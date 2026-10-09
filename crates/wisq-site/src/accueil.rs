@@ -1,8 +1,9 @@
 //! L'accueil : la seule page du site qui ne soit pas un document.
 //!
-//! Le héros, la bande, les deux modes, la comparaison, l'appairage et les
-//! chiffres. Toute la copie vient de `crate::content` ; ce fichier n'est que de
-//! la mise en page.
+//! Le héros, la bande, les deux modes, les trois protocoles, les deux machines
+//! locales, la comparaison, le toucher, l'appairage, la sécurité, les chiffres,
+//! l'état du projet et le plan des pages. Toute la copie vient de
+//! `crate::content` ; ce fichier n'est que de la mise en page.
 //!
 //! **Le mouvement vit ailleurs, et ce n'est pas un hasard.** Ce composant n'est
 //! jamais hydraté : il est rendu à la construction, et le navigateur garde son
@@ -14,7 +15,7 @@
 
 use yew::prelude::*;
 
-use crate::content::Lang;
+use crate::content::{ExplorerCopy, Lang, TraitCopy};
 use crate::logo::Logo;
 use crate::routes::RouteId;
 use crate::shell::href;
@@ -104,24 +105,50 @@ pub fn Accueil(props: &AccueilProps) -> Html {
                 </div>
             </section>
 
+            // **Les trois protocoles**, chacun avec sa réserve. La réserve a sa
+            // propre ligne, sous les points, pour qu'elle ne se lise pas comme
+            // un point de plus.
+            <section id="protocoles">
+                <div class="wrap">
+                    <h2>{ copy.protocoles.title }</h2>
+                    <p class="lede">{ copy.protocoles.lede }</p>
+                    <div class="cards cards-3">
+                        { for copy.protocoles.items.iter().map(|p| html! {
+                            <article class="card">
+                                <span class="tag">{ p.name }</span>
+                                <p>{ p.reach }</p>
+                                <ul>
+                                    { for p.points.iter().map(|point| html! { <li>{ *point }</li> }) }
+                                </ul>
+                                <p class="card-reserve">{ p.caveat }</p>
+                            </article>
+                        }) }
+                    </div>
+                </div>
+            </section>
+
+            <section id="machines">
+                <div class="wrap">
+                    <h2>{ copy.machines.title }</h2>
+                    <p class="lede">{ copy.machines.lede }</p>
+                    { tableau(&copy.machines.columns, copy.machines.rows, true) }
+                    <p class="table-note">{ copy.machines.note }</p>
+                </div>
+            </section>
+
             <section id="compare">
                 <div class="wrap">
                     <h2>{ copy.compare.title }</h2>
                     <p class="lede">{ copy.compare.lede }</p>
-                    <div class="table-scroll">
-                        <table>
-                            <thead>
-                                <tr>
-                                    { for copy.compare.columns.iter().map(|c| html! { <th scope="col">{ *c }</th> }) }
-                                </tr>
-                            </thead>
-                            <tbody>
-                                { for copy.compare.rows.iter().map(|ligne| html! {
-                                    <tr>{ for ligne.iter().map(|cell| html! { <td>{ *cell }</td> }) }</tr>
-                                }) }
-                            </tbody>
-                        </table>
-                    </div>
+                    { tableau(&copy.compare.columns, copy.compare.rows, false) }
+                </div>
+            </section>
+
+            <section id="toucher">
+                <div class="wrap">
+                    <h2>{ copy.toucher.title }</h2>
+                    <p class="lede">{ copy.toucher.lede }</p>
+                    { traits(copy.toucher.items) }
                 </div>
             </section>
 
@@ -142,6 +169,14 @@ pub fn Accueil(props: &AccueilProps) -> Html {
                 </div>
             </section>
 
+            <section id="securite">
+                <div class="wrap">
+                    <h2>{ copy.securite.title }</h2>
+                    <p class="lede">{ copy.securite.lede }</p>
+                    { traits(copy.securite.items) }
+                </div>
+            </section>
+
             <section id="facts">
                 <div class="wrap">
                     <h2>{ copy.facts.title }</h2>
@@ -155,8 +190,103 @@ pub fn Accueil(props: &AccueilProps) -> Html {
                     </div>
                 </div>
             </section>
+
+            // **L'état**, en deux listes. La seconde est dessinée comme la
+            // première, sans atténuation : ce qui manque n'est pas une note de
+            // bas de page.
+            <section id="etat">
+                <div class="wrap">
+                    <h2>{ copy.etat.title }</h2>
+                    <p class="lede">{ copy.etat.lede }</p>
+                    <div class="etat">
+                        <div>
+                            <h3>{ copy.etat.done_label }</h3>
+                            <ul class="etat-liste etat-fait">
+                                { for copy.etat.done.iter().map(|ligne| html! { <li>{ *ligne }</li> }) }
+                            </ul>
+                        </div>
+                        <div>
+                            <h3>{ copy.etat.next_label }</h3>
+                            <ul class="etat-liste">
+                                { for copy.etat.next.iter().map(|ligne| html! { <li>{ *ligne }</li> }) }
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            // **Le plan des pages.** Chaque carte est un lien entier : le nom
+            // de la page en titre, ce qu'on y trouve dessous.
+            <section id="explorer">
+                <div class="wrap">
+                    <h2>{ copy.explorer.title }</h2>
+                    <div class="cards cards-3">
+                        { for pistes(&copy.explorer).into_iter().map(|(route, ligne)| html! {
+                            <a class="card card-lien" href={vers(route)}>
+                                <h3>{ route.label(lang.copy()) }</h3>
+                                <p>{ ligne }</p>
+                            </a>
+                        }) }
+                    </div>
+                </div>
+            </section>
         </>
     }
+}
+
+/// Un tableau dont la première ligne nomme les colonnes. `en_tete_de_ligne`
+/// fait de la première cellule de chaque ligne un en-tête : dans le tableau des
+/// machines, « Mémoire » est ce dont la ligne parle, pas une donnée.
+fn tableau(colonnes: &[&'static str; 3], lignes: &'static [[&'static str; 3]], en_tete_de_ligne: bool) -> Html {
+    html! {
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        { for colonnes.iter().map(|c| html! { <th scope="col">{ *c }</th> }) }
+                    </tr>
+                </thead>
+                <tbody>
+                    { for lignes.iter().map(|ligne| html! {
+                        <tr>
+                            { for ligne.iter().enumerate().map(|(i, cell)| if i == 0 && en_tete_de_ligne {
+                                html! { <th scope="row">{ *cell }</th> }
+                            } else {
+                                html! { <td>{ *cell }</td> }
+                            }) }
+                        </tr>
+                    }) }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+/// Une liste de termes et de ce qu'ils veulent dire, en grille.
+fn traits(items: &'static [TraitCopy]) -> Html {
+    html! {
+        <dl class="traits">
+            { for items.iter().map(|t| html! {
+                <div>
+                    <dt>{ t.term }</dt>
+                    <dd>{ t.detail }</dd>
+                </div>
+            }) }
+        </dl>
+    }
+}
+
+/// Les pages écrites, dans l'ordre de la navigation, avec leur ligne.
+fn pistes(e: &'static ExplorerCopy) -> [(RouteId, &'static str); 7] {
+    [
+        (RouteId::Docs, e.docs),
+        (RouteId::Protocol, e.protocol),
+        (RouteId::Architecture, e.architecture),
+        (RouteId::Faq, e.faq),
+        (RouteId::Roadmap, e.roadmap),
+        (RouteId::Releases, e.releases),
+        (RouteId::Privacy, e.privacy),
+    ]
 }
 
 /// Le titre, mot par mot.

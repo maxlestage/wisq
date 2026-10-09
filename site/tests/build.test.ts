@@ -626,6 +626,66 @@ describe("theme", () => {
     );
   });
 
+  /// **Les contrastes se relisent, ils ne se citent pas.**
+  ///
+  /// La palette crème portait ses mesures en commentaire — « #bf3a0b rend 4,71
+  /// sur crème » — et c'était juste pour le fond. Personne n'avait mesuré les
+  /// cartes : le texte doux y rendait 4,27 et l'accent 4,26, sous le seuil de
+  /// 4,5 que WCAG demande pour du texte courant, sur les surfaces qui portent
+  /// l'essentiel de l'accueil. Le passage au violet l'a vu parce que ce test
+  /// existait avant la palette.
+  ///
+  /// Chaque couple est un couple que la page **peint** — la règle qui le pose
+  /// est nommée —, lu dans la feuille de style construite, pour les deux
+  /// thèmes. Le dégradé des boutons est lu arrêt par arrêt : un texte posé sur
+  /// un dégradé doit tenir sur toute sa longueur, pas en moyenne.
+  test("chaque couple texte-fond que la page peint passe 4,5, dans les deux thèmes", () => {
+    const css = readFileSync(join(dist, styleFile()), "utf8");
+    const lineaire = (c: number) => {
+      const v = c / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (couleur: string) => {
+      let hex = couleur.replace("#", "");
+      if (hex.length === 3 || hex.length === 4) hex = [...hex].map((c) => c + c).join("");
+      expect(hex.length, `${couleur} : une couleur à écrire en hexadécimal opaque`).toBe(6);
+      const [r, g, b] = [0, 2, 4].map((i) => lineaire(parseInt(hex.slice(i, i + 2), 16)));
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const contraste = (a: string, b: string) => {
+      const [haut, bas] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (haut! + 0.05) / (bas! + 0.05);
+    };
+    const COUPLES: [texte: string, fond: string, ou: string][] = [
+      ["--fg", "--bg", "le corps du texte"],
+      ["--fg-soft", "--bg", "les paragraphes d'un document"],
+      ["--fg", "--bg-soft", "le titre d'une carte"],
+      ["--fg-soft", "--bg-soft", "le texte d'une carte"],
+      ["--accent", "--bg", "un lien"],
+      ["--accent", "--bg-soft", "l'étiquette d'une carte"],
+      ["--accent-fg", "--accent", "le lien d'évitement"],
+      ["--fg-code", "--bg-code", "un bloc de code"],
+    ];
+    for (const [theme, selecteur] of [
+      ["clair", ":root{"],
+      ["sombre", ":root[data-theme=dark]{"],
+    ] as const) {
+      const jetons = tokensOf(css, selecteur);
+      for (const [texte, fond, ou] of COUPLES) {
+        const rendu = contraste(jetons[texte]!, jetons[fond]!);
+        expect(rendu, `${theme} : ${texte} sur ${fond} (${ou}) rend ${rendu.toFixed(2)}`)
+          .toBeGreaterThanOrEqual(4.5);
+      }
+      const arrets = jetons["--degrade"]?.match(/#[0-9a-f]{3,8}\b/gi) ?? [];
+      expect(arrets.length, `${theme} : le dégradé des boutons doit avoir deux arrêts`).toBe(2);
+      for (const arret of arrets) {
+        const rendu = contraste(jetons["--accent-fg"]!, arret);
+        expect(rendu, `${theme} : un bouton, --accent-fg sur ${arret}, rend ${rendu.toFixed(2)}`)
+          .toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
   /// An effect runs after the page has painted, so the theme cannot come from
   /// React: a reader who chose light on a dark system would see a flash of
   /// dark on every navigation.

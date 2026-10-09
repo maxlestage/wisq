@@ -31,20 +31,28 @@
 }
 
 :root {
-  --bg: #f2ede3;
-  --bg-soft: #e9e2d5;
-  --bg-code: #161513;
-  --fg: #161513;
-  --fg-soft: #6f685d;
-  --fg-code: #f2ede3;
-  --line: #1615131f;
-  /* **Deux oranges, et c'est mesuré.** Le signal #e8501a rend 5,17 contre le
-     fond nuit et seulement 3,22 contre le crème : il passe en sombre et échoue
-     en clair. #bf3a0b rend 4,71 sur crème. Un site sombre uniquement n'a qu'un
-     orange ; celui-ci porte un thème clair, donc il en faut deux. */
-  --accent: #bf3a0b;
-  --accent-soft: #bf3a0b14;
-  --accent-fg: #f2ede3;
+  /* **Le violet du logo, et c'est mesuré.** Les trois teintes de la marque —
+     #a8a2ff, #8b83ff, #6f64ff — sont faites pour une plaque de nuit : sur un
+     fond clair, la plus sombre ne rend que 4,25 contre du blanc, sous le seuil
+     de 4,5 que WCAG demande pour du texte courant. Le thème clair prend donc un
+     violet plus profond de la même famille, #5145d9, qui rend 6,06 sur le fond
+     et 5,57 sur les cartes ; le sombre garde #8b83ff, la couleur exacte du
+     filet de la plaque, 6,36 sur la nuit. Chaque couple que la page peint est
+     relu par `tests/build.test.ts`, dans les deux thèmes, plutôt que cité. */
+  --bg: #f6f5ff;
+  --bg-soft: #ecebfb;
+  --bg-code: #15132b;
+  --fg: #15132b;
+  --fg-soft: #57537a;
+  --fg-code: #ecebfb;
+  --line: #15132b1f;
+  --accent: #5145d9;
+  --accent-soft: #5145d914;
+  --accent-fg: #f6f5ff;
+  /* Le dégradé des quadrants du logo, pour ce qui se presse. En clair, ses
+     deux arrêts sont descendus d'un cran pour que le texte posé dessus tienne
+     4,5 sur toute la longueur — 4,84 au plus clair. */
+  --degrade: linear-gradient(135deg, #6157e6, #4338c4);
   --radius: 4px;
   --pad: clamp(20px, 4.2vw, 56px);
   --max: 1180px;
@@ -72,30 +80,32 @@
    in one direction and silently fail in the other. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0e0d0c;
-    --bg-soft: #161513;
-    --bg-code: #050504;
-    --fg: #f2ede3;
-    --fg-soft: #bdb6aa;
-    --fg-code: #f2ede3;
-    --line: #f2ede31f;
-    --accent: #e8501a;
-    --accent-soft: #e8501a1f;
-    --accent-fg: #0e0d0c;
+    --bg: #0b0a14;
+    --bg-soft: #14122a;
+    --bg-code: #06050c;
+    --fg: #eeedff;
+    --fg-soft: #aeaacf;
+    --fg-code: #eeedff;
+    --line: #eeedff1f;
+    --accent: #8b83ff;
+    --accent-soft: #8b83ff1f;
+    --accent-fg: #0b0a14;
+    --degrade: linear-gradient(135deg, #a8a2ff, #6f64ff);
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #0e0d0c;
-  --bg-soft: #161513;
-  --bg-code: #050504;
-  --fg: #f2ede3;
-  --fg-soft: #bdb6aa;
-  --fg-code: #f2ede3;
-  --line: #f2ede31f;
-  --accent: #e8501a;
-  --accent-soft: #e8501a1f;
-  --accent-fg: #0e0d0c;
+  --bg: #0b0a14;
+  --bg-soft: #14122a;
+  --bg-code: #06050c;
+  --fg: #eeedff;
+  --fg-soft: #aeaacf;
+  --fg-code: #eeedff;
+  --line: #eeedff1f;
+  --accent: #8b83ff;
+  --accent-soft: #8b83ff1f;
+  --accent-fg: #0b0a14;
+  --degrade: linear-gradient(135deg, #a8a2ff, #6f64ff);
 }
 
 * { box-sizing: border-box; }
@@ -117,13 +127,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* La sélection prend la couleur du signal plutôt que le bleu du système : c'est
+/* La sélection prend le violet de la marque plutôt que le bleu du système : c'est
    la seule surface colorée que le lecteur fabrique lui-même. */
 ::selection { background: var(--accent); color: var(--bg); }
 
 /* ---------- le grain ----------
  *
- * Une page de crème parfaitement plate n'a pas de matière, et c'est la seule
+ * Une page parfaitement plate n'a pas de matière, et c'est la seule
  * chose que le site de référence fait que ni la couleur ni la typographie ne
  * peuvent rendre. Le bruit est dessiné par le navigateur — `feTurbulence`, pas
  * une image —, donc il ne coûte aucune requête et ne pèse que ses 300 octets de
@@ -143,14 +153,16 @@ body {
  * l'amplitude de l'écart d'un pixel isolé.
  *
  * Relevé, sur le pire pixel de `--fg-soft` contre `--bg` en thème clair, le cas
- * le plus serré des deux thèmes (4,72 en clair contre 9,65 en sombre) :
+ * le plus serré des deux thèmes (6,64 en clair contre 8,85 en sombre) — le
+ * texte éclairci au blanc, le fond assombri au noir, chacun de l'opacité du
+ * voile :
  *
- *   sans grain  4,72 — 0,055 → 3,71 — 0,07 → 3,47 — 0,10 → 3,04
+ *   sans grain  6,64 — 0,055 → 5,11 — 0,07 → 4,76 — 0,10 → 4,12
  *
- * Aucune opacité visible ne tient le pire pixel au-dessus de 4,5 : la poursuivre
- * n'a pas de sens. 0,055 plutôt que les 0,07 du site de référence, c'est un
- * cinquième d'amplitude en moins — 1,01 point d'écart au lieu de 1,25 — là où le
- * thème clair n'a que 0,22 de marge au-dessus du seuil. */
+ * Sous la palette crème, le même relevé partait de 4,72 et tombait à 3,71 :
+ * aucune opacité visible ne tenait le pire pixel au-dessus de 4,5. Le violet
+ * le tient, jusqu'à 0,07 — l'opacité du site de référence. 0,055 reste, parce
+ * que la marge achetée par la palette n'est pas une raison de la dépenser. */
 body::after {
   content: "";
   position: fixed;
@@ -357,7 +369,7 @@ section + section { border-top: 1px solid var(--line); }
   color: var(--fg-soft);
   text-decoration: none;
 }
-.lang-switch a[aria-current="true"] { background: var(--accent); color: var(--accent-fg); }
+.lang-switch a[aria-current="true"] { background: var(--degrade); color: var(--accent-fg); }
 
 /* Le premier îlot : la bascule de thème et le choix de langue, dans le
    conteneur que le module hydrate. Il range ses deux enfants comme la barre
@@ -388,7 +400,7 @@ section + section { border-top: 1px solid var(--line); }
   color: var(--fg-soft);
   cursor: pointer;
 }
-.theme-switch button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+.theme-switch button[aria-pressed="true"] { background: var(--degrade); color: var(--accent-fg); }
 
 /* ---------- hero ---------- */
 
@@ -463,8 +475,8 @@ section + section { border-top: 1px solid var(--line); }
      SVG draws — 54 of 240 — or the glow has squarer corners than the logo. */
   border-radius: 22.5%;
   box-shadow:
-    0 1px 2px rgb(14 13 12 / 0.18),
-    0 12px 30px -12px rgb(232 80 26 / 0.45);
+    0 1px 2px rgb(11 10 20 / 0.18),
+    0 12px 30px -12px rgb(111 100 255 / 0.55);
 }
 
 /* Petites capitales élargies : à 11 px, l'axe de largeur rend la ligne lisible
@@ -522,7 +534,7 @@ section + section { border-top: 1px solid var(--line); }
   border: 1px solid transparent;
   cursor: pointer;
 }
-.btn-primary { background: var(--accent); color: var(--accent-fg); }
+.btn-primary { background: var(--degrade); color: var(--accent-fg); }
 .btn-secondary { background: transparent; color: var(--fg); border-color: var(--line); }
 .btn:active { transform: translateY(1px); }
 
@@ -552,7 +564,7 @@ section + section { border-top: 1px solid var(--line); }
   white-space: nowrap;
   font-variation-settings: "wdth" 70;
 }
-/* Le séparateur est la marque elle-même, dans la couleur du signal. */
+/* Le séparateur est la marque elle-même, dans le violet de la palette. */
 .bande-mot::after {
   content: "▚";
   margin-left: 0.9em;
@@ -626,10 +638,33 @@ thead th {
   font-variation-settings: "wdth" 112;
   color: var(--fg-soft);
 }
-tbody tr:last-child td { border-bottom: 0; }
-td:first-child { font-weight: 600; white-space: nowrap; }
+tbody tr:last-child > * { border-bottom: 0; }
+td:first-child, tbody th { font-weight: 600; white-space: nowrap; }
 td:last-child { color: var(--fg); }
 td:nth-child(2) { color: var(--fg-soft); }
+/* Deux machines côte à côte ne sont pas une comparaison : aucune des deux
+   colonnes n'est l'autre en plus pâle. */
+#machines td { color: var(--fg); }
+.table-note { margin-top: 12px; font-size: 0.82rem; color: var(--fg-soft); }
+
+/* ---------- l'accueil, au-delà des deux modes ---------- */
+
+/* La réserve d'un protocole, sous un filet : une phrase à part, pas un point
+   de plus dans la liste. */
+.card-reserve { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.86rem; }
+.card-lien { display: block; color: inherit; text-decoration: none; transition: border-color 0.2s var(--ease); }
+.card-lien:hover { border-color: var(--accent); }
+.card-lien h3 { color: var(--accent); }
+
+.traits { display: grid; gap: 22px; margin: 26px 0 0; }
+.traits dt { font-weight: 700; }
+.traits dd { margin: 4px 0 0; color: var(--fg-soft); font-size: 0.95rem; }
+
+.etat { display: grid; gap: 26px; margin-top: 26px; }
+.etat-liste { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.etat-liste li { position: relative; padding-left: 26px; color: var(--fg-soft); }
+.etat-liste li::before { content: "○"; position: absolute; left: 0; color: var(--accent); font-weight: 700; }
+.etat-fait li::before { content: "✓"; }
 
 /* ---------- install ---------- */
 
@@ -864,6 +899,7 @@ pre code { white-space: pre; }
   .cards { grid-template-columns: 1fr 1fr; gap: 22px; }
   .facts { grid-template-columns: repeat(4, 1fr); }
   .card { padding: 26px; }
+  .traits, .etat { grid-template-columns: 1fr 1fr; }
 }
 
 /* The hero splits in two only once both halves fit. At 40em the lockup is
@@ -887,6 +923,7 @@ pre code { white-space: pre; }
 @media (min-width: 64em) {
   .nav-links { display: flex; }
   .steps { grid-template-columns: repeat(3, 1fr); gap: 28px; }
+  .cards-3, .traits { grid-template-columns: repeat(3, 1fr); }
 }
 
 
@@ -1356,8 +1393,10 @@ html.rideau .hero .cta-row { animation-delay: 1.7s; }
 }
 
 /* ---- le rideau ------------------------------------------------------------ *
- * Une fois par session, la page s'ouvre derrière un rideau d'encre qui porte la
- * marque, dans ses couleurs fixes. Ses deux quadrants arrivent l'un après
+ * Une fois par session, la page s'ouvre derrière un rideau de nuit violette qui
+ * porte la marque, dans ses couleurs fixes — la nuit est celle du thème sombre,
+ * quel que soit le thème, parce que la marque est dessinée pour elle. Ses deux
+ * quadrants arrivent l'un après
  * l'autre, le lien entre eux, puis le rideau se lève. Un pseudo-élément et non
  * un nœud : rien à ajouter au DOM, donc rien qu'une hydratation puisse trouver
  * de trop. Il ne retient aucun clic — `pointer-events: none` —, et il ne
@@ -1369,7 +1408,7 @@ html.rideau body::before {
   inset: 0;
   z-index: 10000;
   pointer-events: none;
-  background: #0e0d0c url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cstyle%3E.q%7Banimation:a .45s cubic-bezier(.2,.7,.1,1) both%7D.l%7Banimation-delay:.25s%7D.p%7Banimation-delay:.12s%7D@keyframes a%7Bfrom%7Bopacity:0;transform:translateY(14px)%7D%7D%3C/style%3E%3Crect class='q' x='40' y='40' width='72' height='72' rx='13' fill='%23a8a2ff'/%3E%3Cg class='q p' fill='%238b83ff'%3E%3Ccircle cx='114.56' cy='114.56' r='2.5'/%3E%3Ccircle cx='120' cy='120' r='2.5'/%3E%3Ccircle cx='125.44' cy='125.44' r='2.5'/%3E%3C/g%3E%3Crect class='q l' x='128' y='128' width='72' height='72' rx='13' fill='%236f64ff'/%3E%3C/svg%3E") center / clamp(96px, 16vw, 168px) no-repeat;
+  background: #0b0a14 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cstyle%3E.q%7Banimation:a .45s cubic-bezier(.2,.7,.1,1) both%7D.l%7Banimation-delay:.25s%7D.p%7Banimation-delay:.12s%7D@keyframes a%7Bfrom%7Bopacity:0;transform:translateY(14px)%7D%7D%3C/style%3E%3Crect class='q' x='40' y='40' width='72' height='72' rx='13' fill='%23a8a2ff'/%3E%3Cg class='q p' fill='%238b83ff'%3E%3Ccircle cx='114.56' cy='114.56' r='2.5'/%3E%3Ccircle cx='120' cy='120' r='2.5'/%3E%3Ccircle cx='125.44' cy='125.44' r='2.5'/%3E%3C/g%3E%3Crect class='q l' x='128' y='128' width='72' height='72' rx='13' fill='%236f64ff'/%3E%3C/svg%3E") center / clamp(96px, 16vw, 168px) no-repeat;
   animation: wisq-rideau 0.85s 0.6s cubic-bezier(0.77, 0, 0.18, 1) forwards;
 }
 @keyframes wisq-rideau {

@@ -36,8 +36,8 @@ use yew::prelude::*;
 /// dans le catalogue du pré-rendu pour les métas, le script de la tête et le
 /// manifeste, et `tests/build.test.ts` les confronte à la feuille de style
 /// construite plutôt qu'à une copie.
-pub const BAR_CLAIR: &str = "#f2ede3";
-pub const BAR_SOMBRE: &str = "#0e0d0c";
+pub const BAR_CLAIR: &str = "#f6f5ff";
+pub const BAR_SOMBRE: &str = "#0b0a14";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Theme {
