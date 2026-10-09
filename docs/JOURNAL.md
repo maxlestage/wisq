@@ -22701,3 +22701,120 @@ cette tranche : sous `ssr`, `cargo build --release` avertit que le bouchon
 `fn appliquer(_: Theme) {}` n'est jamais utilisé — Yew laisse tomber les
 gestionnaires de clic au pré-rendu. L'avertissement est juste ; il lui manque un
 `#[allow(dead_code)]` et la phrase qui dit pourquoi.
+
+## #333 — la bonne unité de mesure est la page, pas le propriétaire
+
+#332 a corrigé la propriété et mesuré le module. Il restait le trou qui avait
+rendu la faute invisible : **rien ne mesurait la page.**
+
+Les deux fichiers qui existaient regardaient chacun une moitié.
+`behaviour.test.ts` charge `src/main.ts` seul, sur l'accueil — une page que le
+script possède entièrement, et c'est pour ça qu'il est resté vert pendant que la
+page `offline` perdait trois comportements. `hydration.test.ts` chargeait le
+module seul. Entre les deux, la page portée — celle qui est tenue par **deux**
+moitiés — n'était regardée par personne.
+
+### Ce que la tranche ajoute
+
+`hydration.test.ts` charge maintenant `src/main.ts` **et** le module wasm, dans
+l'ordre de la vraie page (le script d'abord, la colle ensuite), sur la page
+portée, et exerce les **quatre** comportements : la bascule de thème que Yew
+possède, la mémoire de la langue, l'invite d'installation et les révélations au
+défilement que le script possède encore.
+
+Le point qui compte est que le test ne demande jamais **qui** porte quoi. Le jour
+où un comportement passe du script au module, ce fichier ne change pas : il
+tombe si le comportement disparaît, et c'est tout ce qu'on lui demande. Une
+assertion attachée à un propriétaire passe au vert quand la propriété se
+déplace ; une assertion attachée à la page ne s'en aperçoit même pas.
+
+### Le témoin, et sa forme exacte
+
+La faute de #331 a été reposée telle quelle — les trois comportements
+s'effaçant dès que la page porte `data-hydrate="yew"` :
+
+```
+(fail) la page portée garde la mémoire du choix de langue
+(fail) la page portée garde son invite d'installation
+(fail) la page portée se révèle au défilement, et le dit sur la racine
+ 1 pass
+ 3 fail
+```
+
+**Un passant, trois tombés** — et le passant est la bascule de thème, le seul
+comportement réellement porté. C'est exactement la forme de la régression :
+vert là où Yew porte, rouge partout où il ne porte pas. C'est ce que la suite
+aurait dit ce jour-là.
+
+### La garde réciproque
+
+Le même piège existe en miroir : `behaviour.test.ts` importe le script **sans
+jamais démarrer le module**, donc le jour où l'accueil sera porté, les
+comportements que Yew possède n'y auraient plus aucun propriétaire et sept
+assertions tomberaient sans dire pourquoi. Un premier test y refuse donc, par
+son nom, que l'accueil porte `data-hydrate="yew"`, et nomme où déménager ses
+assertions. Sabordé en le faisant regarder `offline/index.html`, qui est
+réellement portée : il tombe.
+
+### Ce que happy-dom fournit, relevé et non supposé
+
+Les quatre comportements tournent **sans que rien soit simulé**, et c'est une
+mesure, pas un espoir :
+
+| ce dont le code a besoin | ce que happy-dom rend |
+| --- | --- |
+| `IntersectionObserver` | `function` |
+| `(prefers-reduced-motion: reduce)` | `false` — donc le mouvement démarre |
+| `(hover: hover)` | `true` — donc la lueur s'attache |
+| `(display-mode: standalone)` | `false` — donc l'invite est offerte |
+| `navigator.maxTouchPoints` | `0`, et un UA qui n'est pas iOS |
+| `requestAnimationFrame` | `function` |
+
+Et un refus, qui compte autant : **`"serviceWorker" in navigator` est faux**.
+La branche réseau de `main.ts` ne part donc jamais, ce qui était la seule chose
+dans ce fichier qui aurait pu attendre sans borne. Vérifié parce que la question
+s'est posée, pas parce qu'elle était commode.
+
+### Deux obstacles de plus, mesurés
+
+**`tsc` refuse un chemin littéral en `.ts`** (TS5097). Le voisin passait parce
+qu'il importe le script avec une requête de contournement de cache. Ici la
+requête a sa propre raison d'être, et elle est écrite : `bun test` charge tous
+les fichiers dans un même processus, et sans elle le second à passer hériterait
+du travail que le premier a fait sur un autre document.
+
+**Un dépassement de délai vu une fois, à 20 s, non reproduit en six tours
+complets.** Il n'est pas attribué : le nom du test n'a pas été lu. Ce qui est
+établi — le fichier n'a aucune attente non bornée (`jusqua` plafonne à 200
+tours, et il n'y a pas de chemin réseau), il coûte 517 ms une fois les octets
+chauds contre 5,5 s à froid, et ce tour-là était cinq fois plus lent partout
+(58 s contre 11 s). Le dépôt décrit déjà un rouge rare de cette signature dans
+`claims.test.ts` : une marche de 146 fichiers à **5 798 ms à froid** sous un
+`setDefaultTimeout(20_000)` que neuf fichiers posent et qui, dans bun, vaut pour
+tout le processus. C'est l'explication la plus probable ; ce n'est pas une
+preuve, et c'est écrit ici pour la prochaine fois plutôt qu'affirmé.
+
+### Le sabordage
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| la langue n'est plus mémorisée | la mémoire de la langue |
+| l'invite ne se révèle plus sur `beforeinstallprompt` | l'invite |
+| le renvoi ne mémorise plus | l'invite |
+| le mouvement ne pose plus `data-motion` | les révélations |
+| la barre de lecture n'est plus posée | les révélations |
+| TÉMOIN : la faute de #331, reposée | trois sur quatre, le thème survivant |
+| la garde réciproque regarde une page portée | la garde |
+
+Sept, aucun survivant.
+
+### Le signe à retenir
+
+**Une garde attachée à un propriétaire garde le propriétaire, pas la chose.**
+`behaviour.test.ts` gardait « ce que `main.ts` fait », et il l'a fait
+parfaitement pendant que la page qu'il ne regardait pas perdait trois
+comportements. Le remède n'est pas un test de plus par propriétaire : c'est de
+prendre la **page** comme unité, et de laisser la propriété se déplacer dessous
+sans que la mesure bouge. C'est la même famille que la leçon de #464 — dès
+qu'une garde écrit ce qu'elle devrait aller chercher, elle garde sa propre
+copie — appliquée non plus à une valeur, mais à une frontière.

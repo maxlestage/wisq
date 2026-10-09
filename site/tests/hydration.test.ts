@@ -16,6 +16,17 @@
 /// Ce fichier charge donc le vrai module, dans le vrai document construit, et
 /// appuie sur les boutons.
 ///
+/// **Et il charge aussi `src/main.ts`, parce que c'est la page qui compte, pas
+/// le module.** Une page portée est tenue par deux moitiés : ce que Yew possède
+/// déjà, et ce que le script possède encore. Mesurer la première seule est
+/// exactement l'erreur qui a publié la page `offline` sans son invite
+/// d'installation — les tests du module étaient verts, ceux du script
+/// regardaient une autre page, et personne ne regardait *celle-ci*. Les quatre
+/// comportements sont donc exercés ici **ensemble**, sur la page portée, quel
+/// que soit celui des deux qui les porte. Le jour où un comportement passe de
+/// l'un à l'autre, ce fichier ne change pas : il tombe si le comportement
+/// disparaît, et c'est tout ce qu'on lui demande.
+///
 /// **Comment le wasm tourne ici.** La colle de wasm-bindgen cherche son `.wasm`
 /// par `fetch` relatif à sa propre adresse ; sous Bun, le `fetch` de happy-dom
 /// refuse le schéma `file:` — mesuré, « URL scheme "file" is not supported ».
@@ -161,6 +172,19 @@ beforeAll(async () => {
     .replace(/[\s\S]*<html[^>]*>/, "")
     .replace(/<\/html>[\s\S]*/, "");
 
+  // **L'ordre de la vraie page.** Le script du site est un module ES que le
+  // document charge avant la colle du wasm ; l'inverse ferait courir
+  // l'hydratation contre un document que le script n'a pas encore touché, et
+  // mesurerait un ordre qui n'existe nulle part.
+  //
+  // La requête donne à ce fichier **sa propre** évaluation du script.
+  // `bun test` charge tous les fichiers de test dans un même processus, et
+  // `behaviour.test.ts` importe le même module pour une autre page ; sans elle,
+  // le second à passer hériterait du travail que le premier a fait sur un autre
+  // document. C'est aussi la seule forme que `tsc` accepte pour un chemin en
+  // `.ts` — mesuré : le chemin littéral rend TS5097.
+  await import(`../src/main.ts?portee=${encodeURIComponent(page)}`);
+
   const { glue, wasm } = front();
   const module = await import(glue);
   await module.default({ module_or_path: readFileSync(wasm) });
@@ -225,4 +249,85 @@ test("le module hydraté tient la bascule de thème", async () => {
   expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
   expect(localStorage.getItem("wisq.theme")).toBeNull();
   expect(presse()).toEqual(["auto"]);
+});
+
+// --- ce que le script possède encore, sur cette même page ---------------------
+//
+// Les trois qui suivent ne sont pas portés en Yew aujourd'hui : `src/main.ts`
+// les tient. Ils sont exercés **ici**, sur la page portée, et non dans
+// `behaviour.test.ts` qui regarde l'accueil — parce que c'est exactement cette
+// distinction qui a manqué. Le jour où l'un d'eux passera en Yew, rien ici ne
+// changera : le test demande que le comportement existe, pas qui le porte.
+
+test("la page portée garde la mémoire du choix de langue", () => {
+  const lien = document.querySelector<HTMLAnchorElement>('.lang-switch a[hreflang="fr"]');
+  if (!lien) throw new Error(`${page} : aucun lien de langue vers le français`);
+  lien.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  expect(localStorage.getItem("wisq.lang")).toBe("fr");
+});
+
+test("la page portée garde son invite d'installation", async () => {
+  const banniere = document.querySelector<HTMLElement>("[data-install]");
+  if (!banniere) throw new Error(`${page} : aucune invite d'installation`);
+  expect(banniere.hasAttribute("hidden"), "l'invite se montre sans qu'on la propose").toBe(true);
+
+  // L'événement que Chromium envoie, avec ce que le code en attend : il le
+  // retient pour le rejouer sur un geste, donc les deux membres doivent être là.
+  const evenement = new Event("beforeinstallprompt") as Event & {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: string }>;
+  };
+  evenement.prompt = async () => {};
+  evenement.userChoice = Promise.resolve({ outcome: "accepted" });
+  window.dispatchEvent(evenement);
+  await jusqua(
+    () => !banniere.hasAttribute("hidden"),
+    "que `beforeinstallprompt` révèle l'invite",
+  );
+
+  expect(
+    document.querySelector('[data-install-variant="prompt"]')!.hasAttribute("hidden"),
+    "la formulation de Chromium reste masquée",
+  ).toBe(false);
+  // Ce lecteur n'est pas sur iOS : lui dire de toucher un bouton Partager qu'il
+  // n'a pas serait pire que de se taire.
+  expect(
+    document.querySelector('[data-install-variant="ios"]')!.hasAttribute("hidden"),
+    "la formulation iOS est montrée à qui n'est pas sur iOS",
+  ).toBe(true);
+
+  document
+    .querySelector<HTMLButtonElement>("[data-install-dismiss]")!
+    .dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  await jusqua(
+    () => banniere.hasAttribute("hidden"),
+    "que le renvoi masque l'invite",
+  );
+  expect(localStorage.getItem("wisq.install.dismissed")).toBe("1");
+});
+
+/// **Le mouvement, et surtout sa règle.** Rien n'est masqué par la feuille de
+/// style seule : les règles qui masquent vivent toutes sous `[data-motion]`, que
+/// ce comportement est seul à poser. Donc le mesurer, c'est mesurer deux choses
+/// d'un coup — que les révélations arrivent, et qu'une page sans elles n'a rien
+/// d'invisible.
+test("la page portée se révèle au défilement, et le dit sur la racine", () => {
+  expect(
+    document.documentElement.dataset.motion,
+    "sans `data-motion`, les règles qui masquent ne s'appliquent pas — et rien ne se lève",
+  ).toBe("on");
+  expect(document.documentElement.style.getPropertyValue("--rise")).not.toBe("");
+
+  const blocs = [...document.querySelectorAll(".doc > .wrap > *")];
+  expect(blocs.length, `${page} : aucun bloc de document à révéler`).toBeGreaterThan(0);
+  for (const bloc of blocs) {
+    expect(
+      (bloc as HTMLElement).dataset.reveal,
+      `un bloc de ${page} n'est pas inscrit auprès de l'observateur`,
+    ).toBe("");
+  }
+
+  // La barre de progression n'existe que là où quelque chose peut la remplir,
+  // c'est-à-dire sur une page écrite — et celle-ci en est une.
+  expect(document.querySelector(".reading-progress"), "la barre de lecture manque").not.toBeNull();
 });
