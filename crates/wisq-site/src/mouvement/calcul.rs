@@ -57,6 +57,60 @@ pub fn rampe(p: f64, (debut, fin): (f64, f64)) -> f64 {
     borne((p - debut) / (fin - debut), 0.0, 1.0)
 }
 
+/// Un pas vers une cible : la part du chemin restant que l'on parcourt à
+/// chaque image. Le curseur rattrape le pointeur ainsi — vite quand il est
+/// loin, doucement quand il arrive.
+pub fn approcher(de: f64, vers: f64, part: f64) -> f64 {
+    de + (vers - de) * part
+}
+
+/// Une vitesse qui s'éteint, divisée par `1 + dt/τ` à chaque image.
+///
+/// **Sans `exp`, et c'est du poids** : l'exponentielle n'est pas une
+/// instruction de WebAssembly, elle tirerait une routine de `libm` dans le
+/// module. La division suit la même pente au début et ne s'en écarte qu'aux
+/// images longues, que `dt` borné empêche.
+pub fn amortir(v: f64, dt: f64, tau: f64) -> f64 {
+    if tau <= 0.0 {
+        return 0.0;
+    }
+    v / (1.0 + dt.max(0.0) / tau)
+}
+
+/// Le décalage d'une piste qui boucle, ramené dans `[0, tour)`.
+///
+/// La bande porte deux fois ses mots : quand elle a reculé d'un tour entier,
+/// la seconde copie est exactement là où était la première, donc retirer les
+/// tours complets ne se voit pas. `floor` et non `%` : le reste d'un flottant
+/// n'est pas une instruction de WebAssembly, `floor` en est une.
+pub fn enrouler(d: f64, tour: f64) -> f64 {
+    if tour <= 0.0 {
+        return 0.0;
+    }
+    d - tour * (d / tour).floor()
+}
+
+/// L'inclinaison d'une carte sous le pointeur : un axe dans le plan de la
+/// carte, en millièmes, et un angle en dixièmes de degré.
+///
+/// Le point sous le pointeur s'enfonce, comme une carte qu'on presse du doigt :
+/// à droite, c'est le bord droit qui recule, donc l'axe est vertical ; en bas,
+/// le bord bas, et l'axe est horizontal. L'angle croît avec la distance au
+/// centre et atteint `max` au milieu d'un bord. Au centre exact il n'y a pas
+/// d'axe, et l'angle est nul.
+pub fn inclinaison(px: f64, py: f64, max: f64) -> (i32, i32, i32) {
+    let dx = borne(px, 0.0, 1.0) - 0.5;
+    let dy = borne(py, 0.0, 1.0) - 0.5;
+    let n = (dx * dx + dy * dy).sqrt();
+    if n < 0.001 {
+        return (0, 1000, 0);
+    }
+    let ax = (-dy / n * 1000.0).round() as i32;
+    let ay = (dx / n * 1000.0).round() as i32;
+    let angle = (borne(n / 0.5, 0.0, 1.0) * max).round() as i32;
+    (ax, ay, angle)
+}
+
 // La géométrie de `crate::logo`, et rien d'autre : un quadrant fait 72 de côté,
 // arrondi de 13 ; la fenêtre est à 40, le téléphone à 128 ; l'écran du
 // téléphone est un trou arrondi de 7 entre 147 et 181 sur 139 à 189 ; les trois
@@ -141,5 +195,63 @@ mod tests {
         assert!((rampe(0.56, (0.5, 0.62)) - 0.5).abs() < 1e-9);
         assert_eq!(rampe(0.1, (0.5, 0.62)), 0.0);
         assert_eq!(rampe(0.9, (0.5, 0.62)), 1.0);
+    }
+
+    #[test]
+    fn la_bande_boucle_sans_couture() {
+        use super::enrouler;
+        assert_eq!(enrouler(0.0, 400.0), 0.0);
+        assert_eq!(enrouler(450.0, 400.0), 50.0);
+        // Défilée vers le haut, la bande recule : le décalage négatif revient
+        // dans le tour, il ne sort jamais par la gauche.
+        assert_eq!(enrouler(-50.0, 400.0), 350.0);
+        assert_eq!(enrouler(-850.0, 400.0), 350.0);
+        // Une piste sans largeur — pas encore mesurée — ne bouge pas.
+        assert_eq!(enrouler(123.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn l_elan_s_eteint_sans_changer_de_signe() {
+        use super::amortir;
+        let mut v = 1200.0;
+        for _ in 0..120 {
+            v = amortir(v, 16.0, 260.0);
+        }
+        assert!(
+            v > 0.0 && v < 1.0,
+            "après deux secondes, l'élan est éteint : {v}"
+        );
+        assert!(amortir(-500.0, 16.0, 260.0) < 0.0);
+        assert_eq!(
+            amortir(300.0, 0.0, 260.0),
+            300.0,
+            "sans temps écoulé, rien ne bouge"
+        );
+    }
+
+    #[test]
+    fn la_carte_s_enfonce_sous_le_pointeur() {
+        use super::inclinaison;
+        assert_eq!(inclinaison(0.5, 0.5, 70.0), (0, 1000, 0), "au centre, rien");
+        // Au milieu du bord droit : l'axe est vertical, l'angle est plein.
+        assert_eq!(inclinaison(1.0, 0.5, 70.0), (0, 1000, 70));
+        // Au milieu du bord bas : l'axe est horizontal, et de sens opposé.
+        assert_eq!(inclinaison(0.5, 1.0, 70.0), (-1000, 0, 70));
+        // Un coin ne dépasse pas l'angle d'un bord : il est borné.
+        assert_eq!(inclinaison(0.0, 0.0, 70.0).2, 70);
+        // Hors de la carte, le pointeur est ramené sur son bord.
+        assert_eq!(inclinaison(3.0, 0.5, 70.0), (0, 1000, 70));
+    }
+
+    #[test]
+    fn le_curseur_rattrape_sans_depasser() {
+        use super::approcher;
+        let mut x = 0.0;
+        for _ in 0..60 {
+            let suivant = approcher(x, 100.0, 0.2);
+            assert!(suivant > x && suivant <= 100.0);
+            x = suivant;
+        }
+        assert!(x > 99.9);
     }
 }

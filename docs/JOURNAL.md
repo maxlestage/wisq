@@ -23274,3 +23274,218 @@ pendant que je portais le troisième comportement. La PR a été fermée plutôt
 forcée — son contenu touchait `site/src/main.ts`, que #335 a supprimé. Ce qui
 survit d'une tranche remplacée, c'est ce qu'elle a **mesuré**, pas ce qu'elle a
 écrit.
+
+## #337 — le violet du logo, quatre fois plus à lire, et du mouvement partout
+
+Trois demandes en trois messages : « remettre le site en violet comme le
+logo », « bien plus d'informations sur tout le site », puis « bien plus
+d'animation sur tout le site ». Une tranche, parce que les trois touchent les
+mêmes pages et que les gardes qui les tiennent sont les mêmes.
+
+### Le violet, mesuré avant d'être posé
+
+#464 avait habillé le site en crème et orange, d'après zamocorp. Le logo, lui,
+n'a jamais quitté sa famille : #a8a2ff et #6f64ff pour les quadrants, #8b83ff
+pour le filet de la plaque. Ces trois teintes sont dessinées pour la nuit : la
+plus sombre ne rend que 4,25 contre du blanc. Le thème sombre prend donc
+#8b83ff tel quel — 6,36 sur le fond —, et le clair un cran plus profond de la
+même famille, #5145d9 — 6,06 sur le fond, 5,57 sur les cartes. Les boutons
+prennent le dégradé des quadrants, descendu d'un cran en clair pour que le
+texte posé dessus tienne 4,5 sur toute sa longueur.
+
+**La garde a été écrite avant la palette, et elle a trouvé quelque chose dans
+l'ancienne.** Elle relit, dans la feuille de style construite et pour les deux
+thèmes, chaque couple texte-fond que la page peint, règle nommée, dégradé lu
+arrêt par arrêt. Rejouée sur le crème : le texte des cartes rendait **4,27** et
+leur étiquette **4,26**, sous le seuil, sur les surfaces qui portent
+l'essentiel de l'accueil. Le commentaire de la palette citait des mesures
+justes — contre le fond. Personne n'avait mesuré les cartes.
+
+Le grain y gagne aussi : relevé de la même façon que #464, le pire pixel du
+texte doux en clair passe de 3,71 à 5,11. La palette crème ne tenait 4,5 à
+aucune opacité visible ; la violette le tient jusqu'à celle de la référence.
+
+### Le contenu : sept pages réécrites depuis le dépôt
+
+Sept rédacteurs en parallèle, un par page, avec une consigne commune : rien
+d'inventé, chaque fait vérifiable dans le dépôt, la structure identique bloc
+pour bloc dans les deux langues, et pour chaque nombre nouveau une provenance
+prête pour `claims.test.ts` — la commande qui le refait, ou la ligne qui prouve
+que ce n'est pas une mesure. Les pages sont passées de 18 102 à 85 418 mots de
+données ; la garde des nombres a reçu une centaine de provenances nouvelles, et
+elle passe sans exception ni liste d'aveux.
+
+**Chaque page enrichie a trouvé au moins une phrase fausse dans l'ancienne** :
+
+| page | ce qu'elle disait | ce qui est vrai |
+| --- | --- | --- |
+| hors ligne | seules les pages déjà lues restent disponibles | le service worker les précharge toutes, dans les deux langues |
+| vie privée | « deux petites valeurs » dans le navigateur | quatre clés, dont `wisq.theme` et `wisq.rideau` |
+| feuille de route | l'application lit l'image d'installation et la refuse | `IsoBoot` la démarre |
+| protocole | « zéro dépendance » ; un exemple JSON | rustls, rcgen, ring ; l'exemple n'était pas ce que le démon écrit |
+| questions | les consoles « non chiffrées par conception » ; un bureau « avec le son » | TLS et TLS épinglé sont proposés ; rien ne joue le son |
+| versions | une extension de signe sur « 85 % » d'un démarrage | le nombre n'existe nulle part ; le CHANGELOG dit 47 % pour les accès mémoire |
+| guide | `--service`, une option du démon | le démon s'arrête sur « argument inconnu » ; c'est l'installateur |
+
+Et l'accueil que j'écrivais en même temps recopiait « vingt et une familles
+d'architectures » du README. **L'énumération en déclare vingt**, et
+`docs/ROADMAP.md` les nomme, vingt, dans la phrase qui en annonce vingt et une.
+Six copies corrigées, et une garde qui compte les `case`.
+
+**La garde d'installation a mordu une fois.** La page du protocole décrivait
+l'installateur — `scripts/install.sh --service`, la formule Homebrew —, ce que
+le site s'interdit depuis longtemps : il explique ce qu'est wisq, il ne dit à
+personne comment l'installer. Retiré ; ce qui relève du protocole — un service
+launchd ou systemd garde le démon en vie, et son journal porte le jeton — est
+resté.
+
+### Ce que les rédacteurs ont trouvé hors du site
+
+Le plus important n'est pas sur le site. **L'envoi de fichiers SPICE échoue
+toujours depuis l'écran de session** : `SessionModel.sendFile` fait
+`session as? SPICESession`, et `SessionFactory` enveloppe toujours SPICE dans
+une `ReconnectingSession` — la conversion rend `nil`, le bouton répond « cette
+session n'a pas d'agent SPICE », quoi que fasse l'invité. Le protocole est
+écrit et testé ; c'est la couture qui manque. Vérifié par lecture, **pas
+corrigé** : `WisqUI` ne se compile que sous iOS, et une correction qu'aucun
+test ne peut exercer ici n'a pas sa place dans une tranche de site. Les pages
+disent le défaut au lieu de promettre l'envoi.
+
+Du même ordre, signalés et laissés : le son SPICE est décodé et jamais joué
+(aucun `AVFoundation` dans `Sources/`), `SPICESession.setPreferredSize` est
+vide alors que le parcours Ubuntu annonce un écran qui suit le téléphone,
+`SECURITY.md` annonçait un agent en HTTP clair — corrigé, c'était une ligne —,
+la formule Homebrew dit « no dependencies », l'en-tête de `main.rs` donne 22 Mo
+pour l'ancien démon quand tout le reste dit 58, `wisq-agent bureau` affirme
+que le mot de passe « n'est écrit nulle part ailleurs » alors qu'il est dans le
+XML du domaine, et deux commentaires RDP disent « TLS d'abord » quand le code
+ne demande que la sécurité historique.
+
+### Le mouvement, sur tout le site
+
+| où | quoi | porte |
+| --- | --- | --- |
+| chaque page écrite | le titre monte mot par mot, l'accroche suit | `html.entree` |
+| derrière les titres | une aurore de la palette qui dérive | `[data-motion]` |
+| chaque page écrite | un sommaire dont le trait glisse jusqu'à la section lue | `[data-motion]` |
+| blocs de code | tapés ligne à ligne, curseur de terminal à la fin | `[data-motion]` |
+| listes, tableaux, définitions, pied | en cascade, élément par élément | `[data-motion]` |
+| titres de section | sortent de leur ligne, leur trait se trace | `[data-motion]` |
+| cartes | s'inclinent sous le pointeur, un trait de lumière fait le tour | `[data-motion]` |
+| souris | un anneau qui suit avec retard, grossit sur ce qui se clique | `[data-motion]` |
+| la bande | prend l'élan du défilement, dans son sens, et penche | `[data-motion]` |
+| pied de chaque page | la bande, et le nom en très grand, lettre par lettre | `[data-motion]` |
+| en-tête | s'efface en descendant, revient en remontant, jamais avec le focus | `[data-motion]` |
+| d'une page à l'autre | la nouvelle monte par-dessus l'ancienne qui recule | `no-preference` |
+
+**La bande n'est plus une animation CSS** : sa vitesse dépend du défilement, ce
+qu'une animation écrite d'avance ne sait pas faire. Le module pose le recul et
+la pente ; la boucle s'arrête quand aucune bande n'est visible. **L'en-tête
+d'un document n'est plus révélé au défilement** : il entre sous
+`html.entree`, avant la première peinture — révélé aussi par le module, il
+aurait été peint, masqué, puis rejoué.
+
+**Mesuré** : le module passe de 261 252 à 271 558 octets, 116 280 gzippés ; la
+feuille de style de 23 717 à 29 755. Les deux plafonds ont été relevés, avec la
+mesure écrite à côté — du code, pas du contenu : la prose des pages, elle, n'est
+toujours pas dans le module, et le test qui le vérifie n'a pas bougé.
+
+### La seconde vague
+
+« Bien plus d'animation sur tout le site », demandé une seconde fois pendant
+que la première vague partait en revue. Elle n'a pas été lue comme une
+redite : six choses de plus, chacune derrière sa porte.
+
+| quoi | comment | porte |
+| --- | --- | --- |
+| le thème s'ouvre en cercle depuis le bouton pressé | `document.startViewTransition`, et la feuille de style découvre la nouvelle page par un cercle | `[data-motion]` et la transition de vue |
+| les titres de section montent mot par mot | découpés à la construction, comme le titre du héros ; le sommaire recoupe leur texte | `[data-motion]` |
+| un retour en haut | un vrai lien, au nom de celui du pied, dont l'anneau suit la lecture | `[data-motion]` |
+| les rangs des sections, le nom du pied | glissent et se resserrent avec le défilement, en CSS seul | `[data-motion]` et `animation-timeline` |
+| la navigation et le pied | aimantés, comme les boutons du héros | `[data-motion]` |
+| la marque, l'icône du thème, les tableaux | la marque pivote, l'icône tourne, la ligne survolée s'éclaire | `[data-motion]` |
+
+**La bascule en cercle ne coûte jamais le thème.** Elle demande deux choses
+qu'aucun réglage ne remplace — `[data-motion]`, que le module ne pose pas au
+calme, et la transition de vue, que Chrome et Safari connaissent et les autres
+pas — et sans l'une ou l'autre, le thème s'applique d'un coup, comme avant. Si
+l'appel échoue, le rappel n'a peut-être pas tourné : le thème est appliqué
+directement. Les deux branches ont leur test, et le test prête au navigateur
+de happy-dom la transition qu'il n'a pas.
+
+**Les animations liées au défilement sont en CSS**, là où le navigateur sait
+le faire : Chromium oui, Safari depuis sa 26, Firefox derrière un réglage.
+Ailleurs, les rangs et le nom restent à leur état de repos, ce qui est leur
+état final. Aucune ligne de Rust pour ça, donc aucun octet de plus dans le
+module.
+
+**Mesuré** : le module passe à 276 591 octets, 118 718 gzippés ; la feuille de
+style à 32 043. Les plafonds sont relevés une seconde fois, à 285 000 et
+123 000 pour le module, 35 000 pour la feuille, avec la mesure écrite à côté.
+
+**Six mutations, six tuées** : la bascule qui ignore le calme, la classe qui
+reste après la transition, le retour en haut qui ne s'efface plus, le retour
+en haut sans nom, la navigation sans aimants, les titres d'un document qui ne
+sont plus découpés.
+
+### Défauts trouvés en route
+
+**1. `toEqual` sur des éléments happy-dom, encore.** Le premier test du
+sommaire comparait des listes d'éléments ; le processus a été tué par manque de
+mémoire avant d'imprimer quoi que ce soit. C'est la leçon que le test de
+révélation porte déjà en commentaire, payée une seconde fois. Les assertions
+comparent maintenant des rangs.
+
+**2. Deux observateurs pour un même titre.** Un titre de section est regardé
+par la révélation et par le sommaire ; l'observateur maîtrisé du test ne
+prévenait que le premier, et le sommaire n'apprenait rien. Un navigateur les
+préviendrait tous les deux — le test aussi, maintenant.
+
+**3. Le compte de tests a bougé sous les rédacteurs.** Les quatre tests de
+`calcul.rs` ont fait passer le dépôt de 2628 à 2632 tests ; trois gardes l'ont
+dit à chaque rédacteur, qui l'a rapporté plutôt que de le corriger chez un
+autre. C'est la consigne qui a tenu : ne toucher qu'à sa page.
+
+### Le sabordage
+
+Huit mutations, chacune construite et passée au test du mouvement :
+
+| sabordage | verdict | test qui tombe |
+| --- | --- | --- |
+| le sommaire ne retire plus la marque de la section précédente | tué | la section qui entre dans la vue devient la section lue |
+| le premier mouvement ne pose plus l'anneau sous la flèche | tué | l'anneau arrive sous la flèche |
+| l'élan de la bande ignore le sens du défilement | tué | le défilement la pousse dans son sens |
+| la boucle de la bande tourne même invisible | **survivant**, puis tué | hors de la vue, la boucle s'arrête — écrit après |
+| l'en-tête revient au moindre pixel de remontée | tué | l'en-tête s'efface quand on descend |
+| la carte ne se redresse plus quand le pointeur part | tué | la carte s'enfonce sous le pointeur, et se redresse |
+| l'en-tête d'un document est révélé au défilement | tué | les blocs se lèvent en entrant dans la vue |
+| la cascade oublie le pied | tué | les listes d'un document, ses tableaux et le pied |
+
+Et deux sur les gardes de contenu : la palette crème remise dans la feuille de
+style construite fait tomber la garde de contraste (4,27 sur les cartes), et
+« twenty-one » remis dans le README fait tomber celle des familles.
+
+**Le survivant dit ce qu'il fallait dire** : une boucle qui ne s'arrête jamais
+ne se voit pas — la bande avance, le test qui la regarde avancer est content.
+Ce qu'elle coûte, une image par rafraîchissement d'écran sur toute la page, ne
+se lit qu'en regardant ce qu'elle fait **quand elle ne devrait rien faire**.
+
+### Ce qui n'est pas fait
+
+- **Le défaut de l'envoi de fichiers SPICE**, ni le son, ni la retaille — voir
+  plus haut.
+- **Aucun vrai Safari, aucun iPhone** : les captures sont de Chromium, à 390 et
+  1 280 px, dans les deux thèmes, avec et sans mouvement. Les transitions de
+  page n'ont pas été capturées.
+- Les pages sont longues — jusqu'à 63 Ko de HTML pour les versions. Le
+  sommaire est la réponse ; une coupe éditoriale en serait une autre, et c'est
+  à l'auteur d'en décider.
+
+### Le signe à retenir
+
+**Écrire davantage, c'est relire davantage.** Aucune des sept pages n'a été
+enrichie sans qu'une phrase de l'ancienne tombe, et les défauts les plus graves
+— l'envoi de fichiers, le son — ne sont pas sur le site du tout : ils sont
+apparus parce qu'un rédacteur, à qui l'on interdisait d'écrire ce qu'il ne
+pouvait pas vérifier, est allé vérifier. La consigne qui produit du contenu
+exact est aussi une revue de code.

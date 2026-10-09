@@ -29,9 +29,13 @@
 
 #[cfg(feature = "hydrate")]
 mod aimants;
+#[cfg(feature = "hydrate")]
+mod bande;
 pub mod calcul;
 #[cfg(feature = "hydrate")]
 mod chiffres;
+#[cfg(feature = "hydrate")]
+mod curseur;
 #[cfg(feature = "hydrate")]
 mod defilement;
 #[cfg(feature = "hydrate")]
@@ -46,6 +50,8 @@ pub(crate) mod outils;
 mod ouverture;
 #[cfg(feature = "hydrate")]
 mod revelation;
+#[cfg(feature = "hydrate")]
+mod sommaire;
 
 #[cfg(feature = "hydrate")]
 use wasm_bindgen::JsCast;
@@ -90,6 +96,9 @@ pub fn demarrer() {
     ouverture::demarrer(&fenetre, &document);
     aimants::demarrer(&fenetre, &document);
     defilement::demarrer(&fenetre, &document);
+    sommaire::demarrer(&document);
+    bande::demarrer(&fenetre, &document);
+    curseur::demarrer(&fenetre, &document);
 
     surveiller(&fenetre, &racine);
 }

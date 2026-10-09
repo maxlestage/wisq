@@ -39,7 +39,7 @@ public struct KernelImage: Equatable, Sendable {
 /// personne à qui demander.
 ///
 /// **Reconnaître n'est pas exécuter, et les deux ne se confondent pas ici.**
-/// wisq reconnaît vingt et une familles ; il en exécute deux. Pour les
+/// wisq reconnaît vingt familles ; il en exécute deux. Pour les
 /// autres, le refus **nomme** l'architecture au lieu de dire « non » : c'est
 /// la différence entre un mur et une carte.
 ///

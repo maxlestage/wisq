@@ -174,6 +174,9 @@ fn Footer(props: &FooterProps) -> Html {
 
     html! {
         <footer class="site-footer">
+            // La bande de l'accueil, au pied de chaque page : la même piste, que
+            // le défilement pousse aussi ici.
+            { bande(lang.accueil().bande.words) }
             <div class="wrap footer-top">
                 <div class="footer-brand">
                     // La marque et le nom, la même paire que le héros à une
@@ -227,6 +230,31 @@ fn Footer(props: &FooterProps) -> Html {
                     <a href="#main">{ copy.footer.back_to_top }</a>
                 </div>
             </div>
+            // **Le nom, en très grand, pour finir.** Décoratif — le pied le dit
+            // déjà en haut, en texte qu'on lit —, et chaque lettre est sa
+            // propre boîte pour monter à son tour quand le pied arrive.
+            <p class="pied-geant" aria-hidden="true">
+                { for "wisq▚".chars().map(|c| html! { <span>{ c }</span> }) }
+            </p>
         </footer>
+    }
+}
+
+/// **La bande** : des mots-clés en très grand, qui défilent.
+///
+/// Deux fois la liste, parce qu'une piste qui avance de la moitié de sa largeur
+/// et recommence n'a pas de couture ; au repos, la seconde copie est masquée et
+/// la première va à la ligne. Décorative, et elle le dit : elle répète en mots
+/// ce que la page explique en phrases.
+pub(crate) fn bande(mots: &'static [&'static str]) -> Html {
+    html! {
+        <div class="bande" aria-hidden="true">
+            <div class="bande-piste">
+                { for mots.iter().map(|mot| html! { <span class="bande-mot">{ *mot }</span> }) }
+                { for mots.iter().map(|mot| html! {
+                    <span class="bande-mot bande-double">{ *mot }</span>
+                }) }
+            </div>
+        </div>
     }
 }

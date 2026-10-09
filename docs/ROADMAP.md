@@ -4202,7 +4202,7 @@ sélectionnée ».
 **Reconnaître n'est pas exécuter**, et les deux sont désormais deux questions
 distinctes dans le code plutôt qu'un booléen qui les mélange.
 
-`GuestArchitecture` nomme les **vingt et une familles** pour lesquelles le
+`GuestArchitecture` nomme les **vingt familles** pour lesquelles le
 noyau Linux a un répertoire dans `arch/`, plus celles qu'il a portées assez
 longtemps pour que des images traînent encore : x86, ARM, RISC-V, MIPS,
 PowerPC, IBM Z, SPARC, LoongArch, Alpha, ARC, C-SKY, Hexagon, Itanium, 68000,
@@ -4311,7 +4311,7 @@ imaginés.
 
 ### Ce qui n'est pas promis
 
-Reconnaître vingt et une familles n'en fait pas tourner vingt et une. Écrire un
+Reconnaître vingt familles n'en fait pas tourner vingt. Écrire un
 cœur ARM64 ou PowerPC est un lot par architecture, pas une case à cocher. Ce
 que cette tranche change, c'est qu'un fichier refusé est désormais **nommé** :
 « un noyau Linux pour ARM64, au format Image ARM64 » au lieu du silence. C'est
