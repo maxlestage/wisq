@@ -23673,9 +23673,23 @@ front : wisq-27c09838c2d61e9f.wasm (276599 octets, 118716 gzip),
 ```
 
 C'est aussi la onzième façon de se tromper du journal, prise par l'autre bout :
-un instrument qui connaît la réponse et la jette. Celui-ci la garde, et la
-prochaine exécution du coureur répondra d'elle-même à la question que #339 a
-laissée ouverte sur la colle.
+un instrument qui connaît la réponse et la jette. Celui-ci la garde — et il a
+répondu **en une exécution** à la question que #339 avait laissée ouverte :
+
+| à compresseur égal (Bun 1.4.2) | le coureur | ce conteneur | écart |
+| --- | --- | --- | --- |
+| wasm brut | 276 907 | 276 599 | **308** |
+| wasm gzip | 118 741 | 118 716 | **25** |
+| colle brute | 58 869 | 58 869 | **0** |
+| colle gzip | 9 909 | 9 909 | **0** |
+
+**La colle est identique à l'octet sur les deux machines**, brut et gzip. C'était
+le soupçon de #339 — il se trouve qu'il était juste, mais il avait été tiré d'une
+comparaison qui ne pouvait pas l'établir, et il a fallu poser l'instrument pour
+le savoir. Un soupçon juste pour de mauvaises raisons reste à mesurer.
+
+Et le brut du module bouge **douze fois plus** que son gzip, ce qui achève de
+retourner l'affirmation de #339.
 
 ### Le signe à retenir
 

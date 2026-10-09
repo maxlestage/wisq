@@ -249,10 +249,22 @@ describe("built output", () => {
   /// fichiers. Il y avait deux `bun` sur le PATH du conteneur, et ça n'a pas été
   /// vu.
   ///
-  /// **Le gzip est donc le chiffre le plus STABLE entre machines, pas le moins.**
-  /// À compresseur égal : 118 718 annoncé pour le coureur contre 118 716 ici,
-  /// soit **2 octets**, là où le brut en bouge 308. L'intuition de départ était
-  /// juste à l'envers.
+  /// **Le gzip est donc le chiffre le plus STABLE entre machines, pas le moins**
+  /// — et depuis que la construction imprime les quatre chiffres, c'est mesuré
+  /// des deux côtés au lieu d'être inféré d'un chiffre de prose :
+  ///
+  /// | à compresseur égal (Bun 1.4.2) | le coureur | ce conteneur | écart |
+  /// | --- | --- | --- | --- |
+  /// | wasm brut | 276 907 | 276 599 | **308** |
+  /// | wasm gzip | 118 741 | 118 716 | **25** |
+  /// | colle brute | 58 869 | 58 869 | **0** |
+  /// | colle gzip | 9 909 | 9 909 | **0** |
+  ///
+  /// Le brut du module bouge **douze fois plus** que son gzip : l'intuition de
+  /// départ était juste à l'envers. Et **la colle est identique à l'octet sur les
+  /// deux machines**, brut et gzip — ce qui était soupçonné depuis trois tranches
+  /// sans jamais avoir été mesuré de ce côté-là, faute que la construction
+  /// imprime le chiffre.
   ///
   /// **Pourquoi aucune garde ne tient ces chiffres exactement.** Elle serait
   /// rouge sur une machine ou sur l'autre pour un module parfaitement sain.
@@ -261,12 +273,12 @@ describe("built output", () => {
   /// | borne | marge | d'après |
   /// | --- | --- | --- |
   /// | wasm brut, 285 000 | 8 093 | le coureur, le plus gros des deux |
-  /// | wasm gzip, 123 000 | 4 282 | le chiffre annoncé pour le coureur |
-  /// | colle brute, 60 000 | 1 131 | ce conteneur, seule mesure |
-  /// | colle gzip, 11 000 | **1 091** | ce conteneur, seule mesure |
+  /// | wasm gzip, 123 000 | 4 259 | le coureur |
+  /// | colle brute, 60 000 | 1 131 | les deux, qui s'accordent |
+  /// | colle gzip, 11 000 | **1 091** | les deux, qui s'accordent |
   ///
   /// Toutes gardent plus de marge que le plus grand écart observé entre machines
-  /// — 308 octets sur le brut, 2 sur le gzip. **Aucune n'est en danger**, et
+  /// — 308 octets sur le brut, 25 sur le gzip. **Aucune n'est en danger**, et
   /// l'alarme que #339 a sonnée là-dessus venait du même mélange de
   /// compresseurs : elle comparait une marge de colle à un écart de module
   /// mesuré à un autre outil.
