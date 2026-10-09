@@ -566,4 +566,37 @@ console.log(
 console.log(`  ${written.join(", ")}`);
 console.log(`  PWA : manifest, ${ICONS.length} icônes, service worker ${version}`);
 console.log(`  langues : ${LANGS.join(", ")} — ${written.length / LANGS.length} pages chacune`);
-console.log(`  front : ${wasmName} (${wasmBytes.byteLength} octets), ${glueName}`);
+// **Les quatre chiffres, pas deux — et c'est ce qui manquait.**
+//
+// Le budget de `tests/build.test.ts` tient quatre bornes : le module et la
+// colle, brut et gzippé. Cette ligne n'en imprimait qu'une, et les trois autres
+// n'étaient lisibles que sur la machine qui construit. #339 a mesuré **308
+// octets d'écart** sur le module entre le coureur de la CI et un conteneur, aux
+// deux commits essayés — et n'a rien pu dire de la colle, dont les deux bornes
+// ont pourtant la plus petite marge (1 131 et 1 237 octets). Le chiffre existait
+// ici, à cet instant ; le jeter obligeait à deviner.
+//
+// C'est la onzième façon de se tromper du JOURNAL, celle que l'en-tête de
+// `check-agent-size.sh` nomme pour le démon : un instrument qui connaît la
+// réponse à une question que le dépôt pose ailleurs, sans savoir qu'il la pose.
+//
+// **Et la version de Bun est imprimée avec, parce que le chiffre gzip en
+// dépend.** Mesuré, le même fichier et le même appel `Bun.gzipSync` :
+// **118 716 octets sous Bun 1.4.2, 117 620 sous 1.3.11** — 1 096 octets qui
+// viennent de l'outil et pas de l'entrée. Le `gzip -9` du système en donne un
+// troisième, 117 213. Un chiffre gzip sans son outil n'est donc pas comparable à
+// un autre chiffre gzip, et c'est exactement l'erreur que #339 a commise : deux
+// `bun` sur un même PATH, et un écart de compresseur lu comme un écart de
+// machine.
+//
+// **Ce n'est pas une garde**, et la suite n'en fait pas une : elle ne peut
+// asserter que des bornes, puisqu'un chiffre exact serait rouge sur une machine
+// ou sur l'autre. C'est une mesure, déposée dans le journal du coureur pour
+// qu'on puisse l'y lire — et qui se nomme assez pour être comparable.
+const gzip = (octets: Uint8Array) => Bun.gzipSync(octets).byteLength;
+const glueBytes = new TextEncoder().encode(glue);
+console.log(
+  `  front : ${wasmName} (${wasmBytes.byteLength} octets, ${gzip(wasmBytes)} gzip)`
+    + `, ${glueName} (${glueBytes.byteLength} octets, ${gzip(glueBytes)} gzip)`
+    + ` — gzip de Bun ${Bun.version}`,
+);
