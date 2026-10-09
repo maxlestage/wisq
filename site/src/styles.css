@@ -52,6 +52,12 @@
      donne à une apparition l'air d'être arrivée plutôt que d'avoir glissé.
      `ease-out` faisait l'inverse de ce dessin. */
   --ease: cubic-bezier(0.2, 0.7, 0.1, 1);
+  /* Le retour d'un bouton aimanté. `linear()` dessine un rebond qu'aucune
+     courbe de Bézier ne sait faire ; là où il manque, la déclaration
+     précédente reste et le bouton revient simplement en dépassant un peu. */
+  --rebond: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --rebond: linear(0, 0.42 8%, 0.85 16%, 1.1 25%, 1.16 31%, 1.1 38%, 0.98 50%,
+      0.96 56%, 1.01 70%, 1.005 85%, 1);
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: "Archivo Variable", Archivo, -apple-system, BlinkMacSystemFont,
     "Segoe UI", Inter, Roboto, sans-serif;
@@ -353,6 +359,16 @@ section + section { border-top: 1px solid var(--line); }
 }
 .lang-switch a[aria-current="true"] { background: var(--accent); color: var(--accent-fg); }
 
+/* Le premier îlot : la bascule de thème et le choix de langue, dans le
+   conteneur que le module hydrate. Il range ses deux enfants comme la barre
+   les rangeait avant qu'ils aient une racine à eux. */
+.header-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .theme-switch {
   display: inline-flex;
   border: 1px solid var(--line);
@@ -376,7 +392,39 @@ section + section { border-top: 1px solid var(--line); }
 
 /* ---------- hero ---------- */
 
-.hero { padding-block: clamp(40px, 7vw, 96px) clamp(48px, 8vw, 112px); }
+/* **L'ouverture, au repos.** Un héros plein écran, glissé sous l'en-tête
+   comme celui de la référence : l'en-tête est translucide, la scène commence
+   derrière lui et réserve sa hauteur en haut. `--entete` est mesurée par le
+   module ; la valeur de repli est celle d'un en-tête sur une ligne.
+
+   **La scène est la même avec ou sans mouvement, au même pixel.** C'est ce qui
+   permet au module d'arriver après la première peinture sans que rien ne
+   saute : il allonge la section — sous le pli, là où personne ne regarde — et
+   épingle une scène qui était déjà à sa place. La valeur de repli de
+   `--entete` est la hauteur mesurée de l'en-tête à 390 comme à 1 280 px,
+   102 px : le module la confirme au lieu de la corriger. */
+.hero {
+  padding: 0;
+  margin-top: calc(-1 * var(--entete, 6.375rem));
+}
+.hero-scene {
+  position: relative;
+  display: grid;
+  align-content: center;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding-top: var(--entete, 6.375rem);
+  padding-bottom: clamp(48px, 8vw, 96px);
+  /* La lumière et la poussière traversent la scène de part en part : coupées
+     ici, elles ne font jamais glisser la page. `clip` et non `hidden`, qui
+     ferait de la scène un conteneur de défilement et casserait l'épinglage. */
+  overflow-x: clip;
+}
+/* La toile de la poussière et l'invitation à défiler n'existent qu'avec du
+   mouvement : au repos, la marque est le SVG, et il n'y a rien à dérouler. */
+.hero-dust,
+.hero-hint { display: none; }
+.hero-grid { position: relative; z-index: 1; }
 
 /* The full mark leads on a phone, the way an app's own screen would, and moves
    beside the text once there is a second column to put it in. It is sized in
@@ -447,7 +495,12 @@ section + section { border-top: 1px solid var(--line); }
 }
 .hero .lede { font-size: clamp(1.15rem, 2.4vw, 1.7rem); max-width: 38ch; }
 
-.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
+/* Les mots du titre ne sont des boîtes qu'au moment d'entrer : au repos, ce
+   sont des `span` en ligne, et la phrase se compose comme n'importe quelle
+   phrase. */
+.hero-title .mot { display: inline; }
+
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
 
 .btn {
   display: inline-flex;
@@ -472,6 +525,42 @@ section + section { border-top: 1px solid var(--line); }
 .btn-primary { background: var(--accent); color: var(--accent-fg); }
 .btn-secondary { background: transparent; color: var(--fg); border-color: var(--line); }
 .btn:active { transform: translateY(1px); }
+
+/* ---------- la bande ---------- */
+
+/* Les mots-clés des sections du dessous, en très grand et resserrés — l'axe de
+   largeur à 70 %, là où la référence met son poids typographique. Au repos, une
+   seule fois chaque mot, et la ligne va à la ligne : immobile, la bande n'a
+   aucune raison de couper quoi que ce soit. */
+.bande {
+  overflow: hidden;
+  padding-block: clamp(14px, 2.4vw, 24px);
+  border-block: 1px solid var(--line);
+}
+.bande-piste {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.bande-mot {
+  padding-inline: 0.45em;
+  font-size: clamp(1.35rem, 4vw, 2.9rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-variation-settings: "wdth" 70;
+}
+/* Le séparateur est la marque elle-même, dans la couleur du signal. */
+.bande-mot::after {
+  content: "▚";
+  margin-left: 0.9em;
+  font-size: 0.55em;
+  vertical-align: 0.25em;
+  color: var(--accent);
+}
+.bande-double { display: none; }
 
 /* ---------- modes ---------- */
 
@@ -788,7 +877,10 @@ pre code { white-space: pre; }
     gap: 48px;
   }
   .hero-lockup { order: 0; gap: 22px; }
-  .hero-logo { width: 7rem; }
+  /* Plus grande que la première mesure, parce qu'elle est maintenant la scène
+     de l'ouverture : c'est sur elle que la poussière se rassemble, et à
+     112 px la marque formée tenait dans un timbre. */
+  .hero-logo { width: 8.5rem; }
   .hero-wordmark { font-size: 9rem; }
 }
 
@@ -876,10 +968,17 @@ pre code { white-space: pre; }
 
 /* Anchored to the bottom, clear of the home indicator, and never covering the
    last line of a page the reader is in the middle of. */
-.install-banner {
+/* Le second îlot porte l'adhérence : c'est lui l'enfant de `#root`, donc lui
+   que le défilement de toute la page peut tenir au bas de l'écran. Posée sur la
+   bannière, elle ne tiendrait qu'à l'intérieur de son conteneur, qui n'est pas
+   plus haut qu'elle. */
+.install-dock {
   position: sticky;
   bottom: 0;
   z-index: 20;
+}
+
+.install-banner {
   background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: saturate(160%) blur(12px);
   border-top: 1px solid var(--line);
@@ -921,7 +1020,14 @@ pre code { white-space: pre; }
   .site-header,
   .site-footer,
   .install-banner,
+  .bande,
+  .hero-dust,
+  .hero-hint,
   .skip-link { display: none !important; }
+
+  /* Sur papier, l'ouverture est un en-tête de page, pas un écran. */
+  .hero { margin-top: 0; }
+  .hero-scene { min-height: 0; padding-top: 0; }
 
   /* Le grain est une texture d'écran : à l'impression c'est une page grise. */
   body::after { display: none; }
@@ -1012,7 +1118,9 @@ pre code { white-space: pre; }
   left: 0;
   height: 2px;
   width: 100%;
-  transform: scaleX(var(--read, 0));
+  /* En millièmes : le module pose des entiers, pour ne pas embarquer le
+     formatage des flottants. */
+  transform: scaleX(calc(var(--read, 0) / 1000));
   transform-origin: 0 50%;
   background: var(--accent);
   z-index: 50;
@@ -1051,4 +1159,248 @@ pre code { white-space: pre; }
 
 @media print {
   .reading-progress { display: none; }
+}
+
+/* =============================================================================
+ * L'ouverture, la bande, les aimants, le rideau — ce que fait zamocorp.com.
+ *
+ * Trois états, et le premier est la référence :
+ *
+ *   - **au repos** — sans script, ou avec « réduire les animations » — la page
+ *     est exactement celle d'au-dessus : un héros plein écran, une bande qui va
+ *     à la ligne, des boutons immobiles ;
+ *   - **`html.entree`** — posé par le script de la tête, avant la première
+ *     peinture — les animations qui s'achèvent d'elles-mêmes : le titre monte
+ *     mot par mot, le rideau se lève. Un module qui n'arrive jamais ne laisse
+ *     rien de caché ;
+ *   - **`[data-motion]`** — posé par le module — ce qui suit le défilement ou le
+ *     pointeur, et ce qui ne s'arrête jamais : l'épinglage, la poussière, la
+ *     lumière, les aimants, la bande. Le module pilote des variables en
+ *     millièmes, et absentes elles valent l'état final.
+ * ========================================================================== */
+
+/* ---- l'entrée du héros ---------------------------------------------------- */
+
+/* Chaque mot est un masque, et son contenu monte depuis sous la ligne. Le
+   masque déborde un peu sous la ligne de base — `line-height: 0.9` couperait
+   sinon les jambages de « p » et de « y » —, et la marge négative rend ce
+   débord à la ligne suivante. */
+html.entree .hero-title .mot {
+  display: inline-block;
+  overflow: clip;
+  padding-bottom: 0.14em;
+  margin-bottom: -0.14em;
+  vertical-align: top;
+}
+html.entree .hero-title .mot > span {
+  display: inline-block;
+  animation: wisq-mot 0.95s var(--ease) both;
+  animation-delay: calc(0.12s + var(--i, 0) * 75ms);
+}
+@keyframes wisq-mot {
+  from { transform: translateY(108%); }
+}
+
+/* Puis l'étiquette, l'accroche, les boutons et la marque, dans cet ordre. */
+html.entree .hero .badge,
+html.entree .hero .lede,
+html.entree .hero .cta-row,
+html.entree .hero-lockup {
+  animation: wisq-monte 0.9s var(--ease) both;
+}
+html.entree .hero .badge { animation-delay: 0.05s; }
+html.entree .hero-lockup { animation-delay: 0.25s; }
+html.entree .hero .lede { animation-delay: 0.55s; }
+html.entree .hero .cta-row { animation-delay: 0.7s; }
+@keyframes wisq-monte {
+  from { opacity: 0; transform: translateY(1.2rem); }
+}
+
+/* Derrière le rideau, tout attend qu'il se soit levé. */
+html.rideau .hero-title .mot > span { animation-delay: calc(1.15s + var(--i, 0) * 75ms); }
+html.rideau .hero .badge { animation-delay: 1.05s; }
+html.rideau .hero-lockup { animation-delay: 1.25s; }
+html.rideau .hero .lede { animation-delay: 1.55s; }
+html.rideau .hero .cta-row { animation-delay: 1.7s; }
+
+/* ---- l'ouverture épinglée ------------------------------------------------- *
+ * Seulement sur un écran assez haut pour la tenir : plus petit, le texte
+ * déborderait de la scène et une partie n'apparaîtrait qu'à la fin de la
+ * course. La section s'allonge et la scène s'épingle ; le module en déduit la
+ * progression, et sur un écran trop court il n'y a pas de course — il dessine
+ * directement l'état final. */
+@media (min-height: 560px) {
+  [data-motion] .hero {
+    height: 220vh;
+    height: 220svh;
+  }
+  [data-motion] .hero-scene {
+    position: sticky;
+    top: 0;
+  }
+  [data-motion] .hero-dust {
+    display: block;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  /* La marque solide apparaît sur la poussière qui vient de la former : même
+     boîte, mêmes coordonnées, et le module dit quand. */
+  [data-motion] .hero-logo {
+    opacity: calc(var(--forme, 1000) / 1000);
+  }
+  /* L'invitation à défiler : une goutte qui tombe le long d'un fil, et qui
+     s'efface dès le premier dixième de la course. */
+  [data-motion] .hero-hint {
+    display: block;
+    position: absolute;
+    left: 50%;
+    bottom: clamp(16px, 4vh, 40px);
+    width: 1px;
+    height: 46px;
+    overflow: hidden;
+    background: var(--line);
+    opacity: calc(1 - var(--ouverture, 1000) / 100);
+  }
+  [data-motion] .hero-hint span {
+    position: absolute;
+    inset: 0;
+    background: var(--accent);
+    animation: wisq-goutte 2.1s var(--ease) infinite;
+  }
+}
+@keyframes wisq-goutte {
+  0% { transform: scaleY(0); transform-origin: top; }
+  45% { transform: scaleY(1); transform-origin: top; }
+  55% { transform: scaleY(1); transform-origin: bottom; }
+  100% { transform: scaleY(0); transform-origin: bottom; }
+}
+
+/* **La lumière.** Une fois la marque formée, un éclat la traverse puis passe
+   sur le nom : la marque s'éclaire au passage, et une bande claire glisse dans
+   les lettres. `--lueur` va de 0 à 1000 ; la première moitié est pour la
+   marque, la seconde pour le nom. Au repos elle vaut 1000 : l'éclat est passé,
+   et le nom est d'une seule encre. */
+[data-motion] .hero-lockup {
+  --lu: calc(var(--lueur, 1000) / 1000);
+}
+[data-motion] .hero-logo {
+  filter: brightness(calc(1 + 0.55 * max(0, 1 - max(var(--lu) - 0.22, 0.22 - var(--lu)) * 5)));
+}
+[data-motion] .hero-wordmark {
+  background: linear-gradient(100deg, var(--fg) 0 42%, var(--accent) 47%, #fff 50%,
+      var(--accent) 53%, var(--fg) 58% 100%) no-repeat;
+  background-size: 300% 100%;
+  background-position-x: calc(100% - clamp(0, (var(--lu) - 0.38) / 0.62, 1) * 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---- la bande qui défile -------------------------------------------------- */
+
+/* Deux fois la liste, et la piste recule de la moitié de sa largeur : quand
+   elle recommence, la seconde copie est exactement là où la première était,
+   donc il n'y a pas de couture. Elle s'arrête sous le pointeur, pour qu'on
+   puisse lire un mot.
+
+   **Sous `[data-motion]` et non sous `html.entree`, et c'est la garde du
+   mouvement qui l'a dit.** Une animation sans fin n'est acceptable que là où
+   le module a vérifié qu'on n'a pas demandé le calme, et `motion.test` refuse
+   toute ligne `infinite` hors de cet attribut. Le premier jet la posait sous
+   `entree`, que le script de la tête pose aux mêmes conditions — vrai, mais
+   c'était une seconde porte pour la même promesse. La bande est sous le pli :
+   qu'elle se mette à défiler quand le module arrive ne se voit pas. */
+[data-motion] .bande-double { display: inline; }
+[data-motion] .bande-piste {
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  width: max-content;
+  animation: wisq-bande 40s linear infinite;
+}
+[data-motion] .bande:hover .bande-piste { animation-play-state: paused; }
+@keyframes wisq-bande {
+  to { transform: translateX(-50%); }
+}
+
+/* ---- les cartes montent, les titres sortent de leur ligne ---------------- */
+
+/* Plus de chemin que les blocs d'un document : sur l'accueil, la référence fait
+   monter ses cartes d'une vraie distance, et un peu d'échelle leur donne le
+   poids d'un objet qui arrive. */
+[data-motion] :is(.cards, .steps, .facts) > [data-reveal]:not([data-revealed]) {
+  transform: translateY(2rem) scale(0.97);
+}
+[data-motion] #main > section[data-reveal] > .wrap > h2 {
+  clip-path: inset(0 0 100% 0);
+  transform: translateY(0.4em);
+  transition: clip-path 0.9s var(--ease) 0.1s, transform 0.9s var(--ease) 0.1s;
+}
+[data-motion] #main > section[data-revealed] > .wrap > h2 {
+  clip-path: inset(-0.3em);
+  transform: none;
+}
+
+/* ---- les aimants ---------------------------------------------------------- */
+
+/* Le module pose le décalage ; la transition fait le reste. Lente et
+   rebondissante au retour, vive pendant qu'on suit le pointeur. */
+[data-motion] [data-aimant] {
+  transform: translate(var(--mx, 0px), var(--my, 0px));
+  transition: transform 0.9s var(--rebond);
+}
+[data-motion] [data-aimant]:hover {
+  transition: transform 0.3s var(--ease);
+}
+
+/* ---- le rideau ------------------------------------------------------------ *
+ * Une fois par session, la page s'ouvre derrière un rideau d'encre qui porte la
+ * marque, dans ses couleurs fixes. Ses deux quadrants arrivent l'un après
+ * l'autre, le lien entre eux, puis le rideau se lève. Un pseudo-élément et non
+ * un nœud : rien à ajouter au DOM, donc rien qu'une hydratation puisse trouver
+ * de trop. Il ne retient aucun clic — `pointer-events: none` —, et il ne
+ * retient pas la page non plus : il se lève à heure fixe, que le module soit
+ * arrivé ou non. */
+html.rideau body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  background: #0e0d0c url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 240'%3E%3Cstyle%3E.q%7Banimation:a .45s cubic-bezier(.2,.7,.1,1) both%7D.l%7Banimation-delay:.25s%7D.p%7Banimation-delay:.12s%7D@keyframes a%7Bfrom%7Bopacity:0;transform:translateY(14px)%7D%7D%3C/style%3E%3Crect class='q' x='40' y='40' width='72' height='72' rx='13' fill='%23a8a2ff'/%3E%3Cg class='q p' fill='%238b83ff'%3E%3Ccircle cx='114.56' cy='114.56' r='2.5'/%3E%3Ccircle cx='120' cy='120' r='2.5'/%3E%3Ccircle cx='125.44' cy='125.44' r='2.5'/%3E%3C/g%3E%3Crect class='q l' x='128' y='128' width='72' height='72' rx='13' fill='%236f64ff'/%3E%3C/svg%3E") center / clamp(96px, 16vw, 168px) no-repeat;
+  animation: wisq-rideau 0.85s 0.6s cubic-bezier(0.77, 0, 0.18, 1) forwards;
+}
+@keyframes wisq-rideau {
+  to { clip-path: inset(0 0 100% 0); }
+}
+
+/* ---- d'une page à l'autre ------------------------------------------------- *
+ * Les transitions de vue entre documents : la page qui part monte et s'efface,
+ * celle qui arrive monte à sa place, et l'en-tête, nommé, ne bouge pas. Chrome
+ * 126 et Safari 18.2 les jouent ; ailleurs, la navigation est une navigation.
+ * Seulement si la personne n'a pas demandé moins de mouvement : la règle est
+ * à l'intérieur de la requête, donc sans elle il n'y a même pas de fondu. */
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+  .site-header { view-transition-name: entete; }
+  ::view-transition-old(root) { animation: wisq-vue-sortie 0.3s var(--ease) both; }
+  ::view-transition-new(root) { animation: wisq-vue-entree 0.55s var(--ease) both; }
+}
+@keyframes wisq-vue-sortie {
+  to { opacity: 0; transform: translateY(-1.25rem); }
+}
+@keyframes wisq-vue-entree {
+  from { opacity: 0; transform: translateY(1.75rem); }
+}
+
+/* ---- moins de mouvement --------------------------------------------------- *
+ * Le script de la tête ne pose ni `entree` ni `rideau`, et le module ne pose
+ * pas `[data-motion]`. Ces règles tiennent si l'un des deux venait à s'en
+ * passer — la règle globale du haut coupe déjà les animations, celle-ci rend
+ * aussi leur place aux choses qu'un décalage déplacerait. */
+@media (prefers-reduced-motion: reduce) {
+  html.rideau body::before { display: none; }
+  [data-aimant] { transform: none !important; }
 }

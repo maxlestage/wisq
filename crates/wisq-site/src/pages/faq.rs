@@ -1,0 +1,76 @@
+//! Les questions qu'on pose avant d'installer.
+//!
+//! Des données, pas du balisage : `crate::doc` est le seul rendu, et une
+//! traduction manquante ne compile pas.
+
+use crate::doc::{Block, Doc};
+
+pub static FAQ_EN: Doc = Doc {
+    title: "Questions",
+    lede: "The ones worth answering plainly, including where wisq is weaker than the alternatives.",
+    blocks: &[
+        Block::H2("Does this need a jailbreak?"),
+        Block::P("No. Neither half of wisq does anything a normal application cannot. The remote side is a network client. The local side is an interpreter, which needs no executable memory and therefore no entitlement — the same ground iSH stands on."),
+        Block::H2("Is it on the App Store?"),
+        Block::P("Not yet. The build is designed to be admissible — no JIT, no downloaded code, and no QEMU inside to carry GPL obligations — but designed to be admissible and accepted are different things. There is no public build yet."),
+        Block::H2("Why not just ship QEMU?"),
+        Block::P("Two reasons, and the licence is the smaller one. QEMU is GPL, which constrains what an App Store binary can be; that is why UTM SE sits in a grey area. The larger reason is that a general emulator interpreting a modern desktop operating system on a phone is slow enough to be a demo rather than a tool. wisq splits the problem instead: the desktop runs where the silicon is, and what runs locally is a machine small enough to be genuinely fast."),
+        Block::H2("How fast is the local machine, really?"),
+        Block::P("A Linux login prompt after 44.6 million guest instructions — the same count every run, on either core, because the machine's clock advances with instructions rather than with wall time. How long that takes belongs to the host: the Rust core the app ships boots it in 0.24 to 0.33 s, which is 137 to 187 million instructions a second — the low end on a modest x86_64 Linux container, the high end on the machine CI runs on, which prints both cores' figures at the end of every run. No iPhone has been in that loop, and an A-series core is a different machine. The benchmark those numbers come from lives in the repository, and CI runs it on every change."),
+        Block::H2("What can the local machine actually run?"),
+        Block::P("A real Linux kernel with a real shell, on a 32-bit RISC-V machine with no MMU and 64 MB of RAM by default, raisable to 2 GB. That is a working Unix — busybox, shell scripts, a compiler if you build one in. It is not a desktop, and it will not run anything compiled for x86 or ARM."),
+        Block::H2("Can the local machine keep files?"),
+        Block::P("Two answers, and they are not the same thing. The machine itself is saved: set aside when the screen locks, it comes back with your shell exactly where it was, mid-command if that is where you left it — no second boot. And since recently it can also have a disk: a filesystem or installer image you import, of any size, seen on /dev/vda and read in place. What the guest writes goes into a layer kept beside the image, durable at every write: it survives suspension, a restart of the app, and the app being killed, and the file you imported never changes. What wisq cannot do is put a block driver into the kernel you brought. Many rv32 nommu kernels have none, and one that has none will never touch the device — so wisq counts the requests and tells you at the end, instead of leaving you with a silent disk."),
+        Block::H2("Can I run a real desktop — Omarchy, Ubuntu — with my own image?"),
+        Block::P("Yes, and on the machine that can actually run it. Point the agent at your ISO on a computer that stays on: wisq-agent bureau --image ~/omarchy-4.0.2.iso builds the disk, writes the libvirt domain, starts it, and prints the desktop's password. The image runs there with the host's accelerator — KVM on Linux, HVF on a Mac — at full speed, and the phone shows it over SPICE, with sound, clipboard and file drop. The local machine on the phone is a different thing and will stay one: iOS allows no JIT, so it interprets, and it gives you a text console. A desktop needs an accelerator, and an App Store app on a phone does not have one. wisq does both and does not pretend they are the same."),
+        Block::H2("Is my connection encrypted?"),
+        Block::P("The agent side, yes: the daemon speaks TLS by default behind its mandatory token, with a self-signed certificate whose fingerprint travels in the pairing link — the app pins exactly that certificate, so there is no authority to run. The consoles themselves stay unencrypted by design, VNC and SPICE alike: for those, use a network you trust or a tunnel you already run."),
+        Block::H2("Where are my passwords kept?"),
+        Block::P("In the iPhone Keychain, referenced by name from the machine list. The list itself is plain JSON and contains no secret, so it can be inspected, backed up or synced without leaking anything."),
+        Block::H2("Do I need the agent?"),
+        Block::P("Only if you want a powered-off VM to boot when you tap it. Without it wisq connects to consoles that are already up, which is all a VNC client normally does."),
+        Block::H2("Which hypervisors work?"),
+        Block::P("For connecting: anything with a VNC or SPICE console — which between them covers what nearly every hypervisor publishes. For booting on demand: the agent drives libvirt through the virsh command line, so anything libvirt manages — QEMU/KVM, Xen, LXC. Other backends are a small amount of code behind one interface."),
+        Block::H2("Is there an Android version?"),
+        Block::P("No, and it is not planned. The parts that would port are already portable — the daemon and the interpreter are Rust with no platform dependencies — but the app is the product, and it is built for one platform properly rather than two badly."),
+        Block::H2("What licence?"),
+        Block::P("None yet. Nothing here grants rights to reuse this code, and no licence has been chosen; that decision is still the author's to make. The RISC-V execution semantics are a port of mini-rv32ima by Charles Lohr (MIT), credited in NOTICE; no third-party code is vendored."),
+        Block::H2("How do I report something?"),
+        Block::P("Get in touch. Wrong colours, a guest that connects but stays black, a protocol message the client rejects — those are bugs on our side and the kind that are hard to find without someone else's hardware."),
+    ],
+};
+
+pub static FAQ_FR: Doc = Doc {
+    title: "Questions",
+    lede: "Celles qui méritent une réponse franche, y compris là où wisq est plus faible que les solutions existantes.",
+    blocks: &[
+        Block::H2("Faut-il un jailbreak ?"),
+        Block::P("Non. Aucune des deux moitiés de wisq ne fait quoi que ce soit qu'une application ordinaire ne puisse faire. Le côté distant est un client réseau. Le côté local est un interpréteur, qui n'a besoin d'aucune mémoire exécutable et donc d'aucune autorisation particulière — le terrain sur lequel iSH se tient déjà."),
+        Block::H2("Est-ce sur l'App Store ?"),
+        Block::P("Pas encore. La construction est pensée pour être recevable — pas de JIT, pas de code téléchargé, et pas de QEMU dedans pour porter des obligations GPL — mais pensée pour être recevable et acceptée sont deux choses différentes. Il n'y a pas encore de version publique."),
+        Block::H2("Pourquoi ne pas simplement embarquer QEMU ?"),
+        Block::P("Deux raisons, et la licence est la moindre. QEMU est sous GPL, ce qui contraint ce qu'un binaire App Store peut être ; c'est pourquoi UTM SE occupe une zone grise. La raison plus lourde est qu'un émulateur généraliste interprétant un système de bureau moderne sur un téléphone est lent au point d'être une démonstration plutôt qu'un outil. wisq découpe le problème autrement : le bureau tourne là où il y a du silicium, et ce qui tourne localement est une machine assez petite pour être réellement rapide."),
+        Block::H2("Quelle est vraiment la vitesse de la machine locale ?"),
+        Block::P("Une invite de connexion Linux après 44,6 millions d'instructions invitées — le même compte à chaque exécution, sur l'un ou l'autre cœur, parce que l'horloge de la machine avance avec les instructions et non avec le temps réel. Combien de temps cela prend appartient à l'hôte : le cœur Rust que l'application embarque le démarre en 0,24 à 0,33 s, soit 137 à 187 millions d'instructions par seconde — le bas sur un conteneur Linux x86_64 modeste, le haut sur la machine où tourne la CI, qui imprime les chiffres des deux cœurs à la fin de chaque exécution. Aucun iPhone n'est passé par cette boucle, et un cœur A-series est une autre machine. Le banc dont ces nombres sortent vit dans le dépôt, et la CI le lance à chaque changement."),
+        Block::H2("Que peut réellement faire tourner la machine locale ?"),
+        Block::P("Un vrai noyau Linux avec un vrai shell, sur une machine RISC-V 32 bits sans MMU et 64 Mo de RAM par défaut, qu'on peut monter à 2 Go. C'est un Unix qui fonctionne — busybox, scripts shell, un compilateur si vous en intégrez un. Ce n'est pas un bureau, et cela n'exécutera rien de compilé pour x86 ou ARM."),
+        Block::H2("La machine locale peut-elle garder des fichiers ?"),
+        Block::P("Deux réponses, et ce n'est pas la même chose. La machine elle-même est sauvée : mise de côté quand l'écran se verrouille, elle revient avec votre shell exactement où il était, au milieu d'une commande si c'est là que vous l'avez laissée — pas de second démarrage. Et depuis peu elle peut aussi avoir un disque : une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, vue sur /dev/vda et lue sur place. Ce que l'invité écrit va dans une couche gardée à côté de l'image, durable à chaque écriture : elle survit à une suspension, à un redémarrage de l'app et à sa mort, et le fichier importé ne change jamais. Ce que wisq ne peut pas faire, c'est mettre un pilote bloc dans le noyau que vous apportez. Beaucoup de noyaux rv32 nommu n'en ont pas, et un noyau qui n'en a pas ne touchera jamais le périphérique — alors wisq compte les requêtes et vous le dit à la fin, au lieu de vous laisser devant un disque muet."),
+        Block::H2("Puis-je avoir un vrai bureau — Omarchy, Ubuntu — avec mon image ?"),
+        Block::P("Oui, et sur la machine qui sait vraiment le faire tourner. Donnez votre ISO à l'agent, sur un ordinateur qui reste allumé : wisq-agent bureau --image ~/omarchy-4.0.2.iso construit le disque, écrit le domaine libvirt, le démarre, et affiche le mot de passe du bureau. L'image tourne là-bas avec l'accélérateur de l'hôte — KVM sous Linux, HVF sur un Mac —, à pleine vitesse, et le téléphone l'affiche par SPICE, avec le son, le presse-papiers et le dépôt de fichier. La machine locale du téléphone est autre chose, et le restera : iOS n'autorise aucun JIT, donc elle interprète, et elle rend une console texte. Un bureau demande un accélérateur, et une application de l'App Store sur un téléphone n'en a pas. wisq fait les deux et ne prétend pas que c'est pareil."),
+        Block::H2("Ma connexion est-elle chiffrée ?"),
+        Block::P("Côté agent, oui : le démon parle TLS par défaut derrière son jeton obligatoire, avec un certificat auto-signé dont l'empreinte voyage dans le lien d'appairage — l'app épingle exactement ce certificat, donc aucune autorité à exploiter. Les consoles elles-mêmes restent non chiffrées par construction, VNC comme SPICE : pour elles, réseau de confiance ou tunnel existant."),
+        Block::H2("Où sont conservés mes mots de passe ?"),
+        Block::P("Dans le trousseau de l'iPhone, référencés par nom depuis la liste des machines. La liste elle-même est du JSON simple et ne contient aucun secret : elle peut être inspectée, sauvegardée ou synchronisée sans rien divulguer."),
+        Block::H2("L'agent est-il nécessaire ?"),
+        Block::P("Seulement si vous voulez qu'une VM éteinte démarre quand vous la touchez. Sans lui, wisq se connecte à des consoles déjà actives, ce que fait normalement tout client VNC."),
+        Block::H2("Quels hyperviseurs fonctionnent ?"),
+        Block::P("Pour se connecter : tout ce qui expose une console VNC ou SPICE — ce qui couvre à elles deux ce que publie presque tout hyperviseur. Pour démarrer à la demande : l'agent pilote libvirt via la ligne de commande virsh, donc tout ce que libvirt gère — QEMU/KVM, Xen, LXC. D'autres backends représentent peu de code derrière une seule interface."),
+        Block::H2("Y a-t-il une version Android ?"),
+        Block::P("Non, et ce n'est pas prévu. Les parties qui se porteraient sont déjà portables — le démon et l'interpréteur sont en Rust sans dépendance de plateforme — mais l'application est le produit, et elle est faite correctement pour une plateforme plutôt que mal pour deux."),
+        Block::H2("Quelle licence ?"),
+        Block::P("Aucune pour l'instant. Rien ici n'accorde de droits de réutilisation, et aucune licence n'a été choisie ; la décision appartient encore à l'auteur. La sémantique d'exécution RISC-V est un portage de mini-rv32ima de Charles Lohr (MIT), créditée dans NOTICE ; aucun code tiers n'est embarqué."),
+        Block::H2("Comment signaler quelque chose ?"),
+        Block::P("Écrivez-moi. Des couleurs fausses, un invité qui se connecte mais reste noir, un message de protocole que le client refuse — ce sont des défauts de notre côté, et le genre qu'on ne trouve pas sans le matériel de quelqu'un d'autre."),
+    ],
+};

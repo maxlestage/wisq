@@ -3676,6 +3676,11 @@ reste le langage d'écriture et le pré-rendu ; seule la livraison change. Ce qu
 arrive d'interactif plus tard va dans `src/main.ts` en code DOM, ou derrière un
 import dynamique que seules les pages concernées paient.
 
+> **Revenu dessus en #331–#335** : le front est passé en Yew, et un composant
+> interactif s'écrit de nouveau comme un composant — en Rust. Le budget n'est
+> plus celui d'un script de 1 062 octets mais celui d'un module de deux îlots ;
+> voir « Le site — Yew, des îlots, et le mouvement de zamocorp ».
+
 Deux garde-fous, et le second est le plus important :
 
 - Le budget d'octets descend à 8 000 bruts / 3 000 gzip, et un test échoue si
@@ -3850,6 +3855,63 @@ chose que personne ne peut relire. Les six chemins qui lancent `xcodegen` le
 dessinent d'abord, et un test compte ces chemins : un septième ajouté sans le
 générateur échoue, parce que `xcodegen` fige la liste des fichiers du projet
 et qu'une application sans icône se construit très bien.
+
+## Le site — Yew, des îlots, et le mouvement de zamocorp (fait)
+
+Demandé : « tout reprendre pour la partie front et tout faire en Yew et wasm, en
+mettant tout à jour sur la base des résultats internet, et faire des animations
+comme zamocorp ». Fait en cinq tranches, #331 à #335 du journal ; celle-ci est
+la dernière, et elle retire React.
+
+**Le front est un crate.** `crates/wisq-site` porte les dix pages dans les deux
+langues — la copie dans `content.rs`, les documents dans `pages/*.rs`,
+engendrés une fois depuis le TypeScript puis confrontés au rendu de React page
+par page avant que celui-ci ne parte. Son binaire `wisq-site-prerender` rend
+tout en HTML et décrit le site dans un catalogue JSON que la construction et
+les tests lisent : `src/routes.ts`, `src/content.ts`, `src/pages/*.ts` et
+`src/theme.ts` étaient des copies de ce qu'il déclare. `site/` garde la
+construction, le serveur, la feuille de style et les tests.
+
+**Deux îlots, et c'est mesuré.**
+
+| | brut | gzip |
+| --- | --- | --- |
+| une page portée, thème seul (#331) | 253 728 | 106 392 |
+| toutes les pages, hydratées entières | 351 822 | 148 277 |
+| **deux îlots, tout le mouvement** | **261 252** | **112 436** |
+
+Hydrater une page entière demande au module de porter tout ce qu'elle affiche,
+pour le comparer au balisage : la prose des dix pages, dans les deux langues,
+téléchargée par chaque lecteur pour un texte que sa page avait déjà. Seuls deux
+endroits ont un état — la bascule de thème et le choix de langue, l'invite
+d'installation —, donc seuls deux sont hydratés, chacun sur sa racine
+`data-ilot`. La page est rendue sans les marqueurs d'hydratation de Yew et les
+îlots avec : la frontière se lit dans le HTML publié. Le plafond ne bouge plus
+avec le contenu, seulement avec le code.
+
+**Le mouvement, d'après zamocorp.com**, relevé dans le dépôt Plum qui l'avait
+lu dans un navigateur — le site lui-même n'est pas joignable depuis ce
+conteneur. Le rideau et le titre mot par mot sont des animations CSS qui
+s'achèvent d'elles-mêmes, décidées par le script de la tête avant la première
+peinture ; l'ouverture épinglée où la poussière forme la marque, la lumière, la
+bande, les aimants et le défilement lissé à la molette sont en Rust. La
+poussière est calculée depuis la géométrie du logo, là où la référence joue une
+séquence d'images pré-rendues et 54 Ko gzippés de GSAP et de Lenis ; un test
+Rust confronte ses nombres aux littéraux du SVG. Le défilement lissé ne
+s'active qu'à la souris : l'iPhone a déjà son inertie.
+
+**Ce que « mis à jour » a donné.** Yew 0.23.0, wasm-bindgen 0.2.129, web-sys
+0.3.106, happy-dom 20.14.6 : déjà aux dernières versions publiées, rien à
+monter. Ce qui avait bougé dehors : wasm-bindgen a quitté l'organisation
+`rustwasm`, mise en sommeil en 2025 — `install-wasm-toolchain.sh` télécharge
+depuis `wasm-bindgen/wasm-bindgen`, au lieu de tenir à une redirection. Et deux
+choses que les navigateurs savent faire maintenant sont prises là où elles ne
+coûtent rien : les transitions de vue entre documents (Chrome 126, Safari 18.2),
+et `linear()` pour le rebond des aimants.
+
+**Ce qui n'est pas fait.** Rien ne vérifie le mouvement dans un vrai Safari
+d'iPhone : les captures sont de Chromium, à 390 et 1 280 px, dans les deux
+thèmes et avec le mouvement réduit.
 
 ## Le site ne distribue pas wisq — et c'est une décision
 

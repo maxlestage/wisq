@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { copy } from "../src/content";
+import { catalogue } from "./catalogue";
 
 /// The site advertises numbers about the codebase. Numbers on a landing page
 /// rot silently, so this reads the repository and fails when a claim stops
@@ -47,8 +47,13 @@ function testCount(): number {
   return total;
 }
 
+/// Les chiffres que l'accueil publie, tels que le pré-rendu les rend : la copie
+/// est dans `crates/wisq-site/src/content.rs` depuis que le front est en Rust,
+/// et le catalogue du pré-rendu est sa seule lecture (`tests/catalogue.ts`).
+const facts = () => catalogue().copy.en!.facts;
+
 function claimedValue(label: RegExp): number {
-  const item = copy.en.facts.items.find((entry) => label.test(entry.label));
+  const item = facts().find((entry) => label.test(entry.label));
   if (!item) throw new Error(`aucun chiffre annoncé ne correspond à ${label}`);
   return Number(item.value);
 }
@@ -145,10 +150,7 @@ describe("advertised claims match the repository", () => {
         `${files.join(", ")}`,
     ).toBe(1);
 
-    const page = readFileSync(
-      join(import.meta.dir, "..", "src", "pages", "architecture.ts"),
-      "utf8",
-    );
+    const page = readFileSync(join(pagesDirectory, "architecture.rs"), "utf8");
     for (const [language, pattern] of [
       ["en", /a C ABI of (\d+) functions/],
       ["fr", /une ABI C de (\d+) fonctions/],
@@ -249,15 +251,18 @@ describe("advertised claims match the repository", () => {
     // phrases fausses dans le tableau de la tranche qui les a corrigées. Une
     // garde qui refuserait au journal de dire ce qui était faux lui
     // interdirait de tenir le registre.
+    // Le front et sa copie : `crates/wisq-site/src`, depuis que le site n'a
+    // plus de source TypeScript. Le périmètre a suivi le contenu, et le compte
+    // final — sept — n'a pas bougé, ce qui est la preuve qu'il l'a suivi.
     const sources: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir)) {
         const path = join(dir, entry);
         if (statSync(path).isDirectory()) walk(path);
-        else if (entry.endsWith(".ts") || entry.endsWith(".tsx")) sources.push(path);
+        else if (entry.endsWith(".rs")) sources.push(path);
       }
     };
-    walk(join(import.meta.dir, "..", "src"));
+    walk(join(repoRoot, "crates", "wisq-site", "src"));
     for (const entry of readdirSync(join(repoRoot, "docs"))) {
       if (entry.endsWith(".md") && entry !== "JOURNAL.md") {
         sources.push(join(repoRoot, "docs", entry));
@@ -417,7 +422,7 @@ describe("advertised claims match the repository", () => {
 
   test("every advertised figure is either checked here or named as unheld", () => {
     const checked = [/tests/, /gates|portes/];
-    for (const item of copy.en.facts.items) {
+    for (const item of facts()) {
       const held = checked.some((pattern) => pattern.test(item.label));
       const named = notHeld.has(item.label);
       expect(
@@ -441,7 +446,7 @@ describe("advertised claims match the repository", () => {
   /// un chiffre que le site n'affiche plus est une explication sans objet, et
   /// elle se lit comme une lacune qui n'existe pas.
   test("nothing lingers in the unheld list for a figure the site no longer shows", () => {
-    const published = new Set(copy.en.facts.items.map((item) => item.label));
+    const published = new Set(facts().map((item) => item.label));
     for (const label of notHeld.keys()) {
       expect(published.has(label), `« ${label} » n'est plus publié`).toBe(true);
     }
@@ -493,7 +498,13 @@ describe("advertised claims match the repository", () => {
 /// nombre.** « 64 Mo de RAM » est resté juste comme chiffre et faux comme
 /// phrase le jour où la taille de la machine est devenue un réglage — aucun
 /// compteur de nombres ne voit ça, et ce n'est pas un compteur qui l'a trouvé.
-const pagesDirectory = join(import.meta.dir, "..", "src", "pages");
+/// **Les pages sont des fichiers Rust depuis que le front est en Yew**, un par
+/// page comme avant : `docs.rs` au lieu de `docs.ts`, `mod.rs` au lieu de
+/// `index.ts`. Le compteur lit le fichier entier, code compris ; les pages ne
+/// portent que des données, donc les seuls nombres qu'il y trouve sont ceux
+/// que le site publie — et c'est pourquoi les gardes du contenu vivent dans
+/// `crates/wisq-site/src/contenu_tests.rs` et non à côté des pages.
+const pagesDirectory = join(repoRoot, "crates", "wisq-site", "src", "pages");
 
 /// Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à un
 /// mot ni à un trait d'union : « x86-64 » et « rv32ima » ne sont pas des
@@ -502,7 +513,7 @@ const publishedNumber = /(?<![-\w])\d[\d   ]*(?:[.,]\d+)?(?![\w])/g;
 
 function pageFiles(): string[] {
   return readdirSync(pagesDirectory)
-    .filter((name) => name.endsWith(".ts"))
+    .filter((name) => name.endsWith(".rs"))
     .sort();
 }
 
@@ -540,7 +551,7 @@ function provenanceOf(entries: [string, string][]): Map<string, string> {
 /// l'autre n'a rien à faire sur une page qui parle au présent.
 const accounted = new Map<string, Map<string, string>>([
   [
-    "roadmap.ts",
+    "roadmap.rs",
     provenanceOf([
       [
         "10 116",
@@ -561,7 +572,7 @@ const accounted = new Map<string, Map<string, string>>([
     ]),
   ],
   [
-    "protocol.ts",
+    "protocol.rs",
     provenanceOf([
       [
         "0.1",
@@ -634,7 +645,7 @@ const accounted = new Map<string, Map<string, string>>([
     ]),
   ],
   [
-    "faq.ts",
+    "faq.rs",
     provenanceOf([
       [
         "44.6",
@@ -702,7 +713,7 @@ const accounted = new Map<string, Map<string, string>>([
     ]),
   ],
   [
-    "docs.ts",
+    "docs.rs",
     provenanceOf([
       [
         "3.8",
@@ -777,7 +788,7 @@ const accounted = new Map<string, Map<string, string>>([
     ]),
   ],
   [
-    "architecture.ts",
+    "architecture.rs",
     provenanceOf([
       [
         "2.7",
@@ -884,9 +895,9 @@ const accounted = new Map<string, Map<string, string>>([
   // La réserve sur le transport ne porte plus « version 1 » : elle disait le
   // clair comme une fatalité alors que c'est un défaut, et le numéro de
   // version n'ajoutait rien qu'un chiffre à tenir.
-  ["privacy.ts", new Map()],
-  ["index.ts", new Map()],
-  ["offline.ts", new Map()],
+  ["privacy.rs", new Map()],
+  ["mod.rs", new Map()],
+  ["offline.rs", new Map()],
 ]);
 
 /// Les pages que rien ne relit. L'entrée porte **la liste exacte** des chiffres
@@ -910,7 +921,7 @@ const notLookedAt = new Map<string, string[]>([]);
 /// ci-dessous vérifie que l'ailleurs en question lit vraiment ce fichier.
 const heldElsewhere = new Map([
   [
-    "releases.ts",
+    "releases.rs",
     {
       guard: "version-agreement.test.ts",
       why:
@@ -922,7 +933,7 @@ const heldElsewhere = new Map([
 ]);
 
 describe("les pages du site publient des nombres, et le périmètre de ce qui les relit est écrit", () => {
-  test("toute page de src/pages est tenue, avouée non tenue, ou nommée hors sujet", () => {
+  test("toute page de crates/wisq-site/src/pages est tenue, avouée non tenue, ou nommée hors sujet", () => {
     for (const page of pageFiles()) {
       const listed =
         Number(accounted.has(page)) +
@@ -1338,7 +1349,8 @@ describe("le relevé LZ4 : trois phrases et une table pour une seule mesure", ()
 });
 
 describe("la phrase des corpus matériels ne dérive pas là où la garde ne regardait pas", () => {
-  /// Le compteur d'inventaire plus haut ne lit que `site/src`, `docs` hors
+  /// Le compteur d'inventaire plus haut ne lit que le front — `site/src` à
+  /// l'époque, `crates/wisq-site/src` depuis qu'il est en Rust —, `docs` hors
   /// journal, `CHANGELOG.md` et les deux READMEs, et son en-tête affirmait que
   /// les phrases laissées dehors le sont **par leur forme** — qu'elles ne
   /// disent pas « corpus matériels ». **Six le disent** : trois témoins de
@@ -1357,7 +1369,7 @@ describe("la phrase des corpus matériels ne dérive pas là où la garde ne reg
   /// le premier relevé de cette tranche a fait. Les marqueurs de commentaire
   /// sont retirés et les blancs écrasés **avant** de chercher.
   const INVENTORY = [
-    "site/src/",
+    "crates/wisq-site/src/",
     "docs/",
     "CHANGELOG.md",
     "README.md",

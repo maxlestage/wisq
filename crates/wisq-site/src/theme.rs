@@ -27,6 +27,18 @@
 
 use yew::prelude::*;
 
+/// Les deux `--bg` de `styles.css`, et ce que le navigateur peint autour de la
+/// page : la barre d'état sur iOS, le bandeau d'onglet ailleurs.
+///
+/// **Une seule source.** Ces deux couleurs étaient écrites à la main en cinq
+/// endroits et rien ne les comparait ; `src/theme.ts` les a d'abord réunies,
+/// et elles vivent ici depuis que le front est en Rust. La construction les lit
+/// dans le catalogue du pré-rendu pour les métas, le script de la tête et le
+/// manifeste, et `tests/build.test.ts` les confronte à la feuille de style
+/// construite plutôt qu'à une copie.
+pub const BAR_CLAIR: &str = "#f2ede3";
+pub const BAR_SOMBRE: &str = "#0e0d0c";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Theme {
     Light,
@@ -170,26 +182,57 @@ fn retenir(theme: Theme) {
     }
 }
 
-/// Poser l'attribut, qui est la seule chose qu'un lecteur voie tout de suite.
+/// Poser l'attribut, qui est la seule chose qu'un lecteur voie tout de suite —
+/// et les deux métas `theme-color`, qui sont la seconde.
+///
+/// **Les métas manquaient au portage, et rien ne le disait.** La version DOM
+/// les réécrivait à chaque choix ; la première version Yew ne posait que
+/// `data-theme`. Les deux métas portent une requête `media`, donc sur `auto`
+/// elles suivent déjà le système — mais un choix explicite doit les forcer
+/// toutes les deux, sinon le navigateur peint sa barre pour un thème que la
+/// page n'emploie pas. Sur la page `offline`, seule page portée à l'époque, un
+/// lecteur qui choisissait « clair » sur un téléphone sombre gardait une barre
+/// d'état noire au-dessus d'une page crème.
 ///
 /// Sous `ssr` il n'y a pas de document, et le bouchon du bas ne fait rien —
 /// ce qui est juste : le pré-rendu part de `auto`, et c'est le script bloquant
 /// de la tête qui applique les couleurs avant la première peinture.
 #[cfg(feature = "hydrate")]
 fn appliquer(theme: Theme) {
-    let Some(racine) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.document_element())
-    else {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
         return;
     };
-    match theme {
-        Theme::Auto => {
-            let _ = racine.remove_attribute("data-theme");
-        }
-        other => {
-            let _ = racine.set_attribute("data-theme", other.slug());
-        }
+    if let Some(racine) = document.document_element() {
+        let _ = match theme {
+            Theme::Auto => racine.remove_attribute("data-theme"),
+            other => racine.set_attribute("data-theme", other.slug()),
+        };
+    }
+    let Ok(metas) = document.query_selector_all(r#"meta[name="theme-color"]"#) else {
+        return;
+    };
+    for i in 0..metas.length() {
+        let Some(meta) = metas
+            .item(i)
+            .and_then(|n| wasm_bindgen::JsCast::dyn_into::<web_sys::Element>(n).ok())
+        else {
+            continue;
+        };
+        let propre = if meta
+            .get_attribute("media")
+            .unwrap_or_default()
+            .contains("dark")
+        {
+            BAR_SOMBRE
+        } else {
+            BAR_CLAIR
+        };
+        let couleur = match theme {
+            Theme::Auto => propre,
+            Theme::Light => BAR_CLAIR,
+            Theme::Dark => BAR_SOMBRE,
+        };
+        let _ = meta.set_attribute("content", couleur);
     }
 }
 

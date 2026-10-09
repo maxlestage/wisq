@@ -22921,3 +22921,249 @@ Et son corollaire, qui a sauvé cette tranche d'une garde inutile : **avant
 d'écrire une garde pour un mécanisme, vérifier que le mécanisme existe.** La
 garde aurait été verte, elle aurait eu l'air de tenir quelque chose, et elle
 n'aurait gardé qu'une histoire.
+
+## #335 — le site entier en Yew, deux îlots, et le mouvement de zamocorp
+
+Demandé, une seconde fois et dans les mêmes mots : « Tout reprendre pour la
+partie front et tout faire en yew et wasm en mettant tout à jour sur la base
+des résultats internets et faire des animations comme zamocorp ». #331 à #334
+avaient livré la chaîne, la bascule de thème et la mémoire de la langue sur la
+page `offline` ; cette tranche livre le reste — les neuf autres pages, les
+comportements que `src/main.ts` portait encore, les animations — et retire
+React.
+
+### La fidélité d'abord, et elle a trouvé un défaut
+
+Le contenu des neuf pages et de l'accueil a été **engendré** depuis le
+TypeScript par un convertisseur jetable, pas recopié : les documents sont
+devenus `crates/wisq-site/src/pages/*.rs`, la copie de l'accueil une structure
+de `content.rs`. Puis le garde que #332 avait écrit pour ce moment précis —
+« le portage en Yew rend la même page que React » — a confronté les vingt pages
+Yew aux vingt pages React, après ses quatre normalisations nommées.
+
+**Dix-neuf identiques, une différente : la 404.** Le `page_path` de Rust
+consultait `output`, donc le sélecteur de langue d'une page introuvable menait
+à la 404 de l'autre langue ; celui de TypeScript menait à son accueil. Le Rust
+avait tort : une page qui dit « cette adresse n'existe pas » n'a pas de
+contrepartie à proposer. Corrigé, avec un test qui distingue l'adresse d'une
+route du fichier qu'elle écrit — puis vingt sur vingt. C'est seulement là que
+React est parti, et le garde avec lui : il n'avait plus deux lectures à
+confronter, ce que son en-tête annonçait.
+
+### La mesure qui a décidé de la forme
+
+Avec toutes les pages hydratées, le module a été mesuré avant d'être accepté :
+
+| | brut | gzip |
+| --- | --- | --- |
+| une page portée, thème seul (#331) | 253 728 | 106 392 |
+| toutes les pages, hydratées entières | 351 822 | 148 277 |
+| **deux îlots, tout le mouvement** | **261 252** | **112 436** |
+
+La deuxième ligne est ce que l'ancien plafond annonçait — « chaque tranche qui
+porte des pages le relèvera ». Elle a été refusée. Hydrater une page demande au
+module de produire le même arbre que le pré-rendu pour pouvoir le comparer,
+donc de porter **tout ce que la page affiche** : la prose des dix pages, dans
+les deux langues, téléchargée par chaque lecteur pour un texte que sa page
+avait déjà. C'est le défaut que le dépôt avait retiré une fois sous une autre
+forme — la copie JSON de chaque document, posée à côté du balisage pour que
+React puisse hydrater.
+
+Seuls deux endroits d'une page ont un état : les réglages de l'en-tête et
+l'invite d'installation. Seuls ces deux-là sont hydratés, chacun sur sa racine
+`data-ilot` — un conteneur à lui, parce que Yew retire de la racine qu'il
+hydrate tout nœud que le composant ne réclame pas : hydratée sur `#root`,
+l'invite aurait effacé la page. Le reste est du HTML, et les comportements qui
+le touchent — la redirection, le service worker, tout le mouvement — sont des
+fonctions Rust sur le DOM. Le plafond ne bouge plus avec le contenu ; un test
+vérifie qu'aucune phrase d'aucune page n'est dans le module.
+
+Le pré-rendu va jusqu'au bout de l'idée : la page est rendue **sans** les
+marqueurs d'hydratation de Yew, chaque îlot **avec**, puis remis à sa place —
+et la substitution refuse si l'îlot n'apparaît pas exactement une fois. Six
+marqueurs par page au lieu d'une vingtaine, et la frontière se lit dans le HTML
+publié ; un test la tient.
+
+Et la copie de l'accueil a quitté `Copy` pour `AccueilCopy` : un `static`
+référencé entre en entier dans le module, et les îlots lisent `Copy`.
+
+### Le mouvement, d'après zamocorp — relevé, pas deviné
+
+**zamocorp.com n'est pas joignable depuis ce conteneur** : 403 au proxy, échec
+de résolution par l'outil de lecture du web, archive refusée elle aussi. #329
+l'avait lu ; cette session non. Le relevé vient du dépôt Plum de Maxime, dont
+le commit « L'accueil s'ouvre comme zamocorp.com » dit l'avoir fait « après
+l'avoir ouvert dans un navigateur et lu son code » : un rideau d'entrée, une
+ouverture épinglée que le défilement déroule, une marque qui se forme dans la
+poussière, un balayage de lumière, le titre ligne par ligne, une goutte qui
+invite à défiler, une bande qui défile, des cartes qui montent, du grain, des
+boutons aimantés — et, côté technique, une séquence d'images AVIF pré-rendues et
+54 Ko gzippés de GSAP et de Lenis.
+
+Tout y est, en trois portes :
+
+| porte | posée par | quoi |
+| --- | --- | --- |
+| `html.entree` | le script de la tête, avant la première peinture | le titre mot par mot, l'accroche, les boutons — des animations qui **s'achèvent d'elles-mêmes** |
+| `html.rideau` | le même, une fois par session | le rideau qui porte la marque et se lève |
+| `[data-motion]` | le module | l'épinglage, la poussière, la lumière, la bande, les aimants, le défilement lissé |
+
+La première porte existe parce qu'une entrée décidée par le module arrive après
+la première peinture : le titre serait peint, masqué, puis rejoué. Une
+animation qui s'achève seule peut partir avant lui sans rien laisser de caché
+s'il n'arrive jamais. Ni l'une ni l'autre si l'on a demandé le calme, et un
+test refuse toute animation qui ne passerait par aucune des trois — plus les
+transitions de vue, dans une requête qui exige `no-preference`.
+
+**La poussière est calculée.** Chaque grain est tiré dans la géométrie exacte
+du logo — les deux quadrants arrondis, l'écran du téléphone en creux, les trois
+pas du lien —, et la marque SVG apparaît sur la poussière formée, même boîte,
+mêmes coordonnées. Un test Rust confronte les nombres de la poussière aux
+littéraux de `logo.rs`.
+
+**Les captures ont corrigé le premier dessin.** Tirés n'importe où dans la
+scène, les grains couvraient le titre et l'accroche : ça ne se lisait pas
+comme une marque qui se forme, ça se lisait comme une page sale. Ils partent
+maintenant d'un nuage centré sur la marque, et la marque est passée de 7 à
+8,5 rem — à 112 px, formée, elle tenait dans un timbre.
+
+**Le défilement lissé ne s'active qu'à la souris**, en mode natif comme le
+recommande Lenis lui-même : la page défile vraiment, donc la barre, la
+recherche dans la page et les technologies d'assistance voient un défilement
+ordinaire. Le zoom au clavier, le défilement horizontal, une majuscule et un
+élément qui défile lui-même restent au navigateur. Un écran tactile a déjà son
+inertie — et l'iPhone, sujet de ce projet, la fait mieux que n'importe quel
+script.
+
+### Ce que « mis à jour » a donné
+
+| quoi | constat |
+| --- | --- |
+| Yew 0.23.0, wasm-bindgen 0.2.129, web-sys 0.3.106, happy-dom 20.14.6 | déjà les dernières publiées : rien à monter |
+| wasm-bindgen | a quitté l'organisation `rustwasm`, mise en sommeil en 2025 ; l'ancienne adresse répond par une 301, mesuré — le script télécharge depuis la nouvelle |
+| transitions de vue entre documents | Chrome 126, Safari 18.2 ; prises en CSS, dans `prefers-reduced-motion: no-preference` |
+| `linear()` | le rebond des aimants, avec une courbe de Bézier en repli |
+| rustc du conteneur | 1.97 contre 1.99 sur le coureur : monté avant clippy, la leçon de #329 |
+
+Et React, `react-dom`, leurs types et le réglage `jsx` de `tsconfig.json` sont
+partis du site.
+
+### Défauts trouvés en route
+
+**1. Les métas `theme-color` n'étaient plus réécrites depuis #331.** La version
+DOM les forçait à chaque choix ; le portage Yew ne posait que `data-theme`. Sur
+la page `offline`, un lecteur qui choisissait « clair » sur un téléphone sombre
+gardait une barre d'état noire au-dessus d'une page crème. Vu en lisant
+`applyTheme` pour le retirer ; un test le tient maintenant.
+
+**2. La course du test de thème, qui précédait cette tranche.** Le relevé de
+départ de la suite complète a rendu 416 sur 417 : le test attendait
+`data-theme` — posé de façon synchrone par le gestionnaire — puis lisait l'état
+pressé, qui demande un nouveau rendu de Yew. Seul, il passait trois fois sur
+trois. Il attend maintenant l'état pressé, la règle de #332 appliquée à sa
+dernière assertion.
+
+**3. La bande défilait sous la mauvaise porte.** Posée sous `html.entree`, et la
+garde de #330 — « aucune animation infinie n'échappe à `[data-motion]` » —
+l'aurait refusée ; vue en relisant la garde, avant qu'elle ne morde. Une
+animation sans fin attend le module, qui a vérifié qu'on n'a pas demandé le
+calme ; la bande est sous le pli, qu'elle démarre tard ne se voit pas.
+
+**4. Bun émet un `chunk-<empreinte>.js` vide pour toute entrée HTML.** La garde
+écrite pour refuser tout script sorti du bundler a refusé ma première
+construction ; le fichier fait 0 octet. Elle retire maintenant le vide et
+refuse le moindre octet.
+
+**5. Les gardes du contenu ne pouvaient pas vivre à côté des pages.**
+`claims.test.ts` relit chaque fichier de `pages/` et exige une provenance pour
+chaque nombre ; un seuil de test — `200` mots — y aurait passé pour un chiffre
+publié. Elles sont dans `crates/wisq-site/src/contenu_tests.rs`.
+
+**7. Et la CI a refusé leur premier emplacement.** Elles ont d'abord été un test
+d'intégration, `tests/contenu.rs`, vert dans ce conteneur. Le job Rust est
+tombé : « the crate `wisq_site` requires panic strategy `abort` which is
+incompatible with this crate's strategy of `unwind` », trente-neuf fois. Ce
+crate est un `cdylib`, donc cargo retire l'empreinte du nom de sa bibliothèque ;
+un test d'intégration la fait construire une seconde fois, en `unwind`, sous le
+même nom que la version `abort` du profil `release` — l'avertissement « output
+filename collision » de cargo#6313 le disait, et il se reproduit ici après un
+`cargo clean -p wisq-site`. Sur un arbre chaud, l'ordre de construction
+cachait l'erreur ; sur le coureur, à froid, il la montrait. Les gardes sont
+redevenues des tests unitaires, et la construction à froid ne signale plus de
+collision.
+
+**6. happy-dom fait hériter `WheelEvent` de `UIEvent`.** La spécification dit
+`MouseEvent`, donc `ctrlKey` et `shiftKey` ; là, ils valent `undefined`. Mon
+premier test a cru que le module reprenait un zoom au clavier ; c'était
+l'environnement qui ne savait pas dire « ctrl ». Les touches sont posées sur
+l'événement, et c'est écrit.
+
+### Le sabordage
+
+Treize sabordages du module, chacun reconstruit et mesuré ; le source est
+restauré après chacun.
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| les métas `theme-color` ne sont plus réécrites | le clic qui « repeint la barre » |
+| la langue n'est plus mémorisée | suivre un lien de langue |
+| la redirection ne part jamais | le navigateur francophone |
+| l'invite n'est plus retenue | `beforeinstallprompt` révèle la bannière |
+| l'invite retenue n'est pas rejouée | idem, à l'assertion suivante |
+| le mouvement réduit est ignoré | une demande de moins d'animation ne masque rien |
+| la révélation ne cesse pas d'observer | **rien — puis** « les blocs se lèvent » |
+| un chiffre s'arrête en route | le chiffre qui finit sur sa valeur |
+| la molette n'est plus reprise | la molette est reprise |
+| `ctrl` ignoré | le zoom reste au navigateur |
+| l'ouverture compte à rebours | la progression suit la course |
+| l'aimant n'est jamais relâché | le bouton relâché |
+| les réglages rendus sans marqueurs | les quatre tests des réglages, et la garde des marqueurs |
+| TÉMOIN : le module n'est pas démarré | 22 tests sur 38 |
+
+**Deux leçons, et aucune n'est sur le module.**
+
+**Le survivant dont le verdict s'était perdu.** Retirer `unobserve` laissait la
+suite verte — après plus de deux minutes et 5 Go de mémoire pour un seul
+fichier. L'assertion était juste : `expect(regardes).not.toContain(bloc)`.
+Mais un échec doit imprimer l'élément, et bun imprime un élément happy-dom en
+parcourant tout ce qu'il touche — mesuré, une seconde pour un DOM de deux
+paragraphes. Sur une page du site, l'impression a dévoré le verdict.
+L'assertion porte maintenant sur un booléen, et le sabordage tombe en un
+instant. **Une assertion dont l'échec ne peut pas s'imprimer n'échoue pas.**
+
+**Le sabordage trop faible.** « Le chiffre s'arrête à 97 % » est passé : à 97 %
+de sa course, une courbe cubique donne 2 620,93, qui s'arrondit à la valeur
+finale. Le module était faux et l'écran juste — le test n'avait rien à voir.
+Refait à 60 % de la course, il tombe. Un sabordage qui ne change pas ce que le
+test observe n'est pas un survivant, c'est un sabordage raté, et il faut savoir
+lequel des deux on a avant d'écrire une garde de plus.
+
+**Et le treizième a changé le module.** Avant le correctif, les réglages sans
+marqueurs faisaient tomber **douze** tests : l'invite d'installation et la
+redirection avec eux, parce qu'une hydratation qui cède dans un module compilé
+avec `panic = "abort"` emporte tout. Le module vérifie désormais qu'une racine
+commence par le marqueur d'ouverture avant de l'hydrater ; sinon il la laisse
+en HTML, et le reste de la page garde son module. Remesuré : quatre tests, tous
+des réglages.
+
+### Ce qui n'est pas fait
+
+- **Aucun vrai Safari, aucun iPhone.** Les captures sont de Chromium, à 390 et
+  1 280 px, dans les deux thèmes, avec et sans mouvement ; l'épinglage et le
+  `svh` sur iOS sont la conception documentée, pas une mesure de ce dépôt.
+- **Le coût de la poussière sur un téléphone n'est pas mesuré** : 1 100 grains
+  par image sous 600 px de large, 2 200 au-delà, tant que la scène est visible
+  et que la marque n'est pas formée.
+- La feuille de style approche son plafond : 22 629 octets construits pour 24 000.
+
+### Le signe à retenir
+
+**Hydrater, c'est expédier une copie.** Un module qui reprend une page doit
+pouvoir la reproduire, donc il en porte le contenu — exactement comme le JSON
+que React exigeait à côté du balisage, et que le dépôt avait retiré. La forme
+qui l'a montré est celle de toutes les tranches depuis #325 : **dès qu'une
+chose doit écrire la valeur qu'elle devrait aller chercher, elle en garde sa
+propre copie.** Pour une garde, c'est un chiffre ; pour un framework, c'est la
+page. Les îlots sont la version de cette règle qui s'applique à l'hydratation :
+ne reprendre que ce qui a un état, et laisser le reste à l'endroit où il est
+déjà.

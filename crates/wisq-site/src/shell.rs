@@ -1,5 +1,6 @@
 //! La coquille que toutes les pages partagent : le lien d'évitement, l'en-tête,
-//! les deux navigations, le pied, et l'invite d'installation.
+//! les deux navigations, le pied, et les deux îlots que le navigateur hydrate —
+//! les réglages de l'en-tête et l'invite d'installation.
 //!
 //! La langue est l'adresse, pas un réglage. Chaque page existe deux fois —
 //! `docs/` et `fr/docs/` — chacune pré-rendue dans sa langue, pour que la
@@ -9,13 +10,14 @@
 use yew::prelude::*;
 
 use crate::content::{Lang, AUTHOR, AUTHOR_URL, SITE_VERSION};
+use crate::installation::InstallPrompt;
 use crate::logo::Logo;
 use crate::routes::{page_path, relative_base, RouteId, ROUTES};
 use crate::theme::ThemeSwitch;
 
 /// L'adresse d'une route depuis la page courante, toujours relative — c'est ce
 /// qui garde le site déplaçable.
-fn href(depuis: RouteId, langue: Lang, vers: RouteId, langue_cible: Lang) -> String {
+pub(crate) fn href(depuis: RouteId, langue: Lang, vers: RouteId, langue_cible: Lang) -> String {
     let base = relative_base(depuis, langue);
     let chemin = page_path(vers, langue_cible);
     if chemin.is_empty() {
@@ -47,32 +49,13 @@ pub fn Shell(props: &ShellProps) -> Html {
                     <a class="brand" href={vers(RouteId::Home)}>
                         { "wisq" }<span>{ "▚" }</span>
                     </a>
-                    <ThemeSwitch lang={lang} />
-                    // Des liens, pas des boutons : chacun est une vraie adresse,
-                    // donc il s'ouvre dans un nouvel onglet, se met en favori, et
-                    // se suit sans aucun JavaScript.
-                    //
-                    // **Le clic ne fait rien d'autre que se souvenir.** Il
-                    // n'empêche pas la navigation, il ne la provoque pas : le
-                    // navigateur suit le lien comme il l'aurait fait, et la seule
-                    // chose ajoutée est la mémoire d'avoir choisi — qui ne nourrit
-                    // qu'une décision, la redirection depuis l'accueil anglais.
-                    // C'est pour ça qu'aucun `prevent_default` n'apparaît ici : un
-                    // lecteur dont le wasm n'arrive jamais garde un lien qui marche.
-                    <nav class="lang-switch" aria-label={copy.language}>
-                        { for Lang::ALL.into_iter().map(|code| {
-                            let au_clic = Callback::from(move |_: MouseEvent| {
-                                crate::stockage::ecrire(crate::stockage::LANGUE, code.code());
-                            });
-                            html! {
-                                <a href={href(route, lang, route, code)} hreflang={code.code()}
-                                   aria-current={(code == lang).then(|| AttrValue::from("true"))}
-                                   onclick={au_clic}>
-                                    { code.code().to_uppercase() }
-                                </a>
-                            }
-                        }) }
-                    </nav>
+                    // **Le premier îlot.** Le seul endroit de l'en-tête qui ait un
+                    // état — le thème choisi — et le seul dont les liens se
+                    // souviennent de quelque chose. Le reste de la page est du
+                    // balisage que le navigateur garde tel qu'il arrive.
+                    <div class="header-controls" data-ilot="reglages">
+                        <Reglages route={route} lang={lang} />
+                    </div>
                 </div>
                 // Toutes les pages du site, en une bande défilante. Des liens
                 // plutôt qu'un menu, pour la même raison que ci-dessus.
@@ -91,7 +74,66 @@ pub fn Shell(props: &ShellProps) -> Html {
             <main id="main">{ props.children.clone() }</main>
 
             <Footer route={route} lang={lang} />
-            <InstallPrompt lang={lang} />
+            // **Le second îlot.** Son propre conteneur, parce que Yew retire de
+            // la racine qu'il hydrate tout nœud que le composant ne réclame pas :
+            // hydrater l'invite sur `#root` effacerait la page.
+            <div class="install-dock" data-ilot="installation">
+                <InstallPrompt lang={lang} />
+            </div>
+        </>
+    }
+}
+
+#[derive(Properties, PartialEq, Clone)]
+pub struct ReglagesProps {
+    pub route: RouteId,
+    pub lang: Lang,
+}
+
+/// La bascule de thème et le choix de langue : ce que l'en-tête a de vivant.
+///
+/// **Un îlot, et la raison est mesurée.** Hydrater la page entière demandait au
+/// module de porter tout ce qu'elle affiche, pour pouvoir le comparer au
+/// balisage : avec les dix pages portées, le wasm passait de 254 112 à 351 822
+/// octets, soit 148 277 gzippés — la prose des neuf documents et de l'accueil,
+/// dans les deux langues, téléchargée par chaque lecteur pour être confrontée à
+/// un texte que la page avait déjà. Le dépôt avait retiré exactement ce défaut
+/// une fois : une copie JSON de chaque document, posée à côté du balisage pour
+/// que React puisse hydrater. Seuls deux endroits de la page ont un état, donc
+/// seuls deux endroits sont hydratés ; le reste est du HTML, et les
+/// comportements qui le touchent sont des fonctions Rust sur le DOM.
+#[function_component]
+pub fn Reglages(props: &ReglagesProps) -> Html {
+    let (route, lang) = (props.route, props.lang);
+    let copy = lang.copy();
+    html! {
+        <>
+            <ThemeSwitch lang={lang} />
+            // Des liens, pas des boutons : chacun est une vraie adresse,
+            // donc il s'ouvre dans un nouvel onglet, se met en favori, et
+            // se suit sans aucun JavaScript.
+            //
+            // **Le clic ne fait rien d'autre que se souvenir.** Il
+            // n'empêche pas la navigation, il ne la provoque pas : le
+            // navigateur suit le lien comme il l'aurait fait, et la seule
+            // chose ajoutée est la mémoire d'avoir choisi — qui ne nourrit
+            // qu'une décision, la redirection depuis l'accueil anglais.
+            // C'est pour ça qu'aucun `prevent_default` n'apparaît ici : un
+            // lecteur dont le wasm n'arrive jamais garde un lien qui marche.
+            <nav class="lang-switch" aria-label={copy.language}>
+                { for Lang::ALL.into_iter().map(|code| {
+                    let au_clic = Callback::from(move |_: MouseEvent| {
+                        crate::stockage::ecrire(crate::stockage::LANGUE, code.code());
+                    });
+                    html! {
+                        <a href={href(route, lang, route, code)} hreflang={code.code()}
+                           aria-current={(code == lang).then(|| AttrValue::from("true"))}
+                           onclick={au_clic}>
+                            { code.code().to_uppercase() }
+                        </a>
+                    }
+                }) }
+            </nav>
         </>
     }
 }
@@ -186,53 +228,5 @@ fn Footer(props: &FooterProps) -> Html {
                 </div>
             </div>
         </footer>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct InstallProps {
-    lang: Lang,
-}
-
-/// Ce qui transforme le site en quelque chose sur l'écran d'accueil.
-///
-/// Deux plateformes, deux mécanismes, et celui qui intéresse ce projet est
-/// celui qui n'a pas d'API. Chromium émet `beforeinstallprompt` et confie une
-/// invite à appeler plus tard ; Safari sur iOS n'émet rien du tout et installe
-/// par la feuille de partage, donc la seule chose honnête à y proposer est les
-/// trois gestes qui marchent.
-///
-/// **Les deux formulations sont rendues, et les deux partent masquées.** Savoir
-/// laquelle s'applique est un fait sur le navigateur, donc impossible à la
-/// construction — mais l'alternative était pire : construire cette bannière
-/// dans le navigateur voudrait dire y expédier ses quatre chaînes, dans la
-/// langue de la page.
-#[function_component]
-fn InstallPrompt(props: &InstallProps) -> Html {
-    let copy = props.lang.copy();
-    html! {
-        <aside class="install-banner" role="complementary" hidden=true data-install="">
-            <div class="wrap install-banner-inner">
-                <div data-install-variant="prompt" hidden=true>
-                    <strong>{ copy.pwa.title }</strong>
-                    <p>{ copy.pwa.body }</p>
-                </div>
-                <div data-install-variant="ios" hidden=true>
-                    <strong>{ copy.pwa.ios_title }</strong>
-                    <p>{ copy.pwa.ios_body }</p>
-                </div>
-                <div class="install-banner-actions">
-                    // Seul le chemin de Chromium a un bouton qui puisse faire
-                    // quelque chose : sur iOS il n'y a aucune API à appeler, donc
-                    // la formulation est toute la fonctionnalité.
-                    <button type="button" class="btn btn-primary" data-install-accept="" hidden=true>
-                        { copy.pwa.action }
-                    </button>
-                    <button type="button" class="btn btn-quiet" data-install-dismiss="">
-                        { copy.pwa.dismiss }
-                    </button>
-                </div>
-            </div>
-        </aside>
     }
 }

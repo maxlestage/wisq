@@ -40,17 +40,23 @@ open "Wisq ‣.xcodeproj"
 
 ## The landing page
 
-`site/` is a separate Bun workspace, not part of the Swift build:
+The site's front end is `crates/wisq-site`, in Rust: Yew components rendered
+to HTML at build time, and a WebAssembly module for the two islands and the
+motion. `site/` is a separate Bun workspace around it — the build, the server,
+the stylesheet and the tests:
 
 ```sh
+./scripts/install-wasm-toolchain.sh   # wasm32 target + wasm-bindgen, at the lockfile's version
 cd site && bun install && bun run dev
 bun run build && bun test
 ```
 
-Copy lives in `src/content.ts` in both languages — never inline strings in
-components. Numbers the page claims about the codebase are verified against the
-repository in `tests/claims.test.ts`, so changing the test count means updating
-the page too (the test will tell you).
+Copy lives in `crates/wisq-site/src/content.rs` and the written pages in
+`crates/wisq-site/src/pages/`, in both languages — never inline strings in
+components; a missing translation does not compile. Numbers the page claims
+about the codebase are verified against the repository in
+`site/tests/claims.test.ts`, so changing the test count means updating the page
+too (the test will tell you).
 
 ## What CI checks
 

@@ -1,22 +1,53 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
-import { LANGS, ROUTES, outputPath, pagePath, routeById } from "../src/routes";
-import { PAGES } from "../src/pages";
-import { AUTHOR, copy } from "../src/content";
+import { catalogue, page } from "./catalogue";
 import { siteURL } from "../src/site-url";
-import { BAR } from "../src/theme";
 
 /// The built artefact, not the source. `bun run build` must run before this;
 /// CI does exactly that.
 const dist = join(import.meta.dir, "..", "dist");
 const read = (relative: string) => readFileSync(join(dist, relative), "utf8");
 
+/// Ce que le site déclare de lui-même — routes, langues, copie, couleurs de
+/// barre —, lu dans le catalogue du pré-rendu plutôt que dans une copie : voir
+/// `tests/catalogue.ts`.
+const { langs: LANGS, routes: ROUTES, bar: BAR, author: AUTHOR, copy } = catalogue();
+
 /// Every document the build writes: each route, in each language. Tests that
 /// used to walk the routes walk this instead, or they check half the site.
-const BUILT = LANGS.flatMap((lang) =>
-  ROUTES.map((route) => ({ route, lang, file: outputPath(route, lang) })),
-);
+const BUILT = catalogue().pages.map((p) => ({
+  route: { id: p.route },
+  lang: p.lang,
+  file: p.file,
+  sentence: p.sentence,
+}));
+
+/// Un élément `div` entier à partir de sa balise ouvrante, refermé là où la
+/// profondeur revient à zéro.
+function element(html: string, debut: number): string {
+  let profondeur = 0;
+  const balise = /<\/?div\b[^>]*>/g;
+  balise.lastIndex = debut;
+  for (let m = balise.exec(html); m; m = balise.exec(html)) {
+    profondeur += m[0].startsWith("</") ? -1 : 1;
+    if (profondeur === 0) return html.slice(debut, m.index + m[0].length);
+  }
+  throw new Error("élément non refermé");
+}
+
+/// Le texte d'un fragment de HTML, balises retirées et entités rendues : ce
+/// qu'un lecteur lit, et ce qu'un moteur de recherche indexe.
+function text(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
 
 /// The stylesheet's name is hashed, so tests that read the CSS have to find it
 /// rather than assume it.
@@ -39,27 +70,6 @@ function tokensOf(css: string, selector: string): Record<string, string> {
   );
   expect(Object.keys(tokens).length, `aucun jeton dans « ${selector} »`).toBeGreaterThan(0);
   return tokens;
-}
-
-/// The script's name is hashed too, for the same reason.
-///
-/// **`chunk-` est exigé, et ce n'est pas de la décoration.** Ce lecteur cherchait
-/// « le premier `.js` qui n'est pas `sw.js` », et il y en avait un. Depuis que le
-/// front passe à Yew, `dist` porte aussi la colle de wasm-bindgen,
-/// `wisq-<empreinte>.js` : le lecteur devenait dépendant de l'ordre du système
-/// de fichiers, et les six tests qui mesurent « le script » auraient pu mesurer
-/// la colle — un fichier de 33 Ko que le plafond de 8 000 octets aurait refusé,
-/// ou pire, un fichier où « React » n'apparaît pas pour une raison qui n'a rien
-/// à voir. Le nom du bundler est `chunk-`, donc il est nommé, et deux candidats
-/// sont un refus plutôt qu'un choix.
-function scriptFile(): string {
-  const candidats = readdirSync(dist).filter(
-    (entry) => entry.startsWith("chunk-") && entry.endsWith(".js"),
-  );
-  if (candidats.length !== 1) {
-    throw new Error(`${candidats.length} script(s) chunk-*.js dans dist, il en faut un`);
-  }
-  return candidats[0]!;
 }
 
 /// Les deux fichiers du front en Yew : le module et la colle qui le démarre.
@@ -91,66 +101,25 @@ describe("built output", () => {
     ).toBe(true);
   });
 
-  /// React ships two builds behind one import, and the development one is what
-  /// you get unless the bundler is told otherwise. It carries every warning,
-  /// every key check and every hook invariant: 479 KB against 268 KB, 147 KB
-  /// against 88 KB over the wire, and slower on every render. The site was
-  /// publishing it, because the deploy job runs `bun run build` with no
-  /// environment set and nothing in the build said which build to make.
+  /// **Le seul JavaScript publié est la colle du module, et le service worker.**
   ///
-  /// These two strings exist only in the development build — the branches that
-  /// print them are compiled out of the production one.
-  test("the published script is React's production build", () => {
-    const script = read(scriptFile());
-    for (const marker of ["Each child in a list should have a unique", "captureOwnerStack"]) {
-      expect(script.includes(marker), `le bundle contient « ${marker} »`).toBe(false);
+  /// Le site a expédié React hydratant (65 794 octets gzippés), puis un script
+  /// DOM d'un kilooctet, puis les deux à la fois pendant la migration. Il n'en
+  /// reste aucun : le comportement entier est dans le module wasm, et ce test
+  /// tombe le jour où un script reparaît à côté — React compris, puisque c'est
+  /// la seule façon dont il pourrait revenir.
+  test("aucun script ne voyage à côté du module", () => {
+    const { glue } = frontFiles();
+    const scripts = readdirSync(dist).filter((n) => n.endsWith(".js")).sort();
+    expect(scripts).toEqual([glue, "sw.js"].sort());
+    for (const { file } of BUILT) {
+      const html = read(file);
+      const charges = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]);
+      expect(charges, `${file} charge un script`).toEqual([]);
     }
-  });
-
-  /// The stronger claim, and the one that keeps the budget below honest: React
-  /// is not in the shipped script at all.
-  ///
-  /// The pages are pre-rendered, so React's only remaining job was hydrating
-  /// four behaviours — a redirect, a remembered language, the theme switch, the
-  /// install banner — for 65 794 bytes gzipped. They are plain DOM code now.
-  /// This fails the moment something imports a component into `main.ts`, which
-  /// is the one mistake that would silently put all of it back.
-  ///
-  /// **`createElement` used to be on this list, and it was the wrong marker.**
-  /// It is a DOM API, not a React one: the reading-progress bar calls
-  /// `document.createElement`, and the guard refused it — refusing the plain
-  /// DOM code it exists to encourage. A guard that rejects the thing it is
-  /// protecting is worse than no guard, because the obvious way out is to
-  /// weaken it.
-  ///
-  /// The three that remain were measured against a real minified React 19
-  /// production bundle, 186 KB, built from this repository's own
-  /// `node_modules`: `useState` appears 7 times, `React` 8, `react` 45. They
-  /// come from the runtime itself, so any bundle carrying React carries them,
-  /// hooks or no hooks — and no plain DOM code writes any of the three.
-  test("the shipped script contains no React", () => {
-    const script = read(scriptFile());
-    for (const marker of ["useState", "react", "React"]) {
-      expect(script.includes(marker), `le bundle contient « ${marker} »`).toBe(false);
+    for (const marker of ["useState", "react-dom", "React"]) {
+      expect(read(glue).includes(marker), `la colle contient « ${marker} »`).toBe(false);
     }
-  });
-
-  /// Not a style rule: a phone on a slow link pays for every one of these
-  /// bytes before the page becomes interactive. The ceiling sits a little above
-  /// what the bundle weighs today, so ordinary work does not trip it and a
-  /// doubling does. Gzip is what a visitor actually downloads; the raw figure
-  /// is what their phone has to parse, and both matter.
-  test("the script stays within its budget", () => {
-    const bytes = readFileSync(join(dist, scriptFile()));
-    const gzipped = Bun.gzipSync(bytes).byteLength;
-    // The ceiling was 240 000 raw and 80 000 gzipped, which is what a hydrating
-    // React bundle needs. With hydration gone the script is 2 350 raw and 1 062
-    // gzipped, so a ceiling anywhere near the old one would wave through the
-    // regression it exists to catch: re-importing a component into `main.ts`
-    // costs sixty-four kilobytes and would have passed. These sit a little above
-    // today's figures — room for ordinary work, none for React.
-    expect(bytes.byteLength, "script brut").toBeLessThan(8_000);
-    expect(gzipped, "script gzippé").toBeLessThan(3_000);
   });
 
   /// **La police variable voyage comme fichier, et ça tient à une
@@ -192,30 +161,32 @@ describe("built output", () => {
     expect(read("sw.js"), "la police doit être précachée").toContain(`"./${src![1]!}"`);
   });
 
-  /// **Le front en Yew a son plafond, et il monte tranche par tranche.**
+  /// **Le front en Yew a son plafond, et il ne monte plus avec la prose.**
   ///
   /// Le roadmap porte une section « Le site — l'hydratation retirée », où React
   /// hydratant coûtait 65 794 octets gzip par page et où le code DOM qui l'a
-  /// remplacé en coûte 1 062. Passer à Yew revient sur cette décision, et le
-  /// prix est mesuré avant d'avoir été accepté :
+  /// remplacé en coûtait 1 062. Passer à Yew est revenu sur cette décision, et
+  /// le prix a été mesuré à chaque tranche :
   ///
-  /// | | React hydratant | DOM | Yew (mesuré) |
-  /// | --- | --- | --- | --- |
-  /// | brut | 206 973 | 2 350 | 287 492 |
-  /// | gzip | 65 794 | 1 062 | 113 137 |
+  /// | | brut | gzip |
+  /// | --- | --- | --- |
+  /// | une page portée, thème seul (#331) | 253 728 | 106 392 |
+  /// | toutes les pages, hydratées entières | 351 822 | 148 277 |
+  /// | **deux îlots, tout le mouvement** | **261 252** | **112 436** |
   ///
-  /// Donc **113 137 octets gzip contre 1 062**, et au-dessus du React retiré.
-  /// Ce n'est pas un accident de la migration : c'est le coût d'un runtime de
-  /// framework compilé, et il est écrit ici pour qu'un lecteur du dépôt le
-  /// trouve sans fouiller le journal.
+  /// La deuxième ligne est celle que l'ancien plafond annonçait — « chaque
+  /// tranche qui porte des pages le relèvera » — et elle a été refusée : un
+  /// module qui hydrate la page entière doit porter tout ce qu'elle affiche
+  /// pour pouvoir le comparer, soit la prose des dix pages dans les deux
+  /// langues, téléchargée par chaque lecteur pour un texte que sa page avait
+  /// déjà. Seuls deux endroits ont un état ; seuls deux sont hydratés. Le reste
+  /// du coût est le mouvement — ouverture, poussière, défilement lissé,
+  /// aimants —, et il tient en 7 524 octets bruts au-dessus de la première
+  /// page portée.
   ///
-  /// **Le plafond serre, et c'est voulu.** Une seule page est portée ; les neuf
-  /// autres apportent 97 Ko de prose. Un plafond large d'avance laisserait cette
-  /// croissance invisible, alors que c'est précisément ce qu'il faut voir. Donc
-  /// il tient à peu près la mesure du jour, et **chaque tranche qui porte des
-  /// pages le relève avec son écart mesuré** — la même règle que lorsque le
-  /// budget est descendu de 240 000 à 8 000 : « le chiffre devait bouger avec le
-  /// code ».
+  /// **Le plafond ne bouge donc plus avec le contenu**, seulement avec le code :
+  /// une page de plus n'ajoute rien au module, et `le module ne porte la prose
+  /// d'aucune page` le vérifie.
   test("le front en WebAssembly reste dans son budget", () => {
     const { wasm, glue } = frontFiles();
     const octets = (nom: string) => readFileSync(join(dist, nom));
@@ -224,116 +195,134 @@ describe("built output", () => {
     const wgz = Bun.gzipSync(w).byteLength;
     const ggz = Bun.gzipSync(g).byteLength;
 
-    // Le module. Mesuré 253 728 / 106 392 après `wasm-opt -Oz`.
-    expect(w.byteLength, "wasm brut").toBeLessThan(265_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(112_000);
-    // La colle de wasm-bindgen. Mesurée 33 764 / 6 745, et elle ne bouge qu'avec
-    // la surface de `web-sys` que le front emploie.
-    expect(g.byteLength, "colle brute").toBeLessThan(40_000);
-    expect(ggz, "colle gzippée").toBeLessThan(8_000);
+    // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz`.
+    expect(w.byteLength, "wasm brut").toBeLessThan(272_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(117_000);
+    // La colle de wasm-bindgen. Mesurée 56 272 / 9 635 : elle ne bouge qu'avec
+    // la surface de `web-sys` que le front emploie, et le mouvement en emploie
+    // beaucoup plus que la bascule de thème seule — observateurs, toile,
+    // molette, pointeur, défilement.
+    expect(g.byteLength, "colle brute").toBeLessThan(60_000);
+    expect(ggz, "colle gzippée").toBeLessThan(11_000);
 
     // **Et `wasm-opt` doit vraiment être passé.** Sans lui le module fait
-    // 278 098 octets, ce qui franchit le plafond ci-dessus — mais une chaîne de
-    // construction qui sauterait l'étape sans le dire mériterait d'être nommée
-    // plutôt que déduite d'un dépassement.
-    expect(w.byteLength, "le module n'a pas l'air optimisé").toBeLessThan(270_000);
+    // 294 274 octets — mesuré sur la sortie de wasm-bindgen —, ce qui franchit
+    // le plafond du haut : une construction qui sauterait l'étape sans le dire
+    // tomberait ici plutôt que d'expédier 33 Ko de plus.
+    expect(w.byteLength, "le module n'a pas l'air optimisé").toBeLessThan(294_274);
   });
 
-  /// **Le câblage de l'hydratation, mesuré sur l'artefact.**
+  /// **Le câblage du module, mesuré sur l'artefact.**
   ///
-  /// Un module qui pèse 106 Ko et que personne ne charge est pire qu'un module
+  /// Un module qui pèse 112 Ko et que personne ne charge est pire qu'un module
   /// absent : il passe tous les tests de taille. Ce test suit la chaîne de bout
-  /// en bout sur les pages réellement construites — la marque sur `#root`, le
-  /// module importé, la colle qui nomme le wasm, et les deux dans le précache.
-  test("une page portée en Yew charge vraiment son module", () => {
+  /// en bout sur chaque page construite — la colle importée et démarrée, les
+  /// deux fichiers demandés dès la tête, la colle qui nomme le wasm, et les deux
+  /// dans le précache.
+  test("chaque page charge son module, et le demande tôt", () => {
     const { wasm, glue } = frontFiles();
-    const portees = BUILT.filter(({ file }) => read(file).includes('data-hydrate="yew"'));
-    expect(portees.length, "aucune page portée : ce test serait creux").toBeGreaterThan(0);
-
-    for (const { file } of portees) {
+    for (const { file } of BUILT) {
       const html = read(file);
       expect(html, `${file} : la colle n'est pas importée`).toContain(`${glue}";demarrer()`);
-      expect(html, `${file} : le script DOM doit rester présent et s'effacer seul`)
-        .toContain("chunk-");
+      // Le navigateur cherche les deux pendant qu'il lit le corps, au lieu
+      // d'attendre que la colle s'exécute pour découvrir le wasm.
+      expect(html, `${file} : la colle n'est pas préchargée`).toMatch(
+        new RegExp(`<link rel="modulepreload" href="[./]*${glue}"`),
+      );
+      expect(html, `${file} : le wasm n'est pas préchargé, ou sans crossorigin`).toMatch(
+        new RegExp(`<link rel="preload" href="[./]*${wasm}" as="fetch" type="application/wasm" crossorigin`),
+      );
     }
 
     // La colle nomme le module : sans ça elle chargerait un nom disparu.
     expect(read(glue), "la colle ne nomme pas le wasm").toContain(wasm);
 
     // Hors ligne, un front absent n'est pas une page dégradée : c'est une page
-    // qui ne répond plus.
+    // dont les îlots ne répondent plus.
     const sw = read("sw.js");
     for (const actif of [wasm, glue]) {
       expect(sw, `${actif} doit être précaché`).toContain(`"./${actif}"`);
     }
+  });
 
-    // Et les pages que React rend encore ne paient pas le module.
-    const react = BUILT.filter(({ file }) => !read(file).includes('data-hydrate="yew"'));
-    expect(react.length, "toutes les pages sont portées : la bascule n'a plus d'objet")
-      .toBeGreaterThan(0);
-    for (const { file } of react) {
-      expect(read(file), `${file} : une page React ne doit pas charger le wasm`)
-        .not.toContain(glue);
+  /// **Les marqueurs d'hydratation ne vivent que dans les îlots.** La page est
+  /// rendue sans eux, et chaque îlot avec : là où il y a un marqueur, il y a
+  /// une racine que le module reprend, et nulle part ailleurs. Un marqueur hors
+  /// d'un îlot voudrait dire qu'une région se croit hydratée — ou que le
+  /// pré-rendu a cessé de distinguer les deux.
+  test("les marqueurs d'hydratation ne vivent que dans les îlots", () => {
+    for (const { file } of BUILT) {
+      const html = read(file);
+      const racine = html.match(/<div id="root"[^>]*>([\s\S]*)<\/div>\s*<script/)![1]!;
+      const ilots = [...racine.matchAll(/<div data-ilot="(\w+)"/g)];
+      expect(ilots.map((m) => m[1]), `${file} : les deux îlots`).toEqual(["reglages", "installation"]);
+      // Retirer chaque îlot entier — jusqu'à la balise qui referme sa racine,
+      // comptée, pas devinée : l'îlot des réglages contient des `div` et des
+      // marqueurs imbriqués, et une expression qui s'arrêterait au premier
+      // marqueur de fin s'arrêterait au milieu.
+      let dehors = racine;
+      for (const m of ilots) dehors = dehors.replace(element(racine, m.index!), "");
+      expect(dehors.includes("<!--"), `${file} : un marqueur hors d'un îlot`).toBe(false);
+      // Et chaque îlot l'est, pas seulement l'un des deux : le module refuse
+      // d'hydrater une racine qui ne commence pas par le marqueur d'ouverture.
+      for (const m of ilots) {
+        expect(
+          racine.slice(m.index!).match(/^<div data-ilot="\w+"[^>]*>(<!--<\[\]>-->)?/)![1],
+          `${file} : l'îlot « ${m[1]} » ne commence pas par un marqueur`,
+        ).toBe("<!--<[]>-->");
+      }
     }
   });
 
-  /// The point of moving the documents into the pages: the shared script is the
-  /// site's behaviour, not its prose.
+  /// **Le module porte le comportement du site, pas sa prose.**
   ///
-  /// A reader on the landing page used to download the privacy policy, the FAQ,
-  /// the roadmap and the architecture note, in English *and* French — 61 KB raw,
-  /// 21.6 KB over the wire, measured. This walks the real documents and fails if
-  /// a sentence from any of them is back in the bundle.
-  test("the shared script carries no page's prose", () => {
-    const script = read(scriptFile());
+  /// Un lecteur de l'accueil a longtemps téléchargé la politique de vie
+  /// privée, la FAQ, la feuille de route et la note d'architecture, en anglais
+  /// *et* en français — 61 Ko bruts, mesurés, dans le script partagé de
+  /// l'époque. Le défaut est revenu sous une autre forme pendant la migration :
+  /// hydrater la page entière demandait au module de porter tout ce qu'elle
+  /// affiche, soit 97 Ko de prose de plus. Ce test parcourt les vraies pages et
+  /// tombe si une phrase de l'une d'elles est dans le module — ou une phrase de
+  /// l'accueil, ou du pied.
+  test("le module ne porte la prose d'aucune page", () => {
+    const { wasm, glue } = frontFiles();
+    const module = readFileSync(join(dist, wasm)).toString("utf8") + read(glue);
+    const phrases: [string, string][] = [];
+    for (const { route, lang, sentence } of BUILT) {
+      if (sentence) phrases.push([`${lang}/${route.id}`, sentence]);
+    }
     for (const lang of LANGS) {
-      for (const route of ROUTES) {
-        if (route.id === "home") continue;
-        const doc = PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
-        const sentence = doc.blocks.find(
-          (block): block is { kind: "p"; text: string } =>
-            block.kind === "p" && block.text.length > 40,
-        )?.text;
-        if (!sentence) continue;
-        expect(
-          script.includes(sentence.slice(0, 40)),
-          `${route.id}/${lang} : la prose est repartie dans le bundle`,
-        ).toBe(false);
-      }
+      phrases.push([`${lang}/accueil`, copy[lang]!.hero.lede]);
+      phrases.push([`${lang}/accroche`, copy[lang]!.hero.tagline]);
+      phrases.push([`${lang}/pied`, copy[lang]!.footer.copyright]);
+    }
+    expect(phrases.length, "il faut des phrases, sinon ce test est creux").toBeGreaterThan(20);
+    for (const [ou, phrase] of phrases) {
+      expect(module.includes(phrase.slice(0, 32)), `${ou} : la prose est dans le module`).toBe(false);
     }
   });
 
   /// The two tests that stood here guarded the JSON copy of each document,
   /// embedded beside the markup because hydration had to read exactly what the
-  /// build rendered — one that it round-tripped, one that no `<` in the prose
-  /// could end its script element early. Nothing hydrates, so the payload has
-  /// no reader and is gone, and with it both hazards.
-  ///
-  /// What replaces them is the claim the payload existed to support, checked
-  /// against the markup that now carries it alone: the words are in the page.
-  /// Deleting the two tests without this one would have left the prose
-  /// unguarded on the very change that moved it.
+  /// build rendered. Nothing reads one now, so the payload is gone, and with it
+  /// both hazards. What replaces them is the claim the payload existed to
+  /// support, checked against the markup that now carries it alone: the words
+  /// are in the page.
   test("every written page carries its prose in its markup", () => {
-    for (const { route, lang, file } of BUILT) {
-      if (route.id === "home") continue;
-      const html = read(file);
-      const doc = PAGES[lang][route.id as keyof (typeof PAGES)["en"]];
-      const sentence = doc.blocks.find(
-        (block): block is { kind: "p"; text: string } =>
-          block.kind === "p" && block.text.length > 40,
-      )?.text;
+    let checked = 0;
+    for (const { file, sentence } of BUILT) {
       if (!sentence) continue;
-      // The prose goes through React's escaper, which turns `'` into `&#x27;`
-      // among others — and French prose is full of apostrophes, so the raw
-      // sentence is not in the file verbatim. The longest run that contains
-      // nothing an escaper touches is, and it is still long enough that no
-      // other page could contain it by accident.
+      // Yew escapes `<`, `>`, `&` and `"` in text. The longest run that contains
+      // nothing an escaper touches is in the file verbatim, and it is still
+      // long enough that no other page could contain it by accident.
       const plain = sentence
         .split(/[<>&"']/)
         .reduce((longest, part) => (part.length > longest.length ? part : longest), "");
       if (plain.length < 20) continue;
-      expect(html.includes(plain), `${file} : la prose n'est pas dans le balisage`).toBe(true);
+      expect(read(file).includes(plain), `${file} : la prose n'est pas dans le balisage`).toBe(true);
+      checked += 1;
     }
+    expect(checked, "les dix-huit documents").toBe(18);
   });
 
   /// And the payload is really gone, on every page, rather than gone from the
@@ -356,13 +345,45 @@ describe("built output", () => {
   });
 
   test("the page is readable before any JavaScript loads", () => {
-    // The whole point of pre-rendering: content in the first response.
-    const home = read("index.html");
+    // The whole point of pre-rendering: content in the first response. The
+    // headline is set word by word for its entrance, so it is read as text —
+    // tags out — which is also how a reader and a search engine read it.
+    const home = text(read("index.html"));
     expect(home).toContain("Virtual machines on your iPhone.");
     expect(home).toContain("A real Linux kernel, on the phone");
 
     const privacy = read("privacy/index.html");
     expect(privacy).toContain("No analytics");
+  });
+
+  /// **Le titre, mot par mot, et toujours le titre.** Chaque mot est un masque
+  /// pour son entrée, avec son rang ; le texte du `h1`, balises retirées, est
+  /// exactement l'accroche — espaces comprises —, dans les deux langues.
+  test("le titre de l'accueil est l'accroche, mot par mot", () => {
+    for (const lang of LANGS) {
+      const html = read(page("home", lang).file);
+      const h1 = html.match(/<h1 class="hero-title">([\s\S]*?)<\/h1>/)?.[1];
+      expect(h1, `${lang} : le titre du héros`).toBeDefined();
+      expect(text(h1!), `${lang} : le titre a changé de texte`).toBe(copy[lang]!.hero.tagline);
+      const rangs = [...h1!.matchAll(/style="--i:(\d+)" class="mot"/g)].map((m) => Number(m[1]));
+      expect(rangs, `${lang} : un rang par mot, dans l'ordre`).toEqual(
+        copy[lang]!.hero.tagline.split(" ").map((_, i) => i),
+      );
+    }
+  });
+
+  /// **La bande est décorative, et elle le dit.** Elle répète en mots-clés ce
+  /// que les sections expliquent en phrases ; lue par un lecteur d'écran, elle
+  /// le serait deux fois, la seconde copie comprise.
+  test("la bande se tait pour les lecteurs d'écran, et porte deux fois ses mots", () => {
+    for (const lang of LANGS) {
+      const html = read(page("home", lang).file);
+      expect(html, `${lang} : la bande`).toContain('<div aria-hidden="true" class="bande">');
+      const simples = html.match(/class="bande-mot">/g)?.length ?? 0;
+      const doubles = html.match(/class="bande-mot bande-double">/g)?.length ?? 0;
+      expect(simples, `${lang} : des mots dans la bande`).toBeGreaterThan(4);
+      expect(doubles, `${lang} : la seconde copie, mot pour mot`).toBe(simples);
+    }
   });
 
   /// The strongest guard here: resolve every relative reference against the
@@ -438,7 +459,7 @@ describe("built output", () => {
   test("each French page is actually in French", () => {
     for (const { route, file } of BUILT.filter((page) => page.lang === "fr")) {
       const html = read(file);
-      const english = read(outputPath(route, "en"));
+      const english = read(page(route.id, "en").file);
       expect(html, `${file} : langue déclarée`).toContain('<html lang="fr">');
       const title = (raw: string) => raw.match(/<title>([^<]+)<\/title>/)![1]!;
       const lede = (raw: string) => raw.match(/<meta name="description" content="([^"]+)"/)![1]!;
@@ -502,14 +523,15 @@ describe("the mark", () => {
   /// hero can paint, and a committed binary nobody can diff.
   test("the mark is inline and costs no request", () => {
     const home = read("index.html");
-    expect(home).toContain('<svg class="hero-logo"');
+    // L'ordre des attributs n'est pas un contrat : Yew écrit `class` en dernier.
+    expect(home).toMatch(/<svg [^>]*class="hero-logo"/);
     expect(home.match(/<img[^>]*hero-logo/)).toBeNull();
   });
 
   /// The header brand and the heading already say what this is, so announcing
   /// it a third time is noise for anyone listening rather than looking.
   test("the mark is decorative", () => {
-    const svg = read("index.html").match(/<svg class="hero-logo"[^>]*>/)?.[0];
+    const svg = read("index.html").match(/<svg [^>]*class="hero-logo"[^>]*>/)?.[0];
     expect(svg).toBeDefined();
     expect(svg).toContain('aria-hidden="true"');
   });
@@ -635,13 +657,15 @@ describe("footer", () => {
   /// French pages are held to the same standard in their own language instead
   /// of being exempt from the check.
   test("every page carries the whole footer, in its own language", () => {
+    // L'échappement de Yew pour un nœud de texte : `&`, `<` et `>`, et pas
+    // l'apostrophe, que React écrivait `&#x27;` sans que le HTML l'exige.
     const escape = (text: string) =>
-      text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#x27;");
+      text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     for (const { lang, file } of BUILT) {
       const html = read(file);
-      const footer = copy[lang].footer;
+      const footer = copy[lang]!.footer;
       expect(html, `${file} : vie privée`).toContain(
-        `>${escape(copy[lang].pages.privacy)}</a>`,
+        `>${escape(copy[lang]!.pages.privacy!)}</a>`,
       );
       expect(html, `${file} : retour en haut`).toContain(`>${escape(footer.backToTop)}</a>`);
       expect(html, `${file} : version`).toContain(`${escape(footer.version)} `);
@@ -701,7 +725,7 @@ describe("footer", () => {
   test("every page says who made it, and agrees with the repository", () => {
     for (const { lang, file } of BUILT) {
       const html = read(file);
-      expect(html, `${file} : ligne d'auteur`).toContain(copy[lang].footer.author);
+      expect(html, `${file} : ligne d'auteur`).toContain(copy[lang]!.footer.author);
       expect(html, `${file} : nom de l'auteur`).toContain(`>${AUTHOR}</a>`);
       expect(html, `${file} : meta author`).toContain(`<meta name="author" content="${AUTHOR}" />`);
     }
@@ -741,10 +765,9 @@ describe("footer", () => {
   /// would come back the moment someone added one, and nothing would object.
   ///
   /// This test is about **claiming to be open source and sending people to
-  /// browse the sources**. It is not the whole policy: `render.test.tsx`'s
-  /// "no page hands out a way to install the project" forbids the install
-  /// commands and download paths, and the two are separate decisions about
-  /// separate things.
+  /// browse the sources**. It is not the whole policy: "no page hands out a way
+  /// to install the project", just below, forbids the install commands and
+  /// download paths, and the two are separate decisions about separate things.
   ///
   /// That sentence replaces one that said "the release download survives on
   /// purpose — it is how a reader installs the thing". It had stopped being
@@ -771,6 +794,58 @@ describe("footer", () => {
       expect(html, `${file} : lien « Source » nu vers le dépôt`).not.toContain(
         '"https://github.com/maxlestage/wisq"',
       );
+    }
+  });
+
+  /// The site explains what wisq is and how it fits together. What it does not
+  /// do is tell anyone how to install it — no clone, no tap, no script to pipe
+  /// into a shell, no download link. A reader deciding whether this is for
+  /// them needs to know that an agent prints a link and the phone scans it;
+  /// none of that hands them a build.
+  ///
+  /// It lived in `render.test.tsx` and read React's render; it reads the built
+  /// pages now, which is what a reader gets — and the hero's two new buttons
+  /// are held by it like everything else: they lead to the guide and the
+  /// release notes, not to a download.
+  test("no page hands out a way to install the project", () => {
+    for (const { file } of BUILT) {
+      const html = read(file);
+      for (const trace of [
+        "install-ios.sh",
+        "install.sh",
+        "brew tap",
+        "brew install",
+        "git clone",
+        "cargo run",
+        "cargo build",
+        "xcodegen",
+        "wisq-agent --",
+        "githubusercontent",
+        'id="install"',
+        "releases/latest",
+        ".ipa",
+      ]) {
+        expect(html, `${file} : mode d'emploi (${trace})`).not.toContain(trace);
+      }
+    }
+  });
+
+  /// **Rien de l'invite n'est visible avant que le module n'ait décidé.** La
+  /// bannière, ses deux formulations et le bouton d'installation partent
+  /// masqués, et seul le bouton de renvoi est laissé visible dans un parent
+  /// masqué. Rendre la mauvaise formulation démasquée mettrait « touchez le
+  /// bouton Partager » sous un lecteur Android.
+  test("nothing in the install banner is visible until the module says so", () => {
+    for (const { file } of BUILT) {
+      const html = read(file);
+      for (const marker of [
+        /<aside role="complementary" data-install="" hidden="hidden" class="install-banner">/,
+        /<div data-install-variant="prompt" hidden="hidden">/,
+        /<div data-install-variant="ios" hidden="hidden">/,
+        /<button type="button" data-install-accept="" hidden="hidden"/,
+      ]) {
+        expect(html, `${file} : « ${marker.source} » n'est pas masqué`).toMatch(marker);
+      }
     }
   });
 
@@ -874,8 +949,8 @@ describe("progressive web app", () => {
   test("the service worker has an offline fallback per language, and both were built", () => {
     const sw = read("sw.js");
     for (const lang of LANGS) {
-      expect(sw, `repli hors ligne ${lang}`).toContain(`${lang}: "./${pagePath(routeById("offline"), lang)}"`);
-      expect(existsSync(join(dist, outputPath(routeById("offline"), lang))), `${lang} : page hors ligne`).toBe(true);
+      expect(sw, `repli hors ligne ${lang}`).toContain(`${lang}: "./${page("offline", lang).path}"`);
+      expect(existsSync(join(dist, page("offline", lang).file)), `${lang} : page hors ligne`).toBe(true);
     }
     expect(sw, "le repli suit la langue de l'adresse").toContain("offlineFor");
   });
@@ -903,7 +978,7 @@ describe("discoverability", () => {
     for (const lang of LANGS) {
       for (const route of listed) {
         expect(sitemap, `${lang}/${route.id} absent du sitemap`).toContain(
-          `${siteURL()}${pagePath(route, lang)}</loc>`,
+          `${siteURL()}${page(route.id, lang).path}</loc>`,
         );
       }
     }
