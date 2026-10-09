@@ -23489,3 +23489,23 @@ enrichie sans qu'une phrase de l'ancienne tombe, et les défauts les plus graves
 apparus parce qu'un rédacteur, à qui l'on interdisait d'écrire ce qu'il ne
 pouvait pas vérifier, est allé vérifier. La consigne qui produit du contenu
 exact est aussi une revue de code.
+
+## #338 — le violet, sur un fond blanc
+
+Demandé : « remettre le violet et le fond blanc ». #337 avait posé le violet
+du logo sur un fond légèrement lavande, `#f6f5ff`. Le fond du thème clair
+redevient blanc pur, comme avant #464 ; les cartes n'en gardent qu'un soupçon
+de violet, `#f5f4fe`, pour se détacher, et le texte posé sur les boutons
+devient blanc. Le thème sombre ne bouge pas.
+
+**Mesuré avant d'être posé, et c'est la garde de #337 qui le fait** : chaque
+couple texte-fond que la page peint s'améliore sur le blanc — le texte doux
+passe de 6,64 à 7,18, l'accent de 6,06 à 6,56, les boutons de 4,84 à 5,23 au
+plus clair du dégradé. Le pire pixel sous le grain passe de 5,11 à 5,52.
+
+**Une copie de plus à tenir, et elle est tenue.** Le minifieur écrit le blanc
+`#fff`, et la couleur de barre doit être exactement celle de la feuille
+construite : `theme.rs` et la page de développement l'écrivent donc sous cette
+forme. La garde « la couleur de la barre vient de la palette, partout » l'a
+vérifié sans qu'on ait à le lui dire.
+
