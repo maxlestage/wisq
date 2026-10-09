@@ -308,6 +308,47 @@ describe("la cascade, partout", () => {
   });
 });
 
+describe("le retour en haut", () => {
+  /// **Un vrai lien, au nom de celui du pied**, qui n'apparaît qu'une fois le
+  /// haut quitté et dont l'anneau suit la lecture, en millièmes.
+  test("il apparaît loin du haut, porte le nom du lien du pied, et son anneau suit la lecture", async () => {
+    await ouvrir("fr/index.html", {
+      avant: () => {
+        observateurMaitrise();
+        mesurer(document.documentElement, "scrollHeight", () => innerHeight + 2000);
+      },
+    });
+    const haut = document.querySelector<HTMLAnchorElement>(".haut")!;
+    expect(haut !== null, "le bouton est posé par le module").toBe(true);
+    expect(haut.getAttribute("href")).toBe("#main");
+    const pied = document.querySelector('.footer-legal a[href="#main"]')!.textContent!.trim();
+    expect(haut.getAttribute("aria-label"), "le nom du lien du pied, dans la langue de la page").toBe(pied);
+    expect(haut.dataset.visible, "au repos, en haut").toBeUndefined();
+    window.scrollTo(0, 1000);
+    defiler();
+    expect(haut.dataset.visible).toBe("");
+    expect(style(haut, "--read")).toBe("500");
+    window.scrollTo(0, 100);
+    defiler();
+    expect(haut.dataset.visible, "revenu près du haut, il s'efface").toBeUndefined();
+  });
+
+  /// Les liens de navigation et du pied suivent le pointeur comme les boutons
+  /// du héros : la marque est posée par le module, avec lui ou pas du tout.
+  test("les liens de la navigation et du pied sont aimantés", async () => {
+    await ouvrir("docs/index.html", { avant: observateurMaitrise });
+    const liens = [...document.querySelectorAll(".site-nav a, .footer-groups a")];
+    expect(liens.length).toBeGreaterThan(5);
+    expect(liens.every((l) => l.hasAttribute("data-aimant")), "chaque lien porte la marque").toBe(true);
+  });
+
+  test("au calme, ni bouton ni aimant", async () => {
+    await ouvrir("docs/index.html", { calme: true });
+    expect(document.querySelector(".haut") === null, "pas de bouton").toBe(true);
+    expect(document.querySelector(".site-nav a[data-aimant]") === null, "pas d'aimant").toBe(true);
+  });
+});
+
 describe("le sommaire", () => {
   /// **Il suit la lecture** : le titre qui entre dans le haut de la fenêtre
   /// devient la section lue, et un seul lien la porte.

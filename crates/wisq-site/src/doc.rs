@@ -118,7 +118,7 @@ fn rendre(bloc: &Block) -> Html {
             let id = slug(texte);
             html! {
                 <h2 id={id.clone()}>
-                    <a class="anchor" href={format!("#{id}")} aria-label={*texte}>{ *texte }</a>
+                    <a class="anchor" href={format!("#{id}")} aria-label={*texte}>{ mots(texte) }</a>
                 </h2>
             }
         }

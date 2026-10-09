@@ -81,7 +81,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="modes">
                 <div class="wrap">
-                    <h2>{ copy.modes.title }</h2>
+                    { titre(1, copy.modes.title) }
                     <div class="cards">
                         { for [&copy.modes.remote, &copy.modes.local].into_iter().map(|mode| html! {
                             <article class="card">
@@ -102,7 +102,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
             // un point de plus.
             <section id="protocoles">
                 <div class="wrap">
-                    <h2>{ copy.protocoles.title }</h2>
+                    { titre(2, copy.protocoles.title) }
                     <p class="lede">{ copy.protocoles.lede }</p>
                     <div class="cards cards-3">
                         { for copy.protocoles.items.iter().map(|p| html! {
@@ -121,7 +121,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="machines">
                 <div class="wrap">
-                    <h2>{ copy.machines.title }</h2>
+                    { titre(3, copy.machines.title) }
                     <p class="lede">{ copy.machines.lede }</p>
                     { tableau(&copy.machines.columns, copy.machines.rows, true) }
                     <p class="table-note">{ copy.machines.note }</p>
@@ -130,7 +130,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="compare">
                 <div class="wrap">
-                    <h2>{ copy.compare.title }</h2>
+                    { titre(4, copy.compare.title) }
                     <p class="lede">{ copy.compare.lede }</p>
                     { tableau(&copy.compare.columns, copy.compare.rows, false) }
                 </div>
@@ -138,7 +138,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="toucher">
                 <div class="wrap">
-                    <h2>{ copy.toucher.title }</h2>
+                    { titre(5, copy.toucher.title) }
                     <p class="lede">{ copy.toucher.lede }</p>
                     { traits(copy.toucher.items) }
                 </div>
@@ -146,7 +146,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="how">
                 <div class="wrap">
-                    <h2>{ copy.how.title }</h2>
+                    { titre(6, copy.how.title) }
                     <div class="steps">
                         { for copy.how.steps.iter().map(|step| html! {
                             <div class="step">
@@ -163,7 +163,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="securite">
                 <div class="wrap">
-                    <h2>{ copy.securite.title }</h2>
+                    { titre(7, copy.securite.title) }
                     <p class="lede">{ copy.securite.lede }</p>
                     { traits(copy.securite.items) }
                 </div>
@@ -171,7 +171,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
 
             <section id="facts">
                 <div class="wrap">
-                    <h2>{ copy.facts.title }</h2>
+                    { titre(8, copy.facts.title) }
                     <div class="facts">
                         { for copy.facts.items.iter().map(|fact| html! {
                             <div class="fact">
@@ -188,7 +188,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
             // bas de page.
             <section id="etat">
                 <div class="wrap">
-                    <h2>{ copy.etat.title }</h2>
+                    { titre(9, copy.etat.title) }
                     <p class="lede">{ copy.etat.lede }</p>
                     <div class="etat">
                         <div>
@@ -211,7 +211,7 @@ pub fn Accueil(props: &AccueilProps) -> Html {
             // de la page en titre, ce qu'on y trouve dessous.
             <section id="explorer">
                 <div class="wrap">
-                    <h2>{ copy.explorer.title }</h2>
+                    { titre(10, copy.explorer.title) }
                     <div class="cards cards-3">
                         { for pistes(&copy.explorer).into_iter().map(|(route, ligne)| html! {
                             <a class="card card-lien" href={vers(route)}>
@@ -222,6 +222,19 @@ pub fn Accueil(props: &AccueilProps) -> Html {
                     </div>
                 </div>
             </section>
+        </>
+    }
+}
+
+/// Le titre d'une section : ses mots, qui montent un à un quand la section
+/// arrive, et son rang en très grand derrière lui, que le défilement fait
+/// glisser. Le rang est décoratif — la page se lit dans l'ordre sans lui — et
+/// il le dit.
+fn titre(rang: u8, texte: &'static str) -> Html {
+    html! {
+        <>
+            <span class="sec-num" aria-hidden="true">{ format!("{rang:02}") }</span>
+            <h2>{ mots(texte) }</h2>
         </>
     }
 }

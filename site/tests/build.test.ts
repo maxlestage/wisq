@@ -146,8 +146,11 @@ describe("built output", () => {
     // 23 717 octets avec la palette violette et l'accueil enrichi ; 29 755 avec
     // le mouvement de #337 — l'aurore, le code qui se tape, le sommaire, les
     // cartes qui s'inclinent, le curseur, la bande pilotée, le nom géant du
-    // pied. Le plafond suit une décision mesurée, pas une dérive.
-    expect(style.byteLength, "feuille de style").toBeLessThan(32_000);
+    // pied. 32 043 avec la seconde vague — la bascule de thème en cercle, les
+    // titres mot par mot, le retour en haut, les rangs et le nom que le
+    // défilement fait glisser. Le plafond suit une décision mesurée, pas une
+    // dérive.
+    expect(style.byteLength, "feuille de style").toBeLessThan(35_000);
 
     const face = css.slice(css.indexOf("@font-face"));
     const src = face.match(/url\(\.\/([^)]+\.woff2)\)/);
@@ -202,10 +205,12 @@ describe("built output", () => {
     // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz` ; 271 558 /
     // 116 280 avec les cinq comportements de #337 — le sommaire qui suit la
     // lecture, le curseur, la bande que le défilement pousse, l'inclinaison
-    // des cartes, l'en-tête qui s'efface. Du code, pas du contenu : la règle
-    // du paragraphe au-dessus tient.
-    expect(w.byteLength, "wasm brut").toBeLessThan(280_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(120_000);
+    // des cartes, l'en-tête qui s'efface ; 276 591 / 118 718 avec la seconde
+    // vague — la bascule de thème en cercle, le retour en haut, les aimants de
+    // la navigation. Du code, pas du contenu : la règle du paragraphe
+    // au-dessus tient.
+    expect(w.byteLength, "wasm brut").toBeLessThan(285_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(123_000);
     // La colle de wasm-bindgen. Mesurée 56 272 / 9 635 : elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,
@@ -362,6 +367,47 @@ describe("built output", () => {
 
     const privacy = read("privacy/index.html");
     expect(privacy).toContain("No analytics");
+  });
+
+  /// **Les titres de section aussi, et le sommaire le recoupe.** Chaque `h2`
+  /// de l'accueil et des pages écrites est découpé en mots pour monter un à un.
+  /// Le texte, balises retirées, doit rester le titre : le sommaire porte le
+  /// titre tel qu'il est écrit, sans découpage, donc chaque entrée du sommaire
+  /// doit être exactement le texte du `h2` qu'elle vise. Et les rangs vont de
+  /// zéro au dernier mot, dans l'ordre.
+  test("les titres de section sont découpés en mots, sans changer de texte", () => {
+    for (const { file } of BUILT.filter((b) => !/404|offline/.test(b.file))) {
+      // Le contenu seulement : les colonnes du pied ont leurs propres `h2`,
+      // qui nomment des groupes de liens et ne montent pas.
+      const tout = read(file);
+      const html = tout.slice(tout.indexOf('<main id="main">'), tout.indexOf("</main>"));
+      const titres = [...html.matchAll(/<h2 id="([^"]+)"[^>]*>([\s\S]*?)<\/h2>|<h2>([\s\S]*?)<\/h2>/g)];
+      expect(titres.length, `${file} : des titres de section`).toBeGreaterThan(2);
+      for (const t of titres) {
+        const corps = t[2] ?? t[3]!;
+        const mots = text(corps).split(" ");
+        const rangs = [...corps.matchAll(/style="--i:(\d+)" class="mot"/g)].map((m) => Number(m[1]));
+        expect(rangs, `${file} : « ${text(corps)} »`).toEqual(mots.map((_, i) => i));
+      }
+      for (const entree of html.matchAll(/<li><a href="#([^"]+)">([^<]+)<\/a><\/li>/g)) {
+        const cible = titres.find((t) => t[1] === entree[1]);
+        expect(cible, `${file} : le sommaire vise #${entree[1]}`).toBeDefined();
+        expect(text(cible![2]!), `${file} : #${entree[1]}`).toBe(text(entree[2]!));
+      }
+    }
+  });
+
+  /// Les rangs des sections de l'accueil sont décoratifs, et le disent.
+  test("les rangs des sections sont décoratifs et dans l'ordre", () => {
+    for (const lang of LANGS) {
+      const html = read(page("home", lang).file);
+      const rangs = [...html.matchAll(/<span ([^>]*)class="sec-num"[^>]*>(\d+)<\/span>|<span class="sec-num"([^>]*)>(\d+)<\/span>/g)];
+      expect(rangs.length, `${lang} : un rang par section`).toBe(10);
+      rangs.forEach((r, i) => {
+        expect(r[0], `${lang} : rang ${i + 1}`).toContain('aria-hidden="true"');
+        expect(Number(r[2] ?? r[4]), `${lang} : l'ordre`).toBe(i + 1);
+      });
+    }
   });
 
   /// **Le titre, mot par mot, et toujours le titre.** Chaque mot est un masque

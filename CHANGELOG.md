@@ -62,7 +62,13 @@ break APIs.
   lecture, tape ses blocs de code ligne à ligne ; les cartes s'inclinent sous
   le pointeur, un anneau suit la souris, la bande prend l'élan du défilement et
   revient au pied de chaque page sous le nom de la marque en très grand,
-  l'en-tête s'efface quand on descend.
+  l'en-tête s'efface quand on descend. Puis une seconde vague, demandée une
+  seconde fois : le thème s'ouvre en cercle depuis le bouton pressé, par une
+  transition de vue ; les titres de section montent mot par mot ; un bouton de
+  retour en haut porte un anneau que la lecture remplit ; les rangs des
+  sections de l'accueil et le nom du pied glissent avec le défilement, là où le
+  navigateur sait lier une animation au défilement ; la navigation et le pied
+  deviennent aimantés.
 
 ### Fixed
 - **« Vingt et une familles d'architectures » : l'énumération en déclare

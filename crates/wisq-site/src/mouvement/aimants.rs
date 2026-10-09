@@ -26,6 +26,14 @@ pub fn demarrer(fenetre: &Window, document: &Document) {
     if !outils::requete(fenetre, "(pointer: fine)") || !outils::requete(fenetre, "(hover: hover)") {
         return;
     }
+    // **Les liens de navigation aussi.** Les boutons du héros portent la marque
+    // dans leur balisage ; la bande de navigation et les colonnes du pied la
+    // reçoivent d'ici, parce qu'un aimant n'a de sens qu'avec ce module — sans
+    // lui, l'attribut serait une promesse que personne ne tient.
+    for lien in outils::tous::<Element>(document, ".site-nav a, .footer-groups a") {
+        let _ = lien.set_attribute("data-aimant", "");
+    }
+
     let actif: Rc<RefCell<Option<HtmlElement>>> = Rc::new(RefCell::new(None));
 
     let relacher = |bouton: &HtmlElement| {

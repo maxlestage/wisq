@@ -23390,6 +23390,44 @@ feuille de style de 23 717 à 29 755. Les deux plafonds ont été relevés, avec
 mesure écrite à côté — du code, pas du contenu : la prose des pages, elle, n'est
 toujours pas dans le module, et le test qui le vérifie n'a pas bougé.
 
+### La seconde vague
+
+« Bien plus d'animation sur tout le site », demandé une seconde fois pendant
+que la première vague partait en revue. Elle n'a pas été lue comme une
+redite : six choses de plus, chacune derrière sa porte.
+
+| quoi | comment | porte |
+| --- | --- | --- |
+| le thème s'ouvre en cercle depuis le bouton pressé | `document.startViewTransition`, et la feuille de style découvre la nouvelle page par un cercle | `[data-motion]` et la transition de vue |
+| les titres de section montent mot par mot | découpés à la construction, comme le titre du héros ; le sommaire recoupe leur texte | `[data-motion]` |
+| un retour en haut | un vrai lien, au nom de celui du pied, dont l'anneau suit la lecture | `[data-motion]` |
+| les rangs des sections, le nom du pied | glissent et se resserrent avec le défilement, en CSS seul | `[data-motion]` et `animation-timeline` |
+| la navigation et le pied | aimantés, comme les boutons du héros | `[data-motion]` |
+| la marque, l'icône du thème, les tableaux | la marque pivote, l'icône tourne, la ligne survolée s'éclaire | `[data-motion]` |
+
+**La bascule en cercle ne coûte jamais le thème.** Elle demande deux choses
+qu'aucun réglage ne remplace — `[data-motion]`, que le module ne pose pas au
+calme, et la transition de vue, que Chrome et Safari connaissent et les autres
+pas — et sans l'une ou l'autre, le thème s'applique d'un coup, comme avant. Si
+l'appel échoue, le rappel n'a peut-être pas tourné : le thème est appliqué
+directement. Les deux branches ont leur test, et le test prête au navigateur
+de happy-dom la transition qu'il n'a pas.
+
+**Les animations liées au défilement sont en CSS**, là où le navigateur sait
+le faire : Chromium oui, Safari depuis sa 26, Firefox derrière un réglage.
+Ailleurs, les rangs et le nom restent à leur état de repos, ce qui est leur
+état final. Aucune ligne de Rust pour ça, donc aucun octet de plus dans le
+module.
+
+**Mesuré** : le module passe à 276 591 octets, 118 718 gzippés ; la feuille de
+style à 32 043. Les plafonds sont relevés une seconde fois, à 285 000 et
+123 000 pour le module, 35 000 pour la feuille, avec la mesure écrite à côté.
+
+**Six mutations, six tuées** : la bascule qui ignore le calme, la classe qui
+reste après la transition, le retour en haut qui ne s'efface plus, le retour
+en haut sans nom, la navigation sans aimants, les titres d'un document qui ne
+sont plus découpés.
+
 ### Défauts trouvés en route
 
 **1. `toEqual` sur des éléments happy-dom, encore.** Le premier test du
