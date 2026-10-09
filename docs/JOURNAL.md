@@ -23167,3 +23167,110 @@ propre copie.** Pour une garde, c'est un chiffre ; pour un framework, c'est la
 page. Les îlots sont la version de cette règle qui s'applique à l'hydratation :
 ne reprendre que ce qui a un état, et laisser le reste à l'endroit où il est
 déjà.
+
+## #336 — un `instanceof` sur un nom que nous avons inventé, et la garde qui le refuse
+
+Cette tranche ne porte rien : #335 a livré le front entier. Elle garde une
+trouvaille que #335 a évitée par construction, et que j'ai faite en l'écrivant de
+l'autre côté.
+
+### Ce que j'avais écrit, et pourquoi c'était un mur
+
+En portant l'invite d'installation de mon côté — un travail que #335 a remplacé
+et qui n'est pas livré —, l'événement de Chromium était reconnu par sa classe :
+
+```rust
+#[wasm_bindgen]
+extern "C" { #[wasm_bindgen(extends = web_sys::Event)] pub type Retenue; }
+…
+if let Ok(garde) = brut.dyn_into::<retenue::Retenue>() { … }
+```
+
+Toute l'apparence de la prudence : un transtypage vérifié, un `Result`, un chemin
+d'échec propre. La colle livrée portait ceci, lu dans `site/dist` :
+
+```js
+__wbg_instanceof_Retenue_e48387fb2781baa8: function(arg0) {
+    try { result = getObject(arg0) instanceof Retenue; } catch (_) { result = false; }
+```
+
+**Aucun navigateur ne définit `Retenue`.** Le `try/catch` rendait `false` à
+chaque appel, partout, Chromium compris — donc la bannière n'aurait jamais pu
+apparaître, et tout ce qui dépendait de la reconnaissance était inatteignable.
+Du code mort déguisé en sûreté. C'est le test qui appuie sur le bouton qui l'a
+dit ; aucun test de forme ne pouvait le voir, le module étant émis, au bon poids,
+et importé par la page.
+
+**#335 ne porte pas ce défaut, vérifié** : elle passe par `js_sys::Reflect::get`
+et transtype vers `js_sys::Function` et `js_sys::Promise`, qui sont de vrais
+globaux. Il n'y avait rien à corriger là-bas, et la garde ci-dessous le confirme
+sur l'artefact.
+
+### La garde, et l'oracle qu'il a fallu chercher
+
+Le premier oracle qui vient à l'esprit — « le DOM de test connaît-il ce nom ? » —
+est **faux, et c'est mesuré**. La colle livrée reconnaît dix-sept noms :
+
+```
+WebAssembly ×2, Window, WheelEvent, URL, ShadowRoot, Response, Request,
+Promise, PointerEvent, IntersectionObserverEntry, HTMLScriptElement,
+HTMLElement, HTMLCanvasElement, Event, Error, Element, CanvasRenderingContext2D
+```
+
+happy-dom en définit **seize**. Le manquant est `CanvasRenderingContext2D`, une
+vraie classe de navigateur. Interroger l'environnement de test refuserait donc un
+`instanceof` parfaitement bon.
+
+Ce qui distingue le mur n'est pas que le nom manque **ici** : c'est qu'il
+n'existe **nulle part**, parce que c'est nous qui l'avons écrit. D'où la question
+que `site/tests/externes.test.ts` pose : **un nom que la colle interroge par
+`instanceof` est-il un nom que ce dépôt déclare lui-même à wasm-bindgen ?** Les
+`js_name` d'un bloc externe comptent comme les types, parce que nommer la vraie
+classe ne sauve pas — `js_name = BeforeInstallPromptEvent` ferait reconnaître une
+classe que seul Chromium définit, donc un refus silencieux ailleurs.
+
+Les `pub unsafe extern "C" fn` du C ABI n'ouvrent pas de bloc : le motif exige
+`extern "C" {`, et les trente-six fonctions de `crates/wisq-vm/src/ffi.rs` ne
+sont pas comptées — vérifié par le test sur un arbre fabriqué qui en porte une.
+
+### Une garde dont l'entrée est vide doit refuser ailleurs
+
+Le dépôt ne déclare **aucun** bloc externe aujourd'hui. Le test « sur ce dépôt »
+ne refuserait donc rien quoi qu'il arrive : c'est une garde écrite une tranche en
+avance, et elle ne vaut que si elle est montrée **portante**. Le second test
+construit donc un arbre fautif dans un répertoire temporaire — une caisse qui
+déclare `pub type Retenue;` et une colle qui l'interroge — et exige le refus,
+avec `Element` à côté pour montrer que ce qui vient de `web-sys` n'est pas
+flagué.
+
+Et le test « sur ce dépôt » avait le même défaut en plus petit : devant un `dist`
+absent, zéro nom reconnu donne zéro mur, donc vert pour la pire des raisons. Il
+exige maintenant que la colle soit lue.
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| la colle n'est plus lue | **les deux tests** |
+| les blocs externes ne sont plus reconnus | l'arbre fabriqué |
+| les `js_name` ne comptent plus | l'arbre fabriqué |
+| les murs ne sont plus croisés | l'arbre fabriqué |
+| les `.rs` ne sont plus parcourus en profondeur | l'arbre fabriqué |
+
+Cinq, aucun survivant. Le premier tombant des deux côtés, l'exigence de lecture
+est portante sur le vrai dépôt aussi.
+
+### Le signe à retenir
+
+**Une question dont la réponse est toujours « non » n'est pas une garde, c'est un
+mur** — et elle se reconnaît en la mettant devant la chose qu'elle doit
+**accepter**, jamais en relisant son code, où elle a l'air juste.
+
+Corollaire, qui vaut pour tout pont vers un langage qu'on ne compile pas soi-même :
+**ce que le générateur écrit est lisible, donc il se lit.** La réponse tenait dans
+un `grep instanceof` sur un fichier de `site/dist`.
+
+Et une note de méthode, parce que la tranche a tourné sur rien : **du travail
+peut être remplacé pendant qu'on l'écrit.** #335 a livré le portage complet
+pendant que je portais le troisième comportement. La PR a été fermée plutôt que
+forcée — son contenu touchait `site/src/main.ts`, que #335 a supprimé. Ce qui
+survit d'une tranche remplacée, c'est ce qu'elle a **mesuré**, pas ce qu'elle a
+écrit.
