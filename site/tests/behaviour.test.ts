@@ -11,6 +11,14 @@
 /// it, and presses the buttons. `main.ts` runs its work at import time, which
 /// is why each test re-imports it with a cache-busting query after arranging
 /// the document — importing once and calling nothing would test an empty file.
+///
+/// **Ce fichier regarde une page que `main.ts` possède ENTIÈREMENT, et il ne
+/// charge pas le module wasm.** C'est pour ça qu'il est resté vert quand la page
+/// `offline` a perdu trois comportements : il regarde l'accueil, que React rend
+/// encore. Le premier test ci-dessous refuse donc le jour où l'accueil passera
+/// en Yew, en nommant ce qu'il faut faire — plutôt que de laisser sept
+/// assertions tomber sans dire pourquoi. Les pages portées sont exercées par
+/// `tests/hydration.test.ts`, qui charge le module **et** ce script.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -52,6 +60,22 @@ beforeEach(() => {
 
 afterEach(async () => {
   await GlobalRegistrator.unregister();
+});
+
+/// La page de ce fichier doit rester une page que `main.ts` possède seule.
+///
+/// Tout ce qui suit importe `main.ts` sans jamais démarrer le module wasm : sur
+/// une page portée, les comportements que Yew possède n'auraient donc aucun
+/// propriétaire ici, et ce fichier mesurerait un partage qui n'existe pas dans
+/// la vraie page. Le refus est nominatif pour que le jour où l'accueil sera
+/// porté, on lise quoi faire au lieu de chercher pourquoi sept tests tombent.
+test("l'accueil est encore rendu par React, donc main.ts le possède seul", () => {
+  const html = readFileSync(join(dist, "index.html"), "utf8");
+  expect(
+    html.includes('data-hydrate="yew"'),
+    "l'accueil est porté en Yew : ses comportements vont dans tests/hydration.test.ts,"
+      + " qui charge le module et le script ensemble",
+  ).toBe(false);
 });
 
 describe("the theme switch", () => {
