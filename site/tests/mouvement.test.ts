@@ -56,6 +56,15 @@ class Observateur {
   entrer(cible: Element) {
     this.rappel([new Entree(cible, true)], this);
   }
+  sortir(cible: Element) {
+    this.rappel([new Entree(cible, false)], this);
+  }
+  /// L'élément entre dans la vue pour **tous** ceux qui le regardent — un
+  /// titre de section est regardé par la révélation et par le sommaire, et
+  /// un navigateur les préviendrait tous les deux.
+  static entrerPartout(cible: Element) {
+    for (const o of Observateur.vivants.filter((o) => o.regardes.includes(cible))) o.entrer(cible);
+  }
   /// Celui des observateurs qui regarde cet élément.
   static de(cible: Element): Observateur {
     const trouve = Observateur.vivants.find((o) => o.regardes.includes(cible));
@@ -130,9 +139,13 @@ describe("le mouvement", () => {
     await ouvrir("docs/index.html", { avant: observateurMaitrise });
     expect(racine().dataset.motion).toBe("on");
     expect(style(racine(), "--rise")).not.toBe("");
-    const blocs = [...document.querySelectorAll<HTMLElement>(".doc > .wrap > *")];
+    const blocs = [...document.querySelectorAll<HTMLElement>(".doc > .wrap > :not(.doc-head)")];
     expect(blocs.length, "un document a des blocs").toBeGreaterThan(5);
     for (const bloc of blocs) expect(bloc.dataset.reveal, "chaque bloc est inscrit").toBe("");
+    // **Sauf l'en-tête**, qui entre mot par mot sous `html.entree`, avant la
+    // première peinture. Révélé ici aussi, il serait peint, masqué par le
+    // module, puis rejoué : un clignotement en haut de chaque page.
+    expect(document.querySelector<HTMLElement>(".doc-head")!.dataset.reveal).toBeUndefined();
 
     const observateur = Observateur.de(blocs[0]!);
     observateur.entrer(blocs[0]!);
@@ -156,6 +169,24 @@ describe("le mouvement", () => {
     await ouvrir("index.html", { avant: observateurMaitrise });
     expect(document.querySelector<HTMLElement>(".hero")!.dataset.reveal).toBeUndefined();
     expect(document.querySelector<HTMLElement>("#modes")!.dataset.reveal).toBe("");
+  });
+
+  /// **L'en-tête s'efface en descendant et revient en remontant** — loin du
+  /// haut seulement, et pas pour un tremblement de molette.
+  test("l'en-tête s'efface quand on descend, revient quand on remonte", async () => {
+    await ouvrir("docs/index.html", { avant: observateurMaitrise });
+    window.scrollTo(0, 200);
+    defiler();
+    expect(racine().dataset.cache, "trop près du haut pour s'effacer").toBeUndefined();
+    window.scrollTo(0, 900);
+    defiler();
+    expect(racine().dataset.cache, "on descend : il s'efface").toBe("");
+    window.scrollTo(0, 897);
+    defiler();
+    expect(racine().dataset.cache, "trois pixels ne sont pas un sens").toBe("");
+    window.scrollTo(0, 700);
+    defiler();
+    expect(racine().dataset.cache, "on remonte : il revient").toBeUndefined();
   });
 
   test("l'en-tête se marque dès qu'on a quitté le haut", async () => {
@@ -262,6 +293,190 @@ describe("la cascade", () => {
   });
 });
 
+describe("la cascade, partout", () => {
+  /// Depuis qu'il y a plus à lire, tout ce qui est une liste arrive élément par
+  /// élément : les points d'un document, les lignes d'un tableau, le sommaire,
+  /// les colonnes du pied, et les lettres du nom qui le termine.
+  test("les listes d'un document, ses tableaux et le pied reçoivent leur rang", async () => {
+    await ouvrir("docs/index.html", { avant: observateurMaitrise });
+    for (const selecteur of [".doc-list", ".sommaire ol", ".footer-groups", ".pied-geant"]) {
+      const enfants = [...document.querySelector(selecteur)!.children] as HTMLElement[];
+      expect(enfants.length, `${selecteur} a des enfants`).toBeGreaterThan(1);
+      expect(enfants.map((e) => style(e, "--step")).slice(0, 2), selecteur).toEqual(["0", "1"]);
+      expect(enfants.every((e) => e.dataset.reveal === ""), `${selecteur} : inscrits`).toBe(true);
+    }
+  });
+});
+
+describe("le retour en haut", () => {
+  /// **Un vrai lien, au nom de celui du pied**, qui n'apparaît qu'une fois le
+  /// haut quitté et dont l'anneau suit la lecture, en millièmes.
+  test("il apparaît loin du haut, porte le nom du lien du pied, et son anneau suit la lecture", async () => {
+    await ouvrir("fr/index.html", {
+      avant: () => {
+        observateurMaitrise();
+        mesurer(document.documentElement, "scrollHeight", () => innerHeight + 2000);
+      },
+    });
+    const haut = document.querySelector<HTMLAnchorElement>(".haut")!;
+    expect(haut !== null, "le bouton est posé par le module").toBe(true);
+    expect(haut.getAttribute("href")).toBe("#main");
+    const pied = document.querySelector('.footer-legal a[href="#main"]')!.textContent!.trim();
+    expect(haut.getAttribute("aria-label"), "le nom du lien du pied, dans la langue de la page").toBe(pied);
+    expect(haut.dataset.visible, "au repos, en haut").toBeUndefined();
+    window.scrollTo(0, 1000);
+    defiler();
+    expect(haut.dataset.visible).toBe("");
+    expect(style(haut, "--read")).toBe("500");
+    window.scrollTo(0, 100);
+    defiler();
+    expect(haut.dataset.visible, "revenu près du haut, il s'efface").toBeUndefined();
+  });
+
+  /// Les liens de navigation et du pied suivent le pointeur comme les boutons
+  /// du héros : la marque est posée par le module, avec lui ou pas du tout.
+  test("les liens de la navigation et du pied sont aimantés", async () => {
+    await ouvrir("docs/index.html", { avant: observateurMaitrise });
+    const liens = [...document.querySelectorAll(".site-nav a, .footer-groups a")];
+    expect(liens.length).toBeGreaterThan(5);
+    expect(liens.every((l) => l.hasAttribute("data-aimant")), "chaque lien porte la marque").toBe(true);
+  });
+
+  test("au calme, ni bouton ni aimant", async () => {
+    await ouvrir("docs/index.html", { calme: true });
+    expect(document.querySelector(".haut") === null, "pas de bouton").toBe(true);
+    expect(document.querySelector(".site-nav a[data-aimant]") === null, "pas d'aimant").toBe(true);
+  });
+});
+
+describe("le sommaire", () => {
+  /// **Il suit la lecture** : le titre qui entre dans le haut de la fenêtre
+  /// devient la section lue, et un seul lien la porte.
+  test("la section qui entre dans la vue devient la section lue", async () => {
+    await ouvrir("docs/index.html", { avant: observateurMaitrise });
+    const liens = [...document.querySelectorAll<HTMLAnchorElement>(".sommaire a")];
+    expect(liens.length, "le guide a un sommaire").toBeGreaterThan(2);
+    const titre = (lien: HTMLAnchorElement) =>
+      document.getElementById(lien.getAttribute("href")!.slice(1))!;
+    // Des rangs, jamais des éléments : comparer deux éléments happy-dom fait
+    // parcourir tout l'arbre à `toEqual`, et l'imprimer en cas d'échec coûte
+    // des gigaoctets — la leçon du test de révélation, plus haut.
+    const lus = () =>
+      liens.flatMap((l, i) => (l.getAttribute("aria-current") === "location" ? [i] : []));
+
+    Observateur.entrerPartout(titre(liens[1]!));
+    expect(lus()).toEqual([1]);
+    Observateur.entrerPartout(titre(liens[2]!));
+    expect(lus(), "la précédente rend la main").toEqual([2]);
+    expect(style(document.querySelector(".sommaire ol")!, "--y"), "le trait est posé").not.toBe("");
+  });
+
+  /// Chaque lien du sommaire mène à un titre qui existe : un sommaire qui
+  /// pointerait dans le vide serait pire que pas de sommaire.
+  test("chaque entrée mène à un titre de la page", async () => {
+    await ouvrir("fr/architecture/index.html", { avant: observateurMaitrise });
+    const liens = [...document.querySelectorAll<HTMLAnchorElement>(".sommaire a")];
+    expect(liens.length).toBeGreaterThan(2);
+    for (const lien of liens) {
+      const cible = document.getElementById(lien.getAttribute("href")!.slice(1));
+      expect(cible?.tagName ?? "absent", lien.getAttribute("href")!).toBe("H2");
+    }
+  });
+});
+
+describe("le curseur", () => {
+  const bouger = (cible: EventTarget, x: number, y: number, pointerType = "mouse") =>
+    cible.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x, clientY: y, pointerType }));
+
+  test("l'anneau arrive sous la flèche, grossit sur un lien, se resserre quand on presse", async () => {
+    await ouvrir("index.html", { avant: observateurMaitrise });
+    const anneau = document.querySelector<HTMLElement>(".curseur")!;
+    expect(anneau !== null, "l'anneau est posé par le module").toBe(true);
+    expect(anneau.getAttribute("aria-hidden"), "décoratif, et il le dit").toBe("true");
+    expect(anneau.dataset.visible, "invisible avant le premier mouvement").toBeUndefined();
+
+    bouger(document.querySelector("h2")!, 70, 50);
+    expect(anneau.dataset.visible).toBe("");
+    // **Le premier mouvement le pose sous la flèche**, sans le faire traverser
+    // l'écran depuis l'origine.
+    expect(anneau.style.transform).toBe("translate3d(70px,50px,0)");
+    expect(anneau.dataset.lien, "un titre ne se clique pas").toBeUndefined();
+
+    bouger(document.querySelector(".site-nav a")!, 300, 20);
+    expect(anneau.dataset.lien, "au-dessus d'un lien").toBe("");
+    // Puis il rattrape la flèche, image après image, et s'y arrête.
+    await jusqua(() => anneau.style.transform === "translate3d(300px,20px,0)", "le rattrapage");
+
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    expect(anneau.dataset.presse).toBe("");
+    document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    expect(anneau.dataset.presse).toBeUndefined();
+  });
+
+  /// Un stylet ou un doigt sur un écran hybride ne déplace pas l'anneau : il
+  /// marquerait l'endroit d'un toucher, pas d'une flèche.
+  test("seulement à la souris", async () => {
+    await ouvrir("index.html", { avant: observateurMaitrise });
+    const anneau = document.querySelector<HTMLElement>(".curseur")!;
+    bouger(document.body, 70, 50, "touch");
+    bouger(document.body, 70, 50, "pen");
+    expect(anneau.dataset.visible).toBeUndefined();
+  });
+});
+
+describe("la bande", () => {
+  /// Une piste mesurée : happy-dom ne met rien en page, donc la largeur est
+  /// posée — deux fois les mots, quatre mille pixels, un tour de deux mille.
+  function mesurees() {
+    observateurMaitrise();
+    for (const piste of document.querySelectorAll(".bande-piste")) {
+      mesurer(piste, "scrollWidth", () => 4000);
+    }
+  }
+  const recul = (piste: Element) => Number.parseInt(style(piste, "--d") || "0", 10);
+
+  test("elle avance seule, et le défilement la pousse dans son sens", async () => {
+    await ouvrir("index.html", { avant: mesurees });
+    const bandes = [...document.querySelectorAll(".bande")];
+    expect(bandes.length, "la bande de l'accueil et celle du pied").toBe(2);
+    const piste = bandes[0]!.querySelector(".bande-piste")!;
+    expect(style(piste, "--d"), "immobile tant qu'elle n'est pas visible").toBe("");
+
+    Observateur.de(bandes[0]!).entrer(bandes[0]!);
+    await jusqua(() => recul(piste) < -1, "qu'elle avance");
+
+    // On descend : l'élan s'ajoute, et elle penche dans le sens du défilement.
+    window.scrollTo(0, 400);
+    defiler();
+    await jusqua(() => Number(style(piste, "--penche")) > 0, "la pente vers le bas");
+
+    // On remonte fort : elle repart à l'envers.
+    window.scrollTo(0, 0);
+    defiler();
+    await jusqua(() => Number(style(piste, "--penche")) < 0, "la pente vers le haut");
+    const avant = recul(piste);
+    await jusqua(() => recul(piste) > avant, "qu'elle recule");
+  });
+
+  /// **Hors de la vue, elle ne coûte rien.** Une bande qu'on ne voit plus
+  /// n'a aucune raison de réclamer une image par rafraîchissement d'écran ; le
+  /// sabordage qui gardait la boucle en vie a survécu tant que ce test
+  /// n'existait pas.
+  test("hors de la vue, la boucle s'arrête", async () => {
+    await ouvrir("index.html", { avant: mesurees });
+    const bande = document.querySelector(".bande")!;
+    const piste = bande.querySelector(".bande-piste")!;
+    Observateur.de(bande).entrer(bande);
+    await jusqua(() => recul(piste) < -1, "qu'elle avance");
+    Observateur.de(bande).sortir(bande);
+    // Une dernière image peut encore passer : on la laisse passer, puis plus rien.
+    await new Promise((r) => setTimeout(r, 120));
+    const arretee = style(piste, "--d");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(style(piste, "--d"), "elle a continué hors de la vue").toBe(arretee);
+  });
+});
+
 describe("la lueur", () => {
   test("le halo se pose là où est le pointeur, dans la carte", async () => {
     await ouvrir("index.html", { avant: observateurMaitrise });
@@ -274,6 +489,20 @@ describe("la lueur", () => {
     );
     expect(style(carte, "--mx")).toBe("40px");
     expect(style(carte, "--my")).toBe("38px");
+  });
+
+  /// **La carte s'incline vers le pointeur**, puis se redresse quand il part.
+  /// Au milieu du bord droit, l'axe est vertical et l'angle plein.
+  test("la carte s'enfonce sous le pointeur, et se redresse", async () => {
+    await ouvrir("index.html", { avant: observateurMaitrise });
+    const carte = document.querySelector(".cards > .card")!;
+    boite(carte, { left: 0, top: 0, width: 300, height: 200 });
+    carte.querySelector("p")!.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 300, clientY: 100 }),
+    );
+    expect([style(carte, "--ax"), style(carte, "--ay"), style(carte, "--aa")]).toEqual(["0", "1000", "60"]);
+    carte.dispatchEvent(new PointerEvent("pointerleave"));
+    expect(style(carte, "--aa"), "le pointeur parti, elle se redresse").toBe("0");
   });
 });
 

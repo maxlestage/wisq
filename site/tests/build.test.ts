@@ -143,7 +143,14 @@ describe("built output", () => {
     expect(css, "la police est repassée en ligne dans la feuille de style").not.toContain(
       "data:font",
     );
-    expect(style.byteLength, "feuille de style").toBeLessThan(24_000);
+    // 23 717 octets avec la palette violette et l'accueil enrichi ; 29 755 avec
+    // le mouvement de #337 — l'aurore, le code qui se tape, le sommaire, les
+    // cartes qui s'inclinent, le curseur, la bande pilotée, le nom géant du
+    // pied. 32 043 avec la seconde vague — la bascule de thème en cercle, les
+    // titres mot par mot, le retour en haut, les rangs et le nom que le
+    // défilement fait glisser. Le plafond suit une décision mesurée, pas une
+    // dérive.
+    expect(style.byteLength, "feuille de style").toBeLessThan(35_000);
 
     const face = css.slice(css.indexOf("@font-face"));
     const src = face.match(/url\(\.\/([^)]+\.woff2)\)/);
@@ -188,33 +195,65 @@ describe("built output", () => {
   /// une page de plus n'ajoute rien au module, et `le module ne porte la prose
   /// d'aucune page` le vérifie.
   ///
-  /// **Et ces chiffres dépendent de la machine, ce que « mesuré » ne disait
-  /// pas.** Trois lectures du *même* source :
+  /// **Et ces chiffres dépendent de la machine, ce que « mesuré » ne dit pas.**
+  /// Le même source, lu des deux côtés, à deux commits :
   ///
-  /// | | wasm brut | wasm gzip | colle brute | colle gzip |
+  /// | source | wasm brut | wasm gzip | colle brute | colle gzip |
   /// | --- | --- | --- | --- | --- |
-  /// | le tableau ci-dessus | 261 252 | 112 436 | 56 272 | 9 635 |
-  /// | le coureur de la CI (`a76f52e`) | **261 548** | — | — | — |
-  /// | un conteneur sous rustc 1.99.0 | **261 240** | **110 947** | 56 272 | 9 494 |
+  /// | `a6ce835`, le coureur de la CI | 261 548 | — | — | — |
+  /// | `a6ce835`, ce conteneur (rustc 1.99.0) | 261 240 | 110 947 | 56 272 | 9 494 |
+  /// | `3914022`, le coureur de la CI | 276 907 | — | — | — |
+  /// | `3914022`, ce conteneur (rustc 1.99.0) | 276 599 | 117 213 | 58 869 | 9 763 |
   ///
-  /// **Et le témoin localise l'écart** : la colle brute est identique **à
-  /// l'octet** des deux côtés, alors que le module diffère. Ce n'est donc ni la
-  /// chaîne de construction, ni `wasm-opt`, ni la mesure — c'est la génération
-  /// de code de Rust, exactement ce que l'en-tête de `check-agent-size.sh` a
-  /// établi pour le démon : « les octets d'écart séparaient deux versions de
-  /// rustc, pas deux machines ». `.github/workflows/site.yml` n'épingle aucune
-  /// version, donc l'écart est attendu.
+  /// **L'écart du module est de 308 octets exactement aux deux commits**, sur
+  /// deux modules que quinze kilooctets séparent. Un écart constant, donc pas
+  /// proportionnel au code : ce n'est pas « la compilation est différente », c'est
+  /// quelque chose de taille fixe.
   ///
-  /// **Le gzip bouge cinq fois plus que le brut** — 1 489 octets contre 308.
-  /// La compression amplifie un remaniement que le brut dissimule, donc c'est le
-  /// chiffre gzip qu'il faut regarder le jour où un plafond rougit.
+  /// **Et le module porte bien l'identité de sa chaîne**, ce qui est montré et
+  /// non supposé : il embarque le hash de commit de rustc dans les chemins de la
+  /// bibliothèque standard que ses messages de panique citent —
+  /// `/rustc/b940084d7eb6a299eb4bfeb8e34901bc051e7ac4/library/core/src/…`, le
+  /// hash de `rustc 1.99.0`. C'est la même famille de cause que l'en-tête de
+  /// `check-agent-size.sh` a établie pour le démon : « les octets d'écart
+  /// séparaient deux versions de rustc, pas deux machines ».
+  /// `.github/workflows/site.yml` n'épingle aucune version, donc l'écart est
+  /// attendu. **Les 308 eux-mêmes ne sont pas expliqués** : le module du coureur
+  /// n'est pas récupérable d'ici, donc on ne peut pas le confronter octet par
+  /// octet. C'est écrit comme une mesure reproductible, pas comme une cause.
+  ///
+  /// **Ce qui N'est PAS établi, et le dire vaut mieux que l'inverse.** La taille
+  /// de la colle n'a jamais été mesurée sur le coureur : la construction n'imprime
+  /// que celle du module. Et son nom ne peut pas en tenir lieu — il est adressé
+  /// par contenu, mais la construction y substitue le nom du `.wasm`, donc deux
+  /// colles identiques portent des noms différents dès que le module diffère. Un
+  /// premier jet de cette note concluait de deux noms que la colle était
+  /// identique « à l'octet » : c'était un témoin qui n'en était pas.
+  ///
+  /// **Le gzip bouge cinq fois plus que le brut**, et c'est mesuré deux fois :
+  /// 1 489 octets contre 308 à `a6ce835`, 1 505 contre 308 à `3914022`. La
+  /// compression amplifie un remaniement que le brut dissimule, donc c'est le
+  /// chiffre gzip qu'il faut regarder le jour où un plafond rougit — l'inverse de
+  /// l'intuition.
   ///
   /// **Pourquoi aucune garde ne tient ces chiffres exactement.** Elle serait
   /// rouge sur une machine ou sur l'autre pour un module parfaitement sain.
-  /// Ce qui *est* vérifié, et mesuré : les quatre bornes gardent toutes plus de
-  /// marge que l'écart — 10 452, 4 564, 3 728 et 1 365 octets contre 1 489 au
-  /// pire. Un plafond dont la marge tomberait sous l'écart basculerait d'une
-  /// chaîne à l'autre sans que personne touche au code ; aucun n'en est là.
+  /// Ce qui *est* vérifié : la marge de chaque borne, sur `3914022`, contre
+  /// l'écart de 1 505 au pire.
+  ///
+  /// | borne | marge | d'après |
+  /// | --- | --- | --- |
+  /// | wasm brut, 285 000 | 8 093 | le coureur, qui est le plus gros des deux |
+  /// | wasm gzip, 123 000 | 5 787 | ce conteneur — le coureur ne l'imprime pas |
+  /// | colle brute, 60 000 | **1 131** | ce conteneur, seule mesure |
+  /// | colle gzip, 11 000 | 1 237 | ce conteneur, seule mesure |
+  ///
+  /// **Les deux bornes de la colle sont donc sous l'écart du module**, et c'est
+  /// la seule chose inquiétante ici : si la colle bouge d'une chaîne à l'autre
+  /// autant que le module, elles peuvent basculer sans que personne touche au
+  /// code. On ne sait pas si elle bouge — voir ci-dessus, elle n'est mesurée que
+  /// d'un côté. C'est nommé plutôt que corrigé : relever une borne est une
+  /// décision de budget, et la prendre sans la mesure serait deviner.
   test("le front en WebAssembly reste dans son budget", () => {
     const { wasm, glue } = frontFiles();
     const octets = (nom: string) => readFileSync(join(dist, nom));
@@ -223,14 +262,18 @@ describe("built output", () => {
     const wgz = Bun.gzipSync(w).byteLength;
     const ggz = Bun.gzipSync(g).byteLength;
 
-    // Le module, après `wasm-opt -Oz` : 261 548 bruts sur le coureur de la CI,
-    // 261 240 / 110 947 dans un conteneur sous rustc 1.99.0. L'en-tête dit
-    // pourquoi les deux lectures diffèrent et pourquoi la borne est large.
-    expect(w.byteLength, "wasm brut").toBeLessThan(272_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(117_000);
-    // La colle de wasm-bindgen. Mesurée 56 272 bruts — le même octet sur les
-    // deux machines, ce qui est le témoin de l'en-tête — et 9 494 à 9 635
-    // gzippés. Elle ne bouge qu'avec
+    // Le module. Mesuré 261 252 / 112 436 après `wasm-opt -Oz` ; 271 558 /
+    // 116 280 avec les cinq comportements de #337 — le sommaire qui suit la
+    // lecture, le curseur, la bande que le défilement pousse, l'inclinaison
+    // des cartes, l'en-tête qui s'efface ; 276 591 / 118 718 avec la seconde
+    // vague — la bascule de thème en cercle, le retour en haut, les aimants de
+    // la navigation. Du code, pas du contenu : la règle du paragraphe
+    // au-dessus tient.
+    expect(w.byteLength, "wasm brut").toBeLessThan(285_000);
+    expect(wgz, "wasm gzippé").toBeLessThan(123_000);
+    // La colle de wasm-bindgen. Mesurée 58 869 / 9 763 dans ce conteneur sur
+    // `3914022` — le chiffre d'avant, 56 272 / 9 635, avait deux vagues de
+    // comportements de retard, et rien ne le tenait. Elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,
     // molette, pointeur, défilement.
@@ -386,6 +429,47 @@ describe("built output", () => {
 
     const privacy = read("privacy/index.html");
     expect(privacy).toContain("No analytics");
+  });
+
+  /// **Les titres de section aussi, et le sommaire le recoupe.** Chaque `h2`
+  /// de l'accueil et des pages écrites est découpé en mots pour monter un à un.
+  /// Le texte, balises retirées, doit rester le titre : le sommaire porte le
+  /// titre tel qu'il est écrit, sans découpage, donc chaque entrée du sommaire
+  /// doit être exactement le texte du `h2` qu'elle vise. Et les rangs vont de
+  /// zéro au dernier mot, dans l'ordre.
+  test("les titres de section sont découpés en mots, sans changer de texte", () => {
+    for (const { file } of BUILT.filter((b) => !/404|offline/.test(b.file))) {
+      // Le contenu seulement : les colonnes du pied ont leurs propres `h2`,
+      // qui nomment des groupes de liens et ne montent pas.
+      const tout = read(file);
+      const html = tout.slice(tout.indexOf('<main id="main">'), tout.indexOf("</main>"));
+      const titres = [...html.matchAll(/<h2 id="([^"]+)"[^>]*>([\s\S]*?)<\/h2>|<h2>([\s\S]*?)<\/h2>/g)];
+      expect(titres.length, `${file} : des titres de section`).toBeGreaterThan(2);
+      for (const t of titres) {
+        const corps = t[2] ?? t[3]!;
+        const mots = text(corps).split(" ");
+        const rangs = [...corps.matchAll(/style="--i:(\d+)" class="mot"/g)].map((m) => Number(m[1]));
+        expect(rangs, `${file} : « ${text(corps)} »`).toEqual(mots.map((_, i) => i));
+      }
+      for (const entree of html.matchAll(/<li><a href="#([^"]+)">([^<]+)<\/a><\/li>/g)) {
+        const cible = titres.find((t) => t[1] === entree[1]);
+        expect(cible, `${file} : le sommaire vise #${entree[1]}`).toBeDefined();
+        expect(text(cible![2]!), `${file} : #${entree[1]}`).toBe(text(entree[2]!));
+      }
+    }
+  });
+
+  /// Les rangs des sections de l'accueil sont décoratifs, et le disent.
+  test("les rangs des sections sont décoratifs et dans l'ordre", () => {
+    for (const lang of LANGS) {
+      const html = read(page("home", lang).file);
+      const rangs = [...html.matchAll(/<span ([^>]*)class="sec-num"[^>]*>(\d+)<\/span>|<span class="sec-num"([^>]*)>(\d+)<\/span>/g)];
+      expect(rangs.length, `${lang} : un rang par section`).toBe(10);
+      rangs.forEach((r, i) => {
+        expect(r[0], `${lang} : rang ${i + 1}`).toContain('aria-hidden="true"');
+        expect(Number(r[2] ?? r[4]), `${lang} : l'ordre`).toBe(i + 1);
+      });
+    }
   });
 
   /// **Le titre, mot par mot, et toujours le titre.** Chaque mot est un masque
@@ -656,6 +740,66 @@ describe("theme", () => {
     expect(dev, "src/index.html : méta claire").toContain(
       `content="${light}" media="(prefers-color-scheme: light)"`,
     );
+  });
+
+  /// **Les contrastes se relisent, ils ne se citent pas.**
+  ///
+  /// La palette crème portait ses mesures en commentaire — « #bf3a0b rend 4,71
+  /// sur crème » — et c'était juste pour le fond. Personne n'avait mesuré les
+  /// cartes : le texte doux y rendait 4,27 et l'accent 4,26, sous le seuil de
+  /// 4,5 que WCAG demande pour du texte courant, sur les surfaces qui portent
+  /// l'essentiel de l'accueil. Le passage au violet l'a vu parce que ce test
+  /// existait avant la palette.
+  ///
+  /// Chaque couple est un couple que la page **peint** — la règle qui le pose
+  /// est nommée —, lu dans la feuille de style construite, pour les deux
+  /// thèmes. Le dégradé des boutons est lu arrêt par arrêt : un texte posé sur
+  /// un dégradé doit tenir sur toute sa longueur, pas en moyenne.
+  test("chaque couple texte-fond que la page peint passe 4,5, dans les deux thèmes", () => {
+    const css = readFileSync(join(dist, styleFile()), "utf8");
+    const lineaire = (c: number) => {
+      const v = c / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (couleur: string) => {
+      let hex = couleur.replace("#", "");
+      if (hex.length === 3 || hex.length === 4) hex = [...hex].map((c) => c + c).join("");
+      expect(hex.length, `${couleur} : une couleur à écrire en hexadécimal opaque`).toBe(6);
+      const [r, g, b] = [0, 2, 4].map((i) => lineaire(parseInt(hex.slice(i, i + 2), 16)));
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const contraste = (a: string, b: string) => {
+      const [haut, bas] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (haut! + 0.05) / (bas! + 0.05);
+    };
+    const COUPLES: [texte: string, fond: string, ou: string][] = [
+      ["--fg", "--bg", "le corps du texte"],
+      ["--fg-soft", "--bg", "les paragraphes d'un document"],
+      ["--fg", "--bg-soft", "le titre d'une carte"],
+      ["--fg-soft", "--bg-soft", "le texte d'une carte"],
+      ["--accent", "--bg", "un lien"],
+      ["--accent", "--bg-soft", "l'étiquette d'une carte"],
+      ["--accent-fg", "--accent", "le lien d'évitement"],
+      ["--fg-code", "--bg-code", "un bloc de code"],
+    ];
+    for (const [theme, selecteur] of [
+      ["clair", ":root{"],
+      ["sombre", ":root[data-theme=dark]{"],
+    ] as const) {
+      const jetons = tokensOf(css, selecteur);
+      for (const [texte, fond, ou] of COUPLES) {
+        const rendu = contraste(jetons[texte]!, jetons[fond]!);
+        expect(rendu, `${theme} : ${texte} sur ${fond} (${ou}) rend ${rendu.toFixed(2)}`)
+          .toBeGreaterThanOrEqual(4.5);
+      }
+      const arrets = jetons["--degrade"]?.match(/#[0-9a-f]{3,8}\b/gi) ?? [];
+      expect(arrets.length, `${theme} : le dégradé des boutons doit avoir deux arrêts`).toBe(2);
+      for (const arret of arrets) {
+        const rendu = contraste(jetons["--accent-fg"]!, arret);
+        expect(rendu, `${theme} : un bouton, --accent-fg sur ${arret}, rend ${rendu.toFixed(2)}`)
+          .toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 
   /// An effect runs after the page has painted, so the theme cannot come from

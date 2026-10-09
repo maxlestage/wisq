@@ -36,8 +36,8 @@ use yew::prelude::*;
 /// dans le catalogue du pré-rendu pour les métas, le script de la tête et le
 /// manifeste, et `tests/build.test.ts` les confronte à la feuille de style
 /// construite plutôt qu'à une copie.
-pub const BAR_CLAIR: &str = "#f2ede3";
-pub const BAR_SOMBRE: &str = "#0e0d0c";
+pub const BAR_CLAIR: &str = "#fff";
+pub const BAR_SOMBRE: &str = "#0b0a14";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Theme {
@@ -108,9 +108,9 @@ pub fn ThemeSwitch(props: &ThemeSwitchProps) -> Html {
                 let presse = id == *choisi;
                 let au_clic = {
                     let choisi = choisi.clone();
-                    Callback::from(move |_: MouseEvent| {
+                    Callback::from(move |e: MouseEvent| {
                         choisi.set(id);
-                        appliquer(id);
+                        basculer(id, &e);
                         retenir(id);
                     })
                 };
@@ -238,3 +238,80 @@ fn appliquer(theme: Theme) {
 
 #[cfg(not(feature = "hydrate"))]
 fn appliquer(_: Theme) {}
+
+/// **Le thème s'ouvre en cercle**, depuis le bouton qu'on vient de presser.
+///
+/// La transition de vue du navigateur photographie la page, applique le
+/// thème, et la feuille de style découvre la nouvelle par un cercle qui part du
+/// centre du bouton (`--bx`, `--by`). Deux conditions, et aucune n'est un
+/// réglage de plus : `[data-motion]` sur la racine — le module ne le pose pas
+/// quand on a demandé le calme — et `document.startViewTransition`, que Chrome
+/// et Safari connaissent et les autres pas. Sans l'une ou l'autre, le thème
+/// s'applique comme avant, d'un coup.
+///
+/// **Jamais au prix du thème.** Si l'appel échoue, le rappel n'a peut-être pas
+/// tourné : le thème est appliqué directement, et la classe retirée.
+#[cfg(feature = "hydrate")]
+fn basculer(theme: Theme, e: &MouseEvent) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+
+    let document = web_sys::window().and_then(|w| w.document());
+    let racine = document
+        .as_ref()
+        .and_then(|d| d.document_element())
+        .and_then(|r| r.dyn_into::<web_sys::HtmlElement>().ok());
+    let demarrer = document.as_ref().and_then(|d| {
+        js_sys::Reflect::get(d, &"startViewTransition".into())
+            .ok()?
+            .dyn_into::<js_sys::Function>()
+            .ok()
+    });
+    let (Some(document), Some(racine), Some(demarrer)) = (document, racine, demarrer) else {
+        appliquer(theme);
+        return;
+    };
+    if !racine.has_attribute("data-motion") {
+        appliquer(theme);
+        return;
+    }
+
+    // Le centre du bouton, pas la position du clic : au clavier, il n'y a pas
+    // de pointeur, et le cercle partirait du coin de l'écran.
+    if let Some(bouton) = e
+        .current_target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    {
+        let boite = bouton.get_bounding_client_rect();
+        let x = (boite.left() + boite.width() / 2.0).round() as i32;
+        let y = (boite.top() + boite.height() / 2.0).round() as i32;
+        let style = racine.style();
+        let _ = style.set_property("--bx", &(crate::mouvement::calcul::entier(x) + "px"));
+        let _ = style.set_property("--by", &(crate::mouvement::calcul::entier(y) + "px"));
+    }
+    let _ = racine.class_list().add_1("bascule");
+
+    let rappel = Closure::once_into_js(move || appliquer(theme));
+    let Ok(transition) = demarrer.call1(&document, &rappel) else {
+        appliquer(theme);
+        let _ = racine.class_list().remove_1("bascule");
+        return;
+    };
+    let fin = js_sys::Reflect::get(&transition, &"finished".into())
+        .ok()
+        .and_then(|p| p.dyn_into::<js_sys::Promise>().ok());
+    let Some(fin) = fin else {
+        let _ = racine.class_list().remove_1("bascule");
+        return;
+    };
+    let retirer = Closure::<dyn FnMut()>::new(move || {
+        let _ = racine.class_list().remove_1("bascule");
+    });
+    let _ = fin.finally(&retirer);
+    retirer.forget();
+}
+
+#[cfg(not(feature = "hydrate"))]
+fn basculer(theme: Theme, _: &MouseEvent) {
+    appliquer(theme);
+}

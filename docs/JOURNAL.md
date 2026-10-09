@@ -23275,74 +23275,325 @@ forcée — son contenu touchait `site/src/main.ts`, que #335 a supprimé. Ce qu
 survit d'une tranche remplacée, c'est ce qu'elle a **mesuré**, pas ce qu'elle a
 écrit.
 
-## #337 — « mesuré » ne disait pas sur quelle machine, et la colle est le témoin
+## #337 — le violet du logo, quatre fois plus à lire, et du mouvement partout
+
+Trois demandes en trois messages : « remettre le site en violet comme le
+logo », « bien plus d'informations sur tout le site », puis « bien plus
+d'animation sur tout le site ». Une tranche, parce que les trois touchent les
+mêmes pages et que les gardes qui les tiennent sont les mêmes.
+
+### Le violet, mesuré avant d'être posé
+
+#464 avait habillé le site en crème et orange, d'après zamocorp. Le logo, lui,
+n'a jamais quitté sa famille : #a8a2ff et #6f64ff pour les quadrants, #8b83ff
+pour le filet de la plaque. Ces trois teintes sont dessinées pour la nuit : la
+plus sombre ne rend que 4,25 contre du blanc. Le thème sombre prend donc
+#8b83ff tel quel — 6,36 sur le fond —, et le clair un cran plus profond de la
+même famille, #5145d9 — 6,06 sur le fond, 5,57 sur les cartes. Les boutons
+prennent le dégradé des quadrants, descendu d'un cran en clair pour que le
+texte posé dessus tienne 4,5 sur toute sa longueur.
+
+**La garde a été écrite avant la palette, et elle a trouvé quelque chose dans
+l'ancienne.** Elle relit, dans la feuille de style construite et pour les deux
+thèmes, chaque couple texte-fond que la page peint, règle nommée, dégradé lu
+arrêt par arrêt. Rejouée sur le crème : le texte des cartes rendait **4,27** et
+leur étiquette **4,26**, sous le seuil, sur les surfaces qui portent
+l'essentiel de l'accueil. Le commentaire de la palette citait des mesures
+justes — contre le fond. Personne n'avait mesuré les cartes.
+
+Le grain y gagne aussi : relevé de la même façon que #464, le pire pixel du
+texte doux en clair passe de 3,71 à 5,11. La palette crème ne tenait 4,5 à
+aucune opacité visible ; la violette le tient jusqu'à celle de la référence.
+
+### Le contenu : sept pages réécrites depuis le dépôt
+
+Sept rédacteurs en parallèle, un par page, avec une consigne commune : rien
+d'inventé, chaque fait vérifiable dans le dépôt, la structure identique bloc
+pour bloc dans les deux langues, et pour chaque nombre nouveau une provenance
+prête pour `claims.test.ts` — la commande qui le refait, ou la ligne qui prouve
+que ce n'est pas une mesure. Les pages sont passées de 18 102 à 85 418 mots de
+données ; la garde des nombres a reçu une centaine de provenances nouvelles, et
+elle passe sans exception ni liste d'aveux.
+
+**Chaque page enrichie a trouvé au moins une phrase fausse dans l'ancienne** :
+
+| page | ce qu'elle disait | ce qui est vrai |
+| --- | --- | --- |
+| hors ligne | seules les pages déjà lues restent disponibles | le service worker les précharge toutes, dans les deux langues |
+| vie privée | « deux petites valeurs » dans le navigateur | quatre clés, dont `wisq.theme` et `wisq.rideau` |
+| feuille de route | l'application lit l'image d'installation et la refuse | `IsoBoot` la démarre |
+| protocole | « zéro dépendance » ; un exemple JSON | rustls, rcgen, ring ; l'exemple n'était pas ce que le démon écrit |
+| questions | les consoles « non chiffrées par conception » ; un bureau « avec le son » | TLS et TLS épinglé sont proposés ; rien ne joue le son |
+| versions | une extension de signe sur « 85 % » d'un démarrage | le nombre n'existe nulle part ; le CHANGELOG dit 47 % pour les accès mémoire |
+| guide | `--service`, une option du démon | le démon s'arrête sur « argument inconnu » ; c'est l'installateur |
+
+Et l'accueil que j'écrivais en même temps recopiait « vingt et une familles
+d'architectures » du README. **L'énumération en déclare vingt**, et
+`docs/ROADMAP.md` les nomme, vingt, dans la phrase qui en annonce vingt et une.
+Six copies corrigées, et une garde qui compte les `case`.
+
+**La garde d'installation a mordu une fois.** La page du protocole décrivait
+l'installateur — `scripts/install.sh --service`, la formule Homebrew —, ce que
+le site s'interdit depuis longtemps : il explique ce qu'est wisq, il ne dit à
+personne comment l'installer. Retiré ; ce qui relève du protocole — un service
+launchd ou systemd garde le démon en vie, et son journal porte le jeton — est
+resté.
+
+### Ce que les rédacteurs ont trouvé hors du site
+
+Le plus important n'est pas sur le site. **L'envoi de fichiers SPICE échoue
+toujours depuis l'écran de session** : `SessionModel.sendFile` fait
+`session as? SPICESession`, et `SessionFactory` enveloppe toujours SPICE dans
+une `ReconnectingSession` — la conversion rend `nil`, le bouton répond « cette
+session n'a pas d'agent SPICE », quoi que fasse l'invité. Le protocole est
+écrit et testé ; c'est la couture qui manque. Vérifié par lecture, **pas
+corrigé** : `WisqUI` ne se compile que sous iOS, et une correction qu'aucun
+test ne peut exercer ici n'a pas sa place dans une tranche de site. Les pages
+disent le défaut au lieu de promettre l'envoi.
+
+Du même ordre, signalés et laissés : le son SPICE est décodé et jamais joué
+(aucun `AVFoundation` dans `Sources/`), `SPICESession.setPreferredSize` est
+vide alors que le parcours Ubuntu annonce un écran qui suit le téléphone,
+`SECURITY.md` annonçait un agent en HTTP clair — corrigé, c'était une ligne —,
+la formule Homebrew dit « no dependencies », l'en-tête de `main.rs` donne 22 Mo
+pour l'ancien démon quand tout le reste dit 58, `wisq-agent bureau` affirme
+que le mot de passe « n'est écrit nulle part ailleurs » alors qu'il est dans le
+XML du domaine, et deux commentaires RDP disent « TLS d'abord » quand le code
+ne demande que la sécurité historique.
+
+### Le mouvement, sur tout le site
+
+| où | quoi | porte |
+| --- | --- | --- |
+| chaque page écrite | le titre monte mot par mot, l'accroche suit | `html.entree` |
+| derrière les titres | une aurore de la palette qui dérive | `[data-motion]` |
+| chaque page écrite | un sommaire dont le trait glisse jusqu'à la section lue | `[data-motion]` |
+| blocs de code | tapés ligne à ligne, curseur de terminal à la fin | `[data-motion]` |
+| listes, tableaux, définitions, pied | en cascade, élément par élément | `[data-motion]` |
+| titres de section | sortent de leur ligne, leur trait se trace | `[data-motion]` |
+| cartes | s'inclinent sous le pointeur, un trait de lumière fait le tour | `[data-motion]` |
+| souris | un anneau qui suit avec retard, grossit sur ce qui se clique | `[data-motion]` |
+| la bande | prend l'élan du défilement, dans son sens, et penche | `[data-motion]` |
+| pied de chaque page | la bande, et le nom en très grand, lettre par lettre | `[data-motion]` |
+| en-tête | s'efface en descendant, revient en remontant, jamais avec le focus | `[data-motion]` |
+| d'une page à l'autre | la nouvelle monte par-dessus l'ancienne qui recule | `no-preference` |
+
+**La bande n'est plus une animation CSS** : sa vitesse dépend du défilement, ce
+qu'une animation écrite d'avance ne sait pas faire. Le module pose le recul et
+la pente ; la boucle s'arrête quand aucune bande n'est visible. **L'en-tête
+d'un document n'est plus révélé au défilement** : il entre sous
+`html.entree`, avant la première peinture — révélé aussi par le module, il
+aurait été peint, masqué, puis rejoué.
+
+**Mesuré** : le module passe de 261 252 à 271 558 octets, 116 280 gzippés ; la
+feuille de style de 23 717 à 29 755. Les deux plafonds ont été relevés, avec la
+mesure écrite à côté — du code, pas du contenu : la prose des pages, elle, n'est
+toujours pas dans le module, et le test qui le vérifie n'a pas bougé.
+
+### La seconde vague
+
+« Bien plus d'animation sur tout le site », demandé une seconde fois pendant
+que la première vague partait en revue. Elle n'a pas été lue comme une
+redite : six choses de plus, chacune derrière sa porte.
+
+| quoi | comment | porte |
+| --- | --- | --- |
+| le thème s'ouvre en cercle depuis le bouton pressé | `document.startViewTransition`, et la feuille de style découvre la nouvelle page par un cercle | `[data-motion]` et la transition de vue |
+| les titres de section montent mot par mot | découpés à la construction, comme le titre du héros ; le sommaire recoupe leur texte | `[data-motion]` |
+| un retour en haut | un vrai lien, au nom de celui du pied, dont l'anneau suit la lecture | `[data-motion]` |
+| les rangs des sections, le nom du pied | glissent et se resserrent avec le défilement, en CSS seul | `[data-motion]` et `animation-timeline` |
+| la navigation et le pied | aimantés, comme les boutons du héros | `[data-motion]` |
+| la marque, l'icône du thème, les tableaux | la marque pivote, l'icône tourne, la ligne survolée s'éclaire | `[data-motion]` |
+
+**La bascule en cercle ne coûte jamais le thème.** Elle demande deux choses
+qu'aucun réglage ne remplace — `[data-motion]`, que le module ne pose pas au
+calme, et la transition de vue, que Chrome et Safari connaissent et les autres
+pas — et sans l'une ou l'autre, le thème s'applique d'un coup, comme avant. Si
+l'appel échoue, le rappel n'a peut-être pas tourné : le thème est appliqué
+directement. Les deux branches ont leur test, et le test prête au navigateur
+de happy-dom la transition qu'il n'a pas.
+
+**Les animations liées au défilement sont en CSS**, là où le navigateur sait
+le faire : Chromium oui, Safari depuis sa 26, Firefox derrière un réglage.
+Ailleurs, les rangs et le nom restent à leur état de repos, ce qui est leur
+état final. Aucune ligne de Rust pour ça, donc aucun octet de plus dans le
+module.
+
+**Mesuré** : le module passe à 276 591 octets, 118 718 gzippés ; la feuille de
+style à 32 043. Les plafonds sont relevés une seconde fois, à 285 000 et
+123 000 pour le module, 35 000 pour la feuille, avec la mesure écrite à côté.
+
+**Six mutations, six tuées** : la bascule qui ignore le calme, la classe qui
+reste après la transition, le retour en haut qui ne s'efface plus, le retour
+en haut sans nom, la navigation sans aimants, les titres d'un document qui ne
+sont plus découpés.
+
+### Défauts trouvés en route
+
+**1. `toEqual` sur des éléments happy-dom, encore.** Le premier test du
+sommaire comparait des listes d'éléments ; le processus a été tué par manque de
+mémoire avant d'imprimer quoi que ce soit. C'est la leçon que le test de
+révélation porte déjà en commentaire, payée une seconde fois. Les assertions
+comparent maintenant des rangs.
+
+**2. Deux observateurs pour un même titre.** Un titre de section est regardé
+par la révélation et par le sommaire ; l'observateur maîtrisé du test ne
+prévenait que le premier, et le sommaire n'apprenait rien. Un navigateur les
+préviendrait tous les deux — le test aussi, maintenant.
+
+**3. Le compte de tests a bougé sous les rédacteurs.** Les quatre tests de
+`calcul.rs` ont fait passer le dépôt de 2628 à 2632 tests ; trois gardes l'ont
+dit à chaque rédacteur, qui l'a rapporté plutôt que de le corriger chez un
+autre. C'est la consigne qui a tenu : ne toucher qu'à sa page.
+
+### Le sabordage
+
+Huit mutations, chacune construite et passée au test du mouvement :
+
+| sabordage | verdict | test qui tombe |
+| --- | --- | --- |
+| le sommaire ne retire plus la marque de la section précédente | tué | la section qui entre dans la vue devient la section lue |
+| le premier mouvement ne pose plus l'anneau sous la flèche | tué | l'anneau arrive sous la flèche |
+| l'élan de la bande ignore le sens du défilement | tué | le défilement la pousse dans son sens |
+| la boucle de la bande tourne même invisible | **survivant**, puis tué | hors de la vue, la boucle s'arrête — écrit après |
+| l'en-tête revient au moindre pixel de remontée | tué | l'en-tête s'efface quand on descend |
+| la carte ne se redresse plus quand le pointeur part | tué | la carte s'enfonce sous le pointeur, et se redresse |
+| l'en-tête d'un document est révélé au défilement | tué | les blocs se lèvent en entrant dans la vue |
+| la cascade oublie le pied | tué | les listes d'un document, ses tableaux et le pied |
+
+Et deux sur les gardes de contenu : la palette crème remise dans la feuille de
+style construite fait tomber la garde de contraste (4,27 sur les cartes), et
+« twenty-one » remis dans le README fait tomber celle des familles.
+
+**Le survivant dit ce qu'il fallait dire** : une boucle qui ne s'arrête jamais
+ne se voit pas — la bande avance, le test qui la regarde avancer est content.
+Ce qu'elle coûte, une image par rafraîchissement d'écran sur toute la page, ne
+se lit qu'en regardant ce qu'elle fait **quand elle ne devrait rien faire**.
+
+### Ce qui n'est pas fait
+
+- **Le défaut de l'envoi de fichiers SPICE**, ni le son, ni la retaille — voir
+  plus haut.
+- **Aucun vrai Safari, aucun iPhone** : les captures sont de Chromium, à 390 et
+  1 280 px, dans les deux thèmes, avec et sans mouvement. Les transitions de
+  page n'ont pas été capturées.
+- Les pages sont longues — jusqu'à 63 Ko de HTML pour les versions. Le
+  sommaire est la réponse ; une coupe éditoriale en serait une autre, et c'est
+  à l'auteur d'en décider.
+
+### Le signe à retenir
+
+**Écrire davantage, c'est relire davantage.** Aucune des sept pages n'a été
+enrichie sans qu'une phrase de l'ancienne tombe, et les défauts les plus graves
+— l'envoi de fichiers, le son — ne sont pas sur le site du tout : ils sont
+apparus parce qu'un rédacteur, à qui l'on interdisait d'écrire ce qu'il ne
+pouvait pas vérifier, est allé vérifier. La consigne qui produit du contenu
+exact est aussi une revue de code.
+
+## #338 — le violet, sur un fond blanc
+
+Demandé : « remettre le violet et le fond blanc ». #337 avait posé le violet
+du logo sur un fond légèrement lavande, `#f6f5ff`. Le fond du thème clair
+redevient blanc pur, comme avant #464 ; les cartes n'en gardent qu'un soupçon
+de violet, `#f5f4fe`, pour se détacher, et le texte posé sur les boutons
+devient blanc. Le thème sombre ne bouge pas.
+
+**Mesuré avant d'être posé, et c'est la garde de #337 qui le fait** : chaque
+couple texte-fond que la page peint s'améliore sur le blanc — le texte doux
+passe de 6,64 à 7,18, l'accent de 6,06 à 6,56, les boutons de 4,84 à 5,23 au
+plus clair du dégradé. Le pire pixel sous le grain passe de 5,11 à 5,52.
+
+**Une copie de plus à tenir, et elle est tenue.** Le minifieur écrit le blanc
+`#fff`, et la couleur de barre doit être exactement celle de la feuille
+construite : `theme.rs` et la page de développement l'écrivent donc sous cette
+forme. La garde « la couleur de la barre vient de la palette, partout » l'a
+vérifié sans qu'on ait à le lui dire.
+
+
+## #339 — « mesuré » ne dit pas sur quelle machine, et mon témoin n'en était pas un
 
 Trouvé par la recherche que ce dépôt prescrit quand rien n'est en vol : **deux
-nombres qui devraient s'accorder.** #335 annonce le poids du front, et une
+nombres qui devraient s'accorder.** Le poids du front est annoncé ; une
 reconstruction du même source n'a pas rendu le même nombre.
 
-### Trois lectures d'un seul module
-
-| | wasm brut | wasm gzip | colle brute | colle gzip |
+| source | wasm brut | wasm gzip | colle brute | colle gzip |
 | --- | --- | --- | --- | --- |
-| ce que le dépôt écrivait | 261 252 | 112 436 | 56 272 | 9 635 |
-| le coureur de la CI, sur `a76f52e` | **261 548** | — | — | — |
-| ce conteneur, deux fois, même hash | **261 240** | **110 947** | 56 272 | 9 494 |
+| `a6ce835`, le coureur de la CI | 261 548 | — | — | — |
+| `a6ce835`, ce conteneur (rustc 1.99.0) | 261 240 | 110 947 | 56 272 | 9 494 |
+| `3914022`, le coureur de la CI | 276 907 | — | — | — |
+| `3914022`, ce conteneur | 276 599 | 117 213 | 58 869 | 9 763 |
 
-Le chiffre écrit ne correspond donc à **aucune** des deux machines : +296 contre
-le coureur qui publie le site, −12 contre ce conteneur.
+**L'écart du module est de 308 octets exactement aux deux commits**, sur deux
+modules que quinze kilooctets séparent. Un écart **constant**, donc pas
+proportionnel au code : ce n'est pas « la compilation diffère », c'est quelque
+chose de taille fixe.
 
-### Le témoin, et c'est lui qui rend la trouvaille utile
+Et le module porte bien l'identité de sa chaîne, **montré et non supposé** : il
+embarque le hash de commit de rustc dans les chemins de la bibliothèque standard
+que ses messages de panique citent, `/rustc/b940084d7eb…/library/core/src/…`,
+qui est le hash de `rustc 1.99.0`. Même famille de cause que l'en-tête de
+`check-agent-size.sh` pour le démon. Les 308 eux-mêmes **ne sont pas
+expliqués** : le module du coureur n'est pas récupérable d'ici, donc pas de
+confrontation octet par octet. C'est une mesure reproductible, pas une cause.
 
-**La colle brute est identique à l'octet** — 56 272 des deux côtés — alors que le
-module diffère. Ce n'est donc ni la chaîne de construction, ni `wasm-opt`, ni la
-façon de mesurer : tout cela est partagé et rend le même octet. C'est la
-génération de code de Rust, et `.github/workflows/site.yml` n'épingle aucune
-version.
+### Et le témoin que j'ai failli livrer n'en était pas un
 
-C'est exactement ce que l'en-tête de `check-agent-size.sh` avait établi pour le
-démon — « les 8 192 octets séparaient deux versions de rustc, pas deux machines »
-— et le même raisonnement vaut ici sans avoir à le refaire. Une mesure d'un côté
-du dépôt a servi de clé de l'autre côté.
+Le premier jet de cette tranche concluait que **la colle était identique à
+l'octet** des deux côtés, et en tirait que l'écart venait de la génération de
+code Rust et de rien d'autre. Beau raisonnement, faux deux fois :
 
-**Et le gzip bouge cinq fois plus que le brut** : 1 489 octets contre 308. La
-compression amplifie un remaniement que la taille brute dissimule. C'est donc le
-chiffre gzip qu'il faut regarder le jour où un plafond rougit — l'inverse de
-l'intuition.
+1. Le « 56 272 des deux côtés » comparait **ma** mesure à un chiffre de prose
+   dont la machine est inconnue — pas deux mesures à moi.
+2. Quand la fusion a amené deux tranches de plus, j'ai voulu vérifier par les
+   **noms** : ils sont adressés par contenu, donc des noms différents devaient
+   dire des contenus différents. Sauf que la construction **substitue le nom du
+   `.wasm` dans la colle** avant de la nommer. Deux colles identiques portent
+   donc des noms différents dès que le module diffère. Le nom ne mesure pas la
+   colle.
 
-### Ce qui est corrigé, et ce qui ne l'est pas
+Ce qui est donc écrit maintenant, à la place : **la taille de la colle n'a jamais
+été mesurée sur le coureur**, parce que la construction n'imprime que celle du
+module. Rien n'est établi sur sa dépendance à la machine, et le dire vaut mieux
+que l'inverse.
 
-Le commentaire du budget disait « Mesuré 261 252 / 112 436 » : une affirmation
-plus forte que la mesure, puisqu'elle laissait croire à un nombre reproductible.
-Elle porte maintenant les trois lectures, leur machine, le témoin et la raison.
-Le tableau de #335 reste tel quel : c'était vrai pour son moment.
+### Trois choses de plus, dont une qui inquiète
 
-**Aucune garde ne tient ces chiffres exactement, et c'est délibéré** : elle
-serait rouge sur une machine ou sur l'autre pour un module parfaitement sain —
-le même arbitrage que la garde du démon, qui compare « à la décimale ». Les
-quatre places qui annoncent encore le chiffre au présent ailleurs
+**Le gzip bouge cinq fois plus que le brut**, mesuré deux fois : 1 489 contre 308
+à `a6ce835`, 1 505 contre 308 à `3914022`. La compression amplifie un remaniement
+que le brut dissimule — donc c'est le chiffre gzip qu'il faut regarder le jour où
+un plafond rougit, l'inverse de l'intuition.
+
+**Le chiffre de la colle avait deux vagues de retard** : le commentaire annonçait
+56 272 / 9 635 quand l'artefact en pesait 58 869 / 9 763. Rien ne le tenait, et
+le code avait bougé sans lui. Corrigé, avec sa machine.
+
+**Et les deux bornes de la colle sont sous l'écart du module** : 1 131 et 1 237
+octets de marge contre 1 505. Si la colle bouge d'une chaîne à l'autre autant que
+le module, elles peuvent basculer sans que personne touche au code. On ne sait pas
+si elle bouge — elle n'est mesurée que d'un côté. **C'est nommé plutôt que
+corrigé** : relever une borne est une décision de budget, et la prendre sans la
+mesure serait deviner.
+
+### Ce qui n'est pas touché
+
+Les quatre places qui annoncent le poids au présent ailleurs
 (`crates/wisq-site/src/shell.rs`, `src/lib.rs`, `CHANGELOG.md`,
-`site/README.md`) ne sont pas touchées : les corriger demande de choisir **ce
+`site/README.md`) restent telles quelles : les corriger demande de choisir **ce
 que le dépôt publie** — un chiffre par machine, ou une granularité qui survive à
-l'écart —, et c'est une décision de voix, pas un correctif.
-
-### Et le contrôle qui ne rend rien, dit quand même
-
-J'ai cherché si une borne était en danger : une marge plus petite que l'écart
-basculerait d'une chaîne à l'autre sans que personne touche au code. Mesuré :
-**10 452, 4 564, 3 728 et 1 365 octets de marge contre 1 489 au pire**. Aucune
-n'en est là. C'est un négatif, et il est écrit parce qu'un contrôle qu'on refait
-est un contrôle qu'on paie deux fois.
+l'écart —, et c'est une décision de voix, pas un correctif. Les tableaux datés du
+journal et de la feuille de route restent aussi : ils étaient vrais pour leur
+moment.
 
 ### Le signe à retenir
 
 **« Mesuré » est une affirmation incomplète : elle doit dire où.** Un nombre
 reproductible et un nombre qui dépend de la chaîne se ressemblent exactement sur
-la page, et c'est le second qui vieillit tout seul. La défense n'est pas de le
-tenir plus fort — il ne *peut* pas être tenu — mais de **nommer ce qui le fait
-bouger**, pour que le jour où il bouge, personne ne cherche un défaut.
+la page, et c'est le second qui vieillit tout seul.
 
-Corollaire, qui a fait la moitié du travail ici : **un écart s'explique en
-cherchant ce qui n'a PAS bougé.** La colle identique à l'octet a éliminé trois
-causes d'un coup. Chercher pourquoi le module diffère aurait pris bien plus
-longtemps que de constater que son voisin ne diffère pas.
+Et le signe plus cher, parce qu'il s'est payé sur moi : **un identifiant adressé
+par contenu ne mesure que ce qu'on y a mis.** Le nom de la colle ressemblait à une
+empreinte de la colle ; il est l'empreinte de *la colle plus le nom du module*.
+Un témoin qui passe par un intermédiaire témoigne de l'intermédiaire. La seule
+façon de le voir a été de chercher **ce que la construction fait au fichier entre
+la mesure et le nom** — c'est-à-dire de relire le producteur du chiffre, pas le
+chiffre.
