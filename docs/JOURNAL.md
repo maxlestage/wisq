@@ -24006,11 +24006,13 @@ point, parce qu'elle a l'air d'avoir été mesurée deux fois.
 mettrait le cœur **Swift** devant celui que l'application embarque. Sur la même
 machine, dans le même log : **Rust 271,3, Swift 263,9**. Le Rust est devant.
 
-> **#344 nuance :** l'ordre tient aussi dans le second log (Rust 137,8, Swift
-> 129,8), donc le Rust est devant **deux fois sur deux** — mais l'écart entre les
-> deux cœurs, environ 6 %, est petit devant l'écart entre deux exécutions de la
-> même machine, qui est d'un facteur deux. C'est l'ordre qui est mesuré, pas la
-> marge. Ce
+> **#344 nuance, puis se corrige elle-même :** l'ordre tient aussi dans le
+> second log (Rust 137,8, Swift 129,8) — mais **pas dans le troisième**, où le
+> Swift passe devant (201,3 contre 178,4). Sur trois exécutions, le Rust mène
+> deux fois et le Swift une. L'écart entre les deux cœurs est d'environ 6 % et
+> celui entre deux exécutions de la même machine d'un facteur deux : **ni la
+> marge ni l'ordre ne sont établis**, et il faudrait apparier les passages pour
+> en dire quoi que ce soit. Ce
 qui faisait croire le contraire n'était pas une différence de cœur, c'était une
 borne périmée — et le README, qui annonce « around 160 million » pour le banc
 Swift sur un conteneur de développement, reste juste : 263,9 sur le coureur et
@@ -24047,6 +24049,14 @@ que l'on a maintenant sous la main, tous sur 44,6 M d'instructions :
 trente-cinq minutes d'intervalle, sur la même branche et le même commit de base.
 Un facteur deux sur la même machine. Le coureur partagé de GitHub n'a pas de
 débit ; il a une distribution.
+
+> **Un troisième échantillon, pris avant de fusionner** (exécution 38093046859,
+> 22 h 56) : **178,4 MIPS**, 0,250 s. Il tombe entre les deux autres, donc la
+> fourchette publiée 112–271 borne bien les huit relevés — et il renverse l'ordre
+> des deux cœurs, puisque le Swift y rend 201,3. Trois exécutions de la même
+> machine donnent 137,8, 178,4 et 271,3 : **la dispersion n'est pas un accident
+> entre deux runs, c'est le régime normal.** Ce qui est écrit ci-dessous sur
+> l'ordre des deux cœurs est donc à lire comme non établi.
 
 Ce qui tombe avec ça :
 
