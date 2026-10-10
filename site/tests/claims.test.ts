@@ -738,12 +738,12 @@ const accounted = new Map<string, Map<string, string>>([
         "le même nombre dans l'autre langue.",
       ],
       [
-        "112",
-        "la borne basse du débit du cœur rv32 en Rust, 112,4 MIPS sur le plus lent de cinq passages dans un conteneur de développement modeste : `cargo run --release --bin wisq-bench-rs`. L'accueil annonçait « environ 160 » comme un point, dans les deux langues, après que la FAQ était passée à une fourchette — la correction s'était arrêtée au bord du périmètre de cette garde.",
+        "44.6",
+        "le compte d'instructions jusqu'à l'invite de connexion, et il est **déterministe** : l'horloge de la machine avance avec les instructions retirées, pas avec le temps réel. Quinze passages — cinq par cœur en CI, cinq du cœur Rust dans ce conteneur — ont rendu 44,6 M exactement. Imprimé par les deux bancs, `swift run -c release wisq-bench` et `cargo run --release --bin wisq-bench-rs`, que la CI lance tous les deux. **C'est le seul chiffre de cette phrase qui soit une propriété de wisq** : l'accueil a porté « environ 160 » puis « 137 à 187 » puis « 112 à 271 » millions d'instructions par seconde, et aucun des trois ne tenait, parce qu'un débit appartient à l'hôte. Le compte, lui, ne bouge pas.",
       ],
       [
-        "271",
-        "la borne haute, 271,3 MIPS, relevée par la CI et republiée en fin de job : la borne vient d'un journal que n'importe qui peut ouvrir.",
+        "44,6",
+        "le même compte dans l'autre langue : la copie est écrite deux fois, et la virgule décimale en fait un jeton distinct.",
       ],
     ]),
   ],
@@ -1043,12 +1043,14 @@ const accounted = new Map<string, Map<string, string>>([
       ],
       [
         "0.16",
-        "le démarrage le plus rapide : 0,164 s, sur la machine où tourne la CI, " +
-          "dans l'étape « Ce que les deux bancs ont mesuré » qui republie les " +
-          "deux relevés à la fin de chaque exécution de " +
-          "`cargo run --release --bin wisq-bench-rs`. **Relu le 10 octobre 2026** " +
-          "dans le log du job « Cœur (Linux) » ; la borne annoncée était 0,239 s, " +
-          "et le cœur a gagné depuis.",
+        "le démarrage le plus rapide **observé** : 0,164 s, sur la machine où " +
+          "tourne la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui " +
+          "republie les deux relevés à la fin de chaque exécution de " +
+          "`cargo run --release --bin wisq-bench-rs`. Relu le 10 octobre 2026 " +
+          "dans le log du job « Cœur (Linux) ». **Ce n'est pas une propriété de " +
+          "cette machine** : le même coureur a imprimé 0,324 s trente-cinq " +
+          "minutes plus tard, sur la même branche. Une borne prise sur une " +
+          "exécution est un échantillon.",
       ],
       ["0,16", "le même nombre dans l'autre langue."],
       [
@@ -1062,18 +1064,35 @@ const accounted = new Map<string, Map<string, string>>([
       ],
       ["0,40", "le même nombre dans l'autre langue."],
       [
+        "137.8",
+        "le débit du cœur embarqué dans l'exécution 38091041192 de la CI, " +
+          "22 h 24 UTC le 10 octobre 2026, job « Cœur (Linux) ».",
+      ],
+      ["137,8", "le même nombre dans l'autre langue."],
+      [
+        "271.3",
+        "le débit du même cœur dans l'exécution 38089077102, 21 h 49 le même " +
+          "jour, même branche, même commit de base. Les deux logs sont " +
+          "ouvrables, et c'est leur écart — un facteur deux sur la même " +
+          "machine — qui est l'affirmation de la phrase.",
+      ],
+      ["271,3", "le même nombre dans l'autre langue."],
+      [
         "112",
-        "le débit du plus lent de ces passages, 112,4 MIPS. La page annonçait " +
-          "« environ 160 » comme un point, puis « 137 à 187 » comme une " +
-          "fourchette ; les deux bornes étaient périmées, et dans des sens " +
-          "opposés.",
+        "le plus bas débit observé, 112,4 MIPS, dans ce conteneur de " +
+          "développement. Les sept relevés du cœur embarqué qu'on a sous la " +
+          "main : 112,4 / 113,3 / 114,9 / 124,1 / 137,8 / 138,8 / 271,3 MIPS — " +
+          "cinq passages d'un conteneur et deux exécutions de la CI.",
       ],
       [
         "271",
-        "le débit du plus rapide, 271,3 MIPS, relevé par la CI et republié en " +
-          "fin de job. La borne haute vient donc d'un journal que n'importe qui " +
-          "peut ouvrir, et non d'une mesure faite une fois — c'est ce journal " +
-          "qui a montré que « 187 » ne tenait plus.",
+        "le plus haut observé, 271,3 MIPS, dans un log de la CI. **Et c'est ce " +
+          "chiffre qui a appris à cette page ce qu'elle dit maintenant** : la " +
+          "page annonçait 186,6 MIPS en affirmant que la borne venait de ce " +
+          "journal. Le journal disait 271,3, puis 137,8 à l'exécution suivante. " +
+          "La borne annoncée n'était donc pas périmée — elle était un " +
+          "échantillon présenté comme une borne, et deux échantillons de plus " +
+          "suffisent à le montrer.",
       ],
       [
         "32",

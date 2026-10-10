@@ -23994,11 +23994,23 @@ bornes annoncées étaient périmées **dans des sens opposés** : la basse trop
 haute, la haute trop basse. Une fourchette fausse des deux côtés est pire qu'un
 point, parce qu'elle a l'air d'avoir été mesurée deux fois.
 
+> **#344 corrige : « périmées » est faux.** Le log du run suivant, sur la même
+> branche et trente-cinq minutes plus tard, imprime **137,8 MIPS** pour le même
+> cœur, là où le précédent imprimait 271,3. La borne annoncée de 186,6 n'était
+> pas périmée : c'était un **échantillon présenté comme une borne**, et la mienne
+> l'était tout autant. L'accueil ne publie plus de débit du tout.
+
 ### L'hypothèse de #342, tranchée
 
 #342 laissait ouvert que 160 (Swift, conteneur) contre 137 (Rust, conteneur)
 mettrait le cœur **Swift** devant celui que l'application embarque. Sur la même
-machine, dans le même log : **Rust 271,3, Swift 263,9**. Le Rust est devant. Ce
+machine, dans le même log : **Rust 271,3, Swift 263,9**. Le Rust est devant.
+
+> **#344 nuance :** l'ordre tient aussi dans le second log (Rust 137,8, Swift
+> 129,8), donc le Rust est devant **deux fois sur deux** — mais l'écart entre les
+> deux cœurs, environ 6 %, est petit devant l'écart entre deux exécutions de la
+> même machine, qui est d'un facteur deux. C'est l'ordre qui est mesuré, pas la
+> marge. Ce
 qui faisait croire le contraire n'était pas une différence de cœur, c'était une
 borne périmée — et le README, qui annonce « around 160 million » pour le banc
 Swift sur un conteneur de développement, reste juste : 263,9 sur le coureur et
@@ -24014,3 +24026,68 @@ personne ne l'avait ouvert depuis que le chiffre y avait été pris. C'est le
 corollaire exact de « les chiffres se relancent, ils ne se citent pas » — et la
 garde qui tient un chiffre publié ne tient que son **existence**, jamais sa
 fraîcheur. La fraîcheur n'a qu'un seul instrument : relancer.
+
+## #344 — une borne prise sur une exécution n'est pas une borne
+
+#343 a relancé les deux bancs et conclu que les bornes publiées étaient
+**périmées**. Elles ne l'étaient pas. Voici les sept relevés du cœur embarqué
+que l'on a maintenant sous la main, tous sur 44,6 M d'instructions :
+
+| où | débit (MIPS) | durée (s) |
+| --- | --- | --- |
+| ce conteneur, passage 2 | **112,4** | 0,397 |
+| ce conteneur, passage 1 | 113,3 | 0,394 |
+| ce conteneur, passage 4 | 114,9 | 0,388 |
+| ce conteneur, passage 5 | 124,1 | 0,359 |
+| **CI, exécution 38091041192, 22 h 24** | **137,8** | 0,324 |
+| ce conteneur, passage 3 | 138,8 | 0,321 |
+| **CI, exécution 38089077102, 21 h 49** | **271,3** | 0,164 |
+
+**Les deux exécutions de la CI sont les deux extrêmes du tableau**, à
+trente-cinq minutes d'intervalle, sur la même branche et le même commit de base.
+Un facteur deux sur la même machine. Le coureur partagé de GitHub n'a pas de
+débit ; il a une distribution.
+
+Ce qui tombe avec ça :
+
+1. **« 186,6, relevé par la CI » n'était pas périmé.** C'était un échantillon
+   présenté comme une borne — et il est, à l'intérieur de ce qu'on observe
+   aujourd'hui, parfaitement représentatif.
+2. **« 271,3 » n'était pas meilleur.** Ma propre borne haute venait d'un seul
+   log, exactement de la même façon. J'ai refait l'erreur que je venais de
+   nommer, avec un chiffre plus récent — ce qui est la version la plus facile à
+   ne pas voir.
+3. **« 112 à 271 » comme fourchette entre machines** était une attribution
+   fausse : le conteneur donne 112–139 et la CI 138–271. Les intervalles se
+   chevauchent ; les machines ne se classent pas.
+
+### Ce que le site dit maintenant
+
+**L'accueil ne publie plus de débit.** Il publie le chiffre qui est une
+propriété de wisq et non de l'hôte : **44,6 millions d'instructions invitées, le
+même compte sur toutes les machines**, parce que l'horloge de la machine avance
+avec les instructions et non avec le temps réel. Quinze passages l'ont rendu
+exactement — dix en CI, cinq ici.
+
+La FAQ garde la fourchette observée, 0,16 à 0,40 s / 112 à 271 MIPS, et dit
+désormais **ce que cette fourchette est** : l'écart n'est pas entre machines, la
+machine de la CI à elle seule a imprimé 137,8 puis 271,3, donc un chiffre pris
+sur une exécution est un échantillon. Les deux numéros d'exécution sont dans la
+provenance ; les deux logs sont ouvrables.
+
+### Le signe à retenir
+
+**Un chiffre d'hôte n'a pas de valeur, il a une dispersion** — et la seule façon
+de s'en apercevoir est de le mesurer **deux fois sur la même machine**. Mesurer
+deux machines, ce que #343 a fait, donne au contraire la fausse impression d'un
+écart expliqué : chaque machine semble avoir son chiffre, et l'on attribue à
+l'une la borne basse et à l'autre la haute. Le second log de la même machine
+détruit cette histoire en une ligne.
+
+Et le corollaire, qui est le vrai gain de la tranche : **sur la page la plus lue,
+mettre le chiffre déterministe plutôt que le chiffre d'hôte**. Le compte
+d'instructions ne se périme pas, ne dépend pas du coureur, et dit la même chose —
+que la machine arrive à l'invite tout de suite. Les trois versions successives du
+débit sur l'accueil — « environ 160 », « 137 à 187 », « 112 à 271 » — n'avaient
+pas trois défauts différents : elles avaient le même, qui est de publier un
+chiffre qui n'appartient pas au logiciel.
