@@ -23880,6 +23880,13 @@ langues, avec « selon la machine qui l'exécute » — ce que le point taisait.
 provenances de « 137 » et « 187 » suivent, avec l'instrument
 (`cargo run --release --bin wisq-bench-rs`) que la CI lance.
 
+> **#343 corrige : la fourchette portée ici était elle-même périmée.** Le log de
+> la CI de cette même PR imprime **271,3 MIPS** pour le cœur embarqué, là où la
+> provenance de « 187 » affirmait que la borne haute venait de ce log. Les deux
+> bornes ont été relancées et valent **112 à 271**. La correction est dans la
+> même PR, parce qu'il n'était pas question de committer une provenance que je
+> venais de mesurer fausse.
+
 **441 tests sur 29 fichiers, inchangé** — aucun test de plus : ce sont les trois
 tests de périmètre qui voient un fichier de plus. Les appels d'assertion, eux,
 passent de 5 043 à **5 093**, et c'est là que la différence se lit.
@@ -23916,6 +23923,13 @@ des deux cœurs à la fin de chaque exécution, donc la réponse se lit dans un 
 que n'importe qui peut ouvrir. **Une hypothèse sans preuve vaut mieux qu'une
 preuve fabriquée**, donc elle est écrite ici comme hypothèse.
 
+> **#343 corrige, deux fois.** « Ce conteneur ne peut pas les relancer » était
+> faux : l'image rv32 se récupère là où la CI la récupère, et les deux bancs ont
+> tourné ici. Et l'hypothèse elle-même est tranchée — **sur la même machine, le
+> cœur Rust est devant** : 271,3 contre 263,9 MIPS sur le coureur. Ce qui
+> mettait le Swift devant n'était pas une différence de cœur mais une borne
+> périmée de quatre mois.
+
 ### Le signe à retenir
 
 **Une correction s'arrête là où s'arrête la garde qui l'a demandée.** Le chiffre
@@ -23924,3 +23938,79 @@ resté faux parce qu'aucune ne le lisait — et le dépôt portait déjà, dans 
 justification du nombre corrigé, la phrase qui condamnait l'autre copie. Le
 périmètre d'une garde est donc une affirmation sur le monde, exactement comme
 les nombres qu'elle relit : il se vérifie, et il se compte.
+
+## #343 — la borne haute se disait relevée par la CI ; la CI en imprimait une autre
+
+#342 a porté sur l'accueil la fourchette que la FAQ publiait : **137 à 187
+millions d'instructions par seconde**. Sa provenance, dans le fichier de garde,
+dit de la borne haute :
+
+> le débit du plus rapide, 186,6 MIPS, relevé par la CI et republié en fin de
+> job. La borne haute vient donc d'un journal que n'importe qui peut ouvrir, et
+> non d'une mesure faite une fois.
+
+**Alors je l'ai ouvert.** Le log du job « Cœur (Linux) » de la PR de #342, lu
+par son URL signée :
+
+```
+cœur Rust — celui que l'application embarque
+instructions : 44.6 M retirées (budget 200 M)
+durée        : 0.164 s
+débit        : 271.3 MIPS
+
+cœur Swift
+durée        : 0.169 s
+débit        : 263.9 MIPS
+```
+
+**271,3, pas 186,6.** Une provenance qui invite à ouvrir un journal est une
+promesse vérifiable, et c'est la seule raison pour laquelle ce défaut a été vu :
+la phrase disait où regarder.
+
+### La borne basse, relancée
+
+Le conteneur n'avait pas d'image rv32 — mais la CI en récupère une, et de
+l'endroit qu'elle nomme : `mini-rv32ima-images`, `linux-6.1.14-rv32nommu`. Cinq
+passages de `cargo run --release --bin wisq-bench-rs` ici, le même banc que la
+CI lance :
+
+| passage | 1 | 2 | 3 | 4 | 5 |
+| --- | --- | --- | --- | --- | --- |
+| durée (s) | 0,394 | 0,397 | **0,321** | 0,388 | 0,359 |
+| débit (MIPS) | 113,3 | 112,4 | **138,8** | 114,9 | 124,1 |
+
+Le plus lent : **112,4 MIPS**, 0,397 s. Et le détail qui vaut d'être écrit : la
+borne basse annoncée, 136,9 MIPS à 0,326 s, « le plus lent de cinq passages dans
+un conteneur de développement modeste », est à deux dixièmes de pourcent du
+**plus rapide** de mes cinq passages. Deux conteneurs du même genre ne rendent
+pas le même chiffre, et « le plus lent de cinq » n'est pas une propriété du
+logiciel : c'est une propriété de la machine ce jour-là.
+
+### Ce que le site publie maintenant
+
+**0,16 à 0,40 s, soit 112 à 271 millions d'instructions par seconde** — quatre
+nombres, dans deux langues, aux deux endroits (l'accueil et la FAQ). Les deux
+bornes annoncées étaient périmées **dans des sens opposés** : la basse trop
+haute, la haute trop basse. Une fourchette fausse des deux côtés est pire qu'un
+point, parce qu'elle a l'air d'avoir été mesurée deux fois.
+
+### L'hypothèse de #342, tranchée
+
+#342 laissait ouvert que 160 (Swift, conteneur) contre 137 (Rust, conteneur)
+mettrait le cœur **Swift** devant celui que l'application embarque. Sur la même
+machine, dans le même log : **Rust 271,3, Swift 263,9**. Le Rust est devant. Ce
+qui faisait croire le contraire n'était pas une différence de cœur, c'était une
+borne périmée — et le README, qui annonce « around 160 million » pour le banc
+Swift sur un conteneur de développement, reste juste : 263,9 sur le coureur et
+~160 sur un conteneur modeste, c'est le même écart de machine que celui qu'on
+vient de mesurer pour le cœur Rust.
+
+### Le signe à retenir
+
+**Une provenance qui dit où regarder se fait vérifier ; une qui cite un chiffre
+ne se fait pas vérifier.** La borne haute de la FAQ portait sa propre
+réfutation : elle nommait le journal, le journal était à portée de `curl`, et
+personne ne l'avait ouvert depuis que le chiffre y avait été pris. C'est le
+corollaire exact de « les chiffres se relancent, ils ne se citent pas » — et la
+garde qui tient un chiffre publié ne tient que son **existence**, jamais sa
+fraîcheur. La fraîcheur n'a qu'un seul instrument : relancer.
