@@ -23705,3 +23705,113 @@ le binaire invoqué, la substitution que la construction glisse entre la mesure 
 le nom. #339 a trouvé un vrai écart de 308 octets *et* s'est trompée trois fois
 sur le reste, parce qu'elle a cherché la cause dans l'objet mesuré plutôt que dans
 l'appareil de mesure.
+
+## #341 — la garde des chiffres publiés ne lisait qu'une langue sur deux
+
+L'accueil publie quatre chiffres sur ce dépôt. `crates/wisq-site/src/content.rs`
+écrit le bloc **deux fois**, une fois par langue, donc le site en publie huit.
+`claims.test.ts` en lisait **quatre** : son accès était câblé sur `copy.en`.
+
+### Mesuré avant d'écrire une ligne
+
+« 2600 » dans la tuile française, « 2632 » dans l'anglaise, pré-rendu
+reconstruit :
+
+```
+438 pass
+0 fail
+Ran 438 tests across 29 files.
+```
+
+**Vert.** L'accueil français annonçait un compte de tests faux et rien dans le
+dépôt ne l'aurait dit. La mutation a été vérifiée appliquée par `diff` sur la
+ligne, et le fichier restauré depuis la copie prise avant.
+
+### Le signe était dans la garde elle-même
+
+```ts
+expect(claimedValue(/gates|portes/)).toBe(jobs + 1);
+```
+
+L'alternative `portes` est française. Elle ne pouvait **jamais** s'apparier :
+les étiquettes lues étaient les anglaises. Du code mort — et du code mort qui
+donne à la garde l'air d'être bilingue, ce qui est exactement comment je l'ai
+relue trois tranches de suite sans la voir. **Une alternative morte dans une
+expression régulière promet une couverture qu'elle n'a pas.**
+
+Et mon propre relevé de travail disait, du compte de tests, « README.md,
+README.fr.md et `content.ts` (×2) ». **Le relevé disait ×2 ; la garde lisait
+×1.** Le chiffre miroir était nommé, et le miroir n'était pas regardé.
+
+### La règle qui a tranché
+
+Chercher la même absence là où la chose est **présente** : le reste du fichier
+lit bien les deux langues — l'ABI C (`["fr", /une ABI C de (\d+) fonctions/]`),
+les corpus matériels (« dans les deux langues »), les familles d'architectures —
+et `agent-size.test.ts` porte un test nommé « les deux langues de la même page
+sont lues séparément ». L'habitude du dépôt est bilingue. Le bloc des chiffres
+était l'**exception**, pas la norme, et c'est ce qui en fait un défaut plutôt
+qu'une convention.
+
+J'ai ensuite cherché la même cécité dans les fichiers d'à côté. Deux lectures
+d'une seule langue subsistent et sont délibérées : `build.test.ts` lit
+l'anglais **pour le comparer** au français, et `hydration.test.ts` vérifie un
+attribut sur l'accueil anglais après avoir bouclé sur toutes les pages. Aucun
+chiffre, aucun miroir.
+
+### Le correctif
+
+`facts` prend une langue, `claimedValue` aussi, et les trois gardes du bloc
+tournent sur les deux. `notHeld` — la liste des chiffres **non tenus**, nommés
+plutôt que tus — gagne les deux étiquettes françaises : sans elles, le balayage
+français trouverait deux chiffres ni vérifiés ni nommés. Et un test de plus, qui
+tient le miroir lui-même :
+
+```ts
+test("les deux langues publient les mêmes chiffres, dans le même ordre", () => {
+  const anglais = facts("en").map((item) => item.value);
+  const francais = facts("fr").map((item) => item.value);
+  expect(anglais.length, "l'accueil anglais ne publie aucun chiffre").toBeGreaterThan(0);
+  expect(francais, "les tuiles de l'accueil français ont dérivé").toEqual(anglais);
+});
+```
+
+Positionnel, et non par étiquette : deux des quatre étiquettes ne sont même pas
+traduites (« tests » s'écrit pareil), et les quatre valeurs sont des faits sur
+ce dépôt — aucune ne peut dépendre de la langue du lecteur. La longueur est
+exigée non nulle, sans quoi la garde comparerait deux listes vides le jour où le
+pré-rendu changerait de forme.
+
+**438 → 441 tests sur 29 fichiers.**
+
+### Les deux sabotages, et ce que chacun nomme
+
+Le premier verdict est venu **sur le même artefact**, par un accident qui vaut
+d'être écrit : le binaire de pré-rendu portait encore le contenu saboté, parce
+que `target/` n'avait pas été reconstruit après la restauration. Donc le même
+octet d'entrée, les deux gardes :
+
+| sur le pré-rendu saboté | avant | après |
+| --- | --- | --- |
+| `bun test` | 438 pass, 0 fail | 439 pass, **2 fail** |
+
+Les deux qui tombent, nommés : `the test count is the real one (fr)` et `les
+deux langues publient les mêmes chiffres, dans le même ordre`. C'est un
+avant/après sur l'**objet identique**, ce qu'aucune paire de constructions ne
+donne. L'artefact périmé qui avait coûté une longue chasse en #332 a payé ici :
+c'est le même mécanisme, pris dans l'autre sens.
+
+Second sabotage, un cinquième chiffre dans la **seule** tuile française
+(`3 cœurs de VM`) : tombent `les deux langues publient les mêmes chiffres` et
+`every advertised figure is checked or named as unheld (fr)` — le membre que les
+étiquettes françaises de `notHeld` ajoutent. Restauré depuis la copie prise
+avant, `diff` muet, `git status --porcelain crates/` vide.
+
+### Le signe à retenir
+
+**Un comptage qui ne voit qu'une partie de ce qu'il compte ne garde pas le
+reste** — la variante du jour est la plus traître des quatre déjà relevées,
+parce que la garde **portait le signe de sa propre cécité** : une alternative
+française dans son expression régulière, morte depuis toujours, qui la faisait
+lire comme bilingue. Un fragment de code écrit pour une langue qu'on ne lit pas
+n'est pas une couverture, c'est un alibi.
