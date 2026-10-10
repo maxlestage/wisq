@@ -50,11 +50,33 @@ function testCount(): number {
 /// Les chiffres que l'accueil publie, tels que le pré-rendu les rend : la copie
 /// est dans `crates/wisq-site/src/content.rs` depuis que le front est en Rust,
 /// et le catalogue du pré-rendu est sa seule lecture (`tests/catalogue.ts`).
-const facts = () => catalogue().copy.en!.facts;
+///
+/// **Le bloc existe en deux langues, et ce fichier n'en lisait qu'une.**
+/// `facts` était câblé sur `copy.en`. `content.rs` écrit le bloc deux fois, une
+/// fois par langue, et les quatre tuiles françaises n'étaient lues par aucun
+/// test du dépôt. **Mesuré avant d'écrire une ligne ici** : mettre « 2600 »
+/// dans la tuile française en laissant « 2632 » dans l'anglaise laisse les
+/// 438 tests verts, sur un pré-rendu reconstruit. L'accueil français publiait
+/// alors un compte faux, et rien ne l'aurait dit.
+///
+/// **Et le signe qui l'a caché était dans la garde elle-même** :
+/// `claimedValue(/gates|portes/)` porte une alternative française. Elle ne
+/// pouvait jamais s'apparier, puisque les étiquettes lues étaient anglaises —
+/// du code mort qui donne à la garde l'air d'être bilingue, et qui l'a fait
+/// relire comme telle. Le reste du fichier lit bien les deux langues (l'ABI C,
+/// les corpus matériels, les familles d'architectures) : chercher la même
+/// absence là où la chose est présente a montré que celle-ci est une
+/// exception, pas l'habitude du dépôt.
+type Langue = "en" | "fr";
+const LANGUES: Langue[] = ["en", "fr"];
 
-function claimedValue(label: RegExp): number {
-  const item = facts().find((entry) => label.test(entry.label));
-  if (!item) throw new Error(`aucun chiffre annoncé ne correspond à ${label}`);
+const facts = (langue: Langue) => catalogue().copy[langue]!.facts;
+
+function claimedValue(label: RegExp, langue: Langue): number {
+  const item = facts(langue).find((entry) => label.test(entry.label));
+  if (!item) {
+    throw new Error(`aucun chiffre annoncé en ${langue} ne correspond à ${label}`);
+  }
   return Number(item.value);
 }
 
@@ -73,8 +95,26 @@ const ENGLISH_NUMBERS = [
 ];
 
 describe("advertised claims match the repository", () => {
-  test("the test count is the real one", () => {
-    expect(claimedValue(/tests/)).toBe(testCount());
+  test.each(LANGUES)("the test count is the real one (%s)", (langue) => {
+    expect(claimedValue(/tests/, langue)).toBe(testCount());
+  });
+
+  /// **Les deux tuiles disent la même chose du même dépôt.**
+  ///
+  /// Les quatre chiffres sont des faits sur ce dépôt : aucun ne peut dépendre
+  /// de la langue du lecteur. Seules les étiquettes sont traduites, et deux
+  /// d'entre elles ne le sont même pas (« tests » s'écrit pareil). La garde
+  /// est donc positionnelle : mêmes valeurs, dans le même ordre. Elle attrape
+  /// la dérive qu'une garde par étiquette manquerait — un chiffre corrigé d'un
+  /// côté seulement — et un cinquième chiffre ajouté à une seule langue.
+  ///
+  /// Comparer deux listes vides passerait le jour où le pré-rendu changerait
+  /// de forme, donc la garde exige d'abord d'en trouver.
+  test("les deux langues publient les mêmes chiffres, dans le même ordre", () => {
+    const anglais = facts("en").map((item) => item.value);
+    const francais = facts("fr").map((item) => item.value);
+    expect(anglais.length, "l'accueil anglais ne publie aucun chiffre").toBeGreaterThan(0);
+    expect(francais, "les tuiles de l'accueil français ont dérivé").toEqual(anglais);
   });
 
   /// The same number is printed in both READMEs, and nothing was watching
@@ -372,17 +412,22 @@ describe("advertised claims match the repository", () => {
     // zéro le jour où le format change. Elle doit en trouver, et les nommer.
     expect(gating.length, "aucun workflow ne se déclenche sur pull_request").toBeGreaterThan(0);
     expect(jobs, `jobs comptés dans ${gating.join(", ") || "aucun fichier"}`).toBeGreaterThan(0);
-    // The site counts GitGuardian alongside our own jobs.
-    expect(claimedValue(/gates|portes/)).toBe(jobs + 1);
+    // The site counts GitGuardian alongside our own jobs. Les deux langues :
+    // l'alternative `portes` ne pouvait pas s'apparier avant que `facts` sache
+    // lire le français, et une alternative morte n'est pas une garde.
+    for (const langue of LANGUES) {
+      expect(claimedValue(/gates|portes/, langue), `en ${langue}`).toBe(jobs + 1);
+    }
   });
 
   /// **Les chiffres que ce fichier ne tient pas, nommés plutôt que tus.**
   ///
-  /// Ce fichier vérifie deux des quatre chiffres publiés. Un lecteur — et
-  /// l'auteur de ces lignes le premier — en conclut raisonnablement que les
-  /// quatre le sont : rien ici ne dit le contraire, et le commentaire de
-  /// `content.ts` promet que la garde « échoue quand un chiffre cesse d'être
-  /// vrai ».
+  /// Ce fichier vérifie deux des quatre chiffres de chaque langue — quatre des
+  /// huit que le site publie, puisque `content.rs` écrit le bloc une fois par
+  /// langue. Un lecteur — et l'auteur de ces lignes le premier — en conclut
+  /// raisonnablement que les quatre le sont : rien ici ne dit le contraire, et
+  /// le commentaire de `content.ts` promet que la garde « échoue quand un
+  /// chiffre cesse d'être vrai ».
   ///
   /// **Le silence est le défaut**, pas la décision qui manque. Ce qui suit ne
   /// prétend pas tenir ces deux chiffres : ça tient une autre propriété, et
@@ -409,27 +454,41 @@ describe("advertised claims match the repository", () => {
   /// « une assertion qui a l'air d'une garde » : elle tiendrait le mécanisme,
   /// pas le nombre. Aucun des deux chiffres n'est établi comme faux
   /// aujourd'hui ; ils sont **non tenus**, et c'est ça qui est écrit.
+  ///
+  /// **Les étiquettes sont traduites, donc la liste l'est aussi.** Une liste
+  /// qui n'aurait nommé que les étiquettes anglaises aurait laissé les deux
+  /// chiffres français hors du balayage : ni vérifiés, ni nommés, et le test
+  /// d'à côté vert par-dessus.
   const notHeld = new Map([
     [
       "warnings, strict concurrency",
       "aucun -warnings-as-errors nulle part : un avertissement n'ouvre aucune porte",
     ],
     [
+      "avertissement, concurrence stricte",
+      "aucun -warnings-as-errors nulle part : un avertissement n'ouvre aucune porte",
+    ],
+    [
       "real kernel booted per CI run",
+      "l'étape récupère l'image en best effort et saute si elle manque",
+    ],
+    [
+      "vrai noyau démarré par exécution CI",
       "l'étape récupère l'image en best effort et saute si elle manque",
     ],
   ]);
 
-  test("every advertised figure is either checked here or named as unheld", () => {
+  test.each(LANGUES)("every advertised figure is checked or named as unheld (%s)", (langue) => {
     const checked = [/tests/, /gates|portes/];
-    for (const item of facts()) {
+    for (const item of facts(langue)) {
       const held = checked.some((pattern) => pattern.test(item.label));
       const named = notHeld.has(item.label);
       expect(
         held || named,
-        `le site publie « ${item.value} ${item.label} » et rien ici ne le ` +
-          `vérifie ni ne dit pourquoi. Ajoute une vérification, ou inscris-le ` +
-          `dans notHeld avec sa raison — un chiffre publié ne passe pas en silence.`,
+        `le site publie « ${item.value} ${item.label} » en ${langue} et rien ` +
+          `ici ne le vérifie ni ne dit pourquoi. Ajoute une vérification, ou ` +
+          `inscris-le dans notHeld avec sa raison — un chiffre publié ne ` +
+          `passe pas en silence.`,
       ).toBe(true);
       // **Et pas les deux.** Un chiffre qui serait à la fois vérifié et
       // déclaré non tenu laisserait une entrée périmée derrière une garde qui
@@ -446,7 +505,7 @@ describe("advertised claims match the repository", () => {
   /// un chiffre que le site n'affiche plus est une explication sans objet, et
   /// elle se lit comme une lacune qui n'existe pas.
   test("nothing lingers in the unheld list for a figure the site no longer shows", () => {
-    const published = new Set(facts().map((item) => item.label));
+    const published = new Set(LANGUES.flatMap((langue) => facts(langue).map((item) => item.label)));
     for (const label of notHeld.keys()) {
       expect(published.has(label), `« ${label} » n'est plus publié`).toBe(true);
     }
