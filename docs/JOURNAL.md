@@ -23815,3 +23815,112 @@ parce que la garde **portait le signe de sa propre cécité** : une alternative
 française dans son expression régulière, morte depuis toujours, qui la faisait
 lire comme bilingue. Un fragment de code écrit pour une langue qu'on ne lit pas
 n'est pas une couverture, c'est un alibi.
+
+## #342 — l'accueil annonçait un chiffre que le dépôt avait déjà jugé faux
+
+Le périmètre du balayage des nombres publiés est énoncé **page par page**, et sa
+prose dit qu'il « ne peut plus croître en silence » : toute page de
+`crates/wisq-site/src/pages/` est tenue, avouée non tenue, ou déléguée à une
+garde nommée.
+
+**L'accueil n'est pas dans `pages/`.** Son texte vit dans `content.rs`, un
+répertoire au-dessus. C'est la page la plus lue du site, et elle était hors du
+périmètre.
+
+### Le comptage
+
+| les nombres distincts de `content.rs` | |
+| --- | --- |
+| en tout | **23** |
+| le bloc `facts` (tenu depuis #341, dans les deux langues) | 4 |
+| aussi publiés par une page balayée — leur vérité est tracée là-bas | 17 |
+| **publiés par l'accueil seul** | **2** : « 160 » et « 0,3 » |
+
+### Le défaut, et le dépôt l'avait déjà jugé
+
+L'accueil annonçait, dans les deux langues :
+
+> around **160 million** guest instructions a second
+> environ **160 millions** d'instructions invitées par seconde
+
+Un point, sans machine nommée et sans cœur nommé. Or la provenance de « 137 »,
+dans ce même fichier de garde, dit mot pour mot :
+
+> La page annonçait « environ 160 » comme un point ; deux machines suffisent à
+> montrer pourquoi un point ne tient pas.
+
+La FAQ a été corrigée en fourchette — **137 à 187 millions**, 0,24 à 0,33 s, la
+borne basse sur un conteneur de développement modeste et la haute relevée par la
+CI. L'accueil a gardé le point. **La correction s'était arrêtée au bord du
+périmètre de la garde**, et c'est `stale-claims.test.ts` mot pour mot : « une
+garde qui tient deux copies sur trois laisse la troisième dériver, et personne
+ne le voit parce que les deux gardées s'accordent. »
+
+### La garde, écrite avant le correctif, nomme le défaut toute seule
+
+`content.rs` entre dans le périmètre : deux fonctions savent où il vit
+(`relativePathOf`, `pathOf`), `publishedFiles()` le joint aux pages, et les
+trois tests de périmètre bouclent dessus. Puis sa provenance est écrite,
+vingt-deux entrées — **sauf celle de 160**. Le résultat, avant d'avoir touché à
+une seule phrase de l'accueil :
+
+```
+error: « content.rs » publie « 160 » et rien ne dit d'où il vient.
+(fail) … > aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient
+41 pass, 1 fail
+```
+
+**Un seul rouge** : les vingt-deux autres nombres de l'accueil étaient
+justifiables, et c'est bien le vingt-troisième qui ne l'était pas.
+
+### Le correctif
+
+La phrase porte désormais la fourchette que la FAQ publiait déjà, dans les deux
+langues, avec « selon la machine qui l'exécute » — ce que le point taisait. Les
+provenances de « 137 » et « 187 » suivent, avec l'instrument
+(`cargo run --release --bin wisq-bench-rs`) que la CI lance.
+
+**441 tests sur 29 fichiers, inchangé** — aucun test de plus : ce sont les trois
+tests de périmètre qui voient un fichier de plus. Les appels d'assertion, eux,
+passent de 5 043 à **5 093**, et c'est là que la différence se lit.
+
+### Les deux sabotages
+
+Le balayage lit le **fichier**, pas le catalogue du pré-rendu, donc aucune
+reconstruction n'est nécessaire : quatre cents millisecondes par essai.
+
+| la mutation | ce qui tombe |
+| --- | --- |
+| `6.1` → `6.2`, une occurrence sur quatre | `aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient` — « content.rs » publie « 6.2 » |
+| les quatre occurrences de `6.1` | la même, **et** `rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus` — « 6.1 » n'est plus sur content.rs |
+
+Le nombre d'occurrences est vérifié **avant** de muter (1 attendu, puis 4), parce
+qu'un « SURVÉCU » est le plus souvent une mutation qui ne s'est pas appliquée.
+Restauré depuis la copie prise avant, `diff` muet.
+
+### Ce que cette tranche n'établit pas, et pourquoi
+
+Le README publie **« around 160 million »** pour la même machine rv32 — mais
+pour l'autre cœur : sa commande, imprimée deux lignes au-dessus, est
+`swift run -c release wisq-bench`, et `frozen-figures.test.ts` a établi que ce
+banc-là ne dépend que de `WisqVM`, donc qu'il mesure le cœur **Swift**. Le point
+du README est donc daté, situé (« the x86_64 Linux container this was developed
+on ») et relançable : ce n'est pas la même affirmation que celle de l'accueil, et
+je ne l'ai pas touché.
+
+Reste une question ouverte, et elle n'est pas tranchée ici : 160 pour le cœur
+Swift et 137 pour le cœur Rust, sur deux conteneurs du même genre, mettraient le
+Swift **devant** le Rust. Ce conteneur ne peut pas les relancer — il n'a pas
+d'image rv32, seulement le noyau Alpine x86. La CI, elle, imprime les chiffres
+des deux cœurs à la fin de chaque exécution, donc la réponse se lit dans un log
+que n'importe qui peut ouvrir. **Une hypothèse sans preuve vaut mieux qu'une
+preuve fabriquée**, donc elle est écrite ici comme hypothèse.
+
+### Le signe à retenir
+
+**Une correction s'arrête là où s'arrête la garde qui l'a demandée.** Le chiffre
+de la FAQ a été corrigé parce qu'une garde le lisait ; celui de l'accueil est
+resté faux parce qu'aucune ne le lisait — et le dépôt portait déjà, dans la
+justification du nombre corrigé, la phrase qui condamnait l'autre copie. Le
+périmètre d'une garde est donc une affirmation sur le monde, exactement comme
+les nombres qu'elle relit : il se vérifie, et il se compte.
