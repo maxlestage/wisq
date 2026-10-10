@@ -563,7 +563,39 @@ describe("advertised claims match the repository", () => {
 /// portent que des données, donc les seuls nombres qu'il y trouve sont ceux
 /// que le site publie — et c'est pourquoi les gardes du contenu vivent dans
 /// `crates/wisq-site/src/contenu_tests.rs` et non à côté des pages.
-const pagesDirectory = join(repoRoot, "crates", "wisq-site", "src", "pages");
+///
+/// **Et l'accueil n'est pas dans `pages/`.** Son texte vit dans `content.rs`,
+/// un répertoire au-dessus, donc le périmètre énoncé « page par page » ne le
+/// couvrait pas — et c'est la page la plus lue du site. Mesuré : `content.rs`
+/// publie **23 nombres distincts**, dont quatre sont le bloc `facts` (tenu
+/// ci-dessus) ; des dix-neuf autres, **dix-sept** apparaissent aussi sur une
+/// page balayée, donc leur vérité est tracée là-bas, et **deux** n'étaient
+/// publiés que par l'accueil : « 160 » et « 0,3 ».
+///
+/// Le premier était un défaut, et le dépôt l'avait déjà jugé : la provenance de
+/// « 137 », ci-dessous, dit mot pour mot que « la page annonçait « environ
+/// 160 » comme un point ; deux machines suffisent à montrer pourquoi un point
+/// ne tient pas ». La page de la FAQ a été corrigée en fourchette ; l'accueil a
+/// gardé le point, dans les deux langues, pendant tout ce temps, **parce que la
+/// correction s'est arrêtée au bord du périmètre**. C'est la troisième copie de
+/// `stale-claims.test.ts`, mot pour mot : « une garde qui tient deux copies sur
+/// trois laisse la troisième dériver, et personne ne le voit parce que les deux
+/// gardées s'accordent. »
+const sourceDirectory = join(repoRoot, "crates", "wisq-site", "src");
+const pagesDirectory = join(sourceDirectory, "pages");
+
+/// L'accueil, nommé une fois : c'est le seul fichier du périmètre qui ne soit
+/// pas dans `pages/`, et les deux fonctions ci-dessous sont les seules à savoir
+/// où il vit.
+const HOME = "content.rs";
+
+function relativePathOf(file: string): string {
+  return file === HOME ? file : `pages/${file}`;
+}
+
+function pathOf(file: string): string {
+  return join(file === HOME ? sourceDirectory : pagesDirectory, file);
+}
 
 /// Un nombre, éventuellement à espaces ou à virgule, qui n'est pas collé à un
 /// mot ni à un trait d'union : « x86-64 » et « rv32ima » ne sont pas des
@@ -576,8 +608,13 @@ function pageFiles(): string[] {
     .sort();
 }
 
+/// Tout ce que le site publie en prose : les pages, et l'accueil.
+function publishedFiles(): string[] {
+  return [...pageFiles(), HOME];
+}
+
 function figuresOn(page: string): string[] {
-  const text = readFileSync(join(pagesDirectory, page), "utf8");
+  const text = readFileSync(pathOf(page), "utf8");
   return [
     ...new Set((text.match(publishedNumber) ?? []).map((raw) => raw.trim())),
   ].sort();
@@ -609,6 +646,107 @@ function provenanceOf(entries: [string, string][]): Map<string, string> {
 /// pourquoi ce n'est pas une mesure. Une entrée qui ne saurait dire ni l'un ni
 /// l'autre n'a rien à faire sur une page qui parle au présent.
 const accounted = new Map<string, Map<string, string>>([
+  [
+    HOME,
+    provenanceOf([
+      [
+        "2632",
+        "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
+      ],
+      [
+        "7",
+        "tenu par la garde du bloc `facts` ci-dessus : les jobs de tous les workflows qui se déclenchent sur `pull_request`, plus GitGuardian.",
+      ],
+      [
+        "0",
+        "deux lectures, aucune n'est une mesure : le « 0 avertissement » du bloc `facts` — avoué non tenu ci-dessus, faute de `-warnings-as-errors` — et les deux zéros de `SITE_VERSION = \"0.4.0\"`, comparés aux sept fichiers qui portent la version par `version-agreement.test.ts`.",
+      ],
+      [
+        "1",
+        "deux lectures, aucune n'est une mesure : le « 1 vrai noyau démarré par exécution CI » du bloc `facts` — avoué non tenu ci-dessus — et le rapport « 1:1 » qui nomme un mode d'affichage.",
+      ],
+      [
+        "0.4",
+        "ce n'est pas une mesure : `SITE_VERSION`, la version du site. `version-agreement.test.ts` nomme ce fichier et compare la version aux autres qui la portent.",
+      ],
+      [
+        "2",
+        "ce n'est pas une mesure : trois nombres écrits dans du code. Les deux langues (`pub const ALL: [Lang; 2]`), et le plafond de 2 Gio de la machine rv32 — `Sources/WisqVM/LinuxMachine.swift`, `maximumRAMSize: UInt32 = 2 * 1024 * 1024 * 1024`.",
+      ],
+      [
+        "3",
+        "ce n'est pas une mesure : la largeur du tableau comparatif, `pub columns: [&'static str; 3]`, dans ce fichier.",
+      ],
+      [
+        "4",
+        "relevé, et daté : le compte d'instructions jusqu'au shell de secours de l'initramfs d'Alpine, CHANGELOG 0.4.0 (« after 4 billion instructions »). La CI ne le refait pas — elle ne récupère aucun noyau Alpine.",
+      ],
+      [
+        "17",
+        "ce n'est pas une mesure : la version minimale d'iOS, `project.yml`, `iOS: \"17.0\"`.",
+      ],
+      [
+        "47",
+        "ce n'est pas une mesure : BCP 47, la norme des étiquettes de langue, citée dans un commentaire de ce fichier.",
+      ],
+      [
+        "50",
+        "ce n'est pas une mesure : la durée qu'un clic synthétisé tient le bouton, `Sources/WisqCore/Settings.swift`, `InputTiming.pressReleaseGap = Duration.milliseconds(50)`.",
+      ],
+      [
+        "64",
+        "ce n'est pas une mesure : deux nombres du code. La RAM par défaut de la machine rv32 — `Sources/WisqVM/LinuxMachine.swift`, `defaultRAMSize: UInt32 = 64 * 1024 * 1024` — et la largeur de « x86-64 ».",
+      ],
+      [
+        "6.1",
+        "ce n'est pas une mesure : la version du noyau nommu que la machine rv32 démarre, celle que publie mini-rv32ima et que la CI démarre — `crates/wisq-site/src/pages/faq.rs` le dit dans la même phrase.",
+      ],
+      [
+        "3.8",
+        "ce n'est pas une mesure : la version du protocole RFB que parle le client VNC.",
+      ],
+      [
+        "4.7",
+        "ce n'est pas une mesure : le numéro de la règle de l'App Store que README.md cite et que `docs/ROADMAP.md` écarte.",
+      ],
+      [
+        "8250",
+        "ce n'est pas une mesure : le numéro de pièce de l'UART que la machine rv32 présente.",
+      ],
+      [
+        "16550",
+        "ce n'est pas une mesure : le numéro de pièce de l'UART de la machine PC.",
+      ],
+      [
+        "8259",
+        "ce n'est pas une mesure : le numéro de pièce du contrôleur d'interruptions du PC.",
+      ],
+      [
+        "8253",
+        "ce n'est pas une mesure : le numéro de pièce du minuteur du PC.",
+      ],
+      [
+        "2026",
+        "ce n'est pas une mesure : l'année du copyright du pied de page.",
+      ],
+      [
+        "0.3",
+        "l'arrondi d'une fourchette publiée, pas un point : le cœur Rust amène le noyau rv32 à l'invite en 0,16 à 0,40 s selon la machine (`crates/wisq-site/src/pages/faq.rs`, provenance de « 0.16 » et « 0.40 » ci-dessous), soit `cargo run --release --bin wisq-bench-rs`. Le tilde porte cet écart ; la case d'un tableau comparatif ne porte pas deux bornes.",
+      ],
+      [
+        "0,3",
+        "le même nombre dans l'autre langue.",
+      ],
+      [
+        "44.6",
+        "le compte d'instructions jusqu'à l'invite de connexion, et il est **déterministe** : l'horloge de la machine avance avec les instructions retirées, pas avec le temps réel. Quinze passages — cinq par cœur en CI, cinq du cœur Rust dans ce conteneur — ont rendu 44,6 M exactement. Imprimé par les deux bancs, `swift run -c release wisq-bench` et `cargo run --release --bin wisq-bench-rs`, que la CI lance tous les deux. **C'est le seul chiffre de cette phrase qui soit une propriété de wisq** : l'accueil a porté « environ 160 » puis « 137 à 187 » puis « 112 à 271 » millions d'instructions par seconde, et aucun des trois ne tenait, parce qu'un débit appartient à l'hôte. Le compte, lui, ne bouge pas.",
+      ],
+      [
+        "44,6",
+        "le même compte dans l'autre langue : la copie est écrite deux fois, et la virgule décimale en fait un jeton distinct.",
+      ],
+    ]),
+  ],
   [
     "roadmap.rs",
     provenanceOf([
@@ -904,32 +1042,57 @@ const accounted = new Map<string, Map<string, string>>([
           "la virgule décimale en fait un jeton distinct.",
       ],
       [
-        "0.24",
-        "le démarrage le plus rapide observé : 0,239 s, sur la machine où tourne " +
-          "la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui republie " +
-          "les deux relevés à la fin de chaque exécution de " +
-          "`cargo run --release --bin wisq-bench-rs`.",
+        "0.16",
+        "le démarrage le plus rapide **observé** : 0,164 s, sur la machine où " +
+          "tourne la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui " +
+          "republie les deux relevés à la fin de chaque exécution de " +
+          "`cargo run --release --bin wisq-bench-rs`. Relu le 10 octobre 2026 " +
+          "dans le log du job « Cœur (Linux) ». **Ce n'est pas une propriété de " +
+          "cette machine** : le même coureur a imprimé 0,324 s trente-cinq " +
+          "minutes plus tard, sur la même branche. Une borne prise sur une " +
+          "exécution est un échantillon.",
       ],
-      ["0,24", "le même nombre dans l'autre langue."],
+      ["0,16", "le même nombre dans l'autre langue."],
       [
-        "0.33",
-        "le plus lent : 0,326 s, sur cinq passages du même banc dans un " +
-          "conteneur de développement modeste. C'est une durée d'hôte, pas une " +
+        "0.40",
+        "le plus lent : 0,397 s, sur cinq passages du même banc dans un " +
+          "conteneur de développement modeste — 0,394, 0,397, 0,321, 0,388, " +
+          "0,359 s, relancés le 10 octobre 2026. C'est une durée d'hôte, pas une " +
           "propriété de wisq — le compte d'instructions au-dessus est le même " +
-          "partout, le temps qu'il prend appartient à la machine.",
+          "partout, le temps qu'il prend appartient à la machine, et deux " +
+          "conteneurs du même genre ne rendent pas le même chiffre.",
       ],
-      ["0,33", "le même nombre dans l'autre langue."],
+      ["0,40", "le même nombre dans l'autre langue."],
       [
-        "137",
-        "le débit du plus lent de ces passages, 136,9 MIPS. La page annonçait " +
-          "« environ 160 » comme un point ; deux machines suffisent à montrer " +
-          "pourquoi un point ne tient pas.",
+        "137.8",
+        "le débit du cœur embarqué dans l'exécution 38091041192 de la CI, " +
+          "22 h 24 UTC le 10 octobre 2026, job « Cœur (Linux) ».",
+      ],
+      ["137,8", "le même nombre dans l'autre langue."],
+      [
+        "271.3",
+        "le débit du même cœur dans l'exécution 38089077102, 21 h 49 le même " +
+          "jour, même branche, même commit de base. Les deux logs sont " +
+          "ouvrables, et c'est leur écart — un facteur deux sur la même " +
+          "machine — qui est l'affirmation de la phrase.",
+      ],
+      ["271,3", "le même nombre dans l'autre langue."],
+      [
+        "112",
+        "le plus bas débit observé, 112,4 MIPS, dans ce conteneur de " +
+          "développement. Les sept relevés du cœur embarqué qu'on a sous la " +
+          "main : 112,4 / 113,3 / 114,9 / 124,1 / 137,8 / 138,8 / 271,3 MIPS — " +
+          "cinq passages d'un conteneur et deux exécutions de la CI.",
       ],
       [
-        "187",
-        "le débit du plus rapide, 186,6 MIPS, relevé par la CI et republié en " +
-          "fin de job. La borne haute vient donc d'un journal que n'importe qui " +
-          "peut ouvrir, et non d'une mesure faite une fois.",
+        "271",
+        "le plus haut observé, 271,3 MIPS, dans un log de la CI. **Et c'est ce " +
+          "chiffre qui a appris à cette page ce qu'elle dit maintenant** : la " +
+          "page annonçait 186,6 MIPS en affirmant que la borne venait de ce " +
+          "journal. Le journal disait 271,3, puis 137,8 à l'exécution suivante. " +
+          "La borne annoncée n'était donc pas périmée — elle était un " +
+          "échantillon présenté comme une borne, et deux échantillons de plus " +
+          "suffisent à le montrer.",
       ],
       [
         "32",
@@ -1412,8 +1575,8 @@ const heldElsewhere = new Map([
 ]);
 
 describe("les pages du site publient des nombres, et le périmètre de ce qui les relit est écrit", () => {
-  test("toute page de crates/wisq-site/src/pages est tenue, avouée non tenue, ou nommée hors sujet", () => {
-    for (const page of pageFiles()) {
+  test("toute page publiée — pages/ et l'accueil — est tenue, avouée non tenue, ou nommée hors sujet", () => {
+    for (const page of publishedFiles()) {
       const listed =
         Number(accounted.has(page)) +
         Number(notLookedAt.has(page)) +
@@ -1428,7 +1591,7 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
   });
 
   test("rien ne subsiste dans les trois listes pour une page que le site n'a plus", () => {
-    const present = new Set(pageFiles());
+    const present = new Set(publishedFiles());
     for (const page of [
       ...accounted.keys(),
       ...notLookedAt.keys(),
@@ -1523,7 +1686,7 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
     for (const [page, { guard }] of heldElsewhere) {
       const source = readFileSync(join(import.meta.dir, guard), "utf8");
       expect(
-        source.includes(`src/pages/${page}`),
+        source.includes(`src/${relativePathOf(page)}`),
         `« ${page} » est délégué à ${guard}, qui ne nomme pas ce fichier : ` +
           `la délégation ne couvre rien.`,
       ).toBe(true);
