@@ -23815,3 +23815,289 @@ parce que la garde **portait le signe de sa propre cécité** : une alternative
 française dans son expression régulière, morte depuis toujours, qui la faisait
 lire comme bilingue. Un fragment de code écrit pour une langue qu'on ne lit pas
 n'est pas une couverture, c'est un alibi.
+
+## #342 — l'accueil annonçait un chiffre que le dépôt avait déjà jugé faux
+
+Le périmètre du balayage des nombres publiés est énoncé **page par page**, et sa
+prose dit qu'il « ne peut plus croître en silence » : toute page de
+`crates/wisq-site/src/pages/` est tenue, avouée non tenue, ou déléguée à une
+garde nommée.
+
+**L'accueil n'est pas dans `pages/`.** Son texte vit dans `content.rs`, un
+répertoire au-dessus. C'est la page la plus lue du site, et elle était hors du
+périmètre.
+
+### Le comptage
+
+| les nombres distincts de `content.rs` | |
+| --- | --- |
+| en tout | **23** |
+| le bloc `facts` (tenu depuis #341, dans les deux langues) | 4 |
+| aussi publiés par une page balayée — leur vérité est tracée là-bas | 17 |
+| **publiés par l'accueil seul** | **2** : « 160 » et « 0,3 » |
+
+### Le défaut, et le dépôt l'avait déjà jugé
+
+L'accueil annonçait, dans les deux langues :
+
+> around **160 million** guest instructions a second
+> environ **160 millions** d'instructions invitées par seconde
+
+Un point, sans machine nommée et sans cœur nommé. Or la provenance de « 137 »,
+dans ce même fichier de garde, dit mot pour mot :
+
+> La page annonçait « environ 160 » comme un point ; deux machines suffisent à
+> montrer pourquoi un point ne tient pas.
+
+La FAQ a été corrigée en fourchette — **137 à 187 millions**, 0,24 à 0,33 s, la
+borne basse sur un conteneur de développement modeste et la haute relevée par la
+CI. L'accueil a gardé le point. **La correction s'était arrêtée au bord du
+périmètre de la garde**, et c'est `stale-claims.test.ts` mot pour mot : « une
+garde qui tient deux copies sur trois laisse la troisième dériver, et personne
+ne le voit parce que les deux gardées s'accordent. »
+
+### La garde, écrite avant le correctif, nomme le défaut toute seule
+
+`content.rs` entre dans le périmètre : deux fonctions savent où il vit
+(`relativePathOf`, `pathOf`), `publishedFiles()` le joint aux pages, et les
+trois tests de périmètre bouclent dessus. Puis sa provenance est écrite,
+vingt-deux entrées — **sauf celle de 160**. Le résultat, avant d'avoir touché à
+une seule phrase de l'accueil :
+
+```
+error: « content.rs » publie « 160 » et rien ne dit d'où il vient.
+(fail) … > aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient
+41 pass, 1 fail
+```
+
+**Un seul rouge** : les vingt-deux autres nombres de l'accueil étaient
+justifiables, et c'est bien le vingt-troisième qui ne l'était pas.
+
+### Le correctif
+
+La phrase porte désormais la fourchette que la FAQ publiait déjà, dans les deux
+langues, avec « selon la machine qui l'exécute » — ce que le point taisait. Les
+provenances de « 137 » et « 187 » suivent, avec l'instrument
+(`cargo run --release --bin wisq-bench-rs`) que la CI lance.
+
+> **#343 corrige : la fourchette portée ici était elle-même périmée.** Le log de
+> la CI de cette même PR imprime **271,3 MIPS** pour le cœur embarqué, là où la
+> provenance de « 187 » affirmait que la borne haute venait de ce log. Les deux
+> bornes ont été relancées et valent **112 à 271**. La correction est dans la
+> même PR, parce qu'il n'était pas question de committer une provenance que je
+> venais de mesurer fausse.
+
+**441 tests sur 29 fichiers, inchangé** — aucun test de plus : ce sont les trois
+tests de périmètre qui voient un fichier de plus. Les appels d'assertion, eux,
+passent de 5 043 à **5 093**, et c'est là que la différence se lit.
+
+### Les deux sabotages
+
+Le balayage lit le **fichier**, pas le catalogue du pré-rendu, donc aucune
+reconstruction n'est nécessaire : quatre cents millisecondes par essai.
+
+| la mutation | ce qui tombe |
+| --- | --- |
+| `6.1` → `6.2`, une occurrence sur quatre | `aucun nombre n'apparaît sur une page tenue sans une ligne disant d'où il vient` — « content.rs » publie « 6.2 » |
+| les quatre occurrences de `6.1` | la même, **et** `rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus` — « 6.1 » n'est plus sur content.rs |
+
+Le nombre d'occurrences est vérifié **avant** de muter (1 attendu, puis 4), parce
+qu'un « SURVÉCU » est le plus souvent une mutation qui ne s'est pas appliquée.
+Restauré depuis la copie prise avant, `diff` muet.
+
+### Ce que cette tranche n'établit pas, et pourquoi
+
+Le README publie **« around 160 million »** pour la même machine rv32 — mais
+pour l'autre cœur : sa commande, imprimée deux lignes au-dessus, est
+`swift run -c release wisq-bench`, et `frozen-figures.test.ts` a établi que ce
+banc-là ne dépend que de `WisqVM`, donc qu'il mesure le cœur **Swift**. Le point
+du README est donc daté, situé (« the x86_64 Linux container this was developed
+on ») et relançable : ce n'est pas la même affirmation que celle de l'accueil, et
+je ne l'ai pas touché.
+
+Reste une question ouverte, et elle n'est pas tranchée ici : 160 pour le cœur
+Swift et 137 pour le cœur Rust, sur deux conteneurs du même genre, mettraient le
+Swift **devant** le Rust. Ce conteneur ne peut pas les relancer — il n'a pas
+d'image rv32, seulement le noyau Alpine x86. La CI, elle, imprime les chiffres
+des deux cœurs à la fin de chaque exécution, donc la réponse se lit dans un log
+que n'importe qui peut ouvrir. **Une hypothèse sans preuve vaut mieux qu'une
+preuve fabriquée**, donc elle est écrite ici comme hypothèse.
+
+> **#343 corrige, deux fois.** « Ce conteneur ne peut pas les relancer » était
+> faux : l'image rv32 se récupère là où la CI la récupère, et les deux bancs ont
+> tourné ici. Et l'hypothèse elle-même est tranchée — **sur la même machine, le
+> cœur Rust est devant** : 271,3 contre 263,9 MIPS sur le coureur. Ce qui
+> mettait le Swift devant n'était pas une différence de cœur mais une borne
+> périmée de quatre mois.
+
+### Le signe à retenir
+
+**Une correction s'arrête là où s'arrête la garde qui l'a demandée.** Le chiffre
+de la FAQ a été corrigé parce qu'une garde le lisait ; celui de l'accueil est
+resté faux parce qu'aucune ne le lisait — et le dépôt portait déjà, dans la
+justification du nombre corrigé, la phrase qui condamnait l'autre copie. Le
+périmètre d'une garde est donc une affirmation sur le monde, exactement comme
+les nombres qu'elle relit : il se vérifie, et il se compte.
+
+## #343 — la borne haute se disait relevée par la CI ; la CI en imprimait une autre
+
+#342 a porté sur l'accueil la fourchette que la FAQ publiait : **137 à 187
+millions d'instructions par seconde**. Sa provenance, dans le fichier de garde,
+dit de la borne haute :
+
+> le débit du plus rapide, 186,6 MIPS, relevé par la CI et republié en fin de
+> job. La borne haute vient donc d'un journal que n'importe qui peut ouvrir, et
+> non d'une mesure faite une fois.
+
+**Alors je l'ai ouvert.** Le log du job « Cœur (Linux) » de la PR de #342, lu
+par son URL signée :
+
+```
+cœur Rust — celui que l'application embarque
+instructions : 44.6 M retirées (budget 200 M)
+durée        : 0.164 s
+débit        : 271.3 MIPS
+
+cœur Swift
+durée        : 0.169 s
+débit        : 263.9 MIPS
+```
+
+**271,3, pas 186,6.** Une provenance qui invite à ouvrir un journal est une
+promesse vérifiable, et c'est la seule raison pour laquelle ce défaut a été vu :
+la phrase disait où regarder.
+
+### La borne basse, relancée
+
+Le conteneur n'avait pas d'image rv32 — mais la CI en récupère une, et de
+l'endroit qu'elle nomme : `mini-rv32ima-images`, `linux-6.1.14-rv32nommu`. Cinq
+passages de `cargo run --release --bin wisq-bench-rs` ici, le même banc que la
+CI lance :
+
+| passage | 1 | 2 | 3 | 4 | 5 |
+| --- | --- | --- | --- | --- | --- |
+| durée (s) | 0,394 | 0,397 | **0,321** | 0,388 | 0,359 |
+| débit (MIPS) | 113,3 | 112,4 | **138,8** | 114,9 | 124,1 |
+
+Le plus lent : **112,4 MIPS**, 0,397 s. Et le détail qui vaut d'être écrit : la
+borne basse annoncée, 136,9 MIPS à 0,326 s, « le plus lent de cinq passages dans
+un conteneur de développement modeste », est à deux dixièmes de pourcent du
+**plus rapide** de mes cinq passages. Deux conteneurs du même genre ne rendent
+pas le même chiffre, et « le plus lent de cinq » n'est pas une propriété du
+logiciel : c'est une propriété de la machine ce jour-là.
+
+### Ce que le site publie maintenant
+
+**0,16 à 0,40 s, soit 112 à 271 millions d'instructions par seconde** — quatre
+nombres, dans deux langues, aux deux endroits (l'accueil et la FAQ). Les deux
+bornes annoncées étaient périmées **dans des sens opposés** : la basse trop
+haute, la haute trop basse. Une fourchette fausse des deux côtés est pire qu'un
+point, parce qu'elle a l'air d'avoir été mesurée deux fois.
+
+> **#344 corrige : « périmées » est faux.** Le log du run suivant, sur la même
+> branche et trente-cinq minutes plus tard, imprime **137,8 MIPS** pour le même
+> cœur, là où le précédent imprimait 271,3. La borne annoncée de 186,6 n'était
+> pas périmée : c'était un **échantillon présenté comme une borne**, et la mienne
+> l'était tout autant. L'accueil ne publie plus de débit du tout.
+
+### L'hypothèse de #342, tranchée
+
+#342 laissait ouvert que 160 (Swift, conteneur) contre 137 (Rust, conteneur)
+mettrait le cœur **Swift** devant celui que l'application embarque. Sur la même
+machine, dans le même log : **Rust 271,3, Swift 263,9**. Le Rust est devant.
+
+> **#344 nuance, puis se corrige elle-même :** l'ordre tient aussi dans le
+> second log (Rust 137,8, Swift 129,8) — mais **pas dans le troisième**, où le
+> Swift passe devant (201,3 contre 178,4). Sur trois exécutions, le Rust mène
+> deux fois et le Swift une. L'écart entre les deux cœurs est d'environ 6 % et
+> celui entre deux exécutions de la même machine d'un facteur deux : **ni la
+> marge ni l'ordre ne sont établis**, et il faudrait apparier les passages pour
+> en dire quoi que ce soit. Ce
+qui faisait croire le contraire n'était pas une différence de cœur, c'était une
+borne périmée — et le README, qui annonce « around 160 million » pour le banc
+Swift sur un conteneur de développement, reste juste : 263,9 sur le coureur et
+~160 sur un conteneur modeste, c'est le même écart de machine que celui qu'on
+vient de mesurer pour le cœur Rust.
+
+### Le signe à retenir
+
+**Une provenance qui dit où regarder se fait vérifier ; une qui cite un chiffre
+ne se fait pas vérifier.** La borne haute de la FAQ portait sa propre
+réfutation : elle nommait le journal, le journal était à portée de `curl`, et
+personne ne l'avait ouvert depuis que le chiffre y avait été pris. C'est le
+corollaire exact de « les chiffres se relancent, ils ne se citent pas » — et la
+garde qui tient un chiffre publié ne tient que son **existence**, jamais sa
+fraîcheur. La fraîcheur n'a qu'un seul instrument : relancer.
+
+## #344 — une borne prise sur une exécution n'est pas une borne
+
+#343 a relancé les deux bancs et conclu que les bornes publiées étaient
+**périmées**. Elles ne l'étaient pas. Voici les sept relevés du cœur embarqué
+que l'on a maintenant sous la main, tous sur 44,6 M d'instructions :
+
+| où | débit (MIPS) | durée (s) |
+| --- | --- | --- |
+| ce conteneur, passage 2 | **112,4** | 0,397 |
+| ce conteneur, passage 1 | 113,3 | 0,394 |
+| ce conteneur, passage 4 | 114,9 | 0,388 |
+| ce conteneur, passage 5 | 124,1 | 0,359 |
+| **CI, exécution 38091041192, 22 h 24** | **137,8** | 0,324 |
+| ce conteneur, passage 3 | 138,8 | 0,321 |
+| **CI, exécution 38089077102, 21 h 49** | **271,3** | 0,164 |
+
+**Les deux exécutions de la CI sont les deux extrêmes du tableau**, à
+trente-cinq minutes d'intervalle, sur la même branche et le même commit de base.
+Un facteur deux sur la même machine. Le coureur partagé de GitHub n'a pas de
+débit ; il a une distribution.
+
+> **Un troisième échantillon, pris avant de fusionner** (exécution 38093046859,
+> 22 h 56) : **178,4 MIPS**, 0,250 s. Il tombe entre les deux autres, donc la
+> fourchette publiée 112–271 borne bien les huit relevés — et il renverse l'ordre
+> des deux cœurs, puisque le Swift y rend 201,3. Trois exécutions de la même
+> machine donnent 137,8, 178,4 et 271,3 : **la dispersion n'est pas un accident
+> entre deux runs, c'est le régime normal.** Ce qui est écrit ci-dessous sur
+> l'ordre des deux cœurs est donc à lire comme non établi.
+
+Ce qui tombe avec ça :
+
+1. **« 186,6, relevé par la CI » n'était pas périmé.** C'était un échantillon
+   présenté comme une borne — et il est, à l'intérieur de ce qu'on observe
+   aujourd'hui, parfaitement représentatif.
+2. **« 271,3 » n'était pas meilleur.** Ma propre borne haute venait d'un seul
+   log, exactement de la même façon. J'ai refait l'erreur que je venais de
+   nommer, avec un chiffre plus récent — ce qui est la version la plus facile à
+   ne pas voir.
+3. **« 112 à 271 » comme fourchette entre machines** était une attribution
+   fausse : le conteneur donne 112–139 et la CI 138–271. Les intervalles se
+   chevauchent ; les machines ne se classent pas.
+
+### Ce que le site dit maintenant
+
+**L'accueil ne publie plus de débit.** Il publie le chiffre qui est une
+propriété de wisq et non de l'hôte : **44,6 millions d'instructions invitées, le
+même compte sur toutes les machines**, parce que l'horloge de la machine avance
+avec les instructions et non avec le temps réel. Quinze passages l'ont rendu
+exactement — dix en CI, cinq ici.
+
+La FAQ garde la fourchette observée, 0,16 à 0,40 s / 112 à 271 MIPS, et dit
+désormais **ce que cette fourchette est** : l'écart n'est pas entre machines, la
+machine de la CI à elle seule a imprimé 137,8 puis 271,3, donc un chiffre pris
+sur une exécution est un échantillon. Les deux numéros d'exécution sont dans la
+provenance ; les deux logs sont ouvrables.
+
+### Le signe à retenir
+
+**Un chiffre d'hôte n'a pas de valeur, il a une dispersion** — et la seule façon
+de s'en apercevoir est de le mesurer **deux fois sur la même machine**. Mesurer
+deux machines, ce que #343 a fait, donne au contraire la fausse impression d'un
+écart expliqué : chaque machine semble avoir son chiffre, et l'on attribue à
+l'une la borne basse et à l'autre la haute. Le second log de la même machine
+détruit cette histoire en une ligne.
+
+Et le corollaire, qui est le vrai gain de la tranche : **sur la page la plus lue,
+mettre le chiffre déterministe plutôt que le chiffre d'hôte**. Le compte
+d'instructions ne se périme pas, ne dépend pas du coureur, et dit la même chose —
+que la machine arrive à l'invite tout de suite. Les trois versions successives du
+débit sur l'accueil — « environ 160 », « 137 à 187 », « 112 à 271 » — n'avaient
+pas trois défauts différents : elles avaient le même, qui est de publier un
+chiffre qui n'appartient pas au logiciel.
