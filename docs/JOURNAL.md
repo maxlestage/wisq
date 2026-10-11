@@ -24302,3 +24302,82 @@ ne couvre qu'une direction, quel que soit le nombre de features qu'il allume. Et
 le corollaire pratique : ajouter des portes par symétrie coûte des minutes de CI
 pour rien, alors que **garder la condition** qui rend la paire suffisante ne
 coûte qu'un test qui lit des fichiers.
+
+## #347 — huit assertions que personne n'évaluait, au-dessus de huit `get_unchecked`
+
+`crates/wisq-vm/src/core.rs` écrit, juste avant les huit lectures et écritures
+qui font le chemin chaud de la mémoire invitée :
+
+> Every caller bounds-checks the address against the guest's RAM size first —
+> that check is not an assertion, it is the emulator semantics that turn an
+> out-of-range guest access into a trap. Re-checking here would be a second
+> branch per load and store on the two opcode groups that make up 47 % of a
+> Linux boot, so these read the slice directly. **`debug_assert` keeps the test
+> builds honest about the invariant.**
+
+La ligne suivante est `unsafe { *ram.get_unchecked(offset as usize) }`.
+
+**Et aucune porte du dépôt n'évaluait ces assertions.** `[profile.release]` ne
+déclare ni `debug-assertions` ni `overflow-checks` — les deux sont donc éteints
+— et les trois `cargo test` du dépôt portent tous `--release`. Le filet de huit
+lectures non vérifiées n'était armé nulle part.
+
+### Mesuré dans les deux sens, sur la suite entière
+
+Une assertion toujours fausse posée dans `read_u8` :
+
+| la porte | code | ce qu'elle dit |
+| --- | --- | --- |
+| `cargo test --release` | **0** | 24 suites ok |
+| `RUSTFLAGS="-C debug-assertions=yes" cargo test --release` | **101** | `panicked at crates/wisq-vm/src/core.rs:633` |
+
+Et un second échec dans le run armé, entièrement expliqué : le test
+`the_c_header_matches_the_library_it_describes` compile un programme C contre la
+bibliothèque et le **lance** (`tests/abi.rs:93`). Sous le sabotage, ce programme
+entre dans `read_u8` et avorte. La cascade prouve en prime que l'assertion est
+atteinte **aussi par le chemin du C ABI**, et pas seulement par les tests Rust.
+
+### La première mutation ne prouvait rien, et c'est la deuxième fois
+
+J'ai d'abord saboté contre `cargo test -p wisq-vm --lib`, en release puis armé :
+**les deux à 0**. L'ancre existait, la mutation s'appliquait, et elle était
+**hors du sujet** du jeu de tests lancé — `read_u8` n'est pas atteint par les
+tests unitaires de ce crate, seulement par ses tests d'intégration et par le C.
+C'est la troisième façon dont un « SURVÉCU » trompe, et c'est la **deuxième fois
+en deux tranches** que je choisis une mutation hors sujet (#346 avait choisi la
+mauvaise direction de feature). Le signe commun : *une mutation se choisit en
+fonction du jeu de tests qu'on va lancer, pas en fonction du code qu'on veut
+mettre en défaut.*
+
+### Ce qui est ajouté, et les débordements avec
+
+Une étape de CI et la même ligne dans `verify.sh` :
+
+```
+RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes" cargo test --release
+```
+
+**Les deux étapes gardent chacune sa raison.** Celle qui existait juge la
+configuration que les utilisateurs exécutent — assertions éteintes, c'est ce qui
+est livré ; la nouvelle juge les invariants. Remplacer l'une par l'autre
+perdrait l'un des deux verdicts.
+
+`overflow-checks` vient avec, parce que c'est gratuit et que sur trois cœurs
+d'émulation un débordement non voulu est un défaut et non un arrondi : un
+enroulement délibéré s'écrit `wrapping_add`, et celui qui ne l'est pas devient
+rouge le jour où un test l'atteint. **Mesuré sur l'arbre intact : exit 0,
+24 suites, 149 s** pour la construction et la suite — donc rien à corriger
+aujourd'hui, et le prix est connu.
+
+La garde était déjà là : l'inventaire de `verify-covers-ci.test.ts` a fait
+rougir deux tests jusqu'à ce que l'étape porte son verdict, et son motif exige
+le préfixe `RUSTFLAGS` pour ne pas s'apparier à la ligne simple. 443 → 444.
+
+### Le signe à retenir
+
+**Une assertion vit dans une configuration, pas dans un fichier.** Elle peut
+être écrite, relue, commentée, et n'être jamais exécutée — et le commentaire
+qui dit qu'elle tient l'invariant est alors exactement le genre d'affirmation
+que les gardes existent pour empêcher. Avec une nuance que #345 et #346 avaient
+déjà installée : la configuration qui *n'arme rien* ne garde rien, quel que
+soit le nombre de tests qu'elle lance.

@@ -140,6 +140,13 @@ const GATES: Record<string, Verdict> = {
   // réciproquement. Une seule des deux voit le code mort du jeu par défaut.
   "rust › Clippy (jeu par défaut)": { verify: /cargo clippy --all-targets -- -D warnings/ },
   "rust › Test": { verify: /cargo test --release/ },
+  // Deux étapes de test, deux raisons : celle du dessus juge la configuration
+  // que les utilisateurs exécutent, celle-ci arme les huit `debug_assert!` que
+  // le profil release éteignait, et les débordements avec. Le motif exige le
+  // préfixe `RUSTFLAGS`, donc il ne peut pas s'apparier à la ligne simple.
+  "rust › Test (assertions et débordements armés)": {
+    verify: /RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes" cargo test --release/,
+  },
   "rust › Build the agent, statically": {
     verify: /x86_64-unknown-linux-musl/,
   },
