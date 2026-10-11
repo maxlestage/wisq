@@ -42,6 +42,23 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --release
+      # **Les huit `debug_assert!` du dépôt ne s'évaluaient nulle part.**
+      # `[profile.release]` ne déclare ni `debug-assertions` ni
+      # `overflow-checks`, donc les deux sont éteints, et l'étape ci-dessus est
+      # la seule qui lance des tests. Or `crates/wisq-vm/src/core.rs` écrit, au
+      # dessus de huit `unsafe { get_unchecked }` : « `debug_assert` keeps the
+      # test builds honest about the invariant ». Mesuré : une assertion
+      # toujours fausse posée dans `read_u8` laisse l'étape ci-dessus sortir à
+      # **0** sur 24 suites, et fait sortir celle-ci à **101** en nommant
+      # `core.rs:633`.
+      #
+      # Les deux étapes gardent chacune sa raison : celle du dessus juge la
+      # configuration que les utilisateurs exécutent, celle-ci juge les
+      # invariants. `overflow-checks` vient avec, et gratuitement — sur trois
+      # cœurs d'émulation un débordement non voulu est un défaut, pas un
+      # arrondi. Mesuré : 149 s pour la suite entière, zéro échec.
+      - name: Test (assertions et débordements armés)
+        run: RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes" cargo test --release
       - name: Build the agent, statically
         # musl rather than glibc, so the result runs on any Linux including
         # Alpine with nothing to install first. musl-tools is for ring: TLS

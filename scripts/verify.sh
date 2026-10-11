@@ -128,6 +128,13 @@ fi
 echo "==> Running the Rust tests"
 cargo test --release
 
+# Les huit `debug_assert!` du dépôt, qui ne s'évaluaient nulle part : le profil
+# release éteint `debug-assertions`, et c'est le seul sous lequel des tests
+# tournaient. Mesuré — une assertion toujours fausse dans `read_u8` laisse la
+# ligne ci-dessus sortir à 0 et fait sortir celle-ci à 101.
+echo "==> Les mêmes tests, assertions et débordements armés"
+RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes" cargo test --release
+
 echo "==> Building the core (Swift 6 language mode)"
 swift build
 
