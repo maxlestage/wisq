@@ -28,6 +28,18 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy (strict)
         run: cargo clippy --all-targets --all-features -- -D warnings
+      # **`--all-features` ne voit pas le code mort du jeu par défaut.** Avec
+      # `ssr` et `hydrate` tous deux allumés, une fonction que seul `hydrate`
+      # appelle est vivante ; dans le jeu par défaut elle ne l'est pas. Mesuré :
+      # une fonction appelée depuis un bloc `#[cfg(feature = "hydrate")]` laisse
+      # l'étape ci-dessus sortir à 0 sans un mot, et fait sortir celle-ci à 101
+      # sur « function ... is never used ». Et ce n'est pas une hypothèse : un
+      # relevé de `verify.sh` du 9 octobre 2026 porte
+      # « warning: function `appliquer` is never used », imprimé par le
+      # `cargo build` qui suit la porte stricte — donc après qu'elle était
+      # passée, et sans rien rougir.
+      - name: Clippy (jeu par défaut)
+        run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --release
       - name: Build the agent, statically

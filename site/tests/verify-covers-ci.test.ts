@@ -135,6 +135,10 @@ const GATES: Record<string, Verdict> = {
   "rust › Toolchain": { absent: "installe rustup et une cible ; ce n'est pas une porte" },
   "rust › Format": { verify: /cargo fmt --all --check/ },
   "rust › Clippy (strict)": { verify: /cargo clippy --all-targets --all-features -- -D warnings/ },
+  // Deux portes, deux jeux de drapeaux, et les deux motifs sont spécifiques :
+  // la ligne `--all-features` ne contient pas la sous-chaîne de celle-ci, et
+  // réciproquement. Une seule des deux voit le code mort du jeu par défaut.
+  "rust › Clippy (jeu par défaut)": { verify: /cargo clippy --all-targets -- -D warnings/ },
   "rust › Test": { verify: /cargo test --release/ },
   "rust › Build the agent, statically": {
     verify: /x86_64-unknown-linux-musl/,
