@@ -24205,3 +24205,100 @@ mort ailleurs. Et le détail qui rend la chose durable plutôt que ponctuelle :
 plus large — il l'est pour la couverture du code, il est le plus **étroit** pour
 le code mort. Deux lectures opposées du même drapeau, et c'est la seconde qui
 compte quand la porte est `-D warnings`.
+
+> **#346 précise :** « le plus étroit pour le code mort » est à moitié vrai, et
+> la moitié qui manque renverse le conseil. `--all-features` est la **seule** des
+> deux portes qui voie le code mort dont l'appelant vit dans un
+> `#[cfg(not(feature = …))]`. Les deux portes couvrent les deux directions de
+> l'axe `hydrate`, et une troisième porte n'ajoute rien **tant que** rien n'est
+> gardé en positif sur une feature de `default`. Mesuré, et désormais gardé.
+
+## #346 — deux portes suffisent, et ce n'est pas une symétrie
+
+#345 a posé une seconde porte de clippy. La question suivante allait de soi :
+**deux suffisent-elles ?** Le dépôt construit le front **deux** fois — `cargo
+build --release -p wisq-site` avec les features par défaut, et `cargo build
+--profile wasm-release --target wasm32-unknown-unknown -p wisq-site
+--no-default-features --features hydrate` (`site/build.ts`, lignes 149 et 156).
+La seconde configuration n'est lintée par personne.
+
+### Le sabotage miroir, et il n'a pas survécu
+
+Une fonction appelée depuis un bloc `#[cfg(not(feature = "hydrate"))]` — vivante
+quand `hydrate` est éteint, morte quand il est seul :
+
+| la porte | code |
+| --- | --- |
+| `--all-features` | **101** |
+| jeu par défaut (ajoutée par #345) | 0 |
+| `--no-default-features --features hydrate` | **101** |
+
+**C'est `--all-features` qui l'attrape.** Donc cette direction était déjà tenue,
+et j'avais choisi la mauvaise mutation : elle était **hors du sujet** de la porte
+que je soupçonnais manquante. C'est la troisième façon qu'un sabotage a de
+tromper, prise par l'autre bout — non pas un survivant qui n'en est pas un, mais
+une mort qui ne prouve pas ce qu'on croyait.
+
+### L'asymétrie, écrite une fois pour toutes
+
+Les deux formes de gating ne se comportent pas pareil :
+
+- une fonction dont le seul appelant vit dans `#[cfg(feature = "X")]` est morte
+  quand **X est éteint** ;
+- une fonction dont le seul appelant vit dans `#[cfg(not(feature = "X"))]` est
+  morte quand **X est allumé**.
+
+`--all-features` allume tout : elle ne porte **aucune information
+d'extinction**, et ne voit donc que la seconde forme. Toute l'extinction que les
+deux portes connaissent vient du jeu par défaut, qui éteint exactement les
+features **absentes de `default`**.
+
+**D'où la forme dangereuse, qui est unique** : une feature de `default` gardée
+en **positif**. Elle est allumée dans les deux configurations lintées, et
+éteinte dans celle que `build.ts` construit pour le navigateur. Du code mort
+derrière un tel gating ne rougirait rien.
+
+### Combien y en a-t-il ? Zéro
+
+Compté sur les sources du crate : **37 gatings, dans 5 fichiers, tous sur
+`hydrate`** — et `hydrate` n'est pas dans `default`. Il n'existe pas un seul
+`#[cfg(feature = "ssr")]` dans le dépôt. Les deux portes couvrent donc tout le
+gating existant, et la troisième n'ajouterait rien aujourd'hui.
+
+### Ce qui est livré n'est donc pas une porte, c'est sa condition
+
+`verify-covers-ci.test.ts` lit le `default` de `Cargo.toml`, balaie les sources
+du crate, et exige qu'aucune feature de `default` n'apparaisse en positif. Son
+message nomme la troisième porte à ajouter, mot pour mot, le jour où la
+condition tombera. C'est la septième leçon posée **exprès** à l'avance, au lieu
+d'être constatée après coup.
+
+Deux sabotages, et le second compte autant que le premier :
+
+| le bloc ajouté | la garde |
+| --- | --- |
+| `#[cfg(feature = "ssr")]` | **rouge**, en nommant `ssr` et la raison |
+| `#[cfg(not(feature = "ssr"))]` | **verte** |
+
+Le second montre que la garde distingue les deux formes au lieu de repérer le
+mot « ssr » — c'est « nommer une famille ne désigne pas un membre » appliqué à
+l'envers, en vérifiant qu'elle **accepte** ce qu'elle doit accepter. Et le
+balayage exige de trouver au moins un gating, sans quoi il comparerait deux
+ensembles vides.
+
+**Un détail de l'instrument, parce qu'il a failli me tromper.** Mon script de
+sabotage comptait les occurrences du bloc inséré par
+`grep -c '#[cfg(feature = "ssr")]'` et rendait **0** — `grep` lit les crochets
+comme une classe de caractères. La mutation était bel et bien appliquée : le
+`diff` le disait, et le verdict rouge nommait `ssr`. Un compteur cassé qui rend
+zéro ressemble exactement à une mutation qui ne s'applique pas, et c'est la
+raison pour laquelle le nombre d'occurrences attendu ne se lit jamais seul.
+
+### Le signe à retenir
+
+**La couverture d'une porte de lint a un axe, et l'axe est fixé par ce que la
+configuration ÉTEINT, pas par ce qu'elle allume.** Un drapeau qui n'éteint rien
+ne couvre qu'une direction, quel que soit le nombre de features qu'il allume. Et
+le corollaire pratique : ajouter des portes par symétrie coûte des minutes de CI
+pour rien, alors que **garder la condition** qui rend la paire suffisante ne
+coûte qu'un test qui lit des fichiers.
