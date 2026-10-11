@@ -379,3 +379,97 @@ describe("le périmètre est celui que les workflows déclarent, pas une liste �
     }
   });
 });
+
+/// **Les deux portes de clippy couvrent un seul axe de features, et lequel est
+/// mesuré.**
+///
+/// La tranche précédente a ajouté une seconde porte — `cargo clippy
+/// --all-targets -- -D warnings`, le jeu par défaut — parce que `--all-features`
+/// ne voit pas le code mort du jeu par défaut. Reste à savoir si **deux** portes
+/// suffisent, et la réponse n'est pas une symétrie : c'est une asymétrie, et
+/// elle se mesure.
+///
+/// Les deux formes de gating ne se comportent pas pareil. Une fonction dont le
+/// seul appelant vit dans un `#[cfg(feature = "X")]` est morte quand **X est
+/// éteint** ; une fonction dont le seul appelant vit dans un
+/// `#[cfg(not(feature = "X"))]` est morte quand **X est allumé**. Or
+/// `--all-features` allume tout : elle ne voit donc que la seconde forme. La
+/// seule information d'**extinction** que les deux portes portent vient du jeu
+/// par défaut, qui éteint exactement les features absentes de `default`.
+///
+/// **Donc une feature de `default` gardée en positif est invisible aux deux
+/// portes** — et ce n'est pas théorique : `site/build.ts` construit le front
+/// une seconde fois avec `--no-default-features --features hydrate`, où `ssr`
+/// est éteint. Du code mort là-dedans ne rougirait rien.
+///
+/// Mesuré, le même jour, sur un arbre où une fonction n'est appelée que depuis
+/// un bloc `#[cfg(not(feature = "hydrate"))]` :
+///
+/// | la porte | code |
+/// | --- | --- |
+/// | `--all-features` | **101** |
+/// | jeu par défaut | 0 |
+/// | `--no-default-features --features hydrate` | **101** |
+///
+/// La première l'attrape, donc cette direction-là est déjà tenue, et une
+/// troisième porte n'y ajouterait rien. Ce qui reste à tenir est la condition
+/// ci-dessous : tant que tout le gating du crate porte sur une feature **hors
+/// de `default`**, les deux portes suffisent. Le jour où un
+/// `#[cfg(feature = "ssr")]` apparaît, ce test rougit et nomme la porte à
+/// ajouter — c'est la garde écrite une tranche en avance, posée exprès.
+describe("les deux portes de clippy couvrent tout le gating du front", () => {
+  const CRATE = "crates/wisq-site";
+
+  function sourcesRust(dossier: string): string[] {
+    return readdirSync(join(repoRoot, dossier), { withFileTypes: true }).flatMap(
+      (entree) =>
+        entree.isDirectory()
+          ? sourcesRust(join(dossier, entree.name))
+          : entree.name.endsWith(".rs")
+            ? [join(dossier, entree.name)]
+            : [],
+    );
+  }
+
+  /// Les features que `default` allume, donc celles que **ni** `--all-features`
+  /// **ni** le jeu par défaut n'éteignent jamais.
+  function featuresParDefaut(): string[] {
+    const manifeste = read(`${CRATE}/Cargo.toml`);
+    const ligne = manifeste.match(/^default\s*=\s*\[([^\]]*)\]/m);
+    if (!ligne) throw new Error(`${CRATE}/Cargo.toml ne déclare plus de default`);
+    return [...ligne[1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+  }
+
+  test("aucune feature de `default` n'est gardée en positif", () => {
+    const defauts = featuresParDefaut();
+    expect(defauts, "`default` est vide : la garde ne couvrirait rien").not.toEqual([]);
+
+    const positives = new Map<string, string[]>();
+    let gatings = 0;
+    for (const fichier of sourcesRust(`${CRATE}/src`)) {
+      const texte = read(fichier);
+      for (const trouve of texte.matchAll(/cfg\((not\()?feature\s*=\s*"([^"]+)"/g)) {
+        gatings += 1;
+        if (trouve[1]) continue; // `not(...)` : mort quand la feature est allumée, donc vu par --all-features
+        const nom = trouve[2]!;
+        positives.set(nom, [...(positives.get(nom) ?? []), fichier]);
+      }
+    }
+
+    // Un balayage qui ne trouverait aucun gating passerait en comparant deux
+    // ensembles vides. Il doit en trouver — 37 le jour où ceci est écrit.
+    expect(gatings, `aucun gating trouvé sous ${CRATE}/src`).toBeGreaterThan(0);
+
+    for (const nom of defauts) {
+      expect(
+        positives.get(nom) ?? [],
+        `« ${nom} » est une feature de \`default\`, donc allumée dans les deux ` +
+          `configurations que clippy lint, et elle est gardée en positif ici. ` +
+          `Du code mort derrière ce gating ne rougirait aucune porte, alors que ` +
+          `site/build.ts construit bien le front sans \`default\`. Ajoute une ` +
+          `troisième porte — \`cargo clippy -p wisq-site --no-default-features ` +
+          `--features hydrate --all-targets -- -D warnings\` — ou retire ce gating.`,
+      ).toEqual([]);
+    }
+  });
+});
