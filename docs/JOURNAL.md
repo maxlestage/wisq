@@ -24101,3 +24101,88 @@ que la machine arrive à l'invite tout de suite. Les trois versions successives 
 débit sur l'accueil — « environ 160 », « 137 à 187 », « 112 à 271 » — n'avaient
 pas trois défauts différents : elles avaient le même, qui est de publier un
 chiffre qui n'appartient pas au logiciel.
+
+## #345 — la porte stricte ne voyait pas le code mort du jeu par défaut
+
+Le dépôt a déjà tranché que les avertissements de Rust sont des erreurs :
+`-D warnings` est écrit **trois** fois, dans `scripts/verify.sh`, dans
+`.github/workflows/ci.yml` et dans `release.yml`. Les trois portent le même
+drapeau : `--all-features`.
+
+**Et `--all-features` ne peut pas voir le code mort du jeu par défaut.** Le
+front a deux features qui s'excluent dans la vraie vie — `ssr` pour le
+pré-rendu, `hydrate` pour le navigateur — mais qui compilent ensemble.
+Allumées toutes les deux, une fonction que seul `hydrate` appelle est vivante.
+Dans le jeu par défaut, elle ne l'est pas.
+
+### Le survivant, trouvé dans un relevé et non supposé
+
+`verify.sh` du 9 octobre 2026, dans l'ordre où le log le dit :
+
+```
+429:==> Rust formatting and lints (what CI checks first)
+432:==> Building the Rust side (daemon + VM core)
+433:warning: function `appliquer` is never used
+441:warning: `wisq-site` (lib) generated 1 warning
+443:==> L'agent, statique (musl), et il démarre sans environnement
+```
+
+La porte stricte est à la ligne 429 et n'a rien dit. L'avertissement est à 433,
+**dans le `cargo build` qui la suit** — celui qui compile le jeu par défaut. Et
+le script a continué : les étapes 443, 445, 447 et le reste sont dans le même
+log. Du code mort a traversé la seule porte que ce dépôt oppose aux
+avertissements de Rust.
+
+### Mesuré, pas déduit
+
+Une fonction appelée depuis un bloc `#[cfg(feature = "hydrate")]`, posée dans
+`crates/wisq-site/src/stockage.rs` :
+
+| la porte | code | ce qu'elle dit |
+| --- | --- | --- |
+| `cargo clippy --all-targets --all-features -- -D warnings` | **0** | rien |
+| `cargo clippy --all-targets -- -D warnings` | **101** | `error: function `sonde_morte` is never used` |
+
+Zéro avertissement d'un côté, 101 de l'autre, sur le même arbre. Restauré
+depuis la copie prise avant, `diff` muet, `git status --porcelain crates/`
+vide. Et le jeu par défaut est propre aujourd'hui : la même commande sur
+l'arbre intact sort à 0, donc ce qui est ajouté n'est pas un correctif de code
+mais une porte.
+
+### Ce qui est ajouté, et ce qui ne l'est pas
+
+Une étape de CI, « Clippy (jeu par défaut) », et la même ligne dans
+`verify.sh`, qui promet « everything CI would run » et dont ce fichier-ci
+raconte déjà **trois** fois où la promesse avait un trou.
+
+**La garde était déjà là, et elle a parlé la première.** `verify-covers-ci.test.ts`
+tient un inventaire déclaré : chaque étape nommée des workflows doit porter un
+verdict. L'étape ajoutée a donc fait rougir deux tests avant que son verdict ne
+soit écrit :
+
+```
+error: des étapes de la CI que personne n'a classées
+(fail) chaque étape des workflows porte un verdict
+(fail) les workflows de l'inventaire rendent des étapes, et en nombre plausible
+43 pass, 2 fail
+```
+
+C'est la septième leçon prise par le bon bout : la garde écrite une tranche en
+avance rend la tranche suivante presque gratuite — ici, elle a **exigé** le
+classement au lieu de l'attendre. Les deux motifs sont spécifiques : la ligne
+`--all-features` ne contient pas la sous-chaîne de l'autre, et réciproquement.
+
+`release.yml` n'est **pas** touché, et c'est une exclusion, pas un oubli : ce
+n'est pas une porte de pull request, l'inventaire ne lit que les workflows
+déclenchés par une PR, et une release est taillée dans un `master` qui a passé
+la porte de PR. Le trou se ferme en amont d'elle.
+
+### Le signe à retenir
+
+**Une décision appliquée à une seule configuration n'est appliquée à aucune**,
+ou presque : il suffit qu'une feature supplémentaire rende vivant ce qui est
+mort ailleurs. Et le détail qui rend la chose durable plutôt que ponctuelle :
+`--all-features` est le drapeau qu'on écrit par réflexe parce qu'il *semble* le
+plus large — il l'est pour la couverture du code, il est le plus **étroit** pour
+le code mort. Deux lectures opposées du même drapeau, et c'est la seconde qui
+compte quand la porte est `-D warnings`.
