@@ -24172,6 +24172,25 @@ avance rend la tranche suivante presque gratuite — ici, elle a **exigé** le
 classement au lieu de l'attendre. Les deux motifs sont spécifiques : la ligne
 `--all-features` ne contient pas la sous-chaîne de l'autre, et réciproquement.
 
+### Et la porte **arrive**, ce qui est une troisième chose
+
+Trois affirmations se ressemblent et ne sont pas la même : que la commande
+refuse un arbre fautif, qu'elle soit écrite dans le script, et qu'elle
+**tourne** quand le script tourne. Les deux premières étaient établies ; la
+troisième ne l'était pas, et c'est exactement la première leçon de ce journal.
+Le même sabotage, mais lancé à travers `verify.sh` au lieu de `cargo` :
+
+```
+VERIFY_SOUS_SABOTAGE=101
+429:==> Rust formatting and lints (what CI checks first)
+433:error: function `sonde_morte` is never used
+```
+
+**Les mêmes deux numéros de ligne que le relevé du 9 octobre** — 429 pour
+l'étape, 433 pour le verdict — et les deux seules choses qui changent sont
+celles qui comptent : `warning` est devenu `error`, et « le script a continué »
+est devenu 101. Restauré, `diff` muet, `git status --porcelain` vide.
+
 `release.yml` n'est **pas** touché, et c'est une exclusion, pas un oubli : ce
 n'est pas une porte de pull request, l'inventaire ne lit que les workflows
 déclenchés par une PR, et une release est taillée dans un `master` qui a passé
