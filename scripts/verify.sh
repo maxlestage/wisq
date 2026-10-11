@@ -92,6 +92,10 @@ fi
 echo "==> Rust formatting and lints (what CI checks first)"
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
+# Le jeu par défaut, que `--all-features` ne couvre pas : `ssr` et `hydrate`
+# allumés ensemble rendent vivante une fonction que seul `hydrate` appelle.
+# Mesuré — la porte ci-dessus sort à 0 sur un arbre où celle-ci sort à 101.
+cargo clippy --all-targets -- -D warnings
 
 echo "==> Building the Rust side (daemon + VM core)"
 cargo build --release
