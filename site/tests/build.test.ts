@@ -168,6 +168,20 @@ describe("built output", () => {
     expect(read("sw.js"), "la police doit être précachée").toContain(`"./${src![1]!}"`);
   });
 
+  /// Les quatre plafonds du front, nommés une fois parce qu'ils sont publiés.
+  ///
+  /// **Un plafond, et non une mesure, est le seul chiffre que le dépôt peut
+  /// publier sur le module** — la note du test ci-dessous dit pourquoi : les
+  /// octets bruts diffèrent de 308 entre le coureur et ce conteneur pour un
+  /// module parfaitement sain. `site/README.md` publie donc ces deux-là, et le
+  /// test « le README du site publie le plafond du module » les y confronte.
+  const PLAFOND = {
+    wasm: 285_000,
+    wasmGzip: 123_000,
+    colle: 60_000,
+    colleGzip: 11_000,
+  } as const;
+
   /// **Le front en Yew a son plafond, et il ne monte plus avec la prose.**
   ///
   /// Le roadmap porte une section « Le site — l'hydratation retirée », où React
@@ -179,17 +193,27 @@ describe("built output", () => {
   /// | --- | --- | --- |
   /// | une page portée, thème seul (#331) | 253 728 | 106 392 |
   /// | toutes les pages, hydratées entières | 351 822 | 148 277 |
-  /// | **deux îlots, tout le mouvement** | **261 252** | **112 436** |
+  /// | deux îlots, le mouvement d'origine | 261 252 | 112 436 |
+  /// | deux îlots, les cinq comportements de #337 | 271 558 | 116 280 |
+  /// | **deux îlots, la seconde vague de #337** | **276 591** | **118 718** |
   ///
-  /// La deuxième ligne est celle que l'ancien plafond annonçait — « chaque
-  /// tranche qui porte des pages le relèvera » — et elle a été refusée : un
-  /// module qui hydrate la page entière doit porter tout ce qu'elle affiche
-  /// pour pouvoir le comparer, soit la prose des dix pages dans les deux
-  /// langues, téléchargée par chaque lecteur pour un texte que sa page avait
-  /// déjà. Seuls deux endroits ont un état ; seuls deux sont hydratés. Le reste
-  /// du coût est le mouvement — ouverture, poussière, défilement lissé,
-  /// aimants —, et il tient en 7 524 octets bruts au-dessus de la première
-  /// page portée.
+  /// **Les deux dernières lignes manquaient, et la troisième se lisait donc
+  /// comme l'état courant.** C'est ce qui a fait publier à `site/README.md` un
+  /// module quinze kilooctets plus léger qu'il n'est : voir le test qui suit.
+  /// Le chiffre d'une ligne est celui de sa tranche, sur la machine qui l'a
+  /// mesurée ; ce que le module pèse aujourd'hui est tenu par `PLAFOND`, pas
+  /// par ce tableau.
+  ///
+  /// La ligne des pages hydratées entières est celle que l'ancien plafond
+  /// annonçait — « chaque tranche qui porte des pages le relèvera » — et elle a
+  /// été refusée : un module qui hydrate la page entière doit porter tout ce
+  /// qu'elle affiche pour pouvoir le comparer, soit la prose des dix pages dans
+  /// les deux langues, téléchargée par chaque lecteur pour un texte que sa page
+  /// avait déjà. Seuls deux endroits ont un état ; seuls deux sont hydratés. Le
+  /// reste du coût est le mouvement — ouverture, poussière, défilement lissé,
+  /// aimants, et les deux vagues de #337 —, et il tient en 22 863 octets bruts
+  /// au-dessus de la première page portée : une différence entre deux lignes du
+  /// tableau, donc entre deux tranches, pas une mesure prise d'un coup.
   ///
   /// **Le plafond ne bouge donc plus avec le contenu**, seulement avec le code :
   /// une page de plus n'ajoute rien au module, et `le module ne porte la prose
@@ -297,22 +321,120 @@ describe("built output", () => {
     // vague — la bascule de thème en cercle, le retour en haut, les aimants de
     // la navigation. Du code, pas du contenu : la règle du paragraphe
     // au-dessus tient.
-    expect(w.byteLength, "wasm brut").toBeLessThan(285_000);
-    expect(wgz, "wasm gzippé").toBeLessThan(123_000);
+    expect(w.byteLength, "wasm brut").toBeLessThan(PLAFOND.wasm);
+    expect(wgz, "wasm gzippé").toBeLessThan(PLAFOND.wasmGzip);
     // La colle de wasm-bindgen. Mesurée 58 869 / 9 763 dans ce conteneur sur
     // `3914022` — le chiffre d'avant, 56 272 / 9 635, avait deux vagues de
     // comportements de retard, et rien ne le tenait. Elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,
     // molette, pointeur, défilement.
-    expect(g.byteLength, "colle brute").toBeLessThan(60_000);
-    expect(ggz, "colle gzippée").toBeLessThan(11_000);
+    expect(g.byteLength, "colle brute").toBeLessThan(PLAFOND.colle);
+    expect(ggz, "colle gzippée").toBeLessThan(PLAFOND.colleGzip);
 
     // **Et `wasm-opt` doit vraiment être passé.** Sans lui le module fait
     // 294 274 octets — mesuré sur la sortie de wasm-bindgen —, ce qui franchit
     // le plafond du haut : une construction qui sauterait l'étape sans le dire
     // tomberait ici plutôt que d'expédier 33 Ko de plus.
     expect(w.byteLength, "le module n'a pas l'air optimisé").toBeLessThan(294_274);
+  });
+
+  /// **Le README du site publiait une mesure là où le dépôt tient un plafond.**
+  ///
+  /// Il disait, au présent : « Islands cost 261 252 bytes, 112 436 gzipped,
+  /// motion included. » C'était la mesure du jour où les îlots ont été décidés,
+  /// et elle est périmée depuis les deux vagues de comportements de #337 —
+  /// celles que le commentaire du test ci-dessus date, 271 558 puis 276 591.
+  /// Reconstruit pour cette tranche, le module fait **276 599 octets et
+  /// 118 716 gzippés** : la phrase annonçait quinze kilooctets de moins que ce
+  /// que le lecteur télécharge, et « motion included » était précisément la
+  /// partie qui avait changé.
+  ///
+  /// **Le même fichier portait les deux chiffres** — le périmé dans son tableau
+  /// et le courant dans le commentaire du budget — et rien ne lisait la phrase
+  /// du README. C'est la forme de #289 une fois de plus : plusieurs copies d'un
+  /// chiffre, les gardées d'accord entre elles, et celle que personne ne relit
+  /// qui dérive.
+  ///
+  /// **Ce que la garde exige, et pourquoi pas une égalité.** Le README nomme les
+  /// deux plafonds, et aucun chiffre d'octets de ce paragraphe n'a le droit
+  /// d'être **sous** l'artefact que la construction vient d'écrire. Une égalité
+  /// sur la mesure serait rouge sur une machine ou sur l'autre pour un module
+  /// sain, pour la raison déjà écrite plus haut. Un plafond, lui, tient sur les
+  /// deux — et le test ci-dessus le confronte aux octets à chaque construction,
+  /// donc la phrase est tenue de bout en bout : README → plafond → module.
+  ///
+  /// **Ce qu'elle ne tient pas**, et c'est délibéré :
+  ///
+  /// - les autres chiffres du README, et la prose des pages publiées.
+  ///   `architecture.rs` et `releases.rs` citent 261 252 comme le terme d'une
+  ///   comparaison datée, pas comme le poids d'aujourd'hui, et
+  ///   `claims.test.ts` leur impose déjà une provenance qui le dit ;
+  /// - les tableaux par tranche — celui au-dessus, celui de
+  ///   `crates/wisq-site/src/lib.rs`, celui de `docs/ROADMAP.md` et celui du
+  ///   journal. Une ligne y est le relevé de **sa** tranche, sur la machine qui
+  ///   l'a mesurée, et rien ne peut vérifier ça après coup. Les trois premiers
+  ///   disent maintenant que le poids d'aujourd'hui est ailleurs ; le journal
+  ///   est daté et ne se réécrit pas ;
+  /// - un écart entre machines, qui s'écrit en centaines d'octets. Si on
+  ///   l'écrivait dans ce paragraphe du README, la garde le prendrait pour un
+  ///   poids de module et rougirait : les petits nombres d'octets se disent
+  ///   ici, dans le test, et pas là.
+  test("le README du site publie le plafond du module, pas une mesure", () => {
+    const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8");
+    const groupe = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+
+    // Le paragraphe des îlots, repéré par son chapeau. S'il est renommé, la
+    // garde rougit ici plutôt que de garder le vide : une garde qu'un
+    // renommage satisfait ne garde rien.
+    // **Les blancs sont normalisés, et `stale-claims.test.ts` a dit pourquoi** :
+    // un document enveloppé à quatre-vingts colonnes coupe « 285 000 bytes »
+    // entre le nombre et son unité, et un motif qui ne trouve rien passe.
+    const paragraphe = readme
+      .split(/\n\s*\n/)
+      .map((bloc) => bloc.replace(/\s+/g, " "))
+      .find((bloc) => bloc.includes("**Islands, not the page.**"));
+    expect(
+      paragraphe,
+      "site/README.md n'a plus le paragraphe « Islands, not the page. » : " +
+        "soit il a été renommé, et cette garde ne lit plus rien, soit le " +
+        "partage en îlots n'est plus ce que le README annonce.",
+    ).toBeDefined();
+
+    for (const plafond of [PLAFOND.wasm, PLAFOND.wasmGzip]) {
+      expect(
+        paragraphe!.includes(groupe(plafond)),
+        `site/README.md ne nomme pas le plafond ${groupe(plafond)} que ` +
+          `« le front en WebAssembly reste dans son budget » tient. Le README ` +
+          `doit publier le plafond : c'est le seul chiffre vrai sur les deux ` +
+          `machines, et c'est lui qui est confronté aux octets du module.`,
+      ).toBe(true);
+    }
+
+    // Aucun chiffre d'octets de ce paragraphe ne peut être plus léger que le
+    // module construit. Les chiffres de la forme refusée — hydrater les pages
+    // entières — sont plus lourds par construction, donc ils passent ; une
+    // mesure qui a vieilli passe sous l'artefact, et c'est exactement ce qui
+    // était arrivé.
+    const { wasm } = frontFiles();
+    const octets = readFileSync(join(dist, wasm));
+    const reel = { bytes: octets.byteLength, gzipped: Bun.gzipSync(octets).byteLength };
+    const cites = [...paragraphe!.matchAll(/([0-9][0-9 ]*[0-9]) (bytes|gzipped)/g)];
+    expect(
+      cites.length,
+      "site/README.md ne chiffre plus rien dans le paragraphe des îlots",
+    ).toBeGreaterThanOrEqual(2);
+    for (const [, brut, unite] of cites) {
+      const valeur = Number(brut.replace(/ /g, ""));
+      const seuil = unite === "bytes" ? reel.bytes : reel.gzipped;
+      expect(
+        valeur,
+        `site/README.md annonce ${brut} ${unite} pour le module, qui en fait ` +
+          `${groupe(seuil)}. Un chiffre sous l'artefact est une mesure qui a ` +
+          `vieilli : le module grossit à chaque comportement ajouté, et c'est ` +
+          `le plafond qui se publie, pas la mesure du jour.`,
+      ).toBeGreaterThanOrEqual(seuil);
+    }
   });
 
   /// **Le câblage du module, mesuré sur l'artefact.**

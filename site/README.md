@@ -16,9 +16,15 @@ hydrated, each on its own root (`data-ilot`); the rest — the prose, the landin
 page, the footer — is HTML the module never takes over. That is a measured
 choice: hydrating whole pages put every page's prose, in both languages, into
 the module (351 822 bytes, 148 277 gzipped) so that it could be compared with
-text the page already had. Islands cost 261 252 bytes, 112 436 gzipped, motion
-included. The page is rendered without Yew's hydration markers and each island
-with them, so the boundary is visible in the published HTML.
+text the page already had. Islands and all the motion are held under 285 000
+bytes and 123 000 gzipped by `tests/build.test.ts`, which weighs the module the
+build just wrote. A ceiling rather than a measurement, deliberately: the exact
+count differs between machines for a module that is perfectly well, and it
+grows with every behaviour added — which is how the figure this paragraph used
+to publish came to be fifteen kilobytes light. That test's own note carries the
+readings, machine by machine. The page is rendered without Yew's hydration
+markers and each island with them, so the boundary is visible in the published
+HTML.
 
 **The motion follows zamocorp.com**, in Rust: a curtain once per session, an
 opening where the section pins and the ▚ mark gathers out of a cloud of dust as
