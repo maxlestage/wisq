@@ -264,8 +264,8 @@ describe("built output", () => {
   ///
   /// | | wasm | colle |
   /// | --- | --- | --- |
-  /// | `Bun.gzipSync`, Bun 1.4.2 — ce que la CI emploie | **118 716** | **9 909** |
-  /// | `Bun.gzipSync`, Bun 1.3.11 | 117 620 | 9 993 |
+  /// | `Bun.gzipSync`, Bun 1.4.2 — le Bun de ce conteneur | **118 716** | **9 909** |
+  /// | `Bun.gzipSync`, Bun 1.3.11 — l'autre, sur le même PATH | 117 620 | 9 993 |
   /// | `gzip -9` du système | 117 213 | 9 763 |
   ///
   /// Le même appel, le même octet d'entrée, **1 096 octets d'écart entre deux
@@ -277,7 +277,7 @@ describe("built output", () => {
   /// — et depuis que la construction imprime les quatre chiffres, c'est mesuré
   /// des deux côtés au lieu d'être inféré d'un chiffre de prose :
   ///
-  /// | à compresseur égal (Bun 1.4.2) | le coureur | ce conteneur | écart |
+  /// | à compresseur comparable | le coureur | ce conteneur | écart |
   /// | --- | --- | --- | --- |
   /// | wasm brut | 276 907 | 276 599 | **308** |
   /// | wasm gzip | 118 741 | 118 716 | **25** |
@@ -292,7 +292,8 @@ describe("built output", () => {
   ///
   /// **Pourquoi aucune garde ne tient ces chiffres exactement.** Elle serait
   /// rouge sur une machine ou sur l'autre pour un module parfaitement sain.
-  /// Ce qui *est* vérifié, à compresseur égal (Bun 1.4.2, celui de la CI) :
+  /// Ce qui *est* vérifié, les quatre chiffres du coureur étant ceux qu'il a
+  /// imprimés sur la PR #482, le 12 octobre, sous Bun 1.4.3 :
   ///
   /// | borne | marge | d'après |
   /// | --- | --- | --- |
@@ -323,9 +324,13 @@ describe("built output", () => {
     // au-dessus tient.
     expect(w.byteLength, "wasm brut").toBeLessThan(PLAFOND.wasm);
     expect(wgz, "wasm gzippé").toBeLessThan(PLAFOND.wasmGzip);
-    // La colle de wasm-bindgen. Mesurée 58 869 / 9 763 dans ce conteneur sur
-    // `3914022` — le chiffre d'avant, 56 272 / 9 635, avait deux vagues de
-    // comportements de retard, et rien ne le tenait. Elle ne bouge qu'avec
+    // La colle de wasm-bindgen. Mesurée 58 869 / **9 909** dans ce conteneur
+    // sous Bun 1.4.2, et le coureur a imprimé les deux mêmes chiffres sous
+    // Bun 1.4.3 : même entrée, même sortie sur ces 58 869 octets. Cette ligne
+    // disait 9 763, qui est la ligne `gzip -9` du tableau au-dessus et non
+    // celle du compresseur que cette assertion emploie — l'erreur que la note
+    // nomme douze lignes plus haut, commise sous elle. Le chiffre d'avant,
+    // 56 272, avait deux vagues de comportements de retard. Elle ne bouge qu'avec
     // la surface de `web-sys` que le front emploie, et le mouvement en emploie
     // beaucoup plus que la bascule de thème seule — observateurs, toile,
     // molette, pointeur, défilement.
@@ -434,6 +439,100 @@ describe("built output", () => {
           `vieilli : le module grossit à chaque comportement ajouté, et c'est ` +
           `le plafond qui se publie, pas la mesure du jour.`,
       ).toBeGreaterThanOrEqual(seuil);
+    }
+  });
+
+  /// **La note ci-dessus gelait la version de Bun de la CI, que rien n'épingle.**
+  ///
+  /// Elle donnait Bun 1.4.2 pour le compresseur de la CI, trois fois, et la
+  /// comparaison « à compresseur égal » en dépendait tout entière. **Cette
+  /// phrase-ci ne cite pas l'ancienne mot pour mot, et c'est la garde qui l'a
+  /// exigé** : écrite d'abord avec la citation, elle se faisait refuser par son
+  /// propre motif. Le refus est juste — une citation est indistinguable d'une
+  /// affirmation pour qui lit le fichier —, et c'est la même famille que #322,
+  /// où une phrase recopiée emportait ses nombres sans leur sens. Mesuré sur le
+  /// journal brut du tour de la PR #482, le 12 octobre : le coureur a imprimé
+  /// `bun install v1.4.3`, `==> Bun 1.4.3` et « gzip de Bun 1.4.3 ». Aucun
+  /// workflow n'épingle de version — `ci.yml` emploie `oven-sh/setup-bun@v2`
+  /// sans `bun-version`, et `site.yml` demande `latest` —, donc la phrase était
+  /// vraie quand elle a été écrite et rien n'a eu à bouger pour qu'elle cesse de
+  /// l'être. C'est #322 mot pour mot : *une phrase vraie peut devenir fausse sans
+  /// que personne n'y touche.*
+  ///
+  /// **Et ce n'est pas un détail de prose, c'est l'outil.** La note l'établit
+  /// elle-même, et le relevé a été refait pour cette tranche sur les octets
+  /// identiques de `dist` :
+  ///
+  /// | compresseur | la colle, 58 869 o | le module, 276 599 o |
+  /// | --- | --- | --- |
+  /// | `Bun.gzipSync`, Bun 1.4.2 | **9 909** | **118 716** |
+  /// | `Bun.gzipSync`, Bun 1.3.11 | 9 993 | 117 620 |
+  /// | `gzip -9` du système | 9 763 | 117 213 |
+  ///
+  /// Un chiffre gzip sans son outil ne vaut donc rien, et la version du coureur
+  /// est le seul terme que le dépôt ne tient pas.
+  ///
+  /// **Ce que la garde exige, et elle tient les deux sens.** Si aucun workflow
+  /// n'épingle Bun, aucune prose du dossier ne peut porter **l'une des trois
+  /// attributions au présent listées dans le motif** à côté d'une version. Si un
+  /// workflow en épingle une, la prose doit nommer celle-là. Le jour où
+  /// quelqu'un épingle, la première moitié rougit et dit que la prose a le droit
+  /// de nommer ; le jour où quelqu'un dégèle, la seconde rougit sur la phrase.
+  ///
+  /// **Ce qu'elle ne tient pas, et la borne est étroite.**
+  ///
+  /// - **Une quatrième formulation lui échappe.** Le motif énumère trois tours
+  ///   de phrase ; « la version que la CI installe » passerait. Dire d'elle
+  ///   qu'elle refuse *toute* attribution serait exactement la faute que cette
+  ///   tranche corrige — une prose plus forte que sa garde (#323) —, donc elle
+  ///   ne le dit pas. Ce qu'elle tient : les trois tours que le dépôt a
+  ///   réellement employés, et la moitié qui lit les workflows, qui est générale.
+  /// - **Un relevé daté est légitime** et n'est pas visé. « Le coureur a imprimé
+  ///   Bun 1.4.3 le 12 octobre » porte son outil et sa date : c'est la forme que
+  ///   le dépôt veut, et la seule qui ne vieillit pas en silence.
+  test("aucune prose ne donne pour la CI une version de Bun que rien n'épingle", () => {
+    const workflows = join(import.meta.dir, "..", "..", ".github", "workflows");
+    const epingles: string[] = [];
+    let pas = 0;
+    for (const nom of readdirSync(workflows).filter((f) => f.endsWith(".yml"))) {
+      const texte = readFileSync(join(workflows, nom), "utf8");
+      // Un pas commence à son `- uses:` et court jusqu'au suivant : c'est là que
+      // vit son `with:`, donc là qu'un `bun-version` se lit.
+      for (const bloc of texte.split(/(?=^\s*-\s+uses:)/m)) {
+        // **L'arobase fait partie du motif, et c'est un sabordage survivant qui
+        // l'a exigé.** Sans elle, `oven-sh/setup-bunne` — une action qui
+        // n'existe pas — satisfaisait la garde, parce qu'elle **contient** le
+        // nom cherché. C'est le piège de #322 (`mkdtempSynced` contient
+        // `mkdtempSync`), rencontré ici dans mon propre motif.
+        if (!/uses:\s*oven-sh\/setup-bun@/.test(bloc)) continue;
+        pas += 1;
+        const pin = bloc.match(/bun-version:\s*["']?([^"'\s]+)/);
+        if (pin && pin[1] !== "latest") epingles.push(`${nom} → ${pin[1]}`);
+      }
+    }
+    expect(
+      pas,
+      "aucun workflow n'installe Bun : cette garde ne lit plus rien, et la " +
+        "moitié qui refuse d'attribuer une version à la CI ne repose sur rien.",
+    ).toBeGreaterThan(0);
+
+    // L'attribution au présent, et elle seule : « ce que la CI emploie »,
+    // « celui de la CI ». Un relevé daté ne correspond pas, et c'est voulu.
+    const attribution = /Bun (\d+\.\d+(?:\.\d+)?)[^\n]{0,40}?(?:ce que la CI emploie|celui de la CI|que la CI emploie)/g;
+    const fichiers = readdirSync(import.meta.dir).filter((f) => f.endsWith(".ts"));
+    for (const fichier of fichiers) {
+      const texte = readFileSync(join(import.meta.dir, fichier), "utf8");
+      for (const trouve of texte.matchAll(attribution)) {
+        expect(
+          epingles.some((p) => p.endsWith(trouve[1]!)),
+          `site/tests/${fichier} donne Bun ${trouve[1]} pour la version de la ` +
+            `CI, et ${epingles.length === 0 ? "aucun workflow ne l'épingle" : `les workflows épinglent ${epingles.join(", ")}`}. ` +
+            `Un chiffre gzip ne vaut rien sans son compresseur, et la version du ` +
+            `coureur n'est tenue par aucun fichier du dépôt : écrire un relevé ` +
+            `daté — « le coureur a imprimé Bun X le <date> » — au lieu d'une ` +
+            `attribution au présent.\n\n${trouve[0]}`,
+        ).toBe(true);
+      }
     }
   });
 
