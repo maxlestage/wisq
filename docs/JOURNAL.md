@@ -24477,3 +24477,121 @@ changer le README rougit, et l'inverse aussi.
   module et rougirait. Les petits nombres d'octets se disent dans le test.
 
 `bun test` : 444 → 445, sur 29 fichiers.
+
+## #349 — un chiffre gzip cité sous le mauvais compresseur, et la version du coureur gelée dans la prose
+
+`site/tests/build.test.ts` porte la note la plus longue du dépôt sur les tailles
+du front. Elle établit elle-même, en #339, qu'« un chiffre gzip sans son outil
+n'est pas comparable à un autre chiffre gzip ». Deux lignes de ce fichier
+l'enfreignaient.
+
+### Le commentaire citait la ligne `gzip -9` d'un tableau à trois lignes
+
+Au-dessus de l'assertion de la colle :
+
+> La colle de wasm-bindgen. Mesurée 58 869 / **9 763** dans ce conteneur sur
+> `3914022`
+
+L'assertion annotée est `expect(ggz, "colle gzippée")`, où `ggz` sort de
+`Bun.gzipSync`. **Relevé pour cette tranche, sur les octets identiques de
+`dist` et non cité :**
+
+| compresseur | la colle, 58 869 o | le module, 276 599 o |
+| --- | --- | --- |
+| `Bun.gzipSync`, Bun 1.4.2 | **9 909** | **118 716** |
+| `Bun.gzipSync`, Bun 1.3.11 | 9 993 | 117 620 |
+| `gzip -9` du système | **9 763** | 117 213 |
+
+9 763 est la troisième ligne. Le commentaire avait pris la ligne du système pour
+celle du compresseur que son assertion emploie — 146 octets, et l'erreur que la
+note nomme **douze lignes plus haut**. C'est #268 à nouveau : la règle citée, et
+enfreinte juste en dessous.
+
+### Et la version du coureur était gelée
+
+La note donnait Bun 1.4.2 pour le compresseur de la CI, trois fois, et toute la
+comparaison « à compresseur égal » en dépendait. Lu dans le journal brut du tour
+de la PR #482, le 12 octobre : `bun install v1.4.3`, `==> Bun 1.4.3`, « gzip de
+Bun 1.4.3 ».
+
+**Rien n'épingle Bun** : `ci.yml` emploie `oven-sh/setup-bun@v2` sans
+`bun-version`, `site.yml` demande `latest`. La phrase était donc vraie quand
+elle a été écrite et rien n'a eu à bouger pour qu'elle cesse de l'être — #322
+mot pour mot.
+
+Ce qui tient quand même, et c'est mesuré : le coureur a imprimé **9 909** pour
+la colle sous 1.4.3, le même chiffre que ce conteneur sous 1.4.2, sur les mêmes
+58 869 octets. Les deux versions s'accordent sur cette entrée. Sur le module je
+ne peux rien en dire : les deux machines n'en produisent pas les mêmes octets.
+
+### La garde tient les deux sens
+
+Si aucun workflow n'épingle Bun, aucune prose de `site/tests/` ne peut donner
+une version pour celle de la CI. Si un workflow en épingle une, la prose doit
+nommer celle-là. Le jour où quelqu'un épingle, la première moitié rougit et dit
+que la prose a le droit de nommer.
+
+### Quatre sabordages, et deux ont appris quelque chose
+
+| sabordage | verdict |
+| --- | --- |
+| l'attribution plantée dans `claims.test.ts` | **tombe**, en nommant `claims.test.ts` — la balayure couvre le dossier |
+| `bun-version: "1.4.2"` épinglé dans `ci.yml`, l'attribution toujours plantée | **vert** — la garde tient la condition, pas la phrase |
+| `oven-sh/setup-bun` → `setup-bunne` dans les quatre workflows | **SURVÉCU** |
+| le même, contre le motif resserré en `setup-bun@` | **tombe** |
+
+**Le survivant est dans mon propre motif.** `/uses:\s*oven-sh\/setup-bun/`
+accepte `oven-sh/setup-bunne`, une action qui n'existe pas, parce que le nom
+**contient** le nom cherché. C'est exactement le piège de #322
+(`mkdtempSynced` contient `mkdtempSync`), rencontré cette fois dans la garde que
+j'écrivais. L'arobase le ferme, et le même sabordage tombe ensuite.
+
+**Et la garde a refusé ma propre explication.** Écrite d'abord en citant
+l'ancienne phrase mot pour mot, elle se faisait recaler par son propre motif.
+Le refus est juste : pour qui lit le fichier, une citation est indistinguable
+d'une affirmation. L'entrée ci-dessus décrit donc l'ancienne phrase au lieu de
+la reproduire, et le commentaire du test dit pourquoi.
+
+### Deux erreurs de méthode, les deux attrapées par une vérification de routine
+
+**La copie d'avant était une copie d'après.** J'ai restauré les workflows depuis
+un répertoire copié **après** le deuxième sabordage : `ci.yml` a gardé
+l'épinglage. `git status --porcelain` l'a montré, et la copie prise au tout
+début l'a réparé. La règle a besoin d'une forme plus serrée : *une copie prise
+avant le **premier** sabordage, pas avant le dernier.*
+
+**Et la première mutation ne s'était pas appliquée du tout** : l'ancre
+`import { expect, test } from "bun:test";` n'existe pas dans `claims.test.ts`,
+qui importe aussi `describe`. Le test est passé vert, et un vert sous un
+sabordage qui n'a pas pris ne dit rien.
+
+### Et la même faute dans le texte de la garde, relue une fois de plus
+
+Le premier jet du commentaire disait que, sans épinglage, « aucune prose du
+dossier ne peut donner une version pour celle de la CI ». Le motif, lui, énumère
+**trois** tours de phrase. « La version que la CI installe » passerait.
+
+C'est #323 à la lettre — *une affirmation en prose plus forte que ce que la
+garde vérifie est exactement ce que la garde existe pour empêcher* —, commise
+dans la tranche qui corrige cette faute, et trouvée en relisant mon propre
+diff avant de committer. Le commentaire énonce donc maintenant la borne : trois
+tours nommés, la moitié qui lit les workflows étant la seule qui soit générale.
+
+### Un échec que je ne peux pas nommer, et c'est de ma faute
+
+La première exécution de la suite entière a rendu **1 fail** sur 446. Les six
+suivantes : **446 pass, 0 fail**. La seule qui a échoué est aussi la seule à
+avoir pris **61,43 s** là où les six autres prennent **11,4 à 12,1 s** — cinq
+fois plus. Le dépôt porte déjà le mode, dans l'en-tête de `heroku.test.ts` :
+« quatre secondes suffisent sur une machine au repos et pas sur une machine
+chargée […] un budget qui dépend de la charge n'est pas une garde, c'est un
+chronomètre ».
+
+**Mais je ne l'affirme pas, parce que je n'ai pas le nom du test.** Je l'avais
+lancé avec `| tail -6`, et la ligne `(fail)` était dans ce que le tube a jeté.
+Un échec qu'on ne peut pas nommer est un échec qu'on ne peut pas juger, et
+« chronomètre » serait une explication vraisemblable posée à la place d'une
+mesure. La consigne qui en sort : *capturer toute la sortie d'une suite du
+premier coup, dans un fichier.*
+
+`bun test` : 445 → 446, sur 29 fichiers.
