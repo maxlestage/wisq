@@ -3880,6 +3880,14 @@ construction, le serveur, la feuille de style et les tests.
 | toutes les pages, hydratées entières | 351 822 | 148 277 |
 | **deux îlots, tout le mouvement** | **261 252** | **112 436** |
 
+**Ces trois chiffres sont ceux de cette tranche-ci**, et le dernier n'est pas
+le poids d'aujourd'hui : les deux vagues de comportements de #337 l'ont porté à
+271 558 puis 276 591 octets bruts. Ce que le module pèse est tenu par un
+plafond — `site/tests/build.test.ts`, « le front en WebAssembly reste dans son
+budget » —, et c'est ce plafond que `site/README.md` publie, parce qu'une
+mesure vieillit au premier comportement ajouté alors qu'un plafond tient sur
+les deux machines.
+
 Hydrater une page entière demande au module de porter tout ce qu'elle affiche,
 pour le comparer au balisage : la prose des dix pages, dans les deux langues,
 téléchargée par chaque lecteur pour un texte que sa page avait déjà. Seuls deux
