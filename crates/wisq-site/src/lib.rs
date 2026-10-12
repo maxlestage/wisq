@@ -14,12 +14,21 @@
 //! | un composant Yew trivial, première sonde | 188 859 | 80 196 |
 //! | une page portée, thème seul (#331) | 253 728 | 106 392 |
 //! | toutes les pages, hydratées entières | 351 822 | 148 277 |
-//! | deux îlots, tout le mouvement | 261 252 | 112 436 |
+//! | deux îlots, le mouvement d'origine | 261 252 | 112 436 |
+//! | deux îlots, les cinq comportements de #337 | 271 558 | 116 280 |
+//! | deux îlots, la seconde vague de #337 | 276 591 | 118 718 |
 //!
 //! Le code DOM que Yew a remplacé en coûtait 1 062 gzippés, et le React
-//! hydratant que le dépôt avait retiré avant lui 65 794. La troisième ligne est
-//! celle qu'on n'a pas prise : voir `shell::Reglages` pour la raison, et
-//! `mouvement` pour ce que coûte la quatrième au-delà des îlots.
+//! hydratant que le dépôt avait retiré avant lui 65 794. La ligne des pages
+//! hydratées entières est celle qu'on n'a pas prise : voir `shell::Reglages`
+//! pour la raison, et `mouvement` pour ce que coûtent les îlots au-delà d'elle.
+//!
+//! **Le chiffre d'une ligne est celui de sa tranche**, pas le poids
+//! d'aujourd'hui : il bouge avec le code à chaque comportement ajouté, et il
+//! diffère d'une machine à l'autre pour un module sain. Ce que le module pèse
+//! est donc tenu par un plafond, et par lui seul —
+//! `site/tests/build.test.ts`, « le front en WebAssembly reste dans son
+//! budget ».
 //!
 //! **Ce qu'il rachète.** Les comportements du site vivaient dans `src/main.ts`,
 //! en code DOM, à côté de composants React qui portaient en commentaire « this

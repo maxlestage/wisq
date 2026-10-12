@@ -24381,3 +24381,99 @@ qui dit qu'elle tient l'invariant est alors exactement le genre d'affirmation
 que les gardes existent pour empêcher. Avec une nuance que #345 et #346 avaient
 déjà installée : la configuration qui *n'arme rien* ne garde rien, quel que
 soit le nombre de tests qu'elle lance.
+
+## #348 — le README du site publiait le module quinze kilooctets plus léger qu'il n'est
+
+`site/README.md` disait, au présent, dans le paragraphe qui explique le partage
+en îlots :
+
+> Islands cost 261 252 bytes, 112 436 gzipped, motion included.
+
+**Reconstruit sur l'arbre de cette tranche, le module fait 276 599 octets et
+118 716 gzippés** — `bun run build` imprime les quatre chiffres depuis #340 :
+
+```
+front : wisq-27c09838c2d61e9f.wasm (276599 octets, 118716 gzip),
+        wisq-ba1d922b489ebd83.js (58869 octets, 9909 gzip) — gzip de Bun 1.4.2
+```
+
+La phrase annonçait donc 15 347 octets de moins que ce qu'un lecteur télécharge,
+et 6 280 de moins gzippés. Elle était vraie le jour où les îlots ont été
+décidés ; les deux vagues de comportements de #337 l'ont rendue fausse, et
+« motion included » est exactement la partie qui avait changé.
+
+### Le chiffre vivait dans cinq copies, et la gardée était la bonne
+
+| où | ce qu'il disait | lu par |
+| --- | --- | --- |
+| `site/tests/build.test.ts`, le plafond | 285 000 / 123 000, confrontés aux octets | la CI, à chaque construction |
+| `site/tests/build.test.ts`, son commentaire | « 276 591 / 118 718 avec la seconde vague » | personne |
+| `site/tests/build.test.ts`, son tableau | 261 252 / 112 436 en dernière ligne | personne |
+| `crates/wisq-site/src/lib.rs`, son tableau | idem | personne |
+| `docs/ROADMAP.md`, son tableau | idem | personne |
+| `site/README.md` | 261 252 / 112 436 **au présent** | personne |
+
+**Le même fichier portait le périmé et le courant**, à cent trente lignes l'un
+de l'autre : le tableau s'arrêtait avant #337, le commentaire du budget le
+datait. C'est la forme de #289 pour la quatrième fois — plusieurs copies d'un
+chiffre, celles qu'une garde tient d'accord entre elles, et celle que personne
+ne relit qui dérive. Ce qui est nouveau ici : **la copie qui a dérivé était la
+seule écrite au présent**, et les trois tableaux n'étaient pas faux, seulement
+incomplets.
+
+### Ce qui est publié n'est plus une mesure, c'est le plafond
+
+Le README nomme maintenant 285 000 et 123 000 — les bornes que
+`site/tests/build.test.ts` tient déjà contre l'artefact. Les quatre plafonds
+sont sortis en `PLAFOND` pour qu'il n'y ait qu'un endroit à changer, et un
+nouveau test exige que le README les nomme.
+
+**Pourquoi un plafond et pas la mesure.** La note du test l'avait déjà écrit
+pour elle-même : les octets bruts diffèrent de 308 entre le coureur de la CI et
+ce conteneur, à source identique, pour un module parfaitement sain. Une égalité
+serait rouge sur une machine ou sur l'autre. C'est la leçon de #344 appliquée à
+un poids au lieu d'un débit : *un relevé n'est pas une borne, et seule la borne
+se publie.*
+
+### La garde, et les trois sabordages
+
+Le test lit le paragraphe repéré par son chapeau — blancs normalisés, parce que
+`stale-claims.test.ts` a montré qu'un document enveloppé à quatre-vingts
+colonnes coupe « 285 000 bytes » entre le nombre et son unité — puis exige deux
+choses : que les deux plafonds y soient nommés, et qu'**aucun chiffre d'octets
+du paragraphe ne soit sous l'artefact que la construction vient d'écrire**.
+
+La seconde est la condition générale, pas l'instance : les chiffres de la forme
+refusée — 351 822 et 148 277, les pages hydratées entières — sont plus lourds
+par construction et passent d'eux-mêmes ; une mesure qui vieillit passe sous le
+module, et c'est précisément ce qui était arrivé.
+
+| sabordage | ce qui tombe |
+| --- | --- |
+| le README ne nomme plus le plafond (l'état d'avant) | `le README du site publie le plafond du module` — « ne nomme pas le plafond 285 000 » |
+| la phrase périmée remise, plafonds gardés | le même — « annonce 261 252 bytes pour le module, qui en fait 276 599 » |
+| `PLAFOND.wasm` passé à 270 000 | **les deux** — `reste dans son budget` sur les octets, et la garde du README sur le nom |
+
+Le troisième est celui qui compte : il prouve que la boucle est fermée dans les
+deux sens — README → plafond → octets du module. Changer le plafond sans
+changer le README rougit, et l'inverse aussi.
+
+### Ce que la tranche ne fait pas, et le dire est la moitié du travail
+
+- **Les pages publiées gardent 261 252.** `architecture.rs` et `releases.rs`
+  le citent comme le terme d'une comparaison datée — « 351 822 octets au lieu
+  de 261 252 » —, pas comme le poids d'aujourd'hui, et `claims.test.ts` leur
+  impose déjà une provenance qui le dit mot pour mot : « Le module a bougé
+  depuis. » Comment le site doit publier ce chiffre reste une question de voix,
+  posée à Maxime et pas tranchée ici.
+- **Les tableaux par tranche restent des tableaux par tranche.** Celui de
+  `build.test.ts`, celui de `lib.rs` et celui du `ROADMAP` gagnent les deux
+  lignes de #337 qui manquaient et une phrase qui dit que le poids
+  d'aujourd'hui est tenu par le plafond ; aucune garde ne peut vérifier après
+  coup qu'une ligne est bien le relevé de sa tranche. L'entrée de journal de
+  #335 ne se réécrit pas : elle est datée.
+- **Un écart entre machines ne s'écrit pas dans ce paragraphe du README.** Il
+  tient en centaines d'octets, donc la garde le prendrait pour un poids de
+  module et rougirait. Les petits nombres d'octets se disent dans le test.
+
+`bun test` : 444 → 445, sur 29 fichiers.
