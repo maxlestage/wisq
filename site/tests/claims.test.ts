@@ -1042,28 +1042,6 @@ const accounted = new Map<string, Map<string, string>>([
           "la virgule décimale en fait un jeton distinct.",
       ],
       [
-        "0.16",
-        "le démarrage le plus rapide **observé** : 0,164 s, sur la machine où " +
-          "tourne la CI, dans l'étape « Ce que les deux bancs ont mesuré » qui " +
-          "republie les deux relevés à la fin de chaque exécution de " +
-          "`cargo run --release --bin wisq-bench-rs`. Relu le 10 octobre 2026 " +
-          "dans le log du job « Cœur (Linux) ». **Ce n'est pas une propriété de " +
-          "cette machine** : le même coureur a imprimé 0,324 s trente-cinq " +
-          "minutes plus tard, sur la même branche. Une borne prise sur une " +
-          "exécution est un échantillon.",
-      ],
-      ["0,16", "le même nombre dans l'autre langue."],
-      [
-        "0.40",
-        "le plus lent : 0,397 s, sur cinq passages du même banc dans un " +
-          "conteneur de développement modeste — 0,394, 0,397, 0,321, 0,388, " +
-          "0,359 s, relancés le 10 octobre 2026. C'est une durée d'hôte, pas une " +
-          "propriété de wisq — le compte d'instructions au-dessus est le même " +
-          "partout, le temps qu'il prend appartient à la machine, et deux " +
-          "conteneurs du même genre ne rendent pas le même chiffre.",
-      ],
-      ["0,40", "le même nombre dans l'autre langue."],
-      [
         "137.8",
         "le débit du cœur embarqué dans l'exécution 38091041192 de la CI, " +
           "22 h 24 UTC le 10 octobre 2026, job « Cœur (Linux) ».",
@@ -1078,22 +1056,26 @@ const accounted = new Map<string, Map<string, string>>([
       ],
       ["271,3", "le même nombre dans l'autre langue."],
       [
-        "112",
-        "le plus bas débit observé, 112,4 MIPS, dans ce conteneur de " +
-          "développement. Les sept relevés du cœur embarqué qu'on a sous la " +
-          "main : 112,4 / 113,3 / 114,9 / 124,1 / 137,8 / 138,8 / 271,3 MIPS — " +
-          "cinq passages d'un conteneur et deux exécutions de la CI.",
+        "288.1",
+        "le troisième relevé du coureur de la CI, et le plus haut : exécution " +
+          "38314300191, job « Cœur (Linux) », 22 h 11 UTC le 12 octobre 2026, " +
+          "0,155 s pour les mêmes 44,6 M d'instructions. **C'est lui qui a mis " +
+          "en défaut l'intervalle que cette page publiait** : 288,1 est " +
+          "au-dessus de l'ancienne borne haute, 0,155 s en dessous de " +
+          "l'ancienne borne basse, et le tour était vert.",
       ],
+      ["288,1", "le même nombre dans l'autre langue."],
       [
-        "271",
-        "le plus haut observé, 271,3 MIPS, dans un log de la CI. **Et c'est ce " +
-          "chiffre qui a appris à cette page ce qu'elle dit maintenant** : la " +
-          "page annonçait 186,6 MIPS en affirmant que la borne venait de ce " +
-          "journal. Le journal disait 271,3, puis 137,8 à l'exécution suivante. " +
-          "La borne annoncée n'était donc pas périmée — elle était un " +
-          "échantillon présenté comme une borne, et deux échantillons de plus " +
-          "suffisent à le montrer.",
+        "112.4",
+        "le plus bas débit relevé, dans un conteneur de développement modeste, " +
+          "sur cinq passages du même banc : 112,4 / 113,3 / 114,9 / 124,1 / " +
+          "138,8 MIPS, relancés le 10 octobre 2026. Il est nommé avec sa " +
+          "machine, et non comme le bas d'un intervalle : les quatre relevés " +
+          "du coureur sont une autre machine, et la garde « aucune page ne " +
+          "range dans un même intervalle deux chiffres pris sur deux " +
+          "machines » refuse désormais de les coudre.",
       ],
+      ["112,4", "le même nombre dans l'autre langue."],
       [
         "32",
         "ce n'est pas une mesure : les 32 bits de rv32ima, l'architecture de la " +
@@ -1621,6 +1603,77 @@ describe("les pages du site publient des nombres, et le périmètre de ce qui le
         `efface la première : ${duplicated.join(", ")}. Donne-leur deux clés, ` +
         `ou fusionne les deux raisons dans une seule entrée.`,
     ).toEqual([]);
+  });
+
+  /// **Un intervalle dont les deux bouts viennent de deux machines n'est pas un
+  /// intervalle.**
+  ///
+  /// La FAQ annonçait « 0,16 à 0,40 s, soit 112 à 271 millions d'instructions
+  /// par seconde — et cet écart n'est pas un écart entre machines ». Les
+  /// provenances de ce fichier disaient le contraire, à quarante lignes de là :
+  /// 0,16 et 271,3 sont des relevés **de la machine de la CI**, 0,40 et 112,4
+  /// des relevés **d'un conteneur de développement**. Les deux bornes de chaque
+  /// intervalle venaient donc de deux machines différentes, dans la phrase même
+  /// qui le niait.
+  ///
+  /// **La garde se sert de ce que le dépôt tient déjà.** Chaque chiffre publié
+  /// porte une provenance, et une provenance d'hôte nomme sa machine — c'est la
+  /// moitié du travail de #343 et #344. Il suffisait de joindre les deux : un
+  /// `X à Y` dont les deux bouts sont des chiffres tenus, et dont les
+  /// provenances nomment deux machines, est refusé.
+  ///
+  /// **Les deux langues, et la provenance qui délègue.** La page française
+  /// écrit « 0,16 à 0,40 » et sa provenance dit « le même nombre dans l'autre
+  /// langue » — sans machine. Une garde qui s'arrêterait là ne lirait que
+  /// l'anglais, ce qui est exactement le défaut de #477. La délégation est donc
+  /// suivie : la virgule devient un point, et la machine se lit sur l'entrée
+  /// qui la porte.
+  ///
+  /// **Ce qu'elle ne refuse pas** : un avant/après sur une seule machine.
+  /// `releases.rs` écrit « 55 to 163 million guest instructions a second […]
+  /// on the same machine » — un gain mesuré d'un côté à l'autre d'un
+  /// changement, pas une dispersion. Les deux bouts y ont la même machine,
+  /// donc la garde se taît, et c'est le bon comportement et non un oubli.
+  const MACHINES: [RegExp, string][] = [
+    [/conteneur/i, "un conteneur de développement"],
+    [/\bCI\b|coureur/i, "la machine de la CI"],
+  ];
+
+  /// La machine qu'une provenance nomme, en suivant la délégation d'une langue
+  /// à l'autre. `undefined` quand la provenance ne parle pas de machine : le
+  /// chiffre n'est alors pas un relevé d'hôte, et l'intervalle ne le concerne
+  /// pas.
+  function machineOf(provenance: Map<string, string>, chiffre: string): string | undefined {
+    let why = provenance.get(chiffre);
+    if (why && /le même nombre dans l'autre langue/.test(why)) {
+      why = provenance.get(chiffre.replace(",", "."));
+    }
+    if (!why) return undefined;
+    for (const [motif, nom] of MACHINES) if (motif.test(why)) return nom;
+    return undefined;
+  }
+
+  test("aucune page ne range dans un même intervalle deux chiffres pris sur deux machines", () => {
+    const borne = String.raw`\d[\d\u00a0\u202f ]*(?:[.,]\d+)?`;
+    const intervalle = new RegExp(`(${borne})\\s+(?:to|à)\\s+(${borne})`, "g");
+    for (const [page, provenance] of accounted) {
+      const texte = readFileSync(pathOf(page), "utf8");
+      for (const trouve of texte.matchAll(intervalle)) {
+        const bas = trouve[1]!.trim();
+        const haut = trouve[2]!.trim();
+        const machineBasse = machineOf(provenance, bas);
+        const machineHaute = machineOf(provenance, haut);
+        if (!machineBasse || !machineHaute) continue;
+        expect(
+          machineHaute,
+          `${page} publie « ${bas} à ${haut} » comme un intervalle, mais ` +
+            `« ${bas} » a été relevé sur ${machineBasse} et « ${haut} » sur ` +
+            `${machineHaute}. Un intervalle cousu sur deux machines ne décrit ` +
+            `aucune des deux : donner les relevés avec leur machine et leur ` +
+            `date, pas un écart qui les mélange.`,
+        ).toBe(machineBasse);
+      }
+    }
   });
 
   test("rien ne subsiste dans une liste de provenance pour un nombre que la page ne porte plus", () => {
