@@ -24595,3 +24595,104 @@ mesure. La consigne qui en sort : *capturer toute la sortie d'une suite du
 premier coup, dans un fichier.*
 
 `bun test` : 445 → 446, sur 29 fichiers.
+
+## #350 — un intervalle cousu sur deux machines, dans la phrase qui niait l'être
+
+La FAQ publie, dans les deux langues, le temps que met la machine locale à
+atteindre son invite. Elle disait :
+
+> le cœur Rust que l'application embarque le démarre en **0,16 à 0,40 s**, soit
+> **112 à 271** millions d'instructions par seconde — et cet écart **n'est pas
+> un écart entre machines**.
+
+**Les provenances de `claims.test.ts` disaient le contraire, quarante lignes
+plus bas**, et en toutes lettres :
+
+| chiffre | ce que sa provenance dit |
+| --- | --- |
+| `0.16` | « 0,164 s, **sur la machine où tourne la CI** » |
+| `0.40` | « 0,397 s […] dans un **conteneur de développement** modeste » |
+| `112` | « le plus bas débit observé, 112,4 MIPS, **dans ce conteneur** » |
+| `271` | « le plus haut observé, 271,3 MIPS, **dans un log de la CI** » |
+
+Les deux bornes de chaque intervalle venaient donc de deux machines
+différentes, dans la phrase même qui le niait. Le dépôt portait les deux
+affirmations et elles ne pouvaient pas être vraies ensemble.
+
+### Et un quatrième relevé les a mises en défaut toutes les deux
+
+Le tour **vert** de la PR #483, exécution 38314300191, job « Cœur (Linux) »,
+22 h 11 UTC le 12 octobre :
+
+```
+cœur Rust — celui que l'application embarque
+instructions : 44.6 M retirées (budget 200 M)
+durée        : 0.155 s
+débit        : 288.1 MIPS
+```
+
+**288,1 MIPS est au-dessus de l'ancienne borne haute ; 0,155 s est en dessous
+de l'ancienne borne basse.** Les quatre relevés du coureur sont donc 137,8 /
+271,3 / 288,1 — et la page annonçait 271 comme un plafond.
+
+### Comment la trouvaille est venue, et ce n'était pas la recherche prévue
+
+Je cherchais si « 1 vrai noyau démarré par exécution CI » — l'un des deux
+chiffres que `claims.test.ts` déclare **non tenus** — était établi comme faux.
+Il ne l'est pas : le tour de #483 a bien démarré un vrai noyau, deux fois dans
+le seul job « Cœur (Linux) ». Mais le relevé qui le prouve portait 288,1, et
+c'est lui qui a nommé le défaut d'à côté. *Une mesure faite pour une question
+répond parfois à une autre, et c'est encore deux nombres qui devraient
+s'accorder.*
+
+### Avant de conclure, chercher la même forme là où elle pourrait être
+
+Trois autres pages parlent de débit. Deux ne sont pas concernées — `docs.rs`
+cite MIPS comme **architecture** dans la liste des `arch/` de Linux, et
+`roadmap.rs` fait un argument d'ordre de grandeur sans intervalle. La
+troisième, `releases.rs`, écrit « 55 to 163 million guest instructions a
+second […] **on the same machine** » : c'est un avant/après d'un gain, pas une
+dispersion, et ses deux bouts ont la même machine. Elle reste.
+
+### La garde se sert de ce que le dépôt tenait déjà
+
+Chaque chiffre publié porte une provenance, et une provenance d'hôte nomme sa
+machine — c'est la moitié du travail de #343 et #344. Il suffisait de joindre
+les deux : un `X à Y` dont les deux bouts sont des chiffres tenus et dont les
+provenances nomment **deux** machines est refusé. Ce n'est pas une interdiction
+des intervalles, c'est le refus d'un intervalle qui mélange deux machines.
+
+**La délégation d'une langue à l'autre est suivie.** La page française écrit
+« 0,16 à 0,40 » et sa provenance dit « le même nombre dans l'autre langue »,
+sans machine. Une garde qui s'arrêterait là ne lirait que l'anglais — le défaut
+de #477 exactement. La virgule devient un point, et la machine se lit sur
+l'entrée qui la porte.
+
+### Trois sabordages, et le troisième était hors sujet
+
+| sabordage | verdict |
+| --- | --- |
+| « 112,4 à 288,1 » dans la page **française** | **tombe**, par la délégation, en nommant les deux machines |
+| « 112.4 to 288.1 » dans la page anglaise | **tombe** |
+| « 137,8 puis 271,3 **à** 288,1 » — deux relevés du **même** coureur | **vert**, et c'est le bon comportement |
+
+Le troisième a d'abord été écrit « 137,8 à 288,1 », ce qui **retirait 271,3 de
+la page** : c'est la garde des provenances périmées qui est tombée, pas la
+mienne. La mutation était hors du sujet de la garde visée, pour la troisième
+fois dans ce dépôt, et c'est en lisant *quel* test tombait que ça s'est vu. La
+forme corrigée garde le jeu de chiffres intact et ne change que la jointure.
+
+### Ce que la page dit maintenant
+
+Plus d'intervalle. Les quatre relevés du coureur et celui du conteneur sont
+nommés avec leur machine, le facteur deux entre deux tours de la même machine
+à trente-cinq minutes d'intervalle est dit, et la conclusion est celle de #344 :
+*un chiffre d'hôte est un échantillon, pas une borne* — avec, en plus, qu'un
+intervalle bâti sur deux machines ne décrit ni l'une ni l'autre.
+
+Les provenances de `0.16`, `0,16`, `0.40`, `0,40`, `112` et `271` partent avec
+les chiffres : la garde « rien ne subsiste dans une liste de provenance pour un
+nombre que la page ne porte plus » l'exige, et c'est elle qui a vérifié que le
+jeu était exact. `288.1`, `288,1`, `112.4` et `112,4` entrent avec la leur.
+
+`bun test` : 446 → 447, sur 29 fichiers.
