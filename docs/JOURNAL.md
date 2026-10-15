@@ -24696,3 +24696,68 @@ nombre que la page ne porte plus » l'exige, et c'est elle qui a vérifié que l
 jeu était exact. `288.1`, `288,1`, `112.4` et `112,4` entrent avec la leur.
 
 `bun test` : 446 → 447, sur 29 fichiers.
+
+## #351 — la garde du chiffrage du bureau comptait un fichier des trois, et ne lisait pas les lettres
+
+Deux nombres qui devraient s'accorder : la feuille de route chiffrait la suite
+hébergée à **17**, la cible `WisqHostedTests` en porte **22**.
+
+Le périmètre est déclaré par `project.yml`, qui donne à la cible le dossier
+`Tests/WisqHostedTests` entier. Il contient trois fichiers :
+
+| fichier | cas |
+| --- | --- |
+| `LocalDesktopTests.swift` | 17 |
+| `MetalCompilerProbeTests.swift` | 3 |
+| `WebKitJITProbeTests.swift` | 2 |
+| **la cible** | **22** |
+
+La ligne du tableau de « Brancher le bureau dans l'application » donnait le
+compte du premier fichier sous le nom de la suite entière, et sa garde, écrite
+en #324, lisait ce seul fichier. *Un comptage qui ne voit qu'une partie de ce
+qu'il compte ne garde pas le reste* — la leçon de #320, commise dans la garde
+qui l'invoquait.
+
+### La seconde faute était quatre lignes plus bas, et en toutes lettres
+
+La même section écrivait le compte **en lettres** dans sa phrase sur le coût.
+Le motif de la garde ne lisait que des chiffres, donc cette phrase n'était
+tenue par rien : le jour où un dix-huitième cas arrive, la garde force le
+tableau et laisse la phrase derrière. C'est exactement #313 — « six » corrigé
+en « huit », « la sixième » restée en place — et c'est la cinquième leçon du
+dépôt rencontrée une fois de plus : **un nombre écrit en lettres échappe à
+toutes les gardes** tant qu'aucune ne sait lire les lettres.
+
+### Ce que la garde fait maintenant
+
+Elle lit le périmètre **dans `project.yml`**, pas dans son propre texte : un
+quatrième fichier posé dans le dossier entre dans le compte sans que personne y
+pense. Elle compte les cas fichier par fichier et nomme chaque fichier avec son
+compte dans le message d'échec. Et son balayage des phrases accepte le chiffre
+comme les lettres, par une table qui va jusqu'à trente — `FRENCH_NUMBERS`
+s'arrêtait à quatorze, et c'est au-dessus de quatorze que la faute vivait.
+
+### Six sabordages, six chutes, chacun nommant son test
+
+| sabordage | test qui tombe |
+| --- | --- |
+| `**22**` → `**21**` dans le tableau | les phrases « tests hébergés » |
+| « vingt-deux » → « vingt et un » **en lettres** | les phrases « tests hébergés » |
+| `**17**` → `**18**` cas | le tableau nomme le fichier qu'il compte |
+| un quatrième `.swift` posé dans le dossier | les phrases « tests hébergés » (et les deux comptes de tests du README) |
+| la cible déclare `Tests/WisqUITests` | le périmètre lu dans la spec |
+| un `bootsAKernel: true` de moins | le tableau nomme le fichier qu'il compte |
+
+Le quatrième est celui qui compte : il prouve que le dossier est **parcouru**,
+pas recopié. Le cinquième prouve que le périmètre vient de la spec.
+
+### La garde a refusé mon explication, et elle avait raison
+
+Le paragraphe qui raconte la faute citait la vieille phrase mot pour mot. La
+garde l'a refusée : dans un document, une citation ne se distingue pas d'une
+affirmation. Le paragraphe **décrit** donc la vieille phrase au lieu de la
+reproduire. C'est le troisième refus de ce genre dans ce dépôt, et à chaque
+fois le remède est le même.
+
+Restauration vérifiée par `diff` contre une copie prise **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.

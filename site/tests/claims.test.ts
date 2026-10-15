@@ -1889,9 +1889,9 @@ describe("le guide annonce le nombre de secrets que le workflow exige", () => {
 /// **La feuille de route chiffre une décision, et ses chiffres se rouillent.**
 ///
 /// « Brancher le bureau dans l'application : les trois formes, et leur coût »
-/// avance deux nombres sur la suite hébergée — combien de tests elle porte, et
-/// combien démarrent un noyau. Ce sont les deux qui décident si le bureau est
-/// jugé sous un vrai WebKit, donc les deux sur lesquels la décision s'appuie.
+/// avance des nombres sur la suite hébergée — combien de tests elle porte, et
+/// combien démarrent un noyau. Ce sont ceux qui décident si le bureau est jugé
+/// sous un vrai WebKit, donc ceux sur lesquels la décision s'appuie.
 ///
 /// Ils sont tenus ici pour une raison qui a coûté deux tranches : #322 a écrit
 /// « the third and last of this repository's guard scripts » quand c'était
@@ -1899,37 +1899,115 @@ describe("le guide annonce le nombre de secrets que le workflow exige", () => {
 /// n'y touche ; #323 a trouvé que la phrase d'à côté affirmait plus que sa
 /// garde ne vérifiait. **Un relevé qu'aucune garde ne lit dérive**, et un
 /// chiffrage qui dérive fait trancher une décision sur un chiffre périmé.
+///
+/// Et la première version de cette garde était elle-même l'erreur qu'elle
+/// nomme, deux fois. Elle lisait **un seul fichier**, `LocalDesktopTests`, et
+/// tenait son compte contre une phrase qui disait « tests hébergés » : la
+/// cible `WisqHostedTests` en porte trois, vingt-deux cas en tout contre les
+/// dix-sept de celui-là. *Un comptage qui ne voit qu'une partie de ce qu'il
+/// compte ne garde pas le reste* (#320). Et quatre lignes plus bas la même
+/// section écrivait « les dix-sept tests hébergés » **en toutes lettres**, que
+/// le motif en chiffres ne pouvait pas voir : si un dix-huitième cas arrivait,
+/// la garde forçait le tableau et laissait la phrase — le défaut exact de
+/// #313, « six » corrigé en « huit » avec « la sixième » restée en place.
+///
+/// Donc le périmètre se lit dans `project.yml`, pas dans ce fichier : la cible
+/// déclare un dossier, et c'est ce dossier qui est compté. Un quatrième
+/// fichier posé dedans entre dans le compte sans que personne y pense.
 describe("le chiffrage du bureau annonce la vraie suite hébergée", () => {
-  const hosted = readFileSync(
+  const spec = readFileSync(join(repoRoot, "project.yml"), "utf8");
+  const roadmap = readFileSync(join(repoRoot, "docs/ROADMAP.md"), "utf8");
+
+  /// Le périmètre de la cible, lu là où XcodeGen le lit. Écrire le chemin ici
+  /// rendrait la garde aveugle au jour où la cible en déclare un second.
+  const cible = spec.match(/^ {2}WisqHostedTests:\n(?: {4}.*\n| *\n)*/m)?.[0] ?? "";
+  const dossiers = [...cible.matchAll(/^ {6}- path: (.+)$/gm)].map((m) => m[1].trim());
+
+  /// Tous les cas de la cible, fichier par fichier, et ceux du bureau à part.
+  const fichiers = dossiers
+    .flatMap((d) =>
+      readdirSync(join(repoRoot, d))
+        .filter((f) => f.endsWith(".swift"))
+        .map((f) => join(repoRoot, d, f)),
+    )
+    .sort();
+  const casDe = (chemin: string) =>
+    (readFileSync(chemin, "utf8").match(/^\s*func test[A-Z_]/gm) ?? []).length;
+  const heberges = fichiers.reduce((n, f) => n + casDe(f), 0);
+  const bureau = readFileSync(
     join(repoRoot, "Tests/WisqHostedTests/LocalDesktopTests.swift"),
     "utf8",
   );
-  const roadmap = readFileSync(join(repoRoot, "docs/ROADMAP.md"), "utf8");
+  const cas = bureau.match(/^\s*func test[A-Z_]/gm) ?? [];
+  const booting = bureau.match(/bootsAKernel: true/g) ?? [];
 
-  /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
-  const cases = hosted.match(/\bfunc test\w+/g) ?? [];
-  const booting = hosted.match(/bootsAKernel: true/g) ?? [];
+  /// La section, bornée par son titre et le suivant de même rang : un nombre
+  /// pris ailleurs dans un document de treize mille lignes ne dirait rien.
+  /// La section est la dernière du document aujourd'hui ; la borne haute
+  /// accepte donc aussi la fin du fichier, et pas seulement le titre suivant.
+  const section =
+    roadmap.match(
+      /^## Brancher le bureau dans l'application[^\n]*\n[\s\S]*?(?=^## |$(?![\s\S]))/m,
+    )?.[0] ?? "";
 
-  test("le nombre de tests hébergés est celui que la feuille de route écrit", () => {
-    expect(cases.length, "aucun test hébergé trouvé").toBeGreaterThan(5);
-    const said = roadmap.match(/\*\*(\d+)\*\* tests hébergés, dont \*\*(\d+)\*\*/);
-    expect(said, "la ligne qui chiffre la suite hébergée a changé de forme").not.toBeNull();
-    expect(
-      Number(said![1]),
-      `la feuille de route dit ${said![1]} tests hébergés, il y en a ${cases.length}`,
-    ).toBe(cases.length);
+  /// `FRENCH_NUMBERS` s'arrête à quatorze ; les deux nombres de cette section
+  /// sont au-dessus, et c'est au-dessus que les lettres échappaient.
+  const EN_LETTRES = new Map<string, number>([
+    ...FRENCH_NUMBERS.map((mot, n): [string, number] => [mot, n]),
+    ["quinze", 15], ["seize", 16], ["dix-sept", 17], ["dix-huit", 18],
+    ["dix-neuf", 19], ["vingt", 20], ["vingt et un", 21], ["vingt-deux", 22],
+    ["vingt-trois", 23], ["vingt-quatre", 24], ["vingt-cinq", 25],
+    ["vingt-six", 26], ["vingt-sept", 27], ["vingt-huit", 28],
+    ["vingt-neuf", 29], ["trente", 30],
+  ]);
+  const valeur = (jeton: string): number | undefined =>
+    /^\d+$/.test(jeton) ? Number(jeton) : EN_LETTRES.get(jeton.toLowerCase());
+
+  test("le périmètre lu dans la spec est bien celui de la cible hébergée", () => {
+    expect(dossiers, "la cible `WisqHostedTests` ne déclare plus de source").toEqual([
+      "Tests/WisqHostedTests",
+    ]);
+    expect(fichiers.length, "un seul fichier lu : le périmètre a rétréci").toBeGreaterThan(1);
+    expect(heberges, "aucun cas hébergé compté").toBeGreaterThan(cas.length);
   });
 
-  test("le nombre de ceux qui démarrent un noyau l'est aussi", () => {
+  test("le tableau nomme le fichier qu'il compte, et son compte est le bon", () => {
+    expect(section, "la section du chiffrage a changé de titre").not.toBe("");
+    const dit = section.match(
+      /\*\*(\d+)\*\* cas dans `LocalDesktopTests`, dont \*\*(\d+)\*\*/,
+    );
+    expect(dit, "la ligne qui chiffre le bureau a changé de forme").not.toBeNull();
+    expect(cas.length, "aucun cas de bureau trouvé").toBeGreaterThan(5);
+    expect(
+      Number(dit![1]),
+      `la feuille de route dit ${dit![1]} cas, LocalDesktopTests en porte ${cas.length}`,
+    ).toBe(cas.length);
     /// Le témoin : si le motif ne trouvait rien, « zéro contre zéro »
     /// satisferait l'égalité sans avoir rien lu.
     expect(booting.length, "aucun test hébergé ne démarre un noyau").toBeGreaterThan(0);
-    const said = roadmap.match(/\*\*(\d+)\*\* tests hébergés, dont \*\*(\d+)\*\*/);
-    expect(said).not.toBeNull();
     expect(
-      Number(said![2]),
-      `la feuille de route dit ${said![2]} démarrages, il y en a ${booting.length}`,
+      Number(dit![2]),
+      `la feuille de route dit ${dit![2]} démarrages, il y en a ${booting.length}`,
     ).toBe(booting.length);
+  });
+
+  test("toute phrase qui dit « tests hébergés » donne le compte de la cible, lettres comprises", () => {
+    const dits = [...section.matchAll(/\*{0,2}([\p{L}\d-]+(?: et un)?)\*{0,2} tests hébergés/gu)]
+      .map((m) => [m[0].trim(), valeur(m[1])] as const)
+      .filter(([, n]) => n !== undefined);
+    expect(
+      dits.length,
+      "aucune phrase chiffrée de la section ne dit « tests hébergés » : " +
+        "le motif ne lit plus rien, ou la section les a perdues",
+    ).toBeGreaterThanOrEqual(2);
+    for (const [phrase, n] of dits) {
+      expect(
+        n,
+        `« ${phrase} » : la cible en porte ${heberges} (${fichiers
+          .map((f) => `${f.split("/").pop()} ${casDe(f)}`)
+          .join(", ")})`,
+      ).toBe(heberges);
+    }
   });
 });
 

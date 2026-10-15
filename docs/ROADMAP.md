@@ -13423,16 +13423,22 @@ et ne juge pas la granularité, trois choses qui diffèrent à dessein.
 ## Brancher le bureau dans l'application : les trois formes, et leur coût
 
 **Ce qui est mesuré, pas supposé.** Toutes les lignes de cette section ont été
-vérifiées dans l'arbre, et les deux chiffres qu'elle avance sont tenus par
+vérifiées dans l'arbre, et les chiffres qu'elle avance sont tenus par
 `site/tests/claims.test.ts` — un relevé qui rouille est ce que #322 et #323 ont
-coûté.
+coûté. La garde lit le périmètre de la cible dans `project.yml`, et lit les
+nombres de cette section aussi bien en chiffres qu'en toutes lettres : sa
+première version ne comptait qu'un fichier des trois et ne voyait pas les
+lettres, ce qui fait que cette ligne a longtemps donné le compte de ce seul
+fichier sous le nom de la suite entière. La garde refuse aussi cette
+explication si elle recopie la vieille phrase : une citation ne se distingue
+pas d'une affirmation pour qui lit.
 
 | fait | mesure |
 | --- | --- |
 | `WisqUI` dépend déjà de `WisqVMRust` | `Package.swift`, et `LocalVMModel.swift` l'importe déjà |
 | l'application n'embarque aucun noyau | aucun `*.bin` sous `App/` ni `Sources/` ; `LocalVMModel` lit l'image que l'utilisateur importe |
 | héberger un `WKWebView` dans l'app est déjà fait | `WebKitBenchView` + `BenchHost` |
-| le bureau est jugé dans un vrai WebKit | **17** tests hébergés, dont **3** démarrent avec `bootsAKernel: true` |
+| le bureau est jugé dans un vrai WebKit | **17** cas dans `LocalDesktopTests`, dont **3** démarrent avec `bootsAKernel: true` — sur **22** tests hébergés en tout |
 | ce qui n'a jamais eu lieu | un **vrai noyau Linux** démarré par `LocalDesktop` sous WebKit, nulle part |
 
 **Ce qui fait de ça une décision et pas un branchement.** Les deux cœurs n'ont
@@ -13479,7 +13485,7 @@ peut donc **pas typer une seule ligne** de ce branchement, et `verify.sh` y
 passerait sans rien en dire. Le seul verdict est le job « App iOS », environ
 quinze minutes par tour, qui est aussi le seul à lancer les tests hébergés.
 
-C'est faisable — les dix-sept tests hébergés ont été écrits dans cette même
+C'est faisable — les vingt-deux tests hébergés ont été écrits dans cette même
 condition — mais ça impose la forme : un diff petit, calqué sur ce qui existe,
 dans le moins de fichiers possible. C'est ce qui range la **forme 2** devant la
 **1** si la décision est de commencer tout de suite, et la **1** devant la **2**
