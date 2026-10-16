@@ -370,6 +370,12 @@ final class X86BootAttemptTests: XCTestCase {
                 "\($0.sectors) secteurs, \($0.served) requêtes servies,"
                     + " \($0.refused) refusées, état \($0.status)"
             } ?? "aucun")
+            second disque         : \(core.memory?.bus?.second.map { host in
+                host.storage.map {
+                    "\($0.sectors) secteurs, \($0.served) requêtes servies,"
+                        + " \($0.refused) refusées, état \($0.status), ligne \(host.interruptLine)"
+                } ?? "vide"
+            } ?? "aucun")
             """)
 
         func list(_ title: String, _ lines: [String]) {
