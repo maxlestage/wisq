@@ -40,6 +40,37 @@ public final class X86PCIHost: @unchecked Sendable {
     /// La taille de la fenêtre de ports que le périphérique demande.
     public static let windowSize: UInt32 = 0x40
 
+    /// **L'emplacement du second disque**, celui que le noyau nomme `vdb`.
+    ///
+    /// Pourquoi un second : une image d'installation *est* le disque de sa
+    /// machine — sa racine y vit, et la ligne de commande la nomme. Installer
+    /// une distribution demande un autre disque à côté, vierge, sur lequel
+    /// l'installateur écrit. Le noyau énumère les emplacements dans l'ordre, et
+    /// `virtio_blk` nomme les disques dans l'ordre où il les trouve : trois
+    /// devient `vda`, quatre `vdb`.
+    public static let secondSlot: UInt32 = 4
+
+    /// La ligne d'interruption annoncée pour le second disque.
+    ///
+    /// **Sur le 8259 maître**, comme tout ce que cette machine signale : le
+    /// contrôleur esclave est modélisé pour ses registres, mais aucune ligne
+    /// n'y est routée. Zéro est l'horloge, quatre le port série, cinq le
+    /// premier disque ; six est celle de la disquette sur un PC, et cette
+    /// machine n'en a pas.
+    public static let secondInterruptLine: UInt8 = 6
+
+    /// L'emplacement que **cet** hôte sert : trois pour le premier disque, le
+    /// pont et tout le reste ; quatre pour le second.
+    public let deviceSlot: UInt32
+
+    /// Le second disque, servi par un hôte à lui sur l'emplacement quatre.
+    ///
+    /// **Un second objet plutôt qu'un tableau dans celui-ci**, et c'est pour
+    /// l'instantané : l'état du premier disque s'écrit tel qu'il s'est
+    /// toujours écrit, octet pour octet, et celui du second s'ajoute derrière
+    /// une marque. Les machines déjà sauvées ne voient rien changer.
+    public var second: X86PCIHost?
+
     /// Ce que le noyau a écrit dans le port d'adresse.
     public private(set) var address: UInt32 = 0
     /// Le disque, ou rien. Sans lui le bus existe mais reste vide, ce qui est
@@ -51,13 +82,23 @@ public final class X86PCIHost: @unchecked Sendable {
     /// Où le noyau a placé la fenêtre de ports du périphérique.
     public private(set) var window: UInt32 = 0
     /// La ligne d'interruption, telle que le noyau la lit **et l'écrit**.
-    public private(set) var interruptLine: UInt8 = VirtioBlock.pc.interruptLine
+    public private(set) var interruptLine: UInt8
     /// Vrai entre l'écriture de tous les uns dans le registre de fenêtre et la
     /// lecture qui suit : c'est ainsi qu'un noyau demande la **taille**.
     var sizing = false
 
     public init(storage: VirtioBlock? = nil) {
         self.storage = storage
+        deviceSlot = Self.slot
+        interruptLine = VirtioBlock.pc.interruptLine
+    }
+
+    /// L'hôte du second disque. Il ne répond qu'à son emplacement — jamais au
+    /// pont, que le premier annonce déjà.
+    public init(secondStorage storage: VirtioBlock) {
+        self.storage = storage
+        deviceSlot = Self.secondSlot
+        interruptLine = Self.secondInterruptLine
     }
 
     /// Vrai quand les ports du périphérique sont activés et placés.
@@ -85,14 +126,15 @@ public final class X86PCIHost: @unchecked Sendable {
     /// Vrai quand l'adresse désigne le périphérique qu'on a.
     var addressesTheDevice: Bool {
         let it = selected
-        return it.enabled && it.bus == 0 && it.slot == Self.slot && it.function == 0
+        return it.enabled && it.bus == 0 && it.slot == deviceSlot && it.function == 0
             && storage != nil
     }
 
     /// Vrai quand l'adresse désigne le pont hôte.
     var addressesTheBridge: Bool {
         let it = selected
-        return it.enabled && it.bus == 0 && it.slot == Self.bridgeSlot && it.function == 0
+        return deviceSlot == Self.slot
+            && it.enabled && it.bus == 0 && it.slot == Self.bridgeSlot && it.function == 0
     }
 
     /// Le pont : quatre registres, et rien d'autre. Il n'a ni fenêtre ni
@@ -114,6 +156,7 @@ public final class X86PCIHost: @unchecked Sendable {
     /// périphérique de fabricant zéro.
     public func configuration() -> UInt32 {
         if addressesTheBridge { return bridgeConfiguration() }
+        if let second, second.addressesTheDevice { return second.configuration() }
         guard addressesTheDevice else { return 0xFFFF_FFFF }
         switch selected.register {
         case 0x00: return 0x1001_1AF4          // virtio-blk, en version ancienne
@@ -132,6 +175,10 @@ public final class X86PCIHost: @unchecked Sendable {
     }
 
     public func writeConfiguration(_ value: UInt32, _ width: Int, _ byte: UInt32) {
+        if let second, second.addressesTheDevice {
+            second.writeConfiguration(value, width, byte)
+            return
+        }
         guard addressesTheDevice else { return }
         switch selected.register {
         case 0x04:
@@ -156,7 +203,22 @@ public final class X86PCIHost: @unchecked Sendable {
 
     // MARK: - Les deux ports
 
-    public func writeAddress(_ value: UInt32) { address = value }
+    /// L'adresse est celle du bus, pas d'un emplacement : le second hôte la
+    /// reçoit aussi, sans quoi il répondrait au registre d'avant.
+    public func writeAddress(_ value: UInt32) {
+        address = value
+        second?.writeAddress(value)
+    }
+
+    /// Le disque dont la fenêtre contient ce port, et le décalage dedans — le
+    /// premier d'abord, puis le second.
+    public func device(atPort port: UInt16) -> (device: VirtioBlock, offset: UInt16)? {
+        if let device = storage, let at = windowOffset(port) { return (device, at) }
+        if let second, let device = second.storage, let at = second.windowOffset(port) {
+            return (device, at)
+        }
+        return nil
+    }
 
     // MARK: - Ce qu'on sauve
 

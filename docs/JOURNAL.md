@@ -45,6 +45,61 @@ pas de téléphone — la forme se transporte, pas les secondes.
 Les chiffres publiés suivent : « environ 17 Mio » devient « environ 8 Mio »
 dans l'application et sur le site, et sa provenance dit d'où il vient.
 
+## 2026-10-16 — un second disque, et un vrai noyau qui écrit dessus
+
+Le disque vierge ne servait qu'à un noyau et son initramfs : une image
+d'installation *est* le disque `/dev/vda` de sa machine — sa racine y vit, et
+sa ligne de commande la nomme. Installer depuis l'ISO demandait un second
+périphérique bloc.
+
+**L'emplacement PCI quatre**, servi par un second `X86PCIHost` qui partage
+l'adresse du bus et ne se dit jamais pont. Sa fenêtre de ports est à lui, et
+sa ligne d'interruption aussi : la six, sur le 8259 maître — le contrôleur
+esclave n'a aucune ligne routée, et zéro, quatre et cinq sont prises. Un
+second hôte plutôt qu'un tableau dans le premier, pour l'instantané : l'état
+du premier disque s'écrit octet pour octet comme avant, et le second
+s'ajoute derrière une marque (`WISQ_vdb`). Un instantané d'avant se relit
+sans lui ; un instantané tronqué dans sa section refuse en entier.
+
+**Mesuré sur le vrai noyau Alpine LTS 6.6**, par `X86BootAttemptTests` et
+`WISQ_PC_SECOND_DISK`, en release :
+
+    pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000
+    pci 0000:00:04.0: [1af4:1001] type 00 class 0x010000
+    virtio_blk virtio0: [vda] 32768 512-byte logical blocks (16.8 MB/16.0 MiB)
+    virtio_blk virtio1: [vdb] 65536 512-byte logical blocks (33.6 MB/32.0 MiB)
+    ~ # echo wisq-ecrit-sur-vdb > /dev/vdb
+    ~ # head -c 19 /dev/vdb; echo
+    wisq-ecrit-sur-vdb
+
+    second disque : 65536 secteurs, 357 requêtes servies, 0 refusées, état 7, ligne 6
+
+Écrire puis relire passe par la file, par la ligne six et par le
+gestionnaire du noyau : c'est le chemin entier, pas seulement l'énumération.
+
+**Deux faux départs, et ils sont à moi.** Un `pkill -f` dont le motif était
+dans sa propre ligne de commande l'a tué avec la cible ; puis une source
+modifiée pendant la compilation release a fait échouer celle-ci. La mesure
+a fini par tourner depuis un worktree à part, et c'est la règle désormais
+pour les mesures longues.
+
+## 2026-10-16 — la console locale reçoit ses touches
+
+« Travailler confortablement » était la moitié de la demande, et la console
+locale n'offrait que « Entrée » et `^C`. Sans tabulation, pas de complétion ;
+sans flèches, pas d'historique ; sans Échap ni Ctrl, pas d'éditeur.
+
+**Une barre de touches**, au-dessus de la ligne de commande : Échap, Tab, les
+quatre flèches, `^C ^D ^Z ^R ^L ^A ^E ^U ^W`, début, fin, pages et suppr.
+Ce qu'elles envoient est décidé dans `TerminalKey` (WisqVM), sous des tests :
+une séquence fausse d'un octet ne se voit qu'à l'usage.
+
+**Deux détails qui font la différence à l'usage.** Le texte en cours de
+saisie part *avant* la touche, sans retour à la ligne : une tabulation après
+`ls /us` complète `/us` au lieu d'une ligne vide. Et les flèches suivent le
+mode que le programme a demandé — `TerminalGrid` retient maintenant DECCKM
+(`ESC [ ? 1 h`), et en mode application une flèche s'écrit `ESC O A` : c'est
+ce que `vi` et `less` attendent.
 ## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
 
 Deuxième tranche de la même demande, et Maxime a dit oui aux PR, une par

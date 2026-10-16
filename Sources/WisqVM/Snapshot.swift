@@ -42,6 +42,15 @@ enum Snapshot {
     /// qu'une confusion refuse au lieu de rendre n'importe quoi.
     static let x87Section: UInt64 = 0x3738_785F_5153_4957  // « WISQ_x87 »
 
+    /// La marque du second disque de la machine PC, posée après le premier.
+    ///
+    /// Ce qui la précède est l'état PCI du premier disque ; dans un instantané
+    /// d'avant, il n'y avait rien derrière — il s'arrêtait là. Une confusion
+    /// demanderait un instantané d'avant avec des octets en trop, ce qu'aucune
+    /// version n'a écrit, et la lecture exige de toute façon la section
+    /// entière derrière la marque.
+    static let secondDiskSection: UInt64 = 0x6264_765F_5153_4957  // « WISQ_vdb »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
