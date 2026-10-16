@@ -359,6 +359,11 @@ struct LocalVMListView: View {
                     Button("Exporter", systemImage: "square.and.arrow.up") {
                         export(machine)
                     }
+                    // Repartir d'où cette machine est — installée, configurée,
+                    // session comprise — sans toucher à l'original.
+                    Button("Dupliquer", systemImage: "plus.square.on.square") {
+                        duplicate(machine)
+                    }
                 }
             }
             .onDelete { positions in
@@ -372,7 +377,7 @@ struct LocalVMListView: View {
         } header: {
             Text("Machines installées")
         } footer: {
-            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer ou exporter — une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
+            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
         }
     }
 
@@ -418,6 +423,20 @@ struct LocalVMListView: View {
             exported = ExportedMachine(
                 name: machine.name, url: try KernelLibrary.exportMachine(machine))
             importError = nil
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func duplicate(_ machine: InstalledMachine) {
+        do {
+            let copy = try KernelLibrary.duplicateMachine(machine)
+            reloadLibrary()
+            importError = nil
+            note = Note(
+                text: "« \(copy.name) » reprend où « \(machine.name) » en était, et vit sa vie à part.",
+                symbol: "plus.square.on.square")
+            storage = KernelLibrary.storageReport()
         } catch {
             importError = error.localizedDescription
         }
