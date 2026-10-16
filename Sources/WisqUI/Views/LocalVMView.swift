@@ -17,7 +17,19 @@ struct LocalVMListView: View {
         _kernels = State(initialValue: files)
         _kinds = State(initialValue: Self.read(files))
         _disks = State(initialValue: LocalDisk.allRecorded())
+        _installed = State(initialValue: InstalledMachines.list())
     }
+
+    /// Les machines installées, la dernière lancée d'abord. Relues avec la
+    /// bibliothèque : supprimer une image emporte celles qui la démarrent.
+    @State private var installed: [InstalledMachine]
+    /// L'image sur laquelle on est en train d'installer, le temps de la
+    /// question du nom.
+    @State private var installing: URL?
+    /// La machine qu'on est en train de renommer.
+    @State private var renaming: InstalledMachine?
+    /// Le nom tapé dans l'une ou l'autre de ces deux questions.
+    @State private var machineName = ""
 
     @State private var kernels: [URL]
     /// Ce que chaque fichier est, lu **une fois** par changement de
@@ -44,6 +56,9 @@ struct LocalVMListView: View {
 
     var body: some View {
         List {
+            if !installed.isEmpty {
+                installedSection
+            }
             Section {
                 ForEach(kernels, id: \.self) { kernel in
                     VStack(alignment: .leading, spacing: 6) {
@@ -78,8 +93,24 @@ struct LocalVMListView: View {
                                 kernel: kernel, library: kernels,
                                 chosen: disks[kernel.lastPathComponent]
                             ) { chosen in
-                                attach(chosen, to: kernel)
+                                attach(chosen, key: kernel.lastPathComponent)
                             }
+                        }
+                        // **Une machine de plus sur ce fichier**, avec son nom,
+                        // sa mémoire, son disque et sa session à elle. Un
+                        // bouton visible plutôt qu'un appui long : c'est le
+                        // geste qui fait exister la section du dessus, et un
+                        // geste caché ne se découvre pas.
+                        if InstalledMachines.canInstall(kinds[kernel] ?? .unknown) {
+                            Button {
+                                machineName = InstalledMachines.suggestedName(
+                                    forImage: kernel.lastPathComponent)
+                                installing = kernel
+                            } label: {
+                                Label("Installer une machine", systemImage: "plus.square.on.square")
+                                    .font(.footnote)
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
                 }
@@ -91,11 +122,13 @@ struct LocalVMListView: View {
                 // le balayage et ajoute le bouton « Modifier » de la barre :
                 // un chemin visible, qui ne dispute rien au curseur.
                 .onDelete { positions in
+                    var removed: [String] = []
                     for kernel in positions.map({ kernels[$0] }) {
-                        KernelLibrary.delete(kernel)
+                        removed += KernelLibrary.delete(kernel)
                     }
                     reloadLibrary()
-                    note = nil
+                    note = Self.removedMachinesNote(removed)
+                        .map { Note(text: $0, symbol: "trash") }
                     storage = KernelLibrary.storageReport()
                 }
             } footer: {
@@ -207,8 +240,24 @@ struct LocalVMListView: View {
         }
         .fullScreenCover(item: $booting) { target in
             NavigationStack {
-                LocalVMTerminalView(kernelURL: target.url)
+                LocalVMTerminalView(kernelURL: target.url, installed: target.machine)
             }
+        }
+        .alert("Nouvelle machine", isPresented: Binding(
+            get: { installing != nil }, set: { if !$0 { installing = nil } })
+        ) {
+            TextField("Nom", text: $machineName)
+            Button("Installer") { install() }
+            Button("Annuler", role: .cancel) { installing = nil }
+        } message: {
+            Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .alert("Renommer", isPresented: Binding(
+            get: { renaming != nil }, set: { if !$0 { renaming = nil } })
+        ) {
+            TextField("Nom", text: $machineName)
+            Button("Renommer") { rename() }
+            Button("Annuler", role: .cancel) { renaming = nil }
         }
         // Relu à l'ouverture, et au retour d'une session : c'est en quittant
         // une machine qu'elle est sauvegardée, donc c'est là que le chiffre
@@ -217,7 +266,102 @@ struct LocalVMListView: View {
             reloadLibrary()
             storage = KernelLibrary.storageReport()
         }
-        .onChange(of: booting == nil) { storage = KernelLibrary.storageReport() }
+        .onChange(of: booting == nil) {
+            // Un démarrage range la machine en tête : la liste suit.
+            installed = InstalledMachines.list()
+            storage = KernelLibrary.storageReport()
+        }
+    }
+
+    /// Les machines installées : chacune démarre son image sous ses propres
+    /// clés, et dit si elle reprendra sa session.
+    @ViewBuilder
+    private var installedSection: some View {
+        Section {
+            ForEach(installed) { machine in
+                let image = imageURL(of: machine)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Button {
+                            booting = BootTarget(url: image, machine: machine)
+                        } label: {
+                            InstalledMachineRow(
+                                machine: machine,
+                                role: LibraryEntry.role(of: kinds[image] ?? .unknown),
+                                entry: storage.entry(forKernel: machine.key))
+                        }
+                        .buttonStyle(.plain)
+                        Spacer(minLength: 12)
+                        KernelMemoryMenu(
+                            kernel: image, key: machine.key, core: kinds[image]?.core
+                        ) { forgotten in
+                            note = Self.note(forgotten: forgotten)
+                                .map { Note(text: $0, symbol: "memorychip") }
+                            storage = KernelLibrary.storageReport()
+                        }
+                    }
+                    if kinds[image]?.couldBootHere == true {
+                        KernelDiskMenu(
+                            kernel: image, library: kernels, chosen: disks[machine.key]
+                        ) { chosen in
+                            attach(chosen, key: machine.key)
+                        }
+                    }
+                }
+                .contextMenu {
+                    Button("Renommer", systemImage: "pencil") {
+                        machineName = machine.name
+                        renaming = machine
+                    }
+                }
+            }
+            .onDelete { positions in
+                for machine in positions.map({ installed[$0] }) {
+                    _ = try? InstalledMachines.remove(id: machine.id)
+                }
+                reloadLibrary()
+                note = nil
+                storage = KernelLibrary.storageReport()
+            }
+        } header: {
+            Text("Machines installées")
+        } footer: {
+            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Appui long pour renommer ; la supprimer efface sa session et ses écritures, pas l'image.")
+        }
+    }
+
+    /// Le fichier qu'une machine démarre. Absent de la bibliothèque, il reste
+    /// nommé : le démarrage dira alors qu'il ne se lit pas, ce qui vaut mieux
+    /// qu'une ligne qui disparaît sans un mot.
+    private func imageURL(of machine: InstalledMachine) -> URL {
+        kernels.first { $0.lastPathComponent == machine.image }
+            ?? URL(fileURLWithPath: machine.image)
+    }
+
+    private func install() {
+        guard let image = installing else { return }
+        installing = nil
+        do {
+            let machine = try InstalledMachines.install(
+                image: image.lastPathComponent, name: machineName)
+            reloadLibrary()
+            importError = nil
+            note = Note(text: "« \(machine.name) » est installée. Touchez-la pour la démarrer.",
+                        symbol: "plus.square.on.square")
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func rename() {
+        guard let machine = renaming else { return }
+        renaming = nil
+        do {
+            try InstalledMachines.rename(id: machine.id, to: machineName)
+            reloadLibrary()
+        } catch {
+            importError = error.localizedDescription
+        }
     }
 
     /// Relit la bibliothèque **et** ce que chaque fichier est. Les deux vont
@@ -227,6 +371,7 @@ struct LocalVMListView: View {
         kernels = KernelLibrary.list()
         kinds = Self.read(kernels)
         disks = LocalDisk.allRecorded()
+        installed = InstalledMachines.list()
     }
 
     /// Retient le disque choisi, et oublie ce que ce choix invalide.
@@ -235,8 +380,11 @@ struct LocalVMListView: View {
     /// mémoire et pour une raison plus dure : leur instantané porte les octets
     /// du disque tels que l'invité les a laissés. Les reprendre après un
     /// changement rendrait le réglage muet.
-    private func attach(_ disk: String?, to kernel: URL) {
-        let name = kernel.lastPathComponent
+    ///
+    /// `key` est le nom du fichier pour un fichier démarré tel quel, la clé
+    /// de la machine pour une machine installée : c'est le même réglage, rangé
+    /// sous la clé de ce qui démarre.
+    private func attach(_ disk: String?, key name: String) {
         guard disk != disks[name] else { return }
         LocalDisk.attach(disk, forKernel: name)
         disks = LocalDisk.allRecorded()
@@ -279,6 +427,38 @@ private struct LibraryRow: View {
                 .foregroundStyle(.secondary)
             if let storageLine {
                 Text(storageLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Une machine installée : son nom, ce qu'elle démarre, et si elle reprendra
+/// sa session.
+///
+/// « Reprend sa session » est ce que la ligne a de plus utile à dire : c'est la
+/// différence entre retrouver son travail et redémarrer, et rien d'autre à
+/// l'écran ne la montre avant de toucher.
+private struct InstalledMachineRow: View {
+    let machine: InstalledMachine
+    let role: LibraryEntry.Role
+    let entry: LocalStorage.Entry?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(machine.name, systemImage: "desktopcomputer")
+            Text("\(machine.image) · \(LibraryEntry.word(role))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let entry, entry.savedMachineCount > 0 {
+                Label("Reprend sa session · \(LocalStorage.describe(bytes: entry.savedMachineBytes))",
+                      systemImage: "play.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            }
+            if let entry, entry.diskWritesBytes > 0 {
+                Text("\(LocalStorage.describe(bytes: entry.diskWritesBytes)) écrits sur son disque")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -350,6 +530,9 @@ private struct KernelDiskMenu: View {
 /// Linux, ce que ce fichier ne peut pas être.
 private struct KernelMemoryMenu: View {
     let kernel: URL
+    /// Sous quoi le réglage est rangé : le nom du fichier, ou la clé d'une
+    /// machine installée — qui a sa propre mémoire.
+    let key: String
     /// **Le cœur de ce noyau, quand le fichier l'a dit.**
     ///
     /// C'est lui qui décide du plafond : deux gibioctets pour le rv32, où
@@ -372,12 +555,14 @@ private struct KernelMemoryMenu: View {
 
     @State private var size: UInt64
 
-    init(kernel: URL, core: GuestArchitecture.Core?, onChange: @escaping (Int) -> Void) {
+    init(kernel: URL, key: String? = nil, core: GuestArchitecture.Core?,
+         onChange: @escaping (Int) -> Void) {
         self.kernel = kernel
+        self.key = key ?? kernel.lastPathComponent
         self.core = core
         self.onChange = onChange
         _size = State(initialValue: KernelMemory.size(
-            forKernel: kernel.lastPathComponent, ceiling: KernelMemory.ceiling(for: core)))
+            forKernel: self.key, ceiling: KernelMemory.ceiling(for: core)))
     }
 
     /// Les paliers que cet appareil autorise. Calculés une fois : le curseur
@@ -412,8 +597,8 @@ private struct KernelMemoryMenu: View {
         }
         .onChange(of: size) { previous, chosen in
             guard previous != chosen else { return }
-            KernelMemory.setSize(chosen, forKernel: kernel.lastPathComponent)
-            onChange(SuspendedMachine.clearAll(named: kernel.lastPathComponent))
+            KernelMemory.setSize(chosen, forKernel: key)
+            onChange(SuspendedMachine.clearAll(named: key))
         }
     }
 }
@@ -463,6 +648,17 @@ extension LocalVMListView {
         }
     }
 
+    /// Ce que la suppression d'une image a emporté avec elle.
+    static func removedMachinesNote(_ names: [String]) -> String? {
+        switch names.count {
+        case 0: return nil
+        case 1: return "La machine « \(names[0]) » est partie avec son image."
+        default:
+            return "Les machines " + names.map { "« \($0) »" }.joined(separator: ", ")
+                + " sont parties avec leur image."
+        }
+    }
+
     static func note(forgotten: Int) -> String? {
         switch forgotten {
         case 0: return nil
@@ -489,7 +685,9 @@ private struct Note {
 /// Identifiable wrapper so a kernel can drive a cover presentation.
 private struct BootTarget: Identifiable {
     let url: URL
-    var id: String { url.absoluteString }
+    /// La machine installée, ou `nil` pour le fichier démarré tel quel.
+    var machine: InstalledMachine?
+    var id: String { machine.map { "installee:\($0.id)" } ?? url.absoluteString }
 }
 
 /// The console of a running local VM: scrolling output, a command line, and the
@@ -497,6 +695,9 @@ private struct BootTarget: Identifiable {
 /// cell-grid terminal can come later.
 struct LocalVMTerminalView: View {
     let kernelURL: URL
+    /// `var` avec sa valeur par défaut, pour que l'initialiseur membre à
+    /// membre la garde facultative : un `let` initialisé en est exclu.
+    var installed: InstalledMachine?
 
     @State private var model = LocalVMModel()
     @State private var commandLine = ""
@@ -560,7 +761,7 @@ struct LocalVMTerminalView: View {
             .padding(10)
             .background(.ultraThinMaterial)
         }
-        .navigationTitle(kernelURL.lastPathComponent)
+        .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -582,7 +783,7 @@ struct LocalVMTerminalView: View {
             }
         }
         .onAppear {
-            model.boot(kernelURL: kernelURL)
+            model.boot(kernelURL: kernelURL, installed: installed)
             inputFocused = true
             UIApplication.shared.isIdleTimerDisabled = true
         }

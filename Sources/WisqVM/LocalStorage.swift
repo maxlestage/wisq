@@ -125,14 +125,36 @@ public enum LocalStorage {
     ///
     /// `writes` is where the disk overlays live; nil counts none, which is
     /// what a library with no disk has.
+    ///
+    /// `installed` holds the keys of the installed machines. Each gets an entry
+    /// of its own under that key — no image bytes, since the image is the
+    /// library's, but its sessions and its own disk writes — and, above all,
+    /// its sessions are **claimed**: without this, a machine whose key is no
+    /// file name would have its suspended session reported as left behind,
+    /// and the button that frees those would delete it.
     public static func report(
-        kernels: URL, machines: URL, writes: URL? = nil, unpackedIso: URL? = nil
+        kernels: URL, machines: URL, writes: URL? = nil, unpackedIso: URL? = nil,
+        installed: [MachineKeys] = []
     ) -> Report {
         let manager = FileManager.default
         let names = (try? manager.contentsOfDirectory(atPath: kernels.path))?.sorted() ?? []
 
         var entries: [Entry] = []
         var claimed = Set<String>()
+        for keys in installed {
+            let files = SuspendedMachine.savedMachineFiles(named: keys.settings, in: machines)
+            claimed.formUnion(files)
+            entries.append(
+                Entry(
+                    kernel: keys.settings, kernelBytes: 0,
+                    savedMachineBytes: files.reduce(0) {
+                        $0 + size(of: machines.appendingPathComponent($1))
+                    },
+                    savedMachineCount: files.count,
+                    diskWritesBytes: writes.map {
+                        LocalDisk.overlayBytes(withPrefix: keys.overlayPrefix, inWritesDirectory: $0)
+                    } ?? 0))
+        }
         for name in names {
             let files = SuspendedMachine.savedMachineFiles(named: name, in: machines)
             claimed.formUnion(files)
@@ -160,10 +182,17 @@ public enum LocalStorage {
 
     /// Removes the machines saved from kernels the library no longer holds,
     /// and answers with how much that freed.
+    ///
+    /// `installed` is the same list `report` takes, for the same reason: an
+    /// installed machine's session belongs to no file name, and must not be
+    /// taken for a leftover.
     @discardableResult
-    public static func freeOrphanedMachines(kernels: URL, machines: URL) -> Int {
+    public static func freeOrphanedMachines(
+        kernels: URL, machines: URL, installed: [MachineKeys] = []
+    ) -> Int {
         let manager = FileManager.default
-        let names = (try? manager.contentsOfDirectory(atPath: kernels.path)) ?? []
+        let names = ((try? manager.contentsOfDirectory(atPath: kernels.path)) ?? [])
+            + installed.map(\.settings)
         var claimed = Set<String>()
         for name in names {
             claimed.formUnion(SuspendedMachine.savedMachineFiles(named: name, in: machines))
