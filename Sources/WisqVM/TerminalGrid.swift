@@ -98,6 +98,14 @@ public struct TerminalGrid: Sendable {
     private var scrollTop = 0
     private var scrollBottom: Int
     public private(set) var isCursorVisible = true
+
+    /// **Les flèches en « mode application »** (DECCKM, `ESC [ ? 1 h`).
+    ///
+    /// Un programme plein écran — `vi`, `less`, `top` — le demande en entrant
+    /// et le rend en sortant : dans ce mode, une flèche s'écrit `ESC O A` et
+    /// non `ESC [ A`. La grille ne fait que le retenir ; c'est `TerminalKey`
+    /// qui en tient compte au moment d'envoyer une touche.
+    public private(set) var applicationCursorKeys = false
     public private(set) var isAlternateScreen = false
 
     private enum State {
@@ -195,6 +203,7 @@ public struct TerminalGrid: Sendable {
         scrollTop = 0
         scrollBottom = rows - 1
         isCursorVisible = true
+        applicationCursorKeys = false
         isAlternateScreen = false
         state = .text
         csiBuffer.removeAll()
@@ -401,6 +410,8 @@ public struct TerminalGrid: Sendable {
         }
         for mode in parameters {
             switch mode {
+            case 1:
+                applicationCursorKeys = enable
             case 25:
                 isCursorVisible = enable
             case 47, 1047, 1049:
