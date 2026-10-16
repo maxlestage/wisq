@@ -27,6 +27,14 @@ disque ; sinon retirer la copie emporterait le disque de l'original.
 
 **Un sabotage, une chute :** la copie qui garde le nom du disque propre de la
 source au lieu du sien.
+## 2026-10-16 — la signature remonte sous le mot-symbole
+
+Maxime, capture du téléphone à l'appui : la signature devait être **sous
+wisq**, pas au bas du pied après les colonnes — où, sur un téléphone, le nom
+en très grand passait de surcroît sous le bouton « haut de page ». Elle est
+maintenant dans le bloc de la marque, juste sous le logo et le mot-symbole :
+la mention, le nom (prénom et nom en couleur) à une taille que la colonne
+tient, puis d'où il vient, avant la phrase de présentation.
 
 ## 2026-10-16 — la signature du pied, en grand, et en couleur sur le nom
 
