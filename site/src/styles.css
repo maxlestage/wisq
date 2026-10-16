@@ -832,15 +832,8 @@ pre code { white-space: pre; }
 }
 .footer-wordmark { font-size: 1.35rem; letter-spacing: -0.03em; }
 
-/* Scoped through .footer-brand rather than shouted with !important: these sit
+/* Scoped through .footer-brand rather than shouted with !important: this sits
    inside `.footer-brand p`, which is more specific than a bare class. */
-.footer-brand .footer-author {
-  margin: 6px 0 0;
-  font-size: 0.85rem;
-}
-.footer-author a { color: var(--fg); text-decoration: none; font-weight: 600; }
-.footer-author a:hover { color: var(--accent); text-decoration: underline; }
-
 .footer-brand .footer-version {
   font-family: var(--mono);
   font-size: 0.78rem;
@@ -867,6 +860,44 @@ pre code { white-space: pre; }
   text-decoration: none;
 }
 .footer-groups a:hover { color: var(--accent); }
+
+/* La signature : le nom en grand, centré entre les colonnes et la barre du bas.
+   Le prénom et le nom dans le dégradé de la marque, le reste dans la couleur
+   du texte. */
+.signature {
+  display: grid;
+  justify-items: center;
+  margin-top: 48px;
+  padding-top: 56px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+.signature-par {
+  margin: 0 0 14px;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--fg-soft);
+}
+.signature-nom {
+  margin: 0;
+  font-weight: 800;
+  font-size: clamp(2.3rem, 7.4vw, 5.6rem);
+  font-variation-settings: "wdth" 112;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.signature-nom a { color: var(--fg); text-decoration: none; }
+.signature-nom a:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+.signature-couleur {
+  background: var(--degrade);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.signature-fabrique { margin: 18px 0 0; font-size: 1.02rem; color: var(--fg-soft); }
 
 .footer-bottom {
   margin-top: 36px;

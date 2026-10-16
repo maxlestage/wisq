@@ -112,6 +112,11 @@ pub struct FooterCopy {
     /// d'autrui : une ligne qui dit ce qui est à moi ne doit jamais se lire
     /// comme une revendication sur ce qui ne l'est pas.
     pub author: &'static str,
+    /// Où et avec quoi : la phrase sous le nom de la signature. « Swift et
+    /// Rust » parce que c'est vrai — l'application et le client distant sont
+    /// en Swift, l'agent, le cœur et ce site en Rust ; n'en nommer qu'un
+    /// serait une affirmation que le dépôt dément.
+    pub crafted: &'static str,
     pub attribution: &'static str,
     /// Ce par quoi la ligne de version se terminait était une licence. Il n'y en
     /// a pas, donc elle finit par le défaut nu — vrai quoi qu'on choisisse, et
@@ -347,6 +352,7 @@ pub static EN: Copy = Copy {
         tagline: "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
         privacy_note: "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
         author: "Designed and developed by",
+        crafted: "Made in Swift and Rust, in France",
         attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
         rights: "All rights reserved",
         copyright: "© 2026 Maxime Nathan Lestage",
@@ -394,6 +400,7 @@ pub static FR: Copy = Copy {
         tagline: "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
         privacy_note: "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
         author: "Conçu et développé par",
+        crafted: "Fabriqué en Swift et en Rust, en France",
         attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
         rights: "Tous droits réservés",
         copyright: "© 2026 Maxime Nathan Lestage",
