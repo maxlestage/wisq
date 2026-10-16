@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — la signature du pied devient un sceau
+
+Maxime : un pied plus stylé, sur wisq seulement, dans l'esprit d'un sceau
+animé. La ligne « Conçu et développé par … » auprès du mot-symbole devient un
+bloc centré entre les colonnes et la barre du bas : un sceau qui tourne
+lentement autour des initiales, avec la signature écrite sur l'anneau ; le
+nom en grand, qu'une lumière dans le dégradé de la marque traverse une fois
+toutes les neuf secondes ; et d'où il vient.
+
+**La phrase dit vrai** : « Fabriqué en Swift et en Rust, en France ».
+L'application et le client distant sont en Swift, l'agent, le cœur et ce site
+en Rust — n'en nommer qu'un serait une affirmation que le dépôt dément.
+
+**Ce qui n'a pas bougé** : le nom reste **un** lien d'un seul tenant, que la
+garde « every page says who made it » cherche ; le crédit au travail d'autrui
+reste dans la barre du bas ; tout le mouvement est sous `[data-motion]`, que
+le script ne pose pas quand on a demandé moins d'animation, et sans script le
+sceau est simplement immobile. Pas un octet de JavaScript en plus.
+
+Le texte de l'anneau suit le cercle par `textPath`, et `textLength` vaut la
+circonférence : la phrase le referme exactement, dans les deux langues. Le
+premier essai, à 10,5 px, était trop long pour l'anglais comme pour le
+français et `textLength` resserrait les lettres jusqu'à les faire se toucher —
+vu sur la capture, d'où 9,4 px.
+
 ## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
 
 Deuxième tranche de la même demande, et Maxime a dit oui aux PR, une par
