@@ -1151,7 +1151,11 @@ describe("footer", () => {
     for (const { lang, file } of BUILT) {
       const html = read(file);
       expect(html, `${file} : ligne d'auteur`).toContain(copy[lang]!.footer.author);
-      expect(html, `${file} : nom de l'auteur`).toContain(`>${AUTHOR}</a>`);
+      // Le texte du lien d'auteur, sans les balises qui colorent le prénom et
+      // le nom : c'est ce qu'un lecteur lit, et ce qui doit nommer la personne.
+      const lien = html.match(/<a [^>]*rel="author"[^>]*>(.*?)<\/a>/s);
+      expect(lien, `${file} : lien d'auteur`).not.toBeNull();
+      expect(lien![1]!.replace(/<[^>]+>/g, ""), `${file} : nom de l'auteur`).toBe(AUTHOR);
       expect(html, `${file} : meta author`).toContain(`<meta name="author" content="${AUTHOR}" />`);
     }
     const repoRoot = join(dist, "..", "..");

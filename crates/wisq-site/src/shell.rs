@@ -195,15 +195,6 @@ fn Footer(props: &FooterProps) -> Html {
                     <p class="footer-version">
                         { format!("{} {} · {}", copy.footer.version, SITE_VERSION, copy.footer.rights) }
                     </p>
-                    // La paternité est auprès du mot-symbole, là où un lecteur
-                    // cherche qui a fait une chose. Le crédit au travail d'autrui
-                    // reste dans la barre du bas et n'est pas touché par ceci :
-                    // une ligne qui dit ce qui est à moi ne doit jamais se lire
-                    // comme une revendication sur ce qui ne l'est pas.
-                    <p class="footer-author">
-                        { format!("{} ", copy.footer.author) }
-                        <a href={AUTHOR_URL} rel="author">{ AUTHOR }</a>
-                    </p>
                 </div>
 
                 <nav class="footer-groups" aria-label={copy.footer.docs}>
@@ -218,6 +209,23 @@ fn Footer(props: &FooterProps) -> Html {
                         </div>
                     }) }
                 </nav>
+            </div>
+
+            // **La signature.** Le nom en grand, et d'où il vient. La couleur
+            // ne tombe que sur le prénom et le nom, le second prénom restant
+            // dans la couleur du texte. Le crédit au travail d'autrui reste dans
+            // la barre du bas et n'est pas touché par ceci : une ligne qui dit
+            // ce qui est à moi ne doit jamais se lire comme une revendication
+            // sur ce qui ne l'est pas.
+            <div class="wrap signature">
+                <p class="signature-par">{ copy.footer.author }</p>
+                // Le nom est **un** lien : c'est lui que la garde « every page
+                // says who made it » cherche, et elle lit son texte sans les
+                // balises qui colorent deux de ses mots.
+                <p class="signature-nom">
+                    <a href={AUTHOR_URL} rel="author">{ nom_en_couleur() }</a>
+                </p>
+                <p class="signature-fabrique">{ copy.footer.crafted }</p>
             </div>
 
             <div class="wrap footer-bottom">
@@ -256,5 +264,25 @@ pub(crate) fn bande(mots: &'static [&'static str]) -> Html {
                 }) }
             </div>
         </div>
+    }
+}
+
+/// Le nom de l'auteur, le prénom et le nom de famille en couleur, ce qui est
+/// entre les deux dans la couleur du texte. Les espaces restent du texte nu :
+/// le contenu du lien se lit toujours « Maxime Nathan Lestage ».
+fn nom_en_couleur() -> Html {
+    let mots: Vec<&str> = AUTHOR.split(' ').collect();
+    let dernier = mots.len().saturating_sub(1);
+    html! {
+        <>
+            { for mots.iter().enumerate().map(|(i, mot)| {
+                let espace = if i > 0 { " " } else { "" };
+                if i == 0 || i == dernier {
+                    html! { <>{ espace }<span class="signature-couleur">{ *mot }</span></> }
+                } else {
+                    html! { <>{ espace }{ *mot }</> }
+                }
+            }) }
+        </>
     }
 }
