@@ -87,13 +87,41 @@ public final class X86Machine: @unchecked Sendable {
     private func attach(device: VirtioBlock) {
         disk = device
         memory.storage = device
-        memory.bus = X86PCIHost(storage: device)
+        let bus = X86PCIHost(storage: device)
+        bus.second = memory.bus?.second
+        memory.bus = bus
+    }
+
+    /// Le second disque, quand il y en a un — `/dev/vdb` pour le noyau.
+    public private(set) var secondDisk: VirtioBlock?
+
+    /// Brancher un second disque, lu sur place lui aussi.
+    ///
+    /// **Par le bus PCI seulement.** La fenêtre MMIO est celle du premier et
+    /// n'a jamais été trouvée par le noyau d'Alpine — voir `X86PCIHost` —, et
+    /// lui en ouvrir une seconde serait poser une porte que personne ne prend.
+    /// L'ordre de branchement est libre : chacun garde l'autre.
+    public func attach(secondDiskFileAt base: URL, writes: URL) throws {
+        attach(second: VirtioBlock(store: try FileDiskStore(base: base, writes: writes)))
+    }
+
+    /// Le même, en mémoire — la forme des tests.
+    public func attach(secondDisk image: [UInt8]) {
+        attach(second: VirtioBlock(image: image))
+    }
+
+    private func attach(second device: VirtioBlock) {
+        secondDisk = device
+        let bus = memory.bus ?? X86PCIHost(storage: nil)
+        bus.second = X86PCIHost(secondStorage: device)
+        memory.bus = bus
     }
 
     /// Le retirer. Une machine reprise depuis un instantané sans disque n'en a
     /// pas, même si celle qu'on reprend en avait un.
     public func detachDisk() {
         disk = nil
+        secondDisk = nil
         memory.storage = nil
         memory.bus = nil
     }
@@ -390,6 +418,17 @@ public final class X86Machine: @unchecked Sendable {
             disk.save(into: &writer)
             memory.bus?.save(into: &writer)
         }
+        // **Le second disque, derrière sa marque et après le premier.** Les
+        // instantanés d'avant s'arrêtent là où celui-ci commence, et la
+        // reprise lit son absence comme « pas de second disque ». Il n'est
+        // écrit qu'avec un premier : l'application branche toujours l'image
+        // avant le disque d'installation, et un second sans premier n'aurait
+        // aucune section derrière laquelle se ranger.
+        if disk != nil, let second = secondDisk, let host = memory.bus?.second {
+            writer.u64(Snapshot.secondDiskSection)
+            second.save(into: &writer)
+            host.save(into: &writer)
+        }
         return Data(writer.bytes)
     }
 
@@ -453,12 +492,22 @@ public final class X86Machine: @unchecked Sendable {
         // qu'elle avait, plutôt qu'un disque à moitié repris.
         var restoredDisk: VirtioBlock?
         var restoredBus: X86PCIHost?
+        var restoredSecond: VirtioBlock?
         if !reader.isAtEnd {
             let device = try VirtioBlock.restored(from: &reader, keeping: disk?.store)
             let bus = X86PCIHost(storage: device)
             try bus.restore(from: &reader)
             restoredDisk = device
             restoredBus = bus
+            // Le second, si sa marque est là — et alors en entier, ou rien.
+            if reader.peeks(Snapshot.secondDiskSection) {
+                _ = try reader.u64()
+                let second = try VirtioBlock.restored(from: &reader, keeping: secondDisk?.store)
+                let host = X86PCIHost(secondStorage: second)
+                try host.restore(from: &reader)
+                bus.second = host
+                restoredSecond = second
+            }
         }
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
@@ -472,6 +521,7 @@ public final class X86Machine: @unchecked Sendable {
         stopRequested = false
         lock.unlock()
         disk = restoredDisk
+        secondDisk = restoredSecond
         memory.storage = restoredDisk
         memory.bus = restoredBus
         core = restored
