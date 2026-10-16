@@ -861,32 +861,28 @@ pre code { white-space: pre; }
 }
 .footer-groups a:hover { color: var(--accent); }
 
-/* La signature : le nom en grand, centré entre les colonnes et la barre du bas.
-   Le prénom et le nom dans le dégradé de la marque, le reste dans la couleur
-   du texte. */
-.signature {
-  display: grid;
-  justify-items: center;
-  margin-top: 48px;
-  padding-top: 56px;
-  border-top: 1px solid var(--line);
-  text-align: center;
-}
-.signature-par {
-  margin: 0 0 14px;
+/* La signature, sous le mot-symbole : la mention en capitales espacées, le nom
+   en grand — le prénom et le nom dans le dégradé de la marque —, et d'où il
+   vient. Scopée par .footer-brand, comme les autres lignes du bloc, parce que
+   `.footer-brand p` est plus spécifique qu'une classe nue. */
+.footer-brand .signature { margin: 22px 0 6px; }
+.footer-brand .signature-par {
+  margin: 0 0 8px;
   font-family: var(--mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.32em;
+  font-size: 0.7rem;
+  letter-spacing: 0.28em;
   text-transform: uppercase;
   color: var(--fg-soft);
 }
-.signature-nom {
+.footer-brand .signature-nom {
   margin: 0;
+  max-width: none;
   font-weight: 800;
-  font-size: clamp(2.3rem, 7.4vw, 5.6rem);
+  font-size: clamp(1.9rem, 6vw, 2.7rem);
   font-variation-settings: "wdth" 112;
-  line-height: 1.02;
-  letter-spacing: -0.035em;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+  color: var(--fg);
   text-wrap: balance;
 }
 .signature-nom a { color: var(--fg); text-decoration: none; }
@@ -897,7 +893,7 @@ pre code { white-space: pre; }
   background-clip: text;
   color: transparent;
 }
-.signature-fabrique { margin: 18px 0 0; font-size: 1.02rem; color: var(--fg-soft); }
+.footer-brand .signature-fabrique { margin: 10px 0 0; font-size: 0.92rem; color: var(--fg-soft); }
 
 .footer-bottom {
   margin-top: 36px;
