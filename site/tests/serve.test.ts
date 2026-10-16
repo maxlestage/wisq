@@ -116,9 +116,11 @@ describe("what the preview server sends", () => {
       // le comportement du site est dans le module.
       (name.startsWith("chunk-") && name.endsWith(".css")) ||
       // Le module WebAssembly du front, et la colle qui le charge.
-      (name.startsWith("wisq-") && (name.endsWith(".wasm") || name.endsWith(".js")));
+      (name.startsWith("wisq-") && (name.endsWith(".wasm") || name.endsWith(".js"))) ||
+      // Celui de la page `linux/`, qui porte la machine rv32ima.
+      (name.startsWith("linux-") && (name.endsWith(".wasm") || name.endsWith(".js")));
     const attendus = new Set(files.filter(adresseParContenu));
-    expect(attendus.size, "ni police ni actif haché dans dist").toBe(4);
+    expect(attendus.size, "ni police ni actif haché dans dist").toBe(6);
     expect(new Set(IMMUTABLE)).toEqual(attendus);
 
     // Et la conséquence, dans les deux sens, sur chaque fichier construit.

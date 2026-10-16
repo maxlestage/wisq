@@ -40,9 +40,10 @@ open "Wisq ‣.xcodeproj"
 
 ## The landing page
 
-The site's front end is `crates/wisq-site`, in Rust: Yew components rendered
-to HTML at build time, and a WebAssembly module for the two islands and the
-motion. `site/` is a separate Bun workspace around it — the build, the server,
+The site's front end is `crates/wisq-site`, in Rust, written with
+[Active](https://github.com/maxlestage/Active): views rendered to HTML at build
+time, a WebAssembly module for the islands and the motion, and a second one
+carrying `wisq-vm` for the `linux/` page. `site/` is a separate Bun workspace around it — the build, the server,
 the stylesheet and the tests:
 
 ```sh

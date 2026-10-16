@@ -13,6 +13,7 @@ use crate::content::{Copy, Lang};
 pub enum RouteId {
     Home,
     Docs,
+    Linux,
     Protocol,
     Architecture,
     Faq,
@@ -46,6 +47,14 @@ pub static ROUTES: &[Route] = &[
     Route {
         id: RouteId::Docs,
         path: "docs",
+        listed: true,
+        output: None,
+    },
+    // La machine rv32ima de wisq, dans le navigateur. Listée : c'est la seule
+    // page du site où l'on fait quelque chose plutôt que lire.
+    Route {
+        id: RouteId::Linux,
+        path: "linux",
         listed: true,
         output: None,
     },
@@ -109,6 +118,7 @@ impl RouteId {
         match self {
             RouteId::Home => "home",
             RouteId::Docs => "docs",
+            RouteId::Linux => "linux",
             RouteId::Protocol => "protocol",
             RouteId::Architecture => "architecture",
             RouteId::Faq => "faq",
@@ -131,6 +141,7 @@ impl RouteId {
         match self {
             RouteId::Home => copy.pages.home,
             RouteId::Docs => copy.pages.docs,
+            RouteId::Linux => copy.pages.linux,
             RouteId::Protocol => copy.pages.protocol,
             RouteId::Architecture => copy.pages.architecture,
             RouteId::Faq => copy.pages.faq,

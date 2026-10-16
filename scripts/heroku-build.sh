@@ -41,7 +41,7 @@ if [ -z "${SITE_URL:-}" ]; then
 fi
 
 # La chaîne WebAssembly, pour la même raison que Bun juste en dessous : le front
-# du site est en Yew, donc le construire demande la cible wasm32, wasm-bindgen
+# du site est écrit avec Active, en Rust, donc le construire demande la cible wasm32, wasm-bindgen
 # et wasm-opt. Récupérée à chaque construction plutôt que mise en cache, comme
 # Bun — sur un déploiement que personne ne peut déboguer depuis un téléphone,
 # une chaîne reproductible vaut les quelques minutes qu'elle coûte. Le binaire de

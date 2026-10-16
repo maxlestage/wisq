@@ -1,11 +1,12 @@
 /// Builds the site: one pre-rendered document per address, the WebAssembly
-/// front that hydrates two islands of it and moves the rest, and everything a
+/// front that hydrates its islands and moves the rest, and everything a
 /// browser needs to install it.
 ///
 /// **There is no React here any more, and no JavaScript of the site's own.**
-/// Every page is rendered by `crates/wisq-site` — Yew components, server-side
-/// rendered by its `wisq-site-prerender` binary — and every behaviour runs in
-/// the WebAssembly module the same crate compiles. What is left in this file is
+/// Every page is rendered by `crates/wisq-site` — views written with Active,
+/// Maxime Nathan Lestage's Rust front-end library, rendered by its
+/// `wisq-site-prerender` binary — and every behaviour runs in the WebAssembly
+/// module the same crate compiles. What is left in this file is
 /// the plumbing around them: the stylesheet and its font, the Rust toolchain
 /// calls, content-addressed names, and the files a static host and a service
 /// worker need.
@@ -105,15 +106,17 @@ await writeFile(stylePath, styleSource.replace(inlinedFonts[0]![0]!, `url(./${fo
 await writeFile(join(outdir, fontName), fontBytes);
 
 // ---------------------------------------------------------------------------
-// Le front en Yew, compilé deux fois.
+// Le front, écrit avec Active, compilé trois fois.
 //
-// Deux sorties pour un seul arbre de composants, `crates/wisq-site` :
+// Trois sorties pour un seul arbre de vues, `crates/wisq-site` :
 //
-//   - un binaire natif qui rend toutes les pages en HTML (`ServerRenderer`,
+//   - un binaire natif qui rend toutes les pages en HTML (`Node::render`,
 //     drapeau `ssr`) et les décrit dans un catalogue JSON ;
-//   - un module wasm qui hydrate deux îlots de ce HTML — les réglages de
+//   - un module wasm qui hydrate les îlots de ce HTML — les réglages de
 //     l'en-tête, l'invite d'installation — et anime le reste (drapeau
-//     `hydrate`).
+//     `hydrate`) ;
+//   - le même module avec la machine rv32ima de `wisq-vm` et le terminal qui
+//     la conduit (drapeau `linux`), chargé par la seule page `linux/`.
 //
 // **Le profil `wasm-release` n'est pas un détail.** Le profil `release` du
 // workspace est taillé pour l'interpréteur de VM : `opt-level = 3`, pour la
@@ -137,7 +140,7 @@ async function lancer(quoi: string, cmd: string[], aide?: string) {
 
 const AIDE_RUST = [
   "",
-  "Le front du site est en Yew, donc sa construction demande la chaîne Rust :",
+  "Le front du site est écrit avec Active, en Rust, donc sa construction demande la chaîne Rust :",
   "",
   "    ./scripts/install-wasm-toolchain.sh   # la cible wasm32 et wasm-bindgen, à la version du verrou",
   "    bun install                           # fournit wasm-opt, par binaryen",
@@ -149,54 +152,69 @@ await lancer(
   ["cargo", "build", "--release", "-p", "wisq-site"],
   AIDE_RUST,
 );
-await lancer(
-  "la construction du wasm",
-  [
-    "cargo", "build", "--profile", "wasm-release", "--target", "wasm32-unknown-unknown",
-    "-p", "wisq-site", "--no-default-features", "--features", "hydrate",
-  ],
-  AIDE_RUST,
-);
+/// Compile le module avec `fonctions`, l'emballe, le réduit, et l'écrit sous
+/// un nom adressé par son contenu : `<prefixe>-<empreinte>.wasm` et sa colle.
+async function module(prefixe: string, fonctions: string) {
+  await lancer(
+    `la construction du wasm (${fonctions})`,
+    [
+      "cargo", "build", "--profile", "wasm-release", "--target", "wasm32-unknown-unknown",
+      "-p", "wisq-site", "--no-default-features", "--features", fonctions,
+    ],
+    AIDE_RUST,
+  );
 
-// wasm-bindgen écrit le module et sa colle ; `--target web` donne un module ES
-// dont l'export par défaut démarre le tout, et qui résout le `.wasm` par
-// rapport à sa propre adresse — donc une seule orthographe sert les pages de
-// toutes les profondeurs.
-const wasmOut = join(outdir, "wasm");
-await lancer(
-  "wasm-bindgen",
-  [
-    "wasm-bindgen", "--target", "web", "--no-typescript", "--out-dir", wasmOut,
-    "--out-name", "wisq", "../target/wasm32-unknown-unknown/wasm-release/wisq_site.wasm",
-  ],
-  AIDE_RUST,
-);
+  // wasm-bindgen écrit le module et sa colle ; `--target web` donne un module
+  // ES dont l'export par défaut démarre le tout, et qui résout le `.wasm` par
+  // rapport à sa propre adresse — donc une seule orthographe sert les pages
+  // de toutes les profondeurs.
+  const wasmOut = join(outdir, `wasm-${prefixe}`);
+  await lancer(
+    "wasm-bindgen",
+    [
+      "wasm-bindgen", "--target", "web", "--no-typescript", "--out-dir", wasmOut,
+      "--out-name", prefixe, "../target/wasm32-unknown-unknown/wasm-release/wisq_site.wasm",
+    ],
+    AIDE_RUST,
+  );
 
-// `wasm-opt -Oz` : mesuré, 210 334 octets avant, 188 859 après sur la première
-// sonde — une passe qui ne change rien au comportement.
-const wasmOpt = "node_modules/binaryen/bin/wasm-opt";
-await lancer(
-  "wasm-opt",
-  [wasmOpt, "-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int",
-   join(wasmOut, "wisq_bg.wasm"), "-o", join(wasmOut, "wisq_bg.wasm")],
-  AIDE_RUST,
-);
+  // `wasm-opt -Oz` : mesuré, 210 334 octets avant, 188 859 après sur la
+  // première sonde — une passe qui ne change rien au comportement.
+  const wasmOpt = "node_modules/binaryen/bin/wasm-opt";
+  await lancer(
+    "wasm-opt",
+    [wasmOpt, "-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int",
+     join(wasmOut, `${prefixe}_bg.wasm`), "-o", join(wasmOut, `${prefixe}_bg.wasm`)],
+    AIDE_RUST,
+  );
 
-// Les deux fichiers prennent un nom adressé par leur contenu, comme la feuille
-// de style, et entrent dans la liste des immuables : un nom qui change avec les
-// octets ne peut pas être périmé.
-const wasmBytes = await Bun.file(join(wasmOut, "wisq_bg.wasm")).bytes();
-const glueSource = await Bun.file(join(wasmOut, "wisq.js")).text();
-const wasmName = `wisq-${Bun.hash(wasmBytes).toString(16)}.wasm`;
-// La colle nomme le `.wasm` qu'elle charge, donc son propre nom doit dépendre
-// des deux : sinon un changement de wasm laisserait une colle au nom inchangé
-// pointant sur un fichier disparu, et le cache d'un visiteur servirait une
-// colle orpheline.
-const glue = glueSource.replace("wisq_bg.wasm", wasmName);
-const glueName = `wisq-${Bun.hash(glue).toString(16)}.js`;
-await writeFile(join(outdir, wasmName), wasmBytes);
-await writeFile(join(outdir, glueName), glue);
-await rm(wasmOut, { recursive: true, force: true });
+  // Les deux fichiers prennent un nom adressé par leur contenu, comme la
+  // feuille de style, et entrent dans la liste des immuables : un nom qui
+  // change avec les octets ne peut pas être périmé.
+  const octets = await Bun.file(join(wasmOut, `${prefixe}_bg.wasm`)).bytes();
+  const source = await Bun.file(join(wasmOut, `${prefixe}.js`)).text();
+  const wasm = `${prefixe}-${Bun.hash(octets).toString(16)}.wasm`;
+  // La colle nomme le `.wasm` qu'elle charge, donc son propre nom doit
+  // dépendre des deux : sinon un changement de wasm laisserait une colle au nom
+  // inchangé pointant sur un fichier disparu, et le cache d'un visiteur
+  // servirait une colle orpheline.
+  const colle = source.replace(`${prefixe}_bg.wasm`, wasm);
+  const glue = `${prefixe}-${Bun.hash(colle).toString(16)}.js`;
+  await writeFile(join(outdir, wasm), octets);
+  await writeFile(join(outdir, glue), colle);
+  await rm(wasmOut, { recursive: true, force: true });
+  return { wasm, glue, octets, colle };
+}
+
+// Le module commun d'abord, puis celui de la page `linux/` : les deux écrivent
+// `wisq_site.wasm` au même endroit, donc ils se suivent.
+const commun = await module("wisq", "hydrate");
+const { wasm: wasmName, glue: glueName, octets: wasmBytes, colle: glue } = commun;
+const linux = await module("linux", "linux");
+
+/// Le module d'une page : celui qui porte la machine pour `linux/`, le module
+/// commun pour toutes les autres.
+const frontDe = (route: string) => (route === "linux" ? linux : commun);
 
 // ---------------------------------------------------------------------------
 // Le catalogue : toutes les pages, et tout ce qu'il faut savoir pour les
@@ -227,6 +245,7 @@ interface Catalogue {
   bar: { light: string; dark: string };
   author: string;
   authorUrl: string;
+  generator: { name: string; version: string; url: string };
   routes: Route[];
   copy: Record<string, { hero: { lede: string } }>;
   pages: Rendered[];
@@ -235,6 +254,7 @@ const catalogue: Catalogue = JSON.parse(
   await lancer("le pré-rendu", ["../target/release/wisq-site-prerender"], AIDE_RUST),
 );
 const { langs: LANGS, bar: BAR, author: AUTHOR, authorUrl: AUTHOR_URL, routes: ROUTES } = catalogue;
+const GENERATOR = `${catalogue.generator.name} ${catalogue.generator.version}`;
 if (catalogue.pages.length !== ROUTES.length * LANGS.length) {
   console.error(
     `le pré-rendu a rendu ${catalogue.pages.length} pages pour ${ROUTES.length} routes ` +
@@ -249,7 +269,7 @@ const pathOf = (route: Route, lang: string) =>
 // pour l'hôte. C'est ici qu'on sait lesquels le sont — c'est ici que les noms
 // sont composés —, donc c'est ici que la liste s'écrit, et `scripts/serve.ts`
 // la lit sur le disque.
-const immutable = [styleName, fontName, wasmName, glueName];
+const immutable = [styleName, fontName, wasmName, glueName, linux.wasm, linux.glue];
 await writeFile(
   join(outdir, "immutable.txt"),
   `# Les actifs que cette construction a nommés d'après leur contenu.\n` +
@@ -341,6 +361,7 @@ const ENTREE_SCRIPT = `<script>(function(){try{if(matchMedia("(prefers-reduced-m
 
 function documentFor(page: Rendered): string {
   const { base, lang } = page;
+  const front = frontDe(page.route);
   const isHome = page.route === "home";
   const canonical = `${SITE_URL}${page.path}`;
   const route = ROUTES.find((r) => r.id === page.route)!;
@@ -391,6 +412,7 @@ function documentFor(page: Rendered): string {
     <title>${escapeHTML(page.title)}</title>
     <meta name="description" content="${escapeHTML(page.description)}" />
     <meta name="author" content="${escapeHTML(AUTHOR)}" />
+    <meta name="generator" content="${escapeHTML(GENERATOR)}" />
     <link rel="canonical" href="${canonical}" />${alternates}
     <meta name="theme-color" content="${BAR.dark}" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="${BAR.light}" media="(prefers-color-scheme: light)" />
@@ -406,14 +428,14 @@ function documentFor(page: Rendered): string {
     <meta name="apple-mobile-web-app-title" content="wisq" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>▚</text></svg>" />
     <link rel="stylesheet" href="${base}${styleName}" />
-    <link rel="modulepreload" href="${base}${glueName}" />
-    <link rel="preload" href="${base}${wasmName}" as="fetch" type="application/wasm" crossorigin />${jsonLd}
+    <link rel="modulepreload" href="${base}${front.glue}" />
+    <link rel="preload" href="${base}${front.wasm}" as="fetch" type="application/wasm" crossorigin />${jsonLd}
     ${THEME_SCRIPT}
     ${ENTREE_SCRIPT}
   </head>
   <body>
     <div id="root" data-route="${page.route}" data-lang="${lang}" data-base="${base}">${page.markup}</div>
-    <script type="module">import demarrer from "${base}${glueName}";demarrer();</script>
+    <script type="module">import demarrer from "${base}${front.glue}";demarrer();</script>
   </body>
 </html>
 `;
@@ -448,6 +470,11 @@ const precache = [
   // rien ne la signale.
   `./${wasmName}`,
   `./${glueName}`,
+  // Celui de la page `linux/` aussi : la machine hors ligne est la même que
+  // dans l'application, et une page qui s'affiche sans pouvoir démarrer ce
+  // qu'elle propose serait une promesse vide.
+  `./${linux.wasm}`,
+  `./${linux.glue}`,
   "./manifest.webmanifest",
   ...ICONS.map((icon) => `./${icon.file}`),
 ];
@@ -600,3 +627,8 @@ console.log(
     + `, ${glueName} (${glueBytes.byteLength} octets, ${gzip(glueBytes)} gzip)`
     + ` — gzip de Bun ${Bun.version}`,
 );
+console.log(
+  `  linux : ${linux.wasm} (${linux.octets.byteLength} octets, ${gzip(linux.octets)} gzip)`
+    + ` — la machine rv32ima, pour la seule page linux/`,
+);
+console.log(`  écrit avec ${GENERATOR} — ${catalogue.generator.url}`);

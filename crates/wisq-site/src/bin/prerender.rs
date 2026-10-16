@@ -1,10 +1,10 @@
 //! Rend en HTML toutes les pages du site, et dit à la construction tout ce
 //! qu'elle doit savoir pour les écrire.
 //!
-//! C'est l'équivalent exact de ce que `site/build.tsx` faisait avec
-//! `renderToString` de React : le balisage arrive dans la première réponse, un
-//! moteur de recherche voit une vraie page, et le WebAssembly n'est nécessaire
-//! qu'aux deux îlots et au mouvement.
+//! Les vues sont celles d'Active : `Node::render` écrit chaque page dans une
+//! `String`, de façon synchrone. Le balisage arrive dans la première réponse,
+//! un moteur de recherche voit une vraie page, et le WebAssembly n'est
+//! nécessaire qu'aux îlots et au mouvement.
 //!
 //! **Un catalogue, pas seulement du balisage.** La construction avait besoin de
 //! la liste des routes, des titres, des descriptions, des couleurs de barre et
@@ -19,14 +19,10 @@
 //! l'arbre de dépendances du wasm, où chaque octet est compté. L'échappement
 //! couvre ce que la spécification JSON exige d'échapper, et un test le vérifie.
 
-use wisq_site::content::{Lang, AUTHOR, AUTHOR_URL, SITE_VERSION};
-use wisq_site::installation::{InstallPrompt, InstallProps};
+use wisq_site::content::{Lang, ACTIVE_URL, AUTHOR, AUTHOR_URL, SITE_VERSION};
 use wisq_site::pages::{self, RELEASED_VERSIONS};
 use wisq_site::routes::{output_path, page_path, relative_base, RouteId, ROUTES};
-use wisq_site::shell::{Reglages, ReglagesProps};
 use wisq_site::theme::{BAR_CLAIR, BAR_SOMBRE};
-use wisq_site::{Page, PageProps};
-use yew::{BaseComponent, ServerRenderer};
 
 /// Échappe une chaîne pour un littéral JSON.
 ///
@@ -112,9 +108,10 @@ fn copie(lang: Lang) -> String {
 /// Le titre et la description d'une page : ceux du document pour une page
 /// écrite, ceux de l'accueil sinon.
 fn tete(route: RouteId, lang: Lang) -> (String, &'static str) {
-    match pages::doc(route, lang) {
-        Some(d) => (format!("{} — wisq", d.title), d.lede),
-        None => (lang.accueil().title.to_string(), lang.accueil().hero.lede),
+    match (route, pages::doc(route, lang)) {
+        (_, Some(d)) => (format!("{} — wisq", d.title), d.lede),
+        (RouteId::Linux, None) => (format!("{} — wisq", lang.linux().title), lang.linux().lede),
+        (_, None) => (lang.accueil().title.to_string(), lang.accueil().hero.lede),
     }
 }
 
@@ -131,66 +128,23 @@ fn phrase(route: RouteId, lang: Lang) -> Option<&'static str> {
         })
 }
 
-/// Un composant rendu en HTML, avec ou sans les marqueurs d'hydratation.
-async fn rendre<C>(props: C::Properties, hydratable: bool) -> String
-where
-    C: BaseComponent,
-    C::Properties: Send + Clone,
-{
-    ServerRenderer::<C>::with_props(move || props.clone())
-        .hydratable(hydratable)
-        .render()
-        .await
+/// **La page, et les îlots marqués par Active.**
+///
+/// Active n'écrit de marque que là où le navigateur aura quelque chose à
+/// reprendre : `<active-island data-island=… data-props=…>` autour de chaque
+/// îlot, et à l'intérieur les commentaires qui situent un texte ou une région
+/// dynamique. Le reste de la page est du HTML nu. La frontière se lit donc dans
+/// le HTML publié, comme avant — sans que ce binaire ait à rendre chaque îlot
+/// deux fois pour la tracer à la main, ce que demandait Yew.
+fn page(route: RouteId, lang: Lang) -> String {
+    wisq_site::page(route, lang).render()
 }
 
-/// **La page sans marqueurs, et les îlots avec.**
-///
-/// Yew pose un commentaire `<!--<[]>-->` à chaque bord de composant pour
-/// retrouver son arbre à l'hydratation. Rendue d'un bloc, la page en portait
-/// une vingtaine — autour de l'accueil, du pied, de chaque logo — pour des
-/// régions que rien n'hydratera jamais. La page est donc rendue sans eux, et
-/// chacun des deux îlots est rendu une seconde fois, avec, puis remis à sa
-/// place. La frontière se lit dans le HTML publié : là où il y a des
-/// marqueurs, il y a un îlot, et nulle part ailleurs.
-///
-/// **Et la substitution refuse plutôt que de deviner.** Le rendu sans
-/// marqueurs d'un îlot doit apparaître exactement une fois dans la page : zéro
-/// voudrait dire que la coquille ne le rend plus comme ce binaire le croit,
-/// deux qu'il ne saurait pas lequel remplacer. Dans les deux cas, la page
-/// publiée aurait un îlot que le module ne pourrait pas reprendre.
-async fn page(route: RouteId, lang: Lang) -> String {
-    let mut balisage = rendre::<Page>(PageProps { route, lang }, false).await;
-    let ilots = [
-        (
-            "reglages",
-            rendre::<Reglages>(ReglagesProps { route, lang }, false).await,
-            rendre::<Reglages>(ReglagesProps { route, lang }, true).await,
-        ),
-        (
-            "installation",
-            rendre::<InstallPrompt>(InstallProps { lang }, false).await,
-            rendre::<InstallPrompt>(InstallProps { lang }, true).await,
-        ),
-    ];
-    for (nom, inerte, hydratable) in ilots {
-        let vus = balisage.matches(&inerte).count();
-        assert!(
-            vus == 1,
-            "{}/{} : l'îlot « {nom} » apparaît {vus} fois dans la page, il en faut une",
-            lang.code(),
-            route.slug()
-        );
-        balisage = balisage.replacen(&inerte, &hydratable, 1);
-    }
-    balisage
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     let mut rendues: Vec<String> = Vec::new();
     for lang in Lang::ALL {
         for route in ROUTES.iter().map(|r| r.id) {
-            let balisage = page(route, lang).await;
+            let balisage = page(route, lang);
             let (titre, description) = tete(route, lang);
             rendues.push(objet(&[
                 ("route", json(route.slug())),
@@ -217,6 +171,16 @@ async fn main() {
         ),
         ("author", json(AUTHOR)),
         ("authorUrl", json(AUTHOR_URL)),
+        // Avec quoi le front est écrit : la construction en fait le
+        // `<meta name="generator">` de chaque page.
+        (
+            "generator",
+            objet(&[
+                ("name", json("Active")),
+                ("version", json(active::VERSION)),
+                ("url", json(ACTIVE_URL)),
+            ]),
+        ),
         ("version", json(SITE_VERSION)),
         (
             "releasedVersions",

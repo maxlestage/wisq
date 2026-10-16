@@ -35,6 +35,22 @@ const capabilities = [
       "README.fr.md": /agent parle TLS|TLS de l'agent|Agent .*TLS/i,
     },
   },
+  {
+    name: "Linux dans le navigateur",
+    provenFor: "crates/wisq-site/src/linux.rs",
+    markers: {
+      "README.md": /Linux in the browser/,
+      "README.fr.md": /Linux dans le navigateur/,
+    },
+  },
+  {
+    name: "le front écrit avec Active",
+    provenFor: "crates/wisq-site/Cargo.toml",
+    markers: {
+      "README.md": /written with \[Active\]/,
+      "README.fr.md": /écrit avec \[Active\]/,
+    },
+  },
 ];
 
 test("une capacité que le code porte est nommée dans les deux README", () => {

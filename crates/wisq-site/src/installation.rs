@@ -9,15 +9,19 @@
 //! **Les deux formulations sont rendues, et les deux partent masquées.** Savoir
 //! laquelle s'applique est un fait sur le navigateur, donc impossible à la
 //! construction. Le composant part donc de « rien à montrer » des deux côtés —
-//! c'est ce que l'hydratation exige, le premier rendu du client devant
-//! coïncider avec le pré-rendu — et un effet décide ensuite.
+//! Active reprend le balisage tel que le serveur l'a écrit — et un `on_mount`,
+//! qui ne tourne que dans le navigateur, décide ensuite.
 //!
 //! **Ce que le portage rachète.** La version DOM révélait la bannière en
 //! retirant des attributs `hidden` posés sur un balisage qu'elle n'avait pas
 //! écrit, retrouvé par des sélecteurs. Ici l'état décide du balisage, et le
 //! balisage est à côté de l'état.
 
-use yew::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use active::prelude::*;
+use active::Node;
 
 use crate::content::Lang;
 
@@ -40,72 +44,80 @@ type Retenu = Option<wasm_bindgen::JsValue>;
 #[cfg(not(feature = "hydrate"))]
 type Retenu = Option<()>;
 
-#[derive(Properties, PartialEq, Clone)]
-pub struct InstallProps {
-    pub lang: Lang,
-}
+/// L'îlot de l'invite. Ses propriétés sont le code de la langue.
+pub fn install_prompt(props: &str) -> Node {
+    let lang = Lang::parse(props).unwrap_or(Lang::En);
+    let variante = use_state(None::<Variante>);
+    let renvoyee = use_state(false);
+    let retenu: Rc<RefCell<Retenu>> = Rc::new(RefCell::new(None));
 
-#[function_component]
-pub fn InstallPrompt(props: &InstallProps) -> Html {
-    let variante = use_state(|| None::<Variante>);
-    let renvoyee = use_state(|| false);
-    let retenu = use_mut_ref(|| Retenu::None);
-
-    {
-        let montrer = variante.setter();
-        let retenu = retenu.clone();
-        use_effect_with((), move |()| {
-            guetter(move |v| montrer.set(Some(v)), retenu);
-        });
-    }
-
-    let cacher = {
-        let renvoyee = renvoyee.setter();
-        Callback::from(move |()| {
-            renvoyee.set(true);
-            crate::stockage::ecrire(RENVOI, "1");
-        })
+    let cacher = move || {
+        renvoyee.set(true);
+        crate::stockage::ecrire(RENVOI, "1");
     };
-    let au_renvoi = {
-        let cacher = cacher.clone();
-        Callback::from(move |_: MouseEvent| cacher.emit(()))
-    };
-    let a_l_acceptation = {
-        let retenu = retenu.clone();
-        Callback::from(move |_: MouseEvent| rejouer(&retenu.borrow(), cacher.clone()))
-    };
+    let montree = move || variante.get().is_some() && !renvoyee.get();
+    let est = move |v: Variante| move || variante.get() == Some(v);
 
-    let copy = props.lang.copy();
-    let montree = variante.is_some() && !*renvoyee;
-    let invite = *variante == Some(Variante::Invite);
-    let ios = *variante == Some(Variante::Ios);
-    html! {
-        <aside class="install-banner" role="complementary" hidden={!montree} data-install="">
-            <div class="wrap install-banner-inner">
-                <div data-install-variant="prompt" hidden={!invite}>
-                    <strong>{ copy.pwa.title }</strong>
-                    <p>{ copy.pwa.body }</p>
-                </div>
-                <div data-install-variant="ios" hidden={!ios}>
-                    <strong>{ copy.pwa.ios_title }</strong>
-                    <p>{ copy.pwa.ios_body }</p>
-                </div>
-                <div class="install-banner-actions">
-                    // Seul le chemin de Chromium a un bouton qui puisse faire
-                    // quelque chose : sur iOS il n'y a aucune API à appeler, donc
-                    // la formulation est toute la fonctionnalité.
-                    <button type="button" class="btn btn-primary" data-install-accept=""
-                            hidden={!invite} onclick={a_l_acceptation}>
-                        { copy.pwa.action }
-                    </button>
-                    <button type="button" class="btn btn-quiet" data-install-dismiss=""
-                            onclick={au_renvoi}>
-                        { copy.pwa.dismiss }
-                    </button>
-                </div>
-            </div>
-        </aside>
-    }
+    let copy = lang.copy();
+    let guet = retenu.clone();
+    aside()
+        .class("install-banner")
+        .attr("role", "complementary")
+        .bool_attr("hidden", move || !montree())
+        .attr("data-install", "")
+        .on_mount(move |_| guetter(move |v| variante.set(Some(v)), guet.clone()))
+        .child(
+            div()
+                .class("wrap install-banner-inner")
+                .child(
+                    div()
+                        .attr("data-install-variant", "prompt")
+                        .bool_attr("hidden", {
+                            let oui = est(Variante::Invite);
+                            move || !oui()
+                        })
+                        .child(strong().text(copy.pwa.title))
+                        .child(p().text(copy.pwa.body)),
+                )
+                .child(
+                    div()
+                        .attr("data-install-variant", "ios")
+                        .bool_attr("hidden", {
+                            let oui = est(Variante::Ios);
+                            move || !oui()
+                        })
+                        .child(strong().text(copy.pwa.ios_title))
+                        .child(p().text(copy.pwa.ios_body)),
+                )
+                .child(
+                    div()
+                        .class("install-banner-actions")
+                        // Seul le chemin de Chromium a un bouton qui puisse faire
+                        // quelque chose : sur iOS il n'y a aucune API à appeler,
+                        // donc la formulation est toute la fonctionnalité.
+                        .child(
+                            button()
+                                .attr("type", "button")
+                                .class("btn btn-primary")
+                                .attr("data-install-accept", "")
+                                .bool_attr("hidden", {
+                                    let oui = est(Variante::Invite);
+                                    move || !oui()
+                                })
+                                .on_click(move |_| rejouer(&retenu.borrow(), cacher))
+                                .text(copy.pwa.action),
+                        )
+                        .child(
+                            button()
+                                .attr("type", "button")
+                                .class("btn btn-quiet")
+                                .attr("data-install-dismiss", "")
+                                .on_click(move |_| cacher())
+                                .text(copy.pwa.dismiss),
+                        ),
+                ),
+        )
+        .into()
 }
 
 /// Décide s'il y a quelque chose à proposer, et quoi.
@@ -116,7 +128,7 @@ pub fn InstallPrompt(props: &InstallProps) -> Html {
 /// navigateur n'accepte de montrer l'invite qu'en réponse à un geste, donc il
 /// faut la garder jusqu'au toucher.
 #[cfg(feature = "hydrate")]
-fn guetter(montrer: impl Fn(Variante) + 'static, retenu: std::rc::Rc<std::cell::RefCell<Retenu>>) {
+fn guetter(montrer: impl Fn(Variante) + 'static, retenu: Rc<RefCell<Retenu>>) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
 
@@ -144,7 +156,7 @@ fn guetter(montrer: impl Fn(Variante) + 'static, retenu: std::rc::Rc<std::cell::
 }
 
 #[cfg(not(feature = "hydrate"))]
-fn guetter(_: impl Fn(Variante) + 'static, _: std::rc::Rc<std::cell::RefCell<Retenu>>) {}
+fn guetter(_: impl Fn(Variante) + 'static, _: Rc<RefCell<Retenu>>) {}
 
 /// Déjà lancé depuis l'écran d'accueil : rien à proposer.
 #[cfg(feature = "hydrate")]
@@ -177,7 +189,7 @@ fn ios(fenetre: &web_sys::Window) -> bool {
 /// `prompt` et `userChoice` sont lus par réflexion. Une invite absente — un
 /// événement qu'on n'aurait pas retenu — ne fait rien plutôt que de lever.
 #[cfg(feature = "hydrate")]
-fn rejouer(retenu: &Retenu, cacher: Callback<()>) {
+fn rejouer(retenu: &Retenu, cacher: impl Fn() + 'static) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
 
@@ -196,13 +208,13 @@ fn rejouer(retenu: &Retenu, cacher: Callback<()>) {
         .and_then(|v| v.dyn_into::<js_sys::Promise>().ok());
     match choix {
         Some(promesse) => {
-            let suite = Closure::once(move |_: wasm_bindgen::JsValue| cacher.emit(()));
+            let suite = Closure::once(move |_: wasm_bindgen::JsValue| cacher());
             let _ = promesse.then(&suite);
             suite.forget();
         }
-        None => cacher.emit(()),
+        None => cacher(),
     }
 }
 
 #[cfg(not(feature = "hydrate"))]
-fn rejouer(_: &Retenu, _: Callback<()>) {}
+fn rejouer(_: &Retenu, _: impl Fn() + 'static) {}

@@ -650,7 +650,19 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "2632",
+        "1.14",
+        "ce n'est pas une mesure : la fin du nom du noyau que la page `linux/` conseille, `linux-6.1.14-rv32nommu-cnl-1.zip` — le fichier que `.github/workflows/ci.yml` récupère et démarre.",
+      ],
+      [
+        "32",
+        "ce n'est pas une mesure : la largeur des registres de la machine que la page `linux/` décrit — RISC-V 32 bits, rv32ima, `crates/wisq-vm/src/core.rs`.",
+      ],
+      [
+        "45",
+        "relevé : le nombre d'instructions jusqu'à l'invite de connexion que la page `linux/` annonce, « environ 45 millions ». `swift run -c release wisq-bench --image Image` le refait (44,6 M, cité par README.md) ; la CI l'imprime à chaque exécution.",
+      ],
+      [
+        "2637",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [

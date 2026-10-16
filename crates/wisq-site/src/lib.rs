@@ -1,50 +1,35 @@
-//! Le front du site de wisq, en Yew — tout le front, depuis que React est parti.
+//! Le front du site de wisq, écrit avec **Active** — la bibliothèque
+//! front-end en Rust de Maxime Nathan Lestage, <https://github.com/maxlestage/Active>.
+//! Tout le front, depuis que React puis Yew sont partis.
 //!
-//! **Un seul arbre de composants, deux cibles.** La construction le rend en
-//! HTML avec `ServerRenderer` (drapeau `ssr`, binaire `wisq-site-prerender`), et
-//! le navigateur en reprend **deux îlots** — les réglages de l'en-tête et
-//! l'invite d'installation — en WebAssembly (drapeau `hydrate`). La première
-//! peinture ne dépend donc pas du module, et c'était la première chose
-//! vérifiée : `ServerRenderer` produit bien le balisage.
+//! **Un seul arbre de vues, trois cibles.** La construction le rend en HTML
+//! avec `Node::render` (drapeau `ssr`, binaire `wisq-site-prerender`), et le
+//! navigateur en reprend **les îlots** — les réglages de l'en-tête, l'invite
+//! d'installation, et sur la page `linux/` le terminal — en WebAssembly
+//! (drapeau `hydrate`, et `linux` pour le module qui porte la machine). La
+//! première peinture ne dépend donc pas du module.
 //!
-//! **Ce que ce passage coûte, mesuré à chaque tranche.**
+//! **Ce que le passage à Active change.** Une vue est une fonction qui rend un
+//! `Node`, construit par des appels chaînés plutôt que par une macro ; l'état
+//! est un `State<T>` qu'on déplace dans les fermetures, et un changement ne
+//! réécrit que le texte, l'attribut ou la classe qui en dépend — pas de DOM
+//! virtuel, pas de second rendu du contenu statique. Les îlots sont un concept
+//! de la bibliothèque (`active::island`, `active::hydrate`) plutôt qu'une
+//! construction de ce crate : le pré-rendu n'a plus à rendre chaque îlot deux
+//! fois pour poser des marqueurs à la main.
 //!
-//! | | brut | gzip |
-//! | --- | --- | --- |
-//! | un composant Yew trivial, première sonde | 188 859 | 80 196 |
-//! | une page portée, thème seul (#331) | 253 728 | 106 392 |
-//! | toutes les pages, hydratées entières | 351 822 | 148 277 |
-//! | deux îlots, le mouvement d'origine | 261 252 | 112 436 |
-//! | deux îlots, les cinq comportements de #337 | 271 558 | 116 280 |
-//! | deux îlots, la seconde vague de #337 | 276 591 | 118 718 |
-//!
-//! Le code DOM que Yew a remplacé en coûtait 1 062 gzippés, et le React
-//! hydratant que le dépôt avait retiré avant lui 65 794. La ligne des pages
-//! hydratées entières est celle qu'on n'a pas prise : voir `shell::Reglages`
-//! pour la raison, et `mouvement` pour ce que coûtent les îlots au-delà d'elle.
-//!
-//! **Le chiffre d'une ligne est celui de sa tranche**, pas le poids
-//! d'aujourd'hui : il bouge avec le code à chaque comportement ajouté, et il
-//! diffère d'une machine à l'autre pour un module sain. Ce que le module pèse
-//! est donc tenu par un plafond, et par lui seul —
+//! **Ce que le module pèse est tenu par un plafond, et par lui seul** —
 //! `site/tests/build.test.ts`, « le front en WebAssembly reste dans son
-//! budget ».
-//!
-//! **Ce qu'il rachète.** Les comportements du site vivaient dans `src/main.ts`,
-//! en code DOM, à côté de composants React qui portaient en commentaire « this
-//! component never runs in a browser ». Les deux moitiés d'un même objet étaient
-//! dans deux fichiers et deux langages, tenues ensemble par le nom d'un
-//! attribut. Ici un composant interactif s'écrit comme un composant, le
-//! mouvement comme du Rust, et tout le front est vérifiable par `cargo clippy
-//! -D warnings` et `cargo test` — ce qui, dans ce conteneur, est plus que ce
-//! qu'on peut dire de l'application.
+//! budget ». L'historique des mesures de l'époque Yew est dans `docs/JOURNAL.md`.
 
 pub mod accueil;
+pub mod console;
 pub mod content;
 #[cfg(test)]
 mod contenu_tests;
 pub mod doc;
 pub mod installation;
+pub mod linux;
 pub mod logo;
 pub mod mouvement;
 #[cfg(feature = "hydrate")]
@@ -55,37 +40,29 @@ pub mod shell;
 pub mod stockage;
 pub mod theme;
 
+use active::Node;
 use content::Lang;
-use doc::DocPage;
 use routes::RouteId;
-use shell::Shell;
-use yew::prelude::*;
-
-#[derive(Properties, PartialEq, Clone)]
-pub struct PageProps {
-    pub route: RouteId,
-    pub lang: Lang,
-}
 
 /// Une page complète : la coquille, et ce que la route montre à l'intérieur —
-/// la mise en page de l'accueil, ou le document d'une page écrite.
-#[function_component]
-pub fn Page(props: &PageProps) -> Html {
-    let corps = match pages::doc(props.route, props.lang) {
-        Some(d) => html! { <DocPage doc={d.clone()} lang={props.lang} /> },
-        None => html! { <accueil::Accueil lang={props.lang} /> },
+/// la mise en page de l'accueil, celle de la page Linux, ou le document d'une
+/// page écrite.
+pub fn page(route: RouteId, lang: Lang) -> Node {
+    let corps = match (route, pages::doc(route, lang)) {
+        (_, Some(d)) => doc::doc_page(d, lang),
+        (RouteId::Linux, None) => linux::page(lang),
+        (_, None) => accueil::accueil(lang),
     };
-    html! { <Shell route={props.route} lang={props.lang}>{ corps }</Shell> }
+    shell::shell(route, lang, corps)
 }
 
 /// Le point d'entrée du navigateur.
 ///
 /// **Des îlots, pas la page.** Le HTML est déjà là, produit par la
-/// construction, et il est complet : seuls deux endroits ont un état — les
-/// réglages de l'en-tête, l'invite d'installation —, donc seuls ces deux-là
-/// sont hydratés, chacun sur sa racine. Le reste — la prose, l'accueil, le
-/// pied — n'est jamais repris par Yew, et c'est ce qui garde la prose hors du
-/// module : voir `shell::Reglages` pour la mesure.
+/// construction, et il est complet : seuls les îlots ont un état, donc seuls
+/// eux sont hydratés, chacun sur sa racine `<active-island>`. Le reste — la
+/// prose, l'accueil, le pied — n'est jamais repris par Active, et c'est ce qui
+/// garde la prose hors du module : voir `shell::reglages` pour la mesure.
 ///
 /// La route et la langue viennent du document plutôt que de l'adresse : la
 /// construction les écrit sur `#root` en `data-route` et `data-lang`, et un

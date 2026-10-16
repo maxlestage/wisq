@@ -85,6 +85,7 @@ pub struct PagesCopy {
     pub releases: &'static str,
     pub privacy: &'static str,
     pub offline: &'static str,
+    pub linux: &'static str,
 }
 
 pub struct FooterGroups {
@@ -112,6 +113,11 @@ pub struct FooterCopy {
     /// d'autrui : une ligne qui dit ce qui est à moi ne doit jamais se lire
     /// comme une revendication sur ce qui ne l'est pas.
     pub author: &'static str,
+    /// Avec quoi le front est fait — Active — et la liaison vers son auteur :
+    /// « Front end written in Rust with Active, by … ». Deux morceaux autour
+    /// de deux liens, pour que chaque langue place les mots où elle veut.
+    pub built_with: &'static str,
+    pub built_by: &'static str,
     pub attribution: &'static str,
     /// Ce par quoi la ligne de version se terminait était une licence. Il n'y en
     /// a pas, donc elle finit par le défaut nu — vrai quoi qu'on choisisse, et
@@ -274,6 +280,7 @@ pub struct ExplorerCopy {
     pub roadmap: &'static str,
     pub releases: &'static str,
     pub privacy: &'static str,
+    pub linux: &'static str,
 }
 
 /// Tout ce que l'accueil dit, à part de la coquille.
@@ -315,6 +322,8 @@ pub struct Copy {
 pub const AUTHOR: &str = "Maxime Nathan Lestage";
 pub const AUTHOR_URL: &str = "https://github.com/maxlestage";
 pub const SITE_VERSION: &str = "0.4.0";
+/// La bibliothèque avec laquelle tout le front est écrit, du même auteur.
+pub const ACTIVE_URL: &str = "https://github.com/maxlestage/Active";
 
 pub static EN: Copy = Copy {
     language: "Language",
@@ -335,6 +344,7 @@ pub static EN: Copy = Copy {
         releases: "Releases",
         privacy: "Privacy",
         offline: "Offline",
+        linux: "Linux in the browser",
     },
     footer: FooterCopy {
         docs: "Site",
@@ -347,6 +357,8 @@ pub static EN: Copy = Copy {
         tagline: "Virtual machines on your iPhone: remote at full speed, or a real Linux kernel on the phone itself.",
         privacy_note: "No analytics, no cookies, no third-party requests. This page loaded nothing from anyone else.",
         author: "Designed and developed by",
+        built_with: "Front end written in Rust with",
+        built_by: ", by",
         attribution: "RISC-V execution semantics ported from mini-rv32ima by Charles Lohr (MIT).",
         rights: "All rights reserved",
         copyright: "© 2026 Maxime Nathan Lestage",
@@ -382,6 +394,7 @@ pub static FR: Copy = Copy {
         releases: "Versions",
         privacy: "Vie privée",
         offline: "Hors ligne",
+        linux: "Linux dans le navigateur",
     },
     footer: FooterCopy {
         docs: "Site",
@@ -394,6 +407,8 @@ pub static FR: Copy = Copy {
         tagline: "Des machines virtuelles sur votre iPhone : à distance à pleine vitesse, ou un vrai noyau Linux sur le téléphone lui-même.",
         privacy_note: "Aucune mesure d'audience, aucun cookie, aucune requête tierce. Cette page n'a rien chargé chez qui que ce soit.",
         author: "Conçu et développé par",
+        built_with: "Front écrit en Rust avec",
+        built_by: ", par",
         attribution: "Sémantique d'exécution RISC-V portée de mini-rv32ima, de Charles Lohr (MIT).",
         rights: "Tous droits réservés",
         copyright: "© 2026 Maxime Nathan Lestage",
@@ -514,7 +529,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Built to be trusted",
-        items: &[FactCopy { value: "2632", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
+        items: &[FactCopy { value: "2637", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
     },
     etat: EtatCopy {
         title: "Where it stands",
@@ -533,6 +548,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
         roadmap: "What is done, what comes next, and what stands in the way.",
         releases: "Every published version, and what it changed.",
         privacy: "What this site and the app keep, where, and what they never collect.",
+        linux: "wisq's RISC-V machine, compiled to WebAssembly: hand it a Linux image and get a shell in this tab.",
     },
 };
 
@@ -640,7 +656,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Fait pour inspirer confiance",
-        items: &[FactCopy { value: "2632", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
+        items: &[FactCopy { value: "2637", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
     },
     etat: EtatCopy {
         title: "Où en est le projet",
@@ -659,5 +675,116 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
         roadmap: "Ce qui est fait, ce qui vient, et ce qui barre la route.",
         releases: "Chaque version publiée, et ce qu'elle a changé.",
         privacy: "Ce que ce site et l'application gardent, où, et ce qu'ils ne collectent jamais.",
+        linux: "La machine RISC-V de wisq, compilée en WebAssembly : donnez-lui une image Linux, et un shell s'ouvre dans cet onglet.",
     },
+};
+
+/// La page `linux/` : la machine rv32ima de wisq, dans le navigateur.
+///
+/// **À part de `Copy`, pour la raison qui sépare `AccueilCopy`.** Le terminal
+/// est un îlot, donc ce qu'il lit entre dans le module qui l'hydrate — mais ce
+/// module-là n'est chargé que par cette page. Rangée dans `Copy`, cette copie
+/// partirait chez chaque lecteur de chaque page, dans le module commun.
+pub struct LinuxCopy {
+    pub title: &'static str,
+    pub lede: &'static str,
+    pub intro: &'static [&'static str],
+    pub steps_title: &'static str,
+    pub steps: &'static [&'static str],
+    pub image_label: &'static str,
+    pub image_hint: &'static str,
+    pub boot: &'static str,
+    pub stop: &'static str,
+    pub terminal_label: &'static str,
+    pub input_label: &'static str,
+    pub input_placeholder: &'static str,
+    pub send: &'static str,
+    pub ctrl_c: &'static str,
+    pub idle: &'static str,
+    pub reading: &'static str,
+    pub running: &'static str,
+    pub stopped: &'static str,
+    pub power_off: &'static str,
+    pub not_riscv: &'static str,
+    pub too_large: &'static str,
+    pub unreadable: &'static str,
+    pub privacy: &'static str,
+    pub credit: &'static str,
+}
+
+impl Lang {
+    pub fn linux(self) -> &'static LinuxCopy {
+        match self {
+            Lang::En => &LINUX_EN,
+            Lang::Fr => &LINUX_FR,
+        }
+    }
+}
+
+pub static LINUX_EN: LinuxCopy = LinuxCopy {
+    title: "Linux in your browser",
+    lede: "The same RISC-V machine that boots Linux on the iPhone, compiled to WebAssembly and running in this tab. Hand it a kernel image and it boots to a shell — nothing is uploaded anywhere.",
+    intro: &[
+        "This is wisq's rv32ima interpreter — the Rust core the app ships — with no JIT and no server behind it. The machine has 64 MiB of RAM, a UART console and an instruction-counted timer, exactly as on the phone.",
+        "It runs no-MMU RISC-V 32-bit kernels with their root filesystem built in, the kind mini-rv32ima boots. An x86 bzImage or an ELF file is recognised and refused with a sentence rather than a crash.",
+    ],
+    steps_title: "Boot it",
+    steps: &[
+        "Download a kernel: linux-6.1.14-rv32nommu-cnl-1.zip from github.com/cnlohr/mini-rv32ima-images (images folder) is the one wisq's CI boots.",
+        "Unzip it — the Files app on an iPhone does it with a tap — and keep the file named Image.",
+        "Choose that Image below and press Boot. The login prompt arrives after about 45 million instructions; log in as root.",
+    ],
+    image_label: "Kernel image",
+    image_hint: "A RISC-V 32-bit no-MMU Linux Image, read from this device only.",
+    boot: "Boot",
+    stop: "Stop",
+    terminal_label: "Linux console",
+    input_label: "Type a line for the guest",
+    input_placeholder: "ls /",
+    send: "Send",
+    ctrl_c: "Ctrl-C",
+    idle: "No machine running. Choose an image to boot.",
+    reading: "Reading the image…",
+    running: "Running",
+    stopped: "Stopped.",
+    power_off: "The guest powered off.",
+    not_riscv: "This file is not a RISC-V no-MMU kernel image (it looks like an x86 bzImage or an ELF file). The browser machine is rv32ima only.",
+    too_large: "This image does not fit in the machine's 64 MiB of RAM.",
+    unreadable: "The file could not be read.",
+    privacy: "The image is read in this tab and never sent anywhere: this page makes no request with it.",
+    credit: "Page and terminal written with Active; the machine is crates/wisq-vm, the core of the iPhone app.",
+};
+
+pub static LINUX_FR: LinuxCopy = LinuxCopy {
+    title: "Linux dans votre navigateur",
+    lede: "La même machine RISC-V qui démarre Linux sur l'iPhone, compilée en WebAssembly et exécutée dans cet onglet. Donnez-lui une image de noyau, elle démarre jusqu'au shell — rien n'est envoyé nulle part.",
+    intro: &[
+        "C'est l'interpréteur rv32ima de wisq — le cœur Rust que l'application embarque — sans JIT et sans serveur derrière. La machine a 64 Mio de RAM, une console UART et une horloge comptée en instructions, exactement comme sur le téléphone.",
+        "Elle exécute des noyaux RISC-V 32 bits sans MMU dont le système de fichiers racine est intégré, ceux que démarre mini-rv32ima. Un bzImage x86 ou un fichier ELF est reconnu, et refusé par une phrase plutôt que par un plantage.",
+    ],
+    steps_title: "La démarrer",
+    steps: &[
+        "Téléchargez un noyau : linux-6.1.14-rv32nommu-cnl-1.zip, sur github.com/cnlohr/mini-rv32ima-images (dossier images), est celui que démarre la CI de wisq.",
+        "Décompressez-le — l'app Fichiers de l'iPhone le fait d'un toucher — et gardez le fichier nommé Image.",
+        "Choisissez cette Image ci-dessous et appuyez sur Démarrer. L'invite de connexion arrive après environ 45 millions d'instructions ; connectez-vous en root.",
+    ],
+    image_label: "Image du noyau",
+    image_hint: "Une image Linux RISC-V 32 bits sans MMU, lue sur cet appareil seulement.",
+    boot: "Démarrer",
+    stop: "Arrêter",
+    terminal_label: "Console Linux",
+    input_label: "Taper une ligne pour l'invité",
+    input_placeholder: "ls /",
+    send: "Envoyer",
+    ctrl_c: "Ctrl-C",
+    idle: "Aucune machine en marche. Choisissez une image à démarrer.",
+    reading: "Lecture de l'image…",
+    running: "En marche",
+    stopped: "Arrêtée.",
+    power_off: "L'invité s'est éteint.",
+    not_riscv: "Ce fichier n'est pas une image de noyau RISC-V sans MMU (il ressemble à un bzImage x86 ou à un fichier ELF). La machine du navigateur est rv32ima seulement.",
+    too_large: "Cette image ne tient pas dans les 64 Mio de RAM de la machine.",
+    unreadable: "Le fichier n'a pas pu être lu.",
+    privacy: "L'image est lue dans cet onglet et n'est envoyée nulle part : cette page ne fait aucune requête avec elle.",
+    credit: "Page et terminal écrits avec Active ; la machine est crates/wisq-vm, le cœur de l'application iPhone.",
 };

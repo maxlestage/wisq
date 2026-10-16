@@ -18,7 +18,7 @@
 //! sombre dans les deux thèmes pour la raison qui fait qu'une icône
 //! d'application l'est : c'est l'icône de l'application.
 
-use yew::prelude::*;
+use active::prelude::*;
 
 /// Les deux quadrants de U+259A, dans une boîte de 240×240.
 ///
@@ -60,6 +60,156 @@ const _: () = {
     assert!(SIDE == 72 && UL == 40 && LR == 128 && GAP == 16);
 };
 
+/// La marque, en SVG en ligne.
+///
+/// **Pourquoi un suffixe explicite plutôt qu'un identifiant engendré.** La
+/// marque apparaît plus d'une fois par page — le héros et le pied — et deux
+/// copies de `id="wisq-plate"` sont du HTML invalide qui n'a l'air correct que
+/// parce que les deux dégradés sont identiques. L'appelant nomme donc son
+/// instance : c'est déterministe, lisible dans le HTML livré, et identique d'un
+/// rendu à l'autre sans dépendre d'un compteur.
+pub fn logo(class: &'static str, instance: &'static str) -> Element {
+    let plate = format!("wisq-plate-{instance}");
+    let mark = format!("wisq-mark-{instance}");
+    let clip = format!("wisq-window-{instance}");
+    let plate_url = format!("url(#{plate})");
+    let mark_url = format!("url(#{mark})");
+    let clip_url = format!("url(#{clip})");
+
+    // Les trois pas du lien, à travers l'écart : la seule chose de la plaque
+    // qui ne soit pas un objet solide, parce qu'un réseau n'en est pas un.
+    //
+    // Les pas sont 0,16, 0,5 et 0,84 de l'écart depuis `UL + SIDE` = 112, et
+    // l'opacité 0,38 + pas/2. Soit 114,56 / 120 / 125,44 et 0,46 / 0,63 / 0,8.
+    const LIEN: [(&str, &str); 3] = [("114.56", "0.46"), ("120", "0.63"), ("125.44", "0.8")];
+
+    let degrade = |id: String, de: &'static str, a: &'static str| {
+        linear_gradient()
+            .id(id)
+            .attr("x1", "0")
+            .attr("y1", "0")
+            .attr("x2", "1")
+            .attr("y2", "1")
+            .child(stop().attr("offset", "0").attr("stop-color", de))
+            .child(stop().attr("offset", "1").attr("stop-color", a))
+    };
+    let pastille = |cx: &'static str| {
+        circle()
+            .attr("cx", cx)
+            .attr("cy", "49.5")
+            .attr("r", "3")
+            .attr("fill", "#0b0d10")
+            .attr("fill-opacity", "0.42")
+    };
+
+    svg()
+        .class(class)
+        .attr("viewBox", "0 0 240 240")
+        .attr("width", "240")
+        .attr("height", "240")
+        // Le mot-symbole de l'en-tête nomme déjà le site et le titre suit
+        // immédiatement, donc annoncer ceci en plus ne répéterait que les deux.
+        .attr("aria-hidden", "true")
+        .attr("focusable", "false")
+        .child(
+            defs()
+                .child(degrade(plate, "#171d26", "#0b0d10"))
+                .child(degrade(mark, "#a8a2ff", "#6f64ff"))
+                .child(
+                    el("clipPath").id(clip).child(
+                        rect()
+                            .attr("x", "40")
+                            .attr("y", "40")
+                            .attr("width", "72")
+                            .attr("height", "72")
+                            .attr("rx", "13"),
+                    ),
+                ),
+        )
+        .child(
+            rect()
+                .attr("width", "240")
+                .attr("height", "240")
+                .attr("rx", "54")
+                .attr("fill", plate_url),
+        )
+        .child(
+            rect()
+                .attr("x", "0.75")
+                .attr("y", "0.75")
+                .attr("width", "238.5")
+                .attr("height", "238.5")
+                .attr("rx", "53.25")
+                .attr("fill", "none")
+                .attr("stroke", "#8b83ff")
+                .attr("stroke-opacity", "0.16")
+                .attr("stroke-width", "1.5"),
+        )
+        .children(LIEN.iter().map(|(c, opacite)| {
+            circle()
+                .attr("cx", *c)
+                .attr("cy", *c)
+                .attr("r", "2.5")
+                .attr("fill", "#8b83ff")
+                .attr("fill-opacity", *opacite)
+        }))
+        // En haut à gauche : une machine ailleurs, donc une fenêtre.
+        .child(
+            g().attr("clip-path", clip_url)
+                .child(
+                    rect()
+                        .attr("x", "40")
+                        .attr("y", "40")
+                        .attr("width", "72")
+                        .attr("height", "72")
+                        .attr("fill", mark_url.clone()),
+                )
+                .child(
+                    rect()
+                        .attr("x", "40")
+                        .attr("y", "40")
+                        .attr("width", "72")
+                        .attr("height", "19")
+                        .attr("fill", "#0b0d10")
+                        .attr("fill-opacity", "0.3"),
+                )
+                // 9,5 et non 9 : la barre de titre de la fenêtre fait 19 de
+                // haut, et les deux pastilles sont à son milieu exact.
+                .child(pastille("53"))
+                .child(pastille("65")),
+        )
+        // En bas à droite : le téléphone dans votre main, écran compris.
+        .child(
+            rect()
+                .attr("x", "128")
+                .attr("y", "128")
+                .attr("width", "72")
+                .attr("height", "72")
+                .attr("rx", "13")
+                .attr("fill", mark_url),
+        )
+        .child(
+            rect()
+                .attr("x", "147")
+                .attr("y", "139")
+                .attr("width", "34")
+                .attr("height", "50")
+                .attr("rx", "7")
+                .attr("fill", "#0b0d10")
+                .attr("fill-opacity", "0.32"),
+        )
+        .child(
+            rect()
+                .attr("x", "157")
+                .attr("y", "182")
+                .attr("width", "14")
+                .attr("height", "2.8")
+                .attr("rx", "1.4")
+                .attr("fill", "#0b0d10")
+                .attr("fill-opacity", "0.5"),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GAP, LIEN_PAS, LR, SIDE, UL};
@@ -90,84 +240,5 @@ mod tests {
                 "opacité du pas {pas}"
             );
         }
-    }
-}
-
-#[derive(Properties, PartialEq)]
-pub struct LogoProps {
-    #[prop_or_default]
-    pub class: AttrValue,
-    /// **Pourquoi un suffixe explicite plutôt qu'un identifiant engendré.**
-    ///
-    /// La marque apparaît plus d'une fois par page — le héros et le pied — et
-    /// deux copies de `id="wisq-plate"` sont du HTML invalide qui n'a l'air
-    /// correct que parce que les deux dégradés sont identiques. La version
-    /// React appelait `useId`, qui rend des identifiants stables mais bruyants
-    /// (des deux-points, légaux dans un `id` et pénibles dans une référence
-    /// d'URL). Ici l'appelant nomme son instance : c'est déterministe, lisible
-    /// dans le HTML livré, et identique entre le pré-rendu et l'hydratation
-    /// sans dépendre d'un compteur interne au framework.
-    pub instance: AttrValue,
-}
-
-#[function_component]
-pub fn Logo(props: &LogoProps) -> Html {
-    let plate = format!("wisq-plate-{}", props.instance);
-    let mark = format!("wisq-mark-{}", props.instance);
-    let clip = format!("wisq-window-{}", props.instance);
-    let plate_url = format!("url(#{plate})");
-    let mark_url = format!("url(#{mark})");
-    let clip_url = format!("url(#{clip})");
-
-    // Les trois pas du lien, à travers l'écart : la seule chose de la plaque
-    // qui ne soit pas un objet solide, parce qu'un réseau n'en est pas un.
-    //
-    // Les pas sont 0,16, 0,5 et 0,84 de l'écart depuis `UL + SIDE` = 112, et
-    // l'opacité 0,38 + pas/2. Soit 114,56 / 120 / 125,44 et 0,46 / 0,63 / 0,8 —
-    // exactement ce que la version React calculait, et ce que le site publie.
-    const LIEN: [(&str, &str); 3] = [("114.56", "0.46"), ("120", "0.63"), ("125.44", "0.8")];
-
-    html! {
-        <svg class={props.class.clone()} viewBox="0 0 240 240" width="240" height="240"
-             // Le mot-symbole de l'en-tête nomme déjà le site et le titre suit
-             // immédiatement, donc annoncer ceci en plus ne répéterait que les deux.
-             aria-hidden="true" focusable="false">
-            <defs>
-                <linearGradient id={plate.clone()} x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#171d26" />
-                    <stop offset="1" stop-color="#0b0d10" />
-                </linearGradient>
-                <linearGradient id={mark.clone()} x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0" stop-color="#a8a2ff" />
-                    <stop offset="1" stop-color="#6f64ff" />
-                </linearGradient>
-                <clipPath id={clip.clone()}>
-                    <rect x="40" y="40" width="72" height="72" rx="13" />
-                </clipPath>
-            </defs>
-
-            <rect width="240" height="240" rx="54" fill={plate_url} />
-            <rect x="0.75" y="0.75" width="238.5" height="238.5" rx="53.25" fill="none"
-                  stroke="#8b83ff" stroke-opacity="0.16" stroke-width="1.5" />
-
-            { for LIEN.iter().map(|(c, opacite)| html! {
-                <circle cx={*c} cy={*c} r="2.5" fill="#8b83ff" fill-opacity={*opacite} />
-            }) }
-
-            // En haut à gauche : une machine ailleurs, donc une fenêtre.
-            <g clip-path={clip_url}>
-                <rect x="40" y="40" width="72" height="72" fill={mark_url.clone()} />
-                <rect x="40" y="40" width="72" height="19" fill="#0b0d10" fill-opacity="0.3" />
-                // 9,5 et non 9 : la barre de titre de la fenêtre fait 19 de
-                // haut, et les deux pastilles sont à son milieu exact.
-                <circle cx="53" cy="49.5" r="3" fill="#0b0d10" fill-opacity="0.42" />
-                <circle cx="65" cy="49.5" r="3" fill="#0b0d10" fill-opacity="0.42" />
-            </g>
-
-            // En bas à droite : le téléphone dans votre main, écran compris.
-            <rect x="128" y="128" width="72" height="72" rx="13" fill={mark_url} />
-            <rect x="147" y="139" width="34" height="50" rx="7" fill="#0b0d10" fill-opacity="0.32" />
-            <rect x="157" y="182" width="14" height="2.8" rx="1.4" fill="#0b0d10" fill-opacity="0.5" />
-        </svg>
     }
 }

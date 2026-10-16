@@ -2,7 +2,7 @@
 #
 # **La chaîne que demande le front du site, installée en un seul endroit.**
 #
-# Depuis que `crates/wisq-site` est en Yew, construire le site demande plus que
+# Depuis que `crates/wisq-site` est en Rust (écrit avec Active), construire le site demande plus que
 # Bun : la cible `wasm32-unknown-unknown`, `wasm-bindgen` pour emballer le
 # module, et `wasm-opt` pour le réduire. La CI et Heroku en ont tous les deux
 # besoin, donc ils appellent ce script au lieu d'en porter chacun une copie.
@@ -35,7 +35,7 @@ fi
 # `wasm-bindgen-macro` et leurs versions, qui ne sont pas celle-là.
 version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, "", $0); print; exit }' Cargo.lock)
 if [ -z "$version" ]; then
-  echo "aucune version de wasm-bindgen dans Cargo.lock : le front est-il toujours en Yew ?" >&2
+  echo "aucune version de wasm-bindgen dans Cargo.lock : le front est-il toujours en Rust ?" >&2
   exit 1
 fi
 echo "==> wasm-bindgen $version, d'après Cargo.lock"
