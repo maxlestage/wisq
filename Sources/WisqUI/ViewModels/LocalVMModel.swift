@@ -521,6 +521,15 @@ public final class LocalVMModel {
         send(line + "\n")
     }
 
+    /// Une touche de la barre, après le texte en cours de saisie — voir
+    /// `TerminalKey.sending(afterTyped:)`, qui décide des octets et de
+    /// l'ordre. Le mode des flèches est lu dans la grille, qui sait ce que le
+    /// programme au premier plan a demandé.
+    public func press(_ key: TerminalKey, afterTyped typed: String) {
+        machine?.send(key.sending(
+            afterTyped: typed, applicationCursorKeys: sink.applicationCursorKeys))
+    }
+
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
@@ -682,6 +691,14 @@ private final class ConsoleSink: @unchecked Sendable {
         if refreshPending { return false }
         refreshPending = true
         return true
+    }
+
+    /// Le mode des flèches que l'invité a demandé, lu sous le verrou : la
+    /// grille est écrite par le fil d'émulation.
+    var applicationCursorKeys: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return console.applicationCursorKeys
     }
 
     func takeText() -> String {
