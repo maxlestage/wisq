@@ -300,6 +300,15 @@ extension X86Core {
         } else {
             devices.primary.request &= ~disk
         }
+        // Le second disque, sur sa propre ligne et selon la même règle.
+        if let second = memory?.bus?.second {
+            let line: UInt8 = 1 << second.interruptLine
+            if second.storage?.interrupting == true {
+                devices.primary.request |= line
+            } else {
+                devices.primary.request &= ~line
+            }
+        }
         guard flags & Flag.interrupt != 0 else { return }
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
@@ -329,5 +338,6 @@ extension X86Core {
     var devicesArmed: Bool {
         devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0
             || memory?.storage?.interrupting == true
+            || memory?.bus?.second?.storage?.interrupting == true
     }
 }

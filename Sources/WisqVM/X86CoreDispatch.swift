@@ -950,10 +950,9 @@ extension X86Core {
             }
 
         default:
-            // La fenêtre de ports du disque, là où le noyau l'a placée.
-            if let bus = memory?.bus, let device = bus.storage,
-               let at = bus.windowOffset(port), let memory {
-                device.writePort(at, size, value, memory)
+            // La fenêtre de ports d'un disque, là où le noyau l'a placée.
+            if let found = memory?.bus?.device(atPort: port), let memory {
+                found.device.writePort(found.offset, size, value, memory)
             }
         }
     }
@@ -964,11 +963,10 @@ extension X86Core {
             return UInt64(serialRead(port &- Self.serialBase))
         case X86PCIHost.addressPort:
             return UInt64(memory?.bus?.address ?? 0)
-        // La fenêtre de ports du disque, là où le noyau l'a placée.
-        case let window where memory?.bus?.windowOffset(window) != nil:
-            guard let bus = memory?.bus, let device = bus.storage,
-                  let at = bus.windowOffset(window) else { return 0 }
-            return device.readPort(at, size)
+        // La fenêtre de ports d'un disque, là où le noyau l'a placée.
+        case let window where memory?.bus?.device(atPort: window) != nil:
+            guard let found = memory?.bus?.device(atPort: window) else { return 0 }
+            return found.device.readPort(found.offset, size)
         case X86PCIHost.dataPort...(X86PCIHost.dataPort &+ 3):
             guard let bus = memory?.bus else { return 0xFFFF_FFFF }
             let word = bus.configuration()

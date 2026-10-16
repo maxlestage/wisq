@@ -300,9 +300,14 @@ struct LocalVMListView: View {
                             storage = KernelLibrary.storageReport()
                         }
                     }
-                    if kinds[image]?.couldBootHere == true {
+                    // Une image d'installation est déjà `/dev/vda` : le disque
+                    // choisi pour une machine qui la démarre arrive en second,
+                    // et le menu le dit.
+                    if InstalledMachines.canInstall(kinds[image] ?? .unknown) {
                         KernelDiskMenu(
                             kernel: image, library: kernels, chosen: disks[machine.key],
+                            title: Self.isInstallationImage(kinds[image])
+                                ? "Disque d'installation (vdb)" : "Disque",
                             createBlank: { size in createBlankDisk(for: machine, bytes: size) }
                         ) { chosen in
                             attach(chosen, key: machine.key)
@@ -497,6 +502,9 @@ private struct KernelDiskMenu: View {
     let kernel: URL
     let library: [URL]
     let chosen: String?
+    /// Le nom du réglage : « Disque », ou « Disque d'installation (vdb) »
+    /// pour une machine qui démarre une image.
+    var title = "Disque"
     /// Créer un disque vierge et le brancher — offert aux seules machines
     /// installées, parce que c'est à elles que le disque appartient.
     var createBlank: ((UInt64) -> Void)?
@@ -518,8 +526,7 @@ private struct KernelDiskMenu: View {
                 Button(disk.lastPathComponent) { choose(disk.lastPathComponent) }
             }
         } label: {
-            Label(chosen.map { "Disque : \($0)" } ?? "Disque : aucun",
-                  systemImage: "externaldrive")
+            Label("\(title) : \(chosen ?? "aucun")", systemImage: "externaldrive")
                 .font(.footnote)
         }
         // Un fichier choisi puis disparu autrement que par la corbeille de
@@ -671,6 +678,13 @@ extension LocalVMListView {
                 leur instantané.
                 """
         }
+    }
+
+    /// Une image d'installation : son noyau est dedans, et elle est elle-même
+    /// le premier disque de la machine.
+    static func isInstallationImage(_ kind: KernelImageKind?) -> Bool {
+        if case .discImage? = kind { return true }
+        return false
     }
 
     /// Ce que la suppression d'une image a emporté avec elle.
