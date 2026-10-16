@@ -8,6 +8,23 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — la console locale reçoit ses touches
+
+« Travailler confortablement » était la moitié de la demande, et la console
+locale n'offrait que « Entrée » et `^C`. Sans tabulation, pas de complétion ;
+sans flèches, pas d'historique ; sans Échap ni Ctrl, pas d'éditeur.
+
+**Une barre de touches**, au-dessus de la ligne de commande : Échap, Tab, les
+quatre flèches, `^C ^D ^Z ^R ^L ^A ^E ^U ^W`, début, fin, pages et suppr.
+Ce qu'elles envoient est décidé dans `TerminalKey` (WisqVM), sous des tests :
+une séquence fausse d'un octet ne se voit qu'à l'usage.
+
+**Deux détails qui font la différence à l'usage.** Le texte en cours de
+saisie part *avant* la touche, sans retour à la ligne : une tabulation après
+`ls /us` complète `/us` au lieu d'une ligne vide. Et les flèches suivent le
+mode que le programme a demandé — `TerminalGrid` retient maintenant DECCKM
+(`ESC [ ? 1 h`), et en mode application une flèche s'écrit `ESC O A` : c'est
+ce que `vi` et `less` attendent.
 ## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
 
 Deuxième tranche de la même demande, et Maxime a dit oui aux PR, une par
