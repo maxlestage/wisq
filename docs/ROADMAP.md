@@ -343,7 +343,12 @@ iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
    image d'installation a l'image sur `vda` et son disque choisi — vierge le
    plus souvent — sur `vdb`. L'instantané l'écrit derrière une marque, après
    le premier : les machines déjà sauvées se relisent sans lui.
-3. Dupliquer une machine (session comprise), et l'exporter.
+3. Dupliquer une machine (session comprise) — voir sa propre tranche.
+4. **Fait.** Exporter une machine hors du téléphone et l'importer sur un autre
+   (`MachineArchive`, fichier `.wisqmachine`) : réglages, couches d'écriture et
+   sessions, sans l'image — l'import la demande par son nom et refuse en la
+   nommant si elle manque. Le disque vierge propre n'est pas porté, il est
+   recréé à sa taille. Tout ou rien : une archive tronquée n'importe rien.
 
 ## Lot 5 — SPICE (fait)
 
