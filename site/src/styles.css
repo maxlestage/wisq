@@ -861,12 +861,10 @@ pre code { white-space: pre; }
 }
 .footer-groups a:hover { color: var(--accent); }
 
-/* La signature : un sceau qui tourne autour des initiales, le nom en grand dans
-   le dégradé de la marque, et d'où il vient. Centrée, entre les colonnes et la
-   barre du bas, avec un halo derrière le sceau pour lui donner un centre. */
+/* La signature : le nom en grand, centré entre les colonnes et la barre du bas.
+   Le prénom et le nom dans le dégradé de la marque, le reste dans la couleur
+   du texte. */
 .signature {
-  position: relative;
-  isolation: isolate;
   display: grid;
   justify-items: center;
   margin-top: 48px;
@@ -874,60 +872,6 @@ pre code { white-space: pre; }
   border-top: 1px solid var(--line);
   text-align: center;
 }
-.signature::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  top: 8px;
-  left: 50%;
-  width: min(460px, 90%);
-  aspect-ratio: 1;
-  translate: -50% 0;
-  background: radial-gradient(closest-side, var(--accent-soft), transparent);
-  pointer-events: none;
-}
-
-.sceau {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: clamp(128px, 15vw, 160px);
-  aspect-ratio: 1;
-  margin-bottom: 22px;
-  container-type: inline-size;
-}
-.sceau-anneau {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-.sceau-piste { fill: none; stroke: var(--line); stroke-width: 0.9; }
-.sceau-piste-dedans { stroke-dasharray: 1.5 4; }
-.sceau-texte {
-  font-family: var(--mono);
-  /* Assez petit pour que la phrase la plus longue, en chasse fixe, tienne dans
-     la circonférence : au-delà, `textLength` resserre les lettres au lieu de
-     les espacer, et elles se touchent. */
-  font-size: 9.4px;
-  font-weight: 600;
-  fill: var(--fg-soft);
-}
-/* Les initiales tiennent dans le cercle pointillé quelle que soit la largeur :
-   elles sont mesurées sur le sceau lui-même. */
-.sceau-initiales {
-  font-weight: 800;
-  font-size: 20px;
-  font-size: 15cqw;
-  font-variation-settings: "wdth" 125;
-  letter-spacing: -0.02em;
-  background: var(--degrade);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
 .signature-par {
   margin: 0 0 14px;
   font-family: var(--mono);
@@ -936,10 +880,6 @@ pre code { white-space: pre; }
   text-transform: uppercase;
   color: var(--fg-soft);
 }
-
-/* Le nom : le texte de la page dans sa couleur, et une lumière dans le dégradé
-   de la marque qui le traverse de temps en temps. Au repos, la lumière est hors
-   du texte — sans animation, le nom se lit simplement. */
 .signature-nom {
   margin: 0;
   font-weight: 800;
@@ -949,33 +889,15 @@ pre code { white-space: pre; }
   letter-spacing: -0.035em;
   text-wrap: balance;
 }
-.signature-nom a {
-  text-decoration: none;
-  background: linear-gradient(100deg, var(--fg) 0 38%, #a8a2ff 46%, #6f64ff 50%, #a8a2ff 54%, var(--fg) 62% 100%)
-    100% 0 / 300% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
+.signature-nom a { color: var(--fg); text-decoration: none; }
 .signature-nom a:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
-
-.signature-fabrique { margin: 18px 0 0; font-size: 1.02rem; color: var(--fg-soft); }
-/* Chaque langage dans la couleur de son logo, et le pays sous son drapeau. */
-.fabrique-swift, .fabrique-rust {
-  font-weight: 650;
+.signature-couleur {
+  background: var(--degrade);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
-.fabrique-swift { background-image: linear-gradient(135deg, #fa7343, #f05138 60%, #e0322a); }
-.fabrique-rust { background-image: linear-gradient(135deg, #ffb27a, #f74c00 55%, #ce422b); }
-.fabrique-france {
-  color: var(--fg);
-  font-weight: 650;
-  padding-bottom: 3px;
-  background: linear-gradient(90deg, #0055a4 0 33.4%, #d9d9e3 33.4% 66.6%, #ef4135 66.6%)
-    no-repeat left bottom / 100% 2px;
-}
+.signature-fabrique { margin: 18px 0 0; font-size: 1.02rem; color: var(--fg-soft); }
 
 .footer-bottom {
   margin-top: 36px;
@@ -1778,19 +1700,6 @@ html.rideau body::before {
   transition: transform 0.35s var(--ease);
 }
 [data-motion] .site-nav a:is(:hover, [aria-current="page"])::after { transform: none; }
-
-/* Le sceau tourne, plus vite sous le doigt ; la lumière traverse le nom une fois
-   toutes les neuf secondes, vite, et le reste du temps le nom est immobile. */
-[data-motion] .sceau-anneau { animation: wisq-sceau 40s linear infinite; }
-[data-motion] .sceau:hover .sceau-anneau { animation-duration: 10s; }
-[data-motion] .sceau-initiales { transition: scale 0.7s var(--rebond), rotate 0.7s var(--rebond); }
-[data-motion] .sceau:hover .sceau-initiales { scale: 1.12; rotate: -6deg; }
-[data-motion] .signature-nom a { animation: wisq-lumiere 9s var(--ease) 1s infinite; }
-@keyframes wisq-sceau { to { rotate: 360deg; } }
-@keyframes wisq-lumiere {
-  0% { background-position: 100% 0; }
-  22%, 100% { background-position: 0% 0; }
-}
 
 /* Le nom géant du pied monte lettre après lettre, et la marque du pied flotte. */
 [data-motion] .pied-geant > [data-reveal]:not([data-revealed]) { transform: translateY(70%); }
