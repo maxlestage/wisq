@@ -352,6 +352,37 @@ final class LocalVMModelTests: XCTestCase {
         )
     }
 
+    /// **Deux machines installées sur le même noyau, deux sessions.** Le cas
+    /// que `InstalledMachine` existe pour servir : sans clés à elles, reprendre
+    /// l'une aurait rendu l'autre — même fichier, mêmes octets, même
+    /// empreinte. Et le fichier démarré tel quel ne reprend ni l'une ni
+    /// l'autre.
+    @MainActor
+    func testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions() throws {
+        let work = try InstalledMachines.install(image: "Image", name: "Travail", in: folder)
+        let play = try InstalledMachines.install(image: "Image", name: "Essai", in: folder)
+
+        let first = model()
+        first.boot(kernelURL: kernel, installed: work)
+        waitUntil("l'invité doit avoir écrit quelque chose") { !first.consoleText.isEmpty }
+        first.suspend()
+        XCTAssertNotNil(SuspendedMachine.load(kernel: identity(named: work.key), in: folder),
+                        "la session est rangée sous la clé de la machine")
+        XCTAssertNil(savedMachine, "et pas sous le nom du fichier")
+
+        let second = model()
+        second.boot(kernelURL: kernel, installed: play)
+        XCTAssertFalse(second.willResume, "l'autre machine du même noyau ne reprend rien")
+        second.stop()
+
+        let third = model()
+        third.boot(kernelURL: kernel, installed: work)
+        XCTAssertTrue(third.willResume, "la première retrouve la sienne")
+        XCTAssertNotNil(InstalledMachines.machine(id: work.id, in: folder)?.lastStartedAt,
+                        "le démarrage est noté, c'est ce qui range la liste")
+        third.stop()
+    }
+
     /// `Image` is what almost every kernel is called. Importing a second one
     /// under that name must not hand it the first one's session — the guest
     /// would resume into a kernel that never ran it.

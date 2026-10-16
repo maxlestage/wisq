@@ -8,6 +8,47 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — plusieurs machines Linux sur le même téléphone
+
+Maxime : « Wisq doit être capable de lire une image Linux, redémarrer une
+session et permettre aux utilisateurs de travailler confortablement ; il faut
+pouvoir installer sur wisq différentes machines Linux. » Et : construire
+l'application toutes les trois heures avec de nouvelles choses. Ce qui suit
+est la première de ces tranches ; les suivantes s'écrivent sous celle-ci.
+
+**Ce qui manquait n'était pas la lecture d'image ni la reprise** — `IsoBoot`
+et `SuspendedMachine` les font déjà. C'était la notion de *machine* : tout
+était rangé sous le nom du fichier, donc une image valait une machine.
+
+**La forme choisie ne déplace rien.** Les trois magasins prennent une clé ;
+une machine installée leur donne la sienne (`installee-<douze hex>`). Un
+fichier démarré tel quel garde ses clés, et c'est un test qui le dit plutôt
+qu'une intention.
+
+**L'ORM n'a pas été employé, et c'est une décision.** Le catalogue est une
+liste de quelques machines dans un fichier JSON écrit atomiquement, à côté des
+trois autres fichiers JSON que la VM locale tient déjà de la même façon.
+`memoire-orm` est en Rust, l'application en Swift : il faudrait une couture
+C de plus pour lire une liste qu'un `JSONDecoder` lit. L'agent hôte, lui,
+garde un budget de dépendances réservé à la cryptographie. Si un jour
+l'agent tient un catalogue de machines côté hôte, la question se reposera là.
+
+**Le défaut trouvé avant d'exister.** Le relevé de stockage appelle « reste »
+toute session qu'aucun fichier de la bibliothèque ne réclame, et propose de
+la reprendre. Une clé de machine ne désigne aucun fichier : sans correction,
+le bouton aurait effacé la session de chaque machine installée. Le relevé
+reçoit maintenant la liste des machines, et le test le montre dans les deux
+sens — aveugle, il se trompe ; informé, il ne se trompe plus.
+
+**Trois sabotages, trois chutes :** le relevé qui oublie de réclamer les
+sessions installées ; l'effacement par préfixe sans sa garde du préfixe vide
+(qui aurait jeté les couches de tout le monde) ; le retrait d'une machine qui
+oublie sa session.
+
+**Ce que ça ne montre pas.** L'interface (`LocalVMView`) est `#if os(iOS)` et
+ne se compile pas ici : c'est la CI d'Apple qui la juge. Le compte de tests
+publié passe de 2632 à 2648.
+
 ## 2026-09-08 — du mouvement sur le site, sans qu'il devienne porteur
 
 Maxime : « je veux des animations js sur toutes les pages ». Deux contraintes
