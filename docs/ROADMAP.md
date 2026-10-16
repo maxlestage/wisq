@@ -306,6 +306,36 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
+## Plusieurs machines installées (tranche 1 faite)
+
+Une machine locale *était* un fichier de la bibliothèque : mémoire, disque,
+couche d'écriture et session suspendue étaient tous rangés sous le nom de
+l'image. Deux Alpine depuis le même ISO — une pour essayer, une pour
+travailler — se seraient partagé leurs écritures et leur session.
+
+`InstalledMachine` (WisqVM) donne à chaque machine un nom et une clé à elle,
+et **aucun des magasins existants n'a changé** : `KernelMemory`, `LocalDisk`
+et `SuspendedMachine` prenaient déjà une clé, qui était le nom du fichier
+faute d'autre chose. Un fichier démarré tel quel garde exactement ses clés
+d'avant (`MachineKeys.image`), donc rien de ce qui est sur les téléphones ne
+change de place.
+
+Ce qui est tenu par la CI Linux (`InstalledMachineTests`) : deux machines sur
+une image ne partagent ni mémoire, ni disque, ni session ; retirer l'une
+emporte tout ce qu'elle retenait et rien de sa voisine ; un catalogue
+illisible n'est jamais réécrit ; et — le défaut qu'il fallait voir avant de
+l'écrire — **la session d'une machine installée n'est pas prise pour un reste**
+par le relevé de stockage, dont le bouton « reprendre » l'aurait effacée. Côté
+iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
+
+**La suite, dans l'ordre :**
+
+1. Un disque vierge par machine, créé dans l'application (fichier épars de la
+   taille choisie) : c'est ce qui permet d'*installer* une distribution depuis
+   son ISO plutôt que de la faire vivre sur la couche d'écriture de l'image.
+2. Un second périphérique bloc, pour avoir l'ISO et ce disque en même temps.
+3. Dupliquer une machine (session comprise), et l'exporter.
+
 ## Lot 5 — SPICE (fait)
 
 *Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
