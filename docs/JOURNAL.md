@@ -8,30 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-10-16 — la signature du pied devient un sceau
+## 2026-10-16 — la signature du pied, en grand, et en couleur sur le nom
 
-Maxime : un pied plus stylé, sur wisq seulement, dans l'esprit d'un sceau
-animé. La ligne « Conçu et développé par … » auprès du mot-symbole devient un
-bloc centré entre les colonnes et la barre du bas : un sceau qui tourne
-lentement autour des initiales, avec la signature écrite sur l'anneau ; le
-nom en grand, qu'une lumière dans le dégradé de la marque traverse une fois
-toutes les neuf secondes ; et d'où il vient.
+Maxime : un pied plus stylé, sur wisq seulement. Un premier jet posait un
+sceau animé autour des initiales ; il n'en voulait pas — la couleur sur le
+prénom et le nom, rien de plus.
 
-**La phrase dit vrai** : « Fabriqué en Swift et en Rust, en France ».
-L'application et le client distant sont en Swift, l'agent, le cœur et ce site
-en Rust — n'en nommer qu'un serait une affirmation que le dépôt dément.
+La ligne « Conçu et développé par … » auprès du mot-symbole devient un bloc
+centré entre les colonnes et la barre du bas : la mention en capitales
+espacées, le nom en grand avec **Maxime** et **Lestage** dans le dégradé de la
+marque et le second prénom dans la couleur du texte, puis « Fabriqué en Swift
+et en Rust, en France » — Swift et Rust parce que c'est vrai, l'application et
+le client distant étant en Swift, l'agent, le cœur et ce site en Rust.
 
-**Ce qui n'a pas bougé** : le nom reste **un** lien d'un seul tenant, que la
-garde « every page says who made it » cherche ; le crédit au travail d'autrui
-reste dans la barre du bas ; tout le mouvement est sous `[data-motion]`, que
-le script ne pose pas quand on a demandé moins d'animation, et sans script le
-sceau est simplement immobile. Pas un octet de JavaScript en plus.
-
-Le texte de l'anneau suit le cercle par `textPath`, et `textLength` vaut la
-circonférence : la phrase le referme exactement, dans les deux langues. Le
-premier essai, à 10,5 px, était trop long pour l'anglais comme pour le
-français et `textLength` resserrait les lettres jusqu'à les faire se toucher —
-vu sur la capture, d'où 9,4 px.
+**La garde a bougé, pas ce qu'elle tient.** « every page says who made it »
+cherchait `>Maxime Nathan Lestage</a>` mot pour mot ; colorer deux mots met
+des balises dans le lien. Elle lit maintenant le texte du lien d'auteur sans
+ses balises, et exige toujours qu'il nomme exactement la même personne. Le
+crédit au travail d'autrui reste dans la barre du bas. Pas d'animation, et pas
+un octet de JavaScript en plus.
 
 ## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
 

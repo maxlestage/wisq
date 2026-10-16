@@ -211,21 +211,21 @@ fn Footer(props: &FooterProps) -> Html {
                 </nav>
             </div>
 
-            // **La signature.** Un sceau qui tourne lentement autour des
-            // initiales, le nom en grand, et d'où il vient. Le crédit au travail
-            // d'autrui reste dans la barre du bas et n'est pas touché par ceci :
-            // une ligne qui dit ce qui est à moi ne doit jamais se lire comme
-            // une revendication sur ce qui ne l'est pas.
+            // **La signature.** Le nom en grand, et d'où il vient. La couleur
+            // ne tombe que sur le prénom et le nom, le second prénom restant
+            // dans la couleur du texte. Le crédit au travail d'autrui reste dans
+            // la barre du bas et n'est pas touché par ceci : une ligne qui dit
+            // ce qui est à moi ne doit jamais se lire comme une revendication
+            // sur ce qui ne l'est pas.
             <div class="wrap signature">
-                { sceau(copy.footer.author, copy.footer.crafted) }
                 <p class="signature-par">{ copy.footer.author }</p>
-                // Le nom est **un** lien d'un seul tenant : c'est lui que la
-                // garde « every page says who made it » cherche, et un nom coupé
-                // en boîtes ne se lirait plus d'un trait.
+                // Le nom est **un** lien : c'est lui que la garde « every page
+                // says who made it » cherche, et elle lit son texte sans les
+                // balises qui colorent deux de ses mots.
                 <p class="signature-nom">
-                    <a href={AUTHOR_URL} rel="author">{ AUTHOR }</a>
+                    <a href={AUTHOR_URL} rel="author">{ nom_en_couleur() }</a>
                 </p>
-                { fabrique(copy.footer.crafted) }
+                <p class="signature-fabrique">{ copy.footer.crafted }</p>
             </div>
 
             <div class="wrap footer-bottom">
@@ -267,65 +267,22 @@ pub(crate) fn bande(mots: &'static [&'static str]) -> Html {
     }
 }
 
-/// **Le sceau** : la signature écrite autour d'un cercle qui tourne lentement,
-/// les initiales au milieu. Décoratif — les mêmes mots sont juste dessous, en
-/// texte qu'on lit —, donc caché aux lecteurs d'écran.
-///
-/// `textLength` est la circonférence du cercle que le texte suit : quelle que
-/// soit la langue, la phrase referme l'anneau exactement au lieu de s'arrêter
-/// court ou de chevaucher son propre début. Des espaces insécables autour des
-/// puces : SVG replie les blancs ordinaires au bout d'un texte, et l'écart où la
-/// phrase rejoint son début disparaîtrait.
-fn sceau(par: &str, fabrique: &str) -> Html {
-    const RAYON: f64 = 78.0;
-    let anneau = format!("{par} {AUTHOR}\u{a0}•\u{a0}{fabrique}\u{a0}•\u{a0}").to_uppercase();
-    let initiales: String = AUTHOR
-        .split(' ')
-        .filter_map(|mot| mot.chars().next())
-        .collect();
-    let cercle = format!(
-        "M100 100m-{RAYON} 0a{RAYON} {RAYON} 0 1 1 {d} 0a{RAYON} {RAYON} 0 1 1 -{d} 0",
-        d = 2.0 * RAYON
-    );
-    let longueur = format!("{:.1}", 2.0 * std::f64::consts::PI * RAYON);
+/// Le nom de l'auteur, le prénom et le nom de famille en couleur, ce qui est
+/// entre les deux dans la couleur du texte. Les espaces restent du texte nu :
+/// le contenu du lien se lit toujours « Maxime Nathan Lestage ».
+fn nom_en_couleur() -> Html {
+    let mots: Vec<&str> = AUTHOR.split(' ').collect();
+    let dernier = mots.len().saturating_sub(1);
     html! {
-        <div class="sceau" aria-hidden="true">
-            <svg class="sceau-anneau" viewBox="0 0 200 200">
-                <defs><path id="sceau-cercle" d={cercle} /></defs>
-                <circle class="sceau-piste" cx="100" cy="100" r="96" />
-                <circle class="sceau-piste sceau-piste-dedans" cx="100" cy="100" r="62" />
-                <text class="sceau-texte">
-                    <textPath href="#sceau-cercle" textLength={longueur} lengthAdjust="spacing">
-                        { anneau }
-                    </textPath>
-                </text>
-            </svg>
-            <span class="sceau-initiales">{ initiales }</span>
-        </div>
+        <>
+            { for mots.iter().enumerate().map(|(i, mot)| {
+                let espace = if i > 0 { " " } else { "" };
+                if i == 0 || i == dernier {
+                    html! { <>{ espace }<span class="signature-couleur">{ *mot }</span></> }
+                } else {
+                    html! { <>{ espace }{ *mot }</> }
+                }
+            }) }
+        </>
     }
-}
-
-/// « Fabriqué en Swift et en Rust, en France », avec les mots qui portent la
-/// phrase mis en avant : chaque langage dans la couleur de son logo, le pays
-/// souligné de son drapeau. Reconnus mot par mot, pour que chaque langue garde
-/// sa phrase.
-fn fabrique(phrase: &str) -> Html {
-    let mots = phrase.split(' ').enumerate().map(|(i, mot)| {
-        let nu = mot.trim_end_matches([',', '.']);
-        let reste = mot[nu.len()..].to_owned();
-        let espace = if i > 0 { " " } else { "" };
-        let classe = match nu {
-            "Swift" => Some("fabrique-swift"),
-            "Rust" => Some("fabrique-rust"),
-            "France" => Some("fabrique-france"),
-            _ => None,
-        };
-        match classe {
-            Some(classe) => {
-                html! { <>{ espace }<span class={classe}>{ nu.to_owned() }</span>{ reste }</> }
-            }
-            None => html! { <>{ espace }{ mot.to_owned() }</> },
-        }
-    });
-    html! { <p class="signature-fabrique">{ for mots }</p> }
 }
