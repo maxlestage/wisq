@@ -879,7 +879,58 @@ public enum KernelLibrary {
         // veulent plus rien dire.
         LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
-        return InstalledMachines.removeAll(usingImage: name)
+        // Le fichier pouvait être le disque propre d'une machine : elle reste,
+        // sans disque à emporter.
+        InstalledMachines.forgetOwnDisk(named: name)
+        let leaving = InstalledMachines.removeAll(usingImage: name)
+        for machine in leaving {
+            if let own = machine.ownDisk, let folder = try? directory() {
+                delete(folder.appendingPathComponent(own))
+            }
+        }
+        return leaving.map(\.name)
+    }
+
+    /// Retire une machine installée, et le disque vierge créé pour elle.
+    ///
+    /// Le disque propre part parce que ce qui le remplissait part aussi : ses
+    /// octets vivent dans la couche d'écriture de la machine, que le retrait
+    /// efface. La base qui resterait ne contiendrait que des zéros. Un disque
+    /// **importé** et choisi pour la machine, lui, reste : il n'est pas à elle.
+    public static func removeMachine(_ machine: InstalledMachine) throws {
+        let removed = try InstalledMachines.remove(id: machine.id)
+        if let own = removed.ownDisk {
+            delete(try directory().appendingPathComponent(own))
+        }
+    }
+
+    /// Crée un disque vierge pour cette machine, le lui branche, et rend son
+    /// nom.
+    ///
+    /// Comme tout changement de disque, les sessions suspendues de la machine
+    /// partent : leur instantané décrit une machine qui avait un autre disque
+    /// sous `/dev/vda`. Un ancien disque propre qu'elle remplace part aussi.
+    @discardableResult
+    public static func createBlankDisk(
+        for machine: InstalledMachine, bytes size: UInt64
+    ) throws -> String {
+        let folder = try directory()
+        let name = BlankDisk.fileName(
+            forMachine: machine.name, among: list().map(\.lastPathComponent))
+        try BlankDisk.create(at: folder.appendingPathComponent(name), bytes: size)
+        let previous = InstalledMachines.machine(id: machine.id)?.ownDisk
+        do {
+            try InstalledMachines.setOwnDisk(name, id: machine.id)
+        } catch {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+            throw error
+        }
+        LocalDisk.attach(name, forKernel: machine.key)
+        SuspendedMachine.clearAll(named: machine.key)
+        if let previous {
+            delete(folder.appendingPathComponent(previous))
+        }
+        return name
     }
 }
 #endif
