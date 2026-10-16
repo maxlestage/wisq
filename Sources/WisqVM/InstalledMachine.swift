@@ -34,14 +34,23 @@ public struct InstalledMachine: Codable, Equatable, Identifiable, Sendable {
     /// Le dernier démarrage ou la dernière reprise. `nil` pour une machine
     /// jamais lancée.
     public var lastStartedAt: Date?
+    /// Le disque vierge créé **pour** cette machine, s'il y en a un — un
+    /// fichier de la bibliothèque qui part avec elle.
+    ///
+    /// Retenu ici, et pas déduit du nom du fichier : un disque importé que la
+    /// personne a choisi n'appartient qu'à elle, et le supprimer avec la
+    /// machine serait effacer un fichier qu'elle a apporté. Absent des
+    /// catalogues écrits avant, donc `nil` au décodage.
+    public var ownDisk: String?
 
     public init(id: String, name: String, image: String, installedAt: Date,
-                lastStartedAt: Date? = nil) {
+                lastStartedAt: Date? = nil, ownDisk: String? = nil) {
         self.id = id
         self.name = name
         self.image = image
         self.installedAt = installedAt
         self.lastStartedAt = lastStartedAt
+        self.ownDisk = ownDisk
     }
 
     /// La clé sous laquelle cette machine range ses réglages, sa session et
@@ -196,6 +205,9 @@ public enum InstalledMachines {
     /// choisi, ses couches d'écriture et ses sessions suspendues. L'image, elle,
     /// reste dans la bibliothèque — d'autres machines peuvent la démarrer, et
     /// c'est à la personne de décider si le fichier part.
+    ///
+    /// La machine rendue porte `ownDisk` : c'est à l'appelant, qui connaît la
+    /// bibliothèque, d'effacer ce fichier-là.
     @discardableResult
     public static func remove(id: String, in directory: URL? = nil) throws -> InstalledMachine {
         var machines = try loadForWriting(in: directory)
@@ -208,21 +220,48 @@ public enum InstalledMachines {
         return machine
     }
 
+    /// Retient le disque vierge créé pour cette machine.
+    public static func setOwnDisk(_ disk: String?, id: String, in directory: URL? = nil) throws {
+        var machines = try loadForWriting(in: directory)
+        guard let index = machines.firstIndex(where: { $0.id == id }) else {
+            throw Refusal.unknown(id)
+        }
+        machines[index].ownDisk = disk
+        try write(machines, in: directory)
+    }
+
+    /// Oublie ce fichier comme disque propre d'une machine — pour un fichier
+    /// supprimé de la bibliothèque par la personne. La machine reste ; elle
+    /// n'a simplement plus de disque à emporter.
+    public static func forgetOwnDisk(named disk: String, in directory: URL? = nil) {
+        guard var machines = try? loadForWriting(in: directory),
+              machines.contains(where: { $0.ownDisk == disk })
+        else { return }
+        for index in machines.indices where machines[index].ownDisk == disk {
+            machines[index].ownDisk = nil
+        }
+        try? write(machines, in: directory)
+    }
+
     /// Retire toutes les machines qui démarrent cette image — pour une image
-    /// supprimée de la bibliothèque. Rend leurs noms, pour le dire.
+    /// supprimée de la bibliothèque. Les rend, pour le dire et pour que
+    /// l'appelant emporte leurs disques propres, qui vivent dans la
+    /// bibliothèque que ce type ne voit pas.
     ///
     /// Une machine sans son image ne démarre plus, et ses couches d'écriture
     /// sont des secteurs posés sur une base qui n'existe plus : les garder
     /// serait garder des octets que personne ne pourra relire.
     @discardableResult
-    public static func removeAll(usingImage image: String, in directory: URL? = nil) -> [String] {
+    public static func removeAll(
+        usingImage image: String, in directory: URL? = nil
+    ) -> [InstalledMachine] {
         guard var machines = try? loadForWriting(in: directory) else { return [] }
         let leaving = machines.filter { $0.image == image }
         guard !leaving.isEmpty else { return [] }
         machines.removeAll { $0.image == image }
         guard (try? write(machines, in: directory)) != nil else { return [] }
         for machine in leaving { forgetEverything(of: machine, in: directory) }
-        return leaving.map(\.name)
+        return leaving
     }
 
     /// Les clés de toutes les machines installées — ce que le relevé de

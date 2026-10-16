@@ -302,7 +302,8 @@ struct LocalVMListView: View {
                     }
                     if kinds[image]?.couldBootHere == true {
                         KernelDiskMenu(
-                            kernel: image, library: kernels, chosen: disks[machine.key]
+                            kernel: image, library: kernels, chosen: disks[machine.key],
+                            createBlank: { size in createBlankDisk(for: machine, bytes: size) }
                         ) { chosen in
                             attach(chosen, key: machine.key)
                         }
@@ -317,7 +318,7 @@ struct LocalVMListView: View {
             }
             .onDelete { positions in
                 for machine in positions.map({ installed[$0] }) {
-                    _ = try? InstalledMachines.remove(id: machine.id)
+                    try? KernelLibrary.removeMachine(machine)
                 }
                 reloadLibrary()
                 note = nil
@@ -326,7 +327,7 @@ struct LocalVMListView: View {
         } header: {
             Text("Machines installées")
         } footer: {
-            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Appui long pour renommer ; la supprimer efface sa session et ses écritures, pas l'image.")
+            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
         }
     }
 
@@ -348,6 +349,20 @@ struct LocalVMListView: View {
             importError = nil
             note = Note(text: "« \(machine.name) » est installée. Touchez-la pour la démarrer.",
                         symbol: "plus.square.on.square")
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func createBlankDisk(for machine: InstalledMachine, bytes size: UInt64) {
+        do {
+            let name = try KernelLibrary.createBlankDisk(for: machine, bytes: size)
+            reloadLibrary()
+            importError = nil
+            note = Note(
+                text: "Disque vierge \(name) (\(KernelMemory.describe(size))) branché sur « \(machine.name) ». Il apparaîtra vide sur /dev/vda.",
+                symbol: "externaldrive.badge.plus")
+            storage = KernelLibrary.storageReport()
         } catch {
             importError = error.localizedDescription
         }
@@ -482,12 +497,22 @@ private struct KernelDiskMenu: View {
     let kernel: URL
     let library: [URL]
     let chosen: String?
+    /// Créer un disque vierge et le brancher — offert aux seules machines
+    /// installées, parce que c'est à elles que le disque appartient.
+    var createBlank: ((UInt64) -> Void)?
     let choose: (String?) -> Void
 
     var body: some View {
         let candidates = LocalDisk.candidates(
             among: library, kernel: kernel.lastPathComponent)
         Menu {
+            if let createBlank {
+                Menu("Nouveau disque vierge") {
+                    ForEach(BlankDisk.sizes, id: \.self) { size in
+                        Button(KernelMemory.describe(size)) { createBlank(size) }
+                    }
+                }
+            }
             Button("Aucun") { choose(nil) }
             ForEach(candidates, id: \.self) { disk in
                 Button(disk.lastPathComponent) { choose(disk.lastPathComponent) }
