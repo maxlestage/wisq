@@ -209,9 +209,38 @@ final class InstalledMachineTests: XCTestCase {
         try InstalledMachines.install(image: iso, name: "B", in: folder)
         let other = try InstalledMachines.install(image: "Image", name: "C", in: folder)
 
-        XCTAssertEqual(InstalledMachines.removeAll(usingImage: iso, in: folder).sorted(), ["A", "B"])
+        XCTAssertEqual(InstalledMachines.removeAll(usingImage: iso, in: folder).map(\.name).sorted(),
+                       ["A", "B"])
         XCTAssertEqual(InstalledMachines.list(in: folder).map(\.id), [other.id])
         XCTAssertEqual(InstalledMachines.removeAll(usingImage: iso, in: folder), [])
+    }
+
+    /// Le disque propre d'une machine est retenu, rendu au retrait — c'est
+    /// l'appelant qui l'efface — et oublié si la personne supprime le fichier.
+    func testAnOwnDiskIsRememberedReturnedOnRemovalAndForgottenWithItsFile() throws {
+        let one = try InstalledMachines.install(image: iso, name: "Un", in: folder)
+        let two = try InstalledMachines.install(image: iso, name: "Deux", in: folder)
+        try InstalledMachines.setOwnDisk("Un-disque.img", id: one.id, in: folder)
+        try InstalledMachines.setOwnDisk("Deux-disque.img", id: two.id, in: folder)
+        XCTAssertEqual(InstalledMachines.machine(id: one.id, in: folder)?.ownDisk, "Un-disque.img")
+
+        InstalledMachines.forgetOwnDisk(named: "Deux-disque.img", in: folder)
+        XCTAssertNil(InstalledMachines.machine(id: two.id, in: folder)?.ownDisk)
+        XCTAssertNotNil(InstalledMachines.machine(id: two.id, in: folder), "la machine reste")
+
+        XCTAssertEqual(try InstalledMachines.remove(id: one.id, in: folder).ownDisk, "Un-disque.img")
+        XCTAssertThrowsError(try InstalledMachines.setOwnDisk("x", id: one.id, in: folder))
+    }
+
+    /// **Un catalogue écrit avant le disque propre se relit**, sans lui.
+    func testACatalogueWrittenBeforeOwnDisksStillReads() throws {
+        let earlier = """
+            {"machines":[{"id":"00000000000a","image":"Image","installedAt":"2026-10-16T11:00:00Z","name":"Vieille"}],"version":1}
+            """
+        try Data(earlier.utf8).write(to: folder.appendingPathComponent(InstalledMachines.fileName))
+        let machine = try XCTUnwrap(InstalledMachines.list(in: folder).first)
+        XCTAssertEqual(machine.name, "Vieille")
+        XCTAssertNil(machine.ownDisk)
     }
 
     /// **Un préfixe vide ne jette aucune couche** : ce serait celles de tout le
