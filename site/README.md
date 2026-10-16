@@ -1,7 +1,8 @@
 # The wisq site
 
-The front end is Rust: the pages are Yew components in `crates/wisq-site`,
-rendered to HTML at build time by that crate's `wisq-site-prerender` binary,
+The front end is Rust, **written with [Active](https://github.com/maxlestage/Active)**
+— the Rust front-end library by Maxime Nathan Lestage, wisq's author. The pages
+are Active views in `crates/wisq-site`, rendered to HTML at build time by that crate's `wisq-site-prerender` binary,
 and everything that happens in a browser after the first paint runs in the
 WebAssembly module the same crate compiles. This directory is what is left
 around it — the build, the server, the stylesheet and its font, the icons, and
@@ -10,9 +11,10 @@ cannot be anything else: two inline lines in the head that must run before the
 first paint (the stored theme, and whether to raise the curtain), the service
 worker, and the glue wasm-bindgen writes to start the module.
 
-**Islands, not the page.** Only two places on a page have state: the theme and
-language controls in the header, and the install prompt. Those two are
-hydrated, each on its own root (`data-ilot`); the rest — the prose, the landing
+**Islands, not the page.** Only a few places on a page have state: the theme and
+language controls in the header, the install prompt, and on `linux/` the
+terminal. Those are Active islands (`active::island`), each inside its own root
+(`data-ilot`), and `active::hydrate` takes them over; the rest — the prose, the landing
 page, the footer — is HTML the module never takes over. That is a measured
 choice: hydrating whole pages put every page's prose, in both languages, into
 the module (351 822 bytes, 148 277 gzipped) so that it could be compared with
@@ -22,9 +24,13 @@ build just wrote. A ceiling rather than a measurement, deliberately: the exact
 count differs between machines for a module that is perfectly well, and it
 grows with every behaviour added — which is how the figure this paragraph used
 to publish came to be fifteen kilobytes light. That test's own note carries the
-readings, machine by machine. The page is rendered without Yew's hydration
-markers and each island with them, so the boundary is visible in the published
-HTML.
+readings, machine by machine. Active writes hydration markers only inside an
+`<active-island>`, so the boundary is visible in the published HTML.
+
+**Linux in the browser.** The `linux/` page loads a second module — the same
+crate built with the `linux` feature — that carries `crates/wisq-vm`, the
+rv32ima machine the app ships, and a terminal island that drives it. Only that
+page loads it, so the shared module's ceiling does not move.
 
 **The motion follows zamocorp.com**, in Rust: a curtain once per session, an
 opening where the section pins and the ▚ mark gathers out of a cloud of dust as

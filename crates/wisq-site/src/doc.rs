@@ -9,7 +9,8 @@
 //! presque gratuite. Les pages qui arrivent n'auront que du contenu à ajouter,
 //! pas du code.
 
-use yew::prelude::*;
+use active::prelude::*;
+use active::Node;
 
 use crate::content::Lang;
 
@@ -108,91 +109,97 @@ pub fn slug(texte: &str) -> String {
     sortie
 }
 
-fn rendre(bloc: &Block) -> Html {
+fn rendre(bloc: &Block) -> Node {
     match bloc {
-        Block::P(texte) => html! { <p>{ *texte }</p> },
+        Block::P(texte) => p().text(*texte).into(),
 
         // Chaque section est adressable, pour qu'un lien vers le milieu du guide
         // arrive là où il le dit.
         Block::H2(texte) => {
             let id = slug(texte);
-            html! {
-                <h2 id={id.clone()}>
-                    <a class="anchor" href={format!("#{id}")} aria-label={*texte}>{ mots(texte) }</a>
-                </h2>
-            }
+            h2().id(id.clone())
+                .child(
+                    a().class("anchor")
+                        .href(format!("#{id}"))
+                        .attr("aria-label", *texte)
+                        .child(mots(texte)),
+                )
+                .into()
         }
 
-        Block::H3(texte) => html! { <h3 id={slug(texte)}>{ *texte }</h3> },
+        Block::H3(texte) => h3().id(slug(texte)).text(*texte).into(),
 
-        Block::Ul(items) => html! {
-            <ul class="doc-list">
-                { for items.iter().map(|i| html! { <li>{ *i }</li> }) }
-            </ul>
-        },
+        Block::Ul(items) => ul()
+            .class("doc-list")
+            .children(items.iter().map(|i| li().text(*i)))
+            .into(),
 
-        Block::Ol(items) => html! {
-            <ol class="doc-list doc-steps">
-                { for items.iter().map(|i| html! { <li>{ *i }</li> }) }
-            </ol>
-        },
+        Block::Ol(items) => ol()
+            .class("doc-list doc-steps")
+            .children(items.iter().map(|i| li().text(*i)))
+            .into(),
 
         // Le code arrive ligne par ligne, comme dans un terminal : chaque ligne
         // est sa propre boîte, avec son rang. Les fins de ligne restent de
         // vrais nœuds de texte **entre** les boîtes, donc ce qu'on sélectionne
         // et copie est le texte exact, et sans le module le bloc est le même
         // `pre` qu'avant.
-        Block::Code { code, caption } => html! {
-            <figure class="doc-code">
-                { caption.map(|c| html! { <figcaption>{ c }</figcaption> }).unwrap_or_default() }
-                <pre><code>{ lignes(code) }</code></pre>
-            </figure>
-        },
+        Block::Code { code, caption } => figure()
+            .class("doc-code")
+            .child(caption.map(|c| figcaption().text(c)))
+            .child(pre().child(el("code").child(lignes(code))))
+            .into(),
 
-        Block::Note { tone, text } => html! {
-            <aside class={format!("doc-note doc-note-{}", tone.slug())}>
-                <p>{ *text }</p>
-            </aside>
-        },
+        Block::Note { tone, text } => aside()
+            .class(format!("doc-note doc-note-{}", tone.slug()))
+            .child(p().text(*text))
+            .into(),
 
-        Block::Table { columns, rows } => html! {
-            <div class="table-scroll">
-                <table>
-                    <thead>
-                        <tr>
-                            { for columns.iter().map(|c| html! { <th scope="col">{ *c }</th> }) }
-                        </tr>
-                    </thead>
-                    <tbody>
-                        { for rows.iter().map(|ligne| html! {
-                            <tr>{ for ligne.iter().map(|cell| html! { <td>{ *cell }</td> }) }</tr>
-                        }) }
-                    </tbody>
-                </table>
-            </div>
-        },
+        Block::Table { columns, rows } => {
+            div()
+                .class("table-scroll")
+                .child(
+                    table()
+                        .child(thead().child(
+                            tr().children(
+                                columns.iter().map(|c| th().attr("scope", "col").text(*c)),
+                            ),
+                        ))
+                        .child(tbody().children(rows.iter().map(|ligne| {
+                            tr().children(ligne.iter().map(|cell| td().text(*cell)))
+                        }))),
+                )
+                .into()
+        }
 
-        Block::Dl(items) => html! {
-            <dl class="doc-dl">
-                { for items.iter().map(|i| html! {
-                    <div><dt>{ i.term }</dt><dd>{ i.detail }</dd></div>
-                }) }
-            </dl>
-        },
+        Block::Dl(items) => dl()
+            .class("doc-dl")
+            .children(
+                items
+                    .iter()
+                    .map(|i| div().child(dt().text(i.term)).child(dd().text(i.detail))),
+            )
+            .into(),
     }
 }
 
 /// Les lignes d'un bloc de code, chacune dans sa boîte.
-fn lignes(code: &'static str) -> Html {
+fn lignes(code: &'static str) -> Node {
     let total = code.split('\n').count();
-    html! {
-        { for code.split('\n').enumerate().map(|(i, ligne)| html! {
-            <>
-                <span class="ligne" style={format!("--l:{i}")}>{ ligne }</span>
-                { if i + 1 < total { html! { "\n" } } else { html! {} } }
-            </>
-        }) }
+    let mut noeuds: Vec<Node> = Vec::with_capacity(total * 2);
+    for (i, ligne) in code.split('\n').enumerate() {
+        noeuds.push(
+            span()
+                .class("ligne")
+                .style(format!("--l:{i}"))
+                .text(ligne)
+                .into(),
+        );
+        if i + 1 < total {
+            noeuds.push("\n".into());
+        }
     }
+    noeuds.into()
 }
 
 /// Une phrase, mot par mot : le titre du héros et celui de chaque page écrite.
@@ -203,16 +210,22 @@ fn lignes(code: &'static str) -> Html {
 /// restent de vrais nœuds de texte entre les mots : un titre se lit, se
 /// sélectionne et se copie avec ses espaces, et un lecteur d'écran lit une
 /// suite de `span` en ligne comme la phrase qu'elle est.
-pub(crate) fn mots(phrase: &'static str) -> Html {
+pub(crate) fn mots(phrase: &'static str) -> Node {
     let total = phrase.split(' ').count();
-    html! {
-        { for phrase.split(' ').enumerate().map(|(i, mot)| html! {
-            <>
-                <span class="mot" style={format!("--i:{i}")}><span>{ mot }</span></span>
-                { if i + 1 < total { html! { " " } } else { html! {} } }
-            </>
-        }) }
+    let mut noeuds: Vec<Node> = Vec::with_capacity(total * 2);
+    for (i, mot) in phrase.split(' ').enumerate() {
+        noeuds.push(
+            span()
+                .class("mot")
+                .style(format!("--i:{i}"))
+                .child(span().text(mot))
+                .into(),
+        );
+        if i + 1 < total {
+            noeuds.push(" ".into());
+        }
     }
+    noeuds.into()
 }
 
 /// À partir de combien de sections une page a un sommaire. En dessous, la page
@@ -223,7 +236,7 @@ const SECTIONS_MIN: usize = 3;
 /// Le sommaire d'une page écrite : ses `h2`, dans l'ordre, chacun vers son
 /// ancre. Rendu à la construction comme le reste, donc il marche sans le
 /// module ; le module ne fait que suivre la section lue.
-fn sommaire(doc: &Doc, lang: Lang) -> Html {
+fn sommaire(doc: &Doc, lang: Lang) -> Node {
     let titres: Vec<&'static str> = doc
         .blocks
         .iter()
@@ -233,49 +246,50 @@ fn sommaire(doc: &Doc, lang: Lang) -> Html {
         })
         .collect();
     if titres.len() < SECTIONS_MIN {
-        return html! {};
+        return Node::Empty;
     }
     let nom = match lang {
         Lang::En => "On this page",
         Lang::Fr => "Sur cette page",
     };
-    html! {
-        // Le corps est une boîte à part pour pouvoir coller : sur un grand
-        // écran, le sommaire est une colonne aussi haute que la page, et c'est
-        // son contenu qui reste sous l'en-tête pendant qu'on lit.
-        <nav class="sommaire" aria-label={nom}>
-            <div class="sommaire-corps">
-                <p class="sommaire-titre">{ nom }</p>
-                <ol>
-                    { for titres.into_iter().map(|t| html! {
-                        <li><a href={format!("#{}", slug(t))}>{ t }</a></li>
-                    }) }
-                </ol>
-            </div>
-        </nav>
-    }
+    // Le corps est une boîte à part pour pouvoir coller : sur un grand écran, le
+    // sommaire est une colonne aussi haute que la page, et c'est son contenu
+    // qui reste sous l'en-tête pendant qu'on lit.
+    nav()
+        .class("sommaire")
+        .attr("aria-label", nom)
+        .child(
+            div()
+                .class("sommaire-corps")
+                .child(p().class("sommaire-titre").text(nom))
+                .child(
+                    ol().children(
+                        titres
+                            .into_iter()
+                            .map(|t| li().child(a().href(format!("#{}", slug(t))).text(t))),
+                    ),
+                ),
+        )
+        .into()
 }
 
-#[derive(Properties, PartialEq)]
-pub struct DocPageProps {
-    pub doc: Doc,
-    pub lang: Lang,
-}
-
-#[function_component]
-pub fn DocPage(props: &DocPageProps) -> Html {
-    html! {
-        <article class="doc">
-            <div class="wrap">
-                <header class="doc-head">
-                    <h1>{ mots(props.doc.title) }</h1>
-                    <p class="lede">{ props.doc.lede }</p>
-                </header>
-                { sommaire(&props.doc, props.lang) }
-                { for props.doc.blocks.iter().map(rendre) }
-            </div>
-        </article>
-    }
+/// Une page écrite : son titre, son accroche, son sommaire et ses blocs.
+pub fn doc_page(doc: &Doc, lang: Lang) -> Node {
+    article()
+        .class("doc")
+        .child(
+            div()
+                .class("wrap")
+                .child(
+                    header()
+                        .class("doc-head")
+                        .child(h1().child(mots(doc.title)))
+                        .child(p().class("lede").text(doc.lede)),
+                )
+                .child(sommaire(doc, lang))
+                .children(doc.blocks.iter().map(rendre)),
+        )
+        .into()
 }
 
 #[cfg(test)]

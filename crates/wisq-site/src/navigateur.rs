@@ -1,7 +1,7 @@
 //! Ce que le module fait en arrivant dans une page, dans l'ordre.
 //!
 //! 1. **La redirection**, d'abord, parce qu'elle rend tout le reste inutile.
-//! 2. **Les deux îlots**, hydratés chacun sur sa racine.
+//! 2. **Les îlots**, hydratés par Active chacun sur sa racine `<active-island>`.
 //! 3. **Le mouvement**, qui ne touche qu'au balisage qu'aucun îlot ne tient.
 //! 4. **Le service worker**, en dernier : il ne doit jamais disputer à la page
 //!    ses premiers octets.
@@ -12,12 +12,10 @@
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{Document, Element, Window};
+use web_sys::{Document, Window};
 
 use crate::content::Lang;
-use crate::installation::{InstallPrompt, InstallProps};
 use crate::routes::RouteId;
-use crate::shell::{Reglages, ReglagesProps};
 
 pub fn demarrer(
     fenetre: &Window,
@@ -30,42 +28,19 @@ pub fn demarrer(
         return Ok(());
     }
 
-    // Une racine absente n'est pas un refus : une page d'une version
-    // précédente, servie par le cache, peut ne pas avoir l'un des deux îlots,
-    // et elle doit garder l'autre.
-    if let Some(racine) = ilot(document, "reglages") {
-        yew::Renderer::<Reglages>::with_root_and_props(racine, ReglagesProps { route, lang })
-            .hydrate();
-    }
-    if let Some(racine) = ilot(document, "installation") {
-        yew::Renderer::<InstallPrompt>::with_root_and_props(racine, InstallProps { lang })
-            .hydrate();
-    }
+    // Active cherche lui-même les racines : une page d'une version précédente,
+    // servie par le cache, qui n'aurait pas l'un des îlots garde les autres.
+    // Le terminal n'est enregistré que dans le module de la page `linux/`.
+    active::hydrate(&[
+        ("reglages", crate::shell::reglages),
+        ("installation", crate::installation::install_prompt),
+        #[cfg(feature = "linux")]
+        (crate::linux::ILOT, crate::linux::terminal),
+    ]);
 
     crate::mouvement::demarrer();
     enregistrer(fenetre, document, base);
     Ok(())
-}
-
-/// La racine d'un îlot, seulement si elle porte de quoi être hydratée.
-///
-/// **Un îlot qui ne s'hydrate pas ne doit pas emporter l'autre.** Yew ne sait
-/// reprendre un balisage qu'à partir des marqueurs qu'il a posés au pré-rendu ;
-/// sans eux il cède, et un module compilé avec `panic = "abort"` ne cède pas à
-/// moitié — le sabordage qui retirait les marqueurs des réglages a fait tomber
-/// l'invite d'installation et le mouvement avec eux. Un îlot dont la racine ne
-/// commence pas par le marqueur d'ouverture reste donc ce qu'il est : du HTML
-/// qui marche sans module — des liens, des boutons inertes —, et le reste de la
-/// page garde le sien.
-fn ilot(document: &Document, nom: &str) -> Option<Element> {
-    let racine = document
-        .query_selector(&format!(r#"[data-ilot="{nom}"]"#))
-        .ok()
-        .flatten()?;
-    let premier = racine.first_child()?;
-    let marque = premier.node_type() == web_sys::Node::COMMENT_NODE
-        && premier.node_value().as_deref() == Some("<[]>");
-    marque.then_some(racine)
 }
 
 /// Envoie un lecteur francophone de l'accueil anglais vers l'accueil français.

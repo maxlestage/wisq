@@ -31,7 +31,35 @@
 //! leave a named slot whose content does not exist. `flush` adds `fsync`.
 
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::FileExt;
+
+/// Hors Unix — le module WebAssembly du site, d'abord — `FileExt` n'existe pas.
+/// Le même contrat, tenu par un déplacement puis une lecture : un `File` n'y
+/// est de toute façon jamais ouvert (le navigateur n'a pas de système de
+/// fichiers), mais la machine doit compiler pour que le site la porte.
+#[cfg(not(unix))]
+trait FileExt {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()>;
+    fn write_all_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()>;
+}
+
+#[cfg(not(unix))]
+impl FileExt for File {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = self;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(buf)
+    }
+
+    fn write_all_at(&self, buf: &[u8], offset: u64) -> std::io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = self;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(buf)
+    }
+}
 use std::path::Path;
 
 pub const SECTOR: u64 = 512;

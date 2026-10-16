@@ -4,9 +4,10 @@
 #   crates/wisq-vm     the rv32ima interpreter — a static library for the iPhone
 #                      app, and the benchmark that measures it
 #   crates/wisq-agent  the host daemon for Mac and Linux
-#   crates/wisq-site   the site's front end: Yew components, pre-rendered at
-#                      build time, two islands hydrated and the motion run in
-#                      WebAssembly
+#   crates/wisq-site   the site's front end, written with Active: views
+#                      pre-rendered at build time, islands hydrated and the
+#                      motion run in WebAssembly, and the rv32ima machine
+#                      booting Linux in the browser
 #
 # The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
 # desktop client built on Network.framework.
@@ -33,3 +34,10 @@ strip = true
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"
+
+# Une exception, et la même mesure dans l'autre sens : `wisq-vm` entre dans le
+# module de la page `linux/`, où il est un interpréteur que chaque image d'écran
+# fait tourner. Là, la vitesse est ce qu'on achète, et `"z"` la vendrait pour
+# quelques kilo-octets.
+[profile.wasm-release.package.wisq-vm]
+opt-level = 3

@@ -4,13 +4,15 @@
 //! seule — pré-rendu, hydratation, émission du wasm, budgets, outillage de la
 //! CI et d'Heroku — et les huit autres documents n'ont apporté que du contenu :
 //! le rendu des neuf sortes de blocs était écrit d'avance. L'accueil n'est pas
-//! un document, il a sa propre mise en page (`crate::accueil`), donc il est la
-//! seule route pour laquelle `doc` rend `None`.
+//! un document, il a sa propre mise en page (`crate::accueil`), et la page
+//! `linux` non plus (`crate::linux`) : ce sont les deux routes pour lesquelles
+//! `doc` rend `None`.
 //!
 //! **Le texte a été engendré depuis le TypeScript, pas recopié**, et la
 //! construction a confronté les deux rendus avant que le TypeScript ne parte :
 //! après normalisation des quatre classes d'écart de sérialisation nommées dans
-//! le journal, chaque page Yew était identique à la page React.
+//! le journal, chaque page Yew était identique à la page React — et chaque page
+//! Active l'a été ensuite à la page Yew.
 
 mod architecture;
 mod docs;
@@ -27,13 +29,14 @@ use crate::content::Lang;
 use crate::doc::Doc;
 use crate::routes::RouteId;
 
-/// Le document d'une route, ou `None` pour l'accueil, qui n'en est pas un.
+/// Le document d'une route, ou `None` pour l'accueil et la page Linux, qui
+/// n'en sont pas.
 pub fn doc(route: RouteId, lang: Lang) -> Option<&'static Doc> {
     let en = lang == Lang::En;
     let choisir =
         |anglais: &'static Doc, francais: &'static Doc| Some(if en { anglais } else { francais });
     match route {
-        RouteId::Home => None,
+        RouteId::Home | RouteId::Linux => None,
         RouteId::Docs => choisir(&docs::DOCS_EN, &docs::DOCS_FR),
         RouteId::Protocol => choisir(&protocol::PROTOCOL_EN, &protocol::PROTOCOL_FR),
         RouteId::Architecture => choisir(

@@ -45,7 +45,7 @@ const TYPES: Record<string, string> = {
   ".webmanifest": "application/manifest+json; charset=utf-8",
   ".png": "image/png",
   // **Et celui-ci est arrivé une tranche plus tard, trouvé par la garde.**
-  // Le front du site est passé à Yew, donc la construction écrit désormais un
+  // Le front du site est en Rust (Active), donc la construction écrit désormais un
   // `.wasm` ; le test « aucun fichier construit ne part en flux d'octets »,
   // écrit avec la police, l'a nommé au premier `bun test`. Un module
   // WebAssembly servi sans `application/wasm` est pire qu'une police : les

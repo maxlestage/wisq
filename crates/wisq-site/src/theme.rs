@@ -5,8 +5,8 @@
 //! coucher du soleil veut que le site en fasse autant, et une bascule à deux
 //! positions l'en sort en silence la première fois qu'il y touche.
 //!
-//! **Ce que le passage à Yew change ici, et c'est l'argument de la bascule.**
-//! La version React portait en commentaire : « this component never runs in a
+//! **Pourquoi la bascule est un composant qui se comporte.** La version React
+//! portait en commentaire : « this component never runs in a
 //! browser ». Elle rendait des boutons porteurs de `data-theme-choice`, et
 //! `src/main.ts` leur rattachait le comportement de loin, en code DOM. Les deux
 //! moitiés d'un même objet vivaient dans deux fichiers et deux langages, et la
@@ -16,16 +16,17 @@
 //! et l'écriture de `data-theme` sont dans ce fichier, avec le balisage qu'ils
 //! pilotent.
 //!
-//! **L'ordre compte, et il est contraint par l'hydratation.** Le rendu du
-//! serveur et le premier rendu du client doivent coïncider, sinon Yew signale
-//! un décalage ; or le choix mémorisé n'est lisible que dans le navigateur.
-//! D'où `auto` au premier rendu des deux côtés, puis la correction dans un
-//! `use_effect`, qui ne tourne pas au pré-rendu. Le script bloquant de la tête
+//! **L'ordre compte, et il est contraint par l'hydratation.** Active reprend
+//! le balisage du serveur tel qu'il est ; or le choix mémorisé n'est lisible
+//! que dans le navigateur. D'où `auto` au rendu des deux côtés, puis la
+//! correction dans un `on_mount`, qui ne tourne jamais au pré-rendu : l'état
+//! change, et Active ne réécrit que les trois `aria-pressed` qui en dépendent. Le script bloquant de la tête
 //! continue d'appliquer le thème **avant la première peinture** : sans lui, un
 //! lecteur qui a choisi « clair » sur un système sombre verrait un éclair de
 //! sombre à chaque navigation, et aucun wasm n'arrive assez tôt pour l'éviter.
 
-use yew::prelude::*;
+use active::prelude::*;
+use active::Node;
 
 /// Les deux `--bg` de `styles.css`, et ce que le navigateur peint autour de la
 /// page : la barre d'état sur iOS, le bandeau d'onglet ailleurs.
@@ -66,97 +67,120 @@ impl Theme {
     }
 }
 
-/// La langue plutôt qu'une référence vers tout le bloc de copie.
+/// Les trois boutons du thème.
 ///
-/// Yew compare les propriétés à chaque rendu pour décider s'il doit retravailler
-/// un composant. Passer `&'static Copy` exigerait `PartialEq` sur `Copy`, donc
-/// une comparaison champ par champ de toute la copie du site — une quarantaine
-/// de chaînes — à chaque fois. `Lang` est une énumération de deux variantes : la
-/// comparaison est un entier, et la copie se retrouve par `lang.copy()`.
-#[derive(Properties, PartialEq)]
-pub struct ThemeSwitchProps {
-    pub lang: crate::content::Lang,
-}
-
-#[function_component]
-pub fn ThemeSwitch(props: &ThemeSwitchProps) -> Html {
-    // `auto` est ce avec quoi le balisage part, parce que c'est la seule réponse
-    // juste pour un lecteur dont le choix n'a pas encore été lu — et pour celui
-    // qui n'a pas de JavaScript du tout, où la page suit simplement le système
-    // et où cette bascule ne fait rien.
-    let choisi = use_state(|| Theme::Auto);
-
-    {
-        let choisi = choisi.clone();
-        use_effect_with((), move |()| {
-            if let Some(stored) = lire_choix() {
-                choisi.set(stored);
-            }
-        });
-    }
-
-    let copy = props.lang.copy();
+/// `auto` est ce avec quoi le balisage part, parce que c'est la seule réponse
+/// juste pour un lecteur dont le choix n'a pas encore été lu — et pour celui
+/// qui n'a pas de JavaScript du tout, où la page suit simplement le système et
+/// où cette bascule ne fait rien.
+pub fn theme_switch(lang: crate::content::Lang) -> Node {
+    let choisi = use_state(Theme::Auto);
+    let copy = lang.copy();
     let options = [
         (Theme::Light, copy.theme.light, icone_soleil()),
         (Theme::Dark, copy.theme.dark, icone_lune()),
         (Theme::Auto, copy.theme.auto, icone_auto()),
     ];
+    div()
+        .class("theme-switch")
+        .attr("role", "group")
+        .attr("aria-label", copy.theme.label)
+        // Dans le navigateur seulement : le choix mémorisé corrige l'état de
+        // départ, et seuls les attributs qui en dépendent sont réécrits.
+        .on_mount(move |_| {
+            if let Some(stored) = lire_choix() {
+                choisi.set(stored);
+            }
+        })
+        .children(options.into_iter().map(|(id, label, icone)| {
+            button()
+                .attr("type", "button")
+                .attr("data-theme-choice", id.slug())
+                .attr_dyn("aria-pressed", move || (choisi.get() == id).to_string())
+                .attr("aria-label", label)
+                .attr("title", label)
+                .on_click(move |e| {
+                    choisi.set(id);
+                    basculer(id, &e);
+                    retenir(id);
+                })
+                .child(icone)
+        }))
+        .into()
+}
 
-    html! {
-        <div class="theme-switch" role="group" aria-label={copy.theme.label}>
-            { for options.into_iter().map(|(id, label, icone)| {
-                let presse = id == *choisi;
-                let au_clic = {
-                    let choisi = choisi.clone();
-                    Callback::from(move |e: MouseEvent| {
-                        choisi.set(id);
-                        basculer(id, &e);
-                        retenir(id);
-                    })
-                };
-                html! {
-                    <button type="button" data-theme-choice={id.slug()}
-                            aria-pressed={presse.to_string()} aria-label={label} title={label}
-                            onclick={au_clic}>
-                        { icone }
-                    </button>
-                }
-            }) }
-        </div>
-    }
+/// Un SVG d'icône : seize pixels, décoratif, hors du parcours du clavier.
+fn icone() -> Element {
+    svg()
+        .attr("viewBox", "0 0 24 24")
+        .attr("width", "16")
+        .attr("height", "16")
+        .attr("aria-hidden", "true")
+        .attr("focusable", "false")
 }
 
 /// Les icônes sont dessinées plutôt que tapées : un soleil en emoji est une
 /// image différente dans chaque fonte, et une fonte qui ne l'a pas dessine un
 /// carré.
-fn icone_soleil() -> Html {
-    html! {
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-            <circle cx="12" cy="12" r="4.4" fill="currentColor" />
-            { for [0, 45, 90, 135, 180, 225, 270, 315].into_iter().map(|angle| html! {
-                <rect x="11.1" y="1.4" width="1.8" height="3.6" rx="0.9" fill="currentColor"
-                      transform={format!("rotate({angle} 12 12)")} />
-            }) }
-        </svg>
-    }
+fn icone_soleil() -> Element {
+    icone()
+        .child(
+            circle()
+                .attr("cx", "12")
+                .attr("cy", "12")
+                .attr("r", "4.4")
+                .attr("fill", "currentColor"),
+        )
+        .children(
+            [
+                "rotate(0 12 12)",
+                "rotate(45 12 12)",
+                "rotate(90 12 12)",
+                "rotate(135 12 12)",
+                "rotate(180 12 12)",
+                "rotate(225 12 12)",
+                "rotate(270 12 12)",
+                "rotate(315 12 12)",
+            ]
+            .into_iter()
+            .map(|rotation| {
+                rect()
+                    .attr("x", "11.1")
+                    .attr("y", "1.4")
+                    .attr("width", "1.8")
+                    .attr("height", "3.6")
+                    .attr("rx", "0.9")
+                    .attr("fill", "currentColor")
+                    .attr("transform", rotation)
+            }),
+        )
 }
 
-fn icone_lune() -> Html {
-    html! {
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-            <path d="M20 14.4A8.6 8.6 0 0 1 9.6 4 8.6 8.6 0 1 0 20 14.4Z" fill="currentColor" />
-        </svg>
-    }
+fn icone_lune() -> Element {
+    icone().child(
+        path()
+            .attr("d", "M20 14.4A8.6 8.6 0 0 1 9.6 4 8.6 8.6 0 1 0 20 14.4Z")
+            .attr("fill", "currentColor"),
+    )
 }
 
 /// Un cercle éclairé d'un côté : la page qui prend son parti ailleurs.
-fn icone_auto() -> Html {
-    html! {
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
-            <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2" />
-            <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" />
-        </svg>
-    }
+fn icone_auto() -> Element {
+    icone()
+        .child(
+            circle()
+                .attr("cx", "12")
+                .attr("cy", "12")
+                .attr("r", "8")
+                .attr("fill", "none")
+                .attr("stroke", "currentColor")
+                .attr("stroke-width", "2"),
+        )
+        .child(
+            path()
+                .attr("d", "M12 4a8 8 0 0 1 0 16Z")
+                .attr("fill", "currentColor"),
+        )
 }
 
 // Le choix mémorisé passe par `crate::stockage`, qui porte la chaîne de refus
@@ -185,8 +209,8 @@ fn retenir(theme: Theme) {
 /// Poser l'attribut, qui est la seule chose qu'un lecteur voie tout de suite —
 /// et les deux métas `theme-color`, qui sont la seconde.
 ///
-/// **Les métas manquaient au portage, et rien ne le disait.** La version DOM
-/// les réécrivait à chaque choix ; la première version Yew ne posait que
+/// **Les métas ont déjà manqué une fois, et rien ne le disait.** La version
+/// DOM les réécrivait à chaque choix ; un portage précédent ne posait que
 /// `data-theme`. Les deux métas portent une requête `media`, donc sur `auto`
 /// elles suivent déjà le système — mais un choix explicite doit les forcer
 /// toutes les deux, sinon le navigateur peint sa barre pour un thème que la
@@ -252,7 +276,7 @@ fn appliquer(_: Theme) {}
 /// **Jamais au prix du thème.** Si l'appel échoue, le rappel n'a peut-être pas
 /// tourné : le thème est appliqué directement, et la classe retirée.
 #[cfg(feature = "hydrate")]
-fn basculer(theme: Theme, e: &MouseEvent) {
+fn basculer(theme: Theme, e: &active::Event) {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
 
@@ -278,10 +302,7 @@ fn basculer(theme: Theme, e: &MouseEvent) {
 
     // Le centre du bouton, pas la position du clic : au clavier, il n'y a pas
     // de pointeur, et le cercle partirait du coin de l'écran.
-    if let Some(bouton) = e
-        .current_target()
-        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-    {
+    if let Some(bouton) = e.current_target() {
         let boite = bouton.get_bounding_client_rect();
         let x = (boite.left() + boite.width() / 2.0).round() as i32;
         let y = (boite.top() + boite.height() / 2.0).round() as i32;
@@ -312,6 +333,6 @@ fn basculer(theme: Theme, e: &MouseEvent) {
 }
 
 #[cfg(not(feature = "hydrate"))]
-fn basculer(theme: Theme, _: &MouseEvent) {
+fn basculer(theme: Theme, _: &active::Event) {
     appliquer(theme);
 }

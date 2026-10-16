@@ -90,7 +90,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2632 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2637 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -123,7 +123,7 @@ Sources/WisqUI       SwiftUI, pensé téléphone d'abord
 Sources/WisqVM       Linux local : cœurs rv32ima et x86-64, UART, virtio-blk
 crates/wisq-agent    démon hôte (Rust) : serveur HTTP/1.1, backends virsh et démo
 crates/wisq-vm       interpréteur rv32ima (Rust) avec une ABI C pour l'application
-crates/wisq-site     le front du site (Rust) : Yew, pré-rendu, deux îlots en wasm
+crates/wisq-site     le front du site (Rust), écrit avec Active : pré-rendu, îlots en wasm, Linux dans le navigateur
 site/                la construction, le serveur et la feuille de style du site (Bun), PWA installable
 App                  cible application
 docs                 architecture, protocole de l'agent, feuille de route
@@ -143,7 +143,25 @@ hôte Ubuntu : libvirt, une VM invitée avec SPICE, le démon, l'appairage, et c
 qu'on essaie depuis le téléphone — avec ce qui a été vérifié et ce qui ne l'a
 pas été.
 
+## Le site
+
+Tout le front du site est **écrit avec [Active](https://github.com/maxlestage/Active)**,
+la bibliothèque front-end en Rust de Maxime Nathan Lestage, l'auteur de wisq :
+pages rendues en HTML à la construction, îlots hydratés en WebAssembly, et le
+mouvement en Rust. Chaque page le dit dans son pied, et dans
+`<meta name="generator">`.
+
+**Linux dans le navigateur.** La page `linux/` du site fait tourner la machine
+rv32ima de wisq — `crates/wisq-vm`, le cœur même que l'application embarque —
+compilée en WebAssembly dans un second module que seule cette page charge.
+Donnez-lui une image de noyau RISC-V sans MMU (celle que démarre la CI est
+`linux-6.1.14-rv32nommu-cnl-1.zip`, de cnlohr/mini-rv32ima-images) : elle
+démarre jusqu'au shell dans l'onglet, et l'image est lue sur place, jamais
+envoyée.
+
 ## Auteur
 
 Conçu et développé par [Maxime Nathan Lestage](https://github.com/maxlestage).
+Le front du site est écrit avec [Active](https://github.com/maxlestage/Active),
+sa bibliothèque front-end en Rust.
 Copyright 2026 Maxime Nathan Lestage. Tous droits réservés.

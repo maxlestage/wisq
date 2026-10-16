@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (2632 tests across Swift and Rust) and
+Everything below is implemented, tested (2637 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -68,6 +68,7 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | `wisq-agent` daemon (libvirt via virsh + demo backend), end-to-end tested | done |
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
+| Linux in the browser: the same Rust core, compiled to WebAssembly, on the site's `linux/` page | done |
 | A disk for the local PC: bring an image, the guest sees it on `/dev/vda` | done |
 | Agent TLS | done |
 | Power a remote VM off from the phone: polite ACPI, then the cord if the guest never answers | done |
@@ -129,7 +130,7 @@ Sources/WisqVM       local Linux: rv32ima and x86-64 cores, UART, virtio-blk
 Sources/WisqUI       SwiftUI, phone-first
 crates/wisq-agent    host daemon (Rust): HTTP/1.1 server, virsh + demo backends
 crates/wisq-vm       rv32ima interpreter (Rust) with a C ABI for the app
-crates/wisq-site     the site's front end (Rust): Yew, pre-rendered, two islands in wasm
+crates/wisq-site     the site's front end (Rust), written with Active: pre-rendered, islands in wasm, Linux in the browser
 site/                the site's build, server and stylesheet (Bun), an installable PWA
 docs/                architecture, agent wire protocol, roadmap
 ```
@@ -150,17 +151,29 @@ from the phone — with what was verified and what was not.
 
 ## The landing page
 
-The project page is Rust end to end: `crates/wisq-site` holds every page as
-Yew components, rendered to HTML at build time so it paints before anything
-else arrives, and compiled to WebAssembly for what has to happen in a browser —
-two hydrated islands (the theme and language controls, the install prompt),
-and the motion, which follows zamocorp.com: a curtain, a pinned opening where
-the ▚ mark gathers out of dust as you scroll, a light sweep, a marquee,
-magnetic buttons and Lenis-style wheel smoothing. Every one of them stands down
-for a reader who asked for reduced motion, and the page is whole without the
-module. `site/` holds the build around it, the server and the stylesheet —
-mobile-first in the literal sense (every base rule targets a phone;
-breakpoints only add room).
+The project page is Rust end to end, and **its whole front end is written with
+[Active](https://github.com/maxlestage/Active)** — the Rust front-end library
+by Maxime Nathan Lestage, the author of wisq. `crates/wisq-site` holds every
+page as Active views, rendered to HTML at build time so it paints before
+anything else arrives, and compiled to WebAssembly for what has to happen in a
+browser: the islands Active hydrates (the theme and language controls, the
+install prompt), and the motion, which follows zamocorp.com: a curtain, a
+pinned opening where the ▚ mark gathers out of dust as you scroll, a light
+sweep, a marquee, magnetic buttons and Lenis-style wheel smoothing. Every one of
+them stands down for a reader who asked for reduced motion, and the page is
+whole without the module. Moving from Yew to Active took the shared module from
+276 143 bytes (118 645 gzipped) to 153 534 (68 631), measured on this
+container with Bun 1.4.2's gzip. `site/` holds the build around it, the server
+and the stylesheet — mobile-first in the literal sense (every base rule targets
+a phone; breakpoints only add room). Every page says so in its footer, and in
+`<meta name="generator">`.
+
+**Linux in the browser.** The site's `linux/` page runs wisq's rv32ima machine —
+`crates/wisq-vm`, the very core the app links — compiled to WebAssembly in a
+second module that only that page loads. Hand it a no-MMU RISC-V kernel image
+(the one CI boots is `linux-6.1.14-rv32nommu-cnl-1.zip` from
+cnlohr/mini-rv32ima-images) and it boots to a shell in the tab; the image is
+read locally and never uploaded.
 
 ```sh
 ./scripts/install-wasm-toolchain.sh
@@ -190,4 +203,6 @@ carries someone else's terms.
 ## Author
 
 Designed and developed by [Maxime Nathan Lestage](https://github.com/maxlestage).
+The site's front end is written with [Active](https://github.com/maxlestage/Active),
+his Rust front-end library.
 Copyright 2026 Maxime Nathan Lestage. All rights reserved.
