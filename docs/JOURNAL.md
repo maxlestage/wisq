@@ -28,6 +28,25 @@ disque ; sinon retirer la copie emporterait le disque de l'original.
 **Un sabotage, une chute :** la copie qui garde le nom du disque propre de la
 source au lieu du sien.
 
+## 2026-10-16 — la signature du pied, en grand, et en couleur sur le nom
+
+Maxime : un pied plus stylé, sur wisq seulement. Un premier jet posait un
+sceau animé autour des initiales ; il n'en voulait pas — la couleur sur le
+prénom et le nom, rien de plus.
+
+La ligne « Conçu et développé par … » auprès du mot-symbole devient un bloc
+centré entre les colonnes et la barre du bas : la mention en capitales
+espacées, le nom en grand avec **Maxime** et **Lestage** dans le dégradé de la
+marque et le second prénom dans la couleur du texte, puis « Fabriqué en Swift
+et en Rust, en France » — Swift et Rust parce que c'est vrai, l'application et
+le client distant étant en Swift, l'agent, le cœur et ce site en Rust.
+
+**La garde a bougé, pas ce qu'elle tient.** « every page says who made it »
+cherchait `>Maxime Nathan Lestage</a>` mot pour mot ; colorer deux mots met
+des balises dans le lien. Elle lit maintenant le texte du lien d'auteur sans
+ses balises, et exige toujours qu'il nomme exactement la même personne. Le
+crédit au travail d'autrui reste dans la barre du bas. Pas d'animation, et pas
+un octet de JavaScript en plus.
 ## 2026-10-16 — un second disque, et un vrai noyau qui écrit dessus
 
 Le disque vierge ne servait qu'à un noyau et son initramfs : une image
