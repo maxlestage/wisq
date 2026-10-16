@@ -400,9 +400,15 @@ public final class LocalVMModel {
         // disque.** Sa racine y vit — c'est ce que la ligne de commande lue
         // dans la recette va nommer — et rien de tout ça n'est copié : le
         // fichier est lu secteur par secteur là où il est.
-        let diskURL = isoDisk ?? LocalDisk.attached(
+        let chosenDisk = LocalDisk.attached(
             kernel: keys.settings,
             among: KernelLibrary.list(), in: storage)
+        let diskURL = isoDisk ?? chosenDisk
+        // **Et le disque choisi devient le second.** Une image d'installation
+        // occupe `/dev/vda` — sa racine y vit —, donc le disque que la
+        // personne a donné à la machine, vierge le plus souvent, arrive sur
+        // `/dev/vdb` : c'est là que l'installateur écrit le système.
+        let secondDiskURL = isoDisk == nil ? nil : chosenDisk
 
         // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
         // appartient à `self`, qui n'y est capturé que faiblement.
@@ -427,6 +433,13 @@ public final class LocalVMModel {
                         fileAt: diskURL,
                         writes: LocalDisk.writesURL(
                             for: keys.overlay(forDisk: diskURL.lastPathComponent),
+                            in: storageFolder))
+                }
+                if let secondDiskURL {
+                    try machine.attachSecondDisk(
+                        fileAt: secondDiskURL,
+                        writes: LocalDisk.writesURL(
+                            for: keys.overlay(forDisk: secondDiskURL.lastPathComponent),
                             in: storageFolder))
                 }
                 // A saved machine is resumed in place of booting. If the file
@@ -506,6 +519,15 @@ public final class LocalVMModel {
 
     public func sendLine(_ line: String) {
         send(line + "\n")
+    }
+
+    /// Une touche de la barre, après le texte en cours de saisie — voir
+    /// `TerminalKey.sending(afterTyped:)`, qui décide des octets et de
+    /// l'ordre. Le mode des flèches est lu dans la grille, qui sait ce que le
+    /// programme au premier plan a demandé.
+    public func press(_ key: TerminalKey, afterTyped typed: String) {
+        machine?.send(key.sending(
+            afterTyped: typed, applicationCursorKeys: sink.applicationCursorKeys))
     }
 
     /// Ends the machine for good, at the user's request. The saved state goes
@@ -669,6 +691,14 @@ private final class ConsoleSink: @unchecked Sendable {
         if refreshPending { return false }
         refreshPending = true
         return true
+    }
+
+    /// Le mode des flèches que l'invité a demandé, lu sous le verrou : la
+    /// grille est écrite par le fil d'émulation.
+    var applicationCursorKeys: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return console.applicationCursorKeys
     }
 
     func takeText() -> String {
