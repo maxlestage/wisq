@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
+
+Deuxième tranche de la même demande, et Maxime a dit oui aux PR, une par
+tranche. Une machine installée peut maintenant recevoir un **disque vierge**
+de un à trente-deux gibioctets, créé dans l'application : c'est ce qu'il faut
+pour formater et installer, et personne n'a ce fichier sous la main sur un
+téléphone.
+
+**Ce que ce dépôt savait déjà, et qui décidait de la forme.** Le format de
+la couche d'écriture a mesuré
+qu'APFS alloue les trous d'un fichier épars dans lequel on *écrit* — c'est
+pourquoi la couche d'écriture est tassée. Qu'un fichier seulement *agrandi*
+par `ftruncate` reste épars sur un iPhone, personne ne l'a mesuré, et ce
+conteneur ne le peut pas. Alors la création **relève les blocs alloués** et
+refuse au-delà d'un mébioctet, fichier effacé. Si APFS se comportait mal, la
+personne recevrait une phrase et pas un téléphone plein — et le job « Cœur
+(Apple) », qui exécute `BlankDiskTests` sur APFS, rougirait pour le dire.
+
+**À qui est le disque.** Un disque vierge créé pour une machine est retenu
+comme le sien (`ownDisk`) et part avec elle : ses octets vivent dans la
+couche de la machine, que le retrait efface, et la base restante ne serait
+que des zéros. Un disque importé et choisi n'est jamais emporté.
+
+**Deux sabotages, deux chutes :** `O_EXCL` remplacé par `O_TRUNC` (un fichier
+existant écrasé en silence) ; l'oubli du disque propre quand la personne
+supprime le fichier.
+
+**Ce qui manque encore pour installer depuis un ISO** : l'ISO *est* le disque
+`/dev/vda` de sa machine. Il faut un second périphérique bloc — tranche
+suivante.
+
 ## 2026-10-16 — plusieurs machines Linux sur le même téléphone
 
 Maxime : « Wisq doit être capable de lire une image Linux, redémarrer une
