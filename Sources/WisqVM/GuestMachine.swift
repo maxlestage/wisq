@@ -97,6 +97,12 @@ public protocol GuestMachine: AnyObject, Sendable {
     /// porte par laquelle passe une image de plusieurs gigaoctets.
     func attachDisk(fileAt base: URL, writes: URL) throws
 
+    /// Branche un **second** disque, lu sur place — `/dev/vdb` pour un noyau
+    /// Linux. C'est celui sur lequel on installe quand le premier est l'image
+    /// d'installation. Seule la machine PC en a un ; les autres refusent en
+    /// le disant (voir l'extension par défaut).
+    func attachSecondDisk(fileAt base: URL, writes: URL) throws
+
     /// Pousse ce que l'invité a écrit sur son disque jusqu'au stockage
     /// durable. Chaque écriture y est déjà ; ceci ajoute `fsync`, pour le
     /// passage en arrière-plan.
@@ -138,6 +144,15 @@ public protocol GuestMachine: AnyObject, Sendable {
 /// `LocalizedError`, un refus parfaitement précis arrivait à l'écran sous la
 /// forme « The operation couldn't be completed », qui est le contraire de ce
 /// que ces cas existent pour dire.
+extension GuestMachine {
+    /// Une machine sans second périphérique bloc refuse, et nomme pourquoi :
+    /// accepter en silence ferait chercher à l'invité un `vdb` qui n'arrive
+    /// jamais.
+    public func attachSecondDisk(fileAt base: URL, writes: URL) throws {
+        throw GuestMachineRefusal.noSecondDiskHere
+    }
+}
+
 public enum GuestMachineRefusal: Error, Equatable, LocalizedError {
     /// Un disque en mémoire donné à une machine qui n'en prend pas.
     ///
@@ -146,9 +161,16 @@ public enum GuestMachineRefusal: Error, Equatable, LocalizedError {
     /// cas d'erreur que plus rien ne peut lever est un mensonge qui attend
     /// d'être cru : il est parti avec le refus.
     case noRamdiskHere(architecture: String)
+    /// Un second disque donné à une machine qui n'a qu'un périphérique bloc.
+    case noSecondDiskHere
 
     public var errorDescription: String? {
         switch self {
+        case .noSecondDiskHere:
+            return """
+                Cette machine n'a qu'un disque. Un second — celui sur lequel on \
+                installe depuis une image — n'existe que sur la machine PC.
+                """
         case .noRamdiskHere(let architecture):
             return """
                 La machine \(architecture) ne prend pas d'initramfs : son \
@@ -226,9 +248,18 @@ extension X86Machine: GuestMachine {
         try attach(diskFileAt: base, writes: writes)
     }
 
-    public func flushDisk() { disk?.flush() }
+    public func attachSecondDisk(fileAt base: URL, writes: URL) throws {
+        try attach(secondDiskFileAt: base, writes: writes)
+    }
 
-    public var diskBytesWritten: Int { disk?.store.bytesWritten ?? 0 }
+    public func flushDisk() {
+        disk?.flush()
+        secondDisk?.flush()
+    }
+
+    public var diskBytesWritten: Int {
+        (disk?.store.bytesWritten ?? 0) + (secondDisk?.store.bytesWritten ?? 0)
+    }
 
     public var diskActivity: (served: UInt64, refused: UInt64)? {
         disk.map { ($0.served, $0.refused) }
