@@ -127,6 +127,38 @@ public enum LocalDisk {
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + ".map"))
     }
 
+    /// Jette toutes les couches dont le nom commence par ce préfixe — celles
+    /// d'une machine installée qu'on retire, quel que soit le disque qu'elle
+    /// avait reçu.
+    ///
+    /// **Un préfixe vide ne jette rien.** Il désignerait toutes les couches de
+    /// toutes les machines, et c'est exactement le préfixe d'un fichier
+    /// démarré tel quel : un appel distrait effacerait les disques de tout le
+    /// monde.
+    @discardableResult
+    public static func discardWrites(withPrefix prefix: String, in directory: URL? = nil) -> Int {
+        guard !prefix.isEmpty,
+              let folder = try? writesDirectory(in: directory),
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return 0 }
+        var removed = 0
+        for entry in entries where entry.hasPrefix(prefix) && entry.hasSuffix(".writes") {
+            discardWrites(for: String(entry.dropLast(".writes".count)), in: directory)
+            removed += 1
+        }
+        return removed
+    }
+
+    /// Ce que les couches de cette machine occupent, tous disques confondus.
+    public static func overlayBytes(withPrefix prefix: String, inWritesDirectory folder: URL) -> Int {
+        guard !prefix.isEmpty,
+              let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return 0 }
+        return entries.filter { $0.hasPrefix(prefix) && $0.hasSuffix(".writes") }
+            .reduce(0) { $0 + overlayBytes(for: String($1.dropLast(".writes".count)),
+                                          inWritesDirectory: folder) }
+    }
+
     /// Ce que la couche d'un disque occupe.
     ///
     /// **La taille des deux fichiers, tout simplement** — parce que la couche
