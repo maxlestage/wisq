@@ -334,6 +334,103 @@ public enum InstalledMachines {
         }
     }
 
+    // MARK: - Dupliquer
+
+    /// Duplique une machine : son nom suivi de « copie », ses réglages, ses
+    /// couches d'écriture **et sa session suspendue**.
+    ///
+    /// **Pourquoi la session aussi.** Dupliquer sert à repartir d'un point
+    /// qu'on a atteint — une distribution installée et configurée, un shell
+    /// où l'on était — sans le refaire. Une copie qui redémarrerait de zéro
+    /// ne serait qu'une installation de plus.
+    ///
+    /// **Ce qui est copié, et pourquoi c'est juste.** La session ne porte pas
+    /// les octets du disque, seulement « le contenu vit ailleurs » ; ce qui le
+    /// porte, ce sont les couches d'écriture. Copier les deux ensemble rend une
+    /// machine dont le disque est exactement celui que l'instantané a connu.
+    /// Les bases ne sont pas copiées : elles ne changent jamais, et deux
+    /// couches posées sur la même base sont deux disques distincts.
+    ///
+    /// **Le disque propre**, s'il y en a un, est une base de zéros qui
+    /// appartient à la machine : la copie en reçoit une à elle, que l'appelant
+    /// crée (ce type ne voit pas la bibliothèque) et nomme dans
+    /// `renamingOwnDisk`. Sa couche est copiée sous ce nouveau nom.
+    ///
+    /// Tout ou rien autant que des fichiers le permettent : une copie qui
+    /// échoue retire la machine à moitié faite, et ce qu'elle avait reçu.
+    @discardableResult
+    public static func duplicate(
+        id: String, name: String? = nil, renamingOwnDisk newOwnDisk: String? = nil,
+        in directory: URL? = nil, now: Date = Date(), newID: String = newIdentifier()
+    ) throws -> InstalledMachine {
+        var machines = try loadForWriting(in: directory)
+        guard let source = machines.first(where: { $0.id == id }) else {
+            throw Refusal.unknown(id)
+        }
+        let wanted = name.map(trimmed) ?? ""
+        let base = wanted.isEmpty ? "\(source.name) copie" : wanted
+        let copy = InstalledMachine(
+            id: newID, name: uniqueName(base, among: machines.map(\.name)),
+            image: source.image, installedAt: now,
+            ownDisk: source.ownDisk == nil ? nil : newOwnDisk)
+        machines.append(copy)
+        try write(machines, in: directory)
+        do {
+            try copySettings(from: source, to: copy, in: directory)
+        } catch {
+            _ = try? remove(id: copy.id, in: directory)
+            throw error
+        }
+        return copy
+    }
+
+    /// Ce qu'une copie reçoit de sa source, fichier par fichier.
+    static func copySettings(
+        from source: InstalledMachine, to copy: InstalledMachine, in directory: URL?
+    ) throws {
+        // La mémoire : la valeur réglée, telle quelle — sans plafond, puisque
+        // ce n'est pas un démarrage qui la lit ici.
+        KernelMemory.setSize(
+            KernelMemory.size(forKernel: source.key, in: directory, ceiling: .max),
+            forKernel: copy.key, in: directory)
+
+        // Le disque choisi : le même fichier, sauf le disque propre, qui est
+        // remplacé par celui de la copie.
+        let renamed: (String) -> String = { disk in
+            disk == source.ownDisk ? (copy.ownDisk ?? disk) : disk
+        }
+        if let disk = LocalDisk.recordedName(forKernel: source.key, in: directory) {
+            LocalDisk.attach(renamed(disk), forKernel: copy.key, in: directory)
+        }
+
+        // Les couches d'écriture, sous la clé de la copie.
+        let writes = try LocalDisk.writesDirectory(in: directory)
+        let manager = FileManager.default
+        let prefix = source.keys.overlayPrefix
+        for entry in try manager.contentsOfDirectory(atPath: writes.path)
+        where entry.hasPrefix(prefix) && entry.hasSuffix(".writes") {
+            let disk = String(entry.dropFirst(prefix.count).dropLast(".writes".count))
+            let target = copy.keys.overlay(forDisk: renamed(disk)) + ".writes"
+            try manager.copyItem(at: writes.appendingPathComponent(entry),
+                                 to: writes.appendingPathComponent(target))
+            let map = writes.appendingPathComponent(entry + ".map")
+            if manager.fileExists(atPath: map.path) {
+                try manager.copyItem(at: map, to: writes.appendingPathComponent(target + ".map"))
+            }
+        }
+
+        // La session : chaque instantané garde son empreinte de noyau, qui
+        // est la même image, et prend la clé de la copie.
+        let folder = try directory ?? SuspendedMachine.directory()
+        let from = "machine-\(SuspendedMachine.safeName(source.key))-"
+        let to = "machine-\(SuspendedMachine.safeName(copy.key))-"
+        for file in SuspendedMachine.savedMachineFiles(named: source.key, in: directory) {
+            try manager.copyItem(
+                at: folder.appendingPathComponent(file),
+                to: folder.appendingPathComponent(to + file.dropFirst(from.count)))
+        }
+    }
+
     // MARK: - Ce que retirer emporte
 
     static func forgetEverything(of machine: InstalledMachine, in directory: URL?) {
