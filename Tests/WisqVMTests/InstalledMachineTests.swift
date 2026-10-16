@@ -251,6 +251,81 @@ final class InstalledMachineTests: XCTestCase {
         XCTAssertTrue(overlays().contains("donnees.img.writes"))
     }
 
+    // MARK: - Dupliquer
+
+    /// **Une copie repart d'où la source était** : même mémoire, même disque,
+    /// mêmes écritures, même session — sous sa clé à elle.
+    func testADuplicateCarriesSettingsWritesAndSession() throws {
+        let source = try InstalledMachines.install(image: iso, name: "Travail", in: folder)
+        KernelMemory.setSize(KernelMemory.choices.last!, forKernel: source.key, in: folder)
+        LocalDisk.attach("donnees.img", forKernel: source.key, in: folder)
+        try overlay(source.keys.overlay(forDisk: "donnees.img"), bytes: 1536)
+        let image = Data("noyau".utf8)
+        let session = Data([7, 7, 7])
+        try SuspendedMachine.save(
+            session, kernel: SuspendedMachine.identity(of: image, named: source.key), in: folder)
+
+        let copy = try InstalledMachines.duplicate(id: source.id, in: folder)
+
+        XCTAssertEqual(copy.name, "Travail copie")
+        XCTAssertEqual(copy.image, iso)
+        XCTAssertNotEqual(copy.key, source.key)
+        XCTAssertEqual(KernelMemory.size(forKernel: copy.key, in: folder, ceiling: .max),
+                       KernelMemory.choices.last!)
+        XCTAssertEqual(LocalDisk.recordedName(forKernel: copy.key, in: folder), "donnees.img")
+        XCTAssertEqual(
+            SuspendedMachine.load(
+                kernel: SuspendedMachine.identity(of: image, named: copy.key), in: folder),
+            session, "la session est reprise par la copie")
+        let writes = try LocalDisk.writesDirectory(in: folder)
+        XCTAssertEqual(
+            LocalDisk.overlayBytes(withPrefix: copy.keys.overlayPrefix, inWritesDirectory: writes),
+            1536 + 8, "la couche et sa carte")
+    }
+
+    /// **La copie et la source divergent ensuite** : retirer l'une ne touche
+    /// rien de l'autre, et la source garde tout.
+    func testADuplicateIsIndependentOfItsSource() throws {
+        let source = try InstalledMachines.install(image: iso, name: "A", in: folder)
+        try overlay(source.keys.overlay(forDisk: iso))
+        let image = Data("noyau".utf8)
+        try SuspendedMachine.save(
+            Data([1]), kernel: SuspendedMachine.identity(of: image, named: source.key), in: folder)
+        let copy = try InstalledMachines.duplicate(id: source.id, name: "B", in: folder)
+
+        try InstalledMachines.remove(id: copy.id, in: folder)
+        XCTAssertEqual(SuspendedMachine.savedMachineFiles(named: source.key, in: folder).count, 1)
+        XCTAssertEqual(overlays().filter { $0.hasPrefix(source.keys.overlayPrefix) }.count, 2)
+        XCTAssertEqual(overlays().filter { $0.hasPrefix(copy.keys.overlayPrefix) }, [])
+    }
+
+    /// Le disque propre de la source est remplacé par celui de la copie —
+    /// réglage, couche et appartenance — et jamais partagé.
+    func testADuplicateGetsItsOwnDiskInsteadOfSharingTheSources() throws {
+        let source = try InstalledMachines.install(image: iso, name: "A", in: folder)
+        try InstalledMachines.setOwnDisk("A-disque.img", id: source.id, in: folder)
+        LocalDisk.attach("A-disque.img", forKernel: source.key, in: folder)
+        try overlay(source.keys.overlay(forDisk: "A-disque.img"))
+
+        let copy = try InstalledMachines.duplicate(
+            id: source.id, renamingOwnDisk: "A-copie-disque.img", in: folder)
+
+        XCTAssertEqual(copy.ownDisk, "A-copie-disque.img")
+        XCTAssertEqual(InstalledMachines.machine(id: copy.id, in: folder)?.ownDisk,
+                       "A-copie-disque.img")
+        XCTAssertEqual(LocalDisk.recordedName(forKernel: copy.key, in: folder), "A-copie-disque.img")
+        XCTAssertTrue(overlays().contains(copy.keys.overlay(forDisk: "A-copie-disque.img") + ".writes"))
+        XCTAssertFalse(overlays().contains(copy.keys.overlay(forDisk: "A-disque.img") + ".writes"))
+    }
+
+    /// Une copie d'une machine qui n'existe plus est refusée, sans rien créer.
+    func testDuplicatingAnUnknownMachineCreatesNothing() throws {
+        XCTAssertThrowsError(try InstalledMachines.duplicate(id: "absente", in: folder)) {
+            XCTAssertEqual($0 as? InstalledMachines.Refusal, .unknown("absente"))
+        }
+        XCTAssertEqual(InstalledMachines.list(in: folder), [])
+    }
+
     // MARK: - Le stockage
 
     /// **La session d'une machine installée n'est pas un reste.** Son nom ne
