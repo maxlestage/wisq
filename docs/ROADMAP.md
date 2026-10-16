@@ -306,7 +306,7 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Plusieurs machines installées (tranche 1 faite)
+## Plusieurs machines installées (tranches 1 et 2 faites)
 
 Une machine locale *était* un fichier de la bibliothèque : mémoire, disque,
 couche d'écriture et session suspendue étaient tous rangés sous le nom de
@@ -330,10 +330,16 @@ iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
 
 **La suite, dans l'ordre :**
 
-1. Un disque vierge par machine, créé dans l'application (fichier épars de la
-   taille choisie) : c'est ce qui permet d'*installer* une distribution depuis
-   son ISO plutôt que de la faire vivre sur la couche d'écriture de l'image.
-2. Un second périphérique bloc, pour avoir l'ISO et ce disque en même temps.
+1. **Fait.** Un disque vierge par machine (`BlankDisk`), créé depuis le menu
+   du disque : une base de zéros agrandie par `ftruncate`, sans un octet
+   écrit, que la machine remplit dans sa couche tassée. La création relève
+   les blocs réellement alloués et refuse — fichier effacé — si le stockage a
+   réservé le disque entier ; le job « Cœur (Apple) » fait tourner la même
+   mesure sur APFS. Le disque appartient à la machine (`ownDisk`) et part
+   avec elle ; un disque importé, jamais.
+2. Un second périphérique bloc, pour avoir l'ISO et ce disque en même temps :
+   c'est ce qui manque pour installer une distribution *depuis son ISO*.
+   Aujourd'hui le disque vierge sert à un noyau et son initramfs.
 3. Dupliquer une machine (session comprise), et l'exporter.
 
 ## Lot 5 — SPICE (fait)
