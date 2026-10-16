@@ -799,6 +799,31 @@ struct LocalVMTerminalView: View {
                     .accessibilityLabel("Avancement de la machine : \(heartbeat)")
             }
 
+            // **Les touches qu'un shell demande.** Tabulation pour compléter,
+            // flèches pour l'historique, Échap et Ctrl pour un éditeur : sans
+            // elles on lance des commandes, on ne travaille pas. Ce que chaque
+            // touche envoie vient de `TerminalKey`, tenu par des tests.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(TerminalKey.bar, id: \.self) { key in
+                        Button {
+                            model.press(key, afterTyped: commandLine)
+                            commandLine = ""
+                            inputFocused = true
+                        } label: {
+                            Text(key.label)
+                                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                .frame(minWidth: 40, minHeight: 32)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel(key.spokenName)
+                    }
+                }
+                .padding(.horizontal, 10)
+            }
+            .padding(.top, 6)
+            .background(.ultraThinMaterial)
+
             HStack(spacing: 8) {
                 TextField("commande", text: $commandLine)
                     .textFieldStyle(.roundedBorder)
@@ -809,12 +834,6 @@ struct LocalVMTerminalView: View {
                     .onSubmit(submit)
                 Button("Entrée", action: submit)
                     .buttonStyle(.borderedProminent)
-                Button {
-                    model.send("\u{3}")   // Ctrl-C
-                } label: {
-                    Text("^C").font(.system(.body, design: .monospaced))
-                }
-                .buttonStyle(.bordered)
             }
             .padding(10)
             .background(.ultraThinMaterial)
