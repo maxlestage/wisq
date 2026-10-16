@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — un second disque, et un vrai noyau qui écrit dessus
+
+Le disque vierge ne servait qu'à un noyau et son initramfs : une image
+d'installation *est* le disque `/dev/vda` de sa machine — sa racine y vit, et
+sa ligne de commande la nomme. Installer depuis l'ISO demandait un second
+périphérique bloc.
+
+**L'emplacement PCI quatre**, servi par un second `X86PCIHost` qui partage
+l'adresse du bus et ne se dit jamais pont. Sa fenêtre de ports est à lui, et
+sa ligne d'interruption aussi : la six, sur le 8259 maître — le contrôleur
+esclave n'a aucune ligne routée, et zéro, quatre et cinq sont prises. Un
+second hôte plutôt qu'un tableau dans le premier, pour l'instantané : l'état
+du premier disque s'écrit octet pour octet comme avant, et le second
+s'ajoute derrière une marque (`WISQ_vdb`). Un instantané d'avant se relit
+sans lui ; un instantané tronqué dans sa section refuse en entier.
+
+**Mesuré sur le vrai noyau Alpine LTS 6.6**, par `X86BootAttemptTests` et
+`WISQ_PC_SECOND_DISK`, en release :
+
+    pci 0000:00:03.0: [1af4:1001] type 00 class 0x010000
+    pci 0000:00:04.0: [1af4:1001] type 00 class 0x010000
+    virtio_blk virtio0: [vda] 32768 512-byte logical blocks (16.8 MB/16.0 MiB)
+    virtio_blk virtio1: [vdb] 65536 512-byte logical blocks (33.6 MB/32.0 MiB)
+    ~ # echo wisq-ecrit-sur-vdb > /dev/vdb
+    ~ # head -c 19 /dev/vdb; echo
+    wisq-ecrit-sur-vdb
+
+    second disque : 65536 secteurs, 357 requêtes servies, 0 refusées, état 7, ligne 6
+
+Écrire puis relire passe par la file, par la ligne six et par le
+gestionnaire du noyau : c'est le chemin entier, pas seulement l'énumération.
+
+**Deux faux départs, et ils sont à moi.** Un `pkill -f` dont le motif était
+dans sa propre ligne de commande l'a tué avec la cible ; puis une source
+modifiée pendant la compilation release a fait échouer celle-ci. La mesure
+a fini par tourner depuis un worktree à part, et c'est la règle désormais
+pour les mesures longues.
+
 ## 2026-10-16 — la console locale reçoit ses touches
 
 « Travailler confortablement » était la moitié de la demande, et la console
