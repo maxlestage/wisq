@@ -131,6 +131,14 @@ final class X86BootAttemptTests: XCTestCase {
             memory.storage = disk
             memory.bus = X86PCIHost(storage: disk)
         }
+        // Un second disque, sur l'emplacement quatre : `vdb` pour le noyau.
+        // C'est le disque sur lequel on installe quand le premier est l'image.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_SECOND_DISK"],
+           let image = FileManager.default.contents(atPath: path) {
+            let bus = memory.bus ?? X86PCIHost(storage: nil)
+            bus.second = X86PCIHost(secondStorage: VirtioBlock(image: [UInt8](image)))
+            memory.bus = bus
+        }
         // **Ce que le témoin a rendu, le 6 septembre 2026**, avec un vrai
         // noyau Alpine LTS et `WISQ_PC_DISPLAY=1024x768` :
         //
