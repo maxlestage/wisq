@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — emporter une machine sur un autre téléphone
+
+La dernière ligne de la feuille de route des machines installées : une
+machine qu'on a installée et configurée ne doit pas être prisonnière du
+téléphone où elle est née. « Exporter » (appui long) écrit un fichier
+`.wisqmachine` et ouvre la feuille de partage ; le bouton « Importer » de la
+bibliothèque le reconnaît à sa marque et installe la machine, qui reprend sa
+session.
+
+**Ce qui n'est pas dedans, et pourquoi.** L'image : un ISO pèse des
+gibioctets, ne change jamais, et le téléphone qui importe doit l'avoir — l'import
+la demande par son nom et refuse en la nommant, plutôt que de créer une
+machine qui ne démarrerait pas. Le disque vierge propre non plus : ce n'est
+qu'une taille, recréée à l'arrivée, et la couche qui le remplissait suit son
+nouveau nom.
+
+**Tout ou rien.** Le manifeste est lu et vérifié avant la moindre écriture, la
+taille annoncée doit être celle du fichier, un nom qui sortirait de son dossier
+est refusé, et une copie qui échoue en route retire la machine à moitié faite.
+Les couches sont recopiées par morceaux d'un mébioctet : une couche de
+plusieurs gibioctets ne passe jamais entière en mémoire.
+
+**Un sabotage n'est d'abord pas tombé, et c'était le test.** Le disque recréé
+portait par hasard le même nom que l'original : le renommage de la couche
+n'était jamais exercé. Le test pose maintenant un fichier du même nom de
+l'autre côté, et le sabotage tombe.
+
 ## 2026-10-16 — un second disque, et un vrai noyau qui écrit dessus
 
 Le disque vierge ne servait qu'à un noyau et son initramfs : une image

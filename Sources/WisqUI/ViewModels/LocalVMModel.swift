@@ -904,6 +904,47 @@ public enum KernelLibrary {
         return leaving.map(\.name)
     }
 
+    /// Écrit une machine dans un fichier `.wisqmachine` du dossier temporaire,
+    /// prêt à partager, et rend son adresse. Le nom du fichier est celui de la
+    /// machine, pour qu'on le reconnaisse là où on l'envoie.
+    public static func exportMachine(_ machine: InstalledMachine) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("export-\(machine.id)", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = BlankDisk.fileName(forMachine: machine.name, among: [])
+            .replacingOccurrences(of: "-disque.img", with: "")
+        let url = folder.appendingPathComponent("\(name).\(MachineArchive.fileExtension)")
+        try MachineArchive.export(machine, kernels: try directory(), to: url)
+        return url
+    }
+
+    /// Importe une machine exportée. Le disque vierge qu'elle avait est
+    /// recréé dans la bibliothèque — et retiré si l'import échoue ensuite.
+    @discardableResult
+    public static func importMachine(from source: URL) throws -> InstalledMachine {
+        _ = source.startAccessingSecurityScopedResource()
+        defer { source.stopAccessingSecurityScopedResource() }
+        let folder = try directory()
+        var created: String?
+        do {
+            return try MachineArchive.import(
+                from: source, library: list().map(\.lastPathComponent)
+            ) { name, bytes in
+                let disk = BlankDisk.fileName(
+                    forMachine: name, among: list().map(\.lastPathComponent))
+                try BlankDisk.create(at: folder.appendingPathComponent(disk), bytes: bytes)
+                created = disk
+                return disk
+            }
+        } catch {
+            if let created {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(created))
+            }
+            throw error
+        }
+    }
+
     /// Retire une machine installée, et le disque vierge créé pour elle.
     ///
     /// Le disque propre part parce que ce qui le remplissait part aussi : ses
