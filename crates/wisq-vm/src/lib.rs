@@ -12,6 +12,9 @@ pub mod census;
 pub mod core;
 pub mod desktop;
 pub mod dtb;
+// L'ABI C n'a de sens que pour l'application : le site, qui compile la machine
+// en WebAssembly, l'appelle directement en Rust.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod iso9660;
 pub mod kernel_image;

@@ -67,7 +67,10 @@ fn les_deux_langues_remplissent_chaque_page() {
         .iter()
         .filter(|r| doc(r.id, Lang::En).is_none())
         .count();
-    assert_eq!(accueil, 1, "seul l'accueil n'est pas un document");
+    assert_eq!(
+        accueil, 2,
+        "seuls l'accueil et la page Linux ne sont pas des documents"
+    );
     for (id, en, fr) in documents() {
         for (lang, d) in [("en", en), ("fr", fr)] {
             for s in chaines(d) {

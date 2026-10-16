@@ -8,6 +8,18 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **Linux dans le navigateur.** La page `linux/` du site fait tourner la
+  machine rv32ima de wisq — `crates/wisq-vm`, le cœur même que l'application
+  embarque — compilée en WebAssembly. On lui donne une image de noyau RISC-V
+  sans MMU (`linux-6.1.14-rv32nommu-cnl-1.zip`, celle que démarre la CI) et
+  elle démarre jusqu'au shell dans l'onglet : relevé dans Chromium sans tête
+  sur ce conteneur, l'invite `buildroot login:` arrive en moins d'une seconde
+  (environ 85 MIPS), et `uname -a` répond `riscv32`. L'image est lue sur
+  place et n'est envoyée nulle part. L'interpréteur vit dans un second module
+  wasm, que seule cette page charge : le module commun ne grossit pas. Pour
+  compiler en wasm, `wisq-vm` met son ABI C de côté hors de l'application et
+  remplace `FileExt` hors Unix ; il garde `opt-level = 3` sous le profil
+  `wasm-release`, parce qu'un interpréteur achète de la vitesse.
 - **Un écran pour la machine x86-64, et un vrai noyau qui le trouve.** Trois
   tranches : `screen_info` dans la page zéro dit au noyau où peindre,
   `X86Framebuffer` tient la mémoire derrière, et `X86Machine.attachDisplay`
@@ -36,6 +48,17 @@ break APIs.
   l'invité et lisible par l'hôte, et la vue reste à écrire.
 
 ### Changed
+- **Tout le front du site est réécrit avec Active**, la bibliothèque
+  front-end en Rust de Maxime Nathan Lestage
+  (<https://github.com/maxlestage/Active>). Les vingt-deux pages sont des vues
+  Active rendues en HTML à la construction ; les îlots — réglages de
+  l'en-tête, invite d'installation, terminal Linux — sont des
+  `active::island` que `active::hydrate` reprend. Le pré-rendu n'a plus à
+  rendre chaque îlot deux fois pour poser des marqueurs à la main, ni
+  d'exécuteur asynchrone. Le module commun passe de 276 143 octets (118 645
+  gzippés) à 153 534 (68 631), mesuré sur ce conteneur avec le gzip de Bun
+  1.4.2. Chaque page le dit dans son pied — « Front end written in Rust with
+  Active, by Maxime Nathan Lestage » — et dans `<meta name="generator">`.
 - **Le site est en Yew et en WebAssembly, de la première page à la dernière,
   et il bouge comme zamocorp.com.** Les dix pages, dans les deux langues, sont
   des composants de `crates/wisq-site` rendus en HTML à la construction ; React,

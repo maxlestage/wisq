@@ -72,9 +72,10 @@ function tokensOf(css: string, selector: string): Record<string, string> {
   return tokens;
 }
 
-/// Les deux fichiers du front en Yew : le module et la colle qui le démarre.
-function frontFiles(): { wasm: string; glue: string } {
-  const noms = readdirSync(dist).filter((entry) => entry.startsWith("wisq-"));
+/// Les deux fichiers d'un module du front — `wisq-` pour le module commun,
+/// `linux-` pour celui de la page `linux/`, qui porte la machine.
+function frontFiles(prefixe = "wisq-"): { wasm: string; glue: string } {
+  const noms = readdirSync(dist).filter((entry) => entry.startsWith(prefixe));
   const wasm = noms.filter((n) => n.endsWith(".wasm"));
   const glue = noms.filter((n) => n.endsWith(".js"));
   if (wasm.length !== 1 || glue.length !== 1) {
@@ -110,8 +111,9 @@ describe("built output", () => {
   /// la seule façon dont il pourrait revenir.
   test("aucun script ne voyage à côté du module", () => {
     const { glue } = frontFiles();
+    const { glue: linux } = frontFiles("linux-");
     const scripts = readdirSync(dist).filter((n) => n.endsWith(".js")).sort();
-    expect(scripts).toEqual([glue, "sw.js"].sort());
+    expect(scripts).toEqual([glue, linux, "sw.js"].sort());
     for (const { file } of BUILT) {
       const html = read(file);
       const charges = [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]);
@@ -544,9 +546,15 @@ describe("built output", () => {
   /// deux fichiers demandés dès la tête, la colle qui nomme le wasm, et les deux
   /// dans le précache.
   test("chaque page charge son module, et le demande tôt", () => {
-    const { wasm, glue } = frontFiles();
-    for (const { file } of BUILT) {
+    const commun = frontFiles();
+    const machine = frontFiles("linux-");
+    for (const { file, route } of BUILT) {
+      // La page `linux/` charge le module qui porte la machine, et seulement
+      // lui ; toutes les autres, le module commun.
+      const { wasm, glue } = route.id === "linux" ? machine : commun;
+      const autre = route.id === "linux" ? commun : machine;
       const html = read(file);
+      expect(html, `${file} : charge aussi l'autre module`).not.toContain(autre.glue);
       expect(html, `${file} : la colle n'est pas importée`).toContain(`${glue}";demarrer()`);
       // Le navigateur cherche les deux pendant qu'il lit le corps, au lieu
       // d'attendre que la colle s'exécute pour découvrir le wasm.
@@ -559,41 +567,45 @@ describe("built output", () => {
     }
 
     // La colle nomme le module : sans ça elle chargerait un nom disparu.
-    expect(read(glue), "la colle ne nomme pas le wasm").toContain(wasm);
+    for (const { wasm, glue } of [commun, machine]) {
+      expect(read(glue), "la colle ne nomme pas le wasm").toContain(wasm);
+    }
 
     // Hors ligne, un front absent n'est pas une page dégradée : c'est une page
     // dont les îlots ne répondent plus.
     const sw = read("sw.js");
-    for (const actif of [wasm, glue]) {
+    for (const actif of [commun.wasm, commun.glue, machine.wasm, machine.glue]) {
       expect(sw, `${actif} doit être précaché`).toContain(`"./${actif}"`);
     }
   });
 
-  /// **Les marqueurs d'hydratation ne vivent que dans les îlots.** La page est
-  /// rendue sans eux, et chaque îlot avec : là où il y a un marqueur, il y a
-  /// une racine que le module reprend, et nulle part ailleurs. Un marqueur hors
-  /// d'un îlot voudrait dire qu'une région se croit hydratée — ou que le
-  /// pré-rendu a cessé de distinguer les deux.
+  /// **Les marqueurs d'hydratation ne vivent que dans les îlots.** Active
+  /// n'en écrit que là où le navigateur aura quelque chose à reprendre : une
+  /// racine `<active-island>` par îlot, et à l'intérieur les commentaires qui
+  /// situent un texte dynamique. Un marqueur hors d'un îlot voudrait dire
+  /// qu'une région se croit hydratée — ou qu'un texte de la page a été rendu
+  /// dynamique sans raison.
   test("les marqueurs d'hydratation ne vivent que dans les îlots", () => {
-    for (const { file } of BUILT) {
+    for (const { file, route } of BUILT) {
       const html = read(file);
       const racine = html.match(/<div id="root"[^>]*>([\s\S]*)<\/div>\s*<script/)![1]!;
-      const ilots = [...racine.matchAll(/<div data-ilot="(\w+)"/g)];
-      expect(ilots.map((m) => m[1]), `${file} : les deux îlots`).toEqual(["reglages", "installation"]);
+      const ilots = [...racine.matchAll(/<div [^>]*data-ilot="(\w+)"/g)];
+      const attendus =
+        route.id === "linux" ? ["reglages", "terminal", "installation"] : ["reglages", "installation"];
+      expect(ilots.map((m) => m[1]), `${file} : les îlots`).toEqual(attendus);
       // Retirer chaque îlot entier — jusqu'à la balise qui referme sa racine,
-      // comptée, pas devinée : l'îlot des réglages contient des `div` et des
-      // marqueurs imbriqués, et une expression qui s'arrêterait au premier
-      // marqueur de fin s'arrêterait au milieu.
+      // comptée, pas devinée : les îlots contiennent des `div` imbriqués.
       let dehors = racine;
       for (const m of ilots) dehors = dehors.replace(element(racine, m.index!), "");
       expect(dehors.includes("<!--"), `${file} : un marqueur hors d'un îlot`).toBe(false);
-      // Et chaque îlot l'est, pas seulement l'un des deux : le module refuse
-      // d'hydrater une racine qui ne commence pas par le marqueur d'ouverture.
+      expect(dehors.includes("<active-island"), `${file} : un îlot hors de sa racine`).toBe(false);
+      // Et chaque racine porte son îlot, sous son nom : c'est par lui que le
+      // module retrouve le composant qui la reprend.
       for (const m of ilots) {
         expect(
-          racine.slice(m.index!).match(/^<div data-ilot="\w+"[^>]*>(<!--<\[\]>-->)?/)![1],
-          `${file} : l'îlot « ${m[1]} » ne commence pas par un marqueur`,
-        ).toBe("<!--<[]>-->");
+          racine.slice(m.index!).match(/^<div [^>]*data-ilot="\w+"[^>]*>(<active-island data-island="\w+")?/)![1],
+          `${file} : l'îlot « ${m[1]} » ne commence pas par sa racine Active`,
+        ).toBe(`<active-island data-island="${m[1]}"`);
       }
     }
   });
@@ -687,7 +699,9 @@ describe("built output", () => {
   /// doit être exactement le texte du `h2` qu'elle vise. Et les rangs vont de
   /// zéro au dernier mot, dans l'ordre.
   test("les titres de section sont découpés en mots, sans changer de texte", () => {
-    for (const { file } of BUILT.filter((b) => !/404|offline/.test(b.file))) {
+    // La page `linux/` est une page à faire plutôt qu'à lire : un seul titre
+    // de section, au-dessus du terminal.
+    for (const { file } of BUILT.filter((b) => !/404|offline|linux/.test(b.file))) {
       // Le contenu seulement : les colonnes du pied ont leurs propres `h2`,
       // qui nomment des groupes de liens et ne montent pas.
       const tout = read(file);
@@ -697,7 +711,7 @@ describe("built output", () => {
       for (const t of titres) {
         const corps = t[2] ?? t[3]!;
         const mots = text(corps).split(" ");
-        const rangs = [...corps.matchAll(/style="--i:(\d+)" class="mot"/g)].map((m) => Number(m[1]));
+        const rangs = [...corps.matchAll(/class="mot" style="--i:(\d+)"/g)].map((m) => Number(m[1]));
         expect(rangs, `${file} : « ${text(corps)} »`).toEqual(mots.map((_, i) => i));
       }
       for (const entree of html.matchAll(/<li><a href="#([^"]+)">([^<]+)<\/a><\/li>/g)) {
@@ -730,7 +744,7 @@ describe("built output", () => {
       const h1 = html.match(/<h1 class="hero-title">([\s\S]*?)<\/h1>/)?.[1];
       expect(h1, `${lang} : le titre du héros`).toBeDefined();
       expect(text(h1!), `${lang} : le titre a changé de texte`).toBe(copy[lang]!.hero.tagline);
-      const rangs = [...h1!.matchAll(/style="--i:(\d+)" class="mot"/g)].map((m) => Number(m[1]));
+      const rangs = [...h1!.matchAll(/class="mot" style="--i:(\d+)"/g)].map((m) => Number(m[1]));
       expect(rangs, `${lang} : un rang par mot, dans l'ordre`).toEqual(
         copy[lang]!.hero.tagline.split(" ").map((_, i) => i),
       );
@@ -743,7 +757,7 @@ describe("built output", () => {
   test("la bande se tait pour les lecteurs d'écran, et porte deux fois ses mots", () => {
     for (const lang of LANGS) {
       const html = read(page("home", lang).file);
-      expect(html, `${lang} : la bande`).toContain('<div aria-hidden="true" class="bande">');
+      expect(html, `${lang} : la bande`).toContain('<div class="bande" aria-hidden="true">');
       const simples = html.match(/class="bande-mot">/g)?.length ?? 0;
       const doubles = html.match(/class="bande-mot bande-double">/g)?.length ?? 0;
       expect(simples, `${lang} : des mots dans la bande`).toBeGreaterThan(4);
@@ -1264,10 +1278,10 @@ describe("footer", () => {
     for (const { file } of BUILT) {
       const html = read(file);
       for (const marker of [
-        /<aside role="complementary" data-install="" hidden="hidden" class="install-banner">/,
-        /<div data-install-variant="prompt" hidden="hidden">/,
-        /<div data-install-variant="ios" hidden="hidden">/,
-        /<button type="button" data-install-accept="" hidden="hidden"/,
+        /<aside class="install-banner" role="complementary" hidden="" data-install="">/,
+        /<div data-install-variant="prompt" hidden="">/,
+        /<div data-install-variant="ios" hidden="">/,
+        /<button class="btn btn-primary" type="button" data-install-accept="" hidden=""/,
       ]) {
         expect(html, `${file} : « ${marker.source} » n'est pas masqué`).toMatch(marker);
       }

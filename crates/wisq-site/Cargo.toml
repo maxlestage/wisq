@@ -3,32 +3,40 @@ name = "wisq-site"
 version = "0.4.0"
 edition = "2021"
 authors = ["Maxime Nathan Lestage"]
-# Yew 0.23 exige 1.84, là où les deux autres crates se tiennent à 1.82. C'est
-# déclaré ici plutôt qu'au workspace : le cœur de la VM et le démon n'ont aucune
-# raison de monter leur plancher parce que le site a un framework.
-rust-version = "1.84"
-description = "Le front du site de wisq : composants Yew pré-rendus à la construction, deux îlots hydratés et le mouvement en WebAssembly"
+# Active est en édition 2024, qui demande 1.85. C'est déclaré ici plutôt qu'au
+# workspace : le cœur de la VM et le démon n'ont aucune raison de monter leur
+# plancher parce que le site a un framework.
+rust-version = "1.85"
+description = "Le front du site de wisq, écrit avec Active : pages rendues à la construction, îlots hydratés et mouvement en WebAssembly, et un Linux qui démarre dans le navigateur"
 repository = "https://github.com/maxlestage/wisq"
 
-# Deux cibles pour un seul arbre de composants, et c'est tout l'intérêt.
+# Trois cibles pour un seul arbre de composants.
 #
-#   `ssr`     — la construction rend les vingt pages en HTML, là où
-#               `renderToString` le faisait pour React. La première peinture ne
-#               dépend donc pas du wasm : mesuré, `ServerRenderer` produit bien
-#               le balisage.
-#   `hydrate` — le navigateur reprend deux îlots de cet HTML, et le module
-#               anime le reste : le mouvement est en Rust, pas en script.
+#   `ssr`     — la construction rend les vingt-deux pages en HTML : `Node::render`
+#               d'Active écrit directement dans une `String`, sans moteur
+#               asynchrone ni marqueur hors des îlots.
+#   `hydrate` — le navigateur reprend les îlots de cet HTML (`active::hydrate`),
+#               et le module anime le reste : le mouvement est en Rust.
+#   `linux`   — le même module, plus la machine rv32ima de `wisq-vm` et le
+#               terminal qui la conduit. Construit à part et chargé par la seule
+#               page `linux/` : un lecteur de la FAQ ne télécharge pas un
+#               interpréteur.
 #
 # `clippy --all-targets --all-features` de la CI les active **ensemble**, sur une
-# cible native. Vérifié avant d'écrire une ligne : ça compile.
+# cible native : le code client est écrit pour compiler des deux côtés.
 [features]
 default = ["ssr"]
-ssr = ["yew/ssr", "dep:tokio"]
-hydrate = ["yew/hydration", "dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
+ssr = []
+hydrate = ["active/client", "dep:wasm-bindgen", "dep:web-sys", "dep:js-sys"]
+linux = ["hydrate", "dep:wisq-vm"]
 
 [dependencies]
-yew = { version = "0.23", default-features = false }
-tokio = { version = "1", features = ["rt", "macros"], optional = true }
+# **Active**, la bibliothèque front-end en Rust de Maxime Nathan Lestage —
+# https://github.com/maxlestage/Active. Épinglée à un commit : le site est
+# reconstruit par Heroku à chaque poussée, et une branche qui bouge ferait
+# changer le front sans qu'une ligne de ce dépôt ait changé.
+active = { git = "https://github.com/maxlestage/Active", rev = "f7663e45d38628e5cfa66cfe3ede0435abb20e0a" }
+wisq-vm = { path = "../wisq-vm", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 # `js-sys` pour trois choses que `web-sys` ne nomme pas : `Reflect` (l'événement
 # `beforeinstallprompt` n'a pas de liaison, il n'est pas normalisé), `Math`
@@ -39,6 +47,7 @@ js-sys = { version = "0.3", optional = true }
 # touche réellement, pas une réserve.
 web-sys = { version = "0.3", optional = true, features = [
   "AddEventListenerOptions",
+  "Blob",
   "CanvasRenderingContext2d",
   "CssStyleDeclaration",
   "Document",
@@ -47,12 +56,16 @@ web-sys = { version = "0.3", optional = true, features = [
   "Element",
   "Event",
   "EventTarget",
+  "File",
+  "FileList",
   "HtmlCanvasElement",
   "HtmlCollection",
   "HtmlElement",
+  "HtmlInputElement",
   "IntersectionObserver",
   "IntersectionObserverEntry",
   "IntersectionObserverInit",
+  "KeyboardEvent",
   "Location",
   "MediaQueryList",
   "MouseEvent",
@@ -77,5 +90,5 @@ crate-type = ["cdylib", "rlib"]
 name = "wisq-site-prerender"
 path = "src/bin/prerender.rs"
 # Sans ça, `--no-default-features --features hydrate` tenterait de construire un
-# binaire natif qui n'a ni tokio ni raison d'exister.
+# binaire natif qui n'a aucune raison d'exister.
 required-features = ["ssr"]

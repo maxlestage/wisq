@@ -197,7 +197,7 @@ function buildTree(options: { builds: boolean }): string {
 
   // **L'installateur de la chaîne wasm, postiche et témoin.**
   //
-  // Depuis que le front est en Yew, `heroku-build.sh` appelle
+  // Depuis que le front est en Rust (Yew, puis Active), `heroku-build.sh` appelle
   // `scripts/install-wasm-toolchain.sh` : sans lui, le déploiement n'a ni
   // wasm-bindgen ni cible wasm32 et la construction refuse. Le vrai
   // installateur télécharge rustup, ce qui n'a rien à faire dans un test dont

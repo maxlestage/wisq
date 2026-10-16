@@ -147,10 +147,11 @@ mod tests {
     /// vient de la former.
     #[test]
     fn la_geometrie_est_celle_du_logo() {
-        let svg = include_str!("../logo.rs");
+        // Le dessin rendu, pas la source : c'est lui que la page publie.
+        let svg = active::Node::from(crate::logo::logo("x", "t")).render();
         let attendu = [
             format!(
-                r#"<rect x="{FENETRE}" y="{FENETRE}" width="{COTE}" height="{COTE}" rx="{RAYON}" />"#
+                r#"<rect x="{FENETRE}" y="{FENETRE}" width="{COTE}" height="{COTE}" rx="{RAYON}">"#
             ),
             format!(
                 r#"<rect x="{TELEPHONE}" y="{TELEPHONE}" width="{COTE}" height="{COTE}" rx="{RAYON}""#
@@ -161,12 +162,12 @@ mod tests {
             ),
         ];
         for a in attendu {
-            assert!(svg.contains(&a), "logo.rs ne dessine pas {a}");
+            assert!(svg.contains(&a), "le logo ne dessine pas {a}");
         }
         for c in PAS {
             assert!(
-                svg.contains(&format!("(\"{c}\"")),
-                "logo.rs n'a pas le pas {c}"
+                svg.contains(&format!("cx=\"{c}\" cy=\"{c}\"")),
+                "le logo n'a pas le pas {c}"
             );
         }
     }
