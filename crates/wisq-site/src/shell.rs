@@ -187,6 +187,22 @@ fn Footer(props: &FooterProps) -> Html {
                         <Logo class="footer-logo" instance="footer" />
                         <span class="footer-wordmark">{ "wisq" }<span>{ "▚" }</span></span>
                     </a>
+                    // **La signature, juste sous le mot-symbole** : là où un
+                    // lecteur cherche qui a fait une chose. La couleur ne tombe
+                    // que sur le prénom et le nom. Le crédit au travail d'autrui
+                    // reste dans la barre du bas et n'est pas touché par ceci :
+                    // une ligne qui dit ce qui est à moi ne doit jamais se lire
+                    // comme une revendication sur ce qui ne l'est pas.
+                    <div class="signature">
+                        <p class="signature-par">{ copy.footer.author }</p>
+                        // Le nom est **un** lien : c'est lui que la garde « every
+                        // page says who made it » cherche, et elle lit son texte
+                        // sans les balises qui colorent deux de ses mots.
+                        <p class="signature-nom">
+                            <a href={AUTHOR_URL} rel="author">{ nom_en_couleur() }</a>
+                        </p>
+                        <p class="signature-fabrique">{ copy.footer.crafted }</p>
+                    </div>
                     <p>{ copy.footer.tagline }</p>
                     // Une seule chaîne plutôt que trois enfants : un moteur de
                     // rendu qui sépare deux nœuds de texte adjacents pose des
@@ -209,23 +225,6 @@ fn Footer(props: &FooterProps) -> Html {
                         </div>
                     }) }
                 </nav>
-            </div>
-
-            // **La signature.** Le nom en grand, et d'où il vient. La couleur
-            // ne tombe que sur le prénom et le nom, le second prénom restant
-            // dans la couleur du texte. Le crédit au travail d'autrui reste dans
-            // la barre du bas et n'est pas touché par ceci : une ligne qui dit
-            // ce qui est à moi ne doit jamais se lire comme une revendication
-            // sur ce qui ne l'est pas.
-            <div class="wrap signature">
-                <p class="signature-par">{ copy.footer.author }</p>
-                // Le nom est **un** lien : c'est lui que la garde « every page
-                // says who made it » cherche, et elle lit son texte sans les
-                // balises qui colorent deux de ses mots.
-                <p class="signature-nom">
-                    <a href={AUTHOR_URL} rel="author">{ nom_en_couleur() }</a>
-                </p>
-                <p class="signature-fabrique">{ copy.footer.crafted }</p>
             </div>
 
             <div class="wrap footer-bottom">
