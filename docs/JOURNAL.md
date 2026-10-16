@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — dupliquer une machine, session comprise
+
+Une machine qu'on a installée et configurée est un point d'arrivée qui a
+coûté du temps. La dupliquer doit rendre ce point, pas un démarrage de plus :
+la copie reprend **la session** de l'original.
+
+**Ce qui est copié tient à ce qu'est un instantané ici.** Il ne porte pas les
+octets du disque, seulement « le contenu vit ailleurs » ; les octets sont dans
+les couches d'écriture. Copier les deux ensemble — sous la clé de la copie —
+rend une machine dont le disque est exactement celui que l'instantané a
+connu. Les bases ne sont jamais copiées : elles ne changent pas, et deux
+couches sur la même base sont deux disques distincts.
+
+**Le disque propre ne se partage pas.** La copie reçoit une base vierge de
+même taille, et la couche de l'original est copiée sous le nom de ce nouveau
+disque ; sinon retirer la copie emporterait le disque de l'original.
+
+**Un sabotage, une chute :** la copie qui garde le nom du disque propre de la
+source au lieu du sien.
 ## 2026-10-16 — la signature remonte sous le mot-symbole
 
 Maxime, capture du téléphone à l'appui : la signature devait être **sous

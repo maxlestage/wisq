@@ -306,7 +306,7 @@ La question de « l'instantané plus vieux que son image » ne se pose plus : un
 image modifiée est une autre clé, donc rien d'enregistré et un démarrage propre.
 C'était la réponse complète, pas une réponse partielle.
 
-## Plusieurs machines installées (tranches 1 à 3 faites)
+## Plusieurs machines installées (faites)
 
 Une machine locale *était* un fichier de la bibliothèque : mémoire, disque,
 couche d'écriture et session suspendue étaient tous rangés sous le nom de
@@ -343,7 +343,12 @@ iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
    image d'installation a l'image sur `vda` et son disque choisi — vierge le
    plus souvent — sur `vdb`. L'instantané l'écrit derrière une marque, après
    le premier : les machines déjà sauvées se relisent sans lui.
-3. Dupliquer une machine (session comprise), et l'exporter.
+3. **Fait.** Dupliquer une machine, session comprise : la copie reçoit la
+   mémoire, le disque choisi, les couches d'écriture copiées sous sa clé et
+   la session suspendue — elle reprend où l'original en était. Les bases ne
+   sont pas copiées (elles ne changent jamais) ; un disque propre est
+   remplacé par une base vierge de même taille, sur laquelle la couche est
+   copiée. **Reste** : exporter une machine hors du téléphone.
 
 ## Lot 5 — SPICE (fait)
 
