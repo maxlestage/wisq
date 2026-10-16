@@ -900,6 +900,34 @@ public enum KernelLibrary {
         }
     }
 
+    /// Duplique une machine, session comprise, et rend la copie.
+    ///
+    /// Son disque propre, s'il y en a un, n'est pas partagé : la copie reçoit
+    /// une base vierge de la même taille, et `InstalledMachines.duplicate`
+    /// copie la couche de la source dessus — c'est la couche qui porte les
+    /// octets, la base n'est que des zéros.
+    @discardableResult
+    public static func duplicateMachine(_ machine: InstalledMachine) throws -> InstalledMachine {
+        let folder = try directory()
+        var ownDisk: String?
+        if let own = machine.ownDisk,
+           let size = (try? FileManager.default.attributesOfItem(
+               atPath: folder.appendingPathComponent(own).path))?[.size] as? Int {
+            let name = BlankDisk.fileName(
+                forMachine: machine.name + " copie", among: list().map(\.lastPathComponent))
+            try BlankDisk.create(at: folder.appendingPathComponent(name), bytes: UInt64(size))
+            ownDisk = name
+        }
+        do {
+            return try InstalledMachines.duplicate(id: machine.id, renamingOwnDisk: ownDisk)
+        } catch {
+            if let ownDisk {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(ownDisk))
+            }
+            throw error
+        }
+    }
+
     /// Crée un disque vierge pour cette machine, le lui branche, et rend son
     /// nom.
     ///
