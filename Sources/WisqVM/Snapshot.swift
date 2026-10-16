@@ -79,27 +79,85 @@ enum Snapshot {
         /// rest is the zero the mapping started as. Writing it all would make
         /// a snapshot too heavy to take every time the app goes to the
         /// background, which is the only moment it can be taken.
+        ///
+        /// **Seules les longues suites de zéros sont repliées.** Une paire
+        /// coûte seize octets d'en-tête ; replier les trois zéros d'un petit
+        /// entier sur huit octets coûtait donc seize octets pour en économiser
+        /// trois. Mesuré sur une machine PC de 512 Mio portant 90 Mio de
+        /// données réelles — l'initramfs d'Alpine et une table d'entiers —
+        /// l'instantané pesait **169,8 Mio**, presque le double de ce qu'il
+        /// contenait. Une suite plus courte que `minimumFoldedZeros` reste
+        /// dans le littéral, où elle coûte ce qu'elle pèse.
+        ///
+        /// **Le lecteur n'a pas changé** : il lit n'importe quelle suite de
+        /// paires, et les instantanés déjà écrits se relisent tels quels. Le
+        /// cœur Rust applique la même règle ; `DifferentialBootTests` compare
+        /// les deux octet pour octet.
         mutating func ram(_ ram: UnsafeRawBufferPointer) {
             u64(UInt64(ram.count))
             let countAt = bytes.count
             u64(0) // pair count, filled in below
+            bytes.reserveCapacity(bytes.count + ram.count / 4)
             var pairs: UInt64 = 0
             var index = 0
-            while index < ram.count {
+            let count = ram.count
+            while index < count {
                 let zerosFrom = index
-                while index < ram.count && ram[index] == 0 { index += 1 }
-                let zeros = UInt64(index - zerosFrom)
-                let literalFrom = index
-                while index < ram.count && ram[index] != 0 { index += 1 }
-                u64(zeros)
+                index = Snapshot.endOfZeros(ram, from: index)
+                var zeros = index - zerosFrom
+                var literalFrom = index
+                // Une suite courte en tête de paire, suivie de données, est
+                // du littéral comme les autres.
+                if zeros < Snapshot.minimumFoldedZeros && index < count {
+                    zeros = 0
+                    literalFrom = zerosFrom
+                }
+                // Le littéral s'étend jusqu'à une longue suite de zéros, ou
+                // jusqu'au bout.
+                while index < count {
+                    if ram[index] != 0 {
+                        index += 1
+                        continue
+                    }
+                    let runFrom = index
+                    index = Snapshot.endOfZeros(ram, from: index)
+                    if index - runFrom >= Snapshot.minimumFoldedZeros || index == count {
+                        index = runFrom
+                        break
+                    }
+                }
+                u64(UInt64(zeros))
                 u64(UInt64(index - literalFrom))
-                bytes.append(contentsOf: ram[literalFrom..<index])
+                bytes.append(contentsOf: UnsafeRawBufferPointer(rebasing: ram[literalFrom..<index]))
                 pairs += 1
             }
             withUnsafeBytes(of: pairs.littleEndian) { encoded in
                 for (offset, byte) in encoded.enumerated() { bytes[countAt + offset] = byte }
             }
         }
+    }
+
+    /// La plus courte suite de zéros qui vaut une paire. Seize octets
+    /// d'en-tête, et une marge : en dessous, replier ne rapporte rien.
+    static let minimumFoldedZeros = 32
+
+    /// Le premier octet non nul à partir de `index`, ou la fin.
+    ///
+    /// **Huit octets à la fois** quand l'alignement le permet : la mémoire
+    /// d'un invité est surtout vide, et c'est cette boucle qui la parcourt à
+    /// chaque passage en arrière-plan.
+    static func endOfZeros(_ ram: UnsafeRawBufferPointer, from start: Int) -> Int {
+        var index = start
+        let count = ram.count
+        guard let base = ram.baseAddress else { return count }
+        while index < count && (Int(bitPattern: base) &+ index) & 7 != 0 && ram[index] == 0 {
+            index += 1
+        }
+        while index + 8 <= count && base.loadUnaligned(fromByteOffset: index, as: UInt64.self) == 0 {
+            index += 8
+        }
+        while index < count && ram[index] == 0 { index += 1 }
+        return index
     }
 
     // MARK: - Reading
@@ -147,7 +205,9 @@ enum Snapshot {
                 throw Failure.ramSizeMismatch(saved: saved, expected: UInt64(ram.count))
             }
             let pairs = try u64()
-            for index in 0..<ram.count { ram[index] = 0 }
+            // Remise à zéro et recopies en bloc : un octet à la fois, la
+            // reprise d'une machine de 512 Mio prenait une seconde et demie.
+            if let base = ram.baseAddress { base.initializeMemory(as: UInt8.self, repeating: 0, count: ram.count) }
             var cursor = 0
             for _ in 0..<pairs {
                 let zeros = try Int(exactly: u64()) ?? -1
@@ -157,7 +217,12 @@ enum Snapshot {
                 guard length >= 0, at + length <= bytes.count, cursor + length <= ram.count else {
                     throw Failure.corrupt
                 }
-                for offset in 0..<length { ram[cursor + offset] = bytes[at + offset] }
+                if length > 0, let target = ram.baseAddress {
+                    bytes.withUnsafeBytes { source in
+                        (target + cursor).copyMemory(
+                            from: source.baseAddress! + at, byteCount: length)
+                    }
+                }
                 at += length
                 cursor += length
             }
