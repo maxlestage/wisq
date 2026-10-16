@@ -84,13 +84,14 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 | Éteindre une VM distante depuis le téléphone : ACPI poli, puis le cordon si l'invité ne répond pas | fait |
 | SPICE : envoi d'un fichier du téléphone vers l'invité (canal agent) | fait |
 | Machine locale suspendue et reprise par instantané — le shell revient où il était | fait |
+| Plusieurs machines Linux locales sur une même image, chacune sa mémoire, ses écritures et sa session | fait |
 | Cœur Rust par défaut, comparé instruction par instruction au cœur Swift en CI | fait |
 | Linux local : émulateur rv32ima, boot d'un vrai noyau, terminal | fait |
 | Un disque pour le PC local : on apporte une image, l'invité la voit sur `/dev/vda` | fait |
 
 `WisqCore`, `WisqNet` et `WisqRemote` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2632 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2648 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
