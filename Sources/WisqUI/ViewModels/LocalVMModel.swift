@@ -78,8 +78,23 @@ public final class LocalVMModel {
     /// without the screen ever disappearing.
     public var shouldResumeOnReturn: Bool { life.shouldResumeOnReturn }
 
-    public func boot(kernelURL: URL) {
+    /// La machine installée que ce modèle fait tourner, ou `nil` pour un
+    /// fichier de la bibliothèque démarré tel quel. Retenue pour la reprise au
+    /// retour au premier plan, qui doit retrouver **la même** machine.
+    private var installed: InstalledMachine?
+
+    /// Démarre — ou reprend — une machine.
+    ///
+    /// `installed` nil démarre le fichier tel quel, sous les clés qu'il a
+    /// toujours eues. Une machine installée range sa mémoire, son disque, sa
+    /// couche d'écriture et sa session sous les siennes : c'est ce qui permet
+    /// d'en avoir plusieurs sur une même image. La décision des clés vit dans
+    /// `MachineKeys`, que la CI Linux juge ; ce fichier ne fait que la suivre.
+    public func boot(kernelURL: URL, installed: InstalledMachine? = nil) {
         guard machine == nil else { return }
+        self.installed = installed
+        let keys = installed?.keys ?? .image(kernelURL.lastPathComponent)
+        if let installed { InstalledMachines.markStarted(id: installed.id, in: storage) }
         // Coming back from a suspension keeps the console: this is the same
         // model instance the user was looking at a moment ago, so its grid
         // still holds their session. Clearing it would make a resumption look
@@ -101,8 +116,7 @@ public final class LocalVMModel {
         // lecture de l'image, exprès — c'est ce qui permet de refuser un
         // fichier trop grand sans le charger — et l'empreinte n'existe
         // qu'après.
-        let ramSize = KernelMemory.size(
-            forKernel: kernelURL.lastPathComponent, in: storage)
+        let ramSize = KernelMemory.size(forKernel: keys.settings, in: storage)
 
         // Ce que le téléphone a de libre **maintenant**, pas quand le réglage
         // a été posé. `KernelMemory.size` a déjà rogné sur ce plafond, donc
@@ -323,7 +337,7 @@ public final class LocalVMModel {
             runFinished = nil
             return
         }
-        kernelName = SuspendedMachine.identity(of: image, named: kernelURL.lastPathComponent)
+        kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
         let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
 
         // **Un noyau de PC ne démarre à rien sans son initramfs.** Il n'a
@@ -387,7 +401,7 @@ public final class LocalVMModel {
         // dans la recette va nommer — et rien de tout ça n'est copié : le
         // fichier est lu secteur par secteur là où il est.
         let diskURL = isoDisk ?? LocalDisk.attached(
-            kernel: kernelURL.lastPathComponent,
+            kernel: keys.settings,
             among: KernelLibrary.list(), in: storage)
 
         // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
@@ -412,7 +426,8 @@ public final class LocalVMModel {
                     try machine.attachDisk(
                         fileAt: diskURL,
                         writes: LocalDisk.writesURL(
-                            for: diskURL.lastPathComponent, in: storageFolder))
+                            for: keys.overlay(forDisk: diskURL.lastPathComponent),
+                            in: storageFolder))
                 }
                 // A saved machine is resumed in place of booting. If the file
                 // is not a snapshot — an older format, a truncated write — the
@@ -559,7 +574,7 @@ public final class LocalVMModel {
     public func scenePhaseChanged(to phase: ScenePhase, kernelURL: URL) {
         switch phase {
         case .background: suspend()
-        case .active where shouldResumeOnReturn: boot(kernelURL: kernelURL)
+        case .active where shouldResumeOnReturn: boot(kernelURL: kernelURL, installed: installed)
         default: break
         }
     }
@@ -783,7 +798,8 @@ public enum KernelLibrary {
         else { return .empty }
         return LocalStorage.report(
             kernels: kernels, machines: machines, writes: try? LocalDisk.writesDirectory(),
-            unpackedIso: LocalStorage.unpackedIsoFolder(in: machines))
+            unpackedIso: LocalStorage.unpackedIsoFolder(in: machines),
+            installed: InstalledMachines.allKeys())
     }
 
     /// Takes back the space held by machines saved from kernels that are no
@@ -793,7 +809,8 @@ public enum KernelLibrary {
         guard let kernels = try? directory(),
               let machines = try? SuspendedMachine.directory()
         else { return 0 }
-        return LocalStorage.freeOrphanedMachines(kernels: kernels, machines: machines)
+        return LocalStorage.freeOrphanedMachines(
+            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys())
     }
 
     /// Removes a kernel, and everything the app remembered about it.
@@ -810,7 +827,13 @@ public enum KernelLibrary {
     /// donc aussi ce nom-là partout où il servait de disque — mais **pas** les
     /// machines sauvegardées de ces noyaux : leur instantané porte les octets
     /// du disque, pas son chemin, et il reste donc parfaitement reprenable.
-    public static func delete(_ url: URL) {
+    ///
+    /// **Et les machines installées sur ce fichier partent avec lui** : sans
+    /// leur image elles ne démarrent plus, et leurs couches d'écriture sont
+    /// des secteurs posés sur une base qui n'existe plus. Leurs noms sont
+    /// rendus, pour que la liste puisse dire ce qui est parti.
+    @discardableResult
+    public static func delete(_ url: URL) -> [String] {
         let name = url.lastPathComponent
         // **Une image d'installation emporte son déballage.** Le noyau et
         // l'initramfs qu'elle avait laissés dans `iso/` n'appartiennent à
@@ -839,6 +862,7 @@ public enum KernelLibrary {
         // veulent plus rien dire.
         LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
+        return InstalledMachines.removeAll(usingImage: name)
     }
 }
 #endif

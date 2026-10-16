@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (2632 tests across Swift and Rust) and
+Everything below is implemented, tested (2648 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -73,6 +73,7 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | Power a remote VM off from the phone: polite ACPI, then the cord if the guest never answers | done |
 | SPICE: send a file from the phone into the guest (agent channel) | done |
 | Local machine suspended and resumed as a snapshot — the shell comes back where it was | done |
+| Several local Linux machines on one image, each with its own memory, disk writes and session | done |
 | Rust VM core by default, compared instruction for instruction with the Swift one in CI | done |
 | SPICE: link, main/display/inputs/cursor channels, `.vv` import | done |
 | SPICE codecs: LZ, GLZ (with its window), QUIC, LZ4, JPEG, palette forms | done |
