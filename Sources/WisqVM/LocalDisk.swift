@@ -68,7 +68,7 @@ public enum LocalDisk {
         guard let identity = KernelImageKind.whatItIs(kind, name: name) else {
             return refusal(size: size, name: name)
         }
-        // « Elle », parce que les deux genres que `whatItIs` nomme sont des
+        // « Elle », parce que les genres que `whatItIs` nomme sont tous des
         // images : reprendre le nom du fichier une seconde fois se lit comme
         // deux refus collés plutôt que comme un seul.
         guard let why = refusal(size: size, subject: "Elle") else { return nil }
@@ -241,7 +241,7 @@ public enum LocalDisk {
     public static func isDiskImage(_ kind: KernelImageKind) -> Bool {
         switch kind {
         case .filesystemImage, .discImage: return true
-        case .unknown, .linuxKernel, .executable, .compressedKernel: return false
+        case .unknown, .linuxKernel, .executable, .compressedKernel, .virtualDisk: return false
         }
     }
 
