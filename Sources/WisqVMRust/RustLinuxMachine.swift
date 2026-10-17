@@ -138,6 +138,17 @@ public final class RustLinuxMachine: @unchecked Sendable {
     /// `FileDiskStore`, octet pour octet : les deux cœurs ouvrent les mêmes
     /// fichiers, et les refus sont les mêmes, avec les mêmes noms.
     public func attach(diskFileAt base: URL, writes: URL) throws {
+        // **Le cœur Rust lit sa base octet pour octet**, et un qcow2 n'est pas
+        // les octets d'un disque : brancher l'un sur l'autre donnerait à
+        // l'invité les tables du format en guise de système de fichiers.
+        // `Qcow2Image` est côté Swift, là où tournent les PC — c'est pour eux
+        // que les distributions livrent des images de cloud.
+        if Qcow2Image.looksLikeOne(fileAt: base) {
+            throw FileDiskStore.Failure.unreadableImage(
+                "ce disque est un qcow2, que le cœur RISC-V ne lit pas encore ; "
+                    + "il se branche sur un noyau de PC, ou se convertit avec "
+                    + "`qemu-img convert -O raw`.")
+        }
         let code = base.withUnsafeFileSystemRepresentation { basePath in
             writes.withUnsafeFileSystemRepresentation { writesPath in
                 wisq_vm_attach_disk_file(vm, basePath, writesPath)

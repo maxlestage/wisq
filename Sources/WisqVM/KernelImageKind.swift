@@ -249,6 +249,12 @@ public enum KernelImageKind: Equatable, Sendable {
         return .unknown
     }
 
+    /// Les formats d'hyperviseur que wisq lit sur place, sans conversion —
+    /// le qcow2, par `Qcow2Image`. Une image de ce format peut encore être
+    /// refusée en la branchant (chiffrée, à fichier de base…) ; le refus
+    /// nomme alors ce qui manque.
+    public static func isReadableVirtualDisk(_ format: String) -> Bool { format == "qcow2" }
+
     /// Le format d'hyperviseur que ces octets portent, ou `nil`.
     static func virtualDisk(_ bytes: [UInt8]) -> String? {
         func starts(with marker: [UInt8]) -> Bool {
@@ -345,6 +351,11 @@ public enum KernelImageKind: Equatable, Sendable {
                 \(name) est une image de système de fichiers (\(format)) — ce \
                 qu'un noyau de PC sait lire sur `/dev/vda`.
                 """
+        case .virtualDisk(let format) where isReadableVirtualDisk(format):
+            return """
+                \(name) est une image de disque au format \(format), que wisq \
+                lit telle quelle.
+                """
         case .virtualDisk(let format):
             return """
                 \(name) est une image de disque au format \(format) — le format \
@@ -409,6 +420,18 @@ public enum KernelImageKind: Equatable, Sendable {
                 C'est en revanche exactement ce qu'un noyau de PC sait lire. \
                 Choisissez-la comme **disque** de votre noyau, et l'invité la \
                 verra sur `/dev/vda`.
+                """
+        case .virtualDisk(let format) where isReadableVirtualDisk(format):
+            // Un qcow2 n'est pas un noyau, mais c'est un disque que wisq lit
+            // tel quel : la réponse utile est où le mettre, pas comment le
+            // convertir.
+            return """
+                \(name) est une image de disque au format \(format) — un disque, \
+                pas un noyau : il n'y a rien là-dedans qui démarre seul.
+
+                wisq la lit telle quelle, sans conversion. Choisissez-la comme \
+                **disque** d'un noyau de PC, et l'invité la verra sur \
+                `/dev/vda`.
                 """
         case .virtualDisk(let format):
             // Pas le message générique non plus : « installez-la sur un hôte »
