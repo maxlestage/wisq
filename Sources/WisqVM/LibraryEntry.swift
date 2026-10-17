@@ -60,6 +60,8 @@ public enum LibraryEntry {
             return .disk(format)
         // Un disque, mais pas encore un disque d'ici : le mot le dit, plutôt
         // que de laisser croire qu'il se branche.
+        case .virtualDisk(let format) where KernelImageKind.isReadableVirtualDisk(format):
+            return .disk(format)
         case .virtualDisk(let format):
             return .foreign("disque \(format), à convertir")
         case .unknown:
