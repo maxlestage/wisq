@@ -21,8 +21,8 @@ pub static OFFLINE_FR: Doc = Doc {
     lede: "Il n'y a pas de réseau, et cette adresse n'est pas de celles que le site garde sur l'appareil.",
     blocks: &[
         Block::P("La première fois que le site est ouvert avec une connexion, son service worker range sur l'appareil chacune de ses pages — dans les deux langues — avec la feuille de style, la police, le module WebAssembly et les icônes. Dès lors, toutes les pages de la navigation s'ouvrent sans réseau. Cette page est ce que reçoit toute autre adresse, ou toute adresse sur un appareil où le site n'a jamais été ouvert en ligne."),
-        Block::P("Avec du réseau, les pages viennent toujours d'abord du réseau, et la copie de l'appareil n'est qu'un repli : ce qu'on lit en ligne n'est jamais une copie périmée, et une documentation discrètement vieille d'une semaine est pire qu'une page qui dit ne pas pouvoir charger. Chaque construction nomme son cache d'après ses propres fichiers, donc une nouvelle version du site remplace l'ancienne copie au lieu de s'y ajouter."),
-        Block::P("Il en va de même une fois le site installé sur l'écran d'accueil, et dans la langue que vous lisiez : une adresse sous /fr/ qui échoue arrive sur la version française de cette page."),
+        Block::P("Avec du réseau, les pages viennent toujours d'abord du réseau, et la copie de l'appareil n'est qu'un repli : ce qu'on lit en ligne n'est jamais une copie périmée, et une documentation discrètement vieille d'une semaine est pire qu'une page qui dit ne pas pouvoir charger. Chaque construction nomme son cache d'après ses propres fichiers, donc une nouvelle version du site remplace l'ancienne copie au lieu de s'y ajouter."),
+        Block::P("Il en va de même une fois le site installé sur l'écran d'accueil, et dans la langue que vous lisiez : une adresse sous /fr/ qui échoue arrive sur la version française de cette page."),
         Block::Note { tone: Tone::Info, text: "C'est le site qui est hors ligne, pas wisq. Les machines Linux locales de l'application n'ont besoin d'aucun réseau — ni serveur, ni compte, rien à joindre." },
     ],
 };
@@ -51,8 +51,8 @@ pub static NOT_FOUND_FR: Doc = Doc {
     blocks: &[
         Block::P("Elle a peut-être été renommée, ou le lien a été saisi à la main. Le site est petit, et tout ce qu'il contient est l'une des pages ci-dessous — chacune est aussi dans la navigation au-dessus, en français et en anglais."),
         Block::Dl(&[
-            DlItem { term: "Accueil", detail: "Ce qu'est wisq : les deux façons dont il fait tourner une machine, les trois protocoles de console, les deux machines locales, et où en est le projet." },
-            DlItem { term: "Docs", detail: "Comment s'en servir : se connecter à une VM, appairer l'agent, démarrer Linux sur le téléphone, et quoi faire quand quelque chose ne marche pas." },
+            DlItem { term: "Accueil", detail: "Ce qu'est wisq : les deux façons dont il fait tourner une machine, les trois protocoles de console, les deux machines locales, et où en est le projet." },
+            DlItem { term: "Docs", detail: "Comment s'en servir : se connecter à une VM, appairer l'agent, démarrer Linux sur le téléphone, et quoi faire quand quelque chose ne marche pas." },
             DlItem { term: "Protocole de l'agent", detail: "L'API HTTP de l'agent hôte, son lien d'appairage et son TLS." },
             DlItem { term: "Architecture", detail: "Les décisions sur lesquelles repose le projet, et pourquoi chacune a été prise." },
             DlItem { term: "Questions", detail: "Jailbreak, App Store, vitesse, hyperviseurs, licence." },
