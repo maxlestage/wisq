@@ -805,6 +805,23 @@ struct LocalVMTerminalView: View {
             // touche envoie vient de `TerminalKey`, tenu par des tests.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    // **Coller**, en tête de la barre : le champ de saisie
+                    // n'a qu'une ligne, et un script copié depuis une page y
+                    // perdait ses retours à la ligne. Ce qui part vient de
+                    // `TerminalPaste`, tenu par des tests.
+                    Button {
+                        if let text = UIPasteboard.general.string {
+                            model.paste(text, afterTyped: commandLine)
+                            commandLine = ""
+                        }
+                        inputFocused = true
+                    } label: {
+                        Label("coller", systemImage: "doc.on.clipboard")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(minHeight: 32)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Coller le presse-papiers dans la console")
                     ForEach(TerminalKey.bar, id: \.self) { key in
                         Button {
                             model.press(key, afterTyped: commandLine)
