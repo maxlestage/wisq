@@ -348,7 +348,12 @@ iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
    la session suspendue — elle reprend où l'original en était. Les bases ne
    sont pas copiées (elles ne changent jamais) ; un disque propre est
    remplacé par une base vierge de même taille, sur laquelle la couche est
-   copiée. **Reste** : exporter une machine hors du téléphone.
+   copiée.
+4. **Fait.** Exporter une machine hors du téléphone et l'importer sur un autre
+   (`MachineArchive`, fichier `.wisqmachine`) : réglages, couches d'écriture et
+   sessions, sans l'image — l'import la demande par son nom et refuse en la
+   nommant si elle manque. Le disque vierge propre n'est pas porté, il est
+   recréé à sa taille. Tout ou rien : une archive tronquée n'importe rien.
 
 ## Lot 5 — SPICE (fait)
 
