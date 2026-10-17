@@ -32,7 +32,7 @@ appliance OVA (ustar : descripteur, puis le nuage en `streamOptimized`) : les
 trois marques relues, `wisq-ecrit` recousu, 650 requêtes servies, aucune
 refusée, et l'archive inchangée (SHA-256 identique).
 
-**Treize sabotages, treize chutes** — le chemin pax, le nom long de GNU, la
+**Douze sabotages, douze chutes** — le chemin pax, le nom long de GNU, la
 somme des en-têtes, le préfixe lu en ancien GNU, la base 256, la taille pax,
 le descripteur en premier, la marque du disque, le nom du descripteur, le
 décalage du membre, la borne du membre, et pour le cœur RISC-V le refus de
