@@ -144,7 +144,8 @@ public final class RustLinuxMachine: @unchecked Sendable {
         // fichiers. Leurs lecteurs sont côté Swift, là où tournent les PC —
         // c'est pour eux que les distributions livrent des images de cloud.
         if VirtualDiskImages.recognizes(fileAt: base) {
-            let format = Qcow2Image.looksLikeOne(fileAt: base) ? "un qcow2" : "un VMDK"
+            let format = Qcow2Image.looksLikeOne(fileAt: base) ? "un qcow2"
+                : VmdkImage.looksLikeOne(fileAt: base) ? "un VMDK" : "une appliance OVA"
             throw FileDiskStore.Failure.unreadableImage(
                 "ce disque est \(format), que le cœur RISC-V ne lit pas encore ; "
                     + "il se branche sur un noyau de PC, ou se convertit avec "
