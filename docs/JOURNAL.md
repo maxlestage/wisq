@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — les disques des autres hyperviseurs, reconnus
+
+Les distributions livrent leurs images de cloud en qcow2 —
+`debian-12-genericcloud-amd64.qcow2`, l'image cloud d'Ubuntu, celle d'Alpine.
+wisq ne connaissait pas ce format : le fichier ressortait « type inconnu »,
+donc était **offert comme disque brut**, et l'invité lisait les tables de
+clusters du qcow2 là où il cherchait un système de fichiers. Rien ne le
+disait ; le disque était simplement illisible.
+
+`KernelImageKind.virtualDisk` nomme maintenant qcow2 (et l'ancien qcow), VMDK
+(binaire et descripteur), VHDX, VHD dynamique et VDI. Un tel fichier n'est plus
+proposé comme disque, la bibliothèque écrit « disque qcow2, à convertir », et
+le refus donne la commande, avec le nom du fichier dedans :
+`qemu-img convert -O raw debian.qcow2 disque.img`.
+
+**Les marques sont relevées, pas recopiées** : `qemu-img` 8.2.2 a été installé
+dans le conteneur, un disque de chaque format créé, et ses premiers octets lus.
+Le VHD *fixe* reste branchable — c'est un disque brut suivi d'un pied —, et un
+test le tient.
+
+**Deux sabotages, deux chutes :** la détection retirée (dix assertions
+rougissent), et le qcow2 rangé parmi les disques branchables (trois).
+
+La suite logique est de **lire** le qcow2 sans conversion ; elle est notée dans
+la feuille de route.
+
 ## 2026-10-17 — la taille du texte de la console
 
 La console locale était écrite en 12 points, sans recours : trop petit pour
