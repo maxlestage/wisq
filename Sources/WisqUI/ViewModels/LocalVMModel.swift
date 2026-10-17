@@ -530,6 +530,16 @@ public final class LocalVMModel {
             afterTyped: typed, applicationCursorKeys: sink.applicationCursorKeys))
     }
 
+    /// Un texte collé, après le texte en cours de saisie — voir
+    /// `TerminalPaste`, qui nettoie le texte et l'encadre si le programme au
+    /// premier plan a demandé le collage encadré.
+    public func paste(_ text: String, afterTyped typed: String) {
+        let bytes = TerminalPaste.sending(
+            text, afterTyped: typed, bracketed: sink.bracketedPaste)
+        guard !bytes.isEmpty else { return }
+        machine?.send(bytes)
+    }
+
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
@@ -699,6 +709,13 @@ private final class ConsoleSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return console.applicationCursorKeys
+    }
+
+    /// Le collage encadré que l'invité a demandé, lu sous le même verrou.
+    var bracketedPaste: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return console.bracketedPaste
     }
 
     func takeText() -> String {
