@@ -759,6 +759,10 @@ struct LocalVMTerminalView: View {
 
     @State private var model = LocalVMModel()
     @State private var commandLine = ""
+    /// La taille du texte de la console, retenue d'une session à l'autre ;
+    /// toujours lue à travers `ConsoleTextSize.nearest`, qui la ramène sur un
+    /// cran quelle que soit la valeur enregistrée.
+    @AppStorage("wisq.console.tailleDuTexte") private var textSize = ConsoleTextSize.standard
     @FocusState private var inputFocused: Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -768,12 +772,19 @@ struct LocalVMTerminalView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     Text(model.consoleText.isEmpty ? "Démarrage…" : model.consoleText)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(size: ConsoleTextSize.nearest(textSize), design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .id("console-end")
                         .textSelection(.enabled)
                 }
+                // Pincer pour grossir ou réduire, comme partout ailleurs sur
+                // le téléphone ; la taille retombe au cran le plus proche.
+                .simultaneousGesture(
+                    MagnifyGesture().onEnded { value in
+                        textSize = ConsoleTextSize.scaled(textSize, by: value.magnification)
+                    }
+                )
                 .background(Color.black)
                 .foregroundStyle(Color(red: 0.7, green: 0.95, blue: 0.7))
                 .onChange(of: model.consoleText) {
@@ -868,6 +879,20 @@ struct LocalVMTerminalView: View {
             // clears the saved machine, but only by ending the session; this is
             // for the user whose guest is wedged and who wants to walk away now
             // and come back to a clean boot.
+            ToolbarItem(placement: .primaryAction) {
+                Menu("Taille du texte", systemImage: "textformat.size") {
+                    Button("Plus grand", systemImage: "plus.magnifyingglass") {
+                        textSize = ConsoleTextSize.larger(than: textSize)
+                    }
+                    .disabled(!ConsoleTextSize.canGrow(textSize))
+                    Button("Plus petit", systemImage: "minus.magnifyingglass") {
+                        textSize = ConsoleTextSize.smaller(than: textSize)
+                    }
+                    .disabled(!ConsoleTextSize.canShrink(textSize))
+                    Button("Taille normale") { textSize = ConsoleTextSize.standard }
+                        .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
+                }
+            }
             if model.hasSavedMachine {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Oublier", systemImage: "trash") {
