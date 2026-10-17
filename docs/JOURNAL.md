@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — l'OVA s'ouvre tel quel, son disque lu dans l'archive
+
+Relance horaire suivante, même autorisation. Cinquième point de la liste :
+`OvaArchive` parcourt l'archive tar d'une appliance et donne son premier VMDK
+à `VmdkImage`, qui le lit **à son décalage** — `VmdkImage` prend désormais un
+membre (début, longueur) et ne lit jamais hors de lui. Rien n'est extrait :
+sur un téléphone, une appliance coûterait sinon deux fois sa taille.
+
+**Les trois tars, et deux formes fabriquées.** Les fixtures sont des archives
+de GNU tar 1.35 en ustar, pax et ancien GNU, dont les deux dernières portent
+un nom de disque de 113 octets (en-tête étendu `x`, membre `L`), plus un tar
+sans descripteur, une appliance sans disque et une au disque gzippé. Deux
+formes que GNU tar n'écrit pas sur un petit disque sont fabriquées : la
+taille dans l'en-tête pax seulement (un disque de plus de 8 Gio), et les dates
+que l'ancien format de GNU range là où ustar met son préfixe. Pour celle-là,
+le module `tarfile` de Python colle la date devant le nom ; `tar tvf` lit
+`appliance.ovf`, c'est lui qui fait foi, et c'est cette erreur-là que le
+test attrape.
+
+**Et contre un vrai noyau.** Le même Alpine LTS, avec pour disque une
+appliance OVA (ustar : descripteur, puis le nuage en `streamOptimized`) : les
+trois marques relues, `wisq-ecrit` recousu, 650 requêtes servies, aucune
+refusée, et l'archive inchangée (SHA-256 identique).
+
+**Douze sabotages, douze chutes** — le chemin pax, le nom long de GNU, la
+somme des en-têtes, le préfixe lu en ancien GNU, la base 256, la taille pax,
+le descripteur en premier, la marque du disque, le nom du descripteur, le
+décalage du membre, la borne du membre, et pour le cœur RISC-V le refus de
+l'OVA. Une distinction de taille pour deux en-têtes étendus consécutifs, que
+rien n'écrit et qu'aucun test ne pouvait voir casser, a été retirée.
+
 ## 2026-10-17 — le VMDK aussi, et le même Alpine l'a lu
 
 Relance horaire, sur l'autorisation de travailler en continu et de fusionner
