@@ -287,15 +287,15 @@ final class LocalStorageTests: XCTestCase {
 /// l'a dit :
 ///
 ///     machine   après 5 M instr.   après 65 M (invite de connexion)
-///      64 Mio        8,9 Mio                16,4 Mio
-///     128 Mio        9,5 Mio                17,0 Mio
-///     256 Mio       10,5 Mio                18,4 Mio
+///      64 Mio        3,7 Mio                 7,4 Mio
+///     128 Mio        4,1 Mio                 7,9 Mio
+///     256 Mio        4,8 Mio                 8,9 Mio
 ///
 /// Le coût suit **ce que l'invité a touché**, pas ce qu'on lui a donné : les
 /// suites de zéros sont repliées, et Linux ne touche pas la mémoire dont il
 /// n'a pas l'usage.
 ///
-/// Ce test existe parce que ce repliement est ce qui sépare « dix-sept
+/// Ce test existe parce que ce repliement est ce qui sépare « huit
 /// mégaoctets par noyau suspendu » de « la taille de la machine par noyau
 /// suspendu ». S'il cassait, le stockage du téléphone se remplirait sans que
 /// rien ne change de comportement visible.

@@ -13,11 +13,17 @@ import Foundation
 /// was given.** Measured on the real kernel, at the login prompt:
 ///
 ///     machine   après 5 M instr.   après 65 M (invite de connexion)
-///      64 Mio        8,9 Mio                16,4 Mio
-///     128 Mio        9,5 Mio                17,0 Mio
-///     256 Mio       10,5 Mio                18,4 Mio
+///      64 Mio        3,7 Mio                 7,4 Mio
+///     128 Mio        4,1 Mio                 7,9 Mio
+///     256 Mio        4,8 Mio                 8,9 Mio
 ///
-/// Quadrupling the machine adds two mebibytes, because Linux does not touch
+/// Those are the figures since only runs of at least thirty-two zeros are
+/// folded (`Snapshot.minimumFoldedZeros`). Before, every run was — a lone zero
+/// byte too — and the same kernel at the same instruction counts weighed
+/// 8,9 / 9,5 / 10,5 and 16,4 / 17,0 / 18,4 Mio: re-measured on the same
+/// machine before the change, and identical to what this table said.
+///
+/// Quadrupling the machine adds a mebibyte and a half, because Linux does not touch
 /// memory it has no use for and the runs of zeros are folded. Spending ten
 /// times the instructions nearly doubles it, because that is memory the guest
 /// actually wrote.
@@ -28,8 +34,8 @@ import Foundation
 /// that broke the zero-folding would be caught rather than quietly filling
 /// someone's phone.
 ///
-/// Seventeen mebibytes per suspended kernel is still worth showing: five
-/// kernels left suspended is eighty-five, appearing without anyone asking for
+/// Eight mebibytes per suspended kernel is still worth showing: five
+/// kernels left suspended is forty, appearing without anyone asking for
 /// it, and a number nobody can see is a number nobody can act on.
 ///
 /// In `WisqVM` rather than the app layer, for the reason `SuspendedMachine`
