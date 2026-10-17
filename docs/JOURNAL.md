@@ -13,8 +13,8 @@ L'ordre est antéchronologique : le plus récent en haut.
 La tranche d'avant reconnaissait le qcow2 et demandait `qemu-img convert` ;
 celle-ci le lit. `Qcow2Image` traduit chaque lecture par les tables L1 et L2,
 rend des zéros pour ce qui n'est pas alloué ou marqué zéro, et décompresse les
-clusters compressés en deflate brut avec la zlib du système — celle que RFB
-lie déjà. `FileDiskStore` choisit son lecteur de base à la marque du fichier :
+clusters compressés en deflate brut avec `Inflate`, un décodeur écrit ici.
+`FileDiskStore` choisit son lecteur de base à la marque du fichier :
 la couche d'écriture ne change pas, et le fichier téléchargé n'est jamais
 modifié. La taille du disque est celle que l'image annonce, pas celle du
 fichier.
@@ -41,6 +41,17 @@ de l'écriture faite sur le fichier brut au lieu du qcow2.
 
 Le cœur Rust, qui fait tourner le RISC-V, lit sa base octet pour octet : il
 refuse un qcow2 en le nommant plutôt que de rendre ses tables à l'invité.
+
+**Pourquoi un décodeur deflate écrit ici, et pas zlib.** La première version
+liait la zlib du système, comme RFB. La CI iOS l'a refusée : le projet Xcode
+construit `WisqVM` aussi en framework dynamique, et cette variante ne résout
+pas une cible de bibliothèque système — « missing target with GUID
+'PACKAGE-TARGET:CZlib' » —, ni avec une condition de plateforme. Le framework
+Compression d'Apple aurait couvert l'iPhone, mais pas Linux, où tournent les
+tests : un des deux décodeurs n'aurait jamais été exercé ici. `Inflate`
+(RFC 1951, à la manière de `puff.c`) tourne partout à l'identique, testé contre
+des flux de zlib — blocs stockés, Huffman fixe, dynamique, répétitions — et
+deux sabotages ; le démarrage d'Alpine a été refait avec lui, même résultat.
 
 ## 2026-10-17 — les disques des autres hyperviseurs, reconnus
 

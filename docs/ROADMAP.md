@@ -371,7 +371,8 @@ recommandent pour une machine prête en une minute.
    n'est jamais modifié. Refusés en le disant : chiffré, à fichier de base,
    à fichier de données externe, marqué corrompu, zstd, L2 étendues, bits
    inconnus.
-2. **Fait.** Les clusters **compressés** (deflate brut, par zlib). Vérifié sur
+2. **Fait.** Les clusters **compressés** (deflate brut, par `Inflate`, écrit
+   ici pour que `WisqVM` ne dépende que de Foundation). Vérifié sur
    un vrai Alpine LTS démarré sur un qcow2 compressé de 64 Mio : début,
    milieu et fin lus, taille annoncée vue par le noyau, écriture partielle
    d'un secteur recousue.
