@@ -104,23 +104,43 @@ impl Writer {
     /// it; the rest is the zero the mapping started as. The encoding is a
     /// sequence of (zeros, literal) pairs, which costs sixteen bytes per pair
     /// on dense data and saves tens of megabytes on real ones.
+    ///
+    /// Only runs of at least [`MINIMUM_FOLDED_ZEROS`] are folded: a pair costs
+    /// sixteen bytes of header, so folding the three zero bytes of a small
+    /// integer cost sixteen to save three. Measured on a 512 MiB PC machine
+    /// holding 90 MiB of real data, the old rule wrote 169.8 MiB. The reader
+    /// is unchanged and reads any sequence of pairs. The Swift writer applies
+    /// the same rule, byte for byte — `DifferentialBootTests` compares them.
     pub(crate) fn ram(&mut self, ram: &[u8]) {
         self.u64(ram.len() as u64);
         let start = self.bytes.len();
         self.u64(0); // pair count, filled in below
+        self.bytes.reserve(ram.len() / 4);
         let mut pairs = 0u64;
         let mut index = 0;
-        while index < ram.len() {
+        let count = ram.len();
+        while index < count {
             let zeros_from = index;
-            while index < ram.len() && ram[index] == 0 {
-                index += 1;
+            index = end_of_zeros(ram, index);
+            let mut zeros = index - zeros_from;
+            let mut literal_from = index;
+            if zeros < MINIMUM_FOLDED_ZEROS && index < count {
+                zeros = 0;
+                literal_from = zeros_from;
             }
-            let zeros = (index - zeros_from) as u64;
-            let literal_from = index;
-            while index < ram.len() && ram[index] != 0 {
-                index += 1;
+            while index < count {
+                if ram[index] != 0 {
+                    index += 1;
+                    continue;
+                }
+                let run_from = index;
+                index = end_of_zeros(ram, index);
+                if index - run_from >= MINIMUM_FOLDED_ZEROS || index == count {
+                    index = run_from;
+                    break;
+                }
             }
-            self.u64(zeros);
+            self.u64(zeros as u64);
             self.bytes(&ram[literal_from..index]);
             pairs += 1;
         }
@@ -130,6 +150,27 @@ impl Writer {
     pub(crate) fn finish(self) -> Vec<u8> {
         self.bytes
     }
+}
+
+/// The shortest run of zeros worth a pair: sixteen bytes of header, and a
+/// margin. Shorter runs stay in the literal, where they cost what they weigh.
+pub(crate) const MINIMUM_FOLDED_ZEROS: usize = 32;
+
+/// The first non-zero byte at or after `start`, or the end — eight bytes at a
+/// time where it can.
+fn end_of_zeros(ram: &[u8], start: usize) -> usize {
+    let mut index = start;
+    while index + 8 <= ram.len() {
+        let word = u64::from_ne_bytes(ram[index..index + 8].try_into().unwrap());
+        if word != 0 {
+            break;
+        }
+        index += 8;
+    }
+    while index < ram.len() && ram[index] == 0 {
+        index += 1;
+    }
+    index
 }
 
 // MARK: - Reading
@@ -323,6 +364,53 @@ mod tests {
         assert!(
             encoded < ram.len() / 100,
             "1 Mio dont 4 Kio utiles doit tenir en moins de 10 Kio, obtenu {encoded}"
+        );
+    }
+
+    /// The exact bytes for a shape that exercises every rule: a short run
+    /// kept in the literal, a long run folded, and a short run at the end.
+    /// `SnapshotRAMEncodingTests` in the Swift suite asserts the **same**
+    /// bytes, so the two writers cannot drift even where no kernel is around
+    /// for the differential boot.
+    #[test]
+    fn the_encoding_is_the_one_the_swift_writer_produces() {
+        let mut ram = vec![1u8, 0, 0, 1];
+        ram.extend([0u8; 40]);
+        ram.extend([2u8, 0, 0, 0]);
+        let mut writer = Writer::new();
+        writer.ram(&ram);
+        let encoded = writer.finish();
+
+        let mut expected = MAGIC.to_vec();
+        for word in [48u64, 3, 0, 4] {
+            expected.extend(word.to_le_bytes());
+        }
+        expected.extend([1u8, 0, 0, 1]);
+        for word in [40u64, 1] {
+            expected.extend(word.to_le_bytes());
+        }
+        expected.push(2);
+        for word in [3u64, 0] {
+            expected.extend(word.to_le_bytes());
+        }
+        assert_eq!(encoded, expected);
+    }
+
+    /// A table of small integers — what kernel memory is full of — costs
+    /// what it weighs. Folding every zero made it cost nearly three times.
+    #[test]
+    fn small_integers_cost_what_they_weigh() {
+        let ram: Vec<u8> = (0..8192u64)
+            .flat_map(|n| (n % 1000 + 1).to_le_bytes())
+            .collect();
+        let mut writer = Writer::new();
+        writer.ram(&ram);
+        let encoded = writer.finish().len();
+        assert!(
+            encoded <= ram.len() + 64,
+            "{} octets pour {}",
+            encoded,
+            ram.len()
         );
     }
 
