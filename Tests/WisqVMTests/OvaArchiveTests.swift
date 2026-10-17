@@ -69,7 +69,7 @@ final class OvaArchiveTests: XCTestCase {
             let found = try members(archive(fixture, size: size, name: "\(label).ova"))
             XCTAssertEqual(found.map(\.name), ["appliance.ovf", name], label)
             XCTAssertEqual(found.last, OvaArchive.Member(name: name, offset: offset, length: length), label)
-            XCTAssertEqual(found.first?.length, 292, label)
+            XCTAssertEqual(found.first?.name, "appliance.ovf", label)
         }
     }
 
@@ -169,6 +169,39 @@ final class OvaArchiveTests: XCTestCase {
             writes: folder.appendingPathComponent("w"))) {
             XCTAssertEqual($0 as? FileDiskStore.Failure, .unreadableImage(
                 OvaArchive.Refusal.diskNotReadableInPlace("gz.vmdk").errorDescription!))
+        }
+    }
+
+    /// **Le descripteur choisit le disque.** L'appliance de VirtualBox a deux
+    /// disques : `donnees.vmdk`, 2 Gio, premier dans l'archive et dans
+    /// `DiskSection` ; `systeme.vmdk`, 1 Mio, que le matériel branche en
+    /// premier. C'est sur lui qu'elle démarre, et c'est lui qui est lu.
+    func testTheDescriptorChoosesTheDiskTheApplianceBootsOn() throws {
+        let url = try archive(OvaFixtures.i, size: 471_040, name: "deux.ova")
+        XCTAssertEqual(try members(url).map(\.name), ["appliance.ovf", "donnees.vmdk", "systeme.vmdk"])
+        let image = try disk(url)
+        XCTAssertEqual(image.virtualSize, 1 << 20, "le système, pas les données")
+        var out = [UInt8](repeating: 0, count: 1 << 20)
+        XCTAssertTrue(image.read(into: &out, at: 0))
+        XCTAssertEqual(out, Qcow2ImageTests.original)
+    }
+
+    /// Une archive faite par `tar -cf x.ova ./appliance.ovf ./disque.vmdk`
+    /// range ses membres sous `./` ; le descripteur, lui, nomme le fichier
+    /// sans. C'est le même fichier.
+    func testAMemberUnderDotSlashIsTheFileTheDescriptorNames() throws {
+        let url = try archive(OvaFixtures.k, size: 81920, name: "point.ova")
+        XCTAssertEqual(try members(url).map(\.name), ["./appliance.ovf", "./appliance-disk1.vmdk"])
+        XCTAssertEqual(try disk(url).virtualSize, 1 << 20)
+    }
+
+    /// Un descripteur qui démarre sur un fichier que l'archive n'a pas : le
+    /// refus le nomme, plutôt que de démarrer sur un autre disque sans le
+    /// dire.
+    func testADescriptorNamingAMissingDiskIsRefusedByName() throws {
+        let url = try archive(OvaFixtures.j, size: 81920, name: "absent.ova")
+        XCTAssertThrowsError(try disk(url)) {
+            XCTAssertEqual($0 as? OvaArchive.Refusal, .missingDisk("absent.vmdk"))
         }
     }
 
