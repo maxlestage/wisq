@@ -24,7 +24,7 @@ import Foundation
 ///
 /// Les nombres sont gros-boutistes, toute la spécification l'est
 /// (`docs/interop/qcow2.txt` de QEMU).
-public final class Qcow2Image: @unchecked Sendable {
+public final class Qcow2Image: VirtualDiskImage, @unchecked Sendable {
     public enum Refusal: Error, Equatable, LocalizedError {
         case notQcow2
         case unsupportedVersion(UInt32)
@@ -152,7 +152,7 @@ public final class Qcow2Image: @unchecked Sendable {
         }
         var raw = [UInt8](repeating: 0, count: l1Size * 8)
         if l1Size > 0 {
-            guard Self.readAll(fd, into: &raw, at: off_t(l1Offset)) else {
+            guard VirtualDiskImages.readAll(fd, into: &raw, at: off_t(l1Offset)) else {
                 throw Refusal.malformed("table L1 illisible")
             }
         }
@@ -196,9 +196,8 @@ public final class Qcow2Image: @unchecked Sendable {
                     for index in done..<(done + take) { buffer[index] = 0 }
                 } else {
                     var piece = [UInt8](repeating: 0, count: take)
-                    guard Self.readAll(fd, into: &piece, at: off_t(host) + off_t(within)) else {
-                        return false
-                    }
+                    let from = off_t(host) + off_t(within)
+                    guard VirtualDiskImages.readAll(fd, into: &piece, at: from) else { return false }
                     buffer.replaceSubrange(done..<(done + take), with: piece)
                 }
             }
@@ -219,7 +218,7 @@ public final class Qcow2Image: @unchecked Sendable {
         if tableOffset == 0 { return 0 }
         if let table = l2Cache[tableOffset] { return table[l2Index] }
         var raw = [UInt8](repeating: 0, count: clusterSize)
-        guard Self.readAll(fd, into: &raw, at: off_t(tableOffset)) else { return nil }
+        guard VirtualDiskImages.readAll(fd, into: &raw, at: off_t(tableOffset)) else { return nil }
         var table = [UInt64](repeating: 0, count: clusterSize / 8)
         for index in 0..<table.count {
             table[index] = raw[(index * 8)..<(index * 8 + 8)].reduce(0) { $0 << 8 | UInt64($1) }
@@ -246,7 +245,7 @@ public final class Qcow2Image: @unchecked Sendable {
         guard host < fileSize else { return nil }
         let length = Int(min(upperBound, fileSize - host))
         var input = [UInt8](repeating: 0, count: length)
-        guard Self.readAll(fd, into: &input, at: off_t(host)) else { return nil }
+        guard VirtualDiskImages.readAll(fd, into: &input, at: off_t(host)) else { return nil }
         guard let bytes = Self.inflateRaw(input, expected: clusterSize) else { return nil }
         lastCompressed = (entry, bytes)
         return bytes
@@ -273,18 +272,5 @@ public final class Qcow2Image: @unchecked Sendable {
         var magic = [UInt8](repeating: 0, count: 4)
         let got = magic.withUnsafeMutableBytes { pread(fd, $0.baseAddress!, 4, 0) }
         return got == 4 && magic == [0x51, 0x46, 0x49, 0xFB]
-    }
-
-    private static func readAll(_ fd: Int32, into buffer: inout [UInt8], at offset: off_t) -> Bool {
-        let wanted = buffer.count
-        var done = 0
-        return buffer.withUnsafeMutableBytes { raw in
-            while done < wanted {
-                let got = pread(fd, raw.baseAddress! + done, wanted - done, offset + off_t(done))
-                if got <= 0 { return false }
-                done += got
-            }
-            return true
-        }
     }
 }

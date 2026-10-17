@@ -250,10 +250,14 @@ public enum KernelImageKind: Equatable, Sendable {
     }
 
     /// Les formats d'hyperviseur que wisq lit sur place, sans conversion —
-    /// le qcow2, par `Qcow2Image`. Une image de ce format peut encore être
-    /// refusée en la branchant (chiffrée, à fichier de base…) ; le refus
-    /// nomme alors ce qui manque.
-    public static func isReadableVirtualDisk(_ format: String) -> Bool { format == "qcow2" }
+    /// le qcow2, par `Qcow2Image`, et le VMDK d'un seul fichier, par
+    /// `VmdkImage`. Une image de ces formats peut encore être refusée en la
+    /// branchant (chiffrée, à fichier de base, découpée…) ; le refus nomme
+    /// alors ce qui manque. Le VMDK « descripteur » n'est que le texte qui
+    /// nomme les vrais fichiers : il n'y a pas de disque dedans.
+    public static func isReadableVirtualDisk(_ format: String) -> Bool {
+        format == "qcow2" || format == "VMDK"
+    }
 
     /// Le format d'hyperviseur que ces octets portent, ou `nil`.
     static func virtualDisk(_ bytes: [UInt8]) -> String? {

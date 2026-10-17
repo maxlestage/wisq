@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — le VMDK aussi, et le même Alpine l'a lu
+
+Relance horaire, sur l'autorisation de travailler en continu et de fusionner
+ce qui est vert. Quatrième point de la liste des images de cloud : `VmdkImage`
+lit le VMDK d'un seul fichier, `monolithicSparse` (VMware Workstation, Fusion)
+et `streamOptimized` (les OVA). `FileDiskStore` ne connaît plus un format mais
+un protocole, `VirtualDiskImage`, que `VirtualDiskImages` choisit à la marque
+du fichier ; le qcow2 y passe sans changer de comportement.
+
+**Ce qui est vérifié, et par quoi.** Grains absents et « zéro », grains
+compressés en zlib dont la somme Adler-32 est contrôlée, adresse du marqueur
+comparée à celle du grain, dernier grain court (`qemu-img` le compresse à sa
+taille, et la somme ne porte que sur lui). Sept fixtures : six de `qemu-img`
+8.2.2, et une au répertoire en fin de fichier comme l'écrit `ovftool`, que
+`qemu-img` n'écrit pas — elle est fabriquée selon la spécification, puis
+relue par `qemu-img convert -O raw`, qui rend le disque d'origine octet pour
+octet. Le morceau d'un disque découpé a l'en-tête d'un disque entier : seul
+son descripteur, vide, le trahit, et c'est lui qui est lu pour le refuser.
+
+**Et contre un vrai noyau.** Le même Alpine LTS, avec pour disque le même
+nuage de 64 Mio en `streamOptimized` (4,2 Mio de fichier) : `[vda] 131072
+512-byte logical blocks`, les trois marques relues au début, au milieu et à
+la fin, `wisq-ecrit` recousu sur la fin du secteur décompressé, 650 requêtes
+servies, aucune refusée, et le fichier inchangé (somme SHA-256 identique).
+
+**Sept sabotages, sept chutes :** la somme Adler-32 ignorée, l'adresse du
+marqueur ignorée, le grain « zéro » lu comme des données, le pied ignoré, le
+type du descripteur ignoré, l'en-tête zlib non vérifié, et le dernier grain
+décompressé comme un grain entier. Le refus du cœur RISC-V, qcow2 compris,
+n'avait pas de test : il en a un.
+
 ## 2026-10-17 — un qcow2 se lit tel quel, et un vrai Alpine l'a lu
 
 La tranche d'avant reconnaissait le qcow2 et demandait `qemu-img convert` ;
