@@ -242,4 +242,25 @@ final class DifferentialDiskTests: XCTestCase {
         XCTAssertTrue(bare.hasDisk, "le périphérique est là")
         XCTAssertEqual(bare.diskBytesWritten, 0, "mais il n'a rien dedans")
     }
+
+    /// **Le cœur Rust lit sa base octet pour octet** : un qcow2 ou un VMDK
+    /// lui donnerait les tables du format en guise de disque. Il les refuse
+    /// en les nommant, sans rien créer à côté.
+    func testTheRustCoreRefusesAFormatItWouldReadAsRawBytes() throws {
+        let folder = try folder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var header = [UInt8](repeating: 0, count: 4096)
+        for (name, magic) in [("un qcow2", [0x51, 0x46, 0x49, 0xFB] as [UInt8]),
+                              ("un VMDK", Array("KDMV".utf8))] {
+            header.replaceSubrange(0..<4, with: magic)
+            let base = folder.appendingPathComponent("\(name).img")
+            try Data(header).write(to: base)
+            let writes = folder.appendingPathComponent("\(name).writes")
+            XCTAssertThrowsError(try RustLinuxMachine { _ in }.attach(diskFileAt: base, writes: writes)) {
+                let why = ($0 as? LocalizedError)?.errorDescription ?? ""
+                XCTAssertTrue(why.hasPrefix("ce disque est \(name), que le cœur RISC-V"), why)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: writes.path), "rien de créé")
+        }
+    }
 }
