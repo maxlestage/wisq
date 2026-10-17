@@ -30,6 +30,8 @@ struct LocalVMListView: View {
     @State private var renaming: InstalledMachine?
     /// Le nom tapé dans l'une ou l'autre de ces deux questions.
     @State private var machineName = ""
+    /// Le fichier d'une machine exportée, le temps de le partager.
+    @State private var exported: ExportedMachine?
 
     @State private var kernels: [URL]
     /// Ce que chaque fichier est, lu **une fois** par changement de
@@ -229,7 +231,21 @@ struct LocalVMListView: View {
         ) { result in
             do {
                 if let source = try result.get().first {
-                    _ = try KernelLibrary.importKernel(from: source)
+                    // **Une machine exportée passe par la même porte** : le
+                    // fichier dit lui-même ce qu'il est.
+                    let isMachine: Bool = {
+                        let opened = source.startAccessingSecurityScopedResource()
+                        defer { if opened { source.stopAccessingSecurityScopedResource() } }
+                        return MachineArchive.isArchive(source)
+                    }()
+                    if isMachine {
+                        let machine = try KernelLibrary.importMachine(from: source)
+                        note = Note(
+                            text: "« \(machine.name) » est importée, et reprendra où elle en était.",
+                            symbol: "square.and.arrow.down")
+                    } else {
+                        _ = try KernelLibrary.importKernel(from: source)
+                    }
                     reloadLibrary()
                     storage = KernelLibrary.storageReport()
                     importError = nil
@@ -251,6 +267,25 @@ struct LocalVMListView: View {
             Button("Annuler", role: .cancel) { installing = nil }
         } message: {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .sheet(item: $exported) { file in
+            VStack(spacing: 18) {
+                Image(systemName: "square.and.arrow.up.circle")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.tint)
+                Text("« \(file.name) » est prête à partir")
+                    .font(.headline)
+                Text("Le fichier porte ses réglages, ses écritures et sa session. L'image qu'elle démarre n'est pas dedans : le téléphone qui l'importe doit l'avoir dans sa bibliothèque.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                ShareLink(item: file.url) {
+                    Label("Partager", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(28)
+            .presentationDetents([.medium])
         }
         .alert("Renommer", isPresented: Binding(
             get: { renaming != nil }, set: { if !$0 { renaming = nil } })
@@ -319,6 +354,11 @@ struct LocalVMListView: View {
                         machineName = machine.name
                         renaming = machine
                     }
+                    // L'emporter sur un autre téléphone : réglages, écritures et
+                    // session, sans l'image — l'autre bibliothèque doit l'avoir.
+                    Button("Exporter", systemImage: "square.and.arrow.up") {
+                        export(machine)
+                    }
                     // Repartir d'où cette machine est — installée, configurée,
                     // session comprise — sans toucher à l'original.
                     Button("Dupliquer", systemImage: "plus.square.on.square") {
@@ -337,7 +377,7 @@ struct LocalVMListView: View {
         } header: {
             Text("Machines installées")
         } footer: {
-            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer ou dupliquer — la copie reprend la session de l'original ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
+            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
         }
     }
 
@@ -373,6 +413,16 @@ struct LocalVMListView: View {
                 text: "Disque vierge \(name) (\(KernelMemory.describe(size))) branché sur « \(machine.name) ». Il apparaîtra vide sur /dev/vda.",
                 symbol: "externaldrive.badge.plus")
             storage = KernelLibrary.storageReport()
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    private func export(_ machine: InstalledMachine) {
+        do {
+            exported = ExportedMachine(
+                name: machine.name, url: try KernelLibrary.exportMachine(machine))
+            importError = nil
         } catch {
             importError = error.localizedDescription
         }
@@ -732,6 +782,13 @@ extension LocalVMListView {
                 """
         }
     }
+}
+
+/// Une machine exportée, le temps de la feuille de partage.
+private struct ExportedMachine: Identifiable {
+    let name: String
+    let url: URL
+    var id: String { url.path }
 }
 
 /// Ce que le dernier geste a coûté, et sous quelle icône le dire.
