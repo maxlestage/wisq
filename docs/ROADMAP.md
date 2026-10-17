@@ -365,14 +365,20 @@ recommandent pour une machine prête en une minute.
 
 **La suite, dans l'ordre :**
 
-1. Lire un qcow2 **comme base** du disque : en-tête, table L1, tables L2,
-   clusters non compressés, clusters à zéro ; les écritures continuent d'aller
-   dans la couche tassée, la base n'est jamais modifiée. Refuser — en le
-   disant — une image chiffrée, une image à fichier de base (`backing_file`)
-   et une image à clusters externes.
-2. Les clusters **compressés** (deflate brut), que les images de cloud
-   emploient presque toutes.
-3. Les mêmes pour VMDK « streamOptimized », la forme sous laquelle se
+1. **Fait.** Lire un qcow2 **comme base** du disque (`Qcow2Image`) : en-tête,
+   table L1, tables L2, clusters ordinaires, clusters « zéro » ; les écritures
+   vont dans la couche tassée de `FileDiskStore`, et le fichier téléchargé
+   n'est jamais modifié. Refusés en le disant : chiffré, à fichier de base,
+   à fichier de données externe, marqué corrompu, zstd, L2 étendues, bits
+   inconnus.
+2. **Fait.** Les clusters **compressés** (deflate brut, par `Inflate`, écrit
+   ici pour que `WisqVM` ne dépende que de Foundation). Vérifié sur
+   un vrai Alpine LTS démarré sur un qcow2 compressé de 64 Mio : début,
+   milieu et fin lus, taille annoncée vue par le noyau, écriture partielle
+   d'un secteur recousue.
+3. Le cœur Rust (RISC-V) refuse un qcow2 en le nommant : il lit sa base octet
+   pour octet. Aucune image de cloud rv32 n'existe, donc rien ne presse.
+4. Les mêmes pour VMDK « streamOptimized », la forme sous laquelle se
    distribuent les appliances OVA.
 
 ## Lot 5 — SPICE (fait)

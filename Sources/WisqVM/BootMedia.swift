@@ -104,6 +104,12 @@ public enum BootMedia {
                 """
         case .executable(let architecture):
             return "\(name) est un exécutable pour \(architecture.name), pas un initramfs."
+        case .virtualDisk(let format) where KernelImageKind.isReadableVirtualDisk(format):
+            return """
+                \(name) est une image de disque au format \(format), pas un \
+                initramfs. Gardez-la comme **disque** de votre noyau : wisq la \
+                lit telle quelle.
+                """
         case .virtualDisk(let format):
             return """
                 \(name) est une image de disque au format \(format), pas un \

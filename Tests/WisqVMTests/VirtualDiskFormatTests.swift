@@ -44,42 +44,62 @@ final class VirtualDiskFormatTests: XCTestCase {
         XCTAssertTrue(LocalDisk.couldBeDisk(KernelImageKind.identify(prefix: raw)))
     }
 
-    /// Le défaut qui a fait écrire ce cas : un qcow2 était offert comme disque,
-    /// et l'invité lisait des tables de clusters au lieu d'un système de
-    /// fichiers. Il ne l'est plus, et il ne démarre pas non plus.
-    func testItIsNeverOfferedAsADiskNorBooted() throws {
+    /// Le défaut qui a fait écrire ce cas : un qcow2 était offert comme disque
+    /// **brut**, et l'invité lisait des tables de clusters au lieu d'un système
+    /// de fichiers. Un format que wisq ne lit pas n'est plus offert du tout ; le
+    /// qcow2, que `Qcow2Image` lit sur place, l'est — et aucun des deux ne
+    /// démarre.
+    func testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots() throws {
+        let vmdk = KernelImageKind.virtualDisk("VMDK")
+        XCTAssertFalse(LocalDisk.couldBeDisk(vmdk))
+        XCTAssertFalse(LocalDisk.isDiskImage(vmdk))
         let qcow2 = KernelImageKind.virtualDisk("qcow2")
-        XCTAssertFalse(LocalDisk.couldBeDisk(qcow2))
-        XCTAssertFalse(LocalDisk.isDiskImage(qcow2))
-        XCTAssertFalse(qcow2.couldBootHere)
-        XCTAssertFalse(InstalledMachines.canInstall(qcow2))
-        XCTAssertNil(qcow2.architecture)
+        XCTAssertTrue(LocalDisk.isDiskImage(qcow2))
+        XCTAssertFalse(LocalDisk.isDiskImage(.virtualDisk("qcow")), "l'ancien qcow, v1, n'est pas lu")
+        for kind in [vmdk, qcow2] {
+            XCTAssertFalse(kind.couldBootHere)
+            XCTAssertFalse(InstalledMachines.canInstall(kind))
+            XCTAssertNil(kind.architecture)
+        }
 
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-disques-virtuels-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let cloud = folder.appendingPathComponent("debian-12-genericcloud-amd64.qcow2")
+        let appliance = folder.appendingPathComponent("appliance.vmdk")
         let raw = folder.appendingPathComponent("disque.img")
         try file([0x51, 0x46, 0x49, 0xFB, 0, 0, 0, 3]).write(to: cloud)
+        try file(Array("KDMV".utf8)).write(to: appliance)
         try file([]).write(to: raw)
-        XCTAssertEqual(LocalDisk.candidates(among: [cloud, raw], kernel: "bzImage"), [raw])
+        XCTAssertEqual(LocalDisk.candidates(among: [cloud, appliance, raw], kernel: "bzImage"),
+                       [cloud, raw])
     }
 
     /// La bibliothèque le dit à sa ligne, et le refus donne la commande qui en
     /// fait un disque d'ici — avec le nom du fichier dedans, prête à copier.
     func testTheWordsSayWhatItIsAndHowToConvertIt() throws {
-        XCTAssertEqual(LibraryEntry.role(of: .virtualDisk("qcow2")),
-                       .foreign("disque qcow2, à convertir"))
+        XCTAssertEqual(LibraryEntry.role(of: .virtualDisk("VMDK")),
+                       .foreign("disque VMDK, à convertir"))
+        XCTAssertEqual(LibraryEntry.role(of: .virtualDisk("qcow2")), .disk("qcow2"))
         let refusal = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
-            .virtualDisk("qcow2"), name: "debian.qcow2"))
-        XCTAssertTrue(refusal.contains("qcow2"))
-        XCTAssertTrue(refusal.contains("`qemu-img convert -O raw debian.qcow2 disque.img`"))
+            .virtualDisk("VMDK"), name: "appliance.vmdk"))
+        XCTAssertTrue(refusal.contains("VMDK"))
+        XCTAssertTrue(refusal.contains("`qemu-img convert -O raw appliance.vmdk disque.img`"))
         XCTAssertFalse(refusal.contains("installez-la sur un hôte"),
                        "le conseil des noyaux étrangers n'a pas de sens pour un disque")
+        // Un qcow2 pris comme noyau : la réponse est où le mettre, pas comment
+        // le convertir.
+        let qcow2 = try XCTUnwrap(KernelImageKind.cannotRunHereExplanation(
+            .virtualDisk("qcow2"), name: "debian.qcow2"))
+        XCTAssertTrue(qcow2.contains("**disque**"))
+        XCTAssertFalse(qcow2.contains("qemu-img"))
         XCTAssertNotNil(KernelImageKind.whatItIs(.virtualDisk("VMDK"), name: "x.vmdk"))
         let notInitramfs = try XCTUnwrap(BootMedia.refusal(
-            for: file([0x51, 0x46, 0x49, 0xFB, 0, 0, 0, 3]), name: "d.qcow2"))
+            for: file(Array("KDMV".utf8)), name: "d.vmdk"))
         XCTAssertTrue(notInitramfs.contains("qemu-img convert -O raw"))
+        let qcow2Initramfs = try XCTUnwrap(BootMedia.refusal(
+            for: file([0x51, 0x46, 0x49, 0xFB, 0, 0, 0, 3]), name: "d.qcow2"))
+        XCTAssertFalse(qcow2Initramfs.contains("qemu-img"))
     }
 }
