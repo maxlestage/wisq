@@ -1,5 +1,9 @@
-import CZlib
 import Foundation
+#if canImport(Compression)
+import Compression
+#else
+import CZlib
+#endif
 
 /// Un disque qcow2, lu sur place, sans conversion.
 ///
@@ -12,7 +16,10 @@ import Foundation
 /// **Ce qu'il lit.** L'en-tête, la table L1, les tables L2 qu'elle désigne, les
 /// clusters ordinaires, les clusters marqués « zéro », et les clusters
 /// **compressés** — deflate brut, que presque toutes les images de cloud
-/// emploient. Lecture seule : les écritures de l'invité ne passent jamais par
+/// emploient. Sur les plateformes d'Apple, c'est le framework Compression qui
+/// les décode (son `COMPRESSION_ZLIB` *est* le deflate brut) ; sous Linux, la
+/// zlib du système. Les deux chemins sont tenus par la CI, chacun sur sa
+/// plateforme, avec les mêmes fixtures. Lecture seule : les écritures de l'invité ne passent jamais par
 /// ici, elles vont dans la couche de `FileDiskStore`, et le fichier téléchargé
 /// reste octet pour octet celui qui a été téléchargé.
 ///
@@ -257,6 +264,21 @@ public final class Qcow2Image: @unchecked Sendable {
     /// faire exactement un cluster ; les octets de bourrage après la fin du
     /// flux sont ignorés, ce que la borne supérieure ci-dessus rend inévitable.
     static func inflateRaw(_ input: [UInt8], expected: Int) -> [UInt8]? {
+        #if canImport(Compression)
+        // Le décodeur s'arrête à la fin du flux ou quand la sortie est pleine,
+        // et rend le nombre d'octets écrits : un cluster complet en rend
+        // exactement la taille, le bourrage qui suit le flux est ignoré.
+        guard !input.isEmpty else { return nil }
+        var output = [UInt8](repeating: 0, count: expected)
+        let written = output.withUnsafeMutableBufferPointer { outBuffer in
+            input.withUnsafeBufferPointer { inBuffer in
+                compression_decode_buffer(
+                    outBuffer.baseAddress!, expected,
+                    inBuffer.baseAddress!, input.count, nil, COMPRESSION_ZLIB)
+            }
+        }
+        return written == expected ? output : nil
+        #else
         var stream = z_stream()
         guard inflateInit2_(&stream, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
             return nil
@@ -279,6 +301,7 @@ public final class Qcow2Image: @unchecked Sendable {
         let full = stream.avail_out == 0
         guard status == Z_STREAM_END || (status == Z_BUF_ERROR && full), full else { return nil }
         return output
+        #endif
     }
 
     /// Le même, pour un fichier qu'on n'a pas encore ouvert.
