@@ -243,16 +243,27 @@ final class DifferentialDiskTests: XCTestCase {
         XCTAssertEqual(bare.diskBytesWritten, 0, "mais il n'a rien dedans")
     }
 
-    /// **Le cœur Rust lit sa base octet pour octet** : un qcow2 ou un VMDK
-    /// lui donnerait les tables du format en guise de disque. Il les refuse
-    /// en les nommant, sans rien créer à côté.
+    /// **Le cœur Rust lit sa base octet pour octet** : un qcow2, un VMDK ou
+    /// un OVA lui donnerait les tables du format en guise de disque. Il les
+    /// refuse en les nommant, sans rien créer à côté.
     func testTheRustCoreRefusesAFormatItWouldReadAsRawBytes() throws {
         let folder = try folder()
         defer { try? FileManager.default.removeItem(at: folder) }
-        var header = [UInt8](repeating: 0, count: 4096)
-        for (name, magic) in [("un qcow2", [0x51, 0x46, 0x49, 0xFB] as [UInt8]),
-                              ("un VMDK", Array("KDMV".utf8))] {
-            header.replaceSubrange(0..<4, with: magic)
+        // L'en-tête tar d'une appliance : un descripteur OVF vide, et la
+        // somme qui le rend valide.
+        var tar = [UInt8](repeating: 0, count: 512)
+        tar.replaceSubrange(0..<5, with: Array("a.ovf".utf8))
+        tar.replaceSubrange(124..<136, with: Array("00000000000\0".utf8))
+        tar[156] = UInt8(ascii: "0")
+        tar.replaceSubrange(257..<265, with: Array("ustar\000".utf8))
+        tar.replaceSubrange(148..<156, with: [UInt8](repeating: 0x20, count: 8))
+        let sum = tar.reduce(0) { $0 + Int($1) }
+        tar.replaceSubrange(148..<156, with: Array(String(format: "%06o\0 ", sum).utf8))
+        for (name, head) in [("un qcow2", [0x51, 0x46, 0x49, 0xFB] as [UInt8]),
+                             ("un VMDK", Array("KDMV".utf8)),
+                             ("une appliance OVA", tar)] {
+            var header = [UInt8](repeating: 0, count: 4096)
+            header.replaceSubrange(0..<head.count, with: head)
             let base = folder.appendingPathComponent("\(name).img")
             try Data(header).write(to: base)
             let writes = folder.appendingPathComponent("\(name).writes")

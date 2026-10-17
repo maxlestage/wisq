@@ -67,6 +67,11 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
     private let compressed: Bool
     private let zeroGrains: Bool
     private let fd: Int32
+    /// Où commence le VMDK dans le fichier ouvert : 0 d'ordinaire, le début
+    /// du membre quand le disque est dans une archive OVA. Toutes les
+    /// lectures passent par là, et `fileSize` est la taille du VMDK, pas du
+    /// fichier.
+    private let origin: off_t
     private let fileSize: UInt64
 
     /// Les tables de grains déjà lues, par secteur. Une table de 512 entrées
@@ -128,14 +133,22 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
         }
     }
 
-    /// Lit l'en-tête de `fd`, qui appartient ensuite à l'image.
-    public init(takingOwnershipOf fd: Int32) throws {
+    /// Lit l'en-tête de `fd`, qui appartient ensuite à l'image. `member`
+    /// désigne le VMDK quand il n'est qu'une partie du fichier — le membre
+    /// d'une archive OVA, lu en place.
+    public init(takingOwnershipOf fd: Int32, member: (offset: UInt64, length: UInt64)? = nil) throws {
         var info = stat()
         guard fstat(fd, &info) == 0 else { throw Refusal.malformed("taille illisible") }
-        let fileSize = UInt64(info.st_size)
+        let whole = UInt64(info.st_size)
+        let origin = member?.offset ?? 0
+        let fileSize = member?.length ?? whole
+        guard origin <= whole, fileSize <= whole - origin else {
+            throw Refusal.malformed("le disque déborde de l'archive")
+        }
         func block(at offset: UInt64, count: Int) -> [UInt8]? {
             var bytes = [UInt8](repeating: 0, count: count)
-            return VirtualDiskImages.readAll(fd, into: &bytes, at: off_t(offset)) ? bytes : nil
+            let from = off_t(origin) + off_t(offset)
+            return VirtualDiskImages.readAll(fd, into: &bytes, at: from) ? bytes : nil
         }
         guard let first = block(at: 0, count: 512), var header = Header(first) else {
             throw Refusal.notVmdk
@@ -211,6 +224,7 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
         else { throw Refusal.malformed("répertoire hors du fichier") }
 
         self.fd = fd
+        self.origin = off_t(origin)
         self.fileSize = fileSize
         self.virtualSize = header.capacity * 512
         self.grainSectors = header.grainSectors
@@ -244,7 +258,7 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
                 buffer.replaceSubrange(done..<(done + take), with: bytes[within..<(within + take)])
             } else {
                 var piece = [UInt8](repeating: 0, count: take)
-                let from = off_t(sector) * 512 + off_t(within)
+                let from = origin + off_t(sector) * 512 + off_t(within)
                 guard VirtualDiskImages.readAll(fd, into: &piece, at: from) else { return false }
                 buffer.replaceSubrange(done..<(done + take), with: piece)
             }
@@ -264,7 +278,7 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
         if tableSector == 0 { return 0 }
         if let table = tableCache[tableSector] { return table[entry] }
         var raw = [UInt8](repeating: 0, count: entriesPerTable * 4)
-        guard VirtualDiskImages.readAll(fd, into: &raw, at: off_t(tableSector) * 512) else { return nil }
+        guard VirtualDiskImages.readAll(fd, into: &raw, at: origin + off_t(tableSector) * 512) else { return nil }
         let table = Self.littleEndianWords(raw)
         tableCache[tableSector] = table
         tableOrder.append(tableSector)
@@ -283,12 +297,12 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
         let start = UInt64(sector) * 512
         guard start <= fileSize, fileSize - start >= 12 else { return nil }
         var marker = [UInt8](repeating: 0, count: 12)
-        guard VirtualDiskImages.readAll(fd, into: &marker, at: off_t(start)) else { return nil }
+        guard VirtualDiskImages.readAll(fd, into: &marker, at: origin + off_t(start)) else { return nil }
         let lba = marker[0..<8].reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
         let length = UInt64(marker[8..<12].reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
         guard lba == grain * grainSectors, length > 6, length <= fileSize - start - 12 else { return nil }
         var input = [UInt8](repeating: 0, count: Int(length))
-        guard VirtualDiskImages.readAll(fd, into: &input, at: off_t(start + 12)) else { return nil }
+        guard VirtualDiskImages.readAll(fd, into: &input, at: origin + off_t(start + 12)) else { return nil }
         // Le dernier grain d'un disque dont la taille n'est pas un multiple
         // du grain est plus court, et compressé tel quel : c'est ce qu'écrit
         // `qemu-img`, et la somme ne porte que sur ces octets-là. Ce qui
