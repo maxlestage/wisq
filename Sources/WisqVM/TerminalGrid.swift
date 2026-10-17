@@ -106,6 +106,13 @@ public struct TerminalGrid: Sendable {
     /// non `ESC [ A`. La grille ne fait que le retenir ; c'est `TerminalKey`
     /// qui en tient compte au moment d'envoyer une touche.
     public private(set) var applicationCursorKeys = false
+    /// **Le collage encadré** (`ESC [ ? 2004 h`).
+    ///
+    /// Bash, zsh et `vim` le demandent pour distinguer un texte collé d'un
+    /// texte tapé : sans lui, chaque retour à la ligne d'un collage exécute la
+    /// ligne qui le précède. La grille le retient ; c'est `TerminalPaste` qui
+    /// encadre le texte au moment de l'envoyer.
+    public private(set) var bracketedPaste = false
     public private(set) var isAlternateScreen = false
 
     private enum State {
@@ -204,6 +211,7 @@ public struct TerminalGrid: Sendable {
         scrollBottom = rows - 1
         isCursorVisible = true
         applicationCursorKeys = false
+        bracketedPaste = false
         isAlternateScreen = false
         state = .text
         csiBuffer.removeAll()
@@ -414,6 +422,8 @@ public struct TerminalGrid: Sendable {
                 applicationCursorKeys = enable
             case 25:
                 isCursorVisible = enable
+            case 2004:
+                bracketedPaste = enable
             case 47, 1047, 1049:
                 setAlternateScreen(enable, saveCursor: mode == 1049)
             default:

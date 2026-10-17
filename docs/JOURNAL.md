@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — coller dans la console locale
+
+La console de la machine locale permettait de copier — la sélection y est
+active — mais pas de coller : le champ de saisie n'a qu'une ligne, et un script
+de dix lignes copié depuis une page y arrivait recousu, ou pas du tout. Un
+bouton « coller » ouvre maintenant la barre de touches.
+
+**Ce qui part est décidé par `TerminalPaste`, sous des tests.** Les retours à la
+ligne s'écrivent `\r`, comme la touche Entrée, et `\r\n` n'en fait qu'un. Aucun
+caractère de contrôle ne passe, sauf la tabulation : un `ESC` caché dans un
+presse-papiers serait exécuté par le programme qui écoute. Et quand bash ou
+`vim` ont demandé le collage encadré (`ESC [ ? 2004 h`, que `TerminalGrid`
+retient comme il retient DECCKM), le texte part entre `ESC [ 200 ~` et
+`ESC [ 201 ~` : les lignes collées restent dans la ligne d'édition au lieu
+d'être exécutées une à une.
+
+**Le défaut qu'il fallait voir avant de l'écrire :** un texte qui porte lui-même
+`ESC [ 201 ~` refermerait l'encadrement de l'intérieur, et la suite serait
+exécutée comme tapée. Le filtre des contrôles l'empêche ; un test le tient.
+
+**Deux sabotages, deux chutes :** le filtre réduit aux contrôles bas (quatre
+tests rougissent), et le mode 2004 rebaptisé 2005 dans la grille (deux).
+
 ## 2026-10-16 — dupliquer une machine, session comprise
 
 Une machine qu'on a installée et configurée est un point d'arrivée qui a
