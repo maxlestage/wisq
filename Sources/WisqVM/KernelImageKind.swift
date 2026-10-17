@@ -68,6 +68,16 @@ public enum KernelImageKind: Equatable, Sendable {
     /// son architecture est **dans** la compression. Le dire vaut mieux que de
     /// deviner, et mieux que de se taire.
     case compressedKernel(String)
+    /// Un disque dans le format d'un autre hyperviseur — qcow2, VMDK, VHDX,
+    /// VHD dynamique, VDI —, nommé par ce format.
+    ///
+    /// **C'est la forme sous laquelle les distributions livrent leurs images
+    /// de cloud**, et c'est pour cela qu'il fallait la reconnaître : avant ce
+    /// cas, un `debian-12-genericcloud-amd64.qcow2` ressortait en `unknown`,
+    /// donc était offert comme disque brut, et l'invité lisait des tables de
+    /// clusters là où il cherchait un système de fichiers. Le nommer permet
+    /// de ne plus l'offrir comme disque, et de dire comment le convertir.
+    case virtualDisk(String)
     /// Nothing this code recognises. Tried anyway; see the type's doc.
     case unknown
 
@@ -76,7 +86,7 @@ public enum KernelImageKind: Equatable, Sendable {
         switch self {
         case .linuxKernel(let image): return image.architecture
         case .executable(let architecture): return architecture
-        case .discImage, .filesystemImage, .compressedKernel, .unknown: return nil
+        case .discImage, .filesystemImage, .compressedKernel, .virtualDisk, .unknown: return nil
         }
     }
 
@@ -92,7 +102,7 @@ public enum KernelImageKind: Equatable, Sendable {
         switch self {
         case .unknown: return true
         case .linuxKernel(let image): return image.architecture.core != nil
-        case .executable, .discImage, .filesystemImage, .compressedKernel: return false
+        case .executable, .discImage, .filesystemImage, .compressedKernel, .virtualDisk: return false
         }
     }
 
@@ -206,6 +216,14 @@ public enum KernelImageKind: Equatable, Sendable {
             return architecture.core != nil ? .unknown : .executable(architecture)
         }
 
+        // **Les disques des autres hyperviseurs**, chacun à sa marque en tête
+        // de fichier — sauf VDI, dont la signature binaire est à 0x40 après
+        // une ligne de texte. Le VHD *fixe* n'est pas ici, et c'est juste : il
+        // est fait des octets bruts du disque suivis d'un pied de 512 octets,
+        // donc il se branche tel quel. Le VHD dynamique, lui, commence par une
+        // copie de ce pied (« conectix ») et n'est pas brut.
+        if let format = virtualDisk(bytes) { return .virtualDisk(format) }
+
         // Les enveloppes. Un `vmlinuz` compressé sans en-tête de démarrage est
         // presque sûrement un noyau — mais son architecture est **dans** la
         // compression, et la lire demanderait de tout décompresser. Nommer
@@ -229,6 +247,25 @@ public enum KernelImageKind: Equatable, Sendable {
         if let format = filesystem(bytes) { return .filesystemImage(format) }
 
         return .unknown
+    }
+
+    /// Le format d'hyperviseur que ces octets portent, ou `nil`.
+    static func virtualDisk(_ bytes: [UInt8]) -> String? {
+        func starts(with marker: [UInt8]) -> Bool {
+            bytes.count >= marker.count && Array(bytes[0..<marker.count]) == marker
+        }
+        if starts(with: [0x51, 0x46, 0x49, 0xFB]) {
+            // La version suit la marque, en gros-boutiste : 1 est l'ancien
+            // qcow, 2 et 3 le qcow2 que livre tout le monde aujourd'hui.
+            let version = bytes.count >= 8 ? be32(bytes, 4) : 0
+            return version == 1 ? "qcow" : "qcow2"
+        }
+        if starts(with: Array("KDMV".utf8)) { return "VMDK" }
+        if starts(with: Array("# Disk DescriptorFile".utf8)) { return "VMDK (descripteur)" }
+        if starts(with: Array("vhdxfile".utf8)) { return "VHDX" }
+        if starts(with: Array("conectix".utf8)) { return "VHD dynamique" }
+        if bytes.count >= 0x44, le32(bytes, 0x40) == 0xBEDA_107F { return "VDI" }
+        return nil
     }
 
     /// Le système de fichiers que ces octets portent, ou `nil`.
@@ -291,7 +328,7 @@ public enum KernelImageKind: Equatable, Sendable {
     /// Alors cette phrase-ci ne conseille rien. Elle nomme, et laisse
     /// l'appelant enchaîner avec la raison qui est la sienne.
     ///
-    /// Ne répond que pour les deux genres qui **sont** un disque : ailleurs,
+    /// Ne répond que pour les genres qui **sont** un disque : ailleurs,
     /// personne n'a besoin de composer, et prétendre reconnaître un fichier
     /// que rien n'a reconnu serait un mensonge de plus.
     public static func whatItIs(_ kind: KernelImageKind, name: String) -> String? {
@@ -307,6 +344,11 @@ public enum KernelImageKind: Equatable, Sendable {
             return """
                 \(name) est une image de système de fichiers (\(format)) — ce \
                 qu'un noyau de PC sait lire sur `/dev/vda`.
+                """
+        case .virtualDisk(let format):
+            return """
+                \(name) est une image de disque au format \(format) — le format \
+                d'un autre hyperviseur, pas les octets bruts d'un disque.
                 """
         case .unknown, .linuxKernel, .executable, .compressedKernel:
             return nil
@@ -367,6 +409,23 @@ public enum KernelImageKind: Equatable, Sendable {
                 C'est en revanche exactement ce qu'un noyau de PC sait lire. \
                 Choisissez-la comme **disque** de votre noyau, et l'invité la \
                 verra sur `/dev/vda`.
+                """
+        case .virtualDisk(let format):
+            // Pas le message générique non plus : « installez-la sur un hôte »
+            // ne veut rien dire pour un disque. Ce qui sert, c'est la commande
+            // qui en fait un disque brut — celui que wisq sait brancher.
+            return """
+                \(name) est une image de disque au format \(format) — le format \
+                d'un autre hyperviseur, pas un noyau, et pas encore un disque \
+                que wisq sait brancher : il lit les octets bruts d'un disque, \
+                et celui-ci les range dans ses propres tables.
+
+                Convertissez-la sur un ordinateur, en une commande :
+
+                `qemu-img convert -O raw \(name) disque.img`
+
+                puis importez `disque.img` : ce sera le **disque** d'un noyau \
+                de PC, et l'invité le verra sur `/dev/vda`.
                 """
         case .executable(let architecture):
             what = "un exécutable pour \(architecture.name)"
