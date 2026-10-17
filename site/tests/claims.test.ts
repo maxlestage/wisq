@@ -1798,7 +1798,7 @@ describe("le nombre de familles d'architectures reconnues est celui de l'énumé
     ["README.md", /—\s+(\S+(?: et une)?)\s+architecture\s+families\s+recognised/, "en"],
     ["README.fr.md", /:\s+(\S+(?: et une)?)\s+familles\s+d'architectures/, "fr"],
     ["crates/wisq-site/src/content.rs", /core itself: (\S+) architecture families recognised/, "en"],
-    ["crates/wisq-site/src/content.rs", /cœur tout seul : (\S+(?: et une)?) familles d'architectures/, "fr"],
+    ["crates/wisq-site/src/content.rs", /cœur tout seul\s: (\S+(?: et une)?) familles d'architectures/, "fr"],
     ["docs/ROADMAP.md", /nomme les \*\*(\S+(?: et une)?) familles\*\*/, "fr"],
   ] as const)("%s annonce le vrai compte (%#)", (fichier, motif, langue) => {
     const texte = readFileSync(join(repoRoot, fichier), "utf8").replace(/\s*\n\s*/g, " ");
