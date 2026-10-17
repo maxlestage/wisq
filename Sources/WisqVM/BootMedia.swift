@@ -104,6 +104,13 @@ public enum BootMedia {
                 """
         case .executable(let architecture):
             return "\(name) est un exécutable pour \(architecture.name), pas un initramfs."
+        case .virtualDisk(let format):
+            return """
+                \(name) est une image de disque au format \(format), pas un \
+                initramfs — et pas encore un disque que wisq sait brancher : \
+                convertissez-la avec `qemu-img convert -O raw`, puis gardez le \
+                résultat comme **disque** de votre noyau.
+                """
         case .compressedKernel, .unknown:
             // Une enveloppe reconnue est déjà partie plus haut : ce qui arrive
             // ici ne commence par aucun magic connu.

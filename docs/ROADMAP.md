@@ -355,6 +355,26 @@ iPhone simulé, `testTwoMachinesInstalledOnOneKernelKeepTheirOwnSessions`.
    nommant si elle manque. Le disque vierge propre n'est pas porté, il est
    recréé à sa taille. Tout ou rien : une archive tronquée n'importe rien.
 
+## Les images de cloud, sans conversion
+
+Depuis le 17 octobre 2026, un qcow2 (et VMDK, VHDX, VHD dynamique, VDI) est
+**reconnu** et n'est plus offert comme disque brut ; le refus donne la commande
+`qemu-img convert -O raw`. C'est honnête, mais c'est un ordinateur de plus sur
+le chemin, et l'image de cloud est justement ce que les distributions
+recommandent pour une machine prête en une minute.
+
+**La suite, dans l'ordre :**
+
+1. Lire un qcow2 **comme base** du disque : en-tête, table L1, tables L2,
+   clusters non compressés, clusters à zéro ; les écritures continuent d'aller
+   dans la couche tassée, la base n'est jamais modifiée. Refuser — en le
+   disant — une image chiffrée, une image à fichier de base (`backing_file`)
+   et une image à clusters externes.
+2. Les clusters **compressés** (deflate brut), que les images de cloud
+   emploient presque toutes.
+3. Les mêmes pour VMDK « streamOptimized », la forme sous laquelle se
+   distribuent les appliances OVA.
+
 ## Lot 5 — SPICE (fait)
 
 *Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
