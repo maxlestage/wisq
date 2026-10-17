@@ -250,13 +250,14 @@ public enum KernelImageKind: Equatable, Sendable {
     }
 
     /// Les formats d'hyperviseur que wisq lit sur place, sans conversion —
-    /// le qcow2, par `Qcow2Image`, et le VMDK d'un seul fichier, par
-    /// `VmdkImage`. Une image de ces formats peut encore être refusée en la
-    /// branchant (chiffrée, à fichier de base, découpée…) ; le refus nomme
-    /// alors ce qui manque. Le VMDK « descripteur » n'est que le texte qui
-    /// nomme les vrais fichiers : il n'y a pas de disque dedans.
+    /// le qcow2, par `Qcow2Image`, le VMDK d'un seul fichier, par `VmdkImage`,
+    /// et l'appliance OVA, dont le VMDK est lu dans l'archive (`OvaArchive`).
+    /// Une image de ces formats peut encore être refusée en la branchant
+    /// (chiffrée, à fichier de base, découpée…) ; le refus nomme alors ce
+    /// qui manque. Le VMDK « descripteur » n'est que le texte qui nomme les
+    /// vrais fichiers : il n'y a pas de disque dedans.
     public static func isReadableVirtualDisk(_ format: String) -> Bool {
-        format == "qcow2" || format == "VMDK"
+        ["qcow2", "VMDK", "OVA"].contains(format)
     }
 
     /// Le format d'hyperviseur que ces octets portent, ou `nil`.
@@ -273,6 +274,9 @@ public enum KernelImageKind: Equatable, Sendable {
         if starts(with: Array("KDMV".utf8)) { return "VMDK" }
         if starts(with: Array("# Disk DescriptorFile".utf8)) { return "VMDK (descripteur)" }
         if starts(with: Array("vhdxfile".utf8)) { return "VHDX" }
+        // Une appliance : un tar dont le premier membre est un descripteur
+        // OVF. Un tar quelconque n'est pas un disque, et reste inconnu.
+        if OvaArchive.looksLikeOne(bytes) { return "OVA" }
         if starts(with: Array("conectix".utf8)) { return "VHD dynamique" }
         if bytes.count >= 0x44, le32(bytes, 0x40) == 0xBEDA_107F { return "VDI" }
         return nil
