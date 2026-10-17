@@ -487,7 +487,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     compare: CompareCopy {
         title: "Why not just use UTM?",
-        lede: "UTM is excellent, and wisq borrows from its touch design. But iOS grants executable memory only to development-signed apps, so emulating a desktop OS on the phone is interpreted and an order of magnitude slow. That is a platform ceiling, not a code-quality one.",
+        lede: "UTM is excellent, and wisq borrows from its touch design. But iOS grants executable memory only to development-signed apps, so emulating a desktop OS on the phone is interpreted and an order of magnitude slower. That is a platform ceiling, not a code-quality one.",
         columns: ["Aspect", "UTM SE", "wisq"],
         rows: &[["Execution", "local QEMU, interpreted", "on the host — or a purpose-built local interpreter"], ["Speed", "very slow (no JIT on iOS)", "network-bound remote · ~0.3 s to a Linux login prompt locally"], ["App Store", "grey area, rule 4.7", "network client + interpreter, both clean"], ["License", "GPL (QEMU)", "no QEMU inside, so no copyleft to carry"]],
     },
