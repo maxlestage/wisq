@@ -181,9 +181,11 @@ let package = Package(
         // say so line by line.
         .target(name: "WisqRemote", dependencies: ["WisqCore", "WisqNet"]),
 
-        // Local Linux VMs: an interpreted rv32ima machine. Foundation only, so
-        // the same core that ships on the phone boots real kernels in CI.
-        .target(name: "WisqVM"),
+        // Local Linux VMs: an interpreted rv32ima machine. Foundation and the
+        // system zlib only, so the same core that ships on the phone boots real
+        // kernels in CI. zlib inflates the compressed clusters of qcow2 cloud
+        // images; it is the same library RFB already links.
+        .target(name: "WisqVM", dependencies: ["CZlib"]),
 
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet", "WisqCore"]),
