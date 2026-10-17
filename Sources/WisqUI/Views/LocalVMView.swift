@@ -177,7 +177,7 @@ struct LocalVMListView: View {
                 } header: {
                     Text("Stockage")
                 } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 17 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension. Une image d'installation laisse en plus son noyau et son initramfs déballés à côté : ils repartent avec elle quand vous la supprimez, et le démarrage suivant les ressort de toute façon.")
+                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 8 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension. Une image d'installation laisse en plus son noyau et son initramfs déballés à côté : ils repartent avec elle quand vous la supprimez, et le démarrage suivant les ressort de toute façon.")
                 }
             }
 
