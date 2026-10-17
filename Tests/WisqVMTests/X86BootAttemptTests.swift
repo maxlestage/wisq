@@ -131,6 +131,18 @@ final class X86BootAttemptTests: XCTestCase {
             memory.storage = disk
             memory.bus = X86PCIHost(storage: disk)
         }
+        // Le même disque, mais **sur fichier**, par `FileDiskStore` : le chemin
+        // de l'application, et celui qui lit un qcow2 à travers ses tables. La
+        // couche d'écriture part dans un dossier temporaire, et le fichier
+        // donné n'est jamais modifié.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK_FILE"] {
+            let writes = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
+            let disk = VirtioBlock(store: try FileDiskStore(
+                base: URL(fileURLWithPath: path), writes: writes))
+            memory.storage = disk
+            memory.bus = X86PCIHost(storage: disk)
+        }
         // Un second disque, sur l'emplacement quatre : `vdb` pour le noyau.
         // C'est le disque sur lequel on installe quand le premier est l'image.
         if let path = ProcessInfo.processInfo.environment["WISQ_PC_SECOND_DISK"],
