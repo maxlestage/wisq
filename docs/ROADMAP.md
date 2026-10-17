@@ -386,9 +386,15 @@ recommandent pour une machine prête en une minute.
    court. Refusés en le disant : le morceau d'un disque découpé ou à
    descripteur séparé, le disque différentiel, une compression ou un drapeau
    inconnus. Le cœur RISC-V le refuse comme le qcow2.
-5. Ouvrir un **OVA** directement : une archive tar dont le disque est un
-   membre, lisible en place à son décalage — ce qui manque, c'est de lire
-   l'archive et de proposer le disque qu'elle contient.
+5. **Fait.** L'**OVA** ouvert tel quel (`OvaArchive`) : l'archive tar est
+   parcourue en-tête par en-tête — ustar, pax, ancien GNU, somme de chaque
+   en-tête vérifiée —, et son premier VMDK est lu **en place**, à son
+   décalage, sans extraction. Refusés en le disant : une appliance sans
+   disque, un disque compressé en gzip dans l'archive (OVF le permet), un tar
+   abîmé ou coupé, un tar quelconque qui ne commence pas par un descripteur.
+6. Le choix du disque quand une appliance en a plusieurs : aujourd'hui le
+   premier, celui que VirtualBox et `ovftool` placent en tête ; le
+   descripteur OVF dit lequel démarre.
 
 ## Lot 5 — SPICE (fait)
 
