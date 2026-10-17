@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — un qcow2 se lit tel quel, et un vrai Alpine l'a lu
+
+La tranche d'avant reconnaissait le qcow2 et demandait `qemu-img convert` ;
+celle-ci le lit. `Qcow2Image` traduit chaque lecture par les tables L1 et L2,
+rend des zéros pour ce qui n'est pas alloué ou marqué zéro, et décompresse les
+clusters compressés en deflate brut avec la zlib du système — celle que RFB
+lie déjà. `FileDiskStore` choisit son lecteur de base à la marque du fichier :
+la couche d'écriture ne change pas, et le fichier téléchargé n'est jamais
+modifié. La taille du disque est celle que l'image annonce, pas celle du
+fichier.
+
+**Contre de vrais fichiers.** Les fixtures sont six images écrites par
+`qemu-img` 8.2.2 dans ce conteneur — v2 et v3, clusters de 4 et de 64 Kio,
+compressées ou non, un cluster « zéro » qui garde son décalage (le piège du
+format), et 2 Gio décrits par 384 Kio —, compressées et codées en base64 :
+8 Kio en tout, avec dans leur en-tête les commandes qui les refont.
+
+**Et contre un vrai noyau.** Alpine LTS démarré sur le PC de wisq avec, pour
+disque, un qcow2 compressé de 64 Mio (4,4 Mio de fichier) par le chemin de
+l'application (`WISQ_PC_DISK_FILE`, ajouté au banc) : le noyau annonce
+`[vda] 131072 512-byte logical blocks`, `head`, `dd` et `tail` rendent les trois
+marques posées au début, au milieu et à la fin, et `echo wisq-ecrit > /dev/vda`
+puis `head -c 16` rendent `wisq-ecrit`, un saut de ligne et `debut` — la fin
+du secteur d'origine, décompressée pour recoudre l'écriture partielle. 650
+requêtes servies, aucune refusée ; `qemu-img compare` dit ensuite le fichier
+intact.
+
+**Trois sabotages, trois chutes :** le drapeau « zéro » ignoré, la frontière
+des champs d'une entrée compressée décalée d'un bit, et la relecture partielle
+de l'écriture faite sur le fichier brut au lieu du qcow2.
+
+Le cœur Rust, qui fait tourner le RISC-V, lit sa base octet pour octet : il
+refuse un qcow2 en le nommant plutôt que de rendre ses tables à l'invité.
+
 ## 2026-10-17 — les disques des autres hyperviseurs, reconnus
 
 Les distributions livrent leurs images de cloud en qcow2 —
