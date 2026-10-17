@@ -392,9 +392,11 @@ recommandent pour une machine prête en une minute.
    décalage, sans extraction. Refusés en le disant : une appliance sans
    disque, un disque compressé en gzip dans l'archive (OVF le permet), un tar
    abîmé ou coupé, un tar quelconque qui ne commence pas par un descripteur.
-6. Le choix du disque quand une appliance en a plusieurs : aujourd'hui le
-   premier, celui que VirtualBox et `ovftool` placent en tête ; le
-   descripteur OVF dit lequel démarre.
+6. **Fait.** Le disque qui démarre, quand une appliance en a plusieurs :
+   `OvfDescriptor` lit le descripteur OVF — le premier disque que le
+   matériel branche (`Item` de type 17), à défaut le premier déclaré — et
+   l'archive le cherche par son nom. Un descripteur qui nomme un disque
+   absent est refusé en le disant, plutôt que de démarrer sur un autre.
 
 ## Lot 5 — SPICE (fait)
 
