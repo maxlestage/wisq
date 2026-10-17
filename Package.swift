@@ -181,17 +181,9 @@ let package = Package(
         // say so line by line.
         .target(name: "WisqRemote", dependencies: ["WisqCore", "WisqNet"]),
 
-        // Local Linux VMs: an interpreted rv32ima machine. Foundation only on
-        // Apple platforms, so the same core that ships on the phone boots real
-        // kernels in CI. The compressed clusters of qcow2 cloud images are raw
-        // DEFLATE: Apple's Compression framework decodes that natively, and on
-        // Linux the system zlib does it. The dependency is Linux-only because
-        // the Xcode project builds WisqVM as a dynamic framework too, and that
-        // variant cannot resolve a system-library target (« missing target
-        // with GUID 'PACKAGE-TARGET:CZlib' »).
-        .target(name: "WisqVM", dependencies: [
-            .target(name: "CZlib", condition: .when(platforms: [.linux])),
-        ]),
+        // Local Linux VMs: an interpreted rv32ima machine. Foundation only, so
+        // the same core that ships on the phone boots real kernels in CI.
+        .target(name: "WisqVM"),
 
         .testTarget(name: "WisqCoreTests", dependencies: ["WisqCore"]),
         .testTarget(name: "WisqNetTests", dependencies: ["WisqNet", "WisqCore"]),
