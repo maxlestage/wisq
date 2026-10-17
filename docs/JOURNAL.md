@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — la taille du texte de la console
+
+La console locale était écrite en 12 points, sans recours : trop petit pour
+lire debout dans un train, trop grand pour qu'une ligne de quatre-vingts
+colonnes tienne sur un téléphone en portrait. Un menu « Taille du texte »
+(plus grand, plus petit, taille normale) et le pincement la changent, et elle
+est retenue d'une session à l'autre.
+
+**Des crans, pas un continuum** (`ConsoleTextSize`, de 8 à 24 points). Un
+pincement rend un facteur quelconque ; la taille retombe au cran le plus
+proche, si bien que « plus grand » puis « plus petit » ramènent toujours où
+l'on était. Une valeur enregistrée qui n'est pas un cran — une autre version,
+un fichier abîmé — retombe aussi sur un cran, jamais sur une taille absurde.
+Le défaut reste 12 : rien ne bouge pour qui ne touche à rien.
+
+**Deux sabotages, deux chutes :** l'égalité tranchée vers le grand cran, et un
+facteur de pincement nul ou négatif accepté.
+
 ## 2026-10-17 — coller dans la console locale
 
 La console de la machine locale permettait de copier — la sélection y est
