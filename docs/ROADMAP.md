@@ -376,10 +376,19 @@ recommandent pour une machine prête en une minute.
    un vrai Alpine LTS démarré sur un qcow2 compressé de 64 Mio : début,
    milieu et fin lus, taille annoncée vue par le noyau, écriture partielle
    d'un secteur recousue.
-3. Le cœur Rust (RISC-V) refuse un qcow2 en le nommant : il lit sa base octet
+3. Le cœur Rust (RISC-V) refuse un qcow2 (et un VMDK) en le nommant : il lit sa base octet
    pour octet. Aucune image de cloud rv32 n'existe, donc rien ne presse.
-4. Les mêmes pour VMDK « streamOptimized », la forme sous laquelle se
-   distribuent les appliances OVA.
+4. **Fait.** Le VMDK d'un seul fichier (`VmdkImage`) : `monolithicSparse`,
+   celui de VMware Workstation et Fusion, et `streamOptimized`, celui des
+   appliances OVA — répertoire en tête comme l'écrit `qemu-img`, ou à la fin
+   derrière un pied comme l'écrit `ovftool`. Grains absents, grains « zéro »,
+   grains compressés en zlib avec leur somme Adler-32 vérifiée, dernier grain
+   court. Refusés en le disant : le morceau d'un disque découpé ou à
+   descripteur séparé, le disque différentiel, une compression ou un drapeau
+   inconnus. Le cœur RISC-V le refuse comme le qcow2.
+5. Ouvrir un **OVA** directement : une archive tar dont le disque est un
+   membre, lisible en place à son décalage — ce qui manque, c'est de lire
+   l'archive et de proposer le disque qu'elle contient.
 
 ## Lot 5 — SPICE (fait)
 
