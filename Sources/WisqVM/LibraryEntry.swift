@@ -58,6 +58,10 @@ public enum LibraryEntry {
             return .bootMedia(format)
         case .filesystemImage(let format), .discImage(let format):
             return .disk(format)
+        // Un disque, mais pas encore un disque d'ici : le mot le dit, plutôt
+        // que de laisser croire qu'il se branche.
+        case .virtualDisk(let format):
+            return .foreign("disque \(format), à convertir")
         case .unknown:
             return .unrecognised
         }
