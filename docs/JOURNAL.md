@@ -8,6 +8,42 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-16 — l'instantané pesait le double de ce qu'il portait
+
+« Reprendre une session » doit être rapide, et la reprise passe par
+l'instantané. Mesuré avant de toucher à quoi que ce soit, sur une machine PC
+de 512 Mio portant 90 Mio de données réelles — l'initramfs d'Alpine et une
+table de petits entiers : **169,8 Mio**, 0,87 s pour sauver, 1,64 s pour
+reprendre.
+
+**La cause était dans la règle de repliement.** Chaque suite de zéros devenait
+une paire de seize octets d'en-tête — un zéro isolé aussi. Les trois zéros
+hauts d'un petit entier sur huit octets coûtaient donc seize octets pour en
+économiser trois, et la mémoire d'un noyau est faite de ces entiers-là.
+
+**Seules les suites d'au moins trente-deux zéros sont repliées**, dans les
+deux écrivains, Swift et Rust, à l'octet près — un test de chaque côté attend
+les mêmes octets pour la même forme, et `DifferentialBootTests`, lancé ici sur
+le vrai noyau rv32, compare les instantanés des deux cœurs. Le lecteur n'a pas
+changé : les machines déjà sauvées se relisent telles quelles, et un test
+relit l'ancien encodage. La reprise recopie maintenant par blocs au lieu d'un
+octet à la fois.
+
+| | avant | après |
+| --- | --- | --- |
+| PC 512 Mio, 90 Mio de données | 169,8 Mio | **88,8 Mio** |
+| reprise de cette machine | 1,64 s | **0,39 s** |
+| rv32 64 Mio à l'invite de connexion | 16,4 Mio | **7,4 Mio** |
+| rv32 256 Mio à l'invite de connexion | 18,4 Mio | **8,9 Mio** |
+
+L'ancienne colonne a été **remesurée** sur le même conteneur avant le
+changement : elle redonne exactement le tableau que `LocalStorage` publiait.
+La sauvegarde, elle, ne bouge pas (0,90 s) : elle passe son temps à lire les
+données, pas à écrire des en-têtes. Ce sont des chiffres de conteneur Linux,
+pas de téléphone — la forme se transporte, pas les secondes.
+
+Les chiffres publiés suivent : « environ 17 Mio » devient « environ 8 Mio »
+dans l'application et sur le site, et sa provenance dit d'où il vient.
 ## 2026-10-16 — dupliquer une machine, session comprise
 
 Une machine qu'on a installée et configurée est un point d'arrivée qui a

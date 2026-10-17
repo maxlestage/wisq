@@ -650,7 +650,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "2672",
+        "2680",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -1249,7 +1249,7 @@ const accounted = new Map<string, Map<string, string>>([
       ],
       [
         "8",
-        "ce n'est pas une mesure : les huit premiers octets du mot de passe que l'authentification VNC historique lit — `VNCAuth.response`, `Array(raw.prefix(8))`, dans `Sources/WisqRemote/VNC/DES.swift`.",
+        "ce n'est pas une mesure : les huit premiers octets du mot de passe que l'authentification VNC historique lit — `VNCAuth.response`, `Array(raw.prefix(8))`, dans `Sources/WisqRemote/VNC/DES.swift`. Et, sur la même page, la place d'une machine RISC-V suspendue arrivée à l'invite de connexion, depuis que seules les suites d'au moins trente-deux zéros sont repliées — mesurée le 16 octobre 2026 sur le noyau rv32 de la CI après 65 millions d'instructions (7,4 / 7,9 / 8,9 Mio pour 64 / 128 / 256 Mio de machine), tableau dans `Sources/WisqVM/LocalStorage.swift` ; l'écran « Stockage » de l'application (`LocalStorage`) compte ce que pèse chaque machine sauvegardée, et c'est là qu'elle se refait. Le même chiffre est écrit dans `LocalVMView.swift`.",
       ],
       [
         "50",
@@ -1294,10 +1294,6 @@ const accounted = new Map<string, Map<string, string>>([
       [
         "40",
         "ce n'est pas une mesure : `KernelImageKind.bytesNeeded`, `40 * 1024` — de quoi atteindre le descripteur de volume ISO 9660, au secteur seize.",
-      ],
-      [
-        "17",
-        "la place d'une machine RISC-V suspendue arrivée à l'invite de connexion — mesure consignée dans docs/ROADMAP.md, section « L'espace de stockage », sans date ni commande ; l'écran « Stockage » de l'application (`LocalStorage`) compte ce que pèse chaque machine sauvegardée, et c'est là qu'elle se refait. Le même chiffre est écrit dans `LocalVMView.swift`.",
       ],
       [
         "32",
