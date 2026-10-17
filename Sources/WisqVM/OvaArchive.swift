@@ -15,10 +15,10 @@ import Foundation
 /// `size`), la taille en octal ou en base 256. Chaque en-tête est contrôlé
 /// par sa somme : un tar abîmé est refusé, pas parcouru au hasard.
 ///
-/// **Quel disque.** Le premier VMDK de l'archive — l'ordre du descripteur,
-/// qui place le disque de démarrage en premier dans ce qu'écrivent VirtualBox
-/// et `ovftool`. Un membre `.vmdk` qui ne commence pas comme un VMDK (OVF
-/// permet de compresser chaque fichier en gzip) est refusé en le disant.
+/// **Quel disque.** Celui sur lequel le descripteur OVF démarre
+/// (`OvfDescriptor`) ; si le descripteur ne le dit pas, le premier VMDK de
+/// l'archive. Un membre `.vmdk` qui ne commence pas comme un VMDK (OVF permet
+/// de compresser chaque fichier en gzip) est refusé en le disant.
 public enum OvaArchive {
     public enum Refusal: Error, Equatable, LocalizedError {
         case notOva
@@ -26,6 +26,8 @@ public enum OvaArchive {
         case noDisk
         /// Le membre `.vmdk` n'est pas un VMDK lisible en place.
         case diskNotReadableInPlace(String)
+        /// Le descripteur nomme un disque de démarrage que l'archive n'a pas.
+        case missingDisk(String)
         /// Un en-tête tar qui ne tient pas debout.
         case malformed(String)
 
@@ -36,6 +38,8 @@ public enum OvaArchive {
             case .diskNotReadableInPlace(let name):
                 return "le disque \(name) de l'archive OVA est compressé ; "
                     + "wisq lit les disques que l'archive stocke tels quels."
+            case .missingDisk(let name):
+                return "le descripteur de l'appliance démarre sur \(name), absent de l'archive OVA."
             case .malformed(let what): return "l'archive OVA est mal formée : \(what)."
             }
         }
@@ -133,18 +137,42 @@ public enum OvaArchive {
         throw Refusal.malformed("plus de \(memberLimit) membres")
     }
 
-    /// Le disque de l'appliance : le premier membre `.vmdk`, s'il commence
-    /// comme un VMDK.
+    /// Au-delà, ce n'est plus un descripteur mais autre chose : il n'est pas
+    /// lu, et le premier VMDK reste le choix.
+    static let descriptorLimit = 1 << 20
+
+    /// Le disque de l'appliance : celui que le descripteur fait démarrer, ou
+    /// à défaut le premier membre `.vmdk` — s'il commence comme un VMDK.
     public static func disk(in fd: Int32) throws -> Member {
-        guard let disk = try members(of: fd).first(where: {
-            $0.name.lowercased().hasSuffix(".vmdk")
-        }) else { throw Refusal.noDisk }
+        let all = try members(of: fd)
+        let chosen: Member?
+        if let href = bootDiskHref(all.first, fd: fd) {
+            // Le `href` est relatif au descripteur, qui est à la racine de
+            // l'archive ; un tar peut préfixer ses membres de `./`.
+            func plain(_ name: String) -> String { name.hasPrefix("./") ? String(name.dropFirst(2)) : name }
+            guard let named = all.first(where: { plain($0.name) == plain(href) }) else {
+                throw Refusal.missingDisk(href)
+            }
+            chosen = named
+        } else {
+            chosen = all.first(where: { $0.name.lowercased().hasSuffix(".vmdk") })
+        }
+        guard let disk = chosen else { throw Refusal.noDisk }
         var magic = [UInt8](repeating: 0, count: 4)
         guard disk.length >= 512,
               VirtualDiskImages.readAll(fd, into: &magic, at: off_t(disk.offset)),
               magic == VmdkImage.magic
         else { throw Refusal.diskNotReadableInPlace(disk.name) }
         return disk
+    }
+
+    /// Le `href` du disque de démarrage selon le descripteur — le premier
+    /// membre, que `members(of:)` a déjà vérifié être un `.ovf`.
+    private static func bootDiskHref(_ descriptor: Member?, fd: Int32) -> String? {
+        guard let descriptor, descriptor.length <= UInt64(descriptorLimit) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: Int(descriptor.length))
+        guard VirtualDiskImages.readAll(fd, into: &bytes, at: off_t(descriptor.offset)) else { return nil }
+        return OvfDescriptor.bootDiskHref(String(decoding: bytes, as: UTF8.self))
     }
 
     // MARK: - En-têtes tar

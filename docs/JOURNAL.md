@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-17 — le descripteur OVF dit sur quel disque l'appliance démarre
+
+Relance horaire suivante, même autorisation. Sixième point de la liste : une
+appliance à deux disques démarrait sur le premier de l'archive, qui n'est
+pas forcément le bon — VirtualBox déclare ses disques dans un ordre et les
+branche dans un autre. `OvfDescriptor` lit le descripteur et rend le fichier
+du premier disque **branché** (`Item` de type 17, `ovf:/disk/…` ou
+`/disk/…`), à défaut le premier déclaré, à défaut rien ; `OvaArchive` cherche
+ce fichier parmi ses membres, `./` compris, et refuse en le nommant un
+descripteur qui démarre sur un fichier absent.
+
+**Pas de `XMLParser`** : sous Linux il vit dans `FoundationXML`, qui tire
+libxml2, et `WisqVM` ne dépend que de Foundation. Un lecteur de balises,
+attributs, texte et commentaires suffit à un OVF ; ce qu'il ne comprend pas,
+il le saute. Le chemin CDATA, écrit d'abord, a été retiré : aucun OVF n'en
+emploie et aucun test ne pouvait le voir casser.
+
+**Les fixtures ont été refaites** : leurs descripteurs nommaient tous
+`appliance-disk1.vmdk`, même là où le disque s'appelle autrement — ce qui ne
+gênait pas tant que personne ne lisait le descripteur. Chacune nomme
+désormais son disque ; s'y ajoutent l'appliance à deux disques, sur le
+modèle d'un export de VirtualBox 7, celle qui nomme un disque absent, et
+celle dont les membres sont sous `./`.
+
+**Onze sabotages, onze chutes** : les `Item` ignorés, la graphie
+`/disk/` de VirtualBox, le type 17, les commentaires, les guillemets autour
+d'un `>`, les entités, le repli sur le premier disque déclaré, le blanc
+autour de la ressource, le refus du disque absent, le `./`, et le
+descripteur ignoré. Pas de nouveau démarrage d'Alpine : le chemin de lecture
+du disque est celui de la tranche d'avant, et une appliance à un disque
+choisit le même qu'avant — c'est ce que vérifient les tests.
+
 ## 2026-10-17 — l'OVA s'ouvre tel quel, son disque lu dans l'archive
 
 Relance horaire suivante, même autorisation. Cinquième point de la liste :
