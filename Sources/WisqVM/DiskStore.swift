@@ -127,8 +127,9 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         /// pas : il a été tronqué, et les octets que l'invité croit avoir
         /// écrits ne sont plus là.
         case overlayIsTruncated
-        /// La base est dans un format que wisq lit (qcow2), mais cette image-ci
-        /// emploie quelque chose qu'il refuse ; la raison est dans le texte.
+        /// La base est dans un format que wisq lit (qcow2, VMDK), mais cette
+        /// image-ci emploie quelque chose qu'il refuse ; la raison est dans le
+        /// texte.
         case unreadableImage(String)
 
         public var errorDescription: String? {
@@ -157,10 +158,10 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
 
     public let sectors: UInt64
     private let base: Int32
-    /// La base, quand c'est un qcow2 : ses octets ne sont pas ceux du disque,
-    /// et c'est elle qui les traduit. `nil` pour une image brute, lue par
-    /// `pread` à l'endroit demandé.
-    private let qcow2: Qcow2Image?
+    /// La base, quand c'est un qcow2 ou un VMDK : ses octets ne sont pas ceux
+    /// du disque, et c'est elle qui les traduit. `nil` pour une image brute,
+    /// lue par `pread` à l'endroit demandé.
+    private let image: (any VirtualDiskImage)?
     private let writes: Int32
     private let map: Int32
     /// Quel emplacement porte quel secteur. En mémoire seulement : la carte
@@ -173,24 +174,24 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         guard baseFD >= 0 else { throw Failure.cannotOpenBase }
         var info = stat()
         guard fstat(baseFD, &info) == 0 else { close(baseFD); throw Failure.cannotOpenBase }
-        // **Un qcow2 est lu à travers ses tables**, et sa taille est celle
-        // qu'il annonce, pas celle du fichier : une image de cloud de 400 Mio
-        // décrit couramment un disque de 2 Gio. La couche, elle, ne change pas
-        // — elle range des secteurs du disque, d'où qu'ils viennent.
-        var qcow2: Qcow2Image?
-        if Qcow2Image.looksLikeOne(fd: baseFD) {
+        // **Un qcow2 ou un VMDK est lu à travers ses tables**, et sa taille
+        // est celle qu'il annonce, pas celle du fichier : une image de cloud
+        // de 400 Mio décrit couramment un disque de 2 Gio. La couche, elle, ne
+        // change pas — elle range des secteurs du disque, d'où qu'ils viennent.
+        var image: (any VirtualDiskImage)?
+        if VirtualDiskImages.recognizes(fd: baseFD) {
             let own = dup(baseFD)
             guard own >= 0 else { close(baseFD); throw Failure.cannotOpenBase }
             do {
-                qcow2 = try Qcow2Image(takingOwnershipOf: own)
+                image = try VirtualDiskImages.image(takingOwnershipOf: own)
             } catch {
                 close(own)
                 close(baseFD)
                 throw Failure.unreadableImage(
-                    (error as? LocalizedError)?.errorDescription ?? "image qcow2 illisible.")
+                    (error as? LocalizedError)?.errorDescription ?? "image de disque illisible.")
             }
         }
-        let size = qcow2?.virtualSize ?? UInt64(info.st_size)
+        let size = image?.virtualSize ?? UInt64(info.st_size)
         guard size >= UInt64(Self.sectorSize) else { close(baseFD); throw Failure.notADisk }
         let sectors = size / UInt64(Self.sectorSize)
 
@@ -267,7 +268,7 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         for (slot, sector) in table.enumerated() { slots[sector] = slot }
 
         self.base = baseFD
-        self.qcow2 = qcow2
+        self.image = image
         self.writes = writesFD
         self.map = mapFD
         self.sectors = sectors
@@ -361,9 +362,9 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
         return true
     }
 
-    /// Les octets de la base à `offset`, à travers le qcow2 s'il y en a un.
+    /// Les octets de la base à `offset`, à travers son format s'il en a un.
     private func readBase(into buffer: inout [UInt8], at offset: UInt64) -> Bool {
-        if let qcow2 { return qcow2.read(into: &buffer, at: offset) }
+        if let image { return image.read(into: &buffer, at: offset) }
         return Self.readAll(base, into: &buffer, at: off_t(offset))
     }
 

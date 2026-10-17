@@ -241,8 +241,8 @@ public enum LocalDisk {
     public static func isDiskImage(_ kind: KernelImageKind) -> Bool {
         switch kind {
         case .filesystemImage, .discImage: return true
-        // Le qcow2 est lu sur place par `Qcow2Image` ; les autres formats
-        // d'hyperviseur ne le sont pas encore.
+        // Le qcow2 et le VMDK sont lus sur place (`Qcow2Image`, `VmdkImage`) ;
+        // les autres formats d'hyperviseur ne le sont pas encore.
         case .virtualDisk(let format) where KernelImageKind.isReadableVirtualDisk(format): return true
         case .unknown, .linuxKernel, .executable, .compressedKernel, .virtualDisk: return false
         }
