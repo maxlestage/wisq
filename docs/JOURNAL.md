@@ -8,6 +8,23 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — jusqu'au shell de root, sur l'ISO téléchargée
+
+Relance horaire, même autorisation. La tranche d'avant s'arrêtait sur
+« Welcome to Alpine Linux 3.24 » : le banc ne tapait que devant l'invite du
+shell de secours, `~ # `, et un système qui démarre **jusqu'au bout** affiche
+`login:`. Il reconnaît désormais aussi l'invite de connexion et celle du shell
+de `root` (`localhost:~# `) ; le chemin par défaut, sans `WISQ_PC_INPUT`, ne
+change pas.
+
+**Ce que la machine répond.** L'ISO `virt` d'Alpine 3.24.2, téléchargée et
+vérifiée par la feuille « Télécharger », démarrée sur le PC de wisq avec
+l'ISO pour disque : OpenRC lance tous ses services, `root` se connecte sans
+mot de passe, et les trois commandes rendent `3.24.2`, `6.18.52-0-virt` et
+`28` paquets. 7,39 milliards d'instructions retirées, 852 secondes en version
+optimisée dans ce conteneur. Le budget du banc par défaut, 4,5 milliards, n'y
+suffit pas : `WISQ_PC_BUDGET=14000000000`.
+
 ## 2026-10-18 — l'ISO qu'on télécharge, démarrée : `PSHUFLW` manquait
 
 Relance horaire, même autorisation. Avant d'ajouter quoi que ce soit, la
