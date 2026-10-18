@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — l'ISO qu'on télécharge, démarrée : `PSHUFLW` manquait
+
+Relance horaire, même autorisation. Avant d'ajouter quoi que ce soit, la
+vérification de bout en bout de ce que la feuille « Télécharger » propose :
+l'ISO `alpine-virt-3.24.2-x86_64.iso`, téléchargée et vérifiée la veille,
+déballée par `IsoBoot.unpack` (noyau, initramfs et ligne de commande lus dans
+`syslinux.cfg`), puis démarrée sur le PC de wisq avec l'ISO elle-même pour
+disque.
+
+**Ce qu'elle a montré.** Le noyau 6.18 démarre, l'init monte le média
+(`Mounting boot media: ok`), et `apk` commence à installer les vingt-huit
+paquets du système… pour s'arrêter au quinzième, à quatre milliards
+d'instructions, sur `unsupported("l'opcode 0F 70")`.
+
+**Ce n'était pas `PSHUFD`**, que le cœur exécute depuis longtemps. `objdump`
+sur les bibliothèques qu'`apk` charge, prises sur le miroir d'Alpine :
+`libcrypto` et `musl` n'emploient que `pshufd` (préfixe `66`), mais zlib porte
+huit `pshuflw` et zstd trois — `F2 0F 70`. `pshufhw` (`F3`) n'apparaît nulle
+part ; il est écrit avec, parce que c'est la même instruction sur l'autre
+moitié et qu'un test les départage.
+
+**Contre le vrai processeur.** L'oracle SSE2 se régénère d'abord à l'octet
+près (`cmp` identique), puis reçoit vingt-quatre formes de plus — les six
+permutations de `SHUFFLES`, registre et mémoire, pour chacune : 720
+désaccords avant, aucun après, sur 4 560 cas. **Trois sabotages, trois
+chutes** : la moitié recopiée prise dans la destination au lieu de la source
+(300), les moitiés interverties (498), l'immédiat ignoré (492).
+
+**Et le démarrage, refait.** Les vingt-huit paquets s'installent
+(`OK: 10.5 MiB in 28 packages`), et OpenRC 0.63.2 démarre — le budget du banc
+(4,5 milliards d'instructions) s'épuise ensuite dans ses services.
+
 ## 2026-10-18 — les téléchargements interrompus, dans le relevé
 
 Relance horaire, même autorisation. Un `.part` vit hors de la bibliothèque —
