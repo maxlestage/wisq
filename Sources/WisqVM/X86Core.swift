@@ -35,7 +35,7 @@ public struct X86Core: @unchecked Sendable {
     /// la vérification de bornes qu'on croyait éviter. Revenu au tableau ; la
     /// prochaine tentative devra commencer par une mesure, pas par une
     /// intuition.
-    public var registers: [UInt64]
+    public var registers: X86Registers
     /// RFLAGS, dont seuls les six de l'arithmétique nous occupent ici.
     public var flags: UInt64
     /// Où le cœur en est.
@@ -236,7 +236,7 @@ public struct X86Core: @unchecked Sendable {
                 flags: UInt64 = X86Core.Flag.reserved, rip: UInt64 = 0,
                 memory: X86Memory? = nil) {
         precondition(registers.count == 16, "un x86-64 a seize registres généraux")
-        self.registers = registers
+        self.registers = X86Registers(registers)
         self.flags = flags
         self.rip = rip
         self.memory = memory
