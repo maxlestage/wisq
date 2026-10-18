@@ -8,6 +8,47 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — la table de partitions d'une image de cloud
+
+Message de l'utilisateur : « Tout ». Je l'ai compris comme une demande
+d'avancer sur tous les axes, pas seulement la vitesse, sans attendre la
+relance horaire. La feuille de route prend donc une nouvelle section, « Les
+images de cloud qui démarrent seules » : une Debian, une Ubuntu ou une Fedora
+téléchargée doit démarrer sans qu'on lui apporte de noyau, puisque le sien est
+dans l'image.
+
+**Première tranche : `PartitionTable`.** MBR et GPT, lus par une fonction
+`(décalage, nombre) → octets`. La même table se lit donc dans une image
+brute, un qcow2 ou le VMDK d'un OVA. Pour la GPT, les sommes CRC-32 de
+l'en-tête et des entrées sont vérifiées, et une principale abîmée est
+remplacée par la copie de secours du dernier secteur. Deux copies abîmées sont
+refusées en donnant les deux raisons. Pour le MBR, les partitions logiques
+sont numérotées 5, 6, 7 comme le fait Linux, en suivant une chaîne bornée à
+128 maillons. `CRC32` est écrit ici, pour que `WisqVM` ne dépende toujours que
+de Foundation.
+
+**Vérifié sur une vraie image.** `debian-13-nocloud-amd64.qcow2`, téléchargée
+et vérifiée contre `SHA512SUMS`, convertie en brut : la racine x86-64 en
+`vda1` (2943 Mio), la partition BIOS en `vda14` et l'EFI en `vda15`. La
+fixture ne garde que les 791 octets non nuls des secteurs de tête et de queue,
+et un qcow2 de 48 Kio refait de ces mêmes octets
+(`scripts/build-partition-fixtures.py`).
+
+**Les tests et les sabotages.** Neuf tests. Ils attrapent chacun des
+sabotages suivants : la somme de l'en-tête retirée, celle des entrées retirée,
+la copie de secours ignorée, la borne du disque MBR retirée, l'ordre des
+octets d'un GUID changé, le rang de la racine retiré, le maillon logique compté
+depuis le mauvais point, la zone utilisable ignorée, le MBR protecteur ignoré.
+Retirer la borne de la chaîne fait tourner la lecture sans fin. Deux sabotages
+ont d'abord passé sans être vus. Le test n'avait que deux partitions
+logiques, ce qui ne distinguait pas les deux façons de compter les maillons :
+il en a trois maintenant. Aucun test ne couvrait la zone utilisable de la GPT :
+le nouveau recalcule les deux sommes d'une table fausse. Un troisième
+sabotage passait parce que l'ensemble des maillons déjà vus faisait double
+emploi avec la borne : il est retiré, et la borne compte maintenant les
+maillons, pas les partitions. Un maillon vide qui revient sur lui-même
+n'aurait sinon jamais été arrêté.
+
 ## 2026-10-18 — `hasPrefix` sans recherche, les cases du cache d'un seul tenant
 
 Relance horaire, même autorisation. Nouvel échantillonnage après #511, avec
