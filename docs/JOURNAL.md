@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — ce que le chargeur de la distribution aurait démarré
+
+Suite de la même série. `CloudBoot` trouve dans une image de cloud son noyau,
+son initramfs et sa ligne de commande, en reprenant ce que le chargeur de la
+distribution a écrit plutôt qu'en le devinant. Pour `grub.cfg` (Debian,
+Ubuntu), c'est la première entrée de premier niveau, celle que GRUB démarre
+quand `default` vaut 0 : les sous-menus sont sautés, l'accolade d'un
+commentaire ne compte pas, et un `(hd0,gpt1)` en tête de chemin est retiré.
+Pour les entrées BLS (Fedora), c'est la plus récente, les numéros de version
+lus comme des nombres. Plusieurs initramfs sont mis bout à bout, comme le
+fait GRUB. Une entrée qui nomme un noyau absent n'est pas crue. Sans
+configuration, on prend les liens `/vmlinuz` et `/initrd.img`, ou le noyau le
+plus récent de `/boot`, avec une racine désignée par son PARTUUID. Les
+variables de GRUB qu'on ne peut pas évaluer (`$vt_handoff`) sont retirées, et
+`console=ttyS0` est ajouté si la ligne n'envoie pas la console sur le port
+série, que wisq montre.
+
+`PartitionTable` donne maintenant le PARTUUID de chaque partition : le GUID
+propre à l'entrée pour une GPT, et pour un MBR la signature du disque suivie
+du numéro (`1234abcd-05`), comme le forme le noyau.
+
+**Sur la vraie image.** `debian-13-nocloud-amd64.qcow2` : « grub.cfg de
+vda1 », 12 154 816 octets de noyau, 36 159 851 d'initramfs, et la ligne de
+commande `root=PARTUUID=3f7bd41d-… ro console=tty0 console=ttyS0,115200
+earlyprintk=ttyS0,115200 consoleblank=0`, mot pour mot. Le PARTUUID est bien
+celui de `vda1` dans la table.
+
+**Les sabotages.** Dix sont vus : le saut des sous-menus, l'entrée sans
+noyau, le disque GRUB en tête de chemin, les variables, la console ajoutée,
+la concaténation des initramfs, le noyau le plus récent, la racine par
+PARTUUID, l'accolade d'un commentaire, le premier `initrd` d'un `if`. Quatre
+avaient d'abord passé, chacun faute d'un cas : le choix du noyau le plus
+récent (il n'y en avait qu'un), un `initrd` dans chaque branche d'un `if`, un
+`grub.cfg` qui nomme un noyau absent, et le commentaire qui porte une
+accolade. Un commentaire `# linux …` n'aurait jamais rien cassé : il ne
+commence pas par `linux`.
+
 ## 2026-10-18 — lire ext4, et le noyau de Debian sort du qcow2
 
 Suite de la tranche précédente, même autorisation. `Ext4Volume` lit ext2,
