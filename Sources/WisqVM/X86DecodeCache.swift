@@ -37,11 +37,21 @@ final class X86DecodeCache: @unchecked Sendable {
 
     /// Combien de lectures ont trouvé leur instruction, et combien ont dû la
     /// décoder : ce qui dit si le cache sert, plutôt que de le supposer.
-    private(set) var hits: UInt64 = 0
-    private(set) var misses: UInt64 = 0
+    var hits: UInt64 { counts[0] }
+    var misses: UInt64 { counts[1] }
+
+    /// **Les deux compteurs derrière un pointeur**, et pas en `var` de la
+    /// classe. Une propriété modifiable d'une classe fait vérifier chaque
+    /// accès par le contrôle d'exclusivité de Swift, un appel à
+    /// `swift_beginAccess` à chaque instruction. Sur le premier milliard
+    /// d'instructions du démarrage d'Alpine : 96,8 s avec ces deux `var`,
+    /// 93,5 s derrière le pointeur.
+    private let counts: UnsafeMutablePointer<UInt64>
 
     init() {
         let count = Self.slots
+        counts = .allocate(capacity: 2)
+        counts.initialize(repeating: 0, count: 2)
         low = .allocate(capacity: count)
         low.initialize(repeating: 0, count: count)
         high = .allocate(capacity: count)
@@ -62,6 +72,7 @@ final class X86DecodeCache: @unchecked Sendable {
         high.deallocate()
         lowMask.deallocate()
         highMask.deallocate()
+        counts.deallocate()
         instructions.deinitialize(count: Self.slots)
         instructions.deallocate()
     }
@@ -82,7 +93,7 @@ final class X86DecodeCache: @unchecked Sendable {
         guard start <= size - 16 else { return nil }
         let slot = start & (Self.slots - 1)
         guard lowMask[slot] != 0 else {
-            misses &+= 1
+            counts[1] &+= 1
             return nil
         }
         let raw = UnsafeRawPointer(bytes + start)
@@ -91,15 +102,15 @@ final class X86DecodeCache: @unchecked Sendable {
         guard (first ^ low[slot]) & lowMask[slot] == 0,
               (second ^ high[slot]) & highMask[slot] == 0
         else {
-            misses &+= 1
+            counts[1] &+= 1
             return nil
         }
         let instruction = instructions[slot]
         guard instruction.length <= available else {
-            misses &+= 1
+            counts[1] &+= 1
             return nil
         }
-        hits &+= 1
+        counts[0] &+= 1
         return instruction
     }
 
