@@ -1,7 +1,8 @@
 import Foundation
 import XCTest
 
-import WisqVM
+@testable import WisqVM
+import WisqVMTestKit
 
 @testable import WisqVMRust
 
@@ -288,6 +289,56 @@ final class IsoBootDecisionTests: XCTestCase {
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: folder.path),
             "aucun dossier de déballage pour un fichier qui n'est pas une image")
+    }
+
+    /// **Une image de cloud démarre comme une image d'installation** : son
+    /// noyau et son initramfs sortent sous les noms fixes, elle devient le
+    /// disque, et la ligne de commande est celle de son `grub.cfg`, avec la
+    /// réponse à la première mise en route quand un mot de passe est donné.
+    func testACloudImageBecomesAKernelAndADisk() throws {
+        let packed = try XCTUnwrap(Data(base64Encoded: Ext4Fixtures.ext4))
+        let volume = try XCTUnwrap(Qcow2Image.inflateRaw([UInt8](packed), expected: Ext4Fixtures.size))
+        let image = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-nuage-\(getpid())-\(UUID().uuidString).raw")
+        try Data(CloudDisk.raw(around: volume)).write(to: image)
+        defer { try? FileManager.default.removeItem(at: image) }
+
+        let sample = UUID().uuidString
+        let boot = try IsoBoot.decide(image, into: folder, ceiling: 1 << 20, rootPassword: sample).get()
+        XCTAssertEqual(boot.kernel, folder.appendingPathComponent(CloudBoot.kernelName))
+        XCTAssertEqual(boot.initrd, folder.appendingPathComponent(CloudBoot.initrdName))
+        XCTAssertEqual(boot.disk, image, "l'image est le disque")
+        let line = try XCTUnwrap(boot.commandLine)
+        XCTAssertTrue(line.hasPrefix("root=/dev/vda1 ro console=ttyS0 "), line)
+        XCTAssertTrue(line.contains("passwd.hashed-password.root:$6$"), line)
+        XCTAssertFalse(line.contains(sample))
+        XCTAssertEqual(((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted(), [CloudBoot.initrdName, CloudBoot.kernelName])
+
+        // Le plafond s'applique ici aussi, et le refus se dit.
+        let refusal = IsoBoot.decide(image, into: folder, ceiling: 1000)
+        XCTAssertEqual(refusal, .failure(.cloud(.tooLarge)))
+        XCTAssertTrue(IsoBoot.explanation(.cloud(.tooLarge), name: "nuage.raw").contains("nuage.raw"))
+    }
+
+    /// **Un fichier que personne ne reconnaît passe tel quel**, même quand son
+    /// premier secteur finit par 0x55AA : rien n'est déballé, et un noyau
+    /// sans en-tête garde sa chance de démarrer.
+    func testAnUnknownFileStillPassesThroughUntouched() throws {
+        var bytes = [UInt8](repeating: 0x90, count: 4096)
+        bytes[510] = 0x55
+        bytes[511] = 0xAA
+        let kernel = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-inconnu-\(getpid())-\(UUID().uuidString)")
+        try Data(bytes).write(to: kernel)
+        defer { try? FileManager.default.removeItem(at: kernel) }
+        XCTAssertEqual(KernelImageKind.identify(fileAt: kernel), .unknown)
+        let boot = try IsoBoot.decide(kernel, into: folder, ceiling: 1 << 20).get()
+        XCTAssertEqual(boot.kernel, kernel)
+        XCTAssertNil(boot.disk)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertTrue(IsoBoot.mightBeCloudImage(.virtualDisk("qcow2")))
+        XCTAssertFalse(IsoBoot.mightBeCloudImage(.virtualDisk("VHDX")))
+        XCTAssertFalse(IsoBoot.mightBeCloudImage(.filesystemImage("ext2/3/4")))
     }
 
     /// **Sur une image, les quatre champs changent ensemble.**
