@@ -383,8 +383,12 @@ public struct X86Core: @unchecked Sendable {
         outOfPatience = false
         while executed < budget {
             // Le matériel, entre deux instructions. Le masque plutôt qu'un
-            // test à chaque tour : voir `serviceInterrupts`.
-            if devicesArmed && executed & 0x3F == 0 { try serviceInterrupts() }
+            // test à chaque tour : voir `serviceInterrupts`. **Le masque
+            // d'abord** : `devicesArmed` lit trois classes, et chaque lecture
+            // passe par le contrôle d'exclusivité. Évalué en premier, il
+            // coûtait à chaque instruction ce que le masque devait réserver à
+            // une sur soixante-quatre.
+            if executed & 0x3F == 0 && devicesArmed { try serviceInterrupts() }
             if halted {
                 // `HLT` attend une interruption. Sans horloge armée, ou les
                 // interruptions masquées, plus rien ne viendra jamais : c'est
