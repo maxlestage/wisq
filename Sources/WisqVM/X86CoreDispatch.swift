@@ -653,6 +653,35 @@ extension X86Core {
                 write(0, size, highByte: false, destination)
             }
 
+        case 0x77 where instruction.vexCount == 0:  // EMMS
+            // Les huit registres de la pile x87 marqués vides, comme après une
+            // série d'instructions MMX. Linux l'exécute sur un processeur AMD
+            // à chaque restauration de l'état flottant, entre `FNCLEX` et un
+            // `FILD` factice : c'est le contournement de « FXSAVE leak ».
+            x87Tags = 0xFFFF
+
+        case 0xC7 where (try? Self.fields(instruction))?.reg == 1:  // CMPXCHG8B
+            // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
+            // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
+            // promet le bit CX8 de CPUID, que la glibc exige pour démarrer.
+            // Avec REX.W, ce serait `CMPXCHG16B`, que CX16 n'annonce pas.
+            let fields = try decodeFields(instruction)
+            guard fields.mod != 0b11, (instruction.rex ?? 0) & 0x08 == 0 else {
+                throw Fault.unsupported("CMPXCHG16B, ou CMPXCHG8B sur un registre")
+            }
+            let current = try readMemory(lastAddress, 8)
+            let expected = (registers[2] & 0xFFFF_FFFF) << 32 | (registers[0] & 0xFFFF_FFFF)
+            if current == expected {
+                try writeMemory(lastAddress, 8, (registers[1] & 0xFFFF_FFFF) << 32 | (registers[3] & 0xFFFF_FFFF))
+                flags |= Flag.zero
+            } else {
+                // Les moitiés lues remplacent EAX et EDX, hauts effacés comme
+                // toute écriture de trente-deux bits.
+                registers[0] = current & 0xFFFF_FFFF
+                registers[2] = current >> 32
+                flags &= ~Flag.zero
+            }
+
         case 0xC0, 0xC1:  // XADD : échanger, puis additionner
             // **La mémoire d'abord, le registre ensuite.** Le registre source
             // recevait l'ancienne valeur *avant* l'écriture en mémoire ; quand

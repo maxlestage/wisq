@@ -233,9 +233,87 @@ extension X86Core {
             let result = Self.pack(bytes)
             setVector(fields.reg, result.0, result.1)
 
+        // **Ce que la glibc de Debian demande en plus.** Alpine est bâtie sur
+        // musl, et ses programmes n'employaient rien de ce qui suit. L'image
+        // de cloud de Debian 13 s'est arrêtée dans son initramfs, à 2,1
+        // milliards d'instructions, sur `66 0F D7` : `PMOVMSKB`, le cœur de
+        // `strlen`, `memchr` et `strchr` en SSE2. Le comptage sur les binaires
+        // de cet initramfs (`objdump`, les formes sans VEX seulement, puisque
+        // le CPUID n'annonce ni AVX ni SSSE3) a donné la liste : `pmovmskb`
+        // (1 178), `paddb` (1 111), `psubb` (409), `pcmpgtb` (403),
+        // `pmuludq` (154), `psubusb` (152), `pminub` (146), `pextrw` (131),
+        // `paddw` (55), `packuswb` (53), `pmullw` (34), `psubw` (19),
+        // `pmulhuw` (12), `pmaxub` (12), `pcmpgtw` (2), et quatre décalages
+        // par registre (`psrad` 16, `psrld` 15, `psllw` 8, `pslld` 5).
+
+        // Les octets et les mots, comme les doubles mots plus haut.
+        case 0x64: try compute(instruction, 1) { Int8(truncatingIfNeeded: $0) > Int8(truncatingIfNeeded: $1) ? $2 : 0 }
+        case 0x65: try compute(instruction, 2) {
+            Int16(truncatingIfNeeded: $0) > Int16(truncatingIfNeeded: $1) ? $2 : 0
+        }
+        case 0xFC: try compute(instruction, 1) { ($0 &+ $1) & $2 }
+        case 0xFD: try compute(instruction, 2) { ($0 &+ $1) & $2 }
+        case 0xF8: try compute(instruction, 1) { ($0 &- $1) & $2 }
+        case 0xF9: try compute(instruction, 2) { ($0 &- $1) & $2 }
+        // Sans signe, et **saturés** : ce que `strcmp` emploie pour trouver
+        // un octet nul ou une différence en un seul passage.
+        case 0xDA: try compute(instruction, 1) { left, right, _ in min(left, right) }
+        case 0xDE: try compute(instruction, 1) { left, right, _ in max(left, right) }
+        case 0xD8: try compute(instruction, 1) { left, right, _ in left > right ? left - right : 0 }
+
+        // Les multiplications : la moitié basse ou haute du produit de mots de
+        // seize bits, et le produit complet des doubles mots pairs.
+        case 0xD5: try compute(instruction, 2) { ($0 &* $1) & $2 }
+        case 0xE4: try compute(instruction, 2) { left, right, _ in (left &* right) >> 16 }
+        case 0xF4: try compute(instruction, 8) { left, right, _ in (left & 0xFFFF_FFFF) &* (right & 0xFFFF_FFFF) }
+
+        case 0x67:  // PACKUSWB : seize mots signés serrés en seize octets
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let result = Self.packUnsignedSaturated(vector(fields.reg), (low: source.0, high: source.1))
+            setVector(fields.reg, result.0, result.1)
+
+        // Les décalages dont le compte vient d'un registre XMM, ou de la
+        // mémoire : ses soixante-quatre bits bas, entiers, et sans repli.
+        case 0xF1, 0xF2, 0xD2, 0xE2:
+            let fields = try decodeFields(instruction)
+            let count = try readVectorRM(fields, 16).0
+            let width = opcode == 0xF1 ? 2 : 4
+            let result = Self.shiftEach(width, vector(fields.reg), count,
+                                        arithmetic: opcode == 0xE2, left: opcode == 0xF1 || opcode == 0xF2)
+            setVector(fields.reg, result.0, result.1)
+
+        // Vers un registre général : le bit de signe de chaque octet, ou un
+        // mot choisi. Ces deux formes n'existent qu'entre registres.
+        case 0xD7:  // PMOVMSKB
+            let fields = try decodeFields(instruction)
+            guard fields.mod == 0b11 else { throw Fault.unsupported("PMOVMSKB depuis la mémoire") }
+            let bytes = Self.bytes(vector(fields.rm))
+            let mask = bytes.indices.reduce(UInt64(0)) { $0 | UInt64(bytes[$1] >> 7) << UInt64($1) }
+            writeReg(fields, 4, mask)
+
+        case 0xC5:  // PEXTRW
+            let fields = try decodeFields(instruction)
+            guard fields.mod == 0b11 else { throw Fault.unsupported("PEXTRW depuis la mémoire") }
+            let position = UInt64(UInt8(truncatingIfNeeded: instruction.immediate) & 0x07)
+            let value = vector(fields.rm)
+            let half = position < 4 ? value.low : value.high
+            writeReg(fields, 4, (half >> (16 * (position % 4))) & 0xFFFF)
+
         default: return false
         }
         return true
+    }
+
+    /// `PACKUSWB` : chaque mot signé ramené entre 0 et 255. Les huit mots de
+    /// la destination font les octets bas, ceux de la source les octets hauts.
+    static func packUnsignedSaturated(
+        _ destination: (low: UInt64, high: UInt64), _ source: (low: UInt64, high: UInt64)
+    ) -> (UInt64, UInt64) {
+        let words = [destination.low, destination.high, source.low, source.high].flatMap { half in
+            (0..<4).map { Int16(truncatingIfNeeded: half >> (16 * UInt64($0))) }
+        }
+        return pack(words.map { UInt8(clamping: $0) })
     }
 
     /// Une opération élément par élément entre la destination et la source.
