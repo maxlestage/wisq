@@ -342,12 +342,19 @@ public struct X86Core: @unchecked Sendable {
         }
     }
 
+    /// **Ces petites fonctions sont forcées en ligne**, avec celles des
+    /// drapeaux plus bas : sous callgrind, `mask` et `signBit` restaient des
+    /// appels, et coûtaient à elles deux plus de quatre pour cent des
+    /// instructions de l'hôte.
+    @inline(__always)
     static func mask(_ size: Int) -> UInt64 {
         size == 8 ? UInt64.max : (UInt64(1) << (8 * UInt64(size))) - 1
     }
 
+    @inline(__always)
     static func signBit(_ size: Int) -> UInt64 { UInt64(1) << (8 * UInt64(size) - 1) }
 
+    @inline(__always)
     static func signExtend(_ value: UInt64, _ size: Int) -> UInt64 {
         size == 8 ? value : (value & (signBit(size) &- 1)) &- (value & signBit(size))
     }
@@ -356,6 +363,7 @@ public struct X86Core: @unchecked Sendable {
 
     var carry: Bool { flags & Flag.carry != 0 }
 
+    @inline(__always)
     mutating func set(_ flag: UInt64, _ on: Bool) {
         if on { flags |= flag } else { flags &= ~flag }
     }
@@ -363,8 +371,10 @@ public struct X86Core: @unchecked Sendable {
     /// La parité : celle des **huit bits de poids faible** du résultat, et
     /// d'eux seuls, quelle que soit la largeur de l'opération. Posée quand le
     /// nombre de bits à un est pair.
+    @inline(__always)
     static func parity(_ value: UInt64) -> Bool { (value & 0xFF).nonzeroBitCount % 2 == 0 }
 
+    @inline(__always)
     mutating func setResultFlags(_ result: UInt64, _ size: Int) {
         set(Flag.zero, result & Self.mask(size) == 0)
         set(Flag.sign, result & Self.signBit(size) != 0)
@@ -652,6 +662,31 @@ public struct X86Core: @unchecked Sendable {
             rmIsHighByte: noRex && (4...7).contains(Int(modrm & 0x07)))
     }
 
+    /// **Les octets de la table `0F` qu'un gestionnaire spécialisé peut
+    /// prendre** — système, vectoriel, arithmétique vectorielle, flottant —,
+    /// quels que soient les préfixes. Deux cent cinquante-six bits, écrits en
+    /// constantes plutôt qu'en tableau : un tableau statique se paie d'un
+    /// passage par son initialisation paresseuse à chaque lecture.
+    ///
+    /// **Un octet oublié ici serait une instruction perdue**, rendue à la
+    /// table ordinaire qui la refuserait. `X86TwoByteDispatchTests` essaie les
+    /// quatre gestionnaires sur chacun des autres octets, avec et sans
+    /// préfixe, et exige qu'aucun ne le prenne.
+    @inline(__always)
+    static func claimedBySpecialists(_ opcode: UInt8) -> Bool {
+        let words: (UInt64, UInt64, UInt64, UInt64) = (
+            0x0007_FF0F_0077_0000, 0xC05F_F7F7_F7F3_0000,
+            0x0000_0004_0000_0000, 0x7F56_88D4_CDF4_0074)
+        let word: UInt64
+        switch opcode >> 6 {
+        case 0: word = words.0
+        case 1: word = words.1
+        case 2: word = words.2
+        default: word = words.3
+        }
+        return word >> UInt64(opcode & 63) & 1 != 0
+    }
+
     mutating func perform(_ instruction: X86Instruction) throws {
         guard instruction.vexCount == 0 else {
             throw Fault.unsupported("une instruction vectorielle")
@@ -661,6 +696,16 @@ public struct X86Core: @unchecked Sendable {
         switch instruction.map {
         case .oneByte: try oneByte(instruction, opcode)
         case .twoByte:
+            // **Les octets que personne d'autre ne réclame vont droit à la
+            // table ordinaire.** Les sauts conditionnels, `SETcc`, `CMOVcc`,
+            // `MOVZX` et `IMUL` passaient d'abord par les quatre gestionnaires
+            // spécialisés, qui répondaient tour à tour « pas moi » : sous
+            // callgrind, chacun coûtait seize instructions de l'hôte par
+            // instruction de l'invité. Voir `claimedBySpecialists`.
+            guard Self.claimedBySpecialists(opcode) else {
+                try twoByte(instruction, opcode)
+                return
+            }
             // Les instructions système d'abord : elles occupent des octets que
             // la table ordinaire ne connaît pas.
             if try systemInstruction(instruction, opcode) { return }
