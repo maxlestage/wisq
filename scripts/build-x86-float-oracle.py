@@ -90,6 +90,17 @@ def forms():
     out += ["cvttss2si %xmm1, %eax", "cvttss2si %xmm1, %rax",
             "cvttsd2si %xmm1, %eax", "cvttsd2si %xmm1, %rax",
             "cvtss2si %xmm1, %eax", "cvtsd2si %xmm1, %rax"]
+    # **Ce que la glibc de Debian demande en plus**, arrivé quand systemd a
+    # démarré sur l'image de cloud de Debian 13 et s'est arrêté sur `F2 0F C2`.
+    # La comparaison qui rend un masque, sous ses huit prédicats.
+    for width in ["ss", "sd"]:
+        for code in range(8):
+            out += [f"cmp{width} ${code}, %xmm1, %xmm0",
+                    f"cmp{width} ${code}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # Les deux doubles traités à part, et les conversions par paires.
+    for name in ["addpd", "mulpd"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    out += ["cvtpd2ps %xmm1, %xmm0", "cvtdq2pd %xmm1, %xmm0", "cvttpd2dq %xmm1, %xmm0"]
     return out
 
 
@@ -100,6 +111,9 @@ DOUBLES = [
     0.0, -0.0, 1.0, -1.0, 0.5, -2.5, 3.0, 2.0,
     1.7976931348623157e308, 5e-324, float("inf"), float("-inf"),
     4503599627370497.0, 1e300,
+    # Deux valeurs où tronquer et arrondir au plus proche ne donnent pas le
+    # même entier ; 0,5 et -2,5 donnent le même des deux façons.
+    1.75, -3.5,
 ]
 # Les motifs de bits qu'aucun littéral ne donne : NaN silencieux, NaN
 # signalant, et un dénormal.
@@ -136,8 +150,16 @@ def patterns():
     `ss` reçoivent de vraies valeurs et que les formes `sd` en reçoivent
     d'autres encore.
     """
-    out = [(double(value), 0x4142434445464748) for value in DOUBLES]
-    out += [(bits, 0x4142434445464748) for bits in RAW_DOUBLES]
+    # La moitié haute des doubles porte un autre double de la liste : les
+    # formes `pd` traitent les deux moitiés, et une moitié haute toujours la
+    # même n'en vérifierait qu'une.
+    out = [(double(value), double(DOUBLES[(index * 5 + 2) % len(DOUBLES)]))
+           for index, value in enumerate(DOUBLES)]
+    out += [(bits, RAW_DOUBLES[(index + 1) % len(RAW_DOUBLES)])
+            for index, bits in enumerate(RAW_DOUBLES)]
+    # Deux petits entiers de trente-deux bits, l'un négatif : ce que
+    # `CVTDQ2PD` convertit.
+    out.append((0xFFFFFFFD00000007, 0x4142434445464748))
     out += [(single(value) | (single(value) << 32), 0x4142434445464748)
             for value in FLOATS]
     out += [(bits | (bits << 32), 0x4142434445464748) for bits in RAW_FLOATS]
