@@ -416,10 +416,18 @@ d'entrer dans la bibliothèque.
    vrai miroir : l'ISO `virt` de 69 Mio téléchargée en deux fois, la
    seconde reprise à 30 Mio, rend la somme de l'index ; la vérification
    prend 0,4 s.
-2. Le transfert dans l'application : `URLSession`, le `.part` dans un dossier
-   que la bibliothèque ne liste pas, la reprise au retour de l'application,
-   et une feuille « Télécharger » qui propose les images de l'index.
-3. D'autres distributions, chacune par son propre index signé ou ses
+2. **Fait.** Le transfert dans l'application : `ImageDownloader` mène la
+   requête, la reprise et la vérification contre un `RangeFetcher` — un
+   serveur scripté dans les tests, `URLSession` sur l'iPhone —, le `.part`
+   attend dans `Wisq/downloads`, que la bibliothèque ne liste pas, et la
+   feuille « Télécharger » (menu « + », ou l'écran vide) propose les images
+   de l'index avec leur progrès. Une coupure garde ce qui est arrivé ; le
+   bouton, rappuyé, reprend là.
+3. Le téléchargement qui continue quand l'application passe en arrière-plan
+   (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
+   la reprise par `Range` doit alors se recoudre sur ce qu'il rend), et les
+   `.part` comptés dans le relevé de stockage.
+4. D'autres distributions, chacune par son propre index signé ou ses
    `SHA256SUMS`.
 
 ## Lot 5 — SPICE (fait)

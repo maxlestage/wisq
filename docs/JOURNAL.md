@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — la feuille « Télécharger », et le transfert qui reprend
+
+Relance horaire, même autorisation. La moitié réseau de la tranche d'avant :
+`ImageDownloader` lit l'index, demande l'image avec `Range` si un `.part`
+existe, suit la décision de `ImageDownload.continuation`, écrit le corps au
+bout du `.part`, et ne range le fichier qu'après `finish`. Il ne connaît du
+réseau qu'un protocole, `RangeFetcher` ; l'iPhone lui donne `URLSession`,
+les tests un serveur scripté qui honore `Range` comme le miroir d'Alpine ou,
+sur commande, coupe, finit trop tôt, ignore la reprise, la donne au mauvais
+octet, altère un octet ou envoie trop.
+
+**Le défaut qu'il fallait voir avant de l'écrire** : une réponse qui finit
+proprement mais trop tôt serait passée à `finish`, qui aurait vu la mauvaise
+taille et **effacé** ce qui était arrivé. C'est `interrupted` désormais, et le
+`.part` reste.
+
+**Côté iPhone**, `URLSessionRangeFetcher` garde la requête, la réponse et la
+lecture des octets dans une seule tâche — les octets de `URLSession` ne
+quittent jamais celle qui les lit — et rend des morceaux de 64 Kio ; un
+lecteur qui s'arrête le dit par `yield`, et la tâche cesse de recevoir. Il a
+été vérifié en Swift 6 strict sous Linux, avec pour octets une séquence
+volontairement non `Sendable`, `URLSession.bytes` n'y existant pas. La
+feuille SwiftUI, elle, ne se compile que sur la CI d'Apple. Elle s'ouvre par
+le menu « + », devenu « Importer un fichier » / « Télécharger Alpine », et
+par l'écran de la bibliothèque vide.
+
+**Sept sabotages, sept chutes** : la coupure propre, la remise à zéro d'une
+reprise ignorée, le `.part` trop long, l'envoi trop long, le `.part` déjà
+complet, l'écriture au bout du fichier, et le progrès de départ.
+
 ## 2026-10-18 — télécharger une image : la somme, l'index, la reprise
 
 Relance horaire, même autorisation. Les formats de disque étant lus, l'axe

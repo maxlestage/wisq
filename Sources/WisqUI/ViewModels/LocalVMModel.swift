@@ -760,6 +760,16 @@ public enum KernelLibrary {
         return base
     }
 
+    /// Où les téléchargements attendent d'être entiers et vérifiés : à côté
+    /// de la bibliothèque, pas dedans, pour qu'un `.part` n'y soit jamais
+    /// listé comme une image.
+    public static func downloadsDirectory() throws -> URL {
+        let base = try directory().deletingLastPathComponent()
+            .appendingPathComponent("downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
     public static func list() -> [URL] {
         guard let directory = try? directory(),
               let entries = try? FileManager.default.contentsOfDirectory(
