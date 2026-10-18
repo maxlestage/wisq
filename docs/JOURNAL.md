@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian plus vite : la table 0F, et les drapeaux en ligne
+
+Suite directe, même autorisation. Cette fois, callgrind, sur les cent
+premiers millions d'instructions d'Alpine : 600 instructions de l'hôte par
+instruction de l'invité, et deux postes nets.
+
+- **La chaîne des gestionnaires `0F`.** Une instruction de la table `0F`
+  passait par quatre gestionnaires spécialisés : système, vectoriel,
+  arithmétique vectorielle et flottant. Les sauts conditionnels, `SETcc`,
+  `CMOVcc`, `MOVZX` et `IMUL`, les plus fréquentes, n'appartiennent à aucun
+  des quatre, et chacun répondait « pas moi » pour seize instructions de
+  l'hôte. Un masque de 256 bits (`claimedBySpecialists`, écrit en
+  constantes) les envoie maintenant droit à la table ordinaire. Un test essaie
+  les quatre gestionnaires sur chacun des autres octets, avec et sans
+  préfixe, en registre comme en mémoire, et exige qu'aucun ne le prenne. Le
+  sabotage qui retire un bit au masque y tombe.
+- **`mask` et `signBit` restaient des appels**, à plus de 4 % à elles deux.
+  Elles sont forcées en ligne, avec `set`, `parity`, `signExtend` et
+  `setResultFlags`.
+- Mesuré en alternance, temps processeur, premier milliard d'Alpine, quatre
+  paires : 47,0 s avant, 44,4 s après. Debian jusqu'au shell de `root` :
+  1 097 s avant, 1 033 s après, et 1 186 s il y a deux tranches.
+
 ## 2026-10-18 — Debian plus vite : les accès mémoire
 
 Suite directe, même autorisation. Un démarrage de Debian échantillonné par
