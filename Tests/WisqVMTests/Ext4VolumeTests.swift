@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Le lecteur ext2/ext4 : deux systèmes de fichiers écrits par e2fsprogs, les
 /// mêmes fichiers dans chacun, et ce qu'on doit y lire.
