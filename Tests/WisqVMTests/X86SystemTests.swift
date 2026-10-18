@@ -209,8 +209,24 @@ final class X86SystemTests: XCTestCase {
             let value = core.registers[register]
             for byte in 0..<4 { name.append(UInt8((value >> (8 * UInt64(byte))) & 0xFF)) }
         }
-        XCTAssertEqual(String(decoding: name, as: UTF8.self), "wisq  x86-64")
+        XCTAssertEqual(String(decoding: name, as: UTF8.self), "AuthenticAMD",
+                       "un nom que la glibc connaît, sans quoi elle ne lit pas la feuille 1")
         XCTAssertEqual(X86CPUID.vendor.utf8.count, 12, "douze octets, ni plus ni moins")
+    }
+
+    /// Le nom de wisq est dans la chaîne de marque, que Linux affiche comme
+    /// `model name` : trois feuilles de seize octets, complétées de zéros.
+    func testTheBrandStringCarriesWisqsName() {
+        let words = (0x8000_0002...0x8000_0004).flatMap { leaf -> [UInt32] in
+            let (a, b, c, d) = X86CPUID.answer(leaf: UInt32(leaf), subleaf: 0)
+            return [a, b, c, d]
+        }
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> (8 * UInt32($0))) } }
+        XCTAssertEqual(bytes.count, 48)
+        XCTAssertEqual(String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self), X86CPUID.brand)
+        XCTAssertTrue(X86CPUID.brand.hasPrefix("wisq"))
+        XCTAssertLessThan(X86CPUID.brand.utf8.count, 48, "un zéro final au moins")
+        XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0000, subleaf: 0).0, 0x8000_0004)
     }
 
     /// Écrire `EFER` ne suffit pas à être en mode long : le processeur pose
