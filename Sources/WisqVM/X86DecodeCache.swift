@@ -27,7 +27,19 @@ import Foundation
 /// partager entre deux copies est sans risque, puisque chacune vérifie les
 /// octets de sa propre mémoire.
 final class X86DecodeCache: @unchecked Sendable {
-    static let slots = 1 << 13
+    /// **65 536 cases.** Avec 8192, le premier milliard d'instructions (le
+    /// noyau) manquait 3 % de ses lectures, mais le démarrage complet en
+    /// manquait 21 % : les programmes de l'espace utilisateur, `apk` et
+    /// OpenRC, s'ajoutent au noyau et ne tiennent plus. Avec 65 536, il ne
+    /// manque plus que 4,3 % des lectures, et le démarrage complet passe de
+    /// 615 s à 590 s. Au-delà, le gain ne paierait plus la mémoire, que
+    /// `footprint` borne.
+    static let slots = 1 << 16
+
+    /// Ce que le cache occupe : quatre mots par case, plus l'instruction.
+    static var footprint: Int {
+        slots * (4 * MemoryLayout<UInt64>.stride + MemoryLayout<X86Instruction>.stride)
+    }
 
     private let low: UnsafeMutablePointer<UInt64>
     private let high: UnsafeMutablePointer<UInt64>
