@@ -284,31 +284,33 @@ final class X86BootAttemptTests: XCTestCase {
             // attend : la machine n'est jamais au repos, et `login` abandonnait
             // au bout de ses soixante secondes avant qu'on ait tapé le mot de
             // passe. On avance donc de cinquante millions d'instructions à la
-            // fois, et l'on tape quand une invite est apparue depuis la
-            // dernière frappe **et que la console s'est tue depuis une
-            // tranche** ; au repos sans invite nouvelle, c'est fini.
+            // fois, et l'on tape **à la tranche qui suit** celle où une
+            // invite est apparue depuis la dernière frappe ; au repos sans
+            // invite nouvelle, c'est fini.
             //
-            // Le silence compte : `login` vide l'entrée juste après avoir
-            // écrit `Password: `, et un mot de passe tapé dans le même souffle
-            // que l'invite était jeté avec ce qui précédait — `login`
-            // attendait ensuite, et expirait.
+            // L'attente d'une tranche compte : `login` vide l'entrée juste
+            // après avoir écrit `Password: `, et un mot de passe tapé dans le
+            // même souffle que l'invite était jeté. Attendre que la console se
+            // taise ne marche pas non plus : tant que des tâches de démarrage
+            // tournent, systemd réécrit son état chaque seconde, et le silence
+            // ne venait qu'après l'expiration de `login`.
             var remaining = allowance
             var answeredUpTo = 0
-            var lastLength = core.serialOutput.count
+            var promptSeen = false
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
                 remaining -= min(remaining, max(executed, 1))
-                let quiet = core.serialOutput.count == lastLength
-                lastLength = core.serialOutput.count
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
-                if Self.prompts.contains(where: { fresh.contains($0) }), !toType.isEmpty,
-                   quiet || core.outOfPatience {
+                let prompted = Self.prompts.contains(where: { fresh.contains($0) })
+                if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
                     let line = toType.removeFirst()
                     typed.append(line)
                     core.serialInput.append(contentsOf: Array((line + "\n").utf8))
                     answeredUpTo = core.serialOutput.count
+                    promptSeen = false
                     continue
                 }
+                promptSeen = prompted
                 if core.outOfPatience { break }
             }
         } catch {
