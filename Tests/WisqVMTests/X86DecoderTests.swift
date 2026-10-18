@@ -288,4 +288,19 @@ final class X86DecoderTests: XCTestCase {
         XCTAssertEqual(lengths, [4, 4, 1], "endbr64, sub, ret — et rien qui déborde")
         XCTAssertEqual(offset, stream.count)
     }
+
+    /// `hasPrefix` répond par un `switch` écrit à la main : il doit dire,
+    /// pour chacun des 256 octets, la même chose que l'ordre des bits du
+    /// masque. Chaque préfixe, seul devant un `nop`, n'est vu que par lui.
+    func testHasPrefixAgreesWithThePrefixOrderForEveryByte() throws {
+        for prefix in X86Decoder.prefixOrder {
+            let instruction = try X86Decoder.decode([prefix, 0x90])
+            for byte in 0...255 {
+                XCTAssertEqual(instruction.hasPrefix(UInt8(byte)), UInt8(byte) == prefix,
+                               "préfixe \(prefix), octet \(byte)")
+            }
+        }
+        let bare = try X86Decoder.decode([0x90])
+        XCTAssertFalse((0...255).contains { bare.hasPrefix(UInt8($0)) })
+    }
 }
