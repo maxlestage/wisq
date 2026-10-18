@@ -169,6 +169,8 @@ extension X86Core {
         return value
     }
 
+    // Inlinée : voir `read(_:_:highByte:)`.
+    @inline(__always)
     func readReg(_ fields: Fields, _ size: Int) -> UInt64 {
         read(fields.reg, size, highByte: fields.regIsHighByte)
     }
@@ -196,6 +198,9 @@ extension X86Core {
     /// Les seize conditions, dans l'ordre du champ `tttn`. Ce sont les mêmes
     /// pour Jcc, SETcc et CMOVcc : une seule table, donc un seul endroit où se
     /// tromper.
+    ///
+    /// Inlinée : voir `read(_:_:highByte:)`.
+    @inline(__always)
     public func condition(_ code: UInt8) -> Bool {
         let overflow = flags & Flag.overflow != 0
         let carryFlag = flags & Flag.carry != 0
