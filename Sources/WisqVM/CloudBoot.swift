@@ -62,13 +62,33 @@ public struct CloudBoot: Equatable, Sendable {
     /// `rootPassword`, s'il est donné, devient celui de `root` à la première
     /// mise en route d'un système systemd (voir `firstbootOptions`).
     public static func find(in image: any VirtualDiskImage, rootPassword: String? = nil) throws -> CloudBoot {
+        try find(in: image, rootHash: try hash(rootPassword))
+    }
+
+    /// La même, avec le mot de passe déjà en empreinte `$6$` : ce que
+    /// l'application garde (`RootPassword`), puisqu'elle ne garde jamais le
+    /// mot de passe lui-même.
+    public static func find(in image: any VirtualDiskImage, rootHash: String?) throws -> CloudBoot {
         let table = try PartitionTable.read(image)
-        return try find(in: table, rootPassword: rootPassword) { try Ext4Volume($0, in: image) }
+        return try find(in: table, rootHash: rootHash) { try Ext4Volume($0, in: image) }
     }
 
     static func find(in table: PartitionTable, rootPassword: String? = nil,
                      open: (PartitionTable.Partition) throws -> Ext4Volume) throws -> CloudBoot {
-        if let rootPassword, !acceptsAsRootPassword(rootPassword) { throw Failure.unusablePassword }
+        try find(in: table, rootHash: try hash(rootPassword), open: open)
+    }
+
+    /// L'empreinte d'un mot de passe donné en clair, sur un sel neuf, ou le
+    /// refus de ce qui ne peut pas en être un.
+    static func hash(_ rootPassword: String?) throws -> String? {
+        guard let rootPassword else { return nil }
+        guard acceptsAsRootPassword(rootPassword) else { throw Failure.unusablePassword }
+        return SHA512Crypt.hash(rootPassword, salt: randomSalt())
+    }
+
+    static func find(in table: PartitionTable, rootHash: String?,
+                     open: (PartitionTable.Partition) throws -> Ext4Volume) throws -> CloudBoot {
+        if let rootHash, !RootPassword.isHash(rootHash) { throw Failure.unusablePassword }
         var readable = false
         for partition in table.linuxCandidates {
             // Une partition qui n'est pas un ext (btrfs, xfs) n'arrête pas la
@@ -85,14 +105,14 @@ public struct CloudBoot: Equatable, Sendable {
                 let initrd = entry.initrds.isEmpty ? nil
                     : try entry.initrds.flatMap { try volume.contents(of: $0) }
                 return CloudBoot(kernel: kernel, initrd: initrd,
-                                 commandLine: commandLine(entry.options, rootPassword: rootPassword),
+                                 commandLine: commandLine(entry.options, rootHash: rootHash),
                                  origin: "\(origin) de \(name)")
             }
             if let (kernel, initrd) = unconfiguredKernel(in: volume) {
                 let root = partition.uniqueID.isEmpty ? "/dev/\(name)" : "PARTUUID=\(partition.uniqueID)"
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
-                                 commandLine: commandLine(["root=\(root)", "ro"], rootPassword: rootPassword),
+                                 commandLine: commandLine(["root=\(root)", "ro"], rootHash: rootHash),
                                  origin: "\(kernel) de \(name)")
             }
         }
@@ -100,6 +120,13 @@ public struct CloudBoot: Equatable, Sendable {
     }
 
     // MARK: - Sur le disque de l'application
+
+    /// **La mémoire d'une image de cloud**, au moins. Le noyau de Debian 13
+    /// décompressé fait 35 Mio, son initramfs se déballe en mémoire, et
+    /// systemd démarre ensuite une vingtaine de services : la machine de
+    /// référence (64 Mio) panique avant la racine. 512 Mio est ce que le banc
+    /// a démarré jusqu'au shell de `root`. Un réglage plus haut est gardé.
+    public static let minimumRAMSize = 512 << 20
 
     /// Le nom du noyau sorti d'une image, dans le dossier de déballage. Posé
     /// ici, jamais pris dans l'image : un chemin écrit par qui a fait l'image
@@ -142,7 +169,7 @@ public struct CloudBoot: Equatable, Sendable {
     ///
     /// Le dossier est refait à neuf, pour que l'initramfs d'une image ne
     /// démarre jamais avec le noyau d'une autre ; et un refus n'y laisse rien.
-    public static func unpack(_ url: URL, into folder: URL, rootPassword: String? = nil,
+    public static func unpack(_ url: URL, into folder: URL, rootHash: String? = nil,
                               ceiling: UInt64 = .max) -> Result<Unpacked, Refusal>? {
         let found: CloudBoot
         do {
@@ -160,7 +187,7 @@ public struct CloudBoot: Equatable, Sendable {
                 return nil
             }
             guard !table.partitions.isEmpty else { return nil }
-            found = try find(in: table, rootPassword: rootPassword) { try Ext4Volume($0, in: image) }
+            found = try find(in: table, rootHash: rootHash) { try Ext4Volume($0, in: image) }
         } catch let failure as Failure {
             return .failure(.notBootable(failure))
         } catch {
@@ -183,6 +210,18 @@ public struct CloudBoot: Equatable, Sendable {
         }
         return .success(Unpacked(kernel: kernel, initrd: initrd, commandLine: found.commandLine,
                                  origin: found.origin))
+    }
+
+    /// **Ce fichier est-il une image de cloud ?** Lu sans rien en sortir :
+    /// la table de partitions, et au moins une partition où un noyau Linux
+    /// peut vivre. De quoi décider, avant de démarrer, s'il faut demander le
+    /// mot de passe de `root` ; c'est `unpack` qui dira ensuite si un noyau
+    /// s'y trouve vraiment.
+    public static func isCloudImage(fileAt url: URL) -> Bool {
+        guard let image = try? VirtualDiskImages.disk(fileAt: url),
+              let table = try? PartitionTable.read(image)
+        else { return false }
+        return !table.linuxCandidates.isEmpty
     }
 
     /// Le refus, en français et sans balisage, pour la console.
@@ -350,13 +389,13 @@ public struct CloudBoot: Equatable, Sendable {
     /// `login` expirait avant la fin. Sans mot de passe, il n'y a rien à
     /// répondre : `systemd-firstboot` est coupé, `root` reste verrouillé
     /// ailleurs que sur la console série.
-    static func firstbootOptions(rootPassword: String?, salt: String) -> [String] {
-        guard let rootPassword else { return ["systemd.firstboot=off"] }
+    static func firstbootOptions(rootHash: String?) -> [String] {
+        guard let rootHash else { return ["systemd.firstboot=off"] }
         return [
             "systemd.set_credential=firstboot.locale:C.UTF-8",
             "systemd.set_credential=firstboot.keymap:us",
             "systemd.set_credential=firstboot.timezone:UTC",
-            "systemd.set_credential=passwd.hashed-password.root:" + SHA512Crypt.hash(rootPassword, salt: salt),
+            "systemd.set_credential=passwd.hashed-password.root:" + rootHash,
         ]
     }
 
@@ -377,8 +416,11 @@ public struct CloudBoot: Equatable, Sendable {
     /// GRUB qu'on ne peut pas évaluer (`$vt_handoff`), avec la console série
     /// si elles ne l'y mettent pas, et les délais d'une machine lente, sauf
     /// ceux que l'entrée fixe déjà elle-même.
-    static func commandLine(_ options: [String], rootPassword: String? = nil,
-                            salt: String = randomSalt()) -> String {
+    static func commandLine(_ options: [String], rootPassword: String?, salt: String) -> String {
+        commandLine(options, rootHash: rootPassword.map { SHA512Crypt.hash($0, salt: salt) })
+    }
+
+    static func commandLine(_ options: [String], rootHash: String? = nil) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
@@ -390,7 +432,7 @@ public struct CloudBoot: Equatable, Sendable {
         // Une entrée qui règle déjà la première mise en route le fait à sa
         // façon, et on n'y ajoute rien.
         if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") || $0.hasPrefix("systemd.set_credential") }) {
-            kept += consoleOptions + firstbootOptions(rootPassword: rootPassword, salt: salt)
+            kept += consoleOptions + firstbootOptions(rootHash: rootHash)
         }
         return kept.joined(separator: " ")
     }

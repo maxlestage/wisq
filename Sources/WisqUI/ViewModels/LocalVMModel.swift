@@ -176,16 +176,21 @@ public final class LocalVMModel {
         let isoDisk: URL?
         let isoCommandLine: String?
         let isoRamdisk: URL?
+        let minimumRAM: Int
         #if WISQ_RUST_CORE
         // `storage` est optionnel et le reste : il traverse jusqu'à `IsoBoot`,
         // qui le résout comme le fait `SuspendedMachine`. Le composer ici — sur
         // un `URL?` — est l'erreur que la CI d'Apple a refusée, et elle est la
         // seule à pouvoir la voir.
+        // Une image de cloud reçoit le mot de passe de `root` que la personne
+        // a donné, en empreinte : voir `RootPassword`.
         switch IsoBoot.decide(
-            kernelURL, unpackingInto: storage, ceiling: UInt64(roomNow)
+            kernelURL, unpackingInto: storage, ceiling: UInt64(roomNow),
+            rootHash: RootPassword.hash(forKernel: keys.settings, in: storage)
         ) {
         case .success(let boot):
             kind = boot.kind
+            minimumRAM = boot.minimumRAM
             bootURL = boot.kernel
             isoDisk = boot.disk
             isoCommandLine = boot.commandLine
@@ -207,6 +212,7 @@ public final class LocalVMModel {
         isoDisk = nil
         isoCommandLine = nil
         isoRamdisk = nil
+        minimumRAM = 0
         #endif
 
         // **Un média de démarrage n'est pas un noyau, et le dire passe avant
@@ -251,14 +257,20 @@ public final class LocalVMModel {
         // rien, ce que ce fichier ne peut pas être.
         var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
         if core == .x86_64 {
-            machineRAM = max(machineRAM, X86Machine.minimumRAMSize)
+            // Le plancher de la machine PC, et celui du système qu'elle
+            // démarre quand l'image en donne un (`IsoBoot.Boot.minimumRAM`).
+            machineRAM = max(machineRAM, X86Machine.minimumRAMSize, minimumRAM)
             if machineRAM > Int(roomNow) {
                 _ = life.guestFinished()
+                // Le plancher qui a joué est celui qu'on nomme : celui du
+                // système démarré, quand il dépasse celui de la machine.
+                let need = minimumRAM > X86Machine.minimumRAMSize
+                    ? "le système de cette image a besoin d'au moins \(minimumRAM >> 20) Mo pour démarrer."
+                    : "une machine PC a besoin d'au moins \(X86Machine.minimumRAMSize >> 20) Mo — son noyau "
+                        + "décompressé en fait trente-cinq à lui seul."
                 finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et une \
-                    machine PC a besoin d'au moins \
-                    \(X86Machine.minimumRAMSize >> 20) Mo — son noyau \
-                    décompressé en fait trente-cinq à lui seul.
+                    \(kernelURL.lastPathComponent) est un noyau pour PC, et \
+                    \(need)
 
                     Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
                     moment. Fermez ce qui tourne à côté et réessayez.
@@ -922,6 +934,7 @@ public enum KernelLibrary {
             LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
         }
         KernelMemory.forget(kernel: name)
+        RootPassword.forget(kernel: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
         // La couche d'écriture part avec sa base : sans elle, ses secteurs ne

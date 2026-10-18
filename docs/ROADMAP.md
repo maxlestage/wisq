@@ -450,9 +450,14 @@ noyau dans le disque lui-même.
    sans table de partitions lisible passe tel quel, comme avant : un noyau
    sans en-tête garde sa chance. Vérifié sur l'image Debian 13 : ce qui est
    déballé est, octet pour octet, ce que `CloudBoot` lit.
-5b. Demander le mot de passe de `root` avant le premier démarrage, et le
-   passer à `IsoBoot.decide(rootPassword:)`, qui l'accepte déjà. Sans lui,
-   `root` s'ouvre sur la console série et reste verrouillé ailleurs.
+5b. **Fait.** Avant le premier démarrage d'une image de cloud, l'application
+   demande le mot de passe de `root`. Elle n'en garde que l'empreinte `$6$`
+   (`RootPassword`, un fichier à côté des autres réglages, sous la clé de la
+   machine), la redonne à chaque démarrage, et retient aussi « sans mot de
+   passe ». Dupliquer une machine copie l'empreinte ; la retirer, ou supprimer
+   l'image, l'oublie. Une image de cloud reçoit aussi au moins 512 Mio de
+   mémoire (`CloudBoot.minimumRAMSize`) : à 64 Mio, Debian panique avant sa
+   racine.
 6. D'autres index : `SHA512SUMS` de Debian (SHA-512 est là depuis l'étape 4),
    `SHA256SUMS` d'Ubuntu.
 
