@@ -16,11 +16,11 @@ import Foundation
 /// l'instruction est décodée à nouveau. Il n'y a ni écriture à surveiller ni
 /// moment à choisir pour vider.
 ///
-/// **La clé est physique**, pas l'adresse virtuelle : deux espaces d'adressage
-/// qui montrent le même code partagent l'entrée, et deux qui montrent des
-/// codes différents à la même adresse virtuelle ne se confondent pas. La
-/// place dans la page est la même des deux côtés, donc la borne de page que le
-/// décodeur a respectée en remplissant l'entrée vaut aussi en la relisant.
+/// **La case est choisie par l'adresse physique**, pas virtuelle : deux
+/// espaces d'adressage qui montrent le même code partagent l'entrée. Et il n'y
+/// a pas de clé à comparer : le décodage ne dépend que des octets, si bien que
+/// deux adresses qui tombent dans la même case avec les mêmes octets ont la
+/// même instruction. Ce sont les octets qui font foi, eux seuls.
 ///
 /// Une classe, et pas une valeur : `X86Core` est une structure que l'on
 /// copie, et un cache recopié à chaque copie coûterait plus qu'il ne rend. Le
@@ -29,7 +29,6 @@ import Foundation
 final class X86DecodeCache: @unchecked Sendable {
     static let slots = 1 << 13
 
-    private let keys: UnsafeMutablePointer<Int>
     private let low: UnsafeMutablePointer<UInt64>
     private let high: UnsafeMutablePointer<UInt64>
     private let lowMask: UnsafeMutablePointer<UInt64>
@@ -43,8 +42,6 @@ final class X86DecodeCache: @unchecked Sendable {
 
     init() {
         let count = Self.slots
-        keys = .allocate(capacity: count)
-        keys.initialize(repeating: 0, count: count)
         low = .allocate(capacity: count)
         low.initialize(repeating: 0, count: count)
         high = .allocate(capacity: count)
@@ -54,14 +51,13 @@ final class X86DecodeCache: @unchecked Sendable {
         highMask = .allocate(capacity: count)
         highMask.initialize(repeating: 0, count: count)
         instructions = .allocate(capacity: count)
-        // Une instruction quelconque, jamais rendue : la clé à zéro dit que
-        // la case est vide.
+        // Une instruction quelconque, jamais rendue : un masque nul dit que
+        // la case est vide — toute instruction a au moins un octet.
         let filler = try? X86Decoder.decode([0x90])
         instructions.initialize(repeating: filler!, count: count)
     }
 
     deinit {
-        keys.deallocate()
         low.deallocate()
         high.deallocate()
         lowMask.deallocate()
@@ -70,8 +66,8 @@ final class X86DecodeCache: @unchecked Sendable {
         instructions.deallocate()
     }
 
-    /// L'instruction qui commence à `start`, si la case la connaît, si ses
-    /// octets sont encore ceux-là, et si elle tient dans les `available`
+    /// L'instruction qui commence à `start`, si la case en tient une, si ses
+    /// octets sont ceux qui sont là, et si elle tient dans les `available`
     /// octets que la lecture s'autorise. Seize octets doivent tenir dans la
     /// mémoire : au bord, on décode comme avant.
     ///
@@ -85,7 +81,7 @@ final class X86DecodeCache: @unchecked Sendable {
                 available: Int) -> X86Instruction? {
         guard start <= size - 16 else { return nil }
         let slot = start & (Self.slots - 1)
-        guard keys[slot] == start &+ 1 else {
+        guard lowMask[slot] != 0 else {
             misses &+= 1
             return nil
         }
@@ -118,7 +114,6 @@ final class X86DecodeCache: @unchecked Sendable {
         let maskLow: UInt64 = length >= 8 ? .max : (1 << UInt64(8 * length)) - 1
         let maskHigh: UInt64 = length <= 8 ? 0
             : (length >= 16 ? .max : (1 << UInt64(8 * (length - 8))) - 1)
-        keys[slot] = start &+ 1
         low[slot] = raw.loadUnaligned(as: UInt64.self) & maskLow
         high[slot] = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self) & maskHigh
         lowMask[slot] = maskLow
