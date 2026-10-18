@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Trouver dans une image de cloud son noyau, son initramfs et sa ligne de
 /// commande : ce que le chargeur de la distribution a écrit, et ce qu'on fait
@@ -239,6 +240,124 @@ final class CloudBootTests: XCTestCase {
         }
     }
 
+    // MARK: - Déballée sur le disque
+
+    /// Le système de fichiers des fixtures dans un disque brut, sur une
+    /// partition de `type`.
+    private func rawDisk(type: UInt8 = 0x83) throws -> URL {
+        let packed = try XCTUnwrap(Data(base64Encoded: Ext4Fixtures.ext4))
+        let volume = try XCTUnwrap(Qcow2Image.inflateRaw([UInt8](packed), expected: Ext4Fixtures.size))
+        return try temporary(CloudDisk.raw(around: volume, type: type))
+    }
+
+    private var made: [URL] = []
+
+    private func temporary(_ bytes: [UInt8]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-nuage-\(getpid())-\(UUID().uuidString)")
+        try Data(bytes).write(to: url)
+        made.append(url)
+        return url
+    }
+
+    private func folder() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-deballage-\(getpid())-\(UUID().uuidString)")
+        made.append(url)
+        return url
+    }
+
+    override func tearDown() {
+        for url in made { try? FileManager.default.removeItem(at: url) }
+        made = []
+    }
+
+    private func onDisk(_ folder: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
+    }
+
+    /// **Une image brute, déballée** : le noyau et l'initramfs écrits sous
+    /// des noms fixes, rien d'autre, et ce qu'un déballage précédent avait
+    /// laissé est parti.
+    func testARawCloudImageIsUnpackedUnderFixedNames() throws {
+        let image = try rawDisk()
+        let into = folder()
+        try FileManager.default.createDirectory(at: into, withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: into.appendingPathComponent("reste"))
+        let unpacked = try XCTUnwrap(CloudBoot.unpack(image, into: into)).get()
+        XCTAssertEqual(onDisk(into), [CloudBoot.initrdName, CloudBoot.kernelName])
+        XCTAssertEqual(unpacked.kernel, into.appendingPathComponent(CloudBoot.kernelName))
+        XCTAssertEqual([UInt8](try Data(contentsOf: unpacked.kernel)), pattern(300_000, 1))
+        XCTAssertEqual([UInt8](try Data(contentsOf: try XCTUnwrap(unpacked.initrd))), pattern(70_000, 2))
+        XCTAssertTrue(unpacked.commandLine.hasPrefix("root=/dev/vda1 ro console=ttyS0 "), unpacked.commandLine)
+        XCTAssertEqual(unpacked.origin, "grub.cfg de vda1")
+    }
+
+    /// **Ce qui n'est pas un disque n'est pas touché** : `nil`, et le
+    /// dossier reste tel qu'il était. Un fichier quelconque, et un premier
+    /// secteur signé 0x55AA, avec du bruit devant ou sans aucune partition.
+    func testWhatIsNotADiskPassesUntouched() throws {
+        func signed(_ fill: UInt8) -> [UInt8] {
+            var bytes = [UInt8](repeating: fill, count: 4096)
+            bytes[510] = 0x55
+            bytes[511] = 0xAA
+            return bytes
+        }
+        for bytes in [pattern(4096, 3), signed(0x90), signed(0)] {
+            let into = folder()
+            XCTAssertNil(CloudBoot.unpack(try temporary(bytes), into: into))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: into.path))
+        }
+    }
+
+    /// **Un disque qui ne démarre pas est un refus**, qui dit pourquoi, et
+    /// n'écrit rien : pas de partition Linux, un mot de passe inutilisable,
+    /// un noyau plus grand que ce que l'appelant accepte.
+    func testADiskThatCannotBootIsRefusedAndWritesNothing() throws {
+        let cases: [(URL, String?, UInt64, CloudBoot.Refusal)] = [
+            (try rawDisk(type: 0x07), nil, .max, .notBootable(.noLinuxPartition)),
+            (try rawDisk(), "\u{7}", .max, .notBootable(.unusablePassword)),
+            (try rawDisk(), nil, 299_999, .tooLarge),
+        ]
+        for (image, password, ceiling, expected) in cases {
+            let into = folder()
+            XCTAssertEqual(CloudBoot.unpack(image, into: into, rootPassword: password, ceiling: ceiling),
+                           .failure(expected))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: into.path))
+        }
+        XCTAssertNotNil(CloudBoot.unpack(try rawDisk(), into: folder(), ceiling: 300_000).flatMap { try? $0.get() },
+                        "un plafond égal à la taille du noyau suffit")
+        XCTAssertTrue(CloudBoot.explanation(.notBootable(.noLinuxPartition), name: "debian.qcow2")
+            .hasPrefix("debian.qcow2 est une image de disque, mais wisq ne peut pas la démarrer : l'image n'a aucune"))
+    }
+
+    /// **Un qcow2 est un disque de toute façon** : sa table, celle de
+    /// l'image de Debian, se lit à travers lui, et des partitions sans ext
+    /// lisible sont un refus, jamais un passage tel quel.
+    func testAQcow2WithoutAReadableLinuxPartitionIsRefused() throws {
+        let packed = try XCTUnwrap(Data(base64Encoded: PartitionFixtures.debianQcow2))
+        let bytes = try XCTUnwrap(Qcow2Image.inflateRaw([UInt8](packed),
+                                                        expected: PartitionFixtures.debianQcow2Size))
+        let into = folder()
+        XCTAssertEqual(CloudBoot.unpack(try temporary(bytes), into: into),
+                       .failure(.notBootable(.noLinuxPartition)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: into.path))
+    }
+
+    /// L'image brute rend ses octets, et refuse de lire au-delà de sa fin.
+    func testARawImageReadsWhatTheFileHolds() throws {
+        let url = try temporary(pattern(1000, 4))
+        let image = try XCTUnwrap(try VirtualDiskImages.disk(fileAt: url))
+        XCTAssertTrue(image is RawDiskImage)
+        XCTAssertEqual(image.virtualSize, 1000)
+        var buffer = [UInt8](repeating: 0, count: 10)
+        XCTAssertTrue(image.read(into: &buffer, at: 990))
+        XCTAssertEqual(buffer, Array(pattern(1000, 4)[990...]))
+        XCTAssertFalse(image.read(into: &buffer, at: 991))
+        XCTAssertFalse(image.read(into: &buffer, at: 2000))
+        XCTAssertFalse(image.read(into: &buffer, at: .max), "un décalage hors de `off_t` ne fait pas planter")
+    }
+
     /// **La vraie image**, si on la donne (`WISQ_CLOUD_IMAGE`) : ce que wisq
     /// démarrera, et d'où il le tient.
     func testARealCloudImageIsFoundBootable() throws {
@@ -252,5 +371,9 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(Array(found.kernel[0x202..<0x206]), Array("HdrS".utf8))
         print("\(found.origin) : noyau \(found.kernel.count) octets, initramfs \(found.initrd?.count ?? 0) octets")
         print("ligne de commande : \(found.commandLine)")
+        // Et déballée comme l'application la déballe : les mêmes octets.
+        let unpacked = try XCTUnwrap(CloudBoot.unpack(URL(fileURLWithPath: path), into: folder())).get()
+        XCTAssertEqual([UInt8](try Data(contentsOf: unpacked.kernel)), found.kernel)
+        XCTAssertEqual(try unpacked.initrd.map { [UInt8](try Data(contentsOf: $0)) }, found.initrd)
     }
 }

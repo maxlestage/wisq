@@ -61,3 +61,44 @@ public enum VirtualDiskImages {
         }
     }
 }
+
+/// Une image brute, octet pour octet : le disque est le fichier. Ce que
+/// `FileDiskStore` lit sans intermédiaire ; ici pour qui veut lire un disque
+/// sans savoir d'avance s'il est brut ou non (`VirtualDiskImages.disk`).
+public final class RawDiskImage: VirtualDiskImage, @unchecked Sendable {
+    private let fd: Int32
+    public let virtualSize: UInt64
+
+    /// `fd` appartient ensuite à l'image, qui le ferme.
+    public init(takingOwnershipOf fd: Int32) {
+        self.fd = fd
+        var status = stat()
+        virtualSize = fstat(fd, &status) == 0 ? UInt64(max(status.st_size, 0)) : 0
+    }
+
+    deinit { close(fd) }
+
+    /// Faux au-delà de la fin : `readAll` le dit déjà, puisque `pread` n'y
+    /// rend plus rien — un sabotage a montré qu'une garde de plus ici ne
+    /// tenait rien.
+    public func read(into buffer: inout [UInt8], at offset: UInt64) -> Bool {
+        guard offset <= UInt64(off_t.max) else { return false }
+        return VirtualDiskImages.readAll(fd, into: &buffer, at: off_t(offset))
+    }
+}
+
+extension VirtualDiskImages {
+    /// Le disque d'un fichier, quel que soit son format : un des formats lus
+    /// ici, sinon l'image brute. `nil` seulement si le fichier ne s'ouvre pas.
+    public static func disk(fileAt url: URL) throws -> (any VirtualDiskImage)? {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        do {
+            if let image = try image(takingOwnershipOf: fd) { return image }
+        } catch {
+            close(fd)
+            throw error
+        }
+        return RawDiskImage(takingOwnershipOf: fd)
+    }
+}
