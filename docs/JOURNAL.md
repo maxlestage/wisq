@@ -15,8 +15,10 @@ suivant est le chemin jusqu'à l'image : aujourd'hui elle arrive par Fichiers,
 donc par un autre ordinateur. Cette tranche écrit ce qui se décide sans le
 réseau ; le transfert, dans l'application, est la suivante.
 
-**`SHA256`**, en Swift, par morceaux — CryptoKit n'existe pas sous Linux, et
-`WisqVM` ne dépend que de Foundation. Les vecteurs de FIPS 180-4 et du NIST,
+**`SHA256Stream`**, en Swift, par morceaux — CryptoKit n'existe pas sous Linux, et
+`WisqVM` ne dépend que de Foundation. Pas `SHA256` : `WisqNet` a déjà un type
+de ce nom, d'un coup et non par morceaux, et une vue qui importe les deux
+modules n'aurait plus su lequel elle nommait. Les vecteurs de FIPS 180-4 et du NIST,
 dont le million de « a », et la même somme par morceaux de toutes tailles.
 **`ImageDownload`** lit l'index d'Alpine tel que le miroir le servait (gardé
 tel quel dans le test), choisit `virt` puis `standard`, refuse une entrée
