@@ -67,9 +67,21 @@ public final class X86Memory: @unchecked Sendable {
             }
             throw X86Core.Fault.outsideMemory(address)
         }
-        var value: UInt64 = 0
-        for byte in 0..<width { value |= UInt64(bytes[start + byte]) << (8 * UInt64(byte)) }
-        return value
+        // **Un chargement, pas une boucle.** La mémoire de l'invité est
+        // petit-boutienne, comme l'hôte ; `littleEndian` le dit et coûte zéro
+        // là où c'est vrai. La boucle d'octets reste pour les largeurs
+        // impaires, que seuls les accès à cheval sur une page demandent.
+        let at = UnsafeRawPointer(bytes + start)
+        switch width {
+        case 8: return UInt64(littleEndian: at.loadUnaligned(as: UInt64.self))
+        case 4: return UInt64(UInt32(littleEndian: at.loadUnaligned(as: UInt32.self)))
+        case 2: return UInt64(UInt16(littleEndian: at.loadUnaligned(as: UInt16.self)))
+        case 1: return UInt64(bytes[start])
+        default:
+            var value: UInt64 = 0
+            for byte in 0..<width { value |= UInt64(bytes[start + byte]) << (8 * UInt64(byte)) }
+            return value
+        }
     }
 
     public func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
@@ -84,7 +96,15 @@ public final class X86Memory: @unchecked Sendable {
             }
             throw X86Core.Fault.outsideMemory(address)
         }
-        for byte in 0..<width { bytes[start + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }
+        let at = UnsafeMutableRawPointer(bytes + start)
+        switch width {
+        case 8: at.storeBytes(of: value.littleEndian, as: UInt64.self)
+        case 4: at.storeBytes(of: UInt32(truncatingIfNeeded: value).littleEndian, as: UInt32.self)
+        case 2: at.storeBytes(of: UInt16(truncatingIfNeeded: value).littleEndian, as: UInt16.self)
+        case 1: bytes[start] = UInt8(truncatingIfNeeded: value)
+        default:
+            for byte in 0..<width { bytes[start + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF) }
+        }
     }
 
     /// Charger un bloc à une adresse — ce que fait un chargeur de noyau.
