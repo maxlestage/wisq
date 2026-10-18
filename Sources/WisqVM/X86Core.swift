@@ -288,6 +288,17 @@ public struct X86Core: @unchecked Sendable {
     /// AH, CH, DH et BH — les **octets hauts** de RAX à RBX — et avec REX ils
     /// désignent SPL, BPL, SIL et DIL. Le même champ de trois bits nomme deux
     /// choses selon un octet qui se trouve ailleurs dans l'instruction.
+    ///
+    /// **Toujours inlinée, comme `readReg`, `condition` et
+    /// `effectiveAddress`.** Ces quatre fonctions ne modifient rien et sont
+    /// appelées depuis des fonctions `mutating`. Quand l'appel restait un
+    /// appel, Swift passait une **copie** du cœur entier : 776 octets recopiés
+    /// et chacune de ses références retenue puis relâchée, à presque chaque
+    /// instruction. Le désassemblage en montrait quatorze dans `oneByte` et
+    /// onze dans `twoByte`. Inlinées, elles lisent les champs sur place. Sur
+    /// le premier milliard d'instructions du démarrage d'Alpine : 67,3 s →
+    /// 58,3 s.
+    @inline(__always)
     func read(_ index: Int, _ size: Int, highByte: Bool) -> UInt64 {
         if size == 1 && highByte { return (registers[index - 4] >> 8) & 0xFF }
         let value = registers[index]

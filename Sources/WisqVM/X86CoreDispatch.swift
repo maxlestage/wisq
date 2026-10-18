@@ -1011,6 +1011,9 @@ extension X86Core {
     /// `segmented` dit si la base du segment entre dans le calcul. Elle y
     /// entre partout **sauf** pour `LEA`, qui ne lit rien en mémoire et ne
     /// traverse donc pas l'unité de segmentation.
+    ///
+    /// Inlinée : voir `read(_:_:highByte:)`.
+    @inline(__always)
     func effectiveAddress(
         _ instruction: X86Instruction, _ fields: Fields, segmented: Bool = true
     ) throws -> UInt64 {
