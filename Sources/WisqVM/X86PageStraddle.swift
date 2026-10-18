@@ -29,11 +29,12 @@ extension X86Core {
     @inline(__always)
     mutating func readMemory(_ virtual: UInt64, _ size: Int,
                              _ access: Access = .read) throws -> UInt64 {
-        guard let memory else { throw Fault.unsupported("une lecture sans mémoire") }
+        guard let reference = memoryReference else { throw Fault.unsupported("une lecture sans mémoire") }
         guard Self.crosses(virtual, size) else {
-            return try memory.read(try translate(virtual, access), size)
+            let physical = try translate(virtual, access)
+            return try reference._withUnsafeGuaranteedRef { try $0.read(physical, size) }
         }
-        return try readAcross(virtual, size, access, memory)
+        return try readAcross(virtual, size, access, reference.takeUnretainedValue())
     }
 
     /// Le chemin froid de la lecture : deux traductions, deux moitiés,
@@ -49,12 +50,13 @@ extension X86Core {
     /// Écrire `size` octets à une adresse **virtuelle**.
     @inline(__always)
     mutating func writeMemory(_ virtual: UInt64, _ size: Int, _ value: UInt64) throws {
-        guard let memory else { throw Fault.unsupported("une écriture sans mémoire") }
+        guard let reference = memoryReference else { throw Fault.unsupported("une écriture sans mémoire") }
         guard Self.crosses(virtual, size) else {
-            try memory.write(try translate(virtual, .write), size, value)
+            let physical = try translate(virtual, .write)
+            try reference._withUnsafeGuaranteedRef { try $0.write(physical, size, value) }
             return
         }
-        try writeAcross(virtual, size, value, memory)
+        try writeAcross(virtual, size, value, reference.takeUnretainedValue())
     }
 
     /// **Les deux traductions d'abord, les deux écritures ensuite.** C'est la
