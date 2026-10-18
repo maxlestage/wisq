@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refait Tests/WisqVMTests/Ext4Fixtures.swift : deux petits systèmes de
+"""Refait Tests/WisqVMTestKit/Ext4Fixtures.swift : deux petits systèmes de
 fichiers écrits par e2fsprogs, l'un ext4 (blocs de 4 Kio, extents, 64 bits,
 metadata_csum), l'autre ext2 (blocs de 1 Kio, blocs indirects).
 
@@ -69,8 +69,8 @@ lines = [
     "// Deux systèmes de fichiers écrits par e2fsprogs 1.47 (`mkfs -d`, puis",
     "// `e2fsck -fD` pour indexer les répertoires), en deflate brut puis base64.",
     "// Ne pas éditer à la main ; pour les refaire : scripts/build-ext4-fixtures.py.",
-    "enum Ext4Fixtures {",
-    "    static let size = 2 << 20",
+    "public enum Ext4Fixtures {",
+    "    public static let size = 2 << 20",
 ]
 for name, command in images.items():
     image = os.path.join(out, name + ".img")
@@ -106,14 +106,14 @@ for name, command in images.items():
         located = imap.split("located at block ")[1]
         block, offset = located.split(", offset ")
         lines.append("    /// Le bloc d'index des extents de `boot/sparse`, dans `ext4`.")
-        lines.append("    static let sparseIndexBlock = %d" % index_block)
+        lines.append("    public static let sparseIndexBlock = %d" % index_block)
         lines.append("    /// Le décalage de l'inode de `etc/hostname`, dans `ext4`.")
-        lines.append("    static let hostnameInodeOffset = %d" % (int(block) * 4096 + int(offset.split()[0], 0)))
+        lines.append("    public static let hostnameInodeOffset = %d" % (int(block) * 4096 + int(offset.split()[0], 0)))
     data = open(image, "rb").read()
     packer = zlib.compressobj(9, zlib.DEFLATED, -15)
     packed = base64.b64encode(packer.compress(data) + packer.flush()).decode()
     lines.append("")
-    lines.append("    static let %s = [" % name)
+    lines.append("    public static let %s = [" % name)
     lines += ['        "%s",' % packed[i:i + 96] for i in range(0, len(packed), 96)]
     lines.append("    ].joined()")
 lines.append("}")

@@ -67,6 +67,8 @@ public enum IsoBoot {
         case cannotPrepare
         case cannotExtractKernel(String)
         case cannotExtractInitrd(String)
+        /// Une image de cloud reconnue, et ce qui l'empêche de démarrer.
+        case cloud(CloudBoot.Refusal)
     }
 
     /// **Ce qu'il faut savoir du fichier choisi, image ou non.**
@@ -158,21 +160,54 @@ public enum IsoBoot {
     /// compile pas, et elle n'a été refusée que dix minutes plus tard par la CI
     /// d'Apple. Le type optionnel traverse maintenant jusqu'ici, où il est
     /// vérifié à chaque commit.
+    ///
+    /// `rootPassword` ne sert qu'à une image de cloud : voir `CloudBoot`.
     public static func decide(
-        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64
+        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64, rootPassword: String? = nil
     ) -> Result<Boot, Refusal> {
         let kind = KernelImageKind.identify(fileAt: chosen)
-        guard case .discImage = kind else { return .success(.plain(chosen, kind)) }
+        guard case .discImage = kind else {
+            // Sans dossier, un noyau ordinaire démarre quand même : le refus
+            // ne vaut que pour ce qui doit être déballé.
+            guard mightBeCloudImage(kind), let folder = folder(in: storage) else {
+                return .success(.plain(chosen, kind))
+            }
+            return decide(chosen, into: folder, ceiling: ceiling, rootPassword: rootPassword)
+        }
         guard let folder = folder(in: storage) else { return .failure(.cannotPrepare) }
         return decide(chosen, into: folder, ceiling: ceiling)
     }
 
+    /// **Ce qui peut être une image de cloud** : un disque d'hyperviseur que
+    /// wisq lit, ou un fichier que personne n'a reconnu — une image brute
+    /// commence par une table de partitions, qui n'a pas de marque à elle au
+    /// premier secteur. Un noyau reconnu ne passe jamais par là.
+    static func mightBeCloudImage(_ kind: KernelImageKind) -> Bool {
+        switch kind {
+        case .virtualDisk(let format): return KernelImageKind.isReadableVirtualDisk(format)
+        case .unknown: return true
+        default: return false
+        }
+    }
+
     /// La même, sur un dossier nommé — ce que les tests emploient.
     public static func decide(
-        _ chosen: URL, into folder: URL, ceiling: UInt64
+        _ chosen: URL, into folder: URL, ceiling: UInt64, rootPassword: String? = nil
     ) -> Result<Boot, Refusal> {
         let kind = KernelImageKind.identify(fileAt: chosen)
-        guard case .discImage = kind else { return .success(.plain(chosen, kind)) }
+        guard case .discImage = kind else {
+            guard mightBeCloudImage(kind),
+                  let cloud = CloudBoot.unpack(chosen, into: folder, rootPassword: rootPassword,
+                                               ceiling: ceiling)
+            else { return .success(.plain(chosen, kind)) }
+            // **L'image de cloud est son propre disque**, comme l'image
+            // d'installation : sa racine y vit, et la ligne de commande lue
+            // dans son `grub.cfg` la nomme.
+            return cloud.map { unpacked in
+                Boot(kind: KernelImageKind.identify(fileAt: unpacked.kernel), kernel: unpacked.kernel,
+                     disk: chosen, commandLine: unpacked.commandLine, initrd: unpacked.initrd)
+            }.mapError { .cloud($0) }
+        }
         return unpack(chosen, into: folder, ceiling: ceiling).map { plan in
             Boot(
                 kind: KernelImageKind.identify(fileAt: plan.kernel),
@@ -265,6 +300,8 @@ public enum IsoBoot {
                 faute de racine à monter : ses pilotes de disque ne sont pas \
                 compilés dedans, ils vivent là.
                 """
+        case .cloud(let refusal):
+            return CloudBoot.explanation(refusal, name: name)
         }
     }
 }
