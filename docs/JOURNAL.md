@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — `hasPrefix` sans recherche, les cases du cache d'un seul tenant
+
+Relance horaire, même autorisation. Nouvel échantillonnage après #511, avec
+deux postes nouveaux.
+
+**`hasPrefix`, 5 % des échantillons.** L'exécution demande presque à chaque
+instruction si un préfixe est là (`66`, `F3`, `F0`…). La réponse cherchait
+l'octet dans `prefixOrder`, un tableau global, avec un `swift_once` à chaque
+accès. C'est maintenant un `switch`. Un test vérifie, pour les 256 octets, que
+la réponse est la même que celle de l'ordre des bits du masque, et un sabotage
+qui échange deux bits le fait échouer. Sur le premier milliard
+d'instructions : 58,5 s → 53,7 s.
+
+**Le cache de décodage, un tiers des échantillons.** Chaque case était
+répartie sur cinq tableaux, si bien qu'une lecture touchait jusqu'à cinq
+lignes de cache de l'hôte, éloignées les unes des autres depuis que le cache
+fait 6 Mio. Une case `Entry` tient maintenant en 96 octets d'un seul tenant :
+53,7 s → 49,3 à 50,7 s selon les passages.
+
+**Ensemble.** Sur le premier milliard d'instructions : 58,5 s → environ 50 s
+(−14 %). Sur le démarrage complet jusqu'au shell de `root` : 590 s → 555 s
+(−6 %), avec les mêmes 7 373 336 906 instructions et les mêmes réponses.
+
 ## 2026-10-18 — un cache de décodage à la taille de l'espace utilisateur : −4 %
 
 Relance horaire, même autorisation. La tranche d'avant l'avait remarqué : sur
