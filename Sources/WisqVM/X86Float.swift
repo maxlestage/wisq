@@ -136,16 +136,7 @@ extension X86Core {
                 }
                 setVector(fields.reg, value.bitPattern, destination.high)
             } else {
-                let from = Self.asDouble(source.0)
-                let value: Float
-                if from.isNaN {
-                    let sign = UInt32(truncatingIfNeeded: from.bitPattern >> 32) & 0x8000_0000
-                    let payload = UInt32(truncatingIfNeeded:
-                        (from.bitPattern & 0x000F_FFFF_FFFF_FFFF) >> 29)
-                    value = Float(bitPattern: sign | 0x7FC0_0000 | payload)
-                } else {
-                    value = Float(from)
-                }
+                let value = Self.narrowed(Self.asDouble(source.0))
                 let low = (destination.low & ~0xFFFF_FFFF) | UInt64(value.bitPattern)
                 setVector(fields.reg, low, destination.high)
             }
@@ -176,6 +167,63 @@ extension X86Core {
             let rounded = opcode == 0x2C ? value.rounded(.towardZero)
                 : value.rounded(.toNearestOrEven)
             writeReg(fields, wide ? 8 : 4, Self.toInteger(rounded, wide ? 8 : 4))
+
+        // **Ce que la glibc de Debian demande en plus**, arrivé par l'image de
+        // cloud de Debian 13 : systemd démarre, et la course s'arrête sur
+        // `F2 0F C2` dans l'un de ses programmes. Le comptage sur les binaires
+        // de l'initramfs : `cmpnlesd` 15, `cmplesd` 11, `cmpltsd` 8,
+        // `cmpless` 8, `cmpnless` 7, `cmpnltsd` 1 ; `mulpd` 15, `addpd` 8 ;
+        // `cvtpd2ps` 2, `cvtdq2pd` 1, `cvttpd2dq` 1.
+
+        // La comparaison qui rend un **masque** au lieu d'écrire les
+        // drapeaux : tout à un ou tout à zéro dans l'élément bas, le reste
+        // laissé tel quel.
+        case 0xC2 where single || doubleWide:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, single ? 4 : 8)
+            let destination = vector(fields.reg)
+            let code = UInt8(truncatingIfNeeded: instruction.immediate)
+            if single {
+                let holds = Self.predicate(code, Double(Self.asSingle(destination.low)),
+                                           Double(Self.asSingle(source.0)))
+                let low = (destination.low & ~0xFFFF_FFFF) | (holds ? 0xFFFF_FFFF : 0)
+                setVector(fields.reg, low, destination.high)
+            } else {
+                let holds = Self.predicate(code, Self.asDouble(destination.low), Self.asDouble(source.0))
+                setVector(fields.reg, holds ? .max : 0, destination.high)
+            }
+
+        // Les deux doubles d'un registre traités à part, chacun selon la
+        // règle des NaN de l'arithmétique scalaire.
+        case 0x58 where operandSize, 0x59 where operandSize:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let operation: (Double, Double) -> Double = opcode == 0x58 ? { $0 + $1 } : { $0 * $1 }
+            let low = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), operation)
+            let high = Self.combine(Self.asDouble(destination.high), Self.asDouble(source.1), operation)
+            setVector(fields.reg, low.bitPattern, high.bitPattern)
+
+        case 0x5A where operandSize:  // CVTPD2PS : deux doubles en deux simples, le haut effacé
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let low = UInt64(Self.narrowed(Self.asDouble(source.0)).bitPattern)
+            let high = UInt64(Self.narrowed(Self.asDouble(source.1)).bitPattern)
+            setVector(fields.reg, low | high << 32, 0)
+
+        case 0xE6 where single:  // CVTDQ2PD : deux entiers de trente-deux bits, exacts en double
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 8).0
+            let low = Double(Int32(truncatingIfNeeded: source))
+            let high = Double(Int32(truncatingIfNeeded: source >> 32))
+            setVector(fields.reg, low.bitPattern, high.bitPattern)
+
+        case 0xE6 where operandSize:  // CVTTPD2DQ : tronqués vers zéro, le haut effacé
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let low = Self.toInteger(Self.asDouble(source.0).rounded(.towardZero), 4)
+            let high = Self.toInteger(Self.asDouble(source.1).rounded(.towardZero), 4)
+            setVector(fields.reg, low | high << 32, 0)
 
         default: return false
         }
@@ -219,32 +267,55 @@ extension X86Core {
         let source = try readVectorRM(fields, single ? 4 : 8)
         let destination = vector(fields.reg)
         if single {
-            let left = Self.asSingle(destination.low)
-            let right = Self.asSingle(source.0)
-            let result: Float
-            if left.isNaN {
-                result = Self.quiet(left)
-            } else if right.isNaN {
-                result = Self.quiet(right)
-            } else {
-                let computed = narrow(left, right)
-                result = computed.isNaN ? Self.indefiniteSingle : computed
-            }
+            let result = Self.combine(Self.asSingle(destination.low), Self.asSingle(source.0), narrow)
             let low = (destination.low & ~0xFFFF_FFFF) | UInt64(result.bitPattern)
             setVector(fields.reg, low, destination.high)
         } else {
-            let left = Self.asDouble(destination.low)
-            let right = Self.asDouble(source.0)
-            let result: Double
-            if left.isNaN {
-                result = Self.quiet(left)
-            } else if right.isNaN {
-                result = Self.quiet(right)
-            } else {
-                let computed = wide(left, right)
-                result = computed.isNaN ? Self.indefiniteDouble : computed
-            }
+            let result = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), wide)
             setVector(fields.reg, result.bitPattern, destination.high)
+        }
+    }
+
+    /// Les trois règles des NaN, pour un élément : la destination si c'en est
+    /// un, sinon la source, sinon le calcul, dont un NaN né de deux nombres
+    /// devient l'indéfini réel.
+    static func combine(_ left: Double, _ right: Double, _ operation: (Double, Double) -> Double) -> Double {
+        if left.isNaN { return quiet(left) }
+        if right.isNaN { return quiet(right) }
+        let computed = operation(left, right)
+        return computed.isNaN ? indefiniteDouble : computed
+    }
+
+    static func combine(_ left: Float, _ right: Float, _ operation: (Float, Float) -> Float) -> Float {
+        if left.isNaN { return quiet(left) }
+        if right.isNaN { return quiet(right) }
+        let computed = operation(left, right)
+        return computed.isNaN ? indefiniteSingle : computed
+    }
+
+    /// Un double ramené en simple, comme le fait x86 : un NaN garde son signe
+    /// et le haut de sa charge, et devient silencieux.
+    static func narrowed(_ from: Double) -> Float {
+        guard from.isNaN else { return Float(from) }
+        let sign = UInt32(truncatingIfNeeded: from.bitPattern >> 32) & 0x8000_0000
+        let payload = UInt32(truncatingIfNeeded: (from.bitPattern & 0x000F_FFFF_FFFF_FFFF) >> 29)
+        return Float(bitPattern: sign | 0x7FC0_0000 | payload)
+    }
+
+    /// Les huit prédicats de `CMPSS`/`CMPSD`, dans l'ordre de l'immédiat. Les
+    /// comparaisons de Swift rendent faux dès qu'un NaN est là, ce qui est
+    /// exactement la règle des quatre premiers ; les quatre suivants en sont
+    /// les négations, donc vrais sur un NaN.
+    static func predicate(_ code: UInt8, _ left: Double, _ right: Double) -> Bool {
+        switch code & 0x07 {
+        case 0: return left == right
+        case 1: return left < right
+        case 2: return left <= right
+        case 3: return left.isNaN || right.isNaN
+        case 4: return !(left == right)
+        case 5: return !(left < right)
+        case 6: return !(left <= right)
+        default: return !left.isNaN && !right.isNaN
         }
     }
 
