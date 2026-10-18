@@ -398,6 +398,30 @@ recommandent pour une machine prête en une minute.
    l'archive le cherche par son nom. Un descripteur qui nomme un disque
    absent est refusé en le disant, plutôt que de démarrer sur un autre.
 
+## Télécharger une image depuis l'application
+
+Importer par Fichiers suppose que l'image est déjà sur le téléphone, donc
+qu'un autre ordinateur l'y a mise. Une distribution qui publie ses images
+avec leur somme peut être téléchargée par wisq lui-même, et vérifiée avant
+d'entrer dans la bibliothèque.
+
+**La suite, dans l'ordre :**
+
+1. **Fait.** Ce qui se décide sans le réseau (`ImageDownload`, `SHA256Stream`) :
+   l'index d'Alpine (`latest-releases.yaml`, lu au moment de télécharger
+   plutôt qu'une version écrite ici), les saveurs qui démarrent (`virt`,
+   puis `standard`), la reprise d'un transfert coupé (`Range`, et la réponse
+   du serveur lue contre l'octet demandé), et la règle qu'un fichier n'entre
+   qu'entier et à la somme publiée — sinon il est effacé. Vérifié sur le
+   vrai miroir : l'ISO `virt` de 69 Mio téléchargée en deux fois, la
+   seconde reprise à 30 Mio, rend la somme de l'index ; la vérification
+   prend 0,4 s.
+2. Le transfert dans l'application : `URLSession`, le `.part` dans un dossier
+   que la bibliothèque ne liste pas, la reprise au retour de l'application,
+   et une feuille « Télécharger » qui propose les images de l'index.
+3. D'autres distributions, chacune par son propre index signé ou ses
+   `SHA256SUMS`.
+
 ## Lot 5 — SPICE (fait)
 
 *Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
