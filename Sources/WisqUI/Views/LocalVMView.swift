@@ -165,6 +165,22 @@ struct LocalVMListView: View {
                             "dont image d'installation déballée",
                             value: LocalStorage.describe(bytes: storage.unpackedIsoBytes))
                     }
+                    if storage.partialDownloadCount > 0 {
+                        // Un téléchargement interrompu reprend où il s'était
+                        // arrêté : l'effacer est un choix, pas un ménage, et le
+                        // bouton dit ce qu'il coûte.
+                        Button(role: .destructive) {
+                            let freed = KernelLibrary.discardPartialDownloads()
+                            storage = KernelLibrary.storageReport()
+                            note = Note(
+                                text: "\(LocalStorage.describe(bytes: freed)) repris ; le prochain téléchargement repartira de zéro.",
+                                symbol: "trash")
+                        } label: {
+                            Label(
+                                "Effacer \(LocalStorage.describe(bytes: storage.partialDownloadBytes)) de téléchargements interrompus",
+                                systemImage: "arrow.down.circle")
+                        }
+                    }
                     if storage.orphanedCount > 0 {
                         Button {
                             let freed = KernelLibrary.freeOrphanedMachines()
