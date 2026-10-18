@@ -270,9 +270,37 @@ extension X86Core {
                 setVector(fields.reg, low, high)
             }
 
+        // `PSHUFLW` et `PSHUFHW` : `PSHUFD` à l'échelle de seize bits, sur
+        // une seule moitié. C'est un vrai démarrage qui les a demandées —
+        // l'ISO `virt` d'Alpine s'arrêtait sur `0F 70` en installant ses
+        // paquets, dans le zlib que `apk` charge pour les décompresser. La
+        // moitié que l'instruction ne nomme pas est recopiée **depuis la
+        // source**, pas gardée de la destination : c'est un déplacement
+        // complet, et l'oracle départage les deux lectures.
+        case 0x70 where repeatFD || repeatFE:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let control = UInt8(truncatingIfNeeded: instruction.immediate)
+            if repeatFD {
+                setVector(fields.reg, Self.shuffleWords(source.0, control), source.1)
+            } else {
+                setVector(fields.reg, source.0, Self.shuffleWords(source.1, control))
+            }
+
         default: return false
         }
         return true
+    }
+
+    /// Les quatre mots de seize bits d'une moitié, remis dans l'ordre que dit
+    /// l'immédiat, deux bits par position.
+    static func shuffleWords(_ value: UInt64, _ control: UInt8) -> UInt64 {
+        var result: UInt64 = 0
+        for position in 0..<4 {
+            let chosen = UInt64((control >> (2 * position)) & 0x03)
+            result |= ((value >> (16 * chosen)) & 0xFFFF) << (16 * UInt64(position))
+        }
+        return result
     }
 
     /// L'entrelacement : des morceaux de `width` octets, pris alternativement

@@ -123,6 +123,20 @@ def forms():
     # La somme des différences absolues, qui condense seize octets en deux
     # nombres et n'a d'équivalent nulle part ailleurs dans le jeu.
     out += ["psadbw %xmm1, %xmm0", f"psadbw {ALIGNED:#x}(%rsi), %xmm0"]
+    # **`PSHUFLW` et `PSHUFHW`**, arrivées par un vrai démarrage : l'ISO
+    # `virt` d'Alpine 3.24 monte son média, installe ses paquets, et s'arrête
+    # au quinzième sur `0F 70` sans préfixe `66`. Ce n'était pas `PSHUFD`,
+    # déjà là : `objdump` sur les bibliothèques que `apk` charge trouve
+    # `pshuflw` dans zlib (huit fois) et zstd (trois), et `pshufhw` nulle
+    # part. Les deux s'écrivent ensemble parce qu'elles sont la même chose à
+    # une moitié près : quatre mots de seize bits permutés d'un côté, l'autre
+    # moitié **recopiée telle quelle** — c'est ce que l'oracle doit tenir,
+    # avec des valeurs différentes dans les deux moitiés pour que l'échange se
+    # voie.
+    for name in ["pshuflw", "pshufhw"]:
+        for control in SHUFFLES:
+            out += [f"{name} ${control:#x}, %xmm1, %xmm0",
+                    f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
     return out
 
 
