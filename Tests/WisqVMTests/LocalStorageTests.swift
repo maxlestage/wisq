@@ -350,3 +350,44 @@ final class ResizedSnapshotCostTests: XCTestCase {
             "un invité qui a moins tourné doit avoir moins écrit")
     }
 }
+
+/// Les téléchargements interrompus, dans le même relevé.
+extension LocalStorageTests {
+
+    fileprivate var downloads: URL { root.appendingPathComponent("downloads", isDirectory: true) }
+
+    /// Un `.part` est compté à part, sous aucun noyau, et seulement lui : le
+    /// nom qu'il porte est celui que donne `ImageDownload.partURL`, pour que
+    /// le relevé et le téléchargeur parlent des mêmes fichiers.
+    func testInterruptedDownloadsAreCountedApartAndOnlyThem() throws {
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        _ = try writeKernel("bzImage", bytes: 1000)
+        let part = ImageDownload.partURL(for: downloads.appendingPathComponent("alpine-virt.iso"))
+        try Data(count: 6000).write(to: part)
+        try Data(count: 500).write(to: downloads.appendingPathComponent("b.iso.part"))
+        try Data(count: 9999).write(to: downloads.appendingPathComponent("autre-chose.iso"))
+        let report = LocalStorage.report(kernels: kernels, machines: machines, downloads: downloads)
+        XCTAssertEqual(report.partialDownloadBytes, 6500)
+        XCTAssertEqual(report.partialDownloadCount, 2)
+        XCTAssertEqual(report.total, 1000 + 6500, "dans le total, sous aucune entrée")
+        XCTAssertEqual(report.entries.map(\.kernel), ["bzImage"])
+        XCTAssertEqual(LocalStorage.report(kernels: kernels, machines: machines).partialDownloadBytes, 0,
+                       "sans dossier de téléchargements, rien")
+    }
+
+    /// Les effacer rend leurs octets, et rien d'autre ne part : ni le fichier
+    /// qui n'est pas un `.part`, ni la bibliothèque.
+    func testDiscardingInterruptedDownloadsTakesBackOnlyThem() throws {
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        _ = try writeKernel("bzImage", bytes: 1000)
+        try Data(count: 6000).write(to: downloads.appendingPathComponent("a.iso.part"))
+        let other = downloads.appendingPathComponent("autre-chose.iso")
+        try Data(count: 9999).write(to: other)
+        XCTAssertEqual(LocalStorage.discardPartialDownloads(in: downloads), 6000)
+        XCTAssertEqual(LocalStorage.report(kernels: kernels, machines: machines, downloads: downloads)
+            .partialDownloadCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kernels.appendingPathComponent("bzImage").path))
+        XCTAssertEqual(LocalStorage.discardPartialDownloads(in: nil), 0)
+    }
+}

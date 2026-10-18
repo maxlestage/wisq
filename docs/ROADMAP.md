@@ -423,11 +423,14 @@ d'entrer dans la bibliothèque.
    feuille « Télécharger » (menu « + », ou l'écran vide) propose les images
    de l'index avec leur progrès. Une coupure garde ce qui est arrivé ; le
    bouton, rappuyé, reprend là.
-3. Le téléchargement qui continue quand l'application passe en arrière-plan
+3. **Fait.** Les `.part` comptés dans le relevé de stockage, à part — sous
+   aucun noyau, puisqu'ils ne sont pas encore dans la bibliothèque —, et un
+   bouton qui les efface en disant ce qu'il coûte : le prochain
+   téléchargement repartira de zéro.
+4. Le téléchargement qui continue quand l'application passe en arrière-plan
    (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
-   la reprise par `Range` doit alors se recoudre sur ce qu'il rend), et les
-   `.part` comptés dans le relevé de stockage.
-4. D'autres distributions, chacune par son propre index signé ou ses
+   la reprise par `Range` doit alors se recoudre sur ce qu'il rend).
+5. D'autres distributions, chacune par son propre index signé ou ses
    `SHA256SUMS`.
 
 ## Lot 5 — SPICE (fait)
