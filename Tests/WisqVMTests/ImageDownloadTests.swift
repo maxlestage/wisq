@@ -21,13 +21,13 @@ final class ImageDownloadTests: XCTestCase {
     /// Les vecteurs de FIPS 180-4 et du NIST : vide, « abc », le message de
     /// 448 bits qui force un bloc de bourrage entier, et un million de « a ».
     func testSHA256MatchesTheStandardVectors() {
-        XCTAssertEqual(SHA256.hex([UInt8]()),
+        XCTAssertEqual(SHA256Stream.hex([UInt8]()),
                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
-        XCTAssertEqual(SHA256.hex(Array("abc".utf8)),
+        XCTAssertEqual(SHA256Stream.hex(Array("abc".utf8)),
                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        XCTAssertEqual(SHA256.hex(Array("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)),
+        XCTAssertEqual(SHA256Stream.hex(Array("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)),
                        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
-        XCTAssertEqual(SHA256.hex([UInt8](repeating: 0x61, count: 1_000_000)),
+        XCTAssertEqual(SHA256Stream.hex([UInt8](repeating: 0x61, count: 1_000_000)),
                        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
     }
 
@@ -36,19 +36,19 @@ final class ImageDownloadTests: XCTestCase {
     /// haché, par mégaoctets.
     func testSHA256ByPiecesIsTheSameAsAtOnce() {
         let bytes = (0..<10_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 7) }
-        let whole = SHA256.hex(bytes)
+        let whole = SHA256Stream.hex(bytes)
         for piece in [1, 3, 55, 56, 63, 64, 65, 127, 1000] {
-            var hash = SHA256()
+            var hash = SHA256Stream()
             var start = 0
             while start < bytes.count {
                 hash.update(bytes[start..<min(start + piece, bytes.count)])
                 start += piece
             }
-            XCTAssertEqual(SHA256.hexString(hash.finalize()), whole, "morceaux de \(piece)")
+            XCTAssertEqual(SHA256Stream.hexString(hash.finalize()), whole, "morceaux de \(piece)")
         }
         let url = folder.appendingPathComponent("f")
         XCTAssertNoThrow(try Data(bytes).write(to: url))
-        XCTAssertEqual(try SHA256.hex(ofFileAt: url), whole)
+        XCTAssertEqual(try SHA256Stream.hex(ofFileAt: url), whole)
     }
 
     // MARK: - L'index d'Alpine
@@ -204,22 +204,22 @@ final class ImageDownloadTests: XCTestCase {
     /// demandée à l'octet 100 revient en `206 bytes 100-199/69206016` ; la
     /// demande au-delà de la fin, en `416 bytes */69206016`.
     func testTheServerAnswerSaysWhatToDoWithTheBytes() {
-        typealias C = ImageDownload.Continuation
+        typealias Answer = ImageDownload.Continuation
         XCTAssertNil(ImageDownload.rangeHeader(resumingAt: 0))
         XCTAssertEqual(ImageDownload.rangeHeader(resumingAt: 100), "bytes=100-")
-        XCTAssertEqual(ImageDownload.continuation(status: 200, contentRange: nil, resumingAt: 0), C.append)
+        XCTAssertEqual(ImageDownload.continuation(status: 200, contentRange: nil, resumingAt: 0), Answer.append)
         XCTAssertEqual(ImageDownload.continuation(
-            status: 206, contentRange: "bytes 100-199/69206016", resumingAt: 100), C.append)
+            status: 206, contentRange: "bytes 100-199/69206016", resumingAt: 100), Answer.append)
         XCTAssertEqual(ImageDownload.continuation(
-            status: 206, contentRange: "bytes 100-199/*", resumingAt: 100), C.append)
+            status: 206, contentRange: "bytes 100-199/*", resumingAt: 100), Answer.append)
         // Un serveur qui ignore la reprise renvoie tout depuis le début.
-        XCTAssertEqual(ImageDownload.continuation(status: 200, contentRange: nil, resumingAt: 100), C.restart)
+        XCTAssertEqual(ImageDownload.continuation(status: 200, contentRange: nil, resumingAt: 100), Answer.restart)
         // Le `.part` a déjà tout : rien à recevoir, la somme dira le reste.
         XCTAssertEqual(ImageDownload.continuation(
-            status: 416, contentRange: "bytes */69206016", resumingAt: 69_206_016), C.complete)
+            status: 416, contentRange: "bytes */69206016", resumingAt: 69_206_016), Answer.complete)
         // Plus long que le fichier : il vient d'une autre version.
         XCTAssertEqual(ImageDownload.continuation(
-            status: 416, contentRange: "bytes */69206016", resumingAt: 70_000_000), C.restart)
+            status: 416, contentRange: "bytes */69206016", resumingAt: 70_000_000), Answer.restart)
         // Une reprise ailleurs qu'à l'octet demandé recoudrait de travers.
         if case .refuse = ImageDownload.continuation(
             status: 206, contentRange: "bytes 0-99/69206016", resumingAt: 100) {} else {
@@ -229,9 +229,9 @@ final class ImageDownloadTests: XCTestCase {
             XCTFail("une reprise sans Content-Range doit être refusée")
         }
         XCTAssertEqual(ImageDownload.continuation(status: 404, contentRange: nil, resumingAt: 0),
-                       C.refuse("le fichier n'existe plus sur le serveur (404)."))
+                       Answer.refuse("le fichier n'existe plus sur le serveur (404)."))
         XCTAssertEqual(ImageDownload.continuation(status: 503, contentRange: nil, resumingAt: 0),
-                       C.refuse("le serveur a répondu 503."))
+                       Answer.refuse("le serveur a répondu 503."))
         XCTAssertEqual(ImageDownload.partURL(for: folder.appendingPathComponent("a.iso")).lastPathComponent,
                        "a.iso.part")
     }
@@ -242,7 +242,7 @@ final class ImageDownloadTests: XCTestCase {
     /// est effacé, pour que le prochain essai ne reprenne pas sur lui.
     func testOnlyAVerifiedFileEntersTheLibrary() throws {
         let bytes = Array("une image, pas une vraie".utf8)
-        let sum = SHA256.hex(bytes)
+        let sum = SHA256Stream.hex(bytes)
         let destination = folder.appendingPathComponent("image.iso")
         let part = ImageDownload.partURL(for: destination)
 
@@ -264,7 +264,7 @@ final class ImageDownloadTests: XCTestCase {
         try Data(altered).write(to: part)
         XCTAssertThrowsError(try ImageDownload.finish(part: part, as: destination, size: nil, sha256: sum)) {
             XCTAssertEqual($0 as? ImageDownload.Failure,
-                           .checksumMismatch(expected: sum, got: SHA256.hex(altered)))
+                           .checksumMismatch(expected: sum, got: SHA256Stream.hex(altered)))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path), "effacé")
         XCTAssertEqual(try Data(contentsOf: destination), Data(bytes), "l'image juste n'a pas été touchée")

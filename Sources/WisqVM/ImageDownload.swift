@@ -196,7 +196,7 @@ public enum ImageDownload {
             try? manager.removeItem(at: part)
             throw Failure.wrongSize(expected: size, got: got)
         }
-        let digest = try SHA256.hex(ofFileAt: part)
+        let digest = try SHA256Stream.hex(ofFileAt: part)
         guard digest == sha256.lowercased() else {
             try? manager.removeItem(at: part)
             throw Failure.checksumMismatch(expected: sha256.lowercased(), got: digest)
