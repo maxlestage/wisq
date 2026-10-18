@@ -424,9 +424,14 @@ noyau dans le disque lui-même.
    répertoires en ligne, toute fonction inconnue. Vérifié sur la vraie image
    Debian 13, lue dans le qcow2 : le noyau (12 Mio) et l'initramfs (36 Mio)
    que nomme son `grub.cfg` sont identiques à ce que rend `debugfs`.
-3. La ligne de commande : celle du premier `menuentry` du `grub.cfg`, sans
-   rien deviner. Debian y écrit `root=PARTUUID=…` : il faudra aussi le GUID
-   propre à chaque partition, que `PartitionTable` ne garde pas encore.
+3. **Fait.** Le noyau, l'initramfs et la ligne de commande (`CloudBoot`) :
+   la première entrée de premier niveau du `grub.cfg` (Debian, Ubuntu), ou
+   l'entrée BLS la plus récente (Fedora), reprise telle quelle. Faute de
+   configuration, ce sont les liens `/vmlinuz` et `/initrd.img`, ou le noyau
+   le plus récent de `/boot`. `PartitionTable` donne aussi le PARTUUID de
+   chaque partition, que vise le `root=PARTUUID=…` de Debian. Vérifié sur la
+   vraie image Debian 13 : « grub.cfg de vda1 », sa ligne de commande mot pour
+   mot.
 4. Dans l'application : une image de cloud importée ou téléchargée propose
    « Démarrer », sans noyau à choisir.
 5. D'autres index : `SHA512SUMS` de Debian (il faudra SHA-512), `SHA256SUMS`
