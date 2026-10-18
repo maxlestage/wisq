@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — un cache des instructions décodées : −10 %
+
+Relance horaire, même autorisation. Le démarrage complet d'Alpine prenait
+852 secondes ; échantillonné à la main avec `gdb`, le décodeur x86 revenait
+dans à peu près deux échantillons sur cinq. Le cœur garde maintenant les
+instructions qu'il a décodées, rangées dans 8192 cases par adresse physique
+(`X86DecodeCache`).
+
+**Rien à invalider.** Chaque entrée garde les octets qu'elle a décodés et ne
+sert que s'ils sont encore là, comparés à chaque lecture : deux chargements de
+huit octets et un masque. Le code qui se réécrit est donc décodé à nouveau,
+sans surveiller aucune écriture. Il n'y a pas non plus de clé d'adresse,
+puisque le décodage ne dépend que des octets. Une entrée ne sert que si
+l'instruction tient dans la place que la lecture s'autorise : avec la
+pagination, c'est jusqu'à la fin de la page. Une instruction à cheval sur deux
+pages n'est jamais rangée.
+
+**Ce que ça rend.** Sur les trois premiers milliards d'instructions du
+démarrage, on passe de 319,8 s à 287,8 s, soit −10 %, avec le même RIP final
+et la même console. Sur 600 millions d'instructions, 599 650 519 viennent du
+cache et 349 481 sont décodées, soit 99,94 % de succès. Le gain reste modeste
+au regard de ce taux : le décodage n'était qu'une partie du coût, le reste
+(copie de l'instruction, aiguillage, traduction d'adresse) est la prochaine
+cible.
+
+**Les tests.** Il y en a trois : le code qui se réécrit, une boucle décodée une
+seule fois, et une case qui ne sert que pour ses octets et sa place. Ils
+attrapent chacun des sabotages : sans comparaison des octets, sans garde de
+place, sans test de case vide, avec un masque trop large. Le banc x86 affiche
+le nombre de lectures trouvées et décodées.
+
 ## 2026-10-18 — jusqu'au shell de root, sur l'ISO téléchargée
 
 Relance horaire, même autorisation. La tranche d'avant s'arrêtait sur
