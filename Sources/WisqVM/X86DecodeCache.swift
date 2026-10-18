@@ -27,7 +27,7 @@ import Foundation
 /// partager entre deux copies est sans risque, puisque chacune vérifie les
 /// octets de sa propre mémoire.
 final class X86DecodeCache: @unchecked Sendable {
-    static let slots = 1 << 13
+    static let slots = 1 << 16
 
     private let low: UnsafeMutablePointer<UInt64>
     private let high: UnsafeMutablePointer<UInt64>
