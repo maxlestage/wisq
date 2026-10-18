@@ -303,15 +303,15 @@ final class IsoBootDecisionTests: XCTestCase {
         try Data(CloudDisk.raw(around: volume)).write(to: image)
         defer { try? FileManager.default.removeItem(at: image) }
 
-        let sample = UUID().uuidString
-        let boot = try IsoBoot.decide(image, into: folder, ceiling: 1 << 20, rootPassword: sample).get()
+        let sample = SHA512Crypt.hash(UUID().uuidString, salt: "wisqsalt")
+        let boot = try IsoBoot.decide(image, into: folder, ceiling: 1 << 20, rootHash: sample).get()
+        XCTAssertEqual(boot.minimumRAM, CloudBoot.minimumRAMSize)
         XCTAssertEqual(boot.kernel, folder.appendingPathComponent(CloudBoot.kernelName))
         XCTAssertEqual(boot.initrd, folder.appendingPathComponent(CloudBoot.initrdName))
         XCTAssertEqual(boot.disk, image, "l'image est le disque")
         let line = try XCTUnwrap(boot.commandLine)
         XCTAssertTrue(line.hasPrefix("root=/dev/vda1 ro console=ttyS0 "), line)
-        XCTAssertTrue(line.contains("passwd.hashed-password.root:$6$"), line)
-        XCTAssertFalse(line.contains(sample))
+        XCTAssertTrue(line.hasSuffix("passwd.hashed-password.root:" + sample), line)
         XCTAssertEqual(((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted(), [CloudBoot.initrdName, CloudBoot.kernelName])
 
         // Le plafond s'applique ici aussi, et le refus se dit.
@@ -335,6 +335,7 @@ final class IsoBootDecisionTests: XCTestCase {
         let boot = try IsoBoot.decide(kernel, into: folder, ceiling: 1 << 20).get()
         XCTAssertEqual(boot.kernel, kernel)
         XCTAssertNil(boot.disk)
+        XCTAssertEqual(boot.minimumRAM, 0, "aucun plancher pour ce qu'on n'a pas lu")
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertTrue(IsoBoot.mightBeCloudImage(.virtualDisk("qcow2")))
         XCTAssertFalse(IsoBoot.mightBeCloudImage(.virtualDisk("VHDX")))
