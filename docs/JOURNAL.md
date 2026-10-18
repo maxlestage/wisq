@@ -8,6 +8,22 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — les téléchargements interrompus, dans le relevé
+
+Relance horaire, même autorisation. Un `.part` vit hors de la bibliothèque —
+c'est ce qui l'empêche d'y être pris pour une image —, donc sous aucune
+entrée du relevé de stockage : une ISO `standard` de 370 Mio coupée à la
+moitié laissait 185 Mio que personne ne voyait. `LocalStorage.report` prend
+désormais le dossier des téléchargements, compte ses `.part` à part et dans
+le total, et `discardPartialDownloads` les efface — eux seuls : un fichier
+qui ne porte pas ce nom n'est pas à lui. La feuille de stockage montre le
+bouton quand il y a quelque chose à reprendre, et dit ce que ça coûte.
+
+Le nom compté est celui que donne `ImageDownload.partURL` : le test passe par
+lui, pour que le relevé et le téléchargeur ne puissent pas diverger sur ce
+qu'est un `.part`. **Trois sabotages, trois chutes** : le filtre sur le nom,
+le total, l'effacement.
+
 ## 2026-10-18 — la feuille « Télécharger », et le transfert qui reprend
 
 Relance horaire, même autorisation. La moitié réseau de la tranche d'avant :
