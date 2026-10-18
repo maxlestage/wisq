@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — le contrôle d'exclusivité sortait de la boucle chaude : −30 %
+
+Relance horaire, même autorisation. Un nouvel échantillonnage, après le cache
+de décodage, a trouvé `swift_beginAccess` et ses voisins parmi les fonctions
+les plus vues. Pour mesurer le contrôle d'exclusivité dynamique de Swift, j'ai
+compilé WisqVM une fois avec `-enforce-exclusivity=unchecked` : le premier
+milliard d'instructions du démarrage d'Alpine passe de 96,8 s à 67,5 s. Le
+drapeau n'a servi qu'à mesurer, il n'est pas gardé. J'ai cherché les appels un
+par un, avec un point d'arrêt `gdb` qui compte les appelants.
+
+**Deux causes, toutes deux dans la boucle de chaque instruction.**
+- `if devicesArmed && executed & 0x3F == 0` évaluait `devicesArmed` à chaque
+  tour, alors que le masque devait le réserver à une instruction sur
+  soixante-quatre. Or `devicesArmed` lit trois classes (la mémoire, le
+  disque, le bus), et chaque lecture passe par un contrôle d'exclusivité. Les
+  deux conditions sont maintenant dans l'autre ordre, sans changer le sens.
+- Les compteurs `hits` et `misses` du cache de décodage, des `var` d'une
+  classe, ajoutés par la tranche précédente, coûtaient le même contrôle à
+  chaque instruction. Ils sont maintenant derrière un pointeur : 96,8 s →
+  93,5 s à eux seuls.
+
+**Ce que ça rend.** Avec les deux corrections, le même milliard
+d'instructions prend 67,3 s, soit −30 %, avec le même nombre d'instructions
+retirées, le même RIP final et les mêmes lectures du cache. Couper tout le
+contrôle ne gagne plus que 0,2 s : ce qui reste (le décodeur sur les absences
+du cache, `serviceInterrupts` une instruction sur soixante-quatre) ne pèse
+plus. Le démarrage complet jusqu'au shell de `root`, avec les mêmes réponses
+(`3.24.2`, `6.18.52-0-virt`, 28 paquets), passe de 852 s avant le cache à
+711 s.
+
+**Les tests.** Le changement ne modifie aucun comportement, il n'y a donc pas
+de nouveau test. Un sabotage qui ne sert plus jamais les interruptions fait
+échouer 14 tests : le chemin réordonné est bien couvert.
+
 ## 2026-10-18 — un cache des instructions décodées : −10 %
 
 Relance horaire, même autorisation. Le démarrage complet d'Alpine prenait
