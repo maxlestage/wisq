@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian plus vite : les accès mémoire
+
+Suite directe, même autorisation. Un démarrage de Debian échantillonné par
+`gdb` (237 échantillons) a donné les postes :
+- `X86DecodeCache.lookup` : un quart ;
+- `swift_retain` et `swift_release` : un sixième, appelés depuis `readRM`,
+  `push`, `pop` et `writeRM`.
+
+- **Le compte de références.** `readMemory` et `writeMemory` liaient
+  `memory`, une classe, puis appelaient `translate`, une méthode `mutating` :
+  Swift retenait la mémoire le temps de l'appel. Le cœur garde maintenant, à
+  côté de la référence forte, une `Unmanaged` qui ne compte rien, et c'est
+  par elle que passent les accès. Échantillonné de nouveau, il ne reste que
+  deux échantillons de `swift_retain` ou `swift_release` sur une centaine.
+- **Un chargement, pas une boucle.** `X86Memory.read` et `write`
+  assemblaient la valeur octet par octet ; les largeurs 1, 2, 4 et 8 se
+  lisent et s'écrivent maintenant en une fois.
+- **Mesuré en alternance**, parce que la machine est bruyante (51 à 54 s
+  pour le même binaire). Sur le premier milliard d'instructions d'Alpine, en
+  temps processeur, quatre paires : 52,2 s en moyenne avant, 48,9 s après,
+  et la branche gagne chaque paire. Le démarrage de Debian jusqu'au shell de
+  `root` passe de 1 186 s à 1 097 s.
+- **Essayé et défait.** Une case du cache de décodage tient en 96 octets.
+  Ramenée à 64 (des compteurs d'instruction sur un octet, des masques
+  recalculés depuis la longueur), elle était plus lente, et l'instruction
+  compacte seule aussi.
+
 ## 2026-10-18 — Debian dans la feuille « Télécharger »
 
 Suite directe, même autorisation.
