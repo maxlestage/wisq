@@ -8,6 +8,90 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — ce que le chargeur de la distribution aurait démarré
+
+Suite de la même série. `CloudBoot` trouve dans une image de cloud son noyau,
+son initramfs et sa ligne de commande, en reprenant ce que le chargeur de la
+distribution a écrit plutôt qu'en le devinant. Pour `grub.cfg` (Debian,
+Ubuntu), c'est la première entrée de premier niveau, celle que GRUB démarre
+quand `default` vaut 0 : les sous-menus sont sautés, l'accolade d'un
+commentaire ne compte pas, et un `(hd0,gpt1)` en tête de chemin est retiré.
+Pour les entrées BLS (Fedora), c'est la plus récente, les numéros de version
+lus comme des nombres. Plusieurs initramfs sont mis bout à bout, comme le
+fait GRUB. Une entrée qui nomme un noyau absent n'est pas crue. Sans
+configuration, on prend les liens `/vmlinuz` et `/initrd.img`, ou le noyau le
+plus récent de `/boot`, avec une racine désignée par son PARTUUID. Les
+variables de GRUB qu'on ne peut pas évaluer (`$vt_handoff`) sont retirées, et
+`console=ttyS0` est ajouté si la ligne n'envoie pas la console sur le port
+série, que wisq montre.
+
+`PartitionTable` donne maintenant le PARTUUID de chaque partition : le GUID
+propre à l'entrée pour une GPT, et pour un MBR la signature du disque suivie
+du numéro (`1234abcd-05`), comme le forme le noyau.
+
+**Sur la vraie image.** `debian-13-nocloud-amd64.qcow2` : « grub.cfg de
+vda1 », 12 154 816 octets de noyau, 36 159 851 d'initramfs, et la ligne de
+commande `root=PARTUUID=3f7bd41d-… ro console=tty0 console=ttyS0,115200
+earlyprintk=ttyS0,115200 consoleblank=0`, mot pour mot. Le PARTUUID est bien
+celui de `vda1` dans la table.
+
+**Les sabotages.** Dix sont vus : le saut des sous-menus, l'entrée sans
+noyau, le disque GRUB en tête de chemin, les variables, la console ajoutée,
+la concaténation des initramfs, le noyau le plus récent, la racine par
+PARTUUID, l'accolade d'un commentaire, le premier `initrd` d'un `if`. Quatre
+avaient d'abord passé, chacun faute d'un cas : le choix du noyau le plus
+récent (il n'y en avait qu'un), un `initrd` dans chaque branche d'un `if`, un
+`grub.cfg` qui nomme un noyau absent, et le commentaire qui porte une
+accolade. Un commentaire `# linux …` n'aurait jamais rien cassé : il ne
+commence pas par `linux`.
+
+## 2026-10-18 — lire ext4, et le noyau de Debian sort du qcow2
+
+Suite de la tranche précédente, même autorisation. `Ext4Volume` lit ext2,
+ext3 et ext4 sans rien écrire : il suit un chemin (liens compris), liste un
+répertoire et lit un fichier. Il reconnaît les arbres d'extents à plusieurs
+niveaux, les extents réservés (lus comme des zéros), les anciens blocs
+indirects et doublement indirects, les trous, et les répertoires indexés,
+dont les blocs d'index se lisent comme des entrées vides. Il refuse, en les
+nommant, un journal à rejouer et les fonctions qu'il ne sait pas lire. Les
+sommes `metadata_csum` ne sont pas vérifiées : elles protègent d'une écriture
+interrompue, et ce lecteur n'écrit pas.
+
+**Sur la vraie image.** `debian-13-nocloud-amd64.qcow2`, lue directement à
+travers `Qcow2Image`, puis `PartitionTable`, puis `Ext4Volume` : le
+`grub.cfg` nomme `/boot/vmlinuz-6.12.113+deb13-amd64` (12 154 816 octets) et
+son initramfs (36 159 851 octets). Les deux ont la même somme SHA-256 que ce
+que rend `debugfs -R dump`. Le `grub.cfg` donne aussi la ligne de commande,
+`root=PARTUUID=… ro console=ttyS0,115200 …`, que l'étape suivante reprendra
+telle quelle. Le test sur la vraie image ne tourne que si on la donne
+(`WISQ_CLOUD_IMAGE`) ; en version de débogage, l'initramfs prend 18 s à lire.
+
+**Un bug trouvé par les fixtures.** L'adresse du premier bloc indirect avait
+été lue au décalage 44 de `i_block`, au lieu de 48 : c'est le treizième mot,
+pas le douzième. L'ext2 de la fixture l'a montré tout de suite, au
+douzième bloc du noyau.
+
+**Les fixtures.** Deux systèmes de fichiers de 2 Mio écrits par e2fsprogs,
+l'un en ext4 (blocs de 4 Kio, 64 bits, metadata_csum), l'autre en ext2
+(blocs de 1 Kio). `e2fsck -fD` indexe ensuite leurs répertoires, ce que
+`mkfs -d` ne fait pas. `debugfs -w` y réserve des blocs par `fallocate`, et
+ces blocs sont remplis d'octets non nuls. Identifiants, graine et heure sont
+fixés, si bien que deux passages de `scripts/build-ext4-fixtures.py` rendent
+les mêmes octets.
+
+**Les sabotages.** Ceux-ci ont tous été vus : l'adresse d'un bloc fils,
+les liens courts, `..`, les entrées vides, le refus du journal et celui des
+fonctions inconnues, le format de l'UUID, la borne des quarante liens, la
+cible d'un extent réservé. Quatre ont d'abord passé, et chacun a fait
+ajouter un test :
+- un trou d'ext2 lu comme « bloc zéro », qui rendait des zéros par hasard :
+  le premier bloc de la fixture est maintenant rempli ;
+- un lien relatif lu depuis la racine : aucun lien relatif ne vivait dans un
+  sous-répertoire, `boot/current` en est un ;
+- la profondeur d'un nœud d'extents non vérifiée : le test abîme le bloc
+  d'index ;
+- la moitié haute de la taille ignorée : le test abîme l'inode.
+
 ## 2026-10-18 — la table de partitions d'une image de cloud
 
 Message de l'utilisateur : « Tout ». Je l'ai compris comme une demande
