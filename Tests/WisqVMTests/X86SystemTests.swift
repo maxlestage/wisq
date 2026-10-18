@@ -79,6 +79,17 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(core.x87Status, 0x7F00)
     }
 
+    /// `EMMS` vide la pile x87, sans toucher au sommet ni aux registres :
+    /// le deuxième temps du contournement AMD.
+    func testEMMSMarksTheWholeX87StackEmpty() throws {
+        var core = try machine([0x0F, 0x77, 0xF4])
+        core.x87Tags = 0x0000
+        core.x87Status = 0x3800
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.x87Tags, 0xFFFF)
+        XCTAssertEqual(core.x87Status, 0x3800)
+    }
+
     /// **MMX est annoncé au sens strict**, comme le FPU : la glibc lit le bit,
     /// aucun binaire de l'initramfs de Debian n'emploie un registre MMX, et
     /// une instruction MMX qui arriverait serait refusée par son nom plutôt
