@@ -316,12 +316,12 @@ final class CloudBootTests: XCTestCase {
     func testADiskThatCannotBootIsRefusedAndWritesNothing() throws {
         let cases: [(URL, String?, UInt64, CloudBoot.Refusal)] = [
             (try rawDisk(type: 0x07), nil, .max, .notBootable(.noLinuxPartition)),
-            (try rawDisk(), "\u{7}", .max, .notBootable(.unusablePassword)),
+            (try rawDisk(), "$6$sel$deux mots", .max, .notBootable(.unusablePassword)),
             (try rawDisk(), nil, 299_999, .tooLarge),
         ]
         for (image, password, ceiling, expected) in cases {
             let into = folder()
-            XCTAssertEqual(CloudBoot.unpack(image, into: into, rootPassword: password, ceiling: ceiling),
+            XCTAssertEqual(CloudBoot.unpack(image, into: into, rootHash: password, ceiling: ceiling),
                            .failure(expected))
             XCTAssertFalse(FileManager.default.fileExists(atPath: into.path))
         }
