@@ -856,7 +856,13 @@ public enum KernelLibrary {
         return LocalStorage.report(
             kernels: kernels, machines: machines, writes: try? LocalDisk.writesDirectory(),
             unpackedIso: LocalStorage.unpackedIsoFolder(in: machines),
-            installed: InstalledMachines.allKeys())
+            installed: InstalledMachines.allKeys(), downloads: try? downloadsDirectory())
+    }
+
+    /// Efface les téléchargements interrompus, et dit ce que ça a rendu.
+    @discardableResult
+    public static func discardPartialDownloads() -> Int {
+        LocalStorage.discardPartialDownloads(in: try? downloadsDirectory())
     }
 
     /// Takes back the space held by machines saved from kernels that are no
