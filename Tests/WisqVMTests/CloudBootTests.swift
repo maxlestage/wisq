@@ -7,7 +7,8 @@ import XCTest
 final class CloudBootTests: XCTestCase {
     /// Les délais qu'une machine lente ajoute à toute ligne de commande.
     /// Sans mot de passe donné, `systemd-firstboot` est coupé en plus.
-    private let slow = (CloudBoot.slowMachineOptions + ["systemd.firstboot=off"]).joined(separator: " ")
+    private let slow = (CloudBoot.slowMachineOptions + CloudBoot.consoleOptions + ["systemd.firstboot=off"])
+        .joined(separator: " ")
 
     /// **Les délais d'une machine lente**, et une entrée qui en fixe un
     /// elle-même : le sien reste, une seule fois, et les autres s'ajoutent.
@@ -20,24 +21,31 @@ final class CloudBootTests: XCTestCase {
     }
 
     /// **Un mot de passe pour `root`** : la première mise en route reçoit ses
-    /// quatre réponses d'avance, et `systemd-firstboot` n'est plus coupé.
-    /// Un mot de passe que la ligne de commande couperait est refusé.
+    /// quatre réponses d'avance, et `systemd-firstboot` n'est plus coupé. Le
+    /// mot de passe ne passe qu'en empreinte `$6$`, jamais en clair, et deux
+    /// démarrages ne tirent pas le même sel.
     func testARootPasswordAnswersTheFirstBootInAdvance() throws {
-        let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: "s3cret!")
-        XCTAssertTrue(line.hasSuffix(" systemd.service_watchdogs=0 "
+        let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: "wisq",
+                                         salt: "wisqsalt")
+        XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service "
             + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
             + "systemd.set_credential=firstboot.timezone:UTC "
-            + "systemd.set_credential=passwd.plaintext-password.root:s3cret!"), line)
+            + "systemd.set_credential=passwd.hashed-password.root:"
+            + "$6$wisqsalt$MD17UU57EA39WXKflUE5shqAnOtzXwVKihsVuI5Hyl00nkHl/7.cljF5qzTuSEzNO5/m6GsFDDKzxVE8Rvz0Z0"),
+                      line)
         XCTAssertFalse(line.contains("systemd.firstboot=off"))
-        for bad in ["", "deux mots", "guil\"lemet", "accentué", "tab\tulé"] {
+        XCTAssertFalse(line.contains(":wisq "), "jamais le mot de passe en clair")
+        for bad in ["", "tab\tulé", "retour\n"] {
             XCTAssertFalse(CloudBoot.acceptsAsRootPassword(bad), bad)
         }
-        XCTAssertTrue(CloudBoot.acceptsAsRootPassword("Wisq-2026_!#"))
-        XCTAssertThrowsError(try boot(rootPassword: "deux mots")) { error in
+        XCTAssertTrue(CloudBoot.acceptsAsRootPassword("deux mots, accentués"))
+        XCTAssertThrowsError(try boot(rootPassword: "")) { error in
             XCTAssertEqual(error as? CloudBoot.Failure, .unusablePassword)
         }
-        XCTAssertTrue(try boot(rootPassword: "wisq").commandLine
-            .hasSuffix("systemd.set_credential=passwd.plaintext-password.root:wisq"))
+        let first = try boot(rootPassword: "wisq").commandLine
+        let second = try boot(rootPassword: "wisq").commandLine
+        XCTAssertTrue(first.contains("passwd.hashed-password.root:$6$"))
+        XCTAssertNotEqual(first, second, "un sel neuf à chaque démarrage")
     }
 
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
