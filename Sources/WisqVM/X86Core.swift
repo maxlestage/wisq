@@ -42,7 +42,17 @@ public struct X86Core: @unchecked Sendable {
     public var rip: UInt64
     /// La mémoire de l'invité. Absente, toute forme mémoire est refusée plutôt
     /// qu'approximée.
-    public var memory: X86Memory?
+    public var memory: X86Memory? {
+        didSet { memoryReference = memory.map { Unmanaged.passUnretained($0) } }
+    }
+    /// **La même mémoire, sans compte de références**, pour les accès du
+    /// chemin chaud. Lire `memory` dans une méthode `mutating` qui appelle
+    /// ensuite `translate` oblige Swift à retenir la classe le temps de
+    /// l'appel, puis à la relâcher : échantillonné pendant un démarrage de
+    /// Debian, `swift_retain` et `swift_release` prenaient un échantillon sur
+    /// six, appelés depuis `readRM`, `push`, `pop` et `writeRM`. `memory`
+    /// garde la mémoire en vie ; celle-ci ne fait que la montrer.
+    var memoryReference: Unmanaged<X86Memory>?
     /// Les octets sortis par le port série, dans l'ordre.
     public var serialOutput: [UInt8] = []
     /// Les octets tapés qui attendent d'être lus par le port série.
@@ -230,6 +240,7 @@ public struct X86Core: @unchecked Sendable {
         self.flags = flags
         self.rip = rip
         self.memory = memory
+        memoryReference = memory.map { Unmanaged.passUnretained($0) }
     }
 
     /// Les bits de RFLAGS que ce cœur pose ou lit.
