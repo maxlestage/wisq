@@ -2,9 +2,9 @@
 import SwiftUI
 import WisqVM
 
-/// La feuille « Télécharger » : les images qu'Alpine publie et qui démarrent
-/// ici, lues dans son index au moment d'ouvrir la feuille, et le progrès de
-/// celle qu'on télécharge.
+/// La feuille « Télécharger » : les images qu'Alpine et Debian publient et
+/// qui démarrent ici, lues dans leurs index au moment d'ouvrir la feuille, et
+/// le progrès de celle qu'on télécharge.
 ///
 /// Rien n'est promis avant la fin : l'image n'entre dans la bibliothèque
 /// qu'entière et à la somme que publie la distribution. Une coupure garde ce
@@ -21,7 +21,7 @@ struct ImageDownloadSheet: View {
                 case .loadingIndex:
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text("Lecture de l'index d'Alpine…")
+                        Text("Lecture des index d'Alpine et de Debian…")
                             .foregroundStyle(.secondary)
                     }
                 case .failed(let why):
@@ -39,7 +39,7 @@ struct ImageDownloadSheet: View {
                             row(release)
                         }
                     } footer: {
-                        Text("L'image n'entre dans la bibliothèque qu'entière et à la somme SHA-256 que publie Alpine. Un téléchargement interrompu reprend où il s'était arrêté.")
+                        Text("L'image n'entre dans la bibliothèque qu'entière et à la somme que publie sa distribution. Un téléchargement interrompu reprend où il s'était arrêté. L'image de Debian démarre telle quelle : wisq demandera le mot de passe de root au premier démarrage.")
                     }
                 }
             }
@@ -59,9 +59,9 @@ struct ImageDownloadSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Alpine \(release.version) — \(release.title)")
+                    Text("\(release.distribution) \(release.version) — \(release.title)")
                         .font(.body.weight(.semibold))
-                    Text("\(release.file) · \(LocalStorage.describe(bytes: release.size))")
+                    Text("\(release.file) · \(LocalStorage.describe(bytes: release.size)) · \(release.checksum.algorithm)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
