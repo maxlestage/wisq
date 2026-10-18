@@ -284,15 +284,25 @@ final class X86BootAttemptTests: XCTestCase {
             // attend : la machine n'est jamais au repos, et `login` abandonnait
             // au bout de ses soixante secondes avant qu'on ait tapé le mot de
             // passe. On avance donc de cinquante millions d'instructions à la
-            // fois, et l'on tape dès qu'une invite est apparue depuis la
-            // dernière frappe ; au repos sans invite nouvelle, c'est fini.
+            // fois, et l'on tape quand une invite est apparue depuis la
+            // dernière frappe **et que la console s'est tue depuis une
+            // tranche** ; au repos sans invite nouvelle, c'est fini.
+            //
+            // Le silence compte : `login` vide l'entrée juste après avoir
+            // écrit `Password: `, et un mot de passe tapé dans le même souffle
+            // que l'invite était jeté avec ce qui précédait — `login`
+            // attendait ensuite, et expirait.
             var remaining = allowance
             var answeredUpTo = 0
+            var lastLength = core.serialOutput.count
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
                 remaining -= min(remaining, max(executed, 1))
+                let quiet = core.serialOutput.count == lastLength
+                lastLength = core.serialOutput.count
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
-                if Self.prompts.contains(where: { fresh.contains($0) }), !toType.isEmpty {
+                if Self.prompts.contains(where: { fresh.contains($0) }), !toType.isEmpty,
+                   quiet || core.outOfPatience {
                     let line = toType.removeFirst()
                     typed.append(line)
                     core.serialInput.append(contentsOf: Array((line + "\n").utf8))
