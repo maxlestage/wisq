@@ -29,6 +29,8 @@ public struct CloudBoot: Equatable, Sendable {
         case noLinuxPartition
         /// Des partitions lisibles, mais aucun noyau dedans.
         case noKernel
+        /// Un mot de passe que la ligne de commande ne peut pas porter.
+        case unusablePassword
 
         public var errorDescription: String? {
             switch self {
@@ -36,6 +38,8 @@ public struct CloudBoot: Equatable, Sendable {
                 return "l'image n'a aucune partition Linux que wisq sache lire (ext2, ext3 ou ext4)."
             case .noKernel:
                 return "aucun noyau n'a été trouvé dans l'image : ni grub.cfg, ni entrée de démarrage, ni /boot/vmlinuz."
+            case .unusablePassword:
+                return "le mot de passe de root ne doit contenir ni blanc, ni guillemet, ni caractère hors de l'ASCII imprimable."
             }
         }
     }
@@ -55,13 +59,16 @@ public struct CloudBoot: Equatable, Sendable {
 
     /// Cherche de quoi démarrer dans une image : sa table, puis chacune de
     /// ses partitions Linux dans l'ordre de `linuxCandidates`.
-    public static func find(in image: any VirtualDiskImage) throws -> CloudBoot {
+    /// `rootPassword`, s'il est donné, devient celui de `root` à la première
+    /// mise en route d'un système systemd (voir `firstbootOptions`).
+    public static func find(in image: any VirtualDiskImage, rootPassword: String? = nil) throws -> CloudBoot {
         let table = try PartitionTable.read(image)
-        return try find(in: table) { try Ext4Volume($0, in: image) }
+        return try find(in: table, rootPassword: rootPassword) { try Ext4Volume($0, in: image) }
     }
 
-    static func find(in table: PartitionTable,
+    static func find(in table: PartitionTable, rootPassword: String? = nil,
                      open: (PartitionTable.Partition) throws -> Ext4Volume) throws -> CloudBoot {
+        if let rootPassword, !acceptsAsRootPassword(rootPassword) { throw Failure.unusablePassword }
         var readable = false
         for partition in table.linuxCandidates {
             // Une partition qui n'est pas un ext (btrfs, xfs) n'arrête pas la
@@ -78,13 +85,14 @@ public struct CloudBoot: Equatable, Sendable {
                 let initrd = entry.initrds.isEmpty ? nil
                     : try entry.initrds.flatMap { try volume.contents(of: $0) }
                 return CloudBoot(kernel: kernel, initrd: initrd,
-                                 commandLine: commandLine(entry.options), origin: "\(origin) de \(name)")
+                                 commandLine: commandLine(entry.options, rootPassword: rootPassword),
+                                 origin: "\(origin) de \(name)")
             }
             if let (kernel, initrd) = unconfiguredKernel(in: volume) {
                 let root = partition.uniqueID.isEmpty ? "/dev/\(name)" : "PARTUUID=\(partition.uniqueID)"
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
-                                 commandLine: commandLine(["root=\(root)", "ro"]),
+                                 commandLine: commandLine(["root=\(root)", "ro"], rootPassword: rootPassword),
                                  origin: "\(kernel) de \(name)")
             }
         }
@@ -198,21 +206,48 @@ public struct CloudBoot: Equatable, Sendable {
     /// - le périphérique de `/boot/efi` n'est pas apparu dans les 90 s qu'un
     ///   périphérique reçoit, et systemd est passé en mode de secours ;
     /// - journald a dépassé ses 90 s de démarrage et son chien de garde ;
-    /// - `systemd-firstboot` attendait une touche sur la console, avec « Press
-    ///   any key to proceed », pour une installation qui n'en a pas besoin.
     ///
-    /// Les quatre options ne changent rien pour un système qui n'est pas
-    /// systemd : OpenRC ou BusyBox les ignorent.
+    /// Ces options ne changent rien pour un système qui n'est pas systemd :
+    /// OpenRC ou BusyBox les ignorent.
     static let slowMachineOptions = [
         "systemd.default_device_timeout_sec=600", "systemd.default_timeout_start_sec=600",
-        "systemd.service_watchdogs=0", "systemd.firstboot=off",
+        "systemd.service_watchdogs=0",
     ]
+
+    /// **La première mise en route, sans question.** L'image de Debian 13
+    /// arrive avec `root` verrouillé (`!unprovisioned` dans `/etc/shadow`) :
+    /// c'est `systemd-firstboot` qui doit lui donner un mot de passe, en le
+    /// demandant sur la console (« Press any key to proceed »), et le banc
+    /// restait devant cet écran. systemd accepte les réponses d'avance, en
+    /// « credentials » passés sur la ligne de commande : la locale, le clavier,
+    /// le fuseau et le mot de passe. Il n'a alors rien à demander.
+    ///
+    /// Sans mot de passe, il n'y a rien à lui répondre : `systemd-firstboot`
+    /// est coupé, et `root` reste verrouillé. Le mot de passe est lisible dans
+    /// `/proc/cmdline` de l'invité, ce qui suffit pour une machine que seule la
+    /// personne qui tient le téléphone utilise, mais pas davantage.
+    static func firstbootOptions(rootPassword: String?) -> [String] {
+        guard let rootPassword else { return ["systemd.firstboot=off"] }
+        return [
+            "systemd.set_credential=firstboot.locale:C.UTF-8",
+            "systemd.set_credential=firstboot.keymap:us",
+            "systemd.set_credential=firstboot.timezone:UTC",
+            "systemd.set_credential=passwd.plaintext-password.root:\(rootPassword)",
+        ]
+    }
+
+    /// Un mot de passe qui tient dans la ligne de commande du noyau : rien qui
+    /// la coupe (un blanc) ou qui l'entoure (un guillemet), et des caractères
+    /// imprimables ASCII, que le clavier série tape sans surprise.
+    public static func acceptsAsRootPassword(_ password: String) -> Bool {
+        !password.isEmpty && password.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0x7F && $0 != "\"" }
+    }
 
     /// La ligne de commande : les options de l'entrée, sans les variables de
     /// GRUB qu'on ne peut pas évaluer (`$vt_handoff`), avec la console série
     /// si elles ne l'y mettent pas, et les délais d'une machine lente, sauf
     /// ceux que l'entrée fixe déjà elle-même.
-    static func commandLine(_ options: [String]) -> String {
+    static func commandLine(_ options: [String], rootPassword: String? = nil) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
@@ -220,6 +255,11 @@ public struct CloudBoot: Equatable, Sendable {
         for option in slowMachineOptions {
             let key = option.prefix { $0 != "=" }
             if !kept.contains(where: { $0.prefix { $0 != "=" } == key }) { kept.append(option) }
+        }
+        // Une entrée qui règle déjà la première mise en route le fait à sa
+        // façon, et on n'y ajoute rien.
+        if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") || $0.hasPrefix("systemd.set_credential") }) {
+            kept += firstbootOptions(rootPassword: rootPassword)
         }
         return kept.joined(separator: " ")
     }

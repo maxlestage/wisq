@@ -6,7 +6,8 @@ import XCTest
 /// quand il n'a rien écrit.
 final class CloudBootTests: XCTestCase {
     /// Les délais qu'une machine lente ajoute à toute ligne de commande.
-    private let slow = CloudBoot.slowMachineOptions.joined(separator: " ")
+    /// Sans mot de passe donné, `systemd-firstboot` est coupé en plus.
+    private let slow = (CloudBoot.slowMachineOptions + ["systemd.firstboot=off"]).joined(separator: " ")
 
     /// **Les délais d'une machine lente**, et une entrée qui en fixe un
     /// elle-même : le sien reste, une seule fois, et les autres s'ajoutent.
@@ -15,7 +16,28 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(line, "root=/dev/vda1 systemd.firstboot=on console=ttyS0 "
                            + "systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 "
                            + "systemd.service_watchdogs=0")
-        XCTAssertEqual(CloudBoot.slowMachineOptions.count, 4)
+        XCTAssertEqual(CloudBoot.slowMachineOptions.count, 3)
+    }
+
+    /// **Un mot de passe pour `root`** : la première mise en route reçoit ses
+    /// quatre réponses d'avance, et `systemd-firstboot` n'est plus coupé.
+    /// Un mot de passe que la ligne de commande couperait est refusé.
+    func testARootPasswordAnswersTheFirstBootInAdvance() throws {
+        let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: "s3cret!")
+        XCTAssertTrue(line.hasSuffix(" systemd.service_watchdogs=0 "
+            + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
+            + "systemd.set_credential=firstboot.timezone:UTC "
+            + "systemd.set_credential=passwd.plaintext-password.root:s3cret!"), line)
+        XCTAssertFalse(line.contains("systemd.firstboot=off"))
+        for bad in ["", "deux mots", "guil\"lemet", "accentué", "tab\tulé"] {
+            XCTAssertFalse(CloudBoot.acceptsAsRootPassword(bad), bad)
+        }
+        XCTAssertTrue(CloudBoot.acceptsAsRootPassword("Wisq-2026_!#"))
+        XCTAssertThrowsError(try boot(rootPassword: "deux mots")) { error in
+            XCTAssertEqual(error as? CloudBoot.Failure, .unusablePassword)
+        }
+        XCTAssertTrue(try boot(rootPassword: "wisq").commandLine
+            .hasSuffix("systemd.set_credential=passwd.plaintext-password.root:wisq"))
     }
 
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
@@ -24,7 +46,7 @@ final class CloudBootTests: XCTestCase {
 
     /// Le système de fichiers ext4 des fixtures, abîmé si on le demande, posé
     /// comme partition 1 d'une table d'une seule partition.
-    private func boot(kind: PartitionTable.Kind = .linuxRoot, uniqueID: String = "",
+    private func boot(kind: PartitionTable.Kind = .linuxRoot, uniqueID: String = "", rootPassword: String? = nil,
                       patch: ((inout [UInt8]) -> Void)? = nil) throws -> CloudBoot {
         let packed = try XCTUnwrap(Data(base64Encoded: Ext4Fixtures.ext4))
         var bytes = try XCTUnwrap(Qcow2Image.inflateRaw([UInt8](packed), expected: Ext4Fixtures.size))
@@ -33,7 +55,7 @@ final class CloudBootTests: XCTestCase {
         let partition = PartitionTable.Partition(number: 1, kind: kind, start: 0, length: UInt64(disk.count),
                                                  name: "", uniqueID: uniqueID)
         let table = PartitionTable(scheme: .gpt, partitions: [partition])
-        return try CloudBoot.find(in: table) { partition in
+        return try CloudBoot.find(in: table, rootPassword: rootPassword) { partition in
             try Ext4Volume(size: partition.length) { offset, count in
                 guard offset + UInt64(count) <= UInt64(disk.count) else { return nil }
                 return Array(disk[Int(offset)..<(Int(offset) + count)])
