@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — télécharger une image : la somme, l'index, la reprise
+
+Relance horaire, même autorisation. Les formats de disque étant lus, l'axe
+suivant est le chemin jusqu'à l'image : aujourd'hui elle arrive par Fichiers,
+donc par un autre ordinateur. Cette tranche écrit ce qui se décide sans le
+réseau ; le transfert, dans l'application, est la suivante.
+
+**`SHA256`**, en Swift, par morceaux — CryptoKit n'existe pas sous Linux, et
+`WisqVM` ne dépend que de Foundation. Les vecteurs de FIPS 180-4 et du NIST,
+dont le million de « a », et la même somme par morceaux de toutes tailles.
+**`ImageDownload`** lit l'index d'Alpine tel que le miroir le servait (gardé
+tel quel dans le test), choisit `virt` puis `standard`, refuse une entrée
+dont le nom serait un chemin ou dont la somme n'en est pas une, et décide de
+la reprise sur les réponses que le vrai miroir rend — relevées avec `curl -r`
+plutôt que supposées : `206 bytes 100-199/69206016`, `416 bytes */69206016`.
+Un `.part` faux est effacé, pour qu'un nouvel essai ne reprenne pas sur lui.
+
+**Contre le vrai fichier.** L'ISO `virt` 3.24.2, 69 206 016 octets,
+téléchargée en deux fois — coupée à 30 Mio, reprise par `Range` (`206 bytes
+31457280-69206015/69206016`) — puis passée à `finish` : la somme est celle de
+l'index, le fichier prend son nom, et `KernelImageKind` y lit une ISO 9660.
+0,4 s pour hacher les 69 Mio en version optimisée.
+
+**Dix sabotages, dix chutes** : une constante de SHA-256, le bourrage, la
+longueur, l'octet de reprise, la reprise ignorée par le serveur, le `416`
+complet, le nom de fichier en chemin, l'ordre des saveurs, l'effacement du
+fichier faux, le contrôle de taille. Une garde sur l'indentation de l'index,
+qu'aucune entrée réelle ne pouvait faire casser, a été retirée.
+
 ## 2026-10-17 — le descripteur OVF dit sur quel disque l'appliance démarre
 
 Relance horaire suivante, même autorisation. Sixième point de la liste : une
