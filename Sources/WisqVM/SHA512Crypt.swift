@@ -36,12 +36,15 @@ public enum SHA512Crypt {
         0x431d67c49c100d4c, 0x4cc5d4becb3e42b6, 0x597f299cfc657e2a, 0x5fcb6fab3ad6faec, 0x6c44198c4a475817,
     ]
 
+    /// L'état de départ de SHA-512.
+    static let initialState: [UInt64] = [
+        0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+        0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
+    ]
+
     /// Le condensé SHA-512 de `bytes` : soixante-quatre octets.
     public static func sha512(_ bytes: [UInt8]) -> [UInt8] {
-        var state: [UInt64] = [
-            0x6a09e667f3bcc908, 0xbb67ae8584caa73b, 0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
-            0x510e527fade682d1, 0x9b05688c2b3e6c1f, 0x1f83d9abfb41bd6b, 0x5be0cd19137e2179,
-        ]
+        var state = initialState
         var message = bytes
         message.append(0x80)
         while message.count % 128 != 112 { message.append(0) }
@@ -49,32 +52,59 @@ public enum SHA512Crypt {
         message += [UInt8](repeating: 0, count: 8)
         message += (0..<8).map { UInt8(truncatingIfNeeded: bits >> (56 - 8 * UInt64($0))) }
         var words = [UInt64](repeating: 0, count: 80)
-        for block in stride(from: 0, to: message.count, by: 128) {
-            for index in 0..<16 {
-                words[index] = (0..<8).reduce(UInt64(0)) { $0 << 8 | UInt64(message[block + 8 * index + $1]) }
-            }
-            for index in 16..<80 {
-                let low = words[index - 15], high = words[index - 2]
-                let sigma0 = rotate(low, 1) ^ rotate(low, 8) ^ (low >> 7)
-                let sigma1 = rotate(high, 19) ^ rotate(high, 61) ^ (high >> 6)
-                words[index] = words[index - 16] &+ sigma0 &+ words[index - 7] &+ sigma1
-            }
-            var (a, b, c, d, e, f, g, h) = (state[0], state[1], state[2], state[3],
-                                            state[4], state[5], state[6], state[7])
-            for index in 0..<80 {
-                let sum1 = rotate(e, 14) ^ rotate(e, 18) ^ rotate(e, 41)
-                let choice = (e & f) ^ (~e & g)
-                let first = h &+ sum1 &+ choice &+ roundConstants[index] &+ words[index]
-                let sum0 = rotate(a, 28) ^ rotate(a, 34) ^ rotate(a, 39)
-                let majority = (a & b) ^ (a & c) ^ (b & c)
-                let second = sum0 &+ majority
-                (h, g, f, e, d, c, b, a) = (g, f, e, d &+ first, c, b, a, first &+ second)
-            }
-            for (index, value) in [a, b, c, d, e, f, g, h].enumerated() { state[index] &+= value }
-        }
-        return state.flatMap { word in (0..<8).map { UInt8(truncatingIfNeeded: word >> (56 - 8 * UInt64($0))) } }
+        message.withUnsafeBytes { compress(&state, $0, words: &words) }
+        return digest(state)
     }
 
+    /// Les huit mots de l'état, octet de poids fort d'abord.
+    static func digest(_ state: [UInt64]) -> [UInt8] {
+        state.flatMap { word in (0..<8).map { UInt8(truncatingIfNeeded: word >> (56 - 8 * UInt64($0))) } }
+    }
+
+    /// **Tous les blocs entiers de `bytes`**, à la suite, mêlés à `state` ;
+    /// `words` est un tampon de quatre-vingts mots que l'appelant garde d'un
+    /// appel à l'autre. Partagé avec `SHA512Stream`. Écrit sur des
+    /// pointeurs, sans tableau intermédiaire : la première version, à coups
+    /// de `reduce` et de tableaux par bloc, hachait l'image de Debian
+    /// (390 Mio) en 25 s, le temps de laisser croire à un téléphone figé ;
+    /// celle-ci le fait en 1,4 s.
+    static func compress(_ state: inout [UInt64], _ bytes: UnsafeRawBufferPointer, words: inout [UInt64]) {
+        let blocks = bytes.count / 128
+        guard blocks > 0, let base = bytes.baseAddress else { return }
+        roundConstants.withUnsafeBufferPointer { k in
+            words.withUnsafeMutableBufferPointer { w in
+                var (a0, b0, c0, d0) = (state[0], state[1], state[2], state[3])
+                var (e0, f0, g0, h0) = (state[4], state[5], state[6], state[7])
+                for block in 0..<blocks {
+                    let start = base + block * 128
+                    for index in 0..<16 {
+                        w[index] = UInt64(bigEndian: start.loadUnaligned(fromByteOffset: 8 * index, as: UInt64.self))
+                    }
+                    for index in 16..<80 {
+                        let low = w[index - 15], high = w[index - 2]
+                        let sigma0 = rotate(low, 1) ^ rotate(low, 8) ^ (low >> 7)
+                        let sigma1 = rotate(high, 19) ^ rotate(high, 61) ^ (high >> 6)
+                        w[index] = w[index - 16] &+ sigma0 &+ w[index - 7] &+ sigma1
+                    }
+                    var (a, b, c, d, e, f, g, h) = (a0, b0, c0, d0, e0, f0, g0, h0)
+                    for index in 0..<80 {
+                        let sum1 = rotate(e, 14) ^ rotate(e, 18) ^ rotate(e, 41)
+                        let choice = (e & f) ^ (~e & g)
+                        let first = h &+ sum1 &+ choice &+ k[index] &+ w[index]
+                        let sum0 = rotate(a, 28) ^ rotate(a, 34) ^ rotate(a, 39)
+                        let majority = (a & b) ^ (a & c) ^ (b & c)
+                        h = g; g = f; f = e; e = d &+ first
+                        d = c; c = b; b = a; a = first &+ sum0 &+ majority
+                    }
+                    a0 &+= a; b0 &+= b; c0 &+= c; d0 &+= d
+                    e0 &+= e; f0 &+= f; g0 &+= g; h0 &+= h
+                }
+                state = [a0, b0, c0, d0, e0, f0, g0, h0]
+            }
+        }
+    }
+
+    @inline(__always)
     private static func rotate(_ value: UInt64, _ count: UInt64) -> UInt64 {
         (value >> count) | (value << (64 - count))
     }

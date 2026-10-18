@@ -458,8 +458,16 @@ noyau dans le disque lui-même.
    l'image, l'oublie. Une image de cloud reçoit aussi au moins 512 Mio de
    mémoire (`CloudBoot.minimumRAMSize`) : à 64 Mio, Debian panique avant sa
    racine.
-6. D'autres index : `SHA512SUMS` de Debian (SHA-512 est là depuis l'étape 4),
-   `SHA256SUMS` d'Ubuntu.
+6. **Fait pour Debian.** La feuille « Télécharger » lit aussi `SHA512SUMS`
+   de Debian 13 et propose l'image `nocloud` en qcow2, la seule vérifiée de
+   bout en bout. Sa taille, que l'index ne donne pas, est demandée au serveur
+   (`Range: bytes=0-0`, le total du `206`), et le fichier n'entre qu'à la
+   somme SHA-512 publiée (`SHA512Stream`, 390 Mio en 1,4 s). Un index muet ne
+   cache pas l'autre. Vérifié sur le vrai miroir : la taille rendue est celle
+   du fichier démarré, et sa somme celle de l'index.
+7. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
+   ne connaît pas encore le credential `agetty.autologin`, et ses images
+   attendent cloud-init.
 
 ## Télécharger une image depuis l'application
 
@@ -493,8 +501,9 @@ d'entrer dans la bibliothèque.
 4. Le téléchargement qui continue quand l'application passe en arrière-plan
    (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
    la reprise par `Range` doit alors se recoudre sur ce qu'il rend).
-5. D'autres distributions, chacune par son propre index signé ou ses
-   `SHA256SUMS`.
+5. **Fait pour Debian** (voir « Les images de cloud qui démarrent seules »,
+   étape 6). D'autres distributions, chacune par son propre index ou ses
+   sommes, une fois démarrées de bout en bout.
 
 ## Lot 5 — SPICE (fait)
 
