@@ -398,6 +398,33 @@ recommandent pour une machine prête en une minute.
    l'archive le cherche par son nom. Un descripteur qui nomme un disque
    absent est refusé en le disant, plutôt que de démarrer sur un autre.
 
+## Les images de cloud qui démarrent seules
+
+Une image de cloud de Debian, d'Ubuntu ou de Fedora est un disque entier : son
+noyau et son initramfs sont **dedans**, dans `/boot`, et rien n'est publié à
+côté. wisq sait lire le qcow2, mais il lui faut encore un noyau apporté à
+part. Pour qu'une image téléchargée démarre telle quelle, il faut trouver ce
+noyau dans le disque lui-même.
+
+**La suite, dans l'ordre :**
+
+1. **Fait.** La table de partitions (`PartitionTable`), MBR et GPT, lue à
+   travers le disque virtuel, qu'il soit brut, qcow2 ou VMDK. Pour la GPT,
+   les deux sommes CRC-32 sont vérifiées, et la copie de secours remplace une
+   principale abîmée. Pour le MBR, les partitions logiques sont numérotées
+   comme Linux le fait. Vérifié sur la vraie table de l'image `nocloud` de
+   Debian 13 : la racine (`vda1`), la partition BIOS (`vda14`) et l'EFI
+   (`vda15`).
+2. Un lecteur ext4 en lecture seule (superbloc, groupes, inodes, extents,
+   répertoires) : de quoi lire `/boot/vmlinuz-*` et `/boot/initrd.img-*`, ou
+   suivre les liens `/vmlinuz` et `/initrd.img` de Debian.
+3. La ligne de commande : `root=` désigne la partition par son numéro
+   (`/dev/vda1`), ou par l'UUID que donne le superbloc.
+4. Dans l'application : une image de cloud importée ou téléchargée propose
+   « Démarrer », sans noyau à choisir.
+5. D'autres index : `SHA512SUMS` de Debian (il faudra SHA-512), `SHA256SUMS`
+   d'Ubuntu.
+
 ## Télécharger une image depuis l'application
 
 Importer par Fichiers suppose que l'image est déjà sur le téléphone, donc
