@@ -131,7 +131,7 @@ extension X86Core {
     /// À appeler juste après une instruction d'anneau trois, avec les
     /// registres d'avant : chaque registre qui a changé note ici l'adresse de
     /// l'instruction qui l'a écrit.
-    mutating func rememberBirths(before: [UInt64], rip entry: UInt64,
+    mutating func rememberBirths(before: X86Registers, rip entry: UInt64,
                                  from address: UInt64?) {
         for index in 0..<16 where registers[index] != before[index] {
             registerBornAt[index] = entry
