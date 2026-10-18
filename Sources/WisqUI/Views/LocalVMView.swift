@@ -47,6 +47,8 @@ struct LocalVMListView: View {
     /// la bibliothèque, pour la raison que `KernelDiskMenu` explique.
     @State private var disks: [String: String] = [:]
     @State private var showImporter = false
+    /// La feuille qui télécharge une image depuis l'index d'une distribution.
+    @State private var showDownload = false
     @State private var importError: String?
     @State private var booting: BootTarget?
     /// Ce que le dernier réglage a coûté, à dire une fois — et sous quelle
@@ -197,10 +199,11 @@ struct LocalVMListView: View {
                 ContentUnavailableView {
                     Label("Aucun noyau", systemImage: "terminal")
                 } description: {
-                    Text("Importez une image de noyau Linux rv32ima pour la faire tourner directement sur ce téléphone.")
+                    Text("Importez une image depuis Fichiers, ou téléchargez Alpine directement : elle démarre sur ce téléphone.")
                 } actions: {
-                    Button("Importer une image") { showImporter = true }
+                    Button("Télécharger Alpine") { showDownload = true }
                         .buttonStyle(.borderedProminent)
+                    Button("Importer une image") { showImporter = true }
                 }
             }
         }
@@ -217,10 +220,21 @@ struct LocalVMListView: View {
                 }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button {
-                    showImporter = true
+                // Deux portes vers la bibliothèque : un fichier déjà là, ou
+                // une image que wisq va chercher et vérifie lui-même.
+                Menu {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Importer un fichier", systemImage: "folder")
+                    }
+                    Button {
+                        showDownload = true
+                    } label: {
+                        Label("Télécharger Alpine", systemImage: "arrow.down.circle")
+                    }
                 } label: {
-                    Label("Importer", systemImage: "plus")
+                    Label("Ajouter", systemImage: "plus")
                 }
             }
         }
@@ -267,6 +281,16 @@ struct LocalVMListView: View {
             Button("Annuler", role: .cancel) { installing = nil }
         } message: {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .sheet(isPresented: $showDownload) {
+            ImageDownloadSheet { url in
+                reloadLibrary()
+                storage = KernelLibrary.storageReport()
+                importError = nil
+                note = Note(
+                    text: "« \(url.lastPathComponent) » est téléchargée et vérifiée : touchez-la pour la démarrer.",
+                    symbol: "checkmark.seal")
+            }
         }
         .sheet(item: $exported) { file in
             VStack(spacing: 18) {

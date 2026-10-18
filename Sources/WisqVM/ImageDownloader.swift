@@ -1,0 +1,144 @@
+import Foundation
+
+/// Ce que l'application fournit pour télécharger : une requête `GET`,
+/// éventuellement avec un en-tête `Range`, et ce qui revient.
+///
+/// C'est toute la place du réseau dans le téléchargement. Le reste — où
+/// reprendre, quoi faire de la réponse, quand garder le fichier — est dans
+/// `ImageDownloader`, qui ne connaît que ce protocole : les tests lui donnent
+/// un serveur scripté, l'application `URLSession`.
+public protocol RangeFetcher: Sendable {
+    func fetch(_ url: URL, range: String?) async throws -> FetchedResponse
+}
+
+/// Le statut, l'en-tête `Content-Range` s'il y en a un, et le corps, par
+/// morceaux.
+public struct FetchedResponse: Sendable {
+    public let status: Int
+    public let contentRange: String?
+    public let body: AsyncThrowingStream<Data, Error>
+
+    public init(status: Int, contentRange: String?, body: AsyncThrowingStream<Data, Error>) {
+        self.status = status
+        self.contentRange = contentRange
+        self.body = body
+    }
+}
+
+/// Télécharge une image dans la bibliothèque, en reprenant un transfert
+/// coupé, et ne l'y range que vérifiée.
+public struct ImageDownloader: Sendable {
+    public enum Failure: Error, Equatable, LocalizedError {
+        /// Le serveur a répondu quelque chose dont on ne peut rien faire.
+        case refused(String)
+        /// L'index n'a donné aucune image qui démarre ici.
+        case nothingToDownload
+        /// La réponse s'est arrêtée avant la fin ; le `.part` est gardé, et
+        /// le prochain essai reprend à son dernier octet.
+        case interrupted(have: Int, of: Int)
+
+        public var errorDescription: String? {
+            switch self {
+            case .refused(let why): return why
+            case .nothingToDownload:
+                return "l'index de la distribution ne propose aucune image qui démarre ici."
+            case .interrupted(let have, let total):
+                return "le transfert s'est arrêté à \(have) octets sur \(total) ; "
+                    + "le prochain essai reprendra là."
+            }
+        }
+    }
+
+    public let fetcher: any RangeFetcher
+    /// Là où les `.part` attendent : pas la bibliothèque, qui ne doit lister
+    /// que des fichiers entiers.
+    public let partsFolder: URL
+
+    public init(fetcher: any RangeFetcher, partsFolder: URL) {
+        self.fetcher = fetcher
+        self.partsFolder = partsFolder
+    }
+
+    /// Les images de l'index d'Alpine qui démarrent ici.
+    public func bootableReleases(index: URL = ImageDownload.alpineIndex) async throws
+        -> [ImageDownload.Release] {
+        let response = try await fetcher.fetch(index, range: nil)
+        guard response.status == 200 else {
+            throw Failure.refused("l'index de la distribution n'a pas pu être lu (\(response.status)).")
+        }
+        var text = Data()
+        for try await chunk in response.body {
+            text.append(chunk)
+            // Un index fait quelques kilo-octets ; au-delà, ce n'en est pas un.
+            guard text.count <= 1 << 20 else { throw Failure.refused("l'index est démesuré.") }
+        }
+        let releases = ImageDownload.bootable(ImageDownload.alpineReleases(String(decoding: text, as: UTF8.self)))
+        guard !releases.isEmpty else { throw Failure.nothingToDownload }
+        return releases
+    }
+
+    /// Télécharge `release` et le range sous `folder`, à son nom ; rend
+    /// l'adresse du fichier. `progress` reçoit les octets déjà là et la
+    /// taille attendue, au départ — une reprise ne repart pas de zéro — puis
+    /// à chaque morceau.
+    ///
+    /// Une coupure en route laisse le `.part` tel qu'il est : l'appel suivant
+    /// reprend à son dernier octet.
+    public func download(
+        _ release: ImageDownload.Release, into folder: URL, index: URL = ImageDownload.alpineIndex,
+        progress: @Sendable (Int, Int) -> Void = { _, _ in }
+    ) async throws -> URL {
+        let manager = FileManager.default
+        try manager.createDirectory(at: partsFolder, withIntermediateDirectories: true)
+        let destination = folder.appendingPathComponent(release.file)
+        let part = ImageDownload.partURL(for: partsFolder.appendingPathComponent(release.file))
+        if !manager.fileExists(atPath: part.path) { _ = manager.createFile(atPath: part.path, contents: nil) }
+        var have = (try? manager.attributesOfItem(atPath: part.path)[.size] as? Int) ?? 0
+        // Plus long que le fichier annoncé : il vient d'une autre version de
+        // l'index. Rien à en garder.
+        if have > release.size {
+            try Data().write(to: part)
+            have = 0
+        }
+        progress(have, release.size)
+
+        if have < release.size {
+            let response = try await fetcher.fetch(
+                ImageDownload.url(of: release, index: index),
+                range: ImageDownload.rangeHeader(resumingAt: have))
+            switch ImageDownload.continuation(
+                status: response.status, contentRange: response.contentRange, resumingAt: have) {
+            case .refuse(let why):
+                throw Failure.refused(why)
+            case .complete:
+                break
+            case .restart:
+                try Data().write(to: part)
+                have = 0
+                fallthrough
+            case .append:
+                let handle = try FileHandle(forWritingTo: part)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                for try await chunk in response.body {
+                    // Le serveur qui envoie plus que la taille annoncée ne
+                    // fait pas grossir le fichier au-delà : la somme le
+                    // refuserait de toute façon, mais pas avant de l'avoir
+                    // écrit en entier.
+                    guard have + chunk.count <= release.size else {
+                        throw Failure.refused("le serveur envoie plus que la taille annoncée.")
+                    }
+                    try handle.write(contentsOf: chunk)
+                    have += chunk.count
+                    progress(have, release.size)
+                }
+                // Une réponse qui finit proprement mais trop tôt n'est pas un
+                // fichier faux : c'est un transfert coupé. Le passer à
+                // `finish` effacerait ce qui est déjà là.
+                if have < release.size { throw Failure.interrupted(have: have, of: release.size) }
+            }
+        }
+        try ImageDownload.finish(part: part, as: destination, size: release.size, sha256: release.sha256)
+        return destination
+    }
+}
