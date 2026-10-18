@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian dans la feuille « Télécharger »
+
+Suite directe, même autorisation.
+
+- **L'index de Debian** (`SHA512SUMS` de `trixie/latest`) est lu à côté de
+  celui d'Alpine. Seule l'image `nocloud` pour PC, en qcow2, est proposée :
+  c'est celle qui démarre ici de bout en bout. La somme relevée sur le miroir
+  le 18 octobre est celle de l'image démarrée jusqu'au shell de `root`.
+- **La taille n'est pas dans l'index.** Elle est demandée au serveur, en un
+  octet : `Range: bytes=0-0` rend `206` et `bytes 0-0/408879104`, la taille
+  exacte du fichier. Sans elle, ni la reprise ni le progrès ne tiendraient,
+  et l'image n'est alors pas proposée.
+- **SHA-512 par morceaux.** La première version, qui réemployait la
+  compression de `SHA512Crypt` telle quelle, hachait les 390 Mio en 25 s.
+  Réécrite sur des pointeurs, sans tableau par bloc, elle le fait en 1,4 s,
+  et `SHA512Crypt` en profite aussi.
+- Un index qui ne répond pas ne cache plus l'autre : la liste garde ce qui a
+  pu être lu.
+- Neuf sabotages. Deux ne tombaient pas, faute de test : un `200` porteur
+  d'un `Content-Range`, et l'index de Debian muet à côté de celui d'Alpine.
+  Les deux cas sont maintenant écrits, et tombent.
+
 ## 2026-10-18 — Le mot de passe de root, demandé une fois
 
 Suite directe, même autorisation.
