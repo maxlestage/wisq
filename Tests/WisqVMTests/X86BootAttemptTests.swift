@@ -78,6 +78,13 @@ final class X86BootAttemptTests: XCTestCase {
     /// L'invite du shell de secours d'Alpine. C'est elle qui dit qu'il y a
     /// quelqu'un pour lire ce qu'on tape.
     static let prompt = "~ # "
+    /// Ce qui dit aussi qu'on peut taper, sur un système **installé** et pas
+    /// seulement en secours : l'invite de connexion de `getty`, et celle du
+    /// shell de `root` une fois connecté (`localhost:~# `). Sans elles, une
+    /// ISO qui démarre jusqu'au bout — « Welcome to Alpine Linux » — laissait
+    /// le banc muet devant `login:`, et la course finissait sans qu'on ait
+    /// rien demandé à la machine.
+    static let prompts = [prompt, "login: ", "~# "]
     /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
     /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
     /// la réponse ne dépend d'aucun programme à charger.
@@ -270,7 +277,7 @@ final class X86BootAttemptTests: XCTestCase {
                 try core.run(budget: allowance, waiting: patient)
                 guard core.outOfPatience else { break }
                 let seen = String(decoding: core.serialOutput, as: UTF8.self)
-                guard seen.contains(Self.prompt), !toType.isEmpty else { break }
+                guard Self.prompts.contains(where: { seen.contains($0) }), !toType.isEmpty else { break }
                 let line = toType.removeFirst()
                 typed.append(line)
                 core.serialInput.append(contentsOf: Array((line + "\n").utf8))
