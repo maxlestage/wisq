@@ -8,6 +8,26 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Le mot de passe de root, demandé une fois
+
+Suite directe, même autorisation.
+
+- **La question est posée avant le premier démarrage** d'une image de cloud,
+  et seulement là. `RootPassword.shouldAsk` lit la table de partitions sans
+  rien déballer, et se tait dès qu'une réponse est gardée, mot de passe ou
+  « sans ».
+- **Le mot de passe n'est jamais gardé**, seulement son empreinte `$6$` sur un
+  sel tiré pour lui. `IsoBoot.decide` et `CloudBoot.unpack` prennent
+  maintenant l'empreinte (`rootHash:`) et non plus le mot de passe. Une
+  empreinte qui contiendrait une espace couperait la ligne de commande du
+  noyau en deux options : elle se lit comme absente.
+- **La mémoire.** Une image de cloud démarrée sans réglage partait avec les
+  128 Mio de la machine PC, et Debian ne tient pas dedans. `IsoBoot.Boot`
+  porte maintenant un plancher, 512 Mio pour une image de cloud, que
+  l'application applique comme celui de la machine PC, avec le même refus
+  quand le téléphone n'a pas assez de mémoire libre.
+- Huit sabotages, huit tombés.
+
 ## 2026-10-18 — Une image de cloud démarre quand on la touche
 
 Suite directe, même autorisation. La consigne « Tout » : toutes les pistes,

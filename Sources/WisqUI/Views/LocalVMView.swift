@@ -51,6 +51,10 @@ struct LocalVMListView: View {
     @State private var showDownload = false
     @State private var importError: String?
     @State private var booting: BootTarget?
+    /// L'image de cloud dont on demande le mot de passe de `root`, avant
+    /// son premier démarrage.
+    @State private var askingPassword: BootTarget?
+    @State private var rootPassword = ""
     /// Ce que le dernier réglage a coûté, à dire une fois — et sous quelle
     /// icône, parce que « mémoire changée » sous une puce mémoire et « disque
     /// changé » sous la même puce enverraient chercher au mauvais endroit.
@@ -68,7 +72,7 @@ struct LocalVMListView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Button {
-                                booting = BootTarget(url: kernel)
+                                start(BootTarget(url: kernel))
                             } label: {
                                 LibraryRow(
                                     kernel: kernel,
@@ -327,6 +331,20 @@ struct LocalVMListView: View {
             .padding(28)
             .presentationDetents([.medium])
         }
+        // **Le mot de passe de `root`, une fois.** Une image de cloud arrive
+        // avec `root` verrouillé ; ce qui est donné ici n'est gardé qu'en
+        // empreinte (`RootPassword`), et « Sans mot de passe » est retenu
+        // aussi, pour que la question ne revienne pas.
+        .alert("Mot de passe de root", isPresented: Binding(
+            get: { askingPassword != nil }, set: { if !$0 { askingPassword = nil } })
+        ) {
+            SecureField("Mot de passe", text: $rootPassword)
+            Button("Démarrer") { answerPassword(rootPassword) }
+            Button("Sans mot de passe") { answerPassword(nil) }
+            Button("Annuler", role: .cancel) { askingPassword = nil }
+        } message: {
+            Text("Ce sera celui de root dans \(askingPassword?.url.lastPathComponent ?? "cette image"). wisq n'en garde que l'empreinte. Sans mot de passe, root s'ouvre seul sur la console de wisq, et nulle part ailleurs.")
+        }
         .alert("Renommer", isPresented: Binding(
             get: { renaming != nil }, set: { if !$0 { renaming = nil } })
         ) {
@@ -348,6 +366,39 @@ struct LocalVMListView: View {
         }
     }
 
+    /// Démarre, ou demande d'abord le mot de passe de `root` d'une image de
+    /// cloud qui n'a jamais démarré. La décision vit dans `RootPassword`.
+    private func start(_ target: BootTarget) {
+        let key = target.machine?.key ?? target.url.lastPathComponent
+        if RootPassword.shouldAsk(fileAt: target.url, forKernel: key) {
+            rootPassword = ""
+            askingPassword = target
+        } else {
+            booting = target
+        }
+    }
+
+    /// La réponse à la question : un mot de passe gardé en empreinte, ou
+    /// « sans », puis le démarrage. Un mot de passe que `login` ne pourrait
+    /// pas recevoir laisse la question ouverte, et le dit.
+    private func answerPassword(_ password: String?) {
+        guard let target = askingPassword else { return }
+        let key = target.machine?.key ?? target.url.lastPathComponent
+        if let password {
+            guard RootPassword.set(password, forKernel: key) else {
+                note = Note(text: "Ce mot de passe ne peut pas servir : il ne doit être ni vide, ni contenir de tabulation ou de retour à la ligne.",
+                            symbol: "exclamationmark.triangle")
+                askingPassword = nil
+                return
+            }
+        } else {
+            RootPassword.decline(forKernel: key)
+        }
+        rootPassword = ""
+        askingPassword = nil
+        booting = target
+    }
+
     /// Les machines installées : chacune démarre son image sous ses propres
     /// clés, et dit si elle reprendra sa session.
     @ViewBuilder
@@ -358,7 +409,7 @@ struct LocalVMListView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Button {
-                            booting = BootTarget(url: image, machine: machine)
+                            start(BootTarget(url: image, machine: machine))
                         } label: {
                             InstalledMachineRow(
                                 machine: machine,
