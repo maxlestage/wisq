@@ -407,7 +407,7 @@ d'entrer dans la bibliothèque.
 
 **La suite, dans l'ordre :**
 
-1. **Fait.** Ce qui se décide sans le réseau (`ImageDownload`, `SHA256`) :
+1. **Fait.** Ce qui se décide sans le réseau (`ImageDownload`, `SHA256Stream`) :
    l'index d'Alpine (`latest-releases.yaml`, lu au moment de télécharger
    plutôt qu'une version écrite ici), les saveurs qui démarrent (`virt`,
    puis `standard`), la reprise d'un transfert coupé (`Range`, et la réponse

@@ -10,7 +10,7 @@ import Foundation
 ///
 /// Par morceaux parce qu'une image fait des centaines de mégaoctets : elle est
 /// lue et hachée bloc par bloc, jamais tenue entière en mémoire.
-public struct SHA256: Sendable {
+public struct SHA256Stream: Sendable {
     private var state: [UInt32] = [
         0x6A09_E667, 0xBB67_AE85, 0x3C6E_F372, 0xA54F_F53A,
         0x510E_527F, 0x9B05_688C, 0x1F83_D9AB, 0x5BE0_CD19,
@@ -61,7 +61,7 @@ public struct SHA256: Sendable {
     /// La somme de `bytes`, en hexadécimal minuscule — la forme que publient
     /// les distributions.
     public static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
-        var hash = SHA256()
+        var hash = SHA256Stream()
         hash.update(bytes)
         return hexString(hash.finalize())
     }
@@ -74,7 +74,7 @@ public struct SHA256: Sendable {
     public static func hex(ofFileAt url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        var hash = SHA256()
+        var hash = SHA256Stream()
         while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
             hash.update(chunk)
         }
