@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian plus vite : les registres à plat
+
+Suite directe, même autorisation. Callgrind montrait encore
+`swift_isUniquelyReferenced`, des vérifications de bornes et des
+`swift_release` dans le chemin chaud. Ils venaient tous du même endroit :
+les seize registres étaient un `[UInt64]`, et chaque écriture de registre
+payait ce qu'un tableau Swift doit payer.
+
+- **`X86Registers`** : seize mots rangés à plat dans la structure du cœur,
+  et un indice ramené à quatre bits plutôt que vérifié. C'est une
+  collection : `registers[4]`, `Array(core.registers)` et les littéraux
+  s'écrivent comme avant, et ni les 88 sites des sources ni les 238 des
+  tests n'ont changé.
+- Mesuré en alternance, temps processeur, premier milliard d'Alpine, quatre
+  paires : 44,3 s avant, 41,4 s après. Debian jusqu'au shell de `root` :
+  1 033 s avant, 972 s après. Il y a quatre tranches, c'était 1 186 s.
+- **Essayé et défait** : forcer en ligne `decodeFields` ne gagnait rien.
+
 ## 2026-10-18 — Debian plus vite : la table 0F, et les drapeaux en ligne
 
 Suite directe, même autorisation. Cette fois, callgrind, sur les cent
