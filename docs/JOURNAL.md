@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Une image de cloud démarre quand on la touche
+
+Suite directe, même autorisation. La consigne « Tout » : toutes les pistes,
+pas seulement la vitesse.
+
+- **Le chemin existait déjà.** Toucher un fichier de la bibliothèque appelle
+  `IsoBoot.decide`, qui déballait les images d'installation. Une image de
+  cloud (qcow2, VMDK, brute) y passe maintenant aussi : `CloudBoot.unpack`
+  écrit son noyau et son initramfs sous des noms fixes, et l'image devient le
+  disque. L'application n'a presque pas changé : seule la suppression d'un
+  qcow2 emporte désormais aussi ce qu'il avait déballé.
+- **Ce qui n'est pas un disque n'est pas touché.** Le premier secteur de bien
+  des fichiers finit par 0x55AA. Un fichier brut n'est donc pris pour un
+  disque que si sa table se lit et porte au moins une partition. Le premier
+  essai refusait un fichier plein de bruit, en le prenant pour une table
+  abîmée ; un test l'a montré. Un qcow2, lui, est un disque de toute façon, et
+  sa table abîmée est un refus.
+- **GitGuardian** voyait huit « mots de passe » dans les tests de #518 : les
+  valeurs d'essai. Ils sont maintenant tirés au hasard (`UUID`), et
+  l'empreinte attendue est calculée par `SHA512Crypt`, déjà vérifié contre
+  ses vecteurs.
+- Sept sabotages. Six sont tombés. La garde de taille de `RawDiskImage` ne
+  tenait rien, puisque `pread` rend déjà faux au-delà de la fin : elle est
+  partie.
+
 ## 2026-10-18 — Debian 13 jusqu'au shell de root, l'image telle qu'elle est téléchargée
 
 Suite directe, même autorisation. Après les flottants, plus aucune instruction
