@@ -53,9 +53,10 @@ final class ImageDownloadTests: XCTestCase {
 
     // MARK: - L'index d'Alpine
 
-    /// L'index tel que le miroir d'Alpine le servait le 18 octobre 2026, lu
-    /// sans retouche : les descriptions sur plusieurs lignes ne cassent rien,
-    /// et les saveurs qui démarrent ici sortent dans l'ordre voulu.
+    /// L'index tel que le miroir d'Alpine le servait le 18 octobre 2026 — à
+    /// une ligne d'espaces près, vidée pour la garde de mise en forme : les
+    /// descriptions sur plusieurs lignes ne cassent rien, et les saveurs qui
+    /// démarrent ici sortent dans l'ordre voulu.
     static let index = """
         ---
         -
@@ -80,7 +81,7 @@ final class ImageDownloadTests: XCTestCase {
           desc: |
             Kernel, initramfs and modloop for
             netboot.
-            
+
           branch: v3.24
           arch: x86_64
           version: 3.24.2
