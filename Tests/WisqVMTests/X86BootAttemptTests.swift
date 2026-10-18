@@ -117,16 +117,29 @@ final class X86BootAttemptTests: XCTestCase {
     }
 
     func testHowFarARealKernelGets() throws {
-        guard let path = ProcessInfo.processInfo.environment["WISQ_PC_KERNEL"],
-              let data = FileManager.default.contents(atPath: path)
+        let environment = ProcessInfo.processInfo.environment
+        // **Une image de cloud, telle quelle** (`WISQ_PC_CLOUD_IMAGE`) : le
+        // noyau, l'initramfs et la ligne de commande sont ceux que `CloudBoot`
+        // y trouve, comme dans l'application, et l'image est le disque.
+        // `WISQ_PC_ROOT_PASSWORD` donne le mot de passe de `root`.
+        let cloudPath = environment["WISQ_PC_CLOUD_IMAGE"]
+        let cloud: CloudBoot? = try cloudPath.map { path in
+            let fd = open(path, O_RDONLY)
+            guard fd >= 0, let image = try VirtualDiskImages.image(takingOwnershipOf: fd) else {
+                throw XCTSkip("image de cloud illisible : \(path)")
+            }
+            return try CloudBoot.find(in: image, rootPassword: environment["WISQ_PC_ROOT_PASSWORD"])
+        }
+        guard let data = cloud.map({ Data($0.kernel) })
+                ?? environment["WISQ_PC_KERNEL"].flatMap({ FileManager.default.contents(atPath: $0) })
         else {
-            throw XCTSkip("noyau PC absent : définir WISQ_PC_KERNEL pour ce test")
+            throw XCTSkip("noyau PC absent : définir WISQ_PC_KERNEL ou WISQ_PC_CLOUD_IMAGE pour ce test")
         }
 
         // Un disque en mémoire, quand on en désigne un : c'est ce qui donne un
         // espace utilisateur, puisque le noyau d'Alpine n'a aucun pilote de
         // disque compilé dedans — ce sont des modules, et ils sont là-dedans.
-        let ramdisk = ProcessInfo.processInfo.environment["WISQ_PC_INITRD"]
+        let ramdisk = cloud?.initrd ?? environment["WISQ_PC_INITRD"]
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
         let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
@@ -147,7 +160,7 @@ final class X86BootAttemptTests: XCTestCase {
         // de l'application, et celui qui lit un qcow2 à travers ses tables. La
         // couche d'écriture part dans un dossier temporaire, et le fichier
         // donné n'est jamais modifié.
-        if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK_FILE"] {
+        if let path = cloudPath ?? environment["WISQ_PC_DISK_FILE"] {
             let writes = FileManager.default.temporaryDirectory
                 .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
             let disk = VirtioBlock(store: try FileDiskStore(
@@ -196,7 +209,8 @@ final class X86BootAttemptTests: XCTestCase {
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
         // défaut plutôt que de la remplacer : la console série en fait partie,
         // et une mesure qui la perdrait ne dirait plus rien du tout.
-        let extra = ProcessInfo.processInfo.environment["WISQ_PC_CMDLINE"]
+        let extra = cloud?.commandLine ?? environment["WISQ_PC_CMDLINE"]
+        if let cloud { print("ligne de commande (\(cloud.origin)) : \(cloud.commandLine)") }
         let commandLine = [X86BootLoader.defaultCommandLine, extra]
             .compactMap { $0 }.joined(separator: " ")
         let placement = try X86BootLoader.load(

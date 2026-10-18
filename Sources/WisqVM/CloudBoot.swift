@@ -39,7 +39,7 @@ public struct CloudBoot: Equatable, Sendable {
             case .noKernel:
                 return "aucun noyau n'a été trouvé dans l'image : ni grub.cfg, ni entrée de démarrage, ni /boot/vmlinuz."
             case .unusablePassword:
-                return "le mot de passe de root ne doit contenir ni blanc, ni guillemet, ni caractère hors de l'ASCII imprimable."
+                return "le mot de passe de root ne doit être ni vide, ni contenir de caractère de contrôle."
             }
         }
     }
@@ -202,16 +202,33 @@ public struct CloudBoot: Equatable, Sendable {
     /// L'horloge de l'invité avance avec les instructions exécutées, et wisq en
     /// exécute une quinzaine de millions par seconde. Les délais que systemd
     /// prévoit pour une vraie machine n'y suffisent pas. L'image de cloud de
-    /// Debian 13 l'a montré en trois démarrages :
+    /// Debian 13 l'a montré :
     /// - le périphérique de `/boot/efi` n'est pas apparu dans les 90 s qu'un
     ///   périphérique reçoit, et systemd est passé en mode de secours ;
-    /// - journald a dépassé ses 90 s de démarrage et son chien de garde ;
+    /// - journald a dépassé ses 90 s de démarrage et son chien de garde.
     ///
     /// Ces options ne changent rien pour un système qui n'est pas systemd :
     /// OpenRC ou BusyBox les ignorent.
     static let slowMachineOptions = [
         "systemd.default_device_timeout_sec=600", "systemd.default_timeout_start_sec=600",
         "systemd.service_watchdogs=0",
+    ]
+
+    /// **La console série ouverte en `root`, comme une console physique.**
+    /// Le délai de `login` (soixante secondes, `LOGIN_TIMEOUT`) couvre
+    /// l'authentification **et** l'ouverture de la session ; chez Debian,
+    /// `pam_systemd` y attend le gestionnaire `systemd --user` de `root`, et
+    /// l'ensemble ne tenait pas dans soixante secondes de temps invité. Le
+    /// message d'accueil s'affichait, puis « login: timed out ». Donc :
+    /// - `agetty.autologin:root` : `serial-getty` importe les credentials
+    ///   `agetty.*` et ouvre la session sans invite ;
+    /// - `login.noauth:yes` : `login`, sur cette console seulement, ne
+    ///   redemande pas le mot de passe ;
+    /// - `systemd.mask=user@0.service` : aucun gestionnaire utilisateur à
+    ///   attendre pour `root`.
+    static let consoleOptions = [
+        "systemd.set_credential=agetty.autologin:root", "systemd.set_credential=login.noauth:yes",
+        "systemd.mask=user@0.service",
     ]
 
     /// **La première mise en route, sans question.** L'image de Debian 13
@@ -222,32 +239,41 @@ public struct CloudBoot: Equatable, Sendable {
     /// « credentials » passés sur la ligne de commande : la locale, le clavier,
     /// le fuseau et le mot de passe. Il n'a alors rien à demander.
     ///
-    /// Sans mot de passe, il n'y a rien à lui répondre : `systemd-firstboot`
-    /// est coupé, et `root` reste verrouillé. Le mot de passe est lisible dans
-    /// `/proc/cmdline` de l'invité, ce qui suffit pour une machine que seule la
-    /// personne qui tient le téléphone utilise, mais pas davantage.
-    static func firstbootOptions(rootPassword: String?) -> [String] {
+    /// **Le mot de passe passe en empreinte `$6$`**, calculée ici. Donné en
+    /// clair, il se lisait dans `/proc/cmdline`, et `systemd-firstboot` le
+    /// chiffrait en yescrypt, si coûteux à vérifier à cette vitesse que
+    /// `login` expirait avant la fin. Sans mot de passe, il n'y a rien à
+    /// répondre : `systemd-firstboot` est coupé, `root` reste verrouillé
+    /// ailleurs que sur la console série.
+    static func firstbootOptions(rootPassword: String?, salt: String) -> [String] {
         guard let rootPassword else { return ["systemd.firstboot=off"] }
         return [
             "systemd.set_credential=firstboot.locale:C.UTF-8",
             "systemd.set_credential=firstboot.keymap:us",
             "systemd.set_credential=firstboot.timezone:UTC",
-            "systemd.set_credential=passwd.plaintext-password.root:\(rootPassword)",
+            "systemd.set_credential=passwd.hashed-password.root:" + SHA512Crypt.hash(rootPassword, salt: salt),
         ]
     }
 
-    /// Un mot de passe qui tient dans la ligne de commande du noyau : rien qui
-    /// la coupe (un blanc) ou qui l'entoure (un guillemet), et des caractères
-    /// imprimables ASCII, que le clavier série tape sans surprise.
+    /// Un sel de seize caractères de l'alphabet de `crypt`, tiré au hasard.
+    static func randomSalt() -> String {
+        String(decoding: (0..<16).map { _ in SHA512Crypt.alphabet.randomElement() ?? UInt8(ascii: ".") },
+               as: UTF8.self)
+    }
+
+    /// Un mot de passe que `login` peut recevoir d'un clavier : non vide, et
+    /// sans caractère de contrôle. Il n'a plus à tenir dans la ligne de
+    /// commande, où ne passe que son empreinte.
     public static func acceptsAsRootPassword(_ password: String) -> Bool {
-        !password.isEmpty && password.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0x7F && $0 != "\"" }
+        !password.isEmpty && !password.unicodeScalars.contains { $0.properties.generalCategory == .control }
     }
 
     /// La ligne de commande : les options de l'entrée, sans les variables de
     /// GRUB qu'on ne peut pas évaluer (`$vt_handoff`), avec la console série
     /// si elles ne l'y mettent pas, et les délais d'une machine lente, sauf
     /// ceux que l'entrée fixe déjà elle-même.
-    static func commandLine(_ options: [String], rootPassword: String? = nil) -> String {
+    static func commandLine(_ options: [String], rootPassword: String? = nil,
+                            salt: String = randomSalt()) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
@@ -259,7 +285,7 @@ public struct CloudBoot: Equatable, Sendable {
         // Une entrée qui règle déjà la première mise en route le fait à sa
         // façon, et on n'y ajoute rien.
         if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") || $0.hasPrefix("systemd.set_credential") }) {
-            kept += firstbootOptions(rootPassword: rootPassword)
+            kept += consoleOptions + firstbootOptions(rootPassword: rootPassword, salt: salt)
         }
         return kept.joined(separator: " ")
     }
