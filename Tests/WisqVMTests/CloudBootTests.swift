@@ -5,6 +5,19 @@ import XCTest
 /// commande : ce que le chargeur de la distribution a écrit, et ce qu'on fait
 /// quand il n'a rien écrit.
 final class CloudBootTests: XCTestCase {
+    /// Les délais qu'une machine lente ajoute à toute ligne de commande.
+    private let slow = CloudBoot.slowMachineOptions.joined(separator: " ")
+
+    /// **Les délais d'une machine lente**, et une entrée qui en fixe un
+    /// elle-même : le sien reste, une seule fois, et les autres s'ajoutent.
+    func testTheSlowMachineDelaysAreAddedUnlessTheEntrySetsThem() {
+        let line = CloudBoot.commandLine(["root=/dev/vda1", "systemd.firstboot=on", "console=ttyS0"])
+        XCTAssertEqual(line, "root=/dev/vda1 systemd.firstboot=on console=ttyS0 "
+                           + "systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 "
+                           + "systemd.service_watchdogs=0")
+        XCTAssertEqual(CloudBoot.slowMachineOptions.count, 4)
+    }
+
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
         (0..<count).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ ($0 >> 9) &+ seed) }
     }
@@ -54,10 +67,11 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(entry.initrds, ["/boot/initrd.img-6.12.113+deb13-amd64"])
         XCTAssertEqual(entry.options, ["root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c", "ro", "console=tty0",
                                        "console=ttyS0,115200", "earlyprintk=ttyS0,115200", "consoleblank=0"])
-        // La console série y est déjà : rien n'est ajouté.
+        // La console série y est déjà : seuls s'ajoutent les délais d'une
+        // machine lente.
         XCTAssertEqual(CloudBoot.commandLine(entry.options),
                        "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 "
-                           + "earlyprintk=ttyS0,115200 consoleblank=0")
+                           + "earlyprintk=ttyS0,115200 consoleblank=0 " + slow)
     }
 
     /// Ce qu'écrivent d'autres distributions : une entrée sans noyau sautée,
@@ -89,7 +103,8 @@ final class CloudBootTests: XCTestCase {
         let entry = try XCTUnwrap(CloudBoot.grubEntry(text))
         XCTAssertEqual(entry.kernel, "/boot/vmlinuz-6.8.0-45-generic")
         XCTAssertEqual(entry.initrds, ["/boot/initrd.img-6.8.0-45-generic"])
-        XCTAssertEqual(CloudBoot.commandLine(entry.options), "root=PARTUUID=abc ro console=tty1 console=ttyS0")
+        XCTAssertEqual(CloudBoot.commandLine(entry.options),
+                       "root=PARTUUID=abc ro console=tty1 console=ttyS0 " + slow)
         XCTAssertNil(CloudBoot.grubEntry("set default=0\n# menuentry 'commenté' {\n"))
         // L'accolade d'un commentaire ne compte pas : l'entrée qui suit reste
         // de premier niveau.
@@ -115,7 +130,7 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(entry.kernel, "/vmlinuz-6.10.4-200.fc40.x86_64")
         XCTAssertEqual(entry.initrds, ["/early-microcode.img", "/initramfs-6.10.4-200.fc40.x86_64.img"])
         XCTAssertEqual(CloudBoot.commandLine(entry.options),
-                       "root=UUID=5a5f rootflags=subvol=root ro console=ttyS0,115200n8")
+                       "root=UUID=5a5f rootflags=subvol=root ro console=ttyS0,115200n8 " + slow)
         XCTAssertEqual(["a-6.9.12.conf", "a-6.10.4.conf"].sorted { $0.compare($1, options: .numeric) == .orderedDescending },
                        ["a-6.10.4.conf", "a-6.9.12.conf"])
     }
@@ -127,7 +142,7 @@ final class CloudBootTests: XCTestCase {
         let found = try boot()
         XCTAssertEqual(found.kernel, pattern(300_000, 1))
         XCTAssertEqual(found.initrd, pattern(70_000, 2))
-        XCTAssertEqual(found.commandLine, "root=/dev/vda1 ro console=ttyS0")
+        XCTAssertEqual(found.commandLine, "root=/dev/vda1 ro console=ttyS0 " + slow)
         XCTAssertEqual(found.origin, "grub.cfg de vda1")
     }
 
@@ -137,7 +152,8 @@ final class CloudBootTests: XCTestCase {
         let found = try boot(uniqueID: "3f7bd41d-e564-4995-bb29-b2aebe93a04c", patch: rename("grub.cfg", "grub.old"))
         XCTAssertEqual(found.kernel, pattern(300_000, 1))
         XCTAssertEqual(found.initrd, pattern(70_000, 2))
-        XCTAssertEqual(found.commandLine, "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=ttyS0")
+        XCTAssertEqual(found.commandLine,
+                       "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=ttyS0 " + slow)
         XCTAssertEqual(found.origin, "/vmlinuz de vda1")
     }
 
