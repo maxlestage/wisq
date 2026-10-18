@@ -101,17 +101,28 @@ public enum LocalStorage {
         /// ne montrait pas et qu'aucun geste ne pouvait reprendre.
         public let unpackedIsoBytes: Int
 
+        /// Les téléchargements interrompus : des `.part` qui attendent d'être
+        /// repris. Hors de la bibliothèque par construction — un fichier
+        /// partiel n'y entre jamais —, donc sous aucune entrée, et invisibles
+        /// si le relevé ne les comptait pas à part. Une image de 370 Mio coupée
+        /// à la moitié, c'est 185 Mio que personne ne voyait.
+        public let partialDownloadBytes: Int
+        public let partialDownloadCount: Int
+
         /// Nothing at all — what a first launch has, and what a view can hold
         /// before it has looked.
         public static let empty = Report(entries: [], orphanedBytes: 0, orphanedCount: 0)
 
         public init(
-            entries: [Entry], orphanedBytes: Int, orphanedCount: Int, unpackedIsoBytes: Int = 0
+            entries: [Entry], orphanedBytes: Int, orphanedCount: Int, unpackedIsoBytes: Int = 0,
+            partialDownloadBytes: Int = 0, partialDownloadCount: Int = 0
         ) {
             self.entries = entries
             self.orphanedBytes = orphanedBytes
             self.orphanedCount = orphanedCount
             self.unpackedIsoBytes = unpackedIsoBytes
+            self.partialDownloadBytes = partialDownloadBytes
+            self.partialDownloadCount = partialDownloadCount
         }
 
         /// The entry for one kernel, or nil when the library has none.
@@ -120,7 +131,7 @@ public enum LocalStorage {
         }
 
         public var total: Int {
-            entries.reduce(orphanedBytes + unpackedIsoBytes) { $0 + $1.total }
+            entries.reduce(orphanedBytes + unpackedIsoBytes + partialDownloadBytes) { $0 + $1.total }
         }
         public var savedMachineBytes: Int {
             entries.reduce(orphanedBytes) { $0 + $1.savedMachineBytes }
@@ -138,9 +149,12 @@ public enum LocalStorage {
     /// its sessions are **claimed**: without this, a machine whose key is no
     /// file name would have its suspended session reported as left behind,
     /// and the button that frees those would delete it.
+    ///
+    /// `downloads` is where interrupted downloads wait (`ImageDownloader`'s
+    /// `partsFolder`); nil counts none.
     public static func report(
         kernels: URL, machines: URL, writes: URL? = nil, unpackedIso: URL? = nil,
-        installed: [MachineKeys] = []
+        installed: [MachineKeys] = [], downloads: URL? = nil
     ) -> Report {
         let manager = FileManager.default
         let names = (try? manager.contentsOfDirectory(atPath: kernels.path))?.sorted() ?? []
@@ -177,13 +191,39 @@ public enum LocalStorage {
 
         let orphans = SuspendedMachine.allSavedMachineFiles(in: machines)
             .filter { !claimed.contains($0) }
+        let parts = partialDownloads(in: downloads)
         return Report(
             entries: entries.sorted {
                 $0.total == $1.total ? $0.kernel < $1.kernel : $0.total > $1.total
             },
             orphanedBytes: orphans.reduce(0) { $0 + size(of: machines.appendingPathComponent($1)) },
             orphanedCount: orphans.count,
-            unpackedIsoBytes: bytes(inFolder: unpackedIso))
+            unpackedIsoBytes: bytes(inFolder: unpackedIso),
+            partialDownloadBytes: parts.reduce(0) { $0 + size(of: $1) },
+            partialDownloadCount: parts.count)
+    }
+
+    /// Les `.part` d'un dossier de téléchargements — eux seuls : un fichier
+    /// qui n'en porte pas le nom n'est pas un téléchargement interrompu, et ce
+    /// relevé n'a pas à le compter ni le bouton à l'effacer.
+    static func partialDownloads(in folder: URL?) -> [URL] {
+        guard let folder,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+        else { return [] }
+        return names.filter { $0.hasSuffix(".part") }.sorted()
+            .map { folder.appendingPathComponent($0) }
+    }
+
+    /// Efface les téléchargements interrompus, et dit ce que ça a rendu. Le
+    /// prochain téléchargement de la même image repartira de zéro.
+    @discardableResult
+    public static func discardPartialDownloads(in folder: URL?) -> Int {
+        var freed = 0
+        for part in partialDownloads(in: folder) {
+            freed += size(of: part)
+            try? FileManager.default.removeItem(at: part)
+        }
+        return freed
     }
 
     /// Removes the machines saved from kernels the library no longer holds,
