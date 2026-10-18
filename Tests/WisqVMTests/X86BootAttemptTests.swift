@@ -278,14 +278,28 @@ final class X86BootAttemptTests: XCTestCase {
             // là, on la laisse continuer — taper avant qu'un shell existe
             // n'écrirait que dans le tampon d'un pilote qui n'est pas encore
             // ouvert.
-            for _ in 0...toType.count {
-                try core.run(budget: allowance, waiting: patient)
-                guard core.outOfPatience else { break }
-                let seen = String(decoding: core.serialOutput, as: UTF8.self)
-                guard Self.prompts.contains(where: { seen.contains($0) }), !toType.isEmpty else { break }
-                let line = toType.removeFirst()
-                typed.append(line)
-                core.serialInput.append(contentsOf: Array((line + "\n").utf8))
+            //
+            // **Par tranches, et pas seulement au repos.** Sur un système
+            // installé, des services tournent encore pendant que `login`
+            // attend : la machine n'est jamais au repos, et `login` abandonnait
+            // au bout de ses soixante secondes avant qu'on ait tapé le mot de
+            // passe. On avance donc de cinquante millions d'instructions à la
+            // fois, et l'on tape dès qu'une invite est apparue depuis la
+            // dernière frappe ; au repos sans invite nouvelle, c'est fini.
+            var remaining = allowance
+            var answeredUpTo = 0
+            while remaining > 0 {
+                let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
+                remaining -= min(remaining, max(executed, 1))
+                let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
+                if Self.prompts.contains(where: { fresh.contains($0) }), !toType.isEmpty {
+                    let line = toType.removeFirst()
+                    typed.append(line)
+                    core.serialInput.append(contentsOf: Array((line + "\n").utf8))
+                    answeredUpTo = core.serialOutput.count
+                    continue
+                }
+                if core.outOfPatience { break }
             }
         } catch {
             stopped = error
