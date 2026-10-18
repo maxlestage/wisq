@@ -28,7 +28,15 @@ reste presque plus de copie du cœur dans les fonctions chaudes.
 d'Alpine, on passe de 67,3 s à 58,3 s (−13 %), avec le même nombre
 d'instructions retirées, le même RIP final et les mêmes lectures du cache. La
 suite passe telle quelle (2210 tests Swift). Le changement ne modifie aucun
-comportement, il n'y a donc pas de nouveau test.
+comportement, il n'y a donc pas de nouveau test. Le démarrage complet jusqu'au
+shell de `root` passe de 711 s à 615 s, avec exactement le même nombre
+d'instructions retirées (7 373 336 906) et les mêmes réponses.
+
+**La suite, vue en passant.** Sur tout ce démarrage, le cache de décodage
+trouve 5,80 milliards d'instructions et en décode 1,57 milliard, soit 21 %
+d'absences, contre 3 % sur le premier milliard. Les programmes de l'espace
+utilisateur (`apk`, OpenRC) ne tiennent pas dans 8192 cases. C'est la
+prochaine tranche.
 
 ## 2026-10-18 — le contrôle d'exclusivité sortait de la boucle chaude : −30 %
 
