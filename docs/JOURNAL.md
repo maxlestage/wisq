@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — les flottants SSE2 qui manquaient : Debian jusqu'à « Welcome to Debian »
+
+Suite directe. Debian s'était arrêtée sur `F2 0F C2` (`CMPSD`) une fois
+systemd lancé. Le même comptage sur les binaires de l'initramfs a donné le
+reste de la virgule flottante SSE2 employée : `cmpnlesd` 15, `cmplesd` 11,
+`cmpltsd` 8, `cmpless` 8, `cmpnless` 7, `cmpnltsd` 1, `mulpd` 15, `addpd` 8,
+`cvtpd2ps` 2, `cvtdq2pd` 1, `cvttpd2dq` 1. Tout est écrit : la comparaison
+qui rend un masque sous ses huit prédicats, l'addition et la multiplication
+des deux doubles d'un registre, chacun selon la règle des NaN du scalaire
+(maintenant partagée, `combine`), et les trois conversions par paires.
+
+**L'oracle flottant** passe à 85 formes et 9 180 cas, tous d'accord avec le
+processeur, en version de débogage, celle qui avait déjà attrapé un NaN
+signalant. Deux changements de corpus ont été nécessaires :
+- la moitié haute des doubles prend une autre valeur de la liste, sans quoi
+  `addpd` n'aurait été vérifié que sur une moitié ;
+- 1,75 et -3,5 entrent dans la liste. 0,5 et -2,5 donnent le même entier qu'on
+  tronque ou qu'on arrondisse au plus proche, et un `CVTTPD2DQ` qui arrondissait
+  passait donc l'oracle.
+
+Un sabotage passe encore : retirer la règle des NaN des formes en paquets.
+Sur un hôte x86, Swift calcule les NaN comme le processeur, donc l'oracle n'y
+voit rien ; c'est l'ARM d'un iPhone qui les calculerait autrement, et le
+commentaire d'origine le disait déjà.
+
+**La sonde** sur les 142 instructions SSE de l'initramfs ne trouve plus
+aucun refus, hors SSSE3, SSE4, AES et SHA, que le CPUID n'annonce pas.
+
+**Ce que la machine répond.** Debian va maintenant à « Welcome to Debian
+GNU/Linux 13 (trixie)! » et au-delà : 20,2 milliards d'instructions en
+1 316 s, **sans une seule instruction refusée**. Elle finit en mode de
+secours, pour une autre raison : le périphérique de `/boot/efi` n'est pas apparu
+dans les 90 secondes que systemd lui laisse, et journald a échoué sur son
+chien de garde. L'horloge de l'invité avance avec les instructions, et à
+quinze millions par seconde les délais pensés pour une vraie machine sont
+courts. C'est la tranche suivante.
+
 ## 2026-10-18 — Debian jusqu'à systemd : le SSE2 de la glibc, et un nom qu'elle connaît
 
 Suite de la même série. Le but : l'image de cloud de Debian 13 démarrée sur
