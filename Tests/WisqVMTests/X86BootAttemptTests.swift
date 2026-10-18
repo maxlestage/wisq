@@ -84,7 +84,12 @@ final class X86BootAttemptTests: XCTestCase {
     /// ISO qui démarre jusqu'au bout — « Welcome to Alpine Linux » — laissait
     /// le banc muet devant `login:`, et la course finissait sans qu'on ait
     /// rien demandé à la machine.
-    static let prompts = [prompt, "login: ", "~# "]
+    ///
+    /// Et `Password: ` : l'image de cloud de Debian demande le mot de passe de
+    /// `root`, vide, après le nom. Sans cette invite, le banc attendait, la
+    /// saisie expirait sur « Login incorrect », et la ligne suivante tombait
+    /// sur un nouveau `login:`. Une entrée `\n` y répond.
+    static let prompts = [prompt, "login: ", "~# ", "Password: "]
     /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
     /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
     /// la réponse ne dépend d'aucun programme à charger.
@@ -112,16 +117,29 @@ final class X86BootAttemptTests: XCTestCase {
     }
 
     func testHowFarARealKernelGets() throws {
-        guard let path = ProcessInfo.processInfo.environment["WISQ_PC_KERNEL"],
-              let data = FileManager.default.contents(atPath: path)
+        let environment = ProcessInfo.processInfo.environment
+        // **Une image de cloud, telle quelle** (`WISQ_PC_CLOUD_IMAGE`) : le
+        // noyau, l'initramfs et la ligne de commande sont ceux que `CloudBoot`
+        // y trouve, comme dans l'application, et l'image est le disque.
+        // `WISQ_PC_ROOT_PASSWORD` donne le mot de passe de `root`.
+        let cloudPath = environment["WISQ_PC_CLOUD_IMAGE"]
+        let cloud: CloudBoot? = try cloudPath.map { path in
+            let fd = open(path, O_RDONLY)
+            guard fd >= 0, let image = try VirtualDiskImages.image(takingOwnershipOf: fd) else {
+                throw XCTSkip("image de cloud illisible : \(path)")
+            }
+            return try CloudBoot.find(in: image, rootPassword: environment["WISQ_PC_ROOT_PASSWORD"])
+        }
+        guard let data = cloud.map({ Data($0.kernel) })
+                ?? environment["WISQ_PC_KERNEL"].flatMap({ FileManager.default.contents(atPath: $0) })
         else {
-            throw XCTSkip("noyau PC absent : définir WISQ_PC_KERNEL pour ce test")
+            throw XCTSkip("noyau PC absent : définir WISQ_PC_KERNEL ou WISQ_PC_CLOUD_IMAGE pour ce test")
         }
 
         // Un disque en mémoire, quand on en désigne un : c'est ce qui donne un
         // espace utilisateur, puisque le noyau d'Alpine n'a aucun pilote de
         // disque compilé dedans — ce sont des modules, et ils sont là-dedans.
-        let ramdisk = ProcessInfo.processInfo.environment["WISQ_PC_INITRD"]
+        let ramdisk = cloud?.initrd ?? environment["WISQ_PC_INITRD"]
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
         let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
@@ -142,7 +160,7 @@ final class X86BootAttemptTests: XCTestCase {
         // de l'application, et celui qui lit un qcow2 à travers ses tables. La
         // couche d'écriture part dans un dossier temporaire, et le fichier
         // donné n'est jamais modifié.
-        if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK_FILE"] {
+        if let path = cloudPath ?? environment["WISQ_PC_DISK_FILE"] {
             let writes = FileManager.default.temporaryDirectory
                 .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
             let disk = VirtioBlock(store: try FileDiskStore(
@@ -191,7 +209,8 @@ final class X86BootAttemptTests: XCTestCase {
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
         // défaut plutôt que de la remplacer : la console série en fait partie,
         // et une mesure qui la perdrait ne dirait plus rien du tout.
-        let extra = ProcessInfo.processInfo.environment["WISQ_PC_CMDLINE"]
+        let extra = cloud?.commandLine ?? environment["WISQ_PC_CMDLINE"]
+        if let cloud { print("ligne de commande (\(cloud.origin)) : \(cloud.commandLine)") }
         let commandLine = [X86BootLoader.defaultCommandLine, extra]
             .compactMap { $0 }.joined(separator: " ")
         let placement = try X86BootLoader.load(
@@ -273,14 +292,40 @@ final class X86BootAttemptTests: XCTestCase {
             // là, on la laisse continuer — taper avant qu'un shell existe
             // n'écrirait que dans le tampon d'un pilote qui n'est pas encore
             // ouvert.
-            for _ in 0...toType.count {
-                try core.run(budget: allowance, waiting: patient)
-                guard core.outOfPatience else { break }
-                let seen = String(decoding: core.serialOutput, as: UTF8.self)
-                guard Self.prompts.contains(where: { seen.contains($0) }), !toType.isEmpty else { break }
-                let line = toType.removeFirst()
-                typed.append(line)
-                core.serialInput.append(contentsOf: Array((line + "\n").utf8))
+            //
+            // **Par tranches, et pas seulement au repos.** Sur un système
+            // installé, des services tournent encore pendant que `login`
+            // attend : la machine n'est jamais au repos, et `login` abandonnait
+            // au bout de ses soixante secondes avant qu'on ait tapé le mot de
+            // passe. On avance donc de cinquante millions d'instructions à la
+            // fois, et l'on tape **à la tranche qui suit** celle où une
+            // invite est apparue depuis la dernière frappe ; au repos sans
+            // invite nouvelle, c'est fini.
+            //
+            // L'attente d'une tranche compte : `login` vide l'entrée juste
+            // après avoir écrit `Password: `, et un mot de passe tapé dans le
+            // même souffle que l'invite était jeté. Attendre que la console se
+            // taise ne marche pas non plus : tant que des tâches de démarrage
+            // tournent, systemd réécrit son état chaque seconde, et le silence
+            // ne venait qu'après l'expiration de `login`.
+            var remaining = allowance
+            var answeredUpTo = 0
+            var promptSeen = false
+            while remaining > 0 {
+                let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
+                remaining -= min(remaining, max(executed, 1))
+                let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
+                let prompted = Self.prompts.contains(where: { fresh.contains($0) })
+                if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
+                    let line = toType.removeFirst()
+                    typed.append(line)
+                    core.serialInput.append(contentsOf: Array((line + "\n").utf8))
+                    answeredUpTo = core.serialOutput.count
+                    promptSeen = false
+                    continue
+                }
+                promptSeen = prompted
+                if core.outOfPatience { break }
             }
         } catch {
             stopped = error

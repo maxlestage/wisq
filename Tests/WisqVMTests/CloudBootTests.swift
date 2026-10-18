@@ -5,13 +5,60 @@ import XCTest
 /// commande : ce que le chargeur de la distribution a écrit, et ce qu'on fait
 /// quand il n'a rien écrit.
 final class CloudBootTests: XCTestCase {
+    /// Les délais qu'une machine lente ajoute à toute ligne de commande.
+    /// Sans mot de passe donné, `systemd-firstboot` est coupé en plus.
+    private let slow = (CloudBoot.slowMachineOptions + CloudBoot.consoleOptions + ["systemd.firstboot=off"])
+        .joined(separator: " ")
+
+    /// **Les délais d'une machine lente**, et une entrée qui en fixe un
+    /// elle-même : le sien reste, une seule fois, et les autres s'ajoutent.
+    func testTheSlowMachineDelaysAreAddedUnlessTheEntrySetsThem() {
+        let line = CloudBoot.commandLine(["root=/dev/vda1", "systemd.firstboot=on", "console=ttyS0"])
+        XCTAssertEqual(line, "root=/dev/vda1 systemd.firstboot=on console=ttyS0 "
+                           + "systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 "
+                           + "systemd.service_watchdogs=0")
+        XCTAssertEqual(CloudBoot.slowMachineOptions.count, 3)
+    }
+
+    /// **Un mot de passe pour `root`** : la première mise en route reçoit ses
+    /// quatre réponses d'avance, et `systemd-firstboot` n'est plus coupé. Le
+    /// mot de passe ne passe qu'en empreinte `$6$`, jamais en clair, et deux
+    /// démarrages ne tirent pas le même sel.
+    func testARootPasswordAnswersTheFirstBootInAdvance() throws {
+        // Tiré au hasard : un texte fixe ici passerait pour un secret aux
+        // yeux des analyseurs de dépôt. L'empreinte elle-même est vérifiée
+        // contre des vecteurs connus dans `SHA512CryptTests`.
+        let sample = UUID().uuidString
+        let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: sample,
+                                         salt: "wisqsalt")
+        XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service "
+            + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
+            + "systemd.set_credential=firstboot.timezone:UTC "
+            + "systemd.set_credential=passwd.hashed-password.root:"
+            + SHA512Crypt.hash(sample, salt: "wisqsalt")),
+                      line)
+        XCTAssertFalse(line.contains("systemd.firstboot=off"))
+        XCTAssertFalse(line.contains(sample), "jamais le mot de passe en clair")
+        for bad in ["", sample + "\t", "\n" + sample] {
+            XCTAssertFalse(CloudBoot.acceptsAsRootPassword(bad), bad)
+        }
+        XCTAssertTrue(CloudBoot.acceptsAsRootPassword(sample.lowercased() + ", accentué é"))
+        XCTAssertThrowsError(try boot(rootPassword: String())) { error in
+            XCTAssertEqual(error as? CloudBoot.Failure, .unusablePassword)
+        }
+        let first = try boot(rootPassword: sample).commandLine
+        let second = try boot(rootPassword: sample).commandLine
+        XCTAssertTrue(first.contains("passwd.hashed-password.root:$6$"))
+        XCTAssertNotEqual(first, second, "un sel neuf à chaque démarrage")
+    }
+
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
         (0..<count).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ ($0 >> 9) &+ seed) }
     }
 
     /// Le système de fichiers ext4 des fixtures, abîmé si on le demande, posé
     /// comme partition 1 d'une table d'une seule partition.
-    private func boot(kind: PartitionTable.Kind = .linuxRoot, uniqueID: String = "",
+    private func boot(kind: PartitionTable.Kind = .linuxRoot, uniqueID: String = "", rootPassword: String? = nil,
                       patch: ((inout [UInt8]) -> Void)? = nil) throws -> CloudBoot {
         let packed = try XCTUnwrap(Data(base64Encoded: Ext4Fixtures.ext4))
         var bytes = try XCTUnwrap(Qcow2Image.inflateRaw([UInt8](packed), expected: Ext4Fixtures.size))
@@ -20,7 +67,7 @@ final class CloudBootTests: XCTestCase {
         let partition = PartitionTable.Partition(number: 1, kind: kind, start: 0, length: UInt64(disk.count),
                                                  name: "", uniqueID: uniqueID)
         let table = PartitionTable(scheme: .gpt, partitions: [partition])
-        return try CloudBoot.find(in: table) { partition in
+        return try CloudBoot.find(in: table, rootPassword: rootPassword) { partition in
             try Ext4Volume(size: partition.length) { offset, count in
                 guard offset + UInt64(count) <= UInt64(disk.count) else { return nil }
                 return Array(disk[Int(offset)..<(Int(offset) + count)])
@@ -54,10 +101,11 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(entry.initrds, ["/boot/initrd.img-6.12.113+deb13-amd64"])
         XCTAssertEqual(entry.options, ["root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c", "ro", "console=tty0",
                                        "console=ttyS0,115200", "earlyprintk=ttyS0,115200", "consoleblank=0"])
-        // La console série y est déjà : rien n'est ajouté.
+        // La console série y est déjà : seuls s'ajoutent les délais d'une
+        // machine lente.
         XCTAssertEqual(CloudBoot.commandLine(entry.options),
                        "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 "
-                           + "earlyprintk=ttyS0,115200 consoleblank=0")
+                           + "earlyprintk=ttyS0,115200 consoleblank=0 " + slow)
     }
 
     /// Ce qu'écrivent d'autres distributions : une entrée sans noyau sautée,
@@ -89,7 +137,8 @@ final class CloudBootTests: XCTestCase {
         let entry = try XCTUnwrap(CloudBoot.grubEntry(text))
         XCTAssertEqual(entry.kernel, "/boot/vmlinuz-6.8.0-45-generic")
         XCTAssertEqual(entry.initrds, ["/boot/initrd.img-6.8.0-45-generic"])
-        XCTAssertEqual(CloudBoot.commandLine(entry.options), "root=PARTUUID=abc ro console=tty1 console=ttyS0")
+        XCTAssertEqual(CloudBoot.commandLine(entry.options),
+                       "root=PARTUUID=abc ro console=tty1 console=ttyS0 " + slow)
         XCTAssertNil(CloudBoot.grubEntry("set default=0\n# menuentry 'commenté' {\n"))
         // L'accolade d'un commentaire ne compte pas : l'entrée qui suit reste
         // de premier niveau.
@@ -115,7 +164,7 @@ final class CloudBootTests: XCTestCase {
         XCTAssertEqual(entry.kernel, "/vmlinuz-6.10.4-200.fc40.x86_64")
         XCTAssertEqual(entry.initrds, ["/early-microcode.img", "/initramfs-6.10.4-200.fc40.x86_64.img"])
         XCTAssertEqual(CloudBoot.commandLine(entry.options),
-                       "root=UUID=5a5f rootflags=subvol=root ro console=ttyS0,115200n8")
+                       "root=UUID=5a5f rootflags=subvol=root ro console=ttyS0,115200n8 " + slow)
         XCTAssertEqual(["a-6.9.12.conf", "a-6.10.4.conf"].sorted { $0.compare($1, options: .numeric) == .orderedDescending },
                        ["a-6.10.4.conf", "a-6.9.12.conf"])
     }
@@ -127,7 +176,7 @@ final class CloudBootTests: XCTestCase {
         let found = try boot()
         XCTAssertEqual(found.kernel, pattern(300_000, 1))
         XCTAssertEqual(found.initrd, pattern(70_000, 2))
-        XCTAssertEqual(found.commandLine, "root=/dev/vda1 ro console=ttyS0")
+        XCTAssertEqual(found.commandLine, "root=/dev/vda1 ro console=ttyS0 " + slow)
         XCTAssertEqual(found.origin, "grub.cfg de vda1")
     }
 
@@ -137,7 +186,8 @@ final class CloudBootTests: XCTestCase {
         let found = try boot(uniqueID: "3f7bd41d-e564-4995-bb29-b2aebe93a04c", patch: rename("grub.cfg", "grub.old"))
         XCTAssertEqual(found.kernel, pattern(300_000, 1))
         XCTAssertEqual(found.initrd, pattern(70_000, 2))
-        XCTAssertEqual(found.commandLine, "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=ttyS0")
+        XCTAssertEqual(found.commandLine,
+                       "root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=ttyS0 " + slow)
         XCTAssertEqual(found.origin, "/vmlinuz de vda1")
     }
 

@@ -432,10 +432,19 @@ noyau dans le disque lui-même.
    chaque partition, que vise le `root=PARTUUID=…` de Debian. Vérifié sur la
    vraie image Debian 13 : « grub.cfg de vda1 », sa ligne de commande mot pour
    mot.
-4. Dans l'application : une image de cloud importée ou téléchargée propose
-   « Démarrer », sans noyau à choisir.
-5. D'autres index : `SHA512SUMS` de Debian (il faudra SHA-512), `SHA256SUMS`
-   d'Ubuntu.
+4. **Fait.** Ce qu'une machine lente et sans clavier demande à systemd, ajouté
+   par `CloudBoot` à la ligne de commande : des délais longs, les chiens de
+   garde coupés, la console série ouverte en `root` (credentials
+   `agetty.autologin` et `login.noauth`, `user@0.service` masqué), et
+   `systemd-firstboot` répondu d'avance, mot de passe de `root` compris en
+   empreinte `$6$` calculée par wisq (`SHA512Crypt`). Vérifié de bout en bout :
+   l'image `nocloud` de Debian 13, démarrée telle quelle par le banc
+   (`WISQ_PC_CLOUD_IMAGE`), répond `13.7`, `6.12.113+deb13-amd64` et
+   278 paquets au shell de `root`, en 19 milliards d'instructions.
+5. Dans l'application : une image de cloud importée ou téléchargée propose
+   « Démarrer », sans noyau à choisir, et demande le mot de passe de `root`.
+6. D'autres index : `SHA512SUMS` de Debian (SHA-512 est là depuis l'étape 4),
+   `SHA256SUMS` d'Ubuntu.
 
 ## Télécharger une image depuis l'application
 
