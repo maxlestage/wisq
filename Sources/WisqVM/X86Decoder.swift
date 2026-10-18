@@ -90,9 +90,30 @@ public struct X86Instruction: Equatable, Sendable {
     }
 
     /// Vrai quand une instruction porte ce préfixe hérité.
+    ///
+    /// **Un `switch`, pas une recherche dans `prefixOrder`.** L'exécution le
+    /// demande à presque chaque instruction (`66`, `F3`, `F0`…), et la
+    /// recherche linéaire dans un tableau global, avec le `swift_once` de
+    /// chaque accès, faisait un échantillon sur vingt du démarrage d'Alpine.
+    /// Les bits sont ceux de `prefixOrder`, et un test vérifie les 256 octets.
+    @inline(__always)
     public func hasPrefix(_ byte: UInt8) -> Bool {
-        guard let index = X86Decoder.prefixOrder.firstIndex(of: byte) else { return false }
-        return prefixMask & (1 << UInt16(index)) != 0
+        let bit: UInt16
+        switch byte {
+        case 0xF0: bit = 1 << 0
+        case 0xF2: bit = 1 << 1
+        case 0xF3: bit = 1 << 2
+        case 0x2E: bit = 1 << 3
+        case 0x36: bit = 1 << 4
+        case 0x3E: bit = 1 << 5
+        case 0x26: bit = 1 << 6
+        case 0x64: bit = 1 << 7
+        case 0x65: bit = 1 << 8
+        case 0x66: bit = 1 << 9
+        case 0x67: bit = 1 << 10
+        default: return false
+        }
+        return prefixMask & bit != 0
     }
 
     /// Une instruction x86 ne peut pas dépasser quinze octets ; le processeur

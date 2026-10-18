@@ -36,16 +36,23 @@ final class X86DecodeCache: @unchecked Sendable {
     /// `footprint` borne.
     static let slots = 1 << 16
 
-    /// Ce que le cache occupe : quatre mots par case, plus l'instruction.
-    static var footprint: Int {
-        slots * (4 * MemoryLayout<UInt64>.stride + MemoryLayout<X86Instruction>.stride)
+    /// Ce que le cache occupe.
+    static var footprint: Int { slots * MemoryLayout<Entry>.stride }
+
+    /// **Une case d'un seul tenant.** Les octets, leurs masques et
+    /// l'instruction ont d'abord été rangés dans cinq tableaux séparés : une
+    /// lecture touchait alors jusqu'à cinq lignes de cache du processeur
+    /// hôte, loin les unes des autres dès que le cache a grandi à 6 Mio.
+    /// Côte à côte, une case tient en 96 octets, soit deux lignes au plus.
+    struct Entry {
+        var low: UInt64
+        var high: UInt64
+        var lowMask: UInt64
+        var highMask: UInt64
+        var instruction: X86Instruction
     }
 
-    private let low: UnsafeMutablePointer<UInt64>
-    private let high: UnsafeMutablePointer<UInt64>
-    private let lowMask: UnsafeMutablePointer<UInt64>
-    private let highMask: UnsafeMutablePointer<UInt64>
-    private let instructions: UnsafeMutablePointer<X86Instruction>
+    private let entries: UnsafeMutablePointer<Entry>
 
     /// Combien de lectures ont trouvé leur instruction, et combien ont dû la
     /// décoder : ce qui dit si le cache sert, plutôt que de le supposer.
@@ -61,32 +68,21 @@ final class X86DecodeCache: @unchecked Sendable {
     private let counts: UnsafeMutablePointer<UInt64>
 
     init() {
-        let count = Self.slots
         counts = .allocate(capacity: 2)
         counts.initialize(repeating: 0, count: 2)
-        low = .allocate(capacity: count)
-        low.initialize(repeating: 0, count: count)
-        high = .allocate(capacity: count)
-        high.initialize(repeating: 0, count: count)
-        lowMask = .allocate(capacity: count)
-        lowMask.initialize(repeating: 0, count: count)
-        highMask = .allocate(capacity: count)
-        highMask.initialize(repeating: 0, count: count)
-        instructions = .allocate(capacity: count)
         // Une instruction quelconque, jamais rendue : un masque nul dit que
         // la case est vide — toute instruction a au moins un octet.
         let filler = try? X86Decoder.decode([0x90])
-        instructions.initialize(repeating: filler!, count: count)
+        entries = .allocate(capacity: Self.slots)
+        entries.initialize(repeating: Entry(low: 0, high: 0, lowMask: 0, highMask: 0,
+                                            instruction: filler!),
+                           count: Self.slots)
     }
 
     deinit {
-        low.deallocate()
-        high.deallocate()
-        lowMask.deallocate()
-        highMask.deallocate()
         counts.deallocate()
-        instructions.deinitialize(count: Self.slots)
-        instructions.deallocate()
+        entries.deinitialize(count: Self.slots)
+        entries.deallocate()
     }
 
     /// L'instruction qui commence à `start`, si la case en tient une, si ses
@@ -104,26 +100,26 @@ final class X86DecodeCache: @unchecked Sendable {
                 available: Int) -> X86Instruction? {
         guard start <= size - 16 else { return nil }
         let slot = start & (Self.slots - 1)
-        guard lowMask[slot] != 0 else {
+        let entry = entries + slot
+        guard entry.pointee.lowMask != 0 else {
             counts[1] &+= 1
             return nil
         }
         let raw = UnsafeRawPointer(bytes + start)
         let first = raw.loadUnaligned(as: UInt64.self)
         let second = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self)
-        guard (first ^ low[slot]) & lowMask[slot] == 0,
-              (second ^ high[slot]) & highMask[slot] == 0
+        guard (first ^ entry.pointee.low) & entry.pointee.lowMask == 0,
+              (second ^ entry.pointee.high) & entry.pointee.highMask == 0
         else {
             counts[1] &+= 1
             return nil
         }
-        let instruction = instructions[slot]
-        guard instruction.length <= available else {
+        guard entry.pointee.instruction.length <= available else {
             counts[1] &+= 1
             return nil
         }
         counts[0] &+= 1
-        return instruction
+        return entry.pointee.instruction
     }
 
     /// Range une instruction tout juste décodée à `start`.
@@ -137,10 +133,9 @@ final class X86DecodeCache: @unchecked Sendable {
         let maskLow: UInt64 = length >= 8 ? .max : (1 << UInt64(8 * length)) - 1
         let maskHigh: UInt64 = length <= 8 ? 0
             : (length >= 16 ? .max : (1 << UInt64(8 * (length - 8))) - 1)
-        low[slot] = raw.loadUnaligned(as: UInt64.self) & maskLow
-        high[slot] = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self) & maskHigh
-        lowMask[slot] = maskLow
-        highMask[slot] = maskHigh
-        instructions[slot] = instruction
+        entries[slot] = Entry(
+            low: raw.loadUnaligned(as: UInt64.self) & maskLow,
+            high: raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self) & maskHigh,
+            lowMask: maskLow, highMask: maskHigh, instruction: instruction)
     }
 }
