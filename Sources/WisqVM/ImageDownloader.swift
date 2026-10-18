@@ -59,9 +59,40 @@ public struct ImageDownloader: Sendable {
         self.partsFolder = partsFolder
     }
 
-    /// Les images de l'index d'Alpine qui démarrent ici.
-    public func bootableReleases(index: URL = ImageDownload.alpineIndex) async throws
+    /// Les images qui démarrent ici, de tous les index : Alpine, puis Debian.
+    ///
+    /// **Un index qui ne répond pas ne cache pas les autres** : la liste
+    /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
+    /// dit la raison du premier.
+    public func bootableReleases(alpine: URL = ImageDownload.alpineIndex,
+                                 debian: URL = ImageDownload.debianIndex) async throws
         -> [ImageDownload.Release] {
+        var releases: [ImageDownload.Release] = []
+        var firstFailure: Error?
+        do {
+            let text = try await read(alpine)
+            releases += ImageDownload.bootable(ImageDownload.alpineReleases(text, index: alpine))
+        } catch {
+            firstFailure = error
+        }
+        do {
+            let text = try await read(debian)
+            for candidate in ImageDownload.debianCandidates(text) {
+                let file = debian.deletingLastPathComponent().appendingPathComponent(candidate.file)
+                guard let size = try await size(of: file) else { continue }
+                releases.append(ImageDownload.debianRelease(
+                    file: candidate.file, version: candidate.version, sha512: candidate.sha512,
+                    size: size, index: debian))
+            }
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        if releases.isEmpty { throw firstFailure ?? Failure.nothingToDownload }
+        return releases
+    }
+
+    /// Un index, en texte.
+    func read(_ index: URL) async throws -> String {
         let response = try await fetcher.fetch(index, range: nil)
         guard response.status == 200 else {
             throw Failure.refused("l'index de la distribution n'a pas pu être lu (\(response.status)).")
@@ -72,9 +103,14 @@ public struct ImageDownloader: Sendable {
             // Un index fait quelques kilo-octets ; au-delà, ce n'en est pas un.
             guard text.count <= 1 << 20 else { throw Failure.refused("l'index est démesuré.") }
         }
-        let releases = ImageDownload.bootable(ImageDownload.alpineReleases(String(decoding: text, as: UTF8.self)))
-        guard !releases.isEmpty else { throw Failure.nothingToDownload }
-        return releases
+        return String(decoding: text, as: UTF8.self)
+    }
+
+    /// La taille d'un fichier, demandée au serveur (`ImageDownload.sizeProbe`).
+    /// Le corps de la réponse, un octet, n'est pas lu.
+    func size(of file: URL) async throws -> Int? {
+        let response = try await fetcher.fetch(file, range: ImageDownload.sizeProbe)
+        return ImageDownload.size(fromProbe: response.status, contentRange: response.contentRange)
     }
 
     /// Télécharge `release` et le range sous `folder`, à son nom ; rend
@@ -85,7 +121,7 @@ public struct ImageDownloader: Sendable {
     /// Une coupure en route laisse le `.part` tel qu'il est : l'appel suivant
     /// reprend à son dernier octet.
     public func download(
-        _ release: ImageDownload.Release, into folder: URL, index: URL = ImageDownload.alpineIndex,
+        _ release: ImageDownload.Release, into folder: URL,
         progress: @Sendable (Int, Int) -> Void = { _, _ in }
     ) async throws -> URL {
         let manager = FileManager.default
@@ -104,7 +140,7 @@ public struct ImageDownloader: Sendable {
 
         if have < release.size {
             let response = try await fetcher.fetch(
-                ImageDownload.url(of: release, index: index),
+                ImageDownload.url(of: release),
                 range: ImageDownload.rangeHeader(resumingAt: have))
             switch ImageDownload.continuation(
                 status: response.status, contentRange: response.contentRange, resumingAt: have) {
@@ -138,7 +174,7 @@ public struct ImageDownloader: Sendable {
                 if have < release.size { throw Failure.interrupted(have: have, of: release.size) }
             }
         }
-        try ImageDownload.finish(part: part, as: destination, size: release.size, sha256: release.sha256)
+        try ImageDownload.finish(part: part, as: destination, size: release.size, checksum: release.checksum)
         return destination
     }
 }
