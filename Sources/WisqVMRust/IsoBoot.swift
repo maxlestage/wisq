@@ -89,6 +89,9 @@ public enum IsoBoot {
         /// Celle de la recette, ou rien quand le fichier n'est pas une image.
         public let commandLine: String?
         public let initrd: URL?
+        /// La mémoire en dessous de laquelle ce système ne démarre pas, ou
+        /// zéro quand on n'en sait rien. Seule une image de cloud en donne une.
+        public var minimumRAM = 0
 
         /// Le fichier tel qu'il est, quand il n'y a rien à déballer.
         static func plain(_ url: URL, _ kind: KernelImageKind) -> Boot {
@@ -161,9 +164,10 @@ public enum IsoBoot {
     /// d'Apple. Le type optionnel traverse maintenant jusqu'ici, où il est
     /// vérifié à chaque commit.
     ///
-    /// `rootPassword` ne sert qu'à une image de cloud : voir `CloudBoot`.
+    /// `rootHash` — l'empreinte `$6$` que garde `RootPassword` — ne sert qu'à
+    /// une image de cloud : voir `CloudBoot`.
     public static func decide(
-        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64, rootPassword: String? = nil
+        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64, rootHash: String? = nil
     ) -> Result<Boot, Refusal> {
         let kind = KernelImageKind.identify(fileAt: chosen)
         guard case .discImage = kind else {
@@ -172,7 +176,7 @@ public enum IsoBoot {
             guard mightBeCloudImage(kind), let folder = folder(in: storage) else {
                 return .success(.plain(chosen, kind))
             }
-            return decide(chosen, into: folder, ceiling: ceiling, rootPassword: rootPassword)
+            return decide(chosen, into: folder, ceiling: ceiling, rootHash: rootHash)
         }
         guard let folder = folder(in: storage) else { return .failure(.cannotPrepare) }
         return decide(chosen, into: folder, ceiling: ceiling)
@@ -192,20 +196,22 @@ public enum IsoBoot {
 
     /// La même, sur un dossier nommé — ce que les tests emploient.
     public static func decide(
-        _ chosen: URL, into folder: URL, ceiling: UInt64, rootPassword: String? = nil
+        _ chosen: URL, into folder: URL, ceiling: UInt64, rootHash: String? = nil
     ) -> Result<Boot, Refusal> {
         let kind = KernelImageKind.identify(fileAt: chosen)
         guard case .discImage = kind else {
             guard mightBeCloudImage(kind),
-                  let cloud = CloudBoot.unpack(chosen, into: folder, rootPassword: rootPassword,
+                  let cloud = CloudBoot.unpack(chosen, into: folder, rootHash: rootHash,
                                                ceiling: ceiling)
             else { return .success(.plain(chosen, kind)) }
             // **L'image de cloud est son propre disque**, comme l'image
             // d'installation : sa racine y vit, et la ligne de commande lue
             // dans son `grub.cfg` la nomme.
             return cloud.map { unpacked in
-                Boot(kind: KernelImageKind.identify(fileAt: unpacked.kernel), kernel: unpacked.kernel,
-                     disk: chosen, commandLine: unpacked.commandLine, initrd: unpacked.initrd)
+                var boot = Boot(kind: KernelImageKind.identify(fileAt: unpacked.kernel), kernel: unpacked.kernel,
+                                disk: chosen, commandLine: unpacked.commandLine, initrd: unpacked.initrd)
+                boot.minimumRAM = CloudBoot.minimumRAMSize
+                return boot
             }.mapError { .cloud($0) }
         }
         return unpack(chosen, into: folder, ceiling: ceiling).map { plan in
