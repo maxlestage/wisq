@@ -653,6 +653,13 @@ extension X86Core {
                 write(0, size, highByte: false, destination)
             }
 
+        case 0x77 where instruction.vexCount == 0:  // EMMS
+            // Les huit registres de la pile x87 marqués vides, comme après une
+            // série d'instructions MMX. Linux l'exécute sur un processeur AMD
+            // à chaque restauration de l'état flottant, entre `FNCLEX` et un
+            // `FILD` factice : c'est le contournement de « FXSAVE leak ».
+            x87Tags = 0xFFFF
+
         case 0xC7 where (try? Self.fields(instruction))?.reg == 1:  // CMPXCHG8B
             // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
             // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
