@@ -415,11 +415,18 @@ noyau dans le disque lui-même.
    comme Linux le fait. Vérifié sur la vraie table de l'image `nocloud` de
    Debian 13 : la racine (`vda1`), la partition BIOS (`vda14`) et l'EFI
    (`vda15`).
-2. Un lecteur ext4 en lecture seule (superbloc, groupes, inodes, extents,
-   répertoires) : de quoi lire `/boot/vmlinuz-*` et `/boot/initrd.img-*`, ou
-   suivre les liens `/vmlinuz` et `/initrd.img` de Debian.
-3. La ligne de commande : `root=` désigne la partition par son numéro
-   (`/dev/vda1`), ou par l'UUID que donne le superbloc.
+2. **Fait.** Un lecteur ext2, ext3 et ext4 en lecture seule (`Ext4Volume`) :
+   superbloc, descripteurs de groupe (32 ou 64 octets), inodes, arbres
+   d'extents à plusieurs niveaux, extents réservés lus comme des zéros,
+   anciens blocs indirects, trous, répertoires indexés, liens symboliques
+   courts et longs, suivis comme le fait Linux. Refusés en le disant : un
+   journal non rejoué, un journal externe, `meta_bg`, la compression, les
+   répertoires en ligne, toute fonction inconnue. Vérifié sur la vraie image
+   Debian 13, lue dans le qcow2 : le noyau (12 Mio) et l'initramfs (36 Mio)
+   que nomme son `grub.cfg` sont identiques à ce que rend `debugfs`.
+3. La ligne de commande : celle du premier `menuentry` du `grub.cfg`, sans
+   rien deviner. Debian y écrit `root=PARTUUID=…` : il faudra aussi le GUID
+   propre à chaque partition, que `PartitionTable` ne garde pas encore.
 4. Dans l'application : une image de cloud importée ou téléchargée propose
    « Démarrer », sans noyau à choisir.
 5. D'autres index : `SHA512SUMS` de Debian (il faudra SHA-512), `SHA256SUMS`
