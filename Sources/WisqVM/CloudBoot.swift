@@ -99,6 +99,111 @@ public struct CloudBoot: Equatable, Sendable {
         throw readable ? Failure.noKernel : Failure.noLinuxPartition
     }
 
+    // MARK: - Sur le disque de l'application
+
+    /// Le nom du noyau sorti d'une image, dans le dossier de déballage. Posé
+    /// ici, jamais pris dans l'image : un chemin écrit par qui a fait l'image
+    /// ne décide pas où les octets atterrissent.
+    public static let kernelName = "vmlinuz"
+    /// Celui de l'initramfs, pour la même raison.
+    public static let initrdName = "initramfs"
+
+    /// Ce qu'une image de cloud laisse sur le disque pour démarrer.
+    public struct Unpacked: Equatable, Sendable {
+        public let kernel: URL
+        public let initrd: URL?
+        public let commandLine: String
+        public let origin: String
+    }
+
+    /// Pourquoi une image de cloud ne démarre pas, une fois qu'on sait que
+    /// c'en est une.
+    public enum Refusal: Error, Equatable, Sendable {
+        /// L'image est là, mais ce qu'on cherche n'y est pas.
+        case notBootable(Failure)
+        /// Le disque ou ses tables ne se lisent pas.
+        case unreadable(String)
+        /// Le noyau ou l'initramfs dépasse ce que l'appelant accepte d'écrire.
+        case tooLarge
+        /// Le dossier de déballage n'a pas pu être écrit.
+        case cannotPrepare
+    }
+
+    /// **Une image de cloud, déballée pour démarrer** : son noyau et son
+    /// initramfs écrits dans `folder`, sous des noms fixes, et la ligne de
+    /// commande qui va avec. L'image elle-même reste où elle est : c'est le
+    /// disque de la machine.
+    ///
+    /// `nil` quand le fichier n'est **pas** une image de cloud — pas de table
+    /// de partitions, ou une table vide —, et rien n'est alors écrit : c'est un noyau, ou autre
+    /// chose, et l'appelant continue comme avant. Une table présente fait de
+    /// l'image un disque, jamais un noyau, et ce qui manque ensuite est un
+    /// refus qui le dit.
+    ///
+    /// Le dossier est refait à neuf, pour que l'initramfs d'une image ne
+    /// démarre jamais avec le noyau d'une autre ; et un refus n'y laisse rien.
+    public static func unpack(_ url: URL, into folder: URL, rootPassword: String? = nil,
+                              ceiling: UInt64 = .max) -> Result<Unpacked, Refusal>? {
+        let found: CloudBoot
+        do {
+            guard let image = try VirtualDiskImages.disk(fileAt: url) else { return nil }
+            // **Un fichier brut n'est un disque que si sa table se lit**, et
+            // porte au moins une partition : le premier secteur de bien des
+            // fichiers finit par 0x55AA, avec n'importe quoi devant. Un qcow2,
+            // lui, est un disque de toute façon, et sa table abîmée un refus.
+            let table: PartitionTable
+            do {
+                table = try PartitionTable.read(image)
+            } catch PartitionTable.Failure.noTable {
+                return nil
+            } catch where image is RawDiskImage {
+                return nil
+            }
+            guard !table.partitions.isEmpty else { return nil }
+            found = try find(in: table, rootPassword: rootPassword) { try Ext4Volume($0, in: image) }
+        } catch let failure as Failure {
+            return .failure(.notBootable(failure))
+        } catch {
+            return .failure(.unreadable(error.localizedDescription))
+        }
+        guard UInt64(found.kernel.count) <= ceiling, UInt64(found.initrd?.count ?? 0) <= ceiling else {
+            return .failure(.tooLarge)
+        }
+        let files = FileManager.default
+        try? files.removeItem(at: folder)
+        let kernel = folder.appendingPathComponent(kernelName)
+        let initrd = found.initrd.map { _ in folder.appendingPathComponent(initrdName) }
+        do {
+            try files.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(found.kernel).write(to: kernel)
+            if let initrd, let bytes = found.initrd { try Data(bytes).write(to: initrd) }
+        } catch {
+            try? files.removeItem(at: folder)
+            return .failure(.cannotPrepare)
+        }
+        return .success(Unpacked(kernel: kernel, initrd: initrd, commandLine: found.commandLine,
+                                 origin: found.origin))
+    }
+
+    /// Le refus, en français et sans balisage, pour la console.
+    public static func explanation(_ refusal: Refusal, name: String) -> String {
+        switch refusal {
+        case .notBootable(let failure):
+            return "\(name) est une image de disque, mais wisq ne peut pas la démarrer : "
+                + (failure.errorDescription ?? "")
+        case .unreadable(let why):
+            return "\(name) n'a pas pu être lue : \(why)"
+        case .tooLarge:
+            return "Le noyau ou l'initramfs de \(name) dépasse ce que cette machine peut charger."
+        case .cannotPrepare:
+            return """
+                wisq n'a pas pu préparer de place pour déballer \(name).
+
+                Il reste peut-être trop peu d'espace sur cet appareil.
+                """
+        }
+    }
+
     // MARK: - Les configurations
 
     private static func configuredEntry(in volume: Ext4Volume) -> (Entry, String)? {

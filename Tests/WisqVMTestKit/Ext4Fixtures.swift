@@ -3,14 +3,14 @@ import Foundation
 // Deux systèmes de fichiers écrits par e2fsprogs 1.47 (`mkfs -d`, puis
 // `e2fsck -fD` pour indexer les répertoires), en deflate brut puis base64.
 // Ne pas éditer à la main ; pour les refaire : scripts/build-ext4-fixtures.py.
-enum Ext4Fixtures {
-    static let size = 2 << 20
+public enum Ext4Fixtures {
+    public static let size = 2 << 20
     /// Le bloc d'index des extents de `boot/sparse`, dans `ext4`.
-    static let sparseIndexBlock = 69
+    public static let sparseIndexBlock = 69
     /// Le décalage de l'inode de `etc/hostname`, dans `ext4`.
-    static let hostnameInodeOffset = 154880
+    public static let hostnameInodeOffset = 154880
 
-    static let ext4 = [
+    public static let ext4 = [
         "7d0HnFxl2Tfg2RAIJRq6VCkCUtywvUiRrvQiSBGVQJYQSDaQghCQDqKCqKDSkSqoSFNAqYI0UURp0hEEQUFQUAREvj2HsK++",
         "zqPvx+PPeM59Xf7WPQkn88z/P2dm9p6ZnWk0gLBGvPm1+NC36UNfL/39Xzcah8z6GvHm36954t17NhpvvPHh51saLcN/flPL",
         "rO/zzfpD39C3G4b+3V4jG42Flm/b7pmHPzT/V3503K/ufH7pjT85cdo+rQP7Te/6D0adstSY90/6+KafP+O4pZdZYsmllm5p",
@@ -191,7 +191,7 @@ enum Ext4Fixtures {
         "AOC/2/8D",
     ].joined()
 
-    static let ext2 = [
+    public static let ext2 = [
         "7d0HmF5ltTbgPZOQUIIUAZGisSAqZjI9M2LvFXuvgQwQTME0ir0rIqjYEBWxY0dBUbH33hWxYa9YUbFyVijz43G/5+S6fjwm",
         "ee77nGW+mM3n9zwz75RcazZdB8QarNm26w6tX746t+surF8HrvjnCy+bwUt/e5MXfeWIrrv44nv9euCS6y79/aUu/+d2uOw3",
         "U5f9Y3NqDtjpZsfts+ighx13yoJ9h25+pwcdtXztIxfNHL1u9EoNM/9//NPV++x04xUPvfMJp5647zX32nuffTe+3gWX/dnj",
