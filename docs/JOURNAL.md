@@ -8,6 +8,53 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — lire ext4, et le noyau de Debian sort du qcow2
+
+Suite de la tranche précédente, même autorisation. `Ext4Volume` lit ext2,
+ext3 et ext4 sans rien écrire : il suit un chemin (liens compris), liste un
+répertoire et lit un fichier. Il reconnaît les arbres d'extents à plusieurs
+niveaux, les extents réservés (lus comme des zéros), les anciens blocs
+indirects et doublement indirects, les trous, et les répertoires indexés,
+dont les blocs d'index se lisent comme des entrées vides. Il refuse, en les
+nommant, un journal à rejouer et les fonctions qu'il ne sait pas lire. Les
+sommes `metadata_csum` ne sont pas vérifiées : elles protègent d'une écriture
+interrompue, et ce lecteur n'écrit pas.
+
+**Sur la vraie image.** `debian-13-nocloud-amd64.qcow2`, lue directement à
+travers `Qcow2Image`, puis `PartitionTable`, puis `Ext4Volume` : le
+`grub.cfg` nomme `/boot/vmlinuz-6.12.113+deb13-amd64` (12 154 816 octets) et
+son initramfs (36 159 851 octets). Les deux ont la même somme SHA-256 que ce
+que rend `debugfs -R dump`. Le `grub.cfg` donne aussi la ligne de commande,
+`root=PARTUUID=… ro console=ttyS0,115200 …`, que l'étape suivante reprendra
+telle quelle. Le test sur la vraie image ne tourne que si on la donne
+(`WISQ_CLOUD_IMAGE`) ; en version de débogage, l'initramfs prend 18 s à lire.
+
+**Un bug trouvé par les fixtures.** L'adresse du premier bloc indirect avait
+été lue au décalage 44 de `i_block`, au lieu de 48 : c'est le treizième mot,
+pas le douzième. L'ext2 de la fixture l'a montré tout de suite, au
+douzième bloc du noyau.
+
+**Les fixtures.** Deux systèmes de fichiers de 2 Mio écrits par e2fsprogs,
+l'un en ext4 (blocs de 4 Kio, 64 bits, metadata_csum), l'autre en ext2
+(blocs de 1 Kio). `e2fsck -fD` indexe ensuite leurs répertoires, ce que
+`mkfs -d` ne fait pas. `debugfs -w` y réserve des blocs par `fallocate`, et
+ces blocs sont remplis d'octets non nuls. Identifiants, graine et heure sont
+fixés, si bien que deux passages de `scripts/build-ext4-fixtures.py` rendent
+les mêmes octets.
+
+**Les sabotages.** Ceux-ci ont tous été vus : l'adresse d'un bloc fils,
+les liens courts, `..`, les entrées vides, le refus du journal et celui des
+fonctions inconnues, le format de l'UUID, la borne des quarante liens, la
+cible d'un extent réservé. Quatre ont d'abord passé, et chacun a fait
+ajouter un test :
+- un trou d'ext2 lu comme « bloc zéro », qui rendait des zéros par hasard :
+  le premier bloc de la fixture est maintenant rempli ;
+- un lien relatif lu depuis la racine : aucun lien relatif ne vivait dans un
+  sous-répertoire, `boot/current` en est un ;
+- la profondeur d'un nœud d'extents non vérifiée : le test abîme le bloc
+  d'index ;
+- la moitié haute de la taille ignorée : le test abîme l'inode.
+
 ## 2026-10-18 — la table de partitions d'une image de cloud
 
 Message de l'utilisateur : « Tout ». Je l'ai compris comme une demande
