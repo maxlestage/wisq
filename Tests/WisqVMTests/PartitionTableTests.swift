@@ -70,6 +70,9 @@ final class PartitionTableTests: XCTestCase {
         XCTAssertEqual(table.partitions[2].start, 4 * mib)
         XCTAssertEqual(table.partitions[2].length, 124 * mib)
         XCTAssertEqual(table.linuxCandidates.map(\.number), [1])
+        // Ce que vise le `root=PARTUUID=…` de son grub.cfg et de son fstab.
+        XCTAssertEqual(table.partitions[0].uniqueID, "3f7bd41d-e564-4995-bb29-b2aebe93a04c")
+        XCTAssertEqual(table.partitions[2].uniqueID, "d136b129-41ec-405c-9e4c-fd190105a0c8")
     }
 
     /// La même table, lue dans un qcow2 : le lecteur ne voit que le disque
@@ -177,6 +180,11 @@ final class PartitionTableTests: XCTestCase {
         // Le troisième maillon est relatif à l'étendue, pas au maillon d'avant.
         XCTAssertEqual(table.partitions[3].start, (22528 + 24576 + 2048) * 512)
         XCTAssertEqual(table.linuxCandidates.map(\.number), [1, 5, 7])
+        // Sans signature de disque, pas de PARTUUID ; avec, celui du noyau.
+        XCTAssertEqual(table.partitions.map(\.uniqueID), ["", "", "", ""])
+        disk.write([0xCD, 0xAB, 0x34, 0x12], at: 440)
+        XCTAssertEqual(try disk.table().partitions.map(\.uniqueID),
+                       ["1234abcd-01", "1234abcd-05", "1234abcd-06", "1234abcd-07"])
     }
 
     /// Une chaîne de logiques qui revient sur elle-même ne fait pas tourner la

@@ -56,6 +56,11 @@ public struct PartitionTable: Equatable, Sendable {
         public let length: UInt64
         /// Le nom GPT, souvent vide.
         public let name: String
+        /// Ce que Linux appelle son PARTUUID, et ce que vise un
+        /// `root=PARTUUID=…` : le GUID propre à l'entrée pour une GPT, en
+        /// minuscules ; pour un MBR, la signature du disque et le numéro,
+        /// `1234abcd-01`. Vide si le MBR n'a pas de signature.
+        public let uniqueID: String
     }
 
     public enum Failure: Error, Equatable, LocalizedError {
@@ -96,7 +101,7 @@ public struct PartitionTable: Equatable, Sendable {
             // n'est que dans sa copie de secours.
             return try readGPT(size: size, read)
         }
-        return try readMBR(records, size: size, read)
+        return try readMBR(records, signature: le32(mbr, 440), size: size, read)
     }
 
     /// Le même, pour une image dans un des formats lus par wisq.
@@ -149,7 +154,7 @@ public struct PartitionTable: Equatable, Sendable {
         }
     }
 
-    static func readMBR(_ records: [MBRRecord], size: UInt64,
+    static func readMBR(_ records: [MBRRecord], signature: UInt32, size: UInt64,
                         _ read: (UInt64, Int) -> [UInt8]?) throws -> PartitionTable {
         var partitions: [Partition] = []
         for (index, record) in records.enumerated() where record.type != 0 && record.sectors != 0 {
@@ -162,10 +167,17 @@ public struct PartitionTable: Equatable, Sendable {
                 partitions += try logicalPartitions(in: record, size: size, read)
             } else {
                 partitions.append(Partition(number: index + 1, kind: mbrKind(record.type),
-                                            start: start, length: length, name: ""))
+                                            start: start, length: length, name: "", uniqueID: ""))
             }
         }
-        return PartitionTable(scheme: .mbr, partitions: partitions.sorted { $0.number < $1.number })
+        // Le PARTUUID d'un MBR, tel que le noyau le forme : la signature du
+        // disque (au décalage 440) et le numéro de la partition en hexadécimal.
+        let named = partitions.sorted { $0.number < $1.number }.map { partition in
+            Partition(number: partition.number, kind: partition.kind, start: partition.start,
+                      length: partition.length, name: "",
+                      uniqueID: signature == 0 ? "" : String(format: "%08x-%02x", signature, partition.number))
+        }
+        return PartitionTable(scheme: .mbr, partitions: named)
     }
 
     /// Les partitions logiques : une chaîne de MBR étendus, chacun décrivant
@@ -196,7 +208,7 @@ public struct PartitionTable: Equatable, Sendable {
                     throw Failure.corrupt("la partition \(5 + partitions.count) déborde du disque.")
                 }
                 partitions.append(Partition(number: 5 + partitions.count, kind: mbrKind(entry.type),
-                                            start: start, length: length, name: ""))
+                                            start: start, length: length, name: "", uniqueID: ""))
             }
             link = isExtended(next.type) && next.sectors != 0 ? extended.firstSector + next.firstSector : 0
         }
@@ -275,7 +287,8 @@ public struct PartitionTable: Equatable, Sendable {
                 .prefix { $0 != 0 }, as: UTF16.self)
             partitions.append(Partition(number: index + 1, kind: gptKind(guid(type)),
                                         start: first * sector, length: (last - first + 1) * sector,
-                                        name: name))
+                                        name: name,
+                                        uniqueID: guid(Array(entries[(base + 16)..<(base + 32)])).lowercased()))
         }
         return PartitionTable(scheme: .gpt, partitions: partitions)
     }
