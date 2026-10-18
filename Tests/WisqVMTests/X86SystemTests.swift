@@ -32,6 +32,73 @@ final class X86SystemTests: XCTestCase {
         // lesquelles Linux le détecte répondent juste, et rien de plus.
         // L'arithmétique x87, elle, est refusée par son nom.
         XCTAssertNotEqual(features & 1, 0, "sans FPU annoncé, un noyau 64 bits s'arrête")
+        // Le socle x86-64 que la glibc exige avant de charger quoi que ce soit.
+        for (bit, name) in [(8, "CX8"), (23, "MMX"), (24, "FXSR"), (25, "SSE"), (26, "SSE2")] {
+            XCTAssertNotEqual(features & (1 << UInt32(bit)), 0, "\(name) : sans lui, la glibc refuse de démarrer")
+        }
+        // Et rien au-delà, que ce cœur n'a pas : SSE3, SSSE3, SSE4, AVX
+        // vivent dans ECX, qui reste vide.
+        XCTAssertEqual(X86CPUID.answer(leaf: 1, subleaf: 0).2, 0)
+    }
+
+    /// **CX8 annoncé : `CMPXCHG8B` répond.** Égal, il range ECX:EBX et lève
+    /// ZF ; différent, il rend la valeur lue dans EDX:EAX, hauts effacés, et
+    /// baisse ZF. Avec REX.W ce serait `CMPXCHG16B`, que CX16 n'annonce pas.
+    func testCMPXCHG8BSwapsWhenEqualAndReportsWhatItFoundOtherwise() throws {
+        let program: [UInt8] = [0x0F, 0xC7, 0x0E, 0x0F, 0xC7, 0x0E]  // cmpxchg8b (%rsi), deux fois
+        var core = try machine(program)
+        try core.memory?.write(0x8000, 8, 0x1111_2222_3333_4444)
+        core.registers[6] = 0x8000
+        core.registers[0] = 0xFFFF_FFFF_3333_4444  // EAX, avec un haut qui doit être ignoré
+        core.registers[2] = 0x1111_2222             // EDX
+        core.registers[3] = 0x5555_6666             // EBX
+        core.registers[1] = 0x7777_8888             // ECX
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(0x8000, 8), 0x7777_8888_5555_6666)
+        XCTAssertNotEqual(core.flags & X86Core.Flag.zero, 0)
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(0x8000, 8), 0x7777_8888_5555_6666, "différent : rien n'est rangé")
+        XCTAssertEqual(core.registers[0], 0x5555_6666)
+        XCTAssertEqual(core.registers[2], 0x7777_8888)
+        XCTAssertEqual(core.flags & X86Core.Flag.zero, 0)
+
+        var wide = try machine([0x48, 0x0F, 0xC7, 0x0E])  // cmpxchg16b (%rsi)
+        XCTAssertThrowsError(try wide.run(budget: 1)) { error in
+            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+        }
+    }
+
+    /// `FNCLEX` efface les drapeaux d'exception, ES et B, et garde le sommet
+    /// de pile et les codes de condition : de 0xFFFF il reste 0x7F00. Linux
+    /// l'exécute sur un processeur AMD à chaque restauration de l'état
+    /// flottant ; sans lui, Alpine comme Debian s'arrêtaient sur `DB E2`.
+    func testFNCLEXClearsTheExceptionsAndKeepsTheStackTop() throws {
+        var core = try machine([0xDB, 0xE2, 0xF4])
+        core.x87Status = 0xFFFF
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.x87Status, 0x7F00)
+    }
+
+    /// `EMMS` vide la pile x87, sans toucher au sommet ni aux registres :
+    /// le deuxième temps du contournement AMD.
+    func testEMMSMarksTheWholeX87StackEmpty() throws {
+        var core = try machine([0x0F, 0x77, 0xF4])
+        core.x87Tags = 0x0000
+        core.x87Status = 0x3800
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.x87Tags, 0xFFFF)
+        XCTAssertEqual(core.x87Status, 0x3800)
+    }
+
+    /// **MMX est annoncé au sens strict**, comme le FPU : la glibc lit le bit,
+    /// aucun binaire de l'initramfs de Debian n'emploie un registre MMX, et
+    /// une instruction MMX qui arriverait serait refusée par son nom plutôt
+    /// qu'exécutée sur un registre XMM.
+    func testMMXInstructionsAreStillRefusedByName() throws {
+        var core = try machine([0x0F, 0xEF, 0xC1])  // pxor %mm1,%mm0
+        XCTAssertThrowsError(try core.run(budget: 1)) { error in
+            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+        }
     }
 
     /// Sans le bit « mode long » dans la feuille étendue, un noyau 64 bits
@@ -164,8 +231,24 @@ final class X86SystemTests: XCTestCase {
             let value = core.registers[register]
             for byte in 0..<4 { name.append(UInt8((value >> (8 * UInt64(byte))) & 0xFF)) }
         }
-        XCTAssertEqual(String(decoding: name, as: UTF8.self), "wisq  x86-64")
+        XCTAssertEqual(String(decoding: name, as: UTF8.self), "AuthenticAMD",
+                       "un nom que la glibc connaît, sans quoi elle ne lit pas la feuille 1")
         XCTAssertEqual(X86CPUID.vendor.utf8.count, 12, "douze octets, ni plus ni moins")
+    }
+
+    /// Le nom de wisq est dans la chaîne de marque, que Linux affiche comme
+    /// `model name` : trois feuilles de seize octets, complétées de zéros.
+    func testTheBrandStringCarriesWisqsName() {
+        let words = (0x8000_0002...0x8000_0004).flatMap { leaf -> [UInt32] in
+            let (a, b, c, d) = X86CPUID.answer(leaf: UInt32(leaf), subleaf: 0)
+            return [a, b, c, d]
+        }
+        let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> (8 * UInt32($0))) } }
+        XCTAssertEqual(bytes.count, 48)
+        XCTAssertEqual(String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self), X86CPUID.brand)
+        XCTAssertTrue(X86CPUID.brand.hasPrefix("wisq"))
+        XCTAssertLessThan(X86CPUID.brand.utf8.count, 48, "un zéro final au moins")
+        XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0000, subleaf: 0).0, 0x8000_0004)
     }
 
     /// Écrire `EFER` ne suffit pas à être en mode long : le processeur pose

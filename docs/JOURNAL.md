@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian jusqu'à systemd : le SSE2 de la glibc, et un nom qu'elle connaît
+
+Suite de la même série. Le but : l'image de cloud de Debian 13 démarrée sur
+le PC de wisq, avec le noyau, l'initramfs et la ligne de commande que donne
+`CloudBoot`, et le qcow2 téléchargé comme disque. Chaque arrêt a nommé la
+tranche suivante.
+
+**1. `66 0F D7`, à 2,1 milliards d'instructions.** C'est `PMOVMSKB`, le cœur
+de `strlen` et `memchr` en SSE2. Alpine est bâtie sur musl et n'en avait
+jamais eu besoin. L'initramfs de Debian a été déballé (un cpio, puis un cpio
+en zstd), et ses binaires désassemblés. J'ai fait exécuter au cœur un vrai
+encodage de chacune des 142 instructions SSE sans VEX qu'on y trouve, par une
+sonde jetable. Il restait quinze instructions entières : `pmovmskb`,
+`paddb`/`w`, `psubb`/`w`, `pcmpgtb`/`w`, `pminub`, `pmaxub`, `psubusb`,
+`packuswb`, `pmullw`, `pmulhuw`, `pmuludq`, `pextrw`. S'y ajoutent quatre
+décalages par registre, `movmskps`/`pd`, `movntdq`/`movntps` et
+`movlpd`/`movhpd`. L'oracle passe à 196 formes et 7 644 cas, tous d'accord du
+premier coup avec le processeur de ce conteneur ; douze sabotages sont vus.
+Restent refusés, par leur nom : les paquets de flottants (`addpd`, `cmpsd`,
+`cvt*`), et SSSE3, SSE4, AES et SHA, que le CPUID n'annonce pas et que la
+glibc n'emploie donc pas.
+
+**2. « libc.so.6: CPU ISA level is lower than required ».** La glibc vérifie
+le socle x86-64 (CMOV, CX8, FPU, FXSR, MMX, SSE, SSE2) avant de charger quoi
+que ce soit. Annoncer les bits manquants n'a **rien changé**, et la lecture de
+`sysdeps/x86/cpu-features.c` (glibc 2.41) a dit pourquoi. Pour un
+constructeur qu'elle ne connaît pas, la glibc appelle `get_common_indices`
+sans famille : elle ne lit **jamais** la feuille 1. « wisq  x86-64 » rendait
+donc le socle invisible, quoi qu'on y mette. Le cœur prend maintenant
+l'identité du `qemu64` de QEMU : `AuthenticAMD`, famille 15, modèle 107. Le
+nom de wisq passe dans la chaîne de marque, que `/proc/cpuinfo` affiche comme
+`model name`. CX8 est tenu par `CMPXCHG8B`, écrit pour l'occasion. MMX est
+annoncé au sens où le FPU l'était déjà : aucun binaire de l'initramfs
+n'emploie un registre MMX, et ses instructions sont refusées par leur nom.
+
+**3. `DB E2`, puis `0F 77`, sur Alpine comme sur Debian.** Ce sont `FNCLEX` et
+`EMMS` : sur un processeur AMD, Linux les exécute, avec un `FILD` factice, à
+chaque restauration de l'état flottant (le contournement de « FXSAVE leak »).
+Se présenter comme AMD les a fait venir, et les deux sont écrits.
+
+**Ce que la machine répond.** Debian monte sa racine par le PARTUUID que
+`CloudBoot` avait repris de son `grub.cfg`, et **systemd démarre** :
+journald, sysusers, sysctl, growfs, random-seed. La course s'arrête à 9,27
+milliards d'instructions, en 545 s, sur `0F C2` (`CMPSD`), une comparaison
+flottante. systemd était aussi passé en mode de secours, ce qu'il faudra
+regarder. Alpine, démarrée avec ce même CPUID, va toujours jusqu'au shell de
+`root` (`3.24.2`, `6.18.52-0-virt`, 28 paquets), en 552 s : pas de
+régression mesurable.
+
 ## 2026-10-18 — ce que le chargeur de la distribution aurait démarré
 
 Suite de la même série. `CloudBoot` trouve dans une image de cloud son noyau,

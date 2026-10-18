@@ -137,6 +137,24 @@ def forms():
         for control in SHUFFLES:
             out += [f"{name} ${control:#x}, %xmm1, %xmm0",
                     f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Ce que la glibc de Debian demande en plus**, arrivé par l'image de
+    # cloud de Debian 13 arrêtée sur `66 0F D7` (`PMOVMSKB`) dans son
+    # initramfs. Les octets et les mots, comparés, additionnés, soustraits ;
+    # les opérations sans signe et saturées ; les multiplications ; le
+    # resserrement saturé des mots en octets.
+    for name in ["pcmpgtb", "pcmpgtw", "paddb", "paddw", "psubb", "psubw", "pminub", "pmaxub",
+                 "psubusb", "pmullw", "pmulhuw", "pmuludq", "packuswb"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    # Les décalages dont le compte est dans xmm1 ou en mémoire : les quatre
+    # que la glibc emploie.
+    for name in ["psllw", "pslld", "psrld", "psrad"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    # Vers un registre général : les bits de signe, et un mot choisi.
+    out += ["pmovmskb %xmm1, %eax", "movmskps %xmm1, %eax", "movmskpd %xmm1, %eax"]
+    for position in INSERTS:
+        out.append(f"pextrw ${position}, %xmm1, %eax")
+    # Les chargements d'une moitié, depuis la mémoire seulement.
+    out += [f"movlpd {ALIGNED:#x}(%rsi), %xmm0", f"movhpd {ALIGNED:#x}(%rsi), %xmm0"]
     return out
 
 
@@ -156,6 +174,13 @@ VALUES = [
     (0x5555555555555555, 0xAAAAAAAAAAAAAAAA),
     (0x7FFFFFFF7FFFFFFF, 0x8000000080000000),
     (0xFFFFFFFEFFFFFFFF, 0x0000000000000002),
+    # Un petit compte dans le bas, pour les décalages par registre, et des mots
+    # aux deux bords du signe.
+    (0x0000000000000003, 0x8001800180017FFF),
+    (0x000000000000001F, 0x7FFF00FF80000100),
+    # Des octets autour de 0x7F, 0x80 et 0xFF : la saturation et la
+    # comparaison signée s'y décident.
+    (0x80FF7F0001FE817E, 0x00FF00800080FF7F),
 ]
 
 GENERAL = [
