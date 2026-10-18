@@ -32,6 +32,51 @@ final class X86SystemTests: XCTestCase {
         // lesquelles Linux le détecte répondent juste, et rien de plus.
         // L'arithmétique x87, elle, est refusée par son nom.
         XCTAssertNotEqual(features & 1, 0, "sans FPU annoncé, un noyau 64 bits s'arrête")
+        // Le socle x86-64 que la glibc exige avant de charger quoi que ce soit.
+        for (bit, name) in [(8, "CX8"), (23, "MMX"), (24, "FXSR"), (25, "SSE"), (26, "SSE2")] {
+            XCTAssertNotEqual(features & (1 << UInt32(bit)), 0, "\(name) : sans lui, la glibc refuse de démarrer")
+        }
+        // Et rien au-delà, que ce cœur n'a pas : SSE3, SSSE3, SSE4, AVX
+        // vivent dans ECX, qui reste vide.
+        XCTAssertEqual(X86CPUID.answer(leaf: 1, subleaf: 0).2, 0)
+    }
+
+    /// **CX8 annoncé : `CMPXCHG8B` répond.** Égal, il range ECX:EBX et lève
+    /// ZF ; différent, il rend la valeur lue dans EDX:EAX, hauts effacés, et
+    /// baisse ZF. Avec REX.W ce serait `CMPXCHG16B`, que CX16 n'annonce pas.
+    func testCMPXCHG8BSwapsWhenEqualAndReportsWhatItFoundOtherwise() throws {
+        let program: [UInt8] = [0x0F, 0xC7, 0x0E, 0x0F, 0xC7, 0x0E]  // cmpxchg8b (%rsi), deux fois
+        var core = try machine(program)
+        try core.memory?.write(0x8000, 8, 0x1111_2222_3333_4444)
+        core.registers[6] = 0x8000
+        core.registers[0] = 0xFFFF_FFFF_3333_4444  // EAX, avec un haut qui doit être ignoré
+        core.registers[2] = 0x1111_2222             // EDX
+        core.registers[3] = 0x5555_6666             // EBX
+        core.registers[1] = 0x7777_8888             // ECX
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(0x8000, 8), 0x7777_8888_5555_6666)
+        XCTAssertNotEqual(core.flags & X86Core.Flag.zero, 0)
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(try core.memory?.read(0x8000, 8), 0x7777_8888_5555_6666, "différent : rien n'est rangé")
+        XCTAssertEqual(core.registers[0], 0x5555_6666)
+        XCTAssertEqual(core.registers[2], 0x7777_8888)
+        XCTAssertEqual(core.flags & X86Core.Flag.zero, 0)
+
+        var wide = try machine([0x48, 0x0F, 0xC7, 0x0E])  // cmpxchg16b (%rsi)
+        XCTAssertThrowsError(try wide.run(budget: 1)) { error in
+            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+        }
+    }
+
+    /// **MMX est annoncé au sens strict**, comme le FPU : la glibc lit le bit,
+    /// aucun binaire de l'initramfs de Debian n'emploie un registre MMX, et
+    /// une instruction MMX qui arriverait serait refusée par son nom plutôt
+    /// qu'exécutée sur un registre XMM.
+    func testMMXInstructionsAreStillRefusedByName() throws {
+        var core = try machine([0x0F, 0xEF, 0xC1])  // pxor %mm1,%mm0
+        XCTAssertThrowsError(try core.run(budget: 1)) { error in
+            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+        }
     }
 
     /// Sans le bit « mode long » dans la feuille étendue, un noyau 64 bits

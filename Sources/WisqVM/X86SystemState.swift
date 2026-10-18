@@ -119,8 +119,23 @@ public enum X86CPUID {
     /// - PAE (6) : la traduction d'adresses est à quatre niveaux.
     /// - CMOV (15) : les seize `CMOVcc` sont là depuis la tranche 3a.
     /// - PGE (13) et PSE (3) : les pages larges sont traduites.
+    /// - CX8 (8) : `CMPXCHG8B`.
+    /// - FXSR (24) : `FXSAVE` et `FXRSTOR`, tenus par leur oracle.
+    /// - SSE (25) et SSE2 (26) : les déplacements, la logique, l'arithmétique
+    ///   entière et les scalaires flottants. Ce qui reste refusé (les paquets
+    ///   de flottants, `CMPSD`) l'est par son nom.
+    /// - MMX (23), **au sens où FPU l'est** : aucune instruction MMX n'existe
+    ///   ici, et chacune est refusée par son nom si elle arrive.
+    ///
+    /// **Pourquoi les cinq derniers.** La glibc refuse de charger un programme
+    /// sur un processeur qui n'a pas le socle x86-64 : CMOV, CX8, FPU, FXSR,
+    /// MMX, SSE et SSE2, lus ici. L'image de cloud de Debian 13 s'arrêtait sur
+    /// « libc.so.6: CPU ISA level is lower than required » à chaque programme
+    /// de son initramfs, et udev, qui ne démarrait pas, ne créait jamais le
+    /// lien de sa racine. Aucun binaire de cet initramfs n'emploie un
+    /// registre MMX : le bit est ce que la glibc lit, pas ce qu'elle exécute.
     public static let features: UInt32 = 1 | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 3)
-        | (1 << 13) | (1 << 15)
+        | (1 << 13) | (1 << 15) | (1 << 8) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
