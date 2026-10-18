@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Une session Debian, sauvée puis reprise
+
+Suite directe, même autorisation. Côté vitesse, il ne restait que de petits
+postes. Un `[]` littéral de registres qu'on croyait coûteux ne l'était pas :
+six paires mesurées en alternance, 41,20 s contre 41,21. Il a été laissé.
+
+L'autre priorité est donc passée devant : reprendre une session.
+`X86CloudResumeTests` suit le chemin de l'application, de bout en bout :
+- l'image de cloud déballée par `CloudBoot.unpack` ;
+- une `X86Machine` de 512 Mio, avec l'image comme disque sur fichier et sa
+  couche d'écriture ;
+- le shell de `root`, une variable posée dans le shell, puis `snapshot()` ;
+- une machine neuve, le même disque et sa couche, puis `restore()`.
+
+Ce qu'il a mesuré :
+- le démarrage : 18,8 milliards d'instructions, en 966 s ;
+- l'instantané : 217 Mio, en 2,4 s ;
+- la reprise : 1,1 s.
+
+La variable du shell est revenue (`wisq-reprise`), et le disque répond
+(`13.7`) : la session est bien celle d'avant, pas un nouveau démarrage.
+
+Reste à rendre l'instantané plus petit : il s'écrit à chaque passage de
+l'application en arrière-plan, et 217 Mio, c'est beaucoup pour un
+téléphone.
+
 ## 2026-10-18 — Debian plus vite : les registres à plat
 
 Suite directe, même autorisation. Callgrind montrait encore
