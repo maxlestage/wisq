@@ -8,6 +8,23 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — un cache de décodage à la taille de l'espace utilisateur : −4 %
+
+Relance horaire, même autorisation. La tranche d'avant l'avait remarqué : sur
+tout le démarrage, le cache de 8192 cases manquait 21 % des lectures, alors
+qu'il n'en manquait que 3 % sur le premier milliard d'instructions. Une fois
+lancés, `apk` et OpenRC s'ajoutent au noyau et ne tiennent plus dans le cache.
+
+**65 536 cases.** Sur le même démarrage complet, il ne manque plus que 4,3 %
+des lectures : 319 597 692 décodées au lieu de 1 569 319 990. Le temps passe
+de 615 s à 590 s, avec les mêmes 7 373 336 906 instructions et les mêmes
+réponses. Le cache occupe 6 Mio par machine : chaque case tient quatre mots
+et une instruction de 64 octets.
+
+**Le test.** `X86DecodeCache.footprint` donne cette taille, et un test la borne
+à 8 Mio, sans descendre sous 65 536 cases. Un sabotage à 262 144 cases le fait
+échouer.
+
 ## 2026-10-18 — le cœur n'est plus recopié à chaque instruction : −13 %
 
 Relance horaire, même autorisation. Après le contrôle d'exclusivité,
