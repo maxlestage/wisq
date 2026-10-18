@@ -49,6 +49,14 @@ final class X86DecodeCacheTests: XCTestCase {
         XCTAssertLessThanOrEqual(core.decodeCache.misses, 4)
     }
 
+    /// Le cache se paie en mémoire, une fois par machine : il doit rester
+    /// petit devant la RAM de l'invité, même sur un téléphone.
+    func testTheCacheStaysSmallBesideTheGuestsMemory() {
+        XCTAssertLessThanOrEqual(X86DecodeCache.footprint, 8 << 20, "huit Mio au plus")
+        XCTAssertGreaterThanOrEqual(X86DecodeCache.slots, 1 << 16,
+                                    "l'espace utilisateur ne tient pas dans moins")
+    }
+
     /// La case elle-même : une entrée ne sert que pour ses octets, et que si
     /// elle tient dans ce que la lecture s'autorise — la borne de page quand
     /// la pagination est active.
