@@ -110,15 +110,16 @@ final class X86VectorTests: XCTestCase {
     /// du dépôt tient dans les deux sens : ce qui est demandé est écrit et
     /// mesuré, ce qui ne l'est pas s'arrête en le disant.
     func testPackedArithmeticIsStillRefusedByName() throws {
-        // `66 0f 59 c1` : mulpd %xmm1,%xmm0
-        let ram = try Self.memory([0x66, 0x0F, 0x59, 0xC1])
+        // `66 0f 5c c1` : subpd %xmm1,%xmm0. `mulpd` et `addpd` sont arrivées
+        // avec Debian ; `subpd`, qu'aucun de ses binaires n'emploie, non.
+        let ram = try Self.memory([0x66, 0x0F, 0x5C, 0xC1])
         var core = Self.core(ram)
         core.setVector(0, 0x3FF0_0000_0000_0000, 0x4000_0000_0000_0000)
         XCTAssertThrowsError(try core.run(budget: 1)) { error in
             guard case .unsupported(let name)? = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, reçu \(error)")
             }
-            XCTAssertTrue(name.contains("59"), "il faut nommer l'opcode : \(name)")
+            XCTAssertTrue(name.contains("5C"), "il faut nommer l'opcode : \(name)")
         }
         XCTAssertEqual(core.vectors[0], 0x3FF0_0000_0000_0000,
                        "et rien n'a été écrit avant de refuser")
