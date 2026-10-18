@@ -8,6 +8,57 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — Debian 13 jusqu'au shell de root, l'image telle qu'elle est téléchargée
+
+Suite directe, même autorisation. Après les flottants, plus aucune instruction
+n'arrêtait Debian. Ce qui restait tenait à systemd et à `login`, sur une
+machine qui exécute une quinzaine de millions d'instructions par seconde et
+dont l'horloge suit le temps réel (1 152 s d'uptime pour 1 286 s de course).
+Six démarrages de vingt minutes ont levé les obstacles un par un.
+
+1. **Le mode de secours.** Le périphérique de `/boot/efi` n'apparaissait pas
+   dans les 90 s qu'un périphérique reçoit, et journald dépassait son délai et
+   son chien de garde. Remède : `systemd.default_device_timeout_sec=600`,
+   `systemd.default_timeout_start_sec=600`, `systemd.service_watchdogs=0`.
+2. **« Welcome to your new installation… Press any key ».** C'est
+   `systemd-firstboot`, qui attend une touche, puis veut donner un mot de
+   passe à `root`, verrouillé dans l'image (`!unprovisioned`). Les couper laissait
+   `root` verrouillé. Les credentials passés sur la ligne de commande
+   répondent d'avance : locale, clavier, fuseau, mot de passe.
+3. **Le banc ne tapait pas au bon moment.** Il attendait le repos de la
+   machine, que systemd ne laisse jamais venir, puis le silence de la
+   console, que l'indicateur de progression ne laisse jamais venir non plus.
+   Les lignes portaient aussi un `\n` de trop. Le banc avance maintenant par
+   tranches de cinquante millions d'instructions, et tape à la tranche qui
+   suit celle où l'invite est apparue. Il connaît aussi `Password: `.
+   Alpine ne s'en porte que mieux : 493 à 546 s au lieu de 552.
+4. **`login` expirait pendant la vérification du mot de passe.** Donné en
+   clair, le mot de passe était chiffré en yescrypt, trop coûteux à cette
+   vitesse. Il passe maintenant en empreinte `$6$` (`SHA512Crypt`, écrit ici
+   et vérifié contre FIPS 180-4, la spécification de SHA-crypt et
+   `openssl passwd -6`), qui en plus ne se lit plus en clair dans
+   `/proc/cmdline`. Le mot de passe passait, et le message d'accueil
+   s'affichait.
+5. **…puis `login` expirait quand même.** La lecture de `login.c`
+   (util-linux 2.41) l'a expliqué : `LOGIN_TIMEOUT` couvre l'authentification
+   **et** l'ouverture de la session, où `pam_systemd` attend le gestionnaire
+   `systemd --user` de `root`. Le remède est la console série ouverte comme
+   une console physique : `agetty.autologin:root`, `login.noauth:yes`,
+   `systemd.mask=user@0.service`.
+
+**Ce que la machine répond.** Le banc démarre maintenant une image de cloud
+telle quelle (`WISQ_PC_CLOUD_IMAGE`), avec le noyau, l'initramfs et la ligne
+de commande de `CloudBoot`, comme le fera l'application.
+`debian-13-nocloud-amd64.qcow2`, mot de passe `wisq`, donne
+`root@localhost:~#`, puis `13.7`, `6.12.113+deb13-amd64` et 278 paquets :
+18,9 milliards d'instructions en 1 186 s.
+
+**Les tests.** `SHA512Crypt` : trois vecteurs de SHA-512, trois de la
+spécification, un d'`openssl`, tous justes du premier coup. `CloudBoot` : les
+délais ajoutés sauf ceux que l'entrée fixe, la console série, le mot de passe
+qui ne passe qu'en empreinte, avec un sel neuf à chaque démarrage. Les deux
+sabotages de la règle des doublons sont vus.
+
 ## 2026-10-18 — les flottants SSE2 qui manquaient : Debian jusqu'à « Welcome to Debian »
 
 Suite directe. Debian s'était arrêtée sur `F2 0F C2` (`CMPSD`) une fois
