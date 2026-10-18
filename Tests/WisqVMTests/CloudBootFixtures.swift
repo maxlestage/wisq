@@ -2,7 +2,8 @@ import Foundation
 
 // Le grub.cfg de l'image cloud `debian-13-nocloud-amd64.qcow2` (somme SHA-512
 // 401ffd04…5bd0df26), tel que `update-grub` l'a écrit, lu par
-// `debugfs -R "cat /boot/grub/grub.cfg"`. Ne pas éditer à la main.
+// `debugfs -R "cat /boot/grub/grub.cfg"`, sans les espaces que `update-grub`
+// laisse en fin de ligne. Ne pas éditer à la main.
 enum CloudBootFixtures {
     static let debianGrub = #"""
 #
@@ -107,7 +108,7 @@ menuentry 'Debian GNU/Linux' --class debian --class gnu-linux --class gnu --clas
 	  search --no-floppy --fs-uuid --set=root 13223055-e9dd-4810-96ca-8fe4d0ef1d49
 	fi
 	echo	'Loading Linux 6.12.113+deb13-amd64 ...'
-	linux	/boot/vmlinuz-6.12.113+deb13-amd64 root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 
+	linux	/boot/vmlinuz-6.12.113+deb13-amd64 root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0
 	echo	'Loading initial ramdisk ...'
 	initrd	/boot/initrd.img-6.12.113+deb13-amd64
 }
@@ -125,7 +126,7 @@ submenu 'Advanced options for Debian GNU/Linux' $menuentry_id_option 'gnulinux-a
 		  search --no-floppy --fs-uuid --set=root 13223055-e9dd-4810-96ca-8fe4d0ef1d49
 		fi
 		echo	'Loading Linux 6.12.113+deb13-amd64 ...'
-		linux	/boot/vmlinuz-6.12.113+deb13-amd64 root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0 
+		linux	/boot/vmlinuz-6.12.113+deb13-amd64 root=PARTUUID=3f7bd41d-e564-4995-bb29-b2aebe93a04c ro console=tty0 console=ttyS0,115200 earlyprintk=ttyS0,115200 consoleblank=0
 		echo	'Loading initial ramdisk ...'
 		initrd	/boot/initrd.img-6.12.113+deb13-amd64
 	}
