@@ -84,7 +84,12 @@ final class X86BootAttemptTests: XCTestCase {
     /// ISO qui démarre jusqu'au bout — « Welcome to Alpine Linux » — laissait
     /// le banc muet devant `login:`, et la course finissait sans qu'on ait
     /// rien demandé à la machine.
-    static let prompts = [prompt, "login: ", "~# "]
+    ///
+    /// Et `Password: ` : l'image de cloud de Debian demande le mot de passe de
+    /// `root`, vide, après le nom. Sans cette invite, le banc attendait, la
+    /// saisie expirait sur « Login incorrect », et la ligne suivante tombait
+    /// sur un nouveau `login:`. Une entrée `\n` y répond.
+    static let prompts = [prompt, "login: ", "~# ", "Password: "]
     /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
     /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
     /// la réponse ne dépend d'aucun programme à charger.
