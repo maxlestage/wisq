@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-18 — le cœur n'est plus recopié à chaque instruction : −13 %
+
+Relance horaire, même autorisation. Après le contrôle d'exclusivité,
+l'échantillonnage montrait `memcpy` dans un échantillon sur huit, et
+`swift_retain`/`swift_release` dans un sur dix. Le désassemblage a donné la
+taille copiée : `0x308`, 776 octets, c'est-à-dire tout `X86Core`. Ces copies
+étaient faites avant chaque appel à `read(_:_:highByte:)`, `readReg`,
+`condition` et `effectiveAddress` : quatorze dans `oneByte`, onze dans
+`twoByte`.
+
+**Pourquoi.** Ces quatre fonctions ne modifient rien et sont appelées depuis
+des fonctions `mutating`. Tant que l'appel reste un appel, Swift leur passe
+une copie de `self`, avec chaque référence du cœur retenue puis relâchée.
+Marquées `@inline(__always)`, elles lisent les champs sur place, et il ne
+reste presque plus de copie du cœur dans les fonctions chaudes.
+
+**Ce que ça rend.** Sur le premier milliard d'instructions du démarrage
+d'Alpine, on passe de 67,3 s à 58,3 s (−13 %), avec le même nombre
+d'instructions retirées, le même RIP final et les mêmes lectures du cache. La
+suite passe telle quelle (2210 tests Swift). Le changement ne modifie aucun
+comportement, il n'y a donc pas de nouveau test. Le démarrage complet jusqu'au
+shell de `root` passe de 711 s à 615 s, avec exactement le même nombre
+d'instructions retirées (7 373 336 906) et les mêmes réponses.
+
+**La suite, vue en passant.** Sur tout ce démarrage, le cache de décodage
+trouve 5,80 milliards d'instructions et en décode 1,57 milliard, soit 21 %
+d'absences, contre 3 % sur le premier milliard. Les programmes de l'espace
+utilisateur (`apk`, OpenRC) ne tiennent pas dans 8192 cases. C'est la
+prochaine tranche.
+
 ## 2026-10-18 — le contrôle d'exclusivité sortait de la boucle chaude : −30 %
 
 Relance horaire, même autorisation. Un nouvel échantillonnage, après le cache
