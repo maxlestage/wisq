@@ -394,6 +394,10 @@ public enum InstalledMachines {
             KernelMemory.size(forKernel: source.key, in: directory, ceiling: .max),
             forKernel: copy.key, in: directory)
 
+        // Le mot de passe de `root` : la copie démarre le même système, déjà
+        // mis en route avec lui.
+        RootPassword.copy(from: source.key, to: copy.key, in: directory)
+
         // Le disque choisi : le même fichier, sauf le disque propre, qui est
         // remplacé par celui de la copie.
         let renamed: (String) -> String = { disk in
@@ -435,6 +439,7 @@ public enum InstalledMachines {
 
     static func forgetEverything(of machine: InstalledMachine, in directory: URL?) {
         KernelMemory.forget(kernel: machine.key, in: directory)
+        RootPassword.forget(kernel: machine.key, in: directory)
         LocalDisk.forget(kernel: machine.key, in: directory)
         SuspendedMachine.clearAll(named: machine.key, in: directory)
         LocalDisk.discardWrites(withPrefix: machine.keys.overlayPrefix, in: directory)
