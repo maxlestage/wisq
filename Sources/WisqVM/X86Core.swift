@@ -429,12 +429,20 @@ public struct X86Core: @unchecked Sendable {
                     : X86Instruction.maximumLength
                 let available = min(room, memory.size - start)
                 let instruction: X86Instruction
-                do {
-                    instruction = try X86Decoder.decode(memory.bytes + start,
-                                                        available: available)
-                } catch X86DecodeError.truncated
-                            where available < X86Instruction.maximumLength {
-                    instruction = try decodeAcrossPageBoundary(from: start, have: available)
+                if let known = decodeCache.lookup(memory.bytes, at: start, size: memory.size,
+                                                  available: available) {
+                    instruction = known
+                } else {
+                    do {
+                        instruction = try X86Decoder.decode(memory.bytes + start,
+                                                            available: available)
+                        decodeCache.store(instruction, memory.bytes, at: start, size: memory.size)
+                    } catch X86DecodeError.truncated
+                                where available < X86Instruction.maximumLength {
+                        // À cheval sur deux pages : jamais rangé, puisque ses
+                        // derniers octets ne sont pas à la suite des premiers.
+                        instruction = try decodeAcrossPageBoundary(from: start, have: available)
+                    }
                 }
                 // Le témoin, quand il est armé et qu'on est dans un programme.
                 // La condition est d'abord sur le drapeau : éteint — le cas de
@@ -551,6 +559,8 @@ public struct X86Core: @unchecked Sendable {
     /// le chemin lent n'alloue pas : il est rare — quatorze octets sur quatre
     /// mille quatre-vingt-seize — mais il est sur le chemin chaud.
     var fetchWindow = [UInt8](repeating: 0, count: X86Instruction.maximumLength)
+    /// Les instructions déjà décodées. Voir `X86DecodeCache`.
+    let decodeCache = X86DecodeCache()
 
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
