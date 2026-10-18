@@ -68,6 +68,17 @@ final class X86SystemTests: XCTestCase {
         }
     }
 
+    /// `FNCLEX` efface les drapeaux d'exception, ES et B, et garde le sommet
+    /// de pile et les codes de condition : de 0xFFFF il reste 0x7F00. Linux
+    /// l'exécute sur un processeur AMD à chaque restauration de l'état
+    /// flottant ; sans lui, Alpine comme Debian s'arrêtaient sur `DB E2`.
+    func testFNCLEXClearsTheExceptionsAndKeepsTheStackTop() throws {
+        var core = try machine([0xDB, 0xE2, 0xF4])
+        core.x87Status = 0xFFFF
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.x87Status, 0x7F00)
+    }
+
     /// **MMX est annoncé au sens strict**, comme le FPU : la glibc lit le bit,
     /// aucun binaire de l'initramfs de Debian n'emploie un registre MMX, et
     /// une instruction MMX qui arriverait serait refusée par son nom plutôt

@@ -42,6 +42,13 @@ extension X86Core {
                 x87Status = 0
                 x87Control = 0x037F
                 x87Tags = 0xFFFF
+            // FNCLEX : les drapeaux d'exception, le résumé ES et le bit B
+            // effacés ; le sommet de pile et les codes de condition restent.
+            // Linux l'exécute à chaque restauration de l'état flottant sur un
+            // processeur AMD (le contournement de « FXSAVE leak »), ce que le
+            // cœur annonce depuis qu'il se présente comme le `qemu64` de QEMU.
+            case (0xDB, 4) where modrm == 0xE2:
+                x87Status &= 0x7F00
             // L'arithmétique sur la pile. `D8` écrit dans ST(0), `DC` dans
             // ST(i), et `DE` dans ST(i) **puis dépile** — trois octets pour
             // trois destinations, ce que le mnémonique seul ne dit pas.
