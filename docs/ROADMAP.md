@@ -441,8 +441,18 @@ noyau dans le disque lui-même.
    l'image `nocloud` de Debian 13, démarrée telle quelle par le banc
    (`WISQ_PC_CLOUD_IMAGE`), répond `13.7`, `6.12.113+deb13-amd64` et
    278 paquets au shell de `root`, en 19 milliards d'instructions.
-5. Dans l'application : une image de cloud importée ou téléchargée propose
-   « Démarrer », sans noyau à choisir, et demande le mot de passe de `root`.
+5. **Fait.** Dans l'application, une image de cloud importée ou téléchargée
+   démarre quand on la touche, sans noyau à choisir. Elle prend le chemin des
+   images d'installation : `IsoBoot.decide` passe la main à
+   `CloudBoot.unpack`, qui écrit le noyau et l'initramfs sous des noms fixes
+   dans le dossier de déballage, et l'image devient le disque. Sont concernés
+   le qcow2, le VMDK et l'image brute, lue par `RawDiskImage`. Un fichier brut
+   sans table de partitions lisible passe tel quel, comme avant : un noyau
+   sans en-tête garde sa chance. Vérifié sur l'image Debian 13 : ce qui est
+   déballé est, octet pour octet, ce que `CloudBoot` lit.
+5b. Demander le mot de passe de `root` avant le premier démarrage, et le
+   passer à `IsoBoot.decide(rootPassword:)`, qui l'accepte déjà. Sans lui,
+   `root` s'ouvre sur la console série et reste verrouillé ailleurs.
 6. D'autres index : `SHA512SUMS` de Debian (SHA-512 est là depuis l'étape 4),
    `SHA256SUMS` d'Ubuntu.
 

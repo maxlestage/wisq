@@ -908,11 +908,14 @@ public enum KernelLibrary {
         // qu'il était. Et seulement pour une image : jeter le déballage en
         // supprimant un noyau ordinaire ne coûterait rien, mais ce serait dire
         // quelque chose de faux sur ce qui vient de partir.
+        //
+        // Une image de cloud en qcow2 ou en VMDK déballe aussi son noyau au
+        // même endroit (`CloudBoot.unpack`), et l'emporte de la même façon.
         let wasAnImage: Bool
-        if case .discImage = KernelImageKind.identify(fileAt: url) {
-            wasAnImage = true
-        } else {
-            wasAnImage = false
+        switch KernelImageKind.identify(fileAt: url) {
+        case .discImage: wasAnImage = true
+        case .virtualDisk(let format): wasAnImage = KernelImageKind.isReadableVirtualDisk(format)
+        default: wasAnImage = false
         }
         try? FileManager.default.removeItem(at: url)
         if wasAnImage {
