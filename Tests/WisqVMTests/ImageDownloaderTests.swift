@@ -46,19 +46,23 @@ final class ImageDownloaderTests: XCTestCase {
                 return (cutAfter, endAfter)
             }
             var start = 0
+            var last = file.count - 1
             var status = 200
             var contentRange: String?
             if let range, behaviour != .ignoresRange {
-                start = Int(range.dropFirst("bytes=".count).dropLast())!
+                // `bytes=100-` pour une reprise, `bytes=0-0` pour la taille.
+                let bounds = range.dropFirst("bytes=".count).split(separator: "-", omittingEmptySubsequences: false)
+                start = Int(bounds[0])!
+                if let end = Int(bounds[1]) { last = min(end, last) }
                 if start >= file.count {
                     return FetchedResponse(status: 416, contentRange: "bytes */\(file.count)",
                                            body: AsyncThrowingStream { $0.finish() })
                 }
                 status = 206
                 let shown = behaviour == .wrongOffset ? 0 : start
-                contentRange = "bytes \(shown)-\(file.count - 1)/\(file.count)"
+                contentRange = "bytes \(shown)-\(last)/\(file.count)"
             }
-            var bytes = Array(file[start...]) + [UInt8](repeating: 7, count: extra)
+            var bytes = Array(file[start...last]) + [UInt8](repeating: 7, count: extra)
             if let corruptAt, corruptAt >= start { bytes[corruptAt - start] ^= 0xFF }
             let send = bytes
             let body = AsyncThrowingStream<Data, Error> { continuation in
@@ -87,9 +91,9 @@ final class ImageDownloaderTests: XCTestCase {
     private let image: [UInt8] = (0..<100_000).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ $0 >> 9) }
 
     private var release: ImageDownload.Release {
-        ImageDownload.Release(flavor: "alpine-virt", title: "Virtual", version: "3.24.2", arch: "x86_64",
-                              file: "alpine-virt.iso", size: image.count,
-                              sha256: SHA256Stream.hex(image))
+        ImageDownload.Release(distribution: "Alpine", flavor: "alpine-virt", title: "Virtual", version: "3.24.2",
+                              arch: "x86_64", file: "alpine-virt.iso", size: image.count,
+                              checksum: .sha256(SHA256Stream.hex(image)), index: ImageDownload.alpineIndex)
     }
 
     private var part: URL { parts.appendingPathComponent("alpine-virt.iso.part") }
@@ -240,6 +244,81 @@ final class ImageDownloaderTests: XCTestCase {
             XCTFail("un index vide doit le dire")
         } catch {
             XCTAssertEqual(error as? ImageDownloader.Failure, .nothingToDownload)
+        }
+    }
+
+    /// Plusieurs serveurs, un par adresse : ce qu'un téléphone voit quand il
+    /// lit l'index d'Alpine et celui de Debian.
+    final class Router: RangeFetcher, @unchecked Sendable {
+        let routes: [URL: Server]
+        init(_ routes: [URL: Server]) { self.routes = routes }
+        func fetch(_ url: URL, range: String?) async throws -> FetchedResponse {
+            guard let server = routes[url] else {
+                return FetchedResponse(status: 404, contentRange: nil, body: AsyncThrowingStream { $0.finish() })
+            }
+            return try await server.fetch(url, range: range)
+        }
+    }
+
+    private var debianImage: URL {
+        ImageDownload.debianIndex.deletingLastPathComponent()
+            .appendingPathComponent("debian-13-nocloud-amd64.qcow2")
+    }
+
+    /// **Debian à côté d'Alpine** : sa taille demandée au serveur (un octet),
+    /// puis le fichier téléchargé et vérifié contre sa somme SHA-512.
+    func testDebianIsListedWithItsSizeAndVerifiedBySHA512() async throws {
+        let sums = SHA256Stream.hexString(SHA512Crypt.sha512(image)) + "  debian-13-nocloud-amd64.qcow2\n"
+        let file = Server(image)
+        let router = Router([
+            ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8)),
+            ImageDownload.debianIndex: Server(Array(sums.utf8)),
+            debianImage: file,
+        ])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
+        let releases = try await downloader.bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["alpine-virt", "alpine-standard", "debian-nocloud"])
+        let debian = try XCTUnwrap(releases.last)
+        XCTAssertEqual(debian.size, image.count, "la taille vient du 206")
+        XCTAssertEqual(file.ranges, [ImageDownload.sizeProbe])
+
+        let url = try await downloader.download(debian, into: library)
+        XCTAssertEqual(url, library.appendingPathComponent("debian-13-nocloud-amd64.qcow2"))
+        XCTAssertEqual(try Data(contentsOf: url), Data(image))
+    }
+
+    /// **Un index muet ne cache pas l'autre**, et une image dont le serveur
+    /// ne dit pas la taille n'est pas proposée. Seul un échec de tous est un
+    /// échec, et il dit le premier.
+    func testOneSilentIndexDoesNotHideTheOther() async throws {
+        let onlyDebian = Router([
+            ImageDownload.debianIndex: Server(Array((String(repeating: "ab", count: 64)
+                                                     + "  debian-13-nocloud-amd64.qcow2\n").utf8)),
+            debianImage: Server(image),
+        ])
+        let releases = try await ImageDownloader(fetcher: onlyDebian, partsFolder: parts).bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["debian-nocloud"])
+        let onlyAlpine = Router([ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8))])
+        let alpine = try await ImageDownloader(fetcher: onlyAlpine, partsFolder: parts).bootableReleases()
+        XCTAssertEqual(alpine.map(\.flavor), ["alpine-virt", "alpine-standard"], "Debian muet, Alpine reste")
+
+        let sizeless = Server(image)
+        sizeless.behaviour = .ignoresRange
+        let noSize = Router([
+            ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8)),
+            ImageDownload.debianIndex: Server(Array((String(repeating: "ab", count: 64)
+                                                     + "  debian-13-nocloud-amd64.qcow2\n").utf8)),
+            debianImage: sizeless,
+        ])
+        let alpineOnly = try await ImageDownloader(fetcher: noSize, partsFolder: parts).bootableReleases()
+        XCTAssertEqual(alpineOnly.map(\.flavor), ["alpine-virt", "alpine-standard"])
+
+        do {
+            _ = try await ImageDownloader(fetcher: Router([:]), partsFolder: parts).bootableReleases()
+            XCTFail("aucun index lisible doit le dire")
+        } catch {
+            XCTAssertEqual(error as? ImageDownloader.Failure,
+                           .refused("l'index de la distribution n'a pas pu être lu (404)."))
         }
     }
 

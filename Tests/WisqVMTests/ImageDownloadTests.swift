@@ -51,6 +51,94 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(try SHA256Stream.hex(ofFileAt: url), whole)
     }
 
+    // MARK: - SHA-512
+
+    /// Les vecteurs de FIPS 180-4 : vide, « abc », le message de deux blocs,
+    /// et un million de « a » ; par morceaux à cheval sur les blocs de 128
+    /// octets, la même somme qu'en une fois, et la même que `SHA512Crypt`.
+    func testSHA512ByPiecesMatchesTheStandardVectors() throws {
+        XCTAssertEqual(SHA512Stream.hex([UInt8]()),
+                       "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
+                           + "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e")
+        XCTAssertEqual(SHA512Stream.hex(Array("abc".utf8)),
+                       "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+                           + "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+        XCTAssertEqual(SHA512Stream.hex([UInt8](repeating: 0x61, count: 1_000_000)),
+                       "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973eb"
+                           + "de0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b")
+        let bytes = (0..<10_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 7) }
+        let whole = SHA512Stream.hex(bytes)
+        XCTAssertEqual(whole, SHA256Stream.hexString(SHA512Crypt.sha512(bytes)))
+        for piece in [1, 7, 111, 112, 127, 128, 129, 255, 1000] {
+            var hash = SHA512Stream()
+            var start = 0
+            while start < bytes.count {
+                hash.update(bytes[start..<min(start + piece, bytes.count)])
+                start += piece
+            }
+            XCTAssertEqual(SHA256Stream.hexString(hash.finalize()), whole, "morceaux de \(piece)")
+        }
+        let url = folder.appendingPathComponent("f")
+        try Data(bytes).write(to: url)
+        XCTAssertEqual(try SHA512Stream.hex(ofFileAt: url), whole)
+    }
+
+    // MARK: - L'index de Debian
+
+    /// Des lignes du vrai `SHA512SUMS` de Debian 13 (relevé le 18 octobre
+    /// 2026), plus des lignes qui ne doivent rien donner : seule l'image
+    /// `nocloud` pour PC, en qcow2, sort, avec sa version et sa somme.
+    static let debianSums = """
+        9819cd8290a212160ab7f88d18b993399ccf05d3f4f790f3318f82a88e03b3c60d2405688cb99490ea98ec4204e55bf0f8c3b8ee627a8065759b0b1a39b11a7b  debian-13-generic-amd64.json
+        62aa92aeff32cbf3fe6c01f410fef4035b1603a512f073c9f8889072168de9e49fa361ba48621359fc7608ad91225e823ea233feb33f612eb39e50aaf21957fe  debian-13-generic-amd64.qcow2
+        ec584ccabfef7120b4c4f7482adf0e615894d9292cedec446b64194b951ebe5dd97c336b5dcbae458333764b0edd516334506017f33c4f2020ef8d38b569ffe3  debian-13-genericcloud-amd64.qcow2
+        401ffd04907291b3af4fd9832b38fa16ac92e83cdb21a954f76a72d2b2d0daa6f6fc98a596f52a2616c0a3f11fd8f47138da8f5667b7f15f0a4bbc5f5bd0df26  debian-13-nocloud-amd64.qcow2
+        b91d3ea53e5d31eb13d721fd8b650990ff43cdbf4f2c57b215e077999161c8a4cff1984c882085092a91ccbe8c1c13faee146b5146aa308d44c95e60c46d82f0  debian-13-nocloud-amd64.raw
+        866b11bfa9c2dfb9a15569b9e1407c01cf9daa3e1e75afe576af58a8737f2a7436f585d45ce8bfb620976c8459f5347badab9c4c83552010c33ade0ab3eac37f  debian-13-nocloud-arm64.qcow2
+        401ffd04  debian-14-nocloud-amd64.qcow2
+        401ffd04907291b3af4fd9832b38fa16ac92e83cdb21a954f76a72d2b2d0daa6f6fc98a596f52a2616c0a3f11fd8f47138da8f5667b7f15f0a4bbc5f5bd0df26  ../debian-13-nocloud-amd64.qcow2
+        401ffd04907291b3af4fd9832b38fa16ac92e83cdb21a954f76a72d2b2d0daa6f6fc98a596f52a2616c0a3f11fd8f47138da8f5667b7f15f0a4bbc5f5bd0df26  debian-x-nocloud-amd64.qcow2
+        """
+
+    func testTheDebianIndexGivesTheNocloudImageOnly() {
+        let found = ImageDownload.debianCandidates(Self.debianSums)
+        XCTAssertEqual(found.map(\.file), ["debian-13-nocloud-amd64.qcow2"])
+        XCTAssertEqual(found.first?.version, "13")
+        XCTAssertEqual(found.first?.sha512.prefix(8), "401ffd04")
+        // L'étoile du mode binaire de `sha512sum` ne fait pas partie du nom.
+        let starred = ImageDownload.debianCandidates(String(repeating: "ab", count: 64)
+                                                         + " *debian-14-nocloud-amd64.qcow2")
+        XCTAssertEqual(starred.map(\.file), ["debian-14-nocloud-amd64.qcow2"])
+        let release = ImageDownload.debianRelease(file: "debian-13-nocloud-amd64.qcow2", version: "13",
+                                                  sha512: String(repeating: "ab", count: 64), size: 10)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-nocloud-amd64.qcow2")
+        XCTAssertEqual(release.checksum.algorithm, "SHA-512")
+    }
+
+    /// **Le vrai fichier**, si on le donne (`WISQ_DEBIAN_QCOW2`) : sa somme
+    /// SHA-512 est celle de `SHA512SUMS`, et le temps qu'elle prend se lit.
+    func testTheRealDebianImageMatchesItsPublishedSum() throws {
+        guard let path = ProcessInfo.processInfo.environment["WISQ_DEBIAN_QCOW2"] else {
+            throw XCTSkip("image absente : définir WISQ_DEBIAN_QCOW2 pour ce test")
+        }
+        let started = Date()
+        let digest = try SHA512Stream.hex(ofFileAt: URL(fileURLWithPath: path))
+        print("SHA-512 de \(path) en \(String(format: "%.1f", Date().timeIntervalSince(started))) s")
+        XCTAssertEqual(digest, ImageDownload.debianCandidates(Self.debianSums).first?.sha512)
+    }
+
+    /// La taille demandée au serveur : le total d'un `206`, rien d'autre.
+    func testTheSizeProbeReadsOnlyAPartialAnswer() {
+        XCTAssertEqual(ImageDownload.size(fromProbe: 206, contentRange: "bytes 0-0/437452288"), 437_452_288)
+        XCTAssertNil(ImageDownload.size(fromProbe: 206, contentRange: "bytes 0-0/*"))
+        XCTAssertNil(ImageDownload.size(fromProbe: 200, contentRange: nil))
+        XCTAssertNil(ImageDownload.size(fromProbe: 206, contentRange: nil))
+        // Un `200` envoie le fichier entier, pas l'octet demandé : un
+        // `Content-Range` qui l'accompagnerait ne décrit rien de ce qui vient.
+        XCTAssertNil(ImageDownload.size(fromProbe: 200, contentRange: "bytes 0-0/10"))
+    }
+
     // MARK: - L'index d'Alpine
 
     /// L'index tel que le miroir d'Alpine le servait le 18 octobre 2026 — à
@@ -174,9 +262,10 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(bootable.map(\.flavor), ["alpine-virt", "alpine-standard"])
         let virt = try XCTUnwrap(bootable.first)
         XCTAssertEqual(virt, ImageDownload.Release(
-            flavor: "alpine-virt", title: "Virtual", version: "3.24.2", arch: "x86_64",
+            distribution: "Alpine", flavor: "alpine-virt", title: "Virtual", version: "3.24.2", arch: "x86_64",
             file: "alpine-virt-3.24.2-x86_64.iso", size: 69_206_016,
-            sha256: "3ab424762af704b2c2a9e57df1dc37f982af260071504d977f2fb96822e7130b"))
+            checksum: .sha256("3ab424762af704b2c2a9e57df1dc37f982af260071504d977f2fb96822e7130b"),
+            index: ImageDownload.alpineIndex))
         XCTAssertEqual(ImageDownload.url(of: virt).absoluteString,
                        "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/"
                         + "alpine-virt-3.24.2-x86_64.iso")
@@ -247,13 +336,13 @@ final class ImageDownloadTests: XCTestCase {
         let part = ImageDownload.partURL(for: destination)
 
         try Data(bytes).write(to: part)
-        try ImageDownload.finish(part: part, as: destination, size: bytes.count, sha256: sum.uppercased())
+        try ImageDownload.finish(part: part, as: destination, size: bytes.count, checksum: .sha256(sum.uppercased()))
         XCTAssertEqual(try Data(contentsOf: destination), Data(bytes))
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path))
 
         try Data(bytes.dropLast()).write(to: part)
         XCTAssertThrowsError(try ImageDownload.finish(
-            part: part, as: destination, size: bytes.count, sha256: sum)) {
+            part: part, as: destination, size: bytes.count, checksum: .sha256(sum))) {
             XCTAssertEqual($0 as? ImageDownload.Failure,
                            .wrongSize(expected: bytes.count, got: bytes.count - 1))
         }
@@ -262,7 +351,7 @@ final class ImageDownloadTests: XCTestCase {
         var altered = bytes
         altered[3] ^= 1
         try Data(altered).write(to: part)
-        XCTAssertThrowsError(try ImageDownload.finish(part: part, as: destination, size: nil, sha256: sum)) {
+        XCTAssertThrowsError(try ImageDownload.finish(part: part, as: destination, size: nil, checksum: .sha256(sum))) {
             XCTAssertEqual($0 as? ImageDownload.Failure,
                            .checksumMismatch(expected: sum, got: SHA256Stream.hex(altered)))
         }
