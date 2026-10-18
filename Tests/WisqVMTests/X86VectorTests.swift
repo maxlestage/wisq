@@ -192,4 +192,26 @@ final class X86VectorTests: XCTestCase {
         XCTAssertEqual(Double(bitPattern: core.vectors[0]), 6.0)
         XCTAssertEqual(core.vectors[1], 0xAAAA, "la moitié haute est laissée telle quelle")
     }
+
+    /// **Les rangements non temporels** écrivent comme `MOVDQA` et `MOVAPS` :
+    /// seize octets, à l'adresse dite. L'oracle ne les voit pas (il refuse
+    /// qu'une instruction écrive dans sa fenêtre), d'où ce test. Et leur forme
+    /// entre registres n'existe pas : elle est refusée en le disant.
+    func testNonTemporalStoresWriteSixteenBytesAndOnlyToMemory() throws {
+        for code: [UInt8] in [[0x66, 0x0F, 0xE7, 0x06], [0x0F, 0x2B, 0x06]] {  // movntdq / movntps %xmm0,(%rsi)
+            let ram = try Self.memory(code)
+            var core = Self.core(ram)
+            core.registers[6] = 0x2000
+            core.setVector(0, 0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210)
+            try core.run(budget: 1)
+            XCTAssertEqual(try ram.read(0x2000, 8), 0x0123_4567_89AB_CDEF)
+            XCTAssertEqual(try ram.read(0x2008, 8), 0xFEDC_BA98_7654_3210)
+        }
+        for code: [UInt8] in [[0x66, 0x0F, 0xE7, 0xC1], [0x66, 0x0F, 0xD7, 0x06], [0x66, 0x0F, 0x12, 0xC1]] {
+            var core = Self.core(try Self.memory(code))
+            XCTAssertThrowsError(try core.run(budget: 1), "\(code)") { error in
+                guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+            }
+        }
+    }
 }

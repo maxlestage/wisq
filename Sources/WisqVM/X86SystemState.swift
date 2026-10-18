@@ -98,14 +98,30 @@ public struct X86SystemState: Equatable, Sendable {
 public enum X86CPUID {
     /// Le nom du constructeur : **exactement douze octets**, comme le veut la
     /// convention, répartis dans EBX, EDX puis ECX — dans cet ordre-là, qui
-    /// n'est pas celui qu'on devinerait. C'est ce que l'invité affichera dans
-    /// `/proc/cpuinfo`.
-    public static let vendor = "wisq  x86-64"
+    /// n'est pas celui qu'on devinerait.
+    ///
+    /// **Il a fallu un nom que la glibc connaît.** Le cœur s'annonçait
+    /// « wisq  x86-64 », et la glibc, pour un constructeur qu'elle ne
+    /// reconnaît pas, ne lit **jamais** la feuille 1 (`get_common_indices`
+    /// est appelé sans famille) : tous les bits du socle x86-64 lui
+    /// paraissaient absents, quoi qu'on y mette, et chaque programme de
+    /// l'initramfs de Debian s'arrêtait sur « CPU ISA level is lower than
+    /// required ». On reprend donc l'identité du processeur `qemu64` de
+    /// QEMU : `AuthenticAMD`, famille 15, modèle 107. Linux et la glibc la
+    /// voient depuis quinze ans sur des machines virtuelles sans JIT, et un
+    /// MSR propre au constructeur qu'ils liraient se lit ici comme zéro, sans
+    /// faute. Le nom de wisq reste là où on le lit : `model name`, dans
+    /// `/proc/cpuinfo`, vient de la chaîne de marque (`brand`).
+    public static let vendor = "AuthenticAMD"
+
+    /// La chaîne de marque, feuilles 0x80000002 à 0x80000004 : quarante-huit
+    /// octets, complétés de zéros.
+    public static let brand = "wisq x86-64 (comme le qemu64 de QEMU)"
 
     /// La plus grande feuille ordinaire que ce processeur connaît.
     public static let highestBasicLeaf: UInt32 = 1
     /// La plus grande feuille étendue.
-    public static let highestExtendedLeaf: UInt32 = 0x8000_0001
+    public static let highestExtendedLeaf: UInt32 = 0x8000_0004
 
     /// Ce que le noyau doit voir dans EDX pour la feuille 1. Chacun de ces
     /// bits est tenu par le reste du cœur :
@@ -119,8 +135,23 @@ public enum X86CPUID {
     /// - PAE (6) : la traduction d'adresses est à quatre niveaux.
     /// - CMOV (15) : les seize `CMOVcc` sont là depuis la tranche 3a.
     /// - PGE (13) et PSE (3) : les pages larges sont traduites.
+    /// - CX8 (8) : `CMPXCHG8B`.
+    /// - FXSR (24) : `FXSAVE` et `FXRSTOR`, tenus par leur oracle.
+    /// - SSE (25) et SSE2 (26) : les déplacements, la logique, l'arithmétique
+    ///   entière et les scalaires flottants. Ce qui reste refusé (les paquets
+    ///   de flottants, `CMPSD`) l'est par son nom.
+    /// - MMX (23), **au sens où FPU l'est** : aucune instruction MMX n'existe
+    ///   ici, et chacune est refusée par son nom si elle arrive.
+    ///
+    /// **Pourquoi les cinq derniers.** La glibc refuse de charger un programme
+    /// sur un processeur qui n'a pas le socle x86-64 : CMOV, CX8, FPU, FXSR,
+    /// MMX, SSE et SSE2, lus ici. L'image de cloud de Debian 13 s'arrêtait sur
+    /// « libc.so.6: CPU ISA level is lower than required » à chaque programme
+    /// de son initramfs, et udev, qui ne démarrait pas, ne créait jamais le
+    /// lien de sa racine. Aucun binaire de cet initramfs n'emploie un
+    /// registre MMX : le bit est ce que la glibc lit, pas ce qu'elle exécute.
     public static let features: UInt32 = 1 | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 3)
-        | (1 << 13) | (1 << 15)
+        | (1 << 13) | (1 << 15) | (1 << 8) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
@@ -135,13 +166,20 @@ public enum X86CPUID {
         case 0:
             return (highestBasicLeaf, word(0), word(8), word(4))
         case 1:
-            // La famille et le modèle : un « 6/15 », ce qu'un noyau accepte
-            // sans chercher d'errata particulier.
-            return (0x0000_06F0, 0, 0, features)
+            // Famille 15 (0xF), modèle 107 (0x6B : 0xB dans le champ de base,
+            // 6 dans l'étendu), pas 1 : ce que répond le `qemu64` de QEMU.
+            return (0x0006_0FB1, 0, 0, features)
         case 0x8000_0000:
             return (highestExtendedLeaf, 0, 0, 0)
         case 0x8000_0001:
             return (0, 0, 0, extendedFeatures)
+        case 0x8000_0002...0x8000_0004:
+            let bytes = Array(brand.utf8) + [UInt8](repeating: 0, count: 48 - brand.utf8.count)
+            let base = Int(leaf - 0x8000_0002) * 16
+            func brandWord(_ offset: Int) -> UInt32 {
+                (0..<4).reduce(UInt32(0)) { $0 | UInt32(bytes[base + offset + $1]) << (8 * UInt32($1)) }
+            }
+            return (brandWord(0), brandWord(4), brandWord(8), brandWord(12))
         default:
             // Une feuille inconnue rend des zéros, ce que le manuel demande —
             // et non les registres inchangés, qui feraient lire n'importe quoi.
