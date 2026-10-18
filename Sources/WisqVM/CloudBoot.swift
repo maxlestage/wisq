@@ -189,13 +189,37 @@ public struct CloudBoot: Equatable, Sendable {
         return String(word[word.index(after: close)...])
     }
 
+    /// Ce qu'une machine sans JIT demande à systemd, et pourquoi.
+    ///
+    /// L'horloge de l'invité avance avec les instructions exécutées, et wisq en
+    /// exécute une quinzaine de millions par seconde. Les délais que systemd
+    /// prévoit pour une vraie machine n'y suffisent pas. L'image de cloud de
+    /// Debian 13 l'a montré en trois démarrages :
+    /// - le périphérique de `/boot/efi` n'est pas apparu dans les 90 s qu'un
+    ///   périphérique reçoit, et systemd est passé en mode de secours ;
+    /// - journald a dépassé ses 90 s de démarrage et son chien de garde ;
+    /// - `systemd-firstboot` attendait une touche sur la console, avec « Press
+    ///   any key to proceed », pour une installation qui n'en a pas besoin.
+    ///
+    /// Les quatre options ne changent rien pour un système qui n'est pas
+    /// systemd : OpenRC ou BusyBox les ignorent.
+    static let slowMachineOptions = [
+        "systemd.default_device_timeout_sec=600", "systemd.default_timeout_start_sec=600",
+        "systemd.service_watchdogs=0", "systemd.firstboot=off",
+    ]
+
     /// La ligne de commande : les options de l'entrée, sans les variables de
-    /// GRUB qu'on ne peut pas évaluer (`$vt_handoff`), et avec la console
-    /// série si elles ne l'y mettent pas.
+    /// GRUB qu'on ne peut pas évaluer (`$vt_handoff`), avec la console série
+    /// si elles ne l'y mettent pas, et les délais d'une machine lente, sauf
+    /// ceux que l'entrée fixe déjà elle-même.
     static func commandLine(_ options: [String]) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
+        }
+        for option in slowMachineOptions {
+            let key = option.prefix { $0 != "=" }
+            if !kept.contains(where: { $0.prefix { $0 != "=" } == key }) { kept.append(option) }
         }
         return kept.joined(separator: " ")
     }
