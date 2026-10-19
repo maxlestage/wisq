@@ -370,10 +370,36 @@ public struct CloudBoot: Equatable, Sendable {
     ///   redemande pas le mot de passe ;
     /// - `systemd.mask=user@0.service` : aucun gestionnaire utilisateur à
     ///   attendre pour `root`.
+    ///
+    /// **Et, depuis systemd 256, pas de `login` du tout.** Chez Ubuntu 26.04,
+    /// `pam_motd` lance les scripts du message d'accueil dans les mêmes
+    /// soixante secondes, et `login` a expiré dix-neuf fois avant de passer.
+    /// Le credential `systemd.unit-dropin.serial-getty@ttyS0.service` donne
+    /// au service de la console série un `ExecStart` qui ouvre `bash` en
+    /// shell de connexion, directement sur `ttyS0` (voir `shellOnSerial`).
+    /// Un systemd plus ancien l'ignore, et les trois options d'avant
+    /// suffisent alors.
     static let consoleOptions = [
         "systemd.set_credential=agetty.autologin:root", "systemd.set_credential=login.noauth:yes",
+        "systemd.set_credential_binary=systemd.unit-dropin.serial-getty@ttyS0.service:"
+            + Data(shellOnSerial.utf8).base64EncodedString(),
         "systemd.mask=user@0.service",
     ]
+
+    /// Le drop-in de la console série. Passé en base64, parce qu'une ligne de
+    /// commande du noyau ne porte ni retour à la ligne ni espace dans une
+    /// valeur. `-` devant le programme : un shell qui sort ne met pas le
+    /// service en échec, et `Restart=always` en ouvre un autre.
+    static let shellOnSerial = """
+        [Service]
+        ExecStart=
+        ExecStart=-/bin/bash --login
+        StandardInput=tty
+        StandardOutput=tty
+        WorkingDirectory=/root
+        Environment=HOME=/root TERM=vt220
+
+        """
 
     /// **La première mise en route, sans question.** L'image de Debian 13
     /// arrive avec `root` verrouillé (`!unprovisioned` dans `/etc/shadow`) :

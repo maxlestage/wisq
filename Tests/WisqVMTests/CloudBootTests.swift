@@ -53,6 +53,28 @@ final class CloudBootTests: XCTestCase {
         XCTAssertNotEqual(first, second, "un sel neuf à chaque démarrage")
     }
 
+    /// **La console série ouvre un shell, sans `login`.** Le credential se
+    /// relit tel que systemd le relira : son nom désigne le service de
+    /// `ttyS0`, et sa valeur, en base64, est un drop-in qui **vide** d'abord
+    /// `ExecStart` (sans cette ligne vide, systemd refuse un second
+    /// `ExecStart` sur un service simple) puis lance `bash` en shell de
+    /// connexion sur le terminal. La ligne entière, mot de passe compris,
+    /// tient dans les 2048 octets d'une ligne de commande x86.
+    func testTheSerialConsoleOpensAShellWithoutLogin() throws {
+        let prefix = "systemd.set_credential_binary=systemd.unit-dropin.serial-getty@ttyS0.service:"
+        let option = try XCTUnwrap(CloudBoot.consoleOptions.first { $0.hasPrefix(prefix) })
+        let decoded = try XCTUnwrap(Data(base64Encoded: String(option.dropFirst(prefix.count))))
+        let dropIn = String(decoding: decoded, as: UTF8.self).split(separator: "\n").map(String.init)
+        XCTAssertEqual(dropIn.first, "[Service]")
+        let starts = dropIn.filter { $0.hasPrefix("ExecStart=") }
+        XCTAssertEqual(starts, ["ExecStart=", "ExecStart=-/bin/bash --login"], "vider, puis remplacer")
+        XCTAssertTrue(dropIn.contains("StandardInput=tty"), "le shell lit le terminal")
+        XCTAssertFalse(option.contains(" "), "une seule option pour le noyau")
+        let line = CloudBoot.commandLine(["root=PARTUUID=0123", "ro"], rootPassword: UUID().uuidString,
+                                         salt: "wisqsalt")
+        XCTAssertLessThan(line.utf8.count + X86BootLoader.defaultCommandLine.utf8.count + 1, 2048)
+    }
+
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
         (0..<count).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ ($0 >> 9) &+ seed) }
     }

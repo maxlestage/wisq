@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Ubuntu 26.04 jusqu'au shell de `root`, sans `login`
+
+Suite directe, même autorisation. Après #530, la même mesure (budget de
+90 milliards d'instructions, 1 Gio de RAM) va jusqu'au bout :
+`root@ubuntu:~#` à 71,4 milliards d'instructions, en 4658 s. Le message
+d'accueil d'Ubuntu s'affiche, adresse IPv4 de `eth0` comprise.
+
+Ce que la mesure laissait : `login` expirait dix-neuf fois avant de passer.
+Ses soixante secondes couvrent l'ouverture de la session, et `pam_motd` y
+lance les scripts du message d'accueil pendant que snapd et motd-news
+démarrent encore.
+
+- **La console série ouvre `bash`, sans `login`.** Depuis systemd 256, le
+  credential `systemd.unit-dropin.serial-getty@ttyS0.service` devient un
+  drop-in du service de la console. Celui de wisq vide `ExecStart` et lance
+  `bash --login` sur `ttyS0`. Il passe en base64
+  (`systemd.set_credential_binary`), parce qu'une valeur de la ligne de
+  commande du noyau ne porte ni espace ni retour à la ligne. Les credentials
+  d'avant restent pour un systemd plus ancien, qui ignore le drop-in. La
+  console série d'une machine wisq était déjà `root` sans mot de passe : on
+  n'y perd rien.
+- **Mesuré sur les deux.** Ubuntu 26.04 : `root@ubuntu:~#` à 60,9 milliards
+  d'instructions au lieu de 71,4, sans une expiration, et `/etc/os-release`
+  répond. Debian 13 : `root@localhost:~#` à 18,7 milliards, et
+  `cat /etc/debian_version` rend 13.7.
+- Un test relit le credential comme systemd le relira, et vérifie que la
+  ligne entière tient dans 2048 octets. Trois sabotages : la ligne
+  `ExecStart=` vide oubliée, le mauvais service, pas de terminal en entrée.
+
 ## 2026-10-19 — Ubuntu 26.04 jusqu'à son invite de connexion
 
 Suite directe, même autorisation. Avec le tic d'horloge allégé, Ubuntu 26.04
