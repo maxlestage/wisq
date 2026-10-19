@@ -49,8 +49,11 @@ extension X86Core {
         guard pagingActive else { return virtual }
         let page = virtual & ~UInt64(0xFFF)
         let slot = Int((page >> 12) & UInt64(Self.translationSlots - 1))
-        if translationTags[slot] == page &+ 1, allowed(translationFlags[slot], access) {
-            return translationFrames[slot] | (virtual & 0xFFF)
+        // Lu sans vérification de bornes : l'emplacement est masqué à la
+        // taille du cache, et le tableau n'en change jamais.
+        let entry = translations.withUnsafeBufferPointer { $0[slot] }
+        if entry.tag == page &+ 1, allowed(entry.flags, access) {
+            return entry.frame | (virtual & 0xFFF)
         }
         return try fill(virtual, page, slot, access)
     }
@@ -127,9 +130,7 @@ extension X86Core {
             pageFaultErrorCode = Self.present | how.errorCode | (privilege == 3 ? 1 << 2 : 0)
             throw Fault.pageFault(at)
         }
-        translationTags[slot] = page &+ 1
-        translationFrames[slot] = walked.frame
-        translationFlags[slot] = walked.flags
+        translations[slot] = Translation(tag: page &+ 1, frame: walked.frame, flags: walked.flags)
         return walked.frame | (at & 0xFFF)
     }
 
@@ -194,7 +195,7 @@ extension X86Core {
     /// Écrire CR3 vide le cache — c'est ce que fait un vrai processeur, et
     /// c'est ainsi qu'un noyau change d'espace d'adressage.
     mutating func flushTranslations() {
-        for slot in 0..<Self.translationSlots { translationTags[slot] = 0 }
+        for slot in 0..<Self.translationSlots { translations[slot].tag = 0 }
     }
 
     /// Écrire un registre de contrôle, et vider le cache de traductions quand
