@@ -8,6 +8,30 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le témoin éteint ne coûte plus rien
+
+Suite directe, même autorisation. Après #532, callgrind avec les coûts par
+adresse (`--dump-instr=yes`) sur les cent premiers millions d'instructions
+d'Alpine. `run` exécutait à lui seul 208 instructions de l'hôte par
+instruction de l'invité, dont 203 en ligne droite. Une quarantaine servait
+le témoin des adresses non canoniques, **même éteint** : `let before =
+watching ? registers : []` fabriquait un littéral vide de seize registres,
+le posait sur la pile et le passait, à chaque instruction.
+
+- Tout ce que le témoin fait autour d'`execute` vit dans `executeWatched`,
+  jamais inlinée. `run` ne garde qu'un test : `canonicalWatchArmed &&
+  privilege == 3`. Le code du témoin est le même, et le passage d'anneau
+  garde sa condition (`watching` impliquait déjà le drapeau et l'anneau
+  trois).
+- **Mesuré.** Sous callgrind : 50,35 → 43,34 milliards d'instructions hôte,
+  soit 13,9 % de moins. En temps CPU utilisateur, sur le premier milliard
+  d'instructions d'Alpine et trois paires alternées : 45,7 s → 43,3 s, 5 %.
+  L'écart entre les deux dit que le reste du temps attend la mémoire.
+- Pas de test nouveau : les tests des témoins passent par la fonction
+  déplacée. Deux sabotages. Un `run` qui n'appelle jamais le témoin fait
+  tomber 49 tests ; un témoin qui oublie `rememberBirths` en fait tomber
+  deux.
+
 ## 2026-10-19 — Le calcul d'adresse sans copie des registres
 
 Suite directe, même autorisation. Ubuntu démarre plus de trois fois plus
