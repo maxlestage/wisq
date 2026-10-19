@@ -465,7 +465,15 @@ noyau dans le disque lui-même.
    somme SHA-512 publiée (`SHA512Stream`, 390 Mio en 1,4 s). Un index muet ne
    cache pas l'autre. Vérifié sur le vrai miroir : la taille rendue est celle
    du fichier démarré, et sa somme celle de l'index.
-7. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
+7. **Vérifié : la session se reprend.** Par le chemin de l'application
+   (`X86Machine`, l'image comme disque sur fichier avec sa couche
+   d'écriture), Debian démarre jusqu'au shell de `root` en 966 s, puis
+   `snapshot()` rend 217 Mio en 2,4 s et `restore()` reprend dans une machine
+   neuve en 1,1 s. Une variable du shell posée avant la sauvegarde est là
+   après, et le disque répond (`X86CloudResumeTests`, armé par
+   `WISQ_PC_RESUME`). La suite : un instantané plus petit, puisqu'il s'écrit
+   à chaque passage en arrière-plan.
+8. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
    ne connaît pas encore le credential `agetty.autologin`, et ses images
    attendent cloud-init.
 
