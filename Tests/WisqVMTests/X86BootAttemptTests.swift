@@ -317,8 +317,22 @@ final class X86BootAttemptTests: XCTestCase {
             var remaining = allowance
             var answeredUpTo = 0
             var promptSeen = false
+            // **Où passe le temps de l'invité.** Avec `WISQ_PC_SAMPLE`, on
+            // avance par tranches d'un million d'instructions et l'on note le
+            // RIP où chacune s'arrête, une ligne hexadécimale par tranche, dans
+            // le fichier nommé. Avec `nokaslr` et le `System.map` de l'image,
+            // les adresses du noyau se lisent en noms de fonctions.
+            let sampleFile = environment["WISQ_PC_SAMPLE"]
+            var samples: [String] = []
+            defer {
+                if let sampleFile {
+                    try? samples.joined(separator: "\n").write(toFile: sampleFile, atomically: true, encoding: .utf8)
+                }
+            }
+            let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
             while remaining > 0 {
-                let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
+                let executed = try core.run(budget: min(remaining, slice), waiting: patient)
+                if sampleFile != nil { samples.append(String(core.rip, radix: 16)) }
                 remaining -= min(remaining, max(executed, 1))
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
