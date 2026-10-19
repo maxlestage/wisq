@@ -516,6 +516,14 @@ noyau dans le disque lui-même.
    d'instructions (3202 s), le second à 39,5 milliards (2322 s), soit 34 %
    de moins. Les services n'y attendent plus que 13 minutes au lieu de 37.
    AppArmor reste donc actif : son coût est celui du premier démarrage.
+10. **En cours.** Fedora 44 Cloud. Sa racine est un btrfs compressé en
+    zstd, sans `/boot` à part : le noyau, l'initramfs et les entrées BLS sont
+    dans le btrfs. Les tranches :
+    - **Fait.** La décompression zstd (`Zstd`, RFC 8878), écrite ici.
+    - Un lecteur btrfs en lecture seule : superbloc, arbre des tronçons,
+      arbre racine, sous-volumes, répertoires, et les extents en ligne,
+      ordinaires ou compressés.
+    - `CloudBoot` qui le prend comme il prend l'ext4.
 
 ## Télécharger une image depuis l'application
 

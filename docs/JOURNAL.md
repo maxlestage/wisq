@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — zstd, première tranche de Fedora
+
+Suite directe, même autorisation. Les derniers gains de l'interprète
+tombent sous 1 % chacun (un `X86Segments` à plat ne donnait que 0,6 %, et
+il est resté sur la table). La priorité « installer différentes machines
+Linux » repasse devant : Fedora 44 Cloud range son noyau dans un btrfs
+compressé en zstd, et wisq ne lit ni l'un ni l'autre.
+
+- **`Zstd`**, la décompression de la RFC 8878, écrite ici comme `LZ4` et
+  `Inflate`. Elle lit les trames et les trames à sauter, les blocs bruts,
+  répétés et compressés, les littéraux bruts, répétés ou en Huffman (un ou
+  quatre flux, arbre réutilisé), et les séquences en FSE avec leurs quatre
+  modes et les trois décalages répétés. Les dictionnaires sont refusés en le
+  disant.
+- **Un carré évité.** La première version mettait 57 s pour 20 Mio :
+  `append(contentsOf: output[…])` tenait une tranche du tableau qu'il
+  agrandissait, et chaque copie recopiait le tableau entier. En place :
+  0,34 s pour les mêmes fichiers.
+- **Vérifié contre l'outil de référence** (`zstd` 1.5.5), en local, sur
+  vingt fichiers : `libc.so.6` aux niveaux 1, 3, 9, 19 et 22 `--long`, les
+  licences de Debian, 3 Mo de hasard, du texte et des zéros. Neuf tests
+  embarqués, dont huit dans la CI : des trames de l'outil en base64 et des
+  textes refaits par le même générateur.
+- Sept sabotages. Deux ne tombaient pas sur les fixtures embarquées : les
+  distributions prédéfinies (une fixture courte les prend maintenant) et le
+  mode « table répétée », que seule `libc` aux niveaux 19 et 22 emploie. Ce
+  dernier tombe dans le test local, et aucun petit fichier ne l'exerce.
+  Une distribution prédéfinie des longueurs de littéraux, faussée sur deux
+  codes, passe encore : la fixture courte n'emploie pas ces codes.
+
 ## 2026-10-19 — Le cache de traduction en un seul tableau
 
 Suite directe, même autorisation. La traduction d'adresse passe à chaque
