@@ -486,67 +486,19 @@ public struct X86Core: @unchecked Sendable {
                 // Le témoin, quand il est armé et qu'on est dans un programme.
                 // La condition est d'abord sur le drapeau : éteint — le cas de
                 // toute exécution normale — il n'y a pas même de lecture du
-                // privilège, et le chemin chaud reste ce qu'il était.
-                let watching = canonicalWatchArmed && privilege == 3
-                // **Le passage d'anneau, des deux côtés.** On note la pile en
-                // partant, et on la compare en revenant : c'est le seul endroit
-                // où celle d'un programme peut bouger sans qu'il y soit pour
-                // quelque chose.
-                if canonicalWatchArmed, privilege == 3, ringDeparture != nil {
-                    returningToRingThree()
-                }
-                // **Un programme qui prend la main dans un espace d'adressage
-                // neuf vient de naître.** C'est le seul instant où sa pile
-                // porte encore ce que le noyau y a posé, avant qu'il n'écrive
-                // dessus.
-                if watching, !addressSpacesSeen.contains(system.control[3]) {
-                    addressSpacesSeen.append(system.control[3])
-                    noteProcessStart()
-                    // Un espace d'adressage neuf est un autre programme : ses
-                    // retours n'ont rien à voir avec ceux d'avant.
-                    forgetShadowStack()
-                }
-                let wasCall = watching && Self.callsOrReturns(instruction) == .call
-                let wasReturn = watching && Self.callsOrReturns(instruction) == .ret
-                let throughMemory = watching ? Self.indirectThroughMemory(instruction) : nil
-                let entry = rip
-                let before = watching ? registers : []
-                let stackBefore = watching ? registers[4] : 0
-                try execute(instruction)
-                if watching {
-                    // `lastAddress` ne veut dire quelque chose que si
-                    // l'instruction avait un opérande en mémoire ; le champ
-                    // `mod` du ModRM le dit.
-                    let read = (instruction.modrm.map { $0 < 0xC0 } ?? false)
-                        ? lastAddress : nil
-                    rememberBirths(before: before, rip: entry, from: read)
-                    // Un saut vers une page absente était-il en attente ? Si
-                    // l'on reprend ailleurs qu'à l'endroit visé, le noyau ne
-                    // l'a pas résolu — et c'est le seul cas qui compte.
-                    settleLostJump(entry)
-                    noteProcessActivity(at: entry)
-                    previousRip = entry
-                    // **Qui bouge la pile.** Noté avant d'examiner le retour,
-                    // pour que le `ret` fautif figure lui-même dans la trace
-                    // qu'on montrera de lui.
-                    if registers[4] != stackBefore {
-                        noteStackMove(at: entry, from: stackBefore,
-                                      to: registers[4], instruction)
-                    }
-                    if wasCall {
-                        rememberCall(promised: entry &+ UInt64(instruction.length),
-                                     at: entry)
-                    } else if wasReturn {
-                        rememberReturn(taken: rip, at: entry)
-                    }
-                    if let jumped = throughMemory {
-                        // `lastAddress` porte la case que le ModRM désignait :
-                        // le cœur l'a calculée pour lire l'adresse, et la
-                        // recalculer ici donnerait un second résultat qu'il
-                        // faudrait garder d'accord avec le premier.
-                        rememberIndirectCall(at: entry, slot: lastAddress,
-                                             jumped: jumped)
-                    }
+                // privilège.
+                //
+                // **Et tout le témoin vit dans une autre fonction.** Ses
+                // variables locales — les registres d'avant, la pile d'avant,
+                // la nature de l'instruction — restaient dans celle-ci, et
+                // callgrind montrait le prix d'un témoin éteint : seize
+                // registres d'un littéral vide fabriqués, posés sur la pile et
+                // passés à chaque instruction, une quarantaine d'instructions
+                // de l'hôte pour rien.
+                if canonicalWatchArmed && privilege == 3 {
+                    try executeWatched(instruction)
+                } else {
+                    try execute(instruction)
                 }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
@@ -557,6 +509,63 @@ public struct X86Core: @unchecked Sendable {
             executed += 1
         }
         return executed
+    }
+
+    /// Une instruction exécutée sous le regard du témoin : ce que `run` faisait
+    /// autour de `execute` quand le témoin est armé et qu'un programme tourne.
+    /// À part, et jamais inlinée, pour que le chemin ordinaire n'en porte rien.
+    @inline(never)
+    mutating func executeWatched(_ instruction: X86Instruction) throws {
+        // **Le passage d'anneau, des deux côtés.** On note la pile en
+        // partant, et on la compare en revenant : c'est le seul endroit où
+        // celle d'un programme peut bouger sans qu'il y soit pour quelque
+        // chose.
+        if ringDeparture != nil {
+            returningToRingThree()
+        }
+        // **Un programme qui prend la main dans un espace d'adressage neuf
+        // vient de naître.** C'est le seul instant où sa pile porte encore ce
+        // que le noyau y a posé, avant qu'il n'écrive dessus.
+        if !addressSpacesSeen.contains(system.control[3]) {
+            addressSpacesSeen.append(system.control[3])
+            noteProcessStart()
+            // Un espace d'adressage neuf est un autre programme : ses retours
+            // n'ont rien à voir avec ceux d'avant.
+            forgetShadowStack()
+        }
+        let wasCall = Self.callsOrReturns(instruction) == .call
+        let wasReturn = Self.callsOrReturns(instruction) == .ret
+        let throughMemory = Self.indirectThroughMemory(instruction)
+        let entry = rip
+        let before = registers
+        let stackBefore = registers[4]
+        try execute(instruction)
+        // `lastAddress` ne veut dire quelque chose que si l'instruction avait
+        // un opérande en mémoire ; le champ `mod` du ModRM le dit.
+        let read = (instruction.modrm.map { $0 < 0xC0 } ?? false) ? lastAddress : nil
+        rememberBirths(before: before, rip: entry, from: read)
+        // Un saut vers une page absente était-il en attente ? Si l'on reprend
+        // ailleurs qu'à l'endroit visé, le noyau ne l'a pas résolu — et c'est
+        // le seul cas qui compte.
+        settleLostJump(entry)
+        noteProcessActivity(at: entry)
+        previousRip = entry
+        // **Qui bouge la pile.** Noté avant d'examiner le retour, pour que le
+        // `ret` fautif figure lui-même dans la trace qu'on montrera de lui.
+        if registers[4] != stackBefore {
+            noteStackMove(at: entry, from: stackBefore, to: registers[4], instruction)
+        }
+        if wasCall {
+            rememberCall(promised: entry &+ UInt64(instruction.length), at: entry)
+        } else if wasReturn {
+            rememberReturn(taken: rip, at: entry)
+        }
+        if let jumped = throughMemory {
+            // `lastAddress` porte la case que le ModRM désignait : le cœur l'a
+            // calculée pour lire l'adresse, et la recalculer ici donnerait un
+            // second résultat qu'il faudrait garder d'accord avec le premier.
+            rememberIndirectCall(at: entry, slot: lastAddress, jumped: jumped)
+        }
     }
 
     /// Exécute l'instruction et avance RIP de ce qui a été lu.
