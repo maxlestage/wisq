@@ -195,3 +195,39 @@ final class LZ4Tests: XCTestCase {
         XCTAssertEqual(back, snapshot)
     }
 }
+
+/// L'instantané de la vraie session de Debian, refait depuis une machine qui
+/// l'a repris : le même, octet pour octet, et en combien de temps.
+final class X86SnapshotSpeedTests: XCTestCase {
+    func testTheRealSessionIsSavedAgainIdenticallyAndQuickly() throws {
+        guard let path = ProcessInfo.processInfo.environment["WISQ_SNAPSHOT_FILE"],
+              ProcessInfo.processInfo.environment["WISQ_PC_CLOUD_IMAGE"] != nil else {
+            throw XCTSkip("définir WISQ_SNAPSHOT_FILE et WISQ_PC_CLOUD_IMAGE pour ce test")
+        }
+        let saved = try SnapshotFile.unpack(try Data(contentsOf: URL(fileURLWithPath: path)))
+        let machine = X86Machine(ramSize: CloudBoot.minimumRAMSize) { _ in }
+        // Le disque de la session, comme l'application le rebranche : sans
+        // lui, l'état de son contrôleur ne se relit pas à l'identique.
+        if let image = ProcessInfo.processInfo.environment["WISQ_PC_CLOUD_IMAGE"] {
+            let writes = FileManager.default.temporaryDirectory
+                .appendingPathComponent("wisq-vitesse-\(getpid())-\(UUID().uuidString).writes")
+            defer { try? FileManager.default.removeItem(at: writes) }
+            try machine.attach(diskFileAt: URL(fileURLWithPath: image), writes: writes)
+        }
+        try machine.restore(saved)
+        // Le meilleur de cinq : la machine qui mesure est partagée, et une
+        // seule prise varie du simple au double.
+        var best = Double.infinity
+        var again = Data()
+        for _ in 0..<5 {
+            let started = Date()
+            again = machine.snapshot()
+            best = min(best, Date().timeIntervalSince(started))
+        }
+        print("instantané refait en \(String(format: "%.2f", best)) s (le meilleur de cinq)")
+        if let out = ProcessInfo.processInfo.environment["WISQ_SNAPSHOT_AGAIN"] {
+            try again.write(to: URL(fileURLWithPath: out))
+        }
+        XCTAssertEqual(again, saved)
+    }
+}
