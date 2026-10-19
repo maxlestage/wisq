@@ -8,6 +8,30 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — L'instantané, pris plus vite
+
+Suite directe, même autorisation. Au passage en arrière-plan, iOS ne laisse
+que quelques secondes. Dans ce temps, il faut prendre l'instantané (environ
+2,4 s pour la session de Debian), le compresser (1,3 s), puis l'écrire.
+
+- **Un banc sans démarrer Debian.** `X86SnapshotSpeedTests` reprend la
+  vraie session gardée, disque branché comme dans l'application, puis refait
+  l'instantané. Il doit être identique octet pour octet : sans le disque,
+  l'état de son contrôleur différait de seize octets, ce qui a été vu tout
+  de suite. Le banc garde le meilleur de cinq prises, parce qu'une seule
+  prise varie du simple au double sur une machine partagée.
+- **Les littéraux, huit octets à la fois** (`Snapshot.nextZero`). La boucle
+  avançait d'un octet à chaque tour sur plus de deux cents mébioctets de
+  données.
+- **La réserve du tampon à la taille de la RAM**, au lieu d'un quart. La
+  sortie fait 217 Mio, et le tampon était réalloué et recopié en chemin. Seules
+  les pages écrites coûtent de la mémoire.
+- **Mesuré** : 0,82 s avant, 0,675 s après (le meilleur de cinq, deux
+  passages chacun). Le premier instantané d'un processus reste plus lent :
+  il touche de la mémoire neuve.
+- Deux sabotages, tous deux tombés : le masque des octets nuls inversé, et un
+  saut qui passe par-dessus un zéro.
+
 ## 2026-10-19 — Une machine sauvée deux fois plus petite
 
 Suite directe, même autorisation. La session de Debian sauvée pesait

@@ -106,7 +106,7 @@ enum Snapshot {
             u64(UInt64(ram.count))
             let countAt = bytes.count
             u64(0) // pair count, filled in below
-            bytes.reserveCapacity(bytes.count + ram.count / 4)
+            bytes.reserveCapacity(bytes.count + ram.count + 4096)
             var pairs: UInt64 = 0
             var index = 0
             let count = ram.count
@@ -125,7 +125,7 @@ enum Snapshot {
                 // jusqu'au bout.
                 while index < count {
                     if ram[index] != 0 {
-                        index += 1
+                        index = Snapshot.nextZero(ram, from: index + 1)
                         continue
                     }
                     let runFrom = index
@@ -166,6 +166,28 @@ enum Snapshot {
             index += 8
         }
         while index < count && ram[index] == 0 { index += 1 }
+        return index
+    }
+
+    /// Le premier octet nul à partir de `index`, ou la fin.
+    ///
+    /// **Huit octets à la fois**, pour la même raison que `endOfZeros` : une
+    /// session de Debian porte plus de deux cents mébioctets de données, et
+    /// la première version les parcourait octet par octet. Un mot contient un
+    /// octet nul exactement quand `(mot - 0x01…01) & ~mot & 0x80…80` ne vaut
+    /// pas zéro ; on ne redescend à l'octet que dans ce mot-là.
+    static func nextZero(_ ram: UnsafeRawBufferPointer, from start: Int) -> Int {
+        var index = start
+        let count = ram.count
+        guard let base = ram.baseAddress else { return count }
+        let ones: UInt64 = 0x0101_0101_0101_0101
+        let highs: UInt64 = 0x8080_8080_8080_8080
+        while index + 8 <= count {
+            let word = base.loadUnaligned(fromByteOffset: index, as: UInt64.self)
+            if (word &- ones) & ~word & highs != 0 { break }
+            index += 8
+        }
+        while index < count && ram[index] != 0 { index += 1 }
         return index
     }
 
