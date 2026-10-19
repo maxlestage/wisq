@@ -137,18 +137,18 @@ final class X86CoreTests: XCTestCase {
     /// l'exemple finit par marcher ne tient plus rien, et celui-ci a cédé deux
     /// fois parce que le cœur grandit du côté où la machine pousse.
     ///
-    /// L'exemple d'aujourd'hui est `0F 58` **sans préfixe** : `ADDPS`, la même
-    /// addition mais sur les quatre valeurs du registre à la fois. Elle
-    /// apparaît deux fois dans tout l'espace utilisateur de l'invité, dans du
-    /// code que ce démarrage n'atteint pas — et le jour où elle sera réclamée,
-    /// ce test cédera une troisième fois, ce qui sera encore la bonne nouvelle.
+    /// Il a cédé une troisième fois : `0F 58` sans préfixe, `ADDPS`, est venu
+    /// avec l'arithmétique empaquetée qu'Ubuntu 26.04 a réclamée. L'exemple
+    /// d'aujourd'hui est `0F 5D` **sans préfixe** : `MINPS`, le minimum des
+    /// quatre valeurs du registre à la fois, qu'aucun démarrage n'a encore
+    /// demandé.
     func testAnOpcodeTheCoreDoesNotRunYetIsNamed() {
         var machine = core()
-        XCTAssertThrowsError(try run([0x0F, 0x58, 0xC1], on: &machine)) { error in
+        XCTAssertThrowsError(try run([0x0F, 0x5D, 0xC1], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
-            XCTAssertTrue(what.contains("58"), "il faut nommer l'opcode : \(what)")
+            XCTAssertTrue(what.contains("5D"), "il faut nommer l'opcode : \(what)")
         }
     }
 
