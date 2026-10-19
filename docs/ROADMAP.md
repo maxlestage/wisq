@@ -471,8 +471,11 @@ noyau dans le disque lui-même.
    `snapshot()` rend 217 Mio en 2,4 s et `restore()` reprend dans une machine
    neuve en 1,1 s. Une variable du shell posée avant la sauvegarde est là
    après, et le disque répond (`X86CloudResumeTests`, armé par
-   `WISQ_PC_RESUME`). La suite : un instantané plus petit, puisqu'il s'écrit
-   à chaque passage en arrière-plan.
+   `WISQ_PC_RESUME`). **Fait aussi : l'instantané plus petit.** Le fichier
+   d'une machine sauvée est compressé en LZ4 par blocs d'un mébioctet
+   (`SnapshotFile`, `LZ4`, écrits ici). La session de Debian passe de 217 Mio
+   à 97 Mio, compressée en 1,3 s et relue en 1 s. Un fichier d'avant se lit
+   tel quel.
 8. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
    ne connaît pas encore le credential `agetty.autologin`, et ses images
    attendent cloud-init.
