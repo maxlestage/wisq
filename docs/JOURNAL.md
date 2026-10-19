@@ -21,7 +21,7 @@ instruction acceptée, finissait en mode de secours.
 - **Le diagnostic du mode de secours.** udev n'était pas bloqué. Les journaux
   de debug, renvoyés vers la console, montrent chaque événement traité, à
   environ 2,5 s de temps invité pièce, et plus de mille événements à traiter.
-  Ensuite, le banc a noté le RIP de l'invité toutes les millions
+  Ensuite, le banc a noté le RIP de l'invité à chaque million
   d'instructions (`WISQ_PC_SAMPLE`, avec `nokaslr` et le `System.map` de
   l'image). Résultat : 37 % dans le tic d'horloge et l'ordonnanceur. Le noyau
   d'Ubuntu bat à 1000 Hz, celui de Debian à 250 Hz.
