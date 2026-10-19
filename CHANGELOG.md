@@ -76,6 +76,14 @@ break APIs.
   commentaires portaient le compte ; `docs/ROADMAP.md` nommait les vingt dans
   la phrase même qui en annonçait vingt et une. Une garde compte maintenant les
   `case` de `GuestArchitecture.Family`.
+- **Et la page *Feuille de route* du site portait toujours l'ancien compte,
+  dans les deux langues.** « La feuille de route » de la correction précédente
+  voulait dire `docs/ROADMAP.md` ; la page du site en est une autre, et la
+  garde avait recopié la même liste de cinq lectures. Les gardes chiffrées ne
+  pouvaient pas la rattraper : elles relèvent les chiffres, et ce compte-là est
+  écrit en lettres. La garde ne nomme plus de page — elle lit tout ce que le
+  site publie, `pages/` et l'accueil, et exige le compte de l'énumération de
+  chaque phrase qui le donne, dans les deux langues.
 - **La page hors ligne disait que seules les pages déjà lues restaient
   disponibles.** Le service worker les précharge toutes, dans les deux langues,
   dès la première visite ; elle le dit, et dit pourquoi une page hors ligne
