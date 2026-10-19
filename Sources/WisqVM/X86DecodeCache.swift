@@ -98,6 +98,18 @@ final class X86DecodeCache: @unchecked Sendable {
     @inline(__always)
     func lookup(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int, size: Int,
                 available: Int) -> X86Instruction? {
+        lookupEntry(bytes, at: start, size: size, available: available)?.pointee.instruction
+    }
+
+    /// La même recherche, qui rend **l'entrée** plutôt qu'une copie de son
+    /// instruction. `run` passe `entry.pointee.instruction` tel quel à
+    /// l'exécution : une instruction décodée pèse près de cent octets, et la
+    /// rendre par valeur la recopiait deux fois à chaque instruction, dans un
+    /// optionnel puis dans la variable de `run`. L'entrée ne bouge pas pendant
+    /// l'exécution : seul `run` range, et seulement avant d'exécuter.
+    @inline(__always)
+    func lookupEntry(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int, size: Int,
+                     available: Int) -> UnsafeMutablePointer<Entry>? {
         guard start <= size - 16 else { return nil }
         let slot = start & (Self.slots - 1)
         let entry = entries + slot
@@ -119,7 +131,7 @@ final class X86DecodeCache: @unchecked Sendable {
             return nil
         }
         counts[0] &+= 1
-        return entry.pointee.instruction
+        return entry
     }
 
     /// Range une instruction tout juste décodée à `start`.
