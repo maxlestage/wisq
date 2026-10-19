@@ -309,10 +309,13 @@ public struct X86Core: @unchecked Sendable {
     /// onze dans `twoByte`. Inlinées, elles lisent les champs sur place. Sur
     /// le premier milliard d'instructions du démarrage d'Alpine : 67,3 s →
     /// 58,3 s.
+    ///
+    /// `mutating` pour lire les registres en place : voir
+    /// `X86Registers.read(_:)`.
     @inline(__always)
-    func read(_ index: Int, _ size: Int, highByte: Bool) -> UInt64 {
-        if size == 1 && highByte { return (registers[index - 4] >> 8) & 0xFF }
-        let value = registers[index]
+    mutating func read(_ index: Int, _ size: Int, highByte: Bool) -> UInt64 {
+        if size == 1 && highByte { return (registers.read(index - 4) >> 8) & 0xFF }
+        let value = registers.read(index)
         switch size {
         case 1: return value & 0xFF
         case 2: return value & 0xFFFF
@@ -331,12 +334,12 @@ public struct X86Core: @unchecked Sendable {
     mutating func write(_ index: Int, _ size: Int, highByte: Bool, _ value: UInt64) {
         if size == 1 && highByte {
             let target = index - 4
-            registers[target] = (registers[target] & ~0xFF00) | ((value & 0xFF) << 8)
+            registers[target] = (registers.read(target) & ~0xFF00) | ((value & 0xFF) << 8)
             return
         }
         switch size {
-        case 1: registers[index] = (registers[index] & ~0xFF) | (value & 0xFF)
-        case 2: registers[index] = (registers[index] & ~0xFFFF) | (value & 0xFFFF)
+        case 1: registers[index] = (registers.read(index) & ~0xFF) | (value & 0xFF)
+        case 2: registers[index] = (registers.read(index) & ~0xFFFF) | (value & 0xFFFF)
         case 4: registers[index] = value & 0xFFFF_FFFF  // le haut disparaît
         default: registers[index] = value
         }

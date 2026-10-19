@@ -1050,8 +1050,11 @@ extension X86Core {
     /// traverse donc pas l'unité de segmentation.
     ///
     /// Inlinée : voir `read(_:_:highByte:)`.
+    ///
+    /// **`mutating`, pour lire les registres en place** : voir
+    /// `X86Registers.read(_:)`.
     @inline(__always)
-    func effectiveAddress(
+    mutating func effectiveAddress(
         _ instruction: X86Instruction, _ fields: Fields, segmented: Bool = true
     ) throws -> UInt64 {
         guard let modrm = instruction.modrm, fields.mod != 0b11 else {
@@ -1065,15 +1068,15 @@ extension X86Core {
             let base = Int((rex & 0x01) << 3 | (sib & 0x07))
             // L'index 100 sans REX.X veut dire « pas d'index » : c'est ainsi
             // qu'on écrit une adresse sans registre d'échelle.
-            let scaled = index == 4 ? 0 : registers[index] << UInt64((sib >> 6) & 0x03)
-            let baseValue = (fields.mod == 0 && (sib & 0x07) == 0b101) ? 0 : registers[base]
+            let scaled = index == 4 ? 0 : registers.read(index) << UInt64((sib >> 6) & 0x03)
+            let baseValue = (fields.mod == 0 && (sib & 0x07) == 0b101) ? 0 : registers.read(base)
             return segment &+ baseValue &+ scaled &+ displacement
         }
         if fields.mod == 0 && modrm & 0x07 == 0b101 {
             // Relatif à RIP : l'adresse suit l'instruction entière.
             return segment &+ rip &+ UInt64(instruction.length) &+ displacement
         }
-        return segment &+ registers[fields.rm] &+ displacement
+        return segment &+ registers.read(fields.rm) &+ displacement
     }
 
     /// La base du segment que l'instruction a nommé, ou zéro.
@@ -1092,10 +1095,13 @@ extension X86Core {
         return system.modelSpecific[which] ?? 0
     }
 
-    /// Les bits de `%fs:` et `%gs:` dans le masque de préfixes, cherchés une
-    /// fois : le chemin chaud ne fait plus qu'un ET.
-    static let segmentPrefixes: UInt16 =
-        X86Decoder.prefixBit[0x64] | X86Decoder.prefixBit[0x65]
+    /// Les bits de `%fs:` et `%gs:` dans le masque de préfixes (le huitième et
+    /// le neuvième de `X86Decoder.prefixOrder`), écrits en constante.
+    /// **Pas un `static let` calculé depuis la table** : il se payait d'un
+    /// `swift_once` à chaque adresse calculée, ce que callgrind montrait au
+    /// milieu de `decodeFields`. `X86RegistersTests` vérifie qu'il dit la même
+    /// chose que la table.
+    static var segmentPrefixes: UInt16 { 0x0180 }
 
     /// BT, BTS, BTR, BTC : lire le bit, puis éventuellement le changer.
     mutating func bit(_ kind: Int, _ fields: Fields, _ size: Int, _ offset: UInt64) throws {
