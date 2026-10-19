@@ -314,6 +314,45 @@ extension X86Extended {
         return X86Extended(significand: significand & ~mask, signExponent: signExponent)
     }
 
+    /// **`FRNDINT`** : la valeur arrondie à l'entier selon le mode, exacte
+    /// en étendu. Le compte rendu dit si quelque chose s'est perdu, et C1
+    /// si la grandeur est montée. Un NaN signalant devient silencieux, un
+    /// « non pris en charge » devient l'indéfini, l'un et l'autre invalides.
+    public static func integral(_ value: X86Extended, rounding: Rounding) -> (X86Extended, Report) {
+        var report = Report()
+        if value.isSpecial || (value.biased != 0 && value.significand & 0x8000_0000_0000_0000 == 0) {
+            let unsupported = value.significand & 0x8000_0000_0000_0000 == 0
+            if unsupported { return (.indefinite, Report(Report.invalid)) }
+            if value.isSignalingNaN { return (value.quieted, Report(Report.invalid)) }
+            return (value, report)
+        }
+        if value.isZero { return (value, report) }
+        if value.biased == 0 { report.note(Report.denormal) }
+        let sign = value.signExponent & 0x8000
+        let exponent = value.biased - bias
+        guard exponent < 63 else { return (value, report) }
+        var whole: UInt64 = 0
+        var rest: UInt64
+        if exponent >= 0 {
+            whole = value.significand >> UInt64(63 - exponent)
+            rest = value.significand << UInt64(exponent + 1)
+        } else {
+            // Moins d'une demie se résume à un reste quelconque et petit :
+            // seul compte qu'il ne soit pas nul.
+            rest = exponent == -1 ? value.significand : 1
+        }
+        guard rest != 0 else { return (value, report) }
+        report.note(Report.inexact)
+        if roundsUp(rest: rest, even: whole & 1 == 0, negative: value.negative, rounding: rounding) {
+            whole += 1
+            report.roundedUp = true
+        }
+        guard whole != 0 else { return (X86Extended(significand: 0, signExponent: sign), report) }
+        let shift = UInt64(whole.leadingZeroBitCount)
+        return (X86Extended(significand: whole << shift,
+                            signExponent: sign | UInt16(bias + 63 - Int(shift))), report)
+    }
+
     /// Les quatre modes d'arrondi, tels que les bits 10 et 11 du mot de
     /// contrôle les nomment.
     public enum Rounding: Sendable {

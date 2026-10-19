@@ -30,6 +30,39 @@ extension X86Core {
                 case 0xEE: push(.zero)
                 default: throw Fault.unsupported("une constante x87 : \(hex(modrm))")
                 }
+            // **Ce que la libc et la libstdc++ de Fedora 44 demandent en
+            // plus**, trouvé par la sonde qui passe au cœur chaque forme des
+            // binaires de l'image : `FXAM` (38 fichiers, le `isnan` des
+            // `long double`), `FCMOVcc` (36), `FNSTENV`/`FLDENV` (39, les
+            // fonctions de `fenv.h`), les comparaisons qui dépilent deux fois,
+            // `FFREEP` et `FRNDINT`.
+            case (0xD9, 4) where modrm == 0xE5:  // FXAM
+                x87Status = (x87Status & ~0x4700) | examined(0)
+            case (0xD9, 7) where modrm == 0xFC:  // FRNDINT
+                let (result, report) = X86Extended.integral(stackOrIndefinite(0), rounding: rounding)
+                setStack(0, result)
+                note(report)
+            // Les copies conditionnelles : `DA` sur CF, ZF, CF ou ZF, et PF ;
+            // `DB` sur leurs négations. La copie a lieu ou non, la pile ne
+            // bouge pas.
+            case (0xDA, 0...3), (0xDB, 0...3):
+                let holds: Bool
+                switch field {
+                case 0: holds = flags & Flag.carry != 0
+                case 1: holds = flags & Flag.zero != 0
+                case 2: holds = flags & (Flag.carry | Flag.zero) != 0
+                default: holds = flags & Flag.parity != 0
+                }
+                if holds != (opcode == 0xDB) { setStack(0, stackOrIndefinite(index)) }
+            case (0xDE, 3) where modrm == 0xD9, (0xDA, 5) where modrm == 0xE9:  // FCOMPP / FUCOMPP
+                noteComparison(stack(0), stack(1), quietIsInvalid: opcode == 0xDE)
+                setCondition(X86Extended.compare(stack(0), stack(1)))
+                pop()
+                pop()
+            case (0xDD, 0): markTag((x87TopIndex + index) & 7, 0b11)  // FFREE
+            case (0xDF, 0):                                          // FFREEP
+                markTag((x87TopIndex + index) & 7, 0b11)
+                pop()
             case (0xD9, 0): push(stack(index))                       // FLD ST(i)
             case (0xD9, 1):                                          // FXCH
                 let top = stack(0)
@@ -135,6 +168,15 @@ extension X86Core {
             setStack(0, result)
             note(report)
 
+        // L'environnement : vingt-huit octets dans le format protégé de
+        // trente-deux bits, celui de `fegetenv` et `fesetenv`. Le préfixe 66
+        // demanderait le format de quatorze octets, que rien n'emploie.
+        case 0xD9 where field == 6 || field == 4:
+            guard !instruction.hasPrefix(0x66) else {
+                throw Fault.unsupported("FNSTENV/FLDENV sur quatorze octets")
+            }
+            if field == 6 { try storeEnvironment(address) } else { try loadEnvironment(address) }
+
         case 0xD9 where field == 5:  // FLDCW
             x87Control = UInt16(truncatingIfNeeded: try readRM(fields, 2))
         case 0xD9 where field == 7:  // FNSTCW
@@ -147,6 +189,51 @@ extension X86Core {
     }
 
     private func hex(_ value: UInt8) -> String { String(format: "%02X", value) }
+
+    /// Ce que `FXAM` dit de `ST(i)` : C3, C2 et C0 nomment la classe, C1 le
+    /// signe. Un registre vide se dit à part, quoi qu'il contienne.
+    func examined(_ index: Int) -> UInt16 {
+        let value = stack(index)
+        let sign: UInt16 = value.negative ? 0x0200 : 0
+        if isEmpty(index) { return 0x4100 | sign }                     // vide : C3 C0
+        let integer = value.significand & 0x8000_0000_0000_0000 != 0
+        if value.isSpecial {
+            guard integer else { return sign }                         // non pris en charge
+            return (value.isInfinite ? 0x0500 : 0x0100) | sign         // infini : C2 C0 ; NaN : C0
+        }
+        if value.biased == 0 {
+            return (value.significand == 0 ? 0x4000 : 0x4400) | sign   // zéro : C3 ; dénormal : C3 C2
+        }
+        return (integer ? 0x0400 : 0) | sign                           // normal : C2
+    }
+
+    /// `FNSTENV` : le mot de contrôle, le mot d'état et le mot d'étiquettes
+    /// complet, chacun sur quatre octets, puis les pointeurs de la dernière
+    /// instruction et de sa donnée, que ce cœur ne suit pas et range à zéro.
+    /// Ensuite, comme le processeur, toutes les exceptions sont masquées.
+    private mutating func storeEnvironment(_ address: UInt64) throws {
+        let words = [UInt64(x87Control) | 0xFFFF_0000, UInt64(x87Status) | 0xFFFF_0000,
+                     UInt64(x87Tags) | 0xFFFF_0000, 0, 0, 0, 0xFFFF_0000]
+        for (index, word) in words.enumerated() {
+            try writeMemory(address &+ UInt64(4 * index), 4, word)
+        }
+        x87Control |= 0x3F
+    }
+
+    /// `FLDENV` : l'inverse. Comme pour `FXRSTOR`, le bit 6 du mot de
+    /// contrôle revient levé, ES et B se recalculent, et une étiquette
+    /// non vide se relit dans la valeur du registre.
+    private mutating func loadEnvironment(_ address: UInt64) throws {
+        x87Control = UInt16(truncatingIfNeeded: try readMemory(address, 2)) | 0x40
+        x87Status = UInt16(truncatingIfNeeded: try readMemory(address &+ 4, 2))
+        let pending = (x87Status & 0x3F) & ~(x87Control & 0x3F)
+        x87Status = pending != 0 ? (x87Status | 0x8080) : (x87Status & ~0x8080)
+        let tags = UInt16(truncatingIfNeeded: try readMemory(address &+ 8, 2))
+        for physical in 0..<8 {
+            let empty = (tags >> UInt16(2 * physical)) & 0b11 == 0b11
+            markTag(physical, empty ? 0b11 : Self.tag(for: x87[physical]))
+        }
+    }
 
     /// `DC` et `DE` **échangent** la soustraction et la division avec leurs
     /// formes renversées par rapport à `D8` : le champ 4 est `FSUB` sur l'un
@@ -203,13 +290,16 @@ extension X86Core {
             note(X86Extended.Report(X86Extended.Report.invalid))
             return bits == 64 ? 0x8000_0000_0000_0000 : (UInt64(1) << (bits - 1))
         }
-        var report = X86Extended.Report()
         // **Ce qui coûte, c'est la partie fractionnaire**, pas l'écart avec
         // l'entier rendu. Comparer le résultat à la troncature manquait le cas
         // le plus courant : 2,5 arrondi au pair rend 2, ce qui est bien la
         // troncature — et pourtant une demie s'est perdue en chemin.
-        if value != value.rounded { report.note(X86Extended.Report.inexact) }
-        note(report)
+        //
+        // Et C1 dit si l'arrondi est monté : 1,75 rangé en 2. Le cœur ne le
+        // levait pas ; l'oracle l'a montré dès qu'il a porté une valeur qui
+        // monte. Le dénormal, lui, ne se signale pas ici.
+        let rounded = X86Extended.integral(value, rounding: rounding).1
+        note(X86Extended.Report(rounded.flags & X86Extended.Report.inexact, roundedUp: rounded.roundedUp))
         return UInt64(bitPattern: whole)
     }
 }
