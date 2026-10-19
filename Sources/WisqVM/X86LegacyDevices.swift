@@ -98,9 +98,31 @@ public struct X86LegacyDevices: Sendable, Equatable {
         return UInt16(UInt64(reload) &- elapsed)
     }
 
+    /// Le canal zéro programmé pour **un** coup (modes 0 et 4), et non pour
+    /// battre. C'est ce que fait Linux dès que son horloge de référence est le
+    /// compteur de cycles : il réarme le canal à chaque échéance, pour la
+    /// suivante seulement.
+    public var oneShot = false
+
+    /// L'intervalle le plus court qu'on accorde à un coup unique : quatre
+    /// millisecondes, le battement d'un noyau à 250 Hz.
+    ///
+    /// **Pourquoi.** Le noyau d'Ubuntu bat à 1000 Hz. À la vitesse de ce cœur,
+    /// une milliseconde fait quatorze mille instructions, et le traitement
+    /// d'une échéance — l'ordonnanceur, les minuteries, la comptabilité de
+    /// charge — en prend cinq mille : échantillonné pendant le démarrage
+    /// d'Ubuntu 26.04, 37 % des instructions de l'invité y passaient, et udev
+    /// ne vidait pas sa file avant l'expiration de systemd. Un noyau en coup
+    /// unique ne compte pas les échéances, il lit l'heure au compteur de
+    /// cycles et rattrape ce qui est passé : en livrer une sur quatre ne lui
+    /// fait rien perdre. Le mode périodique, lui, compte chaque battement
+    /// pour avancer `jiffies`, et on n'y touche pas.
+    public static let shortestOneShot: UInt64 = 4773
+
     /// Combien de fois le canal zéro a débordé depuis son rechargement.
     public func expirations(at ticks: UInt64) -> UInt64 {
         guard reload != 0 else { return 0 }
-        return (ticks &- reloadedAt) / UInt64(reload)
+        let period = oneShot ? max(UInt64(reload), Self.shortestOneShot) : UInt64(reload)
+        return (ticks &- reloadedAt) / period
     }
 }
