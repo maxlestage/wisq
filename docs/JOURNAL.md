@@ -8,6 +8,19 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Ubuntu 26.04 jusqu'au shell de `root`
+
+Suite directe, même autorisation. Après #530, la même mesure (budget de
+90 milliards d'instructions, 1 Gio de RAM) va jusqu'au bout :
+`root@ubuntu:~#` à 71,4 milliards d'instructions, en 4658 s. Le message
+d'accueil d'Ubuntu s'affiche, adresse IPv4 de `eth0` comprise.
+
+Aucun code dans cette entrée : c'est le constat, et ce qu'il laisse.
+`login` expire dix-neuf fois avant de passer. Ses soixante secondes couvrent
+l'ouverture de la session, et `pam_motd` y lance les scripts du message
+d'accueil pendant que snapd et motd-news démarrent encore. La feuille de
+route le note avant de proposer Ubuntu au téléchargement.
+
 ## 2026-10-19 — Ubuntu 26.04 jusqu'à son invite de connexion
 
 Suite directe, même autorisation. Avec le tic d'horloge allégé, Ubuntu 26.04
