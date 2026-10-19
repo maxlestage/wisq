@@ -476,7 +476,13 @@ noyau dans le disque lui-même.
    (`SnapshotFile`, `LZ4`, écrits ici). La session de Debian passe de 217 Mio
    à 97 Mio, compressée en 1,3 s et relue en 1 s. Un fichier d'avant se lit
    tel quel.
-8. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
+8. **Fait.** Plusieurs machines sur une même image de cloud : la
+   bibliothèque reconnaît une image de cloud en lisant sa table
+   (`InstalledMachines.cloudImages`), la nomme comme telle (« image de cloud
+   (qcow2) », une icône de nuage), et propose « Installer une machine ».
+   Chaque machine a sa couche d'écriture et son mot de passe de `root`. Un
+   qcow2 vierge, qui n'est qu'un disque de données, n'est pas proposé.
+9. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
    ne connaît pas encore le credential `agetty.autologin`, et ses images
    attendent cloud-init.
 
