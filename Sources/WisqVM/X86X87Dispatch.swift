@@ -28,7 +28,14 @@ extension X86Core {
                 switch modrm {
                 case 0xE8: push(X86Extended(1.0))
                 case 0xEE: push(.zero)
-                default: throw Fault.unsupported("une constante x87 : \(hex(modrm))")
+                default:
+                    // Les cinq autres, venues avec la `libm` de Fedora 44 :
+                    // arrondies selon le mode depuis leurs soixante-six bits.
+                    guard let constant = X86Extended.Constant(rawValue: modrm) else {
+                        throw Fault.unsupported("une constante x87 : \(hex(modrm))")
+                    }
+                    push(X86Extended.constant(constant, rounding: rounding).0)
+                    x87Status &= ~0x0200
                 }
             // **Ce que la libc et la libstdc++ de Fedora 44 demandent en
             // plus**, trouvé par la sonde qui passe au cœur chaque forme des
@@ -63,6 +70,33 @@ extension X86Core {
             case (0xDF, 0):                                          // FFREEP
                 markTag((x87TopIndex + index) & 7, 0b11)
                 pop()
+            // **Les fonctions de la `libm`**, pour ses `long double` : la
+            // racine, l'extraction de l'exposant, la mise à l'échelle et le
+            // reste partiel. Voir `X86ExtendedFunctions.swift`.
+            case (0xD9, 7) where modrm == 0xFA:  // FSQRT
+                let (result, report) = X86Extended.squareRoot(stackOrIndefinite(0), rounding: rounding)
+                setStack(0, result)
+                note(report)
+            case (0xD9, 6) where modrm == 0xF4:  // FXTRACT
+                let (exponent, significand, report) = X86Extended.extracted(stackOrIndefinite(0))
+                setStack(0, exponent)
+                push(significand)
+                note(report)
+            case (0xD9, 7) where modrm == 0xFD:  // FSCALE
+                let (result, report) = X86Extended.scaled(stackOrIndefinite(0), by: stackOrIndefinite(1),
+                                                          rounding: rounding)
+                setStack(0, result)
+                note(report)
+            case (0xD9, 7) where modrm == 0xF8, (0xD9, 6) where modrm == 0xF5:  // FPREM / FPREM1
+                let outcome = X86Extended.partialRemainder(stackOrIndefinite(0), stackOrIndefinite(1),
+                                                           nearest: modrm == 0xF5)
+                setStack(0, outcome.value)
+                x87Status |= outcome.report.flags
+                // C2 dit « pas fini » ; C0, C3 et C1 portent Q2, Q1 et Q0.
+                let q = outcome.quotient
+                x87Status &= ~0x4700
+                x87Status |= (outcome.complete ? 0 : 0x0400) | (q & 4 != 0 ? 0x0100 : 0)
+                    | (q & 2 != 0 ? 0x4000 : 0) | (q & 1 != 0 ? 0x0200 : 0)
             case (0xD9, 0): push(stack(index))                       // FLD ST(i)
             case (0xD9, 1):                                          // FXCH
                 let top = stack(0)
