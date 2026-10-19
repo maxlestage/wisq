@@ -47,6 +47,18 @@ public struct X86Registers: RandomAccessCollection, MutableCollection, Equatable
         }
     }
 
+    /// La même lecture, **en place**. `withUnsafeBytes(of:)` sur une valeur
+    /// n'a d'adresse que celle d'une copie, et l'indice ordinaire recopiait
+    /// les cent vingt-huit octets du stockage sur la pile à chaque lecture :
+    /// deux fois par adresse calculée, la base et l'index. Sur le stockage
+    /// lui-même (`&storage`), il n'y a rien à copier ; d'où `mutating`, qui
+    /// ne change rien. Un aiguillage de seize cas évitait aussi la copie, et
+    /// coûtait plus cher qu'elle.
+    @inline(__always)
+    public mutating func read(_ index: Int) -> UInt64 {
+        withUnsafeBytes(of: &storage) { $0.load(fromByteOffset: (index & 15) &* 8, as: UInt64.self) }
+    }
+
     public static func == (left: X86Registers, right: X86Registers) -> Bool {
         left.elementsEqual(right)
     }

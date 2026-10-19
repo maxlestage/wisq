@@ -36,4 +36,21 @@ final class X86RegistersTests: XCTestCase {
         XCTAssertEqual(original[4], 0x7000)
         XCTAssertEqual(copy[4], 0x6FF8)
     }
+    /// **La lecture en place rend ce que rend l'indice**, pour chacun des
+    /// seize, et un indice au-delà de quinze est ramené à quatre bits comme
+    /// par l'indice.
+    func testTheInPlaceReadAgreesWithTheSubscript() {
+        var registers = X86Registers((0..<16).map { 0x1111_0000_0000_0000 &* UInt64($0) &+ UInt64($0) })
+        for index in 0..<16 {
+            XCTAssertEqual(registers.read(index), registers[index], "registre \(index)")
+        }
+        XCTAssertEqual(registers.read(17), registers[1])
+    }
+
+    /// Les préfixes de segment écrits en constante sont ceux de la table du
+    /// décodeur, et rien d'autre.
+    func testTheSegmentPrefixConstantIsTheDecodersFSAndGS() {
+        XCTAssertEqual(X86Core.segmentPrefixes, X86Decoder.prefixBit[0x64] | X86Decoder.prefixBit[0x65])
+        XCTAssertEqual(X86Core.segmentPrefixes.nonzeroBitCount, 2)
+    }
 }
