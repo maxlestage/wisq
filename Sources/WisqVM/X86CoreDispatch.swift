@@ -969,6 +969,9 @@ extension X86Core {
                 devices.writeHighNext = false
                 devices.readHighNext = false
                 devices.latched = nil
+                // Les bits 1 à 3 : le mode. 0 et 4 (et leurs variantes à
+                // porte, 1 et 5) comptent une fois ; 2 et 3 battent.
+                devices.oneShot = (byte >> 1) & 0x03 <= 1
             }
         case 0x40:
             if devices.writeHighNext {
