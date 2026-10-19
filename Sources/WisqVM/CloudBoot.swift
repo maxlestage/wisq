@@ -35,7 +35,7 @@ public struct CloudBoot: Equatable, Sendable {
         public var errorDescription: String? {
             switch self {
             case .noLinuxPartition:
-                return "l'image n'a aucune partition Linux que wisq sache lire (ext2, ext3 ou ext4)."
+                return "l'image n'a aucune partition Linux que wisq sache lire (ext2, ext3, ext4 ou btrfs)."
             case .noKernel:
                 return "aucun noyau n'a été trouvé dans l'image : ni grub.cfg, ni entrée de démarrage, ni /boot/vmlinuz."
             case .unusablePassword:
@@ -70,11 +70,11 @@ public struct CloudBoot: Equatable, Sendable {
     /// mot de passe lui-même.
     public static func find(in image: any VirtualDiskImage, rootHash: String?) throws -> CloudBoot {
         let table = try PartitionTable.read(image)
-        return try find(in: table, rootHash: rootHash) { try Ext4Volume($0, in: image) }
+        return try find(in: table, rootHash: rootHash) { try linuxVolume($0, in: image) }
     }
 
     static func find(in table: PartitionTable, rootPassword: String? = nil,
-                     open: (PartitionTable.Partition) throws -> Ext4Volume) throws -> CloudBoot {
+                     open: (PartitionTable.Partition) throws -> any LinuxVolume) throws -> CloudBoot {
         try find(in: table, rootHash: try hash(rootPassword), open: open)
     }
 
@@ -87,13 +87,12 @@ public struct CloudBoot: Equatable, Sendable {
     }
 
     static func find(in table: PartitionTable, rootHash: String?,
-                     open: (PartitionTable.Partition) throws -> Ext4Volume) throws -> CloudBoot {
+                     open: (PartitionTable.Partition) throws -> any LinuxVolume) throws -> CloudBoot {
         if let rootHash, !RootPassword.isHash(rootHash) { throw Failure.unusablePassword }
         var readable = false
         for partition in table.linuxCandidates {
-            // Une partition qui n'est pas un ext (btrfs, xfs) n'arrête pas la
-            // recherche : chez Fedora, la racine est en btrfs, et c'est le
-            // `/boot` séparé qu'on lit.
+            // Une partition qu'on ne sait pas lire (xfs, LVM) n'arrête pas la
+            // recherche : une autre, un `/boot` séparé, peut porter le noyau.
             guard let volume = try? open(partition) else { continue }
             readable = true
             let name = "vda\(partition.number)"
@@ -187,7 +186,7 @@ public struct CloudBoot: Equatable, Sendable {
                 return nil
             }
             guard !table.partitions.isEmpty else { return nil }
-            found = try find(in: table, rootHash: rootHash) { try Ext4Volume($0, in: image) }
+            found = try find(in: table, rootHash: rootHash) { try linuxVolume($0, in: image) }
         } catch let failure as Failure {
             return .failure(.notBootable(failure))
         } catch {
@@ -245,7 +244,7 @@ public struct CloudBoot: Equatable, Sendable {
 
     // MARK: - Les configurations
 
-    private static func configuredEntry(in volume: Ext4Volume) -> (Entry, String)? {
+    private static func configuredEntry(in volume: any LinuxVolume) -> (Entry, String)? {
         for path in grubPaths {
             guard let bytes = try? volume.contents(of: path),
                   let entry = grubEntry(String(decoding: bytes, as: UTF8.self)),
@@ -254,7 +253,7 @@ public struct CloudBoot: Equatable, Sendable {
             return (entry, (path as NSString).lastPathComponent)
         }
         for directory in blsDirectories {
-            guard let names = try? volume.list(directory).map(\.name).filter({ $0.hasSuffix(".conf") }) else {
+            guard let names = try? volume.listing(directory).map(\.name).filter({ $0.hasSuffix(".conf") }) else {
                 continue
             }
             // La plus récente d'abord : BLS nomme ses entrées par version, et
@@ -455,10 +454,18 @@ public struct CloudBoot: Equatable, Sendable {
             let key = option.prefix { $0 != "=" }
             if !kept.contains(where: { $0.prefix { $0 != "=" } == key }) { kept.append(option) }
         }
-        // Une entrée qui règle déjà la première mise en route le fait à sa
-        // façon, et on n'y ajoute rien.
-        if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") || $0.hasPrefix("systemd.set_credential") }) {
-            kept += consoleOptions + firstbootOptions(rootHash: rootHash)
+        // Une entrée qui passe déjà des credentials le fait à sa façon, et
+        // on n'y ajoute rien.
+        guard !kept.contains(where: { $0.hasPrefix("systemd.set_credential") }) else {
+            return kept.joined(separator: " ")
+        }
+        // La console série, toujours : Fedora écrit `systemd.firstboot=off`
+        // dans son entrée, et sans ce shell sa console resterait sur
+        // `login`, devant un `root` verrouillé. Sa première mise en route,
+        // elle, reste celle que l'entrée a choisie.
+        kept += consoleOptions
+        if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") }) {
+            kept += firstbootOptions(rootHash: rootHash)
         }
         return kept.joined(separator: " ")
     }
@@ -472,12 +479,12 @@ public struct CloudBoot: Equatable, Sendable {
             .max { $0.compare($1, options: .numeric) == .orderedAscending }
     }
 
-    private static func unconfiguredKernel(in volume: Ext4Volume) -> (String, String?)? {
+    private static func unconfiguredKernel(in volume: any LinuxVolume) -> (String, String?)? {
         if volume.exists("/vmlinuz") {
             return ("/vmlinuz", volume.exists("/initrd.img") ? "/initrd.img" : nil)
         }
         for directory in ["/boot", "/"] {
-            guard let names = try? volume.list(directory).filter({ $0.kind == .file }).map(\.name) else { continue }
+            guard let names = try? volume.listing(directory).filter({ $0.kind == .file }).map(\.name) else { continue }
             guard let kernel = newestKernel(names) else { continue }
             let version = kernel.dropFirst("vmlinuz-".count)
             let base = directory == "/" ? "" : directory
