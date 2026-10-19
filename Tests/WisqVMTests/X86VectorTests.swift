@@ -215,4 +215,35 @@ final class X86VectorTests: XCTestCase {
             }
         }
     }
+    /// **Les rangements d'une moitié** : `MOVLPS`/`MOVLPD` rangent le bas du
+    /// registre, `MOVHPS`/`MOVHPD` le haut, sur huit octets et pas un de
+    /// plus. Ubuntu 26.04 s'arrêtait sur `0F 17`. Entre registres, ces
+    /// formes n'existent pas, et sont refusées en le disant.
+    func testHalfStoresWriteEightBytesOfTheRightHalf() throws {
+        // `0f 13 06` movlps, `66 0f 13 06` movlpd, `0f 17 06` movhps,
+        // `66 0f 17 06` movhpd, tous %xmm0,(%rsi).
+        let cases: [([UInt8], UInt64)] = [
+            ([0x0F, 0x13, 0x06], 0x0123_4567_89AB_CDEF),
+            ([0x66, 0x0F, 0x13, 0x06], 0x0123_4567_89AB_CDEF),
+            ([0x0F, 0x17, 0x06], 0xFEDC_BA98_7654_3210),
+            ([0x66, 0x0F, 0x17, 0x06], 0xFEDC_BA98_7654_3210),
+        ]
+        for (code, expected) in cases {
+            let ram = try Self.memory(code)
+            try ram.write(0x2008, 8, 0xEEEE_EEEE_EEEE_EEEE)
+            var core = Self.core(ram)
+            core.registers[6] = 0x2000
+            core.setVector(0, 0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210)
+            try core.run(budget: 1)
+            XCTAssertEqual(try ram.read(0x2000, 8), expected, "\(code)")
+            XCTAssertEqual(try ram.read(0x2008, 8), 0xEEEE_EEEE_EEEE_EEEE, "huit octets seulement : \(code)")
+            XCTAssertEqual(core.vector(0).high, 0xFEDC_BA98_7654_3210, "le registre ne bouge pas")
+        }
+        for code: [UInt8] in [[0x0F, 0x13, 0xC1], [0x0F, 0x17, 0xC1]] {
+            var core = Self.core(try Self.memory(code))
+            XCTAssertThrowsError(try core.run(budget: 1), "\(code)") { error in
+                guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
+            }
+        }
+    }
 }
