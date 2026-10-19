@@ -511,8 +511,11 @@ noyau dans le disque lui-même.
    au premier démarrage. `apparmor=0` sur la ligne de commande l'éviterait,
    mais affaiblirait la sécurité de l'invité sans le dire. Les démarrages
    suivants doivent relire le cache des profils, que garde la couche
-   d'écriture. **À mesurer avant de décider** : un second démarrage de la
-   même machine.
+   d'écriture. **Mesuré** (`WISQ_PC_WRITES`, la même couche pour deux
+   courses) : le premier démarrage donne le shell à 59,9 milliards
+   d'instructions (3202 s), le second à 39,5 milliards (2322 s), soit 34 %
+   de moins. Les services n'y attendent plus que 13 minutes au lieu de 37.
+   AppArmor reste donc actif : son coût est celui du premier démarrage.
 
 ## Télécharger une image depuis l'application
 
