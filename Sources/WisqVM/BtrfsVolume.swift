@@ -219,12 +219,13 @@ public final class BtrfsVolume: @unchecked Sendable {
     /// Les objets d'un arbre dont la clé tombe dans `[from, to]`, dans l'ordre.
     /// La descente ne suit que les enfants dont l'intervalle peut en contenir.
     func items(in root: UInt64, level: UInt8, from: Key, to: Key) throws -> [(Key, ArraySlice<UInt8>)] {
+        guard from <= to else { return [] }
         var found: [(Key, ArraySlice<UInt8>)] = []
-        try visit(root, expectedLevel: level, from: from, to: to, depth: 0, into: &found)
+        try visit(root, expectedLevel: level, keys: from...to, depth: 0, into: &found)
         return found
     }
 
-    private func visit(_ address: UInt64, expectedLevel: UInt8, from: Key, to: Key, depth: Int,
+    private func visit(_ address: UInt64, expectedLevel: UInt8, keys: ClosedRange<Key>, depth: Int,
                        into found: inout [(Key, ArraySlice<UInt8>)]) throws {
         guard depth <= 8 else { throw Failure.corrupt("un arbre trop profond.") }
         let node = try readLogical(address, nodeSize)
@@ -238,8 +239,8 @@ public final class BtrfsVolume: @unchecked Sendable {
             for index in 0..<count {
                 let at = header + 25 * index
                 let key = Key(node[at..<(at + 17)])
-                guard key >= from else { continue }
-                guard key <= to else { break }
+                guard key >= keys.lowerBound else { continue }
+                guard key <= keys.upperBound else { break }
                 let offset = header + Int(le32(node[...], at + 17))
                 let size = Int(le32(node[...], at + 21))
                 guard offset + size <= nodeSize else { throw Failure.corrupt("un objet hors de sa feuille.") }
@@ -252,12 +253,12 @@ public final class BtrfsVolume: @unchecked Sendable {
             let at = header + 33 * index
             let key = Key(node[at..<(at + 17)])
             // L'enfant couvre de sa clé à celle du suivant.
-            if key > to { break }
+            if key > keys.upperBound { break }
             if index + 1 < count {
                 let next = Key(node[(at + 33)..<(at + 50)])
-                if next <= from { continue }
+                if next <= keys.lowerBound { continue }
             }
-            try visit(le64(node[...], at + 17), expectedLevel: level - 1, from: from, to: to,
+            try visit(le64(node[...], at + 17), expectedLevel: level - 1, keys: keys,
                       depth: depth + 1, into: &found)
         }
     }
