@@ -8,6 +8,18 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le profil d'Ubuntu, écrit au fil de la course
+
+Suite directe, même autorisation. Le premier profil du démarrage entier
+d'Ubuntu a été arrêté au bout de deux heures : le banc n'écrivait ses
+échantillons qu'à la fin, et il n'en restait rien. `WISQ_PC_SAMPLE` les
+écrit maintenant par paquets de mille. Le second profil, borné à
+65 milliards d'instructions, montre où passe le temps : l'espace utilisateur
+monte à 70–81 % entre 25 et 45 milliards, pendant que dix services attendent
+la compilation des profils AppArmor du premier démarrage. La feuille de
+route le note ; rien n'est changé dans l'invité avant d'avoir mesuré un
+second démarrage.
+
 ## 2026-10-19 — L'instruction du cache passée sans copie
 
 Suite directe, même autorisation. Une instruction décodée pèse près de cent
