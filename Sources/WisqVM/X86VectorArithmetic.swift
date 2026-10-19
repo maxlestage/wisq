@@ -267,6 +267,55 @@ extension X86Core {
         case 0xE4: try compute(instruction, 2) { left, right, _ in (left &* right) >> 16 }
         case 0xF4: try compute(instruction, 8) { left, right, _ in (left & 0xFFFF_FFFF) &* (right & 0xFFFF_FFFF) }
 
+        // **Ce que Fedora 44 demande en plus**, trouvé d'avance : chaque
+        // instruction SSE2 des binaires de son image (`/usr/bin`,
+        // `/usr/lib64`, `/usr/lib/systemd`), passée au cœur une à une. Le
+        // démarrage s'arrêtait sur `66 0F 63` dans `zram-generator`. Les
+        // comparaisons et les extrêmes signés des mots, les moyennes
+        // arrondies vers le haut, les additions et soustractions saturées.
+        case 0x75: try compute(instruction, 2) { $0 == $1 ? $2 : 0 }
+        case 0xEE: try compute(instruction, 2) { left, right, _ in
+            Int16(truncatingIfNeeded: left) > Int16(truncatingIfNeeded: right) ? left : right
+        }
+        case 0xEA: try compute(instruction, 2) { left, right, _ in
+            Int16(truncatingIfNeeded: left) < Int16(truncatingIfNeeded: right) ? left : right
+        }
+        case 0xE0: try compute(instruction, 1) { left, right, _ in (left + right + 1) >> 1 }
+        case 0xE3: try compute(instruction, 2) { left, right, _ in (left + right + 1) >> 1 }
+        case 0xDC: try compute(instruction, 1) { left, right, _ in min(left + right, 0xFF) }
+        case 0xDD: try compute(instruction, 2) { left, right, _ in min(left + right, 0xFFFF) }
+        case 0xD9: try compute(instruction, 2) { left, right, _ in left > right ? left - right : 0 }
+        case 0xEC, 0xED, 0xE8, 0xE9:  // PADDSB, PADDSW, PSUBSB, PSUBSW
+            let width = opcode & 1 == 0 ? 1 : 2
+            let bits = UInt64(8 * width)
+            let subtract = opcode < 0xEC
+            try compute(instruction, width) { left, right, mask in
+                let a = Int64(bitPattern: left << (64 - bits)) >> (64 - bits)
+                let b = Int64(bitPattern: right << (64 - bits)) >> (64 - bits)
+                let limit = Int64(1) << (bits - 1)
+                let sum = min(max(subtract ? a - b : a + b, -limit), limit - 1)
+                return UInt64(bitPattern: sum) & mask
+            }
+        // La moitié haute du produit signé de deux mots ; et `PMADDWD`, les
+        // produits signés de deux mots voisins additionnés en un double mot.
+        case 0xE5: try compute(instruction, 2) { left, right, mask in
+            UInt64(bitPattern: (Int64(Int16(truncatingIfNeeded: left)) * Int64(Int16(truncatingIfNeeded: right))) >> 16)
+                & mask
+        }
+        case 0xF5: try compute(instruction, 4) { left, right, mask in
+            let low = Int64(Int16(truncatingIfNeeded: left)) * Int64(Int16(truncatingIfNeeded: right))
+            let high = Int64(Int16(truncatingIfNeeded: left >> 16)) * Int64(Int16(truncatingIfNeeded: right >> 16))
+            return UInt64(bitPattern: low + high) & mask
+        }
+        // Les resserrements **signés** : les mots en octets, les doubles mots
+        // en mots, chacun ramené dans ce que sa nouvelle taille peut porter.
+        case 0x63, 0x6B:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let result = Self.packSignedSaturated(vector(fields.reg), (low: source.0, high: source.1),
+                                                  from: opcode == 0x63 ? 2 : 4)
+            setVector(fields.reg, result.0, result.1)
+
         case 0x67:  // PACKUSWB : seize mots signés serrés en seize octets
             let fields = try decodeFields(instruction)
             let source = try readVectorRM(fields, 16)
@@ -314,6 +363,29 @@ extension X86Core {
             (0..<4).map { Int16(truncatingIfNeeded: half >> (16 * UInt64($0))) }
         }
         return pack(words.map { UInt8(clamping: $0) })
+    }
+
+    /// `PACKSSWB` et `PACKSSDW` : chaque élément signé de `from` octets
+    /// ramené dans un élément signé deux fois plus étroit. La destination
+    /// fait la moitié basse, la source la moitié haute.
+    static func packSignedSaturated(
+        _ destination: (low: UInt64, high: UInt64), _ source: (low: UInt64, high: UInt64), from: Int
+    ) -> (UInt64, UInt64) {
+        let bits = UInt64(8 * from)
+        let narrow = bits / 2
+        let limit = Int64(1) << (narrow - 1)
+        var halves: [UInt64] = [0, 0]
+        var position: UInt64 = 0
+        for half in [destination.low, destination.high, source.low, source.high] {
+            for index in 0..<(64 / bits) {
+                let piece = (half >> (index * bits)) << (64 - bits)
+                let value = min(max(Int64(bitPattern: piece) >> (64 - bits), -limit), limit - 1)
+                let field = UInt64(bitPattern: value) & ((1 << narrow) - 1)
+                halves[Int(position / 64)] |= field << (position % 64)
+                position += narrow
+            }
+        }
+        return (halves[0], halves[1])
     }
 
     /// Une opération élément par élément entre la destination et la source.

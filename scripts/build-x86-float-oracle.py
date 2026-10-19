@@ -101,6 +101,9 @@ def forms():
     for name in ["addpd", "mulpd"]:
         out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
     out += ["cvtpd2ps %xmm1, %xmm0", "cvtdq2pd %xmm1, %xmm0", "cvttpd2dq %xmm1, %xmm0"]
+    # Les racines empaquetées : `sqrtpd` arrêtait `zram-generator` chez
+    # Fedora 44, et `sqrtps` est la même chose sur quatre simples.
+    out += ["sqrtpd %xmm1, %xmm0", f"sqrtpd {ALIGNED:#x}(%rsi), %xmm0", "sqrtps %xmm1, %xmm0"]
     return out
 
 
