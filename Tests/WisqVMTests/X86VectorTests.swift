@@ -97,29 +97,53 @@ final class X86VectorTests: XCTestCase {
         XCTAssertEqual(core.vectors[1], 0, "et tout le reste effacé")
     }
 
-    /// L'arithmétique **empaquetée** est refusée de la même façon, et le
-    /// scalaire ne l'est plus.
-    ///
-    /// Cette place tenait le refus de `mulsd` ; la machine l'a réclamée, et le
-    /// septième corpus la tient maintenant contre le vrai processeur. Ce qui
-    /// reste refusé est la forme qui traite les deux valeurs du registre à la
-    /// fois : elle apparaît une poignée de fois dans l'espace utilisateur de
-    /// l'invité, dans du code que ce démarrage n'atteint pas.
-    ///
-    /// C'est un état, pas un manque caché — et la démonstration que la règle
-    /// du dépôt tient dans les deux sens : ce qui est demandé est écrit et
-    /// mesuré, ce qui ne l'est pas s'arrête en le disant.
-    func testPackedArithmeticIsStillRefusedByName() throws {
-        // `66 0f 5c c1` : subpd %xmm1,%xmm0. `mulpd` et `addpd` sont arrivées
-        // avec Debian ; `subpd`, qu'aucun de ses binaires n'emploie, non.
-        let ram = try Self.memory([0x66, 0x0F, 0x5C, 0xC1])
+    /// **L'arithmétique empaquetée**, élément par élément : deux doubles avec
+    /// `66`, quatre simples sans préfixe. `subpd` a longtemps tenu cette place
+    /// comme exemple de refus ; Ubuntu 26.04 l'a réclamée, à 59 milliards
+    /// d'instructions.
+    func testPackedArithmeticWorksLaneByLane() throws {
+        // `66 0f 5c c1` subpd, `66 0f 5e c1` divpd : %xmm1 vers %xmm0.
+        for (code, low, high) in [([UInt8]([0x66, 0x0F, 0x5C, 0xC1]), 7.0 - 2.0, 1.0 - 4.0),
+                                  ([0x66, 0x0F, 0x5E, 0xC1], 7.0 / 2.0, 1.0 / 4.0)] {
+            var core = Self.core(try Self.memory(code))
+            core.setVector(0, 7.0.bitPattern, 1.0.bitPattern)
+            core.setVector(1, 2.0.bitPattern, 4.0.bitPattern)
+            try core.run(budget: 1)
+            XCTAssertEqual(core.vector(0).low, low.bitPattern, "\(code)")
+            XCTAssertEqual(core.vector(0).high, high.bitPattern, "\(code)")
+        }
+        // `0f 5c c1` subps, `0f 5e c1` divps, `0f 58 c1` addps, `0f 59 c1` mulps.
+        let left: [Float] = [8, 6, -3, 1], right: [Float] = [2, 4, 0.5, 3]
+        func pack(_ values: [Float]) -> (UInt64, UInt64) {
+            let bits = values.map { UInt64($0.bitPattern) }
+            return (bits[0] | bits[1] << 32, bits[2] | bits[3] << 32)
+        }
+        let operations: [(UInt8, (Float, Float) -> Float)] = [
+            (0x5C, { $0 - $1 }), (0x5E, { $0 / $1 }), (0x58, { $0 + $1 }), (0x59, { $0 * $1 }),
+        ]
+        for (opcode, operation) in operations {
+            var core = Self.core(try Self.memory([0x0F, opcode, 0xC1]))
+            let (l, r) = (pack(left), pack(right))
+            core.setVector(0, l.0, l.1)
+            core.setVector(1, r.0, r.1)
+            try core.run(budget: 1)
+            let expected = pack(zip(left, right).map(operation))
+            XCTAssertEqual(core.vector(0).low, expected.0, String(format: "0F %02X, bas", opcode))
+            XCTAssertEqual(core.vector(0).high, expected.1, String(format: "0F %02X, haut", opcode))
+        }
+    }
+
+    /// Ce qui reste refusé l'est par son nom, et sans rien écrire avant :
+    /// `minpd` (`66 0f 5d`), qu'aucun démarrage n'a encore demandé.
+    func testPackedMinimumIsStillRefusedByName() throws {
+        let ram = try Self.memory([0x66, 0x0F, 0x5D, 0xC1])
         var core = Self.core(ram)
         core.setVector(0, 0x3FF0_0000_0000_0000, 0x4000_0000_0000_0000)
         XCTAssertThrowsError(try core.run(budget: 1)) { error in
             guard case .unsupported(let name)? = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, reçu \(error)")
             }
-            XCTAssertTrue(name.contains("5C"), "il faut nommer l'opcode : \(name)")
+            XCTAssertTrue(name.contains("5D"), "il faut nommer l'opcode : \(name)")
         }
         XCTAssertEqual(core.vectors[0], 0x3FF0_0000_0000_0000,
                        "et rien n'a été écrit avant de refuser")
