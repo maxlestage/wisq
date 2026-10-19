@@ -505,9 +505,14 @@ extension X86Core {
             // processeur qui n'annonce pas la technologie — et `X86CPUID`
             // ne l'annonce pas — ce sont des NOP. Les refuser arrêterait le
             // noyau à sa toute première instruction.
-            guard instruction.modrm == 0xFA || instruction.modrm == 0xFB else {
-                throw Fault.unsupported("F3 0F 1E hors ENDBR")
-            }
+            //
+            // **Et tout le reste de `F3 0F 1E` aussi**, `RDSSPD` et `RDSSPQ`
+            // (`/1` en registre) compris. La glibc d'Ubuntu 26.04 met un
+            // registre à zéro puis lit le pointeur de pile fantôme : resté à
+            // zéro, il n'y a pas de pile fantôme. Sans CET, le manuel range
+            // ces octets parmi les NOP réservés, et le registre ne bouge pas.
+            // Le refuser arrêtait Ubuntu au premier programme lancé.
+            break
 
         case 0x0D, 0x18...0x1D, 0x1E:
             // PREFETCH et les NOP réservés du groupe 16 : des indices pour un
