@@ -482,9 +482,17 @@ noyau dans le disque lui-même.
    (qcow2) », une icône de nuage), et propose « Installer une machine ».
    Chaque machine a sa couche d'écriture et son mot de passe de `root`. Un
    qcow2 vierge, qui n'est qu'un disque de données, n'est pas proposé.
-9. Ubuntu (`SHA256SUMS`), une fois démarré de bout en bout : son systemd 255
-   ne connaît pas encore le credential `agetty.autologin`, et ses images
-   attendent cloud-init.
+9. **En cours.** Ubuntu 26.04 (`SHA256SUMS`), une fois démarré de bout en
+   bout. Ce qui est fait :
+   - sa glibc lit le pointeur de pile fantôme (`RDSSPQ`, `F3 0F 1E`), qui
+     n'est qu'un NOP sans CET ;
+   - son noyau bat à 1000 Hz, et 37 % des instructions de l'invité passaient
+     dans le tic d'horloge. Le 8253 en coup unique n'échoit plus avant 4 ms,
+     et cette part tombe à 14 %.
+
+   Ce qui reste : udev traite plus de mille événements de démarrage dans
+   l'initramfs de dracut, et n'en a pas fini quand les délais de systemd
+   expirent (600 s par périphérique).
 
 ## Télécharger une image depuis l'application
 
