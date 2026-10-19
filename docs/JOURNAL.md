@@ -28,12 +28,17 @@ Son désassemblage montrait trois choses qui n'avaient rien à y faire :
   `static let` calculé depuis la table du décodeur. C'est maintenant une
   constante, et un test la compare à la table ;
 - une recherche de dictionnaire pour la base de FS ou GS. Elle n'a lieu
-  qu'avec un préfixe de segment, et elle reste pour une prochaine tranche.
+  qu'avec un préfixe de segment. Mesurée : deux champs à la place font
+  gagner 0,5 % d'instructions hôte sous callgrind (50,35 → 50,11 milliards
+  pour cent millions d'instructions d'Alpine). C'est trop peu pour soixante
+  lignes, et le dictionnaire reste.
 
 Essayé et écarté : un aiguillage de seize cas dans l'indice. Il évitait la
 copie, et la mesure le donnait 10 % plus lent que master.
 
-**Mesuré** (temps CPU utilisateur, premier milliard d'instructions
+**Mesuré** sous callgrind, sur les cent premiers millions d'instructions
+d'Alpine : 55,9 → 50,35 milliards d'instructions hôte, soit 10 % de moins.
+En temps CPU utilisateur (premier milliard d'instructions
 d'Alpine, quatre paires alternées, un démarrage d'Ubuntu tournant à côté) :
 54,2 s → 49,0 s en moyenne, environ 9,6 % de moins. La constante seule
 donnait environ 5 %.
