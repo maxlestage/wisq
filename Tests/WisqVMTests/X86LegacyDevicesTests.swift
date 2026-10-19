@@ -80,6 +80,74 @@ final class X86LegacyDevicesTests: XCTestCase {
 
     // MARK: - Le battement
 
+    /// Le canal zéro programmé comme Linux le programme : un mode, puis le
+    /// compte en deux octets. Puis on demande ce qui est dû juste avant et
+    /// juste après une échéance.
+    static func programmed(mode: UInt8, count: UInt16) throws -> X86Core {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        // `b0 xx` `e6 43` : le mode ; `b0 lo` `e6 40` `b0 hi` `e6 40` : le compte.
+        var core = try Self.core(ram, [
+            0xB0, mode, 0xE6, 0x43,
+            0xB0, UInt8(count & 0xFF), 0xE6, 0x40,
+            0xB0, UInt8(count >> 8), 0xE6, 0x40,
+        ])
+        try core.run(budget: 6)
+        XCTAssertEqual(core.devices.reload, count)
+        return core
+    }
+
+    /// **Le coup unique d'un noyau à 1000 Hz arrive au bout de quatre
+    /// millisecondes.** Linux passe le canal en mode 4 (`0x38`) dès que son
+    /// heure vient du compteur de cycles, puis réarme 1193 battements à chaque
+    /// échéance. Les livrer toutes coûtait 37 % des instructions d'Ubuntu.
+    func testAOneShotOfAMillisecondWaitsForFourMilliseconds() throws {
+        let core = try Self.programmed(mode: 0x38, count: 1193)
+        XCTAssertTrue(core.devices.oneShot, "le mode 4 compte une fois")
+        let start = core.devices.reloadedAt
+        XCTAssertEqual(core.devices.expirations(at: start &+ 1193), 0, "pas après une milliseconde")
+        XCTAssertEqual(core.devices.expirations(at: start &+ X86LegacyDevices.shortestOneShot &- 1), 0)
+        XCTAssertEqual(core.devices.expirations(at: start &+ X86LegacyDevices.shortestOneShot), 1,
+                       "mais au bout de quatre")
+    }
+
+    /// Un coup unique plus long que le plancher garde sa propre échéance.
+    func testALongerOneShotKeepsItsOwnDeadline() throws {
+        let core = try Self.programmed(mode: 0x30, count: 20_000)
+        XCTAssertTrue(core.devices.oneShot, "le mode 0 compte une fois, lui aussi")
+        let start = core.devices.reloadedAt
+        XCTAssertEqual(core.devices.expirations(at: start &+ 19_999), 0)
+        XCTAssertEqual(core.devices.expirations(at: start &+ 20_000), 1)
+    }
+
+    /// **Le mode périodique n'est pas touché.** Un noyau qui bat avance
+    /// `jiffies` d'un cran par interruption : lui en livrer moins ferait
+    /// ralentir son heure. Le noyau d'Alpine bat ainsi pendant tout son
+    /// démarrage.
+    func testThePeriodicModeKeepsEveryBeat() throws {
+        let core = try Self.programmed(mode: 0x34, count: 1193)
+        XCTAssertFalse(core.devices.oneShot, "le mode 2 bat")
+        let start = core.devices.reloadedAt
+        XCTAssertEqual(core.devices.expirations(at: start &+ 1193), 1, "chaque milliseconde")
+        XCTAssertEqual(core.devices.expirations(at: start &+ 4 * 1193), 4)
+        XCTAssertFalse(try Self.programmed(mode: 0x36, count: 1193).devices.oneShot, "le mode 3 bat aussi")
+    }
+
+    /// Le mode survit à un instantané : une machine reprise en coup unique
+    /// ne se remet pas à livrer chaque milliseconde.
+    func testTheOneShotModeSurvivesASnapshot() throws {
+        let machine = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
+        machine.core.devices.oneShot = true
+        machine.core.devices.reload = 0xFFFF
+        let restored = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
+        try restored.restore(machine.snapshot())
+        XCTAssertTrue(restored.core.devices.oneShot)
+        XCTAssertEqual(restored.core.devices.reload, 0xFFFF, "et le compte n'en est pas abîmé")
+
+        machine.core.devices.oneShot = false
+        try restored.restore(machine.snapshot())
+        XCTAssertFalse(restored.core.devices.oneShot, "un instantané périodique le reste")
+    }
+
     /// Le canal zéro déborde, la ligne zéro demande, et le gestionnaire du
     /// noyau est appelé au vecteur que le contrôleur porte.
     func testTheTimerReachesTheHandler() throws {
