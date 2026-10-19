@@ -536,7 +536,10 @@ public final class X86Machine: @unchecked Sendable {
             writer.u32(UInt32(controller.initialisationStep))
             writer.u32(controller.readsService ? 1 : 0)
         }
-        writer.u32(UInt32(devices.reload))
+        // Le mode tient dans les bits libres au-dessus des seize du compte :
+        // un instantané d'avant ce bit se relit en mode périodique, comme il
+        // tournait.
+        writer.u32(UInt32(devices.reload) | (devices.oneShot ? 1 << 16 : 0))
         writer.u32(devices.writeHighNext ? 1 : 0)
         writer.u32(devices.readHighNext ? 1 : 0)
         writer.u32(UInt32(devices.latched ?? 0))
@@ -572,7 +575,9 @@ public final class X86Machine: @unchecked Sendable {
             controller.readsService = try reader.u32() != 0
             if which == 0 { devices.primary = controller } else { devices.secondary = controller }
         }
-        devices.reload = UInt16(truncatingIfNeeded: try reader.u32())
+        let reload = try reader.u32()
+        devices.reload = UInt16(truncatingIfNeeded: reload)
+        devices.oneShot = reload & (1 << 16) != 0
         devices.writeHighNext = try reader.u32() != 0
         devices.readHighNext = try reader.u32() != 0
         let latched = UInt16(truncatingIfNeeded: try reader.u32())

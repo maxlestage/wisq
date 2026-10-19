@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Ubuntu 26.04 : le tic d'horloge et `RDSSPQ`
+
+Suite directe, même autorisation. Prochaine distribution de la feuille de
+route : l'image de cloud d'Ubuntu 26.04. Elle s'arrêtait d'abord à
+5 milliards d'instructions sur `F3 0F 1E hors ENDBR`, puis, une fois cette
+instruction acceptée, finissait en mode de secours.
+
+- **`RDSSPQ`.** La glibc d'Ubuntu lit le pointeur de pile fantôme. Sans CET
+  annoncé, l'instruction est un NOP et laisse le registre à zéro. Un test, un
+  sabotage.
+- **Le diagnostic du mode de secours.** udev n'était pas bloqué. Les journaux
+  de debug, renvoyés vers la console, montrent chaque événement traité, à
+  environ 2,5 s de temps invité pièce, et plus de mille événements à traiter.
+  Ensuite, le banc a noté le RIP de l'invité à chaque million
+  d'instructions (`WISQ_PC_SAMPLE`, avec `nokaslr` et le `System.map` de
+  l'image). Résultat : 37 % dans le tic d'horloge et l'ordonnanceur. Le noyau
+  d'Ubuntu bat à 1000 Hz, celui de Debian à 250 Hz.
+- **Le correctif.** Un 8253 en coup unique (modes 0 et 4, ce que Linux
+  programme dès que son heure vient du compteur de cycles) n'échoit plus
+  avant 4 ms. Le noyau rattrape le temps passé en lisant ce compteur, donc il
+  ne perd rien. Le mode périodique compte chaque battement pour avancer
+  `jiffies`, et n'est pas touché. Le mode est gardé dans l'instantané, dans un
+  bit libre au-dessus du compte, et un instantané d'avant se relit en mode
+  périodique. La part du tic passe de 37,4 % à 14,2 %, et l'initramfs met en
+  file `initrd.target` à 281 s au lieu de 365 s.
+- Quatre tests. Cinq sabotages, et l'un d'eux ne tombait pas : le compte 1193
+  tient dans douze bits. Le test d'instantané prend maintenant 0xFFFF.
+- **Ce qui reste.** Les modules et leur décompression zstd prennent
+  maintenant la tête du profil, et udev n'a toujours pas fini à temps.
+
 ## 2026-10-19 — Plusieurs machines sur une image de cloud
 
 Suite directe, même autorisation. La priorité « installer plusieurs
