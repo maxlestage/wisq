@@ -8,6 +8,26 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Ubuntu 26.04 jusqu'à son invite de connexion
+
+Suite directe, même autorisation. Avec le tic d'horloge allégé, Ubuntu 26.04
+passe l'initramfs, bascule sur sa racine et démarre `serial-getty`. Il
+s'arrêtait ensuite sur deux familles d'instructions vectorielles :
+
+- **`0F 13` et `0F 17`** (`MOVLPS`/`MOVLPD`, `MOVHPS`/`MOVHPD` vers la
+  mémoire), à 45,7 milliards d'instructions. Elles rangent huit octets, le
+  bas ou le haut du registre. Les octets entrent dans le masque des
+  gestionnaires spécialisés. Trois sabotages, dont le masque.
+- **L'arithmétique empaquetée** (`0F 5C`), à 59,3 milliards. `SUBPD` et
+  `DIVPD` rejoignent `ADDPD` et `MULPD`. `ADDPS`, `MULPS`, `SUBPS` et `DIVPS`
+  traitent leurs quatre simples avec la même règle des NaN. Le test qui
+  prenait `subpd` comme exemple de refus prend maintenant `minpd`. Trois
+  sabotages.
+
+Après ces deux arrêts, la console montre
+`ubuntu login: root (automatic login)`. **Ce qui reste :** `login` repart en
+boucle, et a expiré une fois après ses soixante secondes.
+
 ## 2026-10-19 — Ubuntu 26.04 : le tic d'horloge et `RDSSPQ`
 
 Suite directe, même autorisation. Prochaine distribution de la feuille de
