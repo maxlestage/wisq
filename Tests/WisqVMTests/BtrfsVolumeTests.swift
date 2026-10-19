@@ -78,7 +78,8 @@ final class BtrfsVolumeTests: XCTestCase {
         XCTAssertEqual(try volume.contents(of: "/boot/noyau"), Self.letters(12000))
         XCTAssertEqual(try volume.contents(of: "/etc/vide"), [])
         XCTAssertEqual(String(decoding: try volume.contents(of: "/boot/loader/entries/a.conf"), as: UTF8.self),
-                       "title Fedora\nlinux /noyau\noptions root=UUID=x rootflags=subvol=root\n")
+                       "title Fedora\nlinux /boot/noyau\ninitrd /etc/court\n"
+                           + "options root=UUID=x rootflags=subvol=root systemd.firstboot=off\n")
     }
 
     /// Les liens symboliques, relatifs et absolus, sont suivis ; et un
