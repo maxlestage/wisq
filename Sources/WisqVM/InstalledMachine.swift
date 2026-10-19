@@ -283,6 +283,28 @@ public enum InstalledMachines {
         return kind.couldBootHere
     }
 
+    /// **Les images de cloud parmi `files`** : un disque d'hyperviseur que
+    /// wisq lit, ou un fichier que personne n'a reconnu, dont la table de
+    /// partitions porte une partition Linux (`CloudBoot.isCloudImage`).
+    ///
+    /// À part de `canInstall`, qui ne lit que la nature du fichier : un
+    /// qcow2 peut être un disque de données vierge, sur lequel installer une
+    /// machine n'aurait aucun sens. Seule la table le dit, et la lire demande
+    /// d'ouvrir le fichier, une fois par rechargement de la liste plutôt
+    /// qu'à chaque dessin.
+    public static func cloudImages(_ files: [URL], kinds: [URL: KernelImageKind]) -> Set<URL> {
+        Set(files.filter { url in
+            switch kinds[url] ?? .unknown {
+            case .virtualDisk(let format) where KernelImageKind.isReadableVirtualDisk(format):
+                return CloudBoot.isCloudImage(fileAt: url)
+            case .unknown:
+                return CloudBoot.isCloudImage(fileAt: url)
+            default:
+                return false
+            }
+        })
+    }
+
     // MARK: - Les noms
 
     /// Le nom qu'une machine reçoit quand personne n'en donne.

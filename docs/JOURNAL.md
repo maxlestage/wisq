@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Plusieurs machines sur une image de cloud
+
+Suite directe, même autorisation. La priorité « installer plusieurs
+machines Linux » butait sur une règle d'avant les images de cloud :
+`canInstall` ne proposait l'installation qu'aux noyaux et aux images
+d'installation, et un qcow2, qui ne démarrait pas, en était exclu. On ne
+pouvait donc pas avoir deux Debian indépendantes sur la même image.
+
+- **La règle ne pouvait pas devenir « tout qcow2 »** : un disque de données
+  vierge en qcow2 aurait proposé une machine qui refuse de démarrer.
+  `InstalledMachines.cloudImages` lit la table de chaque fichier candidat,
+  une fois par rechargement de la liste et non à chaque dessin, et ne garde
+  que ceux qui portent une partition Linux.
+- La ligne dit « image de cloud (qcow2) », avec une icône de nuage. Le menu de
+  disque d'une machine installée dit « Disque d'installation (vdb) », puisque
+  l'image occupe `vda`.
+- Deux machines sur la même image ont chacune leur couche d'écriture et leur
+  mot de passe de `root`.
+- Trois sabotages. L'un ne tombait pas : le test n'avait aucun qcow2 qui ne
+  soit pas une image de cloud. Un qcow2 vierge écrit par `qemu-img` est
+  maintenant dans le test, et le sabotage y tombe.
+
 ## 2026-10-19 — L'instantané, pris plus vite
 
 Suite directe, même autorisation. Au passage en arrière-plan, iOS ne laisse
