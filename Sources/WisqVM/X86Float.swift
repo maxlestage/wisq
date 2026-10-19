@@ -107,6 +107,21 @@ extension X86Core {
         case 0x5D where single || doubleWide: try select(instruction, single, keepLower: true)
         case 0x5F where single || doubleWide: try select(instruction, single, keepLower: false)
         case 0x51 where single || doubleWide: try squareRoot(instruction, single)
+        // Les racines **empaquetées**, chaque élément selon la règle du
+        // scalaire. `SQRTPD` arrêtait `zram-generator` chez Fedora 44.
+        case 0x51 where operandSize:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, Self.root(Self.asDouble(source.0)).bitPattern,
+                      Self.root(Self.asDouble(source.1)).bitPattern)
+        case 0x51:  // SQRTPS
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            func lanes(_ value: UInt64) -> UInt64 {
+                UInt64(Self.root(Self.asSingle(value)).bitPattern)
+                    | UInt64(Self.root(Self.asSingle(value >> 32)).bitPattern) << 32
+            }
+            setVector(fields.reg, lanes(source.0), lanes(source.1))
 
         // Les comparaisons, seules de tout le vectoriel à écrire des drapeaux.
         //
@@ -398,17 +413,22 @@ extension X86Core {
         let source = try readVectorRM(fields, single ? 4 : 8)
         let destination = vector(fields.reg)
         if single {
-            let from = Self.asSingle(source.0)
-            let result = from.isNaN ? Self.quiet(from)
-                : (from < 0 ? Self.indefiniteSingle : from.squareRoot())
+            let result = Self.root(Self.asSingle(source.0))
             let low = (destination.low & ~0xFFFF_FFFF) | UInt64(result.bitPattern)
             setVector(fields.reg, low, destination.high)
         } else {
-            let from = Self.asDouble(source.0)
-            let result = from.isNaN ? Self.quiet(from)
-                : (from < 0 ? Self.indefiniteDouble : from.squareRoot())
-            setVector(fields.reg, result.bitPattern, destination.high)
+            setVector(fields.reg, Self.root(Self.asDouble(source.0)).bitPattern, destination.high)
         }
+    }
+
+    /// La racine que rend le processeur : un NaN reste NaN, rendu
+    /// silencieux ; un nombre négatif (pas -0) donne l'indéfini.
+    static func root(_ from: Double) -> Double {
+        from.isNaN ? quiet(from) : (from < 0 ? indefiniteDouble : from.squareRoot())
+    }
+
+    static func root(_ from: Float) -> Float {
+        from.isNaN ? quiet(from) : (from < 0 ? indefiniteSingle : from.squareRoot())
     }
 
     /// La comparaison qui écrit les drapeaux. Non ordonnée — un NaN d'un côté

@@ -203,6 +203,11 @@ extension X86Core {
         // octets : les mêmes bits déplacés pareil, un autre nom.
         case 0x14 where operandSize: try interleave(instruction, 8, high: false)
         case 0x15 where operandSize: try interleave(instruction, 8, high: true)
+        // Sans préfixe, `UNPCKLPS` et `UNPCKHPS` : les mêmes bits que
+        // `PUNPCKLDQ` et `PUNPCKHDQ`, par morceaux de quatre octets. systemd
+        // 259 de Fedora 44 s'y arrêtait.
+        case 0x14 where !repeatFE && !repeatFD: try interleave(instruction, 4, high: false)
+        case 0x15 where !repeatFE && !repeatFD: try interleave(instruction, 4, high: true)
 
         case 0x12 where !repeatFE && !repeatFD:  // MOVHLPS / MOVLPS / MOVLPD
             let fields = try decodeFields(instruction)
