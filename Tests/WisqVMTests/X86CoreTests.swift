@@ -138,17 +138,17 @@ final class X86CoreTests: XCTestCase {
     /// fois parce que le cœur grandit du côté où la machine pousse.
     ///
     /// Il a cédé une troisième fois : `0F 58` sans préfixe, `ADDPS`, est venu
-    /// avec l'arithmétique empaquetée qu'Ubuntu 26.04 a réclamée. L'exemple
-    /// d'aujourd'hui est `0F 5D` **sans préfixe** : `MINPS`, le minimum des
-    /// quatre valeurs du registre à la fois, qu'aucun démarrage n'a encore
-    /// demandé.
+    /// avec l'arithmétique empaquetée qu'Ubuntu 26.04 a réclamée, et une
+    /// quatrième : `MINPS`, venu avec ce que Fedora 44 porte. L'exemple
+    /// d'aujourd'hui est `0F 53`, `RCPPS`, refusé **exprès** : une
+    /// approximation dont les bits changent d'un processeur à l'autre.
     func testAnOpcodeTheCoreDoesNotRunYetIsNamed() {
         var machine = core()
-        XCTAssertThrowsError(try run([0x0F, 0x5D, 0xC1], on: &machine)) { error in
+        XCTAssertThrowsError(try run([0x0F, 0x53, 0xC1], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
-            XCTAssertTrue(what.contains("5D"), "il faut nommer l'opcode : \(what)")
+            XCTAssertTrue(what.contains("53"), "il faut nommer l'opcode : \(what)")
         }
     }
 

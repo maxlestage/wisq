@@ -140,16 +140,7 @@ extension X86Core {
                 // La charge utile monte de vingt-neuf bits, et le bit
                 // silencieux est posé. Laisser l'hôte convertir donnerait son
                 // NaN à lui.
-                let from = Self.asSingle(source.0)
-                let value: Double
-                if from.isNaN {
-                    let sign = UInt64(from.bitPattern & 0x8000_0000) << 32
-                    let payload = UInt64(from.bitPattern & 0x007F_FFFF) << 29
-                    value = Double(bitPattern: sign | 0x7FF8_0000_0000_0000 | payload)
-                } else {
-                    value = Double(from)
-                }
-                setVector(fields.reg, value.bitPattern, destination.high)
+                setVector(fields.reg, Self.widened(Self.asSingle(source.0)).bitPattern, destination.high)
             } else {
                 let value = Self.narrowed(Self.asDouble(source.0))
                 let low = (destination.low & ~0xFFFF_FFFF) | UInt64(value.bitPattern)
@@ -257,6 +248,49 @@ extension X86Core {
             let low = Self.toInteger(Self.asDouble(source.0).rounded(.towardZero), 4)
             let high = Self.toInteger(Self.asDouble(source.1).rounded(.towardZero), 4)
             setVector(fields.reg, low | high << 32, 0)
+
+        // **Les formes empaquetées que Fedora 44 porte encore**, trouvées
+        // par la même sonde que le SSE2 entier : presque toutes dans
+        // `libmvec`, et `CVTTPS2DQ` dans `libharfbuzz`. Chaque élément suit
+        // la règle de sa forme scalaire. `RCPPS` et `RSQRTPS` restent
+        // refusés : ce sont des approximations, dont les bits diffèrent d'un
+        // processeur à l'autre, et aucun oracle ne pourrait les fixer.
+        case 0x5D where !single && !doubleWide, 0x5F where !single && !doubleWide:
+            let keepLower = opcode == 0x5D
+            try packed(instruction, doubles: operandSize, { left, right in
+                Self.chosen(Self.asDouble(left), Self.asDouble(right), keepLower).bitPattern
+            }, { left, right in
+                Self.chosen(Float(bitPattern: left), Float(bitPattern: right), keepLower).bitPattern
+            })
+        case 0xC2 where !single && !doubleWide:
+            let code = UInt8(truncatingIfNeeded: instruction.immediate)
+            try packed(instruction, doubles: operandSize, { left, right in
+                Self.predicate(code, Self.asDouble(left), Self.asDouble(right)) ? .max : 0
+            }, { left, right in
+                Self.predicate(code, Double(Float(bitPattern: left)), Double(Float(bitPattern: right))) ? .max : 0
+            })
+
+        case 0x5A where !operandSize:  // CVTPS2PD : les deux simples du bas en deux doubles
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 8).0
+            setVector(fields.reg, Self.widened(Self.asSingle(source)).bitPattern,
+                      Self.widened(Self.asSingle(source >> 32)).bitPattern)
+
+        // Sans préfixe, `CVTDQ2PS` : quatre entiers en quatre simples, au
+        // plus proche. Avec `66`, `CVTPS2DQ`, au plus proche ; avec `F3`,
+        // `CVTTPS2DQ`, tronqués. Hors de portée, l'entier indéfini.
+        case 0x5B where !doubleWide:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            func lane(_ bits: UInt64) -> UInt64 {
+                if !operandSize && !single {
+                    return UInt64(Float(Int32(truncatingIfNeeded: bits)).bitPattern)
+                }
+                let value = Double(Float(bitPattern: UInt32(truncatingIfNeeded: bits)))
+                return Self.toInteger(value.rounded(single ? .towardZero : .toNearestOrEven), 4)
+            }
+            func lanes(_ half: UInt64) -> UInt64 { lane(half) | lane(half >> 32) << 32 }
+            setVector(fields.reg, lanes(source.0), lanes(source.1))
 
         default: return false
         }
@@ -389,17 +423,48 @@ extension X86Core {
         let source = try readVectorRM(fields, single ? 4 : 8)
         let destination = vector(fields.reg)
         if single {
-            let left = Self.asSingle(destination.low)
-            let right = Self.asSingle(source.0)
-            let chosen = (keepLower ? left < right : left > right) ? left : right
+            let chosen = Self.chosen(Self.asSingle(destination.low), Self.asSingle(source.0), keepLower)
             let low = (destination.low & ~0xFFFF_FFFF) | UInt64(chosen.bitPattern)
             setVector(fields.reg, low, destination.high)
         } else {
-            let left = Self.asDouble(destination.low)
-            let right = Self.asDouble(source.0)
-            let chosen = (keepLower ? left < right : left > right) ? left : right
+            let chosen = Self.chosen(Self.asDouble(destination.low), Self.asDouble(source.0), keepLower)
             setVector(fields.reg, chosen.bitPattern, destination.high)
         }
+    }
+
+    /// Une opération empaquetée, élément par élément : deux doubles avec
+    /// `66`, quatre simples sans. Les fermetures reçoivent et rendent des
+    /// bits, pour qu'un masque tout à un ne passe jamais par un flottant.
+    private mutating func packed(
+        _ instruction: X86Instruction, doubles: Bool,
+        _ double: (UInt64, UInt64) -> UInt64, _ single: (UInt32, UInt32) -> UInt32
+    ) throws {
+        let fields = try decodeFields(instruction)
+        let source = try readVectorRM(fields, 16)
+        let destination = vector(fields.reg)
+        func lanes(_ left: UInt64, _ right: UInt64) -> UInt64 {
+            if doubles { return double(left, right) }
+            let low = single(UInt32(truncatingIfNeeded: left), UInt32(truncatingIfNeeded: right))
+            let high = single(UInt32(truncatingIfNeeded: left >> 32), UInt32(truncatingIfNeeded: right >> 32))
+            return UInt64(low) | UInt64(high) << 32
+        }
+        setVector(fields.reg, lanes(destination.low, source.0), lanes(destination.high, source.1))
+    }
+
+    /// Le choix de `MIN` et `MAX` : la destination si la comparaison la
+    /// garde, **la source** sinon, NaN et zéros de signes opposés compris.
+    static func chosen<Value: BinaryFloatingPoint>(_ left: Value, _ right: Value, _ keepLower: Bool) -> Value {
+        (keepLower ? left < right : left > right) ? left : right
+    }
+
+    /// Un simple élargi en double. Un NaN garde son signe et sa charge
+    /// utile, montée de vingt-neuf bits, et devient silencieux : laisser
+    /// l'hôte convertir donnerait son NaN à lui.
+    static func widened(_ from: Float) -> Double {
+        guard from.isNaN else { return Double(from) }
+        let sign = UInt64(from.bitPattern & 0x8000_0000) << 32
+        let payload = UInt64(from.bitPattern & 0x007F_FFFF) << 29
+        return Double(bitPattern: sign | 0x7FF8_0000_0000_0000 | payload)
     }
 
     /// La racine carrée, qui **ne regarde que sa source**. La destination ne
