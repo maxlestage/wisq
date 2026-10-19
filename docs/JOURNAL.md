@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le calcul d'adresse sans copie des registres
+
+Suite directe, même autorisation. Ubuntu démarre plus de trois fois plus
+lentement que Debian, et tout ce que gagne l'interprète profite aux deux.
+callgrind, sur les cent premiers millions d'instructions d'Alpine, mettait
+`decodeFields` à 13,6 % : le décodage du ModRM et le calcul de l'adresse.
+Son désassemblage montrait trois choses qui n'avaient rien à y faire :
+
+- **les seize registres recopiés sur la pile, deux fois par adresse.**
+  L'indice de `X86Registers` lisait par `withUnsafeBytes(of: storage)`, qui
+  n'a d'adresse que celle d'une copie : cent vingt-huit octets copiés à
+  chaque lecture de registre. `read(_:)` lit en place
+  (`withUnsafeBytes(of: &storage)`, donc `mutating`). Le calcul d'adresse,
+  `read(_:_:highByte:)`, `readReg`, `write`, `push` et `pop` s'en servent.
+  `readRM` et `twoByte` n'ont plus de copie, et `oneByte` passe de cinq à
+  une ;
+- **un `swift_once` par adresse**, pour lire `segmentPrefixes`, un
+  `static let` calculé depuis la table du décodeur. C'est maintenant une
+  constante, et un test la compare à la table ;
+- une recherche de dictionnaire pour la base de FS ou GS. Elle n'a lieu
+  qu'avec un préfixe de segment. Mesurée : deux champs à la place font
+  gagner 0,5 % d'instructions hôte sous callgrind (50,35 → 50,11 milliards
+  pour cent millions d'instructions d'Alpine). C'est trop peu pour soixante
+  lignes, et le dictionnaire reste.
+
+Essayé et écarté : un aiguillage de seize cas dans l'indice. Il évitait la
+copie, et la mesure le donnait 10 % plus lent que master.
+
+**Mesuré** sous callgrind, sur les cent premiers millions d'instructions
+d'Alpine : 55,9 → 50,35 milliards d'instructions hôte, soit 10 % de moins.
+En temps CPU utilisateur (premier milliard d'instructions
+d'Alpine, quatre paires alternées, un démarrage d'Ubuntu tournant à côté) :
+54,2 s → 49,0 s en moyenne, environ 9,6 % de moins. La constante seule
+donnait environ 5 %.
+
+Deux tests, deux sabotages : une lecture en place ramenée à trois bits, une
+constante qui oublie FS.
+
 ## 2026-10-19 — Ubuntu 26.04 jusqu'au shell de `root`, sans `login`
 
 Suite directe, même autorisation. Après #530, la même mesure (budget de

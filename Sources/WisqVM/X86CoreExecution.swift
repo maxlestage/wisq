@@ -155,7 +155,7 @@ extension X86Core {
     /// d'observable ne change.
     mutating func push(_ value: UInt64, _ size: Int) throws {
         guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
-        let lowered = registers[4] &- UInt64(size)
+        let lowered = registers.read(4) &- UInt64(size)
         try writeMemory(lowered, size, value)
         registers[4] = lowered
     }
@@ -164,14 +164,14 @@ extension X86Core {
     /// garder tel quel est un choix, pas un oubli.
     mutating func pop(_ size: Int) throws -> UInt64 {
         guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
-        let value = try readMemory(registers[4], size)
-        registers[4] = registers[4] &+ UInt64(size)
+        let value = try readMemory(registers.read(4), size)
+        registers[4] = registers.read(4) &+ UInt64(size)
         return value
     }
 
     // Inlinée : voir `read(_:_:highByte:)`.
     @inline(__always)
-    func readReg(_ fields: Fields, _ size: Int) -> UInt64 {
+    mutating func readReg(_ fields: Fields, _ size: Int) -> UInt64 {
         read(fields.reg, size, highByte: fields.regIsHighByte)
     }
 
