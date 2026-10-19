@@ -8,6 +8,23 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le second démarrage d'Ubuntu
+
+Suite directe, même autorisation. La feuille de route demandait de mesurer
+un second démarrage de la même machine avant de toucher à AppArmor.
+`WISQ_PC_WRITES` nomme la couche d'écriture du banc au lieu d'un fichier
+temporaire : deux courses qui la partagent démarrent la même machine.
+
+- **Premier démarrage** : `root@ubuntu:~#` à 59,9 milliards d'instructions,
+  en 3202 s (3899 s avant #532 à #534), puis `sync` pour que la couche garde
+  tout. Elle pèse 19 Mio.
+- **Second démarrage** : le shell à 39,5 milliards d'instructions, en 2322 s,
+  soit 34 % de moins. snapd, rsyslog, polkit et dbus n'attendent plus que
+  13 minutes, contre 37. `systemd-analyze` répond que le démarrage n'est pas
+  encore fini : snapd tourne encore.
+- **La décision** : AppArmor reste actif. Son coût est celui du premier
+  démarrage, et le couper affaiblirait l'invité pour toujours.
+
 ## 2026-10-19 — Le profil d'Ubuntu, écrit au fil de la course
 
 Suite directe, même autorisation. Le premier profil du démarrage entier
