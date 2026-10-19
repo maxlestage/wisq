@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le SSE2 entier de Fedora, trouvé d'avance
+
+Suite directe, même autorisation. Le premier démarrage de Fedora 44 Cloud
+dans wisq est allé jusqu'à « Welcome to Fedora Linux 44 (Cloud Edition)! »,
+puis s'est arrêté après 14,2 milliards d'instructions, à 870 s de temps
+invité, sur `0F 14` : `UNPCKLPS`. Corrigé, il s'arrêtait 90 millions
+d'instructions plus loin sur `66 0F 63`, `PACKSSWB`, dans
+`zram-generator`, un programme en Rust que systemd lance comme
+générateur.
+
+- **Plutôt qu'une instruction par démarrage**, une sonde : chaque forme
+  SSE (sans VEX) des 1075 binaires ELF de `/usr/bin`, `/usr/lib64` et
+  `/usr/lib/systemd` de l'image, 320 formes en tout, passée au cœur une à
+  une. 99 étaient refusées. La plupart (SSSE3, SSE4, AES, SHA, PCLMUL)
+  attendent un bit de CPUID que wisq n'annonce pas : les bibliothèques ne
+  les prennent pas. Restaient le SSE2 entier, que tout programme x86-64
+  peut employer sans demander, et quelques formes flottantes.
+- **Ajoutés** : `UNPCKLPS` et `UNPCKHPS` (les bits de `PUNPCKLDQ` et
+  `PUNPCKHDQ`), `PACKSSWB` et `PACKSSDW`, `PCMPEQW`, `PMULHW`, `PMADDWD`,
+  `PMAXSW`, `PMINSW`, `PAVGB`, `PAVGW`, les additions et soustractions
+  saturées (`PADDUSB`, `PADDUSW`, `PSUBUSW`, `PADDSB`, `PADDSW`, `PSUBSB`,
+  `PSUBSW`), et `SQRTPD` et `SQRTPS`, chaque élément selon la règle de la
+  racine scalaire. Le masque des octets `0F` que prennent les
+  gestionnaires spécialisés en gagne seize ; son test les aurait trouvés.
+- **Vérifié contre le vrai processeur** : les trois oracles (XMM, SIMD,
+  flottant) gagnent ces instructions, entre registres et depuis la
+  mémoire, soit 1620 cas de plus. Chaque ancien fichier s'est d'abord
+  refait à l'octet près.
+- **Ce qui reste refusé** : les formes flottantes empaquetées (`MINPD`,
+  `MAXPS`, `CMPPD`, `CMPPS`, `CVTPS2PD`, `CVTDQ2PS`, `CVTTPS2DQ`,
+  `RCPPS`, `RSQRTPS`), presque toutes dans `libmvec`, et `MOVDDUP`/`LDDQU`
+  (SSE3, derrière CPUID). Une prochaine tranche.
+- Sabotages : la moyenne sans arrondi, `PMADDWD` non signé, la borne du
+  resserrement signé, la moitié haute de `SQRTPD`, et l'addition saturée
+  prise pour une soustraction tombent tous (de 52 à 300 désaccords) ; des
+  morceaux de huit octets pour `UNPCKLPS`, 31.
+
 ## 2026-10-19 — CloudBoot lit le btrfs, troisième tranche de Fedora
 
 Suite directe, même autorisation. `Zstd` et `BtrfsVolume` sont là ; il
