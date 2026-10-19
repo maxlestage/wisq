@@ -322,17 +322,28 @@ final class X86BootAttemptTests: XCTestCase {
             // RIP où chacune s'arrête, une ligne hexadécimale par tranche, dans
             // le fichier nommé. Avec `nokaslr` et le `System.map` de l'image,
             // les adresses du noyau se lisent en noms de fonctions.
-            let sampleFile = environment["WISQ_PC_SAMPLE"]
-            var samples: [String] = []
-            defer {
-                if let sampleFile {
-                    try? samples.joined(separator: "\n").write(toFile: sampleFile, atomically: true, encoding: .utf8)
-                }
+            //
+            // **Écrits au fil de la course**, par paquets de mille. Écrits à
+            // la fin seulement, ils ont été perdus : un profil d'Ubuntu de deux
+            // heures a été arrêté avant la fin, et il n'en restait rien.
+            let sampleFile = environment["WISQ_PC_SAMPLE"].flatMap { path -> FileHandle? in
+                FileManager.default.createFile(atPath: path, contents: nil)
+                return FileHandle(forWritingAtPath: path)
             }
+            var samples: [String] = []
+            func flushSamples() {
+                guard let sampleFile, !samples.isEmpty else { return }
+                sampleFile.write(Data((samples.joined(separator: "\n") + "\n").utf8))
+                samples.removeAll(keepingCapacity: true)
+            }
+            defer { flushSamples(); try? sampleFile?.close() }
             let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
-                if sampleFile != nil { samples.append(String(core.rip, radix: 16)) }
+                if sampleFile != nil {
+                    samples.append(String(core.rip, radix: 16))
+                    if samples.count >= 1000 { flushSamples() }
+                }
                 remaining -= min(remaining, max(executed, 1))
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
