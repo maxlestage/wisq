@@ -26251,3 +26251,74 @@ une garde aveugle, et seule la relecture de la cible les sépare.
 
 Restauration vérifiée par `diff` contre une copie prise **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #353 — la page des versions redit le CHANGELOG, et la tranche d'avant avait ouvert l'écart elle-même
+
+La section « Pas encore publié » de la page des versions redit la section
+`[Unreleased]` du `CHANGELOG.md`. Les corrections y sont une liste, un élément
+par défaut corrigé, dans les deux langues. Le `CHANGELOG` en annonçait
+**cinq** ; la page en portait **quatre**.
+
+Le cinquième point, celui qui manquait, est **le mien** : #352 l'a posé trois
+heures plus tôt, en ajoutant sa ligne au `CHANGELOG` sans la porter sur la
+page. Personne ne comptait les deux
+listes ensemble, donc rien ne l'a dit.
+
+Et l'écart était drôle au mauvais sens : la page annonçait la correction du
+compte des familles d'architectures **sans** annoncer la correction de ce que
+cette correction avait laissé derrière elle. Deux étages du même défaut, et la
+page n'en montrait qu'un.
+
+### Ce que la garde tient, et ce qu'elle ne tient pas
+
+Les **trois listes ont la même longueur** : les deux langues de la page, et
+les points de `### Fixed` sous `## [Unreleased]`. Elle compte, elle ne lit
+pas. Elle ne dit pas que la page raconte les mêmes défauts que le
+`CHANGELOG` — seulement qu'elle en raconte autant. C'est tout ce qu'on lui
+demande, et c'est exactement ce que son en-tête annonce : une prose plus forte
+que la garde d'à côté est le défaut que ce fichier existe pour empêcher.
+
+Les corrections seules, et pour une raison mesurée : sur cette page, « Ajouté »
+et « Modifié » sont de la prose, pas des listes, et la prose y découpe un point
+du `CHANGELOG` en deux paragraphes. Un compte sur ces deux sections serait un
+invariant inventé.
+
+Ses deux lecteurs refusent plutôt que de rendre zéro. Celui de la page veut le
+titre **et** une liste qui le suit avant le titre suivant ; celui du
+`CHANGELOG` veut un `### Fixed` qui tombe à l'intérieur de `[Unreleased]`, pas
+celui de la 0.4.0 quatre cents lignes plus bas.
+
+### Six sabordages, six chutes, chacun nommant son test
+
+| sabordage | test qui tombe |
+| --- | --- |
+| un sixième point dans le `CHANGELOG` | autant que le CHANGELOG en annonce (5 contre 6) |
+| une correction retirée de la page anglaise | les deux langues, **et** le compte du `CHANGELOG` |
+| une correction retirée de la page française | les deux langues, **et** le compte du `CHANGELOG` |
+| le titre anglais de la section renommé | les deux tests, par refus du lecteur de la page |
+| la liste française devenue un paragraphe | les deux tests, par refus du lecteur de la page |
+| `### Fixed` renommé sous `[Unreleased]` | le lecteur du `CHANGELOG`, qui ne prend pas celui de la 0.4.0 |
+
+Le sixième est celui qui compte : sans la borne, le lecteur serait descendu
+jusqu'au `### Fixed` de la 0.4.0 et aurait comparé la page à la mauvaise
+section — une garde qui lit ailleurs est une garde qui ne garde rien.
+
+### La typographie française est une convention mesurée, pas un goût
+
+Ma première tentative d'édition n'a pas trouvé son ancre : la page écrit
+`d'architectures` suivi d'une **espace insécable** avant le deux-points, et
+j'avais écrit une espace ordinaire. Mesuré dans le fichier : 113 insécables
+contre 2 ordinaires avant « : », et 57 **espaces fines insécables** avant
+« ; ». Les deux nouvelles entrées suivent ce relevé. C'est la direction que
+#499 avait nommée sans garde — elle n'en a toujours pas, et ce relevé-ci ne
+vaut que pour ce fichier.
+
+### La garde s'est appliquée à moi dans la minute
+
+Consigner cette tranche demandait un point de plus dans le `CHANGELOG`, donc
+un élément de plus sur la page, dans les deux langues. Le compte est passé de
+cinq à six des trois côtés à la fois. Une garde qui ne coûte rien à son auteur
+est généralement une garde qui ne tient rien.
+
+Restauration vérifiée par `diff` contre une copie prise **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
