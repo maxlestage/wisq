@@ -194,15 +194,33 @@ extension X86Core {
             }
 
         // Les deux doubles d'un registre traités à part, chacun selon la
-        // règle des NaN de l'arithmétique scalaire.
-        case 0x58 where operandSize, 0x59 where operandSize:
+        // règle des NaN de l'arithmétique scalaire. La soustraction et la
+        // division sont venues avec Ubuntu 26.04 : un programme de l'espace
+        // utilisateur s'arrêtait sur `0F 5C` à 59 milliards d'instructions.
+        case 0x58 where operandSize, 0x59 where operandSize, 0x5C where operandSize,
+             0x5E where operandSize:
             let fields = try decodeFields(instruction)
             let source = try readVectorRM(fields, 16)
             let destination = vector(fields.reg)
-            let operation: (Double, Double) -> Double = opcode == 0x58 ? { $0 + $1 } : { $0 * $1 }
+            let operation = Self.packedDouble(opcode)
             let low = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), operation)
             let high = Self.combine(Self.asDouble(destination.high), Self.asDouble(source.1), operation)
             setVector(fields.reg, low.bitPattern, high.bitPattern)
+
+        // Et les quatre simples, sans préfixe : `ADDPS`, `MULPS`, `SUBPS`,
+        // `DIVPS`, chacun selon la même règle.
+        case 0x58 where !single && !doubleWide, 0x59 where !single && !doubleWide,
+             0x5C where !single && !doubleWide, 0x5E where !single && !doubleWide:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let operation = Self.packedSingle(opcode)
+            func lanes(_ left: UInt64, _ right: UInt64) -> UInt64 {
+                let low = Self.combine(Self.asSingle(left), Self.asSingle(right), operation)
+                let high = Self.combine(Self.asSingle(left >> 32), Self.asSingle(right >> 32), operation)
+                return UInt64(low.bitPattern) | UInt64(high.bitPattern) << 32
+            }
+            setVector(fields.reg, lanes(destination.low, source.0), lanes(destination.high, source.1))
 
         case 0x5A where operandSize:  // CVTPD2PS : deux doubles en deux simples, le haut effacé
             let fields = try decodeFields(instruction)
@@ -273,6 +291,26 @@ extension X86Core {
         } else {
             let result = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), wide)
             setVector(fields.reg, result.bitPattern, destination.high)
+        }
+    }
+
+    /// L'opération d'un octet `58`, `59`, `5C` ou `5E`, sur des doubles puis
+    /// sur des simples.
+    static func packedDouble(_ opcode: UInt8) -> (Double, Double) -> Double {
+        switch opcode {
+        case 0x58: return { $0 + $1 }
+        case 0x59: return { $0 * $1 }
+        case 0x5C: return { $0 - $1 }
+        default: return { $0 / $1 }
+        }
+    }
+
+    static func packedSingle(_ opcode: UInt8) -> (Float, Float) -> Float {
+        switch opcode {
+        case 0x58: return { $0 + $1 }
+        case 0x59: return { $0 * $1 }
+        case 0x5C: return { $0 - $1 }
+        default: return { $0 / $1 }
         }
     }
 

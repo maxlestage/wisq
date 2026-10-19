@@ -228,6 +228,19 @@ extension X86Core {
                 vectors[2 * fields.reg + 1] = low
             }
 
+        // Les rangements d'une moitié : le bas (`MOVLPS`, `MOVLPD`) ou le haut
+        // (`MOVHPS`, `MOVHPD`) du registre, vers huit octets de mémoire. Ils
+        // n'existent que vers la mémoire. La glibc d'Ubuntu 26.04 range ainsi
+        // la moitié haute d'un registre, et le démarrage s'arrêtait là, à
+        // 45,7 milliards d'instructions.
+        case 0x13 where !repeatFE && !repeatFD, 0x17 where !repeatFE && !repeatFD:
+            let fields = try decodeFields(instruction)
+            guard fields.mod != 0b11 else {
+                throw Fault.unsupported(String(format: "0F %02X entre registres", opcode))
+            }
+            let value = vector(fields.reg)
+            try writeVectorRM(fields, 8, (opcode == 0x13 ? value.low : value.high, 0))
+
         // Le bit de signe de chaque élément, vers un registre général : quatre
         // pour `MOVMSKPS`, deux pour `MOVMSKPD`. La glibc s'en sert dans ses
         // fonctions de chaînes, sans rien calculer en virgule flottante : ce
