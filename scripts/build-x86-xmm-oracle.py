@@ -124,6 +124,9 @@ def forms():
         "punpcklwd %xmm1, %xmm0",
         "unpcklpd %xmm1, %xmm0",
         "unpckhpd %xmm1, %xmm0",
+        "unpcklps %xmm1, %xmm0",
+        "unpckhps %xmm1, %xmm0",
+        f"unpcklps {ALIGNED:#x}(%rsi), %xmm0",
         "movhlps %xmm1, %xmm0",
         "movlhps %xmm1, %xmm0",
     ]
