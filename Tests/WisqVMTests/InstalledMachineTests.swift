@@ -343,9 +343,10 @@ final class InstalledMachineTests: XCTestCase {
         try FileManager.default.createDirectory(at: kernels, withIntermediateDirectories: true)
         try Data(count: 64).write(to: kernels.appendingPathComponent(iso))
         let machine = try InstalledMachines.install(image: iso, in: folder)
-        try SuspendedMachine.save(
-            Data(count: 100),
-            kernel: SuspendedMachine.identity(of: Data("x".utf8), named: machine.key), in: folder)
+        // Écrite telle quelle, pour que ses octets sur le disque soient
+        // ceux qu'on compte plus bas : `save` compresserait.
+        try Data(count: 100).write(to: folder.appendingPathComponent(SuspendedMachine.fileName(
+            kernel: SuspendedMachine.identity(of: Data("x".utf8), named: machine.key))))
         try overlay(machine.keys.overlay(forDisk: iso), bytes: 1024)
         let writes = try LocalDisk.writesDirectory(in: folder)
 

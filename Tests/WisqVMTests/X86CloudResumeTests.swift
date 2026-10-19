@@ -69,6 +69,8 @@ final class X86CloudResumeTests: XCTestCase {
         let saved = first.snapshot()
         let saving = Date().timeIntervalSince(started)
         print("instantané : \(saved.count / (1 << 20)) Mio en \(String(format: "%.2f", saving)) s")
+        // Gardé, si on le demande, pour en étudier le contenu ailleurs.
+        if let out = environment["WISQ_PC_SNAPSHOT_OUT"] { try saved.write(to: URL(fileURLWithPath: out)) }
 
         // Une machine neuve, le même disque et sa couche, l'instantané.
         let resumed = Console()

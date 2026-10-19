@@ -97,7 +97,9 @@ public enum SuspendedMachine {
         _ snapshot: Data, kernel: String, in directory: URL? = nil
     ) throws {
         let folder = try directory ?? Self.directory()
-        try snapshot.write(
+        // Compressé (`SnapshotFile`) : la session de Debian passe de 217 Mio
+        // à une centaine, écrits pendant les quelques secondes qu'iOS laisse.
+        try SnapshotFile.pack(snapshot).write(
             to: folder.appendingPathComponent(fileName(kernel: kernel)), options: .atomic
         )
     }
@@ -110,8 +112,12 @@ public enum SuspendedMachine {
     /// not happen — a damaged file becoming a damaged machine — is refused by
     /// `LinuxMachine.restore`, which checks the bytes it is given.
     public static func load(kernel: String, in directory: URL? = nil) -> Data? {
-        guard let folder = try? (directory ?? Self.directory()) else { return nil }
-        return try? Data(contentsOf: folder.appendingPathComponent(fileName(kernel: kernel)))
+        guard let folder = try? (directory ?? Self.directory()),
+              let file = try? Data(contentsOf: folder.appendingPathComponent(fileName(kernel: kernel)))
+        else { return nil }
+        // Un fichier d'avant la compression se lit tel quel ; un fichier
+        // compressé abîmé est traité comme un fichier illisible.
+        return try? SnapshotFile.unpack(file)
     }
 
     public static func clear(kernel: String, in directory: URL? = nil) {
