@@ -340,17 +340,26 @@ public enum Zstd {
     ]
 
     // Les distributions prédéfinies (RFC 8878, 3.1.1.3.2.2).
-    static let predefinedLiteralLengths = try! FSETable(counts: [
+    static let predefinedLiteralLengths = predefined(counts: [
         4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
         -1, -1, -1, -1,
     ], accuracy: 6)
-    static let predefinedMatchLengths = try! FSETable(counts: [
+    static let predefinedMatchLengths = predefined(counts: [
         1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1,
     ], accuracy: 6)
-    static let predefinedOffsets = try! FSETable(counts: [
+    static let predefinedOffsets = predefined(counts: [
         1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
     ], accuracy: 5)
+
+    /// Une table que la RFC fixe : elle ne peut pas être invalide.
+    private static func predefined(counts: [Int], accuracy: Int) -> FSETable {
+        do {
+            return try FSETable(counts: counts, accuracy: accuracy)
+        } catch {
+            preconditionFailure("distribution prédéfinie invalide : \(error)")
+        }
+    }
 }
 
 // MARK: - Les lecteurs de bits
