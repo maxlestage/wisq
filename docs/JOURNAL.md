@@ -34,7 +34,7 @@ C'est la vitesse qui décide.
   octet par octet et prenait 1,3 s ; la copie d'un bloc entier, quand les deux
   zones ne se chevauchent pas, la ramène à 1,0 s.
 
-**Les sabotages.** Dix en tout, dont trois ne tombaient pas au premier
+**Les sabotages.** Sept, dont trois ne tombaient pas au premier
 passage, faute de test :
 - un décalage qui remonte avant le début, que le test refusait déjà pour une
   autre raison (une mauvaise taille) ;
