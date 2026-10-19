@@ -46,6 +46,9 @@ struct LocalVMListView: View {
     /// Le disque de chaque noyau, sous le nom du fichier du noyau. Relu avec
     /// la bibliothèque, pour la raison que `KernelDiskMenu` explique.
     @State private var disks: [String: String] = [:]
+    /// Les images de cloud de la bibliothèque, lues au rechargement : voir
+    /// `InstalledMachines.cloudImages`.
+    @State private var cloudImages: Set<URL> = []
     @State private var showImporter = false
     /// La feuille qui télécharge une image depuis l'index d'une distribution.
     @State private var showDownload = false
@@ -76,7 +79,8 @@ struct LocalVMListView: View {
                             } label: {
                                 LibraryRow(
                                     kernel: kernel,
-                                    role: LibraryEntry.role(of: kinds[kernel] ?? .unknown),
+                                    role: LibraryEntry.role(of: kinds[kernel] ?? .unknown,
+                                                           cloudImage: cloudImages.contains(kernel)),
                                     storageLine: Self.storageLine(
                                         storage.entry(forKernel: kernel.lastPathComponent)))
                             }
@@ -109,7 +113,8 @@ struct LocalVMListView: View {
                         // bouton visible plutôt qu'un appui long : c'est le
                         // geste qui fait exister la section du dessus, et un
                         // geste caché ne se découvre pas.
-                        if InstalledMachines.canInstall(kinds[kernel] ?? .unknown) {
+                        if InstalledMachines.canInstall(kinds[kernel] ?? .unknown)
+                            || cloudImages.contains(kernel) {
                             Button {
                                 machineName = InstalledMachines.suggestedName(
                                     forImage: kernel.lastPathComponent)
@@ -413,7 +418,8 @@ struct LocalVMListView: View {
                         } label: {
                             InstalledMachineRow(
                                 machine: machine,
-                                role: LibraryEntry.role(of: kinds[image] ?? .unknown),
+                                role: LibraryEntry.role(of: kinds[image] ?? .unknown,
+                                                       cloudImage: cloudImages.contains(image)),
                                 entry: storage.entry(forKernel: machine.key))
                         }
                         .buttonStyle(.plain)
@@ -429,10 +435,11 @@ struct LocalVMListView: View {
                     // Une image d'installation est déjà `/dev/vda` : le disque
                     // choisi pour une machine qui la démarre arrive en second,
                     // et le menu le dit.
-                    if InstalledMachines.canInstall(kinds[image] ?? .unknown) {
+                    if InstalledMachines.canInstall(kinds[image] ?? .unknown)
+                        || cloudImages.contains(image) {
                         KernelDiskMenu(
                             kernel: image, library: kernels, chosen: disks[machine.key],
-                            title: Self.isInstallationImage(kinds[image])
+                            title: Self.isInstallationImage(kinds[image]) || cloudImages.contains(image)
                                 ? "Disque d'installation (vdb)" : "Disque",
                             createBlank: { size in createBlankDisk(for: machine, bytes: size) }
                         ) { chosen in
@@ -550,6 +557,7 @@ struct LocalVMListView: View {
     private func reloadLibrary() {
         kernels = KernelLibrary.list()
         kinds = Self.read(kernels)
+        cloudImages = InstalledMachines.cloudImages(kernels, kinds: kinds)
         disks = LocalDisk.allRecorded()
         installed = InstalledMachines.list()
     }
