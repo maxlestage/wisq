@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le x87 de la libc de Fedora
+
+Suite directe, même autorisation. La sonde, élargie de SSE à **toutes**
+les formes des binaires de Fedora 44 (835 formes, sans VEX), laissait
+refusé, hors des extensions que le CPUID n'annonce pas et du code
+qu'objdump lit dans des données : le x87 de la libc et de la libstdc++.
+
+- **Ajoutés** : `FXAM` (38 fichiers, le `isnan` des `long double`), les
+  huit `FCMOVcc` (36), `FNSTENV` et `FLDENV` (39, les fonctions de
+  `fenv.h`), `FCOMPP` et `FUCOMPP`, `FFREE` et `FFREEP`, et `FRNDINT`,
+  l'arrondi à l'entier selon le mode, exact en étendu.
+- **`FNSTENV` comme le processeur le range** : les trois mots sur quatre
+  octets, leur moitié haute à `FFFF`, et les pointeurs d'instruction et de
+  donnée à zéro ; puis les six exceptions masquées. `FLDENV` relève le
+  bit 6 du contrôle, recalcule ES et B, et relit chaque étiquette non vide
+  dans la valeur du registre, comme `FXRSTOR`.
+- **Un défaut ancien, trouvé en chemin.** L'oracle n'avait aucune valeur
+  que l'arrondi au plus proche éloigne de zéro (0,5 et -2,5 vont au pair,
+  π descend) : un `FRNDINT` qui ne montait jamais passait. Avec 1,75 et
+  -3,5 de plus, `FIST` s'est montré faux aussi : 1,75 rangé en 2 ne levait
+  pas C1, « arrondi vers le haut », ce que le processeur fait. Corrigé en
+  passant par le même arrondi que `FRNDINT`.
+- **Vérifié contre le vrai processeur** : l'oracle x87 gagne ces
+  instructions et les deux valeurs, 4980 cas (3618 avant). Il ne compare
+  pas le mot de contrôle : un test à part tient le masquage de `FNSTENV`.
+- Sabotages : le dénormal pris pour un normal par `FXAM` (3 désaccords),
+  `FCMOVcc` sans négation (144), `FCOMPP` qui ne dépile qu'une fois (108),
+  les étiquettes de `FLDENV` chargées telles quelles (54), `FFREEP` sans
+  dépiler (54), `FRNDINT` qui ne monte jamais (36) ; `FNSTENV` sans masquer
+  fait tomber le test à part.
+- **Ce qui reste refusé** : le x87 de `libm`, pour les `long double`
+  (`FSQRT`, `FPREM`, `FSCALE`, `FXTRACT`, les constantes, et les
+  transcendantes). Une prochaine tranche.
+
 ## 2026-10-19 — Le flottant empaqueté de Fedora
 
 Suite directe, même autorisation. Ce que la sonde du SSE2 entier laissait

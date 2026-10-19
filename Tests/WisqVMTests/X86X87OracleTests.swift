@@ -206,4 +206,19 @@ final class X86X87OracleTests: XCTestCase {
         }
         XCTAssertEqual(agreed, total)
     }
+
+    /// **`FNSTENV` masque toutes les exceptions après avoir rangé.** L'oracle
+    /// ne compare pas le mot de contrôle : ce test le fait. Le mot rangé est
+    /// celui d'avant ; celui qui reste a ses six masques levés.
+    func testStoringTheEnvironmentMasksEveryExceptionAfterward() throws {
+        let memory = X86Memory(size: 0x4000, base: 0x3000_0000)
+        try memory.load([0xD9, 0x76, 0x10], at: 0x3000_0000)  // fnstenv 0x10(%rsi)
+        var registers = [UInt64](repeating: 0, count: 16)
+        registers[6] = 0x3000_1000
+        var core = X86Core(registers: registers, rip: 0x3000_0000, memory: memory)
+        core.x87Control = 0x0360
+        try core.execute(try X86Decoder.decode(memory.dump(0x3000_0000, 15)))
+        XCTAssertEqual(memory.dump(0x3000_1010, 4), [0x60, 0x03, 0xFF, 0xFF], "le mot d'avant, rangé")
+        XCTAssertEqual(core.x87Control, 0x037F, "puis les six exceptions masquées")
+    }
 }
