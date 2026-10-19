@@ -502,6 +502,18 @@ noyau dans le disque lui-même.
    expiration. Ce qui reste avant de proposer Ubuntu au téléchargement : le
    temps total, plus de trois fois celui de Debian.
 
+   **Où il passe.** Le profil du démarrage entier (`WISQ_PC_SAMPLE`, un
+   échantillon par million d'instructions, `nokaslr`) met l'espace
+   utilisateur à 24 % au début. La part monte à 70–81 % entre 25 et
+   45 milliards d'instructions. Dans ce même intervalle, une dizaine de
+   services (snapd, rsyslog, polkit, chrony, dbus…) attendent 35 à
+   37 minutes derrière `apparmor.service`, qui compile les profils AppArmor
+   au premier démarrage. `apparmor=0` sur la ligne de commande l'éviterait,
+   mais affaiblirait la sécurité de l'invité sans le dire. Les démarrages
+   suivants doivent relire le cache des profils, que garde la couche
+   d'écriture. **À mesurer avant de décider** : un second démarrage de la
+   même machine.
+
 ## Télécharger une image depuis l'application
 
 Importer par Fichiers suppose que l'image est déjà sur le téléphone, donc
