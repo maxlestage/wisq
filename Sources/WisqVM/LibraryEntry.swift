@@ -24,6 +24,9 @@ public enum LibraryEntry {
         case bootMedia(String)
         /// Une image de disque, avec le nom de son format.
         case disk(String)
+        /// Une image de cloud : un disque qui porte son propre noyau, et qui
+        /// démarre quand on la touche (`CloudBoot`). Avec le nom de son format.
+        case cloudImage(String)
         /// Quelque chose que wisq reconnaît et ne peut pas employer ici — un
         /// noyau pour une autre architecture, un exécutable. Nommé quand même.
         case foreign(String)
@@ -69,12 +72,22 @@ public enum LibraryEntry {
         }
     }
 
+    /// Le rôle d'un fichier qu'on sait être une image de cloud, ou non
+    /// (`InstalledMachines.cloudImages`) : une table de partitions ne se voit
+    /// pas dans les premiers octets, seulement en la lisant.
+    public static func role(of kind: KernelImageKind, cloudImage: Bool) -> Role {
+        guard cloudImage else { return role(of: kind) }
+        if case .virtualDisk(let format) = kind { return .cloudImage(format) }
+        return .cloudImage("image brute")
+    }
+
     /// Ce que la ligne dit sous le nom du fichier.
     public static func word(_ role: Role) -> String {
         switch role {
         case .kernel(let architecture): return "noyau \(architecture)"
         case .bootMedia(let format): return "initramfs (\(format))"
         case .disk(let format): return "disque (\(format))"
+        case .cloudImage(let format): return "image de cloud (\(format))"
         case .foreign(let what): return what
         case .unrecognised: return "type inconnu"
         }
@@ -90,6 +103,7 @@ public enum LibraryEntry {
         case .kernel: return "terminal"
         case .bootMedia: return "shippingbox"
         case .disk: return "externaldrive"
+        case .cloudImage: return "cloud"
         case .foreign: return "xmark.octagon"
         case .unrecognised: return "questionmark.circle"
         }
