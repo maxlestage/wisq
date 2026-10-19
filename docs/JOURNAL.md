@@ -26131,3 +26131,78 @@ fois le remède est le même.
 
 Restauration vérifiée par `diff` contre une copie prise **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #352 — la page la plus concernée du site portait encore le nombre que le dépôt venait de retirer partout ailleurs
+
+`GuestArchitecture.Family` déclare **vingt** familles. La page *Feuille de
+route* du site en annonçait **vingt et une**, dans les deux langues, sous le
+titre « Un cœur pour chaque architecture » — la section où la question se pose.
+
+Ce n'est pas une dérive neuve : c'est le reste d'une correction. Le dépôt avait
+déjà retiré ce nombre des deux READMEs, de l'accueil, de `docs/ROADMAP.md` et
+de deux commentaires, et avait posé une garde qui compte les `case`. Le
+CHANGELOG nomme les lieux corrigés : « les deux READMEs, l'accueil, la feuille
+de route ». **« La feuille de route » voulait dire `docs/ROADMAP.md`** ; la
+page du site qui porte ce titre en est une autre, et personne n'a vu les deux.
+La garde a été écrite à partir de cette même liste — cinq lectures nommées une
+à une — donc elle a hérité du trou au lieu de le fermer.
+
+Pendant ce temps, les notes de version du même site annonçaient la correction :
+« Le compte des familles d'architectures : le README, l'accueil et la feuille
+de route disaient vingt et une, et l'énumération en déclare vingt. Une garde
+les compte maintenant. » Deux pages du même site, servies à la même visite,
+donnaient deux comptes.
+
+### Pourquoi les gardes chiffrées ne pouvaient pas le voir
+
+Ce fichier tient un registre de provenance, `accounted` : chaque nombre publié
+par chaque page, et comment on le refait. Il ne peut relever que ce que
+`publishedNumber` relève, et ce lecteur ne lit que des chiffres — « x86-64 »
+n'est pas un chiffre publié, et « vingt et une » non plus. Le compte des
+familles s'écrit en lettres sur toutes les pages. Deux angles morts qui se
+recouvrent : la garde dédiée ne regardait pas la page, et la garde générale ne
+regardait pas les lettres. C'est #313 une troisième fois.
+
+### Ce que la garde fait maintenant
+
+Elle ne nomme aucune page. Elle lit `publishedFiles()` — `pages/` parcouru plus
+l'accueil, les deux fonctions du fichier qui savent déjà où le site vit —,
+relève chaque phrase de la forme « *mot* architecture families » ou « *mot*
+familles d'architectures », garde celles dont le mot est un nombre, et exige
+de chacune le compte de l'énumération. Le filtre par vocabulaire est ce qui
+laisse passer « the count **of** architecture families » et « le compte **des**
+familles d'architectures » des notes de version, qui parlent du compte sans le
+donner.
+
+Deux témoins, parce que c'est par là que la chose est passée : au moins deux
+pages distinctes doivent donner le compte, et au moins une phrase dans chaque
+langue. Une garde qui ne lit qu'une page, ou qu'une langue, est exactement le
+défaut que ce fichier documente déjà deux fois.
+
+Le balayage s'arrête au site. `CHANGELOG.md` raconte le défaut au passé et doit
+pouvoir citer le vieux nombre ; l'étendre aux documents aurait fait tomber la
+garde sur son propre acte de naissance.
+
+### Six sabordages, six chutes, chacun nommant son test
+
+| sabordage | test qui tombe |
+| --- | --- |
+| « twenty » → « twenty-one » sur la page anglaise | aucune page du site ne publie un autre compte |
+| « vingt » → « vingt et une » sur la page française | aucune page du site ne publie un autre compte |
+| l'accueil anglais passe à « nineteen » | le balayage, **et** la lecture nommée de `content.rs` |
+| une vingt et unième famille dans l'énumération | les six lectures, chacune se nommant |
+| plus aucune phrase française sur aucune page | le témoin « aucune phrase française » |
+| seule la page porte le compte, plus l'accueil | le témoin « une seule page du site » |
+
+Le quatrième est celui qui compte : il prouve que le nombre vient de
+l'énumération et pas d'un littéral. Le sixième prouve que le balayage voit
+l'accueil, qui n'est pas dans `pages/`.
+
+Un septième sabordage n'a pas été compté : il n'avait rien saboté. Insérer
+`case vax` sur une ligne à lui ne touchait pas l'énumération, dont les cas sont
+groupés par virgules sur quatre lignes. Les sept tests sont restés verts, et
+c'était la bonne réponse. Un sabordage qui ne sabote rien ressemble beaucoup à
+une garde aveugle, et seule la relecture de la cible les sépare.
+
+Restauration vérifiée par `diff` contre une copie prise **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
