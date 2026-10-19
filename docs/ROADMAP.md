@@ -520,9 +520,10 @@ noyau dans le disque lui-même.
     zstd, sans `/boot` à part : le noyau, l'initramfs et les entrées BLS sont
     dans le btrfs. Les tranches :
     - **Fait.** La décompression zstd (`Zstd`, RFC 8878), écrite ici.
-    - Un lecteur btrfs en lecture seule : superbloc, arbre des tronçons,
-      arbre racine, sous-volumes, répertoires, et les extents en ligne,
-      ordinaires ou compressés.
+    - **Fait.** Un lecteur btrfs en lecture seule (`BtrfsVolume`) :
+      superbloc, arbre des tronçons, arbre racine, sous-volumes,
+      répertoires, liens, et les extents en ligne, ordinaires ou compressés
+      (zlib, zstd ; LZO refusé en le disant).
     - `CloudBoot` qui le prend comme il prend l'ext4.
 
 ## Télécharger une image depuis l'application

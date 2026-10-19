@@ -80,6 +80,16 @@ final class ZstdTests: XCTestCase {
         XCTAssertEqual(try Zstd.decompress(skippable + ZstdFixtures.small), Array("wisq lit zstd".utf8))
     }
 
+    /// **Des zéros après la trame** : ce que btrfs range, un extent compressé
+    /// occupant des secteurs entiers. Acceptés quand on le dit, refusés sinon.
+    func testZerosAfterTheFrameAreAcceptedOnlyWhenAsked() throws {
+        let padded = ZstdFixtures.small + [UInt8](repeating: 0, count: 4096 - ZstdFixtures.small.count)
+        XCTAssertEqual(try Zstd.decompress(padded, paddedWithZeros: true), Array("wisq lit zstd".utf8))
+        XCTAssertThrowsError(try Zstd.decompress(padded))
+        XCTAssertThrowsError(try Zstd.decompress(padded.dropLast() + [1], paddedWithZeros: true),
+                             "un octet non nul après la trame n'est pas du rembourrage")
+    }
+
     /// **Ce qui n'est pas lisible le dit** : pas une trame, une trame coupée,
     /// une trame qui demande un dictionnaire, un octet changé au milieu des
     /// séquences.
