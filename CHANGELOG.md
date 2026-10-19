@@ -84,6 +84,12 @@ break APIs.
   écrit en lettres. La garde ne nomme plus de page — elle lit tout ce que le
   site publie, `pages/` et l'accueil, et exige le compte de l'énumération de
   chaque phrase qui le donne, dans les deux langues.
+- **Et la page des versions, qui redit le `CHANGELOG`, avait gardé la liste
+  d'avant.** « Corrigé depuis la 0.4.0 » portait quatre défauts quand la
+  section `[Unreleased]` en annonçait cinq — l'écart posé par la ligne
+  ci-dessus elle-même, le jour où elle y est entrée. Une garde compte
+  désormais les trois listes ensemble : les deux langues de la page et les
+  points du `CHANGELOG`. Elle compte ; elle ne lit pas.
 - **La page hors ligne disait que seules les pages déjà lues restaient
   disponibles.** Le service worker les précharge toutes, dans les deux langues,
   dès la première visite ; elle le dit, et dit pourquoi une page hors ligne

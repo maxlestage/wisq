@@ -2360,3 +2360,89 @@ describe("la phrase des corpus matériels ne dérive pas là où la garde ne reg
     }
   });
 });
+
+/// **La page des versions redit le `CHANGELOG`, et rien ne les comptait
+/// ensemble.**
+///
+/// « Pas encore publié » restate la section `[Unreleased]` du `CHANGELOG.md` :
+/// même matière, dans les deux langues. Les corrections y sont une liste, un
+/// élément par défaut corrigé. Le jour où une sixième correction est entrée
+/// dans le `CHANGELOG`, la page est restée à cinq — et c'est #536 qui a posé
+/// l'écart, la tranche d'avant, en ajoutant sa ligne au `CHANGELOG` sans la
+/// porter ici. La page annonçait donc la correction du compte des familles
+/// **sans** annoncer la correction de ce que cette correction avait laissé
+/// derrière elle.
+///
+/// Ce que cette garde tient, et rien de plus : **les trois listes ont la même
+/// longueur**. Elle compte, elle ne lit pas — elle ne dit pas que la page
+/// raconte les mêmes défauts, seulement qu'elle en raconte autant. Une entrée
+/// de plus d'un côté la fait tomber, et c'est tout ce qu'on lui demande.
+///
+/// Pourquoi les corrections seules : sur cette page, « Ajouté » et « Modifié »
+/// sont de la prose, pas des listes, et la prose y découpe un point du
+/// `CHANGELOG` en deux paragraphes. Leur inventer un compte serait affirmer
+/// plus que ce qu'on vérifie, ce que ce fichier existe pour empêcher.
+describe("la page des versions porte autant de corrections que le CHANGELOG en annonce", () => {
+  const page = readFileSync(pathOf("releases.rs"), "utf8");
+
+  /// La liste qui suit un titre, refusée si le titre a disparu ou si ce qui le
+  /// suit n'est plus une liste. Un lecteur qui rendrait zéro élément
+  /// comparerait zéro à zéro.
+  function listeSous(titre: string): string[] {
+    const titreAt = page.indexOf(`Block::H3("${titre}")`);
+    expect(titreAt, `la page des versions ne porte plus « ${titre} »`).toBeGreaterThanOrEqual(0);
+    const suivant = ["Block::H3(", "Block::H2("]
+      .map((marque) => page.indexOf(marque, titreAt + 1))
+      .filter((at) => at >= 0)
+      .reduce((plus, at) => Math.min(plus, at), page.length);
+    const ul = page.indexOf("Block::Ul(&[", titreAt);
+    expect(
+      ul >= 0 && ul < suivant,
+      `« ${titre} » n'est plus suivi d'une liste : la page a changé de forme`,
+    ).toBe(true);
+    const corps = page.slice(ul + "Block::Ul(&[".length, page.indexOf("]),", ul));
+    return [...corps.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((trouve) => trouve[0]);
+  }
+
+  /// Les points de `### Fixed` sous `## [Unreleased]`, et rien d'autre : un
+  /// point est une ligne qui ouvre par un tiret, les suivantes étant sa suite.
+  function pointsDuChangelog(): string[] {
+    const texte = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8").split("\n");
+    const ouvre = texte.findIndex((ligne) => ligne.startsWith("## [Unreleased]"));
+    expect(ouvre, "le CHANGELOG ne porte plus de section [Unreleased]").toBeGreaterThanOrEqual(0);
+    const corrige = texte.findIndex((ligne, i) => i > ouvre && ligne.startsWith("### Fixed"));
+    const ferme = texte.findIndex((ligne, i) => i > ouvre && ligne.startsWith("## ["));
+    expect(
+      corrige >= 0 && (ferme < 0 || corrige < ferme),
+      "la section [Unreleased] du CHANGELOG ne porte plus de « ### Fixed »",
+    ).toBe(true);
+    const fin = texte.findIndex(
+      (ligne, i) => i > corrige && (ligne.startsWith("### ") || ligne.startsWith("## ")),
+    );
+    return texte
+      .slice(corrige + 1, fin < 0 ? undefined : fin)
+      .filter((ligne) => ligne.startsWith("- "));
+  }
+
+  test("les deux langues en portent autant l'une que l'autre", () => {
+    const anglais = listeSous("Fixed since 0.4.0");
+    const francais = listeSous("Corrigé depuis la 0.4.0");
+    expect(anglais.length, "la liste anglaise des corrections est vide").toBeGreaterThan(0);
+    expect(
+      francais.length,
+      `la page en annonce ${anglais.length} en anglais et ${francais.length} en français`,
+    ).toBe(anglais.length);
+  });
+
+  test("et autant que le CHANGELOG en annonce", () => {
+    const points = pointsDuChangelog();
+    expect(points.length, "aucun point sous « ### Fixed »").toBeGreaterThan(0);
+    for (const titre of ["Fixed since 0.4.0", "Corrigé depuis la 0.4.0"]) {
+      expect(
+        listeSous(titre).length,
+        `« ${titre} » porte ${listeSous(titre).length} corrections, le CHANGELOG en annonce ` +
+          `${points.length} : ${points.map((p) => p.slice(2, 48).trim()).join(" | ")}`,
+      ).toBe(points.length);
+    }
+  });
+});
