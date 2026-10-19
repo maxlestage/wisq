@@ -8,6 +8,23 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — L'instruction du cache passée sans copie
+
+Suite directe, même autorisation. Une instruction décodée pèse près de cent
+octets, et le cache la rendait par valeur : copiée dans un optionnel, puis
+dans la variable de `run`, à chaque instruction. `lookupEntry` rend l'entrée,
+et `run` passe `entry.pointee.instruction` tel quel à l'exécution. L'entrée
+ne bouge pas pendant ce temps : seul `run` range, et seulement avant
+d'exécuter. Le choix entre le témoin et l'exécution ordinaire passe dans
+`step`, inlinée, pour servir aux deux chemins.
+
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  43,34 → 42,33 milliards d'instructions hôte, 2,3 % de moins.
+- Essayé et écarté : `perform` inlinée dans `run`. 42,53 milliards, donc plus
+  que sans.
+- Sabotage : un cache qui ne compare que le premier octet fait tomber deux
+  tests.
+
 ## 2026-10-19 — Le témoin éteint ne coûte plus rien
 
 Suite directe, même autorisation. Après #532, callgrind avec les coûts par
