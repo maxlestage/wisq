@@ -495,12 +495,12 @@ noyau dans le disque lui-même.
      lesquels l'espace utilisateur s'arrêtait.
 
    **Le shell de `root` est atteint** : `root@ubuntu:~#` à 71,4 milliards
-   d'instructions, soit 4658 s sur la machine de mesure. Ce qui reste avant
-   de proposer Ubuntu au téléchargement :
-   - `login` expire dix-neuf fois avant de passer. Ses soixante secondes
-     couvrent l'ouverture de la session, et `pam_motd` y lance les scripts
-     du message d'accueil pendant que snapd et motd-news démarrent encore ;
-   - le temps total, quatre fois celui de Debian.
+   d'instructions, soit 4658 s sur la machine de mesure. Ensuite, la console
+   série ouvre `bash` sans `login`, par un drop-in passé en credential
+   (systemd ≥ 256). `login` expirait dix-neuf fois avant de passer, et le
+   shell vient maintenant à 60,9 milliards d'instructions, sans une
+   expiration. Ce qui reste avant de proposer Ubuntu au téléchargement : le
+   temps total, plus de trois fois celui de Debian.
 
 ## Télécharger une image depuis l'application
 
