@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — CloudBoot lit le btrfs, troisième tranche de Fedora
+
+Suite directe, même autorisation. `Zstd` et `BtrfsVolume` sont là ; il
+restait à les brancher.
+
+- **`LinuxVolume`**, ce que `CloudBoot` demande à une partition : un
+  fichier, un répertoire, un chemin qui existe. `Ext4Volume` et
+  `BtrfsVolume` le donnent tous deux, et une partition qui n'est pas un ext
+  est relue en btrfs.
+- **La vraie Fedora 44 Cloud** donne son entrée BLS, son noyau (18 Mo) et
+  son initramfs (49 Mo), en 3,4 s, à travers btrfs et zstd. Les chemins de
+  l'entrée (`/boot/vmlinuz-…`) partent de la racine du btrfs, et `/boot`
+  y est un sous-volume : le lecteur le traverse.
+- **La console série, même quand l'entrée coupe `systemd-firstboot`.**
+  Fedora écrit `systemd.firstboot=off` dans son entrée, et la règle d'avant
+  (« une entrée qui règle la première mise en route, on n'y ajoute rien »)
+  laissait sa console sur `login`, devant un `root` verrouillé. Le shell de
+  la console série s'ajoute maintenant à toute entrée qui ne passe pas ses
+  propres credentials ; la première mise en route reste celle de l'entrée.
+  Un mot de passe donné ne s'applique donc pas à Fedora : sa console n'en
+  demande pas.
+- La fixture btrfs a maintenant son script
+  (`scripts/build-btrfs-fixtures.py`), et son entrée BLS est faite comme
+  celle de Fedora. Un test la pose dans un disque brut creux et la déballe
+  comme l'application.
+- Sabotages : sans la relecture en btrfs, et avec l'ancienne règle de la
+  console, les tests tombent.
+
 ## 2026-10-19 — btrfs en lecture seule, deuxième tranche de Fedora
 
 Suite directe, même autorisation. Après zstd, le système de fichiers qui
