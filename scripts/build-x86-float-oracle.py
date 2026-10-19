@@ -104,6 +104,16 @@ def forms():
     # Les racines empaquetées : `sqrtpd` arrêtait `zram-generator` chez
     # Fedora 44, et `sqrtps` est la même chose sur quatre simples.
     out += ["sqrtpd %xmm1, %xmm0", f"sqrtpd {ALIGNED:#x}(%rsi), %xmm0", "sqrtps %xmm1, %xmm0"]
+    # **Les formes empaquetées que Fedora 44 porte encore** : les extrêmes,
+    # les comparaisons sous leurs huit prédicats, et les conversions.
+    for name in ["minpd", "maxpd", "minps", "maxps"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    for width in ["ps", "pd"]:
+        for code in range(8):
+            out.append(f"cmp{width} ${code}, %xmm1, %xmm0")
+    out += [f"cmpps $1, {ALIGNED:#x}(%rsi), %xmm0", f"cmppd $6, {ALIGNED:#x}(%rsi), %xmm0"]
+    out += ["cvtps2pd %xmm1, %xmm0", f"cvtps2pd {ALIGNED:#x}(%rsi), %xmm0",
+            "cvtdq2ps %xmm1, %xmm0", "cvtps2dq %xmm1, %xmm0", "cvttps2dq %xmm1, %xmm0"]
     return out
 
 

@@ -134,16 +134,17 @@ final class X86VectorTests: XCTestCase {
     }
 
     /// Ce qui reste refusé l'est par son nom, et sans rien écrire avant :
-    /// `minpd` (`66 0f 5d`), qu'aucun démarrage n'a encore demandé.
-    func testPackedMinimumIsStillRefusedByName() throws {
-        let ram = try Self.memory([0x66, 0x0F, 0x5D, 0xC1])
+    /// `rsqrtps` (`0f 52`), une approximation que wisq refuse exprès. C'était
+    /// `minpd` jusqu'à ce que Fedora 44 le demande.
+    func testAnApproximationIsStillRefusedByName() throws {
+        let ram = try Self.memory([0x0F, 0x52, 0xC1])
         var core = Self.core(ram)
         core.setVector(0, 0x3FF0_0000_0000_0000, 0x4000_0000_0000_0000)
         XCTAssertThrowsError(try core.run(budget: 1)) { error in
             guard case .unsupported(let name)? = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, reçu \(error)")
             }
-            XCTAssertTrue(name.contains("5D"), "il faut nommer l'opcode : \(name)")
+            XCTAssertTrue(name.contains("52"), "il faut nommer l'opcode : \(name)")
         }
         XCTAssertEqual(core.vectors[0], 0x3FF0_0000_0000_0000,
                        "et rien n'a été écrit avant de refuser")
