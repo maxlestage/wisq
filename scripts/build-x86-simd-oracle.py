@@ -145,6 +145,12 @@ def forms():
     for name in ["pcmpgtb", "pcmpgtw", "paddb", "paddw", "psubb", "psubw", "pminub", "pmaxub",
                  "psubusb", "pmullw", "pmulhuw", "pmuludq", "packuswb"]:
         out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Ce que Fedora 44 demande en plus** : les instructions SSE2 de ses
+    # binaires que wisq n'avait pas, trouvées en les passant toutes au cœur.
+    for name in ["packsswb", "packssdw", "pcmpeqw", "pmulhw", "pmaxsw", "pminsw", "pavgb",
+                 "pavgw", "pmaddwd", "paddusb", "paddusw", "psubusw", "paddsb", "paddsw",
+                 "psubsb", "psubsw"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
     # Les décalages dont le compte est dans xmm1 ou en mémoire : les quatre
     # que la glibc emploie.
     for name in ["psllw", "pslld", "psrld", "psrad"]:
