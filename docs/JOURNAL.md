@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Une machine sauvée deux fois plus petite
+
+Suite directe, même autorisation. La session de Debian sauvée pesait
+217 Mio, à écrire pendant les quelques secondes qu'iOS laisse quand
+l'application passe en arrière-plan.
+
+**L'instantané, étudié avant d'écrire du code.** Il a été gardé dans un
+fichier (`WISQ_PC_SNAPSHOT_OUT`), puis analysé :
+- 14 % de ses pages sont des doublons ;
+- zlib le ramène à 75 Mio, mais en 3,6 s ;
+- LZ4 le ramène à 98 Mio en 0,6 s (les deux en C, par blocs d'un Mio).
+
+C'est la vitesse qui décide.
+
+**Ce qui a été fait.**
+- Un LZ4 écrit ici, au format de bloc standard. Un bloc de la référence
+  (python-lz4) se relit ici, et la référence relit les 64 premiers blocs que
+  wisq écrit de cette session.
+- `SnapshotFile` compresse le **fichier**, pas l'instantané. Le cœur Rust,
+  qui partage le format de l'instantané octet pour octet, n'en voit rien, et
+  un fichier d'avant, sans la marque, se lit tel quel.
+- Mesuré en compilation optimisée, sur la vraie session : 217 Mio deviennent
+  97 Mio, compressés en 1,3 s, relus en 1,0 s. La première relecture copiait
+  octet par octet et prenait 1,3 s ; la copie d'un bloc entier, quand les deux
+  zones ne se chevauchent pas, la ramène à 1,0 s.
+
+**Les sabotages.** Sept, dont trois ne tombaient pas au premier
+passage, faute de test :
+- un décalage qui remonte avant le début, que le test refusait déjà pour une
+  autre raison (une mauvaise taille) ;
+- le bloc rangé tel quel quand la compression ne gagne rien ;
+- la règle des cinq derniers octets en littéraux, que notre décodeur tolère
+  mais que la référence suppose.
+
+Les trois tests sont écrits, et les trois sabotages tombent.
+
+Douze tests de stockage supposaient qu'un fichier sauvé faisait la taille de
+l'instantané. Ils écrivent maintenant leur fichier tel quel, au format
+d'avant, puisque c'est un compte d'octets sur le disque qu'ils vérifient.
+
 ## 2026-10-18 — Une session Debian, sauvée puis reprise
 
 Suite directe, même autorisation. Côté vitesse, il ne restait que de petits

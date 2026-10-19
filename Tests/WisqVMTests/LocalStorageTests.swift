@@ -32,10 +32,14 @@ final class LocalStorageTests: XCTestCase {
         return image
     }
 
+    /// Une machine sauvée de `bytes` octets **sur le disque** : écrite telle
+    /// quelle, comme un fichier d'avant la compression, que `SuspendedMachine`
+    /// relit toujours. Ces tests comptent des octets de fichier ;
+    /// `SuspendedMachine.save` compresserait, et le compte ne serait plus
+    /// celui qu'on a posé.
     private func saveMachine(for image: Data, named name: String, bytes: Int) throws {
-        try SuspendedMachine.save(
-            Data(repeating: 0xAA, count: bytes),
-            kernel: SuspendedMachine.identity(of: image, named: name), in: machines)
+        let file = SuspendedMachine.fileName(kernel: SuspendedMachine.identity(of: image, named: name))
+        try Data(repeating: 0xAA, count: bytes).write(to: machines.appendingPathComponent(file))
     }
 
     /// Rien du tout se lit comme rien du tout, pas comme une panne.
