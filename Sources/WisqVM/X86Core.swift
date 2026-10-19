@@ -467,11 +467,11 @@ public struct X86Core: @unchecked Sendable {
                     ? min(X86Instruction.maximumLength, Int(0x1000 - (rip & 0xFFF)))
                     : X86Instruction.maximumLength
                 let available = min(room, memory.size - start)
-                let instruction: X86Instruction
-                if let known = decodeCache.lookup(memory.bytes, at: start, size: memory.size,
-                                                  available: available) {
-                    instruction = known
+                if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
+                                                       available: available) {
+                    try step(known.pointee.instruction)
                 } else {
+                    let instruction: X86Instruction
                     do {
                         instruction = try X86Decoder.decode(memory.bytes + start,
                                                             available: available)
@@ -482,23 +482,7 @@ public struct X86Core: @unchecked Sendable {
                         // derniers octets ne sont pas à la suite des premiers.
                         instruction = try decodeAcrossPageBoundary(from: start, have: available)
                     }
-                }
-                // Le témoin, quand il est armé et qu'on est dans un programme.
-                // La condition est d'abord sur le drapeau : éteint — le cas de
-                // toute exécution normale — il n'y a pas même de lecture du
-                // privilège.
-                //
-                // **Et tout le témoin vit dans une autre fonction.** Ses
-                // variables locales — les registres d'avant, la pile d'avant,
-                // la nature de l'instruction — restaient dans celle-ci, et
-                // callgrind montrait le prix d'un témoin éteint : seize
-                // registres d'un littéral vide fabriqués, posés sur la pile et
-                // passés à chaque instruction, une quarantaine d'instructions
-                // de l'hôte pour rien.
-                if canonicalWatchArmed && privilege == 3 {
-                    try executeWatched(instruction)
-                } else {
-                    try execute(instruction)
+                    try step(instruction)
                 }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
@@ -509,6 +493,27 @@ public struct X86Core: @unchecked Sendable {
             executed += 1
         }
         return executed
+    }
+
+    /// Une instruction, avec ou sans le témoin.
+    ///
+    /// Le témoin, quand il est armé et qu'on est dans un programme. La
+    /// condition est d'abord sur le drapeau : éteint — le cas de toute
+    /// exécution normale — il n'y a pas même de lecture du privilège.
+    ///
+    /// **Et tout le témoin vit dans une autre fonction.** Ses variables
+    /// locales — les registres d'avant, la pile d'avant, la nature de
+    /// l'instruction — restaient dans `run`, et callgrind montrait le prix
+    /// d'un témoin éteint : seize registres d'un littéral vide fabriqués,
+    /// posés sur la pile et passés à chaque instruction, une quarantaine
+    /// d'instructions de l'hôte pour rien.
+    @inline(__always)
+    mutating func step(_ instruction: X86Instruction) throws {
+        if canonicalWatchArmed && privilege == 3 {
+            try executeWatched(instruction)
+        } else {
+            try execute(instruction)
+        }
     }
 
     /// Une instruction exécutée sous le regard du témoin : ce que `run` faisait
