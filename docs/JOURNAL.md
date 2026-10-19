@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le flottant empaqueté de Fedora
+
+Suite directe, même autorisation. Ce que la sonde du SSE2 entier laissait
+refusé, hors des extensions que le CPUID n'annonce pas : le flottant
+empaqueté, presque tout dans `libmvec`, et `CVTTPS2DQ` dans
+`libharfbuzz`.
+
+- **Ajoutés** : `MINPS`, `MAXPS`, `MINPD`, `MAXPD`, chacun selon la règle
+  du scalaire (la source ressort telle quelle sur un NaN ou deux zéros) ;
+  `CMPPS` et `CMPPD` sous leurs huit prédicats ; `CVTPS2PD`, `CVTDQ2PS`,
+  `CVTPS2DQ` et `CVTTPS2DQ`. Les opérations empaquetées passent par une
+  aide qui ne manipule que des bits, pour qu'un masque tout à un ne
+  traverse jamais un flottant. Le choix de `MIN`/`MAX` et l'élargissement
+  d'un simple (`widened`) sont partagés avec les formes scalaires.
+- **Refusés exprès** : `RCPPS` et `RSQRTPS`, des approximations dont les
+  bits diffèrent d'un processeur à l'autre ; aucun oracle ne les fixerait.
+  Ils deviennent les exemples des deux tests qui exigent un refus nommé :
+  ces tests prenaient `MINPS` et `MINPD`, et ont cédé pour la quatrième
+  fois parce que le cœur grandit du côté où les images poussent.
+- **Vérifié contre le vrai processeur** : l'oracle flottant gagne ces
+  instructions, soit 3348 cas de plus (12852). Tout passait du premier
+  coup ; les sabotages disent que les cas portent : `<=` au lieu de `<`
+  dans le choix (10 désaccords), l'arrondi de `CVTTPS2DQ` (24), `CVTDQ2PS`
+  sans signe (54), les deux simples d'une moitié échangés (766), un seul
+  prédicat pour tous (673). L'élargissement confié à l'hôte passe : sur un
+  hôte x86, `Double(Float)` fait exactement ce que fait le processeur ; le
+  code explicite est là pour les hôtes ARM.
+
 ## 2026-10-19 — Le SSE2 entier de Fedora, trouvé d'avance
 
 Suite directe, même autorisation. Le premier démarrage de Fedora 44 Cloud
