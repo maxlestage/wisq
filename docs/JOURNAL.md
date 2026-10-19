@@ -8,6 +8,49 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Le x87 de la libm de Fedora
+
+Suite directe, même autorisation. Ce que la sonde laissait encore refusé
+dans le x87 de Fedora 44, hors du code qu'objdump lit dans des données :
+la `libm`, pour ses `long double`.
+
+- **Ajoutés**, dans `X86ExtendedFunctions.swift`, chacun calculé sur des
+  entiers puis arrondi une fois par `assemble` :
+  - `FSQRT` : la racine entière d'un nombre de 128 bits (une estimation par
+    le double, trois pas de Newton, une correction d'une unité au plus), et
+    le reste qui dit si la racine vraie passait la moitié ;
+  - `FPREM` et `FPREM1` : le reste exact par `dividingFullWidth`, le
+    quotient tronqué ou au plus proche pair, ses trois bits bas dans C0, C3
+    et C1 ; au-delà de 63 rangs d'écart, un tour partiel qui lève C2 et
+    laisse un écart entre 32 et 63 ;
+  - `FSCALE` (l'exposant de `ST(1)` tronqué, borné à ±2¹⁶) et `FXTRACT` ;
+  - les cinq constantes, `FLDPI`, `FLDL2E`, `FLDL2T`, `FLDLG2`, `FLDLN2`.
+- **Une constante a démenti le manuel.** Le premier jet arrondissait sur
+  les deux bits de garde seuls, comme si le processeur tronquait ses
+  constantes à 66 bits. Ceux de `FLDLG2` valent exactement une demie :
+  l'arrondi au pair gardait `…F798`, le processeur rend `…F799`. Il arrondit
+  juste, depuis la valeur vraie, et c'est ce que fait maintenant un bit
+  collant toujours levé.
+- **Vérifié contre le vrai processeur**, dans les deux oracles x87 : 5580
+  cas au plus proche (dont 1e300 réduit par 1e-300, qui passe par le tour
+  partiel), et 896 dans les quatre modes d'arrondi, où les valeurs
+  débordent ou descendent sous le plus petit normal. Tout passait au
+  premier essai sauf `FLDLG2`. Les anciens fichiers se sont d'abord refaits
+  à l'octet près.
+- **Un test de propriété** pour la racine entière, sur 5000 nombres tirés
+  et les bords : `r² + reste = n` et un reste sous `2r + 1`.
+- Sabotages : la racine toujours sous la moitié (6 et 1 désaccords), le
+  chemin pair toujours pris (12 et 16), les constantes toujours au plus
+  proche (126), `FSCALE` qui arrondit au lieu de tronquer (6), les bits du
+  quotient échangés (38), `FPREM1` sans ajustement (3), une réduction
+  partielle fixe (2), le biais de `FXTRACT` (42), son zéro sans division
+  par zéro (6) ; la racine sans Newton ni correction, 4998 échecs du test de
+  propriété. Retirer la seule correction finale ne fait rien tomber : les
+  trois pas de Newton suffisent sur ces nombres, et elle reste en garde.
+- **Ce qui reste refusé** : les transcendantes (`F2XM1`, `FYL2X`,
+  `FYL2XP1`, `FPATAN`, `FSIN`, `FCOS`, `FPTAN`), dont les bits dépendent de
+  l'approximation interne du processeur.
+
 ## 2026-10-19 — Le x87 de la libc de Fedora
 
 Suite directe, même autorisation. La sonde, élargie de SSE à **toutes**
