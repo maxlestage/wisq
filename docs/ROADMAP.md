@@ -490,9 +490,17 @@ noyau dans le disque lui-même.
      dans le tic d'horloge. Le 8253 en coup unique n'échoit plus avant 4 ms,
      et cette part tombe à 14 %.
 
-   Ce qui reste : udev traite plus de mille événements de démarrage dans
-   l'initramfs de dracut, et n'en a pas fini quand les délais de systemd
-   expirent (600 s par périphérique).
+   - les rangements d'une moitié de registre (`0F 13`, `0F 17`) et
+     l'arithmétique empaquetée (`SUBPD`, `DIVPD`, `ADDPS`…`DIVPS`), sur
+     lesquels l'espace utilisateur s'arrêtait.
+
+   **Le shell de `root` est atteint** : `root@ubuntu:~#` à 71,4 milliards
+   d'instructions, soit 4658 s sur la machine de mesure. Ensuite, la console
+   série ouvre `bash` sans `login`, par un drop-in passé en credential
+   (systemd ≥ 256). `login` expirait dix-neuf fois avant de passer, et le
+   shell vient maintenant à 60,9 milliards d'instructions, sans une
+   expiration. Ce qui reste avant de proposer Ubuntu au téléchargement : le
+   temps total, plus de trois fois celui de Debian.
 
 ## Télécharger une image depuis l'application
 
