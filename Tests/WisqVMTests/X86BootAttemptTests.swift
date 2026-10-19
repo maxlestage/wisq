@@ -142,7 +142,10 @@ final class X86BootAttemptTests: XCTestCase {
         let ramdisk = cloud?.initrd ?? environment["WISQ_PC_INITRD"]
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
-        let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
+        // `WISQ_PC_RAM_MIB` règle la mémoire : l'initramfs d'Ubuntu 26.04
+        // pèse 72 Mio compressé, et se déballe en mémoire.
+        let mebibytes = environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? (ramdisk == nil ? 256 : 512)
+        let memory = X86Memory(size: mebibytes << 20, base: 0)
         // Un disque, quand on en donne un. Le noyau ne le trouvera que si la
         // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
         if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
@@ -209,10 +212,13 @@ final class X86BootAttemptTests: XCTestCase {
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
         // défaut plutôt que de la remplacer : la console série en fait partie,
         // et une mesure qui la perdrait ne dirait plus rien du tout.
-        let extra = cloud?.commandLine ?? environment["WISQ_PC_CMDLINE"]
+        // Avec une image de cloud, `WISQ_PC_CMDLINE` s'ajoute à la ligne de
+        // l'image : de quoi demander à udev ses journaux sans rien perdre.
+        let extra = [cloud?.commandLine, environment["WISQ_PC_CMDLINE"]]
+            .compactMap { $0 }.joined(separator: " ")
         if let cloud { print("ligne de commande (\(cloud.origin)) : \(cloud.commandLine)") }
         let commandLine = [X86BootLoader.defaultCommandLine, extra]
-            .compactMap { $0 }.joined(separator: " ")
+            .filter { !$0.isEmpty }.joined(separator: " ")
         let placement = try X86BootLoader.load(
             kernel: [UInt8](data), into: memory, commandLine: commandLine,
             initialRamdisk: ramdisk, framebuffer: screen)
@@ -311,8 +317,22 @@ final class X86BootAttemptTests: XCTestCase {
             var remaining = allowance
             var answeredUpTo = 0
             var promptSeen = false
+            // **Où passe le temps de l'invité.** Avec `WISQ_PC_SAMPLE`, on
+            // avance par tranches d'un million d'instructions et l'on note le
+            // RIP où chacune s'arrête, une ligne hexadécimale par tranche, dans
+            // le fichier nommé. Avec `nokaslr` et le `System.map` de l'image,
+            // les adresses du noyau se lisent en noms de fonctions.
+            let sampleFile = environment["WISQ_PC_SAMPLE"]
+            var samples: [String] = []
+            defer {
+                if let sampleFile {
+                    try? samples.joined(separator: "\n").write(toFile: sampleFile, atomically: true, encoding: .utf8)
+                }
+            }
+            let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
             while remaining > 0 {
-                let executed = try core.run(budget: min(remaining, 50_000_000), waiting: patient)
+                let executed = try core.run(budget: min(remaining, slice), waiting: patient)
+                if sampleFile != nil { samples.append(String(core.rip, radix: 16)) }
                 remaining -= min(remaining, max(executed, 1))
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })

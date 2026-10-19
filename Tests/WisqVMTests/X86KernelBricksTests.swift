@@ -130,6 +130,19 @@ final class X86KernelBricksTests: XCTestCase {
         XCTAssertEqual(core.retired, 2)
     }
 
+    /// `RDSSPQ %rax` : sans CET, un NOP, et le registre garde ce qu'il avait.
+    /// C'est ainsi que la glibc d'Ubuntu 26.04 apprend qu'il n'y a pas de
+    /// pile fantôme : elle met le registre à zéro, et le lit.
+    func testReadingTheShadowStackPointerLeavesTheRegisterAlone() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        var core = try Self.core(ram, [0xF3, 0x48, 0x0F, 0x1E, 0xC8, 0xF4])
+        core.registers[0] = 0
+        try core.run(budget: 2)
+        XCTAssertTrue(core.halted, "le HLT qui suit doit être atteint")
+        XCTAssertEqual(core.registers[0], 0, "pas de pile fantôme")
+        XCTAssertEqual(core.retired, 2)
+    }
+
     /// `PREFETCH` et les NOP réservés du groupe 16 : des indices pour un cache
     /// que ce cœur n'a pas.
     func testPrefetchDoesNothingAndDoesNotRefuse() throws {
