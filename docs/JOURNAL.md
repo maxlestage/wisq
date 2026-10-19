@@ -8,6 +8,22 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — Le cache de traduction en un seul tableau
+
+Suite directe, même autorisation. La traduction d'adresse passe à chaque
+instruction, pour lire l'instruction elle-même, et à chaque accès mémoire.
+Le cache de traduction tenait trois tableaux côte à côte : étiquettes,
+cadres, permissions. Chaque traduction réussie payait trois vérifications de
+bornes et touchait trois lignes de cache. C'est maintenant un tableau
+d'entrées `Translation` (étiquette, cadre et permissions ensemble), lu sans
+vérification de bornes sur le chemin chaud : l'emplacement est masqué à la
+taille du cache, qui ne change jamais.
+
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  42,33 → 41,43 milliards d'instructions hôte, 2,1 % de moins.
+- Sabotage : une entrée trouvée dont on ne vérifie plus les permissions fait
+  tomber cinq tests.
+
 ## 2026-10-19 — Le second démarrage d'Ubuntu
 
 Suite directe, même autorisation. La feuille de route demandait de mesurer
