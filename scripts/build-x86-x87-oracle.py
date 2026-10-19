@@ -103,6 +103,11 @@ VALUES = [
     ("1+2⁻⁶³", raw(0x8000000000000001, 0x3FFF)),
     ("π", raw(0xC90FDAA22168C235, 0x4000)),
     ("2⁶⁴-1", raw(0xFFFFFFFFFFFFFFFF, 0x403E)),
+    # **Deux valeurs que l'arrondi au plus proche fait monter.** Sans elles,
+    # aucune ne s'éloignait de zéro en devenant entière (0,5 et -2,5 vont au
+    # pair, π descend), et un `FRNDINT` qui ne montait jamais passait.
+    ("1.75", extended(1.75)),
+    ("-3.5", extended(-3.5)),
 ]
 
 # Le sommet de départ. Six laisse deux valeurs en place et deux crans pour
@@ -170,6 +175,16 @@ def forms():
     # Le mot de contrôle : le lire et l'écrire, parce que musl change l'arrondi
     # autour de ses conversions.
     out += ["fnstcw 0x20(%rsi)", "fldcw 0x20(%rsi)"]
+    # **Ce que la libc et la libstdc++ de Fedora 44 demandent en plus.** La
+    # classe d'une valeur, l'arrondi à l'entier, les copies conditionnelles
+    # (les drapeaux d'entrée sont nuls : chaque paire se voit dans les deux
+    # sens), les comparaisons qui dépilent deux fois, la libération d'un
+    # registre, et l'environnement de `fenv.h` rangé puis relu.
+    out += ["fxam", "frndint"]
+    for condition in ["b", "e", "be", "u", "nb", "ne", "nbe", "nu"]:
+        out.append(f"fcmov{condition} %st(1), %st")
+    out += ["fcompp", "fucompp", "ffree %st(1)", "ffreep %st(0)",
+            "fnstenv 0x10(%rsi)", "fldenv 0x0(%rsi)"]
     return out
 
 
