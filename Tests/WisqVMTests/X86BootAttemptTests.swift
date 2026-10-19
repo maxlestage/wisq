@@ -212,10 +212,13 @@ final class X86BootAttemptTests: XCTestCase {
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
         // défaut plutôt que de la remplacer : la console série en fait partie,
         // et une mesure qui la perdrait ne dirait plus rien du tout.
-        let extra = cloud?.commandLine ?? environment["WISQ_PC_CMDLINE"]
+        // Avec une image de cloud, `WISQ_PC_CMDLINE` s'ajoute à la ligne de
+        // l'image : de quoi demander à udev ses journaux sans rien perdre.
+        let extra = [cloud?.commandLine, environment["WISQ_PC_CMDLINE"]]
+            .compactMap { $0 }.joined(separator: " ")
         if let cloud { print("ligne de commande (\(cloud.origin)) : \(cloud.commandLine)") }
         let commandLine = [X86BootLoader.defaultCommandLine, extra]
-            .compactMap { $0 }.joined(separator: " ")
+            .filter { !$0.isEmpty }.joined(separator: " ")
         let placement = try X86BootLoader.load(
             kernel: [UInt8](data), into: memory, commandLine: commandLine,
             initialRamdisk: ramdisk, framebuffer: screen)
