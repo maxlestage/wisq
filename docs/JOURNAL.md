@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-19 — btrfs en lecture seule, deuxième tranche de Fedora
+
+Suite directe, même autorisation. Après zstd, le système de fichiers qui
+le porte.
+
+- **`BtrfsVolume`** lit un btrfs comme `Ext4Volume` lit un ext4 : le
+  superbloc, l'arbre des tronçons (amorcé par le tableau du superbloc),
+  l'arbre racine, puis l'arbre de chaque sous-volume. Il liste les
+  répertoires, suit les liens (relatifs, absolus, et la traversée d'un
+  sous-volume à l'autre) et lit les fichiers : extents en ligne, ordinaires,
+  creux, compressés en zlib ou en zstd. LZO est refusé en le disant.
+- **La fin d'un extent compressé** se décompresse plus court que sa taille
+  déclarée : Linux complète par des zéros, et `BtrfsVolume` aussi. Pour la
+  même raison, `Zstd.decompress` accepte, quand on le lui demande, des
+  zéros après la dernière trame.
+- **Une copie qui double.** Une correspondance qui se recouvre (décalage
+  court, longueur longue) se recopiait octet par octet ; elle double
+  maintenant ce qu'elle a déjà écrit. Les tests de la fixture passent de
+  90 s à 0,2 s en debug.
+- **Vérifié contre l'outil de référence** : le sous-volume `boot` de la
+  vraie Fedora 44 Cloud, relu fichier par fichier, est identique à ce que
+  `btrfs restore` en extrait (noyau, initramfs de 49 Mo, entrées BLS). Ce
+  test reste local ; la CI lit une image de 101 Mio fabriquée par
+  `mkfs.btrfs`, embarquée creuse : ses 101 blocs non vides, 11 Ko en zstd.
+- Sabotages : le décalage de bande, le complément de zéros, le décalage
+  des extents en ligne, les liens relatifs et la copie qui double tombent
+  tous. Le lien relatif ne tombait pas : la fixture a gagné `boot/lien-local`.
+
 ## 2026-10-19 — zstd, première tranche de Fedora
 
 Suite directe, même autorisation. Les derniers gains de l'interprète
