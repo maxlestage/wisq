@@ -28,12 +28,17 @@ public enum Zstd {
     static let magic: UInt32 = 0xFD2F_B528
 
     /// Toutes les trames de `input`, mises bout à bout.
-    public static func decompress(_ input: [UInt8]) throws -> [UInt8] {
+    ///
+    /// `paddedWithZeros` : ce qui suit la dernière trame peut n'être que des
+    /// zéros, et ne compte pas. C'est ce que btrfs range : un extent compressé
+    /// occupe des secteurs entiers, et la trame n'en remplit pas le dernier.
+    public static func decompress(_ input: [UInt8], paddedWithZeros: Bool = false) throws -> [UInt8] {
         var output = [UInt8]()
         var reader = ForwardReader(input)
         guard reader.remaining >= 4 else { throw Failure.notZstd }
         var first = true
         while reader.remaining > 0 {
+            if paddedWithZeros, !first, input[reader.position...].allSatisfy({ $0 == 0 }) { break }
             let word = try reader.u32()
             if word & 0xFFFF_FFF0 == 0x184D_2A50 {
                 // Une trame à sauter : sa taille, puis autant d'octets.
@@ -267,8 +272,19 @@ public enum Zstd {
                 if Int(offset) >= matchLength {
                     (base + end).update(from: base + from, count: matchLength)
                 } else {
-                    // Une copie qui chevauche ce qu'elle écrit : octet par octet.
-                    for index in 0..<matchLength { base[end + index] = base[from + index] }
+                    // **Une copie qui chevauche ce qu'elle écrit** : un motif
+                    // de période `offset`. Une période d'abord, puis ce qui est
+                    // déjà écrit se recopie, deux fois plus à chaque tour, sans
+                    // jamais chevaucher. Un million de zéros d'affilée se
+                    // copient en vingt tours, pas en un million.
+                    let first = Int(offset)
+                    (base + end).update(from: base + from, count: first)
+                    var done = first
+                    while done < matchLength {
+                        let count = min(done, matchLength - done)
+                        (base + end + done).update(from: base + end, count: count)
+                        done += count
+                    }
                 }
             }
 
