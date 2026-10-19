@@ -17,7 +17,7 @@ final class CloudBootTests: XCTestCase {
         let line = CloudBoot.commandLine(["root=/dev/vda1", "systemd.firstboot=on", "console=ttyS0"])
         XCTAssertEqual(line, "root=/dev/vda1 systemd.firstboot=on console=ttyS0 "
                            + "systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 "
-                           + "systemd.service_watchdogs=0")
+                           + "systemd.service_watchdogs=0 " + CloudBoot.consoleOptions.joined(separator: " "))
         XCTAssertEqual(CloudBoot.slowMachineOptions.count, 3)
     }
 
@@ -190,6 +190,63 @@ final class CloudBootTests: XCTestCase {
                        "root=UUID=5a5f rootflags=subvol=root ro console=ttyS0,115200n8 " + slow)
         XCTAssertEqual(["a-6.9.12.conf", "a-6.10.4.conf"].sorted { $0.compare($1, options: .numeric) == .orderedDescending },
                        ["a-6.10.4.conf", "a-6.9.12.conf"])
+    }
+
+    /// **La vraie entrée de Fedora 44 Cloud** : elle coupe elle-même
+    /// `systemd-firstboot`, et la console série ouvre quand même son shell.
+    /// Rien ne s'ajoute deux fois, et aucun credential de première mise en
+    /// route ne vient contredire l'entrée.
+    func testFedorasEntryKeepsItsFirstBootAndGainsTheSerialShell() throws {
+        let entry = try XCTUnwrap(CloudBoot.blsEntry("""
+        title Fedora Linux (6.19.10-300.fc44.x86_64) 44 (Cloud Edition)
+        version 6.19.10-300.fc44.x86_64
+        linux /boot/vmlinuz-6.19.10-300.fc44.x86_64
+        initrd /boot/initramfs-6.19.10-300.fc44.x86_64.img
+        options no_timer_check console=tty1 console=ttyS0,115200n8 systemd.firstboot=off \
+        root=UUID=15c26993-ac30-424a-9c4b-faec4434d234 rootflags=subvol=root
+        grub_users $grub_users
+        grub_arg --unrestricted
+        grub_class fedora
+        """))
+        XCTAssertEqual(entry.kernel, "/boot/vmlinuz-6.19.10-300.fc44.x86_64")
+        let added = (CloudBoot.slowMachineOptions + CloudBoot.consoleOptions).joined(separator: " ")
+        XCTAssertEqual(CloudBoot.commandLine(entry.options),
+                       "no_timer_check console=tty1 console=ttyS0,115200n8 systemd.firstboot=off "
+                           + "root=UUID=15c26993-ac30-424a-9c4b-faec4434d234 rootflags=subvol=root " + added)
+        let line = CloudBoot.commandLine(entry.options, rootPassword: UUID().uuidString, salt: "wisqsalt")
+        XCTAssertFalse(line.contains("passwd.hashed-password"), "l'entrée a coupé la première mise en route")
+        // Une entrée qui passe ses propres credentials, elle, ne reçoit rien.
+        XCTAssertEqual(CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0", "systemd.set_credential=a:b"]),
+                       "root=/dev/vda1 console=ttyS0 systemd.set_credential=a:b "
+                           + CloudBoot.slowMachineOptions.joined(separator: " "))
+    }
+
+    /// **Un btrfs, comme la racine de Fedora** : la fixture de
+    /// `BtrfsVolumeTests` posée en partition d'un disque brut (un fichier
+    /// creux, où seuls ses blocs sont écrits), reconnue comme btrfs après
+    /// l'échec d'ext4, son entrée BLS trouvée sous `/boot/loader/entries`, et
+    /// le noyau et l'initramfs lus à travers lui.
+    func testABtrfsPartitionBootsItsBLSEntry() throws {
+        let fixture = try XCTUnwrap(BtrfsVolumeTests.image)
+        let url = try temporary(CloudDisk.raw(around: [], type: 0x83))
+        let handle = try FileHandle(forWritingTo: url)
+        let start = UInt64(2048 * 512)
+        // La taille de la partition, que `raw(around:)` lit dans le volume.
+        try handle.seek(toOffset: 446 + 12)
+        try handle.write(contentsOf: withUnsafeBytes(of: UInt32(fixture.size / 512).littleEndian) { Data($0) })
+        for (block, bytes) in fixture.blocks {
+            try handle.seek(toOffset: start + UInt64(block * 4096))
+            try handle.write(contentsOf: Data(bytes))
+        }
+        try handle.truncate(atOffset: start + UInt64(fixture.size))
+        try handle.close()
+        let into = folder()
+        let unpacked = try XCTUnwrap(CloudBoot.unpack(url, into: into)).get()
+        XCTAssertEqual([UInt8](try Data(contentsOf: unpacked.kernel)), BtrfsVolumeTests.letters(12000))
+        XCTAssertEqual([UInt8](try Data(contentsOf: try XCTUnwrap(unpacked.initrd))), Array("wisq lit btrfs\n".utf8))
+        XCTAssertEqual(unpacked.origin, "a.conf de vda1")
+        XCTAssertTrue(unpacked.commandLine.hasPrefix("root=UUID=x rootflags=subvol=root systemd.firstboot=off "))
+        XCTAssertTrue(unpacked.commandLine.contains("systemd.unit-dropin.serial-getty@ttyS0.service:"))
     }
 
     /// Dans une image : le grub.cfg de la fixture désigne le noyau et

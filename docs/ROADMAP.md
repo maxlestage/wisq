@@ -524,7 +524,12 @@ noyau dans le disque lui-même.
       superbloc, arbre des tronçons, arbre racine, sous-volumes,
       répertoires, liens, et les extents en ligne, ordinaires ou compressés
       (zlib, zstd ; LZO refusé en le disant).
-    - `CloudBoot` qui le prend comme il prend l'ext4.
+    - **Fait.** `CloudBoot` qui le prend comme il prend l'ext4 : une
+      partition qui n'est pas un ext est relue en btrfs, et l'entrée BLS de
+      Fedora y est trouvée, noyau et initramfs compris (3,4 s pour les
+      67 Mo de la vraie image). La console série ouvre son shell même quand
+      l'entrée coupe elle-même `systemd-firstboot`, comme celle de Fedora.
+    - Le démarrage lui-même, jusqu'au shell de `root`.
 
 ## Télécharger une image depuis l'application
 
