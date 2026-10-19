@@ -142,7 +142,10 @@ final class X86BootAttemptTests: XCTestCase {
         let ramdisk = cloud?.initrd ?? environment["WISQ_PC_INITRD"]
             .flatMap { FileManager.default.contents(atPath: $0) }
             .map { [UInt8]($0) }
-        let memory = X86Memory(size: (ramdisk == nil ? 256 : 512) << 20, base: 0)
+        // `WISQ_PC_RAM_MIB` règle la mémoire : l'initramfs d'Ubuntu 26.04
+        // pèse 72 Mio compressé, et se déballe en mémoire.
+        let mebibytes = environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? (ramdisk == nil ? 256 : 512)
+        let memory = X86Memory(size: mebibytes << 20, base: 0)
         // Un disque, quand on en donne un. Le noyau ne le trouvera que si la
         // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
         if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
