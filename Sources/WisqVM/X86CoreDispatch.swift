@@ -1091,8 +1091,7 @@ extension X86Core {
     @inline(__always)
     func segmentBase(_ instruction: X86Instruction) -> UInt64 {
         guard instruction.prefixMask & Self.segmentPrefixes != 0 else { return 0 }
-        let which = instruction.hasPrefix(0x65) ? X86SystemState.gsBase : X86SystemState.fsBase
-        return system.modelSpecific[which] ?? 0
+        return instruction.hasPrefix(0x65) ? system.modelSpecific.gsBase : system.modelSpecific.fsBase
     }
 
     /// Les bits de `%fs:` et `%gs:` dans le masque de préfixes (le huitième et

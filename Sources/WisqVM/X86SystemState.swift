@@ -17,9 +17,9 @@ public struct X86SystemState: Equatable, Sendable {
     /// dès son démarrage — refuser l'instruction l'arrêterait là, pour un
     /// registre dont il n'attend rien d'autre que d'être écrit.
     public var debug = [UInt64](repeating: 0, count: 8)
-    /// Les registres de modèle. Peu nombreux en pratique, donc un dictionnaire :
-    /// il n'est lu que par `RDMSR` et `WRMSR`, jamais sur le chemin chaud.
-    public var modelSpecific: [UInt32: UInt64] = [:]
+    /// Les registres de modèle. Peu nombreux en pratique, donc un dictionnaire,
+    /// sauf deux : voir `X86ModelSpecific`.
+    public var modelSpecific = X86ModelSpecific()
 
     public init() {}
 
@@ -186,4 +186,64 @@ public enum X86CPUID {
             return (0, 0, 0, 0)
         }
     }
+}
+
+/// Les registres de modèle : un dictionnaire, **sauf les bases de FS et GS**.
+///
+/// Le dictionnaire suffisait à `RDMSR` et `WRMSR`. Mais ces deux bases sont
+/// lues à chaque accès préfixé par `%fs:` ou `%gs:`, et un noyau Linux préfixe
+/// par `%gs:` chacune de ses variables par processeur. Le désassemblage de
+/// `decodeFields` montrait une recherche de dictionnaire, hachage compris, au
+/// milieu du calcul d'adresse. Les deux bases sont donc deux champs.
+///
+/// **Rien ne change au-dehors.** L'indice rend `nil` pour un registre jamais
+/// écrit, FS et GS compris ; un littéral de dictionnaire en construit un ; la
+/// séquence des paires est celle que l'instantané trie et écrit. Un instantané
+/// d'avant se relit donc tel quel, et rend les mêmes octets.
+public struct X86ModelSpecific: Equatable, Sendable, Sequence, ExpressibleByDictionaryLiteral {
+    private var others: [UInt32: UInt64] = [:]
+    /// Les deux bases, lues telles quelles par le calcul d'adresse : zéro pour
+    /// une base jamais écrite, ce que rendait `?? 0`.
+    public private(set) var fsBase: UInt64 = 0
+    public private(set) var gsBase: UInt64 = 0
+    /// Lesquelles des deux ont été écrites, pour que l'indice rende `nil` comme
+    /// le dictionnaire le faisait.
+    private var written: UInt8 = 0
+
+    public init() {}
+
+    public init(dictionaryLiteral elements: (UInt32, UInt64)...) {
+        for (key, value) in elements { self[key] = value }
+    }
+
+    public subscript(key: UInt32) -> UInt64? {
+        get {
+            switch key {
+            case X86SystemState.fsBase: return written & 1 != 0 ? fsBase : nil
+            case X86SystemState.gsBase: return written & 2 != 0 ? gsBase : nil
+            default: return others[key]
+            }
+        }
+        set {
+            switch key {
+            case X86SystemState.fsBase:
+                fsBase = newValue ?? 0
+                written = newValue == nil ? written & ~1 : written | 1
+            case X86SystemState.gsBase:
+                gsBase = newValue ?? 0
+                written = newValue == nil ? written & ~2 : written | 2
+            default: others[key] = newValue
+            }
+        }
+    }
+
+    /// Les paires écrites, dans un ordre quelconque, comme un dictionnaire.
+    public func makeIterator() -> Array<(key: UInt32, value: UInt64)>.Iterator {
+        var pairs = others.map { (key: $0.key, value: $0.value) }
+        if written & 1 != 0 { pairs.append((key: X86SystemState.fsBase, value: fsBase)) }
+        if written & 2 != 0 { pairs.append((key: X86SystemState.gsBase, value: gsBase)) }
+        return pairs.makeIterator()
+    }
+
+    public var count: Int { others.count + (written & 1 != 0 ? 1 : 0) + (written & 2 != 0 ? 1 : 0) }
 }
