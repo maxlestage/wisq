@@ -163,9 +163,16 @@ final class X86BootAttemptTests: XCTestCase {
         // de l'application, et celui qui lit un qcow2 à travers ses tables. La
         // couche d'écriture part dans un dossier temporaire, et le fichier
         // donné n'est jamais modifié.
+        //
+        // `WISQ_PC_WRITES` nomme la couche d'écriture au lieu d'un fichier
+        // temporaire : deux courses qui la partagent sont deux démarrages de la
+        // **même** machine. C'est ainsi qu'on mesure un second démarrage, celui
+        // qui relit ce que le premier a laissé (le cache des profils AppArmor
+        // d'Ubuntu, par exemple).
         if let path = cloudPath ?? environment["WISQ_PC_DISK_FILE"] {
-            let writes = FileManager.default.temporaryDirectory
-                .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
+            let writes = environment["WISQ_PC_WRITES"].map { URL(fileURLWithPath: $0) }
+                ?? FileManager.default.temporaryDirectory
+                    .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
             let disk = VirtioBlock(store: try FileDiskStore(
                 base: URL(fileURLWithPath: path), writes: writes))
             memory.storage = disk
