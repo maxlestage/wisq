@@ -1810,6 +1810,80 @@ describe("le nombre de familles d'architectures reconnues est celui de l'énumé
       attendu![langue],
     );
   });
+
+  /// **La correction s'est arrêtée au bord du périmètre, et la garde l'a
+  /// recopié.**
+  ///
+  /// La liste ci-dessus nomme cinq lectures, parce que c'est la liste que la
+  /// correction avait nommée : « les deux READMEs, l'accueil, la feuille de
+  /// route ». « La feuille de route » voulait dire `docs/ROADMAP.md`. La page
+  /// *Feuille de route* du site en est une autre, et elle est restée à vingt
+  /// et une dans les deux langues — pendant que les notes de version du même
+  /// site annonçaient que le compte était corrigé et qu'« une garde les compte
+  /// maintenant ».
+  ///
+  /// Les gardes chiffrées du fichier ne pouvaient pas la voir : `accounted`
+  /// tient les nombres que `publishedNumber` relève, et celui-là est écrit en
+  /// lettres. Deux angles morts qui se recouvrent, et la page la plus lue sur
+  /// la question portait le chiffre que le dépôt venait de retirer d'ailleurs.
+  ///
+  /// Celle-ci ne nomme donc aucune page : elle lit tout ce que le site publie
+  /// — `pages/` et l'accueil — et exige le compte de l'énumération de chaque
+  /// phrase qui le donne. Le balayage s'arrête au site : `CHANGELOG.md`
+  /// raconte le défaut au passé et doit pouvoir citer le vieux nombre.
+  test("aucune page du site ne publie un autre compte de familles", () => {
+    /// Les mots qui comptent, pour ne pas prendre « of architecture families »
+    /// ni « des familles d'architectures » — les notes de version parlent du
+    /// compte sans le donner — pour des comptes.
+    const COMPTES = new Set([
+      ...FRENCH_NUMBERS,
+      ...ENGLISH_NUMBERS,
+      "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf", "vingt",
+      "vingt et un", "vingt et une", "vingt-deux", "vingt-trois",
+      "vingt-quatre", "vingt-cinq", "trente",
+      "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+      "twenty-one", "twenty-two", "twenty-three", "twenty-four",
+      "twenty-five", "thirty",
+    ]);
+    const PHRASE =
+      /([\p{L}]+(?:-[\p{L}]+)?(?: et une?)?) (?:architecture families|familles d'architectures)/giu;
+
+    const dits = publishedFiles()
+      .flatMap((fichier) =>
+        [...readFileSync(pathOf(fichier), "utf8").matchAll(PHRASE)].map(
+          (m) =>
+            [relativePathOf(fichier), m[0].trim(), m[1]!.toLowerCase()] as const,
+        ),
+      )
+      .filter(([, , mot]) => COMPTES.has(mot));
+
+    /// Deux témoins, parce que c'est par là que la chose est passée : une
+    /// seule page lue, c'est le périmètre qui a rétréci ; une seule langue
+    /// lue, c'est le défaut que ce fichier documente déjà deux fois.
+    const pages = new Set(dits.map(([fichier]) => fichier));
+    expect(
+      pages.size,
+      `une seule page du site donne le compte des familles (${[...pages].join(", ") || "aucune"}) : le motif ne lit plus rien, ou le périmètre a rétréci`,
+    ).toBeGreaterThan(1);
+    expect(
+      dits.some(([, phrase]) => /architecture families/i.test(phrase)),
+      "aucune phrase anglaise ne donne le compte des familles",
+    ).toBe(true);
+    expect(
+      dits.some(([, phrase]) => /familles d'architectures/i.test(phrase)),
+      "aucune phrase française ne donne le compte des familles",
+    ).toBe(true);
+
+    const attendu = MOTS[familles()];
+    expect(attendu, `aucun mot pour ${familles()} familles`).toBeDefined();
+    for (const [fichier, phrase, mot] of dits) {
+      const langue = /architecture families/i.test(phrase) ? "en" : "fr";
+      expect(
+        mot,
+        `${fichier} : « ${phrase} », et l'énumération en déclare ${familles()}`,
+      ).toBe(attendu![langue]);
+    }
+  });
 });
 
 describe("le guide annonce le nombre de secrets que le workflow exige", () => {
