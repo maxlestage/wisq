@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — x86-64-v2, première tranche : SSSE3
+
+Suite directe, même autorisation. Rocky, AlmaLinux et CentOS Stream ont leur
+racine en XFS, que wisq lit depuis #566 — mais leur version 9 est compilée
+pour **x86-64-v2**, et ce cœur n'annonçait aucune des extensions que ce niveau
+exige : `CPUID.1:ECX` valait zéro. Leur glibc refuse de démarrer sans elles.
+
+- **Le comptage d'abord.** `objdump` sur chaque ELF de `/usr` d'AlmaLinux 9.8
+  (GenericCloud du 5 octobre 2026, SHA-256 `25942b55…`, conforme à celle
+  publiée) : cinquante-quatre mnémoniques de SSE3, SSSE3, SSE4.1 et SSE4.2
+  que le cœur ne savait pas exécuter, de `pinsrq` (9 490 fois), `palignr`
+  (4 948) et `pshufb` (1 581) à `phaddsw` (une). Pas quelques instructions,
+  donc : tout le niveau. Il entre par tranches, chacune avec son corpus, et
+  les bits de `CPUID` ne s'allumeront qu'à la fin, quand tout y sera — un bit
+  allumé trop tôt ferait choisir à chaque glibc, Fedora et Debian comprises,
+  des chemins que le cœur ne sait pas suivre.
+- **Cette tranche** : SSSE3 tel que ces binaires l'emploient (`pshufb`,
+  `palignr`, `pabsb/w/d`, `pmaddubsw`, `phaddsw`), et les trois déplacements
+  de SSE3 (`lddqu`, `movddup`, `movsldup`). Les tables `0F 38` et `0F 3A`,
+  que le décodeur lisait déjà, ont enfin un exécutant (`X86SSSE3.swift`) ;
+  sans le préfixe `66`, ce sont les formes MMX, refusées.
+- **Un nouveau corpus**, `scripts/build-x86-v2-oracle.py` →
+  `Tests/Fixtures/x86-v2-oracle.tsv` : quarante formes sur quarante-cinq
+  états, 1 800 réponses du vrai processeur. Il rapporte en plus de celui de
+  SSE2 RCX, les drapeaux et la fenêtre de mémoire, dont `PTEST`,
+  `PCMPISTRI` et `PEXTR*` auront besoin. Le cœur s'accorde sur les 1 800 au
+  premier essai.
+- **Sabotages**, comptés en cas d'accord sur 1 800 : `pshufb` sans le bit 7 →
+  1 767 ; `palignr` inversé → 1 145 ; `palignr` replié au-delà de trente-deux
+  → 1 368 ; `pmaddubsw` à source sans signe → 1 773 ; `phaddsw` sans
+  saturation → 1 758 ; `pabs` sans effet → 1 696, toujours sur trente-deux
+  bits → 1 728 ; `movsldup` sur les mots impairs → 1 731 ; `movddup` sans le
+  haut → 1 667 ; `lddqu` sans le haut → 1 755.
+- **Une leçon du banc de sabotage** : il cherchait le message du test, que
+  l'ordre des redirections envoyait ailleurs, et a cru un sabotage survivant.
+  Il lit maintenant le compte d'accords.
+- Compteur publié : 2914.
+
 ## 2026-10-20 — openSUSE Tumbleweed, la sixième distribution
 
 Suite directe, même autorisation. Le lecteur XFS (#566) ouvrait `/boot`
