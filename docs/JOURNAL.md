@@ -8,6 +8,70 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — openSUSE Tumbleweed, la sixième distribution
+
+Suite directe, même autorisation. Le lecteur XFS (#566) ouvrait `/boot`
+d'openSUSE ; restait à la proposer, et à ce que la console mène au shell.
+
+- **Essayée avant d'être proposée.** L'image du 18 octobre 2026
+  (`openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2`,
+  317 Mo, SHA-256 `c7312339…`, conforme à celle publiée), démarrée par
+  `testHowFarARealKernelGets` : noyau 7.2 lu sur le XFS, initramfs, systemd,
+  puis l'invite `localhost:~ #` environ vingt-huit minutes après le départ,
+  et la réponse à `echo wisq-parle`.
+- **L'assistant d'openSUSE masqué.** Le premier essai s'est arrêté devant
+  « JeOS Firstboot », une boîte de dialogue qui prend la console et attend
+  langue, clavier, licence et mot de passe — ce n'est pas `systemd-firstboot`,
+  que wisq savait déjà faire taire. `systemd.mask=jeos-firstboot.service`
+  rejoint les options de la console ; ailleurs, l'unité n'existe pas.
+- **Le banc voyait mal l'invite.** openSUSE remet ses couleurs à zéro entre le
+  `#` et l'espace : `~ # ` ne s'y lisait pas, et le banc a attendu une heure
+  devant un shell prêt. Il cherche maintenant l'invite dans le texte sans ses
+  séquences d'échappement ; un test le fige sur les octets réels.
+- **L'index** (`ImageDownload.openSUSEIndex`) est le dossier
+  `tumbleweed/appliances/` : sa page écrit ses liens `./nom`, et c'est la date
+  de l'instantané qui porte la version (`2026.10.18`) — triée par date, pas
+  par nom, le numéro d'image qui la précède pouvant changer. La somme se lit
+  dans le `.sha256` du fichier daté, du même format que celui d'Arch :
+  `archChecksum` devient `sumFileChecksum`. `download.opensuse.org` renvoie
+  vers un miroir, et la requête de taille comme le téléchargement suivent.
+- **Tests** : la page (instantané le plus récent d'abord, alias, autre saveur,
+  date tronquée et chemin sortant écartés), la somme, l'adresse ; un
+  téléchargement complet à travers le routeur ; l'invite vue à travers ses
+  couleurs. **Sabotages** : tri par nom → 5 échecs ; liens `./` gardés → 2 ;
+  date tronquée acceptée → 5.
+- Compteur publié : 2912.
+
+## 2026-10-20 — La console répond quand on lui demande où est le curseur
+
+Suite directe, même autorisation. En démarrant openSUSE jusqu'au shell, la
+console a montré, avant chaque invite, une question de systemd 258 : le
+curseur envoyé au coin le plus lointain (`CSI 32766;32766 H`), puis « où
+es-tu ? » (`CSI 6 n`). C'est ainsi qu'il mesure une console série. La grille
+ne répondait à rien — son en-tête le disait, faute de voie de retour vers
+l'invité — et systemd attendait son délai, compté en temps invité, avant de
+laisser au shell une taille inconnue. `resize`, `vim` et `top` posent la même
+question.
+
+- **`TerminalGrid.replies`** : la place du curseur (`CSI 6 n`, depuis 1,
+  ligne puis colonne), l'état (`CSI 5 n` → « tout va bien ») et la nature
+  (`CSI c` → un VT102, ce que la grille imite). Rien aux questions qu'elle ne
+  connaît pas (`CSI > c`, `CSI ? 6 n`, `CSI 15 n`) : mieux vaut se taire que
+  mentir. Bornées à 4 Kio si personne ne les relève ; la remise à zéro les
+  oublie.
+- **La voie de retour** : `LocalVMModel` relève les réponses à chaque morceau
+  de console, sur le fil d'émulation, et les envoie à la machine comme une
+  frappe (`ConsoleAnswers`, la machine n'existant qu'après la fermeture qui
+  reçoit sa sortie). `send` est sûr depuis n'importe quel fil, et la sortie
+  est publiée hors du verrou de la machine.
+- **Tests** : la mesure de systemd telle qu'openSUSE l'envoie (réponse
+  `24;80`, curseur rendu à sa place), un écran de 132 × 50, le compte depuis
+  1, l'état et la nature, les questions tues, une question coupée entre deux
+  morceaux, la borne. **Sabotages** : colonne avant ligne → 7 échecs ; compte
+  depuis 0 → 10 ; `CSI > c` répondu → 4 ; réponses jamais oubliées → 4 ;
+  sans borne → 4 ; remise à zéro qui les garde → 4.
+- Compteur publié : 2909.
+
 ## 2026-10-20 — Un lecteur XFS, pour openSUSE et la famille de Red Hat
 
 Suite directe, même autorisation. L'image de cloud d'openSUSE Tumbleweed
