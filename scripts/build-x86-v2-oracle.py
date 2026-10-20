@@ -123,6 +123,20 @@ def forms():
                     0x03, 0x06, 0x07, 0x0B, 0x0F, 0x30, 0x40, 0x4C, 0x44, 0x46, 0x29, 0x6D]:
         out += [f"pcmpistri ${control:#x}, %xmm1, %xmm0",
                 f"pcmpistri ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # Les trois frères de `PCMPISTRI` : longueurs dans EAX et EDX (avec
+    # REX.W, RAX et RDX), et le masque dans xmm0 au lieu de l'indice. Les
+    # états donnent à RAX et RDX des longueurs courtes, négatives (leur
+    # valeur absolue compte) et démesurées (saturées).
+    for control in [0x1A, 0x3A, 0x02, 0x12, 0x40, 0x4C, 0x45, 0x0D, 0x31, 0x6E]:
+        out += [f"pcmpistrm ${control:#x}, %xmm1, %xmm0", f"pcmpistrm ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0",
+                f"pcmpestri ${control:#x}, %xmm1, %xmm0", f"pcmpestri ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0",
+                f"pcmpestrm ${control:#x}, %xmm1, %xmm0", f"pcmpestrm ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    out += ["pcmpestriq $0x0c, %xmm1, %xmm0", "pcmpestrmq $0x44, %xmm1, %xmm0"]
+    # **`CRC32`**, que le noyau emploie pour les sommes d'ext4 et de btrfs :
+    # un, deux, quatre et huit octets, depuis la mémoire et un registre.
+    out += ["crc32b 0x21(%rsi), %eax", "crc32w 0x22(%rsi), %eax", "crc32l 0x24(%rsi), %eax",
+            "crc32q 0x28(%rsi), %rax", "crc32b %cl, %eax", "crc32l %ecx, %eax", "crc32q %rcx, %rax",
+            "crc32l %eax, %ecx", "crc32b 0x21(%rsi), %rax"]
     # Les drapeaux vers AH et retour, qu'un processeur x86-64 des débuts
     # n'avait pas en mode long.
     out += ["lahf", "sahf"]
@@ -196,6 +210,10 @@ GENERAL = [
     0xFFFFFFFFFFFFFFFF,
     0x123456789ABCDEF0,
     0x00000000DEADBEEF,
+    # Des longueurs pour `PCMPESTR*` : courte, négative, au-delà de seize.
+    0x0000000000000005,
+    0xFFFFFFFFFFFFFFFD,
+    0x000000000000000C,
 ]
 
 IN_FLAGS = [0x002, 0x8D5]
@@ -218,6 +236,8 @@ def states():
         general[6] = DATA
         # Un état sur cinq porte dans RDX:RAX les seize octets que
         # `CMPXCHG16B` trouve en mémoire : c'est l'échange réussi.
+        # RDX, l'autre longueur de `PCMPESTR*`.
+        general[2] = [0xAAAAAAAAAAAAAAAC, 3, 0xFFFFFFFFFFFFFFF9, 16, 9, 0x10000000A][index % 6]
         if index % 5 == 4:
             general[0], general[2] = 0x3736353433323130, 0x3F3E3D3C3B3A3938
         vectors = [(0xC000000000000000 + i, 0xD000000000000000 + i) for i in range(16)]
