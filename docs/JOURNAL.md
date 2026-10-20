@@ -42,6 +42,7 @@ cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
   712.
 - **Le compteur publié passe à 2917** : #569, fusionné entre-temps, avait
   ajouté un test sans le compter.
+
 ## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF, l'arrondi
 
 Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
