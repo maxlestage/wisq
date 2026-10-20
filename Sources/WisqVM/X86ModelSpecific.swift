@@ -56,7 +56,9 @@ public struct X86ModelSpecific: Equatable, Sendable, Sequence, ExpressibleByDict
         others.count + [fsBase, gsBase, kernelGSBase, efer].filter { $0 != nil }.count
     }
 
-    public var isEmpty: Bool { count == 0 }
+    public var isEmpty: Bool {
+        others.isEmpty && fsBase == nil && gsBase == nil && kernelGSBase == nil && efer == nil
+    }
 
     public func makeIterator() -> AnyIterator<(key: UInt32, value: UInt64)> {
         var all = others.map { (key: $0.key, value: $0.value) }
