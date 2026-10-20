@@ -8,6 +8,42 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Un lecteur XFS, pour openSUSE et la famille de Red Hat
+
+Suite directe, même autorisation. L'image de cloud d'openSUSE Tumbleweed
+(« Minimal-VM », 317 Mo) répondait « aucune partition Linux » : sa racine
+— et donc `/boot`, noyau et initramfs — est un **XFS**, et la partition
+EFI ne porte que GRUB. Rocky, AlmaLinux et CentOS Stream sont dans le même
+cas. `XfsVolume` lit ce format, en lecture seule, comme `Ext4Volume` et
+`BtrfsVolume`, et `linuxVolume` l'essaie après eux.
+
+- **Ce qu'il lit** : le superbloc (version 5), les inodes (numéro → groupe,
+  bloc, rang), les trois formes de fourche de données (en ligne, extents,
+  arbre B), chaque forme de répertoire (en ligne, un bloc, feuilles et
+  nœuds — on parcourt les blocs de données sous 32 Gio, l'index n'est pas
+  lu), les liens courts et les liens gardés dans un bloc, les extents
+  réservés jamais écrits (des zéros), les compteurs d'extents sur 64 bits.
+- **Ce qu'il refuse en le disant** : la version 4 (Linux 6.18 ne la monte
+  plus), un volume temps réel, une fonction incompatible inconnue. Le vrai
+  disque l'a montré tout de suite : openSUSE active les **pointeurs vers
+  le parent** (0x80), refusés au premier essai ; ils vivent dans les
+  attributs étendus, qu'on ne lit pas, et sont acceptés.
+- **La fixture est écrite par le noyau**, à travers un montage en boucle
+  (`scripts/build-xfs-fixtures.py`), pas par un fichier prototype : c'est
+  lui qui fait passer un répertoire de trois mille entrées en arbre, et un
+  fichier troué de deux cents octets en arbre d'extents.
+- **Sur la vraie image** : `/boot` d'openSUSE se liste, `vmlinuz` est un
+  bzImage, `/usr/bin` a ses centaines d'entrées (test armé par
+  `WISQ_XFS_IMAGE`) ; et le banc `testHowFarARealKernelGets` démarre
+  maintenant le noyau d'openSUSE lu sur ce XFS.
+- **Sabotages** : sans type dans les entrées → 12 échecs ; feuilles d'un
+  bloc lues comme entrées → 3 ; feuilles au-delà de 32 Gio → 3 ; pointeur
+  de racine d'arbre décalé → 5 ; en-tête de lien long gardé → 3 ; lien
+  relatif lu depuis la racine → 3 ; extents non écrits lus → 4 ; compteurs
+  64 bits ignorés → 16 ; pointeurs vers le parent refusés → 3. Deux gardes
+  qui ne cassaient rien ont été retirées, redondantes.
+- Compteur publié : 2904.
+
 ## 2026-10-20 — Arch Linux, la cinquième distribution
 
 Suite directe, même autorisation. « Installer sur wisq différentes
