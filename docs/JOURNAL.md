@@ -44,7 +44,41 @@ exige : `CPUID.1:ECX` valait zéro. Leur glibc refuse de démarrer sans elles.
 - **Une leçon du banc de sabotage** : il cherchait le message du test, que
   l'ordre des redirections envoyait ailleurs, et a cru un sabotage survivant.
   Il lit maintenant le compte d'accords.
-- Compteur publié : 2911.
+- Compteur publié : 2914.
+
+## 2026-10-20 — openSUSE Tumbleweed, la sixième distribution
+
+Suite directe, même autorisation. Le lecteur XFS (#566) ouvrait `/boot`
+d'openSUSE ; restait à la proposer, et à ce que la console mène au shell.
+
+- **Essayée avant d'être proposée.** L'image du 18 octobre 2026
+  (`openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2`,
+  317 Mo, SHA-256 `c7312339…`, conforme à celle publiée), démarrée par
+  `testHowFarARealKernelGets` : noyau 7.2 lu sur le XFS, initramfs, systemd,
+  puis l'invite `localhost:~ #` environ vingt-huit minutes après le départ,
+  et la réponse à `echo wisq-parle`.
+- **L'assistant d'openSUSE masqué.** Le premier essai s'est arrêté devant
+  « JeOS Firstboot », une boîte de dialogue qui prend la console et attend
+  langue, clavier, licence et mot de passe — ce n'est pas `systemd-firstboot`,
+  que wisq savait déjà faire taire. `systemd.mask=jeos-firstboot.service`
+  rejoint les options de la console ; ailleurs, l'unité n'existe pas.
+- **Le banc voyait mal l'invite.** openSUSE remet ses couleurs à zéro entre le
+  `#` et l'espace : `~ # ` ne s'y lisait pas, et le banc a attendu une heure
+  devant un shell prêt. Il cherche maintenant l'invite dans le texte sans ses
+  séquences d'échappement ; un test le fige sur les octets réels.
+- **L'index** (`ImageDownload.openSUSEIndex`) est le dossier
+  `tumbleweed/appliances/` : sa page écrit ses liens `./nom`, et c'est la date
+  de l'instantané qui porte la version (`2026.10.18`) — triée par date, pas
+  par nom, le numéro d'image qui la précède pouvant changer. La somme se lit
+  dans le `.sha256` du fichier daté, du même format que celui d'Arch :
+  `archChecksum` devient `sumFileChecksum`. `download.opensuse.org` renvoie
+  vers un miroir, et la requête de taille comme le téléchargement suivent.
+- **Tests** : la page (instantané le plus récent d'abord, alias, autre saveur,
+  date tronquée et chemin sortant écartés), la somme, l'adresse ; un
+  téléchargement complet à travers le routeur ; l'invite vue à travers ses
+  couleurs. **Sabotages** : tri par nom → 5 échecs ; liens `./` gardés → 2 ;
+  date tronquée acceptée → 5.
+- Compteur publié : 2912.
 
 ## 2026-10-20 — La console répond quand on lui demande où est le curseur
 

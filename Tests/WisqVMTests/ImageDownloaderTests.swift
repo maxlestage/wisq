@@ -313,6 +313,28 @@ final class ImageDownloaderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data(image))
     }
 
+    /// **openSUSE après Arch** : l'image datée lue sur la page du dossier, sa
+    /// somme dans son `.sha256`, puis le fichier téléchargé et vérifié.
+    func testOpenSUSEIsListedFromItsFolderAndVerifiedBySHA256() async throws {
+        let name = "openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2"
+        let listing = "<a href=\"./\(name)\">x</a><a href=\"./\(name).sha256\">x</a>"
+        let sums = SHA256Stream.hex(image) + "  \(name)\n"
+        let router = Router([
+            ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8)),
+            ImageDownload.openSUSEIndex: Server(Array(listing.utf8)),
+            ImageDownload.openSUSEIndex.appendingPathComponent(name + ".sha256"): Server(Array(sums.utf8)),
+            ImageDownload.openSUSEIndex.appendingPathComponent(name): Server(image),
+        ])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
+        let releases = try await downloader.bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["alpine-virt", "alpine-standard", "opensuse-cloud"])
+        let suse = try XCTUnwrap(releases.last)
+        XCTAssertEqual(suse.version, "2026.10.18")
+        XCTAssertEqual(suse.size, image.count)
+        let url = try await downloader.download(suse, into: library)
+        XCTAssertEqual(try Data(contentsOf: url), Data(image))
+    }
+
     /// **Un index muet ne cache pas l'autre**, et une image dont le serveur
     /// ne dit pas la taille n'est pas proposée. Seul un échec de tous est un
     /// échec, et il dit le premier.
