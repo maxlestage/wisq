@@ -457,8 +457,8 @@ public struct X86Core: @unchecked Sendable {
                 // **Jusqu'au prochain battement, d'un coup.** Endormie, la
                 // machine ne fait rien d'autre qu'attendre le 8253 : un tour
                 // par instruction d'attente coûtait à l'hôte, pour chaque
-                // seconde de l'invité, quatorze millions de passages par le
-                // matériel. Le saut tombe sur le tour exact où le pas à pas
+                // seconde de l'invité, autant de passages par le matériel
+                // que cette seconde vaut d'instructions. Le saut tombe sur le tour exact où le pas à pas
                 // l'aurait réveillée, borné par ce qui reste à attendre.
                 let left = waiting.map { $0 - waited } ?? (budget - executed)
                 let step = min(idleStep(), left)

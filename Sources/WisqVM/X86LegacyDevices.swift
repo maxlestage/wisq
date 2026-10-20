@@ -21,12 +21,28 @@ import Foundation
 public struct X86LegacyDevices: Sendable, Equatable {
     /// Combien d'instructions valent un battement du 8253.
     ///
-    /// Le vrai compte à 1,193182 MHz. À la vitesse mesurée de ce cœur — autour
-    /// de quatorze millions d'instructions par seconde — douze instructions
-    /// par battement donneraient à peu près le temps réel. C'est le chiffre
-    /// retenu : ni si petit que le noyau passe son temps dans son gestionnaire,
-    /// ni si grand que ses attentes durent une éternité.
-    public static let instructionsPerTick: UInt64 = 12
+    /// Le vrai compte à 1,193182 MHz. Ce nombre dit donc **la vitesse que
+    /// l'invité croit à son processeur** : trente-six instructions par
+    /// battement font un processeur de 43 MHz, ce que le noyau mesure au
+    /// démarrage (« Detected 42.950 MHz processor »).
+    ///
+    /// **Pourquoi trente-six, et plus douze.** Douze donnaient à peu près le
+    /// temps réel quand ce cœur exécutait quatorze millions d'instructions par
+    /// seconde. Mais les délais des systèmes, eux, sont écrits pour des
+    /// machines mille fois plus rapides, et ils se comptent en temps de
+    /// l'invité. Fedora 44 compile systemd avec un délai de 45 s, qui borne
+    /// aussi ses vingt générateurs : à douze, ils n'y tenaient pas, `SIGALRM`
+    /// les tuait, et systemd gelait au démarrage. À trente-six, ils passent
+    /// et Fedora va jusqu'au shell de `root`.
+    ///
+    /// **Ce que ça coûte.** Plus rien pour l'attente : une machine endormie
+    /// saute jusqu'au prochain battement (voir `idleStep`), et une seconde
+    /// de sommeil ne coûte pas plus d'instructions à l'hôte qu'avant. Pour le
+    /// travail, le temps de l'invité avance plus lentement que celui de
+    /// l'hôte — c'est le but : un délai de l'invité couvre trois fois plus de
+    /// travail. Et un noyau à 1000 Hz traite trois fois moins d'échéances par
+    /// instruction.
+    public static let instructionsPerTick: UInt64 = 36
 
     /// Un 8259. Deux en cascade forment le contrôleur d'un PC.
     public struct Controller: Sendable, Equatable {
@@ -107,8 +123,9 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// L'intervalle le plus court qu'on accorde à un coup unique : quatre
     /// millisecondes, le battement d'un noyau à 250 Hz.
     ///
-    /// **Pourquoi.** Le noyau d'Ubuntu bat à 1000 Hz. À la vitesse de ce cœur,
-    /// une milliseconde fait quatorze mille instructions, et le traitement
+    /// **Pourquoi.** Le noyau d'Ubuntu bat à 1000 Hz. À douze instructions
+    /// par battement, une milliseconde faisait quatorze mille instructions
+    /// (quarante-trois mille à trente-six), et le traitement
     /// d'une échéance — l'ordonnanceur, les minuteries, la comptabilité de
     /// charge — en prend cinq mille : échantillonné pendant le démarrage
     /// d'Ubuntu 26.04, 37 % des instructions de l'invité y passaient, et udev
