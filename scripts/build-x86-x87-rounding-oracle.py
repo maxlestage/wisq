@@ -117,6 +117,11 @@ def forms():
     out = []
     for name in ["fmul", "fadd", "fsub", "fdiv"]:
         out += [f"{name}p %st, %st(1)", f"{name} %st(1), %st"]
+    # **Ce que la `libm` de Fedora 44 ajoute**, et que les quatre modes
+    # séparent : la mise à l'échelle, qui déborde et descend sous le plus
+    # petit normal ; la racine et l'arrondi à l'entier, inexacts ; et les
+    # cinq constantes, arrondies depuis leur valeur vraie.
+    out += ["fscale", "fsqrt", "frndint", "fldpi", "fldl2e", "fldl2t", "fldlg2", "fldln2"]
     return out
 
 

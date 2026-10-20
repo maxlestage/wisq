@@ -185,6 +185,11 @@ def forms():
         out.append(f"fcmov{condition} %st(1), %st")
     out += ["fcompp", "fucompp", "ffree %st(1)", "ffreep %st(0)",
             "fnstenv 0x10(%rsi)", "fldenv 0x0(%rsi)"]
+    # **Ce que la `libm` de Fedora 44 demande encore**, pour ses `long
+    # double` : la racine, l'extraction de l'exposant, la mise à l'échelle,
+    # les deux restes partiels, et les cinq constantes.
+    out += ["fsqrt", "fxtract", "fscale", "fprem", "fprem1",
+            "fldpi", "fldl2e", "fldl2t", "fldlg2", "fldln2"]
     return out
 
 
