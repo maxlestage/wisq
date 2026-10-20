@@ -18,7 +18,7 @@ import Foundation
 /// entière.
 public enum ImageDownload {
     /// La somme qu'une distribution publie pour une image : SHA-256 chez
-    /// Alpine, SHA-512 chez Debian. En hexadécimal minuscule.
+    /// Alpine, Fedora et Ubuntu, SHA-512 chez Debian. En hexadécimal minuscule.
     public enum Checksum: Equatable, Sendable {
         case sha256(String)
         case sha512(String)
@@ -58,11 +58,15 @@ public enum ImageDownload {
         public let file: String
         public let size: Int
         public let checksum: Checksum
-        /// L'index d'où elle vient : l'image est à côté.
+        /// L'index d'où elle vient : l'image est à côté, sauf quand l'index
+        /// donne lui-même son adresse.
         public let index: URL
+        /// L'adresse que l'index donne, quand il en donne une (Fedora). Elle
+        /// vient du réseau et n'est gardée que sur un hôte attendu.
+        public let link: URL?
 
         public init(distribution: String, flavor: String, title: String, version: String, arch: String,
-                    file: String, size: Int, checksum: Checksum, index: URL) {
+                    file: String, size: Int, checksum: Checksum, index: URL, link: URL? = nil) {
             self.distribution = distribution
             self.flavor = flavor
             self.title = title
@@ -72,6 +76,7 @@ public enum ImageDownload {
             self.size = size
             self.checksum = checksum
             self.index = index
+            self.link = link
         }
     }
 
@@ -132,7 +137,7 @@ public enum ImageDownload {
     /// L'adresse d'une image : à côté de son index. Le nom vient de l'index,
     /// et a été refusé plus haut s'il contenait un chemin.
     public static func url(of release: Release) -> URL {
-        release.index.deletingLastPathComponent().appendingPathComponent(release.file)
+        release.link ?? release.index.deletingLastPathComponent().appendingPathComponent(release.file)
     }
 
     static func isHexDigest(_ text: String, length: Int = 64) -> Bool {
@@ -189,6 +194,92 @@ public enum ImageDownload {
         Release(distribution: "Debian", flavor: "debian-nocloud", title: "nocloud (qcow2)",
                 version: version, arch: "x86_64", file: file, size: size,
                 checksum: .sha512(sha512), index: index)
+    }
+
+    // MARK: - L'index de Fedora
+
+    /// La liste de toutes les images que publie Fedora, avec leur adresse,
+    /// leur taille et leur somme SHA-256 : un tableau JSON tenu par le projet.
+    public static let fedoraIndex = URL(string: "https://fedoraproject.org/releases.json")!
+
+    /// **L'image `Generic` du Cloud, en qcow2, et elle seule.** C'est celle
+    /// qui démarre ici de bout en bout : son noyau et son initramfs sont dans
+    /// un btrfs (voir `BtrfsVolume`), lus par `CloudBoot`. Les autres sont
+    /// faites pour un nuage précis (`AmazonEC2`, `Azure`, `GCE`), pour
+    /// Vagrant, ou démarrent par un noyau unifié UEFI (`UEFI-UKI`) que wisq
+    /// ne lit pas.
+    static func isBootableFedora(_ file: String) -> Bool {
+        file.hasPrefix("Fedora-Cloud-Base-Generic-") && file.hasSuffix(".x86_64.qcow2")
+    }
+
+    /// **La plus récente des versions publiées, et rien d'autre.** Le JSON
+    /// garde toutes les versions encore servies, les bêtas comprises ; la
+    /// liste n'en propose qu'une, numérotée comme une version et non comme
+    /// une préversion. L'adresse vient du réseau : elle n'est gardée que sur
+    /// `download.fedoraproject.org`, en HTTPS, et son dernier segment est le
+    /// nom du fichier, refusé s'il contient un chemin.
+    public static func fedoraReleases(_ json: String, index: URL = fedoraIndex) -> [Release] {
+        guard let entries = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] else {
+            return []
+        }
+        let candidates: [(version: Int, release: Release)] = entries.compactMap { entry in
+            guard entry["arch"] as? String == "x86_64",
+                  entry["subvariant"] as? String == "Cloud_Base",
+                  let versionText = entry["version"] as? String, let version = Int(versionText),
+                  let linkText = entry["link"] as? String, let link = URL(string: linkText),
+                  link.scheme == "https", link.host == "download.fedoraproject.org",
+                  let sha256 = (entry["sha256"] as? String)?.lowercased(), isHexDigest(sha256),
+                  let size = (entry["size"] as? String).flatMap(Int.init) ?? (entry["size"] as? Int), size > 0
+            else { return nil }
+            let file = link.lastPathComponent
+            guard isPlainName(file), isBootableFedora(file) else { return nil }
+            return (version, Release(distribution: "Fedora", flavor: "fedora-cloud", title: "Cloud (qcow2)",
+                                     version: versionText, arch: "x86_64", file: file, size: size,
+                                     checksum: .sha256(sha256), index: index, link: link))
+        }
+        guard let newest = candidates.map(\.version).max() else { return [] }
+        return candidates.filter { $0.version == newest }.prefix(1).map(\.release)
+    }
+
+    // MARK: - L'index d'Ubuntu
+
+    /// Les sommes des images de cloud d'Ubuntu 26.04, par son nom de code :
+    /// le chemin numéroté (`26.04`) y renvoie, et `release` suit la dernière
+    /// construction publiée.
+    public static let ubuntuIndex = URL(
+        string: "https://cloud-images.ubuntu.com/releases/resolute/release/SHA256SUMS")!
+
+    /// **L'image disque du serveur, pour x86-64 de base.** Un `.img` qui est
+    /// un qcow2, lu sur place par `Qcow2Image`. Pas la variante `amd64v3`,
+    /// compilée pour des processeurs plus récents que celui que wisq
+    /// annonce ; pas les `.vmdk`, `.ova`, `.squashfs` ni les archives.
+    static func isBootableUbuntu(_ file: String) -> String? {
+        let prefix = "ubuntu-", suffix = "-server-cloudimg-amd64.img"
+        guard file.hasPrefix(prefix), file.hasSuffix(suffix) else { return nil }
+        let version = file.dropFirst(prefix.count).dropLast(suffix.count)
+        return !version.isEmpty && version.allSatisfy({ $0.isNumber || $0 == "." }) ? String(version) : nil
+    }
+
+    /// Les images de `SHA256SUMS` qui démarrent ici : le format de
+    /// `sha256sum`, comme celui de Debian, avec l'étoile du mode binaire.
+    public static func ubuntuCandidates(_ sums: String) -> [(file: String, version: String, sha256: String)] {
+        sums.split(separator: "\n").compactMap { line in
+            let words = line.split(separator: " ", maxSplits: 1)
+            guard words.count == 2 else { return nil }
+            let sha256 = words[0].lowercased()
+            var file = words[1].trimmingCharacters(in: .whitespaces)
+            if file.hasPrefix("*") { file.removeFirst() }
+            guard isHexDigest(sha256), isPlainName(file), let version = isBootableUbuntu(file) else { return nil }
+            return (file, version, sha256)
+        }
+    }
+
+    /// Une image d'Ubuntu, une fois sa taille connue.
+    public static func ubuntuRelease(file: String, version: String, sha256: String, size: Int,
+                                     index: URL = ubuntuIndex) -> Release {
+        Release(distribution: "Ubuntu", flavor: "ubuntu-cloud", title: "serveur cloud (qcow2)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index)
     }
 
     // MARK: - Reprendre
