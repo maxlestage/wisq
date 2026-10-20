@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Où en est TestFlight : l'état lu sur l'API
+
+L'utilisateur a demandé des builds TestFlight. L'envoi n° 36 (master
+`4799f14`) est parti sans erreur — « Upload succeeded », « Uploaded package is
+processing » — et n'est apparu sur aucun iPhone : « Y'a rien ». La
+construction ne peut pas dire pourquoi : refusé au traitement, en attente de
+la déclaration de chiffrement (déjà posée : `ITSAppUsesNonExemptEncryption`
+vaut `false`), ou dans aucun groupe de test.
+
+- **`testFlightState`** (`site/scripts/asc.ts`) lit les cinq derniers builds
+  — traitement, état du test interne et externe, expiration — et les groupes
+  de l'application : interne ou externe, accès à tous les builds, nombre de
+  testeurs, et lesquels portent chaque build. **`describeTestFlight`** en
+  fait des phrases, et dit quoi faire quand le dernier build est bloqué.
+- **`testflight-etat.yml`** : le même rapport en vingt secondes, sans rien
+  construire, à la main ou depuis la tâche planifiée.
+- **Des nombres et des états, jamais des noms** : le journal d'une
+  exécution est public ; un test vérifie qu'aucune adresse de testeur n'en
+  sort.
+- **Tests** : cinq, sur une API rejouée. **Sabotage** : l'accès d'un groupe
+  à tous les builds ignoré → un échec.
+
 ## 2026-10-20 — La machine se sauve d'elle-même pendant qu'elle tourne
 
 Suite directe, même autorisation. La sauvegarde n'avait lieu qu'au départ,
