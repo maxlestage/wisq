@@ -236,13 +236,13 @@ enum Snapshot {
                 throw Failure.ramSizeMismatch(saved: saved, expected: UInt64(ram.count))
             }
             let pairs = try u64()
-            // Remise à zéro et recopies en bloc : un octet à la fois, la
-            // reprise d'une machine de 512 Mio prenait une seconde et demie.
-            if let base = ram.baseAddress { base.initializeMemory(as: UInt8.self, repeating: 0, count: ram.count) }
+            // Recopies en bloc : un octet à la fois, la reprise d'une machine
+            // de 512 Mio prenait une seconde et demie.
             var cursor = 0
             for _ in 0..<pairs {
                 let zeros = try Int(exactly: u64()) ?? -1
                 guard zeros >= 0, cursor + zeros <= ram.count else { throw Failure.corrupt }
+                Self.clear(ram, from: cursor, count: zeros)
                 cursor += zeros
                 let length = try Int(exactly: u64()) ?? -1
                 guard length >= 0, at + length <= bytes.count, cursor + length <= ram.count else {
@@ -257,6 +257,23 @@ enum Snapshot {
                 at += length
                 cursor += length
             }
+            // Ce que les paires n'ont pas couvert est nul, comme avant.
+            Self.clear(ram, from: cursor, count: ram.count - cursor)
+        }
+
+        /// Met à zéro `count` octets à partir de `start` — **seulement ceux
+        /// qui ne le sont pas déjà.** Une machine qu'on reprend sort de
+        /// `calloc` : ses pages ne sont pas encore fournies, et les lire rend
+        /// toutes la même page nulle du système. Les écrire, même avec des
+        /// zéros, les rendait résidentes une à une ; remettre toute la RAM à
+        /// zéro avant de la recopier écrivait 512 Mio pour en restaurer deux
+        /// cents, et une reprise pesait la machine entière dans l'hôte.
+        static func clear(_ ram: UnsafeMutableRawBufferPointer, from start: Int, count: Int) {
+            guard count > 0, let base = ram.baseAddress else { return }
+            let region = UnsafeRawBufferPointer(start: base + start, count: count)
+            let dirty = Snapshot.endOfZeros(region, from: 0)
+            guard dirty < count else { return }
+            (base + start + dirty).initializeMemory(as: UInt8.self, repeating: 0, count: count - dirty)
         }
 
         /// Whether every byte has been read.
