@@ -143,6 +143,24 @@ final class X86V2OracleTests: XCTestCase {
         XCTAssertEqual(agreed, total)
     }
 
+    /// **Un élargissement ne lit que ce qu'il élargit.** `PMOVZXBQ` prend
+    /// deux octets ; posés aux deux derniers de la mémoire, ils se lisent, et
+    /// une lecture de seize déborderait — sur une vraie machine, sur une page
+    /// qui peut ne pas exister. Le corpus ne le voit pas : sa fenêtre est
+    /// suivie d'autre mémoire.
+    func testAWideningReadsOnlyWhatItWidens() throws {
+        let base: UInt64 = 0x3000_0000
+        let memory = X86Memory(size: 0x1000, base: base)
+        try memory.load([0x66, 0x0F, 0x38, 0x32, 0x06], at: base)  // pmovzxbq (%rsi), %xmm0
+        try memory.load([0x81, 0x7F], at: base + 0xFFE)
+        var registers = X86SIMDOracleTests.witness()
+        registers[6] = base + 0xFFE
+        var core = X86Core(registers: registers, flags: X86Core.Flag.reserved, rip: base, memory: memory)
+        try core.execute(X86Decoder.decode(memory.dump(base, 15)))
+        XCTAssertEqual(core.vectors[0], 0x81)
+        XCTAssertEqual(core.vectors[1], 0x7F)
+    }
+
     /// **Sans `66`, c'est MMX**, et le cœur le refuse au lieu de l'exécuter
     /// sur un registre XMM.
     func testTheMMXFormsAreRefused() throws {
