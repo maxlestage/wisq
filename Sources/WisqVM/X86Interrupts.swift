@@ -174,7 +174,7 @@ extension X86Core {
         //
         // Ce qu'on empile, c'est la pile **d'avant**, lue ici avant tout
         // changement : c'est elle que l'`IRETQ` rendra au programme.
-        let stack = registers[4]
+        let stack = registers.read(4)
         let stackSelector = segments[2]
         let code = segments[1]
         if canonicalWatchArmed, privilege == 3 {
@@ -202,7 +202,7 @@ extension X86Core {
         // Le CS d'avant a été noté plus haut : c'est lui qu'on empile, et
         // c'est lui que l'`IRETQ` rendra.
         segments[1] = gate.selector
-        var pointer = registers[4] & ~UInt64(0xF)
+        var pointer = registers.read(4) & ~UInt64(0xF)
         func push(_ value: UInt64) throws {
             pointer &-= 8
             try writeMemory(pointer, 8, value)
@@ -241,7 +241,7 @@ extension X86Core {
     /// `iretq`. Le dépiler ici ferait sauter deux fois la même case.
     mutating func returnFromInterrupt() throws {
         guard memory != nil else { throw Fault.unsupported("un IRETQ sans mémoire") }
-        var pointer = registers[4]
+        var pointer = registers.read(4)
         func pop() throws -> UInt64 {
             let value = try readMemory(pointer, 8)
             pointer &+= 8
