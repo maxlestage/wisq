@@ -27,6 +27,17 @@ extension X86Core {
             throw Fault.unsupported(String(format: "l'opcode 0F 38 %02X sans 66 (MMX)", opcode))
         }
         let fields = try decodeFields(instruction)
+        // Les deux formes qui ne suivent pas le patron « destination, source,
+        // résultat » : l'une n'écrit que des drapeaux, l'autre lit moins de
+        // seize octets. Voir `X86SSE41.swift`.
+        if opcode == 0x17 {
+            try testBits(fields)
+            return
+        }
+        if let widening = Self.widening(opcode) {
+            try widen(fields, widening)
+            return
+        }
         let destination = vector(fields.reg)
         let read = try readVectorRM(fields, 16)
         let source = (low: read.0, high: read.1)
@@ -45,7 +56,10 @@ extension X86Core {
                 return element & sign != 0 ? (0 &- element) & mask : element
             }
         default:
-            throw Fault.unsupported(String(format: "l'opcode 66 0F 38 %02X", opcode))
+            guard let computed = Self.sse41(opcode, destination, source, mask: vector(0)) else {
+                throw Fault.unsupported(String(format: "l'opcode 66 0F 38 %02X", opcode))
+            }
+            result = computed
         }
         setVector(fields.reg, result.0, result.1)
     }
@@ -62,6 +76,8 @@ extension X86Core {
             let read = try readVectorRM(fields, 16)
             let result = Self.alignBytes(vector(fields.reg), (low: read.0, high: read.1), by: control)
             setVector(fields.reg, result.0, result.1)
+        case 0x0E, 0x14, 0x16, 0x17, 0x20, 0x21, 0x22:
+            try insertOrExtract(instruction, fields, opcode, control)
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
         }
