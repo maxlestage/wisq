@@ -32,7 +32,7 @@ final class CloudBootTests: XCTestCase {
         let sample = UUID().uuidString
         let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: sample,
                                          salt: "wisqsalt")
-        XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service "
+        XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service systemd.mask=jeos-firstboot.service "
             + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
             + "systemd.set_credential=firstboot.timezone:UTC "
             + "systemd.set_credential=passwd.hashed-password.root:"
