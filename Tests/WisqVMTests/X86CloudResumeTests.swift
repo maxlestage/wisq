@@ -55,7 +55,11 @@ final class X86CloudResumeTests: XCTestCase {
         let console = Console()
         let first = X86Machine(ramSize: CloudBoot.minimumRAMSize) { console.append($0) }
         try first.attach(diskFileAt: image, writes: writes)
-        try first.load(kernelImage: try Data(contentsOf: unpacked.kernel), commandLine: unpacked.commandLine,
+        // `WISQ_PC_CMDLINE` s'ajoute à la ligne de l'image, comme au banc de
+        // démarrage : c'est ainsi qu'on mesure ce qu'une option fait gagner.
+        let commandLine = [unpacked.commandLine, environment["WISQ_PC_CMDLINE"]]
+            .compactMap { $0 }.joined(separator: " ")
+        try first.load(kernelImage: try Data(contentsOf: unpacked.kernel), commandLine: commandLine,
                        initialRamdisk: try unpacked.initrd.map { try Data(contentsOf: $0) })
         var started = Date()
         XCTAssertTrue(run(first, until: "~# ", "~]# ", in: console, from: 0, budget: 80_000_000_000),
