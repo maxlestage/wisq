@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — La RAM de l'invité ne pèse que ce qu'elle porte
+
+Suite directe, même autorisation. Le profil de la tranche précédente
+montrait 1,08 milliard d'instructions de l'hôte dans `memset` avant la
+première instruction de l'invité : `X86Memory` remplissait ses 512 Mio de
+zéros à la création, et la reprise d'un instantané les remettait à zéro
+avant de recopier ce qui était sauvé. Deux écritures de toute la RAM, qui
+la rendaient aussi résidente en entier — ce que l'iPhone fait payer.
+
+- **`calloc`** pour la mémoire de l'invité : des pages nulles, fournies au
+  premier accès.
+- **La reprise n'écrit plus que les suites de zéros qui n'en sont pas
+  déjà** (`Snapshot.Reader.clear`) : sur une mémoire neuve, les lire rend
+  la page nulle du système sans rien fournir.
+- **Mesuré**, reprise de Fedora 44 à 18 milliards d'instructions (274 Mio
+  d'instantané) : pic de mémoire du processus 1038 → **802 Mio**, stable
+  sur cinq essais ; durée bruitée par la recopie de la couche d'écriture,
+  médiane 1,3 s → 0,72 s.
+- **Test** `testARestoredMachineOnlyWeighsWhatItCarries` (Linux, via
+  `/proc/self/statm`) : 512 Mio dont 4 écrits, sauvés puis relus dans une
+  mémoire neuve, doivent rendre moins de 64 Mio résidents.
+- **Sabotages** : la remise à zéro complète remise dans le lecteur → le
+  test échoue ; l'ancienne allocation remplie remise dans `X86Memory` → il
+  échoue aussi. (Un `memset` à zéro ajouté *après* `calloc` ne le fait pas
+  échouer : LLVM le retire, sachant la mémoire déjà nulle.)
+- Compteur publié : 2877.
+
 ## 2026-10-20 — Profiler Fedora depuis un instantané : le contrôle d'exclusivité
 
 Suite directe, même autorisation. Profiler un démarrage entier sous
