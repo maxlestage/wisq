@@ -166,3 +166,100 @@ test("un paragraphe qui refuse CR0 ou CR3 dit de quelle forme il parle", () => {
     ).toBe(true);
   }
 });
+
+/// **La constante a triplé, et la prose du test d'à côté est restée à douze.**
+///
+/// `X86LegacyDevices.instructionsPerTick` dit combien d'instructions retirées
+/// valent un battement du 8253 — donc la vitesse que l'invité croit à son
+/// processeur. Elle valait douze ; les tranches qui ont mené Fedora 44 jusqu'au
+/// shell l'ont portée à trente-six, parce que les délais de systemd se comptent
+/// en temps de l'invité et qu'à douze ils n'y tenaient pas.
+///
+/// La constante a été changée, et son propre commentaire avec — il contraste
+/// même les deux valeurs, exprès. `X86GuestClockTests` ne l'a pas été : son
+/// en-tête annonçait l'étalonnage du noyau comme « douze fois le 8253 » avec la
+/// ligne de démarrage qui va avec, et le **message d'échec** de sa dernière
+/// assertion disait « une fois par douze cycles du TSC ». L'assertion, elle,
+/// divisait bien par la constante : elle était juste, et son explication
+/// mentait. Un message d'échec faux est pire que pas de message — il envoie
+/// chercher un facteur douze qui n'existe plus.
+///
+/// C'est #313 à la lettre : une phrase qu'on recopie emporte ses nombres et pas
+/// leur sens. La défense est la même — faire compter la phrase par ce qu'elle
+/// décrit.
+///
+/// **Ce que cette garde tient, et rien de plus.** Les deux tournures qui
+/// énoncent le rapport *d'aujourd'hui* : « N fois le 8253 » et « N cycles du
+/// TSC ». Elle ne lit pas « N instructions par battement », et c'est délibéré :
+/// le commentaire de la constante oppose les douze d'hier aux trente-six
+/// d'aujourd'hui sous cette tournure-là, et une garde qui interdirait le
+/// contraste interdirait l'explication. Elle n'ajoute pas non plus une
+/// cinquième affirmation nommée à la table ci-dessus — elle dérive son nombre
+/// au lieu de le lister, et les quatre restent quatre.
+test("le rapport du 8253 écrit en prose est celui de la constante", () => {
+  const declaration = readFileSync(
+    join(repoRoot, "Sources/WisqVM/X86LegacyDevices.swift"),
+    "utf8",
+  ).match(/instructionsPerTick:\s*UInt64\s*=\s*(\d+)/);
+  expect(
+    declaration,
+    "`X86LegacyDevices` ne déclare plus `instructionsPerTick` là où ce test le lit",
+  ).not.toBeNull();
+  const rapport = Number(declaration![1]);
+  expect(rapport, "le rapport lu vaut zéro : le motif a cessé de lire le nombre").toBeGreaterThan(0);
+
+  const EN_LETTRES = new Map<string, number>([
+    ["un", 1], ["deux", 2], ["trois", 3], ["quatre", 4], ["cinq", 5],
+    ["six", 6], ["sept", 7], ["huit", 8], ["neuf", 9], ["dix", 10],
+    ["onze", 11], ["douze", 12], ["treize", 13], ["quatorze", 14],
+    ["quinze", 15], ["seize", 16], ["dix-sept", 17], ["dix-huit", 18],
+    ["dix-neuf", 19], ["vingt", 20], ["vingt-quatre", 24], ["trente", 30],
+    ["trente-deux", 32], ["trente-six", 36], ["quarante", 40],
+    ["quarante-huit", 48], ["soixante", 60], ["soixante-douze", 72],
+  ]);
+  const valeur = (jeton: string): number | undefined =>
+    /^\d+$/.test(jeton) ? Number(jeton) : EN_LETTRES.get(jeton.toLowerCase());
+
+  /// Les marqueurs de commentaire partent avant que les blancs ne soient
+  /// repliés : sans ça, une tournure coupée par un retour à la ligne porte un
+  /// `///` au milieu, et le motif ne trouve rien — la garde qui ne peut pas
+  /// échouer, sur la ligne même qu'elle vise.
+  const aplati = (texte: string) =>
+    texte.replace(/^[ \t]*\/\/\/?/gm, " ").replace(/\s+/g, " ");
+
+  const TOURNURE = /([\p{L}\d-]+) (fois le 8253|cycles du TSC)/giu;
+  const dits: { fichier: string; phrase: string; n: number }[] = [];
+  const parcourir = (dossier: string) => {
+    for (const entree of readdirSync(dossier)) {
+      const chemin = join(dossier, entree);
+      if (statSync(chemin).isDirectory()) {
+        parcourir(chemin);
+      } else if (entree.endsWith(".swift")) {
+        for (const trouve of aplati(readFileSync(chemin, "utf8")).matchAll(TOURNURE)) {
+          const n = valeur(trouve[1]!);
+          if (n !== undefined) {
+            dits.push({
+              fichier: chemin.slice(repoRoot.length + 1),
+              phrase: trouve[0]!.trim(),
+              n,
+            });
+          }
+        }
+      }
+    }
+  };
+  for (const racine of ["Sources", "Tests"]) parcourir(join(repoRoot, racine));
+
+  expect(
+    dits.length,
+    "aucune phrase Swift n'énonce le rapport du 8253 : le motif ne lit plus " +
+      "rien, ou la tournure a disparu du dépôt",
+  ).toBeGreaterThan(0);
+
+  for (const { fichier, phrase, n } of dits) {
+    expect(
+      n,
+      `${fichier} : « ${phrase} », et \`instructionsPerTick\` vaut ${rapport}`,
+    ).toBe(rapport);
+  }
+});

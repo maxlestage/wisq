@@ -26648,3 +26648,77 @@ est généralement une garde qui ne tient rien.
 
 Restauration vérifiée par `diff` contre une copie prise **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #354 — la constante a triplé, et le message d'échec du test d'à côté envoyait chercher un facteur douze
+
+`X86LegacyDevices.instructionsPerTick` dit combien d'instructions retirées
+valent un battement du 8253 — donc la vitesse que l'invité croit à son
+processeur. Les trois tranches qui ont mené Fedora 44 jusqu'au shell de `root`
+l'ont portée de **douze** à **trente-six**, parce que les délais de systemd se
+comptent en temps de l'invité : à douze, les vingt générateurs ne tenaient pas
+dans les 45 s compilées dans systemd, `SIGALRM` les tuait, et le démarrage
+gelait.
+
+La constante a été changée, et **son propre commentaire avec** — il oppose même
+les deux valeurs, exprès, pour expliquer le choix. `X86GuestClockTests`, lui,
+ne l'a pas été, et il portait la même grandeur à deux endroits :
+
+| où | ce qui était écrit | ce qui est vrai |
+| --- | --- | --- |
+| l'en-tête de la classe | « `Detected 14.318 MHz` », **douze** fois le 8253 | « `Detected 42.950 MHz processor` », **trente-six** fois |
+| le message d'échec du dernier `XCTAssertEqual` | « une fois par **douze** cycles du TSC » | le quotient que l'assertion calcule déjà |
+
+**L'assertion était juste et son explication mentait.** Elle divise par
+`X86LegacyDevices.instructionsPerTick`, donc elle suivait la constante sans
+rien dire. Seul son message était resté à douze — et un message d'échec faux
+est pire que pas de message : il envoie celui qui le lit chercher un facteur
+qui n'existe plus.
+
+C'est #313 mot pour mot : une phrase qu'on recopie emporte ses nombres et pas
+leur sens. Et c'est la raison pour laquelle le message ne porte plus de nombre
+du tout — il **interpole** la constante. Ce qui se dérive ne peut pas vieillir.
+
+### La garde, et son périmètre
+
+Elle lit `instructionsPerTick` dans `X86LegacyDevices.swift`, parcourt
+`Sources/` et `Tests/`, et relève les deux tournures qui énoncent le rapport
+d'aujourd'hui — « *N* fois le 8253 » et « *N* cycles du TSC ». Chiffres et
+lettres, par une table qui va jusqu'à soixante-douze.
+
+Elle **ne lit pas** « *N* instructions par battement », et c'est délibéré : le
+commentaire de la constante oppose sous cette tournure-là les douze d'hier aux
+trente-six d'aujourd'hui. Une garde qui interdirait le contraste interdirait
+l'explication. C'est l'exclusion montrée portante, et non supposée.
+
+Elle n'ajoute pas non plus une cinquième entrée à la table des affirmations
+nommées de `stale-claims.test.ts` : elle **dérive** son nombre au lieu de le
+lister, donc les quatre de l'en-tête restent quatre — un fichier qui garde les
+chiffres périmés des autres n'a pas le droit de périmer les siens.
+
+### Six sabordages, six chutes, chacun nommant son test
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| la prose revient à « douze fois le 8253 » | le fichier, la phrase, et la constante |
+| la constante passe à 48 | « trente-six fois le 8253 », et la constante vaut 48 |
+| une tournure « douze cycles du TSC » écrite à la main | le fichier, la phrase, et la constante |
+| la tournure coupée par un retour à la ligne, avec un faux nombre | la phrase recollée, « douze fois le 8253 » |
+| plus aucune tournure dans le dépôt | « aucune phrase Swift n'énonce le rapport » |
+| la constante déclarée autrement (`= UInt64(36)`) | le lecteur refuse plutôt que de rendre zéro |
+
+Le deuxième est celui qui compte : il prouve que le nombre attendu vient de la
+constante et pas d'un littéral. Le quatrième prouve que les marqueurs `///`
+sont retirés **avant** que les blancs ne soient repliés — sans ça, une tournure
+qu'un retour à la ligne coupe porte un `///` au milieu, le motif ne trouve
+rien, et la garde ne peut pas échouer sur la ligne même qu'elle vise.
+
+### Ce que la tranche ne consigne pas
+
+Aucune entrée au `CHANGELOG`. Ce qui a changé est le commentaire d'un fichier
+de tests, pas wisq : les notes de version du site redisent la section
+`[Unreleased]`, et y faire entrer « un commentaire de test disait douze »
+coûterait une ligne à un lecteur qui n'a rien à en faire. La garde de #353 tient
+l'égalité des trois listes, et elle reste à six contre six.
+
+Restauration vérifiée par `diff` contre une copie prise **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
