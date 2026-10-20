@@ -18,6 +18,8 @@ import {
   appStoreConnectToken,
   certificateInventory,
   describeCertificates,
+  describeTestFlight,
+  testFlightState,
   writeStepOutputs,
 } from "../scripts/asc";
 
@@ -229,5 +231,107 @@ describe("l'inventaire des certificats", () => {
   /// Un compte vide se dit, plutôt que de rendre une parenthèse vide.
   test("un compte sans certificat le dit", () => {
     expect(describeCertificates({})).toBe("certificats sur le compte : aucun");
+  });
+});
+
+/// L'état TestFlight : ce qu'un envoi réussi devient, et la phrase qui dit
+/// quoi faire quand il n'arrive sur aucun iPhone.
+describe("l'état TestFlight", () => {
+  /// Une API rejouée : chaque chemin rend sa réponse, et l'on garde ce qui a
+  /// été demandé.
+  async function withApi<T>(routes: Record<string, any>, run: () => Promise<T>): Promise<T> {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: any) => {
+      const path = String(url).replace("https://api.appstoreconnect.apple.com/v1", "");
+      const key = Object.keys(routes).find((prefix) => path.startsWith(prefix));
+      if (!key) return new Response("{}", { status: 404 });
+      return new Response(JSON.stringify(routes[key]), { status: 200 });
+    }) as typeof fetch;
+    try {
+      return await run();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  const routes = {
+    "/apps?": { data: [{ id: "APP" }] },
+    "/apps/APP/betaGroups": {
+      data: [
+        { id: "G1", attributes: { name: "Moi", isInternalGroup: true, hasAccessToAllBuilds: false } },
+        { id: "G2", attributes: { name: "Amis", isInternalGroup: false, hasAccessToAllBuilds: false } },
+      ],
+    },
+    "/betaGroups/G1/betaTesters": { data: [{ id: "T1", attributes: { email: "personne@example.com" } }] },
+    "/betaGroups/G1/builds": { data: [{ id: "B35" }] },
+    "/betaGroups/G2/betaTesters": { data: [] },
+    "/betaGroups/G2/builds": { data: [] },
+    "/builds?": {
+      data: [
+        {
+          id: "B36",
+          attributes: { version: "36", uploadedDate: "2026-10-20T12:10:24Z", processingState: "VALID", expired: false },
+          relationships: { buildBetaDetail: { data: { id: "D36" } }, preReleaseVersion: { data: { id: "V" } } },
+        },
+        {
+          id: "B35",
+          attributes: { version: "35", uploadedDate: "2026-09-09T19:26:00Z", processingState: "VALID", expired: true },
+          relationships: { buildBetaDetail: { data: { id: "D35" } }, preReleaseVersion: { data: { id: "V" } } },
+        },
+      ],
+      included: [
+        { type: "buildBetaDetails", id: "D36", attributes: { internalBuildState: "READY_FOR_BETA_TESTING", externalBuildState: "READY_FOR_BETA_SUBMISSION" } },
+        { type: "buildBetaDetails", id: "D35", attributes: { internalBuildState: "EXPIRED", externalBuildState: "EXPIRED" } },
+        { type: "preReleaseVersions", id: "V", attributes: { version: "0.4.0" } },
+      ],
+    },
+  };
+
+  test("chaque build dit son traitement, son état de test et ses groupes", async () => {
+    const state = await withApi(routes, () => testFlightState("jeton", "app.wisq.ios"));
+    expect(state.builds[0]).toEqual({
+      version: "0.4.0", number: "36", uploaded: "2026-10-20T12:10:24Z", processing: "VALID",
+      internal: "READY_FOR_BETA_TESTING", external: "READY_FOR_BETA_SUBMISSION", expired: false, groups: [],
+    });
+    expect(state.builds[1]!.groups).toEqual(["Moi"]);
+    expect(state.groups).toEqual([
+      { name: "Moi", internal: true, allBuilds: false, testers: 1 },
+      { name: "Amis", internal: false, allBuilds: false, testers: 0 },
+    ]);
+  });
+
+  /// **Le cas du build n° 36** : envoyé, traité, prêt — et dans aucun groupe.
+  test("un build prêt mais dans aucun groupe le dit, avec quoi faire", async () => {
+    const lines = describeTestFlight(await withApi(routes, () => testFlightState("jeton", "app.wisq.ios")));
+    expect(lines.at(-1)).toContain("n'est dans aucun groupe");
+  });
+
+  test("un groupe qui reçoit tous les builds compte comme un groupe", async () => {
+    const all = { ...routes, "/apps/APP/betaGroups": { data: [
+      { id: "G1", attributes: { name: "Moi", isInternalGroup: true, hasAccessToAllBuilds: true } },
+    ] } };
+    const state = await withApi(all, () => testFlightState("jeton", "app.wisq.ios"));
+    expect(state.builds[0]!.groups).toEqual(["Moi"]);
+    expect(describeTestFlight(state).join("\n")).not.toContain("aucun groupe");
+  });
+
+  test("chaque état qui bloque a sa phrase", () => {
+    const build = { version: "0.4.0", number: "36", uploaded: "t", processing: "VALID", internal: "READY_FOR_BETA_TESTING",
+      external: "?", expired: false, groups: ["Moi"] };
+    const group = { name: "Moi", internal: true, allBuilds: false, testers: 1 };
+    const last = (state: any) => describeTestFlight(state).at(-1)!;
+    expect(last({ builds: [], groups: [group] })).toContain("jamais arrivé");
+    expect(last({ builds: [{ ...build, processing: "PROCESSING" }], groups: [group] })).toContain("en traitement");
+    expect(last({ builds: [{ ...build, processing: "INVALID" }], groups: [group] })).toContain("refusé");
+    expect(last({ builds: [{ ...build, internal: "MISSING_EXPORT_COMPLIANCE" }], groups: [group] })).toContain("chiffrement");
+    expect(last({ builds: [build], groups: [{ ...group, testers: 0 }] })).toContain("sans testeur");
+    expect(describeTestFlight({ builds: [], groups: [] })[0]).toContain("aucun");
+  });
+
+  /// Le journal est public : aucune adresse de testeur ne doit en sortir.
+  test("aucun nom de testeur n'est rendu ni écrit", async () => {
+    const state = await withApi(routes, () => testFlightState("jeton", "app.wisq.ios"));
+    const printed = JSON.stringify(state) + describeTestFlight(state).join("\n");
+    expect(printed).not.toContain("personne@example.com");
   });
 });
