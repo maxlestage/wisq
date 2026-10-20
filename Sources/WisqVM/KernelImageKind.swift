@@ -289,6 +289,11 @@ public enum KernelImageKind: Equatable, Sendable {
     /// seule famille coûterait à tous les fichiers. Un btrfs ressort donc en
     /// `unknown` — ce qui le laisse passer comme disque, puisque `unknown` est
     /// une permission ici.
+    ///
+    /// **Et c'est la seule.** XFS a manqué à cette liste le temps d'une
+    /// tranche, pour rien : sa marque est aux quatre premiers octets. Un test
+    /// du site exige désormais que toute famille dont le dépôt a un lecteur
+    /// `LinuxVolume` soit nommée ici ou exceptée juste au-dessus.
     static func filesystem(_ bytes: [UInt8]) -> String? {
         // ext2, ext3, ext4 : le superbloc est au millième vingt-quatrième
         // octet, et sa marque `0xEF53` cinquante-six octets plus loin. Les
@@ -297,10 +302,14 @@ public enum KernelImageKind: Equatable, Sendable {
         if bytes.count >= 0x43A, bytes[0x438] == 0x53, bytes[0x439] == 0xEF {
             return "ext2/3/4"
         }
-        // squashfs, dans les deux boutismes.
+        // squashfs, dans les deux boutismes, et XFS — leurs marques sont aux
+        // mêmes quatre premiers octets. `XfsVolume.magic` est l'ancre : le
+        // lecteur et le reconnaisseur ne peuvent pas diverger sur ce qu'XFS
+        // est.
         if bytes.count >= 4 {
             let head = Array(bytes[0...3])
             if head == Array("hsqs".utf8) || head == Array("sqsh".utf8) { return "squashfs" }
+            if head == XfsVolume.magic { return "XFS" }
         }
         // FAT : l'étiquette du système, à une place qui dépend de la largeur.
         for (offset, label) in [(0x36, "FAT12"), (0x36, "FAT16"), (0x52, "FAT32")]
