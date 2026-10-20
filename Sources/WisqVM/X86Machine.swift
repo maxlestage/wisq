@@ -128,6 +128,30 @@ public final class X86Machine: @unchecked Sendable {
 
     private let lock = NSLock()
     private var stopRequested = false
+    /// Ce qui réveille un `run()` qui dort : une frappe, ou un arrêt demandé.
+    private let nudge = DispatchSemaphore(value: 0)
+
+    /// **Dormir quand l'invité dort**, au rythme de l'horloge murale.
+    ///
+    /// Une machine endormie saute jusqu'au prochain battement du 8253 (voir
+    /// `X86Core.idleStep`) : son temps à elle avance alors bien plus vite
+    /// que celui de la personne qui la regarde, et la boucle tourne à plein
+    /// régime pour livrer des battements que personne n'attend. Un `sleep 10`
+    /// finissait en quelques millisecondes, l'heure de l'invité filait, et un
+    /// téléphone chauffait devant une invite immobile.
+    ///
+    /// Avec ce réglage, quand l'invité est arrêté sur `HLT` et que son temps a
+    /// pris de l'avance sur l'horloge murale, le fil d'émulation **dort**
+    /// l'écart — par tranches d'au plus un dixième de seconde, et une frappe
+    /// ou un arrêt le réveillent tout de suite. Un invité qui travaille n'est
+    /// jamais ralenti : son temps est en retard, pas en avance.
+    ///
+    /// Éteint par défaut : les tests et les bancs veulent aller aussi vite
+    /// que l'hôte le permet. L'application l'allume.
+    public var pacesIdleToWallClock = false
+
+    /// Combien d'instructions vaut une seconde de l'invité.
+    static let guestHertz = Double(X86LegacyDevices.instructionsPerTick) * 1_193_182
     private var inputQueue: [UInt8] = []
     private var pendingOutput: [UInt8] = []
     private var published = GuestProgress(retired: 0, rip: 0)
@@ -263,6 +287,7 @@ public final class X86Machine: @unchecked Sendable {
         // d'un invité qui dort, sur un téléphone, sans qu'aucun budget puisse
         // l'arrêter. `idled` est l'autre moitié de l'horloge, et il compte ici.
         let start = core.retired &+ core.idled
+        let wallStart = DispatchTime.now().uptimeNanoseconds
         var slicesSinceFlush = 0
 
         while (core.retired &+ core.idled) &- start < instructionBudget {
@@ -309,6 +334,18 @@ public final class X86Machine: @unchecked Sendable {
                 flushOutput()
                 return .powerOff
             }
+            if pacesIdleToWallClock && core.halted {
+                let guest = Double((core.retired &+ core.idled) &- start) / Self.guestHertz
+                let wall = Double(DispatchTime.now().uptimeNanoseconds &- wallStart) / 1e9
+                let ahead = guest - wall
+                if ahead > 0.001 {
+                    flushOutput()
+                    // Les réveils déjà dus sont pris en compte par la tranche
+                    // qui suit : on les vide avant de dormir.
+                    while nudge.wait(timeout: .now()) == .success {}
+                    _ = nudge.wait(timeout: .now() + min(ahead, 0.1))
+                }
+            }
         }
         flushOutput()
         return .stopped
@@ -325,6 +362,7 @@ public final class X86Machine: @unchecked Sendable {
         lock.lock()
         stopRequested = true
         lock.unlock()
+        nudge.signal()
     }
 
     /// Donne des octets tapés à l'UART de l'invité. Utilisable depuis
@@ -333,6 +371,7 @@ public final class X86Machine: @unchecked Sendable {
         lock.lock()
         inputQueue.append(contentsOf: data)
         lock.unlock()
+        nudge.signal()
     }
 
     // MARK: - Sauver et rendre
