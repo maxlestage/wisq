@@ -568,9 +568,12 @@ d'entrer dans la bibliothèque.
 4. Le téléchargement qui continue quand l'application passe en arrière-plan
    (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
    la reprise par `Range` doit alors se recoudre sur ce qu'il rend).
-5. **Fait pour Debian** (voir « Les images de cloud qui démarrent seules »,
-   étape 6). D'autres distributions, chacune par son propre index ou ses
-   sommes, une fois démarrées de bout en bout.
+5. **Fait pour Debian, Fedora et Ubuntu** (voir « Les images de cloud qui
+   démarrent seules », étapes 6 et 10). Chacune par son propre index : les
+   `SHA512SUMS` de Debian, le `releases.json` de Fedora, qui donne aussi
+   l'adresse et la taille (gardées seulement sur
+   `download.fedoraproject.org`), et les `SHA256SUMS` d'Ubuntu 26.04. Les
+   trois images proposées sont celles que wisq a démarrées jusqu'au shell.
 
 ## Lot 5 — SPICE (fait)
 
