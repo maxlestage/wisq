@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Profiler Fedora depuis un instantané : le contrôle d'exclusivité
+
+Suite directe, même autorisation. Profiler un démarrage entier sous
+callgrind prendrait des jours ; deux bancs locaux le rendent possible :
+`testASnapshotIsTakenPartWayThroughTheBoot` sauve la machine à N
+instructions (avec sa couche d'écriture), `testASnapshotRunsAFixedBudget`
+la reprend et exécute un budget fixe. Tous deux sautés sans leurs
+variables d'environnement.
+
+- **Mesuré**, Fedora 44 reprise à 18 milliards, 100 millions
+  d'instructions de l'invité sous callgrind : 44,1 milliards
+  d'instructions de l'hôte, dont **2,8 %** dans `swift_beginAccess` et
+  `AccessSet::insert/remove` — 14,6 millions de contrôles d'exclusivité.
+- **D'où ils venaient.** 9,4 millions de `serviceInterrupts` et
+  `devicesArmed`, qui relisent `storage`, `bus` et `second` — des `var`
+  de classes — tous les 64 tours ; 5,2 millions du décodeur, où le
+  `defer { index += 1 }` sur une variable capturée forçait un contrôle
+  dynamique à chaque décodage.
+- **Correction.** `@exclusivity(unchecked)` sur ces six propriétés (la
+  machine ne vit que sur un fil), et l'incrément sans `defer`. Après :
+  42,46 milliards (−3,7 %), plus aucun appel à `swift_beginAccess` sur ce
+  chemin ; en natif, 300 millions d'instructions passent de 17,6 s à
+  17,1 s en moyenne sur trois essais.
+- **Sabotage** : l'incrément passé à deux, 25 échecs dans
+  `X86DecoderTests`. Les attributs ne changent aucun comportement ; la
+  suite entière les couvre.
+- Compteur publié : 2876 (les deux bancs).
+
 ## 2026-10-20 — Reprendre une session : Debian, Fedora et Ubuntu
 
 Suite directe, même autorisation. La reprise d'une session — ce que vit

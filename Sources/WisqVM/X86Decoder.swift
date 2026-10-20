@@ -216,8 +216,13 @@ public enum X86Decoder {
             guard index < X86Instruction.maximumLength else {
                 throw X86DecodeError.tooLong
             }
-            defer { index += 1 }
-            return bytes[index]
+            // **Pas de `defer` ici.** Avec lui, l'incrément d'`index` —
+            // capturé par les deux fonctions — passait par le contrôle
+            // d'exclusivité dynamique : un `swift_beginAccess` par décodage,
+            // un pour cent du temps de l'hôte sur le démarrage de Fedora.
+            let byte = bytes[index]
+            index += 1
+            return byte
         }
         func peek() -> UInt8? { index < available ? bytes[index] : nil }
         let offset = 0
