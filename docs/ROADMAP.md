@@ -5374,6 +5374,15 @@ Ce que cette tranche ajoute, du bas vers le haut :
   loin dans le fichier pour qu'un noyau la porte par accident, et un test
   mesure ce cas-là plutôt que de le supposer. btrfs n'y est pas, et le dit :
   sa marque vit à 0x10040, au-delà des quarante kibioctets que ce type lit.
+
+  > **XFS s'est ajouté à cette liste, et avait manqué une tranche.** Le
+  > lecteur `XfsVolume` est arrivé en #566 ; le reconnaisseur, lui, ne nommait
+  > toujours pas XFS, et l'en-tête qui énumère ce qui manque ne nommait que
+  > btrfs. La raison de btrfs ne s'appliquait pas : `XFSB` est aux quatre
+  > premiers octets, la même place que la marque de squashfs. Corrigé, et un
+  > test du site exige désormais que toute famille dont le dépôt a un lecteur
+  > `LinuxVolume` soit nommée par le reconnaisseur ou exceptée dans son
+  > en-tête.
 - **`LocalDisk`.** Quel disque va avec quel noyau, sous le nom du fichier du
   noyau, dans `kernel-disk.json` à côté de `kernel-memory.json`. Plus le
   plafond, qui est le fait le plus important de la tranche : **le disque est

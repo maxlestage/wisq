@@ -2605,3 +2605,85 @@ describe("l'en-tête de X86ModelSpecific compte les endroits qui lisent un MSR",
     ).toBe(vrais.length);
   });
 });
+
+/// **Un lecteur de système de fichiers est arrivé, et la phrase qui énumère
+/// le trou est restée à un sur deux.**
+///
+/// `KernelImageKind.filesystem(_:)` nomme ce qu'une image importée porte.
+/// Son en-tête énumère ce qui lui manque — « Ce qui n'y est pas : btrfs » —
+/// avec sa raison : la marque de btrfs vit à 0x10040, au-delà des quarante
+/// kibioctets que ce type lit. La même énumération est recopiée dans
+/// `docs/ROADMAP.md`.
+///
+/// `XfsVolume` est arrivé en #566, et XFS n'était ni nommé ni excepté. La
+/// raison donnée pour btrfs ne s'applique pas à lui : `XFSB` est aux **quatre
+/// premiers octets**, la même place que la marque de squashfs. C'est #322 mot
+/// pour mot — une phrase vraie qu'un travail fait ailleurs a rendue fausse.
+///
+/// **Ce que la garde tient** : chaque famille pour laquelle le dépôt a un
+/// lecteur `LinuxVolume` est, ou bien nommée par le reconnaisseur, ou bien
+/// nommée comme exception dans son en-tête. Elle ne dit rien de ce que le
+/// reconnaisseur nomme **en plus** — squashfs et FAT n'ont pas de lecteur et
+/// n'en ont pas besoin pour être nommés.
+describe("toute famille que wisq sait lire est nommée ou exceptée", () => {
+  /// **Tout `Sources/`, pas le seul fichier du protocole.** Le premier jet ne
+  /// lisait que `LinuxVolume.swift`, là où les trois conformances d'aujourd'hui
+  /// sont écrites. Un sondage l'a mis en défaut : un lecteur qui déclare
+  /// `: LinuxVolume` dans **son propre** fichier — la forme la plus naturelle
+  /// pour qui en ajoute un — passait sans être vu, et c'est précisément la
+  /// situation que cette garde existe pour attraper.
+  const familles = (() => {
+    const vus = new Set<string>();
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const chemin = join(dir, entry);
+        if (statSync(chemin).isDirectory()) {
+          walk(chemin);
+        } else if (entry.endsWith(".swift")) {
+          const texte = readFileSync(chemin, "utf8");
+          for (const trouvé of texte.matchAll(
+            /(?:extension|final class|class|struct)\s+(\w+?)Volume\s*:[^{\n]*\bLinuxVolume\b/g,
+          )) {
+            vus.add(trouvé[1]!.toLowerCase());
+          }
+        }
+      }
+    };
+    walk(join(repoRoot, "Sources"));
+    return [...vus].sort();
+  })();
+
+  const kind = readFileSync(join(repoRoot, "Sources/WisqVM/KernelImageKind.swift"), "utf8");
+  /// Le corps de `filesystem(_:)`, et lui seul : les chaînes qu'il rend. Les
+  /// prendre dans tout le fichier ferait entrer les noms de formats de noyau.
+  const corps = kind.slice(kind.indexOf("static func filesystem("));
+  const corpsFin = corps.indexOf("\n    }");
+  const nommés = [...corps.slice(0, corpsFin).matchAll(/return "([^"]+)"|"([^"]+)"\)/g)]
+    .map((m) => (m[1] ?? m[2]!).toLowerCase())
+    .filter((nom) => /^[a-z0-9/]+$/.test(nom));
+
+  /// Les exceptions, lues dans l'en-tête du reconnaisseur.
+  const exceptées = (kind.match(/Ce qui n'y est pas\s*:?\s*\*{0,2}\s*([\p{L}, ]+)/u)?.[1] ?? "")
+    .split(/,| et /)
+    .map((mot) => mot.trim().toLowerCase())
+    .filter(Boolean);
+
+  test("les trois listes se lisent", () => {
+    expect(familles.length, "aucun lecteur `LinuxVolume` trouvé").toBeGreaterThan(1);
+    expect(nommés.length, "`filesystem(_:)` ne rend plus aucun nom").toBeGreaterThan(1);
+    expect(exceptées.length, "l'en-tête n'énumère plus ce qui manque").toBeGreaterThan(0);
+  });
+
+  test("chaque lecteur est nommé par le reconnaisseur, ou excepté", () => {
+    for (const famille of familles) {
+      const lettres = famille.match(/^[a-z]+/)![0];
+      const reconnue = nommés.some((nom) => nom.includes(lettres));
+      const exceptée = exceptées.some((mot) => mot.includes(lettres) || lettres.includes(mot));
+      expect(
+        reconnue || exceptée,
+        `wisq lit du ${famille}, et \`KernelImageKind.filesystem\` ne le nomme pas ` +
+          `(il rend ${nommés.join(", ")}) ni ne l'excepte (${exceptées.join(", ") || "aucune"})`,
+      ).toBe(true);
+    }
+  });
+});
