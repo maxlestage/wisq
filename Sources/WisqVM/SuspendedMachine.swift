@@ -96,10 +96,19 @@ public enum SuspendedMachine {
     public static func save(
         _ snapshot: Data, kernel: String, in directory: URL? = nil
     ) throws {
-        let folder = try directory ?? Self.directory()
         // Compressé (`SnapshotFile`) : la session de Debian passe de 217 Mio
         // à une centaine, écrits pendant les quelques secondes qu'iOS laisse.
-        try SnapshotFile.pack(snapshot).write(
+        try savePacked(SnapshotFile.pack(snapshot), kernel: kernel, in: directory)
+    }
+
+    /// La même écriture, d'un instantané **déjà compressé** par
+    /// `SnapshotFile.pack`. C'est ce que fait `CheckpointedRun`, qui compresse
+    /// hors de son verrou et n'y tient que l'écriture.
+    public static func savePacked(
+        _ packed: Data, kernel: String, in directory: URL? = nil
+    ) throws {
+        let folder = try directory ?? Self.directory()
+        try packed.write(
             to: folder.appendingPathComponent(fileName(kernel: kernel)), options: .atomic
         )
     }
