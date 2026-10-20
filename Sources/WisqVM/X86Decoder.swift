@@ -63,6 +63,17 @@ public struct X86Instruction: Equatable, Sendable {
     let immediateByteCount: UInt8
     let lengthByte: UInt8
 
+    /// **Les champs du ModRM, déjà dépliés** avec les bits de REX : le
+    /// registre de `reg`, celui de `rm`, et les deux drapeaux « octet haut »
+    /// (bit 0 pour `reg`, bit 1 pour `rm`). Ils ne dépendent que des octets
+    /// de l'instruction, et `X86Core.fields` les recalculait à chaque
+    /// exécution — une vingtaine d'instructions de l'hôte pour chaque
+    /// instruction qui a un ModRM, c'est-à-dire la plupart. Ils logent dans
+    /// le remplissage d'avant le déplacement : la taille ne bouge pas.
+    let regField: UInt8
+    let rmField: UInt8
+    let highByteFlags: UInt8
+
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
     public let displacement: Int64
     /// L'immédiat, brut. Ce qu'il faut en faire — l'étendre au signe ou non —
@@ -85,6 +96,14 @@ public struct X86Instruction: Equatable, Sendable {
         immediateByteCount = UInt8(immediateBytes)
         self.immediate = immediate
         lengthByte = UInt8(length)
+        let rexBits = rex ?? 0
+        let byte = modrm ?? 0
+        regField = (rexBits & 0x04) << 1 | ((byte >> 3) & 0x07)
+        rmField = (rexBits & 0x01) << 3 | (byte & 0x07)
+        // Sans REX, les numéros 4 à 7 d'un opérande d'un octet désignent AH,
+        // CH, DH, BH ; avec, SPL, BPL, SIL, DIL.
+        highByteFlags = rex != nil ? 0
+            : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
     }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,

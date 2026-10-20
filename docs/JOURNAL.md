@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Le calcul d'adresse allégé : −5 % sur les phases chaudes de Fedora
+
+Suite directe, même autorisation. Un profil de l'invité — Fedora démarrée
+avec `nokaslr`, le RIP noté tous les millions d'instructions, rapporté au
+`System.map` de son `/boot` — montrait où passe le démarrage : un tiers en
+espace utilisateur, un dixième à décompresser du zstd, puis l'arithmétique
+des signatures (`mpihelp_*`, `vli_*`) et les auto-tests de la crypto.
+Callgrind sur trois instantanés pris dans ces phases (zstd à 3,25 milliards,
+ECC à 4,75, RSA à 5,85) donnait pourtant le même coût partout, quatre cents
+instructions de l'hôte par instruction de l'invité : rien d'exotique à
+accélérer, mais `decodeFields` — les champs du ModRM et l'adresse — à 11 %
+dans chacune.
+
+- **Les bases de `%fs` et `%gs` sont des champs** (`X86ModelSpecific`, à la
+  place du dictionnaire des MSR) : `segmentBase` hachait un numéro de MSR à
+  chaque accès `%gs:`, et Linux range ses variables par processeur derrière
+  `%gs:`. Même surface qu'avant — indice optionnel, paires triées,
+  littéral —, donc les soixante-cinq usages et l'instantané sont inchangés.
+- **Les champs du ModRM sont dépliés au décodage** (`regField`, `rmField`,
+  `highByteFlags` de `X86Instruction`), dans le remplissage d'avant le
+  déplacement : l'instruction tient toujours en quarante octets.
+- **Mesuré**, callgrind, 100 millions d'instructions depuis chaque
+  instantané, contre master : zstd 40,52 → 38,57 milliards (−4,8 %), RSA
+  40,21 → 37,97 (−5,6 %). En natif, Fedora reprise à 18 milliards,
+  600 millions d'instructions sur un cœur épinglé, médiane de six :
+  36,1 → 35,2 s (−2,5 %).
+- **Tests** : les champs dépliés contre l'ancienne formule pour les 256
+  ModRM sans REX et avec chacun des seize ; `X86ModelSpecific` contre un
+  dictionnaire sur deux cents écritures ; `%fs:`/`%gs:` à travers le cœur.
+  **Sabotages** : la garde REX des octets hauts retirée → 4096 échecs ; FS
+  et GS inversés dans `segmentBase` → 8.
+- **Et les options du noyau, mesurées, non retenues.** Fedora jusqu'au
+  shell : 24,97 milliards d'instructions ; `mitigations=off` 24,92 (rien :
+  un interprète ne spécule pas, mais les retpolines coûtent peu) ;
+  `init_on_alloc=0` 24,57 (−1,6 %, au prix d'un durcissement) ;
+  `cryptomgr.notests` 23,54 (−5,7 %). Les auto-tests de la crypto restent :
+  ils vérifient aussi, à chaque démarrage, que ce cœur calcule juste.
+- Compteur publié : 2890 (2886 sur master après #560, plus ces quatre).
 ## 2026-10-20 — Où en est TestFlight : l'état lu sur l'API
 
 L'utilisateur a demandé des builds TestFlight. L'envoi n° 36 (master
