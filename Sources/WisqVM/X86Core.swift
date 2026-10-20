@@ -563,7 +563,7 @@ public struct X86Core: @unchecked Sendable {
         let throughMemory = Self.indirectThroughMemory(instruction)
         let entry = rip
         let before = registers
-        let stackBefore = registers[4]
+        let stackBefore = registers.read(4)
         try execute(instruction)
         // `lastAddress` ne veut dire quelque chose que si l'instruction avait
         // un opérande en mémoire ; le champ `mod` du ModRM le dit.
@@ -577,8 +577,8 @@ public struct X86Core: @unchecked Sendable {
         previousRip = entry
         // **Qui bouge la pile.** Noté avant d'examiner le retour, pour que le
         // `ret` fautif figure lui-même dans la trace qu'on montrera de lui.
-        if registers[4] != stackBefore {
-            noteStackMove(at: entry, from: stackBefore, to: registers[4], instruction)
+        if registers.read(4) != stackBefore {
+            noteStackMove(at: entry, from: stackBefore, to: registers.read(4), instruction)
         }
         if wasCall {
             rememberCall(promised: entry &+ UInt64(instruction.length), at: entry)

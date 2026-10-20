@@ -45,7 +45,7 @@ extension X86Core {
         case 0x50...0x57:
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
-            try push(registers[index], Self.stackSize(instruction))
+            try push(registers.read(index), Self.stackSize(instruction))
         case 0x58...0x5F:
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
@@ -64,9 +64,9 @@ extension X86Core {
             guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
             let fields = try decodeFields(instruction)
             let size = Self.stackSize(instruction)
-            let value = try readMemory(registers[4], size)
+            let value = try readMemory(registers.read(4), size)
             try writeRM(fields, size, value)
-            registers[4] = registers[4] &+ UInt64(size)
+            registers[4] = registers.read(4) &+ UInt64(size)
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
@@ -75,7 +75,7 @@ extension X86Core {
 
         case 0xC2:  // RET imm16 : dépiler puis jeter des arguments
             let destination = try pop(8)
-            registers[4] = registers[4] &+ (instruction.immediate & 0xFFFF)
+            registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF)
             rip = destination
             jumped = true
         case 0xC3:
@@ -113,22 +113,22 @@ extension X86Core {
             let size = Self.operandSize(instruction, byteForm: false)
             let destination = try pop(size)
             segments[1] = UInt16(truncatingIfNeeded: try pop(size))  // CS
-            if opcode == 0xCA { registers[4] = registers[4] &+ (instruction.immediate & 0xFFFF) }
+            if opcode == 0xCA { registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF) }
             rip = destination
             jumped = true
 
         case 0xC9:  // LEAVE : RSP ← RBP, puis dépiler RBP
-            registers[4] = registers[5]
+            registers[4] = registers.read(5)
             registers[5] = try pop(8)
 
         case 0xE0, 0xE1, 0xE2:  // LOOPNE, LOOPE, LOOP
-            registers[1] = registers[1] &- 1
+            registers[1] = registers.read(1) &- 1
             let zero = flags & Flag.zero != 0
-            let again = registers[1] != 0
+            let again = registers.read(1) != 0
                 && (opcode == 0xE2 || (opcode == 0xE1 ? zero : !zero))
             if again { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
         case 0xE3:  // JRCXZ
-            if registers[1] == 0 { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
+            if registers.read(1) == 0 { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
 
         case 0xE8:  // CALL relatif : empiler le retour, puis sauter
             let ret = rip &+ UInt64(instruction.length)
@@ -144,12 +144,12 @@ extension X86Core {
 
         case 0xE4, 0xE5, 0xEC, 0xED:  // IN
             let port = (opcode <= 0xE5) ? UInt16(instruction.immediate & 0xFF)
-                : UInt16(registers[2] & 0xFFFF)
+                : UInt16(registers.read(2) & 0xFFFF)
             let size = Self.portSize(instruction, byteForm: opcode == 0xE4 || opcode == 0xEC)
             write(0, size, highByte: false, portRead(port, size))
         case 0xE6, 0xE7, 0xEE, 0xEF:  // OUT
             let port = (opcode <= 0xE7) ? UInt16(instruction.immediate & 0xFF)
-                : UInt16(registers[2] & 0xFFFF)
+                : UInt16(registers.read(2) & 0xFFFF)
             let size = Self.portSize(instruction, byteForm: opcode == 0xE6 || opcode == 0xEE)
             portWrite(port, size, read(0, size, highByte: false))
 
@@ -299,7 +299,7 @@ extension X86Core {
             switch opcode {
             case 0xC0, 0xC1: count = instruction.immediate & 0xFF
             case 0xD0, 0xD1: count = 1
-            default: count = registers[1] & 0xFF  // CL
+            default: count = registers.read(1) & 0xFF  // CL
             }
             let kind = Int((instruction.modrm! >> 3) & 0x07)
             try probeWrite(fields, size)
@@ -612,7 +612,7 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             let count = (opcode == 0xA4 || opcode == 0xAC)
                 ? (instruction.immediate & 0xFF)
-                : (registers[1] & 0xFF)
+                : (registers.read(1) & 0xFF)
             try probeWrite(fields, size)
             let destination = try readRM(fields, size)
             let result = doubleShift(
@@ -675,9 +675,9 @@ extension X86Core {
                 throw Fault.unsupported("CMPXCHG16B, ou CMPXCHG8B sur un registre")
             }
             let current = try readMemory(lastAddress, 8)
-            let expected = (registers[2] & 0xFFFF_FFFF) << 32 | (registers[0] & 0xFFFF_FFFF)
+            let expected = (registers.read(2) & 0xFFFF_FFFF) << 32 | (registers.read(0) & 0xFFFF_FFFF)
             if current == expected {
-                try writeMemory(lastAddress, 8, (registers[1] & 0xFFFF_FFFF) << 32 | (registers[3] & 0xFFFF_FFFF))
+                try writeMemory(lastAddress, 8, (registers.read(1) & 0xFFFF_FFFF) << 32 | (registers.read(3) & 0xFFFF_FFFF))
                 flags |= Flag.zero
             } else {
                 // Les moitiés lues remplacent EAX et EDX, hauts effacés comme
@@ -799,30 +799,30 @@ extension X86Core {
         let repeated = instruction.hasPrefix(0xF3) || instruction.hasPrefix(0xF2)
         let whileEqual = instruction.hasPrefix(0xF3)
 
-        var count = repeated ? registers[1] : 1
+        var count = repeated ? registers.read(1) : 1
         while count > 0 {
             switch opcode {
             case 0xA4, 0xA5:  // MOVS : de RSI vers RDI
-                let value = try readMemory(registers[6], size)
-                try writeMemory(registers[7], size, value)
-                registers[6] = registers[6] &+ step
-                registers[7] = registers[7] &+ step
+                let value = try readMemory(registers.read(6), size)
+                try writeMemory(registers.read(7), size, value)
+                registers[6] = registers.read(6) &+ step
+                registers[7] = registers.read(7) &+ step
             case 0xA6, 0xA7:  // CMPS
-                let left = try readMemory(registers[6], size)
-                let right = try readMemory(registers[7], size)
+                let left = try readMemory(registers.read(6), size)
+                let right = try readMemory(registers.read(7), size)
                 _ = subtract(left, right, size)
-                registers[6] = registers[6] &+ step
-                registers[7] = registers[7] &+ step
+                registers[6] = registers.read(6) &+ step
+                registers[7] = registers.read(7) &+ step
             case 0xAA, 0xAB:  // STOS : l'accumulateur vers RDI
-                try writeMemory(registers[7], size, read(0, size, highByte: false))
-                registers[7] = registers[7] &+ step
+                try writeMemory(registers.read(7), size, read(0, size, highByte: false))
+                registers[7] = registers.read(7) &+ step
             case 0xAC, 0xAD:  // LODS : de RSI vers l'accumulateur
-                write(0, size, highByte: false, try readMemory(registers[6], size))
-                registers[6] = registers[6] &+ step
+                write(0, size, highByte: false, try readMemory(registers.read(6), size))
+                registers[6] = registers.read(6) &+ step
             default:  // SCAS : comparer l'accumulateur à ce qui est en RDI
-                let value = try readMemory(registers[7], size)
+                let value = try readMemory(registers.read(7), size)
                 _ = subtract(read(0, size, highByte: false), value, size)
-                registers[7] = registers[7] &+ step
+                registers[7] = registers.read(7) &+ step
             }
             count -= 1
             if repeated {
