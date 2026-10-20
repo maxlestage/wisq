@@ -39,8 +39,11 @@ final class X86DecodeCache: @unchecked Sendable {
     /// 5,2 millions de décodages — un sur vingt — étaient des collisions. En
     /// doublant les cases, 600 millions d'instructions passent de 36,5 s à
     /// 33,8 s (médiane de quatre) ; en les quadruplant, 33,8 s aussi. Le
-    /// double, donc, pour 9,4 Mio depuis que l'instruction tient en quarante
-    /// octets — ce qu'en prenaient 65 536 cases avant. `footprint` le borne.
+    /// double, donc, pour 9,0 Mio : 131 072 cases de soixante-douze octets,
+    /// depuis que l'instruction tient en quarante. C'est la moitié de plus
+    /// que les 6 Mio qu'en prenaient 65 536 cases quand elle en pesait
+    /// soixante-quatre, et pas le même prix. `footprint` le borne, et un
+    /// test relit ce chiffre-ci.
     static let slots = 1 << 17
 
     /// Ce que le cache occupe.
