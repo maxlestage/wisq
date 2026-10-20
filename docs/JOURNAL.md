@@ -27416,3 +27416,71 @@ entrés dans le remplissage.
 
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #358 — un lecteur XFS est arrivé, et la phrase qui énumère le trou est restée à un sur deux
+
+`KernelImageKind.filesystem(_:)` nomme ce qu'une image importée porte :
+ext2/3/4, squashfs dans les deux boutismes, FAT à ses deux places. Son en-tête
+énumère ce qui lui manque — « **Ce qui n'y est pas : btrfs** » — avec sa
+raison : la marque de btrfs vit à 0x10040, au-delà des quarante kibioctets que
+ce type lit. La même énumération est recopiée dans `docs/ROADMAP.md`.
+
+`XfsVolume` est arrivé en #566. Depuis, **deux** familles manquaient, et la
+phrase n'en nommait qu'une.
+
+Et la raison donnée pour btrfs ne s'appliquait pas à XFS : `XFSB` est aux
+**quatre premiers octets**, exactement là où squashfs met la sienne, deux
+lignes plus haut dans la même fonction. Un lecteur de ce commentaire en
+conclurait qu'XFS est nommé ; il ne l'était pas, et une image XFS importée
+ressortait en `unknown`.
+
+C'est #322 mot pour mot : une phrase vraie qu'un travail fait **ailleurs** a
+rendue fausse, sans que personne y touche.
+
+### Le correctif est l'acte, pas la phrase
+
+Deux façons de rendre la phrase vraie : ajouter XFS au reconnaisseur, ou
+l'ajouter à la liste des absents. La seconde aurait demandé d'inventer une
+raison — il n'y en a pas, la marque est à l'offset 0. La première est trois
+lignes, et elle ancre le reconnaisseur sur `XfsVolume.magic` : le lecteur et
+le reconnaisseur ne peuvent plus diverger sur ce qu'XFS est.
+
+`docs/ROADMAP.md` porte la correction en **blockquote** sous le relevé, sans
+le réécrire : la section est marquée « (fait) », donc c'est un relevé, et un
+relevé se date au lieu de se corriger.
+
+### La garde, et le sabordage qui l'a fait réécrire
+
+L'invariant : **toute famille dont le dépôt a un lecteur `LinuxVolume` est
+nommée par le reconnaisseur, ou exceptée dans son en-tête.** Elle ne dit rien
+de ce que le reconnaisseur nomme en plus — squashfs et FAT n'ont pas de
+lecteur et n'en ont pas besoin pour être nommés.
+
+Le premier jet ne lisait que `Sources/WisqVM/LinuxVolume.swift`, où les trois
+conformances d'aujourd'hui sont écrites. Un sondage l'a mis en défaut : un
+lecteur qui déclare `: LinuxVolume` dans **son propre fichier** — la forme la
+plus naturelle pour qui en ajoute un — passait sans être vu. C'est exactement
+la situation que la garde existe pour attraper, et elle l'aurait manquée. Elle
+parcourt maintenant tout `Sources/`.
+
+### Les sabordages
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| XFS retiré du reconnaisseur | « wisq lit du xfs, et `KernelImageKind.filesystem` ne le nomme pas … ni ne l'excepte (btrfs) » |
+| l'exception btrfs effacée de l'en-tête | « l'en-tête n'énumère plus ce qui manque », **et** « wisq lit du btrfs … ni ne l'excepte (aucune) » |
+| un quatrième lecteur dans `LinuxVolume.swift` | « wisq lit du zfs … » |
+| un lecteur dans **son propre fichier** | SURVÉCU au premier jet ; nommé par le second |
+| `filesystem(_:)` renommé | « ne rend plus aucun nom » |
+| la marque `XFSB` faussée | le test du reconnaisseur **et** toute `XfsVolumeTests` tombent |
+| (non-sabordage) `, Sendable` ajouté à une conformance | rien : la conformance tient toujours |
+| (non-sabordage) squashfs retiré du reconnaisseur | rien : squashfs n'a pas de lecteur, et la garde ne le prétend pas |
+
+Les deux derniers ne sabordent rien, et c'est leur intérêt : le premier montre
+que le lecteur de conformances ne se laisse pas tromper par un protocole de
+plus, le second que la garde dit vrai sur son périmètre — elle couvre les
+lecteurs, pas l'inverse.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les quatre fichiers
+voulus.
