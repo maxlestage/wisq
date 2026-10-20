@@ -246,6 +246,18 @@ final class KernelImageKindTests: XCTestCase {
         XCTAssertEqual(KernelImageKind.identify(prefix: Data(fat32)), .filesystemImage("FAT32"))
     }
 
+    /// **XFS, dont wisq a un lecteur depuis #566.**
+    ///
+    /// Sa marque est `XFSB`, aux quatre premiers octets — la même place que
+    /// celle de squashfs, donc bien à l'intérieur des quarante kibioctets que
+    /// ce type lit. La raison qui tient btrfs dehors, sa marque à 0x10040, ne
+    /// s'applique pas ici : XFS manquait, simplement.
+    func testAnXfsImageIsNamed() {
+        var xfs = [UInt8](repeating: 0, count: 0x200)
+        xfs.replaceSubrange(0..<4, with: XfsVolume.magic)
+        XCTAssertEqual(KernelImageKind.identify(prefix: Data(xfs)), .filesystemImage("XFS"))
+    }
+
     /// **Un vrai noyau ne devient pas un système de fichiers.** La marque
     /// d'ext4 vit à 0x438, assez loin pour qu'un fichier quelconque la porte
     /// par accident ; c'est pour ça qu'elle est contrôlée en dernier, et ce
