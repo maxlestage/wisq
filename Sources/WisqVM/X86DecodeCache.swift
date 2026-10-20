@@ -32,9 +32,16 @@ final class X86DecodeCache: @unchecked Sendable {
     /// manquait 21 % : les programmes de l'espace utilisateur, `apk` et
     /// OpenRC, s'ajoutent au noyau et ne tiennent plus. Avec 65 536, il ne
     /// manque plus que 4,3 % des lectures, et le démarrage complet passe de
-    /// 615 s à 590 s. Au-delà, le gain ne paierait plus la mémoire, que
-    /// `footprint` borne.
-    static let slots = 1 << 16
+    /// 615 s à 590 s.
+    ///
+    /// **Puis 131 072.** Fedora a plus de code chaud qu'Alpine : sur
+    /// 100 millions d'instructions reprises à 18 milliards de son démarrage,
+    /// 5,2 millions de décodages — un sur vingt — étaient des collisions. En
+    /// doublant les cases, 600 millions d'instructions passent de 36,5 s à
+    /// 33,8 s (médiane de quatre) ; en les quadruplant, 33,8 s aussi. Le
+    /// double, donc, pour 9,4 Mio depuis que l'instruction tient en quarante
+    /// octets — ce qu'en prenaient 65 536 cases avant. `footprint` le borne.
+    static let slots = 1 << 17
 
     /// Ce que le cache occupe.
     static var footprint: Int { slots * MemoryLayout<Entry>.stride }
