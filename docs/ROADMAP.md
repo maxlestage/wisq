@@ -516,7 +516,7 @@ noyau dans le disque lui-même.
    d'instructions (3202 s), le second à 39,5 milliards (2322 s), soit 34 %
    de moins. Les services n'y attendent plus que 13 minutes au lieu de 37.
    AppArmor reste donc actif : son coût est celui du premier démarrage.
-10. **En cours.** Fedora 44 Cloud. Sa racine est un btrfs compressé en
+10. **Fait.** Fedora 44 Cloud. Sa racine est un btrfs compressé en
     zstd, sans `/boot` à part : le noyau, l'initramfs et les entrées BLS sont
     dans le btrfs. Les tranches :
     - **Fait.** La décompression zstd (`Zstd`, RFC 8878), écrite ici.
@@ -529,7 +529,12 @@ noyau dans le disque lui-même.
       Fedora y est trouvée, noyau et initramfs compris (3,4 s pour les
       67 Mo de la vraie image). La console série ouvre son shell même quand
       l'entrée coupe elle-même `systemd-firstboot`, comme celle de Fedora.
-    - Le démarrage lui-même, jusqu'au shell de `root`.
+    - **Fait.** Le démarrage lui-même, jusqu'au shell de `root` :
+      `cat /etc/fedora-release` rend « Fedora release 44 (Forty Four) » à
+      28,3 milliards d'instructions. Il a fallu le SSE2 entier et flottant
+      que ses binaires emploient, le x87 de sa libc et de sa libm, et une
+      horloge d'invité à 36 instructions par battement : systemd y est
+      compilé avec un délai de 45 s qui borne aussi ses générateurs.
 
 ## Télécharger une image depuis l'application
 
