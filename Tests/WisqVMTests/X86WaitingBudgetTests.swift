@@ -119,4 +119,55 @@ final class X86WaitingBudgetTests: XCTestCase {
         XCTAssertEqual(core.idled, 0, "elle n'a pas attendu : elle s'est arrêtée")
         XCTAssertFalse(core.outOfPatience)
     }
+
+    /// **Sauter l'attente rend la même machine que la compter.** Une boucle
+    /// `sti ; hlt`, et un gestionnaire qui compte ses réveils, acquitte le
+    /// 8259 et revient : la même course, pas à pas puis par sauts, en mode
+    /// périodique puis en coup unique, avec et sans allocation d'attente.
+    /// Instructions retirées, tours d'attente, réveils, leurs heures et RIP doivent être
+    /// les mêmes au tour près — sans quoi un instantané ou une mesure ne
+    /// rejouerait plus la même chose.
+    func testSkippingTheWaitGivesTheSameMachineAsCountingIt() throws {
+        func machine(skipping: Bool, oneShot: Bool) throws -> X86Core {
+            let ram = X86Memory(size: 1 << 20, base: 0)
+            try ram.load([0xFB, 0xF4, 0xEB, 0xFC], at: 0x100)  // sti ; hlt ; jmp .-4
+            // rdtsc ; add %rax,%rdi ; inc %rbx ; mov $0x20,%al ; out %al,$0x20 ; iretq
+            // La somme des heures de réveil, dans RDI : un réveil d'un tour
+            // en retard s'y voit, même quand la fin de course est la même.
+            try ram.load([0x0F, 0x31, 0x48, 0x01, 0xC7, 0x48, 0xFF, 0xC3, 0xB0, 0x20, 0xE6, 0x20, 0x48, 0xCF],
+                         at: 0x8000)
+            let low = UInt64(0x8000) | (UInt64(0x10) << 16) | (UInt64(0x8E) << 40)
+            try ram.write(0x9000 &+ 0x30 * 16, 8, low)
+            try ram.write(0x9000 &+ 0x30 * 16 &+ 8, 8, 0)
+            var core = X86Core(registers: [UInt64](repeating: 0, count: 16), rip: 0x100, memory: ram)
+            core.descriptorBases[1] = 0x9000
+            core.descriptorLimits[1] = 0xFFF
+            core.registers[4] = 0x7000
+            core.devices.primary.mask = 0xFE
+            core.devices.primary.vectorBase = 0x30
+            core.devices.reload = oneShot ? 700 : 1193
+            core.devices.oneShot = oneShot
+            core.skipsIdleTime = skipping
+            return core
+        }
+        for oneShot in [false, true] {
+            for waiting in [nil, 900_000] as [UInt64?] {
+                var counted = try machine(skipping: false, oneShot: oneShot)
+                var skipped = try machine(skipping: true, oneShot: oneShot)
+                let budget: UInt64 = 600_000
+                let a = try counted.run(budget: budget, waiting: waiting)
+                let b = try skipped.run(budget: budget, waiting: waiting)
+                let label = "coup unique : \(oneShot), attente : \(String(describing: waiting))"
+                XCTAssertGreaterThan(counted.registers[3], 4, "la machine s'est réveillée : \(label)")
+                XCTAssertEqual(a, b, label)
+                XCTAssertEqual(counted.registers[3], skipped.registers[3], "réveils, \(label)")
+                XCTAssertEqual(counted.registers[7], skipped.registers[7], "heures de réveil, \(label)")
+                XCTAssertEqual(counted.retired, skipped.retired, label)
+                XCTAssertEqual(counted.idled, skipped.idled, label)
+                XCTAssertEqual(counted.rip, skipped.rip, label)
+                XCTAssertEqual(counted.devices.raised, skipped.devices.raised, label)
+                XCTAssertEqual(counted.outOfPatience, skipped.outOfPatience, label)
+            }
+        }
+    }
 }

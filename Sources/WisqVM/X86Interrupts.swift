@@ -335,6 +335,20 @@ extension X86Core {
     /// Vrai quand quelque chose peut arriver : une horloge armée, ou un port
     /// série dont on a autorisé la réception ou l'émission. Tant que non,
     /// rien ne viendra et la boucle n'a pas à regarder.
+    /// Combien de tours d'attente avant que le 8253 lève sa prochaine
+    /// interruption : le premier battement où `expirations` dépasse
+    /// `raised`, ramené en instructions. Au moins un. Sans canal zéro armé,
+    /// rien de ce qui peut réveiller la machine ne dépend du temps, et l'on
+    /// avance d'un tour comme avant.
+    func idleStep() -> UInt64 {
+        guard skipsIdleTime, devices.reload != 0 else { return 1 }
+        let period = devices.oneShot ? max(UInt64(devices.reload), X86LegacyDevices.shortestOneShot)
+            : UInt64(devices.reload)
+        let wake = (devices.reloadedAt &+ (devices.raised &+ 1) &* period) &* X86LegacyDevices.instructionsPerTick
+        let now = retired &+ idled
+        return wake > now ? wake - now : 1
+    }
+
     var devicesArmed: Bool {
         devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0
             || memory?.storage?.interrupting == true
