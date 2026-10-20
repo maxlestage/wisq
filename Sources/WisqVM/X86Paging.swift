@@ -244,7 +244,7 @@ extension X86Core {
             return true
         case 0x22:  // MOV CRn, r64
             let fields = try Self.fields(instruction)
-            writeControlRegister(fields.reg, registers[fields.rm])
+            writeControlRegister(fields.reg, registers.read(fields.rm))
             return true
         case 0x21:  // MOV r64, DRn
             let fields = try Self.fields(instruction)
@@ -252,15 +252,15 @@ extension X86Core {
             return true
         case 0x23:  // MOV DRn, r64
             let fields = try Self.fields(instruction)
-            system.debug[fields.reg] = registers[fields.rm]
+            system.debug[fields.reg] = registers.read(fields.rm)
             return true
         case 0x30:  // WRMSR : EDX:EAX vers le registre nommé par ECX
-            let value = (registers[2] & 0xFFFF_FFFF) << 32 | (registers[0] & 0xFFFF_FFFF)
-            system.modelSpecific[UInt32(truncatingIfNeeded: registers[1])] = value
+            let value = (registers.read(2) & 0xFFFF_FFFF) << 32 | (registers.read(0) & 0xFFFF_FFFF)
+            system.modelSpecific[UInt32(truncatingIfNeeded: registers.read(1))] = value
             system.refreshLongMode()
             return true
         case 0x32:  // RDMSR
-            let value = system.modelSpecific[UInt32(truncatingIfNeeded: registers[1])] ?? 0
+            let value = system.modelSpecific[UInt32(truncatingIfNeeded: registers.read(1))] ?? 0
             write(0, 4, highByte: false, value & 0xFFFF_FFFF)
             write(2, 4, highByte: false, value >> 32)
             return true
@@ -280,8 +280,8 @@ extension X86Core {
             return true
         case 0xA2:  // CPUID
             let (a, b, c, d) = X86CPUID.answer(
-                leaf: UInt32(truncatingIfNeeded: registers[0]),
-                subleaf: UInt32(truncatingIfNeeded: registers[1]))
+                leaf: UInt32(truncatingIfNeeded: registers.read(0)),
+                subleaf: UInt32(truncatingIfNeeded: registers.read(1)))
             write(0, 4, highByte: false, UInt64(a))
             write(3, 4, highByte: false, UInt64(b))
             write(1, 4, highByte: false, UInt64(c))
