@@ -2446,3 +2446,81 @@ describe("la page des versions porte autant de corrections que le CHANGELOG en a
     }
   });
 });
+
+/// **La phrase nommait trois modules et comptait les tests de quatre.**
+///
+/// `README.fr.md` annonce quels modules Swift compilent sans erreur ni
+/// avertissement sous Swift 6.3, et donne dans la foulée le nombre de tests qui
+/// passent. Elle en nommait trois — `WisqCore`, `WisqNet`, `WisqRemote` — et le
+/// compte qu'elle citait comptait aussi ceux de `WisqVM`, qui est le plus gros
+/// des quatre : les cœurs rv32ima et x86-64, l'UART, virtio-blk. Le tableau
+/// « Structure » du même fichier le liste pourtant, deux sections plus bas.
+///
+/// Le paragraphe nomme lui-même son exception — « la couche `WisqUI` et la
+/// cible application demandent UIKit » —, donc son arithmétique est interne :
+/// cinq modules sous `Sources/`, un excepté, et la liste en portait trois. Ce
+/// qui manquait n'était pas un détail d'inventaire : les dix dernières tranches
+/// fusionnées sont toutes dans `WisqVM`.
+///
+/// **L'ancre est le manifeste, pas une liste écrite ici.** `Package.swift`
+/// déclare quatre bibliothèques sans condition de plateforme, et trois autres
+/// produits derrière une condition (`WisqUI` hors Linux, `WisqVMRust` quand le
+/// cœur Rust est demandé) ; ce sont exactement celles que le paragraphe exclut.
+/// Recopier les quatre noms dans cette garde en ferait une copie de plus à
+/// tenir, ce que ce fichier passe son temps à retirer.
+describe("le README nomme les modules Swift que le manifeste déclare sans condition", () => {
+  const manifeste = readFileSync(join(repoRoot, "Package.swift"), "utf8");
+
+  /// Le tableau littéral de `products:`, et lui seul : il s'arrête au `]` que
+  /// suit le `+` des produits conditionnels. Les `uiProducts` et consorts
+  /// portent une majuscule à `Products`, donc l'ancre ne les attrape pas.
+  const bloc = manifeste.match(/\n\s*products:\s*\[([\s\S]*?)\]\s*\+/)?.[1] ?? "";
+  const declares = [...bloc.matchAll(/\.library\(name:\s*"([^"]+)"/g)]
+    .map((trouve) => trouve[1]!)
+    .sort();
+
+  /// **Le paragraphe entier, pas une liste bien formée dedans.**
+  ///
+  /// Le premier lecteur cherchait une suite de noms entre accents graves
+  /// immédiatement suivie de « compilent ». Un sabordage l'a **survécu** : en
+  /// écrivant « `WisqAudio` puis `WisqCore`, `WisqNet`, `WisqRemote` et
+  /// `WisqVM` compilent », le motif s'accrochait au deuxième nom, rendait une
+  /// liste exacte, et la garde passait sur la phrase même qu'elle vise. Une
+  /// négation devant ne suffisait pas non plus — « puis » n'est pas un accent
+  /// grave. C'est l'assertion satisfaite par un autre chemin, encore.
+  ///
+  /// Ce qui tient : découper le fichier en paragraphes **avant** de replier
+  /// les blancs, prendre celui qui porte la phrase, et relever **tous** les
+  /// noms entre accents graves qui précèdent le verbe. Un nom de plus dans ce
+  /// morceau fait tomber la garde, où qu'il soit. Le prix est qu'un terme
+  /// entre accents graves ajouté devant la liste la ferait tomber aussi : la
+  /// garde refuse plutôt que de laisser passer, et son message dit ce qu'elle
+  /// a lu.
+  const paragraphe = readFileSync(join(repoRoot, "README.fr.md"), "utf8")
+    .split(/\n\s*\n/)
+    .find((bloc) => /compilent sans erreur/.test(bloc))
+    ?.replace(/\s+/g, " ")
+    .trim();
+  const phrase = paragraphe?.match(/^(.*?) compilent sans erreur/) ?? null;
+
+  test("le manifeste déclare bien des bibliothèques inconditionnelles", () => {
+    expect(bloc, "le tableau `products:` de Package.swift n'est plus lisible ici").not.toBe("");
+    expect(
+      declares.length,
+      "moins de trois bibliothèques inconditionnelles lues : l'ancre a glissé",
+    ).toBeGreaterThan(2);
+  });
+
+  test("la phrase du README les nomme toutes", () => {
+    expect(
+      phrase,
+      "README.fr.md n'annonce plus quels modules compilent sans erreur ni avertissement",
+    ).not.toBeNull();
+    const nommes = [...phrase![1]!.matchAll(/`(\w+)`/g)].map((trouve) => trouve[1]!).sort();
+    expect(
+      nommes,
+      `le manifeste déclare ${declares.join(", ")} sans condition de plateforme, ` +
+        `et la phrase nomme ${nommes.join(", ")}`,
+    ).toEqual(declares);
+  });
+});
