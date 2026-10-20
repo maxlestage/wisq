@@ -7,14 +7,14 @@ import XCTest
 /// Même méthode que les corpus précédents : `scripts/build-x86-v2-oracle.py`
 /// fait exécuter chaque forme par le processeur de ce conteneur sur des états
 /// choisis, et fige sa réponse dans `Tests/Fixtures/x86-v2-oracle.tsv`. Ce
-/// corpus rapporte en plus RCX, les drapeaux et la fenêtre de mémoire : les
-/// tranches suivantes — `PTEST`, `PCMPISTRI`, `PEXTR*` vers la mémoire — en
+/// corpus rapporte en plus RCX, RDX, les drapeaux et la fenêtre de mémoire :
+/// `PTEST`, `PCMPISTRI`, `PEXTR*` vers la mémoire et `CMPXCHG16B` en
 /// écrivent. Ce qu'une forme ne touche pas, le générateur l'a vérifié sur la
 /// machine ; c'est exigé ici du cœur.
 final class X86V2OracleTests: XCTestCase {
     struct State: Equatable {
         var low0: UInt64, high0: UInt64, low1: UInt64, high1: UInt64
-        var rax: UInt64, rcx: UInt64, flags: UInt64
+        var rax: UInt64, rcx: UInt64, flags: UInt64, rdx: UInt64
     }
 
     struct Case {
@@ -47,19 +47,19 @@ final class X86V2OracleTests: XCTestCase {
             guard let kind = field.first else { continue }
             func number(_ index: Int) -> UInt64 { UInt64(field[index], radix: 16) ?? 0 }
             switch kind {
-            case "état" where field.count >= 9:
+            case "état" where field.count >= 10:
                 fixture.states[Int(field[1]) ?? -1] = State(
                     low0: number(2), high0: number(3), low1: number(4), high1: number(5),
-                    rax: number(6), rcx: number(7), flags: number(8))
+                    rax: number(6), rcx: number(7), flags: number(8), rdx: number(9))
             case "instr" where field.count >= 4:
                 fixture.instructions[Int(field[1]) ?? -1] = (
                     X86SIMDOracleTests.bytes(field[2]), String(field[3]))
-            case "cas" where field.count >= 11:
+            case "cas" where field.count >= 12:
                 fixture.cases.append(Case(
                     instruction: Int(field[1]) ?? -1, state: Int(field[2]) ?? -1,
                     after: State(low0: number(3), high0: number(4), low1: number(5),
                                  high1: number(6), rax: number(7), rcx: number(8),
-                                 flags: number(9)),
+                                 flags: number(9), rdx: number(11)),
                     memory: field[10] == "-" ? nil : X86SIMDOracleTests.bytes(field[10])))
             default:
                 continue
@@ -70,8 +70,8 @@ final class X86V2OracleTests: XCTestCase {
 
     func testTheCoreComputesWhatTheProcessorComputes() throws {
         let fixture = try Self.read(Self.path)
-        XCTAssertGreaterThan(fixture.cases.count, 1500, "l'oracle doit couvrir, pas illustrer")
-        XCTAssertGreaterThan(fixture.instructions.count, 30)
+        XCTAssertGreaterThan(fixture.cases.count, 13000, "l'oracle doit couvrir, pas illustrer")
+        XCTAssertGreaterThan(fixture.instructions.count, 230)
 
         var disagreements: [String] = []
         var byInstruction: [String: Int] = [:]
@@ -88,6 +88,7 @@ final class X86V2OracleTests: XCTestCase {
             var registers = witness
             registers[0] = before.rax
             registers[1] = before.rcx
+            registers[2] = before.rdx
             registers[4] = X86SIMDOracleTests.stackTop
             registers[6] = X86SIMDOracleTests.dataAddress
             let memory = X86Memory(size: 0x4000, base: 0x3000_0000)
@@ -111,9 +112,9 @@ final class X86V2OracleTests: XCTestCase {
                 low0: core.vectors[0], high0: core.vectors[1],
                 low1: core.vectors[2], high1: core.vectors[3],
                 rax: core.registers[0], rcx: core.registers[1],
-                flags: core.flags & X86Core.Flag.arithmetic)
+                flags: core.flags & X86Core.Flag.arithmetic, rdx: core.registers[2])
             let untouchedVectors = (2..<16).allSatisfy { X86SIMDOracleTests.same(core.vectors, witnessVectors, $0) }
-            let untouched = [2, 3, 8, 9, 10, 11, 12, 13, 14, 15].allSatisfy { core.registers[$0] == witness[$0] }
+            let untouched = [3, 8, 9, 10, 11, 12, 13, 14, 15].allSatisfy { core.registers[$0] == witness[$0] }
             let window = memory.dump(X86SIMDOracleTests.dataAddress, X86SIMDOracleTests.windowSize)
             let expected = item.memory ?? X86SIMDOracleTests.pristine
             if after == item.after && untouched && untouchedVectors && window == expected {
@@ -159,6 +160,23 @@ final class X86V2OracleTests: XCTestCase {
         try core.execute(X86Decoder.decode(memory.dump(base, 15)))
         XCTAssertEqual(core.vectors[0], 0x81)
         XCTAssertEqual(core.vectors[1], 0x7F)
+    }
+
+    /// **`SAHF` puis `LAHF` : les bits 1, 3 et 5 ne passent pas.** Le corpus
+    /// ne les voit pas — il ne rapporte que les drapeaux de l'arithmétique,
+    /// et n'exécute qu'une instruction. AH à 0xFF ressort 0xD7 : SF, ZF, AF,
+    /// PF et CF levés, le bit 1 à un, 3 et 5 à zéro.
+    func testSAHFThenLAHFKeepsOnlyTheFiveFlags() throws {
+        let base: UInt64 = 0x3000_0000
+        let memory = X86Memory(size: 0x1000, base: base)
+        try memory.load([0x9E, 0x9F], at: base)
+        var registers = X86SIMDOracleTests.witness()
+        registers[0] = 0xFF00
+        var core = X86Core(registers: registers, flags: X86Core.Flag.reserved, rip: base, memory: memory)
+        try core.execute(X86Decoder.decode(memory.dump(base, 15)))
+        XCTAssertEqual(core.flags & 0xFF, 0xD7)
+        try core.execute(X86Decoder.decode(memory.dump(base + 1, 15)))
+        XCTAssertEqual(core.registers[0], 0xD700)
     }
 
     /// **Sans `66`, c'est MMX**, et le cœur le refuse au lieu de l'exécuter

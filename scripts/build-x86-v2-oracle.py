@@ -110,6 +110,26 @@ def forms():
     # bits 3-0 mis à zéro.
     for control in [0x00, 0x10, 0x30, 0xC0, 0x4E, 0x91, 0xF8, 0x0F]:
         out += [f"insertps ${control:#x}, %xmm1, %xmm0", f"insertps ${control:#x}, 0x24(%rsi), %xmm0"]
+    # **SSE4.2.** La comparaison signée des mots quadruples, et
+    # `PCMPISTRI`, le comparateur de chaînes : la longueur de chaque
+    # opérande s'arrête à son premier élément nul, et l'immédiat choisit la
+    # taille (octets ou mots, avec ou sans signe), l'agrégation (égal à l'un
+    # des, intervalles, égal un à un, sous-chaîne), la polarité et le bout
+    # d'où l'indice se compte. La glibc d'AlmaLinux n'emploie que 0x1a, 0x3a,
+    # 0x02 et 0x12 ; les autres valeurs couvrent ce que ces quatre ne
+    # touchent pas.
+    out += ["pcmpgtq %xmm1, %xmm0", f"pcmpgtq {ALIGNED:#x}(%rsi), %xmm0"]
+    for control in [0x1A, 0x3A, 0x02, 0x12, 0x00, 0x04, 0x08, 0x0C, 0x01, 0x05, 0x09, 0x0D,
+                    0x03, 0x06, 0x07, 0x0B, 0x0F, 0x30, 0x40, 0x4C, 0x44, 0x46, 0x29, 0x6D]:
+        out += [f"pcmpistri ${control:#x}, %xmm1, %xmm0",
+                f"pcmpistri ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # Les drapeaux vers AH et retour, qu'un processeur x86-64 des débuts
+    # n'avait pas en mode long.
+    out += ["lahf", "sahf"]
+    # `CMPXCHG16B` : RDX:RAX comparé aux seize octets ; égaux, RCX:RBX y
+    # sont rangés ; sinon ils sont relus dans RDX:RAX. Les états où RAX et
+    # RDX portent la fenêtre font l'égalité.
+    out += [f"lock cmpxchg16b {ALIGNED:#x}(%rsi)", f"cmpxchg16b {ALIGNED:#x}(%rsi)"]
     return out
 
 
@@ -140,6 +160,12 @@ VALUES = [
     # (seuls les quatre bits bas comptent).
     (0x8F0E1D2C3B4A5968, 0x0102030405060708),
     (0x8000800080008000, 0x7FFF7FFF80018001),
+    # Des chaînes, pour `PCMPISTRI` : « wisq lit » terminé tôt, des
+    # intervalles « az » et « 09 », et une sous-chaîne présente plus loin.
+    (0x74696C2071736977, 0x0000000000000000),
+    (0x0000000039307A61, 0x0000000000000000),
+    (0x3534333231303938, 0x3D3C3B3A39383736),
+    (0x0000000000003534, 0x0000000000000000),
 ]
 
 GENERAL = [
@@ -167,6 +193,10 @@ def states():
         general = list(fixed)
         general[0] = GENERAL[index % len(GENERAL)]
         general[6] = DATA
+        # Un état sur cinq porte dans RDX:RAX les seize octets que
+        # `CMPXCHG16B` trouve en mémoire : c'est l'échange réussi.
+        if index % 5 == 4:
+            general[0], general[2] = 0x3736353433323130, 0x3F3E3D3C3B3A3938
         vectors = [(0xC000000000000000 + i, 0xD000000000000000 + i) for i in range(16)]
         vectors[0] = VALUES[first]
         vectors[1] = VALUES[second]
@@ -236,22 +266,22 @@ def main():
         out.write("# Ce que le vrai processeur répond sur ce que x86-64-v2 ajoute.\n")
         out.write("# Voir scripts/build-x86-v2-oracle.py.\n")
         out.write("# état\t<indice>\t<xmm0 bas>\t<xmm0 haut>\t<xmm1 bas>\t<xmm1 haut>"
-                  "\t<rax>\t<rcx>\t<drapeaux>\n")
+                  "\t<rax>\t<rcx>\t<drapeaux>\t<rdx>\n")
         out.write("# instr\t<indice>\t<octets>\t<mnémonique>\n")
         out.write("# cas\t<instr>\t<état>\t<xmm0 bas>\t<xmm0 haut>\t<xmm1 bas>"
-                  "\t<xmm1 haut>\t<rax>\t<rcx>\t<drapeaux>\t<fenêtre, ou - intacte>\n")
+                  "\t<xmm1 haut>\t<rax>\t<rcx>\t<drapeaux>\t<fenêtre, ou - intacte>\t<rdx>\n")
         out.write("#   RSI pointe la fenêtre de 64 octets à 0x30001000 ; elle part\n")
         out.write("#   des octets 0x10, 0x11… Les drapeaux sont ceux de l'arithmétique.\n")
         for index, (general, vectors) in enumerate(chosen):
-            out.write("état\t%d\t%x\t%x\t%x\t%x\t%x\t%x\t%x\n"
+            out.write("état\t%d\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%x\n"
                       % (index, vectors[0][0], vectors[0][1], vectors[1][0], vectors[1][1],
-                         general[0], general[1], general[16] & ARITHMETIC_FLAGS))
+                         general[0], general[1], general[16] & ARITHMETIC_FLAGS, general[2]))
         for index, (hexadecimal, text) in enumerate(zip(encoded, texts)):
             out.write("instr\t%d\t%s\t%s\n" % (index, hexadecimal, text))
         for (instruction, index, general, vectors), verdict in zip(cases, answer):
             fields = verdict.split("\t")
             after = [int(value, 16) for value in fields[50:99]]
-            for register in [2, 3] + list(range(8, 16)):
+            for register in [3] + list(range(8, 16)):
                 if after[register] != general[register]:
                     raise SystemExit(
                         f"{texts[instruction]} a écrit dans {REGISTERS[register]}")
@@ -260,9 +290,9 @@ def main():
                 if got != vectors[vector]:
                     raise SystemExit(f"{texts[instruction]} a écrit dans xmm{vector}")
             memory = "-" if fields[99] == window else fields[99]
-            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%s\n"
+            out.write("cas\t%d\t%d\t%x\t%x\t%x\t%x\t%x\t%x\t%x\t%s\t%x\n"
                       % (instruction, index, after[17], after[18], after[19], after[20],
-                         after[0], after[1], after[16] & ARITHMETIC_FLAGS, memory))
+                         after[0], after[1], after[16] & ARITHMETIC_FLAGS, memory, after[2]))
     print(f"{len(encoded)} instructions, {len(cases)} cas", file=sys.stderr)
 
 

@@ -78,6 +78,8 @@ extension X86Core {
             setVector(fields.reg, result.0, result.1)
         case 0x0E, 0x14, 0x16, 0x17, 0x20, 0x21, 0x22:
             try insertOrExtract(instruction, fields, opcode, control)
+        case 0x63:  // PCMPISTRI (SSE4.2)
+            try compareImplicitStrings(fields, control)
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
         }
