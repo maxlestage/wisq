@@ -19,7 +19,7 @@ public struct X86SystemState: Equatable, Sendable {
     public var debug = [UInt64](repeating: 0, count: 8)
     /// Les registres de modèle. Peu nombreux en pratique, donc un dictionnaire :
     /// il n'est lu que par `RDMSR` et `WRMSR`, jamais sur le chemin chaud.
-    public var modelSpecific: [UInt32: UInt64] = [:]
+    public var modelSpecific = X86ModelSpecific()
 
     public init() {}
 

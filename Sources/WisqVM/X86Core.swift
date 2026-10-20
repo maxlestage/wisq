@@ -689,14 +689,11 @@ public struct X86Core: @unchecked Sendable {
         guard let modrm = instruction.modrm else {
             throw Fault.unsupported("une instruction sans ModRM là où il en faut un")
         }
-        let rex = instruction.rex ?? 0
-        let reg = Int((rex & 0x04) << 1 | ((modrm >> 3) & 0x07))
-        let rm = Int((rex & 0x01) << 3 | (modrm & 0x07))
-        let noRex = instruction.rex == nil
+        // Dépliés au décodage : voir `X86Instruction.regField`.
         return Fields(
-            reg: reg, rm: rm, mod: modrm >> 6,
-            regIsHighByte: noRex && (4...7).contains(Int((modrm >> 3) & 0x07)),
-            rmIsHighByte: noRex && (4...7).contains(Int(modrm & 0x07)))
+            reg: Int(instruction.regField), rm: Int(instruction.rmField), mod: modrm >> 6,
+            regIsHighByte: instruction.highByteFlags & 1 != 0,
+            rmIsHighByte: instruction.highByteFlags & 2 != 0)
     }
 
     /// **Les octets de la table `0F` qu'un gestionnaire spécialisé peut
