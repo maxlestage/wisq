@@ -355,6 +355,13 @@ public final class LocalVMModel {
         }
         kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
         let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
+        // **Une reprise que la console n'a pas vue partir se dit.** Revenir
+        // d'une suspension garde l'écran ; revenir après une application tuée
+        // le trouve vide, devant un invité qui attend en silence. Voir
+        // `ResumeNote`.
+        let resumeNote = saved != nil && !resuming
+            ? ResumeNote.text(savedAt: SuspendedMachine.savedAt(kernel: kernelName, in: storage), now: Date())
+            : nil
 
         // **Un noyau de PC ne démarre à rien sans son initramfs.** Il n'a
         // aucun pilote de disque compilé dedans — ce sont des modules, et ils
@@ -429,6 +436,7 @@ public final class LocalVMModel {
         // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
         // appartient à `self`, qui n'y est capturé que faiblement.
         let storageFolder = storage
+        let consoleSink = sink
         // **La sauvegarde continue**, pour la mort qu'iOS n'annonce pas :
         // une application tuée pour la mémoire reprend à la dernière
         // sauvegarde au lieu de refaire un démarrage de vingt minutes. Le nom
@@ -472,7 +480,16 @@ public final class LocalVMModel {
                 // restore throws and the kernel is booted instead, which is the
                 // only useful answer and better than refusing to start.
                 if let saved, (try? machine.restore(saved)) != nil {
-                    // nothing else to do: the guest is already mid-life
+                    // L'invité est déjà en vie ; il reste à le dire, si l'écran
+                    // ne l'a pas vu partir.
+                    if let resumeNote {
+                        let line = ConsoleProse.plain(resumeNote, columns: consoleSink.columns)
+                        if consoleSink.append(Data("[\(line)]\r\n".utf8)) {
+                            Task { @MainActor [weak self] in
+                                self?.consoleText = consoleSink.takeText()
+                            }
+                        }
+                    }
                 } else {
                     try machine.load(
                         kernelImage: image, commandLine: isoCommandLine,
