@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Le cache de décodage double : −7 % sur Fedora
+
+Suite directe, même autorisation. Sur 100 millions d'instructions de
+Fedora reprises à 18 milliards, le cache de décodage (65 536 cases, à
+correspondance directe sur l'adresse physique) manquait 5,2 millions de
+lectures : un décodage complet pour une instruction sur vingt. Fedora a
+bien plus de code chaud qu'Alpine, pour qui la taille avait été choisie.
+
+- **Mesuré**, master contre 2¹⁷ et 2¹⁸ cases, même instantané :
+
+  | cases | mémoire | callgrind, 100 M | natif, 600 M (médiane de 4) |
+  |---|---|---|---|
+  | 65 536 | 4,7 Mio | 40,82 milliards | 36,5 s |
+  | 131 072 | 9,4 Mio | 40,25 milliards | 33,8 s |
+  | 262 144 | 18,9 Mio | 39,83 milliards | 33,8 s |
+
+  Le natif gagne bien plus que callgrind ne le dit (−7 % contre −1,4 %) :
+  callgrind compte les instructions, pas les défauts de cache qu'un
+  décodage provoque en relisant les tables du décodeur. Au-delà du double,
+  plus rien ne se gagne en temps : le double, donc.
+- **Test** : la borne de `testTheCacheStaysSmallBesideTheGuestsMemory`
+  passe à 10 Mio et au moins 2¹⁷ cases. **Sabotage** : 2¹⁶ remis → il
+  échoue.
+- Compteur publié inchangé.
+
 ## 2026-10-20 — Une instruction décodée tient en quarante octets
 
 Suite directe, même autorisation. `X86Instruction` pesait soixante-quatre
