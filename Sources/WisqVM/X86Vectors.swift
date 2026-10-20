@@ -223,6 +223,28 @@ extension X86Core {
                 vectors[2 * fields.reg] = low
             }
 
+        // **Les déplacements de SSE3**, sans arithmétique. `MOVDDUP` diffuse
+        // les soixante-quatre bits bas de la source (huit octets en mémoire,
+        // non alignés) ; `MOVSLDUP` recopie chaque mot pair de trente-deux
+        // bits sur l'impair qui le suit.
+        case 0x12 where repeatFD:  // MOVDDUP
+            let fields = try decodeFields(instruction)
+            let (low, _) = try readVectorRM(fields, 8)
+            setVector(fields.reg, low, low)
+
+        case 0x12 where repeatFE:  // MOVSLDUP
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, source.0 & 0xFFFF_FFFF | source.0 << 32,
+                      source.1 & 0xFFFF_FFFF | source.1 << 32)
+
+        // `LDDQU` : un `MOVDQU` qui n'existe que depuis la mémoire.
+        case 0xF0 where repeatFD:
+            let fields = try decodeFields(instruction)
+            guard fields.mod != 0b11 else { throw Fault.unsupported("F2 0F F0 entre registres") }
+            let value = try readVectorRM(fields, 16)
+            setVector(fields.reg, value.0, value.1)
+
         case 0x16 where !repeatFE && !repeatFD:  // MOVLHPS / MOVHPS / MOVHPD
             let fields = try decodeFields(instruction)
             if operandSize && fields.mod == 0b11 { throw Fault.unsupported("66 0F 16 entre registres") }
