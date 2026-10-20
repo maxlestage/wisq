@@ -215,15 +215,46 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(found.first?.version, "2026.10.15")
         let file = "Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2"
         let sum = "08754e28d91b1680086c6211ef4df13559e766fff7cdb4006489b14b5d281f08"
-        XCTAssertEqual(ImageDownload.archChecksum("\(sum)  \(file)\n", for: file), sum)
-        XCTAssertNil(ImageDownload.archChecksum("\(sum)  Arch-Linux-x86_64-cloudimg.qcow2\n", for: file),
+        XCTAssertEqual(ImageDownload.sumFileChecksum("\(sum)  \(file)\n", for: file), sum)
+        XCTAssertNil(ImageDownload.sumFileChecksum("\(sum)  Arch-Linux-x86_64-cloudimg.qcow2\n", for: file),
                      "la somme d'un autre nom n'est pas celle-ci")
-        XCTAssertNil(ImageDownload.archChecksum("pas-une-somme  \(file)\n", for: file))
+        XCTAssertNil(ImageDownload.sumFileChecksum("pas-une-somme  \(file)\n", for: file))
         let release = ImageDownload.archRelease(file: file, version: "2026.10.15", sha256: sum, size: 10)
         XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
                        "https://geo.mirror.pkgbuild.com/images/latest/" + file,
                        "dans le dossier de l'index, pas un cran au-dessus")
         XCTAssertEqual(release.distribution, "Arch Linux")
+        XCTAssertEqual(release.checksum.algorithm, "SHA-256")
+    }
+
+    /// La page du dossier d'openSUSE, telle qu'elle écrit ses liens (`./nom`).
+    static let openSUSEListing = """
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2.sha256">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2.mirrorlist">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-2.0.0-Cloud-Snapshot20261004.qcow2">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-kvm-and-xen-Snapshot20261018.qcow2">x</a>
+        <a href="./openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot2026101.qcow2">x</a>
+        <a href="../openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261101.qcow2">x</a>
+        """
+
+    /// **openSUSE : l'image de cloud datée, l'instantané le plus récent
+    /// d'abord** — par date, même si un numéro d'image plus grand précède un
+    /// instantané plus vieux. Pas l'alias, ni `kvm-and-xen`, ni une date
+    /// tronquée, ni un chemin qui sort du dossier.
+    func testTheOpenSUSEListingGivesTheNewestCloudSnapshot() {
+        let found = ImageDownload.openSUSECandidates(Self.openSUSEListing)
+        XCTAssertEqual(found.map(\.file), ["openSUSE-Tumbleweed-Minimal-VM.x86_64-1.0.0-Cloud-Snapshot20261018.qcow2",
+                                           "openSUSE-Tumbleweed-Minimal-VM.x86_64-2.0.0-Cloud-Snapshot20261004.qcow2"])
+        XCTAssertEqual(found.map(\.version), ["2026.10.18", "2026.10.04"])
+        let file = found[0].file
+        let sum = "c73123390d277037370f0a5d459f2b8e4f3138e2a727b46f1f0d773c7c476e85"
+        XCTAssertEqual(ImageDownload.sumFileChecksum("\(sum)  \(file)\n", for: file), sum)
+        let release = ImageDownload.openSUSERelease(file: file, version: "2026.10.18", sha256: sum, size: 10)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://download.opensuse.org/tumbleweed/appliances/" + file)
+        XCTAssertEqual(release.distribution, "openSUSE Tumbleweed")
         XCTAssertEqual(release.checksum.algorithm, "SHA-256")
     }
 

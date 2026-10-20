@@ -319,9 +319,10 @@ public enum ImageDownload {
         return found.sorted { $0.file > $1.file }
     }
 
-    /// La somme d'un fichier dans son `.SHA256` (le format de `sha256sum`),
+    /// La somme d'un fichier dans le fichier de sommes qui le suit (le format
+    /// de `sha256sum` : le `.SHA256` d'Arch, le `.sha256` d'openSUSE),
     /// seulement si c'est bien de **ce** fichier qu'elle parle.
-    public static func archChecksum(_ sums: String, for file: String) -> String? {
+    public static func sumFileChecksum(_ sums: String, for file: String) -> String? {
         for line in sums.split(separator: "\n") {
             let words = line.split(separator: " ", maxSplits: 1)
             guard words.count == 2 else { continue }
@@ -343,6 +344,57 @@ public enum ImageDownload {
                 // dossier (`…/latest/`), et `url(of:)` retirerait son dernier
                 // composant pour tomber un dossier trop haut.
                 link: index.appendingPathComponent(file))
+    }
+
+    // MARK: - openSUSE Tumbleweed
+
+    /// Le dossier des images d'openSUSE Tumbleweed. Comme pour Arch, la page
+    /// du dossier nomme des fichiers datés : c'est l'instantané (`Snapshot`)
+    /// qui porte la version, la distribution roulant sans numéro.
+    public static let openSUSEIndex = URL(string: "https://download.opensuse.org/tumbleweed/appliances/")!
+
+    /// **L'image de cloud « Minimal-VM », datée** :
+    /// `openSUSE-Tumbleweed-Minimal-VM.x86_64-V-Cloud-SnapshotAAAAMMJJ.qcow2`,
+    /// rendue en version `AAAA.MM.JJ`. Sa racine est un XFS, que lit
+    /// `XfsVolume`. Pas l'alias non daté — pour la raison d'Arch —, ni les
+    /// autres saveurs (`kvm-and-xen`, `VMware`, `MS-HyperV`), qui ne sont pas
+    /// faites pour démarrer seules sous un nuage, ni ce qui suit l'image.
+    static func isBootableOpenSUSE(_ file: String) -> String? {
+        let prefix = "openSUSE-Tumbleweed-Minimal-VM.x86_64-", suffix = ".qcow2", marker = "-Cloud-Snapshot"
+        guard file.hasPrefix(prefix), file.hasSuffix(suffix) else { return nil }
+        let middle = file.dropFirst(prefix.count).dropLast(suffix.count)
+        guard let cut = middle.range(of: marker) else { return nil }
+        let image = middle[..<cut.lowerBound], date = middle[cut.upperBound...]
+        guard !image.isEmpty, image.allSatisfy({ $0.isNumber || $0 == "." }),
+              date.count == 8, date.allSatisfy(\.isNumber) else { return nil }
+        return "\(date.prefix(4)).\(date.dropFirst(4).prefix(2)).\(date.suffix(2))"
+    }
+
+    /// Les images de cloud que la page du dossier nomme, **l'instantané le
+    /// plus récent d'abord** — trié par date, pas par nom : le numéro d'image
+    /// qui le précède peut changer sans que l'instantané soit plus neuf.
+    public static func openSUSECandidates(_ listing: String) -> [(file: String, version: String)] {
+        var found: [(file: String, version: String)] = []
+        for piece in listing.components(separatedBy: "href=\"").dropFirst() {
+            guard let end = piece.firstIndex(of: "\"") else { continue }
+            var file = String(piece[..<end])
+            // La page d'openSUSE écrit ses liens `./nom`.
+            if file.hasPrefix("./") { file.removeFirst(2) }
+            guard isPlainName(file), let version = isBootableOpenSUSE(file),
+                  !found.contains(where: { $0.file == file }) else { continue }
+            found.append((file, version))
+        }
+        return found.sorted { $0.version > $1.version }
+    }
+
+    /// Une image d'openSUSE Tumbleweed, une fois sa taille connue.
+    /// `download.opensuse.org` renvoie vers un miroir : l'adresse donnée est
+    /// la sienne, la redirection est suivie au téléchargement.
+    public static func openSUSERelease(file: String, version: String, sha256: String, size: Int,
+                                       index: URL = openSUSEIndex) -> Release {
+        Release(distribution: "openSUSE Tumbleweed", flavor: "opensuse-cloud", title: "image de cloud (qcow2)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
     }
 
     // MARK: - Reprendre
