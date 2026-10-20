@@ -37,6 +37,11 @@ cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
   et continue — cinquante-huit secondes de temps invité plus loin, il
   initialise IMA et EVM. Son espace utilisateur attend x86-64-v2 (#572 et
   les bits de CPUID).
+- **Le cœur Rust** relit le même corpus de pile (`x86_oracle.rs`) et y passe
+  sans changement ; son compte de formes et de cas, épinglé, suit : 89 et
+  712.
+- **Le compteur publié passe à 2916** : #569, fusionné entre-temps, avait
+  ajouté un test sans le compter.
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
 
