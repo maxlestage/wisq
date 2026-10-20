@@ -287,6 +287,32 @@ final class ImageDownloaderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data(image))
     }
 
+    /// **Arch Linux à côté d'Alpine** : l'image datée lue sur la page du
+    /// dossier, sa somme dans son `.SHA256`, sa taille demandée au serveur,
+    /// puis le fichier téléchargé et vérifié.
+    func testArchIsListedFromItsFolderAndVerifiedBySHA256() async throws {
+        let name = "Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2"
+        let listing = "<a href=\"\(name)\">x</a><a href=\"Arch-Linux-x86_64-cloudimg.qcow2\">x</a>"
+        let sums = SHA256Stream.hex(image) + "  \(name)\n"
+        let file = Server(image)
+        let router = Router([
+            ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8)),
+            ImageDownload.archIndex: Server(Array(listing.utf8)),
+            ImageDownload.archIndex.appendingPathComponent(name + ".SHA256"): Server(Array(sums.utf8)),
+            ImageDownload.archIndex.appendingPathComponent(name): file,
+        ])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
+        let releases = try await downloader.bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["alpine-virt", "alpine-standard", "arch-cloud"])
+        let arch = try XCTUnwrap(releases.last)
+        XCTAssertEqual(arch.version, "2026.10.15")
+        XCTAssertEqual(arch.size, image.count, "la taille vient du 206")
+
+        let url = try await downloader.download(arch, into: library)
+        XCTAssertEqual(url, library.appendingPathComponent(name))
+        XCTAssertEqual(try Data(contentsOf: url), Data(image))
+    }
+
     /// **Un index muet ne cache pas l'autre**, et une image dont le serveur
     /// ne dit pas la taille n'est pas proposée. Seul un échec de tous est un
     /// échec, et il dit le premier.

@@ -282,6 +282,69 @@ public enum ImageDownload {
                 checksum: .sha256(sha256), index: index)
     }
 
+    // MARK: - Arch Linux
+
+    /// Le dossier des dernières images d'Arch Linux. Il n'y a pas d'index au
+    /// sens strict : la page du dossier liste des fichiers **datés**, et c'est
+    /// leur nom qui porte la version.
+    public static let archIndex = URL(string: "https://geo.mirror.pkgbuild.com/images/latest/")!
+
+    /// **L'image de cloud, datée** : `Arch-Linux-x86_64-cloudimg-AAAAMMJJ.N.qcow2`,
+    /// rendue en version `AAAA.MM.JJ`. Pas l'alias non daté — son contenu
+    /// change à chaque construction, et une somme lue avant le téléchargement
+    /// pourrait ne plus être la bonne après — ni l'image `basic`, ni les
+    /// signatures et sommes qui la suivent.
+    static func isBootableArch(_ file: String) -> String? {
+        let prefix = "Arch-Linux-x86_64-cloudimg-", suffix = ".qcow2"
+        guard file.hasPrefix(prefix), file.hasSuffix(suffix) else { return nil }
+        let stamp = file.dropFirst(prefix.count).dropLast(suffix.count)
+        let parts = stamp.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].count == 8, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        else { return nil }
+        let date = parts[0]
+        return "\(date.prefix(4)).\(date.dropFirst(4).prefix(2)).\(date.suffix(2))"
+    }
+
+    /// Les images de cloud que la page du dossier nomme, **la plus récente
+    /// d'abord** : les `href` de la page, rien d'autre de son HTML.
+    public static func archCandidates(_ listing: String) -> [(file: String, version: String)] {
+        var found: [(file: String, version: String)] = []
+        for piece in listing.components(separatedBy: "href=\"").dropFirst() {
+            guard let end = piece.firstIndex(of: "\"") else { continue }
+            let file = String(piece[..<end])
+            guard isPlainName(file), let version = isBootableArch(file),
+                  !found.contains(where: { $0.file == file }) else { continue }
+            found.append((file, version))
+        }
+        return found.sorted { $0.file > $1.file }
+    }
+
+    /// La somme d'un fichier dans son `.SHA256` (le format de `sha256sum`),
+    /// seulement si c'est bien de **ce** fichier qu'elle parle.
+    public static func archChecksum(_ sums: String, for file: String) -> String? {
+        for line in sums.split(separator: "\n") {
+            let words = line.split(separator: " ", maxSplits: 1)
+            guard words.count == 2 else { continue }
+            var name = words[1].trimmingCharacters(in: .whitespaces)
+            if name.hasPrefix("*") { name.removeFirst() }
+            let sha256 = words[0].lowercased()
+            if name == file, isHexDigest(sha256) { return sha256 }
+        }
+        return nil
+    }
+
+    /// Une image d'Arch Linux, une fois sa taille connue.
+    public static func archRelease(file: String, version: String, sha256: String, size: Int,
+                                   index: URL = archIndex) -> Release {
+        Release(distribution: "Arch Linux", flavor: "arch-cloud", title: "image de cloud (qcow2)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index,
+                // **L'adresse est donnée, pas déduite** : l'index est un
+                // dossier (`…/latest/`), et `url(of:)` retirerait son dernier
+                // composant pour tomber un dossier trop haut.
+                link: index.appendingPathComponent(file))
+    }
+
     // MARK: - Reprendre
 
     /// Où vit le fichier tant qu'il n'est pas vérifié.
