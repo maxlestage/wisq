@@ -61,12 +61,28 @@ extension X86Core {
             // — une page qu'un `fork()` vient de rendre lisible seulement —,
             // et le noyau rejoue l'instruction après avoir copié la page. Si
             // RSP avait déjà avancé, le rejeu dépilerait la case suivante.
+            //
+            // **Et l'adresse se calcule avec RSP déjà avancé.** C'est la règle
+            // du manuel pour un `POP` dont l'opérande passe par RSP :
+            // `pop 0x28(%rsp)` écrit à l'ancien RSP + 8 + 0x28. Calculée avec
+            // l'ancien RSP, l'écriture tombait huit octets trop bas — sur la
+            // case que le code relit juste après. Le noyau 5.14 d'AlmaLinux 9
+            // y range ses drapeaux (`pushf ; pop 0x28(%rsp)`) dans
+            // `__text_poke`, puis relit sa `struct page *` à 0x20(%rsp) : il y
+            // trouvait 0x282, en faisait une page, et le premier `memcpy` vers
+            // la projection temporaire visait une adresse physique de
+            // cinquante et un bits. RSP est avancé le temps du calcul, puis
+            // remis, et n'avance pour de bon qu'après l'écriture.
             guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
-            let fields = try decodeFields(instruction)
             let size = Self.stackSize(instruction)
-            let value = try readMemory(registers.read(4), size)
+            let top = registers.read(4)
+            registers[4] = top &+ UInt64(size)
+            let decoded = Result { try decodeFields(instruction) }
+            registers[4] = top
+            let fields = try decoded.get()
+            let value = try readMemory(top, size)
             try writeRM(fields, size, value)
-            registers[4] = registers.read(4) &+ UInt64(size)
+            registers[4] = top &+ UInt64(size)
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
