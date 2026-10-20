@@ -8,6 +8,27 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Une machine reprise le dit
+
+Suite directe, même autorisation. Depuis la sauvegarde continue (#559), une
+machine revient aussi après une application **tuée** — et alors la console
+repart vide, devant un invité qui attend en silence à son invite. Ça
+ressemble à une machine bloquée, ou à rien du tout ; c'est peut-être ce que
+« Y'a rien » voulait dire.
+
+- **`ResumeNote`** (WisqVM) : « Reprise de la sauvegarde automatique de
+  17 h 05 (il y a 12 min). Appuyez sur Entrée pour retrouver l'invite. » —
+  avec la date si la sauvegarde n'est pas du jour, sans heure si le fichier
+  n'en dit pas.
+- **`SuspendedMachine.savedAt`** : l'heure, lue sur le fichier.
+- **`LocalVMModel`** l'écrit dans la console après une restauration réussie,
+  seulement quand l'écran n'a pas vu la machine partir : une reprise après
+  suspension garde sa console et n'en a pas besoin.
+- **Tests** : cinq (même jour, autre jour, âges en mots, horloge qui recule,
+  sans date, heure du fichier). **Sabotage** : l'âge lu en secondes au lieu
+  de minutes → deux échecs.
+- Compteur publié : 2895.
+
 ## 2026-10-20 — Le calcul d'adresse allégé : −5 % sur les phases chaudes de Fedora
 
 Suite directe, même autorisation. Un profil de l'invité — Fedora démarrée
