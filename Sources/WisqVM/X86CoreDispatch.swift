@@ -270,6 +270,16 @@ extension X86Core {
             write(0, size, highByte: false, read(other, size, highByte: false))
             write(other, size, highByte: false, first)
 
+        // `LAHF` et `SAHF` : SF, ZF, AF, PF et CF vers AH et retour. Les
+        // premiers x86-64 ne les avaient pas en mode long, d'où un bit de
+        // CPUID à part, que x86-64-v2 exige. `LAHF` copie l'octet bas tel
+        // quel : le bit 1 y vaut toujours un, et 3 et 5 toujours zéro, parce
+        // que `SAHF` et `POPF` ne les laissent pas passer — un masque ici ne
+        // changerait rien, et un sabotage l'a montré.
+        case 0x9F:  // LAHF
+            registers[0] = registers.read(0) & ~0xFF00 | (flags & 0xFF) << 8
+        case 0x9E:  // SAHF
+            flags = flags & ~0xD5 | (registers.read(0) >> 8) & 0xD5
         case 0x9C:  // PUSHF : les drapeaux sur la pile, huit octets en mode long
             try push(flags | Flag.reserved, 8)
         case 0x9D:  // POPF
@@ -685,10 +695,12 @@ extension X86Core {
             // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
             // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
             // promet le bit CX8 de CPUID, que la glibc exige pour démarrer.
-            // Avec REX.W, ce serait `CMPXCHG16B`, que CX16 n'annonce pas.
+            // Avec REX.W, c'est `CMPXCHG16B` (voir `X86SSE42.swift`).
             let fields = try decodeFields(instruction)
-            guard fields.mod != 0b11, (instruction.rex ?? 0) & 0x08 == 0 else {
-                throw Fault.unsupported("CMPXCHG16B, ou CMPXCHG8B sur un registre")
+            guard fields.mod != 0b11 else { throw Fault.unsupported("CMPXCHG8B sur un registre") }
+            if (instruction.rex ?? 0) & 0x08 != 0 {
+                try compareExchange16(fields)
+                return
             }
             let current = try readMemory(lastAddress, 8)
             let expected = (registers.read(2) & 0xFFFF_FFFF) << 32 | (registers.read(0) & 0xFFFF_FFFF)
