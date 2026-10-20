@@ -378,11 +378,17 @@ public struct CloudBoot: Equatable, Sendable {
     /// shell de connexion, directement sur `ttyS0` (voir `shellOnSerial`).
     /// Un systemd plus ancien l'ignore, et les trois options d'avant
     /// suffisent alors.
+    ///
+    /// **Et pas d'assistant d'openSUSE.** Sa première mise en route n'est pas
+    /// `systemd-firstboot` mais `jeos-firstboot`, une boîte de dialogue qui
+    /// prend la console avant le shell et attend qu'on la remplisse — langue,
+    /// clavier, licence, mot de passe. Masqué, le shell vient directement ;
+    /// ailleurs, l'unité n'existe pas et le masque ne fait rien.
     static let consoleOptions = [
         "systemd.set_credential=agetty.autologin:root", "systemd.set_credential=login.noauth:yes",
         "systemd.set_credential_binary=systemd.unit-dropin.serial-getty@ttyS0.service:"
             + Data(shellOnSerial.utf8).base64EncodedString(),
-        "systemd.mask=user@0.service",
+        "systemd.mask=user@0.service", "systemd.mask=jeos-firstboot.service",
     ]
 
     /// Le drop-in de la console série. Passé en base64, parce qu'une ligne de

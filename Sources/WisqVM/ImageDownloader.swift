@@ -60,7 +60,7 @@ public struct ImageDownloader: Sendable {
     }
 
     /// Les images qui démarrent ici, de tous les index : Alpine, Debian,
-    /// Fedora, Ubuntu, puis Arch Linux.
+    /// Fedora, Ubuntu, puis Arch Linux et openSUSE Tumbleweed.
     ///
     /// **Un index qui ne répond pas ne cache pas les autres** : la liste
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
@@ -69,7 +69,8 @@ public struct ImageDownloader: Sendable {
                                  debian: URL = ImageDownload.debianIndex,
                                  fedora: URL = ImageDownload.fedoraIndex,
                                  ubuntu: URL = ImageDownload.ubuntuIndex,
-                                 arch: URL = ImageDownload.archIndex) async throws
+                                 arch: URL = ImageDownload.archIndex,
+                                 openSUSE: URL = ImageDownload.openSUSEIndex) async throws
         -> [ImageDownload.Release] {
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
@@ -115,10 +116,24 @@ public struct ImageDownloader: Sendable {
             if let newest = ImageDownload.archCandidates(try await read(arch)).first {
                 let file = arch.appendingPathComponent(newest.file)
                 let sums = try await read(arch.appendingPathComponent(newest.file + ".SHA256"))
-                if let sha256 = ImageDownload.archChecksum(sums, for: newest.file),
+                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
                    let size = try await size(of: file) {
                     releases.append(ImageDownload.archRelease(
                         file: newest.file, version: newest.version, sha256: sha256, size: size, index: arch))
+                }
+            }
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        // openSUSE : la même forme qu'Arch, le `.sha256` à côté de l'image.
+        do {
+            if let newest = ImageDownload.openSUSECandidates(try await read(openSUSE)).first {
+                let file = openSUSE.appendingPathComponent(newest.file)
+                let sums = try await read(openSUSE.appendingPathComponent(newest.file + ".sha256"))
+                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
+                   let size = try await size(of: file) {
+                    releases.append(ImageDownload.openSUSERelease(
+                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: openSUSE))
                 }
             }
         } catch {
