@@ -151,10 +151,12 @@ final class X86WaitingBudgetTests: XCTestCase {
             return core
         }
         for oneShot in [false, true] {
-            for waiting in [nil, 900_000] as [UInt64?] {
+            for waiting in [nil, 75_000 * X86LegacyDevices.instructionsPerTick] as [UInt64?] {
                 var counted = try machine(skipping: false, oneShot: oneShot)
                 var skipped = try machine(skipping: true, oneShot: oneShot)
-                let budget: UInt64 = 600_000
+                // Cinquante mille battements : une quarantaine de réveils en
+                // mode périodique, une dizaine en coup unique.
+                let budget = 50_000 * X86LegacyDevices.instructionsPerTick
                 let a = try counted.run(budget: budget, waiting: waiting)
                 let b = try skipped.run(budget: budget, waiting: waiting)
                 let label = "coup unique : \(oneShot), attente : \(String(describing: waiting))"
