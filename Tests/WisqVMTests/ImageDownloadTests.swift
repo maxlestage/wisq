@@ -189,6 +189,44 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(release.checksum.algorithm, "SHA-256")
     }
 
+    /// Un extrait de la vraie page `images/latest/` d'Arch Linux, avec une
+    /// construction plus ancienne ajoutée, et ce qui doit être écarté :
+    /// l'image `basic`, les alias non datés, les sommes et les signatures, le
+    /// dossier parent, et un nom qui contient un chemin.
+    static let archListing = """
+        <a href="../">../</a>
+        <a href="Arch-Linux-x86_64-basic-20261015.611680.qcow2">x</a>
+        <a href="Arch-Linux-x86_64-basic.qcow2">x</a>
+        <a href="Arch-Linux-x86_64-cloudimg-20261001.600000.qcow2">x</a>
+        <a href="Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2">x</a>
+        <a href="Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2.SHA256">x</a>
+        <a href="Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2.sig">x</a>
+        <a href="Arch-Linux-x86_64-cloudimg.qcow2">x</a>
+        <a href="sub/Arch-Linux-x86_64-cloudimg-20261101.700000.qcow2">x</a>
+        """
+
+    /// **Arch Linux : l'image de cloud datée, la plus récente d'abord**, et
+    /// sa somme lue dans son propre `.SHA256` — pas dans celui d'un autre
+    /// fichier.
+    func testTheArchListingGivesTheNewestDatedCloudImage() {
+        let found = ImageDownload.archCandidates(Self.archListing)
+        XCTAssertEqual(found.map(\.file), ["Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2",
+                                           "Arch-Linux-x86_64-cloudimg-20261001.600000.qcow2"])
+        XCTAssertEqual(found.first?.version, "2026.10.15")
+        let file = "Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2"
+        let sum = "08754e28d91b1680086c6211ef4df13559e766fff7cdb4006489b14b5d281f08"
+        XCTAssertEqual(ImageDownload.archChecksum("\(sum)  \(file)\n", for: file), sum)
+        XCTAssertNil(ImageDownload.archChecksum("\(sum)  Arch-Linux-x86_64-cloudimg.qcow2\n", for: file),
+                     "la somme d'un autre nom n'est pas celle-ci")
+        XCTAssertNil(ImageDownload.archChecksum("pas-une-somme  \(file)\n", for: file))
+        let release = ImageDownload.archRelease(file: file, version: "2026.10.15", sha256: sum, size: 10)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://geo.mirror.pkgbuild.com/images/latest/" + file,
+                       "dans le dossier de l'index, pas un cran au-dessus")
+        XCTAssertEqual(release.distribution, "Arch Linux")
+        XCTAssertEqual(release.checksum.algorithm, "SHA-256")
+    }
+
     /// **Les vrais fichiers**, si on les donne (`WISQ_FEDORA_QCOW2`,
     /// `WISQ_UBUNTU_IMG`) : leur somme est celle que publie leur index —
     /// les deux images que wisq a démarrées jusqu'au shell.

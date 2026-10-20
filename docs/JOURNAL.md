@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Arch Linux, la cinquième distribution
+
+Suite directe, même autorisation. « Installer sur wisq différentes
+machines Linux » : la feuille « Télécharger » proposait Alpine, Debian,
+Fedora et Ubuntu. Arch Linux publie une image de cloud qcow2, racine en
+btrfs, que les lecteurs de ce dépôt ouvrent déjà.
+
+- **Essayée avant d'être proposée.** L'image du 15 octobre 2026
+  (`Arch-Linux-x86_64-cloudimg-20261015.611680.qcow2`, 577 Mo, SHA-256
+  `08754e28…`, conforme à celle publiée), démarrée par le banc
+  `testHowFarARealKernelGets` sans rien changer au cœur : noyau, initramfs
+  systemd (« Booting initrd of Arch Linux »), puis l'invite
+  `[root@archlinux ~]#` et la réponse à `echo wisq-parle`, environ vingt-cinq
+  minutes après le départ.
+- **L'index** (`ImageDownload.archIndex`) est le dossier
+  `images/latest/` : sa page nomme des fichiers **datés**, et c'est le nom
+  qui porte la version (`2026.10.15`). La somme se lit dans le `.SHA256`
+  du fichier daté, pas dans celui de l'alias non daté, dont le contenu
+  change à chaque construction — une somme lue avant le téléchargement
+  pourrait ne plus être la bonne après.
+- **L'adresse est donnée** (`link`), pas déduite : l'index étant un
+  dossier, `url(of:)` aurait retiré son dernier composant et visé un dossier
+  trop haut. Le test l'épingle.
+- **Tests** : la page (image datée la plus récente d'abord ; `basic`, alias,
+  sommes, signatures, parent et chemins écartés), la somme du seul bon
+  fichier, l'adresse ; et un téléchargement complet à travers le routeur,
+  vérifié par SHA-256. **Sabotage** : l'ordre inversé → deux échecs.
+- Compteur publié : 2897.
+
 ## 2026-10-20 — Une machine reprise le dit
 
 Suite directe, même autorisation. Depuis la sauvegarde continue (#559), une

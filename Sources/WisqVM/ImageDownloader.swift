@@ -60,7 +60,7 @@ public struct ImageDownloader: Sendable {
     }
 
     /// Les images qui démarrent ici, de tous les index : Alpine, Debian,
-    /// Fedora, puis Ubuntu.
+    /// Fedora, Ubuntu, puis Arch Linux.
     ///
     /// **Un index qui ne répond pas ne cache pas les autres** : la liste
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
@@ -68,7 +68,8 @@ public struct ImageDownloader: Sendable {
     public func bootableReleases(alpine: URL = ImageDownload.alpineIndex,
                                  debian: URL = ImageDownload.debianIndex,
                                  fedora: URL = ImageDownload.fedoraIndex,
-                                 ubuntu: URL = ImageDownload.ubuntuIndex) async throws
+                                 ubuntu: URL = ImageDownload.ubuntuIndex,
+                                 arch: URL = ImageDownload.archIndex) async throws
         -> [ImageDownload.Release] {
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
@@ -104,6 +105,21 @@ public struct ImageDownloader: Sendable {
                 releases.append(ImageDownload.ubuntuRelease(
                     file: candidate.file, version: candidate.version, sha256: candidate.sha256,
                     size: size, index: ubuntu))
+            }
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        // Arch : la page du dossier nomme l'image datée, son `.SHA256` à côté
+        // en donne la somme. Seule la plus récente est proposée.
+        do {
+            if let newest = ImageDownload.archCandidates(try await read(arch)).first {
+                let file = arch.appendingPathComponent(newest.file)
+                let sums = try await read(arch.appendingPathComponent(newest.file + ".SHA256"))
+                if let sha256 = ImageDownload.archChecksum(sums, for: newest.file),
+                   let size = try await size(of: file) {
+                    releases.append(ImageDownload.archRelease(
+                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: arch))
+                }
             }
         } catch {
             firstFailure = firstFailure ?? error
