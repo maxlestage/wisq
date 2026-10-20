@@ -39,6 +39,10 @@ extension X86Core {
         case 0x3D: return choose(4, smaller: false, signed: true)   // PMAXSD
         case 0x3B: return choose(4, smaller: true, signed: false)   // PMINUD
         case 0x3F: return choose(4, smaller: false, signed: false)  // PMAXUD
+        case 0x37:  // PCMPGTQ, signé (SSE4.2)
+            return elementwise(8, destination, source) {
+                Int64(bitPattern: $0) > Int64(bitPattern: $1) ? $2 : 0
+            }
         case 0x29:  // PCMPEQQ
             return elementwise(8, destination, source) { $0 == $1 ? $2 : 0 }
         case 0x40:  // PMULLD : les trente-deux bits bas de chaque produit
