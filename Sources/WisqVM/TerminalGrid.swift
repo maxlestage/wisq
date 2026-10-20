@@ -13,8 +13,10 @@ import Foundation
 /// cursor addressing, erases, insert/delete of lines and characters, the
 /// scroll region, the alternate screen, save/restore cursor, and SGR
 /// attributes (recorded per cell, so a renderer can show them; the plain-text
-/// projection ignores them). What it deliberately does not do: respond to
-/// queries (DSR would need a back-channel to the guest), and reflow on
+/// projection ignores them). It **answers the three questions** a program
+/// asks a terminal — where the cursor is, whether the terminal is well, and
+/// what kind of terminal it is — in `replies`, which the caller sends back to
+/// the guest (see `takeReplies`). What it deliberately does not do: reflow on
 /// resize (real terminals do not either).
 ///
 /// Two behaviours are worth naming because getting them wrong is invisible
@@ -146,6 +148,33 @@ public struct TerminalGrid: Sendable {
 
     public var cursor: (row: Int, column: Int) { (cursorRow, cursorColumn) }
 
+    /// **Les réponses que l'invité attend**, dans l'ordre des questions.
+    ///
+    /// systemd 258 mesure une console série en y envoyant le curseur au coin
+    /// le plus lointain (`CSI 32766;32766 H`) puis en demandant où il est
+    /// arrivé (`CSI 6 n`) : la réponse est la taille de l'écran. openSUSE le
+    /// fait à chaque shell. Sans réponse, systemd attend son délai — compté en
+    /// temps invité, donc long sur ce cœur — et le shell garde une taille
+    /// inconnue ; `resize`, `vim` ou `top` posent la même question.
+    public private(set) var replies: [UInt8] = []
+
+    /// Borné, comme `csiBuffer` : un invité qui pose mille questions sans
+    /// que personne ne relève les réponses ne fait pas grossir la grille.
+    private static let repliesLimit = 4096
+
+    private mutating func reply(_ text: String) {
+        let bytes = Array(text.utf8)
+        guard replies.count + bytes.count <= Self.repliesLimit else { return }
+        replies += bytes
+    }
+
+    /// Rend les réponses en attente et les oublie : à envoyer à l'invité,
+    /// comme une frappe.
+    public mutating func takeReplies() -> [UInt8] {
+        defer { replies.removeAll(keepingCapacity: true) }
+        return replies
+    }
+
     /// Scrollback plus the visible screen, as plain text. Trailing blanks are
     /// trimmed — per line, and for the screen's unused bottom — so a fresh
     /// grid is empty rather than 24 blank lines, and a boot log reads exactly
@@ -215,6 +244,7 @@ public struct TerminalGrid: Sendable {
         isAlternateScreen = false
         state = .text
         csiBuffer.removeAll()
+        replies.removeAll()
     }
 
     // MARK: - Parser
@@ -359,6 +389,9 @@ public struct TerminalGrid: Sendable {
             handlePrivateMode(final: final, parameters: parameters)
             return
         }
+        // `CSI > c`, `CSI = c` : d'autres questions, sur d'autres versions ;
+        // y répondre comme à `CSI c` mentirait.
+        if raw.hasPrefix(">") || raw.hasPrefix("=") || raw.hasPrefix("<") { return }
 
         switch final {
         case "A":
@@ -404,6 +437,18 @@ public struct TerminalGrid: Sendable {
                 top: parameter(0, default: 1) - 1,
                 bottom: parameter(1, default: rows) - 1
             )
+        case "n":
+            // DSR : 5, l'état (« tout va bien ») ; 6, la place du curseur,
+            // comptée depuis 1, ligne puis colonne.
+            switch parameters.first ?? 0 {
+            case 5: reply("\u{1B}[0n")
+            case 6: reply("\u{1B}[\(cursorRow + 1);\(cursorColumn + 1)R")
+            default: break
+            }
+        case "c":
+            // DA : un VT102, ce que ce terminal imite — pas de couleurs
+            // annoncées, et rien qu'il ne sache faire.
+            if (parameters.first ?? 0) == 0 { reply("\u{1B}[?6c") }
         default:
             break  // queries and modes this grid has no behaviour for
         }

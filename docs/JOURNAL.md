@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — La console répond quand on lui demande où est le curseur
+
+Suite directe, même autorisation. En démarrant openSUSE jusqu'au shell, la
+console a montré, avant chaque invite, une question de systemd 258 : le
+curseur envoyé au coin le plus lointain (`CSI 32766;32766 H`), puis « où
+es-tu ? » (`CSI 6 n`). C'est ainsi qu'il mesure une console série. La grille
+ne répondait à rien — son en-tête le disait, faute de voie de retour vers
+l'invité — et systemd attendait son délai, compté en temps invité, avant de
+laisser au shell une taille inconnue. `resize`, `vim` et `top` posent la même
+question.
+
+- **`TerminalGrid.replies`** : la place du curseur (`CSI 6 n`, depuis 1,
+  ligne puis colonne), l'état (`CSI 5 n` → « tout va bien ») et la nature
+  (`CSI c` → un VT102, ce que la grille imite). Rien aux questions qu'elle ne
+  connaît pas (`CSI > c`, `CSI ? 6 n`, `CSI 15 n`) : mieux vaut se taire que
+  mentir. Bornées à 4 Kio si personne ne les relève ; la remise à zéro les
+  oublie.
+- **La voie de retour** : `LocalVMModel` relève les réponses à chaque morceau
+  de console, sur le fil d'émulation, et les envoie à la machine comme une
+  frappe (`ConsoleAnswers`, la machine n'existant qu'après la fermeture qui
+  reçoit sa sortie). `send` est sûr depuis n'importe quel fil, et la sortie
+  est publiée hors du verrou de la machine.
+- **Tests** : la mesure de systemd telle qu'openSUSE l'envoie (réponse
+  `24;80`, curseur rendu à sa place), un écran de 132 × 50, le compte depuis
+  1, l'état et la nature, les questions tues, une question coupée entre deux
+  morceaux, la borne. **Sabotages** : colonne avant ligne → 7 échecs ; compte
+  depuis 0 → 10 ; `CSI > c` répondu → 4 ; réponses jamais oubliées → 4 ;
+  sans borne → 4 ; remise à zéro qui les garde → 4.
+- Compteur publié : 2909.
+
 ## 2026-10-20 — Un lecteur XFS, pour openSUSE et la famille de Red Hat
 
 Suite directe, même autorisation. L'image de cloud d'openSUSE Tumbleweed

@@ -285,14 +285,21 @@ public final class LocalVMModel {
             }
         }
 
+        // La console répond aux questions de l'invité (voir
+        // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
+        // n'existe qu'après cette fermeture — d'où la boîte.
+        let answers = ConsoleAnswers()
         let machine = makeLocalMachine(
             for: core, ramSizeBytes: machineRAM
         ) { [sink] chunk in
-            guard sink.append(chunk) else { return }
+            let (refresh, replies) = sink.append(chunk)
+            answers.send(replies)
+            guard refresh else { return }
             Task { @MainActor [weak self] in
                 self?.consoleText = sink.takeText()
             }
         }
+        answers.machine = machine
         self.machine = machine
         beat(machine)
 
@@ -741,15 +748,17 @@ private final class ConsoleSink: @unchecked Sendable {
     /// dedans serait une course, pour un nombre qui ne change jamais.
     let columns: Int
 
-    /// Buffers the chunk. Returns true only for the write that should schedule
-    /// a refresh — every write until that refresh happens returns false.
-    func append(_ data: Data) -> Bool {
+    /// Buffers the chunk. `refresh` is true only for the write that should
+    /// schedule a refresh — every write until that refresh happens returns
+    /// false. `replies` is what the chunk asked the terminal, answered.
+    func append(_ data: Data) -> (refresh: Bool, replies: Data) {
         lock.lock()
         defer { lock.unlock() }
         console.append(data)
-        if refreshPending { return false }
+        let replies = Data(console.takeReplies())
+        if refreshPending { return (false, replies) }
         refreshPending = true
-        return true
+        return (true, replies)
     }
 
     /// Le mode des flèches que l'invité a demandé, lu sous le verrou : la
@@ -779,6 +788,31 @@ private final class ConsoleSink: @unchecked Sendable {
         defer { lock.unlock() }
         console.removeAll()
         refreshPending = false
+    }
+}
+
+/// La machine à qui la console répond, posée une fois créée. Lue depuis le
+/// fil d'émulation, écrite depuis l'acteur principal : sous verrou.
+private final class ConsoleAnswers: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var target: GuestMachine?
+
+    var machine: GuestMachine? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return target
+        }
+        set {
+            lock.lock()
+            target = newValue
+            lock.unlock()
+        }
+    }
+
+    func send(_ replies: Data) {
+        guard !replies.isEmpty else { return }
+        machine?.send(replies)
     }
 }
 
