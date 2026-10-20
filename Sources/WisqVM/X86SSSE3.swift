@@ -40,6 +40,15 @@ extension X86Core {
             try testBits(fields)
             return
         }
+        // `MOVNTDQA` (SSE4.1) : seize octets de la mémoire, sans passer par
+        // le cache — ce qui ne change rien ici. Il n'existe que depuis la
+        // mémoire. openSUSE l'emploie.
+        if opcode == 0x2A {
+            guard fields.mod != 0b11 else { throw Fault.unsupported("66 0F 38 2A entre registres") }
+            let value = try readVectorRM(fields, 16)
+            setVector(fields.reg, value.0, value.1)
+            return
+        }
         if let widening = Self.widening(opcode) {
             try widen(fields, widening)
             return
