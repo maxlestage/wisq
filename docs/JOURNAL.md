@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Fedora et Ubuntu dans la feuille « Télécharger »
+
+Suite directe, même autorisation. Fedora 44 Cloud et Ubuntu 26.04 vont
+maintenant jusqu'au shell de `root` (#549) : la feuille « Télécharger »
+de l'application, qui ne proposait qu'Alpine et Debian, les propose
+aussi. C'est l'axe « installer différentes machines Linux » vu de
+l'iPhone.
+
+- **Fedora**, par son `releases.json` : un tableau de toutes les images
+  publiées, avec l'adresse, la taille et la somme SHA-256 de chacune. Seule
+  la `Generic` du Cloud en qcow2 est gardée — les autres sont pour un nuage
+  précis, pour Vagrant, ou démarrent par un noyau unifié UEFI que wisq ne
+  lit pas —, et seulement la version la plus récente numérotée comme une
+  version (une bêta est écartée). L'adresse vient du réseau : elle n'est
+  suivie que sur `download.fedoraproject.org` en HTTPS, et son dernier
+  segment doit être un nom de fichier. `Release` porte donc une adresse
+  facultative, `link`, que `url(of:)` préfère au fichier voisin de l'index.
+- **Ubuntu**, par les `SHA256SUMS` de `releases/resolute/release/` (le
+  chemin `26.04` y renvoie par une redirection) : l'image disque du serveur,
+  `ubuntu-26.04-server-cloudimg-amd64.img`, un qcow2. Pas la variante
+  `amd64v3`, compilée pour des processeurs plus récents que celui que wisq
+  annonce.
+- **Vérifié sur les vrais serveurs** : l'adresse de Fedora renvoie vers un
+  miroir, qui répond `206` avec `bytes 0-0/583729152` à une demande d'un
+  octet — la reprise tient à travers la redirection ; Ubuntu répond
+  `bytes 0-0/865115136`. Les deux fichiers que wisq a démarrés ont la somme
+  que publie leur index (un test local, `WISQ_FEDORA_QCOW2` et
+  `WISQ_UBUNTU_IMG`).
+- **À la mémoire que l'application leur donne** : Fedora (27,8 milliards
+  d'instructions) et Ubuntu (47,8) vont jusqu'au shell et répondent avec 512 Mio,
+  le plancher de `CloudBoot.minimumRAMSize`. Rien à changer de ce côté.
+- Quatre tests : les deux index et ce qu'ils écartent (autres formats,
+  autres architectures, une version plus ancienne, une bêta, un autre
+  hôte, du HTTP clair, un répertoire, un nom avec un chemin), les deux
+  images listées et téléchargées par le même `ImageDownloader` contre un
+  serveur scripté, et les vraies sommes.
+
 ## 2026-10-20 — Fedora 44 jusqu'au shell : un processeur de 43 MHz
 
 Suite directe, même autorisation. La cause du gel de Fedora était connue
