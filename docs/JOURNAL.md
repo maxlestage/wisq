@@ -8,6 +8,42 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — La machine se sauve d'elle-même pendant qu'elle tourne
+
+Suite directe, même autorisation. La sauvegarde n'avait lieu qu'au départ,
+quand iOS met l'application en arrière-plan. Mais iOS ne prévient pas
+toujours : une application tuée pour la mémoire, un plantage, une batterie
+vide, et le démarrage d'une image de cloud — vingt minutes pour Fedora sur
+ce cœur — était à refaire en entier.
+
+- **`CheckpointedRun`** (WisqVM) : la machine tourne par tranches de
+  50 millions, sur son fil, et entre deux tranches elle se sauve quand
+  c'est dû — au moins cinq minutes **et** deux milliards d'instructions
+  retirées depuis la dernière. Une invite immobile ne retire presque rien
+  (l'attente est sautée) et n'est donc pas réécrite. Le démarrage lisait
+  déjà un instantané quand il en trouvait un : une machine tuée reprend à
+  sa dernière sauvegarde. La console, elle, repart vide.
+- **L'invité ne s'arrête que le temps de l'instantané.** Mesuré sur Fedora
+  reprise à 18 milliards : 0,73 s pour l'instantané (237 Mio), puis 2,4 s
+  pour le compresser et l'écrire (122 Mio) — ces 2,4 s-là sur une file à
+  part.
+- **L'arrêt et la sauvegarde sont ordonnés.** « Arrêter » efface
+  l'instantané ; une écriture qui finirait après le ferait revenir, et une
+  sauvegarde de suspension écrasée par un point de reprise plus ancien
+  reprendrait une mémoire en retard sur son disque. L'écriture se fait sous
+  un verrou que `stop` prend aussi, et relit le drapeau d'arrêt juste
+  avant : `stop` attend une écriture en cours, jamais une compression, qui
+  est jetée. `LocalVMModel` arrête désormais à travers la course, et
+  n'efface qu'après.
+- **Tests** : sept, avec une machine qui compte et une horloge injectée —
+  l'intervalle, l'invité qui dort, le disque scellé avant l'instantané,
+  l'échec d'écriture, l'arrêt contre la tranche épuisée, l'arrêt qui
+  attend l'écriture, la compression jetée. **Sabotages** : la relecture du
+  drapeau retirée → la compression jetée est écrite ; le seuil de travail
+  retiré → l'invité qui dort est réécrit ; l'écriture sortie du verrou →
+  l'arrêt n'attend plus.
+- Compteur publié : 2885.
+
 ## 2026-10-20 — Le cache de décodage double : −7 % sur Fedora
 
 Suite directe, même autorisation. Sur 100 millions d'instructions de
