@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF
+
+Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
+emploient de SSE4.2 — `pcmpistri` (404 fois), `pcmpgtq` (64) ; ni `crc32`,
+ni `pcmpestri`, ni les formes `…m` — et les deux autres exigences de
+x86-64-v2 : `cmpxchg16b` (que le cœur refusait expressément) et `lahf`/`sahf`
+en mode long (`X86SSE42.swift`).
+
+- **`PCMPISTRI` en entier**, pas seulement ses quatre usages : la glibc
+  n'emploie que les immédiats 0x1a et 0x3a (égal un à un, nié ou nié sur les
+  éléments valides) et 0x02 et 0x12 (égal à l'un des), relevés par `objdump`.
+  Le corpus en essaie vingt-quatre, qui couvrent les quatre agrégations, les
+  deux tailles avec et sans signe, les quatre polarités et l'indice compté
+  des deux bouts ; les états portent des chaînes terminées tôt, des
+  intervalles et une sous-chaîne. Les indices rendus vont de 0 à 16.
+- **`CMPXCHG16B`** : un état sur cinq porte dans RDX:RAX les seize octets de
+  la fenêtre, et onze échanges sur cinquante-sept réussissent. La case est
+  vérifiée inscriptible avant tout : la machine l'écrit même quand la
+  comparaison échoue. Le corpus rapporte désormais RDX.
+- **Le corpus passe à 237 formes et 13 509 cas**, tous tenus.
+- **Ce que le corpus ne voyait pas, et ce qu'il ne pouvait pas voir.** Les
+  octets signés de `PCMPISTRI` ne comptent que pour les intervalles, et
+  aucun intervalle d'octets signés n'était essayé : 0x06 et 0x46 entrent. Les
+  bits 1, 3 et 5 que `SAHF` ne laisse pas passer sont hors des drapeaux que
+  le corpus rapporte, et il n'exécute qu'une instruction : un test fait
+  `SAHF` puis `LAHF` sur AH = 0xFF et exige 0xD7. Le masque de `LAHF`, lui,
+  ne changeait rien — `flags` n'a jamais ces bits levés — et il est retiré.
+- **Sabotages** : longueur implicite ignorée → 11 673 accords sur 13 281 ;
+  un à un avec des invalides inégaux → 13 191 ; intervalles stricts →
+  13 204 ; négation masquée complète → 13 233 ; indice toujours du bas →
+  13 181 ; ZF jamais → 12 477 ; OF jamais → 12 465 ; sous-chaîne sans fin du
+  motif → 13 123 ; `cmpxchg16b` avec RBX et RCX inversés → 13 259, sans RDX
+  → 13 189 ; `pcmpgtq` sans signe → 13 225 ; octets toujours sans signe et
+  `SAHF` sans masque : vus par les ajouts ci-dessus.
+- `X86SystemTests` épinglait le refus de `CMPXCHG16B` ; ce refus n'existe
+  plus, et le corpus le remplace.
+- Compteur publié : 2916.
+
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
 
 Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
