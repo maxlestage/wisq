@@ -36,9 +36,17 @@ final class X86SystemTests: XCTestCase {
         for (bit, name) in [(8, "CX8"), (23, "MMX"), (24, "FXSR"), (25, "SSE"), (26, "SSE2")] {
             XCTAssertNotEqual(features & (1 << UInt32(bit)), 0, "\(name) : sans lui, la glibc refuse de démarrer")
         }
-        // Et rien au-delà, que ce cœur n'a pas : SSE3, SSSE3, SSE4, AVX
-        // vivent dans ECX, qui reste vide.
-        XCTAssertEqual(X86CPUID.answer(leaf: 1, subleaf: 0).2, 0)
+        // **x86-64-v2, dans ECX** : SSE3, SSSE3, CX16, SSE4.1, SSE4.2 et
+        // POPCNT, que la glibc d'AlmaLinux 9 exige — et rien au-delà : ni
+        // MONITOR, ni AVX (28), ni XSAVE (26), que ce cœur n'a pas.
+        let ecx = X86CPUID.answer(leaf: 1, subleaf: 0).2
+        for (bit, name) in [(0, "SSE3"), (9, "SSSE3"), (13, "CX16"), (19, "SSE4.1"), (20, "SSE4.2"), (23, "POPCNT")] {
+            XCTAssertNotEqual(ecx & (1 << UInt32(bit)), 0, "\(name) : x86-64-v2 l'exige")
+        }
+        XCTAssertEqual(ecx & ~X86CPUID.featuresECX, 0)
+        XCTAssertEqual(ecx & (1 << 3 | 1 << 26 | 1 << 27 | 1 << 28), 0, "ni MONITOR, ni XSAVE, ni AVX")
+        // LAHF-SAHF en mode long, l'autre exigence de x86-64-v2.
+        XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1)
     }
 
     /// **CX8 annoncé : `CMPXCHG8B` répond.** Égal, il range ECX:EBX et lève
