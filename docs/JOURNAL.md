@@ -8,7 +8,7 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF
+## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF, l'arrondi
 
 Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
 emploient de SSE4.2 — `pcmpistri` (404 fois), `pcmpgtq` (64) ; ni `crc32`,
@@ -44,6 +44,21 @@ en mode long (`X86SSE42.swift`).
   `SAHF` sans masque : vus par les ajouts ci-dessus.
 - `X86SystemTests` épinglait le refus de `CMPXCHG16B` ; ce refus n'existe
   plus, et le corpus le remplace.
+- **Et l'arrondi, avec ce qui restait de SSE3** : `roundsd` (462 fois),
+  `roundss` (22), `roundpd` (4), `roundps`, et `addsubpd` (3) ; `fisttp` était
+  déjà là. Le mode vient de l'immédiat, ou de MXCSR quand le bit 2 est levé.
+  Le corpus gagne de vrais nombres (les égalités 1,5 et -2,5, -0,0, +∞, des
+  NaN silencieux et signalants, un dénormal) et passe à **327 formes et
+  24 525 cas**, tous tenus. Sabotages : l'égalité arrondie loin de zéro →
+  22 332 accords sur 22 392 ; -∞ et +∞ inversés → 20 931 ; `roundsd` qui
+  efface le haut → 21 312, `roundss` qui efface le reste du bas → 21 420 ;
+  `addsubpd` qui additionne en bas → 22 312. **Deux trous vus par les
+  sabotages** : ignorer le bit 2 ne se voyait pas, MXCSR valant « au plus
+  proche » comme les bits bas à zéro — 0x5 et 0xF entrent, et le sabotage
+  tombe à 24 264 sur 24 525 ; et rendre un NaN signalant silencieux ne se
+  voit pas même avec un NaN signalant, parce que l'instruction d'arrondi de
+  l'hôte le fait d'elle-même. Gardé, et dit tel quel dans le code : la
+  garantie est celle de l'hôte, et la CI Apple joue le même corpus en arm64.
 - Compteur publié : 2916.
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier

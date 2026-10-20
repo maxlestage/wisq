@@ -130,6 +130,18 @@ def forms():
     # sont rangés ; sinon ils sont relus dans RDX:RAX. Les états où RAX et
     # RDX portent la fenêtre font l'égalité.
     out += [f"lock cmpxchg16b {ALIGNED:#x}(%rsi)", f"cmpxchg16b {ALIGNED:#x}(%rsi)"]
+    # **L'arrondi de SSE4.1**, scalaire et empaqueté. Bits 1-0 de
+    # l'immédiat : au plus proche, vers -∞, vers +∞, vers zéro ; bit 2 : le
+    # mode de MXCSR à la place (ici le défaut, au plus proche) ; bit 3 : sans
+    # exception de précision, ce qui ne change pas le résultat. Les formes
+    # scalaires gardent le haut de la destination.
+    # 0x5 et 0xF : le bit 2 levé **et** un mode dans les bits bas, que MXCSR
+    # doit l'emporter sur — sans eux, ignorer le bit 2 ne se voit pas.
+    for control in [0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x8, 0x9, 0xB, 0xC, 0xF]:
+        for name in ["roundsd", "roundss", "roundpd", "roundps"]:
+            out += [f"{name} ${control:#x}, %xmm1, %xmm0", f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # **SSE3 flottant** : soustraire en bas, additionner en haut.
+    out += ["addsubpd %xmm1, %xmm0", f"addsubpd {ALIGNED:#x}(%rsi), %xmm0"]
     return out
 
 
@@ -166,6 +178,17 @@ VALUES = [
     (0x0000000039307A61, 0x0000000000000000),
     (0x3534333231303938, 0x3D3C3B3A39383736),
     (0x0000000000003534, 0x0000000000000000),
+    # De vrais nombres pour l'arrondi : 1,5 et -2,5 (l'égalité, où « au
+    # plus proche » choisit le pair), 2,5 et -0,4 ; puis -0,0, +∞, un NaN
+    # silencieux et un dénormal ; et des simples : 1,5, -2,5, 0,5, -1,0e10.
+    (0x3FF8000000000000, 0xC004000000000000),
+    (0x4004000000000000, 0xBFD999999999999A),
+    (0x8000000000000000, 0x7FF0000000000000),
+    (0x7FF8000000000001, 0x0000000000000001),
+    (0xC02000003FC00000, 0xD01502F93F000000),
+    # Des NaN **signalants**, double puis deux simples : l'arrondi doit les
+    # rendre silencieux.
+    (0x7FF0000000000001, 0x7F8000017FA00000),
 ]
 
 GENERAL = [
