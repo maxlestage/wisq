@@ -45,7 +45,10 @@ extension X86Core {
     mutating func readVectorRM(_ fields: Fields, _ width: Int) throws -> (UInt64, UInt64) {
         guard fields.mod != 0b11 else { return vector(fields.rm) }
         guard memory != nil else { throw Fault.unsupported("un opérande vectoriel en mémoire") }
-        let low = try readMemory(lastAddress, 8)
+        // Deux, quatre ou huit octets : ce que l'instruction élargit ou
+        // insère, et pas un de plus — le suivant peut être sur une page
+        // absente.
+        let low = try readMemory(lastAddress, min(width, 8))
         guard width == 16 else { return (low, 0) }
         return (low, try readMemory(lastAddress &+ 8, 8))
     }
