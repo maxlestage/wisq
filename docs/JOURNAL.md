@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Une instruction décodée tient en quarante octets
+
+Suite directe, même autorisation. `X86Instruction` pesait soixante-quatre
+octets : ses quatre longueurs (`vexCount`, `displacementBytes`,
+`immediateBytes`, `length`) étaient des `Int`, et l'ordre des champs semait
+du remplissage entre les octets et les mots. La boucle la recopie à chaque
+niveau d'appel — de la case du cache vers `step`, vers `perform`, vers
+l'aiguillage —, et le cache de décodage en garde des milliers.
+
+- Les longueurs sont rangées sur un octet chacune (aucune ne dépasse
+  quinze), avant le déplacement et l'immédiat ; les noms publics restent
+  des `Int` calculés, rien ne change pour les appelants.
+- **Mesuré**, Fedora reprise à 18 milliards, 100 millions d'instructions
+  sous callgrind, contre master au même commit : 41,64 → 41,41 milliards
+  d'instructions de l'hôte (−0,56 %). Modeste, et c'est le chiffre.
+- **Test** `testADecodedInstructionStaysSmall` : la taille au plus quarante
+  octets, et les longueurs relues en `Int`. **Sabotage** : `length` remis
+  en `Int` → il échoue.
+- Compteur publié : 2878.
 ## 2026-10-20 — Le cœur lit ses registres en place
 
 Suite directe, même autorisation. Dans le code machine de

@@ -303,4 +303,19 @@ final class X86DecoderTests: XCTestCase {
         let bare = try X86Decoder.decode([0x90])
         XCTAssertFalse((0...255).contains { bare.hasPrefix(UInt8($0)) })
     }
+
+    /// **Une instruction décodée tient en quarante octets.** La boucle la
+    /// recopie à chaque niveau d'appel et le cache en garde des milliers :
+    /// avec ses longueurs en `Int` et le remplissage entre elles, elle en
+    /// pesait soixante-quatre.
+    func testADecodedInstructionStaysSmall() throws {
+        XCTAssertLessThanOrEqual(MemoryLayout<X86Instruction>.stride, 40)
+        // Et les longueurs se lisent toujours en `Int`, telles quelles.
+        let instruction = try X86Decoder.decode([0x48, 0xC7, 0x84, 0x24, 0x10, 0x00, 0x00, 0x00,
+                                                 0x78, 0x56, 0x34, 0x12])
+        XCTAssertEqual(instruction.length, 12)
+        XCTAssertEqual(instruction.displacementBytes, 4)
+        XCTAssertEqual(instruction.immediateBytes, 4)
+        XCTAssertEqual(instruction.vexCount, 0)
+    }
 }
