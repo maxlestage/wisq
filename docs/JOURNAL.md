@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
+
+Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
+emploient de SSE4.1, hors arrondi : les insertions et extractions
+(`pinsrb/d/q`, `pextrb/d/q`, `insertps`, `extractps`), les minimums et
+maximums (`pminsb`, `pmaxsb`, `pminuw`, `pmaxuw`, `pminsd`, `pmaxsd`,
+`pminud`, `pmaxud`), les élargissements `pmovzx*` et `pmovsx*` (les douze),
+les mélanges (`pblendw`, `pblendvb`, `blendvps`, `blendvpd`), `ptest`,
+`pcmpeqq`, `packusdw`, `pmulld`, `pmuldq` (`X86SSE41.swift`). `round*`
+attend la virgule flottante : arrondir demande MXCSR.
+
+- **Le corpus passe à 183 formes et 8 235 cas**, et le cœur s'accorde sur
+  tous au premier essai. Les extractions vers la mémoire y écrivent : la
+  fenêtre est rapportée, et c'est elle qui juge qu'un `pextrb` vers la
+  mémoire n'écrit qu'un octet.
+- **Un générateur qui perdait des octets.** `objdump` continue sur la ligne
+  suivante une instruction de plus de sept octets, et l'expression qui lit
+  son listing ne lisait que la première : `pinsrq $0, 0x28(%rsi), %xmm0`
+  perdait son immédiat, et l'oracle mourait (SIGSEGV, SIGBUS) en exécutant
+  la suite. `--insn-width=15` ici, comme `build-x86-oracle.py` le faisait
+  déjà. Cinq autres générateurs ne le passent pas ; leurs corpus vérifiés —
+  réassemblés, ou sans aucune forme de sept octets —, aucun n'a été touché.
+- **Ce que le corpus ne pouvait pas voir** : un élargissement ne lit que ce
+  qu'il élargit (deux octets pour `pmovzxbq`). Lire seize octets donnait le
+  même résultat dans la fenêtre, suivie d'autre mémoire ; un test pose les
+  deux octets à la fin de la mémoire, où la lecture de seize faute.
+- **Sabotages**, en cas d'accord sur 8 235 : minimums et maximums toujours
+  sans signe → 7 971 ; `pminuw` en maximum → 8 162 ; `pmulld` qui additionne
+  → 8 146 ; `pmuldq` sans signe → 8 168 ; `packusdw` sans saturation →
+  8 148 ; mélange sur le bit bas → 8 071 ; `ptest` sans CF → 8 166, qui
+  garde les autres drapeaux → 8 169 ; `pmovsx` sans signe → 8 089 ; `pextr`
+  qui écrit huit octets en mémoire → 8 010, sans repli du rang → 7 917 ;
+  `insertps` sans masque de zéros → 7 892, sans choix du mot source →
+  8 137 ; `pblendw` inversé → 8 162. Lire seize octets pour élargir : le
+  test dédié tombe (`outsideMemory`).
+- Compteur publié : 2915.
+
 ## 2026-10-20 — x86-64-v2, première tranche : SSSE3
 
 Suite directe, même autorisation. Rocky, AlmaLinux et CentOS Stream ont leur

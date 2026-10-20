@@ -66,6 +66,50 @@ def forms():
             "movddup %xmm1, %xmm0", f"movddup {ALIGNED:#x}(%rsi), %xmm0",
             "movddup 0x23(%rsi), %xmm0",
             "movsldup %xmm1, %xmm0", f"movsldup {ALIGNED:#x}(%rsi), %xmm0"]
+    # **SSE4.1, l'entier.** Les minimums et maximums signés et sans signe
+    # que SSE2 n'avait pas, le resserrement sans signe des mots doubles, la
+    # comparaison et les multiplications de SSE4.1.
+    for name in ["pminsb", "pmaxsb", "pminuw", "pmaxuw", "pminsd", "pmaxsd", "pminud",
+                 "pmaxud", "packusdw", "pcmpeqq", "pmulld", "pmuldq"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    # Les mélanges : par l'immédiat (`PBLENDW`), ou par le bit de signe de
+    # chaque élément de **xmm0**, implicite (`PBLENDVB`, `BLENDVPS`,
+    # `BLENDVPD`). xmm0 étant le masque, la destination est xmm1 ; entre
+    # registres, la source est xmm0 lui-même — le masque choisit alors ses
+    # propres éléments négatifs.
+    for control in [0x00, 0xFF, 0x0F, 0xA5, 0x3C]:
+        out += [f"pblendw ${control:#x}, %xmm1, %xmm0", f"pblendw ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    for name in ["pblendvb", "blendvps", "blendvpd"]:
+        out += [f"{name} %xmm0, %xmm0, %xmm1", f"{name} %xmm0, {ALIGNED:#x}(%rsi), %xmm1"]
+    # Les élargissements, avec ou sans signe. **Depuis la mémoire, ils ne
+    # lisent que ce qu'ils élargissent** : deux octets pour `PMOVZXBQ`. Une
+    # lecture de seize octets déborderait sur une page qui peut ne pas
+    # exister.
+    for kind in ["zx", "sx"]:
+        for shape, width in [("bw", 8), ("bd", 4), ("bq", 2), ("wd", 8), ("wq", 4), ("dq", 8)]:
+            out += [f"pmov{kind}{shape} %xmm1, %xmm0", f"pmov{kind}{shape} 0x3e(%rsi), %xmm0"]
+    # `PTEST` n'écrit que des drapeaux : ZF si la conjonction est nulle, CF si
+    # la source sans la destination l'est.
+    out += ["ptest %xmm1, %xmm0", f"ptest {ALIGNED:#x}(%rsi), %xmm0", "ptest %xmm0, %xmm0"]
+    # Insérer et extraire, depuis et vers un registre général ou la mémoire.
+    # Les rangs au-delà de la largeur se replient : seuls les bits bas de
+    # l'immédiat comptent.
+    for position in [0, 1, 7, 15, 16]:
+        out += [f"pinsrb ${position}, %eax, %xmm0", f"pinsrb ${position}, 0x25(%rsi), %xmm0",
+                f"pextrb ${position}, %xmm1, %eax", f"pextrb ${position}, %xmm1, 0x25(%rsi)"]
+    for position in [0, 1, 3, 4]:
+        out += [f"pinsrd ${position}, %eax, %xmm0", f"pinsrd ${position}, 0x24(%rsi), %xmm0",
+                f"pextrd ${position}, %xmm1, %eax", f"pextrd ${position}, %xmm1, 0x24(%rsi)",
+                f"extractps ${position}, %xmm1, %eax", f"extractps ${position}, %xmm1, 0x24(%rsi)",
+                f"extractps ${position}, %xmm1, %rax"]
+    for position in [0, 1, 2]:
+        out += [f"pinsrq ${position}, %rax, %xmm0", f"pinsrq ${position}, 0x28(%rsi), %xmm0",
+                f"pextrq ${position}, %xmm1, %rax", f"pextrq ${position}, %xmm1, 0x28(%rsi)"]
+    # `INSERTPS` : le mot que choisissent les bits 7-6 (depuis un registre
+    # seulement), posé où disent les bits 5-4, puis les mots que nomment les
+    # bits 3-0 mis à zéro.
+    for control in [0x00, 0x10, 0x30, 0xC0, 0x4E, 0x91, 0xF8, 0x0F]:
+        out += [f"insertps ${control:#x}, %xmm1, %xmm0", f"insertps ${control:#x}, 0x24(%rsi), %xmm0"]
     return out
 
 
@@ -140,7 +184,12 @@ def assemble(texts):
                 out.write(f"    {text}\n")
         subprocess.run(["as", "--64", "-o", str(obj), str(source)], check=True)
         listing = subprocess.run(
-            ["objdump", "-d", str(obj)], capture_output=True, text=True, check=True).stdout
+            # **Quinze octets par ligne.** Au-delà de sept, objdump continue
+            # une instruction sur la ligne suivante, que l'expression ne lit
+            # pas : `pinsrq $0, 0x28(%rsi), %xmm0` perdait son immédiat, et
+            # le processeur exécutait ce qui venait après.
+            ["objdump", "-d", "--insn-width=15", str(obj)],
+            capture_output=True, text=True, check=True).stdout
 
     line = re.compile(r"^\s*[0-9a-f]+:\t([0-9a-f]{2}(?: [0-9a-f]{2})*) *\t(.*)$")
     encoded = [
