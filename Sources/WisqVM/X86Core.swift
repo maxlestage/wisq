@@ -710,7 +710,7 @@ public struct X86Core: @unchecked Sendable {
     static func claimedBySpecialists(_ opcode: UInt8) -> Bool {
         let words: (UInt64, UInt64, UInt64, UInt64) = (
             0x0007_FF0F_00FF_0000, 0xC07F_FFFF_FFF3_0000,
-            0x0000_0004_0000_0000, 0x7F76_FFFD_FFF4_0074)
+            0x0000_0004_0000_0000, 0x7F77_FFFD_FFF4_0074)
         let word: UInt64
         switch opcode >> 6 {
         case 0: word = words.0
@@ -754,6 +754,8 @@ public struct X86Core: @unchecked Sendable {
             // la même table. Voir `X86Float.swift`.
             if try floatInstruction(instruction, opcode) { return }
             try twoByte(instruction, opcode)
+        case .threeByte38: try threeByte38(instruction, opcode)
+        case .threeByte3A: try threeByte3A(instruction, opcode)
         default: throw Fault.unsupported("la table \(instruction.map)")
         }
     }
