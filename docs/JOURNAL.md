@@ -40,8 +40,77 @@ cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
 - **Le cœur Rust** relit le même corpus de pile (`x86_oracle.rs`) et y passe
   sans changement ; son compte de formes et de cas, épinglé, suit : 89 et
   712.
-- **Le compteur publié passe à 2916** : #569, fusionné entre-temps, avait
+- **Le compteur publié passe à 2917** : #569, fusionné entre-temps, avait
   ajouté un test sans le compter.
+## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF, l'arrondi
+
+Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
+emploient de SSE4.2 — `pcmpistri` (404 fois), `pcmpgtq` (64) ; ni `crc32`,
+ni `pcmpestri`, ni les formes `…m` — et les deux autres exigences de
+x86-64-v2 : `cmpxchg16b` (que le cœur refusait expressément) et `lahf`/`sahf`
+en mode long (`X86SSE42.swift`).
+
+- **`PCMPISTRI` en entier**, pas seulement ses quatre usages : la glibc
+  n'emploie que les immédiats 0x1a et 0x3a (égal un à un, nié ou nié sur les
+  éléments valides) et 0x02 et 0x12 (égal à l'un des), relevés par `objdump`.
+  Le corpus en essaie vingt-quatre, qui couvrent les quatre agrégations, les
+  deux tailles avec et sans signe, les quatre polarités et l'indice compté
+  des deux bouts ; les états portent des chaînes terminées tôt, des
+  intervalles et une sous-chaîne. Les indices rendus vont de 0 à 16.
+- **`CMPXCHG16B`** : un état sur cinq porte dans RDX:RAX les seize octets de
+  la fenêtre, et onze échanges sur cinquante-sept réussissent. La case est
+  vérifiée inscriptible avant tout : la machine l'écrit même quand la
+  comparaison échoue. Le corpus rapporte désormais RDX.
+- **Le corpus passe à 237 formes et 13 509 cas**, tous tenus.
+- **Ce que le corpus ne voyait pas, et ce qu'il ne pouvait pas voir.** Les
+  octets signés de `PCMPISTRI` ne comptent que pour les intervalles, et
+  aucun intervalle d'octets signés n'était essayé : 0x06 et 0x46 entrent. Les
+  bits 1, 3 et 5 que `SAHF` ne laisse pas passer sont hors des drapeaux que
+  le corpus rapporte, et il n'exécute qu'une instruction : un test fait
+  `SAHF` puis `LAHF` sur AH = 0xFF et exige 0xD7. Le masque de `LAHF`, lui,
+  ne changeait rien — `flags` n'a jamais ces bits levés — et il est retiré.
+- **Sabotages** : longueur implicite ignorée → 11 673 accords sur 13 281 ;
+  un à un avec des invalides inégaux → 13 191 ; intervalles stricts →
+  13 204 ; négation masquée complète → 13 233 ; indice toujours du bas →
+  13 181 ; ZF jamais → 12 477 ; OF jamais → 12 465 ; sous-chaîne sans fin du
+  motif → 13 123 ; `cmpxchg16b` avec RBX et RCX inversés → 13 259, sans RDX
+  → 13 189 ; `pcmpgtq` sans signe → 13 225 ; octets toujours sans signe et
+  `SAHF` sans masque : vus par les ajouts ci-dessus.
+- `X86SystemTests` épinglait le refus de `CMPXCHG16B` ; ce refus n'existe
+  plus, et le corpus le remplace.
+- **Et l'arrondi, avec ce qui restait de SSE3** : `roundsd` (462 fois),
+  `roundss` (22), `roundpd` (4), `roundps`, et `addsubpd` (3) ; `fisttp` était
+  déjà là. Le mode vient de l'immédiat, ou de MXCSR quand le bit 2 est levé.
+  Le corpus gagne de vrais nombres (les égalités 1,5 et -2,5, -0,0, +∞, des
+  NaN silencieux et signalants, un dénormal) et passe à **327 formes et
+  24 525 cas**, tous tenus. Sabotages : l'égalité arrondie loin de zéro →
+  22 332 accords sur 22 392 ; -∞ et +∞ inversés → 20 931 ; `roundsd` qui
+  efface le haut → 21 312, `roundss` qui efface le reste du bas → 21 420 ;
+  `addsubpd` qui additionne en bas → 22 312. **Deux trous vus par les
+  sabotages** : ignorer le bit 2 ne se voyait pas, MXCSR valant « au plus
+  proche » comme les bits bas à zéro — 0x5 et 0xF entrent, et le sabotage
+  tombe à 24 264 sur 24 525 ; et rendre un NaN signalant silencieux ne se
+  voit pas même avec un NaN signalant, parce que l'instruction d'arrondi de
+  l'hôte le fait d'elle-même. Gardé, et dit tel quel dans le code : la
+  garantie est celle de l'hôte, et la CI Apple joue le même corpus en arm64.
+- **Le comptage d'AlmaLinux ne suffisait pas, et un essai l'a dit.** Les bits
+  de CPUID allumés à part, trois démarrages en parallèle avant d'en proposer
+  la PR : Debian et Arch s'arrêtent sur `F2 0F 38 F0/F1` — **`CRC32`**, que le
+  **noyau** emploie pour les sommes des métadonnées d'ext4 et de btrfs dès
+  que SSE4.2 est annoncé —, openSUSE sur `66 0F 3A 62`, **`PCMPISTRM`**, que sa
+  glibc emploie là où celle d'AlmaLinux prend `PCMPISTRI`. Le comptage
+  n'avait regardé que l'espace utilisateur d'une distribution. Entrent donc
+  `CRC32` sous ses quatre largeurs, et les trois frères de `PCMPISTRI` —
+  longueurs explicites dans EAX/EDX (`PCMPESTRI`, `PCMPESTRM`), masque dans
+  xmm0 (`PCMPISTRM`, `PCMPESTRM`), sur le même moteur. Le corpus passe à
+  **398 formes et 29 850 cas**, tous tenus ; les états reçoivent des
+  longueurs courtes, négatives et démesurées. Sabotages : le polynôme
+  d'Ethernet au lieu de Castagnoli → 29 175 accords ; le haut de la
+  destination gardé → 29 447 ; longueurs sans REX.W → 29 830 ; longueur
+  négative lue comme zéro → 28 453 ; masque jamais élargi → 29 430 ; masque
+  de mots sur un seul octet → 29 775. Un nouveau comptage, sur les six
+  distributions, noyaux et modules compris, décide de la suite.
+- Compteur publié : 2916.
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
 
