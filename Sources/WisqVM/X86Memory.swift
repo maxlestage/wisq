@@ -40,6 +40,7 @@ public final class X86Memory: @unchecked Sendable {
     /// couvre, et c'est exactement le chemin qui levait « hors mémoire »
     /// jusqu'ici. Le brancher là ne coûte donc rien au chemin chaud — une
     /// adresse ordinaire ne le rencontre jamais.
+    @exclusivity(unchecked)
     public var storage: VirtioBlock?
 
     /// L'écran, quand il y en a un. Même logement que le disque, et pour la
@@ -48,6 +49,7 @@ public final class X86Memory: @unchecked Sendable {
 
     /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
     /// objet que le cœur et les ports ont tous les deux sous la main.
+    @exclusivity(unchecked)
     public var bus: X86PCIHost?
 
     /// Vrai quand l'adresse tombe dans la fenêtre du périphérique.
