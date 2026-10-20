@@ -318,4 +318,27 @@ final class X86DecoderTests: XCTestCase {
         XCTAssertEqual(instruction.immediateBytes, 4)
         XCTAssertEqual(instruction.vexCount, 0)
     }
+
+    /// **Les champs du ModRM dépliés au décodage valent ceux d'avant**, pour
+    /// les 256 octets de ModRM, sans REX et avec chacun des seize. La formule
+    /// de référence est celle que `X86Core.fields` appliquait à chaque
+    /// exécution.
+    func testTheModRMFieldsUnfoldedAtDecodeAreTheOldOnes() throws {
+        for rex in [nil] + (0x40...0x4F).map({ UInt8($0) }) {
+            for modrm in 0...255 {
+                let byte = UInt8(modrm)
+                // `ADD r/m32, r32` : un ModRM, et un SIB ou un déplacement
+                // selon l'octet — assez de zéros derrière pour tous les cas.
+                let bytes = (rex.map { [$0] } ?? []) + [0x01, byte] + [UInt8](repeating: 0, count: 8)
+                let fields = try X86Core.fields(try X86Decoder.decode(bytes))
+                let bits = rex ?? 0
+                XCTAssertEqual(fields.reg, Int((bits & 0x04) << 1 | ((byte >> 3) & 0x07)))
+                XCTAssertEqual(fields.rm, Int((bits & 0x01) << 3 | (byte & 0x07)))
+                XCTAssertEqual(fields.mod, byte >> 6)
+                XCTAssertEqual(fields.regIsHighByte, rex == nil && (4...7).contains(Int((byte >> 3) & 0x07)))
+                XCTAssertEqual(fields.rmIsHighByte, rex == nil && (4...7).contains(Int(byte & 0x07)))
+            }
+        }
+        XCTAssertLessThanOrEqual(MemoryLayout<X86Instruction>.stride, 40)
+    }
 }
