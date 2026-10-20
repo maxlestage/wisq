@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Reprendre une session : Debian, Fedora et Ubuntu
+
+Suite directe, même autorisation. La reprise d'une session — ce que vit
+un iPhone quand wisq passe en arrière-plan puis revient — n'était vérifiée
+que sur Debian. `X86CloudResumeTests` devient le même test pour les trois
+images qui démarrent jusqu'au shell : il attend l'invite de `root` sous
+ses deux formes (`~# `, et `~]# ` chez Fedora), et c'est
+`/etc/os-release` qui répond à la fin. Il n'imprime plus que les lignes
+utiles : chez Fedora et Ubuntu, bash entoure chaque invite d'une séquence
+OSC 3008 de systemd 259 assez longue pour noyer le reste.
+
+- **Mesuré**, par le chemin de l'application (`X86Machine`, l'image comme
+  disque sur fichier avec sa couche d'écriture), une variable du shell
+  posée avant l'instantané et relue après, dans une machine neuve :
+
+  | image | au shell | instantané | reprise |
+  |---|---|---|---|
+  | Debian 13 | 16,7 milliards, 714 s | 209 Mio, 0,75 s | 0,30 s |
+  | Fedora 44 | 25,0 milliards, 1171 s | 274 Mio, 0,93 s | 0,36 s |
+  | Ubuntu 26.04 | 42,5 milliards, 1864 s | 425 Mio, 1,29 s | 0,49 s |
+
+- Debian arrive au shell en 714 s au lieu des 966 s de la première mesure :
+  c'est l'horloge à 36 instructions par battement (#549), qui fait traiter
+  trois fois moins d'échéances au noyau.
+- La reprise d'un btrfs (Fedora) ne demandait rien de plus : le disque est
+  lu par le noyau de l'invité, et wisq n'en garde que la couche d'écriture.
+
 ## 2026-10-20 — Fedora et Ubuntu dans la feuille « Télécharger »
 
 Suite directe, même autorisation. Fedora 44 Cloud et Ubuntu 26.04 vont

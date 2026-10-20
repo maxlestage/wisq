@@ -475,7 +475,11 @@ noyau dans le disque lui-même.
    d'une machine sauvée est compressé en LZ4 par blocs d'un mébioctet
    (`SnapshotFile`, `LZ4`, écrits ici). La session de Debian passe de 217 Mio
    à 97 Mio, compressée en 1,3 s et relue en 1 s. Un fichier d'avant se lit
-   tel quel.
+   tel quel. **Et sur les trois images**, avec l'horloge à 36 instructions
+   par battement (le même test, qui reconnaît les deux invites de `root`) :
+   Debian au shell en 714 s, instantané de 209 Mio en 0,75 s, reprise en
+   0,30 s ; Fedora en 1171 s, 274 Mio en 0,93 s, 0,36 s ; Ubuntu en 1864 s,
+   425 Mio en 1,29 s, 0,49 s. Mesurés avant la compression LZ4 du fichier.
 8. **Fait.** Plusieurs machines sur une même image de cloud : la
    bibliothèque reconnaît une image de cloud en lisant sa table
    (`InstalledMachines.cloudImages`), la nomme comme telle (« image de cloud
