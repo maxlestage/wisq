@@ -213,6 +213,16 @@ extension X86Core {
             let high = Self.combine(Self.asDouble(destination.high), Self.asDouble(source.1), operation)
             setVector(fields.reg, low.bitPattern, high.bitPattern)
 
+        // `ADDSUBPD` (SSE3) : soustraire en bas, additionner en haut, chaque
+        // moitié selon la même règle des NaN.
+        case 0xD0 where operandSize:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let low = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), { $0 - $1 })
+            let high = Self.combine(Self.asDouble(destination.high), Self.asDouble(source.1), { $0 + $1 })
+            setVector(fields.reg, low.bitPattern, high.bitPattern)
+
         // Et les quatre simples, sans préfixe : `ADDPS`, `MULPS`, `SUBPS`,
         // `DIVPS`, chacun selon la même règle.
         case 0x58 where !single && !doubleWide, 0x59 where !single && !doubleWide,

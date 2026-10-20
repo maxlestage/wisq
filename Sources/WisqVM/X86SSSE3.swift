@@ -80,6 +80,8 @@ extension X86Core {
             try insertOrExtract(instruction, fields, opcode, control)
         case 0x63:  // PCMPISTRI (SSE4.2)
             try compareImplicitStrings(fields, control)
+        case 0x08...0x0B:  // ROUNDPS, ROUNDPD, ROUNDSS, ROUNDSD
+            try round(fields, opcode, control)
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
         }
