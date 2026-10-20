@@ -23,6 +23,12 @@ extension X86Core {
     /// La table `0F 38` : une source, une destination, aucun immédiat, aucun
     /// drapeau.
     mutating func threeByte38(_ instruction: X86Instruction, _ opcode: UInt8) throws {
+        // `CRC32` porte F2, pas 66 : avec 66 en plus, c'est sa forme de seize
+        // bits. Voir `X86SSE42.swift`.
+        if instruction.hasPrefix(0xF2), opcode == 0xF0 || opcode == 0xF1 {
+            try crc32(instruction, try decodeFields(instruction), byteForm: opcode == 0xF0)
+            return
+        }
         guard instruction.hasPrefix(0x66) else {
             throw Fault.unsupported(String(format: "l'opcode 0F 38 %02X sans 66 (MMX)", opcode))
         }
@@ -78,8 +84,9 @@ extension X86Core {
             setVector(fields.reg, result.0, result.1)
         case 0x0E, 0x14, 0x16, 0x17, 0x20, 0x21, 0x22:
             try insertOrExtract(instruction, fields, opcode, control)
-        case 0x63:  // PCMPISTRI (SSE4.2)
-            try compareImplicitStrings(fields, control)
+        // PCMPESTRM, PCMPESTRI, PCMPISTRM, PCMPISTRI (SSE4.2)
+        case 0x60...0x63:
+            try compareStrings(instruction, fields, control, explicit: opcode < 0x62, mask: opcode & 1 == 0)
         case 0x08...0x0B:  // ROUNDPS, ROUNDPD, ROUNDSS, ROUNDSD
             try round(fields, opcode, control)
         default:
