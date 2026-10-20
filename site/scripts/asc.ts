@@ -142,6 +142,125 @@ export function describeCertificates(byType: Record<string, number>): string {
   return `certificats sur le compte : ${total} (${detail})`;
 }
 
+/// **Où en est TestFlight** : ce qu'un envoi réussi devient chez Apple.
+///
+/// Un envoi qui finit sur « Upload succeeded » n'est pas encore une
+/// application qu'on installe. Apple traite le paquet (`processingState`),
+/// puis décide s'il peut partir en test (`internalBuildState`) ; et un
+/// iPhone ne voit un build que s'il est dans un groupe dont son compte est
+/// testeur — un groupe interne qui n'a pas « accès à tous les builds » ne le
+/// reçoit pas tout seul. Le build n° 36 a été envoyé sans erreur et n'est
+/// apparu nulle part : sans ces trois réponses, impossible de dire laquelle
+/// manque.
+///
+/// **Des nombres et des états, jamais des noms** : le journal d'une exécution
+/// est public, et l'adresse d'un testeur n'a rien à y faire.
+export interface TestFlightBuild {
+  version: string;
+  number: string;
+  uploaded: string;
+  processing: string;
+  internal: string;
+  external: string;
+  expired: boolean;
+  groups: string[];
+}
+
+export interface TestFlightGroup {
+  name: string;
+  internal: boolean;
+  allBuilds: boolean;
+  testers: number;
+}
+
+export interface TestFlightState {
+  builds: TestFlightBuild[];
+  groups: TestFlightGroup[];
+}
+
+export async function testFlightState(token: string, bundleId: string, count = 5): Promise<TestFlightState> {
+  const apps = await call(token, `/apps?filter[bundleId]=${encodeURIComponent(bundleId)}&limit=1`);
+  const appId = apps.data?.[0]?.id;
+  if (!appId) throw new Error(`aucune fiche d'application pour ${bundleId}`);
+
+  const groupPage = await call(token, `/apps/${appId}/betaGroups?limit=50`);
+  const groups: (TestFlightGroup & { id: string; builds: Set<string> })[] = [];
+  for (const group of groupPage.data ?? []) {
+    const testers = await call(token, `/betaGroups/${group.id}/betaTesters?limit=200`);
+    const builds = await call(token, `/betaGroups/${group.id}/builds?limit=200`);
+    groups.push({
+      id: group.id,
+      name: group.attributes?.name ?? "?",
+      internal: Boolean(group.attributes?.isInternalGroup),
+      allBuilds: Boolean(group.attributes?.hasAccessToAllBuilds),
+      testers: (testers.data ?? []).length,
+      builds: new Set((builds.data ?? []).map((build: any) => build.id)),
+    });
+  }
+
+  const page = await call(
+    token,
+    `/builds?filter[app]=${appId}&sort=-uploadedDate&limit=${count}&include=buildBetaDetail,preReleaseVersion`,
+  );
+  const included = new Map<string, any>(
+    (page.included ?? []).map((item: any) => [`${item.type}/${item.id}`, item]),
+  );
+  const builds: TestFlightBuild[] = (page.data ?? []).map((build: any) => {
+    const detail = included.get(`buildBetaDetails/${build.relationships?.buildBetaDetail?.data?.id}`);
+    const version = included.get(`preReleaseVersions/${build.relationships?.preReleaseVersion?.data?.id}`);
+    return {
+      version: version?.attributes?.version ?? "?",
+      number: build.attributes?.version ?? "?",
+      uploaded: build.attributes?.uploadedDate ?? "?",
+      processing: build.attributes?.processingState ?? "?",
+      internal: detail?.attributes?.internalBuildState ?? "?",
+      external: detail?.attributes?.externalBuildState ?? "?",
+      expired: Boolean(build.attributes?.expired),
+      groups: groups.filter((group) => group.allBuilds || group.builds.has(build.id)).map((group) => group.name),
+    };
+  });
+  return { builds, groups: groups.map(({ id: _id, builds: _builds, ...group }) => group) };
+}
+
+/// Ce que l'état vaut en phrases, et **ce qu'il faut faire** quand quelque
+/// chose manque. Séparé de l'appel réseau pour être éprouvable sans compte.
+export function describeTestFlight(state: TestFlightState): string[] {
+  const lines: string[] = [];
+  if (state.groups.length === 0) {
+    lines.push("groupes de test : aucun — un build ne parvient à aucun iPhone sans groupe.");
+  }
+  for (const group of state.groups) {
+    lines.push(
+      `groupe « ${group.name} » : ${group.internal ? "interne" : "externe"}, `
+        + `${group.testers} testeur${group.testers > 1 ? "s" : ""}`
+        + (group.allBuilds ? ", reçoit tous les builds" : ", ne reçoit que les builds qu'on y ajoute"),
+    );
+  }
+  for (const build of state.builds) {
+    lines.push(
+      `build ${build.version} (${build.number}) envoyé ${build.uploaded} : traitement ${build.processing}, `
+        + `test interne ${build.internal}, externe ${build.external}`
+        + (build.expired ? ", expiré" : "")
+        + ` — groupes : ${build.groups.length ? build.groups.join(", ") : "aucun"}`,
+    );
+  }
+  const latest = state.builds[0];
+  if (!latest) {
+    lines.push("aucun build sur App Store Connect : l'envoi n'est jamais arrivé.");
+  } else if (latest.processing === "PROCESSING") {
+    lines.push("le dernier build est encore en traitement chez Apple : attendre quelques minutes.");
+  } else if (latest.processing === "FAILED" || latest.processing === "INVALID") {
+    lines.push("le dernier build a été refusé au traitement : Apple en a envoyé la raison par courriel au titulaire du compte.");
+  } else if (latest.internal === "MISSING_EXPORT_COMPLIANCE") {
+    lines.push("le dernier build attend la déclaration de chiffrement, dans App Store Connect → TestFlight.");
+  } else if (latest.groups.length === 0) {
+    lines.push("le dernier build n'est dans aucun groupe : aucun iPhone ne le voit. Ajoutez-le à un groupe, ou donnez au groupe interne l'accès à tous les builds.");
+  } else if (state.groups.filter((group) => latest.groups.includes(group.name)).every((group) => group.testers === 0)) {
+    lines.push("le dernier build est dans un groupe sans testeur : ajoutez votre compte au groupe.");
+  }
+  return lines;
+}
+
 /// Ajoute des sorties d'étape au fichier que GitHub tend au job.
 ///
 /// **Ajoute**, et c'est tout l'intérêt de la fonction : le fichier est partagé
@@ -167,6 +286,16 @@ if (import.meta.main) {
   }
 
   const token = appStoreConnectToken({ issuerId, keyId, privateKey });
+  // `bun site/scripts/asc.ts etat` : l'état TestFlight seul, sans rien
+  // créer — c'est ce que lance `testflight-etat.yml`.
+  if (process.argv.includes("etat")) {
+    const lines = describeTestFlight(await testFlightState(token, bundleId));
+    for (const line of lines) console.log(line);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.map((line) => `- ${line}`).join("\n") + "\n");
+    }
+    process.exit(0);
+  }
   await ensureBundleId(token, bundleId, "wisq");
   const teamId = await resolveTeamId(token, bundleId);
   const hasApp = await appExists(token, bundleId);

@@ -1,0 +1,35 @@
+name: TestFlight — état
+
+# Où en est le dernier envoi chez Apple, en vingt secondes et sans rien
+# construire : traitement du paquet, état du test interne et externe, groupes
+# qui le reçoivent, et combien de testeurs chacun porte. Voir
+# `testFlightState` dans `site/scripts/asc.ts`.
+#
+# Il existe parce qu'un envoi peut réussir — « Upload succeeded » — et
+# n'apparaître sur aucun iPhone : refusé au traitement, en attente de la
+# déclaration de chiffrement, ou dans aucun groupe. La construction n'en sait
+# rien ; seule l'API le dit.
+#
+# Des nombres et des états seulement : le journal est public, et aucun nom de
+# testeur n'y est écrit.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  etat:
+    name: Lire l'état TestFlight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - name: L'état, d'après l'API App Store Connect
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          WISQ_BUNDLE_ID: app.wisq.ios
+        run: bun site/scripts/asc.ts etat
