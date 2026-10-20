@@ -128,6 +128,85 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(digest, ImageDownload.debianCandidates(Self.debianSums).first?.sha512)
     }
 
+    /// Un extrait du vrai `releases.json` de Fedora, avec ce qui doit être
+    /// écarté : les images d'un nuage précis et le noyau unifié UEFI, une
+    /// version plus ancienne, une bêta, une autre architecture, et trois
+    /// adresses qu'on ne suit pas — un autre hôte, du HTTP clair, un
+    /// répertoire au lieu d'un fichier.
+    static let fedoraJSON = """
+        [
+         {"version": "44", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-AmazonEC2-44-1.7.x86_64.raw.xz", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "7e4fb73907abdc761d226ddaf3263bdfca62a0b0bfb5f0798545a9981fdd1953", "size": "585701904"},
+         {"version": "44", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f", "size": "583729152"},
+         {"version": "44", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-UEFI-UKI-44-1.7.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base_UKI", "sha256": "2b0af3e6bf4add3695e52df5db3b2eb48d081ab38963ae48c35fca45d5c31b64", "size": "630784000"},
+         {"version": "44", "arch": "aarch64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size": "570000000"},
+         {"version": "43", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "size": "560000000"},
+         {"version": "45 Beta", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/test/45_Beta/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-45_Beta-1.2.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "size": "590000000"},
+         {"version": "46", "arch": "x86_64", "link": "https://example.com/Fedora-Cloud-Base-Generic-46-1.1.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "size": "590000000"},
+         {"version": "46", "arch": "x86_64", "link": "http://download.fedoraproject.org/Fedora-Cloud-Base-Generic-46-1.1.x86_64.qcow2", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "5555555555555555555555555555555555555555555555555555555555555555", "size": "590000000"},
+         {"version": "46", "arch": "x86_64", "link": "https://download.fedoraproject.org/pub/fedora/linux/releases/46/", "variant": "Cloud", "subvariant": "Cloud_Base", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size": "590000000"}
+        ]
+        """
+
+    /// **Fedora : l'image `Generic`, de la dernière version, et elle seule**,
+    /// à l'adresse que donne l'index, avec sa taille et sa somme SHA-256.
+    func testTheFedoraIndexGivesTheNewestGenericImageOnly() throws {
+        let found = ImageDownload.fedoraReleases(Self.fedoraJSON)
+        XCTAssertEqual(found.map(\.file), ["Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"])
+        let release = try XCTUnwrap(found.first)
+        XCTAssertEqual(release.version, "44")
+        XCTAssertEqual(release.size, 583_729_152)
+        XCTAssertEqual(release.checksum, .sha256("28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f"))
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/"
+                           + "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+                       "l'adresse de l'index, pas un fichier à côté de lui")
+        XCTAssertEqual(ImageDownload.fedoraReleases("pas du JSON"), [])
+        XCTAssertEqual(ImageDownload.fedoraReleases("{}"), [], "un objet au lieu d'une liste")
+    }
+
+    /// Un extrait du vrai `SHA256SUMS` d'Ubuntu 26.04, et ce qui doit être
+    /// écarté : la variante `amd64v3`, les autres formats, l'ARM, et un nom
+    /// qui contient un chemin.
+    static let ubuntuSums = """
+        8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2 *ubuntu-26.04-server-cloudimg-amd64.img
+        0664994108e2cc41c8ad24ffb387afb77eb3059c4db779f657aef7106e26baed *ubuntu-26.04-server-cloudimg-amd64.vmdk
+        3b0ccf964bbde59e5d585d4d833ade205440c07a1dc078bad9f56fd4bb466a7d *ubuntu-26.04-server-cloudimg-amd64v3.img
+        2de9f91e36dc84b7c32c06dfb6abbe56902453fd177326da3ea462356be7ac89 *ubuntu-26.04-server-cloudimg-amd64.squashfs
+        7777777777777777777777777777777777777777777777777777777777777777 *ubuntu-26.04-server-cloudimg-arm64.img
+        8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2 *../ubuntu-26.04-server-cloudimg-amd64.img
+        """
+
+    /// **Ubuntu : l'image disque du serveur, x86-64 de base**, et la version
+    /// lue dans son nom.
+    func testTheUbuntuIndexGivesTheServerImageOnly() {
+        let found = ImageDownload.ubuntuCandidates(Self.ubuntuSums)
+        XCTAssertEqual(found.map(\.file), ["ubuntu-26.04-server-cloudimg-amd64.img"])
+        XCTAssertEqual(found.first?.version, "26.04")
+        let release = ImageDownload.ubuntuRelease(file: "ubuntu-26.04-server-cloudimg-amd64.img", version: "26.04",
+                                                  sha256: String(repeating: "ab", count: 32), size: 10)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-amd64.img")
+        XCTAssertEqual(release.checksum.algorithm, "SHA-256")
+    }
+
+    /// **Les vrais fichiers**, si on les donne (`WISQ_FEDORA_QCOW2`,
+    /// `WISQ_UBUNTU_IMG`) : leur somme est celle que publie leur index —
+    /// les deux images que wisq a démarrées jusqu'au shell.
+    func testTheRealFedoraAndUbuntuImagesMatchTheirPublishedSums() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["WISQ_FEDORA_QCOW2"] != nil || environment["WISQ_UBUNTU_IMG"] != nil else {
+            throw XCTSkip("images absentes : définir WISQ_FEDORA_QCOW2 ou WISQ_UBUNTU_IMG pour ce test")
+        }
+        if let path = environment["WISQ_FEDORA_QCOW2"] {
+            XCTAssertEqual(try SHA256Stream.hex(ofFileAt: URL(fileURLWithPath: path)),
+                           ImageDownload.fedoraReleases(Self.fedoraJSON).first?.checksum.expected)
+        }
+        if let path = environment["WISQ_UBUNTU_IMG"] {
+            XCTAssertEqual(try SHA256Stream.hex(ofFileAt: URL(fileURLWithPath: path)),
+                           ImageDownload.ubuntuCandidates(Self.ubuntuSums).first?.sha256)
+        }
+    }
+
     /// La taille demandée au serveur : le total d'un `206`, rien d'autre.
     func testTheSizeProbeReadsOnlyAPartialAnswer() {
         XCTAssertEqual(ImageDownload.size(fromProbe: 206, contentRange: "bytes 0-0/437452288"), 437_452_288)
