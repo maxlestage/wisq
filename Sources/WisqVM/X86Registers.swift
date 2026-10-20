@@ -54,6 +54,14 @@ public struct X86Registers: RandomAccessCollection, MutableCollection, Equatable
     /// lui-même (`&storage`), il n'y a rien à copier ; d'où `mutating`, qui
     /// ne change rien. Un aiguillage de seize cas évitait aussi la copie, et
     /// coûtait plus cher qu'elle.
+    ///
+    /// **Le cœur ne lit que par ici.** Toutes les lectures de `X86Core`
+    /// passaient encore par l'indice — un `push`, une adresse de pile, un
+    /// `mov` de registre à registre —, et chacune recopiait les seize mots :
+    /// sur cent millions d'instructions du démarrage de Fedora, 526 millions
+    /// d'instructions de l'hôte dans le seul aiguillage d'un octet. L'indice
+    /// reste pour ce qui lit un cœur sans le modifier : les tests, les
+    /// instantanés, les comparaisons.
     @inline(__always)
     public mutating func read(_ index: Int) -> UInt64 {
         withUnsafeBytes(of: &storage) { $0.load(fromByteOffset: (index & 15) &* 8, as: UInt64.self) }

@@ -27,6 +27,25 @@ l'aiguillage —, et le cache de décodage en garde des milliers.
   octets, et les longueurs relues en `Int`. **Sabotage** : `length` remis
   en `Int` → il échoue.
 - Compteur publié : 2878.
+## 2026-10-20 — Le cœur lit ses registres en place
+
+Suite directe, même autorisation. Dans le code machine de
+`X86Core.oneByte`, un `push` commençait par recopier les cent vingt-huit
+octets des seize registres sur la pile : l'indice de `X86Registers` lit à
+travers `withUnsafeBytes(of: storage)`, qui n'a d'adresse que celle d'une
+copie. La lecture en place (`registers.read(_:)`, `mutating`) existait
+déjà, mais seuls le calcul d'adresse et quelques chemins s'en servaient.
+
+- **Les cinquante lectures** de registre de `X86Core` et de ses extensions
+  (aiguillages, pagination, interruptions, appels système, x87) passent
+  par `read`. L'indice reste pour ce qui lit un cœur sans le modifier.
+- **Mesuré**, Fedora reprise à 18 milliards, 100 millions d'instructions
+  sous callgrind : `oneByte` 5,42 → 4,89 milliards d'instructions de
+  l'hôte, le total 41,07 milliards (−1,3 %, une fois retirée la remise à
+  zéro de la RAM que #554 supprimait déjà).
+- **Sabotage** : `read` ramené à trois bits d'indice → 17 échecs.
+- Aucun test ajouté : le comportement est le même, toute la suite le
+  couvre, dont les démarrages différentiels contre le cœur Rust.
 
 ## 2026-10-20 — La RAM de l'invité ne pèse que ce qu'elle porte
 

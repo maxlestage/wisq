@@ -55,7 +55,7 @@ extension X86Core {
         // l'infini et sans rien signaler.
         if canonicalWatchArmed, privilege == 3 {
             leavingRingThree(at: rip, cause: .systemCall)
-            noteSystemCall(registers[0])
+            noteSystemCall(registers.read(0))
         }
         registers[1] = rip &+ UInt64(length)
         registers[11] = flags | Flag.reserved
@@ -93,10 +93,10 @@ extension X86Core {
         guard wide else {
             throw Fault.unsupported("un SYSRET vers le mode compatibilité")
         }
-        rip = registers[1]
+        rip = registers.read(1)
         // R11 rend les drapeaux tels que `SYSCALL` les avait pris. Les bits
         // réservés sont remis d'office : ils ne sont pas au programme.
-        flags = (registers[11] & ~(Flag.resume | Flag.nested)) | Flag.reserved
+        flags = (registers.read(11) & ~(Flag.resume | Flag.nested)) | Flag.reserved
         let selectors = systemCallSelectors
         segments[1] = (selectors.exit &+ 16) | 3
         segments[2] = (selectors.exit &+ 8) | 3
