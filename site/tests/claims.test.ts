@@ -2524,3 +2524,84 @@ describe("le README nomme les modules Swift que le manifeste déclare sans condi
     ).toEqual(declares);
   });
 });
+
+/// **« Les soixante endroits », et il y en a soixante-six.**
+///
+/// `X86ModelSpecific` a sorti du dictionnaire les quatre MSR que le chemin
+/// chaud consulte. Son en-tête rassure sur le rayon d'explosion : la surface
+/// ne change pas, donc « les soixante endroits qui lisaient ou écrivaient un
+/// MSR n'ont pas changé ». Comptés : **soixante-six** lignes indexent
+/// `modelSpecific`, et soixante-cinq le faisaient avant la tranche qui a écrit
+/// la phrase.
+///
+/// Ce n'est pas une approximation mal lue. Onze lignes plus haut, le même
+/// commentaire écrit « une vingtaine d'instructions de l'hôte » là où il
+/// approxime ; ici c'est l'article défini et le nombre nu. L'auteur distingue
+/// les deux formes, donc celle-ci compte.
+///
+/// **Ce que la garde tient** : le nombre que l'en-tête donne est celui des
+/// lignes qui indexent `modelSpecific` sous `Sources/` et `Tests/`. Elle lit
+/// les lettres, parce que c'est en lettres que le nombre est écrit — et c'est
+/// précisément pour ça qu'aucune garde chiffrée ne pouvait le voir.
+describe("l'en-tête de X86ModelSpecific compte les endroits qui lisent un MSR", () => {
+  const EN_LETTRES = new Map<string, number>([
+    ["cinquante", 50], ["cinquante-cinq", 55], ["soixante", 60],
+    ["soixante et un", 61], ["soixante-deux", 62], ["soixante-trois", 63],
+    ["soixante-quatre", 64], ["soixante-cinq", 65], ["soixante-six", 66],
+    ["soixante-sept", 67], ["soixante-huit", 68], ["soixante-neuf", 69],
+    ["soixante-dix", 70], ["soixante-quinze", 75], ["quatre-vingts", 80],
+    ["quatre-vingt-dix", 90], ["cent", 100],
+  ]);
+
+  /// Les lignes qui indexent le magasin de MSR, là où le dépôt les range.
+  function endroits(): string[] {
+    const trouvés: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const chemin = join(dir, entry);
+        if (statSync(chemin).isDirectory()) {
+          walk(chemin);
+        } else if (entry.endsWith(".swift")) {
+          for (const ligne of readFileSync(chemin, "utf8").split("\n")) {
+            if (ligne.includes("modelSpecific[")) {
+              trouvés.push(`${chemin.slice(repoRoot.length + 1)} : ${ligne.trim()}`);
+            }
+          }
+        }
+      }
+    };
+    for (const racine of ["Sources", "Tests"]) walk(join(repoRoot, racine));
+    return trouvés;
+  }
+
+  const entête = readFileSync(
+    join(repoRoot, "Sources/WisqVM/X86ModelSpecific.swift"),
+    "utf8",
+  )
+    .replace(/^[ \t]*\/\/\/?/gm, " ")
+    .replace(/\s+/g, " ");
+  const dit = entête.match(/Les ([-\p{L} ]+?) endroits qui (?:lisent|lisaient)/u);
+
+  test("les endroits se comptent, et il y en a", () => {
+    expect(
+      endroits().length,
+      "aucune ligne n'indexe `modelSpecific` : le motif ne lit plus rien, ou le " +
+        "magasin a changé de nom",
+    ).toBeGreaterThan(10);
+  });
+
+  test("le nombre annoncé est celui qu'on compte", () => {
+    expect(
+      dit,
+      "`X86ModelSpecific` n'annonce plus combien d'endroits lisent un MSR",
+    ).not.toBeNull();
+    const n = EN_LETTRES.get(dit![1]!.trim().toLowerCase());
+    expect(n, `aucun nombre pour « ${dit![1]!.trim()} »`).toBeDefined();
+    const vrais = endroits();
+    expect(
+      n,
+      `l'en-tête dit « ${dit![1]!.trim()} » et ${vrais.length} lignes indexent ` +
+        `\`modelSpecific\`, dont ${vrais.slice(0, 2).join(" | ")}`,
+    ).toBe(vrais.length);
+  });
+});

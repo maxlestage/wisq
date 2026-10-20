@@ -27155,3 +27155,76 @@ prétend pas tenir, et elle a eu raison de ne pas tomber.
 
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #357 — « les soixante endroits », et il y en a soixante-six
+
+`X86ModelSpecific` a sorti du dictionnaire les quatre MSR que le chemin chaud
+consulte — les bases de `%fs` et `%gs`, `KernelGSBase`, `EFER` — pour en faire
+des champs. Son en-tête rassure sur le rayon d'explosion :
+
+> **La même surface qu'avant** […] Les **soixante** endroits qui lisaient ou
+> écrivaient un MSR n'ont pas changé.
+
+Comptés : **soixante-six** lignes indexent `modelSpecific` sous `Sources/` et
+`Tests/`, et **soixante-cinq** le faisaient au commit d'avant, celui où la
+phrase a été écrite. Dix-huit d'entre elles sont dans `Sources/`, le reste dans
+les tests.
+
+### Pourquoi ce n'est pas une approximation mal lue
+
+Onze lignes plus haut, le même commentaire écrit « **une vingtaine**
+d'instructions de l'hôte » là où il approxime. Ici c'est l'article défini et le
+nombre nu : « les soixante endroits ». L'auteur distingue les deux formes dans
+le même paragraphe, donc celle-ci compte — et aucune lecture ne donne soixante.
+`Sources/` seul en fait dix-huit, les tests seuls quarante-huit, les deux
+soixante-cinq avant la tranche, soixante-six après.
+
+C'est la cinquième fois que la faute vit dans un **en-tête**, là où personne ne
+compte rien (#321, #322, #323, #354, et celle-ci), et la énième où un nombre
+écrit en lettres échappe à toutes les gardes chiffrées. Celles-ci relèvent les
+chiffres ; « soixante » n'en est pas un.
+
+### Ce que la garde tient
+
+Le nombre que l'en-tête donne est celui des lignes qui indexent
+`modelSpecific` sous `Sources/` et `Tests/`. Elle lit les lettres — c'est en
+lettres que le nombre est écrit, et c'est précisément pour ça qu'il a dérivé.
+
+La phrase passe au présent pour le compte (« les endroits qui **lisent** ») et
+garde au passé ce qui parle de la tranche (« n'ont pas eu à changer ») : un
+compte au passé serait un relevé, et un relevé ne se garde pas, il se date.
+
+### Cinq sabordages, cinq chutes — et un sixième qui devait passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| l'en-tête revient à « soixante » | « dit « soixante » et 66 lignes indexent `modelSpecific` », avec deux d'entre elles |
+| un endroit de plus dans `X86Paging` | 67 contre soixante-six |
+| l'endroit de `X86Paging` retiré | 64 contre soixante-six |
+| la phrase perd son compte | « n'annonce plus combien d'endroits lisent un MSR » |
+| le magasin renommé `msrStore` partout | « aucune ligne n'indexe `modelSpecific` : le motif ne lit plus rien, ou le magasin a changé de nom » |
+| **« une vingtaine »** devient « une trentaine » | rien — et c'est voulu |
+
+Les deuxième et troisième comptent le plus : ils prouvent que le nombre attendu
+vient du dépôt et pas d'un littéral, dans les deux sens. Le cinquième montre
+que le lecteur refuse plutôt que de comparer zéro à zéro. Le sixième n'est pas
+un sabordage : il touche l'approximation voisine, que la garde ne prétend pas
+tenir, et elle a eu raison de ne pas tomber.
+
+### Deux pistes de la même tranche, écartées par la lecture
+
+**Le nouveau test se comparait-il à lui-même ?**
+`testTheModRMFieldsUnfoldedAtDecodeAreTheOldOnes` appelle `X86Core.fields`, et
+`fields` ne recalcule plus rien — il rend les champs dépliés au décodage. Mais
+la formule de référence est **réécrite dans le test**, à partir des octets
+`rex` et `modrm`, et non relue depuis l'instruction. Ce n'est donc pas une
+tautologie : c'est la même formule écrite deux fois, et un décodeur qui
+calculerait autrement la ferait tomber sur 256 × 17 combinaisons.
+
+**« La taille ne bouge pas »**, dit le commentaire des nouveaux champs. Vrai :
+la garde du cache (#356) épingle `footprint` à 9 437 184 octets, donc `Entry`
+à 72 et l'instruction à 40, avant comme après. Trois champs d'un octet sont
+entrés dans le remplissage.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
