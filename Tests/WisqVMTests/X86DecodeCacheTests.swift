@@ -52,9 +52,9 @@ final class X86DecodeCacheTests: XCTestCase {
     /// Le cache se paie en mémoire, une fois par machine : il doit rester
     /// petit devant la RAM de l'invité, même sur un téléphone.
     func testTheCacheStaysSmallBesideTheGuestsMemory() {
-        XCTAssertLessThanOrEqual(X86DecodeCache.footprint, 8 << 20, "huit Mio au plus")
-        XCTAssertGreaterThanOrEqual(X86DecodeCache.slots, 1 << 16,
-                                    "l'espace utilisateur ne tient pas dans moins")
+        XCTAssertLessThanOrEqual(X86DecodeCache.footprint, 10 << 20, "dix Mio au plus")
+        XCTAssertGreaterThanOrEqual(X86DecodeCache.slots, 1 << 17,
+                                    "le code chaud de Fedora ne tient pas dans moins")
     }
 
     /// La case elle-même : une entrée ne sert que pour ses octets, et que si
