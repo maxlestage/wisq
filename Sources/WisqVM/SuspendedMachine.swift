@@ -113,6 +113,14 @@ public enum SuspendedMachine {
         )
     }
 
+    /// Quand la machine sauvée l'a été : la date du fichier. C'est ce que
+    /// `ResumeNote` affiche à la reprise.
+    public static func savedAt(kernel: String, in directory: URL? = nil) -> Date? {
+        guard let folder = try? (directory ?? Self.directory()) else { return nil }
+        let path = folder.appendingPathComponent(fileName(kernel: kernel)).path
+        return (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+    }
+
     /// The saved machine, or nil when there is none.
     ///
     /// An unreadable file is treated as no file rather than as an error: the
