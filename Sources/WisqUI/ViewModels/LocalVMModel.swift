@@ -51,6 +51,10 @@ public final class LocalVMModel {
     /// while the interpreter is writing it would save something that never
     /// existed.
     private var runFinished: DispatchSemaphore?
+    /// La course en cours, qui se sauve d'elle-même par intervalles — voir
+    /// `CheckpointedRun`. C'est par elle qu'on arrête : son `stop` attend une
+    /// écriture en cours, qu'« Arrêter » efface juste après.
+    private var checkpointed: CheckpointedRun?
     /// What becomes of the saved machine on each event, decided by a type that
     /// builds on Linux and is therefore covered by tests — this wiring is not.
     private var life = MachineLifecycle()
@@ -425,6 +429,15 @@ public final class LocalVMModel {
         // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
         // appartient à `self`, qui n'y est capturé que faiblement.
         let storageFolder = storage
+        // **La sauvegarde continue**, pour la mort qu'iOS n'annonce pas :
+        // une application tuée pour la mémoire reprend à la dernière
+        // sauvegarde au lieu de refaire un démarrage de vingt minutes. Le nom
+        // est lu ici pour la même raison que `storage`.
+        let savedUnder = kernelName
+        let checkpointed = CheckpointedRun(machine: machine, write: { packed in
+            try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
+        })
+        self.checkpointed = checkpointed
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -465,7 +478,7 @@ public final class LocalVMModel {
                         kernelImage: image, commandLine: isoCommandLine,
                         initialRamdisk: ramdisk)
                 }
-                outcome = machine.runGuest(instructionBudget: .max)
+                outcome = checkpointed.run()
                 // Lu sur le fil d'émulation, pendant que la machine est encore
                 // à nous : la vue n'y touche pas.
                 activity = machine.diskActivity
@@ -555,10 +568,15 @@ public final class LocalVMModel {
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
-        if life.userStopped() == .forget {
+        let action = life.userStopped()
+        // La machine d'abord, et à travers sa course : une écriture en
+        // cours finit avant que `stop` ne rende la main, et l'effacement qui
+        // suit est donc le dernier mot. Dans l'autre ordre, l'écriture
+        // finissante faisait revenir la machine qu'on vient d'arrêter.
+        if let checkpointed { checkpointed.stop() } else { machine?.stop() }
+        if action == .forget {
             SuspendedMachine.clear(kernel: kernelName, in: storage)
         }
-        machine?.stop()
     }
 
     /// Throws the saved machine away without touching the one running.
@@ -586,7 +604,7 @@ public final class LocalVMModel {
     public func suspend() {
         guard let machine, let finished = runFinished else { return }
         guard life.steppedAway() == .save else { return }
-        machine.stop()
+        if let checkpointed { checkpointed.stop() } else { machine.stop() }
         // If the interpreter has not come back in time, saving would read state
         // it is still writing. Better to lose the session than to save a
         // machine that never existed.
@@ -604,6 +622,7 @@ public final class LocalVMModel {
         }
         self.machine = nil
         runFinished = nil
+        checkpointed = nil
         status = .idle
     }
 
@@ -664,6 +683,7 @@ public final class LocalVMModel {
     private func finish(with message: String) {
         machine = nil
         runFinished = nil
+        checkpointed = nil
         // La ligne d'état s'éteint avec la machine : un battement figé après
         // l'arrêt dirait « bloquée » là où le message entre crochets vient de
         // dire ce qui s'est passé.
