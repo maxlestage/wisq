@@ -134,7 +134,7 @@ extension X86Core {
                 setComparisonFlags(X86Extended.compare(stack(0), stack(index)))
                 if opcode == 0xDF { pop() }
             case (0xDF, 4) where modrm == 0xE0:                      // FNSTSW %ax
-                registers[0] = (registers[0] & ~0xFFFF) | UInt64(x87Status)
+                registers[0] = (registers.read(0) & ~0xFFFF) | UInt64(x87Status)
             default:
                 throw Fault.unsupported("une instruction x87 : \(hex(opcode)) \(hex(modrm))")
             }
