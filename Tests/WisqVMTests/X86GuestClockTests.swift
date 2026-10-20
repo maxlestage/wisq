@@ -23,8 +23,8 @@ import XCTest
 ///
 /// La règle : **`RDTSC` et le 8253 lisent le même temps**, celui de
 /// `X86Core.ticks` — le noyau a étalonné l'un contre l'autre au démarrage
-/// (« Detected 14.318 MHz », douze fois le 8253), et ils n'ont pas le droit de
-/// diverger ensuite.
+/// (« Detected 42.950 MHz processor », trente-six fois le 8253), et ils
+/// n'ont pas le droit de diverger ensuite.
 final class X86GuestClockTests: XCTestCase {
     /// `rdtsc ; hlt ; rdtsc`. Sans IDT, rien ne réveille le `hlt` : le second
     /// `rdtsc` ne s'exécute que quand on relève la machine à la main, après
@@ -71,6 +71,7 @@ final class X86GuestClockTests: XCTestCase {
         let read = Self.timeStamp(core)
         XCTAssertEqual(read, core.retired &+ core.idled &- 1)
         XCTAssertEqual(core.ticks, (read &+ 1) / X86LegacyDevices.instructionsPerTick,
-                       "le 8253 bat une fois par douze cycles du TSC, comme le noyau l'a étalonné")
+                       "le 8253 bat une fois par \(X86LegacyDevices.instructionsPerTick) "
+                       + "cycles du TSC, comme le noyau l'a étalonné")
     }
 }
