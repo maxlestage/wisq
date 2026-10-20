@@ -26841,3 +26841,76 @@ l'égalité des trois listes, et elle reste à six contre six.
 
 Restauration vérifiée par `diff` contre une copie prise **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #355 — la phrase nommait trois modules et comptait les tests de quatre
+
+`README.fr.md` annonce quels modules Swift compilent sans erreur ni
+avertissement sous Swift 6.3, en concurrence stricte complète, et donne dans la
+foulée le nombre de tests qui passent. Elle en nommait **trois** —
+`WisqCore`, `WisqNet`, `WisqRemote` — et le compte qu'elle citait comptait
+aussi ceux de **`WisqVM`**, qui est le plus gros des quatre : les cœurs rv32ima
+et x86-64, l'UART, virtio-blk.
+
+L'arithmétique était interne au paragraphe, ce qui la rend vérifiable sans rien
+supposer. Le tableau « Structure », deux sections plus bas, liste cinq modules
+sous `Sources/`. Le paragraphe nomme lui-même son exception : « la couche
+`WisqUI` et la cible application demandent UIKit ». Cinq moins un font quatre,
+et la liste en portait trois.
+
+Ce n'était pas un détail d'inventaire. `WisqVMTests` est une cible de test sans
+condition de plateforme, le job « Cœur (Linux) » la lance à chaque tour, et les
+dix dernières tranches fusionnées sont toutes dans `WisqVM`.
+
+### L'ancre est le manifeste
+
+`Package.swift` déclare quatre bibliothèques dans son tableau `products:`
+littéral, et trois produits derrière une condition — `WisqUI` hors Linux,
+`WisqVMRust` quand le cœur Rust est demandé, `agentProducts` vide des deux
+côtés. Ce sont exactement ceux que le paragraphe exclut. La garde lit le
+tableau littéral, s'arrête au `]` que suit le `+` des conditionnels, et compare
+l'ensemble à ce que la phrase nomme. Recopier les quatre noms dans la garde en
+aurait fait une copie de plus à tenir.
+
+### Le sabordage qui a survécu, et ce qu'il a nommé
+
+Le premier lecteur cherchait une suite de noms entre accents graves
+immédiatement suivie de « compilent ». En écrivant « `WisqAudio` **puis**
+`WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent », le motif
+s'accrochait au deuxième nom, rendait une liste exacte, et **la garde passait
+sur la phrase même qu'elle vise**. Une négation devant — refuser de démarrer
+juste après un nom entre accents graves — ne suffisait pas : « puis » n'est pas
+un accent grave. C'est l'assertion satisfaite par un autre chemin, une fois de
+plus, et c'est un sabordage qui l'a montrée, pas une relecture.
+
+Ce qui tient : découper le fichier en paragraphes **avant** de replier les
+blancs, prendre celui qui porte la phrase, et relever **tous** les noms entre
+accents graves qui précèdent le verbe. Un nom de trop fait tomber la garde où
+qu'il soit. Le prix est qu'un terme entre accents graves placé devant la liste
+la ferait tomber aussi : elle refuse plutôt que de laisser passer, et son
+message dit ce qu'elle a lu.
+
+### Cinq sabordages, cinq chutes — et une mutation qui n'en était pas une
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| la phrase retombe à trois noms | le manifeste en déclare quatre, la phrase en nomme trois |
+| une cinquième bibliothèque entre au manifeste | `WisqAudio` déclaré, absent de la phrase |
+| la phrase nomme `WisqUI`, que le manifeste conditionne | la phrase nomme `WisqUI`, `WisqVM` |
+| un module de trop **en tête** de la liste | la phrase nomme `WisqAudio`, `WisqCore`, … (SURVÉCU au premier lecteur) |
+| le verbe de la phrase change | « le README n'annonce plus quels modules compilent » |
+| le tableau `products:` devient illisible | « le tableau `products:` de Package.swift n'est plus lisible ici » |
+
+Et une sixième mutation **n'a rien sabordé** : fusionner le paragraphe avec le
+titre suivant laisse intact tout ce qui précède le verbe, donc la garde a eu
+raison de ne pas tomber. Une mutation qui ne change pas la propriété gardée ne
+prouve rien, ni dans un sens ni dans l'autre.
+
+### Ce que la tranche ne consigne pas
+
+Aucune entrée au `CHANGELOG`, et le `README.md` anglais n'est pas touché : il
+ne porte pas de liste de modules, seulement « 2874 tests across Swift and
+Rust », que la garde du compte tient déjà. Les trois listes que garde #353
+restent à six contre six.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
