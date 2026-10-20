@@ -8,6 +8,42 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — L'attente sautée, et pourquoi Fedora gelait
+
+Suite directe, même autorisation. Avec le SSE et le x87 de Fedora 44 en
+place, son démarrage ne s'arrêtait plus sur une instruction : systemd
+écrivait « Failed to fork off sandboxing environment for executing
+generators: Protocol error », puis « Freezing execution ».
+
+- **La cause, lue dans le journal de débogage de systemd** : ses vingt
+  générateurs partent ensemble, et `(generators)` est tué par `SIGALRM`
+  46 s de temps invité plus tard. Fedora compile systemd avec
+  `default-timeout-sec=45` (90 en amont), et ce délai, fixé à la
+  compilation, borne aussi les générateurs. À quatorze millions
+  d'instructions par seconde d'invité, vingt programmes qui chargent
+  chacun `libsystemd-shared`, sous SELinux, n'y tiennent pas.
+  `cloud-init=disabled` ne change rien : ce n'est pas un générateur seul.
+- **Une console écrite au fil de la course** (`WISQ_PC_CONSOLE`) : la
+  première course en journal de débogage a passé ses deux heures, et la
+  console, que le banc n'imprimait qu'à la fin, a été perdue entière.
+- **L'attente sautée.** La vraie réponse est de faire paraître le
+  processeur plus rapide à l'invité, c'est-à-dire plus d'instructions par
+  battement du 8253. Mais une machine endormie avançait d'un tour par
+  instruction d'attente, en interrogeant le matériel à chaque tour :
+  quatorze millions de tours par seconde d'invité, et davantage si le
+  battement s'allonge. Elle saute maintenant d'un coup au tour exact où le
+  8253 la réveillera, borné par ce qui reste de budget ou de patience. Une
+  seconde d'attente à 250 Hz coûtait 0,40 s à l'hôte ; elle en coûte
+  0,08 ms, pour les mêmes 249 réveils.
+- **Le même résultat au tour près**, et un test le tient : une boucle
+  `sti ; hlt` et un gestionnaire qui compte ses réveils et additionne
+  l'heure lue par `rdtsc` à chacun, la même course pas à pas puis par
+  sauts, en mode périodique et en coup unique, avec et sans allocation
+  d'attente. Sabotage : un saut d'un tour trop long ne change ni la fin de
+  course ni le nombre de réveils — l'échéancier est absolu — mais décale
+  chaque heure de réveil, et le test tombe.
+- Prochaine tranche : le battement lui-même.
+
 ## 2026-10-20 — Le x87 de la libm de Fedora
 
 Suite directe, même autorisation. Ce que la sonde laissait encore refusé

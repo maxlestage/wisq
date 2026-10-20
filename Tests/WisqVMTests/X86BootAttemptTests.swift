@@ -344,6 +344,22 @@ final class X86BootAttemptTests: XCTestCase {
                 samples.removeAll(keepingCapacity: true)
             }
             defer { flushSamples(); try? sampleFile?.close() }
+            // **La console aussi, au fil de la course**, avec
+            // `WISQ_PC_CONSOLE` : ce que le port série a écrit depuis la
+            // tranche précédente, ajouté au fichier nommé. Le démarrage de
+            // Fedora en journal de débogage a passé ses deux heures, et la
+            // console, qui ne s'imprime qu'à la fin, a été perdue entière.
+            let consoleFile = environment["WISQ_PC_CONSOLE"].flatMap { path -> FileHandle? in
+                FileManager.default.createFile(atPath: path, contents: nil)
+                return FileHandle(forWritingAtPath: path)
+            }
+            var consoleWritten = 0
+            func flushConsole() {
+                guard let consoleFile, core.serialOutput.count > consoleWritten else { return }
+                consoleFile.write(Data(core.serialOutput.dropFirst(consoleWritten)))
+                consoleWritten = core.serialOutput.count
+            }
+            defer { flushConsole(); try? consoleFile?.close() }
             let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
@@ -352,6 +368,7 @@ final class X86BootAttemptTests: XCTestCase {
                     if samples.count >= 1000 { flushSamples() }
                 }
                 remaining -= min(remaining, max(executed, 1))
+                flushConsole()
                 let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
                 if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
