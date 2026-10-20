@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Dormir quand l'invité dort
+
+Suite directe, même autorisation. Depuis que l'attente se saute jusqu'au
+prochain battement (#547), une machine endormie ne coûte plus rien à
+compter — mais son temps à elle file alors bien plus vite que celui de la
+personne qui la regarde. L'application faisait tourner le cœur sans
+jamais s'arrêter : un `sleep 10` finissait en quelques millisecondes,
+l'heure de l'invité dérivait, et l'appareil chauffait devant une invite
+immobile.
+
+- **`X86Machine.pacesIdleToWallClock`** : quand l'invité est arrêté sur
+  `HLT` et que son temps a pris de l'avance sur l'horloge murale, le fil
+  d'émulation dort l'écart, à la fin de chaque tranche. Une frappe
+  (`send`) ou un arrêt (`stop`) le réveillent. Un invité qui travaille
+  n'est jamais ralenti : son temps est en retard sur le mur, pas en
+  avance.
+- **Éteint par défaut, allumé par l'application** (`makeLocalMachine`) :
+  les tests et les bancs vont toujours aussi vite que l'hôte.
+- Deux tests : trois dixièmes de seconde de sommeil de l'invité prennent
+  plus d'un quart de seconde au mur avec le réglage, quelques
+  millisecondes sans, et la machine est la même au tour près ; un arrêt
+  demandé pendant le sommeil rend la main tout de suite.
+- Sabotages : sans le sommeil, le premier test tombe (0,002 s au lieu de
+  0,25). Deux ne tombent pas, et pourquoi : sans le réveil par `stop`,
+  l'arrêt arrive quand même en quelques millisecondes, parce qu'une
+  tranche ne vaut que 4,6 ms de l'invité et que le sommeil n'en dépasse
+  jamais une ; et dormir aussi pendant le travail ne change rien tant
+  qu'un invité qui travaille est en retard sur le mur. Les deux restent :
+  le premier pour le jour où les tranches s'allongent, le second parce
+  qu'il dit l'intention.
+
 ## 2026-10-20 — L'attente sautée, et pourquoi Fedora gelait
 
 Suite directe, même autorisation. Avec le SSE et le x87 de Fedora 44 en

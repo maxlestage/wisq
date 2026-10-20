@@ -110,11 +110,15 @@ func makeLocalMachine(
     for core: GuestArchitecture.Core, ramSizeBytes: Int,
     onOutput: @escaping @Sendable (Data) -> Void
 ) -> GuestMachine {
-    GuestMachineFactory.make(
+    let machine = GuestMachineFactory.make(
         for: core, ramSizeBytes: ramSizeBytes, onOutput: onOutput,
         riscv: { size, output in
             LocalRISCVMachine(ramSize: UInt32(clamping: size), onOutput: output)
         })
+    // Devant une personne, une machine qui dort laisse dormir l'appareil :
+    // voir `X86Machine.pacesIdleToWallClock`.
+    (machine as? X86Machine)?.pacesIdleToWallClock = true
+    return machine
 }
 
 #endif
