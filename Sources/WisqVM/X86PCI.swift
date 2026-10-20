@@ -69,12 +69,14 @@ public final class X86PCIHost: @unchecked Sendable {
     /// l'instantané : l'état du premier disque s'écrit tel qu'il s'est
     /// toujours écrit, octet pour octet, et celui du second s'ajoute derrière
     /// une marque. Les machines déjà sauvées ne voient rien changer.
+    @exclusivity(unchecked)
     public var second: X86PCIHost?
 
     /// Ce que le noyau a écrit dans le port d'adresse.
     public private(set) var address: UInt32 = 0
     /// Le disque, ou rien. Sans lui le bus existe mais reste vide, ce qui est
     /// une réponse honnête : le noyau énumère, ne trouve rien, et continue.
+    @exclusivity(unchecked)
     public var storage: VirtioBlock?
 
     /// Ce que le noyau a activé — bit 0 les ports, bit 2 la maîtrise du bus.
@@ -82,6 +84,7 @@ public final class X86PCIHost: @unchecked Sendable {
     /// Où le noyau a placé la fenêtre de ports du périphérique.
     public private(set) var window: UInt32 = 0
     /// La ligne d'interruption, telle que le noyau la lit **et l'écrit**.
+    @exclusivity(unchecked)
     public private(set) var interruptLine: UInt8
     /// Vrai entre l'écriture de tous les uns dans le registre de fenêtre et la
     /// lecture qui suit : c'est ainsi qu'un noyau demande la **taille**.
