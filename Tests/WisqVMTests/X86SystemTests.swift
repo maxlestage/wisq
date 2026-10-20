@@ -43,7 +43,8 @@ final class X86SystemTests: XCTestCase {
 
     /// **CX8 annoncé : `CMPXCHG8B` répond.** Égal, il range ECX:EBX et lève
     /// ZF ; différent, il rend la valeur lue dans EDX:EAX, hauts effacés, et
-    /// baisse ZF. Avec REX.W ce serait `CMPXCHG16B`, que CX16 n'annonce pas.
+    /// baisse ZF. Avec REX.W c'est `CMPXCHG16B`, que tient le corpus de
+    /// x86-64-v2 (`X86V2OracleTests`).
     func testCMPXCHG8BSwapsWhenEqualAndReportsWhatItFoundOtherwise() throws {
         let program: [UInt8] = [0x0F, 0xC7, 0x0E, 0x0F, 0xC7, 0x0E]  // cmpxchg8b (%rsi), deux fois
         var core = try machine(program)
@@ -61,11 +62,6 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(core.registers[0], 0x5555_6666)
         XCTAssertEqual(core.registers[2], 0x7777_8888)
         XCTAssertEqual(core.flags & X86Core.Flag.zero, 0)
-
-        var wide = try machine([0x48, 0x0F, 0xC7, 0x0E])  // cmpxchg16b (%rsi)
-        XCTAssertThrowsError(try wide.run(budget: 1)) { error in
-            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
-        }
     }
 
     /// `FNCLEX` efface les drapeaux d'exception, ES et B, et garde le sommet

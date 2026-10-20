@@ -39,6 +39,10 @@ extension X86Core {
         case 0x3D: return choose(4, smaller: false, signed: true)   // PMAXSD
         case 0x3B: return choose(4, smaller: true, signed: false)   // PMINUD
         case 0x3F: return choose(4, smaller: false, signed: false)  // PMAXUD
+        case 0x37:  // PCMPGTQ, signé (SSE4.2)
+            return elementwise(8, destination, source) {
+                Int64(bitPattern: $0) > Int64(bitPattern: $1) ? $2 : 0
+            }
         case 0x29:  // PCMPEQQ
             return elementwise(8, destination, source) { $0 == $1 ? $2 : 0 }
         case 0x40:  // PMULLD : les trente-deux bits bas de chaque produit
@@ -192,6 +196,50 @@ extension X86Core {
 
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
+        }
+    }
+
+    /// **L'arrondi de SSE4.1.** Bits 1-0 de l'immédiat : au plus proche
+    /// (pair en cas d'égalité), vers -∞, vers +∞, vers zéro ; le bit 2 prend
+    /// à la place le mode de MXCSR (bits 13-14, dans le même ordre). Le
+    /// bit 3 ne fait que taire l'exception de précision, que ce cœur ne lève
+    /// pas. Un NaN ressort silencieux : l'instruction d'arrondi d'un hôte x86
+    /// le fait déjà d'elle-même — le sabotage qui retire `quiet` ne casse rien
+    /// ici —, et c'est écrit pour ne pas dépendre de l'hôte, que la CI Apple
+    /// fait tourner sur le même corpus en arm64. Les formes scalaires ne lisent que
+    /// leur élément et gardent le reste de la destination.
+    mutating func round(_ fields: Fields, _ opcode: UInt8, _ control: UInt8) throws {
+        let mode = control & 4 != 0 ? UInt8(mxcsr >> 13 & 3) : control & 3
+        let rule: FloatingPointRoundingRule
+        switch mode {
+        case 0: rule = .toNearestOrEven
+        case 1: rule = .down
+        case 2: rule = .up
+        default: rule = .towardZero
+        }
+        func double(_ bits: UInt64) -> UInt64 {
+            let value = Self.asDouble(bits)
+            return (value.isNaN ? Self.quiet(value) : value.rounded(rule)).bitPattern
+        }
+        func single(_ bits: UInt64) -> UInt64 {
+            let value = Self.asSingle(bits)
+            return UInt64((value.isNaN ? Self.quiet(value) : value.rounded(rule)).bitPattern)
+        }
+        func singles(_ half: UInt64) -> UInt64 { single(half) | single(half >> 32) << 32 }
+        let destination = vector(fields.reg)
+        switch opcode {
+        case 0x08:  // ROUNDPS
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, singles(source.0), singles(source.1))
+        case 0x09:  // ROUNDPD
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, double(source.0), double(source.1))
+        case 0x0A:  // ROUNDSS
+            let source = try readVectorRM(fields, 4)
+            setVector(fields.reg, destination.low & ~0xFFFF_FFFF | single(source.0), destination.high)
+        default:  // ROUNDSD
+            let source = try readVectorRM(fields, 8)
+            setVector(fields.reg, double(source.0), destination.high)
         }
     }
 
