@@ -491,7 +491,7 @@ public final class LocalVMModel {
                     // ne l'a pas vu partir.
                     if let resumeNote {
                         let line = ConsoleProse.plain(resumeNote, columns: consoleSink.columns)
-                        if consoleSink.append(Data("[\(line)]\r\n".utf8)) {
+                        if consoleSink.append(Data("[\(line)]\r\n".utf8)).refresh {
                             Task { @MainActor [weak self] in
                                 self?.consoleText = consoleSink.takeText()
                             }
