@@ -40,22 +40,52 @@ public struct X86Instruction: Equatable, Sendable {
     /// échappement, et combien comptent. Un tuple plutôt qu'un tableau, pour
     /// la même raison.
     public let vexBytes: (UInt8, UInt8, UInt8)
-    public let vexCount: Int
+    public var vexCount: Int { Int(vexCountByte) }
     /// Dans quelle table l'opcode se lit.
     public let map: OpcodeMap
     /// L'octet d'opcode lui-même, sans les échappements qui l'ont désigné.
     public let opcode: UInt8
     public let modrm: UInt8?
     public let sib: UInt8?
-    public let displacementBytes: Int
+    public var displacementBytes: Int { Int(displacementByteCount) }
+    public var immediateBytes: Int { Int(immediateByteCount) }
+    /// Le nombre d'octets que l'instruction occupe en tout.
+    public var length: Int { Int(lengthByte) }
+
+    /// **Les quatre longueurs sur un octet chacune, et rangées avant les
+    /// deux mots.** Elles étaient des `Int`, et l'ordre des champs semait du
+    /// remplissage entre eux : soixante-quatre octets par instruction, que
+    /// la boucle recopie à chaque niveau d'appel — de la case du cache vers
+    /// `step`, puis vers `perform`, puis vers l'aiguillage. Aucune ne
+    /// dépasse quinze. Les noms publics restent des `Int`, calculés.
+    let vexCountByte: UInt8
+    let displacementByteCount: UInt8
+    let immediateByteCount: UInt8
+    let lengthByte: UInt8
+
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
     public let displacement: Int64
-    public let immediateBytes: Int
     /// L'immédiat, brut. Ce qu'il faut en faire — l'étendre au signe ou non —
     /// dépend de l'instruction, donc ce n'est pas décidé ici.
     public let immediate: UInt64
-    /// Le nombre d'octets que l'instruction occupe en tout.
-    public let length: Int
+
+    init(prefixMask: UInt16, rex: UInt8?, vexBytes: (UInt8, UInt8, UInt8), vexCount: Int,
+         map: OpcodeMap, opcode: UInt8, modrm: UInt8?, sib: UInt8?, displacementBytes: Int,
+         displacement: Int64, immediateBytes: Int, immediate: UInt64, length: Int) {
+        self.prefixMask = prefixMask
+        self.rex = rex
+        self.vexBytes = vexBytes
+        vexCountByte = UInt8(vexCount)
+        self.map = map
+        self.opcode = opcode
+        self.modrm = modrm
+        self.sib = sib
+        displacementByteCount = UInt8(displacementBytes)
+        self.displacement = displacement
+        immediateByteCount = UInt8(immediateBytes)
+        self.immediate = immediate
+        lengthByte = UInt8(length)
+    }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,
     /// `0F 3A`) et le champ `mmmmm` d'un VEX ou d'un EVEX désignent les mêmes
