@@ -131,6 +131,7 @@ public final class VirtioBlock: @unchecked Sendable {
     var descriptorTable: UInt64 = 0
     var availableRing: UInt64 = 0
     var usedRing: UInt64 = 0
+    @exclusivity(unchecked)
     public private(set) var interruptStatus: UInt32 = 0
     /// L'index de la prochaine entrée à lire dans l'anneau des disponibles.
     var nextAvailable: UInt16 = 0
