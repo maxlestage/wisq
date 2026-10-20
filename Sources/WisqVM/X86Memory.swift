@@ -21,11 +21,20 @@ public final class X86Memory: @unchecked Sendable {
     public init(size: Int, base: UInt64 = 0) {
         self.size = size
         self.base = base
-        bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
-        bytes.initialize(repeating: 0, count: size)
+        // **`calloc`, pas une allocation suivie d'un remplissage.** Pour un
+        // bloc de cette taille, le système rend des pages qu'il promet nulles
+        // et ne fournit qu'au premier accès : rien à écrire au départ, et la
+        // mémoire que l'invité ne touche jamais ne pèse rien dans l'hôte. Le
+        // remplissage écrivait les 512 Mio d'une machine PC avant sa première
+        // instruction, et les rendait résidents pour toute sa vie — ce que
+        // l'iPhone fait payer en tuant l'application.
+        guard let zeroed = calloc(max(size, 1), 1) else {
+            fatalError("la mémoire de l'invité : \(size) octets refusés par l'hôte")
+        }
+        bytes = zeroed.assumingMemoryBound(to: UInt8.self)
     }
 
-    deinit { bytes.deallocate() }
+    deinit { free(bytes) }
 
     /// L'octet à cette adresse, ou nil si elle est ailleurs.
     func offset(_ address: UInt64, _ width: Int) -> Int? {

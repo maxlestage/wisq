@@ -91,4 +91,42 @@ final class SnapshotRAMEncodingTests: XCTestCase {
         let bad = Snapshot.magic + words([4, 1]) + words([3, 2]) + [1, 1]
         XCTAssertThrowsError(try decode(bad, count: 4))
     }
+
+    /// **Une machine reprise ne pèse que ce qu'elle porte.** Une mémoire de
+    /// 512 Mio où seuls quatre mébioctets sont écrits, sauvée puis relue dans
+    /// une mémoire neuve : l'hôte ne doit fournir que ces pages-là. La remise
+    /// à zéro de toute la RAM avant la recopie les rendait toutes
+    /// résidentes, et la création de la mémoire les écrivait déjà une fois.
+    func testARestoredMachineOnlyWeighsWhatItCarries() throws {
+        #if os(Linux)
+        let size = 512 << 20
+        let written = 4 << 20
+        let source = X86Memory(size: size)
+        for page in stride(from: 0, to: written, by: 4096) { source.bytes[page] = 0x5A }
+        var writer = Snapshot.Writer()
+        writer.ram(UnsafeRawBufferPointer(start: source.bytes, count: size))
+        let encoded = writer.bytes
+
+        let before = try Self.residentBytes()
+        let target = X86Memory(size: size)
+        var reader = try Snapshot.Reader(encoded)
+        try reader.ram(UnsafeMutableRawBufferPointer(start: target.bytes, count: size))
+        let grown = try Self.residentBytes() - before
+        XCTAssertEqual(target.bytes[written - 4096], 0x5A)
+        XCTAssertEqual(target.bytes[size - 1], 0)
+        XCTAssertLessThan(grown, 64 << 20, "\(grown >> 20) Mio rendus résidents pour en restaurer quatre")
+        #else
+        throw XCTSkip("la mémoire résidente se lit dans /proc")
+        #endif
+    }
+
+    #if os(Linux)
+    /// Ce que le processus occupe en mémoire physique, d'après le noyau.
+    private static func residentBytes() throws -> Int {
+        let statm = try String(contentsOfFile: "/proc/self/statm", encoding: .utf8)
+        let fields = statm.split(separator: " ")
+        let pages = try XCTUnwrap(Int(fields[1]))
+        return pages * Int(sysconf(Int32(_SC_PAGESIZE)))
+    }
+    #endif
 }
