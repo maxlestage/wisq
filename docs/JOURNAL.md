@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — Fedora 44 jusqu'au shell : un processeur de 43 MHz
+
+Suite directe, même autorisation. La cause du gel de Fedora était connue
+(#547) : ses vingt générateurs ne tenaient pas dans les 45 s que systemd
+leur donne, comptées en temps de l'invité. L'attente sautée et le sommeil
+au rythme du mur (#548) étant en place, le battement lui-même peut
+changer sans rien coûter à l'hôte pendant que l'invité dort.
+
+- **`instructionsPerTick` passe de 12 à 36.** Le 8253 compte toujours à
+  1,193182 MHz ; l'invité voit maintenant un processeur de 43 MHz
+  (« Detected 42.950 MHz processor ») au lieu de 14. Un délai de l'invité
+  couvre trois fois plus de travail, et un noyau à 1000 Hz traite trois
+  fois moins d'échéances par instruction.
+- **Mesuré sur les trois, avec le même binaire** :
+  - Fedora 44 Cloud : les générateurs passent, `serial-getty` ouvre le
+    shell, `[root@localhost ~]#`, et `cat /etc/fedora-release` rend
+    « Fedora release 44 (Forty Four) » à **28,3 milliards**
+    d'instructions (1555 s d'hôte, attente finale comprise) ;
+  - Debian 13 : `cat /etc/debian_version` rend 13.7 à **17,0 milliards**,
+    contre 18,7 avant ;
+  - Ubuntu 26.04 : `/etc/os-release` répond à **46,6 milliards**, contre
+    60,9 avant, en 2361 s au lieu de 3202.
+- **Le banc suit** : sa patience par défaut est comptée en battements
+  (vingt-quatre secondes de l'invité) et non plus en tours, et il
+  reconnaît l'invite `~]# ` de Fedora et de RHEL, sans quoi il attendait
+  devant un shell ouvert sans rien taper. Le test d'équivalence de
+  l'attente sautée compte son budget en battements, lui aussi.
+- Ce que le changement ne casse pas : la suite entière passe sans autre
+  retouche, et les exécutions restent reproductibles — le temps de
+  l'invité vient toujours du seul compteur d'instructions.
+
 ## 2026-10-20 — Dormir quand l'invité dort
 
 Suite directe, même autorisation. Depuis que l'attente se saute jusqu'au

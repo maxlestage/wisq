@@ -89,7 +89,8 @@ final class X86BootAttemptTests: XCTestCase {
     /// `root`, vide, après le nom. Sans cette invite, le banc attendait, la
     /// saisie expirait sur « Login incorrect », et la ligne suivante tombait
     /// sur un nouveau `login:`. Une entrée `\n` y répond.
-    static let prompts = [prompt, "login: ", "~# ", "Password: "]
+    /// `~]# ` est l'invite de `root` chez Fedora et RHEL, `[root@hôte ~]# `.
+    static let prompts = [prompt, "login: ", "~# ", "~]# ", "Password: "]
     /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
     /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
     /// la réponse ne dépend d'aucun programme à charger.
@@ -294,10 +295,10 @@ final class X86BootAttemptTests: XCTestCase {
             // **Les valeurs par défaut vont jusqu'au shell de secours.** Alpine
             // y arrive après quatre milliards d'instructions retirées, et il
             // lui faut patienter devant un média de démarrage absent — douze
-            // secondes de temps invité, soit deux cents millions de tours ;
-            // on en donne le double.
+            // secondes de temps invité ; on en donne le double, compté en
+            // battements pour qu'il suive `instructionsPerTick`.
             let allowance = budget.flatMap { UInt64($0) } ?? 4_500_000_000
-            let patient = patience ?? 400_000_000
+            let patient = patience ?? 24 * 1_193_182 * X86LegacyDevices.instructionsPerTick
 
             // **La conversation.** Une course s'arrête quand la machine a
             // épuisé sa patience, c'est-à-dire quand elle n'a plus rien à
