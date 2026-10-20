@@ -59,6 +59,23 @@ en mode long (`X86SSE42.swift`).
   voit pas même avec un NaN signalant, parce que l'instruction d'arrondi de
   l'hôte le fait d'elle-même. Gardé, et dit tel quel dans le code : la
   garantie est celle de l'hôte, et la CI Apple joue le même corpus en arm64.
+- **Le comptage d'AlmaLinux ne suffisait pas, et un essai l'a dit.** Les bits
+  de CPUID allumés à part, trois démarrages en parallèle avant d'en proposer
+  la PR : Debian et Arch s'arrêtent sur `F2 0F 38 F0/F1` — **`CRC32`**, que le
+  **noyau** emploie pour les sommes des métadonnées d'ext4 et de btrfs dès
+  que SSE4.2 est annoncé —, openSUSE sur `66 0F 3A 62`, **`PCMPISTRM`**, que sa
+  glibc emploie là où celle d'AlmaLinux prend `PCMPISTRI`. Le comptage
+  n'avait regardé que l'espace utilisateur d'une distribution. Entrent donc
+  `CRC32` sous ses quatre largeurs, et les trois frères de `PCMPISTRI` —
+  longueurs explicites dans EAX/EDX (`PCMPESTRI`, `PCMPESTRM`), masque dans
+  xmm0 (`PCMPISTRM`, `PCMPESTRM`), sur le même moteur. Le corpus passe à
+  **398 formes et 29 850 cas**, tous tenus ; les états reçoivent des
+  longueurs courtes, négatives et démesurées. Sabotages : le polynôme
+  d'Ethernet au lieu de Castagnoli → 29 175 accords ; le haut de la
+  destination gardé → 29 447 ; longueurs sans REX.W → 29 830 ; longueur
+  négative lue comme zéro → 28 453 ; masque jamais élargi → 29 430 ; masque
+  de mots sur un seul octet → 29 775. Un nouveau comptage, sur les six
+  distributions, noyaux et modules compris, décide de la suite.
 - Compteur publié : 2916.
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
