@@ -2,9 +2,9 @@
 import SwiftUI
 import WisqVM
 
-/// La feuille « Télécharger » : les images qu'Alpine et Debian publient et
-/// qui démarrent ici, lues dans leurs index au moment d'ouvrir la feuille, et
-/// le progrès de celle qu'on télécharge.
+/// La feuille « Télécharger » : les images qu'Alpine, Debian, Fedora et
+/// Ubuntu publient et qui démarrent ici, lues dans leurs index au moment
+/// d'ouvrir la feuille, et le progrès de celle qu'on télécharge.
 ///
 /// Rien n'est promis avant la fin : l'image n'entre dans la bibliothèque
 /// qu'entière et à la somme que publie la distribution. Une coupure garde ce
@@ -21,7 +21,7 @@ struct ImageDownloadSheet: View {
                 case .loadingIndex:
                     HStack(spacing: 12) {
                         ProgressView()
-                        Text("Lecture des index d'Alpine et de Debian…")
+                        Text("Lecture des index d'Alpine, de Debian, de Fedora et d'Ubuntu…")
                             .foregroundStyle(.secondary)
                     }
                 case .failed(let why):

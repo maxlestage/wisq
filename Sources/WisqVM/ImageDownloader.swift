@@ -59,13 +59,16 @@ public struct ImageDownloader: Sendable {
         self.partsFolder = partsFolder
     }
 
-    /// Les images qui démarrent ici, de tous les index : Alpine, puis Debian.
+    /// Les images qui démarrent ici, de tous les index : Alpine, Debian,
+    /// Fedora, puis Ubuntu.
     ///
     /// **Un index qui ne répond pas ne cache pas les autres** : la liste
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
     /// dit la raison du premier.
     public func bootableReleases(alpine: URL = ImageDownload.alpineIndex,
-                                 debian: URL = ImageDownload.debianIndex) async throws
+                                 debian: URL = ImageDownload.debianIndex,
+                                 fedora: URL = ImageDownload.fedoraIndex,
+                                 ubuntu: URL = ImageDownload.ubuntuIndex) async throws
         -> [ImageDownload.Release] {
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
@@ -83,6 +86,24 @@ public struct ImageDownloader: Sendable {
                 releases.append(ImageDownload.debianRelease(
                     file: candidate.file, version: candidate.version, sha512: candidate.sha512,
                     size: size, index: debian))
+            }
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        // Fedora donne la taille dans son index : rien à demander au serveur.
+        do {
+            releases += ImageDownload.fedoraReleases(try await read(fedora), index: fedora)
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        do {
+            let text = try await read(ubuntu)
+            for candidate in ImageDownload.ubuntuCandidates(text) {
+                let file = ubuntu.deletingLastPathComponent().appendingPathComponent(candidate.file)
+                guard let size = try await size(of: file) else { continue }
+                releases.append(ImageDownload.ubuntuRelease(
+                    file: candidate.file, version: candidate.version, sha256: candidate.sha256,
+                    size: size, index: ubuntu))
             }
         } catch {
             firstFailure = firstFailure ?? error
