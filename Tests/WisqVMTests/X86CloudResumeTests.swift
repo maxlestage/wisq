@@ -1,15 +1,18 @@
 import XCTest
 @testable import WisqVM
 
-/// **Une session Debian, sauvée puis reprise**, par le chemin de
+/// **Une session d'image de cloud, sauvée puis reprise**, par le chemin de
 /// l'application : `X86Machine`, l'image de cloud comme disque sur fichier
 /// avec sa couche d'écriture, `snapshot()` puis `restore()` dans une machine
 /// neuve. C'est ce que vit un iPhone quand wisq passe en arrière-plan au
 /// milieu d'une session, puis revient.
 ///
 /// Armé seulement quand on lui donne l'image (`WISQ_PC_CLOUD_IMAGE`) et qu'on
-/// le demande (`WISQ_PC_RESUME`) : il démarre Debian jusqu'au shell de `root`,
-/// une quinzaine de minutes.
+/// le demande (`WISQ_PC_RESUME`) : il démarre l'image jusqu'au shell de
+/// `root` — une quinzaine de minutes pour Debian, une vingtaine pour Fedora,
+/// trois quarts d'heure pour Ubuntu. Debian, Fedora et Ubuntu passent par le
+/// même test : l'invite de `root` est `~# ` chez Debian et Ubuntu, et
+/// `~]# ` chez Fedora, et c'est `/etc/os-release` qui répond à la fin.
 final class X86CloudResumeTests: XCTestCase {
     /// La console, recueillie depuis le fil de la machine.
     final class Console: @unchecked Sendable {
@@ -22,19 +25,20 @@ final class X86CloudResumeTests: XCTestCase {
 
     /// Fait tourner `machine` par tranches jusqu'à ce que la console, depuis
     /// `from`, contienne `wanted`, ou que `budget` soit épuisé.
-    private func run(_ machine: X86Machine, until wanted: String, in console: Console, from: Int,
+    private func run(_ machine: X86Machine, until wanted: String..., in console: Console, from: Int,
                      budget: UInt64) -> Bool {
         var spent: UInt64 = 0
         while spent < budget {
             let before = machine.retiredInstructions
             _ = machine.run(instructionBudget: 50_000_000)
             spent += max(machine.retiredInstructions &- before, 1)
-            if String(console.text.utf8.dropFirst(from)).map({ $0.contains(wanted) }) ?? false { return true }
+            let fresh = String(console.text.utf8.dropFirst(from)) ?? ""
+            if wanted.contains(where: { fresh.contains($0) }) { return true }
         }
         return false
     }
 
-    func testADebianSessionComesBackWhereItWas() throws {
+    func testACloudSessionComesBackWhereItWas() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["WISQ_PC_CLOUD_IMAGE"], environment["WISQ_PC_RESUME"] != nil else {
             throw XCTSkip("définir WISQ_PC_CLOUD_IMAGE et WISQ_PC_RESUME pour ce test")
@@ -45,7 +49,7 @@ final class X86CloudResumeTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let unpacked = try XCTUnwrap(CloudBoot.unpack(image, into: folder)).get()
-        let writes = folder.appendingPathComponent("debian.writes")
+        let writes = folder.appendingPathComponent("disque.writes")
 
         // Le premier démarrage, jusqu'au shell de `root`.
         let console = Console()
@@ -54,7 +58,7 @@ final class X86CloudResumeTests: XCTestCase {
         try first.load(kernelImage: try Data(contentsOf: unpacked.kernel), commandLine: unpacked.commandLine,
                        initialRamdisk: try unpacked.initrd.map { try Data(contentsOf: $0) })
         var started = Date()
-        XCTAssertTrue(run(first, until: "~# ", in: console, from: 0, budget: 40_000_000_000),
+        XCTAssertTrue(run(first, until: "~# ", "~]# ", in: console, from: 0, budget: 80_000_000_000),
                       "le shell de root n'est pas venu")
         print("démarrage : \(first.retiredInstructions) instructions en \(Int(Date().timeIntervalSince(started))) s")
 
@@ -83,10 +87,16 @@ final class X86CloudResumeTests: XCTestCase {
         // La session est celle d'avant : la variable du shell est encore là,
         // et le disque répond.
         mark = resumed.count
-        second.send(Data("echo $TEMOIN; cat /etc/debian_version\n".utf8))
+        second.send(Data("echo $TEMOIN; cat /etc/os-release\n".utf8))
         XCTAssertTrue(run(second, until: "wisq-reprise\r\n", in: resumed, from: mark, budget: 5_000_000_000),
                       "la variable du shell n'a pas survécu : \(resumed.text.suffix(400))")
-        XCTAssertTrue(run(second, until: "13.", in: resumed, from: mark, budget: 5_000_000_000))
-        print(String(resumed.text.suffix(300)))
+        XCTAssertTrue(run(second, until: "VERSION_ID=", in: resumed, from: mark, budget: 5_000_000_000),
+                      "le disque n'a pas répondu : \(resumed.text.suffix(400))")
+        // Les lignes qui disent quelque chose : chez Fedora et Ubuntu, bash
+        // entoure chaque invite d'une séquence OSC 3008 de systemd 259, assez
+        // longue pour noyer les trois cents derniers octets.
+        let said = resumed.text.split(whereSeparator: \.isNewline)
+            .filter { $0.contains("wisq-reprise") || $0.hasPrefix("PRETTY_NAME=") || $0.hasPrefix("VERSION_ID=") }
+        print(said.joined(separator: "\n"))
     }
 }
