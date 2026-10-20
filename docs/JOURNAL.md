@@ -77,6 +77,35 @@ en mode long (`X86SSE42.swift`).
   de mots sur un seul octet → 29 775. Un nouveau comptage, sur les six
   distributions, noyaux et modules compris, décide de la suite.
 - Compteur publié : 2916.
+## 2026-10-20 — `pop 0x28(%rsp)` écrivait huit octets trop bas
+
+Suite directe, même autorisation. Le noyau 5.14 d'AlmaLinux 9 s'arrêtait à
+943 millions d'instructions, dans `memcpy`, sur une adresse physique de
+cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
+était ailleurs.
+
+- **La trace.** Une course échantillonnée instruction par instruction, les
+  registres à chaque pas, sur les cent mille dernières : `apply_alternatives`
+  → `__text_poke` → `switch_mm_irqs_off` → `memcpy(0x71099de1d13d, …, 1)`.
+  L'adresse est la projection temporaire où le noyau écrit son propre code,
+  et sa table de pages pointe la trame 0x580000000a. Remontée dans
+  `__text_poke` : `pushf ; pop 0x28(%rsp)` range les drapeaux, puis
+  `mov 0x20(%rsp),%rcx` relit la `struct page *`… et lit 0x282 — les
+  drapeaux. `mk_pte` en fait la trame.
+- **La règle** : l'adresse d'un `POP` dont l'opérande passe par RSP se
+  calcule **après** que RSP a avancé. Le cœur la calculait avant, et écrivait
+  huit octets trop bas, sur la case voisine. RSP est maintenant avancé le
+  temps du calcul, puis remis : il n'avance pour de bon qu'après l'écriture,
+  pour qu'une écriture qui faute ne laisse rien derrière elle.
+- **Le corpus de la pile** gagne `pop (%rsp)`, `pop 8(%rsp)`,
+  `pop 0x28(%rsp)`, `pop -8(%rsp)`, `popw 2(%rsp)`, et `push (%rsp)`,
+  `push 8(%rsp)`, `push -8(%rsp)` — dont l'adresse se calcule **avant** de
+  descendre, et qui étaient justes. 89 formes, 712 cas. Sans le correctif :
+  40 désaccords, tous des `pop` vers la pile. Avec : aucun.
+- **Sur la vraie image** : le noyau d'AlmaLinux 9.8 passe `apply_alternatives`
+  et continue — cinquante-huit secondes de temps invité plus loin, il
+  initialise IMA et EVM. Son espace utilisateur attend x86-64-v2 (#572 et
+  les bits de CPUID).
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
 
@@ -27523,3 +27552,71 @@ entrés dans le remplissage.
 
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #358 — un lecteur XFS est arrivé, et la phrase qui énumère le trou est restée à un sur deux
+
+`KernelImageKind.filesystem(_:)` nomme ce qu'une image importée porte :
+ext2/3/4, squashfs dans les deux boutismes, FAT à ses deux places. Son en-tête
+énumère ce qui lui manque — « **Ce qui n'y est pas : btrfs** » — avec sa
+raison : la marque de btrfs vit à 0x10040, au-delà des quarante kibioctets que
+ce type lit. La même énumération est recopiée dans `docs/ROADMAP.md`.
+
+`XfsVolume` est arrivé en #566. Depuis, **deux** familles manquaient, et la
+phrase n'en nommait qu'une.
+
+Et la raison donnée pour btrfs ne s'appliquait pas à XFS : `XFSB` est aux
+**quatre premiers octets**, exactement là où squashfs met la sienne, deux
+lignes plus haut dans la même fonction. Un lecteur de ce commentaire en
+conclurait qu'XFS est nommé ; il ne l'était pas, et une image XFS importée
+ressortait en `unknown`.
+
+C'est #322 mot pour mot : une phrase vraie qu'un travail fait **ailleurs** a
+rendue fausse, sans que personne y touche.
+
+### Le correctif est l'acte, pas la phrase
+
+Deux façons de rendre la phrase vraie : ajouter XFS au reconnaisseur, ou
+l'ajouter à la liste des absents. La seconde aurait demandé d'inventer une
+raison — il n'y en a pas, la marque est à l'offset 0. La première est trois
+lignes, et elle ancre le reconnaisseur sur `XfsVolume.magic` : le lecteur et
+le reconnaisseur ne peuvent plus diverger sur ce qu'XFS est.
+
+`docs/ROADMAP.md` porte la correction en **blockquote** sous le relevé, sans
+le réécrire : la section est marquée « (fait) », donc c'est un relevé, et un
+relevé se date au lieu de se corriger.
+
+### La garde, et le sabordage qui l'a fait réécrire
+
+L'invariant : **toute famille dont le dépôt a un lecteur `LinuxVolume` est
+nommée par le reconnaisseur, ou exceptée dans son en-tête.** Elle ne dit rien
+de ce que le reconnaisseur nomme en plus — squashfs et FAT n'ont pas de
+lecteur et n'en ont pas besoin pour être nommés.
+
+Le premier jet ne lisait que `Sources/WisqVM/LinuxVolume.swift`, où les trois
+conformances d'aujourd'hui sont écrites. Un sondage l'a mis en défaut : un
+lecteur qui déclare `: LinuxVolume` dans **son propre fichier** — la forme la
+plus naturelle pour qui en ajoute un — passait sans être vu. C'est exactement
+la situation que la garde existe pour attraper, et elle l'aurait manquée. Elle
+parcourt maintenant tout `Sources/`.
+
+### Les sabordages
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| XFS retiré du reconnaisseur | « wisq lit du xfs, et `KernelImageKind.filesystem` ne le nomme pas … ni ne l'excepte (btrfs) » |
+| l'exception btrfs effacée de l'en-tête | « l'en-tête n'énumère plus ce qui manque », **et** « wisq lit du btrfs … ni ne l'excepte (aucune) » |
+| un quatrième lecteur dans `LinuxVolume.swift` | « wisq lit du zfs … » |
+| un lecteur dans **son propre fichier** | SURVÉCU au premier jet ; nommé par le second |
+| `filesystem(_:)` renommé | « ne rend plus aucun nom » |
+| la marque `XFSB` faussée | le test du reconnaisseur **et** toute `XfsVolumeTests` tombent |
+| (non-sabordage) `, Sendable` ajouté à une conformance | rien : la conformance tient toujours |
+| (non-sabordage) squashfs retiré du reconnaisseur | rien : squashfs n'a pas de lecteur, et la garde ne le prétend pas |
+
+Les deux derniers ne sabordent rien, et c'est leur intérêt : le premier montre
+que le lecteur de conformances ne se laisse pas tromper par un protocole de
+plus, le second que la garde dit vrai sur son périmètre — elle couvre les
+lecteurs, pas l'inverse.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les quatre fichiers
+voulus.
