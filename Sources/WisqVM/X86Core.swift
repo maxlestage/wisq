@@ -153,6 +153,10 @@ public struct X86Core: @unchecked Sendable {
     /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
     /// donc l'interruption qui doit le réveiller n'arriverait jamais.
     public var idled: UInt64 = 0
+    /// Sauter l'attente jusqu'au prochain battement plutôt que de la compter
+    /// tour par tour. Le résultat est le même au tour près ; seul un test
+    /// qui le vérifie l'éteint.
+    var skipsIdleTime = true
     /// L'allocation d'attente s'est épuisée avant le budget d'instructions.
     /// Voir `run(budget:waiting:)`.
     public private(set) var outOfPatience = false
@@ -450,14 +454,22 @@ public struct X86Core: @unchecked Sendable {
                 // tour-là, donc ça ne coûte rien.
                 try serviceInterrupts()
                 if !halted { continue }
-                idled &+= 1
+                // **Jusqu'au prochain battement, d'un coup.** Endormie, la
+                // machine ne fait rien d'autre qu'attendre le 8253 : un tour
+                // par instruction d'attente coûtait à l'hôte, pour chaque
+                // seconde de l'invité, quatorze millions de passages par le
+                // matériel. Le saut tombe sur le tour exact où le pas à pas
+                // l'aurait réveillée, borné par ce qui reste à attendre.
+                let left = waiting.map { $0 - waited } ?? (budget - executed)
+                let step = min(idleStep(), left)
+                idled &+= step
                 if let waiting {
-                    waited += 1
+                    waited += step
                     // L'attente a sa propre fin, et elle se dit autrement
                     // qu'un budget d'instructions épuisé.
                     if waited >= waiting { outOfPatience = true; break }
                 } else {
-                    executed += 1
+                    executed += step
                 }
                 continue
             }
