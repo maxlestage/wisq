@@ -322,6 +322,39 @@ final class ImageDownloaderTests: XCTestCase {
         }
     }
 
+    /// **Fedora et Ubuntu à côté des autres** : Fedora à l'adresse que donne
+    /// son index, sans rien demander d'autre au serveur ; Ubuntu avec sa
+    /// taille demandée en un octet. Les deux téléchargés, vérifiés contre leur
+    /// somme SHA-256, et rangés sous leur nom.
+    func testFedoraAndUbuntuAreListedAndDownloadedVerified() async throws {
+        let fedoraLink = URL(string: "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/"
+                                 + "x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2")!
+        let json = """
+            [{"version": "44", "arch": "x86_64", "link": "\(fedoraLink.absoluteString)", "variant": "Cloud",
+              "subvariant": "Cloud_Base", "sha256": "\(SHA256Stream.hex(image))", "size": "\(image.count)"}]
+            """
+        let ubuntuFile = ImageDownload.ubuntuIndex.deletingLastPathComponent()
+            .appendingPathComponent("ubuntu-26.04-server-cloudimg-amd64.img")
+        let fedoraImage = Server(image), ubuntuImage = Server(image)
+        let router = Router([
+            ImageDownload.fedoraIndex: Server(Array(json.utf8)),
+            fedoraLink: fedoraImage,
+            ImageDownload.ubuntuIndex: Server(Array(
+                (SHA256Stream.hex(image) + " *ubuntu-26.04-server-cloudimg-amd64.img\n").utf8)),
+            ubuntuFile: ubuntuImage,
+        ])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
+        let releases = try await downloader.bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["fedora-cloud", "ubuntu-cloud"])
+        XCTAssertEqual(fedoraImage.ranges, [], "la taille de Fedora vient de son index")
+        XCTAssertEqual(ubuntuImage.ranges, [ImageDownload.sizeProbe])
+        for release in releases {
+            let url = try await downloader.download(release, into: library)
+            XCTAssertEqual(url, library.appendingPathComponent(release.file))
+            XCTAssertEqual(try Data(contentsOf: url), Data(image), release.flavor)
+        }
+    }
+
     /// Les progrès reçus, dans l'ordre.
     final class Seen: @unchecked Sendable {
         private let lock = NSLock()
