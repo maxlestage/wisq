@@ -91,6 +91,26 @@ final class X86BootAttemptTests: XCTestCase {
     /// sur un nouveau `login:`. Une entrée `\n` y répond.
     /// `~]# ` est l'invite de `root` chez Fedora et RHEL, `[root@hôte ~]# `.
     static let prompts = [prompt, "login: ", "~# ", "~]# ", "Password: "]
+
+    /// Le texte sans ses séquences d'échappement : l'invite d'openSUSE
+    /// (`localhost:~ #`) remet les couleurs à zéro **entre** le `#` et
+    /// l'espace, et `~ # ` ne s'y lisait pas — le banc attendait devant un
+    /// shell prêt.
+    static func withoutEscapes(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{1B}(\\[[0-9;?]*[ -/]*[@-~]|[()][0-9A-Za-z]|\\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)|[0-9=>A-Za-z])",
+                                  with: "", options: .regularExpression)
+    }
+
+    /// **L'invite d'openSUSE se voit à travers ses couleurs**, et ce que
+    /// systemd envoie avant — la remise à zéro, la question sur la taille, la
+    /// marque OSC 3008 de la session — n'en laisse rien.
+    func testTheOpenSUSEPromptIsSeenThroughItsColours() {
+        let tail = "\u{1B}[!p\u{1B}]104\u{07}\u{1B}[0m\u{1B}[?7h\u{1B}[1G\u{1B}[0J\u{1B}7\u{1B}[32766;32766H\u{1B}[6n"
+            + "\u{1B}8\u{1B}]3008;start=63bb;user=root;type=service\u{1B}\\\u{1B}[1mlocalhost:~ #\u{1B}[m\u{1B}(B "
+        XCTAssertFalse(Self.prompts.contains { tail.contains($0) }, "tel quel, l'invite ne se lit pas")
+        XCTAssertEqual(Self.withoutEscapes(tail), "localhost:~ # ")
+    }
+
     /// Ce qu'on dit à l'invité quand personne n'a rien demandé d'autre, et
     /// dont la réponse est exigée : `echo` est dans le shell lui-même, donc
     /// la réponse ne dépend d'aucun programme à charger.
@@ -370,7 +390,8 @@ final class X86BootAttemptTests: XCTestCase {
                 }
                 remaining -= min(remaining, max(executed, 1))
                 flushConsole()
-                let fresh = String(decoding: core.serialOutput.dropFirst(answeredUpTo), as: UTF8.self)
+                let fresh = Self.withoutEscapes(String(decoding: core.serialOutput.dropFirst(answeredUpTo),
+                                                       as: UTF8.self))
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
                 if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
                     let line = toType.removeFirst()
