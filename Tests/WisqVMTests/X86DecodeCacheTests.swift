@@ -57,6 +57,74 @@ final class X86DecodeCacheTests: XCTestCase {
                                     "le code chaud de Fedora ne tient pas dans moins")
     }
 
+    /// **Le commentaire de `slots` chiffre ce que le cache prend, et ce chiffre
+    /// se recompte.**
+    ///
+    /// Il n'était tenu par rien : `footprint` le calcule, la prose le recopie.
+    /// Elle annonçait « 9,4 Mio » là où le cache en prend 9 437 184 octets,
+    /// soit 9,0 — le nombre avait été divisé par un million au lieu de
+    /// 1 048 576. Le mébioctet est pourtant l'unité du dépôt (« 2 Gio » pour
+    /// `2 * 1024 * 1024 * 1024`, « seize kibioctets » pour 16 384), et le
+    /// fichier lui-même écrit plus bas que le cache « a grandi à 6 Mio »
+    /// quand il avait 65 536 cases — une phrase que la nouvelle contredisait
+    /// en annonçant le même 9,4 pour ces mêmes 65 536 cases.
+    ///
+    /// **Le périmètre est le commentaire de `slots`, et lui seul** : la suite
+    /// du fichier contraste le passé et le présent exprès, et une garde qui
+    /// interdirait le contraste interdirait l'explication.
+    ///
+    /// **Ce qu'elle tient, et pas plus** : le bloc porte au moins un chiffre
+    /// qui vaut le `footprint` d'aujourd'hui. Elle n'interdit pas qu'il en
+    /// porte d'autres — les valeurs d'hier y ont leur place — donc elle
+    /// attrape le chiffre absent, pas le chiffre de trop.
+    func testTheCommentOnSlotsStatesTheRealFootprint() throws {
+        let source = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Sources/WisqVM/X86DecodeCache.swift")
+                .path,
+            encoding: .utf8
+        )
+
+        // Le bloc `///` qui précède immédiatement la déclaration : on remonte
+        // ligne à ligne depuis elle, et on s'arrête à la première qui n'en est
+        // pas. Nommer un numéro de ligne ferait une garde qui vieillit au
+        // premier paragraphe ajouté.
+        let lines = source.components(separatedBy: "\n")
+        guard let at = lines.firstIndex(where: { $0.contains("static let slots") }) else {
+            return XCTFail("X86DecodeCache ne déclare plus `slots` là où ce test le lit")
+        }
+        var first = at
+        while first > 0, lines[first - 1].trimmingCharacters(in: .whitespaces).hasPrefix("///") {
+            first -= 1
+        }
+        XCTAssertGreaterThan(at - first, 1, "`slots` n'a plus de commentaire au-dessus")
+        let bloc = lines[first..<at].joined(separator: " ")
+
+        let pattern = try NSRegularExpression(pattern: "([0-9]+(?:,[0-9]+)?) Mio")
+        let dits = pattern
+            .matches(in: bloc, range: NSRange(bloc.startIndex..., in: bloc))
+            .map { String(bloc[Range($0.range(at: 1), in: bloc)!]) }
+        XCTAssertFalse(dits.isEmpty,
+                       "le commentaire de `slots` ne chiffre plus ce que le cache prend")
+
+        let réel = Double(X86DecodeCache.footprint) / 1_048_576
+        let accordé = dits.contains { jeton in
+            guard let dit = Double(jeton.replacingOccurrences(of: ",", with: ".")) else {
+                return false
+            }
+            return abs(dit - réel) <= 0.1
+        }
+        XCTAssertTrue(
+            accordé,
+            "le commentaire de `slots` dit \(dits.map { "« \($0) Mio »" }.joined(separator: ", "))"
+                + " et aucun ne vaut ce que le cache prend : \(X86DecodeCache.footprint)"
+                + " octets, soit \(String(format: "%.1f", réel)) Mio"
+        )
+    }
+
     /// La case elle-même : une entrée ne sert que pour ses octets, et que si
     /// elle tient dans ce que la lecture s'autorise — la borne de page quand
     /// la pagination est active.

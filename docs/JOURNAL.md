@@ -27014,3 +27014,84 @@ restent à six contre six.
 
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #356 — « 9,4 Mio » était le nombre en mégaoctets sous l'unité des mébioctets, et la phrase d'à côté le démentait
+
+Le commentaire de `X86DecodeCache.slots`, écrit en doublant les cases, chiffrait
+le prix de ce doublement :
+
+> Le double, donc, pour **9,4 Mio** depuis que l'instruction tient en quarante
+> octets — **ce qu'en prenaient 65 536 cases avant**.
+
+Les deux moitiés sont fausses, et la seconde est démentie **dix lignes plus
+bas dans le même fichier**.
+
+### Ce qui est mesuré
+
+Une sonde temporaire dans le test qui connaît déjà `footprint` :
+
+| grandeur | valeur |
+| --- | --- |
+| `X86DecodeCache.footprint` | **9 437 184** octets |
+| `slots` | 131 072 |
+| `MemoryLayout<Entry>.stride` | 72 |
+| `MemoryLayout<X86Instruction>.stride` | 40 |
+
+9 437 184 ÷ 1 048 576 = **9,0 Mio**. Le « 9,4 » est 9 437 184 ÷ 1 000 000 : le
+nombre en mégaoctets, posé sous l'unité des mébioctets. Le dépôt écrit pourtant
+« 2 Gio » pour `2 * 1024 * 1024 * 1024` et « seize kibioctets » pour 16 384 ;
+c'est donc le chiffre qui a glissé, pas la lecture.
+
+La seconde moitié ne tient pas davantage. `Entry` porte quatre `UInt64` plus
+l'instruction, et la mesure le confirme sans reste : 32 + 40 = 72. Avant que
+l'instruction ne tombe à quarante octets elle en pesait soixante-quatre, donc
+`Entry` en faisait 96, et 65 536 cases prenaient 6 291 456 octets — **6 Mio**.
+Le fichier l'écrit lui-même, plus bas : « dès que le cache a grandi à 6 Mio ».
+Doubler les cases coûte donc **la moitié de plus**, pas le même prix. Le
+commentaire présentait une augmentation de 50 % comme un échange neutre.
+
+### Le passé ne s'est pas laissé mesurer, et ça n'a pas été nécessaire
+
+J'ai posé un arbre de travail détaché sur le commit d'avant pour y refaire la
+mesure. `swift test` y refuse le manifeste — « Invalid manifest » sur
+`Package.swift`, qui dépend du dossier où il est lu. Noté pour la prochaine
+fois : **mesurer le passé par un `git worktree` ne marche pas sur ce paquet.**
+
+Ce n'était pas nécessaire : `Entry` vaut 32 octets plus l'instruction, sans
+remplissage, ce que la mesure d'aujourd'hui établit (72 = 32 + 40). Le reste
+est de l'arithmétique sur un nombre que le dépôt énonce lui-même.
+
+### Ce que la garde tient, et son périmètre
+
+Elle relit le commentaire de `slots` — le bloc `///` contigu au-dessus de la
+déclaration, trouvé en remontant ligne à ligne, jamais par un numéro de ligne —
+et exige qu'**au moins un** de ses chiffres en mébioctets vaille le `footprint`
+du jour, à un dixième près.
+
+Le périmètre s'arrête à ce bloc : la suite du fichier oppose le passé au
+présent exprès, et une garde qui interdirait le contraste interdirait
+l'explication. C'est la même exclusion que #354, et elle est montrée portante
+par le sixième sabordage ci-dessous.
+
+Elle n'interdit pas qu'il y ait d'autres chiffres dans le bloc — la valeur
+d'hier y a sa place. Elle attrape donc le chiffre **absent**, pas le chiffre de
+trop, et c'est écrit dans son en-tête.
+
+### Cinq sabordages, cinq chutes — et un sixième qui devait passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| le commentaire revient à « 9,4 Mio » | « dit « 9,4 Mio », « 6 Mio » et aucun ne vaut 9 437 184 octets, soit 9.0 Mio » |
+| les cases doublent encore (`1 << 18`) | « dit « 9,0 Mio », « 6 Mio » … soit 18.0 Mio » — **et** le plancher des dix Mio |
+| plus aucun chiffre dans le bloc | « le commentaire de `slots` ne chiffre plus ce que le cache prend » |
+| le chiffre sorti du bloc, posé **après** la déclaration | le bloc ne porte plus que « 6 Mio » : la garde tombe |
+| `slots` déclaré autrement (`static var` sur un `slotCount`) | « ne déclare plus `slots` là où ce test le lit » |
+| **le chiffre du passé** passe de 6 à 7 Mio | rien — et c'est voulu |
+
+Le deuxième prouve que le nombre attendu vient de `footprint` et pas d'un
+littéral. Le quatrième prouve que le périmètre est bien le bloc. Le sixième
+n'est pas un sabordage : il change une valeur historique, que la garde ne
+prétend pas tenir, et elle a eu raison de ne pas tomber.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
