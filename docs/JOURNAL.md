@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — `oneByte` : les octets rares à part
+
+Relance horaire, même autorisation. Après #587, les deux accolades de
+`oneByte` coûtaient 3,7 % des instructions de l'hôte : le prologue d'une
+fonction immense, qui sauve tous ses registres et réserve un cadre pour
+ses cas les plus lourds, payé par chaque `mov` et chaque `add`.
+
+- Vingt-huit cas rares passent dans `oneByteCold`, jamais inlinée, que
+  `oneByte` appelle par son `default` : interruptions, `IRETQ` et `RETF`,
+  ports, `HLT`, registres de segment, drapeaux, `PUSHF`/`POPF`, `CBW` et
+  `CWD`, `LOOP`, l'`IMUL` à trois opérandes, le x87. Les vingt-sept autres
+  — ce qu'un programme exécute vraiment — restent. Un octet qu'aucune des
+  deux ne connaît finit sur la même faute. Le changement n'est qu'un
+  déplacement : aucune ligne retirée qui ne soit remise ailleurs.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  29,75 → 29,41 milliards d'instructions hôte, 1,2 % de moins — sous le
+  bruit d'une mesure en temps natif. Moins qu'espéré : le cadre reste
+  (`sub $0x60` et quatre registres), parce que des cas chauds — les
+  décalages, le groupe 3 et ses divisions — le demandent eux aussi.
+- Pas de test nouveau. Sabotages, chacun rattrapé : un `default` qui faute
+  au lieu d'appeler `oneByteCold` (84 échecs), `HLT` égaré sous un autre
+  octet (48).
+
 ## 2026-10-21 — `perform` léger : la table `0F` à part
 
 Relance horaire, même autorisation. Après #586, l'entrée et la sortie de
