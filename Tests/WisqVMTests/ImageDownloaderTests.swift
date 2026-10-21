@@ -335,23 +335,29 @@ final class ImageDownloaderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data(image))
     }
 
-    /// **AlmaLinux après les autres** : lu sur la page de son dossier, sa
-    /// somme dans le `CHECKSUM` du dossier, puis téléchargé et vérifié.
-    func testAlmaIsListedAndVerified() async throws {
+    /// **AlmaLinux et Rocky après les autres** : chacun lu sur la page de son
+    /// dossier, sa somme dans son fichier à lui, puis téléchargé et vérifié.
+    func testAlmaAndRockyAreListedAndVerified() async throws {
         let alma = "AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2"
+        let rocky = "Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2"
         let hex = SHA256Stream.hex(image)
         let router = Router([
             ImageDownload.almaIndex: Server(Array("<a href=\"\(alma)\">x</a>".utf8)),
             ImageDownload.almaIndex.appendingPathComponent("CHECKSUM"): Server(Array("\(hex)  \(alma)\n".utf8)),
             ImageDownload.almaIndex.appendingPathComponent(alma): Server(image),
+            ImageDownload.rockyIndex: Server(Array("<a href=\"\(rocky)\">x</a>".utf8)),
+            ImageDownload.rockyIndex.appendingPathComponent(rocky + ".CHECKSUM"):
+                Server(Array("SHA256 (\(rocky)) = \(hex)\n".utf8)),
+            ImageDownload.rockyIndex.appendingPathComponent(rocky): Server(image),
         ])
         let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
         let releases = try await downloader.bootableReleases()
-        XCTAssertEqual(releases.map(\.flavor), ["alma-cloud"])
-        let release = try XCTUnwrap(releases.first)
-        XCTAssertEqual(release.version, "9.8")
-        let url = try await downloader.download(release, into: library)
-        XCTAssertEqual(try Data(contentsOf: url), Data(image))
+        XCTAssertEqual(releases.map(\.flavor), ["alma-cloud", "rocky-cloud"])
+        for release in releases {
+            XCTAssertEqual(release.version, "9.8")
+            let url = try await downloader.download(release, into: library)
+            XCTAssertEqual(try Data(contentsOf: url), Data(image))
+        }
     }
 
     /// **Un index muet ne cache pas l'autre**, et une image dont le serveur

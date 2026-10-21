@@ -397,17 +397,15 @@ public enum ImageDownload {
                 checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
     }
 
-    // MARK: - AlmaLinux 9
+    // MARK: - AlmaLinux 9 et Rocky Linux 9
 
-    /// Le dossier des images de cloud d'AlmaLinux 9. Leur racine est un XFS
-    /// (`XfsVolume`), leur glibc exige x86-64-v2, et leur systemd 252 ouvre
-    /// la console en mode de secours (`CloudBoot.legacyConsoleOptions`).
-    ///
-    /// **Rocky Linux 9, de la même famille, attend** : essayé, il tombe en
-    /// mode d'urgence — le premier démarrage reconstruit la base matérielle
-    /// de udev (`systemd-hwdb-update`), si lentement sur ce cœur que le
-    /// périphérique de `/boot` n'apparaît pas à temps. Voir le journal.
+    /// Les dossiers des images de cloud d'AlmaLinux 9 et de Rocky Linux 9.
+    /// Leur racine est un XFS (`XfsVolume`), leur glibc exige x86-64-v2, et
+    /// leur systemd 252 ouvre la console en mode de secours
+    /// (`CloudBoot.legacyConsoleOptions`), sans recompiler la base de udev
+    /// au premier démarrage — sans quoi Rocky manque `/boot`.
     public static let almaIndex = URL(string: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/")!
+    public static let rockyIndex = URL(string: "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/")!
 
     /// **L'image « GenericCloud » datée d'AlmaLinux** :
     /// `AlmaLinux-9-GenericCloud-9.8-AAAAMMJJ.x86_64.qcow2`. Pas l'alias
@@ -416,6 +414,18 @@ public enum ImageDownload {
     /// trie.
     static func isBootableAlma(_ file: String) -> (version: String, date: String)? {
         datedImage(file, prefix: "AlmaLinux-9-GenericCloud-", suffix: ".x86_64.qcow2")
+    }
+
+    /// **L'image « Base » datée de Rocky** :
+    /// `Rocky-9-GenericCloud-Base-9.8-AAAAMMJJ.N.x86_64.qcow2`. Pas la
+    /// variante `LVM` : wisq ne lit pas un volume logique.
+    static func isBootableRocky(_ file: String) -> (version: String, date: String)? {
+        // Le numéro de construction (`.0`) retiré, c'est la forme d'AlmaLinux ;
+        // le préfixe de `datedImage` écarte `LVM`.
+        let trimmed = file.replacingOccurrences(of: #"\.[0-9]+\.x86_64\.qcow2$"#, with: ".x86_64.qcow2",
+                                                options: .regularExpression)
+        guard trimmed != file else { return nil }
+        return datedImage(trimmed, prefix: "Rocky-9-GenericCloud-Base-", suffix: ".x86_64.qcow2")
     }
 
     /// `VERSION-AAAAMMJJ` entre un préfixe et un suffixe : la version faite de
@@ -447,9 +457,29 @@ public enum ImageDownload {
         return found.sorted { $0.date > $1.date }.map { ($0.file, $0.version) }
     }
 
+    /// La somme d'un fichier dans le format de BSD, celui de Rocky :
+    /// `SHA256 (nom) = somme`, une ligne par fichier, des commentaires autour.
+    public static func bsdChecksum(_ sums: String, for file: String) -> String? {
+        for line in sums.split(separator: "\n") {
+            let text = line.trimmingCharacters(in: .whitespaces)
+            guard text.hasPrefix("SHA256 ("), let close = text.range(of: ") = ") else { continue }
+            let name = text[text.index(text.startIndex, offsetBy: 8)..<close.lowerBound]
+            let sha256 = text[close.upperBound...].lowercased()
+            if name == file, isHexDigest(sha256) { return sha256 }
+        }
+        return nil
+    }
+
     public static func almaRelease(file: String, version: String, sha256: String, size: Int,
                                    index: URL = almaIndex) -> Release {
         Release(distribution: "AlmaLinux", flavor: "alma-cloud", title: "image de cloud (qcow2)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
+    }
+
+    public static func rockyRelease(file: String, version: String, sha256: String, size: Int,
+                                    index: URL = rockyIndex) -> Release {
+        Release(distribution: "Rocky Linux", flavor: "rocky-cloud", title: "image de cloud (qcow2)",
                 version: version, arch: "x86_64", file: file, size: size,
                 checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
     }
