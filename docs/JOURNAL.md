@@ -8,6 +8,27 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — `decodeFields` : le registre en ligne
+
+Relance horaire, même autorisation. Après #584, `decodeFields` coûtait
+encore 1,5 % des instructions de l'hôte rien que sur son entrée : soixante-
+dix millions d'appels pour cent millions d'instructions d'Alpine, chacun
+payant un appel et ses registres sauvés.
+
+- Le partage de `readRM`, une fois de plus : la lecture des champs et le cas
+  du registre en ligne chez l'appelant ; le calcul d'adresse, long, dans
+  `computeAddress`, jamais inlinée — recopié dans la trentaine d'appelants,
+  il les gonflerait tous. La faute d'une instruction sans ModRM, qui
+  n'arrive pas sur une instruction décodée, est construite dans
+  `missingModRM`.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  33,07 → 31,28 milliards d'instructions hôte, **5,4 % de moins**. En temps
+  natif, médiane de trois paires alternées : 17,99 s → 16,89 s, **6,1 %**,
+  les trois paires dans le même sens.
+- Pas de test nouveau : la sémantique ne change pas. Sabotages, chacun
+  rattrapé en masse par les tests en place : l'adresse jamais calculée
+  (96 échecs), l'adresse décalée d'un octet (94).
+
 ## 2026-10-21 — `probeWrite` et `arithmetic` en ligne
 
 Relance horaire, même autorisation. Le profil d'après #583 montrait deux
