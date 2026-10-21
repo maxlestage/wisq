@@ -36,7 +36,7 @@
 
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
@@ -374,5 +374,123 @@ test("le bureau annonce autant de refus de placement qu'il en déclare", () => {
       `${fichier} annonce « ${dit![1]} » là où \`Placement\` en déclare ${attendu} ` +
         `(${refus.length} refus, dont ${régions.length} régions)`,
     ).toBe(attendu);
+  }
+});
+/// **Chaque corpus matériel dit sa taille, et quatre des cinq se trompaient.**
+///
+/// Le dépôt écrit la taille d'un corpus juste après son nom, toujours de la
+/// même façon — le fichier, un deux-points, une virgule ou un tiret, puis les
+/// comptes :
+///
+/// - le flottant, dans le cœur : 46 formes, 4 554 cas ;
+/// - le SSE2 entier, dans le cœur : 108 formes et 3 240 cas ;
+/// - la pile x87, dans le cœur : 67 formes, 3 618 cas ;
+/// - le SSE2 entier, dans son test : 4 560 cas ;
+/// - l'arithmétique, dans `docs/ARCHITECTURE.md` : 13 388 cas.
+///
+/// La dernière est juste. Les quatre autres sont le compte du jour où elles
+/// ont été écrites : le corpus flottant porte **119 formes et 12 852 cas**,
+/// le SSE2 entier **228 et 8 892**, la pile x87 **93 et 5 580**. Et les deux
+/// phrases qui décrivent le **même** fichier — celle du cœur et celle du
+/// test — ne s'accordaient même pas entre elles : 108 formes contre 152.
+///
+/// **Cette garde se lit elle-même**, comme celle de #355, et c'est pour ça que
+/// les cinq phrases ci-dessus sont citées **sans** leur nom de fichier collé
+/// devant : citer la faute dans la forme que la garde refuse serait la
+/// commettre. Aucune exclusion n'est posée pour ce fichier — une exclusion
+/// est une affirmation de plus, et celle-là n'avait pas lieu d'être.
+///
+/// **La forme distingue le présent du passé, et c'est voulu.** Un nombre collé
+/// au nom du fichier dit ce que le fichier **porte** ; il n'y a donc pas
+/// d'exception datée ici, parce qu'un relevé daté ne s'écrit pas comme ça — il
+/// s'écrit « il en portait 46 au moment de #NNN », et le mot qui suit le tiret
+/// n'est alors pas un chiffre. La garde ne lit que la forme du présent.
+test("chaque corpus matériel annonce la taille qu'il a", () => {
+  const dossier = join(repoRoot, "Tests/Fixtures");
+  /// Les lignes d'un corpus portent leur sorte en première colonne : `instr`
+  /// pour une forme, `cas` pour un cas jugé, `état` pour un état d'entrée.
+  const UNITÉS: Record<string, string> = { formes: "instr", cas: "cas", états: "état" };
+  const corpus = new Map<string, Record<string, number>>();
+  for (const entrée of readdirSync(dossier)) {
+    if (!entrée.endsWith("-oracle.tsv")) continue;
+    const compte: Record<string, number> = {};
+    for (const ligne of readFileSync(join(dossier, entrée), "utf8").split("\n")) {
+      if (ligne.startsWith("#") || ligne.trim() === "") continue;
+      const sorte = ligne.split("\t")[0]!;
+      compte[sorte] = (compte[sorte] ?? 0) + 1;
+    }
+    corpus.set(entrée, compte);
+  }
+  expect(corpus.size, "aucun corpus matériel lu : le lecteur ne lit plus rien").toBeGreaterThan(5);
+
+  const SKIP = new Set([".git", "node_modules", "dist", "target", ".build", ".heroku-bun"]);
+  /// Le journal **cite** les phrases fausses, le `CHANGELOG` et la feuille de
+  /// route portent des relevés datés par leur section : ce sont les trois
+  /// exclusions que #317 et #359 ont déjà établies, pour la même raison.
+  const EXCLUS = new Set(["JOURNAL.md", "ROADMAP.md", "CHANGELOG.md"]);
+  const nombre = (brut: string): number =>
+    Number.parseInt(brut.replace(/[   ]/g, ""), 10);
+
+  const annonces: Array<{ fichier: string; corpus: string; unité: string; dit: number }> = [];
+  const parcourir = (dossier: string) => {
+    for (const entrée of readdirSync(dossier)) {
+      if (SKIP.has(entrée) || EXCLUS.has(entrée)) continue;
+      const chemin = join(dossier, entrée);
+      if (statSync(chemin).isDirectory()) {
+        parcourir(chemin);
+        continue;
+      }
+      if (!/\.(swift|rs|ts|md|py)$/.test(entrée)) continue;
+      let texte: string;
+      try {
+        texte = readFileSync(chemin, "utf8");
+      } catch {
+        continue;
+      }
+      if (!texte.includes("-oracle.tsv")) continue;
+      /// Les marqueurs de commentaire partent **avant** l'écrasement des
+      /// blancs : un nombre en fin de ligne et son unité au début de la
+      /// suivante ne doivent pas échapper au lecteur. `X86Float.swift` écrit
+      /// exactement ça — « 46 formes, 4 554 » puis « cas » à la ligne.
+      const plat = texte
+        .replace(/^[ \t]*(\/\/\/?|\*|#(?!\d)|>|!)[ \t]?/gm, "")
+        .replace(/\s+/g, " ");
+      const motif = /`?(?:Tests\/Fixtures\/)?(x86[\w-]*-oracle\.tsv)`?/g;
+      for (const trouvé of plat.matchAll(motif)) {
+        const nom = trouvé[1]!;
+        if (!corpus.has(nom)) continue;
+        const suite = plat.slice(trouvé.index! + trouvé[0].length);
+        const série = suite.match(
+          /^\s*[:,—–]\s*((?:\d[\d   ]*?\s*(?:formes|cas|états)(?:\s*(?:,|et)\s*)?)+)/u,
+        );
+        if (série === null) continue;
+        for (const dit of série[1]!.matchAll(/(\d[\d   ]*?)\s*(formes|cas|états)/gu)) {
+          annonces.push({
+            fichier: relative(repoRoot, chemin),
+            corpus: nom,
+            unité: dit[2]!,
+            dit: nombre(dit[1]!),
+          });
+        }
+      }
+    }
+  };
+  for (const racine of ["Sources", "Tests", "crates", "docs", "scripts", "site"]) {
+    parcourir(join(repoRoot, racine));
+  }
+
+  /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+  expect(
+    annonces.length,
+    "aucune phrase n'annonce la taille d'un corpus juste après son nom : " +
+      "la forme a disparu, et la garde ne tient plus rien",
+  ).toBeGreaterThan(3);
+
+  for (const { fichier, corpus: nom, unité, dit } of annonces) {
+    const vrai = corpus.get(nom)![UNITÉS[unité]!] ?? 0;
+    expect(
+      dit,
+      `${fichier} annonce « ${dit} ${unité} » pour ${nom}, qui en porte ${vrai}`,
+    ).toBe(vrai);
   }
 });
