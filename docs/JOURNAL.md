@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — x86-64-v2 annoncé : AlmaLinux 9 démarre jusqu'à son invite
+
+Suite directe, même autorisation. Les quatre tranches précédentes (#570,
+#571, #572, #573) avaient posé ce que x86-64-v2 exige ; celle-ci l'annonce.
+`CPUID.1:ECX` passe de zéro à SSE3, SSSE3, CX16, SSE4.1, SSE4.2 et POPCNT ;
+`CPUID.80000001:ECX` à LAHF-SAHF. Ni MONITOR, ni XSAVE, ni AVX, ni MOVBE, ni
+les bits de BMI : ce que le cœur n'a pas reste éteint.
+
+- **Ce que les bits allumés font choisir à chacun, essayé avant d'être
+  proposé.** Un premier essai (détaillé à la troisième tranche) avait montré
+  que le comptage sur AlmaLinux ne suffisait pas : Debian et Arch tombaient sur
+  `CRC32`, openSUSE sur `PCMPISTRM`. Un second comptage, sur les six
+  distributions, noyaux et modules compris, n'a plus trouvé que `MOVNTDQA`
+  (openSUSE, cinq fois), qui entre ici — le reste relève de bits qui restent
+  éteints. Puis, avec tout, quatre démarrages en parallèle jusqu'au bout :
+  **Debian 13, openSUSE Tumbleweed et Fedora 44** atteignent leur shell et
+  répondent à `echo wisq-parle`, comme avant ; **AlmaLinux 9.8** démarre son
+  noyau (#573), son initramfs, son systemd 252 — sa glibc accepte le
+  processeur — et va jusqu'à `localhost login:`.
+- **Ce qui reste pour AlmaLinux** : son systemd 252 ignore les credentials
+  par lesquels wisq ouvre la console série en `root` (`agetty.autologin`, le
+  drop-in de `serial-getty@ttyS0`, venus avec systemd 256), et `root` y est
+  verrouillé. C'est la tranche suivante.
+- `X86SystemTests` exige chacun des six bits et rien au-delà : ni MONITOR, ni
+  XSAVE, ni OSXSAVE, ni AVX.
+
 ## 2026-10-20 — `pop 0x28(%rsp)` écrivait huit octets trop bas
 
 Suite directe, même autorisation. Le noyau 5.14 d'AlmaLinux 9 s'arrêtait à
