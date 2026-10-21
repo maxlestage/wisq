@@ -46,16 +46,15 @@ final class CloudBootLegacyConsoleTests: XCTestCase {
     }
 
     /// **AlmaLinux 9** : le noyau sur un `/boot` à part, systemd 252 sur la
-    /// racine. Le service de secours ouvre la console, `sulogin` passe outre
-    /// le `root` verrouillé, et la console série n'a plus de `getty`.
+    /// racine. Le mode de secours ouvre la console, et `sulogin` passe outre
+    /// le `root` verrouillé.
     func testSystemd252GetsTheRescueShellOnTheConsole() throws {
         let root = MemoryVolume(["/usr/lib64/systemd/libsystemd-shared-252.so": [1],
                                  "/usr/lib64/systemd/libsystemd-core-252.so": [1]])
         let line = try find([Self.boot, root]).commandLine
         // Écrites en toutes lettres : relire `legacyConsoleOptions` ne
         // jugerait que la liste contre elle-même.
-        for option in ["systemd.wants=rescue.service", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
-                       "systemd.mask=serial-getty@ttyS0.service"] {
+        for option in ["systemd.unit=rescue.target", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"] {
             XCTAssertTrue(line.contains(option), option)
         }
         XCTAssertFalse(line.contains("agetty.autologin"), "que systemd 252 ignorerait")
@@ -73,7 +72,7 @@ final class CloudBootLegacyConsoleTests: XCTestCase {
                      MemoryVolume(["/etc/os-release": [1]])] {
             let line = try find([Self.boot, root]).commandLine
             for option in CloudBoot.consoleOptions { XCTAssertTrue(line.contains(option), option) }
-            XCTAssertFalse(line.contains("rescue.service"))
+            XCTAssertFalse(line.contains("rescue"))
         }
     }
 
