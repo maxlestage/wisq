@@ -138,14 +138,15 @@ public final class RustLinuxMachine: @unchecked Sendable {
     /// `FileDiskStore`, octet pour octet : les deux cœurs ouvrent les mêmes
     /// fichiers, et les refus sont les mêmes, avec les mêmes noms.
     public func attach(diskFileAt base: URL, writes: URL) throws {
-        // **Le cœur Rust lit sa base octet pour octet**, et un qcow2 ou un
-        // VMDK n'est pas les octets d'un disque : brancher l'un sur l'autre
+        // **Le cœur Rust lit sa base octet pour octet**, et un qcow2, un
+        // VMDK ou un VDI n'est pas les octets d'un disque : brancher l'un sur l'autre
         // donnerait à l'invité les tables du format en guise de système de
         // fichiers. Leurs lecteurs sont côté Swift, là où tournent les PC —
         // c'est pour eux que les distributions livrent des images de cloud.
         if VirtualDiskImages.recognizes(fileAt: base) {
             let format = Qcow2Image.looksLikeOne(fileAt: base) ? "un qcow2"
-                : VmdkImage.looksLikeOne(fileAt: base) ? "un VMDK" : "une appliance OVA"
+                : VmdkImage.looksLikeOne(fileAt: base) ? "un VMDK"
+                : VdiImage.looksLikeOne(fileAt: base) ? "un VDI" : "une appliance OVA"
             throw FileDiskStore.Failure.unreadableImage(
                 "ce disque est \(format), que le cœur RISC-V ne lit pas encore ; "
                     + "il se branche sur un noyau de PC, ou se convertit avec "
