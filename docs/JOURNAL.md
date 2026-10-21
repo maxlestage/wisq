@@ -8,6 +8,27 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — La page du `rip` garde sa place en mémoire
+
+Relance horaire, même autorisation. Même avec la page du `rip` gardée
+(#583), `run` repassait par `memory.offset(physical, 1)` à chaque
+instruction : la borne de la mémoire, 3,7 % des instructions de l'hôte.
+
+- `fetchStart` remplace `fetchFrame` : la page gardée porte directement sa
+  place dans `memory.bytes`, vérifiée une fois pour **la page entière**
+  (`offset(trame, 0x1000)`). Le décalage dans la page n'en sort pas, et la
+  borne ne se repaie plus. Une page que la fin de la mémoire coupe n'est
+  pas gardée : elle repasse par le chemin entier à chaque instruction.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  29,41 → 28,51 milliards d'instructions hôte, **3,1 % de moins**.
+- Deux tests dans `X86FetchPageTests`, pour deux sabotages que rien ne
+  voyait : une page coupée par la fin de la mémoire, dont l'instruction
+  au-delà doit fauter et non être lue hors du tampon ; et une instruction
+  lue à 0x901 dans la page gardée, qu'un masque trop court du décalage
+  irait chercher à 0x101. Le second sabotage passait **toute** la suite
+  avant ce test.
+- Compteur publié : 2933.
+
 ## 2026-10-21 — `oneByte` : les octets rares à part
 
 Relance horaire, même autorisation. Après #587, les deux accolades de
