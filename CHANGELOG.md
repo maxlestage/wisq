@@ -341,7 +341,7 @@ break APIs.
 
 ### Added
 - **A second local architecture: an x86-64 core that runs a stock Alpine
-  kernel and its initramfs.** The core is held by eleven hardware corpora — the
+  kernel and its initramfs.** The core is held by ten hardware corpora — the
   reference is this machine's own processor, asked what it produced for the
   same bytes on the same state: arithmetic, XMM, strings, stack, branches,
   SSE2 integer, scalar float, the x87 stack, x87 rounding at both edges, the
