@@ -567,8 +567,8 @@ fn read_stack_oracle() -> StackOracle {
         }
     }
     assert_eq!(states.len(), 8, "les huit états du corpus de pile");
-    assert_eq!(instructions.len(), 81, "ses quatre-vingt-une formes");
-    assert_eq!(cases.len(), 648, "et ses six cent quarante-huit cas");
+    assert_eq!(instructions.len(), 89, "ses quatre-vingt-neuf formes");
+    assert_eq!(cases.len(), 712, "et ses sept cent douze cas");
     // **Les fenêtres viennent du fichier qui les déclare**, et non de ce code :
     // le corpus de pile ne les porte pas, le corpus arithmétique si, et les
     // deux partagent les mêmes à l'octet près. Les reconstruire ici

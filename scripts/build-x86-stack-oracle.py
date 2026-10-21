@@ -94,6 +94,13 @@ FORMS = [
 ] + [f"pop %{name}" for name in REGISTERS] + [
     "popw %ax", "popw %bp",
     "pop (%rsi)", "popw (%rsi)",
+    # **Vers la pile elle-même.** L'adresse d'un `pop` qui passe par RSP se
+    # calcule **après** que RSP a avancé : `pop 0x28(%rsp)` écrit à l'ancien
+    # RSP + 8 + 0x28. Le noyau d'AlmaLinux 9 y range ses drapeaux, et un cœur
+    # qui calculait avec l'ancien RSP écrasait la case voisine. Et `push`,
+    # lui, calcule **avant** de descendre : les deux sens sont ici.
+    "pop (%rsp)", "pop 8(%rsp)", "pop 0x28(%rsp)", "pop -8(%rsp)", "popw 2(%rsp)",
+    "push (%rsp)", "push 8(%rsp)", "push -8(%rsp)",
     # `leave` : RSP prend RBP, puis on dépile RBP. Deux effets, et l'état
     # d'entrée met RBP ailleurs que le sommet pour qu'on voie les deux.
     "leave",
