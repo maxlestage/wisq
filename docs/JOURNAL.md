@@ -27,6 +27,7 @@ déjà connu. Le chemin entier garde son calcul.
   cheval, précédé d'un `nop` dans la même page, donc lu depuis la page
   gardée. Il tombe sous le sabotage.
 - Compteur publié : 2934.
+
 ## 2026-10-21 — Debian au shell : 767 s → 596 s, les tranches de la nuit
 
 Relance horaire, même autorisation. Les tranches #579 à #590 ont été
