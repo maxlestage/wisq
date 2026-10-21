@@ -18,12 +18,15 @@
 # tree with nothing wrong in it, so none of the eight rules below had ever
 # reported anything.
 #
-# **Un seul processus lit les quatre cent treize fichiers, et c'est le sujet
-# de la tranche qui a réécrit ce fichier.** La boucle d'avant ouvrait onze
-# sous-processus par fichier — `tail`, `od`, `tr`, quatre `grep`, deux `awk` —
-# soit plus de quatre mille cinq cents pour un passage. Mesuré : 4,9 s à chaud,
-# 25,6 s à froid, sur un dépôt où rien n'est fautif. Le coût ne venait pas du
-# texte, qui tient en deux mégaoctets : il venait du nombre de `fork`.
+# **Un seul processus lit tout ce que `git ls-files` rend sous `Sources`,
+# `Tests` et `App`, et c'est le sujet de la tranche qui a réécrit ce
+# fichier.** La boucle d'avant n'en voyait que les `.swift`, et elle ouvrait
+# onze sous-processus par fichier — `tail`, `od`, `tr`, quatre `grep`, deux
+# `awk` —, soit, au relevé de #315 et sur les 413 fichiers Swift que le dépôt
+# portait alors, plus de quatre mille cinq cents pour un passage. Mesuré :
+# 4,9 s à chaud, 25,6 s à froid, sur un dépôt où rien n'est fautif. Le coût ne
+# venait pas du texte, qui tient en deux mégaoctets : il venait du nombre de
+# `fork`.
 #
 # Et ce n'était pas qu'une lenteur. `site/tests/whitespace-guard.test.ts` avait
 # dû monter son délai à vingt secondes parce que la garde s'en approchait sous

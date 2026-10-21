@@ -28126,3 +28126,72 @@ le dit. Le sixième prouve que l'exclusion du journal porte quelque chose.
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, `Tests/Fixtures/` compris, et `git status --porcelain` ne portait
 que les deux fichiers voulus.
+
+## #361 — « les quatre cent treize fichiers » était le compte de la boucle remplacée
+
+L'en-tête de `scripts/check-whitespace.sh` ouvre sur la tranche qui l'a réécrit :
+
+> **Un seul processus lit les quatre cent treize fichiers, et c'est le sujet de
+> la tranche qui a réécrit ce fichier.**
+
+Le processus unique ne lit pas quatre cent treize fichiers, et il n'en a jamais
+lu quatre cent treize. Sa sélection est une ligne, dans le même fichier :
+
+```sh
+git ls-files -z --cached --others --exclude-standard Sources Tests App |
+```
+
+### Les deux nombres qui ne s'accordent pas
+
+| ce qu'on compte | au relevé (`30f1675`, #315) | aujourd'hui |
+| --- | --- | --- |
+| fichiers sous `Sources Tests App` | **427** | **524** |
+| dont `.swift` | **413** | 508 |
+
+413 était donc **exact** — pour la boucle **d'avant**, qui ne prenait que les
+`.swift`. La phrase l'a donné au processus qui l'a remplacée, lequel lit tout.
+Le nombre était celui d'un autre ensemble **dès le premier jour**, et il a
+vieilli de cent onze fichiers depuis. C'est #313 à la lettre : une phrase
+recopiée emporte ses nombres et pas leur sens.
+
+`docs/ROADMAP.md` porte le même 413 et le porte bien — « **Ce qu'elle
+faisait.** Une boucle bash sur les 413 fichiers Swift du dépôt » : au passé,
+sur le bon ensemble, sous le titre de la tranche. Rien à y changer.
+
+### Ce que la garde tient, et ce qu'elle refuse de tenir
+
+Un compte de fichiers figé dans un commentaire se périme à chaque fichier
+ajouté. Le tenir à jour ferait un cinquième miroir à repasser à chaque tranche,
+pour un nombre dont personne n'a besoin. La garde tient donc deux choses qui ne
+se périment pas :
+
+1. **Le périmètre.** L'en-tête doit nommer *exactement* les chemins que la
+   sélection donne à `git ls-files` — lus dans la garde, jamais recopiés dans
+   le test. Dans les deux sens : un chemin ajouté à l'un et pas à l'autre tombe.
+2. **La règle de #360.** Aucun nombre devant « fichiers » ne vit sans date :
+   un compte qui ne vaut plus doit nommer sa tranche, `#NNN`, dans le même
+   paragraphe et **avant** le nombre. Ce qui ne la nomme pas parle du présent,
+   et le présent est l'arbre.
+
+La correction suit les deux : le titre nomme `Sources`, `Tests` et `App` et ne
+compte plus rien ; le relevé garde ses 413, précédés de « au relevé de #315 ».
+
+### Six sabordages, six chutes — et deux essais qui devaient passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| le compte figé revient dans le titre | « l'en-tête fige « treize fichiers » sans nommer de tranche … la garde en lit 524 » |
+| l'en-tête perd `App` | « l'en-tête nomme « Sources, Tests » et la garde lit « App, Sources, Tests » » |
+| la **sélection** perd `App` | le même désaccord, dans l'autre sens |
+| la tranche passe **après** le nombre | « l'en-tête fige « 413 fichiers » sans nommer de tranche » |
+| plus aucun relevé daté | « aucun relevé daté … la règle de #360 ne garde plus rien ici » |
+| l'en-tête cite `crates`, que la garde ne lit pas | « nomme « App, Sources, Tests, crates » et la garde lit « App, Sources, Tests » » |
+| (non-sabordage) l'en-tête cite `Package.swift` | rien : seuls les répertoires de la racine comptent comme périmètre |
+| (non-sabordage) le relevé daté passe de 413 à 999 | rien : il est daté, et #359 dit qu'on ne rafraîchit pas un relevé |
+
+Le troisième et le sixième comptent ensemble : ils montrent que les deux listes
+sont lues là où elles vivent, et qu'aucune ne sert de copie à l'autre. Le
+cinquième montre que l'exception ne peut pas devenir vide en silence.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.

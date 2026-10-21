@@ -32,7 +32,14 @@
 /// covered out of 236, invisibly, because that file happens to be clean.
 
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -556,6 +563,113 @@ describe("the formatting floor accepts what it must not refuse", () => {
         + `et celui qui demande le dernier octet est le n°${dernierOctet + 1}`,
     ).toBe(dernierOctet);
   });
+
+  /// **Le périmètre que l'en-tête annonce, et celui que la garde lit.**
+  ///
+  /// L'en-tête ouvre sur « Un seul processus lit les quatre cent treize
+  /// fichiers ». Ce n'est pas le compte du processus unique : c'est celui de
+  /// la boucle qu'il a remplacée, qui ne voyait que les `.swift`. La
+  /// sélection passe `Sources`, `Tests` et `App` entiers à `git ls-files`, et
+  /// le jour où la phrase a été écrite (#315) l'arbre en portait **427**,
+  /// dont 413 Swift. Il en porte 524 aujourd'hui. Le nombre était celui d'un
+  /// autre ensemble dès le premier jour, et il n'a jamais été tenu — un
+  /// nombre écrit en lettres dans un commentaire n'a aucune garde (#317), et
+  /// un en-tête de garde est précisément là où personne ne compte (#322).
+  ///
+  /// **Deux choses sont tenues ici, et ni l'une ni l'autre n'est un compte à
+  /// rafraîchir à chaque fichier ajouté.**
+  ///
+  /// La première est le périmètre : l'en-tête doit nommer **exactement** les
+  /// chemins que la sélection donne à `git ls-files`. Un chemin ajouté d'un
+  /// côté et pas de l'autre se voit, dans les deux sens.
+  ///
+  /// La seconde est la règle de #360 : un compte qui ne vaut plus doit
+  /// **nommer sa tranche**, `#NNN`, dans le même paragraphe et avant le
+  /// nombre. Ce qui ne la nomme pas parle du présent, et le présent est
+  /// l'arbre. Le périmètre reste vivant, le relevé reste daté, et aucun des
+  /// deux ne demande qu'on repasse ici quand un fichier naît.
+  test("l'en-tête nomme les répertoires que la garde lit, et ne fige aucun compte de fichiers", () => {
+    const script = readFileSync(guard, "utf8");
+
+    /// L'en-tête est le bloc de commentaires qui suit le shebang, jusqu'à la
+    /// première ligne de code. Le lire jusqu'au bout du fichier ferait entrer
+    /// les commentaires du programme, qui parlent d'autre chose.
+    const lignes = script.split("\n").slice(1);
+    const fin = lignes.findIndex((ligne) => ligne.trim() !== "" && !ligne.startsWith("#"));
+    expect(fin, "la garde n'a plus d'en-tête de commentaires").toBeGreaterThan(5);
+    const entete = lignes.slice(0, fin).join("\n");
+
+    /// La sélection est lue dans la garde, pas recopiée ici : deux listes qui
+    /// se recopient dérivent, c'est tout le sujet.
+    const choix = script.match(/git ls-files[^\n|]*--exclude-standard([^\n|]*)/);
+    expect(choix, "la garde ne sélectionne plus ses fichiers par `git ls-files`").not.toBeNull();
+    const chemins = choix![1].trim().split(/\s+/).filter(Boolean).sort();
+    expect(chemins.length, "la sélection ne nomme aucun chemin").toBeGreaterThan(0);
+
+    /// Les répertoires de la racine, pour ne retenir des mots entre accents
+    /// graves que ceux qui désignent un périmètre — `verify.sh` et `awk` n'en
+    /// sont pas.
+    const racine = new Set(
+      readdirSync(repoRoot).filter((entree) => statSync(join(repoRoot, entree)).isDirectory()),
+    );
+    const cités = [
+      ...new Set(
+        [...entete.matchAll(/`([^`]+)`/g)].map((trouvé) => trouvé[1]).filter((nom) => racine.has(nom)),
+      ),
+    ].sort();
+    expect(
+      cités,
+      `l'en-tête nomme ${cités.length === 0 ? "aucun périmètre" : `« ${cités.join(", ")} »`} ` +
+        `et la garde lit « ${chemins.join(", ")} »`,
+    ).toEqual(chemins);
+
+    /// Par paragraphe : par ligne, un nombre en fin de ligne et son nom au
+    /// début de la suivante passeraient. Le `#` de commentaire part, celui
+    /// d'un numéro de tranche reste — sinon le dateur s'effacerait lui-même.
+    const NOMBRES = new Set([
+      "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+      "onze", "douze", "treize", "quatorze", "quinze", "seize", "vingt", "cent",
+      "cents", "mille",
+    ]);
+    const paragraphes = entete
+      .replace(/^[ \t]*#(?!\d)[ \t]?/gm, "")
+      .split(/\n[ \t]*\n/)
+      .map((bloc) => bloc.replace(/\s+/g, " ").trim());
+    let datés = 0;
+    for (const bloc of paragraphes) {
+      for (const trouvé of bloc.matchAll(/(\S+)\s+fichiers\b/g)) {
+        const mot = trouvé[1].replace(/[^\p{L}\d]/gu, "").toLowerCase();
+        if (!NOMBRES.has(mot) && !/^\d+$/.test(mot)) continue;
+        if (/#\d+/.test(bloc.slice(0, trouvé.index!))) {
+          datés += 1;
+          continue;
+        }
+        throw new Error(
+          `l'en-tête fige « ${mot} fichiers » sans nommer de tranche : c'est donc le ` +
+            `présent, et la garde en lit ${countFiles(chemins)}`,
+        );
+      }
+    }
+    expect(
+      datés,
+      "aucun relevé daté dans l'en-tête : l'exception n'a plus d'objet, et la règle " +
+        "de #360 ne garde plus rien ici",
+    ).toBeGreaterThan(0);
+  });
+
+  /// Le compte que la garde lit vraiment, par sa propre sélection. Il ne sert
+  /// qu'à écrire le message de refus : rien ne l'exige dans un commentaire,
+  /// et c'est voulu.
+  function countFiles(chemins: string[]): number {
+    const result = Bun.spawnSync({
+      cmd: ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", ...chemins],
+      cwd: repoRoot,
+    });
+    return new TextDecoder()
+      .decode(result.stdout)
+      .split("\0")
+      .filter(Boolean).length;
+  }
 
   test("this repository, with no root given, is clean", () => {
     const result = Bun.spawnSync({ cmd: ["bash", guard] });
