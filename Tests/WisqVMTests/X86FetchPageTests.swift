@@ -55,6 +55,41 @@ final class X86FetchPageTests: XCTestCase {
         XCTAssertEqual(core.registers[0], 42, "le parcours refait voit la trame déplacée")
     }
 
+    /// **Le décalage entier dans la page gardée.** La seconde instruction
+    /// vient de la page gardée, loin de son début : sa place est celle de la
+    /// trame plus les douze bits bas de `rip`, tous — un masque trop court
+    /// lirait ailleurs dans la page.
+    func testTheKeptPageReadsAtTheWholeOffset() throws {
+        var core = try Pages.core([0x90], subjectFlags: Self.open, ring: 0)
+        try core.memory!.load([0x90] + Self.movFortyTwo, at: Pages.program + 0x900)
+        core.rip = Pages.program + 0x900
+        XCTAssertEqual(try core.run(budget: 2), 2)
+        XCTAssertEqual(core.registers[0], 42, "lue à 0x901 dans la page, pas à 0x101")
+    }
+
+    /// **Une page qui ne tient pas entière dans la mémoire n'est pas gardée.**
+    /// La page du `rip` garde sa place en mémoire et ajoute le décalage sans
+    /// revérifier la borne : c'est sûr parce qu'elle n'est gardée que si la
+    /// page entière y tient. Ici la mémoire s'arrête au milieu de la page du
+    /// code : le `nop` de son dernier octet s'exécute, et l'instruction
+    /// suivante, au-delà, doit fauter — pas être lue hors du tampon.
+    func testAPageCutByTheEndOfMemoryIsNotKept() throws {
+        let memory = X86Memory(size: 0x7800, base: 0)
+        try memory.write(Pages.pml4, 8, Pages.pdpt | Self.open)
+        try memory.write(Pages.pdpt, 8, Pages.directory | Self.open)
+        try memory.write(Pages.directory, 8, Pages.table | Self.open)
+        try memory.write(Pages.table &+ 7 * 8, 8, 0x7000 | Self.open)
+        try memory.write(0x77FF, 1, 0x90)
+        var core = X86Core(registers: [UInt64](repeating: 0, count: 16), rip: 0x77FF, memory: memory)
+        core.system.control[3] = Pages.pml4
+        core.pagingActive = true
+        core.segments[1] = 0x10
+        XCTAssertEqual(try core.run(budget: 1), 1, "le dernier octet de la mémoire")
+        XCTAssertThrowsError(try core.run(budget: 1)) { error in
+            XCTAssertEqual(error as? X86Core.Fault, .outsideMemory(0x7800))
+        }
+    }
+
     /// **L'anneau fait partie de la clé.** Une page de code fermée aux
     /// programmes, lue depuis le noyau, puis exécutée depuis l'anneau trois :
     /// c'est la lecture de l'instruction qui doit fauter, pas l'opérande
