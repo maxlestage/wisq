@@ -8,6 +8,67 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — x86-64-v2 annoncé : AlmaLinux 9 démarre jusqu'à son invite
+
+Suite directe, même autorisation. Les quatre tranches précédentes (#570,
+#571, #572, #573) avaient posé ce que x86-64-v2 exige ; celle-ci l'annonce.
+`CPUID.1:ECX` passe de zéro à SSE3, SSSE3, CX16, SSE4.1, SSE4.2 et POPCNT ;
+`CPUID.80000001:ECX` à LAHF-SAHF. Ni MONITOR, ni XSAVE, ni AVX, ni MOVBE, ni
+les bits de BMI : ce que le cœur n'a pas reste éteint.
+
+- **Ce que les bits allumés font choisir à chacun, essayé avant d'être
+  proposé.** Un premier essai (détaillé à la troisième tranche) avait montré
+  que le comptage sur AlmaLinux ne suffisait pas : Debian et Arch tombaient sur
+  `CRC32`, openSUSE sur `PCMPISTRM`. Un second comptage, sur les six
+  distributions, noyaux et modules compris, n'a plus trouvé que `MOVNTDQA`
+  (openSUSE, cinq fois), qui entre ici — le reste relève de bits qui restent
+  éteints. Puis, avec tout, quatre démarrages en parallèle jusqu'au bout :
+  **Debian 13, openSUSE Tumbleweed et Fedora 44** atteignent leur shell et
+  répondent à `echo wisq-parle`, comme avant ; **AlmaLinux 9.8** démarre son
+  noyau (#573), son initramfs, son systemd 252 — sa glibc accepte le
+  processeur — et va jusqu'à `localhost login:`.
+- **Ce qui reste pour AlmaLinux** : son systemd 252 ignore les credentials
+  par lesquels wisq ouvre la console série en `root` (`agetty.autologin`, le
+  drop-in de `serial-getty@ttyS0`, venus avec systemd 256), et `root` y est
+  verrouillé. C'est la tranche suivante.
+- `X86SystemTests` exige chacun des six bits et rien au-delà : ni MONITOR, ni
+  XSAVE, ni OSXSAVE, ni AVX.
+
+## 2026-10-20 — `pop 0x28(%rsp)` écrivait huit octets trop bas
+
+Suite directe, même autorisation. Le noyau 5.14 d'AlmaLinux 9 s'arrêtait à
+943 millions d'instructions, dans `memcpy`, sur une adresse physique de
+cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
+était ailleurs.
+
+- **La trace.** Une course échantillonnée instruction par instruction, les
+  registres à chaque pas, sur les cent mille dernières : `apply_alternatives`
+  → `__text_poke` → `switch_mm_irqs_off` → `memcpy(0x71099de1d13d, …, 1)`.
+  L'adresse est la projection temporaire où le noyau écrit son propre code,
+  et sa table de pages pointe la trame 0x580000000a. Remontée dans
+  `__text_poke` : `pushf ; pop 0x28(%rsp)` range les drapeaux, puis
+  `mov 0x20(%rsp),%rcx` relit la `struct page *`… et lit 0x282 — les
+  drapeaux. `mk_pte` en fait la trame.
+- **La règle** : l'adresse d'un `POP` dont l'opérande passe par RSP se
+  calcule **après** que RSP a avancé. Le cœur la calculait avant, et écrivait
+  huit octets trop bas, sur la case voisine. RSP est maintenant avancé le
+  temps du calcul, puis remis : il n'avance pour de bon qu'après l'écriture,
+  pour qu'une écriture qui faute ne laisse rien derrière elle.
+- **Le corpus de la pile** gagne `pop (%rsp)`, `pop 8(%rsp)`,
+  `pop 0x28(%rsp)`, `pop -8(%rsp)`, `popw 2(%rsp)`, et `push (%rsp)`,
+  `push 8(%rsp)`, `push -8(%rsp)` — dont l'adresse se calcule **avant** de
+  descendre, et qui étaient justes. 89 formes, 712 cas. Sans le correctif :
+  40 désaccords, tous des `pop` vers la pile. Avec : aucun.
+- **Sur la vraie image** : le noyau d'AlmaLinux 9.8 passe `apply_alternatives`
+  et continue — cinquante-huit secondes de temps invité plus loin, il
+  initialise IMA et EVM. Son espace utilisateur attend x86-64-v2 (#572 et
+  les bits de CPUID).
+- **Le cœur Rust** relit le même corpus de pile (`x86_oracle.rs`) et y passe
+  sans changement ; son compte de formes et de cas, épinglé, suit : 89 et
+  712.
+- **Le compteur publié passe à 2917** : #569, fusionné entre-temps, avait
+  ajouté un test sans le compter.
+
 ## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF, l'arrondi
 
 Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
@@ -77,35 +138,6 @@ en mode long (`X86SSE42.swift`).
   de mots sur un seul octet → 29 775. Un nouveau comptage, sur les six
   distributions, noyaux et modules compris, décide de la suite.
 - Compteur publié : 2916.
-## 2026-10-20 — `pop 0x28(%rsp)` écrivait huit octets trop bas
-
-Suite directe, même autorisation. Le noyau 5.14 d'AlmaLinux 9 s'arrêtait à
-943 millions d'instructions, dans `memcpy`, sur une adresse physique de
-cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
-était ailleurs.
-
-- **La trace.** Une course échantillonnée instruction par instruction, les
-  registres à chaque pas, sur les cent mille dernières : `apply_alternatives`
-  → `__text_poke` → `switch_mm_irqs_off` → `memcpy(0x71099de1d13d, …, 1)`.
-  L'adresse est la projection temporaire où le noyau écrit son propre code,
-  et sa table de pages pointe la trame 0x580000000a. Remontée dans
-  `__text_poke` : `pushf ; pop 0x28(%rsp)` range les drapeaux, puis
-  `mov 0x20(%rsp),%rcx` relit la `struct page *`… et lit 0x282 — les
-  drapeaux. `mk_pte` en fait la trame.
-- **La règle** : l'adresse d'un `POP` dont l'opérande passe par RSP se
-  calcule **après** que RSP a avancé. Le cœur la calculait avant, et écrivait
-  huit octets trop bas, sur la case voisine. RSP est maintenant avancé le
-  temps du calcul, puis remis : il n'avance pour de bon qu'après l'écriture,
-  pour qu'une écriture qui faute ne laisse rien derrière elle.
-- **Le corpus de la pile** gagne `pop (%rsp)`, `pop 8(%rsp)`,
-  `pop 0x28(%rsp)`, `pop -8(%rsp)`, `popw 2(%rsp)`, et `push (%rsp)`,
-  `push 8(%rsp)`, `push -8(%rsp)` — dont l'adresse se calcule **avant** de
-  descendre, et qui étaient justes. 89 formes, 712 cas. Sans le correctif :
-  40 désaccords, tous des `pop` vers la pile. Avec : aucun.
-- **Sur la vraie image** : le noyau d'AlmaLinux 9.8 passe `apply_alternatives`
-  et continue — cinquante-huit secondes de temps invité plus loin, il
-  initialise IMA et EVM. Son espace utilisateur attend x86-64-v2 (#572 et
-  les bits de CPUID).
 
 ## 2026-10-20 — x86-64-v2, deuxième tranche : SSE4.1 entier
 
