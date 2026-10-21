@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — La borne de la mémoire, sans piège
+
+Relance horaire, même autorisation. Callgrind sur les cent premiers millions
+d'instructions d'Alpine, à master : la ligne la plus chère de la mémoire était
+sa borne, `guard index <= UInt64(size - width)` — 2,95 % à elle seule, plus
+1,34 % pour le test de `base` juste avant. Elle passe à chaque lecture
+d'instruction et à chaque accès. `size - width` vérifiait son débordement, et
+la conversion en `UInt64` son signe.
+
+- `X86Memory.offset` compare l'indice, pris par soustraction circulaire, à la
+  taille gardée en `UInt64` (`extent`), puis la somme indice + largeur. Une
+  adresse sous `base` devient un indice immense, que le premier test écarte ;
+  le second ne déborde pas, l'indice étant alors sous la taille.
+- **Mesuré** sous callgrind : 37,96 → 37,50 milliards d'instructions hôte,
+  1,2 % de moins.
+- Tests : `X86MemoryBoundsTests`, trois cas que rien ne couvrait — le dernier
+  mot qui tient et l'octet de trop, une adresse sous une `base` non nulle, une
+  adresse si haute que la somme repasserait par zéro. Sabotages, chacun
+  rattrapé : sans le premier test (les adresses sous `base` passent), et la
+  somme comparée strictement (le dernier mot refusé).
+- Compteur publié : 2926.
+
 ## 2026-10-21 — Rocky Linux 9, la huitième distribution
 
 - **Le mode d'urgence de Rocky venait de udev.** Au premier démarrage,
