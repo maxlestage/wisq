@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — La feuille de route rattrape les huit distributions
+
+Relance horaire, même autorisation. L'étape 5 de « Télécharger une image
+depuis l'application » disait encore « fait pour Debian, Fedora et
+Ubuntu » : la feuille en propose huit depuis #578. Elle les nomme
+maintenant, chacune avec la somme qu'elle vérifie, et dit pourquoi
+AlmaLinux et Rocky ouvrent leur console en mode de secours.
+
+- **Essayé et écarté**, juste avant : `set(flag, on)` sans branche (le bit
+  effacé, puis posé par un masque `0 &- 1`). Callgrind 28,51 → 28,44
+  milliards (0,25 %) ; en temps natif, médiane 15,41 s → 15,28 s avec une
+  paire sur trois inversée — dans le bruit. Le compilateur fait sans doute
+  déjà un déplacement conditionnel.
+- Au passage, la mesure de master en temps natif : 15,4 s pour les
+  600 millions d'instructions d'Alpine du banc, contre 20,0 s avant #584 —
+  les tranches de la nuit se voient à l'horloge, pas seulement sous
+  callgrind.
+
 ## 2026-10-21 — La page du `rip` garde sa place en mémoire
 
 Relance horaire, même autorisation. Même avec la page du `rip` gardée
