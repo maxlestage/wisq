@@ -50,7 +50,7 @@ jailbreak or a special entitlement.
 
 ## Status
 
-Everything below is implemented, tested (2941 tests across Swift and Rust) and
+Everything below is implemented, tested (2947 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose
@@ -140,7 +140,7 @@ the UI and the remote-desktop client — Apple-shaped work on
 Network.framework. Rust holds the parts that are neither: a daemon with no
 interface, and an interpreter that is pure computation over a byte array.
 Neither has a reason to carry a language runtime, and the daemon's download
-went from 58 MB to 1.7 MB by not carrying one.
+went from 58 MB to 1.8 MB by not carrying one.
 
 `docs/ARCHITECTURE.md` explains the load-bearing decisions — negotiated
 pixel format, session-lived zlib dictionaries, the touch model, why JPEG is

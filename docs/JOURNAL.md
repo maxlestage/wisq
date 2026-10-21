@@ -8,6 +8,51 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le démon repasse à 1,8 Mo, sans que personne ne commette rien
+
+La CI de #597 a rougi dans le job Rust, sur `check-agent-size.sh` : le binaire
+du coureur fait **1 766 216 octets**, soit 1,8 Mo décimaux, et les huit textes
+annonçaient 1,7 depuis le 8 octobre (1 749 840 octets sous rustc 1.99). La
+pull request ne touche pas au démon : c'est la chaîne du coureur qui a changé,
+comme la dernière fois. 1 766 216 est à 16 000 octets de la frontière
+d'arrondi, donc le chiffre n'est pas une affaire de machine.
+
+Les huit textes passent à 1,8, et la liste de provenance de
+`site/tests/claims.test.ts` suit (« 1.8 », « 1,8 », la mesure datée). Vérifié
+avec la garde elle-même sur un arbre copié : un binaire de 1 766 216 octets
+s'accorde, un de 1 749 840 refuse ; `bun test` 466/466.
+
+## 2026-10-21 — Le VHD dynamique, lu sur place
+
+Relance horaire, même autorisation. La suite du VDI (#595) : le VHD
+dynamique, celui de Virtual PC, des anciens Hyper-V et d'Azure. Le VHD
+*fixe* se branchait déjà — un disque brut suivi d'un pied —, le dynamique
+était seulement nommé et renvoyé à `qemu-img convert`. `VhdImage` le lit.
+
+- **Relevé sur de vrais fichiers** de `qemu-img` 8.2.2 : le pied de
+  512 octets en tête (`conectix`, recopié à la fin), le type en 60 (3
+  dynamique, 4 différentiel), la taille en 48, l'en-tête dynamique
+  (`cxsparse`) à l'adresse que donne le pied, la table de blocs et sa
+  taille, les blocs de 2 Mio, chaque entrée étant le **secteur** où
+  commence le bloc : sa carte de secteurs, puis ses données. Gros-boutiste.
+- **La carte des secteurs fait foi**, comme le veut le format : un secteur
+  dont le bit est à zéro se lit en zéros, même si le fichier porte encore
+  des octets à sa place. `qemu-img` met tous les bits à un ; d'autres
+  outils, non.
+- **La taille est celle du pied.** Sans `force_size`, `qemu-img` l'arrondit
+  à une géométrie CHS — 3 168 256 octets pour un disque de 3 Mio — et
+  l'invité voit ce que le pied annonce ; une fixture de chaque sorte.
+- Les sommes de contrôle du pied et de l'en-tête sont vérifiées. Refusés
+  en le disant : le différentiel, une somme fausse, un type inconnu, une
+  table qui ne couvre pas le disque ou sort du fichier. Le cœur RISC-V le
+  refuse en le nommant, comme le VDI.
+- Tests : `VhdImageTests` (cinq) et un de plus dans
+  `RustDiskFormatRefusalTests`. Sabotages, chacun rattrapé : la carte
+  ignorée, ses bits lus dans le mauvais ordre, la somme du pied non
+  vérifiée, le différentiel accepté, les données lues sans sauter la
+  carte (6 échecs), le message du cœur RISC-V sans le VHD.
+- Compteur publié : 2947.
+
 ## 2026-10-21 — Le VDI de VirtualBox, lu sur place
 
 Relance horaire, même autorisation. « Lire une image Linux » : une machine

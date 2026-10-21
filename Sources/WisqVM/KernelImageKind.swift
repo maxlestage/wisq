@@ -252,13 +252,14 @@ public enum KernelImageKind: Equatable, Sendable {
     /// Les formats d'hyperviseur que wisq lit sur place, sans conversion —
     /// le qcow2, par `Qcow2Image`, le VMDK d'un seul fichier, par `VmdkImage`,
     /// l'appliance OVA, dont le VMDK est lu dans l'archive (`OvaArchive`), et
-    /// le VDI de VirtualBox, par `VdiImage`.
+    /// le VDI de VirtualBox, par `VdiImage`, et le VHD dynamique, par
+    /// `VhdImage` — le VHD fixe, lui, est une image brute.
     /// Une image de ces formats peut encore être refusée en la branchant
     /// (chiffrée, à fichier de base, découpée…) ; le refus nomme alors ce
     /// qui manque. Le VMDK « descripteur » n'est que le texte qui nomme les
     /// vrais fichiers : il n'y a pas de disque dedans.
     public static func isReadableVirtualDisk(_ format: String) -> Bool {
-        ["qcow2", "VMDK", "OVA", "VDI"].contains(format)
+        ["qcow2", "VMDK", "OVA", "VDI", "VHD dynamique"].contains(format)
     }
 
     /// Le format d'hyperviseur que ces octets portent, ou `nil`.
