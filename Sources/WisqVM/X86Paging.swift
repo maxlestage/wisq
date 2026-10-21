@@ -131,6 +131,7 @@ extension X86Core {
             throw Fault.pageFault(at)
         }
         translations[slot] = Translation(tag: page &+ 1, frame: walked.frame, flags: walked.flags)
+        fetchTag = 0
         return walked.frame | (at & 0xFFF)
     }
 
@@ -196,6 +197,7 @@ extension X86Core {
     /// c'est ainsi qu'un noyau change d'espace d'adressage.
     mutating func flushTranslations() {
         for slot in 0..<Self.translationSlots { translations[slot].tag = 0 }
+        fetchTag = 0
     }
 
     /// Écrire un registre de contrôle, et vider le cache de traductions quand
