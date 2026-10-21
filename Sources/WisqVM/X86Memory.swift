@@ -21,6 +21,7 @@ public final class X86Memory: @unchecked Sendable {
     public init(size: Int, base: UInt64 = 0) {
         self.size = size
         self.base = base
+        extent = UInt64(max(size, 0))
         // **`calloc`, pas une allocation suivie d'un remplissage.** Pour un
         // bloc de cette taille, le système rend des pages qu'il promet nulles
         // et ne fournit qu'au premier accès : rien à écrire au départ, et la
@@ -36,12 +37,23 @@ public final class X86Memory: @unchecked Sendable {
 
     deinit { free(bytes) }
 
+    /// La taille, en `UInt64` une fois pour toutes : la borne du chemin chaud.
+    let extent: UInt64
+
     /// L'octet à cette adresse, ou nil si elle est ailleurs.
+    ///
+    /// **Sans piège, et sans test de `base` à part** : c'est la ligne la plus
+    /// chère de la mémoire, passée à chaque lecture d'instruction et à chaque
+    /// accès. `size - width` vérifiait son débordement, sa conversion en
+    /// `UInt64` son signe. Une adresse sous `base` donne, après la
+    /// soustraction circulaire, un indice immense que le premier test écarte ;
+    /// l'indice étant alors sous la taille, et la largeur petite (de 1 à
+    /// quelques milliers), la somme du second ne déborde pas.
+    @inline(__always)
     func offset(_ address: UInt64, _ width: Int) -> Int? {
-        guard address >= base else { return nil }
         let index = address &- base
-        guard index <= UInt64(size - width) else { return nil }
-        return Int(index)
+        guard index < extent, index &+ UInt64(truncatingIfNeeded: width) <= extent else { return nil }
+        return Int(truncatingIfNeeded: index)
     }
 
     /// Le disque, quand il y en a un. **Il vit derrière la mémoire, pas
