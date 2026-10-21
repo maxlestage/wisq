@@ -46,17 +46,27 @@ final class VirtualDiskFormatTests: XCTestCase {
 
     /// Le défaut qui a fait écrire ce cas : un qcow2 était offert comme disque
     /// **brut**, et l'invité lisait des tables de clusters au lieu d'un système
-    /// de fichiers. Un format que wisq ne lit pas n'est plus offert du tout ; le
-    /// qcow2 et le VMDK, que `Qcow2Image` et `VmdkImage` lisent sur place, le
-    /// sont — et aucun ne démarre.
+    /// de fichiers. Un format que wisq ne lit pas n'est plus offert du tout ;
+    /// le qcow2, le VMDK, l'OVA, le VDI et le VHD dynamique, que
+    /// `Qcow2Image`, `VmdkImage`, `OvaArchive`, `VdiImage` et `VhdImage`
+    /// lisent sur place, le sont — et aucun ne démarre.
+    ///
+    /// **La liste est énumérée, pas recopiée.** Ce cas n'en nommait que deux
+    /// quand la machine en lisait cinq : il gardait le qcow2 et le VMDK, et
+    /// laissait les trois formats arrivés depuis hors de tout contrôle. Le
+    /// sixième qui viendra sera exercé sans qu'on repasse ici.
     func testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots() throws {
         let vhdx = KernelImageKind.virtualDisk("VHDX")
         XCTAssertFalse(LocalDisk.couldBeDisk(vhdx))
         XCTAssertFalse(LocalDisk.isDiskImage(vhdx))
+        XCTAssertFalse(KernelImageKind.readableVirtualDisks.isEmpty)
+        for format in KernelImageKind.readableVirtualDisks {
+            XCTAssertTrue(LocalDisk.isDiskImage(.virtualDisk(format)),
+                          "\(format) est lu sur place et doit être offert comme disque")
+            XCTAssertTrue(LocalDisk.couldBeDisk(.virtualDisk(format)), format)
+        }
         let qcow2 = KernelImageKind.virtualDisk("qcow2")
         let vmdk = KernelImageKind.virtualDisk("VMDK")
-        XCTAssertTrue(LocalDisk.isDiskImage(qcow2))
-        XCTAssertTrue(LocalDisk.isDiskImage(vmdk))
         XCTAssertFalse(LocalDisk.isDiskImage(.virtualDisk("qcow")), "l'ancien qcow, v1, n'est pas lu")
         XCTAssertFalse(LocalDisk.isDiskImage(.virtualDisk("VMDK (descripteur)")),
                        "un descripteur nomme les fichiers du disque, il n'en contient aucun")

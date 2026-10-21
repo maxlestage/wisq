@@ -494,3 +494,148 @@ test("chaque corpus matériel annonce la taille qu'il a", () => {
     ).toBe(vrai);
   }
 });
+/// **Deux formats lus sur place, dit le commentaire ; la fonction juste en
+/// dessous en lit cinq.**
+///
+/// `LocalDisk.isDiskImage` porte, à la ligne au-dessus de son propre `case` :
+///
+/// > Le qcow2 et le VMDK sont lus sur place (`Qcow2Image`, `VmdkImage`) ;
+/// > les autres formats d'hyperviseur ne le sont pas encore.
+///
+/// Et la ligne suivante appelle `KernelImageKind.isReadableVirtualDisk`, qui
+/// répond vrai pour **cinq** : le qcow2, le VMDK, l'OVA, le VDI et le VHD
+/// dynamique. Trois des « autres » sont lus depuis les tranches qui les ont
+/// apportés.
+///
+/// La phrase juste au-dessus de la **définition**, elle, les nomme tous les
+/// cinq. C'est elle qui prouve que l'autre a dérivé, et c'est la raison pour
+/// laquelle cette garde tient quelque chose de vrai dès son premier tour.
+///
+/// **Et le test qui s'en occupait n'en voyait que deux.**
+/// `testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots` vérifiait le qcow2 et
+/// le VMDK, et laissait les trois autres hors de tout contrôle — un comptage
+/// qui ne voit qu'une partie de ce qu'il compte. La liste est donc sortie du
+/// prédicat sous le nom `readableVirtualDisks`, le test l'**énumère**, et le
+/// sixième format sera exercé sans qu'on repasse par là.
+///
+/// **Ce qu'elle lit, et pourquoi pas davantage.** Un commentaire **collé** à
+/// un emploi de `isReadableVirtualDisk` parle de ce que cette fonction
+/// répond ; s'il nomme un format, il parle de la famille et doit la nommer
+/// entière. Les en-têtes de fichier n'entrent pas : `VdiImage.swift` cite le
+/// qcow2 et le VMDK pour situer le VDI, et n'énumère rien. Exiger d'eux la
+/// liste complète serait exiger d'une phrase qu'elle dise ce qu'elle n'a
+/// jamais prétendu dire — l'erreur inverse de celle d'ici.
+test("ce qui est lu sur place est nommé en entier là où on le dit", () => {
+  const noyau = readFileSync(join(repoRoot, "Sources/WisqVM/KernelImageKind.swift"), "utf8");
+  const corps = noyau.match(/readableVirtualDisks\s*=\s*\[([^\]]*)\]/);
+  expect(corps, "`readableVirtualDisks` ne se lit plus").not.toBeNull();
+  const formats = [...corps![1].matchAll(/"([^"]+)"/g)].map((trouvé) => trouvé[1]!);
+  /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+  expect(formats.length, "la liste des formats lus sur place est vide").toBeGreaterThan(3);
+
+  /// **Le vocabulaire vient du reconnaisseur, pas d'ici.** `virtualDisk`
+  /// rend le nom de chaque format qu'il sait distinguer ; ceux qui ne sont
+  /// pas dans la liste du dessus sont reconnus **sans** être lus, et une
+  /// phrase qui dit ce qui est lu sur place ne doit pas les y ranger. Sans
+  /// ce second sens, retirer un format de la liste passerait en silence.
+  const reconnaisseur = noyau.match(
+    /static func virtualDisk\(_ bytes: \[UInt8\]\) -> String\? \{([\s\S]*?)\n {4}\}/,
+  );
+  expect(reconnaisseur, "`virtualDisk` ne se lit plus").not.toBeNull();
+  const vocabulaire = [
+    ...new Set([...reconnaisseur![1].matchAll(/"([^"]+)"/g)].map((trouvé) => trouvé[1]!)),
+  ]
+    .filter((nom) => /^[\p{L}\d]/u.test(nom))
+    /// Du plus long au plus court : « qcow » vit dans « qcow2 », et « VMDK »
+    /// dans « VMDK (descripteur) ». Le plus long est reconnu d'abord et sa
+    /// place est effacée, sans quoi le plus court se compterait en trop.
+    .sort((a, b) => b.length - a.length);
+  for (const format of formats) {
+    expect(vocabulaire, `« ${format} » est lu sans que \`virtualDisk\` sache le nommer`)
+      .toContain(format);
+  }
+
+  const nomme = (texte: string): string[] => {
+    let reste = texte;
+    const trouvés: string[] = [];
+    for (const nom of vocabulaire) {
+      if (!reste.includes(nom)) continue;
+      trouvés.push(nom);
+      reste = reste.split(nom).join(" ");
+    }
+    return trouvés.sort();
+  };
+  const attendus = [...formats].sort();
+
+  /// Le bloc de commentaires **contigu** au-dessus d'une ligne, marqueurs
+  /// retirés et blancs écrasés. Vide s'il n'y en a pas.
+  const dessus = (lignes: string[], index: number): string => {
+    const bloc: string[] = [];
+    for (let i = index - 1; i >= 0; i -= 1) {
+      const nue = lignes[i]!.trim();
+      if (!nue.startsWith("//")) break;
+      bloc.unshift(nue.replace(/^\/\/\/?/, ""));
+    }
+    return bloc.join(" ").replace(/\s+/g, " ").trim();
+  };
+
+  const vus: Array<{ où: string; nommés: string[] }> = [];
+  const parcourir = (dossier: string) => {
+    for (const entrée of readdirSync(dossier)) {
+      const chemin = join(dossier, entrée);
+      if (statSync(chemin).isDirectory()) {
+        parcourir(chemin);
+        continue;
+      }
+      if (!entrée.endsWith(".swift")) continue;
+      const lignes = readFileSync(chemin, "utf8").split("\n");
+      lignes.forEach((ligne, index) => {
+        if (!ligne.includes("isReadableVirtualDisk")) return;
+        const texte = dessus(lignes, index);
+        const nommés = nomme(texte);
+        if (nommés.length === 0) return;
+        vus.push({ où: `${relative(repoRoot, chemin)}:${index + 1}`, nommés });
+      });
+    }
+  };
+  for (const racine of ["Sources", "Tests"]) parcourir(join(repoRoot, racine));
+
+  /// **Une phrase hors de portée d'un emploi, et nommée à la main.** Le `///`
+  /// de ce test-là dit lesquels sont lus, et il ne touche pas la fonction :
+  /// aucune règle mécanique ne l'attraperait sans attraper du même coup les
+  /// en-têtes qui ne prétendent rien. Il est donc désigné, avec son ancre.
+  const suite = readFileSync(
+    join(repoRoot, "Tests/WisqVMTests/VirtualDiskFormatTests.swift"),
+    "utf8",
+  );
+  const lignes = suite.split("\n");
+  const ancre = lignes.findIndex((ligne) =>
+    ligne.includes("func testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots"),
+  );
+  expect(ancre, "`testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots` a disparu")
+    .toBeGreaterThan(0);
+  const texte = dessus(lignes, ancre);
+  vus.push({
+    où: `Tests/WisqVMTests/VirtualDiskFormatTests.swift:${ancre + 1}`,
+    nommés: nomme(texte),
+  });
+
+  expect(
+    vus.length,
+    "aucune phrase ne nomme un format au-dessus d'un emploi : la garde ne tient plus rien",
+  ).toBeGreaterThan(1);
+  /// L'exception serait vide si plus personne ne les nommait tous : c'est la
+  /// phrase complète qui prouve que la règle est tenable.
+  expect(
+    vus.filter((vu) => vu.nommés.length === attendus.length).length,
+    "plus aucune phrase ne nomme les formats en entier",
+  ).toBeGreaterThan(0);
+
+  for (const { où, nommés } of vus) {
+    expect(
+      nommés,
+      `${où} nomme « ${nommés.join(", ")} » là où les formats lus sur place sont ` +
+        `« ${attendus.join(", ")} »`,
+    ).toEqual(attendus);
+  }
+});
