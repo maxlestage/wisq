@@ -8,6 +8,20 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le démon repasse à 1,8 Mo, sans que personne ne commette rien
+
+La CI de #597 a rougi dans le job Rust, sur `check-agent-size.sh` : le binaire
+du coureur fait **1 766 216 octets**, soit 1,8 Mo décimaux, et les huit textes
+annonçaient 1,7 depuis le 8 octobre (1 749 840 octets sous rustc 1.99). La
+pull request ne touche pas au démon : c'est la chaîne du coureur qui a changé,
+comme la dernière fois. 1 766 216 est à 16 000 octets de la frontière
+d'arrondi, donc le chiffre n'est pas une affaire de machine.
+
+Les huit textes passent à 1,8, et la liste de provenance de
+`site/tests/claims.test.ts` suit (« 1.8 », « 1,8 », la mesure datée). Vérifié
+avec la garde elle-même sur un arbre copié : un binaire de 1 766 216 octets
+s'accorde, un de 1 749 840 refuse ; `bun test` 466/466.
+
 ## 2026-10-21 — Le VHD dynamique, lu sur place
 
 Relance horaire, même autorisation. La suite du VDI (#595) : le VHD
