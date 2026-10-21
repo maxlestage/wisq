@@ -152,9 +152,30 @@ public enum X86CPUID {
     /// registre MMX : le bit est ce que la glibc lit, pas ce qu'elle exécute.
     public static let features: UInt32 = 1 | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 3)
         | (1 << 13) | (1 << 15) | (1 << 8) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)
+    /// **Ce que la feuille 1 annonce dans ECX : x86-64-v2.** Vide jusqu'ici,
+    /// et AlmaLinux 9, Rocky 9 et CentOS Stream 9 ne démarraient pas : leur
+    /// glibc est compilée pour ce niveau et refuse un processeur qui ne
+    /// l'annonce pas. Chaque bit est tenu par une tranche et son corpus
+    /// (`Tests/Fixtures/x86-v2-oracle.tsv`) :
+    /// - SSE3 (0) : `lddqu`, `movddup`, `movsldup`, `addsubpd`, `fisttp` ;
+    /// - SSSE3 (9) : `pshufb`, `palignr`, `pabs*`, `pmaddubsw`, `phaddsw` ;
+    /// - CX16 (13) : `cmpxchg16b` ;
+    /// - SSE4.1 (19) : insertions, extractions, élargissements, mélanges,
+    ///   minimums et maximums, `ptest`, l'arrondi ;
+    /// - SSE4.2 (20) : `pcmpistri`, `pcmpgtq` ;
+    /// - POPCNT (23) : `popcnt`, là depuis longtemps.
+    ///
+    /// **Ce qui manque de ces extensions, et que ni AlmaLinux ni les autres
+    /// n'emploient** — `haddp*`, `hsubp*`, `movshdup`, `pcmpestri`, `crc32`,
+    /// les formes `…m` — est refusé par son nom s'il arrive. MONITOR (3) n'est
+    /// pas annoncé : `mwait` n'existe pas ici.
+    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
+    /// Feuille 0x80000001, ECX : LAHF-SAHF (0), `lahf` et `sahf` en mode
+    /// long, que x86-64-v2 exige aussi.
+    public static let extendedFeaturesECX: UInt32 = 1
 
     /// La réponse aux quatre registres, pour une feuille donnée.
     public static func answer(leaf: UInt32, subleaf: UInt32) -> (UInt32, UInt32, UInt32, UInt32) {
@@ -168,11 +189,11 @@ public enum X86CPUID {
         case 1:
             // Famille 15 (0xF), modèle 107 (0x6B : 0xB dans le champ de base,
             // 6 dans l'étendu), pas 1 : ce que répond le `qemu64` de QEMU.
-            return (0x0006_0FB1, 0, 0, features)
+            return (0x0006_0FB1, 0, featuresECX, features)
         case 0x8000_0000:
             return (highestExtendedLeaf, 0, 0, 0)
         case 0x8000_0001:
-            return (0, 0, 0, extendedFeatures)
+            return (0, 0, extendedFeaturesECX, extendedFeatures)
         case 0x8000_0002...0x8000_0004:
             let bytes = Array(brand.utf8) + [UInt8](repeating: 0, count: 48 - brand.utf8.count)
             let base = Int(leaf - 0x8000_0002) * 16
