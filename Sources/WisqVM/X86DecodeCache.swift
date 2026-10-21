@@ -120,7 +120,9 @@ final class X86DecodeCache: @unchecked Sendable {
     @inline(__always)
     func lookupEntry(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int, size: Int,
                      available: Int) -> UnsafeMutablePointer<Entry>? {
-        guard start <= size - 16 else { return nil }
+        // `&-` : la taille de la mémoire n'est jamais négative, et une
+        // soustraction vérifiée coûtait une branche à chaque instruction.
+        guard start <= size &- 16 else { return nil }
         let slot = start & (Self.slots - 1)
         let entry = entries + slot
         guard entry.pointee.lowMask != 0 else {
@@ -148,7 +150,7 @@ final class X86DecodeCache: @unchecked Sendable {
     @inline(__always)
     func store(_ instruction: X86Instruction, _ bytes: UnsafeMutablePointer<UInt8>,
                at start: Int, size: Int) {
-        guard start <= size - 16 else { return }
+        guard start <= size &- 16 else { return }
         let slot = start & (Self.slots - 1)
         let length = instruction.length
         let raw = UnsafeRawPointer(bytes + start)
