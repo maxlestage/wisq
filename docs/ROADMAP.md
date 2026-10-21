@@ -572,12 +572,18 @@ d'entrer dans la bibliothèque.
 4. Le téléchargement qui continue quand l'application passe en arrière-plan
    (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
    la reprise par `Range` doit alors se recoudre sur ce qu'il rend).
-5. **Fait pour Debian, Fedora et Ubuntu** (voir « Les images de cloud qui
-   démarrent seules », étapes 6 et 10). Chacune par son propre index : les
-   `SHA512SUMS` de Debian, le `releases.json` de Fedora, qui donne aussi
-   l'adresse et la taille (gardées seulement sur
-   `download.fedoraproject.org`), et les `SHA256SUMS` d'Ubuntu 26.04. Les
-   trois images proposées sont celles que wisq a démarrées jusqu'au shell.
+5. **Fait pour huit distributions** : Alpine, puis Debian, Fedora et Ubuntu
+   (voir « Les images de cloud qui démarrent seules », étapes 6 et 10),
+   Arch Linux, openSUSE Tumbleweed, AlmaLinux 9 et Rocky Linux 9 — toutes
+   démarrées jusqu'au shell avant d'être proposées. Chacune par son propre
+   index et sa propre somme : les `SHA512SUMS` de Debian, le
+   `releases.json` de Fedora, qui donne aussi l'adresse et la taille
+   (gardées seulement sur `download.fedoraproject.org`), les `SHA256SUMS`
+   d'Ubuntu 26.04, le fichier `.SHA256` de chaque image d'Arch, le
+   `.sha256` d'openSUSE, le `CHECKSUM` du dossier d'AlmaLinux et le
+   `.CHECKSUM` au format de BSD de Rocky. AlmaLinux et Rocky, dont le
+   systemd 252 verrouille `root`, ouvrent leur console en mode de secours
+   (`CloudBoot.legacyConsoleOptions`).
 
 ## Lot 5 — SPICE (fait)
 
