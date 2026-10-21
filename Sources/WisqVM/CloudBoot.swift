@@ -97,6 +97,7 @@ public struct CloudBoot: Equatable, Sendable {
             readable = true
             let name = "vda\(partition.number)"
             if let (entry, origin) = configuredEntry(in: volume) {
+                let legacy = usesLegacyConsole(table, open)
                 let kernel = try volume.contents(of: entry.kernel)
                 // Plusieurs initramfs (le microcode, puis le système) se
                 // donnent au noyau mis bout à bout : il lit les archives cpio
@@ -104,14 +105,15 @@ public struct CloudBoot: Equatable, Sendable {
                 let initrd = entry.initrds.isEmpty ? nil
                     : try entry.initrds.flatMap { try volume.contents(of: $0) }
                 return CloudBoot(kernel: kernel, initrd: initrd,
-                                 commandLine: commandLine(entry.options, rootHash: rootHash),
+                                 commandLine: commandLine(entry.options, rootHash: rootHash, legacyConsole: legacy),
                                  origin: "\(origin) de \(name)")
             }
             if let (kernel, initrd) = unconfiguredKernel(in: volume) {
                 let root = partition.uniqueID.isEmpty ? "/dev/\(name)" : "PARTUUID=\(partition.uniqueID)"
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
-                                 commandLine: commandLine(["root=\(root)", "ro"], rootHash: rootHash),
+                                 commandLine: commandLine(["root=\(root)", "ro"], rootHash: rootHash,
+                                                          legacyConsole: usesLegacyConsole(table, open)),
                                  origin: "\(kernel) de \(name)")
             }
         }
@@ -391,6 +393,69 @@ public struct CloudBoot: Equatable, Sendable {
         "systemd.mask=user@0.service", "systemd.mask=jeos-firstboot.service",
     ]
 
+    /// **La console d'un systemd plus ancien que 256.** AlmaLinux 9, Rocky 9
+    /// et CentOS Stream 9 ont systemd 252 : il ignore les deux credentials
+    /// qui ouvrent ailleurs le shell sans `login` — `agetty.autologin` et le
+    /// drop-in de `serial-getty@ttyS0`, venus avec 256 —, `root` y est
+    /// verrouillé, et la console s'arrêtait sur `localhost login:`. Le mot de
+    /// passe de première mise en route n'y fait rien non plus : `root` existe
+    /// déjà, et systemd 252 ne le touche pas.
+    ///
+    /// Ce qui marche là, et rien qu'avec la ligne de commande :
+    /// - `systemd.wants=rescue.service` : le service de secours, **à côté**
+    ///   du système entier — il ne s'oppose pas à `multi-user.target` — et
+    ///   sur `/dev/console`, la dernière console nommée, donc `ttyS0` ;
+    /// - `SYSTEMD_SULOGIN_FORCE=1` : son `sulogin` ouvre le shell de `root`
+    ///   même verrouillé, comme sur une machine sans mot de passe ;
+    /// - `serial-getty@ttyS0` masqué : deux programmes ne lisent pas le même
+    ///   terminal.
+    ///
+    /// Sortir de ce shell rend la console à `systemctl default` : il n'y en a
+    /// pas de second.
+    static let legacyConsoleOptions = [
+        "systemd.wants=rescue.service", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
+        "systemd.mask=serial-getty@ttyS0.service", "systemd.mask=user@0.service",
+        "systemd.mask=jeos-firstboot.service",
+    ]
+
+    /// Les dossiers où vit `libsystemd-shared-NNN.so`, selon la famille : la
+    /// version est dans son nom, et c'est la seule façon de la lire sans
+    /// exécuter quoi que ce soit.
+    static let systemdFolders = [
+        "/usr/lib/systemd", "/usr/lib64/systemd", "/usr/lib/x86_64-linux-gnu/systemd",
+    ]
+
+    /// La version de systemd d'une image, lue sur la première de ses
+    /// partitions qui en porte un — pas forcément celle du noyau : AlmaLinux
+    /// a son `/boot` à part. `nil` quand rien ne la dit.
+    static func systemdVersion(
+        in table: PartitionTable, _ open: (PartitionTable.Partition) throws -> any LinuxVolume
+    ) -> Int? {
+        for partition in table.linuxCandidates {
+            guard let volume = try? open(partition) else { continue }
+            for folder in systemdFolders {
+                guard let entries = try? volume.listing(folder) else { continue }
+                let prefix = "libsystemd-shared-"
+                let versions = entries.compactMap { entry -> Int? in
+                    guard entry.name.hasPrefix(prefix), entry.name.hasSuffix(".so") else { return nil }
+                    return Int(entry.name.dropFirst(prefix.count).prefix { $0.isNumber })
+                }
+                if let version = versions.max() { return version }
+            }
+        }
+        return nil
+    }
+
+    /// Vrai seulement quand la version est lue **et** plus ancienne que 256.
+    /// Une version qu'on ne lit pas garde la console d'aujourd'hui, celle que
+    /// Debian, Ubuntu, Fedora, Arch et openSUSE ont démarrée.
+    static func usesLegacyConsole(
+        _ table: PartitionTable, _ open: (PartitionTable.Partition) throws -> any LinuxVolume
+    ) -> Bool {
+        guard let version = systemdVersion(in: table, open) else { return false }
+        return version < 256
+    }
+
     /// Le drop-in de la console série. Passé en base64, parce qu'une ligne de
     /// commande du noyau ne porte ni retour à la ligne ni espace dans une
     /// valeur. `-` devant le programme : un shell qui sort ne met pas le
@@ -451,7 +516,7 @@ public struct CloudBoot: Equatable, Sendable {
         commandLine(options, rootHash: rootPassword.map { SHA512Crypt.hash($0, salt: salt) })
     }
 
-    static func commandLine(_ options: [String], rootHash: String? = nil) -> String {
+    static func commandLine(_ options: [String], rootHash: String? = nil, legacyConsole: Bool = false) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
@@ -469,7 +534,7 @@ public struct CloudBoot: Equatable, Sendable {
         // dans son entrée, et sans ce shell sa console resterait sur
         // `login`, devant un `root` verrouillé. Sa première mise en route,
         // elle, reste celle que l'entrée a choisie.
-        kept += consoleOptions
+        kept += legacyConsole ? legacyConsoleOptions : consoleOptions
         if !kept.contains(where: { $0.hasPrefix("systemd.firstboot") }) {
             kept += firstbootOptions(rootHash: rootHash)
         }
