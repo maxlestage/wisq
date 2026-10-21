@@ -156,6 +156,8 @@ def forms():
             out += [f"{name} ${control:#x}, %xmm1, %xmm0", f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
     # **SSE3 flottant** : soustraire en bas, additionner en haut.
     out += ["addsubpd %xmm1, %xmm0", f"addsubpd {ALIGNED:#x}(%rsi), %xmm0"]
+    # `MOVNTDQA`, le chargement de SSE4.1 qu'openSUSE emploie.
+    out += [f"movntdqa {ALIGNED:#x}(%rsi), %xmm0", f"movntdqa {ALIGNED:#x}(%rsi), %xmm1"]
     return out
 
 
