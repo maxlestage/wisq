@@ -258,8 +258,14 @@ public enum KernelImageKind: Equatable, Sendable {
     /// (chiffrée, à fichier de base, découpée…) ; le refus nomme alors ce
     /// qui manque. Le VMDK « descripteur » n'est que le texte qui nomme les
     /// vrais fichiers : il n'y a pas de disque dedans.
+    public static let readableVirtualDisks = ["qcow2", "VMDK", "OVA", "VDI", "VHD dynamique"]
+
+    /// Le prédicat ne porte plus la liste : elle est au-dessus, pour qu'un
+    /// test puisse l'**énumérer** au lieu d'en recopier deux noms. C'est ce
+    /// qu'il faisait, et il ne voyait donc pas les trois formats arrivés
+    /// depuis.
     public static func isReadableVirtualDisk(_ format: String) -> Bool {
-        ["qcow2", "VMDK", "OVA", "VDI", "VHD dynamique"].contains(format)
+        readableVirtualDisks.contains(format)
     }
 
     /// Le format d'hyperviseur que ces octets portent, ou `nil`.
