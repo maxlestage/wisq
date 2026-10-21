@@ -401,9 +401,14 @@ public struct X86Core: @unchecked Sendable {
 
     var carry: Bool { flags & Flag.carry != 0 }
 
+    /// **Sans branche** : le bit effacé, puis posé par un masque tout-à-un ou
+    /// tout-à-zéro tiré du booléen (`0 &- 1`). L'ancien `if on … else …`
+    /// faisait un saut par drapeau, six par opération arithmétique, que le
+    /// prédicteur de l'hôte ne peut pas deviner : la valeur d'un drapeau est
+    /// la donnée elle-même.
     @inline(__always)
     mutating func set(_ flag: UInt64, _ on: Bool) {
-        if on { flags |= flag } else { flags &= ~flag }
+        flags = (flags & ~flag) | (flag & (0 &- UInt64(on ? 1 : 0)))
     }
 
     /// La parité : celle des **huit bits de poids faible** du résultat, et
