@@ -505,9 +505,15 @@ public struct X86Core: @unchecked Sendable {
                 // décalage dans la page n'en sort pas, et la borne de
                 // `offset` ne se repaie plus à chaque instruction.
                 let start: Int
+                let available: Int
                 let page = rip & ~UInt64(0xFFF)
                 if fetchTag == page &+ 1, fetchPrivilege == privilege, watchedAddress == nil {
-                    start = fetchStart &+ Int(truncatingIfNeeded: rip & 0xFFF)
+                    // La page gardée tient entière dans la mémoire : ce qui
+                    // reste lisible est ce qui reste de la page, sans
+                    // reprendre la pagination ni la taille de la mémoire.
+                    let offset = Int(truncatingIfNeeded: rip & 0xFFF)
+                    start = fetchStart &+ offset
+                    available = min(X86Instruction.maximumLength, 0x1000 &- offset)
                 } else {
                     let physical = try translate(rip, .fetch)
                     guard let at = memory.offset(physical, 1) else {
@@ -521,18 +527,18 @@ public struct X86Core: @unchecked Sendable {
                         fetchStart = frame
                         fetchPrivilege = privilege
                     }
+                    // **Une instruction ne se lit pas au-delà de sa page.** La
+                    // traduction ne porte que le premier octet ; les quatorze
+                    // suivants étaient lus contigus en mémoire *physique*, et la
+                    // trame physiquement voisine n'est presque jamais la page
+                    // virtuellement voisine. Voir `decodeAcrossPageBoundary`.
+                    // Sans piège : `rip & 0xFFF` est sous 0x1000, et `offset`
+                    // a déjà mis `start` sous la taille de la mémoire.
+                    let room = pagingActive
+                        ? min(X86Instruction.maximumLength, Int(truncatingIfNeeded: 0x1000 &- (rip & 0xFFF)))
+                        : X86Instruction.maximumLength
+                    available = min(room, memory.size &- start)
                 }
-                // **Une instruction ne se lit pas au-delà de sa page.** La
-                // traduction ne porte que le premier octet ; les quatorze
-                // suivants étaient lus contigus en mémoire *physique*, et la
-                // trame physiquement voisine n'est presque jamais la page
-                // virtuellement voisine. Voir `decodeAcrossPageBoundary`.
-                // Sans piège : `rip & 0xFFF` est sous 0x1000, et `offset` a
-                // déjà mis `start` sous la taille de la mémoire.
-                let room = pagingActive
-                    ? min(X86Instruction.maximumLength, Int(truncatingIfNeeded: 0x1000 &- (rip & 0xFFF)))
-                    : X86Instruction.maximumLength
-                let available = min(room, memory.size &- start)
                 if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
                                                        available: available) {
                     try step(known.pointee.instruction)
