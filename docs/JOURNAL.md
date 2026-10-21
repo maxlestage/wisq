@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — L'erreur de `perform` à part
+
+Relance horaire, même autorisation. Après #581, `perform` coûtait encore
+34 instructions de l'hôte par instruction de l'invité, pour un aiguillage
+sur la table de l'opcode. Son `default` interpolait la table dans le message
+d'erreur : il fallait un cadre de pile pour la chaîne, payé à chaque
+instruction pour un cas qui n'arrive jamais. Le message est construit dans
+`unsupportedMap`, jamais inlinée.
+
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  34,80 → 34,60 milliards d'instructions hôte, 0,6 % de moins — sous le
+  bruit d'une mesure en temps natif, qui n'a donc pas été faite.
+- **Essayé et écarté**, mesuré de la même façon :
+  - `perform` forcée en ligne dans `step`, maintenant qu'elle est légère :
+    34,69 milliards, plus que sans. Le même verdict que le 19 octobre.
+  - Les clauses `where` retirées des `switch` de `oneByte` et `twoByte`,
+    qui en faisaient une chaîne de comparaisons : 34,71 milliards, 0,25 %.
+    Le désassemblage montre pourquoi : la chaîne commence par la plage
+    0x00…0x3D, les opérations arithmétiques, qui sont aussi les plus
+    fréquentes. Trop peu pour le code qu'il fallait déplacer.
+  - `decodeFields` : son chemin chaud fait une quarantaine d'instructions,
+    sans copie ni boucle ; elle est seulement appelée souvent.
+- Test : `X86PerformErrorTests`, le message d'une table inconnue, qu'aucun
+  test ne lisait. `perform` refuse le VEX avant d'arriver là, si bien
+  qu'aucune vraie instruction ne l'atteint : le test appelle
+  `unsupportedMap` directement. Sabotage : un message sans la table fait
+  tomber ce test.
+- Compteur publié : 2928.
+
 ## 2026-10-21 — `readRM` et `writeRM` : le registre en ligne
 
 Relance horaire, même autorisation. Après #580, callgrind montrait

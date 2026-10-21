@@ -765,7 +765,15 @@ public struct X86Core: @unchecked Sendable {
             try twoByte(instruction, opcode)
         case .threeByte38: try threeByte38(instruction, opcode)
         case .threeByte3A: try threeByte3A(instruction, opcode)
-        default: throw Fault.unsupported("la table \(instruction.map)")
+        default: throw Self.unsupportedMap(instruction.map)
         }
+    }
+
+    /// **L'erreur à part, pour que `perform` reste léger.** L'interpolation de
+    /// la table dans le message demandait un cadre de pile et quatre registres
+    /// sauvés, payés à **chaque** instruction pour un cas qui n'arrive jamais.
+    @inline(never)
+    static func unsupportedMap(_ map: X86Instruction.OpcodeMap) -> Fault {
+        .unsupported("la table \(map)")
     }
 }
