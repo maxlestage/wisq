@@ -397,6 +397,21 @@ recommandent pour une machine prête en une minute.
    matériel branche (`Item` de type 17), à défaut le premier déclaré — et
    l'archive le cherche par son nom. Un descripteur qui nomme un disque
    absent est refusé en le disant, plutôt que de démarrer sur un autre.
+7. **Fait.** Le **VDI** de VirtualBox (`VdiImage`), dynamique ou fixe :
+   l'en-tête reconnu par sa marque en 0x40 (QEMU et VirtualBox n'y écrivent
+   pas le même texte), la table de blocs, les blocs jamais écrits et ceux
+   mis à zéro lus en zéros, les données privées de chaque bloc sautées.
+   Refusés en le disant : une autre version que la 1.1, le disque
+   différentiel, qui ne se lit qu'avec son parent.
+8. **Fait.** Le **VHD dynamique** (`VhdImage`) — Virtual PC, les anciens
+   Hyper-V, Azure : le pied `conectix` en tête et l'en-tête `cxsparse`, leurs
+   sommes de contrôle vérifiées, la table de blocs, et la carte des secteurs
+   de chaque bloc **respectée** : un secteur dont le bit est à zéro se lit en
+   zéros. La taille est celle que le pied annonce, arrondie ou non à une
+   géométrie. Refusés en le disant : le disque différentiel, une somme
+   fausse. Le VHD fixe n'en a pas besoin : c'est une image brute suivie d'un
+   pied. Reste reconnu sans être lu, avec la commande `qemu-img convert` :
+   le VHDX.
 
 ## Les images de cloud qui démarrent seules
 

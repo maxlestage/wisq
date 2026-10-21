@@ -721,7 +721,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "2934",
+        "2947",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -917,12 +917,11 @@ const accounted = new Map<string, Map<string, string>>([
           "cette phrase au binaire que la CI construit déjà dans son job Rust " +
           "(`cargo build --release --target x86_64-unknown-linux-musl " +
           "-p wisq-agent`), avec les sept autres textes qui annoncent la même " +
-          "taille. 1 766 216 octets le 21 octobre 2026, soit 1,8 Mo décimaux ; " +
-          "1 749 840 octets le 8 octobre sous rustc 1.99, soit 1,7 ; 1 778 384 " +
-          "le 28 septembre, soit 1,8 déjà. Le démon maigrit et grossit avec " +
-          "son compilateur et avec ce qu'il embarque, sans que personne ne " +
-          "commette rien, et c'est justement pour ça que la phrase est tenue " +
-          "plutôt que datée.",
+          "taille. 1 766 216 octets le 21 octobre 2026 sur le coureur de la CI, " +
+          "soit 1,8 Mo décimaux ; 1 749 840 octets le 8 octobre 2026 sous " +
+          "rustc 1.99, soit 1,7 ; 1 778 384 le 28 septembre, soit 1,8. Le démon maigrit et grossit avec son " +
+          "compilateur sans que personne ne commette rien, et c'est justement " +
+          "pour ça que la phrase est tenue plutôt que datée.",
       ],
       [
         "1,8",

@@ -22,7 +22,8 @@ public enum VirtualDiskImages {
     /// une image brute.
     public static func recognizes(fd: Int32) -> Bool {
         Qcow2Image.looksLikeOne(fd: fd) || VmdkImage.looksLikeOne(fd: fd)
-            || OvaArchive.looksLikeOne(fd: fd)
+            || OvaArchive.looksLikeOne(fd: fd) || VdiImage.looksLikeOne(fd: fd)
+            || VhdImage.looksLikeOne(fd: fd)
     }
 
     /// Le même, pour un fichier qu'on n'a pas encore ouvert.
@@ -40,6 +41,8 @@ public enum VirtualDiskImages {
     public static func image(takingOwnershipOf fd: Int32) throws -> (any VirtualDiskImage)? {
         if Qcow2Image.looksLikeOne(fd: fd) { return try Qcow2Image(takingOwnershipOf: fd) }
         if VmdkImage.looksLikeOne(fd: fd) { return try VmdkImage(takingOwnershipOf: fd) }
+        if VdiImage.looksLikeOne(fd: fd) { return try VdiImage(takingOwnershipOf: fd) }
+        if VhdImage.looksLikeOne(fd: fd) { return try VhdImage(takingOwnershipOf: fd) }
         if OvaArchive.looksLikeOne(fd: fd) {
             let disk = try OvaArchive.disk(in: fd)
             return try VmdkImage(takingOwnershipOf: fd, member: (disk.offset, disk.length))
