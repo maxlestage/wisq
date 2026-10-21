@@ -361,13 +361,20 @@ public struct X86Core: @unchecked Sendable {
     /// drapeaux plus bas : sous callgrind, `mask` et `signBit` restaient des
     /// appels, et coûtaient à elles deux plus de quatre pour cent des
     /// instructions de l'hôte.
+    ///
+    /// **Et calculées sans piège.** La taille vaut 1, 2, 4 ou 8 : ni le
+    /// produit, ni la soustraction, ni la conversion ne peuvent déborder,
+    /// mais `*`, `-` et `UInt64(_:)` le vérifiaient quand même, à chaque
+    /// opérande — sous callgrind, ces deux lignes pesaient 3,2 %.
     @inline(__always)
     static func mask(_ size: Int) -> UInt64 {
-        size == 8 ? UInt64.max : (UInt64(1) << (8 * UInt64(size))) - 1
+        size >= 8 ? UInt64.max : (UInt64(1) &<< (8 &* UInt64(truncatingIfNeeded: size))) &- 1
     }
 
     @inline(__always)
-    static func signBit(_ size: Int) -> UInt64 { UInt64(1) << (8 * UInt64(size) - 1) }
+    static func signBit(_ size: Int) -> UInt64 {
+        UInt64(1) &<< (8 &* UInt64(truncatingIfNeeded: size) &- 1)
+    }
 
     @inline(__always)
     static func signExtend(_ value: UInt64, _ size: Int) -> UInt64 {
@@ -483,10 +490,12 @@ public struct X86Core: @unchecked Sendable {
                 // suivants étaient lus contigus en mémoire *physique*, et la
                 // trame physiquement voisine n'est presque jamais la page
                 // virtuellement voisine. Voir `decodeAcrossPageBoundary`.
+                // Sans piège : `rip & 0xFFF` est sous 0x1000, et `offset` a
+                // déjà mis `start` sous la taille de la mémoire.
                 let room = pagingActive
-                    ? min(X86Instruction.maximumLength, Int(0x1000 - (rip & 0xFFF)))
+                    ? min(X86Instruction.maximumLength, Int(truncatingIfNeeded: 0x1000 &- (rip & 0xFFF)))
                     : X86Instruction.maximumLength
-                let available = min(room, memory.size - start)
+                let available = min(room, memory.size &- start)
                 if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
                                                        available: available) {
                     try step(known.pointee.instruction)
