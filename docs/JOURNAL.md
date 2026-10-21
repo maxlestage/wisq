@@ -8,6 +8,42 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — AlmaLinux 9 ouvre un shell root sur sa console
+
+Suite directe, même autorisation. Depuis #574, AlmaLinux 9.8 démarre jusqu'à
+`localhost login:` — et s'y arrêtait : son systemd 252 ignore les deux
+credentials par lesquels wisq ouvre ailleurs la console série en `root`
+(`agetty.autologin` et le drop-in de `serial-getty@ttyS0`, venus avec 256), et
+`root` y est verrouillé.
+
+- **Trois essais avant le bon.** Le mot de passe de première mise en route :
+  « Login incorrect » — `root` existe déjà, systemd 252 n'y touche pas. Le
+  service de secours **à côté** du système entier
+  (`systemd.wants=rescue.service`) : il ne démarre jamais, et l'unité dit
+  pourquoi — `multi-user.target` le déclare en conflit. Le **mode de
+  secours** (`systemd.unit=rescue.target`) avec `SYSTEMD_SULOGIN_FORCE=1` :
+  « Press Enter for maintenance », puis `[root@localhost ~]#`, et la réponse à
+  `echo wisq-parle`.
+- **Choisi d'après le disque, pas d'après le nom.** `CloudBoot` lit la version
+  de systemd dans le nom de `libsystemd-shared-NNN.so`, sous `/usr/lib`,
+  `/usr/lib64` ou `/usr/lib/x86_64-linux-gnu`, sur chaque partition — celle
+  d'AlmaLinux n'est pas celle du noyau, son `/boot` est à part. Lue et plus
+  ancienne que 256 : le mode de secours. Récente, ou illisible : la console
+  d'aujourd'hui, celle que Debian, Ubuntu, Fedora, Arch et openSUSE ont
+  démarrée.
+- **Le prix, dit tel quel** dans le code : en secours, le réseau et `sshd` ne
+  démarrent pas d'eux-mêmes ; `systemctl start NetworkManager` les lance sans
+  quitter le shell.
+- **Le banc** reconnaît l'invite de `sulogin`.
+- **Tests** : la ligne d'AlmaLinux (systemd 252 sur la racine, noyau sur un
+  `/boot` à part), un systemd récent ou introuvable qui garde la console
+  d'aujourd'hui, la version lue dans le nom. **Sabotages** : 256 compté
+  ancien → 4 échecs ; jamais l'ancienne console → 5 ; la première version
+  plutôt que la plus grande → 1 ; une version inconnue comptée ancienne →
+  7 ; sans `SULOGIN_FORCE` → 1, une fois le test écrit en toutes lettres
+  (il relisait d'abord la liste contre elle-même, et rien ne tombait).
+- Compteur publié : 2920.
+
 ## 2026-10-21 — x86-64-v2 annoncé : AlmaLinux 9 démarre jusqu'à son invite
 
 Suite directe, même autorisation. Les quatre tranches précédentes (#570,
