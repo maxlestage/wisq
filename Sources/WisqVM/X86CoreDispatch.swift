@@ -56,95 +56,18 @@ extension X86Core {
         case 0x68, 0x6A:
             try push(Self.signExtend(instruction.immediate, instruction.immediateBytes),
                      Self.stackSize(instruction))
-        case 0x8F:  // POP r/m
-            // **La mémoire d'abord, la pile ensuite.** L'écriture peut fauter
-            // — une page qu'un `fork()` vient de rendre lisible seulement —,
-            // et le noyau rejoue l'instruction après avoir copié la page. Si
-            // RSP avait déjà avancé, le rejeu dépilerait la case suivante.
-            //
-            // **Et l'adresse se calcule avec RSP déjà avancé.** C'est la règle
-            // du manuel pour un `POP` dont l'opérande passe par RSP :
-            // `pop 0x28(%rsp)` écrit à l'ancien RSP + 8 + 0x28. Calculée avec
-            // l'ancien RSP, l'écriture tombait huit octets trop bas — sur la
-            // case que le code relit juste après. Le noyau 5.14 d'AlmaLinux 9
-            // y range ses drapeaux (`pushf ; pop 0x28(%rsp)`) dans
-            // `__text_poke`, puis relit sa `struct page *` à 0x20(%rsp) : il y
-            // trouvait 0x282, en faisait une page, et le premier `memcpy` vers
-            // la projection temporaire visait une adresse physique de
-            // cinquante et un bits. RSP est avancé le temps du calcul, puis
-            // remis, et n'avance pour de bon qu'après l'écriture.
-            guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
-            let size = Self.stackSize(instruction)
-            let top = registers.read(4)
-            registers[4] = top &+ UInt64(size)
-            let decoded = Result { try decodeFields(instruction) }
-            registers[4] = top
-            let fields = try decoded.get()
-            let value = try readMemory(top, size)
-            try writeRM(fields, size, value)
-            registers[4] = top &+ UInt64(size)
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
         case 0x70...0x7F:
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
-
-        case 0xC2:  // RET imm16 : dépiler puis jeter des arguments
-            let destination = try pop(8)
-            registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF)
-            rip = destination
-            jumped = true
         case 0xC3:
             rip = try pop(8)
-            jumped = true
-        case 0x9B:
-            // FWAIT : attendre que le coprocesseur ait fini, et prendre son
-            // exception s'il en a une. Ce cœur n'a pas de coprocesseur qui
-            // calcule, donc il n'y a jamais rien à attendre ni à prendre.
-            break
-
-        case 0xCC, 0xCD:  // INT3 et INT n : une interruption demandée par le code
-            let vector: UInt8 = opcode == 0xCC
-                ? 3 : UInt8(truncatingIfNeeded: instruction.immediate)
-            // Une interruption **logicielle** reprend **après** l'instruction,
-            // pas dessus : c'est un appel, pas une faute. Avancer RIP d'abord
-            // est donc la seule façon d'empiler la bonne adresse.
-            rip &+= UInt64(instruction.length)
-            guard try enter(vector, errorCode: 0) else {
-                rip &-= UInt64(instruction.length)
-                throw Fault.unsupported("INT \(vector) sans porte pour ce vecteur")
-            }
-            jumped = true
-
-        case 0xCF:  // IRETQ : le retour d'un gestionnaire d'exception
-            guard let rex = instruction.rex, rex & 0x08 != 0 else {
-                throw Fault.unsupported("IRET hors du mode 64 bits")
-            }
-            try returnFromInterrupt()
-
-        case 0xCA, 0xCB:  // RETF : dépiler le décalage **puis** le sélecteur
-            // La largeur par défaut d'un retour lointain en mode 64 bits est de
-            // quatre octets, pas huit : c'est REX.W qui la porte à huit. Un
-            // noyau s'en sert pour recharger CS après avoir posé sa GDT.
-            let size = Self.operandSize(instruction, byteForm: false)
-            let destination = try pop(size)
-            segments[1] = UInt16(truncatingIfNeeded: try pop(size))  // CS
-            if opcode == 0xCA { registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF) }
-            rip = destination
             jumped = true
 
         case 0xC9:  // LEAVE : RSP ← RBP, puis dépiler RBP
             registers[4] = registers.read(5)
             registers[5] = try pop(8)
-
-        case 0xE0, 0xE1, 0xE2:  // LOOPNE, LOOPE, LOOP
-            registers[1] = registers.read(1) &- 1
-            let zero = flags & Flag.zero != 0
-            let again = registers.read(1) != 0
-                && (opcode == 0xE2 || (opcode == 0xE1 ? zero : !zero))
-            if again { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
-        case 0xE3:  // JRCXZ
-            if registers.read(1) == 0 { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
 
         case 0xE8:  // CALL relatif : empiler le retour, puis sauter
             let ret = rip &+ UInt64(instruction.length)
@@ -155,30 +78,10 @@ extension X86Core {
         case 0xEB:
             branch(instruction, Self.signExtend(instruction.immediate, 1))
 
-        case 0xF4:  // HLT : la machine s'arrête et le dit.
-            halted = true
-
-        case 0xE4, 0xE5, 0xEC, 0xED:  // IN
-            let port = (opcode <= 0xE5) ? UInt16(instruction.immediate & 0xFF)
-                : UInt16(registers.read(2) & 0xFFFF)
-            let size = Self.portSize(instruction, byteForm: opcode == 0xE4 || opcode == 0xEC)
-            write(0, size, highByte: false, portRead(port, size))
-        case 0xE6, 0xE7, 0xEE, 0xEF:  // OUT
-            let port = (opcode <= 0xE7) ? UInt16(instruction.immediate & 0xFF)
-                : UInt16(registers.read(2) & 0xFFFF)
-            let size = Self.portSize(instruction, byteForm: opcode == 0xE6 || opcode == 0xEE)
-            portWrite(port, size, read(0, size, highByte: false))
-
         case 0x63:
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
             writeReg(fields, size, Self.signExtend(try readRM(fields, 4), 4) & Self.mask(size))
-
-        case 0x69, 0x6B:  // IMUL à trois opérandes
-            let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction)
-            writeReg(fields, size, multiplyTruncating(
-                try readRM(fields, size), Self.immediate(instruction, size), size))
 
         // Le groupe 1 : la même arithmétique, avec un immédiat.
         case 0x80, 0x81, 0x83:
@@ -213,43 +116,6 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             writeReg(fields, size, try readRM(fields, size))
 
-        case 0x8C:  // MOV r/m16, Sreg
-            let fields = try decodeFields(instruction)
-            try writeRM(fields, 2, UInt64(segments[fields.reg & 0x07]))
-        case 0x8E:  // MOV Sreg, r/m16
-            let fields = try decodeFields(instruction)
-            let selector = UInt16(truncatingIfNeeded: try readRM(fields, 2))
-            let which = fields.reg & 0x07
-            segments[which] = selector
-            // **Un sélecteur nul dans FS ou GS efface la base**, et c'est
-            // mesuré : sur le processeur de ce conteneur, par un programme à
-            // syscalls bruts — passer par la libc entre les deux relevés
-            // toucherait `errno`, qui vit dans le TLS pointé par FS, donc
-            // l'instrument aurait cassé ce qu'il mesure.
-            //
-            //     FS.base avant = 0x7f7da625f740
-            //     xorl %eax,%eax ; movl %eax,%fs
-            //     FS.base apres = 0x0
-            //
-            // Ce cœur gardait l'ancienne, et `segmentBase()` la relit à chaque
-            // accès préfixé : un `%fs:` suivant aurait lu à la mauvaise
-            // adresse. Latent tant que Linux met ses segments à zéro alors que
-            // les bases valent déjà zéro — mais latent n'est pas juste.
-            //
-            // **Un sélecteur non nul ne touche à rien**, et c'est délibéré :
-            // le silicium irait chercher la base dans un descripteur, cette
-            // machine n'a pas de table globale, et inventer une base serait
-            // pire que garder celle qu'on a. Ce qui est corrigé est le cas nul,
-            // qui ne lit aucun descripteur — pas la segmentation entière.
-            //
-            // **Un seul processeur ne fait pas une architecture**, et ce dépôt
-            // n'a pas d'autre silicium sous la main : c'est écrit pour que la
-            // prochaine mesure sache ce qu'elle corrige.
-            if selector == 0, which == 4 || which == 5 {
-                let base = which == 4 ? X86SystemState.fsBase : X86SystemState.gsBase
-                system.modelSpecific[base] = 0
-            }
-
         case 0x8D:  // LEA : calcule une adresse et ne la lit pas.
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
@@ -270,36 +136,8 @@ extension X86Core {
             write(0, size, highByte: false, read(other, size, highByte: false))
             write(other, size, highByte: false, first)
 
-        // `LAHF` et `SAHF` : SF, ZF, AF, PF et CF vers AH et retour. Les
-        // premiers x86-64 ne les avaient pas en mode long, d'où un bit de
-        // CPUID à part, que x86-64-v2 exige. `LAHF` copie l'octet bas tel
-        // quel : le bit 1 y vaut toujours un, et 3 et 5 toujours zéro, parce
-        // que `SAHF` et `POPF` ne les laissent pas passer — un masque ici ne
-        // changerait rien, et un sabotage l'a montré.
-        case 0x9F:  // LAHF
-            registers[0] = registers.read(0) & ~0xFF00 | (flags & 0xFF) << 8
-        case 0x9E:  // SAHF
-            flags = flags & ~0xD5 | (registers.read(0) >> 8) & 0xD5
-        case 0x9C:  // PUSHF : les drapeaux sur la pile, huit octets en mode long
-            try push(flags | Flag.reserved, 8)
-        case 0x9D:  // POPF
-            // Les bits réservés ne se laissent pas écrire, et le bit 1 vaut
-            // toujours un : un noyau qui relit ce qu'il a empilé doit retrouver
-            // la même chose.
-            flags = (try pop(8) & 0x0000_0000_003F_7FD5) | Flag.reserved
-
         case 0xA4, 0xA5, 0xA6, 0xA7, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF:
             try stringOperation(instruction, opcode)
-
-        case 0x98:  // CBW / CWDE / CDQE : l'accumulateur étendu au signe.
-            let size = Self.operandSize(instruction, byteForm: false)
-            write(0, size, highByte: false,
-                  Self.signExtend(read(0, size / 2, highByte: false), size / 2) & Self.mask(size))
-
-        case 0x99:  // CWD / CDQ / CQO : le signe de l'accumulateur rempli dans DX.
-            let size = Self.operandSize(instruction, byteForm: false)
-            let negative = read(0, size, highByte: false) & Self.signBit(size) != 0
-            write(2, size, highByte: false, negative ? Self.mask(size) : 0)
 
         case 0xA8, 0xA9:  // TEST accumulateur, immédiat
             let size = Self.operandSize(instruction, byteForm: opcode == 0xA8)
@@ -340,17 +178,6 @@ extension X86Core {
             let fields = try decodeFields(instruction)
             try writeRM(fields, size, Self.immediate(instruction, size))
 
-        case 0xF5: flags ^= Flag.carry            // CMC
-        case 0xF8: set(Flag.carry, false)         // CLC
-        case 0xF9: set(Flag.carry, true)          // STC
-        // Le drapeau d'interruption et celui de direction. Ce cœur n'a pas
-        // encore d'interruptions, mais un noyau les masque **avant** tout le
-        // reste : refuser l'instruction l'arrêterait à sa première ligne.
-        case 0xFA: set(Flag.interrupt, false)     // CLI
-        case 0xFB: set(Flag.interrupt, true)      // STI
-        case 0xFC: set(Flag.direction, false)     // CLD
-        case 0xFD: set(Flag.direction, true)      // STD
-
         case 0xF6, 0xF7:  // le groupe 3 : TEST, NOT, NEG, et les quatre longues
             let size = Self.operandSize(instruction, byteForm: opcode == 0xF6)
             let fields = try decodeFields(instruction)
@@ -390,9 +217,6 @@ extension X86Core {
                 throw Fault.unsupported("le groupe 5 /\((instruction.modrm! >> 3) & 0x07)")
             }
 
-        case 0xD8...0xDF:
-            try x87Instruction(instruction, opcode)
-
         case 0xFE, 0xFF:  // INC et DEC, qui ne touchent pas à la retenue
             let size = Self.operandSize(instruction, byteForm: opcode == 0xFE)
             let fields = try decodeFields(instruction)
@@ -405,6 +229,199 @@ extension X86Core {
             flags = (flags & ~Flag.carry) | kept
             try writeRM(fields, size, result)
 
+        // Le reste — interruptions, entrées-sorties, segments, drapeaux,
+        // x87 — vit dans `oneByteCold` : voir sa note.
+        default:
+            try oneByteCold(instruction, opcode)
+        }
+    }
+
+    /// **Les octets rares de la table d'un octet, à part.** Leurs cas —
+    /// interruptions, `IRETQ`, ports, `HLT`, registres de segment, drapeaux,
+    /// x87 — demandaient à `oneByte` un cadre et des registres sauvés que
+    /// chaque instruction payait, `mov` et `add` compris : sous callgrind,
+    /// les deux accolades de `oneByte` coûtaient 3,7 % des instructions de
+    /// l'hôte. Un octet qu'aucune des deux ne connaît finit ici, sur la même
+    /// faute qu'avant.
+    @inline(never)
+    mutating func oneByteCold(_ instruction: X86Instruction, _ opcode: UInt8) throws {
+        switch opcode {
+        case 0x8F:  // POP r/m
+            // **La mémoire d'abord, la pile ensuite.** L'écriture peut fauter
+            // — une page qu'un `fork()` vient de rendre lisible seulement —,
+            // et le noyau rejoue l'instruction après avoir copié la page. Si
+            // RSP avait déjà avancé, le rejeu dépilerait la case suivante.
+            //
+            // **Et l'adresse se calcule avec RSP déjà avancé.** C'est la règle
+            // du manuel pour un `POP` dont l'opérande passe par RSP :
+            // `pop 0x28(%rsp)` écrit à l'ancien RSP + 8 + 0x28. Calculée avec
+            // l'ancien RSP, l'écriture tombait huit octets trop bas — sur la
+            // case que le code relit juste après. Le noyau 5.14 d'AlmaLinux 9
+            // y range ses drapeaux (`pushf ; pop 0x28(%rsp)`) dans
+            // `__text_poke`, puis relit sa `struct page *` à 0x20(%rsp) : il y
+            // trouvait 0x282, en faisait une page, et le premier `memcpy` vers
+            // la projection temporaire visait une adresse physique de
+            // cinquante et un bits. RSP est avancé le temps du calcul, puis
+            // remis, et n'avance pour de bon qu'après l'écriture.
+            guard memory != nil else { throw Fault.unsupported("une pile sans mémoire") }
+            let size = Self.stackSize(instruction)
+            let top = registers.read(4)
+            registers[4] = top &+ UInt64(size)
+            let decoded = Result { try decodeFields(instruction) }
+            registers[4] = top
+            let fields = try decoded.get()
+            let value = try readMemory(top, size)
+            try writeRM(fields, size, value)
+            registers[4] = top &+ UInt64(size)
+
+        case 0xC2:  // RET imm16 : dépiler puis jeter des arguments
+            let destination = try pop(8)
+            registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF)
+            rip = destination
+            jumped = true
+        case 0x9B:
+            // FWAIT : attendre que le coprocesseur ait fini, et prendre son
+            // exception s'il en a une. Ce cœur n'a pas de coprocesseur qui
+            // calcule, donc il n'y a jamais rien à attendre ni à prendre.
+            break
+
+        case 0xCC, 0xCD:  // INT3 et INT n : une interruption demandée par le code
+            let vector: UInt8 = opcode == 0xCC
+                ? 3 : UInt8(truncatingIfNeeded: instruction.immediate)
+            // Une interruption **logicielle** reprend **après** l'instruction,
+            // pas dessus : c'est un appel, pas une faute. Avancer RIP d'abord
+            // est donc la seule façon d'empiler la bonne adresse.
+            rip &+= UInt64(instruction.length)
+            guard try enter(vector, errorCode: 0) else {
+                rip &-= UInt64(instruction.length)
+                throw Fault.unsupported("INT \(vector) sans porte pour ce vecteur")
+            }
+            jumped = true
+
+        case 0xCF:  // IRETQ : le retour d'un gestionnaire d'exception
+            guard let rex = instruction.rex, rex & 0x08 != 0 else {
+                throw Fault.unsupported("IRET hors du mode 64 bits")
+            }
+            try returnFromInterrupt()
+
+        case 0xCA, 0xCB:  // RETF : dépiler le décalage **puis** le sélecteur
+            // La largeur par défaut d'un retour lointain en mode 64 bits est de
+            // quatre octets, pas huit : c'est REX.W qui la porte à huit. Un
+            // noyau s'en sert pour recharger CS après avoir posé sa GDT.
+            let size = Self.operandSize(instruction, byteForm: false)
+            let destination = try pop(size)
+            segments[1] = UInt16(truncatingIfNeeded: try pop(size))  // CS
+            if opcode == 0xCA { registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF) }
+            rip = destination
+            jumped = true
+
+        case 0xE0, 0xE1, 0xE2:  // LOOPNE, LOOPE, LOOP
+            registers[1] = registers.read(1) &- 1
+            let zero = flags & Flag.zero != 0
+            let again = registers.read(1) != 0
+                && (opcode == 0xE2 || (opcode == 0xE1 ? zero : !zero))
+            if again { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
+        case 0xE3:  // JRCXZ
+            if registers.read(1) == 0 { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
+
+        case 0xF4:  // HLT : la machine s'arrête et le dit.
+            halted = true
+
+        case 0xE4, 0xE5, 0xEC, 0xED:  // IN
+            let port = (opcode <= 0xE5) ? UInt16(instruction.immediate & 0xFF)
+                : UInt16(registers.read(2) & 0xFFFF)
+            let size = Self.portSize(instruction, byteForm: opcode == 0xE4 || opcode == 0xEC)
+            write(0, size, highByte: false, portRead(port, size))
+        case 0xE6, 0xE7, 0xEE, 0xEF:  // OUT
+            let port = (opcode <= 0xE7) ? UInt16(instruction.immediate & 0xFF)
+                : UInt16(registers.read(2) & 0xFFFF)
+            let size = Self.portSize(instruction, byteForm: opcode == 0xE6 || opcode == 0xEE)
+            portWrite(port, size, read(0, size, highByte: false))
+
+        case 0x69, 0x6B:  // IMUL à trois opérandes
+            let size = Self.operandSize(instruction, byteForm: false)
+            let fields = try decodeFields(instruction)
+            writeReg(fields, size, multiplyTruncating(
+                try readRM(fields, size), Self.immediate(instruction, size), size))
+
+        case 0x8C:  // MOV r/m16, Sreg
+            let fields = try decodeFields(instruction)
+            try writeRM(fields, 2, UInt64(segments[fields.reg & 0x07]))
+        case 0x8E:  // MOV Sreg, r/m16
+            let fields = try decodeFields(instruction)
+            let selector = UInt16(truncatingIfNeeded: try readRM(fields, 2))
+            let which = fields.reg & 0x07
+            segments[which] = selector
+            // **Un sélecteur nul dans FS ou GS efface la base**, et c'est
+            // mesuré : sur le processeur de ce conteneur, par un programme à
+            // syscalls bruts — passer par la libc entre les deux relevés
+            // toucherait `errno`, qui vit dans le TLS pointé par FS, donc
+            // l'instrument aurait cassé ce qu'il mesure.
+            //
+            //     FS.base avant = 0x7f7da625f740
+            //     xorl %eax,%eax ; movl %eax,%fs
+            //     FS.base apres = 0x0
+            //
+            // Ce cœur gardait l'ancienne, et `segmentBase()` la relit à chaque
+            // accès préfixé : un `%fs:` suivant aurait lu à la mauvaise
+            // adresse. Latent tant que Linux met ses segments à zéro alors que
+            // les bases valent déjà zéro — mais latent n'est pas juste.
+            //
+            // **Un sélecteur non nul ne touche à rien**, et c'est délibéré :
+            // le silicium irait chercher la base dans un descripteur, cette
+            // machine n'a pas de table globale, et inventer une base serait
+            // pire que garder celle qu'on a. Ce qui est corrigé est le cas nul,
+            // qui ne lit aucun descripteur — pas la segmentation entière.
+            //
+            // **Un seul processeur ne fait pas une architecture**, et ce dépôt
+            // n'a pas d'autre silicium sous la main : c'est écrit pour que la
+            // prochaine mesure sache ce qu'elle corrige.
+            if selector == 0, which == 4 || which == 5 {
+                let base = which == 4 ? X86SystemState.fsBase : X86SystemState.gsBase
+                system.modelSpecific[base] = 0
+            }
+
+        // `LAHF` et `SAHF` : SF, ZF, AF, PF et CF vers AH et retour. Les
+        // premiers x86-64 ne les avaient pas en mode long, d'où un bit de
+        // CPUID à part, que x86-64-v2 exige. `LAHF` copie l'octet bas tel
+        // quel : le bit 1 y vaut toujours un, et 3 et 5 toujours zéro, parce
+        // que `SAHF` et `POPF` ne les laissent pas passer — un masque ici ne
+        // changerait rien, et un sabotage l'a montré.
+        case 0x9F:  // LAHF
+            registers[0] = registers.read(0) & ~0xFF00 | (flags & 0xFF) << 8
+        case 0x9E:  // SAHF
+            flags = flags & ~0xD5 | (registers.read(0) >> 8) & 0xD5
+        case 0x9C:  // PUSHF : les drapeaux sur la pile, huit octets en mode long
+            try push(flags | Flag.reserved, 8)
+        case 0x9D:  // POPF
+            // Les bits réservés ne se laissent pas écrire, et le bit 1 vaut
+            // toujours un : un noyau qui relit ce qu'il a empilé doit retrouver
+            // la même chose.
+            flags = (try pop(8) & 0x0000_0000_003F_7FD5) | Flag.reserved
+
+        case 0x98:  // CBW / CWDE / CDQE : l'accumulateur étendu au signe.
+            let size = Self.operandSize(instruction, byteForm: false)
+            write(0, size, highByte: false,
+                  Self.signExtend(read(0, size / 2, highByte: false), size / 2) & Self.mask(size))
+
+        case 0x99:  // CWD / CDQ / CQO : le signe de l'accumulateur rempli dans DX.
+            let size = Self.operandSize(instruction, byteForm: false)
+            let negative = read(0, size, highByte: false) & Self.signBit(size) != 0
+            write(2, size, highByte: false, negative ? Self.mask(size) : 0)
+
+        case 0xF5: flags ^= Flag.carry            // CMC
+        case 0xF8: set(Flag.carry, false)         // CLC
+        case 0xF9: set(Flag.carry, true)          // STC
+        // Le drapeau d'interruption et celui de direction. Ce cœur n'a pas
+        // encore d'interruptions, mais un noyau les masque **avant** tout le
+        // reste : refuser l'instruction l'arrêterait à sa première ligne.
+        case 0xFA: set(Flag.interrupt, false)     // CLI
+        case 0xFB: set(Flag.interrupt, true)      // STI
+        case 0xFC: set(Flag.direction, false)     // CLD
+        case 0xFD: set(Flag.direction, true)      // STD
+
+        case 0xD8...0xDF:
+            try x87Instruction(instruction, opcode)
         default:
             throw Fault.unsupported("l'opcode \(String(format: "%02X", opcode))")
         }
