@@ -27,6 +27,32 @@ déjà connu. Le chemin entier garde son calcul.
   cheval, précédé d'un `nop` dans la même page, donc lu depuis la page
   gardée. Il tombe sous le sabotage.
 - Compteur publié : 2934.
+## 2026-10-21 — Debian au shell : 767 s → 596 s, les tranches de la nuit
+
+Relance horaire, même autorisation. Les tranches #579 à #590 ont été
+mesurées sur les cent premiers millions d'instructions d'Alpine (callgrind)
+et sur six cents millions (temps natif). Ce qui compte, c'est le temps pour
+atteindre un shell : mesuré ici par le chemin de l'application
+(`X86CloudResumeTests`, l'image comme disque sur fichier), Debian 13 seule
+sur un cœur épinglé, la veille et la nuit l'une après l'autre.
+
+| commit | instructions jusqu'au shell | temps | instantané | reprise |
+|---|---|---|---|---|
+| 10b862c (#578, avant la nuit) | 16 798 008 294 | 767 s | 215 Mio, 1,87 s | 1,71 s |
+| 0f562b0 (#590) | 16 798 008 294 | **596 s** | 215 Mio, 2,04 s | 1,68 s |
+
+- **22 % de moins**, au même nombre d'instructions à l'unité près : le
+  cœur est déterministe, seul le temps par instruction a changé.
+- Les 714 s du 20 octobre ne se comparent pas à ces deux-là : la machine
+  de ce jour-là était plus rapide ou moins chargée — l'instantané, que le
+  cœur ne touche pas, y prenait 0,75 s contre 1,9 s aujourd'hui. D'où la
+  règle suivie ici : les deux commits sur la même machine, l'un après
+  l'autre.
+- **Une mesure fausse d'abord, et pourquoi.** Debian, Fedora et Ubuntu
+  lancées en même temps sur trois cœurs donnaient 718, 1114 et 1767 s —
+  presque rien de gagné. Les trois courses se gênaient : instantanés trois
+  à quatre fois plus lents, et quatre processeurs virtuels qui ne sont
+  peut-être que deux cœurs. Mesurer seul.
 
 ## 2026-10-21 — La feuille de route rattrape les huit distributions
 
