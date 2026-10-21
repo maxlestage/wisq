@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — AlmaLinux 9, la septième distribution ; Rocky attend
+
+Suite directe, même autorisation. La feuille « Télécharger » propose
+désormais AlmaLinux 9 : son XFS se lit (#566), sa glibc trouve x86-64-v2
+(#570 à #574), son noyau passe `__text_poke` (#573), et sa console s'ouvre en
+mode de secours (#576).
+
+- **L'index** (`ImageDownload.almaIndex`) est le dossier
+  `almalinux/9/cloud/x86_64/images/` : des images « GenericCloud » datées,
+  dont la plus récente est proposée — triée par date, pas par nom, « 9.9 »
+  passant devant « 9.10 » dans l'ordre des lettres. Ni l'alias `latest`, ni la
+  variante `ext4`. La somme vient du `CHECKSUM` du dossier, au format de
+  `sha256sum`.
+- **Rocky Linux 9 a été essayé, et attend.** Son image « Base » du 25 mai 2026
+  (SHA-256 `92c206cc…`, conforme à celle publiée) démarre, prend le mode de
+  secours — son systemd est aussi le 252 —, puis tombe en **mode
+  d'urgence** : au premier démarrage, `systemd-hwdb-update` reconstruit la base
+  matérielle de udev, si lentement sur ce cœur que le périphérique de `/boot`
+  n'apparaît pas à temps (« Timed out waiting for device »). Un shell `root`
+  s'ouvre quand même, mais sans `/boot` ni les systèmes de fichiers locaux :
+  pas une machine qu'on propose. Son lecteur (le format de somme de BSD,
+  l'image « Base » et pas « LVM ») est écrit et testé, et gardé de côté.
+- **Tests** : la page d'AlmaLinux (l'image datée la plus récente, l'alias et
+  la variante écartés, une date tronquée refusée, 9.10 devant 9.9) et un
+  téléchargement complet à travers le routeur, vérifié par SHA-256.
+  **Sabotages** : tri par nom → 1 échec ; `ext4` acceptée → 1 ; date
+  tronquée acceptée → 1.
+- Compteur publié : 2922.
+
 ## 2026-10-21 — AlmaLinux 9 ouvre un shell root sur sa console
 
 Suite directe, même autorisation. Depuis #574, AlmaLinux 9.8 démarre jusqu'à
@@ -438,6 +467,7 @@ dans chacune.
   `cryptomgr.notests` 23,54 (−5,7 %). Les auto-tests de la crypto restent :
   ils vérifient aussi, à chaque démarrage, que ce cœur calcule juste.
 - Compteur publié : 2890 (2886 sur master après #560, plus ces quatre).
+
 ## 2026-10-20 — Où en est TestFlight : l'état lu sur l'API
 
 L'utilisateur a demandé des builds TestFlight. L'envoi n° 36 (master
@@ -540,6 +570,7 @@ l'aiguillage —, et le cache de décodage en garde des milliers.
   octets, et les longueurs relues en `Int`. **Sabotage** : `length` remis
   en `Int` → il échoue.
 - Compteur publié : 2878.
+
 ## 2026-10-20 — Le cœur lit ses registres en place
 
 Suite directe, même autorisation. Dans le code machine de
@@ -2187,6 +2218,7 @@ plusieurs gibioctets ne passe jamais entière en mémoire.
 portait par hasard le même nom que l'original : le renommage de la couche
 n'était jamais exercé. Le test pose maintenant un fichier du même nom de
 l'autre côté, et le sabotage tombe.
+
 ## 2026-10-17 — coller dans la console locale
 
 La console de la machine locale permettait de copier — la sélection y est
@@ -2246,6 +2278,7 @@ pas de téléphone — la forme se transporte, pas les secondes.
 
 Les chiffres publiés suivent : « environ 17 Mio » devient « environ 8 Mio »
 dans l'application et sur le site, et sa provenance dit d'où il vient.
+
 ## 2026-10-16 — dupliquer une machine, session comprise
 
 Une machine qu'on a installée et configurée est un point d'arrivée qui a
@@ -2265,6 +2298,7 @@ disque ; sinon retirer la copie emporterait le disque de l'original.
 
 **Un sabotage, une chute :** la copie qui garde le nom du disque propre de la
 source au lieu du sien.
+
 ## 2026-10-16 — la signature remonte sous le mot-symbole
 
 Maxime, capture du téléphone à l'appui : la signature devait être **sous
@@ -2293,6 +2327,7 @@ des balises dans le lien. Elle lit maintenant le texte du lien d'auteur sans
 ses balises, et exige toujours qu'il nomme exactement la même personne. Le
 crédit au travail d'autrui reste dans la barre du bas. Pas d'animation, et pas
 un octet de JavaScript en plus.
+
 ## 2026-10-16 — un second disque, et un vrai noyau qui écrit dessus
 
 Le disque vierge ne servait qu'à un noyau et son initramfs : une image
@@ -2348,6 +2383,7 @@ saisie part *avant* la touche, sans retour à la ligne : une tabulation après
 mode que le programme a demandé — `TerminalGrid` retient maintenant DECCKM
 (`ESC [ ? 1 h`), et en mode application une flèche s'écrit `ESC O A` : c'est
 ce que `vi` et `less` attendent.
+
 ## 2026-10-16 — un disque vierge, et ce qu'on ne savait pas d'APFS
 
 Deuxième tranche de la même demande, et Maxime a dit oui aux PR, une par
