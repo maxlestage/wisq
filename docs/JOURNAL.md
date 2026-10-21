@@ -28370,3 +28370,81 @@ première des trois trahisons connues. Repris par numéro de ligne, il tombe.
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers
 voulus.
+
+## #363 — quatre corpus matériels sur cinq annonçaient la taille d'avant
+
+Le dépôt écrit la taille d'un corpus juste après son nom, toujours de la même
+façon : le fichier, un deux-points, une virgule ou un tiret, puis les comptes.
+Cinq phrases ont cette forme. **Une seule disait vrai.**
+
+| où | ce qui était annoncé | ce que le fichier porte |
+| --- | --- | --- |
+| `Sources/WisqVM/X86Float.swift` | 46 formes, 4 554 cas | **119**, **12 852** |
+| `Sources/WisqVM/X86VectorArithmetic.swift` | 108 formes et 3 240 cas | **228**, **8 892** |
+| `Sources/WisqVM/X86X87.swift` | 67 formes, 3 618 cas | **93**, **5 580** |
+| `Tests/…/X86SIMDOracleTests.swift` | 152 formes, 4 560 cas, trente états | **228**, **8 892**, **39** |
+| `docs/ARCHITECTURE.md` | 13 388 cas | 13 388 ✓ |
+
+Et les deux phrases qui décrivent le **même** fichier — celle du cœur et celle
+de son test, toutes deux sur `x86-simd-oracle.tsv` — ne s'accordaient pas même
+entre elles : **108 formes contre 152**. Deux copies d'un inventaire qui
+dérivent chacune de son côté, et rien qui les compare.
+
+### Comment les comptes sont pris
+
+Une ligne de corpus porte sa sorte en première colonne : `instr` pour une
+forme, `cas` pour un cas jugé, `état` pour un état d'entrée. La garde lit les
+onze fichiers de `Tests/Fixtures/` et compte ; aucune constante n'est recopiée
+dans le test. Le sixième sabordage le prouve : une ligne `instr` ajoutée au
+corpus x87 fait tomber la phrase du cœur, qui n'a pourtant pas bougé.
+
+### La forme distingue le présent du passé, et c'est voulu
+
+Il n'y a **pas** d'exception datée ici, et ce n'est pas un oubli. Un nombre
+collé au nom du fichier dit ce que le fichier **porte** — c'est du présent.
+Un relevé daté ne s'écrit pas comme ça : il s'écrit « il en portait 46 au
+moment de #NNN », et ce qui suit le tiret n'est alors pas un chiffre. La garde
+ne lit que la forme du présent, et les relevés datés lui échappent par leur
+tournure plutôt que par une liste d'exceptions à tenir.
+
+C'est aussi pourquoi elle ne touche pas aux phrases qui chiffrent un
+**sous-ensemble** : « les 2016 cas de `x86-oracle.tsv` qui portent sur ce
+groupe » met le nombre **avant** le nom, et « `x86-string-oracle.tsv` est né
+d'un comptage : sur les 389 formes du corpus arithmétique » parle d'un autre
+fichier. Le premier non-sabordage le montre.
+
+### Sept sabordages, sept chutes — et deux essais qui devaient passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| le flottant revient à 46 formes | « X86Float.swift annonce « 46 formes » pour x86-float-oracle.tsv, qui en porte 119 » |
+| le x87 revient à 3 618 cas | « annonce « 3618 cas » … qui en porte 5580 » |
+| le SSE2 du cœur revient à 108 formes | « annonce « 108 formes » … qui en porte 228 » |
+| les états du SSE2 reviennent à trente | « annonce « 30 états » … qui en porte 39 » |
+| `docs/ARCHITECTURE.md` dérive | « docs/ARCHITECTURE.md annonce « 13000 cas » … qui en porte 13388 » |
+| une ligne `instr` de plus dans le corpus x87 | « annonce « 93 formes » … qui en porte 94 » |
+| la forme canonique disparaît des sept endroits | « aucune phrase n'annonce la taille d'un corpus juste après son nom » |
+| (non-sabordage) un sous-ensemble chiffré, nom après le nombre | rien : la garde ne lit que le nombre qui **suit** le nom |
+| (non-sabordage) l'annonce recoupée sur deux lignes | rien : le texte est aplati avant d'être lu |
+
+Le cinquième prouve que le balayage atteint `docs/`, le sixième que les
+comptes viennent des fichiers, le septième que la garde ne peut pas devenir
+vide en silence.
+
+**Une ancre vue zéro fois n'est pas une ancre non plus.** Le cinquième
+sabordage a d'abord refusé de s'appliquer : dans `ARCHITECTURE.md`, le tiret
+et le nombre sont séparés par un saut de ligne, et l'ancre qui les contenait
+tous deux n'existait pas. Le script a refusé plutôt que de muter à côté — un
+« SURVÉCU » en serait sorti pour rien.
+
+### Ce que la garde ne tient pas
+
+Les phrases qui chiffrent un corpus **sans** le nommer juste avant : « les
+trois corpus déjà figés — 10 020 cas arithmétiques, 832 vectoriels, 376 de
+chaîne », dans un script de fabrication, est un relevé de son moment et le
+reste. Faire compter ces tournures-là demanderait de deviner de quel fichier
+chacune parle, ce qui est précisément ce qu'une garde ne doit pas faire.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, `Tests/Fixtures/` compris, et `git status --porcelain` ne portait
+que les sept fichiers voulus.

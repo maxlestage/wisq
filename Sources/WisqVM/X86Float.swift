@@ -30,7 +30,7 @@ import Foundation
 //    d'un NaN ou d'un nombre trop grand rend l'« entier indéfini » — le bit
 //    de signe seul — et continue.
 //
-// La référence est `Tests/Fixtures/x86-float-oracle.tsv` : 46 formes, 4 554
+// La référence est `Tests/Fixtures/x86-float-oracle.tsv` : 119 formes, 12 852
 // cas, fabriqué par `scripts/build-x86-float-oracle.py`.
 //
 // **Et ce corpus mesure ce que les six autres interdisaient : les drapeaux.**
