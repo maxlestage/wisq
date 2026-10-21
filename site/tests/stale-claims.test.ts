@@ -263,3 +263,116 @@ test("le rapport du 8253 écrit en prose est celui de la constante", () => {
     ).toBe(rapport);
   }
 });
+/// **Le bureau refuse quatre endroits et sa prose en compte trois.**
+///
+/// `LocalDesktop.place` porte, à trois endroits de son propre commentaire, le
+/// nombre de refus que le Rust peut rendre :
+///
+/// - « **Trois endroits sont refusés**, et il n'en tenait qu'un. » ;
+/// - « Les **deux autres** sont des régions que la machine se donne à
+///   elle-même » — la page zéro et le cadre ;
+/// - « **Les trois refus viennent du Rust.** »
+///
+/// Le `switch` juste en dessous en nomme **cinq**, et `DesktopTranslator`
+/// déclare cinq cas de refus. La troisième région, l'archive initramfs, est
+/// arrivée avec #313 — dont le titre dit « le bureau n'avait pas de racine » —
+/// et la prose d'à côté n'a pas suivi. Le commentaire de `ffi.rs`, lui, a
+/// suivi : il disait « l'un des **quatre** » à #312 et dit « l'un des **cinq** »
+/// depuis. Deux commentaires sur le même ensemble, et un seul a bougé.
+///
+/// Le compte était déjà court à sa naissance : à #312 le Rust rendait quatre
+/// refus — `ffi.rs` l'écrivait — et `place` en annonçait trois.
+///
+/// **Les quatre nombres descendent d'une seule source**, l'énumération
+/// `Placement`, et aucun ne se recopie :
+///
+/// - les cas de refus — tous sauf `placeable` et `unknown` — donnent ce que le
+///   Rust peut rendre, et `ffi.rs` comme `place` doivent l'annoncer ;
+/// - les cas `wouldOverwrite…` donnent les régions que la machine se donne à
+///   elle-même ;
+/// - les endroits refusés sont ces régions **plus la borne de la RAM**, qui
+///   n'est pas une région que la machine se donne : c'est là que s'arrête la
+///   mémoire de l'invité.
+test("le bureau annonce autant de refus de placement qu'il en déclare", () => {
+  const traducteur = readFileSync(
+    join(repoRoot, "Sources/WisqVMRust/DesktopTranslator.swift"),
+    "utf8",
+  );
+  const bureau = readFileSync(join(repoRoot, "Sources/WisqVMRust/LocalDesktop.swift"), "utf8");
+  const ffi = readFileSync(join(repoRoot, "crates/wisq-vm/src/ffi.rs"), "utf8");
+
+  /// L'énumération, prise entre son accolade ouvrante et la fermante de sa
+  /// ligne : la lire en entier ferait entrer les cas des autres types du
+  /// fichier, et il y en a.
+  const bloc = traducteur.match(/public enum Placement[^{]*\{([\s\S]*?)\n {4}\}/);
+  expect(bloc, "`Placement` ne se lit plus dans `DesktopTranslator.swift`").not.toBeNull();
+  const cas = [...bloc![1].matchAll(/^ {8}case (\w+)/gm)].map((trouvé) => trouvé[1]);
+  expect(cas, "`Placement` a perdu ses cas").toContain("placeable");
+
+  /// **L'échappement est reconnu par sa forme, pas par sa place.** Le seul cas
+  /// qui porte une valeur associée est celui qui rend un code inconnu ; le
+  /// renommer sans le dire ici le ferait compter comme un refus. L'exclusion
+  /// est donc nommée **et** vérifiée.
+  const avecValeur = [...bloc![1].matchAll(/^ {8}case (\w+)\(/gm)].map((trouvé) => trouvé[1]);
+  expect(avecValeur, "le cas d'échappement de `Placement` n'est plus `unknown`")
+    .toEqual(["unknown"]);
+
+  const refus = cas.filter((nom) => nom !== "placeable" && nom !== "unknown");
+  const régions = cas.filter((nom) => nom.startsWith("wouldOverwrite"));
+  /// Un lecteur qui ne lit rien ressemble à un lecteur qui lit la bonne chose.
+  expect(régions.length, "aucune région refusée : le lecteur ne lit plus rien").toBeGreaterThan(1);
+  expect(refus.length, "moins de refus que de régions").toBeGreaterThanOrEqual(régions.length);
+
+  const MOTS = [
+    "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
+    "neuf", "dix", "onze", "douze",
+  ];
+  const nombre = (mot: string): number => MOTS.indexOf(mot.toLowerCase());
+
+  /// Chaque phrase est tenue par sa **forme** autant que par son nombre : si
+  /// l'une est réécrite, le contrôle le dit au lieu de passer sur une phrase
+  /// qu'il ne lit plus.
+  const annonces: [string, string, RegExp, number][] = [
+    [
+      "Sources/WisqVMRust/LocalDesktop.swift",
+      bureau,
+      /\*\*(\p{L}+) endroits sont refusés/u,
+      régions.length + 1,
+    ],
+    [
+      "Sources/WisqVMRust/LocalDesktop.swift",
+      bureau,
+      /Les \*\*(\p{L}+) autres\*\* sont des régions que la machine se donne/u,
+      régions.length,
+    ],
+    [
+      "Sources/WisqVMRust/LocalDesktop.swift",
+      bureau,
+      /Les (\p{L}+) autres refus sont au-dedans de cette borne/u,
+      régions.length,
+    ],
+    [
+      "Sources/WisqVMRust/LocalDesktop.swift",
+      bureau,
+      /\*\*Les (\p{L}+) refus viennent du Rust\*\*/u,
+      refus.length,
+    ],
+    [
+      "crates/wisq-vm/src/ffi.rs",
+      ffi,
+      /les ranger sous l'un des (\p{L}+)/u,
+      refus.length,
+    ],
+  ];
+
+  for (const [fichier, texte, motif, attendu] of annonces) {
+    const plat = texte.replace(/^[ \t]*(\/\/\/?|#)[ \t]?/gm, "").replace(/\s+/g, " ");
+    const dit = plat.match(motif);
+    expect(dit, `${fichier} ne porte plus la phrase ${motif}`).not.toBeNull();
+    expect(
+      nombre(dit![1]),
+      `${fichier} annonce « ${dit![1]} » là où \`Placement\` en déclare ${attendu} ` +
+        `(${refus.length} refus, dont ${régions.length} régions)`,
+    ).toBe(attendu);
+  }
+});

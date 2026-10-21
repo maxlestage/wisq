@@ -404,13 +404,15 @@ public final class LocalDesktop {
     /// porterait un littéral de la taille de l'image, et un noyau fait des
     /// dizaines de mégaoctets.
     ///
-    /// **Trois endroits sont refusés, et il n'en tenait qu'un.** La fin de la
+    /// **Quatre endroits sont refusés, et il n'en tenait qu'un.** La fin de la
     /// RAM, au-dessus de laquelle vit la correspondance, était gardée depuis le
-    /// lot 8. Les deux autres sont des régions que la machine se donne à
+    /// lot 8. Les **trois autres** sont des régions que la machine se donne à
     /// elle-même et que l'appelant écrasait sans que rien ne le dise : la
-    /// **page zéro**, que le noyau lit avant sa première instruction, et le
-    /// **cadre**, que la vue repeint à chaque image. C'est la faute que #311 a
-    /// nommée en finissant plutôt que de la cacher.
+    /// **page zéro**, que le noyau lit avant sa première instruction, le
+    /// **cadre**, que la vue repeint à chaque image, et l'**archive
+    /// initramfs**, que le noyau déballe pour s'en faire une racine. C'est la
+    /// faute que #311 a nommée en finissant plutôt que de la cacher, et #313
+    /// a ajouté la troisième région en laissant ce compte derrière lui.
     ///
     /// **Ce chemin coûte cher et c'est assumé pour l'instant** : quelques
     /// dizaines de mégaoctets à travers `evaluateJavaScript`, une fois par
@@ -423,11 +425,11 @@ public final class LocalDesktop {
         // peu trop loin » : il écrirait dans la table que le module lit pour
         // trouver ses régions, et la machine sauterait n'importe où. C'est la
         // même borne que `host.js` pose sur sa lecture, et elle vaut aussi à
-        // l'écriture. Les deux autres refus sont au-dedans de cette borne.
+        // l'écriture. Les trois autres refus sont au-dedans de cette borne.
         let ram = Int(pages) * 65536
         let folded = Int(address & UInt64(ram - 1))
-        // **Les trois refus viennent du Rust**, parce que c'est là que vit le
-        // risque : un pliage par masque et deux additions qui peuvent déborder.
+        // **Les cinq refus viennent du Rust**, parce que c'est là que vit le
+        // risque : un pliage par masque et des additions qui peuvent déborder.
         // Ici, `folded + image.count` piégerait pour une taille absurde au lieu
         // de refuser, et ce fichier n'est typé que sur `Cœur (Apple)` — une
         // faute d'arithmétique y resterait invisible partout ailleurs. Les
