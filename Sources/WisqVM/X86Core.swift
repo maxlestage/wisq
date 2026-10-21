@@ -785,31 +785,7 @@ public struct X86Core: @unchecked Sendable {
 
         switch instruction.map {
         case .oneByte: try oneByte(instruction, opcode)
-        case .twoByte:
-            // **Les octets que personne d'autre ne réclame vont droit à la
-            // table ordinaire.** Les sauts conditionnels, `SETcc`, `CMOVcc`,
-            // `MOVZX` et `IMUL` passaient d'abord par les quatre gestionnaires
-            // spécialisés, qui répondaient tour à tour « pas moi » : sous
-            // callgrind, chacun coûtait seize instructions de l'hôte par
-            // instruction de l'invité. Voir `claimedBySpecialists`.
-            guard Self.claimedBySpecialists(opcode) else {
-                try twoByte(instruction, opcode)
-                return
-            }
-            // Les instructions système d'abord : elles occupent des octets que
-            // la table ordinaire ne connaît pas.
-            if try systemInstruction(instruction, opcode) { return }
-            // Puis les vectorielles, pour la même raison : `0F 6F` est
-            // `MOVDQA` avec un préfixe et rien du tout sans, et la table
-            // ordinaire ne saurait pas les départager.
-            if try vectorInstruction(instruction, opcode) { return }
-            // Puis l'arithmétique vectorielle, qui occupe encore d'autres
-            // octets de la même table. Voir `X86VectorArithmetic.swift`.
-            if try vectorArithmetic(instruction, opcode) { return }
-            // Puis le flottant scalaire, qui occupe encore d'autres octets de
-            // la même table. Voir `X86Float.swift`.
-            if try floatInstruction(instruction, opcode) { return }
-            try twoByte(instruction, opcode)
+        case .twoByte: try performTwoByte(instruction, opcode)
         case .threeByte38: try threeByte38(instruction, opcode)
         case .threeByte3A: try threeByte3A(instruction, opcode)
         default: throw Self.unsupportedMap(instruction.map)
@@ -819,6 +795,38 @@ public struct X86Core: @unchecked Sendable {
     /// **L'erreur à part, pour que `perform` reste léger.** L'interpolation de
     /// la table dans le message demandait un cadre de pile et quatre registres
     /// sauvés, payés à **chaque** instruction pour un cas qui n'arrive jamais.
+    /// **La table `0F` à part, pour que `perform` reste léger.** Ses quatre
+    /// gestionnaires spécialisés demandaient des registres sauvés à l'entrée
+    /// de `perform`, payés par chaque instruction — celles de la table d'un
+    /// octet comprises, qui sont les plus nombreuses.
+    @inline(never)
+    mutating func performTwoByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
+        // **Les octets que personne d'autre ne réclame vont droit à la
+        // table ordinaire.** Les sauts conditionnels, `SETcc`, `CMOVcc`,
+        // `MOVZX` et `IMUL` passaient d'abord par les quatre gestionnaires
+        // spécialisés, qui répondaient tour à tour « pas moi » : sous
+        // callgrind, chacun coûtait seize instructions de l'hôte par
+        // instruction de l'invité. Voir `claimedBySpecialists`.
+        guard Self.claimedBySpecialists(opcode) else {
+            try twoByte(instruction, opcode)
+            return
+        }
+        // Les instructions système d'abord : elles occupent des octets que
+        // la table ordinaire ne connaît pas.
+        if try systemInstruction(instruction, opcode) { return }
+        // Puis les vectorielles, pour la même raison : `0F 6F` est
+        // `MOVDQA` avec un préfixe et rien du tout sans, et la table
+        // ordinaire ne saurait pas les départager.
+        if try vectorInstruction(instruction, opcode) { return }
+        // Puis l'arithmétique vectorielle, qui occupe encore d'autres
+        // octets de la même table. Voir `X86VectorArithmetic.swift`.
+        if try vectorArithmetic(instruction, opcode) { return }
+        // Puis le flottant scalaire, qui occupe encore d'autres octets de
+        // la même table. Voir `X86Float.swift`.
+        if try floatInstruction(instruction, opcode) { return }
+        try twoByte(instruction, opcode)
+    }
+
     @inline(never)
     static func unsupportedMap(_ map: X86Instruction.OpcodeMap) -> Fault {
         .unsupported("la table \(map)")
