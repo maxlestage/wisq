@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le VDI de VirtualBox, lu sur place
+
+Relance horaire, même autorisation. « Lire une image Linux » : une machine
+Linux qu'on a dans VirtualBox vit dans un `.vdi`. wisq le reconnaissait
+depuis le 17 octobre, mais seulement pour le refuser avec la commande
+`qemu-img convert`. `VdiImage` le lit maintenant tel quel, comme le qcow2 et
+le VMDK.
+
+- **Le format, relevé sur de vrais fichiers** de `qemu-img` 8.2.2 avant
+  d'écrire une ligne : la marque `0xBEDA107F` en 0x40 — c'est elle qui
+  reconnaît le fichier, QEMU et VirtualBox n'écrivant pas le même texte en
+  tête —, la version 1.1, le type (1 dynamique, 2 fixe, 4 différentiel), la
+  table de blocs en 0x154, les données en 0x158, la taille en 0x170, le
+  bloc de 1 Mio en 0x178 et ses octets privés en 0x17C. Une entrée de table
+  `0xFFFFFFFF` (jamais écrit) ou `0xFFFFFFFE` (mis à zéro) se lit en zéros.
+- Refusés en le disant : une autre version, le disque différentiel (qui ne
+  se lit qu'avec son parent), un type inconnu, une table qui ne couvre pas
+  le disque ou qui sort du fichier. Une entrée qui pointe hors du fichier
+  fait échouer la lecture de son bloc plutôt que de rendre des octets
+  d'ailleurs.
+- Branché partout où le qcow2 l'est : `VirtualDiskImages` l'ouvre sous la
+  couche d'écriture de `FileDiskStore`, `KernelImageKind` le dit lisible —
+  la bibliothèque l'offre donc comme disque. Le cœur RISC-V, qui lit sa base
+  octet pour octet, le refuse comme le qcow2, et son message dit
+  maintenant « un VDI » au lieu de « une appliance OVA ».
+- Tests : `VdiImageTests` (six, contre deux fixtures — dynamique et fixe,
+  3 Mio de disque, 2 et 3 Kio une fois tassées) et un dans
+  `RustDiskFormatRefusalTests`. Sabotages, chacun rattrapé : le bloc
+  cherché par son rang dans le disque au lieu de son entrée (7 échecs),
+  `0xFFFFFFFE` lu dans le fichier (2), le différentiel accepté (1), la
+  lecture qui ne se recoud plus au bord d'un bloc (3), le message du cœur
+  RISC-V sans le VDI (1).
+- Compteur publié : 2941.
+
 ## 2026-10-21 — Ce qui reste lisible, tiré du décalage sur la page gardée
 
 Relance horaire, même autorisation. Sur le chemin rapide de `run` — la page
