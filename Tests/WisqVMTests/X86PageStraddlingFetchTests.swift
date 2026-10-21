@@ -71,6 +71,25 @@ final class X86PageStraddlingFetchTests: XCTestCase {
                        + " pas celui de la trame voisine")
     }
 
+    /// **Le même saut, depuis la page gardée.** Un `nop` d'abord, dans la
+    /// même page : l'instruction à cheval est alors lue par le chemin rapide
+    /// de `run` (`fetchTag`), qui déduit ce qui reste lisible du seul
+    /// décalage dans la page. Il doit s'arrêter à la fin de la page comme le
+    /// chemin entier, sinon le décodeur lit la trame physiquement voisine.
+    func testAStraddlingInstructionAfterAnotherInTheSamePageReadsTheSecondPage() throws {
+        var core = try Self.core()
+        let memory = try XCTUnwrap(core.memory)
+        try memory.load([0x90, 0x0F, 0x8E, 0x20], at: Self.firstFrame &+ 0xFFC)
+        try memory.load([0x00, 0x00, 0x00], at: Self.secondFrame)
+        try memory.load([0xAA, 0x48, 0x89, 0x0C], at: Self.firstFrame &+ 0x1000)
+        core.flags |= X86Core.Flag.zero
+        core.rip = Self.first &+ 0xFFC
+
+        _ = try core.run(budget: 2)
+        XCTAssertEqual(core.rip, Self.second &+ 0x23,
+                       "lu depuis la page gardée, le saut suit quand même la seconde page")
+    }
+
     /// Et le cas où la seconde page **manque** : le processeur prend une faute
     /// sur elle, il n'invente pas des octets. Sans ça, un programme dont la
     /// page suivante n'est pas encore là exécuterait n'importe quoi.
