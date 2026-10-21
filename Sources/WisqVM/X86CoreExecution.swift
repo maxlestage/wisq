@@ -129,8 +129,18 @@ extension X86Core {
     ///
     /// Le témoin d'adresse s'éteint pendant la vérification : sans ça, chaque
     /// écriture surveillée serait comptée deux fois.
+    ///
+    /// Même partage que `readRM` : le registre — rien à vérifier — en ligne,
+    /// la mémoire à part. Sous callgrind, l'entrée et la sortie de la
+    /// fonction entière coûtaient près de 1 % des instructions de l'hôte.
+    @inline(__always)
     mutating func probeWrite(_ fields: Fields, _ size: Int) throws {
         guard fields.mod != 0b11 else { return }
+        try probeWriteMemory(size)
+    }
+
+    @inline(never)
+    mutating func probeWriteMemory(_ size: Int) throws {
         guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
         let watched = watchedAddress
         watchedAddress = nil
