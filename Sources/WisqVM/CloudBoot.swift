@@ -399,22 +399,22 @@ public struct CloudBoot: Equatable, Sendable {
     /// drop-in de `serial-getty@ttyS0`, venus avec 256 —, `root` y est
     /// verrouillé, et la console s'arrêtait sur `localhost login:`. Le mot de
     /// passe de première mise en route n'y fait rien non plus : `root` existe
-    /// déjà, et systemd 252 ne le touche pas.
+    /// déjà, et systemd 252 ne le touche pas (« Login incorrect », essayé).
     ///
-    /// Ce qui marche là, et rien qu'avec la ligne de commande :
-    /// - `systemd.wants=rescue.service` : le service de secours, **à côté**
-    ///   du système entier — il ne s'oppose pas à `multi-user.target` — et
-    ///   sur `/dev/console`, la dernière console nommée, donc `ttyS0` ;
-    /// - `SYSTEMD_SULOGIN_FORCE=1` : son `sulogin` ouvre le shell de `root`
-    ///   même verrouillé, comme sur une machine sans mot de passe ;
-    /// - `serial-getty@ttyS0` masqué : deux programmes ne lisent pas le même
-    ///   terminal.
+    /// **Le mode de secours, donc**, rien qu'avec la ligne de commande :
+    /// `rescue.target` comme cible, et `SYSTEMD_SULOGIN_FORCE=1` pour que
+    /// `sulogin` ouvre le shell de `root` même verrouillé — « Press Enter for
+    /// maintenance », puis le shell. Essayé sur AlmaLinux 9.8.
     ///
-    /// Sortir de ce shell rend la console à `systemctl default` : il n'y en a
-    /// pas de second.
+    /// **Pas à côté du système entier**, et ce n'était pas faute d'essayer :
+    /// `systemd.wants=rescue.service` avec la cible ordinaire ne démarre
+    /// jamais le service, parce que `multi-user.target` le déclare en
+    /// conflit. Le prix est dit tel quel : en secours, le réseau et `sshd` ne
+    /// démarrent pas d'eux-mêmes — `systemctl start NetworkManager` les
+    /// lance, sans quitter le shell. `systemctl default` ou `exit` rendent le
+    /// système entier, et la console s'arrête alors sur `login`.
     static let legacyConsoleOptions = [
-        "systemd.wants=rescue.service", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
-        "systemd.mask=serial-getty@ttyS0.service", "systemd.mask=user@0.service",
+        "systemd.unit=rescue.target", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
         "systemd.mask=jeos-firstboot.service",
     ]
 
