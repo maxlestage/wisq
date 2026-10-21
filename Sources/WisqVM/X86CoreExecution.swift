@@ -12,6 +12,10 @@ extension X86Core {
     /// directement dans `a ^ b ^ résultat` : c'est le seul endroit du
     /// processeur où ce bit compte, et il est posé même en mode 64 bits où
     /// l'arithmétique décimale n'existe plus.
+    ///
+    /// **En ligne**, comme `arithmetic` qui l'appelle : sous callgrind, ses
+    /// appels coûtaient encore plusieurs pour cent des instructions de l'hôte.
+    @inline(__always)
     mutating func add(_ a: UInt64, _ b: UInt64, _ size: Int, carryIn: UInt64 = 0) -> UInt64 {
         let bits = UInt64(8 * size)
         let mask = Self.mask(size)
@@ -39,6 +43,10 @@ extension X86Core {
     /// Une soustraction. `CMP` est la même chose sans écrire le résultat, et
     /// c'est bien la même fonction qui sert : deux implémentations
     /// divergeraient un jour.
+    ///
+    /// **En ligne**, comme `arithmetic` qui l'appelle : sous callgrind, ses
+    /// appels coûtaient encore plusieurs pour cent des instructions de l'hôte.
+    @inline(__always)
     mutating func subtract(_ a: UInt64, _ b: UInt64, _ size: Int, borrowIn: UInt64 = 0) -> UInt64 {
         let mask = Self.mask(size)
         let sign = Self.signBit(size)
