@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — La largeur au décodage, le masque sans branche : 2,8 % de moins
+
+Deux calculs que le cœur x86 refaisait à chaque instruction, alors qu'ils ne
+dépendent que des octets de l'instruction ou d'une taille déjà connue.
+
+**La largeur des opérandes.** `operandSize` déballait le REX optionnel puis
+cherchait le préfixe `66` à chaque exécution. Elle est maintenant tirée au
+décodage (`wideOperandSize`, 8, 2 ou 4), et loge dans le remplissage d'avant
+le déplacement : `X86Instruction` reste à 40 octets. Callgrind : 27,71 →
+27,30 milliards d'instructions hôte.
+
+**Le masque d'une taille.** `size >= 8 ? UInt64.max : 2^n − 1` devient
+`UInt64.max &>> (64 − 8·size)`, sans choix. Callgrind : 27,30 → 26,94.
+
+**En temps natif**, trois courses alternées de 600 millions d'instructions
+de l'invité, sur un cœur : 14,37 s en moyenne sur master, 13,32 s ici, soit
+7 % de moins — plus que sous callgrind, qui ne compte pas les branches mal
+prédites que le masque faisait payer.
+
+Deux tests comparent les nouvelles formules aux anciennes : chaque REX,
+avec et sans `66`, avec d'autres préfixes ; les quatre tailles du masque.
+Trois sabordages attrapés : `66` avant REX.W, le mauvais bit du masque des
+préfixes, un décalage faux d'un bit. Le masque de la taille 0, que
+`X86OperandMaskTests` épinglait à zéro « comme avant », vaut désormais tous les
+bits : aucun appel ne la passe — chaque taille vient d'`operandSize`,
+`stackSize` ou `portSize` —, et le test le dit au lieu de l'épingler. Compte
+publié : 2949.
+
 ## 2026-10-21 — Le démon repasse à 1,8 Mo, sans que personne ne commette rien
 
 La CI de #597 a rougi dans le job Rust, sur `check-agent-size.sh` : le binaire
