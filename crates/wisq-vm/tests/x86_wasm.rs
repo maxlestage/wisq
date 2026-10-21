@@ -1163,8 +1163,8 @@ fn read_stack_oracle() -> StackOracle {
         }
     }
     assert_eq!(states.len(), 8, "les huit états du corpus de pile");
-    assert_eq!(instructions.len(), 81, "ses quatre-vingt-une formes");
-    assert_eq!(cases.len(), 648, "et ses six cent quarante-huit cas");
+    assert_eq!(instructions.len(), 89, "ses quatre-vingt-neuf formes");
+    assert_eq!(cases.len(), 712, "et ses sept cent douze cas");
     // Les fenêtres, lues là où elles sont déclarées, et exigées identiques.
     let windows = read_oracle().windows;
     assert_eq!(
