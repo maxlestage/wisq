@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — AlmaLinux 9, la septième distribution ; Rocky attend
+
+Suite directe, même autorisation. La feuille « Télécharger » propose
+désormais AlmaLinux 9 : son XFS se lit (#566), sa glibc trouve x86-64-v2
+(#570 à #574), son noyau passe `__text_poke` (#573), et sa console s'ouvre en
+mode de secours (#576).
+
+- **L'index** (`ImageDownload.almaIndex`) est le dossier
+  `almalinux/9/cloud/x86_64/images/` : des images « GenericCloud » datées,
+  dont la plus récente est proposée — triée par date, pas par nom, « 9.9 »
+  passant devant « 9.10 » dans l'ordre des lettres. Ni l'alias `latest`, ni la
+  variante `ext4`. La somme vient du `CHECKSUM` du dossier, au format de
+  `sha256sum`.
+- **Rocky Linux 9 a été essayé, et attend.** Son image « Base » du 25 mai 2026
+  (SHA-256 `92c206cc…`, conforme à celle publiée) démarre, prend le mode de
+  secours — son systemd est aussi le 252 —, puis tombe en **mode
+  d'urgence** : au premier démarrage, `systemd-hwdb-update` reconstruit la base
+  matérielle de udev, si lentement sur ce cœur que le périphérique de `/boot`
+  n'apparaît pas à temps (« Timed out waiting for device »). Un shell `root`
+  s'ouvre quand même, mais sans `/boot` ni les systèmes de fichiers locaux :
+  pas une machine qu'on propose. Son lecteur (le format de somme de BSD,
+  l'image « Base » et pas « LVM ») est écrit et testé, et gardé de côté.
+- **Tests** : la page d'AlmaLinux (l'image datée la plus récente, l'alias et
+  la variante écartés, une date tronquée refusée, 9.10 devant 9.9) et un
+  téléchargement complet à travers le routeur, vérifié par SHA-256.
+  **Sabotages** : tri par nom → 1 échec ; `ext4` acceptée → 1 ; date
+  tronquée acceptée → 1.
+- Compteur publié : 2919.
+
 ## 2026-10-21 — x86-64-v2 annoncé : AlmaLinux 9 démarre jusqu'à son invite
 
 Suite directe, même autorisation. Les quatre tranches précédentes (#570,
