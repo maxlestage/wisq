@@ -54,7 +54,8 @@ final class CloudBootLegacyConsoleTests: XCTestCase {
         let line = try find([Self.boot, root]).commandLine
         // Écrites en toutes lettres : relire `legacyConsoleOptions` ne
         // jugerait que la liste contre elle-même.
-        for option in ["systemd.unit=rescue.target", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1"] {
+        for option in ["systemd.unit=rescue.target", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
+                       "systemd.mask=systemd-hwdb-update.service"] {
             XCTAssertTrue(line.contains(option), option)
         }
         XCTAssertFalse(line.contains("agetty.autologin"), "que systemd 252 ignorerait")
