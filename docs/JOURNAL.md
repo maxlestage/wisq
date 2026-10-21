@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le VHD dynamique, lu sur place
+
+Relance horaire, même autorisation. La suite du VDI (#595) : le VHD
+dynamique, celui de Virtual PC, des anciens Hyper-V et d'Azure. Le VHD
+*fixe* se branchait déjà — un disque brut suivi d'un pied —, le dynamique
+était seulement nommé et renvoyé à `qemu-img convert`. `VhdImage` le lit.
+
+- **Relevé sur de vrais fichiers** de `qemu-img` 8.2.2 : le pied de
+  512 octets en tête (`conectix`, recopié à la fin), le type en 60 (3
+  dynamique, 4 différentiel), la taille en 48, l'en-tête dynamique
+  (`cxsparse`) à l'adresse que donne le pied, la table de blocs et sa
+  taille, les blocs de 2 Mio, chaque entrée étant le **secteur** où
+  commence le bloc : sa carte de secteurs, puis ses données. Gros-boutiste.
+- **La carte des secteurs fait foi**, comme le veut le format : un secteur
+  dont le bit est à zéro se lit en zéros, même si le fichier porte encore
+  des octets à sa place. `qemu-img` met tous les bits à un ; d'autres
+  outils, non.
+- **La taille est celle du pied.** Sans `force_size`, `qemu-img` l'arrondit
+  à une géométrie CHS — 3 168 256 octets pour un disque de 3 Mio — et
+  l'invité voit ce que le pied annonce ; une fixture de chaque sorte.
+- Les sommes de contrôle du pied et de l'en-tête sont vérifiées. Refusés
+  en le disant : le différentiel, une somme fausse, un type inconnu, une
+  table qui ne couvre pas le disque ou sort du fichier. Le cœur RISC-V le
+  refuse en le nommant, comme le VDI.
+- Tests : `VhdImageTests` (cinq) et un de plus dans
+  `RustDiskFormatRefusalTests`. Sabotages, chacun rattrapé : la carte
+  ignorée, ses bits lus dans le mauvais ordre, la somme du pied non
+  vérifiée, le différentiel accepté, les données lues sans sauter la
+  carte (6 échecs), le message du cœur RISC-V sans le VHD.
+- Compteur publié : 2947.
+
 ## 2026-10-21 — Le VDI de VirtualBox, lu sur place
 
 Relance horaire, même autorisation. « Lire une image Linux » : une machine
