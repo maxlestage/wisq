@@ -717,16 +717,34 @@ public struct X86Core: @unchecked Sendable {
     /// pas un registre. Les deux ensemble parce que l'adresse dépend de l'état
     /// d'avant l'instruction : la calculer plus tard, après une écriture,
     /// donnerait autre chose.
+    ///
+    /// **Le registre en ligne, l'adresse à part** — le partage de `readRM`.
+    /// Soixante-dix millions d'appels sur cent millions d'instructions
+    /// d'Alpine, et l'entrée de la fonction coûtait sous callgrind 1,5 % des
+    /// instructions de l'hôte. Le calcul d'adresse, long, reste un appel :
+    /// recopié dans la trentaine d'appelants, il gonflerait chacun. La
+    /// faute, qui n'arrive jamais sur une instruction décodée, est dans
+    /// `missingModRM`.
+    @inline(__always)
     mutating func decodeFields(_ instruction: X86Instruction) throws -> Fields {
         let fields = try X86Core.fields(instruction)
-        if fields.mod != 0b11 { lastAddress = try effectiveAddress(instruction, fields) }
+        if fields.mod != 0b11 { try computeAddress(instruction, fields) }
         return fields
     }
 
+    @inline(never)
+    mutating func computeAddress(_ instruction: X86Instruction, _ fields: Fields) throws {
+        lastAddress = try effectiveAddress(instruction, fields)
+    }
+
+    @inline(never)
+    static func missingModRM() -> Fault {
+        .unsupported("une instruction sans ModRM là où il en faut un")
+    }
+
+    @inline(__always)
     static func fields(_ instruction: X86Instruction) throws -> Fields {
-        guard let modrm = instruction.modrm else {
-            throw Fault.unsupported("une instruction sans ModRM là où il en faut un")
-        }
+        guard let modrm = instruction.modrm else { throw missingModRM() }
         // Dépliés au décodage : voir `X86Instruction.regField`.
         return Fields(
             reg: Int(instruction.regField), rm: Int(instruction.rmField), mod: modrm >> 6,
