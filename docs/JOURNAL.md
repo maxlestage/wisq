@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — La page du `rip`, gardée traduite
+
+Relance horaire, même autorisation. `run` traduisait `rip` à chaque
+instruction : le témoin, l'index, l'étiquette et les permissions du cache de
+traductions, une vingtaine d'instructions de l'hôte — alors que presque
+chaque instruction est lue dans la même page que la précédente.
+
+- `fetchTag`, `fetchFrame` et `fetchPrivilege` gardent la page du dernier
+  `rip` et sa trame. `run` les reprend tant que rien n'a bougé : une
+  traduction ajoutée au cache (`fill`) ou le cache vidé
+  (`flushTranslations` — CR3, CR4, la pagination, `INVLPG`) les effacent,
+  et l'anneau fait partie de la clé, les permissions d'une lecture
+  d'instruction ne dépendant que de lui. Le témoin d'adresse, armé, fait
+  repasser chaque lecture par `translate`. La page du `rip` ne rend donc
+  jamais une trame que le cache de traductions ne rendrait plus.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  34,60 → 33,99 milliards d'instructions hôte, 1,8 % de moins. En temps
+  natif, médiane de trois paires alternées : 19,27 s → 18,95 s, dans le même
+  sens mais **dans le bruit** (18,3 à 19,8 s d'une course à l'autre).
+- **Les trois sabotages passaient d'abord** — rien ne testait ces cas.
+  `X86FetchPageTests` en ajoute trois : CR3 réécrit après qu'on a déplacé la
+  page du code ; une donnée qui chasse la page du code de son emplacement
+  (une grande page en 0x400000 tombe dans le même) puis la page déplacée
+  sans vidage ; un code fermé aux programmes, lu par le noyau, puis exécuté
+  depuis l'anneau trois. Chaque sabotage — oublier le vidage, oublier le
+  remplissage, oublier l'anneau — fait tomber le sien. Le premier essai du
+  troisième ne jugeait rien : sa lecture de donnée remplissait déjà le
+  cache ; un `nop` d'abord.
+- Compteur publié : 2931.
+
 ## 2026-10-21 — L'erreur de `perform` à part
 
 Relance horaire, même autorisation. Après #581, `perform` coûtait encore
