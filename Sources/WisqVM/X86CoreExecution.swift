@@ -92,10 +92,22 @@ extension X86Core {
     /// qu'une instruction qui lit puis réécrit — `add (%rax), %rcx` — ne doit
     /// pas la recalculer : les deux calculs pourraient diverger si un registre
     /// de base venait d'être écrit.
+    ///
+    /// **Le registre en ligne, la mémoire à part.** Sous callgrind, l'entrée et
+    /// la sortie de `readRM` coûtaient à elles seules 1,2 % des instructions
+    /// de l'hôte : un appel, et des registres sauvés pour un chemin qui, la
+    /// moitié du temps, ne lit qu'un registre. Ce chemin-là est maintenant
+    /// recopié chez l'appelant ; celui de la mémoire, long, reste un appel.
+    @inline(__always)
     mutating func readRM(_ fields: Fields, _ size: Int) throws -> UInt64 {
         guard fields.mod != 0b11 else {
             return read(fields.rm, size, highByte: fields.rmIsHighByte)
         }
+        return try readRMMemory(size)
+    }
+
+    @inline(never)
+    mutating func readRMMemory(_ size: Int) throws -> UInt64 {
         guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
         return try readMemory(lastAddress, size)
     }
@@ -126,11 +138,18 @@ extension X86Core {
         try probeWrite(lastAddress, size)
     }
 
+    /// Même partage que `readRM`.
+    @inline(__always)
     mutating func writeRM(_ fields: Fields, _ size: Int, _ value: UInt64) throws {
         guard fields.mod != 0b11 else {
             write(fields.rm, size, highByte: fields.rmIsHighByte, value)
             return
         }
+        try writeRMMemory(size, value)
+    }
+
+    @inline(never)
+    mutating func writeRMMemory(_ size: Int, _ value: UInt64) throws {
         guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
         try writeMemory(lastAddress, size, value)
     }
