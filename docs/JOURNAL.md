@@ -8,6 +8,26 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Ce qui reste lisible, tiré du décalage sur la page gardée
+
+Relance horaire, même autorisation. Sur le chemin rapide de `run` — la page
+du `rip` gardée, #583 et #590 —, chaque instruction recalculait encore ce
+qui reste lisible : la place dans la page selon que la pagination est
+allumée, puis la place dans la mémoire. Une dizaine d'instructions de
+l'hôte, alors que la page gardée tient par construction entière dans la
+mémoire : il ne reste que `min(15, 0x1000 - décalage)`, tiré du décalage
+déjà connu. Le chemin entier garde son calcul.
+
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  28,51 → 27,71 milliards d'instructions hôte, **2,8 % de moins**.
+- **Le sabotage passait toute la suite** : une place lisible qui ne
+  s'arrête plus à la fin de la page. Les tests d'une instruction à cheval
+  sur deux pages la plaçaient en tête de page, donc sur le chemin entier.
+  `X86PageStraddlingFetchTests` en gagne un quatrième : le même saut à
+  cheval, précédé d'un `nop` dans la même page, donc lu depuis la page
+  gardée. Il tombe sous le sabotage.
+- Compteur publié : 2934.
+
 ## 2026-10-21 — Debian au shell : 767 s → 596 s, les tranches de la nuit
 
 Relance horaire, même autorisation. Les tranches #579 à #590 ont été
