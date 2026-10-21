@@ -397,6 +397,63 @@ public enum ImageDownload {
                 checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
     }
 
+    // MARK: - AlmaLinux 9
+
+    /// Le dossier des images de cloud d'AlmaLinux 9. Leur racine est un XFS
+    /// (`XfsVolume`), leur glibc exige x86-64-v2, et leur systemd 252 ouvre
+    /// la console en mode de secours (`CloudBoot.legacyConsoleOptions`).
+    ///
+    /// **Rocky Linux 9, de la même famille, attend** : essayé, il tombe en
+    /// mode d'urgence — le premier démarrage reconstruit la base matérielle
+    /// de udev (`systemd-hwdb-update`), si lentement sur ce cœur que le
+    /// périphérique de `/boot` n'apparaît pas à temps. Voir le journal.
+    public static let almaIndex = URL(string: "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/")!
+
+    /// **L'image « GenericCloud » datée d'AlmaLinux** :
+    /// `AlmaLinux-9-GenericCloud-9.8-AAAAMMJJ.x86_64.qcow2`. Pas l'alias
+    /// `latest`, pour la raison d'Arch, ni la variante `ext4`, qui n'apporte
+    /// rien ici. La version rendue est celle de la distribution, et la date
+    /// trie.
+    static func isBootableAlma(_ file: String) -> (version: String, date: String)? {
+        datedImage(file, prefix: "AlmaLinux-9-GenericCloud-", suffix: ".x86_64.qcow2")
+    }
+
+    /// `VERSION-AAAAMMJJ` entre un préfixe et un suffixe : la version faite de
+    /// chiffres et de points, la date de huit chiffres.
+    private static func datedImage(_ file: String, prefix: String, suffix: String) -> (version: String, date: String)? {
+        guard file.hasPrefix(prefix), file.hasSuffix(suffix) else { return nil }
+        let middle = file.dropFirst(prefix.count).dropLast(suffix.count)
+        let parts = middle.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, parts[0].allSatisfy({ $0.isNumber || $0 == "." }),
+              parts[0].first?.isNumber == true, parts[1].count == 8, parts[1].allSatisfy(\.isNumber)
+        else { return nil }
+        return (String(parts[0]), String(parts[1]))
+    }
+
+    /// Les images que nomme la page d'un dossier, **la plus récente
+    /// d'abord**, selon `parse`.
+    public static func datedCandidates(
+        _ listing: String, _ parse: (String) -> (version: String, date: String)?
+    ) -> [(file: String, version: String)] {
+        var found: [(file: String, version: String, date: String)] = []
+        for piece in listing.components(separatedBy: "href=\"").dropFirst() {
+            guard let end = piece.firstIndex(of: "\"") else { continue }
+            var file = String(piece[..<end])
+            if file.hasPrefix("./") { file.removeFirst(2) }
+            guard isPlainName(file), let dated = parse(file),
+                  !found.contains(where: { $0.file == file }) else { continue }
+            found.append((file, dated.version, dated.date))
+        }
+        return found.sorted { $0.date > $1.date }.map { ($0.file, $0.version) }
+    }
+
+    public static func almaRelease(file: String, version: String, sha256: String, size: Int,
+                                   index: URL = almaIndex) -> Release {
+        Release(distribution: "AlmaLinux", flavor: "alma-cloud", title: "image de cloud (qcow2)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
+    }
+
     // MARK: - Reprendre
 
     /// Où vit le fichier tant qu'il n'est pas vérifié.

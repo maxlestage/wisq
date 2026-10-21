@@ -60,7 +60,7 @@ public struct ImageDownloader: Sendable {
     }
 
     /// Les images qui démarrent ici, de tous les index : Alpine, Debian,
-    /// Fedora, Ubuntu, puis Arch Linux et openSUSE Tumbleweed.
+    /// Fedora, Ubuntu, puis Arch Linux, openSUSE Tumbleweed et AlmaLinux.
     ///
     /// **Un index qui ne répond pas ne cache pas les autres** : la liste
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
@@ -70,7 +70,8 @@ public struct ImageDownloader: Sendable {
                                  fedora: URL = ImageDownload.fedoraIndex,
                                  ubuntu: URL = ImageDownload.ubuntuIndex,
                                  arch: URL = ImageDownload.archIndex,
-                                 openSUSE: URL = ImageDownload.openSUSEIndex) async throws
+                                 openSUSE: URL = ImageDownload.openSUSEIndex,
+                                 alma: URL = ImageDownload.almaIndex) async throws
         -> [ImageDownload.Release] {
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
@@ -134,6 +135,20 @@ public struct ImageDownloader: Sendable {
                    let size = try await size(of: file) {
                     releases.append(ImageDownload.openSUSERelease(
                         file: newest.file, version: newest.version, sha256: sha256, size: size, index: openSUSE))
+                }
+            }
+        } catch {
+            firstFailure = firstFailure ?? error
+        }
+        // AlmaLinux : un seul fichier `CHECKSUM` pour tout le dossier, au
+        // format de `sha256sum`.
+        do {
+            if let newest = ImageDownload.datedCandidates(try await read(alma), ImageDownload.isBootableAlma).first {
+                let sums = try await read(alma.appendingPathComponent("CHECKSUM"))
+                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
+                   let size = try await size(of: alma.appendingPathComponent(newest.file)) {
+                    releases.append(ImageDownload.almaRelease(
+                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: alma))
                 }
             }
         } catch {

@@ -258,6 +258,33 @@ final class ImageDownloadTests: XCTestCase {
         XCTAssertEqual(release.checksum.algorithm, "SHA-256")
     }
 
+    /// **AlmaLinux : l'image GenericCloud datée la plus récente**, ni l'alias
+    /// `latest`, ni la variante `ext4`.
+    func testTheAlmaListingGivesTheNewestGenericCloud() {
+        let listing = """
+            <a href="AlmaLinux-9-GenericCloud-9.8-20260526.x86_64.qcow2">x</a>
+            <a href="AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2">x</a>
+            <a href="AlmaLinux-9-GenericCloud-ext4-9.8-20261005.x86_64.qcow2">x</a>
+            <a href="AlmaLinux-9-GenericCloud-latest.x86_64.qcow2">x</a>
+            <a href="AlmaLinux-9-GenericCloud-9.8-2026100.x86_64.qcow2">x</a>
+            <a href="CHECKSUM">x</a>
+            """
+        let found = ImageDownload.datedCandidates(listing, ImageDownload.isBootableAlma)
+        XCTAssertEqual(found.map(\.file), ["AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2",
+                                           "AlmaLinux-9-GenericCloud-9.8-20260526.x86_64.qcow2"])
+        XCTAssertEqual(found.first?.version, "9.8")
+        let release = ImageDownload.almaRelease(file: found[0].file, version: "9.8", sha256: String(repeating: "a", count: 64), size: 1)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/" + found[0].file)
+        // **Par date, pas par nom** : « 9.9 » passe devant « 9.10 » dans
+        // l'ordre des lettres, et la 9.10 est la plus récente.
+        let later = ImageDownload.datedCandidates("""
+            <a href="AlmaLinux-9-GenericCloud-9.9-20261201.x86_64.qcow2">x</a>
+            <a href="AlmaLinux-9-GenericCloud-9.10-20270601.x86_64.qcow2">x</a>
+            """, ImageDownload.isBootableAlma)
+        XCTAssertEqual(later.first?.version, "9.10")
+    }
+
     /// **Les vrais fichiers**, si on les donne (`WISQ_FEDORA_QCOW2`,
     /// `WISQ_UBUNTU_IMG`) : leur somme est celle que publie leur index —
     /// les deux images que wisq a démarrées jusqu'au shell.
