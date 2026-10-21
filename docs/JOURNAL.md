@@ -28448,3 +28448,54 @@ chacune parle, ce qui est précisément ce qu'une garde ne doit pas faire.
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, `Tests/Fixtures/` compris, et `git status --porcelain` ne portait
 que les sept fichiers voulus.
+
+### Et la base était rouge : les huit textes du démon, portés ici
+
+`master` à `8d33e6f` (#595, « Le VDI de VirtualBox, lu sur place ») rendait
+`Rust (agent + cœur VM)` **rouge**, et toute PR avec lui. La cause n'a rien à
+voir avec cette tranche : `scripts/check-agent-size.sh` refuse parce que le
+démon fait maintenant **1 766 216 octets, soit 1,8 Mo**, quand huit textes
+annonçaient 1,7.
+
+Ce n'était pas le sujet de #596, et je l'ai d'abord dit en commentaire plutôt
+que d'élargir la PR — une tranche par PR. Au point de contrôle suivant, la base
+était toujours rouge, aucune PR de correctif n'était ouverte, et attendre
+revenait à bloquer tout le monde. Les huit chiffres sont donc portés ici, avec
+le neuvième que la provenance de `claims.test.ts` tient à côté.
+
+Ce n'est pas un défaut : c'est la garde qui fait son travail. Le démon a déjà
+fait l'aller-retour — « le démon a maigri de 1,8 à 1,7 Mo, les huit textes
+l'ont appris », écrit dans `site/tests/agent-size.test.ts` — et la phrase est
+**tenue plutôt que datée** exprès, parce qu'elle bouge avec le compilateur
+sans que personne ne commette rien.
+
+**Ce qui n'est pas touché, et pourquoi.** `docs/ROADMAP.md` porte « 1,7 Mo en
+x86_64, 1,4 Mo en aarch64, TLS compris » dans le récit de la tranche qui a posé
+la matrice de publication : c'est un relevé de son moment, pas une annonce du
+présent, et la garde ne le lit pas. Le rafraîchir referait #359.
+
+**Mesuré ici, et comment.** Le premier essai a échoué : `musl-gcc` manquait,
+`apt-get install musl-tools` répondait « Unable to locate package » faute d'un
+`apt-get update`, et `cc-rs` cherche de son côté `x86_64-linux-musl-gcc` là où
+Debian installe `musl-gcc`. Les deux se règlent — la mise à jour des listes,
+puis `CC_x86_64_unknown_linux_musl=musl-gcc` —, et la garde tourne pour de
+bon :
+
+```
+Taille du démon : 1770192 octets, soit 1.8 Mo — les huit textes s'accordent.
+```
+
+Trois relevés indépendants donnent donc le même dixième : 1 766 216 octets au
+job de `8d33e6f`, autant à celui de `f080780`, 1 770 192 ici. Et
+`site/tests/agent-size.test.ts` tient l'autre moitié — huit cas verts : les
+huit textes s'accordent **entre eux**, et chaque motif trouve exactement une
+occurrence.
+
+**Un piège du conteneur, noté au passage.** `verify.sh` ne construit le démon
+musl que si la cible `x86_64-unknown-linux-musl` est installée. Je l'avais
+ajoutée en diagnostiquant, sans `musl-gcc` à côté : le passage suivant a rendu
+**101** sur `failed to find tool "x86_64-linux-musl-gcc"` — une étape que mes
+passages précédents sautaient en silence. Installer la cible **arme** une
+vérification de plus ; c'est une bonne nouvelle, à condition de poser l'outil
+qui va avec. Et pour la troisième fois de la journée, la notification de fin de
+tâche annonçait « exit code 0 » pendant que le fichier horodaté portait 101.
