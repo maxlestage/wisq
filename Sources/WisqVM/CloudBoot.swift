@@ -413,9 +413,15 @@ public struct CloudBoot: Equatable, Sendable {
     /// démarrent pas d'eux-mêmes — `systemctl start NetworkManager` les
     /// lance, sans quitter le shell. `systemctl default` ou `exit` rendent le
     /// système entier, et la console s'arrête alors sur `login`.
+    ///
+    /// **Sans reconstruire la base matérielle de udev** : au premier
+    /// démarrage de Rocky Linux 9, `systemd-hwdb-update` la recompile, si
+    /// lentement sur ce cœur que le périphérique de `/boot` n'apparaît pas à
+    /// temps — mode d'urgence. Masqué, udev garde la base livrée dans
+    /// l'image, et Rocky ouvre le shell avec `/boot` et `/boot/efi` montés.
     static let legacyConsoleOptions = [
         "systemd.unit=rescue.target", "systemd.setenv=SYSTEMD_SULOGIN_FORCE=1",
-        "systemd.mask=jeos-firstboot.service",
+        "systemd.mask=jeos-firstboot.service", "systemd.mask=systemd-hwdb-update.service",
     ]
 
     /// Les dossiers où vit `libsystemd-shared-NNN.so`, selon la famille : la
