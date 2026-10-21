@@ -8,6 +8,41 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-20 — `pop 0x28(%rsp)` écrivait huit octets trop bas
+
+Suite directe, même autorisation. Le noyau 5.14 d'AlmaLinux 9 s'arrêtait à
+943 millions d'instructions, dans `memcpy`, sur une adresse physique de
+cinquante et un bits — et **sans** les bits de x86-64-v2 aussi : la faute
+était ailleurs.
+
+- **La trace.** Une course échantillonnée instruction par instruction, les
+  registres à chaque pas, sur les cent mille dernières : `apply_alternatives`
+  → `__text_poke` → `switch_mm_irqs_off` → `memcpy(0x71099de1d13d, …, 1)`.
+  L'adresse est la projection temporaire où le noyau écrit son propre code,
+  et sa table de pages pointe la trame 0x580000000a. Remontée dans
+  `__text_poke` : `pushf ; pop 0x28(%rsp)` range les drapeaux, puis
+  `mov 0x20(%rsp),%rcx` relit la `struct page *`… et lit 0x282 — les
+  drapeaux. `mk_pte` en fait la trame.
+- **La règle** : l'adresse d'un `POP` dont l'opérande passe par RSP se
+  calcule **après** que RSP a avancé. Le cœur la calculait avant, et écrivait
+  huit octets trop bas, sur la case voisine. RSP est maintenant avancé le
+  temps du calcul, puis remis : il n'avance pour de bon qu'après l'écriture,
+  pour qu'une écriture qui faute ne laisse rien derrière elle.
+- **Le corpus de la pile** gagne `pop (%rsp)`, `pop 8(%rsp)`,
+  `pop 0x28(%rsp)`, `pop -8(%rsp)`, `popw 2(%rsp)`, et `push (%rsp)`,
+  `push 8(%rsp)`, `push -8(%rsp)` — dont l'adresse se calcule **avant** de
+  descendre, et qui étaient justes. 89 formes, 712 cas. Sans le correctif :
+  40 désaccords, tous des `pop` vers la pile. Avec : aucun.
+- **Sur la vraie image** : le noyau d'AlmaLinux 9.8 passe `apply_alternatives`
+  et continue — cinquante-huit secondes de temps invité plus loin, il
+  initialise IMA et EVM. Son espace utilisateur attend x86-64-v2 (#572 et
+  les bits de CPUID).
+- **Le cœur Rust** relit le même corpus de pile (`x86_oracle.rs`) et y passe
+  sans changement ; son compte de formes et de cas, épinglé, suit : 89 et
+  712.
+- **Le compteur publié passe à 2917** : #569, fusionné entre-temps, avait
+  ajouté un test sans le compter.
+
 ## 2026-10-20 — x86-64-v2, troisième tranche : SSE4.2, CMPXCHG16B, LAHF/SAHF, l'arrondi
 
 Suite directe, même autorisation. Ce que les binaires d'AlmaLinux 9.8
