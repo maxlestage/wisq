@@ -249,7 +249,8 @@ public struct X86Core: @unchecked Sendable {
     /// permissions d'une lecture d'instruction n'en dépendent que de lui.
     /// L'étiquette est la page **plus un**, zéro voulant dire « vide ».
     var fetchTag: UInt64 = 0
-    var fetchFrame: UInt64 = 0
+    /// La place de la trame dans `memory.bytes` — pas son adresse physique.
+    var fetchStart = 0
     var fetchPrivilege = 0
 
     struct Translation {
@@ -499,20 +500,27 @@ public struct X86Core: @unchecked Sendable {
                 // La page de l'instruction précédente, si rien n'a bougé : voir
                 // `fetchTag`. Le témoin d'adresse, armé, veut voir chaque
                 // lecture — il repasse par `translate`.
-                let physical: UInt64
+                // La page gardée porte directement sa place dans la mémoire
+                // (`fetchStart`), vérifiée une fois pour la page entière : le
+                // décalage dans la page n'en sort pas, et la borne de
+                // `offset` ne se repaie plus à chaque instruction.
+                let start: Int
                 let page = rip & ~UInt64(0xFFF)
                 if fetchTag == page &+ 1, fetchPrivilege == privilege, watchedAddress == nil {
-                    physical = fetchFrame | (rip & 0xFFF)
+                    start = fetchStart &+ Int(truncatingIfNeeded: rip & 0xFFF)
                 } else {
-                    physical = try translate(rip, .fetch)
-                    if pagingActive {
+                    let physical = try translate(rip, .fetch)
+                    guard let at = memory.offset(physical, 1) else {
+                        throw Fault.outsideMemory(physical)
+                    }
+                    start = at
+                    // Une page qui ne tient pas entière dans la mémoire n'est
+                    // pas gardée : elle repasse ici à chaque instruction.
+                    if pagingActive, let frame = memory.offset(physical & ~UInt64(0xFFF), 0x1000) {
                         fetchTag = page &+ 1
-                        fetchFrame = physical & ~UInt64(0xFFF)
+                        fetchStart = frame
                         fetchPrivilege = privilege
                     }
-                }
-                guard let start = memory.offset(physical, 1) else {
-                    throw Fault.outsideMemory(physical)
                 }
                 // **Une instruction ne se lit pas au-delà de sa page.** La
                 // traduction ne porte que le premier octet ; les quatorze
