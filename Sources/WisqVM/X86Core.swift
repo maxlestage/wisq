@@ -237,6 +237,21 @@ public struct X86Core: @unchecked Sendable {
     /// l'est pas.
     var translations = [Translation](repeating: Translation(), count: X86Core.translationSlots)
 
+    /// **La page du dernier `rip`**, déjà traduite. Presque chaque instruction
+    /// est lue dans la même page que la précédente ; `run` reprend alors la
+    /// trame d'ici au lieu de repasser par `translate` — le témoin, l'index,
+    /// l'étiquette et les permissions, une vingtaine d'instructions de l'hôte
+    /// à chaque fois.
+    ///
+    /// Valable tant que rien n'a bougé : une traduction ajoutée au cache ou
+    /// le cache vidé l'effacent (`fill`, `flushTranslations`), et l'anneau
+    /// dans lequel elle a été vérifiée fait partie de la clé, puisque les
+    /// permissions d'une lecture d'instruction n'en dépendent que de lui.
+    /// L'étiquette est la page **plus un**, zéro voulant dire « vide ».
+    var fetchTag: UInt64 = 0
+    var fetchFrame: UInt64 = 0
+    var fetchPrivilege = 0
+
     struct Translation {
         /// L'adresse de page **plus un**, zéro voulant dire « vide ».
         var tag: UInt64 = 0
@@ -481,7 +496,21 @@ public struct X86Core: @unchecked Sendable {
                 continue
             }
             do {
-                let physical = try translate(rip, .fetch)
+                // La page de l'instruction précédente, si rien n'a bougé : voir
+                // `fetchTag`. Le témoin d'adresse, armé, veut voir chaque
+                // lecture — il repasse par `translate`.
+                let physical: UInt64
+                let page = rip & ~UInt64(0xFFF)
+                if fetchTag == page &+ 1, fetchPrivilege == privilege, watchedAddress == nil {
+                    physical = fetchFrame | (rip & 0xFFF)
+                } else {
+                    physical = try translate(rip, .fetch)
+                    if pagingActive {
+                        fetchTag = page &+ 1
+                        fetchFrame = physical & ~UInt64(0xFFF)
+                        fetchPrivilege = privilege
+                    }
+                }
                 guard let start = memory.offset(physical, 1) else {
                     throw Fault.outsideMemory(physical)
                 }
