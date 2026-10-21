@@ -730,7 +730,6 @@ public struct X86Core: @unchecked Sendable {
         return word >> UInt64(opcode & 63) & 1 != 0
     }
 
-    @inline(__always)
     mutating func perform(_ instruction: X86Instruction) throws {
         guard instruction.vexCount == 0 else {
             throw Fault.unsupported("une instruction vectorielle")
