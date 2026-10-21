@@ -139,7 +139,7 @@ public final class RustLinuxMachine: @unchecked Sendable {
     /// fichiers, et les refus sont les mêmes, avec les mêmes noms.
     public func attach(diskFileAt base: URL, writes: URL) throws {
         // **Le cœur Rust lit sa base octet pour octet**, et un qcow2, un
-        // VMDK, un VDI ou un VHD dynamique n'est pas les octets d'un disque : brancher l'un sur l'autre
+        // VMDK, un VDI, un VHD dynamique ou un VHDX n'est pas les octets d'un disque : brancher l'un sur l'autre
         // donnerait à l'invité les tables du format en guise de système de
         // fichiers. Leurs lecteurs sont côté Swift, là où tournent les PC —
         // c'est pour eux que les distributions livrent des images de cloud.
@@ -147,7 +147,8 @@ public final class RustLinuxMachine: @unchecked Sendable {
             let format = Qcow2Image.looksLikeOne(fileAt: base) ? "un qcow2"
                 : VmdkImage.looksLikeOne(fileAt: base) ? "un VMDK"
                 : VdiImage.looksLikeOne(fileAt: base) ? "un VDI"
-                : VhdImage.looksLikeOne(fileAt: base) ? "un VHD dynamique" : "une appliance OVA"
+                : VhdImage.looksLikeOne(fileAt: base) ? "un VHD dynamique"
+                : VhdxImage.looksLikeOne(fileAt: base) ? "un VHDX" : "une appliance OVA"
             throw FileDiskStore.Failure.unreadableImage(
                 "ce disque est \(format), que le cœur RISC-V ne lit pas encore ; "
                     + "il se branche sur un noyau de PC, ou se convertit avec "

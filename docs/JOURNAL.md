@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le VHDX d'Hyper-V, lu sur place
+
+Le dernier format d'hyperviseur courant que wisq reconnaissait sans le lire.
+`VhdxImage` lit le disque d'Hyper-V tel quel, dynamique ou fixe, contre deux
+vrais fichiers de `qemu-img` 8.2.2 (blocs de 1 Mio, le bloc 1 inscrit « zéro »).
+
+**Ce qui fait foi, quand il y a deux copies.** Le VHDX double ses en-têtes et
+sa table des régions pour survivre à une coupure. Le lecteur garde le plus
+récent des en-têtes dont le CRC-32C tient, et la première table des régions
+valide. Le test qui le tient porte un journal en attente dans l'en-tête
+**ancien** : prendre le premier au lieu du plus récent fait refuser un disque
+sain, et le sabordage le montre.
+
+**Un journal non rejoué est refusé, et nommé.** Un GUID de journal non nul
+veut dire que des écritures attendent : le fichier tel quel n'est pas encore
+le disque. Le refus dit quoi faire (le rouvrir dans Hyper-V, ou `qemu-img
+check -r all`). Le disque différentiel est refusé comme pour le VDI et le VHD.
+
+**Les entrées des cartes de secteurs.** Toutes les `chunkRatio` entrées de la
+table des blocs, une entrée qui n'est pas un bloc s'intercale. Avec des blocs de
+1 Mio, elle n'apparaît qu'après 4096 blocs : le fichier de test ne pouvait pas
+la montrer. Le test change les métadonnées — qui n'ont pas de somme — pour des
+blocs de 256 Mio et un disque de dix-sept blocs, et fait pointer l'entrée de la
+carte sur les données du bloc 0 : lire la table sans la sauter rend « wisq! »
+au lieu de « 2Mio ».
+
+Douze sabordages, tous attrapés : premier en-tête au lieu du plus récent,
+journal ignoré, seconde table des régions oubliée, région ou métadonnée
+obligatoire inconnue acceptée, parent ignoré, cartes non sautées, bloc démappé
+lu dans le fichier, borne de fichier retirée (un plantage sur une adresse au
+bit fort), borne de la table des blocs, CRC faux, taille de secteur libre.
+
+Les tests qui prenaient le VHDX comme exemple de format « reconnu, pas lu »
+prennent désormais l'ancien qcow, version 1 — le seul qui reste avec le VMDK
+« descripteur ». Le cœur RISC-V refuse le VHDX en le nommant, comme les autres.
+Compte publié : 2957.
+
 ## 2026-10-21 — Le démon repasse à 1,8 Mo, sans que personne ne commette rien
 
 La CI de #597 a rougi dans le job Rust, sur `check-agent-size.sh` : le binaire

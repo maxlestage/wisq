@@ -410,8 +410,17 @@ recommandent pour une machine prête en une minute.
    zéros. La taille est celle que le pied annonce, arrondie ou non à une
    géométrie. Refusés en le disant : le disque différentiel, une somme
    fausse. Le VHD fixe n'en a pas besoin : c'est une image brute suivie d'un
-   pied. Reste reconnu sans être lu, avec la commande `qemu-img convert` :
-   le VHDX.
+   pied.
+9. **Fait.** Le **VHDX** d'Hyper-V (`VhdxImage`), dynamique ou fixe : les
+   deux en-têtes — le plus récent de ceux dont le CRC-32C tient —, les deux
+   tables des régions, les métadonnées (taille des blocs, du disque, des
+   secteurs), la table des blocs avec ses entrées de cartes de secteurs
+   sautées ; un bloc absent, mis à zéro ou démappé se lit en zéros. Refusés
+   en le disant : le disque différentiel, un journal pas encore rejoué (le
+   disque n'a pas été fermé proprement), une région ou une métadonnée
+   obligatoire inconnue. Plus aucun format d'hyperviseur courant n'est
+   reconnu sans être lu ; restent l'ancien qcow (version 1) et le VMDK
+   « descripteur », qui n'est que le texte nommant d'autres fichiers.
 
 ## Les images de cloud qui démarrent seules
 
