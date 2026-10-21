@@ -341,4 +341,31 @@ final class X86DecoderTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(MemoryLayout<X86Instruction>.stride, 40)
     }
+
+    /// **La largeur des opérandes tirée au décodage vaut celle d'avant**, pour
+    /// chaque REX et chaque jeu de préfixes : la formule de référence est
+    /// celle que `X86Core.operandSize` appliquait à chaque exécution. REX.W
+    /// l'emporte sur `66`, et les autres préfixes n'y font rien.
+    func testTheOperandWidthTakenAtDecodeIsTheOldOne() throws {
+        let others: [[UInt8]] = [[], [0xF3], [0xF2], [0x2E], [0xF0, 0x64]]
+        for rex in [nil] + (0x40...0x4F).map({ UInt8($0) }) {
+            for size in [false, true] {
+                for prefixes in others {
+                    let bytes = prefixes + (size ? [0x66] : []) + (rex.map { [$0] } ?? []) + [0x01, 0xC8]
+                    let instruction = try X86Decoder.decode(bytes)
+                    let old = (rex ?? 0) & 0x08 != 0 ? 8 : instruction.hasPrefix(0x66) ? 2 : 4
+                    XCTAssertEqual(X86Core.operandSize(instruction, byteForm: false), old, "\(bytes)")
+                    XCTAssertEqual(X86Core.operandSize(instruction, byteForm: true), 1)
+                }
+            }
+        }
+    }
+
+    /// **Le masque sans branche vaut l'ancien**, pour les quatre tailles.
+    func testTheBranchlessMaskIsTheOldOne() {
+        for size in [1, 2, 4, 8] {
+            let old = size >= 8 ? UInt64.max : (UInt64(1) << (8 * UInt64(size))) - 1
+            XCTAssertEqual(X86Core.mask(size), old, "\(size) octets")
+        }
+    }
 }
