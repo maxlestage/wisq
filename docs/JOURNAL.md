@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — `readRM` et `writeRM` : le registre en ligne
+
+Relance horaire, même autorisation. Après #580, callgrind montrait
+`readRM` et `writeRM` coûtant 1,2 % et 0,8 % des instructions de l'hôte
+**rien que sur leur accolade d'entrée et de sortie** : jamais inlinées,
+elles payaient un appel et la sauvegarde des registres, alors que la moitié
+des opérandes ne sont qu'un registre.
+
+- Le chemin du registre est forcé en ligne chez l'appelant ; celui de la
+  mémoire, long (traduction, accès, témoin), reste un appel à part
+  (`readRMMemory`, `writeRMMemory`, jamais inlinées) pour que chaque
+  instruction ne grossisse pas de tout le chemin mémoire.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  36,57 → 34,80 milliards d'instructions hôte, 4,8 % de moins. **En temps
+  natif**, 600 millions d'instructions sur un cœur épinglé, trois paires
+  alternées : médiane 20,16 s → 18,52 s, **8,1 % de moins** — plus que
+  callgrind, qui ne compte pas les appels ni les sauvegardes mal prédites.
+- Pas de test nouveau : la sémantique ne change pas, et les tests en place
+  la tiennent. Sabotages, chacun rattrapé : le registre lu sans l'octet haut
+  (2 échecs), l'écriture en mémoire tronquée à un octet (7 échecs et un
+  plantage).
+
 ## 2026-10-21 — L'arithmétique du chemin chaud, sans piège
 
 Relance horaire, même autorisation. Le même callgrind, après #579, montrait
