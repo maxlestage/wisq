@@ -28578,3 +28578,87 @@ passages précédents sautaient en silence. Installer la cible **arme** une
 vérification de plus ; c'est une bonne nouvelle, à condition de poser l'outil
 qui va avec. Et pour la troisième fois de la journée, la notification de fin de
 tâche annonçait « exit code 0 » pendant que le fichier horodaté portait 101.
+
+## #364 — « les autres ne le sont pas encore », juste au-dessus de la ligne qui en lit cinq
+
+`LocalDisk.isDiskImage` portait, sur la ligne précédant son propre `case` :
+
+> Le qcow2 et le VMDK sont lus sur place (`Qcow2Image`, `VmdkImage`) ;
+> les autres formats d'hyperviseur **ne le sont pas encore**.
+
+Et la ligne suivante appelle `KernelImageKind.isReadableVirtualDisk`, qui
+répond vrai pour **cinq** : `["qcow2", "VMDK", "OVA", "VDI", "VHD dynamique"]`.
+Trois des « autres » sont lus depuis les tranches qui les ont apportés — l'OVA,
+le VDI (#595), le VHD dynamique (#597). Le commentaire contredisait la ligne
+qu'il introduisait.
+
+### Ce qui prouve que c'est la phrase qui a dérivé
+
+La phrase posée juste au-dessus de la **définition**, elle, les nomme tous les
+cinq. Deux phrases sur le même ensemble, à trente lignes l'une de l'autre, et
+une seule a suivi. C'est la forme de #362 à la virgule près, et celle de #358
+avant elle.
+
+### Et le test qui s'en occupait n'en voyait que deux
+
+`testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots` — « seul ce qui est lu est
+offert comme disque » — vérifiait le qcow2 et le VMDK, recopiés à la main, et
+laissait les trois autres hors de tout contrôle. Un comptage qui ne voit qu'une
+partie de ce qu'il compte ne garde pas le reste.
+
+La liste sort donc du prédicat sous le nom `readableVirtualDisks`, et le test
+l'**énumère** au lieu d'en recopier deux noms. Le sixième format sera exercé
+sans qu'on repasse par là. Mesuré après coup : les cinq passent déjà
+`isDiskImage` et `couldBeDisk` — le code était juste, c'est la prose et la
+couverture qui manquaient.
+
+### Ce que la garde lit, et ce qu'elle laisse
+
+Un commentaire **collé** à un emploi de `isReadableVirtualDisk` parle de ce que
+cette fonction répond : s'il nomme un format, il parle de la famille et doit la
+nommer entière. Les en-têtes de fichier n'entrent pas — `VdiImage.swift` cite le
+qcow2 et le VMDK pour situer le VDI, et n'énumère rien. Leur réclamer la liste
+complète serait l'erreur inverse de celle d'ici.
+
+Le `///` du test est hors de portée d'un emploi : aucune règle mécanique ne
+l'attraperait sans attraper du même coup les en-têtes. Il est donc **désigné**,
+avec son ancre — un nom de fonction, pas la phrase qu'il faut corriger.
+
+**La garde se lit dans les deux sens.** Le vocabulaire vient de `virtualDisk`,
+le reconnaisseur : ce qu'il sait nommer et qui n'est pas dans la liste est
+reconnu **sans** être lu, et une phrase ne doit pas l'y ranger. Sans ce second
+sens, retirer un format de la liste serait passé en silence — le deuxième
+sabordage. Les noms sont cherchés du plus long au plus court, et la place du
+plus long effacée : « qcow » vit dans « qcow2 », et « VMDK » dans « VMDK
+(descripteur) ».
+
+### Sept sabordages, sept chutes — et deux essais qui devaient passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| le commentaire revient à deux formats | « nomme « VMDK, qcow2 » là où les formats lus sur place sont « OVA, VDI, VHD dynamique, VMDK, qcow2 » » |
+| le VDI quitte la liste, les phrases le nomment encore | « plus aucune phrase ne nomme les formats en entier » |
+| une phrase range le VHDX parmi les lus | « nomme « …, VHDX, … » là où les formats lus sont … » |
+| le `///` du test revient à deux formats | le même désaccord, sur le fichier de test |
+| la liste disparaît du noyau | « `readableVirtualDisks` ne se lit plus » |
+| le test énumérant perd son ancre | « `testOnlyWhatIsReadIsOfferedAsADiskAndNothingBoots` a disparu » |
+| un format lu que le reconnaisseur ne sait pas nommer | « « QED » est lu sans que `virtualDisk` sache le nommer » |
+| (non-sabordage) un commentaire sans aucun format au-dessus d'un emploi | rien : la porte « s'il en nomme un » porte quelque chose |
+| (non-sabordage) le commentaire recoupé sur d'autres lignes | rien : le bloc est joint et les blancs écrasés |
+
+Le deuxième et le troisième comptent ensemble : ils montrent les deux sens.
+Le septième dit que la liste des lus ne peut pas s'écarter de ce que le
+reconnaisseur sait distinguer.
+
+### Une absence cherchée là où la chose est présente
+
+J'allais compter un second défaut : la doc du cas `virtualDisk` énumère
+« qcow2, VMDK, VHDX, VHD dynamique, VDI » et **omet l'OVA**, que `virtualDisk`
+rend pourtant. La phrase d'à côté tranche : elle écrit « l'appliance OVA, dont
+le VMDK est lu dans l'archive ». L'OVA n'est pas rangé parmi les formats parce
+que c'est une **archive** qui en contient un, et les deux phrases s'accordent
+là-dessus. Pas un défaut, une distinction tenue.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les quatre fichiers
+voulus.
