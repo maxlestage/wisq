@@ -70,6 +70,10 @@ extension X86Core {
     }
 
     /// Les huit opérations que les octets 0x00 à 0x3D portent, dans l'ordre.
+    ///
+    /// **En ligne** : quatre appelants seulement, et l'entrée et la sortie de
+    /// l'appel coûtaient sous callgrind 0,8 % des instructions de l'hôte.
+    @inline(__always)
     mutating func arithmetic(_ index: Int, _ a: UInt64, _ b: UInt64, _ size: Int) -> UInt64? {
         switch index {
         case 0: return add(a, b, size)
