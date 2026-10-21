@@ -8,6 +8,26 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Rocky Linux 9, la huitième distribution
+
+- **Le mode d'urgence de Rocky venait de udev.** Au premier démarrage,
+  `systemd-hwdb-update` recompile la base matérielle — trop lentement sur ce
+  cœur, et le périphérique de `/boot` manquait son délai. La console ancienne
+  (`CloudBoot.legacyConsoleOptions`) masque maintenant ce service : udev garde
+  la base livrée dans l'image. Essayé sur l'image « Base » du 25 mai 2026 :
+  `[root@localhost ~]#` répond, `/boot` et `/boot/efi` montés, aucune ligne
+  `DEPEND` ni `FAILED`. AlmaLinux 9 n'en dépendait pas, et garde son shell.
+- **La feuille « Télécharger » propose Rocky** : l'image « Base » datée la
+  plus récente (pas la variante `LVM`, que wisq ne lit pas), triée par date —
+  la 9.10 passe devant la 9.9 —, vérifiée contre son `.CHECKSUM` au format de
+  BSD (`SHA256 (nom) = somme`), qui doit nommer ce fichier-là.
+- Tests : `testRockyIsTheBaseImageWithItsBSDChecksum`, l'option dite en toutes
+  lettres dans le test de la console ancienne, et AlmaLinux et Rocky
+  téléchargés et vérifiés ensemble. Sabotages, chacun rattrapé : retirer le
+  masque, ne plus comparer le nom dans la somme BSD, élargir le préfixe aux
+  images `LVM`, ne plus ajouter Rocky à la liste.
+- Compteur publié : 2923.
+
 ## 2026-10-21 — AlmaLinux 9, la septième distribution ; Rocky attend
 
 Suite directe, même autorisation. La feuille « Télécharger » propose
