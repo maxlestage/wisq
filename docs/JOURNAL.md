@@ -28234,3 +28234,92 @@ cinquième montre que l'exception ne peut pas devenir vide en silence.
 
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les deux fichiers voulus.
+
+## #362 — le bureau refuse quatre endroits et sa prose en comptait trois
+
+`LocalDesktop.place` porte son inventaire de refus dans son propre
+commentaire, à trois endroits :
+
+> **Trois endroits sont refusés, et il n'en tenait qu'un.** […] Les deux
+> autres sont des régions que la machine se donne à elle-même […] : la **page
+> zéro** […] et le **cadre** […].
+
+> Les deux autres refus sont au-dedans de cette borne.
+
+> **Les trois refus viennent du Rust.**
+
+Le `switch` qui suit en nomme **cinq**, et `DesktopTranslator.Placement` en
+déclare cinq.
+
+### Les deux nombres qui ne s'accordent pas, et le commentaire qui a suivi
+
+| | à #312 (`66b6a6b`) | aujourd'hui |
+| --- | --- | --- |
+| refus que le Rust peut rendre | **4** | **5** |
+| régions que la machine se donne | 2 | **3** |
+| ce qu'annonce `ffi.rs` | « l'un des **quatre** » | « l'un des **cinq** » |
+| ce qu'annonce `place` | « **trois** refus » | « **trois** refus » |
+
+Deux commentaires sur le même ensemble, et un seul a bougé. L'archive
+initramfs — la troisième région, celle que le noyau déballe pour s'en faire
+une racine — est arrivée avec **#313**, dont le titre dit « le bureau n'avait
+pas de racine ». La tranche qui a ajouté la région a laissé le compte
+derrière elle.
+
+Et le compte était **déjà court à sa naissance** : à #312 le Rust rendait
+quatre refus, `ffi.rs` l'écrivait noir sur blanc, et `place` en annonçait
+trois. C'est la même forme qu'à #361 — un nombre juste pour un autre ensemble,
+recopié sur celui qu'il décrit.
+
+### Les quatre nombres descendent d'une seule source
+
+L'énumération `Placement`, et rien ne se recopie :
+
+- les cas de refus — tous sauf `placeable` et l'échappement — donnent ce que
+  le Rust peut rendre : `ffi.rs` **et** `place` doivent l'annoncer ;
+- les cas `wouldOverwrite…` donnent les régions que la machine se donne à
+  elle-même ;
+- les endroits refusés sont ces régions **plus la borne de la RAM**, qui n'en
+  est pas une : c'est là que s'arrête la mémoire de l'invité.
+
+**L'échappement est reconnu par sa forme, pas par sa place.** Le seul cas qui
+porte une valeur associée est celui qui rend un code inconnu. L'exclusion est
+nommée *et* vérifiée — sans quoi un renommage le ferait compter comme un
+refus, en silence. C'est la leçon de #321 dans l'autre sens : une exclusion
+par nom qu'on ne vérifie pas est une affirmation de plus.
+
+### Huit sabordages, huit chutes — et deux essais qui devaient passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| « Quatre endroits » redevient « Trois » | « annonce « Trois » là où `Placement` en déclare 4 » |
+| « les trois autres régions » redevient « deux » | « annonce « deux » … en déclare 3 » |
+| « les cinq refus viennent du Rust » redevient « trois » | « annonce « trois » … en déclare 5 » |
+| `ffi.rs` revient à « l'un des quatre » | « crates/wisq-vm/src/ffi.rs annonce « quatre » … en déclare 5 » |
+| « les trois autres refus au-dedans » redevient « deux » | « annonce « deux » … en déclare 3 » |
+| une sixième région déclarée | « en déclare 5 (6 refus, dont 4 régions) » |
+| l'archive disparaît de l'énumération | « en déclare 3 (5 refus, dont 2 régions) » |
+| le cas d'échappement est renommé | « le cas d'échappement de `Placement` n'est plus `unknown` » |
+| (non-sabordage) les cas changent d'ordre | rien : la garde compte, elle n'ordonne pas |
+| (non-sabordage) la phrase est recoupée sur deux lignes | rien : le texte est aplati avant d'être lu |
+
+Les sixième et septième comptent ensemble : ils prouvent que les quatre
+nombres viennent de l'énumération et non d'une constante recopiée dans le
+test. Le huitième prouve que l'exclusion de l'échappement porte quelque chose.
+
+Les deux sabordages de l'énumération ne compilent évidemment pas — la garde
+est textuelle, et l'exhaustivité du `switch` est tenue par le compilateur, pas
+par elle. Ce qu'elle tient est l'accord entre ce qui est **déclaré** et ce qui
+est **annoncé**, et c'est exactement ce qui avait dérivé.
+
+### Une ancre vue deux fois n'est pas une ancre
+
+Le huitième sabordage n'a pas pris au premier essai : `case unknown(Int32)`
+apparaît **deux fois** dans `DesktopTranslator.swift`, deux énumérations ayant
+le même échappement. Le script a refusé plutôt que de muter les deux — le
+« SURVÉCU » qui en serait sorti aurait été une mutation non appliquée, la
+première des trois trahisons connues. Repris par numéro de ligne, il tombe.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les deux fichiers
+voulus.
