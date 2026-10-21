@@ -91,7 +91,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (2941 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (2947 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
@@ -135,7 +135,7 @@ tient l'application, l'interface et le client de bureau distant — du travail
 de forme Apple, sur Network.framework. Rust tient ce qui n'est ni l'un ni
 l'autre : un démon sans interface, et un interpréteur qui n'est que du calcul
 sur un tableau d'octets. Ni l'un ni l'autre n'a de raison d'embarquer un
-runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,7 Mo
+runtime de langage, et le téléchargement du démon est passé de 58 Mo à 1,8 Mo
 en cessant d'en porter un.
 
 Voir `docs/ARCHITECTURE.md` pour le détail des couches et `docs/ROADMAP.md` pour
