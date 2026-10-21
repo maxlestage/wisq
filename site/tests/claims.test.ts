@@ -312,7 +312,55 @@ describe("advertised claims match the repository", () => {
       sources.push(join(repoRoot, entry));
     }
 
+    // **Une note datée ne se rafraîchit pas, et cette garde la rafraîchissait.**
+    //
+    // Le chapeau de la page des versions pose la règle, dans le dépôt : « a
+    // number here is dated by the version that announced it, and it is not
+    // refreshed when a later version moves it ». Le onzième corpus est arrivé
+    // le 20 octobre, quarante-cinq jours après le tag `v0.4.0` — et la note de
+    // la 0.4.0, dans les deux langues, plus l'entrée `## [0.4.0] — 2026-09-05`
+    // du `CHANGELOG`, se sont mises à annoncer onze. Mesuré au tag avec les
+    // deux conditions de `hardwareOracles` : **dix**.
+    //
+    // L'en-tête de cette garde justifiait le rafraîchissement, et pour le
+    // dixième corpus il avait raison — l'arrondi x87 était *dans* la 0.4.0. Le
+    // onzième ne l'est pas, et la justification ne s'étend pas à lui.
+    //
+    // Les copies datées sortent donc du compte du jour. Elles ne sont pas
+    // libres : **les copies d'une même version doivent s'accorder entre
+    // elles** — la note anglaise, la française et l'entrée du `CHANGELOG`
+    // décrivent le même tag — et il doit y en avoir, sans quoi l'exception
+    // avalerait tout en silence.
+    const released = [
+      ...(readFileSync(join(repoRoot, "crates/wisq-site/src/pages/releases.rs"), "utf8")
+        .match(/RELEASED_VERSIONS[^=]*=\s*&\[([^\]]*)\]/)?.[1] ?? "")
+        .matchAll(/"([^"]+)"/g),
+    ].map((found) => found[1]!);
+    expect(released.length, "`RELEASED_VERSIONS` ne se lit plus").toBeGreaterThan(0);
+
+    /// La version que décrit le passage, ou `null` s'il parle du présent.
+    /// Dans `releases.rs`, le titre d'une section datée est **exactement** un
+    /// numéro : « Added since 0.4.0 » appartient au non-publié et porte
+    /// pourtant « 0.4.0 », donc l'égalité, pas l'inclusion.
+    const datedVersion = (path: string, text: string, at: number): string | null => {
+      const before = text.slice(0, at);
+      if (path.endsWith("CHANGELOG.md")) {
+        const heads = [...before.matchAll(/^## \[([^\]]+)\]/gm)];
+        const last = heads.at(-1)?.[1];
+        return last !== undefined && released.includes(last) ? last : null;
+      }
+      if (path.endsWith(join("pages", "releases.rs"))) {
+        let found: string | null = null;
+        for (const head of before.matchAll(/Block::H2\("([^"]*)"/g)) {
+          if (released.includes(head[1]!)) found = head[1]!;
+        }
+        return found;
+      }
+      return null;
+    };
+
     let seen = 0;
+    const datées = new Map<string, { mot: string; où: string }[]>();
     for (const path of sources) {
       const text = readFileSync(path, "utf8");
       for (const [words, pattern] of [
@@ -326,6 +374,13 @@ describe("advertised claims match the repository", () => {
             words.indexOf(said),
             `${path} écrit « ${found[0]} », un mot qui n'est pas un nombre de cette liste`,
           ).toBeGreaterThanOrEqual(0);
+          const version = datedVersion(path, text, found.index!);
+          if (version !== null) {
+            const déjà = datées.get(version) ?? [];
+            déjà.push({ mot: String(words.indexOf(said)), où: `${path} « ${found[0]} »` });
+            datées.set(version, déjà);
+            continue;
+          }
           expect(
             said,
             `${path} annonce « ${found[0]} » et Tests/Fixtures/ en porte ` +
@@ -333,6 +388,22 @@ describe("advertised claims match the repository", () => {
           ).toBe(words[oracles.length]);
         }
       }
+    }
+
+    // L'exception est montrée portante : il y a bien des copies datées, et
+    // celles d'une même version disent le même nombre.
+    expect(
+      datées.size,
+      "aucune copie datée : l'exception ci-dessus n'a plus d'objet, et la garde " +
+        "est redevenue celle qui rafraîchissait l'histoire",
+    ).toBeGreaterThan(0);
+    for (const [version, copies] of datées) {
+      const nombres = new Set(copies.map((copie) => copie.mot));
+      expect(
+        nombres.size,
+        `les notes de la ${version} ne s'accordent pas : ` +
+          copies.map((copie) => copie.où).join(" | "),
+      ).toBe(1);
     }
     // **Et la garde se garde elle-même.** Si les pages cessaient de dire la
     // phrase, cette boucle ne vérifierait plus rien en silence — c'est
