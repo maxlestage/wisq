@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — `probeWrite` et `arithmetic` en ligne
+
+Relance horaire, même autorisation. Le profil d'après #583 montrait deux
+petites fonctions qui payaient encore leur appel sur leurs accolades :
+`probeWrite` (près de 1 %) et `arithmetic` (0,8 %).
+
+- `probeWrite` reçoit le partage de `readRM` : le registre, où il n'y a
+  rien à vérifier, en ligne chez l'appelant ; la mémoire et la danse du
+  témoin d'adresse dans `probeWriteMemory`, jamais inlinée.
+- `arithmetic` est forcée en ligne dans ses quatre appelants.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine, chacune
+  à part : 33,99 → 33,39 milliards pour `probeWrite` (1,8 %), puis
+  → 33,07 pour `arithmetic` (1,0 %) ; 2,7 % ensemble. En temps natif,
+  médiane de trois paires : 20,01 s → 19,18 s, 4,1 % — mais une paire sur
+  trois est inversée, et le bruit reste grand.
+- Pas de test nouveau : la sémantique ne change pas. Sabotages, chacun
+  rattrapé par les tests en place : un `probeWrite` qui ne vérifie plus
+  jamais la mémoire (5 échecs), un `XOR` qui devient `OR` (5 échecs).
+
 ## 2026-10-21 — La page du `rip`, gardée traduite
 
 Relance horaire, même autorisation. `run` traduisait `rip` à chaque
