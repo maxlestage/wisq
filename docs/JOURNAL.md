@@ -27652,3 +27652,89 @@ lecteurs, pas l'inverse.
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les quatre fichiers
 voulus.
+
+## #359 — la garde des corpus rafraîchissait une note datée, et la page dit noir sur blanc qu'on ne le fait pas
+
+Le chapeau de la page des versions pose la règle, dans le dépôt :
+
+> Its figures are the ones measured then: **a number here is dated by the
+> version that announced it, and it is not refreshed when a later version
+> moves it.**
+
+La garde des corpus matériels le faisait. Un onzième oracle,
+`Tests/Fixtures/x86-v2-oracle.tsv`, est arrivé hier avec #570 ; la garde exige
+que **les sept** copies du compte disent le nombre du jour, et trois de ces
+sept vivent dans des **notes datées** :
+
+| copie | section |
+| --- | --- |
+| `pages/releases.rs` | « Added in 0.4.0: the local machines » |
+| `pages/releases.rs` | « Ajouté dans la 0.4.0 : les machines locales » |
+| `CHANGELOG.md` | `## [0.4.0] — 2026-09-05` |
+
+Les trois annonçaient **onze** corpus pour une version publiée le 5 septembre.
+
+### Ce qui est mesuré, au tag
+
+`git ls-tree -r v0.4.0 -- Tests/Fixtures/` donne dix fichiers `*-oracle.tsv`,
+et chacun satisfait les **deux** conditions que `hardwareOracles` applique :
+son en-tête nomme « le vrai processeur », et son fabricant
+`scripts/build-<nom>.py` existe au même tag. **Dix**, donc, et pas onze.
+
+`x86-v2-oracle.tsv` est né dans `13977d5` (#570), le 20 octobre — quarante-cinq
+jours après `f81b136`, le commit qui a daté la 0.4.0.
+
+### La justification de la garde était vraie, et ne se transportait pas
+
+Son en-tête l'écrit :
+
+> Le dixième — l'arrondi x87 — est arrivé onze heures après la phrase, le jour
+> même, et il est **dans** la version 0.4.0 que la note annonce : la note est
+> donc fausse sur la version qu'elle décrit, et pas seulement périmée.
+
+Pour le dixième, rafraîchir rendait la note **plus** vraie sur sa version.
+Pour le onzième, qui n'est pas dans la 0.4.0, cela la rend fausse. Le
+raisonnement tenait pour un cas et la garde l'a appliqué à tous : c'est le
+premier corpus à arriver **après** une release qui a fait écrire le mensonge,
+et c'était hier.
+
+### Comment le défaut s'est démontré
+
+En rétablissant la vérité. Les trois copies remises à « dix » / « ten », la
+garde **a refusé** : « releases.rs annonce « dix corpus matériels » et
+Tests/Fixtures/ en porte 11 ». Une garde qui refuse le vrai est le défaut,
+pas la prose.
+
+### Le nouveau périmètre, et son exception montrée portante
+
+Les copies du **présent** — l'accueil et la feuille de route, dans les deux
+langues — doivent toujours valoir le compte du jour. Les copies **datées** en
+sortent, et ne sont pas libres pour autant : celles d'une même version doivent
+**s'accorder entre elles**, et il doit en exister, sans quoi l'exception
+avalerait tout en silence et la garde redeviendrait celle qui rafraîchissait
+l'histoire.
+
+Une version est reconnue par **égalité**, pas par inclusion : « Added since
+0.4.0 » est le titre du non-publié et porte pourtant « 0.4.0 ». Le sixième
+essai ci-dessous le montre.
+
+### Cinq sabordages, cinq chutes — et un sixième qui devait passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| l'accueil (présent) passe à « Dix » | « annonce « Dix corpus matériels » et Tests/Fixtures/ en porte 11 » |
+| la note anglaise de la 0.4.0 seule revient à onze | « les notes de la 0.4.0 ne s'accordent pas », les trois citées |
+| le `CHANGELOG` daté seul revient à onze | idem, le désaccord nommé |
+| un douzième corpus posé dans `Tests/Fixtures/` | les copies du présent tombent à 11 contre 12 |
+| les trois copies datées changent de tournure | « aucune copie datée : l'exception n'a plus d'objet », **et** la garde compagnonne tombe à 4 copies sur 7 |
+| (non-sabordage) « Added since 0.4.0 » | rien : c'est du présent, et l'égalité le sait |
+
+Le cinquième est celui qui compte : il prouve que l'exception ne peut pas
+devenir vide sans bruit. Le quatrième prouve que le compte du jour vient du
+répertoire. Et le second montre au passage que la garde compagnonne — « la
+phrase des corpus matériels ne dérive pas là où la garde ne regardait pas » —
+continue de compter sept copies dans le périmètre d'inventaire.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, et `git status --porcelain` ne portait que les trois fichiers
+voulus.
