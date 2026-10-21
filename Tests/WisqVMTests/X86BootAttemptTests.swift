@@ -90,7 +90,9 @@ final class X86BootAttemptTests: XCTestCase {
     /// saisie expirait sur « Login incorrect », et la ligne suivante tombait
     /// sur un nouveau `login:`. Une entrée `\n` y répond.
     /// `~]# ` est l'invite de `root` chez Fedora et RHEL, `[root@hôte ~]# `.
-    static let prompts = [prompt, "login: ", "~# ", "~]# ", "Password: "]
+    /// La dernière : `sulogin`, en mode de secours, attend une touche avant
+    /// d'ouvrir le shell (AlmaLinux 9, voir `CloudBoot.legacyConsoleOptions`).
+    static let prompts = [prompt, "login: ", "~# ", "~]# ", "Password: ", "(or press Control-D to continue): "]
 
     /// Le texte sans ses séquences d'échappement : l'invite d'openSUSE
     /// (`localhost:~ #`) remet les couleurs à zéro **entre** le `#` et
