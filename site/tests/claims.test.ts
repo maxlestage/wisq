@@ -2432,6 +2432,115 @@ describe("la phrase des corpus matériels ne dérive pas là où la garde ne reg
   });
 });
 
+/// **L'inventaire a deux noms, et le balayage d'à côté n'en connaissait qu'un.**
+///
+/// Celui-ci exige de chaque phrase qui dit « corpus matériels » qu'elle soit
+/// dans le périmètre d'inventaire, un constat daté, ou sans nombre, parce
+/// qu'« un inventaire qui dériverait là y serait resté invisible ». Le même
+/// répertoire s'annonce ailleurs sous son autre nom — « oracles matériels » —,
+/// et sous celui-là rien ne le regardait. Il avait dérivé : le fichier
+/// `crates/wisq-vm/tests/x86_wasm.rs` l'écrivait depuis #317, « des **dix**
+/// oracles matériels de `Tests/Fixtures/` — le onzième fichier est le corpus
+/// de décodage » — exact ce jour-là, faux depuis que `x86-v2-oracle.tsv` en a
+/// fait onze, le douzième fichier étant le corpus de décodage.
+///
+/// **Dater, pas rafraîchir.** #359 a réglé l'autre moitié : une note datée ne
+/// se remet pas au goût du jour, sans quoi la garde réécrit l'histoire. La
+/// règle tient donc en une ligne, et elle est mécanique : un compte qui ne
+/// vaut plus doit **nommer sa tranche**, `#NNN`, dans le même paragraphe et
+/// **avant** le nombre. C'est ce que fait la note de `docs/ROADMAP.md`, qui
+/// s'ouvre sur « quatre corpus plus tard (#318) » et garde ses dix. Ce que
+/// personne ne date parle du présent, et le présent est le répertoire.
+describe("l'inventaire des oracles matériels dit le compte du répertoire, sous son second nom", () => {
+  /// Le même répertoire que le compteur d'inventaire, lu par un **second**
+  /// lecteur. Deux lecteurs du même fait valent mieux qu'un appel partagé ;
+  /// c'est la leçon du balayage voisin, qui repart de la racine là où l'autre
+  /// part d'une liste de dossiers.
+  function oracleCount(): number {
+    const dir = join(repoRoot, "Tests/Fixtures");
+    return readdirSync(dir).filter(
+      (entry) =>
+        entry.endsWith("-oracle.tsv") &&
+        readFileSync(join(dir, entry), "utf8").slice(0, 200).includes("le vrai processeur"),
+    ).length;
+  }
+
+  /// `docs/JOURNAL.md`, et pour la raison du balayage voisin : il **cite** les
+  /// phrases fausses dans le tableau de la tranche qui les corrige.
+  const EXCLUDED = ["docs/JOURNAL.md"];
+  const SKIP = new Set([
+    ".git", "node_modules", "dist", "target", ".build", ".heroku-bun", "Fixtures",
+  ]);
+  const NUMBERS = new Map<string, number>([
+    ...FRENCH_NUMBERS.map((mot, n): [string, number] => [mot, n]),
+    ...ENGLISH_NUMBERS.map((mot, n): [string, number] => [mot, n]),
+  ]);
+
+  /// **Par paragraphe, ni par ligne ni par fichier.** Par ligne, un nombre en
+  /// fin de ligne et son nom au début de la suivante passent — c'est la faute
+  /// que le balayage voisin a faite à son premier relevé. Par fichier,
+  /// n'importe quel `#NNN` daterait n'importe quelle phrase. Les marqueurs de
+  /// commentaire et de citation partent d'abord ; le `#` ne part que s'il
+  /// n'ouvre pas un numéro de tranche, sinon le dateur s'effacerait lui-même.
+  function paragraphs(text: string): string[] {
+    return text
+      .replace(/^[ \t]*(\/\/\/?|\*|>|#(?!\d))[ \t]?/gm, "")
+      .split(/\n[ \t]*\n/)
+      .map((bloc) => bloc.replace(/\s+/g, " ").trim());
+  }
+
+  const hits: Array<{ path: string; word: string; dated: boolean }> = [];
+  const walk = (dir: string, prefix: string) => {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP.has(entry)) continue;
+      const path = join(dir, entry);
+      const shown = prefix ? `${prefix}/${entry}` : entry;
+      if (statSync(path).isDirectory()) {
+        walk(path, shown);
+        continue;
+      }
+      if (EXCLUDED.includes(shown)) continue;
+      let text: string;
+      try {
+        text = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      if (!/oracles matériels|hardware oracles/i.test(text)) continue;
+      for (const bloc of paragraphs(text)) {
+        for (const found of bloc.matchAll(/(\S+)\s+(?:oracles matériels|hardware oracles)/giu)) {
+          const word = found[1]!.replace(/[^\p{L}]/gu, "").toLowerCase();
+          if (!NUMBERS.has(word)) continue;
+          hits.push({ path: shown, word, dated: /#\d+/.test(bloc.slice(0, found.index!)) });
+        }
+      }
+    }
+  };
+  walk(repoRoot, "");
+
+  test("toute phrase vivante donne le compte du répertoire, et l'exception est une note datée", () => {
+    const vivantes = hits.filter((hit) => !hit.dated);
+    const datées = hits.filter((hit) => hit.dated);
+    expect(
+      vivantes.length,
+      "aucune phrase vivante n'annonce l'inventaire sous ce nom : la garde ne tient plus rien",
+    ).toBeGreaterThan(0);
+    expect(
+      datées.length,
+      "aucune note datée : l'exception n'a plus d'objet, et la garde est redevenue " +
+        "celle qui rafraîchit l'histoire",
+    ).toBeGreaterThan(0);
+    const compte = oracleCount();
+    for (const hit of vivantes) {
+      expect(
+        NUMBERS.get(hit.word),
+        `${hit.path} annonce « ${hit.word} oracles matériels » sans nommer de tranche : ` +
+          `c'est donc le présent, et Tests/Fixtures/ en porte ${compte}`,
+      ).toBe(compte);
+    }
+  });
+});
+
 /// **La page des versions redit le `CHANGELOG`, et rien ne les comptait
 /// ensemble.**
 ///

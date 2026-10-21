@@ -27973,3 +27973,89 @@ continue de compter sept copies dans le périmètre d'inventaire.
 Restauration vérifiée par `diff` contre les copies prises **avant le premier**
 sabordage, et `git status --porcelain` ne portait que les trois fichiers
 voulus.
+
+## #360 — l'inventaire a deux noms, et la garde n'en connaissait qu'un
+
+#359 a réglé le sens « ne pas rafraîchir une note datée ». Il restait l'autre :
+une phrase qui annonce le même inventaire **sans** le dater et **sans** dire
+« corpus matériels ».
+
+Le balayage de #355 écrit sa promesse dans son propre en-tête :
+
+> Ce test balaie l'arbre et exige de chaque copie qu'elle soit l'une des
+> trois : dans le périmètre d'inventaire, un **constat daté**, ou une mention
+> sans nombre devant. Rien d'autre ne passe.
+
+Il la tient pour la phrase « corpus matériels » / « hardware corpora ». Le même
+répertoire s'annonce ailleurs sous son autre nom — « oracles matériels » —, et
+sous celui-là rien ne regardait. La raison pour laquelle #355 existe — « un
+inventaire qui dériverait là y serait resté invisible » — valait mot pour mot
+pour le second nom, et l'inventaire y avait dérivé.
+
+### Les deux nombres qui ne s'accordent pas
+
+`crates/wisq-vm/tests/x86_wasm.rs` écrivait, au présent :
+
+> des **dix** oracles matériels de `Tests/Fixtures/` — le onzième fichier est
+> le corpus de décodage, qui ne porte pas de résultat
+
+`git ls-tree 4fa184a -- Tests/Fixtures/` donne onze fichiers, dont dix oracles :
+la phrase était **exacte** le 3 octobre, jour de #317. `x86-v2-oracle.tsv` est
+arrivé avec #570 le 20 octobre. Le répertoire porte depuis **onze** oracles et
+**douze** fichiers, le douzième étant le corpus de décodage.
+
+### Le balayage, sous le second nom
+
+Cinq occurrences dans l'arbre, dont deux chiffrées hors du journal :
+
+| fichier | ce qu'il annonce | datée ? |
+| --- | --- | --- |
+| `crates/wisq-vm/tests/x86_wasm.rs` | « dix oracles matériels » | non |
+| `docs/ROADMAP.md` | « dix oracles matériels » | oui, « quatre corpus plus tard (#318) » |
+| `docs/JOURNAL.md` (deux fois) | « dix » | exclu, comme chez #355 |
+| `site/tests/claims.test.ts` | aucun nombre | — |
+
+### La règle, et pourquoi elle est mécanique
+
+#359 interdit de rafraîchir une note datée ; #355 interdit à une phrase
+chiffrée de vivre hors de tout compte. Entre les deux, il faut un critère que
+la machine sait appliquer. Celui-ci : **un compte qui ne vaut plus doit nommer
+sa tranche, `#NNN`, dans le même paragraphe et avant le nombre.** La note de
+`docs/ROADMAP.md` le fait déjà — elle s'ouvre sur « quatre corpus plus tard
+(#318) » — et garde ses dix sans qu'on y touche. Ce que personne ne date parle
+du présent, et le présent est le répertoire.
+
+**Par paragraphe, ni par ligne ni par fichier.** Par ligne, un nombre en fin de
+ligne et son nom au début de la suivante passeraient — la faute que #355 a
+faite à son premier relevé. Par fichier, n'importe quel `#NNN` daterait
+n'importe quelle phrase. Les marqueurs de commentaire et de citation partent
+d'abord, et le `#` ne part que s'il n'ouvre pas un numéro de tranche : sinon le
+dateur s'effacerait lui-même.
+
+### Ce qui est corrigé, et ce qui ne l'est pas
+
+La phrase de `x86_wasm.rs` passe à **onze** oracles et **douze** fichiers, et
+ce qu'elle a de daté — les cœurs Rust n'en lisaient que deux — le dit
+maintenant en toutes lettres : « le jour où celui-ci est arrivé ». La note de
+`docs/ROADMAP.md` ne bouge pas : elle est datée, et #359 dit ce qu'on en fait.
+
+### Six sabordages, six chutes — et deux essais qui devaient passer
+
+| sabordage | ce que le message dit |
+| --- | --- |
+| « onze » redevient « dix » | « x86_wasm.rs annonce « dix oracles matériels » … et Tests/Fixtures/ en porte 11 » |
+| « onze » devient « douze » | idem, reçu 12 |
+| un douzième oracle posé dans `Tests/Fixtures/` | la phrase vivante tombe à onze contre 12 |
+| la note de ROADMAP perd son `(#318)` | « docs/ROADMAP.md annonce « dix oracles matériels » sans nommer de tranche » |
+| la phrase vivante est datée à son tour | « aucune phrase vivante … la garde ne tient plus rien » |
+| l'exclusion du journal est levée | « docs/JOURNAL.md annonce « dix oracles matériels » … » |
+| (non-sabordage) un `-oracle.tsv` qui ne nomme pas le silicium | rien : la seconde condition du lecteur le refuse |
+| (non-sabordage) la note datée passe de « dix » à « neuf » | rien : elle est datée, et c'est précisément l'exception |
+
+Le cinquième est celui qui compte : il prouve que la garde ne peut pas devenir
+vide en silence — si plus rien ne parle du présent, elle ne tient plus rien et
+le dit. Le sixième prouve que l'exclusion du journal porte quelque chose.
+
+Restauration vérifiée par `diff` contre les copies prises **avant le premier**
+sabordage, `Tests/Fixtures/` compris, et `git status --porcelain` ne portait
+que les deux fichiers voulus.
