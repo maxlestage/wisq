@@ -8,6 +8,27 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — L'arithmétique du chemin chaud, sans piège
+
+Relance horaire, même autorisation. Le même callgrind, après #579, montrait
+d'autres lignes qui payaient le même prix caché : une arithmétique vérifiée
+qui ne peut pas déborder, mais que le compilateur ne sait pas sûre.
+
+- `X86Core.mask` et `signBit` (3,2 % à elles deux) : la taille vaut 1, 2, 4
+  ou 8, et le produit, la soustraction et la conversion se font maintenant
+  en `&*`, `&-`, `&<<` et `truncatingIfNeeded`. `mask` garde son ternaire :
+  une taille nulle rend toujours 0.
+- `run` : la place qui reste dans la page (`0x1000 - (rip & 0xFFF)`, 1,9 %)
+  et la mémoire après `start`, que `offset` a déjà bornée.
+- Le cache de décodage : `start <= size - 16`, à chaque recherche.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  37,50 → 36,57 milliards d'instructions hôte, 2,5 % de moins.
+- Test : `X86OperandMaskTests`, le masque et le bit de signe de chaque taille
+  en toutes lettres — rien ne les vérifiait directement. Sabotages, chacun
+  rattrapé : `mask` sans son ternaire (le masque de huit octets tombe à
+  zéro), le bit de signe décalé d'un cran.
+- Compteur publié : 2927.
+
 ## 2026-10-21 — La borne de la mémoire, sans piège
 
 Relance horaire, même autorisation. Callgrind sur les cent premiers millions
