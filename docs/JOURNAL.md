@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — `perform` léger : la table `0F` à part
+
+Relance horaire, même autorisation. Après #586, l'entrée et la sortie de
+`perform` coûtaient encore 4,2 % des instructions de l'hôte. Ses quatre
+gestionnaires spécialisés de la table `0F` (système, vectoriel,
+arithmétique vectorielle, flottant) lui demandaient des registres sauvés,
+payés par **chaque** instruction — celles de la table d'un octet comprises,
+qui sont les plus nombreuses.
+
+- La branche `.twoByte` entière vit dans `performTwoByte`, jamais inlinée.
+  `perform` ne garde que la garde du VEX et l'aiguillage.
+- **Mesuré** sous callgrind, cent millions d'instructions d'Alpine :
+  31,28 → 29,75 milliards d'instructions hôte, **4,9 % de moins** — plus
+  que le prologue seul : `run`, qui appelle `perform`, se compile mieux
+  autour d'un appelé plus simple. En temps natif, médiane de trois paires :
+  17,11 s → 16,14 s, **5,7 %**, les trois paires dans le même sens.
+- **Essayé et écarté** : `add` et `subtract` forcées en ligne, comme
+  `arithmetic` qui les appelle. 31,28 → 31,56 milliards, 0,9 % **de plus** :
+  le code grossi coûte plus que les appels qu'il épargne.
+- Pas de test nouveau : la sémantique ne change pas. Sabotages, chacun
+  rattrapé : les instructions système sautées (8 échecs), la table `0F`
+  envoyée droit à la table ordinaire (25).
+
 ## 2026-10-21 — `decodeFields` : le registre en ligne
 
 Relance horaire, même autorisation. Après #584, `decodeFields` coûtait
