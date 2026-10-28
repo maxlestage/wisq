@@ -859,6 +859,14 @@ public struct X86Core: @unchecked Sendable {
             // Une instruction sur trente de l'invité en est un, chaque
             // fonction d'Ubuntu s'ouvrant dessus.
             if opcode == 0x1E { return }
+            // Les sauts conditionnels longs (`0F 80` à `0F 8F`), une
+            // instruction sur dix-huit : aucun spécialiste ne les réclame
+            // non plus, et `performTwoByte` ne faisait que les passer à
+            // `twoByte` — un cadre de pile et un test de plus.
+            if opcode & 0xF0 == 0x80 {
+                try twoByte(instruction, opcode)
+                return
+            }
             try performTwoByte(instruction, opcode)
         case 2: try threeByte38(instruction, opcode)
         case 3: try threeByte3A(instruction, opcode)
