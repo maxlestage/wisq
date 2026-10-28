@@ -20,9 +20,12 @@ import Foundation
 /// de plus, une addition et une comparaison.
 extension X86Core {
     /// Vrai quand l'accès dépasse la fin de sa page.
+    ///
+    /// `&+` : le décalage est sous 0x1000 et la largeur de un à huit, la somme
+    /// ne peut pas déborder, et `+` le vérifiait à chaque accès mémoire.
     @inline(__always)
     static func crosses(_ virtual: UInt64, _ size: Int) -> Bool {
-        Int(virtual & 0xFFF) + size > 0x1000
+        Int(truncatingIfNeeded: virtual & 0xFFF) &+ size > 0x1000
     }
 
     /// Lire `size` octets à une adresse **virtuelle**.
