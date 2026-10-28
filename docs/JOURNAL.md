@@ -45,6 +45,32 @@ au rangement, l'arithmétique étendue aux formes 6, `MOVZX` mené au `MOV`,
 le numéro posé sous VEX, `TEST` mené à l'arithmétique, `TEST` non aiguillé,
 le décalage du saut long lu sur un octet (attrapé par l'oracle des
 branchements : 80 désaccords sur 630). Compte publié : 2972.
+## 2026-10-28 — Les témoins lus une fois par course
+
+Les runners de GitHub Actions sont revenus vers 15 h 40 : la CI de #598 et
+#600 tourne de nouveau, avec ses journaux. Les trois branches ouvertes ont été
+réalignées sur `master`, qui avait reçu les corrections du parseur HTTP de
+l'agent (compte publié 2951 de son côté).
+
+**Ce qui change.** `run` testait à chaque instruction deux témoins de
+diagnostic : `watchedAddress` dans la garde de la page du code, et
+`canonicalWatchArmed` dans `step`. Aucune instruction ne les arme ni ne les
+éteint — les quatre endroits qui les touchent pendant une course les rendent
+tels quels par `defer` —, donc `run` les lit une fois en entrant, et la
+boucle teste deux constantes locales.
+
+**La mesure.** Callgrind, 100 millions d'instructions d'Alpine : 27,59 →
+27,49 milliards d'instructions de l'hôte (−0,4 %), une instruction de l'hôte
+de moins par instruction de l'invité. Trop peu pour le chronomètre natif,
+dont le bruit est de quelques pour cent : le chiffre est celui de callgrind.
+
+Trois tests tiennent l'entre-deux, le seul endroit où la lecture unique
+pourrait mentir : un témoin d'adresse armé entre deux courses voit la
+lecture d'instruction suivante **alors que la page du code est déjà
+gardée** ; éteint, il ne voit plus rien ; le témoin des programmes armé
+entre deux courses prend l'instruction suivante. Quatre sabordages, quatre
+chutes : la page toujours gardée, la condition inversée, le témoin des
+programmes toujours éteint, puis toujours armé. Compte publié : 2961.
 
 ## 2026-10-21 — Le VHDX d'Hyper-V, lu sur place
 
