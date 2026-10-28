@@ -840,19 +840,25 @@ public struct X86Core: @unchecked Sendable {
         return word >> UInt64(opcode & 63) & 1 != 0
     }
 
+    /// Un seul aiguillage, sur `dispatchCode` : la vérification de l'octet
+    /// vectoriel et le choix de la table y sont déjà réunis, dans le même
+    /// ordre qu'avant — une instruction vectorielle est refusée quelle que
+    /// soit sa table.
     mutating func perform(_ instruction: X86Instruction) throws {
-        guard instruction.vexCount == 0 else {
-            throw Fault.unsupported("une instruction vectorielle")
-        }
         let opcode = instruction.opcode
-
-        switch instruction.map {
-        case .oneByte: try oneByte(instruction, opcode)
-        case .twoByte: try performTwoByte(instruction, opcode)
-        case .threeByte38: try threeByte38(instruction, opcode)
-        case .threeByte3A: try threeByte3A(instruction, opcode)
+        switch instruction.dispatchCode {
+        case 0: try oneByte(instruction, opcode)
+        case 1: try performTwoByte(instruction, opcode)
+        case 2: try threeByte38(instruction, opcode)
+        case 3: try threeByte3A(instruction, opcode)
+        case 4: throw Self.vectorRefusal()
         default: throw Self.unsupportedMap(instruction.map)
         }
+    }
+
+    @inline(never)
+    static func vectorRefusal() -> Fault {
+        .unsupported("une instruction vectorielle")
     }
 
     /// **L'erreur à part, pour que `perform` reste léger.** L'interpolation de
