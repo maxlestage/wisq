@@ -8,6 +8,45 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-28 — Les six drapeaux de l'arithmétique, écrits d'un coup : 8 % de moins en natif
+
+Les runners de GitHub Actions restent indisponibles pour le compte — les
+travaux échouent en quelques secondes, sans journal — et ni #598 ni #600 ne
+peuvent être fusionnées. La consigne est de continuer à travailler sur
+l'application ; cette tranche s'empile sur #600 et attendra comme elle.
+
+**Ce que le profil a montré.** Sur un profil callgrind neuf du démarrage du
+vrai noyau, la ligne `if on { flags |= flag } else { flags &= ~flag }`
+pesait 2,2 % des instructions de l'hôte à elle seule. `ADD`, `SUB`, `CMP`
+et les opérations logiques posaient leurs six drapeaux un par un : six
+écritures de `flags`, et une branche par drapeau — que le processeur de
+l'hôte devine mal, le résultat d'une comparaison de l'invité n'ayant pas de
+régularité.
+
+**Ce qui change.** `add`, `subtract` et `logic` calculent leurs six bits à
+part — `AF` se lit déjà au bit 4 de `a ^ b ^ résultat`, `SF` en décalant le
+bit de signe jusqu'au bit 7 — et les rangent en une écriture
+(`setArithmeticFlags`). `set` lui-même perd sa branche, pour ses autres
+appelants.
+
+**La mesure.** Callgrind compte 2,4 % d'instructions de plus (26,94 →
+27,59 milliards) : un choix sans branche coûte quelques instructions là où
+une branche bien prédite n'en coûtait qu'une, et callgrind ne voit pas les
+autres. Le temps natif tranche — trois courses alternées de 600 millions
+d'instructions de l'invité, sur un cœur : 14,60 s en moyenne sur #600, 13,42 s
+ici, soit 8 % de moins.
+
+Cinq tests comparent la nouvelle pose à l'ancienne, recopiée bit à bit
+avec ses branches : les quatre largeurs, les deux retenues entrantes,
+cinquante-sept opérandes dont les bords de chaque largeur, et cinq états de
+départ des drapeaux — pour que l'interruption, la direction et le piège ne
+bougent pas. Huit sabordages, huit chutes : le masque des autres drapeaux
+oublié, le signe lu un bit trop haut, `OF` hors de l'ensemble, le
+débordement de l'addition pris pour celui de la soustraction, `AF` au bit
+de la parité, `AF` posée par la logique, la parité inversée, la retenue de
+la soustraction perdue. La suite existante — oracles x86 compris — passe
+sans changement. Compte publié : 2954.
+
 ## 2026-10-21 — La largeur au décodage, le masque sans branche : 2,8 % de moins
 
 Deux calculs que le cœur x86 refaisait à chaque instruction, alors qu'ils ne
