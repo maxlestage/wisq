@@ -60,7 +60,7 @@ extension X86Core {
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
         case 0x70...0x7F:
-            if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
+            jumpShort(instruction)
         case 0xC3:
             rip = try pop(8)
             jumped = true
@@ -107,25 +107,13 @@ extension X86Core {
             writeReg(fields, size, first)
 
         case 0x88, 0x89:  // MOV r/m ← r
-            let size = Self.operandSize(instruction, byteForm: opcode == 0x88)
-            let fields = try decodeFields(instruction)
-            try writeRM(fields, size, readReg(fields, size))
+            try moveStore(instruction)
 
         case 0x8A, 0x8B:  // MOV r ← r/m
-            let size = Self.operandSize(instruction, byteForm: opcode == 0x8A)
-            let fields = try decodeFields(instruction)
-            writeReg(fields, size, try readRM(fields, size))
+            try moveLoad(instruction)
 
         case 0x8D:  // LEA : calcule une adresse et ne la lit pas.
-            let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction)
-            // **Et qui ne traverse donc pas l'unité de segmentation.** `leaq
-            // %gs:0x10, %rax` rend 0x10, pas la base du segment plus 0x10 :
-            // rien n'est lu en mémoire, donc aucun segment n'intervient.
-            // L'assembleur le dit — il avertit que le préfixe est
-            // « ineffectual » — et le corpus matériel le vérifie.
-            let address = try effectiveAddress(instruction, fields, segmented: false)
-            writeReg(fields, size, address & Self.mask(size))
+            try loadEffectiveAddress(instruction)
 
         case 0x90...0x97:  // XCHG rAX, r — dont 0x90, qui est NOP.
             let size = Self.operandSize(instruction, byteForm: false)
@@ -1162,5 +1150,51 @@ extension X86Core {
         case 3: try writeRM(fields, size, value ^ (1 << offset))    // BTC
         default: break                                              // BT ne change rien
         }
+    }
+
+    // MARK: - Les gestionnaires aiguillés
+
+    // Voir `X86Core.Route`. Hors ligne, pour que chacun garde son petit
+    // cadre : en ligne dans `perform`, ils lui rendraient le cadre de
+    // `oneByte` qu'ils servent à éviter.
+
+    /// Les seize sauts conditionnels, courts. La destination se compte depuis
+    /// la **fin** de l'instruction.
+    @inline(never)
+    mutating func jumpShort(_ instruction: X86Instruction) {
+        if condition(instruction.opcode) {
+            branch(instruction, Self.signExtend(instruction.immediate, 1))
+        }
+    }
+
+    /// `MOV r/m ← r`, 88 et 89.
+    @inline(never)
+    mutating func moveStore(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: instruction.opcode == 0x88)
+        let fields = try decodeFields(instruction)
+        try writeRM(fields, size, readReg(fields, size))
+    }
+
+    /// `MOV r ← r/m`, 8A et 8B.
+    @inline(never)
+    mutating func moveLoad(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: instruction.opcode == 0x8A)
+        let fields = try decodeFields(instruction)
+        writeReg(fields, size, try readRM(fields, size))
+    }
+
+    /// `LEA` : calcule une adresse et ne la lit pas.
+    ///
+    /// **Et qui ne traverse donc pas l'unité de segmentation.** `leaq
+    /// %gs:0x10, %rax` rend 0x10, pas la base du segment plus 0x10 : rien
+    /// n'est lu en mémoire, donc aucun segment n'intervient. L'assembleur le
+    /// dit — il avertit que le préfixe est « ineffectual » — et le corpus
+    /// matériel le vérifie.
+    @inline(never)
+    mutating func loadEffectiveAddress(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: false)
+        let fields = try decodeFields(instruction)
+        let address = try effectiveAddress(instruction, fields, segmented: false)
+        writeReg(fields, size, address & Self.mask(size))
     }
 }
