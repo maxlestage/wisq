@@ -51,7 +51,7 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
         _ = session
     }
 
-    private func downloader() throws -> ImageDownloader {
+    private func makeDownloader() throws -> ImageDownloader {
         ImageDownloader(fetcher: URLSessionRangeFetcher(), partsFolder: try KernelLibrary.downloadsDirectory())
     }
 
@@ -60,7 +60,7 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
     /// et la taille attendue.
     func download(_ release: ImageDownload.Release,
                   progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
-        let downloader = try downloader()
+        let downloader = try makeDownloader()
         let library = try KernelLibrary.directory()
         // Plus rien à recevoir : il ne reste qu'à vérifier ce qui est là.
         guard let request = try downloader.backgroundRequest(for: release) else {
@@ -70,8 +70,9 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
         }
         let have = release.size - (try partRemaining(release))
         progress(have, release.size)
-        var urlRequest = URLRequest(url: request.url)
-        if let range = request.range { urlRequest.setValue(range, forHTTPHeaderField: "Range") }
+        var built = URLRequest(url: request.url)
+        if let range = request.range { built.setValue(range, forHTTPHeaderField: "Range") }
+        let urlRequest = built
         return try await withCheckedThrowingContinuation { continuation in
             lock.withLock {
                 // Un second appui pendant un téléchargement : le premier est
@@ -118,7 +119,7 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
               let release = ImageDownload.Release(backgroundTag: tag) else { return }
         let http = downloadTask.response as? HTTPURLResponse
         let outcome: Outcome = Result {
-            try downloader().adopt(location, status: http?.statusCode ?? 0,
+            try makeDownloader().adopt(location, status: http?.statusCode ?? 0,
                                    contentRange: http?.value(forHTTPHeaderField: "Content-Range"),
                                    for: release, into: try KernelLibrary.directory())
         }
@@ -148,7 +149,11 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
             defer { wakeCompletion = nil }
             return wakeCompletion
         }
-        DispatchQueue.main.async { completion?() }
+        // Le bloc vient du système, qui demande qu'on l'appelle sur le fil
+        // principal ; il n'est pas déclaré `Sendable`, et ne fait que dire au
+        // système que la session a fini.
+        nonisolated(unsafe) let handler = completion
+        DispatchQueue.main.async { handler?() }
     }
 
     private func finish(_ file: String, _ outcome: Outcome) {
