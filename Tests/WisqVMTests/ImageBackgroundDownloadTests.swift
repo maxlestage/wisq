@@ -98,12 +98,13 @@ final class ImageBackgroundDownloadTests: XCTestCase {
         try havePart(40000)
         _ = try downloader.backgroundRequest(for: release)
         try havePart(60000)
-        XCTAssertThrowsError(try downloader.adopt(try received(image[40000...]), status: 206,
+        // Un morceau qui tiendrait dans la taille annoncée : c'est l'octet
+        // de départ qui doit le faire refuser, pas la place qui manque.
+        XCTAssertThrowsError(try downloader.adopt(try received(image[40000..<50000]), status: 206,
                                                   contentRange: "bytes 40000-99999/100000",
                                                   for: release, into: library)) { error in
-            guard case ImageDownloader.Failure.refused = error else {
-                return XCTFail("un refus, pas \(error)")
-            }
+            XCTAssertEqual(error as? ImageDownloader.Failure,
+                           .refused("le serveur a repris le fichier ailleurs qu'à l'octet 60000."))
         }
         XCTAssertEqual(size(part), 60000)
         XCTAssertFalse(FileManager.default.fileExists(atPath: installed.path))
