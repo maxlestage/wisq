@@ -382,9 +382,15 @@ public struct X86Core: @unchecked Sendable {
     /// produit, ni la soustraction, ni la conversion ne peuvent déborder,
     /// mais `*`, `-` et `UInt64(_:)` le vérifiaient quand même, à chaque
     /// opérande — sous callgrind, ces deux lignes pesaient 3,2 %.
+    ///
+    /// **Et sans branche** : tous les bits, décalés de ce qui manque à la
+    /// taille pour faire huit octets — 56 pour un octet, 0 pour huit. Le
+    /// choix entre « tout » et « 2^n − 1 » coûtait 1,3 % des instructions de
+    /// l'hôte sous callgrind. `&>>` ne garde que les six bits du bas du
+    /// décalage, et les quatre tailles tombent dedans.
     @inline(__always)
     static func mask(_ size: Int) -> UInt64 {
-        size >= 8 ? UInt64.max : (UInt64(1) &<< (8 &* UInt64(truncatingIfNeeded: size))) &- 1
+        UInt64.max &>> (64 &- 8 &* UInt64(truncatingIfNeeded: size))
     }
 
     @inline(__always)
@@ -690,9 +696,7 @@ public struct X86Core: @unchecked Sendable {
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
     static func operandSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
-        if byteForm { return 1 }
-        if let rex = instruction.rex, rex & 0x08 != 0 { return 8 }
-        return instruction.hasPrefix(0x66) ? 2 : 4
+        byteForm ? 1 : Int(truncatingIfNeeded: instruction.wideOperandSize)
     }
 
     /// La largeur d'un aller-retour sur la pile : huit octets, deux sous le
