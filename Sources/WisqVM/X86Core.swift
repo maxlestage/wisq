@@ -848,7 +848,14 @@ public struct X86Core: @unchecked Sendable {
         let opcode = instruction.opcode
         switch instruction.dispatchCode {
         case 0: try oneByte(instruction, opcode)
-        case 1: try performTwoByte(instruction, opcode)
+        case 1:
+            // `ENDBR64` et ses voisins (`F3 0F 1E`, et `0F 1E` sans `F3`) ne
+            // font rien, et aucun gestionnaire spécialisé ne réclame l'octet
+            // (`claimedBySpecialists`) : `twoByte` le prend pour un `break`.
+            // Une instruction sur trente de l'invité en est un, chaque
+            // fonction d'Ubuntu s'ouvrant dessus.
+            if opcode == 0x1E { return }
+            try performTwoByte(instruction, opcode)
         case 2: try threeByte38(instruction, opcode)
         case 3: try threeByte3A(instruction, opcode)
         case 4: throw Self.vectorRefusal()
