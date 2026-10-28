@@ -96,6 +96,8 @@ final class X86FlagsAtOnceTests: XCTestCase {
 
     func testAdditionMatchesTheFlagByFlagReference() {
         let values = Self.operands()
+        // Un seul cœur : en construire un par cas coûtait l'essentiel du test.
+        var cpu = core(flags: 0)
         for size in [1, 2, 4, 8] {
             for start in Self.startingFlags {
                 for carryIn: UInt64 in [0, 1] {
@@ -103,7 +105,7 @@ final class X86FlagsAtOnceTests: XCTestCase {
                         for b in values {
                             var expected = start
                             let want = Self.referenceAdd(&expected, a, b, size, carryIn)
-                            var cpu = core(flags: start)
+                            cpu.flags = start
                             let got = cpu.add(a, b, size, carryIn: carryIn)
                             guard got == want, cpu.flags == expected else {
                                 return XCTFail("""
@@ -122,6 +124,8 @@ final class X86FlagsAtOnceTests: XCTestCase {
 
     func testSubtractionMatchesTheFlagByFlagReference() {
         let values = Self.operands()
+        // Un seul cœur : en construire un par cas coûtait l'essentiel du test.
+        var cpu = core(flags: 0)
         for size in [1, 2, 4, 8] {
             for start in Self.startingFlags {
                 for borrowIn: UInt64 in [0, 1] {
@@ -129,7 +133,7 @@ final class X86FlagsAtOnceTests: XCTestCase {
                         for b in values {
                             var expected = start
                             let want = Self.referenceSubtract(&expected, a, b, size, borrowIn)
-                            var cpu = core(flags: start)
+                            cpu.flags = start
                             let got = cpu.subtract(a, b, size, borrowIn: borrowIn)
                             guard got == want, cpu.flags == expected else {
                                 return XCTFail("""
@@ -147,12 +151,13 @@ final class X86FlagsAtOnceTests: XCTestCase {
     }
 
     func testLogicMatchesTheFlagByFlagReference() {
+        var cpu = core(flags: 0)
         for size in [1, 2, 4, 8] {
             for start in Self.startingFlags {
                 for value in Self.operands() {
                     var expected = start
                     let want = Self.referenceLogic(&expected, value, size)
-                    var cpu = core(flags: start)
+                    cpu.flags = start
                     XCTAssertEqual(cpu.logic(value, size), want)
                     XCTAssertEqual(cpu.flags, expected,
                                    "logique sur \(value), \(size) octets, drapeaux \(String(start, radix: 16))")
