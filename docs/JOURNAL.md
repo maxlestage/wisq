@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-28 — Le téléchargement en arrière-plan : la couture
+
+L'étape 4 du téléchargement (`ROADMAP.md`) : une image de cloud fait des
+centaines de mégaoctets, et le transfert s'arrêtait dès que l'application
+quittait l'écran. Une session `URLSession` d'arrière-plan continue, mais elle
+ne rend pas ses octets au fil de l'eau : elle écrit **son** fichier et le
+donne entier à la fin, parfois longtemps après. La reprise par `Range`, qui
+se faisait morceau par morceau, doit donc se recoudre sur ce fichier-là.
+
+**Ce qui change.** `ImageDownloader.backgroundRequest` rend l'adresse et le
+`Range` à confier à la session (rien quand le `.part` est déjà entier), et
+`adopt` recoud le fichier rendu sur le `.part`, par mégaoctet, puis vérifie
+et range l'image avec `ImageDownload.continuation` et `finish` — les règles du
+téléchargement à l'écran, sans copie. La réponse se lit contre ce que le
+`.part` a **au moment de recoudre** : si le téléchargement a été repris à
+l'écran entre-temps, un `206` qui commence à l'ancien octet est refusé au lieu
+de doubler des octets. Le fichier de la session n'est pas effacé : il est à
+elle. `download` partage maintenant le ménage du `.part` (`preparePart`).
+
+Reste la session elle-même dans l'application, qui ne se compile que sur Mac.
+
+Neuf tests : le premier transfert, la reprise, le `.part` qui a bougé pendant
+que la session travaillait, le serveur qui ignore la reprise, la session qui
+finit trop tôt (le `.part` garde ce qu'elle a apporté, la requête suivante
+reprend après), le `.part` déjà entier, la somme fausse, l'excès d'octets, le
+fichier de la session laissé à la session. Six sabordages, six chutes —
+dont le premier, la réponse lue contre un octet figé, ne tombait pas d'abord :
+la réponse décalée était refusée quand même, pour excès d'octets. Le test exige
+maintenant la bonne raison, avec un morceau qui tiendrait dans la taille.
+Compte publié : 2980.
+
 ## 2026-10-28 — Les témoins lus une fois par course
 
 Les runners de GitHub Actions sont revenus vers 15 h 40 : la CI de #598 et
