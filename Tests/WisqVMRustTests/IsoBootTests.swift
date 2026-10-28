@@ -338,7 +338,8 @@ final class IsoBootDecisionTests: XCTestCase {
         XCTAssertEqual(boot.minimumRAM, 0, "aucun plancher pour ce qu'on n'a pas lu")
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
         XCTAssertTrue(IsoBoot.mightBeCloudImage(.virtualDisk("qcow2")))
-        XCTAssertFalse(IsoBoot.mightBeCloudImage(.virtualDisk("VHDX")))
+        XCTAssertTrue(IsoBoot.mightBeCloudImage(.virtualDisk("VHDX")))
+        XCTAssertFalse(IsoBoot.mightBeCloudImage(.virtualDisk("qcow")))
         XCTAssertFalse(IsoBoot.mightBeCloudImage(.filesystemImage("ext2/3/4")))
     }
 
