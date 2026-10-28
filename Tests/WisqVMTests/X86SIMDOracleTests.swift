@@ -6,9 +6,9 @@ import XCTest
 ///
 /// Sixième corpus, même méthode que les cinq précédents : la référence n'est
 /// ni un document ni un autre émulateur, c'est la machine.
-/// `scripts/build-x86-simd-oracle.py` fait exécuter 152 formes par le
-/// processeur de ce conteneur sur trente états choisis, et fige sa réponse
-/// dans `Tests/Fixtures/x86-simd-oracle.tsv` — 4 560 cas.
+/// `scripts/build-x86-simd-oracle.py` fait exécuter chaque forme par le
+/// processeur de ce conteneur sur des états choisis, et fige sa réponse dans
+/// `Tests/Fixtures/x86-simd-oracle.tsv` — 228 formes, 8 892 cas, 39 états.
 ///
 /// **Le cadrage vient d'un comptage, pas d'une intuition.** Ce sont les
 /// dix-sept mnémoniques que les binaires réellement présents dans l'initramfs
