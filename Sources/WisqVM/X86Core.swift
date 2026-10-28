@@ -487,6 +487,13 @@ public struct X86Core: @unchecked Sendable {
         // une conversation avec l'invité, le premier silence rendant tous les
         // suivants illisibles.
         outOfPatience = false
+        // **Les deux témoins, lus une fois par course.** Aucune instruction ne
+        // les arme ni ne les éteint : ceux qui les touchent pendant une course
+        // les rendent tels quels en sortant (`defer`), et seul l'appelant, entre
+        // deux courses, les change. Lus à chaque tour, ils coûtaient deux
+        // chargements et deux tests par instruction de l'invité.
+        let plainFetch = watchedAddress == nil
+        let watchArmed = canonicalWatchArmed
         while executed < budget {
             // Le matériel, entre deux instructions. Le masque plutôt qu'un
             // test à chaque tour : voir `serviceInterrupts`. **Le masque
@@ -543,7 +550,7 @@ public struct X86Core: @unchecked Sendable {
                 let start: Int
                 let available: Int
                 let page = rip & ~UInt64(0xFFF)
-                if fetchTag == page &+ 1, fetchPrivilege == privilege, watchedAddress == nil {
+                if fetchTag == page &+ 1, fetchPrivilege == privilege, plainFetch {
                     // La page gardée tient entière dans la mémoire : ce qui
                     // reste lisible est ce qui reste de la page, sans
                     // reprendre la pagination ni la taille de la mémoire.
@@ -577,7 +584,7 @@ public struct X86Core: @unchecked Sendable {
                 }
                 if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
                                                        available: available) {
-                    try step(known.pointee.instruction)
+                    try step(known.pointee.instruction, watchArmed: watchArmed)
                 } else {
                     let instruction: X86Instruction
                     do {
@@ -590,7 +597,7 @@ public struct X86Core: @unchecked Sendable {
                         // derniers octets ne sont pas à la suite des premiers.
                         instruction = try decodeAcrossPageBoundary(from: start, have: available)
                     }
-                    try step(instruction)
+                    try step(instruction, watchArmed: watchArmed)
                 }
             } catch let fault as Fault {
                 // Une faute que le noyau a dit savoir traiter lui revient ;
@@ -615,9 +622,12 @@ public struct X86Core: @unchecked Sendable {
     /// d'un témoin éteint : seize registres d'un littéral vide fabriqués,
     /// posés sur la pile et passés à chaque instruction, une quarantaine
     /// d'instructions de l'hôte pour rien.
+    ///
+    /// `watchArmed` est `canonicalWatchArmed` lu par `run` en entrant : voir
+    /// la note des témoins là-bas.
     @inline(__always)
-    mutating func step(_ instruction: X86Instruction) throws {
-        if canonicalWatchArmed && privilege == 3 {
+    mutating func step(_ instruction: X86Instruction, watchArmed: Bool) throws {
+        if watchArmed && privilege == 3 {
             try executeWatched(instruction)
         } else {
             try execute(instruction)
