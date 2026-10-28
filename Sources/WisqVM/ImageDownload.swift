@@ -19,7 +19,7 @@ import Foundation
 public enum ImageDownload {
     /// La somme qu'une distribution publie pour une image : SHA-256 chez
     /// Alpine, Fedora et Ubuntu, SHA-512 chez Debian. En hexadécimal minuscule.
-    public enum Checksum: Equatable, Sendable {
+    public enum Checksum: Equatable, Sendable, Codable {
         case sha256(String)
         case sha512(String)
 
@@ -48,7 +48,7 @@ public enum ImageDownload {
     }
 
     /// Une image qu'une distribution publie, telle que la décrit son index.
-    public struct Release: Equatable, Sendable {
+    public struct Release: Equatable, Sendable, Codable {
         /// « Alpine », « Debian » : ce que la liste écrit devant la version.
         public let distribution: String
         public let flavor: String
@@ -77,6 +77,27 @@ public enum ImageDownload {
             self.checksum = checksum
             self.index = index
             self.link = link
+        }
+
+        /// **L'étiquette d'une tâche d'arrière-plan** : la description de
+        /// l'image, en JSON. Une session d'arrière-plan survit à
+        /// l'application — le système peut la tuer pendant le transfert et
+        /// la relancer pour lui rendre le fichier —, et la seule chose qu'elle
+        /// garde de chaque tâche est cette chaîne : c'est elle qui dit, au
+        /// réveil, quelle image recoudre et contre quelle somme.
+        public var backgroundTag: String {
+            // Un `Release` n'a que des chaînes, un entier et des adresses :
+            // l'encodage ne peut pas échouer.
+            String(decoding: (try? JSONEncoder().encode(self)) ?? Data(), as: UTF8.self)
+        }
+
+        /// L'image qu'une étiquette décrit, ou `nil` pour une étiquette qui
+        /// n'en est pas une — une tâche d'une autre version de wisq.
+        public init?(backgroundTag: String) {
+            guard let release = try? JSONDecoder().decode(Release.self, from: Data(backgroundTag.utf8)) else {
+                return nil
+            }
+            self = release
         }
     }
 
