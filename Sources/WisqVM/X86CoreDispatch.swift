@@ -1142,6 +1142,14 @@ extension X86Core {
         guard instruction.modrm != nil, fields.mod != 0b11 else {
             throw Fault.unsupported("une adresse calculée depuis un registre")
         }
+        return memoryAddress(instruction, segmented: segmented)
+    }
+
+    /// Le calcul lui-même, pour un ModRM dont on sait déjà qu'il désigne la
+    /// mémoire : sans garde, donc sans faute à construire. C'est ce qui le
+    /// laisse s'inliner chez la trentaine d'appelants de `decodeFields`.
+    @inline(__always)
+    mutating func memoryAddress(_ instruction: X86Instruction, segmented: Bool = true) -> UInt64 {
         // La forme est dépliée au décodage : voir `X86Instruction.baseField`.
         var address = (segmented ? segmentBase(instruction) : 0)
             &+ UInt64(bitPattern: instruction.displacement)
