@@ -79,6 +79,12 @@ public struct X86Instruction: Equatable, Sendable {
     /// exécution, un optionnel à déballer et un préfixe à chercher. Elle loge
     /// dans le même remplissage : la taille ne bouge toujours pas.
     let wideOperandSize: UInt8
+    /// **L'aiguillage, choisi au décodage.** Les formes les plus fréquentes
+    /// d'un vrai démarrage ont chacune leur gestionnaire court, que `perform`
+    /// appelle directement : voir `X86Core.Route`. Zéro pour toutes les
+    /// autres, qui passent par les tables comme avant. Il loge dans le
+    /// dernier octet du remplissage : la taille ne bouge pas.
+    let route: UInt8
 
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
     public let displacement: Int64
@@ -112,6 +118,7 @@ public struct X86Instruction: Equatable, Sendable {
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
         // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
         wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
+        route = vexCount == 0 && map == .oneByte ? X86Core.Route.oneByte(opcode) : 0
     }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,

@@ -825,7 +825,42 @@ public struct X86Core: @unchecked Sendable {
         return word >> UInt64(opcode & 63) & 1 != 0
     }
 
+    /// **Les formes chaudes, aiguillées au décodage.** Le chemin ordinaire
+    /// d'un `mov` passait par la table (`switch` sur `map`), puis par
+    /// `oneByte`, dont le cadre — une centaine de cas — sauve des registres à
+    /// chaque appel, puis par une suite de comparaisons d'intervalles avant
+    /// d'atteindre son cas. Le numéro tiré au décodage mène droit à un
+    /// gestionnaire court, dont le cadre ne sauve presque rien.
+    ///
+    /// Chaque gestionnaire est **le** code de son cas : `oneByte` l'appelle
+    /// lui aussi, si bien qu'il n'y a qu'une implémentation, qu'on y arrive
+    /// par l'aiguillage ou par la table.
+    enum Route {
+        static let movStore: UInt8 = 1
+        static let movLoad: UInt8 = 2
+        static let jumpShort: UInt8 = 3
+        static let lea: UInt8 = 4
+
+        /// Le numéro d'une forme de la table d'un octet, sans VEX.
+        static func oneByte(_ opcode: UInt8) -> UInt8 {
+            switch opcode {
+            case 0x88, 0x89: return movStore
+            case 0x8A, 0x8B: return movLoad
+            case 0x70...0x7F: return jumpShort
+            case 0x8D: return lea
+            default: return 0
+            }
+        }
+    }
+
     mutating func perform(_ instruction: X86Instruction) throws {
+        switch instruction.route {
+        case Route.movStore: return try moveStore(instruction)
+        case Route.movLoad: return try moveLoad(instruction)
+        case Route.jumpShort: return jumpShort(instruction)
+        case Route.lea: return try loadEffectiveAddress(instruction)
+        default: break
+        }
         guard instruction.vexCount == 0 else {
             throw Fault.unsupported("une instruction vectorielle")
         }
