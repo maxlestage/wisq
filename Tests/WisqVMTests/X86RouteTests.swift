@@ -63,6 +63,14 @@ final class X86RouteTests: XCTestCase {
         XCTAssertEqual(try X86Decoder.decode([0x90]).route, 0)
         // vmovdqa xmm0, xmm1 : la table `0F`, sous VEX.
         XCTAssertEqual(try X86Decoder.decode([0xC5, 0xF9, 0x6F, 0xC1]).route, 0)
+        // `B6` de la table `0F`, sous VEX : un octet aiguillé sans VEX. Il
+        // n'a pas de sens sous VEX, et doit rester refusé comme tel.
+        let vex = try X86Decoder.decode([0xC5, 0xF8, 0xB6, 0xC1])
+        XCTAssertEqual(vex.route, 0)
+        var core = Self.core(flags: 0x2)
+        XCTAssertThrowsError(try core.perform(vex)) { error in
+            XCTAssertEqual(error as? X86Core.Fault, .unsupported("une instruction vectorielle"))
+        }
     }
 
     /// **L'aiguillage et la table rendent la même machine.** Chaque forme
