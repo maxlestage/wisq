@@ -449,6 +449,10 @@ extension X86Core {
 
     /// La table `0F`.
     mutating func twoByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
+        // Des octets littéraux seulement, comme dans `oneByte` : un intervalle
+        // ou une clause `where` ferait de l'aiguillage une chaîne de
+        // comparaisons. Une forme qui ne convient pas lève, dans son cas, la
+        // faute que `default` lèverait.
         switch opcode {
         case 0x01:  // le groupe 7 : les tables de descripteurs, et le reste
             let group = try decodeFields(instruction)
@@ -562,7 +566,7 @@ extension X86Core {
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici
             break
 
-        case 0x1E where instruction.hasPrefix(0xF3):
+        case 0x1E:
             // ENDBR64 et ENDBR32 : les balises de CET, que le noyau sème à
             // l'entrée de chaque fonction dès qu'il est compilé avec. Sur un
             // processeur qui n'annonce pas la technologie — et `X86CPUID`
@@ -575,9 +579,12 @@ extension X86Core {
             // zéro, il n'y a pas de pile fantôme. Sans CET, le manuel range
             // ces octets parmi les NOP réservés, et le registre ne bouge pas.
             // Le refuser arrêtait Ubuntu au premier programme lancé.
+            //
+            // Sans `F3`, ce sont les NOP réservés du cas suivant : les deux
+            // ne font rien, et c'est ce qui permet un seul cas pour l'octet.
             break
 
-        case 0x0D, 0x18...0x1D, 0x1E:
+        case 0x0D, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D:
             // PREFETCH et les NOP réservés du groupe 16 : des indices pour un
             // cache, et ce cœur n'en a pas. Le noyau en sème sur ses chemins
             // chauds ; les refuser l'arrêterait pour une instruction dont le
@@ -617,10 +624,10 @@ extension X86Core {
                 throw Fault.unsupported("0F AE /\(extension_) en mémoire")
             }
 
-        case 0x80...0x8F:  // Jcc long
+        case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:  // Jcc long
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 4)) }
 
-        case 0x40...0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
+        case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
             // Le mouvement conditionnel écrit **toujours** en 32 bits, même
@@ -630,7 +637,7 @@ extension X86Core {
             let value = condition(opcode) ? try readRM(fields, size) : readReg(fields, size)
             writeReg(fields, size, value)
 
-        case 0x90...0x9F:  // SETcc
+        case 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F:  // SETcc
             let fields = try decodeFields(instruction)
             try writeRM(fields, 1, condition(opcode) ? 1 : 0)
 
@@ -692,7 +699,7 @@ extension X86Core {
             writeReg(fields, size, multiplyTruncating(readReg(fields, size),
                                                       try readRM(fields, size), size))
 
-        case 0xC8...0xCF:  // BSWAP : renverser les octets d'un registre
+        case 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF:  // BSWAP : renverser les octets d'un registre
             let size = Self.operandSize(instruction, byteForm: false)
             let index = Int(((instruction.rex ?? 0) & 0x01) << 3 | (opcode & 0x07))
             let value = read(index, size, highByte: false)
@@ -721,14 +728,16 @@ extension X86Core {
                 write(0, size, highByte: false, destination)
             }
 
-        case 0x77 where instruction.vexCount == 0:  // EMMS
+        case 0x77:  // EMMS
+            guard instruction.vexCount == 0 else { throw Self.unknownTwoByte(opcode) }
             // Les huit registres de la pile x87 marqués vides, comme après une
             // série d'instructions MMX. Linux l'exécute sur un processeur AMD
             // à chaque restauration de l'état flottant, entre `FNCLEX` et un
             // `FILD` factice : c'est le contournement de « FXSAVE leak ».
             x87Tags = 0xFFFF
 
-        case 0xC7 where (try? Self.fields(instruction))?.reg == 1:  // CMPXCHG8B
+        case 0xC7:  // CMPXCHG8B
+            guard (try? Self.fields(instruction))?.reg == 1 else { throw Self.unknownTwoByte(opcode) }
             // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
             // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
             // promet le bit CX8 de CPUID, que la glibc exige pour démarrer.
@@ -782,7 +791,8 @@ extension X86Core {
             writeReg(fields, size, Self.signExtend(try readRM(fields, source), source)
                 & Self.mask(size))
 
-        case 0xB8 where instruction.hasPrefix(0xF3):  // POPCNT
+        case 0xB8:  // POPCNT
+            guard instruction.hasPrefix(0xF3) else { throw Self.unknownTwoByte(opcode) }
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
             let source = try readRM(fields, size)
@@ -805,8 +815,15 @@ extension X86Core {
             }
 
         default:
-            throw Fault.unsupported("l'opcode 0F \(String(format: "%02X", opcode))")
+            throw Self.unknownTwoByte(opcode)
         }
+    }
+
+    /// La faute d'un octet `0F` que personne ne prend, à part : elle sert à
+    /// `default` et aux cas dont la forme ne convient pas.
+    @inline(never)
+    static func unknownTwoByte(_ opcode: UInt8) -> Fault {
+        .unsupported("l'opcode 0F \(String(format: "%02X", opcode))")
     }
 
     /// Le strict minimum d'x87 : **trois** instructions, et rien d'autre.
