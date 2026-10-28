@@ -206,18 +206,10 @@ public struct ImageDownloader: Sendable {
         _ release: ImageDownload.Release, into folder: URL,
         progress: @Sendable (Int, Int) -> Void = { _, _ in }
     ) async throws -> URL {
-        let manager = FileManager.default
-        try manager.createDirectory(at: partsFolder, withIntermediateDirectories: true)
         let destination = folder.appendingPathComponent(release.file)
-        let part = ImageDownload.partURL(for: partsFolder.appendingPathComponent(release.file))
-        if !manager.fileExists(atPath: part.path) { _ = manager.createFile(atPath: part.path, contents: nil) }
-        var have = (try? manager.attributesOfItem(atPath: part.path)[.size] as? Int) ?? 0
-        // Plus long que le fichier annoncé : il vient d'une autre version de
-        // l'index. Rien à en garder.
-        if have > release.size {
-            try Data().write(to: part)
-            have = 0
-        }
+        let prepared = try preparePart(for: release)
+        let part = prepared.url
+        var have = prepared.have
         progress(have, release.size)
 
         if have < release.size {
@@ -253,6 +245,92 @@ public struct ImageDownloader: Sendable {
                 // Une réponse qui finit proprement mais trop tôt n'est pas un
                 // fichier faux : c'est un transfert coupé. Le passer à
                 // `finish` effacerait ce qui est déjà là.
+                if have < release.size { throw Failure.interrupted(have: have, of: release.size) }
+            }
+        }
+        try ImageDownload.finish(part: part, as: destination, size: release.size, checksum: release.checksum)
+        return destination
+    }
+
+    // MARK: - En arrière-plan
+
+    /// Le `.part` de `release` et ce qu'il contient déjà, prêt à recevoir la
+    /// suite. Le même ménage que `download` : un `.part` plus long que le
+    /// fichier annoncé vient d'une autre version de l'index, et repart de
+    /// zéro.
+    func preparePart(for release: ImageDownload.Release) throws -> (url: URL, have: Int) {
+        let manager = FileManager.default
+        try manager.createDirectory(at: partsFolder, withIntermediateDirectories: true)
+        let part = ImageDownload.partURL(for: partsFolder.appendingPathComponent(release.file))
+        if !manager.fileExists(atPath: part.path) { _ = manager.createFile(atPath: part.path, contents: nil) }
+        var have = (try? manager.attributesOfItem(atPath: part.path)[.size] as? Int) ?? 0
+        if have > release.size {
+            try Data().write(to: part)
+            have = 0
+        }
+        return (part, have)
+    }
+
+    /// **La requête à confier à une session d'arrière-plan**, qui continue
+    /// quand l'application n'est plus à l'écran : l'adresse, et l'en-tête
+    /// `Range` qui reprend après ce que le `.part` a déjà. `nil` quand il
+    /// n'y a plus rien à recevoir — `adopt` n'a alors qu'à vérifier.
+    ///
+    /// Une session d'arrière-plan ne rend pas ses octets au fil de l'eau :
+    /// elle écrit **son** fichier, et le donne entier à la fin. C'est donc la
+    /// requête qui porte la reprise, et `adopt` qui recoud.
+    public func backgroundRequest(for release: ImageDownload.Release) throws -> (url: URL, range: String?)? {
+        let (_, have) = try preparePart(for: release)
+        guard have < release.size else { return nil }
+        return (ImageDownload.url(of: release), ImageDownload.rangeHeader(resumingAt: have))
+    }
+
+    /// **Recoudre ce qu'une session d'arrière-plan a rendu** sur le `.part`,
+    /// puis vérifier et ranger l'image, comme `download` le fait de ses
+    /// morceaux : `received` est le fichier de la session, `status` et
+    /// `contentRange` la réponse qui l'accompagnait.
+    ///
+    /// La réponse se lit contre ce que le `.part` a **maintenant**, et pas
+    /// contre ce qu'il avait quand la requête est partie : si l'utilisateur a
+    /// repris le téléchargement à l'écran entre-temps, un `206` qui commence
+    /// à l'ancien octet recoudrait au mauvais endroit, et il est refusé comme
+    /// tout `206` décalé. Un refus garde le `.part` ; seule la somme fausse
+    /// l'efface, dans `finish`.
+    ///
+    /// `received` n'est pas effacé : il appartient à la session, qui le
+    /// reprend elle-même.
+    public func adopt(_ received: URL, status: Int, contentRange: String?,
+                      for release: ImageDownload.Release, into folder: URL) throws -> URL {
+        let prepared = try preparePart(for: release)
+        let part = prepared.url
+        var have = prepared.have
+        let destination = folder.appendingPathComponent(release.file)
+        if have < release.size {
+            switch ImageDownload.continuation(status: status, contentRange: contentRange, resumingAt: have) {
+            case .refuse(let why):
+                throw Failure.refused(why)
+            case .complete:
+                break
+            case .restart:
+                try Data().write(to: part)
+                have = 0
+                fallthrough
+            case .append:
+                let source = try FileHandle(forReadingFrom: received)
+                defer { try? source.close() }
+                let handle = try FileHandle(forWritingTo: part)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                // Par mégaoctet : une image de cloud fait des centaines de
+                // mégaoctets, et le fichier de la session ne se lit pas d'un
+                // bloc.
+                while let chunk = try source.read(upToCount: 1 << 20), !chunk.isEmpty {
+                    guard have + chunk.count <= release.size else {
+                        throw Failure.refused("le serveur envoie plus que la taille annoncée.")
+                    }
+                    try handle.write(contentsOf: chunk)
+                    have += chunk.count
+                }
                 if have < release.size { throw Failure.interrupted(have: have, of: release.size) }
             }
         }
