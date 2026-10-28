@@ -1139,26 +1139,24 @@ extension X86Core {
     mutating func effectiveAddress(
         _ instruction: X86Instruction, _ fields: Fields, segmented: Bool = true
     ) throws -> UInt64 {
-        guard let modrm = instruction.modrm, fields.mod != 0b11 else {
+        guard instruction.modrm != nil, fields.mod != 0b11 else {
             throw Fault.unsupported("une adresse calculée depuis un registre")
         }
-        let rex = instruction.rex ?? 0
-        let displacement = UInt64(bitPattern: instruction.displacement)
-        let segment = segmented ? segmentBase(instruction) : 0
-        if modrm & 0x07 == 0b100, let sib = instruction.sib {
-            let index = Int((rex & 0x02) << 2 | ((sib >> 3) & 0x07))
-            let base = Int((rex & 0x01) << 3 | (sib & 0x07))
-            // L'index 100 sans REX.X veut dire « pas d'index » : c'est ainsi
-            // qu'on écrit une adresse sans registre d'échelle.
-            let scaled = index == 4 ? 0 : registers.read(index) << UInt64((sib >> 6) & 0x03)
-            let baseValue = (fields.mod == 0 && (sib & 0x07) == 0b101) ? 0 : registers.read(base)
-            return segment &+ baseValue &+ scaled &+ displacement
-        }
-        if fields.mod == 0 && modrm & 0x07 == 0b101 {
+        // La forme est dépliée au décodage : voir `X86Instruction.baseField`.
+        var address = (segmented ? segmentBase(instruction) : 0)
+            &+ UInt64(bitPattern: instruction.displacement)
+        let base = instruction.baseField
+        if base < 16 {
+            address &+= registers.read(Int(base))
+        } else if base == X86Instruction.ripRelative {
             // Relatif à RIP : l'adresse suit l'instruction entière.
-            return segment &+ rip &+ UInt64(instruction.length) &+ displacement
+            address &+= rip &+ UInt64(instruction.length)
         }
-        return segment &+ registers.read(fields.rm) &+ displacement
+        let index = instruction.indexField
+        if index < 16 {
+            address &+= registers.read(Int(index)) << UInt64(instruction.scaleShift)
+        }
+        return address
     }
 
     /// La base du segment que l'instruction a nommé, ou zéro.

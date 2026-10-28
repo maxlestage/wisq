@@ -73,6 +73,21 @@ public struct X86Instruction: Equatable, Sendable {
     let regField: UInt8
     let rmField: UInt8
     let highByteFlags: UInt8
+    /// **La forme de l'adresse d'un ModRM en mémoire, dépliée elle aussi** :
+    /// le registre de base (`noRegister` sans base, `ripRelative` pour une
+    /// adresse relative à RIP), celui d'index (`noRegister` sans index), et
+    /// l'échelle en décalage. `effectiveAddress` redéchiffrait à chaque
+    /// exécution le SIB, ses cas particuliers et les bits de REX : une
+    /// vingtaine d'instructions de l'hôte pour chaque instruction qui touche
+    /// la mémoire. Les trois octets logent dans ce qui restait du
+    /// remplissage d'avant le déplacement : la taille ne bouge toujours pas.
+    let baseField: UInt8
+    let indexField: UInt8
+    let scaleShift: UInt8
+    /// Écrits en propriétés calculées, comme `segmentPrefixes` : un
+    /// `static let` peut se payer d'un `swift_once` à chaque lecture.
+    static var noRegister: UInt8 { 16 }
+    static var ripRelative: UInt8 { 17 }
 
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
     public let displacement: Int64
@@ -104,6 +119,27 @@ public struct X86Instruction: Equatable, Sendable {
         // CH, DH, BH ; avec, SPL, BPL, SIL, DIL.
         highByteFlags = rex != nil ? 0
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
+        // Les mêmes règles que celles qu'appliquait `effectiveAddress`, dans
+        // le même ordre : un SIB quand `rm` vaut 100, l'index 100 sans REX.X
+        // pour « pas d'index », la base 101 sous `mod` 00 pour « pas de
+        // base » ; sans SIB, `rm` 101 sous `mod` 00 relatif à RIP.
+        if modrm != nil, byte >> 6 != 0b11 {
+            if byte & 0x07 == 0b100, let sib {
+                let index = (rexBits & 0x02) << 2 | ((sib >> 3) & 0x07)
+                indexField = index == 4 ? Self.noRegister : index
+                scaleShift = sib >> 6
+                baseField = byte >> 6 == 0 && sib & 0x07 == 0b101
+                    ? Self.noRegister : (rexBits & 0x01) << 3 | (sib & 0x07)
+            } else {
+                indexField = Self.noRegister
+                scaleShift = 0
+                baseField = byte >> 6 == 0 && byte & 0x07 == 0b101 ? Self.ripRelative : rmField
+            }
+        } else {
+            baseField = Self.noRegister
+            indexField = Self.noRegister
+            scaleShift = 0
+        }
     }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,
