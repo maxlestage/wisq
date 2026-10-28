@@ -165,7 +165,17 @@ public struct X86Core: @unchecked Sendable {
     /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
     /// charge quand même dès son entrée, et refuser l'instruction l'arrêterait
     /// là.
-    public var segments = [UInt16](repeating: 0, count: 6)
+    ///
+    /// **Le privilège est tenu à part**, comme `pagingActive` : il se lit à
+    /// chaque instruction — la page gardée de `run` le compare — et à chaque
+    /// accès mémoire, dans `allowed`. Lu dans ce tableau, il coûtait chaque
+    /// fois un contrôle de bornes. Les sélecteurs, eux, ne s'écrivent qu'aux
+    /// appels système, aux interruptions et à leurs retours.
+    public var segments = [UInt16](repeating: 0, count: 6) {
+        didSet { currentPrivilege = Int(segments[1] & 3) }
+    }
+    /// Les deux bits du bas de CS, recopiés à chaque écriture de `segments`.
+    private(set) var currentPrivilege = 0
     /// La pagination est-elle allumée ? Gardé à part, et pas relu dans `system`
     /// à chaque accès mémoire : la question se pose plusieurs fois par
     /// instruction et la réponse ne change qu'à l'écriture de CR0. La lire
@@ -669,7 +679,7 @@ public struct X86Core: @unchecked Sendable {
     /// Le niveau de privilège courant, lu dans les deux bits du bas de CS.
     /// Zéro pour le noyau, trois pour un programme — c'est le sélecteur qui le
     /// porte, et rien d'autre.
-    public var privilege: Int { Int(segments[1] & 3) }
+    public var privilege: Int { currentPrivilege }
 
     /// Vrai le temps d'une instruction qui a posé RIP elle-même.
     var jumped = false
