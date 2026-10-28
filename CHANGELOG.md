@@ -102,6 +102,12 @@ break APIs.
   une `SPICESession` là où l'application tient l'enveloppe de reconnexion qui
   l'entoure, donc il échoue quoi que fasse l'invité. Les pages le disent
   maintenant ; le défaut de l'application, lui, reste à corriger.
+- **L'agent servait des requêtes qu'il aurait dû refuser.** Un en-tête sans
+  deux-points, ou avec un blanc avant (`Content-Length : 5`), était sauté, et
+  le corps lu vide là où un mandataire indulgent en lisait cinq octets ; une
+  ligne de requête sans version ou avec une espace dans la cible était servie
+  sur ses deux premiers mots. Les deux reçoivent un 400, comme le veut
+  RFC 9112. Et un statut absent de la table ne part plus en « OK ».
 
 ## [0.4.0] — 2026-09-05
 
