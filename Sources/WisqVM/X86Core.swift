@@ -172,7 +172,10 @@ public struct X86Core: @unchecked Sendable {
     /// fois un contrôle de bornes. Les sélecteurs, eux, ne s'écrivent qu'aux
     /// appels système, aux interruptions et à leurs retours.
     public var segments = [UInt16](repeating: 0, count: 6) {
-        didSet { currentPrivilege = Int(segments[1] & 3) }
+        didSet {
+            currentPrivilege = Int(segments[1] & 3)
+            fetchTag = 0
+        }
     }
     /// Les deux bits du bas de CS, recopiés à chaque écriture de `segments`.
     private(set) var currentPrivilege = 0
@@ -254,14 +257,16 @@ public struct X86Core: @unchecked Sendable {
     /// à chaque fois.
     ///
     /// Valable tant que rien n'a bougé : une traduction ajoutée au cache ou
-    /// le cache vidé l'effacent (`fill`, `flushTranslations`), et l'anneau
-    /// dans lequel elle a été vérifiée fait partie de la clé, puisque les
-    /// permissions d'une lecture d'instruction n'en dépendent que de lui.
+    /// le cache vidé l'effacent (`fill`, `flushTranslations`), et une
+    /// écriture des sélecteurs aussi (`segments`), puisque les permissions
+    /// d'une lecture d'instruction dépendent de l'anneau. L'anneau était
+    /// gardé à côté et comparé à chaque instruction ; effacer l'étiquette
+    /// quand il peut changer coûte la même garantie, payée aux seuls appels
+    /// système, interruptions et retours.
     /// L'étiquette est la page **plus un**, zéro voulant dire « vide ».
     var fetchTag: UInt64 = 0
     /// La place de la trame dans `memory.bytes` — pas son adresse physique.
     var fetchStart = 0
-    var fetchPrivilege = 0
 
     struct Translation {
         /// L'adresse de page **plus un**, zéro voulant dire « vide ».
@@ -560,7 +565,7 @@ public struct X86Core: @unchecked Sendable {
                 let start: Int
                 let available: Int
                 let page = rip & ~UInt64(0xFFF)
-                if fetchTag == page &+ 1, fetchPrivilege == privilege, plainFetch {
+                if fetchTag == page &+ 1, plainFetch {
                     // La page gardée tient entière dans la mémoire : ce qui
                     // reste lisible est ce qui reste de la page, sans
                     // reprendre la pagination ni la taille de la mémoire.
@@ -578,7 +583,6 @@ public struct X86Core: @unchecked Sendable {
                     if pagingActive, let frame = memory.offset(physical & ~UInt64(0xFFF), 0x1000) {
                         fetchTag = page &+ 1
                         fetchStart = frame
-                        fetchPrivilege = privilege
                     }
                     // **Une instruction ne se lit pas au-delà de sa page.** La
                     // traduction ne porte que le premier octet ; les quatorze
