@@ -527,7 +527,8 @@ noyau dans le disque lui-même.
    série ouvre `bash` sans `login`, par un drop-in passé en credential
    (systemd ≥ 256). `login` expirait dix-neuf fois avant de passer, et le
    shell vient maintenant à 60,9 milliards d'instructions, sans une
-   expiration. Ce qui reste avant de proposer Ubuntu au téléchargement : le
+   expiration. Ubuntu est proposé au téléchargement depuis #550 (étape 5
+   de « Télécharger une image depuis l'application »). Ce qui reste : le
    temps total, plus de trois fois celui de Debian.
 
    **Où il passe.** Le profil du démarrage entier (`WISQ_PC_SAMPLE`, un

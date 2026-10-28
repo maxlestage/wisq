@@ -165,7 +165,17 @@ public struct X86Core: @unchecked Sendable {
     /// MSR ; le sélecteur lui-même ne sert plus qu'aux privilèges. Un noyau les
     /// charge quand même dès son entrée, et refuser l'instruction l'arrêterait
     /// là.
-    public var segments = [UInt16](repeating: 0, count: 6)
+    ///
+    /// **Le privilège est tenu à part**, comme `pagingActive` : il se lit à
+    /// chaque instruction — la page gardée de `run` le compare — et à chaque
+    /// accès mémoire, dans `allowed`. Lu dans ce tableau, il coûtait chaque
+    /// fois un contrôle de bornes. Les sélecteurs, eux, ne s'écrivent qu'aux
+    /// appels système, aux interruptions et à leurs retours.
+    public var segments = [UInt16](repeating: 0, count: 6) {
+        didSet { currentPrivilege = Int(segments[1] & 3) }
+    }
+    /// Les deux bits du bas de CS, recopiés à chaque écriture de `segments`.
+    private(set) var currentPrivilege = 0
     /// La pagination est-elle allumée ? Gardé à part, et pas relu dans `system`
     /// à chaque accès mémoire : la question se pose plusieurs fois par
     /// instruction et la réponse ne change qu'à l'écriture de CR0. La lire
@@ -715,7 +725,7 @@ public struct X86Core: @unchecked Sendable {
     /// Le niveau de privilège courant, lu dans les deux bits du bas de CS.
     /// Zéro pour le noyau, trois pour un programme — c'est le sélecteur qui le
     /// porte, et rien d'autre.
-    public var privilege: Int { Int(segments[1] & 3) }
+    public var privilege: Int { currentPrivilege }
 
     /// Vrai le temps d'une instruction qui a posé RIP elle-même.
     var jumped = false
@@ -779,20 +789,15 @@ public struct X86Core: @unchecked Sendable {
     /// **Le registre en ligne, l'adresse à part** — le partage de `readRM`.
     /// Soixante-dix millions d'appels sur cent millions d'instructions
     /// d'Alpine, et l'entrée de la fonction coûtait sous callgrind 1,5 % des
-    /// instructions de l'hôte. Le calcul d'adresse, long, reste un appel :
-    /// recopié dans la trentaine d'appelants, il gonflerait chacun. La
-    /// faute, qui n'arrive jamais sur une instruction décodée, est dans
-    /// `missingModRM`.
+    /// instructions de l'hôte. Le calcul d'adresse est en ligne lui aussi
+    /// depuis que sa forme est dépliée au décodage : il ne reste que des
+    /// additions, et l'appel coûtait plus qu'elles. La faute, qui n'arrive
+    /// jamais sur une instruction décodée, est dans `missingModRM`.
     @inline(__always)
     mutating func decodeFields(_ instruction: X86Instruction) throws -> Fields {
         let fields = try X86Core.fields(instruction)
-        if fields.mod != 0b11 { try computeAddress(instruction, fields) }
+        if fields.mod != 0b11 { lastAddress = memoryAddress(instruction) }
         return fields
-    }
-
-    @inline(never)
-    mutating func computeAddress(_ instruction: X86Instruction, _ fields: Fields) throws {
-        lastAddress = try effectiveAddress(instruction, fields)
     }
 
     @inline(never)
@@ -835,19 +840,25 @@ public struct X86Core: @unchecked Sendable {
         return word >> UInt64(opcode & 63) & 1 != 0
     }
 
+    /// Un seul aiguillage, sur `dispatchCode` : la vérification de l'octet
+    /// vectoriel et le choix de la table y sont déjà réunis, dans le même
+    /// ordre qu'avant — une instruction vectorielle est refusée quelle que
+    /// soit sa table.
     mutating func perform(_ instruction: X86Instruction) throws {
-        guard instruction.vexCount == 0 else {
-            throw Fault.unsupported("une instruction vectorielle")
-        }
         let opcode = instruction.opcode
-
-        switch instruction.map {
-        case .oneByte: try oneByte(instruction, opcode)
-        case .twoByte: try performTwoByte(instruction, opcode)
-        case .threeByte38: try threeByte38(instruction, opcode)
-        case .threeByte3A: try threeByte3A(instruction, opcode)
+        switch instruction.dispatchCode {
+        case 0: try oneByte(instruction, opcode)
+        case 1: try performTwoByte(instruction, opcode)
+        case 2: try threeByte38(instruction, opcode)
+        case 3: try threeByte3A(instruction, opcode)
+        case 4: throw Self.vectorRefusal()
         default: throw Self.unsupportedMap(instruction.map)
         }
+    }
+
+    @inline(never)
+    static func vectorRefusal() -> Fault {
+        .unsupported("une instruction vectorielle")
     }
 
     /// **L'erreur à part, pour que `perform` reste léger.** L'interpolation de
