@@ -592,7 +592,7 @@ public struct X86Core: @unchecked Sendable {
                         : X86Instruction.maximumLength
                     available = min(room, memory.size &- start)
                 }
-                if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
+                if let known = decodeCache.lookupEntry(memory.bytes, at: start,
                                                        available: available) {
                     try step(known.pointee.instruction, watchArmed: watchArmed)
                 } else {
@@ -600,7 +600,7 @@ public struct X86Core: @unchecked Sendable {
                     do {
                         instruction = try X86Decoder.decode(memory.bytes + start,
                                                             available: available)
-                        decodeCache.store(instruction, memory.bytes, at: start, size: memory.size)
+                        decodeCache.store(instruction, memory.bytes, at: start)
                     } catch X86DecodeError.truncated
                                 where available < X86Instruction.maximumLength {
                         // À cheval sur deux pages : jamais rangé, puisque ses
