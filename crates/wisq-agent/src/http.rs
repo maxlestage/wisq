@@ -58,7 +58,10 @@ impl Response {
             426 => "Upgrade Required",
             500 => "Internal Server Error",
             501 => "Not Implemented",
-            _ => "OK",
+            // RFC 9112 §4: the reason phrase may be empty, and an empty one is
+            // honest. "OK" was not — a 403 added tomorrow would have gone out
+            // as `403 OK`.
+            _ => "",
         }
     }
 }
@@ -611,6 +614,20 @@ mod tests {
                 "Content-Length:{value:?} refusé : {reply}"
             );
             assert!(reply.contains("\"len\":5"), "{reply}");
+        }
+    }
+
+    /// Every status this daemon answers with has its own phrase, and one it
+    /// has never been taught says nothing rather than "OK".
+    #[test]
+    fn an_unknown_status_does_not_claim_to_be_ok() {
+        for status in [200, 400, 401, 404, 405, 413, 426, 500, 501] {
+            let phrase = Response::json(status, String::new()).reason();
+            assert!(!phrase.is_empty(), "{status} sans libellé");
+            assert_eq!(phrase == "OK", status == 200, "{status} {phrase}");
+        }
+        for status in [201, 403, 409, 503] {
+            assert_eq!(Response::json(status, String::new()).reason(), "");
         }
     }
 
