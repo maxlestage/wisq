@@ -208,13 +208,25 @@ fn read_request<S: Read>(stream: &mut S) -> Result<Request, ReadFailure> {
 
     let mut request_line = String::new();
     read_line(&mut reader, &mut request_line)?;
+    // RFC 9112 §3: `method SP target SP HTTP-version`, exactly three parts.
+    // Only the first two used to be read, so `GET /v1/vms` with no version and
+    // `GET /v1 /vms HTTP/1.1` with a space in the target were both served —
+    // the second as `/v1`, which is not the resource the client named.
     let mut parts = request_line.trim_end().split(' ');
-    let (Some(method), Some(path)) = (parts.next(), parts.next()) else {
+    let (Some(method), Some(path), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(ReadFailure::Protocol(Response::error(
             400,
             "requête malformée",
         )));
     };
+    if method.is_empty() || path.is_empty() || !version.starts_with("HTTP/1.") {
+        return Err(ReadFailure::Protocol(Response::error(
+            400,
+            "requête malformée",
+        )));
+    }
     let (method, path) = (method.to_string(), path.to_string());
 
     let mut authorization = None;
@@ -600,6 +612,32 @@ mod tests {
             );
             assert!(reply.contains("\"len\":5"), "{reply}");
         }
+    }
+
+    /// A request line is three parts. A missing version, a space inside the
+    /// target or a doubled separator each used to be read as its first two
+    /// words and served.
+    #[test]
+    fn a_request_line_that_is_not_three_parts_is_refused() {
+        let port = echoing_server();
+        for line in [
+            "GET /v1/vms",
+            "GET /v1 /vms HTTP/1.1",
+            "GET  /v1/vms HTTP/1.1",
+            "GET /v1/vms HTTP/2",
+            "GET /v1/vms FTP/1.1",
+        ] {
+            let reply = raw(port, &format!("{line}\r\nHost: h\r\n\r\n"));
+            assert!(
+                reply.starts_with("HTTP/1.1 400"),
+                "{line:?} accepté : {reply}"
+            );
+        }
+        let reply = raw(port, "GET /v1/vms HTTP/1.0\r\nHost: h\r\n\r\n");
+        assert!(
+            reply.starts_with("HTTP/1.1 200"),
+            "HTTP/1.0 refusé : {reply}"
+        );
     }
 
     /// Whitespace before the colon is the one place RFC 9112 forbids it, and
