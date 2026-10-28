@@ -74,7 +74,15 @@ extension X86Core {
     ///
     /// **En ligne** : quatre appelants seulement, et l'entrée et la sortie de
     /// l'appel coûtaient sous callgrind 0,8 % des instructions de l'hôte.
-    @inline(__always)
+    ///
+    /// **`@_transparent`, pas `@inline(__always)`.** Depuis que `add`,
+    /// `subtract` et `logic` écrivent leurs six drapeaux d'un coup et sont
+    /// eux-mêmes en ligne, le compilateur ne tenait plus compte de
+    /// `@inline(__always)` ici : l'assembleur montrait quatre appels à
+    /// `arithmetic` dans `oneByte`. L'attribut souligné l'inline avant
+    /// l'optimiseur, et les quatre appels disparaissent : 1,1 % de moins
+    /// sous callgrind.
+    @_transparent
     mutating func arithmetic(_ index: Int, _ a: UInt64, _ b: UInt64, _ size: Int) -> UInt64? {
         switch index {
         case 0: return add(a, b, size)
