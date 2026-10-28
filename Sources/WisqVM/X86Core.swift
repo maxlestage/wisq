@@ -840,15 +840,40 @@ public struct X86Core: @unchecked Sendable {
         static let movLoad: UInt8 = 2
         static let jumpShort: UInt8 = 3
         static let lea: UInt8 = 4
+        static let arithmetic: UInt8 = 5
+        static let arithmeticImmediate: UInt8 = 6
+        static let test: UInt8 = 7
+        static let jumpNear: UInt8 = 8
+        static let moveZeroExtend: UInt8 = 9
 
-        /// Le numéro d'une forme de la table d'un octet, sans VEX.
-        static func oneByte(_ opcode: UInt8) -> UInt8 {
-            switch opcode {
-            case 0x88, 0x89: return movStore
-            case 0x8A, 0x8B: return movLoad
-            case 0x70...0x7F: return jumpShort
-            case 0x8D: return lea
-            default: return 0
+        /// Le numéro d'une forme, sans VEX. Zéro pour ce qui passe par les
+        /// tables comme avant.
+        ///
+        /// Dans la table `0F`, seuls des octets qu'aucun gestionnaire
+        /// spécialisé ne réclame (`claimedBySpecialists`) : ceux-là allaient
+        /// déjà droit à `twoByte`, et l'aiguillage ne saute rien d'autre.
+        static func number(_ map: X86Instruction.OpcodeMap, _ opcode: UInt8) -> UInt8 {
+            switch map {
+            case .oneByte:
+                switch opcode {
+                case 0x00...0x3D where opcode & 0x07 <= 5: return arithmetic
+                case 0x80, 0x81, 0x83: return arithmeticImmediate
+                case 0x84, 0x85: return test
+                case 0x88, 0x89: return movStore
+                case 0x8A, 0x8B: return movLoad
+                case 0x70...0x7F: return jumpShort
+                case 0x8D: return lea
+                default: return 0
+                }
+            case .twoByte:
+                guard !X86Core.claimedBySpecialists(opcode) else { return 0 }
+                switch opcode {
+                case 0x80...0x8F: return jumpNear
+                case 0xB6, 0xB7: return moveZeroExtend
+                default: return 0
+                }
+            default:
+                return 0
             }
         }
     }
@@ -859,6 +884,11 @@ public struct X86Core: @unchecked Sendable {
         case Route.movLoad: return try moveLoad(instruction)
         case Route.jumpShort: return jumpShort(instruction)
         case Route.lea: return try loadEffectiveAddress(instruction)
+        case Route.arithmetic: return try arithmeticForm(instruction)
+        case Route.arithmeticImmediate: return try arithmeticImmediate(instruction)
+        case Route.test: return try testForm(instruction)
+        case Route.jumpNear: return jumpNear(instruction)
+        case Route.moveZeroExtend: return try moveZeroExtend(instruction)
         default: break
         }
         guard instruction.vexCount == 0 else {

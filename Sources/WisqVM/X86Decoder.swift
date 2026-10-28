@@ -118,7 +118,7 @@ public struct X86Instruction: Equatable, Sendable {
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
         // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
         wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
-        route = vexCount == 0 && map == .oneByte ? X86Core.Route.oneByte(opcode) : 0
+        route = vexCount == 0 ? X86Core.Route.number(map, opcode) : 0
     }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,

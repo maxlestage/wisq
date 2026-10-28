@@ -8,28 +8,7 @@ extension X86Core {
         switch opcode {
         // Les huit opérations arithmétiques, six formes chacune, six fois.
         case 0x00...0x3D where opcode & 0x07 <= 5:
-            let index = Int(opcode >> 3)
-            let form = Int(opcode & 0x07)
-            let byteForm = form == 0 || form == 2 || form == 4
-            let size = Self.operandSize(instruction, byteForm: byteForm)
-            switch form {
-            case 0, 1:  // r/m ← r/m op reg
-                let fields = try decodeFields(instruction)
-                // CMP ne réécrit rien : le vérifier ferait fauter une
-                // comparaison contre une page en lecture seule, ce qu'aucun
-                // processeur ne fait.
-                if index != 7 { try probeWrite(fields, size) }
-                let result = arithmetic(index, try readRM(fields, size), readReg(fields, size), size)
-                if let result { try writeRM(fields, size, result) }
-            case 2, 3:  // reg ← reg op r/m
-                let fields = try decodeFields(instruction)
-                let result = arithmetic(index, readReg(fields, size), try readRM(fields, size), size)
-                if let result { writeReg(fields, size, result) }
-            default:  // l'accumulateur et un immédiat
-                let value = read(0, size, highByte: false)
-                let result = arithmetic(index, value, Self.immediate(instruction, size), size)
-                if let result { write(0, size, highByte: false, result) }
-            }
+            try arithmeticForm(instruction)
 
         // MOVSXD : la seule instruction dont le nom dit ce que fait la moitié
         // du jeu d'instructions x86-64 sans le dire.
@@ -85,18 +64,10 @@ extension X86Core {
 
         // Le groupe 1 : la même arithmétique, avec un immédiat.
         case 0x80, 0x81, 0x83:
-            let size = Self.operandSize(instruction, byteForm: opcode == 0x80)
-            let fields = try decodeFields(instruction)
-            if (instruction.modrm! >> 3) & 0x07 != 7 { try probeWrite(fields, size) }
-            let result = arithmetic(
-                Int((instruction.modrm! >> 3) & 0x07), try readRM(fields, size),
-                Self.immediate(instruction, size), size)
-            if let result { try writeRM(fields, size, result) }
+            try arithmeticImmediate(instruction)
 
         case 0x84, 0x85:  // TEST : un ET dont personne ne garde le résultat.
-            let size = Self.operandSize(instruction, byteForm: opcode == 0x84)
-            let fields = try decodeFields(instruction)
-            _ = logic(try readRM(fields, size) & readReg(fields, size), size)
+            try testForm(instruction)
 
         case 0x86, 0x87:  // XCHG
             let size = Self.operandSize(instruction, byteForm: opcode == 0x86)
@@ -586,7 +557,7 @@ extension X86Core {
             }
 
         case 0x80...0x8F:  // Jcc long
-            if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 4)) }
+            jumpNear(instruction)
 
         case 0x40...0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
             let size = Self.operandSize(instruction, byteForm: false)
@@ -739,9 +710,7 @@ extension X86Core {
             writeReg(fields, size, destination)
 
         case 0xB6, 0xB7:  // MOVZX
-            let size = Self.operandSize(instruction, byteForm: false)
-            let fields = try decodeFields(instruction)
-            writeReg(fields, size, try readRM(fields, opcode == 0xB6 ? 1 : 2))
+            try moveZeroExtend(instruction)
 
         case 0xBE, 0xBF:  // MOVSX
             let size = Self.operandSize(instruction, byteForm: false)
@@ -1196,5 +1165,70 @@ extension X86Core {
         let fields = try decodeFields(instruction)
         let address = try effectiveAddress(instruction, fields, segmented: false)
         writeReg(fields, size, address & Self.mask(size))
+    }
+
+    /// Les huit opérations arithmétiques, six formes chacune : les octets 00
+    /// à 3D dont les trois bits du bas valent 0 à 5.
+    @inline(never)
+    mutating func arithmeticForm(_ instruction: X86Instruction) throws {
+        let opcode = instruction.opcode
+        let index = Int(opcode >> 3)
+        let form = Int(opcode & 0x07)
+        let byteForm = form == 0 || form == 2 || form == 4
+        let size = Self.operandSize(instruction, byteForm: byteForm)
+        switch form {
+        case 0, 1:  // r/m ← r/m op reg
+            let fields = try decodeFields(instruction)
+            // CMP ne réécrit rien : le vérifier ferait fauter une
+            // comparaison contre une page en lecture seule, ce qu'aucun
+            // processeur ne fait.
+            if index != 7 { try probeWrite(fields, size) }
+            let result = arithmetic(index, try readRM(fields, size), readReg(fields, size), size)
+            if let result { try writeRM(fields, size, result) }
+        case 2, 3:  // reg ← reg op r/m
+            let fields = try decodeFields(instruction)
+            let result = arithmetic(index, readReg(fields, size), try readRM(fields, size), size)
+            if let result { writeReg(fields, size, result) }
+        default:  // l'accumulateur et un immédiat
+            let value = read(0, size, highByte: false)
+            let result = arithmetic(index, value, Self.immediate(instruction, size), size)
+            if let result { write(0, size, highByte: false, result) }
+        }
+    }
+
+    /// Le groupe 1 : la même arithmétique, avec un immédiat (80, 81, 83).
+    @inline(never)
+    mutating func arithmeticImmediate(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: instruction.opcode == 0x80)
+        let fields = try decodeFields(instruction)
+        if (instruction.modrm! >> 3) & 0x07 != 7 { try probeWrite(fields, size) }
+        let result = arithmetic(
+            Int((instruction.modrm! >> 3) & 0x07), try readRM(fields, size),
+            Self.immediate(instruction, size), size)
+        if let result { try writeRM(fields, size, result) }
+    }
+
+    /// `TEST` : un ET dont personne ne garde le résultat (84, 85).
+    @inline(never)
+    mutating func testForm(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: instruction.opcode == 0x84)
+        let fields = try decodeFields(instruction)
+        _ = logic(try readRM(fields, size) & readReg(fields, size), size)
+    }
+
+    /// Les seize sauts conditionnels longs, `0F 80` à `0F 8F`.
+    @inline(never)
+    mutating func jumpNear(_ instruction: X86Instruction) {
+        if condition(instruction.opcode) {
+            branch(instruction, Self.signExtend(instruction.immediate, 4))
+        }
+    }
+
+    /// `MOVZX`, `0F B6` et `0F B7`.
+    @inline(never)
+    mutating func moveZeroExtend(_ instruction: X86Instruction) throws {
+        let size = Self.operandSize(instruction, byteForm: false)
+        let fields = try decodeFields(instruction)
+        writeReg(fields, size, try readRM(fields, instruction.opcode == 0xB6 ? 1 : 2))
     }
 }
