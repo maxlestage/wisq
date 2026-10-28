@@ -73,17 +73,27 @@ public struct X86Instruction: Equatable, Sendable {
     let regField: UInt8
     let rmField: UInt8
     let highByteFlags: UInt8
+    /// **La largeur des opérandes hors forme octet**, tirée elle aussi des
+    /// seuls octets de l'instruction : 8 avec `REX.W`, 2 avec le préfixe de
+    /// taille, 4 sinon. `X86Core.operandSize` la recalculait à chaque
+    /// exécution, un optionnel à déballer et un préfixe à chercher. Elle loge
+    /// dans le même remplissage : la taille ne bouge toujours pas.
+    let wideOperandSize: UInt8
     /// **La forme de l'adresse d'un ModRM en mémoire, dépliée elle aussi** :
     /// le registre de base (`noRegister` sans base, `ripRelative` pour une
-    /// adresse relative à RIP), celui d'index (`noRegister` sans index), et
-    /// l'échelle en décalage. `effectiveAddress` redéchiffrait à chaque
+    /// adresse relative à RIP), et dans un seul octet celui d'index
+    /// (`noRegister` sans index) sur les cinq bits du bas, l'échelle en
+    /// décalage sur les deux d'au-dessus. `effectiveAddress` redéchiffrait à chaque
     /// exécution le SIB, ses cas particuliers et les bits de REX : une
     /// vingtaine d'instructions de l'hôte pour chaque instruction qui touche
-    /// la mémoire. Les trois octets logent dans ce qui restait du
-    /// remplissage d'avant le déplacement : la taille ne bouge toujours pas.
+    /// la mémoire. Les deux octets prennent, avec `wideOperandSize`, les
+    /// trois qui restaient du remplissage d'avant le déplacement : la taille
+    /// ne bouge toujours pas. Un octet de plus la portait à 48, et le cache
+    /// de décodage d'autant.
     let baseField: UInt8
-    let indexField: UInt8
-    let scaleShift: UInt8
+    let indexAndScale: UInt8
+    var indexField: UInt8 { indexAndScale & 0x1F }
+    var scaleShift: UInt8 { indexAndScale >> 5 }
     /// Écrits en propriétés calculées, comme `segmentPrefixes` : un
     /// `static let` peut se payer d'un `swift_once` à chaque lecture.
     static var noRegister: UInt8 { 16 }
@@ -119,6 +129,8 @@ public struct X86Instruction: Equatable, Sendable {
         // CH, DH, BH ; avec, SPL, BPL, SIL, DIL.
         highByteFlags = rex != nil ? 0
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
+        // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
+        wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
         // Les mêmes règles que celles qu'appliquait `effectiveAddress`, dans
         // le même ordre : un SIB quand `rm` vaut 100, l'index 100 sans REX.X
         // pour « pas d'index », la base 101 sous `mod` 00 pour « pas de
@@ -126,19 +138,16 @@ public struct X86Instruction: Equatable, Sendable {
         if modrm != nil, byte >> 6 != 0b11 {
             if byte & 0x07 == 0b100, let sib {
                 let index = (rexBits & 0x02) << 2 | ((sib >> 3) & 0x07)
-                indexField = index == 4 ? Self.noRegister : index
-                scaleShift = sib >> 6
+                indexAndScale = (index == 4 ? Self.noRegister : index) | (sib >> 6) << 5
                 baseField = byte >> 6 == 0 && sib & 0x07 == 0b101
                     ? Self.noRegister : (rexBits & 0x01) << 3 | (sib & 0x07)
             } else {
-                indexField = Self.noRegister
-                scaleShift = 0
+                indexAndScale = Self.noRegister
                 baseField = byte >> 6 == 0 && byte & 0x07 == 0b101 ? Self.ripRelative : rmField
             }
         } else {
             baseField = Self.noRegister
-            indexField = Self.noRegister
-            scaleShift = 0
+            indexAndScale = Self.noRegister
         }
     }
 

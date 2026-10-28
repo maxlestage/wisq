@@ -29,10 +29,12 @@ extension X86Core {
             carryOut = sum >> bits != 0
         }
         let result = wide & mask
-        set(Flag.carry, carryOut)
-        set(Flag.auxiliary, ((a ^ b ^ result) >> 4) & 1 != 0)
-        set(Flag.overflow, ((a ^ result) & (b ^ result) & sign) != 0)
-        setResultFlags(result, size)
+        // Les six drapeaux calculés à part, puis écrits d'un coup : voir
+        // `setArithmeticFlags`. `AF` est déjà au bit 4 dans `a ^ b ^ résultat`.
+        let carryBit: UInt64 = carryOut ? Flag.carry : 0
+        let overflowBit: UInt64 = ((a ^ result) & (b ^ result) & sign) != 0 ? Flag.overflow : 0
+        setArithmeticFlags(carryBit | ((a ^ b ^ result) & Flag.auxiliary) | overflowBit
+                           | Self.resultFlagBits(result, size))
         return result
     }
 
@@ -50,10 +52,10 @@ extension X86Core {
         } else {
             borrowOut = (a & mask) < (b & mask)
         }
-        set(Flag.carry, borrowOut)
-        set(Flag.auxiliary, ((a ^ b ^ result) >> 4) & 1 != 0)
-        set(Flag.overflow, ((a ^ b) & (a ^ result) & sign) != 0)
-        setResultFlags(result, size)
+        let carryBit: UInt64 = borrowOut ? Flag.carry : 0
+        let overflowBit: UInt64 = ((a ^ b) & (a ^ result) & sign) != 0 ? Flag.overflow : 0
+        setArithmeticFlags(carryBit | ((a ^ b ^ result) & Flag.auxiliary) | overflowBit
+                           | Self.resultFlagBits(result, size))
         return result
     }
 
@@ -62,10 +64,9 @@ extension X86Core {
     /// et c'est ce que l'oracle a répondu.
     mutating func logic(_ result: UInt64, _ size: Int) -> UInt64 {
         let value = result & Self.mask(size)
-        set(Flag.carry, false)
-        set(Flag.overflow, false)
-        set(Flag.auxiliary, false)
-        setResultFlags(value, size)
+        // `CF`, `OF` et `AF` à zéro, les trois autres du résultat : une
+        // seule écriture au lieu de six.
+        setArithmeticFlags(Self.resultFlagBits(value, size))
         return value
     }
 

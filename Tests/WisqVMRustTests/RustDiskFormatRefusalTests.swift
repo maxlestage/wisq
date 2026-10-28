@@ -49,4 +49,18 @@ final class RustDiskFormatRefusalTests: XCTestCase {
             XCTAssertTrue(reason.hasPrefix("ce disque est un VHD dynamique,"), reason)
         }
     }
+
+    func testAVhdxIsRefusedAndNamed() throws {
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        bytes.replaceSubrange(0..<8, with: Array("vhdxfile".utf8))
+        let base = folder.appendingPathComponent("hyperv.vhdx")
+        try Data(bytes).write(to: base)
+        let machine = RustLinuxMachine(ramSize: 64 << 20) { _ in }
+        XCTAssertThrowsError(try machine.attach(diskFileAt: base, writes: folder.appendingPathComponent("w"))) {
+            guard case .unreadableImage(let reason)? = $0 as? FileDiskStore.Failure else {
+                return XCTFail("refus attendu, reçu \($0)")
+            }
+            XCTAssertTrue(reason.hasPrefix("ce disque est un VHDX,"), reason)
+        }
+    }
 }
