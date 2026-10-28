@@ -407,9 +407,40 @@ public struct X86Core: @unchecked Sendable {
 
     var carry: Bool { flags & Flag.carry != 0 }
 
+    /// **Sans branche** : le bit effacé, puis reposé s'il le faut. Le test
+    /// `if on` coûtait une branche par drapeau, six par addition, et le
+    /// processeur de l'hôte la devinait mal — le résultat d'une comparaison
+    /// de l'invité n'a pas de régularité.
     @inline(__always)
     mutating func set(_ flag: UInt64, _ on: Bool) {
-        if on { flags |= flag } else { flags &= ~flag }
+        flags = (flags & ~flag) | (on ? flag : 0)
+    }
+
+    /// Les six drapeaux de l'arithmétique : ceux que `ADD`, `SUB`, `CMP` et
+    /// les opérations logiques écrivent tous ensemble.
+    static let arithmeticFlags: UInt64 = Flag.carry | Flag.parity | Flag.auxiliary
+        | Flag.zero | Flag.sign | Flag.overflow
+
+    /// **Les six d'un coup.** `computed` ne porte que des bits de
+    /// `arithmeticFlags` ; les autres — l'interruption, la direction, le
+    /// piège — ne bougent pas. Une écriture de `flags` au lieu de six.
+    @inline(__always)
+    mutating func setArithmeticFlags(_ computed: UInt64) {
+        flags = (flags & ~Self.arithmeticFlags) | computed
+    }
+
+    /// `ZF`, `SF` et `PF` d'un résultat, rangés à leur place dans le mot des
+    /// drapeaux, sans écrire `flags`.
+    ///
+    /// Le signe se lit en décalant le bit de signe jusqu'au bit 7, la place
+    /// de `SF` : `8 × size − 8` vaut 0 pour un octet, 56 pour huit.
+    @inline(__always)
+    static func resultFlagBits(_ result: UInt64, _ size: Int) -> UInt64 {
+        let zeroBit: UInt64 = result & mask(size) == 0 ? Flag.zero : 0
+        let shift = 8 &* UInt64(truncatingIfNeeded: size) &- 8
+        let signBit = (result &>> shift) & Flag.sign
+        let parityBit: UInt64 = parity(result) ? Flag.parity : 0
+        return zeroBit | signBit | parityBit
     }
 
     /// La parité : celle des **huit bits de poids faible** du résultat, et
@@ -420,9 +451,8 @@ public struct X86Core: @unchecked Sendable {
 
     @inline(__always)
     mutating func setResultFlags(_ result: UInt64, _ size: Int) {
-        set(Flag.zero, result & Self.mask(size) == 0)
-        set(Flag.sign, result & Self.signBit(size) != 0)
-        set(Flag.parity, Self.parity(result))
+        let bits = Flag.zero | Flag.sign | Flag.parity
+        flags = (flags & ~bits) | Self.resultFlagBits(result, size)
     }
 
     // MARK: - Exécuter
