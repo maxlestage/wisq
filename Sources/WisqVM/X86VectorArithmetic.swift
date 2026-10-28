@@ -25,7 +25,7 @@ import Foundation
 // second.
 //
 // La référence est le processeur lui-même : `Tests/Fixtures/x86-simd-oracle.tsv`,
-// 108 formes et 3 240 cas, fabriqué par `scripts/build-x86-simd-oracle.py`.
+// 228 formes et 8 892 cas, fabriqué par `scripts/build-x86-simd-oracle.py`.
 extension X86Core {
     /// Les cent vingt-huit bits vus comme des éléments de `width` octets, deux
     /// à deux, chaque élément traité à part des autres.

@@ -4,8 +4,9 @@ import XCTest
 
 /// La pile x87, contre le **vrai processeur**.
 ///
-/// Huitième corpus. 67 formes, 3 618 cas, fabriqués par
-/// `scripts/build-x86-x87-oracle.py`. Le harnais a dû apprendre à charger et
+/// Huitième corpus, `Tests/Fixtures/x86-x87-oracle.tsv` : 93 formes, 5 580
+/// cas, fabriqués par `scripts/build-x86-x87-oracle.py`. Le harnais a dû
+/// apprendre à charger et
 /// relire les huit registres de quatre-vingts bits — `FRSTOR` à l'aller,
 /// `FNSAVE` au retour — et la preuve que ça n'a rien changé au reste est que
 /// les sept corpus d'avant se régénèrent **à l'octet près**.
