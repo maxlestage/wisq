@@ -17,6 +17,8 @@ final class X86OperandMaskTests: XCTestCase {
             XCTAssertEqual(X86Core.mask(size), mask, "masque de \(size) octet(s)")
             XCTAssertEqual(X86Core.signBit(size), sign, "signe de \(size) octet(s)")
         }
-        XCTAssertEqual(X86Core.mask(0), 0, "aucun octet, aucun bit — comme avant")
+        // La taille 0 n'est plus épinglée : aucun appel ne la passe (toutes
+        // viennent d'`operandSize`, `stackSize` ou `portSize`, qui rendent 1,
+        // 2, 4 ou 8), et le masque sans branche y rend tous les bits.
     }
 }
