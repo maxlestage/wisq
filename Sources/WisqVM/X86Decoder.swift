@@ -42,7 +42,27 @@ public struct X86Instruction: Equatable, Sendable {
     public let vexBytes: (UInt8, UInt8, UInt8)
     public var vexCount: Int { Int(vexCountByte) }
     /// Dans quelle table l'opcode se lit.
-    public let map: OpcodeMap
+    ///
+    /// **Rangée sur un octet**, `mapCode` : l'énumération en prend deux, à
+    /// cause de la valeur que porte `unknown`. Cette valeur est le champ
+    /// `mmmmm` d'un préfixe vectoriel, cinq bits au plus, et tient sous un bit
+    /// de marque : rien ne se perd. L'octet gagné porte `dispatchCode`.
+    public var map: OpcodeMap {
+        switch mapCode {
+        case 0: return .oneByte
+        case 1: return .twoByte
+        case 2: return .threeByte38
+        case 3: return .threeByte3A
+        default: return .unknown(mapCode & 0x7F)
+        }
+    }
+    let mapCode: UInt8
+    /// **Ce que `perform` aiguille, en un seul octet** : 0 à 3 pour les
+    /// quatre tables, 4 pour une instruction vectorielle — elle passe avant
+    /// sa table, comme dans `perform` —, 5 pour une table inconnue. `perform`
+    /// testait `vexCount`, puis comparait l'énumération à valeur associée
+    /// avant d'atteindre sa table de sauts.
+    let dispatchCode: UInt8
     /// L'octet d'opcode lui-même, sans les échappements qui l'ont désigné.
     public let opcode: UInt8
     public let modrm: UInt8?
@@ -112,7 +132,14 @@ public struct X86Instruction: Equatable, Sendable {
         self.rex = rex
         self.vexBytes = vexBytes
         vexCountByte = UInt8(vexCount)
-        self.map = map
+        switch map {
+        case .oneByte: mapCode = 0
+        case .twoByte: mapCode = 1
+        case .threeByte38: mapCode = 2
+        case .threeByte3A: mapCode = 3
+        case .unknown(let raw): mapCode = 0x80 | (raw & 0x7F)
+        }
+        dispatchCode = vexCount != 0 ? 4 : mapCode < 4 ? mapCode : 5
         self.opcode = opcode
         self.modrm = modrm
         self.sib = sib
