@@ -8,6 +8,109 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-21 — Le VHDX d'Hyper-V, lu sur place
+
+Le dernier format d'hyperviseur courant que wisq reconnaissait sans le lire.
+`VhdxImage` lit le disque d'Hyper-V tel quel, dynamique ou fixe, contre deux
+vrais fichiers de `qemu-img` 8.2.2 (blocs de 1 Mio, le bloc 1 inscrit « zéro »).
+
+**Ce qui fait foi, quand il y a deux copies.** Le VHDX double ses en-têtes et
+sa table des régions pour survivre à une coupure. Le lecteur garde le plus
+récent des en-têtes dont le CRC-32C tient, et la première table des régions
+valide. Le test qui le tient porte un journal en attente dans l'en-tête
+**ancien** : prendre le premier au lieu du plus récent fait refuser un disque
+sain, et le sabordage le montre.
+
+**Un journal non rejoué est refusé, et nommé.** Un GUID de journal non nul
+veut dire que des écritures attendent : le fichier tel quel n'est pas encore
+le disque. Le refus dit quoi faire (le rouvrir dans Hyper-V, ou `qemu-img
+check -r all`). Le disque différentiel est refusé comme pour le VDI et le VHD.
+
+**Les entrées des cartes de secteurs.** Toutes les `chunkRatio` entrées de la
+table des blocs, une entrée qui n'est pas un bloc s'intercale. Avec des blocs de
+1 Mio, elle n'apparaît qu'après 4096 blocs : le fichier de test ne pouvait pas
+la montrer. Le test change les métadonnées — qui n'ont pas de somme — pour des
+blocs de 256 Mio et un disque de dix-sept blocs, et fait pointer l'entrée de la
+carte sur les données du bloc 0 : lire la table sans la sauter rend « wisq! »
+au lieu de « 2Mio ».
+
+Douze sabordages, tous attrapés : premier en-tête au lieu du plus récent,
+journal ignoré, seconde table des régions oubliée, région ou métadonnée
+obligatoire inconnue acceptée, parent ignoré, cartes non sautées, bloc démappé
+lu dans le fichier, borne de fichier retirée (un plantage sur une adresse au
+bit fort), borne de la table des blocs, CRC faux, taille de secteur libre.
+
+Les tests qui prenaient le VHDX comme exemple de format « reconnu, pas lu »
+prennent désormais l'ancien qcow, version 1 — le seul qui reste avec le VMDK
+« descripteur ». Le cœur RISC-V refuse le VHDX en le nommant, comme les autres.
+Compte publié : 2957.
+## 2026-10-28 — Les six drapeaux de l'arithmétique, écrits d'un coup : 8 % de moins en natif
+
+Les runners de GitHub Actions restent indisponibles pour le compte — les
+travaux échouent en quelques secondes, sans journal — et ni #598 ni #600 ne
+peuvent être fusionnées. La consigne est de continuer à travailler sur
+l'application ; cette tranche s'empile sur #600 et attendra comme elle.
+
+**Ce que le profil a montré.** Sur un profil callgrind neuf du démarrage du
+vrai noyau, la ligne `if on { flags |= flag } else { flags &= ~flag }`
+pesait 2,2 % des instructions de l'hôte à elle seule. `ADD`, `SUB`, `CMP`
+et les opérations logiques posaient leurs six drapeaux un par un : six
+écritures de `flags`, et une branche par drapeau — que le processeur de
+l'hôte devine mal, le résultat d'une comparaison de l'invité n'ayant pas de
+régularité.
+
+**Ce qui change.** `add`, `subtract` et `logic` calculent leurs six bits à
+part — `AF` se lit déjà au bit 4 de `a ^ b ^ résultat`, `SF` en décalant le
+bit de signe jusqu'au bit 7 — et les rangent en une écriture
+(`setArithmeticFlags`). `set` lui-même perd sa branche, pour ses autres
+appelants.
+
+**La mesure.** Callgrind compte 2,4 % d'instructions de plus (26,94 →
+27,59 milliards) : un choix sans branche coûte quelques instructions là où
+une branche bien prédite n'en coûtait qu'une, et callgrind ne voit pas les
+autres. Le temps natif tranche — trois courses alternées de 600 millions
+d'instructions de l'invité, sur un cœur : 14,60 s en moyenne sur #600, 13,42 s
+ici, soit 8 % de moins.
+
+Cinq tests comparent la nouvelle pose à l'ancienne, recopiée bit à bit
+avec ses branches : les quatre largeurs, les deux retenues entrantes,
+cinquante-sept opérandes dont les bords de chaque largeur, et cinq états de
+départ des drapeaux — pour que l'interruption, la direction et le piège ne
+bougent pas. Huit sabordages, huit chutes : le masque des autres drapeaux
+oublié, le signe lu un bit trop haut, `OF` hors de l'ensemble, le
+débordement de l'addition pris pour celui de la soustraction, `AF` au bit
+de la parité, `AF` posée par la logique, la parité inversée, la retenue de
+la soustraction perdue. La suite existante — oracles x86 compris — passe
+sans changement. Compte publié : 2954.
+
+## 2026-10-21 — La largeur au décodage, le masque sans branche : 2,8 % de moins
+
+Deux calculs que le cœur x86 refaisait à chaque instruction, alors qu'ils ne
+dépendent que des octets de l'instruction ou d'une taille déjà connue.
+
+**La largeur des opérandes.** `operandSize` déballait le REX optionnel puis
+cherchait le préfixe `66` à chaque exécution. Elle est maintenant tirée au
+décodage (`wideOperandSize`, 8, 2 ou 4), et loge dans le remplissage d'avant
+le déplacement : `X86Instruction` reste à 40 octets. Callgrind : 27,71 →
+27,30 milliards d'instructions hôte.
+
+**Le masque d'une taille.** `size >= 8 ? UInt64.max : 2^n − 1` devient
+`UInt64.max &>> (64 − 8·size)`, sans choix. Callgrind : 27,30 → 26,94.
+
+**En temps natif**, trois courses alternées de 600 millions d'instructions
+de l'invité, sur un cœur : 14,37 s en moyenne sur master, 13,32 s ici, soit
+7 % de moins — plus que sous callgrind, qui ne compte pas les branches mal
+prédites que le masque faisait payer.
+
+Deux tests comparent les nouvelles formules aux anciennes : chaque REX,
+avec et sans `66`, avec d'autres préfixes ; les quatre tailles du masque.
+Trois sabordages attrapés : `66` avant REX.W, le mauvais bit du masque des
+préfixes, un décalage faux d'un bit. Le masque de la taille 0, que
+`X86OperandMaskTests` épinglait à zéro « comme avant », vaut désormais tous les
+bits : aucun appel ne la passe — chaque taille vient d'`operandSize`,
+`stackSize` ou `portSize` —, et le test le dit au lieu de l'épingler. Compte
+publié : 2949.
+
 ## 2026-10-21 — Le démon repasse à 1,8 Mo, sans que personne ne commette rien
 
 La CI de #597 a rougi dans le job Rust, sur `check-agent-size.sh` : le binaire

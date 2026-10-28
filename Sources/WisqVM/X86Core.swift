@@ -392,9 +392,15 @@ public struct X86Core: @unchecked Sendable {
     /// produit, ni la soustraction, ni la conversion ne peuvent déborder,
     /// mais `*`, `-` et `UInt64(_:)` le vérifiaient quand même, à chaque
     /// opérande — sous callgrind, ces deux lignes pesaient 3,2 %.
+    ///
+    /// **Et sans branche** : tous les bits, décalés de ce qui manque à la
+    /// taille pour faire huit octets — 56 pour un octet, 0 pour huit. Le
+    /// choix entre « tout » et « 2^n − 1 » coûtait 1,3 % des instructions de
+    /// l'hôte sous callgrind. `&>>` ne garde que les six bits du bas du
+    /// décalage, et les quatre tailles tombent dedans.
     @inline(__always)
     static func mask(_ size: Int) -> UInt64 {
-        size >= 8 ? UInt64.max : (UInt64(1) &<< (8 &* UInt64(truncatingIfNeeded: size))) &- 1
+        UInt64.max &>> (64 &- 8 &* UInt64(truncatingIfNeeded: size))
     }
 
     @inline(__always)
@@ -411,9 +417,40 @@ public struct X86Core: @unchecked Sendable {
 
     var carry: Bool { flags & Flag.carry != 0 }
 
+    /// **Sans branche** : le bit effacé, puis reposé s'il le faut. Le test
+    /// `if on` coûtait une branche par drapeau, six par addition, et le
+    /// processeur de l'hôte la devinait mal — le résultat d'une comparaison
+    /// de l'invité n'a pas de régularité.
     @inline(__always)
     mutating func set(_ flag: UInt64, _ on: Bool) {
-        if on { flags |= flag } else { flags &= ~flag }
+        flags = (flags & ~flag) | (on ? flag : 0)
+    }
+
+    /// Les six drapeaux de l'arithmétique : ceux que `ADD`, `SUB`, `CMP` et
+    /// les opérations logiques écrivent tous ensemble.
+    static let arithmeticFlags: UInt64 = Flag.carry | Flag.parity | Flag.auxiliary
+        | Flag.zero | Flag.sign | Flag.overflow
+
+    /// **Les six d'un coup.** `computed` ne porte que des bits de
+    /// `arithmeticFlags` ; les autres — l'interruption, la direction, le
+    /// piège — ne bougent pas. Une écriture de `flags` au lieu de six.
+    @inline(__always)
+    mutating func setArithmeticFlags(_ computed: UInt64) {
+        flags = (flags & ~Self.arithmeticFlags) | computed
+    }
+
+    /// `ZF`, `SF` et `PF` d'un résultat, rangés à leur place dans le mot des
+    /// drapeaux, sans écrire `flags`.
+    ///
+    /// Le signe se lit en décalant le bit de signe jusqu'au bit 7, la place
+    /// de `SF` : `8 × size − 8` vaut 0 pour un octet, 56 pour huit.
+    @inline(__always)
+    static func resultFlagBits(_ result: UInt64, _ size: Int) -> UInt64 {
+        let zeroBit: UInt64 = result & mask(size) == 0 ? Flag.zero : 0
+        let shift = 8 &* UInt64(truncatingIfNeeded: size) &- 8
+        let signBit = (result &>> shift) & Flag.sign
+        let parityBit: UInt64 = parity(result) ? Flag.parity : 0
+        return zeroBit | signBit | parityBit
     }
 
     /// La parité : celle des **huit bits de poids faible** du résultat, et
@@ -424,9 +461,8 @@ public struct X86Core: @unchecked Sendable {
 
     @inline(__always)
     mutating func setResultFlags(_ result: UInt64, _ size: Int) {
-        set(Flag.zero, result & Self.mask(size) == 0)
-        set(Flag.sign, result & Self.signBit(size) != 0)
-        set(Flag.parity, Self.parity(result))
+        let bits = Flag.zero | Flag.sign | Flag.parity
+        flags = (flags & ~bits) | Self.resultFlagBits(result, size)
     }
 
     // MARK: - Exécuter
@@ -700,9 +736,7 @@ public struct X86Core: @unchecked Sendable {
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
     static func operandSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
-        if byteForm { return 1 }
-        if let rex = instruction.rex, rex & 0x08 != 0 { return 8 }
-        return instruction.hasPrefix(0x66) ? 2 : 4
+        byteForm ? 1 : Int(truncatingIfNeeded: instruction.wideOperandSize)
     }
 
     /// La largeur d'un aller-retour sur la pile : huit octets, deux sous le
