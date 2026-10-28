@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-28 — L'aiguillage choisi au décodage : 13 % de moins sous callgrind, 7 % au démarrage
+
+**Ce que la mesure a montré.** Un histogramme des opcodes du démarrage
+d'Alpine (mesure locale, jamais commitée) : après la décompression du noyau,
+`mov` fait 19 % des instructions, le groupe 1 9 %, `xor` 7 %, `movzx` 7 %,
+les sauts conditionnels 7 %. Aucun ne domine : c'est le coût commun à toutes
+qu'il fallait viser. Or chacune traversait le `switch` sur la table, puis
+`oneByte` — une centaine de cas, un cadre qui sauve des registres à chaque
+appel, une suite de comparaisons d'intervalles — avant d'atteindre son cas.
+Sous callgrind, ce trajet pesait près de 10 % des instructions de l'hôte.
+
+**Ce qui change.** Le décodeur range dans `X86Instruction.route`, sur le
+dernier octet du remplissage (la structure reste à 40 octets), le numéro
+du gestionnaire des formes chaudes : l'arithmétique 00–3D, le groupe 1
+(80, 81, 83), `TEST` (84, 85), `MOV` (88–8B), `LEA`, les sauts courts et
+longs, `MOVZX`. `perform` y saute directement ; tout le reste — et tout ce
+qui porte un VEX — passe par les tables comme avant. Chaque gestionnaire
+est **le** code de son cas : la table l'appelle aussi, il n'y a qu'une
+implémentation. Dans la table `0F`, seuls des octets qu'aucun gestionnaire
+spécialisé ne réclame sont aiguillés.
+
+**La mesure.** Callgrind, 100 millions d'instructions d'Alpine : 27,59 →
+**24,02** milliards d'instructions de l'hôte (−12,9 %). En natif, sur un
+cœur : 600 millions d'instructions en 12,94 → 12,31 s (−4,9 %), et le
+démarrage entier jusqu'au shell d'Alpine — 2 143 057 483 instructions, le
+même compte des deux côtés — en 65,3 → **60,9 s** (−6,7 %).
+
+Quatre tests : les 768 octets de trois tables un par un contre une table
+écrite à la main ; rien de ce que les spécialistes réclament n'est
+aiguillé ; le décodeur pose le numéro, et pas sous VEX (un `0F B6` sous VEX
+reste refusé) ; chaque forme aiguillée — 140 encodages, registres, mémoire,
+octets hauts, préfixe `66`, quatre états de drapeaux — rend la même machine
+par l'aiguillage et par la table. Sept sabordages, sept chutes : `8A` mené
+au rangement, l'arithmétique étendue aux formes 6, `MOVZX` mené au `MOV`,
+le numéro posé sous VEX, `TEST` mené à l'arithmétique, `TEST` non aiguillé,
+le décalage du saut long lu sur un octet (attrapé par l'oracle des
+branchements : 80 désaccords sur 630). Compte publié : 2972.
+
 ## 2026-10-21 — Le VHDX d'Hyper-V, lu sur place
 
 Le dernier format d'hyperviseur courant que wisq reconnaissait sans le lire.
