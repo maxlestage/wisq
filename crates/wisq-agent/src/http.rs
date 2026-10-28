@@ -240,9 +240,24 @@ fn read_request<S: Read>(stream: &mut S) -> Result<Request, ReadFailure> {
         if line.is_empty() {
             break;
         }
+        // RFC 9112 §5: a field line is `name ":" value`, and §5.1 forbids
+        // whitespace between the name and the colon — a server MUST answer 400.
+        // Both used to be skipped, so `Content-Length : 5` was not a length
+        // here and was one to a lenient proxy in front: the body read as empty
+        // on this side and as five bytes on the other. A line that opens with
+        // whitespace is the obsolete line folding of §5.2, refused the same way.
         let Some((name, value)) = line.split_once(':') else {
-            continue;
+            return Err(ReadFailure::Protocol(Response::error(
+                400,
+                "en-tête malformé",
+            )));
         };
+        if name.is_empty() || name.bytes().any(|b| b.is_ascii_whitespace()) {
+            return Err(ReadFailure::Protocol(Response::error(
+                400,
+                "en-tête malformé",
+            )));
+        }
         let value = value.trim();
         // Header names are case-insensitive, and clients disagree about case.
         match name.to_ascii_lowercase().as_str() {
@@ -584,6 +599,43 @@ mod tests {
                 "Content-Length:{value:?} refusé : {reply}"
             );
             assert!(reply.contains("\"len\":5"), "{reply}");
+        }
+    }
+
+    /// Whitespace before the colon is the one place RFC 9112 forbids it, and
+    /// for a reason: a parser that does not match `Content-Length ` reads no
+    /// body, a lenient one in front reads five bytes, and the two disagree
+    /// about where the next request starts.
+    #[test]
+    fn whitespace_before_a_header_colon_is_refused() {
+        let port = echoing_server();
+        for line in ["Content-Length : 5", "Content-Length\t: 5"] {
+            let reply = raw(
+                port,
+                &format!("POST /v1/x HTTP/1.1\r\nHost: h\r\n{line}\r\n\r\nhello"),
+            );
+            assert!(
+                reply.starts_with("HTTP/1.1 400"),
+                "{line:?} accepté : {reply}"
+            );
+        }
+    }
+
+    /// A line with no colon is not a header, and a line that opens with
+    /// whitespace is a folded continuation of the previous one (RFC 9112
+    /// §5.2). Both used to be skipped without a word.
+    #[test]
+    fn a_header_line_that_is_not_a_field_is_refused() {
+        let port = echoing_server();
+        for line in ["Content-Length 5", " Content-Length: 5", ": 5"] {
+            let reply = raw(
+                port,
+                &format!("POST /v1/x HTTP/1.1\r\nHost: h\r\n{line}\r\n\r\nhello"),
+            );
+            assert!(
+                reply.starts_with("HTTP/1.1 400"),
+                "{line:?} accepté : {reply}"
+            );
         }
     }
 
