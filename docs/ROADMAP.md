@@ -594,9 +594,18 @@ d'entrer dans la bibliothèque.
    aucun noyau, puisqu'ils ne sont pas encore dans la bibliothèque —, et un
    bouton qui les efface en disant ce qu'il coûte : le prochain
    téléchargement repartira de zéro.
-4. Le téléchargement qui continue quand l'application passe en arrière-plan
-   (`URLSession` en arrière-plan, qui écrit dans un fichier temporaire à lui :
-   la reprise par `Range` doit alors se recoudre sur ce qu'il rend).
+4. **En cours.** Le téléchargement qui continue quand l'application passe en
+   arrière-plan (`URLSession` en arrière-plan, qui écrit dans un fichier
+   temporaire à lui : la reprise par `Range` doit alors se recoudre sur ce
+   qu'il rend).
+   - **Fait** : la couture, dans `ImageDownloader`. `backgroundRequest` dit
+     l'adresse et le `Range` à confier à la session, `adopt` recoud le
+     fichier qu'elle rend sur le `.part` — lu contre ce que le `.part` a au
+     moment de recoudre, pas quand la requête est partie — puis vérifie et
+     range l'image avec les mêmes règles qu'à l'écran.
+   - Reste : la session elle-même dans l'application (sa configuration
+     d'arrière-plan, son délégué, et le réveil par
+     `handleEventsForBackgroundURLSession`), qui ne se compile que sur Mac.
 5. **Fait pour huit distributions** : Alpine, puis Debian, Fedora et Ubuntu
    (voir « Les images de cloud qui démarrent seules », étapes 6 et 10),
    Arch Linux, openSUSE Tumbleweed, AlmaLinux 9 et Rocky Linux 9 — toutes
