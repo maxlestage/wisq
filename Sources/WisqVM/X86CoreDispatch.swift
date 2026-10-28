@@ -7,7 +7,19 @@ extension X86Core {
     mutating func oneByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         switch opcode {
         // Les huit opérations arithmétiques, six formes chacune, six fois.
-        case 0x00...0x3D where opcode & 0x07 <= 5:
+        //
+        // **Des octets un par un, et ni `where` ni intervalle.** Un intervalle
+        // se compare par `~=` et une clause `where` se teste : l'un comme
+        // l'autre empêche le compilateur de faire de cet aiguillage une
+        // table de sauts. Chaque instruction de l'invité descendait une
+        // chaîne de comparaisons, cas après cas, avant d'atteindre le sien —
+        // `MOV`, la plus fréquente, une douzaine de tests plus bas. Les cas
+        // de premier niveau de `oneByte` ne portent donc que des littéraux ;
+        // `0x06`, `0x07`, `0x0E`… tombent toujours dans `default`.
+        case 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D,
+             0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D,
+             0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D:
             let index = Int(opcode >> 3)
             let form = Int(opcode & 0x07)
             let byteForm = form == 0 || form == 2 || form == 4
@@ -42,11 +54,11 @@ extension X86Core {
         // disait « toujours huit ». La moitié était vraie — celle sur REX.W —
         // et c'est ce qui l'a rendue crédible. Le vrai processeur a tranché :
         // `pushw %ax` rend RSP à 0x30002ffe, pas à 0x30002ff8.
-        case 0x50...0x57:
+        case 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57:
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
             try push(registers.read(index), Self.stackSize(instruction))
-        case 0x58...0x5F:
+        case 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F:
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
             let size = Self.stackSize(instruction)
@@ -59,7 +71,7 @@ extension X86Core {
 
         // Les seize sauts conditionnels, courts. La destination se compte
         // depuis la **fin** de l'instruction.
-        case 0x70...0x7F:
+        case 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F:
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
         case 0xC3:
             rip = try pop(8)
@@ -127,7 +139,7 @@ extension X86Core {
             let address = try effectiveAddress(instruction, fields, segmented: false)
             writeReg(fields, size, address & Self.mask(size))
 
-        case 0x90...0x97:  // XCHG rAX, r — dont 0x90, qui est NOP.
+        case 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97:  // XCHG rAX, r — dont 0x90, qui est NOP.
             let size = Self.operandSize(instruction, byteForm: false)
             let rex = instruction.rex ?? 0
             let other = Int((rex & 0x01) << 3 | (opcode & 0x07))
@@ -143,13 +155,13 @@ extension X86Core {
             let size = Self.operandSize(instruction, byteForm: opcode == 0xA8)
             _ = logic(read(0, size, highByte: false) & Self.immediate(instruction, size), size)
 
-        case 0xB0...0xB7:  // MOV r8, imm8
+        case 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7:  // MOV r8, imm8
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
             let high = instruction.rex == nil && (4...7).contains(Int(opcode & 0x07))
             write(high ? index : index, 1, highByte: high, instruction.immediate & 0xFF)
 
-        case 0xB8...0xBF:  // MOV r, imm — le seul immédiat de huit octets.
+        case 0xB8, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF:  // MOV r, imm — le seul immédiat de huit octets.
             let size = Self.operandSize(instruction, byteForm: false)
             let rex = instruction.rex ?? 0
             let index = Int((rex & 0x01) << 3 | (opcode & 0x07))
@@ -194,30 +206,13 @@ extension X86Core {
             default: try divideSigned(value, size)
             }
 
-        case 0xFF where (instruction.modrm ?? 0) >> 3 & 0x07 >= 2:
-            // Le groupe 5 : appeler, sauter, empiler — tous par une valeur
-            // qu'on va chercher plutôt que par un déplacement.
-            let fields = try decodeFields(instruction)
-            // `/6` empile, et sa largeur est celle de la pile ; `/2` et `/4`
-            // sautent, et une destination de saut fait toujours huit octets.
-            let reach = (instruction.modrm! >> 3) & 0x07 == 6
-                ? Self.stackSize(instruction) : 8
-            let target = try readRM(fields, reach)
-            switch (instruction.modrm! >> 3) & 0x07 {
-            case 2:
-                try push(rip &+ UInt64(instruction.length), 8)
-                rip = target
-                jumped = true
-            case 4:
-                rip = target
-                jumped = true
-            case 6:
-                try push(target, Self.stackSize(instruction))
-            default:
-                throw Fault.unsupported("le groupe 5 /\((instruction.modrm! >> 3) & 0x07)")
-            }
-
         case 0xFE, 0xFF:  // INC et DEC, qui ne touchent pas à la retenue
+            // Le groupe 5 partage l'octet `FF` : une clause `where` sur son
+            // cas cassait la table de sauts comme celle du premier.
+            if opcode == 0xFF, (instruction.modrm ?? 0) >> 3 & 0x07 >= 2 {
+                try groupFive(instruction)
+                return
+            }
             let size = Self.operandSize(instruction, byteForm: opcode == 0xFE)
             let fields = try decodeFields(instruction)
             try probeWrite(fields, size)
@@ -233,6 +228,31 @@ extension X86Core {
         // x87 — vit dans `oneByteCold` : voir sa note.
         default:
             try oneByteCold(instruction, opcode)
+        }
+    }
+
+    /// Le groupe 5 : appeler, sauter, empiler — tous par une valeur
+    /// qu'on va chercher plutôt que par un déplacement.
+    @inline(never)
+    mutating func groupFive(_ instruction: X86Instruction) throws {
+        let fields = try decodeFields(instruction)
+        // `/6` empile, et sa largeur est celle de la pile ; `/2` et `/4`
+        // sautent, et une destination de saut fait toujours huit octets.
+        let reach = (instruction.modrm! >> 3) & 0x07 == 6
+            ? Self.stackSize(instruction) : 8
+        let target = try readRM(fields, reach)
+        switch (instruction.modrm! >> 3) & 0x07 {
+        case 2:
+            try push(rip &+ UInt64(instruction.length), 8)
+            rip = target
+            jumped = true
+        case 4:
+            rip = target
+            jumped = true
+        case 6:
+            try push(target, Self.stackSize(instruction))
+        default:
+            throw Fault.unsupported("le groupe 5 /\((instruction.modrm! >> 3) & 0x07)")
         }
     }
 
@@ -429,6 +449,10 @@ extension X86Core {
 
     /// La table `0F`.
     mutating func twoByte(_ instruction: X86Instruction, _ opcode: UInt8) throws {
+        // Des octets littéraux seulement, comme dans `oneByte` : un intervalle
+        // ou une clause `where` ferait de l'aiguillage une chaîne de
+        // comparaisons. Une forme qui ne convient pas lève, dans son cas, la
+        // faute que `default` lèverait.
         switch opcode {
         case 0x01:  // le groupe 7 : les tables de descripteurs, et le reste
             let group = try decodeFields(instruction)
@@ -542,7 +566,7 @@ extension X86Core {
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici
             break
 
-        case 0x1E where instruction.hasPrefix(0xF3):
+        case 0x1E:
             // ENDBR64 et ENDBR32 : les balises de CET, que le noyau sème à
             // l'entrée de chaque fonction dès qu'il est compilé avec. Sur un
             // processeur qui n'annonce pas la technologie — et `X86CPUID`
@@ -555,9 +579,12 @@ extension X86Core {
             // zéro, il n'y a pas de pile fantôme. Sans CET, le manuel range
             // ces octets parmi les NOP réservés, et le registre ne bouge pas.
             // Le refuser arrêtait Ubuntu au premier programme lancé.
+            //
+            // Sans `F3`, ce sont les NOP réservés du cas suivant : les deux
+            // ne font rien, et c'est ce qui permet un seul cas pour l'octet.
             break
 
-        case 0x0D, 0x18...0x1D, 0x1E:
+        case 0x0D, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D:
             // PREFETCH et les NOP réservés du groupe 16 : des indices pour un
             // cache, et ce cœur n'en a pas. Le noyau en sème sur ses chemins
             // chauds ; les refuser l'arrêterait pour une instruction dont le
@@ -597,10 +624,10 @@ extension X86Core {
                 throw Fault.unsupported("0F AE /\(extension_) en mémoire")
             }
 
-        case 0x80...0x8F:  // Jcc long
+        case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:  // Jcc long
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 4)) }
 
-        case 0x40...0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
+        case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
             // Le mouvement conditionnel écrit **toujours** en 32 bits, même
@@ -610,7 +637,7 @@ extension X86Core {
             let value = condition(opcode) ? try readRM(fields, size) : readReg(fields, size)
             writeReg(fields, size, value)
 
-        case 0x90...0x9F:  // SETcc
+        case 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F:  // SETcc
             let fields = try decodeFields(instruction)
             try writeRM(fields, 1, condition(opcode) ? 1 : 0)
 
@@ -672,7 +699,7 @@ extension X86Core {
             writeReg(fields, size, multiplyTruncating(readReg(fields, size),
                                                       try readRM(fields, size), size))
 
-        case 0xC8...0xCF:  // BSWAP : renverser les octets d'un registre
+        case 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF:  // BSWAP : renverser les octets d'un registre
             let size = Self.operandSize(instruction, byteForm: false)
             let index = Int(((instruction.rex ?? 0) & 0x01) << 3 | (opcode & 0x07))
             let value = read(index, size, highByte: false)
@@ -701,14 +728,16 @@ extension X86Core {
                 write(0, size, highByte: false, destination)
             }
 
-        case 0x77 where instruction.vexCount == 0:  // EMMS
+        case 0x77:  // EMMS
+            guard instruction.vexCount == 0 else { throw Self.unknownTwoByte(opcode) }
             // Les huit registres de la pile x87 marqués vides, comme après une
             // série d'instructions MMX. Linux l'exécute sur un processeur AMD
             // à chaque restauration de l'état flottant, entre `FNCLEX` et un
             // `FILD` factice : c'est le contournement de « FXSAVE leak ».
             x87Tags = 0xFFFF
 
-        case 0xC7 where (try? Self.fields(instruction))?.reg == 1:  // CMPXCHG8B
+        case 0xC7:  // CMPXCHG8B
+            guard (try? Self.fields(instruction))?.reg == 1 else { throw Self.unknownTwoByte(opcode) }
             // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
             // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
             // promet le bit CX8 de CPUID, que la glibc exige pour démarrer.
@@ -762,7 +791,8 @@ extension X86Core {
             writeReg(fields, size, Self.signExtend(try readRM(fields, source), source)
                 & Self.mask(size))
 
-        case 0xB8 where instruction.hasPrefix(0xF3):  // POPCNT
+        case 0xB8:  // POPCNT
+            guard instruction.hasPrefix(0xF3) else { throw Self.unknownTwoByte(opcode) }
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
             let source = try readRM(fields, size)
@@ -785,8 +815,15 @@ extension X86Core {
             }
 
         default:
-            throw Fault.unsupported("l'opcode 0F \(String(format: "%02X", opcode))")
+            throw Self.unknownTwoByte(opcode)
         }
+    }
+
+    /// La faute d'un octet `0F` que personne ne prend, à part : elle sert à
+    /// `default` et aux cas dont la forme ne convient pas.
+    @inline(never)
+    static func unknownTwoByte(_ opcode: UInt8) -> Fault {
+        .unsupported("l'opcode 0F \(String(format: "%02X", opcode))")
     }
 
     /// Le strict minimum d'x87 : **trois** instructions, et rien d'autre.
@@ -1102,26 +1139,32 @@ extension X86Core {
     mutating func effectiveAddress(
         _ instruction: X86Instruction, _ fields: Fields, segmented: Bool = true
     ) throws -> UInt64 {
-        guard let modrm = instruction.modrm, fields.mod != 0b11 else {
+        guard instruction.modrm != nil, fields.mod != 0b11 else {
             throw Fault.unsupported("une adresse calculée depuis un registre")
         }
-        let rex = instruction.rex ?? 0
-        let displacement = UInt64(bitPattern: instruction.displacement)
-        let segment = segmented ? segmentBase(instruction) : 0
-        if modrm & 0x07 == 0b100, let sib = instruction.sib {
-            let index = Int((rex & 0x02) << 2 | ((sib >> 3) & 0x07))
-            let base = Int((rex & 0x01) << 3 | (sib & 0x07))
-            // L'index 100 sans REX.X veut dire « pas d'index » : c'est ainsi
-            // qu'on écrit une adresse sans registre d'échelle.
-            let scaled = index == 4 ? 0 : registers.read(index) << UInt64((sib >> 6) & 0x03)
-            let baseValue = (fields.mod == 0 && (sib & 0x07) == 0b101) ? 0 : registers.read(base)
-            return segment &+ baseValue &+ scaled &+ displacement
-        }
-        if fields.mod == 0 && modrm & 0x07 == 0b101 {
+        return memoryAddress(instruction, segmented: segmented)
+    }
+
+    /// Le calcul lui-même, pour un ModRM dont on sait déjà qu'il désigne la
+    /// mémoire : sans garde, donc sans faute à construire. C'est ce qui le
+    /// laisse s'inliner chez la trentaine d'appelants de `decodeFields`.
+    @inline(__always)
+    mutating func memoryAddress(_ instruction: X86Instruction, segmented: Bool = true) -> UInt64 {
+        // La forme est dépliée au décodage : voir `X86Instruction.baseField`.
+        var address = (segmented ? segmentBase(instruction) : 0)
+            &+ UInt64(bitPattern: instruction.displacement)
+        let base = instruction.baseField
+        if base < 16 {
+            address &+= registers.read(Int(base))
+        } else if base == X86Instruction.ripRelative {
             // Relatif à RIP : l'adresse suit l'instruction entière.
-            return segment &+ rip &+ UInt64(instruction.length) &+ displacement
+            address &+= rip &+ UInt64(instruction.length)
         }
-        return segment &+ registers.read(fields.rm) &+ displacement
+        let index = instruction.indexField
+        if index < 16 {
+            address &+= registers.read(Int(index)) << UInt64(instruction.scaleShift)
+        }
+        return address
     }
 
     /// La base du segment que l'instruction a nommé, ou zéro.

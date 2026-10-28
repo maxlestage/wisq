@@ -42,7 +42,27 @@ public struct X86Instruction: Equatable, Sendable {
     public let vexBytes: (UInt8, UInt8, UInt8)
     public var vexCount: Int { Int(vexCountByte) }
     /// Dans quelle table l'opcode se lit.
-    public let map: OpcodeMap
+    ///
+    /// **Rangée sur un octet**, `mapCode` : l'énumération en prend deux, à
+    /// cause de la valeur que porte `unknown`. Cette valeur est le champ
+    /// `mmmmm` d'un préfixe vectoriel, cinq bits au plus, et tient sous un bit
+    /// de marque : rien ne se perd. L'octet gagné porte `dispatchCode`.
+    public var map: OpcodeMap {
+        switch mapCode {
+        case 0: return .oneByte
+        case 1: return .twoByte
+        case 2: return .threeByte38
+        case 3: return .threeByte3A
+        default: return .unknown(mapCode & 0x7F)
+        }
+    }
+    let mapCode: UInt8
+    /// **Ce que `perform` aiguille, en un seul octet** : 0 à 3 pour les
+    /// quatre tables, 4 pour une instruction vectorielle — elle passe avant
+    /// sa table, comme dans `perform` —, 5 pour une table inconnue. `perform`
+    /// testait `vexCount`, puis comparait l'énumération à valeur associée
+    /// avant d'atteindre sa table de sauts.
+    let dispatchCode: UInt8
     /// L'octet d'opcode lui-même, sans les échappements qui l'ont désigné.
     public let opcode: UInt8
     public let modrm: UInt8?
@@ -79,6 +99,25 @@ public struct X86Instruction: Equatable, Sendable {
     /// exécution, un optionnel à déballer et un préfixe à chercher. Elle loge
     /// dans le même remplissage : la taille ne bouge toujours pas.
     let wideOperandSize: UInt8
+    /// **La forme de l'adresse d'un ModRM en mémoire, dépliée elle aussi** :
+    /// le registre de base (`noRegister` sans base, `ripRelative` pour une
+    /// adresse relative à RIP), et dans un seul octet celui d'index
+    /// (`noRegister` sans index) sur les cinq bits du bas, l'échelle en
+    /// décalage sur les deux d'au-dessus. `effectiveAddress` redéchiffrait à chaque
+    /// exécution le SIB, ses cas particuliers et les bits de REX : une
+    /// vingtaine d'instructions de l'hôte pour chaque instruction qui touche
+    /// la mémoire. Les deux octets prennent, avec `wideOperandSize`, les
+    /// trois qui restaient du remplissage d'avant le déplacement : la taille
+    /// ne bouge toujours pas. Un octet de plus la portait à 48, et le cache
+    /// de décodage d'autant.
+    let baseField: UInt8
+    let indexAndScale: UInt8
+    var indexField: UInt8 { indexAndScale & 0x1F }
+    var scaleShift: UInt8 { indexAndScale >> 5 }
+    /// Écrits en propriétés calculées, comme `segmentPrefixes` : un
+    /// `static let` peut se payer d'un `swift_once` à chaque lecture.
+    static var noRegister: UInt8 { 16 }
+    static var ripRelative: UInt8 { 17 }
 
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
     public let displacement: Int64
@@ -93,7 +132,14 @@ public struct X86Instruction: Equatable, Sendable {
         self.rex = rex
         self.vexBytes = vexBytes
         vexCountByte = UInt8(vexCount)
-        self.map = map
+        switch map {
+        case .oneByte: mapCode = 0
+        case .twoByte: mapCode = 1
+        case .threeByte38: mapCode = 2
+        case .threeByte3A: mapCode = 3
+        case .unknown(let raw): mapCode = 0x80 | (raw & 0x7F)
+        }
+        dispatchCode = vexCount != 0 ? 4 : mapCode < 4 ? mapCode : 5
         self.opcode = opcode
         self.modrm = modrm
         self.sib = sib
@@ -112,6 +158,24 @@ public struct X86Instruction: Equatable, Sendable {
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
         // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
         wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
+        // Les mêmes règles que celles qu'appliquait `effectiveAddress`, dans
+        // le même ordre : un SIB quand `rm` vaut 100, l'index 100 sans REX.X
+        // pour « pas d'index », la base 101 sous `mod` 00 pour « pas de
+        // base » ; sans SIB, `rm` 101 sous `mod` 00 relatif à RIP.
+        if modrm != nil, byte >> 6 != 0b11 {
+            if byte & 0x07 == 0b100, let sib {
+                let index = (rexBits & 0x02) << 2 | ((sib >> 3) & 0x07)
+                indexAndScale = (index == 4 ? Self.noRegister : index) | (sib >> 6) << 5
+                baseField = byte >> 6 == 0 && sib & 0x07 == 0b101
+                    ? Self.noRegister : (rexBits & 0x01) << 3 | (sib & 0x07)
+            } else {
+                indexAndScale = Self.noRegister
+                baseField = byte >> 6 == 0 && byte & 0x07 == 0b101 ? Self.ripRelative : rmField
+            }
+        } else {
+            baseField = Self.noRegister
+            indexAndScale = Self.noRegister
+        }
     }
 
     /// La table où l'opcode se lit. Les échappements hérités (`0F`, `0F 38`,

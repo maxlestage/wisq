@@ -80,7 +80,34 @@ public final class X86Memory: @unchecked Sendable {
         return address &- VirtioBlock.pc.base
     }
 
+    /// **Le cas courant en ligne, le reste à part.** Presque tous les accès
+    /// sont de la RAM, sur un, deux, quatre ou huit octets ; chacun passait
+    /// pourtant par un appel de fonction, et la fonction portait aussi le
+    /// disque, l'écran et les largeurs impaires. Sous callgrind, `read` et
+    /// `write` coûtaient à eux deux 6,3 % des instructions de l'hôte.
+    /// `fastRead` et `fastWrite` rendent nil ou faux pour tout ce qui n'est
+    /// pas ce cas-là, et le chemin d'avant le prend tel quel.
+    @inline(__always)
     public func read(_ address: UInt64, _ width: Int) throws -> UInt64 {
+        if let value = fastRead(address, width) { return value }
+        return try readSlowly(address, width)
+    }
+
+    @inline(__always)
+    func fastRead(_ address: UInt64, _ width: Int) -> UInt64? {
+        guard let start = offset(address, width) else { return nil }
+        let at = UnsafeRawPointer(bytes + start)
+        switch width {
+        case 8: return UInt64(littleEndian: at.loadUnaligned(as: UInt64.self))
+        case 4: return UInt64(UInt32(littleEndian: at.loadUnaligned(as: UInt32.self)))
+        case 2: return UInt64(UInt16(littleEndian: at.loadUnaligned(as: UInt16.self)))
+        case 1: return UInt64(bytes[start])
+        default: return nil
+        }
+    }
+
+    @inline(never)
+    func readSlowly(_ address: UInt64, _ width: Int) throws -> UInt64 {
         guard let start = offset(address, width) else {
             if let device = storage, let at = storageOffset(address) {
                 return device.read(at, width)
@@ -107,7 +134,28 @@ public final class X86Memory: @unchecked Sendable {
         }
     }
 
+    @inline(__always)
     public func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
+        if fastWrite(address, width, value) { return }
+        try writeSlowly(address, width, value)
+    }
+
+    @inline(__always)
+    func fastWrite(_ address: UInt64, _ width: Int, _ value: UInt64) -> Bool {
+        guard let start = offset(address, width) else { return false }
+        let at = UnsafeMutableRawPointer(bytes + start)
+        switch width {
+        case 8: at.storeBytes(of: value.littleEndian, as: UInt64.self)
+        case 4: at.storeBytes(of: UInt32(truncatingIfNeeded: value).littleEndian, as: UInt32.self)
+        case 2: at.storeBytes(of: UInt16(truncatingIfNeeded: value).littleEndian, as: UInt16.self)
+        case 1: bytes[start] = UInt8(truncatingIfNeeded: value)
+        default: return false
+        }
+        return true
+    }
+
+    @inline(never)
+    func writeSlowly(_ address: UInt64, _ width: Int, _ value: UInt64) throws {
         guard let start = offset(address, width) else {
             if let device = storage, let at = storageOffset(address) {
                 device.write(at, width, value, self)
