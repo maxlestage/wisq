@@ -98,14 +98,17 @@ final class ImageDownloadModel {
     /// Télécharge `release` dans la bibliothèque ; rend son adresse, ou `nil`
     /// si le téléchargement a échoué — la raison est alors dans `phase`.
     func download(_ release: ImageDownload.Release) async -> URL? {
-        guard let downloader, let library = try? KernelLibrary.directory() else {
+        guard downloader != nil, (try? KernelLibrary.directory()) != nil else {
             phase = .failed("la bibliothèque n'a pas pu être ouverte.")
             return nil
         }
         phase = .downloading(file: release.file)
         progress = (0, release.size)
         do {
-            let url = try await downloader.download(release, into: library) { have, total in
+            // **Par la session d'arrière-plan** : le transfert continue
+            // quand l'application quitte l'écran, et l'image est recousue
+            // et vérifiée au réveil. Voir `BackgroundImageDownloads`.
+            let url = try await BackgroundImageDownloads.shared.download(release) { have, total in
                 Task { @MainActor [weak self] in self?.progress = (have, total) }
             }
             phase = .ready
