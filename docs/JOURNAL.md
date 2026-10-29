@@ -8,6 +8,98 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — SPICE : un arrêt pendant l'ouverture reste un arrêt
+
+**Le défaut.** `SPICESession.start` attend toute l'ouverture de la session :
+jusqu'à six connexions, chacune avec sa poignée de main. L'acteur est
+réentrant à chacune de ces attentes. Un `stop` arrivé là, par exemple quand
+on ferme la session pendant qu'elle se connecte, fermait ce qui existait
+déjà. Puis `connect` reprenait : il ouvrait l'affichage, l'entrée, le
+curseur et le son, et lançait leurs pompes. La session était fermée pour
+l'application et vivante sur le réseau, avec de l'image reçue pour personne
+et peut-être du son.
+
+**Ce qui change.** `stop` pose un drapeau. `connect` le relit après chaque
+connexion ouverte et avant chaque pompe (`kept`) : ce qui arrive après
+l'arrêt est refermé aussitôt, sans rien y écrire, et rien ne démarre.
+
+**Vérifié.**
+- Un test (`testAStopWhileOpeningLeavesNothingRunning`) retient la
+  deuxième connexion, arrête la session entre les deux, puis la relâche. Sur
+  le code d'avant, il échoue là où il faut : la connexion d'affichage est
+  écrite et jamais fermée.
+- Deux sabotages, deux chutes.
+- Deux autres lignes ne tombaient sous aucun sabotage : la garde en tête de
+  `start` et le `catch` de l'annulation. Elles n'avaient pas d'effet (le flux
+  d'évènements est déjà fermé par `stop`), et elles sont retirées.
+
+Compte publié : 3110.
+
+## 2026-10-29 — Fichiers .vv : le proxy et l'autorité lus, un ticket Proxmox refusé en le disant
+
+**Le défaut.** Proxmox écrit dans chaque fichier `.vv` un
+`host=pvespiceproxy:<ticket>:…` et un `proxy=http://pve:3128` : la console ne
+se joint qu'à travers ce proxy, qui seul sait lire le ticket. Le lecteur
+ignorait `proxy` et `ca`. L'import fabriquait donc une machine dont l'hôte est
+un nom qu'aucun résolveur ne connaît, et qui échouait plus tard sur une
+erreur sans rapport visible avec la cause.
+
+**Ce qui change.**
+- `VirtViewerFile` lit `proxy` en `Proxy` (hôte, port).
+  - Formes acceptées : `http://`, sans schéma, sans port (3128, celui de
+    Proxmox).
+  - Tout autre schéma est refusé plutôt que pris pour du HTTP.
+- `ca` est lu en PEM, avec les `\n` du fichier rendus en vrais retours à la
+  ligne.
+- `ConnectionImport` refuse un ticket Proxmox avec une phrase qui nomme le
+  proxy. Un fichier oVirt qui nomme un proxy à côté d'un hôte joignable
+  s'importe comme avant.
+
+**Ce qui reste, et pourquoi pas ici.** Traverser le proxy veut un tunnel HTTP
+CONNECT, puis TLS à travers lui, validé par le `ca=` et le `host-subject=` du
+fichier. Network.framework fait le tunnel depuis iOS 17, que le projet vise.
+Mais deux choses ne se vérifient nulle part d'ici :
+- la ligne CONNECT qu'il écrit pour un nom qui contient des deux-points ;
+- la validation contre une autorité fournie.
+
+Il n'y a ni Proxmox ni compilateur Apple ici. C'est la tranche suivante.
+
+**Vérifié.** Cinq tests (`VirtViewerProxyTests`), sur un fichier de la forme
+qu'écrit Proxmox. Cinq sabotages, cinq chutes.
+
+Compte publié : 3109.
+
+## 2026-10-29 — VNC : les serveurs RFB 3.3 et 3.7 se parlent dans leur version
+
+**Le défaut.** Le client répondait « RFB 003.008 » à tout serveur. Son
+commentaire assurait que les serveurs anciens se replient d'eux-mêmes : ce
+n'est pas le cas.
+- Un serveur 3.3 impose son type de sécurité en un mot de quatre octets, sans
+  liste. Le client lisait le premier octet de ce mot comme une longueur de
+  liste, et le flux se décalait dès la lecture suivante.
+- Un serveur 3.7 n'envoie pas de résultat après None, ni de raison après un
+  refus.
+
+**Ce qui change.**
+- `RFB.Version.negotiate` suit la RFC 6143 (§7.1.1) : la version la plus haute
+  que le client parle sans dépasser celle du serveur.
+  - De 3.3 à 3.6, c'est 3.3.
+  - 3.7 reste 3.7.
+  - 3.8 et au-delà, dont le 3.889 d'Apple, donnent 3.8.
+- La poignée de sécurité suit la version : type imposé en 3.3, liste sans
+  résultat après None en 3.7, et 3.8 inchangé.
+
+**Vérifié.** Six tests (`RFBVersionTests`) : la table des versions, puis des
+poignées complètes contre un serveur écrit en mémoire.
+- En 3.3 : None, mot de passe, refus avec sa raison.
+- En 3.7 : None, mot de passe refusé.
+
+Cinq sabotages, cinq chutes. Le premier passage tombait par un plantage du
+test plutôt que par un échec : il indexait ce que le client n'avait pas écrit.
+Les assertions vérifient maintenant la longueur d'abord.
+
+Compte publié : 3104.
+
 ## 2026-10-29 — Une reprise refusée ne touche plus à la mémoire
 
 **Le défaut.** `X86Machine.restore` écrivait la mémoire de l'instantané

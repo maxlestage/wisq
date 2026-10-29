@@ -77,7 +77,24 @@ public enum ConnectionImport {
         asked == .tlsPinned ? .tls : asked
     }
 
+    /// **Un ticket Proxmox n'est pas une adresse.** Proxmox écrit
+    /// `host=pvespiceproxy:<ticket>:<vmid>:<nœud>::<signature>` : un nom que
+    /// seul son proxy SPICE (`proxy=`, port 3128) sait lire, et qu'aucun
+    /// résolveur ne connaît. Importé tel quel, il donnait une machine qui
+    /// échouait plus tard, sur une erreur de nom introuvable qui ne disait
+    /// rien de la cause. wisq ne traverse pas encore ce proxy : on le dit à
+    /// l'import.
+    ///
+    /// Un fichier oVirt peut nommer un proxy à côté d'un hôte joignable
+    /// directement : celui-là s'importe comme avant.
+    static func requiresItsProxy(_ connection: VirtViewerFile.Connection) -> Bool {
+        connection.proxy != nil && connection.host.lowercased().hasPrefix("pvespiceproxy:")
+    }
+
     public static func machine(from connection: VirtViewerFile.Connection) throws -> Imported {
+        if requiresItsProxy(connection), let proxy = connection.proxy {
+            throw Failure.needsSpiceProxy(proxy)
+        }
         let host = try validatedHost(connection.host)
         return Imported(
             machine: Machine(
@@ -164,6 +181,9 @@ public enum ConnectionImport {
         /// file may well be a connection file, just not one that survived
         /// however it got here.
         case unreadableEncoding
+        /// The console is only reachable through the file's SPICE proxy,
+        /// which wisq does not cross yet: see `requiresItsProxy`.
+        case needsSpiceProxy(VirtViewerFile.Proxy)
     }
 
     /// The `[virt-viewer]` section is a header no `.rdp` file has — its lines
@@ -273,6 +293,14 @@ public enum ConnectionImport {
             return "« \(value) » n'est pas un port."
         case let VirtViewerFile.Failure.unsupportedProtocol(name):
             return "wisq ne parle pas le protocole « \(name) »."
+        case let VirtViewerFile.Failure.unsupportedProxy(value):
+            return "« \(value) » n'est pas un proxy HTTP."
+        case let Failure.needsSpiceProxy(proxy):
+            return """
+                Ce fichier vient de Proxmox : sa console passe par le proxy SPICE \
+                de \(proxy.host) (port \(proxy.port)), et wisq ne sait pas encore le \
+                traverser. La machine n'a pas été ajoutée.
+                """
 
         case RemoteDesktopFile.Failure.notARemoteDesktopFile:
             return "Ce fichier .rdp ne contient aucun réglage lisible."
