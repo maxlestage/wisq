@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — FMA, F16C, et les conversions de largeur sur 256 bits
+
+Sixième tranche de x86-64-v3 : les trois dernières pièces avant que CPUID
+puisse annoncer AVX et AVX2 — la glibc de RHEL 10 exige FMA et F16C avec
+eux.
+
+- **FMA** (`X86FMA.swift`) : `vfmadd`, `vfmsub`, `vfnmadd`, `vfnmsub` dans
+  leurs trois ordres, empaquetés sur 128 et 256 bits et scalaires, plus
+  `vfmaddsub` et `vfmsubadd`. Fusionné par `addingProduct` : un seul
+  arrondi.
+- **F16C** : `vcvtph2ps` exact, `vcvtps2ph` sous les quatre arrondis de
+  l'immédiat (ou au plus proche quand il renvoie à MXCSR), écrits sur des
+  bits — l'hôte n'a pas toujours `Float16`.
+- **Les conversions de largeur sur 256 bits** : `vcvtps2pd`, `vcvtdq2pd`,
+  `vcvtpd2ps`, `vcvttpd2dq`, `vcvtpd2dq`.
+
+**Le seizième corpus**, `scripts/build-x86-fma-oracle.py` : 413 formes,
+jugées sur les états de x86-64-v2 et sur douze états de plus, fabriqués aux
+bords de la demi-précision (égalités d'arrondi, sous-normales, 65 504 et ce
+qui déborde, sous les deux signes) — 19 411 cas. Le juge partagé accepte
+maintenant ces états de plus ; les deux autres corpus ressortent identiques.
+
+**Le premier passage a trouvé deux choses.** La règle des NaN de FMA n'est
+pas l'ordre des registres mais celui du calcul — les deux facteurs, puis
+l'addende — : `vfmadd231` rendait le NaN de la destination là où le
+processeur rend celui de `vvvv`. Et `vcvtps2ph` débordait dès 2 : la borne
+de 65 504 était comptée en mauvaises unités. Deux tests à la main (ymm8 à
+ymm15 avec un `2⁻⁶⁰` qu'un produit arrondi perdrait, et les refus) ;
+douze sabordages, onze chutes — le survivant touchait une condition
+redondante, retirée.
+
+Compte publié : 3063 ; corpus matériels : seize.
 ## 2026-10-29 — Le reste de SSSE3, que le systemd de CentOS Stream 10 demande
 
 Essayé sur la branche qui annonce x86-64-v3 entier (pas encore fusionnée) :
