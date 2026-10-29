@@ -100,6 +100,13 @@ def forms():
     for position in [0, 1, 7, 15, 16]:
         out += [f"pinsrb ${position}, %eax, %xmm0", f"pinsrb ${position}, 0x25(%rsi), %xmm0",
                 f"pextrb ${position}, %xmm1, %eax", f"pextrb ${position}, %xmm1, 0x25(%rsi)"]
+    # `PEXTRW` sous `0F 3A 15` : la forme de SSE4.1, la seule qui écrive
+    # la mémoire — celle de SSE2 (`0F C5`) n'a qu'un registre. L'assembleur
+    # choisit `0F C5` pour un registre : la forme `0F 3A 15` y est écrite en
+    # octets. Le systemd de CentOS Stream 10 l'emploie sous VEX.
+    for position in [0, 1, 3, 7, 8]:
+        out += [f"pextrw ${position}, %xmm1, 0x26(%rsi)",
+                f".byte 0x66, 0x0f, 0x3a, 0x15, 0xc8, {position:#x}"]
     for position in [0, 1, 3, 4]:
         out += [f"pinsrd ${position}, %eax, %xmm0", f"pinsrd ${position}, 0x24(%rsi), %xmm0",
                 f"pextrd ${position}, %xmm1, %eax", f"pextrd ${position}, %xmm1, 0x24(%rsi)",
