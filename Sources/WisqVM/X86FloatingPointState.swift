@@ -72,9 +72,22 @@ extension X86Core {
     mutating func saveFloatingPointState() throws {
         guard memory != nil else { throw Fault.unsupported("FXSAVE sans mémoire") }
         let base = lastAddress
+        try saveX87Image(at: base)
+        try saveMXCSR(at: base)
+        try saveVectorImage(at: base)
+    }
+
+    /// **Les trois parts de la zone**, chacune à part : `FXSAVE` les écrit
+    /// toutes, `XSAVE` celles que son masque demande (`X86XSAVE.swift`). Les
+    /// octets qu'elles couvrent sont ceux qu'écrivait `FXSAVE` d'un bloc —
+    /// 0 à 23, 32 à 159 pour x87 ; 24 à 31 pour MXCSR ; 160 à 415 pour XMM.
+    mutating func saveX87Image(at base: UInt64) throws {
         // Les octets réservés doivent partir à zéro : un noyau qui relit la
         // zone avec `XRSTOR` refuse un état qu'il ne reconnaît pas.
-        for offset in stride(from: 0, to: FloatingPointArea.written, by: 8) {
+        for offset in stride(from: 0, to: FloatingPointArea.mxcsr, by: 8) {
+            try writeMemory(base &+ UInt64(offset), 8, 0)
+        }
+        for offset in stride(from: FloatingPointArea.stack, to: FloatingPointArea.vectors, by: 8) {
             try writeMemory(base &+ UInt64(offset), 8, 0)
         }
         func put(_ offset: Int, _ width: Int, _ value: UInt64) throws {
@@ -85,27 +98,51 @@ extension X86Core {
         try put(FloatingPointArea.control, 2, UInt64(x87Control))
         try put(FloatingPointArea.status, 2, UInt64(x87Status))
         try put(FloatingPointArea.abridgedTags, 1, UInt64(abridgedTagWord))
-        try put(FloatingPointArea.mxcsr, 4, UInt64(mxcsr))
-        // Le masque des bits de MXCSR qu'un processeur accepte. Zéro voudrait
-        // dire « aucun », et Linux le prend au mot.
-        try put(FloatingPointArea.mxcsrMask, 4, 0xFFFF)
-
         for index in 0..<8 {
             let value = stack(index)  // ST(index), et non le registre physique
             let at = FloatingPointArea.stack + FloatingPointArea.slot * index
             try put(at, 8, value.significand)
             try put(at + 8, 2, UInt64(value.signExponent))
         }
+    }
+
+    mutating func saveMXCSR(at base: UInt64) throws {
+        try writeMemory(base &+ UInt64(FloatingPointArea.mxcsr), 4, UInt64(mxcsr))
+        // Le masque des bits de MXCSR qu'un processeur accepte. Zéro voudrait
+        // dire « aucun », et Linux le prend au mot.
+        try writeMemory(base &+ UInt64(FloatingPointArea.mxcsrMask), 4, 0xFFFF)
+    }
+
+    mutating func saveVectorImage(at base: UInt64) throws {
         for index in 0..<16 {
-            let at = FloatingPointArea.vectors + FloatingPointArea.slot * index
-            try put(at, 8, vectors[2 * index])
-            try put(at + 8, 8, vectors[2 * index + 1])
+            let at = base &+ UInt64(FloatingPointArea.vectors + FloatingPointArea.slot * index)
+            try writeMemory(at, 8, vectors[2 * index])
+            try writeMemory(at &+ 8, 8, vectors[2 * index + 1])
         }
     }
 
     mutating func restoreFloatingPointState() throws {
         guard memory != nil else { throw Fault.unsupported("FXRSTOR sans mémoire") }
         let base = lastAddress
+        // MXCSR d'abord : c'est la seule valeur qui peut être refusée, et un
+        // refus doit laisser le reste tel qu'il était.
+        try restoreMXCSR(at: base)
+        try restoreX87Image(at: base)
+        try restoreVectorImage(at: base)
+    }
+
+    /// MXCSR, refusé quand il lève un bit que le masque annoncé (0xFFFF) ne
+    /// permet pas — le #GP du processeur, que ce cœur ne livre pas : il
+    /// s'arrête en le nommant plutôt que de charger un état impossible.
+    mutating func restoreMXCSR(at base: UInt64) throws {
+        let value = UInt32(truncatingIfNeeded: try readMemory(base &+ UInt64(FloatingPointArea.mxcsr), 4))
+        guard value & ~0xFFFF == 0 else {
+            throw Fault.unsupported("MXCSR \(String(value, radix: 16)) : des bits réservés levés")
+        }
+        mxcsr = value
+    }
+
+    mutating func restoreX87Image(at base: UInt64) throws {
         func get(_ offset: Int, _ width: Int) throws -> UInt64 {
             try readMemory(base &+ UInt64(offset), width)
         }
@@ -134,7 +171,6 @@ extension X86Core {
         let pending = (x87Status & 0x3F) & ~(x87Control & 0x3F)
         x87Status = pending != 0 ? (x87Status | 0x8080) : (x87Status & ~0x8080)
         let abridged = UInt8(truncatingIfNeeded: try get(FloatingPointArea.abridgedTags, 1))
-        mxcsr = UInt32(truncatingIfNeeded: try get(FloatingPointArea.mxcsr, 4))
 
         for index in 0..<8 {
             let at = FloatingPointArea.stack + FloatingPointArea.slot * index
@@ -150,10 +186,13 @@ extension X86Core {
             let occupied = abridged & UInt8(1 << physical) != 0
             markTag(physical, occupied ? Self.tag(for: x87[physical]) : 0b11)
         }
+    }
+
+    mutating func restoreVectorImage(at base: UInt64) throws {
         for index in 0..<16 {
-            let at = FloatingPointArea.vectors + FloatingPointArea.slot * index
-            vectors[2 * index] = try get(at, 8)
-            vectors[2 * index + 1] = try get(at + 8, 8)
+            let at = base &+ UInt64(FloatingPointArea.vectors + FloatingPointArea.slot * index)
+            vectors[2 * index] = try readMemory(at, 8)
+            vectors[2 * index + 1] = try readMemory(at &+ 8, 8)
         }
     }
 }
