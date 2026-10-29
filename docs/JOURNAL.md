@@ -31,9 +31,9 @@ Pour #600, le chiffre callgrind (−2,8 %) tient — callgrind compte les
 instructions et ne dépend pas de l'alignement —, mais ses 7 % en natif ont
 été mesurés de la même façon et ne valent pas mieux.
 
-**La règle, désormais.** Un temps natif ne se compare que croisé
-(`croise.sh` : chaque côté dans chaque copie), ou dans une seule copie
-reconstruite entre les deux mesures. Sans cela, l'écart entre deux copies
+**La règle, désormais.** Un temps natif ne se compare que croisé — chaque
+côté construit dans chaque copie, et la moyenne des deux passes —, ou dans
+une seule copie reconstruite entre les deux mesures. Sans cela, l'écart entre deux copies
 — jusqu'à 4 % ici — est plus grand que la plupart des gains qu'on mesure.
 Deux essais de cette nuit en ont été jugés autrement : la page de code
 gardée sans clé (−2,2 % sous callgrind, mais 3 % plus lente en natif même
