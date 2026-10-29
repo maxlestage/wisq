@@ -505,7 +505,7 @@ final class X86BootAttemptTests: XCTestCase {
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             fils vus              : \(core.threadActivity.count)
             dialogue              : \(typed.isEmpty ? "rien tapé" : typed.joined(separator: " | "))
-            cache de décodage     : \(core.decodeCache.hits) trouvées, \(core.decodeCache.misses) décodées
+            cache de décodage     : \(core.decodeCacheHits) trouvées, \(core.decodeCache.misses) décodées
             bus PCI               : \(core.memory?.bus.map {
                 String(format: "fenêtre %04x, commande %04x, ligne %d",
                        $0.window, $0.command, $0.interruptLine)
