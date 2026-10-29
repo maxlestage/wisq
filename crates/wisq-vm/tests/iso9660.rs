@@ -918,3 +918,28 @@ fn every_form_of_initrd_list_is_read() {
     let recipe = Recipe::read(variable, "/boot/grub/grub.cfg").expect("variable");
     assert_eq!(recipe.initrd.as_deref(), Some("/i.img"));
 }
+
+/// **Un chemin relatif part du dossier de la recette chez syslinux.** C'est
+/// l'entrée de Mageia telle quelle, dans `/isolinux/isolinux.cfg` : le noyau
+/// est en `/isolinux/x86_64/vmlinuz`, pas en `/x86_64/vmlinuz`.
+#[test]
+fn a_relative_syslinux_path_starts_at_the_recipes_folder() {
+    let text = "\
+default linux
+label linux
+  kernel x86_64/vmlinuz
+  append initrd=x86_64/all.rdz audit=0 noiswmd audit=0 vga=791 splash quiet
+";
+    let recipe = Recipe::read(text, "/isolinux/isolinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/isolinux/x86_64/vmlinuz");
+    assert_eq!(recipe.initrd.as_deref(), Some("/isolinux/x86_64/all.rdz"));
+
+    // Un chemin absolu reste ce qu'il est, et grub part de la racine.
+    let absolute = Recipe::read("label a\n kernel /boot/k\n", "/isolinux/isolinux.cfg");
+    assert_eq!(absolute.expect("absolu").kernel, "/boot/k");
+    let grub = Recipe::read(
+        "menuentry \"a\" {\n linux boot/k\n}\n",
+        "/boot/grub/grub.cfg",
+    );
+    assert_eq!(grub.expect("grub").kernel, "/boot/k");
+}
