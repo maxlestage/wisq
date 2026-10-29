@@ -46,7 +46,37 @@ processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
   rien à corriger dans wisq.
 
 Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
-faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3027.
+faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3032.
+## 2026-10-29 — Les formes VEX.128 de SSE, par les instructions qui existent
+
+Suite de la tranche précédente, demandée par « continue de tout optimiser » :
+le reste de RHEL 10 emploie l'encodage VEX partout où il touche aux
+registres vectoriels, même sur cent vingt-huit bits. Ce sont les opérations
+de SSE, avec une première source de plus (`vvvv`) qui n'est pas écrasée.
+
+- **Une seule exécution.** `X86AVX.swift` classe chaque forme VEX.128 —
+  trois opérandes, deux, décalage par un immédiat, `vzeroupper` — et la
+  traduit en sa forme héritée : `pp` redevient 66, F3 ou F2, R, X, B et W
+  redeviennent un REX, la première source est recopiée dans la destination.
+  Aucune opération n'est récrite.
+- **Le piège** : la seconde source qui est la destination
+  (`vaddps %xmm0, %xmm2, %xmm0`). Elle passe par un registre que
+  l'instruction ne nomme pas, rendu ensuite. Une faute rend la destination.
+- **Refusés** : une opération entière sans 66 (ce serait MMX), une forme à
+  deux opérandes dont `vvvv` n'est pas 1111, toute forme VEX.256 sauf
+  `vzeroall`. CPUID n'annonce toujours pas AVX : il n'y a pas encore de
+  haut des registres YMM.
+
+**La référence est le processeur** : `scripts/build-x86-avx128-oracle.py`
+récrit en VEX les instructions des quatre corpus SSE au lieu d'une liste
+refaite à la main — 1 152 formes sur 38 états, 43 776 cas, xmm3 à xmm15
+tenus intacts. Accord du premier coup ; cinq sabordages (pas de registre de
+passage, registre non rendu, F3 pris pour F2, décalage sans recopie, bit B
+non récrit), cinq chutes — après un test de plus :
+le bit B **survivait**, l'oracle ne nommant que xmm0 à xmm2. Le test des
+registres hauts y passe maintenant par xmm9 et xmm12.
+
+Compte publié : 3025 ; corpus matériels : treize.
 
 ## 2026-10-29 — x86-64-v3, la part des registres généraux : BMI1, BMI2, LZCNT, MOVBE
 
