@@ -33,6 +33,8 @@ extension XfsVolume: LinuxVolume {
 /// des trois, et l'erreur est celle d'ext4 ; un XFS reconnu mais refusé — une
 /// fonction inconnue — rend la sienne, qui dit pourquoi.
 func linuxVolume(_ partition: PartitionTable.Partition, in image: any VirtualDiskImage) throws -> any LinuxVolume {
+    // La partition EFI est du FAT : Gentoo y range son noyau (`FatVolume`).
+    if partition.kind == .efiSystem { return try FatVolume(partition, in: image) }
     do {
         return try Ext4Volume(partition, in: image)
     } catch {
