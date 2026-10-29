@@ -113,11 +113,11 @@ final class X86V3GPROracleTests: XCTestCase {
         XCTAssertEqual(agreed, fixture.cases.count)
     }
 
-    /// **Les formes VEX que ce cœur n'exécute pas restent refusées** : AVX2
-    /// à travers les moitiés (`vpbroadcastb %xmm1, %ymm0`), et une forme BMI
-    /// sous VEX.L, qui n'existe pas.
+    /// **Les formes VEX que ce cœur n'exécute pas restent refusées** : un
+    /// ramassage AVX2 (`vpgatherdd`), et une forme BMI sous VEX.L, qui
+    /// n'existe pas.
     func testOtherVEXFormsAreStillRefused() throws {
-        for bytes: [UInt8] in [[0xC4, 0xE2, 0x7D, 0x78, 0xC1], [0xC4, 0xE2, 0xEC, 0xF2, 0xC1]] {
+        for bytes: [UInt8] in [[0xC4, 0xE2, 0x75, 0x90, 0x04, 0x96], [0xC4, 0xE2, 0xEC, 0xF2, 0xC1]] {
             let memory = X86Memory(size: 0x1000, base: 0x3000_0000)
             try memory.load(bytes, at: 0x3000_0000)
             var core = X86Core(registers: X86SIMDOracleTests.witness(), flags: X86Core.Flag.reserved,

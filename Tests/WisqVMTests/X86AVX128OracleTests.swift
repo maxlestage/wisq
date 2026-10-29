@@ -202,13 +202,12 @@ final class X86AVX128OracleTests: XCTestCase {
 
     /// **Ce qui n'est pas SSE reste refusé** : une forme à deux opérandes
     /// dont `vvvv` n'est pas 1111, une opération entière sans 66 — ce
-    /// serait MMX —, et une forme VEX.256 qui traverse les moitiés.
+    /// serait MMX —, et un ramassage sur 256 bits, que ce cœur n'a pas.
     func testWhatIsNotSSEIsRefused() throws {
         for bytes: [UInt8] in [
             [0xC5, 0xF1, 0x6F, 0xC1],        // vmovdqa avec vvvv = xmm1
             [0xC5, 0xE8, 0xFE, 0xC1],        // vpaddd sans 66
-            [0xC4, 0xE3, 0x6D, 0x46, 0xC1, 0x01],  // vperm2i128 : traverse les moitiés
-            [0xC4, 0xE2, 0x69, 0x0C, 0xC1],  // vpermilps, sans forme SSE
+            [0xC4, 0xE2, 0x75, 0x90, 0x04, 0x96],  // vpgatherdd : un ramassage
         ] {
             let memory = X86Memory(size: 0x1000, base: 0x3000_0000)
             try memory.load(bytes, at: 0x3000_0000)

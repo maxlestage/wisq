@@ -87,11 +87,11 @@ function claimedValue(label: RegExp, langue: Langue): number {
 /// recopiés serait une plaisanterie coûteuse.
 const FRENCH_NUMBERS = [
   "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
-  "neuf", "dix", "onze", "douze", "treize", "quatorze",
+  "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize",
 ];
 const ENGLISH_NUMBERS = [
   "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+  "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
 ];
 
 describe("advertised claims match the repository", () => {
@@ -721,7 +721,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3045",
+        "3048",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -2091,7 +2091,7 @@ describe("le chiffrage du bureau annonce la vraie suite hébergée", () => {
       /^## Brancher le bureau dans l'application[^\n]*\n[\s\S]*?(?=^## |$(?![\s\S]))/m,
     )?.[0] ?? "";
 
-  /// `FRENCH_NUMBERS` s'arrête à quatorze ; les deux nombres de cette section
+  /// `FRENCH_NUMBERS` s'arrête à seize ; les deux nombres de cette section
   /// sont au-dessus, et c'est au-dessus que les lettres échappaient.
   const EN_LETTRES = new Map<string, number>([
     ...FRENCH_NUMBERS.map((mot, n): [string, number] => [mot, n]),
