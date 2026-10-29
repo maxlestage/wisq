@@ -42,12 +42,11 @@ final class X86AVX2OracleTests: XCTestCase {
         XCTAssertEqual(X86AVX256OracleTests.ymm(core, 14), [0x10_0000_0010, 0x10_0000_0010, 0x10_0000_0010, 0x10_0000_0010])
     }
 
-    /// **Ce qui reste refusé** : les ramassages (`vpgatherdd`), les
-    /// conversions qui changent de largeur (`vcvtdq2pd` sur 256 bits), et une
-    /// forme sans sens — `vpermq` sans VEX.W.
+    /// **Ce qui reste refusé** : les ramassages (`vpgatherdd`), `vpmaskmovd`,
+    /// et une forme sans sens — `vpermq` sans VEX.W.
     func testWhatIsStillRefused() throws {
         for bytes: [UInt8] in [
-            [0xC4, 0xE2, 0x75, 0x90, 0x04, 0x96], [0xC5, 0xFE, 0xE6, 0xC1], [0xC4, 0xE3, 0x7D, 0x00, 0xC1, 0x1B],
+            [0xC4, 0xE2, 0x75, 0x90, 0x04, 0x96], [0xC4, 0xE2, 0x6D, 0x8C, 0x06], [0xC4, 0xE3, 0x7D, 0x00, 0xC1, 0x1B],
         ] {
             var core = try X86AVX256OracleTests.core(bytes)
             XCTAssertThrowsError(try core.execute(X86Decoder.decode(core.memory!.dump(core.rip, 15))), "\(bytes)")
