@@ -23,8 +23,8 @@ final class X86PacingTests: XCTestCase {
     /// l'hôte quand la machine dort au rythme du mur, et quelques
     /// millisecondes sans.
     func testASleepingGuestSleepsAtTheWallClockPace() throws {
-        let budget = UInt64(0.3 * X86Machine.guestHertz)
         let fast = try Self.sleeper(pacing: false)
+        let budget = UInt64(0.3 * fast.guestHertz)
         var start = Date()
         XCTAssertEqual(fast.run(instructionBudget: budget), .stopped)
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.15, "sans le réglage, rien n'attend")
