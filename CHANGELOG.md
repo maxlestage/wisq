@@ -124,6 +124,15 @@ break APIs.
   une barre oblique inverse ou écrit le périphérique devant le chemin
   (`(${voidlive})/boot/vmlinuz`). Les deux images démarrent ; Gentoo et
   NixOS, essayés en même temps, trouvaient déjà la leur.
+- **Une recette qui cite plusieurs initramfs** — les microcodes puis
+  l'initramfs sur une ligne grub, chez Artix ; des virgules chez syslinux ;
+  une ligne par fichier chez systemd-boot — était lue comme un seul chemin,
+  ou réduite à sa dernière ligne. Tous sont gardés, dans l'ordre, et posés
+  bout à bout dans l'initramfs, comme un chargeur les pose en mémoire.
+- **L'ISO d'installation de Mageia était refusée** : son `isolinux.cfg` écrit
+  `kernel x86_64/vmlinuz`, un chemin que syslinux lit depuis le dossier de
+  sa recette (`/isolinux/x86_64/vmlinuz`), et que wisq cherchait à la
+  racine.
 
 ## [0.4.0] — 2026-09-05
 
