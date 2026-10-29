@@ -940,6 +940,12 @@ struct LocalVMTerminalView: View {
     /// cran quelle que soit la valeur enregistrée.
     @AppStorage("wisq.console.tailleDuTexte") private var textSize = ConsoleTextSize.standard
     @FocusState private var inputFocused: Bool
+    /// **Le plein écran** : la console prend tout le téléphone. La barre de
+    /// navigation, la barre d'état et le signe de vie s'effacent ; la barre
+    /// des touches et la ligne de commande restent, puisqu'on tape. Un
+    /// bouton en haut à droite le quitte. Pas retenu d'une session à
+    /// l'autre : on rouvre une machine sur l'écran qu'on connaît.
+    @State private var fullScreen = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
@@ -978,7 +984,7 @@ struct LocalVMTerminalView: View {
             // quelques lignes puis se tait dix minutes, sans que rien ne dise
             // s'il tournait encore. « Il tourne en rond » et « il est mort »
             // ne se corrigent pas pareil.
-            if let heartbeat = model.heartbeat {
+            if !fullScreen, let heartbeat = model.heartbeat {
                 Text(heartbeat)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -1044,6 +1050,24 @@ struct LocalVMTerminalView: View {
         }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
+        .statusBarHidden(fullScreen)
+        .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
+        .overlay(alignment: .topTrailing) {
+            if fullScreen {
+                Button {
+                    withAnimation { fullScreen = false }
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .padding(8)
+                .accessibilityLabel("Quitter le plein écran")
+            }
+        }
         .toolbar {
             // **Fermer garde la machine.** L'écran est une `fullScreenCover`,
             // qu'on ne fait pas glisser : sans ce bouton, la seule sortie
@@ -1057,6 +1081,11 @@ struct LocalVMTerminalView: View {
                 Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
                     model.stop()
                     dismiss()
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Plein écran", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    withAnimation { fullScreen = true }
                 }
             }
             ToolbarItem(placement: .primaryAction) {
