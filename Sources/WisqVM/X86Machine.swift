@@ -574,7 +574,13 @@ public final class X86Machine: @unchecked Sendable {
 
         lock.lock()
         inputQueue.removeAll()
-        stopRequested = false
+        // `stopRequested` n'est **pas** remis à zéro : ce n'est pas l'état de
+        // l'invité, c'est celui qui possède la machine qui lui demande de
+        // rendre la main — et il a pu le demander pendant la reprise, que
+        // l'application mène sur un autre fil. L'effacer faisait tourner la
+        // machine tout son budget après l'ordre ; la suspension dépassait son
+        // délai et effaçait la session qu'on venait de reprendre. C'est la
+        // règle de `LinuxMachine.restore`.
         lock.unlock()
         disk = restoredDisk
         secondDisk = restoredSecond
