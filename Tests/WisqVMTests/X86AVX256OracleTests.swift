@@ -68,9 +68,15 @@ final class X86AVX256OracleTests: XCTestCase {
     }
 
     func testTheCoreComputesWhatTheProcessorComputes() throws {
-        let fixture = try Self.read(Self.path)
-        XCTAssertGreaterThan(fixture.cases.count, 25000, "l'oracle doit couvrir, pas illustrer")
-        XCTAssertGreaterThan(fixture.instructions.count, 650)
+        try Self.judge(Self.path, cases: 25000, instructions: 650)
+    }
+
+    /// Le juge, pour ce corpus et pour celui de ce qui traverse les moitiés
+    /// (`X86AVX2OracleTests`), qui a les mêmes colonnes.
+    static func judge(_ path: String, cases: Int, instructions: Int) throws {
+        let fixture = try Self.read(path)
+        XCTAssertGreaterThan(fixture.cases.count, cases, "l'oracle doit couvrir, pas illustrer")
+        XCTAssertGreaterThan(fixture.instructions.count, instructions)
 
         var disagreements: [String] = []
         var byInstruction: [String: Int] = [:]
@@ -97,7 +103,7 @@ final class X86AVX256OracleTests: XCTestCase {
                 registers: registers, flags: before.flags | X86Core.Flag.reserved,
                 rip: 0x3000_0000, memory: memory)
             core.vectors = witnessVectors
-            core.upperVectors = Self.witnessUppers
+            core.upperVectors = witnessUppers
             for register in 0..<3 {
                 let word = before.words[4 * register..<4 * register + 4].map { $0 }
                 core.setVector(register, word[0], word[1])
@@ -211,12 +217,11 @@ final class X86AVX256OracleTests: XCTestCase {
         XCTAssertEqual(core.upperVectors, uppers)
     }
 
-    /// **Ce qui traverse les moitiés reste refusé**, et par son nom :
-    /// `vperm2i128`, `vpbroadcastb`, `vpmovzxbw`, `vcvtps2pd` ; `vaesenc` sur
-    /// 256 bits est VAES, que ce cœur n'annonce pas.
+    /// **Ce que ni les moitiés ni `X86AVX2.swift` ne tiennent reste refusé**,
+    /// et par son nom : `vcvtps2pd` sur 256 bits, qui change de largeur ;
+    /// `vaesenc` sur 256 bits, qui est VAES, que ce cœur n'annonce pas.
     func testWhatCrossesTheHalvesIsRefused() throws {
         for bytes: [UInt8] in [
-            [0xC4, 0xE3, 0x6D, 0x46, 0xC1, 0x01], [0xC4, 0xE2, 0x7D, 0x78, 0xC1], [0xC4, 0xE2, 0x7D, 0x30, 0xC1],
             [0xC5, 0xFC, 0x5A, 0xC1], [0xC4, 0xE2, 0x6D, 0xDC, 0xC1],
         ] {
             var core = try Self.core(bytes)
