@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Le VMDK à descripteur à part se lit, ses fichiers à côté
+
+La plupart des disques de VMware qui ne sont pas des appliances ne tiennent
+pas dans un fichier : ESXi range `disque.vmdk`, un texte, à côté de
+`disque-flat.vmdk`, les octets ; Workstation découpe par défaut en morceaux
+de 2 Gio. wisq reconnaissait le descripteur et le refusait, faute de disque
+dedans. `VmdkDescriptorDisk` lit ses lignes d'étendue — `FLAT`, `VMFS`,
+`SPARSE`, `ZERO` —, ouvre les fichiers qu'elles nomment **dans le dossier du
+descripteur et nulle part ailleurs**, et les met bout à bout. Un morceau
+« sparse » passe par `VmdkImage`, qui accepte maintenant une étendue sans
+descripteur à elle quand c'est un descripteur d'à côté qui la nomme et en
+vérifie la taille. Le branchement (`FileDiskStore`, `VirtualDiskImages.disk`)
+passe le chemin du fichier, dont seul ce format a besoin.
+
+**Ce que `qemu-img` a appris en passant.** Le disque à trois étendues du
+test, relu par `qemu-img` 8.2.2 : 768 Kio au lieu d'un Mio, recollés. Il
+saute en silence les lignes `RDONLY` et `ZERO`, que la spécification de
+VMware définit ; sans elles, il lit le même disque que wisq, octet pour
+octet. C'est la spécification que wisq suit, et le test le dit.
+
+**Ce qui reste : l'application.** La bibliothèque importe un fichier à la
+fois, et un descripteur seul n'est pas un disque : il reste hors des images
+lisibles de `KernelImageKind` tant qu'elle ne sait pas apporter ses fichiers
+— à valider sur un appareil.
+
+Dix tests : `monolithicFlat` et `vmfs`, `twoGbMaxExtentSparse` à travers son
+morceau, trois étendues bout à bout et leurs jointures, un descripteur
+complété de zéros, un nom à espaces, treize refus nommés, quatre noms hors
+du dossier, le branchement qui ne touche à aucun des deux fichiers, et le
+descripteur seul qui dit ce qui lui manque. Cinq sabordages, cinq chutes.
+Compte publié : 2994.
+
 ## 2026-10-29 — La case vide du cache se refuse par sa longueur
 
 Chaque lecture du cache de décodage testait d'abord si la case était vide,

@@ -135,8 +135,12 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
 
     /// Lit l'en-tête de `fd`, qui appartient ensuite à l'image. `member`
     /// désigne le VMDK quand il n'est qu'une partie du fichier — le membre
-    /// d'une archive OVA, lu en place.
-    public init(takingOwnershipOf fd: Int32, member: (offset: UInt64, length: UInt64)? = nil) throws {
+    /// d'une archive OVA, lu en place. `extent` dit que le fichier est une
+    /// étendue qu'un descripteur à part a nommée (`VmdkDescriptorDisk`) :
+    /// son propre descripteur, absent d'ordinaire, n'a alors rien à dire, et
+    /// c'est celui d'à côté qui en vérifie la taille.
+    public init(takingOwnershipOf fd: Int32, member: (offset: UInt64, length: UInt64)? = nil,
+                extent: Bool = false) throws {
         var info = stat()
         guard fstat(fd, &info) == 0 else { throw Refusal.malformed("taille illisible") }
         let whole = UInt64(info.st_size)
@@ -182,26 +186,9 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
             throw Refusal.unknownCompression(header.compression)
         }
 
-        // **Le descripteur dit ce qu'est ce fichier.** Un morceau d'un disque
-        // découpé a le même en-tête qu'un disque entier, à une capacité près
-        // qui serait la sienne : seul le descripteur, embarqué dans les
-        // formes d'un seul fichier, permet de ne pas prendre une partie pour
-        // le tout.
-        guard header.descriptorOffset > 0, header.descriptorSectors > 0 else {
-            throw Refusal.notMonolithic("descripteur à part")
-        }
-        guard header.descriptorSectors <= 2048,
-              header.descriptorOffset <= fileSize / 512,
-              header.descriptorSectors <= fileSize / 512 - header.descriptorOffset,
-              let raw = block(at: header.descriptorOffset * 512, count: Int(header.descriptorSectors) * 512)
-        else { throw Refusal.malformed("descripteur hors du fichier") }
-        let descriptor = Self.descriptorFields(raw)
-        let createType = descriptor["createType"] ?? "type absent"
-        guard createType == "monolithicSparse" || createType == "streamOptimized" else {
-            throw Refusal.notMonolithic(createType)
-        }
-        if let parent = descriptor["parentCID"], parent.lowercased() != "ffffffff" {
-            throw Refusal.parentDisk
+        // Une étendue nommée par un descripteur d'à côté n'a pas le sien.
+        if !extent {
+            try Self.checkEmbeddedDescriptor(header, fileSize: fileSize, block: block)
         }
 
         guard header.capacity > 0 else { throw Refusal.malformed("disque de capacité nulle") }
@@ -236,6 +223,30 @@ public final class VmdkImage: VirtualDiskImage, @unchecked Sendable {
     }
 
     deinit { close(fd) }
+
+    /// **Le descripteur dit ce qu'est ce fichier.** Un morceau d'un disque
+    /// découpé a le même en-tête qu'un disque entier, à une capacité près
+    /// qui serait la sienne : seul le descripteur, embarqué dans les formes
+    /// d'un seul fichier, permet de ne pas prendre une partie pour le tout.
+    private static func checkEmbeddedDescriptor(_ header: Header, fileSize: UInt64,
+                                                block: (UInt64, Int) -> [UInt8]?) throws {
+        guard header.descriptorOffset > 0, header.descriptorSectors > 0 else {
+            throw Refusal.notMonolithic("descripteur à part")
+        }
+        guard header.descriptorSectors <= 2048,
+              header.descriptorOffset <= fileSize / 512,
+              header.descriptorSectors <= fileSize / 512 - header.descriptorOffset,
+              let raw = block(header.descriptorOffset * 512, Int(header.descriptorSectors) * 512)
+        else { throw Refusal.malformed("descripteur hors du fichier") }
+        let descriptor = Self.descriptorFields(raw)
+        let createType = descriptor["createType"] ?? "type absent"
+        guard createType == "monolithicSparse" || createType == "streamOptimized" else {
+            throw Refusal.notMonolithic(createType)
+        }
+        if let parent = descriptor["parentCID"], parent.lowercased() != "ffffffff" {
+            throw Refusal.parentDisk
+        }
+    }
 
     public func read(into buffer: inout [UInt8], at offset: UInt64) -> Bool {
         guard offset <= virtualSize, UInt64(buffer.count) <= virtualSize - offset else { return false }

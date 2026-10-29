@@ -145,7 +145,7 @@ public final class RustLinuxMachine: @unchecked Sendable {
         // c'est pour eux que les distributions livrent des images de cloud.
         if VirtualDiskImages.recognizes(fileAt: base) {
             let format = Qcow2Image.looksLikeOne(fileAt: base) ? "un qcow2"
-                : VmdkImage.looksLikeOne(fileAt: base) ? "un VMDK"
+                : VmdkImage.looksLikeOne(fileAt: base) || VmdkDescriptorDisk.looksLikeOne(fileAt: base) ? "un VMDK"
                 : VdiImage.looksLikeOne(fileAt: base) ? "un VDI"
                 : VhdImage.looksLikeOne(fileAt: base) ? "un VHD dynamique"
                 : VhdxImage.looksLikeOne(fileAt: base) ? "un VHDX" : "une appliance OVA"
