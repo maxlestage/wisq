@@ -58,6 +58,21 @@ extension X86Core {
         return try fill(virtual, page, slot, access)
     }
 
+    /// **L'octet visé, directement dans l'hôte**, quand la traduction est déjà
+    /// en cache et que sa page est de la RAM ; nil sinon, et l'appelant
+    /// reprend le chemin complet. Rien d'autre ne change : le témoin armé,
+    /// la pagination éteinte, une permission refusée ou une page qui n'est
+    /// pas de la RAM passent tous par `translate` comme avant.
+    @inline(__always)
+    func hostAddress(_ virtual: UInt64, _ access: Access) -> UnsafeMutableRawPointer? {
+        guard pagingActive, watchedAddress == nil else { return nil }
+        let page = virtual & ~UInt64(0xFFF)
+        let slot = Int((page >> 12) & UInt64(Self.translationSlots - 1))
+        let entry = translations.withUnsafeBufferPointer { $0[slot] }
+        guard entry.tag == page &+ 1, let host = entry.host, allowed(entry.flags, access) else { return nil }
+        return UnsafeMutableRawPointer(host + Int(virtual & 0xFFF))
+    }
+
     /// Ce que l'accès venait faire. Un gestionnaire de faute de page le lit
     /// dans le code d'erreur, et le décompresseur de Linux refuse ceux qu'il
     /// ne reconnaît pas — donc le poser au hasard l'arrêterait net.
@@ -130,7 +145,8 @@ extension X86Core {
             pageFaultErrorCode = Self.present | how.errorCode | (privilege == 3 ? 1 << 2 : 0)
             throw Fault.pageFault(at)
         }
-        translations[slot] = Translation(tag: page &+ 1, frame: walked.frame, flags: walked.flags)
+        let host = memory.flatMap { ram in ram.offset(walked.frame, 0x1000).map { ram.bytes + $0 } }
+        translations[slot] = Translation(tag: page &+ 1, frame: walked.frame, host: host, flags: walked.flags)
         fetchTag = 0
         return walked.frame | (at & 0xFFF)
     }

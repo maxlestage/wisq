@@ -31,6 +31,15 @@ extension X86Core {
                              _ access: Access = .read) throws -> UInt64 {
         guard let reference = memoryReference else { throw Fault.unsupported("une lecture sans mémoire") }
         guard Self.crosses(virtual, size) else {
+            if let at = hostAddress(virtual, access) {
+                switch size {
+                case 8: return UInt64(littleEndian: at.loadUnaligned(as: UInt64.self))
+                case 4: return UInt64(UInt32(littleEndian: at.loadUnaligned(as: UInt32.self)))
+                case 2: return UInt64(UInt16(littleEndian: at.loadUnaligned(as: UInt16.self)))
+                case 1: return UInt64(at.load(as: UInt8.self))
+                default: break
+                }
+            }
             let physical = try translate(virtual, access)
             return try reference._withUnsafeGuaranteedRef { try $0.read(physical, size) }
         }
@@ -52,6 +61,15 @@ extension X86Core {
     mutating func writeMemory(_ virtual: UInt64, _ size: Int, _ value: UInt64) throws {
         guard let reference = memoryReference else { throw Fault.unsupported("une écriture sans mémoire") }
         guard Self.crosses(virtual, size) else {
+            if let at = hostAddress(virtual, .write) {
+                switch size {
+                case 8: at.storeBytes(of: value.littleEndian, as: UInt64.self); return
+                case 4: at.storeBytes(of: UInt32(truncatingIfNeeded: value).littleEndian, as: UInt32.self); return
+                case 2: at.storeBytes(of: UInt16(truncatingIfNeeded: value).littleEndian, as: UInt16.self); return
+                case 1: at.storeBytes(of: UInt8(truncatingIfNeeded: value), as: UInt8.self); return
+                default: break
+                }
+            }
             let physical = try translate(virtual, .write)
             try reference._withUnsafeGuaranteedRef { try $0.write(physical, size, value) }
             return
