@@ -69,6 +69,14 @@ break APIs.
   sections de l'accueil et le nom du pied glissent avec le défilement, là où le
   navigateur sait lier une animation au défilement ; la navigation et le pied
   deviennent aimantés.
+- **La copie rapide : `rep movs` et `rep stos` par pages entières, et
+  CPUID qui l'annonce.** Chaque élément d'une copie répétée traduisait ses
+  deux adresses ; le morceau qui tient dans les deux pages est maintenant
+  traduit une fois et copié d'un coup, sans rien changer à ce que l'invité
+  voit — une faute ne tombe qu'à une frontière de page. La feuille 7 de
+  CPUID annonce ERMS, FSRM et FSRS, et seulement eux : Linux copie et efface
+  alors sa mémoire par ces instructions. Chimera Linux atteint `/init` 9 %
+  plus tôt, en temps invité comme en temps réel.
 
 ### Fixed
 - **« Vingt et une familles d'architectures » : l'énumération en déclare
@@ -108,6 +116,14 @@ break APIs.
   ligne de requête sans version ou avec une espace dans la cible était servie
   sur ses deux premiers mots. Les deux reçoivent un 400, comme le veut
   RFC 9112. Et un statut absent de la table ne part plus en « OK ».
+- **Void Linux et Tiny Core étaient refusés à l'ouverture de leur ISO**,
+  faute de recette de démarrage, alors qu'ils en portent une. Le lecteur de
+  recettes ne cherchait pas `/boot/isolinux/isolinux.cfg`, ne prenait pas
+  l'initramfs écrit dans la ligne `APPEND` (`initrd=/boot/initrd`, la forme
+  d'origine de syslinux), et lisait mal grub quand il coupe ses lignes par
+  une barre oblique inverse ou écrit le périphérique devant le chemin
+  (`(${voidlive})/boot/vmlinuz`). Les deux images démarrent ; Gentoo et
+  NixOS, essayés en même temps, trouvaient déjà la leur.
 
 ## [0.4.0] — 2026-09-05
 
