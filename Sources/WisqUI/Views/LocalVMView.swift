@@ -146,11 +146,11 @@ struct LocalVMListView: View {
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    // **Ce que les machines locales lancent, dit d'abord.**
-                    // Une image de Windows ou de macOS importée ici ne
-                    // démarrera jamais : autant le savoir avant de la
-                    // télécharger. Un autre système s'ouvre à distance.
-                    Text("**wisq ne lance que Linux.** Ni Windows, ni macOS, ni BSD : une machine locale démarre un noyau Linux, et rien d'autre. Pour un autre système, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
+                    // **Ce que wisq ne lance pas, dit d'abord** : Windows et
+                    // macOS, par choix. Une image de l'un ou de l'autre
+                    // importée ici ne démarrera jamais ; autant le savoir
+                    // avant de la télécharger. Ils s'ouvrent à distance.
+                    Text("**Windows et macOS ne se lancent pas sur wisq**, et c'est un choix délibéré. Pour l'un ou l'autre, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
                     Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système —, et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
                     Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
@@ -951,31 +951,54 @@ struct LocalVMTerminalView: View {
     /// bouton en haut à droite le quitte. Pas retenu d'une session à
     /// l'autre : on rouvre une machine sur l'écran qu'on connaît.
     @State private var fullScreen = false
+    /// **L'écran d'abord**, quand la machine en a un : c'est là que le
+    /// démarrage se voit, et qu'un bureau s'ouvrira. La console reste à un
+    /// geste, pour le shell de la console série.
+    @State private var showsConsole = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Ce que la saisie et la barre visent : le clavier PS/2 quand l'écran
+    /// est affiché, le port série sinon.
+    private var typesOnScreen: Bool { model.screen != nil && !showsConsole }
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(model.consoleText.isEmpty ? "Démarrage…" : model.consoleText)
-                        .font(.system(size: ConsoleTextSize.nearest(textSize), design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .id("console-end")
-                        .textSelection(.enabled)
+            if model.screen != nil && !fullScreen {
+                Picker("Affichage", selection: $showsConsole) {
+                    Text("Écran").tag(false)
+                    Text("Console").tag(true)
                 }
-                // Pincer pour grossir ou réduire, comme partout ailleurs sur
-                // le téléphone ; la taille retombe au cran le plus proche.
-                .simultaneousGesture(
-                    MagnifyGesture().onEnded { value in
-                        textSize = ConsoleTextSize.scaled(textSize, by: value.magnification)
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            if let screen = model.screen, !showsConsole {
+                GuestScreenView(screen: screen) { dx, dy, buttons in
+                    model.pointer(dx: dx, dy: dy, buttons: buttons)
+                }
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(model.consoleText.isEmpty ? "Démarrage…" : model.consoleText)
+                            .font(.system(size: ConsoleTextSize.nearest(textSize), design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                            .id("console-end")
+                            .textSelection(.enabled)
                     }
-                )
-                .background(Color.black)
-                .foregroundStyle(Color(red: 0.7, green: 0.95, blue: 0.7))
-                .onChange(of: model.consoleText) {
-                    proxy.scrollTo("console-end", anchor: .bottom)
+                    // Pincer pour grossir ou réduire, comme partout ailleurs sur
+                    // le téléphone ; la taille retombe au cran le plus proche.
+                    .simultaneousGesture(
+                        MagnifyGesture().onEnded { value in
+                            textSize = ConsoleTextSize.scaled(textSize, by: value.magnification)
+                        }
+                    )
+                    .background(Color.black)
+                    .foregroundStyle(Color(red: 0.7, green: 0.95, blue: 0.7))
+                    .onChange(of: model.consoleText) {
+                        proxy.scrollTo("console-end", anchor: .bottom)
+                    }
                 }
             }
 
@@ -1009,7 +1032,11 @@ struct LocalVMTerminalView: View {
                     // `TerminalPaste`, tenu par des tests.
                     Button {
                         if let text = UIPasteboard.general.string {
-                            model.paste(text, afterTyped: commandLine)
+                            if typesOnScreen {
+                                model.typeOnScreen(commandLine + text)
+                            } else {
+                                model.paste(text, afterTyped: commandLine)
+                            }
                             commandLine = ""
                         }
                         inputFocused = true
@@ -1022,7 +1049,12 @@ struct LocalVMTerminalView: View {
                     .accessibilityLabel("Coller le presse-papiers dans la console")
                     ForEach(TerminalKey.bar, id: \.self) { key in
                         Button {
-                            model.press(key, afterTyped: commandLine)
+                            if typesOnScreen {
+                                model.typeOnScreen(commandLine)
+                                model.pressOnScreen(key)
+                            } else {
+                                model.press(key, afterTyped: commandLine)
+                            }
                             commandLine = ""
                             inputFocused = true
                         } label: {
@@ -1119,6 +1151,11 @@ struct LocalVMTerminalView: View {
                 }
             }
         }
+        // **La raison d'un arrêt s'écrit dans la console** : écran affiché,
+        // on ne la verrait pas. La vue y bascule quand la machine s'arrête.
+        .onChange(of: model.status) { _, status in
+            if case .finished = status { showsConsole = true }
+        }
         .onAppear {
             model.boot(kernelURL: kernelURL, installed: installed)
             inputFocused = true
@@ -1143,6 +1180,12 @@ struct LocalVMTerminalView: View {
     }
 
     private func submit() {
+        if typesOnScreen {
+            model.typeOnScreen(commandLine + "\n")
+            commandLine = ""
+            inputFocused = true
+            return
+        }
         model.sendLine(commandLine)
         commandLine = ""
         inputFocused = true

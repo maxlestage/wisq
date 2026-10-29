@@ -483,6 +483,18 @@ final class X86BootAttemptTests: XCTestCase {
         // Le résumé passe donc en tête : quoi qu'il arrive aux listes, les
         // nombres, eux, sortent.
         func say(_ text: String) { print(text) }
+        // **L'écran tel qu'il est à la fin**, en PPM : `WISQ_PC_SCREEN_DUMP`
+        // nomme le fichier. Le journal dit que le noyau a trouvé l'écran ;
+        // l'image dit ce qu'il y a peint.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_SCREEN_DUMP"],
+           let frame = memory.screen {
+            let pixels = frame.snapshot()
+            var ppm = Data("P6\n\(frame.width) \(frame.height)\n255\n".utf8)
+            for index in stride(from: 0, to: pixels.count, by: 4) {
+                ppm += [pixels[index + 2], pixels[index + 1], pixels[index]]
+            }
+            FileManager.default.createFile(atPath: path, contents: ppm)
+        }
         // **Par la traduction de pages**, pas à l'adresse virtuelle prise pour
         // physique : un arrêt dans le noyau ou dans un module tombe à
         // 0xffff…, que la mémoire physique ne connaît pas — le banc ne
