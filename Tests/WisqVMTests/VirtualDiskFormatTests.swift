@@ -59,8 +59,8 @@ final class VirtualDiskFormatTests: XCTestCase {
         XCTAssertTrue(LocalDisk.isDiskImage(vmdk))
         XCTAssertFalse(LocalDisk.isDiskImage(qcow1), "l'ancien qcow, v1, n'est pas lu")
         XCTAssertTrue(LocalDisk.isDiskImage(.virtualDisk("VHDX")), "le VHDX, lui, l'est")
-        XCTAssertFalse(LocalDisk.isDiskImage(.virtualDisk("VMDK (descripteur)")),
-                       "un descripteur nomme les fichiers du disque, il n'en contient aucun")
+        XCTAssertTrue(LocalDisk.isDiskImage(.virtualDisk("VMDK (descripteur)")),
+                      "un descripteur se lit avec les fichiers qu'il nomme (VmdkDescriptorDisk)")
         for kind in [qcow1, vmdk, qcow2, .virtualDisk("VHDX")] {
             XCTAssertFalse(kind.couldBootHere)
             XCTAssertFalse(InstalledMachines.canInstall(kind))

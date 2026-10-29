@@ -428,10 +428,12 @@ recommandent pour une machine prête en une minute.
     fichiers cherchés à côté du descripteur et nulle part ailleurs. Refusés
     en le disant : le disque différentiel, l'instantané d'ESXi (`VMFSSPARSE`,
     `SESPARSE`), le disque physique (`VMFSRDM`, `VMFSRAW`), un fichier qui
-    manque ou trop court, un nom hors du dossier. **Reste l'application** :
-    la bibliothèque importe un fichier à la fois, et un descripteur sans ses
-    étendues n'est pas un disque — il faut importer le dossier, ou les
-    fichiers ensemble, et cela se valide sur un appareil.
+    manque ou trop court, un nom hors du dossier. **Et dans l'application** :
+    le sélecteur prend plusieurs fichiers à la fois ; les étendues d'un
+    descripteur sont copiées telles quelles, sans le plafond des noyaux,
+    cachées de la liste, comptées à la ligne du descripteur et effacées
+    avec lui, et ce qui manque après un import est nommé. Compilé par la
+    CI ; reste à valider sur un appareil.
 
 ## Les images de cloud qui démarrent seules
 
