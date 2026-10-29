@@ -56,6 +56,16 @@ final class RemoteDesktopFileTests: XCTestCase {
         )
     }
 
+    /// **`server port:i:` quand l'adresse n'en porte pas**, comme mstsc et
+    /// les passerelles l'écrivent ; l'adresse, quand elle en porte un, gagne.
+    /// Un port impossible est un refus, pas 3389.
+    func testTheServerPortOptionIsUsedWhenTheAddressHasNone() throws {
+        XCTAssertEqual(try RemoteDesktopFile.parse("full address:s:host.example.net\nserver port:i:3390").port, 3390)
+        XCTAssertEqual(try RemoteDesktopFile.parse("full address:s:[2001:db8::1]\nserver port:i:4000").port, 4000)
+        XCTAssertEqual(try RemoteDesktopFile.parse("full address:s:host:3391\nserver port:i:3390").port, 3391)
+        XCTAssertThrowsError(try RemoteDesktopFile.parse("full address:s:host\nserver port:i:70000"))
+    }
+
     /// `[2001:db8::1]:3389` has five colons and only the last separates a port.
     /// Splitting on any of the others gives a host of `[2001` and a connection
     /// to nowhere.

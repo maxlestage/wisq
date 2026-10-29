@@ -213,6 +213,11 @@ public struct RDPStandardSecurity {
     /// refuser à chaque message.
     public mutating func seal(_ payload: Data, flags: Flags = []) -> Data {
         let clear = [UInt8](payload)
+        if sent > 0, sent % Self.packetsPerKey == 0 {
+            keys.clientToServer = Self.updatedKey(
+                initial: keys.initialClientToServer, current: keys.clientToServer, method: keys.method)
+            toServer = RDPCrypto.RC4(key: keys.clientToServer)
+        }
         let mac = Self.signature(clear, key: keys.macKey)
         let sealed = toServer.process(clear)
         sent += 1
@@ -231,12 +236,43 @@ public struct RDPStandardSecurity {
         let flags = Flags(rawValue: UInt16(bytes[0]) | UInt16(bytes[1]) << 8)
         guard flags.contains(.encrypt) else { return Data(bytes[4...]) }
         let mac = Array(bytes[4..<12])
+        if received > 0, received % Self.packetsPerKey == 0 {
+            keys.serverToClient = Self.updatedKey(
+                initial: keys.initialServerToClient, current: keys.serverToClient, method: keys.method)
+            fromServer = RDPCrypto.RC4(key: keys.serverToClient)
+        }
         let clear = fromServer.process(Array(bytes[12...]))
         guard Self.signature(clear, key: keys.macKey) == mac else {
             throw WisqError.handshakeFailed("signature invalide : le message a été modifié")
         }
         received += 1
         return Data(clear)
+    }
+
+    /// **Une clé RC4 sert à 4 096 paquets dans son sens, pas un de plus**
+    /// (MS-RDPBCGR 5.3.7). Les clés de départ étaient gardées « pour le
+    /// rafraîchissement », et rien ne les relisait : le 4 097ᵉ message du
+    /// serveur se déchiffrait en bruit — « signature invalide » —, et le
+    /// 4 097ᵉ du client, quelques minutes de souris, en bruit pour lui. La
+    /// session mourait au milieu d'un usage ordinaire, et la reconnexion
+    /// prenait l'échec pour un refus définitif.
+    static let packetsPerKey = 4096
+
+    /// La clé suivante d'un sens, d'après la clé de départ et l'actuelle :
+    /// `SHA(départ, pad1, actuelle)`, plié dans `MD5(départ, pad2, …)`, puis
+    /// chiffré par lui-même en RC4 ; quarante et cinquante-six bits remettent
+    /// leurs constantes en tête. C'est `security_key_update` de FreeRDP.
+    static func updatedKey(initial: [UInt8], current: [UInt8], method: UInt32) -> [UInt8] {
+        let inner = RDPCrypto.sha1(initial + pad1 + current)
+        let temporary = Array(RDPCrypto.md5(initial + pad2 + inner).prefix(current.count))
+        var cipher = RDPCrypto.RC4(key: temporary)
+        var key = cipher.process(temporary)
+        if method == 1 {
+            key.replaceSubrange(0..<3, with: [0xD1, 0x26, 0x9E])
+        } else if method == 8 {
+            key[0] = 0xD1
+        }
+        return key
     }
 
     var keys: Keys
