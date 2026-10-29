@@ -188,9 +188,19 @@ public final class LocalVMModel {
         // seule à pouvoir la voir.
         // Une image de cloud reçoit le mot de passe de `root` que la personne
         // a donné, en empreinte : voir `RootPassword`.
+        // Le disque de la machine et sa couche : s'il porte déjà le système
+        // qu'un installateur y a écrit, c'est lui qui démarre, et plus l'image
+        // d'installation. Voir `IsoBoot.decide` et `InstalledSystem`.
+        let installedOn = LocalDisk.attached(
+            kernel: keys.settings, among: KernelLibrary.list(), in: storage
+        ).flatMap { disk in
+            (try? LocalDisk.writesURL(for: keys.overlay(forDisk: disk.lastPathComponent), in: storage))
+                .map { (disk: disk, writes: $0) }
+        }
         switch IsoBoot.decide(
             kernelURL, unpackingInto: storage, ceiling: UInt64(roomNow),
-            rootHash: RootPassword.hash(forKernel: keys.settings, in: storage)
+            rootHash: RootPassword.hash(forKernel: keys.settings, in: storage),
+            installedOn: installedOn
         ) {
         case .success(let boot):
             kind = boot.kind
@@ -458,7 +468,9 @@ public final class LocalVMModel {
         // occupe `/dev/vda` — sa racine y vit —, donc le disque que la
         // personne a donné à la machine, vierge le plus souvent, arrive sur
         // `/dev/vdb` : c'est là que l'installateur écrit le système.
-        let secondDiskURL = isoDisk == nil ? nil : chosenDisk
+        // Sauf quand c'est lui qui démarre : le système installé y vit, et le
+        // brancher une seconde fois donnerait deux disques pour un fichier.
+        let secondDiskURL = isoDisk == nil || isoDisk == chosenDisk ? nil : chosenDisk
 
         // Lu ici, sur le main actor, plutôt que dans la fermeture : `storage`
         // appartient à `self`, qui n'y est capturé que faiblement.
