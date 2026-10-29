@@ -119,6 +119,16 @@ targets:
         NSBonjourServices:
           - _rfb._tcp
           - _wisq-agent._tcp
+    # **La mémoire du téléphone moins deux gibioctets** (`KernelMemory`) : sans
+    # ces deux droits, iOS tue l'application bien avant. Le premier relève la
+    # limite de mémoire de l'application, le second l'espace d'adressage où
+    # vit la RAM de l'invité. `xcodegen generate` écrit le fichier, et la CI le
+    # compare comme les deux autres.
+    entitlements:
+      path: App/Wisq.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
+        com.apple.developer.kernel.extended-virtual-addressing: true
     dependencies:
       - package: Wisq
         product: WisqUI
