@@ -237,22 +237,23 @@ extension X86Core {
         // Quand une opération attend, chaque drapeau se lit directement dans
         // ce qu'elle a noté, sans assembler le mot : un `jcc` derrière un
         // `cmp` ne paie que le sien.
-        let overflow: Bool
-        let carryFlag: Bool
-        let zero: Bool
-        let sign: Bool
-        if pendingSize == 0 {
-            overflow = settledFlags & Flag.overflow != 0
-            carryFlag = settledFlags & Flag.carry != 0
-            zero = settledFlags & Flag.zero != 0
-            sign = settledFlags & Flag.sign != 0
-        } else {
-            let signBit = Self.signBit(pendingSize)
-            overflow = pendingOverflowSource & signBit != 0
-            carryFlag = pendingLowBits & Flag.carry != 0
-            zero = pendingResult == 0
-            sign = pendingResult & signBit != 0
-        }
+        //
+        // **Les champs lus une fois, en tête, sans branche.** Lus sous un
+        // `if`, ou par `flags` dans un seul des cas, ils faisaient copier le
+        // cœur entier à chaque appel (callgrind : `memcpy`, 8 % des
+        // instructions de l'hôte).
+        let size = pendingSize
+        let settled = settledFlags
+        let result = pendingResult
+        let low = pendingLowBits
+        let overflowSource = pendingOverflowSource
+        let waiting = size != 0
+        let signBit = Self.signBit(size)
+        let overflow = waiting ? overflowSource & signBit != 0 : settled & Flag.overflow != 0
+        let carryFlag = (waiting ? low : settled) & Flag.carry != 0
+        let zero = waiting ? result == 0 : settled & Flag.zero != 0
+        let sign = waiting ? result & signBit != 0 : settled & Flag.sign != 0
+        let parity = waiting ? Self.parity(result) : settled & Flag.parity != 0
         switch code & 0x0F {
         case 0x0: return overflow
         case 0x1: return !overflow
@@ -264,8 +265,8 @@ extension X86Core {
         case 0x7: return !carryFlag && !zero
         case 0x8: return sign
         case 0x9: return !sign
-        case 0xA: return flags & Flag.parity != 0
-        case 0xB: return flags & Flag.parity == 0
+        case 0xA: return parity
+        case 0xB: return !parity
         case 0xC: return sign != overflow
         case 0xD: return sign == overflow
         case 0xE: return zero || sign != overflow
