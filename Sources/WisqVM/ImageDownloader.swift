@@ -65,7 +65,13 @@ public struct ImageDownloader: Sendable {
     ///
     /// **Un index qui ne répond pas ne cache pas les autres** : la liste
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
-    /// dit la raison du premier.
+    /// dit la raison du premier, dans cet ordre.
+    ///
+    /// **Les huit en même temps.** Ils étaient lus l'un après l'autre, et la
+    /// feuille « Télécharger » attendait la somme des huit allers-retours —
+    /// plus ceux des sondes de taille de Debian et d'Ubuntu — avant de
+    /// montrer quoi que ce soit. Elle attend maintenant le plus lent. L'ordre
+    /// de la liste, lui, ne change pas.
     public func bootableReleases(alpine: URL = ImageDownload.alpineIndex,
                                  debian: URL = ImageDownload.debianIndex,
                                  fedora: URL = ImageDownload.fedoraIndex,
@@ -75,102 +81,108 @@ public struct ImageDownloader: Sendable {
                                  alma: URL = ImageDownload.almaIndex,
                                  rocky: URL = ImageDownload.rockyIndex) async throws
         -> [ImageDownload.Release] {
+        async let alpineList = attempt { try await alpineReleases(alpine) }
+        async let debianList = attempt { try await debianReleases(debian) }
+        async let fedoraList = attempt { try await fedoraReleases(fedora) }
+        async let ubuntuList = attempt { try await ubuntuReleases(ubuntu) }
+        async let archList = attempt { try await archReleases(arch) }
+        async let openSUSEList = attempt { try await openSUSEReleases(openSUSE) }
+        async let almaList = attempt { try await almaReleases(alma) }
+        async let rockyList = attempt { try await rockyReleases(rocky) }
+        let lists = await [alpineList, debianList, fedoraList, ubuntuList,
+                           archList, openSUSEList, almaList, rockyList]
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
-        do {
-            let text = try await read(alpine)
-            releases += ImageDownload.bootable(ImageDownload.alpineReleases(text, index: alpine))
-        } catch {
-            firstFailure = error
-        }
-        do {
-            let text = try await read(debian)
-            for candidate in ImageDownload.debianCandidates(text) {
-                let file = debian.deletingLastPathComponent().appendingPathComponent(candidate.file)
-                guard let size = try await size(of: file) else { continue }
-                releases.append(ImageDownload.debianRelease(
-                    file: candidate.file, version: candidate.version, sha512: candidate.sha512,
-                    size: size, index: debian))
+        for list in lists {
+            switch list {
+            case .success(let found): releases += found
+            case .failure(let error): firstFailure = firstFailure ?? error
             }
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        // Fedora donne la taille dans son index : rien à demander au serveur.
-        do {
-            releases += ImageDownload.fedoraReleases(try await read(fedora), index: fedora)
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        do {
-            let text = try await read(ubuntu)
-            for candidate in ImageDownload.ubuntuCandidates(text) {
-                let file = ubuntu.deletingLastPathComponent().appendingPathComponent(candidate.file)
-                guard let size = try await size(of: file) else { continue }
-                releases.append(ImageDownload.ubuntuRelease(
-                    file: candidate.file, version: candidate.version, sha256: candidate.sha256,
-                    size: size, index: ubuntu))
-            }
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        // Arch : la page du dossier nomme l'image datée, son `.SHA256` à côté
-        // en donne la somme. Seule la plus récente est proposée.
-        do {
-            if let newest = ImageDownload.archCandidates(try await read(arch)).first {
-                let file = arch.appendingPathComponent(newest.file)
-                let sums = try await read(arch.appendingPathComponent(newest.file + ".SHA256"))
-                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
-                   let size = try await size(of: file) {
-                    releases.append(ImageDownload.archRelease(
-                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: arch))
-                }
-            }
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        // openSUSE : la même forme qu'Arch, le `.sha256` à côté de l'image.
-        do {
-            if let newest = ImageDownload.openSUSECandidates(try await read(openSUSE)).first {
-                let file = openSUSE.appendingPathComponent(newest.file)
-                let sums = try await read(openSUSE.appendingPathComponent(newest.file + ".sha256"))
-                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
-                   let size = try await size(of: file) {
-                    releases.append(ImageDownload.openSUSERelease(
-                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: openSUSE))
-                }
-            }
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        // AlmaLinux : un seul fichier `CHECKSUM` pour tout le dossier, au
-        // format de `sha256sum`.
-        do {
-            if let newest = ImageDownload.datedCandidates(try await read(alma), ImageDownload.isBootableAlma).first {
-                let sums = try await read(alma.appendingPathComponent("CHECKSUM"))
-                if let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
-                   let size = try await size(of: alma.appendingPathComponent(newest.file)) {
-                    releases.append(ImageDownload.almaRelease(
-                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: alma))
-                }
-            }
-        } catch {
-            firstFailure = firstFailure ?? error
-        }
-        // Rocky : un `.CHECKSUM` par image, au format de BSD.
-        do {
-            if let newest = ImageDownload.datedCandidates(try await read(rocky), ImageDownload.isBootableRocky).first {
-                let sums = try await read(rocky.appendingPathComponent(newest.file + ".CHECKSUM"))
-                if let sha256 = ImageDownload.bsdChecksum(sums, for: newest.file),
-                   let size = try await size(of: rocky.appendingPathComponent(newest.file)) {
-                    releases.append(ImageDownload.rockyRelease(
-                        file: newest.file, version: newest.version, sha256: sha256, size: size, index: rocky))
-                }
-            }
-        } catch {
-            firstFailure = firstFailure ?? error
         }
         if releases.isEmpty { throw firstFailure ?? Failure.nothingToDownload }
         return releases
+    }
+
+    private func attempt(_ body: () async throws -> [ImageDownload.Release]) async
+        -> Result<[ImageDownload.Release], Error> {
+        do { return .success(try await body()) } catch { return .failure(error) }
+    }
+
+    private func alpineReleases(_ alpine: URL) async throws -> [ImageDownload.Release] {
+        ImageDownload.bootable(ImageDownload.alpineReleases(try await read(alpine), index: alpine))
+    }
+
+    private func debianReleases(_ debian: URL) async throws -> [ImageDownload.Release] {
+        var releases: [ImageDownload.Release] = []
+        for candidate in ImageDownload.debianCandidates(try await read(debian)) {
+            let file = debian.deletingLastPathComponent().appendingPathComponent(candidate.file)
+            guard let size = try await size(of: file) else { continue }
+            releases.append(ImageDownload.debianRelease(
+                file: candidate.file, version: candidate.version, sha512: candidate.sha512,
+                size: size, index: debian))
+        }
+        return releases
+    }
+
+    /// Fedora donne la taille dans son index : rien à demander au serveur.
+    private func fedoraReleases(_ fedora: URL) async throws -> [ImageDownload.Release] {
+        ImageDownload.fedoraReleases(try await read(fedora), index: fedora)
+    }
+
+    private func ubuntuReleases(_ ubuntu: URL) async throws -> [ImageDownload.Release] {
+        var releases: [ImageDownload.Release] = []
+        for candidate in ImageDownload.ubuntuCandidates(try await read(ubuntu)) {
+            let file = ubuntu.deletingLastPathComponent().appendingPathComponent(candidate.file)
+            guard let size = try await size(of: file) else { continue }
+            releases.append(ImageDownload.ubuntuRelease(
+                file: candidate.file, version: candidate.version, sha256: candidate.sha256,
+                size: size, index: ubuntu))
+        }
+        return releases
+    }
+
+    /// Arch : la page du dossier nomme l'image datée, son `.SHA256` à côté
+    /// en donne la somme. Seule la plus récente est proposée.
+    private func archReleases(_ arch: URL) async throws -> [ImageDownload.Release] {
+        guard let newest = ImageDownload.archCandidates(try await read(arch)).first else { return [] }
+        let sums = try await read(arch.appendingPathComponent(newest.file + ".SHA256"))
+        guard let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
+              let size = try await size(of: arch.appendingPathComponent(newest.file)) else { return [] }
+        return [ImageDownload.archRelease(
+            file: newest.file, version: newest.version, sha256: sha256, size: size, index: arch)]
+    }
+
+    /// openSUSE : la même forme qu'Arch, le `.sha256` à côté de l'image.
+    private func openSUSEReleases(_ openSUSE: URL) async throws -> [ImageDownload.Release] {
+        guard let newest = ImageDownload.openSUSECandidates(try await read(openSUSE)).first else { return [] }
+        let sums = try await read(openSUSE.appendingPathComponent(newest.file + ".sha256"))
+        guard let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
+              let size = try await size(of: openSUSE.appendingPathComponent(newest.file)) else { return [] }
+        return [ImageDownload.openSUSERelease(
+            file: newest.file, version: newest.version, sha256: sha256, size: size, index: openSUSE)]
+    }
+
+    /// AlmaLinux : un seul fichier `CHECKSUM` pour tout le dossier, au
+    /// format de `sha256sum`.
+    private func almaReleases(_ alma: URL) async throws -> [ImageDownload.Release] {
+        guard let newest = ImageDownload.datedCandidates(try await read(alma), ImageDownload.isBootableAlma).first
+        else { return [] }
+        let sums = try await read(alma.appendingPathComponent("CHECKSUM"))
+        guard let sha256 = ImageDownload.sumFileChecksum(sums, for: newest.file),
+              let size = try await size(of: alma.appendingPathComponent(newest.file)) else { return [] }
+        return [ImageDownload.almaRelease(
+            file: newest.file, version: newest.version, sha256: sha256, size: size, index: alma)]
+    }
+
+    /// Rocky : un `.CHECKSUM` par image, au format de BSD.
+    private func rockyReleases(_ rocky: URL) async throws -> [ImageDownload.Release] {
+        guard let newest = ImageDownload.datedCandidates(try await read(rocky), ImageDownload.isBootableRocky).first
+        else { return [] }
+        let sums = try await read(rocky.appendingPathComponent(newest.file + ".CHECKSUM"))
+        guard let sha256 = ImageDownload.bsdChecksum(sums, for: newest.file),
+              let size = try await size(of: rocky.appendingPathComponent(newest.file)) else { return [] }
+        return [ImageDownload.rockyRelease(
+            file: newest.file, version: newest.version, sha256: sha256, size: size, index: rocky)]
     }
 
     /// Un index, en texte.

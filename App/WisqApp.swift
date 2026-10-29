@@ -6,6 +6,12 @@ import WisqUI
 /// pour lui rendre un fichier, et c'est par ici qu'il le dit.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        BackgroundDownloads.reconnect()
+        return true
+    }
+
+    func application(_ application: UIApplication,
                      handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
         BackgroundDownloads.handleEvents(forSession: identifier, completion: completionHandler)

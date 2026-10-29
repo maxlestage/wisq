@@ -610,6 +610,10 @@ public final class LocalVMModel {
     /// A user who has wedged their guest wants exactly that: leave now, and
     /// start clean.
     public func forgetSavedMachine() {
+        // Dans cet ordre : plus rien ne s'écrira, puis on efface. L'inverse
+        // laisserait une sauvegarde en cours réécrire le fichier.
+        life.userForgot()
+        checkpointed?.stopSaving()
         SuspendedMachine.clear(kernel: kernelName, in: storage)
     }
 
@@ -627,7 +631,15 @@ public final class LocalVMModel {
     /// that silently fails to save, the hitch is the right one.
     public func suspend() {
         guard let machine, let finished = runFinished else { return }
-        guard life.steppedAway() == .save else { return }
+        switch life.steppedAway() {
+        case .save: break
+        case .nothing: return
+        case .forget:
+            // Oubliée : elle s'arrête sans rien écrire (`userForgot`).
+            if let checkpointed { checkpointed.stop() } else { machine.stop() }
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
+            return
+        }
         if let checkpointed { checkpointed.stop() } else { machine.stop() }
         // If the interpreter has not come back in time, saving would read state
         // it is still writing. Better to lose the session than to save a
@@ -900,6 +912,7 @@ public enum KernelLibrary {
         if companion {
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
+                replaced(destination.lastPathComponent)
             }
             try FileManager.default.copyItem(at: source, to: destination)
             return destination
@@ -954,9 +967,21 @@ public enum KernelLibrary {
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
+            replaced(destination.lastPathComponent)
         }
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
+    }
+
+    /// **Un fichier remplacé sous le même nom n'est plus le même disque.**
+    /// Ce qui avait été écrit par-dessus l'ancien — la couche du fichier,
+    /// celles des machines installées dessus — et les sessions qui le
+    /// croyaient là sont jetés : posés sur le nouveau, ils en feraient un
+    /// mélange des deux. Le déballage d'une image part aussi, pour que le
+    /// noyau soit relu dans le nouveau fichier. Les réglages restent.
+    public static func replaced(_ name: String) {
+        LocalDisk.discardEverythingWritten(onDisk: name)
+        LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
     }
 
     /// What the local Linux feature occupies, kernel by kernel.
@@ -988,7 +1013,8 @@ public enum KernelLibrary {
               let machines = try? SuspendedMachine.directory()
         else { return 0 }
         return LocalStorage.freeOrphanedMachines(
-            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys())
+            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys(),
+            writes: try? LocalDisk.writesDirectory())
     }
 
     /// Removes a kernel, and everything the app remembered about it.
@@ -1034,7 +1060,11 @@ public enum KernelLibrary {
         }
         // **Un descripteur VMDK emporte ses étendues**, lues avant de
         // l'effacer : cachées de la liste, elles ne partiraient jamais sinon.
-        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url)
+        // Sauf celles qu'un autre descripteur de la bibliothèque nomme aussi
+        // — une copie du descripteur, deux disques sur la même étendue : les
+        // effacer casserait l'autre.
+        let stillNamed = VmdkDescriptorDisk.companionNames(among: everyFile().filter { $0 != url })
+        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url).filter { !stillNamed.contains($0) }
         try? FileManager.default.removeItem(at: url)
         for companion in companions {
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(companion))
@@ -1044,11 +1074,13 @@ public enum KernelLibrary {
         }
         KernelMemory.forget(kernel: name)
         RootPassword.forget(kernel: name)
+        // **Avant `forgetDisk`**, qui efface les choix dont elle se sert pour
+        // trouver les sessions des noyaux qui avaient ce disque : leur
+        // instantané croyait le disque là, et ne le porte pas. Les couches
+        // des machines installées qui l'avaient partent aussi.
+        LocalDisk.discardEverythingWritten(onDisk: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
-        // La couche d'écriture part avec sa base : sans elle, ses secteurs ne
-        // veulent plus rien dire.
-        LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
         // Le fichier pouvait être le disque propre d'une machine : elle reste,
         // sans disque à emporter.

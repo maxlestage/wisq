@@ -34,11 +34,26 @@ public struct MachineLifecycle: Equatable, Sendable {
     }
 
     public private(set) var state: State = .idle
+    /// « Oublier » a été touché pendant cette course : plus rien d'elle ne
+    /// doit être écrit.
+    public private(set) var forgotten = false
 
     public init() {}
 
     public mutating func booted() {
         state = .running
+        forgotten = false
+    }
+
+    /// The user pressed "Oublier": keep running now, and do not come back to
+    /// this machine next time.
+    ///
+    /// **It has to hold until the machine is gone.** Deleting the file was
+    /// all it did, and the machine was still `running`: the next checkpoint,
+    /// or leaving the screen, wrote it straight back, and the next visit
+    /// resumed the wedged guest the user had just asked to be rid of.
+    public mutating func userForgot() {
+        forgotten = true
     }
 
     /// The user pressed "Arrêter".
@@ -60,6 +75,12 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// user just ended.
     public mutating func steppedAway() -> Action {
         guard state == .running else { return .nothing }
+        // Forgotten: there is nothing to put away, and the machine cannot
+        // keep running behind a screen that is gone. It ends here.
+        if forgotten {
+            state = .ended
+            return .forget
+        }
         state = .suspended
         return .save
     }

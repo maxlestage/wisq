@@ -131,7 +131,13 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
                     totalBytesExpectedToWrite: Int64) {
         guard let tag = downloadTask.taskDescription,
               let release = ImageDownload.Release(backgroundTag: tag) else { return }
-        let (observer, start) = lock.withLock { (observers[release.file], startedAt[release.file] ?? 0) }
+        // Un `200` à une demande de reprise : le serveur renvoie tout, et
+        // `adopt` repartira de zéro — le progrès aussi, au lieu de rester à
+        // 100 % pendant tout le transfert.
+        let restarted = (downloadTask.response as? HTTPURLResponse)?.statusCode == 200
+        let (observer, start) = lock.withLock {
+            (observers[release.file], restarted ? 0 : startedAt[release.file] ?? 0)
+        }
         observer?(min(start + Int(totalBytesWritten), release.size), release.size)
     }
 
@@ -166,6 +172,14 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
             return waiting[file]
         }
         continuation?.resume(with: outcome)
+        // **Personne n'attendait** : l'application relancée par le système
+        // pour cette tâche, la feuille fermée. L'image est rangée quand même,
+        // et la liste l'apprend.
+        if continuation == nil, case .success = outcome {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: BackgroundDownloads.libraryChanged, object: nil)
+            }
+        }
     }
 }
 /// **Le réveil, pour l'application.** Le système relance wisq quand une
@@ -174,6 +188,18 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
 /// ici. Une session d'un autre nom n'est pas la nôtre, et son bloc est
 /// appelé tout de suite.
 public enum BackgroundDownloads {
+    /// Une image est arrivée dans la bibliothèque sans que personne ne
+    /// l'attende.
+    public static let libraryChanged = Notification.Name("wisq.bibliotheque.changee")
+
+    /// **La session recréée au lancement**, et pas au premier appui sur
+    /// « Télécharger » : ses événements — un transfert fini pendant que
+    /// l'application était tuée — n'arrivent qu'à une session vivante, et
+    /// sans elle l'image attendait que quelqu'un rouvre la feuille.
+    public static func reconnect() {
+        _ = BackgroundImageDownloads.shared
+    }
+
     public static func handleEvents(forSession identifier: String, completion: @escaping () -> Void) {
         guard identifier == BackgroundImageDownloads.identifier else {
             completion()
