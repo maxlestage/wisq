@@ -519,6 +519,7 @@ fn parse(text: &str, from: &str) -> Option<Recipe> {
 /// arguments au même endroit : grub les met sur la ligne du noyau, l'autre sur
 /// une ligne à part. Prendre les deux couvre les deux.
 fn one(text: &str, from: &str) -> Option<Recipe> {
+    let base = base_of(from);
     let mut kernel = None;
     let mut initrd = None;
     let mut command_line = String::new();
@@ -532,7 +533,7 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
             "KERNEL" | "LINUX" | "LINUXEFI" => {
                 // Grub écrit le noyau et ses arguments sur la même ligne.
                 let (path, arguments) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-                kernel = Some(absolute(path));
+                kernel = Some(absolute(path, base));
                 if !arguments.trim().is_empty() {
                     command_line = arguments.trim().to_string();
                 }
@@ -544,7 +545,7 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
                 // entrée systemd-boot écrit une ligne par fichier. Tous sont
                 // gardés, dans l'ordre : le chargeur les pose bout à bout, et
                 // c'est ainsi que le noyau les lit.
-                initrd = join_initrds(initrd, rest);
+                initrd = join_initrds(initrd, rest, base);
             }
             "APPEND" | "OPTIONS" => command_line = rest.to_string(),
             _ => {}
@@ -561,7 +562,7 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
             .partition(|word| word.starts_with("initrd="));
         if !named.is_empty() {
             for word in &named {
-                initrd = join_initrds(initrd, &word["initrd=".len()..]);
+                initrd = join_initrds(initrd, &word["initrd=".len()..], base);
             }
             command_line = others.join(" ");
         }
@@ -581,14 +582,14 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
 /// eux-mêmes comme séparateur —, et la frontière avec Swift reste une chaîne.
 /// Une variable de grub (`$tuned_initrd`) n'est pas un fichier : elle tombe,
 /// comme grub la remplace par rien quand elle n'est pas posée.
-fn join_initrds(list: Option<String>, line: &str) -> Option<String> {
+fn join_initrds(list: Option<String>, line: &str, base: &str) -> Option<String> {
     let mut paths: Vec<String> = list
         .map(|known| known.split(' ').map(str::to_string).collect())
         .unwrap_or_default();
     paths.extend(
         line.split(|c: char| c.is_whitespace() || c == ',')
             .filter(|word| !word.is_empty() && !word.starts_with('$'))
-            .map(absolute),
+            .map(|word| absolute(word, base)),
     );
     (!paths.is_empty()).then(|| paths.join(" "))
 }
@@ -627,13 +628,19 @@ fn logical_lines(text: &str) -> Vec<String> {
     lines
 }
 
-/// Un chemin de recette est parfois relatif à la racine de l'image et parfois
-/// écrit avec sa barre. Les deux désignent la même chose.
+/// Le chemin absolu, dans l'image, d'un chemin écrit par une recette.
 ///
 /// **Le périphérique que grub écrit devant**, `(${voidlive})/boot/vmlinuz`
 /// ou `($root)/vmlinuz`, nomme l'image elle-même : c'est celle qu'on lit. Il
 /// est retiré ; sans ça, le chemin cherché commençait par une parenthèse.
-fn absolute(path: &str) -> String {
+///
+/// **Un chemin relatif part du dossier de la recette chez syslinux**, pas de
+/// la racine : c'est son répertoire courant. Mageia écrit `kernel
+/// x86_64/vmlinuz` dans `/isolinux/isolinux.cfg`, et le noyau est en
+/// `/isolinux/x86_64/vmlinuz` ; lu depuis la racine, il était introuvable et
+/// l'image refusée. Grub et systemd-boot, eux, partent de la racine
+/// (`base` vide).
+fn absolute(path: &str, base: &str) -> String {
     let path = path.trim();
     let path = match path.strip_prefix('(').and_then(|rest| rest.split_once(')')) {
         Some((_, inside)) => inside,
@@ -642,6 +649,19 @@ fn absolute(path: &str) -> String {
     if path.starts_with('/') {
         path.to_string()
     } else {
-        format!("/{path}")
+        format!("{base}/{path}")
+    }
+}
+
+/// Le dossier d'où partent les chemins relatifs d'une recette : celui du
+/// fichier pour syslinux et isolinux, la racine (`""`) pour les autres.
+fn base_of(from: &str) -> &str {
+    let syslinux = from.contains("/syslinux/")
+        || from.contains("/isolinux/")
+        || from.ends_with("syslinux.cfg")
+        || from.ends_with("isolinux.cfg");
+    match from.rsplit_once('/') {
+        Some((parent, _)) if syslinux => parent,
+        _ => "",
     }
 }
