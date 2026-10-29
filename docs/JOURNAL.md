@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — La comparaison croisée, dans le dépôt
+
+La règle posée par l'entrée précédente — un temps natif ne se compare que
+croisé — n'existait que dans un script de la machine de mesure.
+`scripts/compare-native.sh` la met dans le dépôt : deux copies jetables
+(`git worktree`), A dans la première et B dans la seconde, N courses
+alternées, puis l'inverse ; il rend la moyenne de chaque commit sur les deux
+copies et l'écart des copies elles-mêmes, pour qu'on voie ce que vaut le
+bruit. Les copies sont retirées en sortant, même sur une erreur.
+
+Essayé de bout en bout, `HEAD` contre `HEAD`, une course par passe :
+10,78 s contre 10,62 s, −1,45 % — pour deux fois le même code. C'est le
+bruit d'une seule course, et la raison des trois par défaut.
+
+Trois tests du site le regardent refuser avant de créer la moindre copie :
+sans ses deux commits, sans le noyau qu'il démarre, devant un commit qui
+n'existe pas. Trois sabordages, trois chutes.
+
 ## 2026-10-29 — Correction : deux gains en temps natif étaient le banc
 
 **Ce qui était faux.** Les entrées de #600 (« 7 % en natif ») et de #601
