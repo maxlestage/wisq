@@ -202,15 +202,39 @@ public enum LocalStorage {
         let orphans = SuspendedMachine.allSavedMachineFiles(in: machines)
             .filter { !claimed.contains($0) }
         let parts = partialDownloads(in: downloads)
+        let strayOverlays = writes.map { orphanedOverlays(in: $0, library: Set(names), installed: installed) } ?? []
+        let strayBytes = writes.map { folder in
+            strayOverlays.reduce(0) { $0 + LocalDisk.overlayBytes(for: $1, inWritesDirectory: folder) }
+        } ?? 0
         return Report(
             entries: entries.sorted {
                 $0.total == $1.total ? $0.kernel < $1.kernel : $0.total > $1.total
             },
-            orphanedBytes: orphans.reduce(0) { $0 + size(of: machines.appendingPathComponent($1)) },
-            orphanedCount: orphans.count,
+            orphanedBytes: orphans.reduce(strayBytes) { $0 + size(of: machines.appendingPathComponent($1)) },
+            orphanedCount: orphans.count + strayOverlays.count,
             unpackedIsoBytes: bytes(inFolder: unpackedIso),
             partialDownloadBytes: parts.reduce(0) { $0 + size(of: $1) },
             partialDownloadCount: parts.count)
+    }
+
+    /// **Les couches d'écriture que plus rien ne lit** : celle d'un fichier
+    /// qui n'est plus dans la bibliothèque, celle d'une machine installée qui
+    /// n'existe plus — retirée, ou l'application tuée entre le retrait de la
+    /// liste et l'effacement de ses fichiers. Elles ne comptaient sous aucune
+    /// ligne du relevé, et aucun bouton ne les reprenait.
+    static func orphanedOverlays(in writes: URL, library: Set<String>, installed: [MachineKeys]) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: writes.path) else { return [] }
+        let prefixes = installed.map(\.overlayPrefix).filter { !$0.isEmpty }
+        return entries.filter { $0.hasSuffix(".writes") }.map { String($0.dropLast(".writes".count)) }
+            .filter { overlay in
+                // Le préfixe d'une machine installée, s'il y en a un, et le
+                // disque qui suit — qui doit être dans la bibliothèque. Celle
+                // d'une machine retirée n'a plus de préfixe connu : son nom
+                // entier n'est le nom d'aucun fichier.
+                let prefix = prefixes.first { overlay.hasPrefix($0) } ?? ""
+                return !library.contains(String(overlay.dropFirst(prefix.count)))
+            }
+            .sorted()
     }
 
     /// Les `.part` d'un dossier de téléchargements — eux seuls : un fichier
@@ -244,7 +268,7 @@ public enum LocalStorage {
     /// taken for a leftover.
     @discardableResult
     public static func freeOrphanedMachines(
-        kernels: URL, machines: URL, installed: [MachineKeys] = []
+        kernels: URL, machines: URL, installed: [MachineKeys] = [], writes: URL? = nil
     ) -> Int {
         let manager = FileManager.default
         let names = ((try? manager.contentsOfDirectory(atPath: kernels.path)) ?? [])
@@ -258,6 +282,16 @@ public enum LocalStorage {
             let url = machines.appendingPathComponent(file)
             freed += size(of: url)
             try? manager.removeItem(at: url)
+        }
+        // Les couches que plus rien ne lit, comptées au relevé avec elles.
+        if let writes {
+            let library = Set((try? manager.contentsOfDirectory(atPath: kernels.path)) ?? [])
+            for overlay in orphanedOverlays(in: writes, library: library, installed: installed) {
+                freed += LocalDisk.overlayBytes(for: overlay, inWritesDirectory: writes)
+                let url = writes.appendingPathComponent(overlay + ".writes")
+                try? manager.removeItem(at: url)
+                try? manager.removeItem(at: URL(fileURLWithPath: url.path + ".map"))
+            }
         }
         return freed
     }

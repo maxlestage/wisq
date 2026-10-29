@@ -63,6 +63,14 @@ public enum VirtualDiskImages {
         return nil
     }
 
+    /// Combien de blocs de `size` octets couvrent `total` octets — sans
+    /// l'addition de l'arrondi habituel, `(total + size - 1) / size`, qui
+    /// déborde, et fait tomber l'application, quand un en-tête hostile
+    /// annonce une taille proche de 2⁶⁴.
+    static func blocks(covering total: UInt64, of size: UInt64) -> UInt64 {
+        total / size + (total % size == 0 ? 0 : 1)
+    }
+
     /// `pread` jusqu'au bout : faux si le fichier finit avant.
     static func readAll(_ fd: Int32, into buffer: inout [UInt8], at offset: off_t) -> Bool {
         let wanted = buffer.count

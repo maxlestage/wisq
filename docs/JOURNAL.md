@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Chasse aux bugs : douze corrections dans une PR
+
+Demandé par l'utilisateur : « avance sur l'application, il faut que tout
+fonctionne ; tu peux tout améliorer et faire la chasse aux bugs ; plusieurs
+commits dans une PR ». Trois audits en lecture seule, en parallèle (les
+lecteurs d'images, les sessions et machines installées, les modèles de vue
+d'iOS), puis chaque constat vérifié avant d'être corrigé, un commit par
+correction, chacun avec son test et ses sabordages quand le code tourne
+ici.
+
+**Ce qui abîmait des données.** Un fichier réimporté ou retéléchargé sous
+le même nom gardait les couches d'écriture et les sessions de l'ancien :
+posées sur la nouvelle base, un mélange des deux disques
+(`LocalDisk.discardEverythingWritten`). Une machine exportée avec un disque
+propre mais branchée sur un autre revenait branchée sur le disque vierge,
+les secteurs de l'autre dessus (le manifeste nomme maintenant le disque
+propre). Supprimer un descripteur VMDK effaçait les étendues qu'un autre
+nommait aussi.
+
+**Ce qui faisait tomber l'application.** Six débordements sur des en-têtes
+hostiles — qcow2, VDI, VHD, VHDX, OVA, descripteur VMDK —, tous reproduits
+par l'audit puis par les tests : l'ancien code tombe sur chacun.
+
+**Ce qui se voyait.** L'écran de la VM locale n'avait pas d'autre sortie
+que « Arrêter », qui efface la session : il a « Fermer ». « Oublier » ne
+tenait pas, la sauvegarde suivante réécrivait la machine. La console
+rendait « � » pour un caractère coupé entre deux morceaux. Un lien
+d'appairage ouvert par-dessus une autre feuille bloquait l'import. Une
+machine distante que le trousseau refuse d'enregistrer fermait l'éditeur
+sans un mot.
+
+**Le reste.** Les huit index de téléchargement sont lus en même temps ; la
+session d'arrière-plan est recréée au lancement et une image arrivée sans
+témoin rafraîchit la liste ; les couches que plus rien ne lit se comptent
+et se reprennent.
+
+**Laissé, et pourquoi.** La couche refusée en entier quand sa carte nomme
+plus de secteurs que n'en porte son fichier (une coupure de courant entre
+les deux écritures) : c'est un choix écrit dans `FileDiskStore` et partagé
+par le cœur Rust, pas un oubli. La collision des noms de session au-delà
+de quarante caractères : la corriger change le nom des fichiers déjà sur
+les téléphones, et demande une migration à part. L'import d'une machine
+qui n'est pas atomique devant un arrêt brutal : une tranche à part.
+
+Dix-huit tests ; compte publié : 3017. Les corrections d'iOS (l'écran, la
+feuille, l'éditeur, le téléchargement d'arrière-plan) sont compilées par
+la CI et restent à valider sur un appareil.
+
 ## 2026-10-29 — Le VMDK à descripteur s'importe avec ses fichiers
 
 #612 lisait le disque, ses fichiers à côté ; la bibliothèque n'en

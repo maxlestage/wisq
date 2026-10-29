@@ -88,10 +88,12 @@ public final class VmdkDescriptorDisk: VirtualDiskImage, @unchecked Sendable {
         var pieces: [(start: UInt64, extent: Extent, image: (any VirtualDiskImage)?)] = []
         var start: UInt64 = 0
         for extent in extents {
-            pieces.append((start, extent, try Self.openExtent(extent, in: folder)))
+            // **La taille d'abord** : `openExtent` la multiplie par 512, et un
+            // nombre de secteurs hostile y faisait tomber l'application.
             guard extent.sectors <= (UInt64.max - start) / 512 else {
                 throw Refusal.malformed("taille hors de portée")
             }
+            pieces.append((start, extent, try Self.openExtent(extent, in: folder)))
             start += extent.sectors * 512
         }
         self.pieces = pieces
