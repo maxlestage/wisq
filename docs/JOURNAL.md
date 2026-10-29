@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Une session réseau par agent appairé, plus une par requête
+
+**Le défaut.** `AgentClient(baseURL:token:pinnedFingerprint:)` construisait
+un `URLSession` neuf à chaque client, et un client se construit à chaque
+connexion à une console (`ConsoleResolver`) et à chaque action d'alimentation
+(`VMPower`). Une session garde son délégué jusqu'à ce qu'on l'invalide, et
+aucune ne l'était. Chacune restait donc, avec son délégué et ses connexions
+TLS au repos, jusqu'à la fin de l'application.
+
+**Ce qui change.** Une session par empreinte de certificat, gardée le temps de
+l'application. Leur nombre est borné par les agents appairés, et une deuxième
+requête reprend la connexion TLS de la première au lieu d'en ouvrir une.
+
+**Vérifié.** Deux tests (`AgentSessionTests`) : même empreinte, même session ;
+autre empreinte, autre session, et jamais celle du système. Le sabotage (une
+session neuve à chaque fois) fait tomber le premier.
+
+Compte publié : 3090.
+
 ## 2026-10-29 — CPUID annonce x86-64-v3 : AVX, AVX2, FMA, F16C
 
 **Ce qui change.** `X86CPUID.featuresECX` annonce FMA (12), AVX (28) et F16C
