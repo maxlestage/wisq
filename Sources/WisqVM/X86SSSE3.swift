@@ -116,7 +116,7 @@ extension X86Core {
             let read = try readVectorRM(fields, 16)
             let result = Self.alignBytes(vector(fields.reg), (low: read.0, high: read.1), by: control)
             setVector(fields.reg, result.0, result.1)
-        case 0x0E, 0x14, 0x16, 0x17, 0x20, 0x21, 0x22:
+        case 0x0E, 0x14, 0x15, 0x16, 0x17, 0x20, 0x21, 0x22:
             try insertOrExtract(instruction, fields, opcode, control)
         // PCMPESTRM, PCMPESTRI, PCMPISTRM, PCMPISTRI (SSE4.2)
         case 0x60...0x63:
