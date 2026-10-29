@@ -1013,7 +1013,8 @@ public enum KernelLibrary {
               let machines = try? SuspendedMachine.directory()
         else { return 0 }
         return LocalStorage.freeOrphanedMachines(
-            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys())
+            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys(),
+            writes: try? LocalDisk.writesDirectory())
     }
 
     /// Removes a kernel, and everything the app remembered about it.
