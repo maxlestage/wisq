@@ -329,3 +329,52 @@ public struct X86ScanCode: Sendable, Equatable, Hashable {
         return table
     }()
 }
+
+/// **Ce qu'on tape, en événements du clavier PS/2.**
+///
+/// L'application reçoit du texte — le clavier de l'iPhone — et des touches
+/// de sa barre ; l'invité attend des touches enfoncées puis relâchées, Maj
+/// et Ctrl compris. Ici, et pas dans la vue, pour que ça se teste.
+public enum X86Keystrokes {
+    public typealias Event = (code: X86ScanCode, down: Bool)
+
+    /// Une touche frappée, avec ses modificateurs autour.
+    public static func press(_ code: X86ScanCode, shift: Bool = false, control: Bool = false) -> [Event] {
+        var events: [Event] = []
+        if control { events.append((.leftControl, true)) }
+        if shift { events.append((.leftShift, true)) }
+        events += [(code, true), (code, false)]
+        if shift { events.append((.leftShift, false)) }
+        if control { events.append((.leftControl, false)) }
+        return events
+    }
+
+    /// Un texte, caractère par caractère, sur un clavier américain. Ce qu'un
+    /// clavier QWERTY n'a pas est laissé de côté.
+    public static func typing(_ text: String) -> [Event] {
+        text.flatMap { character -> [Event] in
+            guard let key = X86ScanCode.typing(character) else { return [] }
+            return press(key.code, shift: key.shift)
+        }
+    }
+
+    /// Une touche de la barre de la console.
+    public static func key(_ key: TerminalKey) -> [Event] {
+        switch key {
+        case .escape: return press(.escape)
+        case .tab: return press(.tab)
+        case .up: return press(.up)
+        case .down: return press(.down)
+        case .left: return press(.left)
+        case .right: return press(.right)
+        case .home: return press(.home)
+        case .end: return press(.end)
+        case .pageUp: return press(.pageUp)
+        case .pageDown: return press(.pageDown)
+        case .delete: return press(.delete)
+        case .control(let letter):
+            guard let key = X86ScanCode.typing(Character(letter.lowercased())) else { return [] }
+            return press(key.code, control: true)
+        }
+    }
+}

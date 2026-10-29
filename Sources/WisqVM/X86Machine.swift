@@ -254,7 +254,8 @@ public final class X86Machine: @unchecked Sendable {
                      initialRamdisk: Data? = nil) throws {
         let placement = try X86BootLoader.load(
             kernel: [UInt8](kernelImage), into: memory,
-            commandLine: commandLine ?? X86BootLoader.defaultCommandLine,
+            commandLine: Self.commandLine(commandLine ?? X86BootLoader.defaultCommandLine,
+                                          withScreen: display != nil),
             initialRamdisk: initialRamdisk.map { [UInt8]($0) },
             framebuffer: display.map {
                 X86BootLoader.Framebuffer(base: $0.base, width: $0.width, height: $0.height)
@@ -388,6 +389,15 @@ public final class X86Machine: @unchecked Sendable {
         inputQueue.append(contentsOf: data)
         lock.unlock()
         nudge.signal()
+    }
+
+    /// **Avec un écran, le noyau y écrit aussi** : `console=tty0` en tête, pour
+    /// que le dernier `console=` — la console série — reste `/dev/console`,
+    /// celle que la console de l'application lit et où l'invité ouvre sa
+    /// session. L'écran montre le démarrage et les terminaux virtuels.
+    static func commandLine(_ line: String, withScreen: Bool) -> String {
+        guard withScreen, !line.split(separator: " ").contains("console=tty0") else { return line }
+        return "console=tty0 " + line
     }
 
     /// Une touche du clavier PS/2 de l'invité, enfoncée ou relâchée.
