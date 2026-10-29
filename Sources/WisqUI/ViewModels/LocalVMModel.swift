@@ -250,69 +250,11 @@ public final class LocalVMModel {
         // su lire serait pire que de laisser essayer.
         let core = kind.core ?? .riscv32
 
-        // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
-        // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
-        // le plafond du téléphone, lui, ne change pas. Quand les deux ne se
-        // rencontrent pas, on le dit au lieu de démarrer une machine trop
-        // petite qui échouerait sans expliquer pourquoi.
-        // Le réglage est une préférence ; l'adressage est un fait. Le bornage
-        // vit dans `KernelMemory.askedOf`, qui dit pourquoi — et qui, vivant
-        // dans `WisqVM`, est jugé par un test sur le coureur qui ne coûte
-        // rien, ce que ce fichier ne peut pas être.
-        var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
-        if core == .x86_64 {
-            // Le plancher de la machine PC, et celui du système qu'elle
-            // démarre quand l'image en donne un (`IsoBoot.Boot.minimumRAM`).
-            machineRAM = max(machineRAM, X86Machine.minimumRAMSize, minimumRAM)
-            if machineRAM > Int(roomNow) {
-                _ = life.guestFinished()
-                // Le plancher qui a joué est celui qu'on nomme : celui du
-                // système démarré, quand il dépasse celui de la machine.
-                let need = minimumRAM > X86Machine.minimumRAMSize
-                    ? "le système de cette image a besoin d'au moins \(minimumRAM >> 20) Mo pour démarrer."
-                    : "une machine PC a besoin d'au moins \(X86Machine.minimumRAMSize >> 20) Mo — son noyau "
-                        + "décompressé en fait trente-cinq à lui seul."
-                finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et \
-                    \(need)
-
-                    Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
-                    moment. Fermez ce qui tourne à côté et réessayez.
-                    """)
-                self.machine = nil
-                runFinished = nil
-                return
-            }
-        }
-
-        // La console répond aux questions de l'invité (voir
-        // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
-        // n'existe qu'après cette fermeture — d'où la boîte.
-        let answers = ConsoleAnswers()
-        let machine = makeLocalMachine(
-            for: core, ramSizeBytes: machineRAM
-        ) { [sink] chunk in
-            let (refresh, replies) = sink.append(chunk)
-            answers.send(replies)
-            guard refresh else { return }
-            Task { @MainActor [weak self] in
-                self?.consoleText = sink.takeText()
-            }
-        }
-        answers.machine = machine
-        self.machine = machine
-        beat(machine)
-
-        // The emulator owns a whole thread for its lifetime: it is a CPU, not a
-        // callback. The quality of service is explicit because the default lets
-        // the scheduler park it on an efficiency core, where an interpreter
-        // runs several times slower — and this is the thread whose speed the
-        // user is watching.
-        let finished = DispatchSemaphore(value: 0)
-        runFinished = finished
-        run += 1
-        let thisRun = run
-
+        // **L'image et sa session avant la machine.** La machine se
+        // construisait d'abord, à la taille réglée, et l'instantané n'était lu
+        // qu'ensuite : une session sauvée à une autre taille était refusée
+        // par la machine, prise pour « pas de session », et écrasée par la
+        // sauvegarde continue. Voir `SessionMemory`.
         // The image is read here rather than on the emulation thread because
         // its bytes are what a saved machine is filed under, and `kernelName`
         // has to be settled before `stop()` or `suspend()` can be called — both
@@ -369,6 +311,84 @@ public final class LocalVMModel {
         let resumeNote = saved != nil && !resuming
             ? ResumeNote.text(savedAt: SuspendedMachine.savedAt(kernel: kernelName, in: storage), now: Date())
             : nil
+
+        // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
+        // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
+        // le plafond du téléphone, lui, ne change pas. Quand les deux ne se
+        // rencontrent pas, on le dit au lieu de démarrer une machine trop
+        // petite qui échouerait sans expliquer pourquoi.
+        // Le réglage est une préférence ; l'adressage est un fait. Le bornage
+        // vit dans `KernelMemory.askedOf`, qui dit pourquoi — et qui, vivant
+        // dans `WisqVM`, est jugé par un test sur le coureur qui ne coûte
+        // rien, ce que ce fichier ne peut pas être.
+        var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
+        let savedRAM = saved.flatMap { SessionMemory.savedRAMSize($0, core: core) }
+        if core == .x86_64, savedRAM == nil {
+            // Le plancher de la machine PC, et celui du système qu'elle
+            // démarre quand l'image en donne un (`IsoBoot.Boot.minimumRAM`).
+            machineRAM = max(machineRAM, X86Machine.minimumRAMSize, minimumRAM)
+            if machineRAM > Int(roomNow) {
+                _ = life.guestFinished()
+                // Le plancher qui a joué est celui qu'on nomme : celui du
+                // système démarré, quand il dépasse celui de la machine.
+                let need = minimumRAM > X86Machine.minimumRAMSize
+                    ? "le système de cette image a besoin d'au moins \(minimumRAM >> 20) Mo pour démarrer."
+                    : "une machine PC a besoin d'au moins \(X86Machine.minimumRAMSize >> 20) Mo — son noyau "
+                        + "décompressé en fait trente-cinq à lui seul."
+                finish(with: """
+                    \(kernelURL.lastPathComponent) est un noyau pour PC, et \
+                    \(need)
+
+                    Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
+                    moment. Fermez ce qui tourne à côté et réessayez.
+                    """)
+                self.machine = nil
+                runFinished = nil
+                return
+            }
+        }
+
+        // Une session lisible impose sa taille, si elle tient dans ce qui est
+        // libre ; sinon elle est gardée, et le démarrage refusé.
+        switch SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow)) {
+        case .boot(let size), .resume(let size):
+            machineRAM = size
+        case .tooLittleRoom(let needed, let room):
+            _ = life.guestFinished()
+            finish(with: SessionMemory.explanation(
+                saved: needed, room: room, name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+
+        // La console répond aux questions de l'invité (voir
+        // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
+        // n'existe qu'après cette fermeture — d'où la boîte.
+        let answers = ConsoleAnswers()
+        let machine = makeLocalMachine(
+            for: core, ramSizeBytes: machineRAM
+        ) { [sink] chunk in
+            let (refresh, replies) = sink.append(chunk)
+            answers.send(replies)
+            guard refresh else { return }
+            Task { @MainActor [weak self] in
+                self?.consoleText = sink.takeText()
+            }
+        }
+        answers.machine = machine
+        self.machine = machine
+        beat(machine)
+
+        // The emulator owns a whole thread for its lifetime: it is a CPU, not a
+        // callback. The quality of service is explicit because the default lets
+        // the scheduler park it on an efficiency core, where an interpreter
+        // runs several times slower — and this is the thread whose speed the
+        // user is watching.
+        let finished = DispatchSemaphore(value: 0)
+        runFinished = finished
+        run += 1
+        let thisRun = run
 
         // **Un noyau de PC ne démarre à rien sans son initramfs.** Il n'a
         // aucun pilote de disque compilé dedans — ce sont des modules, et ils
