@@ -456,6 +456,13 @@ extension X86Core {
         switch opcode {
         case 0x01:  // le groupe 7 : les tables de descripteurs, et le reste
             let group = try decodeFields(instruction)
+            // XGETBV et XSETBV : la forme registre de /2, que LGDT n'a pas.
+            if (instruction.modrm! >> 3) & 0x07 == 2, group.mod == 0b11 {
+                guard group.rm <= 1 else {
+                    throw Fault.unsupported("0f 01 \(String(format: "%02x", instruction.modrm!)) n'est pas décidée")
+                }
+                return try extendedControlInstruction(Int(group.rm))
+            }
             // SWAPGS et INVLPG ne touchent pas à la mémoire de l'invité ; les
             // ranger avant la garde évite d'exiger ce dont ils n'ont pas
             // besoin.
@@ -612,6 +619,11 @@ extension X86Core {
                 mxcsr = UInt32(truncatingIfNeeded: try readRM(fields, 4))
             case 3:  // STMXCSR
                 try writeRM(fields, 4, UInt64(mxcsr))
+            // Sous 66, F2 ou F3, ce sont d'autres instructions (`ptwrite`…).
+            case 4 where instruction.prefixMask & Self.mandatoryPrefixes == 0:  // XSAVE et XSAVE64
+                try saveExtendedState()
+            case 5 where instruction.prefixMask & Self.mandatoryPrefixes == 0:  // XRSTOR et XRSTOR64
+                try restoreExtendedState()
             case 7:
                 // CLFLUSH et CLFLUSHOPT : vider une ligne de cache. Il n'y a
                 // pas de cache ici, donc rien à vider — mais refuser ces

@@ -38,13 +38,15 @@ final class X86SystemTests: XCTestCase {
         }
         // **x86-64-v2, dans ECX** : SSE3, SSSE3, CX16, SSE4.1, SSE4.2 et
         // POPCNT, que la glibc d'AlmaLinux 9 exige — et rien au-delà : ni
-        // MONITOR, ni AVX (28), ni XSAVE (26), que ce cœur n'a pas.
+        // MONITOR, ni AVX (28), que ce cœur n'a pas. XSAVE (26) est là
+        // (`X86XSAVETests`) ; OSXSAVE (27) suit CR4, à zéro ici.
         let ecx = X86CPUID.answer(leaf: 1, subleaf: 0).2
         for (bit, name) in [(0, "SSE3"), (9, "SSSE3"), (13, "CX16"), (19, "SSE4.1"), (20, "SSE4.2"), (23, "POPCNT")] {
             XCTAssertNotEqual(ecx & (1 << UInt32(bit)), 0, "\(name) : x86-64-v2 l'exige")
         }
         XCTAssertEqual(ecx & ~X86CPUID.featuresECX, 0)
-        XCTAssertEqual(ecx & (1 << 3 | 1 << 26 | 1 << 27 | 1 << 28), 0, "ni MONITOR, ni XSAVE, ni AVX")
+        XCTAssertEqual(ecx & (1 << 3 | 1 << 27 | 1 << 28), 0, "ni MONITOR, ni OSXSAVE sans CR4, ni AVX")
+        XCTAssertNotEqual(ecx & (1 << 26), 0, "XSAVE")
         // LAHF-SAHF en mode long, l'autre exigence de x86-64-v2 ; et ABM,
         // qui annonce LZCNT.
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1 | 1 << 5)
@@ -52,7 +54,7 @@ final class X86SystemTests: XCTestCase {
         // feuille 1, BMI1 et BMI2 dans la feuille 7 — sans AVX2, que ce cœur
         // n'a pas.
         XCTAssertNotEqual(ecx & (1 << 22), 0, "MOVBE")
-        XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 7)
+        XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 0xD, "jusqu'à la feuille de l'état étendu")
         let leaf7 = X86CPUID.answer(leaf: 7, subleaf: 0)
         XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 8 | 1 << 9,
                        "BMI1, BMI2 et ERMS, et rien d'autre — ni AVX2 (5)")
@@ -269,7 +271,6 @@ final class X86SystemTests: XCTestCase {
     /// `bulkString` tient, à côté de BMI1 et BMI2. Un bit de plus — AVX2,
     /// SMEP — ferait employer à Linux ou à la glibc ce qui n'existe pas ici.
     func testLeafSevenAnnouncesOnlyTheFastStrings() {
-        XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 7)
         let (maximum, ebx, ecx, edx) = X86CPUID.answer(leaf: 7, subleaf: 0)
         XCTAssertEqual(maximum, 1, "la sous-feuille 1 existe")
         XCTAssertEqual(ebx & ~X86CPUID.extendedLeaf7EBX, 1 << 9, "ERMS, hors BMI1 et BMI2")
@@ -279,7 +280,7 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(one.0, 1 << 11, "FSRS seul")
         XCTAssertEqual([one.1, one.2, one.3], [0, 0, 0])
         XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 2).0, 0)
-        for leaf: UInt32 in 2...6 {
+        for leaf: UInt32 in [2, 3, 4, 5, 6, 8, 9, 0xA, 0xB, 0xC] {
             let answer = X86CPUID.answer(leaf: leaf, subleaf: 0)
             XCTAssertEqual([answer.0, answer.1, answer.2, answer.3], [0, 0, 0, 0], "feuille \(leaf)")
         }
