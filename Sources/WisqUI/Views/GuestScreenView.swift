@@ -35,7 +35,7 @@ struct GuestScreenView: View {
                     Image(decorative: image, scale: 1)
                         .resizable()
                         .interpolation(.medium)
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                 } else {
                     Text("L'invité n'a encore rien dessiné sur son écran.")
                         .font(.footnote)
