@@ -37,7 +37,44 @@ public struct X86Core: @unchecked Sendable {
     /// intuition.
     public var registers: X86Registers
     /// RFLAGS, dont seuls les six de l'arithmétique nous occupent ici.
-    public var flags: UInt64
+    ///
+    /// **Les six de l'arithmétique se calculent quand on les lit.** Une
+    /// addition, une soustraction ou une opération logique ne fait que noter
+    /// de quoi les retrouver (`pending…`) ; c'est la lecture de `flags` qui
+    /// les assemble. Le code compilé écrase la plupart de ces drapeaux avant
+    /// que personne ne les regarde — un `add` suivi d'un `mov` puis d'un
+    /// `cmp` —, et les calculer à chaque opération coûtait, sous callgrind,
+    /// la parité, le zéro, le signe et le débordement de chacune. Écrire
+    /// `flags` règle tout : la valeur écrite remplace ce qui attendait.
+    public var flags: UInt64 {
+        get { pendingSize == 0 ? settledFlags : settledFlags | pendingArithmeticBits }
+        set {
+            settledFlags = newValue
+            pendingSize = 0
+        }
+    }
+    /// Les drapeaux tels qu'ils sont, moins — quand une opération attend —
+    /// les six de l'arithmétique, qui y sont alors à zéro.
+    var settledFlags: UInt64
+    /// La taille de l'opération qui attend, en octets ; zéro quand aucune
+    /// n'attend.
+    var pendingSize = 0
+    /// Son résultat, d'où viennent `ZF`, `SF` et `PF`.
+    var pendingResult: UInt64 = 0
+    /// `CF` et `AF`, déjà à leur place : peu coûteux, et calculés avec les
+    /// opérandes qu'on n'a pas à garder.
+    var pendingLowBits: UInt64 = 0
+    /// Ce dont le bit de signe dit `OF` : `(a ^ r) & (b ^ r)` pour une
+    /// addition, `(a ^ b) & (a ^ r)` pour une soustraction, zéro pour une
+    /// opération logique.
+    var pendingOverflowSource: UInt64 = 0
+
+    /// Les six drapeaux de l'opération qui attend.
+    @inline(__always)
+    var pendingArithmeticBits: UInt64 {
+        let overflowBit: UInt64 = pendingOverflowSource & Self.signBit(pendingSize) != 0 ? Flag.overflow : 0
+        return pendingLowBits | overflowBit | Self.resultFlagBits(pendingResult, pendingSize)
+    }
     /// Où le cœur en est.
     public var rip: UInt64
     /// La mémoire de l'invité. Absente, toute forme mémoire est refusée plutôt
@@ -275,7 +312,7 @@ public struct X86Core: @unchecked Sendable {
                 memory: X86Memory? = nil) {
         precondition(registers.count == 16, "un x86-64 a seize registres généraux")
         self.registers = X86Registers(registers)
-        self.flags = flags
+        self.settledFlags = flags
         self.rip = rip
         self.memory = memory
         memoryReference = memory.map { Unmanaged.passUnretained($0) }
@@ -437,6 +474,20 @@ public struct X86Core: @unchecked Sendable {
     @inline(__always)
     mutating func setArithmeticFlags(_ computed: UInt64) {
         flags = (flags & ~Self.arithmeticFlags) | computed
+    }
+
+    /// **Les six, notés pour plus tard** : voir `flags`. `lowBits` porte
+    /// `CF` et `AF` à leur place, `overflowSource` ce dont le bit de signe
+    /// dit `OF`.
+    @inline(__always)
+    mutating func deferArithmeticFlags(result: UInt64, size: Int, lowBits: UInt64, overflowSource: UInt64) {
+        // Une opération qui attendait déjà n'a rien laissé dans
+        // `settledFlags` : les six y sont à zéro, et le restent.
+        if pendingSize == 0 { settledFlags &= ~Self.arithmeticFlags }
+        pendingSize = size
+        pendingResult = result
+        pendingLowBits = lowBits
+        pendingOverflowSource = overflowSource
     }
 
     /// `ZF`, `SF` et `PF` d'un résultat, rangés à leur place dans le mot des

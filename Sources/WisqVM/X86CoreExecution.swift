@@ -15,7 +15,6 @@ extension X86Core {
     mutating func add(_ a: UInt64, _ b: UInt64, _ size: Int, carryIn: UInt64 = 0) -> UInt64 {
         let bits = UInt64(8 * size)
         let mask = Self.mask(size)
-        let sign = Self.signBit(size)
         let wide: UInt64
         let carryOut: Bool
         if size == 8 {
@@ -29,12 +28,12 @@ extension X86Core {
             carryOut = sum >> bits != 0
         }
         let result = wide & mask
-        // Les six drapeaux calculés à part, puis écrits d'un coup : voir
-        // `setArithmeticFlags`. `AF` est déjà au bit 4 dans `a ^ b ^ résultat`.
+        // Les six drapeaux notés pour plus tard : voir `flags`. `AF` est
+        // déjà au bit 4 dans `a ^ b ^ résultat`.
         let carryBit: UInt64 = carryOut ? Flag.carry : 0
-        let overflowBit: UInt64 = ((a ^ result) & (b ^ result) & sign) != 0 ? Flag.overflow : 0
-        setArithmeticFlags(carryBit | ((a ^ b ^ result) & Flag.auxiliary) | overflowBit
-                           | Self.resultFlagBits(result, size))
+        deferArithmeticFlags(result: result, size: size,
+                             lowBits: carryBit | ((a ^ b ^ result) & Flag.auxiliary),
+                             overflowSource: (a ^ result) & (b ^ result))
         return result
     }
 
@@ -43,7 +42,6 @@ extension X86Core {
     /// divergeraient un jour.
     mutating func subtract(_ a: UInt64, _ b: UInt64, _ size: Int, borrowIn: UInt64 = 0) -> UInt64 {
         let mask = Self.mask(size)
-        let sign = Self.signBit(size)
         let result = ((a & mask) &- (b & mask) &- borrowIn) & mask
         let borrowOut: Bool
         if borrowIn != 0 {
@@ -53,9 +51,9 @@ extension X86Core {
             borrowOut = (a & mask) < (b & mask)
         }
         let carryBit: UInt64 = borrowOut ? Flag.carry : 0
-        let overflowBit: UInt64 = ((a ^ b) & (a ^ result) & sign) != 0 ? Flag.overflow : 0
-        setArithmeticFlags(carryBit | ((a ^ b ^ result) & Flag.auxiliary) | overflowBit
-                           | Self.resultFlagBits(result, size))
+        deferArithmeticFlags(result: result, size: size,
+                             lowBits: carryBit | ((a ^ b ^ result) & Flag.auxiliary),
+                             overflowSource: (a ^ b) & (a ^ result))
         return result
     }
 
@@ -64,9 +62,9 @@ extension X86Core {
     /// et c'est ce que l'oracle a répondu.
     mutating func logic(_ result: UInt64, _ size: Int) -> UInt64 {
         let value = result & Self.mask(size)
-        // `CF`, `OF` et `AF` à zéro, les trois autres du résultat : une
-        // seule écriture au lieu de six.
-        setArithmeticFlags(Self.resultFlagBits(value, size))
+        // `CF`, `OF` et `AF` à zéro, les trois autres du résultat, quand on
+        // les lira.
+        deferArithmeticFlags(result: value, size: size, lowBits: 0, overflowSource: 0)
         return value
     }
 
