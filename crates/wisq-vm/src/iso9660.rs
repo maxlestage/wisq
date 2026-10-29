@@ -361,6 +361,8 @@ fn rock_ridge_name(system: &[u8]) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipe {
     pub kernel: String,
+    /// Le ou les initramfs, **séparés par une espace** et dans l'ordre où le
+    /// chargeur les poserait (voir `join_initrds`).
     pub initrd: Option<String>,
     pub command_line: String,
     /// Le fichier d'où tout ça vient. **Il est rendu pour que l'écran puisse
@@ -536,11 +538,13 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
                 }
             }
             "INITRD" | "INITRDEFI" => {
-                // Une ligne `initrd` peut en citer plusieurs, séparés par des
-                // virgules ; wisq n'en charge qu'un, et prendre le premier en
-                // silence serait un mensonge par omission — on prend la ligne
-                // telle quelle et l'appelant verra qu'elle n'est pas un chemin.
-                initrd = Some(absolute(rest));
+                // **Plusieurs initramfs, et plusieurs lignes.** Grub en cite
+                // plusieurs sur une ligne — les microcodes puis l'initramfs,
+                // chez Artix —, syslinux les sépare par des virgules, et une
+                // entrée systemd-boot écrit une ligne par fichier. Tous sont
+                // gardés, dans l'ordre : le chargeur les pose bout à bout, et
+                // c'est ainsi que le noyau les lit.
+                initrd = join_initrds(initrd, rest);
             }
             "APPEND" | "OPTIONS" => command_line = rest.to_string(),
             _ => {}
@@ -555,8 +559,10 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
         let (named, others): (Vec<&str>, Vec<&str>) = command_line
             .split_whitespace()
             .partition(|word| word.starts_with("initrd="));
-        if let Some(word) = named.first() {
-            initrd = Some(absolute(&word["initrd=".len()..]));
+        if !named.is_empty() {
+            for word in &named {
+                initrd = join_initrds(initrd, &word["initrd=".len()..]);
+            }
             command_line = others.join(" ");
         }
     }
@@ -566,6 +572,25 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
         command_line,
         from: from.to_string(),
     })
+}
+
+/// Ajoute à la liste les initramfs qu'une ligne cite.
+///
+/// **La liste est une chaîne, ses chemins séparés par une espace** : un
+/// chemin de recette n'en porte jamais — grub et syslinux s'en servent
+/// eux-mêmes comme séparateur —, et la frontière avec Swift reste une chaîne.
+/// Une variable de grub (`$tuned_initrd`) n'est pas un fichier : elle tombe,
+/// comme grub la remplace par rien quand elle n'est pas posée.
+fn join_initrds(list: Option<String>, line: &str) -> Option<String> {
+    let mut paths: Vec<String> = list
+        .map(|known| known.split(' ').map(str::to_string).collect())
+        .unwrap_or_default();
+    paths.extend(
+        line.split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|word| !word.is_empty() && !word.starts_with('$'))
+            .map(absolute),
+    );
+    (!paths.is_empty()).then(|| paths.join(" "))
 }
 
 /// Les lignes d'une entrée, **celles que grub coupe par `\` recollées**.
