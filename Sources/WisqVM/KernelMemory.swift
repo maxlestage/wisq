@@ -58,7 +58,7 @@ public enum KernelMemory {
     ///
     /// **C'est la seule borne sur un téléphone.** Elle a vécu à côté de
     /// `os_proc_available_memory()`, et la plus petite des deux gagnait : sur
-    /// un iPhone de douze gibioctets, iOS disait trois gibioctets libres, et
+    /// un iPhone 18 Pro Max (12 Go de RAM), iOS disait trois gibioctets libres, et
     /// le curseur s'arrêtait à deux — le palier sous trois. Maxime : « 2 Go
     /// de RAM c'est trop bas, il faut la mémoire du portable − 2 Go en
     /// dynamique ». La mémoire de l'invité est allouée à zéro par `calloc`,
