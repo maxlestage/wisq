@@ -141,7 +141,7 @@ public final class Qcow2Image: VirtualDiskImage, @unchecked Sendable {
         let l1Size = Int(u32(36))
         let l1Offset = u64(40)
         let perL1 = UInt64(1) << UInt64(clusterBits + l2Bits)
-        let needed = (virtualSize + perL1 - 1) / perL1
+        let needed = VirtualDiskImages.blocks(covering: virtualSize, of: perL1)
         guard UInt64(l1Size) >= needed else {
             throw Refusal.malformed("table L1 trop courte pour la taille annoncée")
         }
