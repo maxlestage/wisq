@@ -377,6 +377,13 @@ struct LocalVMListView: View {
             reloadLibrary()
             storage = KernelLibrary.storageReport()
         }
+        // Un téléchargement d'arrière-plan qui finit sans feuille ouverte —
+        // l'application relancée par le système — range quand même son
+        // image : la liste doit la montrer sans attendre qu'on la rouvre.
+        .onReceive(NotificationCenter.default.publisher(for: BackgroundDownloads.libraryChanged)) { _ in
+            reloadLibrary()
+            storage = KernelLibrary.storageReport()
+        }
         .onChange(of: booting == nil) {
             // Un démarrage range la machine en tête : la liste suit.
             installed = InstalledMachines.list()
@@ -1038,16 +1045,20 @@ struct LocalVMTerminalView: View {
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // **Fermer garde la machine.** L'écran est une `fullScreenCover`,
+            // qu'on ne fait pas glisser : sans ce bouton, la seule sortie
+            // était « Arrêter », qui efface la session — et une machine qui
+            // avait mis vingt minutes à démarrer repartait de zéro. Fermer
+            // laisse `onDisappear` la suspendre, et la liste la reprendra.
             ToolbarItem(placement: .cancellationAction) {
-                Button("Arrêter") {
+                Button("Fermer") { dismiss() }
+            }
+            ToolbarItem(placement: .destructiveAction) {
+                Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
                     model.stop()
                     dismiss()
                 }
             }
-            // Offered only when there is something to forget. "Arrêter" also
-            // clears the saved machine, but only by ending the session; this is
-            // for the user whose guest is wedged and who wants to walk away now
-            // and come back to a clean boot.
             ToolbarItem(placement: .primaryAction) {
                 Menu("Taille du texte", systemImage: "textformat.size") {
                     Button("Plus grand", systemImage: "plus.magnifyingglass") {
@@ -1062,6 +1073,10 @@ struct LocalVMTerminalView: View {
                         .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
                 }
             }
+            // Offered only when there is something to forget. "Arrêter" also
+            // clears the saved machine, but only by ending the session; this is
+            // for the user whose guest is wedged and who wants to walk away now
+            // and come back to a clean boot.
             if model.hasSavedMachine {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Oublier", systemImage: "trash") {
@@ -1076,8 +1091,9 @@ struct LocalVMTerminalView: View {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
-        // down where it stands and picked up on the next visit. Only the
-        // "Arrêter" button ends it, which is what that word has to mean.
+        // down where it stands and picked up on the next visit — "Fermer"
+        // is that. Only the "Arrêter" button ends it, which is what that
+        // word has to mean.
         .onDisappear {
             model.suspend()
             UIApplication.shared.isIdleTimerDisabled = false

@@ -60,6 +60,12 @@ public enum MachineArchive {
         /// La taille du disque vierge propre à la machine, s'il y en avait un.
         var ownDiskBytes: UInt64?
         var files: [Entry]
+        /// **Le nom du disque propre**, s'il y en avait un. Absent des
+        /// archives d'avant, qui supposaient que le disque branché était le
+        /// disque propre : une machine qui en avait un et se branchait sur un
+        /// autre revenait branchée sur le disque vierge recréé, avec les
+        /// secteurs de l'autre posés dessus.
+        var ownDisk: String?
 
         struct Entry: Codable, Equatable {
             enum Kind: String, Codable { case session, writes, map }
@@ -121,7 +127,8 @@ public enum MachineArchive {
             name: machine.name, image: machine.image,
             memory: memory == KernelMemory.defaultSize ? nil : memory,
             disk: LocalDisk.recordedName(forKernel: machine.key, in: directory),
-            ownDiskBytes: ownDiskBytes, files: entries)
+            ownDiskBytes: ownDiskBytes, files: entries,
+            ownDisk: ownDiskBytes == nil ? nil : machine.ownDisk)
 
         let encoded = try JSONEncoder().encode(manifest)
         guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
@@ -178,7 +185,7 @@ public enum MachineArchive {
               manifest.version == 1
         else { throw Refusal.damaged }
 
-        for name in [manifest.image] + manifest.files.map(\.name) + [manifest.disk].compactMap({ $0 })
+        for name in [manifest.image] + manifest.files.map(\.name) + [manifest.disk, manifest.ownDisk].compactMap({ $0 })
         where !isSafe(name) {
             throw Refusal.unsafeName(name)
         }
@@ -195,11 +202,22 @@ public enum MachineArchive {
                 KernelMemory.setSize(memory, forKernel: machine.key, in: directory)
             }
             var disk = manifest.disk
+            // Le nom du disque propre là-bas, et celui qu'il prend ici. Une
+            // archive d'avant ne le nommait pas : c'était le disque branché.
+            var ownRenamed: (from: String, to: String)?
             if let bytes = manifest.ownDiskBytes {
                 let created = try createOwnDisk(machine.name, bytes)
                 try InstalledMachines.setOwnDisk(created, id: machine.id, in: directory)
                 machine.ownDisk = created
-                disk = created
+                if let old = manifest.ownDisk ?? manifest.disk { ownRenamed = (old, created) }
+                // Branché sur le disque propre : sur celui qui vient d'être
+                // recréé. Branché sur un autre, ou sur rien : pareil ici. Une
+                // archive d'avant ne sait pas le dire, et garde sa règle.
+                if let named = manifest.ownDisk {
+                    if manifest.disk == named { disk = created }
+                } else {
+                    disk = created
+                }
             }
             if let disk { LocalDisk.attach(disk, forKernel: machine.key, in: directory) }
 
@@ -211,8 +229,9 @@ public enum MachineArchive {
                     target = folder.appendingPathComponent(
                         "machine-\(SuspendedMachine.safeName(machine.key))-\(entry.name).wisqvm")
                 case .writes, .map:
-                    // Le disque propre a changé de nom : sa couche suit.
-                    let diskName = entry.name == manifest.disk ? (disk ?? entry.name) : entry.name
+                    // Le disque propre a changé de nom : sa couche suit, et
+                    // elle seule.
+                    let diskName = entry.name == ownRenamed?.from ? ownRenamed!.to : entry.name
                     let base = try LocalDisk.writesURL(
                         for: machine.keys.overlay(forDisk: diskName), in: directory)
                     target = entry.kind == .map ? URL(fileURLWithPath: base.path + ".map") : base
