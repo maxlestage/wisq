@@ -165,11 +165,12 @@ public struct AgentBinding: Codable, Hashable, Sendable {
     ///   échouera bruyamment plutôt que de passer en clair, jusqu'à un nouvel
     ///   appairage.
     public static func edited(
-        from previous: AgentBinding?, host: String, port: Int, vmIdentifier: String,
+        from previous: AgentBinding?, at endpoint: (host: String, port: Int), vmIdentifier: String,
         autoStart: Bool, credentialRef: String
     ) -> AgentBinding? {
         let secure = previous?.baseURL.scheme == "https"
-        guard let url = Validation.agentURL(scheme: secure ? "https" : "http", host: host, port: port) else {
+        guard let url = Validation.agentURL(
+            scheme: secure ? "https" : "http", host: endpoint.host, port: endpoint.port) else {
             return nil
         }
         let sameEndpoint = previous.map { $0.baseURL.host == url.host && $0.baseURL.port == url.port } ?? false
