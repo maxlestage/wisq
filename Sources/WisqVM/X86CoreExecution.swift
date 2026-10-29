@@ -234,11 +234,14 @@ extension X86Core {
     /// Inlinée : voir `read(_:_:highByte:)`.
     @inline(__always)
     public func condition(_ code: UInt8) -> Bool {
-        let overflow = flags & Flag.overflow != 0
-        let carryFlag = flags & Flag.carry != 0
-        let zero = flags & Flag.zero != 0
-        let sign = flags & Flag.sign != 0
-        let parity = flags & Flag.parity != 0
+        // Lu une fois : quand une opération attend, chaque lecture de
+        // `flags` assemble ses six drapeaux.
+        let word = flags
+        let overflow = word & Flag.overflow != 0
+        let carryFlag = word & Flag.carry != 0
+        let zero = word & Flag.zero != 0
+        let sign = word & Flag.sign != 0
+        let parity = word & Flag.parity != 0
         switch code & 0x0F {
         case 0x0: return overflow
         case 0x1: return !overflow
