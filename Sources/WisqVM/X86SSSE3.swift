@@ -14,6 +14,11 @@ import Foundation
 // fois), `pshufb` (1 581), `pabsd` (214), `pmaddubsw` (4), `phaddsw` (1) — et
 // `pabsb`, `pabsw`, qui ne diffèrent de `pabsd` que par la largeur.
 //
+// **Puis le reste de SSSE3**, quand le systemd de CentOS Stream 10 s'est
+// arrêté sur `psignb` : `phaddw`, `phaddd`, `phsubw`, `phsubd`, `phsubsw`,
+// `psignb`, `psignw`, `psignd`, `pmulhrsw`. Compilés pour x86-64-v3, ses
+// programmes les emploient sous VEX, qui passe par ici.
+//
 // **Toutes exigent le préfixe `66`.** Sans lui, ce sont les mêmes opérations
 // sur les registres MMX, que ce cœur n'a pas ; les confondre exécuterait sur
 // un XMM ce que le programme voulait faire ailleurs.
@@ -65,8 +70,22 @@ extension X86Core {
         let result: (UInt64, UInt64)
         switch opcode {
         case 0x00: result = Self.shuffleBytes(destination, by: source)
-        case 0x03: result = Self.horizontalAddSaturated(destination, source)
+        case 0x01, 0x02, 0x03, 0x05, 0x06, 0x07: result = Self.horizontal(opcode, destination, source)
         case 0x04: result = Self.multiplyAddBytes(destination, source)
+        // `PSIGNB/W/D` : chaque élément de la destination gardé, opposé ou
+        // mis à zéro selon le signe de celui de la source.
+        case 0x08, 0x09, 0x0A:
+            let width = 1 << Int(opcode - 0x08)
+            result = Self.elementwise(width, destination, source) { element, sign, mask in
+                let top = (mask >> 1) &+ 1
+                if sign & mask == 0 { return 0 }
+                return sign & top != 0 ? (0 &- element) & mask : element
+            }
+        // `PMULHRSW` : le produit signé de deux mots, arrondi, ses bits 15
+        // à 30 — `(a × b + 0x4000) >> 15`.
+        case 0x0B:
+            let left = Self.signedWords(destination), right = Self.signedWords(source)
+            result = Self.packWords((0..<8).map { (left[$0] * right[$0] + 0x4000) >> 15 })
         // La valeur absolue de chaque élément de la **source** : la
         // destination n'est pas lue. Le plus négatif reste ce qu'il est —
         // 0x80 n'a pas d'opposé sur huit bits.
@@ -155,15 +174,34 @@ extension X86Core {
         min(max(value, Int32(Int16.min)), Int32(Int16.max))
     }
 
-    /// **`PHADDSW`** : les mots voisins additionnés deux à deux, saturés — les
-    /// quatre sommes de la destination en bas, celles de la source en haut.
-    static func horizontalAddSaturated(
-        _ destination: (low: UInt64, high: UInt64), _ source: (low: UInt64, high: UInt64)
+    /// **Les opérations horizontales** : les éléments voisins additionnés ou
+    /// soustraits deux à deux — le premier moins le second —, les résultats
+    /// de la destination en bas, ceux de la source en haut. `PHADDW`
+    /// (`01`), `PHADDD` (`02`), `PHADDSW` (`03`, saturé), `PHSUBW` (`05`),
+    /// `PHSUBD` (`06`), `PHSUBSW` (`07`, saturé). Sans saturation, le
+    /// résultat est pris modulo la largeur.
+    static func horizontal(
+        _ opcode: UInt8, _ destination: (low: UInt64, high: UInt64), _ source: (low: UInt64, high: UInt64)
     ) -> (UInt64, UInt64) {
+        let subtract = opcode >= 0x05
+        if opcode & 3 == 2 {
+            // Sur trente-deux bits : deux sommes par registre.
+            func pairs(_ value: (low: UInt64, high: UInt64)) -> [UInt64] {
+                [value.low, value.high].map { word in
+                    let first = UInt32(truncatingIfNeeded: word), second = UInt32(truncatingIfNeeded: word >> 32)
+                    return UInt64(subtract ? first &- second : first &+ second)
+                }
+            }
+            let results = pairs(destination) + pairs(source)
+            return (results[0] | results[1] << 32, results[2] | results[3] << 32)
+        }
+        let saturated = opcode & 3 == 3
         let left = signedWords(destination), right = signedWords(source)
-        let sums = (0..<4).map { saturatedWord(left[2 * $0] + left[2 * $0 + 1]) }
-            + (0..<4).map { saturatedWord(right[2 * $0] + right[2 * $0 + 1]) }
-        return packWords(sums)
+        func combine(_ words: [Int32], _ index: Int) -> Int32 {
+            let value = subtract ? words[2 * index] - words[2 * index + 1] : words[2 * index] + words[2 * index + 1]
+            return saturated ? saturatedWord(value) : value
+        }
+        return packWords((0..<4).map { combine(left, $0) } + (0..<4).map { combine(right, $0) })
     }
 
     /// **`PMADDUBSW`** : chaque octet de la destination, **sans signe**, par
