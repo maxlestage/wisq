@@ -20,6 +20,9 @@ public actor VNCSession: RemoteSession {
     private var stream: (any ByteStream)?
     private var pump: Task<Void, Never>?
     private var desktopName = ""
+    /// What `performVersionHandshake` agreed with the server; the security
+    /// handshake differs between the three.
+    private var version = RFB.Version.v3_8
     /// Created on connect and thrown away on disconnect: a zlib dictionary from a
     /// previous session would decode to garbage.
     private var streams: RFBStreams?
@@ -128,16 +131,16 @@ public actor VNCSession: RemoteSession {
 
     private func performVersionHandshake(_ stream: any ByteStream) async throws {
         let greeting = try await stream.readLatin1(count: 12)
-        guard greeting.hasPrefix("RFB ") else {
+        guard let agreed = RFB.Version.negotiate(greeting) else {
             throw WisqError.handshakeFailed("réponse inattendue de l'hôte (\(greeting.debugDescription))")
         }
-        // Every server built in the last twenty years speaks 3.8; older ones accept
-        // being asked for it and downgrade the security list themselves.
-        try await stream.write(Data("RFB 003.008\n".utf8))
+        version = agreed
+        try await stream.write(Data(agreed.reply.utf8))
     }
 
     private func performSecurityHandshake(_ stream: any ByteStream) async throws {
         continuation.yield(.authenticating)
+        if version == .v3_3 { return try await performImposedSecurity(stream) }
 
         let count = Int(try await stream.readUInt8())
         guard count > 0 else {
@@ -170,6 +173,11 @@ public actor VNCSession: RemoteSession {
             let response = VNCAuth.response(challenge: challenge, password: configuration.password ?? "")
             try await stream.write(response)
         }
+        // 3.7 sends a result only after an authentication, and never a reason.
+        if version == .v3_7 {
+            if chosen == .vncAuth { try await requireResultWithoutReason(stream) }
+            return
+        }
 
         let result = try await stream.readUInt32()
         guard result == 0 else {
@@ -179,6 +187,39 @@ public actor VNCSession: RemoteSession {
             }
             let reason = try await stream.readLatin1(count: length)
             throw WisqError.authenticationFailed(reason.isEmpty ? "mot de passe refusé" : reason)
+        }
+    }
+
+    /// **RFB 3.3: the server imposes the security type**, as a four-byte word.
+    /// Zero is a refusal followed by its reason; None is followed by nothing;
+    /// VNC authentication by its challenge, then a result that carries no
+    /// reason.
+    private func performImposedSecurity(_ stream: any ByteStream) async throws {
+        let imposed = try await stream.readUInt32()
+        switch imposed {
+        case UInt32(RFB.SecurityType.invalid.rawValue):
+            let length = Int(try await stream.readUInt32())
+            guard length <= RFBLimits.maximumTextBytes else {
+                throw WisqError.handshakeFailed("l'hôte a refusé la connexion")
+            }
+            let reason = try await stream.readLatin1(count: length)
+            throw WisqError.handshakeFailed(reason.isEmpty ? "l'hôte a refusé la connexion" : reason)
+        case UInt32(RFB.SecurityType.none.rawValue):
+            return
+        case UInt32(RFB.SecurityType.vncAuth.rawValue):
+            guard configuration.password?.isEmpty == false else { throw WisqError.authenticationRequired }
+            let challenge = try await stream.read(exactly: 16)
+            try await stream.write(VNCAuth.response(challenge: challenge, password: configuration.password ?? ""))
+            try await requireResultWithoutReason(stream)
+        default:
+            throw WisqError.handshakeFailed("aucune méthode d'authentification commune")
+        }
+    }
+
+    /// The SecurityResult of 3.3 and 3.7, which a failure does not explain.
+    private func requireResultWithoutReason(_ stream: any ByteStream) async throws {
+        guard try await stream.readUInt32() == 0 else {
+            throw WisqError.authenticationFailed("mot de passe refusé")
         }
     }
 

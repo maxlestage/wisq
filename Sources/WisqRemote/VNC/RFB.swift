@@ -4,6 +4,42 @@ import WisqNet
 
 /// Wire constants for RFB 3.8 (RFC 6143).
 public enum RFB {
+    /// **The protocol version this client answers with**, from the server's
+    /// twelve-byte greeting.
+    ///
+    /// RFC 6143 §7.1.1: the client replies with the highest version it
+    /// supports that does not exceed the server's. This client used to answer
+    /// 3.8 whatever it was offered, on the belief that older servers
+    /// downgrade on their own; they do not. A 3.3 server imposes its security
+    /// type as a four-byte word rather than offering a list, and a 3.7 server
+    /// sends no result after None. Answering 3.8 to either desynchronised the
+    /// stream on the very next read.
+    ///
+    /// Minors between 3.3 and 3.7 are 3.3 by the RFC's own rule, and anything
+    /// above 3.8 — Apple's 3.889 among them — is answered 3.8.
+    public enum Version: Int, Sendable, Equatable {
+        case v3_3 = 3, v3_7 = 7, v3_8 = 8
+
+        /// The version to speak, or nil when the greeting is not RFB 3.x.
+        public static func negotiate(_ greeting: String) -> Version? {
+            let bytes = Array(greeting.utf8)
+            guard bytes.count == 12, greeting.hasPrefix("RFB "), bytes[7] == UInt8(ascii: "."),
+                  bytes[11] == UInt8(ascii: "\n"),
+                  let major = Int(String(decoding: bytes[4..<7], as: UTF8.self)),
+                  let minor = Int(String(decoding: bytes[8..<11], as: UTF8.self))
+            else { return nil }
+            if major > 3 { return .v3_8 }
+            guard major == 3 else { return nil }
+            if minor >= 8 { return .v3_8 }
+            return minor == 7 ? .v3_7 : .v3_3
+        }
+
+        /// The twelve bytes the client sends back.
+        public var reply: String {
+            "RFB 003.00\(rawValue)\n"
+        }
+    }
+
     public enum SecurityType: UInt8 {
         case invalid = 0
         case none = 1
