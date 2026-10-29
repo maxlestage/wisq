@@ -7,8 +7,8 @@ import Foundation
 // où il touche aux registres vectoriels — `vmovdqa`, `vpxor`, `vaddsd` —, même
 // sur cent vingt-huit bits. Ce sont les opérations de SSE, à deux différences
 // près : un opérande de plus, `vvvv`, qui sert de première source sans être
-// écrasé ; et le haut du registre YMM de destination remis à zéro, qui
-// n'existe pas encore ici.
+// écrasé ; et le haut du registre YMM de destination remis à zéro
+// (`upperVectors`).
 //
 // **Une seule exécution, pas deux.** Plutôt que de récrire chaque opération,
 // la forme VEX est traduite en sa forme héritée : le préfixe implicite (`pp`)
@@ -91,17 +91,61 @@ extension X86Core {
         }
     }
 
-    /// Une forme VEX.128 de SSE, ou le refus.
+    /// Le registre XMM qu'une forme à deux opérandes écrit, ou `nil` quand
+    /// elle écrit un registre général, la mémoire ou les seuls drapeaux.
+    static func vexTwoOperandTarget(_ instruction: X86Instruction, _ opcode: UInt8, register: Bool) -> Int? {
+        let reg = Int(instruction.regField)
+        let rm = register ? Int(instruction.rmField) : nil
+        switch instruction.map {
+        case .twoByte:
+            switch opcode {
+            // Les rangements : vers la mémoire, ou vers le registre de `r/m`.
+            case 0x11, 0x29, 0x7F, 0xD6: return rm
+            case 0x13, 0x17, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x50, 0xC5, 0xD7, 0xE7, 0xF7: return nil
+            // `vmovq xmm, xmm/m64` sous F3 ; `vmovd`/`vmovq` vers un registre
+            // général ou la mémoire sous 66.
+            case 0x7E: return instruction.vexImpliedPrefix == 2 ? reg : nil
+            default: return reg
+            }
+        case .threeByte38:
+            return opcode == 0x17 ? nil : reg  // `vptest` ne pose que les drapeaux
+        case .threeByte3A:
+            switch opcode {
+            case 0x14...0x17, 0x61, 0x63: return nil  // extractions, et les `…stri`
+            case 0x60, 0x62: return 0  // les `…strm` écrivent xmm0
+            default: return reg
+            }
+        default:
+            return reg
+        }
+    }
+
+    /// Une forme VEX.128 de SSE, ou le refus. **Le haut du registre YMM
+    /// qu'elle écrit est remis à zéro** — la seconde différence avec SSE, qui
+    /// le laisse.
     mutating func vex128Instruction(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         let modrm = instruction.modrm ?? 0
         let register = modrm >> 6 == 0b11
         guard let form = Self.vexForm(instruction.map, opcode, instruction.vexImpliedPrefix, register: register)
         else { throw Self.vectorRefusal() }
+        try executeVEX128(instruction, form, modrm: modrm, register: register)
+        switch form {
+        case .zeroUpper: for index in upperVectors.indices { upperVectors[index] = 0 }
+        case .twoOperands:
+            if let target = Self.vexTwoOperandTarget(instruction, opcode, register: register) {
+                clearUpperVector(target)
+            }
+        case .shiftByImmediate: clearUpperVector(instruction.vexRegister)
+        case .threeOperands, .threeOperandsGeneral: clearUpperVector(Int(instruction.regField))
+        }
+    }
+
+    private mutating func executeVEX128(_ instruction: X86Instruction, _ form: VEXForm, modrm: UInt8,
+                                        register: Bool) throws {
         let destination = Int(instruction.regField)
         let source = instruction.vexRegister
         switch form {
         case .zeroUpper:
-            // Le haut des registres YMM n'existe pas encore : rien à effacer.
             return
         case .twoOperands:
             // `vvvv` sans emploi doit valoir 1111 ; autre chose est #UD.
@@ -152,13 +196,14 @@ extension X86Core {
         }
     }
 
-    /// VEX.L à 1 : 256 bits. Seul `VZEROALL` est exécuté — sans haut des
-    /// registres YMM, il efface les seize registres XMM.
+    /// VEX.L à 1 : 256 bits. Seul `VZEROALL` est exécuté : il efface les
+    /// seize registres YMM entiers.
     mutating func wideVEXInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         guard instruction.map == .twoByte, opcode == 0x77, instruction.vexImpliedPrefix == 0 else {
             throw Self.vectorRefusal()
         }
         for index in vectors.indices { vectors[index] = 0 }
+        for index in upperVectors.indices { upperVectors[index] = 0 }
     }
 
     /// La forme héritée d'une forme VEX : le préfixe implicite remis en

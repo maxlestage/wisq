@@ -51,6 +51,12 @@ enum Snapshot {
     /// entière derrière la marque.
     static let secondDiskSection: UInt64 = 0x6264_765F_5153_4957  // « WISQ_vdb »
 
+    /// La marque de l'état étendu de la machine PC — XCR0 et le haut des
+    /// seize registres YMM —, posée juste après la pile x87, avant le disque.
+    /// Même raisonnement que pour celle-ci : un instantané d'avant passe de
+    /// la pile au disque, et le disque ne commence pas par ces huit octets.
+    static let extendedStateSection: UInt64 = 0x6D6D_795F_5153_4957  // « WISQ_ymm »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
