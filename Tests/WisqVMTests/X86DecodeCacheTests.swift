@@ -45,7 +45,7 @@ final class X86DecodeCacheTests: XCTestCase {
         core.registers[1] = 1000
         _ = try core.run(budget: 10_000)
         XCTAssertEqual(core.registers[0], 1000)
-        XCTAssertGreaterThanOrEqual(core.decodeCache.hits, 2995)
+        XCTAssertGreaterThanOrEqual(core.decodeCacheHits, 2995)
         XCTAssertLessThanOrEqual(core.decodeCache.misses, 4)
     }
 

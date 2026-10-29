@@ -64,12 +64,18 @@ final class X86DecodeCache: @unchecked Sendable {
 
     private let entries: UnsafeMutablePointer<Entry>
 
-    /// Combien de lectures ont trouvé leur instruction, et combien ont dû la
-    /// décoder : ce qui dit si le cache sert, plutôt que de le supposer.
-    var hits: UInt64 { counts[0] }
+    /// Combien de lectures ont dû décoder leur instruction : ce qui dit si le
+    /// cache sert, plutôt que de le supposer. Celles qui l'ont trouvée ne se
+    /// comptent plus ici — voir `X86Core.decodeCacheHits`.
+    ///
+    /// **Le compte des trouvailles est sorti du chemin chaud.** C'était une
+    /// écriture en mémoire à chaque instruction de l'invité, deux instructions
+    /// de l'hôte sur la vingtaine que coûte une lecture du cache, pour un
+    /// chiffre qui ne sert qu'à un rapport. Les échecs, eux, se comptent sur le
+    /// chemin froid, qui décode de toute façon.
     var misses: UInt64 { counts[1] }
 
-    /// **Les deux compteurs derrière un pointeur**, et pas en `var` de la
+    /// **Les compteurs derrière un pointeur**, et pas en `var` de la
     /// classe. Une propriété modifiable d'une classe fait vérifier chaque
     /// accès par le contrôle d'exclusivité de Swift, un appel à
     /// `swift_beginAccess` à chaque instruction. Sur le premier milliard
@@ -142,7 +148,6 @@ final class X86DecodeCache: @unchecked Sendable {
             counts[1] &+= 1
             return nil
         }
-        counts[0] &+= 1
         return entry
     }
 
