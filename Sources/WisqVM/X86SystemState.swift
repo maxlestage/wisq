@@ -118,11 +118,11 @@ public enum X86CPUID {
     /// octets, complétés de zéros.
     public static let brand = "wisq x86-64 (comme le qemu64 de QEMU)"
 
-    /// La plus grande feuille ordinaire que ce processeur connaît : 7, celle
-    /// des extensions où BMI1 et BMI2 s'annoncent, et la copie rapide (voir
-    /// `fastStringsEBX`). Les feuilles 2 à 6 rendent des zéros, comme toute
-    /// feuille que ce cœur ne décrit pas.
-    public static let highestBasicLeaf: UInt32 = 7
+    /// La plus grande feuille ordinaire que ce processeur connaît : 0xD,
+    /// celle de l'état étendu (`XSAVE`). La feuille 7 annonce BMI1 et BMI2,
+    /// et la copie rapide (voir `fastStringsEBX`) ; les autres, de 2 à 0xC,
+    /// rendent des zéros, comme toute feuille que ce cœur ne décrit pas.
+    public static let highestBasicLeaf: UInt32 = 0xD
 
     /// **La copie rapide, annoncée parce qu'elle est tenue.** Feuille 7,
     /// sous-feuille 0 : ERMS (EBX, bit 9) et FSRM (EDX, bit 4) ; sous-feuille
@@ -188,12 +188,18 @@ public enum X86CPUID {
     ///
     /// **Et MOVBE (22)**, de x86-64-v3 : un `mov` qui retourne ses octets
     /// (`X86BMI.swift`, `Tests/Fixtures/x86-v3-gpr-oracle.tsv`).
+    ///
+    /// **Et XSAVE (26)** : `XSAVE`, `XRSTOR`, `XGETBV`, `XSETBV`, sur x87,
+    /// SSE et le haut des YMM (`X86XSAVE.swift`). OSXSAVE (27) n'est pas
+    /// ici : il recopie CR4.OSXSAVE, et `answer` le pose quand il le faut.
     public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 22)
-        | (1 << 23)
+        | (1 << 23) | (1 << 26)
+    /// CPUID.1:ECX.OSXSAVE.
+    public static let osxsaveBit: UInt32 = 1 << 27
     /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
     /// n'emploie que les registres généraux, et que le noyau de RHEL 10
-    /// emploie sans demander. AVX2 (5) n'y est pas : ce cœur n'a pas de
-    /// registres YMM.
+    /// emploie sans demander. AVX2 (5) n'y est pas : les registres YMM
+    /// existent (`X86XSAVE.swift`), aucune opération sur 256 bits encore.
     public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 8)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
@@ -202,8 +208,11 @@ public enum X86CPUID {
     /// long, que x86-64-v2 exige aussi ; et ABM (5), qui annonce LZCNT.
     public static let extendedFeaturesECX: UInt32 = 1 | (1 << 5)
 
-    /// La réponse aux quatre registres, pour une feuille donnée.
-    public static func answer(leaf: UInt32, subleaf: UInt32) -> (UInt32, UInt32, UInt32, UInt32) {
+    /// La réponse aux quatre registres, pour une feuille donnée. Deux
+    /// feuilles dépendent de l'état : la 1, dont OSXSAVE recopie CR4, et la
+    /// 0xD, dont EBX dit la taille de la zone pour ce qu'XCR0 active.
+    public static func answer(leaf: UInt32, subleaf: UInt32, xcr0: UInt64 = 1, osxsave: Bool = false)
+        -> (UInt32, UInt32, UInt32, UInt32) {
         let name = Array(vendor.utf8)
         func word(_ start: Int) -> UInt32 {
             (0..<4).reduce(UInt32(0)) { $0 | UInt32(name[start + $1]) << (8 * UInt32($1)) }
@@ -214,13 +223,29 @@ public enum X86CPUID {
         case 1:
             // Famille 15 (0xF), modèle 107 (0x6B : 0xB dans le champ de base,
             // 6 dans l'étendu), pas 1 : ce que répond le `qemu64` de QEMU.
-            return (0x0006_0FB1, 0, featuresECX, features)
+            return (0x0006_0FB1, 0, featuresECX | (osxsave ? osxsaveBit : 0), features)
         case 7:
             // EAX de la sous-feuille 0 : la plus grande sous-feuille, la 1.
             switch subleaf {
             case 0: return (1, extendedLeaf7EBX | fastStringsEBX, 0, fastStringsEDX)
             case 1: return (fastStringsSubleafOneEAX, 0, 0, 0)
             default: return (0, 0, 0, 0)
+            }
+        case 0xD:
+            switch subleaf {
+            case 0:
+                // Les composants possibles, la taille pour ceux d'XCR0, la
+                // plus grande taille ; rien au-dessus du bit 31.
+                return (UInt32(X86Core.supportedExtendedState), X86Core.extendedStateSize(xcr0),
+                        X86Core.extendedStateSize(X86Core.supportedExtendedState), 0)
+            case 2:
+                // Le haut des YMM : 256 octets, à l'octet 576 de la zone.
+                return (UInt32(X86Core.ExtendedStateArea.upperVectorsSize),
+                        UInt32(X86Core.ExtendedStateArea.upperVectors), 0, 0)
+            default:
+                // La sous-feuille 1 dit XSAVEOPT, XSAVEC, XGETBV1, XSAVES :
+                // aucun.
+                return (0, 0, 0, 0)
             }
         case 0x8000_0000:
             return (highestExtendedLeaf, 0, 0, 0)
