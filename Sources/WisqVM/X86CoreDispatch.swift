@@ -800,6 +800,11 @@ extension X86Core {
             flags &= ~Flag.arithmetic
             set(Flag.zero, source == 0)
 
+        case 0xBC where instruction.hasPrefix(0xF3), 0xBD where instruction.hasPrefix(0xF3):
+            // TZCNT et LZCNT : BSF et BSR sous F3, mais une source nulle rend
+            // la largeur, et CF le dit. Voir `X86BMI.swift`.
+            try countZeros(instruction, leading: opcode == 0xBD)
+
         case 0xBC, 0xBD:  // BSF et BSR : le premier bit à un, par un bout ou l'autre
             let size = Self.operandSize(instruction, byteForm: false)
             let fields = try decodeFields(instruction)
