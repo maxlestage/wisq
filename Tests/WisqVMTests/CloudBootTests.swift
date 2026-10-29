@@ -331,7 +331,9 @@ final class CloudBootTests: XCTestCase {
         })) { error in
             XCTAssertEqual(error as? CloudBoot.Failure, .noKernel)
         }
-        XCTAssertThrowsError(try boot(kind: .efiSystem)) { error in
+        // Une partition d'échange, pas EFI : celle-ci est maintenant lue pour
+        // une entrée configurée — Gentoo y range son noyau (`FatVolumeTests`).
+        XCTAssertThrowsError(try boot(kind: .swap)) { error in
             XCTAssertEqual(error as? CloudBoot.Failure, .noLinuxPartition)
         }
     }

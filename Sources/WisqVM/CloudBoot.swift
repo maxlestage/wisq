@@ -90,11 +90,19 @@ public struct CloudBoot: Equatable, Sendable {
                      open: (PartitionTable.Partition) throws -> any LinuxVolume) throws -> CloudBoot {
         if let rootHash, !RootPassword.isHash(rootHash) { throw Failure.unusablePassword }
         var readable = false
-        for partition in table.linuxCandidates {
+        // **Puis les partitions EFI**, et seulement pour une entrée
+        // configurée : Gentoo monte la sienne sur `/boot`, et son
+        // `grub/grub.cfg` y nomme un noyau rangé à côté. Après les
+        // partitions Linux, pour qu'une image qui a son `/boot` ailleurs
+        // n'aille pas chercher le `grub.cfg` d'amorce de sa partition EFI.
+        let efi = table.partitions.filter { $0.kind == .efiSystem }
+        for partition in table.linuxCandidates + efi {
             // Une partition qu'on ne sait pas lire (xfs, LVM) n'arrête pas la
             // recherche : une autre, un `/boot` séparé, peut porter le noyau.
             guard let volume = try? open(partition) else { continue }
-            readable = true
+            // Une partition EFI lisible ne fait pas une partition Linux : le
+            // refus d'une image en LVM reste celui qui le dit.
+            if partition.kind != .efiSystem { readable = true }
             let name = "vda\(partition.number)"
             if let (entry, origin) = configuredEntry(in: volume) {
                 let legacy = usesLegacyConsole(table, open)
@@ -108,7 +116,7 @@ public struct CloudBoot: Equatable, Sendable {
                                  commandLine: commandLine(entry.options, rootHash: rootHash, legacyConsole: legacy),
                                  origin: "\(origin) de \(name)")
             }
-            if let (kernel, initrd) = unconfiguredKernel(in: volume) {
+            if partition.kind != .efiSystem, let (kernel, initrd) = unconfiguredKernel(in: volume) {
                 let root = partition.uniqueID.isEmpty ? "/dev/\(name)" : "PARTUUID=\(partition.uniqueID)"
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
