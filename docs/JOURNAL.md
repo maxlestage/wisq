@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — La case vide du cache se refuse par sa longueur
+
+Chaque lecture du cache de décodage testait d'abord si la case était vide,
+reconnue à son masque nul : trois instructions de l'hôte par instruction de
+l'invité, pour un cas qui n'arrive qu'au tout début d'une machine. Une case
+vide porte maintenant une instruction d'un octet de plus que la plus longue
+qui existe (`X86DecodeCache.emptySlot`). Ses masques nuls laissent passer
+n'importe quels octets, mais sa longueur ne tient jamais dans ce qui reste
+lisible, et c'est la garde de longueur, déjà là, qui la refuse.
+
+Callgrind, 100 millions d'instructions d'Alpine : 22,34 → 22,04 milliards
+d'instructions de l'hôte (−1,3 %). Un test retiré, rien d'échangé contre du
+calcul.
+
+Un test : une case vide ne rend rien, à cent dix places, sous trois
+remplissages de la mémoire et pour chaque longueur lisible de 1 à 15. Deux
+sabordages, deux chutes : la case vide longue de 15, puis de 1. Compte
+publié : 2984.
+
 ## 2026-10-29 — Le cache de décodage ne compte plus ses trouvailles
 
 Le cache de décodage pèse environ un dixième des instructions de l'hôte, une
