@@ -199,8 +199,9 @@ public final class SessionModel {
     }
 
     public func type(_ text: String) {
-        for scalar in text.unicodeScalars {
-            let keysym = scalar == "\n" ? Keysym.enter : Keysym.character(scalar)
+        // Un « \r\n » de Windows est un seul retour à la ligne, pas deux.
+        for scalar in text.replacingOccurrences(of: "\r\n", with: "\n").unicodeScalars {
+            guard let keysym = Keysym.typed(scalar) else { continue }
             press(keysym)
         }
     }
