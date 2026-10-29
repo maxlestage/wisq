@@ -56,6 +56,10 @@ public struct CloudBoot: Equatable, Sendable {
     /// `/boot` est dans la racine, les deux suivants quand il est séparé.
     static let grubPaths = ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg", "/grub/grub.cfg", "/grub2/grub.cfg"]
     static let blsDirectories = ["/boot/loader/entries", "/loader/entries"]
+    /// Ce qu'écrit `extlinux`, le chargeur qu'Alpine installe par défaut :
+    /// dans la racine, ou à la racine d'une partition `/boot` séparée.
+    static let extlinuxPaths = ["/boot/extlinux.conf", "/extlinux.conf",
+                                "/boot/extlinux/extlinux.conf", "/extlinux/extlinux.conf"]
 
     /// Cherche de quoi démarrer dans une image : sa table, puis chacune de
     /// ses partitions Linux dans l'ordre de `linuxCandidates`.
@@ -202,6 +206,14 @@ public struct CloudBoot: Equatable, Sendable {
         } catch {
             return .failure(.unreadable(error.localizedDescription))
         }
+        return write(found, into: folder, ceiling: ceiling)
+    }
+
+    /// Écrit ce qui a été trouvé dans `folder`, sous les noms fixes : la
+    /// moitié de `unpack` qui ne dépend pas d'où vient le disque. Le système
+    /// installé sur le disque d'une machine passe par là aussi
+    /// (`InstalledSystem.unpack`).
+    static func write(_ found: CloudBoot, into folder: URL, ceiling: UInt64) -> Result<Unpacked, Refusal> {
         guard UInt64(found.kernel.count) <= ceiling, UInt64(found.initrd?.count ?? 0) <= ceiling else {
             return .failure(.tooLarge)
         }
@@ -276,7 +288,80 @@ public struct CloudBoot: Equatable, Sendable {
                 return (entry, name)
             }
         }
+        for path in extlinuxPaths {
+            let directory = (path as NSString).deletingLastPathComponent
+            guard let bytes = try? volume.contents(of: path),
+                  let entry = extlinuxEntry(String(decoding: bytes, as: UTF8.self), in: directory),
+                  volume.exists(entry.kernel)
+            else { continue }
+            return (entry, (path as NSString).lastPathComponent)
+        }
         return nil
+    }
+
+    /// **L'entrée qu'extlinux démarre** : celle que nomme `DEFAULT`, sinon
+    /// celle marquée `MENU DEFAULT`, sinon la première. Les mots-clés ne
+    /// tiennent pas compte de la casse ; `LINUX` et `KERNEL` disent la même
+    /// chose, et l'initramfs peut venir d'une ligne `INITRD` (des chemins
+    /// séparés par des virgules) ou d'un `initrd=` dans `APPEND`.
+    ///
+    /// **Un chemin relatif l'est au dossier du fichier** : Alpine écrit
+    /// `LINUX vmlinuz-virt` dans un `/boot/extlinux.conf`, et c'est
+    /// `/boot/vmlinuz-virt` qu'il démarre.
+    static func extlinuxEntry(_ text: String, in directory: String) -> Entry? {
+        struct Label {
+            var name: String
+            var kernel: String?
+            var initrds: [String] = []
+            var options: [String] = []
+            var markedDefault = false
+        }
+        func resolved(_ raw: String) -> String {
+            raw.hasPrefix("/") ? raw : (directory == "/" ? "" : directory) + "/" + raw
+        }
+        var named: String?
+        var labels: [Label] = []
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.hasPrefix("#") else { continue }
+            let words = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            guard let keyword = words.first?.uppercased() else { continue }
+            let rest = Array(words.dropFirst())
+            switch keyword {
+            case "DEFAULT":
+                named = rest.first
+            case "LABEL":
+                labels.append(Label(name: rest.first ?? ""))
+            case "LINUX", "KERNEL":
+                if !labels.isEmpty, let file = rest.first { labels[labels.count - 1].kernel = resolved(file) }
+            case "INITRD":
+                if !labels.isEmpty, let files = rest.first {
+                    labels[labels.count - 1].initrds = files.split(separator: ",").map { resolved(String($0)) }
+                }
+            case "APPEND":
+                guard !labels.isEmpty else { continue }
+                for word in rest {
+                    if word.hasPrefix("initrd=") {
+                        labels[labels.count - 1].initrds = word.dropFirst("initrd=".count)
+                            .split(separator: ",").map { resolved(String($0)) }
+                    } else {
+                        labels[labels.count - 1].options.append(word)
+                    }
+                }
+            case "MENU":
+                if !labels.isEmpty, rest.first?.uppercased() == "DEFAULT" {
+                    labels[labels.count - 1].markedDefault = true
+                }
+            default:
+                break
+            }
+        }
+        let bootable = labels.filter { $0.kernel != nil }
+        let chosen = bootable.first(where: { $0.name == named })
+            ?? bootable.first(where: \.markedDefault)
+            ?? bootable.first
+        guard let chosen, let kernel = chosen.kernel else { return nil }
+        return Entry(kernel: kernel, initrds: chosen.initrds, options: chosen.options)
     }
 
     /// La première entrée de premier niveau d'un `grub.cfg` : celle que GRUB
