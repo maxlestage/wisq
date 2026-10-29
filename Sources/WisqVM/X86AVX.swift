@@ -140,8 +140,8 @@ extension X86Core {
         }
     }
 
-    private mutating func executeVEX128(_ instruction: X86Instruction, _ form: VEXForm, modrm: UInt8,
-                                        register: Bool) throws {
+    mutating func executeVEX128(_ instruction: X86Instruction, _ form: VEXForm, modrm: UInt8,
+                                register: Bool) throws {
         let destination = Int(instruction.regField)
         let source = instruction.vexRegister
         switch form {
@@ -194,16 +194,6 @@ extension X86Core {
                 throw error
             }
         }
-    }
-
-    /// VEX.L à 1 : 256 bits. Seul `VZEROALL` est exécuté : il efface les
-    /// seize registres YMM entiers.
-    mutating func wideVEXInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws {
-        guard instruction.map == .twoByte, opcode == 0x77, instruction.vexImpliedPrefix == 0 else {
-            throw Self.vectorRefusal()
-        }
-        for index in vectors.indices { vectors[index] = 0 }
-        for index in upperVectors.indices { upperVectors[index] = 0 }
     }
 
     /// La forme héritée d'une forme VEX : le préfixe implicite remis en
