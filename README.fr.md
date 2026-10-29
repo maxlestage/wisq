@@ -15,7 +15,9 @@ wisq se place face à UTM sur deux fronts à la fois :
   RISC-V en moins d'une seconde, shell compris. wisq lit le fichier qu'on lui
   donne et choisit le cœur tout seul : vingt familles d'architectures
   reconnues, deux exécutées. Interprété, donc sans JIT : conforme aux règles
-  d'iOS, là où UTM SE vit dans une zone grise.
+  d'iOS, là où UTM SE vit dans une zone grise. **Linux uniquement** : sur le
+  téléphone, wisq lance Linux et rien d'autre — ni Windows, ni macOS, ni BSD.
+  Ceux-là s'ouvrent à distance, depuis l'ordinateur qui les fait tourner.
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
