@@ -80,19 +80,12 @@ final class X86DecodeCache: @unchecked Sendable {
     init() {
         counts = .allocate(capacity: 2)
         counts.initialize(repeating: 0, count: 2)
-        // **Une case vide tient une instruction de seize octets**, qui
-        // n'existe pas : une lecture s'en autorise quinze au plus, si bien que
-        // le test de longueur la refuse toujours. Ses masques nuls laissent
-        // passer la comparaison des octets, et c'est lui qui tranche — le
-        // test « case vide » qui le précédait à chaque lecture n'a plus lieu
-        // d'être.
-        let filler = X86Instruction(
-            prefixMask: 0, rex: nil, vexBytes: (0, 0, 0), vexCount: 0, map: .oneByte, opcode: 0x90,
-            modrm: nil, sib: nil, displacementBytes: 0, displacement: 0, immediateBytes: 0,
-            immediate: 0, length: X86Instruction.maximumLength + 1)
+        // Une instruction quelconque, jamais rendue : un masque nul dit que
+        // la case est vide — toute instruction a au moins un octet.
+        let filler = try? X86Decoder.decode([0x90])
         entries = .allocate(capacity: Self.slots)
         entries.initialize(repeating: Entry(low: 0, high: 0, lowMask: 0, highMask: 0,
-                                            instruction: filler),
+                                            instruction: filler!),
                            count: Self.slots)
     }
 
@@ -104,9 +97,8 @@ final class X86DecodeCache: @unchecked Sendable {
 
     /// L'instruction qui commence à `start`, si la case en tient une, si ses
     /// octets sont ceux qui sont là, et si elle tient dans les `available`
-    /// octets que la lecture s'autorise. Les seize octets lus peuvent passer
-    /// la fin de la mémoire : `X86Memory` garde une marge derrière elle, et
-    /// les masques n'en retiennent que ce que l'instruction occupe.
+    /// octets que la lecture s'autorise. Seize octets doivent tenir dans la
+    /// mémoire : au bord, on décode comme avant.
     ///
     /// **La borne n'est pas redondante.** Sans pagination, une instruction se
     /// lit sur quinze octets contigus, au travers d'une limite de page ; avec,
@@ -114,9 +106,9 @@ final class X86DecodeCache: @unchecked Sendable {
     /// voisine. Une entrée remplie avant que le noyau n'active la pagination
     /// serait sinon rendue telle quelle, avec ses octets d'une autre trame.
     @inline(__always)
-    func lookup(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int,
+    func lookup(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int, size: Int,
                 available: Int) -> X86Instruction? {
-        lookupEntry(bytes, at: start, available: available)?.pointee.instruction
+        lookupEntry(bytes, at: start, size: size, available: available)?.pointee.instruction
     }
 
     /// La même recherche, qui rend **l'entrée** plutôt qu'une copie de son
@@ -126,10 +118,17 @@ final class X86DecodeCache: @unchecked Sendable {
     /// optionnel puis dans la variable de `run`. L'entrée ne bouge pas pendant
     /// l'exécution : seul `run` range, et seulement avant d'exécuter.
     @inline(__always)
-    func lookupEntry(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int,
+    func lookupEntry(_ bytes: UnsafeMutablePointer<UInt8>, at start: Int, size: Int,
                      available: Int) -> UnsafeMutablePointer<Entry>? {
+        // `&-` : la taille de la mémoire n'est jamais négative, et une
+        // soustraction vérifiée coûtait une branche à chaque instruction.
+        guard start <= size &- 16 else { return nil }
         let slot = start & (Self.slots - 1)
         let entry = entries + slot
+        guard entry.pointee.lowMask != 0 else {
+            counts[1] &+= 1
+            return nil
+        }
         let raw = UnsafeRawPointer(bytes + start)
         let first = raw.loadUnaligned(as: UInt64.self)
         let second = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self)
@@ -150,7 +149,8 @@ final class X86DecodeCache: @unchecked Sendable {
     /// Range une instruction tout juste décodée à `start`.
     @inline(__always)
     func store(_ instruction: X86Instruction, _ bytes: UnsafeMutablePointer<UInt8>,
-               at start: Int) {
+               at start: Int, size: Int) {
+        guard start <= size &- 16 else { return }
         let slot = start & (Self.slots - 1)
         let length = instruction.length
         let raw = UnsafeRawPointer(bytes + start)

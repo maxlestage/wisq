@@ -134,29 +134,23 @@ final class X86DecodeCacheTests: XCTestCase {
         try memory.load(jump, at: 0x100)
         let cache = X86DecodeCache()
         let decoded = try X86Decoder.decode(jump)
-        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, available: 15),
+        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, size: memory.size, available: 15),
                      "rien encore")
-        cache.store(decoded, memory.bytes, at: 0x100)
-        XCTAssertEqual(cache.lookup(memory.bytes, at: 0x100, available: 15),
+        cache.store(decoded, memory.bytes, at: 0x100, size: memory.size)
+        XCTAssertEqual(cache.lookup(memory.bytes, at: 0x100, size: memory.size, available: 15),
                        decoded)
-        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, available: 4),
+        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, size: memory.size, available: 4),
                      "six octets ne tiennent pas dans les quatre qui restent de la page")
         // L'octet qui suit l'instruction n'en fait pas partie : le changer ne
         // change rien.
         memory.bytes[0x106] = 0xCC
-        XCTAssertEqual(cache.lookup(memory.bytes, at: 0x100, available: 15),
+        XCTAssertEqual(cache.lookup(memory.bytes, at: 0x100, size: memory.size, available: 15),
                        decoded)
         // Le dernier octet du déplacement, si.
         memory.bytes[0x105] = 0x41
-        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, available: 15))
-        // Au bord de la mémoire : la lecture de seize octets passe sur la
-        // marge que `X86Memory` garde derrière elle, et l'instruction qui
-        // finit au dernier octet est servie comme les autres — tant que ses
-        // octets sont les siens.
-        try memory.load(jump, at: 0x1000 - 6)
-        cache.store(decoded, memory.bytes, at: 0x1000 - 6)
-        XCTAssertEqual(cache.lookup(memory.bytes, at: 0x1000 - 6, available: 6), decoded)
-        memory.bytes[0x1000 - 1] = 0x41
-        XCTAssertNil(cache.lookup(memory.bytes, at: 0x1000 - 6, available: 6))
+        XCTAssertNil(cache.lookup(memory.bytes, at: 0x100, size: memory.size, available: 15))
+        // Au bord de la mémoire, pas de lecture de seize octets : on décode.
+        cache.store(decoded, memory.bytes, at: 0x1000 - 8, size: memory.size)
+        XCTAssertNil(cache.lookup(memory.bytes, at: 0x1000 - 8, size: memory.size, available: 8))
     }
 }
