@@ -244,9 +244,18 @@ public struct X86BootLoader {
         // croit libre, et la page zéro est le seul endroit où on peut lui dire
         // que ces octets-là ne le sont pas.
         if let ramdisk = initialRamdisk, !ramdisk.isEmpty {
-            let top = memory.base &+ UInt64(memory.size)
-            let start = (top &- UInt64(ramdisk.count)) & ~UInt64(0xFFF)
-            guard start >= kernelAddress &+ UInt64(reserved) else {
+            // Sous le trou quand il y en a un : l'adresse s'écrit sur trente-deux
+            // bits, et c'est là que Linux le cherche d'abord.
+            let top = memory.ramRanges[0].upperBound
+            // **Un initramfs plus grand que la mémoire est un refus, pas un
+            // accès hors mémoire.** La soustraction circulaire repartait du
+            // haut de l'espace d'adressage, la garde la laissait passer, et
+            // l'écriture levait `outsideMemory(0xffff…)` : « Démarrage
+            // impossible… erreur 2 », sur une machine de 128 Mio et
+            // l'initramfs de 195 Mo de Chimera.
+            let size = UInt64(ramdisk.count)
+            let start = size <= top ? (top &- size) & ~UInt64(0xFFF) : 0
+            guard size <= top, start >= kernelAddress &+ UInt64(reserved) else {
                 throw LoadError.notEnoughMemory(
                     needed: reserved + ramdisk.count, available: memory.size)
             }
@@ -292,9 +301,16 @@ public struct X86BootLoader {
         // peut pas laisser à zéro. Deux entrées suffisent — ce qui est sous le
         // trou du premier mégaoctet, et tout le reste.
         var entries: [(UInt64, UInt64, UInt32)] = [(0, firstHoleStart, e820Usable)]
-        let memoryTop = memory.base &+ UInt64(memory.size)
+        let ranges = memory.ramRanges
+        let memoryTop = ranges[0].upperBound
         if memoryTop > 0x10_0000 {
             entries.append((0x10_0000, memoryTop &- 0x10_0000, e820Usable))
+        }
+        // Et la RAM qui reprend au-dessus de quatre gibioctets : le trou entre
+        // les deux n'est dans aucune entrée, c'est là que Linux pose ses
+        // fenêtres de périphériques.
+        for above in ranges.dropFirst() {
+            entries.append((above.lowerBound, above.upperBound &- above.lowerBound, e820Usable))
         }
         // **Un écran non réservé est de la mémoire que le noyau donnera à
         // quelqu'un d'autre.** L'allocateur ne consulte que cette carte ; sans

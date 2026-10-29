@@ -12,16 +12,55 @@ import Foundation
 /// Les bornes sont vérifiées **une fois**, à l'entrée, et un accès hors de la
 /// mémoire est une faute nommée plutôt qu'un plantage.
 public final class X86Memory: @unchecked Sendable {
-    /// La taille de la mémoire, en octets.
+    /// L'étendue du bloc, en octets : la RAM, plus le trou quand il y en a un
+    /// (voir `pc(ram:)`). La RAM seule est `ram`.
     public let size: Int
     /// Où elle commence dans l'espace d'adressage de l'invité.
     public let base: UInt64
     let bytes: UnsafeMutablePointer<UInt8>
 
-    public init(size: Int, base: UInt64 = 0) {
+    public convenience init(size: Int, base: UInt64 = 0) {
+        self.init(size: size, base: base, hole: 0)
+    }
+
+    /// **Le trou sous quatre gibioctets**, comme sur un vrai PC et chez QEMU :
+    /// la RAM s'arrête à `holeBase`, les périphériques occupent la suite, et
+    /// ce qui reste de RAM reprend à quatre gibioctets.
+    ///
+    /// Sans lui, une machine de plus de trois gibioctets étalait sa RAM sur
+    /// les adresses du disque (0xD000_0000) et de l'écran (0xE000_0000), et
+    /// Linux ne trouvait plus où poser les fenêtres de ses périphériques :
+    /// « Cannot find an available gap in the 32-bit address range », puis un
+    /// processeur bloqué. Mesuré avec Chimera, à six gibioctets.
+    public static let holeBase: UInt64 = 0xC000_0000
+    public static let holeEnd: UInt64 = 1 << 32
+
+    /// La mémoire d'une machine PC de `ram` octets : un bloc plat jusqu'à
+    /// trois gibioctets, le trou au-delà. Le bloc de l'hôte couvre le trou —
+    /// `calloc` ne rend résident que ce qu'on touche, et personne ne le
+    /// touche —, si bien qu'une adresse physique reste un décalage dans le
+    /// bloc, sans calcul.
+    public static func pc(ram: Int) -> X86Memory {
+        guard UInt64(ram) > holeBase else { return X86Memory(size: ram) }
+        let hole = holeEnd - holeBase
+        return X86Memory(size: ram + Int(hole), base: 0, hole: hole)
+    }
+
+    /// La RAM que l'invité reçoit : la taille, moins le trou.
+    public var ram: Int { size - Int(holeSpan) }
+
+    /// Les plages de RAM, dans l'ordre : une sans trou, deux avec.
+    public var ramRanges: [Range<UInt64>] {
+        guard holeSpan != 0 else { return [base..<(base &+ extent)] }
+        return [base..<(base &+ holeLow), (base &+ holeLow &+ holeSpan)..<(base &+ extent)]
+    }
+
+    private init(size: Int, base: UInt64, hole: UInt64) {
         self.size = size
         self.base = base
         extent = UInt64(max(size, 0))
+        holeSpan = hole
+        holeLow = hole == 0 ? extent : Self.holeBase
         // **`calloc`, pas une allocation suivie d'un remplissage.** Pour un
         // bloc de cette taille, le système rend des pages qu'il promet nulles
         // et ne fournit qu'au premier accès : rien à écrire au départ, et la
@@ -39,6 +78,9 @@ public final class X86Memory: @unchecked Sendable {
 
     /// La taille, en `UInt64` une fois pour toutes : la borne du chemin chaud.
     let extent: UInt64
+    /// Le début du trou et sa longueur ; zéro de longueur sans trou.
+    let holeLow: UInt64
+    let holeSpan: UInt64
 
     /// L'octet à cette adresse, ou nil si elle est ailleurs.
     ///
@@ -52,7 +94,12 @@ public final class X86Memory: @unchecked Sendable {
     @inline(__always)
     func offset(_ address: UInt64, _ width: Int) -> Int? {
         let index = address &- base
-        guard index < extent, index &+ UInt64(truncatingIfNeeded: width) <= extent else { return nil }
+        let end = index &+ UInt64(truncatingIfNeeded: width)
+        guard index < extent, end <= extent else { return nil }
+        // Le trou n'est pas de la RAM : ses adresses vont au disque et à
+        // l'écran. Le premier test suffit sans trou, et le chemin chaud n'y
+        // passe guère : la traduction garde un pointeur vers la page.
+        if holeSpan != 0, end > holeLow, index < holeLow &+ holeSpan { return nil }
         return Int(truncatingIfNeeded: index)
     }
 
