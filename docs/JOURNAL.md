@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Ce qui traverse les moitiés d'un YMM
+
+Cinquième tranche de x86-64-v3 : les opérations qui n'existent que sous
+VEX et font passer des données d'une moitié à l'autre — celles que le code
+vectorisé pour x86-64-v3 sème partout (`vpbroadcastd` pour une constante,
+`vinserti128` et `vextracti128`, `vpermq`).
+
+- **Écrites directement** (`X86AVX2.swift`), sur les quatre mots d'un YMM :
+  diffusions (`vpbroadcastb/w/d/q`, `vbroadcastss/sd`, `vbroadcasti128`,
+  `vbroadcastf128`), `vinserti128`/`vinsertf128`,
+  `vextracti128`/`vextractf128`, `vperm2i128`/`vperm2f128`,
+  `vpermq`/`vpermpd`, `vpermd`/`vpermps`, `vpermilps`/`vpermilpd` (par un
+  registre ou par l'immédiat), `vpblendd`, `vblendvps`/`vblendvpd`/
+  `vpblendvb` (le masque dans un quatrième registre), `vpsllv*`/`vpsrlv*`/
+  `vpsravd`, `vpmovsx*`/`vpmovzx*` sur 256 bits. Une forme VEX.128 efface
+  le haut de sa destination, comme les autres.
+- **Restent refusés** : les ramassages (`vpgather*`), `vpmaskmov`, et les
+  conversions qui changent de largeur. AVX n'est toujours pas annoncé.
+
+**Le quinzième corpus**, `scripts/build-x86-avx2-oracle.py` : 251 formes
+écrites à la main — chacune sous plusieurs immédiats, en mémoire, et avec
+une source qui est la destination —, 9 538 cas, jugés par le même juge que
+le corpus VEX.256 (`judge`, partagé par les deux générateurs et les deux
+tests). Accord du premier coup ; deux tests à la main (ymm8 à ymm15, ce qui
+reste refusé) ; onze sabordages, onze chutes. La garde du site sait
+maintenant compter jusqu'à seize.
+
+Compte publié : 3048 ; corpus matériels : quinze.
+
 ## 2026-10-29 — Les formes VEX.256 qui calculent par moitiés
 
 Quatrième tranche de x86-64-v3 : les registres YMM existent depuis #618,
