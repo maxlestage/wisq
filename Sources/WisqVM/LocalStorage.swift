@@ -175,13 +175,23 @@ public enum LocalStorage {
                         LocalDisk.overlayBytes(withPrefix: keys.overlayPrefix, inWritesDirectory: $0)
                     } ?? 0))
         }
-        for name in names {
+        // **Un VMDK à descripteur pèse ses étendues.** Elles n'ont pas de
+        // ligne à elles — la bibliothèque les cache —, et leurs octets, qui
+        // sont tout le disque, vont à la ligne du descripteur.
+        let urls = names.map { kernels.appendingPathComponent($0) }
+        let companions = VmdkDescriptorDisk.companionNames(among: urls)
+        for name in names where !companions.contains(name) {
             let files = SuspendedMachine.savedMachineFiles(named: name, in: machines)
             claimed.formUnion(files)
+            let url = kernels.appendingPathComponent(name)
+            let extents = VmdkDescriptorDisk.looksLikeOne(fileAt: url)
+                ? VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url) : []
             entries.append(
                 Entry(
                     kernel: name,
-                    kernelBytes: size(of: kernels.appendingPathComponent(name)),
+                    kernelBytes: extents.reduce(size(of: url)) {
+                        $0 + size(of: kernels.appendingPathComponent($1))
+                    },
                     savedMachineBytes: files.reduce(0) {
                         $0 + size(of: machines.appendingPathComponent($1))
                     },

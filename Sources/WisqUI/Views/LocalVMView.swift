@@ -266,10 +266,16 @@ struct LocalVMListView: View {
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.data],
-            allowsMultipleSelection: false
+            // **Plusieurs à la fois** : un VMDK à descripteur est fait de
+            // plusieurs fichiers, et l'application ne voit que ceux qu'on
+            // choisit — pas leurs voisins.
+            allowsMultipleSelection: true
         ) { result in
             do {
-                if let source = try result.get().first {
+                let sources = try result.get()
+                let companions = KernelLibrary.companionNames(importing: sources)
+                var imported: [URL] = []
+                for source in sources {
                     // **Une machine exportée passe par la même porte** : le
                     // fichier dit lui-même ce qu'il est.
                     let isMachine: Bool = {
@@ -283,13 +289,20 @@ struct LocalVMListView: View {
                             text: "« \(machine.name) » est importée, et reprendra où elle en était.",
                             symbol: "square.and.arrow.down")
                     } else {
-                        _ = try KernelLibrary.importKernel(from: source)
+                        imported.append(try KernelLibrary.importKernel(
+                            from: source, companion: companions.contains(source.lastPathComponent)))
                     }
-                    reloadLibrary()
-                    storage = KernelLibrary.storageReport()
-                    importError = nil
                 }
+                reloadLibrary()
+                storage = KernelLibrary.storageReport()
+                // Les étendues ont pu venir avant ou après leur descripteur :
+                // ce qui manque ne se juge qu'une fois tout copié.
+                importError = imported.lazy
+                    .compactMap { VmdkDescriptorDisk.incompleteImportExplanation(ofDescriptorAt: $0) }
+                    .first
             } catch {
+                // Ce qui a été copié avant le refus reste, et se voit.
+                reloadLibrary()
                 importError = error.localizedDescription
             }
         }

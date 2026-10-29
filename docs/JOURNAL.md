@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Le VMDK à descripteur s'importe avec ses fichiers
+
+#612 lisait le disque, ses fichiers à côté ; la bibliothèque n'en
+importait qu'un à la fois, et sur iOS, choisir un fichier n'ouvre pas ses
+voisins. Le sélecteur prend maintenant plusieurs fichiers. Les étendues
+qu'un descripteur nomme — le sien, choisi en même temps, ou un déjà rangé —
+sont copiées telles quelles : une étendue brute de vingt gigaoctets aurait
+été refusée comme un noyau trop gros. Elles n'ont pas de ligne dans la
+liste (`VmdkDescriptorDisk.hidingCompanions`), leurs octets sont comptés à
+celle du descripteur, et elles partent avec lui. Un descripteur venu seul
+est rangé, et l'import dit les fichiers qui lui manquent.
+
+Le descripteur devient un disque lisible pour `KernelImageKind`, et le
+plancher d'un secteur ne le concerne plus : celui d'ESXi fait quelques
+centaines d'octets, pour un disque que ses étendues portent.
+
+Cinq tests : les fichiers nommés (dans l'ordre, sans doublon, jamais hors du
+dossier), le message de ce qui manque à un et à deux fichiers, la liste qui
+cache les étendues et elles seules, le relevé de stockage, le descripteur de
+moins d'un secteur. Quatre sabordages, quatre chutes. La vue et
+`KernelLibrary` sont compilées par la CI ; reste à valider sur un appareil.
+Compte publié : 2999.
+
 ## 2026-10-29 — Le VMDK à descripteur à part se lit, ses fichiers à côté
 
 La plupart des disques de VMware qui ne sont pas des appliances ne tiennent
