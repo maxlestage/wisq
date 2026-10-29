@@ -8,6 +8,37 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — VNC : les serveurs RFB 3.3 et 3.7 se parlent dans leur version
+
+**Le défaut.** Le client répondait « RFB 003.008 » à tout serveur. Son
+commentaire assurait que les serveurs anciens se replient d'eux-mêmes : ce
+n'est pas le cas.
+- Un serveur 3.3 impose son type de sécurité en un mot de quatre octets, sans
+  liste. Le client lisait le premier octet de ce mot comme une longueur de
+  liste, et le flux se décalait dès la lecture suivante.
+- Un serveur 3.7 n'envoie pas de résultat après None, ni de raison après un
+  refus.
+
+**Ce qui change.**
+- `RFB.Version.negotiate` suit la RFC 6143 (§7.1.1) : la version la plus haute
+  que le client parle sans dépasser celle du serveur.
+  - De 3.3 à 3.6, c'est 3.3.
+  - 3.7 reste 3.7.
+  - 3.8 et au-delà, dont le 3.889 d'Apple, donnent 3.8.
+- La poignée de sécurité suit la version : type imposé en 3.3, liste sans
+  résultat après None en 3.7, et 3.8 inchangé.
+
+**Vérifié.** Six tests (`RFBVersionTests`) : la table des versions, puis des
+poignées complètes contre un serveur écrit en mémoire.
+- En 3.3 : None, mot de passe, refus avec sa raison.
+- En 3.7 : None, mot de passe refusé.
+
+Cinq sabotages, cinq chutes. Le premier passage tombait par un plantage du
+test plutôt que par un échec : il indexait ce que le client n'avait pas écrit.
+Les assertions vérifient maintenant la longueur d'abord.
+
+Compte publié : 3104.
+
 ## 2026-10-29 — Une reprise refusée ne touche plus à la mémoire
 
 **Le défaut.** `X86Machine.restore` écrivait la mémoire de l'instantané
