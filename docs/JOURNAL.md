@@ -46,8 +46,11 @@ Le reste est du vrai travail.
 - Retirés tous les deux. Le cœur est à environ 35 M instructions par seconde
   ici. Ce qui reste à gagner demande un autre ordre d'exécution (des blocs
   plutôt que des instructions), pas un réglage.
-- `Load Kernel Modules` échoue sous NixOS, à 36 comme à 72 ; la cause reste
-  à lire.
+- `Load Kernel Modules` échoue sous NixOS, à 36 comme à 72. Le journal de
+  l'invité dit pourquoi : le service expire pendant qu'il insère `zfs`, après
+  56 s de temps processeur de l'invité. Au chargement, ZFS mesure ses
+  implémentations de sommes de contrôle pour garder la plus rapide. C'est de
+  la lenteur, pas un défaut : `atkbd` et `zfs` sont bien insérés.
 
 Compte publié : 3088.
 
