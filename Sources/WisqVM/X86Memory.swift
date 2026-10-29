@@ -29,22 +29,13 @@ public final class X86Memory: @unchecked Sendable {
         // remplissage écrivait les 512 Mio d'une machine PC avant sa première
         // instruction, et les rendait résidents pour toute sa vie — ce que
         // l'iPhone fait payer en tuant l'application.
-        //
-        // **Et seize octets de plus, jamais adressés.** `X86DecodeCache` lit
-        // seize octets d'un coup à l'adresse d'une instruction, pour les
-        // comparer à ceux qu'il a rangés ; la marge lui évite de vérifier, à
-        // chaque instruction, qu'elle n'est pas dans les seize derniers.
-        // `offset` borne toujours à `size` : l'invité n'y voit rien.
-        guard let zeroed = calloc(max(size, 1) + X86Memory.readAhead, 1) else {
+        guard let zeroed = calloc(max(size, 1), 1) else {
             fatalError("la mémoire de l'invité : \(size) octets refusés par l'hôte")
         }
         bytes = zeroed.assumingMemoryBound(to: UInt8.self)
     }
 
     deinit { free(bytes) }
-
-    /// La marge derrière la mémoire : voir `init`.
-    static var readAhead: Int { 16 }
 
     /// La taille, en `UInt64` une fois pour toutes : la borne du chemin chaud.
     let extent: UInt64
