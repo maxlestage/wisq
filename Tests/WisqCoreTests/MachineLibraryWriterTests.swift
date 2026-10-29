@@ -105,6 +105,37 @@ final class MachineLibraryWriterTests: XCTestCase {
             "faute de liaison, le jeton ne doit pas retomber sur la clé du mot de passe")
     }
 
+    /// **Une entrée illisible garde le jeton qu'elle partage.** Une VM écrite
+    /// par une version plus récente est conservée telle quelle pour elle ;
+    /// supprimer sa voisine sur le même agent effaçait le jeton commun, et
+    /// elle revenait, après la mise à jour, sans pouvoir s'authentifier.
+    func testAnUnreadableEntryKeepsTheTokenItShares() throws {
+        let credentials = EphemeralCredentialStore()
+        let readable = vm("a", token: agentRef)
+        try credentials.setSecret("jeton", for: agentRef)
+        // La voisine : la même forme, un protocole que cette version ne
+        // connaît pas.
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var newer = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoder.encode(vm("b", token: agentRef))) as? [String: Any])
+        newer["id"] = UUID().uuidString
+        newer["proto"] = "téléportation"
+        let file = directory.appendingPathComponent("machines.json")
+        let first = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(readable)) as? [String: Any])
+        try JSONSerialization.data(withJSONObject: [first, newer]).write(to: file)
+
+        let store = MachineStore(fileURL: file)
+        XCTAssertEqual(try store.loadReportingUnreadable().unreadable, 1, "le témoin doit être illisible")
+        let writer = MachineLibraryWriter(store: store, credentials: credentials)
+        XCTAssertEqual(try writer.delete(readable).count, 0)
+        XCTAssertEqual(try credentials.secret(for: agentRef), "jeton",
+                       "la VM gardée pour une version plus récente a encore besoin de son jeton")
+        // Son jeton d'agent, et son propre mot de passe : les deux sont à elle.
+        XCTAssertTrue(try store.preservedCredentialRefs().contains(agentRef))
+        XCTAssertEqual(try store.preservedCredentialRefs().count, 2)
+    }
+
     /// The other edge: reaping runs after the token is written, so it must not
     /// take back the one this very save just put in.
     func testTheTokenJustWrittenSurvivesTheReaping() throws {

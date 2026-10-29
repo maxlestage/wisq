@@ -196,8 +196,9 @@ public actor RDPSession: RemoteSession {
         var sealed = RDPStandardSecurity(keys: try RDPStandardSecurity.deriveKeys(
             clientRandom: clientRandom, serverRandom: [UInt8](server.serverRandom),
             method: server.encryptionMethod))
+        let account = RDPClientInfo.account(name)
         let info = RDPClientInfo.packet(
-            user: name, password: configuration.password ?? "",
+            domain: account.domain, user: account.user, password: configuration.password ?? "",
             flags: RDPClientInfo.defaultFlags.union(.forceEncryptedCSPDU))
         try await stream.write(RDPMCS.sendData(user: user, channel: server.ioChannel,
                                                sealed.seal(info, flags: [.info])))

@@ -792,6 +792,40 @@ final class SpiceDisplayChannelTests: XCTestCase {
         XCTAssertEqual(try reader.bytes(Int(pong.size)), [1, 2, 3, 4], "le corps du ping revient")
     }
 
+    /// **SET_ACK reçoit son ACK_SYNC, puis un ACK toutes les `window`
+    /// messages** — à travers les appels de `pump`. spice-server cesse
+    /// d'envoyer passé deux fenêtres non accusées : sans ces ACK, l'écran se
+    /// figeait après une quarantaine de messages, sans une erreur.
+    func testTheDisplayAcknowledgesEveryWindowOfMessages() async throws {
+        var inbound = message(SpiceWire.Message.setAck, u32(9) + u32(2))
+        for _ in 0..<5 { inbound += message(SpiceWire.Message.ping, []) }
+        let server = MemoryByteStream(inbound: inbound)
+        let channel = SpiceDisplayChannel(stream: server)
+        var surfaces = SpiceSurfaces()
+        var caches = SpiceDisplayCaches()
+        var streams = SpiceStreams()
+
+        // Trois messages, puis trois autres : la fenêtre compte à travers.
+        var progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: 1, limit: 3)
+        progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams,
+                                          serial: progress.nextSerial, ack: progress.ack, limit: 3)
+
+        var reader = SpiceWire.Reader(await server.written)
+        var sent: [UInt16] = []
+        var firstBody: [UInt8] = []
+        while let header = try? SpiceWire.decodeDataHeader(Data(try reader.bytes(18))) {
+            let body = try reader.bytes(Int(header.size))
+            if sent.isEmpty { firstBody = body }
+            sent.append(header.type)
+        }
+        let ack = SpiceWire.ClientMessage.ack, pong = SpiceWire.ClientMessage.pong
+        XCTAssertEqual(sent.first, SpiceWire.ClientMessage.ackSync)
+        XCTAssertEqual(firstBody, u32(9), "la génération revient")
+        // Cinq pings, une fenêtre de deux : un ACK après le deuxième et le
+        // quatrième, avant de répondre au message qui l'a déclenché.
+        XCTAssertEqual(Array(sent.dropFirst()), [pong, ack, pong, pong, ack, pong, pong])
+    }
+
     /// A message this does not handle is counted, by type. A client that
     /// silently ignores half a protocol should at least be able to say how
     /// much of it, and this is the number that says what to build next.

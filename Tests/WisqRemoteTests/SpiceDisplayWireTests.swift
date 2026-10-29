@@ -88,6 +88,18 @@ final class SpiceDisplayWireTests: XCTestCase {
         XCTAssertEqual(try SpiceDisplayWire.rect(from: &reader).top, -5)
     }
 
+    /// **Une coordonnée hors de toute surface est refusée au décodage.** Une
+    /// boîte `left = Int32.max`, `right = Int32.min` faisait déborder
+    /// `right - left` dans l'intersection des surfaces, et l'application
+    /// tombait.
+    func testACoordinateBeyondAnySurfaceIsRefused() throws {
+        for hostile in [rect(top: 0, left: Int32.max, bottom: 10, right: Int32.min),
+                        rect(top: Int32.min, left: 0, bottom: Int32.max, right: 10)] {
+            var reader = try SpiceWire.Reader(hostile, from: 0)
+            XCTAssertThrowsError(try SpiceDisplayWire.rect(from: &reader))
+        }
+    }
+
     /// The clip sits inline in the message. The protocol description marks it
     /// `@to_ptr`, which is about the C struct and not the wire — reading it as
     /// a pointer would eat four bytes and then treat a rectangle count as an

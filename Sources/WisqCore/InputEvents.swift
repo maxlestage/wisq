@@ -64,4 +64,24 @@ public enum Keysym {
         if scalar.value < 0x100 { return scalar.value }
         return 0x0100_0000 + scalar.value
     }
+
+    /// **La touche d'un caractère tapé ou collé**, ou `nil` pour un
+    /// caractère de commande qui n'en a pas. Une tabulation, un retour
+    /// chariot — un texte collé depuis Windows en porte un à chaque ligne —
+    /// partaient comme les keysyms 0x09 et 0x0D, qu'aucun serveur ne
+    /// reconnaît : la tabulation ne tabulait pas, et chaque ligne collée
+    /// gagnait un caractère invisible. Ce sont les touches Tab, Entrée,
+    /// Retour arrière, Échap et Suppr ; les autres caractères de commande
+    /// (C0 et C1) n'ont pas de touche et ne sont pas envoyés.
+    public static func typed(_ scalar: Unicode.Scalar) -> UInt32? {
+        switch scalar.value {
+        case 0x09: return tab
+        case 0x0A, 0x0D: return enter
+        case 0x08: return backspace
+        case 0x1B: return escape
+        case 0x7F: return delete
+        case 0x00..<0x20, 0x80..<0xA0: return nil
+        default: return character(scalar)
+        }
+    }
 }
