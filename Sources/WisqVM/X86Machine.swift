@@ -486,6 +486,108 @@ public final class X86Machine: @unchecked Sendable {
     /// parce qu'une machine à moitié restaurée est pire qu'une machine perdue.
     public func restore(_ data: Data) throws {
         var reader = try Snapshot.Reader([UInt8](data))
+        var restored = try Self.readCore(&reader, memory: memory)
+        // **La mémoire en dernier.** Elle s'écrivait ici, directement dans
+        // celle de la machine, et une section abîmée plus loin faisait
+        // refuser la reprise avec la mémoire déjà remplacée : une machine à
+        // moitié reprise, exactement ce que la règle du « tout ou rien »
+        // interdit. Une copie à part doublerait jusqu'à seize gibioctets ; on
+        // lit donc la suite d'abord, sur un second lecteur qui passe la
+        // mémoire en vérifiant les mêmes bornes, et on n'écrit qu'ensuite.
+        var tail = reader
+        try tail.skipRAM(count: ramSize)
+        // La pile x87, si la marque est là. Son absence veut dire « un
+        // instantané d'avant cette section », pas « un instantané abîmé » :
+        // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
+        // déjà. Si la marque est là, ce qui suit doit tenir en entier — un
+        // lecteur qui manque d'octets refuse plutôt que de rendre la moitié
+        // d'une pile.
+        if tail.peeks(Snapshot.x87Section) {
+            _ = try tail.u64()
+            for index in 0..<8 {
+                let significand = try tail.u64()
+                let signExponent = UInt16(truncatingIfNeeded: try tail.u32())
+                restored.x87[index] = X86Extended(significand: significand,
+                                                  signExponent: signExponent)
+            }
+            restored.x87Tags = UInt16(truncatingIfNeeded: try tail.u32())
+        }
+        // Absente : un instantané d'avant, où XCR0 valait x87 seul et le haut
+        // des YMM n'existait pas — ce qu'une machine neuve a déjà.
+        if tail.peeks(Snapshot.extendedStateSection) {
+            _ = try tail.u64()
+            let xcr0 = try tail.u64()
+            guard xcr0 & 1 != 0, xcr0 & ~X86Core.supportedExtendedState == 0 else {
+                throw Snapshot.Failure.corrupt
+            }
+            restored.xcr0 = xcr0
+            for index in 0..<32 { restored.upperVectors[index] = try tail.u64() }
+        }
+        // Absente : un instantané d'avant, écrit quand le rapport valait
+        // trente-six pour toutes les machines.
+        if tail.peeks(Snapshot.clockSection) {
+            _ = try tail.u64()
+            let ratio = try tail.u64()
+            guard (1...4096).contains(ratio) else { throw Snapshot.Failure.corrupt }
+            restored.instructionsPerTick = ratio
+        } else {
+            restored.instructionsPerTick = X86LegacyDevices.legacyInstructionsPerTick
+        }
+        // Le disque, s'il reste des octets. Construit à part et posé tout à la
+        // fin : une lecture qui échoue ici laisse à la machine le disque
+        // qu'elle avait, plutôt qu'un disque à moitié repris.
+        var restoredDisk: VirtioBlock?
+        var restoredBus: X86PCIHost?
+        var restoredSecond: VirtioBlock?
+        if !tail.isAtEnd {
+            let device = try VirtioBlock.restored(from: &tail, keeping: disk?.store)
+            let bus = X86PCIHost(storage: device)
+            try bus.restore(from: &tail)
+            restoredDisk = device
+            restoredBus = bus
+            // Le second, si sa marque est là — et alors en entier, ou rien.
+            if tail.peeks(Snapshot.secondDiskSection) {
+                _ = try tail.u64()
+                let second = try VirtioBlock.restored(from: &tail, keeping: secondDisk?.store)
+                let host = X86PCIHost(secondStorage: second)
+                try host.restore(from: &tail)
+                bus.second = host
+                restoredSecond = second
+            }
+        }
+        // Tout ce qui suit la mémoire a été lu et accepté : `skipRAM` a vu les
+        // mêmes bornes, plus rien ne peut échouer.
+        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+
+        // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
+        // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
+        // qui viennent tous deux d'être restaurés tels quels : LMA est donc
+        // déjà juste. L'appel qui était là au premier jet ne faisait rien —
+        // aucun sabotage ne le faisait tomber, ce qui est la définition d'une
+        // ligne que rien ne tient.
+
+        lock.lock()
+        inputQueue.removeAll()
+        // `stopRequested` n'est **pas** remis à zéro : ce n'est pas l'état de
+        // l'invité, c'est celui qui possède la machine qui lui demande de
+        // rendre la main — et il a pu le demander pendant la reprise, que
+        // l'application mène sur un autre fil. L'effacer faisait tourner la
+        // machine tout son budget après l'ordre ; la suspension dépassait son
+        // délai et effaçait la session qu'on venait de reprendre. C'est la
+        // règle de `LinuxMachine.restore`.
+        lock.unlock()
+        disk = restoredDisk
+        secondDisk = restoredSecond
+        memory.storage = restoredDisk
+        memory.bus = restoredBus
+        core = restored
+    }
+
+    /// **Ce qui précède la mémoire dans un instantané** : les registres, l'état
+    /// du système et les périphériques. À part de `restore` pour que
+    /// `savedRAMSize(in:)` lise exactement le même chemin jusqu'à la taille de
+    /// la mémoire, plutôt qu'une copie qui finirait par en diverger.
+    static func readCore(_ reader: inout Snapshot.Reader, memory: X86Memory) throws -> X86Core {
         var restored = X86Core(registers: [UInt64](repeating: 0, count: 16),
                                rip: 0, memory: memory)
         for index in 0..<16 { restored.registers[index] = try reader.u64() }
@@ -519,88 +621,19 @@ public final class X86Machine: @unchecked Sendable {
         for index in 0..<32 { restored.vectors[index] = try reader.u64() }
         restored.devices = try read(&reader)
         restored.serialInput = try reader.blob()
-        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
-        // La pile x87, si la marque est là. Son absence veut dire « un
-        // instantané d'avant cette section », pas « un instantané abîmé » :
-        // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
-        // déjà. Si la marque est là, ce qui suit doit tenir en entier — un
-        // lecteur qui manque d'octets refuse plutôt que de rendre la moitié
-        // d'une pile.
-        if reader.peeks(Snapshot.x87Section) {
-            _ = try reader.u64()
-            for index in 0..<8 {
-                let significand = try reader.u64()
-                let signExponent = UInt16(truncatingIfNeeded: try reader.u32())
-                restored.x87[index] = X86Extended(significand: significand,
-                                                  signExponent: signExponent)
-            }
-            restored.x87Tags = UInt16(truncatingIfNeeded: try reader.u32())
-        }
-        // Absente : un instantané d'avant, où XCR0 valait x87 seul et le haut
-        // des YMM n'existait pas — ce qu'une machine neuve a déjà.
-        if reader.peeks(Snapshot.extendedStateSection) {
-            _ = try reader.u64()
-            let xcr0 = try reader.u64()
-            guard xcr0 & 1 != 0, xcr0 & ~X86Core.supportedExtendedState == 0 else {
-                throw Snapshot.Failure.corrupt
-            }
-            restored.xcr0 = xcr0
-            for index in 0..<32 { restored.upperVectors[index] = try reader.u64() }
-        }
-        // Absente : un instantané d'avant, écrit quand le rapport valait
-        // trente-six pour toutes les machines.
-        if reader.peeks(Snapshot.clockSection) {
-            _ = try reader.u64()
-            let ratio = try reader.u64()
-            guard (1...4096).contains(ratio) else { throw Snapshot.Failure.corrupt }
-            restored.instructionsPerTick = ratio
-        } else {
-            restored.instructionsPerTick = X86LegacyDevices.legacyInstructionsPerTick
-        }
-        // Le disque, s'il reste des octets. Construit à part et posé tout à la
-        // fin : une lecture qui échoue ici laisse à la machine le disque
-        // qu'elle avait, plutôt qu'un disque à moitié repris.
-        var restoredDisk: VirtioBlock?
-        var restoredBus: X86PCIHost?
-        var restoredSecond: VirtioBlock?
-        if !reader.isAtEnd {
-            let device = try VirtioBlock.restored(from: &reader, keeping: disk?.store)
-            let bus = X86PCIHost(storage: device)
-            try bus.restore(from: &reader)
-            restoredDisk = device
-            restoredBus = bus
-            // Le second, si sa marque est là — et alors en entier, ou rien.
-            if reader.peeks(Snapshot.secondDiskSection) {
-                _ = try reader.u64()
-                let second = try VirtioBlock.restored(from: &reader, keeping: secondDisk?.store)
-                let host = X86PCIHost(secondStorage: second)
-                try host.restore(from: &reader)
-                bus.second = host
-                restoredSecond = second
-            }
-        }
-        // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
-        // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
-        // qui viennent tous deux d'être restaurés tels quels : LMA est donc
-        // déjà juste. L'appel qui était là au premier jet ne faisait rien —
-        // aucun sabotage ne le faisait tomber, ce qui est la définition d'une
-        // ligne que rien ne tient.
+        return restored
+    }
 
-        lock.lock()
-        inputQueue.removeAll()
-        // `stopRequested` n'est **pas** remis à zéro : ce n'est pas l'état de
-        // l'invité, c'est celui qui possède la machine qui lui demande de
-        // rendre la main — et il a pu le demander pendant la reprise, que
-        // l'application mène sur un autre fil. L'effacer faisait tourner la
-        // machine tout son budget après l'ordre ; la suspension dépassait son
-        // délai et effaçait la session qu'on venait de reprendre. C'est la
-        // règle de `LinuxMachine.restore`.
-        lock.unlock()
-        disk = restoredDisk
-        secondDisk = restoredSecond
-        memory.storage = restoredDisk
-        memory.bus = restoredBus
-        core = restored
+    /// **La mémoire avec laquelle un instantané a été pris**, sans le
+    /// reprendre. Une machine se construit avant de lire son instantané, et
+    /// une machine d'une autre taille le refuse (`ramSizeMismatch`) : il faut
+    /// donc le savoir avant, pour construire la bonne. `nil` quand ce n'est
+    /// pas un instantané lisible.
+    public static func savedRAMSize(in data: Data) -> Int? {
+        guard var reader = try? Snapshot.Reader([UInt8](data)),
+              (try? readCore(&reader, memory: X86Memory(size: 0x1000, base: 0))) != nil,
+              let size = try? reader.u64() else { return nil }
+        return Int(exactly: size)
     }
 
     private func write(_ writer: inout Snapshot.Writer, _ devices: X86LegacyDevices) {
@@ -639,7 +672,7 @@ public final class X86Machine: @unchecked Sendable {
         writer.u32(devices.serial.transmitPending ? 1 : 0)
     }
 
-    private func read(_ reader: inout Snapshot.Reader) throws -> X86LegacyDevices {
+    private static func read(_ reader: inout Snapshot.Reader) throws -> X86LegacyDevices {
         var devices = X86LegacyDevices()
         for which in 0..<2 {
             var controller = X86LegacyDevices.Controller()

@@ -33,21 +33,20 @@ public struct AgentClient: Sendable {
     public init(baseURL: URL, token: String?, pinnedFingerprint: Data) {
         self.baseURL = baseURL
         self.token = token
-        #if canImport(CryptoKit) && canImport(Security)
-        let configuration = URLSessionConfiguration.ephemeral
-        self.session = URLSession(
-            configuration: configuration,
-            delegate: PinnedCertificateDelegate(fingerprint: pinnedFingerprint),
-            delegateQueue: nil
-        )
-        #else
-        // The open-source Foundation cannot evaluate server trust, so a pinned
-        // client cannot exist there. Standard validation stays on, and it
-        // rejects the agent's self-signed certificate: closed, with a blunter
-        // error than Apple platforms give — never open, which is what quietly
-        // ignoring the fingerprint would be.
-        self.session = URLSession(configuration: .ephemeral)
-        #endif
+        self.session = Self.pinnedSession(for: pinnedFingerprint)
+    }
+
+    /// **One session per pinned certificate, kept for the life of the app.**
+    ///
+    /// This used to build a fresh `URLSession` for every client, and a client
+    /// is built for every console connection and every power action. A
+    /// session holds its delegate strongly until it is invalidated, and none
+    /// ever was: each one stayed, with its delegate and its idle connections,
+    /// until the app exited. Sharing one per fingerprint bounds them by the
+    /// number of paired agents, and lets a second request reuse the first
+    /// one's TLS connection instead of opening its own.
+    static func pinnedSession(for fingerprint: Data) -> URLSession {
+        PinnedSessions.shared.session(for: fingerprint)
     }
 
     /// The client a stored binding describes: token fetched from the credential
@@ -151,6 +150,39 @@ public struct AgentClient: Sendable {
 
     private struct AgentErrorBody: Decodable {
         let error: String
+    }
+}
+
+/// The sessions `AgentClient.pinnedSession(for:)` hands out, by fingerprint.
+private final class PinnedSessions: @unchecked Sendable {
+    static let shared = PinnedSessions()
+    private let lock = NSLock()
+    private var sessions: [Data: URLSession] = [:]
+
+    func session(for fingerprint: Data) -> URLSession {
+        lock.lock()
+        defer { lock.unlock() }
+        if let known = sessions[fingerprint] { return known }
+        let made = Self.make(fingerprint)
+        sessions[fingerprint] = made
+        return made
+    }
+
+    private static func make(_ fingerprint: Data) -> URLSession {
+        #if canImport(CryptoKit) && canImport(Security)
+        return URLSession(
+            configuration: .ephemeral,
+            delegate: PinnedCertificateDelegate(fingerprint: fingerprint),
+            delegateQueue: nil
+        )
+        #else
+        // The open-source Foundation cannot evaluate server trust, so a pinned
+        // client cannot exist there. Standard validation stays on, and it
+        // rejects the agent's self-signed certificate: closed, with a blunter
+        // error than Apple platforms give — never open, which is what quietly
+        // ignoring the fingerprint would be.
+        return URLSession(configuration: .ephemeral)
+        #endif
     }
 }
 
