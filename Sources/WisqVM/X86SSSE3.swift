@@ -29,6 +29,12 @@ extension X86Core {
             try crc32(instruction, try decodeFields(instruction), byteForm: opcode == 0xF0)
             return
         }
+        // `MOVBE` : les mêmes octets sans F2, avec ou sans 66 (sa forme de
+        // seize bits). Voir `X86BMI.swift`.
+        if opcode == 0xF0 || opcode == 0xF1 {
+            try moveSwappingBytes(instruction, toMemory: opcode == 0xF1)
+            return
+        }
         guard instruction.hasPrefix(0x66) else {
             throw Fault.unsupported(String(format: "l'opcode 0F 38 %02X sans 66 (MMX)", opcode))
         }

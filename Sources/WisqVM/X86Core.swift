@@ -868,7 +868,7 @@ public struct X86Core: @unchecked Sendable {
         case 1: try performTwoByte(instruction, opcode)
         case 2: try threeByte38(instruction, opcode)
         case 3: try threeByte3A(instruction, opcode)
-        case 4: throw Self.vectorRefusal()
+        case 4: try vexInstruction(instruction, opcode)
         default: throw Self.unsupportedMap(instruction.map)
         }
     }
