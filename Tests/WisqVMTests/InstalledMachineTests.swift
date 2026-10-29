@@ -351,7 +351,8 @@ final class InstalledMachineTests: XCTestCase {
         let writes = try LocalDisk.writesDirectory(in: folder)
 
         let blind = LocalStorage.report(kernels: kernels, machines: folder, writes: writes)
-        XCTAssertEqual(blind.orphanedCount, 1, "sans la liste, le relevé se trompe — d'où elle")
+        XCTAssertEqual(blind.orphanedCount, 2,
+                       "sans la liste, le relevé se trompe — sa session et sa couche — d'où elle")
 
         let report = LocalStorage.report(
             kernels: kernels, machines: folder, writes: writes,
@@ -369,6 +370,34 @@ final class InstalledMachineTests: XCTestCase {
             installed: InstalledMachines.allKeys(in: folder)), 0)
         XCTAssertEqual(SuspendedMachine.savedMachineFiles(named: machine.key, in: folder).count, 1,
                        "la session est toujours là")
+    }
+
+    /// **Les couches que plus rien ne lit** sont comptées comme restes, et
+    /// le bouton qui reprend les restes les efface : celle d'un fichier parti
+    /// de la bibliothèque, celle d'une machine retirée. Celles qui servent
+    /// restent.
+    func testOverlaysNothingReadsAreLeftoversAndAreFreed() throws {
+        let kernels = folder.appendingPathComponent("kernels", isDirectory: true)
+        try FileManager.default.createDirectory(at: kernels, withIntermediateDirectories: true)
+        try Data(count: 64).write(to: kernels.appendingPathComponent(iso))
+        let machine = try InstalledMachines.install(image: iso, in: folder)
+        try overlay(iso, bytes: 512)
+        try overlay(machine.keys.overlay(forDisk: iso), bytes: 512)
+        try overlay("parti.img", bytes: 1024)
+        try overlay("installee-000000000000~\(iso)", bytes: 2048)
+        let writes = try LocalDisk.writesDirectory(in: folder)
+        let installed = InstalledMachines.allKeys(in: folder)
+
+        let report = LocalStorage.report(kernels: kernels, machines: folder, writes: writes, installed: installed)
+        XCTAssertEqual(report.orphanedCount, 2)
+        XCTAssertEqual(report.orphanedBytes, 1024 + 8 + 2048 + 8)
+
+        XCTAssertEqual(LocalStorage.freeOrphanedMachines(
+            kernels: kernels, machines: folder, installed: installed, writes: writes), 1024 + 8 + 2048 + 8)
+        let left = try FileManager.default.contentsOfDirectory(atPath: writes.path).sorted()
+        XCTAssertEqual(left, [iso + ".writes", iso + ".writes.map",
+                              machine.keys.overlay(forDisk: iso) + ".writes",
+                              machine.keys.overlay(forDisk: iso) + ".writes.map"].sorted())
     }
 
     // MARK: - Outils

@@ -153,6 +153,46 @@ public enum LocalDisk {
         return removed
     }
 
+    /// **Tout ce qui a été écrit sur ce disque**, jeté — quand le fichier de
+    /// base est remplacé (réimporté, retéléchargé sous le même nom) ou
+    /// supprimé. Rend les clés dont la session a été effacée.
+    ///
+    /// Trois choses, parce qu'une couche ne vaut que sur la base où elle a
+    /// été écrite. La couche du fichier démarré tel quel (`<disque>.writes`)
+    /// et celle de **chaque machine installée** qui l'avait
+    /// (`installee-…~<disque>.writes`) : posées sur une autre base, leurs
+    /// secteurs feraient un mélange des deux disques, et l'invité un système
+    /// de fichiers abîmé. Et les sessions suspendues de tout ce qui démarrait
+    /// sur ce disque : un instantané ne porte pas les octets d'un disque lu
+    /// sur place, seulement l'état de la RAM qui les croyait là.
+    ///
+    /// Les réglages — la mémoire, le disque choisi — restent : ils valent
+    /// pour le nouveau fichier comme pour l'ancien.
+    @discardableResult
+    public static func discardEverythingWritten(onDisk disk: String, in directory: URL? = nil) -> Set<String> {
+        var keys: Set<String> = [disk]
+        keys.formUnion(recorded(in: directory).filter { $0.value == disk }.map(\.key))
+        if let folder = try? writesDirectory(in: directory),
+           let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path) {
+            for entry in entries where entry.hasSuffix(".writes") {
+                let overlay = String(entry.dropLast(".writes".count))
+                // Le préfixe d'une machine installée est sa clé suivie de
+                // `~`, et une clé n'a jamais de `~` : c'est donc le premier
+                // qui sépare. Le reste doit être **exactement** ce disque —
+                // `a~b.img` n'est pas une couche de `b.img`.
+                guard let tilde = overlay.firstIndex(of: "~"),
+                      overlay[overlay.index(after: tilde)...] == disk else { continue }
+                let key = String(overlay[..<tilde])
+                guard key.hasPrefix(InstalledMachine.keyPrefix) else { continue }
+                discardWrites(for: overlay, in: directory)
+                keys.insert(key)
+            }
+        }
+        discardWrites(for: disk, in: directory)
+        for key in keys { SuspendedMachine.clearAll(named: key, in: directory) }
+        return keys
+    }
+
     /// Ce que les couches de cette machine occupent, tous disques confondus.
     public static func overlayBytes(withPrefix prefix: String, inWritesDirectory folder: URL) -> Int {
         guard !prefix.isEmpty,
