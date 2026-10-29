@@ -39,7 +39,7 @@ ymm15 avec un `2⁻⁶⁰` qu'un produit arrondi perdrait, et les refus) ;
 douze sabordages, onze chutes — le survivant touchait une condition
 redondante, retirée.
 
-Compte publié : 3051 ; corpus matériels : seize.
+Compte publié : 3063 ; corpus matériels : seize.
 
 ## 2026-10-29 — Ce qui traverse les moitiés d'un YMM
 
