@@ -428,6 +428,36 @@ enum SpiceWire {
         var window: UInt32
     }
 
+    /// **La fenêtre d'accusés de réception qu'un canal a reçue par SET_ACK.**
+    ///
+    /// spice-server crée les canaux d'affichage et de curseur avec
+    /// `HandleAcks` : passé deux fenêtres de messages non accusés, il cesse
+    /// d'envoyer (`RedChannelClient::waiting_for_ack`). Répondre ACK_SYNC ne
+    /// suffit pas — c'est ce que ce client faisait, et l'écran se figeait
+    /// après la première quarantaine de messages, sans une erreur. Comme
+    /// spice-gtk : un SPICE_MSGC_ACK chaque fois que `window` messages sont
+    /// arrivés depuis le dernier, SET_ACK lui-même compté hors fenêtre.
+    struct AckWindow: Equatable, Sendable {
+        private(set) var window: UInt32 = 0
+        private var remaining: UInt32 = 0
+
+        init() {}
+
+        mutating func set(_ ack: SetAck) {
+            window = ack.window
+            remaining = ack.window
+        }
+
+        /// Un message vient d'arriver : vrai quand un ACK est dû.
+        mutating func received() -> Bool {
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            guard remaining == 0 else { return false }
+            remaining = window
+            return true
+        }
+    }
+
     static func decodeSetAck(_ data: Data) throws -> SetAck {
         var reader = Reader(data)
         return SetAck(generation: try reader.u32(), window: try reader.u32())
