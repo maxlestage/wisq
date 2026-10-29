@@ -22,9 +22,9 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// Combien d'instructions valent un battement du 8253.
     ///
     /// Le vrai compte à 1,193182 MHz. Ce nombre dit donc **la vitesse que
-    /// l'invité croit à son processeur** : trente-six instructions par
-    /// battement font un processeur de 43 MHz, ce que le noyau mesure au
-    /// démarrage (« Detected 42.950 MHz processor »).
+    /// l'invité croit à son processeur** : soixante-douze instructions par
+    /// battement font un processeur de 86 MHz, ce que le noyau mesure au
+    /// démarrage (« Detected 85.908 MHz processor »).
     ///
     /// **Pourquoi trente-six, et plus douze.** Douze donnaient à peu près le
     /// temps réel quand ce cœur exécutait quatorze millions d'instructions par
@@ -42,7 +42,27 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// l'hôte — c'est le but : un délai de l'invité couvre trois fois plus de
     /// travail. Et un noyau à 1000 Hz traite trois fois moins d'échéances par
     /// instruction.
-    public static let instructionsPerTick: UInt64 = 36
+    ///
+    /// **Puis soixante-douze.** NixOS 25.05 attend `/dev/ttyS0` pendant les
+    /// 90 s par défaut de systemd, et udevd ne démarre qu'après les services
+    /// de `tmpfiles` : à trente-six, ces 90 s valaient 3,9 milliards
+    /// d'instructions, elles expiraient avant lui, et la console série
+    /// n'avait jamais de getty. À soixante-douze, le périphérique est trouvé,
+    /// la session s'ouvre sur la console, et le démarrage entier prend
+    /// 35,5 milliards d'instructions au lieu de 48,4 — la génération des clés
+    /// SSH, qui se mesure en temps de l'invité, en fait moins. Alpine, lui,
+    /// ne bouge pas : 62,5 s avant, 61,1 s après, pour le même shell.
+    ///
+    /// **C'est le rapport des machines neuves.** Une machine reprise garde le
+    /// sien, écrit dans son instantané : son noyau a étalonné son TSC contre
+    /// le 8253 au démarrage, et le 8253 garde ses échéances en battements.
+    public static let instructionsPerTick: UInt64 = 72
+
+    /// **Le rapport des instantanés qui ne le disent pas** : ils ont été
+    /// écrits quand il valait trente-six pour toutes les machines. Les
+    /// reprendre à soixante-douze couperait chaque battement en deux sous le
+    /// noyau, et ramènerait `ticks` loin derrière les échéances du 8253.
+    public static let legacyInstructionsPerTick: UInt64 = 36
 
     /// Un 8259. Deux en cascade forment le contrôleur d'un PC.
     public struct Controller: Sendable, Equatable {

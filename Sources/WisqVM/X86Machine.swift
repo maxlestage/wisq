@@ -151,7 +151,7 @@ public final class X86Machine: @unchecked Sendable {
     public var pacesIdleToWallClock = false
 
     /// Combien d'instructions vaut une seconde de l'invité.
-    static let guestHertz = Double(X86LegacyDevices.instructionsPerTick) * 1_193_182
+    var guestHertz: Double { Double(core.instructionsPerTick) * 1_193_182 }
     private var inputQueue: [UInt8] = []
     private var pendingOutput: [UInt8] = []
     private var published = GuestProgress(retired: 0, rip: 0)
@@ -335,7 +335,7 @@ public final class X86Machine: @unchecked Sendable {
                 return .powerOff
             }
             if pacesIdleToWallClock && core.halted {
-                let guest = Double((core.retired &+ core.idled) &- start) / Self.guestHertz
+                let guest = Double((core.retired &+ core.idled) &- start) / guestHertz
                 let wall = Double(DispatchTime.now().uptimeNanoseconds &- wallStart) / 1e9
                 let ahead = guest - wall
                 if ahead > 0.001 {
@@ -455,6 +455,10 @@ public final class X86Machine: @unchecked Sendable {
         writer.u64(Snapshot.extendedStateSection)
         writer.u64(core.xcr0)
         for word in core.upperVectors { writer.u64(word) }
+        // Le rapport de l'horloge, derrière sa marque : le 8253 et le noyau
+        // comptent en battements, et un battement doit garder sa longueur.
+        writer.u64(Snapshot.clockSection)
+        writer.u64(core.instructionsPerTick)
         // **Le disque en dernier, et seulement s'il y en a un.** Son absence
         // est ce qui distingue un instantané d'avant le disque, et la reprise
         // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
@@ -542,6 +546,16 @@ public final class X86Machine: @unchecked Sendable {
             }
             restored.xcr0 = xcr0
             for index in 0..<32 { restored.upperVectors[index] = try reader.u64() }
+        }
+        // Absente : un instantané d'avant, écrit quand le rapport valait
+        // trente-six pour toutes les machines.
+        if reader.peeks(Snapshot.clockSection) {
+            _ = try reader.u64()
+            let ratio = try reader.u64()
+            guard (1...4096).contains(ratio) else { throw Snapshot.Failure.corrupt }
+            restored.instructionsPerTick = ratio
+        } else {
+            restored.instructionsPerTick = X86LegacyDevices.legacyInstructionsPerTick
         }
         // Le disque, s'il reste des octets. Construit à part et posé tout à la
         // fin : une lecture qui échoue ici laisse à la machine le disque
