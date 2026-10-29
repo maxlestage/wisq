@@ -45,8 +45,18 @@ final class X86SystemTests: XCTestCase {
         }
         XCTAssertEqual(ecx & ~X86CPUID.featuresECX, 0)
         XCTAssertEqual(ecx & (1 << 3 | 1 << 26 | 1 << 27 | 1 << 28), 0, "ni MONITOR, ni XSAVE, ni AVX")
-        // LAHF-SAHF en mode long, l'autre exigence de x86-64-v2.
-        XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1)
+        // LAHF-SAHF en mode long, l'autre exigence de x86-64-v2 ; et ABM,
+        // qui annonce LZCNT.
+        XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1 | 1 << 5)
+        // **La part de x86-64-v3 des registres généraux** : MOVBE dans la
+        // feuille 1, BMI1 et BMI2 dans la feuille 7 — sans AVX2, que ce cœur
+        // n'a pas.
+        XCTAssertNotEqual(ecx & (1 << 22), 0, "MOVBE")
+        XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 7)
+        let leaf7 = X86CPUID.answer(leaf: 7, subleaf: 0)
+        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 8 | 1 << 9,
+                       "BMI1, BMI2 et ERMS, et rien d'autre — ni AVX2 (5)")
+        XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 1).1, 0)
     }
 
     /// **CX8 annoncé : `CMPXCHG8B` répond.** Égal, il range ECX:EBX et lève
@@ -255,14 +265,14 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0000, subleaf: 0).0, 0x8000_0004)
     }
 
-    /// **La feuille 7 n'annonce que la copie rapide** : ERMS, FSRM et FSRS,
-    /// que `bulkString` tient. Un bit de plus — AVX2, BMI, SMEP — ferait
-    /// employer à Linux ou à la glibc des instructions qui n'existent pas ici.
+    /// **La copie rapide dans la feuille 7** : ERMS, FSRM et FSRS, que
+    /// `bulkString` tient, à côté de BMI1 et BMI2. Un bit de plus — AVX2,
+    /// SMEP — ferait employer à Linux ou à la glibc ce qui n'existe pas ici.
     func testLeafSevenAnnouncesOnlyTheFastStrings() {
         XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 7)
         let (maximum, ebx, ecx, edx) = X86CPUID.answer(leaf: 7, subleaf: 0)
         XCTAssertEqual(maximum, 1, "la sous-feuille 1 existe")
-        XCTAssertEqual(ebx, 1 << 9, "ERMS seul")
+        XCTAssertEqual(ebx & ~X86CPUID.extendedLeaf7EBX, 1 << 9, "ERMS, hors BMI1 et BMI2")
         XCTAssertEqual(ecx, 0)
         XCTAssertEqual(edx, 1 << 4, "FSRM seul")
         let one = X86CPUID.answer(leaf: 7, subleaf: 1)
