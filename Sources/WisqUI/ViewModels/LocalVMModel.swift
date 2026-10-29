@@ -900,6 +900,7 @@ public enum KernelLibrary {
         if companion {
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
+                replaced(destination.lastPathComponent)
             }
             try FileManager.default.copyItem(at: source, to: destination)
             return destination
@@ -954,9 +955,21 @@ public enum KernelLibrary {
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
+            replaced(destination.lastPathComponent)
         }
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
+    }
+
+    /// **Un fichier remplacé sous le même nom n'est plus le même disque.**
+    /// Ce qui avait été écrit par-dessus l'ancien — la couche du fichier,
+    /// celles des machines installées dessus — et les sessions qui le
+    /// croyaient là sont jetés : posés sur le nouveau, ils en feraient un
+    /// mélange des deux. Le déballage d'une image part aussi, pour que le
+    /// noyau soit relu dans le nouveau fichier. Les réglages restent.
+    public static func replaced(_ name: String) {
+        LocalDisk.discardEverythingWritten(onDisk: name)
+        LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
     }
 
     /// What the local Linux feature occupies, kernel by kernel.
@@ -1044,11 +1057,13 @@ public enum KernelLibrary {
         }
         KernelMemory.forget(kernel: name)
         RootPassword.forget(kernel: name)
+        // **Avant `forgetDisk`**, qui efface les choix dont elle se sert pour
+        // trouver les sessions des noyaux qui avaient ce disque : leur
+        // instantané croyait le disque là, et ne le porte pas. Les couches
+        // des machines installées qui l'avaient partent aussi.
+        LocalDisk.discardEverythingWritten(onDisk: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
-        // La couche d'écriture part avec sa base : sans elle, ses secteurs ne
-        // veulent plus rien dire.
-        LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
         // Le fichier pouvait être le disque propre d'une machine : elle reste,
         // sans disque à emporter.
