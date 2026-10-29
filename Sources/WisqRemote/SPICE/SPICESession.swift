@@ -385,6 +385,9 @@ public actor SPICESession: RemoteSession {
     /// currently wants anything at all.
     private func followRecord(on stream: any ByteStream) async {
         var serial: UInt64 = 1
+        // Le curseur aussi est un canal à accusés : sans eux, le pointeur
+        // cesse de changer après une quarantaine de formes.
+        var ack = SpiceWire.AckWindow()
         while !Task.isCancelled {
             do {
                 let header = try SpiceWire.decodeDataHeader(
@@ -393,8 +396,20 @@ public actor SPICESession: RemoteSession {
                 guard header.size <= 1 << 22 else { return }
                 let payload = header.size == 0
                     ? Data() : try await stream.read(exactly: Int(header.size))
+                if ack.received() {
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.ack, serial: serial, payload: Data()))
+                    serial += 1
+                }
 
                 switch header.type {
+                case SpiceWire.Message.setAck:
+                    let window = try SpiceWire.decodeSetAck(payload)
+                    ack.set(window)
+                    try await stream.write(SpiceWire.message(
+                        SpiceWire.ClientMessage.ackSync, serial: serial,
+                        payload: Data(SpiceWire.u32(window.generation))))
+                    serial += 1
                 case SpiceWire.Message.ping:
                     try await stream.write(SpiceWire.message(
                         SpiceWire.ClientMessage.pong, serial: serial, payload: payload
@@ -694,10 +709,13 @@ public actor SPICESession: RemoteSession {
         var caches = SpiceDisplayCaches()
         var streams = SpiceStreams()
         var serial = serial
+        var ack = SpiceWire.AckWindow()
         do {
             while !Task.isCancelled {
-                let progress = try await channel.pump(into: &surfaces, caches: &caches, streams: &streams, serial: serial)
+                let progress = try await channel.pump(
+                    into: &surfaces, caches: &caches, streams: &streams, serial: serial, ack: ack)
                 serial = progress.nextSerial
+                ack = progress.ack
 
                 // The first surface to appear is the desktop, and its size is
                 // what the UI needs before it can lay anything out.

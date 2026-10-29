@@ -225,15 +225,20 @@ enum Snapshot {
             try UInt64(littleEndian: scalar(8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) })
         }
 
+        // **Les bornes se comparent par soustraction.** Une longueur lue dans
+        // le fichier vaut jusqu'à `Int.max` : `at + length` débordait et
+        // faisait tomber l'application — à chaque ouverture de la machine,
+        // qu'un `try?` ne peut pas rattraper — au lieu de refuser un
+        // instantané abîmé ou importé. `at` ne dépasse jamais `bytes.count`.
         private mutating func scalar(_ count: Int) throws -> [UInt8] {
-            guard at + count <= bytes.count else { throw Failure.corrupt }
+            guard count <= bytes.count - at else { throw Failure.corrupt }
             defer { at += count }
             return Array(bytes[at..<(at + count)])
         }
 
         mutating func blob() throws -> [UInt8] {
             let length = try Int(exactly: u64()) ?? -1
-            guard length >= 0, at + length <= bytes.count else { throw Failure.corrupt }
+            guard length >= 0, length <= bytes.count - at else { throw Failure.corrupt }
             defer { at += length }
             return Array(bytes[at..<(at + length)])
         }
@@ -252,11 +257,11 @@ enum Snapshot {
             var cursor = 0
             for _ in 0..<pairs {
                 let zeros = try Int(exactly: u64()) ?? -1
-                guard zeros >= 0, cursor + zeros <= ram.count else { throw Failure.corrupt }
+                guard zeros >= 0, zeros <= ram.count - cursor else { throw Failure.corrupt }
                 Self.clear(ram, from: cursor, count: zeros)
                 cursor += zeros
                 let length = try Int(exactly: u64()) ?? -1
-                guard length >= 0, at + length <= bytes.count, cursor + length <= ram.count else {
+                guard length >= 0, length <= bytes.count - at, length <= ram.count - cursor else {
                     throw Failure.corrupt
                 }
                 if length > 0, let target = ram.baseAddress {

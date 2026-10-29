@@ -65,7 +65,8 @@ public struct MachineLibraryWriter {
         // Unbinding a machine from its agent, or moving it to another one,
         // leaves the old token behind exactly as a deletion would.
         if let previous {
-            try CredentialReaper.reap(after: previous, remaining: machines, from: credentials)
+            try CredentialReaper.reap(after: previous, remaining: machines,
+                                      alsoReferenced: try store.preservedCredentialRefs(), from: credentials)
         }
         return (machine, machines)
     }
@@ -73,7 +74,8 @@ public struct MachineLibraryWriter {
     /// Removes the machine, then the secrets nothing points at any more.
     public func delete(_ machine: Machine) throws -> [Machine] {
         let machines = try store.delete(id: machine.id)
-        try CredentialReaper.reap(after: machine, remaining: machines, from: credentials)
+        try CredentialReaper.reap(after: machine, remaining: machines,
+                                  alsoReferenced: try store.preservedCredentialRefs(), from: credentials)
         return machines
     }
 }
