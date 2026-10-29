@@ -14,11 +14,13 @@ import Foundation
 // La référence est le processeur : `Tests/Fixtures/x86-v3-gpr-oracle.tsv`.
 extension X86Core {
     /// Les instructions VEX que ce cœur exécute : celles des registres
-    /// généraux. Toutes les autres — AVX, AVX2, FMA, F16C — sont refusées par
-    /// leur nom générique, comme avant.
+    /// généraux, puis les formes VEX.128 de SSE (`X86AVX.swift`). Les autres
+    /// — AVX sur 256 bits, AVX2, FMA, F16C — sont refusées par leur nom
+    /// générique, comme avant.
     mutating func vexInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws {
-        // EVEX n'est pas VEX, et VEX.L à 1 ne désigne aucune de ces formes.
-        guard instruction.vexCount != 4, instruction.vexLength == 0 else { throw Self.vectorRefusal() }
+        // EVEX n'est pas VEX.
+        guard instruction.vexCount != 4 else { throw Self.vectorRefusal() }
+        guard instruction.vexLength == 0 else { return try wideVEXInstruction(instruction, opcode) }
         switch (instruction.map, opcode, instruction.vexImpliedPrefix) {
         case (.threeByte38, 0xF2, 0): try andNot(instruction)
         case (.threeByte38, 0xF3, 0): try lowestBitGroup(instruction)
@@ -29,7 +31,7 @@ extension X86Core {
         case (.threeByte38, 0xF7, 0): try bitFieldExtract(instruction)
         case (.threeByte38, 0xF7, let prefix): try shiftNoFlags(instruction, kind: prefix)
         case (.threeByte3A, 0xF0, 3): try rotateRightNoFlags(instruction)
-        default: throw Self.vectorRefusal()
+        default: try vex128Instruction(instruction, opcode)
         }
     }
 
