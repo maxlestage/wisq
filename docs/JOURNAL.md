@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — CPUID annonce x86-64-v3 : AVX, AVX2, FMA, F16C
+
+**Ce qui change.** `X86CPUID.featuresECX` annonce FMA (12), AVX (28) et F16C
+(29) ; la feuille 7 annonce AVX2 (5) à côté de BMI1, BMI2 et ERMS. OSXSAVE
+reste dérivé de CR4. Chaque bit est tenu par un corpus matériel : VEX.128,
+VEX.256 par moitiés, AVX2 qui traverse les moitiés, FMA et F16C. Ce qui manque
+encore (les ramassages, `vpmaskmov`) est refusé par son nom.
+
+**Pourquoi.** La glibc de RHEL 10 et de CentOS Stream 10 est construite pour
+x86-64-v3 : sans ces bits, elle s'arrête avant le premier programme.
+
+**Mesuré sur deux distributions très différentes** :
+- **CentOS Stream 10** (GenericCloud) : shell root après 33,1 G instructions
+  (20 minutes ici). `uname` dit 6.12.0-279.el10 ; `/proc/cpuinfo` liste avx,
+  avx2, fma, f16c, bmi1, bmi2, erms.
+- **NixOS 25.05** (image d'installation minimale, noyau et initrd extraits) :
+  « Multi-User System » atteint après 48,4 G instructions (25 minutes), avec
+  la session automatique de l'utilisateur `nixos` et sshd démarré.
+- **Ce que NixOS montre** : la getty de ttyS0 n'arrive pas. systemd attend
+  `/dev/ttyS0` 90 secondes, et udevd n'a démarré qu'après. Ce n'est pas un
+  comportement faux : c'est la vitesse, environ 33 M instructions par seconde
+  ici. À noter pour la suite, sans y toucher par un réglage du temps de
+  l'invité.
+- Alpine démarre toujours jusqu'à son shell, état AVX activé (XCR0 = 7).
+
+Compte publié inchangé.
+
 ## 2026-10-29 — FMA, F16C, et les conversions de largeur sur 256 bits
 
 Sixième tranche de x86-64-v3 : les trois dernières pièces avant que CPUID
