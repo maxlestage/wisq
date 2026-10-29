@@ -155,6 +155,10 @@ def forms():
     # que la glibc emploie.
     for name in ["psllw", "pslld", "psrld", "psrad"]:
         out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Et les quatre autres**, arrivés par Guix System : son `ssh-keygen`
+    # s'arrêtait sur `66 0F F3` (`PSLLQ`) en générant ses clés d'hôte.
+    for name in ["psllq", "psrlw", "psrlq", "psraw"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
     # Vers un registre général : les bits de signe, et un mot choisi.
     out += ["pmovmskb %xmm1, %eax", "movmskps %xmm1, %eax", "movmskpd %xmm1, %eax"]
     for position in INSERTS:

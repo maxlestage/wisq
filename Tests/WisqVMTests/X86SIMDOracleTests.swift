@@ -8,7 +8,7 @@ import XCTest
 /// ni un document ni un autre émulateur, c'est la machine.
 /// `scripts/build-x86-simd-oracle.py` fait exécuter chaque forme par le
 /// processeur de ce conteneur sur des états choisis, et fige sa réponse dans
-/// `Tests/Fixtures/x86-simd-oracle.tsv` — 228 formes, 8 892 cas, 39 états.
+/// `Tests/Fixtures/x86-simd-oracle.tsv` — 236 formes, 9 204 cas, 39 états.
 ///
 /// **Le cadrage vient d'un comptage, pas d'une intuition.** Ce sont les
 /// dix-sept mnémoniques que les binaires réellement présents dans l'initramfs
