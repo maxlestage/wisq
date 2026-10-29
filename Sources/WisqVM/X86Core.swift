@@ -848,16 +848,7 @@ public struct X86Core: @unchecked Sendable {
         let opcode = instruction.opcode
         switch instruction.dispatchCode {
         case 0: try oneByte(instruction, opcode)
-        case 1:
-            // Les sauts conditionnels longs (`0F 80` à `0F 8F`), une
-            // instruction sur dix-huit : aucun gestionnaire spécialisé ne les
-            // réclame (`claimedBySpecialists`), et `performTwoByte` ne faisait
-            // que les passer à `twoByte` — un cadre de pile et un test de plus.
-            if opcode & 0xF0 == 0x80 {
-                try twoByte(instruction, opcode)
-                return
-            }
-            try performTwoByte(instruction, opcode)
+        case 1: try performTwoByte(instruction, opcode)
         case 2: try threeByte38(instruction, opcode)
         case 3: try threeByte3A(instruction, opcode)
         case 4: throw Self.vectorRefusal()
