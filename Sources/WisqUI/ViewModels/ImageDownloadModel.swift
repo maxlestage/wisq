@@ -104,6 +104,12 @@ final class ImageDownloadModel {
         }
         phase = .downloading(file: release.file)
         progress = (0, release.size)
+        // Un fichier du même nom déjà là — Debian publie le sien sous un nom
+        // sans version — sera remplacé : ce qui avait été écrit dessus ne
+        // vaudra plus rien (`KernelLibrary.replaced`).
+        let replacing = (try? KernelLibrary.directory()).map {
+            FileManager.default.fileExists(atPath: $0.appendingPathComponent(release.file).path)
+        } ?? false
         do {
             // **Par la session d'arrière-plan** : le transfert continue
             // quand l'application quitte l'écran, et l'image est recousue
@@ -111,6 +117,7 @@ final class ImageDownloadModel {
             let url = try await BackgroundImageDownloads.shared.download(release) { have, total in
                 Task { @MainActor [weak self] in self?.progress = (have, total) }
             }
+            if replacing { KernelLibrary.replaced(release.file) }
             phase = .ready
             return url
         } catch {

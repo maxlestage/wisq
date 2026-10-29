@@ -160,6 +160,24 @@ final class CheckpointedRunTests: XCTestCase {
         XCTAssertEqual(run.checkpoints, 0)
     }
 
+    /// **« Oublier » tient** : après `stopSaving`, la machine continue,
+    /// mais plus aucune sauvegarde n'est écrite — sinon la tranche suivante
+    /// réécrivait celle qu'on venait d'effacer, et le prochain lancement
+    /// reprenait l'invité bloqué dont la personne voulait se défaire.
+    func testStopSavingKeepsTheMachineRunningAndWritesNothingMore() {
+        let machine = CountingMachine(work: 1, slicesBeforePowerOff: 20)
+        let clock = SteppingClock(step: 1_000)
+        let box = Saved()
+        let run = CheckpointedRun(machine: machine, interval: 1, minimumWork: 1,
+                                  clock: clock.read, pack: { $0 }, perform: { $0() }, write: { box.append($0) })
+        machine.onSlice = { slices in if slices == 5 { run.stopSaving() } }
+        XCTAssertEqual(run.run(), .powerOff)
+        XCTAssertEqual(machine.slices, 20, "la machine a continué")
+        XCTAssertEqual(box.all.count, 4, "les quatre d'avant, aucune après")
+        XCTAssertEqual(machine.flushesAtSnapshot.count, 4,
+                       "ni instantané : l'invité ne s'arrête plus pour une sauvegarde jetée")
+    }
+
     /// **Un arrêt est un arrêt** : la course rend `.stopped`, et une tranche
     /// épuisée n'en est pas un.
     func testStopEndsTheRunButAnExhaustedSliceDoesNot() {

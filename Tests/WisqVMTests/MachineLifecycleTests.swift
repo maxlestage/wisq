@@ -134,4 +134,18 @@ final class MachineLifecycleTests: XCTestCase {
         XCTAssertTrue(life.reportsGuestExit)
         XCTAssertEqual(life.guestFinished(), .forget)
     }
+
+    /// **« Oublier » tient jusqu'au départ** : quitter l'écran n'écrit plus
+    /// la machine, elle s'arrête — et la course suivante se sauve de nouveau.
+    func testAForgottenMachineIsNotSavedOnTheWayOut() {
+        var life = MachineLifecycle()
+        life.booted()
+        life.userForgot()
+        XCTAssertEqual(life.steppedAway(), .forget)
+        XCTAssertEqual(life.state, .ended)
+        XCTAssertFalse(life.shouldResumeOnReturn)
+        life.booted()
+        XCTAssertFalse(life.forgotten, "une nouvelle course n'est pas oubliée")
+        XCTAssertEqual(life.steppedAway(), .save)
+    }
 }

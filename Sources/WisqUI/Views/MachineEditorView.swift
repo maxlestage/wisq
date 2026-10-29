@@ -312,11 +312,17 @@ public struct MachineEditorView: View {
             // or when it arrived filled in from a connection file, which is an
             // edit the user did not have to make.
             let writeSecret = passwordTouched || draft.passwordCameFilledIn
-            library.save(
+            // **Une sauvegarde refusée garde l'éditeur ouvert**, avec la
+            // raison : il se fermait quand même, et le mot de passe tapé
+            // était perdu sans un mot.
+            guard library.save(
                 machine,
                 password: writeSecret ? draft.password : nil,
                 agentToken: agentToken
-            )
+            ) else {
+                validationError = library.loadError ?? "la machine n'a pas pu être enregistrée."
+                return
+            }
             onClose()
         } catch let error as WisqError {
             validationError = error.localizedDescription
