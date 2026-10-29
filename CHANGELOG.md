@@ -125,6 +125,15 @@ break APIs.
   (`(${voidlive})/boot/vmlinuz`). Les deux images démarrent ; Gentoo et
   NixOS, essayés en même temps, trouvaient déjà la leur.
 
+- **Une machine PC de plus de 3 Gio ne démarrait pas** : sa RAM d'un seul
+  tenant recouvrait le disque et l'écran, et Linux ne trouvait plus où poser
+  ses périphériques avant de bloquer son processeur. Comme sur un vrai PC, la
+  RAM s'arrête à 3 Gio et reprend à 4 ; Chimera démarre à 6 Gio.
+- **« Démarrage impossible… X86Core.Fault erreur 2 »** : un initramfs plus
+  grand que la mémoire de la machine était posé hors de la mémoire au lieu
+  d'être refusé, et aucun refus de la machine PC ne se lisait. Le refus dit
+  maintenant les deux tailles et le curseur à monter.
+
 ## [0.4.0] — 2026-09-05
 
 ### Added
