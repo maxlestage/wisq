@@ -234,14 +234,26 @@ extension X86Core {
     /// Inlinée : voir `read(_:_:highByte:)`.
     @inline(__always)
     public func condition(_ code: UInt8) -> Bool {
-        // Lu une fois : quand une opération attend, chaque lecture de
-        // `flags` assemble ses six drapeaux.
-        let word = flags
-        let overflow = word & Flag.overflow != 0
-        let carryFlag = word & Flag.carry != 0
-        let zero = word & Flag.zero != 0
-        let sign = word & Flag.sign != 0
-        let parity = word & Flag.parity != 0
+        // Quand une opération attend, chaque drapeau se lit directement dans
+        // ce qu'elle a noté, sans assembler le mot : un `jcc` derrière un
+        // `cmp` ne paie que le sien.
+        let overflow: Bool
+        let carryFlag: Bool
+        let zero: Bool
+        let sign: Bool
+        if pendingSize == 0 {
+            overflow = settledFlags & Flag.overflow != 0
+            carryFlag = settledFlags & Flag.carry != 0
+            zero = settledFlags & Flag.zero != 0
+            sign = settledFlags & Flag.sign != 0
+        } else {
+            let signBit = Self.signBit(pendingSize)
+            overflow = pendingOverflowSource & signBit != 0
+            carryFlag = pendingLowBits & Flag.carry != 0
+            zero = pendingResult == 0
+            sign = pendingResult & signBit != 0
+        }
+        var parity: Bool { flags & Flag.parity != 0 }
         switch code & 0x0F {
         case 0x0: return overflow
         case 0x1: return !overflow
