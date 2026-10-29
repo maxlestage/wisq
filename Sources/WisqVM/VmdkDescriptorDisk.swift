@@ -111,9 +111,7 @@ public final class VmdkDescriptorDisk: VirtualDiskImage, @unchecked Sendable {
             throw Refusal.malformed("étendue \(extent.kind) sans fichier")
         }
         // **À côté, et nulle part ailleurs** : ni chemin, ni `..`.
-        guard !name.contains("/"), !name.contains("\\"), name != ".", name != ".." else {
-            throw Refusal.fileOutsideFolder(name)
-        }
+        guard isLocalName(name) else { throw Refusal.fileOutsideFolder(name) }
         let url = folder.appendingPathComponent(name)
         let fd = open(url.path, O_RDONLY)
         guard fd >= 0 else { throw Refusal.missingFile(name) }
@@ -163,6 +161,78 @@ public final class VmdkDescriptorDisk: VirtualDiskImage, @unchecked Sendable {
         else { return nil }
         let end = bytes.firstIndex(of: 0) ?? bytes.count
         return String(bytes: bytes[0..<end], encoding: .utf8)
+    }
+
+    // MARK: - Les fichiers d'à côté
+
+    /// Les fichiers que le descripteur `url` nomme, dans l'ordre et sans
+    /// doublon : ceux qu'il faut apporter avec lui. Vide pour un fichier qui
+    /// n'est pas un descripteur, ou dont les étendues ne se lisent pas — le
+    /// branchement dira pourquoi. Un nom hors du dossier n'y est jamais.
+    public static func companionFiles(ofDescriptorAt url: URL) -> [String] {
+        guard let text = descriptorText(at: url), let extents = try? extents(text) else { return [] }
+        var names: [String] = []
+        for extent in extents {
+            guard let name = extent.file, isLocalName(name), !names.contains(name) else { continue }
+            names.append(name)
+        }
+        return names
+    }
+
+    /// Ceux qui manquent à côté de lui.
+    public static func missingCompanions(ofDescriptorAt url: URL) -> [String] {
+        let folder = url.deletingLastPathComponent()
+        return companionFiles(ofDescriptorAt: url).filter {
+            !FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path)
+        }
+    }
+
+    /// Ce qu'il faut dire après un import où le descripteur est venu sans
+    /// tous ses fichiers ; `nil` quand il ne lui manque rien. L'application
+    /// ne voit que les fichiers choisis : ceux d'à côté, dans le dossier
+    /// d'origine, ne lui sont pas ouverts, et il faut les choisir ensemble.
+    public static func incompleteImportExplanation(ofDescriptorAt url: URL) -> String? {
+        let missing = missingCompanions(ofDescriptorAt: url)
+        guard !missing.isEmpty else { return nil }
+        let names = missing.map { "« \($0) »" }.joined(separator: ", ")
+        let them = missing.count == 1 ? "ce fichier" : "ces \(missing.count) fichiers"
+        return """
+            « \(url.lastPathComponent) » est un descripteur VMDK : le disque est dans \(names), \
+            à côté de lui. Importez \(them) aussi — ou choisissez-les tous ensemble.
+            """
+    }
+
+    /// **La liste d'un dossier, sans les fichiers que ses descripteurs
+    /// nomment.** Une étendue n'est pas un disque à elle seule : une étendue
+    /// brute serait offerte comme un disque de la taille d'un morceau, et un
+    /// morceau « sparse » refusé. C'est le descripteur qui les représente.
+    public static func hidingCompanions(_ files: [URL]) -> [URL] {
+        var hidden: Set<String> = []
+        // Le chemin entier, pas le nom : un fichier du même nom dans un
+        // autre dossier n'est pas l'étendue de ce descripteur-ci.
+        for url in files where looksLikeOne(fileAt: url) {
+            let folder = url.deletingLastPathComponent().standardizedFileURL.path
+            for name in companionFiles(ofDescriptorAt: url) {
+                hidden.insert(folder + "/" + name)
+            }
+        }
+        guard !hidden.isEmpty else { return files }
+        return files.filter { !hidden.contains($0.standardizedFileURL.path) }
+    }
+
+    /// Les noms que nomment les descripteurs de `files`, tous dossiers
+    /// confondus : pour une liste qui vient d'un seul dossier.
+    public static func companionNames(among files: [URL]) -> Set<String> {
+        var names: Set<String> = []
+        for url in files where looksLikeOne(fileAt: url) {
+            names.formUnion(companionFiles(ofDescriptorAt: url))
+        }
+        return names
+    }
+
+    /// Un nom de fichier du dossier même : ni chemin, ni `..`.
+    static func isLocalName(_ name: String) -> Bool {
+        !name.isEmpty && !name.contains("/") && !name.contains("\\") && name != "." && name != ".."
     }
 
     /// Le même, pour un fichier qu'on n'a pas encore ouvert.
