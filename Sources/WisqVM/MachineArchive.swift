@@ -65,7 +65,7 @@ public enum MachineArchive {
         /// disque propre : une machine qui en avait un et se branchait sur un
         /// autre revenait branchée sur le disque vierge recréé, avec les
         /// secteurs de l'autre posés dessus.
-        var ownDisk: String? = nil
+        var ownDisk: String?
 
         struct Entry: Codable, Equatable {
             enum Kind: String, Codable { case session, writes, map }
