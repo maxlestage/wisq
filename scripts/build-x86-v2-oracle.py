@@ -68,7 +68,18 @@ def forms():
     out += ["lddqu 0x21(%rsi), %xmm0",
             "movddup %xmm1, %xmm0", f"movddup {ALIGNED:#x}(%rsi), %xmm0",
             "movddup 0x23(%rsi), %xmm0",
-            "movsldup %xmm1, %xmm0", f"movsldup {ALIGNED:#x}(%rsi), %xmm0"]
+            "movsldup %xmm1, %xmm0", f"movsldup {ALIGNED:#x}(%rsi), %xmm0",
+            # `MOVSHDUP`, les mots impairs : annoncé avec SSE3, absent
+            # jusqu'à ce qu'un balayage des opcodes le trouve.
+            "movshdup %xmm1, %xmm0", f"movshdup {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Deux instructions entières de SSE4.1 que CPUID annonce** et que le
+    # cœur n'avait pas : le minimum horizontal et son rang, et les sommes
+    # d'écarts absolus sous leurs huit immédiats — les blocs de la source et
+    # les deux départs de la destination.
+    out += ["phminposuw %xmm1, %xmm0", f"phminposuw {ALIGNED:#x}(%rsi), %xmm0"]
+    for control in range(8):
+        out.append(f"mpsadbw ${control}, %xmm1, %xmm0")
+    out.append(f"mpsadbw $5, {ALIGNED:#x}(%rsi), %xmm0")
     # **SSE4.1, l'entier.** Les minimums et maximums signés et sans signe
     # que SSE2 n'avait pas, le resserrement sans signe des mots doubles, la
     # comparaison et les multiplications de SSE4.1.
