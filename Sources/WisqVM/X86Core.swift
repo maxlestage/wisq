@@ -46,8 +46,14 @@ public struct X86Core: @unchecked Sendable {
     /// `cmp` —, et les calculer à chaque opération coûtait, sous callgrind,
     /// la parité, le zéro, le signe et le débordement de chacune. Écrire
     /// `flags` règle tout : la valeur écrite remplace ce qui attendait.
+    ///
+    /// **En ligne, les deux côtés.** Non inlinée, la lecture recevait le cœur
+    /// entier par valeur : callgrind montrait une copie de la structure —
+    /// `memcpy`, 11 % des instructions de l'hôte — à chaque `jcc`.
     public var flags: UInt64 {
+        @inline(__always)
         get { pendingSize == 0 ? settledFlags : settledFlags | pendingArithmeticBits }
+        @inline(__always)
         set {
             settledFlags = newValue
             pendingSize = 0
