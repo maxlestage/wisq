@@ -1027,6 +1027,10 @@ extension X86Core {
         case Self.serialBase...(Self.serialBase &+ 7):
             serialWrite(port &- Self.serialBase, byte)
 
+        // L'horloge CMOS : l'index, puis la donnée. Voir `X86RealTimeClock`.
+        case X86RealTimeClock.indexPort, X86RealTimeClock.dataPort:
+            devices.clock.write(port, byte)
+
         // Le bus PCI : une adresse, puis une donnée. Sans ces deux ports, le
         // noyau conclut « PCI: System does not support PCI » et n'énumère rien.
         case X86PCIHost.addressPort:
@@ -1193,6 +1197,8 @@ extension X86Core {
             return (devices.speakerFinished(at: ticks) ? 0x20 : 0)
                 | (ticks & 1) << 4
                 | (devices.speakerGate ? 1 : 0)
+        case X86RealTimeClock.indexPort, X86RealTimeClock.dataPort:
+            return UInt64(devices.clock.read(port))
         case 0x42:
             let count = devices.speakerCount(at: ticks)
             defer { devices.speakerReadHighNext.toggle() }
