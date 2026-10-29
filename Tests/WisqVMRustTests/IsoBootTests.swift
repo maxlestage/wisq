@@ -212,9 +212,10 @@ final class IsoBootTests: XCTestCase {
 
         let none = IsoBoot.explanation(.noRecipe, name: "quelconque.iso")
         XCTAssertTrue(none.contains("quelconque.iso"), none)
-        // Une image de Windows arrive ici : le refus dit que wisq ne lance que
-        // Linux, sans quoi on chercherait une autre image du même système.
-        XCTAssertTrue(none.contains("ne lance que Linux"), none)
+        // Une image de Windows arrive ici : le refus dit que wisq ne lance ni
+        // Windows ni macOS, par choix, sans quoi on chercherait une autre
+        // image du même système.
+        XCTAssertTrue(none.contains("ni Windows ni macOS"), none)
     }
 
     /// **Ce que le déballage écrit est exactement ce que le relevé compte, et
