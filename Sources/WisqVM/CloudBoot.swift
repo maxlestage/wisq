@@ -90,11 +90,19 @@ public struct CloudBoot: Equatable, Sendable {
                      open: (PartitionTable.Partition) throws -> any LinuxVolume) throws -> CloudBoot {
         if let rootHash, !RootPassword.isHash(rootHash) { throw Failure.unusablePassword }
         var readable = false
-        for partition in table.linuxCandidates {
+        // **Puis les partitions EFI**, et seulement pour une entrée
+        // configurée : Gentoo monte la sienne sur `/boot`, et son
+        // `grub/grub.cfg` y nomme un noyau rangé à côté. Après les
+        // partitions Linux, pour qu'une image qui a son `/boot` ailleurs
+        // n'aille pas chercher le `grub.cfg` d'amorce de sa partition EFI.
+        let efi = table.partitions.filter { $0.kind == .efiSystem }
+        for partition in table.linuxCandidates + efi {
             // Une partition qu'on ne sait pas lire (xfs, LVM) n'arrête pas la
             // recherche : une autre, un `/boot` séparé, peut porter le noyau.
             guard let volume = try? open(partition) else { continue }
-            readable = true
+            // Une partition EFI lisible ne fait pas une partition Linux : le
+            // refus d'une image en LVM reste celui qui le dit.
+            if partition.kind != .efiSystem { readable = true }
             let name = "vda\(partition.number)"
             if let (entry, origin) = configuredEntry(in: volume) {
                 let legacy = usesLegacyConsole(table, open)
@@ -108,7 +116,7 @@ public struct CloudBoot: Equatable, Sendable {
                                  commandLine: commandLine(entry.options, rootHash: rootHash, legacyConsole: legacy),
                                  origin: "\(origin) de \(name)")
             }
-            if let (kernel, initrd) = unconfiguredKernel(in: volume) {
+            if partition.kind != .efiSystem, let (kernel, initrd) = unconfiguredKernel(in: volume) {
                 let root = partition.uniqueID.isEmpty ? "/dev/\(name)" : "PARTUUID=\(partition.uniqueID)"
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
@@ -297,7 +305,7 @@ public struct CloudBoot: Equatable, Sendable {
                         options = Array(words.dropFirst(2))
                     }
                 case "initrd", "initrdefi", "initrd16":
-                    if initrds.isEmpty { initrds = words.dropFirst().map(path) }
+                    if initrds.isEmpty { initrds = initrdPaths(words.dropFirst()) }
                 default:
                     break
                 }
@@ -326,12 +334,22 @@ public struct CloudBoot: Equatable, Sendable {
                 .split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             switch words.first {
             case "linux": kernel = words.count >= 2 ? path(words[1]) : nil
-            case "initrd": initrds += words.dropFirst().map(path)
+            case "initrd": initrds += initrdPaths(words.dropFirst())
             case "options": options += words.dropFirst()
             default: break
             }
         }
         return kernel.map { Entry(kernel: $0, initrds: initrds, options: options) }
+    }
+
+    /// Les fichiers d'une ligne `initrd`, **sans ses variables de GRUB**.
+    /// `tuned`, installé par défaut chez CentOS Stream 10 et les RHEL,
+    /// écrit `initrd /boot/initramfs-….img $tuned_initrd` : une variable
+    /// que GRUB remplace par rien quand elle n'est pas posée. Prise pour un
+    /// fichier, elle faisait refuser toute l'image (« $tuned_initrd
+    /// introuvable »). Les options, elles, les laissaient déjà tomber.
+    static func initrdPaths(_ words: ArraySlice<String>) -> [String] {
+        words.filter { !$0.hasPrefix("$") }.map(path)
     }
 
     /// Un chemin de GRUB : un éventuel disque en tête, `(hd0,gpt1)/boot/…`,
