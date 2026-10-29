@@ -46,7 +46,48 @@ processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
   rien à corriger dans wisq.
 
 Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
-faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3024.
+faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3027.
+
+## 2026-10-29 — x86-64-v3, la part des registres généraux : BMI1, BMI2, LZCNT, MOVBE
+
+CentOS Stream 10 s'arrêtait à sa 13 441ᵉ instruction, sur `andn` : RHEL 10
+et ses dérivés sont compilés pour x86-64-v3, et le cœur x86 ne connaissait
+aucune instruction VEX. Leur noyau n'emploie que la part des registres
+généraux — c'est elle qui entre ici.
+
+- **Le premier préfixe VEX exécuté.** `X86Instruction` recompose R, X, B et W
+  de VEX en bits de REX, si bien que les registres et les adresses passent
+  par les chemins d'avant ; `vexRegister`, `vexLength` et
+  `vexImpliedPrefix` lisent `vvvv`, L et `pp` sans rien ajouter à la
+  structure.
+- **BMI1** (`andn`, `bextr`, `blsi`, `blsmsk`, `blsr`), **BMI2** (`bzhi`,
+  `pdep`, `pext`, `mulx`, `rorx`, `sarx`, `shlx`, `shrx`) dans
+  `X86BMI.swift` ; **LZCNT** et **TZCNT**, BSR et BSF sous F3 ; **MOVBE**.
+  Toute autre forme VEX — AVX, AVX2, FMA — reste refusée par son nom.
+- **CPUID** : la plus grande feuille ordinaire passe de 1 à 7 ; la
+  feuille 7 annonce BMI1 et BMI2, la feuille 1 MOVBE, 0x80000001 ABM. AVX2
+  n'est pas annoncé : il n'y a pas de registres YMM.
+
+**La référence est le processeur** : `scripts/build-x86-v3-gpr-oracle.py`,
+102 formes sur 66 états, 6 732 cas, comparés sous le masque des drapeaux que
+le manuel définit pour chacune. Le premier passage a trouvé un désaccord :
+`sarx` sur soixante-quatre bits décalait sans signe. Un test de plus pour
+r8 à r15, que l'oracle ne nomme pas ; trois sabordages, trois chutes (VEX.X
+perdu, `vvvv` sur trois bits, LZCNT absent).
+
+**Sur l'image réelle** : le noyau de CentOS Stream 10 démarre maintenant
+entier — 97 s de temps invité, jusqu'à `Run /init` —, et c'est la glibc de
+l'initramfs qui s'arrête, proprement : « Fatal glibc error: CPU does not
+support x86-64-v3 ». C'est la suite : AVX, AVX2, FMA et F16C, les registres
+YMM et XSAVE, pour que le reste de RHEL 10 tourne ici.
+
+**Essayé et écarté au passage** : des options de démarrage pour gagner du
+temps (Alpine, instructions jusqu'au shell). `mitigations=off`,
+`no_timer_check`, `quiet` : ±0,2 %. `lpj=` fixé à la main : le double, les
+délais du noyau calibrés trop haut. Le calibrage est déjà sauté, et le temps
+du démarrage est celui du travail du noyau.
+
+Compte publié : 3020 ; corpus matériels : douze.
 
 ## 2026-10-29 — Chasse aux bugs : douze corrections dans une PR
 
