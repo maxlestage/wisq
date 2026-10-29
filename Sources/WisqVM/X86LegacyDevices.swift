@@ -67,6 +67,9 @@ public struct X86LegacyDevices: Sendable, Equatable {
 
     /// Le 16550. Voir `X86SerialPort.swift`.
     public var serial = SerialPort()
+    /// L'horloge et la mémoire CMOS, aux ports 0x70 et 0x71 : voir
+    /// `X86RealTimeClock`. Hors de l'instantané, comme l'heure elle-même.
+    public var clock = X86RealTimeClock()
 
     // MARK: - Le 8253
 
