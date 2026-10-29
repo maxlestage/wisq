@@ -283,8 +283,8 @@ public enum IsoBoot {
                 Une image de données, un disque gravé à la main ou une image \
                 pour une autre architecture, non.
 
-                Et wisq ne lance que Linux : une image de Windows, de macOS \
-                ou d'un BSD ne démarrera pas ici.
+                Et wisq ne lance ni Windows ni macOS, par choix : une image \
+                de l'un ou de l'autre ne démarrera pas ici.
                 """
         case .cannotPrepare:
             return """
