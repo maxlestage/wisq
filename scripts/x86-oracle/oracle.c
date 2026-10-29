@@ -14,6 +14,11 @@
 // produit avec dix-sept, et le régénérer avec quarante-neuf changerait dix
 // mille lignes pour des colonnes que personne ne lirait. Ce qui n'est pas
 // donné part à zéro, et ce qui n'est pas demandé n'est pas rendu.
+//
+// Une ligne de soixante-trois ajoute l'image x87 ; une de quatre-vingt-quinze
+// le haut des seize YMM, deux mots chacun, derrière elle. Les corpus
+// d'avant ressortent à l'octet près : le harnais charge des hauts à zéro, et
+// leurs instructions ne les lisent pas.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +43,12 @@ extern char wisq_return[];
 // déjà figés — et l'oracle charge alors l'état par défaut d'un processeur qui
 // vient d'être remis à zéro : contrôle 0x037F, pile vide.
 #define FPUSLOTS 14
-#define ALLSLOTS (SLOTS + FPUSLOTS)
+#define FPUFULL (SLOTS + FPUSLOTS)
+// **Le haut des seize YMM, en queue encore** : trente-deux cases, deux mots
+// par registre, que seule une ligne complète de quatre-vingt-quinze valeurs
+// donne et reçoit — l'image x87 comprise, que le générateur fabrique alors.
+#define YMMSLOTS 32
+#define ALLSLOTS (FPUFULL + YMMSLOTS)
 #define GENERAL 17
 #define MAX_CODE 512
 
@@ -106,9 +116,9 @@ int main(void) {
             in[count++] = value;
             cursor = next;
         }
-        if (count != GENERAL && count != SLOTS && count != ALLSLOTS) {
-            fprintf(stderr, "ligne à %d valeurs, il en faut %d, %d ou %d : %s",
-                    count, GENERAL, SLOTS, ALLSLOTS, line);
+        if (count != GENERAL && count != SLOTS && count != FPUFULL && count != ALLSLOTS) {
+            fprintf(stderr, "ligne à %d valeurs, il en faut %d, %d, %d ou %d : %s",
+                    count, GENERAL, SLOTS, FPUFULL, ALLSLOTS, line);
             return 1;
         }
         // Sans image x87 donnée, celle d'un processeur remis à zéro : le mot
