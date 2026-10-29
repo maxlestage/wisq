@@ -83,6 +83,37 @@ public final class MachineStore: @unchecked Sendable {
         }
     }
 
+    /// **Les clés de secrets que les entrées illisibles nomment encore.**
+    ///
+    /// Une entrée qu'une version plus récente a écrite est gardée telle
+    /// quelle pour cette version-là — mais le ramasse-secrets ne la voyait
+    /// pas : supprimer une VM d'un agent effaçait le jeton que partageait une
+    /// VM illisible du même agent, et la VM revenait, après la mise à jour,
+    /// sans pouvoir s'authentifier. Toute chaîne sous une clé
+    /// `credentialRef`, à n'importe quelle profondeur : le format qu'on ne
+    /// sait pas lire est justement celui dont on ne connaît pas la forme.
+    public func preservedCredentialRefs() throws -> Set<String> {
+        try queue.sync {
+            _ = try loadOnQueue()
+            var refs: Set<String> = []
+            func collect(_ value: JSONValue) {
+                switch value {
+                case .object(let fields):
+                    for (key, field) in fields {
+                        if key == "credentialRef", case .string(let ref) = field { refs.insert(ref) }
+                        collect(field)
+                    }
+                case .array(let items):
+                    items.forEach(collect)
+                default:
+                    break
+                }
+            }
+            preserved.forEach(collect)
+            return refs
+        }
+    }
+
     public func save(_ machines: [Machine]) throws {
         try queue.sync { try saveOnQueue(machines) }
     }

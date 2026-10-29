@@ -1,4 +1,5 @@
 import Foundation
+import WisqCore
 import WisqNet
 
 /// Decoding for the display channel's messages.
@@ -60,14 +61,26 @@ extension SpiceDisplayWire {
 
     // MARK: - Geometry
 
+    /// **Chaque coordonnée bornée à `Framebuffer.maximumPixels`**, au
+    /// décodage. `Rect.width` est `right - left` sur 32 bits : une boîte
+    /// `left = 0x7FFFFFFF`, `right = 0x80000000` venue d'un serveur hostile
+    /// débordait dans `SpiceSurfaces.intersect` et faisait tomber
+    /// l'application, avant même qu'un pixel soit peint. Bornées à 2²⁶, les
+    /// différences tiennent sur 32 bits et les produits des mises à l'échelle
+    /// sur 64 ; aucune surface que ce client tient n'en approche.
     static func rect(from reader: inout SpiceWire.Reader) throws -> Rect {
         // top, left, bottom, right — the protocol's order, not the usual one.
-        Rect(
+        let rect = Rect(
             top: Int32(bitPattern: try reader.u32()),
             left: Int32(bitPattern: try reader.u32()),
             bottom: Int32(bitPattern: try reader.u32()),
             right: Int32(bitPattern: try reader.u32())
         )
+        let bound = Int32(Framebuffer.maximumPixels)
+        guard [rect.top, rect.left, rect.bottom, rect.right].allSatisfy({ (-bound...bound).contains($0) }) else {
+            throw SpiceError.invalidData
+        }
+        return rect
     }
 
     static func point(from reader: inout SpiceWire.Reader) throws -> Point {
