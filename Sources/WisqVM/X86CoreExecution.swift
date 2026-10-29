@@ -253,7 +253,6 @@ extension X86Core {
             zero = pendingResult == 0
             sign = pendingResult & signBit != 0
         }
-        var parity: Bool { flags & Flag.parity != 0 }
         switch code & 0x0F {
         case 0x0: return overflow
         case 0x1: return !overflow
@@ -265,8 +264,8 @@ extension X86Core {
         case 0x7: return !carryFlag && !zero
         case 0x8: return sign
         case 0x9: return !sign
-        case 0xA: return parity
-        case 0xB: return !parity
+        case 0xA: return flags & Flag.parity != 0
+        case 0xB: return flags & Flag.parity == 0
         case 0xC: return sign != overflow
         case 0xD: return sign == overflow
         case 0xE: return zero || sign != overflow

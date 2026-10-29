@@ -458,7 +458,9 @@ public struct X86Core: @unchecked Sendable {
 
     // MARK: - Les drapeaux
 
-    var carry: Bool { (pendingSize == 0 ? settledFlags : pendingLowBits) & Flag.carry != 0 }
+    var carry: Bool {
+        @inline(__always) get { (pendingSize == 0 ? settledFlags : pendingLowBits) & Flag.carry != 0 }
+    }
 
     /// **Sans branche** : le bit effacé, puis reposé s'il le faut. Le test
     /// `if on` coûtait une branche par drapeau, six par addition, et le
