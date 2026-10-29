@@ -246,6 +246,29 @@ enum Snapshot {
         /// Fills `ram`, which must already be the saved size — the caller
         /// reports the mismatch, because it is the one that knows what the
         /// current machine is.
+        /// **La mémoire lue sans être écrite**, avec les mêmes bornes que
+        /// `ram` : ce qui passe ici passe là-bas. Sert à valider tout ce qui
+        /// suit la mémoire avant d'y toucher — voir `X86Machine.restore`.
+        mutating func skipRAM(count: Int) throws {
+            let saved = try u64()
+            guard saved == UInt64(count) else {
+                throw Failure.ramSizeMismatch(saved: saved, expected: UInt64(count))
+            }
+            let pairs = try u64()
+            var cursor = 0
+            for _ in 0..<pairs {
+                let zeros = try Int(exactly: u64()) ?? -1
+                guard zeros >= 0, zeros <= count - cursor else { throw Failure.corrupt }
+                cursor += zeros
+                let length = try Int(exactly: u64()) ?? -1
+                guard length >= 0, length <= bytes.count - at, length <= count - cursor else {
+                    throw Failure.corrupt
+                }
+                at += length
+                cursor += length
+            }
+        }
+
         mutating func ram(_ ram: UnsafeMutableRawBufferPointer) throws {
             let saved = try u64()
             guard saved == UInt64(ram.count) else {
