@@ -390,7 +390,6 @@ public final class LocalVMModel {
         run += 1
         let thisRun = run
 
-
         // **Un noyau de PC ne démarre à rien sans son initramfs.** Il n'a
         // aucun pilote de disque compilé dedans — ce sont des modules, et ils
         // vivent justement là. Sans lui, ce qui suit est un démarrage complet,
