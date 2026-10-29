@@ -118,8 +118,23 @@ public enum X86CPUID {
     /// octets, complétés de zéros.
     public static let brand = "wisq x86-64 (comme le qemu64 de QEMU)"
 
-    /// La plus grande feuille ordinaire que ce processeur connaît.
-    public static let highestBasicLeaf: UInt32 = 1
+    /// La plus grande feuille ordinaire que ce processeur connaît : la 7, pour
+    /// annoncer la copie rapide (voir `fastStringsEBX`). Les feuilles 2 à 6
+    /// rendent des zéros — ce qu'un processeur AMD rend pour les feuilles de
+    /// cache d'Intel, et ce que dit « pas de `MONITOR` », « pas de capteur ».
+    public static let highestBasicLeaf: UInt32 = 7
+
+    /// **La copie rapide, annoncée parce qu'elle est tenue.** Feuille 7,
+    /// sous-feuille 0 : ERMS (EBX, bit 9) et FSRM (EDX, bit 4) ; sous-feuille
+    /// 1 : FSRS (EAX, bit 11). Avec eux, Linux copie, efface ses pages et
+    /// remplit sa mémoire par `rep movsb` et `rep stosb` au lieu de ses
+    /// boucles déroulées, et la glibc fait de même au-delà de son seuil.
+    /// `bulkString` traite ces deux instructions page par page : un `memcpy`
+    /// d'une page tient en une instruction de l'invité au lieu de cinq cents.
+    /// Aucun autre bit de la feuille 7 n'est posé — ni AVX2, ni BMI, ni SMEP.
+    public static let fastStringsEBX: UInt32 = 1 << 9
+    public static let fastStringsEDX: UInt32 = 1 << 4
+    public static let fastStringsSubleafOneEAX: UInt32 = 1 << 11
     /// La plus grande feuille étendue.
     public static let highestExtendedLeaf: UInt32 = 0x8000_0004
 
@@ -190,6 +205,13 @@ public enum X86CPUID {
             // Famille 15 (0xF), modèle 107 (0x6B : 0xB dans le champ de base,
             // 6 dans l'étendu), pas 1 : ce que répond le `qemu64` de QEMU.
             return (0x0006_0FB1, 0, featuresECX, features)
+        case 7:
+            // EAX de la sous-feuille 0 : la plus grande sous-feuille, la 1.
+            switch subleaf {
+            case 0: return (1, fastStringsEBX, 0, fastStringsEDX)
+            case 1: return (fastStringsSubleafOneEAX, 0, 0, 0)
+            default: return (0, 0, 0, 0)
+            }
         case 0x8000_0000:
             return (highestExtendedLeaf, 0, 0, 0)
         case 0x8000_0001:
