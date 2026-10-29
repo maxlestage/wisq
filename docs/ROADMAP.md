@@ -421,6 +421,17 @@ recommandent pour une machine prête en une minute.
    obligatoire inconnue. Plus aucun format d'hyperviseur courant n'est
    reconnu sans être lu ; restent l'ancien qcow (version 1) et le VMDK
    « descripteur », qui n'est que le texte nommant d'autres fichiers.
+10. **Fait, côté moteur.** Le **VMDK à descripteur à part**
+    (`VmdkDescriptorDisk`) — le `vmfs` d'ESXi, `monolithicFlat`, les disques
+    découpés de Workstation (`twoGbMaxExtentSparse`, `twoGbMaxExtentFlat`) :
+    les étendues `FLAT`, `VMFS`, `SPARSE` et `ZERO` mises bout à bout, leurs
+    fichiers cherchés à côté du descripteur et nulle part ailleurs. Refusés
+    en le disant : le disque différentiel, l'instantané d'ESXi (`VMFSSPARSE`,
+    `SESPARSE`), le disque physique (`VMFSRDM`, `VMFSRAW`), un fichier qui
+    manque ou trop court, un nom hors du dossier. **Reste l'application** :
+    la bibliothèque importe un fichier à la fois, et un descripteur sans ses
+    étendues n'est pas un disque — il faut importer le dossier, ou les
+    fichiers ensemble, et cela se valide sur un appareil.
 
 ## Les images de cloud qui démarrent seules
 

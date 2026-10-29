@@ -258,7 +258,10 @@ public enum KernelImageKind: Equatable, Sendable {
     /// Une image de ces formats peut encore être refusée en la branchant
     /// (chiffrée, à fichier de base, découpée…) ; le refus nomme alors ce
     /// qui manque. Le VMDK « descripteur » n'est que le texte qui nomme les
-    /// vrais fichiers : il n'y a pas de disque dedans.
+    /// vrais fichiers : il n'y a pas de disque dedans. `VmdkDescriptorDisk`
+    /// le lit quand ses fichiers sont à côté de lui, mais la bibliothèque
+    /// n'importe qu'un fichier à la fois : il reste hors d'ici tant qu'elle
+    /// ne sait pas apporter les autres.
     public static func isReadableVirtualDisk(_ format: String) -> Bool {
         ["qcow2", "VMDK", "OVA", "VDI", "VHD dynamique", "VHDX"].contains(format)
     }
