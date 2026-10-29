@@ -64,12 +64,32 @@ final class X86DecodeCache: @unchecked Sendable {
 
     private let entries: UnsafeMutablePointer<Entry>
 
-    /// Combien de lectures ont trouvé leur instruction, et combien ont dû la
-    /// décoder : ce qui dit si le cache sert, plutôt que de le supposer.
-    var hits: UInt64 { counts[0] }
+    /// **Ce que porte une case vide** : une instruction d'un octet de plus que
+    /// la plus longue qui existe. Ses masques nuls laissent passer n'importe
+    /// quels octets, mais sa longueur ne tient jamais dans ce qui reste
+    /// lisible — `available` ne dépasse pas `maximumLength` —, et c'est la
+    /// garde de longueur, déjà là, qui la refuse.
+    ///
+    /// Une case vide se reconnaissait à son masque nul, par un test à chaque
+    /// lecture du cache : trois instructions de l'hôte par instruction de
+    /// l'invité, pour un cas qui n'arrive qu'au tout début.
+    static let emptySlot = X86Instruction(
+        prefixMask: 0, rex: nil, vexBytes: (0, 0, 0), vexCount: 0, map: .oneByte, opcode: 0x90,
+        modrm: nil, sib: nil, displacementBytes: 0, displacement: 0, immediateBytes: 0,
+        immediate: 0, length: X86Instruction.maximumLength + 1)
+
+    /// Combien de lectures ont dû décoder leur instruction : ce qui dit si le
+    /// cache sert, plutôt que de le supposer. Celles qui l'ont trouvée ne se
+    /// comptent plus ici — voir `X86Core.decodeCacheHits`.
+    ///
+    /// **Le compte des trouvailles est sorti du chemin chaud.** C'était une
+    /// écriture en mémoire à chaque instruction de l'invité, deux instructions
+    /// de l'hôte sur la vingtaine que coûte une lecture du cache, pour un
+    /// chiffre qui ne sert qu'à un rapport. Les échecs, eux, se comptent sur le
+    /// chemin froid, qui décode de toute façon.
     var misses: UInt64 { counts[1] }
 
-    /// **Les deux compteurs derrière un pointeur**, et pas en `var` de la
+    /// **Les compteurs derrière un pointeur**, et pas en `var` de la
     /// classe. Une propriété modifiable d'une classe fait vérifier chaque
     /// accès par le contrôle d'exclusivité de Swift, un appel à
     /// `swift_beginAccess` à chaque instruction. Sur le premier milliard
@@ -80,12 +100,9 @@ final class X86DecodeCache: @unchecked Sendable {
     init() {
         counts = .allocate(capacity: 2)
         counts.initialize(repeating: 0, count: 2)
-        // Une instruction quelconque, jamais rendue : un masque nul dit que
-        // la case est vide — toute instruction a au moins un octet.
-        let filler = try? X86Decoder.decode([0x90])
         entries = .allocate(capacity: Self.slots)
         entries.initialize(repeating: Entry(low: 0, high: 0, lowMask: 0, highMask: 0,
-                                            instruction: filler!),
+                                            instruction: Self.emptySlot),
                            count: Self.slots)
     }
 
@@ -125,10 +142,7 @@ final class X86DecodeCache: @unchecked Sendable {
         guard start <= size &- 16 else { return nil }
         let slot = start & (Self.slots - 1)
         let entry = entries + slot
-        guard entry.pointee.lowMask != 0 else {
-            counts[1] &+= 1
-            return nil
-        }
+        // Pas de test de la case vide : voir `emptySlot`.
         let raw = UnsafeRawPointer(bytes + start)
         let first = raw.loadUnaligned(as: UInt64.self)
         let second = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self)
@@ -142,7 +156,6 @@ final class X86DecodeCache: @unchecked Sendable {
             counts[1] &+= 1
             return nil
         }
-        counts[0] &+= 1
         return entry
     }
 
