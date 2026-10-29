@@ -45,7 +45,7 @@ final class X86DecodeCacheTests: XCTestCase {
         core.registers[1] = 1000
         _ = try core.run(budget: 10_000)
         XCTAssertEqual(core.registers[0], 1000)
-        XCTAssertGreaterThanOrEqual(core.decodeCache.hits, 2995)
+        XCTAssertGreaterThanOrEqual(core.decodeCacheHits, 2995)
         XCTAssertLessThanOrEqual(core.decodeCache.misses, 4)
     }
 
@@ -152,5 +152,28 @@ final class X86DecodeCacheTests: XCTestCase {
         // Au bord de la mémoire, pas de lecture de seize octets : on décode.
         cache.store(decoded, memory.bytes, at: 0x1000 - 8, size: memory.size)
         XCTAssertNil(cache.lookup(memory.bytes, at: 0x1000 - 8, size: memory.size, available: 8))
+    }
+
+    /// **Une case vide ne rend rien, quels que soient les octets lus.** Elle
+    /// ne se reconnaît plus à son masque nul — un test de moins à chaque
+    /// lecture — mais à la longueur de ce qu'elle porte, une de plus que la
+    /// plus longue instruction : ses masques nuls laissent tout passer, et
+    /// c'est la longueur qui doit la refuser, à toutes les places et pour tout
+    /// ce qui reste lisible.
+    func testAnEmptySlotGivesNothingWhateverTheBytes() {
+        let cache = X86DecodeCache()
+        let size = 4096
+        let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+        defer { bytes.deallocate() }
+        for fill: UInt8 in [0x00, 0x90, 0xFF] {
+            bytes.initialize(repeating: fill, count: size)
+            for start in stride(from: 0, to: size - 16, by: 37) {
+                for available in 1...X86Instruction.maximumLength {
+                    XCTAssertNil(cache.lookup(bytes, at: start, size: size, available: available),
+                                 "case vide rendue à \(start), \(available) octets lisibles")
+                }
+            }
+        }
+        XCTAssertGreaterThan(X86DecodeCache.emptySlot.length, X86Instruction.maximumLength)
     }
 }

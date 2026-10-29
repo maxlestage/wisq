@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — La case vide du cache se refuse par sa longueur
+
+Chaque lecture du cache de décodage testait d'abord si la case était vide,
+reconnue à son masque nul : trois instructions de l'hôte par instruction de
+l'invité, pour un cas qui n'arrive qu'au tout début d'une machine. Une case
+vide porte maintenant une instruction d'un octet de plus que la plus longue
+qui existe (`X86DecodeCache.emptySlot`). Ses masques nuls laissent passer
+n'importe quels octets, mais sa longueur ne tient jamais dans ce qui reste
+lisible, et c'est la garde de longueur, déjà là, qui la refuse.
+
+Callgrind, 100 millions d'instructions d'Alpine : 22,34 → 22,04 milliards
+d'instructions de l'hôte (−1,3 %). Un test retiré, rien d'échangé contre du
+calcul.
+
+Un test : une case vide ne rend rien, à cent dix places, sous trois
+remplissages de la mémoire et pour chaque longueur lisible de 1 à 15. Deux
+sabordages, deux chutes : la case vide longue de 15, puis de 1. Compte
+publié : 2984.
+
+## 2026-10-29 — Le cache de décodage ne compte plus ses trouvailles
+
+Le cache de décodage pèse environ un dixième des instructions de l'hôte, une
+vingtaine par instruction de l'invité. Deux d'entre elles servaient à compter
+les trouvailles : une écriture en mémoire à chaque instruction, pour un
+chiffre qui ne sert qu'au rapport du démarrage et à un test. Le compte se
+déduit maintenant (`X86Core.decodeCacheHits`) : les instructions exécutées,
+moins celles qu'il a fallu décoder. Un peu généreux — une instruction à
+cheval sur deux pages n'entre jamais dans le cache et n'y compte pas comme
+échec —, ce qui ne change rien à ce qu'il dit. Les échecs se comptent
+toujours, sur le chemin froid qui décode de toute façon.
+
+Callgrind, 100 millions d'instructions d'Alpine : 22,54 → 22,34 milliards
+d'instructions de l'hôte (−0,9 %), les deux par instruction attendues. Une
+écriture retirée, sans branche échangée contre du calcul : rien qu'une
+mesure native croisée trancherait autrement, et l'écart est sous son bruit.
+Le test du cache tient le compte déduit ; le saboter (le compte rendu égal
+aux échecs) le fait tomber.
+
 ## 2026-10-29 — La comparaison croisée, dans le dépôt
 
 La règle posée par l'entrée précédente — un temps natif ne se compare que
