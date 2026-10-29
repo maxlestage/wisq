@@ -8,6 +8,34 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-28 — Le téléchargement en arrière-plan : la session
+
+La seconde moitié de l'étape 4 du téléchargement, après la couture (#606).
+
+**Ce qui change.** `BackgroundImageDownloads` (WisqUI, iOS) mène le
+transfert par une session `URLSession` d'arrière-plan : le système le
+continue l'application endormie ou tuée, et la réveille pour rendre le
+fichier. Son délégué le recoud par `ImageDownloader.adopt` **avant de rendre
+la main** — la session l'efface dès que la méthode revient —, et une tâche
+finie en erreur n'a rien recousu : le `.part` garde ce qu'il avait. Le
+réveil passe par `AppDelegate` (`handleEventsForBackgroundURLSession`,
+branché par `@UIApplicationDelegateAdaptor`). La feuille « Télécharger »
+passe par elle, avec le même progrès qu'avant.
+
+Une session ne garde de chaque tâche qu'une chaîne, sa description. L'image y
+voyage en JSON (`Release.backgroundTag`, `Release` et `Checksum` devenus
+`Codable`) : c'est elle qui dit, au réveil, quelle image recoudre et contre
+quelle somme. Une étiquette qui n'en est pas une ne donne rien, et la tâche
+est ignorée plutôt que recousue sur la mauvaise image.
+
+**Ce qui ne se vérifie pas ici.** La session est du code Apple : compilé par
+la CI, mais pas exécuté — aucun test ne quitte l'application en plein
+transfert. Reste à l'éprouver sur un iPhone.
+
+Trois tests sur l'étiquette (l'image revient telle qu'elle est partie, avec
+ou sans adresse propre, en SHA-256 comme en SHA-512 ; une étiquette étrangère
+ne donne rien ; la somme en fait partie). Deux sabordages, deux chutes. Compte publié : 2983.
+
 ## 2026-10-28 — Le téléchargement en arrière-plan : la couture
 
 L'étape 4 du téléchargement (`ROADMAP.md`) : une image de cloud fait des
