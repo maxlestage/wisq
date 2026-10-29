@@ -9,7 +9,7 @@ import XCTest
 /// le dira en s'arrêtant dessus ». Elle l'a dit : une fois `/init` vivant, la
 /// course s'arrête sur `0F 2A` — `CVTSI2SD` — dans le binaire d'Alpine.
 ///
-/// `Tests/Fixtures/x86-float-oracle.tsv` : 119 formes, 12 852 cas, 108 états,
+/// `Tests/Fixtures/x86-float-oracle.tsv` : 127 formes, 13 716 cas, 108 états,
 /// fabriqués par `scripts/build-x86-float-oracle.py`. Tout est **scalaire** :
 /// les formes
 /// empaquetées apparaissent une à trois fois chacune chez l'invité, dans du
