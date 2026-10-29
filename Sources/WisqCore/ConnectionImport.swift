@@ -107,6 +107,17 @@ public enum ConnectionImport {
     /// would be growing the model to satisfy a file rather than a user.
     /// `RemoteDesktopFile` still reports the values: reading what the file says
     /// and deciding what to do with it are different jobs.
+    /// **Le domaine du fichier, devant l'utilisateur** : `CORP\jdoe`, la forme
+    /// que la session RDP découpe en ses deux champs. Il était lu puis
+    /// perdu, et un compte de domaine s'authentifiait avec un domaine vide.
+    /// Un nom qui porte déjà son domaine — `CORP\jdoe`, `jdoe@corp.example`
+    /// — est gardé tel quel.
+    static func account(_ connection: RemoteDesktopFile.Connection) -> String? {
+        guard let user = connection.username else { return nil }
+        guard let domain = connection.domain, !user.contains("\\"), !user.contains("@") else { return user }
+        return "\(domain)\\\(user)"
+    }
+
     public static func machine(from connection: RemoteDesktopFile.Connection) throws -> Imported {
         let host = try validatedHost(connection.host)
         return Imported(
@@ -121,7 +132,7 @@ public enum ConnectionImport {
                 // be inventing a fact the file does not state.
                 security: .none,
                 credentialRef: nil,
-                username: connection.username,
+                username: account(connection),
                 tags: ["importé"]
             ),
             // Never carried. The blob in the file is encrypted to the machine

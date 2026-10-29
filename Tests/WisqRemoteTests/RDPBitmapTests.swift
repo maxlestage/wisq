@@ -224,6 +224,34 @@ final class RDPInterleavedRLETests: XCTestCase {
         }
     }
 
+    /// **La forme étendue d'une image forme-fond compte des pixels, pas des
+    /// octets de masque.** Un champ de longueur nul ouvre la forme étendue :
+    /// l'octet suivant, plus un, est le nombre de **pixels** — c'est la forme
+    /// qu'un encodeur emploie pour une course qui n'est pas un multiple de
+    /// huit (MS-RDPBCGR 2.2.9.1.1.3.1.2.4, `ExtractRunLengthRegularFgBg` de
+    /// FreeRDP). Le décodeur la multipliait par huit comme la forme
+    /// compacte : neuf pixels en devenaient soixante-douze, le rectangle
+    /// débordait, et l'image entière était perdue. Aucun des vecteurs jugés
+    /// par FreeRDP ne la portait.
+    func testTheExtendedFormOrMaskCountsPixels() throws {
+        // Neuf pixels de forme sur la première ligne : deux octets de masque.
+        let regular = try RDPInterleavedRLE.decompress(
+            Data([0x40, 0x08, 0xFF, 0x01]), width: 9, height: 1, bitsPerPixel: 24)
+        // La même, sous le code qui pose d'abord la couleur de forme.
+        let setting = try RDPInterleavedRLE.decompress(
+            Data([0xD0, 0x08, 0x11, 0x22, 0x33, 0xFF, 0x01]), width: 9, height: 1, bitsPerPixel: 24)
+        for decoded in [regular, setting] {
+            let pixels = [UInt8](decoded)
+            XCTAssertEqual(pixels.count % 9, 0)
+            let size = pixels.count / 9
+            let first = Array(pixels[0..<size])
+            XCTAssertNotEqual(first, [UInt8](repeating: 0, count: size), "la couleur de forme, pas le fond")
+            for index in 1..<9 {
+                XCTAssertEqual(Array(pixels[index * size..<(index + 1) * size]), first, "pixel \(index)")
+            }
+        }
+    }
+
     /// Un flux coupé au milieu d'une couleur est refusé plutôt que complété.
     func testATruncatedStreamIsRefused() {
         XCTAssertThrowsError(try RDPInterleavedRLE.decompress(

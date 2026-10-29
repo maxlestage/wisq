@@ -351,25 +351,31 @@ public enum RDPInterleavedRLE {
             case 0x00...0x9F:
                 var count = Int(code & 0x1F)
                 let kind = code >> 5
-                if count == 0 {
-                    // **Pour une image forme-fond, la longueur est en octets de
-                    // masque**, et la forme étendue compte à partir de un.
+                // **Pour une image forme-fond, la forme compacte compte en
+                // octets de masque — huit pixels chacun —, la forme étendue en
+                // pixels**, à partir de un : c'est ainsi qu'un encodeur écrit
+                // une course qui n'est pas un multiple de huit. Les deux
+                // étaient multipliées par huit, et une course de neuf pixels
+                // en devenait soixante-douze.
+                let extended = count == 0
+                if extended {
                     count = kind == 2 ? Int(try byte()) + 1 : Int(try byte()) + 32
                 }
                 switch kind {
                 case 0: return (.background, count)
                 case 1: return (.foreground, count)
-                case 2: return (.formOrMask, count * 8)
+                case 2: return (.formOrMask, extended ? count : count * 8)
                 case 3: return (.colourRun, count)
                 default: return (.colourImage, count)
                 }
             case 0xC0...0xEF:
                 var count = Int(code & 0x0F)
                 let kind = code >> 4
-                if count == 0 { count = kind == 0xD ? Int(try byte()) + 1 : Int(try byte()) + 16 }
+                let extended = count == 0
+                if extended { count = kind == 0xD ? Int(try byte()) + 1 : Int(try byte()) + 16 }
                 switch kind {
                 case 0xC: return (.setForegroundRun, count)
-                case 0xD: return (.setForegroundMask, count * 8)
+                case 0xD: return (.setForegroundMask, extended ? count : count * 8)
                 default: return (.dithered, count)
                 }
             case 0xF0...0xF8:

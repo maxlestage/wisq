@@ -37,8 +37,15 @@ public enum CredentialReaper {
     ///
     /// `remaining` is the list **after** the change — the caller passes what
     /// the store returned, not what it had before.
-    public static func orphanedRefs(after removed: Machine, remaining: [Machine]) -> Set<String> {
-        let stillUsed = remaining.reduce(into: Set<String>()) { $0.formUnion($1.credentialRefs) }
+    ///
+    /// `alsoReferenced` porte les clés que des entrées **illisibles** de la
+    /// bibliothèque nomment encore (`MachineStore.preservedCredentialRefs`) :
+    /// elles sont gardées pour une version plus récente, et leurs secrets
+    /// avec elles.
+    public static func orphanedRefs(
+        after removed: Machine, remaining: [Machine], alsoReferenced: Set<String> = []
+    ) -> Set<String> {
+        let stillUsed = remaining.reduce(into: alsoReferenced) { $0.formUnion($1.credentialRefs) }
         return removed.credentialRefs.subtracting(stillUsed)
     }
 
@@ -53,9 +60,10 @@ public enum CredentialReaper {
     public static func reap(
         after removed: Machine,
         remaining: [Machine],
+        alsoReferenced: Set<String> = [],
         from store: CredentialStore
     ) throws -> Set<String> {
-        let orphans = orphanedRefs(after: removed, remaining: remaining)
+        let orphans = orphanedRefs(after: removed, remaining: remaining, alsoReferenced: alsoReferenced)
         var firstFailure: Error?
         for ref in orphans.sorted() {
             do {
