@@ -153,6 +153,14 @@ public final class X86Machine: @unchecked Sendable {
     /// Combien d'instructions vaut une seconde de l'invité.
     var guestHertz: Double { Double(core.instructionsPerTick) * 1_193_182 }
     private var inputQueue: [UInt8] = []
+    /// Les touches et les mouvements envoyés par l'hôte, en attente du
+    /// prochain tour — sous le même verrou que `inputQueue`.
+    private var pointerQueue: [PS2Event] = []
+
+    enum PS2Event {
+        case key(X86ScanCode, down: Bool)
+        case mouse(dx: Int, dy: Int, buttons: UInt8)
+    }
     private var pendingOutput: [UInt8] = []
     private var published = GuestProgress(retired: 0, rip: 0)
 
@@ -298,6 +306,13 @@ public final class X86Machine: @unchecked Sendable {
                 core.serialInput.append(contentsOf: inputQueue)
                 inputQueue.removeAll()
             }
+            for event in pointerQueue {
+                switch event {
+                case .key(let code, let down): core.devices.ps2.key(code, down: down)
+                case .mouse(let dx, let dy, let buttons): core.devices.ps2.mouse(dx: dx, dy: dy, buttons: buttons)
+                }
+            }
+            pointerQueue.removeAll()
             lock.unlock()
             if stopped { flushOutput(); return .stopped }
 
@@ -371,6 +386,25 @@ public final class X86Machine: @unchecked Sendable {
     public func send(_ data: Data) {
         lock.lock()
         inputQueue.append(contentsOf: data)
+        lock.unlock()
+        nudge.signal()
+    }
+
+    /// Une touche du clavier PS/2 de l'invité, enfoncée ou relâchée.
+    /// Utilisable depuis n'importe quel fil.
+    public func key(_ code: X86ScanCode, down: Bool) {
+        lock.lock()
+        pointerQueue.append(.key(code, down: down))
+        lock.unlock()
+        nudge.signal()
+    }
+
+    /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
+    /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
+    /// quel fil.
+    public func mouse(dx: Int, dy: Int, buttons: UInt8) {
+        lock.lock()
+        pointerQueue.append(.mouse(dx: dx, dy: dy, buttons: buttons))
         lock.unlock()
         nudge.signal()
     }
