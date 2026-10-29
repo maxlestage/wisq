@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Les formes VEX.256 qui calculent par moitiés
+
+Quatrième tranche de x86-64-v3 : les registres YMM existent depuis #618,
+voici les opérations qui les emploient entiers — celles que la glibc de
+RHEL 10 met dans `memcpy`, `strlen`, `memchr` quand AVX2 est annoncé.
+
+- **Deux fois l'opération de 128 bits** (`X86AVX256.swift`) : la moitié
+  basse par la forme VEX.128, puis la haute par la même, le haut de chaque
+  registre nommé posé à la place de son bas, seize octets plus loin en
+  mémoire. Aucune opération n'est récrite.
+- **Trois écarts tenus** : le compte d'un décalage par un registre, un XMM
+  entier pour les deux moitiés (et pris d'avant la moitié basse quand il est
+  aussi la destination) ; l'immédiat de `vshufpd`, deux bits par moitié ;
+  `vpmovmskb`, `vmovmskps/pd` et `vptest`, qui rassemblent les moitiés.
+- **Une faute sur la moitié haute** — trente-deux octets au bord d'une page —
+  laisse tout comme avant la moitié basse.
+- **Refusé, par son nom** : ce qui traverse les moitiés (`vperm2i128`,
+  `vpbroadcast*`, `vpmovzx` sur ymm, `vcvtps2pd`), et `vblendps`, `vdpps`,
+  `vmpsadbw`, dont la forme SSE n'existe pas encore ici. AVX n'est toujours
+  pas annoncé.
+
+**Le harnais de l'oracle rend le haut des YMM** : une ligne de
+quatre-vingt-quinze valeurs, l'image x87 comprise ; les cinq corpus
+régénérés avec lui ressortent à l'octet près. **Le quatorzième corpus**,
+`scripts/build-x86-avx256-oracle.py`, récrit en ymm les formes du corpus
+VEX.128 — l'assembleur écarte celles qui n'ont pas de forme de 256 bits de
+même largeur — plus vingt de plus : 686 formes, 26 068 cas, ymm3 à ymm15
+tenus intacts.
+
+Le premier passage a trouvé deux choses : quatre formes ajoutées à la main
+sans SSE derrière elles (retirées), et le compte de `vpsrld %xmm0, %ymm2,
+%ymm0` relu **après** que la moitié basse l'avait écrasé — corrigé. Trois
+tests écrits à la main (ymm8 à ymm15 et le registre de passage, la faute
+sur la moitié haute, les refus) ; onze sabordages, onze chutes, dont un
+survivant au premier passage : une condition redondante, retirée.
+
+Compte publié : 3045 ; corpus matériels : quatorze.
+
 ## 2026-10-29 — L'état étendu : XCR0, XSAVE, XRSTOR, et le haut des YMM
 
 Troisième tranche de x86-64-v3, toujours sous « continue de tout
