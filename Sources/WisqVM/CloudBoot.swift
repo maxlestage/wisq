@@ -72,9 +72,14 @@ public struct CloudBoot: Equatable, Sendable {
     /// La même, avec le mot de passe déjà en empreinte `$6$` : ce que
     /// l'application garde (`RootPassword`), puisqu'elle ne garde jamais le
     /// mot de passe lui-même.
-    public static func find(in image: any VirtualDiskImage, rootHash: String?) throws -> CloudBoot {
+    ///
+    /// `serialShell` à faux pour un système **installé** : il a ses comptes
+    /// et ses mots de passe, et la console série n'y ouvre pas de shell
+    /// `root` sans connexion — voir `InstalledSystem`.
+    public static func find(in image: any VirtualDiskImage, rootHash: String?,
+                            serialShell: Bool = true) throws -> CloudBoot {
         let table = try PartitionTable.read(image)
-        return try find(in: table, rootHash: rootHash) { try linuxVolume($0, in: image) }
+        return try find(in: table, rootHash: rootHash, serialShell: serialShell) { try linuxVolume($0, in: image) }
     }
 
     static func find(in table: PartitionTable, rootPassword: String? = nil,
@@ -90,7 +95,7 @@ public struct CloudBoot: Equatable, Sendable {
         return SHA512Crypt.hash(rootPassword, salt: randomSalt())
     }
 
-    static func find(in table: PartitionTable, rootHash: String?,
+    static func find(in table: PartitionTable, rootHash: String?, serialShell: Bool = true,
                      open: (PartitionTable.Partition) throws -> any LinuxVolume) throws -> CloudBoot {
         if let rootHash, !RootPassword.isHash(rootHash) { throw Failure.unusablePassword }
         var readable = false
@@ -117,7 +122,8 @@ public struct CloudBoot: Equatable, Sendable {
                 let initrd = entry.initrds.isEmpty ? nil
                     : try entry.initrds.flatMap { try volume.contents(of: $0) }
                 return CloudBoot(kernel: kernel, initrd: initrd,
-                                 commandLine: commandLine(entry.options, rootHash: rootHash, legacyConsole: legacy),
+                                 commandLine: commandLine(entry.options, rootHash: rootHash, legacyConsole: legacy,
+                                                          serialShell: serialShell),
                                  origin: "\(origin) de \(name)")
             }
             if partition.kind != .efiSystem, let (kernel, initrd) = unconfiguredKernel(in: volume) {
@@ -125,7 +131,8 @@ public struct CloudBoot: Equatable, Sendable {
                 return CloudBoot(kernel: try volume.contents(of: kernel),
                                  initrd: try initrd.map { try volume.contents(of: $0) },
                                  commandLine: commandLine(["root=\(root)", "ro"], rootHash: rootHash,
-                                                          legacyConsole: usesLegacyConsole(table, open)),
+                                                          legacyConsole: usesLegacyConsole(table, open),
+                                                          serialShell: serialShell),
                                  origin: "\(kernel) de \(name)")
             }
         }
@@ -625,7 +632,8 @@ public struct CloudBoot: Equatable, Sendable {
         commandLine(options, rootHash: rootPassword.map { SHA512Crypt.hash($0, salt: salt) })
     }
 
-    static func commandLine(_ options: [String], rootHash: String? = nil, legacyConsole: Bool = false) -> String {
+    static func commandLine(_ options: [String], rootHash: String? = nil, legacyConsole: Bool = false,
+                            serialShell: Bool = true) -> String {
         var kept = options.filter { !$0.hasPrefix("$") }
         if !kept.contains(where: { $0 == "console=ttyS0" || $0.hasPrefix("console=ttyS0,") }) {
             kept.append("console=ttyS0")
@@ -634,6 +642,9 @@ public struct CloudBoot: Equatable, Sendable {
             let key = option.prefix { $0 != "=" }
             if !kept.contains(where: { $0.prefix { $0 != "=" } == key }) { kept.append(option) }
         }
+        // Un système installé garde sa connexion : la console série, oui ;
+        // un shell `root` sans mot de passe, non.
+        guard serialShell else { return kept.joined(separator: " ") }
         // Une entrée qui passe déjà des credentials le fait à sa façon, et
         // on n'y ajoute rien.
         guard !kept.contains(where: { $0.hasPrefix("systemd.set_credential") }) else {
