@@ -8,6 +8,76 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Une reprise refusée ne touche plus à la mémoire
+
+**Le défaut.** `X86Machine.restore` écrivait la mémoire de l'instantané
+directement dans celle de la machine, puis lisait ce qui la suit : la pile
+x87, l'état étendu, le rapport de l'horloge, les disques. Si l'une de ces
+sections était abîmée, la reprise était refusée avec la mémoire déjà
+remplacée. C'est une machine à moitié reprise, ce que la règle du « tout ou
+rien » écrite au-dessus de la fonction interdit.
+
+**Ce qui change.**
+- La suite est lue d'abord, sur un second lecteur. `Snapshot.Reader.skipRAM`
+  passe la mémoire en vérifiant les mêmes bornes que `ram`.
+- La mémoire s'écrit en dernier, quand plus rien ne peut échouer.
+- Pourquoi pas une copie à part, comme le fait la machine RISC-V : elle
+  doublerait jusqu'à seize gibioctets.
+
+**Vérifié.** Deux tests (`X86RestoreAllOrNothingTests`) : un instantané au
+XCR0 abîmé est refusé et la mémoire reste celle d'avant ; un instantané
+intact se reprend, mémoire comprise. Trois sabotages, trois chutes.
+
+Compte publié : 3098.
+
+## 2026-10-29 — Une session réseau par agent appairé, plus une par requête
+
+**Le défaut.** `AgentClient(baseURL:token:pinnedFingerprint:)` construisait
+un `URLSession` neuf à chaque client, et un client se construit à chaque
+connexion à une console (`ConsoleResolver`) et à chaque action d'alimentation
+(`VMPower`). Une session garde son délégué jusqu'à ce qu'on l'invalide, et
+aucune ne l'était. Chacune restait donc, avec son délégué et ses connexions
+TLS au repos, jusqu'à la fin de l'application.
+
+**Ce qui change.** Une session par empreinte de certificat, gardée le temps de
+l'application. Leur nombre est borné par les agents appairés, et une deuxième
+requête reprend la connexion TLS de la première au lieu d'en ouvrir une.
+
+**Vérifié.** Deux tests (`AgentSessionTests`) : même empreinte, même session ;
+autre empreinte, autre session, et jamais celle du système. Le sabotage (une
+session neuve à chaque fois) fait tomber le premier.
+
+Compte publié : 3096.
+
+## 2026-10-29 — Une session reprise garde sa mémoire
+
+**Le défaut.** L'application construisait la machine à la taille réglée,
+rognée sur ce que le téléphone avait de libre, puis lisait l'instantané. Une
+session sauvée à une autre taille était refusée par la machine
+(`ramSizeMismatch`). L'application prenait ce refus pour « pas de session » et
+démarrait le noyau à neuf. Quelques minutes plus tard, la sauvegarde continue
+écrasait l'instantané. Il suffisait d'avoir moins de mémoire libre qu'au moment
+de la sauvegarde, ou d'avoir déplacé le réglage : la session était perdue sans
+un mot.
+
+**Ce qui change.**
+- `SessionMemory` décide. Une session lisible impose sa taille si elle tient
+  dans ce qui est libre ; sinon le démarrage est refusé, l'instantané est
+  gardé, et la phrase donne les deux nombres. Le réglage ne sert plus qu'aux
+  démarrages à neuf.
+- `X86Machine.savedRAMSize(in:)` et `LinuxMachine.savedRAMSize(in:)` lisent
+  la taille sans reprendre la machine. Côté PC, la lecture passe par
+  `readCore`, la partie de `restore` qui précède la mémoire, sortie pour que
+  les deux chemins restent le même.
+- `LocalVMModel` lit l'image et sa session avant de construire la machine.
+  Ce fichier ne se compile qu'à la CI d'Apple.
+
+**Vérifié.** Six tests (`SessionMemoryTests`), dont le bout à bout : la
+taille réglée refuse l'instantané, la taille choisie le reprend octet pour
+octet. Six sabotages, six chutes.
+
+Compte publié : 3094.
+
 ## 2026-10-29 — CPUID annonce x86-64-v3 : AVX, AVX2, FMA, F16C
 
 **Ce qui change.** `X86CPUID.featuresECX` annonce FMA (12), AVX (28) et F16C
