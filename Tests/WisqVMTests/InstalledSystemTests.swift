@@ -59,6 +59,15 @@ final class InstalledSystemTests: XCTestCase {
         XCTAssertEqual(found.kernel, pattern(300_000, 1))
         XCTAssertEqual(found.initrd, pattern(70_000, 2))
         XCTAssertEqual(found.origin, "grub.cfg de vda1")
+        // **Un système installé garde sa connexion** : la console série et
+        // les délais des machines lentes, mais pas de shell `root` sans mot
+        // de passe, ni de première mise en route.
+        let line = found.commandLine
+        XCTAssertTrue(line.contains("console=ttyS0"), line)
+        XCTAssertTrue(line.contains("systemd.default_timeout_start_sec="), line)
+        for refused in ["set_credential", "autologin", "noauth", "firstboot"] {
+            XCTAssertFalse(line.contains(refused), "« \(refused) » dans \(line)")
+        }
         let base = try Data(contentsOf: disk)
         XCTAssertTrue(base.allSatisfy { $0 == 0 }, "le fichier du disque n'est jamais écrit")
     }
