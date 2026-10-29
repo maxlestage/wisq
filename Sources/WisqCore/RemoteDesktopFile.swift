@@ -64,7 +64,7 @@ public enum RemoteDesktopFile {
     /// gateway carrying `gatewaycredentialssource:i:` — an empty value, which
     /// is legal in those files — was refused whole.
     private static let readIntegerKeys: Set<String> = [
-        "desktopwidth", "desktopheight", "screen mode id", "redirectclipboard",
+        "desktopwidth", "desktopheight", "screen mode id", "redirectclipboard", "server port",
     ]
 
     public static func parse(_ text: String) throws -> Connection {
@@ -118,7 +118,11 @@ public enum RemoteDesktopFile {
             throw Failure.missingAddress
         }
 
-        let (host, port) = try splitAddress(address)
+        // **`server port:i:` quand l'adresse n'en porte pas** : mstsc et
+        // plusieurs passerelles l'écrivent ainsi. Il était ignoré, et la
+        // machine enregistrée sur 3389 — un port que le fichier ne nommait pas.
+        let fallback = try integers["server port"].map { try Self.port(String($0)) } ?? defaultPort
+        let (host, port) = try splitAddress(address, fallback: fallback)
         return Connection(
             host: host,
             port: port,
@@ -137,11 +141,11 @@ public enum RemoteDesktopFile {
     /// `[2001:db8::1]:3389` has five colons and only the last one separates a
     /// port. Splitting on the first — or on any colon without looking at the
     /// brackets — produces a host of `[2001` and a connection to nowhere.
-    private static func splitAddress(_ address: String) throws -> (String, Int) {
+    private static func splitAddress(_ address: String, fallback: Int) throws -> (String, Int) {
         if address.hasPrefix("["), let close = address.firstIndex(of: "]") {
             let host = String(address[address.index(after: address.startIndex)..<close])
             let rest = address[address.index(after: close)...]
-            guard !rest.isEmpty else { return (host, defaultPort) }
+            guard !rest.isEmpty else { return (host, fallback) }
             guard rest.hasPrefix(":") else { throw Failure.badPort(String(rest)) }
             return (host, try port(String(rest.dropFirst())))
         }
@@ -150,7 +154,7 @@ public enum RemoteDesktopFile {
         // truncate the address.
         let colons = address.filter { $0 == ":" }.count
         guard colons == 1, let separator = address.lastIndex(of: ":") else {
-            return (address, defaultPort)
+            return (address, fallback)
         }
         return (
             String(address[..<separator]),
