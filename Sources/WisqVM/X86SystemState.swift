@@ -192,15 +192,22 @@ public enum X86CPUID {
     /// **Et XSAVE (26)** : `XSAVE`, `XRSTOR`, `XGETBV`, `XSETBV`, sur x87,
     /// SSE et le haut des YMM (`X86XSAVE.swift`). OSXSAVE (27) n'est pas
     /// ici : il recopie CR4.OSXSAVE, et `answer` le pose quand il le faut.
-    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 22)
-        | (1 << 23) | (1 << 26)
+    ///
+    /// **Et le reste de x86-64-v3** : FMA (12), AVX (28) et F16C (29). Chacun
+    /// est tenu par son corpus — les formes VEX.128 (`x86-avx128-oracle`),
+    /// VEX.256 par moitiés (`x86-avx256-oracle`), ce qui traverse les
+    /// moitiés (`x86-avx2-oracle`), FMA, F16C et les conversions
+    /// (`x86-fma-oracle`). Ce qui manque encore — les ramassages, `vpmaskmov`,
+    /// `vblendps`, `vdpps` — est refusé par son nom s'il arrive.
+    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 19) | (1 << 20)
+        | (1 << 22) | (1 << 23) | (1 << 26) | (1 << 28) | (1 << 29)
     /// CPUID.1:ECX.OSXSAVE.
     public static let osxsaveBit: UInt32 = 1 << 27
     /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
     /// n'emploie que les registres généraux, et que le noyau de RHEL 10
-    /// emploie sans demander. AVX2 (5) n'y est pas : les registres YMM
-    /// existent (`X86XSAVE.swift`), aucune opération sur 256 bits encore.
-    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 8)
+    /// emploie sans demander. **Et AVX2 (5)**, dont les opérations sur
+    /// 256 bits sont là (`X86AVX256.swift`, `X86AVX2.swift`).
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29

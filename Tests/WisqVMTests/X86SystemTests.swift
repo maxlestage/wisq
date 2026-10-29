@@ -37,27 +37,28 @@ final class X86SystemTests: XCTestCase {
             XCTAssertNotEqual(features & (1 << UInt32(bit)), 0, "\(name) : sans lui, la glibc refuse de démarrer")
         }
         // **x86-64-v2, dans ECX** : SSE3, SSSE3, CX16, SSE4.1, SSE4.2 et
-        // POPCNT, que la glibc d'AlmaLinux 9 exige — et rien au-delà : ni
-        // MONITOR, ni AVX (28), que ce cœur n'a pas. XSAVE (26) est là
-        // (`X86XSAVETests`) ; OSXSAVE (27) suit CR4, à zéro ici.
+        // POPCNT, que la glibc d'AlmaLinux 9 exige. MONITOR n'y est pas ;
+        // OSXSAVE (27) suit CR4, à zéro ici.
         let ecx = X86CPUID.answer(leaf: 1, subleaf: 0).2
         for (bit, name) in [(0, "SSE3"), (9, "SSSE3"), (13, "CX16"), (19, "SSE4.1"), (20, "SSE4.2"), (23, "POPCNT")] {
             XCTAssertNotEqual(ecx & (1 << UInt32(bit)), 0, "\(name) : x86-64-v2 l'exige")
         }
         XCTAssertEqual(ecx & ~X86CPUID.featuresECX, 0)
-        XCTAssertEqual(ecx & (1 << 3 | 1 << 27 | 1 << 28), 0, "ni MONITOR, ni OSXSAVE sans CR4, ni AVX")
-        XCTAssertNotEqual(ecx & (1 << 26), 0, "XSAVE")
+        XCTAssertEqual(ecx & (1 << 3 | 1 << 27), 0, "ni MONITOR, ni OSXSAVE sans CR4")
+        // **x86-64-v3, dans ECX** : FMA, XSAVE, AVX, F16C — ce que la glibc
+        // de RHEL 10 exige, chacun tenu par son corpus.
+        for (bit, name) in [(12, "FMA"), (26, "XSAVE"), (28, "AVX"), (29, "F16C")] {
+            XCTAssertNotEqual(ecx & (1 << UInt32(bit)), 0, "\(name) : x86-64-v3 l'exige")
+        }
         // LAHF-SAHF en mode long, l'autre exigence de x86-64-v2 ; et ABM,
         // qui annonce LZCNT.
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1 | 1 << 5)
-        // **La part de x86-64-v3 des registres généraux** : MOVBE dans la
-        // feuille 1, BMI1 et BMI2 dans la feuille 7 — sans AVX2, que ce cœur
-        // n'a pas.
+        // **Le reste de x86-64-v3** : MOVBE dans la feuille 1, BMI1, AVX2 et
+        // BMI2 dans la feuille 7, avec ERMS (#619) — et rien d'autre : ni AVX-512.
         XCTAssertNotEqual(ecx & (1 << 22), 0, "MOVBE")
         XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 0xD, "jusqu'à la feuille de l'état étendu")
         let leaf7 = X86CPUID.answer(leaf: 7, subleaf: 0)
-        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 8 | 1 << 9,
-                       "BMI1, BMI2 et ERMS, et rien d'autre — ni AVX2 (5)")
+        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 5 | 1 << 8 | 1 << 9, "BMI1, AVX2, BMI2 et ERMS, et rien d'autre")
         XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 1).1, 0)
     }
 
