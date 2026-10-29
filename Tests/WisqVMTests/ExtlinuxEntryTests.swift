@@ -57,6 +57,20 @@ final class ExtlinuxEntryTests: XCTestCase {
         XCTAssertEqual(entry.options, ["root=/dev/vda1"])
     }
 
+    /// `MENU DEFAULT` désigne l'entrée quand `DEFAULT` nomme le menu, même
+    /// si ce n'est pas la première.
+    func testTheEntryMarkedDefaultWinsOverTheFirst() throws {
+        let text = """
+            DEFAULT menu.c32
+            LABEL rescue
+              LINUX /vmlinuz-rescue
+            LABEL lts
+              MENU DEFAULT
+              LINUX /vmlinuz-lts
+            """
+        XCTAssertEqual(CloudBoot.extlinuxEntry(text, in: "/")?.kernel, "/vmlinuz-lts")
+    }
+
     /// Sans `DEFAULT` utilisable ni entrée marquée, la première qui a un
     /// noyau ; sans noyau du tout, rien.
     func testTheFirstEntryWithAKernelOtherwise() throws {
