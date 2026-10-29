@@ -267,7 +267,7 @@ extension X86Core {
     /// Le temps de l'invité, en battements du 8253. Il vient du compteur
     /// d'instructions — voir `X86LegacyDevices` pour pourquoi, et pourquoi
     /// c'est une décision plutôt qu'une mesure.
-    public var ticks: UInt64 { (retired &+ idled) / X86LegacyDevices.instructionsPerTick }
+    public var ticks: UInt64 { (retired &+ idled) / instructionsPerTick }
 
     /// Lever ce qui est dû, puis livrer la ligne la plus prioritaire.
     ///
@@ -344,7 +344,7 @@ extension X86Core {
         guard skipsIdleTime, devices.reload != 0 else { return 1 }
         let period = devices.oneShot ? max(UInt64(devices.reload), X86LegacyDevices.shortestOneShot)
             : UInt64(devices.reload)
-        let wake = (devices.reloadedAt &+ (devices.raised &+ 1) &* period) &* X86LegacyDevices.instructionsPerTick
+        let wake = (devices.reloadedAt &+ (devices.raised &+ 1) &* period) &* instructionsPerTick
         let now = retired &+ idled
         return wake > now ? wake - now : 1
     }
