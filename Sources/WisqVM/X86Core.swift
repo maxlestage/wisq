@@ -275,7 +275,7 @@ public struct X86Core: @unchecked Sendable {
         /// trame n'est pas entièrement de la RAM (un disque, un écran). Une
         /// lecture qui trouve sa page ici n'a plus à repasser par les bornes
         /// de la mémoire : elles ont été vérifiées une fois, au remplissage.
-        var host: UnsafeMutablePointer<UInt8>? = nil
+        var host: UnsafeMutablePointer<UInt8>?
         var flags: UInt8 = 0
     }
 
