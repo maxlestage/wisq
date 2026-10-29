@@ -35,6 +35,26 @@ x86-64-v3 : sans ces bits, elle s'arrête avant le premier programme.
 
 Compte publié inchangé.
 
+## 2026-10-29 — `pextrw` vers la mémoire : CentOS Stream 10 jusqu'à son terminal
+
+Toujours sur la branche qui annonce x86-64-v3 entier, avec le reste de
+SSSE3 (#623) : CentOS Stream 10 démarre maintenant ses services — udev,
+fsck de la partition EFI, NetworkManager, rsyslog, crond, cockpit — jusqu'à
+« Started serial-getty@ttyS0 » et « Reached target Login Prompts », où son
+shell interroge le terminal. Il s'arrête à 25,2 milliards d'instructions sur
+`66 0F 3A 15` : `pextrw` sous sa forme SSE4.1, la seule qui écrive la
+mémoire, et que ce cœur n'avait pas (celle de SSE2, `0F C5`, n'a qu'un
+registre).
+
+- **`PEXTRW` sous `0F 3A 15`** (`X86SSE41.swift`), vers un registre ou deux
+  octets de mémoire ; sa forme VEX vient avec.
+- **Le corpus x86-64-v2** la porte — la forme registre écrite en octets,
+  l'assembleur choisissant `0F C5` —, et les corpus VEX.128 et VEX.256 sont
+  régénérés : 428, 1 193 et 722 formes. Accord ; un sabordage (la largeur
+  d'un mot prise pour quatre octets), tombé.
+
+Compte publié inchangé.
+
 ## 2026-10-29 — FMA, F16C, et les conversions de largeur sur 256 bits
 
 Sixième tranche de x86-64-v3 : les trois dernières pièces avant que CPUID
@@ -67,6 +87,7 @@ douze sabordages, onze chutes — le survivant touchait une condition
 redondante, retirée.
 
 Compte publié : 3063 ; corpus matériels : seize.
+
 ## 2026-10-29 — Le reste de SSSE3, que le systemd de CentOS Stream 10 demande
 
 Essayé sur la branche qui annonce x86-64-v3 entier (pas encore fusionnée) :
@@ -234,6 +255,7 @@ processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
 
 Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
 faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3032.
+
 ## 2026-10-29 — Les formes VEX.128 de SSE, par les instructions qui existent
 
 Suite de la tranche précédente, demandée par « continue de tout optimiser » :
@@ -619,6 +641,7 @@ Les tests qui prenaient le VHDX comme exemple de format « reconnu, pas lu »
 prennent désormais l'ancien qcow, version 1 — le seul qui reste avec le VMDK
 « descripteur ». Le cœur RISC-V refuse le VHDX en le nommant, comme les autres.
 Compte publié : 2957.
+
 ## 2026-10-28 — Les six drapeaux de l'arithmétique, écrits d'un coup : 8 % de moins en natif
 
 Les runners de GitHub Actions restent indisponibles pour le compte — les

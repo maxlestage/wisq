@@ -161,9 +161,10 @@ extension X86Core {
 
         // Les extractions : vers un registre, la valeur est élargie à zéro
         // sur trente-deux bits (soixante-quatre avec REX.W) ; vers la
-        // mémoire, seule la largeur de l'élément est écrite.
-        case 0x14, 0x16, 0x17:
-            let width = opcode == 0x14 ? 1 : (opcode == 0x16 && wide ? 8 : 4)
+        // mémoire, seule la largeur de l'élément est écrite. `PEXTRW` (`15`)
+        // est la forme de SSE4.1, qui peut écrire la mémoire.
+        case 0x14, 0x15, 0x16, 0x17:
+            let width = opcode == 0x14 ? 1 : opcode == 0x15 ? 2 : (opcode == 0x16 && wide ? 8 : 4)
             let lanes = 16 / width
             let lane = Int(control) % lanes
             let bytes = Self.bytes(vector(fields.reg))
