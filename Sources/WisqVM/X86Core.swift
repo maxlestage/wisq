@@ -743,6 +743,14 @@ public struct X86Core: @unchecked Sendable {
     /// Les instructions déjà décodées. Voir `X86DecodeCache`.
     let decodeCache = X86DecodeCache()
 
+    /// **Les instructions que le cache de décodage a rendues**, déduites :
+    /// celles qui ont été exécutées, moins celles qu'il a fallu décoder. Un
+    /// compteur dans le cache coûtait une écriture à chaque instruction ; le
+    /// compte d'ici est un peu généreux — une instruction à cheval sur deux
+    /// pages n'entre jamais dans le cache et n'y est pas comptée comme échec —,
+    /// ce qui ne change rien à ce qu'il sert à dire : si le cache sert.
+    var decodeCacheHits: UInt64 { retired &- min(retired, decodeCache.misses) }
+
     /// La largeur des opérandes : un octet pour les opcodes qui le disent,
     /// sinon huit avec `REX.W`, deux avec le préfixe de taille, quatre sinon.
     static func operandSize(_ instruction: X86Instruction, byteForm: Bool) -> Int {
