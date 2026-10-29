@@ -148,13 +148,22 @@ public struct X86Instruction: Equatable, Sendable {
         immediateByteCount = UInt8(immediateBytes)
         self.immediate = immediate
         lengthByte = UInt8(length)
-        let rexBits = rex ?? 0
+        // **Un préfixe VEX porte ce que REX dirait**, inversé pour R, X et B :
+        // VEX à trois octets les a dans son premier, avec W dans le second ;
+        // à deux octets, seul R, et B, X et W valent zéro. Recomposés en bits
+        // de REX, ils désignent les mêmes registres par les mêmes chemins.
+        let rexBits: UInt8
+        switch vexCount {
+        case 2: rexBits = 0x40 | (~vexBytes.0 >> 5) & 0x04
+        case 3: rexBits = 0x40 | (~vexBytes.0 >> 5) & 0x07 | (vexBytes.1 >> 4) & 0x08
+        default: rexBits = rex ?? 0
+        }
         let byte = modrm ?? 0
         regField = (rexBits & 0x04) << 1 | ((byte >> 3) & 0x07)
         rmField = (rexBits & 0x01) << 3 | (byte & 0x07)
         // Sans REX, les numéros 4 à 7 d'un opérande d'un octet désignent AH,
         // CH, DH, BH ; avec, SPL, BPL, SIL, DIL.
-        highByteFlags = rex != nil ? 0
+        highByteFlags = rex != nil || vexCount != 0 ? 0
             : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
         // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
         wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
@@ -207,6 +216,34 @@ public struct X86Instruction: Equatable, Sendable {
         case 3: return [0xC4, vexBytes.0, vexBytes.1]
         case 4: return [0x62, vexBytes.0, vexBytes.1, vexBytes.2]
         default: return []
+        }
+    }
+
+    /// Le registre que VEX nomme dans `vvvv` — inversé dans l'octet —, de 0
+    /// à 15. Zéro sans VEX.
+    public var vexRegister: Int {
+        switch vexCount {
+        case 2: return Int(~vexBytes.0 >> 3 & 0x0F)
+        case 3: return Int(~vexBytes.1 >> 3 & 0x0F)
+        default: return 0
+        }
+    }
+
+    /// VEX.L : 1 pour 256 bits. Zéro sans VEX.
+    public var vexLength: Int {
+        switch vexCount {
+        case 2: return Int(vexBytes.0 >> 2 & 1)
+        case 3: return Int(vexBytes.1 >> 2 & 1)
+        default: return 0
+        }
+    }
+
+    /// Le préfixe que VEX sous-entend (`pp`) : 0 aucun, puis 66, F3, F2.
+    public var vexImpliedPrefix: Int {
+        switch vexCount {
+        case 2: return Int(vexBytes.0 & 3)
+        case 3: return Int(vexBytes.1 & 3)
+        default: return 0
         }
     }
 
