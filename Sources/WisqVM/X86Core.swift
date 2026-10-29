@@ -43,7 +43,11 @@ public struct X86Core: @unchecked Sendable {
     /// La mémoire de l'invité. Absente, toute forme mémoire est refusée plutôt
     /// qu'approximée.
     public var memory: X86Memory? {
-        didSet { memoryReference = memory.map { Unmanaged.passUnretained($0) } }
+        didSet {
+            memoryReference = memory.map { Unmanaged.passUnretained($0) }
+            // Le cache garde des pointeurs dans les octets de l'ancienne.
+            flushTranslations()
+        }
     }
     /// **La même mémoire, sans compte de références**, pour les accès du
     /// chemin chaud. Lire `memory` dans une méthode `mutating` qui appelle
@@ -267,6 +271,11 @@ public struct X86Core: @unchecked Sendable {
         /// L'adresse de page **plus un**, zéro voulant dire « vide ».
         var tag: UInt64 = 0
         var frame: UInt64 = 0
+        /// **La page elle-même, dans les octets de l'hôte** — nil quand la
+        /// trame n'est pas entièrement de la RAM (un disque, un écran). Une
+        /// lecture qui trouve sa page ici n'a plus à repasser par les bornes
+        /// de la mémoire : elles ont été vérifiées une fois, au remplissage.
+        var host: UnsafeMutablePointer<UInt8>? = nil
         var flags: UInt8 = 0
     }
 
