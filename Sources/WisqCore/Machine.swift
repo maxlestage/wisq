@@ -151,4 +151,31 @@ public struct AgentBinding: Codable, Hashable, Sendable {
         self.credentialRef = credentialRef
         self.certificateFingerprint = certificateFingerprint
     }
+
+    /// **La liaison que l'éditeur enregistre**, à partir de celle d'avant.
+    ///
+    /// L'éditeur la reconstruisait en `http`, sans empreinte : ouvrir une
+    /// machine appairée par un lien `wisq://agent?…&fp=…`, changer son nom et
+    /// enregistrer suffisait pour que le jeton et les ordres de démarrage
+    /// partent en clair, sans que rien ne le dise. Une liaison ne descend
+    /// jamais de `https` vers `http` par une simple édition :
+    /// - même hôte, même port : le schéma et l'empreinte sont gardés ;
+    /// - un autre hôte ou un autre port : `https` reste, l'empreinte part —
+    ///   elle désignait le certificat de l'ancienne adresse, et la connexion
+    ///   échouera bruyamment plutôt que de passer en clair, jusqu'à un nouvel
+    ///   appairage.
+    public static func edited(
+        from previous: AgentBinding?, at endpoint: (host: String, port: Int), vmIdentifier: String,
+        autoStart: Bool, credentialRef: String
+    ) -> AgentBinding? {
+        let secure = previous?.baseURL.scheme == "https"
+        guard let url = Validation.agentURL(
+            scheme: secure ? "https" : "http", host: endpoint.host, port: endpoint.port) else {
+            return nil
+        }
+        let sameEndpoint = previous.map { $0.baseURL.host == url.host && $0.baseURL.port == url.port } ?? false
+        return AgentBinding(baseURL: url, vmIdentifier: vmIdentifier, autoStart: autoStart,
+                            credentialRef: credentialRef,
+                            certificateFingerprint: sameEndpoint ? previous?.certificateFingerprint : nil)
+    }
 }
