@@ -131,6 +131,24 @@ extension X86Core {
             try compareStrings(instruction, fields, control, explicit: opcode < 0x62, mask: opcode & 1 == 0)
         case 0x08...0x0B:  // ROUNDPS, ROUNDPD, ROUNDSS, ROUNDSD
             try round(fields, opcode, control)
+        // `BLENDPS`, `BLENDPD` (SSE4.1) : l'élément i — quatre de 32 bits, ou
+        // deux de 64 — vient de la source quand le bit i de l'immédiat est
+        // levé. Leurs formes VEX étaient déclarées et retombaient ici sur un
+        // refus : Chimera s'arrêtait sur `vblendps` dans un module du noyau,
+        // depuis que CPUID annonce AVX.
+        case 0x0C, 0x0D:
+            let read = try readVectorRM(fields, 16)
+            let width: UInt64 = opcode == 0x0C ? 32 : 64
+            let perHalf = Int(64 / width)
+            let element: UInt64 = width == 64 ? .max : (1 << width) - 1
+            var masks: (UInt64, UInt64) = (0, 0)
+            for index in 0..<(2 * perHalf) where control >> index & 1 != 0 {
+                let piece = element << (UInt64(index % perHalf) * width)
+                if index < perHalf { masks.0 |= piece } else { masks.1 |= piece }
+            }
+            let target = vector(fields.reg)
+            setVector(fields.reg, target.low & ~masks.0 | read.0 & masks.0,
+                      target.high & ~masks.1 | read.1 & masks.1)
         // `MPSADBW` (SSE4.1) : huit sommes d'écarts absolus. Le bloc de
         // quatre octets de la source que les bits 1-0 de l'immédiat
         // choisissent, comparé à huit fenêtres glissantes de quatre octets de
