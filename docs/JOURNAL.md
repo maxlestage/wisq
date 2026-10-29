@@ -8,6 +8,35 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Les drapeaux de l'arithmétique se calculent quand on les lit
+
+`ADD`, `SUB`, `CMP` et les opérations logiques calculaient leurs six
+drapeaux à chaque fois — la parité, le zéro, le signe, le débordement — alors
+que le code compilé en écrase la plupart avant que personne ne les lise. Elles
+notent maintenant le résultat, la taille, `CF` et `AF` déjà en place, et ce
+dont le bit de signe dira `OF` ; c'est la lecture de `flags` qui assemble le
+mot, et une écriture règle tout. `condition` (Jcc, SETcc, CMOVcc) lit le
+drapeau qu'il lui faut directement dans l'opération qui attend.
+
+Callgrind, 100 millions d'instructions d'Alpine : 22,04 → 21,76 milliards
+d'instructions de l'hôte (−1,3 %).
+
+**Ce que la mesure a dû corriger, quatre fois.** La première version rendait
+25,41 milliards : la lecture de `flags`, non inlinée, recevait le cœur
+entier par valeur, et `memcpy` pesait 11 % du total. Inlinée, 22,14 — encore
+pire que la base : assembler le mot complet à chaque `jcc` coûtait ce que la
+paresse épargnait. Lire chaque drapeau dans l'opération en attente, sous un
+`if`, a ramené la copie (23,64, puis 23,86 avec la parité lue par `flags` dans
+un seul cas). C'est en lisant tous les champs une fois, en tête, sans
+branche, que la copie disparaît et que le gain apparaît.
+
+Six tests sur l'état qui attend : une opération remplace la précédente, les
+six d'avant ne transparaissent pas, les autres drapeaux restent, une
+écriture garde ce qui attendait et le règle, le mot écrit l'emporte, deux
+lectures rendent le même mot. Trois sabordages, trois chutes : les six d'avant
+laissés dans le mot, l'écriture qui ne règle pas l'attente, le débordement
+d'une soustraction pris pour celui d'une addition. Compte publié : 2990.
+
 ## 2026-10-29 — La case vide du cache se refuse par sa longueur
 
 Chaque lecture du cache de décodage testait d'abord si la case était vide,
