@@ -147,6 +147,10 @@ break APIs.
   `MPSADBW` (SSE4.1) —, trouvées en passant toutes les formes au cœur contre
   ce que les binaires d'un système emploient. Un programme qui les choisit
   sur la foi de CPUID s'arrêtait net.
+- **Chimera Linux s'arrêtait au chargement de ses modules**, sur
+  `vblendps` : depuis que CPUID annonce AVX, un module du noyau mélange ses
+  vecteurs sur 256 bits, et ni `BLENDPS` ni `BLENDPD` n'existaient, sous
+  aucune forme. Les trois formes y sont, contre le vrai processeur.
 
 ## [0.4.0] — 2026-09-05
 
