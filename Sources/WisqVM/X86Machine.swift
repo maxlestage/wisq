@@ -486,39 +486,7 @@ public final class X86Machine: @unchecked Sendable {
     /// parce qu'une machine à moitié restaurée est pire qu'une machine perdue.
     public func restore(_ data: Data) throws {
         var reader = try Snapshot.Reader([UInt8](data))
-        var restored = X86Core(registers: [UInt64](repeating: 0, count: 16),
-                               rip: 0, memory: memory)
-        for index in 0..<16 { restored.registers[index] = try reader.u64() }
-        restored.flags = try reader.u64()
-        restored.rip = try reader.u64()
-        restored.retired = try reader.u64()
-        restored.idled = try reader.u64()
-        restored.halted = try reader.u64() != 0
-        restored.pagingActive = try reader.u64() != 0
-        for index in 0..<16 { restored.system.control[index] = try reader.u64() }
-        for index in 0..<8 { restored.system.debug[index] = try reader.u64() }
-        let count = try reader.u64()
-        guard count <= 4096 else { throw Snapshot.Failure.corrupt }
-        for _ in 0..<count {
-            let number = try reader.u32()
-            restored.system.modelSpecific[number] = try reader.u64()
-        }
-        for index in 0..<6 {
-            restored.segments[index] = UInt16(truncatingIfNeeded: try reader.u32())
-        }
-        for index in 0..<2 {
-            restored.descriptorBases[index] = try reader.u64()
-            restored.descriptorLimits[index] = try reader.u64()
-        }
-        restored.taskSelector = UInt16(truncatingIfNeeded: try reader.u32())
-        restored.taskBase = try reader.u64()
-        restored.taskLimit = try reader.u64()
-        restored.x87Control = UInt16(truncatingIfNeeded: try reader.u32())
-        restored.x87Status = UInt16(truncatingIfNeeded: try reader.u32())
-        restored.mxcsr = try reader.u32()
-        for index in 0..<32 { restored.vectors[index] = try reader.u64() }
-        restored.devices = try read(&reader)
-        restored.serialInput = try reader.blob()
+        var restored = try Self.readCore(&reader, memory: memory)
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
         // La pile x87, si la marque est là. Son absence veut dire « un
         // instantané d'avant cette section », pas « un instantané abîmé » :
@@ -603,6 +571,59 @@ public final class X86Machine: @unchecked Sendable {
         core = restored
     }
 
+    /// **Ce qui précède la mémoire dans un instantané** : les registres, l'état
+    /// du système et les périphériques. À part de `restore` pour que
+    /// `savedRAMSize(in:)` lise exactement le même chemin jusqu'à la taille de
+    /// la mémoire, plutôt qu'une copie qui finirait par en diverger.
+    static func readCore(_ reader: inout Snapshot.Reader, memory: X86Memory) throws -> X86Core {
+        var restored = X86Core(registers: [UInt64](repeating: 0, count: 16),
+                               rip: 0, memory: memory)
+        for index in 0..<16 { restored.registers[index] = try reader.u64() }
+        restored.flags = try reader.u64()
+        restored.rip = try reader.u64()
+        restored.retired = try reader.u64()
+        restored.idled = try reader.u64()
+        restored.halted = try reader.u64() != 0
+        restored.pagingActive = try reader.u64() != 0
+        for index in 0..<16 { restored.system.control[index] = try reader.u64() }
+        for index in 0..<8 { restored.system.debug[index] = try reader.u64() }
+        let count = try reader.u64()
+        guard count <= 4096 else { throw Snapshot.Failure.corrupt }
+        for _ in 0..<count {
+            let number = try reader.u32()
+            restored.system.modelSpecific[number] = try reader.u64()
+        }
+        for index in 0..<6 {
+            restored.segments[index] = UInt16(truncatingIfNeeded: try reader.u32())
+        }
+        for index in 0..<2 {
+            restored.descriptorBases[index] = try reader.u64()
+            restored.descriptorLimits[index] = try reader.u64()
+        }
+        restored.taskSelector = UInt16(truncatingIfNeeded: try reader.u32())
+        restored.taskBase = try reader.u64()
+        restored.taskLimit = try reader.u64()
+        restored.x87Control = UInt16(truncatingIfNeeded: try reader.u32())
+        restored.x87Status = UInt16(truncatingIfNeeded: try reader.u32())
+        restored.mxcsr = try reader.u32()
+        for index in 0..<32 { restored.vectors[index] = try reader.u64() }
+        restored.devices = try read(&reader)
+        restored.serialInput = try reader.blob()
+        return restored
+    }
+
+    /// **La mémoire avec laquelle un instantané a été pris**, sans le
+    /// reprendre. Une machine se construit avant de lire son instantané, et
+    /// une machine d'une autre taille le refuse (`ramSizeMismatch`) : il faut
+    /// donc le savoir avant, pour construire la bonne. `nil` quand ce n'est
+    /// pas un instantané lisible.
+    public static func savedRAMSize(in data: Data) -> Int? {
+        guard var reader = try? Snapshot.Reader([UInt8](data)),
+              (try? readCore(&reader, memory: X86Memory(size: 0x1000, base: 0))) != nil,
+              let size = try? reader.u64() else { return nil }
+        return Int(exactly: size)
+    }
+
     private func write(_ writer: inout Snapshot.Writer, _ devices: X86LegacyDevices) {
         for controller in [devices.primary, devices.secondary] {
             writer.u32(UInt32(controller.mask))
@@ -639,7 +660,7 @@ public final class X86Machine: @unchecked Sendable {
         writer.u32(devices.serial.transmitPending ? 1 : 0)
     }
 
-    private func read(_ reader: inout Snapshot.Reader) throws -> X86LegacyDevices {
+    private static func read(_ reader: inout Snapshot.Reader) throws -> X86LegacyDevices {
         var devices = X86LegacyDevices()
         for which in 0..<2 {
             var controller = X86LegacyDevices.Controller()

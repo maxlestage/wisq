@@ -25,7 +25,36 @@ requête reprend la connexion TLS de la première au lieu d'en ouvrir une.
 autre empreinte, autre session, et jamais celle du système. Le sabotage (une
 session neuve à chaque fois) fait tomber le premier.
 
-Compte publié : 3090.
+Compte publié : 3096.
+
+## 2026-10-29 — Une session reprise garde sa mémoire
+
+**Le défaut.** L'application construisait la machine à la taille réglée,
+rognée sur ce que le téléphone avait de libre, puis lisait l'instantané. Une
+session sauvée à une autre taille était refusée par la machine
+(`ramSizeMismatch`). L'application prenait ce refus pour « pas de session » et
+démarrait le noyau à neuf. Quelques minutes plus tard, la sauvegarde continue
+écrasait l'instantané. Il suffisait d'avoir moins de mémoire libre qu'au moment
+de la sauvegarde, ou d'avoir déplacé le réglage : la session était perdue sans
+un mot.
+
+**Ce qui change.**
+- `SessionMemory` décide. Une session lisible impose sa taille si elle tient
+  dans ce qui est libre ; sinon le démarrage est refusé, l'instantané est
+  gardé, et la phrase donne les deux nombres. Le réglage ne sert plus qu'aux
+  démarrages à neuf.
+- `X86Machine.savedRAMSize(in:)` et `LinuxMachine.savedRAMSize(in:)` lisent
+  la taille sans reprendre la machine. Côté PC, la lecture passe par
+  `readCore`, la partie de `restore` qui précède la mémoire, sortie pour que
+  les deux chemins restent le même.
+- `LocalVMModel` lit l'image et sa session avant de construire la machine.
+  Ce fichier ne se compile qu'à la CI d'Apple.
+
+**Vérifié.** Six tests (`SessionMemoryTests`), dont le bout à bout : la
+taille réglée refuse l'instantané, la taille choisie le reprend octet pour
+octet. Six sabotages, six chutes.
+
+Compte publié : 3094.
 
 ## 2026-10-29 — CPUID annonce x86-64-v3 : AVX, AVX2, FMA, F16C
 
