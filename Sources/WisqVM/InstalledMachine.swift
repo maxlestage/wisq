@@ -463,6 +463,7 @@ public enum InstalledMachines {
         KernelMemory.forget(kernel: machine.key, in: directory)
         RootPassword.forget(kernel: machine.key, in: directory)
         LocalDisk.forget(kernel: machine.key, in: directory)
+        ImageBootRequest.forget(kernel: machine.key, in: directory)
         SuspendedMachine.clearAll(named: machine.key, in: directory)
         LocalDisk.discardWrites(withPrefix: machine.keys.overlayPrefix, in: directory)
     }

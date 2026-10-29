@@ -191,7 +191,12 @@ public final class LocalVMModel {
         // Le disque de la machine et sa couche : s'il porte déjà le système
         // qu'un installateur y a écrit, c'est lui qui démarre, et plus l'image
         // d'installation. Voir `IsoBoot.decide` et `InstalledSystem`.
-        let installedOn = LocalDisk.attached(
+        //
+        // **Sauf si la personne a demandé l'image, une fois** (« Démarrer
+        // l'image d'installation ») : la demande est consommée ici, et le
+        // démarrage suivant revient au disque. Voir `ImageBootRequest`.
+        let fromImage = ImageBootRequest.take(forKernel: keys.settings, in: storage)
+        let installedOn = fromImage ? nil : LocalDisk.attached(
             kernel: keys.settings, among: KernelLibrary.list(), in: storage
         ).flatMap { disk in
             (try? LocalDisk.writesURL(for: keys.overlay(forDisk: disk.lastPathComponent), in: storage))
