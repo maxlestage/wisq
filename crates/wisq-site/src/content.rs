@@ -443,7 +443,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
             name: "Local",
             head: "A real Linux kernel, on the phone",
             body: "An interpreted RISC-V machine boots Linux to a login prompt in a fraction of a second — 44.6 million guest instructions, the same count on every machine, because the machine's clock advances with instructions rather than with wall time. No JIT, so nothing about it fights the platform, and nothing about it needs a jailbreak. And the machine survives iOS: set aside when the screen locks, it resumes your shell right where it was. An x86-64 core stands beside it, running a stock Alpine kernel and its init.",
-            points: &["rv32ima core, 64 MB by default and up to 2 GB, 8250 UART, CLINT timer", "Boots a stock Linux 6.1 nommu kernel to a login prompt", "A disk on /dev/vda for either machine — a filesystem or installer image you import, of any size, read in place; what the guest writes goes into a layer beside it that survives suspension and restarts, and the file you imported never changes. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so", "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images", "Fifteen hardware corpora hold that core: the reference is a real processor, asked what it produced", "Entirely offline — no server, no network", "CI boots that kernel on every commit, as a test"],
+            points: &["rv32ima core, 64 MB by default and up to 2 GB, 8250 UART, CLINT timer", "Boots a stock Linux 6.1 nommu kernel to a login prompt", "A disk on /dev/vda for either machine — a filesystem or installer image you import, of any size, read in place; what the guest writes goes into a layer beside it that survives suspension and restarts, and the file you imported never changes. wisq cannot add a block driver to a kernel you bring: if none touches the device, it says so", "x86-64 core: runs a stock Alpine kernel and its init, 4 billion instructions, no program dying — to the initramfs rescue shell, exactly where QEMU lands on the same images", "Sixteen hardware corpora hold that core: the reference is a real processor, asked what it produced", "Entirely offline — no server, no network", "CI boots that kernel on every commit, as a test"],
         },
     },
     protocoles: ProtocolesCopy {
@@ -521,7 +521,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Built to be trusted",
-        items: &[FactCopy { value: "3048", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
+        items: &[FactCopy { value: "3051", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
     },
     etat: EtatCopy {
         title: "Where it stands",
@@ -569,7 +569,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
             name: "Local",
             head: "Un vrai noyau Linux, sur le téléphone",
             body: "Une machine RISC-V interprétée amène Linux jusqu'à l'invite de connexion en une fraction de seconde — 44,6 millions d'instructions invitées, le même compte sur toutes les machines, parce que l'horloge de la machine avance avec les instructions et non avec le temps réel. Sans JIT, donc rien n'entre en conflit avec la plateforme, et rien n'exige de jailbreak. Et la machine survit à iOS : mise de côté quand l'écran se verrouille, elle reprend votre shell là où il était. Un cœur x86-64 l'accompagne, qui fait tourner un noyau Alpine standard et son init.",
-            points: &["Cœur rv32ima, 64 Mo par défaut et jusqu'à 2 Go, UART 8250, minuteur CLINT", "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite", "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, lue sur place ; ce que l'invité écrit va dans une couche à côté qui survit aux suspensions et aux redémarrages, et le fichier importé ne change jamais. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit", "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images", "Quinze corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit", "Entièrement hors ligne — aucun serveur, aucun réseau", "La CI démarre ce noyau à chaque commit, comme test"],
+            points: &["Cœur rv32ima, 64 Mo par défaut et jusqu'à 2 Go, UART 8250, minuteur CLINT", "Démarre un noyau Linux 6.1 nommu standard jusqu'à l'invite", "Un disque sur /dev/vda pour les deux machines — une image de système de fichiers ou d'installation que vous importez, de n'importe quelle taille, lue sur place ; ce que l'invité écrit va dans une couche à côté qui survit aux suspensions et aux redémarrages, et le fichier importé ne change jamais. wisq ne peut pas ajouter un pilote bloc à un noyau que vous apportez : si personne ne touche le périphérique, il le dit", "Cœur x86-64 : fait tourner un noyau Alpine standard et son init, 4 milliards d'instructions, sans qu'un programme meure — jusqu'au shell de secours de l'initramfs, exactement là où QEMU arrive sur les mêmes images", "Seize corpus matériels tiennent ce cœur : la référence est un vrai processeur, à qui l'on demande ce qu'il a produit", "Entièrement hors ligne — aucun serveur, aucun réseau", "La CI démarre ce noyau à chaque commit, comme test"],
         },
     },
     protocoles: ProtocolesCopy {
@@ -647,7 +647,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Fait pour inspirer confiance",
-        items: &[FactCopy { value: "3048", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
+        items: &[FactCopy { value: "3051", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
     },
     etat: EtatCopy {
         title: "Où en est le projet",

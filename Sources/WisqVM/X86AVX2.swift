@@ -56,6 +56,8 @@ extension X86Core {
     /// Une forme VEX qui traverse les moitiés, exécutée ; `false` quand ce
     /// n'en est pas une — l'appelant refuse alors.
     mutating func crossLaneInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
+        // FMA, F16C et les conversions de largeur : `X86FMA.swift`.
+        if try extendedFloatInstruction(instruction, opcode) { return true }
         guard instruction.vexImpliedPrefix == 1, instruction.modrm != nil else { return false }
         let wide = instruction.vexLength == 1
         let wordCount = wide ? 4 : 2
