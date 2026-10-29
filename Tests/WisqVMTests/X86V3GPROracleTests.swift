@@ -113,11 +113,11 @@ final class X86V3GPROracleTests: XCTestCase {
         XCTAssertEqual(agreed, fixture.cases.count)
     }
 
-    /// **Les formes VEX qui ne sont pas des registres généraux restent
-    /// refusées** : AVX (`vaddps`), et une forme BMI sous VEX.L, qui n'existe
-    /// pas.
+    /// **Les formes VEX que ce cœur n'exécute pas restent refusées** : AVX
+    /// sur 256 bits (`vaddps %ymm2, %ymm1, %ymm0`), et une forme BMI sous
+    /// VEX.L, qui n'existe pas.
     func testOtherVEXFormsAreStillRefused() throws {
-        for bytes: [UInt8] in [[0xC5, 0xF0, 0x58, 0xC2], [0xC4, 0xE2, 0xEC, 0xF2, 0xC1]] {
+        for bytes: [UInt8] in [[0xC5, 0xF4, 0x58, 0xC2], [0xC4, 0xE2, 0xEC, 0xF2, 0xC1]] {
             let memory = X86Memory(size: 0x1000, base: 0x3000_0000)
             try memory.load(bytes, at: 0x3000_0000)
             var core = X86Core(registers: X86SIMDOracleTests.witness(), flags: X86Core.Flag.reserved,
