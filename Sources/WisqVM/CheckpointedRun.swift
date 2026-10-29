@@ -35,6 +35,8 @@ public final class CheckpointedRun: @unchecked Sendable {
     /// Voir `stop`.
     private let lock = NSLock()
     private var stopRequested = false
+    /// `stopSaving` : la machine continue, mais plus rien n'est écrit.
+    private var savingStopped = false
     /// Une sauvegarde est partie et n'a pas fini : la suivante attend.
     private var writing = false
     private var written = 0
@@ -91,6 +93,10 @@ public final class CheckpointedRun: @unchecked Sendable {
                 lock.unlock()
                 return .stopped
             }
+            if savingStopped {
+                lock.unlock()
+                continue
+            }
             // La précédente écrit encore : on réessaiera à la prochaine
             // tranche, sans repartir de zéro sur l'intervalle.
             if writing {
@@ -111,7 +117,7 @@ public final class CheckpointedRun: @unchecked Sendable {
                 // compression a peut-être déjà effacé la sauvegarde, et
                 // écrire celle-ci la ferait revenir. Un échec — plus de place
                 // — ne change rien à la machine, qui continue.
-                if !stopRequested, (try? write(packed)) != nil { written += 1 }
+                if !stopRequested, !savingStopped, (try? write(packed)) != nil { written += 1 }
                 writing = false
                 lock.unlock()
             }
@@ -134,6 +140,16 @@ public final class CheckpointedRun: @unchecked Sendable {
         stopRequested = true
         lock.unlock()
         machine.stop()
+    }
+
+    /// La machine continue, mais **plus aucune sauvegarde n'est écrite** —
+    /// celle qui écrivait finit avant le retour, comme pour `stop`. C'est ce
+    /// que demande « Oublier » : la sauvegarde effacée juste après ne doit
+    /// pas revenir avec la tranche suivante.
+    public func stopSaving() {
+        lock.lock()
+        savingStopped = true
+        lock.unlock()
     }
 
     private var stopWasRequested: Bool {

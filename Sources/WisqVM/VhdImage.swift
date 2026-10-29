@@ -118,7 +118,9 @@ public final class VhdImage: VirtualDiskImage, @unchecked Sendable {
         guard virtualSize >= 512 else { throw Refusal.malformed("disque de moins d'un secteur") }
 
         let headerOffset = u64(footer, 16)
-        guard headerOffset >= 512, headerOffset &+ 1024 <= fileSize else {
+        // Comparé sans addition : un décalage proche de 2⁶⁴ faisait passer
+        // `décalage &+ 1024`, puis tomber `off_t(décalage)`.
+        guard headerOffset >= 512, headerOffset <= fileSize, fileSize - headerOffset >= 1024 else {
             throw Refusal.malformed("en-tête dynamique hors du fichier")
         }
         var header = [UInt8](repeating: 0, count: 1024)
@@ -137,10 +139,10 @@ public final class VhdImage: VirtualDiskImage, @unchecked Sendable {
         }
         // La table couvre au moins le disque, et la borne passe avant
         // l'allocation.
-        guard entries >= (virtualSize + blockSize - 1) / blockSize, entries <= 1 << 24 else {
+        guard entries >= VirtualDiskImages.blocks(covering: virtualSize, of: blockSize), entries <= 1 << 24 else {
             throw Refusal.malformed("\(entries) blocs pour \(virtualSize) octets")
         }
-        guard tableOffset >= 512, tableOffset &+ entries * 4 <= fileSize else {
+        guard tableOffset >= 512, tableOffset <= fileSize, entries * 4 <= fileSize - tableOffset else {
             throw Refusal.malformed("table de blocs hors du fichier")
         }
         var table = [UInt8](repeating: 0, count: Int(entries) * 4)
