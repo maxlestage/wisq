@@ -449,6 +449,12 @@ public final class X86Machine: @unchecked Sendable {
             writer.u32(UInt32(register.signExponent))
         }
         writer.u32(UInt32(core.x87Tags))
+        // XCR0 et le haut des YMM, derrière leur marque : un noyau qui a
+        // activé l'état étendu le retrouve activé, et un programme au milieu
+        // d'un calcul sur 256 bits retrouve ses registres entiers.
+        writer.u64(Snapshot.extendedStateSection)
+        writer.u64(core.xcr0)
+        for word in core.upperVectors { writer.u64(word) }
         // **Le disque en dernier, et seulement s'il y en a un.** Son absence
         // est ce qui distingue un instantané d'avant le disque, et la reprise
         // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
@@ -525,6 +531,17 @@ public final class X86Machine: @unchecked Sendable {
                                                   signExponent: signExponent)
             }
             restored.x87Tags = UInt16(truncatingIfNeeded: try reader.u32())
+        }
+        // Absente : un instantané d'avant, où XCR0 valait x87 seul et le haut
+        // des YMM n'existait pas — ce qu'une machine neuve a déjà.
+        if reader.peeks(Snapshot.extendedStateSection) {
+            _ = try reader.u64()
+            let xcr0 = try reader.u64()
+            guard xcr0 & 1 != 0, xcr0 & ~X86Core.supportedExtendedState == 0 else {
+                throw Snapshot.Failure.corrupt
+            }
+            restored.xcr0 = xcr0
+            for index in 0..<32 { restored.upperVectors[index] = try reader.u64() }
         }
         // Le disque, s'il reste des octets. Construit à part et posé tout à la
         // fin : une lecture qui échoue ici laisse à la machine le disque

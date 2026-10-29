@@ -8,6 +8,49 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — L'état étendu : XCR0, XSAVE, XRSTOR, et le haut des YMM
+
+Troisième tranche de x86-64-v3, toujours sous « continue de tout
+optimiser » : AVX a besoin que ses registres de 256 bits existent, se
+rangent et se reprennent. C'est cette tranche ; les opérations sur 256 bits
+viennent après.
+
+- **Le haut des seize YMM** (`X86Core.upperVectors`), à part des XMM pour que
+  tout ce qui lit un XMM reste ce qu'il était. Chaque forme VEX.128 remet à
+  zéro le haut du registre qu'elle écrit, et de celui-là seul — les
+  rangements vers la mémoire, un registre général ou les drapeaux n'en
+  touchent aucun ; `vzeroupper` les efface tous, `vzeroall` tout.
+- **XCR0, `XGETBV`, `XSETBV`** : x87 toujours, AVX jamais sans SSE, rien
+  d'inconnu, l'anneau zéro pour écrire, CR4.OSXSAVE pour tout.
+- **`XSAVE` et `XRSTOR`, forme standard** (`X86XSAVE.swift`) : les composants
+  qu'XCR0 et EDX:EAX demandent ensemble ; XSTATE_BV mis à jour sur ces bits
+  seuls ; un composant qu'il ne dit pas en usage remis à son état initial ;
+  MXCSR relu dès que SSE ou AVX est demandé. Refusés en s'arrêtant — ce cœur
+  ne livre pas de #GP — : la zone mal alignée, compactée, un en-tête aux
+  octets réservés levés, un MXCSR impossible. `FXSAVE` et `FXRSTOR` passent
+  par les mêmes trois parts de la zone, et `FXRSTOR` refuse maintenant lui
+  aussi un MXCSR impossible au lieu de le charger.
+- **CPUID** : XSAVE (1:ECX.26), OSXSAVE qui recopie CR4, la feuille 0xD (la
+  zone pour ce qu'XCR0 active, 832 octets au plus ; ni XSAVEOPT, ni XSAVEC,
+  ni XSAVES). AVX n'est toujours pas annoncé, donc Linux garde XCR0 à
+  x87|SSE.
+- **L'instantané** porte XCR0 et le haut des YMM derrière une marque,
+  `WISQ_ymm` ; un instantané d'avant se reprend comme avant.
+
+**Sur l'image réelle** : le noyau d'Alpine écrit maintenant « x86/fpu:
+Enabled xstate features 0x3, context size is 576 bytes, using 'standard'
+format » et range ses tâches par `XSAVE` ; il arrive au même shell de
+l'initramfs, qui répond à `echo`, en 3,735 milliards d'instructions contre
+3,731 sur master.
+
+Pas d'oracle matériel : sous un noyau hôte, XSTATE_BV dépend de ce que le
+processeur croit en usage. Neuf tests écrits d'après le manuel ; onze
+sabordages, onze chutes — deux **survivaient** au premier passage : le test
+de l'état initial relisait une zone déjà à zéro (il la remplit maintenant),
+et le filtre ne lançait pas la classe du test de l'instantané.
+
+Compte publié : 3041.
+
 ## 2026-10-29 — Des images Linux très différentes, essayées pour de bon
 
 Demandé par l'utilisateur : « tu peux essayer différentes images Linux bien
