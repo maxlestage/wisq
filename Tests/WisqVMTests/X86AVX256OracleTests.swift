@@ -218,11 +218,11 @@ final class X86AVX256OracleTests: XCTestCase {
     }
 
     /// **Ce que ni les moitiés ni `X86AVX2.swift` ne tiennent reste refusé**,
-    /// et par son nom : `vcvtps2pd` sur 256 bits, qui change de largeur ;
-    /// `vaesenc` sur 256 bits, qui est VAES, que ce cœur n'annonce pas.
+    /// et par son nom : `vaesenc` sur 256 bits, qui est VAES, que ce cœur
+    /// n'annonce pas, et un ramassage.
     func testWhatCrossesTheHalvesIsRefused() throws {
         for bytes: [UInt8] in [
-            [0xC5, 0xFC, 0x5A, 0xC1], [0xC4, 0xE2, 0x6D, 0xDC, 0xC1],
+            [0xC4, 0xE2, 0x75, 0x90, 0x04, 0x96], [0xC4, 0xE2, 0x6D, 0xDC, 0xC1],
         ] {
             var core = try Self.core(bytes)
             XCTAssertThrowsError(try core.execute(X86Decoder.decode(core.memory!.dump(core.rip, 15))), "\(bytes)")
