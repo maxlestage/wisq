@@ -114,13 +114,13 @@ final class X86CoreTests: XCTestCase {
         }
     }
 
-    /// Une instruction vectorielle est refusée de même. Le décodeur sait où
-    /// elle finit depuis la tranche 2 ; ce cœur ne sait pas ce qu'elle fait, et
-    /// il le dit.
+    /// Une instruction vectorielle qu'il n'exécute pas est refusée de même.
+    /// Le décodeur sait où elle finit depuis la tranche 2 ; sur 256 bits, ce
+    /// cœur ne sait pas encore ce qu'elle fait, et il le dit.
     func testAVectorInstructionIsRefusedAndNamed() {
         var machine = core()
-        // c5 f8 57 c0 : vxorps %xmm0,%xmm0,%xmm0
-        XCTAssertThrowsError(try run([0xC5, 0xF8, 0x57, 0xC0], on: &machine)) { error in
+        // c5 fc 57 c0 : vxorps %ymm0,%ymm0,%ymm0
+        XCTAssertThrowsError(try run([0xC5, 0xFC, 0x57, 0xC0], on: &machine)) { error in
             guard case .unsupported(let what) = error as? X86Core.Fault else {
                 return XCTFail("attendu un refus nommé, obtenu \(error)")
             }
