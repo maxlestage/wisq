@@ -65,6 +65,10 @@ public enum LocalDisk {
     /// avec une identité qu'on n'a pas reviendrait à mettre une phrase vide
     /// devant la seule qui dit quelque chose.
     public static func refusal(size: Int, name: String, kind: KernelImageKind) -> String? {
+        // **Un descripteur VMDK ne pèse pas son disque** : quelques centaines
+        // d'octets de texte, souvent moins d'un secteur chez ESXi, pour un
+        // disque que ses étendues portent. Le plancher ne le concerne pas.
+        if kind == .virtualDisk("VMDK (descripteur)") { return nil }
         guard let identity = KernelImageKind.whatItIs(kind, name: name) else {
             return refusal(size: size, name: name)
         }

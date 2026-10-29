@@ -854,11 +854,31 @@ public enum KernelLibrary {
     }
 
     public static func list() -> [URL] {
+        // Les étendues d'un VMDK à descripteur ne sont pas des disques à
+        // elles seules : c'est le descripteur qui les représente.
+        VmdkDescriptorDisk.hidingCompanions(everyFile())
+    }
+
+    /// Tout ce que le dossier contient, étendues comprises.
+    private static func everyFile() -> [URL] {
         guard let directory = try? directory(),
               let entries = try? FileManager.default.contentsOfDirectory(
                   at: directory, includingPropertiesForKeys: nil
               ) else { return [] }
         return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Les noms que nomment les descripteurs déjà rangés et ceux de
+    /// `sources` : ces fichiers-là sont les étendues d'un disque, quoi
+    /// qu'ils aient l'air d'être.
+    public static func companionNames(importing sources: [URL]) -> Set<String> {
+        var names = VmdkDescriptorDisk.companionNames(among: everyFile())
+        for source in sources {
+            let opened = source.startAccessingSecurityScopedResource()
+            defer { if opened { source.stopAccessingSecurityScopedResource() } }
+            names.formUnion(VmdkDescriptorDisk.companionFiles(ofDescriptorAt: source))
+        }
+        return names
     }
 
     /// Copies a picked file into the library, keeping its name.
@@ -868,10 +888,22 @@ public enum KernelLibrary {
     /// thing that can decide is the file itself. Copying a two-gigabyte image
     /// into the app's storage in order to discover on boot that it cannot fit
     /// in a sixty-four megabyte machine costs the disk and teaches nothing.
-    public static func importKernel(from source: URL) throws -> URL {
+    ///
+    /// `companion` dit que le fichier est l'étendue d'un VMDK à descripteur :
+    /// des octets bruts ou un morceau, que rien ne reconnaît comme un disque
+    /// et qui peut peser bien plus que le plafond des noyaux. Il est copié
+    /// tel quel ; c'est son descripteur qui sera jugé.
+    public static func importKernel(from source: URL, companion: Bool = false) throws -> URL {
         let destination = try directory().appendingPathComponent(source.lastPathComponent)
         _ = source.startAccessingSecurityScopedResource()
         defer { source.stopAccessingSecurityScopedResource() }
+        if companion {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination
+        }
         let kind = KernelImageKind.identify(fileAt: source)
         // Ce que le fichier est passe avant ce qu'il pèse, ici aussi : un ISO
         // de six gigaoctets est refusé pour la bonne raison, pas pour sa
@@ -1000,7 +1032,13 @@ public enum KernelLibrary {
         case .virtualDisk(let format): wasAnImage = KernelImageKind.isReadableVirtualDisk(format)
         default: wasAnImage = false
         }
+        // **Un descripteur VMDK emporte ses étendues**, lues avant de
+        // l'effacer : cachées de la liste, elles ne partiraient jamais sinon.
+        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url)
         try? FileManager.default.removeItem(at: url)
+        for companion in companions {
+            try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(companion))
+        }
         if wasAnImage {
             LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
         }
