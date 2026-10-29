@@ -395,6 +395,44 @@ final class ImageDownloaderTests: XCTestCase {
         }
     }
 
+    /// **Les huit index sont demandés ensemble.** Chaque index retient sa
+    /// réponse jusqu'à ce que les huit aient été demandés : lus l'un après
+    /// l'autre, le premier attendrait les sept autres pour rien, et la
+    /// barrière, au bout de son délai, dirait non à tous.
+    func testTheIndexesAreAskedAllAtOnce() async throws {
+        actor Barrier {
+            private var asked: Set<URL> = []
+            func arrive(_ url: URL, expecting count: Int) async -> Bool {
+                asked.insert(url)
+                let deadline = Date().addingTimeInterval(5)
+                while asked.count < count {
+                    guard Date() < deadline else { return false }
+                    try? await Task.sleep(nanoseconds: 2_000_000)
+                }
+                return true
+            }
+        }
+        final class Gate: RangeFetcher, @unchecked Sendable {
+            let indexes: Set<URL> = [
+                ImageDownload.alpineIndex, ImageDownload.debianIndex, ImageDownload.fedoraIndex,
+                ImageDownload.ubuntuIndex, ImageDownload.archIndex, ImageDownload.openSUSEIndex,
+                ImageDownload.almaIndex, ImageDownload.rockyIndex,
+            ]
+            let barrier = Barrier()
+            let inner: Router
+            init(_ inner: Router) { self.inner = inner }
+            func fetch(_ url: URL, range: String?) async throws -> FetchedResponse {
+                if indexes.contains(url), await !barrier.arrive(url, expecting: indexes.count) {
+                    return FetchedResponse(status: 503, contentRange: nil, body: AsyncThrowingStream { $0.finish() })
+                }
+                return try await inner.fetch(url, range: range)
+            }
+        }
+        let gate = Gate(Router([ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8))]))
+        let releases = try await ImageDownloader(fetcher: gate, partsFolder: parts).bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["alpine-virt", "alpine-standard"])
+    }
+
     /// **Fedora et Ubuntu à côté des autres** : Fedora à l'adresse que donne
     /// son index, sans rien demander d'autre au serveur ; Ubuntu avec sa
     /// taille demandée en un octet. Les deux téléchargés, vérifiés contre leur
