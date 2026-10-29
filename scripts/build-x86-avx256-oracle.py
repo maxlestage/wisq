@@ -108,6 +108,15 @@ def main():
     candidates += [form for form in EXTRA if form not in seen]
     texts = [text for text in candidates if load.avx128.assembles(text)]
     print(f"{len(texts)} formes sur {len(candidates)} candidates", file=sys.stderr)
+    judge(texts, arguments.output, arguments.oracle,
+          "Ce que le vrai processeur répond sur les formes VEX.256 qui calculent par moitiés.",
+          "scripts/build-x86-avx256-oracle.py")
+
+
+def judge(texts, output, oracle, title, builder):
+    """Fait exécuter `texts` par le processeur sur les états de ce corpus,
+    et écrit le verdict. `build-x86-avx2-oracle.py` s'en sert aussi."""
+    v2 = load("v2")
     encoded = v2.assemble(texts)
 
     # Les états du corpus VEX.128, et un haut pour chaque YMM : xmm0 à xmm2
@@ -133,15 +142,15 @@ def main():
                 values += [low, high]
             request.append(hexadecimal + "\t" + "\t".join(f"{v:x}" for v in values))
             cases.append((instruction, index))
-    answer = subprocess.run([arguments.oracle], input="\n".join(request) + "\n",
+    answer = subprocess.run([oracle], input="\n".join(request) + "\n",
                             capture_output=True, text=True, check=True).stdout.splitlines()
     if len(answer) != len(cases):
         raise SystemExit(f"{len(cases)} cas envoyés, {len(answer)} verdicts reçus")
 
     window = "".join(f"{0x10 + i:02x}" for i in range(64))
-    with open(arguments.output, "w") as out:
-        out.write("# Ce que le vrai processeur répond sur les formes VEX.256 qui calculent par moitiés.\n")
-        out.write("# Voir scripts/build-x86-avx256-oracle.py.\n")
+    with open(output, "w") as out:
+        out.write(f"# {title}\n")
+        out.write(f"# Voir {builder}.\n")
         out.write("# état\t<indice>\t<xmm0 bas, haut, puis le haut de ymm0 : deux mots>\t<de même pour 1 et 2>"
                   "\t<rax>\t<rcx>\t<drapeaux>\t<rdx>\n")
         out.write("# instr\t<indice>\t<octets>\t<mnémonique>\n")
