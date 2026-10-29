@@ -146,6 +146,11 @@ struct LocalVMListView: View {
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
+                    // **Ce que les machines locales lancent, dit d'abord.**
+                    // Une image de Windows ou de macOS importée ici ne
+                    // démarrera jamais : autant le savoir avant de la
+                    // télécharger. Un autre système s'ouvre à distance.
+                    Text("**wisq ne lance que Linux.** Ni Windows, ni macOS, ni BSD : une machine locale démarre un noyau Linux, et rien d'autre. Pour un autre système, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
                     Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système —, et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
                     Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
