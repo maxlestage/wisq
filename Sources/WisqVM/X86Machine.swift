@@ -487,39 +487,47 @@ public final class X86Machine: @unchecked Sendable {
     public func restore(_ data: Data) throws {
         var reader = try Snapshot.Reader([UInt8](data))
         var restored = try Self.readCore(&reader, memory: memory)
-        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+        // **La mémoire en dernier.** Elle s'écrivait ici, directement dans
+        // celle de la machine, et une section abîmée plus loin faisait
+        // refuser la reprise avec la mémoire déjà remplacée : une machine à
+        // moitié reprise, exactement ce que la règle du « tout ou rien »
+        // interdit. Une copie à part doublerait jusqu'à seize gibioctets ; on
+        // lit donc la suite d'abord, sur un second lecteur qui passe la
+        // mémoire en vérifiant les mêmes bornes, et on n'écrit qu'ensuite.
+        var tail = reader
+        try tail.skipRAM(count: ramSize)
         // La pile x87, si la marque est là. Son absence veut dire « un
         // instantané d'avant cette section », pas « un instantané abîmé » :
         // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
         // déjà. Si la marque est là, ce qui suit doit tenir en entier — un
         // lecteur qui manque d'octets refuse plutôt que de rendre la moitié
         // d'une pile.
-        if reader.peeks(Snapshot.x87Section) {
-            _ = try reader.u64()
+        if tail.peeks(Snapshot.x87Section) {
+            _ = try tail.u64()
             for index in 0..<8 {
-                let significand = try reader.u64()
-                let signExponent = UInt16(truncatingIfNeeded: try reader.u32())
+                let significand = try tail.u64()
+                let signExponent = UInt16(truncatingIfNeeded: try tail.u32())
                 restored.x87[index] = X86Extended(significand: significand,
                                                   signExponent: signExponent)
             }
-            restored.x87Tags = UInt16(truncatingIfNeeded: try reader.u32())
+            restored.x87Tags = UInt16(truncatingIfNeeded: try tail.u32())
         }
         // Absente : un instantané d'avant, où XCR0 valait x87 seul et le haut
         // des YMM n'existait pas — ce qu'une machine neuve a déjà.
-        if reader.peeks(Snapshot.extendedStateSection) {
-            _ = try reader.u64()
-            let xcr0 = try reader.u64()
+        if tail.peeks(Snapshot.extendedStateSection) {
+            _ = try tail.u64()
+            let xcr0 = try tail.u64()
             guard xcr0 & 1 != 0, xcr0 & ~X86Core.supportedExtendedState == 0 else {
                 throw Snapshot.Failure.corrupt
             }
             restored.xcr0 = xcr0
-            for index in 0..<32 { restored.upperVectors[index] = try reader.u64() }
+            for index in 0..<32 { restored.upperVectors[index] = try tail.u64() }
         }
         // Absente : un instantané d'avant, écrit quand le rapport valait
         // trente-six pour toutes les machines.
-        if reader.peeks(Snapshot.clockSection) {
-            _ = try reader.u64()
-            let ratio = try reader.u64()
+        if tail.peeks(Snapshot.clockSection) {
+            _ = try tail.u64()
+            let ratio = try tail.u64()
             guard (1...4096).contains(ratio) else { throw Snapshot.Failure.corrupt }
             restored.instructionsPerTick = ratio
         } else {
@@ -531,22 +539,26 @@ public final class X86Machine: @unchecked Sendable {
         var restoredDisk: VirtioBlock?
         var restoredBus: X86PCIHost?
         var restoredSecond: VirtioBlock?
-        if !reader.isAtEnd {
-            let device = try VirtioBlock.restored(from: &reader, keeping: disk?.store)
+        if !tail.isAtEnd {
+            let device = try VirtioBlock.restored(from: &tail, keeping: disk?.store)
             let bus = X86PCIHost(storage: device)
-            try bus.restore(from: &reader)
+            try bus.restore(from: &tail)
             restoredDisk = device
             restoredBus = bus
             // Le second, si sa marque est là — et alors en entier, ou rien.
-            if reader.peeks(Snapshot.secondDiskSection) {
-                _ = try reader.u64()
-                let second = try VirtioBlock.restored(from: &reader, keeping: secondDisk?.store)
+            if tail.peeks(Snapshot.secondDiskSection) {
+                _ = try tail.u64()
+                let second = try VirtioBlock.restored(from: &tail, keeping: secondDisk?.store)
                 let host = X86PCIHost(secondStorage: second)
-                try host.restore(from: &reader)
+                try host.restore(from: &tail)
                 bus.second = host
                 restoredSecond = second
             }
         }
+        // Tout ce qui suit la mémoire a été lu et accepté : `skipRAM` a vu les
+        // mêmes bornes, plus rien ne peut échouer.
+        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
         // qui viennent tous deux d'être restaurés tels quels : LMA est donc
