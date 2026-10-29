@@ -146,7 +146,19 @@ final class X86BootAttemptTests: XCTestCase {
         // y trouve, comme dans l'application, et l'image est le disque.
         // `WISQ_PC_ROOT_PASSWORD` donne le mot de passe de `root`.
         let cloudPath = environment["WISQ_PC_CLOUD_IMAGE"]
-        let cloud: CloudBoot? = try cloudPath.map { path in
+        // **Le système qu'un installateur a écrit** (`WISQ_PC_INSTALLED_DISK`,
+        // avec sa couche `WISQ_PC_WRITES`) : trouvé à travers la couche, comme
+        // l'application le fait pour une machine installée, et démarré depuis
+        // ce disque. Voir `InstalledSystem`.
+        let installedPath = environment["WISQ_PC_INSTALLED_DISK"]
+        let installed: CloudBoot? = try installedPath.map { path in
+            guard let writes = environment["WISQ_PC_WRITES"],
+                  let found = InstalledSystem.find(disk: URL(fileURLWithPath: path),
+                                                   writes: URL(fileURLWithPath: writes))
+            else { throw XCTSkip("aucun système installé sur \(path)") }
+            return found
+        }
+        let cloud: CloudBoot? = try installed ?? cloudPath.map { path in
             let fd = open(path, O_RDONLY)
             guard fd >= 0, let image = try VirtualDiskImages.image(takingOwnershipOf: fd) else {
                 throw XCTSkip("image de cloud illisible : \(path)")
@@ -192,7 +204,7 @@ final class X86BootAttemptTests: XCTestCase {
         // **même** machine. C'est ainsi qu'on mesure un second démarrage, celui
         // qui relit ce que le premier a laissé (le cache des profils AppArmor
         // d'Ubuntu, par exemple).
-        if let path = cloudPath ?? environment["WISQ_PC_DISK_FILE"] {
+        if let path = cloudPath ?? installedPath ?? environment["WISQ_PC_DISK_FILE"] {
             let writes = environment["WISQ_PC_WRITES"].map { URL(fileURLWithPath: $0) }
                 ?? FileManager.default.temporaryDirectory
                     .appendingPathComponent("wisq-banc-\(UUID().uuidString).writes")
@@ -203,11 +215,23 @@ final class X86BootAttemptTests: XCTestCase {
         }
         // Un second disque, sur l'emplacement quatre : `vdb` pour le noyau.
         // C'est le disque sur lequel on installe quand le premier est l'image.
-        if let path = ProcessInfo.processInfo.environment["WISQ_PC_SECOND_DISK"],
-           let image = FileManager.default.contents(atPath: path) {
-            let bus = memory.bus ?? X86PCIHost(storage: nil)
-            bus.second = X86PCIHost(secondStorage: VirtioBlock(image: [UInt8](image)))
-            memory.bus = bus
+        //
+        // `WISQ_PC_SECOND_WRITES` lui donne une couche d'écriture, comme
+        // l'application le fait : ce qu'un installateur y écrit survit à la
+        // course, et une course suivante peut démarrer le système installé.
+        if let path = ProcessInfo.processInfo.environment["WISQ_PC_SECOND_DISK"] {
+            let second: VirtioBlock?
+            if let writes = environment["WISQ_PC_SECOND_WRITES"] {
+                second = VirtioBlock(store: try FileDiskStore(
+                    base: URL(fileURLWithPath: path), writes: URL(fileURLWithPath: writes)))
+            } else {
+                second = FileManager.default.contents(atPath: path).map { VirtioBlock(image: [UInt8]($0)) }
+            }
+            if let second {
+                let bus = memory.bus ?? X86PCIHost(storage: nil)
+                bus.second = X86PCIHost(secondStorage: second)
+                memory.bus = bus
+            }
         }
         // **Ce que le témoin a rendu, le 6 septembre 2026**, avec un vrai
         // noyau Alpine LTS et `WISQ_PC_DISPLAY=1024x768` :

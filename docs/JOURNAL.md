@@ -8,6 +8,61 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Une machine installée démarre ce que l'installateur a écrit
+
+**Ce qui manquait.** Une machine installée démarrait son image
+d'installation, avec son disque en second (`/dev/vdb`), là où l'installateur
+écrit. Une fois l'installation finie, le système était bien sur ce disque,
+mais rien ne le démarrait : la machine revenait à l'image, comme un PC dont
+le CD resterait en tête de l'ordre de démarrage. « Installer une machine
+Linux » s'arrêtait donc au « Please reboot » de l'installateur.
+
+**Ce qui change.**
+- `InstalledSystem` cherche le système sur le disque de la machine, à
+  travers sa couche d'écriture (`DiskStoreImage`), avec ce qui démarre une
+  image de cloud : `grub.cfg`, entrées BLS, noyau le plus récent de `/boot`.
+  Un disque sans couche n'a rien reçu, et la question n'en crée pas.
+- `CloudBoot` lit aussi `extlinux.conf`, le chargeur qu'Alpine installe.
+  L'entrée retenue est celle que nomme `DEFAULT`, sinon celle marquée
+  `MENU DEFAULT`, sinon la première. Les chemins sont relatifs au dossier du
+  fichier, et l'initramfs peut venir d'`INITRD` ou d'`initrd=`.
+- `IsoBoot.decide(…, installedOn:)` démarre ce disque au lieu de l'image
+  d'installation quand il porte un système. Cela ne vaut que pour une image
+  d'installation : une image de cloud est son propre disque.
+- `LocalVMModel` lui passe le disque de la machine et sa couche, et ne le
+  branche pas une seconde fois.
+- **Un système installé garde sa connexion.** Il reçoit la console série et
+  les délais des machines lentes, mais ni le shell `root` sans mot de passe
+  ni la première mise en route que reçoivent les images de cloud.
+- Le banc de démarrage garde les écritures du second disque
+  (`WISQ_PC_SECOND_WRITES`) et sait démarrer un disque installé
+  (`WISQ_PC_INSTALLED_DISK`).
+
+**Mesuré de bout en bout, dans l'émulateur.**
+- L'image *virt* d'Alpine 3.24 ne peut pas s'installer sans réseau : son
+  dépôt local n'a ni noyau ni chargeur. L'image *standard* non plus. Il faut
+  l'image *extended*.
+- Depuis l'*extended* : `setup-disk -m sys /dev/vdb` partitionne, formate,
+  installe et écrit `extlinux.conf`. « Installation is complete » au bout de
+  54 G instructions (25 minutes), et 320 Mio dans la couche du disque.
+- Puis le disque seul, sans l'image : `InstalledSystem` lit l'`extlinux.conf`
+  de `vda1` et démarre la ligne qu'Alpine y a écrite. Il faut 5,3 G
+  instructions jusqu'à la connexion, avec la racine sur `/dev/vda3` en ext4,
+  montée en lecture-écriture.
+- Debian 13 (image de cloud *genericcloud*) atteint son shell `root` en
+  13,7 G instructions, sans aucune unité en échec.
+
+**Ce qui reste.** Une fois le système installé, l'image d'installation ne
+redémarre plus d'elle-même, par exemple pour une réparation. Il faudra un
+choix dans l'interface.
+
+**Vérifié.** Onze tests (`InstalledSystemTests`, `InstalledBootTests`,
+`ExtlinuxEntryTests`), et six sabotages, six chutes. Un premier passage
+laissait au système installé le shell `root` sans mot de passe ; le test le
+refuse maintenant.
+
+Compte publié : 3121.
+
 ## 2026-10-29 — SPICE : un arrêt pendant l'ouverture reste un arrêt
 
 **Le défaut.** `SPICESession.start` attend toute l'ouverture de la session :
