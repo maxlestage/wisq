@@ -133,3 +133,23 @@ final class X86MemoryHoleTests: XCTestCase {
         }
     }
 }
+
+/// **Un refus se lit.** L'application affiche `localizedDescription` ; sans
+/// description, iOS rendait « …X86Core.Fault erreur 2 ».
+final class X86RefusalTextTests: XCTestCase {
+    func testARamdiskThatDoesNotFitSaysBothSizesAndWhatToDo() {
+        let said = X86BootLoader.LoadError.notEnoughMemory(needed: 246 << 20, available: 192 << 20)
+            .localizedDescription
+        XCTAssertTrue(said.contains("246 Mo"), said)
+        XCTAssertTrue(said.contains("192 Mo"), said)
+        XCTAssertTrue(said.contains("curseur"), said)
+        XCTAssertFalse(said.contains("erreur 0"), said)
+    }
+
+    func testAFaultNamesWhatHappened() {
+        XCTAssertTrue(X86Core.Fault.outsideMemory(0xFFFF_FFFF_FC56_0000).localizedDescription
+            .contains("hors de la mémoire"))
+        XCTAssertTrue(X86Core.Fault.unsupported("vblendps").localizedDescription.contains("vblendps"))
+        XCTAssertFalse(X86Core.Fault.divideError.localizedDescription.contains("erreur 1"))
+    }
+}
