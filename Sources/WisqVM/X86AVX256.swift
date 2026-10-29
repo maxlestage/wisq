@@ -76,9 +76,12 @@ extension X86Core {
         case .threeByte3A:
             guard prefix == 1 else { return nil }
             switch opcode {
-            // `vblendps`, `vblendpd`, `vdpps` et `vmpsadbw` attendent leur
-            // forme SSE, que ce cœur n'a pas encore.
+            // `vblendps`, `vblendpd` et `vdpps` attendent leur forme SSE, que
+            // ce cœur n'a pas encore.
             case 0x08, 0x09, 0x0E, 0x0F: return .independent
+            // `vmpsadbw` : la moitié haute choisit ses blocs dans les bits 3
+            // à 5 de l'immédiat, la basse dans les bits 0 à 2.
+            case 0x42: return .immediateShift(3)
             default: return nil
             }
         default:
