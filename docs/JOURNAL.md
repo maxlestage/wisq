@@ -8,6 +8,25 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Le cache de décodage ne compte plus ses trouvailles
+
+Le cache de décodage pèse environ un dixième des instructions de l'hôte, une
+vingtaine par instruction de l'invité. Deux d'entre elles servaient à compter
+les trouvailles : une écriture en mémoire à chaque instruction, pour un
+chiffre qui ne sert qu'au rapport du démarrage et à un test. Le compte se
+déduit maintenant (`X86Core.decodeCacheHits`) : les instructions exécutées,
+moins celles qu'il a fallu décoder. Un peu généreux — une instruction à
+cheval sur deux pages n'entre jamais dans le cache et n'y compte pas comme
+échec —, ce qui ne change rien à ce qu'il dit. Les échecs se comptent
+toujours, sur le chemin froid qui décode de toute façon.
+
+Callgrind, 100 millions d'instructions d'Alpine : 22,54 → 22,34 milliards
+d'instructions de l'hôte (−0,9 %), les deux par instruction attendues. Une
+écriture retirée, sans branche échangée contre du calcul : rien qu'une
+mesure native croisée trancherait autrement, et l'écart est sous son bruit.
+Le test du cache tient le compte déduit ; le saboter (le compte rendu égal
+aux échecs) le fait tomber.
+
 ## 2026-10-29 — La comparaison croisée, dans le dépôt
 
 La règle posée par l'entrée précédente — un temps natif ne se compare que
