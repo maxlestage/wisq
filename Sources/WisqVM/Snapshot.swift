@@ -57,6 +57,11 @@ enum Snapshot {
     /// la pile au disque, et le disque ne commence pas par ces huit octets.
     static let extendedStateSection: UInt64 = 0x6D6D_795F_5153_4957  // « WISQ_ymm »
 
+    /// La marque du rapport de l'horloge de la machine PC, posée après l'état
+    /// étendu, avant le disque. Un instantané d'avant passe de l'état étendu
+    /// au disque, qui ne commence pas par ces huit octets.
+    static let clockSection: UInt64 = 0x6B63_745F_5153_4957  // « WISQ_tck »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.

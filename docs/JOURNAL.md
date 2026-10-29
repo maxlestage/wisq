@@ -35,6 +35,52 @@ x86-64-v3 : sans ces bits, elle s'arrête avant le premier programme.
 
 Compte publié inchangé.
 
+## 2026-10-29 — L'horloge de l'invité à 86 MHz, et son rapport dans l'instantané
+
+**Ce qui change.**
+- `X86LegacyDevices.instructionsPerTick` passe de 36 à 72 : l'invité se croit
+  sur un processeur de 86 MHz (« Detected 85.908 MHz processor »).
+- Le rapport appartient maintenant à chaque machine (`X86Core.instructionsPerTick`).
+  Il est écrit dans l'instantané derrière une nouvelle marque, « WISQ_tck ».
+- Un instantané qui n'a pas la marque a été écrit à 36, et il reprend à 36.
+  Sinon le noyau verrait chaque battement coupé en deux, et le 8253 verrait
+  son échéance partir dans le futur.
+
+**Pourquoi.** NixOS 25.05 attend `/dev/ttyS0` pendant les 90 s par défaut de
+systemd, et udevd ne démarre qu'après les services de `tmpfiles`. À 36, ces
+90 s valaient 3,9 G instructions : elles expiraient d'abord, et la console
+série n'avait jamais de getty.
+
+**Mesuré.**
+- **NixOS 25.05, à 72** : la console trouve son périphérique, la session
+  `nixos` s'ouvre sur le port série et répond à `uname -a`. Le démarrage
+  entier prend 35,5 G instructions (17 minutes) au lieu de 48,4 G
+  (25 minutes) : la génération des clés SSH se compte en temps de l'invité.
+- **Alpine** : même shell, 62,5 s avant, 61,1 s après.
+- **Quatre tests** (`X86ClockRatioTests`) : le rapport d'une machine neuve,
+  son voyage dans l'instantané, la reprise à 36 d'un instantané sans marque,
+  et le refus d'un rapport nul. Sept sabotages, sept chutes. Le premier
+  passage en laissait survivre un, `ticks` relu dans la constante : les deux
+  machines comparées se trompaient pareil. Une assertion de plus le tient.
+
+**Ce qui a été essayé pour la vitesse, et laissé.** Un profil `perf` de NixOS
+sur 15 G instructions donne `run` à 33 %, `oneByte` à 20 % et `execute` à 16 %.
+Le reste est du vrai travail.
+- Un chemin direct vers la table d'un octet, devant l'aiguillage : 115,5 s
+  au lieu de 112 s sur 4 G instructions, donc plus lent.
+- Une case du cache de décodage de 64 octets alignée, les masques déduits de
+  la longueur : 118 s, plus lent aussi.
+- Retirés tous les deux. Le cœur est à environ 35 M instructions par seconde
+  ici. Ce qui reste à gagner demande un autre ordre d'exécution (des blocs
+  plutôt que des instructions), pas un réglage.
+- `Load Kernel Modules` échoue sous NixOS, à 36 comme à 72. Le journal de
+  l'invité dit pourquoi : le service expire pendant qu'il insère `zfs`, après
+  56 s de temps processeur de l'invité. Au chargement, ZFS mesure ses
+  implémentations de sommes de contrôle pour garder la plus rapide. C'est de
+  la lenteur, pas un défaut : `atkbd` et `zfs` sont bien insérés.
+
+Compte publié : 3088.
+
 ## 2026-10-29 — Chasse aux bugs, deuxième passe : douze corrections dans une PR
 
 Demandé par l'utilisateur : « avance sur l'application, il faut que tout
