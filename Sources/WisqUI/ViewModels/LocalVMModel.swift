@@ -610,6 +610,10 @@ public final class LocalVMModel {
     /// A user who has wedged their guest wants exactly that: leave now, and
     /// start clean.
     public func forgetSavedMachine() {
+        // Dans cet ordre : plus rien ne s'écrira, puis on efface. L'inverse
+        // laisserait une sauvegarde en cours réécrire le fichier.
+        life.userForgot()
+        checkpointed?.stopSaving()
         SuspendedMachine.clear(kernel: kernelName, in: storage)
     }
 
@@ -627,7 +631,15 @@ public final class LocalVMModel {
     /// that silently fails to save, the hitch is the right one.
     public func suspend() {
         guard let machine, let finished = runFinished else { return }
-        guard life.steppedAway() == .save else { return }
+        switch life.steppedAway() {
+        case .save: break
+        case .nothing: return
+        case .forget:
+            // Oubliée : elle s'arrête sans rien écrire (`userForgot`).
+            if let checkpointed { checkpointed.stop() } else { machine.stop() }
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
+            return
+        }
         if let checkpointed { checkpointed.stop() } else { machine.stop() }
         // If the interpreter has not come back in time, saving would read state
         // it is still writing. Better to lose the session than to save a
@@ -854,11 +866,31 @@ public enum KernelLibrary {
     }
 
     public static func list() -> [URL] {
+        // Les étendues d'un VMDK à descripteur ne sont pas des disques à
+        // elles seules : c'est le descripteur qui les représente.
+        VmdkDescriptorDisk.hidingCompanions(everyFile())
+    }
+
+    /// Tout ce que le dossier contient, étendues comprises.
+    private static func everyFile() -> [URL] {
         guard let directory = try? directory(),
               let entries = try? FileManager.default.contentsOfDirectory(
                   at: directory, includingPropertiesForKeys: nil
               ) else { return [] }
         return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Les noms que nomment les descripteurs déjà rangés et ceux de
+    /// `sources` : ces fichiers-là sont les étendues d'un disque, quoi
+    /// qu'ils aient l'air d'être.
+    public static func companionNames(importing sources: [URL]) -> Set<String> {
+        var names = VmdkDescriptorDisk.companionNames(among: everyFile())
+        for source in sources {
+            let opened = source.startAccessingSecurityScopedResource()
+            defer { if opened { source.stopAccessingSecurityScopedResource() } }
+            names.formUnion(VmdkDescriptorDisk.companionFiles(ofDescriptorAt: source))
+        }
+        return names
     }
 
     /// Copies a picked file into the library, keeping its name.
@@ -868,10 +900,23 @@ public enum KernelLibrary {
     /// thing that can decide is the file itself. Copying a two-gigabyte image
     /// into the app's storage in order to discover on boot that it cannot fit
     /// in a sixty-four megabyte machine costs the disk and teaches nothing.
-    public static func importKernel(from source: URL) throws -> URL {
+    ///
+    /// `companion` dit que le fichier est l'étendue d'un VMDK à descripteur :
+    /// des octets bruts ou un morceau, que rien ne reconnaît comme un disque
+    /// et qui peut peser bien plus que le plafond des noyaux. Il est copié
+    /// tel quel ; c'est son descripteur qui sera jugé.
+    public static func importKernel(from source: URL, companion: Bool = false) throws -> URL {
         let destination = try directory().appendingPathComponent(source.lastPathComponent)
         _ = source.startAccessingSecurityScopedResource()
         defer { source.stopAccessingSecurityScopedResource() }
+        if companion {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+                replaced(destination.lastPathComponent)
+            }
+            try FileManager.default.copyItem(at: source, to: destination)
+            return destination
+        }
         let kind = KernelImageKind.identify(fileAt: source)
         // Ce que le fichier est passe avant ce qu'il pèse, ici aussi : un ISO
         // de six gigaoctets est refusé pour la bonne raison, pas pour sa
@@ -922,9 +967,21 @@ public enum KernelLibrary {
         }
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
+            replaced(destination.lastPathComponent)
         }
         try FileManager.default.copyItem(at: source, to: destination)
         return destination
+    }
+
+    /// **Un fichier remplacé sous le même nom n'est plus le même disque.**
+    /// Ce qui avait été écrit par-dessus l'ancien — la couche du fichier,
+    /// celles des machines installées dessus — et les sessions qui le
+    /// croyaient là sont jetés : posés sur le nouveau, ils en feraient un
+    /// mélange des deux. Le déballage d'une image part aussi, pour que le
+    /// noyau soit relu dans le nouveau fichier. Les réglages restent.
+    public static func replaced(_ name: String) {
+        LocalDisk.discardEverythingWritten(onDisk: name)
+        LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
     }
 
     /// What the local Linux feature occupies, kernel by kernel.
@@ -956,7 +1013,8 @@ public enum KernelLibrary {
               let machines = try? SuspendedMachine.directory()
         else { return 0 }
         return LocalStorage.freeOrphanedMachines(
-            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys())
+            kernels: kernels, machines: machines, installed: InstalledMachines.allKeys(),
+            writes: try? LocalDisk.writesDirectory())
     }
 
     /// Removes a kernel, and everything the app remembered about it.
@@ -1000,17 +1058,29 @@ public enum KernelLibrary {
         case .virtualDisk(let format): wasAnImage = KernelImageKind.isReadableVirtualDisk(format)
         default: wasAnImage = false
         }
+        // **Un descripteur VMDK emporte ses étendues**, lues avant de
+        // l'effacer : cachées de la liste, elles ne partiraient jamais sinon.
+        // Sauf celles qu'un autre descripteur de la bibliothèque nomme aussi
+        // — une copie du descripteur, deux disques sur la même étendue : les
+        // effacer casserait l'autre.
+        let stillNamed = VmdkDescriptorDisk.companionNames(among: everyFile().filter { $0 != url })
+        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url).filter { !stillNamed.contains($0) }
         try? FileManager.default.removeItem(at: url)
+        for companion in companions {
+            try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(companion))
+        }
         if wasAnImage {
             LocalStorage.discardUnpackedIso(LocalStorage.unpackedIsoFolder(in: nil))
         }
         KernelMemory.forget(kernel: name)
         RootPassword.forget(kernel: name)
+        // **Avant `forgetDisk`**, qui efface les choix dont elle se sert pour
+        // trouver les sessions des noyaux qui avaient ce disque : leur
+        // instantané croyait le disque là, et ne le porte pas. Les couches
+        // des machines installées qui l'avaient partent aussi.
+        LocalDisk.discardEverythingWritten(onDisk: name)
         LocalDisk.forget(kernel: name)
         LocalDisk.forgetDisk(named: name)
-        // La couche d'écriture part avec sa base : sans elle, ses secteurs ne
-        // veulent plus rien dire.
-        LocalDisk.discardWrites(for: name)
         SuspendedMachine.clearAll(named: name)
         // Le fichier pouvait être le disque propre d'une machine : elle reste,
         // sans disque à emporter.

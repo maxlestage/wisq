@@ -131,6 +131,9 @@ public struct TerminalGrid: Sendable {
     /// Collected CSI parameter and intermediate bytes. Bounded: a hostile
     /// guest must not grow parser state without limit.
     private var csiBuffer: [Unicode.Scalar] = []
+    /// Le début d'un caractère UTF-8 que le morceau précédent a coupé : il
+    /// attend la suite, au lieu d'être rendu en « � ».
+    private var pendingUTF8: [UInt8] = []
     private static let csiBufferLimit = 64
 
     public init(columns: Int = 80, rows: Int = 24, scrollbackLines: Int = 2000) {
@@ -216,8 +219,39 @@ public struct TerminalGrid: Sendable {
 
     // MARK: - Input
 
+    /// **Un caractère peut arriver en deux morceaux.** La console de
+    /// l'invité est lue par tranches d'exécution, et une tranche s'arrête où
+    /// elle s'arrête : au milieu des deux octets d'un « é », ou des quatre
+    /// d'un emoji. Décodé morceau par morceau, chacun des deux bouts devenait
+    /// un « � ». Les octets d'une séquence commencée et pas finie attendent
+    /// donc le morceau suivant ; une séquence fausse, elle, reste un « � ».
     public mutating func append(_ data: Data) {
-        append(String(decoding: data, as: UTF8.self))
+        var bytes = pendingUTF8
+        bytes.append(contentsOf: data)
+        let cut = Self.completeUTF8Prefix(bytes)
+        pendingUTF8 = Array(bytes[cut...])
+        append(String(decoding: bytes[..<cut], as: UTF8.self))
+    }
+
+    /// Jusqu'où `bytes` peut se décoder sans couper un caractère : tout,
+    /// sauf une séquence commencée dans les trois derniers octets et pas
+    /// encore finie.
+    static func completeUTF8Prefix(_ bytes: [UInt8]) -> Int {
+        var start = bytes.count
+        // Remonter les octets de continuation (10xxxxxx), trois au plus.
+        while start > 0, bytes.count - start < 3, bytes[start - 1] & 0xC0 == 0x80 { start -= 1 }
+        guard start > 0 else { return bytes.count }
+        let lead = bytes[start - 1]
+        let length: Int
+        switch lead {
+        case 0xC2...0xDF: length = 2
+        case 0xE0...0xEF: length = 3
+        case 0xF0...0xF4: length = 4
+        // Pas un début de séquence longue : rien n'attend.
+        default: return bytes.count
+        }
+        let have = bytes.count - (start - 1)
+        return have < length ? start - 1 : bytes.count
     }
 
     public mutating func append(_ text: String) {
@@ -244,6 +278,7 @@ public struct TerminalGrid: Sendable {
         isAlternateScreen = false
         state = .text
         csiBuffer.removeAll()
+        pendingUTF8.removeAll()
         replies.removeAll()
     }
 

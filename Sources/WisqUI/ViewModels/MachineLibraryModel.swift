@@ -135,6 +135,11 @@ public final class MachineLibraryModel {
             reload()
             return true
         } catch {
+            // **La liste relue quand même** : l'écriture a pu passer et le
+            // secret seul échouer (le trousseau refuse pendant que
+            // l'appareil est verrouillé), et une machine déjà sur le disque
+            // doit se voir. `reload` efface l'erreur : elle vient après.
+            reload()
             loadError = error.localizedDescription
             return false
         }
@@ -148,6 +153,7 @@ public final class MachineLibraryModel {
             reload()
             return true
         } catch {
+            reload()
             loadError = error.localizedDescription
             return false
         }
