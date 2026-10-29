@@ -40,6 +40,23 @@ douze sabordages, onze chutes — le survivant touchait une condition
 redondante, retirée.
 
 Compte publié : 3063 ; corpus matériels : seize.
+## 2026-10-29 — Le reste de SSSE3, que le systemd de CentOS Stream 10 demande
+
+Essayé sur la branche qui annonce x86-64-v3 entier (pas encore fusionnée) :
+la glibc de CentOS Stream 10 accepte le processeur, systemd démarre —
+« Welcome to CentOS Stream 10 », la politique SELinux chargée en 16,5 s de
+temps invité — et s'arrête à 14,65 milliards d'instructions sur `psignb`.
+Ce cœur n'avait de SSSE3 que ce qu'AlmaLinux 9 employait.
+
+- **Le reste de SSSE3** (`X86SSSE3.swift`) : `phaddw`, `phaddd`, `phsubw`,
+  `phsubd`, `phsubsw` — les horizontales, le premier moins le second,
+  modulo la largeur sauf les formes saturées —, `psignb/w/d`, `pmulhrsw`.
+  Leurs formes VEX.128 et VEX.256 viennent avec, par les tables existantes.
+- **Le corpus x86-64-v2** les porte maintenant, et les corpus VEX.128 et
+  VEX.256, qui en dérivent, ont été régénérés : 418, 1 188 et 722 formes.
+  Accord du premier coup ; cinq sabordages, cinq chutes.
+
+Compte publié inchangé : les cas entrent dans des corpus qui existaient.
 
 ## 2026-10-29 — Ce qui traverse les moitiés d'un YMM
 
