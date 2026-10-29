@@ -297,7 +297,7 @@ public struct CloudBoot: Equatable, Sendable {
                         options = Array(words.dropFirst(2))
                     }
                 case "initrd", "initrdefi", "initrd16":
-                    if initrds.isEmpty { initrds = words.dropFirst().map(path) }
+                    if initrds.isEmpty { initrds = initrdPaths(words.dropFirst()) }
                 default:
                     break
                 }
@@ -326,12 +326,22 @@ public struct CloudBoot: Equatable, Sendable {
                 .split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
             switch words.first {
             case "linux": kernel = words.count >= 2 ? path(words[1]) : nil
-            case "initrd": initrds += words.dropFirst().map(path)
+            case "initrd": initrds += initrdPaths(words.dropFirst())
             case "options": options += words.dropFirst()
             default: break
             }
         }
         return kernel.map { Entry(kernel: $0, initrds: initrds, options: options) }
+    }
+
+    /// Les fichiers d'une ligne `initrd`, **sans ses variables de GRUB**.
+    /// `tuned`, installé par défaut chez CentOS Stream 10 et les RHEL,
+    /// écrit `initrd /boot/initramfs-….img $tuned_initrd` : une variable
+    /// que GRUB remplace par rien quand elle n'est pas posée. Prise pour un
+    /// fichier, elle faisait refuser toute l'image (« $tuned_initrd
+    /// introuvable »). Les options, elles, les laissaient déjà tomber.
+    static func initrdPaths(_ words: ArraySlice<String>) -> [String] {
+        words.filter { !$0.hasPrefix("$") }.map(path)
     }
 
     /// Un chemin de GRUB : un éventuel disque en tête, `(hd0,gpt1)/boot/…`,
