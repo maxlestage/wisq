@@ -255,6 +255,26 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0000, subleaf: 0).0, 0x8000_0004)
     }
 
+    /// **La feuille 7 n'annonce que la copie rapide** : ERMS, FSRM et FSRS,
+    /// que `bulkString` tient. Un bit de plus — AVX2, BMI, SMEP — ferait
+    /// employer à Linux ou à la glibc des instructions qui n'existent pas ici.
+    func testLeafSevenAnnouncesOnlyTheFastStrings() {
+        XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 7)
+        let (maximum, ebx, ecx, edx) = X86CPUID.answer(leaf: 7, subleaf: 0)
+        XCTAssertEqual(maximum, 1, "la sous-feuille 1 existe")
+        XCTAssertEqual(ebx, 1 << 9, "ERMS seul")
+        XCTAssertEqual(ecx, 0)
+        XCTAssertEqual(edx, 1 << 4, "FSRM seul")
+        let one = X86CPUID.answer(leaf: 7, subleaf: 1)
+        XCTAssertEqual(one.0, 1 << 11, "FSRS seul")
+        XCTAssertEqual([one.1, one.2, one.3], [0, 0, 0])
+        XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 2).0, 0)
+        for leaf: UInt32 in 2...6 {
+            let answer = X86CPUID.answer(leaf: leaf, subleaf: 0)
+            XCTAssertEqual([answer.0, answer.1, answer.2, answer.3], [0, 0, 0, 0], "feuille \(leaf)")
+        }
+    }
+
     /// Écrire `EFER` ne suffit pas à être en mode long : le processeur pose
     /// **lui-même** LMA quand la pagination s'allume alors que LME est demandé.
     /// Un noyau lit LMA pour savoir où il en est.
