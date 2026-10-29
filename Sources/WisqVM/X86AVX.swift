@@ -127,7 +127,12 @@ extension X86Core {
         let modrm = instruction.modrm ?? 0
         let register = modrm >> 6 == 0b11
         guard let form = Self.vexForm(instruction.map, opcode, instruction.vexImpliedPrefix, register: register)
-        else { throw Self.vectorRefusal() }
+        else {
+            // Pas de forme SSE : peut-être une de celles qui n'existent que
+            // sous VEX (`X86AVX2.swift`).
+            guard try crossLaneInstruction(instruction, opcode) else { throw Self.vectorRefusal() }
+            return
+        }
         try executeVEX128(instruction, form, modrm: modrm, register: register)
         switch form {
         case .zeroUpper: for index in upperVectors.indices { upperVectors[index] = 0 }
