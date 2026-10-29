@@ -377,6 +377,13 @@ struct LocalVMListView: View {
             reloadLibrary()
             storage = KernelLibrary.storageReport()
         }
+        // Un téléchargement d'arrière-plan qui finit sans feuille ouverte —
+        // l'application relancée par le système — range quand même son
+        // image : la liste doit la montrer sans attendre qu'on la rouvre.
+        .onReceive(NotificationCenter.default.publisher(for: BackgroundDownloads.libraryChanged)) { _ in
+            reloadLibrary()
+            storage = KernelLibrary.storageReport()
+        }
         .onChange(of: booting == nil) {
             // Un démarrage range la machine en tête : la liste suit.
             installed = InstalledMachines.list()
