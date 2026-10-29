@@ -282,6 +282,9 @@ public enum IsoBoot {
                 Les images d'installation des distributions en portent une. \
                 Une image de données, un disque gravé à la main ou une image \
                 pour une autre architecture, non.
+
+                Et wisq ne lance que Linux : une image de Windows, de macOS \
+                ou d'un BSD ne démarrera pas ici.
                 """
         case .cannotPrepare:
             return """
