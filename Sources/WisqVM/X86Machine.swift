@@ -203,7 +203,8 @@ public final class X86Machine: @unchecked Sendable {
     /// **Donner un écran à la machine.** À appeler avant `load` : c'est le
     /// chargeur qui l'annonce au noyau, et il ne le fait qu'une fois.
     public func attachDisplay(width: Int, height: Int) throws {
-        guard UInt64(ramSize) <= Self.displayBase else {
+        // Avec le trou, l'écran tombe dedans quelle que soit la RAM.
+        guard memory.ramRanges.count == 2 || UInt64(ramSize) <= Self.displayBase else {
             throw DisplayRefusal.wouldOverlapMemory
         }
         let screen = X86Framebuffer(base: Self.displayBase, width: width, height: height)
@@ -224,7 +225,7 @@ public final class X86Machine: @unchecked Sendable {
                 onOutput: @escaping @Sendable (Data) -> Void) {
         self.ramSize = max(ramSize, Self.minimumRAMSize)
         self.onOutput = onOutput
-        memory = X86Memory(size: self.ramSize, base: 0)
+        memory = X86Memory.pc(ram: self.ramSize)
         core = X86Core(registers: [UInt64](repeating: 0, count: 16), rip: 0, memory: memory)
     }
 
@@ -431,7 +432,7 @@ public final class X86Machine: @unchecked Sendable {
         let queued = core.serialInput + inputQueue
         lock.unlock()
         writer.blob(queued)
-        writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: ramSize))
+        writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: memory.size))
         // **La pile x87, derrière sa marque.** Le mot de contrôle, le mot
         // d'état et MXCSR sont écrits plus haut depuis toujours ; les huit
         // registres qu'ils décrivent et le mot d'étiquettes ne l'étaient pas.
@@ -495,7 +496,7 @@ public final class X86Machine: @unchecked Sendable {
         // lit donc la suite d'abord, sur un second lecteur qui passe la
         // mémoire en vérifiant les mêmes bornes, et on n'écrit qu'ensuite.
         var tail = reader
-        try tail.skipRAM(count: ramSize)
+        try tail.skipRAM(count: memory.size)
         // La pile x87, si la marque est là. Son absence veut dire « un
         // instantané d'avant cette section », pas « un instantané abîmé » :
         // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
@@ -557,7 +558,7 @@ public final class X86Machine: @unchecked Sendable {
         }
         // Tout ce qui suit la mémoire a été lu et accepté : `skipRAM` a vu les
         // mêmes bornes, plus rien ne peut échouer.
-        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: memory.size))
 
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,

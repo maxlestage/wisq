@@ -18,7 +18,9 @@ speed, local within the rules**. *([Version française](README.fr.md) · [site](
   in well under a second, shell included. wisq reads the file you hand it
   and picks the core itself — twenty architecture families recognised,
   two of them executed. Interpretation needs no JIT, which keeps it clean
-  under App Store rules (precedent: iSH).
+  under App Store rules (precedent: iSH). **Linux only**: on the phone,
+  wisq runs Linux and nothing else — not Windows, not macOS, not BSD. Those
+  open remotely, from the computer that runs them.
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|

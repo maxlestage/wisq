@@ -146,8 +146,13 @@ struct LocalVMListView: View {
                 }
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
+                    // **Ce que les machines locales lancent, dit d'abord.**
+                    // Une image de Windows ou de macOS importée ici ne
+                    // démarrera jamais : autant le savoir avant de la
+                    // télécharger. Un autre système s'ouvre à distance.
+                    Text("**wisq ne lance que Linux.** Ni Windows, ni macOS, ni BSD : une machine locale démarre un noyau Linux, et rien d'autre. Pour un autre système, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
                     Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
-                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)), et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
+                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système —, et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
                     Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
                 }
             }
@@ -940,6 +945,12 @@ struct LocalVMTerminalView: View {
     /// cran quelle que soit la valeur enregistrée.
     @AppStorage("wisq.console.tailleDuTexte") private var textSize = ConsoleTextSize.standard
     @FocusState private var inputFocused: Bool
+    /// **Le plein écran** : la console prend tout le téléphone. La barre de
+    /// navigation, la barre d'état et le signe de vie s'effacent ; la barre
+    /// des touches et la ligne de commande restent, puisqu'on tape. Un
+    /// bouton en haut à droite le quitte. Pas retenu d'une session à
+    /// l'autre : on rouvre une machine sur l'écran qu'on connaît.
+    @State private var fullScreen = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
@@ -978,7 +989,7 @@ struct LocalVMTerminalView: View {
             // quelques lignes puis se tait dix minutes, sans que rien ne dise
             // s'il tournait encore. « Il tourne en rond » et « il est mort »
             // ne se corrigent pas pareil.
-            if let heartbeat = model.heartbeat {
+            if !fullScreen, let heartbeat = model.heartbeat {
                 Text(heartbeat)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -1044,6 +1055,24 @@ struct LocalVMTerminalView: View {
         }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
+        .statusBarHidden(fullScreen)
+        .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
+        .overlay(alignment: .topTrailing) {
+            if fullScreen {
+                Button {
+                    withAnimation { fullScreen = false }
+                } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .padding(8)
+                .accessibilityLabel("Quitter le plein écran")
+            }
+        }
         .toolbar {
             // **Fermer garde la machine.** L'écran est une `fullScreenCover`,
             // qu'on ne fait pas glisser : sans ce bouton, la seule sortie
@@ -1057,6 +1086,11 @@ struct LocalVMTerminalView: View {
                 Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
                     model.stop()
                     dismiss()
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Plein écran", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    withAnimation { fullScreen = true }
                 }
             }
             ToolbarItem(placement: .primaryAction) {
