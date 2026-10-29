@@ -166,10 +166,21 @@ public enum IsoBoot {
     ///
     /// `rootHash` — l'empreinte `$6$` que garde `RootPassword` — ne sert qu'à
     /// une image de cloud : voir `CloudBoot`.
+    ///
+    /// `installedOn` est le disque de la machine et sa couche d'écriture.
+    /// **Quand l'image est une image d'installation** et que ce disque porte
+    /// un système, c'est lui qui démarre : voir `installed`. Une image de
+    /// cloud n'en tient pas compte — son disque, c'est elle.
     public static func decide(
-        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64, rootHash: String? = nil
+        _ chosen: URL, unpackingInto storage: URL?, ceiling: UInt64, rootHash: String? = nil,
+        installedOn: (disk: URL, writes: URL)? = nil
     ) -> Result<Boot, Refusal> {
         let kind = KernelImageKind.identify(fileAt: chosen)
+        if case .discImage = kind, let installedOn, let folder = folder(in: storage),
+           let boot = installed(disk: installedOn.disk, writes: installedOn.writes, into: folder,
+                                ceiling: ceiling) {
+            return boot
+        }
         guard case .discImage = kind else {
             // Sans dossier, un noyau ordinaire démarre quand même : le refus
             // ne vaut que pour ce qui doit être déballé.
@@ -180,6 +191,27 @@ public enum IsoBoot {
         }
         guard let folder = folder(in: storage) else { return .failure(.cannotPrepare) }
         return decide(chosen, into: folder, ceiling: ceiling)
+    }
+
+    /// **Le système installé sur le disque d'une machine**, s'il y en a un :
+    /// la machine le démarre au lieu de son image d'installation, comme un PC
+    /// dont le disque passe avant le CD une fois l'installation faite.
+    ///
+    /// `disk` devient le premier disque, et la ligne de commande est celle que
+    /// l'installateur a écrite (voir `InstalledSystem`). `nil` quand le disque
+    /// ne porte rien qui démarre : la machine démarre alors son image, comme
+    /// avant.
+    public static func installed(
+        disk: URL, writes: URL, into folder: URL, ceiling: UInt64
+    ) -> Result<Boot, Refusal>? {
+        InstalledSystem.unpack(disk: disk, writes: writes, into: folder, ceiling: ceiling)?
+            .map { unpacked in
+                var boot = Boot(kind: KernelImageKind.identify(fileAt: unpacked.kernel), kernel: unpacked.kernel,
+                                disk: disk, commandLine: unpacked.commandLine, initrd: unpacked.initrd)
+                boot.minimumRAM = CloudBoot.minimumRAMSize
+                return boot
+            }
+            .mapError { .cloud($0) }
     }
 
     /// **Ce qui peut être une image de cloud** : un disque d'hyperviseur que
