@@ -20,8 +20,8 @@ import Foundation
 //   moitiés en un registre général ou en drapeaux.
 //
 // Ce qui traverse les moitiés — `vperm2i128`, `vpermq`, `vinserti128`,
-// `vpbroadcast*`, les élargissements et les conversions qui changent de
-// largeur — n'est pas ici, et reste refusé par son nom.
+// `vpbroadcast*`, les élargissements — est dans `X86AVX2.swift` ; les
+// conversions qui changent de largeur restent refusées par leur nom.
 //
 // La référence est le processeur : `Tests/Fixtures/x86-avx256-oracle.tsv`.
 extension X86Core {
@@ -99,7 +99,11 @@ extension X86Core {
         let register = modrm >> 6 == 0b11
         guard let split = Self.laneSplit(instruction.map, opcode, prefix),
               let form = Self.vexForm(instruction.map, opcode, prefix, register: register)
-        else { throw Self.vectorRefusal() }
+        else {
+            // Ce qui traverse les moitiés (`X86AVX2.swift`), ou le refus.
+            guard try crossLaneInstruction(instruction, opcode) else { throw Self.vectorRefusal() }
+            return
+        }
 
         // Les registres XMM que l'instruction nomme : ceux dont la moitié
         // haute prend la place du bas pendant le second passage.
