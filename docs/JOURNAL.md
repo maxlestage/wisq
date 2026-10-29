@@ -8,6 +8,56 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — La comparaison croisée, dans le dépôt
+
+La règle posée par l'entrée précédente — un temps natif ne se compare que
+croisé — n'existait que dans un script de la machine de mesure.
+`scripts/compare-native.sh` la met dans le dépôt : deux copies jetables
+(`git worktree`), A dans la première et B dans la seconde, N courses
+alternées, puis l'inverse ; il rend la moyenne de chaque commit sur les deux
+copies et l'écart des copies elles-mêmes, pour qu'on voie ce que vaut le
+bruit. Les copies sont retirées en sortant, même sur une erreur.
+
+Essayé de bout en bout, `HEAD` contre `HEAD`, une course par passe :
+10,78 s contre 10,62 s, −1,45 % — pour deux fois le même code. C'est le
+bruit d'une seule course, et la raison des trois par défaut.
+
+Trois tests du site le regardent refuser avant de créer la moindre copie :
+sans ses deux commits, sans le noyau qu'il démarre, devant un commit qui
+n'existe pas. Trois sabordages, trois chutes.
+
+## 2026-10-29 — Correction : deux gains en temps natif étaient le banc
+
+**Ce qui était faux.** Les entrées de #600 (« 7 % en natif ») et de #601
+(« 8 % de moins en natif ») chiffraient le temps natif en comparant deux
+copies du dépôt : la branche dans l'une, la base dans l'autre, en
+alternance. Une mesure à vide l'a démenti : **le même commit**, construit
+dans les deux copies, donnait 10,68 s d'un côté et 10,24 s de l'autre, trois
+courses chacune. Le binaire n'est pas le même — les chemins entrent dans les
+informations de débogage, et l'alignement du code en dépend —, et la copie
+qui portait les branches était la plus rapide des deux.
+
+**Ce que dit une mesure croisée.** Chaque côté construit tour à tour dans les
+deux copies, trois courses de 600 millions d'instructions par copie et par
+côté, sur un cœur : #600 (`936ab52`) 13,05 s, #601 (`e7e6a00`) 12,94 s.
+**0,8 %**, dans le bruit. Sous callgrind, #601 exécute 2,4 % d'instructions
+de l'hôte **de plus** : ses drapeaux sans branche n'ont pas rapporté ce que
+le titre annonce. Le changement reste, parce qu'il est juste et ne coûte
+rien de mesurable, mais son titre est faux et cette entrée le dit.
+
+Pour #600, le chiffre callgrind (−2,8 %) tient — callgrind compte les
+instructions et ne dépend pas de l'alignement —, mais ses 7 % en natif ont
+été mesurés de la même façon et ne valent pas mieux.
+
+**La règle, désormais.** Un temps natif ne se compare que croisé — chaque
+côté construit dans chaque copie, et la moyenne des deux passes —, ou dans
+une seule copie reconstruite entre les deux mesures. Sans cela, l'écart entre deux copies
+— jusqu'à 4 % ici — est plus grand que la plupart des gains qu'on mesure.
+Deux essais de cette nuit en ont été jugés autrement : la page de code
+gardée sans clé (−2,2 % sous callgrind, mais 3 % plus lente en natif même
+placée dans la copie favorable) et les registres sans branche (6 % de plus
+sous callgrind, plus lents en natif), abandonnés tous les deux.
+
 ## 2026-10-28 — Le téléchargement en arrière-plan : la session
 
 La seconde moitié de l'étape 4 du téléchargement, après la couture (#606).
