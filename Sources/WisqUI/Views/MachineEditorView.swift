@@ -296,7 +296,7 @@ public struct MachineEditorView: View {
                 agentToken = draft.agentToken
                 // `https` et l'empreinte d'un appairage survivent à l'édition.
                 guard let binding = AgentBinding.edited(
-                    from: draft.machine.agent, host: normalizedAgentHost, port: resolvedPort,
+                    from: draft.machine.agent, at: (normalizedAgentHost, resolvedPort),
                     vmIdentifier: vmIdentifier, autoStart: draft.agentAutoStart, credentialRef: tokenRef)
                 else { throw WisqError.invalidHost(draft.agentAddress) }
                 machine.agent = binding
