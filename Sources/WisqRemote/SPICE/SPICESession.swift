@@ -95,7 +95,30 @@ public actor SPICESession: RemoteSession {
         }
     }
 
+    /// **Un arrêt pendant l'ouverture reste un arrêt.** `start` attend toute
+    /// l'ouverture — six connexions possibles, chacune avec sa poignée de
+    /// main —, et l'acteur est réentrant à chacune de ces attentes. Un `stop`
+    /// arrivé là fermait ce qui existait déjà, puis `connect` reprenait :
+    /// ouvrait l'affichage, le curseur, le son, et lançait leurs pompes. La
+    /// session était fermée pour l'application et vivante sur le réseau,
+    /// avec de l'image reçue pour personne, et du son peut-être.
+    ///
+    /// D'où ce drapeau, posé par `stop` et relu par `connect` après chaque
+    /// connexion ouverte (`kept`) : ce qui arrive après l'arrêt est refermé
+    /// aussitôt, et rien ne démarre.
+    private var stopped = false
+
+    /// La connexion qu'on vient d'ouvrir, si la session en veut encore.
+    private func kept(_ stream: any ByteStream) async throws -> any ByteStream {
+        guard !stopped else {
+            await stream.close()
+            throw CancellationError()
+        }
+        return stream
+    }
+
     public func stop() async {
+        stopped = true
         pump?.cancel()
         cursorPump?.cancel()
         playbackPump?.cancel()
@@ -203,7 +226,7 @@ public actor SPICESession: RemoteSession {
 
         // The main channel first, because it is the only one that learns the
         // session identifier every other channel has to present.
-        let mainStream = try await makeStream(configuration)
+        let mainStream = try await kept(try await makeStream(configuration))
         main = mainStream
         continuation.yield(.authenticating)
         _ = try await SpiceLink(stream: mainStream, encryptTicket: encryptTicket)
@@ -222,7 +245,7 @@ public actor SPICESession: RemoteSession {
         // connection ID. Without it the server sees an unrelated client and
         // gives it a display of its own, which is a black screen that looks
         // like a bug in the decoder.
-        let displayStream = try await makeStream(configuration)
+        let displayStream = try await kept(try await makeStream(configuration))
         display = displayStream
         let link = try await SpiceLink(stream: displayStream, encryptTicket: encryptTicket)
             .open(
@@ -271,19 +294,20 @@ public actor SPICESession: RemoteSession {
         // because the inputs channel would not open is not.
         if session.channels.contains(where: { $0.type == SpiceWire.Channel.inputs.rawValue }) {
             do {
-                let inputStream = try await makeStream(configuration)
+                let inputStream = try await kept(try await makeStream(configuration))
                 _ = try await SpiceLink(stream: inputStream, encryptTicket: encryptTicket)
                     .open(
                         channel: .inputs,
                         connectionID: session.initialisation.sessionID,
                         password: password
                     )
-                inputs = inputStream
+                inputs = try await kept(inputStream)
             } catch {
                 inputs = nil
             }
         }
 
+        guard !stopped else { throw CancellationError() }
         pump = Task { [weak self] in
             await self?.run(channel, from: serial)
         }
@@ -305,6 +329,7 @@ public actor SPICESession: RemoteSession {
         if session.initialisation.agentConnected {
             try? await agentChannel.start()
         }
+        guard !stopped else { throw CancellationError() }
         mainPump = Task { [weak self] in
             await self?.followMain(agentChannel)
         }
@@ -315,14 +340,14 @@ public actor SPICESession: RemoteSession {
         // lags a repaint. Best effort, like input.
         if session.channels.contains(where: { $0.type == SpiceWire.Channel.cursor.rawValue }) {
             do {
-                let cursorStream = try await makeStream(configuration)
+                let cursorStream = try await kept(try await makeStream(configuration))
                 _ = try await SpiceLink(stream: cursorStream, encryptTicket: encryptTicket)
                     .open(
                         channel: .cursor,
                         connectionID: session.initialisation.sessionID,
                         password: password
                     )
-                cursor = cursorStream
+                cursor = try await kept(cursorStream)
                 cursorPump = Task { [weak self] in
                     await self?.followCursor(on: cursorStream)
                 }
@@ -337,7 +362,7 @@ public actor SPICESession: RemoteSession {
         // is a session, and a server may not offer the channel at all.
         if session.channels.contains(where: { $0.type == SpiceWire.Channel.playback.rawValue }) {
             do {
-                let playbackStream = try await makeStream(configuration)
+                let playbackStream = try await kept(try await makeStream(configuration))
                 _ = try await SpiceLink(stream: playbackStream, encryptTicket: encryptTicket)
                     .open(
                         channel: .playback,
@@ -347,7 +372,7 @@ public actor SPICESession: RemoteSession {
                             SpicePlaybackWire.advertised
                         )
                     )
-                playback = playbackStream
+                playback = try await kept(playbackStream)
                 playbackPump = Task { [weak self] in
                     await self?.followPlayback(on: playbackStream)
                 }
@@ -361,7 +386,7 @@ public actor SPICESession: RemoteSession {
         // not a deadline anyone can keep.
         if session.channels.contains(where: { $0.type == SpiceWire.Channel.record.rawValue }) {
             do {
-                let recordStream = try await makeStream(configuration)
+                let recordStream = try await kept(try await makeStream(configuration))
                 _ = try await SpiceLink(stream: recordStream, encryptTicket: encryptTicket)
                     .open(
                         channel: .record,
@@ -371,7 +396,7 @@ public actor SPICESession: RemoteSession {
                             SpiceRecordWire.advertised
                         )
                     )
-                record = recordStream
+                record = try await kept(recordStream)
                 recordPump = Task { [weak self] in
                     await self?.followRecord(on: recordStream)
                 }
