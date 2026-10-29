@@ -40,6 +40,9 @@ struct SpiceDisplayChannel {
         /// passed the same number back in every time would give it one full of
         /// them.
         var nextSerial: UInt64 = 0
+        /// La fenêtre d'accusés de réception, rendue elle aussi : elle compte
+        /// à travers les appels.
+        var ack = SpiceWire.AckWindow()
     }
 
     private static let firstSerial: UInt64 = 1
@@ -101,9 +104,10 @@ struct SpiceDisplayChannel {
     /// with a blank screen.
     func pump(
         into surfaces: inout SpiceSurfaces, caches: inout SpiceDisplayCaches,
-        streams: inout SpiceStreams, serial: UInt64, limit: Int = 1
+        streams: inout SpiceStreams, serial: UInt64, ack: SpiceWire.AckWindow = .init(), limit: Int = 1
     ) async throws -> Progress {
         var progress = Progress()
+        progress.ack = ack
         var serial = serial
 
         for _ in 0..<limit {
@@ -113,6 +117,10 @@ struct SpiceDisplayChannel {
             guard header.size <= Self.maximumMessageBytes else { throw SpiceError.invalidData }
             let payload = header.size == 0
                 ? Data() : try await stream.read(exactly: Int(header.size))
+            if progress.ack.received() {
+                try await stream.write(SpiceWire.message(SpiceWire.ClientMessage.ack, serial: serial, payload: Data()))
+                serial += 1
+            }
 
             // **Invalidations ride in the header, not in a message of their
             // own.** Because wisq reads the eighteen-byte header,
@@ -137,6 +145,13 @@ struct SpiceDisplayChannel {
                 try await stream.write(SpiceWire.message(
                     SpiceWire.ClientMessage.pong, serial: serial, payload: payload
                 ))
+                serial += 1
+
+            case SpiceWire.Message.setAck:
+                let window = try SpiceWire.decodeSetAck(payload)
+                progress.ack.set(window)
+                try await stream.write(SpiceWire.message(
+                    SpiceWire.ClientMessage.ackSync, serial: serial, payload: Data(SpiceWire.u32(window.generation))))
                 serial += 1
 
             case SpiceDisplayWire.Message.invalList.rawValue:
