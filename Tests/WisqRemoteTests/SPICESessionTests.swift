@@ -1286,4 +1286,88 @@ final class SPICESessionTests: XCTestCase {
 
         await session.stop()
     }
+
+    // MARK: - Stopping while it opens
+
+    /// Hands out the main socket, then holds the display socket back until the
+    /// test lets it go: `stop()` lands while `start()` is suspended between the
+    /// two, which is the interleaving this is about.
+    private actor HeldSecondSocket {
+        private let main: any ByteStream
+        private let display: any ByteStream
+        private(set) var requests = 0
+        private var asked = false
+        private var released = false
+        private var askedWaiter: CheckedContinuation<Void, Never>?
+        private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+        init(main: any ByteStream, display: any ByteStream) {
+            self.main = main
+            self.display = display
+        }
+
+        func next() async -> any ByteStream {
+            requests += 1
+            if requests == 1 { return main }
+            asked = true
+            askedWaiter?.resume()
+            askedWaiter = nil
+            if !released { await withCheckedContinuation { releaseWaiter = $0 } }
+            return display
+        }
+
+        func secondRequested() async {
+            if asked { return }
+            await withCheckedContinuation { askedWaiter = $0 }
+        }
+
+        func release() {
+            released = true
+            releaseWaiter?.resume()
+            releaseWaiter = nil
+        }
+    }
+
+    /// A socket that remembers being written to and being closed, and that
+    /// has nothing to read: a client still going would fail on it rather than
+    /// wait forever, so the test ends either way.
+    private actor WatchedSocket: ByteStream {
+        private(set) var written = Data()
+        private(set) var closed = false
+        func read(exactly count: Int) async throws -> Data {
+            guard count > 0 else { return Data() }
+            throw WisqError.connectionClosed
+        }
+        func write(_ data: Data) async throws { written.append(data) }
+        func close() { closed = true }
+    }
+
+    /// **A stop during the opening stays a stop.** The display connection that
+    /// arrives after it is closed at once, nothing is written to it, and no
+    /// later channel is asked for.
+    func testAStopWhileOpeningLeavesNothingRunning() async throws {
+        let mainSocket = MemoryByteStream(
+            inbound: linkReply() + Data(SpiceWire.u32(0))
+                + mainInit(sessionID: 7) + channelsList(withInputs: true, withCursor: true)
+        )
+        let display = WatchedSocket()
+        let held = HeldSecondSocket(main: mainSocket, display: display)
+        let session = SPICESession(
+            configuration: SessionConfiguration(host: "h", port: 5900, password: "x"),
+            streamProvider: { _ in await held.next() },
+            encryptTicket: ticket
+        )
+        let starting = Task { await session.start() }
+        await held.secondRequested()
+        await session.stop()
+        await held.release()
+        await starting.value
+
+        let closed = await display.closed
+        let written = await display.written
+        let requests = await held.requests
+        XCTAssertTrue(closed, "la connexion arrivée après l'arrêt est refermée")
+        XCTAssertTrue(written.isEmpty, "rien n'y est écrit")
+        XCTAssertEqual(requests, 2, "aucun canal n'est ouvert après l'arrêt")
+    }
 }
