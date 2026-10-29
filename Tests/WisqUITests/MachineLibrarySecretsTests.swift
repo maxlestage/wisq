@@ -140,4 +140,20 @@ final class MachineLibrarySecretsTests: XCTestCase {
             try credentials.secret(for: saved.defaultCredentialRef), "mdp",
             "une machine encore listée ne doit pas avoir perdu son mot de passe")
     }
+
+    /// **Un trousseau qui refuse** — l'appareil verrouillé — fait échouer la
+    /// sauvegarde après l'écriture de la liste. Elle le dit, et la machine,
+    /// déjà sur le disque, se voit : la liste n'était pas relue, et l'éditeur
+    /// se fermait sur une sauvegarde qu'il croyait faite.
+    func testASaveTheKeychainRefusesSaysSoAndStillListsTheMachine() {
+        final class Locked: CredentialStore, @unchecked Sendable {
+            struct Refused: Error {}
+            func secret(for ref: String) throws -> String? { nil }
+            func setSecret(_ secret: String?, for ref: String) throws { throw Refused() }
+        }
+        let library = makeLibrary(Locked())
+        XCTAssertFalse(library.save(Machine(name: "nas", host: "nas.local"), password: "mdp"))
+        XCTAssertNotNil(library.loadError)
+        XCTAssertEqual(library.machines.map(\.name), ["nas"])
+    }
 }

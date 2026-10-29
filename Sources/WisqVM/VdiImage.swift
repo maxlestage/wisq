@@ -112,9 +112,15 @@ public final class VdiImage: VirtualDiskImage, @unchecked Sendable {
         guard blockSize >= 512, blockSize % 512 == 0, blockSize <= 1 << 30 else {
             throw Refusal.malformed("bloc de \(blockSize) octets")
         }
+        // **Ce qui précède chaque bloc, borné comme le bloc** : sans borne,
+        // `entrée × (bloc + extra)` débordait à la première lecture d'un
+        // fichier hostile, et l'application tombait au lieu de refuser.
+        guard blockExtra <= 1 << 30 else {
+            throw Refusal.malformed("\(blockExtra) octets avant chaque bloc")
+        }
         // La table couvre le disque entier, ni plus court ni démesuré : la
         // borne passe avant l'allocation.
-        guard blockCount == (virtualSize + blockSize - 1) / blockSize else {
+        guard blockCount == VirtualDiskImages.blocks(covering: virtualSize, of: blockSize) else {
             throw Refusal.malformed("\(blockCount) blocs pour \(virtualSize) octets")
         }
         guard blocksOffset >= 0x190, blocksOffset &+ blockCount * 4 <= fileSize else {

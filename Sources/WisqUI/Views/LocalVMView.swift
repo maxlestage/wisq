@@ -266,10 +266,16 @@ struct LocalVMListView: View {
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.data],
-            allowsMultipleSelection: false
+            // **Plusieurs à la fois** : un VMDK à descripteur est fait de
+            // plusieurs fichiers, et l'application ne voit que ceux qu'on
+            // choisit — pas leurs voisins.
+            allowsMultipleSelection: true
         ) { result in
             do {
-                if let source = try result.get().first {
+                let sources = try result.get()
+                let companions = KernelLibrary.companionNames(importing: sources)
+                var imported: [URL] = []
+                for source in sources {
                     // **Une machine exportée passe par la même porte** : le
                     // fichier dit lui-même ce qu'il est.
                     let isMachine: Bool = {
@@ -283,13 +289,20 @@ struct LocalVMListView: View {
                             text: "« \(machine.name) » est importée, et reprendra où elle en était.",
                             symbol: "square.and.arrow.down")
                     } else {
-                        _ = try KernelLibrary.importKernel(from: source)
+                        imported.append(try KernelLibrary.importKernel(
+                            from: source, companion: companions.contains(source.lastPathComponent)))
                     }
-                    reloadLibrary()
-                    storage = KernelLibrary.storageReport()
-                    importError = nil
                 }
+                reloadLibrary()
+                storage = KernelLibrary.storageReport()
+                // Les étendues ont pu venir avant ou après leur descripteur :
+                // ce qui manque ne se juge qu'une fois tout copié.
+                importError = imported.lazy
+                    .compactMap { VmdkDescriptorDisk.incompleteImportExplanation(ofDescriptorAt: $0) }
+                    .first
             } catch {
+                // Ce qui a été copié avant le refus reste, et se voit.
+                reloadLibrary()
                 importError = error.localizedDescription
             }
         }
@@ -361,6 +374,13 @@ struct LocalVMListView: View {
         // une machine qu'elle est sauvegardée, donc c'est là que le chiffre
         // change le plus.
         .onAppear {
+            reloadLibrary()
+            storage = KernelLibrary.storageReport()
+        }
+        // Un téléchargement d'arrière-plan qui finit sans feuille ouverte —
+        // l'application relancée par le système — range quand même son
+        // image : la liste doit la montrer sans attendre qu'on la rouvre.
+        .onReceive(NotificationCenter.default.publisher(for: BackgroundDownloads.libraryChanged)) { _ in
             reloadLibrary()
             storage = KernelLibrary.storageReport()
         }
@@ -1025,16 +1045,20 @@ struct LocalVMTerminalView: View {
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // **Fermer garde la machine.** L'écran est une `fullScreenCover`,
+            // qu'on ne fait pas glisser : sans ce bouton, la seule sortie
+            // était « Arrêter », qui efface la session — et une machine qui
+            // avait mis vingt minutes à démarrer repartait de zéro. Fermer
+            // laisse `onDisappear` la suspendre, et la liste la reprendra.
             ToolbarItem(placement: .cancellationAction) {
-                Button("Arrêter") {
+                Button("Fermer") { dismiss() }
+            }
+            ToolbarItem(placement: .destructiveAction) {
+                Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
                     model.stop()
                     dismiss()
                 }
             }
-            // Offered only when there is something to forget. "Arrêter" also
-            // clears the saved machine, but only by ending the session; this is
-            // for the user whose guest is wedged and who wants to walk away now
-            // and come back to a clean boot.
             ToolbarItem(placement: .primaryAction) {
                 Menu("Taille du texte", systemImage: "textformat.size") {
                     Button("Plus grand", systemImage: "plus.magnifyingglass") {
@@ -1049,6 +1073,10 @@ struct LocalVMTerminalView: View {
                         .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
                 }
             }
+            // Offered only when there is something to forget. "Arrêter" also
+            // clears the saved machine, but only by ending the session; this is
+            // for the user whose guest is wedged and who wants to walk away now
+            // and come back to a clean boot.
             if model.hasSavedMachine {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Oublier", systemImage: "trash") {
@@ -1063,8 +1091,9 @@ struct LocalVMTerminalView: View {
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
-        // down where it stands and picked up on the next visit. Only the
-        // "Arrêter" button ends it, which is what that word has to mean.
+        // down where it stands and picked up on the next visit — "Fermer"
+        // is that. Only the "Arrêter" button ends it, which is what that
+        // word has to mean.
         .onDisappear {
             model.suspend()
             UIApplication.shared.isIdleTimerDisabled = false
