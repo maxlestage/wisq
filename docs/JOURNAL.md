@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — SPICE : un arrêt pendant l'ouverture reste un arrêt
+
+**Le défaut.** `SPICESession.start` attend toute l'ouverture de la session :
+jusqu'à six connexions, chacune avec sa poignée de main. L'acteur est
+réentrant à chacune de ces attentes. Un `stop` arrivé là, par exemple quand
+on ferme la session pendant qu'elle se connecte, fermait ce qui existait
+déjà. Puis `connect` reprenait : il ouvrait l'affichage, l'entrée, le
+curseur et le son, et lançait leurs pompes. La session était fermée pour
+l'application et vivante sur le réseau, avec de l'image reçue pour personne
+et peut-être du son.
+
+**Ce qui change.** `stop` pose un drapeau. `connect` le relit après chaque
+connexion ouverte et avant chaque pompe (`kept`) : ce qui arrive après
+l'arrêt est refermé aussitôt, sans rien y écrire, et rien ne démarre.
+
+**Vérifié.**
+- Un test (`testAStopWhileOpeningLeavesNothingRunning`) retient la
+  deuxième connexion, arrête la session entre les deux, puis la relâche. Sur
+  le code d'avant, il échoue là où il faut : la connexion d'affichage est
+  écrite et jamais fermée.
+- Deux sabotages, deux chutes.
+- Deux autres lignes ne tombaient sous aucun sabotage : la garde en tête de
+  `start` et le `catch` de l'annulation. Elles n'avaient pas d'effet (le flux
+  d'évènements est déjà fermé par `stop`), et elles sont retirées.
+
+Compte publié : 3110.
+
 ## 2026-10-29 — Fichiers .vv : le proxy et l'autorité lus, un ticket Proxmox refusé en le disant
 
 **Le défaut.** Proxmox écrit dans chaque fichier `.vv` un
