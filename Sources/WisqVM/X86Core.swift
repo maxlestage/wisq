@@ -849,16 +849,10 @@ public struct X86Core: @unchecked Sendable {
         switch instruction.dispatchCode {
         case 0: try oneByte(instruction, opcode)
         case 1:
-            // `ENDBR64` et ses voisins (`F3 0F 1E`, et `0F 1E` sans `F3`) ne
-            // font rien, et aucun gestionnaire spécialisé ne réclame l'octet
-            // (`claimedBySpecialists`) : `twoByte` le prend pour un `break`.
-            // Une instruction sur trente de l'invité en est un, chaque
-            // fonction d'Ubuntu s'ouvrant dessus.
-            if opcode == 0x1E { return }
             // Les sauts conditionnels longs (`0F 80` à `0F 8F`), une
-            // instruction sur dix-huit : aucun spécialiste ne les réclame
-            // non plus, et `performTwoByte` ne faisait que les passer à
-            // `twoByte` — un cadre de pile et un test de plus.
+            // instruction sur dix-huit : aucun gestionnaire spécialisé ne les
+            // réclame (`claimedBySpecialists`), et `performTwoByte` ne faisait
+            // que les passer à `twoByte` — un cadre de pile et un test de plus.
             if opcode & 0xF0 == 0x80 {
                 try twoByte(instruction, opcode)
                 return
