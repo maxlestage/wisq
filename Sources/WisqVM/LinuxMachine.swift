@@ -484,6 +484,14 @@ public final class LinuxMachine: @unchecked Sendable {
     /// is read into a scratch buffer that only replaces the live one once the
     /// whole snapshot has been accepted. A guest holding half of yesterday's
     /// memory is worse than a refused restore.
+    /// **La mémoire avec laquelle un instantané a été pris**, sans le
+    /// reprendre : elle suit les mots du cœur. Voir `X86Machine.savedRAMSize`.
+    public static func savedRAMSize(in data: Data) -> Int? {
+        guard var reader = try? Snapshot.Reader(Array(data)) else { return nil }
+        for _ in 0..<Snapshot.coreWords where (try? reader.u32()) == nil { return nil }
+        return (try? reader.u64()).flatMap { Int(exactly: $0) }
+    }
+
     public func restore(_ data: Data) throws {
         var reader = try Snapshot.Reader(Array(data))
         var words = [UInt32](repeating: 0, count: Snapshot.coreWords)
