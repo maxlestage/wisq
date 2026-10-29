@@ -168,7 +168,7 @@ final class X86BootAttemptTests: XCTestCase {
         // `WISQ_PC_RAM_MIB` règle la mémoire : l'initramfs d'Ubuntu 26.04
         // pèse 72 Mio compressé, et se déballe en mémoire.
         let mebibytes = environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? (ramdisk == nil ? 256 : 512)
-        let memory = X86Memory(size: mebibytes << 20, base: 0)
+        let memory = X86Memory.pc(ram: mebibytes << 20)
         // Un disque, quand on en donne un. Le noyau ne le trouvera que si la
         // ligne de commande le lui dit — voir `WISQ_PC_CMDLINE`.
         if let path = ProcessInfo.processInfo.environment["WISQ_PC_DISK"],
@@ -483,6 +483,15 @@ final class X86BootAttemptTests: XCTestCase {
         // Le résumé passe donc en tête : quoi qu'il arrive aux listes, les
         // nombres, eux, sortent.
         func say(_ text: String) { print(text) }
+        // **Par la traduction de pages**, pas à l'adresse virtuelle prise pour
+        // physique : un arrêt dans le noyau ou dans un module tombe à
+        // 0xffff…, que la mémoire physique ne connaît pas — le banc ne
+        // montrait alors qu'un « ? ».
+        var bytesAtRIP = "?"
+        if let physical = try? core.translate(core.rip, .fetch), let memory = core.memory {
+            let bytes = (0..<16).compactMap { try? memory.read(physical + UInt64($0), 1) }
+            bytesAtRIP = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        }
 
         say("""
 
@@ -492,9 +501,7 @@ final class X86BootAttemptTests: XCTestCase {
             rip                   : 0x\(String(core.rip, radix: 16))
             au repos              : \(halt)
             contrôleur            : \(controller)
-            octets à RIP          : \(core.memory.map {
-                (try? $0.read(core.rip, 8)).map { String($0, radix: 16) } ?? "?"
-            } ?? "?")
+            octets à RIP          : \(bytesAtRIP)
             port série            : \(core.serialOutput.count) octets
             appels par la mémoire : \(core.indirectCalls.count) distincts
             passages d'anneau     : \(core.ringPassages.description)
