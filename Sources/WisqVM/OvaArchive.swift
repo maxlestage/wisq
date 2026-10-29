@@ -239,7 +239,7 @@ public enum OvaArchive {
         while at < payload.count {
             guard let space = payload[at...].firstIndex(of: 0x20),
                   let length = Int(String(decoding: payload[at..<space], as: UTF8.self)),
-                  length > space - at + 1, at + length <= payload.count
+                  length > space - at + 1, length <= payload.count - at
             else { break }
             let record = payload[(space + 1)..<(at + length - 1)]
             if let equal = record.firstIndex(of: UInt8(ascii: "=")) {

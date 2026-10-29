@@ -140,7 +140,9 @@ public final class VhdxImage: VirtualDiskImage, @unchecked Sendable {
         }
         func read(_ count: Int, at offset: UInt64) -> [UInt8]? {
             var bytes = [UInt8](repeating: 0, count: count)
-            guard offset &+ UInt64(count) <= fileSize,
+            // Sans addition : un décalage proche de 2⁶⁴ passait `&+`, puis
+            // faisait tomber `off_t(décalage)`.
+            guard offset <= fileSize, UInt64(count) <= fileSize - offset,
                   VirtualDiskImages.readAll(fd, into: &bytes, at: off_t(offset)) else { return nil }
             return bytes
         }
@@ -273,8 +275,11 @@ public final class VhdxImage: VirtualDiskImage, @unchecked Sendable {
                     _ = memset(raw.baseAddress! + done, 0, length)
                 }
             case 6:
-                let at = ((entry >> 20) << 20) + within
-                guard at + UInt64(length) <= fileSize else { return false }
+                // La table n'a pas de somme : une entrée hostile peut nommer
+                // n'importe quel mébioctet, et l'addition déborder.
+                let start = (entry >> 20) << 20
+                guard start <= fileSize, within + UInt64(length) <= fileSize - start else { return false }
+                let at = start + within
                 var chunk = [UInt8](repeating: 0, count: length)
                 guard VirtualDiskImages.readAll(fd, into: &chunk, at: off_t(at)) else { return false }
                 buffer.replaceSubrange(done..<(done + length), with: chunk)
