@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Des images Linux très différentes, essayées pour de bon
+
+Demandé par l'utilisateur : « tu peux essayer différentes images Linux bien
+différentes, t'aider ». Huit distributions avaient déjà démarré ici (Alpine,
+Debian, Fedora, Ubuntu, Arch, openSUSE, AlmaLinux, Rocky). Quatre autres,
+choisies pour ce qui les sépare : la libc, le système d'init, le niveau de
+processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
+
+- **Tiny Core Linux 15 (CorePure64)** : BusyBox, tout dans un initramfs de
+  14 Mio. Démarre jusqu'à son `init` et ses scripts en sept milliards
+  d'instructions. Pas de shell sur la console série, et c'est voulu : son
+  `inittab` n'ouvre que `tty1`.
+- **CentOS Stream 10** (GenericCloud du 26 octobre 2026) : refusée en deux
+  secondes, « `$tuned_initrd` introuvable ». `tuned` écrit une variable de
+  GRUB sur la ligne `initrd` de l'entrée BLS ; GRUB la remplace par rien,
+  wisq la prenait pour un fichier. **Corrigé.** Puis le noyau s'arrête à
+  la 13 441ᵉ instruction, sur `andn` — BMI1, en VEX : RHEL 10 et ses
+  dérivés sont compilés pour **x86-64-v3** (AVX2, BMI1/2, FMA, LZCNT,
+  MOVBE), et le cœur x86 ne connaît encore aucune instruction VEX. Le noyau
+  n'emploie que la partie des registres généraux (BMI, LZCNT, MOVBE) ; sa
+  glibc exige ensuite AVX2 et FMA. C'est la prochaine grande tranche.
+- **Gentoo** (image « di » console du 25 octobre 2026, OpenRC) : « aucun
+  noyau ». Sa partition EFI, en FAT, est montée sur `/boot` : noyau,
+  initramfs et `grub/grub.cfg` y sont, la racine XFS n'a rien. **Un
+  lecteur FAT** (`FatVolume`, FAT12/16/32, noms longs) et la partition EFI
+  lue après les partitions Linux : le noyau démarre.
+- **Void Linux** (live musl du 2 février 2025, runit) : l'ISO branchée comme
+  disque, dracut cherche `CDLABEL=VOID_LIVE`. Son initramfs de 149 Mio se
+  déballe lentement — le noyau signale un `kworker` bloqué plus de deux
+  minutes de temps invité —, mais avance.
+
+Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
+faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3024.
+
 ## 2026-10-29 — Chasse aux bugs : douze corrections dans une PR
 
 Demandé par l'utilisateur : « avance sur l'application, il faut que tout
