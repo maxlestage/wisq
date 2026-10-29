@@ -93,6 +93,12 @@ def forms():
     # propres éléments négatifs.
     for control in [0x00, 0xFF, 0x0F, 0xA5, 0x3C]:
         out += [f"pblendw ${control:#x}, %xmm1, %xmm0", f"pblendw ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # `BLENDPS`, `BLENDPD` : l'élément i vient de la source quand le bit i de
+    # l'immédiat est levé. Les bits au-delà du nombre d'éléments sont lus
+    # aussi, en VEX.256, par la moitié haute.
+    for name in ["blendps", "blendpd"]:
+        for control in [0x00, 0x0F, 0x05, 0x0A, 0xF3, 0x3C]:
+            out += [f"{name} ${control:#x}, %xmm1, %xmm0", f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
     for name in ["pblendvb", "blendvps", "blendvpd"]:
         out += [f"{name} %xmm0, %xmm0, %xmm1", f"{name} %xmm0, {ALIGNED:#x}(%rsi), %xmm1"]
     # Les élargissements, avec ou sans signe. **Depuis la mémoire, ils ne
