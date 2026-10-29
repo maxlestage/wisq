@@ -234,6 +234,15 @@ public struct X86Core: @unchecked Sendable {
     /// cœur ne calcule toujours pas en virgule flottante — il déplace des bits,
     /// ce qui est une autre décision et la seule qu'on ait demandée.
     public var vectors = [UInt64](repeating: 0, count: 32)
+    /// **Le haut des seize registres YMM**, rangé de même : `upperVectors[2 * n]`
+    /// porte les bits 128 à 191 de `ymm<n>`, `upperVectors[2 * n + 1]` les
+    /// bits 192 à 255. À part plutôt que dans `vectors`, pour que tout ce qui
+    /// lit un XMM — l'oracle, l'instantané, `FXSAVE` — reste ce qu'il était.
+    /// Voir `X86XSAVE.swift`.
+    public var upperVectors = [UInt64](repeating: 0, count: 32)
+    /// XCR0 : les composants de l'état étendu que le système a activés. x87
+    /// seul au départ, comme sur le processeur.
+    public var xcr0: UInt64 = 1
     /// Le mot de contrôle SSE. Ce cœur ne calcule pas en virgule flottante,
     /// mais un noyau x86-64 le range et le relit dès son démarrage : sur cette
     /// architecture, SSE est garanti par l'architecture et Linux ne demande

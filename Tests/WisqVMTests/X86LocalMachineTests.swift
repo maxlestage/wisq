@@ -271,6 +271,9 @@ final class X86SnapshotTests: XCTestCase {
                                    0x7000_0000_0000_0000 + UInt64(index),
                                    0x8000_0000_0000_0000 + UInt64(index))
         }
+        // L'état étendu : XCR0 autre que x87 seul, et le haut de chaque YMM.
+        machine.core.xcr0 = 0b111
+        for index in 0..<32 { machine.core.upperVectors[index] = 0x9000_0000_0000_0000 + UInt64(index) }
         machine.core.devices.primary.mask = 0xFE
         machine.core.devices.primary.request = 0x03
         machine.core.devices.primary.service = 0x01
@@ -351,6 +354,10 @@ final class X86SnapshotTests: XCTestCase {
                            0x7000_0000_0000_0000 + UInt64(index), "xmm\(index) bas")
             XCTAssertEqual(core.vector(index).high,
                            0x8000_0000_0000_0000 + UInt64(index), "xmm\(index) haut")
+        }
+        XCTAssertEqual(core.xcr0, 0b111, "XCR0")
+        for index in 0..<32 {
+            XCTAssertEqual(core.upperVectors[index], 0x9000_0000_0000_0000 + UInt64(index), "haut des YMM, mot \(index)")
         }
         XCTAssertEqual(core.devices.primary.mask, 0xFE)
         XCTAssertEqual(core.devices.primary.request, 0x03)
