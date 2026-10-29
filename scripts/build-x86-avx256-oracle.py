@@ -113,7 +113,7 @@ def main():
           "scripts/build-x86-avx256-oracle.py")
 
 
-def judge(texts, output, oracle, title, builder):
+def judge(texts, output, oracle, title, builder, extra=()):
     """Fait exécuter `texts` par le processeur sur les états de ce corpus,
     et écrit le verdict. `build-x86-avx2-oracle.py` s'en sert aussi."""
     v2 = load("v2")
@@ -130,6 +130,15 @@ def judge(texts, output, oracle, title, builder):
         for register in range(3):
             uppers[register] = v2.VALUES[(index * 3 + 7 * register + 1) % count]
         chosen.append((general, vectors, uppers))
+    # Des états de plus, fabriqués par le corpus qui les demande : ymm0 à
+    # ymm2 entiers, quatre mots chacun ; le reste comme le premier état.
+    base_general, base_vectors, base_uppers = chosen[0]
+    for words in extra:
+        vectors, uppers = list(base_vectors), list(base_uppers)
+        for register in range(3):
+            vectors[register] = tuple(words[4 * register:4 * register + 2])
+            uppers[register] = tuple(words[4 * register + 2:4 * register + 4])
+        chosen.append((base_general, vectors, uppers))
 
     request, cases = [], []
     for instruction, hexadecimal in enumerate(encoded):
