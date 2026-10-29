@@ -3606,7 +3606,7 @@ console.log("cr2 " + vm.globals[SLOTS.control + 1].value);
 /// `MOVSX` et des `CMOVS` » — et il juge le cœur Swift depuis : 47 formes,
 /// 376 cas, zéro désaccord.
 ///
-/// **Il ne jugeait que lui**, et c'est la mesure qui le dit : des **treize**
+/// **Il ne jugeait que lui**, et c'est la mesure qui le dit : des **quatorze**
 /// oracles matériels que `Tests/Fixtures/` porte aujourd'hui — le fichier de
 /// plus est le corpus de décodage, qui ne porte pas de résultat — les cœurs
 /// Rust n'en lisaient que deux le jour où celui-ci est arrivé, `x86-oracle.tsv` et
