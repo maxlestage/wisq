@@ -33,11 +33,17 @@ processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
   noyau ». Sa partition EFI, en FAT, est montée sur `/boot` : noyau,
   initramfs et `grub/grub.cfg` y sont, la racine XFS n'a rien. **Un
   lecteur FAT** (`FatVolume`, FAT12/16/32, noms longs) et la partition EFI
-  lue après les partitions Linux : le noyau démarre.
+  lue après les partitions Linux : le noyau démarre, et l'image va
+  jusqu'au shell de `root` — c'est systemd, pas OpenRC, dans cette image —
+  en 34 milliards d'instructions (935 s ici) ; `/etc/os-release` répond
+  `ID='gentoo'`.
 - **Void Linux** (live musl du 2 février 2025, runit) : l'ISO branchée comme
   disque, dracut cherche `CDLABEL=VOID_LIVE`. Son initramfs de 149 Mio se
   déballe lentement — le noyau signale un `kworker` bloqué plus de deux
-  minutes de temps invité —, mais avance.
+  minutes de temps invité —, mais avance : runit passe ses trois étapes et
+  la console série ouvre `void-live login:` en 46 milliards d'instructions.
+  Le banc tapait ses commandes à l'invite de connexion, pas dans un shell :
+  rien à corriger dans wisq.
 
 Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
 faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3024.
