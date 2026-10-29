@@ -1059,7 +1059,11 @@ public enum KernelLibrary {
         }
         // **Un descripteur VMDK emporte ses étendues**, lues avant de
         // l'effacer : cachées de la liste, elles ne partiraient jamais sinon.
-        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url)
+        // Sauf celles qu'un autre descripteur de la bibliothèque nomme aussi
+        // — une copie du descripteur, deux disques sur la même étendue : les
+        // effacer casserait l'autre.
+        let stillNamed = VmdkDescriptorDisk.companionNames(among: everyFile().filter { $0 != url })
+        let companions = VmdkDescriptorDisk.companionFiles(ofDescriptorAt: url).filter { !stillNamed.contains($0) }
         try? FileManager.default.removeItem(at: url)
         for companion in companions {
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent().appendingPathComponent(companion))
