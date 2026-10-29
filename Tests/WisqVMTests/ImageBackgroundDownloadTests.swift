@@ -174,4 +174,39 @@ final class ImageBackgroundDownloadTests: XCTestCase {
         _ = try downloader.adopt(file, status: 200, contentRange: nil, for: release, into: library)
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
+
+    // MARK: - L'étiquette de la tâche
+
+    /// **L'image revient telle qu'elle est partie**, quelle que soit sa somme
+    /// et qu'elle ait ou non sa propre adresse : c'est ce que la session rend
+    /// au réveil, et c'est contre elle que `adopt` vérifie.
+    func testTheBackgroundTagGivesBackTheSameRelease() throws {
+        let fedora = ImageDownload.Release(
+            distribution: "Fedora", flavor: "cloud", title: "Cloud", version: "43", arch: "x86_64",
+            file: "Fedora-Cloud.qcow2", size: 512 << 20, checksum: .sha512(String(repeating: "ab", count: 64)),
+            index: URL(string: "https://fedoraproject.org/releases.json")!,
+            link: URL(string: "https://download.fedoraproject.org/pub/fedora/Fedora-Cloud.qcow2")!)
+        for release in [release, fedora] {
+            XCTAssertEqual(ImageDownload.Release(backgroundTag: release.backgroundTag), release)
+        }
+    }
+
+    /// **Une étiquette qui n'en est pas une** — vide, d'un autre format,
+    /// d'une version de wisq où il manquait un champ — ne donne pas d'image :
+    /// la tâche est ignorée plutôt que recousue sur la mauvaise.
+    func testATagThatIsNotOursGivesNothing() {
+        XCTAssertNil(ImageDownload.Release(backgroundTag: ""))
+        XCTAssertNil(ImageDownload.Release(backgroundTag: "alpine-virt.iso"))
+        XCTAssertNil(ImageDownload.Release(backgroundTag: #"{"file":"alpine-virt.iso","size":3}"#))
+    }
+
+    /// **La somme est dans l'étiquette, et elle compte** : une image dont la
+    /// somme a changé n'est pas la même image.
+    func testTheChecksumIsPartOfTheTag() {
+        let other = ImageDownload.Release(
+            distribution: release.distribution, flavor: release.flavor, title: release.title,
+            version: release.version, arch: release.arch, file: release.file, size: release.size,
+            checksum: .sha256(String(repeating: "0", count: 64)), index: release.index)
+        XCTAssertNotEqual(ImageDownload.Release(backgroundTag: other.backgroundTag), release)
+    }
 }

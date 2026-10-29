@@ -603,9 +603,14 @@ d'entrer dans la bibliothèque.
      fichier qu'elle rend sur le `.part` — lu contre ce que le `.part` a au
      moment de recoudre, pas quand la requête est partie — puis vérifie et
      range l'image avec les mêmes règles qu'à l'écran.
-   - Reste : la session elle-même dans l'application (sa configuration
-     d'arrière-plan, son délégué, et le réveil par
-     `handleEventsForBackgroundURLSession`), qui ne se compile que sur Mac.
+   - **Écrit** : la session elle-même dans l'application
+     (`BackgroundImageDownloads`) — sa configuration d'arrière-plan, son
+     délégué qui recoud avant de rendre la main, et le réveil par
+     `handleEventsForBackgroundURLSession` dans `AppDelegate`. Chaque tâche
+     porte son image dans sa description (`Release.backgroundTag`), seule
+     chose qu'une session garde d'une vie de l'application à l'autre. La
+     feuille « Télécharger » passe par elle. Compilé par la CI ; reste à
+     l'éprouver sur un iPhone, l'application quittée en plein transfert.
 5. **Fait pour huit distributions** : Alpine, puis Debian, Fedora et Ubuntu
    (voir « Les images de cloud qui démarrent seules », étapes 6 et 10),
    Arch Linux, openSUSE Tumbleweed, AlmaLinux 9 et Rocky Linux 9 — toutes
