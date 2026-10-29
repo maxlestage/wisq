@@ -118,10 +118,10 @@ public enum X86CPUID {
     /// octets, complétés de zéros.
     public static let brand = "wisq x86-64 (comme le qemu64 de QEMU)"
 
-    /// La plus grande feuille ordinaire que ce processeur connaît : la 7, pour
-    /// annoncer la copie rapide (voir `fastStringsEBX`). Les feuilles 2 à 6
-    /// rendent des zéros — ce qu'un processeur AMD rend pour les feuilles de
-    /// cache d'Intel, et ce que dit « pas de `MONITOR` », « pas de capteur ».
+    /// La plus grande feuille ordinaire que ce processeur connaît : 7, celle
+    /// des extensions où BMI1 et BMI2 s'annoncent, et la copie rapide (voir
+    /// `fastStringsEBX`). Les feuilles 2 à 6 rendent des zéros, comme toute
+    /// feuille que ce cœur ne décrit pas.
     public static let highestBasicLeaf: UInt32 = 7
 
     /// **La copie rapide, annoncée parce qu'elle est tenue.** Feuille 7,
@@ -131,7 +131,8 @@ public enum X86CPUID {
     /// boucles déroulées, et la glibc fait de même au-delà de son seuil.
     /// `bulkString` traite ces deux instructions page par page : un `memcpy`
     /// d'une page tient en une instruction de l'invité au lieu de cinq cents.
-    /// Aucun autre bit de la feuille 7 n'est posé — ni AVX2, ni BMI, ni SMEP.
+    /// La feuille 7 ne porte rien d'autre que ces trois bits et ceux de
+    /// `extendedLeaf7EBX` — ni AVX2, ni SMEP.
     public static let fastStringsEBX: UInt32 = 1 << 9
     public static let fastStringsEDX: UInt32 = 1 << 4
     public static let fastStringsSubleafOneEAX: UInt32 = 1 << 11
@@ -184,13 +185,22 @@ public enum X86CPUID {
     /// n'emploient** — `haddp*`, `hsubp*`, `movshdup`, `pcmpestri`, `crc32`,
     /// les formes `…m` — est refusé par son nom s'il arrive. MONITOR (3) n'est
     /// pas annoncé : `mwait` n'existe pas ici.
-    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23)
+    ///
+    /// **Et MOVBE (22)**, de x86-64-v3 : un `mov` qui retourne ses octets
+    /// (`X86BMI.swift`, `Tests/Fixtures/x86-v3-gpr-oracle.tsv`).
+    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 22)
+        | (1 << 23)
+    /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
+    /// n'emploie que les registres généraux, et que le noyau de RHEL 10
+    /// emploie sans demander. AVX2 (5) n'y est pas : ce cœur n'a pas de
+    /// registres YMM.
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 8)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
     /// Feuille 0x80000001, ECX : LAHF-SAHF (0), `lahf` et `sahf` en mode
-    /// long, que x86-64-v2 exige aussi.
-    public static let extendedFeaturesECX: UInt32 = 1
+    /// long, que x86-64-v2 exige aussi ; et ABM (5), qui annonce LZCNT.
+    public static let extendedFeaturesECX: UInt32 = 1 | (1 << 5)
 
     /// La réponse aux quatre registres, pour une feuille donnée.
     public static func answer(leaf: UInt32, subleaf: UInt32) -> (UInt32, UInt32, UInt32, UInt32) {
@@ -208,7 +218,7 @@ public enum X86CPUID {
         case 7:
             // EAX de la sous-feuille 0 : la plus grande sous-feuille, la 1.
             switch subleaf {
-            case 0: return (1, fastStringsEBX, 0, fastStringsEDX)
+            case 0: return (1, extendedLeaf7EBX | fastStringsEBX, 0, fastStringsEDX)
             case 1: return (fastStringsSubleafOneEAX, 0, 0, 0)
             default: return (0, 0, 0, 0)
             }
