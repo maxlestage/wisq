@@ -71,9 +71,23 @@ public struct RootView: View {
             // lands straight in the import screen, credentials filled in.
             guard let payload = try? AgentPairing.parse(url) else { return }
             pairingPrefill = payload
+            // **Tout ce qui couvre l'écran se ferme d'abord**, la VM locale
+            // et le banc compris : SwiftUI ne présente qu'une feuille à la
+            // fois, et celle-ci, demandée par-dessus une autre, restait
+            // ignorée — le drapeau resté vrai, l'import ne s'ouvrait plus,
+            // même par son bouton.
+            let covered = editing != nil || connecting != nil || showingLocalVMs || showingBench
             editing = nil
             connecting = nil
-            importingFromAgent = true
+            showingLocalVMs = false
+            showingBench = false
+            importingFromAgent = false
+            if covered {
+                // Au tour suivant, une fois la feuille d'avant partie.
+                DispatchQueue.main.async { importingFromAgent = true }
+            } else {
+                importingFromAgent = true
+            }
         }
         .sheet(item: $editing) { draft in
             NavigationStack {
