@@ -72,12 +72,12 @@ final class X86RealTimeClockTests: XCTestCase {
     /// Le calendrier, aux dates qui font trébucher : l'origine, une année
     /// bissextile, le passage du siècle.
     func testTheCalendarHoldsAtItsEdges() {
-        typealias C = X86RealTimeClock.Calendar
+        typealias Civil = X86RealTimeClock.Calendar
         XCTAssertEqual(X86RealTimeClock.calendar(at: 0),
-                       C(year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, weekday: 5))
+                       Civil(year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0, weekday: 5))
         XCTAssertEqual(X86RealTimeClock.calendar(at: 951_782_400),
-                       C(year: 2000, month: 2, day: 29, hour: 0, minute: 0, second: 0, weekday: 3))
+                       Civil(year: 2000, month: 2, day: 29, hour: 0, minute: 0, second: 0, weekday: 3))
         XCTAssertEqual(X86RealTimeClock.calendar(at: 4_102_444_799),
-                       C(year: 2099, month: 12, day: 31, hour: 23, minute: 59, second: 59, weekday: 5))
+                       Civil(year: 2099, month: 12, day: 31, hour: 23, minute: 59, second: 59, weekday: 5))
     }
 }
