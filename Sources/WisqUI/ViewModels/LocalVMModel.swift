@@ -610,6 +610,10 @@ public final class LocalVMModel {
     /// A user who has wedged their guest wants exactly that: leave now, and
     /// start clean.
     public func forgetSavedMachine() {
+        // Dans cet ordre : plus rien ne s'écrira, puis on efface. L'inverse
+        // laisserait une sauvegarde en cours réécrire le fichier.
+        life.userForgot()
+        checkpointed?.stopSaving()
         SuspendedMachine.clear(kernel: kernelName, in: storage)
     }
 
@@ -627,7 +631,15 @@ public final class LocalVMModel {
     /// that silently fails to save, the hitch is the right one.
     public func suspend() {
         guard let machine, let finished = runFinished else { return }
-        guard life.steppedAway() == .save else { return }
+        switch life.steppedAway() {
+        case .save: break
+        case .nothing: return
+        case .forget:
+            // Oubliée : elle s'arrête sans rien écrire (`userForgot`).
+            if let checkpointed { checkpointed.stop() } else { machine.stop() }
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
+            return
+        }
         if let checkpointed { checkpointed.stop() } else { machine.stop() }
         // If the interpreter has not come back in time, saving would read state
         // it is still writing. Better to lose the session than to save a
