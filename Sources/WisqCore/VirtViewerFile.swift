@@ -27,11 +27,21 @@ public enum VirtViewerFile {
         /// The file asked to be deleted after use. An instruction about *this*
         /// file, and nothing else.
         public var deleteAfterUse: Bool
+        /// **The HTTP proxy the console goes through**, when the file names
+        /// one (`proxy=http://pve:3128`). Proxmox always does: its `host` is
+        /// a ticket only that proxy can read. oVirt may, for access from
+        /// outside, beside a host that is reachable directly.
+        public var proxy: Proxy?
+        /// The certificate authority the server's certificate chains to, as
+        /// PEM, when the file carries one (`ca=`). The file writes its line
+        /// breaks as `\n`; they are real line breaks here.
+        public var certificateAuthority: String?
 
         public init(
             proto: RemoteProtocol, host: String, port: Int,
             security: TransportSecurity, password: String? = nil,
-            hostSubject: String? = nil, deleteAfterUse: Bool = false
+            hostSubject: String? = nil, deleteAfterUse: Bool = false,
+            proxy: Proxy? = nil, certificateAuthority: String? = nil
         ) {
             self.proto = proto
             self.host = host
@@ -40,6 +50,46 @@ public enum VirtViewerFile {
             self.password = password
             self.hostSubject = hostSubject
             self.deleteAfterUse = deleteAfterUse
+            self.proxy = proxy
+            self.certificateAuthority = certificateAuthority
+        }
+    }
+
+    /// An HTTP CONNECT proxy, the only kind virt-viewer files name.
+    public struct Proxy: Equatable, Sendable, CustomStringConvertible {
+        public var host: String
+        public var port: Int
+
+        public init(host: String, port: Int) {
+            self.host = host
+            self.port = port
+        }
+
+        public var description: String { "\(host):\(port)" }
+
+        /// `http://host:port`, `http://host` (port 3128, Proxmox's), or the
+        /// same without the scheme. Any other scheme is refused rather than
+        /// read as HTTP: a `https://` or `socks://` proxy is a different
+        /// conversation, and pretending otherwise would connect somewhere the
+        /// file did not mean.
+        static func parse(_ raw: String) throws -> Proxy {
+            var rest = Substring(raw)
+            if let scheme = rest.range(of: "://") {
+                guard rest[..<scheme.lowerBound].lowercased() == "http" else {
+                    throw Failure.unsupportedProxy(raw)
+                }
+                rest = rest[scheme.upperBound...]
+            }
+            if rest.hasSuffix("/") { rest = rest.dropLast() }
+            guard !rest.isEmpty, !rest.contains("/") else { throw Failure.unsupportedProxy(raw) }
+            guard let colon = rest.lastIndex(of: ":") else { return Proxy(host: String(rest), port: 3128) }
+            let host = String(rest[..<colon])
+            let portText = String(rest[rest.index(after: colon)...])
+            guard !host.isEmpty else { throw Failure.unsupportedProxy(raw) }
+            guard let port = Int(portText), (1...65535).contains(port) else {
+                throw Failure.badPort(portText)
+            }
+            return Proxy(host: host, port: port)
         }
     }
 
@@ -49,6 +99,8 @@ public enum VirtViewerFile {
         case missingPort
         case badPort(String)
         case unsupportedProtocol(String)
+        /// A `proxy=` that is not an HTTP proxy, or not one at all.
+        case unsupportedProxy(String)
     }
 
     /// Parses a `.vv` file.
@@ -111,7 +163,11 @@ public enum VirtViewerFile {
             hostSubject: values["host-subject"].flatMap { $0.isEmpty ? nil : $0 },
             deleteAfterUse: ["1", "true", "yes"].contains(
                 (values["delete-this-file"] ?? "").lowercased()
-            )
+            ),
+            proxy: try values["proxy"].flatMap { $0.isEmpty ? nil : try Proxy.parse($0) },
+            certificateAuthority: values["ca"].flatMap {
+                $0.isEmpty ? nil : $0.replacingOccurrences(of: "\\n", with: "\n")
+            }
         )
     }
 }
@@ -128,6 +184,8 @@ extension VirtViewerFile.Connection: CustomStringConvertible {
         if password != nil { parts.append("password: (présent, masqué)") }
         if let hostSubject { parts.append("host-subject: \(hostSubject)") }
         if deleteAfterUse { parts.append("à supprimer après usage") }
+        if let proxy { parts.append("proxy: \(proxy)") }
+        if certificateAuthority != nil { parts.append("autorité de certification fournie") }
         return parts.joined(separator: ", ")
     }
 }
