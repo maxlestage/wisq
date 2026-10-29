@@ -122,21 +122,26 @@ final class X86FramebufferTests: XCTestCase {
         XCTAssertEqual(machine.bootParameters()[0x0F], 0)
     }
 
-    /// **Un cadre qui recouvrirait la RAM est refusé, pas décalé en silence.**
+    /// **Un cadre ne recouvre jamais la RAM.**
     ///
-    /// La fenêtre est à 0xE0000000. Une machine dotée de plus de mémoire que ça
-    /// verrait ses deux régions se superposer, et l'écriture d'un pixel
-    /// écraserait une page du noyau. Refuser est la seule réponse honnête :
-    /// déplacer le cadre demanderait `ext_lfb_base`, que cette tranche
-    /// n'implémente pas.
-    func testADisplayThatWouldOverlapRAMIsRefused() {
-        let machine = X86Machine(ramSize: 4 << 30) { _ in }
-        XCTAssertThrowsError(try machine.attachDisplay(width: 640, height: 480)) { error in
-            guard case X86Machine.DisplayRefusal.wouldOverlapMemory = error else {
-                return XCTFail("le refus doit dire pourquoi : \(error)")
-            }
+    /// La fenêtre est à 0xE0000000. Une machine de plus de mémoire que ça
+    /// voyait ses deux régions se superposer, et ce test exigeait un refus.
+    /// Depuis le trou sous quatre gibioctets (`X86Memory.pc`), la RAM s'arrête
+    /// à trois et reprend à quatre : l'écran tombe dans le trou, et une
+    /// écriture de pixel va au cadre, jamais à une page du noyau.
+    func testADisplayNeverOverlapsRAM() throws {
+        for ram in [3 << 30, (3 << 30) + (512 << 20), 4 << 30, 6 << 30] {
+            let machine = X86Machine(ramSize: ram) { _ in }
+            try machine.attachDisplay(width: 640, height: 480)
+            let display = try XCTUnwrap(machine.display)
+            XCTAssertNil(machine.memory.offset(display.base, 4),
+                         "\(ram >> 20) Mio : le premier pixel n'est pas de la RAM")
+            XCTAssertNil(machine.memory.offset(display.base + UInt64(display.byteCount) - 4, 4),
+                         "\(ram >> 20) Mio : le dernier non plus")
+            try machine.memory.write(display.base, 4, 0x00FF_00FF)
+            XCTAssertEqual(display.snapshot()[0...3], [0xFF, 0x00, 0xFF, 0x00],
+                           "\(ram >> 20) Mio : l'écriture va au cadre")
         }
-        XCTAssertNil(machine.display, "et rien ne doit rester accroché")
     }
 
 }
