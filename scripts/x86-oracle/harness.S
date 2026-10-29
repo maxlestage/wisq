@@ -22,6 +22,8 @@
 //                 (rax rcx rdx rbx rsp rbp rsi rdi r8..r15)
 //   state[16]     RFLAGS
 //   state[17..48] les seize registres XMM, deux mots chacun, le bas d'abord
+//   state[49..62] l'image x87 de `FRSTOR`
+//   state[63..94] le haut des seize registres YMM, deux mots chacun
 //   code          la page exécutable, terminée par le saut de retour
 // Lu puis réécrit sur place.
 //
@@ -84,6 +86,25 @@ wisq_x86_run:
     movdqu  43*8(%rdi), %xmm13
     movdqu  45*8(%rdi), %xmm14
     movdqu  47*8(%rdi), %xmm15
+    // **Le haut des YMM, posé par-dessus.** `vinserti128` garde le bas
+    // qu'on vient de charger et remplit le haut : zéro pour les corpus qui
+    // n'en donnent pas, et qui n'en lisent pas.
+    vinserti128 $1, 63*8(%rdi), %ymm0, %ymm0
+    vinserti128 $1, 65*8(%rdi), %ymm1, %ymm1
+    vinserti128 $1, 67*8(%rdi), %ymm2, %ymm2
+    vinserti128 $1, 69*8(%rdi), %ymm3, %ymm3
+    vinserti128 $1, 71*8(%rdi), %ymm4, %ymm4
+    vinserti128 $1, 73*8(%rdi), %ymm5, %ymm5
+    vinserti128 $1, 75*8(%rdi), %ymm6, %ymm6
+    vinserti128 $1, 77*8(%rdi), %ymm7, %ymm7
+    vinserti128 $1, 79*8(%rdi), %ymm8, %ymm8
+    vinserti128 $1, 81*8(%rdi), %ymm9, %ymm9
+    vinserti128 $1, 83*8(%rdi), %ymm10, %ymm10
+    vinserti128 $1, 85*8(%rdi), %ymm11, %ymm11
+    vinserti128 $1, 87*8(%rdi), %ymm12, %ymm12
+    vinserti128 $1, 89*8(%rdi), %ymm13, %ymm13
+    vinserti128 $1, 91*8(%rdi), %ymm14, %ymm14
+    vinserti128 $1, 93*8(%rdi), %ymm15, %ymm15
 
     mov     0*8(%rdi), %rax
     mov     1*8(%rdi), %rcx
@@ -141,6 +162,25 @@ wisq_return:
     movdqu  %xmm13, wisq_out+43*8(%rip)
     movdqu  %xmm14, wisq_out+45*8(%rip)
     movdqu  %xmm15, wisq_out+47*8(%rip)
+    // Les `movdqu` d'au-dessus sont des formes héritées : elles laissent le
+    // haut des YMM tel que l'instruction à l'essai l'a mis.
+    vextracti128 $1, %ymm0, wisq_out+63*8(%rip)
+    vextracti128 $1, %ymm1, wisq_out+65*8(%rip)
+    vextracti128 $1, %ymm2, wisq_out+67*8(%rip)
+    vextracti128 $1, %ymm3, wisq_out+69*8(%rip)
+    vextracti128 $1, %ymm4, wisq_out+71*8(%rip)
+    vextracti128 $1, %ymm5, wisq_out+73*8(%rip)
+    vextracti128 $1, %ymm6, wisq_out+75*8(%rip)
+    vextracti128 $1, %ymm7, wisq_out+77*8(%rip)
+    vextracti128 $1, %ymm8, wisq_out+79*8(%rip)
+    vextracti128 $1, %ymm9, wisq_out+81*8(%rip)
+    vextracti128 $1, %ymm10, wisq_out+83*8(%rip)
+    vextracti128 $1, %ymm11, wisq_out+85*8(%rip)
+    vextracti128 $1, %ymm12, wisq_out+87*8(%rip)
+    vextracti128 $1, %ymm13, wisq_out+89*8(%rip)
+    vextracti128 $1, %ymm14, wisq_out+91*8(%rip)
+    vextracti128 $1, %ymm15, wisq_out+93*8(%rip)
+    vzeroupper
 
     // La pile redevient la nôtre avant qu'on ose un pushfq.
     mov     wisq_host_rsp(%rip), %rsp
@@ -159,7 +199,7 @@ wisq_return:
     // Recopier dans le tampon de l'appelant.
     mov     wisq_state(%rip), %rdi
     leaq    wisq_out(%rip), %rsi
-    mov     $63, %rcx
+    mov     $95, %rcx
 1:  mov     (%rsi), %rax
     mov     %rax, (%rdi)
     add     $8, %rsi
@@ -189,5 +229,6 @@ wisq_return_slot:  .quad 0
 // section, et le harnais mourait d'un défaut de segmentation. Les sept corpus
 // se régénéraient quand même, parce que ce qui suivait n'était plus lu ; c'est
 // le premier cas qui a demandé la pile x87 qui l'a fait tomber.
-wisq_out:          .fill 63, 8, 0
+// Puis trente-deux pour le haut des YMM, en queue pour la même raison.
+wisq_out:          .fill 95, 8, 0
     .section .note.GNU-stack,"",@progbits
