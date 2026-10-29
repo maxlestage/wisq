@@ -192,6 +192,23 @@ final class CloudBootTests: XCTestCase {
                        ["a-6.10.4.conf", "a-6.9.12.conf"])
     }
 
+    /// **L'entrée de CentOS Stream 10**, telle que `tuned` la laisse : une
+    /// variable de GRUB après l'initramfs, une autre après les options. GRUB
+    /// les remplace par rien ; prise pour un fichier, la première faisait
+    /// refuser l'image entière (« $tuned_initrd introuvable »).
+    func testCentOSStreamsTunedVariablesAreNotFiles() throws {
+        let entry = try XCTUnwrap(CloudBoot.blsEntry("""
+        title CentOS Stream (6.12.0-279.el10.x86_64) 10 (Coughlan)
+        version 6.12.0-279.el10.x86_64
+        linux /boot/vmlinuz-6.12.0-279.el10.x86_64
+        initrd /boot/initramfs-6.12.0-279.el10.x86_64.img $tuned_initrd
+        options root=UUID=08643c1d-9403-47a4-b36b-bae307ff77d4 console=tty0 console=ttyS0,115200n8 $tuned_params
+        grub_users $grub_users
+        """))
+        XCTAssertEqual(entry.initrds, ["/boot/initramfs-6.12.0-279.el10.x86_64.img"])
+        XCTAssertFalse(CloudBoot.commandLine(entry.options).contains("$"))
+    }
+
     /// **La vraie entrée de Fedora 44 Cloud** : elle coupe elle-même
     /// `systemd-firstboot`, et la console série ouvre quand même son shell.
     /// Rien ne s'ajoute deux fois, et aucun credential de première mise en
@@ -314,7 +331,9 @@ final class CloudBootTests: XCTestCase {
         })) { error in
             XCTAssertEqual(error as? CloudBoot.Failure, .noKernel)
         }
-        XCTAssertThrowsError(try boot(kind: .efiSystem)) { error in
+        // Une partition d'échange, pas EFI : celle-ci est maintenant lue pour
+        // une entrée configurée — Gentoo y range son noyau (`FatVolumeTests`).
+        XCTAssertThrowsError(try boot(kind: .swap)) { error in
             XCTAssertEqual(error as? CloudBoot.Failure, .noLinuxPartition)
         }
     }
