@@ -87,7 +87,19 @@ public enum AgentPairing {
         guard let host = values["host"].flatMap({ try? Validation.normalizedHost($0) }) else {
             throw WisqError.malformedMessage("lien d'appairage sans hôte")
         }
-        let port = try Validation.validatedPort(values["port"].flatMap(Int.init) ?? 7442)
+        // **7442 quand le lien n'en dit rien, un refus quand il dit autre chose
+        // qu'un port.** `port=74x2` — un lien abîmé, recopié à la main —
+        // devenait 7442 : un appairage contre un port que le lien ne nommait
+        // pas, le jeton envoyé à ce qui y écoute.
+        let port: Int
+        if let raw = values["port"] {
+            guard let number = Int(raw) else {
+                throw WisqError.malformedMessage("port invalide dans le lien d'appairage : \(raw)")
+            }
+            port = try Validation.validatedPort(number)
+        } else {
+            port = 7442
+        }
 
         // A malformed fingerprint is an error, never a shrug: silently dropping
         // it would downgrade the connection to plain HTTP, which is exactly
