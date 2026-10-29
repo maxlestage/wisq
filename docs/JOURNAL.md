@@ -8,6 +8,66 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Chasse aux bugs, deuxième passe : douze corrections dans une PR
+
+Demandé par l'utilisateur : « avance sur l'application, il faut que tout
+fonctionne ; tu peux tout améliorer et faire la chasse aux bugs ; plusieurs
+commits dans une PR ». Trois audits en lecture seule, en parallèle, sur ce
+que la première passe (#614) n'avait pas lu : les protocoles distants
+(VNC, RDP, SPICE), le cœur de l'application et le réseau (`WisqCore`,
+`WisqNet`), le cycle de vie des machines locales. Chaque constat vérifié
+avant d'être corrigé, un commit par correction, chacun avec son test et
+ses sabordages.
+
+**Corrigé :**
+- **Un agent appairé retombait en HTTP clair** à la première édition de la
+  machine : l'éditeur reconstruisait la liaison en `http`, sans empreinte.
+  `AgentBinding.edited` garde `https` et l'empreinte.
+- **Une VM gardée pour une version plus récente perdait son jeton** quand on
+  supprimait sa voisine sur le même agent.
+- **Un arrêt pendant la reprise d'une machine x86 était oublié** : la
+  suspension dépassait son délai et effaçait la session qu'on venait de
+  reprendre.
+- **Une longueur énorme dans un instantané faisait tomber l'application** à
+  chaque ouverture de la machine, au lieu d'un refus.
+- **SPICE** : un rectangle hostile faisait tomber l'application ; une image
+  GLZ de 65 536 × 65 536 demandait seize gibioctets ; l'affichage et le
+  curseur n'accusaient jamais réception, et **l'écran se figeait après une
+  quarantaine de messages**.
+- **RDP** : la forme étendue d'une image forme-fond, multipliée par huit,
+  perdait le rectangle ; **les clés de session ne se renouvelaient pas** et
+  la session mourait au 4 097ᵉ paquet ; le domaine d'un compte ne partait
+  jamais.
+- **Import** : un `.rdp` qui donne `server port:i:` à part était enregistré
+  sur 3389 ; un lien d'appairage au port mal formé appairait sur 7442.
+- **Clavier distant** : une tabulation et un retour chariot partaient comme
+  des keysyms qu'aucun serveur ne reconnaît.
+
+**Vu et laissé, pour l'instant** :
+- les noms de session tronqués à quarante caractères — deux images au nom
+  long et proche partagent leurs sessions, et la correction ferait perdre
+  une fois, à la mise à jour, celles des images à nom long ;
+- la mémoire réglée rabattue en silence sous la taille d'une session
+  enregistrée, qui démarre alors à froid — la correction est dans
+  `LocalVMModel`, que ce conteneur ne compile pas, sur un chemin d'erreur
+  qui efface la session ;
+- l'instantané d'une machine x86 restauré en partie quand sa queue est
+  abîmée ;
+- le disque d'écriture non daté avec l'instantané qu'il accompagne, après
+  un plantage ;
+- VNC 3.3, la fuite d'une connexion `NWConnection` qui échoue à s'ouvrir, et
+  le `.vv` de Proxmox (`proxy=`).
+
+**Les vérifications.** 21 tests ; chaque sabordage est tombé, une fois
+refait celui qui ne compilait pas. L'arbitrage RDP de la forme étendue vient
+de la spécification et du code de FreeRDP : sa bibliothèque n'est plus
+installée ici, et aucun des vecteurs qu'elle avait jugés ne portait cette
+forme. La formule du renouvellement des clés est calculée à part, en
+Python. Les changements de `WisqUI` (l'éditeur, la frappe) ne se compilent
+pas ici : la CI Apple les juge.
+
+Compte publié : 3084.
+
 ## 2026-10-29 — `pextrw` vers la mémoire : CentOS Stream 10 jusqu'à son terminal
 
 Toujours sur la branche qui annonce x86-64-v3 entier, avec le reste de
@@ -60,6 +120,7 @@ douze sabordages, onze chutes — le survivant touchait une condition
 redondante, retirée.
 
 Compte publié : 3063 ; corpus matériels : seize.
+
 ## 2026-10-29 — Le reste de SSSE3, que le systemd de CentOS Stream 10 demande
 
 Essayé sur la branche qui annonce x86-64-v3 entier (pas encore fusionnée) :
@@ -227,6 +288,7 @@ processeur qu'elles exigent, l'endroit où elles rangent leur noyau.
 
 Sept tests de plus — l'entrée réelle de CentOS, six sur trois FAT réels
 faits par `mkfs.fat` — ; cinq sabordages, cinq chutes. Compte publié : 3032.
+
 ## 2026-10-29 — Les formes VEX.128 de SSE, par les instructions qui existent
 
 Suite de la tranche précédente, demandée par « continue de tout optimiser » :
@@ -612,6 +674,7 @@ Les tests qui prenaient le VHDX comme exemple de format « reconnu, pas lu »
 prennent désormais l'ancien qcow, version 1 — le seul qui reste avec le VMDK
 « descripteur ». Le cœur RISC-V refuse le VHDX en le nommant, comme les autres.
 Compte publié : 2957.
+
 ## 2026-10-28 — Les six drapeaux de l'arithmétique, écrits d'un coup : 8 % de moins en natif
 
 Les runners de GitHub Actions restent indisponibles pour le compte — les

@@ -91,6 +91,19 @@ final class SpiceGLZTests: XCTestCase {
         XCTAssertNoThrow(try SpiceGLZ.header(Array(raw.prefix(SpiceGLZ.headerBytes))))
     }
 
+    /// **Une image trop grande est refusée avant d'être allouée**, comme en
+    /// LZ : 65 536 × 65 536 demandait seize gibioctets d'un coup.
+    func testAnImageTooLargeToHoldIsRefusedBeforeAnythingIsSized() throws {
+        var raw = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].stream)
+        // Magique, version, un octet de type, puis la largeur et la hauteur,
+        // de poids fort en premier : 65 536 chacune.
+        raw.replaceSubrange(9..<13, with: [0, 1, 0, 0])
+        raw.replaceSubrange(13..<17, with: [0, 1, 0, 0])
+        XCTAssertThrowsError(try SpiceGLZ.header(raw)) {
+            XCTAssertEqual($0 as? SpiceGLZ.Failure, .badGeometry)
+        }
+    }
+
     func testANegativeDimensionIsRefusedBeforeAnythingIsSized() throws {
         var raw = SpiceGLZFixtures.bytes(SpiceGLZFixtures.sequence[0].stream)
         raw[9] = 0xFF   // the top byte of the width

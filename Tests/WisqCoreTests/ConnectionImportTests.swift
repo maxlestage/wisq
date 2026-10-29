@@ -60,6 +60,19 @@ final class ConnectionImportTests: XCTestCase {
         XCTAssertEqual(imported.machine.username, "mlestage")
     }
 
+    /// **Le domaine du fichier part avec l'utilisateur**, sous la forme que la
+    /// session RDP découpe ; un nom qui porte déjà le sien reste tel quel.
+    func testTheDomainOfAnRDPFileTravelsWithTheUser() throws {
+        func imported(_ text: String) throws -> String? {
+            try ConnectionImport.machine(from: RemoteDesktopFile.parse(text)).machine.username
+        }
+        XCTAssertEqual(try imported("full address:s:vm\nusername:s:jdoe\ndomain:s:CORP"), "CORP\\jdoe")
+        XCTAssertEqual(try imported("full address:s:vm\nusername:s:jdoe@corp.example\ndomain:s:CORP"),
+                       "jdoe@corp.example")
+        XCTAssertEqual(try imported("full address:s:vm\nusername:s:OTHER\\jdoe\ndomain:s:CORP"), "OTHER\\jdoe")
+        XCTAssertEqual(try imported("full address:s:vm\nusername:s:jdoe"), "jdoe")
+    }
+
     // MARK: - What the file says, and what wisq does with it
 
     func testASpiceFileBecomesASpiceMachineOnItsOwnPortAndTransport() throws {

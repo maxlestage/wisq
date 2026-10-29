@@ -48,6 +48,15 @@ final class AgentPairingTests: XCTestCase {
         XCTAssertEqual(try AgentPairing.parse(url).port, 7442)
     }
 
+    /// **Un port qui n'en est pas un est un refus, pas 7442** : appairer
+    /// contre un port que le lien ne nomme pas enverrait le jeton ailleurs.
+    func testAMalformedPortIsAnErrorNotTheDefault() {
+        for bad in ["port=74x2", "port=", "port=99999"] {
+            let url = URL(string: "wisq://agent?host=nas&token=t&\(bad)")!
+            XCTAssertThrowsError(try AgentPairing.parse(url), bad)
+        }
+    }
+
     func testRejectsForeignURLs() {
         XCTAssertThrowsError(try AgentPairing.parse(URL(string: "https://agent?host=x")!))
         XCTAssertThrowsError(try AgentPairing.parse(URL(string: "wisq://machine?host=x")!))
