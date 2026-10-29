@@ -299,7 +299,8 @@ extension X86Core {
         case 0xA2:  // CPUID
             let (a, b, c, d) = X86CPUID.answer(
                 leaf: UInt32(truncatingIfNeeded: registers.read(0)),
-                subleaf: UInt32(truncatingIfNeeded: registers.read(1)))
+                subleaf: UInt32(truncatingIfNeeded: registers.read(1)),
+                xcr0: xcr0, osxsave: extendedStateEnabled)
             write(0, 4, highByte: false, UInt64(a))
             write(3, 4, highByte: false, UInt64(b))
             write(1, 4, highByte: false, UInt64(c))
