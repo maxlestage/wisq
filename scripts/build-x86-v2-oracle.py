@@ -55,7 +55,10 @@ def forms():
     # registres en trente-deux octets et en prend seize à partir de
     # l'immédiat : au-delà de seize, il puise dans la seule source, au-delà
     # de trente-deux, il rend zéro.
-    for name in ["pshufb", "pabsb", "pabsw", "pabsd", "pmaddubsw", "phaddsw"]:
+    # Puis le reste de SSSE3, que le systemd de CentOS Stream 10 demande
+    # sous VEX : les horizontales, `psign*`, `pmulhrsw`.
+    for name in ["pshufb", "pabsb", "pabsw", "pabsd", "pmaddubsw", "phaddsw", "phaddw", "phaddd", "phsubw",
+                 "phsubd", "phsubsw", "psignb", "psignw", "psignd", "pmulhrsw"]:
         out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
     for shift in [0, 1, 4, 8, 15, 16, 17, 24, 31, 32, 200]:
         out += [f"palignr ${shift}, %xmm1, %xmm0", f"palignr ${shift}, {ALIGNED:#x}(%rsi), %xmm0"]
