@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Une reprise refusée ne touche plus à la mémoire
+
+**Le défaut.** `X86Machine.restore` écrivait la mémoire de l'instantané
+directement dans celle de la machine, puis lisait ce qui la suit : la pile
+x87, l'état étendu, le rapport de l'horloge, les disques. Si l'une de ces
+sections était abîmée, la reprise était refusée avec la mémoire déjà
+remplacée. C'est une machine à moitié reprise, ce que la règle du « tout ou
+rien » écrite au-dessus de la fonction interdit.
+
+**Ce qui change.**
+- La suite est lue d'abord, sur un second lecteur. `Snapshot.Reader.skipRAM`
+  passe la mémoire en vérifiant les mêmes bornes que `ram`.
+- La mémoire s'écrit en dernier, quand plus rien ne peut échouer.
+- Pourquoi pas une copie à part, comme le fait la machine RISC-V : elle
+  doublerait jusqu'à seize gibioctets.
+
+**Vérifié.** Deux tests (`X86RestoreAllOrNothingTests`) : un instantané au
+XCR0 abîmé est refusé et la mémoire reste celle d'avant ; un instantané
+intact se reprend, mémoire comprise. Trois sabotages, trois chutes.
+
+Compte publié : 3098.
+
 ## 2026-10-29 — Une session réseau par agent appairé, plus une par requête
 
 **Le défaut.** `AgentClient(baseURL:token:pinnedFingerprint:)` construisait
