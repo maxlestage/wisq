@@ -163,4 +163,40 @@ final class MachineArchiveTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: LocalDisk.writesURL(
             for: back.keys.overlay(forDisk: own), in: there)), Data([4, 2]))
     }
+
+    /// **Un disque propre, mais branché sur un autre** : l'archive le dit, et
+    /// l'import rebranche l'autre, couche comprise ; seule la couche du
+    /// disque propre suit son nouveau nom. Avant, la machine revenait
+    /// branchée sur le disque vierge recréé, avec les secteurs de l'autre
+    /// posés dessus.
+    func testAnOwnDiskThatIsNotTheAttachedOneStaysApart() throws {
+        let machine = try InstalledMachines.install(image: iso, name: "Neuve", in: here)
+        try BlankDisk.create(at: kernels(here).appendingPathComponent("Neuve-disque.img"), bytes: 1 << 30)
+        try InstalledMachines.setOwnDisk("Neuve-disque.img", id: machine.id, in: here)
+        LocalDisk.attach("debian.raw", forKernel: machine.key, in: here)
+        try write(Data([1]), to: LocalDisk.writesURL(for: machine.keys.overlay(forDisk: "Neuve-disque.img"), in: here))
+        try write(Data([2]), to: LocalDisk.writesURL(for: machine.keys.overlay(forDisk: "debian.raw"), in: here))
+        try MachineArchive.export(
+            try XCTUnwrap(InstalledMachines.machine(id: machine.id, in: here)),
+            kernels: kernels(here), in: here, to: archive)
+        try Data().write(to: kernels(there).appendingPathComponent("Neuve-disque.img"))
+
+        let back = try importThere()
+        let own = try XCTUnwrap(back.ownDisk)
+        XCTAssertEqual(own, "Neuve-disque-2.img")
+        XCTAssertEqual(LocalDisk.recordedName(forKernel: back.key, in: there), "debian.raw")
+        XCTAssertEqual(try Data(contentsOf: LocalDisk.writesURL(
+            for: back.keys.overlay(forDisk: "debian.raw"), in: there)), Data([2]))
+        XCTAssertEqual(try Data(contentsOf: LocalDisk.writesURL(
+            for: back.keys.overlay(forDisk: own), in: there)), Data([1]))
+    }
+
+    /// **Une archive d'avant** ne nomme pas le disque propre : elle se lit
+    /// toujours, sans lui.
+    func testAnOlderArchiveWithoutTheOwnDisksNameStillReads() throws {
+        let json = #"{"version":1,"name":"x","image":"a.iso","disk":"x-disque.img","ownDiskBytes":1024,"files":[]}"#
+        let decoded = try JSONDecoder().decode(MachineArchive.Manifest.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.disk, "x-disque.img")
+        XCTAssertNil(decoded.ownDisk)
+    }
 }
