@@ -47,7 +47,10 @@ public enum InstalledSystem {
         guard files.fileExists(atPath: writes.path), files.fileExists(atPath: writes.path + ".map"),
               let store = try? FileDiskStore(base: disk, writes: writes)
         else { return nil }
-        return try? CloudBoot.find(in: DiskStoreImage(store), rootHash: nil)
+        // **Sans le shell de la console série** : un système installé a ses
+        // comptes, et celui qui l'a installé y a mis un mot de passe. Les
+        // délais des machines lentes, eux, restent.
+        return try? CloudBoot.find(in: DiskStoreImage(store), rootHash: nil, serialShell: false)
     }
 
     /// Le même, déballé dans `folder` comme une image de cloud : noyau et
