@@ -118,8 +118,10 @@ public enum X86CPUID {
     /// octets, complétés de zéros.
     public static let brand = "wisq x86-64 (comme le qemu64 de QEMU)"
 
-    /// La plus grande feuille ordinaire que ce processeur connaît.
-    public static let highestBasicLeaf: UInt32 = 1
+    /// La plus grande feuille ordinaire que ce processeur connaît : 7, celle
+    /// des extensions où BMI1 et BMI2 s'annoncent. Les feuilles 2 à 6 rendent
+    /// des zéros, comme toute feuille que ce cœur ne décrit pas.
+    public static let highestBasicLeaf: UInt32 = 7
     /// La plus grande feuille étendue.
     public static let highestExtendedLeaf: UInt32 = 0x8000_0004
 
@@ -169,13 +171,22 @@ public enum X86CPUID {
     /// n'emploient** — `haddp*`, `hsubp*`, `movshdup`, `pcmpestri`, `crc32`,
     /// les formes `…m` — est refusé par son nom s'il arrive. MONITOR (3) n'est
     /// pas annoncé : `mwait` n'existe pas ici.
-    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23)
+    ///
+    /// **Et MOVBE (22)**, de x86-64-v3 : un `mov` qui retourne ses octets
+    /// (`X86BMI.swift`, `Tests/Fixtures/x86-v3-gpr-oracle.tsv`).
+    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 22)
+        | (1 << 23)
+    /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
+    /// n'emploie que les registres généraux, et que le noyau de RHEL 10
+    /// emploie sans demander. AVX2 (5) n'y est pas : ce cœur n'a pas de
+    /// registres YMM.
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 8)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
     /// Feuille 0x80000001, ECX : LAHF-SAHF (0), `lahf` et `sahf` en mode
-    /// long, que x86-64-v2 exige aussi.
-    public static let extendedFeaturesECX: UInt32 = 1
+    /// long, que x86-64-v2 exige aussi ; et ABM (5), qui annonce LZCNT.
+    public static let extendedFeaturesECX: UInt32 = 1 | (1 << 5)
 
     /// La réponse aux quatre registres, pour une feuille donnée.
     public static func answer(leaf: UInt32, subleaf: UInt32) -> (UInt32, UInt32, UInt32, UInt32) {
@@ -190,6 +201,9 @@ public enum X86CPUID {
             // Famille 15 (0xF), modèle 107 (0x6B : 0xB dans le champ de base,
             // 6 dans l'étendu), pas 1 : ce que répond le `qemu64` de QEMU.
             return (0x0006_0FB1, 0, featuresECX, features)
+        case 7:
+            // Une seule sous-feuille : EAX dit la plus grande, zéro.
+            return subleaf == 0 ? (0, extendedLeaf7EBX, 0, 0) : (0, 0, 0, 0)
         case 0x8000_0000:
             return (highestExtendedLeaf, 0, 0, 0)
         case 0x8000_0001:
