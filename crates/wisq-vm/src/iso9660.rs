@@ -375,10 +375,15 @@ pub struct Recipe {
 /// se compose d'`INCLUDE` qui pointent d'autres fichiers ; une entrée de
 /// chargeur, elle, tient en cinq lignes sans indirection. Quand les deux
 /// existent, la seconde répond mieux à la même question.
-const WHERE: [&str; 8] = [
+///
+/// **`/boot/isolinux/` manquait**, et c'est là que Void Linux et Tiny Core
+/// rangent la leur : leurs deux images étaient refusées faute de recette,
+/// alors qu'elles en portent une de trois lignes.
+const WHERE: [&str; 9] = [
     "/loader/entries",
     "/boot/syslinux/syslinux.cfg",
     "/boot/syslinux/isolinux.cfg",
+    "/boot/isolinux/isolinux.cfg",
     "/isolinux/isolinux.cfg",
     "/syslinux/syslinux.cfg",
     "/boot/grub/grub.cfg",
@@ -515,7 +520,7 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
     let mut kernel = None;
     let mut initrd = None;
     let mut command_line = String::new();
-    for line in text.lines() {
+    for line in logical_lines(text) {
         let line = line.trim();
         let Some((word, rest)) = line.split_once(char::is_whitespace) else {
             continue;
@@ -541,6 +546,20 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
             _ => {}
         }
     }
+    // **L'initramfs dans les arguments**, la forme d'origine de syslinux :
+    // `APPEND initrd=/boot/initrd root=…`. C'est celle de Void Linux. Sans
+    // ligne `INITRD`, le mot est pris pour ce qu'il dit, et retiré de la
+    // ligne : un noyau démarré directement n'en fait rien, et le laisser
+    // ferait croire qu'il a servi.
+    if initrd.is_none() {
+        let (named, others): (Vec<&str>, Vec<&str>) = command_line
+            .split_whitespace()
+            .partition(|word| word.starts_with("initrd="));
+        if let Some(word) = named.first() {
+            initrd = Some(absolute(&word["initrd=".len()..]));
+            command_line = others.join(" ");
+        }
+    }
     kernel.map(|kernel| Recipe {
         kernel,
         initrd,
@@ -549,10 +568,52 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
     })
 }
 
+/// Les lignes d'une entrée, **celles que grub coupe par `\` recollées**.
+///
+/// Le `grub.cfg` de Void écrit son noyau sur une ligne et ses arguments sur
+/// les quatre suivantes. Lues une à une, la ligne du noyau finissait par une
+/// barre oblique, prise pour un argument, et les vrais arguments étaient
+/// perdus.
+fn logical_lines(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut pending = String::new();
+    for line in text.lines() {
+        // La suite d'une ligne coupée perd son retrait : il n'est que de la
+        // mise en page, et il restait au milieu des arguments.
+        let line = if pending.is_empty() {
+            line
+        } else {
+            line.trim_start()
+        };
+        match line.trim_end().strip_suffix('\\') {
+            Some(head) => {
+                pending.push_str(head.trim_end());
+                pending.push(' ');
+            }
+            None => {
+                pending.push_str(line);
+                lines.push(std::mem::take(&mut pending));
+            }
+        }
+    }
+    if !pending.is_empty() {
+        lines.push(pending);
+    }
+    lines
+}
+
 /// Un chemin de recette est parfois relatif à la racine de l'image et parfois
 /// écrit avec sa barre. Les deux désignent la même chose.
+///
+/// **Le périphérique que grub écrit devant**, `(${voidlive})/boot/vmlinuz`
+/// ou `($root)/vmlinuz`, nomme l'image elle-même : c'est celle qu'on lit. Il
+/// est retiré ; sans ça, le chemin cherché commençait par une parenthèse.
 fn absolute(path: &str) -> String {
     let path = path.trim();
+    let path = match path.strip_prefix('(').and_then(|rest| rest.split_once(')')) {
+        Some((_, inside)) => inside,
+        None => path,
+    };
     if path.starts_with('/') {
         path.to_string()
     } else {

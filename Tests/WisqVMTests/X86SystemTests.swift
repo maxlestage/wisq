@@ -56,7 +56,8 @@ final class X86SystemTests: XCTestCase {
         XCTAssertNotEqual(ecx & (1 << 22), 0, "MOVBE")
         XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 0xD, "jusqu'à la feuille de l'état étendu")
         let leaf7 = X86CPUID.answer(leaf: 7, subleaf: 0)
-        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 8, "BMI1 et BMI2, et rien d'autre — ni AVX2 (5)")
+        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 8 | 1 << 9,
+                       "BMI1, BMI2 et ERMS, et rien d'autre — ni AVX2 (5)")
         XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 1).1, 0)
     }
 
@@ -264,6 +265,25 @@ final class X86SystemTests: XCTestCase {
         XCTAssertTrue(X86CPUID.brand.hasPrefix("wisq"))
         XCTAssertLessThan(X86CPUID.brand.utf8.count, 48, "un zéro final au moins")
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0000, subleaf: 0).0, 0x8000_0004)
+    }
+
+    /// **La copie rapide dans la feuille 7** : ERMS, FSRM et FSRS, que
+    /// `bulkString` tient, à côté de BMI1 et BMI2. Un bit de plus — AVX2,
+    /// SMEP — ferait employer à Linux ou à la glibc ce qui n'existe pas ici.
+    func testLeafSevenAnnouncesOnlyTheFastStrings() {
+        let (maximum, ebx, ecx, edx) = X86CPUID.answer(leaf: 7, subleaf: 0)
+        XCTAssertEqual(maximum, 1, "la sous-feuille 1 existe")
+        XCTAssertEqual(ebx & ~X86CPUID.extendedLeaf7EBX, 1 << 9, "ERMS, hors BMI1 et BMI2")
+        XCTAssertEqual(ecx, 0)
+        XCTAssertEqual(edx, 1 << 4, "FSRM seul")
+        let one = X86CPUID.answer(leaf: 7, subleaf: 1)
+        XCTAssertEqual(one.0, 1 << 11, "FSRS seul")
+        XCTAssertEqual([one.1, one.2, one.3], [0, 0, 0])
+        XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 2).0, 0)
+        for leaf: UInt32 in [2, 3, 4, 5, 6, 8, 9, 0xA, 0xB, 0xC] {
+            let answer = X86CPUID.answer(leaf: leaf, subleaf: 0)
+            XCTAssertEqual([answer.0, answer.1, answer.2, answer.3], [0, 0, 0, 0], "feuille \(leaf)")
+        }
     }
 
     /// Écrire `EFER` ne suffit pas à être en mode long : le processeur pose

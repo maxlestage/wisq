@@ -899,7 +899,10 @@ extension X86Core {
         let whileEqual = instruction.hasPrefix(0xF3)
 
         var count = repeated ? registers.read(1) : 1
+        let comparing = opcode == 0xA6 || opcode == 0xA7 || opcode == 0xAE || opcode == 0xAF
         while count > 0 {
+            // **Une page à la fois quand c'est possible** : voir `bulkString`.
+            if repeated && count > 1, try bulkString(opcode, size, &count) { continue }
             switch opcode {
             case 0xA4, 0xA5:  // MOVS : de RSI vers RDI
                 let value = try readMemory(registers.read(6), size)
@@ -928,10 +931,73 @@ extension X86Core {
                 registers[1] = count
                 // Les deux comparaisons — CMPS et SCAS — s'arrêtent aussi sur
                 // le drapeau de zéro, et dans le sens que le préfixe dit.
-                let comparing = [0xA6, 0xA7, 0xAE, 0xAF].contains(Int(opcode))
                 if comparing && ((flags & Flag.zero != 0) != whileEqual) { break }
             }
         }
+    }
+
+    /// **`REP MOVS` et `REP STOS` par pages entières**, au lieu d'un élément à
+    /// la fois.
+    ///
+    /// Le `memcpy` de musl est un `rep movsq`, et un noyau efface et recopie
+    /// ses pages de la même façon : chaque élément traduisait ses deux
+    /// adresses et repassait par les bornes de la mémoire. Ici, le morceau qui
+    /// tient dans la page de la source **et** dans celle de la destination est
+    /// traduit une fois, dans l'ordre des accès d'un élément — la lecture,
+    /// puis l'écriture —, puis copié ou rempli d'un coup.
+    ///
+    /// **Ce que l'invité voit ne change pas.** Une faute ne tombe qu'à une
+    /// frontière de page, donc RSI, RDI et RCX disent exactement ce qui a été
+    /// fait, comme après le même nombre d'éléments un par un. Restent à
+    /// l'ancien chemin, qui rend `false` : le sens arrière, un élément à
+    /// cheval sur deux pages, un morceau qui touche un périphérique plutôt que
+    /// la RAM, le témoin d'adresse armé (il veut voir chaque accès), et une
+    /// copie dont la destination commence **dans** la source, plus haut —
+    /// l'élément un par un y répète un motif, ce que `memmove` ne ferait pas.
+    mutating func bulkString(_ opcode: UInt8, _ size: Int, _ count: inout UInt64) throws -> Bool {
+        let moving = opcode == 0xA4 || opcode == 0xA5
+        guard moving || opcode == 0xAA || opcode == 0xAB,
+              flags & Flag.direction == 0, watchedAddress == nil,
+              let memory = memoryReference?.takeUnretainedValue()
+        else { return false }
+        let destination = registers.read(7)
+        var room = 0x1000 - Int(destination & 0xFFF)
+        let source = registers.read(6)
+        if moving { room = min(room, 0x1000 - Int(source & 0xFFF)) }
+        let elements = min(count, UInt64(room / size))
+        guard elements > 1 else { return false }
+        let length = Int(elements) * size
+        // Les traductions, dans l'ordre d'un élément : la source d'abord.
+        let from = moving ? memory.offset(try translate(source, .read), length) : nil
+        guard let to = memory.offset(try translate(destination, .write), length),
+              !moving || from != nil
+        else { return false }
+        let target = memory.bytes + to
+        if let from {
+            guard to <= from || to >= from + length else { return false }
+            UnsafeMutableRawPointer(target).copyMemory(
+                from: UnsafeRawPointer(memory.bytes + from), byteCount: length)
+            registers[6] = source &+ UInt64(length)
+        } else {
+            let value = read(0, size, highByte: false)
+            switch size {
+            case 1: target.update(repeating: UInt8(truncatingIfNeeded: value), count: length)
+            default:
+                let raw = UnsafeMutableRawPointer(target)
+                for index in 0..<Int(elements) {
+                    let at = raw + index * size
+                    switch size {
+                    case 2: at.storeBytes(of: UInt16(truncatingIfNeeded: value).littleEndian, as: UInt16.self)
+                    case 4: at.storeBytes(of: UInt32(truncatingIfNeeded: value).littleEndian, as: UInt32.self)
+                    default: at.storeBytes(of: value.littleEndian, as: UInt64.self)
+                    }
+                }
+            }
+        }
+        registers[7] = destination &+ UInt64(length)
+        count -= elements
+        registers[1] = count
+        return true
     }
 
     /// Sauter : la destination d'un saut relatif se compte depuis la **fin**
