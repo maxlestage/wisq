@@ -157,6 +157,11 @@ public struct X86Core: @unchecked Sendable {
     /// aucune, et sans ce second compteur son horloge s'arrêterait avec lui —
     /// donc l'interruption qui doit le réveiller n'arriverait jamais.
     public var idled: UInt64 = 0
+    /// **Le rapport de cette machine-ci**, et pas seulement la constante. Une
+    /// machine neuve prend `X86LegacyDevices.instructionsPerTick` ; une
+    /// machine reprise garde celui sous lequel son noyau a étalonné son
+    /// horloge — voir `X86LegacyDevices.legacyInstructionsPerTick`.
+    public var instructionsPerTick: UInt64 = X86LegacyDevices.instructionsPerTick
     /// Sauter l'attente jusqu'au prochain battement plutôt que de la compter
     /// tour par tour. Le résultat est le même au tour près ; seul un test
     /// qui le vérifie l'éteint.
