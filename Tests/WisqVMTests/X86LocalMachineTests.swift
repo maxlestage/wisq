@@ -106,6 +106,24 @@ final class X86LocalMachineTests: XCTestCase {
                           "l'arrêt doit rendre la main tout de suite")
     }
 
+    /// **Un arrêt demandé pendant la reprise n'est pas oublié.**
+    ///
+    /// L'application reprend une session sur un fil d'arrière-plan, et peut
+    /// demander l'arrêt depuis le fil principal avant la fin — l'utilisateur
+    /// quitte l'écran aussitôt. `restore` remettait le drapeau à zéro : la
+    /// machine tournait alors tout son budget, la suspension attendait au-delà
+    /// de son délai, et la session qu'on venait de reprendre était effacée.
+    /// La machine RV32 avait déjà corrigé ce défaut ; la machine x86 le
+    /// portait encore.
+    func testAStopDuringTheRestoreIsKept() throws {
+        let saved = try machine([0xEB, 0xFE], out: { _ in }).snapshot()
+        let resumed = try machine([0x90], out: { _ in })
+        resumed.stop()
+        try resumed.restore(saved)
+        XCTAssertEqual(resumed.run(instructionBudget: 20_000_000), .stopped)
+        XCTAssertLessThan(resumed.retiredInstructions, 1000, "l'arrêt d'avant la reprise doit tenir")
+    }
+
     /// **Une machine qui tourne sans rien écrire doit quand même dire qu'elle
     /// avance.**
     ///

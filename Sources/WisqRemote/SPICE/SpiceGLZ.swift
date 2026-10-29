@@ -1,4 +1,5 @@
 import Foundation
+import WisqCore
 
 /// SPICE's GLZ codec — the *global* LZ — decoding side, starting at its header.
 ///
@@ -105,6 +106,10 @@ enum SpiceGLZ {
         // size that becomes enormous the moment it is multiplied. Refused
         // before anything is allocated from it.
         guard width > 0, height > 0, stride >= 0 else { throw Failure.badGeometry }
+        // **Et bornées comme toute image** : LZ, LZ4 et QUIC le sont, GLZ ne
+        // l'était pas — un en-tête de 65 536 × 65 536 demandait seize
+        // gibioctets d'un coup, avant le premier octet de pixels.
+        guard Framebuffer.canHold(width: width, height: height) else { throw Failure.badGeometry }
 
         var id: UInt64 = 0
         for _ in 0..<8 { id = id << 8 | UInt64(try reader.u8()) }

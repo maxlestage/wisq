@@ -281,10 +281,6 @@ public struct MachineEditorView: View {
                 let (agentHost, agentPort) = Validation.splitHostPort(draft.agentAddress)
                 let normalizedAgentHost = try Validation.normalizedHost(agentHost)
                 let resolvedPort = try Validation.validatedPort(agentPort ?? 7442)
-                guard let baseURL = Validation.agentURL(
-                    scheme: "http", host: normalizedAgentHost, port: resolvedPort) else {
-                    throw WisqError.invalidHost(draft.agentAddress)
-                }
                 guard !draft.agentVMID.trimmingCharacters(in: .whitespaces).isEmpty else {
                     throw WisqError.agentFailure("l'identifiant de la VM est requis")
                 }
@@ -298,12 +294,12 @@ public struct MachineEditorView: View {
                 // at, which puts it out of reach of the reaping too.
                 let tokenRef = "agent.\(normalizedAgentHost):\(resolvedPort)"
                 agentToken = draft.agentToken
-                machine.agent = AgentBinding(
-                    baseURL: baseURL,
-                    vmIdentifier: vmIdentifier,
-                    autoStart: draft.agentAutoStart,
-                    credentialRef: tokenRef
-                )
+                // `https` et l'empreinte d'un appairage survivent à l'édition.
+                guard let binding = AgentBinding.edited(
+                    from: draft.machine.agent, at: (normalizedAgentHost, resolvedPort),
+                    vmIdentifier: vmIdentifier, autoStart: draft.agentAutoStart, credentialRef: tokenRef)
+                else { throw WisqError.invalidHost(draft.agentAddress) }
+                machine.agent = binding
             } else {
                 machine.agent = nil
             }

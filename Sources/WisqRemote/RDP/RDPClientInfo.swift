@@ -55,6 +55,18 @@ public enum RDPClientInfo {
     static let shellLimit = 512
     static let directoryLimit = 512
 
+    /// **`DOMAINE\utilisateur` en ses deux champs.** C'est la forme qu'on tape
+    /// et celle qu'un fichier `.rdp` donne (`domain:s:` à côté de
+    /// `username:s:`) ; le paquet, lui, a un champ par moitié. Le compte
+    /// partait entier dans le champ de l'utilisateur, le domaine vide : un
+    /// compte de domaine ne pouvait pas ouvrir de session. Une forme
+    /// `utilisateur@domaine` reste entière, dans le champ de l'utilisateur :
+    /// c'est ainsi qu'un serveur l'attend.
+    static func account(_ name: String) -> (domain: String, user: String) {
+        guard let separator = name.firstIndex(of: "\\") else { return ("", name) }
+        return (String(name[..<separator]), String(name[name.index(after: separator)...]))
+    }
+
     /// Le paquet, prêt à chiffrer.
     public static func packet(domain: String = "", user: String,
                               password: String, shell: String = "", directory: String = "",
