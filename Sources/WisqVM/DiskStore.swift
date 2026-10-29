@@ -183,7 +183,7 @@ public final class FileDiskStore: DiskStore, @unchecked Sendable {
             let own = dup(baseFD)
             guard own >= 0 else { close(baseFD); throw Failure.cannotOpenBase }
             do {
-                image = try VirtualDiskImages.image(takingOwnershipOf: own)
+                image = try VirtualDiskImages.image(takingOwnershipOf: own, at: baseURL)
             } catch {
                 close(own)
                 close(baseFD)
