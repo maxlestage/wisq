@@ -44,6 +44,16 @@ public final class LocalVMModel {
     /// Console text, ANSI-stripped and line-edited, bounded in lines.
     public private(set) var consoleText = ""
 
+    /// **L'écran de la machine PC**, ou nil pour une machine sans écran (le
+    /// RISC-V). La vue relit ses pixels quand sa révision change.
+    public private(set) var screen: X86Framebuffer?
+
+    /// La taille de l'écran qu'on donne à une machine PC : celle d'un écran
+    /// de bureau modeste, que `simpledrm` prend telle quelle et qu'un
+    /// téléphone affiche en paysage sans trop réduire. Plus grand, chaque
+    /// défilement de la console coûterait plus à l'interprète.
+    public static let screenSize = (width: 1024, height: 768)
+
     private var machine: GuestMachine?
     private let sink = ConsoleSink()
     /// Signalled when the emulation thread leaves `run()`. Suspending has to
@@ -378,6 +388,15 @@ public final class LocalVMModel {
         }
         answers.machine = machine
         self.machine = machine
+        // **L'écran avant le chargement et avant la reprise** : le chargeur
+        // l'annonce au noyau dans la page zéro, et une machine reprise
+        // repeint dans le cadre qu'elle avait.
+        if let pc = machine as? X86Machine {
+            try? pc.attachDisplay(width: Self.screenSize.width, height: Self.screenSize.height)
+            screen = pc.display
+        } else {
+            screen = nil
+        }
         beat(machine)
 
         // The emulator owns a whole thread for its lifetime: it is a CPU, not a
@@ -584,6 +603,27 @@ public final class LocalVMModel {
 
     public func send(_ text: String) {
         machine?.send(Data(text.utf8))
+    }
+
+    // MARK: - Le clavier et la souris de l'écran
+
+    /// Du texte tapé sur le clavier PS/2 de la machine PC — ce que l'écran
+    /// reçoit, là où la console reçoit des octets sur le port série.
+    public func typeOnScreen(_ text: String) {
+        guard let pc = machine as? X86Machine else { return }
+        for event in X86Keystrokes.typing(text) { pc.key(event.code, down: event.down) }
+    }
+
+    /// Une touche de la barre, sur le clavier PS/2.
+    public func pressOnScreen(_ key: TerminalKey) {
+        guard let pc = machine as? X86Machine else { return }
+        for event in X86Keystrokes.key(key) { pc.key(event.code, down: event.down) }
+    }
+
+    /// Un mouvement de la souris PS/2, en pixels de l'écran de l'invité, Y
+    /// vers le bas ; `buttons` : 1 gauche, 2 droit.
+    public func pointer(dx: Int, dy: Int, buttons: UInt8) {
+        (machine as? X86Machine)?.mouse(dx: dx, dy: dy, buttons: buttons)
     }
 
     public func sendLine(_ line: String) {

@@ -153,3 +153,32 @@ final class X86PS2Tests: XCTestCase {
         XCTAssertEqual(core.devices.secondary.service, 0)
     }
 }
+
+/// **Ce qu'on tape devient des touches**, Maj et Ctrl autour.
+final class X86KeystrokesTests: XCTestCase {
+    private func codes(_ events: [X86Keystrokes.Event]) -> [String] {
+        events.map { String(format: "%@%02X%@", $0.code.extended ? "E0 " : "", $0.code.set1, $0.down ? "↓" : "↑") }
+    }
+
+    func testTextIsTypedWithShiftWhereNeeded() {
+        XCTAssertEqual(codes(X86Keystrokes.typing("aB")), ["1E↓", "1E↑", "2A↓", "30↓", "30↑", "2A↑"])
+        XCTAssertEqual(codes(X86Keystrokes.typing("é")), [], "ce qu'un clavier QWERTY n'a pas")
+        XCTAssertEqual(codes(X86Keystrokes.typing("\n")), ["1C↓", "1C↑"])
+    }
+
+    func testTheBarKeysBecomePCKeys() {
+        XCTAssertEqual(codes(X86Keystrokes.key(.up)), ["E0 48↓", "E0 48↑"])
+        XCTAssertEqual(codes(X86Keystrokes.key(.control("c"))), ["1D↓", "2E↓", "2E↑", "1D↑"])
+        XCTAssertEqual(codes(X86Keystrokes.key(.escape)), ["01↓", "01↑"])
+    }
+
+    /// Avec un écran, le noyau y écrit aussi, et la console série reste la
+    /// dernière nommée — `/dev/console`.
+    func testAScreenAddsTheVirtualConsoleFirst() {
+        let line = X86Machine.commandLine("console=ttyS0 quiet", withScreen: true)
+        XCTAssertEqual(line, "console=tty0 console=ttyS0 quiet")
+        XCTAssertEqual(X86Machine.commandLine("console=ttyS0", withScreen: false), "console=ttyS0")
+        XCTAssertEqual(X86Machine.commandLine("console=tty0 console=ttyS0", withScreen: true),
+                       "console=tty0 console=ttyS0", "pas deux fois")
+    }
+}
