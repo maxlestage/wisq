@@ -24,6 +24,7 @@ public enum VirtualDiskImages {
         Qcow2Image.looksLikeOne(fd: fd) || VmdkImage.looksLikeOne(fd: fd)
             || OvaArchive.looksLikeOne(fd: fd) || VdiImage.looksLikeOne(fd: fd)
             || VhdImage.looksLikeOne(fd: fd) || VhdxImage.looksLikeOne(fd: fd)
+            || VmdkDescriptorDisk.looksLikeOne(fd: fd)
     }
 
     /// Le même, pour un fichier qu'on n'a pas encore ouvert.
@@ -38,7 +39,18 @@ public enum VirtualDiskImages {
     /// fichier n'est dans aucun des formats lus ici — c'est alors une image
     /// brute, et `fd` reste à l'appelant. Une image reconnue mais refusée
     /// lève le refus de son format, qui en dit la raison.
-    public static func image(takingOwnershipOf fd: Int32) throws -> (any VirtualDiskImage)? {
+    ///
+    /// `url` est le chemin de `fd`. Seul le VMDK à descripteur en a besoin :
+    /// ses octets sont dans des fichiers à côté de lui, qu'il nomme.
+    public static func image(takingOwnershipOf fd: Int32, at url: URL? = nil) throws -> (any VirtualDiskImage)? {
+        if VmdkDescriptorDisk.looksLikeOne(fd: fd) {
+            guard let url else {
+                throw VmdkDescriptorDisk.Refusal.malformed("descripteur ouvert sans son chemin")
+            }
+            let disk = try VmdkDescriptorDisk(contentsOf: url)
+            close(fd)
+            return disk
+        }
         if Qcow2Image.looksLikeOne(fd: fd) { return try Qcow2Image(takingOwnershipOf: fd) }
         if VmdkImage.looksLikeOne(fd: fd) { return try VmdkImage(takingOwnershipOf: fd) }
         if VdiImage.looksLikeOne(fd: fd) { return try VdiImage(takingOwnershipOf: fd) }
@@ -98,7 +110,7 @@ extension VirtualDiskImages {
         let fd = open(url.path, O_RDONLY)
         guard fd >= 0 else { return nil }
         do {
-            if let image = try image(takingOwnershipOf: fd) { return image }
+            if let image = try image(takingOwnershipOf: fd, at: url) { return image }
         } catch {
             close(fd)
             throw error
