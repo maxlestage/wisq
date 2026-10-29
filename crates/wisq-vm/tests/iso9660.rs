@@ -815,3 +815,64 @@ options archisobasedir=arch quiet
     );
     assert_eq!(recipe.command_line, "archisobasedir=arch quiet");
 }
+
+/// **L'initramfs nommé dans `APPEND`**, comme l'écrit Void Linux : syslinux
+/// n'a pas besoin de ligne `INITRD`, et la recette en était rendue sans
+/// initramfs — un noyau démarré sans sa racine.
+#[test]
+fn an_initrd_in_the_append_line_is_the_initrd() {
+    let text = "\
+UI vesamenu.c32
+ONTIMEOUT linux
+
+LABEL linux
+MENU LABEL Void Linux 6.12.11_1 x86_64-musl
+KERNEL /boot/vmlinuz
+APPEND initrd=/boot/initrd root=live:CDLABEL=VOID_LIVE init=/sbin/init ro loglevel=4
+";
+    let recipe = Recipe::read(text, "/boot/isolinux/isolinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/vmlinuz");
+    assert_eq!(recipe.initrd.as_deref(), Some("/boot/initrd"));
+    assert_eq!(
+        recipe.command_line, "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro loglevel=4",
+        "le mot `initrd=` a servi : il ne reste pas sur la ligne"
+    );
+}
+
+/// Une ligne `INITRD` reste la réponse quand elle est là : le mot de
+/// `APPEND` ne la remplace pas.
+#[test]
+fn an_initrd_line_wins_over_the_append_word() {
+    let text = "\
+label corepure64
+\tkernel /boot/vmlinuz64
+\tinitrd /boot/corepure64.gz
+\tappend loglevel=3 initrd=/ailleurs
+";
+    let recipe = Recipe::read(text, "/boot/isolinux/isolinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/vmlinuz64");
+    assert_eq!(recipe.initrd.as_deref(), Some("/boot/corepure64.gz"));
+    assert_eq!(recipe.command_line, "loglevel=3 initrd=/ailleurs");
+}
+
+/// **Grub coupe ses lignes**, et nomme le périphérique devant le chemin.
+/// C'est l'entrée de Void Linux, telle quelle.
+#[test]
+fn grub_continued_lines_and_device_prefixes_are_read() {
+    let text = "\
+menuentry \"Void Linux 6.12.11_1 (x86_64-musl)\" --id \"linux\"  {
+    set gfxpayload=\"keep\"
+    linux (${voidlive})/boot/vmlinuz \\
+        root=live:CDLABEL=VOID_LIVE ro init=/sbin/init \\
+        rd.luks=0 rd.md=0 rd.dm=0 loglevel=4
+    initrd (${voidlive})/boot/initrd
+}
+";
+    let recipe = Recipe::read(text, "/boot/grub/grub_void.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/vmlinuz");
+    assert_eq!(recipe.initrd.as_deref(), Some("/boot/initrd"));
+    assert_eq!(
+        recipe.command_line,
+        "root=live:CDLABEL=VOID_LIVE ro init=/sbin/init rd.luks=0 rd.md=0 rd.dm=0 loglevel=4"
+    );
+}
