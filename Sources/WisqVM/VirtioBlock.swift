@@ -41,9 +41,59 @@ import Foundation
 public protocol GuestMemory: AnyObject {
     func read(_ address: UInt64, _ width: Int) throws -> UInt64
     func write(_ address: UInt64, _ width: Int, _ value: UInt64) throws
+    /// **Un bloc d'octets vers l'invité**, d'un coup. Un octet hors de la
+    /// mémoire est perdu sans erreur, comme une écriture `try?` à la fois.
+    func copyIn(_ bytes: [UInt8], at address: UInt64)
+    /// **Un bloc d'octets depuis l'invité**. Un octet hors de la mémoire se
+    /// lit zéro.
+    func copyOut(at address: UInt64, count: Int) -> [UInt8]
 }
 
-extension X86Memory: GuestMemory {}
+extension GuestMemory {
+    /// Octet par octet : ce que faisaient les périphériques avant qu'une
+    /// mémoire sache copier un bloc.
+    public func copyIn(_ bytes: [UInt8], at address: UInt64) {
+        for (index, value) in bytes.enumerated() {
+            try? write(address &+ UInt64(index), 1, UInt64(value))
+        }
+    }
+
+    public func copyOut(at address: UInt64, count: Int) -> [UInt8] {
+        (0..<max(count, 0)).map {
+            UInt8(truncatingIfNeeded: (try? read(address &+ UInt64($0), 1)) ?? 0)
+        }
+    }
+}
+
+/// **La copie d'un bloc, quand il tient en mémoire vive** : une recopie, au
+/// lieu d'un appel par octet. Une lecture du disque de 128 Kio coûtait
+/// 131 072 appels à `write`, chacun avec ses bornes. Un bloc qui déborde,
+/// ou qui touche un périphérique, repasse par le chemin octet par octet.
+extension X86Memory: GuestMemory {
+    public func copyIn(_ bytes: [UInt8], at address: UInt64) {
+        guard !bytes.isEmpty else { return }
+        guard let start = offset(address, bytes.count) else {
+            for (index, value) in bytes.enumerated() {
+                try? write(address &+ UInt64(index), 1, UInt64(value))
+            }
+            return
+        }
+        bytes.withUnsafeBytes { source in
+            guard let from = source.baseAddress else { return }
+            UnsafeMutableRawPointer(self.bytes + start).copyMemory(from: from, byteCount: source.count)
+        }
+    }
+
+    public func copyOut(at address: UInt64, count: Int) -> [UInt8] {
+        guard count > 0 else { return [] }
+        guard let start = offset(address, count) else {
+            return (0..<count).map {
+                UInt8(truncatingIfNeeded: (try? read(address &+ UInt64($0), 1)) ?? 0)
+            }
+        }
+        return [UInt8](UnsafeBufferPointer(start: bytes + start, count: count))
+    }
+}
 
 public final class VirtioBlock: @unchecked Sendable {
     /// Où une machine pose ce périphérique, et par quelle ligne elle prévient.
@@ -364,9 +414,7 @@ public final class VirtioBlock: @unchecked Sendable {
                     refused &+= 1
                     return
                 }
-                for (index, value) in bytes.enumerated() {
-                    try? memory.write(buffer.address &+ UInt64(index), 1, UInt64(value))
-                }
+                memory.copyIn(bytes, at: buffer.address)
                 written &+= buffer.length
                 at &+= UInt64(buffer.length)
             }
@@ -376,12 +424,7 @@ public final class VirtioBlock: @unchecked Sendable {
             var at = sector &* 512
             for buffer in payload {
                 guard !buffer.writable else { refused &+= 1; return }
-                var bytes = [UInt8](repeating: 0, count: Int(buffer.length))
-                for index in 0..<bytes.count {
-                    if let value = try? memory.read(buffer.address &+ UInt64(index), 1) {
-                        bytes[index] = UInt8(truncatingIfNeeded: value)
-                    }
-                }
+                let bytes = memory.copyOut(at: buffer.address, count: Int(buffer.length))
                 guard store.write(at: at, bytes) else { refused &+= 1; return }
                 at &+= UInt64(buffer.length)
             }

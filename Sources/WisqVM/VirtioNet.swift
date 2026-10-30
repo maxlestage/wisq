@@ -206,9 +206,7 @@ public final class VirtioNet: @unchecked Sendable {
             for buffer in chain(head, in: queues[Self.transmitQueue], memory) where !buffer.writable {
                 let room = Self.headerBytes + Self.largestFrame - bytes.count
                 let count = min(Int(buffer.length), max(room, 0))
-                for index in 0..<count {
-                    bytes.append(UInt8(truncatingIfNeeded: (try? memory.read(buffer.address &+ UInt64(index), 1)) ?? 0))
-                }
+                bytes += memory.copyOut(at: buffer.address, count: count)
             }
             if bytes.count > Self.headerBytes, let backend {
                 backend.send(Array(bytes[Self.headerBytes...]))
@@ -231,9 +229,7 @@ public final class VirtioNet: @unchecked Sendable {
             for buffer in chain(head, in: queues[Self.receiveQueue], memory) where buffer.writable {
                 guard at < bytes.count else { break }
                 let count = min(Int(buffer.length), bytes.count - at)
-                for index in 0..<count {
-                    try? memory.write(buffer.address &+ UInt64(index), 1, UInt64(bytes[at + index]))
-                }
+                memory.copyIn(Array(bytes[at..<(at + count)]), at: buffer.address)
                 at += count
             }
             if at < bytes.count {
@@ -248,9 +244,35 @@ public final class VirtioNet: @unchecked Sendable {
         }
     }
 
+    /// Les passages du contrôleur d'interruptions qu'on laisse filer, quand le
+    /// processeur travaille, entre deux questions au réseau.
+    ///
+    /// **Pourquoi.** Le contrôleur passe toutes les soixante-quatre
+    /// instructions, et chaque question au réseau en mode utilisateur prend
+    /// quatre verrous — le sien, l'UDP, le TCP, l'ICMP — même quand rien
+    /// n'est arrivé. Mesuré sur l'Alpine installé, six milliards
+    /// d'instructions : 200 s sans carte, 223 s avec. Une question sur seize,
+    /// soit toutes les 1 024 instructions (une trentaine de microsecondes),
+    /// ne se voit plus, ni dans le temps ni dans la latence.
+    ///
+    /// **Au repos, à chaque passage** : une machine endormie n'exécute rien,
+    /// et attendre seize passages, ce serait attendre seize battements.
+    static let busyPollInterval = 16
+    @exclusivity(unchecked)
+    private var passesSincePoll = 0
+
     /// **Prendre ce que le réseau a pour l'invité**, et le lui donner si ses
-    /// tampons sont là. Appelé à chaque passage du contrôleur d'interruptions.
-    public func poll(_ memory: GuestMemory) {
+    /// tampons sont là. Appelé à chaque passage du contrôleur d'interruptions ;
+    /// `busy` dit que le processeur travaille (voir `busyPollInterval`).
+    public func poll(_ memory: GuestMemory, busy: Bool = false) {
+        if busy {
+            passesSincePoll &+= 1
+            guard passesSincePoll >= Self.busyPollInterval else {
+                if !waiting.isEmpty { deliver(memory) }
+                return
+            }
+        }
+        passesSincePoll = 0
         if let backend {
             for frame in backend.receive() {
                 guard frame.count <= Self.largestFrame, waiting.count < Self.waitingLimit else {
