@@ -408,6 +408,8 @@ final class HostStreamsTests: XCTestCase {
         defer { streams.close() }
         let port = try streams.forward(hostPort: 0, toGuestPort: 5900)
         XCTAssertNotEqual(port, 0)
+        XCTAssertEqual(streams.listeningAddresses, [[127, 0, 0, 1]],
+                       "la boucle locale seule : l'invité ne s'expose pas au réseau du téléphone")
         let client = try Self.connectClient(to: port)
         defer { _ = closeSocket(client) }
 
@@ -424,15 +426,18 @@ final class HostStreamsTests: XCTestCase {
         guest.acknowledged = syn.sequence &+ 1
         streams.handle(guest.segment(Flag.syn | Flag.ack, maximumSegment: 1200))
         guest.next &+= 1
+        XCTAssertEqual(streams.openConnections, 1)
         let ack = guest.wait { !$0.isEmpty }
         XCTAssertEqual(ack.first?.flags, Flag.ack)
         XCTAssertEqual(ack.first?.acknowledgment, guest.next, "le SYN de l'invité est accusé")
 
-        // De l'hôte vers l'invité.
-        HostStreamsTests.Server.write(client, Array("RFB?".utf8))
-        let data = guest.wait { all in all.reduce(0) { $0 + $1.payload.count } >= 4 }
+        // De l'hôte vers l'invité, en segments à la taille qu'il a dite.
+        let screen = [UInt8](repeating: 0x42, count: 3000)
+        HostStreamsTests.Server.write(client, screen)
+        let data = guest.wait { all in all.reduce(0) { $0 + $1.payload.count } >= 3000 }
+        XCTAssertTrue(data.allSatisfy { $0.payload.count <= 1200 }, "la taille de segment de l'invité")
         guest.take(data)
-        XCTAssertEqual(guest.received, Array("RFB?".utf8))
+        XCTAssertEqual(guest.received, screen)
 
         // De l'invité vers l'hôte.
         guest.send(Flag.ack | Flag.psh, Array("RFB 003.008\n".utf8))

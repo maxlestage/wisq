@@ -199,6 +199,21 @@ public final class HostStreams: @unchecked Sendable {
         return UInt16(bigEndian: address.sin_port)
     }
 
+    /// Les adresses où écoutent les ports relayés, pour les tests.
+    var listeningAddresses: [[UInt8]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return listeners.map { listener in
+            var address = sockaddr_in()
+            var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+            _ = withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener.descriptor, $0, &length) }
+            }
+            let raw = UInt32(bigEndian: address.sin_addr.s_addr)
+            return [UInt8(raw >> 24), UInt8((raw >> 16) & 0xFF), UInt8((raw >> 8) & 0xFF), UInt8(raw & 0xFF)]
+        }
+    }
+
     /// Sous verrou : une connexion de l'hôte arrive, wisq ouvre vers l'invité.
     private func welcome(from listener: Int32, toGuestPort guestPort: UInt16) {
         let descriptor = acceptSocket(listener)
