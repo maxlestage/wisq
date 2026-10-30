@@ -48,10 +48,18 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     private var guestMAC: [UInt8] = VirtioNet.defaultMAC
     private var identification: UInt16 = 0
     public let relay: DatagramRelay?
+    public let streams: HostStreams?
 
-    /// Sans `relay`, l'UDP vers le dehors se perd, comme sur un réseau isolé.
-    public init(relay: DatagramRelay? = nil) {
+    /// Sans `relay`, l'UDP vers le dehors se perd ; sans `streams`, le TCP —
+    /// comme sur un réseau isolé.
+    public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil) {
         self.relay = relay
+        self.streams = streams
+    }
+
+    /// Le réseau complet : l'UDP et le TCP de l'invité sortent par l'hôte.
+    public static func throughHost() -> UserNetwork {
+        UserNetwork(relay: HostDatagrams(), streams: HostStreams())
     }
 
     public func send(_ frame: [UInt8]) {
@@ -61,19 +69,26 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         guestMAC = Array(frame[6..<12])
         outgoing += replies
         lock.unlock()
-        if replies.isEmpty, let relay, let datagram = Self.outboundDatagram(frame) {
+        guard replies.isEmpty else { return }
+        if let relay, let datagram = Self.outboundDatagram(frame) {
             relay.send(datagram.payload, to: datagram.destination, port: datagram.destinationPort,
                        fromGuestPort: datagram.sourcePort)
+        } else if let streams, let segment = Self.inboundSegment(frame) {
+            streams.handle(segment)
         }
     }
 
     public func receive() -> [[UInt8]] {
         let arrived = relay?.receive() ?? []
+        let segments = streams?.receive() ?? []
         lock.lock()
         defer { lock.unlock() }
         for datagram in arrived {
             identification &+= 1
             outgoing += Self.frames(for: datagram, to: guestMAC, identification: identification)
+        }
+        for segment in segments {
+            outgoing.append(Self.frame(for: segment, to: guestMAC))
         }
         guard !outgoing.isEmpty else { return [] }
         let taken = outgoing
@@ -107,6 +122,54 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         guard length >= 8, length <= udp.count else { return nil }
         return Outbound(destination: Array(packet[16..<20]), sourcePort: be16(udp, 0),
                         destinationPort: be16(udp, 2), payload: Array(udp[8..<length]))
+    }
+
+    // MARK: - Le TCP
+
+    /// Le segment TCP que porte `frame`, sous les adresses de l'invité.
+    static func inboundSegment(_ frame: [UInt8]) -> HostStreams.Segment? {
+        guard frame.count >= 54, be16(frame, 12) == ipv4Type else { return nil }
+        let packet = Array(frame[14...])
+        guard packet[0] >> 4 == 4, packet[9] == 6 else { return nil }
+        let headerLength = Int(packet[0] & 0x0F) * 4
+        let total = Int(be16(packet, 2))
+        guard headerLength >= 20, total >= headerLength + 20, total <= packet.count,
+              checksum(Array(packet[0..<headerLength])) == 0,
+              be16(packet, 6) & 0x3FFF == 0 else { return nil }
+        let tcp = Array(packet[headerLength..<total])
+        let pseudo = Array(packet[12..<20]) + [0, 6] + be16Bytes(UInt16(tcp.count))
+        guard checksum(pseudo + tcp) == 0 else { return nil }
+        let offset = Int(tcp[12] >> 4) * 4
+        guard offset >= 20, offset <= tcp.count else { return nil }
+        var maximumSegment: UInt16?
+        var at = 20
+        while at < offset {
+            let kind = tcp[at]
+            if kind == 0 { break }
+            if kind == 1 { at += 1; continue }
+            guard at + 1 < offset, tcp[at + 1] >= 2, at + Int(tcp[at + 1]) <= offset else { break }
+            if kind == 2, tcp[at + 1] == 4 { maximumSegment = be16(tcp, at + 2) }
+            at += Int(tcp[at + 1])
+        }
+        return HostStreams.Segment(remote: Array(packet[16..<20]), remotePort: be16(tcp, 2),
+                                   guestPort: be16(tcp, 0), sequence: be32(tcp, 4),
+                                   acknowledgment: be32(tcp, 8), flags: tcp[13] & 0x3F,
+                                   window: be16(tcp, 14), maximumSegment: maximumSegment,
+                                   payload: Array(tcp[offset...]))
+    }
+
+    /// La trame qui porte `segment` à l'invité.
+    static func frame(for segment: HostStreams.Segment, to mac: [UInt8]) -> [UInt8] {
+        let options: [UInt8] = segment.maximumSegment.map { [2, 4] + be16Bytes($0) } ?? []
+        var tcp = be16Bytes(segment.remotePort) + be16Bytes(segment.guestPort)
+            + be32Bytes(segment.sequence) + be32Bytes(segment.acknowledgment)
+            + [UInt8((20 + options.count) / 4) << 4, segment.flags] + be16Bytes(segment.window)
+            + [0, 0, 0, 0] + options + segment.payload
+        let pseudo = segment.remote + guest + [0, 6] + be16Bytes(UInt16(tcp.count))
+        let sum = checksum(pseudo + tcp)
+        tcp[16] = UInt8(sum >> 8)
+        tcp[17] = UInt8(sum & 0xFF)
+        return ethernet(to: mac, type: ipv4Type, ipv4Packet(from: segment.remote, to: guest, protocol: 6, tcp))
     }
 
     /// La charge la plus grande d'un fragment : une trame de 1514 octets, moins
@@ -307,6 +370,10 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
 
     static func be16(_ bytes: [UInt8], _ at: Int) -> UInt16 {
         UInt16(bytes[at]) << 8 | UInt16(bytes[at + 1])
+    }
+
+    static func be32(_ bytes: [UInt8], _ at: Int) -> UInt32 {
+        UInt32(bytes[at]) << 24 | UInt32(bytes[at + 1]) << 16 | UInt32(bytes[at + 2]) << 8 | UInt32(bytes[at + 3])
     }
 
     static func be16Bytes(_ value: UInt16) -> [UInt8] { [UInt8(value >> 8), UInt8(value & 0xFF)] }
