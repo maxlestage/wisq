@@ -287,17 +287,25 @@ public enum GuestMachineFactory {
     /// c'est un drapeau de compilation qui décide lequel part. Ce module ne
     /// connaît que le Swift ; l'application passe l'autre quand elle est
     /// construite avec.
+    ///
+    /// `network` : l'autre bout du câble de la machine PC. Il n'est demandé
+    /// que pour elle — la carte RISC-V n'a pas de réseau —, et seulement
+    /// quand elle est construite : un réseau ouvre des sockets et des fils.
     public static func make(
         for core: GuestArchitecture.Core,
         ramSizeBytes: Int,
         onOutput: @escaping @Sendable (Data) -> Void,
+        network: () -> NetworkBackend? = { nil },
         riscv: (Int, @escaping @Sendable (Data) -> Void) -> GuestMachine = {
             LinuxMachine(ramSize: UInt32(clamping: $0), onOutput: $1)
         }
     ) -> GuestMachine {
         switch core {
         case .riscv32: return riscv(ramSizeBytes, onOutput)
-        case .x86_64: return X86Machine(ramSize: ramSizeBytes, onOutput: onOutput)
+        case .x86_64:
+            let machine = X86Machine(ramSize: ramSizeBytes, onOutput: onOutput)
+            if let backend = network() { machine.attach(network: VirtioNet(backend: backend)) }
+            return machine
         }
     }
 }
