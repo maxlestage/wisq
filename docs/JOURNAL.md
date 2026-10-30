@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Couper le réseau d'une machine
+
+**Ce qui manquait.** Toute machine PC sortait par le téléphone, sans moyen de
+l'en empêcher. C'était le dernier point de la section « Le réseau de la
+machine locale » de la ROADMAP : un système qu'on essaie sans lui faire
+confiance, ou qu'on veut garder hors ligne, n'avait pas d'interrupteur.
+
+**Ce qui change.**
+- `MachineNetwork` (WisqVM) range le réglage sous la clé de la machine, comme
+  la mémoire ou la demande de démarrer l'image. Un fichier abîmé se lit
+  « rien de coupé ».
+- `UserNetwork.isolated()` est le câble d'une machine coupée. La carte et la
+  passerelle restent : ARP, bail DHCP, ping de `10.0.2.2`. Rien ne sort : ni
+  UDP, ni ping vers le dehors, et le TCP que l'invité ouvre est refusé tout
+  de suite par `HostStreams(reachesOutside: false)`, sans attendre un délai.
+- **La carte reste, et c'est voulu.** L'instantané porte la carte ; une
+  machine reprise sans elle ne relirait pas le sien. Couper ou rendre le
+  réseau ne coûte donc pas la session, et le réglage prend effet au prochain
+  démarrage ou à la prochaine reprise.
+- **Le bureau reste** : le port relayé vers le serveur VNC de l'invité entre
+  dans l'appareil au lieu d'en sortir.
+- Supprimer une machine oublie le réglage ; la dupliquer le recopie.
+- Dans l'application, un bouton « Réseau » / « Réseau coupé » sous chaque
+  machine PC et chaque machine installée.
+
+**Vérifié.** Six tests (`MachineNetworkTests`), plus deux lignes dans les
+tests des machines installées. Quatre sabotages, tous attrapés : le refus du
+TCP ôté (quatre échecs), l'UDP laissé à la machine coupée (un), le réglage
+qui ne se rend plus (trois), le câble qui ignore le réglage (deux). `swift
+test` passe : 2650 tests, 52 sautés, aucun échec. `check-whitespace.sh` et
+les 470 tests du site passent aussi. Le compte publié passe à 3208. Le bouton
+lui-même n'est construit que par la CI iOS : il n'a pas été essayé sur un
+appareil.
+
+**Un piège de banc, noté.** Les tests du site lisent le compte publié dans
+`target/release/wisq-site-prerender`. Après un changement de
+`content.rs`, il faut le reconstruire (`cargo build --release -p wisq-site`).
+Sinon la garde compare le vrai compte au compte de l'ancien binaire, et
+échoue sur un chiffre que personne n'a écrit.
+
 ## 2026-10-30 — Le README dit que le PC local a le réseau, et un bureau
 
 **Ce qui manquait.** Le tableau d'état du README (en anglais et en français)

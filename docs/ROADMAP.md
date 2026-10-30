@@ -674,8 +674,9 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
   « Wired connection 1 » prend le bail toute seule (`10.0.2.15`, route par
   `10.0.2.2`), et la date est juste.
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
-- **Un réglage par machine** pour la couper. Aujourd'hui toute machine PC a
-  le réseau.
+- **Un réglage par machine pour la couper : fait** (`MachineNetwork`). La
+  carte et la passerelle restent, rien ne sort, et le bureau relayé marche
+  encore. Couper ne coûte pas la session.
 
 **Ce que le réseau a ouvert, vérifié : installer Alpine depuis la petite
 image.** L'ISO `virt` (69 Mio) ne porte pas les paquets de l'installation, et

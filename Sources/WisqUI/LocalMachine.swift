@@ -107,14 +107,15 @@ extension RustLinuxMachine: GuestMachine {
 /// **C'est ici que la sélection automatique arrive dans l'application.**
 /// `KernelImageKind.core` a lu le fichier ; il ne reste qu'à obéir.
 func makeLocalMachine(
-    for core: GuestArchitecture.Core, ramSizeBytes: Int,
+    for core: GuestArchitecture.Core, ramSizeBytes: Int, settingsKey: String, storage: URL?,
     onOutput: @escaping @Sendable (Data) -> Void
 ) -> GuestMachine {
     // **Le réseau, comme chez QEMU** : l'invité a sa carte, un bail DHCP,
-    // le DNS et le TCP de l'hôte. Voir `UserNetwork`.
+    // le DNS et le TCP de l'hôte — sauf si son réglage le coupe. Voir
+    // `UserNetwork` et `MachineNetwork`.
     let machine = GuestMachineFactory.make(
         for: core, ramSizeBytes: ramSizeBytes, onOutput: onOutput,
-        network: { UserNetwork.throughHost() },
+        network: { MachineNetwork.backend(forKernel: settingsKey, in: storage) },
         riscv: { size, output in
             LocalRISCVMachine(ramSize: UInt32(clamping: size), onOutput: output)
         })
