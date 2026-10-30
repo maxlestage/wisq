@@ -238,8 +238,14 @@ final class X86BootAttemptTests: XCTestCase {
         // lever le lien et envoyer ses premières trames.
         // `WISQ_PC_NET=user` met derrière elle le réseau en mode utilisateur
         // (`UserNetwork`) : un bail DHCP, une passerelle qui répond.
-        let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable(
-            behind: environment["WISQ_PC_NET"] == "user" ? UserNetwork.throughHost() : nil)
+        let userNetwork = environment["WISQ_PC_NET"] == "user" ? UserNetwork.throughHost() : nil
+        let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable(behind: userNetwork)
+        // `WISQ_PC_FORWARD=8080:80` relaie `127.0.0.1:8080` de l'hôte vers le
+        // port 80 de l'invité.
+        if let forward = environment["WISQ_PC_FORWARD"], let streams = userNetwork?.streams {
+            let ports = forward.split(separator: ":").compactMap { UInt16($0) }
+            if ports.count == 2 { try streams.forward(hostPort: ports[0], toGuestPort: ports[1]) }
+        }
         if let cable {
             let bus = memory.bus ?? X86PCIHost(storage: nil)
             bus.network = X86PCIHost(network: VirtioNet(backend: cable))
