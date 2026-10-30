@@ -89,6 +89,7 @@ public final class X86Machine: @unchecked Sendable {
         memory.storage = device
         let bus = X86PCIHost(storage: device)
         bus.second = memory.bus?.second
+        bus.network = memory.bus?.network
         memory.bus = bus
     }
 
@@ -117,13 +118,33 @@ public final class X86Machine: @unchecked Sendable {
         memory.bus = bus
     }
 
+    /// La carte réseau, quand il y en a une — `eth0` pour le noyau.
+    public private(set) var network: VirtioNet?
+
+    /// **Brancher une carte réseau**, sur l'emplacement cinq du bus. Ce qui en
+    /// fait un réseau est `backend` ; sans lui, la carte est un câble
+    /// débranché. L'ordre de branchement avec les disques est libre.
+    public func attach(network nic: VirtioNet) {
+        network = nic
+        let bus = memory.bus ?? X86PCIHost(storage: nil)
+        bus.network = X86PCIHost(network: nic)
+        memory.bus = bus
+    }
+
     /// Le retirer. Une machine reprise depuis un instantané sans disque n'en a
     /// pas, même si celle qu'on reprend en avait un.
     public func detachDisk() {
         disk = nil
         secondDisk = nil
         memory.storage = nil
-        memory.bus = nil
+        // La carte réseau n'est pas un disque : elle reste.
+        if let host = memory.bus?.network {
+            let bus = X86PCIHost(storage: nil)
+            bus.network = host
+            memory.bus = bus
+        } else {
+            memory.bus = nil
+        }
     }
 
     private let lock = NSLock()
@@ -504,6 +525,14 @@ public final class X86Machine: @unchecked Sendable {
         // comptent en battements, et un battement doit garder sa longueur.
         writer.u64(Snapshot.clockSection)
         writer.u64(core.instructionsPerTick)
+        // **La carte réseau, derrière sa marque et avant les disques** : la
+        // section du disque n'a pas de marque, elle se lit « s'il reste des
+        // octets », et une carte écrite après elle serait prise pour un disque.
+        if let network, let host = memory.bus?.network {
+            writer.u64(Snapshot.networkSection)
+            network.save(into: &writer)
+            host.save(into: &writer)
+        }
         // **Le disque en dernier, et seulement s'il y en a un.** Son absence
         // est ce qui distingue un instantané d'avant le disque, et la reprise
         // la lit comme « pas de disque » plutôt que comme un dégât — sinon les
@@ -578,6 +607,19 @@ public final class X86Machine: @unchecked Sendable {
         } else {
             restored.instructionsPerTick = X86LegacyDevices.legacyInstructionsPerTick
         }
+        // La carte réseau, si sa marque est là, branchée sur l'autre bout
+        // qu'a la machine qu'on reprend : le réseau n'est pas dans
+        // l'instantané, il est autour.
+        var restoredNetwork: VirtioNet?
+        var restoredNetworkHost: X86PCIHost?
+        if tail.peeks(Snapshot.networkSection) {
+            _ = try tail.u64()
+            let nic = try VirtioNet.restored(from: &tail, backend: network?.backend)
+            let host = X86PCIHost(network: nic)
+            try host.restore(from: &tail)
+            restoredNetwork = nic
+            restoredNetworkHost = host
+        }
         // Le disque, s'il reste des octets. Construit à part et posé tout à la
         // fin : une lecture qui échoue ici laisse à la machine le disque
         // qu'elle avait, plutôt qu'un disque à moitié repris.
@@ -624,7 +666,14 @@ public final class X86Machine: @unchecked Sendable {
         disk = restoredDisk
         secondDisk = restoredSecond
         memory.storage = restoredDisk
-        memory.bus = restoredBus
+        network = restoredNetwork
+        if let restoredNetworkHost {
+            let bus = restoredBus ?? X86PCIHost(storage: nil)
+            bus.network = restoredNetworkHost
+            memory.bus = bus
+        } else {
+            memory.bus = restoredBus
+        }
         core = restored
     }
 
