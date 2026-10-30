@@ -86,6 +86,37 @@ final class IsoBootTests: XCTestCase {
 
     /// Une recette sans initramfs démarre quand même : un noyau qui porte ses
     /// pilotes existe, et refuser serait une supposition de plus.
+    /// **Plusieurs initramfs, mis bout à bout** comme un chargeur les pose :
+    /// chacun aligné sur quatre octets. Trois octets, un de bourrage, puis
+    /// les trois mêmes — la recette cite deux fois le même fichier, à la
+    /// façon des virgules de syslinux.
+    func testSeveralInitramfsAreLaidEndToEnd() throws {
+        let piece = Data([0x1f, 0x8b, 0x08])
+        let image = try IsoGravure(
+            recipeInitrd: "/boot/initramfs-virt,/boot/initramfs-virt", initramfs: piece
+        ).write()
+        defer { try? FileManager.default.removeItem(at: image) }
+        let plan = try plan(IsoBoot.unpack(image, into: folder, ceiling: 1 << 20))
+        let initrd = try XCTUnwrap(plan.initrd)
+        XCTAssertEqual(try Data(contentsOf: initrd), piece + Data([0]) + piece)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: initrd.appendingPathExtension("part").path),
+            "le morceau de passage ne reste pas")
+    }
+
+    /// Le second initramfs absent : le refus le nomme, et rien ne reste.
+    func testAMissingSecondInitramfsIsNamed() throws {
+        let image = try IsoGravure(recipeInitrd: "/boot/initramfs-virt /boot/absent").write()
+        defer { try? FileManager.default.removeItem(at: image) }
+        switch IsoBoot.unpack(image, into: folder, ceiling: 1 << 20) {
+        case .success:
+            XCTFail("un initramfs promis et absent est refusé")
+        case .failure(let refusal):
+            XCTAssertEqual(refusal, .cannotExtractInitrd("/boot/absent"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "rien ne reste")
+    }
+
     func testARecipeWithoutAnInitramfsStillBoots() throws {
         let image = try IsoGravure(recipeInitrd: nil, carriesInitrd: false).write()
         defer { try? FileManager.default.removeItem(at: image) }
