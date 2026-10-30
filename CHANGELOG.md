@@ -133,12 +133,6 @@ break APIs.
   `kernel x86_64/vmlinuz`, un chemin que syslinux lit depuis le dossier de
   sa recette (`/isolinux/x86_64/vmlinuz`), et que wisq cherchait à la
   racine.
-- **Chaque invité se croyait le premier janvier 2000.** L'horloge du PC
-  (ports 0x70 et 0x71) rendait des zéros : journaux et fichiers datés de 1999,
-  et surtout aucun certificat TLS valide — HTTPS et les gestionnaires de
-  paquets refusaient. Elle rend l'heure de l'hôte, en UTC, avec une pile
-  valide et une mémoire CMOS inscriptible ; Chimera Linux règle son horloge
-  à la bonne seconde au démarrage.
 - **Guix System s'arrêtait en générant ses clés SSH**, sur `PSLLQ` : des huit
   décalages SSE2 dont le compte vient d'un registre, seuls quatre existaient.
   Les huit y sont, contre le vrai processeur.
