@@ -224,6 +224,64 @@ final class HostStreamsTests: XCTestCase {
         XCTAssertEqual(guest.received, Array("abcdef".utf8))
     }
 
+    /// **Un SYN répété reçoit sa réponse tout de suite**, pas au bout du
+    /// délai de réémission.
+    func testARepeatedSynIsAnsweredAtOnce() throws {
+        let server = try Server { client in _ = Server.readAll(client, until: 1) }
+        let streams = HostStreams()
+        defer { streams.close() }
+        let guest = Guest(streams, to: server.port)
+        let syn = guest.segment(Flag.syn, maximumSegment: 1460)
+        streams.handle(syn)
+        let first = guest.wait { $0.contains { $0.flags & Flag.syn != 0 } }
+        XCTAssertTrue(first.contains { $0.flags & Flag.syn != 0 })
+        let asked = Date()
+        streams.handle(syn)
+        let again = guest.wait { $0.contains { $0.flags & Flag.syn != 0 } }
+        XCTAssertEqual(again.first { $0.flags & Flag.syn != 0 }?.sequence,
+                       first.first { $0.flags & Flag.syn != 0 }?.sequence)
+        XCTAssertLessThan(Date().timeIntervalSince(asked), 0.5)
+    }
+
+    /// **Une fenêtre fermée se rouvre d'elle-même** : quand l'hôte ne lit
+    /// plus, wisq annonce zéro ; quand il reprend, un accusé le dit à
+    /// l'invité sans qu'il ait rien à envoyer. Et une sonde pendant la
+    /// fermeture reçoit sa réponse.
+    func testAClosedWindowReopens() throws {
+        let start = DispatchSemaphore(value: 0)
+        let server = try Server { client in
+            start.wait()
+            _ = Server.readAll(client, until: Int.max)
+        }
+        var small: Int32 = 4096
+        setsockopt(server.descriptor, SOL_SOCKET, SO_RCVBUF, &small, socklen_t(MemoryLayout<Int32>.size))
+        let streams = HostStreams()
+        defer { streams.close() }
+        let guest = Guest(streams, to: server.port)
+        _ = try guest.connect()
+        var window = 65_535
+        var acked = guest.next
+        let chunk = [UInt8](repeating: 0x61, count: 1460)
+        let deadline = Date().addingTimeInterval(20)
+        while window > 0, Date() < deadline {
+            while Int(guest.next &- acked) < window {
+                guest.send(Flag.ack, Array(chunk.prefix(window - Int(guest.next &- acked))))
+            }
+            for segment in guest.wait(until: { !$0.isEmpty }) {
+                acked = segment.acknowledgment
+                window = Int(segment.window)
+            }
+        }
+        XCTAssertEqual(window, 0, "l'hôte ne lit plus : la fenêtre se ferme")
+        // La sonde : un octet au-delà d'une fenêtre fermée.
+        streams.handle(guest.segment(Flag.ack, [0x62]))
+        let probe = guest.wait { !$0.isEmpty }
+        XCTAssertEqual(probe.last?.acknowledgment, acked, "la sonde est accusée, sans être prise")
+        start.signal()
+        let reopened = guest.wait { $0.contains { $0.window > 0 } }
+        XCTAssertTrue(reopened.contains { $0.window > 0 }, "personne n'a dit à l'invité que la fenêtre s'est rouverte")
+    }
+
     /// **Un port fermé est un refus** : l'invité reçoit une remise à zéro qui
     /// accuse son SYN, et rien ne reste ouvert.
     func testARefusedConnectionIsReset() throws {
