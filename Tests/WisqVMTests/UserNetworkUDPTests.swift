@@ -142,7 +142,7 @@ final class UserNetworkUDPTests: XCTestCase {
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let bound = withUnsafeMutablePointer(to: &address) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Int32 in
-                guard bind(server, pointer, length) == 0 else { return -1 }
+                guard bindSocket(server, pointer, length) == 0 else { return -1 }
                 return getsockname(server, pointer, &length)
             }
         }
@@ -199,4 +199,10 @@ final class UserNetworkUDPTests: XCTestCase {
         XCTAssertEqual(relay.openSockets, 0, "aucune socket rouverte")
         XCTAssertTrue(relay.receive().isEmpty)
     }
+}
+
+/// `bind` dit tout court, dans une méthode de `XCTestCase`, désigne sous
+/// macOS la méthode de `NSObject` : la fonction des sockets se nomme ici.
+func bindSocket(_ descriptor: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+    bind(descriptor, address, length)
 }
