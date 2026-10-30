@@ -175,6 +175,7 @@ final class InstalledMachineTests: XCTestCase {
             KernelMemory.setSize(KernelMemory.choices.last!, forKernel: machine.key, in: folder)
             RootPassword.set(UUID().uuidString, forKernel: machine.key, in: folder)
             LocalDisk.attach("donnees.img", forKernel: machine.key, in: folder)
+            ImageBootRequest.request(forKernel: machine.key, in: folder)
             try SuspendedMachine.save(
                 Data([2]), kernel: SuspendedMachine.identity(of: image, named: machine.key),
                 in: folder)
@@ -190,6 +191,8 @@ final class InstalledMachineTests: XCTestCase {
                        KernelMemory.defaultSize)
         XCTAssertNil(LocalDisk.recordedName(forKernel: gone.key, in: folder))
         XCTAssertNil(RootPassword.hash(forKernel: gone.key, in: folder))
+        XCTAssertFalse(ImageBootRequest.isRequested(forKernel: gone.key, in: folder))
+        XCTAssertTrue(ImageBootRequest.isRequested(forKernel: kept.key, in: folder))
         XCTAssertNotNil(RootPassword.hash(forKernel: kept.key, in: folder))
         XCTAssertEqual(SuspendedMachine.savedMachineFiles(named: gone.key, in: folder), [])
         XCTAssertEqual(overlays().filter { $0.hasPrefix(gone.keys.overlayPrefix) }, [])
