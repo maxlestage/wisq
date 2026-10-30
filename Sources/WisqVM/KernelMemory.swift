@@ -49,21 +49,6 @@ public enum KernelMemory {
         1024 << 20, 2 << 30, 4 << 30, 8 << 30, 16 << 30,
     ]
 
-    /// What the app must keep for itself, next to the guest's RAM.
-    ///
-    /// The guest's memory is one mapping the interpreter touches at will, so
-    /// it all becomes resident. Everything else the app is doing lives beside
-    /// it: the console's text and its grid, the framebuffers of a remote
-    /// session, the kernel image being read from disk, and the decoding
-    /// buffers of whatever protocol is open.
-    ///
-    /// A named number rather than a fraction, because it does not scale with
-    /// the guest — a bigger machine does not make the console bigger. It is a
-    /// judgement, and it is generous on purpose: the failure it prevents is
-    /// the app disappearing without a word, which is the exact thing that
-    /// happened here once already.
-    public static let roomForTheAppItself: UInt64 = 256 << 20
-
     /// What the machine leaves to the device, whatever the moment allows.
     ///
     /// Maxime's rule, in his words: « je veux pouvoir la gérer en étant deux
@@ -71,49 +56,49 @@ public enum KernelMemory {
     /// the device's own memory — a bound that scales with the phone and does
     /// not move, unlike what the system reports.
     ///
-    /// It sits **next to** the system's answer rather than replacing it,
-    /// because the two say different things. This one says how much of a
-    /// device wisq is willing to be; `os_proc_available_memory()` says how
-    /// much is free right now. A phone with twelve gibibytes allows ten by
-    /// this rule and rather less by the other, and the smaller of the two is
-    /// the only one that is safe to offer.
+    /// **C'est la seule borne sur un téléphone.** Elle a vécu à côté de
+    /// `os_proc_available_memory()`, et la plus petite des deux gagnait : sur
+    /// un iPhone 18 Pro Max (12 Go de RAM), iOS disait trois gibioctets libres, et
+    /// le curseur s'arrêtait à deux — le palier sous trois. Maxime : « 2 Go
+    /// de RAM c'est trop bas, il faut la mémoire du portable − 2 Go en
+    /// dynamique ». La mémoire de l'invité est allouée à zéro par `calloc`,
+    /// qui ne rend résident que ce que l'invité touche ; et l'application
+    /// demande à iOS la limite de mémoire étendue
+    /// (`com.apple.developer.kernel.increased-memory-limit`).
     public static let leftToTheDevice: UInt64 = 2 << 30
+
+    /// **Le pas des tailles qui ne sont pas des puissances de deux.** Le haut
+    /// du curseur est la règle de l'appareil, arrondie à ce pas : 9,5 Gio sur
+    /// un téléphone qui annonce 11,6 Gio. Un quart de gibioctet : assez fin
+    /// pour ne rien perdre, assez gros pour que la taille se lise.
+    public static let step: UInt64 = 256 << 20
 
     /// The largest machine this device may be asked for.
     ///
-    /// **Measured, not guessed.** iOS publishes exactly this number:
-    /// `os_proc_available_memory()` returns how many bytes the app may still
-    /// allocate before the system kills it. Asking it is strictly better than
-    /// the fraction of physical memory this used to use — that fraction was an
-    /// invention, it ignored what the rest of the device was doing, and it
-    /// gave the same answer on a phone at rest and a phone under pressure.
+    /// **Sur un téléphone, sa mémoire moins deux gibioctets** — voir
+    /// `leftToTheDevice` —, jamais sous la machine de référence et jamais
+    /// au-delà de ce que l'architecture permet.
     ///
-    /// So: what the system says is left, minus what the app needs beside the
-    /// guest, never below the reference machine and never above what the
-    /// architecture allows.
-    ///
-    /// `availableBytes` is a parameter rather than a call so this rule can be
-    /// tested on a runner that has no iOS to ask. `physicalMemory` is the
-    /// fallback for the platforms that do not publish the first number —
-    /// macOS and Linux — where an eighth of physical memory remains the best
-    /// available guess.
+    /// `availableBytes` dit si l'on tourne sur un appareil qui sait répondre
+    /// (iOS) : c'est un paramètre plutôt qu'un appel pour que la règle se
+    /// teste sur un runner sans iOS. Ailleurs — macOS, Linux —, rien ne borne
+    /// ce qu'un processus peut allouer, et un huitième de la mémoire physique
+    /// reste la seule estimation raisonnable.
     public static func ceiling(availableBytes: UInt64?, physicalMemory: UInt64,
                                core: GuestArchitecture.Core? = nil) -> UInt64 {
-        // What the moment allows: the system's own answer, less the room the
-        // app needs beside the guest. Where nothing answers, the fraction.
-        let now = availableBytes.map { $0 > roomForTheAppItself ? $0 - roomForTheAppItself : 0 }
-            ?? (physicalMemory / 8)
-        // What the device allows, whatever the moment: two gibibytes below its
-        // own memory. Subtracted with a floor, because a device smaller than
-        // the margin would otherwise wrap.
+        // Deux gibioctets sous la mémoire de l'appareil. Soustrait avec un
+        // plancher : un appareil plus petit que la marge reviendrait au tour.
         let device = physicalMemory > leftToTheDevice ? physicalMemory - leftToTheDevice : 0
+        // Là où le système ne dit rien, la fraction, et la règle de l'appareil
+        // par-dessus.
+        let now = availableBytes == nil ? min(physicalMemory / 8, device) : device
         // Et ce que l'architecture permet, qui ne se négocie pas — celle du
         // cœur qu'on nous nomme, ou la plus généreuse quand personne n'a lu le
         // fichier. Voir `Core.maximumRAMSize` : pour le rv32 c'est un fait
         // d'adressage, pour la machine PC un choix.
         let architecture = core?.maximumRAMSize ?? GuestArchitecture.Core.largestRAMSize
-        let capped = min(min(now, device), architecture)
-        return max(capped, defaultSize)
+        let capped = min(now, architecture)
+        return max(capped / step * step, defaultSize)
     }
 
     /// The same, from what this device says about itself right now.
@@ -150,9 +135,24 @@ public enum KernelMemory {
         #endif
     }
 
-    /// The sizes worth offering on this device: the choices up to the ceiling.
+    /// The sizes worth offering on this device: the choices up to the ceiling,
+    /// **and the ceiling itself**, when it falls between two of them. Sans ce
+    /// dernier cran, un téléphone qui permet 9,5 Gio s'arrêtait à 8.
     public static func offered(ceiling limit: UInt64) -> [UInt64] {
-        choices.filter { $0 <= limit }
+        var sizes = choices.filter { $0 <= limit }
+        let top = limit / step * step
+        if top > (sizes.last ?? 0) { sizes.append(top) }
+        return sizes
+    }
+
+    /// **Une taille qu'on accepte d'enregistrer** : un des paliers, ou un
+    /// multiple du pas entre la machine de référence et le plus grand plafond
+    /// — le haut du curseur d'un téléphone. Ce qui vient d'ailleurs est un
+    /// défaut plutôt qu'un réglage.
+    public static func isRecordable(_ size: UInt64) -> Bool {
+        choices.contains(size)
+            || (size % step == 0 && size >= defaultSize
+                && size <= GuestArchitecture.Core.largestRAMSize)
     }
 
     /// The largest kernel image worth keeping on this device.
@@ -200,7 +200,7 @@ public enum KernelMemory {
     public static func size(forKernel kernel: String, in directory: URL? = nil,
                             ceiling limit: UInt64 = ceiling) -> UInt64 {
         guard let recorded = recorded(in: directory)[kernel] else { return defaultSize }
-        guard choices.contains(recorded) else { return defaultSize }
+        guard isRecordable(recorded) else { return defaultSize }
         return min(recorded, limit)
     }
 
@@ -233,7 +233,7 @@ public enum KernelMemory {
     /// else is a bug rather than something to encode.
     public static func setSize(_ size: UInt64, forKernel kernel: String,
                                in directory: URL? = nil) {
-        guard choices.contains(size) else { return }
+        guard isRecordable(size) else { return }
         var all = recorded(in: directory)
         if size == defaultSize {
             // The default is the absence of a choice, so going back to it

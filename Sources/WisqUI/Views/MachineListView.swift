@@ -158,7 +158,7 @@ public struct MachineListView: View {
                 ContentUnavailableView {
                     Label("Aucune machine", systemImage: "server.rack")
                 } description: {
-                    Text("Ajoutez un serveur VNC — une VM QEMU, un Raspberry Pi, un poste de travail — pour l'atteindre depuis votre iPhone.")
+                    Text("Ajoutez un serveur VNC — une VM QEMU, un Raspberry Pi, un poste de travail — pour l'atteindre depuis votre iPhone. Sur le téléphone même, wisq ne lance ni Windows ni macOS, par choix.")
                 } actions: {
                     Button("Ajouter une machine", action: onNew)
                         .buttonStyle(.borderedProminent)
