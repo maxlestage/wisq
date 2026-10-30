@@ -400,89 +400,110 @@ final class ArchitecturalMemoryLimitTests: XCTestCase {
     }
 }
 
-/// Le plafond quand le système, lui, sait répondre.
+/// **Sur un téléphone, sa mémoire moins deux gibioctets, et rien d'autre.**
 ///
-/// Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone
-/// pour la partager ». La bonne réponse n'était pas d'augmenter la fraction
-/// inventée, c'était d'arrêter d'inventer : iOS publie exactement ce nombre —
-/// `os_proc_available_memory()` rend ce que l'application peut encore allouer
-/// avant que le système ne la tue.
-final class SystemBudgetCeilingTests: XCTestCase {
-    private func ceiling(available: UInt64?, physical: UInt64 = 8 << 30,
+/// Maxime : « 2 Go de RAM c'est trop bas, il faut la mémoire du portable
+/// − 2 Go en dynamique ». La réponse d'iOS sur la mémoire libre bornait aussi
+/// le curseur, et la plus petite des deux gagnait : trois gibioctets libres
+/// sur un iPhone de douze, et le curseur s'arrêtait à deux. Elle ne borne plus.
+final class DeviceCeilingTests: XCTestCase {
+    private func ceiling(available: UInt64? = 3 << 30, physical: UInt64,
                          core: GuestArchitecture.Core? = nil) -> UInt64 {
         KernelMemory.ceiling(
             availableBytes: available, physicalMemory: physical, core: core)
     }
 
-    /// Ce que le système laisse, moins ce que l'application garde pour elle.
-    func testTheCeilingIsWhatTheSystemLeavesMinusWhatTheAppNeeds() {
-        // 1,5 Gio disponibles − 256 Mio pour l'application = 1,25 Gio.
-        XCTAssertEqual(ceiling(available: 1536 << 20), (1536 - 256) << 20)
-        // Et l'écart est exactement la réserve nommée, pas un nombre voisin.
-        XCTAssertEqual(
-            UInt64(ceiling(available: 1024 << 20)),
-            (1024 << 20) - KernelMemory.roomForTheAppItself)
+    /// Un iPhone de douze gibioctets en donne dix, quoi qu'iOS dise de libre.
+    func testAPhoneGivesItsMemoryLessTwoGibibytes() {
+        XCTAssertEqual(ceiling(physical: 12 << 30), 10 << 30)
+        XCTAssertEqual(ceiling(available: 600 << 20, physical: 12 << 30), 10 << 30,
+                       "la mémoire libre du moment ne borne plus")
+        XCTAssertEqual(ceiling(available: 64 << 30, physical: 12 << 30), 10 << 30)
+        XCTAssertEqual(ceiling(physical: 8 << 30, core: .x86_64), 6 << 30)
     }
 
-    /// Un téléphone qui a beaucoup de place donne beaucoup — c'est le point de
-    /// la demande — mais jamais plus que ce que le **cœur nommé** peut
-    /// adresser.
-    ///
-    /// La borne était écrite `riscvLimit` sans cœur, donc elle s'appliquait
-    /// aussi à une machine PC : c'est le défaut de la tranche #283. Ici, avec
-    /// le cœur, elle redevient ce qu'elle dit être.
-    func testAGenerousDeviceGivesGibibytesButNeverPastTheArchitecture() {
-        // Huit gibioctets physiques : la règle de l'appareil en laisse six, et
-        // le système dit ce qu'on lui fait dire. Un cœur rv32 s'arrête à son
-        // dernier octet adressable.
-        XCTAssertEqual(ceiling(available: 3 << 30, core: .riscv32), riscvLimit)
-        XCTAssertEqual(ceiling(available: 64 << 30, core: .riscv32), riscvLimit)
-        // La même place, à une machine PC : elle va plus haut, et c'est la
-        // règle de l'appareil — six gibioctets sur huit physiques — qui borne.
-        XCTAssertEqual(ceiling(available: 64 << 30, core: .x86_64), 6 << 30)
-        XCTAssertGreaterThan(
-            ceiling(available: 64 << 30, core: .x86_64),
-            ceiling(available: 64 << 30, core: .riscv32),
-            "sans quoi le plafond par cœur ne servirait à rien")
-        XCTAssertGreaterThanOrEqual(ceiling(available: 2 << 30), 1024 << 20)
+    /// Le haut tombe sur le pas de 256 Mio : un téléphone qui annonce
+    /// 11 878 Mio — ce qu'iOS dit d'un appareil de « 12 Go » — en donne 9,5 Gio.
+    func testTheTopFallsOnTheStep() {
+        let limit = ceiling(physical: 11_878 << 20)
+        XCTAssertEqual(limit, 9_728 << 20)
+        XCTAssertEqual(limit % KernelMemory.step, 0)
+        XCTAssertEqual(KernelMemory.describe(limit), "9,5 Gio")
     }
 
-    /// Un téléphone à l'étroit ne descend pas sous la machine de référence :
-    /// elle a toujours marché, et un plancher qui la rendrait impossible
-    /// transformerait une contrainte passagère en panne permanente.
-    func testATightDeviceStillOffersTheReferenceMachine() {
-        XCTAssertEqual(ceiling(available: 300 << 20), referenceMachine)
-        XCTAssertEqual(ceiling(available: 0), referenceMachine)
-        // Et la soustraction ne déborde pas quand la réserve est plus grande
-        // que ce qui reste.
-        XCTAssertEqual(ceiling(available: 1), referenceMachine)
+    /// Jamais au-delà de ce que l'architecture adresse.
+    func testNeverPastTheArchitecture() {
+        XCTAssertEqual(ceiling(physical: 64 << 30, core: .riscv32), riscvLimit)
+        XCTAssertEqual(ceiling(physical: 64 << 30, core: .x86_64), 16 << 30)
+        XCTAssertEqual(ceiling(physical: 64 << 30), 16 << 30)
     }
 
-    /// Là où le système ne dit rien, la fraction reprend la main — et donne un
-    /// résultat différent, sinon ce paramètre ne servirait à rien.
+    /// Un appareil de deux gibioctets ou moins garde la machine de référence,
+    /// celle qui a toujours marché, et la soustraction ne revient pas au tour.
+    func testASmallDeviceKeepsTheReferenceMachine() {
+        for physical: UInt64 in [2 << 30, 1 << 30, 0] {
+            XCTAssertEqual(ceiling(physical: physical), referenceMachine,
+                           "\(physical >> 30) Gio physiques")
+        }
+    }
+
+    /// Là où le système ne dit rien — macOS, Linux —, la fraction reprend la
+    /// main, et donne bien autre chose.
     func testWhereTheSystemSaysNothingTheFractionTakesOver() {
         XCTAssertEqual(ceiling(available: nil, physical: 8 << 30), 1024 << 20)
-        XCTAssertNotEqual(
-            ceiling(available: 1024 << 20, physical: 8 << 30),
-            ceiling(available: nil, physical: 8 << 30),
-            "les deux règles doivent vraiment être deux règles")
+        XCTAssertNotEqual(ceiling(available: nil, physical: 8 << 30),
+                          ceiling(physical: 8 << 30))
     }
 
-    /// La règle est **monotone** : plus le téléphone laisse de place, plus la
-    /// machine peut être grande. C'est ce qu'un curseur promet en glissant.
-    func testMoreRoomIsNeverLessMachine() {
+    /// Plus l'appareil a de mémoire, plus la machine peut être grande.
+    func testMoreMemoryIsNeverLessMachine() {
         var previous: UInt64 = 0
-        for megabytes in [0, 128, 256, 512, 1024, 2048, 4096, 8192] {
-            let limit = ceiling(available: UInt64(megabytes) << 20)
-            XCTAssertGreaterThanOrEqual(limit, previous, "\(megabytes) Mo disponibles")
+        for gibibytes: UInt64 in [0, 1, 2, 3, 4, 6, 8, 12, 16, 32] {
+            let limit = ceiling(physical: gibibytes << 30)
+            XCTAssertGreaterThanOrEqual(limit, previous, "\(gibibytes) Gio")
             previous = limit
         }
     }
 
+    /// La marge est bien deux gibioctets, lue plutôt que réaffirmée.
+    func testTheMarginIsTwoGibibytes() {
+        XCTAssertEqual(KernelMemory.leftToTheDevice, 2 << 30)
+        XCTAssertEqual(ceiling(physical: 4 << 30), 2 << 30)
+    }
+
+    /// **Le haut du curseur est le plafond lui-même**, même entre deux
+    /// paliers : sans ce dernier cran, 9,5 Gio permis s'arrêtaient à 8.
+    func testTheSliderReachesTheCeiling() {
+        let limit = ceiling(physical: 11_878 << 20)
+        let offered = KernelMemory.offered(ceiling: limit)
+        XCTAssertEqual(offered.last, limit)
+        XCTAssertTrue(offered.contains(8 << 30))
+        XCTAssertEqual(offered, offered.sorted())
+        XCTAssertEqual(Set(offered).count, offered.count, "pas de cran en double")
+        // Un plafond qui est déjà un palier ne s'ajoute pas une seconde fois.
+        XCTAssertEqual(KernelMemory.offered(ceiling: 8 << 30).last, 8 << 30)
+        XCTAssertEqual(KernelMemory.offered(ceiling: 8 << 30).filter { $0 == 8 << 30 }.count, 1)
+    }
+
+    /// Ce cran-là s'enregistre et se relit ; une taille hors du pas, non.
+    func testTheTopStepIsRemembered() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-ceiling-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let top: UInt64 = 9_728 << 20
+        XCTAssertTrue(KernelMemory.isRecordable(top))
+        KernelMemory.setSize(top, forKernel: "chimera.iso", in: folder)
+        XCTAssertEqual(
+            KernelMemory.size(forKernel: "chimera.iso", in: folder, ceiling: 10 << 30), top)
+        XCTAssertFalse(KernelMemory.isRecordable(top + 1))
+        XCTAssertFalse(KernelMemory.isRecordable(32 << 30), "au-delà du plus grand plafond")
+        XCTAssertTrue(KernelMemory.isRecordable(16 << 20), "les petits paliers restent")
+        KernelMemory.setSize(top + 1, forKernel: "autre.iso", in: folder)
+        XCTAssertEqual(KernelMemory.size(forKernel: "autre.iso", in: folder, ceiling: 10 << 30),
+                       referenceMachine, "une taille hors du pas ne s'enregistre pas")
+    }
+
     /// Et le refus qui remplace un plantage : les deux chiffres, et quoi faire.
-    ///
-    /// « Pas assez de mémoire » sans nombre est une impasse — on ne peut pas
-    /// savoir s'il faut fermer une application ou baisser le réglage.
     func testTheRefusalNamesBothFiguresAndWhatToDo() {
         let message = KernelMemory.notEnoughRoomExplanation(
             requested: 1024 << 20, ceiling: 512 << 20, name: "Image")
@@ -490,68 +511,7 @@ final class SystemBudgetCeilingTests: XCTestCase {
         XCTAssertTrue(message.contains("1 Gio"), message)
         XCTAssertTrue(message.contains("512 Mo"), message)
         XCTAssertTrue(message.contains("curseur"), "il faut dire quoi faire : \(message)")
-        XCTAssertFalse(
-            message.contains("octets"),
-            "le message parle à quelqu'un, pas à un journal : \(message)")
-    }
-}
-
-/// La règle de Maxime : « deux giga plus petit que ce que le téléphone a ».
-///
-/// Elle vit **à côté** de la réponse du système, pas à sa place, parce que les
-/// deux disent des choses différentes : celle-ci dit de combien d'un appareil
-/// wisq accepte d'être, `os_proc_available_memory()` dit ce qui est libre à cet
-/// instant. La plus petite des deux est la seule qu'on puisse proposer sans
-/// proposer un plantage.
-final class DeviceMarginCeilingTests: XCTestCase {
-    /// Sur un iPhone 17 Pro (12 Go), la règle laisse 10 Gio — et c'est donc la
-    /// réponse du système qui décide, comme prévu.
-    func testOnALargePhoneTheSystemAnswerIsTheBindingOne() {
-        let physical: UInt64 = 12 << 30
-        // Le système dit 3 Gio libres : c'est lui qui borne, pas la règle des
-        // deux gibioctets — qui laisserait dix. Trois gibioctets moins les 256
-        // Mio que l'application garde pour elle, arrondis au palier du
-        // dessous : deux gibioctets. **Sans cœur nommé** le plafond
-        // d'architecture est le plus grand, donc c'est bien la réponse du
-        // système qu'on mesure ici, et plus l'adressage du rv32 par accident.
-        XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: 3 << 30, physicalMemory: physical),
-            (3 << 30) - KernelMemory.roomForTheAppItself,
-            "3 Gio moins la réserve de l'application")
-        // Le système dit 600 Mo libres : lui encore, et bien plus bas.
-        XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: 600 << 20, physicalMemory: physical),
-            (600 - 256) << 20)
-    }
-
-    /// Et la règle mord vraiment quand le système est généreux : un appareil de
-    /// 3 Gio n'en laisse qu'un, quoi que le système raconte.
-    func testTheDeviceRuleBitesWhenTheSystemIsGenerous() {
-        XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: 8 << 30, physicalMemory: 3 << 30),
-            1 << 30,
-            "trois gibioctets moins deux, et le système ne peut pas passer outre")
-    }
-
-    /// Le bord net, et il faut le regarder en face : sur un appareil de deux
-    /// gibioctets ou moins, « deux gibioctets de moins » vaut zéro. Le plancher
-    /// rend alors la machine de référence, celle qui a toujours marché.
-    func testOnASmallDeviceTheRuleReachesZeroAndTheFloorAnswers() {
-        for physical: UInt64 in [2 << 30, 1 << 30, 0] {
-            XCTAssertEqual(
-                KernelMemory.ceiling(availableBytes: 8 << 30, physicalMemory: physical),
-                referenceMachine,
-                "\(physical >> 30) Gio physiques")
-        }
-    }
-
-    /// La marge est bien deux gibioctets, lue plutôt que réaffirmée.
-    func testTheMarginIsTwoGibibytes() {
-        XCTAssertEqual(KernelMemory.leftToTheDevice, 2 << 30)
-        // Un appareil de 4 Gio en laisse exactement 2 à la machine.
-        XCTAssertEqual(
-            KernelMemory.ceiling(availableBytes: 64 << 30, physicalMemory: 4 << 30),
-            riscvLimit)
+        XCTAssertFalse(message.contains("octets"), message)
     }
 }
 
@@ -629,6 +589,8 @@ final class PerCoreMemoryCeilingTests: XCTestCase {
         XCTAssertTrue(
             KernelMemory.offered(ceiling: twelve).contains(8 << 30),
             "mais 8 Gio, oui")
+        XCTAssertEqual(KernelMemory.offered(ceiling: twelve).last, 10 << 30,
+                       "et le haut du curseur est la règle de l'appareil")
     }
 
     /// Un fichier que personne n'a reconnu garde la permission du dépôt —

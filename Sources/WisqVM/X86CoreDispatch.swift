@@ -1087,7 +1087,29 @@ extension X86Core {
                 devices.primary.mask = byte
             }
         case 0xA0:
-            if byte & 0x10 != 0 { devices.secondary.initialisationStep = 1 }
+            if byte & 0x10 != 0 {
+                devices.secondary.initialisationStep = 1
+            } else if byte & 0x08 != 0 {
+                devices.secondary.readsService = byte & 0x01 != 0
+            } else if byte & 0x20 != 0 {
+                // La fin d'interruption du second, sous les deux mêmes formes
+                // que le maître. Il n'en avait aucune : il ne délivrait rien,
+                // et la souris PS/2, sur sa ligne 12, est la première à passer
+                // par lui.
+                if byte & 0x40 != 0 {
+                    devices.secondary.service &= ~(1 << (byte & 0x07))
+                } else {
+                    let service = devices.secondary.service
+                    if service != 0 {
+                        devices.secondary.service &= ~(1 << service.trailingZeroBitCount)
+                    }
+                }
+            }
+        // Le contrôleur du clavier et de la souris.
+        case X86PS2Controller.dataPort:
+            devices.ps2.writeData(byte)
+        case X86PS2Controller.commandPort:
+            devices.ps2.writeCommand(byte)
         case 0xA1:
             if devices.secondary.initialisationStep != 0 {
                 if devices.secondary.initialisationStep == 1 {
@@ -1197,6 +1219,8 @@ extension X86Core {
                 ? devices.secondary.service : devices.secondary.request)
         case 0xA1: return UInt64(devices.secondary.mask)
         case 0x71: return UInt64(cmos.read())
+        case X86PS2Controller.dataPort: return UInt64(devices.ps2.readData())
+        case X86PS2Controller.commandPort: return UInt64(devices.ps2.status())
         case 0x61:
             // Le bit 5 : « le canal deux est arrivé à zéro ». Le bit 4 change
             // à chaque rafraîchissement mémoire sur un vrai PC ; le faire
