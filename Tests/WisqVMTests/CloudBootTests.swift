@@ -33,6 +33,8 @@ final class CloudBootTests: XCTestCase {
         let line = CloudBoot.commandLine(["root=/dev/vda1", "console=ttyS0"], rootPassword: sample,
                                          salt: "wisqsalt")
         XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service systemd.mask=jeos-firstboot.service "
+            + "systemd.set_credential_binary=network.network.99-wisq-dhcp:"
+            + Data(CloudBoot.dhcpOnEthernet.utf8).base64EncodedString() + " "
             + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
             + "systemd.set_credential=firstboot.timezone:UTC "
             + "systemd.set_credential=passwd.hashed-password.root:"
@@ -73,6 +75,26 @@ final class CloudBootTests: XCTestCase {
         let line = CloudBoot.commandLine(["root=PARTUUID=0123", "ro"], rootPassword: UUID().uuidString,
                                          salt: "wisqsalt")
         XCTAssertLessThan(line.utf8.count + X86BootLoader.defaultCommandLine.utf8.count + 1, 2048)
+    }
+
+    /// **Le réseau d'une image de cloud se configure sans cloud-init.** Le
+    /// credential se relit comme `systemd-network-generator` le relira : un
+    /// `.network` qui demande le DHCP sur toute carte Ethernet, sous un nom
+    /// qui laisse passer avant lui la configuration de l'image.
+    func testTheCloudImageAsksForDHCP() throws {
+        let prefix = "systemd.set_credential_binary=network.network.99-wisq-dhcp:"
+        let option = try XCTUnwrap(CloudBoot.consoleOptions.first { $0.hasPrefix(prefix) })
+        let decoded = try XCTUnwrap(Data(base64Encoded: String(option.dropFirst(prefix.count))))
+        let lines = String(decoding: decoded, as: UTF8.self).split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines, ["[Match]", "Type=ether", "[Network]", "DHCP=yes"])
+        XCTAssertFalse(option.contains(" "), "une seule option pour le noyau")
+        let line = CloudBoot.commandLine(["root=PARTUUID=0123", "ro"], rootPassword: UUID().uuidString,
+                                         salt: "wisqsalt")
+        XCTAssertTrue(line.contains(prefix))
+        XCTAssertFalse(CloudBoot.commandLine(["root=PARTUUID=0123"], serialShell: false).contains(prefix),
+                       "un système installé garde sa propre configuration")
+        XCTAssertFalse(CloudBoot.commandLine(["root=PARTUUID=0123"], legacyConsole: true).contains(prefix),
+                       "systemd 252 ne lit pas ce credential")
     }
 
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {

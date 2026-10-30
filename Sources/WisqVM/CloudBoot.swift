@@ -496,12 +496,33 @@ public struct CloudBoot: Equatable, Sendable {
     /// prend la console avant le shell et attend qu'on la remplisse — langue,
     /// clavier, licence, mot de passe. Masqué, le shell vient directement ;
     /// ailleurs, l'unité n'existe pas et le masque ne fait rien.
+    ///
+    /// **Et le réseau.** Une image de cloud attend que cloud-init écrive sa
+    /// configuration, et wisq démarre sans lui. Debian 13 voyait sa carte
+    /// (`enp0s5`), lançait `systemd-networkd`, et ne la configurait pas :
+    /// `apt-get update` ne résolvait rien. Depuis 256,
+    /// `systemd-network-generator` lit les credentials `network.network.*` :
+    /// celui-ci demande le DHCP sur toute carte Ethernet (voir
+    /// `dhcpOnEthernet`). Son nom commence par 99, pour que la configuration
+    /// de l'image, s'il y en a une, passe avant.
     static let consoleOptions = [
         "systemd.set_credential=agetty.autologin:root", "systemd.set_credential=login.noauth:yes",
         "systemd.set_credential_binary=systemd.unit-dropin.serial-getty@ttyS0.service:"
             + Data(shellOnSerial.utf8).base64EncodedString(),
         "systemd.mask=user@0.service", "systemd.mask=jeos-firstboot.service",
+        "systemd.set_credential_binary=network.network.99-wisq-dhcp:"
+            + Data(dhcpOnEthernet.utf8).base64EncodedString(),
     ]
+
+    /// Le fichier `.network` que reçoit `systemd-networkd` : le DHCP, en IPv4
+    /// comme en IPv6, sur toute carte Ethernet.
+    static let dhcpOnEthernet = """
+        [Match]
+        Type=ether
+        [Network]
+        DHCP=yes
+
+        """
 
     /// **La console d'un systemd plus ancien que 256.** AlmaLinux 9, Rocky 9
     /// et CentOS Stream 9 ont systemd 252 : il ignore les deux credentials
