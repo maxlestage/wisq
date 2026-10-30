@@ -236,7 +236,7 @@ public final class HostDatagrams: DatagramRelay, @unchecked Sendable {
     #endif
 }
 
-private func closeSocket(_ descriptor: Int32) -> Int32 {
+func closeSocket(_ descriptor: Int32) -> Int32 {
     #if canImport(Glibc)
     Glibc.close(descriptor)
     #else
