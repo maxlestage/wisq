@@ -154,6 +154,26 @@ break APIs.
   grand que la mémoire de la machine était posé hors de la mémoire au lieu
   d'être refusé, et aucun refus de la machine PC ne se lisait. Le refus dit
   maintenant les deux tailles et le curseur à monter.
+- **Artix et Fedora Workstation étaient refusés faute de recette**, alors
+  que leur grub en porte une — écrite comme un script. Artix ne met aucune
+  ligne `linux` dans `grub.cfg` : il lit `kernels.cfg` par `source`, et son
+  entrée nomme le noyau `vmlinuz-$2`, qu'une boucle assemble. Fedora
+  Workstation 44 range la sienne dans `/boot/grub2/`, que son
+  `/EFI/BOOT/grub.cfg` relit par `configfile ($root)/…`. Le lecteur suit
+  maintenant `source` et `configfile`, passe à une entrée ses paramètres,
+  trouve sur le disque un noyau nommé par une variable quand il n'y en a
+  qu'un, et garde l'argument qui nomme le support (`label=ARTIX_202608`).
+  Artix démarre jusqu'à son invite de connexion, à l'écran : son initramfs
+  retrouve le disque par cette étiquette, et s6 lance ses services.
+- **Arch ne donnait jamais la main sur la console série.** L'invité croit
+  tourner à environ 86 MHz (un cran d'horloge toutes les 72 instructions) ;
+  à cette allure, systemd met plus de quatre-vingt-dix secondes de son temps
+  à atteindre udevd, `/dev/ttyS0` expirait avant d'être vu, et la connexion
+  série ne s'ouvrait pas. Une image démarrée par sa recette reçoit
+  maintenant `systemd.default_device_timeout_sec=600` et
+  `systemd.default_timeout_start_sec=600` ; l'horloge ne change pas, et un
+  système sans systemd ignore ces mots. Arch 7.2.7 va jusqu'à « archiso
+  login: » sur la console série.
 
 ## [0.4.0] — 2026-09-05
 
