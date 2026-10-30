@@ -71,6 +71,8 @@ operate, and `--no-tls` for tunnels that already encrypt.
 | Boot-before-connect, `wisq://` pairing (QR), Bonjour discovery | done |
 | Local Linux: rv32ima emulator, real-kernel boot, terminal view | done |
 | A disk for the local PC: bring an image, the guest sees it on `/dev/vda` | done |
+| Network for the local PC: DHCP, DNS, outgoing TCP, UDP and ping through the phone — `apk add`, `apt install` | done |
+| The local PC's desktop: a VNC server in the guest, opened by wisq's own client through a forwarded port | done |
 | Agent TLS | done |
 | Power a remote VM off from the phone: polite ACPI, then the cord if the guest never answers | done |
 | SPICE: send a file from the phone into the guest (agent channel) | done |
