@@ -943,3 +943,153 @@ label linux
     );
     assert_eq!(grub.expect("grub").kernel, "/boot/k");
 }
+
+/// Une image en mémoire pour `Recipe::read_in` : des fichiers par chemin, et
+/// les noms d'un dossier tirés de ces chemins.
+fn files(
+    table: &'static [(&'static str, &'static str)],
+) -> (
+    impl Fn(&str) -> Option<String>,
+    impl Fn(&str) -> Vec<String>,
+) {
+    let file = move |path: &str| {
+        table
+            .iter()
+            .find(|(name, _)| *name == path)
+            .map(|(_, text)| text.to_string())
+    };
+    let names = move |folder: &str| {
+        table
+            .iter()
+            .filter_map(|(name, _)| name.strip_prefix(folder)?.strip_prefix('/'))
+            .filter(|rest| !rest.contains('/'))
+            .map(str::to_string)
+            .collect()
+    };
+    (file, names)
+}
+
+/// La disposition d'Artix, réduite à ce qui compte : `grub.cfg` n'a aucune
+/// ligne `linux`, il lit `kernels.cfg`, dont l'entrée nomme son noyau par
+/// `$2` — une boucle `for` que wisq ne joue pas.
+const ARTIX: &[(&str, &str)] = &[
+    (
+        "/boot/grub/grub.cfg",
+        "function menu_reload {\n    configfile /boot/grub/grub.cfg\n}\nfunction memtest_detect {\n    menuentry --class=memtest \"memtest\" {linux16 /boot/$1}\n}\nsource /boot/grub/defaults.cfg\nsource /boot/grub/kernels.cfg\nsource /boot/grub/locales/${1}\n",
+    ),
+    ("/boot/grub/defaults.cfg", "timeout=-1\n"),
+    (
+        "/boot/grub/kernels.cfg",
+        "if cpuid -l; then\n    title=\"\"\n    for kopt in x86_64 $kopts label=ARTIX_202608; do\n        title=\"$title $kopt\";\n    done\n    menuentry \"From CD/DVD/ISO: artix.x86_64 \" --class=artix.x86_64 \"$title \" {# set arguments above with the editor\n        linux /boot/vmlinuz-$2\n        initrd /boot/intel-ucode.img /boot/amd-ucode.img /boot/initramfs-x86_64.img\n    }\nfi\n",
+    ),
+    ("/boot/vmlinuz-x86_64", ""),
+    ("/boot/initramfs-x86_64.img", ""),
+    ("/boot/intel-ucode.img", ""),
+    ("/boot/amd-ucode.img", ""),
+];
+
+/// **Artix démarre** : la recette suit `source`, passe `$2` à l'entrée,
+/// trouve le seul `vmlinuz-…` du dossier, et garde l'argument qui nomme le
+/// support — sans lui, l'initramfs ne retrouve pas le disque.
+#[test]
+fn a_grub_script_that_names_its_kernel_by_a_variable_is_read() {
+    let (file, names) = files(ARTIX);
+    let text = file("/boot/grub/grub.cfg").unwrap();
+    let recipe = Recipe::read_in(&text, "/boot/grub/grub.cfg", "ARTIX_202608", &file, &names)
+        .expect("la recette d'Artix");
+    assert_eq!(recipe.kernel, "/boot/vmlinuz-x86_64");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/boot/intel-ucode.img /boot/amd-ucode.img /boot/initramfs-x86_64.img")
+    );
+    assert_eq!(recipe.command_line, "label=ARTIX_202608");
+    assert_eq!(recipe.from, "/boot/grub/grub.cfg");
+}
+
+/// **Deux noyaux qui conviennent, aucun choisi.** Entre `vmlinuz-lts` et
+/// `vmlinuz-zen`, prendre l'un serait deviner ; l'image est refusée plutôt
+/// que démarrée sur un noyau que personne n'a nommé.
+#[test]
+fn a_variable_kernel_with_two_candidates_is_not_guessed() {
+    const TWO: &[(&str, &str)] = &[
+        (
+            "/boot/grub/grub.cfg",
+            "menuentry \"a\" {\n linux /boot/vmlinuz-$flavour quiet\n}\n",
+        ),
+        ("/boot/vmlinuz-lts", ""),
+        ("/boot/vmlinuz-zen", ""),
+    ];
+    let (file, names) = files(TWO);
+    let text = file("/boot/grub/grub.cfg").unwrap();
+    assert_eq!(
+        Recipe::read_in(&text, "/boot/grub/grub.cfg", "X", &file, &names),
+        None
+    );
+}
+
+/// Les paramètres d'une entrée remplacent `$1`, `${2}` ; une variable qui
+/// n'est pas lue tombe de la ligne, comme chez grub quand elle n'est pas
+/// posée, au lieu d'arriver au noyau en toutes lettres.
+#[test]
+fn entry_parameters_are_passed_and_unset_variables_vanish() {
+    let text = "menuentry 'Live' --class=live \"k1\" \"root=live\" {\n linux /boot/$2 ${3} $kopts quiet ${auto}x\n}\n";
+    let recipe = Recipe::read(text, "/boot/grub/grub.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/k1");
+    assert_eq!(recipe.command_line, "root=live quiet x");
+}
+
+/// **Un `configfile` qui se relit lui-même ne fait pas tourner la lecture
+/// en rond** : `menu_reload` relit `grub.cfg`, et chaque fichier n'est lu
+/// qu'une fois.
+#[test]
+fn a_grub_file_that_sources_itself_is_read_once() {
+    const LOOP: &[(&str, &str)] = &[
+        (
+            "/boot/grub/grub.cfg",
+            "configfile /boot/grub/grub.cfg\nsource /boot/grub/b.cfg\n",
+        ),
+        (
+            "/boot/grub/b.cfg",
+            "source /boot/grub/grub.cfg\nmenuentry \"b\" {\n linux /boot/k\n}\n",
+        ),
+    ];
+    let (file, names) = files(LOOP);
+    let text = file("/boot/grub/grub.cfg").unwrap();
+    let recipe =
+        Recipe::read_in(&text, "/boot/grub/grub.cfg", "", &file, &names).expect("la recette");
+    assert_eq!(recipe.kernel, "/boot/k");
+}
+
+/// **Fedora Workstation 44** : `/EFI/BOOT/grub.cfg` ne fait que relire
+/// `($root)/boot/grub2/grub.cfg`. Le périphérique devant le chemin est
+/// l'image elle-même ; le prendre pour une variable laissait l'image sans
+/// recette.
+#[test]
+fn a_configfile_behind_a_device_prefix_is_followed() {
+    const FEDORA: &[(&str, &str)] = &[
+        (
+            "/EFI/BOOT/grub.cfg",
+            "search --file --set=root /boot/0xf20784ad\nset prefix=($root)/boot/grub2\nconfigfile ($root)/boot/grub2/grub.cfg\n",
+        ),
+        (
+            "/boot/grub2/grub.cfg",
+            "set default=\"1\"\nmenuentry \"Start Fedora-Workstation-Live\" --class fedora {\n\tlinux ($root)/boot/x86_64/loader/linux quiet rhgb  root=live:CDLABEL=Fedora-WS-Live-44 rd.live.image\n\tinitrd ($root)/boot/x86_64/loader/initrd\n}\n",
+        ),
+    ];
+    let (file, names) = files(FEDORA);
+    let text = file("/EFI/BOOT/grub.cfg").unwrap();
+    let recipe = Recipe::read_in(
+        &text,
+        "/EFI/BOOT/grub.cfg",
+        "Fedora-WS-Live-44",
+        &file,
+        &names,
+    )
+    .expect("la recette de Fedora");
+    assert_eq!(recipe.kernel, "/boot/x86_64/loader/linux");
+    assert_eq!(recipe.initrd.as_deref(), Some("/boot/x86_64/loader/initrd"));
+    assert_eq!(
+        recipe.command_line,
+        "quiet rhgb root=live:CDLABEL=Fedora-WS-Live-44 rd.live.image"
+    );
+}
