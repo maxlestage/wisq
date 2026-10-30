@@ -8,6 +8,47 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Le bureau de la machine locale, par le client VNC de wisq
+
+**Ce qui manquait.** La machine locale n'avait qu'une console. Le port relayé
+de #643 existait dans la bibliothèque, mais l'application ne s'en servait pas.
+
+**Ce qui change.**
+- `LocalVMModel` relaie, dès le démarrage, le port 5900 de l'invité vers un
+  port de `127.0.0.1` choisi par le système (`X86Machine.forward`).
+- La console gagne un bouton « Bureau ». Il ouvre le client VNC de wisq sur
+  ce port, par `LocalDesktop.machine`, sans chiffrement ni mot de passe :
+  rien ne quitte le téléphone.
+- **Le bureau se pose par-dessus la console, il ne se présente pas.** Une
+  feuille ou une `fullScreenCover` ferait disparaître l'écran de la machine,
+  et son `onDisappear` la suspendrait.
+- `SessionView` gagne un initialiseur hors bibliothèque. Une session au
+  bureau n'est ni enregistrée ni marquée comme jointe, et c'est la console
+  qui la ferme.
+- Tant qu'aucun serveur VNC ne tourne dans l'invité, la session dit qu'elle
+  ne joint personne. `LocalDesktop.hint` dit quoi lancer.
+
+**Mesuré**, sur l'Alpine installé par #637, avec le port relayé au banc :
+- dans l'invité, `apk add xvfb x11vnc`, puis `Xvfb :0` et
+  `x11vnc -display :0` ;
+- sur l'hôte, un client RFB par `127.0.0.1:15900` reçoit :
+  - `RFB 003.008` ;
+  - le type de sécurité « aucune » ;
+  - un écran de 800 × 600 nommé `wisq-bureau` ;
+  - puis, pour une mise à jour complète, 1 920 016 octets d'image, soit
+    800 × 600 × 4 plus les en-têtes.
+
+**Vérifié.**
+- Deux tests :
+  - `LocalDesktopTests` : la boucle locale, en VNC, sans secret ni agent ;
+  - `HostStreamsTests` : la machine ne relaie qu'avec le réseau en mode
+    utilisateur, et sinon ne rend rien, sans erreur.
+- Cinq sabotages, cinq chutes.
+- La vue ne se construit pas sous Linux. Seule la CI Apple la compile, et
+  le geste lui-même reste à essayer sur un appareil.
+
+Compte publié : 3160.
+
 ## 2026-10-30 — Un port de l'hôte vers l'invité
 
 **Ce qui manquait.** L'invité pouvait sortir, mais rien de l'hôte ne pouvait
