@@ -8,6 +8,58 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Un port de l'hôte vers l'invité
+
+**Ce qui manquait.** L'invité pouvait sortir, mais rien de l'hôte ne pouvait
+entrer. Un serveur dans l'invité, un VNC par exemple, restait injoignable,
+même du téléphone qui le fait tourner.
+
+**Ce qui change.**
+- `HostStreams.forward(hostPort:toGuestPort:)` relaie un port de l'hôte vers
+  l'invité, comme `hostfwd` chez QEMU.
+  - Une connexion sur `127.0.0.1:hostPort` devient une connexion vers le port
+    de l'invité, venue de `10.0.2.2`.
+  - Seule la boucle locale écoute : l'invité ne s'expose pas au réseau du
+    téléphone.
+- C'est le sens inverse du TCP sortant de #641 : wisq envoie le SYN.
+  - Il attend un vrai SYN-ACK, qui accuse son SYN, et réémet tant que
+    l'invité se tait.
+  - Il tient la taille de segment que l'invité a dite.
+  - Il raccroche le client de l'hôte si personne ne répond dans le délai.
+  - Une remise à zéro de l'invité, quand rien n'écoute, ferme ce client tout
+    de suite.
+  - Le reste, les données, les fenêtres et la fermeture, est le chemin de
+    #641.
+- Au banc, `WISQ_PC_FORWARD=18083:80` relaie le port.
+
+**Mesuré**, sur l'Alpine installé par #637 :
+- dans l'invité, `nc -l -p 80` sert une réponse HTTP ;
+- sur l'hôte, `curl http://127.0.0.1:18083/` la reçoit : `bonjour-de-invite` ;
+- `nc` imprime la requête de `curl`, `Host: 127.0.0.1:18083` compris.
+
+Le banc ne règle pas l'attente sur l'horloge, contrairement à l'application.
+Il fallait donc garder l'invité occupé pendant que `curl` frappait : endormi,
+il traverse tout son budget en quelques secondes.
+
+**Pas encore** : l'application ne relaie aucun port. Un serveur VNC dans
+l'invité, ouvert par le client VNC de wisq, est la suite naturelle (voir la
+feuille de route).
+
+**Vérifié.**
+- Quatre tests (`HostStreamsTests`) :
+  - le chemin complet, données dans les deux sens et fermeture ;
+  - un refus de l'invité ;
+  - un SYN qui attend la bonne réponse ;
+  - un invité muet.
+- Dix sabotages, dix chutes. Quatre survivaient au premier passage, et les
+  tests les tiennent maintenant :
+  - l'écoute sur toutes les interfaces ;
+  - un accusé sans SYN pris pour une réponse ;
+  - la taille de segment de l'invité ignorée ;
+  - le délai jamais tenu.
+
+Compte publié : 3158.
+
 ## 2026-10-30 — La machine PC de l'application a le réseau
 
 **Ce qui manquait.** La carte (#639), le DHCP et le DNS (#640) et le TCP
