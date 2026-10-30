@@ -320,6 +320,23 @@ extension X86Core {
                 devices.primary.request &= ~line
             }
         }
+        // Le clavier sur la ligne 1, la souris sur la ligne 12 — la quatrième
+        // du second contrôleur. À niveau, comme le port série.
+        if devices.ps2.keyboardInterrupting {
+            devices.primary.request |= 1 << X86PS2Controller.keyboardLine
+        } else {
+            devices.primary.request &= ~(1 << X86PS2Controller.keyboardLine)
+        }
+        let mouseBit: UInt8 = 1 << (X86PS2Controller.mouseLine - 8)
+        if devices.ps2.mouseInterrupting {
+            devices.secondary.request |= mouseBit
+        } else {
+            devices.secondary.request &= ~mouseBit
+        }
+        // **La cascade** : le second demande par la ligne 2 du maître, quand
+        // une de ses lignes est démasquée et passe devant ce qu'il sert déjà.
+        let secondLine = Self.deliverable(devices.secondary)
+        if secondLine != nil { devices.primary.request |= 0x04 } else { devices.primary.request &= ~0x04 }
         guard flags & Flag.interrupt != 0 else { return }
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
@@ -335,12 +352,33 @@ extension X86Core {
            line >= UInt8(devices.primary.service.trailingZeroBitCount) {
             return
         }
+        if line == 2, let second = secondLine {
+            // Le vecteur vient du second, et les deux gardent la ligne en
+            // service jusqu'à leur fin d'interruption — Linux l'envoie aux
+            // deux.
+            guard try enter(devices.secondary.vectorBase &+ second, errorCode: 0) else { return }
+            devices.secondary.request &= ~(1 << second)
+            devices.secondary.service |= (1 << second)
+            devices.primary.request &= ~0x04
+            devices.primary.service |= 0x04
+            return
+        }
         let vector = devices.primary.vectorBase &+ line
         guard try enter(vector, errorCode: 0) else { return }
         // La demande n'est retirée **que** si elle a été livrée : sinon elle
         // reste, et le noyau la trouvera quand il aura posé sa porte.
         devices.primary.request &= ~(1 << line)
         devices.primary.service |= (1 << line)
+    }
+
+    /// La ligne qu'un 8259 livrerait maintenant : démasquée, et devant tout
+    /// ce qu'il sert déjà. Nil sinon.
+    static func deliverable(_ controller: X86LegacyDevices.Controller) -> UInt8? {
+        let pending = controller.request & ~controller.mask
+        guard pending != 0 else { return nil }
+        let line = UInt8(pending.trailingZeroBitCount)
+        if controller.service != 0, line >= UInt8(controller.service.trailingZeroBitCount) { return nil }
+        return line
     }
 
     /// Vrai quand quelque chose peut arriver : une horloge armée, ou un port

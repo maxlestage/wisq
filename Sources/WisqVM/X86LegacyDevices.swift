@@ -84,6 +84,8 @@ public struct X86LegacyDevices: Sendable, Equatable {
 
     public var primary = Controller()
     public var secondary = Controller()
+    /// Le contrôleur du clavier et de la souris. Voir `X86PS2Controller`.
+    public var ps2 = X86PS2Controller()
 
     /// Le 16550. Voir `X86SerialPort.swift`.
     public var serial = SerialPort()
