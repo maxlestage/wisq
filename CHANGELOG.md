@@ -124,6 +124,36 @@ break APIs.
   une barre oblique inverse ou écrit le périphérique devant le chemin
   (`(${voidlive})/boot/vmlinuz`). Les deux images démarrent ; Gentoo et
   NixOS, essayés en même temps, trouvaient déjà la leur.
+- **Une recette qui cite plusieurs initramfs** — les microcodes puis
+  l'initramfs sur une ligne grub, chez Artix ; des virgules chez syslinux ;
+  une ligne par fichier chez systemd-boot — était lue comme un seul chemin,
+  ou réduite à sa dernière ligne. Tous sont gardés, dans l'ordre, et posés
+  bout à bout dans l'initramfs, comme un chargeur les pose en mémoire.
+- **L'ISO d'installation de Mageia était refusée** : son `isolinux.cfg` écrit
+  `kernel x86_64/vmlinuz`, un chemin que syslinux lit depuis le dossier de
+  sa recette (`/isolinux/x86_64/vmlinuz`), et que wisq cherchait à la
+  racine.
+- **Guix System s'arrêtait en générant ses clés SSH**, sur `PSLLQ` : des huit
+  décalages SSE2 dont le compte vient d'un registre, seuls quatre existaient.
+  Les huit y sont, contre le vrai processeur.
+- **Sept instructions que CPUID annonce manquaient** — `MOVSHDUP`, les
+  horizontales `HADDPS`, `HSUBPS`, `HADDPD`, `HSUBPD` (SSE3), `PHMINPOSUW` et
+  `MPSADBW` (SSE4.1) —, trouvées en passant toutes les formes au cœur contre
+  ce que les binaires d'un système emploient. Un programme qui les choisit
+  sur la foi de CPUID s'arrêtait net.
+- **Chimera Linux s'arrêtait au chargement de ses modules**, sur
+  `vblendps` : depuis que CPUID annonce AVX, un module du noyau mélange ses
+  vecteurs sur 256 bits, et ni `BLENDPS` ni `BLENDPD` n'existaient, sous
+  aucune forme. Les trois formes y sont, contre le vrai processeur.
+
+- **Une machine PC de plus de 3 Gio ne démarrait pas** : sa RAM d'un seul
+  tenant recouvrait le disque et l'écran, et Linux ne trouvait plus où poser
+  ses périphériques avant de bloquer son processeur. Comme sur un vrai PC, la
+  RAM s'arrête à 3 Gio et reprend à 4 ; Chimera démarre à 6 Gio.
+- **« Démarrage impossible… X86Core.Fault erreur 2 »** : un initramfs plus
+  grand que la mémoire de la machine était posé hors de la mémoire au lieu
+  d'être refusé, et aucun refus de la machine PC ne se lisait. Le refus dit
+  maintenant les deux tailles et le curseur à monter.
 
 ## [0.4.0] — 2026-09-05
 

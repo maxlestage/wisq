@@ -30,7 +30,7 @@ import Foundation
 //    d'un NaN ou d'un nombre trop grand rend l'« entier indéfini » — le bit
 //    de signe seul — et continue.
 //
-// La référence est `Tests/Fixtures/x86-float-oracle.tsv` : 119 formes, 12 852
+// La référence est `Tests/Fixtures/x86-float-oracle.tsv` : 127 formes, 13 716
 // cas, fabriqué par `scripts/build-x86-float-oracle.py`.
 //
 // **Et ce corpus mesure ce que les six autres interdisaient : les drapeaux.**
@@ -222,6 +222,31 @@ extension X86Core {
             let low = Self.combine(Self.asDouble(destination.low), Self.asDouble(source.0), { $0 - $1 })
             let high = Self.combine(Self.asDouble(destination.high), Self.asDouble(source.1), { $0 + $1 })
             setVector(fields.reg, low.bitPattern, high.bitPattern)
+
+        // **Les additions et soustractions horizontales de SSE3** : chaque
+        // paire voisine d'un même registre, la destination d'abord, la
+        // source ensuite. `HADDPD` et `HSUBPD` sous 66, `HADDPS` et `HSUBPS`
+        // sous F2 ; chaque résultat suit la règle des NaN de l'élément de
+        // gauche, puis de droite. Annoncées avec SSE3 et absentes jusqu'ici.
+        case 0x7C where operandSize, 0x7D where operandSize:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let operation: (Double, Double) -> Double = opcode == 0x7C ? { $0 + $1 } : { $0 - $1 }
+            let low = Self.combine(Self.asDouble(destination.low), Self.asDouble(destination.high), operation)
+            let high = Self.combine(Self.asDouble(source.0), Self.asDouble(source.1), operation)
+            setVector(fields.reg, low.bitPattern, high.bitPattern)
+
+        case 0x7C where doubleWide, 0x7D where doubleWide:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let operation: (Float, Float) -> Float = opcode == 0x7C ? { $0 + $1 } : { $0 - $1 }
+            func pair(_ half: UInt64) -> UInt64 {
+                UInt64(Self.combine(Self.asSingle(half), Self.asSingle(half >> 32), operation).bitPattern)
+            }
+            setVector(fields.reg, pair(destination.low) | pair(destination.high) << 32,
+                      pair(source.0) | pair(source.1) << 32)
 
         // Et les quatre simples, sans préfixe : `ADDPS`, `MULPS`, `SUBPS`,
         // `DIVPS`, chacun selon la même règle.

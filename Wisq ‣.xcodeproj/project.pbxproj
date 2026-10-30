@@ -47,6 +47,7 @@
 		2929322DC88D18589AC82A48 /* Wisq.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Wisq.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2DBC52CE587875729F2C106B /* KernelMemoryNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryNoteTests.swift; sourceTree = "<group>"; };
 		3F04062F94A16D172B251A44 /* wisq */ = {isa = PBXFileReference; lastKnownFileType = folder; name = wisq; path = .; sourceTree = SOURCE_ROOT; };
+		4179608503509F803348637E /* Wisq.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Wisq.entitlements; sourceTree = "<group>"; };
 		43A9385C55B394D504E15599 /* LocalVMModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVMModelTests.swift; sourceTree = "<group>"; };
 		4A51D800BD6A5BEA06CD1B83 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		651340557E4AC066FC3601EB /* RefusalTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RefusalTextTests.swift; sourceTree = "<group>"; };
@@ -142,6 +143,7 @@
 			children = (
 				4A51D800BD6A5BEA06CD1B83 /* Assets.xcassets */,
 				DAC4761BC4521ABE2586FEEB /* Info.plist */,
+				4179608503509F803348637E /* Wisq.entitlements */,
 				DA6A1EBDD6861A1CB10497D1 /* WisqApp.swift */,
 			);
 			path = App;
@@ -341,6 +343,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Wisq.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -362,6 +365,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/Wisq.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
