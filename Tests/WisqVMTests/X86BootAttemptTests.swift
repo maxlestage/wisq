@@ -239,7 +239,7 @@ final class X86BootAttemptTests: XCTestCase {
         // `WISQ_PC_NET=user` met derrière elle le réseau en mode utilisateur
         // (`UserNetwork`) : un bail DHCP, une passerelle qui répond.
         let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable(
-            behind: environment["WISQ_PC_NET"] == "user" ? UserNetwork() : nil)
+            behind: environment["WISQ_PC_NET"] == "user" ? UserNetwork(relay: HostDatagrams()) : nil)
         if let cable {
             let bus = memory.bus ?? X86PCIHost(storage: nil)
             bus.network = X86PCIHost(network: VirtioNet(backend: cable))
