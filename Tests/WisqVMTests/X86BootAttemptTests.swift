@@ -233,6 +233,15 @@ final class X86BootAttemptTests: XCTestCase {
                 memory.bus = bus
             }
         }
+        // **Une carte réseau** (`WISQ_PC_NET=1`), sur l'emplacement cinq. Son
+        // autre bout ne fait que compter : de quoi voir le pilote la trouver,
+        // lever le lien et envoyer ses premières trames.
+        let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable()
+        if let cable {
+            let bus = memory.bus ?? X86PCIHost(storage: nil)
+            bus.network = X86PCIHost(network: VirtioNet(backend: cable))
+            memory.bus = bus
+        }
         // **Ce que le témoin a rendu, le 6 septembre 2026**, avec un vrai
         // noyau Alpine LTS et `WISQ_PC_DISPLAY=1024x768` :
         //
@@ -544,6 +553,9 @@ final class X86BootAttemptTests: XCTestCase {
                         + " \($0.refused) refusées, état \($0.status), ligne \(host.interruptLine)"
                 } ?? "vide"
             } ?? "aucun")
+            réseau                : \(core.memory?.bus?.network?.nic.map { nic in
+                "\(nic.transmitted) trames envoyées (\(cable?.sent ?? 0) au câble), état \(nic.status)"
+            } ?? "aucun")
             """)
 
         func list(_ title: String, _ lines: [String]) {
@@ -634,4 +646,12 @@ final class X86BootAttemptTests: XCTestCase {
         XCTAssertTrue(serial.contains("Run /init as init process"),
                       "et passer la main à un programme")
     }
+}
+
+/// L'autre bout d'une carte réseau de banc : il compte ce qu'on lui envoie et
+/// ne répond jamais.
+final class CountingCable: NetworkBackend {
+    var sent = 0
+    func send(_ frame: [UInt8]) { sent += 1 }
+    func receive() -> [[UInt8]] { [] }
 }
