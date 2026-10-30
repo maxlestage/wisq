@@ -188,30 +188,31 @@ public final class X86Machine: @unchecked Sendable {
     /// L'heure de l'invité vient de son compteur d'instructions, et un
     /// instantané le fige : sans ceci, une machine reprise trois jours plus
     /// tard se croyait trois jours plus tôt, et `apt` refusait des dépôts
-    /// « pas encore valides ». Le temps écoulé passe dans `idled`, comme si
-    /// le processeur avait dormi tout ce temps sur un `HLT`. Le compteur
-    /// d'horodatage et le 8253 avancent ensemble, et les échéances manquées
-    /// se fondent en une seule (`serviceInterrupts`).
+    /// « pas encore valides ». Le temps dû passe dans `idled`, comme si le
+    /// processeur avait dormi sur un `HLT`. Le compteur d'horodatage et le
+    /// 8253 avancent ensemble, et les échéances manquées se fondent en une
+    /// seule (`serviceInterrupts`).
     ///
-    /// À appeler machine arrêtée, entre la reprise et `run`. Un écart négatif
-    /// ne fait rien : le temps de l'invité ne recule pas.
+    /// **Par pas** (`GuestClock.stepSeconds`), chacun quand l'invité est
+    /// arrêté sur `HLT` : voir `run`. Un écart négatif ne fait rien : le
+    /// temps de l'invité ne recule pas. Ce qui reste dû n'est pas dans
+    /// l'instantané ; un rattrapage interrompu reprend avec l'écart de la
+    /// reprise suivante.
     public func elapse(seconds: TimeInterval) {
-        guard seconds > 0, seconds.isFinite else { return }
-        let cycles = min(seconds, Self.longestElapse) * guestHertz
-        core.idled &+= UInt64(cycles)
+        guard let seconds = GuestClock.catchUp(seconds) else { return }
+        pendingElapse &+= UInt64(seconds * guestHertz)
     }
 
-    /// Le temps écoulé depuis `savedAt`, l'heure de l'instantané repris
-    /// (`SuspendedMachine.savedAt`). Sans heure, rien : mieux vaut une heure
-    /// en retard qu'un écart inventé.
-    public func elapse(since savedAt: Date?, now: Date = Date()) {
-        guard let savedAt else { return }
-        elapse(seconds: now.timeIntervalSince(savedAt))
-    }
+    /// Le temps encore dû, en cycles.
+    var pendingElapse: UInt64 = 0
 
-    /// Au-delà, la session est de toute façon d'une autre époque ; borner
-    /// garde le calcul loin du débordement.
-    static let longestElapse: TimeInterval = 10 * 365 * 86_400
+    /// Paie un pas du temps dû, et dit combien de cycles il a valu.
+    func takeElapseStep() -> UInt64 {
+        let step = min(pendingElapse, UInt64(GuestClock.stepSeconds * guestHertz))
+        core.idled &+= step
+        pendingElapse -= step
+        return step
+    }
     private var inputQueue: [UInt8] = []
     /// Les touches et les mouvements envoyés par l'hôte, en attente du
     /// prochain tour — sous le même verrou que `inputQueue`.
@@ -356,7 +357,7 @@ public final class X86Machine: @unchecked Sendable {
         // compter que celles-là ferait tourner cette boucle sans fin autour
         // d'un invité qui dort, sur un téléphone, sans qu'aucun budget puisse
         // l'arrêter. `idled` est l'autre moitié de l'horloge, et il compte ici.
-        let start = core.retired &+ core.idled
+        var start = core.retired &+ core.idled
         let wallStart = DispatchTime.now().uptimeNanoseconds
         var slicesSinceFlush = 0
 
@@ -410,6 +411,14 @@ public final class X86Machine: @unchecked Sendable {
             if executed == 0 {
                 flushOutput()
                 return .powerOff
+            }
+            // **Le temps dû, un pas par sommeil** (`elapse`). Il ne compte ni
+            // dans le budget ni dans l'avance sur le mur : c'est du temps du
+            // dehors, pas du travail de l'invité, et le dormir ferait attendre
+            // la personne cinq minutes par pas.
+            if core.halted, pendingElapse > 0 {
+                start &+= takeElapseStep()
+                continue
             }
             if pacesIdleToWallClock && core.halted {
                 let guest = Double((core.retired &+ core.idled) &- start) / guestHertz
