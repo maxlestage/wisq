@@ -78,6 +78,13 @@ public final class HostDatagrams: DatagramRelay, @unchecked Sendable {
         for descriptor in closing { _ = closeSocket(descriptor) }
     }
 
+    /// Les sockets ouvertes, pour les tests.
+    var openSockets: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return outlets.count
+    }
+
     // MARK: - La traduction
 
     /// Où va vraiment un datagramme que l'invité adresse à `destination:port`.

@@ -128,6 +128,7 @@ final class UserNetworkUDPTests: XCTestCase {
         // Le relais tourne sur l'hôte : le résolveur local de systemd lui répond.
         XCTAssertEqual(HostDatagrams.hostResolver("nameserver 127.0.0.53"), [127, 0, 0, 53])
         XCTAssertEqual(HostDatagrams.hostResolver("nameserver 1.2.3.4.5"), [1, 1, 1, 1])
+        XCTAssertEqual(HostDatagrams.hostResolver("nameserver 1.2.3.x.4"), [1, 1, 1, 1], "quatre nombres, pas une adresse")
         XCTAssertEqual(HostDatagrams.hostResolver(nil), [1, 1, 1, 1])
     }
 
@@ -174,6 +175,7 @@ final class UserNetworkUDPTests: XCTestCase {
         defer { relay.close() }
         let network = UserNetwork(relay: relay)
         network.send(Self.udpFrame(to: UserNetwork.gateway, port: port, from: 5555, Array("wisq".utf8)))
+        XCTAssertEqual(relay.openSockets, 1)
         var frames: [[UInt8]] = []
         let deadline = Date().addingTimeInterval(5)
         while frames.isEmpty, Date() < deadline {
@@ -194,6 +196,7 @@ final class UserNetworkUDPTests: XCTestCase {
         let relay = HostDatagrams(resolver: [127, 0, 0, 1])
         relay.close()
         relay.send([1], to: UserNetwork.gateway, port: 9, fromGuestPort: 1)
+        XCTAssertEqual(relay.openSockets, 0, "aucune socket rouverte")
         XCTAssertTrue(relay.receive().isEmpty)
     }
 }
