@@ -8,6 +8,59 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — La passerelle donne l'heure
+
+**Ce qui manquait.** Le temps de l'invité avance au rythme de l'interprète,
+donc un invité chargé prend du retard pendant qu'il tourne. Son client NTP
+le rattrape, mais seulement s'il joint un serveur. Or un téléphone hors
+ligne n'en joint aucun, ni une machine au réseau coupé (#653).
+
+**Ce qui change.**
+- `UserNetwork.ntp` : la passerelle `10.0.2.2` répond elle-même aux
+  demandes SNTP (RFC 4330) sur son port 123, avec l'heure du téléphone. Elle
+  se donne la strate un et la référence « WISQ ». Seul un client (mode trois)
+  est servi ; sa version, son intervalle et son heure d'envoi lui sont
+  rendus.
+- Le bail DHCP l'annonce (option 42). `systemd-networkd` le passe à
+  `timesyncd`.
+- Une demande vers un serveur du dehors part toujours par l'hôte, comme
+  avant ; réseau coupé, elle se perd, et la passerelle reste.
+
+**Vérifié sur un vrai invité.** Debian 13, image de cloud, réseau en mode
+utilisateur :
+
+```
+active
+         NTP: 10.0.2.2
+1793390031
+(date -u -s @1600000000 ; systemctl restart systemd-timesyncd ; sleep 15)
+1793390110
+       Server: 10.0.2.2 (10.0.2.2)
+      Stratum: 1
+    Reference: WISQ
+```
+
+L'invité, remis en septembre 2020, revient à l'heure du téléphone en quinze
+secondes d'invité. NTP vers le dehors est bloqué dans ce conteneur, donc c'est
+bien la passerelle qui a répondu.
+
+**Tests.**
+- Cinq tests dans `UserNetworkTimeTests` : les horodatages, la réponse, le
+  refus de ce qui n'est pas un client, le passage par les trames, et l'heure
+  qui reste quand le réseau est coupé.
+- Une ligne de plus dans le test du bail, pour l'option 42.
+- Cinq sabotages, tous attrapés :
+  - le mode du client ignoré : deux échecs ;
+  - l'heure d'envoi du client non rendue : un ;
+  - l'époque d'Unix prise pour celle de NTP : trois ;
+  - l'option 42 ôtée : deux ;
+  - n'importe quelle adresse servie au lieu de la passerelle : un.
+- `swift test`, `check-whitespace.sh` et les tests du site passent.
+- Le compte publié passe à 3218.
+
+**Ce qui reste.** Alpine n'a pas de client NTP par défaut. Son `udhcpc`
+reçoit l'option, mais rien ne s'en sert sans `chronyd` ou `ntpd`.
+
 ## 2026-10-30 — Une session reprise le lendemain sait quel jour on est
 
 **Ce qui n'allait pas.** L'heure de l'invité PC vient de son compteur
