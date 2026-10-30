@@ -154,6 +154,17 @@ break APIs.
   grand que la mémoire de la machine était posé hors de la mémoire au lieu
   d'être refusé, et aucun refus de la machine PC ne se lisait. Le refus dit
   maintenant les deux tailles et le curseur à monter.
+- **Artix et Fedora Workstation étaient refusés faute de recette**, alors
+  que leur grub en porte une — écrite comme un script. Artix ne met aucune
+  ligne `linux` dans `grub.cfg` : il lit `kernels.cfg` par `source`, et son
+  entrée nomme le noyau `vmlinuz-$2`, qu'une boucle assemble. Fedora
+  Workstation 44 range la sienne dans `/boot/grub2/`, que son
+  `/EFI/BOOT/grub.cfg` relit par `configfile ($root)/…`. Le lecteur suit
+  maintenant `source` et `configfile`, passe à une entrée ses paramètres,
+  trouve sur le disque un noyau nommé par une variable quand il n'y en a
+  qu'un, et garde l'argument qui nomme le support (`label=ARTIX_202608`).
+  Artix démarre : son initramfs retrouve le disque par cette étiquette, et
+  s6 lance ses services.
 
 ## [0.4.0] — 2026-09-05
 
