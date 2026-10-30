@@ -65,6 +65,14 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         UserNetwork(relay: HostDatagrams(), streams: HostStreams(), echoes: HostEchoes.make())
     }
 
+    /// **Le réseau coupé** (`MachineNetwork`) : la passerelle répond encore
+    /// — ARP, bail, ping de `10.0.2.2` —, mais rien ne sort. Le TCP reste
+    /// pour les ports relayés vers l'invité, et lui seul : ce que l'invité
+    /// ouvre vers le dehors est refusé tout de suite, sans attendre.
+    public static func isolated() -> UserNetwork {
+        UserNetwork(streams: HostStreams(reachesOutside: false))
+    }
+
     public func send(_ frame: [UInt8]) {
         guard frame.count >= 14 else { return }
         let replies = Self.answer(frame)
