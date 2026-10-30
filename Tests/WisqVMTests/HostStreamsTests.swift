@@ -261,7 +261,9 @@ final class HostStreamsTests: XCTestCase {
         streams.handle(HostStreams.Segment(remote: [10, 0, 2, 77], remotePort: 80, guestPort: 40_004,
                                            sequence: 9, acknowledgment: 0, flags: Flag.syn, window: 1000,
                                            maximumSegment: nil, payload: []))
-        XCTAssertEqual(streams.receive().first?.flags, Flag.rst | Flag.ack)
+        let refused = streams.receive().first
+        XCTAssertEqual(refused?.flags, Flag.rst | Flag.ack)
+        XCTAssertEqual(refused?.acknowledgment, 10, "le SYN compte pour un")
         XCTAssertEqual(streams.openConnections, 0)
     }
 
