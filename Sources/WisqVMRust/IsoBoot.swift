@@ -123,15 +123,40 @@ public enum IsoBoot {
     /// qui n'a rien à dire à personne, alors qu'ici il éteindrait la seule
     /// sortie qui existe. Le reste passe mot pour mot — `splash` compris, qui
     /// ne demande qu'un dessin que personne ne fera.
+    ///
+    /// **Et systemd reçoit de la patience** (voir `patience`), entre les deux.
     public static func commandLine(from recipe: String) -> String {
-        let kept = recipe
+        let words = recipe
             .split(separator: " ", omittingEmptySubsequences: true)
             .filter { $0 != "quiet" }
+        let waits = patience.filter { setting in
+            let key = setting.prefix { $0 != "=" }
+            return !words.contains { $0.hasPrefix(key + "=") }
+        }
+        return (words.map(String.init) + waits + [X86BootLoader.defaultCommandLine])
             .joined(separator: " ")
-        return kept.isEmpty
-            ? X86BootLoader.defaultCommandLine
-            : "\(kept) \(X86BootLoader.defaultCommandLine)"
     }
+
+    /// **Les délais de systemd, allongés à dix minutes.**
+    ///
+    /// L'invité croit tourner sur un processeur d'environ 86 MHz : l'horloge
+    /// avance d'un cran toutes les `X86LegacyDevices.instructionsPerTick`
+    /// instructions, quelle que soit la vitesse du téléphone. À cette allure,
+    /// Arch met plus de quatre-vingt-dix secondes de son temps à atteindre
+    /// udevd — le décodage LZMA de sa racine, puis les services rangés avant
+    /// lui. Le délai par défaut d'un périphérique expire avant, `/dev/ttyS0`
+    /// n'est jamais « vu », et la connexion sur la console série — la seule
+    /// que la vue Console montre — ne s'ouvre pas. Un vrai PC à 86 MHz
+    /// tomberait dans le même mur.
+    ///
+    /// L'horloge, elle, ne change pas : la ralentir ou l'accélérer étirerait
+    /// les délais de tous les invités. Ces deux mots ne parlent qu'à systemd ;
+    /// un système qui ne l'a pas les ignore, et une image qui fixe déjà les
+    /// siens les garde.
+    static let patience = [
+        "systemd.default_device_timeout_sec=600",
+        "systemd.default_timeout_start_sec=600",
+    ]
 
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
