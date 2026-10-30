@@ -9,10 +9,11 @@ import Foundation
 /// documentation, de scripts et d'habitudes les supposent : l'invité est
 /// `10.0.2.15/24`, la passerelle `10.0.2.2`, le serveur de noms `10.0.2.3`.
 ///
-/// **Ce que cette tranche fait** : répondre aux demandes ARP pour la
-/// passerelle et le serveur de noms, servir un bail DHCP, et répondre aux
-/// échos ICMP adressés à la passerelle. Le reste est ignoré sans bruit,
-/// comme un réseau où personne n'écoute.
+/// **Ce qu'il fait** : répondre aux demandes ARP pour la passerelle et le
+/// serveur de noms, servir un bail DHCP, répondre aux échos ICMP adressés à
+/// la passerelle, et confier l'UDP — le DNS d'abord — à un `DatagramRelay`
+/// qui le porte au-dehors. Le reste est ignoré sans bruit, comme un réseau où
+/// personne n'écoute.
 public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     public static let guest: [UInt8] = [10, 0, 2, 15]
     public static let gateway: [UInt8] = [10, 0, 2, 2]
@@ -25,26 +26,114 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     /// session, et le renouvellement est servi de toute façon.
     public static let leaseSeconds: UInt32 = 86_400
 
+    /// Un datagramme UDP pour l'invité, sous l'adresse qu'il attend.
+    public struct Datagram: Equatable, Sendable {
+        public let source: [UInt8]
+        public let sourcePort: UInt16
+        public let guestPort: UInt16
+        public let payload: [UInt8]
+
+        public init(source: [UInt8], sourcePort: UInt16, guestPort: UInt16, payload: [UInt8]) {
+            self.source = source
+            self.sourcePort = sourcePort
+            self.guestPort = guestPort
+            self.payload = payload
+        }
+    }
+
     private let lock = NSLock()
     private var outgoing: [[UInt8]] = []
+    /// L'adresse matérielle de l'invité, apprise de ses trames : c'est à elle
+    /// que vont les réponses du dehors.
+    private var guestMAC: [UInt8] = VirtioNet.defaultMAC
+    private var identification: UInt16 = 0
+    public let relay: DatagramRelay?
 
-    public init() {}
+    /// Sans `relay`, l'UDP vers le dehors se perd, comme sur un réseau isolé.
+    public init(relay: DatagramRelay? = nil) {
+        self.relay = relay
+    }
 
     public func send(_ frame: [UInt8]) {
+        guard frame.count >= 14 else { return }
         let replies = Self.answer(frame)
-        guard !replies.isEmpty else { return }
         lock.lock()
+        guestMAC = Array(frame[6..<12])
         outgoing += replies
         lock.unlock()
+        if replies.isEmpty, let relay, let datagram = Self.outboundDatagram(frame) {
+            relay.send(datagram.payload, to: datagram.destination, port: datagram.destinationPort,
+                       fromGuestPort: datagram.sourcePort)
+        }
     }
 
     public func receive() -> [[UInt8]] {
+        let arrived = relay?.receive() ?? []
         lock.lock()
         defer { lock.unlock() }
+        for datagram in arrived {
+            identification &+= 1
+            outgoing += Self.frames(for: datagram, to: guestMAC, identification: identification)
+        }
         guard !outgoing.isEmpty else { return [] }
         let taken = outgoing
         outgoing.removeAll()
         return taken
+    }
+
+    // MARK: - L'UDP du dehors
+
+    /// Un datagramme que l'invité envoie au-delà de la passerelle.
+    struct Outbound: Equatable {
+        let destination: [UInt8]
+        let sourcePort: UInt16
+        let destinationPort: UInt16
+        let payload: [UInt8]
+    }
+
+    /// Le datagramme UDP que porte `frame`, s'il en porte un entier. Un
+    /// fragment est laissé de côté : un client DNS n'en envoie pas.
+    static func outboundDatagram(_ frame: [UInt8]) -> Outbound? {
+        guard frame.count >= 34, be16(frame, 12) == ipv4Type else { return nil }
+        let packet = Array(frame[14...])
+        guard packet[0] >> 4 == 4, packet[9] == 17 else { return nil }
+        let headerLength = Int(packet[0] & 0x0F) * 4
+        let total = Int(be16(packet, 2))
+        guard headerLength >= 20, total >= headerLength + 8, total <= packet.count,
+              checksum(Array(packet[0..<headerLength])) == 0,
+              be16(packet, 6) & 0x3FFF == 0 else { return nil }
+        let udp = Array(packet[headerLength..<total])
+        let length = Int(be16(udp, 4))
+        guard length >= 8, length <= udp.count else { return nil }
+        return Outbound(destination: Array(packet[16..<20]), sourcePort: be16(udp, 0),
+                        destinationPort: be16(udp, 2), payload: Array(udp[8..<length]))
+    }
+
+    /// La charge la plus grande d'un fragment : une trame de 1514 octets, moins
+    /// les en-têtes Ethernet et IPv4, arrondie au multiple de huit.
+    static let fragmentPayload = 1480
+
+    /// Les trames qui portent `datagram` à l'invité, fragmentées s'il dépasse
+    /// une trame — une réponse DNS avec EDNS le peut.
+    static func frames(for datagram: Datagram, to mac: [UInt8], identification: UInt16) -> [[UInt8]] {
+        let udp = udpDatagram(sourcePort: datagram.sourcePort, destinationPort: datagram.guestPort,
+                              datagram.payload, from: datagram.source, to: guest)
+        guard udp.count > fragmentPayload else {
+            return [ethernet(to: mac, type: ipv4Type, ipv4Packet(from: datagram.source, to: guest, protocol: 17, udp))]
+        }
+        var frames: [[UInt8]] = []
+        var offset = 0
+        while offset < udp.count {
+            let end = min(offset + fragmentPayload, udp.count)
+            let more = end < udp.count
+            let field = UInt16(offset / 8) | (more ? 0x2000 : 0)
+            frames.append(ethernet(to: mac, type: ipv4Type,
+                                   ipv4Packet(from: datagram.source, to: guest, protocol: 17,
+                                              Array(udp[offset..<end]), identification: identification,
+                                              fragment: field)))
+            offset = end
+        }
+        return frames
     }
 
     // MARK: - Ce qu'on répond
@@ -177,9 +266,11 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         destination + routerMAC + be16Bytes(type) + payload
     }
 
+    /// Sans `fragment`, le paquet est entier et ne doit pas être fragmenté.
     static func ipv4Packet(from source: [UInt8], to destination: [UInt8], protocol number: UInt8,
-                           _ payload: [UInt8]) -> [UInt8] {
-        var header: [UInt8] = [0x45, 0] + be16Bytes(UInt16(20 + payload.count)) + [0, 0, 0x40, 0, 64, number, 0, 0]
+                           _ payload: [UInt8], identification: UInt16 = 0, fragment: UInt16 = 0x4000) -> [UInt8] {
+        var header: [UInt8] = [0x45, 0] + be16Bytes(UInt16(20 + payload.count)) + be16Bytes(identification)
+            + be16Bytes(fragment) + [64, number, 0, 0]
         header += source + destination
         let sum = checksum(header)
         header[10] = UInt8(sum >> 8)
