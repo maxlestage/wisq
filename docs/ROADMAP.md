@@ -679,7 +679,9 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
 - **Un réglage par machine pour la couper : fait** (`MachineNetwork`). La
   carte et la passerelle restent, rien ne sort, et le bureau relayé marche
-  encore. Couper ne coûte pas la session.
+  encore. Couper ne coûte pas la session. Ce qui voudrait sortir est refusé
+  tout de suite : DNS « refusé », ICMP « réseau injoignable », TCP remis à
+  zéro.
 
 **Ce que le réseau a ouvert, vérifié : installer Alpine depuis la petite
 image.** L'ISO `virt` (69 Mio) ne porte pas les paquets de l'installation, et
