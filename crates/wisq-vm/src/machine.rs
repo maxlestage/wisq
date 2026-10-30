@@ -728,7 +728,11 @@ mod tests {
         let mut machine = Machine::new(1024 * 1024, Box::new(|_| {}));
         machine.core.timerl = 0xFFFF_FFF0;
         machine.elapse(0x20);
-        assert_eq!((machine.core.timerh, machine.core.timerl), (0, 0xFFFF_FFF0), "rien avant le sommeil");
+        assert_eq!(
+            (machine.core.timerh, machine.core.timerl),
+            (0, 0xFFFF_FFF0),
+            "rien avant le sommeil"
+        );
         machine.take_elapse_step();
         assert_eq!((machine.core.timerh, machine.core.timerl), (1, 0x10));
         machine.elapse(3 * 86_400 * 1_000_000);
@@ -742,6 +746,10 @@ mod tests {
         assert_eq!(now, 0x1_0000_0010 + 259_200_000_000);
         machine.elapse(u64::MAX);
         machine.elapse(1);
-        assert_eq!(machine.pending_elapse, u64::MAX, "la dette sature, elle ne déborde pas");
+        assert_eq!(
+            machine.pending_elapse,
+            u64::MAX,
+            "la dette sature, elle ne déborde pas"
+        );
     }
 }
