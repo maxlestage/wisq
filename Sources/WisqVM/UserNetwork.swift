@@ -53,10 +53,16 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
 
     /// Sans `relay`, l'UDP vers le dehors se perd ; sans `streams`, le TCP ;
     /// sans `echoes`, le ping — comme sur un réseau isolé.
-    public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil, echoes: HostEchoes? = nil) {
+    /// Vrai pour le réseau coupé : ce qui voudrait sortir est refusé tout de
+    /// suite par la passerelle, au lieu de se perdre. Voir `refusal`.
+    public let refusesOutside: Bool
+
+    public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil, echoes: HostEchoes? = nil,
+                refusesOutside: Bool = false) {
         self.relay = relay
         self.streams = streams
         self.echoes = echoes
+        self.refusesOutside = refusesOutside
     }
 
     /// Le réseau complet : l'UDP et le TCP de l'invité sortent par l'hôte.
@@ -70,7 +76,7 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     /// pour les ports relayés vers l'invité, et lui seul : ce que l'invité
     /// ouvre vers le dehors est refusé tout de suite, sans attendre.
     public static func isolated() -> UserNetwork {
-        UserNetwork(streams: HostStreams(reachesOutside: false))
+        UserNetwork(streams: HostStreams(reachesOutside: false), refusesOutside: true)
     }
 
     public func send(_ frame: [UInt8]) {
@@ -89,6 +95,10 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         } else if let echoes, let echo = Self.outboundEcho(frame),
                   let host = HostDatagrams.hostEndpoint(for: echo.destination, port: 0, resolver: [0, 0, 0, 0]) {
             echoes.send(echo.message, to: host)
+        } else if refusesOutside, let refused = Self.refusal(frame) {
+            lock.lock()
+            outgoing.append(refused)
+            lock.unlock()
         }
     }
 
@@ -159,6 +169,70 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         let message = Array(packet[headerLength..<total])
         guard message[0] == 8, message[1] == 0, checksum(message) == 0 else { return nil }
         return (Array(packet[16..<20]), message)
+    }
+
+    // MARK: - Le refus, réseau coupé
+
+    /// **Ce que la passerelle d'un réseau coupé répond** à ce qui voudrait
+    /// sortir, plutôt que de le laisser se perdre.
+    ///
+    /// Sans réponse, chaque nom cherché attendait l'expiration du client DNS
+    /// — cinq secondes, deux fois, à chaque `sudo`, chaque `ssh`, chaque
+    /// `apt` —, et un `ping` restait muet. Le TCP était déjà refusé tout de
+    /// suite (`HostStreams.reachesOutside`) ; ceci fait de même pour le reste :
+    /// - une question au serveur de noms reçoit « refusé » (RCODE cinq) ;
+    /// - tout autre datagramme UDP, et tout écho vers le dehors, reçoit un
+    ///   ICMP « réseau injoignable » de la passerelle.
+    static func refusal(_ frame: [UInt8]) -> [UInt8]? {
+        guard frame.count >= 34, be16(frame, 12) == ipv4Type else { return nil }
+        let source = Array(frame[6..<12])
+        let packet = Array(frame[14...])
+        let headerLength = Int(packet[0] & 0x0F) * 4
+        guard packet[0] >> 4 == 4, headerLength >= 20, packet.count >= headerLength + 8,
+              Array(packet[12..<16]) == guest else { return nil }
+        let destination = Array(packet[16..<20])
+        // Ni diffusion ni multidiffusion : mDNS, LLMNR et les annonces ne
+        // s'adressent à personne en particulier, et RFC 1122 interdit d'y
+        // répondre par une erreur.
+        guard destination[0] < 224, destination != [10, 0, 2, 255] else { return nil }
+        if let datagram = outboundDatagram(frame) {
+            if destination == nameServer, datagram.destinationPort == 53,
+               let answer = refusedQuestion(datagram.payload) {
+                let udp = udpDatagram(sourcePort: 53, destinationPort: datagram.sourcePort, answer,
+                                      from: nameServer, to: guest)
+                return ethernet(to: source, type: ipv4Type,
+                                ipv4Packet(from: nameServer, to: guest, protocol: 17, udp))
+            }
+            guard destination != gateway else { return nil }
+        } else {
+            guard outboundEcho(frame) != nil, destination != gateway, destination != nameServer else { return nil }
+        }
+        // L'en-tête du paquet refusé et ses huit premiers octets, comme le
+        // demande la RFC 792 : c'est ce qui permet au client de reconnaître
+        // le sien.
+        var message: [UInt8] = [3, 0, 0, 0, 0, 0, 0, 0] + Array(packet[0..<(headerLength + 8)])
+        let sum = checksum(message)
+        message[2] = UInt8(sum >> 8)
+        message[3] = UInt8(sum & 0xFF)
+        return ethernet(to: source, type: ipv4Type, ipv4Packet(from: gateway, to: guest, protocol: 1, message))
+    }
+
+    /// La réponse « refusé » à une question DNS : le même identifiant, la
+    /// même question, aucune réponse. Une question illisible n'en reçoit
+    /// pas — elle aura l'ICMP.
+    static func refusedQuestion(_ query: [UInt8]) -> [UInt8]? {
+        guard query.count >= 12, query[2] & 0x80 == 0, be16(query, 4) == 1 else { return nil }
+        var at = 12
+        while at < query.count, query[at] != 0 {
+            guard query[at] & 0xC0 == 0 else { return nil }
+            at += Int(query[at]) + 1
+        }
+        let end = at + 1 + 4
+        guard end <= query.count else { return nil }
+        // Réponse ; le code d'opération et « récursion demandée » repris ;
+        // « récursion possible » ; code cinq.
+        let flags: [UInt8] = [0x80 | (query[2] & 0x79), 0x80 | 5]
+        return Array(query[0..<2]) + flags + [0, 1, 0, 0, 0, 0, 0, 0] + Array(query[12..<end])
     }
 
     // MARK: - Le TCP
