@@ -393,7 +393,7 @@ public final class LocalVMModel {
         // n'existe qu'après cette fermeture — d'où la boîte.
         let answers = ConsoleAnswers()
         let machine = makeLocalMachine(
-            for: core, ramSizeBytes: machineRAM
+            for: core, ramSizeBytes: machineRAM, settingsKey: keys.settings, storage: storage
         ) { [sink] chunk in
             let (refresh, replies) = sink.append(chunk)
             answers.send(replies)
@@ -1160,6 +1160,7 @@ public enum KernelLibrary {
         }
         KernelMemory.forget(kernel: name)
         RootPassword.forget(kernel: name)
+        MachineNetwork.forget(kernel: name)
         // **Avant `forgetDisk`**, qui efface les choix dont elle se sert pour
         // trouver les sessions des noyaux qui avaient ce disque : leur
         // instantané croyait le disque là, et ne le porte pas. Les couches

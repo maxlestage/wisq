@@ -122,8 +122,14 @@ public final class HostStreams: @unchecked Sendable {
     private var nextLocalPort = UInt16.random(in: 49_152...60_000)
     private let resolver: [UInt8]
 
-    public init(resolver: [UInt8]? = nil, connectTimeout: TimeInterval = HostStreams.connectTimeout) {
+    /// Faux : ce que l'invité ouvre vers le dehors est refusé, et seuls les
+    /// ports relayés (`forward`) servent. Voir `UserNetwork.isolated()`.
+    public let reachesOutside: Bool
+
+    public init(resolver: [UInt8]? = nil, connectTimeout: TimeInterval = HostStreams.connectTimeout,
+                reachesOutside: Bool = true) {
         self.connectTimeout = connectTimeout
+        self.reachesOutside = reachesOutside
         self.resolver = resolver ?? HostDatagrams.hostResolver()
         let thread = Thread { [weak self] in
             while let streams = self, streams.listen() {}
@@ -295,7 +301,8 @@ public final class HostStreams: @unchecked Sendable {
 
     /// Sous verrou.
     private func open(_ key: Key, from segment: Segment) {
-        guard let host = HostDatagrams.hostEndpoint(for: key.remote, port: key.remotePort, resolver: resolver),
+        guard reachesOutside,
+              let host = HostDatagrams.hostEndpoint(for: key.remote, port: key.remotePort, resolver: resolver),
               connections.count < Self.connectionLimit else { return refuse(segment) }
         let descriptor = socket(AF_INET, Self.streamType, 0)
         guard descriptor >= 0 else { return refuse(segment) }
