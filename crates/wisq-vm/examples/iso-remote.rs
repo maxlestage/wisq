@@ -56,6 +56,10 @@ impl OverHttp {
             .args([
                 "-sS",
                 "--fail",
+                // Les miroirs renvoient presque toujours ailleurs (« Current »
+                // chez openSUSE, « latest » ailleurs) : sans suivre, la
+                // première tranche était la page de redirection.
+                "-L",
                 "-r",
                 &format!("{first}-{last}"),
                 "--output",
