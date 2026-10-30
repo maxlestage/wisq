@@ -163,8 +163,16 @@ break APIs.
   maintenant `source` et `configfile`, passe à une entrée ses paramètres,
   trouve sur le disque un noyau nommé par une variable quand il n'y en a
   qu'un, et garde l'argument qui nomme le support (`label=ARTIX_202608`).
-  Artix démarre : son initramfs retrouve le disque par cette étiquette, et
-  s6 lance ses services.
+  Artix démarre jusqu'à son invite de connexion, à l'écran : son initramfs
+  retrouve le disque par cette étiquette, et s6 lance ses services.
+- **Arch ne donnait jamais la main sur la console série.** L'invité croit
+  tourner à environ 86 MHz (un cran d'horloge toutes les 72 instructions) ;
+  à cette allure, systemd met plus de quatre-vingt-dix secondes de son temps
+  à atteindre udevd, `/dev/ttyS0` expirait avant d'être vu, et la connexion
+  série ne s'ouvrait pas. Une image démarrée par sa recette reçoit
+  maintenant `systemd.default_device_timeout_sec=600` et
+  `systemd.default_timeout_start_sec=600` ; l'horloge ne change pas, et un
+  système sans systemd ignore ces mots.
 
 ## [0.4.0] — 2026-09-05
 
