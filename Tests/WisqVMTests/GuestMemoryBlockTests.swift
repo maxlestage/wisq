@@ -88,4 +88,24 @@ final class GuestMemoryBlockTests: XCTestCase {
         XCTAssertEqual(driver.nic.delivered, 1)
         XCTAssertEqual(try driver.bytes(at: 0x5000A, count: VirtioNetTests.frame.count), VirtioNetTests.frame)
     }
+
+    /// **Endormi, le processeur interroge le réseau à chaque passage** : une
+    /// machine en `HLT` n'exécute rien, et seize passages y seraient seize
+    /// battements d'attente pour un paquet déjà arrivé.
+    func testAHaltedCoreAsksTheNetworkEveryPass() throws {
+        final class Counting: NetworkBackend {
+            var asked = 0
+            func send(_ frame: [UInt8]) {}
+            func receive() -> [[UInt8]] { asked += 1; return [] }
+        }
+        let cable = Counting()
+        let machine = X86Machine(ramSize: 16 << 20, onOutput: { _ in })
+        machine.attach(network: VirtioNet(backend: cable))
+        machine.core.halted = true
+        for _ in 0..<3 { try machine.core.serviceInterrupts() }
+        XCTAssertEqual(cable.asked, 3, "endormi : à chaque passage")
+        machine.core.halted = false
+        for _ in 0..<3 { try machine.core.serviceInterrupts() }
+        XCTAssertEqual(cable.asked, 3, "au travail : un passage sur seize")
+    }
 }
