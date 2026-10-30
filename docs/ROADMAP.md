@@ -665,9 +665,11 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
     relais.
   - Il reste à l'essayer sur un appareil, et peut-être à installer le
     serveur VNC d'un geste.
-- **L'ICMP vers le dehors.** Aujourd'hui seul l'écho de la passerelle répond.
-  Les sockets ICMP sans privilège (`SOCK_DGRAM`, `IPPROTO_ICMP`) suffiraient,
-  là où le système les permet.
+- **L'ICMP vers le dehors : fait** (`HostEchoes`), par les sockets ICMP sans
+  privilège, là où le système les permet.
+- **Les images de cloud sans cloud-init : fait** (#645). Un credential
+  `network.network.*` demande le DHCP, et l'horloge CMOS donne la date.
+  Vérifié sur Debian 13 et Ubuntu 26.04.
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
 - **Un réglage par machine** pour la couper. Aujourd'hui toute machine PC a
   le réseau.
