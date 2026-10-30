@@ -637,6 +637,39 @@ d'entrer dans la bibliothèque.
    systemd 252 verrouille `root`, ouvrent leur console en mode de secours
    (`CloudBoot.legacyConsoleOptions`).
 
+## Le réseau de la machine locale
+
+L'invité PC a un réseau « en mode utilisateur », à la manière de slirp chez
+QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
+
+**Fait, dans l'ordre :**
+
+1. **La carte** (#639) : `VirtioNet`, virtio-net par la forme ancienne de
+   virtio-pci, et sa section dans l'instantané.
+2. **Le DHCP et le DNS** (#640) : `UserNetwork` répond à ARP, sert le bail et
+   l'écho ICMP de la passerelle. `HostDatagrams` porte l'UDP par les sockets
+   de l'hôte.
+3. **Le TCP** (#641) : `HostStreams` porte chaque connexion de l'invité sur
+   une connexion de l'hôte. Avec lui, `apk update` et `apk add htop`
+   marchent sur l'Alpine installé.
+4. **Dans l'application** : `makeLocalMachine` branche
+   `UserNetwork.throughHost()`.
+
+**La suite :**
+
+- **Un port de l'hôte vers l'invité : fait dans la bibliothèque**
+  (`HostStreams.forward`, vérifié par `curl` vers un `nc` de l'invité). Il
+  reste à le brancher dans l'application.
+  - Le gain : un serveur VNC dans l'invité (`x11vnc`, `wayvnc`) devient
+    joignable par le client VNC de wisq lui-même. La machine locale aurait
+    un bureau, pas seulement une console.
+- **L'ICMP vers le dehors.** Aujourd'hui seul l'écho de la passerelle répond.
+  Les sockets ICMP sans privilège (`SOCK_DGRAM`, `IPPROTO_ICMP`) suffiraient,
+  là où le système les permet.
+- **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
+- **Un réglage par machine** pour la couper. Aujourd'hui toute machine PC a
+  le réseau.
+
 ## Lot 5 — SPICE (fait)
 
 *Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
