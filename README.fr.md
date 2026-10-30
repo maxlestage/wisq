@@ -15,7 +15,9 @@ wisq se place face à UTM sur deux fronts à la fois :
   RISC-V en moins d'une seconde, shell compris. wisq lit le fichier qu'on lui
   donne et choisit le cœur tout seul : vingt familles d'architectures
   reconnues, deux exécutées. Interprété, donc sans JIT : conforme aux règles
-  d'iOS, là où UTM SE vit dans une zone grise.
+  d'iOS, là où UTM SE vit dans une zone grise. **Ni Windows ni macOS**, par
+  choix délibéré : aucun des deux ne se lance sur le téléphone. Les deux
+  s'ouvrent à distance, depuis l'ordinateur qui les fait tourner.
 
 | | UTM SE (App Store) | wisq |
 |---|---|---|
@@ -93,7 +95,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (3177 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (3202 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
