@@ -312,7 +312,7 @@ extension X86Core {
         // La carte réseau : d'abord ce que le réseau a pour l'invité, posé
         // dans ses tampons, puis sa ligne, à niveau comme celle des disques.
         if let network = memory?.bus?.network, let nic = network.nic, let memory {
-            nic.poll(memory)
+            nic.poll(memory, busy: !halted)
             let line: UInt8 = 1 << network.interruptLine
             if nic.interrupting {
                 devices.primary.request |= line
