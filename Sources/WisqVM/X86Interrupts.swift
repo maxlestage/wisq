@@ -309,6 +309,17 @@ extension X86Core {
                 devices.primary.request &= ~line
             }
         }
+        // La carte réseau : d'abord ce que le réseau a pour l'invité, posé
+        // dans ses tampons, puis sa ligne, à niveau comme celle des disques.
+        if let network = memory?.bus?.network, let nic = network.nic, let memory {
+            nic.poll(memory)
+            let line: UInt8 = 1 << network.interruptLine
+            if nic.interrupting {
+                devices.primary.request |= line
+            } else {
+                devices.primary.request &= ~line
+            }
+        }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la quatrième
         // du second contrôleur. À niveau, comme le port série.
         if devices.ps2.keyboardInterrupting {
@@ -391,5 +402,6 @@ extension X86Core {
         devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0
             || memory?.storage?.interrupting == true
             || memory?.bus?.second?.storage?.interrupting == true
+            || memory?.bus?.network?.nic != nil
     }
 }
