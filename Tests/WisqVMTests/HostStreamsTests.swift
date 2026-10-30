@@ -384,6 +384,104 @@ final class HostStreamsTests: XCTestCase {
         XCTAssertNil(UserNetwork.inboundSegment(frame), "somme TCP fausse")
     }
 
+    /// Un client de l'hôte vers `127.0.0.1:port`, bloquant, avec délai.
+    static func connectClient(to port: UInt16) throws -> Int32 {
+        let client = socket(AF_INET, HostStreams.streamType, 0)
+        guard client >= 0 else { throw POSIXError(.EMFILE) }
+        var limit = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+        var address = HostDatagrams.socketAddress([127, 0, 0, 1], port: port)
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard result == 0 else { throw POSIXError(.ECONNREFUSED) }
+        return client
+    }
+
+    /// **Un port de l'hôte vers l'invité** : le client de l'hôte se connecte,
+    /// wisq envoie un SYN à l'invité depuis `10.0.2.2`, l'invité répond, et
+    /// les octets passent dans les deux sens jusqu'à la fermeture.
+    func testAHostPortReachesTheGuest() throws {
+        let streams = HostStreams()
+        defer { streams.close() }
+        let port = try streams.forward(hostPort: 0, toGuestPort: 5900)
+        XCTAssertNotEqual(port, 0)
+        let client = try Self.connectClient(to: port)
+        defer { _ = closeSocket(client) }
+
+        let probe = Guest(streams, to: 0, from: 5900)
+        let syns = probe.wait { $0.contains { $0.flags & Flag.syn != 0 } }
+        let syn = try XCTUnwrap(syns.first { $0.flags & Flag.syn != 0 }, "pas de SYN vers l'invité")
+        XCTAssertEqual(syn.flags, Flag.syn, "un SYN seul : wisq ouvre")
+        XCTAssertEqual(syn.remote, UserNetwork.gateway)
+        XCTAssertEqual(syn.guestPort, 5900)
+        XCTAssertEqual(syn.maximumSegment, HostStreams.segmentSize)
+
+        // L'invité accepte : SYN-ACK, avec sa taille de segment.
+        let guest = Guest(streams, to: syn.remotePort, from: 5900)
+        guest.acknowledged = syn.sequence &+ 1
+        streams.handle(guest.segment(Flag.syn | Flag.ack, maximumSegment: 1200))
+        guest.next &+= 1
+        let ack = guest.wait { !$0.isEmpty }
+        XCTAssertEqual(ack.first?.flags, Flag.ack)
+        XCTAssertEqual(ack.first?.acknowledgment, guest.next, "le SYN de l'invité est accusé")
+
+        // De l'hôte vers l'invité.
+        HostStreamsTests.Server.write(client, Array("RFB?".utf8))
+        let data = guest.wait { all in all.reduce(0) { $0 + $1.payload.count } >= 4 }
+        guest.take(data)
+        XCTAssertEqual(guest.received, Array("RFB?".utf8))
+
+        // De l'invité vers l'hôte.
+        guest.send(Flag.ack | Flag.psh, Array("RFB 003.008\n".utf8))
+        XCTAssertEqual(Server.readAll(client, until: 12), Array("RFB 003.008\n".utf8))
+
+        // L'invité ferme : l'hôte lit la fin.
+        guest.send(Flag.fin | Flag.ack)
+        var byte: UInt8 = 0
+        XCTAssertEqual(recv(client, &byte, 1, 0), 0, "la fin de l'invité arrive à l'hôte")
+    }
+
+    /// **Personne n'écoute dans l'invité** : sa remise à zéro ferme le client
+    /// de l'hôte, au lieu de le laisser pendre.
+    func testAGuestRefusalClosesTheHostClient() throws {
+        let streams = HostStreams()
+        defer { streams.close() }
+        let port = try streams.forward(hostPort: 0, toGuestPort: 22)
+        let client = try Self.connectClient(to: port)
+        defer { _ = closeSocket(client) }
+        let probe = Guest(streams, to: 0, from: 22)
+        let syn = try XCTUnwrap(probe.wait { !$0.isEmpty }.first)
+        let guest = Guest(streams, to: syn.remotePort, from: 22)
+        streams.handle(guest.segment(Flag.rst | Flag.ack, sequence: 0))
+        XCTAssertEqual(streams.openConnections, 0)
+        var byte: UInt8 = 0
+        XCTAssertLessThanOrEqual(recv(client, &byte, 1, 0), 0)
+    }
+
+    /// Une réponse qui n'accuse pas notre SYN est ignorée, et le SYN est
+    /// réémis tant que l'invité se tait. Un port de l'hôte déjà pris est un
+    /// refus dit.
+    func testTheSynWaitsForTheRightAnswer() throws {
+        let streams = HostStreams()
+        defer { streams.close() }
+        let port = try streams.forward(hostPort: 0, toGuestPort: 80)
+        let client = try Self.connectClient(to: port)
+        defer { _ = closeSocket(client) }
+        let probe = Guest(streams, to: 0, from: 80)
+        let syn = try XCTUnwrap(probe.wait { !$0.isEmpty }.first)
+        let guest = Guest(streams, to: syn.remotePort, from: 80)
+        guest.acknowledged = syn.sequence &+ 2
+        streams.handle(guest.segment(Flag.syn | Flag.ack))
+        XCTAssertTrue(streams.receive().isEmpty, "un mauvais accusé n'ouvre rien")
+        let again = guest.wait { !$0.isEmpty }
+        XCTAssertEqual(again.first?.flags, Flag.syn)
+        XCTAssertEqual(again.first?.sequence, syn.sequence, "le même SYN, réémis")
+        XCTAssertThrowsError(try streams.forward(hostPort: port, toGuestPort: 81))
+    }
+
     /// La trame que l'invité enverrait pour `segment`.
     static func fromGuest(_ segment: HostStreams.Segment) -> [UInt8] {
         let options: [UInt8] = segment.maximumSegment.map { [2, 4] + UserNetwork.be16Bytes($0) } ?? []
