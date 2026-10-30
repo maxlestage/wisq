@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Installer Alpine depuis la petite image, par le réseau
+
+**Ce qui n'était pas possible.** L'ISO `virt` d'Alpine (69 Mio), celle que
+l'application télécharge d'abord, démarre, mais ne porte pas les paquets
+d'une installation. Sans réseau, il fallait l'ISO étendue de 1,4 Gio. C'est
+ce qu'avait fait l'installation de #637.
+
+**Ce que le réseau change, vérifié au banc** (aucune ligne de code dans cette
+tranche) :
+- l'ISO `virt` sur `vda`, un disque vierge de 2 Gio sur `vdb`, et
+  `WISQ_PC_NET=user` ;
+- `udhcpc` prend `10.0.2.15` ;
+- les dépôts `http://dl-cdn.alpinelinux.org/alpine/v3.24/{main,community}`,
+  et `apk update` donne 28 677 paquets ;
+- `ERASE_DISKS=/dev/vdb setup-disk -m sys /dev/vdb` télécharge et installe
+  vingt-huit paquets, le noyau `6.18.59-0-virt` et `extlinux.conf`, puis
+  « Installation is complete ». Le tout prend trente milliards
+  d'instructions, dix-huit minutes ici.
+- **Le disque démarre seul.** `uname -r` donne `6.18.59-0-virt`, la racine
+  fait 56,5 Mio sur `vda3`, et le bail reprend.
+
+**À savoir.** `setup-disk` seul n'écrit pas `/etc/network/interfaces` :
+`setup-alpine` le fait, en posant sa question. Le HTTPS de l'invité, lui,
+échoue ici seulement, à cause de la passerelle du conteneur.
+
 ## 2026-10-30 — Essayé, sans gain : une case du cache de décodage par ligne
 
 **L'idée.** Un profil `perf` du démarrage met un quart du temps de `run` sur
