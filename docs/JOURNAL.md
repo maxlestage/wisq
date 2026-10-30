@@ -8,6 +8,64 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Une image de cloud sort sur le réseau toute seule, et à la bonne date
+
+**Ce qui manquait.** Sur Debian 13, avec le réseau de #642, `apt-get update`
+ne marchait pas, et pour deux raisons.
+- **Pas de configuration réseau.** Le noyau voyait la carte (`enp0s5`), et
+  `systemd-networkd` tournait. Mais une image de cloud attend que cloud-init
+  écrive sa configuration, et wisq démarre sans lui. La carte restait donc
+  sans adresse.
+- **Pas d'horloge.** wisq n'avait pas de MC146818 aux ports 0x70 et 0x71.
+  L'invité démarrait au 13 avril 2026, la date de son image, et `apt`
+  refusait toutes les signatures de ses dépôts : « Not live until
+  2026-10-30 ». TLS tombe de la même façon sur un certificat « pas encore
+  valide ».
+
+**Ce qui change.**
+- **Le DHCP par un credential.** Depuis 256, `systemd-network-generator` lit
+  les credentials `network.network.*`. `CloudBoot.consoleOptions` en passe
+  un, `99-wisq-dhcp`, qui demande le DHCP sur toute carte Ethernet.
+  - Son nom commence par 99, pour que la configuration de l'image passe
+    avant.
+  - Un système installé garde la sienne, et le systemd 252 des familles
+    Red Hat 9 ne le lit pas.
+- **L'horloge du PC** (`X86CMOSClock`).
+  - L'heure de l'hôte, en UTC et en BCD, comme un BIOS la laisse, lue à
+    chaque accès. Une session reprise retrouve donc l'heure juste.
+  - Le binaire et les douze heures quand le registre B les demande.
+  - Le réglage par le bit SET, qui ne change que l'écart de l'invité avec
+    l'hôte.
+  - Le reste de la mémoire CMOS est relu tel qu'écrit.
+  - Ni alarme, ni interruption.
+
+**Mesuré**, sur Debian 13 (image de cloud), sans rien taper dans l'invité
+pour le réseau :
+- `enp0s5` a `10.0.2.15/24`, la route passe par `10.0.2.2`, et
+  `resolvectl` nomme `10.0.2.3` ;
+- `rtc_cmos rtc_cmos: registered as rtc0`, et `date` donne le
+  30 octobre 2026 ;
+- les miroirs passés en `http://` (le conteneur de travail réémet le TLS
+  sous sa propre autorité), `apt-get update` passe en 7 min 36 s, et
+  `apt-get install htop` installe `htop 3.4.1`.
+
+L'horloge système de l'invité prend quelques minutes de retard sur la RTC :
+elle avance au rythme des instructions de l'interprète. C'est un autre
+sujet.
+
+**Vérifié.**
+- Six tests : `CloudBootTests` (le credential, relu comme systemd le
+  relira) et `X86CMOSClockTests` (cinq, dont le passage par les ports de la
+  machine).
+- Quinze sabotages, quinze chutes. Un survivait au premier passage :
+  écarter le registre D à l'écriture ne changeait rien de visible. La ligne
+  est partie.
+- Au passage, mon outil de sabotage lisait de travers une suite qui saute
+  un test (« with 1 test skipped and 1 failure »). Il donnait pour
+  survivants des sabotages bel et bien tombés, et c'est corrigé.
+
+Compte publié : 3166.
+
 ## 2026-10-30 — Le bureau de la machine locale, par le client VNC de wisq
 
 **Ce qui manquait.** La machine locale n'avait qu'une console. Le port relayé
