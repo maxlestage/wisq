@@ -49,17 +49,20 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     private var identification: UInt16 = 0
     public let relay: DatagramRelay?
     public let streams: HostStreams?
+    public let echoes: HostEchoes?
 
-    /// Sans `relay`, l'UDP vers le dehors se perd ; sans `streams`, le TCP —
-    /// comme sur un réseau isolé.
-    public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil) {
+    /// Sans `relay`, l'UDP vers le dehors se perd ; sans `streams`, le TCP ;
+    /// sans `echoes`, le ping — comme sur un réseau isolé.
+    public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil, echoes: HostEchoes? = nil) {
         self.relay = relay
         self.streams = streams
+        self.echoes = echoes
     }
 
     /// Le réseau complet : l'UDP et le TCP de l'invité sortent par l'hôte.
     public static func throughHost() -> UserNetwork {
-        UserNetwork(relay: HostDatagrams(), streams: HostStreams())
+        // Le ping, si le système ouvre la socket ICMP sans privilège.
+        UserNetwork(relay: HostDatagrams(), streams: HostStreams(), echoes: HostEchoes.make())
     }
 
     public func send(_ frame: [UInt8]) {
@@ -75,12 +78,16 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
                        fromGuestPort: datagram.sourcePort)
         } else if let streams, let segment = Self.inboundSegment(frame) {
             streams.handle(segment)
+        } else if let echoes, let echo = Self.outboundEcho(frame),
+                  let host = HostDatagrams.hostEndpoint(for: echo.destination, port: 0, resolver: [0, 0, 0, 0]) {
+            echoes.send(echo.message, to: host)
         }
     }
 
     public func receive() -> [[UInt8]] {
         let arrived = relay?.receive() ?? []
         let segments = streams?.receive() ?? []
+        let echoed = echoes?.receive() ?? []
         lock.lock()
         defer { lock.unlock() }
         for datagram in arrived {
@@ -89,6 +96,10 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         }
         for segment in segments {
             outgoing.append(Self.frame(for: segment, to: guestMAC))
+        }
+        for reply in echoed {
+            outgoing.append(Self.ethernet(to: guestMAC, type: Self.ipv4Type,
+                                     Self.ipv4Packet(from: reply.source, to: Self.guest, protocol: 1, reply.message)))
         }
         guard !outgoing.isEmpty else { return [] }
         let taken = outgoing
@@ -122,6 +133,24 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         guard length >= 8, length <= udp.count else { return nil }
         return Outbound(destination: Array(packet[16..<20]), sourcePort: be16(udp, 0),
                         destinationPort: be16(udp, 2), payload: Array(udp[8..<length]))
+    }
+
+    // MARK: - Le ping du dehors
+
+    /// L'écho que porte `frame`, s'il en porte un entier et juste : sa
+    /// destination et le message ICMP.
+    static func outboundEcho(_ frame: [UInt8]) -> (destination: [UInt8], message: [UInt8])? {
+        guard frame.count >= 42, be16(frame, 12) == ipv4Type else { return nil }
+        let packet = Array(frame[14...])
+        guard packet[0] >> 4 == 4, packet[9] == 1 else { return nil }
+        let headerLength = Int(packet[0] & 0x0F) * 4
+        let total = Int(be16(packet, 2))
+        guard headerLength >= 20, total >= headerLength + 8, total <= packet.count,
+              checksum(Array(packet[0..<headerLength])) == 0,
+              be16(packet, 6) & 0x3FFF == 0 else { return nil }
+        let message = Array(packet[headerLength..<total])
+        guard message[0] == 8, message[1] == 0, checksum(message) == 0 else { return nil }
+        return (Array(packet[16..<20]), message)
     }
 
     // MARK: - Le TCP
@@ -242,9 +271,11 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         let body = Array(packet[headerLength..<total])
         switch packet[9] {
         case 1:  // ICMP
-            guard destination == gateway, let reply = echoReply(body) else { return [] }
+            // La passerelle et le serveur de noms répondent d'ici ; le reste
+            // part par `HostEchoes`, s'il y en a.
+            guard destination == gateway || destination == nameServer, let reply = echoReply(body) else { return [] }
             return [ethernet(to: source, type: ipv4Type,
-                             ipv4Packet(from: gateway, to: sourceIP, protocol: 1, reply))]
+                             ipv4Packet(from: destination, to: sourceIP, protocol: 1, reply))]
         case 17:  // UDP
             guard body.count >= 8 else { return [] }
             let destinationPort = be16(body, 2)
