@@ -8,6 +8,22 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Le README dit que le PC local a le réseau, et un bureau
+
+**Ce qui manquait.** Le tableau d'état du README (en anglais et en français)
+ne nommait ni le réseau de la machine locale (#639 à #647), ni son bureau par
+VNC (#643, #644). Quelqu'un qui le lisait croyait encore la machine coupée du
+monde.
+
+**Ce qui change.** Deux lignes, dans les deux langues :
+- le réseau du PC local : DHCP, DNS, TCP, UDP et ping sortants par le
+  téléphone, `apk add` et `apt install` ;
+- le bureau du PC local : un serveur VNC dans l'invité, ouvert par le client
+  de wisq à travers un port relayé.
+
+**Vérifié.** Les tests du site, qui relisent ce que les README affirment,
+passent : 470 sur 470. La vérification des espaces passe aussi.
+
 ## 2026-10-30 — Installer Alpine depuis la petite image, par le réseau
 
 **Ce qui n'était pas possible.** L'ISO `virt` d'Alpine (69 Mio), celle que
