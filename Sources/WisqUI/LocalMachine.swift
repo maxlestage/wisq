@@ -110,8 +110,11 @@ func makeLocalMachine(
     for core: GuestArchitecture.Core, ramSizeBytes: Int,
     onOutput: @escaping @Sendable (Data) -> Void
 ) -> GuestMachine {
+    // **Le réseau, comme chez QEMU** : l'invité a sa carte, un bail DHCP,
+    // le DNS et le TCP de l'hôte. Voir `UserNetwork`.
     let machine = GuestMachineFactory.make(
         for: core, ramSizeBytes: ramSizeBytes, onOutput: onOutput,
+        network: { UserNetwork.throughHost() },
         riscv: { size, output in
             LocalRISCVMachine(ramSize: UInt32(clamping: size), onOutput: output)
         })
