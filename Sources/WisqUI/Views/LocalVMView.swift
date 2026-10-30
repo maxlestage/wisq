@@ -109,6 +109,11 @@ struct LocalVMListView: View {
                                 attach(chosen, key: kernel.lastPathComponent)
                             }
                         }
+                        // Le réseau ne concerne que la machine PC : la
+                        // carte RISC-V n'en a pas.
+                        if kinds[kernel]?.couldBootHere == true, kinds[kernel]?.core != .riscv32 {
+                            MachineNetworkToggle(key: kernel.lastPathComponent)
+                        }
                         // **Une machine de plus sur ce fichier**, avec son nom,
                         // sa mémoire, son disque et sa session à elle. Un
                         // bouton visible plutôt qu'un appui long : c'est le
@@ -472,6 +477,7 @@ struct LocalVMListView: View {
                             attach(chosen, key: machine.key)
                         }
                     }
+                    MachineNetworkToggle(key: machine.key)
                 }
                 .contextMenu {
                     Button("Renommer", systemImage: "pencil") {
@@ -685,6 +691,33 @@ private struct InstalledMachineRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// **Couper le réseau d'une machine** : un bouton qui dit l'état et le
+/// change, rangé par `MachineNetwork` sous la clé de la machine.
+///
+/// Pris au prochain démarrage ou à la prochaine reprise, sans rien oublier :
+/// la carte reste, seul le câble change, et la session se reprend.
+private struct MachineNetworkToggle: View {
+    let key: String
+    @State private var cut: Bool
+
+    init(key: String) {
+        self.key = key
+        _cut = State(initialValue: MachineNetwork.isCut(forKernel: key))
+    }
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { !cut }, set: { cut = !$0 })) {
+            Label(cut ? "Réseau coupé" : "Réseau", systemImage: cut ? "network.slash" : "network")
+                .font(.footnote)
+        }
+        .toggleStyle(.button)
+        .accessibilityHint("Pris au prochain démarrage ou à la prochaine reprise")
+        .onChange(of: cut) { _, now in
+            MachineNetwork.setCut(now, forKernel: key)
         }
     }
 }
