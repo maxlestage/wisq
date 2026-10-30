@@ -669,7 +669,10 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
   privilège, là où le système les permet.
 - **Les images de cloud sans cloud-init : fait** (#645). Un credential
   `network.network.*` demande le DHCP, et l'horloge CMOS donne la date.
-  Vérifié sur Debian 13 et Ubuntu 26.04.
+  Vérifié sur Debian 13 et Ubuntu 26.04. CentOS Stream 10, qui a
+  NetworkManager et pas `systemd-networkd`, n'en a pas besoin : sa
+  « Wired connection 1 » prend le bail toute seule (`10.0.2.15`, route par
+  `10.0.2.2`), et la date est juste.
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
 - **Un réglage par machine** pour la couper. Aujourd'hui toute machine PC a
   le réseau.
