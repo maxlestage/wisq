@@ -283,14 +283,14 @@ public enum IsoBoot {
         }
 
         var initrd: URL?
-        if let inside = recipe.initrd {
+        if let list = recipe.initrd {
             let out = folder.appendingPathComponent(initrdName)
-            guard IsoImage.extract(inside, from: image, to: out, ceiling: ceiling) else {
+            if let missing = extractInitrds(list, from: image, to: out, ceiling: ceiling) {
                 // **Le noyau déjà sorti part avec.** Seul sur le disque d'un
                 // téléphone, il se ferait prendre pour un noyau importé au
                 // démarrage suivant.
                 try? files.removeItem(at: folder)
-                return .failure(.cannotExtractInitrd(inside))
+                return .failure(.cannotExtractInitrd(missing))
             }
             initrd = out
         }
@@ -299,6 +299,46 @@ public enum IsoBoot {
             Plan(
                 kernel: kernel, initrd: initrd,
                 commandLine: recipe.commandLine, recipe: recipe.from))
+    }
+
+    /// **Les initramfs de la recette, mis bout à bout dans un seul fichier.**
+    ///
+    /// La recette en cite parfois plusieurs, séparés par une espace — les
+    /// microcodes puis l'initramfs, chez Artix. Un chargeur les pose les uns
+    /// après les autres en mémoire, chacun aligné sur quatre octets, et le
+    /// noyau lit la suite comme une seule archive : c'est ce que ce fichier
+    /// reproduit. Un seul initramfs est copié tel quel.
+    ///
+    /// Rend le chemin qui n'a pas pu être extrait, ou nil.
+    static func extractInitrds(
+        _ list: String, from image: URL, to out: URL, ceiling: UInt64
+    ) -> String? {
+        let parts = list.split(separator: " ").map(String.init)
+        guard parts.count > 1 else {
+            return IsoImage.extract(list, from: image, to: out, ceiling: ceiling) ? nil : list
+        }
+        let files = FileManager.default
+        guard files.createFile(atPath: out.path, contents: nil),
+              let sink = try? FileHandle(forWritingTo: out)
+        else { return parts[0] }
+        defer { try? sink.close() }
+        let piece = out.appendingPathExtension("part")
+        defer { try? files.removeItem(at: piece) }
+        var written: UInt64 = 0
+        for inside in parts {
+            guard IsoImage.extract(inside, from: image, to: piece, ceiling: ceiling),
+                  let bytes = try? Data(contentsOf: piece, options: .alwaysMapped)
+            else { return inside }
+            let padding = Int((4 - written % 4) % 4)
+            do {
+                try sink.write(contentsOf: Data(count: padding))
+                try sink.write(contentsOf: bytes)
+            } catch {
+                return inside
+            }
+            written += UInt64(padding) + UInt64(bytes.count)
+        }
+        return nil
     }
 
     /// Ce qu'on affiche dans la console, en français et sans balisage : elle
