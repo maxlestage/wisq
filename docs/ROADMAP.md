@@ -657,9 +657,9 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
 
 **La suite :**
 
-- **Un port de l'hôte vers l'invité.** wisq écoute sur `127.0.0.1` et ouvre la
-  connexion *vers* l'invité. C'est le sens inverse de `HostStreams` : wisq
-  envoie le SYN.
+- **Un port de l'hôte vers l'invité : fait dans la bibliothèque**
+  (`HostStreams.forward`, vérifié par `curl` vers un `nc` de l'invité). Il
+  reste à le brancher dans l'application.
   - Le gain : un serveur VNC dans l'invité (`x11vnc`, `wayvnc`) devient
     joignable par le client VNC de wisq lui-même. La machine locale aurait
     un bureau, pas seulement une console.
