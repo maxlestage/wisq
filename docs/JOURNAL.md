@@ -8,6 +8,58 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Une session reprise le lendemain sait quel jour on est
+
+**Ce qui n'allait pas.** L'heure de l'invité PC vient de son compteur
+d'instructions (`retired + idled`), et un instantané le fige. Une machine
+reprise trois jours après sa sauvegarde se croyait donc trois jours plus tôt.
+`apt` refuse alors des dépôts « pas encore valides », et TLS des certificats
+de même. L'horloge CMOS (#646) donnait bien l'heure de l'hôte, mais Linux ne
+la lit qu'au démarrage.
+
+**Ce qui change.**
+- `X86Machine.elapse(seconds:)` fait passer le temps du dehors dans `idled`,
+  comme si le processeur avait dormi tout ce temps sur un `HLT`. Le compteur
+  d'horodatage et le 8253 avancent ensemble ; les échéances manquées se
+  fondent en une seule interruption, comme toujours dans `serviceInterrupts`.
+  Un écart négatif ne fait rien, et l'écart est borné à dix ans.
+- `elapse(since:)` part de l'heure de l'instantané (`SuspendedMachine.savedAt`,
+  la date du fichier) ; sans heure, rien.
+- L'application l'appelle juste après une reprise réussie.
+- Au banc, `WISQ_PC_ELAPSE="N:secondes"` fait passer le temps juste avant la
+  frappe numéro N.
+
+**Vérifié sur un vrai invité.** Debian 13 (noyau 6.12), image de cloud, trois
+jours (259 200 s) passés entre deux `date -u +%s` :
+
+```
+1793386270
+[259392.201740] clocksource: Long readout interval, skipping watchdog check: ...
+1793645486
+```
+
+L'écart vaut 259 216 s : les trois jours, plus les seize secondes de la
+course. La source d'horloge reste `tsc` : le chien de garde saute sa
+vérification au lieu de déclarer le TSC instable. Un `sleep 2` dure ensuite
+cinq secondes d'invité, comme avant.
+
+**Tests.** Cinq tests (`X86ElapseTests`) : une heure dehors, une heure au
+compteur et au 8253 ; ni recul ni débordement ; depuis l'instantané ; les
+échéances fondues en une ; l'avance gardée par l'instantané. Quatre
+sabotages, tous attrapés :
+- la garde du négatif ôtée : le test plante, la conversion en entier non
+  signé tombe ;
+- la mauvaise cadence : cinq échecs ;
+- l'écart pris à l'envers : deux ;
+- les échéances livrées une par une : deux.
+
+`swift test` passe, ainsi que `check-whitespace.sh` et les tests du site. Le
+compte publié passe à 3213.
+
+**Ce qui reste.** Un invité **chargé** prend toujours du retard pendant qu'il
+tourne : son temps avance au rythme de l'interprète. Seul NTP le rattrape, et
+NTP est bloqué dans ce conteneur.
+
 ## 2026-10-30 — Couper le réseau d'une machine
 
 **Ce qui manquait.** Toute machine PC sortait par le téléphone, sans moyen de
