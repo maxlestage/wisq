@@ -2,6 +2,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import WisqCore
 import WisqVM
 
 // Le lecteur d'image vit du côté Rust. Les imports sont par fichier en Swift :
@@ -412,6 +413,10 @@ public final class LocalVMModel {
         } else {
             screen = nil
         }
+        // **Le bureau** : le port 5900 de l'invité, relayé sur la boucle
+        // locale. Il écoute dès maintenant ; il ne répondra que quand un
+        // serveur VNC tournera dans l'invité. Voir `LocalDesktop`.
+        desktopPort = try? (machine as? X86Machine)?.forward(toGuestPort: LocalDesktop.guestPort)
         beat(machine)
 
         // The emulator owns a whole thread for its lifetime: it is a CPU, not a
@@ -697,6 +702,10 @@ public final class LocalVMModel {
     /// Whether there is a saved machine to forget, so the interface can offer
     /// the command only when it would do something.
     public var hasSavedMachine: Bool { willResume }
+
+    /// Le port de `127.0.0.1` relayé vers le bureau de l'invité, quand la
+    /// machine a le réseau. Voir `LocalDesktop`.
+    public private(set) var desktopPort: UInt16?
 
     /// Saves the machine and lets it go, so the next visit resumes it.
     ///
