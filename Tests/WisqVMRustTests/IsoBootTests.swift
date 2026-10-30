@@ -640,7 +640,25 @@ final class IsoBootCommandLineTests: XCTestCase {
     /// Une recette sans arguments n'en invente pas, mais reçoit quand même de
     /// quoi parler.
     func testAnEmptyRecipeStillSpeaks() {
-        XCTAssertEqual(IsoBoot.commandLine(from: "   "), X86BootLoader.defaultCommandLine)
+        XCTAssertEqual(
+            IsoBoot.commandLine(from: "   "),
+            (IsoBoot.patience + [X86BootLoader.defaultCommandLine]).joined(separator: " "))
+    }
+
+    /// **systemd attend dix minutes un périphérique, pas quatre-vingt-dix
+    /// secondes.** À la vitesse que l'invité croit avoir, Arch n'atteint pas
+    /// udevd avant que `/dev/ttyS0` expire, et la console série reste sans
+    /// connexion. Une image qui fixe déjà un délai garde le sien.
+    func testSystemdIsGivenTimeAndAnImageKeepsItsOwn() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch")
+        XCTAssertTrue(line.contains("systemd.default_device_timeout_sec=600"), line)
+        XCTAssertTrue(line.contains("systemd.default_timeout_start_sec=600"), line)
+        XCTAssertTrue(line.hasSuffix(X86BootLoader.defaultCommandLine), line)
+
+        let own = IsoBoot.commandLine(from: "systemd.default_device_timeout_sec=30 root=/dev/vda")
+        XCTAssertTrue(own.contains("systemd.default_device_timeout_sec=30"), own)
+        XCTAssertFalse(own.contains("systemd.default_device_timeout_sec=600"), own)
+        XCTAssertTrue(own.contains("systemd.default_timeout_start_sec=600"), own)
     }
 
     /// **Et le plan porte la ligne complète, pas celle de la recette.**
