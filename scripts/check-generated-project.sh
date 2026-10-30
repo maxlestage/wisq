@@ -59,7 +59,7 @@ grief() {
 # **Un tableau, pas une chaîne.** Le bundle porte maintenant une espace
 # (« Wisq ‣.xcodeproj ») : une liste délimitée par l'espace la couperait en
 # deux chemins qui n'existent pas, et la comparaison porterait sur rien.
-generated=("Wisq ‣.xcodeproj/project.pbxproj" "App/Info.plist")
+generated=("Wisq ‣.xcodeproj/project.pbxproj" "App/Info.plist" "App/Wisq.entitlements")
 
 # **Le numéro, et le script qui le pose.** Les deux sont nommés ici plutôt que
 # répétés dans la boucle : c'est la paire que la règle désigne.
