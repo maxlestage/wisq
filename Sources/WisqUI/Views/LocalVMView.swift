@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UniformTypeIdentifiers
+import WisqCore
 import WisqVM
 
 /// Local Linux: pick a kernel image, boot it on the phone, get a shell.
@@ -949,6 +950,8 @@ struct LocalVMTerminalView: View {
 
     @State private var model = LocalVMModel()
     @State private var commandLine = ""
+    /// Le bureau de l'invité, posé par-dessus la console : voir `LocalDesktop`.
+    @State private var showingDesktop = false
     /// La taille du texte de la console, retenue d'une session à l'autre ;
     /// toujours lue à travers `ConsoleTextSize.nearest`, qui la ramène sur un
     /// cran quelle que soit la valeur enregistrée.
@@ -1094,9 +1097,25 @@ struct LocalVMTerminalView: View {
             .padding(10)
             .background(.ultraThinMaterial)
         }
+        // **Le bureau se pose par-dessus, il ne se présente pas.** Une
+        // feuille ou une `fullScreenCover` ferait disparaître cet écran, et
+        // `onDisappear` suspendrait la machine dont on veut justement voir le
+        // bureau.
+        .overlay {
+            if showingDesktop, let port = model.desktopPort {
+                SessionView(
+                    machine: LocalDesktop.machine(
+                        port: port, name: installed?.name ?? kernelURL.lastPathComponent),
+                    credentials: EphemeralCredentialStore(),
+                    onClose: { showingDesktop = false })
+                .ignoresSafeArea()
+            }
+        }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(fullScreen ? .hidden : .visible, for: .navigationBar)
+        // Une seule visibilité pour la barre : deux modificateurs se
+        // disputeraient, et le bureau comme le plein écran la veulent cachée.
+        .toolbar(showingDesktop || fullScreen ? .hidden : .visible, for: .navigationBar)
         .statusBarHidden(fullScreen)
         .persistentSystemOverlays(fullScreen ? .hidden : .automatic)
         .overlay(alignment: .topTrailing) {
@@ -1146,6 +1165,18 @@ struct LocalVMTerminalView: View {
                     .disabled(!ConsoleTextSize.canShrink(textSize))
                     Button("Taille normale") { textSize = ConsoleTextSize.standard }
                         .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
+                }
+            }
+            // Le bureau, quand la machine a le réseau. Il ne répond qu'une fois
+            // un serveur VNC lancé dans l'invité ; d'ici là, la session dit
+            // qu'elle ne joint personne, et `LocalDesktop.hint` dit quoi lancer.
+            if model.desktopPort != nil {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Bureau", systemImage: "display") {
+                        inputFocused = false
+                        showingDesktop = true
+                    }
+                    .accessibilityHint(LocalDesktop.hint)
                 }
             }
             // Offered only when there is something to forget. "Arrêter" also

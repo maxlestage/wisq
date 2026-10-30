@@ -657,12 +657,14 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
 
 **La suite :**
 
-- **Un port de l'hôte vers l'invité : fait dans la bibliothèque**
-  (`HostStreams.forward`, vérifié par `curl` vers un `nc` de l'invité). Il
-  reste à le brancher dans l'application.
-  - Le gain : un serveur VNC dans l'invité (`x11vnc`, `wayvnc`) devient
-    joignable par le client VNC de wisq lui-même. La machine locale aurait
-    un bureau, pas seulement une console.
+- **Un port de l'hôte vers l'invité : fait** (`HostStreams.forward`, #643),
+  et **le bureau** qui s'en sert.
+  - Le bouton « Bureau » de la console ouvre le client VNC de wisq sur le
+    port 5900 de l'invité.
+  - Vérifié au banc : `x11vnc` sous `Xvfb` sert son écran à travers le
+    relais.
+  - Il reste à l'essayer sur un appareil, et peut-être à installer le
+    serveur VNC d'un geste.
 - **L'ICMP vers le dehors.** Aujourd'hui seul l'écho de la passerelle répond.
   Les sockets ICMP sans privilège (`SOCK_DGRAM`, `IPPROTO_ICMP`) suffiraient,
   là où le système les permet.

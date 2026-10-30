@@ -504,6 +504,23 @@ final class HostStreamsTests: XCTestCase {
         XCTAssertEqual(streams.openConnections, 0)
     }
 
+    /// **Par la machine** : avec le réseau en mode utilisateur, `forward` rend
+    /// un port qui écoute ; sans lui, rien — et pas d'erreur.
+    func testTheMachineForwardsOnlyThroughTheUserNetwork() throws {
+        let streams = HostStreams()
+        defer { streams.close() }
+        let machine = X86Machine(ramSize: 16 << 20, onOutput: { _ in })
+        XCTAssertNil(try machine.forward(toGuestPort: 5900), "sans carte")
+        machine.attach(network: VirtioNet(backend: CountingCable()))
+        XCTAssertNil(try machine.forward(toGuestPort: 5900), "une carte, mais pas ce réseau")
+        machine.attach(network: VirtioNet(backend: UserNetwork(streams: streams)))
+        let port = try XCTUnwrap(try machine.forward(toGuestPort: 5900))
+        XCTAssertNotEqual(port, 0)
+        XCTAssertEqual(streams.listeningAddresses, [[127, 0, 0, 1]])
+        let client = try Self.connectClient(to: port)
+        _ = closeSocket(client)
+    }
+
     /// La trame que l'invité enverrait pour `segment`.
     static func fromGuest(_ segment: HostStreams.Segment) -> [UInt8] {
         let options: [UInt8] = segment.maximumSegment.map { [2, 4] + UserNetwork.be16Bytes($0) } ?? []
