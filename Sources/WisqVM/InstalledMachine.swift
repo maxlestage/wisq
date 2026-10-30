@@ -420,6 +420,11 @@ public enum InstalledMachines {
         // mis en route avec lui.
         RootPassword.copy(from: source.key, to: copy.key, in: directory)
 
+        // Le réseau coupé : la copie d'une machine tenue à l'écart l'est
+        // aussi.
+        MachineNetwork.setCut(MachineNetwork.isCut(forKernel: source.key, in: directory),
+                              forKernel: copy.key, in: directory)
+
         // Le disque choisi : le même fichier, sauf le disque propre, qui est
         // remplacé par celui de la copie.
         let renamed: (String) -> String = { disk in
@@ -464,6 +469,7 @@ public enum InstalledMachines {
         RootPassword.forget(kernel: machine.key, in: directory)
         LocalDisk.forget(kernel: machine.key, in: directory)
         ImageBootRequest.forget(kernel: machine.key, in: directory)
+        MachineNetwork.forget(kernel: machine.key, in: directory)
         SuspendedMachine.clearAll(named: machine.key, in: directory)
         LocalDisk.discardWrites(withPrefix: machine.keys.overlayPrefix, in: directory)
     }
