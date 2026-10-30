@@ -62,6 +62,10 @@ enum Snapshot {
     /// au disque, qui ne commence pas par ces huit octets.
     static let clockSection: UInt64 = 0x6B63_745F_5153_4957  // « WISQ_tck »
 
+    /// La marque de la carte réseau de la machine PC, posée après le rapport
+    /// de l'horloge, avant les disques.
+    static let networkSection: UInt64 = 0x7465_6E5F_5153_4957  // « WISQ_net »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
