@@ -484,7 +484,24 @@ final class HostStreamsTests: XCTestCase {
         let again = guest.wait { !$0.isEmpty }
         XCTAssertEqual(again.first?.flags, Flag.syn)
         XCTAssertEqual(again.first?.sequence, syn.sequence, "le même SYN, réémis")
+        // Un accusé seul, même juste, n'est pas une réponse à un SYN.
+        guest.acknowledged = syn.sequence &+ 1
+        streams.handle(guest.segment(Flag.ack))
+        XCTAssertTrue(streams.receive().allSatisfy { $0.flags == Flag.syn }, "rien d'ouvert sans le SYN de l'invité")
         XCTAssertThrowsError(try streams.forward(hostPort: port, toGuestPort: 81))
+    }
+
+    /// **Un invité qui se tait** : au bout du délai, le client de l'hôte est
+    /// raccroché plutôt que laissé pendre.
+    func testASilentGuestHangsUpTheHostClient() throws {
+        let streams = HostStreams(connectTimeout: 0.3)
+        defer { streams.close() }
+        let port = try streams.forward(hostPort: 0, toGuestPort: 22)
+        let client = try Self.connectClient(to: port)
+        defer { _ = closeSocket(client) }
+        var byte: UInt8 = 0
+        XCTAssertLessThanOrEqual(recv(client, &byte, 1, 0), 0, "raccroché")
+        XCTAssertEqual(streams.openConnections, 0)
     }
 
     /// La trame que l'invité enverrait pour `segment`.

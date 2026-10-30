@@ -56,7 +56,9 @@ public final class HostStreams: @unchecked Sendable {
     static let retransmitAfter: TimeInterval = 1
     /// Une connexion qui ne s'établit pas dans ce délai est refusée à
     /// l'invité.
-    static let connectTimeout: TimeInterval = 20
+    public static let connectTimeout: TimeInterval = 20
+    /// `connectTimeout`, sauf pour les tests qui ne veulent pas l'attendre.
+    let connectTimeout: TimeInterval
     static let connectionLimit = 256
 
     struct Key: Hashable {
@@ -120,7 +122,8 @@ public final class HostStreams: @unchecked Sendable {
     private var nextLocalPort = UInt16.random(in: 49_152...60_000)
     private let resolver: [UInt8]
 
-    public init(resolver: [UInt8]? = nil) {
+    public init(resolver: [UInt8]? = nil, connectTimeout: TimeInterval = HostStreams.connectTimeout) {
+        self.connectTimeout = connectTimeout
         self.resolver = resolver ?? HostDatagrams.hostResolver()
         let thread = Thread { [weak self] in
             while let streams = self, streams.listen() {}
@@ -459,7 +462,7 @@ public final class HostStreams: @unchecked Sendable {
         for connection in connections.values {
             switch connection.phase {
             case .connecting:
-                if now.timeIntervalSince(connection.opened) > Self.connectTimeout {
+                if now.timeIntervalSince(connection.opened) > connectTimeout {
                     reset(connection)
                 } else {
                     watched.append((connection, Int16(POLLOUT)))
@@ -472,7 +475,7 @@ public final class HostStreams: @unchecked Sendable {
             case .synSent:
                 // Personne n'écoute dans l'invité, ou il n'a pas encore de
                 // réseau : on raccroche au bout du même délai.
-                if now.timeIntervalSince(connection.opened) > Self.connectTimeout {
+                if now.timeIntervalSince(connection.opened) > connectTimeout {
                     drop(connection)
                 } else if now.timeIntervalSince(connection.lastSent) > Self.retransmitAfter {
                     emit(connection, flags: Flag.syn, sequence: connection.initial)
