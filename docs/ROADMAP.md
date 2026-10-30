@@ -673,6 +673,9 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
   NetworkManager et pas `systemd-networkd`, n'en a pas besoin : sa
   « Wired connection 1 » prend le bail toute seule (`10.0.2.15`, route par
   `10.0.2.2`), et la date est juste.
+- **L'heure : faite.** La passerelle sert SNTP sur `10.0.2.2:123` avec
+  l'heure du téléphone, et le bail l'annonce (option 42). Une session reprise
+  rattrape le temps passé dehors (`X86Machine.elapse`, #654).
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
 - **Un réglage par machine pour la couper : fait** (`MachineNetwork`). La
   carte et la passerelle restent, rien ne sort, et le bureau relayé marche

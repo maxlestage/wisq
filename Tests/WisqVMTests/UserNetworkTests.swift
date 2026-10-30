@@ -59,6 +59,7 @@ final class UserNetworkTests: XCTestCase {
             XCTAssertEqual(options[3], UserNetwork.gateway)
             XCTAssertEqual(options[6], UserNetwork.nameServer)
             XCTAssertEqual(options[54], UserNetwork.gateway)
+            XCTAssertEqual(options[42], UserNetwork.gateway, "le serveur de temps")
             // La somme UDP, avec le pseudo-en-tête : nulle sur un datagramme juste.
             let udp = Array(ip[20...])
             let pseudo = Array(ip[12..<20]) + [0, 17] + UserNetwork.be16Bytes(UInt16(udp.count))
