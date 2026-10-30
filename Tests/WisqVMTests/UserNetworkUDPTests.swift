@@ -200,9 +200,3 @@ final class UserNetworkUDPTests: XCTestCase {
         XCTAssertTrue(relay.receive().isEmpty)
     }
 }
-
-/// `bind` dit tout court, dans une méthode de `XCTestCase`, désigne sous
-/// macOS la méthode de `NSObject` : la fonction des sockets se nomme ici.
-func bindSocket(_ descriptor: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
-    bind(descriptor, address, length)
-}
