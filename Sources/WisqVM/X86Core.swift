@@ -862,8 +862,8 @@ public struct X86Core: @unchecked Sendable {
     @inline(__always)
     static func claimedBySpecialists(_ opcode: UInt8) -> Bool {
         let words: (UInt64, UInt64, UInt64, UInt64) = (
-            0x0007_FF0F_00FF_0000, 0xC07F_FFFF_FFF3_0000,
-            0x0000_0004_0000_0000, 0x7F77_FFFD_FFF5_0074)
+            0x0007_FF0F_00FF_0000, 0xF07F_FFFF_FFF3_0000,
+            0x0000_0004_0000_0000, 0x7F7F_FFFF_FFFF_0074)
         let word: UInt64
         switch opcode >> 6 {
         case 0: word = words.0

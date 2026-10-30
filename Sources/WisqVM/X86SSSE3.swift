@@ -72,6 +72,14 @@ extension X86Core {
         case 0x00: result = Self.shuffleBytes(destination, by: source)
         case 0x01, 0x02, 0x03, 0x05, 0x06, 0x07: result = Self.horizontal(opcode, destination, source)
         case 0x04: result = Self.multiplyAddBytes(destination, source)
+        // `PHMINPOSUW` (SSE4.1) : le plus petit des huit mots sans signe de
+        // la source, et son rang — le premier en cas d'égalité — dans les
+        // bits 16 à 18 ; tout le reste à zéro. La destination n'est pas lue.
+        case 0x41:
+            let words = (0..<8).map { UInt16(truncatingIfNeeded: ($0 < 4 ? source.low : source.high) >> (16 * UInt64($0 % 4))) }
+            let smallest = words.min() ?? 0
+            let rank = words.firstIndex(of: smallest) ?? 0
+            result = (UInt64(smallest) | UInt64(rank) << 16, 0)
         // `PSIGNB/W/D` : chaque élément de la destination gardé, opposé ou
         // mis à zéro selon le signe de celui de la source.
         case 0x08, 0x09, 0x0A:
@@ -123,6 +131,39 @@ extension X86Core {
             try compareStrings(instruction, fields, control, explicit: opcode < 0x62, mask: opcode & 1 == 0)
         case 0x08...0x0B:  // ROUNDPS, ROUNDPD, ROUNDSS, ROUNDSD
             try round(fields, opcode, control)
+        // `BLENDPS`, `BLENDPD` (SSE4.1) : l'élément i — quatre de 32 bits, ou
+        // deux de 64 — vient de la source quand le bit i de l'immédiat est
+        // levé. Leurs formes VEX étaient déclarées et retombaient ici sur un
+        // refus : Chimera s'arrêtait sur `vblendps` dans un module du noyau,
+        // depuis que CPUID annonce AVX.
+        case 0x0C, 0x0D:
+            let read = try readVectorRM(fields, 16)
+            let width: UInt64 = opcode == 0x0C ? 32 : 64
+            let perHalf = Int(64 / width)
+            let element: UInt64 = width == 64 ? .max : (1 << width) - 1
+            var masks: (UInt64, UInt64) = (0, 0)
+            for index in 0..<(2 * perHalf) where control >> index & 1 != 0 {
+                let piece = element << (UInt64(index % perHalf) * width)
+                if index < perHalf { masks.0 |= piece } else { masks.1 |= piece }
+            }
+            let target = vector(fields.reg)
+            setVector(fields.reg, target.low & ~masks.0 | read.0 & masks.0,
+                      target.high & ~masks.1 | read.1 & masks.1)
+        // `MPSADBW` (SSE4.1) : huit sommes d'écarts absolus. Le bloc de
+        // quatre octets de la source que les bits 1-0 de l'immédiat
+        // choisissent, comparé à huit fenêtres glissantes de quatre octets de
+        // la destination, qui commencent à l'octet 0 ou 4 selon le bit 2.
+        case 0x42:
+            let read = try readVectorRM(fields, 16)
+            let target = Self.bytes(vector(fields.reg)), block = Self.bytes((low: read.0, high: read.1))
+            let from = Int(control >> 2 & 1) * 4, chosen = Int(control & 3) * 4
+            let sums = (0..<8).map { window in
+                (0..<4).reduce(0) { total, offset in
+                    total + abs(Int(target[from + window + offset]) - Int(block[chosen + offset]))
+                }
+            }
+            let packed = Self.packWords(sums.map { Int32($0) })
+            setVector(fields.reg, packed.0, packed.1)
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
         }
