@@ -268,7 +268,9 @@ public final class HostStreams: @unchecked Sendable {
         }
         let room = Int(connection.window)
         let taken = Array(payload.prefix(room))
-        var acknowledge = !taken.isEmpty
+        // Même sans place, un segment reçoit son accusé : c'est par lui que
+        // l'invité, qui sonde une fenêtre fermée, apprend qu'elle se rouvre.
+        var acknowledge = !payload.isEmpty
         if !taken.isEmpty, !connection.guestFinished {
             connection.toHost += taken
             connection.guestNext &+= UInt32(taken.count)
