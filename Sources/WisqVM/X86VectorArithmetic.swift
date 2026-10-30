@@ -101,8 +101,9 @@ extension X86Core {
         _ value: (low: UInt64, high: UInt64), by count: UInt64, left: Bool
     ) -> (UInt64, UInt64) {
         guard count < 16 else { return (0, 0) }
+        // Un décalage de 64 bits ou plus rend zéro en Swift : le compte nul
+        // n'a pas besoin d'un cas à lui.
         let bits = count * 8
-        guard bits > 0 else { return (value.low, value.high) }
         if left {
             if bits >= 64 { return (0, value.low << (bits - 64)) }
             return (value.low << bits, value.high << bits | value.low >> (64 - bits))
