@@ -236,7 +236,10 @@ final class X86BootAttemptTests: XCTestCase {
         // **Une carte réseau** (`WISQ_PC_NET=1`), sur l'emplacement cinq. Son
         // autre bout ne fait que compter : de quoi voir le pilote la trouver,
         // lever le lien et envoyer ses premières trames.
-        let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable()
+        // `WISQ_PC_NET=user` met derrière elle le réseau en mode utilisateur
+        // (`UserNetwork`) : un bail DHCP, une passerelle qui répond.
+        let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable(
+            behind: environment["WISQ_PC_NET"] == "user" ? UserNetwork() : nil)
         if let cable {
             let bus = memory.bus ?? X86PCIHost(storage: nil)
             bus.network = X86PCIHost(network: VirtioNet(backend: cable))
@@ -648,10 +651,15 @@ final class X86BootAttemptTests: XCTestCase {
     }
 }
 
-/// L'autre bout d'une carte réseau de banc : il compte ce qu'on lui envoie et
-/// ne répond jamais.
+/// L'autre bout d'une carte réseau de banc : il compte ce qu'on lui envoie, et
+/// le passe au réseau qu'on met derrière, s'il y en a un.
 final class CountingCable: NetworkBackend {
     var sent = 0
-    func send(_ frame: [UInt8]) { sent += 1 }
-    func receive() -> [[UInt8]] { [] }
+    let behind: NetworkBackend?
+    init(behind: NetworkBackend? = nil) { self.behind = behind }
+    func send(_ frame: [UInt8]) {
+        sent += 1
+        behind?.send(frame)
+    }
+    func receive() -> [[UInt8]] { behind?.receive() ?? [] }
 }
