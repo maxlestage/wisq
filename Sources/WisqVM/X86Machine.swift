@@ -131,6 +131,14 @@ public final class X86Machine: @unchecked Sendable {
         memory.bus = bus
     }
 
+    /// **Relayer un port de l'hôte vers l'invité**, quand la carte est branchée
+    /// sur le réseau en mode utilisateur : voir `HostStreams.forward`. Rend le
+    /// port qui écoute sur `127.0.0.1`, ou rien sans ce réseau.
+    public func forward(hostPort: UInt16 = 0, toGuestPort guestPort: UInt16) throws -> UInt16? {
+        guard let streams = (network?.backend as? UserNetwork)?.streams else { return nil }
+        return try streams.forward(hostPort: hostPort, toGuestPort: guestPort)
+    }
+
     /// Le retirer. Une machine reprise depuis un instantané sans disque n'en a
     /// pas, même si celle qu'on reprend en avait un.
     public func detachDisk() {

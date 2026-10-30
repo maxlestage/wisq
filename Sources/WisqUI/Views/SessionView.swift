@@ -14,11 +14,30 @@ public struct SessionView: View {
     @State private var choosingFileToSend = false
     @Environment(\.dismiss) private var dismiss
 
-    private let library: MachineLibraryModel
+    /// Absente pour une session qui n'entre pas dans la bibliothèque.
+    private let library: MachineLibraryModel?
+    private let credentials: CredentialStore
+    /// Qui ferme la session, quand elle n'est pas présentée : voir
+    /// `init(machine:credentials:onClose:)`.
+    private let onClose: (() -> Void)?
 
     public init(machine: Machine, library: MachineLibraryModel) {
         self._model = State(initialValue: SessionModel(machine: machine))
         self.library = library
+        self.credentials = library.credentialStore
+        self.onClose = nil
+    }
+
+    /// **Une session hors de la bibliothèque** : le bureau de la machine
+    /// locale (`LocalDesktop`). Elle n'est ni enregistrée ni marquée comme
+    /// jointe, et c'est `onClose` qui la ferme : elle est posée par-dessus la
+    /// console plutôt que présentée, pour que la machine ne se suspende pas
+    /// en la voyant disparaître.
+    public init(machine: Machine, credentials: CredentialStore, onClose: @escaping () -> Void) {
+        self._model = State(initialValue: SessionModel(machine: machine))
+        self.library = nil
+        self.credentials = credentials
+        self.onClose = onClose
     }
 
     public var body: some View {
@@ -183,13 +202,13 @@ public struct SessionView: View {
     }
 
     private func connect() {
-        model.connect(credentials: library.credentialStore)
-        library.markConnected(model.machine)
+        model.connect(credentials: credentials)
+        library?.markConnected(model.machine)
     }
 
     private func close() {
         model.disconnect()
-        dismiss()
+        if let onClose { onClose() } else { dismiss() }
     }
 }
 
