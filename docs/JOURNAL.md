@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-29 — Démarrer l'image d'installation, une fois
+
+**Ce qui manquait.** Depuis #637, une machine dont le disque porte un système
+installé démarre ce disque. Il n'y avait plus de chemin vers l'image
+d'installation : ni pour réparer un système qui ne démarre plus, ni pour
+réinstaller.
+
+**Ce qui change.**
+- `ImageBootRequest` est une demande posée sous la clé de la machine, que le
+  démarrage suivant **consomme** (`take`). Elle vaut pour un démarrage, comme
+  le menu de démarrage d'un PC ; le suivant revient au disque. La supprimer
+  avec la machine fait partie de `forgetEverything`.
+- `LocalVMModel` la prend avant `IsoBoot.decide` ; quand elle est là, il ne
+  passe pas le disque installé, et l'image démarre.
+- Le menu d'appui long d'une machine sur image d'installation gagne
+  « Démarrer l'image d'installation », et le pied de la section le dit.
+- La session du système installé n'est ni reprise ni effacée par ce
+  démarrage : elle est rangée sous l'empreinte de son propre noyau, et
+  reprend au démarrage suivant.
+
+**Vérifié.** Trois tests (`ImageBootRequestTests`), et l'assertion ajoutée au
+test de suppression d'une machine. Les deux fichiers d'interface ne se
+compilent qu'à la CI d'Apple.
+
+Compte publié : 3124.
+
 ## 2026-10-29 — Une machine installée démarre ce que l'installateur a écrit
 
 **Ce qui manquait.** Une machine installée démarrait son image
