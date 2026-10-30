@@ -96,7 +96,9 @@ struct X86CMOSClock {
             if starting { setting = Self.dateRegisters.map { read(register: $0) } }
             statusB = byte
             if ending, let setting { finishSetting(setting) }
-        case Self.statusA, Self.statusC, Self.statusD:
+        // A et C : rien à régler ici. D se lit toujours valide, quoi qu'on y
+        // écrive.
+        case Self.statusA, Self.statusC:
             return
         case let register where Self.dateRegisters.contains(register):
             guard let at = Self.dateRegisters.firstIndex(of: register) else { return }
