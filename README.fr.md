@@ -88,6 +88,8 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 | Cœur Rust par défaut, comparé instruction par instruction au cœur Swift en CI | fait |
 | Linux local : émulateur rv32ima, boot d'un vrai noyau, terminal | fait |
 | Un disque pour le PC local : on apporte une image, l'invité la voit sur `/dev/vda` | fait |
+| Le réseau du PC local : DHCP, DNS, TCP, UDP et ping sortants par le téléphone — `apk add`, `apt install` | fait |
+| Le bureau du PC local : un serveur VNC dans l'invité, ouvert par le client de wisq à travers un port relayé | fait |
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
