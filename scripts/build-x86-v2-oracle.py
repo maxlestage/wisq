@@ -68,7 +68,18 @@ def forms():
     out += ["lddqu 0x21(%rsi), %xmm0",
             "movddup %xmm1, %xmm0", f"movddup {ALIGNED:#x}(%rsi), %xmm0",
             "movddup 0x23(%rsi), %xmm0",
-            "movsldup %xmm1, %xmm0", f"movsldup {ALIGNED:#x}(%rsi), %xmm0"]
+            "movsldup %xmm1, %xmm0", f"movsldup {ALIGNED:#x}(%rsi), %xmm0",
+            # `MOVSHDUP`, les mots impairs : annoncé avec SSE3, absent
+            # jusqu'à ce qu'un balayage des opcodes le trouve.
+            "movshdup %xmm1, %xmm0", f"movshdup {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Deux instructions entières de SSE4.1 que CPUID annonce** et que le
+    # cœur n'avait pas : le minimum horizontal et son rang, et les sommes
+    # d'écarts absolus sous leurs huit immédiats — les blocs de la source et
+    # les deux départs de la destination.
+    out += ["phminposuw %xmm1, %xmm0", f"phminposuw {ALIGNED:#x}(%rsi), %xmm0"]
+    for control in range(8):
+        out.append(f"mpsadbw ${control}, %xmm1, %xmm0")
+    out.append(f"mpsadbw $5, {ALIGNED:#x}(%rsi), %xmm0")
     # **SSE4.1, l'entier.** Les minimums et maximums signés et sans signe
     # que SSE2 n'avait pas, le resserrement sans signe des mots doubles, la
     # comparaison et les multiplications de SSE4.1.
@@ -82,6 +93,12 @@ def forms():
     # propres éléments négatifs.
     for control in [0x00, 0xFF, 0x0F, 0xA5, 0x3C]:
         out += [f"pblendw ${control:#x}, %xmm1, %xmm0", f"pblendw ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    # `BLENDPS`, `BLENDPD` : l'élément i vient de la source quand le bit i de
+    # l'immédiat est levé. Les bits au-delà du nombre d'éléments sont lus
+    # aussi, en VEX.256, par la moitié haute.
+    for name in ["blendps", "blendpd"]:
+        for control in [0x00, 0x0F, 0x05, 0x0A, 0xF3, 0x3C]:
+            out += [f"{name} ${control:#x}, %xmm1, %xmm0", f"{name} ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
     for name in ["pblendvb", "blendvps", "blendvpd"]:
         out += [f"{name} %xmm0, %xmm0, %xmm1", f"{name} %xmm0, {ALIGNED:#x}(%rsi), %xmm1"]
     # Les élargissements, avec ou sans signe. **Depuis la mémoire, ils ne

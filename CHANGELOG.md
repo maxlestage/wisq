@@ -124,6 +124,27 @@ break APIs.
   une barre oblique inverse ou écrit le périphérique devant le chemin
   (`(${voidlive})/boot/vmlinuz`). Les deux images démarrent ; Gentoo et
   NixOS, essayés en même temps, trouvaient déjà la leur.
+- **Une recette qui cite plusieurs initramfs** — les microcodes puis
+  l'initramfs sur une ligne grub, chez Artix ; des virgules chez syslinux ;
+  une ligne par fichier chez systemd-boot — était lue comme un seul chemin,
+  ou réduite à sa dernière ligne. Tous sont gardés, dans l'ordre, et posés
+  bout à bout dans l'initramfs, comme un chargeur les pose en mémoire.
+- **L'ISO d'installation de Mageia était refusée** : son `isolinux.cfg` écrit
+  `kernel x86_64/vmlinuz`, un chemin que syslinux lit depuis le dossier de
+  sa recette (`/isolinux/x86_64/vmlinuz`), et que wisq cherchait à la
+  racine.
+- **Guix System s'arrêtait en générant ses clés SSH**, sur `PSLLQ` : des huit
+  décalages SSE2 dont le compte vient d'un registre, seuls quatre existaient.
+  Les huit y sont, contre le vrai processeur.
+- **Sept instructions que CPUID annonce manquaient** — `MOVSHDUP`, les
+  horizontales `HADDPS`, `HSUBPS`, `HADDPD`, `HSUBPD` (SSE3), `PHMINPOSUW` et
+  `MPSADBW` (SSE4.1) —, trouvées en passant toutes les formes au cœur contre
+  ce que les binaires d'un système emploient. Un programme qui les choisit
+  sur la foi de CPUID s'arrêtait net.
+- **Chimera Linux s'arrêtait au chargement de ses modules**, sur
+  `vblendps` : depuis que CPUID annonce AVX, un module du noyau mélange ses
+  vecteurs sur 256 bits, et ni `BLENDPS` ni `BLENDPD` n'existaient, sous
+  aucune forme. Les trois formes y sont, contre le vrai processeur.
 
 ## [0.4.0] — 2026-09-05
 
