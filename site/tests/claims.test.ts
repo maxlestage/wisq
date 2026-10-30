@@ -721,7 +721,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3222",
+        "3228",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -1454,7 +1454,7 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "36",
+        "37",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
@@ -1467,7 +1467,9 @@ const accounted = new Map<string, Map<string, string>>([
           "`wisq_desktop_declare_initramfs`, sans quoi le noyau du bureau " +
           "meurt dans `prepare_namespace` avec sa racine à côté. Trente-six en " +
           "#314 : `wisq_kernel_loads`, le lecteur ELF que le montage de mesure " +
-          "emploie depuis #304 et que rien n'exposait à l'application.",
+          "emploie depuis #304 et que rien n'exposait à l'application. " +
+          "Trente-sept : `wisq_vm_elapse`, le temps passé hors de la machine, " +
+          "que la machine RISC-V rattrape à la reprise d'une session.",
       ],
       [
         "8",
