@@ -8,6 +8,51 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Le réseau en mode utilisateur : un bail DHCP, et le DNS de l'invité qui sort
+
+**Ce qui manquait.** La carte de #639 envoyait ses trames dans un câble où
+personne ne répondait : `udhcpc` diffusait et n'obtenait rien.
+
+**Ce qui change.**
+- `UserNetwork` est l'autre bout du câble, à la manière de « slirp » chez
+  QEMU, avec les adresses de QEMU : l'invité est `10.0.2.15/24`, la
+  passerelle `10.0.2.2`, le serveur de noms `10.0.2.3`.
+  - Il répond à ARP pour la passerelle et le serveur de noms.
+  - Il sert un bail DHCP : une offre à la découverte, un accord à la demande.
+  - Il renvoie l'écho ICMP adressé à la passerelle.
+- **L'UDP sort par `HostDatagrams`**, une socket de l'hôte par port source de
+  l'invité.
+  - `10.0.2.3:53` va au serveur de noms de l'hôte, lu dans
+    `/etc/resolv.conf` (sinon `1.1.1.1`). `10.0.2.2` est l'hôte lui-même.
+  - La réponse revient sous l'adresse que l'invité avait jointe, sinon il la
+    jetterait.
+  - Un fil écoute les sockets. La carte est sondée toutes les soixante-quatre
+    instructions, et un appel système à ce rythme coûterait plus que
+    l'interprète : `receive()` ne fait que vider une file sous verrou.
+  - Les sockets qui dorment depuis une minute sont refermées, soixante-quatre
+    au plus.
+  - Une réponse plus grande qu'une trame est fragmentée.
+- Au banc, `WISQ_PC_NET=user` branche cette pile derrière la carte.
+
+**Mesuré**, sur l'Alpine installé par #637 :
+- `udhcpc: lease of 10.0.2.15 obtained from 10.0.2.2` ;
+- la route par défaut passe par `10.0.2.2`, et `resolv.conf` nomme `10.0.2.3` ;
+- `ping -c 3 10.0.2.2` : trois sur trois ;
+- `nslookup example.com` et `nslookup alpinelinux.org` répondent, avec les
+  vraies adresses, depuis le vrai DNS.
+
+**Pas encore** : le TCP. Sans lui, pas de `wget` ni d'`apk add`. C'est la
+tranche suivante.
+
+**Vérifié.** Onze tests (`UserNetworkTests`, `UserNetworkUDPTests`), dont un
+aller-retour par de vraies sockets jusqu'à un serveur d'écho sur l'hôte.
+Vingt sabotages, vingt chutes. Deux survivaient au premier
+passage, et les tests les tiennent maintenant :
+- un relais arrêté rouvrait une socket ;
+- une adresse comme `1.2.3.x.4` passait pour quatre nombres.
+
+Compte publié : 3142.
+
 ## 2026-10-30 — Une carte réseau pour la machine PC (virtio-net), première tranche du réseau
 
 **Ce qui manquait.** La machine locale n'avait aucun réseau : ni carte, ni pile.
