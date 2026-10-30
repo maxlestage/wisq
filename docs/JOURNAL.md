@@ -69,7 +69,7 @@ c'est le `max_cycles` du journal de Debian, pas cette mesure.
   pas illimité (trois cœurs), paiement au sommeil ôté (trois cœurs), temps
   payé compté sur le mur.
 - `swift test`, `check-whitespace.sh` et les tests du site passent. Le compte
-  publié passe à 3228. L'ABI C passe de trente-six à trente-sept fonctions :
+  publié passe à 3234 (avec ceux de #656). L'ABI C passe de trente-six à trente-sept fonctions :
   la page d'architecture le dit, et sa provenance aussi.
 
 **Un piège de banc, payé ici.** SwiftPM ne suit pas `libwisq_vm.a`. Après un
