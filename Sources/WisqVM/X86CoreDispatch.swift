@@ -1159,6 +1159,8 @@ extension X86Core {
             // La fenêtre de ports d'un disque, là où le noyau l'a placée.
             if let found = memory?.bus?.device(atPort: port), let memory {
                 found.device.writePort(found.offset, size, value, memory)
+            } else if let found = memory?.bus?.networkDevice(atPort: port), let memory {
+                found.device.writePort(found.offset, size, value, memory)
             }
         }
     }
@@ -1172,6 +1174,10 @@ extension X86Core {
         // La fenêtre de ports d'un disque, là où le noyau l'a placée.
         case let window where memory?.bus?.device(atPort: window) != nil:
             guard let found = memory?.bus?.device(atPort: window) else { return 0 }
+            return found.device.readPort(found.offset, size)
+        // Celle de la carte réseau.
+        case let window where memory?.bus?.networkDevice(atPort: window) != nil:
+            guard let found = memory?.bus?.networkDevice(atPort: window) else { return 0 }
             return found.device.readPort(found.offset, size)
         case X86PCIHost.dataPort...(X86PCIHost.dataPort &+ 3):
             guard let bus = memory?.bus else { return 0xFFFF_FFFF }
