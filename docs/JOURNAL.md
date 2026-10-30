@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Le ping de l'invité sort
+
+**Ce qui manquait.** Seule la passerelle répondait au ping. `ping 1.1.1.1`,
+la première chose qu'on tape pour savoir si le réseau marche, ne revenait
+jamais, alors même que l'UDP et le TCP sortaient.
+
+**Ce qui change.**
+- `HostEchoes` porte les échos ICMP de l'invité par une socket ICMP
+  « datagramme » de l'hôte, celle qu'un programme sans privilège peut ouvrir.
+  - iOS et macOS l'ouvrent. Linux l'ouvre si `net.ipv4.ping_group_range` le
+    permet.
+  - Sans elle, `make()` ne rend rien, et l'écho se perd comme avant.
+- **Le noyau change l'identifiant de l'écho**, et Linux y met le numéro de
+  la socket. La réponse se reconnaît donc à sa source et à sa séquence, et
+  repart vers l'invité avec l'identifiant qu'il avait choisi, sa somme
+  refaite.
+  - Darwin rend l'en-tête IPv4 devant le message, et on l'ôte.
+  - Une réponse que personne n'attend est jetée.
+- Le serveur de noms `10.0.2.3` répond au ping comme la passerelle, sous sa
+  propre adresse.
+
+**Mesuré**, sur l'Alpine installé par #637. Le conteneur de travail ne laisse
+pas sortir l'ICMP : l'adresse jointe est donc la sienne, `192.0.2.2`, à
+laquelle répond le noyau de l'hôte.
+- `ping -c 3 192.0.2.2` : trois sur trois, 0,3 ms ;
+- `ping -c 2 10.0.2.3` : deux sur deux.
+
+**Vérifié.**
+- Trois tests (`HostEchoesTests`) :
+  - la réponse remise en forme, sous Linux et sous Darwin ;
+  - ce qui part et ce qui répond d'ici ;
+  - un aller-retour par une vraie socket vers la boucle locale, sauté si le
+    système la refuse.
+- Dix sabotages, dix chutes.
+
+Compte publié : 3169.
+
 ## 2026-10-30 — Une image de cloud sort sur le réseau toute seule, et à la bonne date
 
 **Ce qui manquait.** Sur Debian 13, avec le réseau de #642, `apt-get update`
