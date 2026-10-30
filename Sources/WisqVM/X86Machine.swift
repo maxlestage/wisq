@@ -181,6 +181,29 @@ public final class X86Machine: @unchecked Sendable {
 
     /// Combien d'instructions vaut une seconde de l'invité.
     var guestHertz: Double { Double(core.instructionsPerTick) * 1_193_182 }
+
+    /// **Le temps qui a passé hors de la machine** — une session reprise le
+    /// lendemain, un téléphone resté en veille.
+    ///
+    /// L'heure de l'invité vient de son compteur d'instructions, et un
+    /// instantané le fige : sans ceci, une machine reprise trois jours plus
+    /// tard se croyait trois jours plus tôt, et `apt` refusait des dépôts
+    /// « pas encore valides ». Le temps écoulé passe dans `idled`, comme si
+    /// le processeur avait dormi tout ce temps sur un `HLT`. Le compteur
+    /// d'horodatage et le 8253 avancent ensemble, et les échéances manquées
+    /// se fondent en une seule (`serviceInterrupts`).
+    ///
+    /// À appeler machine arrêtée, entre la reprise et `run`. Un écart négatif
+    /// ne fait rien : le temps de l'invité ne recule pas.
+    public func elapse(seconds: TimeInterval) {
+        guard seconds > 0, seconds.isFinite else { return }
+        let cycles = min(seconds, Self.longestElapse) * guestHertz
+        core.idled &+= UInt64(cycles)
+    }
+
+    /// Au-delà, la session est de toute façon d'une autre époque ; borner
+    /// garde le calcul loin du débordement.
+    static let longestElapse: TimeInterval = 10 * 365 * 86_400
     private var inputQueue: [UInt8] = []
     /// Les touches et les mouvements envoyés par l'hôte, en attente du
     /// prochain tour — sous le même verrou que `inputQueue`.
