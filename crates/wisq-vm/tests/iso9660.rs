@@ -876,3 +876,70 @@ menuentry \"Void Linux 6.12.11_1 (x86_64-musl)\" --id \"linux\"  {
         "root=live:CDLABEL=VOID_LIVE ro init=/sbin/init rd.luks=0 rd.md=0 rd.dm=0 loglevel=4"
     );
 }
+
+/// **Plusieurs initramfs sur une ligne** : les deux microcodes puis
+/// l'initramfs, comme l'écrit l'entrée grub d'Artix. Tous sont gardés, dans
+/// l'ordre, séparés par une espace.
+#[test]
+fn several_initrds_on_one_grub_line_are_all_kept() {
+    let text = "\
+menuentry \"From CD/DVD/ISO: artix.x86_64 \" {
+    linux /boot/vmlinuz-x86_64 label=ARTIX_202608
+    initrd /boot/intel-ucode.img /boot/amd-ucode.img /boot/initramfs-x86_64.img
+}
+";
+    let recipe = Recipe::read(text, "/boot/grub/kernels.cfg").expect("la recette");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/boot/intel-ucode.img /boot/amd-ucode.img /boot/initramfs-x86_64.img")
+    );
+}
+
+/// La même liste, aux trois formes des chargeurs : les virgules de syslinux,
+/// une ligne par fichier chez systemd-boot, et les mots `initrd=` de
+/// `APPEND`. Une variable de grub n'est pas un fichier : elle tombe.
+#[test]
+fn every_form_of_initrd_list_is_read() {
+    let syslinux = "LABEL a\nKERNEL /k\nINITRD /u.img,/i.img\n";
+    let recipe = Recipe::read(syslinux, "/isolinux/isolinux.cfg").expect("syslinux");
+    assert_eq!(recipe.initrd.as_deref(), Some("/u.img /i.img"));
+
+    let entry = "linux /k\ninitrd /u.img\ninitrd /i.img\noptions quiet\n";
+    let recipe = Recipe::read(entry, "/loader/entries/a.conf").expect("systemd-boot");
+    assert_eq!(recipe.initrd.as_deref(), Some("/u.img /i.img"));
+    assert_eq!(recipe.command_line, "quiet");
+
+    let append = "LABEL a\nKERNEL /k\nAPPEND initrd=/u.img,/i.img root=/dev/sr0\n";
+    let recipe = Recipe::read(append, "/isolinux/isolinux.cfg").expect("APPEND");
+    assert_eq!(recipe.initrd.as_deref(), Some("/u.img /i.img"));
+    assert_eq!(recipe.command_line, "root=/dev/sr0");
+
+    let variable = "menuentry \"a\" {\n linux /k\n initrd /i.img $tuned_initrd\n}\n";
+    let recipe = Recipe::read(variable, "/boot/grub/grub.cfg").expect("variable");
+    assert_eq!(recipe.initrd.as_deref(), Some("/i.img"));
+}
+
+/// **Un chemin relatif part du dossier de la recette chez syslinux.** C'est
+/// l'entrée de Mageia telle quelle, dans `/isolinux/isolinux.cfg` : le noyau
+/// est en `/isolinux/x86_64/vmlinuz`, pas en `/x86_64/vmlinuz`.
+#[test]
+fn a_relative_syslinux_path_starts_at_the_recipes_folder() {
+    let text = "\
+default linux
+label linux
+  kernel x86_64/vmlinuz
+  append initrd=x86_64/all.rdz audit=0 noiswmd audit=0 vga=791 splash quiet
+";
+    let recipe = Recipe::read(text, "/isolinux/isolinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/isolinux/x86_64/vmlinuz");
+    assert_eq!(recipe.initrd.as_deref(), Some("/isolinux/x86_64/all.rdz"));
+
+    // Un chemin absolu reste ce qu'il est, et grub part de la racine.
+    let absolute = Recipe::read("label a\n kernel /boot/k\n", "/isolinux/isolinux.cfg");
+    assert_eq!(absolute.expect("absolu").kernel, "/boot/k");
+    let grub = Recipe::read(
+        "menuentry \"a\" {\n linux boot/k\n}\n",
+        "/boot/grub/grub.cfg",
+    );
+    assert_eq!(grub.expect("grub").kernel, "/boot/k");
+}

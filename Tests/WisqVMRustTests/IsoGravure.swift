@@ -38,6 +38,10 @@ struct IsoGravure {
     /// images portant deux noyaux différents — c'est ce qui distingue deux
     /// machines sauvegardées.
     var kernel = IsoGravure.kernel
+    /// Les octets de l'initramfs gravé. Réglable pour qu'une longueur qui
+    /// n'est pas un multiple de quatre montre le bourrage entre deux
+    /// initramfs mis bout à bout.
+    var initramfs = IsoGravure.initramfs
 
     func write() throws -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -110,7 +114,7 @@ struct IsoGravure {
         // répertoires : sans ça, une image coupée n'ouvrirait même pas, et le
         // test de l'effacement ne pourrait pas exister.
         let kernelLBA: UInt32 = 23
-        let initrd = push([UInt8](Self.initramfs))
+        let initrd = push([UInt8](initramfs))
         var lines = ["DEFAULT virt", "LABEL virt", "  KERNEL \(recipeKernel)"]
         if let recipeInitrd { lines.append("  INITRD \(recipeInitrd)") }
         lines.append("  APPEND \(commandLine)")

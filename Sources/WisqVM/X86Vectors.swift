@@ -241,6 +241,15 @@ extension X86Core {
             setVector(fields.reg, source.0 & 0xFFFF_FFFF | source.0 << 32,
                       source.1 & 0xFFFF_FFFF | source.1 << 32)
 
+        // `MOVSHDUP` : le frère de `MOVSLDUP`, chaque mot **impair** recopié
+        // sur le pair qui le précède. Annoncé avec SSE3 et absent : un
+        // programme qui le choisit sur la foi de CPUID s'arrêtait net.
+        case 0x16 where repeatFE:
+            let fields = try decodeFields(instruction)
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, source.0 >> 32 | source.0 & 0xFFFF_FFFF_0000_0000,
+                      source.1 >> 32 | source.1 & 0xFFFF_FFFF_0000_0000)
+
         // `LDDQU` : un `MOVDQU` qui n'existe que depuis la mémoire.
         case 0xF0 where repeatFD:
             let fields = try decodeFields(instruction)

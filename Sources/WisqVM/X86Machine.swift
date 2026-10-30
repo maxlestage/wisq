@@ -182,6 +182,14 @@ public final class X86Machine: @unchecked Sendable {
     /// Combien d'instructions vaut une seconde de l'invité.
     var guestHertz: Double { Double(core.instructionsPerTick) * 1_193_182 }
     private var inputQueue: [UInt8] = []
+    /// Les touches et les mouvements envoyés par l'hôte, en attente du
+    /// prochain tour — sous le même verrou que `inputQueue`.
+    private var pointerQueue: [PS2Event] = []
+
+    enum PS2Event {
+        case key(X86ScanCode, down: Bool)
+        case mouse(dx: Int, dy: Int, buttons: UInt8)
+    }
     private var pendingOutput: [UInt8] = []
     private var published = GuestProgress(retired: 0, rip: 0)
 
@@ -232,7 +240,8 @@ public final class X86Machine: @unchecked Sendable {
     /// **Donner un écran à la machine.** À appeler avant `load` : c'est le
     /// chargeur qui l'annonce au noyau, et il ne le fait qu'une fois.
     public func attachDisplay(width: Int, height: Int) throws {
-        guard UInt64(ramSize) <= Self.displayBase else {
+        // Avec le trou, l'écran tombe dedans quelle que soit la RAM.
+        guard memory.ramRanges.count == 2 || UInt64(ramSize) <= Self.displayBase else {
             throw DisplayRefusal.wouldOverlapMemory
         }
         let screen = X86Framebuffer(base: Self.displayBase, width: width, height: height)
@@ -253,7 +262,7 @@ public final class X86Machine: @unchecked Sendable {
                 onOutput: @escaping @Sendable (Data) -> Void) {
         self.ramSize = max(ramSize, Self.minimumRAMSize)
         self.onOutput = onOutput
-        memory = X86Memory(size: self.ramSize, base: 0)
+        memory = X86Memory.pc(ram: self.ramSize)
         core = X86Core(registers: [UInt64](repeating: 0, count: 16), rip: 0, memory: memory)
     }
 
@@ -274,7 +283,8 @@ public final class X86Machine: @unchecked Sendable {
                      initialRamdisk: Data? = nil) throws {
         let placement = try X86BootLoader.load(
             kernel: [UInt8](kernelImage), into: memory,
-            commandLine: commandLine ?? X86BootLoader.defaultCommandLine,
+            commandLine: Self.commandLine(commandLine ?? X86BootLoader.defaultCommandLine,
+                                          withScreen: display != nil),
             initialRamdisk: initialRamdisk.map { [UInt8]($0) },
             framebuffer: display.map {
                 X86BootLoader.Framebuffer(base: $0.base, width: $0.width, height: $0.height)
@@ -326,6 +336,13 @@ public final class X86Machine: @unchecked Sendable {
                 core.serialInput.append(contentsOf: inputQueue)
                 inputQueue.removeAll()
             }
+            for event in pointerQueue {
+                switch event {
+                case .key(let code, let down): core.devices.ps2.key(code, down: down)
+                case .mouse(let dx, let dy, let buttons): core.devices.ps2.mouse(dx: dx, dy: dy, buttons: buttons)
+                }
+            }
+            pointerQueue.removeAll()
             lock.unlock()
             if stopped { flushOutput(); return .stopped }
 
@@ -403,6 +420,34 @@ public final class X86Machine: @unchecked Sendable {
         nudge.signal()
     }
 
+    /// **Avec un écran, le noyau y écrit aussi** : `console=tty0` en tête, pour
+    /// que le dernier `console=` — la console série — reste `/dev/console`,
+    /// celle que la console de l'application lit et où l'invité ouvre sa
+    /// session. L'écran montre le démarrage et les terminaux virtuels.
+    static func commandLine(_ line: String, withScreen: Bool) -> String {
+        guard withScreen, !line.split(separator: " ").contains("console=tty0") else { return line }
+        return "console=tty0 " + line
+    }
+
+    /// Une touche du clavier PS/2 de l'invité, enfoncée ou relâchée.
+    /// Utilisable depuis n'importe quel fil.
+    public func key(_ code: X86ScanCode, down: Bool) {
+        lock.lock()
+        pointerQueue.append(.key(code, down: down))
+        lock.unlock()
+        nudge.signal()
+    }
+
+    /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
+    /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
+    /// quel fil.
+    public func mouse(dx: Int, dy: Int, buttons: UInt8) {
+        lock.lock()
+        pointerQueue.append(.mouse(dx: dx, dy: dy, buttons: buttons))
+        lock.unlock()
+        nudge.signal()
+    }
+
     // MARK: - Sauver et rendre
 
     /// La machine entière en octets : les registres, l'état système, la pile
@@ -460,7 +505,7 @@ public final class X86Machine: @unchecked Sendable {
         let queued = core.serialInput + inputQueue
         lock.unlock()
         writer.blob(queued)
-        writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: ramSize))
+        writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: memory.size))
         // **La pile x87, derrière sa marque.** Le mot de contrôle, le mot
         // d'état et MXCSR sont écrits plus haut depuis toujours ; les huit
         // registres qu'ils décrivent et le mot d'étiquettes ne l'étaient pas.
@@ -532,7 +577,7 @@ public final class X86Machine: @unchecked Sendable {
         // lit donc la suite d'abord, sur un second lecteur qui passe la
         // mémoire en vérifiant les mêmes bornes, et on n'écrit qu'ensuite.
         var tail = reader
-        try tail.skipRAM(count: ramSize)
+        try tail.skipRAM(count: memory.size)
         // La pile x87, si la marque est là. Son absence veut dire « un
         // instantané d'avant cette section », pas « un instantané abîmé » :
         // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
@@ -607,7 +652,7 @@ public final class X86Machine: @unchecked Sendable {
         }
         // Tout ce qui suit la mémoire a été lu et accepté : `skipRAM` a vu les
         // mêmes bornes, plus rien ne peut échouer.
-        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: ramSize))
+        try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: memory.size))
 
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
