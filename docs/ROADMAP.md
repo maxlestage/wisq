@@ -677,6 +677,17 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
 - **Un réglage par machine** pour la couper. Aujourd'hui toute machine PC a
   le réseau.
 
+**Ce que le réseau a ouvert, vérifié : installer Alpine depuis la petite
+image.** L'ISO `virt` (69 Mio) ne porte pas les paquets de l'installation, et
+il fallait jusqu'ici l'ISO étendue (1,4 Gio). Avec le réseau, elle installe en
+les téléchargeant : `udhcpc`, les dépôts `http://dl-cdn.alpinelinux.org`,
+`apk update` (28 677 paquets), puis `setup-disk -m sys /dev/vdb` sur un disque
+vierge de 2 Gio. Vingt-huit paquets, le noyau `6.18.59-0-virt` et
+`extlinux.conf` en trente milliards d'instructions. Le disque démarré seul
+ouvre son shell : 56,5 Mio de racine, et le bail reprend. Un système
+installé par `setup-disk` seul n'a pas de `/etc/network/interfaces` ;
+`setup-alpine` le pose.
+
 ## Lot 5 — SPICE (fait)
 
 *Le titre de cette section a longtemps dit « format, lien, entrées, affichage,
