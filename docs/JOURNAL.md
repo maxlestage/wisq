@@ -8,6 +8,59 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Réseau coupé, la passerelle refuse tout de suite
+
+**Ce qui n'allait pas.** Sur une machine au réseau coupé (#653), le TCP vers
+le dehors était refusé tout de suite. Le reste se perdait sans réponse :
+chaque nom cherché attendait l'expiration du client DNS, et un `ping` restait
+muet jusqu'à son délai.
+
+**Ce qui change.** `UserNetwork.refusal`, pour le seul réseau coupé
+(`refusesOutside`, posé par `isolated()`) :
+- une question au serveur de noms `10.0.2.3:53` reçoit « refusé » (RCODE
+  cinq). La réponse garde l'identifiant et la question, sans réponse et sans
+  l'option EDNS de la demande ;
+- tout autre datagramme UDP vers le dehors, et tout écho, reçoit de la
+  passerelle un ICMP « réseau injoignable ». Il porte l'en-tête du paquet
+  refusé et ses huit premiers octets (RFC 792) ;
+- rien en réponse à une diffusion ou une multidiffusion (mDNS, LLMNR), ni à
+  la passerelle elle-même (RFC 1122) ;
+- une question illisible (nom coupé, pointeur dans la question) reçoit
+  l'ICMP plutôt qu'une réponse DNS fausse.
+
+Au banc, `WISQ_PC_NET=cut` démarre l'invité sur le réseau coupé.
+
+**Vérifié sur un vrai invité.** Debian 13, image de cloud, réseau coupé :
+
+```
+getent hosts debian.org        → rc=2 en 340 ms
+ping -c1 -W5 1.1.1.1           → From 10.0.2.2 icmp_seq=1 Destination Net Unreachable, 124 ms
+apt-get update                 → « Could not resolve 'deb.debian.org' », fini en 43 s d'invité
+```
+
+Je n'ai pas mesuré l'avant : ce serait une course de plus. Il dépend des
+délais du résolveur de l'invité, et `systemd-resolved` en donne plusieurs
+secondes par nom.
+
+**Tests.**
+- Quatre tests dans `UserNetworkRefusalTests` : la question refusée, le reste
+  injoignable, ce qui n'est pas refusé, et la question illisible.
+- `UserNetworkTimeTests.testTimeSurvivesACutNetwork` suit le changement :
+  une demande NTP vers un serveur du dehors reçoit maintenant l'ICMP, au lieu
+  de rien.
+- Six sabotages, tous attrapés :
+  - les diffusions servies : trois échecs ;
+  - le refus éteint sur le réseau coupé : trois ;
+  - un autre code de réponse : un ;
+  - l'option EDNS gardée : un ;
+  - l'ICMP sans les huit octets : deux ;
+  - le pointeur accepté : un.
+- Le sabotage du pointeur a d'abord **survécu** : la question de test était
+  trop courte, et elle était refusée par sa longueur, garde ou pas. Le test
+  porte maintenant deux cents octets derrière le pointeur, et il tombe.
+- `swift test`, `check-whitespace.sh` et les tests du site passent. Le compte
+  publié passe à 3222.
+
 ## 2026-10-30 — La passerelle donne l'heure
 
 **Ce qui manquait.** Le temps de l'invité avance au rythme de l'interprète,
