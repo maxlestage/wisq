@@ -75,13 +75,16 @@ final class UserNetworkTimeTests: XCTestCase {
     }
 
     /// **Réseau coupé, l'heure reste** : la passerelle répond d'elle-même,
-    /// et une demande vers un serveur du dehors ne reçoit rien d'ici.
-    func testTimeSurvivesACutNetwork() {
+    /// et une demande vers un serveur du dehors est refusée (voir
+    /// `UserNetwork.refusal`), pas servie.
+    func testTimeSurvivesACutNetwork() throws {
         let cut = UserNetwork.isolated()
         defer { cut.streams?.close() }
         cut.send(Self.frame(Self.request(sent: [1, 1, 1, 1, 1, 1, 1, 1])))
-        XCTAssertEqual(cut.receive().count, 1)
+        let served = try XCTUnwrap(cut.receive().first)
+        XCTAssertEqual(served[14 + 9], 17, "une réponse NTP")
         cut.send(Self.frame(Self.request(sent: [1, 1, 1, 1, 1, 1, 1, 1]), to: [162, 159, 200, 1]))
-        XCTAssertTrue(cut.receive().isEmpty)
+        let refused = try XCTUnwrap(cut.receive().first)
+        XCTAssertEqual(refused[14 + 9], 1, "un ICMP « injoignable », pas une heure")
     }
 }
