@@ -75,6 +75,9 @@ public struct X86Core: @unchecked Sendable {
     public var system = X86SystemState()
     /// Le contrôleur d'interruptions et l'horloge d'un PC.
     public var devices = X86LegacyDevices()
+    /// L'horloge du PC, aux ports 0x70 et 0x71 : voir `X86CMOSClock`. Hors de
+    /// l'instantané — elle lit l'heure de l'hôte.
+    var cmos = X86CMOSClock()
     /// Le témoin des adresses non canoniques : armé ou non, et ce qu'il a vu.
     ///
     /// **Seul l'anneau trois est regardé** quand il est armé, et ce n'est pas
