@@ -258,6 +258,7 @@ public final class VirtioNet: @unchecked Sendable {
     /// **Au repos, à chaque passage** : une machine endormie n'exécute rien,
     /// et attendre seize passages, ce serait attendre seize battements.
     static let busyPollInterval = 16
+    @exclusivity(unchecked)
     private var passesSincePoll = 0
 
     /// **Prendre ce que le réseau a pour l'invité**, et le lui donner si ses
@@ -265,9 +266,9 @@ public final class VirtioNet: @unchecked Sendable {
     /// `busy` dit que le processeur travaille (voir `busyPollInterval`).
     public func poll(_ memory: GuestMemory, busy: Bool = false) {
         if busy {
-            passesSincePoll += 1
+            passesSincePoll &+= 1
             guard passesSincePoll >= Self.busyPollInterval else {
-                deliver(memory)
+                if !waiting.isEmpty { deliver(memory) }
                 return
             }
         }
