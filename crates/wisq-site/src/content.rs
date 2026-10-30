@@ -521,7 +521,7 @@ pub static ACCUEIL_EN: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Built to be trusted",
-        items: &[FactCopy { value: "3179", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
+        items: &[FactCopy { value: "3182", label: "tests" }, FactCopy { value: "7", label: "blocking CI gates" }, FactCopy { value: "0", label: "warnings, strict concurrency" }, FactCopy { value: "1", label: "real kernel booted per CI run" }],
     },
     etat: EtatCopy {
         title: "Where it stands",
@@ -647,7 +647,7 @@ pub static ACCUEIL_FR: AccueilCopy = AccueilCopy {
     },
     facts: FactsCopy {
         title: "Fait pour inspirer confiance",
-        items: &[FactCopy { value: "3179", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
+        items: &[FactCopy { value: "3182", label: "tests" }, FactCopy { value: "7", label: "portes CI bloquantes" }, FactCopy { value: "0", label: "avertissement, concurrence stricte" }, FactCopy { value: "1", label: "vrai noyau démarré par exécution CI" }],
     },
     etat: EtatCopy {
         title: "Où en est le projet",
