@@ -59,6 +59,14 @@ public final class X86PCIHost: @unchecked Sendable {
     /// machine n'en a pas.
     public static let secondInterruptLine: UInt8 = 6
 
+    /// **L'emplacement de la carte réseau**, après les deux disques.
+    public static let networkSlot: UInt32 = 5
+
+    /// Sa ligne : trois, celle du second port série sur un PC, que cette
+    /// machine n'a pas. Toujours sur le 8259 maître, pour la raison du second
+    /// disque.
+    public static let networkInterruptLine: UInt8 = 3
+
     /// L'emplacement que **cet** hôte sert : trois pour le premier disque, le
     /// pont et tout le reste ; quatre pour le second.
     public let deviceSlot: UInt32
@@ -71,6 +79,16 @@ public final class X86PCIHost: @unchecked Sendable {
     /// une marque. Les machines déjà sauvées ne voient rien changer.
     @exclusivity(unchecked)
     public var second: X86PCIHost?
+
+    /// La carte réseau, servie par un hôte à elle sur l'emplacement cinq —
+    /// séparée pour la raison du second disque : l'instantané d'avant ne
+    /// change pas d'un octet.
+    @exclusivity(unchecked)
+    public var network: X86PCIHost?
+
+    /// La carte de **cet** hôte, quand c'est celui de l'emplacement cinq.
+    @exclusivity(unchecked)
+    public var nic: VirtioNet?
 
     /// Ce que le noyau a écrit dans le port d'adresse.
     public private(set) var address: UInt32 = 0
@@ -104,9 +122,20 @@ public final class X86PCIHost: @unchecked Sendable {
         interruptLine = Self.secondInterruptLine
     }
 
+    /// L'hôte de la carte réseau.
+    public init(network nic: VirtioNet) {
+        self.storage = nil
+        self.nic = nic
+        deviceSlot = Self.networkSlot
+        interruptLine = Self.networkInterruptLine
+    }
+
+    /// Vrai quand un périphérique est branché sur cet hôte.
+    var hasDevice: Bool { storage != nil || nic != nil }
+
     /// Vrai quand les ports du périphérique sont activés et placés.
     public var windowOpen: Bool {
-        storage != nil && window != 0 && command & 0x01 != 0
+        hasDevice && window != 0 && command & 0x01 != 0
     }
 
     /// Le décalage dans la fenêtre du périphérique, ou rien.
@@ -130,7 +159,7 @@ public final class X86PCIHost: @unchecked Sendable {
     var addressesTheDevice: Bool {
         let it = selected
         return it.enabled && it.bus == 0 && it.slot == deviceSlot && it.function == 0
-            && storage != nil
+            && hasDevice
     }
 
     /// Vrai quand l'adresse désigne le pont hôte.
@@ -160,18 +189,22 @@ public final class X86PCIHost: @unchecked Sendable {
     public func configuration() -> UInt32 {
         if addressesTheBridge { return bridgeConfiguration() }
         if let second, second.addressesTheDevice { return second.configuration() }
+        if let network, network.addressesTheDevice { return network.configuration() }
         guard addressesTheDevice else { return 0xFFFF_FFFF }
+        let isNetwork = nic != nil
         switch selected.register {
-        case 0x00: return 0x1001_1AF4          // virtio-blk, en version ancienne
+        // virtio-net ou virtio-blk, en version ancienne
+        case 0x00: return isNetwork ? 0x1000_1AF4 : 0x1001_1AF4
         case 0x04: return UInt32(command)      // aucun bit d'état à annoncer
-        case 0x08: return 0x0100_0000          // stockage de masse, révision zéro
+        // contrôleur Ethernet, ou stockage de masse ; révision zéro
+        case 0x08: return isNetwork ? 0x0200_0000 : 0x0100_0000
         case 0x0C: return 0                    // en-tête de type zéro
         case 0x10:
             // La fenêtre de ports. Pendant la mesure de taille, le noyau lit
             // le masque : les bits qu'il ne peut pas changer disent la taille.
             if sizing { return ~(Self.windowSize &- 1) | 1 }
             return window | 1
-        case 0x2C: return 0x0002_1AF4          // sous-système : un disque
+        case 0x2C: return isNetwork ? 0x0001_1AF4 : 0x0002_1AF4  // sous-système
         case 0x3C: return UInt32(interruptLine) | (1 << 8)  // ligne, puis broche A
         default: return 0
         }
@@ -180,6 +213,10 @@ public final class X86PCIHost: @unchecked Sendable {
     public func writeConfiguration(_ value: UInt32, _ width: Int, _ byte: UInt32) {
         if let second, second.addressesTheDevice {
             second.writeConfiguration(value, width, byte)
+            return
+        }
+        if let network, network.addressesTheDevice {
+            network.writeConfiguration(value, width, byte)
             return
         }
         guard addressesTheDevice else { return }
@@ -211,6 +248,7 @@ public final class X86PCIHost: @unchecked Sendable {
     public func writeAddress(_ value: UInt32) {
         address = value
         second?.writeAddress(value)
+        network?.writeAddress(value)
     }
 
     /// Le disque dont la fenêtre contient ce port, et le décalage dedans — le
@@ -221,6 +259,12 @@ public final class X86PCIHost: @unchecked Sendable {
             return (device, at)
         }
         return nil
+    }
+
+    /// La carte réseau dont la fenêtre contient ce port, et le décalage.
+    public func networkDevice(atPort port: UInt16) -> (device: VirtioNet, offset: UInt16)? {
+        guard let network, let device = network.nic, let at = network.windowOffset(port) else { return nil }
+        return (device, at)
     }
 
     // MARK: - Ce qu'on sauve
