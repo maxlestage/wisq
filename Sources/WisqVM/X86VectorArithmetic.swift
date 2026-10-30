@@ -93,17 +93,42 @@ extension X86Core {
     /// Le registre entier décalé **en octets**, sans regarder les éléments.
     /// `PSRLDQ` et `PSLLDQ` portent des noms de la même famille et n'en sont
     /// pas : ils déplacent les cent vingt-huit bits d'un bloc.
+    ///
+    /// **Par décalages de mots, sans tableau** : `PSRLDQ` est dans le
+    /// `memcpy` et le `strlen` de la glibc, et un tableau alloué à chaque
+    /// passage y coûtait plus que l'instruction.
     static func shiftWhole(
         _ value: (low: UInt64, high: UInt64), by count: UInt64, left: Bool
     ) -> (UInt64, UInt64) {
         guard count < 16 else { return (0, 0) }
-        var bytes = [UInt8](repeating: 0, count: 16)
-        let source = self.bytes(value)
-        for index in 0..<16 {
-            let from = left ? index - Int(count) : index + Int(count)
-            if from >= 0, from < 16 { bytes[index] = source[from] }
+        let bits = count * 8
+        guard bits > 0 else { return (value.low, value.high) }
+        if left {
+            if bits >= 64 { return (0, value.low << (bits - 64)) }
+            return (value.low << bits, value.high << bits | value.low >> (64 - bits))
         }
-        return pack(bytes)
+        if bits >= 64 { return (value.high >> (bits - 64), 0) }
+        return (value.low >> bits | value.high << (64 - bits), value.high >> bits)
+    }
+
+    /// **`PCMPEQB` sur un mot, huit octets à la fois** : 0xFF là où les deux
+    /// octets sont égaux, 0 ailleurs. Le bit haut de chaque octet de `t` dit
+    /// que l'octet de `a ^ b` n'est pas nul — sans qu'une retenue passe d'un
+    /// octet au suivant, puisqu'on n'additionne que les sept bits du bas.
+    static func equalBytes(_ left: UInt64, _ right: UInt64) -> UInt64 {
+        let difference = left ^ right
+        let lowSeven: UInt64 = 0x7F7F_7F7F_7F7F_7F7F
+        let nonZero = ((difference & lowSeven) &+ lowSeven) | difference
+        let equal = ~nonZero & 0x8080_8080_8080_8080
+        return (equal >> 7) &* 0xFF
+    }
+
+    /// **`PMOVMSKB` sur un mot** : le bit haut de chacun des huit octets,
+    /// rangés dans l'ordre, l'octet zéro au bit zéro. La multiplication
+    /// amène chaque bit haut à sa place dans l'octet du haut, sans que deux
+    /// d'entre eux se rencontrent.
+    static func signBits(_ value: UInt64) -> UInt64 {
+        ((value & 0x8080_8080_8080_8080) >> 7 &* 0x0102_0408_1020_4080) >> 56
     }
 
     static func bytes(_ value: (low: UInt64, high: UInt64)) -> [UInt8] {
@@ -171,7 +196,14 @@ extension X86Core {
         // Les comparaisons : tous les bits de l'élément à un quand c'est vrai,
         // tous à zéro sinon. C'est un masque, pas un booléen — il sert
         // ensuite d'opérande à un `PAND`.
-        case 0x74: try compute(instruction, 1) { $0 == $1 ? $2 : 0 }
+        case 0x74:
+            // L'octet à l'octet, mais huit à la fois : c'est le cœur des
+            // `strlen` et `memchr` de la glibc.
+            let fields = try decodeFields(instruction)
+            let destination = vector(fields.reg)
+            let source = try readVectorRM(fields, 16)
+            setVector(fields.reg, Self.equalBytes(destination.low, source.0),
+                      Self.equalBytes(destination.high, source.1))
         case 0x76: try compute(instruction, 4) { $0 == $1 ? $2 : 0 }
         case 0x66: try compute(instruction, 4) {
             Int32(truncatingIfNeeded: $0) > Int32(truncatingIfNeeded: $1) ? $2 : 0
@@ -337,9 +369,8 @@ extension X86Core {
         case 0xD7:  // PMOVMSKB
             let fields = try decodeFields(instruction)
             guard fields.mod == 0b11 else { throw Fault.unsupported("PMOVMSKB depuis la mémoire") }
-            let bytes = Self.bytes(vector(fields.rm))
-            let mask = bytes.indices.reduce(UInt64(0)) { $0 | UInt64(bytes[$1] >> 7) << UInt64($1) }
-            writeReg(fields, 4, mask)
+            let value = vector(fields.rm)
+            writeReg(fields, 4, Self.signBits(value.low) | Self.signBits(value.high) << 8)
 
         case 0xC5:  // PEXTRW
             let fields = try decodeFields(instruction)
