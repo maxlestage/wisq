@@ -30,7 +30,7 @@ final class HostStreamsTests: XCTestCase {
             var length = socklen_t(MemoryLayout<sockaddr_in>.size)
             let bound = withUnsafeMutablePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Int32 in
-                    guard bind(listener, pointer, length) == 0, startListening(listener) == 0 else { return -1 }
+                    guard bindSocket(listener, pointer, length) == 0, startListening(listener) == 0 else { return -1 }
                     return getsockname(listener, pointer, &length)
                 }
             }
