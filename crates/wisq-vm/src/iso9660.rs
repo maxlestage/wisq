@@ -381,7 +381,11 @@ pub struct Recipe {
 /// **`/boot/isolinux/` manquait**, et c'est là que Void Linux et Tiny Core
 /// rangent la leur : leurs deux images étaient refusées faute de recette,
 /// alors qu'elles en portent une de trois lignes.
-const WHERE: [&str; 9] = [
+///
+/// **`/boot/grub2/` aussi**, le dossier de grub chez Fedora et ses parents :
+/// Fedora Workstation 44 y range sa recette, et son `/EFI/BOOT/grub.cfg`
+/// ne fait que la relire par `configfile`.
+const WHERE: [&str; 10] = [
     "/loader/entries",
     "/boot/syslinux/syslinux.cfg",
     "/boot/syslinux/isolinux.cfg",
@@ -389,6 +393,7 @@ const WHERE: [&str; 9] = [
     "/isolinux/isolinux.cfg",
     "/syslinux/syslinux.cfg",
     "/boot/grub/grub.cfg",
+    "/boot/grub2/grub.cfg",
     "/EFI/BOOT/grub.cfg",
     "/arch/boot/syslinux/archiso_sys.cfg",
 ];
@@ -405,12 +410,55 @@ impl Recipe {
     /// entier pour vérifier qu'une ligne `linux` est comprise ferait payer
     /// deux cents lignes de gréement à chaque dialecte ajouté.
     pub fn read(text: &str, from: &str) -> Option<Recipe> {
-        parse(text, from)
+        parse_entries(text, from, &|_| None).map(|(recipe, _)| recipe)
+    }
+
+    /// Lit une recette **comme dans une image**, sans en bâtir une : `file`
+    /// rend le texte d'un fichier de l'image, `names` les noms d'un dossier,
+    /// et `label` est l'étiquette du volume. C'est ce que fait [`Recipe::of`],
+    /// les trois venant de l'image ; publique pour la même raison que
+    /// [`Recipe::read`].
+    pub fn read_in(
+        text: &str,
+        from: &str,
+        label: &str,
+        file: &dyn Fn(&str) -> Option<String>,
+        names: &dyn Fn(&str) -> Vec<String>,
+    ) -> Option<Recipe> {
+        let text = if is_grub(from) {
+            let mut seen = vec![from.to_string()];
+            sourced(text, file, &mut seen, 0)
+        } else {
+            text.to_string()
+        };
+        let resolve = |kernel: &str| resolved(kernel, names);
+        let (mut recipe, guessed) = parse_entries(&text, from, &resolve)?;
+        if guessed {
+            recipe.command_line = with_label(&recipe.command_line, &text, label);
+        }
+        Some(recipe)
     }
 
     /// Cherche une recette dans l'image, et rend la première qui nomme un
     /// noyau.
     pub fn of<B: Bytes>(iso: &Iso<B>) -> Option<Recipe> {
+        let file = |path: &str| {
+            let entry = iso.find(path).filter(|entry| !entry.directory)?;
+            let bytes = iso.read(&entry, RECIPE_CEILING)?;
+            Some(String::from_utf8_lossy(&bytes).into_owned())
+        };
+        let names = |path: &str| {
+            iso.find(path)
+                .filter(|entry| entry.directory)
+                .map(|entry| {
+                    iso.list(&entry)
+                        .into_iter()
+                        .filter(|child| !child.directory)
+                        .map(|child| child.name)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         for place in WHERE {
             let Some(entry) = iso.find(place) else {
                 continue;
@@ -429,13 +477,122 @@ impl Recipe {
                     continue;
                 };
                 let text = String::from_utf8_lossy(&bytes);
-                if let Some(recipe) = parse(&text, &path) {
+                if let Some(recipe) =
+                    Recipe::read_in(&text, &path, iso.volume_label(), &file, &names)
+                {
                     return Some(recipe);
                 }
             }
         }
         None
     }
+}
+
+/// **Grub lit d'autres fichiers**, et la recette peut être dans l'un d'eux.
+///
+/// Le `grub.cfg` d'Artix ne porte aucune ligne `linux` : il définit des
+/// fonctions, puis écrit `source /boot/grub/kernels.cfg`, et c'est là que
+/// sont les entrées. Chaque `source` ou `configfile` dont le chemin est écrit
+/// en clair est remplacé par le texte du fichier, à sa place — l'ordre des
+/// entrées reste celui que grub verrait.
+///
+/// Un chemin qui passe par une variable (`source /boot/grub/locales/${1}`)
+/// reste tel quel : sa valeur n'existe qu'au moment où grub l'exécute. Un
+/// fichier déjà lu ne l'est pas deux fois — `menu_reload` relit `grub.cfg`
+/// lui-même —, et quatre niveaux suffisent à toute image vue.
+fn sourced(
+    text: &str,
+    file: &dyn Fn(&str) -> Option<String>,
+    seen: &mut Vec<String>,
+    depth: usize,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        let command = words.next().unwrap_or("");
+        // Le périphérique devant le chemin, `($root)/boot/grub2/grub.cfg`
+        // chez Fedora, est l'image elle-même : il tombe avant qu'on juge si
+        // le chemin passe par une variable.
+        let path = absolute(words.next().unwrap_or("").trim_matches('"'), "");
+        let literal = words.next().is_none() && path.len() > 1 && !path.contains('$');
+        if matches!(command, "source" | "configfile")
+            && literal
+            && depth < 4
+            && !seen.contains(&path)
+        {
+            seen.push(path.clone());
+            if let Some(inner) = file(&path) {
+                out.push_str(&sourced(&inner, file, seen, depth + 1));
+                out.push('\n');
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+fn is_grub(from: &str) -> bool {
+    from.ends_with("grub.cfg")
+}
+
+/// **Un noyau dont le nom passe par une variable**, trouvé sur le disque.
+///
+/// Artix écrit `linux /boot/vmlinuz-$2`, et `$2` vaut ce qu'une boucle `for`
+/// a assemblé — `x86_64` suivi des arguments. Lire la boucle reviendrait à
+/// écrire un interprète de grub. Mais le fichier, lui, est là : le dossier
+/// `/boot` porte un seul nom qui commence par `vmlinuz-`. **Un seul**, sinon
+/// rien : entre deux noyaux, choisir serait deviner, et une entrée de plus
+/// loin dans le fichier aura peut-être un nom en clair.
+fn resolved(kernel: &str, names: &dyn Fn(&str) -> Vec<String>) -> Option<String> {
+    let (folder, name) = kernel.rsplit_once('/')?;
+    if folder.contains('$') {
+        return None;
+    }
+    let prefix = &name[..name.find('$')?];
+    if prefix.is_empty() {
+        return None;
+    }
+    let mut matching = names(folder)
+        .into_iter()
+        .filter(|candidate| candidate.starts_with(prefix));
+    let found = matching.next()?;
+    matching
+        .next()
+        .is_none()
+        .then(|| format!("{folder}/{found}"))
+}
+
+/// **L'argument qui nomme le support**, gardé quand le reste n'a pu être lu.
+///
+/// Un système « live » cherche au démarrage le disque d'où il vient, et le
+/// reconnaît à son étiquette : `label=ARTIX_202608`, `archisolabel=…`,
+/// `CDLABEL=…`. Quand grub assemble la ligne par ses variables, wisq ne peut
+/// pas la recalculer ; mais cet argument-là y est écrit en toutes lettres,
+/// parce qu'il ne dépend de rien, et sans lui l'initramfs ne trouve jamais
+/// sa racine. Il est repris du texte, s'il y figure, une seule fois.
+fn with_label(command_line: &str, text: &str, label: &str) -> String {
+    let mut words: Vec<String> = command_line
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if label.trim().is_empty() {
+        return words.join(" ");
+    }
+    for word in text.split(|c: char| c.is_whitespace() || c == '"' || c == ';') {
+        let Some((key, value)) = word.split_once('=') else {
+            continue;
+        };
+        let key_ok = !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        if key_ok && value == label && !words.iter().any(|known| known == word) {
+            words.push(word.to_string());
+        }
+    }
+    words.join(" ")
 }
 
 /// Lire une recette, quel que soit le chargeur qui l'a écrite.
@@ -493,8 +650,23 @@ fn entries(text: &str) -> Vec<&str> {
 /// dans le nom du `LABEL` chez syslinux) pour départager des cas où les deux
 /// règles s'accordent déjà. Le jour où une image les fera diverger, ce sera un
 /// défaut nommé, avec son image pour le montrer.
-fn parse(text: &str, from: &str) -> Option<Recipe> {
-    entries(text).into_iter().find_map(|block| one(block, from))
+///
+/// Rendu avec la recette : **le nom du noyau a-t-il été trouvé sur le
+/// disque** plutôt que lu (voir `resolved`). Une entrée dont le noyau ne se
+/// lit ni ne se trouve est passée, et la suivante a sa chance.
+fn parse_entries(
+    text: &str,
+    from: &str,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> Option<(Recipe, bool)> {
+    entries(text).into_iter().find_map(|block| {
+        let recipe = one(block, from)?;
+        if !recipe.kernel.contains('$') {
+            return Some((recipe, false));
+        }
+        let kernel = resolve(&recipe.kernel)?;
+        Some((Recipe { kernel, ..recipe }, true))
+    })
 }
 
 /// Une entrée, et elle seule.
@@ -523,7 +695,9 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
     let mut kernel = None;
     let mut initrd = None;
     let mut command_line = String::new();
+    let parameters = positional(text);
     for line in logical_lines(text) {
+        let line = with_parameters(line.trim(), &parameters);
         let line = line.trim();
         let Some((word, rest)) = line.split_once(char::is_whitespace) else {
             continue;
@@ -570,9 +744,105 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
     kernel.map(|kernel| Recipe {
         kernel,
         initrd,
-        command_line,
+        command_line: without_unset(&command_line),
         from: from.to_string(),
     })
+}
+
+/// **Ce qu'une entrée de grub reçoit en `$1`, `$2`…** : son titre, puis les
+/// mots écrits après lui sur la ligne `menuentry`, options `--…` exceptées.
+///
+/// Artix s'en sert pour nommer son noyau — `menuentry "…" "$title " {
+/// linux /boot/vmlinuz-$2 }` —, et l'aide de grub le fait pour ses propres
+/// menus. Les guillemets sont ceux du shell ; une entrée sans mot
+/// d'ouverture (syslinux, systemd-boot) n'a pas de paramètres.
+fn positional(text: &str) -> Vec<String> {
+    let header = text.lines().next().unwrap_or("").trim_start();
+    let Some(rest) = header.strip_prefix("menuentry") else {
+        return Vec::new();
+    };
+    let rest = rest.split('{').next().unwrap_or("");
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut started = false;
+    for c in rest.chars() {
+        match (quote, c) {
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                started = true;
+            }
+            (Some(open), _) if c == open => quote = None,
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            _ => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    words.retain(|word| !word.starts_with("--"));
+    words
+}
+
+/// Remplace `$1`, `${2}`… par les paramètres de l'entrée. Un numéro sans
+/// paramètre reste écrit : c'est `without_unset` qui le fait tomber, comme
+/// le reste de ce que grub ne trouverait pas.
+fn with_parameters(line: &str, parameters: &[String]) -> String {
+    if parameters.is_empty() || !line.contains('$') {
+        return line.to_string();
+    }
+    let mut out = line.to_string();
+    for (index, value) in parameters.iter().enumerate().rev() {
+        let number = index + 1;
+        out = out.replace(&format!("${{{number}}}"), value);
+        out = out.replace(&format!("${number}"), value);
+    }
+    out
+}
+
+/// **Une variable que wisq n'a pas lue vaut rien**, comme chez grub pour une
+/// variable qui n'est pas posée. `$kopts` et `${auto}` disparaissent de la
+/// ligne au lieu d'arriver au noyau en toutes lettres, où ils ne veulent
+/// rien dire ; un mot qui n'était qu'une variable disparaît avec elle.
+fn without_unset(command_line: &str) -> String {
+    command_line
+        .split_whitespace()
+        .map(|word| {
+            let mut kept = String::with_capacity(word.len());
+            let mut chars = word.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c != '$' {
+                    kept.push(c);
+                    continue;
+                }
+                if chars.peek() == Some(&'{') {
+                    for inner in chars.by_ref() {
+                        if inner == '}' {
+                            break;
+                        }
+                    }
+                } else {
+                    while chars
+                        .peek()
+                        .is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_')
+                    {
+                        chars.next();
+                    }
+                }
+            }
+            kept
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Ajoute à la liste les initramfs qu'une ligne cite.
