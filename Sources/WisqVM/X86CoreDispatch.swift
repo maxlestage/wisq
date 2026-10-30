@@ -1123,6 +1123,10 @@ extension X86Core {
                 devices.secondary.mask = byte
             }
 
+        // L'horloge : l'index, puis la donnée. Voir `X86CMOSClock`.
+        case 0x70: cmos.select(byte)
+        case 0x71: cmos.write(byte)
+
         // Le 8253. Seul le canal zéro bat ; les autres se laissent écrire sans
         // rien produire, ce qui suffit à ne pas arrêter un noyau qui les
         // programme pour le haut-parleur.
@@ -1214,6 +1218,7 @@ extension X86Core {
             return UInt64(devices.secondary.readsService
                 ? devices.secondary.service : devices.secondary.request)
         case 0xA1: return UInt64(devices.secondary.mask)
+        case 0x71: return UInt64(cmos.read())
         case X86PS2Controller.dataPort: return UInt64(devices.ps2.readData())
         case X86PS2Controller.commandPort: return UInt64(devices.ps2.status())
         case 0x61:
