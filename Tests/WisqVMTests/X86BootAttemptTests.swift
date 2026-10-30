@@ -655,4 +655,3 @@ final class CountingCable: NetworkBackend {
     func send(_ frame: [UInt8]) { sent += 1 }
     func receive() -> [[UInt8]] { [] }
 }
-
