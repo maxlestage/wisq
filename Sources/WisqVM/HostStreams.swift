@@ -366,7 +366,7 @@ public final class HostStreams: @unchecked Sendable {
                     connection.lastSent = now
                 }
             case .established:
-                if (connection.inFlight > 0 || (connection.finSent && !connection.finAcknowledged)),
+                if connection.inFlight > 0 || (connection.finSent && !connection.finAcknowledged),
                    now.timeIntervalSince(connection.lastSent) > Self.retransmitAfter {
                     // Tout depuis le dernier accusé.
                     connection.inFlight = 0
