@@ -1027,10 +1027,6 @@ extension X86Core {
         case Self.serialBase...(Self.serialBase &+ 7):
             serialWrite(port &- Self.serialBase, byte)
 
-        // L'horloge CMOS : l'index, puis la donnée. Voir `X86RealTimeClock`.
-        case X86RealTimeClock.indexPort, X86RealTimeClock.dataPort:
-            devices.clock.write(port, byte)
-
         // Le bus PCI : une adresse, puis une donnée. Sans ces deux ports, le
         // noyau conclut « PCI: System does not support PCI » et n'énumère rien.
         case X86PCIHost.addressPort:
@@ -1104,6 +1100,10 @@ extension X86Core {
             } else {
                 devices.secondary.mask = byte
             }
+
+        // L'horloge : l'index, puis la donnée. Voir `X86CMOSClock`.
+        case 0x70: cmos.select(byte)
+        case 0x71: cmos.write(byte)
 
         // Le 8253. Seul le canal zéro bat ; les autres se laissent écrire sans
         // rien produire, ce qui suffit à ne pas arrêter un noyau qui les
@@ -1196,6 +1196,7 @@ extension X86Core {
             return UInt64(devices.secondary.readsService
                 ? devices.secondary.service : devices.secondary.request)
         case 0xA1: return UInt64(devices.secondary.mask)
+        case 0x71: return UInt64(cmos.read())
         case 0x61:
             // Le bit 5 : « le canal deux est arrivé à zéro ». Le bit 4 change
             // à chaque rafraîchissement mémoire sur un vrai PC ; le faire
@@ -1203,8 +1204,6 @@ extension X86Core {
             return (devices.speakerFinished(at: ticks) ? 0x20 : 0)
                 | (ticks & 1) << 4
                 | (devices.speakerGate ? 1 : 0)
-        case X86RealTimeClock.indexPort, X86RealTimeClock.dataPort:
-            return UInt64(devices.clock.read(port))
         case 0x42:
             let count = devices.speakerCount(at: ticks)
             defer { devices.speakerReadHighNext.toggle() }
