@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Essayé, sans gain : une case du cache de décodage par ligne
+
+**L'idée.** Un profil `perf` du démarrage met un quart du temps de `run` sur
+une seule instruction, celle qui compare les octets de l'invité à ceux d'une
+case du cache de décodage. C'est l'attente de la case. Une case pesait
+soixante-douze octets, et la plupart chevauchaient deux lignes de
+soixante-quatre.
+- Les deux masques se déduisaient de la longueur de l'instruction. Les ôter
+  ramenait la case à cinquante-six octets.
+- Complétée à soixante-quatre, dans un tableau aligné, chaque lecture ne
+  touchait plus qu'une ligne, et le cache passait de 9,0 à 8,0 Mio.
+
+**Mesuré**, quatre milliards d'instructions du démarrage de l'Alpine installé,
+sans réseau, trois passages alternés de chaque côté :
+- avant : 125,1 s, 127,3 s, 132,5 s ;
+- après : 127,8 s, 127,6 s, 125,8 s.
+
+Les médianes sont à 127,3 et 127,6 s : rien, dans le bruit du conteneur.
+L'attente vient du premier accès à une case prise au hasard dans 9 Mio, pas
+de la seconde ligne, et calculer les masques à chaque lecture coûte ce que la
+ligne épargnait. **Pas gardé.** Le code reste celui de #508 et des tranches
+qui ont suivi.
+
 ## 2026-10-30 — `PMOVMSKB` et `PCMPEQB` sans tableau : le cœur de `strlen`, dix-huit et huit fois plus vite
 
 **Ce qui coûtait.** Un profil `perf` du démarrage de l'Alpine installé met le
