@@ -8,6 +8,51 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — Une carte réseau pour la machine PC (virtio-net), première tranche du réseau
+
+**Ce qui manquait.** La machine locale n'avait aucun réseau : ni carte, ni pile.
+Sans réseau, pas d'`apt install`, pas d'installateur qui télécharge ses
+paquets (Debian netinst, Arch, l'image *virt* d'Alpine), pas de mise à jour.
+Ubuntu 26.04 le montre : il démarre jusqu'à son shell, et sa seule unité en
+échec est `systemd-networkd-wait-online`. Le réseau se fera en tranches : la
+carte (celle-ci), puis une pile en mode utilisateur à la manière de « slirp »
+(ARP et DHCP, puis UDP et DNS, puis TCP vers l'hôte).
+
+**Ce qui change.**
+- `VirtioNet` est une carte virtio-net par la forme ancienne de virtio-pci,
+  la même porte que `VirtioBlock`.
+  - Deux files : la zéro reçoit, la une émet.
+  - Seule fonction annoncée : `MAC`. L'en-tête des trames fait donc dix
+    octets.
+  - L'adresse par défaut est `02:77:69:73:71:01`, administrée localement.
+  - Une trame trop grande pour son tampon est perdue plutôt que rendue
+    tronquée. Celles qui n'ont pas de tampon attendent, avec une borne.
+- `NetworkBackend` est l'autre bout du câble, `send` et `receive`. Ce qui en
+  fait un réseau vivra là ; sans lui, la carte est un câble débranché.
+- Sur le bus, la carte est à l'emplacement cinq, en classe Ethernet, sur la
+  ligne 3 du 8259 maître. Les ports et l'interruption sont branchés, et le
+  contrôleur d'interruptions la sonde à chaque passage (`poll`).
+- **Une session reprise garde sa carte.** La section « WISQ_net » est posée
+  *avant* les disques, dont la section n'a pas de marque. Le réseau, lui,
+  n'est pas dans l'instantané : la carte reprise se branche sur l'autre bout
+  de la machine qui reprend. Brancher un disque, ou le retirer, ne débranche
+  pas la carte.
+
+**Mesuré.** Sur l'Alpine installé par #637, avec `WISQ_PC_NET=1` au banc :
+- le noyau active `virtio-pci 0000:00:05.0` ;
+- `ip link` montre `eth0` avec l'adresse `02:77:69:73:71:01` ;
+- `udhcpc` diffuse ses demandes, et douze trames arrivent au câble.
+
+Personne n'y répond encore : c'est la tranche suivante.
+
+**Vérifié.** Sept tests (`VirtioNetTests`), conduits comme un pilote : files
+en mémoire, émission, réception, attente d'un tampon, tampon trop petit,
+espace de configuration PCI, instantané avec et sans carte. Sept sabotages,
+sept chutes. Le premier passage en laissait survivre un : brancher un disque
+après la carte la débranchait. Le test le tient maintenant.
+
+Compte publié : 3131.
+
 ## 2026-10-29 — Démarrer l'image d'installation, une fois
 
 **Ce qui manquait.** Depuis #637, une machine dont le disque porte un système
