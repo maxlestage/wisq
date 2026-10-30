@@ -8,6 +8,54 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — `PMOVMSKB` et `PCMPEQB` sans tableau : le cœur de `strlen`, dix-huit et huit fois plus vite
+
+**Ce qui coûtait.** Un profil `perf` du démarrage de l'Alpine installé met le
+dispatch en tête : la boucle, les opcodes d'un octet et `execute`, 63 % à
+eux trois. Il montre aussi quelques pour cent d'allocations. En les
+cherchant, j'ai trouvé deux instructions qui allouaient à chaque passage.
+- `PMOVMSKB` construisait un tableau de seize octets pour en lire les bits
+  hauts. C'est le cœur des `strlen`, `memchr` et `strchr` de la glibc en
+  SSE2.
+- `PSRLDQ` et `PSLLDQ` aussi, pour déplacer les cent vingt-huit bits.
+- `PCMPEQB`, son voisin de boucle, passait par la comparaison générique
+  élément par élément, une fermeture par octet.
+
+`apt-get update` passait cinq minutes de processeur à lire des index texte
+dans ces boucles. Et l'AVX2 que la glibc choisit (wisq annonce x86-64-v3)
+passe par les mêmes fonctions, une moitié de 128 bits après l'autre.
+
+**Ce qui change.**
+- `signBits` : les huit bits hauts d'un mot, rangés par une multiplication
+  qui amène chacun à sa place sans qu'aucun ne se rencontre.
+- `equalBytes` : huit octets comparés à la fois. On n'additionne que les
+  sept bits du bas de chaque octet, et aucune retenue ne passe d'un octet au
+  suivant.
+- `shiftWhole` : deux décalages de mots. Le décalage nul n'a pas besoin de
+  son cas, puisqu'un décalage de 64 bits rend zéro en Swift.
+
+**Mesuré**, cinq millions d'appels en build release :
+
+| instruction | avant | après |
+|---|---|---|
+| `PMOVMSKB` | 80,5 ns | 4,4 ns |
+| `PCMPEQB` | 39,2 ns | 4,9 ns |
+| `PSRLDQ`, `PSLLDQ` | (tableau) | 2,1 à 2,9 ns |
+
+Dans la boucle de `strlen` (`pcmpeqb`, `pmovmskb`, `test`, `jz` pour seize
+octets), l'interprète passe ainsi d'environ 120 ns de surcoût à 10.
+
+**Vérifié.**
+- Trois tests (`X86VectorSWARTests`). Chaque forme est comparée à
+  l'écriture octet par octet qu'elle remplace, sur deux mille valeurs tirées
+  et sur les bords : le bit haut seul, pas de retenue, tous les comptes de 0
+  à 17.
+- L'oracle SIMD, mesuré sur un vrai processeur, passe tel quel.
+- Neuf sabotages, neuf chutes. Le seul survivant du premier passage était la
+  garde du décalage nul, inutile, et elle est partie.
+
+Compte publié : 3177.
+
 ## 2026-10-30 — La carte réseau ne coûte presque plus rien, et les périphériques copient par blocs
 
 **Ce qui coûtait.** Brancher le réseau ralentissait la machine. Sur l'Alpine
