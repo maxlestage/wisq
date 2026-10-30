@@ -172,7 +172,8 @@ break APIs.
   série ne s'ouvrait pas. Une image démarrée par sa recette reçoit
   maintenant `systemd.default_device_timeout_sec=600` et
   `systemd.default_timeout_start_sec=600` ; l'horloge ne change pas, et un
-  système sans systemd ignore ces mots.
+  système sans systemd ignore ces mots. Arch 7.2.7 va jusqu'à « archiso
+  login: » sur la console série.
 
 ## [0.4.0] — 2026-09-05
 
