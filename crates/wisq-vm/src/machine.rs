@@ -87,7 +87,13 @@ impl Handle {
     }
 }
 
+/// Le plus grand pas d'un rattrapage : cinq minutes, comme
+/// `GuestClock.stepSeconds` côté Swift.
+const ELAPSE_STEP_MICROS: u64 = 300_000_000;
+
 pub struct Machine {
+    /// Le temps encore dû, en microsecondes — voir `elapse`.
+    pending_elapse: u64,
     ram: Box<[u8]>,
     core: Core,
     shared: Arc<Shared>,
@@ -107,6 +113,7 @@ impl Machine {
             // footprint the system judges the app on.
             ram: vec![0u8; ram_size].into_boxed_slice(),
             core: Core::new(),
+            pending_elapse: 0,
             shared: Arc::new(Shared::default()),
             disk: None,
             pending_output: Vec::with_capacity(4096),
@@ -205,6 +212,26 @@ impl Machine {
     /// flatters an idle guest.
     pub fn retired_instructions(&self) -> u64 {
         self.core.retired()
+    }
+
+    /// Le temps passé hors de la machine, en microsecondes : le CLINT compte
+    /// à un mégahertz, et Linux lit l'heure dans `mtime`. Payé par pas
+    /// (`ELAPSE_STEP_MICROS`), chacun quand le hart attend sur `wfi` : un
+    /// noyau d'avant 6.12 ne convertit sans déborder qu'une dizaine de
+    /// minutes d'écart. Le même geste que `LinuxMachine.elapse(seconds:)`
+    /// côté Swift.
+    pub fn elapse(&mut self, micros: u64) {
+        self.pending_elapse = self.pending_elapse.saturating_add(micros);
+    }
+
+    /// Paie un pas du temps dû.
+    fn take_elapse_step(&mut self) {
+        let step = self.pending_elapse.min(ELAPSE_STEP_MICROS);
+        let now = (u64::from(self.core.timerh) << 32) | u64::from(self.core.timerl);
+        let later = now.wrapping_add(step);
+        self.core.timerh = (later >> 32) as u32;
+        self.core.timerl = later as u32;
+        self.pending_elapse -= step;
     }
 
     /// Loads a kernel image and prepares the hart exactly the way the reference
@@ -316,6 +343,11 @@ impl Machine {
             match result {
                 StepResult::Ran => continue,
                 StepResult::Waiting => {
+                    // Le temps dû, un pas par sommeil : voir `elapse`.
+                    if self.pending_elapse > 0 {
+                        self.take_elapse_step();
+                        continue;
+                    }
                     // The timer is the only thing that can wake a parked hart:
                     // it executes nothing, so it cannot poll the UART either.
                     // With none armed nothing ever will, and the budget cannot
@@ -687,5 +719,29 @@ mod tests {
         assert_eq!(bare.disk.as_ref().unwrap().sectors(), 0, "mais vide");
 
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Le temps dû se paie par pas de cinq minutes au plus, retenue du mot
+    /// haut comprise, jusqu'au dernier reste.
+    #[test]
+    fn elapsing_is_paid_in_steps() {
+        let mut machine = Machine::new(1024 * 1024, Box::new(|_| {}));
+        machine.core.timerl = 0xFFFF_FFF0;
+        machine.elapse(0x20);
+        assert_eq!((machine.core.timerh, machine.core.timerl), (0, 0xFFFF_FFF0), "rien avant le sommeil");
+        machine.take_elapse_step();
+        assert_eq!((machine.core.timerh, machine.core.timerl), (1, 0x10));
+        machine.elapse(3 * 86_400 * 1_000_000);
+        let mut steps = 0;
+        while machine.pending_elapse > 0 {
+            machine.take_elapse_step();
+            steps += 1;
+        }
+        assert_eq!(steps, 864, "trois jours en pas de cinq minutes");
+        let now = (u64::from(machine.core.timerh) << 32) | u64::from(machine.core.timerl);
+        assert_eq!(now, 0x1_0000_0010 + 259_200_000_000);
+        machine.elapse(u64::MAX);
+        machine.elapse(1);
+        assert_eq!(machine.pending_elapse, u64::MAX, "la dette sature, elle ne déborde pas");
     }
 }

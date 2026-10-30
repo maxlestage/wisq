@@ -551,8 +551,9 @@ public final class LocalVMModel {
                 if let saved, (try? machine.restore(saved)) != nil {
                     // **L'heure de l'invité rattrape le temps passé dehors** :
                     // sans ça, une session reprise le lendemain se croyait la
-                    // veille. Voir `X86Machine.elapse(since:)`.
-                    (machine as? X86Machine)?.elapse(since: savedAt)
+                    // veille. Voir `GuestMachine.elapse(seconds:)`, pour le
+                    // PC comme pour la machine RISC-V.
+                    machine.elapse(since: savedAt)
                     // L'invité est déjà en vie ; il reste à le dire, si l'écran
                     // ne l'a pas vu partir.
                     if let resumeNote {

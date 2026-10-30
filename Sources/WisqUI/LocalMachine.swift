@@ -91,6 +91,12 @@ extension RustLinuxMachine: GuestMachine {
         hasDisk ? (diskServed, diskRefused) : nil
     }
 
+    /// Le même geste que `LinuxMachine.elapse(seconds:)`, par le FFI.
+    public func elapse(seconds: TimeInterval) {
+        guard let seconds = GuestClock.catchUp(seconds) else { return }
+        elapse(microseconds: UInt64(seconds * 1_000_000))
+    }
+
     @discardableResult
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {
