@@ -296,6 +296,13 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
                 return [ethernet(to: broadcastMAC, type: ipv4Type,
                                  ipv4Packet(from: gateway, to: [255, 255, 255, 255], protocol: 17, udp))]
             }
+            // L'heure, servie par la passerelle elle-même : voir `ntp`.
+            if destination == gateway, destinationPort == ntpPort, let reply = ntp(Array(body[8..<length]), now: Date()) {
+                let udp = udpDatagram(sourcePort: ntpPort, destinationPort: be16(body, 0), reply,
+                                      from: gateway, to: sourceIP)
+                return [ethernet(to: source, type: ipv4Type,
+                                 ipv4Packet(from: gateway, to: sourceIP, protocol: 17, udp))]
+            }
             return []
         default:
             return []
@@ -358,8 +365,53 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         reply += [1, 4] + netmask
         reply += [3, 4] + gateway
         reply += [6, 4] + nameServer
+        // Le serveur de temps : la passerelle. `systemd-networkd` le passe
+        // à `timesyncd`.
+        reply += [42, 4] + gateway
         reply += [255]
         return reply
+    }
+
+    // MARK: - L'heure
+
+    static let ntpPort: UInt16 = 123
+    /// Des secondes de 1900 à 1970 : l'époque de NTP n'est pas celle d'Unix.
+    static let ntpEpochOffset: TimeInterval = 2_208_988_800
+
+    /// **L'heure du téléphone, servie par la passerelle** (SNTP, RFC 4330).
+    ///
+    /// Le temps de l'invité avance au rythme de l'interprète : un invité
+    /// chargé prend du retard. Son client NTP le rattrape, à condition de
+    /// joindre un serveur. Celui-ci est toujours là, sans réseau dehors,
+    /// réseau coupé compris (`UserNetwork.isolated()`), et le bail l'annonce
+    /// (option 42).
+    ///
+    /// Strate un, référence « WISQ » : l'horloge de l'hôte est la référence
+    /// de ce petit réseau. Seule une demande de client (mode trois) reçoit
+    /// une réponse ; elle reprend sa version, son intervalle et son heure
+    /// d'envoi, comme le client l'attend.
+    static func ntp(_ request: [UInt8], now: Date) -> [UInt8]? {
+        guard request.count >= 48, request[0] & 0x07 == 3 else { return nil }
+        let version = (request[0] >> 3) & 0x07
+        let stamp = ntpTimestamp(now)
+        var reply: [UInt8] = [version << 3 | 4, 1, request[2], 0xEC]
+        reply += [0, 0, 0, 0]               // délai jusqu'à la racine
+        reply += [0, 0, 0, 0x10]            // dispersion : un quart de milliseconde
+        reply += Array("WISQ".utf8)         // référence
+        reply += stamp                      // dernière mise à l'heure
+        reply += Array(request[40..<48])    // l'envoi du client, rendu tel quel
+        reply += stamp                      // réception
+        reply += stamp                      // envoi
+        return reply
+    }
+
+    /// Une date en horodatage NTP : secondes depuis 1900, puis la fraction
+    /// en deux cent trente-deuxièmes.
+    static func ntpTimestamp(_ date: Date) -> [UInt8] {
+        let since1900 = date.timeIntervalSince1970 + ntpEpochOffset
+        let seconds = since1900.rounded(.down)
+        let fraction = UInt32(min((since1900 - seconds) * 4_294_967_296, 4_294_967_295))
+        return be32Bytes(UInt32(truncatingIfNeeded: Int64(seconds))) + be32Bytes(fraction)
     }
 
     // MARK: - Les trames
