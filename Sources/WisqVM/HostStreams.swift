@@ -65,7 +65,10 @@ public final class HostStreams: @unchecked Sendable {
         let remotePort: UInt16
     }
 
-    enum Phase { case connecting, synReceived, established }
+    /// `connecting` et `synReceived` : l'invité a ouvert, l'hôte s'établit
+    /// puis l'invité accuse. `synSent` : c'est l'hôte qui a ouvert, par un
+    /// port relayé, et wisq attend la réponse de l'invité à son SYN.
+    enum Phase { case connecting, synReceived, synSent, established }
 
     final class Connection {
         let key: Key
@@ -110,6 +113,11 @@ public final class HostStreams: @unchecked Sendable {
     private var connections: [Key: Connection] = [:]
     private var outgoing: [Segment] = []
     private var running = true
+    /// Les ports relayés : ce qui arrive sur la socket va vers ce port de
+    /// l'invité.
+    private var listeners: [(descriptor: Int32, guestPort: UInt16)] = []
+    /// Le prochain port d'où wisq ouvre vers l'invité, au nom de l'hôte.
+    private var nextLocalPort = UInt16.random(in: 49_152...60_000)
     private let resolver: [UInt8]
 
     public init(resolver: [UInt8]? = nil) {
@@ -123,13 +131,15 @@ public final class HostStreams: @unchecked Sendable {
 
     deinit {
         for connection in connections.values { _ = closeSocket(connection.descriptor) }
+        for listener in listeners { _ = closeSocket(listener.descriptor) }
     }
 
     public func close() {
         lock.lock()
         running = false
-        let closing = connections.values.map(\.descriptor)
+        let closing = connections.values.map(\.descriptor) + listeners.map(\.descriptor)
         connections.removeAll()
+        listeners.removeAll()
         lock.unlock()
         for descriptor in closing { _ = closeSocket(descriptor) }
     }
@@ -150,6 +160,73 @@ public final class HostStreams: @unchecked Sendable {
         return taken
     }
 
+    // MARK: - Un port de l'hôte vers l'invité
+
+    public enum ForwardFailure: Error, Equatable {
+        /// Le port de l'hôte est pris, ou refusé : `errno`.
+        case cannotListen(Int32)
+    }
+
+    /// **Relayer un port de l'hôte vers l'invité** : une connexion sur
+    /// `127.0.0.1:hostPort` devient une connexion vers `guestPort` de
+    /// l'invité, venue de `10.0.2.2` — comme `hostfwd` chez QEMU. Seule la
+    /// boucle locale écoute : l'invité ne s'expose pas au réseau du
+    /// téléphone. `hostPort` zéro laisse le système choisir ; le port rendu
+    /// est celui qui écoute.
+    @discardableResult
+    public func forward(hostPort: UInt16, toGuestPort guestPort: UInt16) throws -> UInt16 {
+        let descriptor = socket(AF_INET, Self.streamType, 0)
+        guard descriptor >= 0 else { throw ForwardFailure.cannotListen(errno) }
+        var one: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
+        var address = HostDatagrams.socketAddress([127, 0, 0, 1], port: hostPort)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Int32 in
+                guard bindSocket(descriptor, pointer, length) == 0, listenSocket(descriptor) == 0 else { return -1 }
+                return getsockname(descriptor, pointer, &length)
+            }
+        }
+        guard bound == 0 else {
+            let failure = errno
+            _ = closeSocket(descriptor)
+            throw ForwardFailure.cannotListen(failure)
+        }
+        _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL, 0) | O_NONBLOCK)
+        lock.lock()
+        listeners.append((descriptor, guestPort))
+        lock.unlock()
+        return UInt16(bigEndian: address.sin_port)
+    }
+
+    /// Sous verrou : une connexion de l'hôte arrive, wisq ouvre vers l'invité.
+    private func welcome(from listener: Int32, toGuestPort guestPort: UInt16) {
+        let descriptor = acceptSocket(listener)
+        guard descriptor >= 0 else { return }
+        guard connections.count < Self.connectionLimit else {
+            _ = closeSocket(descriptor)
+            return
+        }
+        _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL, 0) | O_NONBLOCK)
+        #if canImport(Darwin)
+        var one: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        #endif
+        // Un port local libre : une connexion encore ouverte ne doit pas être
+        // confondue avec la nouvelle.
+        var key: Key
+        repeat {
+            nextLocalPort = nextLocalPort >= 60_999 ? 49_152 : nextLocalPort + 1
+            key = Key(guestPort: guestPort, remote: UserNetwork.gateway, remotePort: nextLocalPort)
+        } while connections[key] != nil
+        let connection = Connection(key: key, descriptor: descriptor, guestNext: 0,
+                                    initial: UInt32.random(in: 0...UInt32.max))
+        connection.phase = .synSent
+        connections[key] = connection
+        emit(connection, flags: Flag.syn, sequence: connection.initial)
+        connection.lastSent = Date()
+    }
+
     // MARK: - Ce que l'invité envoie
 
     public func handle(_ segment: Segment) {
@@ -167,6 +244,18 @@ public final class HostStreams: @unchecked Sendable {
         }
         if segment.flags & Flag.rst != 0 {
             drop(connection)
+            return
+        }
+        if connection.phase == .synSent {
+            // La réponse de l'invité à notre SYN : son numéro, sa fenêtre, sa
+            // taille de segment, et l'accusé qui ouvre la connexion.
+            guard segment.flags & (Flag.syn | Flag.ack) == Flag.syn | Flag.ack,
+                  segment.acknowledgment == connection.initial &+ 1 else { return }
+            connection.guestNext = segment.sequence &+ 1
+            connection.guestWindow = Int(segment.window)
+            connection.guestSegment = Int(min(segment.maximumSegment ?? 536, Self.segmentSize))
+            connection.phase = .established
+            emit(connection, flags: Flag.ack)
             return
         }
         if segment.flags & Flag.syn != 0 {
@@ -365,6 +454,15 @@ public final class HostStreams: @unchecked Sendable {
                     emit(connection, flags: Flag.syn | Flag.ack, sequence: connection.initial)
                     connection.lastSent = now
                 }
+            case .synSent:
+                // Personne n'écoute dans l'invité, ou il n'a pas encore de
+                // réseau : on raccroche au bout du même délai.
+                if now.timeIntervalSince(connection.opened) > Self.connectTimeout {
+                    drop(connection)
+                } else if now.timeIntervalSince(connection.lastSent) > Self.retransmitAfter {
+                    emit(connection, flags: Flag.syn, sequence: connection.initial)
+                    connection.lastSent = now
+                }
             case .established:
                 if connection.inFlight > 0 || (connection.finSent && !connection.finAcknowledged),
                    now.timeIntervalSince(connection.lastSent) > Self.retransmitAfter {
@@ -379,17 +477,25 @@ public final class HostStreams: @unchecked Sendable {
                 if events != 0 { watched.append((connection, events)) }
             }
         }
+        let waiting = listeners
         lock.unlock()
-        guard !watched.isEmpty else {
+        guard !watched.isEmpty || !waiting.isEmpty else {
             usleep(10_000)
             return true
         }
         var descriptors = watched.map { pollfd(fd: $0.connection.descriptor, events: $0.events, revents: 0) }
+            + waiting.map { pollfd(fd: $0.descriptor, events: Int16(POLLIN), revents: 0) }
         guard poll(&descriptors, nfds_t(descriptors.count), 20) > 0 else { return true }
         var buffer = [UInt8](repeating: 0, count: 65_536)
         lock.lock()
         defer { lock.unlock() }
+        guard running else { return false }
         for (index, entry) in descriptors.enumerated() where entry.revents != 0 {
+            guard index < watched.count else {
+                let listener = waiting[index - watched.count]
+                welcome(from: listener.descriptor, toGuestPort: listener.guestPort)
+                continue
+            }
             let connection = watched[index].connection
             // Refermée entre-temps par l'invité.
             guard connections[connection.key] === connection else { continue }
@@ -410,7 +516,7 @@ public final class HostStreams: @unchecked Sendable {
             connection.phase = .synReceived
             emit(connection, flags: Flag.syn | Flag.ack, sequence: connection.initial)
             connection.lastSent = Date()
-        case .synReceived:
+        case .synReceived, .synSent:
             return
         case .established:
             if revents & Int16(POLLOUT) != 0 {
@@ -443,3 +549,7 @@ public final class HostStreams: @unchecked Sendable {
     static let sendFlags: Int32 = 0
     #endif
 }
+
+func listenSocket(_ descriptor: Int32) -> Int32 { listen(descriptor, 8) }
+
+func acceptSocket(_ descriptor: Int32) -> Int32 { accept(descriptor, nil, nil) }
