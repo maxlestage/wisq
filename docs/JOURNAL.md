@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — La carte réseau ne coûte presque plus rien, et les périphériques copient par blocs
+
+**Ce qui coûtait.** Brancher le réseau ralentissait la machine. Sur l'Alpine
+installé, six milliards d'instructions prenaient 200 à 204 s sans carte et
+223 à 229 s avec.
+- **La cause.** Le contrôleur d'interruptions sonde la carte toutes les
+  soixante-quatre instructions. Chaque sonde demandait au réseau en mode
+  utilisateur s'il avait quelque chose, et cette question prend quatre
+  verrous (le sien, l'UDP, le TCP, l'ICMP), même quand rien n'est arrivé.
+- **Mesuré à part**, dix millions de passages avec le réseau complet
+  derrière : 150 à 164 ns par passage. Toutes les 1,8 µs environ, cela fait
+  8 à 9 % du temps de l'interprète.
+
+**Ce qui change.**
+- **Une question sur seize quand le processeur travaille**, soit toutes les
+  1 024 instructions, une trentaine de microsecondes.
+  - Au repos (`HLT`), elle a lieu à chaque passage : une machine endormie
+    n'exécute rien, et seize passages y seraient seize battements.
+  - Ce qui attend un tampon part à chaque passage, sans question au réseau.
+  - Mesuré à part : 34 à 44 ns par passage. La carte coûte donc environ 2 %,
+    au lieu de 8 à 9 %.
+- **La copie d'un bloc** (`GuestMemory.copyIn`, `copyOut`).
+  - Le disque et la carte écrivaient et lisaient la mémoire de l'invité un
+    octet à la fois, à travers un appel avec ses bornes. Une lecture de
+    128 Kio faisait 131 072 appels.
+  - Quand le bloc tient en mémoire vive, c'est maintenant une recopie.
+  - Ce qui déborde ou touche un périphérique repasse octet par octet, avec
+    la même règle : perdu sans erreur, relu à zéro.
+  - Une mémoire qui ne sait rien de mieux garde la copie par défaut du
+    protocole.
+
+**Ce que la mesure d'ensemble ne dit pas.** Le démarrage complet avec carte
+ne se compare pas proprement au démarrage sans elle. L'invité ne fait pas le
+même travail (son pilote, ses interruptions), et deux passages identiques ont
+varié de 214 à 234 s sur ce conteneur partagé. La mesure qui tranche est
+celle des passages, isolée.
+
+**Vérifié.**
+- Cinq tests (`GuestMemoryBlockTests`) :
+  - le bloc en mémoire vive, et celui qui déborde ;
+  - la copie par défaut ;
+  - la carte moins bavarde au travail ;
+  - le processeur endormi qui interroge à chaque passage.
+- Douze sabotages, douze chutes. Un survivait au premier passage, celui qui
+  faisait attendre le processeur endormi comme celui qui travaille ; le
+  dernier test le tient.
+
+Compte publié : 3174.
+
 ## 2026-10-30 — Le ping de l'invité sort
 
 **Ce qui manquait.** Seule la passerelle répondait au ping. `ping 1.1.1.1`,
