@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — La machine PC de l'application a le réseau
+
+**Ce qui manquait.** La carte (#639), le DHCP et le DNS (#640) et le TCP
+(#641) ne servaient qu'au banc. La machine de l'application n'avait pas de
+carte.
+
+**Ce qui change.**
+- `GuestMachineFactory.make` prend `network`, l'autre bout du câble de la
+  machine PC.
+  - Il n'est construit que pour elle : un réseau ouvre des sockets et des
+    fils, et la carte RISC-V n'en a pas.
+  - Sans réseau demandé, pas de carte. Un câble débranché se verrait dans
+    `ip link`, et ce n'est pas ce qu'on a demandé.
+- `makeLocalMachine` lui passe `UserNetwork.throughHost()`. L'invité a sa
+  carte, un bail DHCP, le DNS et le TCP de l'hôte, comme sous QEMU.
+- **Une session reprise** retrouve sa carte, branchée sur le réseau de la
+  machine qui reprend. Ses connexions TCP, elles, ne survivent pas à la
+  reprise : l'hôte ne les a plus, et l'invité reçoit des remises à zéro.
+- Une session enregistrée avant le réseau reprend sans carte, comme elle était.
+
+**Vérifié.** Un test (`GuestMachineTests`) : la carte branchée sur le réseau
+donné, jamais construit pour le RISC-V, et pas de carte sans réseau demandé.
+Trois sabotages, trois chutes. La vue, qui ne se construit pas sous Linux, ne
+change pas. Seule la CI Apple compile l'appel de `makeLocalMachine`.
+
+Compte publié : 3154.
+
 ## 2026-10-30 — Le TCP de l'invité sort par l'hôte : `apk add` marche
 
 **Ce qui manquait.** Après #640, l'invité avait un bail et un DNS, mais pas de
