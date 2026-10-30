@@ -238,7 +238,12 @@ final class X86BootAttemptTests: XCTestCase {
         // lever le lien et envoyer ses premières trames.
         // `WISQ_PC_NET=user` met derrière elle le réseau en mode utilisateur
         // (`UserNetwork`) : un bail DHCP, une passerelle qui répond.
-        let userNetwork = environment["WISQ_PC_NET"] == "user" ? UserNetwork.throughHost() : nil
+        // `WISQ_PC_NET=cut`, le réseau coupé (`UserNetwork.isolated()`).
+        let userNetwork: UserNetwork? = switch environment["WISQ_PC_NET"] {
+        case "user": UserNetwork.throughHost()
+        case "cut": UserNetwork.isolated()
+        default: nil
+        }
         let cable = environment["WISQ_PC_NET"] == nil ? nil : CountingCable(behind: userNetwork)
         // `WISQ_PC_FORWARD=8080:80` relaie `127.0.0.1:8080` de l'hôte vers le
         // port 80 de l'invité.
