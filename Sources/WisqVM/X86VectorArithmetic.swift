@@ -25,7 +25,7 @@ import Foundation
 // second.
 //
 // La référence est le processeur lui-même : `Tests/Fixtures/x86-simd-oracle.tsv`,
-// 228 formes et 8 892 cas, fabriqué par `scripts/build-x86-simd-oracle.py`.
+// 236 formes et 9 204 cas, fabriqué par `scripts/build-x86-simd-oracle.py`.
 extension X86Core {
     /// Les cent vingt-huit bits vus comme des éléments de `width` octets, deux
     /// à deux, chaque élément traité à part des autres.
@@ -357,12 +357,16 @@ extension X86Core {
 
         // Les décalages dont le compte vient d'un registre XMM, ou de la
         // mémoire : ses soixante-quatre bits bas, entiers, et sans repli.
-        case 0xF1, 0xF2, 0xD2, 0xE2:
+        // Les huit : à gauche (F1 à F3), logiques à droite (D1 à D3),
+        // arithmétiques à droite (E1, E2), sur des mots, des doubles mots et
+        // des quadruples mots. Il n'en existait que quatre — ceux que la glibc
+        // emploie — et le `ssh-keygen` de Guix s'arrêtait sur `PSLLQ`.
+        case 0xF1, 0xF2, 0xF3, 0xD1, 0xD2, 0xD3, 0xE1, 0xE2:
             let fields = try decodeFields(instruction)
             let count = try readVectorRM(fields, 16).0
-            let width = opcode == 0xF1 ? 2 : 4
+            let width = 2 << Int((opcode & 0x0F) - 1)  // 1 → 2, 2 → 4, 3 → 8
             let result = Self.shiftEach(width, vector(fields.reg), count,
-                                        arithmetic: opcode == 0xE2, left: opcode == 0xF1 || opcode == 0xF2)
+                                        arithmetic: opcode & 0xF0 == 0xE0, left: opcode & 0xF0 == 0xF0)
             setVector(fields.reg, result.0, result.1)
 
         // Vers un registre général : le bit de signe de chaque octet, ou un

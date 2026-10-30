@@ -112,6 +112,11 @@ def forms():
         for code in range(8):
             out.append(f"cmp{width} ${code}, %xmm1, %xmm0")
     out += [f"cmpps $1, {ALIGNED:#x}(%rsi), %xmm0", f"cmppd $6, {ALIGNED:#x}(%rsi), %xmm0"]
+    # **Les horizontales de SSE3**, annoncées et absentes jusqu'à ce qu'un
+    # balayage des opcodes les trouve : chaque paire voisine d'un registre,
+    # avec la règle des NaN de chaque somme.
+    for name in ["haddps", "hsubps", "haddpd", "hsubpd"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0"]
     out += ["cvtps2pd %xmm1, %xmm0", f"cvtps2pd {ALIGNED:#x}(%rsi), %xmm0",
             "cvtdq2ps %xmm1, %xmm0", "cvtps2dq %xmm1, %xmm0", "cvttps2dq %xmm1, %xmm0"]
     return out
