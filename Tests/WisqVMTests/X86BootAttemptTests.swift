@@ -438,6 +438,14 @@ final class X86BootAttemptTests: XCTestCase {
                                                        as: UTF8.self))
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
                 if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
+                    // **Une reprise, le lendemain** : avec `WISQ_PC_ELAPSE`
+                    // (« N:secondes »), le temps passe hors de la machine
+                    // juste avant la frappe numéro N — voir
+                    // `X86Machine.elapse(seconds:)`.
+                    if let elapse = environment["WISQ_PC_ELAPSE"]?.split(separator: ":"),
+                       elapse.count == 2, Int(elapse[0]) == typed.count, let seconds = Double(elapse[1]) {
+                        core.idled &+= UInt64(seconds * Double(core.instructionsPerTick) * 1_193_182)
+                    }
                     let line = toType.removeFirst()
                     typed.append(line)
                     core.serialInput.append(contentsOf: Array((line + "\n").utf8))
