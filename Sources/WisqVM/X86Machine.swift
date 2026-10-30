@@ -201,6 +201,14 @@ public final class X86Machine: @unchecked Sendable {
         core.idled &+= UInt64(cycles)
     }
 
+    /// Le temps écoulé depuis `savedAt`, l'heure de l'instantané repris
+    /// (`SuspendedMachine.savedAt`). Sans heure, rien : mieux vaut une heure
+    /// en retard qu'un écart inventé.
+    public func elapse(since savedAt: Date?, now: Date = Date()) {
+        guard let savedAt else { return }
+        elapse(seconds: now.timeIntervalSince(savedAt))
+    }
+
     /// Au-delà, la session est de toute façon d'une autre époque ; borner
     /// garde le calcul loin du débordement.
     static let longestElapse: TimeInterval = 10 * 365 * 86_400
