@@ -72,6 +72,27 @@ final class GuestMachineTests: XCTestCase {
         XCTAssertEqual(asked.sizes, [32 << 20], "le cœur PC ne doit pas passer par là")
     }
 
+    /// **Le réseau va à la machine PC, et n'est construit que pour elle** : un
+    /// réseau ouvre des sockets et des fils, et la carte RISC-V n'en a pas.
+    /// Sans réseau demandé, pas de carte : un câble débranché se verrait dans
+    /// `ip link`, et ce n'est pas ce qu'on a demandé.
+    func testTheNetworkGoesToThePCAndOnlyThere() {
+        let asked = Counter()
+        let backend = UserNetwork()
+        let pc = GuestMachineFactory.make(
+            for: .x86_64, ramSizeBytes: 64 << 20, onOutput: { _ in },
+            network: { asked.record(1); return backend })
+        let card = (pc as? X86Machine)?.network
+        XCTAssertNotNil(card)
+        XCTAssertTrue(card?.backend === backend, "la carte est branchée sur le réseau donné")
+        _ = GuestMachineFactory.make(
+            for: .riscv32, ramSizeBytes: 32 << 20, onOutput: { _ in },
+            network: { asked.record(2); return backend })
+        XCTAssertEqual(asked.sizes, [1], "jamais construit pour le RISC-V")
+        XCTAssertNil((GuestMachineFactory.make(
+            for: .x86_64, ramSizeBytes: 64 << 20, onOutput: { _ in }) as? X86Machine)?.network)
+    }
+
     // MARK: - Ce que le protocole transporte
 
     /// **Un disque en mémoire donné à la machine RISC-V est refusé, et nommé.**
