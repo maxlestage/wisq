@@ -229,7 +229,7 @@ jobs:
           # engendrés suivent, soit le numéro épinglé a changé sans qu'on
           # régénère. Dans les deux cas la correction est la même : lancer
           # `xcodegen generate` et committer le résultat avec le changement.
-          if ! git diff --exit-code -- "Wisq ‣.xcodeproj/project.pbxproj" App/Info.plist; then
+          if ! git diff --exit-code -- "Wisq ‣.xcodeproj/project.pbxproj" App/Info.plist App/Wisq.entitlements; then
             echo "::error::les fichiers engendrés par xcodegen ne sont pas ceux du dépôt."
             echo "::error::lancer « xcodegen generate » et committer le résultat."
             exit 1
