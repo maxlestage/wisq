@@ -309,6 +309,17 @@ extension X86Core {
                 devices.primary.request &= ~line
             }
         }
+        // La carte réseau : d'abord ce que le réseau a pour l'invité, posé
+        // dans ses tampons, puis sa ligne, à niveau comme celle des disques.
+        if let network = memory?.bus?.network, let nic = network.nic, let memory {
+            nic.poll(memory)
+            let line: UInt8 = 1 << network.interruptLine
+            if nic.interrupting {
+                devices.primary.request |= line
+            } else {
+                devices.primary.request &= ~line
+            }
+        }
         guard flags & Flag.interrupt != 0 else { return }
         let pending = devices.primary.request & ~devices.primary.mask
         guard pending != 0 else { return }
@@ -353,5 +364,6 @@ extension X86Core {
         devices.reload != 0 || devices.serial.interruptEnable & 0x03 != 0
             || memory?.storage?.interrupting == true
             || memory?.bus?.second?.storage?.interrupting == true
+            || memory?.bus?.network?.nic != nil
     }
 }
