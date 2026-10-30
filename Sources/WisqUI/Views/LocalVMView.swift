@@ -487,6 +487,15 @@ struct LocalVMListView: View {
                     Button("Dupliquer", systemImage: "plus.square.on.square") {
                         duplicate(machine)
                     }
+                    // Une machine dont le disque porte un système démarre ce
+                    // disque ; celle-ci revient à son image pour un démarrage —
+                    // réparer, réinstaller —, et le suivant revient au disque.
+                    if Self.isInstallationImage(kinds[image]) {
+                        Button("Démarrer l'image d'installation", systemImage: "opticaldisc") {
+                            ImageBootRequest.request(forKernel: machine.key)
+                            start(BootTarget(url: image, machine: machine))
+                        }
+                    }
                 }
             }
             .onDelete { positions in
@@ -500,7 +509,7 @@ struct LocalVMListView: View {
         } header: {
             Text("Machines installées")
         } footer: {
-            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Appui long pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
+            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Une fois le système installé sur son disque, la machine démarre ce disque, et non plus l'image ; l'appui long propose de redémarrer l'image d'installation une fois, pour réparer ou réinstaller. Appui long aussi pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
         }
     }
 
