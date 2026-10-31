@@ -13,6 +13,8 @@ extension X86Core.Fault: LocalizedError {
             return "le processeur de wisq ne sait pas encore exécuter \(what)."
         case .divideError:
             return "une division par zéro hors de toute gestion d'erreur de l'invité."
+        case .invalidOpcode:
+            return "une instruction indéfinie (ud2) que l'invité n'a pas rattrapée : aucune table d'interruptions ne porte le vecteur 6."
         case .pageFault(let address):
             return String(format: "une adresse que les tables de pages ne traduisent pas (0x%llx).", address)
         case .outsideMemory(let address):

@@ -568,7 +568,13 @@ extension X86Core {
         case 0x05: try systemCall(length: instruction.length)
         case 0x07: try systemReturn(wide: (instruction.rex ?? 0) & 0x08 != 0)
 
-        case 0x0B: throw Fault.unsupported("UD2 : l'invité s'est arrêté lui-même")
+        // UD2 : **livré au vecteur 6**, comme sur un vrai processeur. Le
+        // noyau en met un à chaque `WARN()` : son gestionnaire imprime
+        // l'avertissement et reprend deux octets plus loin. Arrêter la machine
+        // là faisait d'un simple avertissement de n'importe quelle
+        // distribution la fin de la machine. Sans IDT, la faute sort et
+        // arrête, comme avant.
+        case 0x0B: throw Fault.invalidOpcode
 
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici
             break
