@@ -90,6 +90,12 @@ public final class X86PCIHost: @unchecked Sendable {
     @exclusivity(unchecked)
     public var nic: VirtioNet?
 
+    /// **La carte graphique**, en 00:02.0, quand la machine a un écran. Elle
+    /// tient son propre espace de configuration (`X86BochsDisplay`) ; le
+    /// pont ne fait que lui passer les accès qui la visent.
+    @exclusivity(unchecked)
+    public var display: X86BochsDisplay?
+
     /// Ce que le noyau a écrit dans le port d'adresse.
     public private(set) var address: UInt32 = 0
     /// Le disque, ou rien. Sans lui le bus existe mais reste vide, ce qui est
@@ -186,8 +192,16 @@ public final class X86PCIHost: @unchecked Sendable {
     /// **Un emplacement vide rend tous les uns**, et c'est ce qui dit au noyau
     /// qu'il n'y a personne : rendre des zéros lui ferait croire à un
     /// périphérique de fabricant zéro.
+    /// Vrai quand l'adresse choisie vise la carte graphique.
+    var addressesTheDisplay: Bool {
+        let it = selected
+        return display != nil && it.enabled && it.bus == 0 && it.slot == X86BochsDisplay.slot
+            && it.function == 0
+    }
+
     public func configuration() -> UInt32 {
         if addressesTheBridge { return bridgeConfiguration() }
+        if let display, addressesTheDisplay { return display.configuration(selected.register) }
         if let second, second.addressesTheDevice { return second.configuration() }
         if let network, network.addressesTheDevice { return network.configuration() }
         guard addressesTheDevice else { return 0xFFFF_FFFF }
@@ -211,6 +225,10 @@ public final class X86PCIHost: @unchecked Sendable {
     }
 
     public func writeConfiguration(_ value: UInt32, _ width: Int, _ byte: UInt32) {
+        if let display, addressesTheDisplay {
+            display.writeConfiguration(selected.register, value)
+            return
+        }
         if let second, second.addressesTheDevice {
             second.writeConfiguration(value, width, byte)
             return
