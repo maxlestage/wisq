@@ -19,10 +19,9 @@ import Foundation
 // `psignb`, `psignw`, `psignd`, `pmulhrsw`. Compilés pour x86-64-v3, ses
 // programmes les emploient sous VEX, qui passe par ici.
 //
-// **Toutes exigent le préfixe `66`.** Sans lui, ce sont les mêmes opérations
-// sur les registres MMX, que `X86MMX.swift` n'écrit pas encore pour SSSE3 ;
-// les confondre exécuterait sur un XMM ce que le programme voulait faire
-// ailleurs.
+// **Avec le préfixe `66`, sur les XMM ; sans lui, sur les registres MMX**,
+// les mêmes opérations sur huit octets : voir `ssse3OnMMX`. Les confondre
+// exécuterait sur un XMM ce que le programme voulait faire ailleurs.
 //
 // La référence est le processeur : `Tests/Fixtures/x86-v2-oracle.tsv`.
 extension X86Core {
@@ -42,6 +41,7 @@ extension X86Core {
             return
         }
         guard instruction.hasPrefix(0x66) else {
+            if try ssse3OnMMX(instruction, opcode, aligning: false) { return }
             throw Fault.unsupported(String(format: "l'opcode 0F 38 %02X sans 66 (MMX)", opcode))
         }
         let fields = try decodeFields(instruction)
@@ -72,7 +72,8 @@ extension X86Core {
         switch opcode {
         case 0x00: result = Self.shuffleBytes(destination, by: source)
         case 0x01, 0x02, 0x03, 0x05, 0x06, 0x07: result = Self.horizontal(opcode, destination, source)
-        case 0x04: result = Self.multiplyAddBytes(destination, source)
+        case 0x04, 0x08...0x0B, 0x1C...0x1E:
+            result = Self.ssse3Elementwise(opcode, destination, source) ?? (0, 0)
         // `PHMINPOSUW` (SSE4.1) : le plus petit des huit mots sans signe de
         // la source, et son rang — le premier en cas d'égalité — dans les
         // bits 16 à 18 ; tout le reste à zéro. La destination n'est pas lue.
@@ -81,29 +82,6 @@ extension X86Core {
             let smallest = words.min() ?? 0
             let rank = words.firstIndex(of: smallest) ?? 0
             result = (UInt64(smallest) | UInt64(rank) << 16, 0)
-        // `PSIGNB/W/D` : chaque élément de la destination gardé, opposé ou
-        // mis à zéro selon le signe de celui de la source.
-        case 0x08, 0x09, 0x0A:
-            let width = 1 << Int(opcode - 0x08)
-            result = Self.elementwise(width, destination, source) { element, sign, mask in
-                let top = (mask >> 1) &+ 1
-                if sign & mask == 0 { return 0 }
-                return sign & top != 0 ? (0 &- element) & mask : element
-            }
-        // `PMULHRSW` : le produit signé de deux mots, arrondi, ses bits 15
-        // à 30 — `(a × b + 0x4000) >> 15`.
-        case 0x0B:
-            let left = Self.signedWords(destination), right = Self.signedWords(source)
-            result = Self.packWords((0..<8).map { (left[$0] * right[$0] + 0x4000) >> 15 })
-        // La valeur absolue de chaque élément de la **source** : la
-        // destination n'est pas lue. Le plus négatif reste ce qu'il est —
-        // 0x80 n'a pas d'opposé sur huit bits.
-        case 0x1C, 0x1D, 0x1E:
-            let width = 1 << Int(opcode - 0x1C)
-            result = Self.elementwise(width, source, source) { element, _, mask in
-                let sign = (mask >> 1) &+ 1
-                return element & sign != 0 ? (0 &- element) & mask : element
-            }
         default:
             guard let computed = Self.sse41(opcode, destination, source, mask: vector(0)) else {
                 throw Fault.unsupported(String(format: "l'opcode 66 0F 38 %02X", opcode))
@@ -116,6 +94,7 @@ extension X86Core {
     /// La table `0F 3A` : la même chose, et un octet immédiat derrière.
     mutating func threeByte3A(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         guard instruction.hasPrefix(0x66) else {
+            if try ssse3OnMMX(instruction, opcode, aligning: true) { return }
             throw Fault.unsupported(String(format: "l'opcode 0F 3A %02X sans 66 (MMX)", opcode))
         }
         let fields = try decodeFields(instruction)
@@ -167,6 +146,44 @@ extension X86Core {
             setVector(fields.reg, packed.0, packed.1)
         default:
             throw Fault.unsupported(String(format: "l'opcode 66 0F 3A %02X", opcode))
+        }
+    }
+
+    /// **Les opérations de SSSE3 qui travaillent élément par élément** —
+    /// `PMADDUBSW` (`04`), `PSIGNB/W/D` (`08` à `0A`), `PMULHRSW` (`0B`),
+    /// `PABSB/W/D` (`1C` à `1E`) — sur seize octets. Sur les registres MMX, la
+    /// même chose avec une moitié haute nulle, dont on garde le bas : rien n'y
+    /// traverse d'une moitié à l'autre. `nil` pour un autre opcode.
+    static func ssse3Elementwise(
+        _ opcode: UInt8, _ destination: (low: UInt64, high: UInt64), _ source: (low: UInt64, high: UInt64)
+    ) -> (UInt64, UInt64)? {
+        switch opcode {
+        case 0x04: return multiplyAddBytes(destination, source)
+        // `PSIGNB/W/D` : chaque élément de la destination gardé, opposé ou
+        // mis à zéro selon le signe de celui de la source.
+        case 0x08, 0x09, 0x0A:
+            let width = 1 << Int(opcode - 0x08)
+            return elementwise(width, destination, source) { element, sign, mask in
+                let top = (mask >> 1) &+ 1
+                if sign & mask == 0 { return 0 }
+                return sign & top != 0 ? (0 &- element) & mask : element
+            }
+        // `PMULHRSW` : le produit signé de deux mots, arrondi, ses bits 15
+        // à 30 — `(a × b + 0x4000) >> 15`.
+        case 0x0B:
+            let left = signedWords(destination), right = signedWords(source)
+            return packWords((0..<8).map { (left[$0] * right[$0] + 0x4000) >> 15 })
+        // La valeur absolue de chaque élément de la **source** : la
+        // destination n'est pas lue. Le plus négatif reste ce qu'il est —
+        // 0x80 n'a pas d'opposé sur huit bits.
+        case 0x1C, 0x1D, 0x1E:
+            let width = 1 << Int(opcode - 0x1C)
+            return elementwise(width, source, source) { element, _, mask in
+                let sign = (mask >> 1) &+ 1
+                return element & sign != 0 ? (0 &- element) & mask : element
+            }
+        default:
+            return nil
         }
     }
 
