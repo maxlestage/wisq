@@ -21,15 +21,15 @@ final class X86ElapseTests: XCTestCase {
 
     /// **Une heure dehors, une heure de plus au compteur** de l'invité, au
     /// rythme où son noyau l'a étalonné — le compteur d'horodatage et le 8253
-    /// ensemble —, payée en douze pas de cinq minutes.
+    /// ensemble —, payée en trois cent soixante pas de dix secondes.
     func testAnHourOutsideIsAnHourInsideInSteps() {
         let pc = machine()
         let before = clock(pc)
         let ticks = pc.core.ticks
         pc.elapse(seconds: 3600)
         XCTAssertEqual(clock(pc), before, "rien avant le premier sommeil")
-        XCTAssertEqual(pc.takeElapseStep(), UInt64(300 * pc.guestHertz), "un pas de cinq minutes")
-        XCTAssertEqual(drain(pc), 11)
+        XCTAssertEqual(pc.takeElapseStep(), UInt64(10 * pc.guestHertz), "un pas de dix secondes")
+        XCTAssertEqual(drain(pc), 359)
         XCTAssertEqual(clock(pc) - before, UInt64(3600 * pc.guestHertz))
         XCTAssertEqual(pc.core.ticks - ticks, 3600 * 1_193_182, "le 8253 avance d'autant")
     }
@@ -58,8 +58,8 @@ final class X86ElapseTests: XCTestCase {
         XCTAssertEqual(pc.pendingElapse, UInt64(90 * pc.guestHertz), "un instantané « du futur » ne fait rien")
     }
 
-    /// **Les échéances manquées d'un pas se fondent en une** : cinq minutes
-    /// d'horloge à 250 Hz ne font pas soixante-quinze mille interruptions,
+    /// **Les échéances manquées d'un pas se fondent en une** : dix secondes
+    /// d'horloge à 250 Hz ne font pas deux mille cinq cents interruptions,
     /// mais une, et l'invité lit l'heure au compteur.
     func testMissedTicksBecomeOne() throws {
         let pc = machine()
@@ -67,7 +67,7 @@ final class X86ElapseTests: XCTestCase {
         pc.core.devices.reloadedAt = pc.core.ticks
         try pc.core.serviceInterrupts()
         pc.core.devices.primary.request = 0
-        pc.elapse(seconds: 300)
+        pc.elapse(seconds: 10)
         _ = pc.takeElapseStep()
         try pc.core.serviceInterrupts()
         XCTAssertEqual(pc.core.devices.primary.request & 1, 1, "l'horloge sonne")
@@ -78,18 +78,18 @@ final class X86ElapseTests: XCTestCase {
     }
 
     /// **Un invité qui dort paie tout pendant `run`**, un pas par tranche, et
-    /// sans que la cadence murale lui fasse dormir la journée : le temps du
-    /// dehors n'est ni du budget ni une avance sur le mur. Une journée, deux
-    /// cent quatre-vingt-huit pas, et moins de trois cents tranches de budget.
+    /// sans que la cadence murale lui fasse dormir l'heure : le temps du
+    /// dehors n'est ni du budget ni une avance sur le mur. Une heure, trois
+    /// cent soixante pas, et moins de quatre cents tranches de budget.
     func testASleepingGuestCatchesUpDuringRun() throws {
         let pc = try X86PacingTests.sleeper(pacing: true)
         let before = clock(pc)
-        pc.elapse(seconds: 86_400)
+        pc.elapse(seconds: 3600)
         let started = Date()
-        XCTAssertEqual(pc.run(instructionBudget: 300 * 200_000), .stopped)
-        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "une journée ne se dort pas")
+        XCTAssertEqual(pc.run(instructionBudget: 400 * 200_000), .stopped)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "une heure ne se dort pas")
         XCTAssertEqual(pc.pendingElapse, 0, "tout est payé")
-        XCTAssertGreaterThanOrEqual(clock(pc) - before, UInt64(86_400 * pc.guestHertz))
+        XCTAssertGreaterThanOrEqual(clock(pc) - before, UInt64(3600 * pc.guestHertz))
     }
 
     /// L'avance payée passe dans l'instantané.

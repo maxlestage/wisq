@@ -10,7 +10,7 @@ final class LinuxMachineElapseTests: XCTestCase {
     }
 
     /// **Trois jours dehors, trois jours de plus à `mtime`**, en
-    /// microsecondes, payés en 864 pas de cinq minutes, retenue du mot haut
+    /// microsecondes, payés en 25 920 pas de dix secondes, retenue du mot haut
     /// comprise.
     func testThreeDaysOutsideArePaidInSteps() {
         let machine = LinuxMachine(ramSize: 16 << 20, onOutput: { _ in })
@@ -18,13 +18,13 @@ final class LinuxMachineElapseTests: XCTestCase {
         machine.elapse(seconds: 3 * 86_400)
         XCTAssertEqual(mtime(machine), before, "rien avant le premier sommeil")
         machine.takeElapseStep()
-        XCTAssertEqual(mtime(machine) - before, 300_000_000)
+        XCTAssertEqual(mtime(machine) - before, 10_000_000)
         var steps = 1
         while machine.pendingElapse > 0 {
             machine.takeElapseStep()
             steps += 1
         }
-        XCTAssertEqual(steps, 864)
+        XCTAssertEqual(steps, 25_920)
         XCTAssertEqual(mtime(machine) - before, 259_200_000_000)
         XCTAssertGreaterThan(machine.mmioLoad(0x1100_BFFC), 0, "le mot haut a reçu la retenue")
     }

@@ -7,7 +7,7 @@ import XCTest
 /// cœurs : voir `LinuxMachine.elapse(seconds:)` et `wisq_vm_elapse`.
 ///
 /// Le noyau de référence et son busybox. `date` avant l'instantané, puis
-/// après la reprise et un rattrapage en six pas (`GuestClock.stepSeconds`),
+/// après la reprise et un rattrapage en cent quatre-vingts pas (`GuestClock.stepSeconds`),
 /// doit sauter d'une demi-heure. Les deux cœurs doivent finir sur les mêmes
 /// octets.
 ///
@@ -129,7 +129,7 @@ final class DifferentialElapseTests: XCTestCase {
         let image = try Data(contentsOf: URL(fileURLWithPath: path))
         let rust = try resumedLater({ Self.rustCore($0, away: Self.away) }, image: image)
         XCTAssertGreaterThanOrEqual(rust.gap, Int(Self.away), "le cœur du téléphone a rattrapé la demi-heure")
-        // **L'invité suit `mtime` à travers les six pas** : l'écart entre son
+        // **L'invité suit `mtime` à travers tous les pas** : l'écart entre son
         // heure et le compteur est le même avant et après. Une conversion de
         // travers, ou un pas qu'il n'aurait pas compté, le déplacerait.
         XCTAssertEqual(rust.offsetAfter, rust.offsetBefore, accuracy: 2)

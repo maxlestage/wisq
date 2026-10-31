@@ -415,7 +415,7 @@ public final class X86Machine: @unchecked Sendable {
             // **Le temps dû, un pas par sommeil** (`elapse`). Il ne compte ni
             // dans le budget ni dans l'avance sur le mur : c'est du temps du
             // dehors, pas du travail de l'invité, et le dormir ferait attendre
-            // la personne cinq minutes par pas.
+            // la personne dix secondes par pas.
             if core.halted, pendingElapse > 0 {
                 start &+= takeElapseStep()
                 continue
