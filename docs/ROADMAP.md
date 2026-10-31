@@ -669,7 +669,8 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
   privilège, là où le système les permet.
 - **Les images de cloud sans cloud-init : fait** (#645). Un credential
   `network.network.*` demande le DHCP, et l'horloge CMOS donne la date.
-  Vérifié sur Debian 13 et Ubuntu 26.04. CentOS Stream 10, qui a
+  Vérifié sur Debian 13, Ubuntu 26.04 et Arch Linux (systemd 257, où
+  `timesyncd` prend aussi l'heure de la passerelle). CentOS Stream 10, qui a
   NetworkManager et pas `systemd-networkd`, n'en a pas besoin : sa
   « Wired connection 1 » prend le bail toute seule (`10.0.2.15`, route par
   `10.0.2.2`), et la date est juste.

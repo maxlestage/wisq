@@ -8,6 +8,48 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Arch Linux sur le réseau de wisq, sans rien régler
+
+**Ce qui n'avait pas été essayé.** Arch Linux démarrait depuis le 20 octobre,
+mais le réseau en mode utilisateur (#639 à #657) n'y avait jamais tourné.
+Arch est la seule des familles essayées à prendre systemd au plus près de sa
+dernière version (257) : c'est elle qui dit si le credential de #645 et
+l'heure de #655 tiennent ailleurs que sur Debian.
+
+**Mesuré**, image de cloud du 31 octobre (`Arch-Linux-x86_64-cloudimg.qcow2`,
+577 Mo), réseau en mode utilisateur, sans rien taper pour le réseau :
+
+```
+2: eth0    inet 10.0.2.15/24 metric 1024 brd 10.0.2.255 scope global dynamic eth0
+       State: routable
+         DNS: 10.0.2.3
+         NTP: 10.0.2.2
+Sat Oct 31 01:01:36 UTC 2026
+       Server: 10.0.2.2 (10.0.2.2)
+      Stratum: 1
+    Reference: WISQ
+1 packets transmitted, 1 received, 0% packet loss
+rtt min/avg/max/mdev = 2.292/2.292/2.292/0.000 ms
+209.126.35.79   archlinux.org
+http 200 131637
+```
+
+- Le bail vient du credential `99-wisq-dhcp`.
+- `timesyncd` prend l'heure de la passerelle, comme sur Debian 13.
+- La date est juste dès le démarrage, grâce à l'horloge CMOS.
+- Le `core.db` du miroir arrive en HTTP, 131 Ko. HTTPS n'est pas
+  essayé : le conteneur de travail réémet le TLS sous sa propre autorité.
+
+**Une fausse alerte, écartée.** La console d'Arch est pleine de
+`]3008;start=…;type=shell…\`. Ce sont les séquences OSC 3008 que systemd 257
+émet autour de chaque invite et de chaque commande. Le banc les laisse
+paraître dans son journal, parce que son `withoutEscapes` n'ôte que les CSI.
+La console de l'application, elle, les avale : `TerminalGrid` lit une OSC
+jusqu'à BEL ou `ESC \`. Ce n'est pas un défaut du produit.
+
+**Rien de changé dans le code.** Course complète : 2 633 s, dont environ
+vingt-cinq minutes de démarrage.
+
 ## 2026-10-30 — La reprise rattrape l'heure par pas, et sur la machine RISC-V aussi
 
 **Ce qui manquait, et ce qui était fragile.**
