@@ -8,6 +8,59 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — L'app s'ouvre sur ses machines, l'écran se zoome, le clavier se range
+
+Trois demandes, avec trois captures du téléphone :
+
+**L'accueil.** L'app s'ouvrait sur « Machines », la liste des connexions
+VNC, vide chez qui n'a que des machines locales. Pour atteindre les
+siennes, il fallait passer par le menu +, puis « Linux local ». Elle s'ouvre
+maintenant sur les machines du téléphone, sous le titre « Machines »
+(`LocalVMListView`). Les connexions à distance sont dans son menu +, sous
+« Connexions à distance (VNC, SPICE, RDP) ». L'écran vide le propose aussi,
+à côté de « Télécharger Alpine » et « Importer une image ».
+
+Un lien d'appairage `wisq://` arrive maintenant n'importe où : tout ce que
+l'accueil a ouvert se ferme (une machine en plein écran se suspend comme
+par « Fermer »), la liste des connexions s'ouvre, puis l'import.
+
+**Zoomer sur l'écran.** Ajusté à la largeur d'un iPhone en portrait, un
+écran de 1024 pixels montre le texte du noyau sur quatre ou cinq points de
+haut : « ACPI BIOS Error » se devinait sur la capture, il ne se lisait pas.
+L'écran est maintenant une `UIScrollView` :
+- pincer zoome, jusqu'à six fois l'ajustement ;
+- glisser à deux doigts déplace la vue ;
+- un doigt reste la souris, et elle suit le zoom. Dix points de glissement
+  font dix points à l'écran, donc quatre fois moins de pixels de l'invité
+  quand on a zoomé quatre fois : un pointeur plus fin quand on regarde de
+  près.
+
+Qui regardait l'écran entier le garde entier quand la vue change (le
+clavier qui sort, le téléphone qu'on tourne) ; qui avait zoomé garde son
+zoom. Les nombres viennent de `ScreenZoom` et `ScreenPointer`, dans
+`WisqVM`, sous des tests qui tournent sur Linux.
+
+**Le clavier se range.** Sorti, il couvrait la moitié de l'écran, et rien
+ne le rentrait : chaque touche de la barre le ressortait. Un bouton en tête
+de la barre le range ou le ressort. Les touches de la barre et « Entrée »
+marchent clavier rangé, sans le ressortir ; seule la touche Retour du
+clavier garde le champ pour la commande suivante. Faire glisser la console
+vers le bas le range aussi.
+
+**Tests.** `ScreenZoomTests`, huit tests : l'ajustement par le côté le plus
+serré, rien sans écran ni vue, le zoom le plus fort qui rend la console
+lisible, un glissement lent qui avance, le doigt qui suit le zoom, une
+échelle absurde qui ne bouge rien, un pas borné, et le reste oublié quand le
+doigt se lève. Six sabotages, tous attrapés : l'ajustement par le côté le
+plus large, le reste perdu, l'arrondi au plus proche, le reste gardé au
+lever, une échelle négative ou NaN acceptée (l'app s'arrêtait), un maximum
+trop faible. Les vues SwiftUI et UIKit ne se compilent pas sur Linux :
+c'est la CI iOS qui les juge.
+
+Le site dit le nouveau chemin (`docs.rs`, dans les deux langues), et que le
+PC a un écran et le réseau, ce qu'il niait encore. Le compte publié passe à
+3252.
+
 ## 2026-10-31 — Une instruction inconnue dans un programme ne coûte plus la machine
 
 **Ce qui se passait.** Toute forme que ce cœur ne sait pas exécuter arrêtait
