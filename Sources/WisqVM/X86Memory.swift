@@ -120,6 +120,19 @@ public final class X86Memory: @unchecked Sendable {
     @exclusivity(unchecked)
     public var bus: X86PCIHost?
 
+    /// **Les octets de l'hôte derrière `length` octets à cette adresse
+    /// physique**, s'ils tiennent d'un seul tenant dans la RAM ou dans le
+    /// cadre ; nil sinon — le disque, le trou, ou rien du tout.
+    ///
+    /// `screen` est le cadre quand c'est lui : qui y écrit directement doit le
+    /// dire (`X86Framebuffer.touch`), pour que la vue repeigne.
+    @inline(__always)
+    func block(_ address: UInt64, _ length: Int) -> (bytes: UnsafeMutablePointer<UInt8>, screen: X86Framebuffer?)? {
+        if let start = offset(address, length) { return (bytes + start, nil) }
+        if let frame = screen, let at = frame.offset(address, length) { return (frame.bytes + at, frame) }
+        return nil
+    }
+
     /// Vrai quand l'adresse tombe dans la fenêtre du périphérique.
     @inline(__always)
     func storageOffset(_ address: UInt64) -> UInt64? {

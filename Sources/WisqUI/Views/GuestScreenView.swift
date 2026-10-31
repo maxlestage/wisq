@@ -58,8 +58,7 @@ struct GuestScreenView: View {
     /// XRGB8888 petit-boutien : en mémoire B, G, R, X — ce que Core Graphics
     /// lit sans conversion en « premier octet ignoré, ordre 32 bits petit ».
     static func makeImage(_ screen: X86Framebuffer) -> CGImage? {
-        let bytes = screen.snapshot()
-        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        guard let provider = CGDataProvider(data: screen.pixelData() as CFData) else { return nil }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
             | CGBitmapInfo.byteOrder32Little.rawValue)
         return CGImage(
