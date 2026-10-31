@@ -320,6 +320,23 @@ final class X86InterruptTests: XCTestCase {
         XCTAssertTrue(core.programRefusals.first?.contains("0F 0E") == true, "et nommée")
     }
 
+    /// **Le refus porte les octets de l'instruction** : « une instruction
+    /// vectorielle » ne disait pas laquelle. Ici une forme VEX qui n'existe
+    /// pas, `VEX.0F AE /4`.
+    func testARefusalCarriesTheInstructionsBytes() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.map(ram, Self.mapped)
+        try Self.installGate(ram, vector: 6, target: Self.handler)
+        try ram.load([0xF4], at: Self.handler)
+        var core = try Self.core(ram, code: [0xC5, 0xF8, 0xAE, 0x24, 0x24, 0x90, 0x90])
+        core.segments[1] = 0x33
+        try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, Self.handler)
+        XCTAssertEqual(core.programRefusals.first?.hasSuffix(" (C5 F8 AE 24 24)"), true,
+                       "les cinq octets de l'instruction, pas ceux qui suivent : \(core.programRefusals)")
+    }
+
     /// Sans porte pour le vecteur 6, elle sort comme avant, et rien n'est
     /// gardé : la machine s'arrête avec son nom.
     func testAnUnknownFormInAProgramWithoutAGateStillComesOut() throws {
