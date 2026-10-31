@@ -39,7 +39,43 @@ n'importe quelle taille accepté (la reprise échoue).
 
 Une session sauvée avant ce changement n'a pas son écran dans
 l'instantané : elle reviendra encore sur un écran noir, une fois, et la
-sauvegarde suivante le portera. Le compte publié passe à 3274.
+sauvegarde suivante le portera. Le compte publié passe à 3278, avec les
+conversions MMX (#671) fusionnées entre-temps.
+
+## 2026-10-31 — Les conversions entre MMX et flottants : le jeu MMX est complet
+
+**Ce qui restait.** Après SSSE3 sur MMX (#670), six formes MMX étaient
+encore refusées : `CVTPI2PS`, `CVTPI2PD`, `CVTPS2PI`, `CVTTPS2PI`,
+`CVTPD2PI` et `CVTTPD2PI` (`0F 2A`, `2C`, `2D`, sans préfixe et sous
+`66`). Ce sont les dernières : le jeu MMX que CPUID annonce existe
+maintenant en entier.
+
+**Ce qui change.** `X86Core.mmxConversion` :
+- vers les flottants, deux entiers de trente-deux bits pris dans un
+  registre MMX ou dans huit octets de mémoire. Deux simples remplacent la
+  moitié basse du XMM et gardent la haute ; deux doubles le remplacent ;
+- vers les entiers, deux simples ou deux doubles (seize octets) tronqués
+  (`2C`) ou arrondis au plus proche (`2D`). Un flottant hors des entiers
+  rend 0x80000000, comme les conversions scalaires ;
+- un registre MMX lu ou écrit fait entrer dans le MMX.
+
+**L'oracle.** Ces formes écrivent ou lisent un XMM, et le prologue et
+l'épilogue communs (`movdq2q`, `movq2dq`) auraient écrasé leur résultat.
+`scripts/build-x86-mmx-oracle.py` accepte maintenant, pour une forme,
+`(prologue, instruction, épilogue)` : chacune a les siens, et son résultat
+finit dans xmm0. L'oracle MMX passe de 273 à 285 formes et de 10 647 à
+11 115 cas, ajoutés à la fin. Tous concordent.
+
+**Ce que l'oracle ne voyait pas.** Cinq sabotages ; trois attrapés par
+lui (l'entier lu sans signe, la moitié haute effacée, l'entrée en MMX
+oubliée). Deux lui ont échappé, la troncature et le second double de
+`CVTPD2PI` lu en mémoire : ses flottants sont minuscules ou hors des
+entiers. `X86MMXConversionTests` les tient, sur 1,5 et −2,7, 3 et −7, et un
+flottant hors des entiers.
+
+**Tests.** Quatre de plus : les trois de `X86MMXConversionTests`, et la
+pile x87 de ces formes dans `X86MMXStateTests`. Le compte publié passe à
+3274.
 
 ## 2026-10-31 — SSSE3 sur les registres MMX
 
