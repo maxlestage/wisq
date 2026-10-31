@@ -36,6 +36,7 @@ final class CheckpointedRunTests: XCTestCase {
         func flushDisk() { flushes += 1 }
         func send(_ data: Data) {}
         func restore(_ data: Data) throws {}
+        func elapse(seconds: TimeInterval) {}
 
         func runGuest(instructionBudget: UInt64) -> GuestOutcome {
             lock.lock()

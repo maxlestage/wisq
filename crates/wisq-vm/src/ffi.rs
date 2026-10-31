@@ -315,6 +315,18 @@ pub unsafe extern "C" fn wisq_vm_retired_instructions(vm: *const WisqVM) -> u64 
     }
 }
 
+/// Le temps passé hors de la machine, en microsecondes — voir
+/// `Machine::elapse`. Machine arrêtée seulement.
+///
+/// # Safety
+/// `vm` must come from `wisq_vm_new` and must not have been freed.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_vm_elapse(vm: *mut WisqVM, micros: u64) {
+    if let Some(vm) = vm.as_mut() {
+        vm.machine.elapse(micros);
+    }
+}
+
 /// Saves the whole machine into a freshly allocated buffer.
 ///
 /// The buffer is handed to C by leaking a boxed slice; `wisq_vm_free_snapshot`

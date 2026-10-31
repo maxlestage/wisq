@@ -383,6 +383,11 @@ public final class LinuxMachine: @unchecked Sendable {
             case .ran:
                 continue
             case .waiting:
+                // Le temps dû, un pas par sommeil : voir `elapse`.
+                if pendingElapse > 0 {
+                    takeElapseStep()
+                    continue
+                }
                 // The hart sleeps until the timer fires, and the timer is the
                 // only thing that can wake it: a parked hart executes nothing,
                 // so it cannot poll the UART either.
@@ -418,6 +423,28 @@ public final class LinuxMachine: @unchecked Sendable {
     /// honest denominator.
     public var retiredInstructions: UInt64 {
         (UInt64(core.cycleh) << 32) | UInt64(core.cyclel)
+    }
+
+    /// **Le temps passé hors de la machine**, dans `mtime` : le CLINT
+    /// compte en microsecondes (`timebase-frequency` vaut un million dans
+    /// l'arbre), et Linux y lit l'heure. Payé par pas, chacun quand le hart
+    /// attend sur `wfi` : voir `GuestClock.stepSeconds` et `run`.
+    public func elapse(seconds: TimeInterval) {
+        guard let seconds = GuestClock.catchUp(seconds) else { return }
+        pendingElapse &+= UInt64(seconds * 1_000_000)
+    }
+
+    /// Le temps encore dû, en microsecondes.
+    var pendingElapse: UInt64 = 0
+
+    /// Paie un pas du temps dû : `mtime` avance, et l'échéance dépassée
+    /// réveille le hart au tour suivant.
+    func takeElapseStep() {
+        let step = min(pendingElapse, UInt64(GuestClock.stepSeconds * 1_000_000))
+        let later = (UInt64(core.timerh) << 32 | UInt64(core.timerl)) &+ step
+        core.timerh = UInt32(truncatingIfNeeded: later >> 32)
+        core.timerl = UInt32(truncatingIfNeeded: later)
+        pendingElapse -= step
     }
 
     /// Asks a running `run()` to return. Safe from any thread.
