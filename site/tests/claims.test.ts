@@ -727,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3307",
+        "3310",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
