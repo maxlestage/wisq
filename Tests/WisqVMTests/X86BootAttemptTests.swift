@@ -496,12 +496,6 @@ final class X86BootAttemptTests: XCTestCase {
                 }
                 promptSeen = prompted
                 if core.outOfPatience { break }
-                // **Un redémarrage demandé finit la course**, comme il finit
-                // la machine de l'application (`X86Machine.run` rend
-                // `.reboot`) : continuer ferait voir au banc la méthode
-                // suivante du noyau, que l'application ne lui laisse jamais
-                // atteindre.
-                if core.devices.ps2.resetRequested { break }
             }
         } catch {
             stopped = error
@@ -533,11 +527,14 @@ final class X86BootAttemptTests: XCTestCase {
         // armée et interruptions permises, et c'est le **budget** qui s'est
         // épuisé pendant l'attente. « La machine dort » et « la course s'est
         // arrêtée » ne sont pas la même phrase.
+        // **Un redémarrage demandé finit la course**, comme il finit la
+        // machine de l'application : le cœur s'arrête sur l'instruction qui
+        // tire la ligne (`X86Core.Reset`).
         let ending: String
-        if let stopped {
-            ending = "\(stopped)"
-        } else if core.devices.ps2.resetRequested {
+        if stopped is X86Core.Reset {
             ending = "redémarrage demandé (impulsion du 8042)"
+        } else if let stopped {
+            ending = "\(stopped)"
         } else if core.outOfPatience {
             ending = "attente épuisée (la machine patientait encore)"
         } else if core.halted && core.idled > 0 {

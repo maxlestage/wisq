@@ -385,20 +385,17 @@ public final class X86Machine: @unchecked Sendable {
             let executed: UInt64
             do {
                 executed = try core.run(budget: min(slice, remaining))
+            } catch is X86Core.Reset {
+                // L'invité a tiré la ligne de remise à zéro : il redémarre.
+                collectOutput()
+                flushOutput()
+                return .reboot
             } catch {
                 collectOutput()
                 flushOutput()
                 return .faulted("\(error)")
             }
             collectOutput()
-            // **L'invité a tiré la ligne de remise à zéro** : il redémarre.
-            // Linux répète l'impulsion dix fois, à cinquante microsecondes
-            // d'écart ; la tranche s'arrête bien avant qu'il n'abandonne pour
-            // la méthode suivante.
-            if core.devices.ps2.resetRequested {
-                flushOutput()
-                return .reboot
-            }
 
             // Une invite se termine sans retour à la ligne ; sans un vidage
             // régulier elle resterait dans le tampon, et la console aurait

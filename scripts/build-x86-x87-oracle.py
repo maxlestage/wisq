@@ -166,6 +166,18 @@ def forms():
         out += [f"{name} %st(1), %st", f"{name} %st, %st(1)", f"{name}p %st, %st(1)"]
     for name in ["fadds", "fmuls", "fsubs", "fdivs"]:
         out.append(f"{name} 0x20(%rsi)")
+    # **Ce que chrony demande, chez Chimera Linux** : l'arithmétique avec un
+    # entier en mémoire, sur trente-deux et seize bits (`DA`, `DE`), et le
+    # reste des opérandes flottants en mémoire, comparaisons comprises
+    # (`D8`, `DC`). `fimull` arrêtait chronyd par « Illegal instruction ».
+    for suffix in ["l", "s"]:
+        for name in ["fiadd", "fimul", "ficom", "ficomp",
+                     "fisub", "fisubr", "fidiv", "fidivr"]:
+            out.append(f"{name}{suffix} 0x20(%rsi)")
+    for name in ["fsubrs", "fdivrs", "fcoms", "fcomps",
+                 "faddl", "fmull", "fcoml", "fcompl",
+                 "fsubl", "fsubrl", "fdivl", "fdivrl"]:
+        out.append(f"{name} 0x20(%rsi)")
     # Le signe et la valeur absolue, qui ne touchent qu'un bit.
     out += ["fchs", "fabs", "fxch %st(1)", "fxch %st(2)"]
     # Les comparaisons, par les deux chemins que musl emprunte.
