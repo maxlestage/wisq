@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — SSSE3 sur les registres MMX
+
+**Ce qui restait.** Le MMX existe depuis #665, mais pas les formes MMX de
+SSSE3 : `0F 38 00` à `0B`, `0F 38 1C` à `1E` et `0F 3A 0F` sans préfixe
+(`PSHUFB`, les horizontales, `PMADDUBSW`, `PSIGNB/W/D`, `PMULHRSW`,
+`PABSB/W/D`, `PALIGNR`). Un programme qui s'en servait mourait d'un
+« Illegal instruction ».
+
+**Ce qui change.** `X86MMXSSSE3.swift` les exécute sur huit octets, dans les
+registres MMX. Trois ne se déduisent pas de leur forme XMM, et l'oracle l'a
+fait voir dès le premier sabotage :
+- `PSHUFB` ne lit que trois bits d'index ;
+- les horizontales rangent les résultats de la destination puis ceux de la
+  source dans un seul registre de huit octets ;
+- `PALIGNR` décale seize octets, pas trente-deux.
+
+Les autres travaillent élément par élément : `ssse3Elementwise`, sortie de
+`threeByte38`, sert maintenant aux deux formes, avec une moitié haute nulle
+pour la forme MMX.
+
+**L'oracle MMX** passe de 225 à 273 formes et de 8 775 à 10 647 cas,
+produits par le vrai processeur, ajoutés à la fin : les cas d'avant sont
+identiques à l'octet près. Tous concordent.
+
+**Tests.**
+- `X86MMXStateTests` : un test de plus, la pile x87 que ces formes
+  partagent (sommet à zéro, étiquettes valides). L'oracle ne la voit pas.
+- `X86V2OracleTests` disait que ces formes étaient refusées. Il vérifie
+  maintenant qu'elles s'exécutent sur MM0 sans toucher aux XMM.
+
+Cinq sabotages :
+- trois attrapés par l'oracle : `PSHUFB` sur quatre bits, les horizontales
+  à la manière XMM, `PALIGNR` qui inverse destination et source ;
+- l'entrée en MMX oubliée, attrapée par le test de la pile x87 ;
+- la borne de `PALIGNR` déplacée d'un cran, qui ne change rien : un décalage
+  de soixante-quatre bits ou plus rend déjà zéro.
+
+Restent refusées par leur nom les conversions entre MMX et flottants (`0F
+2A`, `2C`, `2D` sans préfixe et sous `66`). Le compte publié passe à 3270.
+
 ## 2026-10-31 — Une machine qui redémarre repart d'elle-même
 
 **Ce qui se passait.** Un invité qui redémarrait (`reboot`, ou `r` devant
