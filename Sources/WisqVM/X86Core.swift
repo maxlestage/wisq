@@ -878,7 +878,7 @@ public struct X86Core: @unchecked Sendable {
     static func claimedBySpecialists(_ opcode: UInt8) -> Bool {
         let words: (UInt64, UInt64, UInt64, UInt64) = (
             0x000F_FF0F_00FF_0000, 0xF07F_FFFF_FFF3_0000,
-            0x0000_0004_0000_0000, 0x7F7F_FFFF_FFFF_0074)
+            0x0000_0004_0000_0000, 0x7FFF_FFFF_FFFF_0074)
         let word: UInt64
         switch opcode >> 6 {
         case 0: word = words.0
@@ -942,6 +942,9 @@ public struct X86Core: @unchecked Sendable {
         // Puis le flottant scalaire, qui occupe encore d'autres octets de
         // la même table. Voir `X86Float.swift`.
         if try floatInstruction(instruction, opcode) { return }
+        // Puis le MMX, que les autres laissent : les mêmes octets, sans
+        // préfixe. Voir `X86MMX.swift`.
+        if try mmxInstruction(instruction, opcode) { return }
         try twoByte(instruction, opcode)
     }
 

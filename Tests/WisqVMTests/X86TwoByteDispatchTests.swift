@@ -36,7 +36,9 @@ final class X86TwoByteDispatchTests: XCTestCase {
                 }
             }
         }
-        XCTAssertGreaterThan(tried, 1000, "le parcours a bien essayé quelque chose")
+        // Le seuil a baissé de mille à neuf cents quand `0F F7` (MASKMOVQ) est
+        // passé aux gestionnaires spécialisés avec le MMX : huit essais de moins.
+        XCTAssertGreaterThan(tried, 900, "le parcours a bien essayé quelque chose")
     }
 
     /// Les octets qu'on sait spécialisés le sont, et les plus fréquents des
