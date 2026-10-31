@@ -26,8 +26,12 @@ struct GuestScreenView: View {
     @State private var shownRevision: UInt64 = .max
 
     var body: some View {
+        // La taille de l'image, pas celle de l'écran lue à part : le pilote de
+        // la carte change de résolution (`X86BochsDisplay`), et l'image dit
+        // celle qu'elle a vraiment.
         GuestScreenCanvas(
-            image: image, guestWidth: screen.width, guestHeight: screen.height, onPointer: onPointer)
+            image: image, guestWidth: image?.width ?? screen.width,
+            guestHeight: image?.height ?? screen.height, onPointer: onPointer)
             .overlay {
                 if image == nil {
                     Text("L'invité n'a encore rien dessiné sur son écran.")
@@ -57,13 +61,17 @@ struct GuestScreenView: View {
 
     /// XRGB8888 petit-boutien : en mémoire B, G, R, X — ce que Core Graphics
     /// lit sans conversion en « premier octet ignoré, ordre 32 bits petit ».
+    ///
+    /// Le mode et ses pixels sont pris ensemble (`frame`) : une résolution qui
+    /// change entre les deux lectures ferait une image de travers.
     static func makeImage(_ screen: X86Framebuffer) -> CGImage? {
-        guard let provider = CGDataProvider(data: screen.pixelData() as CFData) else { return nil }
+        let (mode, pixels) = screen.frame()
+        guard let provider = CGDataProvider(data: pixels as CFData) else { return nil }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
             | CGBitmapInfo.byteOrder32Little.rawValue)
         return CGImage(
-            width: screen.width, height: screen.height, bitsPerComponent: 8, bitsPerPixel: 32,
-            bytesPerRow: screen.bytesPerRow, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info,
+            width: mode.width, height: mode.height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: mode.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info,
             provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 }
