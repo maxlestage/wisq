@@ -179,16 +179,23 @@ final class X86V2OracleTests: XCTestCase {
         XCTAssertEqual(core.registers[0], 0xD700)
     }
 
-    /// **Sans `66`, c'est MMX**, et le cœur le refuse au lieu de l'exécuter
-    /// sur un registre XMM.
-    func testTheMMXFormsAreRefused() throws {
+    /// **Sans `66`, c'est MMX** : le cœur l'exécute sur les registres MMX, et
+    /// ne touche à aucun XMM. (Il la refusait, jusqu'à ce que SSSE3 existe sur
+    /// les registres MMX : voir `X86MMXSSSE3.swift`.)
+    func testTheMMXFormsRunOnTheMMXRegisters() throws {
         for bytes: [UInt8] in [[0x0F, 0x38, 0x00, 0xC1], [0x0F, 0x3A, 0x0F, 0xC1, 0x04]] {
             let memory = X86Memory(size: 0x1000, base: 0x3000_0000)
             try memory.load(bytes, at: 0x3000_0000)
             var core = X86Core(registers: X86SIMDOracleTests.witness(), flags: X86Core.Flag.reserved,
                                rip: 0x3000_0000, memory: memory)
+            core.vectors = (0..<32).map { 0x0101_0101_0101_0101 &* UInt64($0 + 1) }
+            core.setMMX(0, 0x0706_0504_0302_0100)
+            core.setMMX(1, 0x0001_0203_0405_0607)
+            let vectors = core.vectors
             let instruction = try X86Decoder.decode(memory.dump(0x3000_0000, 15))
-            XCTAssertThrowsError(try core.execute(instruction), "\(bytes)")
+            try core.execute(instruction)
+            XCTAssertEqual(core.vectors, vectors, "aucun XMM touché : \(bytes)")
+            XCTAssertNotEqual(core.mmx(0), 0x0706_0504_0302_0100, "MM0 a changé : \(bytes)")
         }
     }
 }

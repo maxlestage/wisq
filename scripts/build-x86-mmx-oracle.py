@@ -66,6 +66,15 @@ def forms():
     out += ["pmovmskb %mm1, %eax",
             "movd %eax, %mm0", f"movd {MEMORY}, %mm0", "movq %rax, %mm0",
             "movd %mm1, %eax", "movq %mm1, %rax"]
+    # **SSSE3 sur les registres MMX** : les mêmes opérations que sous 66, sur
+    # huit octets. `pshufb` n'y lit que trois bits d'index ; `palignr` et les
+    # horizontales mêlent destination et source autrement que sur seize.
+    for name in ["pshufb", "phaddw", "phaddd", "phaddsw", "phsubw", "phsubd", "phsubsw",
+                 "pmaddubsw", "psignb", "psignw", "psignd", "pmulhrsw",
+                 "pabsb", "pabsw", "pabsd"]:
+        out += [f"{name} %mm1, %mm0", f"{name} {MEMORY}, %mm0"]
+    for count in [0, 1, 3, 7, 8, 9, 15, 16, 200]:
+        out += [f"palignr ${count}, %mm1, %mm0", f"palignr ${count}, {MEMORY}, %mm0"]
     return out
 
 
