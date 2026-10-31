@@ -1070,6 +1070,11 @@ extension X86Core {
         case Self.serialBase...(Self.serialBase &+ 7):
             serialWrite(port &- Self.serialBase, byte)
 
+        // Les registres DISPI de la carte graphique, par ports : voir
+        // `X86BochsDisplay`.
+        case X86BochsDisplay.indexPort, X86BochsDisplay.dataPort:
+            memory?.vga?.writePort(port, UInt16(truncatingIfNeeded: value))
+
         // Le bus PCI : une adresse, puis une donnée. Sans ces deux ports, le
         // noyau conclut « PCI: System does not support PCI » et n'énumère rien.
         case X86PCIHost.addressPort:
@@ -1234,6 +1239,8 @@ extension X86Core {
         switch port {
         case Self.serialBase...(Self.serialBase &+ 7):
             return UInt64(serialRead(port &- Self.serialBase))
+        case X86BochsDisplay.indexPort, X86BochsDisplay.dataPort:
+            return UInt64(memory?.vga?.readPort(port) ?? 0xFFFF)
         case X86PCIHost.addressPort:
             return UInt64(memory?.bus?.address ?? 0)
         // La fenêtre de ports d'un disque, là où le noyau l'a placée.
