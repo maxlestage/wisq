@@ -66,6 +66,12 @@ enum Snapshot {
     /// de l'horloge, avant les disques.
     static let networkSection: UInt64 = 0x7465_6E5F_5153_4957  // « WISQ_net »
 
+    /// La marque de l'écran de la machine PC — sa taille, puis ses pixels
+    /// codés comme la mémoire —, posée après le rapport de l'horloge, avant
+    /// la carte réseau. Un instantané d'avant passe de l'horloge au réseau ou
+    /// au disque, qui ne commencent pas par ces huit octets.
+    static let screenSection: UInt64 = 0x6E63_735F_5153_4957  // « WISQ_scn »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
