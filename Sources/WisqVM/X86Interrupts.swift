@@ -165,14 +165,34 @@ extension X86Core {
         // « Illegal instruction » à ce programme, comme sur un processeur
         // qui ne l'a pas. Le nom n'est pas perdu : `programRefusals` le
         // garde, et `X86Machine` l'écrit à la console.
+        //
+        // **Et ses octets avec** (`refusedBytes`) : « une instruction
+        // vectorielle » nommait des dizaines de formes à la fois. Le banc de
+        // Void Linux Xfce en a compté quarante-huit sans dire laquelle — c'était
+        // `vstmxcsr`, et il a fallu aller lire la `libm` de l'invité.
         var refusal: String?
-        if case .unsupported(let what) = fault, privilege == 3 { refusal = what }
+        if case .unsupported(let what) = fault, privilege == 3 { refusal = what + refusedBytes() }
         guard let vector = refusal == nil ? Self.vector(of: fault) : 6 else { return false }
         if case .pageFault(let address) = fault { system.control[2] = address }
         if canonicalWatchArmed, privilege == 3 { noteFault(fault, at: rip) }
         let delivered = try enter(vector, errorCode: vector == 14 ? pageFaultErrorCode : 0)
         if delivered, let refusal { programRefusals.append(refusal) }
         return delivered
+    }
+
+    /// Les octets de l'instruction refusée, entre parenthèses, en
+    /// hexadécimal : autant que l'instruction en compte quand ils se
+    /// décodent, sinon tous ceux qui se lisent. Rien si la page n'est pas
+    /// lisible — le refus garde alors son seul nom.
+    mutating func refusedBytes() -> String {
+        var bytes: [UInt8] = []
+        for offset in 0..<UInt64(X86Instruction.maximumLength) {
+            guard let byte = try? readMemory(rip &+ offset, 1, .fetch) else { break }
+            bytes.append(UInt8(truncatingIfNeeded: byte))
+        }
+        guard !bytes.isEmpty else { return "" }
+        let length = (try? X86Decoder.decode(bytes))?.length ?? bytes.count
+        return " (" + bytes.prefix(length).map { String(format: "%02X", $0) }.joined(separator: " ") + ")"
     }
 
     /// Entrer dans le gestionnaire d'un vecteur, et dire si ça a été fait.

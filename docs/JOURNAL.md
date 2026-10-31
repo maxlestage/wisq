@@ -8,6 +8,44 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Xorg ne meurt plus dans `sincos` : le bureau Xfce de Void s'ouvre
+
+**Ce que le banc a montré, carte graphique branchée (#676).** Void Linux Xfce
+trouve maintenant `/dev/dri/card0`, `lightdm` lance Xorg, et Xorg meurt une
+seconde plus tard. `lightdm` le relance en boucle : quarante-huit fois sur
+une course. Le journal de Xorg donne une trace qui finit dans la `libm`,
+appelée par `libinput`, et les octets lus dans la `libm` de l'invité, à
+`+0x73ca0`, sont `c5 f8 ae 5c 24 18` : `vstmxcsr 0x18(%rsp)`.
+
+La glibc choisit ses variantes FMA d'après `CPUID`, et celle de `sincos` sauve
+et rétablit l'arrondi par la forme VEX de `STMXCSR`. `libinput` appelle
+`sincos` pour l'accélération du pointeur. Ce cœur connaissait `LDMXCSR` et
+`STMXCSR`, pas leurs formes VEX : le programme recevait « Illegal
+instruction ».
+
+**Ce qui change.**
+- `VLDMXCSR` et `VSTMXCSR` (`VEX.LZ.0F AE /2` et `/3`) font ce que font leurs
+  formes sans VEX. Seule la forme mémoire existe, avec `vvvv` à 1111 ; le
+  reste est refusé.
+- **Un refus nomme les octets de l'instruction refusée.** « une instruction
+  vectorielle » nommait des dizaines de formes à la fois, et le banc en a
+  compté quarante-huit sans dire laquelle : il a fallu aller lire la `libm`
+  de l'invité octet par octet. La console dit maintenant, par exemple,
+  « une instruction vectorielle (C5 F8 AE 24 24) ».
+
+**Au banc, après la correction** : plus une seule trace dans le journal de
+Xorg, et la session démarre d'elle-même (connexion automatique de l'image
+live) : `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, Thunar,
+`xfce4-notifyd`, `xfce4-power-manager`.
+
+**Tests.** `X86VEXControlStatusTests` (trois), sur les octets mêmes de la
+`libm` de Void, et un test des octets dans le refus (`X86InterruptTests`).
+Quatre sabotages, tous tombés :
+- `vvvv` non vérifié ;
+- le chargement et l'écriture inversés ;
+- toute extension acceptée ;
+- les octets qui suivent l'instruction gardés dans le refus.
+
 ## 2026-10-31 — La carte graphique de QEMU : un vrai `/dev/dri` pour tous les Linux
 
 **La demande.** « Je veux que ça s'affiche en desktop quand même sans passer
