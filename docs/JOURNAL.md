@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Une instruction inconnue dans un programme ne coûte plus la machine
+
+**Ce qui se passait.** Toute forme que ce cœur ne sait pas exécuter arrêtait
+la machine entière, même demandée par un programme ordinaire. Une
+bibliothèque qui emploie une instruction MMX, par exemple, emportait tout le
+système avec elle. La sonde de la table `0F` en a compté environ soixante-dix
+(le MMX, annoncé par CPUID parce que la glibc l'exige, et jamais écrit ici).
+
+**Ce qui change.**
+- **Dans un programme** (anneau trois), la forme inconnue part au vecteur 6,
+  comme sur un processeur qui ne l'a pas. Linux envoie « Illegal
+  instruction » à ce programme, et à lui seul.
+- **Dans le noyau**, rien ne change : la machine s'arrête avec le nom de la
+  forme. C'est un trou de ce cœur, et le livrer ferait croire au noyau que
+  son propre code est faux.
+- **Le nom n'est pas perdu.** Le cœur le garde (`programRefusals`), et
+  `X86Machine` l'écrit à la console, une fois par forme :
+  « [wisq : un programme a demandé l'opcode 0F 6F, que ce processeur ne sait
+  pas encore exécuter. Il reçoit « Illegal instruction » ; la machine
+  continue.] ».
+
+**Vérifié sur un vrai invité.** Debian 13 et un programme ELF de 132 octets,
+tapé en base64 dans le shell, qui exécute `movq %mm1, %mm0` puis `exit` :
+
+```
+[  179.056794] traps: mmx[517] trap invalid opcode ip:400078 sp:7ffc8f8ce130 error:0 in mmx[78,400000+1000]
+Illegal instruction
+toujours-vivant
+6.12.113+deb13-amd64
+```
+
+**Tests.** Trois de plus :
+- dans `X86InterruptTests`, la forme inconnue livrée en anneau trois, et
+  sortie sans porte, rien de gardé ;
+- `X86ProgramRefusalTests`, une note par forme et une seule fois.
+
+Quatre sabotages, tous attrapés : livrer aussi dans le noyau, ne jamais
+livrer, garder le nom d'un refus non livré, et répéter la note. Le compte
+publié passe à 3244.
+
 ## 2026-10-31 — Ce que le téléphone a montré : un chien de garde, et trois instructions qui arrêtaient la machine
 
 Deux captures de Maxime, sur le build TestFlight 114.
