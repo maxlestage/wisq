@@ -183,9 +183,17 @@ public struct TerminalGrid: Sendable {
     /// grid is empty rather than 24 blank lines, and a boot log reads exactly
     /// as it always did.
     public var text: String {
+        lines.joined(separator: "\n")
+    }
+
+    /// **Les mêmes lignes, une par une** : ce que `text` joint. La console de
+    /// l'application en fait une pile paresseuse, où seules les lignes à
+    /// l'écran sont mises en page ; un seul `Text` de deux mille lignes était
+    /// remis en page en entier à chaque sortie de l'invité.
+    public var lines: [String] {
         var lines = scrollback
         lines.append(contentsOf: visibleScreenLines())
-        return lines.joined(separator: "\n")
+        return lines
     }
 
     /// The visible grid only — what a screen-shaped renderer draws.
