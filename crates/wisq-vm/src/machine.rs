@@ -87,9 +87,10 @@ impl Handle {
     }
 }
 
-/// Le plus grand pas d'un rattrapage : cinq minutes, comme
-/// `GuestClock.stepSeconds` côté Swift.
-const ELAPSE_STEP_MICROS: u64 = 300_000_000;
+/// Le plus grand pas d'un rattrapage : dix secondes, comme
+/// `GuestClock.stepSeconds` côté Swift, qui dit pourquoi — sous le seuil du
+/// chien de garde de Linux.
+const ELAPSE_STEP_MICROS: u64 = 10_000_000;
 
 pub struct Machine {
     /// Le temps encore dû, en microsecondes — voir `elapse`.
@@ -721,7 +722,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
-    /// Le temps dû se paie par pas de cinq minutes au plus, retenue du mot
+    /// Le temps dû se paie par pas de dix secondes au plus, retenue du mot
     /// haut comprise, jusqu'au dernier reste.
     #[test]
     fn elapsing_is_paid_in_steps() {
@@ -741,7 +742,7 @@ mod tests {
             machine.take_elapse_step();
             steps += 1;
         }
-        assert_eq!(steps, 864, "trois jours en pas de cinq minutes");
+        assert_eq!(steps, 25_920, "trois jours en pas de dix secondes");
         let now = (u64::from(machine.core.timerh) << 32) | u64::from(machine.core.timerl);
         assert_eq!(now, 0x1_0000_0010 + 259_200_000_000);
         machine.elapse(u64::MAX);

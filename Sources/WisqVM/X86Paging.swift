@@ -296,6 +296,28 @@ extension X86Core {
             write(0, 4, highByte: false, cycles & 0xFFFF_FFFF)
             write(2, 4, highByte: false, (cycles >> 32) & 0xFFFF_FFFF)
             return true
+        case 0x33:
+            // RDPMC : le compteur de performance que nomme ECX, sur quarante-
+            // huit bits, dans EDX:EAX.
+            //
+            // **Le processeur annoncé est un AMD de famille 15**, et Linux y
+            // trouve, sans rien demander à CPUID, les quatre compteurs des K8
+            // : `PERF_CTL` en `0xC0010000` à `3`, `PERF_CTR` en `0xC0010004`
+            // à `7`. Le chien de garde NMI en prend un (« Permanently consumes
+            // one hw-PMU counter »), et `perf` les relit par RDPMC — au
+            // redémarrage d'une machine, sur le téléphone, la machine s'est
+            // arrêtée là : « l'opcode 0F 33 ».
+            //
+            // Rien ne compte vraiment ici : RDPMC rend ce que WRMSR a écrit,
+            // comme RDMSR. Un index hors des quatre rend zéro — ce cœur ne
+            // livre pas de #GP, voir `X86XSAVE.swift`.
+            let index = UInt32(truncatingIfNeeded: registers.read(1))
+            let counter = index < Self.performanceCounters
+                ? system.modelSpecific[Self.firstPerformanceCounter + index] ?? 0 : 0
+            let value = counter & 0xFFFF_FFFF_FFFF
+            write(0, 4, highByte: false, value & 0xFFFF_FFFF)
+            write(2, 4, highByte: false, value >> 32)
+            return true
         case 0xA2:  // CPUID
             let (a, b, c, d) = X86CPUID.answer(
                 leaf: UInt32(truncatingIfNeeded: registers.read(0)),
@@ -312,6 +334,9 @@ extension X86Core {
     }
 
     static let pagingBit: UInt64 = X86SystemState.paging
+    /// `PERF_CTR0` des AMD de famille 15, et combien il y en a.
+    static let firstPerformanceCounter: UInt32 = 0xC001_0004
+    static let performanceCounters: UInt32 = 4
 }
 
 // **Une instruction à cheval sur deux pages.**

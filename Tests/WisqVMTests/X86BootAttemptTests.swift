@@ -400,6 +400,10 @@ final class X86BootAttemptTests: XCTestCase {
             var remaining = allowance
             var answeredUpTo = 0
             var promptSeen = false
+            var owedCycles: UInt64 = 0
+            var elapsed = false
+            let hertz = Double(core.instructionsPerTick) * 1_193_182
+            let elapseStep = environment["WISQ_PC_ELAPSE_STEP"].flatMap(Double.init) ?? GuestClock.stepSeconds
             // **Où passe le temps de l'invité.** Avec `WISQ_PC_SAMPLE`, on
             // avance par tranches d'un million d'instructions et l'on note le
             // RIP où chacune s'arrête, une ligne hexadécimale par tranche, dans
@@ -448,14 +452,26 @@ final class X86BootAttemptTests: XCTestCase {
                 let fresh = Self.withoutEscapes(String(decoding: core.serialOutput.dropFirst(answeredUpTo),
                                                        as: UTF8.self))
                 let prompted = Self.prompts.contains(where: { fresh.contains($0) })
-                if prompted, !toType.isEmpty, promptSeen || core.outOfPatience {
+                // **Le temps dû se paie comme dans l'application** : un pas à
+                // chaque sommeil de l'invité — voir `X86Machine.run`.
+                if owedCycles > 0, core.halted {
+                    let step = min(owedCycles, UInt64(elapseStep * hertz))
+                    core.idled &+= step
+                    owedCycles -= step
+                    continue
+                }
+                if prompted, !toType.isEmpty, promptSeen || core.outOfPatience, owedCycles == 0 {
                     // **Une reprise, le lendemain** : avec `WISQ_PC_ELAPSE`
                     // (« N:secondes »), le temps passe hors de la machine
-                    // juste avant la frappe numéro N — voir
-                    // `X86Machine.elapse(seconds:)`.
-                    if let elapse = environment["WISQ_PC_ELAPSE"]?.split(separator: ":"),
+                    // juste avant la frappe numéro N, par pas de
+                    // `WISQ_PC_ELAPSE_STEP` secondes (`GuestClock.stepSeconds`
+                    // sinon) — voir `X86Machine.elapse(seconds:)`. La frappe
+                    // attend que tout soit payé.
+                    if !elapsed, let elapse = environment["WISQ_PC_ELAPSE"]?.split(separator: ":"),
                        elapse.count == 2, Int(elapse[0]) == typed.count, let seconds = Double(elapse[1]) {
-                        core.idled &+= UInt64(seconds * Double(core.instructionsPerTick) * 1_193_182)
+                        elapsed = true
+                        owedCycles = UInt64(seconds * hertz)
+                        continue
                     }
                     let line = toType.removeFirst()
                     typed.append(line)
@@ -463,6 +479,18 @@ final class X86BootAttemptTests: XCTestCase {
                     answeredUpTo = core.serialOutput.count
                     promptSeen = false
                     continue
+                }
+                // **Tout est tapé, et l'invite est revenue** : la conversation
+                // est finie. Sans cet arrêt, un invité jamais tout à fait au
+                // repos — des services qui tournent, une horloge NTP —
+                // épuisait le reste du budget : openSUSE répondait en sept
+                // minutes, et la course en durait soixante-quatorze. La même
+                // prudence que pour taper : l'invite vue deux tranches de
+                // suite. `WISQ_PC_RUN_ON` garde l'ancienne conduite, pour un
+                // relevé qui veut le budget entier.
+                if prompted, toType.isEmpty, !typed.isEmpty, promptSeen || core.outOfPatience,
+                   environment["WISQ_PC_RUN_ON"] == nil {
+                    break
                 }
                 promptSeen = prompted
                 if core.outOfPatience { break }

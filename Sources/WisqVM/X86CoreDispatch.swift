@@ -565,10 +565,36 @@ extension X86Core {
                 throw Fault.unsupported("le groupe 6 /\((instruction.modrm! >> 3) & 0x07)")
             }
 
+        case 0x02, 0x03:
+            // LAR et LSL : les droits d'accès et la limite du segment que
+            // nomme le sélecteur, ZF à un s'ils se lisent, à zéro sinon.
+            //
+            // **Le vDSO de Linux en dépend** : `getcpu()`, et donc
+            // `sched_getcpu()` de la glibc, lit le numéro du processeur dans
+            // la limite de l'entrée 15 de la GDT, par `lsl`, quand RDPID
+            // manque — et ce processeur ne l'annonce pas. Sans LSL, le premier
+            // programme qui demandait sur quel processeur il tournait
+            // arrêtait la machine entière.
+            let fields = try decodeFields(instruction)
+            let size = Self.operandSize(instruction, byteForm: false)
+            let selector = UInt16(truncatingIfNeeded: try readRM(fields, 2))
+            if let value = try segmentQuery(selector, accessRights: opcode == 0x02) {
+                write(fields.reg, size, highByte: false, value)
+                flags |= Flag.zero
+            } else {
+                flags &= ~Flag.zero
+            }
+
         case 0x05: try systemCall(length: instruction.length)
         case 0x07: try systemReturn(wide: (instruction.rex ?? 0) & 0x08 != 0)
 
-        case 0x0B: throw Fault.unsupported("UD2 : l'invité s'est arrêté lui-même")
+        // UD2 : **livré au vecteur 6**, comme sur un vrai processeur. Le
+        // noyau en met un à chaque `WARN()` : son gestionnaire imprime
+        // l'avertissement et reprend deux octets plus loin. Arrêter la machine
+        // là faisait d'un simple avertissement de n'importe quelle
+        // distribution la fin de la machine. Sans IDT, la faute sort et
+        // arrête, comme avant.
+        case 0x0B: throw Fault.invalidOpcode
 
         case 0x06, 0x08, 0x09:  // CLTS, INVD, WBINVD — rien à faire ici
             break
@@ -1323,5 +1349,37 @@ extension X86Core {
         case 3: try writeRM(fields, size, value ^ (1 << offset))    // BTC
         default: break                                              // BT ne change rien
         }
+    }
+}
+
+extension X86Core {
+    /// **Ce que LAR et LSL lisent d'un descripteur**, ou `nil` quand
+    /// l'instruction doit rendre ZF à zéro.
+    ///
+    /// Les règles du manuel, réduites à ce que le mode long garde : le
+    /// sélecteur nul et la LDT ne se lisent pas (Linux 64 bits n'a pas de
+    /// LDT) ; un descripteur système ne se lit que s'il est une LDT ou un
+    /// TSS — plus, pour LAR, une porte d'appel ; et hors du code conforme, le
+    /// DPL doit être au moins le plus grand du CPL et du RPL. La présence du
+    /// segment n'est pas exigée : c'est le descripteur qu'on lit, pas le
+    /// segment.
+    mutating func segmentQuery(_ selector: UInt16, accessRights: Bool) throws -> UInt64? {
+        let index = UInt64(selector & 0xFFF8)
+        guard index != 0, selector & 4 == 0, index &+ 7 <= descriptorLimits[0] else { return nil }
+        let descriptor = try readMemory(descriptorBases[0] &+ index, 8, .machine)
+        let access = (descriptor >> 40) & 0xFF
+        let type = access & 0x0F
+        let isSystem = access & 0x10 == 0
+        if isSystem {
+            let readable: [UInt64] = accessRights ? [0x2, 0x9, 0xB, 0xC] : [0x2, 0x9, 0xB]
+            guard readable.contains(type) else { return nil }
+        }
+        let conformingCode = !isSystem && type & 0xC == 0xC
+        let level = Int((access >> 5) & 3)
+        if !conformingCode, level < max(privilege, Int(selector & 3)) { return nil }
+        if accessRights { return (descriptor >> 32) & 0x00F0_FF00 }
+        let limit = (descriptor & 0xFFFF) | ((descriptor >> 32) & 0xF_0000)
+        // Le bit G : la limite compte en pages de quatre kibioctets.
+        return descriptor & (1 << 55) != 0 ? limit << 12 | 0xFFF : limit
     }
 }
