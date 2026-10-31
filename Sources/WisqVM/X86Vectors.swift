@@ -75,7 +75,8 @@ extension X86Core {
     /// l'opcode n'en est pas une, pour que le dispatch ordinaire continue.
     ///
     /// Le préfixe décide autant que l'opcode : `0F 6E` sans préfixe est une
-    /// instruction MMX, avec `66` c'est SSE, et ce cœur ne fait que le second.
+    /// instruction MMX (voir `X86MMX.swift`), avec `66` c'est SSE, et ce
+    /// fichier ne fait que le second.
     /// Le dire plutôt que de les confondre évite d'exécuter sur un registre
     /// XMM ce que le programme voulait faire sur un registre MMX.
     mutating func vectorInstruction(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
