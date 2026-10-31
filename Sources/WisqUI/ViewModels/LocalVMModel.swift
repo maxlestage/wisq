@@ -97,6 +97,12 @@ public final class LocalVMModel {
     /// fichier de la bibliothèque démarré tel quel. Retenue pour la reprise au
     /// retour au premier plan, qui doit retrouver **la même** machine.
     private var installed: InstalledMachine?
+    /// Le fichier que la dernière course a démarré : celui qu'un redémarrage
+    /// de l'invité relance.
+    private var bootedKernel: URL?
+    /// Les redémarrages que la machine fait d'elle-même, comptés pour ne pas
+    /// boucler : voir `AutomaticRestart`.
+    private var restarts = AutomaticRestart()
 
     /// Démarre — ou reprend — une machine.
     ///
@@ -105,9 +111,10 @@ public final class LocalVMModel {
     /// couche d'écriture et sa session sous les siennes : c'est ce qui permet
     /// d'en avoir plusieurs sur une même image. La décision des clés vit dans
     /// `MachineKeys`, que la CI Linux juge ; ce fichier ne fait que la suivre.
-    public func boot(kernelURL: URL, installed: InstalledMachine? = nil) {
+    public func boot(kernelURL: URL, installed: InstalledMachine? = nil, keepingConsole: Bool = false) {
         guard machine == nil else { return }
         self.installed = installed
+        bootedKernel = kernelURL
         let keys = installed?.keys ?? .image(kernelURL.lastPathComponent)
         if let installed { InstalledMachines.markStarted(id: installed.id, in: storage) }
         // Coming back from a suspension keeps the console: this is the same
@@ -117,7 +124,9 @@ public final class LocalVMModel {
         let resuming = life.shouldResumeOnReturn
         life.booted()
         status = .running
-        if !resuming {
+        // Un redémarrage de l'invité garde aussi la console, comme une vraie
+        // console série : on y lit pourquoi il a redémarré.
+        if !resuming && !keepingConsole {
             consoleText = ""
             sink.reset()
         }
@@ -613,8 +622,17 @@ public final class LocalVMModel {
                 }.map { "\n\n\($0)" } ?? ""
                 switch outcome {
                 case .powerOff: self.finish(with: "La machine s'est éteinte." + silence)
+                // **Un invité qui redémarre repart de lui-même**, comme un
+                // vrai PC, sans boucler : voir `AutomaticRestart`. Ce qu'il
+                // démarre est ce qu'un démarrage ordinaire choisirait — le
+                // système installé, une fois l'installation faite.
                 case .reboot:
-                    self.finish(with: "La machine a redémarré ; relancez-la." + silence)
+                    if self.restarts.shouldRestart(at: Date()), let kernel = self.bootedKernel {
+                        self.finish(with: "La machine redémarre." + silence)
+                        self.boot(kernelURL: kernel, installed: self.installed, keepingConsole: true)
+                    } else {
+                        self.finish(with: AutomaticRestart.loopExplanation + silence)
+                    }
                 case .stopped: self.finish(with: "Arrêtée." + silence)
                 // Un refus du cœur est **nommé**. « Arrêtée » à sa place
                 // enverrait chercher partout ; l'instruction qui a manqué est

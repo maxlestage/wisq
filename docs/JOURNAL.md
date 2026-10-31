@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Une machine qui redémarre repart d'elle-même
+
+**Ce qui se passait.** Un invité qui redémarrait (`reboot`, ou `r` devant
+l'invite de dinit chez Chimera) finissait sur « La machine a redémarré ;
+relancez-la. ». Il fallait fermer l'écran et toucher la machine de
+nouveau, là où un vrai PC repart tout seul. Depuis #668, la machine PC sait
+redémarrer ; il restait à repartir.
+
+**Ce qui change.** Sur `.reboot`, `LocalVMModel` écrit « La machine
+redémarre. » et relance le même fichier, avec la même machine installée. Ce
+qui démarre est ce qu'un démarrage ordinaire choisirait : le système
+installé, une fois l'installation faite. La console est gardée, comme une
+vraie console série : on y lit pourquoi l'invité a redémarré. La machine
+RISC-V, qui redémarrait déjà (`.reboot`), en profite aussi.
+
+**Pas en boucle.** Un noyau qui panique avec `panic=5` redémarre cinq
+secondes après chaque démarrage, et sur un téléphone ce serait la batterie
+brûlée. `AutomaticRestart` (dans `WisqVM`, testé sous Linux) laisse passer
+trois redémarrages en deux minutes. Au quatrième, la machine s'arrête :
+« La machine redémarre en boucle : trois redémarrages en deux minutes.
+Elle s'arrête là ; relancez-la quand vous voulez. » Une heure du téléphone
+qui recule ne compte pas comme une boucle.
+
+**Tests.** `AutomaticRestartTests`, quatre : trois redémarrages puis
+l'arrêt, des redémarrages espacés qui passent toujours, la fenêtre qui
+oublie, et l'heure qui recule. Quatre sabotages, tous attrapés : une limite
+décalée d'un cran, la fenêtre qui n'oublie jamais, l'heure du futur
+gardée, et le redémarrage jamais compté. Le câblage dans `LocalVMModel`
+ne se compile pas sous Linux : c'est la CI iOS qui le juge.
+
+Le compte publié passe à 3269.
+
 ## 2026-10-31 — Chimera Linux démarre et redémarre : l'horloge passe à 288, le 8042 remet à zéro, FIMUL existe
 
 **Ce que le téléphone a montré.** Une capture de Chimera Linux (live ISO
