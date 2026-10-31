@@ -148,16 +148,21 @@ public enum GuestClock {
     /// garde le calcul loin du débordement.
     public static let longestElapse: TimeInterval = 10 * 365 * 86_400
 
-    /// **Le plus grand pas d'un rattrapage**, en secondes.
+    /// **Le plus grand pas d'un rattrapage**, en secondes : dix.
     ///
-    /// Un noyau convertit l'écart lu à son compteur en nanosecondes par une
-    /// multiplication sur soixante-quatre bits, sûre jusqu'à `max_cycles`. Le
-    /// journal de Debian 13 le donne pour le TSC de cette machine :
-    /// `0x13d021d59e`, soit environ 990 s à 86 MHz. Linux 6.12 traite les
-    /// écarts plus grands ; les noyaux d'avant les convertissent de travers.
-    /// Le temps dû se paie donc par pas de cinq minutes, chacun quand
-    /// l'invité s'est rendormi, c'est-à-dire après qu'il a compté le
-    /// précédent.
+    /// Deux bornes. Un noyau convertit l'écart lu à son compteur en
+    /// nanosecondes par une multiplication sur soixante-quatre bits, sûre
+    /// jusqu'à `max_cycles` : environ 990 s pour le TSC de cette machine, dit
+    /// le journal de Debian 13 ; Linux 6.12 traite au-delà, les noyaux
+    /// d'avant non. Et **le chien de garde de Linux** : une horloge qui saute
+    /// de plus de vingt secondes sans que son fil ait tourné lui fait crier
+    /// « BUG: soft lockup - CPU#0 stuck for 280s! [swapper/0:0] », et le
+    /// détecteur de RCU fait de même au-delà de vingt et une. C'est ce que
+    /// les pas de cinq minutes affichaient sur le téléphone, une ligne par
+    /// pas, à la reprise d'une session. Dix secondes restent sous les deux.
+    ///
+    /// Chaque pas est payé quand l'invité s'est rendormi, c'est-à-dire après
+    /// qu'il a compté le précédent et que son chien de garde a tourné.
     ///
     /// **Ce que le rattrapage coûte à l'invité**, mesuré sur le noyau RISC-V
     /// de référence : environ cent mille instructions par seconde rattrapée,
@@ -165,7 +170,7 @@ public enum GuestClock {
     /// un à un, par pas ou d'un seul coup. Trois jours valent donc quelque
     /// vingt-sept milliards d'instructions, payées pendant que l'invité
     /// tourne.
-    public static let stepSeconds: TimeInterval = 300
+    public static let stepSeconds: TimeInterval = 10
 
     /// L'écart à rattraper, ou `nil` s'il n'y a rien à faire : le temps de
     /// l'invité ne recule pas, et un écart qui n'est pas un nombre ne se
