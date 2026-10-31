@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — La console ne met en page que ce qu'on voit
+
+**La demande.** « Hyper méga fluide et réactif », puis « continue d'être
+plus rapide ».
+
+**Ce qui faisait saccader.** La console de la machine locale était un seul
+`Text` : deux mille lignes de défilement plus l'écran, environ 160 Ko de
+texte. SwiftUI le remettait en page en entier à chaque mise à jour. Et les
+mises à jour s'enchaînaient aussi vite que le fil principal les prenait : la
+suivante partait dès que la précédente avait lu la grille. Pendant un
+démarrage bavard, le fil principal ne faisait plus que mettre en page la
+console, et le clavier, le défilement et l'écran attendaient derrière.
+
+**Ce qui change.**
+- `TerminalGrid.lines` rend les lignes une par une (ce que `text` joint), et
+  la vue en fait une `LazyVStack` : seules les lignes à l'écran sont mises en
+  page. Une ligne vide garde sa hauteur.
+- `ConsolePacer` espace les mises à jour d'au moins 1/30 s, comme l'écran.
+  Les morceaux arrivés pendant l'attente partent ensemble. Une frappe
+  isolée part tout de suite, sans attendre : l'écho reste immédiat.
+- Chaque ligne se sélectionne à part. Le bouton « Copier la console » de la
+  barre copie le tout.
+
+**Tests.** `ConsolePacerTests` (quatre) et un test de `lines` dans
+`TerminalGridTests`. Trois sabotages :
+- l'horloge qui recule non gardée : le test plante ;
+- les lignes sans le défilement : deux tests tombent ;
+- la borne `>=` changée en `>` : ne tombe pas, et c'est attendu. À
+  l'intervalle pile, les deux rendent zéro, si bien que la mutation est
+  équivalente.
+
+La vue ne se compile pas sous Linux (pas de SwiftUI) : c'est le job « App
+iOS » qui la juge.
+
 ## 2026-10-31 — L'écran se remplit d'un bloc
 
 **La demande.** « Accélère tout », puis « continue d'être plus rapide ».
