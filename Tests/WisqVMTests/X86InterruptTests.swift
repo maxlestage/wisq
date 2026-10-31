@@ -262,8 +262,9 @@ final class X86InterruptTests: XCTestCase {
         try Self.map(ram, Self.mapped)
         for vector in 0..<32 { try Self.installGate(ram, vector: vector, target: Self.handler) }
         try ram.load([0xF4], at: Self.handler)
-        // `0f 6f` : MMX, que ce cœur ne connaît pas.
-        var core = try Self.core(ram, code: [0x0F, 0x6F, 0xC1])
+        // `0f 0e` : FEMMS, du 3DNow! d'AMD, que ce cœur ne connaît pas. (Ce
+        // test prenait `0f 6f`, du MMX, jusqu'à ce que le MMX existe.)
+        var core = try Self.core(ram, code: [0x0F, 0x0E])
         XCTAssertThrowsError(try core.run(budget: 1)) {
             guard case .some(X86Core.Fault.unsupported) = $0 as? X86Core.Fault else {
                 return XCTFail("attendu : un refus nommé, pas une exception livrée")
@@ -310,13 +311,13 @@ final class X86InterruptTests: XCTestCase {
         try Self.map(ram, Self.mapped)
         try Self.installGate(ram, vector: 6, target: Self.handler)
         try ram.load([0xF4], at: Self.handler)
-        var core = try Self.core(ram, code: [0x0F, 0x6F, 0xC1])  // MMX
+        var core = try Self.core(ram, code: [0x0F, 0x0E])  // FEMMS, du 3DNow!
         core.segments[1] = 0x33
         try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
         try core.run(budget: 1)
         XCTAssertEqual(core.rip, Self.handler, "livrée au vecteur 6")
         XCTAssertEqual(core.programRefusals.count, 1)
-        XCTAssertTrue(core.programRefusals.first?.contains("0F 6F") == true, "et nommée")
+        XCTAssertTrue(core.programRefusals.first?.contains("0F 0E") == true, "et nommée")
     }
 
     /// Sans porte pour le vecteur 6, elle sort comme avant, et rien n'est
@@ -324,7 +325,7 @@ final class X86InterruptTests: XCTestCase {
     func testAnUnknownFormInAProgramWithoutAGateStillComesOut() throws {
         let ram = X86Memory(size: 1 << 20, base: 0)
         try Self.map(ram, Self.mapped)
-        var core = try Self.core(ram, code: [0x0F, 0x6F, 0xC1])
+        var core = try Self.core(ram, code: [0x0F, 0x0E])
         core.segments[1] = 0x33
         try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
         XCTAssertThrowsError(try core.run(budget: 1)) {

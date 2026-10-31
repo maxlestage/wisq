@@ -156,8 +156,10 @@ public enum X86CPUID {
     /// - SSE (25) et SSE2 (26) : les déplacements, la logique, l'arithmétique
     ///   entière et les scalaires flottants. Ce qui reste refusé (les paquets
     ///   de flottants, `CMPSD`) l'est par son nom.
-    /// - MMX (23), **au sens où FPU l'est** : aucune instruction MMX n'existe
-    ///   ici, et chacune est refusée par son nom si elle arrive.
+    /// - MMX (23) : annoncé d'abord parce que la glibc l'exige, sans qu'aucune
+    ///   instruction MMX n'existe ici ; elles existent maintenant
+    ///   (`X86MMX.swift`, tenu par `x86-mmx-oracle.tsv`). Les formes MMX de
+    ///   SSSE3 (`0F 38` sans `66`) restent refusées par leur nom.
     ///
     /// **Pourquoi les cinq derniers.** La glibc refuse de charger un programme
     /// sur un processeur qui n'a pas le socle x86-64 : CMOV, CX8, FPU, FXSR,
