@@ -1,3 +1,5 @@
+import Foundation
+
 /// **La mémoire derrière l'écran que le chargeur a déclaré.**
 ///
 /// `X86BootLoader.Framebuffer` dit au noyau *où* peindre ; ce fichier tient
@@ -48,32 +50,71 @@ public final class X86Framebuffer: @unchecked Sendable {
     /// **La fenêtre s'arrête exactement à la fin du cadre.** Un octet de trop
     /// et une écriture perdue deviendrait silencieuse, au lieu de lever la
     /// faute qui la ferait remarquer.
+    ///
+    /// **Une largeur plus grande que le cadre n'y tient pas**, et le dit : la
+    /// copie d'un bloc (`X86Core.bulkString`) demande jusqu'à une page entière,
+    /// et un cadre minuscule — un pixel, dans un test — rendait `byteCount -
+    /// width` négatif, une conversion qui arrête le programme.
     @inline(__always)
     func offset(_ address: UInt64, _ width: Int) -> Int? {
-        guard address >= base else { return nil }
+        guard address >= base, width <= byteCount else { return nil }
         let index = address &- base
         guard index <= UInt64(byteCount - width) else { return nil }
         return Int(index)
     }
 
+    /// **Un chargement, pas une boucle d'octets**, comme la RAM : le cadre est
+    /// petit-boutien comme l'invité et l'hôte. La boucle reste pour les
+    /// largeurs impaires, que seuls les accès à cheval sur une page demandent.
     @inline(__always)
     func read(_ at: Int, _ width: Int) -> UInt64 {
-        var value: UInt64 = 0
-        for byte in 0..<width { value |= UInt64(pixels[at + byte]) << (8 * UInt64(byte)) }
-        return value
+        let place = UnsafeRawPointer(pixels + at)
+        switch width {
+        case 4: return UInt64(UInt32(littleEndian: place.loadUnaligned(as: UInt32.self)))
+        case 8: return UInt64(littleEndian: place.loadUnaligned(as: UInt64.self))
+        case 2: return UInt64(UInt16(littleEndian: place.loadUnaligned(as: UInt16.self)))
+        case 1: return UInt64(pixels[at])
+        default:
+            var value: UInt64 = 0
+            for byte in 0..<width { value |= UInt64(pixels[at + byte]) << (8 * UInt64(byte)) }
+            return value
+        }
     }
 
     @inline(__always)
     func write(_ at: Int, _ width: Int, _ value: UInt64) {
-        for byte in 0..<width {
-            pixels[at + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF)
+        let place = UnsafeMutableRawPointer(pixels + at)
+        switch width {
+        case 4: place.storeBytes(of: UInt32(truncatingIfNeeded: value).littleEndian, as: UInt32.self)
+        case 8: place.storeBytes(of: value.littleEndian, as: UInt64.self)
+        case 2: place.storeBytes(of: UInt16(truncatingIfNeeded: value).littleEndian, as: UInt16.self)
+        case 1: pixels[at] = UInt8(truncatingIfNeeded: value)
+        default:
+            for byte in 0..<width {
+                pixels[at + byte] = UInt8((value >> (8 * UInt64(byte))) & 0xFF)
+            }
         }
         revision &+= 1
     }
 
+    /// **Les pixels eux-mêmes, pour une copie d'un bloc** : `X86Core.bulkString`
+    /// y copie une ligne entière d'un coup, et dit ensuite qu'il l'a fait
+    /// (`touch`), puisque `write` n'y est pas passé.
+    var bytes: UnsafeMutablePointer<UInt8> { pixels }
+
+    /// Une écriture faite directement dans `bytes` : la vue doit repeindre.
+    func touch() { revision &+= 1 }
+
     /// L'image telle qu'elle est, copiée. C'est ce qu'une vue affiche.
     public func snapshot() -> [UInt8] {
         Array(UnsafeBufferPointer(start: pixels, count: byteCount))
+    }
+
+    /// **La même image, en une seule copie.** La vue en fait un `CGImage`
+    /// trente fois par seconde : `Data(snapshot())` copiait les trois mégaoctets
+    /// d'un écran 1024 × 768 deux fois, sur le fil principal, à chaque image.
+    public func pixelData() -> Data {
+        Data(bytes: pixels, count: byteCount)
     }
 
     /// Les pixels en lecture, sans copie : pour l'instantané de la machine.
