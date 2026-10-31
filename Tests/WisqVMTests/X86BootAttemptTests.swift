@@ -282,10 +282,18 @@ final class X86BootAttemptTests: XCTestCase {
             let parts = asked.lowercased().split(separator: "x")
             let width = parts.count == 2 ? Int(parts[0]) ?? 1024 : 1024
             let height = parts.count == 2 ? Int(parts[1]) ?? 768 : 768
-            let frame = X86Framebuffer(base: X86Machine.displayBase, width: width, height: height)
+            let frame = X86Framebuffer(base: X86Machine.displayBase, width: width, height: height,
+                                       memory: X86BochsDisplay.memoryBytes)
             memory.screen = frame
+            // Et la carte graphique, comme dans `X86Machine.attachDisplay` :
+            // c'est elle que `bochs-drm` trouve sur le bus.
+            let card = X86BochsDisplay(screen: frame, registersBase: X86Machine.displayRegistersBase)
+            memory.vga = card
+            let bus = memory.bus ?? X86PCIHost(storage: nil)
+            bus.display = card
+            memory.bus = bus
             screen = X86BootLoader.Framebuffer(
-                base: frame.base, width: frame.width, height: frame.height)
+                base: frame.base, width: frame.bootMode.width, height: frame.bootMode.height)
         }
 
         // Ce qu'on dit au noyau. `WISQ_PC_CMDLINE` **ajoute** à la ligne par
