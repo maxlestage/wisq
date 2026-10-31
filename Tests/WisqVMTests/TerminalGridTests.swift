@@ -20,6 +20,16 @@ final class TerminalGridTests: XCTestCase {
         XCTAssertEqual(terminal.text, "Booting Linux...\nrv32ima at 160 MIPS\n~ #")
     }
 
+    /// **Les lignes une par une** (`lines`), ce que la console de
+    /// l'application met en page : défilement compris, et exactement ce que
+    /// `text` joint.
+    func testTheLinesAreWhatTheTextJoins() {
+        let terminal = grid(columns: 20, rows: 3, feed: "un\ndeux\n\ntrois\nquatre\n$ ")
+        XCTAssertEqual(terminal.lines, ["un", "deux", "", "trois", "quatre", "$"])
+        XCTAssertEqual(terminal.lines.joined(separator: "\n"), terminal.text)
+        XCTAssertEqual(grid().lines, [""], "une grille neuve : une ligne vide, celle du curseur")
+    }
+
     func testStripsColourSequencesFromTheProjection() {
         let terminal = grid(feed: "\u{1B}[1;32mOK\u{1B}[0m done")
         XCTAssertEqual(terminal.text, "OK done")

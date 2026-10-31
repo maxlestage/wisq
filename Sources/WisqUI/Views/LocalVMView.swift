@@ -1056,12 +1056,8 @@ struct LocalVMTerminalView: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        Text(model.consoleText.isEmpty ? "Démarrage…" : model.consoleText)
-                            .font(.system(size: ConsoleTextSize.nearest(textSize), design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .id("console-end")
-                            .textSelection(.enabled)
+                        ConsoleLinesView(lines: model.consoleLines,
+                                         size: ConsoleTextSize.nearest(textSize))
                     }
                     // Pincer pour grossir ou réduire, comme partout ailleurs sur
                     // le téléphone ; la taille retombe au cran le plus proche.
@@ -1075,8 +1071,8 @@ struct LocalVMTerminalView: View {
                     .scrollDismissesKeyboard(.interactively)
                     .background(Color.black)
                     .foregroundStyle(Color(red: 0.7, green: 0.95, blue: 0.7))
-                    .onChange(of: model.consoleText) {
-                        proxy.scrollTo("console-end", anchor: .bottom)
+                    .onChange(of: model.consoleLines) {
+                        proxy.scrollTo(ConsoleLinesView.end, anchor: .bottom)
                     }
                 }
             }
@@ -1252,6 +1248,14 @@ struct LocalVMTerminalView: View {
                     withAnimation { fullScreen = true }
                 }
             }
+            // **Copier toute la console** : chaque ligne se sélectionne à part
+            // depuis qu'elles sont mises en page une par une (voir
+            // `ConsoleLinesView`) ; le tout part d'ici.
+            ToolbarItem(placement: .primaryAction) {
+                Button("Copier la console", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = model.consoleText
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu("Taille du texte", systemImage: "textformat.size") {
                     Button("Plus grand", systemImage: "plus.magnifyingglass") {
@@ -1335,4 +1339,40 @@ struct LocalVMTerminalView: View {
         commandLine = ""
     }
 }
+
+/// **La console, une ligne par vue, dans une pile paresseuse.**
+///
+/// C'était un seul `Text` de toute la console — deux mille lignes de
+/// défilement plus l'écran — que SwiftUI remettait en page en entier à
+/// chaque sortie de l'invité. Pendant un démarrage bavard, le fil principal ne
+/// faisait plus que ça, et le clavier comme le défilement attendaient
+/// derrière. `LazyVStack` ne met en page que les lignes à l'écran.
+///
+/// Une ligne vide garde la hauteur d'une ligne : un `Text` vide n'en a pas, et
+/// les paragraphes du journal de démarrage se seraient recollés.
+struct ConsoleLinesView: View {
+    let lines: [String]
+    let size: Double
+
+    /// La dernière vue de la pile, où la console se cale quand elle avance.
+    static let end = "console-end"
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            if lines.isEmpty || lines == [""] {
+                Text("Démarrage…")
+            } else {
+                ForEach(lines.indices, id: \.self) { index in
+                    Text(lines[index].isEmpty ? " " : lines[index])
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Color.clear.frame(height: 1).id(Self.end)
+        }
+        .font(.system(size: size, design: .monospaced))
+        .textSelection(.enabled)
+        .padding(10)
+    }
+}
+
 #endif
