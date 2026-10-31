@@ -8,6 +8,70 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — L'écran se remplit d'un bloc
+
+**La demande.** « Accélère tout », puis « continue d'être plus rapide ».
+
+**Ce qui était lent.** `simpledrm` dessine dans une copie en RAM et la pousse
+vers le cadre ligne par ligne, par `memcpy_toio` : un `rep movsl` de quatre
+mille octets par ligne. `bulkString` copie déjà ces chaînes une page à la
+fois, mais seulement de RAM à RAM. Le cadre de l'écran vit hors de la RAM,
+si bien que chaque pixel repassait par l'élément un par un :
+- deux traductions tentées pour rien ;
+- la lecture ;
+- l'écriture par le repli de la mémoire, octet par octet, et la révision
+  avancée à chaque pixel.
+
+Un écran 1024 × 768 repeint, c'est 786 432 fois ce trajet.
+
+**Ce qui change.**
+- `X86Memory.block` rend les octets de l'hôte derrière un morceau, qu'il soit
+  dans la RAM ou dans le cadre. La copie y passe d'un coup, et la révision
+  n'avance qu'une fois par morceau.
+- Le cadre lit et écrit par chargements de 1, 2, 4 ou 8 octets au lieu d'une
+  boucle d'octets : c'est le chemin de `vesafb`, qui peint la console du
+  noyau pixel par pixel.
+- La vue fait son `CGImage` d'une seule copie (`pixelData`) au lieu de deux,
+  trente fois par seconde sur le fil principal.
+
+**Mesuré au banc**, en release, sur un écran 1024 × 768 entier, meilleur de
+cinq :
+
+| | RAM | écran, d'un bloc | écran, élément par élément |
+| --- | --- | --- | --- |
+| `rep movsl`, 768 lignes | 2,0 ms | **1,1 ms** | 28,8 ms |
+| `mov` de quatre octets, 786 432 fois | 45 ms | 60 ms | 72 ms |
+
+L'élément par élément est ici le témoin d'adresse armé, qui coupe le chemin
+par blocs. L'ancien code était un peu plus lent encore : il retentait les
+deux traductions de `bulkString` à chaque pixel avant d'y renoncer.
+
+**Tests.** `X86ScreenBlockCopyTests` (six) fait tourner chaque copie deux
+fois, par blocs et élément par élément, et compare registres, drapeaux, RAM,
+écran et faute. Les cas couverts :
+- RAM → écran ;
+- remplissage de l'écran ;
+- écran → RAM ;
+- écran sur lui-même, dans les deux sens ;
+- une copie qui sort du cadre ;
+- un cadre plus petit qu'une page.
+
+`X86FramebufferTests` gagne un test des largeurs. Sept sabotages, tous
+tombés :
+- le bloc refusé à l'écran ;
+- la révision oubliée ;
+- la garde de chevauchement retirée ;
+- une écriture de quatre octets fausse ;
+- une lecture de huit octets fausse ;
+- une écriture de deux octets fausse ;
+- la lecture impaire retirée.
+
+**Trouvé en route, pour le bureau.** Void Linux Xfce montait `lightdm` sans
+jamais lancer Xorg. Son noyau prend `vesafb`, sans `/dev/dri`, et `logind`
+ne fait d'un `fb0` le maître d'un siège que si le noyau a reçu `nomodeset`
+(règle `71-seat.rules`). Sans siège graphique, `lightdm` attend pour
+toujours. C'est la tranche suivante.
+
 ## 2026-10-31 — L'écran repeint trente fois par seconde
 
 **La demande.** « Je veux que ça soit vraiment hyper méga fluide et
