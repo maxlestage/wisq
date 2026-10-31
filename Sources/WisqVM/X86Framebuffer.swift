@@ -75,4 +75,16 @@ public final class X86Framebuffer: @unchecked Sendable {
     public func snapshot() -> [UInt8] {
         Array(UnsafeBufferPointer(start: pixels, count: byteCount))
     }
+
+    /// Les pixels en lecture, sans copie : pour l'instantané de la machine.
+    func withPixels<Result>(_ body: (UnsafeRawBufferPointer) throws -> Result) rethrows -> Result {
+        try body(UnsafeRawBufferPointer(start: pixels, count: byteCount))
+    }
+
+    /// Les pixels remplacés d'un coup, à la reprise. La révision avance : une
+    /// vue qui regardait l'écran d'avant repeint.
+    func replacePixels(_ body: (UnsafeMutableRawBufferPointer) throws -> Void) rethrows {
+        try body(UnsafeMutableRawBufferPointer(start: pixels, count: byteCount))
+        revision &+= 1
+    }
 }
