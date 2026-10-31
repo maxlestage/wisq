@@ -115,6 +115,11 @@ public final class X86Memory: @unchecked Sendable {
     /// même raison : ses adresses ne sont pas de la RAM.
     public var screen: X86Framebuffer?
 
+    /// Les registres de la carte graphique (sa BAR2), quand il y en a une.
+    /// Même logement, même raison. Voir `X86BochsDisplay`.
+    @exclusivity(unchecked)
+    public var vga: X86BochsDisplay?
+
     /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
     /// objet que le cœur et les ports ont tous les deux sous la main.
     @exclusivity(unchecked)
@@ -175,6 +180,9 @@ public final class X86Memory: @unchecked Sendable {
             if let frame = screen, let at = frame.offset(address, width) {
                 return frame.read(at, width)
             }
+            if let card = vga, let at = card.registerOffset(address, width) {
+                return card.readRegisters(at, width)
+            }
             throw X86Core.Fault.outsideMemory(address)
         }
         // **Un chargement, pas une boucle.** La mémoire de l'invité est
@@ -223,6 +231,10 @@ public final class X86Memory: @unchecked Sendable {
             }
             if let frame = screen, let at = frame.offset(address, width) {
                 frame.write(at, width, value)
+                return
+            }
+            if let card = vga, let at = card.registerOffset(address, width) {
+                card.writeRegisters(at, width, value)
                 return
             }
             throw X86Core.Fault.outsideMemory(address)

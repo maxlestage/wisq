@@ -71,6 +71,10 @@ enum Snapshot {
     /// la carte réseau. Un instantané d'avant passe de l'horloge au réseau ou
     /// au disque, qui ne commencent pas par ces huit octets.
     static let screenSection: UInt64 = 0x6E63_735F_5153_4957  // « WISQ_scn »
+    /// La mémoire vidéo et la carte graphique : voir `X86BochsDisplay`. La
+    /// section d'écran d'avant (`screenSection`) ne portait que le cadre du
+    /// démarrage ; elle se lit encore.
+    static let videoSection: UInt64 = 0x6469_765F_5153_4957  // « WISQ_vid »
 
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
