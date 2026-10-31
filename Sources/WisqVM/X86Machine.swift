@@ -472,9 +472,23 @@ public final class X86Machine: @unchecked Sendable {
     /// que le dernier `console=` — la console série — reste `/dev/console`,
     /// celle que la console de l'application lit et où l'invité ouvre sa
     /// session. L'écran montre le démarrage et les terminaux virtuels.
+    ///
+    /// **Et `nomodeset`, pour qu'un bureau s'y ouvre.** Void Linux Xfce
+    /// montait `lightdm` sans jamais lancer Xorg : son noyau prend `vesafb`, il
+    /// n'y a pas de `/dev/dri`, et `logind` ne fait d'un `fb0` le maître d'un
+    /// siège que si le noyau a reçu `nomodeset` — c'est la règle
+    /// `71-seat.rules` de systemd, qu'elogind reprend. Sans siège graphique,
+    /// `lightdm`, `gdm` ou `sddm` attendent pour toujours. Ici l'option ne
+    /// retire rien : `nomodeset` écarte les pilotes de cartes graphiques, et
+    /// cette machine n'en a aucune ; `simpledrm`, un pilote du micrologiciel,
+    /// démarre avec.
     static func commandLine(_ line: String, withScreen: Bool) -> String {
-        guard withScreen, !line.split(separator: " ").contains("console=tty0") else { return line }
-        return "console=tty0 " + line
+        guard withScreen else { return line }
+        let words = line.split(separator: " ")
+        var result = line
+        if !words.contains("nomodeset") { result = "nomodeset " + result }
+        if !words.contains("console=tty0") { result = "console=tty0 " + result }
+        return result
     }
 
     /// Une touche du clavier PS/2 de l'invité, enfoncée ou relâchée.
