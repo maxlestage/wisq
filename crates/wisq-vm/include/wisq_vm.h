@@ -154,6 +154,10 @@ void wisq_vm_stop(WisqVM *vm);
 /* Instructions the guest has actually retired — retired, not offered. */
 uint64_t wisq_vm_retired_instructions(const WisqVM *vm);
 
+/* Le temps passé hors de la machine, en microsecondes, ajouté à mtime.
+ * Machine arrêtée seulement. */
+void wisq_vm_elapse(WisqVM *vm, uint64_t micros);
+
 /*
  * Saves the whole machine: RAM, the hart, and the keystrokes still queued.
  *

@@ -135,6 +135,45 @@ public protocol GuestMachine: AnyObject, Sendable {
     func snapshot() -> Data
     /// Reprend une machine sauvée.
     func restore(_ data: Data) throws
+    /// **Le temps passé hors de la machine** : une session reprise le
+    /// lendemain doit savoir quel jour on est. À appeler machine arrêtée,
+    /// entre la reprise et le premier tour ; le temps dû se paie ensuite par
+    /// pas, pendant que l'invité dort. Voir `GuestClock`.
+    func elapse(seconds: TimeInterval)
+}
+
+/// Ce que les machines partagent pour rattraper le temps passé dehors.
+public enum GuestClock {
+    /// Au-delà, la session est de toute façon d'une autre époque ; borner
+    /// garde le calcul loin du débordement.
+    public static let longestElapse: TimeInterval = 10 * 365 * 86_400
+
+    /// **Le plus grand pas d'un rattrapage**, en secondes.
+    ///
+    /// Un noyau convertit l'écart lu à son compteur en nanosecondes par une
+    /// multiplication sur soixante-quatre bits, sûre jusqu'à `max_cycles`. Le
+    /// journal de Debian 13 le donne pour le TSC de cette machine :
+    /// `0x13d021d59e`, soit environ 990 s à 86 MHz. Linux 6.12 traite les
+    /// écarts plus grands ; les noyaux d'avant les convertissent de travers.
+    /// Le temps dû se paie donc par pas de cinq minutes, chacun quand
+    /// l'invité s'est rendormi, c'est-à-dire après qu'il a compté le
+    /// précédent.
+    ///
+    /// **Ce que le rattrapage coûte à l'invité**, mesuré sur le noyau RISC-V
+    /// de référence : environ cent mille instructions par seconde rattrapée,
+    /// soit un millier par battement à 100 Hz. Ce noyau avance ses battements
+    /// un à un, par pas ou d'un seul coup. Trois jours valent donc quelque
+    /// vingt-sept milliards d'instructions, payées pendant que l'invité
+    /// tourne.
+    public static let stepSeconds: TimeInterval = 300
+
+    /// L'écart à rattraper, ou `nil` s'il n'y a rien à faire : le temps de
+    /// l'invité ne recule pas, et un écart qui n'est pas un nombre ne se
+    /// rattrape pas.
+    public static func catchUp(_ seconds: TimeInterval) -> TimeInterval? {
+        guard seconds > 0, seconds.isFinite else { return nil }
+        return min(seconds, longestElapse)
+    }
 }
 
 /// Ce qu'une machine refuse quand on lui demande ce qu'elle ne sait pas faire.
@@ -145,6 +184,14 @@ public protocol GuestMachine: AnyObject, Sendable {
 /// forme « The operation couldn't be completed », qui est le contraire de ce
 /// que ces cas existent pour dire.
 extension GuestMachine {
+    /// Le temps écoulé depuis `savedAt`, l'heure de l'instantané repris
+    /// (`SuspendedMachine.savedAt`). Sans heure, rien : mieux vaut une heure
+    /// en retard qu'un écart inventé.
+    public func elapse(since savedAt: Date?, now: Date = Date()) {
+        guard let savedAt else { return }
+        elapse(seconds: now.timeIntervalSince(savedAt))
+    }
+
     /// Une machine sans second périphérique bloc refuse, et nomme pourquoi :
     /// accepter en silence ferait chercher à l'invité un `vdb` qui n'arrive
     /// jamais.
