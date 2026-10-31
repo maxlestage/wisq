@@ -355,6 +355,11 @@ public struct X86Core: @unchecked Sendable {
         case unsupported(String)
         /// Une division par zéro, ou dont le quotient ne tient pas.
         case divideError
+        /// Une instruction **voulue** invalide : `UD2`. Ce n'est pas un trou
+        /// de ce cœur — le noyau l'écrit exprès, à chaque `WARN()` et chaque
+        /// `BUG()`, et attend son #UD pour imprimer l'avertissement et
+        /// reprendre après.
+        case invalidOpcode
         /// Une adresse virtuelle qu'aucune table de pages ne traduit.
         case pageFault(UInt64)
         /// Une adresse **physique** en dehors de la mémoire de l'invité. Ce
@@ -869,7 +874,7 @@ public struct X86Core: @unchecked Sendable {
     @inline(__always)
     static func claimedBySpecialists(_ opcode: UInt8) -> Bool {
         let words: (UInt64, UInt64, UInt64, UInt64) = (
-            0x0007_FF0F_00FF_0000, 0xF07F_FFFF_FFF3_0000,
+            0x000F_FF0F_00FF_0000, 0xF07F_FFFF_FFF3_0000,
             0x0000_0004_0000_0000, 0x7F7F_FFFF_FFFF_0074)
         let word: UInt64
         switch opcode >> 6 {

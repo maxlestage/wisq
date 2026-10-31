@@ -271,6 +271,34 @@ final class X86InterruptTests: XCTestCase {
         }
     }
 
+    // MARK: - UD2
+
+    /// **UD2 part au vecteur 6, sans code d'erreur, RIP sur l'instruction** :
+    /// c'est le cadre que le gestionnaire de Linux attend pour reconnaître
+    /// un `WARN()`, l'imprimer et reprendre deux octets plus loin.
+    func testUD2IsDeliveredToVectorSix() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.map(ram, Self.mapped)
+        try Self.installGate(ram, vector: 6, target: Self.handler)
+        try ram.load([0xF4], at: Self.handler)
+        var core = try Self.core(ram, code: [0x0F, 0x0B])
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, Self.handler, "livré")
+        XCTAssertEqual(core.registers[4], Self.stackTop - 40, "cinq cases : pas de code d'erreur")
+        XCTAssertEqual(try ram.read(core.registers[4], 8), 0x1000, "la reprise pointe sur le ud2 lui-même")
+    }
+
+    /// Sans porte pour le vecteur 6, UD2 arrête la machine, et dit pourquoi.
+    func testUD2WithoutAGateComesOutNamed() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.map(ram, Self.mapped)
+        var core = try Self.core(ram, code: [0x0F, 0x0B])
+        XCTAssertThrowsError(try core.run(budget: 1)) {
+            XCTAssertEqual($0 as? X86Core.Fault, .invalidOpcode)
+            XCTAssertTrue(($0 as? LocalizedError)?.errorDescription?.contains("ud2") == true)
+        }
+    }
+
     // MARK: - Le retour
 
     /// Une division par zéro part au vecteur zéro, et **sans** code d'erreur :
