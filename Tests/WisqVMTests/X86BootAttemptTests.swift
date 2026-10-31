@@ -330,6 +330,12 @@ final class X86BootAttemptTests: XCTestCase {
         // Le témoin d'adresse suit un programme par défaut ; pour suivre le
         // chargeur de modules, il faut lui dire de regarder aussi le noyau.
         core.watchesKernel = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_KERNEL"] != nil
+        // `WISQ_PC_TICK` : le nombre d'instructions par cran d'horloge, pour
+        // mesurer ce qu'un invité ferait s'il se croyait plus rapide — sans
+        // toucher à la valeur des machines de l'application.
+        if let ratio = ProcessInfo.processInfo.environment["WISQ_PC_TICK"].flatMap({ UInt64($0) }), ratio > 0 {
+            core.instructionsPerTick = ratio
+        }
         if let asked = ProcessInfo.processInfo.environment["WISQ_PC_WATCH_ADDRESS"] {
             let halves = asked.split(separator: "+", maxSplits: 1)
             core.watchedAddress = halves.first.flatMap { UInt64($0, radix: 16) }
