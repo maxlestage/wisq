@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Fedora : NetworkManager prend le bail, et chrony l'heure de la passerelle
+
+**Ce qui n'avait pas été essayé.** Le serveur SNTP de la passerelle (#655)
+n'avait servi que `systemd-timesyncd`, sur Debian 13 et Arch. Fedora prend
+une autre route : NetworkManager pour le bail, et `chrony`, plus exigeant
+sur ce qu'il accepte d'un serveur, pour l'heure.
+
+**Mesuré**, image de cloud Fedora déjà au banc (`fedora.qcow2`, 584 Mo),
+réseau en mode utilisateur, sans rien taper pour le réseau :
+
+```
+2: enp0s5    inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic noprefixroute enp0s5
+… ntp_servers = 10.0.2.2 | routers = 10.0.2.2 | domain_name_servers = 10.0.2.3 …
+Sat Oct 31 03:53:16 AM UTC 2026
+active
+^? 10.0.2.2                      1   6    17     6    -77ms[-3588ms] +/-  277us
+Reference ID    : 0A000202 (10.0.2.2)
+Stratum         : 2
+System time     : 0.000000000 seconds fast of NTP time
+Leap status     : Normal
+```
+
+- NetworkManager prend le bail tout seul et lit l'option 42 : on voit
+  `ntp_servers = 10.0.2.2` dans `DHCP4.OPTION`.
+- Le crochet DHCP de `chrony` ajoute la passerelle à ses sources. `chrony`
+  s'y accroche (`Reference ID … (10.0.2.2)`), se place une strate sous
+  elle, et corrige un écart de 3,6 s.
+- Les serveurs du pool de Fedora restent à zéro : NTP vers le dehors est
+  bloqué dans ce conteneur. C'est donc bien la passerelle qui a servi.
+
+**Rien de changé dans le code.** Course complète : 837 s.
+
 ## 2026-10-31 — Arch Linux sur le réseau de wisq, sans rien régler
 
 **Ce qui n'avait pas été essayé.** Arch Linux démarrait depuis le 20 octobre,
