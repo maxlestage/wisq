@@ -57,6 +57,7 @@ extension X86Core {
     static func vector(of fault: Fault) -> UInt8? {
         switch fault {
         case .divideError: return 0
+        case .invalidOpcode: return 6
         case .pageFault: return 14
         case .unsupported, .outsideMemory: return nil
         }

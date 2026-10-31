@@ -124,6 +124,7 @@ extension X86Core {
         case .pageFault(let address):
             what = String(format: "#PF à %llx (code %llx)", address, pageFaultErrorCode)
         case .divideError: what = "#DE"
+        case .invalidOpcode: what = "#UD"
         case .outsideMemory(let address): what = String(format: "hors mémoire %llx", address)
         case .unsupported(let name): what = name
         }
