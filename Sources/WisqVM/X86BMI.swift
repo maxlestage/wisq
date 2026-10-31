@@ -31,7 +31,36 @@ extension X86Core {
         case (.threeByte38, 0xF7, 0): try bitFieldExtract(instruction)
         case (.threeByte38, 0xF7, let prefix): try shiftNoFlags(instruction, kind: prefix)
         case (.threeByte3A, 0xF0, 3): try rotateRightNoFlags(instruction)
+        case (.twoByte, 0xAE, 0): try vexControlStatus(instruction)
         default: try vex128Instruction(instruction, opcode)
+        }
+    }
+
+    /// **`VLDMXCSR` et `VSTMXCSR`** (`VEX.LZ.0F AE /2` et `/3`) : le registre
+    /// de contrôle et d'état SSE, chargé depuis la mémoire ou écrit en
+    /// mémoire, exactement comme `LDMXCSR` et `STMXCSR` sans VEX.
+    ///
+    /// La `libm` de la glibc les emploie dans ses variantes FMA, choisies
+    /// d'après `CPUID` : `sincos` sauve et rétablit l'arrondi par
+    /// `vstmxcsr`. `libinput` l'appelle pour l'accélération du pointeur, et
+    /// Xorg mourait au démarrage d'un « Illegal instruction », relancé en
+    /// boucle par `lightdm` — le bureau de Void Linux Xfce ne s'ouvrait pas.
+    ///
+    /// Seule la forme mémoire existe ; `vvvv` doit valoir 1111 (aucun
+    /// registre), sinon l'instruction est indéfinie.
+    private mutating func vexControlStatus(_ instruction: X86Instruction) throws {
+        let modrm = instruction.modrm ?? 0
+        let extension_ = modrm >> 3 & 0x07
+        guard modrm >> 6 != 0b11, instruction.vexRegister == 0,
+              extension_ == 2 || extension_ == 3 else {
+            throw Self.vectorRefusal()
+        }
+        let fields = try decodeFields(instruction)
+        guard memory != nil else { throw Fault.unsupported("VEX 0F AE sans mémoire") }
+        if extension_ == 2 {
+            mxcsr = UInt32(truncatingIfNeeded: try readRM(fields, 4))
+        } else {
+            try writeRM(fields, 4, UInt64(mxcsr))
         }
     }
 
