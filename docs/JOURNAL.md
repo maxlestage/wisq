@@ -8,6 +8,77 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-30 — La reprise rattrape l'heure par pas, et sur la machine RISC-V aussi
+
+**Ce qui manquait, et ce qui était fragile.**
+- #654 ne rattrapait l'heure que sur le PC. Une session RISC-V reprise le
+  lendemain se croyait la veille.
+- Sur le PC, tout le temps passait **d'un seul coup** dans le compteur. Le
+  journal de Debian 13 donne la limite : `clocksource: tsc: ... max_cycles:
+  0x13d021d59e`, environ 990 s à 86 MHz. Linux 6.12 traite un écart plus
+  grand ; un noyau d'avant le convertit de travers. Debian 12 (6.1), Ubuntu
+  24.04 (6.8) ou une Alpine en 6.6, repris une heure plus tard, auraient lu
+  une heure fausse.
+
+**Ce qui change.**
+- `elapse(seconds:)` devient une exigence de `GuestMachine`, et
+  `elapse(since:)` une extension commune. L'application l'appelle sur toute
+  machine reprise.
+- **Le temps dû se paie par pas** de cinq minutes (`GuestClock.stepSeconds`),
+  chacun quand l'invité s'est rendormi. Sur le PC, c'est l'arrêt sur `HLT`
+  dans `X86Machine.run`. Sur RISC-V, c'est l'attente sur `wfi` dans les deux
+  boucles, Swift (`LinuxMachine.run`) et Rust (`Machine::run`).
+- Le temps payé ne compte ni dans le budget ni dans l'avance sur le mur. La
+  cadence murale aurait sinon fait dormir la personne cinq minutes par pas.
+- Côté Rust : `Machine::elapse`, `wisq_vm_elapse`, et
+  `RustLinuxMachine.elapse(microseconds:)`.
+
+**Vérifié sur un vrai invité RISC-V**, le noyau de référence et son busybox,
+sur les deux cœurs (`DifferentialElapseTests`) :
+- `date` avant l'instantané, puis après une reprise une demi-heure plus tard
+  (six pas) : l'écart dépasse la demi-heure ;
+- l'écart entre `date` et `mtime` est le même avant et après, à deux secondes
+  près : l'invité a compté chaque pas ;
+- les deux cœurs finissent sur le même écart et les mêmes octets
+  d'instantané.
+
+**Une erreur de lecture, corrigée en route.** Trois jours d'un coup sur ce
+noyau, et `date` ne revenait pas dans le budget. J'y ai d'abord vu un
+débordement. La mesure a montré autre chose : ce noyau paie environ **cent
+mille instructions par seconde rattrapée**, un millier par battement à
+100 Hz. Il avance ses battements un à un, par pas comme d'un coup :
+
+```
+budget après la reprise    écart rattrapé
+  2 milliards                19 057 s
+  8 milliards                75 832 s
+```
+
+Trois jours valent donc vingt-sept milliards d'instructions, payées pendant
+que l'invité tourne. Sur un téléphone, c'est quelques minutes pendant
+lesquelles l'invité est plus lent. Ce n'est pas le pas qui coûte, c'est le
+noyau ; le test réel porte donc sur une demi-heure. Ce qui justifie le pas,
+c'est le `max_cycles` du journal de Debian, pas cette mesure.
+
+**Tests.**
+- `X86ElapseTests` (six, dont un invité endormi qui paie une journée en
+  moins de trois cents tranches, sans dormir la journée).
+- `LinuxMachineElapseTests` (trois), `DifferentialElapseTests` (un invité
+  réel), et un test Rust (`elapsing_is_paid_in_steps`).
+- Treize sabotages, tous attrapés : retenue, cadence, recul, sens de l'écart,
+  pas illimité (trois cœurs), paiement au sommeil ôté (trois cœurs), temps
+  payé compté sur le mur.
+- `swift test`, `check-whitespace.sh` et les tests du site passent. Le compte
+  publié passe à 3234 (avec ceux de #656). L'ABI C passe de trente-six à trente-sept fonctions :
+  la page d'architecture le dit, et sa provenance aussi.
+
+**Un piège de banc, payé ici.** SwiftPM ne suit pas `libwisq_vm.a`. Après un
+changement du seul code Rust, `swift build` ne relie pas le binaire de tests,
+qui garde l'ancienne bibliothèque. Un sabotage du côté Rust a ainsi d'abord
+« survécu ». Il faut effacer `.build/debug/WisqPackageTests.xctest` avant de
+reconstruire ; relié de neuf, le même sabotage fait tomber le test trois
+fois.
+
 ## 2026-10-30 — Réseau coupé, la passerelle refuse tout de suite
 
 **Ce qui n'allait pas.** Sur une machine au réseau coupé (#653), le TCP vers

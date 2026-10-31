@@ -158,6 +158,16 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "ABI: la machine restaurée a un autre compteur\n");
                 ok = 0;
             }
+            /* Le temps passé hors de la machine, comme à la reprise d'une
+             * session : une heure de dette, qui ne retire rien et ne se paie
+             * qu'au prochain sommeil du hart. Un prototype qui prendrait les
+             * microsecondes sur trente-deux bits, ou la machine par valeur,
+             * casserait ici. */
+            wisq_vm_elapse(restored, 3600ull * 1000000ull);
+            if (wisq_vm_retired_instructions(restored) != retired) {
+                fprintf(stderr, "ABI: wisq_vm_elapse a fait tourner la machine\n");
+                ok = 0;
+            }
             /* And a buffer that is not a snapshot must be refused by name
              * rather than read as one. */
             const uint8_t rubbish[8] = {1, 2, 3, 4, 5, 6, 7, 8};

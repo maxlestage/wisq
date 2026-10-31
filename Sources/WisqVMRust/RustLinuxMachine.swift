@@ -225,6 +225,12 @@ public final class RustLinuxMachine: @unchecked Sendable {
         wisq_vm_stop(vm)
     }
 
+    /// Le temps passé hors de la machine, en microsecondes de `mtime` —
+    /// voir `Machine::elapse` côté Rust. Machine arrêtée seulement.
+    public func elapse(microseconds: UInt64) {
+        wisq_vm_elapse(vm, microseconds)
+    }
+
     /// The whole machine as bytes, in the format the Swift core also writes.
     ///
     /// The buffer comes from Rust and goes straight back to it; copying it
