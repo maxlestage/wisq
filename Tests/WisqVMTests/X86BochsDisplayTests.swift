@@ -155,6 +155,10 @@ final class X86BochsDisplayTests: XCTestCase {
         // L'image montrée vient bien de là.
         try memory.write(X86Machine.displayBase + UInt64(480 * 640 * 4), 4, 0x0012_3456)
         XCTAssertEqual(Array(screen.snapshot()[0..<4]), [0x56, 0x34, 0x12, 0])
+        // Rallumée, la carte repart de la première page, comme QEMU.
+        try Self.setDispi(memory, 4, 0)
+        try Self.setDispi(memory, 4, 0x41)
+        XCTAssertEqual(screen.mode.start, 0)
     }
 
     /// **Une ligne virtuelle plus longue que l'image** : la vue en lit les
