@@ -8,6 +8,102 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Ce que le téléphone a montré : un chien de garde, et trois instructions qui arrêtaient la machine
+
+Deux captures de Maxime, sur le build TestFlight 114.
+
+### « BUG: soft lockup - CPU#0 stuck for 280s! [swapper/0:0] »
+
+**Ce que montrait l'écran.** Une session reprise, et une ligne par cinq
+minutes de temps rattrapé : `[ 785.26] watchdog: BUG: soft lockup - CPU#0
+stuck for 280s!`, puis `1385`, `1685`, `2285`…
+
+**La cause : les pas de cinq minutes de #658.** Le chien de garde de Linux
+crie dès que son horloge saute de plus de vingt secondes sans que son fil
+ait tourné. Le détecteur de RCU fait de même au-delà de vingt et une. Un
+noyau qui arrête son battement au repos (NO_HZ, celui de Debian) relance
+ce chien de garde en sortant du repos, et ne voit rien. Un noyau à battement
+périodique le voit à chaque pas.
+
+**Reproduit au banc.** Debian 13 avec `nohz=off`, une reprise une heure plus
+tard. Le banc paie maintenant `WISQ_PC_ELAPSE` comme l'application, un pas
+à chaque sommeil, de `WISQ_PC_ELAPSE_STEP` secondes :
+
+```
+pas de 300 s : [  508.020507] watchdog: BUG: soft lockup - CPU#0 stuck for 281s! [swapper/0:0]
+               … 12 fois dans dmesg pour une heure
+pas de 10 s  : 0
+```
+
+Sans `nohz=off`, Debian ne crie ni avec l'un ni avec l'autre, et c'est ce
+qui l'avait caché.
+
+**Ce qui change.** `GuestClock.stepSeconds` passe à dix secondes, sous les
+deux seuils, et `ELAPSE_STEP_MICROS` côté Rust de même. Trois jours font
+25 920 pas au lieu de 864. Chacun coûte un sommeil de l'invité : quelques
+milliers d'instructions sur un noyau NO_HZ.
+
+### « l'opcode 0F 33 », au redémarrage d'un invité
+
+**RDPMC.** Le processeur annoncé est un AMD de famille 15 : Linux y prend
+les quatre compteurs `PERF_CTR` (`0xC0010004` à `7`) sans rien demander à
+CPUID, et le chien de garde NMI en tient un. `perf` les relit par RDPMC,
+ici au redémarrage. RDPMC rend maintenant ce que WRMSR y a écrit, sur
+quarante-huit bits, et zéro hors des quatre. Le compteur ne compte pas, comme
+avant par RDMSR.
+
+### Et ce qu'une sonde a trouvé à côté
+
+Pour ne pas attendre la prochaine capture, j'ai fait passer les 256 octets
+de la table `0F` au cœur, en anneau zéro. Deux trous comptent pour « n'importe
+quel Linux » :
+- **UD2 arrêtait la machine** (« l'invité s'est arrêté lui-même »). Or le
+  noyau en met un à chaque `WARN()` : son #UD imprime l'avertissement et
+  reprend deux octets plus loin. Un simple avertissement de n'importe quelle
+  distribution arrêtait donc tout. UD2 part maintenant au vecteur 6, comme
+  sur un vrai processeur, et sans IDT il arrête la machine comme avant, avec
+  son nom (`Fault.invalidOpcode`). Une instruction que ce cœur ne connaît
+  pas, elle, n'est toujours **pas** livrée comme #UD : ce serait faire
+  croire au noyau que son propre code est faux.
+- **LSL et LAR** (`0F 03`, `0F 02`) manquaient. Le vDSO s'en sert pour
+  `getcpu()` quand RDPID manque, et RDPID n'est pas annoncé :
+  `sched_getcpu()` arrêtait la machine. LSL lit la limite de l'entrée 15 de
+  la GDT, où Linux range le numéro du processeur. Les règles du manuel sont
+  réduites au mode long.
+
+Le reste de la sonde est surtout MMX (`0F 60`–`7F` et `0F D0`–`FF` sans
+`66`) : rare dans un système d'aujourd'hui, pour plus tard.
+
+### Le banc s'arrête quand la conversation est finie
+
+openSUSE répondait en sept minutes, et la course en durait soixante-quatorze :
+le banc épuisait son budget derrière un invité jamais tout à fait au repos.
+Il s'arrête maintenant quand tout est tapé et que l'invite est revenue deux
+tranches de suite. `WISQ_PC_RUN_ON` garde l'ancienne conduite. Vérifié sur
+Debian avec un budget de deux cents milliards : arrêt à 16,2 milliards, les
+deux réponses là.
+
+### Vérifié
+
+Les sabotages sont tous attrapés :
+- RDPMC, quatre : les quarante-huit bits, l'index, le MSR, et le masque des
+  octets réclamés, que `X86TwoByteDispatchTests` tient ;
+- UD2, trois ;
+- LSL et LAR, six. Celui du sélecteur nul a d'abord survécu : l'entrée zéro
+  de la GDT du test était vide et refusait d'elle-même. Elle est remplie
+  maintenant.
+
+L'invité RISC-V réel des deux cœurs passe avec cent quatre-vingts pas de dix
+secondes, aux mêmes octets. `swift test` passe : 2677 tests, 52 sautés,
+aucun échec. Le compte publié passe à 3241, et l'en-tête de
+`X86ModelSpecific` compte soixante-neuf endroits qui lisent un MSR au lieu de
+soixante-six : RDPMC et ses deux tests.
+
+**Ce qui reste.** Une reprise de trois jours se paie en 25 920 sommeils.
+Sur un noyau qui avance ses battements un à un (le RISC-V de référence),
+c'est toujours une centaine de milliers d'instructions par seconde
+rattrapée.
+
 ## 2026-10-31 — openSUSE Tumbleweed sur le réseau de wisq
 
 **Ce qui n'avait pas été essayé.** openSUSE Tumbleweed démarre depuis le 20
