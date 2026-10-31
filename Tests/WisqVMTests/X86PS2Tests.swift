@@ -173,12 +173,17 @@ final class X86KeystrokesTests: XCTestCase {
     }
 
     /// Avec un écran, le noyau y écrit aussi, et la console série reste la
-    /// dernière nommée — `/dev/console`.
+    /// dernière nommée — `/dev/console`. Et `nomodeset`, pour que `logind`
+    /// donne un siège graphique au cadre (voir `X86Machine.commandLine`).
     func testAScreenAddsTheVirtualConsoleFirst() {
         let line = X86Machine.commandLine("console=ttyS0 quiet", withScreen: true)
-        XCTAssertEqual(line, "console=tty0 console=ttyS0 quiet")
+        XCTAssertEqual(line, "console=tty0 nomodeset console=ttyS0 quiet")
         XCTAssertEqual(X86Machine.commandLine("console=ttyS0", withScreen: false), "console=ttyS0")
+        XCTAssertEqual(X86Machine.commandLine("console=tty0 nomodeset console=ttyS0", withScreen: true),
+                       "console=tty0 nomodeset console=ttyS0", "pas deux fois")
         XCTAssertEqual(X86Machine.commandLine("console=tty0 console=ttyS0", withScreen: true),
-                       "console=tty0 console=ttyS0", "pas deux fois")
+                       "nomodeset console=tty0 console=ttyS0", "l'un sans l'autre")
+        XCTAssertEqual(X86Machine.commandLine("quiet nomodeset console=ttyS0", withScreen: true),
+                       "console=tty0 quiet nomodeset console=ttyS0")
     }
 }
