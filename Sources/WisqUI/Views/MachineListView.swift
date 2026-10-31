@@ -4,6 +4,10 @@ import WisqCore
 import WisqRemote
 
 /// The library. Big tap targets, connect in one tap, everything else behind a swipe.
+///
+/// **Les connexions à distance**, ouvertes depuis le menu + de l'écran
+/// d'accueil : celui-ci montre les machines du téléphone (voir
+/// `LocalVMListView`).
 public struct MachineListView: View {
     let library: MachineLibraryModel
     let onConnect: (Machine) -> Void
@@ -11,7 +15,6 @@ public struct MachineListView: View {
     let onNew: () -> Void
     let onImportFromAgent: () -> Void
     let onOpenConnectionFile: () -> Void
-    let onLocalVMs: () -> Void
     /// Ouvre la mesure qui décide du bureau local. Elle n'a pas sa place dans
     /// un réglage : c'est une question ouverte, pas une préférence.
     let onBench: () -> Void
@@ -93,8 +96,8 @@ public struct MachineListView: View {
             Text(MachineLibraryModel.discardExplanation(count: library.unreadable))
         }
         .listStyle(.insetGrouped)
-        .searchable(text: $search, prompt: "Rechercher une machine")
-        .navigationTitle("Machines")
+        .searchable(text: $search, prompt: "Rechercher une connexion")
+        .navigationTitle("Connexions à distance")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -106,9 +109,6 @@ public struct MachineListView: View {
                     }
                     Button(action: onOpenConnectionFile) {
                         Label("Ouvrir un fichier .vv ou .rdp", systemImage: "doc.badge.plus")
-                    }
-                    Button(action: onLocalVMs) {
-                        Label("Linux local (sur ce téléphone)", systemImage: "terminal")
                     }
                     Button(action: onBench) {
                         Label("Le bureau est-il possible ?",
@@ -156,9 +156,9 @@ public struct MachineListView: View {
         .overlay {
             if library.machines.isEmpty {
                 ContentUnavailableView {
-                    Label("Aucune machine", systemImage: "server.rack")
+                    Label("Aucune connexion", systemImage: "server.rack")
                 } description: {
-                    Text("Ajoutez un serveur VNC — une VM QEMU, un Raspberry Pi, un poste de travail — pour l'atteindre depuis votre iPhone. Sur le téléphone même, wisq ne lance ni Windows ni macOS, par choix.")
+                    Text("Ajoutez un serveur VNC, SPICE ou RDP — une VM QEMU, un Raspberry Pi, un poste de travail — pour l'atteindre depuis votre iPhone. Sur le téléphone même, wisq ne lance ni Windows ni macOS, par choix.")
                 } actions: {
                     Button("Ajouter une machine", action: onNew)
                         .buttonStyle(.borderedProminent)
