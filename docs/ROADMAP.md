@@ -675,7 +675,8 @@ QEMU, avec ses adresses (`10.0.2.15`, passerelle `10.0.2.2`, DNS `10.0.2.3`).
   « Wired connection 1 » prend le bail toute seule (`10.0.2.15`, route par
   `10.0.2.2`), et la date est juste.
 - **L'heure : faite.** La passerelle sert SNTP sur `10.0.2.2:123` avec
-  l'heure du téléphone, et le bail l'annonce (option 42). Une session reprise
+  l'heure du téléphone, et le bail l'annonce (option 42). `timesyncd`
+  (Debian 13, Arch) et `chrony` (Fedora, par NetworkManager) la prennent. Une session reprise
   rattrape le temps passé dehors, par pas de cinq minutes, sur le PC comme
   sur la machine RISC-V (`GuestMachine.elapse`).
 - **IPv6.** Rien n'est servi : ni annonce de routeur, ni DHCPv6.
