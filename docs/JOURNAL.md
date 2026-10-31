@@ -8,6 +8,39 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — `vmovss` et `vmovsd` entre registres, forme « rangement »
+
+**Ce que le banc a montré**, une fois les octets dans les refus (#677) : la
+session Xfce de Void se voyait refuser seize fois deux instructions,
+`C5 23 11 DA` et `C5 1B 11 E1`. Ce sont `vmovsd` entre deux registres, sous
+l'opcode `0F 11` (la forme « rangement », qui nomme la destination dans
+`r/m`). La table VEX.128 l'écartait exprès : SSE n'a pas d'équivalent,
+puisque `movsd` entre registres y garde le haut de sa destination.
+
+**Ce qui change.** `scalarMoveBetweenRegisters` fait ce que fait la forme
+`0F 10`, `reg` et `r/m` échangés :
+- le bas de la destination vient de `reg` (huit octets sous F2, quatre sous
+  F3) ;
+- le reste des cent vingt-huit bits vient de `vvvv` ;
+- le haut du registre YMM tombe à zéro.
+
+Relevé sur le processeur de la machine de développement avant d'écrire une
+ligne : `vmovsd %xmm12, %xmm11, %xmm2` (`C5 23 11 E2`) met dans xmm2 le bas
+de xmm12 et le haut de xmm11.
+
+**Le banc dit aussi où la mémoire vidéo est peinte.** L'écran de fin de
+course reste noir alors que la session Xfce tourne. Une image noire ne dit
+pas si l'invité n'a rien peint ou s'il a peint ailleurs. Le banc imprime
+donc en fin de course :
+- le mode de l'écran ;
+- les registres de la carte ;
+- les plages de la mémoire vidéo qui ne sont pas vides.
+
+**Tests.** `X86VEXScalarMoveTests` (trois), sur les octets refusés et ceux
+qu'assemble `gcc`. Deux sabotages, tous deux tombés :
+- huit octets copiés sous F3 ;
+- le haut de YMM gardé.
+
 ## 2026-10-31 — Xorg ne meurt plus dans `sincos` : le bureau Xfce de Void s'ouvre
 
 **Ce que le banc a montré, carte graphique branchée (#676).** Void Linux Xfce

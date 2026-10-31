@@ -598,6 +598,23 @@ final class X86BootAttemptTests: XCTestCase {
                 ppm += [pixels[index + 2], pixels[index + 1], pixels[index]]
             }
             FileManager.default.createFile(atPath: path, contents: ppm)
+            // **Et où la mémoire vidéo n'est pas vide** : une image noire ne
+            // dit pas si l'invité n'a rien peint ou s'il a peint ailleurs que
+            // là où l'écran regarde. Le mode, les registres de la carte, et
+            // les plages de pixels non nuls, par mébioctet.
+            let mode = frame.mode
+            say("écran                 : \(mode.width) × \(mode.height), ligne \(mode.bytesPerRow), début \(mode.start), mémoire à 0x\(String(frame.base, radix: 16))")
+            if let card = memory.vga {
+                say("carte                 : \(card.state.registers.map { String($0, radix: 16) }.joined(separator: " "))")
+            }
+            let filled = frame.withPixels { raw -> [String] in
+                stride(from: 0, to: raw.count, by: 1 << 20).compactMap { start in
+                    let end = min(start + (1 << 20), raw.count)
+                    let count = raw[start..<end].reduce(0) { $1 != 0 ? $0 + 1 : $0 }
+                    return count == 0 ? nil : "\(start >> 20) Mio : \(count)"
+                }
+            }
+            say("mémoire vidéo peinte  : \(filled.isEmpty ? "rien" : filled.joined(separator: ", "))")
         }
         // **Par la traduction de pages**, pas à l'adresse virtuelle prise pour
         // physique : un arrêt dans le noyau ou dans un module tombe à

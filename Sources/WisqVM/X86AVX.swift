@@ -126,6 +126,9 @@ extension X86Core {
     mutating func vex128Instruction(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         let modrm = instruction.modrm ?? 0
         let register = modrm >> 6 == 0b11
+        if instruction.map == .twoByte, opcode == 0x11, register, instruction.vexImpliedPrefix >= 2 {
+            return scalarMoveBetweenRegisters(instruction)
+        }
         guard let form = Self.vexForm(instruction.map, opcode, instruction.vexImpliedPrefix, register: register)
         else {
             // Pas de forme SSE : peut-être une de celles qui n'existent que
@@ -143,6 +146,28 @@ extension X86Core {
         case .shiftByImmediate: clearUpperVector(instruction.vexRegister)
         case .threeOperands, .threeOperandsGeneral: clearUpperVector(Int(instruction.regField))
         }
+    }
+
+    /// **`vmovss` et `vmovsd` entre registres, sous leur forme « rangement »**
+    /// (`VEX.F3/F2.0F 11`, `mod` = 11) : la destination est `r/m`, le bas
+    /// vient de `reg`, le reste des cent vingt-huit bits de `vvvv`, et le haut
+    /// du registre YMM est remis à zéro. La forme `0F 10` fait la même chose
+    /// avec `reg` et `r/m` échangés.
+    ///
+    /// SSE n'a rien d'équivalent — `movsd` entre registres y garde le haut de
+    /// la destination —, d'où une forme à part plutôt qu'une traduction. Les
+    /// programmes de la session Xfce de Void l'emploient (`C5 23 11 DA`,
+    /// `C5 1B 11 E1`) ; la table la refusait. Relevé sur le processeur :
+    /// `vmovsd %xmm12, %xmm11, %xmm2` (`C5 23 11 E2`) met dans xmm2 le bas
+    /// de xmm12 et le haut de xmm11.
+    mutating func scalarMoveBetweenRegisters(_ instruction: X86Instruction) {
+        let destination = Int(instruction.rmField)
+        let low = vector(Int(instruction.regField)).low
+        let upper = vector(instruction.vexRegister)
+        // Sous F2, huit octets ; sous F3, quatre.
+        let mask: UInt64 = instruction.vexImpliedPrefix == 3 ? .max : 0xFFFF_FFFF
+        setVector(destination, upper.low & ~mask | low & mask, upper.high)
+        clearUpperVector(destination)
     }
 
     mutating func executeVEX128(_ instruction: X86Instruction, _ form: VEXForm, modrm: UInt8,
