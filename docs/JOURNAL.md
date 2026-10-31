@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — openSUSE Tumbleweed sur le réseau de wisq
+
+**Ce qui n'avait pas été essayé.** openSUSE Tumbleweed démarre depuis le 20
+octobre, sans réseau. La même course qu'Arch et Fedora, sur l'image de cloud
+`Minimal-VM` du 31 octobre (317 Mo).
+
+**Mesuré**, sans rien taper pour le réseau :
+
+```
+2: enp0s5    inet 10.0.2.15/24 brd 10.0.2.255 scope global dynamic noprefixroute enp0s5
+active inactive activating inactive        (NetworkManager, wicked, chronyd, systemd-timesyncd)
+Sat Oct 31 04:47:10 AM UTC 2026
+Reference ID    : 0A000202 (10.0.2.2)
+Stratum         : 2
+System time     : 0.000000000 seconds fast of NTP time
+^? 10.0.2.2                      1   6    17    23   +500ms[-1985ms] +/-  279us
+195.135.223.50  opensuse.org
+http 200 14119
+```
+
+- NetworkManager prend le bail. wicked n'est pas actif sur cette image.
+- `chrony` prend la passerelle comme référence et corrige un écart de deux
+  secondes. Il était encore « activating » au premier coup d'œil, et
+  synchronisé trente secondes plus tard.
+- Le DNS répond, et le `repomd.xml` du dépôt arrive en HTTP.
+- L'invite est arrivée sept minutes après le départ. Les 4 431 s de la course
+  sont le banc qui épuise son budget après la dernière commande.
+
+Avec Debian 13, Ubuntu 26.04, CentOS Stream 10, Arch et Fedora, c'est la
+sixième famille qui sort sur le réseau de wisq sans réglage. Rien de changé
+dans le code.
+
 ## 2026-10-31 — Fedora : NetworkManager prend le bail, et chrony l'heure de la passerelle
 
 **Ce qui n'avait pas été essayé.** Le serveur SNTP de la passerelle (#655)
