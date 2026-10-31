@@ -200,12 +200,13 @@ final class X86LocalMachineTests: XCTestCase {
     /// Un refus du cœur est **nommé**. Un arrêt sans nom envoie chercher
     /// partout ; celui-ci dit quelle instruction.
     func testARefusalIsNamedRatherThanSilent() throws {
-        // `0f 6f c1` : une instruction MMX, que ce cœur ne connaît pas.
-        let machine = try machine([0x0F, 0x6F, 0xC1], out: { _ in })
+        // `0f 0e` : FEMMS, du 3DNow!, que ce cœur ne connaît pas. (C'était
+        // une instruction MMX, jusqu'à ce que le MMX existe.)
+        let machine = try machine([0x0F, 0x0E], out: { _ in })
         guard case .faulted(let reason) = machine.run(instructionBudget: 10) else {
             return XCTFail("attendu un refus nommé")
         }
-        XCTAssertTrue(reason.contains("6F"), reason)
+        XCTAssertTrue(reason.contains("0E"), reason)
     }
 
     /// La mémoire ne descend pas sous le plancher, même si on le demande : le

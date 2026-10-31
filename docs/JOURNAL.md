@@ -45,11 +45,29 @@ partagée (le sommet, les étiquettes, l'exposant), les rangements en mémoire
 (MOVQ, MOVNTQ, MOVD sur quatre octets, MASKMOVQ octet par octet), et MOVNTQ
 vers un registre, qui reste refusé.
 
-**Vérifié sur un vrai invité.** INVITE
+**Vérifié sur un vrai invité.** Debian 13, et le même genre de programme
+ELF que dans l'entrée précédente, tapé en base64 dans le shell. Il met 5
+dans MM0 et 3 dans MM1, les additionne (PADDB), décale de quatre bits
+(PSLLQ), rend le résultat par MOVD, exécute EMMS et sort avec ce code :
 
-**Ailleurs.** `X86InterruptTests` prend FEMMS (`0F 0E`) comme forme
-inconnue à la place de MOVQ. `X86TwoByteDispatchTests` compte une forme de
-moins à essayer (`0F F7` est maintenant pris).
+```
+root@localhost:~# … /tmp/mmx; echo "rc=$?"
+rc=128
+```
+
+Huit fois seize : là où l'entrée précédente finissait en « Illegal
+instruction », le programme compte.
+
+**Ailleurs.** Trois tests prenaient le MMX pour l'exemple d'une forme
+inconnue :
+- `X86InterruptTests` et `X86LocalMachineTests` prennent FEMMS (`0F 0E`) à
+  sa place ;
+- `X86SystemTests` disait qu'un PXOR MMX était refusé par son nom. Il
+  vérifie maintenant qu'il s'exécute sur les registres x87 sans toucher aux
+  XMM.
+
+`X86TwoByteDispatchTests` compte une forme de moins à essayer (`0F F7` est
+maintenant pris).
 
 **Tests.** Quatre de plus : l'oracle et les trois tests d'état. Douze
 sabotages, tous attrapés :
