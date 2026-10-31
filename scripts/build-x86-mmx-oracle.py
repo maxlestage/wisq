@@ -75,7 +75,24 @@ def forms():
         out += [f"{name} %mm1, %mm0", f"{name} {MEMORY}, %mm0"]
     for count in [0, 1, 3, 7, 8, 9, 15, 16, 200]:
         out += [f"palignr ${count}, %mm1, %mm0", f"palignr ${count}, {MEMORY}, %mm0"]
+    # **Les conversions entre MMX et flottants.** Elles écrivent un XMM ou
+    # lisent un XMM : le prologue et l'épilogue ordinaires écraseraient leur
+    # résultat. Chacune a donc les siens — `(prologue, instruction,
+    # épilogue)` — et son résultat finit dans xmm0.
+    # Vers un XMM : mm1 chargé depuis xmm1, le résultat laissé dans xmm0.
+    for name in ["cvtpi2ps", "cvtpi2pd"]:
+        out.append((["movdq2q %xmm1, %mm1"], f"{name} %mm1, %xmm0", ["emms"]))
+        out.append(([], f"{name} {MEMORY}, %xmm0", ["emms"]))
+    # Vers un MMX : la source dans xmm1 ou en mémoire, mm0 rendu dans xmm0.
+    for name in ["cvtps2pi", "cvttps2pi", "cvtpd2pi", "cvttpd2pi"]:
+        out.append(([], f"{name} %xmm1, %mm0", ["movq2dq %mm0, %xmm0", "emms"]))
+        out.append(([], f"{name} {MEMORY}, %mm0", ["movq2dq %mm0, %xmm0", "emms"]))
     return out
+
+
+def parts(item):
+    """Une forme : son prologue, son instruction, son épilogue."""
+    return (PROLOGUE, item, EPILOGUE) if isinstance(item, str) else item
 
 
 VALUES = [
@@ -133,8 +150,11 @@ def states():
 def assemble(texts):
     """Les octets de chaque suite : prologue, instruction, épilogue."""
     flat = []
-    for text in texts:
-        flat += PROLOGUE + [text] + EPILOGUE
+    sizes = []
+    for item in texts:
+        before, text, after = parts(item)
+        flat += before + [text] + after
+        sizes.append(len(before) + 1 + len(after))
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "cases.s"
         obj = Path(directory) / "cases.o"
@@ -152,10 +172,14 @@ def assemble(texts):
         for row in listing.splitlines()
         if (match := line.match(row))
     ]
-    per = len(PROLOGUE) + 1 + len(EPILOGUE)
     if len(encoded) != len(flat):
         raise SystemExit(f"{len(flat)} instructions demandées, {len(encoded)} relues")
-    return ["".join(encoded[i:i + per]) for i in range(0, len(encoded), per)]
+    suites = []
+    start = 0
+    for size in sizes:
+        suites.append("".join(encoded[start:start + size]))
+        start += size
+    return suites
 
 
 def main():
@@ -164,8 +188,9 @@ def main():
     parser.add_argument("--oracle", default="scripts/x86-oracle/oracle")
     arguments = parser.parse_args()
 
-    texts = forms()
-    encoded = assemble(texts)
+    items = forms()
+    encoded = assemble(items)
+    texts = [parts(item)[1] for item in items]
     chosen = list(states())
 
     request = []
