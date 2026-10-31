@@ -92,7 +92,9 @@ final class X86BootAttemptTests: XCTestCase {
     /// `~]# ` est l'invite de `root` chez Fedora et RHEL, `[root@hôte ~]# `.
     /// La dernière : `sulogin`, en mode de secours, attend une touche avant
     /// d'ouvrir le shell (AlmaLinux 9, voir `CloudBoot.legacyConsoleOptions`).
-    static let prompts = [prompt, "login: ", "~# ", "~]# ", "Password: ", "(or press Control-D to continue): "]
+    /// `\n# ` : le shell de `root` chez Chimera Linux, `dash` sans invite
+    /// réglée — un dièse nu en début de ligne.
+    static let prompts = [prompt, "login: ", "~# ", "~]# ", "\n# ", "Password: ", "(or press Control-D to continue): "]
 
     /// Le texte sans ses séquences d'échappement : l'invite d'openSUSE
     /// (`localhost:~ #`) remet les couleurs à zéro **entre** le `#` et
@@ -525,8 +527,13 @@ final class X86BootAttemptTests: XCTestCase {
         // armée et interruptions permises, et c'est le **budget** qui s'est
         // épuisé pendant l'attente. « La machine dort » et « la course s'est
         // arrêtée » ne sont pas la même phrase.
+        // **Un redémarrage demandé finit la course**, comme il finit la
+        // machine de l'application : le cœur s'arrête sur l'instruction qui
+        // tire la ligne (`X86Core.Reset`).
         let ending: String
-        if let stopped {
+        if stopped is X86Core.Reset {
+            ending = "redémarrage demandé (impulsion du 8042)"
+        } else if let stopped {
             ending = "\(stopped)"
         } else if core.outOfPatience {
             ending = "attente épuisée (la machine patientait encore)"
@@ -613,6 +620,7 @@ final class X86BootAttemptTests: XCTestCase {
             adresses non canoniques : \(core.nonCanonicalSeen.count)
             fils vus              : \(core.threadActivity.count)
             dialogue              : \(typed.isEmpty ? "rien tapé" : typed.joined(separator: " | "))
+            refusé aux programmes : \(core.programRefusals.isEmpty ? "rien" : core.programRefusals.joined(separator: ", "))
             cache de décodage     : \(core.decodeCacheHits) trouvées, \(core.decodeCache.misses) décodées
             bus PCI               : \(core.memory?.bus.map {
                 String(format: "fenêtre %04x, commande %04x, ligne %d",

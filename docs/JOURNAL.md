@@ -8,6 +8,147 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Chimera Linux démarre et redémarre : l'horloge passe à 288, le 8042 remet à zéro, FIMUL existe
+
+**Ce que le téléphone a montré.** Une capture de Chimera Linux (live ISO
+du 20 décembre 2025, base, x86_64), arrêtée devant :
+
+```
+All services have stopped with no shutdown issued; boot failure?
+Choose: (r)eboot, r(e)covery, re(s)tart boot sequence, (p)ower off?
+```
+
+**Reproduit au banc**, avec ce que l'application tire de l'ISO (le noyau,
+l'initramfs de 195 Mo, la ligne de commande de la recette). Le premier
+échec est plus haut :
+
+```
+dinit: Service early-modules-early with pid 262 exceeded allowed start time; cancelling.
+[FAILED] early-modules-early
+```
+
+Tout le reste tombe derrière lui.
+
+**Lent, pas bloqué.** dinit laisse soixante secondes à chaque service.
+Démarré avec `init=/usr/bin/env -- "PS1=~# " /bin/sh` pour avoir un shell à
+la place de dinit, le service se mesure à la main : il exécute
+`kmod static-modules`, qui charge les modules des nœuds statiques de `/dev`.
+`/proc/uptime` passe de 124,60 à 242,84 s, et le temps de repos ne bouge pas
+(80,92) : 118 s de processeur occupé, soit 10,2 milliards d'instructions
+à 86 MHz. Sur un vrai processeur, c'est une seconde ou deux.
+
+**La décision.** `X86LegacyDevices.instructionsPerTick` dit la vitesse que
+l'invité croit à son processeur. Il est passé de 12 à 36 pour Fedora, puis à
+72 pour NixOS ; il passe à 288 (344 MHz) pour Chimera. À ce rapport,
+`early-modules-early` tient en trente secondes et Chimera va jusqu'à
+`chimera login:` en 21,9 milliards d'instructions. Le seul autre service en
+échec, `syslog-ng`, ne dit pas pourquoi ; la connexion n'en dépend pas.
+
+**Ce que les autres paient**, mesuré au banc jusqu'au shell de `root`, aux
+deux rapports :
+
+| | instructions à 72 | à 288 | temps de l'invité à 72 | à 288 |
+| --- | --- | --- | --- | --- |
+| Debian 13 | 16,23 milliards | 15,96 | 190 s | 56 s |
+| Arch | 27,20 | 27,15 | 304 s | 77 s |
+| Fedora 44 | 21,95 | 22,90 | 241 s | 64 s |
+| Alpine (secours) | 3,60 | 3,75 | 41 s | 14 s |
+
+Le même travail, à 4 % près. Ce qui coûte plus, ce sont les attentes qui
+tournent sur le processeur au lieu de dormir : un temps de l'invité fixe vaut
+quatre fois plus d'instructions. Fedora a le même échec
+(`systemd-network-generator`) aux deux rapports.
+
+**Une machine reprise garde son rapport**, écrit dans son instantané : son
+noyau a étalonné son TSC contre le 8253 au démarrage. Une machine Chimera
+déjà arrêtée devant « boot failure? » doit donc être arrêtée (« Arrêter »)
+puis redémarrée pour prendre le nouveau rapport.
+
+**Redémarrer.** Une seconde capture, la même machine relancée et `r` tapé
+devant « boot failure? » :
+
+```
+[ 6423.274197] reboot: Restarting system
+[La machine s'est arrêtée : unsupported("le groupe 5 /5")]
+```
+
+Linux essaie ses méthodes dans l'ordre. ACPI d'abord, qu'il n'y a pas.
+Puis le 8042 : `outb(0xfe, 0x64)`, une impulsion sur la ligne de remise à
+zéro, que ce contrôleur ignorait. Puis EFI, absent, puis le BIOS :
+`machine_real_restart`, un saut long indirect (`ljmpl *`, `FF /5`) vers du
+code en mode réel. C'est là que la machine s'arrêtait.
+
+`X86PS2Controller` tient maintenant la ligne (`resetRequested`) :
+l'impulsion `0xFE`, ou le port de sortie écrit avec le bit zéro à zéro
+(`0xD1`). `X86Machine.run` la lit après chaque tranche et rend `.reboot`,
+comme la machine RISC-V, et l'application dit « La machine a redémarré ;
+relancez-la. » Le saut long n'est jamais atteint : Linux répète l'impulsion
+dix fois avant de passer à la méthode suivante, et la tranche s'arrête bien
+avant. Le banc s'arrête aussi sur la ligne tirée, et le dit.
+
+**Plus sûr que la fin de tranche.** La première version lisait la ligne
+après chaque tranche : deux cent mille instructions dans l'application,
+cinquante millions au banc. Au banc, le noyau avait le temps d'épuiser ses
+impulsions et d'atteindre le saut long. Le cœur lève maintenant
+`X86Core.Reset` sur l'`OUT` même qui tire la ligne, et `X86Machine.run` en
+fait `.reboot`.
+
+**Deux services tombés, une instruction.** Une fois Chimera à l'invite, le
+banc a montré « dinit: Service chronyd terminated due to signal 4 », et
+`syslog-ng` en échec. Le banc dit maintenant ce qui a été refusé aux
+programmes : `DA /1`, `FIMUL` avec un entier de trente-deux bits en
+mémoire. Le groupe `DA` (entiers de trente-deux bits) et le groupe `DE`
+(seize bits) n'existaient pas, ni les comparaisons de `D8` et `DC` avec un
+opérande en mémoire. Ils existent : les huit opérations sur les quatre
+largeurs. L'oracle x87 passe de 93 à 121 formes et de 5 580 à 7 260 cas,
+fabriqués par le vrai processeur, tous concordants du premier coup.
+Cinq sabotages contre lui ; l'un a survécu, le signe de l'entier : la
+fenêtre de l'oracle ne porte que des octets de 0x10 à 0x4F, donc des
+entiers positifs. `X86X87IntegerOperandTests` le tient.
+
+**Vérifié au banc, de bout en bout**, avec ce que l'application tire de
+l'ISO et le nouveau rapport par défaut. Chimera va jusqu'au shell de
+`root`, sans un service en échec ni un programme tué, puis :
+
+```
+# uname -r; cat /proc/uptime
+6.18.2-0-generic
+118.06 56.10
+# reboot
+[  143.429314] reboot: Restarting system
+arrêt                 : redémarrage demandé (impulsion du 8042)
+refusé aux programmes : rien
+```
+
+**Tests.**
+- `X86ClockRatioTests` : la machine neuve à 288, et un test de plus, une
+  machine reprise à 72 qui y reste.
+- `X86WaitingBudgetTests` et `X86LegacyDevicesTests` : neuf tests
+  supposaient 72, par un budget de 500 instructions ou une attente de 500
+  tours, écrits quand un battement en valait soixante-douze. Ils comptent
+  maintenant en battements. Le test qui compte chaque tour d'attente un par
+  un est fixé à 72 : sa preuve ne dépend pas du rapport, et à 288 il passait
+  de une à quatre minutes.
+- `X86RebootTests`, cinq : l'impulsion `0xFE`, les autres commandes qui
+  laissent la ligne, le port de sortie selon son bit zéro, le cœur qui
+  s'arrête sur l'impulsion même, et la machine qui rend `.reboot`, elle et
+  la machine locale de l'application.
+- `X86X87IntegerOperandTests`, trois : un entier négatif qui multiplie,
+  une comparaison qui voit le signe, et celle qui dépile.
+
+Les sabotages, tous attrapés hormis celui que l'oracle ne pouvait pas voir :
+- sept pour le redémarrage et le rapport : l'impulsion retirée, toute la
+  plage `F0`–`FF` qui remet à zéro, le port de sortie retiré, le port de
+  sortie sans son bit, la machine qui ne lit pas la ligne, la machine
+  locale qui rend `.stopped`, le rapport d'un instantané ignoré à la
+  reprise ; puis le cœur qui ne s'arrête plus sur l'impulsion ;
+- sept pour le x87 : l'entier de seize bits lu sur trente-deux, la
+  comparaison sans ses drapeaux, `FCOMP` qui ne dépile pas, un NaN
+  silencieux accepté, et le signe des entiers de trente-deux et de seize
+  bits.
+
+Le compte publié passe à 3265.
+
 ## 2026-10-31 — Le clavier se range pour de bon
 
 **Ce que le téléphone a montré**, avec la version de #666 : le bouton en

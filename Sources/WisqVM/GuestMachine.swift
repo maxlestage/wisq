@@ -321,6 +321,7 @@ extension X86Machine: GuestMachine {
     public func runGuest(instructionBudget: UInt64) -> GuestOutcome {
         switch run(instructionBudget: instructionBudget) {
         case .powerOff: return .powerOff
+        case .reboot: return .reboot
         case .stopped: return .stopped
         case .faulted(let reason): return .faulted(reason)
         }

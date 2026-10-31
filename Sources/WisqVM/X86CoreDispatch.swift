@@ -357,6 +357,9 @@ extension X86Core {
                 : UInt16(registers.read(2) & 0xFFFF)
             let size = Self.portSize(instruction, byteForm: opcode == 0xE6 || opcode == 0xEE)
             portWrite(port, size, read(0, size, highByte: false))
+            // La ligne de remise à zéro tirée arrête la course sur cette
+            // instruction même : voir `X86Core.Reset`.
+            if devices.ps2.resetRequested { throw Reset() }
 
         case 0x69, 0x6B:  // IMUL à trois opérandes
             let size = Self.operandSize(instruction, byteForm: false)
