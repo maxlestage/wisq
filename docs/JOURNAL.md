@@ -8,7 +8,7 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-10-31 — Chimera Linux démarre et redémarre : l'horloge passe à 288, le 8042 remet à zéro
+## 2026-10-31 — Chimera Linux démarre et redémarre : l'horloge passe à 288, le 8042 remet à zéro, FIMUL existe
 
 **Ce que le téléphone a montré.** Une capture de Chimera Linux (live ISO
 du 20 décembre 2025, base, x86_64), arrêtée devant :
@@ -86,7 +86,39 @@ relancez-la. » Le saut long n'est jamais atteint : Linux répète l'impulsion
 dix fois avant de passer à la méthode suivante, et la tranche s'arrête bien
 avant. Le banc s'arrête aussi sur la ligne tirée, et le dit.
 
-(Vérification au banc sur Chimera : à venir dans le commit suivant.)
+**Plus sûr que la fin de tranche.** La première version lisait la ligne
+après chaque tranche : deux cent mille instructions dans l'application,
+cinquante millions au banc. Au banc, le noyau avait le temps d'épuiser ses
+impulsions et d'atteindre le saut long. Le cœur lève maintenant
+`X86Core.Reset` sur l'`OUT` même qui tire la ligne, et `X86Machine.run` en
+fait `.reboot`.
+
+**Deux services tombés, une instruction.** Une fois Chimera à l'invite, le
+banc a montré « dinit: Service chronyd terminated due to signal 4 », et
+`syslog-ng` en échec. Le banc dit maintenant ce qui a été refusé aux
+programmes : `DA /1`, `FIMUL` avec un entier de trente-deux bits en
+mémoire. Le groupe `DA` (entiers de trente-deux bits) et le groupe `DE`
+(seize bits) n'existaient pas, ni les comparaisons de `D8` et `DC` avec un
+opérande en mémoire. Ils existent : les huit opérations sur les quatre
+largeurs. L'oracle x87 passe de 93 à 121 formes et de 5 580 à 7 260 cas,
+fabriqués par le vrai processeur, tous concordants du premier coup.
+Cinq sabotages contre lui ; l'un a survécu, le signe de l'entier : la
+fenêtre de l'oracle ne porte que des octets de 0x10 à 0x4F, donc des
+entiers positifs. `X86X87IntegerOperandTests` le tient.
+
+**Vérifié au banc, de bout en bout**, avec ce que l'application tire de
+l'ISO et le nouveau rapport par défaut. Chimera va jusqu'au shell de
+`root`, sans un service en échec ni un programme tué, puis :
+
+```
+# uname -r; cat /proc/uptime
+6.18.2-0-generic
+118.06 56.10
+# reboot
+[  143.429314] reboot: Restarting system
+arrêt                 : redémarrage demandé (impulsion du 8042)
+refusé aux programmes : rien
+```
 
 **Tests.**
 - `X86ClockRatioTests` : la machine neuve à 288, et un test de plus, une
@@ -97,16 +129,25 @@ avant. Le banc s'arrête aussi sur la ligne tirée, et le dit.
   maintenant en battements. Le test qui compte chaque tour d'attente un par
   un est fixé à 72 : sa preuve ne dépend pas du rapport, et à 288 il passait
   de une à quatre minutes.
-- `X86RebootTests`, quatre : l'impulsion `0xFE`, les autres commandes qui
-  laissent la ligne, le port de sortie selon son bit zéro, et la machine
-  qui rend `.reboot`, elle et la machine locale de l'application.
+- `X86RebootTests`, cinq : l'impulsion `0xFE`, les autres commandes qui
+  laissent la ligne, le port de sortie selon son bit zéro, le cœur qui
+  s'arrête sur l'impulsion même, et la machine qui rend `.reboot`, elle et
+  la machine locale de l'application.
+- `X86X87IntegerOperandTests`, trois : un entier négatif qui multiplie,
+  une comparaison qui voit le signe, et celle qui dépile.
 
-Sept sabotages, tous attrapés : l'impulsion retirée, toute la plage
-`F0`–`FF` qui remet à zéro, le port de sortie retiré, le port de sortie
-sans son bit, la machine qui ne lit pas la ligne, la machine locale qui
-rend `.stopped`, et le rapport d'un instantané ignoré à la reprise.
+Les sabotages, tous attrapés hormis celui que l'oracle ne pouvait pas voir :
+- sept pour le redémarrage et le rapport : l'impulsion retirée, toute la
+  plage `F0`–`FF` qui remet à zéro, le port de sortie retiré, le port de
+  sortie sans son bit, la machine qui ne lit pas la ligne, la machine
+  locale qui rend `.stopped`, le rapport d'un instantané ignoré à la
+  reprise ; puis le cœur qui ne s'arrête plus sur l'impulsion ;
+- sept pour le x87 : l'entier de seize bits lu sur trente-deux, la
+  comparaison sans ses drapeaux, `FCOMP` qui ne dépile pas, un NaN
+  silencieux accepté, et le signe des entiers de trente-deux et de seize
+  bits.
 
-Le compte publié passe à 3261.
+Le compte publié passe à 3265.
 
 ## 2026-10-31 — L'app s'ouvre sur ses machines, l'écran se zoome, le clavier se range
 
