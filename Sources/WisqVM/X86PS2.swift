@@ -66,8 +66,8 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// bit. Sans elle, le noyau passait à la méthode suivante, un saut long
     /// vers le code en mode réel du BIOS (`machine_real_restart`), et la
     /// machine s'arrêtait sur « le groupe 5 /5 » — le saut que ce cœur
-    /// n'exécute pas. `X86Machine` la lit après chaque tranche, et rend
-    /// `.reboot`.
+    /// n'exécute pas. Le cœur s'arrête sur l'instruction qui la tire
+    /// (`X86Core.Reset`), et `X86Machine` rend `.reboot`.
     public var resetRequested = false
 
     public init() {}
@@ -392,5 +392,17 @@ public enum X86Keystrokes {
             guard let key = X86ScanCode.typing(Character(letter.lowercased())) else { return [] }
             return press(key.code, control: true)
         }
+    }
+}
+
+extension X86Core {
+    /// **La course s'arrête sur l'instruction qui tire la ligne de remise à
+    /// zéro**, et pas à la fin de sa tranche. Une tranche du banc fait
+    /// cinquante millions d'instructions : le noyau avait le temps d'épuiser
+    /// ses dix impulsions, de passer au BIOS, et de s'arrêter sur le saut long
+    /// que ce cœur n'exécute pas. `X86Machine.run` en fait `.reboot`.
+    public struct Reset: Error, Equatable, CustomStringConvertible {
+        public init() {}
+        public var description: String { "la ligne de remise à zéro du 8042" }
     }
 }

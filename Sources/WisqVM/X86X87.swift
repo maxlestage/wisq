@@ -20,7 +20,7 @@ import Foundation
 // dans l'ordre de la **pile**, tandis que le mot d'étiquettes est indexé par
 // registre **physique**.
 //
-// La référence est `Tests/Fixtures/x86-x87-oracle.tsv` : 93 formes, 5 580 cas.
+// La référence est `Tests/Fixtures/x86-x87-oracle.tsv` : 121 formes, 7 260 cas.
 extension X86Core {
     /// Le sommet, tel que le mot d'état le porte.
     public var x87TopIndex: Int {
