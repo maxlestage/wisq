@@ -1,4 +1,5 @@
 #if os(iOS)
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 import WisqCore
@@ -1016,6 +1017,10 @@ struct LocalVMTerminalView: View {
     /// cran quelle que soit la valeur enregistrée.
     @AppStorage("wisq.console.tailleDuTexte") private var textSize = ConsoleTextSize.standard
     @FocusState private var inputFocused: Bool
+    /// **Le clavier du système est-il sorti ?** Lu dans ses notifications, et
+    /// pas dans `inputFocused` : sur le téléphone, rendre le focus ne
+    /// rentrait pas le clavier, et l'icône du bouton mentait avec lui.
+    @State private var keyboardShown = false
     /// **Le plein écran** : la console prend tout le téléphone. La barre de
     /// navigation, la barre d'état et le signe de vie s'effacent ; la barre
     /// des touches et la ligne de commande restent, puisqu'on tape. Un
@@ -1105,15 +1110,28 @@ struct LocalVMTerminalView: View {
                     // plus souvent qu'on n'y tape. Ce bouton le rentre ou le
                     // ressort ; les touches de la barre, elles, marchent
                     // clavier rangé, sans le ressortir.
+                    //
+                    // **Rentré par UIKit, pas par le focus.** La première
+                    // version rendait `inputFocused`, et une capture du
+                    // téléphone a montré le clavier resté là : dans un écran
+                    // présenté en plein écran, SwiftUI ne le rentrait pas.
+                    // `resignFirstResponder` envoyé à la chaîne des
+                    // répondeurs le rentre, quel que soit qui le tient.
                     Button {
-                        inputFocused = !inputFocused
+                        if keyboardShown {
+                            inputFocused = false
+                            UIApplication.shared.sendAction(
+                                #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        } else {
+                            inputFocused = true
+                        }
                     } label: {
-                        Image(systemName: inputFocused ? "keyboard.chevron.compact.down" : "keyboard")
+                        Image(systemName: keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
                             .font(.system(size: 14, weight: .medium))
                             .frame(minWidth: 40, minHeight: 32)
                     }
                     .buttonStyle(.bordered)
-                    .accessibilityLabel(inputFocused ? "Ranger le clavier" : "Sortir le clavier")
+                    .accessibilityLabel(keyboardShown ? "Ranger le clavier" : "Sortir le clavier")
                     // **Coller**, en tête de la barre : le champ de saisie
                     // n'a qu'une ligne, et un script copié depuis une page y
                     // perdait ses retours à la ligne. Ce qui part vient de
@@ -1277,9 +1295,17 @@ struct LocalVMTerminalView: View {
         .onChange(of: model.status) { _, status in
             if case .finished = status { showsConsole = true }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardShown = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardShown = false
+        }
+        // **Pas de clavier d'office** : il sort quand on touche le champ ou
+        // son bouton. Ouvert à chaque machine, il cachait la moitié de
+        // l'écran à qui ne venait que regarder.
         .onAppear {
             model.boot(kernelURL: kernelURL, installed: installed)
-            inputFocused = true
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
