@@ -4,12 +4,19 @@ import UniformTypeIdentifiers
 import WisqCore
 
 /// App entry point view. iPhone-first: a single navigation stack, no split view.
+///
+/// **L'app s'ouvre sur les machines du téléphone** (`LocalVMListView`, titrée
+/// « Machines ») ; les connexions à distance sont un écran plus loin, par
+/// son menu +.
 public struct RootView: View {
     @State private var library = MachineLibraryModel.makeDefault()
     @State private var editing: MachineDraft?
     @State private var connecting: Machine?
     @State private var importingFromAgent = false
-    @State private var showingLocalVMs = false
+    @State private var showingRemote = false
+    /// Ferme ce que l'écran d'accueil a ouvert par-dessus lui : voir
+    /// `LocalVMListView.dismissal`.
+    @State private var localDismissal = 0
     @State private var showingBench = false
     @State private var pairingPrefill: AgentPairing.Payload?
     @State private var choosingConnectionFile = false
@@ -19,16 +26,18 @@ public struct RootView: View {
 
     public var body: some View {
         NavigationStack {
-            MachineListView(
-                library: library,
-                onConnect: { connecting = $0 },
-                onEdit: { editing = MachineDraft(machine: $0) },
-                onNew: { editing = MachineDraft() },
-                onImportFromAgent: { importingFromAgent = true },
-                onOpenConnectionFile: { choosingConnectionFile = true },
-                onLocalVMs: { showingLocalVMs = true },
-                onBench: { showingBench = true }
-            )
+            LocalVMListView(dismissal: localDismissal) { showingRemote = true }
+                .navigationDestination(isPresented: $showingRemote) {
+                    MachineListView(
+                        library: library,
+                        onConnect: { connecting = $0 },
+                        onEdit: { editing = MachineDraft(machine: $0) },
+                        onNew: { editing = MachineDraft() },
+                        onImportFromAgent: { importingFromAgent = true },
+                        onOpenConnectionFile: { choosingConnectionFile = true },
+                        onBench: { showingBench = true }
+                    )
+                }
         }
         // Every content type, rather than `.vv` and `.rdp` declared as types.
         // Those files arrive from Mail and AirDrop with whatever name the
@@ -53,11 +62,6 @@ public struct RootView: View {
         .sheet(isPresented: $showingBench) {
             NavigationStack { WebKitBenchView() }
         }
-        .sheet(isPresented: $showingLocalVMs) {
-            NavigationStack {
-                LocalVMListView { showingLocalVMs = false }
-            }
-        }
         .sheet(isPresented: $importingFromAgent) {
             NavigationStack {
                 AgentImportView(library: library, prefill: pairingPrefill) {
@@ -75,19 +79,17 @@ public struct RootView: View {
             // et le banc compris : SwiftUI ne présente qu'une feuille à la
             // fois, et celle-ci, demandée par-dessus une autre, restait
             // ignorée — le drapeau resté vrai, l'import ne s'ouvrait plus,
-            // même par son bouton.
-            let covered = editing != nil || connecting != nil || showingLocalVMs || showingBench
+            // même par son bouton. Ce que l'écran d'accueil a ouvert
+            // lui-même (une machine en plein écran, un téléchargement) ne se
+            // voit pas d'ici : il se ferme par `localDismissal`, et l'import
+            // attend toujours le tour suivant.
             editing = nil
             connecting = nil
-            showingLocalVMs = false
             showingBench = false
             importingFromAgent = false
-            if covered {
-                // Au tour suivant, une fois la feuille d'avant partie.
-                DispatchQueue.main.async { importingFromAgent = true }
-            } else {
-                importingFromAgent = true
-            }
+            localDismissal += 1
+            showingRemote = true
+            DispatchQueue.main.async { importingFromAgent = true }
         }
         .sheet(item: $editing) { draft in
             NavigationStack {
