@@ -60,6 +60,16 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// Le clavier envoie-t-il ses touches ? Allumé au départ, comme un vrai.
     public var keyboardScanning = true
 
+    /// **La ligne de remise à zéro du processeur**, que le 8042 tient sur le
+    /// bit zéro de son port de sortie. Linux la tire pour redémarrer, juste
+    /// après ACPI qu'il n'y a pas : `outb(0xfe, 0x64)`, une impulsion sur ce
+    /// bit. Sans elle, le noyau passait à la méthode suivante, un saut long
+    /// vers le code en mode réel du BIOS (`machine_real_restart`), et la
+    /// machine s'arrêtait sur « le groupe 5 /5 » — le saut que ce cœur
+    /// n'exécute pas. Le cœur s'arrête sur l'instruction qui la tire
+    /// (`X86Core.Reset`), et `X86Machine` rend `.reboot`.
+    public var resetRequested = false
+
     public init() {}
 
     // MARK: - Les ports
@@ -96,6 +106,9 @@ public struct X86PS2Controller: Sendable, Equatable {
         case 0xAD: configuration |= Self.keyboardDisabled
         case 0xAE: configuration &= ~Self.keyboardDisabled
         case 0xD0: reply(0x01)  // le port de sortie : la ligne de remise à zéro au repos
+        // Une impulsion sur les lignes du port de sortie dont le bit est à
+        // zéro : le bit zéro, c'est la remise à zéro.
+        case 0xF0...0xFF where command & 0x01 == 0: resetRequested = true
         default: break
         }
     }
@@ -106,6 +119,9 @@ public struct X86PS2Controller: Sendable, Equatable {
             pendingCommand = nil
             switch command {
             case 0x60: configuration = byte
+            // Le port de sortie écrit d'un coup : le bit zéro à zéro tire
+            // la même ligne.
+            case 0xD1 where byte & 0x01 == 0: resetRequested = true
             case 0xD2: reply(byte)
             // Le bouclage : Linux s'en sert pour savoir s'il y a un port de
             // souris, en lisant l'octet revenu « de la souris ».
@@ -376,5 +392,17 @@ public enum X86Keystrokes {
             guard let key = X86ScanCode.typing(Character(letter.lowercased())) else { return [] }
             return press(key.code, control: true)
         }
+    }
+}
+
+extension X86Core {
+    /// **La course s'arrête sur l'instruction qui tire la ligne de remise à
+    /// zéro**, et pas à la fin de sa tranche. Une tranche du banc fait
+    /// cinquante millions d'instructions : le noyau avait le temps d'épuiser
+    /// ses dix impulsions, de passer au BIOS, et de s'arrêter sur le saut long
+    /// que ce cœur n'exécute pas. `X86Machine.run` en fait `.reboot`.
+    public struct Reset: Error, Equatable, CustomStringConvertible {
+        public init() {}
+        public var description: String { "la ligne de remise à zéro du 8042" }
     }
 }

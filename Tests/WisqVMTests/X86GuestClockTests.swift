@@ -23,7 +23,7 @@ import XCTest
 ///
 /// La règle : **`RDTSC` et le 8253 lisent le même temps**, celui de
 /// `X86Core.ticks` — le noyau a étalonné l'un contre l'autre au démarrage
-/// (« Detected 85.908 MHz processor », soixante-douze fois le 8253), et ils
+/// (« Detected 343.624 MHz processor », 288 fois le 8253), et ils
 /// n'ont pas le droit de diverger ensuite.
 final class X86GuestClockTests: XCTestCase {
     /// `rdtsc ; hlt ; rdtsc`. Sans IDT, rien ne réveille le `hlt` : le second
