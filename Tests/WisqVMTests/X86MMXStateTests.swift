@@ -39,6 +39,20 @@ final class X86MMXStateTests: XCTestCase {
         XCTAssertEqual(core.x87Tags, 0xFFFF, "EMMS rend la pile vide")
     }
 
+    /// **Les formes SSSE3 sur MMX entrent dans le MMX comme les autres** :
+    /// `pshufb %mm1, %mm0` et `palignr $4, %mm1, %mm0`, sommet à zéro et
+    /// étiquettes valides. L'oracle ne voit pas la pile x87 ; ce test, si.
+    func testSSSE3OnMMXSharesTheX87Stack() throws {
+        for code: [UInt8] in [[0x0F, 0x38, 0x00, 0xC1], [0x0F, 0x3A, 0x0F, 0xC1, 0x04]] {
+            let (core, _) = try Self.run(code) {
+                $0.x87TopIndex = 5
+                $0.x87Tags = 0xFFFF
+            }
+            XCTAssertEqual(core.x87TopIndex, 0, "\(code)")
+            XCTAssertEqual(core.x87Tags, 0, "\(code)")
+        }
+    }
+
     /// **Les rangements** : `movq mm, m64`, `movntq`, `movd r/m32, mm` (les
     /// quatre octets bas seulement), et `maskmovq`, qui ne range que les octets
     /// dont le bit fort du masque est à un, à [RDI].
