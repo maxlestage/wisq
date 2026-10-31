@@ -464,6 +464,18 @@ final class X86BootAttemptTests: XCTestCase {
                     promptSeen = false
                     continue
                 }
+                // **Tout est tapé, et l'invite est revenue** : la conversation
+                // est finie. Sans cet arrêt, un invité jamais tout à fait au
+                // repos — des services qui tournent, une horloge NTP —
+                // épuisait le reste du budget : openSUSE répondait en sept
+                // minutes, et la course en durait soixante-quatorze. La même
+                // prudence que pour taper : l'invite vue deux tranches de
+                // suite. `WISQ_PC_RUN_ON` garde l'ancienne conduite, pour un
+                // relevé qui veut le budget entier.
+                if prompted, toType.isEmpty, !typed.isEmpty, promptSeen || core.outOfPatience,
+                   environment["WISQ_PC_RUN_ON"] == nil {
+                    break
+                }
                 promptSeen = prompted
                 if core.outOfPatience { break }
             }
