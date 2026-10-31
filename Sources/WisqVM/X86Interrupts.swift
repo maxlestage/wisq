@@ -51,9 +51,9 @@ extension X86Core {
     static let vectorsWithErrorCode: Set<UInt8> = [8, 10, 11, 12, 13, 14, 17, 21, 29, 30]
 
     /// Le vecteur d'une faute, quand ce cœur sait la livrer. Une forme non
-    /// implémentée n'en a pas : la livrer comme #UD ferait croire au noyau que
-    /// son propre code est invalide, ce qui est un mensonge plus coûteux que
-    /// l'arrêt.
+    /// implémentée n'en a pas **dans le noyau** : la livrer comme #UD lui
+    /// ferait croire que son propre code est invalide, ce qui est un mensonge
+    /// plus coûteux que l'arrêt. Dans un programme, `deliver` la livre en #UD.
     static func vector(of fault: Fault) -> UInt8? {
         switch fault {
         case .divideError: return 0
@@ -157,10 +157,22 @@ extension X86Core {
     /// simples, donc ça tient ; l'écrire ailleurs que dans ce commentaire
     /// serait prématuré.
     mutating func deliver(_ fault: Fault) throws -> Bool {
-        guard let vector = Self.vector(of: fault) else { return false }
+        // **Une forme inconnue dans un programme : #UD, et le programme seul
+        // en meurt.** Dans le noyau, elle arrête la machine avec son nom —
+        // c'est un trou de ce cœur, et le livrer ferait croire au noyau que
+        // son propre code est faux. Dans un programme, l'arrêt coûtait la
+        // machine entière pour une instruction que Linux sait traiter : un
+        // « Illegal instruction » à ce programme, comme sur un processeur
+        // qui ne l'a pas. Le nom n'est pas perdu : `programRefusals` le
+        // garde, et `X86Machine` l'écrit à la console.
+        var refusal: String?
+        if case .unsupported(let what) = fault, privilege == 3 { refusal = what }
+        guard let vector = refusal == nil ? Self.vector(of: fault) : 6 else { return false }
         if case .pageFault(let address) = fault { system.control[2] = address }
         if canonicalWatchArmed, privilege == 3 { noteFault(fault, at: rip) }
-        return try enter(vector, errorCode: vector == 14 ? pageFaultErrorCode : 0)
+        let delivered = try enter(vector, errorCode: vector == 14 ? pageFaultErrorCode : 0)
+        if delivered, let refusal { programRefusals.append(refusal) }
+        return delivered
     }
 
     /// Entrer dans le gestionnaire d'un vecteur, et dire si ça a été fait.

@@ -851,9 +851,34 @@ public final class X86Machine: @unchecked Sendable {
     }
 
     private func collectOutput() {
-        guard !core.serialOutput.isEmpty else { return }
-        pendingOutput.append(contentsOf: core.serialOutput)
-        core.serialOutput.removeAll(keepingCapacity: true)
+        if !core.serialOutput.isEmpty {
+            pendingOutput.append(contentsOf: core.serialOutput)
+            core.serialOutput.removeAll(keepingCapacity: true)
+        }
+        // **Ce qu'un programme a demandé et que ce processeur n'a pas** : le
+        // programme a reçu son « Illegal instruction », la machine continue,
+        // et la console dit pourquoi — une fois par forme, pour qu'un
+        // programme qui réessaie en boucle ne la noie pas.
+        if !core.programRefusals.isEmpty {
+            pendingOutput.append(contentsOf: Array(Self.refusalNotes(core.programRefusals,
+                                                                     reported: &reportedRefusals).utf8))
+            core.programRefusals.removeAll()
+        }
+    }
+
+    /// Les notes à écrire pour ces refus : une par forme jamais dite.
+    static func refusalNotes(_ refusals: [String], reported: inout Set<String>) -> String {
+        refusals.filter { reported.insert($0).inserted }.map(refusalNote).joined()
+    }
+
+    /// Les formes déjà dites à la console.
+    private var reportedRefusals: Set<String> = []
+
+    /// La phrase de la console, entre crochets comme les autres notes de
+    /// wisq.
+    static func refusalNote(_ refusal: String) -> String {
+        "\r\n[wisq : un programme a demandé \(refusal), que ce processeur ne sait pas encore "
+            + "exécuter. Il reçoit « Illegal instruction » ; la machine continue.]\r\n"
     }
 
     private func flushOutput() {

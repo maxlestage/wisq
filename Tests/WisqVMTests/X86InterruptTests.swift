@@ -299,6 +299,42 @@ final class X86InterruptTests: XCTestCase {
         }
     }
 
+    // MARK: - Une forme inconnue dans un programme
+
+    /// **Dans un programme, une forme que ce cœur ne connaît pas devient un
+    /// #UD** : le programme reçoit son « Illegal instruction », la machine
+    /// continue, et le nom de la forme est gardé pour la console. Dans le
+    /// noyau, elle sort toujours (`testAnUnimplementedFormIsNotDeliveredAsAnException`).
+    func testAnUnknownFormInAProgramIsDeliveredAsInvalidOpcode() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.map(ram, Self.mapped)
+        try Self.installGate(ram, vector: 6, target: Self.handler)
+        try ram.load([0xF4], at: Self.handler)
+        var core = try Self.core(ram, code: [0x0F, 0x6F, 0xC1])  // MMX
+        core.segments[1] = 0x33
+        try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, Self.handler, "livrée au vecteur 6")
+        XCTAssertEqual(core.programRefusals.count, 1)
+        XCTAssertTrue(core.programRefusals.first?.contains("0F 6F") == true, "et nommée")
+    }
+
+    /// Sans porte pour le vecteur 6, elle sort comme avant, et rien n'est
+    /// gardé : la machine s'arrête avec son nom.
+    func testAnUnknownFormInAProgramWithoutAGateStillComesOut() throws {
+        let ram = X86Memory(size: 1 << 20, base: 0)
+        try Self.map(ram, Self.mapped)
+        var core = try Self.core(ram, code: [0x0F, 0x6F, 0xC1])
+        core.segments[1] = 0x33
+        try Self.loadTaskSegment(ram, &core, kernelStack: Self.stackTop)
+        XCTAssertThrowsError(try core.run(budget: 1)) {
+            guard case .some(X86Core.Fault.unsupported) = $0 as? X86Core.Fault else {
+                return XCTFail("attendu : le refus nommé")
+            }
+        }
+        XCTAssertTrue(core.programRefusals.isEmpty)
+    }
+
     // MARK: - Le retour
 
     /// Une division par zéro part au vecteur zéro, et **sans** code d'erreur :
