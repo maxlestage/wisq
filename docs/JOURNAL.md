@@ -61,6 +61,77 @@ Le site dit le nouveau chemin (`docs.rs`, dans les deux langues), et que le
 PC a un écran et le réseau, ce qu'il niait encore. Le compte publié passe à
 3252.
 
+## 2026-10-31 — Le MMX existe
+
+**Ce qui manquait.** CPUID annonce le MMX, parce que la glibc l'exige, mais
+aucune de ses instructions n'était écrite. Depuis l'entrée précédente, un
+programme qui en demandait une recevait « Illegal instruction » sans perdre
+la machine. C'était mieux, mais le programme mourait quand même. Des
+bibliothèques multimédia et des codecs anciens en ont encore.
+
+**Ce qui change.** `X86MMX.swift` écrit le jeu entier :
+- les déplacements : MOVD et MOVQ dans les deux sens, MOVNTQ, MASKMOVQ,
+  MOVDQ2Q et MOVQ2DQ ;
+- les décalages, par immédiat ou par registre ;
+- l'arithmétique : additions et soustractions qui bouclent ou saturent,
+  multiplications, PMADDWD, PSADBW, minimum, maximum et moyenne ;
+- les comparaisons, la logique, les dépaquetages et les empaquetages ;
+- PSHUFW, PINSRW, PEXTRW et PMOVMSKB.
+
+Les registres MMX sont la mantisse des huit registres x87, comme sur le
+vrai processeur. Toute instruction MMX, sauf EMMS, remet le sommet de la
+pile à zéro et marque les huit cases pleines ; écrire MMn met l'exposant de
+ST(n) à 0xFFFF. EMMS vide les étiquettes.
+
+Restent refusées, et livrées au programme comme avant : les formes MMX de
+SSSE3 (`0F 38` sans préfixe, `0F 3A 0F`), les conversions entre MMX et
+flottants (`0F 2A`, `2C` et `2D` sans préfixe), et le 3DNow!.
+
+**L'oracle.** `scripts/build-x86-mmx-oracle.py` fait exécuter chaque forme
+par le vrai processeur. Le banc ne transporte que les XMM, alors chaque
+forme est encadrée : MOVDQ2Q charge MM0 et MM1, MOVQ2DQ les rend, EMMS
+nettoie. `Tests/Fixtures/x86-mmx-oracle.tsv` garde 225 formes et 8775 cas,
+registre et mémoire, et `X86MMXOracleTests` les rejoue tous. Tous concordent.
+
+Ce que l'oracle ne voit pas, `X86MMXStateTests` le tient : la pile x87
+partagée (le sommet, les étiquettes, l'exposant), les rangements en mémoire
+(MOVQ, MOVNTQ, MOVD sur quatre octets, MASKMOVQ octet par octet), et MOVNTQ
+vers un registre, qui reste refusé.
+
+**Vérifié sur un vrai invité.** Debian 13, et le même genre de programme
+ELF que dans l'entrée précédente, tapé en base64 dans le shell. Il met 5
+dans MM0 et 3 dans MM1, les additionne (PADDB), décale de quatre bits
+(PSLLQ), rend le résultat par MOVD, exécute EMMS et sort avec ce code :
+
+```
+root@localhost:~# … /tmp/mmx; echo "rc=$?"
+rc=128
+```
+
+Huit fois seize : là où l'entrée précédente finissait en « Illegal
+instruction », le programme compte.
+
+**Ailleurs.** Trois tests prenaient le MMX pour l'exemple d'une forme
+inconnue :
+- `X86InterruptTests` et `X86LocalMachineTests` prennent FEMMS (`0F 0E`) à
+  sa place ;
+- `X86SystemTests` disait qu'un PXOR MMX était refusé par son nom. Il
+  vérifie maintenant qu'il s'exécute sur les registres x87 sans toucher aux
+  XMM.
+
+`X86TwoByteDispatchTests` compte une forme de moins à essayer (`0F F7` est
+maintenant pris).
+
+**Tests.** Quatre de plus : l'oracle et les trois tests d'état. Douze
+sabotages, tous attrapés :
+- six contre l'oracle : la largeur de PADDB, la moitié dépaquetée, la borne
+  basse de l'empaquetage signé, le décalage arithmétique au-delà de la
+  largeur, le bit bas de MMn et PSHUFW ;
+- six contre les tests d'état : les étiquettes, le sommet, l'exposant, le
+  masque de MASKMOVQ, la largeur de MOVD et MOVNTQ vers un registre.
+
+Le compte publié passe à 3248.
+
 ## 2026-10-31 — Une instruction inconnue dans un programme ne coûte plus la machine
 
 **Ce qui se passait.** Toute forme que ce cœur ne sait pas exécuter arrêtait
