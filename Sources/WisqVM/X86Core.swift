@@ -59,6 +59,9 @@ public struct X86Core: @unchecked Sendable {
     var memoryReference: Unmanaged<X86Memory>?
     /// Les octets sortis par le port série, dans l'ordre.
     public var serialOutput: [UInt8] = []
+    /// Les formes inconnues qu'un programme a demandées, livrées en #UD :
+    /// voir `deliver`. `X86Machine` les dit à la console et vide la liste.
+    public var programRefusals: [String] = []
     /// Les octets tapés qui attendent d'être lus par le port série.
     ///
     /// Le registre d'état de la ligne annonce « une donnée est prête » tant
