@@ -69,6 +69,7 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// puis à deux cent quatre-vingt-huit :
     /// - Debian 13 : 16,23 puis 15,96 milliards ; 190 puis 56 s ;
     /// - Arch : 27,20 puis 27,15 milliards ; 304 puis 77 s ;
+    /// - Fedora 44 : 21,95 puis 22,90 milliards ; 241 puis 64 s ;
     /// - Alpine, jusqu'au shell de secours : 3,60 puis 3,75 milliards — les
     ///   attentes qui tournent sur le processeur coûtent quatre fois plus
     ///   d'instructions — ; 41 puis 14 s.

@@ -494,6 +494,12 @@ final class X86BootAttemptTests: XCTestCase {
                 }
                 promptSeen = prompted
                 if core.outOfPatience { break }
+                // **Un redémarrage demandé finit la course**, comme il finit
+                // la machine de l'application (`X86Machine.run` rend
+                // `.reboot`) : continuer ferait voir au banc la méthode
+                // suivante du noyau, que l'application ne lui laisse jamais
+                // atteindre.
+                if core.devices.ps2.resetRequested { break }
             }
         } catch {
             stopped = error
@@ -528,6 +534,8 @@ final class X86BootAttemptTests: XCTestCase {
         let ending: String
         if let stopped {
             ending = "\(stopped)"
+        } else if core.devices.ps2.resetRequested {
+            ending = "redémarrage demandé (impulsion du 8042)"
         } else if core.outOfPatience {
             ending = "attente épuisée (la machine patientait encore)"
         } else if core.halted && core.idled > 0 {

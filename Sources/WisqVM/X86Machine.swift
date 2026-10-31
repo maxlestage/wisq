@@ -27,6 +27,9 @@ public final class X86Machine: @unchecked Sendable {
     public enum Outcome: Equatable, Sendable {
         /// L'invité s'est arrêté lui-même, et plus rien ne peut le réveiller.
         case powerOff
+        /// L'invité a tiré la ligne de remise à zéro : il demande à
+        /// redémarrer. Voir `X86PS2Controller.resetRequested`.
+        case reboot
         /// Quelqu'un a demandé l'arrêt, ou le budget s'est épuisé.
         case stopped
         /// Le cœur a refusé quelque chose. Nommé, parce qu'un arrêt sans nom
@@ -388,6 +391,14 @@ public final class X86Machine: @unchecked Sendable {
                 return .faulted("\(error)")
             }
             collectOutput()
+            // **L'invité a tiré la ligne de remise à zéro** : il redémarre.
+            // Linux répète l'impulsion dix fois, à cinquante microsecondes
+            // d'écart ; la tranche s'arrête bien avant qu'il n'abandonne pour
+            // la méthode suivante.
+            if core.devices.ps2.resetRequested {
+                flushOutput()
+                return .reboot
+            }
 
             // Une invite se termine sans retour à la ligne ; sans un vidage
             // régulier elle resterait dans le tampon, et la console aurait
