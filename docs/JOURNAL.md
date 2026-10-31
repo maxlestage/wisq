@@ -8,6 +8,27 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — Le clavier se range pour de bon
+
+**Ce que le téléphone a montré**, avec la version de #666 : le bouton en
+tête de la barre des touches ne rangeait pas le clavier. Il rendait le focus
+du champ (`inputFocused = false`). Dans l'écran de la machine, présenté en
+plein écran, SwiftUI ne rentrait pas le clavier pour autant, et l'icône du
+bouton, qui lisait ce même focus, ne disait plus la vérité.
+
+**Ce qui change.**
+- Le bouton envoie `resignFirstResponder` à la chaîne des répondeurs
+  d'UIKit, qui rentre le clavier quel que soit qui le tient.
+- Son icône et son nom suivent les notifications du clavier
+  (`keyboardWillShowNotification`, `keyboardWillHideNotification`), et non
+  plus le focus.
+- Le clavier ne sort plus de lui-même à l'ouverture d'une machine : il sort
+  quand on touche le champ ou le bouton.
+
+Rien de testable sous Linux : ce sont deux lignes d'UIKit et une
+notification. C'est la CI iOS qui les compile, et le téléphone qui les
+juge.
+
 ## 2026-10-31 — L'app s'ouvre sur ses machines, l'écran se zoome, le clavier se range
 
 Trois demandes, avec trois captures du téléphone :
