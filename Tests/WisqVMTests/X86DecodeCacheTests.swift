@@ -125,6 +125,31 @@ final class X86DecodeCacheTests: XCTestCase {
         )
     }
 
+    /// **Les masques se déduisent de la longueur** (`masks`) : les octets de
+    /// l'instruction dans les deux mots que la lecture compare, ni un de plus
+    /// ni un de moins, et jamais une moitié d'octet.
+    func testTheMasksCoverExactlyTheInstructionsBytes() {
+        for length in 1...16 {
+            let masks = X86DecodeCache.masks(length)
+            let covered = (0..<16).filter { byte in
+                let word = byte < 8 ? masks.low : masks.high
+                return (word >> (8 * UInt64(byte % 8))) & 0xFF == 0xFF
+            }
+            XCTAssertEqual(covered, Array(0..<length), "longueur \(length)")
+            XCTAssertEqual(masks.low.nonzeroBitCount + masks.high.nonzeroBitCount, 8 * length,
+                           "longueur \(length) : des octets entiers")
+        }
+    }
+
+    /// **Une case, une ligne de cache** : soixante-quatre octets, alignés sur
+    /// soixante-quatre. Une case à cheval sur deux lignes coûte deux lectures
+    /// de la mémoire au lieu d'une, à chaque instruction de l'invité.
+    func testAnEntryIsOneCacheLine() {
+        XCTAssertEqual(MemoryLayout<X86DecodeCache.Entry>.stride, X86DecodeCache.lineSize)
+        XCTAssertEqual(X86DecodeCache.lineSize, 64)
+        XCTAssertEqual(Int(bitPattern: X86DecodeCache().firstEntry) % X86DecodeCache.lineSize, 0)
+    }
+
     /// La case elle-même : une entrée ne sert que pour ses octets, et que si
     /// elle tient dans ce que la lecture s'autorise — la borne de page quand
     /// la pagination est active.
@@ -157,9 +182,9 @@ final class X86DecodeCacheTests: XCTestCase {
     /// **Une case vide ne rend rien, quels que soient les octets lus.** Elle
     /// ne se reconnaît plus à son masque nul — un test de moins à chaque
     /// lecture — mais à la longueur de ce qu'elle porte, une de plus que la
-    /// plus longue instruction : ses masques nuls laissent tout passer, et
-    /// c'est la longueur qui doit la refuser, à toutes les places et pour tout
-    /// ce qui reste lisible.
+    /// plus longue instruction : seize zéros passent la comparaison des
+    /// octets, et c'est la longueur qui doit la refuser, à toutes les places
+    /// et pour tout ce qui reste lisible.
     func testAnEmptySlotGivesNothingWhateverTheBytes() {
         let cache = X86DecodeCache()
         let size = 4096
