@@ -11,6 +11,11 @@ import XCTest
 final class X86LegacyDevicesTests: XCTestCase {
     static let handler: UInt64 = 0x8000
     static let idt: UInt64 = 0x9000
+    /// **Sept battements**, quel que soit le rapport de l'horloge : l'horloge
+    /// armée déborde tous les deux, et il en faut assez pour qu'elle sonne.
+    /// C'était 500 instructions, écrit quand un battement en valait
+    /// soixante-douze ; à deux cent quatre-vingt-huit, 500 n'en font pas deux.
+    static let fewTicks = 7 * X86LegacyDevices.instructionsPerTick
 
     static func core(_ ram: X86Memory, _ code: [UInt8]) throws -> X86Core {
         try ram.load(code, at: 0x100)
@@ -154,7 +159,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         let ram = X86Memory(size: 1 << 20, base: 0)
         var core = try Self.core(ram, [0xEB, 0xFE])  // une boucle infinie
         Self.armed(&core)
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertTrue(core.halted, "le gestionnaire s'arrête sur un HLT")
         XCTAssertEqual(core.rip, Self.handler &+ 1)
         XCTAssertEqual(core.devices.primary.service, 1, "la ligne zéro est en service")
@@ -173,7 +178,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         let ram = X86Memory(size: 1 << 20, base: 0)
         var core = try Self.core(ram, [0xEB, 0xFE])
         Self.armed(&core)
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertEqual(core.devices.primary.service, 1, "la ligne zéro est en service")
 
         // Le gestionnaire rouvre les interruptions, et l'horloge rebat.
@@ -253,7 +258,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         var core = try Self.core(ram, [0xEB, 0xFE])
         Self.armed(&core)
         core.devices.primary.mask = 0xFF
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertFalse(core.halted)
         XCTAssertEqual(core.devices.primary.request, 1, "la demande attend le démasquage")
     }
@@ -265,7 +270,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         var core = try Self.core(ram, [0xEB, 0xFE])
         Self.armed(&core)
         core.flags &= ~X86Core.Flag.interrupt
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertFalse(core.halted)
         XCTAssertEqual(core.devices.primary.request, 1)
     }
@@ -282,7 +287,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         var core = try Self.core(ram, [0xEB, 0xFE])
         Self.armed(&core)
         core.devices.primary.vectorBase = 0x40  // aucun gestionnaire à ce numéro
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertFalse(core.halted)
         XCTAssertEqual(core.devices.primary.request, 1, "la demande attend sa porte")
         XCTAssertEqual(core.devices.primary.service, 0, "et n'est jamais entrée en service")
@@ -294,7 +299,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         let ram = X86Memory(size: 1 << 20, base: 0)
         var core = try Self.core(ram, [0xEB, 0xFE])
         Self.armed(&core)
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertEqual(core.devices.primary.service, 1)
         // `b0 20` `e6 20` : out $0x20 dans le port de commande.
         try ram.load([0xB0, 0x20, 0xE6, 0x20], at: 0x200)
@@ -312,7 +317,7 @@ final class X86LegacyDevicesTests: XCTestCase {
         let ram = X86Memory(size: 1 << 20, base: 0)
         var core = try Self.core(ram, [0xF4])
         Self.armed(&core)
-        try core.run(budget: 500)
+        try core.run(budget: Self.fewTicks)
         XCTAssertEqual(core.rip, Self.handler &+ 1, "le battement doit l'avoir réveillé")
         XCTAssertGreaterThan(core.idled, 0, "et du temps doit avoir passé pendant l'attente")
     }

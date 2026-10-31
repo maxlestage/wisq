@@ -27,6 +27,9 @@ public final class X86Machine: @unchecked Sendable {
     public enum Outcome: Equatable, Sendable {
         /// L'invité s'est arrêté lui-même, et plus rien ne peut le réveiller.
         case powerOff
+        /// L'invité a tiré la ligne de remise à zéro : il demande à
+        /// redémarrer. Voir `X86PS2Controller.resetRequested`.
+        case reboot
         /// Quelqu'un a demandé l'arrêt, ou le budget s'est épuisé.
         case stopped
         /// Le cœur a refusé quelque chose. Nommé, parce qu'un arrêt sans nom
@@ -382,6 +385,11 @@ public final class X86Machine: @unchecked Sendable {
             let executed: UInt64
             do {
                 executed = try core.run(budget: min(slice, remaining))
+            } catch is X86Core.Reset {
+                // L'invité a tiré la ligne de remise à zéro : il redémarre.
+                collectOutput()
+                flushOutput()
+                return .reboot
             } catch {
                 collectOutput()
                 flushOutput()

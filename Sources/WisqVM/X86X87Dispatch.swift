@@ -190,17 +190,31 @@ extension X86Core {
             try writeRM(fields, bits / 8, integer(stack(0), bits: bits, .towardZero))
             pop()
 
-        case 0xD8:  // L'arithmétique avec un opérande simple en mémoire
-            let value = X86Extended(Double(Float(bitPattern:
+        // **L'arithmétique avec un opérande en mémoire**, quatre largeurs pour
+        // les mêmes huit opérations : un simple (`D8`), un double (`DC`), un
+        // entier de trente-deux bits (`DA`) ou de seize (`DE`). L'entier est
+        // exact en quatre-vingts bits ; c'est l'opération qui arrondit.
+        // `/2` et `/3` comparent, et `/3` dépile : `FCOM`, `FICOM`, comme
+        // `FCOMPP`, signalent même un NaN silencieux. `DA /1`, `FIMUL`,
+        // arrêtait chronyd chez Chimera Linux.
+        case 0xD8, 0xDA, 0xDC, 0xDE:
+            let value: X86Extended
+            switch opcode {
+            case 0xD8: value = X86Extended(Double(Float(bitPattern:
                 UInt32(truncatingIfNeeded: try readRM(fields, 4)))))
-            let (result, report) = try combine(field, stack(0), value, rounding)
-            setStack(0, result)
-            note(report)
-        case 0xDC:  // La même, en double
-            let value = X86Extended(Double(bitPattern: try readRM(fields, 8)))
-            let (result, report) = try combine(field, stack(0), value, rounding)
-            setStack(0, result)
-            note(report)
+            case 0xDC: value = X86Extended(Double(bitPattern: try readRM(fields, 8)))
+            case 0xDA: value = X86Extended(Int64(Int32(truncatingIfNeeded: try readRM(fields, 4))))
+            default: value = X86Extended(Int64(Int16(truncatingIfNeeded: try readRM(fields, 2))))
+            }
+            if field == 2 || field == 3 {
+                noteComparison(stack(0), value, quietIsInvalid: true)
+                setCondition(X86Extended.compare(stack(0), value))
+                if field == 3 { pop() }
+            } else {
+                let (result, report) = try combine(field, stack(0), value, rounding)
+                setStack(0, result)
+                note(report)
+            }
 
         // L'environnement : vingt-huit octets dans le format protégé de
         // trente-deux bits, celui de `fegetenv` et `fesetenv`. Le préfixe 66
