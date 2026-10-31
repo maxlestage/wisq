@@ -186,9 +186,9 @@ extension X86Core {
     /// est pas une, pour que le reste du dispatch continue.
     ///
     /// Toutes ces formes exigent le préfixe `66` : sans lui ce sont les
-    /// instructions MMX, qui travaillent sur d'autres registres et que ce cœur
-    /// n'a pas. Le dire plutôt que de les confondre évite d'exécuter sur un
-    /// registre XMM ce que le programme voulait faire ailleurs.
+    /// instructions MMX, qui travaillent sur d'autres registres — voir
+    /// `X86MMX.swift`. Les confondre exécuterait sur un registre XMM ce que
+    /// le programme voulait faire ailleurs.
     mutating func vectorArithmetic(
         _ instruction: X86Instruction, _ opcode: UInt8
     ) throws -> Bool {
