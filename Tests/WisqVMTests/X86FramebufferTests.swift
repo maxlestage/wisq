@@ -47,6 +47,23 @@ final class X86FramebufferTests: XCTestCase {
         XCTAssertEqual(try memory.read(Self.base &+ 16, 4), 0x00_12_34_56)
     }
 
+    /// **Chaque largeur relit ce qu'elle a écrit**, petit-boutienne : un, deux,
+    /// quatre et huit octets par un chargement, trois — la moitié d'un accès
+    /// à cheval sur une page — par la boucle d'octets.
+    func testEveryWidthReadsBackWhatWasWritten() throws {
+        let (memory, screen) = machine()
+        try memory.write(Self.base &+ 8, 8, 0x0102_0304_0506_0708)
+        XCTAssertEqual(Array(screen.snapshot()[8..<16]), [8, 7, 6, 5, 4, 3, 2, 1])
+        XCTAssertEqual(try memory.read(Self.base &+ 8, 8), 0x0102_0304_0506_0708)
+        XCTAssertEqual(try memory.read(Self.base &+ 9, 2), 0x0607)
+        XCTAssertEqual(try memory.read(Self.base &+ 15, 1), 0x01)
+        XCTAssertEqual(try memory.read(Self.base &+ 10, 3), 0x04_0506)
+        try memory.write(Self.base &+ 20, 2, 0xBEEF)
+        try memory.write(Self.base &+ 23, 1, 0x7F)
+        try memory.write(Self.base &+ 24, 3, 0xAA_BBCC)
+        XCTAssertEqual(Array(screen.snapshot()[20..<27]), [0xEF, 0xBE, 0, 0x7F, 0xCC, 0xBB, 0xAA])
+    }
+
     /// **La fenêtre s'arrête exactement à la fin du cadre.** Un octet de plus
     /// et une écriture perdue deviendrait silencieuse, au lieu de lever la
     /// faute qui la ferait remarquer.

@@ -979,10 +979,20 @@ extension X86Core {
     /// frontière de page, donc RSI, RDI et RCX disent exactement ce qui a été
     /// fait, comme après le même nombre d'éléments un par un. Restent à
     /// l'ancien chemin, qui rend `false` : le sens arrière, un élément à
-    /// cheval sur deux pages, un morceau qui touche un périphérique plutôt que
-    /// la RAM, le témoin d'adresse armé (il veut voir chaque accès), et une
-    /// copie dont la destination commence **dans** la source, plus haut —
-    /// l'élément un par un y répète un motif, ce que `memmove` ne ferait pas.
+    /// cheval sur deux pages, un morceau qui touche le disque ou le trou
+    /// plutôt que la RAM, le témoin d'adresse armé (il veut voir chaque
+    /// accès), et une copie dont la destination commence **dans** la source,
+    /// plus haut — l'élément un par un y répète un motif, ce que `memmove` ne
+    /// ferait pas.
+    ///
+    /// **L'écran en est, depuis qu'un bureau s'y affiche.** `simpledrm` peint
+    /// dans une copie en RAM et la pousse vers le cadre ligne par ligne, par
+    /// `memcpy_toio` — un `rep movsl` de quatre mille octets par ligne. Le cadre
+    /// n'étant pas de la RAM, chaque pixel passait par l'ancien chemin : deux
+    /// traductions tentées pour rien, puis la lecture, puis l'écriture par le
+    /// repli de la mémoire, sept cent quatre-vingt-six mille fois pour un écran
+    /// 1024 × 768 repeint. Le morceau qui tient dans le cadre se copie
+    /// maintenant d'un coup, et la révision n'avance qu'une fois.
     mutating func bulkString(_ opcode: UInt8, _ size: Int, _ count: inout UInt64) throws -> Bool {
         let moving = opcode == 0xA4 || opcode == 0xA5
         guard moving || opcode == 0xAA || opcode == 0xAB,
@@ -997,15 +1007,18 @@ extension X86Core {
         guard elements > 1 else { return false }
         let length = Int(elements) * size
         // Les traductions, dans l'ordre d'un élément : la source d'abord.
-        let from = moving ? memory.offset(try translate(source, .read), length) : nil
-        guard let to = memory.offset(try translate(destination, .write), length),
+        let from = moving ? memory.block(try translate(source, .read), length) : nil
+        guard let to = memory.block(try translate(destination, .write), length),
               !moving || from != nil
         else { return false }
-        let target = memory.bytes + to
+        let target = to.bytes
         if let from {
-            guard to <= from || to >= from + length else { return false }
+            // Des pointeurs de l'hôte, et non plus des places dans la RAM :
+            // le cadre est une autre allocation, et la RAM ne le chevauche
+            // jamais. Seul le cadre recopié sur lui-même peut s'y retrouver.
+            guard target <= from.bytes || target >= from.bytes + length else { return false }
             UnsafeMutableRawPointer(target).copyMemory(
-                from: UnsafeRawPointer(memory.bytes + from), byteCount: length)
+                from: UnsafeRawPointer(from.bytes), byteCount: length)
             registers[6] = source &+ UInt64(length)
         } else {
             let value = read(0, size, highByte: false)
@@ -1023,6 +1036,7 @@ extension X86Core {
                 }
             }
         }
+        to.screen?.touch()
         registers[7] = destination &+ UInt64(length)
         count -= elements
         registers[1] = count
