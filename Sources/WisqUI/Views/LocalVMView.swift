@@ -4,12 +4,25 @@ import UniformTypeIdentifiers
 import WisqCore
 import WisqVM
 
-/// Local Linux: pick a kernel image, boot it on the phone, get a shell.
+/// **L'écran d'accueil** : les machines Linux du téléphone. Choisir une
+/// image, la démarrer, avoir un shell.
+///
+/// Il s'appelait « Linux local » et s'ouvrait par le menu + d'une liste de
+/// connexions VNC, vide chez qui n'a que des machines locales : chaque
+/// lancement commençait par un écran « Aucune machine » et deux gestes pour
+/// atteindre les siennes. C'est maintenant par lui que l'app s'ouvre, sous le
+/// titre « Machines », et les connexions à distance sont dans son menu +.
 struct LocalVMListView: View {
-    let onClose: () -> Void
+    /// Ouvre la liste des connexions à distance (VNC, SPICE, RDP).
+    let onRemote: () -> Void
+    /// Change quand tout ce qui couvre l'écran doit se fermer — un lien
+    /// d'appairage arrive, et sa feuille ne s'ouvrirait pas par-dessus une
+    /// machine en plein écran.
+    let dismissal: Int
 
-    init(onClose: @escaping () -> Void) {
-        self.onClose = onClose
+    init(dismissal: Int = 0, onRemote: @escaping () -> Void) {
+        self.dismissal = dismissal
+        self.onRemote = onRemote
         // Les genres sont lus **avant la première image**, et pas dans
         // `onAppear` : celui-ci ne se déclenche qu'après un premier rendu, et
         // ce rendu-là afficherait la bibliothèque entière sous l'icône du
@@ -228,25 +241,22 @@ struct LocalVMListView: View {
                 }
             }
         }
-        .navigationTitle("Linux local")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Machines")
         .overlay {
             if kernels.isEmpty {
                 ContentUnavailableView {
                     Label("Aucun noyau", systemImage: "terminal")
                 } description: {
-                    Text("Importez une image depuis Fichiers, ou téléchargez Alpine directement : elle démarre sur ce téléphone.")
+                    Text("Importez une image depuis Fichiers, ou téléchargez Alpine directement : elle démarre sur ce téléphone. Une machine qui tourne ailleurs s'atteint par les connexions à distance.")
                 } actions: {
                     Button("Télécharger Alpine") { showDownload = true }
                         .buttonStyle(.borderedProminent)
                     Button("Importer une image") { showImporter = true }
+                    Button("Connexions à distance", action: onRemote)
                 }
             }
         }
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Fermer", action: onClose)
-            }
             // Le chemin visible vers la suppression. Il ne s'affiche que
             // lorsqu'il y a quelque chose à supprimer : un « Modifier » sur
             // une liste vide n'ouvre que du vide.
@@ -255,9 +265,10 @@ struct LocalVMListView: View {
                     EditButton()
                 }
             }
-            ToolbarItem(placement: .confirmationAction) {
+            ToolbarItem(placement: .topBarTrailing) {
                 // Deux portes vers la bibliothèque : un fichier déjà là, ou
-                // une image que wisq va chercher et vérifie lui-même.
+                // une image que wisq va chercher et vérifie lui-même. Puis
+                // celle des machines qui tournent ailleurs.
                 Menu {
                     Button {
                         showImporter = true
@@ -268,6 +279,10 @@ struct LocalVMListView: View {
                         showDownload = true
                     } label: {
                         Label("Télécharger Alpine", systemImage: "arrow.down.circle")
+                    }
+                    Divider()
+                    Button(action: onRemote) {
+                        Label("Connexions à distance (VNC, SPICE, RDP)", systemImage: "network")
                     }
                 } label: {
                     Label("Ajouter", systemImage: "plus")
@@ -321,6 +336,17 @@ struct LocalVMListView: View {
             NavigationStack {
                 LocalVMTerminalView(kernelURL: target.url, installed: target.machine)
             }
+        }
+        // Un lien d'appairage arrive : tout ce que cet écran a ouvert se
+        // ferme, la machine se suspend comme par « Fermer ».
+        .onChange(of: dismissal) {
+            booting = nil
+            showDownload = false
+            showImporter = false
+            exported = nil
+            askingPassword = nil
+            installing = nil
+            renaming = nil
         }
         .alert("Nouvelle machine", isPresented: Binding(
             get: { installing != nil }, set: { if !$0 { installing = nil } })
@@ -1039,6 +1065,9 @@ struct LocalVMTerminalView: View {
                             textSize = ConsoleTextSize.scaled(textSize, by: value.magnification)
                         }
                     )
+                    // Faire glisser la console vers le bas range le clavier,
+                    // comme dans Messages.
+                    .scrollDismissesKeyboard(.interactively)
                     .background(Color.black)
                     .foregroundStyle(Color(red: 0.7, green: 0.95, blue: 0.7))
                     .onChange(of: model.consoleText) {
@@ -1071,6 +1100,20 @@ struct LocalVMTerminalView: View {
             // touche envoie vient de `TerminalKey`, tenu par des tests.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    // **Le clavier se range** : sorti, il couvre la moitié
+                    // du téléphone, et on regarde l'écran de la machine bien
+                    // plus souvent qu'on n'y tape. Ce bouton le rentre ou le
+                    // ressort ; les touches de la barre, elles, marchent
+                    // clavier rangé, sans le ressortir.
+                    Button {
+                        inputFocused = !inputFocused
+                    } label: {
+                        Image(systemName: inputFocused ? "keyboard.chevron.compact.down" : "keyboard")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(minWidth: 40, minHeight: 32)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel(inputFocused ? "Ranger le clavier" : "Sortir le clavier")
                     // **Coller**, en tête de la barre : le champ de saisie
                     // n'a qu'une ligne, et un script copié depuis une page y
                     // perdait ses retours à la ligne. Ce qui part vient de
@@ -1084,7 +1127,6 @@ struct LocalVMTerminalView: View {
                             }
                             commandLine = ""
                         }
-                        inputFocused = true
                     } label: {
                         Label("coller", systemImage: "doc.on.clipboard")
                             .font(.system(size: 14, weight: .medium))
@@ -1101,7 +1143,6 @@ struct LocalVMTerminalView: View {
                                 model.press(key, afterTyped: commandLine)
                             }
                             commandLine = ""
-                            inputFocused = true
                         } label: {
                             Text(key.label)
                                 .font(.system(size: 14, weight: .medium, design: .monospaced))
@@ -1123,7 +1164,14 @@ struct LocalVMTerminalView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($inputFocused)
-                    .onSubmit(submit)
+                    // La touche Retour du clavier rend le champ ; on le
+                    // reprend, pour taper la commande suivante.
+                    .onSubmit {
+                        submit()
+                        inputFocused = true
+                    }
+                // Le bouton, lui, ne touche pas au clavier : rangé, il le
+                // reste.
                 Button("Entrée", action: submit)
                     .buttonStyle(.borderedProminent)
             }
@@ -1255,13 +1303,10 @@ struct LocalVMTerminalView: View {
     private func submit() {
         if typesOnScreen {
             model.typeOnScreen(commandLine + "\n")
-            commandLine = ""
-            inputFocused = true
-            return
+        } else {
+            model.sendLine(commandLine)
         }
-        model.sendLine(commandLine)
         commandLine = ""
-        inputFocused = true
     }
 }
 #endif
