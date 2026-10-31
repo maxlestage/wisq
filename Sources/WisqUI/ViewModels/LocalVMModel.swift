@@ -42,8 +42,14 @@ public final class LocalVMModel {
     /// déclenche donc plus rien du tout, et c'est précisément lui qu'il faut
     /// pouvoir regarder.
     private var ticker: Task<Void, Never>?
-    /// Console text, ANSI-stripped and line-edited, bounded in lines.
-    public private(set) var consoleText = ""
+    /// **Les lignes de la console**, une par une : scrollback puis écran,
+    /// ANSI interprété, bornées en nombre. La vue en fait une pile
+    /// paresseuse — voir `TerminalGrid.lines`.
+    public private(set) var consoleLines: [String] = []
+
+    /// Console text, ANSI-stripped and line-edited, bounded in lines : les
+    /// mêmes lignes, jointes.
+    public var consoleText: String { consoleLines.joined(separator: "\n") }
 
     /// **L'écran de la machine PC**, ou nil pour une machine sans écran (le
     /// RISC-V). La vue relit ses pixels quand sa révision change.
@@ -127,7 +133,7 @@ public final class LocalVMModel {
         // Un redémarrage de l'invité garde aussi la console, comme une vraie
         // console série : on y lit pourquoi il a redémarré.
         if !resuming && !keepingConsole {
-            consoleText = ""
+            consoleLines = []
             sink.reset()
         }
 
@@ -408,8 +414,12 @@ public final class LocalVMModel {
             let (refresh, replies) = sink.append(chunk)
             answers.send(replies)
             guard refresh else { return }
+            // Trente fois par seconde au plus : voir `ConsolePacer`. Les
+            // morceaux qui arrivent pendant l'attente partent avec celle-ci.
             Task { @MainActor [weak self] in
-                self?.consoleText = sink.takeText()
+                let wait = sink.refreshDelay()
+                if wait > 0 { try? await Task.sleep(nanoseconds: wait) }
+                self?.consoleLines = sink.takeLines()
             }
         }
         answers.machine = machine
@@ -569,7 +579,7 @@ public final class LocalVMModel {
                         let line = ConsoleProse.plain(resumeNote, columns: consoleSink.columns)
                         if consoleSink.append(Data("[\(line)]\r\n".utf8)).refresh {
                             Task { @MainActor [weak self] in
-                                self?.consoleText = consoleSink.takeText()
+                                self?.consoleLines = consoleSink.takeLines()
                             }
                         }
                     }
@@ -842,7 +852,7 @@ public final class LocalVMModel {
         status = .finished(message)
         let forTheGrid = ConsoleProse.plain(message, columns: sink.columns)
         _ = sink.append(Data("\n[\(forTheGrid)]\n".utf8))
-        consoleText = sink.takeText()
+        consoleLines = sink.takeLines()
     }
 }
 
@@ -856,6 +866,7 @@ private final class ConsoleSink: @unchecked Sendable {
     private let lock = NSLock()
     private var console = TerminalGrid()
     private var refreshPending = false
+    private var pacer = ConsolePacer()
 
     init() {
         columns = console.columns
@@ -898,11 +909,21 @@ private final class ConsoleSink: @unchecked Sendable {
         return console.bracketedPaste
     }
 
-    func takeText() -> String {
+    /// Les lignes de la grille, et la console tenue pour repeinte : la
+    /// prochaine mise à jour attendra l'intervalle de `ConsolePacer`.
+    func takeLines() -> [String] {
         lock.lock()
         defer { lock.unlock() }
         refreshPending = false
-        return console.text
+        pacer.refreshed(at: DispatchTime.now().uptimeNanoseconds)
+        return console.lines
+    }
+
+    /// Ce que la mise à jour demandée maintenant doit attendre.
+    func refreshDelay() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return pacer.delay(at: DispatchTime.now().uptimeNanoseconds)
     }
 
     func reset() {
