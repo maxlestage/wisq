@@ -59,7 +59,7 @@ c'est la CI iOS qui les juge.
 
 Le site dit le nouveau chemin (`docs.rs`, dans les deux langues), et que le
 PC a un écran et le réseau, ce qu'il niait encore. Le compte publié passe à
-3252.
+3256, avec le MMX (#665) fusionné entre-temps.
 
 ## 2026-10-31 — Le MMX existe
 
