@@ -85,13 +85,19 @@ function claimedValue(label: RegExp, langue: Langue): number {
 /// matériels, et le balayage qui vérifie ce qui vit hors de son périmètre.
 /// Recopier une liste de nombres dans un fichier qui garde des nombres
 /// recopiés serait une plaisanterie coûteuse.
+///
+/// Elles vont jusqu'à vingt depuis que le dix-septième corpus (le MMX) est
+/// arrivé : « dix-sept » porte un trait d'union, et les gardes qui
+/// nettoient un mot avant de le chercher ici gardent ce trait.
 const FRENCH_NUMBERS = [
   "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit",
   "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize",
+  "dix-sept", "dix-huit", "dix-neuf", "vingt",
 ];
 const ENGLISH_NUMBERS = [
   "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
   "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+  "seventeen", "eighteen", "nineteen", "twenty",
 ];
 
 describe("advertised claims match the repository", () => {
@@ -364,8 +370,8 @@ describe("advertised claims match the repository", () => {
     for (const path of sources) {
       const text = readFileSync(path, "utf8");
       for (const [words, pattern] of [
-        [FRENCH_NUMBERS, /([\p{L}]+) corpus matériels/gu],
-        [ENGLISH_NUMBERS, /([\p{L}]+) hardware corpora/giu],
+        [FRENCH_NUMBERS, /([\p{L}-]+) corpus matériels/gu],
+        [ENGLISH_NUMBERS, /([\p{L}-]+) hardware corpora/giu],
       ] as const) {
         for (const found of text.matchAll(pattern)) {
           seen += 1;
@@ -721,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3252",
+        "3256",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -2093,8 +2099,8 @@ describe("le chiffrage du bureau annonce la vraie suite hébergée", () => {
       /^## Brancher le bureau dans l'application[^\n]*\n[\s\S]*?(?=^## |$(?![\s\S]))/m,
     )?.[0] ?? "";
 
-  /// `FRENCH_NUMBERS` s'arrête à seize ; les deux nombres de cette section
-  /// sont au-dessus, et c'est au-dessus que les lettres échappaient.
+  /// `FRENCH_NUMBERS` s'arrête à vingt ; les deux nombres de cette section
+  /// peuvent être au-dessus, et c'est au-dessus que les lettres échappaient.
   const EN_LETTRES = new Map<string, number>([
     ...FRENCH_NUMBERS.map((mot, n): [string, number] => [mot, n]),
     ["quinze", 15], ["seize", 16], ["dix-sept", 17], ["dix-huit", 18],
@@ -2388,7 +2394,7 @@ describe("la phrase des corpus matériels ne dérive pas là où la garde ne reg
         for (const found of flat.matchAll(/(\S+)\s+(corpus matériels|hardware corpora)/giu)) {
           hits.push({
             path: shown,
-            word: found[1].replace(/[^\p{L}]/gu, "").toLowerCase(),
+            word: found[1].replace(/[^\p{L}-]/gu, "").toLowerCase(),
             tail: flat.slice(found.index! + found[0].length).trimStart().slice(0, 60),
           });
         }
@@ -2511,7 +2517,7 @@ describe("l'inventaire des oracles matériels dit le compte du répertoire, sous
       if (!/oracles matériels|hardware oracles/i.test(text)) continue;
       for (const bloc of paragraphs(text)) {
         for (const found of bloc.matchAll(/(\S+)\s+(?:oracles matériels|hardware oracles)/giu)) {
-          const word = found[1]!.replace(/[^\p{L}]/gu, "").toLowerCase();
+          const word = found[1]!.replace(/[^\p{L}-]/gu, "").toLowerCase();
           if (!NUMBERS.has(word)) continue;
           hits.push({ path: shown, word, dated: /#\d+/.test(bloc.slice(0, found.index!)) });
         }
