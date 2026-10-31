@@ -8,6 +8,84 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — La carte graphique de QEMU : un vrai `/dev/dri` pour tous les Linux
+
+**La demande.** « Je veux que ça s'affiche en desktop quand même sans passer
+par rien juste Linux local », puis « faut que tous les Linux fonctionnent ».
+
+**Ce que Void Linux Xfce a montré au banc.** L'image live démarre, `lightdm`
+tourne, et Xorg ne se lance jamais :
+- son noyau prend `vesafb` : pas de `/dev/dri`, seulement un `fb0`
+  (`CONFIG_SYSFB_SIMPLEFB` est absent de sa configuration, si bien que
+  `simpledrm` ne trouve jamais de cadre à prendre) ;
+- `lightdm` attend que `logind` lui donne un siège graphique, et `logind` ne
+  fait d'un `fb0` le maître d'un siège que si le noyau a reçu `nomodeset`
+  (règle `71-seat.rules`) ;
+- et l'image live de Void lit `nomodeset` comme « pas de bureau » : son
+  crochet `05-nomodeset.sh` pose un fichier `down` sur `lightdm`, `sddm` et
+  `gdm`. Essayé : `lightdm` reste arrêté, sans même un journal.
+
+Aucune option de la ligne de commande n'en sort. Il fallait un vrai
+périphérique DRM.
+
+**Ce qui change.** `X86BochsDisplay` est la carte « std VGA » de QEMU, celle
+que `bochs-drm` pilote, et ce pilote est dans presque tous les noyaux :
+- sur le bus PCI en 00:02.0, 1234:1111, contrôleur VGA, révision 2 ;
+- BAR0 : la mémoire vidéo, 16 Mio, là où était déjà le cadre du démarrage ;
+- BAR2 : les registres (EDID absent, ports VGA, registres DISPI de Bochs à
+  0x500, registres étendus de QEMU à 0x600) ;
+- et les mêmes registres DISPI par les ports 0x1CE et 0x1CF.
+
+L'écran (`X86Framebuffer`) devient une mémoire vidéo de 16 Mio et un **mode** :
+largeur, hauteur, longueur de ligne et premier pixel. Le pilote pose la
+résolution qu'il veut, et change de page en déplaçant le premier pixel. La vue
+de l'application suit : elle prend le mode et ses pixels ensemble, sous un
+verrou, et l'image a la taille que l'invité a choisie. L'instantané porte la
+mémoire vidéo entière et l'état de la carte (`WISQ_vid`) ; l'ancienne section,
+qui ne portait que le cadre du démarrage, se lit encore.
+
+Une machine qui n'a qu'un écran a maintenant un bus PCI : sans lui, le noyau
+ne verrait pas la carte. Le pont refait à chaque disque branché, retiré ou
+repris garde la carte (`install(bus:)`).
+
+**Ce que le vrai noyau en dit**, Void Linux Xfce au banc, sans rien changer à
+sa ligne de commande :
+
+```
+bochs-drm 0000:00:02.0: vgaarb: deactivate vga console
+[drm] Found bochs VGA, ID 0xb0c5.
+[drm] Framebuffer size 16384 kB @ 0xe0000000, mmio @ 0xe1000000.
+[drm] Initialized bochs-drm 1.0.0 for 0000:00:02.0 on minor 0
+fbcon: bochs-drmdrmfb (fb0) is primary device
+```
+
+`/dev/dri/card0` existe, et la console du noyau est passée sur la carte.
+
+**Tests.** `X86BochsDisplayTests` (treize) rejoue ce que fait le pilote :
+- trouver la carte sur le bus, même sans disque ni réseau ;
+- lire et mesurer ses BAR, et suivre une BAR déplacée ;
+- garder la carte quand un disque arrive ou part ;
+- lire l'identifiant, la mémoire et les registres étendus ;
+- poser un mode, changer de page, lire une ligne virtuelle plus longue que
+  l'image ;
+- refuser un mode qui ne tient pas ;
+- effacer à l'allumage, sauf `NOCLEARMEM` ;
+- `GETCAPS` ;
+- les ports ;
+- l'instantané.
+
+Dix sabotages, tous tombés :
+- pas de bus pour un écran seul ;
+- le masque de la BAR0 faux ;
+- les décalages gardés à l'allumage ;
+- un mode hors mémoire accepté ;
+- les lignes lues sans leur remplissage ;
+- la carte non reprise ;
+- l'index de port ignoré ;
+- pas d'effacement ;
+- la carte absente du bus ;
+- la BAR2 sourde en écriture.
+
 ## 2026-10-31 — La console ne met en page que ce qu'on voit
 
 **La demande.** « Hyper méga fluide et réactif », puis « continue d'être

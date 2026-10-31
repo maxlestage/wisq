@@ -93,7 +93,7 @@ public final class X86Machine: @unchecked Sendable {
         let bus = X86PCIHost(storage: device)
         bus.second = memory.bus?.second
         bus.network = memory.bus?.network
-        memory.bus = bus
+        install(bus: bus)
     }
 
     /// Le second disque, quand il y en a un — `/dev/vdb` pour le noyau.
@@ -118,7 +118,7 @@ public final class X86Machine: @unchecked Sendable {
         secondDisk = device
         let bus = memory.bus ?? X86PCIHost(storage: nil)
         bus.second = X86PCIHost(secondStorage: device)
-        memory.bus = bus
+        install(bus: bus)
     }
 
     /// La carte réseau, quand il y en a une — `eth0` pour le noyau.
@@ -131,7 +131,7 @@ public final class X86Machine: @unchecked Sendable {
         network = nic
         let bus = memory.bus ?? X86PCIHost(storage: nil)
         bus.network = X86PCIHost(network: nic)
-        memory.bus = bus
+        install(bus: bus)
     }
 
     /// **Relayer un port de l'hôte vers l'invité**, quand la carte est branchée
@@ -152,10 +152,21 @@ public final class X86Machine: @unchecked Sendable {
         if let host = memory.bus?.network {
             let bus = X86PCIHost(storage: nil)
             bus.network = host
-            memory.bus = bus
+            install(bus: bus)
         } else {
-            memory.bus = nil
+            install(bus: nil)
         }
+    }
+
+    /// **Le bus posé, la carte graphique dessus.** Le pont est refait quand un
+    /// disque arrive, part, ou revient d'un instantané ; la carte, elle, reste
+    /// celle de l'écran. Et un écran sans disque ni réseau a quand même besoin
+    /// d'un bus pour être trouvé : sans lui, le noyau ne verrait pas la carte.
+    private func install(bus: X86PCIHost?) {
+        var bus = bus
+        if bus == nil, vga != nil { bus = X86PCIHost(storage: nil) }
+        bus?.display = vga
+        memory.bus = bus
     }
 
     private let lock = NSLock()
@@ -279,10 +290,23 @@ public final class X86Machine: @unchecked Sendable {
         guard memory.ramRanges.count == 2 || UInt64(ramSize) <= Self.displayBase else {
             throw DisplayRefusal.wouldOverlapMemory
         }
-        let screen = X86Framebuffer(base: Self.displayBase, width: width, height: height)
+        let screen = X86Framebuffer(base: Self.displayBase, width: width, height: height,
+                                    memory: X86BochsDisplay.memoryBytes)
         memory.screen = screen
         display = screen
+        // **Et la carte graphique qui va avec**, sur le bus : c'est elle que
+        // `bochs-drm` trouve, et qui fait de l'écran un vrai périphérique DRM.
+        let card = X86BochsDisplay(screen: screen, registersBase: Self.displayRegistersBase)
+        memory.vga = card
+        vga = card
+        install(bus: memory.bus)
     }
+
+    /// La carte graphique de l'écran, quand il y en a un.
+    public private(set) var vga: X86BochsDisplay?
+
+    /// Les registres de la carte (sa BAR2), juste après sa mémoire vidéo.
+    public static let displayRegistersBase: UInt64 = displayBase + UInt64(X86BochsDisplay.memoryBytes)
 
     /// La page zéro telle qu'elle a été posée. Pour un test, et pour dire ce
     /// que le noyau va lire.
@@ -587,10 +611,18 @@ public final class X86Machine: @unchecked Sendable {
         // console du noyau ne repeignait que son curseur — une capture du
         // téléphone l'a montré. Codés comme la mémoire, une console de texte
         // pèse ce que ses caractères pèsent.
-        if let display {
-            writer.u64(Snapshot.screenSection)
-            writer.u64(UInt64(display.width))
-            writer.u64(UInt64(display.height))
+        //
+        // **Puis la mémoire vidéo entière, avec la carte** (`videoSection`) :
+        // un bureau peint dans des tampons que l'image ne montre pas encore,
+        // et la carte dit lequel est montré. L'ancienne section, qui ne
+        // portait que le cadre du démarrage, se lit encore.
+        if let display, let vga {
+            writer.u64(Snapshot.videoSection)
+            writer.u64(UInt64(display.memorySize))
+            writer.u64(display.base)
+            writer.u64(UInt64(display.bootMode.width))
+            writer.u64(UInt64(display.bootMode.height))
+            vga.save(into: &writer)
             display.withPixels { writer.ram($0) }
         }
         // **La carte réseau, derrière sa marque et avant les disques** : la
@@ -680,16 +712,39 @@ public final class X86Machine: @unchecked Sendable {
         // ne se reprend pas — elle garde le sien, que l'invité repeindra —,
         // et une machine sans écran passe par-dessus.
         var screenPixels: Snapshot.Reader?
+        var screenPixelCount = 0
         if tail.peeks(Snapshot.screenSection) {
             _ = try tail.u64()
             let width = try tail.u64(), height = try tail.u64()
             guard (1...16_384).contains(width), (1...16_384).contains(height) else {
                 throw Snapshot.Failure.corrupt
             }
-            if let display, display.width == Int(width), display.height == Int(height) {
+            if let display, display.bootMode.width == Int(width), display.bootMode.height == Int(height) {
                 screenPixels = tail
+                screenPixelCount = Int(width * height * 4)
             }
             try tail.skipRAM(count: Int(width * height * 4))
+        }
+        // La mémoire vidéo et la carte, même règle : une mémoire d'une autre
+        // taille, ou un écran de démarrage d'une autre taille, ne se
+        // reprennent pas.
+        var videoState: (base: UInt64, card: X86BochsDisplay.State)?
+        if tail.peeks(Snapshot.videoSection) {
+            _ = try tail.u64()
+            let size = try tail.u64(), base = try tail.u64()
+            let width = try tail.u64(), height = try tail.u64()
+            guard (1...(1 << 30)).contains(size), base < 1 << 32, base & (size - 1) == 0,
+                  (1...16_384).contains(width), (1...16_384).contains(height) else {
+                throw Snapshot.Failure.corrupt
+            }
+            let card = try X86BochsDisplay.readState(from: &tail)
+            if let display, vga != nil, display.memorySize == Int(size),
+               display.bootMode.width == Int(width), display.bootMode.height == Int(height) {
+                screenPixels = tail
+                screenPixelCount = Int(size)
+                videoState = (base, card)
+            }
+            try tail.skipRAM(count: Int(size))
         }
         // La carte réseau, si sa marque est là, branchée sur l'autre bout
         // qu'a la machine qu'on reprend : le réseau n'est pas dans
@@ -730,7 +785,11 @@ public final class X86Machine: @unchecked Sendable {
         // mêmes bornes, plus rien ne peut échouer.
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: memory.size))
         if var screenPixels, let display {
-            try display.replacePixels { try screenPixels.ram($0) }
+            try display.replacePixels(count: screenPixelCount) { try screenPixels.ram($0) }
+        }
+        if let videoState, let display, let vga {
+            display.move(to: videoState.base)
+            vga.apply(videoState.card)
         }
 
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
@@ -757,9 +816,9 @@ public final class X86Machine: @unchecked Sendable {
         if let restoredNetworkHost {
             let bus = restoredBus ?? X86PCIHost(storage: nil)
             bus.network = restoredNetworkHost
-            memory.bus = bus
+            install(bus: bus)
         } else {
-            memory.bus = restoredBus
+            install(bus: restoredBus)
         }
         core = restored
     }
