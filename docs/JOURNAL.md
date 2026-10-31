@@ -8,6 +8,39 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — L'écran revient avec la machine reprise
+
+**Ce que le téléphone a montré.** Deux captures prises à la même seconde :
+- la console : « [Reprise de la sauvegarde automatique de 14 h 27 (à
+  l'instant). Appuyez sur Entrée pour retrouver l'invite.] », puis le shell
+  qui répond (`$`) ;
+- l'écran : noir, sauf le petit trait du curseur.
+
+**Pourquoi.** Les pixels de l'écran vivent hors de la RAM, dans
+`X86Framebuffer`, et l'instantané ne les portait pas. Une machine reprise
+revenait donc sur un écran noir. La console du noyau ne repeint que ce qui
+change : elle n'a redessiné que son curseur, qui clignote.
+
+**Ce qui change.** L'instantané porte l'écran, derrière une marque
+(`WISQ_scn`), avant la carte réseau : sa largeur, sa hauteur, puis ses
+pixels codés comme la mémoire. Une console de texte pèse ce que ses
+caractères pèsent, le noir se plie. À la reprise, comme la mémoire, la
+section est validée d'abord et écrite à la fin, et la révision de l'écran
+avance pour que la vue repeigne. Un écran d'une autre taille que celui de
+la machine ne se reprend pas : elle garde le sien, que l'invité repeindra.
+Une machine sans écran passe par-dessus, et un instantané d'avant se reprend
+comme avant.
+
+**Tests.** `X86ScreenSnapshotTests`, quatre : l'écran qui revient et fait
+repeindre, l'écran d'une autre taille laissé tel quel, la machine sans
+écran, l'instantané d'avant. Quatre sabotages, tous attrapés : l'écran
+jamais écrit, jamais repris, la révision qui n'avance pas, et un écran de
+n'importe quelle taille accepté (la reprise échoue).
+
+Une session sauvée avant ce changement n'a pas son écran dans
+l'instantané : elle reviendra encore sur un écran noir, une fois, et la
+sauvegarde suivante le portera. Le compte publié passe à 3274.
+
 ## 2026-10-31 — SSSE3 sur les registres MMX
 
 **Ce qui restait.** Le MMX existe depuis #665, mais pas les formes MMX de

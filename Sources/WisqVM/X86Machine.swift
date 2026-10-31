@@ -581,6 +581,18 @@ public final class X86Machine: @unchecked Sendable {
         // comptent en battements, et un battement doit garder sa longueur.
         writer.u64(Snapshot.clockSection)
         writer.u64(core.instructionsPerTick)
+        // **L'écran, derrière sa marque, avant la carte réseau.** Ses pixels
+        // vivent hors de la RAM (`X86Framebuffer`), et l'instantané ne les
+        // portait pas : une machine reprise revenait sur un écran noir, où la
+        // console du noyau ne repeignait que son curseur — une capture du
+        // téléphone l'a montré. Codés comme la mémoire, une console de texte
+        // pèse ce que ses caractères pèsent.
+        if let display {
+            writer.u64(Snapshot.screenSection)
+            writer.u64(UInt64(display.width))
+            writer.u64(UInt64(display.height))
+            display.withPixels { writer.ram($0) }
+        }
         // **La carte réseau, derrière sa marque et avant les disques** : la
         // section du disque n'a pas de marque, elle se lit « s'il reste des
         // octets », et une carte écrite après elle serait prise pour un disque.
@@ -663,6 +675,22 @@ public final class X86Machine: @unchecked Sendable {
         } else {
             restored.instructionsPerTick = X86LegacyDevices.legacyInstructionsPerTick
         }
+        // L'écran, si sa marque est là, lu comme la mémoire : validé ici,
+        // écrit à la fin. Un écran d'une autre taille que celui de la machine
+        // ne se reprend pas — elle garde le sien, que l'invité repeindra —,
+        // et une machine sans écran passe par-dessus.
+        var screenPixels: Snapshot.Reader?
+        if tail.peeks(Snapshot.screenSection) {
+            _ = try tail.u64()
+            let width = try tail.u64(), height = try tail.u64()
+            guard (1...16_384).contains(width), (1...16_384).contains(height) else {
+                throw Snapshot.Failure.corrupt
+            }
+            if let display, display.width == Int(width), display.height == Int(height) {
+                screenPixels = tail
+            }
+            try tail.skipRAM(count: Int(width * height * 4))
+        }
         // La carte réseau, si sa marque est là, branchée sur l'autre bout
         // qu'a la machine qu'on reprend : le réseau n'est pas dans
         // l'instantané, il est autour.
@@ -701,6 +729,9 @@ public final class X86Machine: @unchecked Sendable {
         // Tout ce qui suit la mémoire a été lu et accepté : `skipRAM` a vu les
         // mêmes bornes, plus rien ne peut échouer.
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: memory.size))
+        if var screenPixels, let display {
+            try display.replacePixels { try screenPixels.ram($0) }
+        }
 
         // **Pas de recalcul du mode long ici**, et c'est vérifié plutôt que
         // supposé. `pagingOn` et `longMode` se lisent dans CR0 et dans EFER,
