@@ -107,15 +107,21 @@ final class X86SystemTests: XCTestCase {
         XCTAssertEqual(core.x87Status, 0x3800)
     }
 
-    /// **MMX est annoncé au sens strict**, comme le FPU : la glibc lit le bit,
-    /// aucun binaire de l'initramfs de Debian n'emploie un registre MMX, et
-    /// une instruction MMX qui arriverait serait refusée par son nom plutôt
-    /// qu'exécutée sur un registre XMM.
-    func testMMXInstructionsAreStillRefusedByName() throws {
+    /// **MMX est annoncé, et il existe** : la glibc lit le bit, et une
+    /// instruction MMX s'exécute sur les registres x87, qu'elle partage, et
+    /// jamais sur un registre XMM. (Ce test disait autrefois qu'elle était
+    /// refusée par son nom ; voir `X86MMX.swift`.)
+    func testMMXRunsOnTheX87RegistersNotOnXMM() throws {
         var core = try machine([0x0F, 0xEF, 0xC1])  // pxor %mm1,%mm0
-        XCTAssertThrowsError(try core.run(budget: 1)) { error in
-            guard case .unsupported? = error as? X86Core.Fault else { return XCTFail("\(error)") }
-        }
+        core.setMMX(0, 0x0F0F_0000_FFFF_1234)
+        core.setMMX(1, 0x00FF_00FF_00FF_00FF)
+        core.vectors[0] = 0xAAAA_AAAA_AAAA_AAAA
+        core.vectors[2] = 0x5555_5555_5555_5555
+        let xmm = core.vectors
+        _ = try core.run(budget: 1)
+        XCTAssertEqual(core.mmx(0), 0x0FF0_00FF_FF00_12CB)
+        XCTAssertEqual(core.mmx(1), 0x00FF_00FF_00FF_00FF)
+        XCTAssertEqual(core.vectors, xmm, "aucun registre XMM touché")
     }
 
     /// Sans le bit « mode long » dans la feuille étendue, un noyau 64 bits

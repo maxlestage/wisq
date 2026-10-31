@@ -20,8 +20,9 @@ import Foundation
 // programmes les emploient sous VEX, qui passe par ici.
 //
 // **Toutes exigent le préfixe `66`.** Sans lui, ce sont les mêmes opérations
-// sur les registres MMX, que ce cœur n'a pas ; les confondre exécuterait sur
-// un XMM ce que le programme voulait faire ailleurs.
+// sur les registres MMX, que `X86MMX.swift` n'écrit pas encore pour SSSE3 ;
+// les confondre exécuterait sur un XMM ce que le programme voulait faire
+// ailleurs.
 //
 // La référence est le processeur : `Tests/Fixtures/x86-v2-oracle.tsv`.
 extension X86Core {
