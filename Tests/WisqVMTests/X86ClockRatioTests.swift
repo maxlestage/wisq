@@ -19,11 +19,24 @@ final class X86ClockRatioTests: XCTestCase {
     }
 
     /// Une machine neuve prend le rapport d'aujourd'hui, et le noyau le lit
-    /// comme une fréquence : 72 × 1,193182 MHz.
+    /// comme une fréquence : 288 × 1,193182 MHz. (C'était 72 jusqu'à ce que
+    /// Chimera Linux en manque : voir `X86LegacyDevices.instructionsPerTick`.)
     func testANewMachineTakesTodaysRatio() throws {
         let machine = try X86PacingTests.sleeper(pacing: false)
-        XCTAssertEqual(machine.core.instructionsPerTick, 72)
-        XCTAssertEqual(machine.guestHertz, 85_909_104, accuracy: 1)
+        XCTAssertEqual(machine.core.instructionsPerTick, 288)
+        XCTAssertEqual(machine.guestHertz, 343_636_416, accuracy: 1)
+    }
+
+    /// **Une machine reprise à soixante-douze y reste** : son noyau a étalonné
+    /// son TSC à 86 MHz, et le passer à 344 ferait couler son temps quatre
+    /// fois moins vite sous lui.
+    func testAMachineSavedAtSeventyTwoResumesAtSeventyTwo() throws {
+        let saved = try Self.ranMachine(ratio: 72)
+        let resumed = try X86PacingTests.sleeper(pacing: false)
+        try resumed.restore(saved.snapshot())
+        XCTAssertEqual(resumed.core.instructionsPerTick, 72)
+        XCTAssertEqual(resumed.guestHertz, 85_909_104, accuracy: 1)
+        XCTAssertEqual(resumed.core.ticks, saved.core.ticks)
     }
 
     /// Le rapport voyage dans l'instantané, et le temps de l'invité avec lui.
@@ -69,6 +82,6 @@ final class X86ClockRatioTests: XCTestCase {
         bytes.replaceSubrange((bytes.count - 8)..<bytes.count, with: [UInt8](repeating: 0, count: 8))
         let resumed = try X86PacingTests.sleeper(pacing: false)
         XCTAssertThrowsError(try resumed.restore(Data(bytes)))
-        XCTAssertEqual(resumed.core.instructionsPerTick, 72)
+        XCTAssertEqual(resumed.core.instructionsPerTick, X86LegacyDevices.instructionsPerTick)
     }
 }
