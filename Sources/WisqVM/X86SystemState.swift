@@ -159,8 +159,8 @@ public enum X86CPUID {
     /// - MMX (23) : annoncé d'abord parce que la glibc l'exige, sans qu'aucune
     ///   instruction MMX n'existe ici ; elles existent maintenant
     ///   (`X86MMX.swift`, tenu par `x86-mmx-oracle.tsv`), formes MMX de
-    ///   SSSE3 comprises (`X86MMXSSSE3.swift`). Restent refusées par leur nom
-    ///   les conversions entre MMX et flottants (`0F 2A`, `2C`, `2D`).
+    ///   SSSE3 (`X86MMXSSSE3.swift`) et conversions entre MMX et flottants
+    ///   (`X86Core.mmxConversion`) comprises : le jeu entier.
     ///
     /// **Pourquoi les cinq derniers.** La glibc refuse de charger un programme
     /// sur un processeur qui n'a pas le socle x86-64 : CMOV, CX8, FPU, FXSR,

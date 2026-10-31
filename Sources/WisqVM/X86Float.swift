@@ -147,6 +147,14 @@ extension X86Core {
                 setVector(fields.reg, low, destination.high)
             }
 
+        // **Les conversions entre MMX et flottants** : sans préfixe, deux
+        // simples ; sous `66`, deux doubles ; côté MMX, deux entiers de
+        // trente-deux bits. Voir `mmxConversion`. La condition est écrite
+        // sur chaque motif, pour la raison dite plus haut.
+        case 0x2A where !single && !doubleWide, 0x2C where !single && !doubleWide,
+             0x2D where !single && !doubleWide:
+            try mmxConversion(instruction, opcode, double: operandSize)
+
         case 0x2A where single || doubleWide:  // CVTSI2SS / CVTSI2SD
             let fields = try decodeFields(instruction)
             let raw = try readRM(fields, wide ? 8 : 4)
@@ -550,5 +558,54 @@ extension X86Core {
         } else if left < right {
             flags |= Flag.carry
         }
+    }
+}
+
+extension X86Core {
+    /// **`CVTPI2PS`, `CVTPI2PD`, `CVT(T)PS2PI`, `CVT(T)PD2PI`** : deux
+    /// entiers de trente-deux bits d'un côté, deux simples (sans préfixe) ou
+    /// deux doubles (`66`) de l'autre.
+    ///
+    /// - Vers les flottants (`2A`) : les entiers viennent d'un registre MMX
+    ///   ou de huit octets de mémoire. Deux simples remplacent la moitié
+    ///   basse du XMM et laissent la haute ; deux doubles le remplacent.
+    /// - Vers les entiers (`2C` tronque, `2D` arrondit au plus proche) : un
+    ///   flottant qui ne tient pas rend l'entier indéfini, 0x80000000, comme
+    ///   les conversions scalaires.
+    ///
+    /// Un registre MMX lu ou écrit fait entrer dans le MMX (`enterMMX`). Lire
+    /// les entiers en mémoire n'y touche pas.
+    ///
+    /// Elles étaient les dernières formes MMX que ce cœur refusait. La
+    /// référence est `Tests/Fixtures/x86-mmx-oracle.tsv`.
+    mutating func mmxConversion(_ instruction: X86Instruction, _ opcode: UInt8, double: Bool) throws {
+        let fields = try decodeFields(instruction)
+        if opcode == 0x2A {
+            let raw: UInt64
+            if fields.mod == 0b11 {
+                enterMMX()
+                raw = mmx(fields.rm)
+            } else {
+                raw = try readRMMemory(8)
+            }
+            let low = Double(Int32(truncatingIfNeeded: raw))
+            let high = Double(Int32(truncatingIfNeeded: raw >> 32))
+            if double {
+                setVector(fields.reg, low.bitPattern, high.bitPattern)
+            } else {
+                let pair = UInt64(Float(low).bitPattern) | UInt64(Float(high).bitPattern) << 32
+                setVector(fields.reg, pair, vector(fields.reg).high)
+            }
+            return
+        }
+        let source = try readVectorRM(fields, double ? 16 : 8)
+        let values = double
+            ? [Self.asDouble(source.0), Self.asDouble(source.1)]
+            : [Double(Self.asSingle(source.0)), Double(Self.asSingle(source.0 >> 32))]
+        let integers = values.map { value in
+            Self.toInteger(opcode == 0x2C ? value.rounded(.towardZero) : value.rounded(.toNearestOrEven), 4)
+        }
+        enterMMX()
+        setMMX(fields.reg, integers[0] | integers[1] << 32)
     }
 }
