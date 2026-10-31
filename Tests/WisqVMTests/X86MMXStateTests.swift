@@ -53,6 +53,19 @@ final class X86MMXStateTests: XCTestCase {
         }
     }
 
+    /// **Les conversions qui touchent un registre MMX y entrent aussi** :
+    /// `cvtpi2ps %mm1, %xmm0` et `cvtps2pi %xmm1, %mm0`.
+    func testConversionsShareTheX87Stack() throws {
+        for code: [UInt8] in [[0x0F, 0x2A, 0xC1], [0x0F, 0x2D, 0xC1]] {
+            let (core, _) = try Self.run(code) {
+                $0.x87TopIndex = 5
+                $0.x87Tags = 0xFFFF
+            }
+            XCTAssertEqual(core.x87TopIndex, 0, "\(code)")
+            XCTAssertEqual(core.x87Tags, 0, "\(code)")
+        }
+    }
+
     /// **Les rangements** : `movq mm, m64`, `movntq`, `movd r/m32, mm` (les
     /// quatre octets bas seulement), et `maskmovq`, qui ne range que les octets
     /// dont le bit fort du masque est à un, à [RDI].
