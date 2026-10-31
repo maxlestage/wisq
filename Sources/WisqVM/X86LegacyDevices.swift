@@ -22,9 +22,9 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// Combien d'instructions valent un battement du 8253.
     ///
     /// Le vrai compte à 1,193182 MHz. Ce nombre dit donc **la vitesse que
-    /// l'invité croit à son processeur** : soixante-douze instructions par
-    /// battement font un processeur de 86 MHz, ce que le noyau mesure au
-    /// démarrage (« Detected 85.908 MHz processor »).
+    /// l'invité croit à son processeur** : deux cent quatre-vingt-huit
+    /// instructions par battement font un processeur de 344 MHz, ce que le
+    /// noyau mesure au démarrage (« tsc: Detected 343.624 MHz processor »).
     ///
     /// **Pourquoi trente-six, et plus douze.** Douze donnaient à peu près le
     /// temps réel quand ce cœur exécutait quatorze millions d'instructions par
@@ -53,10 +53,30 @@ public struct X86LegacyDevices: Sendable, Equatable {
     /// SSH, qui se mesure en temps de l'invité, en fait moins. Alpine, lui,
     /// ne bouge pas : 62,5 s avant, 61,1 s après, pour le même shell.
     ///
+    /// **Puis deux cent quatre-vingt-huit.** Chimera Linux démarre par dinit,
+    /// dont les services ont soixante secondes pour démarrer. Le premier,
+    /// `early-modules-early`, charge les modules des nœuds statiques de
+    /// `/dev` (`kmod static-modules`) : 118 s de l'invité à soixante-douze,
+    /// processeur occupé de bout en bout, soit 10,2 milliards
+    /// d'instructions. dinit l'interrompait, et tout le démarrage tombait
+    /// derrière lui (« All services have stopped with no shutdown issued;
+    /// boot failure? »), sur le téléphone comme au banc. À deux cent
+    /// quatre-vingt-huit, il tient en trente secondes, et Chimera va jusqu'à
+    /// `chimera login:` en 21,9 milliards d'instructions.
+    ///
+    /// Les autres ne paient presque rien, mesurés au banc jusqu'au shell de
+    /// `root`, en instructions puis en temps de l'invité, à soixante-douze
+    /// puis à deux cent quatre-vingt-huit :
+    /// - Debian 13 : 16,23 puis 15,96 milliards ; 190 puis 56 s ;
+    /// - Arch : 27,20 puis 27,15 milliards ; 304 puis 77 s ;
+    /// - Alpine, jusqu'au shell de secours : 3,60 puis 3,75 milliards — les
+    ///   attentes qui tournent sur le processeur coûtent quatre fois plus
+    ///   d'instructions — ; 41 puis 14 s.
+    ///
     /// **C'est le rapport des machines neuves.** Une machine reprise garde le
     /// sien, écrit dans son instantané : son noyau a étalonné son TSC contre
     /// le 8253 au démarrage, et le 8253 garde ses échéances en battements.
-    public static let instructionsPerTick: UInt64 = 72
+    public static let instructionsPerTick: UInt64 = 288
 
     /// **Le rapport des instantanés qui ne le disent pas** : ils ont été
     /// écrits quand il valait trente-six pour toutes les machines. Les

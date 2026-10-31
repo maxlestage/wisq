@@ -85,7 +85,9 @@ final class X86WaitingBudgetTests: XCTestCase {
                            rip: 0, memory: memory)
         core.flags |= X86Core.Flag.interrupt
         core.devices.reload = 4  // une horloge qui bat vite
-        _ = try core.run(budget: 1000, waiting: 500)
+        // Sept battements d'attente, quel que soit le rapport de l'horloge :
+        // de quoi en voir sonner une, décalée d'un cran par le `nop`.
+        _ = try core.run(budget: 1000, waiting: 7 * core.instructionsPerTick)
         XCTAssertGreaterThan(core.devices.raised, 0,
                              "l'horloge a battu, et quelqu'un l'a lue")
     }
@@ -128,6 +130,12 @@ final class X86WaitingBudgetTests: XCTestCase {
     /// les mêmes au tour près — sans quoi un instantané ou une mesure ne
     /// rejouerait plus la même chose.
     func testSkippingTheWaitGivesTheSameMachineAsCountingIt() throws {
+        // **Au rapport d'avant, soixante-douze.** La course comptée fait
+        // chaque tour d'attente un par un : au rapport d'aujourd'hui, elle en
+        // ferait quatre fois plus, pour la même preuve, et ce test seul
+        // passait de une à quatre minutes. Sauter ou compter ne dépend pas du
+        // rapport ; le nombre de battements, lui, reste le même.
+        let ratio: UInt64 = 72
         func machine(skipping: Bool, oneShot: Bool) throws -> X86Core {
             let ram = X86Memory(size: 1 << 20, base: 0)
             try ram.load([0xFB, 0xF4, 0xEB, 0xFC], at: 0x100)  // sti ; hlt ; jmp .-4
@@ -148,15 +156,16 @@ final class X86WaitingBudgetTests: XCTestCase {
             core.devices.reload = oneShot ? 700 : 1193
             core.devices.oneShot = oneShot
             core.skipsIdleTime = skipping
+            core.instructionsPerTick = ratio
             return core
         }
         for oneShot in [false, true] {
-            for waiting in [nil, 75_000 * X86LegacyDevices.instructionsPerTick] as [UInt64?] {
+            for waiting in [nil, 75_000 * ratio] as [UInt64?] {
                 var counted = try machine(skipping: false, oneShot: oneShot)
                 var skipped = try machine(skipping: true, oneShot: oneShot)
                 // Cinquante mille battements : une quarantaine de réveils en
                 // mode périodique, une dizaine en coup unique.
-                let budget = 50_000 * X86LegacyDevices.instructionsPerTick
+                let budget = 50_000 * ratio
                 let a = try counted.run(budget: budget, waiting: waiting)
                 let b = try skipped.run(budget: budget, waiting: waiting)
                 let label = "coup unique : \(oneShot), attente : \(String(describing: waiting))"
