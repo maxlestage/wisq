@@ -6,9 +6,10 @@ import WisqVM
 /// **L'écran de la machine PC** : ce que le noyau peint par `simpledrm`, et ce
 /// qu'un bureau Linux dessine dessus.
 ///
-/// L'image est relue dix fois par seconde au plus, et seulement quand sa
+/// L'image est relue trente fois par seconde au plus, et seulement quand sa
 /// révision a bougé (voir `X86Framebuffer.revision`) : une image immobile ne
-/// coûte rien à la batterie.
+/// coûte rien à la batterie. Dix fois par seconde suffisaient à une console ;
+/// un bureau, où le pointeur et les fenêtres bougent sous le doigt, saccadait.
 ///
 /// **Le doigt est une souris PS/2**, comme un pavé tactile : glisser déplace
 /// le pointeur de l'invité, toucher clique, un appui long fait le clic droit.
@@ -42,7 +43,7 @@ struct GuestScreenView: View {
             .task {
                 while !Task.isCancelled {
                     refresh()
-                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    try? await Task.sleep(nanoseconds: 33_000_000)
                 }
             }
     }

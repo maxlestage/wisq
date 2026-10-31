@@ -8,6 +8,33 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-10-31 — L'écran repeint trente fois par seconde
+
+**La demande.** « Je veux que ça soit vraiment hyper méga fluide et
+réactif », avec un bureau dans l'écran de la machine locale.
+
+**Ce qui change.** `GuestScreenView` relisait l'image dix fois par seconde
+au plus. C'était assez pour une console, pas pour un bureau où le pointeur et
+les fenêtres bougent sous le doigt. Elle la relit maintenant trente fois par
+seconde. Une image immobile ne coûte toujours rien : la copie n'a lieu que
+quand la révision de l'écran a bougé.
+
+**Ce qui reste le vrai frein**, mesuré au banc sur un démarrage d'Alpine
+(3,77 milliards d'instructions) avec `perf` :
+- 47 % dans la boucle de `X86Core.run` :
+  - 13 % sur la relecture des octets de l'instruction, que le cache de
+    décodage compare avant de servir sa réponse ;
+  - environ 14 % sur le saut indirect de l'aiguillage.
+- 21 % dans `oneByte`, puis l'arithmétique (6 %) et la lecture de la
+  mémoire (4,5 %).
+
+C'est le coût d'un interprète, et iOS n'en permet pas d'autre en dehors du
+WebAssembly que WebKit compile (voir « Le bureau est-il possible ? »). Les
+tranches suivantes s'y attaquent, mesurées une à une.
+
+Rien de testable sous Linux ici : une constante dans une vue. La CI iOS la
+compile.
+
 ## 2026-10-31 — L'écran revient avec la machine reprise
 
 **Ce que le téléphone a montré.** Deux captures prises à la même seconde :

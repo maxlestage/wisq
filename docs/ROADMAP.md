@@ -13894,3 +13894,13 @@ si la comparaison des deux cœurs est le but.
 
 **La forme reste à trancher par Maxime.** Les trois sont écrites ici pour qu'elle
 se tranche sur des coûts et pas sur une impression.
+
+**Tranché le 31 octobre 2026 : les deux à la fois.** Maxime veut un bureau
+« hyper méga fluide et réactif » dans l'écran de la machine locale, et a choisi
+entre trois réponses : optimiser le cœur Swift, brancher l'émetteur, ou les
+deux. Les deux :
+- le cœur Swift s'optimise tout de suite, tranche par tranche, chaque gain
+  mesuré au banc. Rien de ce qui marche (disque, écran, reprise) ne se perd ;
+- l'émetteur se branche en parallèle, d'abord à part (la forme 2, la console
+  seule), puis gagne le disque, l'écran et la reprise, jusqu'à pouvoir prendre
+  la place du cœur Swift dans l'écran de la machine locale (la forme 3).
