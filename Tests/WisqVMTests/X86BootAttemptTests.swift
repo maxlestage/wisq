@@ -451,6 +451,7 @@ final class X86BootAttemptTests: XCTestCase {
             }
             defer { flushConsole(); try? consoleFile?.close() }
             let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
+            let extraPrompts = environment["WISQ_PC_PROMPT"].map { [$0] } ?? []
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
@@ -461,7 +462,10 @@ final class X86BootAttemptTests: XCTestCase {
                 flushConsole()
                 let fresh = Self.withoutEscapes(String(decoding: core.serialOutput.dropFirst(answeredUpTo),
                                                        as: UTF8.self))
-                let prompted = Self.prompts.contains(where: { fresh.contains($0) })
+                // `WISQ_PC_PROMPT` ajoute une invite que la liste ne connaît
+                // pas — `bp 2> `, le shell d'arrêt de l'`init` d'antiX —,
+                // pour aller taper dans un shell inhabituel.
+                let prompted = (Self.prompts + extraPrompts).contains(where: { fresh.contains($0) })
                 // **Le temps dû se paie comme dans l'application** : un pas à
                 // chaque sommeil de l'invité — voir `X86Machine.run`.
                 if owedCycles > 0, core.halted {
