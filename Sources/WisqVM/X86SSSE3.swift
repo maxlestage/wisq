@@ -34,6 +34,12 @@ extension X86Core {
             try crc32(instruction, try decodeFields(instruction), byteForm: opcode == 0xF0)
             return
         }
+        // `ADCX` (66) et `ADOX` (F3) : ici, 66 n'est pas la taille de
+        // l'opérande, et F3 passe avant lui. Voir `X86BMI.swift`.
+        if opcode == 0xF6, instruction.hasPrefix(0xF3) || instruction.hasPrefix(0x66) {
+            try addWithOneCarry(instruction, overflow: instruction.hasPrefix(0xF3))
+            return
+        }
         // `MOVBE` : les mêmes octets sans F2, avec ou sans 66 (sa forme de
         // seize bits). Voir `X86BMI.swift`.
         if opcode == 0xF0 || opcode == 0xF1 {
