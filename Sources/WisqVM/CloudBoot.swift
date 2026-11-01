@@ -512,7 +512,42 @@ public struct CloudBoot: Equatable, Sendable {
         "systemd.mask=user@0.service", "systemd.mask=jeos-firstboot.service",
         "systemd.set_credential_binary=network.network.99-wisq-dhcp:"
             + Data(dhcpOnEthernet.utf8).base64EncodedString(),
+        "systemd.set_credential_binary=systemd.extra-unit.\(sshHostKeyUnit):"
+            + Data(sshHostKey.utf8).base64EncodedString(),
+        "systemd.wants=\(sshHostKeyUnit)",
     ]
+
+    /// Le nom de l'unité qui donne à `sshd` sa clé d'hôte.
+    static let sshHostKeyUnit = "wisq-ssh-host-key.service"
+
+    /// **La clé d'hôte de `sshd`.** Une image de cloud est livrée sans clé
+    /// d'hôte — chaque machine doit avoir la sienne —, et c'est cloud-init
+    /// qui la crée au premier démarrage. wisq démarre sans lui : sur
+    /// Debian 13, `/etc/ssh` n'en avait aucune, `sshd -t` échouait, et
+    /// `ssh.service` tombait cinq fois de suite avant d'abandonner.
+    ///
+    /// Depuis 256, `systemd-debug-generator` installe les unités reçues en
+    /// credentials `systemd.extra-unit.*`, et `systemd.wants=` les tire. Elle
+    /// passe avant `sshd`, sous ses deux noms, et ne fait rien quand la clé
+    /// existe déjà ou quand l'image n'a pas `ssh-keygen`.
+    ///
+    /// **Une clé ed25519, et rien d'autre.** `ssh-keygen -A` aurait aussi
+    /// tiré une clé RSA de 3072 bits : la recherche de ses nombres premiers
+    /// est le calcul le plus long d'un premier démarrage à cette vitesse —
+    /// NixOS, qui le fait lui-même, y passe quatorze minutes. Une clé
+    /// ed25519 se tire en un instant, et tout client d'aujourd'hui la lit ;
+    /// `sshd` saute en silence les types par défaut qui manquent.
+    static let sshHostKey = """
+        [Unit]
+        Description=Cle d'hote SSH ed25519 (wisq)
+        Before=ssh.service sshd.service
+        ConditionPathExists=/usr/bin/ssh-keygen
+        ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key
+
+        """
 
     /// Le fichier `.network` que reçoit `systemd-networkd` : le DHCP, en IPv4
     /// comme en IPv6, sur toute carte Ethernet.
