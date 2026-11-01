@@ -235,6 +235,9 @@ extension X86Core {
         // Le CS d'avant a été noté plus haut : c'est lui qu'on empile, et
         // c'est lui que l'`IRETQ` rendra.
         segments[1] = gate.selector
+        // Le gestionnaire est du code 64 bits, même quand il interrompt un
+        // programme 32 bits.
+        setCompatibilityMode(false)
         var pointer = registers.read(4) & ~UInt64(0xF)
         func push(_ value: UInt64) throws {
             pointer &-= 8
@@ -290,6 +293,9 @@ extension X86Core {
         flags = restored | Flag.reserved
         registers[4] = stack
         segments[2] = UInt16(truncatingIfNeeded: stackSelector)
+        // Le retour vers un programme 32 bits — le premier `init` de MX Linux
+        // y arrive ainsi — le met en mode compatibilité.
+        refreshCompatibilityMode()
         jumped = true
     }
 }

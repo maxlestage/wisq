@@ -727,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3311",
+        "3317",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -2737,7 +2737,7 @@ describe("l'en-tête de X86ModelSpecific compte les endroits qui lisent un MSR",
     ["soixante et un", 61], ["soixante-deux", 62], ["soixante-trois", 63],
     ["soixante-quatre", 64], ["soixante-cinq", 65], ["soixante-six", 66],
     ["soixante-sept", 67], ["soixante-huit", 68], ["soixante-neuf", 69],
-    ["soixante-dix", 70], ["soixante-quinze", 75], ["quatre-vingts", 80],
+    ["soixante-dix", 70], ["soixante et onze", 71], ["soixante-quinze", 75], ["quatre-vingts", 80],
     ["quatre-vingt-dix", 90], ["cent", 100],
   ]);
 

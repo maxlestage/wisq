@@ -14,7 +14,7 @@ import Foundation
 ///
 /// **La même surface qu'avant** : l'indice rend un optionnel et en accepte
 /// un, la séquence rend des paires `(key, value)`, un littéral de
-/// dictionnaire en construit un. Les soixante-neuf endroits qui lisent ou
+/// dictionnaire en construit un. Les soixante et onze endroits qui lisent ou
 /// écrivent un MSR par son indice n'ont pas eu à changer, et l'instantané les
 /// écrit dans le même ordre — trié par numéro — octet pour octet. Un test du
 /// site recompte ces endroits.

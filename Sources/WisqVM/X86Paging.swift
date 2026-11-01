@@ -377,7 +377,8 @@ extension X86Core {
         for index in 0..<more { fetchWindow[have + index] = memory.bytes[beyond + index] }
         return try fetchWindow.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { throw X86DecodeError.truncated }
-            return try X86Decoder.decode(base, available: have + more)
+            return try X86Decoder.decode(base, available: have + more,
+                                         compatibility: compatibilityMode)
         }
     }
 }
