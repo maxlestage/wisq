@@ -8,6 +8,19 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-01 — Le commentaire des délais de systemd parlait encore de 86 MHz
+
+`IsoBoot.patience` explique pourquoi une image démarrée par sa recette reçoit
+dix minutes de patience pour systemd. Le commentaire disait que l'invité se
+croit à environ 86 MHz. C'était vrai à soixante-douze instructions par cran
+d'horloge ; depuis #668, l'horloge avance toutes les deux cent quatre-vingt-huit
+instructions, et l'invité se croit à environ 344 MHz.
+
+Le texte garde l'histoire, qui explique la règle, et dit le présent. Les
+délais restent : Fedora et openSUSE démarrent encore lentement, et ils ne
+coûtent rien à qui arrive à l'heure. Les journaux et les notes de version
+d'avant gardent leur 86 MHz : ce sont des relevés de leur moment.
+
 ## 2026-11-01 — Le bureau Xfce s'affiche ; le matériel servi quatre fois moins souvent
 
 **Le bureau.** Après la carte graphique (#676), `vstmxcsr` (#677) et `vmovsd`
