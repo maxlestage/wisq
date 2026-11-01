@@ -451,6 +451,21 @@ final class X86BootAttemptTests: XCTestCase {
             }
             defer { flushConsole(); try? consoleFile?.close() }
             let slice: UInt64 = sampleFile == nil ? 50_000_000 : 1_000_000
+            // **L'écran aussi, au fil de la course**, toutes les dix
+            // milliards d'instructions : une course de MX Linux a tourné plus
+            // de trois heures sans atteindre la fin de son budget, et l'image,
+            // écrite seulement à la fin, n'existait toujours pas.
+            var nextScreen: UInt64 = 10_000_000_000
+            var ranSoFar: UInt64 = 0
+            func dumpScreen() {
+                guard let path = environment["WISQ_PC_SCREEN_DUMP"], let frame = memory.screen else { return }
+                let pixels = frame.snapshot()
+                var ppm = Data("P6\n\(frame.width) \(frame.height)\n255\n".utf8)
+                for index in stride(from: 0, to: pixels.count, by: 4) {
+                    ppm += [pixels[index + 2], pixels[index + 1], pixels[index]]
+                }
+                FileManager.default.createFile(atPath: path, contents: ppm)
+            }
             let extraPrompts = environment["WISQ_PC_PROMPT"].map { [$0] } ?? []
             while remaining > 0 {
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
@@ -460,6 +475,11 @@ final class X86BootAttemptTests: XCTestCase {
                 }
                 remaining -= min(remaining, max(executed, 1))
                 flushConsole()
+                ranSoFar &+= max(executed, 1)
+                if ranSoFar >= nextScreen {
+                    dumpScreen()
+                    nextScreen &+= 10_000_000_000
+                }
                 let fresh = Self.withoutEscapes(String(decoding: core.serialOutput.dropFirst(answeredUpTo),
                                                        as: UTF8.self))
                 // `WISQ_PC_PROMPT` ajoute une invite que la liste ne connaît
