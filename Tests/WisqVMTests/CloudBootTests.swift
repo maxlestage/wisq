@@ -35,6 +35,9 @@ final class CloudBootTests: XCTestCase {
         XCTAssertTrue(line.hasSuffix(" systemd.mask=user@0.service systemd.mask=jeos-firstboot.service "
             + "systemd.set_credential_binary=network.network.99-wisq-dhcp:"
             + Data(CloudBoot.dhcpOnEthernet.utf8).base64EncodedString() + " "
+            + "systemd.set_credential_binary=systemd.extra-unit.wisq-ssh-host-key.service:"
+            + Data(CloudBoot.sshHostKey.utf8).base64EncodedString() + " "
+            + "systemd.wants=wisq-ssh-host-key.service "
             + "systemd.set_credential=firstboot.locale:C.UTF-8 systemd.set_credential=firstboot.keymap:us "
             + "systemd.set_credential=firstboot.timezone:UTC "
             + "systemd.set_credential=passwd.hashed-password.root:"
@@ -95,6 +98,32 @@ final class CloudBootTests: XCTestCase {
                        "un système installé garde sa propre configuration")
         XCTAssertFalse(CloudBoot.commandLine(["root=PARTUUID=0123"], legacyConsole: true).contains(prefix),
                        "systemd 252 ne lit pas ce credential")
+    }
+
+    /// **`sshd` a sa clé d'hôte.** L'image de Debian 13 n'en livre aucune —
+    /// cloud-init la crée d'habitude — et `ssh.service` tombait sur
+    /// `sshd -t`. Une unité reçue en credential la tire avant `sshd`, sous
+    /// ses deux noms : une clé ed25519 seule, sans RSA, et rien quand elle
+    /// existe déjà.
+    func testTheCloudImageGivesSSHItsHostKey() throws {
+        let prefix = "systemd.set_credential_binary=systemd.extra-unit.wisq-ssh-host-key.service:"
+        let option = try XCTUnwrap(CloudBoot.consoleOptions.first { $0.hasPrefix(prefix) })
+        XCTAssertFalse(option.contains(" "), "une seule option pour le noyau")
+        let decoded = try XCTUnwrap(Data(base64Encoded: String(option.dropFirst(prefix.count))))
+        let lines = String(decoding: decoded, as: UTF8.self).split(separator: "\n").map(String.init)
+        XCTAssertTrue(lines.contains("Before=ssh.service sshd.service"), "Debian dit ssh, les autres sshd")
+        XCTAssertTrue(lines.contains("ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key"),
+                      "une clé déjà là est gardée")
+        XCTAssertTrue(lines.contains("Type=oneshot"), "sshd attend que la clé soit écrite")
+        let start = try XCTUnwrap(lines.first { $0.hasPrefix("ExecStart=") })
+        XCTAssertTrue(start.contains("-t ed25519") && start.contains("-f /etc/ssh/ssh_host_ed25519_key"), start)
+        XCTAssertFalse(start.contains(" -A"), "ssh-keygen -A tirerait aussi une clé RSA, des minutes ici")
+        XCTAssertTrue(CloudBoot.consoleOptions.contains("systemd.wants=wisq-ssh-host-key.service"),
+                      "une unité installée par le générateur ne démarre que si on la tire")
+        let line = CloudBoot.commandLine(["root=PARTUUID=0123"], rootPassword: UUID().uuidString, salt: "wisqsalt")
+        XCTAssertTrue(line.contains(prefix))
+        XCTAssertFalse(CloudBoot.commandLine(["root=PARTUUID=0123"], serialShell: false).contains(prefix),
+                       "un système installé a déjà ses clés")
     }
 
     private func pattern(_ count: Int, _ seed: Int) -> [UInt8] {
