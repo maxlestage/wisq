@@ -8,6 +8,52 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-01 — Le bureau Xfce s'affiche ; le matériel servi quatre fois moins souvent
+
+**Le bureau.** Après la carte graphique (#676), `vstmxcsr` (#677) et `vmovsd`
+entre registres (#678), plus rien n'est refusé aux programmes de la session
+Xfce de Void. Le banc en a pris l'image en fin de course : le bureau entier,
+avec son tableau de bord, ses icônes, le pointeur et le dock, en 1024 × 768.
+Le relevé de fin de course dit :
+- l'écran montre 1024 × 768 à partir de 3 Mio ;
+- c'est là que Xorg a peint (de 3 à 6 Mio de la mémoire vidéo).
+
+Les deux images noires d'avant venaient des instructions encore refusées :
+les programmes qui dessinent le bureau mouraient avant d'avoir peint.
+
+**La vitesse.** `perf` pendant que la session Xfce démarre : le même profil
+qu'au démarrage du noyau, pas d'instruction vectorielle en tête. Une seule
+dépense nouvelle à lire : `swift_retain` et `swift_release`, 3 %, appelés
+depuis `serviceInterrupts`.
+
+Ce passage revient toutes les soixante-quatre instructions. Il divise le
+compteur d'instructions pour avoir l'heure du 8253, puis relit les lignes
+de chaque périphérique par des chaînes d'optionnels (`memory?.bus?.…`), une
+dizaine de retenues par passage.
+
+**Ce qui change.**
+- La mémoire et le pont sont lus une fois par passage.
+- Le passage revient toutes les 256 instructions. Le retard d'une
+  interruption passe de 64 à 256 instructions, moins d'une microseconde de
+  l'invité.
+- La carte réseau garde sa cadence : une question au réseau toutes les
+  1 024 instructions, soit un passage sur quatre au lieu d'un sur seize.
+
+**Mesuré** : Void Linux avec disque, réseau et écran, 2,5 milliards
+d'instructions, trois paires alternées, en release.
+
+| | master | branche |
+| --- | --- | --- |
+| lecture unique seule | 54,9 s | 54,4 s |
+| et 256 instructions | 54,7 s | **49,6 s** |
+
+Soit **9 % plus rapide**.
+
+**Tests.** La suite entière passe à 256 (2 746 cas). Elle borne aussi le
+réglage : à 1 024 instructions, trois tests du port série tombent (une
+interruption d'émission attendue dans un budget fixe), et à 65 536, quinze
+tests tombent.
+
 ## 2026-10-31 — `vmovss` et `vmovsd` entre registres, forme « rangement »
 
 **Ce que le banc a montré**, une fois les octets dans les refus (#677) : la
