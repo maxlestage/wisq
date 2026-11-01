@@ -74,7 +74,13 @@ extension X86Core {
         let selectors = systemCallSelectors
         segments[1] = selectors.entry & ~UInt16(3)
         segments[2] = (selectors.entry &+ 8) & ~UInt16(3)
-        rip = system.modelSpecific[X86SystemState.longSystemCallTarget] ?? 0
+        // **Un programme 32 bits entre par `CSTAR`**, pas par `LSTAR` : le
+        // noyau y a mis son entrée de compatibilité (`entry_SYSCALL_compat`).
+        // C'est le chemin du vDSO 32 bits sur un processeur AuthenticAMD.
+        rip = system.modelSpecific[compatibilityMode
+            ? X86SystemState.compatibilitySystemCallTarget
+            : X86SystemState.longSystemCallTarget] ?? 0
+        setCompatibilityMode(false)
         jumped = true
     }
 
@@ -91,7 +97,17 @@ extension X86Core {
             throw Fault.unsupported("un SYSRET sans EFER.SCE")
         }
         guard wide else {
-            throw Fault.unsupported("un SYSRET vers le mode compatibilité")
+            // **`SYSRETL` : le retour vers un programme 32 bits.** CS est le
+            // sélecteur de `STAR` tel quel (le code 32 bits vient en premier),
+            // et EIP les trente-deux bits de ECX.
+            rip = registers.read(1) & 0xFFFF_FFFF
+            flags = (registers.read(11) & ~(Flag.resume | Flag.nested)) | Flag.reserved
+            let selectors = systemCallSelectors
+            segments[1] = selectors.exit | 3
+            segments[2] = (selectors.exit &+ 8) | 3
+            setCompatibilityMode(true)
+            jumped = true
+            return
         }
         rip = registers.read(1)
         // R11 rend les drapeaux tels que `SYSCALL` les avait pris. Les bits
@@ -100,6 +116,7 @@ extension X86Core {
         let selectors = systemCallSelectors
         segments[1] = (selectors.exit &+ 16) | 3
         segments[2] = (selectors.exit &+ 8) | 3
+        setCompatibilityMode(false)
         jumped = true
     }
 }

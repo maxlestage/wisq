@@ -590,6 +590,20 @@ final class IsoBootFolderTests: XCTestCase {
 /// des choses différentes et nécessaires : celle de l'image dit **où est la
 /// racine**, celle de wisq dit **où parler**.
 final class IsoBootCommandLineTests: XCTestCase {
+    /// **antiX et MX Linux cherchent leur racine sur les disques aussi.**
+    /// Leur `init` ne regarde que les clés USB et les CD par défaut, et
+    /// l'image est ici un disque virtio : sans `from=all`, MX s'arrêtait sur
+    /// « No usb,cd devices found ». Pas pour un autre système — Porteus lit
+    /// `from=` comme un chemin —, ni quand l'image en nomme un.
+    func testAntiXIsToldToLookOnDisksToo() {
+        let mx = IsoBoot.commandLine(from: "quiet splasht nosplash", kernel: "/antiX/vmlinuz")
+        XCTAssertTrue(mx.contains(" from=all "), mx)
+        let own = IsoBoot.commandLine(from: "from=usb splasht", kernel: "/antiX/vmlinuz")
+        XCTAssertFalse(own.contains("from=all"), own)
+        let other = IsoBoot.commandLine(from: "archisobasedir=arch", kernel: "/arch/boot/x86_64/vmlinuz-linux")
+        XCTAssertFalse(other.contains("from="), other)
+    }
+
     /// Ce que l'image demande survit mot pour mot. Sans `archisobasedir`,
     /// archiso ne trouve pas son squashfs et panique sur sa racine.
     func testWhatTheImageAsksForSurvivesWhole() {

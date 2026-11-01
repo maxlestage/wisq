@@ -649,7 +649,8 @@ public struct X86Core: @unchecked Sendable {
                     let instruction: X86Instruction
                     do {
                         instruction = try X86Decoder.decode(memory.bytes + start,
-                                                            available: available)
+                                                            available: available,
+                                                            compatibility: compatibilityMode)
                         decodeCache.store(instruction, memory.bytes, at: start, size: memory.size)
                     } catch X86DecodeError.truncated
                                 where available < X86Instruction.maximumLength {
@@ -791,7 +792,58 @@ public struct X86Core: @unchecked Sendable {
     /// mille quatre-vingt-seize — mais il est sur le chemin chaud.
     var fetchWindow = [UInt8](repeating: 0, count: X86Instruction.maximumLength)
     /// Les instructions déjà décodées. Voir `X86DecodeCache`.
-    let decodeCache = X86DecodeCache()
+    ///
+    /// **Un cache par mode.** Les mêmes octets ne veulent pas dire la même
+    /// chose en mode compatibilité (voir `X86Decoder.decode`), et le cache
+    /// identifie une instruction par ses octets seuls. Les deux s'échangent
+    /// quand CS change de mode — aux entrées et sorties du noyau, jamais
+    /// entre deux instructions d'un même programme —, si bien que la boucle
+    /// n'en lit toujours qu'un, sans test de plus.
+    private(set) var decodeCache = X86DecodeCache()
+    /// Le cache de l'autre mode, tant qu'il ne sert pas. Créé au premier
+    /// programme 32 bits : une machine qui n'en lance pas n'en paie pas les
+    /// neuf mébioctets.
+    private var otherModeDecodeCache: X86DecodeCache?
+    /// **Un programme 32 bits tourne** : le descripteur de CS a son bit L à
+    /// zéro sous un noyau 64 bits. Voir `setCompatibilityMode`.
+    public private(set) var compatibilityMode = false
+
+    /// Changer de mode, et de cache avec lui.
+    mutating func setCompatibilityMode(_ on: Bool) {
+        guard on != compatibilityMode else { return }
+        compatibilityMode = on
+        let other = otherModeDecodeCache ?? X86DecodeCache()
+        otherModeDecodeCache = decodeCache
+        decodeCache = other
+    }
+
+    /// **Le mode que CS désigne**, lu dans son descripteur : le bit L (53)
+    /// dit 64 bits, son absence dit compatibilité. Un sélecteur nul, de la
+    /// LDT ou hors de la GDT est pris pour du 64 bits — c'est ce que le noyau
+    /// utilise pour lui-même, et Linux 64 bits n'a pas de LDT.
+    mutating func codeSegmentIsCompatibility(_ selector: UInt16) -> Bool {
+        let index = UInt64(selector & 0xFFF8)
+        guard index != 0, selector & 4 == 0, index &+ 7 <= descriptorLimits[0],
+              let descriptor = try? readMemory(descriptorBases[0] &+ index, 8, .machine)
+        else { return false }
+        return descriptor & (1 << 53) == 0
+    }
+
+    /// **La base qu'un descripteur de la GDT porte**, ou `nil` pour un
+    /// sélecteur nul, de la LDT ou hors de la table.
+    mutating func descriptorBase(_ selector: UInt16) -> UInt64? {
+        let index = UInt64(selector & 0xFFF8)
+        guard index != 0, selector & 4 == 0, index &+ 7 <= descriptorLimits[0],
+              let descriptor = try? readMemory(descriptorBases[0] &+ index, 8, .machine)
+        else { return nil }
+        return (descriptor >> 16) & 0xFF_FFFF | ((descriptor >> 56) & 0xFF) << 24
+    }
+
+    /// Recalculer le mode depuis CS : après une reprise, ou un chargement de
+    /// CS par un retour.
+    mutating func refreshCompatibilityMode() {
+        setCompatibilityMode(codeSegmentIsCompatibility(segments[1]))
+    }
 
     /// **Les instructions que le cache de décodage a rendues**, déduites :
     /// celles qui ont été exécutées, moins celles qu'il a fallu décoder. Un
@@ -814,7 +866,15 @@ public struct X86Core: @unchecked Sendable {
     /// `operandSize` : en mode 64 bits, `push` et `pop` sont déjà larges sans
     /// qu'on le demande, et le seul préfixe qui les raccourcit est `66`.
     static func stackSize(_ instruction: X86Instruction) -> Int {
-        instruction.hasPrefix(0x66) ? 2 : 8
+        instruction.hasPrefix(0x66) ? 2 : (instruction.isCompatibility ? 4 : 8)
+    }
+
+    /// La largeur d'une adresse de retour, de `PUSHF` et d'une destination de
+    /// saut indirect : huit octets en mode 64 bits, quatre en mode
+    /// compatibilité. `0x66` n'y entre pas — le mode 64 bits l'ignore pour
+    /// les sauts proches.
+    static func nearSize(_ instruction: X86Instruction) -> Int {
+        instruction.isCompatibility ? 4 : 8
     }
 
     struct Fields {

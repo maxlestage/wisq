@@ -821,6 +821,8 @@ public final class X86Machine: @unchecked Sendable {
             install(bus: restoredBus)
         }
         core = restored
+        // Le mode ne s'écrit pas dans l'instantané : il se relit dans CS.
+        core.refreshCompatibilityMode()
     }
 
     /// **Ce qui précède la mémoire dans un instantané** : les registres, l'état
