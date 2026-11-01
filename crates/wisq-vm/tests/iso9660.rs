@@ -1118,11 +1118,13 @@ fn a_syslinux_menu_module_is_followed_to_its_entries() {
     assert_eq!(recipe.command_line, "boot=live config quiet");
 }
 
-/// **antiX et MX Linux reçoivent l'étiquette de leur volume.** Leur `init`
-/// trie les disques par numéro majeur, et celui du disque virtio n'est pas
-/// dans sa liste : MX s'arrêtait sur « No all devices found », son disque
-/// présent. `blab=` lui fait chercher le volume par son nom. Pas pour un autre
-/// système, ni quand l'image désigne déjà son support.
+/// **antiX et MX Linux reçoivent l'étiquette de leur volume, et `fbdev`.**
+/// Leur `init` trie les disques par numéro majeur, et celui du disque virtio
+/// n'est pas dans sa liste : MX s'arrêtait sur « No all devices found », son
+/// disque présent. `blab=` lui fait chercher le volume par son nom. Et sans
+/// carte graphique, son serveur X prenait `vesa`, qui veut un BIOS VGA :
+/// `xorg=fbdev` le mène au bureau. Pas pour un autre système, ni quand l'image
+/// désigne déjà son support ou son pilote.
 #[test]
 fn antix_is_given_its_volume_label() {
     let mx = "label live\n kernel /antiX/vmlinuz\n append quiet splasht initrd=/antiX/initrd.gz\n";
@@ -1131,16 +1133,21 @@ fn antix_is_given_its_volume_label() {
     let recipe = Recipe::read_in(mx, "/boot/syslinux/syslinux.cfg", "MX-Live", &none, &empty)
         .expect("la recette de MX");
     assert!(
-        recipe.command_line.ends_with(" blab=MX-Live"),
+        recipe.command_line.ends_with(" blab=MX-Live xorg=fbdev"),
         "{}",
         recipe.command_line
     );
 
-    let own = "label live\n kernel /antiX/vmlinuz\n append buuid=1234 initrd=/antiX/initrd.gz\n";
+    let own = "label live\n kernel /antiX/vmlinuz\n append buuid=1234 xorg=vesa initrd=/antiX/initrd.gz\n";
     let recipe = Recipe::read_in(own, "/boot/syslinux/syslinux.cfg", "MX-Live", &none, &empty)
         .expect("la recette");
     assert!(
         !recipe.command_line.contains("blab="),
+        "{}",
+        recipe.command_line
+    );
+    assert!(
+        !recipe.command_line.contains("xorg=fbdev"),
         "{}",
         recipe.command_line
     );
@@ -1156,6 +1163,11 @@ fn antix_is_given_its_volume_label() {
     .expect("la recette d'Arch");
     assert!(
         !recipe.command_line.contains("blab="),
+        "{}",
+        recipe.command_line
+    );
+    assert!(
+        !recipe.command_line.contains("xorg="),
         "{}",
         recipe.command_line
     );
