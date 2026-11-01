@@ -425,12 +425,8 @@ impl Recipe {
         file: &dyn Fn(&str) -> Option<String>,
         names: &dyn Fn(&str) -> Vec<String>,
     ) -> Option<Recipe> {
-        let text = if is_grub(from) {
-            let mut seen = vec![from.to_string()];
-            sourced(text, file, &mut seen, 0)
-        } else {
-            text.to_string()
-        };
+        let mut seen = vec![from.to_string()];
+        let text = sourced(text, base_of(from), file, &mut seen, 0);
         let resolve = |kernel: &str| resolved(kernel, names);
         let (mut recipe, guessed) = parse_entries(&text, from, &resolve)?;
         if guessed {
@@ -500,8 +496,15 @@ impl Recipe {
 /// reste tel quel : sa valeur n'existe qu'au moment où grub l'exécute. Un
 /// fichier déjà lu ne l'est pas deux fois — `menu_reload` relit `grub.cfg`
 /// lui-même —, et quatre niveaux suffisent à toute image vue.
+///
+/// **Syslinux aussi.** Tails écrit `kernel vesamenu.c32` puis `append
+/// live64.cfg` dans `isolinux.cfg` : le « noyau » est le module de menu, et
+/// le menu est dans `live64.cfg`, qui lit `menu.cfg` par `include`. Les
+/// `include` et `config` de syslinux, et un `append` qui ne nomme qu'un
+/// fichier `.cfg`, sont suivis de même, depuis le dossier de la recette.
 fn sourced(
     text: &str,
+    base: &str,
     file: &dyn Fn(&str) -> Option<String>,
     seen: &mut Vec<String>,
     depth: usize,
@@ -509,20 +512,22 @@ fn sourced(
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
         let mut words = line.split_whitespace();
-        let command = words.next().unwrap_or("");
+        let command = words.next().unwrap_or("").to_ascii_lowercase();
+        let word = words.next().unwrap_or("").trim_matches('"');
         // Le périphérique devant le chemin, `($root)/boot/grub2/grub.cfg`
         // chez Fedora, est l'image elle-même : il tombe avant qu'on juge si
         // le chemin passe par une variable.
-        let path = absolute(words.next().unwrap_or("").trim_matches('"'), "");
+        let path = absolute(word, base);
         let literal = words.next().is_none() && path.len() > 1 && !path.contains('$');
-        if matches!(command, "source" | "configfile")
-            && literal
-            && depth < 4
-            && !seen.contains(&path)
-        {
+        let follows = match command.as_str() {
+            "source" | "configfile" | "include" | "config" => true,
+            "append" => word.to_ascii_lowercase().ends_with(".cfg"),
+            _ => false,
+        };
+        if follows && literal && depth < 4 && !seen.contains(&path) {
             seen.push(path.clone());
             if let Some(inner) = file(&path) {
-                out.push_str(&sourced(&inner, file, seen, depth + 1));
+                out.push_str(&sourced(&inner, base, file, seen, depth + 1));
                 out.push('\n');
                 continue;
             }
@@ -531,10 +536,6 @@ fn sourced(
         out.push('\n');
     }
     out
-}
-
-fn is_grub(from: &str) -> bool {
-    from.ends_with("grub.cfg")
 }
 
 /// **Un noyau dont le nom passe par une variable**, trouvé sur le disque.
@@ -707,6 +708,12 @@ fn one(text: &str, from: &str) -> Option<Recipe> {
             "KERNEL" | "LINUX" | "LINUXEFI" => {
                 // Grub écrit le noyau et ses arguments sur la même ligne.
                 let (path, arguments) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                // **Un module de syslinux n'est pas un noyau.** `kernel
+                // vesamenu.c32` ouvre un menu (Tails) ; le prendre pour le
+                // noyau démarrait le menu de syslinux sur le cœur x86.
+                if path.to_ascii_lowercase().ends_with(".c32") {
+                    continue;
+                }
                 kernel = Some(absolute(path, base));
                 if !arguments.trim().is_empty() {
                     command_line = arguments.trim().to_string();
