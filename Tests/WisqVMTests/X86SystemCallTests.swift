@@ -148,18 +148,22 @@ final class X86SystemCallTests: XCTestCase {
         XCTAssertEqual(core.segments[2], 0x2B, "SS : 0x23 + 8, anneau trois")
     }
 
-    /// Un `SYSRET` sans REX.W vise le mode compatibilité, que ce cœur ne fait
-    /// pas tourner. Il est **refusé et nommé** plutôt que traité comme son
-    /// voisin 64 bits : rendre la main sous un segment 32 bits à un programme
-    /// qui en attend un de 64 le ferait partir dans le décor.
-    func testTheCompatibilityReturnIsRefusedRatherThanTakenForTheWideOne() throws {
+    /// **Un `SYSRET` sans REX.W rend la main à un programme 32 bits.**
+    /// C'est `sysretl`, par quoi Linux revient d'un appel système fait en
+    /// mode compatibilité : EIP vient d'ECX tronqué à 32 bits, CS est la base
+    /// de sortie elle-même (sans les seize du retour large) et SS la base plus
+    /// huit. Longtemps refusé — le cœur n'avait pas de mode compatibilité —,
+    /// il fallait l'avoir pour que l'`init` 32 bits de MX Linux tourne.
+    func testTheCompatibilityReturnLandsInThirtyTwoBitMode() throws {
         var core = try Self.core([0x0F, 0x07])
         core.segments[1] = 0x10
-        XCTAssertThrowsError(try core.run(budget: 1)) { error in
-            XCTAssertEqual(error as? X86Core.Fault,
-                           .unsupported("un SYSRET vers le mode compatibilité"))
-        }
-        XCTAssertEqual(core.segments[1], 0x10, "et rien n'a bougé avant de refuser")
+        core.registers[1] = 0xFFFF_FFFF_0804_9000
+        try core.run(budget: 1)
+        XCTAssertEqual(core.rip, 0x0804_9000, "EIP : ECX tronqué à 32 bits")
+        XCTAssertEqual(core.segments[1], 0x23, "CS : la base de sortie, anneau trois")
+        XCTAssertEqual(core.segments[2], 0x2B, "SS : la base plus huit, anneau trois")
+        XCTAssertEqual(core.privilege, 3)
+        XCTAssertTrue(core.compatibilityMode, "la suite se décode en 32 bits")
     }
 
     // MARK: - L'aller-retour
