@@ -598,7 +598,7 @@ fn with_label(command_line: &str, text: &str, label: &str) -> String {
 }
 
 /// **antiX reconnaît son support à son étiquette**, puisqu'il ne le trouve
-/// pas tout seul sur un disque virtio.
+/// pas tout seul sur un disque virtio, **et dessine par le tampon d'image**.
 ///
 /// L'`init` d'antiX — celui de MX Linux et d'antiX, reconnus à leur noyau
 /// rangé dans `/antiX/` — trie les périphériques par numéro majeur et ne
@@ -608,9 +608,28 @@ fn with_label(command_line: &str, text: &str, label: &str) -> String {
 /// pourtant présent. `blab=<étiquette>` lui fait chercher le volume par son
 /// nom, sans passer par ce tri. Rien n'est ajouté quand l'image désigne déjà
 /// son support, ni pour une étiquette qui contient une espace.
+///
+/// **`xorg=fbdev`** : sans carte graphique reconnue, `live-init` impose au
+/// serveur X le pilote `vesa`, qui veut le BIOS d'une carte VGA que wisq n'a
+/// pas. MX affichait son fond d'écran, puis un écran noir pour de bon. Le
+/// pilote `fbdev` — celui qu'antiX prend de lui-même quand il démarre en UEFI
+/// — peint dans le tampon que wisq lui donne, et MX va jusqu'à son bureau
+/// Xfce. Rien n'est ajouté quand l'image choisit déjà son pilote.
 fn with_antix_device(command_line: &str, kernel: &str, label: &str) -> String {
-    let named = command_line.split_whitespace().any(|word| {
-        [
+    let mut words: Vec<String> = command_line
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if !kernel.starts_with("/antiX/") {
+        return words.join(" ");
+    }
+    let has = |keys: &[&str], words: &[String]| {
+        words
+            .iter()
+            .any(|word| keys.iter().any(|key| word.starts_with(key)))
+    };
+    let named = has(
+        &[
             "blab=",
             "blabel=",
             "bootlabel=",
@@ -618,24 +637,17 @@ fn with_antix_device(command_line: &str, kernel: &str, label: &str) -> String {
             "bootuuid=",
             "bdev=",
             "bootdev=",
-        ]
-        .iter()
-        .any(|key| word.starts_with(key))
-    });
+        ],
+        &words,
+    );
     let label = label.trim();
-    if !kernel.starts_with("/antiX/")
-        || named
-        || label.is_empty()
-        || label.contains(char::is_whitespace)
-    {
-        return command_line.to_string();
+    if !named && !label.is_empty() && !label.contains(char::is_whitespace) {
+        words.push(format!("blab={label}"));
     }
-    let line = command_line.trim();
-    if line.is_empty() {
-        format!("blab={label}")
-    } else {
-        format!("{line} blab={label}")
+    if !has(&["xorg="], &words) {
+        words.push("xorg=fbdev".to_string());
     }
+    words.join(" ")
 }
 
 /// Lire une recette, quel que soit le chargeur qui l'a écrite.
