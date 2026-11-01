@@ -197,6 +197,14 @@ break APIs.
   l'étiquette du volume (`blab=MX-Live`) et le trouve par son nom. MX 25.3
   écrit « Welcome to MX 25.3_Xfce », monte son volume, se configure et
   quitte son initrd au bout de 34 secondes de son temps.
+- **MX Linux montrait son fond d'écran, puis un écran noir pour de bon.**
+  Sans carte graphique reconnue, `live-init` impose au serveur X le pilote
+  `vesa`, qui veut le BIOS d'une carte VGA que wisq n'a pas. Une image
+  d'antiX reçoit maintenant `xorg=fbdev` — le pilote qu'antiX prend de
+  lui-même en UEFI —, qui peint dans le tampon que wisq lui donne. MX 25.3
+  va jusqu'à son bureau Xfce, panneau, horloge et icônes compris. Et le banc
+  de démarrage écrit l'écran toutes les dix milliards d'instructions : c'est
+  ce qui a montré le noir, MX ne disant plus rien sur la console série.
 
 ## [0.4.0] — 2026-09-05
 
