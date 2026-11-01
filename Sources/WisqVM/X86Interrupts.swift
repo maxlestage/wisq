@@ -327,14 +327,22 @@ extension X86Core {
         // configuration PCI, pas celle qu'on avait prévue : c'est lui qui
         // décide, et un périphérique qui frapperait ailleurs frapperait dans
         // le vide.
-        let disk: UInt8 = 1 << (memory?.bus?.interruptLine ?? VirtioBlock.pc.interruptLine)
+        //
+        // **La mémoire et le bus, lus une fois.** Chaque `memory?.bus?.…`
+        // retenait puis relâchait la mémoire et le pont, une dizaine de fois
+        // par passage, et le passage revient toutes les soixante-quatre
+        // instructions : `perf` donnait 3 % du temps de la session Xfce de
+        // Void à `swift_retain` et `swift_release`, appelés d'ici.
+        let memory = self.memory
+        let bus = memory?.bus
+        let disk: UInt8 = 1 << (bus?.interruptLine ?? VirtioBlock.pc.interruptLine)
         if memory?.storage?.interrupting == true {
             devices.primary.request |= disk
         } else {
             devices.primary.request &= ~disk
         }
         // Le second disque, sur sa propre ligne et selon la même règle.
-        if let second = memory?.bus?.second {
+        if let second = bus?.second {
             let line: UInt8 = 1 << second.interruptLine
             if second.storage?.interrupting == true {
                 devices.primary.request |= line
@@ -344,7 +352,7 @@ extension X86Core {
         }
         // La carte réseau : d'abord ce que le réseau a pour l'invité, posé
         // dans ses tampons, puis sa ligne, à niveau comme celle des disques.
-        if let network = memory?.bus?.network, let nic = network.nic, let memory {
+        if let network = bus?.network, let nic = network.nic, let memory {
             nic.poll(memory, busy: !halted)
             let line: UInt8 = 1 << network.interruptLine
             if nic.interrupting {

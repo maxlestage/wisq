@@ -553,7 +553,7 @@ public struct X86Core: @unchecked Sendable {
             // passe par le contrôle d'exclusivité. Évalué en premier, il
             // coûtait à chaque instruction ce que le masque devait réserver à
             // une sur soixante-quatre.
-            if executed & 0x3F == 0 && devicesArmed { try serviceInterrupts() }
+            if executed & 0xFF == 0 && devicesArmed { try serviceInterrupts() }
             if halted {
                 // `HLT` attend une interruption. Sans horloge armée, ou les
                 // interruptions masquées, plus rien ne viendra jamais : c'est
