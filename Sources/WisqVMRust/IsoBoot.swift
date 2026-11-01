@@ -139,15 +139,22 @@ public enum IsoBoot {
 
     /// **Les délais de systemd, allongés à dix minutes.**
     ///
-    /// L'invité croit tourner sur un processeur d'environ 86 MHz : l'horloge
-    /// avance d'un cran toutes les `X86LegacyDevices.instructionsPerTick`
-    /// instructions, quelle que soit la vitesse du téléphone. À cette allure,
-    /// Arch met plus de quatre-vingt-dix secondes de son temps à atteindre
-    /// udevd — le décodage LZMA de sa racine, puis les services rangés avant
-    /// lui. Le délai par défaut d'un périphérique expire avant, `/dev/ttyS0`
-    /// n'est jamais « vu », et la connexion sur la console série — la seule
-    /// que la vue Console montre — ne s'ouvre pas. Un vrai PC à 86 MHz
-    /// tomberait dans le même mur.
+    /// L'horloge de l'invité avance d'un cran toutes les
+    /// `X86LegacyDevices.instructionsPerTick` instructions, quelle que soit la
+    /// vitesse du téléphone. Quand ces mots ont été écrits, c'était toutes les
+    /// soixante-douze, et l'invité se croyait sur un processeur d'environ
+    /// 86 MHz. À cette allure, Arch mettait plus de quatre-vingt-dix secondes
+    /// de son temps à atteindre udevd — le décodage LZMA de sa racine, puis les
+    /// services rangés avant lui. Le délai par défaut d'un périphérique
+    /// expirait avant, `/dev/ttyS0` n'était jamais « vu », et la connexion sur
+    /// la console série — la seule que la vue Console montre — ne s'ouvrait
+    /// pas. Un vrai PC à 86 MHz tomberait dans le même mur.
+    ///
+    /// **Depuis #668, deux cent quatre-vingt-huit instructions par cran** :
+    /// l'invité se croit à environ 344 MHz, et le même travail lui prend quatre
+    /// fois moins de son temps. Les délais allongés restent : un démarrage
+    /// lent — Fedora, openSUSE — en a encore besoin, et ils ne coûtent rien à
+    /// celui qui arrive à l'heure.
     ///
     /// L'horloge, elle, ne change pas : la ralentir ou l'accélérer étirerait
     /// les délais de tous les invités. Ces deux mots ne parlent qu'à systemd ;
