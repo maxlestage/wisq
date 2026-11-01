@@ -192,10 +192,11 @@ break APIs.
   système par `int 0x80` ou par `SYSCALL` vers CSTAR, rendus par `sysretl`.
   Une sonde exécute chacune des 131 708 instructions du busybox : les trois
   formes qui manquaient encore (l'adresse repliée sous la base de segment,
-  `MOV` à adresse absolue, `FTST`) y sont. Et l'`init` d'antiX, qui ne
-  cherche sa racine que sur les clés USB et les CD, reçoit `from=all` pour
-  la trouver sur le disque virtio. MX 25.3 écrit « Welcome to MX 25.3_Xfce »,
-  charge ses modules et cherche son `linuxfs`.
+  `MOV` à adresse absolue, `FTST`) y sont. Et l'`init` d'antiX, qui trie
+  les disques par numéro majeur et ignore celui du disque virtio, reçoit
+  l'étiquette du volume (`blab=MX-Live`) et le trouve par son nom. MX 25.3
+  écrit « Welcome to MX 25.3_Xfce », monte son volume, se configure et
+  quitte son initrd au bout de 34 secondes de son temps.
 
 ## [0.4.0] — 2026-09-05
 
