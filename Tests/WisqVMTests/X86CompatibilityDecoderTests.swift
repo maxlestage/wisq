@@ -78,4 +78,75 @@ final class X86CompatibilityDecoderTests: XCTestCase {
         XCTAssertGreaterThan(checked, 100)
         XCTAssertEqual(wrong.count, 0, wrong.prefix(20).joined(separator: "\n"))
     }
+
+    /// **Chaque instruction du même programme s'exécute**, en mode
+    /// compatibilité : aucune ne doit tomber sur un « pas encore » du cœur.
+    ///
+    /// Le contenu des registres et de la mémoire n'est pas jugé ici — c'est
+    /// le travail des oracles —, seulement que la forme a une exécution. Une
+    /// faute de page ou une adresse hors de la mémoire est le sort normal
+    /// d'une instruction sortie de son programme ; un `unsupported`, non.
+    /// C'est ainsi qu'ont été trouvés, en une passe, les trous que le
+    /// démarrage de MX Linux aurait révélés un à un, six minutes chacun.
+    func testEveryInstructionOfARealProgramExecutes() throws {
+        let path = ProcessInfo.processInfo.environment["WISQ_I386_TSV"]
+            ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Fixtures/x86-i386-lengths.tsv").path
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        let memory = X86Memory(size: 0x40_0000, base: 0)
+        var core = X86Core(memory: memory)
+        core.setCompatibilityMode(true)
+        var missing: [String: String] = [:]
+        var executed = 0
+        for line in text.split(separator: "\n") {
+            let fields = line.split(separator: "\t", maxSplits: 2)
+            guard fields.count >= 2 else { continue }
+            let hex = Array(fields[1].utf8)
+            let bytes = stride(from: 0, to: hex.count, by: 2).map {
+                UInt8(String(decoding: hex[$0..<$0 + 2], as: UTF8.self), radix: 16)!
+            }
+            let instruction = try X86Decoder.decode(bytes, compatibility: true)
+            for index in 0..<8 { core.registers[index] = 0x20_0000 }
+            core.rip = 0x10_0000
+            do {
+                try core.execute(instruction)
+                executed += 1
+            } catch X86Core.Fault.unsupported(let what) {
+                // Sans table d'interruptions, `int $0x80` n'a nulle part où
+                // aller : c'est la machine de test qui manque, pas le cœur.
+                if !what.hasPrefix("INT ") { missing[String(fields[2])] = what }
+            } catch X86Core.Fault.invalidOpcode where bytes.suffix(2) != [0x0F, 0x0B] {
+                // Un #UD hors de `UD2` : une forme que le cœur refuse.
+                missing[String(fields[2])] = "#UD"
+            } catch {
+                executed += 1
+            }
+        }
+        XCTAssertGreaterThan(executed, 100)
+        XCTAssertEqual(missing.count, 0, missing.sorted { $0.key < $1.key }
+            .prefix(40).map { "\($0.key) → \($0.value)" }.joined(separator: "\n"))
+    }
+
+    /// **En 32 bits, base et décalage s'ajoutent modulo quatre gibioctets.**
+    /// Le TLS se lit sous la base de GS : `mov %gs:(%esi), %edi` avec ESI =
+    /// 0xFFFFFFF8 vise huit octets plus bas. L'`init` de MX Linux en restait
+    /// là, à refauter sans fin. Et `mov %gs:0xc, %eax`, l'adresse absolue
+    /// (`A1`), qui suivait immédiatement.
+    func testThirtyTwoBitAddressesWrapUnderTheSegmentBase() throws {
+        let memory = X86Memory(size: 0x10000, base: 0)
+        try memory.load([0x44, 0x33, 0x22, 0x11], at: 0x1FF8)
+        try memory.load([0x88, 0x77, 0x66, 0x55], at: 0x200C)
+        var core = X86Core(memory: memory)
+        core.setCompatibilityMode(true)
+        core.system.modelSpecific[X86SystemState.gsBase] = 0x2000
+        core.registers[6] = 0xFFFF_FFF8
+        try core.execute(X86Decoder.decode([0x65, 0x8B, 0x3E], compatibility: true))
+        XCTAssertEqual(core.registers[7], 0x1122_3344)
+        try core.execute(X86Decoder.decode([0x65, 0xA1, 0x0C, 0, 0, 0], compatibility: true))
+        XCTAssertEqual(core.registers[0], 0x5566_7788)
+        core.registers[0] = 0xAABB_CCDD
+        try core.execute(X86Decoder.decode([0x65, 0xA3, 0x10, 0, 0, 0], compatibility: true))
+        XCTAssertEqual(try memory.read(0x2010, 4), 0xAABB_CCDD)
+    }
 }

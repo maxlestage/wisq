@@ -45,6 +45,12 @@ extension X86Core {
             // `FFREEP` et `FRNDINT`.
             case (0xD9, 4) where modrm == 0xE5:  // FXAM
                 x87Status = (x87Status & ~0x4700) | examined(0)
+            // `FTST` : `FCOM` contre zéro. Le busybox 32 bits de MX Linux
+            // l'emploie ; la sonde qui exécute chacune de ses instructions
+            // l'a trouvé seul manquant.
+            case (0xD9, 4) where modrm == 0xE4:  // FTST
+                noteComparison(stack(0), .zero, quietIsInvalid: true)
+                setCondition(X86Extended.compare(stack(0), .zero))
             case (0xD9, 7) where modrm == 0xFC:  // FRNDINT
                 let (result, report) = X86Extended.integral(stackOrIndefinite(0), rounding: rounding)
                 setStack(0, result)
