@@ -432,6 +432,7 @@ impl Recipe {
         if guessed {
             recipe.command_line = with_label(&recipe.command_line, &text, label);
         }
+        recipe.command_line = with_antix_device(&recipe.command_line, &recipe.kernel, label);
         Some(recipe)
     }
 
@@ -594,6 +595,47 @@ fn with_label(command_line: &str, text: &str, label: &str) -> String {
         }
     }
     words.join(" ")
+}
+
+/// **antiX reconnaît son support à son étiquette**, puisqu'il ne le trouve
+/// pas tout seul sur un disque virtio.
+///
+/// L'`init` d'antiX — celui de MX Linux et d'antiX, reconnus à leur noyau
+/// rangé dans `/antiX/` — trie les périphériques par numéro majeur et ne
+/// garde que ceux des CD, des clés et des disques qu'il connaît. Le disque
+/// virtio reçoit un majeur dynamique qui n'est pas dans la liste, même avec
+/// `from=all` : MX s'arrêtait sur « No all devices found », son disque
+/// pourtant présent. `blab=<étiquette>` lui fait chercher le volume par son
+/// nom, sans passer par ce tri. Rien n'est ajouté quand l'image désigne déjà
+/// son support, ni pour une étiquette qui contient une espace.
+fn with_antix_device(command_line: &str, kernel: &str, label: &str) -> String {
+    let named = command_line.split_whitespace().any(|word| {
+        [
+            "blab=",
+            "blabel=",
+            "bootlabel=",
+            "buuid=",
+            "bootuuid=",
+            "bdev=",
+            "bootdev=",
+        ]
+        .iter()
+        .any(|key| word.starts_with(key))
+    });
+    let label = label.trim();
+    if !kernel.starts_with("/antiX/")
+        || named
+        || label.is_empty()
+        || label.contains(char::is_whitespace)
+    {
+        return command_line.to_string();
+    }
+    let line = command_line.trim();
+    if line.is_empty() {
+        format!("blab={label}")
+    } else {
+        format!("{line} blab={label}")
+    }
 }
 
 /// Lire une recette, quel que soit le chargeur qui l'a écrite.
