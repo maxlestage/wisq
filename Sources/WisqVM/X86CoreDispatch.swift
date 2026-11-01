@@ -74,19 +74,19 @@ extension X86Core {
         case 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F:
             if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 1)) }
         case 0xC3:
-            rip = try pop(8)
+            rip = try pop(Self.nearSize(instruction))
             jumped = true
 
         case 0xC9:  // LEAVE : RSP ← RBP, puis dépiler RBP
             registers[4] = registers.read(5)
-            registers[5] = try pop(8)
+            write(5, Self.nearSize(instruction), highByte: false, try pop(Self.nearSize(instruction)))
 
         case 0xE8:  // CALL relatif : empiler le retour, puis sauter
             let ret = rip &+ UInt64(instruction.length)
-            try push(ret, 8)
-            branch(instruction, Self.signExtend(instruction.immediate, 4))
+            try push(ret, Self.nearSize(instruction))
+            branch(instruction, Self.signExtend(instruction.immediate, instruction.immediateBytes))
         case 0xE9:
-            branch(instruction, Self.signExtend(instruction.immediate, 4))
+            branch(instruction, Self.signExtend(instruction.immediate, instruction.immediateBytes))
         case 0xEB:
             branch(instruction, Self.signExtend(instruction.immediate, 1))
 
@@ -239,11 +239,11 @@ extension X86Core {
         // `/6` empile, et sa largeur est celle de la pile ; `/2` et `/4`
         // sautent, et une destination de saut fait toujours huit octets.
         let reach = (instruction.modrm! >> 3) & 0x07 == 6
-            ? Self.stackSize(instruction) : 8
+            ? Self.stackSize(instruction) : Self.nearSize(instruction)
         let target = try readRM(fields, reach)
         switch (instruction.modrm! >> 3) & 0x07 {
         case 2:
-            try push(rip &+ UInt64(instruction.length), 8)
+            try push(rip &+ UInt64(instruction.length), Self.nearSize(instruction))
             rip = target
             jumped = true
         case 4:
@@ -266,6 +266,52 @@ extension X86Core {
     @inline(never)
     mutating func oneByteCold(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         switch opcode {
+        // **Les opcodes que le mode 64 bits a repris**, qui n'arrivent ici
+        // qu'en mode compatibilité : le décodeur 64 bits lit `40`–`4F` comme
+        // REX et refuse les autres.
+        case 0x40...0x4F where instruction.isCompatibility:  // INC/DEC r32
+            let size = instruction.hasPrefix(0x66) ? 2 : 4
+            let index = Int(opcode & 0x07)
+            let value = registers.read(index) & Self.mask(size)
+            let kept = flags & Flag.carry
+            let result = opcode < 0x48 ? add(value, 1, size) : subtract(value, 1, size)
+            flags = (flags & ~Flag.carry) | kept
+            write(index, size, highByte: false, result)
+        // Le décodeur 64 bits refuse ces octets : seul le mode compatibilité
+        // les amène ici.
+        case 0x06, 0x0E, 0x16, 0x1E:  // PUSH ES, CS, SS, DS
+            try push(UInt64(segments[Int(opcode >> 3)]), Self.stackSize(instruction))
+        case 0x07, 0x17, 0x1F:  // POP ES, SS, DS
+            segments[Int(opcode >> 3)] = UInt16(truncatingIfNeeded: try pop(Self.stackSize(instruction)))
+        case 0x60 where instruction.isCompatibility:  // PUSHA
+            let size = Self.stackSize(instruction)
+            let original = registers.read(4)
+            for index in 0..<8 {
+                try push(index == 4 ? original : registers.read(index), size)
+            }
+        case 0x61 where instruction.isCompatibility:  // POPA : ESP dépilé, puis jeté
+            let size = Self.stackSize(instruction)
+            for index in (0..<8).reversed() {
+                let value = try pop(size)
+                if index != 4 { write(index, size, highByte: false, value) }
+            }
+
+        // **`MOV` avec une adresse absolue** (`moffs`) : l'adresse est dans
+        // l'instruction, sans ModRM. Rare en 64 bits ; courant en 32 bits,
+        // où le TLS se lit par `mov %gs:0xc, %eax` — `65 a1 0c 00 00 00`.
+        case 0xA0...0xA3:
+            guard memory != nil else { throw Fault.unsupported("un opérande en mémoire") }
+            let size = Self.operandSize(instruction, byteForm: opcode & 1 == 0)
+            var offset = instruction.immediate
+            if instruction.isCompatibility || instruction.hasPrefix(0x67) { offset &= 0xFFFF_FFFF }
+            var address = segmentBase(instruction) &+ offset
+            if instruction.isCompatibility { address &= 0xFFFF_FFFF }
+            if opcode < 0xA2 {
+                write(0, size, highByte: false, try readMemory(address, size))
+            } else {
+                try writeMemory(address, size, registers.read(0) & Self.mask(size))
+            }
+
         case 0x8F:  // POP r/m
             // **La mémoire d'abord, la pile ensuite.** L'écriture peut fauter
             // — une page qu'un `fork()` vient de rendre lisible seulement —,
@@ -295,7 +341,7 @@ extension X86Core {
             registers[4] = top &+ UInt64(size)
 
         case 0xC2:  // RET imm16 : dépiler puis jeter des arguments
-            let destination = try pop(8)
+            let destination = try pop(Self.nearSize(instruction))
             registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF)
             rip = destination
             jumped = true
@@ -333,6 +379,7 @@ extension X86Core {
             segments[1] = UInt16(truncatingIfNeeded: try pop(size))  // CS
             if opcode == 0xCA { registers[4] = registers.read(4) &+ (instruction.immediate & 0xFFFF) }
             rip = destination
+            refreshCompatibilityMode()
             jumped = true
 
         case 0xE0, 0xE1, 0xE2:  // LOOPNE, LOOPE, LOOP
@@ -403,6 +450,15 @@ extension X86Core {
                 let base = which == 4 ? X86SystemState.fsBase : X86SystemState.gsBase
                 system.modelSpecific[base] = 0
             }
+            // **Un sélecteur non nul dans FS ou GS prend la base de son
+            // descripteur** — c'est le TLS d'un programme 32 bits : la libc
+            // i386 lit ses variables par `%gs:`, et le noyau range leur base
+            // dans une entrée de la GDT (`set_thread_area`), qu'il recharge à
+            // chaque changement de tâche par `mov %gs`.
+            if selector != 0, which == 4 || which == 5,
+               let base = descriptorBase(selector) {
+                system.modelSpecific[which == 4 ? X86SystemState.fsBase : X86SystemState.gsBase] = base
+            }
 
         // `LAHF` et `SAHF` : SF, ZF, AF, PF et CF vers AH et retour. Les
         // premiers x86-64 ne les avaient pas en mode long, d'où un bit de
@@ -415,12 +471,12 @@ extension X86Core {
         case 0x9E:  // SAHF
             flags = flags & ~0xD5 | (registers.read(0) >> 8) & 0xD5
         case 0x9C:  // PUSHF : les drapeaux sur la pile, huit octets en mode long
-            try push(flags | Flag.reserved, 8)
+            try push(flags | Flag.reserved, Self.nearSize(instruction))
         case 0x9D:  // POPF
             // Les bits réservés ne se laissent pas écrire, et le bit 1 vaut
             // toujours un : un noyau qui relit ce qu'il a empilé doit retrouver
             // la même chose.
-            flags = (try pop(8) & 0x0000_0000_003F_7FD5) | Flag.reserved
+            flags = (try pop(Self.nearSize(instruction)) & 0x0000_0000_003F_7FD5) | Flag.reserved
 
         case 0x98:  // CBW / CWDE / CDQE : l'accumulateur étendu au signe.
             let size = Self.operandSize(instruction, byteForm: false)
@@ -666,7 +722,9 @@ extension X86Core {
             }
 
         case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:  // Jcc long
-            if condition(opcode) { branch(instruction, Self.signExtend(instruction.immediate, 4)) }
+            if condition(opcode) {
+                branch(instruction, Self.signExtend(instruction.immediate, instruction.immediateBytes))
+            }
 
         case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:  // CMOVcc : une écriture qui n'a peut-être pas lieu
             let size = Self.operandSize(instruction, byteForm: false)
@@ -1048,6 +1106,8 @@ extension X86Core {
     /// plus classique de l'architecture.
     mutating func branch(_ instruction: X86Instruction, _ displacement: UInt64) {
         rip = rip &+ UInt64(instruction.length) &+ displacement
+        // EIP a trente-deux bits en mode compatibilité.
+        if instruction.isCompatibility { rip &= 0xFFFF_FFFF }
         jumped = true
     }
 
@@ -1319,8 +1379,7 @@ extension X86Core {
     @inline(__always)
     mutating func memoryAddress(_ instruction: X86Instruction, segmented: Bool = true) -> UInt64 {
         // La forme est dépliée au décodage : voir `X86Instruction.baseField`.
-        var address = (segmented ? segmentBase(instruction) : 0)
-            &+ UInt64(bitPattern: instruction.displacement)
+        var address = UInt64(bitPattern: instruction.displacement)
         let base = instruction.baseField
         if base < 16 {
             address &+= registers.read(Int(base))
@@ -1332,7 +1391,19 @@ extension X86Core {
         if index < 16 {
             address &+= registers.read(Int(index)) << UInt64(instruction.scaleShift)
         }
-        return address
+        // **En mode compatibilité, une adresse a trente-deux bits** : un
+        // déplacement absolu comme `[0x90000000]`, étendu au signe, tombait
+        // sinon au-delà de quatre gibioctets.
+        //
+        // **Et la base s'y ajoute modulo quatre gibioctets.** Le TLS d'un
+        // programme 32 bits se lit sous la base de GS : `mov %gs:(%esi)` avec
+        // ESI = 0xFFFFFFF8 vise huit octets plus bas. Sans ce second
+        // repliement, l'adresse passait au-delà de quatre gibioctets, et le
+        // noyau renvoyait la faute sans fin — l'`init` de MX Linux tournait là.
+        guard instruction.isCompatibility else {
+            return (segmented ? segmentBase(instruction) : 0) &+ address
+        }
+        return ((segmented ? segmentBase(instruction) : 0) &+ (address & 0xFFFF_FFFF)) & 0xFFFF_FFFF
     }
 
     /// La base du segment que l'instruction a nommé, ou zéro.
