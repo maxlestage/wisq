@@ -1093,3 +1093,27 @@ fn a_configfile_behind_a_device_prefix_is_followed() {
         "quiet rhgb root=live:CDLABEL=Fedora-WS-Live-44 rd.live.image"
     );
 }
+
+/// **Tails** : `isolinux.cfg` ouvre un menu (`kernel vesamenu.c32`, `append
+/// live64.cfg`), et c'est `live64.cfg` qui porte le noyau, après un
+/// `include`. Le module de menu n'est pas un noyau ; le fichier qu'il ouvre
+/// est suivi, depuis le dossier de la recette.
+#[test]
+fn a_syslinux_menu_module_is_followed_to_its_entries() {
+    const TAILS: &[(&str, &str)] = &[
+        (
+            "/isolinux/isolinux.cfg",
+            "label select_menu\n       com32 ifcpu64.c32\n       append menu_64 -- menu_32 -- menu_32\nlabel menu_64\n       kernel vesamenu.c32\n       append live64.cfg\nlabel menu_32\n       com32 cat.c32\n       append sorry32.txt\ndefault select_menu\n",
+        ),
+        ("/isolinux/live64.cfg", "include menu.cfg\n\nlabel live\n\tmenu label Tails\n\tkernel /live/vmlinuz\n\tappend initrd=/live/initrd.img boot=live config quiet\n"),
+        ("/isolinux/menu.cfg", "menu title SYSLINUX\ninclude stdmenu.cfg\n"),
+        ("/isolinux/stdmenu.cfg", "menu color sel * #ffffffff #55555555 *\n"),
+    ];
+    let (file, names) = files(TAILS);
+    let text = file("/isolinux/isolinux.cfg").unwrap();
+    let recipe = Recipe::read_in(&text, "/isolinux/isolinux.cfg", "TAILS", &file, &names)
+        .expect("la recette de Tails");
+    assert_eq!(recipe.kernel, "/live/vmlinuz");
+    assert_eq!(recipe.initrd.as_deref(), Some("/live/initrd.img"));
+    assert_eq!(recipe.command_line, "boot=live config quiet");
+}
