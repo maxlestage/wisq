@@ -53,9 +53,6 @@ public enum IsoBoot {
         /// Le fichier de recette d'où tout vient, pour que la console puisse
         /// le nommer quand un démarrage tourne mal.
         public let recipe: String
-        /// Le chemin du noyau **dans l'image** : il dit parfois quel système
-        /// on démarre (voir `commandLine(from:kernel:)`).
-        public var kernelInImage: String = ""
     }
 
     /// Pourquoi on ne démarre pas.
@@ -128,25 +125,13 @@ public enum IsoBoot {
     /// ne demande qu'un dessin que personne ne fera.
     ///
     /// **Et systemd reçoit de la patience** (voir `patience`), entre les deux.
-    ///
-    /// **Et antiX cherche aussi sur les disques.** Son `init` — celui de
-    /// MX Linux et d'antiX, reconnus à leur noyau rangé dans `/antiX/` — ne
-    /// cherche son `linuxfs` que sur les clés USB et les CD par défaut
-    /// (`DEF_FROM_TYPE="usb,cd"`). Ici l'image est un disque virtio, que ce
-    /// tri range parmi les disques durs : MX s'arrêtait sur « No usb,cd
-    /// devices found ». `from=all` lui fait regarder partout. Le mot n'est
-    /// ajouté qu'à antiX — `from=` est aussi celui de Porteus, où il nomme un
-    /// chemin — et jamais quand l'image en donne un.
-    public static func commandLine(from recipe: String, kernel: String = "") -> String {
+    public static func commandLine(from recipe: String) -> String {
         let words = recipe
             .split(separator: " ", omittingEmptySubsequences: true)
             .filter { $0 != "quiet" }
-        var waits = patience.filter { setting in
+        let waits = patience.filter { setting in
             let key = setting.prefix { $0 != "=" }
             return !words.contains { $0.hasPrefix(key + "=") }
-        }
-        if kernel.hasPrefix("/antiX/"), !words.contains(where: { $0.hasPrefix("from=") }) {
-            waits.append("from=all")
         }
         return (words.map(String.init) + waits + [X86BootLoader.defaultCommandLine])
             .joined(separator: " ")
@@ -299,8 +284,7 @@ public enum IsoBoot {
                 kernel: plan.kernel, disk: chosen,
                 // **La ligne complète, pas celle de la recette.** Voir
                 // `commandLine(from:)` : celle de l'image ne dit pas où parler.
-                commandLine: commandLine(from: plan.commandLine, kernel: plan.kernelInImage),
-                initrd: plan.initrd)
+                commandLine: commandLine(from: plan.commandLine), initrd: plan.initrd)
         }
     }
 
@@ -346,8 +330,7 @@ public enum IsoBoot {
         return .success(
             Plan(
                 kernel: kernel, initrd: initrd,
-                commandLine: recipe.commandLine, recipe: recipe.from,
-                kernelInImage: recipe.kernel))
+                commandLine: recipe.commandLine, recipe: recipe.from))
     }
 
     /// **Les initramfs de la recette, mis bout à bout dans un seul fichier.**
