@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-01 — `sshd` a sa clé d'hôte sur une image de cloud
+
+Le balayage des distributions le notait depuis des jours : Debian 13 démarre
+jusqu'au shell, mais `ssh.service` échoue. Vérifié avant de toucher quoi que
+ce soit : `/etc/ssh` n'a **aucune** clé d'hôte, `ExecStartPre=/usr/sbin/sshd -t`
+rend 1, et systemd abandonne après cinq relances. L'image est livrée sans clé
+— chaque machine doit avoir la sienne — et c'est cloud-init (installé,
+25.1.4) qui la crée au premier démarrage. wisq démarre sans lui.
+
+**Une unité en credential.** Comme le DHCP de `systemd-networkd`, la réponse
+passe par la ligne de commande : `systemd.extra-unit.wisq-ssh-host-key.service`
+(lu par `systemd-debug-generator` depuis 256) et `systemd.wants=` pour la
+tirer. Elle passe avant `ssh.service` et `sshd.service`, et ne fait rien
+quand la clé existe ou que `ssh-keygen` manque.
+
+**ed25519 seulement.** `ssh-keygen -A` aurait aussi tiré une clé RSA de
+3072 bits, et NixOS, qui le fait lui-même, passe quatorze minutes sur
+« SSH Host Keys Generation » à cette vitesse. La clé ed25519 est tirée en un
+instant ; `sshd` saute en silence les types par défaut absents.
+
+**Essayé** sur l'image Debian 13 du balayage : « Finished wisq-ssh-host-key »,
+« Started ssh.service », et `ssh-keyscan -t ed25519 127.0.0.1` répond
+« SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4 » avec la clé. Trois sabotages
+— sans `systemd.wants`, `-A` à la place, sans la condition — font tomber le
+test.
+
 ## 2026-11-01 — Le commentaire des délais de systemd parlait encore de 86 MHz
 
 `IsoBoot.patience` explique pourquoi une image démarrée par sa recette reçoit
