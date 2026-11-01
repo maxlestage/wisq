@@ -174,6 +174,13 @@ break APIs.
   `systemd.default_timeout_start_sec=600` ; l'horloge ne change pas, et un
   système sans systemd ignore ces mots. Arch 7.2.7 va jusqu'à « archiso
   login: » sur la console série.
+- **Tails était lu comme s'il démarrait un module de menu.** Son
+  `isolinux.cfg` écrit `kernel vesamenu.c32` puis `append live64.cfg` : le
+  « noyau » est le menu de syslinux, et la vraie entrée (`/live/vmlinuz`)
+  est dans `live64.cfg`, après un `include`. Un module `.c32` n'est plus
+  pris pour un noyau, et le lecteur suit les `include` et `config` de
+  syslinux, et un `append` qui ne nomme qu'un fichier `.cfg`, depuis le
+  dossier de la recette.
 
 ## [0.4.0] — 2026-09-05
 
