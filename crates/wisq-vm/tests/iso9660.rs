@@ -1130,15 +1130,33 @@ fn antix_is_given_its_volume_label() {
     let empty = |_: &str| Vec::new();
     let recipe = Recipe::read_in(mx, "/boot/syslinux/syslinux.cfg", "MX-Live", &none, &empty)
         .expect("la recette de MX");
-    assert!(recipe.command_line.ends_with(" blab=MX-Live"), "{}", recipe.command_line);
+    assert!(
+        recipe.command_line.ends_with(" blab=MX-Live"),
+        "{}",
+        recipe.command_line
+    );
 
     let own = "label live\n kernel /antiX/vmlinuz\n append buuid=1234 initrd=/antiX/initrd.gz\n";
     let recipe = Recipe::read_in(own, "/boot/syslinux/syslinux.cfg", "MX-Live", &none, &empty)
         .expect("la recette");
-    assert!(!recipe.command_line.contains("blab="), "{}", recipe.command_line);
+    assert!(
+        !recipe.command_line.contains("blab="),
+        "{}",
+        recipe.command_line
+    );
 
     let arch = "label arch\n kernel /arch/boot/x86_64/vmlinuz-linux\n append archisobasedir=arch\n";
-    let recipe = Recipe::read_in(arch, "/boot/syslinux/syslinux.cfg", "ARCH_202611", &none, &empty)
-        .expect("la recette d'Arch");
-    assert!(!recipe.command_line.contains("blab="), "{}", recipe.command_line);
+    let recipe = Recipe::read_in(
+        arch,
+        "/boot/syslinux/syslinux.cfg",
+        "ARCH_202611",
+        &none,
+        &empty,
+    )
+    .expect("la recette d'Arch");
+    assert!(
+        !recipe.command_line.contains("blab="),
+        "{}",
+        recipe.command_line
+    );
 }
