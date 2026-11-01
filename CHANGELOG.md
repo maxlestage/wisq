@@ -181,6 +181,21 @@ break APIs.
   pris pour un noyau, et le lecteur suit les `include` et `config` de
   syslinux, et un `append` qui ne nomme qu'un fichier `.cfg`, depuis le
   dossier de la recette.
+- **MX Linux mourait dès son `init`, un programme 32 bits.** Son initramfs
+  lance un busybox i386 statique, et le cœur n'avait pas de mode
+  compatibilité : `_start` empilait ses arguments sur huit octets, `argv`
+  se lisait nul, et `init` fautait à l'adresse 0. Le cœur suit maintenant
+  le bit L du descripteur de CS : sous un noyau 64 bits, un programme
+  32 bits a son propre décodage (`40`–`4F` redeviennent INC et DEC), une
+  pile de quatre octets, un EIP et des adresses de 32 bits repliés modulo
+  quatre gibioctets, son TLS sous `%gs` lu dans la GDT, et ses appels
+  système par `int 0x80` ou par `SYSCALL` vers CSTAR, rendus par `sysretl`.
+  Une sonde exécute chacune des 131 708 instructions du busybox : les trois
+  formes qui manquaient encore (l'adresse repliée sous la base de segment,
+  `MOV` à adresse absolue, `FTST`) y sont. Et l'`init` d'antiX, qui ne
+  cherche sa racine que sur les clés USB et les CD, reçoit `from=all` pour
+  la trouver sur le disque virtio. MX 25.3 écrit « Welcome to MX 25.3_Xfce »,
+  charge ses modules et cherche son `linuxfs`.
 
 ## [0.4.0] — 2026-09-05
 
