@@ -257,7 +257,11 @@ public final class VirtioNet: @unchecked Sendable {
     ///
     /// **Au repos, à chaque passage** : une machine endormie n'exécute rien,
     /// et attendre seize passages, ce serait attendre seize battements.
-    static let busyPollInterval = 16
+    ///
+    /// **Puis une sur quatre**, depuis que le contrôleur ne passe plus que
+    /// toutes les 256 instructions (voir `X86Core.run`) : toujours une
+    /// question toutes les 1 024 instructions, la même latence qu'avant.
+    static let busyPollInterval = 4
     @exclusivity(unchecked)
     private var passesSincePoll = 0
 

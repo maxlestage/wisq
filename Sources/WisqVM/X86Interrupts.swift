@@ -330,7 +330,7 @@ extension X86Core {
         //
         // **La mémoire et le bus, lus une fois.** Chaque `memory?.bus?.…`
         // retenait puis relâchait la mémoire et le pont, une dizaine de fois
-        // par passage, et le passage revient toutes les soixante-quatre
+        // par passage, et le passage revenait toutes les soixante-quatre
         // instructions : `perf` donnait 3 % du temps de la session Xfce de
         // Void à `swift_retain` et `swift_release`, appelés d'ici.
         let memory = self.memory
