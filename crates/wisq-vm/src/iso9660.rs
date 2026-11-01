@@ -610,12 +610,24 @@ fn with_label(command_line: &str, text: &str, label: &str) -> String {
 /// son support, ni pour une étiquette qui contient une espace.
 fn with_antix_device(command_line: &str, kernel: &str, label: &str) -> String {
     let named = command_line.split_whitespace().any(|word| {
-        ["blab=", "blabel=", "bootlabel=", "buuid=", "bootuuid=", "bdev=", "bootdev="]
-            .iter()
-            .any(|key| word.starts_with(key))
+        [
+            "blab=",
+            "blabel=",
+            "bootlabel=",
+            "buuid=",
+            "bootuuid=",
+            "bdev=",
+            "bootdev=",
+        ]
+        .iter()
+        .any(|key| word.starts_with(key))
     });
     let label = label.trim();
-    if !kernel.starts_with("/antiX/") || named || label.is_empty() || label.contains(char::is_whitespace) {
+    if !kernel.starts_with("/antiX/")
+        || named
+        || label.is_empty()
+        || label.contains(char::is_whitespace)
+    {
         return command_line.to_string();
     }
     let line = command_line.trim();
