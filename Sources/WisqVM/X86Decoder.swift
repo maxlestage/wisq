@@ -117,6 +117,10 @@ public struct X86Instruction: Equatable, Sendable {
     /// Écrits en propriétés calculées, comme `segmentPrefixes` : un
     /// `static let` peut se payer d'un `swift_once` à chaque lecture.
     static var noRegister: UInt8 { 16 }
+    /// **Décodée pour un programme 32 bits** sous un noyau 64 bits : le
+    /// segment de code a son bit L à zéro. La pile, les adresses et les sauts
+    /// y ont trente-deux bits, et REX n'existe pas.
+    public var isCompatibility: Bool { highByteFlags & 4 != 0 }
     static var ripRelative: UInt8 { 17 }
 
     /// Le déplacement, déjà étendu au signe. Zéro quand il n'y en a pas.
@@ -127,7 +131,8 @@ public struct X86Instruction: Equatable, Sendable {
 
     init(prefixMask: UInt16, rex: UInt8?, vexBytes: (UInt8, UInt8, UInt8), vexCount: Int,
          map: OpcodeMap, opcode: UInt8, modrm: UInt8?, sib: UInt8?, displacementBytes: Int,
-         displacement: Int64, immediateBytes: Int, immediate: UInt64, length: Int) {
+         displacement: Int64, immediateBytes: Int, immediate: UInt64, length: Int,
+         compatibility: Bool = false) {
         self.prefixMask = prefixMask
         self.rex = rex
         self.vexBytes = vexBytes
@@ -163,8 +168,9 @@ public struct X86Instruction: Equatable, Sendable {
         rmField = (rexBits & 0x01) << 3 | (byte & 0x07)
         // Sans REX, les numéros 4 à 7 d'un opérande d'un octet désignent AH,
         // CH, DH, BH ; avec, SPL, BPL, SIL, DIL.
-        highByteFlags = rex != nil || vexCount != 0 ? 0
-            : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0)
+        highByteFlags = (rex != nil || vexCount != 0 ? 0
+            : (((byte >> 3) & 0x07) >= 4 ? 1 : 0) | ((byte & 0x07) >= 4 ? 2 : 0))
+            | (compatibility ? 4 : 0)
         // 0x66 est le bit 9 du masque des préfixes (`hasPrefix`).
         wideOperandSize = rexBits & 0x08 != 0 ? 8 : prefixMask & (1 << 9) != 0 ? 2 : 4
         // Les mêmes règles que celles qu'appliquait `effectiveAddress`, dans
@@ -179,7 +185,10 @@ public struct X86Instruction: Equatable, Sendable {
                     ? Self.noRegister : (rexBits & 0x01) << 3 | (sib & 0x07)
             } else {
                 indexAndScale = Self.noRegister
-                baseField = byte >> 6 == 0 && byte & 0x07 == 0b101 ? Self.ripRelative : rmField
+                // **En mode compatibilité, pas de relatif à RIP** : la même
+                // forme y est une adresse absolue de quatre octets.
+                baseField = byte >> 6 == 0 && byte & 0x07 == 0b101
+                    ? (compatibility ? Self.noRegister : Self.ripRelative) : rmField
             }
         } else {
             baseField = Self.noRegister
@@ -338,6 +347,9 @@ public enum X86Decoder {
         /// Une adresse absolue (`moffs`) : huit octets en mode 64 bits,
         /// quatre avec le préfixe de taille d'adresse.
         case absoluteAddress
+        /// `ptr16:32` de `CALL` et `JMP` lointains, en mode compatibilité :
+        /// six octets, quatre avec `0x66`.
+        case farPointer
     }
 
     /// La forme d'un opcode : porte-t-il un ModRM, et que traîne-t-il derrière.
@@ -352,10 +364,12 @@ public enum X86Decoder {
 
     /// L'instruction qui commence à `offset`, ou l'erreur qui dit pourquoi
     /// non.
-    public static func decode(_ bytes: [UInt8], at offset: Int = 0) throws -> X86Instruction {
+    public static func decode(_ bytes: [UInt8], at offset: Int = 0,
+                              compatibility: Bool = false) throws -> X86Instruction {
         try bytes.withUnsafeBufferPointer { buffer in
             guard let start = buffer.baseAddress else { throw X86DecodeError.truncated }
-            return try decode(start + offset, available: buffer.count - offset)
+            return try decode(start + offset, available: buffer.count - offset,
+                              compatibility: compatibility)
         }
     }
 
@@ -366,7 +380,7 @@ public enum X86Decoder {
     /// `Array`, coûtait plus cher que le décodage lui-même sur les instructions
     /// courtes — et la plupart le sont.
     public static func decode(
-        _ bytes: UnsafePointer<UInt8>, available: Int
+        _ bytes: UnsafePointer<UInt8>, available: Int, compatibility: Bool = false
     ) throws -> X86Instruction {
         var index = 0
         func next() throws -> UInt8 {
@@ -383,6 +397,12 @@ public enum X86Decoder {
             return byte
         }
         func peek() -> UInt8? { index < available ? bytes[index] : nil }
+        // En mode compatibilité, C4, C5 et 62 sont LES, LDS et BOUND quand
+        // l'octet suivant est un ModRM mémoire ; VEX et EVEX ne s'y lisent que
+        // si ses deux bits hauts valent 11.
+        func vectorFollows() -> Bool {
+            !compatibility || (index + 1 < available && bytes[index + 1] >> 6 == 0b11)
+        }
         let offset = 0
 
         // 1. Les préfixes hérités.
@@ -402,12 +422,12 @@ public enum X86Decoder {
         var wideOperand = false
 
         switch peek() {
-        case 0xC5:  // VEX à deux octets : la table est toujours 0F.
+        case 0xC5 where vectorFollows():  // VEX à deux octets : la table est toujours 0F.
             _ = try next()
             vexBytes.0 = try next()
             vexCount = 2
             map = .twoByte
-        case 0xC4:  // VEX à trois octets : `mmmmm` désigne la table.
+        case 0xC4 where vectorFollows():  // VEX à trois octets : `mmmmm` désigne la table.
             _ = try next()
             let second = try next()
             let third = try next()
@@ -415,7 +435,7 @@ public enum X86Decoder {
             vexCount = 3
             map = mapFor(mmmmm: second & 0x1F)
             wideOperand = third & 0x80 != 0  // VEX.W
-        case 0x62:  // EVEX : quatre octets, `mmm` sur les mêmes tables.
+        case 0x62 where vectorFollows():  // EVEX : quatre octets, `mmm` sur les mêmes tables.
             _ = try next()
             let p0 = try next()
             let p1 = try next()
@@ -424,7 +444,7 @@ public enum X86Decoder {
             vexCount = 4
             map = mapFor(mmmmm: p0 & 0x07)
             wideOperand = p1 & 0x80 != 0  // EVEX.W
-        case .some(let byte) where 0x40...0x4F ~= byte:
+        case .some(let byte) where 0x40...0x4F ~= byte && !compatibility:
             _ = try next()
             rex = byte
             wideOperand = (byte & 0x08) != 0  // REX.W
@@ -455,14 +475,36 @@ public enum X86Decoder {
         }
 
         // 4. La forme de cet opcode dans cette table.
-        let shape = try self.shape(map: map, opcode: opcode, vector: vexCount != 0)
+        let shape = try self.shape(map: map, opcode: opcode, vector: vexCount != 0,
+                                   compatibility: compatibility)
 
         // 5. ModRM, et ce qu'il entraîne.
         var modrm: UInt8?
         var sib: UInt8?
         var displacementBytes = 0
         var displacement: Int64 = 0
-        if shape.hasModRM {
+        let sixteenBitAddressing = compatibility && prefixMask & prefixBit[0x67] != 0
+        if shape.hasModRM && sixteenBitAddressing {
+            // **L'adressage 16 bits** : ni SIB, et des déplacements de deux
+            // octets ; `rm` 110 sous `mod` 00 est une adresse absolue.
+            let byte = try next()
+            modrm = byte
+            let mod = byte >> 6
+            switch mod {
+            case 0b00 where byte & 0x07 == 0b110: displacementBytes = 2
+            case 0b01: displacementBytes = 1
+            case 0b10: displacementBytes = 2
+            default: break
+            }
+            for byte in 0..<displacementBytes {
+                displacement |= Int64(try next()) << (8 * Int64(byte))
+            }
+            if displacementBytes == 1 {
+                displacement = Int64(Int8(truncatingIfNeeded: displacement))
+            } else if displacementBytes == 2 {
+                displacement = Int64(Int16(truncatingIfNeeded: displacement))
+            }
+        } else if shape.hasModRM {
             let byte = try next()
             modrm = byte
             let mod = byte >> 6
@@ -511,7 +553,10 @@ public enum X86Decoder {
         case .operandSizedOrEight:
             immediateBytes = wideOperand ? 8 : (hasOperandSizePrefix ? 2 : 4)
         case .wordThenByte: immediateBytes = 3
-        case .absoluteAddress: immediateBytes = hasAddressSizePrefix ? 4 : 8
+        case .absoluteAddress:
+            immediateBytes = compatibility ? (hasAddressSizePrefix ? 2 : 4)
+                : (hasAddressSizePrefix ? 4 : 8)
+        case .farPointer: immediateBytes = hasOperandSizePrefix ? 4 : 6
         }
         var immediate: UInt64 = 0
         for byte in 0..<immediateBytes {
@@ -525,7 +570,7 @@ public enum X86Decoder {
             map: map, opcode: opcode,
             modrm: modrm, sib: sib, displacementBytes: displacementBytes,
             displacement: displacement, immediateBytes: immediateBytes,
-            immediate: immediate, length: length)
+            immediate: immediate, length: length, compatibility: compatibility)
     }
 
     /// La longueur seule, quand c'est tout ce qu'on veut savoir.
@@ -559,16 +604,16 @@ public enum X86Decoder {
     }
 
     static func shape(
-        map: X86Instruction.OpcodeMap, opcode: UInt8, vector: Bool
+        map: X86Instruction.OpcodeMap, opcode: UInt8, vector: Bool, compatibility: Bool = false
     ) throws -> Shape {
         switch map {
         case .oneByte:
-            guard let shape = oneByteMap[Int(opcode)] else {
+            guard let shape = (compatibility ? compatibilityOneByteMap : oneByteMap)[Int(opcode)] else {
                 throw X86DecodeError.unsupportedOpcode(map: map, opcode: opcode)
             }
             return shape
         case .twoByte:
-            guard let shape = twoByteMap[Int(opcode)] else {
+            guard let shape = (compatibility ? compatibilityTwoByteMap : twoByteMap)[Int(opcode)] else {
                 throw X86DecodeError.unsupportedOpcode(map: map, opcode: opcode)
             }
             return shape
@@ -652,6 +697,43 @@ public enum X86Decoder {
         for opcode in 0xF8...0xFD { table[opcode] = Shape(false) }  // drapeaux
         table[0xFE] = Shape(true)  // INC/DEC r/m8
         table[0xFF] = Shape(true)  // INC/DEC/CALL/JMP/PUSH r/m
+        return table
+    }()
+
+    /// **La table d'un octet en mode compatibilité** : celle du mode 64 bits,
+    /// plus ce qu'il avait repris au 32 bits. `40`–`4F` y sont `INC` et `DEC`
+    /// (REX n'existe pas), et un saut ou un `MOV r, imm` raccourcit avec
+    /// `0x66` au lieu de garder ses quatre octets.
+    static let compatibilityOneByteMap: [Shape?] = {
+        var table = oneByteMap
+        for opcode in [0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F] {
+            table[opcode] = Shape(false)  // PUSH/POP ES, CS, SS, DS
+        }
+        for opcode in [0x27, 0x2F, 0x37, 0x3F] { table[opcode] = Shape(false) }  // BCD
+        for opcode in 0x40...0x4F { table[opcode] = Shape(false) }  // INC/DEC r32
+        table[0x60] = Shape(false)  // PUSHA
+        table[0x61] = Shape(false)  // POPA
+        table[0x62] = Shape(true)  // BOUND
+        table[0x82] = Shape(true, .byte)  // l'alias de 80
+        table[0x9A] = Shape(false, .farPointer)  // CALL ptr16:32
+        table[0xC4] = Shape(true)  // LES
+        table[0xC5] = Shape(true)  // LDS
+        table[0xCE] = Shape(false)  // INTO
+        table[0xD4] = Shape(false, .byte)  // AAM
+        table[0xD5] = Shape(false, .byte)  // AAD
+        table[0xD6] = Shape(false)  // SALC
+        table[0xE8] = Shape(false, .operandSized)  // CALL rel32, rel16 avec 0x66
+        table[0xE9] = Shape(false, .operandSized)  // JMP rel32, rel16 avec 0x66
+        table[0xEA] = Shape(false, .farPointer)  // JMP ptr16:32
+        for opcode in 0xB8...0xBF { table[opcode] = Shape(false, .operandSized) }
+        return table
+    }()
+
+    /// La table `0F` en mode compatibilité : les `Jcc` proches y raccourcissent
+    /// avec `0x66`, comme `CALL` et `JMP`.
+    static let compatibilityTwoByteMap: [Shape?] = {
+        var table = twoByteMap
+        for opcode in 0x80...0x8F { table[opcode] = Shape(false, .operandSized) }
         return table
     }()
 
