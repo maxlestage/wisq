@@ -553,6 +553,15 @@ public struct X86Core: @unchecked Sendable {
             // passe par le contrôle d'exclusivité. Évalué en premier, il
             // coûtait à chaque instruction ce que le masque devait réserver à
             // une sur soixante-quatre.
+            //
+            // **Une sur deux cent cinquante-six, désormais.** Le passage
+            // coûtait environ un dixième du temps de l'interprète à une sur
+            // soixante-quatre — l'horloge qu'on divise, les lignes qu'on
+            // relit. Mesuré, Void Linux avec disque, réseau et écran,
+            // 2,5 milliards d'instructions : 54,7 s → 49,6 s (médianes de
+            // trois). Le retard d'une interruption passe de 64 à 256
+            // instructions, moins d'une microseconde de l'invité : aucun
+            // noyau ne le distingue d'une horloge un peu moins précise.
             if executed & 0xFF == 0 && devicesArmed { try serviceInterrupts() }
             if halted {
                 // `HLT` attend une interruption. Sans horloge armée, ou les
