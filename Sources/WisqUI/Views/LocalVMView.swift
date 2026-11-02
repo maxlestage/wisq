@@ -1050,7 +1050,9 @@ struct LocalVMTerminalView: View {
                 .padding(.vertical, 6)
             }
             if let screen = model.screen, !showsConsole {
-                GuestScreenView(screen: screen) { dx, dy, buttons in
+                GuestScreenView(screen: screen, onTouch: { x, y, buttons in
+                    model.touch(x: x, y: y, buttons: buttons)
+                }) { dx, dy, buttons in
                     model.pointer(dx: dx, dy: dy, buttons: buttons)
                 }
             } else {
