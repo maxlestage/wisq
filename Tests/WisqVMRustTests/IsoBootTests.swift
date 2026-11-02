@@ -67,6 +67,22 @@ final class IsoBootTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: initrd), IsoGravure.initramfs)
     }
 
+    /// **Un système « live » de dracut demande un gibioctet** : le bureau de
+    /// Void ne s'ouvre pas avec le plancher de la machine PC. Les autres
+    /// images n'en reçoivent pas, et un `root=live:` caché dans un autre
+    /// argument ne compte pas.
+    func testALiveSystemAsksForAGibibyte() throws {
+        let void = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro rd.live.overlay.overlayfs=1"
+        let image = try IsoGravure(commandLine: void).write()
+        defer { try? FileManager.default.removeItem(at: image) }
+        guard case .success(let boot) = IsoBoot.decide(image, into: folder, ceiling: 1 << 20) else {
+            return XCTFail("l'image doit démarrer")
+        }
+        XCTAssertEqual(boot.minimumRAM, 1 << 30)
+        XCTAssertEqual(IsoBoot.minimumRAM(forRecipe: "modules=loop,squashfs quiet"), 0, "Alpine")
+        XCTAssertEqual(IsoBoot.minimumRAM(forRecipe: "init=/sbin/init foo=root=live:x"), 0)
+    }
+
     /// **La ligne de commande est lue, pas inventée.**
     ///
     /// Une ligne fabriquée démarre un noyau qui ne trouve pas sa racine, et la

@@ -360,6 +360,29 @@ final class ImageDownloaderTests: XCTestCase {
         }
     }
 
+    /// **Void Linux, le bureau** : l'ISO Xfce datée lue sur la page du
+    /// dossier, sa somme dans le `sha256sum.txt` commun, puis téléchargée et
+    /// vérifiée.
+    func testTheVoidDesktopIsListedAndVerified() async throws {
+        let file = "void-live-x86_64-20250202-xfce.iso"
+        let hex = SHA256Stream.hex(image)
+        let router = Router([
+            ImageDownload.voidIndex: Server(Array("<a href=\"\(file)\">x</a>".utf8)),
+            ImageDownload.voidIndex.appendingPathComponent("sha256sum.txt"):
+                Server(Array("SHA256 (void-live-x86_64-20250202-base.iso) = \(String(repeating: "0", count: 64))\n"
+                             .utf8) + Array("SHA256 (\(file)) = \(hex)\n".utf8)),
+            ImageDownload.voidIndex.appendingPathComponent(file): Server(image),
+        ])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: parts)
+        let releases = try await downloader.bootableReleases()
+        XCTAssertEqual(releases.map(\.flavor), ["void-xfce"])
+        let release = try XCTUnwrap(releases.first)
+        XCTAssertEqual(release.version, "2025.02.02")
+        XCTAssertEqual(release.checksum, .sha256(hex), "la somme de ce fichier, pas celle de la ligne d'avant")
+        let url = try await downloader.download(release, into: library)
+        XCTAssertEqual(try Data(contentsOf: url), Data(image))
+    }
+
     /// **Un index muet ne cache pas l'autre**, et une image dont le serveur
     /// ne dit pas la taille n'est pas proposée. Seul un échec de tous est un
     /// échec, et il dit le premier.
@@ -395,9 +418,9 @@ final class ImageDownloaderTests: XCTestCase {
         }
     }
 
-    /// **Les huit index sont demandés ensemble.** Chaque index retient sa
-    /// réponse jusqu'à ce que les huit aient été demandés : lus l'un après
-    /// l'autre, le premier attendrait les sept autres pour rien, et la
+    /// **Les neuf index sont demandés ensemble.** Chaque index retient sa
+    /// réponse jusqu'à ce que les neuf aient été demandés : lus l'un après
+    /// l'autre, le premier attendrait les huit autres pour rien, et la
     /// barrière, au bout de son délai, dirait non à tous.
     func testTheIndexesAreAskedAllAtOnce() async throws {
         actor Barrier {
@@ -416,7 +439,7 @@ final class ImageDownloaderTests: XCTestCase {
             let indexes: Set<URL> = [
                 ImageDownload.alpineIndex, ImageDownload.debianIndex, ImageDownload.fedoraIndex,
                 ImageDownload.ubuntuIndex, ImageDownload.archIndex, ImageDownload.openSUSEIndex,
-                ImageDownload.almaIndex, ImageDownload.rockyIndex,
+                ImageDownload.almaIndex, ImageDownload.rockyIndex, ImageDownload.voidIndex,
             ]
             let barrier = Barrier()
             let inner: Router
