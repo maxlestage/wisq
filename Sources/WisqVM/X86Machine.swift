@@ -166,6 +166,7 @@ public final class X86Machine: @unchecked Sendable {
         var bus = bus
         if bus == nil, vga != nil { bus = X86PCIHost(storage: nil) }
         bus?.display = vga
+        bus?.tablet = tablet
         memory.bus = bus
     }
 
@@ -299,8 +300,21 @@ public final class X86Machine: @unchecked Sendable {
         let card = X86BochsDisplay(screen: screen, registersBase: Self.displayRegistersBase)
         memory.vga = card
         vga = card
+        // **Et la tablette** : un écran se touche. Elle vit juste après les
+        // registres de la carte, et `virtio_input` en fait un pointeur absolu.
+        let pointer = VirtioTablet(interruptLine: VirtioTablet.line)
+        pointer.writeConfiguration(0x10, UInt32(Self.tabletBase))
+        memory.tablet = pointer
+        tablet = pointer
         install(bus: memory.bus)
     }
+
+    /// La tablette de l'écran, quand il y en a un : toucher pour pointer.
+    public private(set) var tablet: VirtioTablet?
+
+    /// La BAR0 de la tablette : seize kibioctets, alignés, après les registres
+    /// de la carte graphique.
+    public static let tabletBase: UInt64 = displayRegistersBase + 0x1_0000
 
     /// La carte graphique de l'écran, quand il y en a un.
     public private(set) var vga: X86BochsDisplay?
@@ -513,6 +527,17 @@ public final class X86Machine: @unchecked Sendable {
     /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
     /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
     /// quel fil.
+    /// **Un toucher à un endroit de l'écran**, par la tablette : `x` et `y`
+    /// de 0 à 1. Faux quand la tablette n'est pas là ou que l'invité ne l'a
+    /// pas prise : l'appelant passe alors par `mouse`.
+    @discardableResult
+    public func touch(x: Double, y: Double, buttons: UInt8) -> Bool {
+        guard let tablet, tablet.isReady else { return false }
+        tablet.point(x: x, y: y, buttons: buttons)
+        nudge.signal()
+        return true
+    }
+
     public func mouse(dx: Int, dy: Int, buttons: UInt8) {
         lock.lock()
         pointerQueue.append(.mouse(dx: dx, dy: dy, buttons: buttons))
@@ -625,6 +650,10 @@ public final class X86Machine: @unchecked Sendable {
             vga.save(into: &writer)
             display.withPixels { writer.ram($0) }
         }
+        if let tablet {
+            writer.u64(Snapshot.tabletSection)
+            tablet.save(into: &writer)
+        }
         // **La carte réseau, derrière sa marque et avant les disques** : la
         // section du disque n'a pas de marque, elle se lit « s'il reste des
         // octets », et une carte écrite après elle serait prise pour un disque.
@@ -729,6 +758,7 @@ public final class X86Machine: @unchecked Sendable {
         // taille, ou un écran de démarrage d'une autre taille, ne se
         // reprennent pas.
         var videoState: (base: UInt64, card: X86BochsDisplay.State)?
+        var restoredTablet: VirtioTablet?
         if tail.peeks(Snapshot.videoSection) {
             _ = try tail.u64()
             let size = try tail.u64(), base = try tail.u64()
@@ -745,6 +775,14 @@ public final class X86Machine: @unchecked Sendable {
                 videoState = (base, card)
             }
             try tail.skipRAM(count: Int(size))
+        }
+        // La tablette, sur la machine qui en a une ; lue même sans elle, pour
+        // que la section suivante soit à sa place.
+        if tail.peeks(Snapshot.tabletSection) {
+            _ = try tail.u64()
+            let scratch = VirtioTablet(interruptLine: VirtioTablet.line)
+            try scratch.restore(from: &tail)
+            restoredTablet = scratch
         }
         // La carte réseau, si sa marque est là, branchée sur l'autre bout
         // qu'a la machine qu'on reprend : le réseau n'est pas dans
@@ -786,6 +824,12 @@ public final class X86Machine: @unchecked Sendable {
         try reader.ram(UnsafeMutableRawBufferPointer(start: memory.bytes, count: memory.size))
         if var screenPixels, let display {
             try display.replacePixels(count: screenPixelCount) { try screenPixels.ram($0) }
+        }
+        if let restoredTablet, let tablet {
+            var writer = Snapshot.Writer()
+            restoredTablet.save(into: &writer)
+            var reader = try Snapshot.Reader(writer.bytes)
+            try tablet.restore(from: &reader)
         }
         if let videoState, let display, let vga {
             display.move(to: videoState.base)
