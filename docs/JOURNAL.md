@@ -8,6 +8,49 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — Toucher pour pointer : une tablette virtio
+
+Sur l'écran de la machine locale, le doigt poussait une souris PS/2
+relative, comme un pavé tactile : le pointeur n'allait jamais exactement sous
+le doigt, Xorg accélérant ce qu'on lui envoie. Sur un téléphone, on veut
+toucher **là** où l'on clique. vmmouse avait été écarté (il exige l'identité
+VMware) ; la voie de QEMU est sa `virtio-tablet`.
+
+**Le transport moderne, d'abord.** `virtio_input` refuse un périphérique sans
+`VIRTIO_F_VERSION_1`, et les disques et la carte réseau de wisq parlent
+l'ancien transport, par des ports. `VirtioTablet` porte donc le transport de
+virtio 1.0 : une liste de capacités dans l'espace de configuration PCI (les
+registres communs, l'ISR, la configuration du périphérique, les sonnettes),
+une BAR0 de seize kibioctets en mémoire, des files décrites par trois adresses
+de 64 bits, et l'INTx faute de MSI-X (les vecteurs demandés sont refusés).
+
+**La tablette ensuite** : « wisq tablet », BUS_VIRTUAL, ABS_X et ABS_Y de 0 à
+32 767, BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, REL_WHEEL — ce que `virtio_input`
+lit par `select`/`subsel`. Un toucher part en un paquet (X, Y, trois boutons,
+`SYN_REPORT`), un événement par tampon offert ; faute de tampons, ils
+attendent, bornés. Elle arrive avec l'écran (00:07.0, ligne 10, sa BAR0
+après les registres de la carte), et son état passe dans l'instantané
+(`WISQ_tab`) : sans lui, un pilote qui croit ses files prêtes ferait face,
+après une reprise, à un périphérique remis à zéro.
+
+**Dans l'application** : quand l'invité a pris la tablette (DRIVER_OK, la
+file active), toucher clique à l'endroit touché, un appui long y fait le clic
+droit, glisser traîne bouton enfoncé ; sinon — Alpine, un système sans
+`virtio_input` — la souris PS/2 reste.
+
+**Essayé sur Void Xfce** : `input: wisq tablet as
+/devices/pci0000:00/0000:00:07.0/virtio2/input/input4`, puis Xorg :
+« Adding input device wisq tablet (/dev/input/event3) », « Using input driver
+'libinput' », « device is a pointer ». Pas encore vu : un toucher réel
+déplaçant le pointeur, qui demande l'application ; le chemin de l'événement
+jusqu'au tampon de l'invité est tenu par les tests.
+
+Onze tests ; six sabotages tombés (le bit « capacités » de l'état, DRIVER_OK
+ignoré, une fonction non offerte acceptée, l'ISR jamais effacé, le
+`SYN_REPORT` oublié). Le premier essai du sabotage de DRIVER_OK passait : le
+test n'avait pas de file posée, rien ne pouvait partir de toute façon. Il en
+pose une maintenant.
+
 ## 2026-11-02 — « Télécharger » propose un bureau : Void Linux Xfce
 
 Les huit images de la feuille « Télécharger » ouvraient toutes une console :
