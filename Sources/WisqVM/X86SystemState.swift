@@ -202,8 +202,12 @@ public enum X86CPUID {
     /// moitiés (`x86-avx2-oracle`), FMA, F16C et les conversions
     /// (`x86-fma-oracle`). Ce qui manque encore — les ramassages, `vpmaskmov`,
     /// `vblendps`, `vdpps` — est refusé par son nom s'il arrive.
-    public static let featuresECX: UInt32 = 1 | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 19) | (1 << 20)
-        | (1 << 22) | (1 << 23) | (1 << 26) | (1 << 28) | (1 << 29)
+    ///
+    /// **Et AES (25) et PCLMULQDQ (1)** : un tour d'AES et la multiplication
+    /// sans retenue de GCM en une instruction (`X86AES.swift`). OpenSSL
+    /// chiffre alors le TLS et LUKS sans ses tables.
+    public static let featuresECX: UInt32 = 1 | (1 << 1) | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 19) | (1 << 20)
+        | (1 << 22) | (1 << 23) | (1 << 25) | (1 << 26) | (1 << 28) | (1 << 29)
     /// CPUID.1:ECX.OSXSAVE.
     public static let osxsaveBit: UInt32 = 1 << 27
     /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui

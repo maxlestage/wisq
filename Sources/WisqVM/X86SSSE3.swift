@@ -82,6 +82,10 @@ extension X86Core {
         case 0x01, 0x02, 0x03, 0x05, 0x06, 0x07: result = Self.horizontal(opcode, destination, source)
         case 0x04, 0x08...0x0B, 0x1C...0x1E:
             result = Self.ssse3Elementwise(opcode, destination, source) ?? (0, 0)
+        // AES-NI : `AESIMC` (DB) et les quatre tours (DC à DF). Voir
+        // `X86AES.swift`.
+        case 0xDB...0xDF:
+            result = Self.aesRound(opcode, destination, source)
         // `PHMINPOSUW` (SSE4.1) : le plus petit des huit mots sans signe de
         // la source, et son rang — le premier en cas d'égalité — dans les
         // bits 16 à 18 ; tout le reste à zéro. La destination n'est pas lue.
@@ -109,6 +113,17 @@ extension X86Core {
         let fields = try decodeFields(instruction)
         let control = UInt8(truncatingIfNeeded: instruction.immediate)
         switch opcode {
+        case 0xDF:  // AESKEYGENASSIST, voir `X86AES.swift`
+            let read = try readVectorRM(fields, 16)
+            let result = Self.aesKeyAssist((low: read.0, high: read.1), control)
+            setVector(fields.reg, result.0, result.1)
+        case 0x44:  // PCLMULQDQ
+            let read = try readVectorRM(fields, 16)
+            let destination = vector(fields.reg)
+            let left = control & 0x01 == 0 ? destination.low : destination.high
+            let right = control & 0x10 == 0 ? read.0 : read.1
+            let result = Self.carrylessMultiply(left, right)
+            setVector(fields.reg, result.0, result.1)
         case 0x0F:  // PALIGNR
             let read = try readVectorRM(fields, 16)
             let result = Self.alignBytes(vector(fields.reg), (low: read.0, high: read.1), by: control)
