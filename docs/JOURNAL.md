@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — « Télécharger » propose un bureau : Void Linux Xfce
+
+Les huit images de la feuille « Télécharger » ouvraient toutes une console :
+Alpine, et sept images de cloud. Le bureau existe pourtant depuis #676 — la
+carte Bochs, `bochs-drm`, Xorg et Xfce sur l'écran de la machine locale —,
+mais il fallait aller chercher l'ISO soi-même.
+
+**La neuvième entrée** : la plus récente des `void-live-x86_64-AAAAMMJJ-xfce.iso`
+du dossier `live/current` de Void, sa somme lue dans le `sha256sum.txt`
+commun (format de BSD, le lecteur de Rocky), sa taille demandée en un octet.
+Ni `base`, ni `musl`, ni un autre processeur. Lue avec les huit autres, en
+même temps.
+
+**Démarrée par sa propre recette** : `IsoBoot` lit dans l'ISO la ligne que
+j'avais écrite à la main pour le banc (`root=live:CDLABEL=VOID_LIVE …`), sans
+rien ajouter.
+
+**Et sa mémoire.** L'application donnait à une ISO le plancher de la machine
+PC, 128 Mio : le bureau ne s'y serait jamais ouvert, et sans le dire. Une
+recette `root=live:` (dracut, Void, Fedora Live) reçoit maintenant un plancher
+de 1 Gio. Mesuré avant de le fixer : avec 1024 Mio, la session `anon` s'ouvre
+— lightdm, Xorg (aucune trace de plantage), xfwm4, le panneau, le bureau,
+Thunar — en 2 637 s de banc. Alpine n'est pas touchée.
+
+Trois tests (la liste de Void, la feuille qui la télécharge et la vérifie,
+le plancher), et le test des index lus ensemble passe à neuf. Quatre
+sabotages tombés : Void retirée de la liste, la somme lue au format de
+`sha256sum`, une date non vérifiée (la variante `musl` passait), `root=live:`
+cherché comme sous-chaîne.
+
 ## 2026-11-02 — Les formes VEX d'AES sans traduction : 5 % sur AES-GCM
 
 Après #689, une seconde de l'invité d'`openssl speed aes-128-gcm` coûtait

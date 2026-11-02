@@ -90,7 +90,8 @@ public enum IsoBoot {
         public let commandLine: String?
         public let initrd: URL?
         /// La mémoire en dessous de laquelle ce système ne démarre pas, ou
-        /// zéro quand on n'en sait rien. Seule une image de cloud en donne une.
+        /// zéro quand on n'en sait rien. Une image de cloud en donne une, et
+        /// un système « live » de dracut (`liveSystemRAM`).
         public var minimumRAM = 0
 
         /// Le fichier tel qu'il est, quand il n'y a rien à déballer.
@@ -279,13 +280,30 @@ public enum IsoBoot {
             }.mapError { .cloud($0) }
         }
         return unpack(chosen, into: folder, ceiling: ceiling).map { plan in
-            Boot(
+            var boot = Boot(
                 kind: KernelImageKind.identify(fileAt: plan.kernel),
                 kernel: plan.kernel, disk: chosen,
                 // **La ligne complète, pas celle de la recette.** Voir
                 // `commandLine(from:)` : celle de l'image ne dit pas où parler.
                 commandLine: commandLine(from: plan.commandLine), initrd: plan.initrd)
+            boot.minimumRAM = minimumRAM(forRecipe: plan.commandLine)
+            return boot
         }
+    }
+
+    /// **La mémoire d'un système « live » de dracut** : un gibioctet.
+    ///
+    /// Une recette qui dit `root=live:` démarre un système entier depuis
+    /// l'image — Void Linux, Fedora Live —, et ses écritures vont en mémoire.
+    /// Le bureau Xfce de Void, que la feuille « Télécharger » propose, ouvre
+    /// sa session avec 1 Gio (essayé : lightdm, Xorg, xfwm4, le panneau, le
+    /// bureau) ; avec le plancher de la machine PC, 128 Mio, il ne serait
+    /// jamais allé jusque-là, et sans le dire. Les autres images — Alpine,
+    /// qui démarre dans quelques dizaines de mégaoctets — n'en reçoivent pas.
+    public static let liveSystemRAM = 1 << 30
+
+    static func minimumRAM(forRecipe recipe: String) -> Int {
+        recipe.split(separator: " ").contains { $0.hasPrefix("root=live:") } ? liveSystemRAM : 0
     }
 
     /// Ouvre l'image, en sort de quoi démarrer, ou dit pourquoi non.
