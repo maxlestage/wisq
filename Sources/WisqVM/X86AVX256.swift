@@ -113,19 +113,32 @@ extension X86Core {
 
         // Les registres XMM que l'instruction nomme : ceux dont la moitié
         // haute prend la place du bas pendant le second passage.
-        var named = [Int(instruction.regField)]
-        if instruction.vexRegister != 0 || form != .twoOperands { named.append(instruction.vexRegister) }
-        if register { named.append(Int(instruction.rmField)) }
+        //
+        // **Sans tas.** C'était un tableau, et l'état d'avant et d'entre les
+        // deux passages deux copies de `vectors` entier : trois allocations
+        // par instruction VEX.256, que le premier `setVector` réalisait. Le
+        // démarrage du bureau de MX Linux en faisait huit millions toutes les
+        // deux cents millions d'instructions — la copie de mémoire et la
+        // décompression de son système passent par là. Seuls les registres
+        // que l'instruction touche sont gardés, dans des valeurs fixes.
+        var named = Lanes()
+        named.insert(Int(instruction.regField))
+        if instruction.vexRegister != 0 || form != .twoOperands { named.insert(instruction.vexRegister) }
+        if register { named.insert(Int(instruction.rmField)) }
         let target: Int?
         switch form {
         case .shiftByImmediate: target = instruction.vexRegister
         case .twoOperands: target = Self.vexTwoOperandTarget(instruction, opcode, register: register)
         default: target = Int(instruction.regField)
         }
+        // Ce qui est gardé : les registres nommés et la destination.
+        var saved = named
+        if let target { saved.insert(target) }
 
-        let before = vectors
+        let before = saved.values(of: self)
         let flagsBefore = flags
         let generalBefore = registers.read(Int(instruction.regField))
+        var spareBefore: (index: Int, low: UInt64, high: UInt64)?
         do {
             try executeVEX128(instruction, form, modrm: modrm, register: register)
             let lowFlags = flags
@@ -134,8 +147,11 @@ extension X86Core {
 
             // La moitié haute : les hauts à la place des bas, seize octets
             // plus loin, l'immédiat de la moitié haute.
-            let kept = vectors
-            for index in named { setVector(index, upperVectors[2 * index], upperVectors[2 * index + 1]) }
+            let kept = saved.values(of: self)
+            for slot in 0..<named.count {
+                let index = named[slot]
+                setVector(index, upperVectors[2 * index], upperVectors[2 * index + 1])
+            }
             var immediate = instruction.immediate
             if case .immediateShift(let bits) = split { immediate >>= UInt64(bits) }
             let shift: Int64 = register || split == .sharedCount ? 0 : 16
@@ -148,8 +164,10 @@ extension X86Core {
             // est aussi la destination (`vpsrld %xmm0, %ymm0, %ymm0`).
             if split == .sharedCount, register,
                let spare = (0..<8).first(where: { !named.contains($0) && $0 != Int(instruction.rmField) }) {
-                let count = before[2 * Int(instruction.rmField)...2 * Int(instruction.rmField) + 1]
-                setVector(spare, count.first!, count.last!)
+                let count = before.value(of: Int(instruction.rmField))
+                let current = vector(spare)
+                spareBefore = (spare, current.low, current.high)
+                setVector(spare, count.low, count.high)
                 halfModRM = modrm & 0xF8 | UInt8(spare)
                 half = Self.withHalf(half, modrm: halfModRM)
             }
@@ -159,7 +177,8 @@ extension X86Core {
                 upperVectors[2 * target] = high.low
                 upperVectors[2 * target + 1] = high.high
             }
-            vectors = kept
+            kept.restore(into: &self)
+            if let spareBefore { setVector(spareBefore.index, spareBefore.low, spareBefore.high) }
             if let target, let lowResult { setVector(target, lowResult.low, lowResult.high) }
 
             switch split {
@@ -178,10 +197,90 @@ extension X86Core {
         } catch {
             // Une faute — la moitié haute qui touche une page absente — laisse
             // tout comme avant la première moitié.
-            vectors = before
+            before.restore(into: &self)
+            if let spareBefore { setVector(spareBefore.index, spareBefore.low, spareBefore.high) }
             flags = flagsBefore
             write(Int(instruction.regField), 8, highByte: false, generalBefore)
             throw error
+        }
+    }
+
+    /// **Jusqu'à quatre registres XMM, sans tas** : les nommés d'une
+    /// instruction VEX.256 et sa destination. Voir `wideVEXInstruction`.
+    struct Lanes {
+        private(set) var count = 0
+        private var slots: (Int, Int, Int, Int) = (0, 0, 0, 0)
+
+        subscript(slot: Int) -> Int {
+            switch slot {
+            case 0: return slots.0
+            case 1: return slots.1
+            case 2: return slots.2
+            default: return slots.3
+            }
+        }
+
+        func contains(_ index: Int) -> Bool {
+            (0..<count).contains { self[$0] == index }
+        }
+
+        mutating func insert(_ index: Int) {
+            guard !contains(index) else { return }
+            switch count {
+            case 0: slots.0 = index
+            case 1: slots.1 = index
+            case 2: slots.2 = index
+            default: slots.3 = index
+            }
+            count += 1
+        }
+
+        /// Leurs valeurs, maintenant.
+        func values(of core: X86Core) -> LaneValues {
+            var values = LaneValues(lanes: self)
+            for slot in 0..<count { values.set(slot, core.vector(self[slot])) }
+            return values
+        }
+    }
+
+    /// Les valeurs gardées des registres d'un `Lanes`.
+    struct LaneValues {
+        let lanes: Lanes
+        private var low: (UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0)
+        private var high: (UInt64, UInt64, UInt64, UInt64) = (0, 0, 0, 0)
+
+        init(lanes: Lanes) { self.lanes = lanes }
+
+        mutating func set(_ slot: Int, _ value: (low: UInt64, high: UInt64)) {
+            switch slot {
+            case 0: low.0 = value.low; high.0 = value.high
+            case 1: low.1 = value.low; high.1 = value.high
+            case 2: low.2 = value.low; high.2 = value.high
+            default: low.3 = value.low; high.3 = value.high
+            }
+        }
+
+        func get(_ slot: Int) -> (low: UInt64, high: UInt64) {
+            switch slot {
+            case 0: return (low.0, high.0)
+            case 1: return (low.1, high.1)
+            case 2: return (low.2, high.2)
+            default: return (low.3, high.3)
+            }
+        }
+
+        /// La valeur gardée d'un registre de l'ensemble.
+        func value(of index: Int) -> (low: UInt64, high: UInt64) {
+            for slot in 0..<lanes.count where lanes[slot] == index { return get(slot) }
+            return (0, 0)
+        }
+
+        /// Remettre les registres gardés comme ils étaient.
+        func restore(into core: inout X86Core) {
+            for slot in 0..<lanes.count {
+                let value = get(slot)
+                core.setVector(lanes[slot], value.low, value.high)
+            }
         }
     }
 

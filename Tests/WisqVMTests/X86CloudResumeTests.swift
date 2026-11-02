@@ -111,22 +111,18 @@ final class X86CloudResumeTests: XCTestCase {
     /// couche d'écriture du disque, qui va avec, à côté (`.writes`).
     func testASnapshotIsTakenPartWayThroughTheBoot() throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["WISQ_PC_CLOUD_IMAGE"],
+        guard environment["WISQ_PC_CLOUD_IMAGE"] != nil || environment["WISQ_PC_KERNEL"] != nil,
               let at = environment["WISQ_PC_SNAPSHOT_AT"].flatMap(UInt64.init),
               let out = environment["WISQ_PC_SNAPSHOT_OUT"]
-        else { throw XCTSkip("définir WISQ_PC_CLOUD_IMAGE, WISQ_PC_SNAPSHOT_AT et WISQ_PC_SNAPSHOT_OUT") }
-        let image = URL(fileURLWithPath: path)
+        else { throw XCTSkip("définir WISQ_PC_CLOUD_IMAGE ou WISQ_PC_KERNEL, WISQ_PC_SNAPSHOT_AT et WISQ_PC_SNAPSHOT_OUT") }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-profil-\(getpid())-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let unpacked = try XCTUnwrap(CloudBoot.unpack(image, into: folder)).get()
         let writes = URL(fileURLWithPath: out + ".writes")
         for suffix in ["", ".map"] { try? FileManager.default.removeItem(atPath: writes.path + suffix) }
-        let machine = X86Machine(ramSize: CloudBoot.minimumRAMSize) { _ in }
-        try machine.attach(diskFileAt: image, writes: writes)
-        try machine.load(kernelImage: try Data(contentsOf: unpacked.kernel), commandLine: unpacked.commandLine,
-                         initialRamdisk: try unpacked.initrd.map { try Data(contentsOf: $0) })
+        let machine = try Self.profiledMachine(environment, folder: folder, writes: writes)
+        try machine.boot()
         while machine.retiredInstructions < at {
             _ = machine.run(instructionBudget: min(50_000_000, at - machine.retiredInstructions))
         }
@@ -135,15 +131,63 @@ final class X86CloudResumeTests: XCTestCase {
         print("instantané à \(machine.retiredInstructions) instructions : \(out)")
     }
 
+    /// **La machine à profiler, et de quoi la démarrer.** Une image de cloud
+    /// (`WISQ_PC_CLOUD_IMAGE`) apporte son noyau et sa ligne ; sinon un noyau
+    /// et son initramfs nommés (`WISQ_PC_KERNEL`, `WISQ_PC_INITRD`), le disque
+    /// `WISQ_PC_DISK_FILE`, `WISQ_PC_RAM_MIB` et `WISQ_PC_CMDLINE` — ce qu'il
+    /// faut pour profiler le démarrage d'un bureau depuis son ISO. Avec
+    /// `WISQ_PC_DISPLAY`, l'écran de l'application est branché, comme dans
+    /// `LocalVMModel` : un bureau sans écran ne démarre pas comme avec.
+    struct Profiled {
+        let machine: X86Machine
+        let start: () throws -> Void
+        var retiredInstructions: UInt64 { machine.retiredInstructions }
+        func boot() throws { try start() }
+        func run(instructionBudget: UInt64) -> X86Machine.Outcome { machine.run(instructionBudget: instructionBudget) }
+        func flushDisk() { machine.flushDisk() }
+        func snapshot() -> Data { machine.snapshot() }
+    }
+
+    static func profiledMachine(_ environment: [String: String], folder: URL, writes: URL) throws -> Profiled {
+        if let path = environment["WISQ_PC_CLOUD_IMAGE"] {
+            let image = URL(fileURLWithPath: path)
+            let unpacked = try XCTUnwrap(CloudBoot.unpack(image, into: folder)).get()
+            let machine = X86Machine(ramSize: CloudBoot.minimumRAMSize) { _ in }
+            try machine.attach(diskFileAt: image, writes: writes)
+            return Profiled(machine: machine) {
+                try machine.load(kernelImage: try Data(contentsOf: unpacked.kernel), commandLine: unpacked.commandLine,
+                                 initialRamdisk: try unpacked.initrd.map { try Data(contentsOf: $0) })
+            }
+        }
+        let kernel = try XCTUnwrap(environment["WISQ_PC_KERNEL"])
+        let mebibytes = environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? 2048
+        let machine = X86Machine(ramSize: mebibytes << 20) { _ in }
+        if let disk = environment["WISQ_PC_DISK_FILE"] {
+            try machine.attach(diskFileAt: URL(fileURLWithPath: disk), writes: writes)
+        }
+        if environment["WISQ_PC_DISPLAY"] != nil {
+            try machine.attachDisplay(width: 1024, height: 768)
+        }
+        let line = [X86BootLoader.defaultCommandLine, environment["WISQ_PC_CMDLINE"] ?? ""]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        return Profiled(machine: machine) {
+            try machine.load(kernelImage: try Data(contentsOf: URL(fileURLWithPath: kernel)), commandLine: line,
+                             initialRamdisk: try environment["WISQ_PC_INITRD"].map {
+                                 try Data(contentsOf: URL(fileURLWithPath: $0))
+                             })
+        }
+    }
+
     /// **Reprendre l'instantané et faire tourner un budget**, sans rien
     /// d'autre : c'est ce que callgrind suit. Avec `WISQ_PC_CLOUD_IMAGE`,
     /// `WISQ_PC_FROM_SNAPSHOT` et `WISQ_PC_BUDGET`. La couche d'écriture est
     /// copiée avant : l'instantané reste rejouable autant de fois qu'on veut.
     func testASnapshotRunsAFixedBudget() throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["WISQ_PC_CLOUD_IMAGE"], let from = environment["WISQ_PC_FROM_SNAPSHOT"],
+        guard environment["WISQ_PC_CLOUD_IMAGE"] != nil || environment["WISQ_PC_KERNEL"] != nil,
+              let from = environment["WISQ_PC_FROM_SNAPSHOT"],
               let budget = environment["WISQ_PC_BUDGET"].flatMap(UInt64.init)
-        else { throw XCTSkip("définir WISQ_PC_CLOUD_IMAGE, WISQ_PC_FROM_SNAPSHOT et WISQ_PC_BUDGET") }
+        else { throw XCTSkip("définir WISQ_PC_CLOUD_IMAGE ou WISQ_PC_KERNEL, WISQ_PC_FROM_SNAPSHOT et WISQ_PC_BUDGET") }
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-profil-\(getpid())-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -152,8 +196,7 @@ final class X86CloudResumeTests: XCTestCase {
         for suffix in ["", ".map"] where FileManager.default.fileExists(atPath: from + ".writes" + suffix) {
             try FileManager.default.copyItem(atPath: from + ".writes" + suffix, toPath: writes.path + suffix)
         }
-        let machine = X86Machine(ramSize: CloudBoot.minimumRAMSize) { _ in }
-        try machine.attach(diskFileAt: URL(fileURLWithPath: path), writes: writes)
+        let machine = try Self.profiledMachine(environment, folder: folder, writes: writes).machine
         try machine.restore(try Data(contentsOf: URL(fileURLWithPath: from)))
         let start = machine.retiredInstructions
         let started = Date()
