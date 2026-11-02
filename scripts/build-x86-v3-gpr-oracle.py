@@ -118,6 +118,8 @@ VALUES = [
 ]
 
 IN_FLAGS = [0x002, 0x8D7]
+# CF seul, puis OF seul.
+ONE_CARRY_FLAGS = [0x003, 0x802]
 
 
 def states():
@@ -132,6 +134,13 @@ def states():
         general[0], general[1], general[2] = VALUES[a], VALUES[c], VALUES[d]
         general[6] = DATA
         yield general + [IN_FLAGS[index % len(IN_FLAGS)]]
+    # CF et OF séparés : sans eux, `ADCX` qui lirait OF, ou `ADOX` qui
+    # lirait CF, passerait, puisque les deux entrent ensemble plus haut.
+    for index in range(count):
+        general = list(fixed)
+        general[0], general[1], general[2] = VALUES[index], VALUES[(index * 5 + 3) % count], VALUES[index]
+        general[6] = DATA
+        yield general + [ONE_CARRY_FLAGS[index % len(ONE_CARRY_FLAGS)]]
 
 
 def assemble(texts):
