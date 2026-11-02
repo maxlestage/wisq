@@ -67,8 +67,8 @@ public struct ImageDownloader: Sendable {
     /// garde ce qui a pu être lu. Seul un échec de tous est un échec, et il
     /// dit la raison du premier, dans cet ordre.
     ///
-    /// **Les huit en même temps.** Ils étaient lus l'un après l'autre, et la
-    /// feuille « Télécharger » attendait la somme des huit allers-retours —
+    /// **Les neuf en même temps.** Ils étaient lus l'un après l'autre, et la
+    /// feuille « Télécharger » attendait la somme de leurs allers-retours —
     /// plus ceux des sondes de taille de Debian et d'Ubuntu — avant de
     /// montrer quoi que ce soit. Elle attend maintenant le plus lent. L'ordre
     /// de la liste, lui, ne change pas.
@@ -79,7 +79,8 @@ public struct ImageDownloader: Sendable {
                                  arch: URL = ImageDownload.archIndex,
                                  openSUSE: URL = ImageDownload.openSUSEIndex,
                                  alma: URL = ImageDownload.almaIndex,
-                                 rocky: URL = ImageDownload.rockyIndex) async throws
+                                 rocky: URL = ImageDownload.rockyIndex,
+                                 void: URL = ImageDownload.voidIndex) async throws
         -> [ImageDownload.Release] {
         async let alpineList = attempt { try await alpineReleases(alpine) }
         async let debianList = attempt { try await debianReleases(debian) }
@@ -89,8 +90,9 @@ public struct ImageDownloader: Sendable {
         async let openSUSEList = attempt { try await openSUSEReleases(openSUSE) }
         async let almaList = attempt { try await almaReleases(alma) }
         async let rockyList = attempt { try await rockyReleases(rocky) }
+        async let voidList = attempt { try await voidReleases(void) }
         let lists = await [alpineList, debianList, fedoraList, ubuntuList,
-                           archList, openSUSEList, almaList, rockyList]
+                           archList, openSUSEList, almaList, rockyList, voidList]
         var releases: [ImageDownload.Release] = []
         var firstFailure: Error?
         for list in lists {
@@ -183,6 +185,17 @@ public struct ImageDownloader: Sendable {
               let size = try await size(of: rocky.appendingPathComponent(newest.file)) else { return [] }
         return [ImageDownload.rockyRelease(
             file: newest.file, version: newest.version, sha256: sha256, size: size, index: rocky)]
+    }
+
+    /// Void : un seul `sha256sum.txt` pour tout le dossier, au format de BSD.
+    private func voidReleases(_ void: URL) async throws -> [ImageDownload.Release] {
+        guard let newest = ImageDownload.datedCandidates(try await read(void), ImageDownload.isBootableVoid).first
+        else { return [] }
+        let sums = try await read(void.appendingPathComponent("sha256sum.txt"))
+        guard let sha256 = ImageDownload.bsdChecksum(sums, for: newest.file),
+              let size = try await size(of: void.appendingPathComponent(newest.file)) else { return [] }
+        return [ImageDownload.voidRelease(
+            file: newest.file, version: newest.version, sha256: sha256, size: size, index: void)]
     }
 
     /// Un index, en texte.

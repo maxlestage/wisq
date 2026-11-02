@@ -505,6 +505,35 @@ public enum ImageDownload {
                 checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
     }
 
+    // MARK: - Void Linux, un bureau
+
+    /// Le dossier des images « live » de Void Linux. Comme pour Arch, la page
+    /// du dossier nomme des fichiers datés, et `sha256sum.txt`, à côté, les
+    /// sommes de tous, au format de BSD.
+    public static let voidIndex = URL(string: "https://repo-default.voidlinux.org/live/current/")!
+
+    /// **Le bureau Xfce, en ISO live** : `void-live-x86_64-AAAAMMJJ-xfce.iso`,
+    /// rendu en version `AAAA.MM.JJ`. C'est la seule entrée de la liste qui
+    /// ouvre un **bureau** : elle démarre jusqu'à Xfce sur l'écran de la
+    /// machine locale (la carte Bochs, `bochs-drm`, depuis #676), sans rien
+    /// installer. Pas la variante `musl`, pas `base` (la console seule, comme
+    /// les images de cloud), pas les autres processeurs.
+    static func isBootableVoid(_ file: String) -> (version: String, date: String)? {
+        let prefix = "void-live-x86_64-", suffix = "-xfce.iso"
+        guard file.hasPrefix(prefix), file.hasSuffix(suffix) else { return nil }
+        let date = file.dropFirst(prefix.count).dropLast(suffix.count)
+        guard date.count == 8, date.allSatisfy(\.isNumber) else { return nil }
+        return ("\(date.prefix(4)).\(date.dropFirst(4).prefix(2)).\(date.suffix(2))", String(date))
+    }
+
+    /// Le bureau de Void Linux, une fois sa taille connue.
+    public static func voidRelease(file: String, version: String, sha256: String, size: Int,
+                                   index: URL = voidIndex) -> Release {
+        Release(distribution: "Void Linux", flavor: "void-xfce", title: "bureau Xfce (ISO live)",
+                version: version, arch: "x86_64", file: file, size: size,
+                checksum: .sha256(sha256), index: index, link: index.appendingPathComponent(file))
+    }
+
     // MARK: - Reprendre
 
     /// Où vit le fichier tant qu'il n'est pas vérifié.
