@@ -472,7 +472,15 @@ final class X86BootAttemptTests: XCTestCase {
                 FileManager.default.createFile(atPath: path, contents: ppm)
             }
             let extraPrompts = environment["WISQ_PC_PROMPT"].map { [$0] } ?? []
+            // **Un doigt sur la tablette**, avec `WISQ_PC_TOUCH` : à chaque
+            // tranche, une fois que l'invité l'a prise, un toucher au quart
+            // de l'écran, bouton relâché. De quoi lire, dans l'invité, que
+            // les événements arrivent jusqu'à `/dev/input/event*`.
+            let touching = environment["WISQ_PC_TOUCH"] != nil
             while remaining > 0 {
+                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                    tablet.point(x: 0.25, y: 0.75, buttons: 0)
+                }
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
