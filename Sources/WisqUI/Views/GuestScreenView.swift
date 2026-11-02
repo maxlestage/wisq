@@ -11,15 +11,19 @@ import WisqVM
 /// coûte rien à la batterie. Dix fois par seconde suffisaient à une console ;
 /// un bureau, où le pointeur et les fenêtres bougent sous le doigt, saccadait.
 ///
-/// **Le doigt est une souris PS/2**, comme un pavé tactile : glisser déplace
-/// le pointeur de l'invité, toucher clique, un appui long fait le clic droit.
-/// Le pointeur n'est pas dessiné ici : c'est l'invité qui le dessine, à
-/// l'endroit où il croit qu'il est.
+/// **Le doigt pointe là où il touche**, quand l'invité a pris la tablette
+/// (`VirtioTablet`) : toucher clique à cet endroit, un appui long y fait le
+/// clic droit, glisser y traîne avec le bouton enfoncé — une fenêtre, une
+/// sélection. **Sinon, le doigt est une souris PS/2**, comme un pavé tactile :
+/// glisser déplace le pointeur, toucher clique où il est. Le pointeur n'est
+/// pas dessiné ici : c'est l'invité qui le dessine.
 ///
 /// **Pincer zoome, deux doigts déplacent la vue** : voir `ScreenZoom`. Un
 /// doigt reste la souris, zoom ou pas.
 struct GuestScreenView: View {
     let screen: X86Framebuffer
+    /// Un toucher absolu, de 0 à 1 ; faux quand la tablette n'est pas prise.
+    var onTouch: (_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool = { _, _, _ in false }
     let onPointer: (_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void
 
     @State private var image: CGImage?
@@ -31,7 +35,7 @@ struct GuestScreenView: View {
         // celle qu'elle a vraiment.
         GuestScreenCanvas(
             image: image, guestWidth: image?.width ?? screen.width,
-            guestHeight: image?.height ?? screen.height, onPointer: onPointer)
+            guestHeight: image?.height ?? screen.height, onTouch: onTouch, onPointer: onPointer)
             .overlay {
                 if image == nil {
                     Text("L'invité n'a encore rien dessiné sur son écran.")
@@ -43,7 +47,7 @@ struct GuestScreenView: View {
             .background(Color.black)
             .accessibilityElement()
             .accessibilityLabel("Écran de la machine")
-            .accessibilityHint("Glisser un doigt déplace le pointeur, toucher clique, un appui long fait le clic droit. Pincer zoome, glisser à deux doigts déplace la vue.")
+            .accessibilityHint("Toucher clique à cet endroit, un appui long fait le clic droit, glisser un doigt traîne. Pincer zoome, glisser à deux doigts déplace la vue.")
             .task {
                 while !Task.isCancelled {
                     refresh()
@@ -84,22 +88,31 @@ private struct GuestScreenCanvas: UIViewRepresentable {
     let image: CGImage?
     let guestWidth: Int
     let guestHeight: Int
+    let onTouch: (_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool
     let onPointer: (_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void
 
     func makeUIView(context: Context) -> GuestScreenScrollView {
         let view = GuestScreenScrollView()
+        view.onTouch = onTouch
         view.onPointer = onPointer
         return view
     }
 
     func updateUIView(_ view: GuestScreenScrollView, context: Context) {
+        view.onTouch = onTouch
         view.onPointer = onPointer
         view.show(image, width: guestWidth, height: guestHeight)
     }
 }
 
 final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
+    var onTouch: ((_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool)?
     var onPointer: ((_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void)?
+    /// Le glissement en cours passe par la tablette (décidé à son début).
+    private var draggingAbsolute = false
+    /// Le dernier endroit touché sur l'écran : un doigt qui sort de l'écran
+    /// en glissant relâche le bouton là, pas dans un coin.
+    private var lastSpot: (x: Double, y: Double)?
 
     private let canvas = UIImageView()
     private var shownImage: CGImage?
@@ -126,7 +139,7 @@ final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
         let drag = UIPanGestureRecognizer(target: self, action: #selector(handleDrag(_:)))
         drag.maximumNumberOfTouches = 1
         addGestureRecognizer(drag)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
         press.minimumPressDuration = 0.5
@@ -197,8 +210,31 @@ final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
 
     // MARK: - La souris
 
+    /// Le doigt, de 0 à 1 sur l'écran de l'invité, ou nil hors de l'écran.
+    private func place(_ gesture: UIGestureRecognizer) -> (x: Double, y: Double)? {
+        let at = gesture.location(in: canvas)
+        return ScreenTouch.fraction(x: Double(at.x), y: Double(at.y),
+                                    width: Double(guestSize.width), height: Double(guestSize.height))
+    }
+
+    /// Un toucher absolu ; faux si la tablette n'est pas prise.
+    private func touch(_ gesture: UIGestureRecognizer, _ buttons: UInt8) -> Bool {
+        guard let spot = place(gesture) ?? (draggingAbsolute ? lastSpot : nil), let onTouch else { return false }
+        lastSpot = spot
+        return onTouch(spot.x, spot.y, buttons)
+    }
+
     @objc private func handleDrag(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
+        case .began:
+            // Le bouton enfoncé là où le doigt s'est posé, et tenu.
+            draggingAbsolute = touch(gesture, 0) && touch(gesture, 1)
+        case .changed where draggingAbsolute:
+            _ = touch(gesture, 1)
+        case .ended where draggingAbsolute, .cancelled where draggingAbsolute, .failed where draggingAbsolute:
+            // Relâché là où le doigt est, ou au dernier endroit de l'écran.
+            _ = touch(gesture, 0)
+            draggingAbsolute = false
         case .changed:
             let travel = gesture.translation(in: self)
             gesture.setTranslation(.zero, in: self)
@@ -213,10 +249,16 @@ final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
         }
     }
 
-    @objc private func handleTap() { click(1) }
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        // Là où le doigt a touché ; sinon, là où est le pointeur.
+        if touch(gesture, 0), touch(gesture, 1), touch(gesture, 0) { return }
+        click(1)
+    }
 
     @objc private func handlePress(_ gesture: UILongPressGestureRecognizer) {
-        if gesture.state == .began { click(2) }
+        guard gesture.state == .began else { return }
+        if touch(gesture, 0), touch(gesture, 2), touch(gesture, 0) { return }
+        click(2)
     }
 
     private func click(_ button: UInt8) {
