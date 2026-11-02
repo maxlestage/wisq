@@ -149,8 +149,7 @@ extension X86Core {
         }
     }
 
-    /// **Les formes VEX d'AES, de `PCLMULQDQ` et des quatre opérations
-    /// logiques, sans détour.** OpenSSL les
+    /// **Les formes VEX d'AES et de `PCLMULQDQ`, sans détour.** OpenSSL les
     /// emploie sous VEX dès qu'AVX est annoncé (`vaesenc`, `vpclmulqdq`), et
     /// la traduction générique — une instruction héritée fabriquée, la
     /// destination recopiée puis rendue, un second aiguillage — prenait sous
@@ -159,25 +158,20 @@ extension X86Core {
     /// `reg ← opération(vvvv, r/m)`, et le haut du registre YMM à zéro.
     /// `vaesimc` et `vaeskeygenassist`, à deux opérandes, gardent le chemin
     /// générique : ils ne servent qu'à préparer les clés.
+    ///
+    /// **Mesuré** : 137 → 130 s d'hôte pour cinq secondes de l'invité
+    /// d'`openssl speed aes-128-gcm`. Le même raccourci pour `vpand`,
+    /// `vpandn`, `vpor` et `vpxor` n'a rien gagné de plus (130 s) et n'est
+    /// pas resté : le reste de la traduction se paie ailleurs.
     mutating func vexCryptography(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
         let isRound = instruction.map == .threeByte38 && (0xDC...0xDF).contains(opcode)
         let isMultiply = instruction.map == .threeByte3A && opcode == 0x44
-        let isLogic = instruction.map == .twoByte && (opcode == 0xDB || opcode == 0xDF || opcode == 0xEB || opcode == 0xEF)
-        guard isRound || isMultiply || isLogic else { return false }
+        guard isRound || isMultiply else { return false }
         let fields = try decodeFields(instruction)
         let first = vector(instruction.vexRegister)
         let read = try readVectorRM(fields, 16)
         let result: (UInt64, UInt64)
-        if isLogic {
-            // `vpand`, `vpandn`, `vpor`, `vpxor` : entre les deux, la boucle
-            // de GCM en est pleine, et chacune payait la même traduction.
-            switch opcode {
-            case 0xDB: result = (first.low & read.0, first.high & read.1)
-            case 0xDF: result = (~first.low & read.0, ~first.high & read.1)
-            case 0xEB: result = (first.low | read.0, first.high | read.1)
-            default: result = (first.low ^ read.0, first.high ^ read.1)
-            }
-        } else if isRound {
+        if isRound {
             result = Self.aesRound(opcode, first, (low: read.0, high: read.1))
         } else {
             let control = UInt8(truncatingIfNeeded: instruction.immediate)
