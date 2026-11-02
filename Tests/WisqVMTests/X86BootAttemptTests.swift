@@ -624,6 +624,13 @@ final class X86BootAttemptTests: XCTestCase {
         // Le résumé passe donc en tête : quoi qu'il arrive aux listes, les
         // nombres, eux, sortent.
         func say(_ text: String) { print(text) }
+        // **La tablette, telle qu'elle finit** : prise ou non par l'invité,
+        // ce qui attend encore, et où en sont ses files.
+        if let tablet = memory.tablet {
+            say("tablette              : état \(tablet.status), prête \(tablet.isReady), en attente "
+                + "\(tablet.hasPending), files \(tablet.queues.map { "\($0.enabled) \($0.nextAvailable)/\($0.nextUsed)" }), "
+                + "ISR \(tablet.interruptStatus), ligne \(tablet.interruptLine), BAR 0x\(String(tablet.base, radix: 16))")
+        }
         // **L'écran tel qu'il est à la fin**, en PPM : `WISQ_PC_SCREEN_DUMP`
         // nomme le fichier. Le journal dit que le noyau a trouvé l'écran ;
         // l'image dit ce qu'il y a peint.
