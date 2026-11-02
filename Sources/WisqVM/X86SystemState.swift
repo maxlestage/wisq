@@ -213,7 +213,10 @@ public enum X86CPUID {
     /// (19)**, `ADCX` et `ADOX` (`X86BMI.swift`) : avec BMI2, OpenSSL prend
     /// sa boucle `MULX`/`ADCX`/`ADOX` pour l'exponentiation modulaire, et
     /// une clé RSA se tire avec moins d'instructions.
-    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8) | (1 << 19)
+    /// **Et SHA (29)**, les sept instructions de `X86SHA.swift` : OpenSSL,
+    /// la libgcrypt et le noyau hachent alors un bloc en une quarantaine
+    /// d'instructions au lieu de plusieurs centaines.
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8) | (1 << 19) | (1 << 29)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29

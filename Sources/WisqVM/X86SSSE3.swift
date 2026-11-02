@@ -47,6 +47,8 @@ extension X86Core {
             return
         }
         guard instruction.hasPrefix(0x66) else {
+            // Les extensions SHA n'ont pas de préfixe. Voir `X86SHA.swift`.
+            if try secureHash(instruction, opcode, map3A: false) { return }
             if try ssse3OnMMX(instruction, opcode, aligning: false) { return }
             throw Fault.unsupported(String(format: "l'opcode 0F 38 %02X sans 66 (MMX)", opcode))
         }
@@ -100,6 +102,7 @@ extension X86Core {
     /// La table `0F 3A` : la même chose, et un octet immédiat derrière.
     mutating func threeByte3A(_ instruction: X86Instruction, _ opcode: UInt8) throws {
         guard instruction.hasPrefix(0x66) else {
+            if try secureHash(instruction, opcode, map3A: true) { return }
             if try ssse3OnMMX(instruction, opcode, aligning: true) { return }
             throw Fault.unsupported(String(format: "l'opcode 0F 3A %02X sans 66 (MMX)", opcode))
         }
