@@ -242,6 +242,39 @@ extension X86Core {
         set(Flag.zero, count == 0)
     }
 
+    /// **`ADCX` (66 0F 38 F6) et `ADOX` (F3 0F 38 F6)** : une addition avec
+    /// retenue qui ne lit et ne pose **qu'un** drapeau — CF pour l'une, OF
+    /// pour l'autre — et laisse tous les autres. Deux chaînes de retenues
+    /// peuvent ainsi courir côte à côte, entrelacées avec `MULX` qui n'en
+    /// touche aucun : c'est la boucle de multiplication d'OpenSSL quand le
+    /// processeur annonce BMI2 et ADX, avec moins d'instructions par mot
+    /// que sa boucle `MUL`/`ADC` — ce que paie un interpréteur.
+    ///
+    /// 32 bits, ou 64 avec REX.W. Le préfixe 66 fait partie de l'opcode et
+    /// ne raccourcit rien.
+    mutating func addWithOneCarry(_ instruction: X86Instruction, overflow: Bool) throws {
+        let size = instruction.wideOperandSize == 8 ? 8 : 4
+        let fields = try decodeFields(instruction)
+        let flag = overflow ? Flag.overflow : Flag.carry
+        let carryIn: UInt64 = flags & flag != 0 ? 1 : 0
+        let left = readReg(fields, size)
+        let right = try readRM(fields, size)
+        let result: UInt64
+        let carryOut: Bool
+        if size == 8 {
+            let (first, overflow1) = left.addingReportingOverflow(right)
+            let (second, overflow2) = first.addingReportingOverflow(carryIn)
+            result = second
+            carryOut = overflow1 || overflow2
+        } else {
+            let sum = (left & 0xFFFF_FFFF) &+ (right & 0xFFFF_FFFF) &+ carryIn
+            result = sum & 0xFFFF_FFFF
+            carryOut = sum >> 32 != 0
+        }
+        writeReg(fields, size, result)
+        set(flag, carryOut)
+    }
+
     /// `MOVBE` (0F 38 F0 et F1) : un `mov` entre registre et mémoire dont les
     /// octets sont retournés. La mémoire seulement ; entre registres, c'est
     /// une autre instruction.
