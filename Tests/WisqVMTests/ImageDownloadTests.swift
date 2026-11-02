@@ -278,6 +278,29 @@ final class ImageDownloadTests: XCTestCase {
                        "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/" + found[0].file)
     }
 
+    /// **Void : le bureau Xfce pour PC, la plus récente d'abord.** Ni la
+    /// console seule (`base`), ni `musl`, ni un autre processeur, ni une date
+    /// qui n'en est pas une.
+    func testVoidIsTheXfceLiveImageForPC() {
+        let listing = """
+            <a href="void-live-x86_64-20250202-xfce.iso">x</a>
+            <a href="void-live-x86_64-20250202-base.iso">x</a>
+            <a href="void-live-x86_64-musl-20250202-xfce.iso">x</a>
+            <a href="void-live-aarch64-20250202-xfce.iso">x</a>
+            <a href="void-live-x86_64-20240314-xfce.iso">x</a>
+            <a href="void-live-x86_64-2025022-xfce.iso">x</a>
+            <a href="void-live-x86_64-latest-xfce.iso">x</a>
+            """
+        let found = ImageDownload.datedCandidates(listing, ImageDownload.isBootableVoid)
+        XCTAssertEqual(found.map(\.file), ["void-live-x86_64-20250202-xfce.iso", "void-live-x86_64-20240314-xfce.iso"])
+        XCTAssertEqual(found.first?.version, "2025.02.02")
+        let release = ImageDownload.voidRelease(file: found[0].file, version: "2025.02.02",
+                                                sha256: String(repeating: "a", count: 64), size: 1)
+        XCTAssertEqual(ImageDownload.url(of: release).absoluteString,
+                       "https://repo-default.voidlinux.org/live/current/void-live-x86_64-20250202-xfce.iso")
+        XCTAssertEqual(release.distribution, "Void Linux")
+    }
+
     /// **Rocky : l'image « Base » datée**, pas la variante LVM, et sa somme au
     /// format de BSD — seulement si c'est bien de ce fichier qu'elle parle.
     func testRockyIsTheBaseImageWithItsBSDChecksum() {
