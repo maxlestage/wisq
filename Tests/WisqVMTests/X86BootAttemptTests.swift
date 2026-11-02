@@ -473,13 +473,19 @@ final class X86BootAttemptTests: XCTestCase {
             }
             let extraPrompts = environment["WISQ_PC_PROMPT"].map { [$0] } ?? []
             // **Un doigt sur la tablette**, avec `WISQ_PC_TOUCH` : à chaque
-            // tranche, une fois que l'invité l'a prise, un toucher au quart
-            // de l'écran, bouton relâché. De quoi lire, dans l'invité, que
-            // les événements arrivent jusqu'à `/dev/input/event*`.
+            // tranche, une fois que l'invité l'a prise, un toucher, bouton
+            // relâché, **tantôt au quart de l'écran, tantôt au milieu**. Le
+            // même point répété ne passerait pas : le cœur `input` de Linux
+            // jette un événement dont la valeur n'a pas changé, et le premier
+            // essai, qui touchait toujours le même endroit, n'a rien lu dans
+            // `/dev/input/event3` alors que 6 984 événements étaient rendus.
             let touching = environment["WISQ_PC_TOUCH"] != nil
+            var touches = 0
             while remaining > 0 {
                 if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
-                    tablet.point(x: 0.25, y: 0.75, buttons: 0)
+                    let x = touches % 2 == 0 ? 0.25 : 0.5
+                    tablet.point(x: x, y: 0.75, buttons: 0)
+                    touches += 1
                 }
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
