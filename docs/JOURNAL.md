@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — Le toucher arrive jusqu'au pointeur de Xorg
+
+#693 laissait une chose non vue : un toucher qui déplace vraiment le pointeur.
+Le banc la montre maintenant (`WISQ_PC_TOUCH` : un toucher par tranche, une
+fois la tablette prise).
+
+**Un premier essai faux, et pourquoi.** Le banc touchait toujours le même
+point, et `cat /dev/input/event3` n'a rien lu en vingt secondes. L'état de la
+tablette en fin de course disait pourtant tout le contraire : prise (état
+15), 6 984 événements rendus au pilote, rien en attente, et la ligne 10
+montée 615 fois (`virtio2` dans `/proc/interrupts`). La raison est dans le
+cœur `input` de Linux : un événement dont la valeur n'a pas changé est jeté.
+Le même point répété n'a donc rien à dire après le premier paquet.
+
+**Le second essai alterne deux points**, le quart et le milieu de la largeur,
+aux trois quarts de la hauteur. Dans l'invité :
+
+```
+… 03 00 00 00 00 20 00 00   EV_ABS ABS_X 0x2000
+… 00 00 00 00 00 00 00 00   SYN_REPORT
+… 03 00 00 00 00 40 00 00   EV_ABS ABS_X 0x4000
+```
+
+et la capture de fin montre le pointeur de Xorg en (256, 576), là où le
+dernier toucher l'a posé.
+
 ## 2026-11-02 — Toucher pour pointer : une tablette virtio
 
 Sur l'écran de la machine locale, le doigt poussait une souris PS/2
