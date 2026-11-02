@@ -488,6 +488,10 @@ final class X86BootAttemptTests: XCTestCase {
             // de l'application le tape. `WISQ_PC_KEYS_AFTER` règle l'attente.
             let keys = environment["WISQ_PC_KEYS"]
             let keysAfter = environment["WISQ_PC_KEYS_AFTER"].flatMap(Int.init) ?? 1000
+            // Le terminal met du temps à s'ouvrir à cette vitesse : un texte
+            // tapé trop tôt tombe sur le bureau, et se perd (essayé : 300
+            // tranches ne suffisaient pas).
+            let typeAfter = environment["WISQ_PC_KEYS_TYPE_AFTER"].flatMap(Int.init) ?? 1500
             var tranchesSinceReady = 0
             while remaining > 0 {
                 if let keys, let tablet = memory.tablet, tablet.isReady {
@@ -499,7 +503,7 @@ final class X86BootAttemptTests: XCTestCase {
                         for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
                         core.devices.ps2.key(.leftAlt, down: false)
                         core.devices.ps2.key(.leftControl, down: false)
-                    } else if tranchesSinceReady == keysAfter + 300 {
+                    } else if tranchesSinceReady == keysAfter + typeAfter {
                         for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
                     }
                 }
