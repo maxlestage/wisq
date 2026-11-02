@@ -129,6 +129,7 @@ extension X86Core {
         if instruction.map == .twoByte, opcode == 0x11, register, instruction.vexImpliedPrefix >= 2 {
             return scalarMoveBetweenRegisters(instruction)
         }
+        if instruction.vexImpliedPrefix == 1, try vexCryptography(instruction, opcode) { return }
         guard let form = Self.vexForm(instruction.map, opcode, instruction.vexImpliedPrefix, register: register)
         else {
             // Pas de forme SSE : peut-être une de celles qui n'existent que
@@ -146,6 +147,40 @@ extension X86Core {
         case .shiftByImmediate: clearUpperVector(instruction.vexRegister)
         case .threeOperands, .threeOperandsGeneral: clearUpperVector(Int(instruction.regField))
         }
+    }
+
+    /// **Les formes VEX d'AES et de `PCLMULQDQ`, sans détour.** OpenSSL les
+    /// emploie sous VEX dès qu'AVX est annoncé (`vaesenc`, `vpclmulqdq`), et
+    /// la traduction générique — une instruction héritée fabriquée, la
+    /// destination recopiée puis rendue, un second aiguillage — prenait sous
+    /// `perf` près d'un tiers du temps de l'hôte d'`openssl speed
+    /// aes-128-gcm`, plus que les tours d'AES eux-mêmes. Ici, directement :
+    /// `reg ← opération(vvvv, r/m)`, et le haut du registre YMM à zéro.
+    /// `vaesimc` et `vaeskeygenassist`, à deux opérandes, gardent le chemin
+    /// générique : ils ne servent qu'à préparer les clés.
+    ///
+    /// **Mesuré** : 137 → 130 s d'hôte pour cinq secondes de l'invité
+    /// d'`openssl speed aes-128-gcm`. Le même raccourci pour `vpand`,
+    /// `vpandn`, `vpor` et `vpxor` n'a rien gagné de plus (130 s) et n'est
+    /// pas resté : le reste de la traduction se paie ailleurs.
+    mutating func vexCryptography(_ instruction: X86Instruction, _ opcode: UInt8) throws -> Bool {
+        let isRound = instruction.map == .threeByte38 && (0xDC...0xDF).contains(opcode)
+        let isMultiply = instruction.map == .threeByte3A && opcode == 0x44
+        guard isRound || isMultiply else { return false }
+        let fields = try decodeFields(instruction)
+        let first = vector(instruction.vexRegister)
+        let read = try readVectorRM(fields, 16)
+        let result: (UInt64, UInt64)
+        if isRound {
+            result = Self.aesRound(opcode, first, (low: read.0, high: read.1))
+        } else {
+            let control = UInt8(truncatingIfNeeded: instruction.immediate)
+            result = Self.carrylessMultiply(control & 0x01 == 0 ? first.low : first.high,
+                                            control & 0x10 == 0 ? read.0 : read.1)
+        }
+        setVector(fields.reg, result.0, result.1)
+        clearUpperVector(fields.reg)
+        return true
     }
 
     /// **`vmovss` et `vmovsd` entre registres, sous leur forme « rangement »**

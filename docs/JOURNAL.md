@@ -8,6 +8,30 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — Les formes VEX d'AES sans traduction : 5 % sur AES-GCM
+
+Après #689, une seconde de l'invité d'`openssl speed aes-128-gcm` coûtait
+encore deux fois plus d'hôte qu'une seconde sans AES-NI. `perf` sur la course
+donne la raison : OpenSSL emploie les formes **VEX** (`vaesenc`,
+`vpclmulqdq`), et la traduction VEX → forme héritée prend près d'un tiers du
+temps — `legacy(_:modrm:base:)` 8,7 %, `vex128Instruction` 5,7, `vexInstruction`
+4,8, `executeVEX128` 4,5, `vexForm` 3,8 —, plus que les tours d'AES (8,1) ou
+la multiplication sans retenue (6,5).
+
+**Un chemin direct** (`vexCryptography`) pour les quatre tours et
+`vpclmulqdq` : `reg ← opération(vvvv, r/m)`, le haut du registre YMM à zéro.
+Le corpus VEX.128 (51 148 cas) le tient ; il ne voit pas le haut des YMM, et
+deux tests le font (`X86VEXCryptographyTests`) — le sabotage qui l'oublie
+tombe là, et nulle part ailleurs.
+
+**Mesuré** : 137 → 130 s d'hôte pour la même course, 5 %. Moins que le
+tiers promis : le reste de la traduction est payé par les autres
+instructions VEX de la boucle. Le même raccourci pour `vpand`, `vpandn`,
+`vpor` et `vpxor` a été essayé (deux sabotages tombés) et n'a rien gagné de
+plus — 130 s encore — ; il n'est pas resté. Le vrai levier est de traduire
+une fois, au décodage, plutôt qu'à chaque exécution : noté pour une tranche
+à part.
+
 ## 2026-11-02 — AES-NI et PCLMULQDQ : AES-GCM sept fois plus rapide
 
 La troisième de la série : le processeur du conteneur a `aes` et
