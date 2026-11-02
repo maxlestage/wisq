@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fabrique le verdict du **vrai processeur** sur la part de x86-64-v3 qui
-n'emploie que les registres généraux : BMI1, BMI2, LZCNT, TZCNT et MOVBE.
+n'emploie que les registres généraux : BMI1, BMI2, LZCNT, TZCNT, MOVBE et ADX.
 
     scripts/build-x86-v3-gpr-oracle.py Tests/Fixtures/x86-v3-gpr-oracle.tsv
 
@@ -79,6 +79,13 @@ def forms():
     for reg, mem in [("%rax", "0x28(%rsi)"), ("%eax", "0x24(%rsi)"), ("%ax", "0x22(%rsi)"),
                      ("%rcx", "0x29(%rsi)")]:
         out += [(f"movbe {mem}, {reg}", ALL), (f"movbe {reg}, {mem}", ALL)]
+    # ADX. `ADCX` additionne avec CF et ne pose que CF ; `ADOX` fait de
+    # même avec OF. Les deux chaînes de retenues d'OpenSSL passent l'une à
+    # côté de l'autre : chacune doit laisser intact le drapeau de l'autre,
+    # et le masque entier le vérifie.
+    for a, c, mem in [("%rax", "%rcx", "0x28(%rsi)"), ("%eax", "%ecx", "0x24(%rsi)")]:
+        for name in ["adcx", "adox"]:
+            out += [(f"{name} {c}, {a}", ALL), (f"{name} {mem}, {a}", ALL), (f"{name} {a}, {a}", ALL)]
     return out
 
 
@@ -111,6 +118,8 @@ VALUES = [
 ]
 
 IN_FLAGS = [0x002, 0x8D7]
+# CF seul, puis OF seul.
+ONE_CARRY_FLAGS = [0x003, 0x802]
 
 
 def states():
@@ -125,6 +134,13 @@ def states():
         general[0], general[1], general[2] = VALUES[a], VALUES[c], VALUES[d]
         general[6] = DATA
         yield general + [IN_FLAGS[index % len(IN_FLAGS)]]
+    # CF et OF séparés : sans eux, `ADCX` qui lirait OF, ou `ADOX` qui
+    # lirait CF, passerait, puisque les deux entrent ensemble plus haut.
+    for index in range(count):
+        general = list(fixed)
+        general[0], general[1], general[2] = VALUES[index], VALUES[(index * 5 + 3) % count], VALUES[index]
+        general[6] = DATA
+        yield general + [ONE_CARRY_FLAGS[index % len(ONE_CARRY_FLAGS)]]
 
 
 def assemble(texts):
@@ -169,7 +185,7 @@ def main():
 
     window = None
     with open(arguments.output, "w") as out:
-        out.write("# Ce que le vrai processeur répond sur BMI1, BMI2, LZCNT, TZCNT et MOVBE.\n")
+        out.write("# Ce que le vrai processeur répond sur BMI1, BMI2, LZCNT, TZCNT, MOVBE et ADX.\n")
         out.write("# Voir scripts/build-x86-v3-gpr-oracle.py.\n")
         out.write("# état\t<indice>\t<rax>\t<rcx>\t<rdx>\t<drapeaux>\n")
         out.write("# instr\t<indice>\t<octets>\t<masque des drapeaux définis>\t<mnémonique>\n")
