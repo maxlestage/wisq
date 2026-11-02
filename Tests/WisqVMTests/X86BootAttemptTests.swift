@@ -481,7 +481,28 @@ final class X86BootAttemptTests: XCTestCase {
             // `/dev/input/event3` alors que 6 984 événements étaient rendus.
             let touching = environment["WISQ_PC_TOUCH"] != nil
             var touches = 0
+            // **Le clavier du bureau**, avec `WISQ_PC_KEYS` : un certain
+            // nombre de tranches après que l'invité a pris la tablette (le
+            // bureau monte), Ctrl+Alt+T — le terminal d'Xfce —, puis, plus
+            // tard, le texte, tapé sur le clavier PS/2 comme l'onglet Écran
+            // de l'application le tape. `WISQ_PC_KEYS_AFTER` règle l'attente.
+            let keys = environment["WISQ_PC_KEYS"]
+            let keysAfter = environment["WISQ_PC_KEYS_AFTER"].flatMap(Int.init) ?? 1000
+            var tranchesSinceReady = 0
             while remaining > 0 {
+                if let keys, let tablet = memory.tablet, tablet.isReady {
+                    tranchesSinceReady += 1
+                    if tranchesSinceReady == keysAfter {
+                        for event in [(X86ScanCode.leftControl, true), (.leftAlt, true)] {
+                            core.devices.ps2.key(event.0, down: event.1)
+                        }
+                        for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
+                        core.devices.ps2.key(.leftAlt, down: false)
+                        core.devices.ps2.key(.leftControl, down: false)
+                    } else if tranchesSinceReady == keysAfter + 300 {
+                        for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
+                    }
+                }
                 if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let x = touches % 2 == 0 ? 0.25 : 0.5
                     tablet.point(x: x, y: 0.75, buttons: 0)
