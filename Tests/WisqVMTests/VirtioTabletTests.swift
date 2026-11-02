@@ -254,4 +254,35 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertEqual(back.queues, tablet.queues)
         XCTAssertEqual(try resumed.core.memory?.read(0xF200_0014, 1), 15, "la BAR déplacée répond")
     }
+
+    // MARK: - Le doigt
+
+    /// **Un toucher ne passe par la tablette que si l'invité l'a prise** :
+    /// avant DRIVER_OK, `touch` répond non et l'application garde la souris
+    /// PS/2 ; après, le toucher attend son tampon.
+    func testATouchGoesThroughTheTabletOnlyOnceTheGuestTookIt() throws {
+        let machine = try X86BochsDisplayTests.machine()
+        XCTAssertFalse(machine.touch(x: 0.5, y: 0.5, buttons: 1))
+        let tablet = try XCTUnwrap(machine.tablet)
+        XCTAssertFalse(tablet.hasPending)
+        let memory = try XCTUnwrap(machine.core.memory)
+        tablet.write(0x16, 2, 0, memory)
+        tablet.write(0x1C, 2, 1, memory)
+        tablet.write(0x14, 1, 1 | 2 | 8 | 4, memory)
+        XCTAssertTrue(machine.touch(x: 0.5, y: 0.5, buttons: 1))
+        XCTAssertTrue(tablet.hasPending)
+    }
+
+    /// **Où tombe le doigt** : rapporté à l'écran de l'invité, et rien dans
+    /// la marge noire ni pour un écran sans taille.
+    func testTheFingerIsPlacedOnTheGuestScreen() throws {
+        let middle = try XCTUnwrap(ScreenTouch.fraction(x: 512, y: 384, width: 1024, height: 768))
+        XCTAssertEqual(middle.x, 0.5)
+        XCTAssertEqual(middle.y, 0.5)
+        XCTAssertNotNil(ScreenTouch.fraction(x: 1024, y: 768, width: 1024, height: 768), "le bord compte")
+        XCTAssertNil(ScreenTouch.fraction(x: -1, y: 10, width: 1024, height: 768))
+        XCTAssertNil(ScreenTouch.fraction(x: 10, y: 769, width: 1024, height: 768))
+        XCTAssertNil(ScreenTouch.fraction(x: 10, y: 10, width: 0, height: 768))
+        XCTAssertNil(ScreenTouch.fraction(x: .nan, y: 10, width: 1024, height: 768))
+    }
 }

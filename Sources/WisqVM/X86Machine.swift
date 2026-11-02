@@ -527,6 +527,17 @@ public final class X86Machine: @unchecked Sendable {
     /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
     /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
     /// quel fil.
+    /// **Un toucher à un endroit de l'écran**, par la tablette : `x` et `y`
+    /// de 0 à 1. Faux quand la tablette n'est pas là ou que l'invité ne l'a
+    /// pas prise : l'appelant passe alors par `mouse`.
+    @discardableResult
+    public func touch(x: Double, y: Double, buttons: UInt8) -> Bool {
+        guard let tablet, tablet.isReady else { return false }
+        tablet.point(x: x, y: y, buttons: buttons)
+        nudge.signal()
+        return true
+    }
+
     public func mouse(dx: Int, dy: Int, buttons: UInt8) {
         lock.lock()
         pointerQueue.append(.mouse(dx: dx, dy: dy, buttons: buttons))

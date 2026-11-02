@@ -39,6 +39,18 @@ public enum ScreenZoom {
 ///
 /// Sans le reste, un glissement lent n'avancerait jamais : à trois points
 /// par pixel, chaque déplacement d'un point arrondirait à zéro.
+/// **Où tombe un doigt sur l'écran de l'invité**, de 0 à 1 sur chaque axe :
+/// le point dans le canevas (en pixels de l'invité, zoom compris), rapporté à
+/// sa taille. `nil` hors de l'écran ou pour une taille absurde : un doigt posé
+/// dans la marge noire ne clique nulle part.
+public enum ScreenTouch {
+    public static func fraction(x: Double, y: Double, width: Double, height: Double) -> (x: Double, y: Double)? {
+        guard width > 0, height > 0, x.isFinite, y.isFinite, x >= 0, y >= 0, x <= width, y <= height
+        else { return nil }
+        return (x / width, y / height)
+    }
+}
+
 public struct ScreenPointer: Equatable {
     /// Le plus grand pas rendu d'un coup. Un pas plus long ne vient que d'un
     /// zoom absurde, et le convertir tel quel en `Int` arrêterait l'app.
