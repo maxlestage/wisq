@@ -185,6 +185,17 @@ def forms():
     out += ["addsubpd %xmm1, %xmm0", f"addsubpd {ALIGNED:#x}(%rsi), %xmm0"]
     # `MOVNTDQA`, le chargement de SSE4.1 qu'openSUSE emploie.
     out += [f"movntdqa {ALIGNED:#x}(%rsi), %xmm0", f"movntdqa {ALIGNED:#x}(%rsi), %xmm1"]
+    # **Les extensions SHA**, que `CPUID` annonce avec ce corpus. Les quatre
+    # quarts de `SHA1RNDS4`. Depuis la mémoire, l'adresse est alignée : ce
+    # sont des formes SSE sans VEX, et le processeur lève une faute sur
+    # seize octets non alignés (essayé : l'oracle y meurt). `SHA256RNDS2`
+    # lit xmm0 en plus : la destination est xmm1, comme pour `BLENDV*`.
+    for selector in range(4):
+        out += [f"sha1rnds4 ${selector}, %xmm1, %xmm0", f"sha1rnds4 ${selector}, {ALIGNED:#x}(%rsi), %xmm0"]
+    for name in ["sha1nexte", "sha1msg1", "sha1msg2", "sha256msg1", "sha256msg2"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0", f"{name} %xmm0, %xmm0"]
+    out += ["sha256rnds2 %xmm0, %xmm0, %xmm1", f"sha256rnds2 %xmm0, {ALIGNED:#x}(%rsi), %xmm1",
+            "sha256rnds2 %xmm0, %xmm1, %xmm1"]
     return out
 
 
