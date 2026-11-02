@@ -54,13 +54,13 @@ final class X86SystemTests: XCTestCase {
         // qui annonce LZCNT.
         XCTAssertEqual(X86CPUID.answer(leaf: 0x8000_0001, subleaf: 0).2, 1 | 1 << 5)
         // **Le reste de x86-64-v3** : MOVBE dans la feuille 1, BMI1, AVX2 et
-        // BMI2 dans la feuille 7, avec ERMS (#619) et ADX (`adcx`, `adox`) — et
+        // BMI2 dans la feuille 7, avec ERMS (#619), ADX (`adcx`, `adox`) et SHA — et
         // rien d'autre : ni AVX-512.
         XCTAssertNotEqual(ecx & (1 << 22), 0, "MOVBE")
         XCTAssertEqual(X86CPUID.answer(leaf: 0, subleaf: 0).0, 0xD, "jusqu'à la feuille de l'état étendu")
         let leaf7 = X86CPUID.answer(leaf: 7, subleaf: 0)
-        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 5 | 1 << 8 | 1 << 9 | 1 << 19,
-                       "BMI1, AVX2, BMI2, ERMS et ADX, et rien d'autre")
+        XCTAssertEqual(leaf7.1, 1 << 3 | 1 << 5 | 1 << 8 | 1 << 9 | 1 << 19 | 1 << 29,
+                       "BMI1, AVX2, BMI2, ERMS, ADX et SHA, et rien d'autre")
         XCTAssertEqual(X86CPUID.answer(leaf: 7, subleaf: 1).1, 0)
     }
 
