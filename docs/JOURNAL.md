@@ -8,6 +8,40 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — AES-NI et PCLMULQDQ : AES-GCM sept fois plus rapide
+
+La troisième de la série : le processeur du conteneur a `aes` et
+`pclmulqdq`, et le TLS d'aujourd'hui (apt sur https, curl, git) chiffre en
+AES-GCM, LUKS en AES-XTS. Sans ces instructions, OpenSSL prend son AES par
+tables et son GHASH logiciel.
+
+**Ce qui entre** (`X86AES.swift`) : `AESENC`, `AESENCLAST`, `AESDEC`,
+`AESDECLAST`, `AESIMC`, `AESKEYGENASSIST` et `PCLMULQDQ`, et les bits 1 et 25
+de la feuille 1. La boîte de substitution est **calculée** (l'inverse dans
+GF(2⁸) puis la transformation affine), pas recopiée. Les formes VEX.128
+viennent avec : le cœur les traduit en leur forme héritée, et le corpus
+VEX.128 régénéré en porte quarante-six de plus. 39 525 cas dans le corpus v2,
+51 148 dans le VEX.128, tous d'accord au premier passage ; cinq sabotages
+sur la première version, quatre sur la seconde, tous tombés.
+
+**Mesuré** comme pour SHA, `openssl speed -seconds 5 -bytes 8192 -evp
+aes-128-gcm`, d'abord AES et PCLMULQDQ masqués
+(`OPENSSL_ia32cap="~0x200000200000000:~0"`) :
+
+```
+sans AES-NI                  :   8,3 Mo/s de l'invité —  61 s d'horloge
+avec, tour octet par octet   : 137,6 Mo/s de l'invité — 271 s
+avec, tables T               : 137,6 Mo/s de l'invité — 137 s
+```
+
+La première version faisait chaque tour octet par octet, avec une
+multiplication dans GF(2⁸) en boucle : seize fois moins d'instructions de
+l'invité, mais chacune si chère que l'hôte ne gagnait que 3,9. Les tables T
+— pour chaque octet, la colonne qu'il apporte une fois substitué et mélangé
+— font un tour en seize lectures : 7,4 fois plus vite à l'horloge. Une
+seconde de l'invité coûte encore deux fois plus que sans AES-NI ; le reste
+est dans `PCLMULQDQ`, une boucle sur les bits, et dans l'aiguillage.
+
 ## 2026-11-02 — Les extensions SHA : SHA-256 dix fois plus rapide
 
 Après ADX, la même question sur le hachage : le processeur du conteneur a
