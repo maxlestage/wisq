@@ -196,6 +196,18 @@ def forms():
         out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0", f"{name} %xmm0, %xmm0"]
     out += ["sha256rnds2 %xmm0, %xmm0, %xmm1", f"sha256rnds2 %xmm0, {ALIGNED:#x}(%rsi), %xmm1",
             "sha256rnds2 %xmm0, %xmm1, %xmm1"]
+    # **AES-NI et PCLMULQDQ.** Les quatre tours et le mélange inverse ; la
+    # dérivation des clés sous des constantes de tour réelles (1 à 0x36) et
+    # quelconques ; la multiplication sans retenue sous ses quatre choix de
+    # moitiés, et des bits d'immédiat que le processeur ignore.
+    for name in ["aesenc", "aesenclast", "aesdec", "aesdeclast", "aesimc"]:
+        out += [f"{name} %xmm1, %xmm0", f"{name} {ALIGNED:#x}(%rsi), %xmm0", f"{name} %xmm0, %xmm0"]
+    for constant in [0x00, 0x01, 0x02, 0x1B, 0x36, 0x80, 0xFF]:
+        out += [f"aeskeygenassist ${constant:#x}, %xmm1, %xmm0"]
+    out += [f"aeskeygenassist $0x1b, {ALIGNED:#x}(%rsi), %xmm0"]
+    for control in [0x00, 0x01, 0x10, 0x11, 0xEE, 0x13]:
+        out += [f"pclmulqdq ${control:#x}, %xmm1, %xmm0", f"pclmulqdq ${control:#x}, {ALIGNED:#x}(%rsi), %xmm0"]
+    out += ["pclmulqdq $0x01, %xmm0, %xmm0"]
     return out
 
 
