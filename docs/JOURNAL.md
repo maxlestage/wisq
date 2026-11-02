@@ -8,6 +8,45 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — ADX : une signature RSA 1,7 fois moins chère
+
+NixOS passe quatorze minutes sur « SSH Host Keys Generation », et sur Debian
+trois `ssh-keygen -t rsa -b 3072` prenaient 1,9 s, 5 min 25 s et 2,8 s de
+temps de l'invité — la recherche des nombres premiers est un tirage. Le profil
+de l'hôte pendant ce calcul : l'invité calcule vraiment, et
+`add(_:_:carryIn:)` prend à elle seule 11 % du temps, appelée par
+`arithmetic` — `ADD` et `ADC`, la boucle multiprécision d'OpenSSL.
+
+**Le levier n'était pas dans l'addition**, déjà serrée (drapeaux écrits d'un
+coup, parité par `nonzeroBitCount`). Il était dans `CPUID` : BMI2 annoncé,
+mais pas ADX. Sans ADX, OpenSSL prend sa boucle `MUL`/`ADC` ; avec BMI2 et
+ADX, sa boucle `MULX`/`ADCX`/`ADOX`, deux chaînes de retenues entrelacées,
+avec moins d'instructions par mot. Pour un interpréteur, c'est le nombre
+d'instructions qui se paie.
+
+**`ADCX` et `ADOX`** (66/F3 0F 38 F6) : une addition avec retenue qui ne lit
+et ne pose qu'un drapeau, CF ou OF. Tenues par le corpus v3-gpr régénéré sur
+le processeur du conteneur (il a `adx`) : douze formes, et des états où CF et
+OF entrent **séparés** — sans eux, un `ADCX` qui lirait OF passait, les deux
+entrant ensemble partout ailleurs. 10 032 cas, tous d'accord. Trois
+sabotages (la taille lue avec 66 comme préfixe de taille, CF posé aussi par
+`ADOX`, la retenue d'entrée lue dans CF pour les deux) tombent.
+
+**Mesuré** dans un même démarrage de Debian 13, `openssl speed -seconds 10
+rsa3072`, d'abord avec `OPENSSL_ia32cap="~0:~0x80000"` (ADX masqué), puis
+sans :
+
+```
+sans ADX : 10,8 signatures/s, 544 vérifications/s (de l'invité) — 933 s d'horloge
+avec ADX : 18,2 signatures/s, 905 vérifications/s (de l'invité) — 970 s d'horloge
+```
+
+Les deux courses durent le même temps de l'invité (à la génération de clés
+près, 2 s de plus pour la seconde) et coûtent le même temps d'hôte par
+seconde de l'invité : le facteur 1,69 sur les instructions est le facteur
+sur l'horloge. Une signature, une vérification ou un test de primalité RSA
+coûte 40 % de moins — `sshd`, `ssh-keygen`, TLS.
+
 ## 2026-11-01 — `sshd` a sa clé d'hôte sur une image de cloud
 
 Le balayage des distributions le notait depuis des jours : Debian 13 démarre

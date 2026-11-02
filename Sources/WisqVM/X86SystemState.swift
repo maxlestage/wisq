@@ -209,8 +209,11 @@ public enum X86CPUID {
     /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
     /// n'emploie que les registres généraux, et que le noyau de RHEL 10
     /// emploie sans demander. **Et AVX2 (5)**, dont les opérations sur
-    /// 256 bits sont là (`X86AVX256.swift`, `X86AVX2.swift`).
-    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8)
+    /// 256 bits sont là (`X86AVX256.swift`, `X86AVX2.swift`). **Et ADX
+    /// (19)**, `ADCX` et `ADOX` (`X86BMI.swift`) : avec BMI2, OpenSSL prend
+    /// sa boucle `MULX`/`ADCX`/`ADOX` pour l'exponentiation modulaire, et
+    /// une clé RSA se tire avec moins d'instructions.
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8) | (1 << 19)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29
