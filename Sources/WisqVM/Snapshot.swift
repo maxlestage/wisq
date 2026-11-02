@@ -75,6 +75,8 @@ enum Snapshot {
     /// section d'écran d'avant (`screenSection`) ne portait que le cadre du
     /// démarrage ; elle se lit encore.
     static let videoSection: UInt64 = 0x6469_765F_5153_4957  // « WISQ_vid »
+    /// La tablette virtio : sa BAR, son état, ses files. Voir `VirtioTablet`.
+    static let tabletSection: UInt64 = 0x6261_745F_5153_4957  // « WISQ_tab »
 
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test

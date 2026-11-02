@@ -199,9 +199,18 @@ public final class X86PCIHost: @unchecked Sendable {
             && it.function == 0
     }
 
+    /// La tablette, sur son emplacement. Voir `VirtioTablet`.
+    public var tablet: VirtioTablet?
+
+    var addressesTheTablet: Bool {
+        let it = selected
+        return tablet != nil && it.enabled && it.bus == 0 && it.slot == VirtioTablet.slot && it.function == 0
+    }
+
     public func configuration() -> UInt32 {
         if addressesTheBridge { return bridgeConfiguration() }
         if let display, addressesTheDisplay { return display.configuration(selected.register) }
+        if let tablet, addressesTheTablet { return tablet.configuration(selected.register) }
         if let second, second.addressesTheDevice { return second.configuration() }
         if let network, network.addressesTheDevice { return network.configuration() }
         guard addressesTheDevice else { return 0xFFFF_FFFF }
@@ -227,6 +236,10 @@ public final class X86PCIHost: @unchecked Sendable {
     public func writeConfiguration(_ value: UInt32, _ width: Int, _ byte: UInt32) {
         if let display, addressesTheDisplay {
             display.writeConfiguration(selected.register, value)
+            return
+        }
+        if let tablet, addressesTheTablet {
+            tablet.writeConfiguration(selected.register, value)
             return
         }
         if let second, second.addressesTheDevice {

@@ -367,6 +367,20 @@ extension X86Core {
                 devices.primary.request &= ~line
             }
         }
+        // La tablette : ce que le doigt a fait, dans les tampons du pilote,
+        // puis sa ligne, à niveau.
+        if let tablet = bus?.tablet, let memory {
+            if tablet.hasPending { tablet.deliver(memory) }
+            // Une ligne de 8 à 15 est sur le second contrôleur, comme la souris.
+            let line = tablet.interruptLine
+            if line >= 8 {
+                let bit: UInt8 = 1 << (line - 8)
+                if tablet.interrupting { devices.secondary.request |= bit } else { devices.secondary.request &= ~bit }
+            } else {
+                let bit: UInt8 = 1 << line
+                if tablet.interrupting { devices.primary.request |= bit } else { devices.primary.request &= ~bit }
+            }
+        }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la quatrième
         // du second contrôleur. À niveau, comme le port série.
         if devices.ps2.keyboardInterrupting {
@@ -450,5 +464,6 @@ extension X86Core {
             || memory?.storage?.interrupting == true
             || memory?.bus?.second?.storage?.interrupting == true
             || memory?.bus?.network?.nic != nil
+            || memory?.bus?.tablet != nil
     }
 }

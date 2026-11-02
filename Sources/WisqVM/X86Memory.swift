@@ -119,6 +119,8 @@ public final class X86Memory: @unchecked Sendable {
     /// Même logement, même raison. Voir `X86BochsDisplay`.
     @exclusivity(unchecked)
     public var vga: X86BochsDisplay?
+    /// La BAR0 de la tablette virtio. Voir `VirtioTablet`.
+    public var tablet: VirtioTablet?
 
     /// Le bus PCI, quand il y en a un. Il vit ici parce que c'est le seul
     /// objet que le cœur et les ports ont tous les deux sous la main.
@@ -183,6 +185,9 @@ public final class X86Memory: @unchecked Sendable {
             if let card = vga, let at = card.registerOffset(address, width) {
                 return card.readRegisters(at, width)
             }
+            if let device = tablet, let at = device.registerOffset(address, width) {
+                return device.read(at, width)
+            }
             throw X86Core.Fault.outsideMemory(address)
         }
         // **Un chargement, pas une boucle.** La mémoire de l'invité est
@@ -235,6 +240,10 @@ public final class X86Memory: @unchecked Sendable {
             }
             if let card = vga, let at = card.registerOffset(address, width) {
                 card.writeRegisters(at, width, value)
+                return
+            }
+            if let device = tablet, let at = device.registerOffset(address, width) {
+                device.write(at, width, value, self)
                 return
             }
             throw X86Core.Fault.outsideMemory(address)
