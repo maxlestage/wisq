@@ -472,7 +472,21 @@ final class X86BootAttemptTests: XCTestCase {
                 FileManager.default.createFile(atPath: path, contents: ppm)
             }
             let extraPrompts = environment["WISQ_PC_PROMPT"].map { [$0] } ?? []
+            // **Un doigt sur la tablette**, avec `WISQ_PC_TOUCH` : à chaque
+            // tranche, une fois que l'invité l'a prise, un toucher, bouton
+            // relâché, **tantôt au quart de l'écran, tantôt au milieu**. Le
+            // même point répété ne passerait pas : le cœur `input` de Linux
+            // jette un événement dont la valeur n'a pas changé, et le premier
+            // essai, qui touchait toujours le même endroit, n'a rien lu dans
+            // `/dev/input/event3` alors que 6 984 événements étaient rendus.
+            let touching = environment["WISQ_PC_TOUCH"] != nil
+            var touches = 0
             while remaining > 0 {
+                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                    let x = touches % 2 == 0 ? 0.25 : 0.5
+                    tablet.point(x: x, y: 0.75, buttons: 0)
+                    touches += 1
+                }
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
@@ -616,6 +630,13 @@ final class X86BootAttemptTests: XCTestCase {
         // Le résumé passe donc en tête : quoi qu'il arrive aux listes, les
         // nombres, eux, sortent.
         func say(_ text: String) { print(text) }
+        // **La tablette, telle qu'elle finit** : prise ou non par l'invité,
+        // ce qui attend encore, et où en sont ses files.
+        if let tablet = memory.tablet {
+            say("tablette              : état \(tablet.status), prête \(tablet.isReady), en attente "
+                + "\(tablet.hasPending), files \(tablet.queues.map { "\($0.enabled) \($0.nextAvailable)/\($0.nextUsed)" }), "
+                + "ISR \(tablet.interruptStatus), ligne \(tablet.interruptLine), BAR 0x\(String(tablet.base, radix: 16))")
+        }
         // **L'écran tel qu'il est à la fin**, en PPM : `WISQ_PC_SCREEN_DUMP`
         // nomme le fichier. Le journal dit que le noyau a trouvé l'écran ;
         // l'image dit ce qu'il y a peint.
