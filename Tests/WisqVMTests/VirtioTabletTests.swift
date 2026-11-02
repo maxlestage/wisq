@@ -203,4 +203,55 @@ final class VirtioTabletTests: XCTestCase {
         tablet.write(0x0C, 4, 0xFFFF_FFFF, memory)
         XCTAssertEqual(tablet.driverFeatures, 1 << 32)
     }
+
+    // MARK: - Sur la machine
+
+    /// **Un écran vient avec sa tablette** : en 00:07.0 sur le bus, sa BAR0
+    /// déjà posée après les registres de la carte, ses registres joignables
+    /// par la mémoire une fois allumée, et sa ligne levée quand un toucher
+    /// arrive.
+    func testTheScreenComesWithItsTablet() throws {
+        let machine = try X86BochsDisplayTests.machine()
+        let memory = try XCTUnwrap(machine.core.memory)
+        let bus = try XCTUnwrap(memory.bus)
+        bus.writeAddress(X86BochsDisplayTests.address(slot: VirtioTablet.slot, register: 0))
+        XCTAssertEqual(bus.configuration(), 0x1052_1AF4)
+        bus.writeAddress(X86BochsDisplayTests.address(slot: VirtioTablet.slot, register: 0x10))
+        XCTAssertEqual(UInt64(bus.configuration()), X86Machine.tabletBase)
+        bus.writeAddress(X86BochsDisplayTests.address(slot: VirtioTablet.slot, register: 0x04))
+        bus.writeConfiguration(0x0006, 2, 0)
+        // Le nom, lu par la mémoire comme le pilote le lit.
+        try memory.write(X86Machine.tabletBase + 0x2000, 1, 1)
+        XCTAssertEqual(try memory.read(X86Machine.tabletBase + 0x2002, 1), UInt64(VirtioTablet.name.utf8.count))
+        XCTAssertNil(X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in }).tablet,
+                     "sans écran, pas de tablette")
+    }
+
+    /// **La tablette revient avec la machine** : un pilote qui a posé ses
+    /// files les retrouve, et le toucher d'après la reprise arrive.
+    func testTheTabletComesBackWithTheMachine() throws {
+        let saved = try X86BochsDisplayTests.machine()
+        let memory = try XCTUnwrap(saved.core.memory)
+        let tablet = try XCTUnwrap(saved.tablet)
+        tablet.writeConfiguration(0x04, 0x0006)
+        tablet.writeConfiguration(0x10, 0xF200_0000)
+        tablet.write(0x14, 1, 1 | 2, memory)
+        tablet.write(0x08, 4, 1, memory)
+        tablet.write(0x0C, 4, 1, memory)
+        tablet.write(0x16, 2, 0, memory)
+        tablet.write(0x20, 8, 0x1000, memory)
+        tablet.write(0x28, 8, 0x2000, memory)
+        tablet.write(0x30, 8, 0x3000, memory)
+        tablet.write(0x1C, 2, 1, memory)
+        tablet.write(0x14, 1, 1 | 2 | 8 | 4, memory)
+
+        let resumed = try X86BochsDisplayTests.machine()
+        try resumed.restore(saved.snapshot())
+        let back = try XCTUnwrap(resumed.tablet)
+        XCTAssertEqual(back.configuration(0x10), 0xF200_0000)
+        XCTAssertEqual(back.status, 15)
+        XCTAssertEqual(back.driverFeatures, 1 << 32)
+        XCTAssertEqual(back.queues, tablet.queues)
+        XCTAssertEqual(try resumed.core.memory?.read(0xF200_0014, 1), 15, "la BAR déplacée répond")
+    }
 }

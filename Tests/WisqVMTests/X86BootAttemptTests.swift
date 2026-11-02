@@ -291,6 +291,11 @@ final class X86BootAttemptTests: XCTestCase {
             memory.vga = card
             let bus = memory.bus ?? X86PCIHost(storage: nil)
             bus.display = card
+            // Et la tablette qui va avec l'écran (`VirtioTablet`).
+            let tablet = VirtioTablet(interruptLine: VirtioTablet.line)
+            tablet.writeConfiguration(0x10, UInt32(X86Machine.tabletBase))
+            memory.tablet = tablet
+            bus.tablet = tablet
             memory.bus = bus
             screen = X86BootLoader.Framebuffer(
                 base: frame.base, width: frame.bootMode.width, height: frame.bootMode.height)
