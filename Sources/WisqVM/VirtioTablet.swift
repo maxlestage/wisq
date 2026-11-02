@@ -61,6 +61,12 @@ public final class VirtioTablet: @unchecked Sendable {
     /// L'écart entre deux sonnettes : `queue_notify_off` fois ce nombre.
     static let notifyMultiplier: UInt32 = 4
 
+    /// L'emplacement sur le bus, et la ligne d'interruption : la 10, libre
+    /// (le disque, le second disque, la carte réseau, le port série, le
+    /// clavier et la souris ont les leurs).
+    public static let slot: UInt32 = 7
+    public static let line: UInt8 = 10
+
     /// Où commence la liste des capacités dans l'espace de configuration.
     static let firstCapability: UInt32 = 0x40
 
@@ -341,6 +347,73 @@ public final class VirtioTablet: @unchecked Sendable {
         var bytes = [UInt8](repeating: 0, count: Int(codes.max() ?? 0) / 8 + 1)
         for code in codes { bytes[Int(code) / 8] |= 1 << (code % 8) }
         return bytes
+    }
+
+    // MARK: - Ce qu'on sauve
+
+    /// **L'état que le pilote a posé** : la BAR, l'état, les fonctions, les
+    /// files et où elles en sont. Sans lui, une machine reprise garderait un
+    /// pilote qui croit ses files prêtes devant un périphérique remis à zéro,
+    /// et le doigt ne pointerait plus rien. Les événements en attente ne
+    /// sont pas gardés : ce sont des gestes d'avant.
+    func save(into writer: inout Snapshot.Writer) {
+        writer.u64(base)
+        writer.u32(UInt32(command))
+        writer.u32(UInt32(interruptLine))
+        writer.u32(UInt32(status))
+        writer.u64(driverFeatures)
+        writer.u32(UInt32(queueSelect))
+        writer.u32(UInt32(select) | UInt32(subselect) << 8)
+        writer.u32(UInt32(interruptStatus))
+        for queue in queues {
+            writer.u32(UInt32(queue.size) | (queue.enabled ? 1 << 16 : 0))
+            writer.u64(queue.descriptors)
+            writer.u64(queue.available)
+            writer.u64(queue.used)
+            writer.u32(UInt32(queue.nextAvailable) | UInt32(queue.nextUsed) << 16)
+        }
+    }
+
+    /// Lit l'état, le vérifie, et ne l'applique qu'entier.
+    func restore(from reader: inout Snapshot.Reader) throws {
+        let base = try reader.u64()
+        let command = UInt16(truncatingIfNeeded: try reader.u32())
+        let line = UInt8(truncatingIfNeeded: try reader.u32())
+        let status = UInt8(truncatingIfNeeded: try reader.u32())
+        let features = try reader.u64()
+        let select = UInt16(truncatingIfNeeded: try reader.u32())
+        let choice = try reader.u32()
+        let pending = UInt8(truncatingIfNeeded: try reader.u32())
+        var restored: [Queue] = []
+        for _ in 0..<2 {
+            let word = try reader.u32()
+            var queue = Queue()
+            queue.size = UInt16(truncatingIfNeeded: word)
+            queue.enabled = word >> 16 & 1 != 0
+            queue.descriptors = try reader.u64()
+            queue.available = try reader.u64()
+            queue.used = try reader.u64()
+            let positions = try reader.u32()
+            queue.nextAvailable = UInt16(truncatingIfNeeded: positions)
+            queue.nextUsed = UInt16(truncatingIfNeeded: positions >> 16)
+            guard queue.size != 0, queue.size <= Self.queueSize, queue.size & (queue.size - 1) == 0 else {
+                throw Snapshot.Failure.corrupt
+            }
+            restored.append(queue)
+        }
+        guard base & (Self.barBytes - 1) == 0, base < 1 << 32, features & ~Self.versionFeature == 0 else {
+            throw Snapshot.Failure.corrupt
+        }
+        self.base = base
+        self.command = command
+        interruptLine = line
+        self.status = status
+        driverFeatures = features
+        queueSelect = select
+        self.select = UInt8(truncatingIfNeeded: choice)
+        subselect = UInt8(truncatingIfNeeded: choice >> 8)
+        interruptStatus = pending
+        queues = restored
     }
 
     // MARK: - Les événements
