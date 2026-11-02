@@ -469,6 +469,11 @@ public final class VirtioTablet: @unchecked Sendable {
         pending += packet
     }
 
+    /// **Le pilote l'a prise** : DRIVER_OK posé et la file des événements
+    /// active. Avant, ou sur un système sans `virtio_input`, un toucher ne
+    /// mènerait nulle part, et l'application garde la souris PS/2.
+    public var isReady: Bool { status & 0x04 != 0 && queues[Self.eventQueue].enabled }
+
     public var hasPending: Bool {
         lock.lock()
         defer { lock.unlock() }
