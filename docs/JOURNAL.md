@@ -8,6 +8,41 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-02 — Les extensions SHA : SHA-256 dix fois plus rapide
+
+Après ADX, la même question sur le hachage : le processeur du conteneur a
+`sha_ni`, et ce cœur ne l'annonçait pas. OpenSSL, la libgcrypt (apt, GnuPG)
+et le noyau (`sha256_ni`) hachaient donc un bloc de soixante-quatre octets en
+plusieurs centaines d'instructions de l'invité, chacune interprétée.
+
+**Les sept instructions** (`X86SHA.swift`) : `SHA1RNDS4`, `SHA1NEXTE`,
+`SHA1MSG1`, `SHA1MSG2`, `SHA256RNDS2` (xmm0 implicite), `SHA256MSG1`,
+`SHA256MSG2`, en fonctions pures sur les quatre mots d'un registre, et le bit
+29 de la feuille 7. Le corpus v2 les reçoit : vingt-six formes, 36 825 cas, tous
+d'accord au premier passage. Quatre sabotages (la fonction du troisième quart
+de SHA-1, l'ordre du résultat de `SHA256RNDS2`, σ0 avec une rotation au lieu
+d'un décalage, le quatrième mot de `SHA1MSG2`) tombent.
+
+**Une surprise au passage** : les formes mémoire à une adresse non alignée
+faisaient mourir l'oracle. Ce sont des formes SSE sans VEX, et le processeur
+lève une faute sur seize octets non alignés. Le cœur, lui, ne lève jamais sur
+l'alignement — c'est écrit dans `X86Vectors.swift`, et un programme correct
+ne le demande pas — ; le corpus prend donc l'adresse alignée.
+
+**Mesuré** dans un même démarrage de Debian 13, `openssl speed -seconds 5
+-bytes 8192 -evp sha256`, d'abord SHA masqué (`OPENSSL_ia32cap="~0:~0x20000000"`) :
+
+```
+sans SHA : 12,1 Mo/s de l'invité — 125 s d'horloge
+avec SHA : 119,6 Mo/s de l'invité — 191 s, puis 121 s
+```
+
+La première version rangeait les mots dans des `[UInt32]`, alloués sur le tas
+à chaque instruction : 191 s d'hôte pour les cinq secondes de l'invité. En
+`SIMD4<UInt32>`, 121 s, autant que la course sans SHA : le facteur 9,9 sur les
+instructions est celui de l'horloge. Vérifier un paquet, une image ou un
+certificat coûte dix fois moins.
+
 ## 2026-11-02 — ADX : une signature RSA 1,7 fois moins chère
 
 NixOS passe quatorze minutes sur « SSH Host Keys Generation », et sur Debian
