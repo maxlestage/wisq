@@ -565,6 +565,7 @@ final class X86BootAttemptTests: XCTestCase {
                 if !dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let step = dragSteps.removeFirst()
                     tablet.point(x: step.x, y: step.y, buttons: step.buttons)
+                    print("glissé : (\(step.x), \(step.y)) boutons \(step.buttons) au tic \(core.ticks)")
                 } else if touching, dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let x = touches % 2 == 0 ? 0.25 : 0.5
                     tablet.point(x: x, y: 0.75, buttons: 0)
