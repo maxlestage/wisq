@@ -576,10 +576,17 @@ final class X86BootAttemptTests: XCTestCase {
                 // la patience, l'attente ne compte pas, et une tranche d'une
                 // machine endormie couvrait jusqu'à 35 s : les pas du glissé
                 // tombaient à des dizaines de secondes l'un de l'autre.
+                //
+                // **Et dès qu'on touche, l'attente compte toujours** : une
+                // tranche dure alors au plus 0,15 s de l'invité. Sinon le clic
+                // droit, le clic qui ferme le menu et le glissé, que l'invité
+                // demande à vingt secondes d'écart, tombaient dans la même
+                // tranche et partaient en 150 ms : l'appui sur la barre de
+                // titre arrivait pendant que le menu se refermait.
                 let gliding = !dragSteps.isEmpty
                 let executed = gliding
                     ? try core.run(budget: min(remaining, 19_091 * X86LegacyDevices.instructionsPerTick), waiting: nil)
-                    : try core.run(budget: min(remaining, slice), waiting: patient)
+                    : try core.run(budget: min(remaining, slice), waiting: touching ? nil : patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
                     if samples.count >= 1000 { flushSamples() }
