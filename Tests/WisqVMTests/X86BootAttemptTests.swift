@@ -506,7 +506,11 @@ final class X86BootAttemptTests: XCTestCase {
                 guard let lastBreak = core.serialOutput[markerScan...].lastIndex(of: 0x0A) else { return }
                 let complete = String(decoding: core.serialOutput[markerScan..<lastBreak], as: UTF8.self)
                 markerScan = lastBreak + 1
-                for line in complete.split(separator: "\n") {
+                // `isNewline` et pas `"\n"` : la console finit ses lignes par
+                // `\r\n`, qui est **un seul** caractère pour Swift. Coupé sur
+                // `"\n"`, « CLIQUE_2\r\nTAPE_2 » restait une ligne, et la
+                // frappe ne partait jamais.
+                for line in complete.split(whereSeparator: \.isNewline) {
                     if line.hasPrefix("OUVRE_2") {
                         dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
                         core.devices.ps2.type(.leftControl, down: true)
