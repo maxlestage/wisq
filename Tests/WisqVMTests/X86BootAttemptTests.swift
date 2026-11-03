@@ -493,6 +493,7 @@ final class X86BootAttemptTests: XCTestCase {
             let keys = environment["WISQ_PC_KEYS"]
             var markerScan = 0
             var shots = 0
+            var dragSteps: [(x: Double, y: Double, buttons: UInt8)] = []
             // Chaque marque compte, à chaque fois qu'elle paraît : l'invité
             // les répète tant que le terminal n'est pas là, puis tant que le
             // fichier n'est pas écrit. Le bureau ne monte pas toujours au
@@ -538,16 +539,15 @@ final class X86BootAttemptTests: XCTestCase {
                         }
                     } else if line.hasPrefix("GLISSE_2") {
                         // **Glisser un doigt** : la barre de titre du premier
-                        // terminal, traînée bouton enfoncé, par étapes comme
-                        // un doigt qui avance, puis relâchée plus bas.
-                        if let tablet = memory.tablet, tablet.isReady {
-                            tablet.point(x: 0.4, y: 0.055, buttons: 0)
-                            for step in 0...10 {
-                                let t = Double(step) / 10
-                                tablet.point(x: 0.4 + 0.2 * t, y: 0.055 + 0.3 * t, buttons: 1)
-                            }
-                            tablet.point(x: 0.6, y: 0.355, buttons: 0)
+                        // terminal, traînée bouton enfoncé, puis relâchée
+                        // plus bas. Un pas par tranche, comme un doigt qui
+                        // avance — pas tout d'un coup.
+                        dragSteps = [(0.4, 0.055, 0), (0.4, 0.055, 1)]
+                        for step in 1...20 {
+                            let t = Double(step) / 20
+                            dragSteps.append((0.4 + 0.2 * t, 0.055 + 0.3 * t, 1))
                         }
+                        dragSteps.append((0.6, 0.355, 0))
                     } else if line.hasPrefix("ECRAN_2") {
                         // Une capture choisie par l'invité, numérotée.
                         shots += 1
@@ -562,7 +562,10 @@ final class X86BootAttemptTests: XCTestCase {
 
             while remaining > 0 {
                 watchMarkers()
-                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                if !dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                    let step = dragSteps.removeFirst()
+                    tablet.point(x: step.x, y: step.y, buttons: step.buttons)
+                } else if touching, dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let x = touches % 2 == 0 ? 0.25 : 0.5
                     tablet.point(x: x, y: 0.75, buttons: 0)
                     touches += 1
