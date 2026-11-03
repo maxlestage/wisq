@@ -8,6 +8,29 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-03 — Deux doigts font tourner la molette
+
+Sur l'onglet Écran, deux doigts déplaçaient la vue zoomée, et rien d'autre.
+Quand l'écran entier est montré, ils n'avaient rien à déplacer, et le bureau
+n'avait aucun moyen de défiler : ni une page, ni une liste, ni un menu trop
+long. La tablette annonçait pourtant `REL_WHEEL` depuis #693.
+
+**Désormais, sur l'écran entier, deux doigts tournent la molette de
+l'invité.** Zoomé, ils déplacent toujours la vue. Le compte des crans vit dans
+`ScreenWheel` (WisqVM, testé sous Linux) :
+
+- un cran tous les 24 points de doigt ;
+- dans le sens du téléphone : le doigt qui descend fait remonter la page ;
+- le reste d'un glissement s'additionne, si bien qu'un doigt lent finit par
+  tourner un cran ;
+- huit crans au plus d'un coup ;
+- les doigts levés oublient le reste.
+
+`X86Machine.scroll` répond non tant que la tablette n'est pas prise : la
+souris PS/2 de l'invité n'a pas de molette.
+
+Le banc gagne `ROULE_2`, cinq crans vers le haut là où est le pointeur.
+
 ## 2026-11-03 — Clic droit et glisser sur le bureau Xfce
 
 Le banc sait maintenant faire, sur le vrai bureau Void Xfce, ce que fait le
