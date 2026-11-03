@@ -481,40 +481,36 @@ final class X86BootAttemptTests: XCTestCase {
             // `/dev/input/event3` alors que 6 984 événements étaient rendus.
             let touching = environment["WISQ_PC_TOUCH"] != nil
             var touches = 0
-            // **Le clavier du bureau**, avec `WISQ_PC_KEYS` : un certain
-            // nombre de tranches après que l'invité a pris la tablette (le
-            // bureau monte), Ctrl+Alt+T — le terminal d'Xfce —, puis, plus
-            // tard, le texte, tapé sur le clavier PS/2 comme l'onglet Écran
-            // de l'application le tape. `WISQ_PC_KEYS_AFTER` règle l'attente.
+            // **Le clavier du bureau**, avec `WISQ_PC_KEYS` : réglé sur
+            // l'invité, pas sur un compte de tranches. Quand la console série
+            // écrit `OUVRE_2`, Ctrl+Alt+T — le terminal d'Xfce ; quand elle
+            // écrit `TAPE_2`, le texte, tapé sur le clavier PS/2 comme
+            // l'onglet Écran de l'application le tape. Les marques se font
+            // écrire par `echo OUVRE_$((1+1))` : la ligne de commande, que la
+            // console répète, ne les contient pas telles quelles. Compter en
+            // tranches ne disait jamais quand le terminal serait prêt.
             let keys = environment["WISQ_PC_KEYS"]
-            let keysAfter = environment["WISQ_PC_KEYS_AFTER"].flatMap(Int.init) ?? 1000
-            // Le terminal met du temps à s'ouvrir à cette vitesse : un texte
-            // tapé trop tôt tombe sur le bureau, et se perd (essayé : 300
-            // tranches ne suffisaient pas).
-            let typeAfter = environment["WISQ_PC_KEYS_TYPE_AFTER"].flatMap(Int.init) ?? 1500
-            var tranchesSinceReady = 0
+            var markerScan = 0
+            var terminalOpened = false, keysTyped = false
+            func watchMarkers() {
+                guard let keys, core.serialOutput.count > markerScan else { return }
+                let seen = String(decoding: core.serialOutput.dropFirst(max(0, markerScan - 16)), as: UTF8.self)
+                markerScan = core.serialOutput.count
+                if !terminalOpened, seen.contains("OUVRE_2") {
+                    terminalOpened = true
+                    core.devices.ps2.key(.leftControl, down: true)
+                    core.devices.ps2.key(.leftAlt, down: true)
+                    for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
+                    core.devices.ps2.key(.leftAlt, down: false)
+                    core.devices.ps2.key(.leftControl, down: false)
+                }
+                if !keysTyped, seen.contains("TAPE_2") {
+                    keysTyped = true
+                    for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
+                }
+            }
             while remaining > 0 {
-                if let keys, let tablet = memory.tablet, tablet.isReady {
-                    tranchesSinceReady += 1
-                    if tranchesSinceReady == keysAfter {
-                        for event in [(X86ScanCode.leftControl, true), (.leftAlt, true)] {
-                            core.devices.ps2.key(event.0, down: event.1)
-                        }
-                        for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
-                        core.devices.ps2.key(.leftAlt, down: false)
-                        core.devices.ps2.key(.leftControl, down: false)
-                    } else if tranchesSinceReady >= keysAfter + typeAfter,
-                              (tranchesSinceReady - keysAfter - typeAfter) % 1000 == 0 {
-                        // Retapé toutes les mille tranches : on ne sait pas, à
-                        // cette vitesse, quand le terminal aura pris la main.
-                        for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
-                    }
-                }
-                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
-                    let x = touches % 2 == 0 ? 0.25 : 0.5
-                    tablet.point(x: x, y: 0.75, buttons: 0)
-                    touches += 1
-                }
+                watchMarkers()
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
