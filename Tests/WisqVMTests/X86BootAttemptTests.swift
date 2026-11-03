@@ -571,7 +571,15 @@ final class X86BootAttemptTests: XCTestCase {
                     tablet.point(x: x, y: 0.75, buttons: 0)
                     touches += 1
                 }
-                let executed = try core.run(budget: min(remaining, slice), waiting: patient)
+                // **Un doigt qui glisse vit à 60 Hz** : pendant le glissé,
+                // une tranche dure 16 ms de l'invité, attente comprise. Avec
+                // la patience, l'attente ne compte pas, et une tranche d'une
+                // machine endormie couvrait jusqu'à 35 s : les pas du glissé
+                // tombaient à des dizaines de secondes l'un de l'autre.
+                let gliding = !dragSteps.isEmpty
+                let executed = gliding
+                    ? try core.run(budget: min(remaining, 19_091 * X86LegacyDevices.instructionsPerTick), waiting: nil)
+                    : try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
                     if samples.count >= 1000 { flushSamples() }
