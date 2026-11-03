@@ -229,7 +229,10 @@ public final class VirtioTablet: @unchecked Sendable {
             // La sonnette d'une file : des tampons neufs. La file d'état
             // porte les voyants du clavier, qu'il n'y a pas : on les rend.
             let which = Int((offset - Self.notifyOffset) / UInt64(Self.notifyMultiplier))
-            if which == Self.statusQueue { drainStatus(memory) } else { deliver(memory) }
+            // **À la dernière heure connue** : sans elle, la sonnette rendait
+            // tout d'un coup, retenu compris, et l'appui et la relâche d'un
+            // toucher arrivaient encore à 27 µs d'écart.
+            if which == Self.statusQueue { drainStatus(memory) } else { deliver(memory, now: clock, fromDoorbell: true) }
         default:
             break
         }
@@ -509,6 +512,9 @@ public final class VirtioTablet: @unchecked Sendable {
     public static let buttonTicks: UInt64 = 35_795
     var deliveredButtons: UInt8 = 0
     var lastChangedButtons = false
+    /// La dernière heure qu'on a donnée à `deliver`, pour la sonnette, qui
+    /// n'en a pas. Sans aucune (les tests), rien n'est retenu.
+    var clock: UInt64?
     /// L'invité a lu l'ISR depuis le dernier dépôt.
     var acknowledged = true
     /// L'heure où l'attente a commencé : le premier passage après la lecture.
@@ -530,10 +536,11 @@ public final class VirtioTablet: @unchecked Sendable {
     /// **Les événements en attente, dans les tampons que l'invité a
     /// offerts**, tant qu'il y en a. Chaque tampon reçoit un événement. Avec
     /// `now` (le PIT de la machine), au rythme d'un doigt ; sans, tout part.
-    public func deliver(_ memory: GuestMemory, now: UInt64? = nil) {
+    public func deliver(_ memory: GuestMemory, now: UInt64? = nil, fromDoorbell: Bool = false) {
         guard status & 0x04 != 0 else { return }  // DRIVER_OK
         lock.lock()
         defer { lock.unlock() }
+        if let now, !fromDoorbell { clock = now }
         while !pending.isEmpty {
             // Un paquet qui commence en tête de file : peut-il partir ? Un
             // paquet commencé, lui, finit sans attendre.
@@ -543,9 +550,10 @@ public final class VirtioTablet: @unchecked Sendable {
                 let changes = buttons != deliveredButtons
                 if let now, lastChangedButtons {
                     guard acknowledged else { return }
-                    let since = holdingSince ?? now
-                    holdingSince = since
-                    guard now >= since &+ Self.buttonTicks else { return }
+                    // L'heure de la sonnette est celle d'un passage ancien :
+                    // elle ne commence pas l'attente, elle la laisse au PIT.
+                    if holdingSince == nil, !fromDoorbell { holdingSince = now }
+                    guard let since = holdingSince, now >= since &+ Self.buttonTicks else { return }
                 }
                 guard let next = nextBuffer(Self.eventQueue, memory) else { return }
                 packetLeft = end

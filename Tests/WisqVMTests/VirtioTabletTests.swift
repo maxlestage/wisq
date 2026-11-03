@@ -223,6 +223,26 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertEqual(try delivered(), 24 + 18 + 12)
     }
 
+    /// **La sonnette ne passe pas outre** : le pilote qui rend ses tampons
+    /// sonne la file, et la sonnette rendait tout, retenu compris — l'appui
+    /// et la relâche d'un toucher arrivaient encore à 27 µs d'écart.
+    func testTheDoorbellDoesNotReleaseWhatIsHeld() throws {
+        let memory = makeMemory()
+        let tablet = try started(memory)
+        tablet.point(x: 0.5, y: 0.5, buttons: 2)     // l'appui du clic droit
+        tablet.point(x: 0.5, y: 0.5, buttons: 0)     // sa relâche
+        tablet.deliver(memory, now: 1000)
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "l'appui seul")
+        _ = tablet.read(0x1000, 1)                   // lu
+        tablet.write(0x3000, 2, 0, memory)           // la sonnette, aussitôt
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "la relâche reste retenue")
+        tablet.deliver(memory, now: 2000)
+        tablet.write(0x3000, 2, 0, memory)
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "l'écart court depuis 2000")
+        tablet.deliver(memory, now: 2000 + VirtioTablet.buttonTicks)
+        XCTAssertEqual(try memory.read(used + 2, 2), 8, "la relâche part, jusqu'au dernier tampon offert")
+    }
+
     /// **Un paquet commencé finit sans attendre** : faute de tampons, la
     /// moitié d'un appui reste en file ; la suite n'est pas retenue comme
     /// un nouveau changement de boutons.
