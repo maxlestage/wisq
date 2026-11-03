@@ -492,6 +492,7 @@ final class X86BootAttemptTests: XCTestCase {
             // tranches ne disait jamais quand le terminal serait prêt.
             let keys = environment["WISQ_PC_KEYS"]
             var markerScan = 0
+            var shots = 0
             // Chaque marque compte, à chaque fois qu'elle paraît : l'invité
             // les répète tant que le terminal n'est pas là, puis tant que le
             // fichier n'est pas écrit. Le bureau ne monte pas toujours au
@@ -528,6 +529,29 @@ final class X86BootAttemptTests: XCTestCase {
                         if let tablet = memory.tablet, tablet.isReady {
                             for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
                         }
+                    } else if line.hasPrefix("DROIT_2") {
+                        // **Le clic droit** de l'appui long : sur le fond du
+                        // bureau, en haut à droite, là où aucune fenêtre ne
+                        // s'ouvre — Xfce y ouvre son menu.
+                        if let tablet = memory.tablet, tablet.isReady {
+                            for buttons: UInt8 in [0, 2, 0] { tablet.point(x: 0.92, y: 0.2, buttons: buttons) }
+                        }
+                    } else if line.hasPrefix("GLISSE_2") {
+                        // **Glisser un doigt** : la barre de titre du premier
+                        // terminal, traînée bouton enfoncé, par étapes comme
+                        // un doigt qui avance, puis relâchée plus bas.
+                        if let tablet = memory.tablet, tablet.isReady {
+                            tablet.point(x: 0.4, y: 0.055, buttons: 0)
+                            for step in 0...10 {
+                                let t = Double(step) / 10
+                                tablet.point(x: 0.4 + 0.2 * t, y: 0.055 + 0.3 * t, buttons: 1)
+                            }
+                            tablet.point(x: 0.6, y: 0.355, buttons: 0)
+                        }
+                    } else if line.hasPrefix("ECRAN_2") {
+                        // Une capture choisie par l'invité, numérotée.
+                        shots += 1
+                        dumpScreen("-marque-\(shots).ppm")
                     } else if line.hasPrefix("TAPE_2") {
                         dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
                         // Au rythme d'une main : `X86PS2Controller.pace`.
