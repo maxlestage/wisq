@@ -659,7 +659,7 @@ final class X86BootAttemptTests: XCTestCase {
         func say(_ text: String) { print(text) }
         // **La tablette, telle qu'elle finit** : prise ou non par l'invité,
         // ce qui attend encore, et où en sont ses files.
-        say("clavier PS/2          : \(core.devices.ps2.output.count) octets en attente, balayage \(core.devices.ps2.keyboardScanning)")
+        say("clavier PS/2          : \(core.devices.ps2.output.count) octets en attente, balayage \(core.devices.ps2.keyboardScanning), perdues \(core.devices.ps2.droppedWhileNotScanning) sans balayage, \(core.devices.ps2.droppedWhilePortDisabled) port coupé")
         if let tablet = memory.tablet {
             say("tablette              : état \(tablet.status), prête \(tablet.isReady), en attente "
                 + "\(tablet.hasPending), files \(tablet.queues.map { "\($0.enabled) \($0.nextAvailable)/\($0.nextUsed)" }), "

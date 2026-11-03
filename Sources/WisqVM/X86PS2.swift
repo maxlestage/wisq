@@ -55,6 +55,11 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// Le dernier octet écrit l'a été au port de commande : bit 3 de l'état.
     public var lastWriteWasCommand = false
 
+    /// Les touches perdues, et pourquoi : le clavier ne balayait pas (`F5`),
+    /// ou le contrôleur avait coupé son port (`AD`).
+    public private(set) var droppedWhileNotScanning = 0
+    public private(set) var droppedWhilePortDisabled = 0
+
     /// La souris envoie-t-elle ses mouvements (`F4`) ?
     public var mouseReporting = false
     /// Le clavier envoie-t-il ses touches ? Allumé au départ, comme un vrai.
@@ -210,7 +215,8 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// étendues —, enfoncée ou relâchée. Traduite en jeu 2 quand le noyau a
     /// coupé la traduction.
     public mutating func key(_ code: X86ScanCode, down: Bool) {
-        guard keyboardScanning, configuration & Self.keyboardDisabled == 0 else { return }
+        guard keyboardScanning else { droppedWhileNotScanning &+= 1; return }
+        guard configuration & Self.keyboardDisabled == 0 else { droppedWhilePortDisabled &+= 1; return }
         if translating {
             if code.extended { reply(0xE0) }
             reply(down ? code.set1 : code.set1 | 0x80)
