@@ -88,4 +88,36 @@ final class ScreenZoomTests: XCTestCase {
         XCTAssertEqual(pointer, ScreenPointer())
         XCTAssertNil(pointer.move(dx: 0.2, dy: -0.2, pointsPerPixel: 1), "0,9 ne revient pas")
     }
+
+    // MARK: - La molette à deux doigts
+
+    /// **Un cran tous les 24 points**, dans le sens du téléphone : le doigt
+    /// qui descend tourne la molette vers le haut.
+    func testTwoFingersTurnTheWheelANotchEveryTwentyFourPoints() {
+        var wheel = ScreenWheel()
+        XCTAssertEqual(wheel.notches(dy: 50), 2)
+        XCTAssertEqual(wheel.remainder, 2)
+        XCTAssertEqual(wheel.notches(dy: -26), -1, "le reste compte, dans l'autre sens")
+        XCTAssertEqual(wheel.notches(dy: -48), -2)
+    }
+
+    /// **Un doigt lent finit par tourner un cran** : le reste s'additionne.
+    func testASlowSwipeStillTurnsTheWheel() {
+        var wheel = ScreenWheel()
+        let turned = (0..<30).map { _ in wheel.notches(dy: 1) }
+        XCTAssertEqual(turned.reduce(0, +), 1)
+        XCTAssertEqual(turned.firstIndex(of: 1), 23, "au vingt-quatrième point")
+    }
+
+    /// **Les doigts levés oublient le reste**, un saut absurde est borné, et
+    /// une valeur qui n'est pas un nombre ne tourne rien.
+    func testTheWheelForgetsOnLiftAndIsBounded() {
+        var wheel = ScreenWheel()
+        _ = wheel.notches(dy: 20)
+        wheel.lift()
+        XCTAssertEqual(wheel.notches(dy: 20), 0, "20 points d'un geste neuf, pas 40")
+        XCTAssertEqual(wheel.notches(dy: 1e9), ScreenWheel.mostNotches)
+        XCTAssertEqual(wheel.notches(dy: .nan), 0)
+        XCTAssertEqual(wheel.notches(dy: -.infinity), 0)
+    }
 }
