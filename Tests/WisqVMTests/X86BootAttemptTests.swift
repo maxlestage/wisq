@@ -492,24 +492,31 @@ final class X86BootAttemptTests: XCTestCase {
             // tranches ne disait jamais quand le terminal serait prêt.
             let keys = environment["WISQ_PC_KEYS"]
             var markerScan = 0
-            var terminalOpened = false, keysTyped = false
+            // Chaque marque compte, à chaque fois qu'elle paraît : l'invité
+            // les répète tant que le terminal n'est pas là, puis tant que le
+            // fichier n'est pas écrit. Le bureau ne monte pas toujours au
+            // même moment, et une seule tentative tombait tantôt sur la
+            // console texte, tantôt sur un bureau sans terminal.
             func watchMarkers() {
                 guard let keys, core.serialOutput.count > markerScan else { return }
-                let seen = String(decoding: core.serialOutput.dropFirst(max(0, markerScan - 16)), as: UTF8.self)
-                markerScan = core.serialOutput.count
-                if !terminalOpened, seen.contains("OUVRE_2") {
-                    terminalOpened = true
-                    dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
-                    core.devices.ps2.key(.leftControl, down: true)
-                    core.devices.ps2.key(.leftAlt, down: true)
-                    for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
-                    core.devices.ps2.key(.leftAlt, down: false)
-                    core.devices.ps2.key(.leftControl, down: false)
-                }
-                if !keysTyped, seen.contains("TAPE_2") {
-                    keysTyped = true
-                    dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
-                    for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
+                let fresh = String(decoding: core.serialOutput.dropFirst(markerScan), as: UTF8.self)
+                // Une marque à cheval sur deux tranches : on attend la fin de
+                // ligne pour lire.
+                guard let lastBreak = fresh.lastIndex(of: "\n") else { return }
+                let complete = fresh[..<lastBreak]
+                markerScan += complete.utf8.count + 1
+                for line in complete.split(separator: "\n") {
+                    if line.hasPrefix("OUVRE_2") {
+                        dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
+                        core.devices.ps2.key(.leftControl, down: true)
+                        core.devices.ps2.key(.leftAlt, down: true)
+                        for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
+                        core.devices.ps2.key(.leftAlt, down: false)
+                        core.devices.ps2.key(.leftControl, down: false)
+                    } else if line.hasPrefix("TAPE_2") {
+                        dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
+                        for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
+                    }
                 }
             }
             while remaining > 0 {
