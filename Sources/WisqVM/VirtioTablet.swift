@@ -198,6 +198,11 @@ public final class VirtioTablet: @unchecked Sendable {
             // Lire l'ISR l'efface : c'est l'accusé de réception de l'INTx.
             let value = interruptStatus
             interruptStatus = 0
+            if value & 1 != 0 {
+                lock.lock()
+                acknowledged = true
+                lock.unlock()
+            }
             return UInt64(value)
         case Self.deviceOffset..<(Self.deviceOffset + 0x88):
             let bytes = deviceConfiguration()
@@ -224,7 +229,10 @@ public final class VirtioTablet: @unchecked Sendable {
             // La sonnette d'une file : des tampons neufs. La file d'état
             // porte les voyants du clavier, qu'il n'y a pas : on les rend.
             let which = Int((offset - Self.notifyOffset) / UInt64(Self.notifyMultiplier))
-            if which == Self.statusQueue { drainStatus(memory) } else { deliver(memory) }
+            // **À la dernière heure connue** : sans elle, la sonnette rendait
+            // tout d'un coup, retenu compris, et l'appui et la relâche d'un
+            // toucher arrivaient encore à 27 µs d'écart.
+            if which == Self.statusQueue { drainStatus(memory) } else { deliver(memory, now: clock, fromDoorbell: true) }
         default:
             break
         }
@@ -305,6 +313,11 @@ public final class VirtioTablet: @unchecked Sendable {
         subselect = 0
         lock.lock()
         pending.removeAll()
+        deliveredButtons = 0
+        lastChangedButtons = false
+        acknowledged = true
+        holdingSince = nil
+        packetLeft = 0
         lock.unlock()
     }
 
@@ -480,13 +493,86 @@ public final class VirtioTablet: @unchecked Sendable {
         return !pending.isEmpty
     }
 
+    /// **Le rythme d'un doigt autour des boutons.** Un appui, puis le
+    /// glissé, puis la relâche, rendus d'un coup à l'invité, portent la même
+    /// heure : xfwm4 voit l'appui sur la barre de titre, demande où en est le
+    /// bouton, et le trouve déjà relâché — la fenêtre ne bouge pas. Un paquet
+    /// qui suit un changement de boutons attend donc `buttonTicks` (30 ms du
+    /// PIT, l'appui du clavier) : la relâche d'un toucher, le premier pas
+    /// d'un glissé. Le reste passe sans attendre — l'appui lui-même, sans
+    /// latence ajoutée, et les déplacements, qui retenus s'entasseraient dès
+    /// que la machine prend du retard sur le doigt.
+    ///
+    /// **Les 30 ms comptent depuis que l'invité a lu**, pas depuis le dépôt.
+    /// Compté depuis le dépôt, une machine endormie sautait jusqu'au
+    /// battement suivant — jusqu'à 55 ms — et trouvait l'appui *et* la
+    /// relâche dans ses tampons : evdev les datait à 17 µs d'écart. L'ISR lu,
+    /// `vp_interrupt` vide la file dans la foulée ; c'est de là que l'écart
+    /// part.
+    public static let buttonTicks: UInt64 = 35_795
+    var deliveredButtons: UInt8 = 0
+    var lastChangedButtons = false
+    /// La dernière heure qu'on a donnée à `deliver`, pour la sonnette, qui
+    /// n'en a pas. Sans aucune (les tests), rien n'est retenu.
+    var clock: UInt64?
+    /// L'invité a lu l'ISR depuis le dernier dépôt.
+    var acknowledged = true
+    /// L'heure où l'attente a commencé : le premier passage après la lecture.
+    var holdingSince: UInt64?
+    /// Ce qui reste à rendre du paquet commencé, faute de tampons.
+    var packetLeft = 0
+
+    /// Les boutons que porte un paquet, ou ceux d'avant s'il n'en dit rien
+    /// (la molette).
+    func buttons(of packet: ArraySlice<Event>) -> UInt8 {
+        var buttons = deliveredButtons
+        for event in packet where event.type == Self.key {
+            guard let bit = Self.buttonCodes.firstIndex(of: event.code) else { continue }
+            if event.value != 0 { buttons |= 1 << bit } else { buttons &= ~(1 << bit) }
+        }
+        return buttons
+    }
+
     /// **Les événements en attente, dans les tampons que l'invité a
-    /// offerts**, tant qu'il y en a. Chaque tampon reçoit un événement.
-    public func deliver(_ memory: GuestMemory) {
+    /// offerts**, tant qu'il y en a. Chaque tampon reçoit un événement. Avec
+    /// `now` (le PIT de la machine), au rythme d'un doigt ; sans, tout part.
+    public func deliver(_ memory: GuestMemory, now: UInt64? = nil, fromDoorbell: Bool = false) {
         guard status & 0x04 != 0 else { return }  // DRIVER_OK
         lock.lock()
         defer { lock.unlock() }
-        while !pending.isEmpty, let (head, buffer) = nextBuffer(Self.eventQueue, memory) {
+        if let now, !fromDoorbell { clock = now }
+        while !pending.isEmpty {
+            // Un paquet qui commence en tête de file : peut-il partir ? Un
+            // paquet commencé, lui, finit sans attendre.
+            if packetLeft == 0 {
+                let end = (pending.firstIndex { $0.type == Self.synchronize } ?? pending.count - 1) + 1
+                let buttons = buttons(of: pending[..<end])
+                let changes = buttons != deliveredButtons
+                if let now, lastChangedButtons {
+                    guard acknowledged else { return }
+                    // L'heure de la sonnette est celle d'un passage ancien :
+                    // elle ne commence pas l'attente, elle la laisse au PIT.
+                    if holdingSince == nil, !fromDoorbell { holdingSince = now }
+                    guard let since = holdingSince, now >= since &+ Self.buttonTicks else { return }
+                }
+                guard let next = nextBuffer(Self.eventQueue, memory) else { return }
+                packetLeft = end
+                lastChangedButtons = changes
+                deliveredButtons = buttons
+                acknowledged = false
+                holdingSince = nil
+                deliverOne(next, memory)
+            } else {
+                guard let next = nextBuffer(Self.eventQueue, memory) else { return }
+                deliverOne(next, memory)
+            }
+            packetLeft -= 1
+        }
+    }
+
+    private func deliverOne(_ next: (UInt16, VirtioBlock.Descriptor), _ memory: GuestMemory) {
+        let (head, buffer) = next
+        do {  // sous le verrou de `deliver`
             let event = pending.removeFirst()
             if buffer.writable, buffer.length >= 8 {
                 memory.copyIn(event.bytes, at: buffer.address)

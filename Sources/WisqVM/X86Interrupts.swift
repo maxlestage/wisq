@@ -370,7 +370,7 @@ extension X86Core {
         // La tablette : ce que le doigt a fait, dans les tampons du pilote,
         // puis sa ligne, à niveau.
         if let tablet = bus?.tablet, let memory {
-            if tablet.hasPending { tablet.deliver(memory) }
+            if tablet.hasPending { tablet.deliver(memory, now: ticks) }
             // Une ligne de 8 à 15 est sur le second contrôleur, comme la souris.
             let line = tablet.interruptLine
             if line >= 8 {
