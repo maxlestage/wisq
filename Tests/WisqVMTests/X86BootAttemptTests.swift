@@ -534,6 +534,11 @@ final class X86BootAttemptTests: XCTestCase {
 
             while remaining > 0 {
                 watchMarkers()
+                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                    let x = touches % 2 == 0 ? 0.25 : 0.5
+                    tablet.point(x: x, y: 0.75, buttons: 0)
+                    touches += 1
+                }
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
