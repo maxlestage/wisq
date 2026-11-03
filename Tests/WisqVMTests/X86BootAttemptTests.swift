@@ -503,7 +503,10 @@ final class X86BootAttemptTests: XCTestCase {
                         for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
                         core.devices.ps2.key(.leftAlt, down: false)
                         core.devices.ps2.key(.leftControl, down: false)
-                    } else if tranchesSinceReady == keysAfter + typeAfter {
+                    } else if tranchesSinceReady >= keysAfter + typeAfter,
+                              (tranchesSinceReady - keysAfter - typeAfter) % 1000 == 0 {
+                        // Retapé toutes les mille tranches : on ne sait pas, à
+                        // cette vitesse, quand le terminal aura pris la main.
                         for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
                     }
                 }
