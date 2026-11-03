@@ -516,6 +516,13 @@ final class X86BootAttemptTests: XCTestCase {
                         core.devices.ps2.key(.leftControl, down: false)
                     } else if line.hasPrefix("TAPE_2") {
                         dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
+                        // **Un toucher sur la fenêtre d'abord**, comme le
+                        // doigt de l'utilisateur : Xfce donne le clavier à la
+                        // fenêtre qu'on clique, et un terminal ouvert par un
+                        // raccourci ne l'avait pas (curseur creux).
+                        if let tablet = memory.tablet, tablet.isReady {
+                            for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
+                        }
                         for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
                     }
                 }
