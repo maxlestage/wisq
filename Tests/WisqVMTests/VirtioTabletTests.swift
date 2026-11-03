@@ -156,10 +156,10 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertFalse(tablet.hasPending)
     }
 
-    /// **Un glissé au rythme d'un doigt** : l'appui part seul, le glissé
-    /// 30 ms après, d'un bloc, et la relâche encore 30 ms plus tard. Rendus
-    /// d'un coup, xfwm4 trouvait le bouton déjà relâché en commençant à
-    /// déplacer la fenêtre, et elle ne bougeait pas.
+    /// **Un glissé au rythme d'un doigt** : l'appui part seul ; le glissé
+    /// attend que l'invité l'ait lu, puis 30 ms. Rendus d'un coup, xfwm4
+    /// trouvait le bouton déjà relâché en commençant à déplacer la fenêtre,
+    /// et elle ne bougeait pas.
     func testButtonChangesArePacedLikeAFinger() throws {
         let memory = makeMemory()
         let tablet = try started(memory)
@@ -180,35 +180,41 @@ final class VirtioTabletTests: XCTestCase {
                     UInt32(try memory.read(at + 4, 4))]
         }
         let gap = VirtioTablet.buttonTicks
-        tablet.point(x: 0.1, y: 0.1, buttons: 1)     // l'appui
+        func acknowledge() { _ = tablet.read(0x1000, 1) }  // `vp_interrupt`
+        // L'appui part tout de suite : aucune latence ajoutée au toucher.
+        tablet.point(x: 0.1, y: 0.1, buttons: 1)
         tablet.deliver(memory, now: 1000)
-        XCTAssertEqual(try delivered(), 6, "l'appui seul")
+        XCTAssertEqual(try delivered(), 6, "l'appui, sans attendre")
         XCTAssertEqual(try event(2), [1, 0x110, 1])
         tablet.point(x: 0.2, y: 0.1, buttons: 1)     // le glissé…
         tablet.point(x: 0.3, y: 0.1, buttons: 1)
-        tablet.point(x: 0.3, y: 0.1, buttons: 0)     // la relâche
+        tablet.point(x: 0.3, y: 0.1, buttons: 0)     // …et la relâche
         try offer(64)
-        tablet.deliver(memory, now: 1000 + gap - 1)
+        // **Tant que l'invité n'a pas lu, rien ne suit**, quel que soit le
+        // temps passé : c'est ce qui datait l'appui et la relâche à 17 µs.
+        tablet.deliver(memory, now: 1000 + 10 * gap)
+        XCTAssertEqual(try delivered(), 6, "l'invité n'a pas encore lu l'appui")
+        acknowledge()
+        // L'attente part du premier passage après la lecture.
+        tablet.deliver(memory, now: 5_000_000)
+        tablet.deliver(memory, now: 5_000_000 + gap - 1)
         XCTAssertEqual(try delivered(), 6, "le glissé attend que l'appui ait duré")
-        tablet.deliver(memory, now: 1000 + gap)
         // Sans place pour plus de huit à la fois, la file se vide en
-        // plusieurs passes : le glissé, deux paquets, part à la même heure.
-        for _ in 0..<3 { tablet.deliver(memory, now: 1000 + gap) }
-        XCTAssertEqual(try delivered(), 18, "les deux pas du glissé, sans attendre entre eux")
-        XCTAssertEqual(try event(12), [3, 0, 9830], "le second pas, x = 0,3")
-        tablet.deliver(memory, now: 1000 + 2 * gap - 1)
-        XCTAssertEqual(try delivered(), 18, "la relâche attend après le dernier pas")
-        for _ in 0..<2 { tablet.deliver(memory, now: 1000 + 2 * gap) }
+        // plusieurs passes : les deux pas, puis la relâche, à la même heure —
+        // la relâche suit un déplacement, pas un changement de boutons.
+        for _ in 0..<4 { tablet.deliver(memory, now: 5_000_000 + gap) }
         XCTAssertEqual(try delivered(), 24)
         XCTAssertEqual(try event(20), [1, 0x110, 0], "la relâche du bouton gauche")
         XCTAssertFalse(tablet.hasPending)
-        // Des déplacements sans bouton : juste après la relâche, le premier
-        // attend l'écart, comme le glissé après l'appui ; puis ils partent
-        // tous ensemble.
+        // Après la relâche, le premier déplacement attend à son tour la
+        // lecture puis l'écart ; ensuite ils partent tous ensemble.
         for step in 0..<3 { tablet.point(x: Double(step) / 10, y: 0.5, buttons: 0) }
-        tablet.deliver(memory, now: 1000 + 2 * gap + 1)
-        XCTAssertEqual(try delivered(), 24, "le premier pas après la relâche attend")
-        for _ in 0..<3 { tablet.deliver(memory, now: 1000 + 3 * gap) }
+        tablet.deliver(memory, now: 6_000_000)
+        XCTAssertEqual(try delivered(), 24, "la relâche n'est pas lue")
+        acknowledge()
+        tablet.deliver(memory, now: 6_000_001)
+        XCTAssertEqual(try delivered(), 24, "l'écart commence")
+        for _ in 0..<3 { tablet.deliver(memory, now: 6_000_001 + gap) }
         XCTAssertEqual(try delivered(), 24 + 18)
         // Et sans heure, comme avant, tout part.
         tablet.point(x: 0.5, y: 0.5, buttons: 1)

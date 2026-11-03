@@ -198,6 +198,11 @@ public final class VirtioTablet: @unchecked Sendable {
             // Lire l'ISR l'efface : c'est l'accusé de réception de l'INTx.
             let value = interruptStatus
             interruptStatus = 0
+            if value & 1 != 0 {
+                lock.lock()
+                acknowledged = true
+                lock.unlock()
+            }
             return UInt64(value)
         case Self.deviceOffset..<(Self.deviceOffset + 0x88):
             let bytes = deviceConfiguration()
@@ -307,7 +312,8 @@ public final class VirtioTablet: @unchecked Sendable {
         pending.removeAll()
         deliveredButtons = 0
         lastChangedButtons = false
-        resumesAt = 0
+        acknowledged = true
+        holdingSince = nil
         packetLeft = 0
         lock.unlock()
     }
@@ -488,14 +494,25 @@ public final class VirtioTablet: @unchecked Sendable {
     /// glissé, puis la relâche, rendus d'un coup à l'invité, portent la même
     /// heure : xfwm4 voit l'appui sur la barre de titre, demande où en est le
     /// bouton, et le trouve déjà relâché — la fenêtre ne bouge pas. Un paquet
-    /// qui change les boutons attend donc `buttonTicks` (30 ms du PIT, l'appui
-    /// du clavier) après le précédent, et le paquet qui le suit aussi. Les
-    /// déplacements entre deux, eux, passent sans attendre : retenus, ils
-    /// s'entasseraient dès que la machine prend du retard sur le doigt.
+    /// qui suit un changement de boutons attend donc `buttonTicks` (30 ms du
+    /// PIT, l'appui du clavier) : la relâche d'un toucher, le premier pas
+    /// d'un glissé. Le reste passe sans attendre — l'appui lui-même, sans
+    /// latence ajoutée, et les déplacements, qui retenus s'entasseraient dès
+    /// que la machine prend du retard sur le doigt.
+    ///
+    /// **Les 30 ms comptent depuis que l'invité a lu**, pas depuis le dépôt.
+    /// Compté depuis le dépôt, une machine endormie sautait jusqu'au
+    /// battement suivant — jusqu'à 55 ms — et trouvait l'appui *et* la
+    /// relâche dans ses tampons : evdev les datait à 17 µs d'écart. L'ISR lu,
+    /// `vp_interrupt` vide la file dans la foulée ; c'est de là que l'écart
+    /// part.
     public static let buttonTicks: UInt64 = 35_795
     var deliveredButtons: UInt8 = 0
     var lastChangedButtons = false
-    var resumesAt: UInt64 = 0
+    /// L'invité a lu l'ISR depuis le dernier dépôt.
+    var acknowledged = true
+    /// L'heure où l'attente a commencé : le premier passage après la lecture.
+    var holdingSince: UInt64?
     /// Ce qui reste à rendre du paquet commencé, faute de tampons.
     var packetLeft = 0
 
@@ -524,12 +541,18 @@ public final class VirtioTablet: @unchecked Sendable {
                 let end = (pending.firstIndex { $0.type == Self.synchronize } ?? pending.count - 1) + 1
                 let buttons = buttons(of: pending[..<end])
                 let changes = buttons != deliveredButtons
-                if let now, changes || lastChangedButtons, now < resumesAt { return }
+                if let now, lastChangedButtons {
+                    guard acknowledged else { return }
+                    let since = holdingSince ?? now
+                    holdingSince = since
+                    guard now >= since &+ Self.buttonTicks else { return }
+                }
                 guard let next = nextBuffer(Self.eventQueue, memory) else { return }
                 packetLeft = end
                 lastChangedButtons = changes
                 deliveredButtons = buttons
-                resumesAt = (now ?? 0) &+ Self.buttonTicks
+                acknowledged = false
+                holdingSince = nil
                 deliverOne(next, memory)
             } else {
                 guard let next = nextBuffer(Self.eventQueue, memory) else { return }
