@@ -156,6 +156,111 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertFalse(tablet.hasPending)
     }
 
+    /// **Un glissé au rythme d'un doigt** : l'appui part seul ; le glissé
+    /// attend que l'invité l'ait lu, puis 30 ms. Rendus d'un coup, xfwm4
+    /// trouvait le bouton déjà relâché en commençant à déplacer la fenêtre,
+    /// et elle ne bougeait pas.
+    func testButtonChangesArePacedLikeAFinger() throws {
+        let memory = makeMemory()
+        let tablet = try started(memory)
+        // La file a huit places : le pilote rend chaque tampon lu, comme
+        // `virtinput_recv_events`, et la file en offre `total` en tout.
+        func offer(_ total: Int) throws {
+            for index in 0..<total {
+                try memory.write(available + 4 + UInt64(index % 8) * 2, 2, UInt64(index % 8))
+            }
+            try memory.write(available + 2, 2, UInt64(total))
+        }
+        func delivered() throws -> Int { Int(try memory.read(used + 2, 2)) }
+        /// Le `k`-ième événement rendu (type, code, valeur).
+        func event(_ k: Int) throws -> [UInt32] {
+            let head = try memory.read(used + 4 + UInt64(k % 8) * 8, 4)
+            let at = buffers + head * 8
+            return [UInt32(try memory.read(at, 2)), UInt32(try memory.read(at + 2, 2)),
+                    UInt32(try memory.read(at + 4, 4))]
+        }
+        let gap = VirtioTablet.buttonTicks
+        func acknowledge() { _ = tablet.read(0x1000, 1) }  // `vp_interrupt`
+        // L'appui part tout de suite : aucune latence ajoutée au toucher.
+        tablet.point(x: 0.1, y: 0.1, buttons: 1)
+        tablet.deliver(memory, now: 1000)
+        XCTAssertEqual(try delivered(), 6, "l'appui, sans attendre")
+        XCTAssertEqual(try event(2), [1, 0x110, 1])
+        tablet.point(x: 0.2, y: 0.1, buttons: 1)     // le glissé…
+        tablet.point(x: 0.3, y: 0.1, buttons: 1)
+        tablet.point(x: 0.3, y: 0.1, buttons: 0)     // …et la relâche
+        try offer(64)
+        // **Tant que l'invité n'a pas lu, rien ne suit**, quel que soit le
+        // temps passé : c'est ce qui datait l'appui et la relâche à 17 µs.
+        tablet.deliver(memory, now: 1000 + 10 * gap)
+        XCTAssertEqual(try delivered(), 6, "l'invité n'a pas encore lu l'appui")
+        acknowledge()
+        // L'attente part du premier passage après la lecture.
+        tablet.deliver(memory, now: 5_000_000)
+        tablet.deliver(memory, now: 5_000_000 + gap - 1)
+        XCTAssertEqual(try delivered(), 6, "le glissé attend que l'appui ait duré")
+        // Sans place pour plus de huit à la fois, la file se vide en
+        // plusieurs passes : les deux pas, puis la relâche, à la même heure —
+        // la relâche suit un déplacement, pas un changement de boutons.
+        for _ in 0..<4 { tablet.deliver(memory, now: 5_000_000 + gap) }
+        XCTAssertEqual(try delivered(), 24)
+        XCTAssertEqual(try event(20), [1, 0x110, 0], "la relâche du bouton gauche")
+        XCTAssertFalse(tablet.hasPending)
+        // Après la relâche, le premier déplacement attend à son tour la
+        // lecture puis l'écart ; ensuite ils partent tous ensemble.
+        for step in 0..<3 { tablet.point(x: Double(step) / 10, y: 0.5, buttons: 0) }
+        tablet.deliver(memory, now: 6_000_000)
+        XCTAssertEqual(try delivered(), 24, "la relâche n'est pas lue")
+        acknowledge()
+        tablet.deliver(memory, now: 6_000_001)
+        XCTAssertEqual(try delivered(), 24, "l'écart commence")
+        for _ in 0..<3 { tablet.deliver(memory, now: 6_000_001 + gap) }
+        XCTAssertEqual(try delivered(), 24 + 18)
+        // Et sans heure, comme avant, tout part.
+        tablet.point(x: 0.5, y: 0.5, buttons: 1)
+        tablet.point(x: 0.5, y: 0.5, buttons: 0)
+        for _ in 0..<2 { tablet.deliver(memory) }
+        XCTAssertEqual(try delivered(), 24 + 18 + 12)
+    }
+
+    /// **La sonnette ne passe pas outre** : le pilote qui rend ses tampons
+    /// sonne la file, et la sonnette rendait tout, retenu compris — l'appui
+    /// et la relâche d'un toucher arrivaient encore à 27 µs d'écart.
+    func testTheDoorbellDoesNotReleaseWhatIsHeld() throws {
+        let memory = makeMemory()
+        let tablet = try started(memory)
+        tablet.point(x: 0.5, y: 0.5, buttons: 2)     // l'appui du clic droit
+        tablet.point(x: 0.5, y: 0.5, buttons: 0)     // sa relâche
+        tablet.deliver(memory, now: 1000)
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "l'appui seul")
+        _ = tablet.read(0x1000, 1)                   // lu
+        tablet.write(0x3000, 2, 0, memory)           // la sonnette, aussitôt
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "la relâche reste retenue")
+        tablet.deliver(memory, now: 2000)
+        tablet.write(0x3000, 2, 0, memory)
+        XCTAssertEqual(try memory.read(used + 2, 2), 6, "l'écart court depuis 2000")
+        tablet.deliver(memory, now: 2000 + VirtioTablet.buttonTicks)
+        XCTAssertEqual(try memory.read(used + 2, 2), 8, "la relâche part, jusqu'au dernier tampon offert")
+    }
+
+    /// **Un paquet commencé finit sans attendre** : faute de tampons, la
+    /// moitié d'un appui reste en file ; la suite n'est pas retenue comme
+    /// un nouveau changement de boutons.
+    func testAStartedPacketFinishesWithoutWaiting() throws {
+        let memory = makeMemory()
+        let tablet = try started(memory, count: 4)
+        tablet.point(x: 0.1, y: 0.1, buttons: 1)
+        tablet.deliver(memory, now: 1000)
+        XCTAssertEqual(try events(memory).count, 4)
+        for index in 4..<8 {
+            try memory.write(available + 4 + UInt64(index) * 2, 2, UInt64(index))
+        }
+        try memory.write(available + 2, 2, 8)
+        tablet.deliver(memory, now: 1001)
+        XCTAssertEqual(try events(memory).count, 6, "le bouton droit, le milieu et SYN, tout de suite")
+        XCTAssertFalse(tablet.hasPending)
+    }
+
     /// **Faute de tampons, les événements attendent** — dans l'ordre — et
     /// partent à la sonnette suivante. La molette va vers le haut en positif.
     func testEventsWaitForBuffersAndKeepTheirOrder() throws {

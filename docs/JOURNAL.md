@@ -8,6 +8,47 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-03 — Clic droit et glisser sur le bureau Xfce
+
+Le banc sait maintenant faire, sur le vrai bureau Void Xfce, ce que fait le
+doigt sur l'onglet Écran. `DROIT_2` fait un clic droit sur le fond du bureau,
+`GLISSE_2` traîne la barre de titre du premier terminal, et `ECRAN_2` prend une
+capture numérotée. Le clic droit a marché du premier coup : le menu du bureau
+s'ouvre sous le doigt. Le glisser a demandé cinq passages.
+
+**Ce qui n'allait pas dans la tablette.** Un relevé evdev dans l'invité
+montrait l'appui et la relâche d'un clic à 17 µs d'écart. Deux causes, la
+seconde cachée par la première :
+
+1. Les paquets partaient dès qu'il y avait des tampons. Une machine qui
+   dort saute jusqu'au battement suivant de l'horloge, et elle trouvait
+   l'appui *et* la relâche en se réveillant. Désormais, le paquet qui suit un
+   changement de boutons (la relâche d'un toucher, le premier pas d'un
+   glissé) attend que l'invité ait lu l'ISR, puis 30 ms. L'appui lui-même
+   part tout de suite, et les déplacements ne sont jamais retenus.
+2. La sonnette de la file, que le pilote tire en rendant ses tampons,
+   rendait tout, y compris ce qui était retenu : encore 27 µs d'écart.
+   Elle ne rend plus que ce qui peut partir.
+
+Après ces deux corrections, evdev montre 30 ms entre l'appui et la relâche,
+pour le clic droit comme pour le gauche.
+
+**Ce qui n'allait pas dans le banc.** Avec `WISQ_PC_WAIT`, l'attente ne
+compte pas dans une tranche. Une machine endormie y passait jusqu'à 35 s, si
+bien que :
+
+- les pas du glissé tombaient à des dizaines de secondes l'un de l'autre ;
+- le clic droit, le clic qui ferme le menu et le glissé, demandés à vingt
+  secondes d'écart, partaient dans les mêmes 150 ms.
+
+Dès qu'on touche, l'attente compte : une tranche dure alors au plus 0,15 s,
+et 16 ms pendant un glissé (60 Hz, comme un doigt).
+
+**Le résultat.** Le menu se ferme au clic, et le premier terminal quitte sa
+place : une fenêtre de sa taille exacte (826 × 516) est maintenant en (198, 252),
+déplacée de ce que demandait le glissé. Elle recouvre le second terminal, et la
+capture ne distingue pas les deux ; c'est la seule réserve.
+
 ## 2026-11-03 — Le clavier écrit vraiment dans le terminal de Xfce
 
 Sur le bureau Void Xfce, rien de ce que l'on tapait n'arrivait dans le
