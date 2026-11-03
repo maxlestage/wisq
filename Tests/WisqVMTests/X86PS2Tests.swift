@@ -81,6 +81,43 @@ final class X86PS2Tests: XCTestCase {
         XCTAssertEqual(drain(&ps2), [0x1C, 0xF0, 0x1C, 0x5A], "A puis Entrée, en jeu 2")
     }
 
+    /// **Les frappes de l'hôte, au rythme d'une main** (`pace`) : une à la
+    /// fois, la touche tenue `holdTicks`, puis `gapTicks` avant la suivante,
+    /// et rien tant que le noyau n'a pas lu l'octet d'avant. Tapées d'un
+    /// coup, le terminal d'Xfce n'en voyait aucune ; tenues une seconde,
+    /// Xorg les répétait.
+    func testTypedKeysArePacedLikeAHand() {
+        var ps2 = X86PS2Controller()
+        for event in X86Keystrokes.typing("ab") { ps2.type(event.code, down: event.down) }
+        XCTAssertEqual(ps2.typing.count, 4)
+        XCTAssertTrue(ps2.output.isEmpty, "rien ne part avant son heure")
+        ps2.pace(now: 1_000)
+        XCTAssertEqual(drain(&ps2), [0x1E], "A enfoncée")
+        ps2.pace(now: 1_000 + X86PS2Controller.holdTicks - 1)
+        XCTAssertTrue(ps2.output.isEmpty, "tenue")
+        ps2.pace(now: 1_000 + X86PS2Controller.holdTicks)
+        XCTAssertEqual(drain(&ps2), [0x9E], "A relâchée")
+        let released = 1_000 + X86PS2Controller.holdTicks
+        ps2.pace(now: released + X86PS2Controller.gapTicks - 1)
+        XCTAssertTrue(ps2.output.isEmpty, "l'écart entre deux touches")
+        ps2.pace(now: released + X86PS2Controller.gapTicks)
+        XCTAssertEqual(drain(&ps2), [0x30], "B enfoncée")
+        // Un octet que le noyau n'a pas lu retient la suite, même à l'heure.
+        ps2.pace(now: .max / 2)
+        XCTAssertEqual(ps2.output.count, 1)
+        ps2.pace(now: .max / 2)
+        XCTAssertEqual(ps2.output.count, 1, "pas de deuxième octet avant la lecture du premier")
+        XCTAssertEqual(drain(&ps2), [0xB0])
+        XCTAssertTrue(ps2.typing.isEmpty)
+    }
+
+    /// La file des frappes est bornée : un collage démesuré s'arrête là.
+    func testTheTypingQueueIsBounded() {
+        var ps2 = X86PS2Controller()
+        for _ in 0..<(X86PS2Controller.typingLimit + 10) { ps2.type(.space, down: true) }
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
+    }
+
     /// Un caractère se tape sur un clavier américain.
     func testACharacterMapsToItsUSKey() {
         XCTAssertEqual(X86ScanCode.typing("a")?.code, X86ScanCode(0x1E))

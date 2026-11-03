@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-03 — Le clavier écrit vraiment dans le terminal de Xfce
+
+Sur le bureau Void Xfce, rien de ce que l'on tapait n'arrivait dans le
+terminal. Le banc le montre maintenant de bout en bout : il ouvre un terminal
+(Ctrl+Alt+T, marque `OUVRE_2`), le touche pour lui donner le focus
+(`CLIQUE_2`), puis y tape `echo clavier-ok $((6*7)) > /tmp/clavier`
+(`TAPE_2`). La console série lit ensuite `clavier-ok 42`.
+
+**La cause : des touches pressées et relâchées en 18 µs.** Le contrôleur
+8042 recevait chaque touche de l'hôte d'un coup, pression et relâche dans la
+même rafale. Le noyau les rendait bien (evdev les montre), mais Xorg et GTK
+ignorent une touche aussi brève. Les touches passent maintenant par une file
+(`X86PS2Controller.typing`) que l'horloge du PIT relâche à la main d'un
+humain : 30 ms d'appui, 20 ms entre deux touches, 8192 en attente au plus.
+Un appui plus long aurait déclenché la répétition automatique (660 ms).
+
+**Ce que le banc a dû apprendre en route** :
+
+- le terminal ouvert par raccourci n'a pas le focus avant un clic ;
+- l'écran de veille éteint l'écran ;
+- « \r\n » est un seul caractère en Swift, d'où les marques coupées sur
+  `isNewline` ;
+- la lecture est faite en octets, pour que l'UTF-8 coupé ne rende pas le guetteur sourd.
+
+**Une perte non reproduite.** Lors d'un essai, la première lettre a manqué
+(« cho »). Au passage suivant, les huit premiers événements evdev ont été
+relevés avec `dd` : le `e` (code 0x12) y était, appui puis relâche, et la
+ligne entière est arrivée. Je n'ai pas réussi à reproduire la perte, je la
+note donc sans la corriger à l'aveugle.
+
 ## 2026-11-02 — Le toucher arrive jusqu'au pointeur de Xorg
 
 #693 laissait une chose non vue : un toucher qui déplace vraiment le pointeur.

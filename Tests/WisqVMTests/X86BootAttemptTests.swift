@@ -462,8 +462,9 @@ final class X86BootAttemptTests: XCTestCase {
             // écrite seulement à la fin, n'existait toujours pas.
             var nextScreen: UInt64 = 10_000_000_000
             var ranSoFar: UInt64 = 0
-            func dumpScreen() {
-                guard let path = environment["WISQ_PC_SCREEN_DUMP"], let frame = memory.screen else { return }
+            func dumpScreen(_ suffix: String = "") {
+                guard let base = environment["WISQ_PC_SCREEN_DUMP"], let frame = memory.screen else { return }
+                let path = suffix.isEmpty ? base : base + suffix
                 let pixels = frame.snapshot()
                 var ppm = Data("P6\n\(frame.width) \(frame.height)\n255\n".utf8)
                 for index in stride(from: 0, to: pixels.count, by: 4) {
@@ -481,7 +482,62 @@ final class X86BootAttemptTests: XCTestCase {
             // `/dev/input/event3` alors que 6 984 événements étaient rendus.
             let touching = environment["WISQ_PC_TOUCH"] != nil
             var touches = 0
+            // **Le clavier du bureau**, avec `WISQ_PC_KEYS` : réglé sur
+            // l'invité, pas sur un compte de tranches. Quand la console série
+            // écrit `OUVRE_2`, Ctrl+Alt+T — le terminal d'Xfce ; quand elle
+            // écrit `TAPE_2`, le texte, tapé sur le clavier PS/2 comme
+            // l'onglet Écran de l'application le tape. Les marques se font
+            // écrire par `echo OUVRE_$((1+1))` : la ligne de commande, que la
+            // console répète, ne les contient pas telles quelles. Compter en
+            // tranches ne disait jamais quand le terminal serait prêt.
+            let keys = environment["WISQ_PC_KEYS"]
+            var markerScan = 0
+            // Chaque marque compte, à chaque fois qu'elle paraît : l'invité
+            // les répète tant que le terminal n'est pas là, puis tant que le
+            // fichier n'est pas écrit. Le bureau ne monte pas toujours au
+            // même moment, et une seule tentative tombait tantôt sur la
+            // console texte, tantôt sur un bureau sans terminal.
+            func watchMarkers() {
+                guard let keys, core.serialOutput.count > markerScan else { return }
+                // Une marque à cheval sur deux tranches : on attend la fin de
+                // ligne pour lire. **En octets** : avancer de la longueur du
+                // texte décodé dérivait dès qu'un octet n'était pas de l'UTF-8
+                // (remplacé par trois), et la veille devenait sourde.
+                guard let lastBreak = core.serialOutput[markerScan...].lastIndex(of: 0x0A) else { return }
+                let complete = String(decoding: core.serialOutput[markerScan..<lastBreak], as: UTF8.self)
+                markerScan = lastBreak + 1
+                // `isNewline` et pas `"\n"` : la console finit ses lignes par
+                // `\r\n`, qui est **un seul** caractère pour Swift. Coupé sur
+                // `"\n"`, « CLIQUE_2\r\nTAPE_2 » restait une ligne, et la
+                // frappe ne partait jamais.
+                for line in complete.split(whereSeparator: \.isNewline) {
+                    if line.hasPrefix("OUVRE_2") {
+                        dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
+                        core.devices.ps2.type(.leftControl, down: true)
+                        core.devices.ps2.type(.leftAlt, down: true)
+                        for event in X86Keystrokes.typing("t") { core.devices.ps2.type(event.code, down: event.down) }
+                        core.devices.ps2.type(.leftAlt, down: false)
+                        core.devices.ps2.type(.leftControl, down: false)
+                    } else if line.hasPrefix("CLIQUE_2") {
+                        // **Un toucher sur la fenêtre d'abord**, comme le
+                        // doigt de l'utilisateur : Xfce donne le clavier à la
+                        // fenêtre qu'on clique, et un terminal ouvert par un
+                        // raccourci ne l'avait pas (curseur creux). À part de
+                        // la frappe : tapé dans la même tranche, le premier
+                        // caractère arrivait avant la fenêtre (« cho »).
+                        if let tablet = memory.tablet, tablet.isReady {
+                            for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
+                        }
+                    } else if line.hasPrefix("TAPE_2") {
+                        dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
+                        // Au rythme d'une main : `X86PS2Controller.pace`.
+                        for event in X86Keystrokes.typing(keys) { core.devices.ps2.type(event.code, down: event.down) }
+                    }
+                }
+            }
+
             while remaining > 0 {
+                watchMarkers()
                 if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let x = touches % 2 == 0 ? 0.25 : 0.5
                     tablet.point(x: x, y: 0.75, buttons: 0)
@@ -632,6 +688,7 @@ final class X86BootAttemptTests: XCTestCase {
         func say(_ text: String) { print(text) }
         // **La tablette, telle qu'elle finit** : prise ou non par l'invité,
         // ce qui attend encore, et où en sont ses files.
+        say("clavier PS/2          : \(core.devices.ps2.output.count) octets en attente, balayage \(core.devices.ps2.keyboardScanning), perdues \(core.devices.ps2.droppedWhileNotScanning) sans balayage, \(core.devices.ps2.droppedWhilePortDisabled) port coupé")
         if let tablet = memory.tablet {
             say("tablette              : état \(tablet.status), prête \(tablet.isReady), en attente "
                 + "\(tablet.hasPending), files \(tablet.queues.map { "\($0.enabled) \($0.nextAvailable)/\($0.nextUsed)" }), "
