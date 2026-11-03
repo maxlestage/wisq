@@ -514,15 +514,18 @@ final class X86BootAttemptTests: XCTestCase {
                         for event in X86Keystrokes.typing("t") { core.devices.ps2.type(event.code, down: event.down) }
                         core.devices.ps2.type(.leftAlt, down: false)
                         core.devices.ps2.type(.leftControl, down: false)
-                    } else if line.hasPrefix("TAPE_2") {
-                        dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
+                    } else if line.hasPrefix("CLIQUE_2") {
                         // **Un toucher sur la fenêtre d'abord**, comme le
                         // doigt de l'utilisateur : Xfce donne le clavier à la
                         // fenêtre qu'on clique, et un terminal ouvert par un
-                        // raccourci ne l'avait pas (curseur creux).
+                        // raccourci ne l'avait pas (curseur creux). À part de
+                        // la frappe : tapé dans la même tranche, le premier
+                        // caractère arrivait avant la fenêtre (« cho »).
                         if let tablet = memory.tablet, tablet.isReady {
                             for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
                         }
+                    } else if line.hasPrefix("TAPE_2") {
+                        dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
                         // Au rythme d'une main : `X86PS2Controller.pace`.
                         for event in X86Keystrokes.typing(keys) { core.devices.ps2.type(event.code, down: event.down) }
                     }
