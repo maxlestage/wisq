@@ -548,6 +548,11 @@ final class X86BootAttemptTests: XCTestCase {
                             dragSteps.append((0.4 + 0.2 * t, 0.055 + 0.3 * t, 1))
                         }
                         dragSteps.append((0.6, 0.355, 0))
+                    } else if line.hasPrefix("ROULE_2") {
+                        // **La molette**, cinq crans vers le haut, là où est
+                        // le pointeur : ce que tournent deux doigts sur
+                        // l'écran entier (`ScreenWheel`).
+                        if let tablet = memory.tablet, tablet.isReady { tablet.scroll(5) }
                     } else if line.hasPrefix("ECRAN_2") {
                         // Une capture choisie par l'invité, numérotée.
                         shots += 1

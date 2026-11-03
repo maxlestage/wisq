@@ -51,6 +51,35 @@ public enum ScreenTouch {
     }
 }
 
+/// **La molette à deux doigts.** Quand l'écran entier est montré, deux
+/// doigts n'ont rien à déplacer : ils font tourner la molette de l'invité,
+/// un cran tous les `pointsPerNotch` points de doigt. Le sens est celui du
+/// téléphone : le doigt qui descend fait remonter la page, comme une molette
+/// qu'on tourne vers le haut (cran positif, `REL_WHEEL`). Le reste d'un
+/// glissement passe au suivant : un doigt lent finit par tourner un cran.
+public struct ScreenWheel: Equatable {
+    public static let pointsPerNotch = 24.0
+    /// Le plus de crans rendus d'un coup : un saut absurde du doigt ne fait
+    /// pas défiler un document entier.
+    public static let mostNotches = 8
+
+    public private(set) var remainder: Double = 0
+
+    public init() {}
+
+    /// Les crans de ce bout de glissement, `dy` en points, vers le bas positif.
+    public mutating func notches(dy: Double) -> Int {
+        guard dy.isFinite else { return 0 }
+        remainder += dy
+        let whole = (remainder / Self.pointsPerNotch).rounded(.towardZero)
+        remainder -= whole * Self.pointsPerNotch
+        return Int(max(-Double(Self.mostNotches), min(Double(Self.mostNotches), whole)))
+    }
+
+    /// Les doigts levés : le reste ne passe pas au geste suivant.
+    public mutating func lift() { remainder = 0 }
+}
+
 public struct ScreenPointer: Equatable {
     /// Le plus grand pas rendu d'un coup. Un pas plus long ne vient que d'un
     /// zoom absurde, et le convertir tel quel en `Int` arrêterait l'app.
