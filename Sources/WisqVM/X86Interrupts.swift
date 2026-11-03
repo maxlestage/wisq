@@ -381,6 +381,8 @@ extension X86Core {
                 if tablet.interrupting { devices.primary.request |= bit } else { devices.primary.request &= ~bit }
             }
         }
+        // Les frappes de l'hôte, une à la fois, au rythme d'une main.
+        if !devices.ps2.typing.isEmpty { devices.ps2.pace(now: ticks) }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la quatrième
         // du second contrôleur. À niveau, comme le port série.
         if devices.ps2.keyboardInterrupting {
@@ -465,5 +467,6 @@ extension X86Core {
             || memory?.bus?.second?.storage?.interrupting == true
             || memory?.bus?.network?.nic != nil
             || memory?.bus?.tablet != nil
+            || !devices.ps2.typing.isEmpty
     }
 }

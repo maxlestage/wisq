@@ -411,7 +411,7 @@ public final class X86Machine: @unchecked Sendable {
             }
             for event in pointerQueue {
                 switch event {
-                case .key(let code, let down): core.devices.ps2.key(code, down: down)
+                case .key(let code, let down): core.devices.ps2.type(code, down: down)
                 case .mouse(let dx, let dy, let buttons): core.devices.ps2.mouse(dx: dx, dy: dy, buttons: buttons)
                 }
             }
@@ -524,9 +524,6 @@ public final class X86Machine: @unchecked Sendable {
         nudge.signal()
     }
 
-    /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
-    /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
-    /// quel fil.
     /// **Un toucher à un endroit de l'écran**, par la tablette : `x` et `y`
     /// de 0 à 1. Faux quand la tablette n'est pas là ou que l'invité ne l'a
     /// pas prise : l'appelant passe alors par `mouse`.
@@ -538,6 +535,9 @@ public final class X86Machine: @unchecked Sendable {
         return true
     }
 
+    /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
+    /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
+    /// quel fil.
     public func mouse(dx: Int, dy: Int, buttons: UInt8) {
         lock.lock()
         pointerQueue.append(.mouse(dx: dx, dy: dy, buttons: buttons))
