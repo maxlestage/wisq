@@ -492,6 +492,8 @@ final class X86BootAttemptTests: XCTestCase {
             // tranches ne disait jamais quand le terminal serait prêt.
             let keys = environment["WISQ_PC_KEYS"]
             var markerScan = 0
+            var shots = 0
+            var dragSteps: [(x: Double, y: Double, buttons: UInt8)] = []
             // Chaque marque compte, à chaque fois qu'elle paraît : l'invité
             // les répète tant que le terminal n'est pas là, puis tant que le
             // fichier n'est pas écrit. Le bureau ne monte pas toujours au
@@ -528,6 +530,28 @@ final class X86BootAttemptTests: XCTestCase {
                         if let tablet = memory.tablet, tablet.isReady {
                             for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
                         }
+                    } else if line.hasPrefix("DROIT_2") {
+                        // **Le clic droit** de l'appui long : sur le fond du
+                        // bureau, en haut à droite, là où aucune fenêtre ne
+                        // s'ouvre — Xfce y ouvre son menu.
+                        if let tablet = memory.tablet, tablet.isReady {
+                            for buttons: UInt8 in [0, 2, 0] { tablet.point(x: 0.92, y: 0.2, buttons: buttons) }
+                        }
+                    } else if line.hasPrefix("GLISSE_2") {
+                        // **Glisser un doigt** : la barre de titre du premier
+                        // terminal, traînée bouton enfoncé, puis relâchée
+                        // plus bas. Un pas par tranche, comme un doigt qui
+                        // avance — pas tout d'un coup.
+                        dragSteps = [(0.4, 0.055, 0), (0.4, 0.055, 1)]
+                        for step in 1...20 {
+                            let t = Double(step) / 20
+                            dragSteps.append((0.4 + 0.2 * t, 0.055 + 0.3 * t, 1))
+                        }
+                        dragSteps.append((0.6, 0.355, 0))
+                    } else if line.hasPrefix("ECRAN_2") {
+                        // Une capture choisie par l'invité, numérotée.
+                        shots += 1
+                        dumpScreen("-marque-\(shots).ppm")
                     } else if line.hasPrefix("TAPE_2") {
                         dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
                         // Au rythme d'une main : `X86PS2Controller.pace`.
@@ -538,12 +562,31 @@ final class X86BootAttemptTests: XCTestCase {
 
             while remaining > 0 {
                 watchMarkers()
-                if touching, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                if !dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
+                    let step = dragSteps.removeFirst()
+                    tablet.point(x: step.x, y: step.y, buttons: step.buttons)
+                    print("glissé : (\(step.x), \(step.y)) boutons \(step.buttons) au tic \(core.ticks)")
+                } else if touching, dragSteps.isEmpty, let tablet = memory.tablet, tablet.isReady, !tablet.hasPending {
                     let x = touches % 2 == 0 ? 0.25 : 0.5
                     tablet.point(x: x, y: 0.75, buttons: 0)
                     touches += 1
                 }
-                let executed = try core.run(budget: min(remaining, slice), waiting: patient)
+                // **Un doigt qui glisse vit à 60 Hz** : pendant le glissé,
+                // une tranche dure 16 ms de l'invité, attente comprise. Avec
+                // la patience, l'attente ne compte pas, et une tranche d'une
+                // machine endormie couvrait jusqu'à 35 s : les pas du glissé
+                // tombaient à des dizaines de secondes l'un de l'autre.
+                //
+                // **Et dès qu'on touche, l'attente compte toujours** : une
+                // tranche dure alors au plus 0,15 s de l'invité. Sinon le clic
+                // droit, le clic qui ferme le menu et le glissé, que l'invité
+                // demande à vingt secondes d'écart, tombaient dans la même
+                // tranche et partaient en 150 ms : l'appui sur la barre de
+                // titre arrivait pendant que le menu se refermait.
+                let gliding = !dragSteps.isEmpty
+                let executed = gliding
+                    ? try core.run(budget: min(remaining, 19_091 * X86LegacyDevices.instructionsPerTick), waiting: nil)
+                    : try core.run(budget: min(remaining, slice), waiting: touching ? nil : patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
                     if samples.count >= 1000 { flushSamples() }
