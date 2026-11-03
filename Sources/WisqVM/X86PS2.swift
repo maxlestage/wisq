@@ -211,6 +211,44 @@ public struct X86PS2Controller: Sendable, Equatable {
 
     // MARK: - Ce que l'hôte envoie
 
+    /// **Les frappes de l'hôte, au rythme d'une main.** L'application tape
+    /// un texte d'un coup ; posées telles quelles, presser et relâcher une
+    /// touche tenaient en dix-huit microsecondes de l'invité. Le noyau les
+    /// voyait toutes (`evtest` les montrait, une à une), et le terminal
+    /// d'Xfce n'en affichait **aucune**. Tenues une seconde au contraire,
+    /// Xorg les répétait : « chhhhhhhhhhooooooooo ». Une main tient une
+    /// touche quelques dizaines de millisecondes, et en laisse autant avant
+    /// la suivante : c'est ce que `pace` rejoue, à l'horloge de l'invité.
+    public struct Keystroke: Sendable, Equatable {
+        public var code: X86ScanCode
+        public var down: Bool
+    }
+    public private(set) var typing: [Keystroke] = []
+    /// Le tic (horloge à 1,193182 MHz) avant lequel rien d'autre ne part.
+    var typingResumesAt: UInt64 = 0
+    /// Trente millisecondes tenue, vingt entre deux touches : assez long pour
+    /// qu'une frappe se voie, trop court pour que la répétition (660 ms par
+    /// défaut chez Xorg) parte.
+    public static let holdTicks: UInt64 = 35_795
+    public static let gapTicks: UInt64 = 23_864
+    /// Une file bornée : un collage démesuré ne fait pas grossir la machine.
+    public static let typingLimit = 8192
+
+    /// Une frappe de l'hôte, à poser quand son tour viendra (`pace`).
+    public mutating func type(_ code: X86ScanCode, down: Bool) {
+        guard typing.count < Self.typingLimit else { return }
+        typing.append(Keystroke(code: code, down: down))
+    }
+
+    /// Pose la frappe suivante si son heure est venue, à `now` tics : une
+    /// à la fois, et seulement quand le noyau a lu ce qui précède.
+    public mutating func pace(now: UInt64) {
+        guard let next = typing.first, now >= typingResumesAt, output.isEmpty else { return }
+        typing.removeFirst()
+        key(next.code, down: next.down)
+        typingResumesAt = now &+ (next.down ? Self.holdTicks : Self.gapTicks)
+    }
+
     /// Une touche, en codes du jeu 1 — `E0` compris pour les touches
     /// étendues —, enfoncée ou relâchée. Traduite en jeu 2 quand le noyau a
     /// coupé la traduction.

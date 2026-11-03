@@ -411,7 +411,7 @@ public final class X86Machine: @unchecked Sendable {
             }
             for event in pointerQueue {
                 switch event {
-                case .key(let code, let down): core.devices.ps2.key(code, down: down)
+                case .key(let code, let down): core.devices.ps2.type(code, down: down)
                 case .mouse(let dx, let dy, let buttons): core.devices.ps2.mouse(dx: dx, dy: dy, buttons: buttons)
                 }
             }

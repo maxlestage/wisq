@@ -509,11 +509,11 @@ final class X86BootAttemptTests: XCTestCase {
                 for line in complete.split(separator: "\n") {
                     if line.hasPrefix("OUVRE_2") {
                         dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
-                        core.devices.ps2.key(.leftControl, down: true)
-                        core.devices.ps2.key(.leftAlt, down: true)
-                        for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
-                        core.devices.ps2.key(.leftAlt, down: false)
-                        core.devices.ps2.key(.leftControl, down: false)
+                        core.devices.ps2.type(.leftControl, down: true)
+                        core.devices.ps2.type(.leftAlt, down: true)
+                        for event in X86Keystrokes.typing("t") { core.devices.ps2.type(event.code, down: event.down) }
+                        core.devices.ps2.type(.leftAlt, down: false)
+                        core.devices.ps2.type(.leftControl, down: false)
                     } else if line.hasPrefix("TAPE_2") {
                         dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
                         // **Un toucher sur la fenêtre d'abord**, comme le
@@ -523,23 +523,14 @@ final class X86BootAttemptTests: XCTestCase {
                         if let tablet = memory.tablet, tablet.isReady {
                             for buttons: UInt8 in [0, 1, 0] { tablet.point(x: 0.5, y: 0.6, buttons: buttons) }
                         }
-                        // Une touche par tranche, comme une main : voir
-                        // `pacedKeys`.
-                        pacedKeys += X86Keystrokes.typing(keys)
+                        // Au rythme d'une main : `X86PS2Controller.pace`.
+                        for event in X86Keystrokes.typing(keys) { core.devices.ps2.type(event.code, down: event.down) }
                     }
                 }
             }
-            // **Les touches au rythme d'une main.** Tapées d'un coup, presser
-            // et relâcher une touche tenaient en dix-huit microsecondes de
-            // l'invité : le noyau les voyait toutes (`evtest` les montre), le
-            // terminal aucune.
-            var pacedKeys: [X86Keystrokes.Event] = []
+
             while remaining > 0 {
                 watchMarkers()
-                if !pacedKeys.isEmpty {
-                    let event = pacedKeys.removeFirst()
-                    core.devices.ps2.key(event.code, down: event.down)
-                }
                 let executed = try core.run(budget: min(remaining, slice), waiting: patient)
                 if sampleFile != nil {
                     samples.append(String(core.rip, radix: 16))
