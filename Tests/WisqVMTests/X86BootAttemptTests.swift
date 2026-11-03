@@ -499,12 +499,13 @@ final class X86BootAttemptTests: XCTestCase {
             // console texte, tantôt sur un bureau sans terminal.
             func watchMarkers() {
                 guard let keys, core.serialOutput.count > markerScan else { return }
-                let fresh = String(decoding: core.serialOutput.dropFirst(markerScan), as: UTF8.self)
                 // Une marque à cheval sur deux tranches : on attend la fin de
-                // ligne pour lire.
-                guard let lastBreak = fresh.lastIndex(of: "\n") else { return }
-                let complete = fresh[..<lastBreak]
-                markerScan += complete.utf8.count + 1
+                // ligne pour lire. **En octets** : avancer de la longueur du
+                // texte décodé dérivait dès qu'un octet n'était pas de l'UTF-8
+                // (remplacé par trois), et la veille devenait sourde.
+                guard let lastBreak = core.serialOutput[markerScan...].lastIndex(of: 0x0A) else { return }
+                let complete = String(decoding: core.serialOutput[markerScan..<lastBreak], as: UTF8.self)
+                markerScan = lastBreak + 1
                 for line in complete.split(separator: "\n") {
                     if line.hasPrefix("OUVRE_2") {
                         dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
