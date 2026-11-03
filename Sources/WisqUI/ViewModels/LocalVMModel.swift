@@ -676,14 +676,14 @@ public final class LocalVMModel {
         for event in X86Keystrokes.key(key) { pc.key(event.code, down: event.down) }
     }
 
-    /// Un mouvement de la souris PS/2, en pixels de l'écran de l'invité, Y
-    /// vers le bas ; `buttons` : 1 gauche, 2 droit.
     /// Un toucher à un endroit de l'écran, par la tablette ; faux quand
     /// l'invité ne l'a pas prise. Voir `X86Machine.touch`.
     public func touch(x: Double, y: Double, buttons: UInt8) -> Bool {
         (machine as? X86Machine)?.touch(x: x, y: y, buttons: buttons) ?? false
     }
 
+    /// Un mouvement de la souris PS/2, en pixels de l'écran de l'invité, Y
+    /// vers le bas ; `buttons` : 1 gauche, 2 droit.
     public func pointer(dx: Int, dy: Int, buttons: UInt8) {
         (machine as? X86Machine)?.mouse(dx: dx, dy: dy, buttons: buttons)
     }
