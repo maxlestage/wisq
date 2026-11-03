@@ -462,8 +462,9 @@ final class X86BootAttemptTests: XCTestCase {
             // écrite seulement à la fin, n'existait toujours pas.
             var nextScreen: UInt64 = 10_000_000_000
             var ranSoFar: UInt64 = 0
-            func dumpScreen() {
-                guard let path = environment["WISQ_PC_SCREEN_DUMP"], let frame = memory.screen else { return }
+            func dumpScreen(_ suffix: String = "") {
+                guard let base = environment["WISQ_PC_SCREEN_DUMP"], let frame = memory.screen else { return }
+                let path = suffix.isEmpty ? base : base + suffix
                 let pixels = frame.snapshot()
                 var ppm = Data("P6\n\(frame.width) \(frame.height)\n255\n".utf8)
                 for index in stride(from: 0, to: pixels.count, by: 4) {
@@ -498,6 +499,7 @@ final class X86BootAttemptTests: XCTestCase {
                 markerScan = core.serialOutput.count
                 if !terminalOpened, seen.contains("OUVRE_2") {
                     terminalOpened = true
+                    dumpScreen("-avant-ouvre.ppm")  // ce que le raccourci trouve
                     core.devices.ps2.key(.leftControl, down: true)
                     core.devices.ps2.key(.leftAlt, down: true)
                     for event in X86Keystrokes.typing("t") { core.devices.ps2.key(event.code, down: event.down) }
@@ -506,6 +508,7 @@ final class X86BootAttemptTests: XCTestCase {
                 }
                 if !keysTyped, seen.contains("TAPE_2") {
                     keysTyped = true
+                    dumpScreen("-avant-tape.ppm")  // ce que le texte trouve
                     for event in X86Keystrokes.typing(keys) { core.devices.ps2.key(event.code, down: event.down) }
                 }
             }
