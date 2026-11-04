@@ -710,6 +710,14 @@ fn main() {
     // Éteint par défaut : ça coûte une lecture d'un octet par entrée de
     // région, et les relevés d'avant ont été pris sans.
     let veille = std::env::var("WISQ_VEILLE").is_ok_and(|value| value != "0");
+    // **`WISQ_PILE` : combien de mots de pile relever.** Huit par défaut,
+    // comme les relevés d'avant. Une exception précoce (`early_idt_handler`)
+    // range son cadre — et le RIP fautif — plus bas que huit mots : sans en
+    // demander plus, on voit qui a géré la faute, jamais qui l'a prise.
+    let pile: usize = std::env::var("WISQ_PILE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(8);
     let turns: usize = std::env::var("WISQ_TURNS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -975,7 +983,7 @@ const vue = new DataView(vm.memory.buffer);
 const masque = BigInt({pages}) * 65536n - 1n;
 const sommet = Number(lire(4) & masque);
 const mots = [];
-for (let i = 0; i < 8; i++) {{
+for (let i = 0; i < {pile}; i++) {{
   const at = sommet + i * 8;
   mots.push(at + 8 <= vm.memory.buffer.byteLength
     ? "0x" + vue.getBigUint64(at, true).toString(16)
