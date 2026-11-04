@@ -104,11 +104,15 @@ final class X86DesktopResumeTests: XCTestCase {
         XCTAssertTrue(Self.run(machine, until: "login:", console: console, budget: budget), "pas d'invite")
         machine.send(Data("root\n".utf8))
         XCTAssertTrue(Self.run(machine, until: "Password:", console: console, budget: budget))
+        var mark = console.text.count
         machine.send(Data("voidlinux\n".utf8))
+        // **L'invite d'abord** : ce qui est tapé pendant que `login` vérifie
+        // le mot de passe est jeté, et la commande suivante se perdait.
+        XCTAssertTrue(Self.run(machine, until: "# ", after: mark, console: console, budget: budget), "pas de shell")
         // Le bureau et son panneau, puis le temps qu'ils se posent. Les
         // marques s'écrivent par calcul : la ligne de commande, que la
         // console répète, ne les contient pas telles quelles.
-        let mark = console.text.count
+        mark = console.text.count
         machine.send(Data("until pgrep -x xfce4-panel >/dev/null; do sleep 5; done; sleep 30; echo BUREAU_$((1+1))\n".utf8))
         XCTAssertTrue(Self.run(machine, until: "BUREAU_2", after: mark, console: console, budget: budget),
                       "le bureau n'est pas venu")
