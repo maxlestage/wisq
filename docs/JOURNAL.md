@@ -31,6 +31,14 @@ souris PS/2 de l'invité n'a pas de molette.
 
 Le banc gagne `ROULE_2`, cinq crans vers le haut là où est le pointeur.
 
+**Un paquet par cran.** Le premier essai sur le bureau Void Xfce
+(`seq 1 300` dans le terminal, puis cinq crans) ne défilait pas. Le relevé
+evdev montrait pourtant `REL_WHEEL` 5, et libinput prenait la tablette pour
+une souris. Ce qui manquait, c'est qu'une vraie souris envoie un cran par
+événement. La tablette fait désormais pareil, 32 crans au plus d'un coup. Au
+passage suivant, le terminal remonte : il montrait les lignes 278 à 300, il
+montre 266 à 289.
+
 ## 2026-11-03 — Clic droit et glisser sur le bureau Xfce
 
 Le banc sait maintenant faire, sur le vrai bureau Void Xfce, ce que fait le
