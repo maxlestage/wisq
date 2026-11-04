@@ -40,6 +40,20 @@ Tout cela en 52 s.
 - Le budget compte l'attente, comme `X86Machine.run` : un invité qui dort
   l'use aussi.
 
+**Le premier temps, relancé seul après la fusion**, a d'abord échoué deux
+fois :
+
+- Le disque du conteneur était plein, et l'instantané est sorti tronqué.
+- L'écran était tout noir alors que le panneau tournait.
+
+`xfdesktop` était pourtant vivant et le noyau n'avait rien tué : sous
+l'interprète, le fond met simplement longtemps à se dessiner. Trente secondes
+après le panneau, c'était trop tôt. Le banc attend désormais que l'écran soit
+allumé, et la reprise vérifie que `xfdesktop` tourne encore.
+
+Les deux temps passent l'un après l'autre : le premier en 32 min, le second
+en 51 s.
+
 ## 2026-11-03 — Deux doigts font tourner la molette
 
 Sur l'onglet Écran, deux doigts déplaçaient la vue zoomée, et rien d'autre.
