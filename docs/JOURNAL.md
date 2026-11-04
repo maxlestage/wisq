@@ -8,6 +8,38 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-04 — Un bureau qui revient après une sauvegarde
+
+L'application sauve la machine quand on quitte l'écran et la reprend au
+retour. Pour un bureau graphique, rien ne vérifiait que ce retour marche :
+le banc d'amorçage monte son processeur à la main, sans `X86Machine`, qui
+seule sait sauver et rendre.
+
+`X86DesktopResumeTests` le fait, en deux temps relançables chacun seul (une
+course entière dure plus longtemps que certains conteneurs) :
+
+1. `WISQ_PC_DESKTOP_SAVE` démarre l'ISO Void Xfce jusqu'au panneau d'Xfce,
+   puis écrit l'instantané et la couche d'écriture du disque.
+2. `WISQ_PC_DESKTOP_RESUME` reprend cet instantané dans une machine **neuve**.
+
+Au second temps :
+
+- l'écran est là avant la moindre instruction, le bureau tel qu'il était ;
+- la console série répond (`REPRIS_42`) ;
+- Ctrl+Alt+T sur le clavier PS/2 ouvre un terminal ;
+- deux touchers sortent d'evdev (96 octets lus).
+
+Tout cela en 52 s.
+
+**Ce qu'il a fallu apprendre en route**, côté banc :
+
+- Sans rien en entrée, Xorg éteint l'écran au bout de dix minutes. Un doigt
+  bouge donc toutes les cinq secondes de l'invité.
+- `login` jette ce qui est tapé pendant qu'il vérifie le mot de passe. La
+  commande suivante attend donc l'invite.
+- Le budget compte l'attente, comme `X86Machine.run` : un invité qui dort
+  l'use aussi.
+
 ## 2026-11-03 — Deux doigts font tourner la molette
 
 Sur l'onglet Écran, deux doigts déplaçaient la vue zoomée, et rien d'autre.
