@@ -468,10 +468,22 @@ public final class VirtioTablet: @unchecked Sendable {
         enqueue(packet)
     }
 
-    /// **La molette** : des crans, positifs vers le haut.
+    /// **La molette** : des crans, positifs vers le haut. **Un paquet par
+    /// cran**, comme une vraie souris : cinq crans d'un coup, `REL_WHEEL` 5,
+    /// arrivaient bien dans evdev, mais le terminal de Xfce ne défilait pas.
+    /// Au plus `mostNotches` d'un coup.
+    public static let mostNotches = 32
+
     public func scroll(_ notches: Int32) {
-        enqueue([Event(type: Self.relative, code: Self.wheel, value: UInt32(bitPattern: notches)),
-                 Event(type: Self.synchronize, code: 0, value: 0)])
+        let step: Int32 = notches < 0 ? -1 : 1
+        let count = min(Int(notches.magnitude), Self.mostNotches)
+        guard count > 0 else { return }
+        var packets: [Event] = []
+        for _ in 0..<count {
+            packets += [Event(type: Self.relative, code: Self.wheel, value: UInt32(bitPattern: step)),
+                        Event(type: Self.synchronize, code: 0, value: 0)]
+        }
+        enqueue(packets)
     }
 
     func enqueue(_ packet: [Event]) {

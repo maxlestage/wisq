@@ -378,8 +378,8 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertTrue(tablet.hasPending)
     }
 
-    /// **La molette passe par la tablette**, une fois prise ; zéro cran ne
-    /// fait rien, et un nombre démesuré est borné à ce qu'un `Int32` porte.
+    /// **La molette passe par la tablette**, une fois prise, un paquet par
+    /// cran ; zéro cran ne fait rien, et un nombre démesuré est borné.
     func testTheWheelGoesThroughTheTabletOnceTheGuestTookIt() throws {
         let machine = try X86BochsDisplayTests.machine()
         XCTAssertFalse(machine.scroll(notches: 1), "la souris PS/2 n'a pas de molette")
@@ -391,10 +391,13 @@ final class VirtioTabletTests: XCTestCase {
         XCTAssertFalse(machine.scroll(notches: 0))
         XCTAssertFalse(tablet.hasPending)
         XCTAssertTrue(machine.scroll(notches: -2))
-        XCTAssertEqual(tablet.pending.first?.value, UInt32(bitPattern: -2), "deux crans vers le bas")
+        // Un paquet par cran, comme une vraie souris.
+        XCTAssertEqual(tablet.pending.map(\.value), [UInt32(bitPattern: -1), 0, UInt32(bitPattern: -1), 0],
+                       "deux crans vers le bas")
         XCTAssertEqual(tablet.pending.first?.code, VirtioTablet.wheel)
         XCTAssertTrue(machine.scroll(notches: .max))
-        XCTAssertEqual(tablet.pending.dropFirst(2).first?.value, UInt32(Int32.max))
+        XCTAssertEqual(tablet.pending.count, 4 + 2 * VirtioTablet.mostNotches, "borné")
+        XCTAssertEqual(tablet.pending.last(where: { $0.type == 2 })?.value, 1)
     }
 
     /// **Où tombe le doigt** : rapporté à l'écran de l'invité, et rien dans
