@@ -70,6 +70,18 @@ final class X86DesktopResumeTests: XCTestCase {
         FileManager.default.createFile(atPath: path, contents: Data(console.text.utf8))
     }
 
+    /// Faire tourner jusqu'à ce que plus de la moitié de l'écran soit
+    /// allumée, en touchant de temps en temps comme `run(until:)`.
+    static func runUntilLit(_ machine: X86Machine, _ display: X86Framebuffer, budget: UInt64) -> Bool {
+        let slice: UInt64 = 50_000_000
+        for turn in 0..<(budget / slice) {
+            if litFraction(display) > 0.5 { return true }
+            _ = machine.run(instructionBudget: slice)
+            if turn % 34 == 0 { _ = machine.touch(x: turn % 68 == 0 ? 0.25 : 0.5, y: 0.75, buttons: 0) }
+        }
+        return false
+    }
+
     /// La part de l'écran qui n'est pas noire, de 0 à 1.
     static func litFraction(_ display: X86Framebuffer) -> Double {
         let pixels = display.snapshot()
@@ -117,6 +129,12 @@ final class X86DesktopResumeTests: XCTestCase {
         XCTAssertTrue(Self.run(machine, until: "BUREAU_2", after: mark, console: console, budget: budget),
                       "le bureau n'est pas venu")
         let display = try XCTUnwrap(machine.display)
+        // **Attendre que le bureau soit dessiné**, pas un temps fixé : sous
+        // l'interprète, `xfdesktop` met longtemps à charger son fond. Trente
+        // secondes après le panneau, deux passages ont sauvé un écran encore
+        // tout noir, `xfdesktop` bien vivant.
+        let lit = Self.runUntilLit(machine, display, budget: budget)
+        XCTAssertTrue(lit, "le bureau ne s'est pas dessiné")
         Self.dump(display, to: out + "-avant.ppm")
         XCTAssertGreaterThan(Self.litFraction(display), 0.5, "le bureau est à l'écran avant la sauvegarde")
         machine.flushDisk()
@@ -150,8 +168,16 @@ final class X86DesktopResumeTests: XCTestCase {
         XCTAssertGreaterThan(Self.litFraction(display), 0.5, "l'écran repris est noir")
         let budget: UInt64 = 400_000_000_000
 
-        // La console série.
+        // **Le bureau lui-même** : `xfdesktop` dessine le fond et les
+        // icônes. Un passage a repris un écran au fond noir : on demande s'il
+        // vit encore, et ce que le noyau a dit des plantages.
         var mark = console.text.count
+        machine.send(Data("pgrep -x xfdesktop >/dev/null && echo FOND_VIVANT || echo FOND_MORT; dmesg | grep -i -E 'segfault|trap|killed' | tail -4; echo FOND_$((1+1))\n".utf8))
+        XCTAssertTrue(Self.run(machine, until: "FOND_2", after: mark, console: console, budget: budget))
+        XCTAssertTrue(console.text.dropFirst(mark).contains("FOND_VIVANT"), "xfdesktop ne tourne plus")
+
+        // La console série.
+        mark = console.text.count
         machine.send(Data("echo REPRIS_$((6*7))\n".utf8))
         XCTAssertTrue(Self.run(machine, until: "REPRIS_42", after: mark, console: console, budget: budget),
                       "la console série ne répond plus")
