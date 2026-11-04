@@ -4782,7 +4782,7 @@ for (const [adresse, octets] of posé) {{
 }}
 
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 console.log("demandes " + asked.length);
 console.log("vues " + asked.join(","));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
@@ -13398,7 +13398,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
 console.log("fini");
 "#,
@@ -14502,7 +14502,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 const lu = window.wisqConsole();
 console.log("console " + lu.octets);
 console.log("perdus " + lu.perdus);
@@ -14801,4 +14801,124 @@ console.log("fini");
         rdx_second: number("rdxdeux "),
         text: text.clone(),
     }
+}
+
+/// **Deux retours par le même `ret` partagé, et la pile doit revenir où elle
+/// était.**
+///
+/// Mesuré sur Alpine 6.18.60 : `x86_64_start_kernel` appelle `copy_bootdata`,
+/// qui pousse RBP et RBX, appelle `sanitize_boot_params`, dépile, et rend la
+/// main par `jmp __x86_return_thunk` — un `ret` seul, dans une autre région.
+/// `sanitize_boot_params` finit de la même façon. Sous l'émetteur, le `ret`
+/// final dépilait **le RBP sauvé** (qui valait CR4, `0x90`) au lieu de
+/// l'adresse de retour : la machine sautait à `0x90`, et le noyau s'arrêtait
+/// dans `native_halt` avant d'avoir écrit une seule ligne.
+///
+/// Le programme reprend les deux fonctions réduites à ce qui touche la pile,
+/// chacune dans sa région, et le `ret` partagé dans une troisième.
+#[test]
+fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0x48, 0xc7, 0xc5, 0x90, 0x00, 0x00, 0x00, // mov $0x90,%rbp — CR4, dans le noyau
+        0xe8, 0x2d, 0x00, 0x00, 0x00, // call 0x40 (copy_bootdata) — retour à 0x13
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi — la pile au retour
+        0x48, 0xc7, 0xc6, 0x37, 0x13, 0x00, 0x00, // mov $0x1337,%rsi — arrivé ici
+        0x0f, 0x0b, // ud2
+    ];
+    program.resize(0x40, 0xcc);
+    // 0x40 — copy_bootdata : push rbp ; push rbx ; call sanitize ; pop rbx ;
+    // pop rbp ; jmp thunk.
+    program.extend_from_slice(&[
+        0x55, // push %rbp
+        0x53, // push %rbx
+        0xe8, 0x39, 0x00, 0x00, 0x00, // call 0x80 (sanitize_boot_params) — retour à 0x47
+        0x5b, // pop %rbx
+        0x5d, // pop %rbp
+        0xe9, 0x72, 0x00, 0x00, 0x00, // jmp 0xc0 (le thunk) — depuis 0x4e
+    ]);
+    program.resize(0x80, 0xcc);
+    // 0x80 — sanitize_boot_params : quatre poussées, une réserve de 0xa0,
+    // tout rendu, puis le même thunk.
+    program.extend_from_slice(&[
+        0x41, 0x55, // push %r13
+        0x41, 0x54, // push %r12
+        0x55, // push %rbp
+        0x53, // push %rbx
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+        0x5b, // pop %rbx
+        0x5d, // pop %rbp
+        0x41, 0x5c, // pop %r12
+        0x41, 0x5d, // pop %r13
+        0xe9, 0x21, 0x00, 0x00, 0x00, // jmp 0xc0 (le thunk) — depuis 0x9a, suivante 0x9f
+    ]);
+    program.resize(0xc0, 0xcc);
+    program.extend_from_slice(&[0xc3, 0xcc]); // 0xc0 — __x86_return_thunk : ret
+    program.resize(0x100, 0xcc); // le rembourrage du noyau, que le décodeur lit
+    let scratch = std::env::temp_dir().join(format!("wisq-host-thunk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (slot, offset) in [0usize, 0x40, 0x80, 0xc0, 0x13, 0x47].into_iter().enumerate() {
+        let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+        let path = scratch.join(format!("r{offset:x}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        served += &format!(
+            "    if (address === {}n) return readFileSync({:?});\n",
+            BASE + offset as u64,
+            path.to_string_lossy()
+        );
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 64 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
+console.log("rip " + lire({rip}));
+console.log("rsp " + lire(4));
+console.log("rdi " + lire(7));
+console.log("rsi " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    let line = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_ne!(line("rip "), 0x90, "le `ret` a dépilé le RBP sauvé : la pile avait un mot de trop");
+    assert_eq!(line("rsi "), 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(line("rdi "), 0xf000, "et la pile, à son point de départ : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
 }
