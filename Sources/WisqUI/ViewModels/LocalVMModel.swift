@@ -682,6 +682,12 @@ public final class LocalVMModel {
         (machine as? X86Machine)?.touch(x: x, y: y, buttons: buttons) ?? false
     }
 
+    /// La molette de l'écran : des crans, positifs vers le haut.
+    @discardableResult
+    public func scroll(notches: Int) -> Bool {
+        (machine as? X86Machine)?.scroll(notches: notches) ?? false
+    }
+
     /// Un mouvement de la souris PS/2, en pixels de l'écran de l'invité, Y
     /// vers le bas ; `buttons` : 1 gauche, 2 droit.
     public func pointer(dx: Int, dy: Int, buttons: UInt8) {
