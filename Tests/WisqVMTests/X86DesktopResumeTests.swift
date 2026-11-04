@@ -53,11 +53,21 @@ final class X86DesktopResumeTests: XCTestCase {
     static func run(_ machine: X86Machine, until marker: String, after from: Int = 0, console: Console,
                     budget: UInt64) -> Bool {
         let slice: UInt64 = 50_000_000
-        for _ in 0..<(budget / slice) {
+        for turn in 0..<(budget / slice) {
             _ = machine.run(instructionBudget: slice)
             if console.text.dropFirst(from).contains(marker) { return true }
+            // **Un doigt qui bouge de temps en temps**, toutes les cinq
+            // secondes de l'invité : sans rien en entrée, Xorg éteint
+            // l'écran au bout de dix minutes, et le bureau ne se voit plus.
+            if turn % 34 == 0 { _ = machine.touch(x: turn % 68 == 0 ? 0.25 : 0.5, y: 0.75, buttons: 0) }
         }
         return false
+    }
+
+    /// La console, à côté de l'instantané : ce qui s'est passé, même quand un
+    /// test échoue.
+    static func keep(_ console: Console, at path: String) {
+        FileManager.default.createFile(atPath: path, contents: Data(console.text.utf8))
     }
 
     /// La part de l'écran qui n'est pas noire, de 0 à 1.
@@ -88,6 +98,7 @@ final class X86DesktopResumeTests: XCTestCase {
         for suffix in ["", ".map"] { try? FileManager.default.removeItem(atPath: writes.path + suffix) }
         let console = Console()
         let (machine, boot) = try Self.machine(environment, writes: writes, console: console)
+        defer { Self.keep(console, at: out + ".console") }
         try boot()
         let budget: UInt64 = 2_000_000_000_000
         XCTAssertTrue(Self.run(machine, until: "login:", console: console, budget: budget), "pas d'invite")
@@ -126,6 +137,7 @@ final class X86DesktopResumeTests: XCTestCase {
         }
         let console = Console()
         let (machine, _) = try Self.machine(environment, writes: writes, console: console)
+        defer { Self.keep(console, at: from + "-repris.console") }
         try machine.restore(try Data(contentsOf: URL(fileURLWithPath: from)))
         let display = try XCTUnwrap(machine.display)
         // **L'écran d'abord, avant la moindre instruction** : c'est ce que
