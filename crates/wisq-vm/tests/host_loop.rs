@@ -14816,13 +14816,17 @@ console.log("fini");
 ///
 /// Le programme reprend les deux fonctions réduites à ce qui touche la pile,
 /// chacune dans sa région, et le `ret` partagé dans une troisième.
-#[test]
-fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
+/// Le programme de `two_returns_…`, avec le corps de `sanitize_boot_params`
+/// fourni par l'appelant (entre les poussées et les dépilements). Le `jmp`
+/// vers le thunk est **calculé** : écrit à la main, un rel32 faux a d'abord
+/// fait échouer ce banc pour une raison qui n'était pas la sienne.
+fn returns_through_a_shared_thunk(name: &str, middle: &[u8]) -> (u64, u64, String) {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
     const PAGES: u32 = 1;
     const BASE: u64 = 0x1_0000;
+    const THUNK: usize = 0x300;
     let mut program: Vec<u8> = vec![
         0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
         0x48, 0xc7, 0xc5, 0x90, 0x00, 0x00, 0x00, // mov $0x90,%rbp — CR4, dans le noyau
@@ -14840,32 +14844,36 @@ fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
         0xe8, 0x39, 0x00, 0x00, 0x00, // call 0x80 (sanitize_boot_params) — retour à 0x47
         0x5b, // pop %rbx
         0x5d, // pop %rbp
-        0xe9, 0x72, 0x00, 0x00, 0x00, // jmp 0xc0 (le thunk) — depuis 0x4e
+        0xe9, 0xb2, 0x02, 0x00, 0x00, // jmp 0x300 (le thunk) — suivante 0x4e
     ]);
     program.resize(0x80, 0xcc);
-    // 0x80 — sanitize_boot_params : quatre poussées, une réserve de 0xa0,
-    // tout rendu, puis le même thunk.
+    // 0x80 — sanitize_boot_params : quatre poussées, le corps, quatre
+    // dépilements, puis le même thunk.
     program.extend_from_slice(&[
         0x41, 0x55, // push %r13
         0x41, 0x54, // push %r12
         0x55, // push %rbp
         0x53, // push %rbx
-        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
-        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+    ]);
+    program.extend_from_slice(middle);
+    program.extend_from_slice(&[
         0x5b, // pop %rbx
         0x5d, // pop %rbp
         0x41, 0x5c, // pop %r12
         0x41, 0x5d, // pop %r13
-        0xe9, 0x21, 0x00, 0x00, 0x00, // jmp 0xc0 (le thunk) — depuis 0x9a, suivante 0x9f
     ]);
-    program.resize(0xc0, 0xcc);
-    program.extend_from_slice(&[0xc3, 0xcc]); // 0xc0 — __x86_return_thunk : ret
-    program.resize(0x100, 0xcc); // le rembourrage du noyau, que le décodeur lit
-    let scratch = std::env::temp_dir().join(format!("wisq-host-thunk-{}", std::process::id()));
+    let next = program.len() + 5;
+    assert!(next <= THUNK, "le corps de sanitize déborde sur le thunk");
+    program.push(0xe9); // jmp THUNK
+    program.extend_from_slice(&((THUNK as i32 - next as i32).to_le_bytes()));
+    program.resize(THUNK, 0xcc);
+    program.extend_from_slice(&[0xc3, 0xcc]); // __x86_return_thunk : ret
+    program.resize(0x400, 0xcc); // le rembourrage du noyau, que le décodeur lit
+    let scratch = std::env::temp_dir().join(format!("wisq-host-thunk-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let mut served = String::new();
-    for (slot, offset) in [0usize, 0x40, 0x80, 0xc0, 0x13, 0x47].into_iter().enumerate() {
+    for (slot, offset) in [0usize, 0x40, 0x80, THUNK, 0x13, 0x47].into_iter().enumerate() {
         let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
             .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
         let path = scratch.join(format!("r{offset:x}.wasm"));
@@ -14909,16 +14917,82 @@ console.log("rsi " + lire(6));
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let errors = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
-    let line = |name: &str| {
+    let line = |field: &str| {
         text.lines()
-            .find_map(|l| l.strip_prefix(name))
-            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {text}"))
             .trim()
             .parse::<u64>()
             .expect("un nombre")
     };
-    assert_ne!(line("rip "), 0x90, "le `ret` a dépilé le RBP sauvé : la pile avait un mot de trop");
-    assert_eq!(line("rsi "), 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
-    assert_eq!(line("rdi "), 0xf000, "et la pile, à son point de départ : {text}");
     let _ = std::fs::remove_dir_all(&scratch);
+    (line("rsi "), line("rdi "), text)
+}
+
+#[test]
+fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
+    let (arrived, stack, text) = returns_through_a_shared_thunk("simple", &[
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+    ]);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
+}
+
+/// **Le même retour, avec la copie de `sanitize_boot_params` sur sa pile** :
+/// `rep movsl` de 0x28 mots, d'une table vers la réserve que `RDI = RSP`
+/// désigne.
+#[test]
+fn a_string_copy_onto_the_stack_leaves_the_stack_where_it_was() {
+    let (arrived, stack, text) = returns_through_a_shared_thunk("movsl", &[
+        0x48, 0xc7, 0xc6, 0x00, 0x02, 0x01, 0x00, // mov $0x10200,%rsi — la table
+        0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
+        0x31, 0xc0, // xor %eax,%eax
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi
+        0x49, 0x89, 0xe5, // mov %rsp,%r13
+        0xf3, 0xa5, // rep movsl
+        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+    ]);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
+}
+
+/// **Le vrai corps de `sanitize_boot_params`**, octet pour octet, pris dans
+/// Alpine 6.18.60 (`linux-virt-6.18.60-r0`, de `0xffffffff81201c01` à
+/// `0xffffffff81201cd6`) : la réserve, la copie de la table sur la pile, le
+/// `rep stos` de la page de travail, la boucle à deux `cmov` et son
+/// `rep movsb`, et la copie finale de 0x400 mots. Les adresses absolues se
+/// replient sur la RAM du banc comme sur la vraie machine ; les deux `call`
+/// ne mènent qu'aux avertissements, que des données nulles ne prennent pas.
+#[test]
+fn the_real_body_of_sanitize_boot_params_leaves_the_stack_where_it_was() {
+    let mut middle: Vec<u8> = vec![
+        0x48, 0xc7, 0xc6, 0x20, 0x5d, 0x00, 0x82, // mov $0xffffffff82005d20,%rsi — la table
+        0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
+        0x31, 0xc0, // xor %eax,%eax
+    ];
+    middle.extend_from_slice(&[
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, 0x48, 0x89, 0xe7, 0x49, 0x89,
+        0xe5, 0xf3, 0xa5, 0xb9, 0x00, 0x04, 0x00, 0x00, 0x48, 0xc7, 0xc7, 0x40,
+        0xa6, 0x2e, 0x83, 0xf3, 0xab, 0x41, 0x8b, 0x6d, 0x00, 0xb8, 0x00, 0x10,
+        0x00, 0x00, 0xb9, 0x00, 0x10, 0x00, 0x00, 0x41, 0x8b, 0x5d, 0x04, 0x48,
+        0x39, 0xc5, 0x4c, 0x8d, 0xa5, 0x40, 0xa6, 0x2e, 0x83, 0x48, 0x0f, 0x43,
+        0xc5, 0x48, 0x89, 0xc6, 0x48, 0x29, 0xee, 0x48, 0x81, 0xc5, 0xe0, 0xba,
+        0x2e, 0x83, 0x48, 0x39, 0xce, 0x48, 0x0f, 0x46, 0xce, 0x48, 0x39, 0xde,
+        0x73, 0x0d, 0x48, 0x89, 0xda, 0xbf, 0x11, 0x00, 0x00, 0x00, 0xe8, 0x5c,
+        0xf9, 0x01, 0x00, 0x48, 0x81, 0xfe, 0x00, 0x10, 0x00, 0x00, 0x76, 0x2d,
+        0x48, 0x39, 0xd9, 0x73, 0x28, 0x80, 0x3d, 0x25, 0xda, 0x9b, 0x01, 0x00,
+        0x75, 0x1f, 0x48, 0xc7, 0xc2, 0x68, 0xd5, 0x3e, 0x82, 0x48, 0x89, 0xde,
+        0x48, 0xc7, 0xc7, 0x20, 0xcd, 0x3e, 0x82, 0xc6, 0x05, 0x0b, 0xda, 0x9b,
+        0x01, 0x01, 0xe8, 0x88, 0x16, 0x0f, 0x00, 0x0f, 0x0b, 0x49, 0x83, 0xc5,
+        0x08, 0x48, 0x89, 0xd9, 0x4c, 0x89, 0xe7, 0x48, 0x89, 0xee, 0x48, 0x8d,
+        0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, 0xf3, 0xa4, 0x49, 0x39, 0xc5, 0x0f,
+        0x85, 0x64, 0xff, 0xff, 0xff, 0x48, 0xc7, 0xc6, 0x40, 0xa6, 0x2e, 0x83,
+        0x48, 0xc7, 0xc7, 0xe0, 0xba, 0x2e, 0x83, 0xb9, 0x00, 0x04, 0x00, 0x00,
+        0xf3, 0xa5, 0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00,
+    ]);
+    let (arrived, stack, text) = returns_through_a_shared_thunk("vrai", &middle);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
 }
