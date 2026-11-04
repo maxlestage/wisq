@@ -18,12 +18,15 @@ import WisqVM
 /// glisser déplace le pointeur, toucher clique où il est. Le pointeur n'est
 /// pas dessiné ici : c'est l'invité qui le dessine.
 ///
-/// **Pincer zoome, deux doigts déplacent la vue** : voir `ScreenZoom`. Un
-/// doigt reste la souris, zoom ou pas.
+/// **Pincer zoome, deux doigts déplacent la vue** : voir `ScreenZoom`. Sur
+/// l'écran entier, qu'ils n'ont pas à déplacer, ils tournent la molette
+/// (`ScreenWheel`). Un doigt reste la souris, zoom ou pas.
 struct GuestScreenView: View {
     let screen: X86Framebuffer
     /// Un toucher absolu, de 0 à 1 ; faux quand la tablette n'est pas prise.
     var onTouch: (_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool = { _, _, _ in false }
+    /// La molette, en crans positifs vers le haut.
+    var onWheel: (_ notches: Int) -> Void = { _ in }
     let onPointer: (_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void
 
     @State private var image: CGImage?
@@ -35,7 +38,8 @@ struct GuestScreenView: View {
         // celle qu'elle a vraiment.
         GuestScreenCanvas(
             image: image, guestWidth: image?.width ?? screen.width,
-            guestHeight: image?.height ?? screen.height, onTouch: onTouch, onPointer: onPointer)
+            guestHeight: image?.height ?? screen.height, onTouch: onTouch, onWheel: onWheel,
+            onPointer: onPointer)
             .overlay {
                 if image == nil {
                     Text("L'invité n'a encore rien dessiné sur son écran.")
@@ -47,7 +51,7 @@ struct GuestScreenView: View {
             .background(Color.black)
             .accessibilityElement()
             .accessibilityLabel("Écran de la machine")
-            .accessibilityHint("Toucher clique à cet endroit, un appui long fait le clic droit, glisser un doigt traîne. Pincer zoome, glisser à deux doigts déplace la vue.")
+            .accessibilityHint("Toucher clique à cet endroit, un appui long fait le clic droit, glisser un doigt traîne. Pincer zoome ; glisser à deux doigts déplace la vue, ou fait défiler quand l'écran est montré en entier.")
             .task {
                 while !Task.isCancelled {
                     refresh()
@@ -89,17 +93,20 @@ private struct GuestScreenCanvas: UIViewRepresentable {
     let guestWidth: Int
     let guestHeight: Int
     let onTouch: (_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool
+    let onWheel: (_ notches: Int) -> Void
     let onPointer: (_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void
 
     func makeUIView(context: Context) -> GuestScreenScrollView {
         let view = GuestScreenScrollView()
         view.onTouch = onTouch
+        view.onWheel = onWheel
         view.onPointer = onPointer
         return view
     }
 
     func updateUIView(_ view: GuestScreenScrollView, context: Context) {
         view.onTouch = onTouch
+        view.onWheel = onWheel
         view.onPointer = onPointer
         view.show(image, width: guestWidth, height: guestHeight)
     }
@@ -108,6 +115,10 @@ private struct GuestScreenCanvas: UIViewRepresentable {
 final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
     var onTouch: ((_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool)?
     var onPointer: ((_ dx: Int, _ dy: Int, _ buttons: UInt8) -> Void)?
+    var onWheel: ((_ notches: Int) -> Void)?
+    /// Deux doigts sur l'écran entier : la molette (`ScreenWheel`).
+    private var wheelRecognizer: UIPanGestureRecognizer?
+    private var wheel = ScreenWheel()
     /// Le glissement en cours passe par la tablette (décidé à son début).
     private var draggingAbsolute = false
     /// Le dernier endroit touché sur l'écran : un doigt qui sort de l'écran
@@ -144,6 +155,23 @@ final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
         let press = UILongPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
         press.minimumPressDuration = 0.5
         addGestureRecognizer(press)
+        let turn = UIPanGestureRecognizer(target: self, action: #selector(handleWheel(_:)))
+        turn.minimumNumberOfTouches = 2
+        turn.maximumNumberOfTouches = 2
+        addGestureRecognizer(turn)
+        wheelRecognizer = turn
+    }
+
+    /// L'écran entier est montré : deux doigts n'ont rien à déplacer.
+    private var isFitted: Bool { zoomScale <= minimumZoomScale + 0.0001 }
+
+    /// **Deux doigts : la vue ou la molette.** Zoomé, ils déplacent la vue ;
+    /// l'écran entier montré, ils tournent la molette de l'invité — une page
+    /// qui défile, une liste, un menu trop long.
+    override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        if gesture === wheelRecognizer { return isFitted }
+        if gesture === panGestureRecognizer, isFitted { return false }
+        return super.gestureRecognizerShouldBegin(gesture)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -244,6 +272,20 @@ final class GuestScreenScrollView: UIScrollView, UIScrollViewDelegate {
             }
         case .ended, .cancelled, .failed:
             pointer.lift()
+        default:
+            break
+        }
+    }
+
+    @objc private func handleWheel(_ gesture: UIPanGestureRecognizer) {
+        switch gesture.state {
+        case .changed:
+            let travel = gesture.translation(in: self)
+            gesture.setTranslation(.zero, in: self)
+            let notches = wheel.notches(dy: Double(travel.y))
+            if notches != 0 { onWheel?(notches) }
+        case .ended, .cancelled, .failed:
+            wheel.lift()
         default:
             break
         }

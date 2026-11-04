@@ -535,6 +535,17 @@ public final class X86Machine: @unchecked Sendable {
         return true
     }
 
+    /// **La molette**, par la tablette : des crans, positifs vers le haut.
+    /// Faux quand la tablette n'est pas prise : la souris PS/2 de l'invité
+    /// n'a que trois octets, pas de molette.
+    @discardableResult
+    public func scroll(notches: Int) -> Bool {
+        guard let tablet, tablet.isReady, notches != 0 else { return false }
+        tablet.scroll(Int32(clamping: notches))
+        nudge.signal()
+        return true
+    }
+
     /// Un mouvement de la souris PS/2 de l'invité, Y vers le bas, et ses
     /// boutons : 1 gauche, 2 droit, 4 milieu. Utilisable depuis n'importe
     /// quel fil.
