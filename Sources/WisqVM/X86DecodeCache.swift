@@ -39,11 +39,10 @@ final class X86DecodeCache: @unchecked Sendable {
     /// 5,2 millions de décodages — un sur vingt — étaient des collisions. En
     /// doublant les cases, 600 millions d'instructions passent de 36,5 s à
     /// 33,8 s (médiane de quatre) ; en les quadruplant, 33,8 s aussi. Le
-    /// double, donc, pour 9,0 Mio : 131 072 cases de soixante-douze octets,
-    /// depuis que l'instruction tient en quarante. C'est la moitié de plus
-    /// que les 6 Mio qu'en prenaient 65 536 cases quand elle en pesait
-    /// soixante-quatre, et pas le même prix. `footprint` le borne, et un
-    /// test relit ce chiffre-ci.
+    /// double, donc : 131 072 cases de soixante-quatre octets, une ligne de
+    /// cache chacune depuis que les masques se déduisent de la longueur
+    /// (voir `Entry`), soit 8,0 Mio. `footprint` le borne, et un test relit
+    /// ce chiffre-ci.
     static let slots = 1 << 17
 
     /// Ce que le cache occupe.
@@ -54,19 +53,37 @@ final class X86DecodeCache: @unchecked Sendable {
     /// lecture touchait alors jusqu'à cinq lignes de cache du processeur
     /// hôte, loin les unes des autres dès que le cache a grandi à 6 Mio.
     /// Côte à côte, une case tient en 96 octets, soit deux lignes au plus.
+    ///
+    /// **Une seule ligne, désormais.** Les deux masques se déduisent de la
+    /// longueur de l'instruction : la case perd seize octets et tient en 64,
+    /// alignée sur 64 — une ligne de cache de l'hôte par lecture, au lieu
+    /// de deux pour une case de 72 octets à cheval. Le profil du démarrage
+    /// de Void plaçait la première lecture de la case en tête de `run`.
     struct Entry {
         var low: UInt64
         var high: UInt64
-        var lowMask: UInt64
-        var highMask: UInt64
         var instruction: X86Instruction
+        /// Le bourrage jusqu'à 64 octets : sans lui, une case de 56 octets
+        /// sur huit en enjamberait deux lignes.
+        var padding: UInt64 = 0
+    }
+
+    /// Les masques d'une instruction de `length` octets sur les deux mots de
+    /// seize octets lus : ce qui compte de chacun. Seize octets ou plus (la
+    /// case vide) : tout compte, et c'est la garde de longueur qui la refuse.
+    @inline(__always)
+    static func masks(length: Int) -> (low: UInt64, high: UInt64) {
+        let low: UInt64 = length >= 8 ? .max : (1 &<< UInt64(8 &* length)) &- 1
+        let high: UInt64 = length <= 8 ? 0
+            : (length >= 16 ? .max : (1 &<< UInt64(8 &* (length &- 8))) &- 1)
+        return (low, high)
     }
 
     private let entries: UnsafeMutablePointer<Entry>
 
     /// **Ce que porte une case vide** : une instruction d'un octet de plus que
-    /// la plus longue qui existe. Ses masques nuls laissent passer n'importe
-    /// quels octets, mais sa longueur ne tient jamais dans ce qui reste
+    /// la plus longue qui existe. Ses octets nuls ne passent que devant seize
+    /// octets nuls, et sa longueur ne tient de toute façon jamais dans ce qui reste
     /// lisible — `available` ne dépasse pas `maximumLength` —, et c'est la
     /// garde de longueur, déjà là, qui la refuse.
     ///
@@ -100,16 +117,18 @@ final class X86DecodeCache: @unchecked Sendable {
     init() {
         counts = .allocate(capacity: 2)
         counts.initialize(repeating: 0, count: 2)
-        entries = .allocate(capacity: Self.slots)
-        entries.initialize(repeating: Entry(low: 0, high: 0, lowMask: 0, highMask: 0,
-                                            instruction: Self.emptySlot),
+        // Alignées sur 64 : une case, une ligne.
+        entries = UnsafeMutableRawPointer
+            .allocate(byteCount: Self.slots * MemoryLayout<Entry>.stride, alignment: 64)
+            .bindMemory(to: Entry.self, capacity: Self.slots)
+        entries.initialize(repeating: Entry(low: 0, high: 0, instruction: Self.emptySlot),
                            count: Self.slots)
     }
 
     deinit {
         counts.deallocate()
         entries.deinitialize(count: Self.slots)
-        entries.deallocate()
+        UnsafeMutableRawPointer(entries).deallocate()
     }
 
     /// L'instruction qui commence à `start`, si la case en tient une, si ses
@@ -146,8 +165,9 @@ final class X86DecodeCache: @unchecked Sendable {
         let raw = UnsafeRawPointer(bytes + start)
         let first = raw.loadUnaligned(as: UInt64.self)
         let second = raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self)
-        guard (first ^ entry.pointee.low) & entry.pointee.lowMask == 0,
-              (second ^ entry.pointee.high) & entry.pointee.highMask == 0
+        let mask = Self.masks(length: entry.pointee.instruction.length)
+        guard (first ^ entry.pointee.low) & mask.low == 0,
+              (second ^ entry.pointee.high) & mask.high == 0
         else {
             counts[1] &+= 1
             return nil
@@ -165,14 +185,11 @@ final class X86DecodeCache: @unchecked Sendable {
                at start: Int, size: Int) {
         guard start <= size &- 16 else { return }
         let slot = start & (Self.slots - 1)
-        let length = instruction.length
         let raw = UnsafeRawPointer(bytes + start)
-        let maskLow: UInt64 = length >= 8 ? .max : (1 << UInt64(8 * length)) - 1
-        let maskHigh: UInt64 = length <= 8 ? 0
-            : (length >= 16 ? .max : (1 << UInt64(8 * (length - 8))) - 1)
+        let mask = Self.masks(length: instruction.length)
         entries[slot] = Entry(
-            low: raw.loadUnaligned(as: UInt64.self) & maskLow,
-            high: raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self) & maskHigh,
-            lowMask: maskLow, highMask: maskHigh, instruction: instruction)
+            low: raw.loadUnaligned(as: UInt64.self) & mask.low,
+            high: raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self) & mask.high,
+            instruction: instruction)
     }
 }
