@@ -49,6 +49,26 @@ final class X86DecodeCacheTests: XCTestCase {
         XCTAssertLessThanOrEqual(core.decodeCache.misses, 4)
     }
 
+    /// **Une case, une ligne de cache** : 64 octets exactement, et le
+    /// tableau aligné sur 64. Une case de 72 octets enjambait deux lignes, et
+    /// la première lecture de la case menait le profil de `run`.
+    func testAnEntryIsOneHostCacheLine() {
+        XCTAssertEqual(MemoryLayout<X86DecodeCache.Entry>.stride, 64)
+    }
+
+    /// **Les masques se déduisent de la longueur** : ce qui compte des deux
+    /// mots lus, sans plus. La case vide (seize octets) compte tout.
+    func testTheMasksFollowTheLength() {
+        XCTAssertEqual(X86DecodeCache.masks(length: 1).low, 0xFF)
+        XCTAssertEqual(X86DecodeCache.masks(length: 1).high, 0)
+        XCTAssertEqual(X86DecodeCache.masks(length: 8).low, .max)
+        XCTAssertEqual(X86DecodeCache.masks(length: 8).high, 0)
+        XCTAssertEqual(X86DecodeCache.masks(length: 9).high, 0xFF)
+        XCTAssertEqual(X86DecodeCache.masks(length: 15).high, 0x00FF_FFFF_FFFF_FFFF)
+        XCTAssertEqual(X86DecodeCache.masks(length: 16).low, .max)
+        XCTAssertEqual(X86DecodeCache.masks(length: 16).high, .max)
+    }
+
     /// Le cache se paie en mémoire, une fois par machine : il doit rester
     /// petit devant la RAM de l'invité, même sur un téléphone.
     func testTheCacheStaysSmallBesideTheGuestsMemory() {
