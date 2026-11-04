@@ -117,6 +117,13 @@ final class X86DesktopResumeTests: XCTestCase {
         XCTAssertTrue(Self.run(machine, until: "BUREAU_2", after: mark, console: console, budget: budget),
                       "le bureau n'est pas venu")
         let display = try XCTUnwrap(machine.display)
+        // **Un doigt pour réveiller l'écran**, comme l'utilisateur : Xorg a
+        // pu l'éteindre avant que la tablette soit prise, et un passage a
+        // trouvé le bureau monté mais l'écran tout noir.
+        for spot in [0.3, 0.6] { _ = machine.touch(x: spot, y: 0.75, buttons: 0) }
+        mark = console.text.count
+        machine.send(Data("sleep 5; echo REVEIL_$((1+1))\n".utf8))
+        XCTAssertTrue(Self.run(machine, until: "REVEIL_2", after: mark, console: console, budget: budget))
         Self.dump(display, to: out + "-avant.ppm")
         XCTAssertGreaterThan(Self.litFraction(display), 0.5, "le bureau est à l'écran avant la sauvegarde")
         machine.flushDisk()
