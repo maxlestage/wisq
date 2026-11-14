@@ -1027,6 +1027,12 @@ console.log("instances_fin " + porte.instances);
         raison.starts_with("RuntimeError"),
         "une trappe du module est une `RuntimeError` du moteur : {text}"
     );
+    // Le nom seul ne suffit pas : c'est le message entier qu'il faut garder,
+    // celui qui dit *quelle* trappe (`String(trappe)`, pas `trappe.name`).
+    assert!(
+        raison.contains("Unreachable"),
+        "la raison garde le message du moteur, pas seulement son nom : {text}"
+    );
     assert_eq!(said(&text, "pourquoi_trappe "), raison, "{text}");
     assert_eq!(
         said(&text, "leve_message "),
