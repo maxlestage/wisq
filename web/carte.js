@@ -212,10 +212,16 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
   let enVol = 0;
   /// **Confier à l'arrière tout ce qui est parti.** Rend le nombre de
   /// requêtes confiées. Un échec de l'arrière (une promesse rejetée, une
-  /// écriture qu'il ne sait pas faire) est rendu au pilote en erreur
-  /// d'entrée-sortie ; une erreur de la carte elle-même, en rendant la
-  /// réponse, n'est pas rattrapée — elle reste une promesse rejetée, que le
+  /// écriture qu'il ne sait pas faire ou qu'il dit ratée) est rendu au pilote
+  /// en erreur d'entrée-sortie ; une erreur de la carte elle-même, en rendant
+  /// la réponse, n'est pas rattrapée — elle reste une promesse rejetée, que le
   /// moteur signale.
+  ///
+  /// **Une réponse peut faire partir d'autres requêtes** : la carte ne tient
+  /// que 64 Mio à la fois pour l'arrière, et ce qui ne tenait pas attendait
+  /// dans la file que de la place se libère. Elles sont confiées dès la
+  /// réponse rendue, avant que `enVol` ne descende : il ne passe jamais par
+  /// zéro tant qu'une requête reste à servir.
   function servir() {
     let confiees = 0;
     for (let r = requeteDisque(); r !== null; r = requeteDisque()) {
@@ -230,6 +236,9 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
           (rendu) => (r.sens === "lire" ? disqueLu(id, rendu) : disqueFini(id, rendu === true)),
           () => disqueFini(id, false),
         )
+        .then(() => {
+          if (porte.carte_requetes() !== 0) servir();
+        })
         .finally(() => {
           enVol -= 1;
         })

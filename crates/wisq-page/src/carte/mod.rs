@@ -228,8 +228,19 @@ impl Carte {
     /// octets, dont les octets sont à l'arrière. Un disque déjà branché est
     /// remplacé, ses requêtes parties oubliées — à faire avant le démarrage,
     /// comme on branche un câble machine éteinte.
+    ///
+    /// **Les noms continuent** d'un disque à l'autre. Les requêtes de
+    /// l'ancien sont oubliées, mais leurs réponses peuvent encore venir de
+    /// l'arrière ; un disque neuf qui recommencerait à nommer depuis 1
+    /// donnerait à sa première requête le nom d'une requête de l'ancien, et
+    /// la réponse en retard remplirait ses tampons avec les octets d'un autre
+    /// secteur, en la disant réussie.
     pub fn brancher_disque(&mut self, secteurs: u64) {
-        self.pci.disque = Some(VirtioBlk::nouveau(secteurs));
+        let mut neuf = VirtioBlk::nouveau(secteurs);
+        if let Some(ancien) = &self.pci.disque {
+            neuf.reprendre_les_noms(ancien.prochain_nom());
+        }
+        self.pci.disque = Some(neuf);
     }
 
     /// **La prochaine requête du disque pour l'arrière**, ou rien. La boucle
