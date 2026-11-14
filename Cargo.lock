@@ -1154,6 +1154,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisq-page"
+version = "0.4.0"
+dependencies = [
+ "wisq-vm",
+]
+
+[[package]]
 name = "wisq-site"
 version = "0.4.0"
 dependencies = [

@@ -19,10 +19,15 @@ jobs:
       # absent : un compilateur que rien n'exécute n'est pas un compilateur
       # vérifié. Sans cette étape, le job est rouge — mesuré.
       - uses: oven-sh/setup-bun@v2
+      # **La cible `wasm32-unknown-unknown`, pour l'émetteur de la page.**
+      # `crates/wisq-page/tests/page.rs` construit l'émetteur en WebAssembly
+      # (`scripts/build-page-emitter.sh`) et compare, sous Bun, ses modules à
+      # ceux du natif ; sans la cible, ces tests tombent en la nommant.
       - name: Toolchain
         run: |
           rustup component add rustfmt clippy
           rustup target add x86_64-unknown-linux-musl
+          rustup target add wasm32-unknown-unknown
           rustc --version
       - name: Format
         run: cargo fmt --all --check
