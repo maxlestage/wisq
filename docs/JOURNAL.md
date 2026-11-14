@@ -8,6 +8,101 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le bureau prêt se fabrique d'une commande, et pèse trois fois moins
+
+**Ce qui n'allait pas.** Le seul bureau Xfce déjà démarré du bloc-notes
+(`images/xfce/bureau.snap`) sortait du banc `X86DesktopResumeTests` : une
+machine nue, **sans carte réseau** (repris dans l'application, le bureau
+n'aurait plus eu de réseau), un noyau extrait à la main par `xorriso`, une
+ligne de commande écrite à la main, et 842 Mio bruts (497 Mio en LZ4) parce
+que Linux remplit la mémoire libre de cache. Rien ne l'emballait dans une
+archive que l'application sait importer.
+
+**Ce qui change.**
+
+- **`wisq-fabrique`**, une cible exécutable (`Sources/wisq-fabrique`, avec
+  le cœur Rust seulement) : une ISO en entrée, une archive `.wisqmachine` et
+  sa fiche JSON en sortie. Le noyau, l'initramfs et la ligne sortent de
+  l'image par `IsoBoot.decide`, **le code du téléphone** : c'est l'empreinte
+  du noyau qui nomme la session (`d63775f2e341116a`, la même que celle du
+  noyau extrait à la main).
+- **La machine de la fabrique est celle de l'application**
+  (`ReadyDesktopBuild.machine`) : `GuestMachineFactory.make` avec sa carte
+  réseau, l'écran de l'application et sa tablette. L'écran
+  (`GuestMachineFactory.screenSize`, 1024 × 768) est descendu de
+  `LocalVMModel` dans `WisqVM`, et l'application le branche par
+  `GuestMachineFactory.attachScreen`. Pour que deux fabrications donnent le
+  même bureau : réseau isolé (le bail est servi, rien ne sort), aléa fixé,
+  heure figée (`X86Machine.frozenHostTime`, gardée à travers `load` et
+  `restore`).
+- **Le pilotage par la console vit dans `WisqVM`** (`GuestConsole`,
+  `GuestScript`) : un déroulé en données (`expect`, `type`, `screenLit`),
+  le même pour la fabrique et pour le banc. Les marques se cherchent en
+  octets, dans tout ce qui suit la dernière frappe.
+- **Avant de sauver** : `rm -f /etc/ssh/ssh_host_*; sync; echo 3 >
+  /proc/sys/vm/drop_caches`, avec `init_on_free=1` ajouté à la ligne de la
+  fabrication — sans lui, une page libérée garde son contenu.
+- **Vérifié avant d'être emporté** (`ReadyDesktopBuild.check`) : repris dans
+  une machine de l'application neuve, l'instantané doit rendre la carte
+  réseau, une tablette prise par son pilote, un écran allumé à plus de
+  moitié, la mémoire et le niveau attendus.
+- **L'assemblage** : `InstalledMachines.install` dans un dossier à part, la
+  couche d'écriture du disque sous la clé de cette machine, la mémoire de
+  l'instantané (`KernelMemory.setSize` ; une taille hors réglage est refusée
+  au lieu d'être ignorée), la session rangée par `SuspendedMachine` sous
+  l'empreinte du noyau, puis `MachineArchive.export`.
+- **Le banc** passe par la même machine et le même pilote, reprend aussi
+  une archive importée dans un dossier vierge (`WISQ_PC_DESKTOP_ARCHIVE`,
+  `WISQ_PC_IMAGE_NAME`), vérifie la carte réseau dans l'invité — et son
+  contrôle « `xfdesktop` vivant » ne passe plus toujours : la console répète
+  la ligne tapée, et `FOND_VIVANT` y était écrit en clair.
+
+**Mesuré ici** (archive, fiche, console et écran dans
+`<bloc-notes>/bureau-pret/`) :
+
+| | ancien `bureau.snap` | bureau prêt |
+| --- | --- | --- |
+| instructions de la fabrication | 95,09 G | 97,70 G (2527 s, 39 à 46 MIPS) |
+| instantané brut | 842,0 Mio | **345,8 Mio** (362 643 017 octets) |
+| pages non nulles | 935,8 Mio | 397,9 Mio (61 % de pages nulles) |
+| LZ4 par blocs (ce que range le téléphone) | 497,0 Mio | **155,0 Mio** (archive : 162 570 340 octets) |
+| LZ4-HC 9, même format | 436,4 Mio | 128,6 Mio |
+| zstd -3 / -19 par blocs de 1 Mio | 367,9 / 333,9 Mio | 105,4 / 88,9 Mio |
+| zstd -19 d'un seul flux | 293,6 Mio | 82,2 Mio |
+
+L'invite de connexion vient vers 43 G instructions, le panneau vers 88 G.
+**La reprise** : l'archive importée dans un dossier vierge, la session
+trouvée sous `installee-…-d63775f2e341116a`, l'écran dessiné avant la
+première instruction, la console qui répond 14,2 s après la reprise,
+`xfdesktop` vivant, `NET_1` (la carte réseau dans l'invité), Ctrl+Alt+T qui
+ouvre un terminal, la tablette qui livre ses 96 octets. Le banc entier :
+128 s, pic résident 929 Mio — l'ancien instantané, par le même banc :
+57 s, 1862 Mio, et il **échoue** sur la carte réseau (`NET_0`), comme
+attendu.
+
+**Le prix : le premier usage est plus lent.** Une sonde jetable a tapé trois
+fois la même commande (`pgrep`, `dmesg | grep`, `ls | wc`) après la
+reprise : 680 M instructions la première fois contre 255 M pour l'ancien
+instantané, puis 73 M contre 72 M. `init_on_free=1` ne coûte donc rien une
+fois le bureau repris ; c'est le cache vidé qui se relit dans le squashfs de
+l'ISO (`free -m` : 576 Mio libres et 180 de cache, contre 68 et 690).
+
+**Tests** : 25 de plus (`GuestScriptTests` 11 contre une fausse machine,
+`ReadyDesktopBuildTests` 14) ; quatorze sabotages, quatorze chutes — sans
+carte réseau, mauvaise empreinte, écran de 800 × 600, garde de l'écran noir
+ôtée, garde du réseau ou de la tablette ôtée, marque oubliée à la frappe,
+une tranche de trop, l'heure perdue au chargement ou à la reprise, doigt
+ôté, fin de l'invité ignorée, marque cherchée dans le dernier morceau,
+garde de la mémoire ôtée. `swift test` : 2842 tests, aucun échec. Compte
+publié : 3418. L'ancien `bureau.snap` (883 Mo) est effacé du bloc-notes ;
+l'instantané brut du bureau prêt le remplace pour les bancs.
+
+**Ce qui reste.** La publication (tranche 2) ; l'entrée de catalogue et ses
+gardes (tranche 3) ; l'heure de la première reprise (l'invité se croit le
+14 novembre à minuit, l'heure figée de la fabrication : `hwclock -s` ou
+`elapse`, tranche 4) ; un réchauffement du cache avant la sauvegarde, si le
+premier usage gêne ; l'essai sur un iPhone, que rien ici ne remplace.
+
 ## 2026-11-14 — La session trop grande gardée, et l'invité éteint jamais sauvé
 
 Le contrôle de la tranche précédente a trouvé une voie de plus par laquelle
