@@ -3664,12 +3664,19 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 ..Decoded::nothing(Width::Qword)
             })
         }
-        // **Le retour lointain**, avec ou sans `REX.W`. Le noyau écrit
-        // `48 cb` ; `cb` seul existe aussi, et le décoder coûte cette ligne.
+        // **Le retour lointain, et sa largeur vient de REX.W**, comme celle
+        // d'`iretq`. Le noyau écrit `48 cb` : `lretq`, deux mots de huit
+        // octets. `cb` seul est un `lret` de **trente-deux** bits — EIP puis
+        // CS sur quatre octets chacun — et `66 cb` un de seize. Les décoder
+        // tous en `lretq`, ce que faisait cette ligne, dépilait seize octets
+        // là où le silicium en dépile huit ou quatre : une pile décalée, et un
+        // saut à une adresse faite de deux moitiés. Le décodeur les lit
+        // toutes, à leur largeur ; c'est l'émetteur qui refuse les deux
+        // courtes en les nommant.
         0xcb => Some(Decoded {
             op: Op::FarReturn,
             length: at,
-            ..Decoded::nothing(Width::Qword)
+            ..Decoded::nothing(prefixes.width(false))
         }),
         // **Le retour d'interruption**, dont la largeur vient de REX.W : `48 cf`
         // est la forme du mode long, `cf` seul un `iretd` que l'émetteur
@@ -5609,15 +5616,24 @@ mod tests {
     /// confondre laisserait huit octets sur la pile — une pile décalée est un
     /// défaut qui ne se voit que bien plus tard, dans une fonction sans rapport.
     ///
-    /// Les deux formes existent : `cb` seul, et `48 cb` avec le préfixe REX.W.
-    /// Le noyau écrit la seconde ; les décoder toutes deux coûte une ligne et
-    /// évite qu'un `cb` isolé passe pour un octet inconnu.
+    /// Les trois formes existent : `48 cb` avec le préfixe REX.W, `cb` seul
+    /// et `66 cb`. Le noyau écrit la première ; les décoder toutes évite
+    /// qu'un `cb` isolé passe pour un octet inconnu. **Et chacune à sa
+    /// largeur** : `cb` seul dépile deux mots de quatre octets, pas de huit.
     #[test]
     fn a_far_return_is_not_a_near_one() {
-        for bytes in [&[0xcb][..], &[0x48, 0xcb][..]] {
+        for (bytes, width) in [
+            (&[0xcb][..], Width::Dword),
+            (&[0x66, 0xcb][..], Width::Word),
+            (&[0x48, 0xcb][..], Width::Qword),
+        ] {
             let step = decode(bytes).unwrap_or_else(|| panic!("{bytes:02x?} se décode"));
             assert_eq!(step.op, Op::FarReturn, "pour {bytes:02x?}");
             assert_eq!(step.length, bytes.len(), "pour {bytes:02x?}");
+            assert_eq!(
+                step.width, width,
+                "la largeur d'un retour lointain vient de REX.W et de 0x66, pour {bytes:02x?}"
+            );
             assert_ne!(
                 step.op,
                 Op::Return,

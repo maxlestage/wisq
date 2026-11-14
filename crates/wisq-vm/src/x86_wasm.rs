@@ -1356,8 +1356,9 @@ impl Body {
     /// **L'anneau est lu dans CS à chaque accès**, deux bits du bas. Le garder
     /// dans une globale de plus demanderait de la tenir à jour partout où CS
     /// change — `iretq`, `sysretq`, `syscall`, la délivrance de l'hôte, un
-    /// `lretq` —, et une seule oubliée ouvrirait le noyau aux programmes. Six
-    /// instructions WebAssembly de plus par accès, mesurées au JOURNAL.
+    /// `lretq` —, et une seule oubliée ouvrirait le noyau aux programmes. Le
+    /// prix : neuf instructions WebAssembly de plus par écriture en ligne,
+    /// onze par lecture, et 7,4 % de wasm émis en plus — mesuré au JOURNAL.
     fn translated(
         &mut self,
         mask: u32,
@@ -1935,7 +1936,14 @@ impl Module {
                 // bits qu'aucun noyau n'exécute, et le produire demanderait
                 // un cadre que cette machine ne pose jamais. Un refus ici,
                 // avant `terminate`, plutôt qu'un cadre à moitié lu.
-                if step.op == Op::InterruptReturn && step.width != Width::Qword {
+                //
+                // **Et `lret` sans REX.W pareil.** `cb` seul dépile EIP puis
+                // CS sur quatre octets chacun ; l'émettre en `lretq`, ce que
+                // faisait l'émetteur tant que le décodeur ne disait pas la
+                // largeur, dépilait seize octets au lieu de huit.
+                if matches!(step.op, Op::InterruptReturn | Op::FarReturn)
+                    && step.width != Width::Qword
+                {
                     return Err(Refused::CannotTranslate {
                         at: at - step.length,
                     });
