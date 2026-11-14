@@ -8,6 +8,115 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le disque de la page : une remise ne rend plus la place de ce que l'arrière tient encore
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche juste en
+dessous a trouvé un défaut et deux trous, que j'ai relus dans le code
+avant d'y toucher.
+
+1. **La borne de 64 Mio ne survivait pas à une remise.** Une remise à
+   zéro (statut 0) ou une file reposée (registre `0x08`) vidait la liste
+   des requêtes en vol, et `tenus()` retombait à zéro. Mais les lectures
+   déjà confiées à l'arrière par `web/carte.js` restaient en vol, et
+   chacune y alloue toute sa longueur (l'`arrayBuffer` de `fetch`). Un
+   invité qui boucle « remise, file, lecture de 64 Mio, notification »
+   faisait donc partir 64 Mio de plus à chaque tour : le contrôleur a
+   mesuré dix lectures confiées, 640 Mio, pendant que `tenus()` en
+   annonçait 64. L'entrée d'en dessous disait « la carte ne tient jamais
+   plus, pour toutes les requêtes en vol » : c'était faux après une remise.
+2. **La reprise par `fini` n'était jugée par rien.** Retirer
+   `self.reprendre(ram)` de `fini` laissait toute la suite verte ; or ce
+   retrait fige l'invité (trois écritures de 32 Mio : la troisième ne part
+   jamais, car le pilote a publié et ne notifiera plus). L'entrée d'en
+   dessous affirmait « `lu` et `fini` relisent la file » sans que la
+   seconde moitié soit vérifiée.
+3. **Le test « `enVol` ne passe jamais par zéro » ne le prouvait pas.**
+   Inverser dans `web/carte.js` le décompte et la reprise (`finally` avant
+   le `then`) laissait `what_waits_for_room_leaves_on_the_answer` vert : le
+   compte n'y était relevé que dans `surReponse`, où il vaut 1 dans les
+   deux ordres. Et la justification de l'entrée d'en dessous (« entre deux
+   microtâches, aucune boucle hôte ne peut l'observer ») était fausse :
+   toute autre réaction de promesse déjà en file, la réponse d'une autre
+   requête ou son `surReponse`, s'exécute entre ces deux microtâches.
+
+**Ce qui change** (`crates/wisq-page/src/carte/virtio_blk.rs`, `mod.rs`,
+`tests/carte.rs`).
+
+- **Une requête confiée puis oubliée reste comptée jusqu'à sa réponse.**
+  L'oubli (remise, file reposée) range les requêtes déjà prises par la
+  boucle hôte dans une liste d'oubliées, par nom et longueur. Leur réponse
+  ne touche toujours pas à la RAM (`lu` et `fini` rendent `false`), mais
+  elles comptent dans `tenus()` et dans les 128 places jusqu'à ce qu'elle
+  vienne, et cette réponse fait reprendre la file. Une requête que la
+  boucle n'avait pas encore prise n'est jamais partie : elle est lâchée.
+- **Les oubliées prennent aussi une place parmi les 128.** Sans quoi un
+  invité qui boucle « remise, 128 requêtes » ferait grossir sans fin ce que
+  l'arrière sert. Le pilote n'y est pour rien : sa requête **attend**
+  (elle n'est pas refusée), comme pour la borne des octets. La 129ᵉ
+  requête *en vol*, elle, reste refusée comme avant.
+- **Un disque rebranché hérite de ce que l'ancien a confié**
+  (`succeder_a`, appelé par `brancher_disque`) : ses noms, comme avant, et
+  ses requêtes confiées sans réponse, qui restent comptées.
+- **`en_attente` compte une file qui attend de la place** : sa reprise
+  peut venir de la réponse d'une oubliée, donc `wakeable` doit l'attendre.
+  Une oubliée seule, sans file qui attend, ne lèvera rien.
+- **La file ne peut toujours pas rester bloquée** : elle n'attend que si
+  quelque chose est dehors (en vol ou oubliée), et chaque réponse la
+  relit. Cela suppose que l'arrière réponde à toute requête confiée, ce que
+  `web/carte.js` fait (résolue ou rejetée, `disqueLu` ou `disqueFini`).
+- **Le test Bun relève `enVol` à chaque microtâche** pendant que la
+  réponse se rend, par une autre chaîne de promesses : il doit voir 2 (la
+  seconde confiée, la première pas encore décomptée) et jamais 0.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs en natif (`--lib`, 80 → 84) :
+  `a_reset_does_not_give_back_what_the_backend_still_holds` (le cas du
+  contrôleur, dix tours « remise, file, lecture de 64 Mio, notification » :
+  une seule lecture confiée, somme 64 Mio, aucun refus ; la réponse
+  oubliée ne copie rien, puis la lecture du dixième tour part et se sert),
+  `forgotten_requests_still_take_their_place_in_the_queue` (128 lectures
+  confiées, une remise : la requête suivante attend, la réponse d'une
+  oubliée la fait partir),
+  `a_disk_plugged_anew_still_counts_what_the_old_one_left_out` (par la
+  carte entière : la lecture de 64 Mio de l'ancien disque fait attendre la
+  première du neuf, et `reveil()` le dit),
+  `a_finished_write_or_a_failure_lets_what_waited_leave` (trois écritures
+  de 32 Mio : la troisième part quand la première est finie ; une
+  quatrième part quand la deuxième échoue). Sous Bun,
+  `what_waits_for_room_leaves_on_the_answer` relève maintenant `1 2 1`
+  (minimum, maximum, dernier relevé).
+- **Neuf sabotages d'une ligne, chacun tombé, puis restauré** avec
+  `git diff --quiet` vérifié : l'oubli qui ne compte pas les confiées
+  (deux tests tombent) ; la borne des places sans les oubliées
+  (`forgotten_requests…`) ; la succession sans les oubliées
+  (`a_disk_plugged_anew_still_counts…`) ; **`reprendre` retiré de `fini`**
+  (`a_finished_write_or_a_failure…`, le trou 2) ; la reprise retirée à la
+  réponse d'une oubliée, `file_attend` jamais levé, `lu` puis `fini` qui
+  ignorent les oubliées (de un à trois tests tombent chaque fois) ; et
+  **dans `web/carte.js`, le `finally` placé avant la reprise** :
+  `what_waits_for_room_leaves_on_the_answer` tombe, relevé `0 1 1` au lieu
+  de `1 2 1` (le trou 3).
+- `cargo test --release` : 599 réussis, 0 échec (595 avant) ; même chose
+  avec `RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes"`
+  (599/0). `cargo test --release -p wisq-page` : lib 84, carte 6, page 6.
+  `cargo fmt --all --check`, les deux `cargo clippy` (`-D warnings`) et
+  `clippy -p wisq-page --target wasm32-unknown-unknown` : propres ;
+  `cargo build --release -p wisq-vm` : propre (rien n'y est touché).
+  Compte publié : 3492 → 3496 (Swift 2897 + Rust 599). Site :
+  `typecheck` et `build` propres, `bun test` 470/0.
+
+**Ce qui reste.**
+
+- Le contrat demandé à l'arrière : répondre à toute requête confiée. Un
+  arrière qui perdrait une réponse garderait sa place pour toujours, et la
+  file attendrait ; `web/carte.js` répond toujours, mais rien ne borne le
+  temps de cette réponse (pas de délai d'abandon).
+- Rien n'est encore branché dans `web/host.js` (le flux A y travaille) : le
+  raccord reste celui de l'avant-dernière entrée (« Le disque de la page :
+  pont PCI… »).
+- La borne de 64 Mio n'a pas été mesurée contre un vrai noyau sous charge.
+
 ## 2026-11-14 — Le disque de la page : une borne sur la somme, des noms qui ne reviennent pas, un statut qui n'est plus écrasé
 
 **Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente (le
