@@ -283,3 +283,78 @@ console.log("fin " + recopier() + " " + c.reveil());
     );
     assert_eq!(said(&text, "fin "), "11/0 false");
 }
+
+/// **Ce que l'application envoie, par le module wasm32** : une touche
+/// étendue posée tout de suite ou à son tour (`E0` devant), les lignes du
+/// dehors levées, baissées et refusées, et **un texte qui remplit la file
+/// sans laisser de touche enfoncée** — le défaut d'avant : `"a" + "A" ×
+/// 2048` finissait sur `Maj↓ A↓`, et Xorg répétait A sans fin.
+#[test]
+fn what_the_app_sends_reaches_the_guest_and_never_sticks_a_key() {
+    let module = page_module();
+    let script = format!(
+        r#"{prelude}
+const c = carte(module, {{ heure: () => 0 }});
+const hex = (v) => Number(v).toString(16);
+const vider = () => {{ const lus = []; while (c.lignes().maitre & 2) lus.push(hex(c.ports.in(0x60n, 1n))); return lus; }};
+// Tout de suite : la flèche haut, enfoncée.
+c.touche(0x48, true, true);
+console.log("touche " + vider().join(","));
+// À son tour : la flèche gauche, enfoncée puis relâchée.
+console.log("taper " + c.taper(0x4b, true, true) + " " + c.taper(0x4b, true, false));
+let tics = 0n;
+const jouer = () => {{ const lus = []; while (c.reveil()) {{ c.battre(tics); lus.push(...vider()); tics += 100000n; }} return lus; }};
+console.log("tapees " + jouer().join(","));
+// Les lignes du dehors.
+console.log("lever " + c.lever(5) + " " + c.lever(10));
+const l = c.lignes();
+console.log("levees " + hex(l.maitre) + "/" + hex(l.esclave) + " " + hex(l.tenuesMaitre & 0x20) + "/" + hex(l.tenuesEsclave & 0x04));
+console.log("baisser " + c.baisser(5) + " " + hex(c.lignes().maitre) + "/" + hex(c.lignes().esclave));
+console.log("refus " + [c.lever(0), c.lever(2), c.lever(4), c.lever(16), c.baisser(4)].join(","));
+c.baisser(10);
+// Le texte qui remplit la file : 2 + 4 × 2047 frappes, le « A » suivant ne
+// tient plus.
+console.log("frappes " + c.taperTexte("a" + "A".repeat(2048)));
+// La file est pleine à deux places près : deux touches enfoncées passent,
+// une troisième non ; leurs relâchements passent au-delà de la borne, pas
+// celui d'une touche relevée.
+console.log("borne " + [c.taper(0x30, false, true), c.taper(0x31, false, true), c.taper(0x32, false, true),
+  c.taper(0x30, false, false), c.taper(0x31, false, false), c.taper(0x32, false, false)].join(","));
+const lus = jouer();
+console.log("derniers " + lus.slice(-8).join(" "));
+const compte = (o) => lus.filter((x) => x === o).length;
+console.log("comptes " + [compte("2a"), compte("aa"), compte("1e"), compte("9e")].join(","));
+"#,
+        prelude = prelude(&module),
+    );
+    let text = run_driver("application", &script);
+    assert_eq!(
+        said(&text, "touche "),
+        "e0,48",
+        "E0 devant une touche étendue"
+    );
+    assert_eq!(said(&text, "taper "), "true true");
+    assert_eq!(said(&text, "tapees "), "e0,4b,e0,cb", "E0 à son tour aussi");
+    assert_eq!(said(&text, "lever "), "true true");
+    assert_eq!(
+        said(&text, "levees "),
+        "20/4 20/4",
+        "ligne 5 au maître, 10 à l'esclave"
+    );
+    assert_eq!(said(&text, "baisser "), "true 0/4");
+    assert_eq!(
+        said(&text, "refus "),
+        "false,false,false,false,false",
+        "les lignes de l'hôte, et au-delà de 15"
+    );
+    assert_eq!(said(&text, "frappes "), "8190");
+    assert_eq!(said(&text, "borne "), "true,true,false,true,true,false");
+    assert_eq!(
+        said(&text, "derniers "),
+        "2a 1e 9e aa 30 31 b0 b1",
+        "un caractère entier, puis chaque touche relâchée"
+    );
+    // « a » sans Maj, puis 2 047 « A » : Maj enfoncée et relâchée autant de
+    // fois, A aussi.
+    assert_eq!(said(&text, "comptes "), "2047,2047,2048,2048");
+}

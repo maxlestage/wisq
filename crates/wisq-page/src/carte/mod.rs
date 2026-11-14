@@ -246,16 +246,28 @@ impl Carte {
     }
 
     /// Une frappe posée à son tour, au rythme d'une main ([`Carte::battre`]).
-    pub fn taper(&mut self, code: CodeTouche, enfoncee: bool) {
-        self.ps2.taper(code, enfoncee);
+    /// `false` si la file pleine la refuse ; le relâchement d'une touche que
+    /// la file laisse enfoncée n'est jamais refusé ([`I8042::taper`]).
+    pub fn taper(&mut self, code: CodeTouche, enfoncee: bool) -> bool {
+        self.ps2.taper(code, enfoncee)
     }
 
     /// **Un texte**, tapé sur un clavier américain, au rythme d'une main.
-    /// Rend le nombre de frappes mises en file (la file est bornée).
+    /// Rend le nombre de frappes mises en file.
+    ///
+    /// La file est bornée ([`i8042::LIMITE_DE_FRAPPE`]), et un caractère y
+    /// entre **entier ou pas du tout** : couper Maj, A, A, Maj après le
+    /// premier A laissait A et Maj enfoncées dans l'invité. Le texte s'arrête
+    /// au premier caractère qui ne tient plus, plutôt que de sauter celui-là
+    /// et de taper les suivants, plus courts : l'invité reçoit le début du
+    /// texte, pas un texte troué.
     pub fn taper_texte(&mut self, texte: &str) -> usize {
         let avant = self.ps2.frappes.len();
-        for frappe in i8042::frappes_du_texte(texte) {
-            self.ps2.taper(frappe.code, frappe.enfoncee);
+        for caractere in texte.chars() {
+            let groupe = i8042::frappes_du_caractere(caractere);
+            if !self.ps2.taper_groupe(&groupe) {
+                break;
+            }
         }
         self.ps2.frappes.len() - avant
     }
@@ -437,6 +449,41 @@ mod tests {
             );
         }
         assert!(!carte.reveil());
+    }
+
+    /// **Un texte qui remplit la file s'arrête sur un caractère entier.**
+    /// Avant, la borne coupait `Maj A A Maj` après l'enfoncement : A et Maj
+    /// restaient enfoncées dans l'invité, et Xorg répétait A sans fin. Ici
+    /// le texte s'arrête au premier caractère qui ne tient plus, même si le
+    /// suivant, plus court, tiendrait : pas de texte troué.
+    #[test]
+    fn a_text_that_fills_the_queue_ends_on_a_whole_character() {
+        let mut carte = Carte::nouvelle();
+        let texte = format!("a{}Ab", "A".repeat(2047));
+        // « a » : deux frappes ; chaque « A » : quatre. 2 + 4 × 2 047 = 8 190,
+        // et le « A » suivant n'a plus que deux places.
+        assert_eq!(carte.taper_texte(&texte), 8_190);
+        let file: Vec<_> = carte.ps2.frappes.iter().copied().collect();
+        let fin: Vec<_> = file[file.len() - 4..]
+            .iter()
+            .map(|f| (f.code.jeu1, f.enfoncee))
+            .collect();
+        assert_eq!(
+            fin,
+            [(0x2A, true), (0x1E, true), (0x1E, false), (0x2A, false)],
+            "le dernier caractère est entier"
+        );
+        let compte = |jeu1, enfoncee| {
+            file.iter()
+                .filter(|f| f.code.jeu1 == jeu1 && f.enfoncee == enfoncee)
+                .count()
+        };
+        assert_eq!((compte(0x2A, true), compte(0x2A, false)), (2_047, 2_047));
+        assert_eq!((compte(0x1E, true), compte(0x1E, false)), (2_048, 2_048));
+        assert_eq!(compte(0x30, true), 0, "« b » ne passe pas devant « A »");
+        // Un autre texte, plus tard, prend les places qui restent.
+        assert_eq!(carte.taper_texte("b"), 2);
+        assert_eq!(carte.taper_texte("c"), 0);
     }
 
     /// **Les lignes du dehors, à niveau**, et le refus des lignes de l'hôte.

@@ -114,10 +114,11 @@ extern "C" fn carte_touche(jeu1: u32, etendue: u32, enfoncee: u32) {
     carte().touche(code(jeu1, etendue), enfoncee != 0);
 }
 
-/// Une frappe posée à son tour, au rythme d'une main.
+/// Une frappe posée à son tour, au rythme d'une main : 1 si elle est en
+/// file, 0 si la file pleine la refuse.
 #[no_mangle]
-extern "C" fn carte_taper(jeu1: u32, etendue: u32, enfoncee: u32) {
-    carte().taper(code(jeu1, etendue), enfoncee != 0);
+extern "C" fn carte_taper(jeu1: u32, etendue: u32, enfoncee: u32) -> u32 {
+    u32::from(carte().taper(code(jeu1, etendue), enfoncee != 0))
 }
 
 /// La place où copier un texte de `longueur` octets. Ne vaut que jusqu'au
@@ -138,7 +139,8 @@ extern "C" fn carte_texte(longueur: u32) -> i32 {
     let Some(Ok(texte)) = texte.get(..longueur as usize).map(std::str::from_utf8) else {
         return -1;
     };
-    // Borné par la file des frappes (8 192), donc bien en deçà d'un `i32`.
+    // Borné par la file des frappes (8 192) : un texte n'y entre jamais
+    // au-delà de la borne. Bien en deçà d'un `i32`.
     carte().taper_texte(texte) as i32
 }
 
@@ -203,7 +205,7 @@ mod tests {
         carte_touche(0x48, 1, 1);
         assert_eq!(carte_lignes(), 1 << 1);
         assert_eq!((carte_lire(0x60, 1), carte_lire(0x60, 1)), (0xE0, 0x48));
-        carte_taper(0x1E, 0, 1);
+        assert_eq!(carte_taper(0x1E, 0, 1), 1);
         assert_eq!(carte_reveil(), 1);
         assert_eq!(carte_lignes(), 0);
         carte_battre(1);

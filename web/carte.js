@@ -98,7 +98,8 @@ export function carte(source, { heure = Date.now } = {}) {
   }
 
   /// Un texte, au rythme d'une main, sur un clavier américain. Rend le nombre
-  /// de frappes mises en file.
+  /// de frappes mises en file : un caractère y entre entier ou pas du tout,
+  /// et le texte s'arrête au premier qui ne tient plus sous la borne.
   function taperTexte(chaine) {
     const octets = texte.encode(chaine);
     const place = porte.carte_texte_place(octets.length);
@@ -116,8 +117,9 @@ export function carte(source, { heure = Date.now } = {}) {
     taperTexte,
     /// Une touche posée tout de suite : son code du jeu 1, `E0` ou non.
     touche: (jeu1, etendue, enfoncee) => porte.carte_touche(jeu1, etendue ? 1 : 0, enfoncee ? 1 : 0),
-    /// Une frappe posée à son tour.
-    taper: (jeu1, etendue, enfoncee) => porte.carte_taper(jeu1, etendue ? 1 : 0, enfoncee ? 1 : 0),
+    /// Une frappe posée à son tour : `false` si la file pleine la refuse (le
+    /// relâchement d'une touche que la file laisse enfoncée passe toujours).
+    taper: (jeu1, etendue, enfoncee) => porte.carte_taper(jeu1, etendue ? 1 : 0, enfoncee ? 1 : 0) === 1,
     /// Un mouvement, Y vers le bas comme à l'écran ; les boutons en bits
     /// (gauche, droit, milieu).
     souris: (dx, dy, boutons) => porte.carte_souris(dx | 0, dy | 0, boutons),

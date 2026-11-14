@@ -45,8 +45,19 @@ const TRADUCTION: u8 = 0x40;
 /// touches, en tics du 8254 (1,193182 MHz) : les nombres du cœur Swift.
 pub const TENUE_TICS: u64 = 35_795;
 pub const ECART_TICS: u64 = 23_864;
-/// Une file bornée : un collage démesuré ne fait pas grossir la machine.
+/// **Une file bornée** : un collage démesuré ne fait pas grossir la machine.
+///
+/// La borne ne doit jamais couper une touche en deux. Une file pleine qui
+/// gardait l'enfoncement et jetait le relâchement laissait la touche (et Maj)
+/// enfoncées dans l'invité, et Xorg la répétait sans fin. D'où deux règles :
+/// un texte entre caractère par caractère, entier ou pas du tout
+/// ([`I8042::taper_groupe`]), et le relâchement d'une touche que la file
+/// laisse enfoncée passe toujours ([`I8042::taper`]). La file peut donc
+/// dépasser la borne, de [`TOUCHES`] relâchements au plus.
 pub const LIMITE_DE_FRAPPE: usize = 8192;
+/// Le nombre de touches distinctes : un code du jeu 1 sur un octet, avec ou
+/// sans `E0`.
+pub const TOUCHES: usize = 512;
 
 /// **Une touche du PC**, par son code du jeu 1 et son préfixe `E0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -123,6 +134,11 @@ pub struct I8042 {
     pub frappes: VecDeque<Frappe>,
     /// Le tic avant lequel rien d'autre ne part.
     frappe_reprend_a: u64,
+    /// **Les touches que la file laisse enfoncées** : celles dont la dernière
+    /// frappe admise est un enfoncement, un bit par touche (rang
+    /// [`rang_de_touche`]). C'est l'état de l'invité une fois la file jouée
+    /// jusqu'au bout ; qu'une frappe parte ne le change donc pas.
+    enfoncees_en_file: [u64; TOUCHES / 64],
 }
 
 impl Default for I8042 {
@@ -147,6 +163,7 @@ impl I8042 {
             remise_demandee: false,
             frappes: VecDeque::new(),
             frappe_reprend_a: 0,
+            enfoncees_en_file: [0; TOUCHES / 64],
         }
     }
 
@@ -320,12 +337,45 @@ impl I8042 {
 
     // --- Ce que l'hôte envoie ---
 
-    /// Une frappe de l'hôte, à poser quand son tour viendra
-    /// ([`I8042::rythmer`]).
-    pub fn taper(&mut self, code: CodeTouche, enfoncee: bool) {
-        if self.frappes.len() < LIMITE_DE_FRAPPE {
-            self.frappes.push_back(Frappe { code, enfoncee });
+    /// **Une frappe de l'hôte**, à poser quand son tour viendra
+    /// ([`I8042::rythmer`]). Rend `false` si la file pleine la refuse.
+    ///
+    /// Un enfoncement n'entre que sous la borne. Le relâchement d'une touche
+    /// que la file laisse enfoncée entre toujours, même au-delà : le refuser
+    /// laisserait la touche enfoncée dans l'invité pour de bon. Un autre
+    /// relâchement (d'une touche déjà relevée) n'entre que sous la borne,
+    /// comme un enfoncement, pour que rien ne fasse grossir la file sans fin.
+    pub fn taper(&mut self, code: CodeTouche, enfoncee: bool) -> bool {
+        let (mot, bit) = rang_de_touche(code);
+        let tenue = self.enfoncees_en_file[mot] & bit != 0;
+        if self.frappes.len() >= LIMITE_DE_FRAPPE && (enfoncee || !tenue) {
+            return false;
         }
+        self.poser(Frappe { code, enfoncee });
+        true
+    }
+
+    /// **Des frappes qui vont ensemble** (un caractère : Maj, la touche
+    /// enfoncée puis relâchée, Maj), admises toutes ou aucune : `false`, et
+    /// rien en file, si elles ne tiennent pas entières sous la borne.
+    pub fn taper_groupe(&mut self, groupe: &[Frappe]) -> bool {
+        if self.frappes.len().saturating_add(groupe.len()) > LIMITE_DE_FRAPPE {
+            return false;
+        }
+        for &frappe in groupe {
+            self.poser(frappe);
+        }
+        true
+    }
+
+    fn poser(&mut self, frappe: Frappe) {
+        let (mot, bit) = rang_de_touche(frappe.code);
+        if frappe.enfoncee {
+            self.enfoncees_en_file[mot] |= bit;
+        } else {
+            self.enfoncees_en_file[mot] &= !bit;
+        }
+        self.frappes.push_back(frappe);
     }
 
     /// Pose la frappe suivante si son heure est venue, à `maintenant` tics du
@@ -421,6 +471,12 @@ impl I8042 {
     }
 }
 
+/// Le mot et le bit d'une touche dans [`I8042::enfoncees_en_file`].
+fn rang_de_touche(code: CodeTouche) -> (usize, u64) {
+    let rang = usize::from(code.jeu1) | (usize::from(code.etendue) << 8);
+    (rang / 64, 1 << (rang % 64))
+}
+
 fn paquet(dx: i64, dy: i64, boutons: u8) -> [u8; 3] {
     let mut premier = 0x08 | (boutons & 0x07);
     if dx < 0 {
@@ -485,26 +541,32 @@ pub fn touche_du_caractere(caractere: char) -> Option<(CodeTouche, bool)> {
     None
 }
 
-/// **Ce qu'on tape, en touches enfoncées puis relâchées**, Maj autour quand il
-/// le faut : le pendant de `X86Keystrokes.typing`. Ce qu'un clavier QWERTY
-/// n'a pas est laissé de côté.
-pub fn frappes_du_texte(texte: &str) -> Vec<Frappe> {
-    let mut frappes = Vec::new();
-    for caractere in texte.chars() {
-        let Some((code, maj)) = touche_du_caractere(caractere) else {
-            continue;
-        };
-        let mut poser = |code, enfoncee| frappes.push(Frappe { code, enfoncee });
-        if maj {
-            poser(CodeTouche::MAJ_GAUCHE, true);
-        }
-        poser(code, true);
-        poser(code, false);
-        if maj {
-            poser(CodeTouche::MAJ_GAUCHE, false);
-        }
+/// **Les frappes d'un caractère** : la touche enfoncée puis relâchée, Maj
+/// autour quand il le faut. Vide pour ce qu'un clavier QWERTY n'a pas. Un
+/// caractère est l'unité qu'admet la file ([`I8042::taper_groupe`]) : chaque
+/// touche y est relâchée.
+pub fn frappes_du_caractere(caractere: char) -> Vec<Frappe> {
+    let Some((code, maj)) = touche_du_caractere(caractere) else {
+        return Vec::new();
+    };
+    let mut frappes = Vec::with_capacity(4);
+    let mut poser = |code, enfoncee| frappes.push(Frappe { code, enfoncee });
+    if maj {
+        poser(CodeTouche::MAJ_GAUCHE, true);
+    }
+    poser(code, true);
+    poser(code, false);
+    if maj {
+        poser(CodeTouche::MAJ_GAUCHE, false);
     }
     frappes
+}
+
+/// **Ce qu'on tape, en touches enfoncées puis relâchées**, caractère par
+/// caractère : le pendant de `X86Keystrokes.typing`. Ce qu'un clavier QWERTY
+/// n'a pas est laissé de côté.
+pub fn frappes_du_texte(texte: &str) -> Vec<Frappe> {
+    texte.chars().flat_map(frappes_du_caractere).collect()
 }
 
 #[cfg(test)]
@@ -669,6 +731,180 @@ mod tests {
             ps2.taper(CodeTouche::ESPACE, true);
         }
         assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE);
+    }
+
+    /// **Une file pleine ne coupe jamais une touche en deux.** Le défaut
+    /// hérité du cœur Swift : à la borne, l'enfoncement entrait et le
+    /// relâchement était jeté, et la touche restait enfoncée dans l'invité
+    /// — Xorg la répétait sans fin.
+    #[test]
+    fn a_full_queue_never_leaves_a_key_down() {
+        let mut ps2 = I8042::nouveau();
+        let (a, b) = (CodeTouche::simple(0x1E), CodeTouche::simple(0x30));
+        // Remplie jusqu'à une place de la borne, l'espace enfoncé en dernier.
+        while ps2.frappes.len() < LIMITE_DE_FRAPPE - 1 {
+            let enfoncee = ps2.frappes.len() % 2 == 0;
+            assert!(ps2.taper(CodeTouche::ESPACE, enfoncee));
+        }
+        assert!(ps2.taper(a, true), "la dernière place");
+        assert!(!ps2.taper(b, true), "plus de place pour un enfoncement");
+        assert!(!ps2.taper(b, false), "ni pour relâcher une touche relevée");
+        assert!(
+            ps2.taper(a, false),
+            "A était enfoncée : son relâchement passe"
+        );
+        assert!(ps2.taper(CodeTouche::ESPACE, false), "l'espace aussi");
+        assert!(!ps2.taper(a, false), "mais une seule fois");
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE + 2);
+        // Joué jusqu'au bout, chaque touche est relevée.
+        let mut tenues = std::collections::HashSet::new();
+        for frappe in &ps2.frappes {
+            if frappe.enfoncee {
+                tenues.insert(frappe.code);
+            } else {
+                tenues.remove(&frappe.code);
+            }
+        }
+        assert!(tenues.is_empty(), "{tenues:?}");
+    }
+
+    /// **Le dépassement est borné** : au plus un relâchement par touche
+    /// distincte, quoi que l'hôte envoie.
+    #[test]
+    fn the_queue_overflows_by_one_release_per_key_at_most() {
+        let mut ps2 = I8042::nouveau();
+        let toutes: Vec<CodeTouche> = (0..=u8::MAX)
+            .flat_map(|jeu1| [CodeTouche::simple(jeu1), CodeTouche::etendue(jeu1)])
+            .collect();
+        assert_eq!(toutes.len(), TOUCHES);
+        for &code in &toutes {
+            assert!(ps2.taper(code, true));
+        }
+        while ps2.taper(CodeTouche::ESPACE, true) {}
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE);
+        for &code in &toutes {
+            assert!(ps2.taper(code, false), "{code:?}");
+        }
+        for &code in &toutes {
+            assert!(!ps2.taper(code, false), "déjà relâchée : {code:?}");
+            assert!(!ps2.taper(code, true), "{code:?}");
+        }
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE + TOUCHES);
+    }
+
+    /// **Un groupe entre entier ou pas du tout**, sous la borne.
+    #[test]
+    fn a_group_of_keystrokes_is_taken_whole_or_not_at_all() {
+        let mut ps2 = I8042::nouveau();
+        let maj_a = frappes_du_caractere('A');
+        assert_eq!(maj_a.len(), 4);
+        while ps2.frappes.len() + 2 <= LIMITE_DE_FRAPPE - 2 {
+            assert!(ps2.taper_groupe(&frappes_du_caractere('a')));
+        }
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE - 2);
+        assert!(!ps2.taper_groupe(&maj_a), "quatre frappes, deux places");
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE - 2, "rien n'est entré");
+        assert!(
+            ps2.taper_groupe(&frappes_du_caractere('a')),
+            "deux tiennent"
+        );
+        assert!(ps2.taper_groupe(&[]), "un groupe vide tient toujours");
+        assert!(!ps2.taper_groupe(&frappes_du_caractere('a')));
+        assert_eq!(ps2.frappes.len(), LIMITE_DE_FRAPPE);
+    }
+
+    /// **Chaque octet écrit va où sa commande le dit**, et à personne
+    /// d'autre : `D2` le rend comme venant du clavier (ligne 1, pas 12), et
+    /// une nouvelle commande du contrôleur annule celle qui attendait son
+    /// octet — l'octet suivant va alors au clavier.
+    #[test]
+    fn each_written_byte_goes_where_its_command_says() {
+        let mut ps2 = I8042::nouveau();
+        ps2.ecrire_commande(0xD2);
+        ps2.ecrire_donnee(0x1E);
+        assert_eq!(ps2.etat() & 0x20, 0, "pas une sortie de la souris");
+        assert!(ps2.clavier_interrompt());
+        assert!(!ps2.souris_interrompt());
+        assert_eq!(vider(&mut ps2), [0x1E]);
+        // `60` attend la configuration ; `AA` passe avant, et l'octet
+        // suivant n'est plus à `60`.
+        let avant = ps2.configuration;
+        ps2.ecrire_commande(0x60);
+        ps2.ecrire_commande(0xAA);
+        assert_eq!(vider(&mut ps2), [0x55]);
+        ps2.ecrire_donnee(0xF2);
+        assert_eq!(ps2.configuration, avant, "le CTR n'a pas bougé");
+        assert_eq!(vider(&mut ps2), [0xFA, 0xAB, 0x41], "le clavier l'a reçu");
+    }
+
+    /// **Le clavier prend ses paramètres** : après `ED`, `F3` ou `F0`,
+    /// l'octet suivant est un paramètre, pas une commande. `F0 00` demande
+    /// le jeu en cours : le jeu 2, que le contrôleur rend `41` quand il
+    /// traduit.
+    #[test]
+    fn the_keyboard_takes_its_parameters() {
+        let mut ps2 = I8042::nouveau();
+        ps2.ecrire_donnee(0xF0);
+        ps2.ecrire_donnee(0x00);
+        assert_eq!(vider(&mut ps2), [0xFA, 0xFA, 0x41], "jeu 2, traduit");
+        // Les voyants à `FF` : un paramètre, pas une remise à zéro.
+        ps2.ecrire_donnee(0xED);
+        ps2.ecrire_donnee(0xFF);
+        assert_eq!(vider(&mut ps2), [0xFA, 0xFA]);
+        ps2.ecrire_donnee(0xF3);
+        ps2.ecrire_donnee(0xF2);
+        assert_eq!(vider(&mut ps2), [0xFA, 0xFA], "la cadence, pas l'identité");
+        // Choisir un jeu n'est qu'accusé ; sans traduction, le jeu se dit 2.
+        ps2.ecrire_donnee(0xF0);
+        ps2.ecrire_donnee(0x02);
+        assert_eq!(vider(&mut ps2), [0xFA, 0xFA]);
+        ps2.ecrire_commande(0x60);
+        ps2.ecrire_donnee(0x07);
+        ps2.ecrire_donnee(0xF0);
+        ps2.ecrire_donnee(0x00);
+        assert_eq!(vider(&mut ps2), [0xFA, 0xFA, 0x02], "jeu 2, non traduit");
+    }
+
+    /// **La souris dit son état, et sa remise à zéro l'éteint** : `E9`
+    /// rend le bit « rapporte » tel qu'il est, et `FF` coupe les paquets
+    /// jusqu'au prochain `F4`.
+    #[test]
+    fn the_mouse_reports_its_status_and_its_reset_silences_it() {
+        let mut ps2 = I8042::nouveau();
+        ps2.ecrire_commande(0xA8);
+        let souris = |ps2: &mut I8042, octet: u8| {
+            ps2.ecrire_commande(0xD4);
+            ps2.ecrire_donnee(octet);
+            vider(ps2)
+        };
+        assert_eq!(souris(&mut ps2, 0xE9), [0xFA, 0x00, 0x02, 100]);
+        assert_eq!(souris(&mut ps2, 0xF4), [0xFA]);
+        assert_eq!(souris(&mut ps2, 0xE9), [0xFA, 0x20, 0x02, 100]);
+        assert_eq!(souris(&mut ps2, 0xFF), [0xFA, 0xAA, 0x00]);
+        assert!(!ps2.souris_rapporte);
+        ps2.souris(4, 4, 0);
+        assert!(
+            vider(&mut ps2).is_empty(),
+            "remise à zéro : plus de paquets"
+        );
+        assert_eq!(souris(&mut ps2, 0xE9), [0xFA, 0x00, 0x02, 100]);
+    }
+
+    /// **Une souris coupée par le contrôleur se tait**, même allumée : `A7`
+    /// coupe le port, `A8` le rouvre.
+    #[test]
+    fn a_mouse_port_disabled_by_the_controller_sends_nothing() {
+        let mut ps2 = I8042::nouveau();
+        ps2.ecrire_commande(0xA8);
+        ps2.ecrire_commande(0xD4);
+        ps2.ecrire_donnee(0xF4);
+        vider(&mut ps2);
+        ps2.ecrire_commande(0xA7);
+        ps2.souris(4, 4, 1);
+        assert!(vider(&mut ps2).is_empty(), "port coupé");
+        ps2.ecrire_commande(0xA8);
+        ps2.souris(4, 4, 1);
+        assert_eq!(vider(&mut ps2).len(), 3, "port rouvert : un paquet");
     }
 
     /// Un caractère se tape sur un clavier américain.

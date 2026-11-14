@@ -346,7 +346,8 @@ pub(crate) mod tests {
     //! pour un, au même moment et aux mêmes octets. Le cinquième passe par
     //! les ports de la [`Carte`](super::super::Carte) au lieu de ceux de
     //! `X86Machine`. Un sixième tient le calendrier lui-même, que le Swift
-    //! n'avait pas à tester (il est à Foundation).
+    //! n'avait pas à tester (il est à Foundation), et un septième le réglage
+    //! en binaire, qu'aucun cas Swift ne tenait.
     use super::*;
 
     /// Le 30 octobre 2026, 17 h 05 min 09 s UTC, un vendredi — le moment des
@@ -494,6 +495,37 @@ pub(crate) mod tests {
             (0x20, 0x27),
             "2027"
         );
+    }
+
+    /// **Régler l'horloge en binaire** (`hwclock` sous un registre B
+    /// binaire) : les registres écrits se décodent en binaire, l'heure en
+    /// douze heures comprise. Décodés en BCD, `27` (`0x1B`) donnait 2021.
+    #[test]
+    fn the_guest_sets_the_clock_in_binary() {
+        let mut h = horloge();
+        h.choisir(0x0B);
+        h.ecrire(BINAIRE | REGLAGE);
+        for (registre, valeur) in [
+            (0x00, 7),
+            (0x02, 45),
+            (0x04, 8 | 0x80),
+            (0x07, 19),
+            (0x08, 12),
+            (0x09, 27),
+            (0x32, 20),
+        ] {
+            h.choisir(registre);
+            h.ecrire(valeur);
+        }
+        h.choisir(0x0B);
+        h.ecrire(BINAIRE);
+        assert_eq!(
+            h.heure_invite_ms(),
+            date_en_ms(2027, 12, 19, 20, 45, 7),
+            "8 h de l'après-midi, le 19 décembre 2027"
+        );
+        assert_eq!(lire(&mut h, 0x09), 27);
+        assert_eq!(lire(&mut h, 0x04), 8 | 0x80);
     }
 
     /// Le reste de la mémoire CMOS se relit tel qu'écrit.
