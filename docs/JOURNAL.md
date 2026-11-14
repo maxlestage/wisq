@@ -9126,6 +9126,7 @@ choses pour qu'on ne s'en prive pas en cours de route. Et une distribution
 complète tourne **aujourd'hui** sur un hôte, avec wisq comme écran — le lot 7
 ajoute un chemin, il n'en remplace aucun.
 
+
 ## 2026-09-03, ~19h30 UTC — « Ça fonctionne pas je te l'avais dit ! »
 
 Maxime a envoyé une capture. L'application refuse `omarchy-4.0.2.iso 2` avec :
@@ -9181,6 +9182,7 @@ Un refus juste peut égarer autant qu'un refus faux, s'il désigne la mauvaise
 cause. « Trop gros » et « pas la bonne machine » mènent à deux gestes
 différents, et le premier était un cul-de-sac déguisé en piste.
 
+
 ## 2026-09-03, ~18h UTC — arrêter d'inventer un plafond, et demander à iOS
 
 Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone pour
@@ -9225,6 +9227,7 @@ infligé une fois, sur l'image d'Omarchy.
 Donc une phrase, avec **les deux chiffres et quoi en faire**. « Pas assez de
 mémoire » sans nombre est une impasse : le lecteur ne peut pas savoir s'il doit
 fermer une application ou baisser le curseur. Un test l'exige explicitement.
+
 
 ## 2026-09-03, ~17h45 UTC — un curseur en gigaoctets, et le défaut que la question a fait sortir
 
@@ -9292,6 +9295,7 @@ Il glisse sur les **indices** des paliers, pas sur des octets : il saute donc
 de puissance de deux en puissance de deux au lieu de proposer des tailles
 qu'aucune machine n'a jamais eues.
 
+
 ## 2026-09-03, ~17h20 UTC — la garde que ni l'une ni l'autre des deux suites ne pouvait tenir
 
 Petite tranche, et sa justification tient en une mesure.
@@ -9328,6 +9332,7 @@ se trompe, c'est-à-dire de façon cohérente.
 Au passage, le second test dit une chose qui n'allait pas de soi : **démarrer
 une VM n'efface pas sa mémoire**. C'est une propriété de la machine, pas de sa
 session, et `settle` aurait pu la remettre à zéro sans que rien ne le remarque.
+
 
 ## 2026-09-03, ~17h UTC — la mémoire des VM distantes, lue avant d'être écrite
 
@@ -9399,6 +9404,7 @@ Huit au total, tous mordants : l'unité qui n'est plus vérifiée, les deux nomb
 confondus, les deux étiquettes échangées, l'état que `dominfo` ne rend plus, le
 JSON qui écrit un zéro plutôt que rien, la liste que perd une mémoire illisible,
 les deux nombres toujours dits, et les tailles comptées en puissances de dix.
+
 
 ## 2026-09-03, ~16h30 UTC — « l'espace de stockage », et ce que ça peut vouloir dire
 
@@ -9494,6 +9500,7 @@ mémoire en puissances de deux ; un chiffre de stockage en puissances de dix à
 côté d'un chiffre de mémoire qui ne l'est pas rendrait les deux incomparables,
 et c'est précisément côte à côte qu'ils apparaissent maintenant.
 
+
 ## 2026-09-03, ~16h UTC — le réglage de mémoire, et ce qu'il coûte
 
 La tranche précédente a rendu la mémoire réglable dans les deux cœurs. Celle-ci
@@ -9560,6 +9567,7 @@ n'est plus rognée par le plafond de l'appareil, le plafond qui redevient un
 quart, `clearAll` qui redevient un test de préfixe, le réglage qui cesse d'être
 classé par noyau, le retour au défaut qui écrit le nombre au lieu d'effacer
 l'entrée, et la garde qui refusait une valeur hors de la liste offerte.
+
 
 ## 2026-09-03, ~15h UTC — la mémoire réglable, et l'invité qui l'apprend
 
@@ -9647,6 +9655,7 @@ lisaient ainsi, tous dans du code que seul le job « App iOS » compile — donc
 la bascule vers une propriété d'instance aurait cassé la construction sans
 qu'aucun job Linux le dise. `LocalMachineMemory` porte maintenant la taille et
 le seuil, en un point ; c'est la ligne que le réglage déplacera.
+
 
 ## 2026-09-03, ~13h UTC — l'application a disparu, et la garde existait
 
@@ -19779,6 +19788,7 @@ est pas. L'argument était **ignoré**.
 Un « SURVÉCU » est une hypothèse, pas un résultat. Celle-ci se vérifie en une
 minute, et le vrai sabotage — ajouter 6 à la liste des vecteurs à code d'erreur,
 ce qui décale la pile du gestionnaire de huit octets — tombe aussitôt.
+
 
 ## Quatre fois de suite, la règle était déjà écrite ailleurs
 
@@ -30371,6 +30381,7 @@ plus clair du dégradé. Le pire pixel sous le grain passe de 5,11 à 5,52.
 construite : `theme.rs` et la page de développement l'écrivent donc sous cette
 forme. La garde « la couleur de la barre vient de la palette, partout » l'a
 vérifié sans qu'on ait à le lui dire.
+
 
 ## #339 — « mesuré » ne dit pas sur quelle machine, et mon témoin n'en était pas un
 
