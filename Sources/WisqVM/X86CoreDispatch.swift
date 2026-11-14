@@ -835,8 +835,26 @@ extension X86Core {
             // `FILD` factice : c'est le contournement de « FXSAVE leak ».
             x87Tags = 0xFFFF
 
-        case 0xC7:  // CMPXCHG8B
-            guard (try? Self.fields(instruction))?.reg == 1 else { throw Self.unknownTwoByte(opcode) }
+        case 0xC7:  // CMPXCHG8B, RDRAND, RDSEED
+            let group = try? Self.fields(instruction)
+            // **`/6` et `/7` en registre : `RDRAND` et `RDSEED`.** Un nombre
+            // tiré de la source de la machine (`X86Entropy`), à la largeur de
+            // l'opérande — la règle de `write` : seize bits gardent le haut,
+            // trente-deux l'effacent —, CF posé pour dire « il y en avait
+            // un », OF, SF, ZF, AF et PF effacés. La source ne manque jamais :
+            // CF vaut toujours un, et le noyau n'a pas à réessayer.
+            // `F3 0F C7 /7` est `RDPID`, et les formes mémoire sont les
+            // pointeurs de VMX : ni l'un ni les autres ne sont ici.
+            // Le champ `reg` porte ici l'extension de l'opcode, et REX.R n'y
+            // entre pas : `regField` l'y a ajouté, on le retire.
+            if let group, group.mod == 0b11, group.reg & 7 >= 6,
+               !instruction.hasPrefix(0xF3), !instruction.hasPrefix(0xF2) {
+                let size = Self.operandSize(instruction, byteForm: false)
+                write(group.rm, size, highByte: false, entropy.next())
+                flags = (flags & ~Flag.arithmetic) | Flag.carry
+                return
+            }
+            guard group?.reg == 1 else { throw Self.unknownTwoByte(opcode) }
             // Le même échange que `CMPXCHG`, sur huit octets et deux paires de
             // registres : EDX:EAX attendus, ECX:EBX à ranger. C'est ce que
             // promet le bit CX8 de CPUID, que la glibc exige pour démarrer.

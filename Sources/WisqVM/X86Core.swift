@@ -81,6 +81,10 @@ public struct X86Core: @unchecked Sendable {
     /// L'horloge du PC, aux ports 0x70 et 0x71 : voir `X86CMOSClock`. Hors de
     /// l'instantané — elle lit l'heure de l'hôte.
     var cmos = X86CMOSClock()
+    /// Ce que `RDRAND` et `RDSEED` rendent : voir `X86Entropy`. Hors de
+    /// l'instantané, comme l'horloge CMOS ; `X86Machine` y pose la sienne à
+    /// chaque cœur qu'elle construit.
+    public var entropy = X86Entropy.seeded(X86Entropy.reproducibleSeed)
     /// Le témoin des adresses non canoniques : armé ou non, et ce qu'il a vu.
     ///
     /// **Seul l'anneau trois est regardé** quand il est armé, et ce n'est pas

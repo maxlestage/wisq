@@ -21,6 +21,12 @@
 //! interesting part is a few megabytes is the difference between a snapshot a
 //! phone can take on every backgrounding and one it cannot.
 
+// **Sur `wasm32`, l'écrivain et le lecteur n'ont personne pour les appeler** :
+// `machine`, leur seul client, reste hors de cette cible (`lib.rs`). Ils sont
+// gardés plutôt que coupés, parce que la page aura à sauver son propre état ;
+// le compilateur ne doit simplement pas les compter comme du code mort là-bas.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+
 use crate::core::Core;
 
 /// Bytes at the start of every snapshot. Version last, so a future format can
