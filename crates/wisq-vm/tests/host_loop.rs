@@ -270,6 +270,20 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         wisq_vm::x86_wasm::TLB_PAGES.to_string(),
         "les pages qu'occupe le tampon"
     );
+    // **Ce que l'hôte dit à la marche qu'il vient faire.** Un `walkMachine`
+    // faux ferait juger la délivrance d'une faute sur les droits de la page —
+    // et fauter en posant un cadre sur la pile du noyau ; un `walkFetch` faux
+    // laisserait un programme exécuter une page du noyau.
+    assert_eq!(
+        value("walkMachine"),
+        wisq_vm::x86_wasm::WALK_MACHINE.to_string(),
+        "l'accès du processeur pour lui-même"
+    );
+    assert_eq!(
+        value("walkFetch"),
+        wisq_vm::x86_wasm::WALK_FETCH.to_string(),
+        "le chargement d'instruction"
+    );
 }
 
 /// **Et le périmètre de cette répétition, que rien ne comptait.**
@@ -11082,7 +11096,14 @@ const vm = machine({{
   pages: {pages},
 }});
 {placed}const vue = new DataView(vm.memory.buffer);
-const present = 0x3n;
+// **Présente, inscriptible, et utilisateur.** Le programme de ce montage tourne
+// en anneau trois : son code et la page qu'il lit doivent porter le bit
+// utilisateur à tous les niveaux, sinon le chargement de sa première
+// instruction faute — c'est ce que fait le silicium, et ce que fait l'émetteur
+// depuis que sa marche juge les droits. Les pages du noyau qui vivent dans la
+// même identité (la GDT, le TSS, les piles) ne sont lues que par le
+// processeur pour lui-même, qu'aucun droit n'arrête.
+const present = 0x7n;
 const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
 // L'identité sur les quatre premiers mébioctets : le code, les tables, la GDT,
 // le TSS et les trois piles y vivent.
@@ -17477,4 +17498,891 @@ fn an_instruction_with_several_accesses_changes_nothing_when_one_of_them_faults(
         fault.keeps(&what, &before);
         untouched(&fault, &what);
     }
+}
+
+/// **Le banc des droits des pages** : l'écriture, l'anneau, et le code
+/// d'erreur que la faute porte.
+///
+/// La marche de l'émetteur ne regardait que le bit de présence, et posait
+/// toujours le code d'erreur zéro. Une écriture sur une page en lecture seule
+/// passait donc : la copie à l'écriture d'après un `fork` n'avait jamais lieu
+/// — le fils écrivait dans les pages du père —, et la première écriture dans
+/// une page anonyme neuve allait dans la **page zéro** que le noyau partage
+/// entre tous, parce qu'une faute annoncée « lecture » lui fait poser cette
+/// page-là, en lecture seule, et rejouer. Un programme d'anneau trois lisait
+/// aussi la mémoire du noyau. Le cœur Swift (`X86Paging.swift`, `allowed`) et
+/// l'interprète Rust (`x86_paging.rs`, `permits`) tiennent ces bits ; le
+/// silicium aussi, et c'est ce que ce banc lui demande.
+///
+/// La machine : la pagination posée par le pilote — CR0.PG, avec ou sans
+/// CR0.WP —, l'anneau aussi, une page de code en identité à `RIGHTS_CODE`, et
+/// une page de données haute, `RIGHTS_PAGE`, dont le pilote choisit les bits :
+/// ceux des trois niveaux au-dessus d'elle et ceux de sa feuille. La page
+/// d'après est absente, ou posée sur une trame **qui n'est pas la voisine**.
+/// Pas d'IDT : une faute arrête la machine, et l'état se lit tel que
+/// l'instruction fautive l'a laissé — le témoin porte le code d'erreur que le
+/// module a posé, **plus un** ; le bit utilisateur, l'hôte l'ajoute à la
+/// délivrance (voir `a_ring_three_access_to_a_present_supervisor_page_says_present_and_user`).
+///
+/// **Les régions se traduisent à la demande**, par `x86-translate` sur la
+/// fenêtre que l'hôte a lue **par les tables** : c'est aussi le chargement
+/// d'instruction qui est éprouvé, et un second programme peut suivre le
+/// premier sans qu'on ait à graver son créneau.
+struct Rights {
+    text: String,
+}
+
+/// Un cas du banc.
+struct RightsCase {
+    /// L'anneau du premier programme : zéro ou trois.
+    ring: u8,
+    /// CR0.WP.
+    write_protect: bool,
+    /// Les bits des trois niveaux au-dessus de la page de données.
+    upper: u64,
+    /// Ceux de sa feuille.
+    leaf: u64,
+    /// Ceux de la feuille de la page d'après, ou rien : absente.
+    next: Option<u64>,
+    /// Ceux des quatre niveaux qui portent la page de code.
+    code: u64,
+    program: Vec<u8>,
+    /// **Un second programme, son anneau**, joué après le premier sur le même
+    /// tampon de traduction : le pilote ne touche ni à CR0 ni à CR3 entre les
+    /// deux, donc rien ne le vide.
+    then: Option<(u8, Vec<u8>)>,
+}
+
+const RIGHTS_PAGES: u32 = 64;
+const RIGHTS_CODE: u64 = 0x1_0000;
+/// Où le second programme est posé : dans la même page de code.
+const RIGHTS_THEN: u64 = 0x1_0800;
+const RIGHTS_PML4: u64 = 0x2_0000;
+const RIGHTS_PDPT: u64 = 0x2_1000;
+const RIGHTS_PD: u64 = 0x2_2000;
+const RIGHTS_PT: u64 = 0x2_3000;
+const RIGHTS_PDPT_LOW: u64 = 0x2_4000;
+const RIGHTS_PD_LOW: u64 = 0x2_5000;
+const RIGHTS_PT_LOW: u64 = 0x2_6000;
+/// La page de données, et sa trame.
+const RIGHTS_PAGE: u64 = 0xFFFF_8000_0020_4000;
+const RIGHTS_FRAME: u64 = 0x3_0000;
+/// La trame de la page d'après, quand elle est posée. **Pas
+/// `RIGHTS_FRAME + 0x1000`.**
+const RIGHTS_NEXT_FRAME: u64 = 0x3_8000;
+
+/// Les trois bits d'une entrée que ce banc fait varier.
+const PTE_PRESENT: u64 = 1;
+const PTE_WRITABLE: u64 = 1 << 1;
+const PTE_USER: u64 = 1 << 2;
+/// Une entrée que tout le monde peut lire et écrire.
+const PTE_ALL: u64 = PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+/// **Le témoin de faute que le module pose : le code d'erreur plus un.** P
+/// (bit 0) dit « la page est là, c'est un droit qui manque », W (bit 1) dit
+/// « c'était une écriture ». Le bit 2, l'anneau, l'hôte l'ajoute.
+const WITNESS_ABSENT_READ: u64 = 1;
+const WITNESS_ABSENT_WRITE: u64 = 0b10 + 1;
+const WITNESS_DENIED_READ: u64 = 0b01 + 1;
+const WITNESS_DENIED_WRITE: u64 = 0b11 + 1;
+
+/// Ce que le motif de la page de données vaut en `RIGHTS_PAGE + 0xfc0`, lu
+/// sur huit octets : 1, 2, … 8.
+const RIGHTS_PATTERN: u64 = 0x0807_0605_0403_0201;
+/// Ce que les programmes écrivent.
+const RIGHTS_VALUE: u64 = 0x8877_6655_4433_2211;
+
+impl RightsCase {
+    /// Un cas d'anneau zéro, WP allumé — ce que Linux pose —, la page de
+    /// données lisible et inscriptible par tous, la page d'après absente.
+    fn new(program: Vec<u8>) -> Self {
+        RightsCase {
+            ring: 0,
+            write_protect: true,
+            upper: PTE_ALL,
+            leaf: PTE_ALL,
+            next: None,
+            code: PTE_ALL,
+            program,
+            then: None,
+        }
+    }
+}
+
+impl Rights {
+    fn run(name: &str, case: &RightsCase) -> Rights {
+        let Some(bun) = bun() else {
+            panic!("Bun est absent : ce test ne serait vérifié par rien.");
+        };
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-droits-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let first = scratch.join("premier.bin");
+        std::fs::write(&first, &case.program).expect("le programme");
+        let second = scratch.join("second.bin");
+        let (then_ring, then) = match &case.then {
+            Some((ring, bytes)) => {
+                assert!(
+                    bytes.len() < 0x800,
+                    "le second programme tient dans sa demi-page"
+                );
+                std::fs::write(&second, bytes).expect("le second programme");
+                (*ring, true)
+            }
+            None => (0, false),
+        };
+        assert!(
+            case.program.len() < 0x800,
+            "le premier programme tient dans sa demi-page"
+        );
+        let selectors = |ring: u8| {
+            if ring == 3 {
+                (0x33u64, 0x2bu64)
+            } else {
+                (0x10, 0x18)
+            }
+        };
+        let (cs, ss) = selectors(case.ring);
+        let (then_cs, then_ss) = selectors(then_ring);
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+const octets = new Uint8Array(vm.memory.buffer);
+octets.set(readFileSync({first:?}), {code});
+if ({then}) octets.set(readFileSync({second:?}), {then_at});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+// La page de code, en identité, par quatre niveaux qui portent tous ses bits.
+const code = BigInt({code_flags});
+vue.setBigUint64({pml4} + idx({code}n, 39) * 8, {pdpt_low}n | code, true);
+vue.setBigUint64({pdpt_low} + idx({code}n, 30) * 8, {pd_low}n | code, true);
+vue.setBigUint64({pd_low} + idx({code}n, 21) * 8, {pt_low}n | code, true);
+vue.setBigUint64({pt_low} + idx({code}n, 12) * 8, {code}n | code, true);
+// La page de données : les bits des trois niveaux, puis ceux de la feuille.
+const haut = BigInt({upper});
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | haut, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | haut, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | haut, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | BigInt({leaf}), true);
+if ({next} !== null) {{
+  vue.setBigUint64({pt} + idx({page}n + 0x1000n, 12) * 8, {next_frame}n | BigInt({next}), true);
+}}
+// Le motif : 1, 2, … 64 au bout de la page, 65, … 128 au début de la suivante.
+for (let i = 0; i < 64; i++) vue.setUint8({frame} + 0xfc0 + i, i + 1);
+for (let i = 0; i < 64; i++) vue.setUint8({next_frame} + i, i + 65);
+new Uint8Array(vm.memory.buffer, {frame} + 0x1000, 64).fill(0xee);
+// La pagination et l'anneau, posés : un programme d'anneau trois ne pourrait
+// écrire ni CR0 ni CR3.
+vm.globals[{control}].value = (1n << 31n) | ({wp} ? 1n << 16n : 0n);
+vm.globals[{control} + 2].value = {pml4}n;
+vm.globals[{segment} + 1].value = {cs}n;
+vm.globals[{segment} + 2].value = {ss}n;
+vm.globals[{rip}].value = {code}n;
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const hex = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+const releve = (avant, why) => {{
+  console.log(avant + "arret " + why.stopped);
+  for (let r = 0; r < 16; r++) console.log(avant + "r" + r + " " + lire(r));
+  console.log(avant + "rip " + lire({rip}));
+  console.log(avant + "cr2 " + lire({control} + 1));
+  console.log(avant + "faute " + lire({fault}));
+  console.log(avant + "haut " + hex({frame} + 0xfc0, 64));
+  console.log(avant + "suite " + hex({next_frame}, 64));
+  console.log(avant + "voisine " + hex({frame} + 0x1000, 64));
+}};
+releve("", await vm.run({{ budget: 256n, rounds: 8 }}));
+if ({then}) {{
+  // Le premier s'est arrêté sur son `ud2` : son arrêt est effacé, rien
+  // d'autre. Le tampon de traduction reste tel qu'il l'a laissé.
+  vm.globals[{stop}].value = 0n;
+  vm.globals[{segment} + 1].value = {then_cs}n;
+  vm.globals[{segment} + 2].value = {then_ss}n;
+  vm.globals[{rip}].value = {then_at}n;
+  releve("2:", await vm.run({{ budget: 256n, rounds: 8 }}));
+}}
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                translator = env!("CARGO_BIN_EXE_x86-translate"),
+                pages = RIGHTS_PAGES,
+                first = first.to_string_lossy(),
+                second = second.to_string_lossy(),
+                then = then,
+                then_at = RIGHTS_THEN,
+                code = RIGHTS_CODE,
+                code_flags = case.code,
+                upper = case.upper,
+                leaf = case.leaf,
+                next = case
+                    .next
+                    .map_or("null".to_string(), |bits| bits.to_string()),
+                page = RIGHTS_PAGE,
+                frame = RIGHTS_FRAME,
+                next_frame = RIGHTS_NEXT_FRAME,
+                pml4 = RIGHTS_PML4,
+                pdpt = RIGHTS_PDPT,
+                pd = RIGHTS_PD,
+                pt = RIGHTS_PT,
+                pdpt_low = RIGHTS_PDPT_LOW,
+                pd_low = RIGHTS_PD_LOW,
+                pt_low = RIGHTS_PT_LOW,
+                wp = case.write_protect,
+                control = CONTROL_SLOT,
+                segment = SEGMENT_SLOT,
+                cs = cs,
+                ss = ss,
+                then_cs = then_cs,
+                then_ss = then_ss,
+                rip = RIP_SLOT,
+                fault = FAULT_SLOT,
+                stop = wisq_vm::x86_wasm::STOP_SLOT,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        Rights { text }
+    }
+
+    fn line(&self, field: &str) -> &str {
+        self.text
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {}", self.text))
+            .trim()
+    }
+
+    fn number(&self, field: &str) -> u64 {
+        self.line(field).parse().expect("un nombre")
+    }
+
+    /// Les soixante-quatre octets d'une des trois fenêtres relevées.
+    fn bytes(&self, field: &str) -> Vec<u8> {
+        let text = self.line(field);
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet"))
+            .collect()
+    }
+
+    /// Les huit premiers octets du motif, au bout de la page de données.
+    fn first_word(&self, phase: &str) -> u64 {
+        let text = self.line(&format!("{phase}haut "));
+        let mut bytes = [0u8; 8];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet");
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    /// Le programme est allé jusqu'à son `ud2` sans fauter.
+    fn finishes(&self, what: &str, phase: &str) {
+        assert_eq!(
+            self.number(&format!("{phase}faute ")),
+            0,
+            "{what} : l'accès a le droit, rien ne faute : {}",
+            self.text
+        );
+        assert_eq!(
+            self.line(&format!("{phase}arret ")),
+            UD2_SANS_PORTE,
+            "{what} : la machine va jusqu'au `ud2` : {}",
+            self.text
+        );
+    }
+
+    /// **La faute a eu lieu, sur `rip`, avec `cr2`, et le témoin porte le
+    /// code d'erreur juste**, plus un.
+    fn faults(&self, what: &str, phase: &str, rip: u64, cr2: u64, witness: u64) {
+        assert_eq!(
+            self.line(&format!("{phase}arret ")),
+            FAUTE_SANS_PORTE,
+            "{what} : la machine s'arrête sur une faute de page : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}faute ")),
+            witness,
+            "{what} : le témoin porte le code d'erreur plus un — P pour un droit \
+             qui manque, W pour une écriture : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}rip ")),
+            rip,
+            "{what} : RIP nomme l'instruction fautive : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}cr2 ")),
+            cr2,
+            "{what} : CR2 porte l'adresse fautive : {}",
+            self.text
+        );
+    }
+}
+
+/// Les octets qui lisent huit octets à `RIGHTS_PAGE + 0xfc0` dans RAX, et
+/// l'adresse de la lecture.
+fn rights_read(into: &mut Vec<u8>) -> u64 {
+    into.extend_from_slice(&movabs(6, RIGHTS_PAGE + 0xfc0)); // movabs $PAGE+0xfc0,%rsi
+    let at = into.len() as u64;
+    into.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax
+    at
+}
+
+/// Les octets qui écrivent `RIGHTS_VALUE` à `RIGHTS_PAGE + 0xfc0`, et
+/// l'adresse de l'écriture.
+fn rights_write(into: &mut Vec<u8>) -> u64 {
+    into.extend_from_slice(&movabs(6, RIGHTS_PAGE + 0xfc0));
+    into.extend_from_slice(&movabs(3, RIGHTS_VALUE)); // movabs $VALUE,%rbx
+    let at = into.len() as u64;
+    into.extend_from_slice(&[0x48, 0x89, 0x1e]); // mov %rbx,(%rsi)
+    at
+}
+
+/// Un programme fait d'un accès puis d'un `ud2` ; rend le programme et
+/// l'adresse de l'accès.
+fn rights_program(access: fn(&mut Vec<u8>) -> u64) -> (Vec<u8>, u64) {
+    let mut program = Vec::new();
+    let at = access(&mut program);
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    (program, RIGHTS_CODE + at)
+}
+
+/// **Une écriture sur une page en lecture seule faute en anneau zéro quand
+/// CR0.WP est allumé, et passe quand il est éteint.**
+///
+/// C'est la règle du manuel (« CR0.WP … inhibits supervisor-level procedures
+/// from writing into read-only pages ») et celle du cœur Swift (`allowed`) :
+/// Linux allume WP, et c'est ce qui rend la copie à l'écriture sûre même quand
+/// c'est le noyau qui écrit dans la mémoire d'un programme — un `read(2)` dans
+/// un tampon que `fork` vient de partager.
+///
+/// **Les droits sont le ET des quatre niveaux.** Une table qui n'est pas
+/// inscriptible interdit d'écrire dans tout ce qu'elle couvre, même si la
+/// feuille dit le contraire : le deuxième cas le tient.
+///
+/// Le code d'erreur porte P (la page est là, c'est le droit qui manque) et W
+/// (c'était une écriture) : le témoin vaut `0b11 + 1`. Et la faute arrive
+/// **avant** l'écriture : le motif est intact.
+#[test]
+fn a_write_to_a_read_only_page_faults_under_write_protect_and_passes_without() {
+    let (program, at) = rights_program(rights_write);
+    let address = RIGHTS_PAGE + 0xfc0;
+
+    let mut case = RightsCase::new(program.clone());
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let leaf = Rights::run("wp-feuille", &case);
+    leaf.faults(
+        "WP allumé, feuille en lecture seule",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        leaf.first_word(""),
+        RIGHTS_PATTERN,
+        "la faute arrive avant l'écriture : rien n'est écrit : {}",
+        leaf.text
+    );
+
+    case.leaf = PTE_ALL;
+    case.upper = PTE_PRESENT | PTE_USER;
+    let upper = Rights::run("wp-niveaux", &case);
+    upper.faults(
+        "WP allumé, feuille inscriptible sous des tables qui ne le sont pas",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        upper.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        upper.text
+    );
+
+    case.write_protect = false;
+    case.upper = PTE_ALL;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let through = Rights::run("sans-wp", &case);
+    through.finishes(
+        "WP éteint : le noyau écrit à travers une page en lecture seule",
+        "",
+    );
+    assert_eq!(
+        through.first_word(""),
+        RIGHTS_VALUE,
+        "sans WP, l'écriture du noyau a lieu : {}",
+        through.text
+    );
+
+    let (read, _) = rights_program(rights_read);
+    let mut case = RightsCase::new(read);
+    case.leaf = PTE_PRESENT;
+    let reads = Rights::run("lecture", &case);
+    reads.finishes("une lecture n'a besoin que de la présence", "");
+    assert_eq!(
+        reads.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a rendu le motif : {}",
+        reads.text
+    );
+}
+
+/// **Le tampon de traduction ne laisse pas passer une écriture par une entrée
+/// qu'une lecture a remplie.**
+///
+/// Le tampon de l'émetteur ne portait que le numéro de page : la lecture le
+/// remplissait, et l'écriture qui suivait sur la même page y trouvait sa trame
+/// sans repasser par la marche — donc sans que personne ne regarde le bit
+/// d'écriture. Un contrôle dans la seule marche ne suffit pas : c'est ce que le
+/// commentaire d'`allowed` dit côté Swift, et ce que ce test tient. La
+/// lecture, l'écriture, puis un `add` en mémoire — une lecture et une écriture
+/// dans la même instruction — sur une page en lecture seule.
+#[test]
+fn the_buffer_does_not_let_a_write_through_an_entry_a_read_filled() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let mut program = Vec::new();
+    rights_read(&mut program);
+    let at = RIGHTS_CODE + rights_write(&mut program);
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let mut case = RightsCase::new(program);
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("tampon", &case);
+    fault.faults(
+        "une écriture après une lecture de la même page",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture d'avant a eu lieu — c'est elle qui a rempli le tampon : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, address));
+    program.extend_from_slice(&movabs(3, RIGHTS_VALUE));
+    let at = RIGHTS_CODE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x01, 0x1e]); // add %rbx,(%rsi)
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("ajout", &case);
+    fault.faults(
+        "un `add` en mémoire : il lit, puis il écrit",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+}
+
+/// **Un programme d'anneau trois n'atteint pas une page du superviseur.**
+///
+/// Le bit utilisateur, lui aussi, est le ET des quatre niveaux : une feuille
+/// qui le porte sous une table qui ne le porte pas reste fermée. Le noyau,
+/// lui, lit et écrit les pages d'un programme — cette machine n'annonce pas
+/// SMAP, donc rien ne l'en empêche, et `copy_to_user` en dépend.
+#[test]
+fn ring_three_cannot_reach_a_supervisor_page() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let (read, read_at) = rights_program(rights_read);
+    let (write, write_at) = rights_program(rights_write);
+
+    let mut case = RightsCase::new(read.clone());
+    case.ring = 3;
+    case.leaf = PTE_PRESENT | PTE_WRITABLE;
+    Rights::run("u-lecture", &case).faults(
+        "anneau trois, lecture d'une feuille du superviseur",
+        "",
+        read_at,
+        address,
+        WITNESS_DENIED_READ,
+    );
+    case.program = write.clone();
+    let fault = Rights::run("u-ecriture", &case);
+    fault.faults(
+        "anneau trois, écriture dans une feuille du superviseur",
+        "",
+        write_at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+
+    case.program = read.clone();
+    case.leaf = PTE_ALL;
+    case.upper = PTE_PRESENT | PTE_WRITABLE;
+    Rights::run("u-niveaux", &case).faults(
+        "anneau trois, feuille utilisateur sous des tables du superviseur",
+        "",
+        read_at,
+        address,
+        WITNESS_DENIED_READ,
+    );
+
+    case.upper = PTE_ALL;
+    let reads = Rights::run("u-permis", &case);
+    reads.finishes("anneau trois, une page à lui", "");
+    assert_eq!(
+        reads.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a eu lieu : {}",
+        reads.text
+    );
+    case.program = write;
+    let writes = Rights::run("u-permis-ecriture", &case);
+    writes.finishes("anneau trois, une page à lui, inscriptible", "");
+    assert_eq!(
+        writes.first_word(""),
+        RIGHTS_VALUE,
+        "l'écriture a eu lieu : {}",
+        writes.text
+    );
+
+    case.ring = 0;
+    case.program = read;
+    let kernel = Rights::run("noyau-sur-page-utilisateur", &case);
+    kernel.finishes(
+        "anneau zéro sur une page utilisateur : pas de SMAP annoncé",
+        "",
+    );
+    assert_eq!(
+        kernel.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a eu lieu : {}",
+        kernel.text
+    );
+}
+
+/// **En anneau trois, une page en lecture seule le reste, WP ou non.** CR0.WP
+/// ne règle que le superviseur ; un programme qui écrit dans une page que
+/// `fork` a partagée doit fauter, sinon le fils écrit dans la mémoire du père.
+#[test]
+fn ring_three_cannot_write_a_read_only_page_even_without_write_protect() {
+    let (write, at) = rights_program(rights_write);
+    let mut case = RightsCase::new(write);
+    case.ring = 3;
+    case.write_protect = false;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("u-sans-wp", &case);
+    fault.faults(
+        "anneau trois, WP éteint, page en lecture seule",
+        "",
+        at,
+        RIGHTS_PAGE + 0xfc0,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+}
+
+/// **Une entrée du tampon remplie en anneau zéro n'ouvre rien à l'anneau
+/// trois.**
+///
+/// Le tampon survit aux changements d'anneau — un vrai processeur ne le vide
+/// pas à chaque appel système, et l'émetteur non plus. Ce qu'il range doit
+/// donc dire **ce que la page permet**, pas ce que l'accès qui l'a rempli
+/// avait le droit de faire : sinon le noyau lit une page à lui, rend la main
+/// au programme, et le programme la lit par la même case.
+///
+/// Et le cas jumeau, le plus sournois : WP éteint, le noyau **écrit** dans une
+/// page utilisateur en lecture seule — il le peut —, puis le programme écrit
+/// au même endroit. L'écriture du noyau ne doit pas avoir rangé « on peut
+/// écrire ».
+#[test]
+fn an_entry_filled_in_ring_zero_does_not_open_a_page_to_ring_three() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let (first, _) = rights_program(rights_read);
+    let (second, at) = rights_program(rights_read);
+    let mut case = RightsCase::new(first);
+    case.leaf = PTE_PRESENT | PTE_WRITABLE;
+    case.then = Some((3, second));
+    let run = Rights::run("anneaux-lecture", &case);
+    run.finishes("le noyau lit sa page", "");
+    run.faults(
+        "puis le programme, par la même case du tampon",
+        "2:",
+        at - RIGHTS_CODE + RIGHTS_THEN,
+        address,
+        WITNESS_DENIED_READ,
+    );
+
+    let (first, _) = rights_program(rights_write);
+    let (second, at) = rights_program(rights_write);
+    let mut case = RightsCase::new(first);
+    case.write_protect = false;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    case.then = Some((3, second));
+    let run = Rights::run("anneaux-ecriture", &case);
+    run.finishes(
+        "WP éteint, le noyau écrit dans une page en lecture seule",
+        "",
+    );
+    run.faults(
+        "puis le programme écrit au même endroit",
+        "2:",
+        at - RIGHTS_CODE + RIGHTS_THEN,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+}
+
+/// **Une faute sur une page absente dit si c'était une écriture.**
+///
+/// Le bit W du code d'erreur ne dépend pas de la présence. Linux s'en sert dès
+/// la première écriture dans une page anonyme neuve : annoncée « lecture »,
+/// elle lui fait poser la page zéro partagée, en lecture seule, puis rejouer
+/// l'instruction — qui faute une seconde fois, ou, sans protection en
+/// écriture, **écrit dans la page zéro de tout le système**.
+#[test]
+fn a_fault_on_an_absent_page_says_whether_it_was_a_write() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    for (name, access, witness) in [
+        (
+            "absente-lecture",
+            rights_read as fn(&mut Vec<u8>) -> u64,
+            WITNESS_ABSENT_READ,
+        ),
+        ("absente-ecriture", rights_write, WITNESS_ABSENT_WRITE),
+    ] {
+        let (program, at) = rights_program(access);
+        let mut case = RightsCase::new(program);
+        case.leaf = 0;
+        Rights::run(name, &case).faults(name, "", at, address, witness);
+    }
+}
+
+/// **Une écriture à cheval sur une page en lecture seule n'écrit ni dans
+/// l'une ni dans l'autre**, et CR2 nomme le premier octet de la seconde.
+///
+/// Le chemin lent marche les deux pages avant le premier octet : la seconde
+/// doit y être jugée **en écriture**, pas seulement en présence. Une lecture
+/// à cheval, elle, passe.
+#[test]
+fn a_write_across_into_a_read_only_page_writes_neither_page() {
+    let start = RIGHTS_PAGE + 0xffc;
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, start));
+    program.extend_from_slice(&movabs(3, RIGHTS_VALUE));
+    let at = RIGHTS_CODE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x89, 0x1e]); // mov %rbx,(%rsi)
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.next = Some(PTE_PRESENT | PTE_USER);
+    let fault = Rights::run("cheval-ecriture", &case);
+    fault.faults(
+        "une écriture à cheval, la seconde page en lecture seule",
+        "",
+        at,
+        RIGHTS_PAGE + 0x1000,
+        WITNESS_DENIED_WRITE,
+    );
+    let pattern: Vec<u8> = (1..=64).collect();
+    let suite: Vec<u8> = (65..=128).collect();
+    assert_eq!(
+        fault.bytes("haut "),
+        pattern,
+        "rien dans la première page : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.bytes("suite "),
+        suite,
+        "rien dans la seconde : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.bytes("voisine "),
+        vec![0xee; 64],
+        "ni à côté : {}",
+        fault.text
+    );
+
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, start));
+    program.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.next = Some(PTE_PRESENT | PTE_USER);
+    let reads = Rights::run("cheval-lecture", &case);
+    reads.finishes("une lecture à cheval sur une page en lecture seule", "");
+    assert_eq!(
+        reads.number("r0 "),
+        u64::from_le_bytes([61, 62, 63, 64, 65, 66, 67, 68]),
+        "les quatre derniers octets de la page, puis les quatre premiers de la suivante : {}",
+        reads.text
+    );
+}
+
+/// **Un accès d'anneau trois à une page présente du noyau dit « présente » et
+/// « utilisateur ».** Le code d'erreur complet, tel que le gestionnaire le
+/// trouve sur sa pile : P, posé par la marche du module, et U, que l'hôte
+/// ajoute d'après CS. `0x5`. Linux y lit « un programme a touché ce qui n'est
+/// pas à lui », et lui envoie `SIGSEGV` — au lieu de chercher une page qui
+/// manque, et de la trouver.
+///
+/// Le montage est celui du segment de tâche, la feuille de la page lue posée
+/// **sans** le bit utilisateur.
+#[test]
+fn a_ring_three_access_to_a_present_supervisor_page_says_present_and_user() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("superviseur");
+    let tweak = format!(
+        "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n | 0x3n, true); \
+         // présente, inscriptible, pas utilisateur",
+        pt = RIG_PT,
+        absent = RIG_ABSENT,
+        frame = RIG_FRAME,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        false,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire doit avoir tourné pour que le cadre existe : {text}"
+    );
+    let words: Vec<String> = line_of(&text, "cadre ")
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        words[0], "0x5",
+        "**P et U** : la page est là, c'est le droit qui manque, et l'accès \
+         venait d'un programme : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "cr2 "),
+        format!("0x{RIG_ABSENT:x}"),
+        "CR2 porte l'adresse lue : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rdx "),
+        "0",
+        "et la lecture n'a rien rendu : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un programme ne charge pas ses instructions dans une page du noyau.**
+///
+/// L'hôte lit la fenêtre d'une région par la marche du module, et la marche
+/// juge ce chargement-là aussi : en anneau trois, une page sans le bit
+/// utilisateur ne se lit pas plus qu'une page absente. La faute délivrée
+/// porte P et U — `0x5`, sans le bit 4 tant que ni NXE ni SMEP ne sont
+/// armés —, CR2 et RIP sur la cible du saut.
+///
+/// Le montage est celui du segment de tâche, dans sa forme « chargement » : le
+/// programme saute sur `RIG_ABSENT`, dont la feuille est ici posée **sans**
+/// le bit utilisateur. Pas sur sa propre première instruction : la toute
+/// première fenêtre est lue avant qu'aucune région n'existe, donc avant que
+/// l'hôte ait une marche à appeler, et il la lit par repli.
+#[test]
+fn a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("chargement-superviseur");
+    // **La page porte un `ud2`**, et pas les zéros de la mémoire neuve. Deux
+    // octets nuls sont `add %al,(%rax)` — RAX vaut la cible du saut —, et un
+    // hôte qui chargerait la page sans la juger exécuterait cette lecture,
+    // qui fauterait à la même adresse avec le même code : le test passait
+    // ainsi sous un sabotage. Un `ud2` exécuté s'arrête sans porte, et le
+    // gestionnaire ne tourne pas.
+    let tweak = format!(
+        "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n | 0x3n, true); \
+         // présente, inscriptible, pas utilisateur\n\
+         vue.setUint16({frame}, 0x0b0f, true); // ud2",
+        pt = RIG_PT,
+        absent = RIG_ABSENT,
+        frame = RIG_FRAME,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        true,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire a tourné — la faute de chargement est délivrée : {text}"
+    );
+    let words: Vec<String> = line_of(&text, "cadre ")
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        words[0], "0x5",
+        "**P et U** pour un chargement refusé : {text}"
+    );
+    assert_eq!(
+        words[1],
+        format!("0x{RIG_ABSENT:x}"),
+        "le cadre pointe sur la cible du saut : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "cr2 "),
+        format!("0x{RIG_ABSENT:x}"),
+        "CR2 porte l'adresse qu'on n'a pas pu charger : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }

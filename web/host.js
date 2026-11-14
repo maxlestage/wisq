@@ -211,6 +211,14 @@ export const SLOTS = {
   tlbPages: 1,
   tlbEntry: 16,
   tlbSlots: 4096,
+  /// **Ce que l'hôte dit à la marche du module qu'il vient faire** — son
+  /// second argument, `WALK_MACHINE` et `WALK_FETCH` côté Rust. Le processeur
+  /// qui lit une porte, un descripteur ou pose un cadre n'est jugé sur aucun
+  /// droit ; un chargement d'instruction veut le bit utilisateur en anneau
+  /// trois. Un nombre faux ici ouvrirait le noyau aux programmes, ou ferait
+  /// fauter la délivrance d'une faute.
+  walkMachine: 0,
+  walkFetch: 3,
   mix: 0x9e3779b97f4a7c15n,
 };
 
@@ -1191,16 +1199,25 @@ export function machine({
 
   const rip = () => BigInt.asUintN(64, globals[SLOTS.rip].value);
   let walk = null;
+  /// Ce que la marche a rendu sur la première page de la dernière fenêtre
+  /// que `read` n'a pas pu lire du tout : le code d'erreur plus un, ou zéro.
+  let unread = 0n;
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
   /// `Body::peek` et `Body::poke`. Allumée, c'est `walk`, qui pose le témoin
   /// et CR2 quand la page manque : `null` alors, et c'est à l'appelant de
   /// nommer ce qui vient de fauter pendant qu'il faisait autre chose.
-  function physical(address) {
+  ///
+  /// **`kind` dit ce que l'hôte vient faire**, et c'est la marche qui juge :
+  /// `SLOTS.walkMachine` pour le processeur qui travaille pour lui-même — la
+  /// porte, le descripteur, le segment de tâche, le cadre —, qu'aucun droit
+  /// n'arrête ; `SLOTS.walkFetch` pour la fenêtre d'une région, qu'un
+  /// programme ne lit que dans ses propres pages.
+  function physical(address, kind = SLOTS.walkMachine) {
     const paging = (BigInt.asUintN(64, globals[SLOTS.control].value) & PAGING_BIT) !== 0n;
     if (!paging || walk === null) return Number(address & BigInt(base - 1));
-    const frame = walk(BigInt.asIntN(64, address));
+    const frame = walk(BigInt.asIntN(64, address), kind);
     if (globals[SLOTS.fault].value !== 0n) return null;
     const page = Number(BigInt.asUintN(32, BigInt(frame)));
     return (page + Number(address & 0xfffn)) & (base - 1);
@@ -1231,10 +1248,12 @@ export function machine({
   /// sait.**
   ///
   /// Le module pose le bit de présence et celui d'écriture — il est le seul à
-  /// savoir ce que l'accès tentait. Il ne sait pas dire l'anneau : il range le
-  /// témoin et rend la main, et c'est ici que CS est lu. Et le chargement
-  /// d'instruction, il ne le voit pas du tout : c'est l'hôte qui va chercher
-  /// les octets d'une région.
+  /// savoir ce que l'accès tentait. Ce commentaire le disait déjà quand c'était
+  /// faux : le module posait toujours zéro. Il les pose depuis que sa marche
+  /// juge les droits des pages. Il ne dit pas l'anneau : il range le témoin et
+  /// rend la main, et c'est ici que CS est lu. Et le chargement d'instruction,
+  /// il ne le voit pas du tout : c'est l'hôte qui va chercher les octets d'une
+  /// région — et qui lui demande le bit de présence, par `read`.
   function pageFaultCode(base, fetch) {
     const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
     let out = base;
@@ -1455,15 +1474,26 @@ export function machine({
   /// détache si la mémoire grandit, et l'invité peut la réécrire pendant
   /// l'aller-retour vers l'application — qui traduirait alors des octets qui
   /// ont bougé sous son nez.
+  ///
+  /// **C'est un chargement d'instruction**, et la marche le juge comme tel :
+  /// en anneau trois, une page du superviseur ne se lit pas plus qu'une page
+  /// absente. Ce que la marche a dit de la **première** page reste dans
+  /// `unread` — le code d'erreur plus un, comme le témoin —, parce que c'est
+  /// lui que la faute de chargement délivre : P quand la page est là et que
+  /// le programme n'y a pas droit.
   function read(address, window) {
     const temoin = globals[SLOTS.fault].value;
     const cr2 = globals[SLOTS.control + 1].value;
     const out = new Uint8Array(window);
     let filled = 0;
+    unread = 0n;
     while (filled < window) {
       globals[SLOTS.fault].value = 0n;
-      const at = physical(address + BigInt(filled));
-      if (at === null) break;
+      const at = physical(address + BigInt(filled), SLOTS.walkFetch);
+      if (at === null) {
+        if (filled === 0) unread = globals[SLOTS.fault].value;
+        break;
+      }
       // **Le bout de la RAM est une borne dure** : la correspondance des
       // blocs et le tampon de traduction vivent juste au-dessus, et lire plus
       // loin les enverrait à l'application, qui les prendrait pour du code.
@@ -1869,9 +1899,13 @@ export function machine({
               };
             }
             globals[SLOTS.control + 1].value = BigInt.asIntN(64, here);
+            // **Le code d'erreur vient de la marche**, par `read` : P quand
+            // la page est là mais réservée au noyau. Il valait toujours zéro,
+            // ce qui était juste tant que rien d'autre qu'une page absente
+            // ne pouvait arrêter un chargement.
             const why = deliver(
               PAGE_FAULT,
-              pageFaultCode(0n, true),
+              pageFaultCode(unread === 0n ? 0n : unread - 1n, true),
               "une faute de page sur un chargement d'instruction",
             );
             if (why !== null) return { stopped: why, at: here };
