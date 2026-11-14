@@ -285,6 +285,18 @@ chaque accès n'est pas séparable du bruit.
 **Donc : le contrôle en ligne.** La page piège aurait acheté un mécanisme faux
 pour une économie qu'aucune des trois mesures ne voit.
 
+**RIP n'est plus tenu à jour à chaque accès : c'est la sortie de faute qui le
+pose** (14 novembre). Il l'était en tête de chaque instruction à opérande
+mémoire — la colonne de droite du tableau. Le critère oubliait celles qui
+atteignent la mémoire sans opérande : les chaînes (`rep movs` par RSI et RDI),
+la pile (`push`, `pop`, `leave`), `call`, `ret`, `jmp *`. Leur faute nommait
+l'instruction mémoire d'avant ; Linux 6.12 et 6.18 s'arrêtaient là-dessus dans
+`copy_bootdata`. La constante est maintenant écrite dans la branche du contrôle
+qui rend la main, donc par tout accès sans exception, et le chemin sans faute
+ne la paie plus. Les mêmes instructions lisent ou écrivent **avant** de bouger
+RSP : une faute les laisse rejouables, et un `rep` interrompu reprend où il en
+était (RCX, RSI et RDI disent ce qui reste).
+
 ## Les interruptions
 
 ### Ce qui existe
@@ -535,10 +547,11 @@ Trois choses, et aucune n'est petite :
    de lui — un compteur qui la lève, un contrôleur qui la route, une boucle qui
    demande à `IF` la permission.
 3. **`iretq`, et la pile de retour.** **Produit.** Il dépile RIP, CS, RFLAGS,
-   RSP et SS dans cet ordre, laisse le code d'erreur au gestionnaire, et pose
-   RIP sur lui-même avant sa première lecture pour qu'une faute sur le cadre
-   reprenne là. Sept sabotages l'ont éprouvé, dont « le sélecteur pris pour
-   RIP » et « RSP laissé où il est ».
+   RSP et SS dans cet ordre, et laisse le code d'erreur au gestionnaire. Les
+   cinq mots sont lus avant qu'un seul registre ne change, et une faute sur
+   le cadre rend la main avec RIP sur l'`iretq` — par la sortie de faute
+   commune à tous les accès — pour qu'il se rejoue. Sept sabotages l'ont
+   éprouvé, dont « le sélecteur pris pour RIP » et « RSP laissé où il est ».
 
 ### Et une raison de ne pas commencer par là
 

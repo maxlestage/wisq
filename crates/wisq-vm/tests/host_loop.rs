@@ -4782,7 +4782,7 @@ for (const [adresse, octets] of posé) {{
 }}
 
 const why = await window.wisqRun();
-console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
+console.log("arret " + why);
 console.log("demandes " + asked.length);
 console.log("vues " + asked.join(","));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
@@ -13398,7 +13398,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
+console.log("arret " + why);
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
 console.log("fini");
 "#,
@@ -14502,7 +14502,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
+console.log("arret " + why);
 const lu = window.wisqConsole();
 console.log("console " + lu.octets);
 console.log("perdus " + lu.perdus);
@@ -14869,13 +14869,23 @@ fn returns_through_a_shared_thunk(name: &str, middle: &[u8]) -> (u64, u64, Strin
     program.resize(THUNK, 0xcc);
     program.extend_from_slice(&[0xc3, 0xcc]); // __x86_return_thunk : ret
     program.resize(0x400, 0xcc); // le rembourrage du noyau, que le décodeur lit
-    let scratch = std::env::temp_dir().join(format!("wisq-host-thunk-{name}-{}", std::process::id()));
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-thunk-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let mut served = String::new();
-    for (slot, offset) in [0usize, 0x40, 0x80, THUNK, 0x13, 0x47].into_iter().enumerate() {
-        let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
-            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+    for (slot, offset) in [0usize, 0x40, 0x80, THUNK, 0x13, 0x47]
+        .into_iter()
+        .enumerate()
+    {
+        let module = Module::resolving(
+            &program[offset..],
+            BASE + offset as u64,
+            0,
+            slot as u32,
+            PAGES,
+        )
+        .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
         let path = scratch.join(format!("r{offset:x}.wasm"));
         std::fs::write(&path, &module).expect("le module");
         served += &format!(
@@ -14913,10 +14923,17 @@ console.log("rsi " + lire(6));
         ),
     )
     .expect("le pilote");
-    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let errors = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
     let line = |field: &str| {
         text.lines()
             .find_map(|l| l.strip_prefix(field))
@@ -14931,11 +14948,17 @@ console.log("rsi " + lire(6));
 
 #[test]
 fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
-    let (arrived, stack, text) = returns_through_a_shared_thunk("simple", &[
-        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
-        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
-    ]);
-    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    let (arrived, stack, text) = returns_through_a_shared_thunk(
+        "simple",
+        &[
+            0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+            0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+        ],
+    );
+    assert_eq!(
+        arrived, 0x1337,
+        "la machine doit revenir derrière le premier `call` : {text}"
+    );
     assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
 }
 
@@ -14944,17 +14967,23 @@ fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
 /// désigne.
 #[test]
 fn a_string_copy_onto_the_stack_leaves_the_stack_where_it_was() {
-    let (arrived, stack, text) = returns_through_a_shared_thunk("movsl", &[
-        0x48, 0xc7, 0xc6, 0x00, 0x02, 0x01, 0x00, // mov $0x10200,%rsi — la table
-        0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
-        0x31, 0xc0, // xor %eax,%eax
-        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
-        0x48, 0x89, 0xe7, // mov %rsp,%rdi
-        0x49, 0x89, 0xe5, // mov %rsp,%r13
-        0xf3, 0xa5, // rep movsl
-        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
-    ]);
-    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    let (arrived, stack, text) = returns_through_a_shared_thunk(
+        "movsl",
+        &[
+            0x48, 0xc7, 0xc6, 0x00, 0x02, 0x01, 0x00, // mov $0x10200,%rsi — la table
+            0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
+            0x31, 0xc0, // xor %eax,%eax
+            0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+            0x48, 0x89, 0xe7, // mov %rsp,%rdi
+            0x49, 0x89, 0xe5, // mov %rsp,%r13
+            0xf3, 0xa5, // rep movsl
+            0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+        ],
+    );
+    assert_eq!(
+        arrived, 0x1337,
+        "la machine doit revenir derrière le premier `call` : {text}"
+    );
     assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
 }
 
@@ -14973,27 +15002,27 @@ fn the_real_body_of_sanitize_boot_params_leaves_the_stack_where_it_was() {
         0x31, 0xc0, // xor %eax,%eax
     ];
     middle.extend_from_slice(&[
-        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, 0x48, 0x89, 0xe7, 0x49, 0x89,
-        0xe5, 0xf3, 0xa5, 0xb9, 0x00, 0x04, 0x00, 0x00, 0x48, 0xc7, 0xc7, 0x40,
-        0xa6, 0x2e, 0x83, 0xf3, 0xab, 0x41, 0x8b, 0x6d, 0x00, 0xb8, 0x00, 0x10,
-        0x00, 0x00, 0xb9, 0x00, 0x10, 0x00, 0x00, 0x41, 0x8b, 0x5d, 0x04, 0x48,
-        0x39, 0xc5, 0x4c, 0x8d, 0xa5, 0x40, 0xa6, 0x2e, 0x83, 0x48, 0x0f, 0x43,
-        0xc5, 0x48, 0x89, 0xc6, 0x48, 0x29, 0xee, 0x48, 0x81, 0xc5, 0xe0, 0xba,
-        0x2e, 0x83, 0x48, 0x39, 0xce, 0x48, 0x0f, 0x46, 0xce, 0x48, 0x39, 0xde,
-        0x73, 0x0d, 0x48, 0x89, 0xda, 0xbf, 0x11, 0x00, 0x00, 0x00, 0xe8, 0x5c,
-        0xf9, 0x01, 0x00, 0x48, 0x81, 0xfe, 0x00, 0x10, 0x00, 0x00, 0x76, 0x2d,
-        0x48, 0x39, 0xd9, 0x73, 0x28, 0x80, 0x3d, 0x25, 0xda, 0x9b, 0x01, 0x00,
-        0x75, 0x1f, 0x48, 0xc7, 0xc2, 0x68, 0xd5, 0x3e, 0x82, 0x48, 0x89, 0xde,
-        0x48, 0xc7, 0xc7, 0x20, 0xcd, 0x3e, 0x82, 0xc6, 0x05, 0x0b, 0xda, 0x9b,
-        0x01, 0x01, 0xe8, 0x88, 0x16, 0x0f, 0x00, 0x0f, 0x0b, 0x49, 0x83, 0xc5,
-        0x08, 0x48, 0x89, 0xd9, 0x4c, 0x89, 0xe7, 0x48, 0x89, 0xee, 0x48, 0x8d,
-        0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, 0xf3, 0xa4, 0x49, 0x39, 0xc5, 0x0f,
-        0x85, 0x64, 0xff, 0xff, 0xff, 0x48, 0xc7, 0xc6, 0x40, 0xa6, 0x2e, 0x83,
-        0x48, 0xc7, 0xc7, 0xe0, 0xba, 0x2e, 0x83, 0xb9, 0x00, 0x04, 0x00, 0x00,
-        0xf3, 0xa5, 0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00,
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, 0x48, 0x89, 0xe7, 0x49, 0x89, 0xe5, 0xf3, 0xa5,
+        0xb9, 0x00, 0x04, 0x00, 0x00, 0x48, 0xc7, 0xc7, 0x40, 0xa6, 0x2e, 0x83, 0xf3, 0xab, 0x41,
+        0x8b, 0x6d, 0x00, 0xb8, 0x00, 0x10, 0x00, 0x00, 0xb9, 0x00, 0x10, 0x00, 0x00, 0x41, 0x8b,
+        0x5d, 0x04, 0x48, 0x39, 0xc5, 0x4c, 0x8d, 0xa5, 0x40, 0xa6, 0x2e, 0x83, 0x48, 0x0f, 0x43,
+        0xc5, 0x48, 0x89, 0xc6, 0x48, 0x29, 0xee, 0x48, 0x81, 0xc5, 0xe0, 0xba, 0x2e, 0x83, 0x48,
+        0x39, 0xce, 0x48, 0x0f, 0x46, 0xce, 0x48, 0x39, 0xde, 0x73, 0x0d, 0x48, 0x89, 0xda, 0xbf,
+        0x11, 0x00, 0x00, 0x00, 0xe8, 0x5c, 0xf9, 0x01, 0x00, 0x48, 0x81, 0xfe, 0x00, 0x10, 0x00,
+        0x00, 0x76, 0x2d, 0x48, 0x39, 0xd9, 0x73, 0x28, 0x80, 0x3d, 0x25, 0xda, 0x9b, 0x01, 0x00,
+        0x75, 0x1f, 0x48, 0xc7, 0xc2, 0x68, 0xd5, 0x3e, 0x82, 0x48, 0x89, 0xde, 0x48, 0xc7, 0xc7,
+        0x20, 0xcd, 0x3e, 0x82, 0xc6, 0x05, 0x0b, 0xda, 0x9b, 0x01, 0x01, 0xe8, 0x88, 0x16, 0x0f,
+        0x00, 0x0f, 0x0b, 0x49, 0x83, 0xc5, 0x08, 0x48, 0x89, 0xd9, 0x4c, 0x89, 0xe7, 0x48, 0x89,
+        0xee, 0x48, 0x8d, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, 0xf3, 0xa4, 0x49, 0x39, 0xc5, 0x0f,
+        0x85, 0x64, 0xff, 0xff, 0xff, 0x48, 0xc7, 0xc6, 0x40, 0xa6, 0x2e, 0x83, 0x48, 0xc7, 0xc7,
+        0xe0, 0xba, 0x2e, 0x83, 0xb9, 0x00, 0x04, 0x00, 0x00, 0xf3, 0xa5, 0x48, 0x81, 0xc4, 0xa0,
+        0x00, 0x00, 0x00,
     ]);
     let (arrived, stack, text) = returns_through_a_shared_thunk("vrai", &middle);
-    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(
+        arrived, 0x1337,
+        "la machine doit revenir derrière le premier `call` : {text}"
+    );
     assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
 }
 
@@ -15092,10 +15121,17 @@ console.log("mot " + vue.getBigUint64({frame} + 0x7f8, true).toString());
         ),
     )
     .expect("le pilote");
-    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let errors = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
     let number = |name: &str| {
         text.lines()
             .find_map(|l| l.strip_prefix(name))
@@ -15104,9 +15140,21 @@ console.log("mot " + vue.getBigUint64({frame} + 0x7f8, true).toString());
             .parse::<u64>()
             .expect("un nombre")
     };
-    assert_eq!(number("rip "), faults_at, "RIP nomme la lecture fautive : {text}");
-    assert_eq!(number("rsp "), TOP - 8, "le `push` d'avant a eu lieu : RSP est descendu de huit : {text}");
-    assert_eq!(number("mot "), PUSHED, "et le mot poussé est sur la pile : {text}");
+    assert_eq!(
+        number("rip "),
+        faults_at,
+        "RIP nomme la lecture fautive : {text}"
+    );
+    assert_eq!(
+        number("rsp "),
+        TOP - 8,
+        "le `push` d'avant a eu lieu : RSP est descendu de huit : {text}"
+    );
+    assert_eq!(
+        number("mot "),
+        PUSHED,
+        "et le mot poussé est sur la pile : {text}"
+    );
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
@@ -15178,8 +15226,14 @@ fn a_page_fault_delivered_after_a_push_returns_to_the_same_stack() {
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let mut served = String::new();
     for (slot, offset) in [0usize, 0x100, resumes].into_iter().enumerate() {
-        let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
-            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+        let module = Module::resolving(
+            &program[offset..],
+            BASE + offset as u64,
+            0,
+            slot as u32,
+            PAGES,
+        )
+        .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
         let path = scratch.join(format!("r{offset:x}.wasm"));
         std::fs::write(&path, &module).expect("le module");
         served += &format!(
@@ -15190,7 +15244,8 @@ fn a_page_fault_delivered_after_a_push_returns_to_the_same_stack() {
     }
     // La porte du vecteur 14 : une porte d'interruption 64 bits, présente,
     // sélecteur 0x10.
-    let gate_low = (HANDLER & 0xffff) | (0x10 << 16) | (0x8e00u64 << 32) | ((HANDLER >> 16) & 0xffff) << 48;
+    let gate_low =
+        (HANDLER & 0xffff) | (0x10 << 16) | (0x8e00u64 << 32) | ((HANDLER >> 16) & 0xffff) << 48;
     let gate_high = HANDLER >> 32;
     let driver = scratch.join("d.mjs");
     std::fs::write(
@@ -15245,10 +15300,17 @@ console.log("rbx " + lire(3));
         ),
     )
     .expect("le pilote");
-    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let errors = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
     let number = |name: &str| {
         text.lines()
             .find_map(|l| l.strip_prefix(name))
@@ -15257,8 +15319,16 @@ console.log("rbx " + lire(3));
             .parse::<u64>()
             .expect("un nombre")
     };
-    assert_eq!(number("rdi "), TOP - 8, "au retour, la pile garde le `push` et rien de plus : {text}");
-    assert_eq!(number("rbx "), 0x90, "et son sommet est le mot poussé : {text}");
+    assert_eq!(
+        number("rdi "),
+        TOP - 8,
+        "au retour, la pile garde le `push` et rien de plus : {text}"
+    );
+    assert_eq!(
+        number("rbx "),
+        0x90,
+        "et son sommet est le mot poussé : {text}"
+    );
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
@@ -15351,10 +15421,17 @@ console.log("rsp " + lire(4));
         ),
     )
     .expect("le pilote");
-    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
     let text = String::from_utf8_lossy(&output.stdout).to_string();
     let errors = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
     let number = |name: &str| {
         text.lines()
             .find_map(|l| l.strip_prefix(name))
@@ -15363,7 +15440,906 @@ console.log("rsp " + lire(4));
             .parse::<u64>()
             .expect("un nombre")
     };
-    assert_eq!(number("rsp "), TOP - 8, "le `push` a eu lieu, une fois : {text}");
-    assert_eq!(number("rip "), faults_at, "RIP nomme le `rep movs` qui a fauté, pas une instruction d'avant : {text}");
+    assert_eq!(
+        number("rsp "),
+        TOP - 8,
+        "le `push` a eu lieu, une fois : {text}"
+    );
+    assert_eq!(
+        number("rip "),
+        faults_at,
+        "RIP nomme le `rep movs` qui a fauté, pas une instruction d'avant : {text}"
+    );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le banc des fautes de page prises au milieu d'une instruction.**
+///
+/// Une instruction qui faute doit laisser deux choses justes : RIP **sur
+/// elle**, et les registres **comme avant elle** — ou, pour un `rep`, comme
+/// après les tours déjà faits. C'est ce qui permet au noyau invité de poser la
+/// page et de la rejouer. Les instructions à opérande mémoire le tenaient ;
+/// celles qui atteignent la mémoire sans opérande — les chaînes par RSI et
+/// RDI, la pile par RSP, `call` et `ret` — ne posaient pas RIP, et certaines
+/// bougeaient RSP avant d'avoir écrit. Linux 6.12 et 6.18 s'arrêtaient
+/// là-dessus dans `copy_bootdata`.
+///
+/// La machine du banc : la pagination allumée, **une** page posée (`PAGE`),
+/// et rien autour — ni la page d'après (`ABSENT`), ni celle d'avant. Pas
+/// d'IDT : la faute ne peut être délivrée à personne, l'hôte s'arrête dessus
+/// et l'état se lit tel que l'instruction fautive l'a laissé. Les
+/// soixante-quatre derniers octets de la page portent 1, 2, … 64, pour qu'une
+/// copie partielle se reconnaisse.
+struct MidFault {
+    /// L'adresse de l'instruction qui doit fauter.
+    at: u64,
+    /// Ce que le pilote a écrit.
+    text: String,
+}
+
+impl MidFault {
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    /// La seule page posée, et sa trame.
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    /// La page d'après : aucune table ne la porte.
+    const ABSENT: u64 = Self::PAGE + 0x1000;
+    /// Une pile posée, au milieu de la page.
+    const STACK: u64 = Self::PAGE + 0x800;
+    /// Une pile dont la page n'existe pas.
+    const NO_STACK: u64 = Self::ABSENT + 0x800;
+    /// Où les copies arrivent, et où commence le motif qu'elles lisent.
+    const DEST: u64 = Self::PAGE + 0x100;
+    const PATTERN: u64 = Self::PAGE + 0xfc0;
+
+    /// Allumer la pagination, jouer `prelude` (qui réussit), puis `faulty`.
+    fn run(name: &str, prelude: &[u8], faulty: &[u8]) -> MidFault {
+        let Some(bun) = bun() else {
+            panic!("Bun est absent : ce test ne serait vérifié par rien.");
+        };
+        let mut program: Vec<u8> = Vec::new();
+        program.extend_from_slice(&movabs(0, Self::PML4));
+        program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+        program.extend_from_slice(&movabs(0, 1 << 31));
+        program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 — PG
+        program.extend_from_slice(prelude);
+        let at = Self::BASE + program.len() as u64;
+        program.extend_from_slice(faulty);
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : là où va un `call +0`
+        program.resize(program.len() + 16, 0xcc);
+
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-midfault-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let module = Module::resolving(&program, Self::BASE, 0, 0, Self::PAGES)
+            .unwrap_or_else(|| panic!("la région de « {name} » se traduit"));
+        let path = scratch.join("r.wasm");
+        std::fs::write(&path, &module).expect("le module");
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+// Le motif : 1, 2, … 64 dans les soixante-quatre derniers octets de la page.
+for (let i = 0; i < 64; i++) vue.setUint8({frame} + 0xfc0 + i, i + 1);
+vm.globals[{rip}].value = {base}n;
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const hex = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("cs0 " + lire({cs}));
+console.log("rflags0 " + lire({rflags}));
+const why = await vm.run({{ budget: 256n, rounds: 4 }});
+console.log("arret " + why.stopped);
+for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
+console.log("rip " + lire({rip}));
+console.log("rflags " + lire({rflags}));
+console.log("cs " + lire({cs}));
+console.log("cr2 " + lire({cr2}));
+console.log("faute " + lire({fault}));
+console.log("dest " + hex({frame} + 0x100, 64));
+console.log("sous " + hex({frame} + 0x7c0, 64));
+console.log("haut " + hex({frame} + 0xfc0, 64));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                path = path.to_string_lossy(),
+                pages = Self::PAGES,
+                rip = RIP_SLOT,
+                rflags = RFLAGS_SLOT,
+                cs = SEGMENT_SLOT + 1,
+                cr2 = CONTROL_SLOT + 1,
+                fault = FAULT_SLOT,
+                base = Self::BASE,
+                page = Self::PAGE,
+                frame = Self::FRAME,
+                pml4 = Self::PML4,
+                pdpt = Self::PDPT,
+                pd = Self::PD,
+                pt = Self::PT,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        MidFault { at, text }
+    }
+
+    fn line(&self, field: &str) -> &str {
+        self.text
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {}", self.text))
+            .trim()
+    }
+
+    fn number(&self, field: &str) -> u64 {
+        self.line(field).parse().expect("un nombre")
+    }
+
+    /// Un registre général, par son numéro de codage.
+    fn register(&self, number: u8) -> u64 {
+        self.number(&format!("r{number} "))
+    }
+
+    /// Les soixante-quatre octets d'une des trois fenêtres relevées.
+    fn bytes(&self, field: &str) -> Vec<u8> {
+        let text = self.line(field);
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet"))
+            .collect()
+    }
+
+    /// La faute a eu lieu, n'a été délivrée à personne, et **RIP nomme
+    /// l'instruction qui l'a prise** — avec l'adresse fautive dans CR2.
+    fn names_it(&self, what: &str, cr2: u64) {
+        assert_eq!(
+            self.line("arret "),
+            FAUTE_SANS_PORTE,
+            "{what} : la machine s'arrête sur la faute : {}",
+            self.text
+        );
+        assert_ne!(
+            self.number("faute "),
+            0,
+            "{what} : le témoin est posé : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number("rip "),
+            self.at,
+            "{what} : RIP nomme l'instruction fautive, pas une autre : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number("cr2 "),
+            cr2,
+            "{what} : CR2 porte l'adresse fautive : {}",
+            self.text
+        );
+    }
+}
+
+/// `movabs $value,%reg`, pour les seize registres.
+fn movabs(register: u8, value: u64) -> Vec<u8> {
+    let mut out = vec![0x48 | (register >> 3), 0xb8 | (register & 7)];
+    out.extend_from_slice(&value.to_le_bytes());
+    out
+}
+
+/// **Une faute dans une instruction de chaîne la nomme, et garde ce qui est
+/// fait.**
+///
+/// Les quatre largeurs de `movs` et de `stos`, seules et répétées. Seule,
+/// l'instruction qui faute n'a rien fait : RSI, RDI et RCX sont ceux d'avant.
+/// Répétée, elle a fait les tours d'avant la faute et **le dit** : RCX compte
+/// ce qui reste, RSI et RDI désignent l'élément qui a fauté, et les éléments
+/// déjà copiés sont en mémoire. C'est ce que fait le silicium, ce que font
+/// l'interprète Rust et le cœur Swift, et ce qui laisse le noyau rejouer le
+/// `rep` pour **finir** la copie — pas pour la recommencer.
+///
+/// Mesuré sur Linux 6.12.115 et 6.18.60 : le `rep movsl` de `copy_bootdata`
+/// faute sur la page de démarrage, que le noyau pose à la demande. RIP nommait
+/// une lecture six octets plus haut ; le noyau y reprenait, refaisait un
+/// `push`, et le `ret` sautait à `0x90`.
+///
+/// `lods`, `cmps` et `scas` ne sont pas ici : le décodeur ne les lit pas, et
+/// une région qui en porte est refusée avant d'avoir pu fauter.
+#[test]
+fn a_fault_in_any_string_instruction_names_it_and_keeps_what_was_done() {
+    const RAX: u64 = 0x8877_6655_4433_2211;
+    let moves: [(&str, &[u8], u64); 4] = [
+        ("movsb", &[0xa4], 1),
+        ("movsw", &[0x66, 0xa5], 2),
+        ("movsl", &[0xa5], 4),
+        ("movsq", &[0x48, 0xa5], 8),
+    ];
+    let stores: [(&str, &[u8], u64); 4] = [
+        ("stosb", &[0xaa], 1),
+        ("stosw", &[0x66, 0xab], 2),
+        ("stosl", &[0xab], 4),
+        ("stosq", &[0x48, 0xab], 8),
+    ];
+    let set = |rsi: u64, rdi: u64, rcx: u64| -> Vec<u8> {
+        let mut out = movabs(6, rsi);
+        out.extend(movabs(7, rdi));
+        out.extend(movabs(1, rcx));
+        out.extend(movabs(0, RAX));
+        out
+    };
+    let repeated = |bytes: &[u8]| -> Vec<u8> {
+        let mut out = vec![0xf3];
+        out.extend_from_slice(bytes);
+        out
+    };
+    let pattern: Vec<u8> = (1..=64).collect();
+
+    for (name, bytes, size) in moves {
+        // Seule, la source absente : rien n'a bougé.
+        let what = format!("{name}, source absente");
+        let fault = MidFault::run(name, &set(MidFault::ABSENT, MidFault::DEST, 7), bytes);
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(6),
+            MidFault::ABSENT,
+            "{what} : RSI : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(7),
+            MidFault::DEST,
+            "{what} : RDI : {}",
+            fault.text
+        );
+        assert_eq!(fault.register(1), 7, "{what} : RCX : {}", fault.text);
+        assert_eq!(
+            fault.bytes("dest "),
+            vec![0; 64],
+            "{what} : rien n'est écrit : {}",
+            fault.text
+        );
+
+        // Seule, la destination absente : la lecture a réussi, et rien n'a
+        // bougé non plus — RSI n'avance pas sans RDI.
+        let what = format!("{name}, destination absente");
+        let fault = MidFault::run(name, &set(MidFault::PATTERN, MidFault::ABSENT, 7), bytes);
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(6),
+            MidFault::PATTERN,
+            "{what} : RSI : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(7),
+            MidFault::ABSENT,
+            "{what} : RDI : {}",
+            fault.text
+        );
+        assert_eq!(fault.register(1), 7, "{what} : RCX : {}", fault.text);
+
+        // Répétée, la source à cheval : deux éléments dans la page, le
+        // troisième dans la page absente. Cinq demandés, trois restent.
+        let what = format!("rep {name}, source à cheval");
+        let fault = MidFault::run(
+            name,
+            &set(MidFault::ABSENT - 2 * size, MidFault::DEST, 5),
+            &repeated(bytes),
+        );
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(1),
+            3,
+            "{what} : RCX compte ce qui reste : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(6),
+            MidFault::ABSENT,
+            "{what} : RSI est sur l'élément fautif : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(7),
+            MidFault::DEST + 2 * size,
+            "{what} : RDI a suivi : {}",
+            fault.text
+        );
+        let done = 2 * size as usize;
+        let mut expected = pattern[64 - done..].to_vec();
+        expected.resize(64, 0);
+        assert_eq!(
+            fault.bytes("dest "),
+            expected,
+            "{what} : deux éléments copiés, pas un de plus : {}",
+            fault.text
+        );
+
+        // Répétée, la destination à cheval : les deux premiers éléments du
+        // motif arrivent en haut de la page, le troisième faute.
+        let what = format!("rep {name}, destination à cheval");
+        let fault = MidFault::run(
+            name,
+            &set(MidFault::PATTERN, MidFault::ABSENT - 2 * size, 5),
+            &repeated(bytes),
+        );
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(1),
+            3,
+            "{what} : RCX compte ce qui reste : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(6),
+            MidFault::PATTERN + 2 * size,
+            "{what} : RSI a suivi : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(7),
+            MidFault::ABSENT,
+            "{what} : RDI est sur l'élément fautif : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.bytes("haut ")[64 - done..],
+            pattern[..done],
+            "{what} : deux éléments écrits : {}",
+            fault.text
+        );
+    }
+
+    for (name, bytes, size) in stores {
+        let what = format!("{name}, destination absente");
+        let fault = MidFault::run(name, &set(MidFault::PATTERN, MidFault::ABSENT, 7), bytes);
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(7),
+            MidFault::ABSENT,
+            "{what} : RDI : {}",
+            fault.text
+        );
+        assert_eq!(fault.register(1), 7, "{what} : RCX : {}", fault.text);
+
+        let what = format!("rep {name}, destination à cheval");
+        let fault = MidFault::run(
+            name,
+            &set(MidFault::PATTERN, MidFault::ABSENT - 2 * size, 5),
+            &repeated(bytes),
+        );
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(1),
+            3,
+            "{what} : RCX compte ce qui reste : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(7),
+            MidFault::ABSENT,
+            "{what} : RDI est sur l'élément fautif : {}",
+            fault.text
+        );
+        let element = &RAX.to_le_bytes()[..size as usize];
+        let written = [element, element].concat();
+        assert_eq!(
+            fault.bytes("haut ")[64 - written.len()..],
+            written[..],
+            "{what} : deux éléments écrits : {}",
+            fault.text
+        );
+    }
+
+    // En arrière : `std`, puis une copie qui descend sous le début de la page.
+    // Deux octets copiés (PAGE+1, PAGE+0), le troisième est dans la page
+    // d'avant, qui n'existe pas non plus.
+    let what = "std ; rep movsb, en arrière";
+    let mut prelude = set(MidFault::PAGE + 1, MidFault::DEST + 1, 4);
+    prelude.push(0xfd); // std
+    let fault = MidFault::run("arriere", &prelude, &[0xf3, 0xa4]);
+    fault.names_it(what, MidFault::PAGE - 1);
+    assert_eq!(
+        fault.register(1),
+        2,
+        "{what} : RCX compte ce qui reste : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.register(6),
+        MidFault::PAGE - 1,
+        "{what} : RSI : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.register(7),
+        MidFault::DEST - 1,
+        "{what} : RDI : {}",
+        fault.text
+    );
+
+    // Et un compte nul ne faute pas : il ne lit rien, même sur une page
+    // absente. La machine arrive au `ud2` qui suit.
+    let what = "rep movsb, compte nul";
+    let fault = MidFault::run(
+        "nul",
+        &set(MidFault::ABSENT, MidFault::DEST, 0),
+        &[0xf3, 0xa4],
+    );
+    assert_eq!(
+        fault.line("arret "),
+        UD2_SANS_PORTE,
+        "{what} : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.number("faute "),
+        0,
+        "{what} : aucune faute : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.number("rip "),
+        fault.at + 2,
+        "{what} : arrêtée sur le `ud2` : {}",
+        fault.text
+    );
+}
+
+/// **Une faute dans une instruction de pile la nomme, et laisse la pile où
+/// elle était.**
+///
+/// `push` sous toutes ses formes, `pushf`, `pop`, `popf` et `leave`, chacune
+/// sur une pile dont la page manque. Aucune ne porte d'opérande mémoire pour
+/// sa pile : RIP n'était donc pas posé. Et les `push` descendaient RSP
+/// **avant** d'écrire : rejoués après la faute, ils le descendaient une
+/// seconde fois, et la pile gardait un mot de trop. Une pile qui grandit à la
+/// demande — celle de tout programme — passe par là à chaque page neuve.
+///
+/// `leave` posait RSP sur RBP avant de lire : la faute était alors délivrée
+/// sur une pile déplacée.
+#[test]
+fn a_fault_in_any_stack_instruction_names_it_and_leaves_the_stack_alone() {
+    const RBX: u64 = 0x1111;
+    let stack = |rsp: u64| -> Vec<u8> {
+        let mut out = movabs(4, rsp);
+        out.extend(movabs(3, RBX));
+        out.extend(movabs(6, MidFault::DEST));
+        out
+    };
+    // Les formes qui écrivent sous le sommet : la faute est à RSP moins huit.
+    let pushes: [(&str, &[u8]); 6] = [
+        ("push %rbx", &[0x53]),
+        ("push %rsp", &[0x54]),
+        ("push $0x1234", &[0x68, 0x34, 0x12, 0x00, 0x00]),
+        ("push $0x7f", &[0x6a, 0x7f]),
+        ("pushq (%rsi)", &[0xff, 0x36]),
+        ("pushf", &[0x9c]),
+    ];
+    for (rank, (what, bytes)) in pushes.into_iter().enumerate() {
+        let fault = MidFault::run(&format!("push{rank}"), &stack(MidFault::NO_STACK), bytes);
+        fault.names_it(what, MidFault::NO_STACK - 8);
+        assert_eq!(
+            fault.register(4),
+            MidFault::NO_STACK,
+            "{what} : RSP n'est pas descendu, le rejeu ne le descendra qu'une fois : {}",
+            fault.text
+        );
+    }
+    // Les formes qui lisent au sommet : la faute est à RSP.
+    let pops: [(&str, &[u8]); 2] = [("pop %rbx", &[0x5b]), ("popf", &[0x9d])];
+    for (rank, (what, bytes)) in pops.into_iter().enumerate() {
+        let fault = MidFault::run(&format!("pop{rank}"), &stack(MidFault::NO_STACK), bytes);
+        fault.names_it(what, MidFault::NO_STACK);
+        assert_eq!(
+            fault.register(4),
+            MidFault::NO_STACK,
+            "{what} : RSP n'est pas remonté : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(3),
+            RBX,
+            "{what} : la destination n'a pas bougé : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.number("rflags "),
+            fault.number("rflags0 "),
+            "{what} : les drapeaux non plus : {}",
+            fault.text
+        );
+    }
+    // `pushq (%rsi)` dont c'est la **source** qui manque : la pile, posée,
+    // n'a rien reçu.
+    let what = "pushq (%rsi), source absente";
+    let mut prelude = stack(MidFault::STACK);
+    prelude.extend(movabs(6, MidFault::ABSENT));
+    let fault = MidFault::run("pushsrc", &prelude, &[0xff, 0x36]);
+    fault.names_it(what, MidFault::ABSENT);
+    assert_eq!(
+        fault.register(4),
+        MidFault::STACK,
+        "{what} : RSP : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.bytes("sous ")[56..],
+        [0; 8],
+        "{what} : rien sous le sommet : {}",
+        fault.text
+    );
+
+    // `leave` : RBP désigne une page absente, RSP une page posée.
+    let what = "leave";
+    let mut prelude = stack(MidFault::STACK);
+    prelude.extend(movabs(5, MidFault::NO_STACK));
+    let fault = MidFault::run("leave", &prelude, &[0xc9]);
+    fault.names_it(what, MidFault::NO_STACK);
+    assert_eq!(
+        fault.register(4),
+        MidFault::STACK,
+        "{what} : RSP n'a pas rejoint RBP — c'est sur lui que la faute sera délivrée : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.register(5),
+        MidFault::NO_STACK,
+        "{what} : RBP n'a pas bougé : {}",
+        fault.text
+    );
+}
+
+/// **Une faute dans un `call`, un `ret` ou un saut indirect les nomme, et
+/// laisse la pile où elle était.**
+///
+/// Ces instructions finissent un bloc : elles ne passent pas par le
+/// traducteur d'instructions mais par celui des fins de bloc, qui ne posait
+/// RIP pour aucune d'elles — sauf `iretq`. Leur faute nommait donc
+/// l'instruction mémoire d'avant, ou l'entrée du bloc. `call` descendait RSP
+/// avant d'écrire l'adresse de retour, comme `push`.
+///
+/// `iretq` posait RIP, mais rangeait CS et RFLAGS au fil de ses lectures : sur
+/// un cadre à cheval sur une page absente, la faute partait avec le sélecteur
+/// du **retour**. Ici le cadre a RIP et CS dans la page posée, RFLAGS dans la
+/// page absente ; CS doit rester celui d'avant.
+#[test]
+fn a_fault_in_a_call_a_return_or_an_indirect_jump_names_it_and_leaves_the_stack_alone() {
+    let set = |rsp: u64, rsi: u64| -> Vec<u8> {
+        let mut out = movabs(4, rsp);
+        out.extend(movabs(6, rsi));
+        out.extend(movabs(0, MidFault::BASE));
+        out
+    };
+    // Sur une pile absente. Les `call` écrivent sous le sommet, les retours
+    // lisent au sommet.
+    let on_no_stack: [(&str, &[u8], u64); 6] = [
+        ("call +0", &[0xe8, 0x00, 0x00, 0x00, 0x00], 8),
+        ("call *%rax", &[0xff, 0xd0], 8),
+        ("call *(%rsi)", &[0xff, 0x16], 8),
+        ("ret", &[0xc3], 0),
+        ("ret $16", &[0xc2, 0x10, 0x00], 0),
+        ("lretq", &[0x48, 0xcb], 0),
+    ];
+    for (rank, (what, bytes, below)) in on_no_stack.into_iter().enumerate() {
+        let fault = MidFault::run(
+            &format!("ctl{rank}"),
+            &set(MidFault::NO_STACK, MidFault::DEST),
+            bytes,
+        );
+        fault.names_it(what, MidFault::NO_STACK - below);
+        assert_eq!(
+            fault.register(4),
+            MidFault::NO_STACK,
+            "{what} : RSP n'a pas bougé : {}",
+            fault.text
+        );
+    }
+    // Sur une pile posée, la cible prise dans une page absente.
+    let through_absent: [(&str, &[u8]); 2] = [
+        ("call *(%rsi), cible absente", &[0xff, 0x16]),
+        ("jmp *(%rsi), cible absente", &[0xff, 0x26]),
+    ];
+    for (rank, (what, bytes)) in through_absent.into_iter().enumerate() {
+        let fault = MidFault::run(
+            &format!("ind{rank}"),
+            &set(MidFault::STACK, MidFault::ABSENT),
+            bytes,
+        );
+        fault.names_it(what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(4),
+            MidFault::STACK,
+            "{what} : RSP n'a pas bougé : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.bytes("sous ")[56..],
+            [0; 8],
+            "{what} : rien n'est empilé : {}",
+            fault.text
+        );
+    }
+    // `iretq` : RIP et CS du cadre dans la page posée (les seize derniers
+    // octets du motif), RFLAGS dans la page absente.
+    let what = "iretq, cadre à cheval";
+    let fault = MidFault::run(
+        "iretq",
+        &set(MidFault::ABSENT - 16, MidFault::DEST),
+        &[0x48, 0xcf],
+    );
+    fault.names_it(what, MidFault::ABSENT);
+    assert_eq!(
+        fault.register(4),
+        MidFault::ABSENT - 16,
+        "{what} : RSP n'a pas bougé : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.number("cs "),
+        fault.number("cs0 "),
+        "{what} : CS est celui d'avant, pas celui du cadre : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.number("rflags "),
+        fault.number("rflags0 "),
+        "{what} : RFLAGS aussi : {}",
+        fault.text
+    );
+}
+
+/// **Une copie à cheval sur une page que le noyau pose à la demande : une
+/// faute, et la copie finit où elle s'était arrêtée.**
+///
+/// Le chemin entier, comme `copy_bootdata` le prend : un `rep movs` dont la
+/// source commence dans une page posée et continue dans une page absente ; la
+/// faute est délivrée à un gestionnaire qui relève ce qu'il voit, pose la
+/// page, et rend la main par `iretq`. Le `rep` est rejoué.
+///
+/// Ce que le gestionnaire voit est ce que le silicium montre : le RIP du
+/// cadre nomme le `rep`, RCX compte les éléments qui restent, RSI est sur
+/// l'élément qui a fauté. Et à la fin : **une** faute, la copie entière, pas
+/// un octet de plus. Un `rep` qui reprendrait ailleurs — plus haut dans le
+/// bloc, comme avant — rejouerait des instructions déjà faites.
+#[test]
+fn a_string_copy_across_a_page_that_arrives_on_demand_finishes_where_it_stopped() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = BASE + 0x100;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    // Une page posée pour l'IDT (en bas), la destination, la pile (au
+    // milieu) et le descripteur de `lidt` ; la page d'après arrive à la
+    // demande, sur la trame voisine.
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    const ARRIVES: u64 = PAGE + 0x1000;
+    const ARRIVING_FRAME: u64 = 0x3_1000;
+    const TOP: u64 = PAGE + 0x800;
+    const DEST: u64 = PAGE + 0x400;
+    const DESCRIPTOR: u64 = PAGE + 0xf00;
+
+    // (le nom, le `rep`, la taille d'un élément, combien avant la frontière,
+    // combien en tout)
+    let copies: [(&str, &[u8], u64, u64, u64); 2] = [
+        ("movsb", &[0xf3, 0xa4], 1, 5, 13),
+        ("movsq", &[0xf3, 0x48, 0xa5], 8, 1, 3),
+    ];
+    for (name, bytes, size, before, count) in copies {
+        let source = ARRIVES - before * size;
+        let mut program: Vec<u8> = Vec::new();
+        program.extend_from_slice(&movabs(0, PML4));
+        program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+        program.extend_from_slice(&movabs(0, 1 << 31));
+        program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+        program.extend_from_slice(&movabs(0, DESCRIPTOR));
+        program.extend_from_slice(&[0x0f, 0x01, 0x18]); // lidt (%rax)
+        program.extend_from_slice(&movabs(4, TOP));
+        program.extend_from_slice(&movabs(6, source));
+        program.extend_from_slice(&movabs(7, DEST));
+        program.extend_from_slice(&movabs(1, count));
+        let copy = program.len();
+        program.extend_from_slice(bytes); // le `rep movs`, à cheval
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : vecteur 6 sans porte, l'arrêt
+        assert!(program.len() <= 0x100);
+        program.resize(0x100, 0xcc);
+        // Le gestionnaire : relever ce que la faute montre, poser la page,
+        // jeter le code d'erreur, rendre la main.
+        program.extend_from_slice(&[
+            0x49, 0x89, 0xc8, // mov %rcx,%r8 — ce qui reste
+            0x49, 0x89, 0xf1, // mov %rsi,%r9 — l'élément fautif
+            0x49, 0x89, 0xfa, // mov %rdi,%r10
+            0x49, 0xff, 0xc3, // inc %r11 — une faute de plus
+            0x4c, 0x8b, 0x64, 0x24, 0x08, // mov 8(%rsp),%r12 — le RIP du cadre
+        ]);
+        let leaf = PT + ((ARRIVES >> 12) & 0x1ff) * 8;
+        program.extend_from_slice(&movabs(0, leaf));
+        program.extend_from_slice(&[0x48, 0xc7, 0x00]); // movq $ARRIVING_FRAME|3,(%rax)
+        program.extend_from_slice(&((ARRIVING_FRAME | 3) as u32).to_le_bytes());
+        program.extend_from_slice(&[
+            0x48, 0x83, 0xc4, 0x08, // add $8,%rsp — le code d'erreur
+            0x48, 0xcf, // iretq
+        ]);
+        program.resize(0x180, 0xcc);
+
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-pfcopy-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let mut served = String::new();
+        // L'entrée, le gestionnaire, et le `rep` lui-même : c'est là que
+        // l'`iretq` doit revenir.
+        for (slot, offset) in [0usize, 0x100, copy].into_iter().enumerate() {
+            let module = Module::resolving(
+                &program[offset..],
+                BASE + offset as u64,
+                0,
+                slot as u32,
+                PAGES,
+            )
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+            let path = scratch.join(format!("r{offset:x}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            served += &format!(
+                "    if (address === {}n) return readFileSync({:?});\n",
+                BASE + offset as u64,
+                path.to_string_lossy()
+            );
+        }
+        let gate_low = (HANDLER & 0xffff)
+            | (0x10 << 16)
+            | (0x8e00u64 << 32)
+            | ((HANDLER >> 16) & 0xffff) << 48;
+        let gate_high = HANDLER >> 32;
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    console.log("demandee " + address.toString());
+    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+// Le code et la table des feuilles, cartographiés sur eux-mêmes : la
+// délivrance lit le gestionnaire à travers les tables, et le gestionnaire
+// écrit la feuille de la page qui arrive.
+vue.setBigUint64({pml4} + idx({base}n, 39) * 8, 0x24000n | 3n, true);
+vue.setBigUint64(0x24000 + idx({base}n, 30) * 8, 0x25000n | 3n, true);
+vue.setBigUint64(0x25000 + idx({base}n, 21) * 8, 0x26000n | 3n, true);
+vue.setBigUint64(0x26000 + idx({base}n, 12) * 8, {base}n | 3n, true);
+vue.setBigUint64(0x26000 + idx({pt}n, 12) * 8, {pt}n | 3n, true);
+// L'IDT : quinze portes, seule la quatorzième est présente.
+vue.setBigUint64({frame} + 14 * 16, {gate_low}n, true);
+vue.setBigUint64({frame} + 14 * 16 + 8, {gate_high}n, true);
+vue.setUint16({frame} + 0xf00, 15 * 16 - 1, true);
+vue.setBigUint64({frame} + 0xf02, {page}n, true);
+// La source : 1, 2, 3… à cheval sur la frontière des deux trames.
+const source = {arriving} - {before};
+for (let i = 0; i < {length}; i++) vue.setUint8(source + i, i + 1);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 512n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
+console.log("dest " + Array.from(new Uint8Array(vm.memory.buffer, {frame} + 0x400, {length} + 8))
+  .map((o) => o.toString(16).padStart(2, "0")).join(""));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                base = BASE,
+                page = PAGE,
+                frame = FRAME,
+                arriving = ARRIVING_FRAME,
+                before = before * size,
+                length = count * size,
+                pml4 = PML4,
+                pdpt = PDPT,
+                pd = PD,
+                pt = PT,
+                gate_low = gate_low,
+                gate_high = gate_high,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        let line = |field: &str| -> String {
+            text.lines()
+                .find_map(|l| l.strip_prefix(field))
+                .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {text}"))
+                .trim()
+                .to_string()
+        };
+        let register =
+            |number: u8| -> u64 { line(&format!("r{number} ")).parse().expect("un nombre") };
+        assert_eq!(
+            line("arret "),
+            UD2_PORTE_ABSENTE,
+            "rep {name} : la machine va au bout de la copie, jusqu'au `ud2` : {text}"
+        );
+        assert_eq!(
+            register(11),
+            1,
+            "rep {name} : une faute, une seule : {text}"
+        );
+        assert_eq!(
+            register(12),
+            BASE + copy as u64,
+            "rep {name} : le RIP du cadre nomme le `rep` : {text}"
+        );
+        assert_eq!(
+            register(8),
+            count - before,
+            "rep {name} : à la faute, RCX compte ce qui reste : {text}"
+        );
+        assert_eq!(
+            register(9),
+            ARRIVES,
+            "rep {name} : à la faute, RSI est sur l'élément fautif : {text}"
+        );
+        assert_eq!(
+            register(10),
+            DEST + before * size,
+            "rep {name} : à la faute, RDI a suivi : {text}"
+        );
+        assert_eq!(
+            register(1),
+            0,
+            "rep {name} : à la fin, RCX est épuisé : {text}"
+        );
+        assert_eq!(
+            register(6),
+            source + count * size,
+            "rep {name} : RSI a tout parcouru : {text}"
+        );
+        assert_eq!(
+            register(7),
+            DEST + count * size,
+            "rep {name} : RDI aussi : {text}"
+        );
+        let mut expected: String = (1..=count * size)
+            .map(|octet| format!("{octet:02x}"))
+            .collect();
+        expected += "0000000000000000";
+        assert_eq!(
+            line("dest "),
+            expected,
+            "rep {name} : la copie est entière, et rien après : {text}"
+        );
+    }
 }
