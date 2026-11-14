@@ -89,6 +89,24 @@ final class MachineArchiveTests: XCTestCase {
             Data("la session".utf8), "la session reprendra là-bas")
     }
 
+    /// **Le manifeste s'écrit clés triées.** Sans cela, l'ordre des clés
+    /// changeait d'un lancement à l'autre (le hachage de Swift est tiré au
+    /// sort), et deux exports de la même machine n'étaient pas les mêmes
+    /// octets : deux bureaux prêts identiques ne se comparaient pas par leur
+    /// somme.
+    func testTheManifestIsWrittenWithSortedKeys() throws {
+        try MachineArchive.export(try furnishedMachine(), kernels: kernels(here), in: here, to: archive)
+        let bytes = [UInt8](try Data(contentsOf: archive))
+        let start = MachineArchive.magic.count + 8
+        let length = bytes[MachineArchive.magic.count..<start].reversed().reduce(0) { $0 << 8 | Int($1) }
+        let body = Data(bytes[start..<start + length])
+        let manifest = try JSONDecoder().decode(MachineArchive.Manifest.self, from: body)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        XCTAssertEqual(String(decoding: body, as: UTF8.self),
+                       String(decoding: try encoder.encode(manifest), as: UTF8.self))
+    }
+
     /// **Sans l'image, rien n'est créé**, et le refus la nomme.
     func testAMissingImageIsNamedAndNothingIsCreated() throws {
         try MachineArchive.export(try furnishedMachine(), kernels: kernels(here), in: here, to: archive)

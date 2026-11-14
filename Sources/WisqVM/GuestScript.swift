@@ -99,6 +99,10 @@ public final class GuestScript {
     public enum Step: Equatable, Sendable {
         /// Attendre que la console montre ce texte après la dernière frappe.
         case expect(String)
+        /// La même attente, mais **arrêtée dès que `refused` paraît** : une
+        /// commande qui sait qu'elle a échoué le dit, et le déroulé s'arrête
+        /// là au lieu d'user tout son budget à attendre ce qui ne viendra pas.
+        case expectUnless(String, refused: String)
         /// Taper ceci sur la console série.
         case type(String)
         /// Attendre que plus de la moitié de l'écran soit allumée.
@@ -113,6 +117,8 @@ public final class GuestScript {
         case screenStayedDark(budget: UInt64)
         /// L'invité a fini en route : plus rien ne viendra.
         case guestEnded(String)
+        /// La console a montré la marque de l'échec.
+        case refused(String)
 
         public var description: String {
             switch self {
@@ -122,6 +128,8 @@ public final class GuestScript {
                 return "l'écran est resté noir pendant \(budget) instructions"
             case .guestEnded(let why):
                 return why
+            case .refused(let marker):
+                return "l'invité a répondu « \(marker) »"
             }
         }
     }
@@ -163,6 +171,8 @@ public final class GuestScript {
                 type(text)
             case .expect(let marker):
                 try expect(marker, budget: budget)
+            case .expectUnless(let marker, let refused):
+                try expect(marker, unless: refused, budget: budget)
             case .screenLit:
                 try waitUntilLit(budget: budget)
             }
@@ -180,11 +190,18 @@ public final class GuestScript {
     /// dernière frappe. **Le budget compte l'attente** : un invité qui dort
     /// l'use aussi, et une marque qui ne vient jamais finit par rendre la
     /// main.
-    public func expect(_ marker: String, budget: UInt64) throws {
-        if console.contains(marker, after: mark) { return }
+    ///
+    /// Avec `refused`, l'attente s'arrête aussi dès que cette marque-là
+    /// paraît, et le dit (`Failure.refused`).
+    public func expect(_ marker: String, unless refused: String? = nil, budget: UInt64) throws {
+        func settled() throws -> Bool {
+            if let refused, console.contains(refused, after: mark) { throw Failure.refused(refused) }
+            return console.contains(marker, after: mark)
+        }
+        if try settled() { return }
         for _ in 0..<turnsIn(budget) {
             try step()
-            if console.contains(marker, after: mark) { return }
+            if try settled() { return }
         }
         throw Failure.markerNeverCame(marker, budget: budget)
     }
@@ -216,6 +233,7 @@ public final class GuestScript {
     static func describe(_ step: Step) -> String {
         switch step {
         case .expect(let marker): return "attendre « \(marker) »"
+        case .expectUnless(let marker, let refused): return "attendre « \(marker) », pas « \(refused) »"
         case .type(let text): return "taper « \(text.trimmingCharacters(in: .newlines)) »"
         case .screenLit: return "attendre l'écran dessiné"
         }

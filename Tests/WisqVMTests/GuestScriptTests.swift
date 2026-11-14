@@ -157,13 +157,53 @@ final class GuestScriptTests: XCTestCase {
     /// **La règle des marques**, tenue sur le déroulé du bureau : aucune
     /// frappe ne contient la marque qu'on attend après elle. Sinon la console,
     /// qui répète la ligne tapée, la montrerait tout de suite.
+    ///
+    /// La marque d'échec d'une attente (`expectUnless`) aussi : écrite en
+    /// clair dans la ligne, elle arrêterait la fabrication à coup sûr.
     func testNoTypedLineCarriesItsOwnMarker() {
         let steps = ReadyDesktopBuild.voidXfce
+        var checked = 0
         for (index, step) in steps.enumerated() {
-            guard case .type(let text) = step, index + 1 < steps.count,
-                  case .expect(let marker) = steps[index + 1] else { continue }
-            XCTAssertFalse(text.contains(marker), "« \(text) » contient « \(marker) »")
+            guard case .type(let text) = step, index + 1 < steps.count else { continue }
+            let markers: [String]
+            switch steps[index + 1] {
+            case .expect(let marker): markers = [marker]
+            case .expectUnless(let marker, let refused): markers = [marker, refused]
+            case .type, .screenLit: continue
+            }
+            for marker in markers {
+                XCTAssertFalse(text.contains(marker), "« \(text) » contient « \(marker) »")
+                checked += 1
+            }
         }
+        XCTAssertEqual(checked, 5, "mot de passe, invite, bureau, et la préparation deux fois")
+    }
+
+    /// **Une marque d'échec arrête l'attente tout de suite**, à la tranche où
+    /// elle paraît, au lieu d'user tout le budget — deux mille milliards
+    /// d'instructions, des heures, pour une préparation qui a dit non.
+    func testARefusalStopsTheWaitAtOnce() {
+        let (machine, script) = make()
+        machine.outputs[2] = "REFUS_4\r\n"
+        machine.outputs[3] = "PRET_2\r\n"
+        XCTAssertThrowsError(try script.expect("PRET_2", unless: "REFUS_4", budget: 1000 * Self.slice)) {
+            XCTAssertEqual($0 as? GuestScript.Failure, .refused("REFUS_4"))
+        }
+        XCTAssertEqual(machine.advances, 2)
+    }
+
+    /// La marque d'échec qui était là **avant** la frappe ne compte pas, et
+    /// l'attente trouve sa marque comme `expect`.
+    func testARefusalBeforeTheTypingDoesNotCount() throws {
+        let (machine, script) = make()
+        machine.console.append(Data("REFUS_4\r\n".utf8))
+        machine.outputs[3] = "PRET_2\r\n"
+        try script.run([.type("prepare\n"), .expectUnless("PRET_2", refused: "REFUS_4")], budget: 10 * Self.slice)
+        XCTAssertEqual(machine.advances, 3)
+        XCTAssertThrowsError(try script.run([.expectUnless("FIN_2", refused: "PRET_2")], budget: 10 * Self.slice)) {
+            XCTAssertEqual($0 as? GuestScript.Failure, .refused("PRET_2"), "et une marque déjà là arrête sans tourner")
+        }
+        XCTAssertEqual(machine.advances, 3)
     }
 
     /// **Le bureau prêt est préparé, puis regardé, avant d'être sauvé** : le
@@ -171,6 +211,7 @@ final class GuestScriptTests: XCTestCase {
     func testTheDesktopIsPreparedThenLookedAtLast() throws {
         let steps = ReadyDesktopBuild.voidXfce
         let prepare = try XCTUnwrap(steps.firstIndex(of: .type(ReadyDesktopBuild.prepare)))
+        XCTAssertEqual(steps[prepare + 1], .expectUnless("PRET_2", refused: ReadyDesktopBuild.preparationRefused))
         XCTAssertTrue(ReadyDesktopBuild.prepare.contains("echo 3 > /proc/sys/vm/drop_caches"))
         XCTAssertTrue(ReadyDesktopBuild.prepare.contains("sync;"))
         XCTAssertGreaterThan(prepare, try XCTUnwrap(steps.firstIndex(of: .expect("BUREAU_2"))))

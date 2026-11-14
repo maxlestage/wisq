@@ -22,7 +22,9 @@ public enum ReadyDesktopBuild {
     /// l'interprète, `xfdesktop` met longtemps à charger son fond.
     ///
     /// **Avant de sauver**, la préparation (`prepare`), puis l'écran encore
-    /// une fois : on n'emporte pas un écran noir.
+    /// une fois : on n'emporte pas un écran noir. Une préparation qui n'a pas
+    /// tenu (`sshd` encore là, pas d'horloge à guetter) arrête la
+    /// fabrication tout de suite, au lieu d'emporter une clé partagée.
     public static let voidXfce: [GuestScript.Step] = [
         .expect("login:"),
         .type("root\n"),
@@ -33,22 +35,70 @@ public enum ReadyDesktopBuild {
         .expect("BUREAU_2"),
         .screenLit,
         .type(prepare),
-        .expect("PRET_2"),
+        .expectUnless("PRET_2", refused: preparationRefused),
         .screenLit,
     ]
 
     /// **Ce qu'on tape avant de sauver.**
     ///
-    /// - Les clés d'hôte SSH, s'il y en a : l'instantané est le même pour
-    ///   tous ceux qui le téléchargent, et une clé d'hôte partagée n'en est
-    ///   plus une. `sshd` les refait à son prochain départ.
+    /// - **`sshd` arrêté, puis ses clés d'hôte effacées.** L'instantané est
+    ///   le même pour tous ceux qui le téléchargent, et une clé d'hôte
+    ///   partagée n'en est plus une. Effacer les fichiers ne suffisait pas :
+    ///   depuis OpenSSH 9.8, l'écouteur (`sshd -D [listener]`, 9.9p1 dans
+    ///   le bureau Void) charge les clés **en mémoire** au départ et les
+    ///   passe à chaque `sshd-session`. Il tournait dans l'instantané, et
+    ///   toutes les copies auraient présenté la clé de la fabrication tant
+    ///   qu'il ne redémarrait pas — et rien ne le redémarrait. Arrêté
+    ///   (`sv down`, que `runsv` respecte), sa mémoire est rendue, et
+    ///   `init_on_free=1` la met à zéro.
+    /// - **Le guetteur** (`keyWatcher`), lancé à part, qui refait les clés et
+    ///   relance `sshd` une fois la machine reprise.
     /// - `sync`, puis `drop_caches` : Linux remplit la mémoire libre de
     ///   cache, et l'instantané écrit tout ce qui n'est pas nul. Le bureau
     ///   sauvé sans ça portait 936 Mio de pages non nulles pour 1 Gio.
     ///   Vider le cache ne suffit pas à lui seul : une page libérée garde son
     ///   contenu. C'est `init_on_free=1` (`commandLine`) qui la met à zéro.
-    public static let prepare =
-        "rm -f /etc/ssh/ssh_host_*; sync; echo 3 > /proc/sys/vm/drop_caches; sleep 2; echo PRET_$((1+1))\n"
+    /// - **La preuve, avant la marque** : `PRET_2` ne vient que si aucun
+    ///   `sshd` ne tourne plus et que l'horloge à guetter existe ; sinon
+    ///   `REFUS_4` (`preparationRefused`).
+    public static let prepare = "sv down sshd; rm -f /etc/ssh/ssh_host_*; "
+        + "setsid sh -c '\(keyWatcher)' </dev/null >/dev/null 2>&1 & "
+        + "sync; echo 3 > /proc/sys/vm/drop_caches; sleep 2; "
+        + "if pgrep -x sshd >/dev/null || ! test -r \(rtcSeconds); then echo REFUS_$((2+2)); "
+        + "else echo PRET_$((1+1)); fi\n"
+
+    /// La marque d'une préparation qui n'a pas tenu.
+    public static let preparationRefused = "REFUS_4"
+
+    /// L'horloge CMOS telle que l'invité la lit, **à chaque lecture** : le
+    /// pilote `rtc_cmos` relit les registres, il ne garde pas l'heure du
+    /// démarrage.
+    public static let rtcSeconds = "/sys/class/rtc/rtc0/since_epoch"
+
+    /// **Le guetteur des clés**, un `sh` qui dort dans l'instantané.
+    ///
+    /// *Quand* : l'horloge CMOS de la fabrication est figée
+    /// (`X86Machine.frozenHostTime`), celle du téléphone avance. Tant que
+    /// `rtcSeconds` ne bouge pas, on est encore à la fabrique ; dès qu'il
+    /// bouge, la machine a été reprise ailleurs.
+    ///
+    /// *Pourquoi attendre encore soixante-cinq secondes* : l'état du
+    /// générateur du noyau (le CRNG) est dans l'instantané, le même pour
+    /// toutes les copies. Des clés tirées tout de suite pourraient sortir de
+    /// cet état-là, donc être les mêmes partout. Le noyau ne le réensemence
+    /// qu'au plus toutes les soixante secondes, et c'est ce réensemencement
+    /// qui mêle `RDSEED` et `RDRAND` — l'aléa du téléphone (`X86Entropy`).
+    /// Après soixante-cinq secondes, le premier tirage le provoque.
+    ///
+    /// Puis `ssh-keygen -A` (les clés qui manquent) et `sv up sshd`.
+    public static let keyWatcher = watcher(clock: rtcSeconds, poll: "5", settle: "65")
+
+    /// Le guetteur sur une autre horloge et d'autres attentes : celui de
+    /// l'invité, en secondes, ou celui d'un test, en fractions.
+    static func watcher(clock: String, poll: String, settle: String) -> String {
+        "r=\(clock); t=$(cat $r); while [ \"$(cat $r)\" = \"$t\" ]; do sleep \(poll); done; "
+            + "sleep \(settle); ssh-keygen -A; sv up sshd"
+    }
 
     /// **La mise à zéro des pages libérées**, que la fabrication ajoute à la
     /// ligne de l'image. Le noyau de Void met les pages à zéro à
@@ -79,16 +129,21 @@ public enum ReadyDesktopBuild {
     /// sur un autre écran, le noyau a réglé un mode que la reprise n'applique
     /// pas, et l'écran reste noir.
     ///
-    /// Deux écarts, et seulement pour que deux fabrications donnent le même
-    /// bureau : le réseau **isolé** (le bail est servi, rien ne sort) et
-    /// l'heure **figée** à `frozenAt`. L'aléa reste la suite fixée : le
-    /// téléphone prend celui du système à la reprise (`X86Entropy`).
+    /// Deux écarts, pour que rien du dehors n'entre dans la fabrication : le
+    /// réseau **isolé** (le bail est servi, rien ne sort) et l'heure
+    /// **figée** à `frozenAt`, pour l'horloge CMOS **et** pour le NTP de la
+    /// passerelle (`UserNetwork.hostClock`). L'aléa reste la suite fixée : le
+    /// téléphone prend celui du système à la reprise (`X86Entropy`). Que
+    /// deux fabrications donnent alors le même bureau se mesure (voir le
+    /// journal), cela ne se suppose pas.
     public static func machine(
         ramSize: Int, frozenAt: Date?, onOutput: @escaping @Sendable (Data) -> Void
     ) throws -> X86Machine {
+        let hostClock: @Sendable () -> Date
+        if let frozenAt { hostClock = { frozenAt } } else { hostClock = { Date() } }
         guard let machine = GuestMachineFactory.make(
             for: .x86_64, ramSizeBytes: ramSize, onOutput: onOutput,
-            network: { UserNetwork.isolated() }) as? X86Machine
+            network: { UserNetwork.isolated(hostClock: hostClock) }) as? X86Machine
         else { throw Refusal.notAPC }
         machine.entropy = .seeded(X86Entropy.reproducibleSeed)
         machine.frozenHostTime = frozenAt
@@ -114,6 +169,10 @@ public enum ReadyDesktopBuild {
         case level(saved: UInt64?, expected: UInt64)
         /// La mémoire sauvée n'est pas une taille que l'application règle.
         case unrecordableMemory(Int)
+        /// Une option de la fabrication qui ne se lit pas.
+        case unreadableOption(String, value: String)
+        /// Moins de mémoire que l'image n'en demande.
+        case memoryBelowMinimum(requested: Int, minimum: Int)
 
         public var description: String {
             switch self {
@@ -128,7 +187,11 @@ public enum ReadyDesktopBuild {
             case .level(let saved, let expected):
                 return "niveau sauvé \(saved.map(String.init) ?? "illisible"), attendu \(expected)"
             case .unrecordableMemory(let bytes):
-                return "la mémoire sauvée (\(bytes >> 20) Mio) n'est pas un réglage de l'application"
+                return "la mémoire (\(bytes >> 20) Mio) n'est pas un réglage de l'application"
+            case .unreadableOption(let option, let value):
+                return "\(option) illisible : « \(value) »"
+            case .memoryBelowMinimum(let requested, let minimum):
+                return "\(requested >> 20) Mio demandés, l'image en veut au moins \(minimum >> 20)"
             }
         }
     }
@@ -156,6 +219,48 @@ public enum ReadyDesktopBuild {
         let lit = GuestScript.litFraction(machine.screenPixels ?? [])
         guard lit > 0.5 else { throw Refusal.darkScreen(lit: lit) }
         return lit
+    }
+
+    // MARK: - Les réglages, jugés avant de démarrer
+
+    /// **La mémoire de la fabrication**, décidée avant la demi-heure de
+    /// démarrage et pas après : `--ram 1500` tournait jusqu'au bout, puis
+    /// `assemble` refusait une taille que l'application ne règle pas.
+    ///
+    /// Sans `--ram` (`requestedMiB` nil), le plancher de l'image. Une valeur
+    /// illisible, sous le plancher, ou hors des réglages de l'application est
+    /// refusée en le disant.
+    public static func memory(requestedMiB text: String?, minimum: Int) throws -> Int {
+        let floor = max(X86Machine.minimumRAMSize, minimum)
+        var ram = floor
+        if let text {
+            guard let mebibytes = Int(text), mebibytes > 0, mebibytes <= Int.max >> 21 else {
+                throw Refusal.unreadableOption("--ram", value: text)
+            }
+            ram = mebibytes << 20
+            guard ram >= floor else { throw Refusal.memoryBelowMinimum(requested: ram, minimum: floor) }
+        }
+        guard isRecordable(ram) else { throw Refusal.unrecordableMemory(ram) }
+        return ram
+    }
+
+    /// Le budget de chaque attente, en instructions : deux mille milliards
+    /// sans `--budget`. Un budget illisible ou nul est refusé — il était
+    /// remplacé sans un mot par celui par défaut.
+    public static func budget(_ text: String?) throws -> UInt64 {
+        guard let text else { return defaultBudget }
+        guard let budget = UInt64(text), budget > 0 else { throw Refusal.unreadableOption("--budget", value: text) }
+        return budget
+    }
+
+    public static let defaultBudget: UInt64 = 2_000_000_000_000
+
+    /// **Une taille que l'application sait régler**, ou rien : `setSize`
+    /// ignore sans rien dire une taille hors de ses choix, et l'archive
+    /// annoncerait alors la mémoire par défaut à côté d'une session qui en
+    /// veut une autre.
+    static func isRecordable(_ ram: Int) -> Bool {
+        ram > 0 && (KernelMemory.isRecordable(UInt64(ram)) || UInt64(ram) == KernelMemory.defaultSize)
     }
 
     // MARK: - L'assemblage
@@ -196,13 +301,9 @@ public enum ReadyDesktopBuild {
         guard let ram = X86Machine.savedRAMSize(in: snapshot) else {
             throw Refusal.unreadable("la taille de la mémoire ne se lit pas")
         }
-        // **Une taille que l'application sait régler**, ou rien : `setSize`
-        // ignore sans rien dire une taille hors de ses choix, et l'archive
-        // annoncerait alors la mémoire par défaut à côté d'une session qui en
-        // veut une autre.
-        guard KernelMemory.isRecordable(UInt64(ram)) || UInt64(ram) == KernelMemory.defaultSize else {
-            throw Refusal.unrecordableMemory(ram)
-        }
+        // Jugée au départ aussi (`memory`), mais c'est la mémoire de
+        // l'instantané qui part dans l'archive : voir `isRecordable`.
+        guard isRecordable(ram) else { throw Refusal.unrecordableMemory(ram) }
         KernelMemory.setSize(UInt64(ram), forKernel: machine.key, in: work)
         let identity = SuspendedMachine.identity(of: kernel, named: machine.key)
         try SuspendedMachine.savePacked(SnapshotFile.pack(snapshot), kernel: identity, in: work)
@@ -258,12 +359,16 @@ public enum ReadyDesktopBuild {
         /// L'instantané brut, et tel qu'il est rangé dans l'archive.
         public var snapshotBytes: UInt64
         public var packedBytes: UInt64
+        /// La somme de l'instantané brut : deux fabrications se comparent
+        /// par elle, même quand on n'a gardé ni l'une ni l'autre. Absente des
+        /// fiches d'avant.
+        public var snapshotSHA256: String?
         public var commit: String?
 
         public init(title: String, level: UInt64, image: File, archive: File, kernelDigest: String,
                     ramBytes: UInt64, screen: [Int], commandLine: String, madeAt: Date,
                     guestClock: Date?, instructions: UInt64, snapshotBytes: UInt64,
-                    packedBytes: UInt64, commit: String?) {
+                    packedBytes: UInt64, snapshotSHA256: String? = nil, commit: String?) {
             self.title = title
             self.level = level
             self.image = image
@@ -277,6 +382,7 @@ public enum ReadyDesktopBuild {
             self.instructions = instructions
             self.snapshotBytes = snapshotBytes
             self.packedBytes = packedBytes
+            self.snapshotSHA256 = snapshotSHA256
             self.commit = commit
         }
 

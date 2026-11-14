@@ -134,6 +134,168 @@ final class ReadyDesktopBuildTests: XCTestCase {
         }
     }
 
+    /// L'instantané, son niveau réécrit. La section suit la mémoire, et sa
+    /// marque n'y paraît qu'une fois.
+    static func levelOffset(in snapshot: Data) throws -> Int {
+        let marker = withUnsafeBytes(of: Snapshot.levelSection.littleEndian) { Data($0) }
+        let found = try XCTUnwrap(snapshot.range(of: marker), "pas de section du niveau")
+        XCTAssertNil(snapshot.range(of: marker, in: found.upperBound..<snapshot.endIndex), "une seule marque")
+        return found.upperBound
+    }
+
+    static func withLevel(_ level: UInt64, in snapshot: Data) throws -> Data {
+        let at = try levelOffset(in: snapshot)
+        var patched = snapshot
+        patched.replaceSubrange(at..<at + 8, with: withUnsafeBytes(of: level.littleEndian) { Data($0) })
+        return patched
+    }
+
+    /// **Un autre niveau de machine est refusé**, plus ancien comme plus
+    /// récent : la fiche annonce le niveau de cette version, et un bureau
+    /// pris par une autre machine que celle-ci n'est pas celui qu'on publie.
+    func testAnotherLevelIsRefused() throws {
+        let machine = try ReadyDesktopBuild.machine(ramSize: Self.ram, frozenAt: Self.moment) { _ in }
+        let snapshot = try Self.snapshot(of: machine)
+        XCTAssertNoThrow(try ReadyDesktopBuild.check(snapshot, ramSize: Self.ram))
+        for level in [0, X86Machine.snapshotLevel + 1] {
+            let other = try Self.withLevel(level, in: snapshot)
+            XCTAssertEqual(X86Machine.savedLevel(in: other), level)
+            XCTAssertThrowsError(try ReadyDesktopBuild.check(other, ramSize: Self.ram)) {
+                XCTAssertEqual($0 as? ReadyDesktopBuild.Refusal,
+                               .level(saved: level, expected: X86Machine.snapshotLevel), "niveau \(level)")
+            }
+        }
+    }
+
+    /// **Un instantané qui ne se reprend pas est dit illisible**, avec la
+    /// raison de la reprise : ici, coupé au milieu de la pile x87, alors que
+    /// son niveau et sa mémoire se lisent encore.
+    func testASnapshotThatDoesNotComeBackIsUnreadable() throws {
+        let machine = try ReadyDesktopBuild.machine(ramSize: Self.ram, frozenAt: nil) { _ in }
+        let snapshot = try Self.snapshot(of: machine)
+        let cut = Data(snapshot.prefix(try Self.levelOffset(in: snapshot) + 8 + 12))
+        XCTAssertEqual(X86Machine.savedLevel(in: cut), X86Machine.snapshotLevel)
+        XCTAssertEqual(X86Machine.savedRAMSize(in: cut), Self.ram)
+        XCTAssertThrowsError(try ReadyDesktopBuild.check(cut, ramSize: Self.ram)) { error in
+            guard case .unreadable(let why)? = error as? ReadyDesktopBuild.Refusal else {
+                return XCTFail("refusé autrement : \(error)")
+            }
+            XCTAssertFalse(why.isEmpty)
+        }
+    }
+
+    // MARK: - L'heure et les clés
+
+    /// **La passerelle sert l'heure figée**, comme l'horloge CMOS : un client
+    /// NTP de l'invité (`chronyd` tourne dans le bureau Void) recevait
+    /// l'heure vraie de l'hôte. La machine de l'application, elle, sert
+    /// l'heure du système.
+    func testTheGatewayServesTheFrozenTime() throws {
+        func served(by machine: X86Machine) throws -> TimeInterval {
+            let network = try XCTUnwrap(machine.network?.backend as? UserNetwork)
+            defer { network.streams?.close() }
+            network.send(UserNetworkTimeTests.frame(UserNetworkTimeTests.request(sent: [1, 1, 1, 1, 1, 1, 1, 1])))
+            let reply = try XCTUnwrap(network.receive().first)
+            let ntp = Array(reply[(14 + 20 + 8)...])
+            return TimeInterval(UserNetwork.be32(ntp, 40)) - UserNetwork.ntpEpochOffset
+        }
+        let frozen = try ReadyDesktopBuild.machine(ramSize: Self.ram, frozenAt: Self.moment) { _ in }
+        XCTAssertEqual(try served(by: frozen), Self.moment.timeIntervalSince1970)
+        let live = try ReadyDesktopBuild.machine(ramSize: Self.ram, frozenAt: nil) { _ in }
+        XCTAssertEqual(try served(by: live), Date().timeIntervalSince1970, accuracy: 5)
+    }
+
+    /// **`sshd` est arrêté avant que ses clés soient effacées**, et la
+    /// préparation le prouve avant sa marque. Depuis OpenSSH 9.8 l'écouteur
+    /// garde les clés en mémoire : effacer les fichiers sous un `sshd`
+    /// vivant laissait la clé de la fabrication à toutes les copies.
+    func testSSHIsStoppedBeforeItsKeysAreErased() throws {
+        let line = ReadyDesktopBuild.prepare
+        let stop = try XCTUnwrap(line.range(of: "sv down sshd;"))
+        let erase = try XCTUnwrap(line.range(of: "rm -f /etc/ssh/ssh_host_*;"))
+        XCTAssertLessThan(stop.lowerBound, erase.lowerBound)
+        XCTAssertTrue(line.contains("setsid sh -c '\(ReadyDesktopBuild.keyWatcher)' </dev/null"))
+        XCTAssertFalse(ReadyDesktopBuild.keyWatcher.contains("'"), "le guetteur tient entre apostrophes")
+        let proof = try XCTUnwrap(line.range(of: "if pgrep -x sshd >/dev/null || ! test -r "
+            + ReadyDesktopBuild.rtcSeconds + "; then echo REFUS_$((2+2)); else echo PRET_$((1+1)); fi"))
+        XCTAssertLessThan(erase.lowerBound, proof.lowerBound)
+        XCTAssertEqual(ReadyDesktopBuild.preparationRefused, "REFUS_4")
+        XCTAssertEqual(ReadyDesktopBuild.keyWatcher,
+                       ReadyDesktopBuild.watcher(clock: ReadyDesktopBuild.rtcSeconds, poll: "5", settle: "65"),
+                       "plus de soixante secondes : le noyau réensemence alors son générateur")
+    }
+
+    /// **Le guetteur, joué par un vrai `sh`** : tant que l'horloge ne bouge
+    /// pas, il ne fait rien ; dès qu'elle bouge, il refait les clés, **puis**
+    /// relance `sshd`, et s'en va. `ssh-keygen` et `sv` sont des doublures
+    /// qui notent leur appel.
+    func testTheWatcherWaitsForTheClockToMove() throws {
+        let files = FileManager.default
+        let folder = files.temporaryDirectory.appendingPathComponent("wisq-guetteur-\(UUID().uuidString)")
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("appels")
+        for tool in ["ssh-keygen", "sv"] {
+            let stub = folder.appendingPathComponent(tool)
+            try Data("#!/bin/sh\necho \(tool) \"$@\" >> '\(log.path)'\n".utf8).write(to: stub)
+            try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        }
+        let clock = folder.appendingPathComponent("since_epoch")
+        try Data("1794614400\n".utf8).write(to: clock)
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-c", ReadyDesktopBuild.watcher(clock: clock.path, poll: "0.05", settle: "0.1")]
+        shell.environment = ["PATH": folder.path + ":/usr/bin:/bin"]
+        try shell.run()
+        defer { if shell.isRunning { shell.terminate() } }
+
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertTrue(shell.isRunning, "l'horloge figée : le guetteur attend")
+        XCTAssertFalse(files.fileExists(atPath: log.path), "rien refait à la fabrique")
+
+        try Data("1794614401\n".utf8).write(to: clock)
+        let deadline = Date().addingTimeInterval(10)
+        while shell.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        XCTAssertFalse(shell.isRunning, "le guetteur a fini")
+        XCTAssertEqual(String(decoding: (try? Data(contentsOf: log)) ?? Data(), as: UTF8.self),
+                       "ssh-keygen -A\nsv up sshd\n")
+    }
+
+    // MARK: - Les réglages
+
+    /// **La mémoire se juge avant de démarrer** : `--ram 1500` tournait
+    /// quarante minutes avant que l'assemblage la refuse.
+    func testTheMemoryIsJudgedBeforeTheBoot() {
+        let gibibyte = 1 << 30
+        XCTAssertEqual(try ReadyDesktopBuild.memory(requestedMiB: nil, minimum: gibibyte), gibibyte)
+        XCTAssertEqual(try ReadyDesktopBuild.memory(requestedMiB: nil, minimum: 0), X86Machine.minimumRAMSize)
+        XCTAssertEqual(try ReadyDesktopBuild.memory(requestedMiB: "2048", minimum: gibibyte), 2 * gibibyte)
+        let refused: [(String, ReadyDesktopBuild.Refusal)] = [
+            ("1500", .unrecordableMemory(1500 << 20)),
+            ("512", .memoryBelowMinimum(requested: 512 << 20, minimum: gibibyte)),
+            ("mille", .unreadableOption("--ram", value: "mille")),
+            ("0", .unreadableOption("--ram", value: "0")),
+            ("-1024", .unreadableOption("--ram", value: "-1024")),
+        ]
+        for (text, refusal) in refused {
+            XCTAssertThrowsError(try ReadyDesktopBuild.memory(requestedMiB: text, minimum: gibibyte), text) {
+                XCTAssertEqual($0 as? ReadyDesktopBuild.Refusal, refusal, text)
+            }
+        }
+    }
+
+    /// **Un budget illisible est refusé**, au lieu d'être remplacé sans un
+    /// mot par celui par défaut.
+    func testAnUnreadableBudgetIsRefused() {
+        XCTAssertEqual(try ReadyDesktopBuild.budget(nil), 2_000_000_000_000)
+        XCTAssertEqual(try ReadyDesktopBuild.budget("5000"), 5000)
+        for text in ["2e12", "", "0", "beaucoup"] {
+            XCTAssertThrowsError(try ReadyDesktopBuild.budget(text), text) {
+                XCTAssertEqual($0 as? ReadyDesktopBuild.Refusal, .unreadableOption("--budget", value: text))
+            }
+        }
+    }
+
     // MARK: - L'assemblage
 
     /// **Exporter, puis importer dans un dossier neuf** : la machine revient
@@ -187,6 +349,34 @@ final class ReadyDesktopBuildTests: XCTestCase {
         XCTAssertTrue(files.fileExists(atPath: layer.path + ".map"), "la couche n'a pas suivi")
         // Et la machine reprend dans une machine de l'application neuve.
         XCTAssertNoThrow(try ReadyDesktopBuild.check(try XCTUnwrap(found.snapshot), ramSize: Self.ram))
+    }
+
+    /// **Deux assemblages du même instantané sont les mêmes octets**, bien
+    /// que chacun installe sa machine sous une clé tirée au sort et à sa
+    /// date : ni l'une ni l'autre n'entre dans l'archive (la session y est
+    /// nommée par l'empreinte du noyau seule, la couche par le nom du
+    /// disque). Deux bureaux prêts se comparent donc par la somme de leur
+    /// archive.
+    func testTwoAssembliesOfTheSameSnapshotAreTheSameBytes() throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("wisq-pret-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        let machine = try ReadyDesktopBuild.machine(ramSize: Self.ram, frozenAt: Self.moment) { _ in }
+        let snapshot = try Self.snapshot(of: machine)
+        var archives: [Data] = []
+        var keys: [String] = []
+        for (index, day) in [0.0, 86_400.0].enumerated() {
+            let work = root.appendingPathComponent("atelier-\(index)")
+            try files.createDirectory(at: work, withIntermediateDirectories: true)
+            let (installed, _) = try ReadyDesktopBuild.install(
+                image: "void.iso", name: "Void Xfce (prêt)", in: work, now: Self.moment.addingTimeInterval(day))
+            let archive = work.appendingPathComponent("bureau.wisqmachine")
+            try ReadyDesktopBuild.assemble(installed, snapshot: snapshot, kernel: Data([1, 2, 3]), in: work, to: archive)
+            archives.append(try Data(contentsOf: archive))
+            keys.append(installed.key)
+        }
+        XCTAssertNotEqual(keys[0], keys[1])
+        XCTAssertEqual(archives[0], archives[1])
     }
 
     /// **Une mémoire que l'application ne sait pas régler est refusée** à
