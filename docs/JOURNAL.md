@@ -8,6 +8,108 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La carte de la page : trait `Ram`, `Carte`, i8042 et horloge CMOS en Rust
+
+**Ce qui n'allait pas.** Dans la page WebKit, la boucle hôte (`web/host.js`)
+ne connaît que deux 8259, un 8254 et un 16550. Tout autre port rend `0xff`,
+personne. Un noyau n'y trouve donc ni clavier, ni souris, ni horloge murale :
+« i8042: Can't read CTR », et une date de 1970 (carte du 14 novembre,
+§ 1.6 et § 1.9). Le cœur Swift a ces périphériques, mais un port est un
+appel synchrone depuis le module d'une région : ils ne peuvent pas rester en
+Swift, derrière un message.
+
+**Ce qui change.**
+
+- **Un module `carte` dans `crates/wisq-page`**, compilé dans le même
+  `wisq_page.wasm` que l'émetteur, et en natif pour les tests :
+  - le trait `Ram` (lire, écrire des octets de la RAM invitée par adresse
+    physique ; une plage entière ou rien), `RamPlate` pour les tests,
+    `SansRam` pour la page ;
+  - la `Carte`, qui aiguille les ports (in/out de 1, 2 ou 4 octets ; `None`
+    pour « personne ») et tient les lignes à niveau : `lignes()` (seize bits,
+    maître puis esclave), `tenues()` (celles à effacer quand elles
+    retombent), `lever`/`baisser` pour une source du dehors. Elle refuse les
+    lignes 0, 2 et 4, que les puces de `host.js` tiennent ;
+  - **l'horloge CMOS** aux ports `0x70`/`0x71`, portée registre pour
+    registre depuis `X86CMOSClock.swift`. L'heure UTC est injectée en
+    millisecondes : `SystemTime::now` panique sur `wasm32-unknown-unknown`.
+    Le calendrier (Howard Hinnant) est écrit dans le crate, sans dépendance ;
+  - **l'i8042** aux ports `0x60`/`0x64`, lignes 1 et 12, porté commande pour
+    commande depuis `X86PS2.swift` : CTR, autotests, bouclage, souris par
+    `D4`, jeux 1 et 2, paquets de souris, remise à zéro par `0xFE` (et par
+    `D1` bit zéro à zéro), et le **rythme de frappe humain** (30 ms tenue,
+    20 ms d'écart, en tics du 8254 ; une frappe ne part que quand le noyau
+    a tout lu). La disposition américaine et le texte en frappes, Maj
+    autour, viennent avec.
+- **Quinze exports `carte_*`** du module (lire, écrire, lignes, tenues,
+  lever, baisser, battre, heure, touche, taper, texte_place, texte, souris, remise,
+  réveil). Le module n'a **toujours aucun import** : l'émetteur s'instancie
+  encore avec `{}`.
+- **`web/carte.js`** charge la carte dans une instance à elle (une trappe de
+  l'émetteur jette son instance, pas le clavier) et expose `ports.in`/
+  `ports.out` à la forme exacte d'`env.in`/`env.out`, `lignes()`,
+  `battre(tics)`, `reveil()`, `remise()`, et `touche`, `taper`,
+  `taperTexte`, `souris`. **`host.js` n'est pas touché** : le flux A y
+  travaille. Le raccord (une dizaine de lignes) est décrit pour la suite.
+
+**Trois trous des tests Swift, bouchés du côté Rust.** Les sabotages les ont
+montrés :
+
+- retirer « une frappe ne part que si le noyau a tout lu » laissait le cas
+  du rythme vert, en Swift comme dans la première version portée : la
+  seconde demande tombait aussi avant l'heure. Le cas Rust ajoute une
+  frappe en attente, une heure largement passée, et un octet non lu ;
+- retirer la copie des registres au début d'un réglage (bit SET) laissait le
+  cas du réglage vert : chaque écriture prenait effet tout de suite, au
+  même résultat. Le cas Rust fait passer une heure chez l'hôte pendant le
+  réglage, et l'heure lue doit rester figée ;
+- forcer le siècle à vingt laissait aussi le cas du réglage vert : aucun
+  cas n'écrivait le siècle. Le cas Rust écrit 19, puis 0 (qui vaut 20).
+
+Les tests Swift ne sont pas modifiés. Un quatrième sabotage a survécu, du
+côté JavaScript : `Number(valeur)` au lieu de la valeur ramenée sur 32 bits
+dans `ports.out`. Le test n'essayait qu'une valeur sous 2³² ; il passe
+maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
+
+**Comment c'est vérifié.**
+
+- 29 tests ajoutés. 27 natifs : les 5 cas de `X86CMOSClockTests` (le
+  cinquième par les ports de la carte), plus un sur le calendrier ; les 9
+  de `X86PS2Tests` (la cascade réduite à ce que la carte tient : la ligne
+  12, quatrième de l'esclave) et 2 de `X86KeystrokesTests` ; les 3 de
+  `X86RebootTests` qui tiennent le 8042 ; les touches perdues ; 7 sur la
+  carte (ports, lignes, rythme vu des lignes, RAM) ; 2 sur les exports.
+  2 sous Bun (`crates/wisq-page/tests/carte.rs`), sur le module wasm32 : un
+  aller-retour de port (horloge à heure figée, sonde du 8042, une valeur de
+  64 bits qui garde son octet bas), et les lignes recopiées dans de faux
+  8259 au rythme d'une main, les lignes 0 et 4 de l'hôte intactes.
+- Vingt sabotages d'une ligne (quatorze dans le Rust des périphériques,
+  six dans `web/carte.js` et l'export de l'heure), chacun restauré puis
+  vérifié par `cmp` : seize font tomber au moins un test du premier coup ;
+  les quatre autres ont survécu, ont fait renforcer les tests (voir plus
+  haut), et tombent maintenant.
+- `cargo test --release` : 535 tests, 0 échec ; pareil avec les assertions
+  et les débordements armés. `cargo fmt --check`, les deux `clippy`, et
+  `clippy` pour `wasm32-unknown-unknown` sur `wisq-page` : propres.
+- Le module de la page passe de 266 311 à 282 502 octets (57 391 à 62 090
+  en gzip -9) ; mesuré sur `target/page`.
+- Compte publié : 3 365 → 3 394 (Swift 2 859 + Rust 535) ; site reconstruit,
+  `bun test` du site : 470 réussis, 0 échec.
+
+**Ce qui reste.**
+
+- **Le raccord dans `host.js`**, quand le flux A aura fini : un paramètre
+  `carte` à `machine()`, la carte en dernier dans `env.in` et `env.out`, ses
+  lignes recopiées à chaque tour et dans l'attente du `hlt`, `reveil()` dans
+  `wakeable`, et `remise()` rendue comme « redémarrage ». Puis un test Bun
+  où un invité lit l'horloge et le 8042 par de vrais `in`/`out`.
+- Les messages de l'application (`wisqTouche`, `wisqSouris`, `wisqTaper`)
+  et `LocalDesktop.key`/`mouse` côté Swift.
+- La RAM n'est pas branchée dans la page : le premier périphérique qui la
+  lira (virtio, P4) ajoutera `ram_lire`/`ram_ecrire`, et l'émetteur devra
+  les recevoir aussi.
+- Ni l'horloge ni le 8042 ne passent dans un instantané (P9).
+
 ## 2026-11-14 — La raison que l'émetteur de la page garde est jugée
 
 **Ce qui n'allait pas.** Le contrôle de la tranche « survit à une trappe »
