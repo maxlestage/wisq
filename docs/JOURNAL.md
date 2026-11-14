@@ -8,6 +8,78 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Reprise sûre : l'aléa, la mémoire, le refus dit
+
+Premier pas du « bureau prêt » : un bureau Void Xfce déjà démarré, qu'on
+télécharge au lieu d'attendre trente-deux minutes. Avant de fabriquer ce
+fichier, la reprise devait tenir quatre promesses qu'elle ne tenait pas.
+
+**1. L'aléa était le même pour tous.** Le processeur n'annonçait ni RDRAND
+ni RDSEED, et RDTSC est le compteur d'instructions : chaque téléphone qui
+reprend le même instantané repart du même état du générateur du noyau, et
+les clés tirées juste après se devinent. `RDRAND` et `RDSEED` (`0F C7 /6`
+et `/7` en registre, trois largeurs) sont maintenant exécutés, et annoncés
+par CPUID (feuille 1, ECX 30 ; feuille 7, EBX 18). Ils tirent dans une
+source qui appartient à la machine (`X86Entropy`) : l'aléa du système dans
+l'application (`GuestMachineFactory.make`), une suite fixée partout
+ailleurs, pour que les tests, les bancs et la fabrication restent
+reproductibles. La source n'entre pas dans l'instantané : elle est celle de
+la machine qui reprend. `RDPID` et les formes mémoire (VMX) restent
+refusés.
+
+**2. La reprise pesait deux fois l'instantané.** `restore` recopiait
+l'instantané en `[UInt8]` avant d'en lire un mot, `savedRAMSize` aussi pour
+n'en lire que huit octets, et l'application gardait l'instantané et
+l'initramfs toute la session dans la fermeture du fil d'émulation. Le
+lecteur lit maintenant les octets de `Data` en place ; la session passe au
+fil d'émulation dans une boîte (`PendingSession`) que la reprise vide ; le
+fichier est projeté en mémoire (`.mappedIfSafe`) ; l'initramfs n'est lu que
+pour un démarrage à froid.
+
+**3. Une session illisible démarrait le noyau à neuf sans un mot**, et la
+sauvegarde continue l'écrasait cinq minutes plus tard. `SavedSession`
+distingue « pas de session » de « session illisible » (abîmée, ou prise par
+une machine plus récente) ; la seconde est gardée, rien ne démarre, et la
+console dit pourquoi et que « Oublier » repart de zéro. Une reprise refusée
+plus loin, par la machine elle-même, suit le même chemin.
+
+**4. Un niveau de machine.** `X86Machine.snapshotLevel` (1 : RDRAND
+annoncé) est écrit juste derrière la mémoire (`WISQ_lvl`). Une machine plus
+récente est refusée en le disant (`newerMachine`) ; un instantané d'avant la
+section est de niveau zéro et se reprend comme avant.
+
+**Vérifié** :
+
+- La mémoire, mesurée par le noyau (`/proc/self/statm`, et le pic `VmHWM`
+  remis à zéro par `/proc/self/clear_refs`) sur un instantané de 96 Mio :
+  le pic de la reprise est de 105 Mio, contre 201 Mio avec l'ancienne
+  copie ; après une reprise par `PendingSession`, le processus pèse 9 Mio
+  de plus qu'avant, contre 105 Mio quand la boîte garde les octets.
+- Le bureau Xfce sauvé le 4 novembre (`bureau.snap`, 883 Mo, sans la
+  section du niveau) se reprend avec ce code : fond vivant, console série,
+  Ctrl+Alt+T, tablette (`testTheDesktopComesBackAfterASave`, 71,6 s, le
+  conteneur partagé avec d'autres compilations).
+- Pas de recul de vitesse visible : 2 milliards d'instructions depuis
+  `milieu.snap` en 49,9 s (la référence connue est d'environ 53 s ; une
+  seule mesure, conteneur chargé).
+- Quatorze sabotages, quatorze détectés, restaurations vérifiées : copie
+  dans `restore`, copie dans `savedRAMSize`, boîte qui garde les octets, CF
+  non posé, largeur ignorée, fabrique sans l'aléa du système, source perdue
+  à la reprise, bit de CPUID retiré, machine plus récente acceptée, session
+  illisible prise pour aucune, niveau non écrit, `RDPID` accepté, REX.R
+  laissé dans le champ d'opcode, reprise refusée prise pour un succès.
+- `swift test` : 2805 tests, 0 échec. 26 tests nouveaux (`X86RandomTests`,
+  `X86SnapshotLevelTests`, `SavedSessionTests`, `X86ResumeMemoryTests`) ; le
+  test qui fige la feuille 7 de CPUID compte RDSEED.
+
+**Ce qui reste** : la liaison dans `LocalVMModel` (le message, l'initramfs
+lu au démarrage à froid seulement) n'est compilée que par le job « App
+iOS ». La décompression écrit encore tout l'instantané avant la reprise
+(décompresser bloc par bloc vers la RAM ôterait l'instantané décompressé, 842 Mio pour le bureau, du pic), et
+`IsoBoot` ressort toujours le noyau et l'initramfs de l'ISO à chaque
+ouverture. L'heure de la première reprise (tranche 4.2) et la sauvegarde
+d'une grosse machine (4.4) sont d'autres tranches.
+
 ## 2026-11-04 — Un bureau qui revient après une sauvegarde
 
 L'application sauve la machine quand on quitte l'écran et la reprend au
