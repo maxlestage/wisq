@@ -96,14 +96,18 @@ fn prelude(module: &Path) -> String {
 /// le 30 octobre 2026 à 17 h 05 min 09 s UTC), relue à chaque accès ; le
 /// 8042 répond à son autotest ; un port des puces de `host.js` n'est pas à
 /// la carte ; une valeur de 64 bits garde son octet bas en passant l'export
-/// `i32`. Et le module n'a **aucun import** : l'émetteur, instancié avec
-/// `{}` par `web/page-emitter.js`, en dépend.
+/// `i32`. Et le module n'importe **que les deux fonctions de la RAM**
+/// (`carte.ram_lire`, `carte.ram_ecrire`), rien d'autre : l'émetteur,
+/// instancié sur le même module par `web/page-emitter.js`, les reçoit de lui
+/// sous une forme qui lève, et une mémoire ou une table importée le
+/// casserait.
 #[test]
 fn a_port_round_trip_through_the_page_module() {
     let module = page_module();
     let script = format!(
         r#"{prelude}
-console.log("imports " + WebAssembly.Module.imports(module).length);
+console.log("imports " + WebAssembly.Module.imports(module).map((i) => i.module + "." + i.name + ":" + i.kind).sort().join(" "));
+console.log("emetteur " + emetteur(module).instances);
 let maintenant = 1793379909000;
 const c = carte(module, {{ heure: () => maintenant }});
 const lire = (port) => {{ const v = c.ports.in(BigInt(port), 1n); return v === null ? "personne" : "0x" + v.toString(16); }};
@@ -135,9 +139,10 @@ console.log("remise_apres " + c.remise());
     let text = run_driver("ports", &script);
     assert_eq!(
         said(&text, "imports "),
-        "0",
-        "l'émetteur s'instancie avec {{}}"
+        "carte.ram_ecrire:function carte.ram_lire:function",
+        "la RAM, et rien d'autre"
     );
+    assert_eq!(said(&text, "emetteur "), "1", "l'émetteur s'instancie");
     assert_eq!(said(&text, "type "), "bigint", "la forme d'env.in");
     assert_eq!(said(&text, "annee "), "0x26");
     assert_eq!(said(&text, "heure "), "0x17");
@@ -357,4 +362,246 @@ console.log("comptes " + [compte("2a"), compte("aa"), compte("1e"), compte("9e")
     // « a » sans Maj, puis 2 047 « A » : Maj enfoncée et relâchée autant de
     // fois, A aussi.
     assert_eq!(said(&text, "comptes "), "2047,2047,2048,2048");
+}
+
+/// **Un disque de 1,4 Gio lu par plages, servi plus tard, qui lève la ligne
+/// 5 à la fin.**
+///
+/// Le fichier est creux (`ftruncate`) : 1,4 Gio annoncés, quelques kibioctets
+/// sur le disque, deux marques — l'une à 4 Kio de la fin, l'autre écrite par
+/// l'invité. `Bun.serve` le sert par plages, `?a=…&n=…`, en lisant
+/// `Bun.file(…).slice(a, a + n)` : jamais le fichier entier. C'est le contrat
+/// que le magasin de la page tiendra par `wisq://`, et `arriereParUrl` de
+/// `web/carte.js` est l'arrière qui le parle.
+///
+/// Le noyau est joué par les ports, dans son ordre : l'énumération du bus,
+/// la mesure de la BAR, son placement, la ligne lue, la capacité, la poignée
+/// de main, la file posée à la page 1 dans la RAM de l'invité (une
+/// `WebAssembly.Memory` à part, comme celle de `host.js`). Puis :
+///
+/// - la notification rend tout de suite, la ligne reste basse, la carte se
+///   dit réveillable, et **tant que l'arrière tarde** (une porte fermée devant
+///   lui), rien n'est rendu, même vingt millisecondes plus tard ;
+/// - la porte ouverte, une seule lecture de 4 096 octets part, à
+///   `taille − 4096`, la marque arrive dans la RAM, l'octet de statut dit
+///   « réussi », l'anneau des servies avance, **la ligne 5 monte** au 8259
+///   maître, et retombe quand le noyau lit l'état d'interruption ;
+/// - une écriture part par `PUT` et change le fichier, au bon endroit ;
+/// - l'arrière refuse une plage que le magasin rend tronquée ;
+/// - un secteur au-delà du disque est refusé tout de suite, sans requête.
+///
+/// Et une mesure : seize lectures d'un mébioctet de suite, par la file, de
+/// la notification à la ligne levée.
+#[test]
+fn a_disk_read_by_ranges_is_served_later_and_raises_line_five() {
+    let module = page_module();
+    let carte_js = workspace_root().join("web/carte.js");
+    let script = format!(
+        r#"{prelude}
+import {{ arriereParUrl, ramDeMemoire }} from {carte_js:?};
+import {{ openSync, ftruncateSync, writeSync, readSync, closeSync, statSync }} from "fs";
+
+// Le disque : 1,4 Gio annoncés, creux.
+const TAILLE = 1503238144;
+const chemin = import.meta.dir + "/disque.iso";
+let fd = openSync(chemin, "w");
+ftruncateSync(fd, TAILLE);
+writeSync(fd, new TextEncoder().encode("la fin du disque"), 0, 16, TAILLE - 4096);
+closeSync(fd);
+console.log("creux " + (statSync(chemin).blocks * 512 < 1048576));
+
+// Le magasin, par plages.
+const lectures = [];
+const serveur = Bun.serve({{
+  port: 0,
+  async fetch(requete) {{
+    const u = new URL(requete.url);
+    const a = Number(u.searchParams.get("a"));
+    if (requete.method === "PUT") {{
+      const corps = new Uint8Array(await requete.arrayBuffer());
+      const f = openSync(chemin, "r+");
+      writeSync(f, corps, 0, corps.length, a);
+      closeSync(f);
+      return new Response(null, {{ status: 204 }});
+    }}
+    const n = Number(u.searchParams.get("n"));
+    lectures.push(a + "+" + n);
+    return new Response(Bun.file(chemin).slice(a, a + n));
+  }},
+}});
+const parUrl = arriereParUrl("http://127.0.0.1:" + serveur.port + "/disque/0", TAILLE);
+// Une porte fermée devant l'arrière : la réponse tarde autant qu'on veut.
+let ouvrir;
+const porteDeLArriere = new Promise((r) => (ouvrir = r));
+const arriere = {{
+  octets: TAILLE,
+  lire: async (a, n) => {{ await porteDeLArriere; return parUrl.lire(a, n); }},
+  ecrire: (a, o) => parUrl.ecrire(a, o),
+}};
+
+// La RAM de l'invité : 4 Mio, dans une mémoire à elle.
+const memoire = new WebAssembly.Memory({{ initial: 64 }});
+const vue = () => new DataView(memoire.buffer);
+let reponses = 0;
+const c = carte(module, {{ heure: () => 0, ram: ramDeMemoire(memoire, 64 * 65536), disque: arriere, surReponse: () => (reponses += 1) }});
+const sortir = (port, valeur, largeur) => c.ports.out(BigInt(port), BigInt(valeur), BigInt(largeur));
+const entrer = (port, largeur) => {{ const v = c.ports.in(BigInt(port), BigInt(largeur)); return v === null ? "personne" : "0x" + v.toString(16); }};
+const pics = {{ master: {{ request: 0x11 }}, slave: {{ request: 0 }} }};
+const recopier = () => {{
+  const l = c.lignes();
+  pics.master.request = (pics.master.request & ~l.tenuesMaitre) | l.maitre;
+  pics.slave.request = (pics.slave.request & ~l.tenuesEsclave) | l.esclave;
+  return pics.master.request.toString(16) + "/" + pics.slave.request.toString(16);
+}};
+
+// L'énumération, comme le noyau.
+sortir(0xcf8, 0x80000000, 4);
+console.log("pont " + entrer(0xcfc, 4));
+sortir(0xcf8, 0x80001800, 4);
+console.log("disque " + entrer(0xcfc, 4));
+sortir(0xcf8, 0x80001810, 4);
+sortir(0xcfc, 0xffffffff, 4);
+console.log("masque " + entrer(0xcfc, 4));
+sortir(0xcfc, 0xc000, 4);
+sortir(0xcf8, 0x80001804, 4);
+sortir(0xcfc, 0x0005, 2);
+sortir(0xcf8, 0x8000183c, 4);
+console.log("ligne " + entrer(0xcfc, 1));
+console.log("capacite " + entrer(0xc018, 4) + " " + entrer(0xc014, 4));
+// La poignée de main, et la file à la page 1.
+for (const s of [0, 1, 3]) sortir(0xc012, s, 1);
+sortir(0xc004, Number(entrer(0xc000, 4)), 4);
+sortir(0xc012, 11, 1);
+sortir(0xc00e, 0, 2);
+console.log("taille " + entrer(0xc00c, 2));
+sortir(0xc008, 1, 4);
+sortir(0xc012, 15, 1);
+
+// Une requête : l'en-tête à 0x4000, le tampon à 0x10000, le statut à 0x4800.
+let publiees = 0;
+function requete(genre, secteur, longueur, inscriptible) {{
+  const v = vue();
+  v.setUint32(0x4000, genre, true);
+  v.setBigUint64(0x4008, BigInt(secteur), true);
+  const dire = (i, a, n, drapeaux, suivant) => {{
+    v.setBigUint64(0x1000 + i * 16, BigInt(a), true);
+    v.setUint32(0x1008 + i * 16, n, true);
+    v.setUint16(0x100c + i * 16, drapeaux, true);
+    v.setUint16(0x100e + i * 16, suivant, true);
+  }};
+  dire(0, 0x4000, 16, 1, 1);
+  dire(1, 0x10000, longueur, inscriptible ? 3 : 1, 2);
+  dire(2, 0x4800, 1, 2, 0);
+  v.setUint8(0x4800, 0xff);
+  v.setUint16(0x1804 + (publiees % 128) * 2, 0, true);
+  publiees += 1;
+  v.setUint16(0x1802, publiees, true);
+  return sortir(0xc010, 0, 2);
+}}
+const statut = () => "0x" + vue().getUint8(0x4800).toString(16);
+const servies = () => vue().getUint16(0x2002, true);
+const attendre = async () => {{ while (c.disque.enVol() > 0) await new Promise((r) => setTimeout(r, 1)); }};
+
+console.log("notifie " + requete(0, (TAILLE - 4096) / 512, 4096, true));
+console.log("tout_de_suite " + recopier() + " " + statut() + " " + c.reveil() + " " + c.disque.enVol() + " " + lectures.length);
+await new Promise((r) => setTimeout(r, 20));
+console.log("en_attente " + recopier() + " " + statut() + " " + servies() + " " + lectures.length + " " + reponses);
+ouvrir();
+await attendre();
+const lu = new TextDecoder().decode(new Uint8Array(memoire.buffer, 0x10000, 16));
+console.log("revenue " + recopier() + " " + statut() + " " + servies() + " " + vue().getUint32(0x2008, true) + " " + reponses);
+console.log("marque " + lu);
+console.log("lectures " + lectures.join(","));
+console.log("acquitte " + entrer(0xc013, 1) + " " + recopier() + " " + c.reveil());
+
+// Une écriture, au secteur 8.
+new Uint8Array(memoire.buffer, 0x10000, 512).fill(0).set(new TextEncoder().encode("écrit par l'invité"));
+console.log("ecriture " + requete(1, 8, 512, false));
+await attendre();
+const relu = new Uint8Array(20);
+fd = openSync(chemin, "r");
+readSync(fd, relu, 0, 20, 8 * 512);
+closeSync(fd);
+console.log("ecrite " + statut() + " " + new TextDecoder().decode(relu) + " " + recopier());
+entrer(0xc013, 1);
+
+// L'arrière refuse une plage plus courte que demandée : les dix derniers
+// octets du fichier, quand on en demande vingt.
+console.log("court " + (await parUrl.lire(TAILLE - 10, 20).then(() => "rendu", (e) => "refuse")));
+
+// Au-delà du disque : refusé tout de suite, rien ne part.
+const avant = lectures.length;
+requete(0, TAILLE / 512, 512, true);
+console.log("au_dela " + statut() + " " + c.disque.enVol() + " " + (lectures.length - avant) + " " + recopier());
+entrer(0xc013, 1);
+
+// La mesure : seize mébioctets, un par requête, de la notification à la
+// ligne levée.
+const debut = performance.now();
+for (let i = 0; i < 16; i++) {{
+  requete(0, (i * 1048576) / 512, 1048576, true);
+  await attendre();
+  if ((recopier(), pics.master.request & 0x20) === 0 || statut() !== "0x0") throw new Error("lecture " + i);
+  entrer(0xc013, 1);
+}}
+const ms = performance.now() - debut;
+console.log("mesure " + (ms / 16).toFixed(2) + " ms par Mio, " + (16 / (ms / 1000)).toFixed(0) + " Mio/s");
+serveur.stop(true);
+"#,
+        prelude = prelude(&module),
+    );
+    let text = run_driver("disque", &script);
+    assert_eq!(
+        said(&text, "creux "),
+        "true",
+        "le fichier n'occupe presque rien"
+    );
+    assert_eq!(said(&text, "pont "), "0x12378086", "le 440FX en 00:00.0");
+    assert_eq!(
+        said(&text, "disque "),
+        "0x10011af4",
+        "virtio-blk ancien en 00:03.0"
+    );
+    assert_eq!(said(&text, "masque "), "0xffffffc1", "64 ports");
+    assert_eq!(said(&text, "ligne "), "0x5");
+    // 1 503 238 144 / 512 = 2 936 012 = 0x2C_CCCC.
+    assert_eq!(said(&text, "capacite "), "0x0 0x2ccccc");
+    assert_eq!(said(&text, "taille "), "0x80");
+    assert_eq!(said(&text, "notifie "), "true", "l'out rend tout de suite");
+    assert_eq!(
+        said(&text, "tout_de_suite "),
+        "11/0 0xff true 1 0",
+        "ligne basse, statut intact, réveillable, une en vol, rien de lu"
+    );
+    assert_eq!(
+        said(&text, "en_attente "),
+        "11/0 0xff 0 0 0",
+        "l'arrière tarde : rien n'est rendu"
+    );
+    assert_eq!(
+        said(&text, "revenue "),
+        "31/0 0x0 1 4096 1",
+        "la ligne 5 au maître, réussi, une servie de 4 096 octets"
+    );
+    assert_eq!(said(&text, "marque "), "la fin du disque");
+    assert_eq!(
+        said(&text, "lectures "),
+        "1503234048+4096",
+        "une seule plage, celle demandée"
+    );
+    assert_eq!(said(&text, "acquitte "), "0x1 11/0 false");
+    assert_eq!(said(&text, "ecriture "), "true");
+    assert_eq!(said(&text, "court "), "refuse", "jamais une plage tronquée");
+    assert_eq!(
+        said(&text, "ecrite "),
+        "0x0 écrit par l'invité 31/0",
+        "le fichier a changé, au secteur 8"
+    );
+    assert_eq!(
+        said(&text, "au_dela "),
+        "0x1 0 0 31/0",
+        "erreur, rien en vol, rien lu, la réponse déjà là"
+    );
+    let mesure = said(&text, "mesure ");
+    eprintln!("disque par plages : {mesure}");
 }

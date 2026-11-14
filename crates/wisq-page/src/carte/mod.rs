@@ -21,6 +21,8 @@
 //! | --- | --- | --- |
 //! | `0x60`, `0x64` | i8042, clavier et souris ([`i8042`]) | 1 et 12 |
 //! | `0x70`, `0x71` | CMOS, horloge ([`cmos`]) | aucune |
+//! | `0xCF8`, `0xCFC` à `0xCFF` | pont PCI ([`pci`]) : 440FX en 00:00.0 | — |
+//! | la BAR0 du disque, `0x40` ports | virtio-blk de forme ancienne en 00:03.0 ([`virtio_blk`]) | 5, ou celle que le noyau écrit |
 //!
 //! **Les lignes sont à niveau.** [`Carte::lignes`] dit, à l'instant, quelles
 //! lignes ses périphériques tiennent levées, et [`Carte::tenues`] lesquelles
@@ -32,15 +34,25 @@
 //!
 //! **La RAM de l'invité** n'est pas dans la mémoire de ce module : elle est
 //! dans la `WebAssembly.Memory` de la boucle hôte. Un périphérique qui la lit
-//! (une file virtio, demain) passe donc par le trait [`Ram`], que chaque appel
-//! de port reçoit. Aucun des deux périphériques de cette tranche ne la lit.
+//! — la file du disque virtio — passe donc par le trait [`Ram`], que chaque
+//! appel de port reçoit.
+//!
+//! **Le disque répond plus tard.** Ses octets ne sont pas dans la page : une
+//! lecture ou une écriture **part** ([`Carte::requete_disque`]), la boucle
+//! hôte la confie à un arrière qui répond quand il peut, et la réponse
+//! ([`Carte::disque_lu`], [`Carte::disque_fini`]) remplit la RAM et lève la
+//! ligne. Voir [`virtio_blk`].
 
 pub mod cmos;
 pub mod i8042;
+pub mod pci;
 mod porte;
+pub mod virtio_blk;
 
 use cmos::Cmos;
 use i8042::{CodeTouche, I8042, LIGNE_CLAVIER, LIGNE_SOURIS, PORT_COMMANDE, PORT_DONNEES};
+use pci::{masque, Pci, PORT_ADRESSE, PORT_DONNEE};
+use virtio_blk::{RequeteDisque, VirtioBlk};
 
 /// **La RAM de l'invité, vue d'un périphérique**, par adresse physique.
 ///
@@ -82,11 +94,9 @@ impl Ram for RamPlate {
     }
 }
 
-/// **Aucune RAM** : tout accès est refusé. C'est ce que la porte de la page
-/// passe tant qu'aucun périphérique de la carte ne lit la RAM — la brancher
-/// demandera deux fonctions importées (`ram_lire`, `ram_ecrire`), et le
-/// module n'en importe aucune aujourd'hui, ce qui garde l'émetteur
-/// instanciable sans rien (`web/page-emitter.js`).
+/// **Aucune RAM** : tout accès est refusé. Ce que reçoit un accès qui ne
+/// doit pas la toucher, et ce que voit un disque qu'on conduit sans elle :
+/// une file illisible, donc rien de servi.
 pub struct SansRam;
 
 impl Ram for SansRam {
@@ -112,6 +122,8 @@ pub const LIGNES_DE_L_HOTE: u16 = (1 << 0) | (1 << 2) | (1 << 4);
 pub struct Carte {
     pub cmos: Cmos,
     pub ps2: I8042,
+    /// Le bus PCI, et le disque qui est dessus.
+    pub pci: Pci,
     /// Les lignes levées par [`Carte::lever`] et pas encore baissées.
     levees_du_dehors: u16,
     /// Toutes celles que [`Carte::lever`] ou [`Carte::baisser`] ont nommées :
@@ -133,6 +145,7 @@ impl Carte {
         Self {
             cmos: Cmos::nouvelle(),
             ps2: I8042::nouveau(),
+            pci: Pci::nouveau(),
             levees_du_dehors: 0,
             nommees_du_dehors: 0,
         }
@@ -142,9 +155,14 @@ impl Carte {
     /// ici — la boucle hôte rend alors ce qu'elle rend pour un port vide
     /// (`0xff`, le bus qui flotte).
     ///
-    /// Les deux périphériques de cette carte sont des puces à registres d'un
-    /// octet : une lecture plus large rend l'octet, et zéro au-dessus, comme
-    /// `portRead` du cœur Swift (qui ne regarde pas la largeur pour eux).
+    /// L'i8042 et l'horloge sont des puces à registres d'un octet : une
+    /// lecture plus large rend l'octet, et zéro au-dessus, comme `portRead`
+    /// du cœur Swift (qui ne regarde pas la largeur pour eux). Le bus et le
+    /// disque rendent leur registre ramené à la largeur, comme l'`in` du cœur
+    /// Swift l'écrit dans le registre de l'invité.
+    ///
+    /// **Les ports fixes passent avant la fenêtre du disque** : une BAR posée
+    /// par-dessus l'i8042 ne lui vole rien.
     pub fn port_lire(&mut self, port: u16, largeur: u8, _ram: &mut dyn Ram) -> Option<u32> {
         if !largeur_valide(largeur) {
             return None;
@@ -156,27 +174,98 @@ impl Carte {
             // dans son cas par défaut), et Linux ne le lit jamais.
             0x70 => 0,
             0x71 => self.cmos.lire(),
-            _ => return None,
+            PORT_ADRESSE => return Some((u64::from(self.pci.adresse()) & masque(largeur)) as u32),
+            PORT_DONNEE..=0xCFF => {
+                return Some(self.pci.lire_donnee(u32::from(port - PORT_DONNEE), largeur))
+            }
+            _ => {
+                let decalage = self.pci.dans_la_fenetre(port)?;
+                let disque = self.pci.disque.as_mut()?;
+                let valeur = disque.lire_port(decalage, largeur);
+                return Some((u64::from(valeur) & masque(largeur)) as u32);
+            }
         };
         Some(u32::from(octet))
     }
 
     /// **Écrire un port**, de `largeur` octets. `false` : personne ici, et
     /// l'écriture tombe dans le vide. Une écriture plus large qu'un octet
-    /// n'en garde que l'octet bas, comme `portWrite` du cœur Swift.
-    pub fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, _ram: &mut dyn Ram) -> bool {
+    /// n'en garde que l'octet bas pour l'i8042 et l'horloge, comme
+    /// `portWrite` du cœur Swift ; le bus et le disque reçoivent la valeur
+    /// ramenée à la largeur — un `outw` écrit deux octets, pas quatre.
+    ///
+    /// `ram` est celle de l'invité : la notification du disque y lit sa file.
+    pub fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut dyn Ram) -> bool {
         if !largeur_valide(largeur) {
             return false;
         }
         let octet = valeur as u8;
+        let valeur = (u64::from(valeur) & masque(largeur)) as u32;
         match port {
             PORT_DONNEES => self.ps2.ecrire_donnee(octet),
             PORT_COMMANDE => self.ps2.ecrire_commande(octet),
             0x70 => self.cmos.choisir(octet),
             0x71 => self.cmos.ecrire(octet),
-            _ => return false,
+            PORT_ADRESSE => self.pci.ecrire_adresse(valeur),
+            PORT_DONNEE..=0xCFF => {
+                self.pci
+                    .ecrire_donnee(u32::from(port - PORT_DONNEE), largeur, valeur)
+            }
+            _ => {
+                let Some(decalage) = self.pci.dans_la_fenetre(port) else {
+                    return false;
+                };
+                let Some(disque) = self.pci.disque.as_mut() else {
+                    return false;
+                };
+                disque.ecrire_port(decalage, valeur, ram);
+            }
         }
         true
+    }
+
+    /// **Brancher le disque** en 00:03.0 : `secteurs` secteurs de 512
+    /// octets, dont les octets sont à l'arrière. Un disque déjà branché est
+    /// remplacé, ses requêtes parties oubliées — à faire avant le démarrage,
+    /// comme on branche un câble machine éteinte.
+    pub fn brancher_disque(&mut self, secteurs: u64) {
+        self.pci.disque = Some(VirtioBlk::nouveau(secteurs));
+    }
+
+    /// **La prochaine requête du disque pour l'arrière**, ou rien. La boucle
+    /// hôte la prend après chaque `out` qui a pu notifier, la confie à
+    /// l'arrière, et rend la réponse quand elle arrive.
+    pub fn requete_disque(&mut self) -> Option<RequeteDisque> {
+        self.pci.disque.as_mut()?.prendre_requete()
+    }
+
+    /// **Les octets d'une lecture sont arrivés** : voir [`VirtioBlk::lu`].
+    /// `false` quand `id` ne nomme aucune requête partie.
+    pub fn disque_lu(&mut self, id: u32, octets: &[u8], ram: &mut dyn Ram) -> bool {
+        self.pci
+            .disque
+            .as_mut()
+            .is_some_and(|disque| disque.lu(id, octets, ram))
+    }
+
+    /// **Une requête est finie sans octets** : voir [`VirtioBlk::fini`].
+    pub fn disque_fini(&mut self, id: u32, reussi: bool, ram: &mut dyn Ram) -> bool {
+        self.pci
+            .disque
+            .as_mut()
+            .is_some_and(|disque| disque.fini(id, reussi, ram))
+    }
+
+    /// **La ligne du disque, en bit**, si elle est une ligne que la carte
+    /// peut tenir : celle que le noyau a écrite dans la configuration, cinq
+    /// au départ. Une ligne de l'hôte ou au-delà de 15 n'est jamais tenue — le
+    /// disque s'y tairait plutôt que d'effacer ce que les puces de `host.js`
+    /// y posent.
+    fn bit_du_disque(&self) -> u16 {
+        if self.pci.disque.is_none() {
+            return 0;
+        }
+        bit_du_dehors(self.pci.ligne).unwrap_or(0)
     }
 
     /// **Les seize lignes, à niveau** : le bit `n` est la ligne `n` (0 à 7 au
@@ -184,6 +273,10 @@ impl Carte {
     /// peuvent y paraître.
     pub fn lignes(&self) -> u16 {
         let mut lignes = self.levees_du_dehors;
+        // Le disque, tant que son état d'interruption n'est pas acquitté.
+        if self.pci.disque.as_ref().is_some_and(VirtioBlk::interrompt) {
+            lignes |= self.bit_du_disque();
+        }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la
         // quatrième de l'esclave. À niveau, comme le port série.
         if self.ps2.clavier_interrompt() {
@@ -198,7 +291,7 @@ impl Carte {
     /// **Les lignes que la carte tient**, levées ou non : celles que la
     /// boucle hôte doit effacer quand [`Carte::lignes`] ne les lève pas.
     pub fn tenues(&self) -> u16 {
-        LIGNES_DES_PERIPHERIQUES | self.nommees_du_dehors
+        LIGNES_DES_PERIPHERIQUES | self.bit_du_disque() | self.nommees_du_dehors
     }
 
     /// **Lever une ligne du dehors**, jusqu'à [`Carte::baisser`]. Refusé
@@ -284,10 +377,17 @@ impl Carte {
     }
 
     /// **Quelque chose peut encore lever une ligne sans que l'invité
-    /// agisse** : des frappes attendent leur tour. Ce que `wakeable` de la
-    /// boucle hôte doit compter, comme `devicesArmed` du côté Swift.
+    /// agisse** : des frappes attendent leur tour, une requête du disque
+    /// attend sa réponse, ou le disque tient sa ligne. Ce que `wakeable` de
+    /// la boucle hôte doit compter, comme `devicesArmed` du côté Swift (qui
+    /// compte `storage.interrupting`).
     pub fn reveil(&self) -> bool {
         !self.ps2.frappes.is_empty()
+            || self
+                .pci
+                .disque
+                .as_ref()
+                .is_some_and(|d| d.en_attente() || d.interrompt())
     }
 }
 
@@ -368,7 +468,7 @@ mod tests {
     fn ports_that_are_not_the_cards_are_left_to_the_host() {
         let mut carte = Carte::nouvelle();
         for port in [
-            0x20, 0x21, 0x40, 0x43, 0x61, 0x3F8, 0x72, 0x80, 0xCF8, 0xCFC, 0x5F,
+            0x20, 0x21, 0x40, 0x43, 0x61, 0x3F8, 0x72, 0x80, 0xCF9, 0xCFB, 0xC000, 0x5F,
         ] {
             assert_eq!(lire(&mut carte, port), None, "{port:#x}");
             assert!(!ecrire(&mut carte, port, 0), "{port:#x}");
