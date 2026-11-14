@@ -112,6 +112,8 @@ public enum ReadyDesktopBuild {
         case memory(saved: Int?, expected: Int)
         /// Le niveau de machine sauvé n'est pas celui de cette version.
         case level(saved: UInt64?, expected: UInt64)
+        /// La mémoire sauvée n'est pas une taille que l'application règle.
+        case unrecordableMemory(Int)
 
         public var description: String {
             switch self {
@@ -125,6 +127,8 @@ public enum ReadyDesktopBuild {
                 return "mémoire sauvée \(saved.map(String.init) ?? "illisible"), attendue \(expected)"
             case .level(let saved, let expected):
                 return "niveau sauvé \(saved.map(String.init) ?? "illisible"), attendu \(expected)"
+            case .unrecordableMemory(let bytes):
+                return "la mémoire sauvée (\(bytes >> 20) Mio) n'est pas un réglage de l'application"
             }
         }
     }
@@ -177,17 +181,32 @@ public enum ReadyDesktopBuild {
     /// réglée, puis l'archive écrite par `MachineArchive.export`.
     ///
     /// La session est nommée par l'empreinte de `kernel` — les octets du
-    /// noyau que le téléphone sortira de l'image, pas ceux de l'image. Rend
-    /// cette identité.
+    /// noyau que le téléphone sortira de l'image, pas ceux de l'image. La
+    /// mémoire réglée est celle que l'instantané porte : la session l'impose
+    /// de toute façon à la reprise (`SessionMemory`), et deux nombres pour la
+    /// même chose finiraient par différer. Rend l'identité de la session.
+    ///
+    /// Les images de la bibliothèque, dont `export` ne se sert que pour
+    /// mesurer un disque propre à la machine, sont cherchées dans `work` :
+    /// une machine de fabrication n'en a pas.
     @discardableResult
     public static func assemble(
-        _ machine: InstalledMachine, snapshot: Data, kernel: Data, ramSize: UInt64,
-        kernels: URL, in work: URL, to archive: URL
+        _ machine: InstalledMachine, snapshot: Data, kernel: Data, in work: URL, to archive: URL
     ) throws -> String {
-        KernelMemory.setSize(ramSize, forKernel: machine.key, in: work)
+        guard let ram = X86Machine.savedRAMSize(in: snapshot) else {
+            throw Refusal.unreadable("la taille de la mémoire ne se lit pas")
+        }
+        // **Une taille que l'application sait régler**, ou rien : `setSize`
+        // ignore sans rien dire une taille hors de ses choix, et l'archive
+        // annoncerait alors la mémoire par défaut à côté d'une session qui en
+        // veut une autre.
+        guard KernelMemory.isRecordable(UInt64(ram)) || UInt64(ram) == KernelMemory.defaultSize else {
+            throw Refusal.unrecordableMemory(ram)
+        }
+        KernelMemory.setSize(UInt64(ram), forKernel: machine.key, in: work)
         let identity = SuspendedMachine.identity(of: kernel, named: machine.key)
         try SuspendedMachine.savePacked(SnapshotFile.pack(snapshot), kernel: identity, in: work)
-        try MachineArchive.export(machine, kernels: kernels, in: work, to: archive)
+        try MachineArchive.export(machine, kernels: work, in: work, to: archive)
         return identity
     }
 

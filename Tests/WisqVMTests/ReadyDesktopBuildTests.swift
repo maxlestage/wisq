@@ -162,8 +162,7 @@ final class ReadyDesktopBuildTests: XCTestCase {
 
         let archive = root.appendingPathComponent("bureau.wisqmachine")
         let identity = try ReadyDesktopBuild.assemble(
-            installed, snapshot: snapshot, kernel: kernel, ramSize: 1 << 30,
-            kernels: kernels, in: work, to: archive)
+            installed, snapshot: snapshot, kernel: kernel, in: work, to: archive)
         XCTAssertEqual(identity, SuspendedMachine.identity(of: kernel, named: installed.key))
         XCTAssertTrue(identity.hasSuffix(ReadyDesktopBuild.kernelDigest(kernel)))
 
@@ -182,11 +181,28 @@ final class ReadyDesktopBuildTests: XCTestCase {
         guard case .none = SavedSession.find(
             kernel: SuspendedMachine.identity(of: other, named: imported.keys.settings), in: fresh, core: .x86_64)
         else { return XCTFail("un autre noyau a trouvé la session") }
-        XCTAssertEqual(KernelMemory.size(forKernel: imported.key, in: fresh, ceiling: .max), 1 << 30)
+        XCTAssertEqual(KernelMemory.size(forKernel: imported.key, in: fresh, ceiling: .max), UInt64(Self.ram),
+                       "la mémoire réglée n'est pas celle de la session")
         let layer = try LocalDisk.writesURL(for: imported.keys.overlay(forDisk: image), in: fresh)
         XCTAssertTrue(files.fileExists(atPath: layer.path + ".map"), "la couche n'a pas suivi")
         // Et la machine reprend dans une machine de l'application neuve.
         XCTAssertNoThrow(try ReadyDesktopBuild.check(try XCTUnwrap(found.snapshot), ramSize: Self.ram))
+    }
+
+    /// **Une mémoire que l'application ne sait pas régler est refusée** à
+    /// l'assemblage, plutôt qu'emportée sous le réglage par défaut.
+    func testAMemoryTheApplicationCannotRecordIsRefused() throws {
+        let files = FileManager.default
+        let work = files.temporaryDirectory.appendingPathComponent("wisq-pret-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: work) }
+        try files.createDirectory(at: work, withIntermediateDirectories: true)
+        let (installed, _) = try ReadyDesktopBuild.install(image: "void.iso", name: "Void", in: work)
+        let odd = X86Machine(ramSize: Self.ram + (1 << 20), onOutput: { _ in })
+        XCTAssertThrowsError(try ReadyDesktopBuild.assemble(
+            installed, snapshot: odd.snapshot(), kernel: Data([1]), in: work,
+            to: work.appendingPathComponent("bureau.wisqmachine"))) {
+            XCTAssertEqual($0 as? ReadyDesktopBuild.Refusal, .unrecordableMemory(Self.ram + (1 << 20)))
+        }
     }
 
     /// La fiche se relit telle qu'écrite, clés triées, dates lisibles.

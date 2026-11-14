@@ -159,8 +159,7 @@ func fabricate() throws {
 
     let archive = out.appendingPathComponent(base + "-pret." + MachineArchive.fileExtension)
     let identity = try ReadyDesktopBuild.assemble(
-        installed, snapshot: snapshot, kernel: kernel, ramSize: UInt64(ram),
-        kernels: iso.deletingLastPathComponent(), in: work, to: archive)
+        installed, snapshot: snapshot, kernel: kernel, in: work, to: archive)
     let packed = (try files.attributesOfItem(atPath: work.appendingPathComponent(
         SuspendedMachine.fileName(kernel: identity)).path)[.size] as? NSNumber)?.uint64Value ?? 0
     journal.say("archive : \(archive.path), session \(identity)")
