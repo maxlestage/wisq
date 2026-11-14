@@ -1,0 +1,23 @@
+[package]
+name = "wisq-page"
+version = "0.4.0"
+edition = "2021"
+authors = ["Maxime Nathan Lestage"]
+rust-version = "1.82"
+description = "L'émetteur x86-64 → WebAssembly compilé lui-même en WebAssembly, pour traduire dans la page sans passer par le pont"
+repository = "https://github.com/maxlestage/wisq"
+publish = false
+
+# **Aucune dépendance de plus que le cœur**, pour la même raison que lui : ce
+# module part dans la page de l'application, et chaque crate ajouté serait une
+# chose de plus à auditer et à compiler pour wasm32.
+[dependencies]
+wisq-vm = { path = "../wisq-vm" }
+
+[lib]
+# **`cdylib` pour la page, `rlib` pour les tests natifs.** Le module que la page
+# charge est le `cdylib` construit pour `wasm32-unknown-unknown`
+# (`scripts/build-page-emitter.sh`). L'`rlib` laisse les tests d'intégration de
+# ce crate appeler les mêmes fonctions en natif, et les comparer à
+# `Module::resolving_or_why` sans moteur JavaScript.
+crate-type = ["cdylib", "rlib"]

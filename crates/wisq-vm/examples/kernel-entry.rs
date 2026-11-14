@@ -2,6 +2,15 @@
 //!
 //!     cargo run -p wisq-vm --release --example kernel-entry -- vmlinux.bin [System.map]
 //!
+//! **Le traducteur est dans le pilote, comme dans la page** (`WISQ_TRADUCTEUR`,
+//! `page` par défaut) : l'émetteur compilé en WebAssembly
+//! (`scripts/build-page-emitter.sh`, que l'outil lance lui-même) traduit chaque
+//! région dans le fil de Bun. `WISQ_TRADUCTEUR=processus` reprend la forme
+//! d'avant, un `x86-translate` lancé par région. Les deux rendent le même
+//! relevé, au caractère près hors les deux lignes qui nomment le traducteur ;
+//! le premier coûte 0,13 ms par région au lieu de 1,9 à 2,2 ms (JOURNAL,
+//! 14 novembre 2026).
+//!
 //! **Le second argument est facultatif et change tout ce qu'on peut conclure.**
 //! Sans lui l'outil rend « rip 0xffffffff81000642 », et la feuille de route a
 //! porté une tranche entière un « on ne sait pas si ce `jmp .` est un chemin
@@ -250,6 +259,125 @@ fn name_addresses(text: &str, map: &Symbols) -> String {
             }
         })
         .collect()
+}
+
+/// **Les deux traducteurs que le pilote sait appeler.**
+#[derive(Clone, Copy)]
+enum Translator {
+    /// L'émetteur compilé en WebAssembly, appelé dans le fil du pilote.
+    Page,
+    /// `x86-translate`, lancé en `Bun.spawnSync` pour chaque région.
+    Process,
+}
+
+/// **Ce que `WISQ_TRADUCTEUR` demande**, ou la page par défaut. La forme est
+/// refusée plutôt que devinée, comme `WISQ_SCREEN` : un nom mal écrit qui
+/// retomberait en silence sur l'autre traducteur ferait comparer deux
+/// mesures prises du même côté.
+fn declared_translator() -> Result<Translator, String> {
+    match std::env::var("WISQ_TRADUCTEUR").ok().as_deref() {
+        None | Some("page") => Ok(Translator::Page),
+        Some("processus") => Ok(Translator::Process),
+        Some(other) => Err(format!(
+            "WISQ_TRADUCTEUR={other} ne se lit pas : « page » (le défaut) ou « processus »"
+        )),
+    }
+}
+
+/// **Le module de la page, construit par son script.** Le script relance
+/// cargo, qui ne refait rien quand rien n'a changé : un module périmé ne peut
+/// pas passer, et la garde de date que `x86-translate` demande n'a pas lieu
+/// d'être ici.
+fn page_module(root: &Path) -> std::path::PathBuf {
+    // La sortie de cargo n'est imprimée que si elle sert : sur un échec. Un
+    // relevé qui commence par « Finished » ne se compare plus ligne à ligne
+    // avec celui de l'autre traducteur.
+    let output = std::process::Command::new("bash")
+        .arg(root.join("scripts/build-page-emitter.sh"))
+        .arg(root)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+        }
+        failed => {
+            if let Ok(output) = &failed {
+                print!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+            println!(
+                "l'émetteur de la page ne se construit pas (scripts/build-page-emitter.sh) ; \
+                 WISQ_TRADUCTEUR=processus reprend la forme d'avant"
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// **`x86-translate`, trouvé et daté.**
+fn process_translator(root: &Path) -> std::path::PathBuf {
+    // **Où le traducteur se trouve.** À côté de cet exemple dans `target`, ou
+    // sous la racine. S'il manque, le dire avec la commande qui le construit
+    // plutôt que d'échouer sur un `spawnSync` dont le message ne nomme rien.
+    let translator = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .and_then(|dir| dir.parent())
+                .map(Path::to_path_buf)
+        })
+        .map(|dir| dir.join("x86-translate"))
+        .filter(|at| at.exists())
+        .or_else(|| {
+            let at = root.join("target/release/x86-translate");
+            at.exists().then_some(at)
+        });
+    let Some(translator) = translator else {
+        println!("`x86-translate` n'est pas construit : cargo build -p wisq-vm --release --bin x86-translate");
+        std::process::exit(1);
+    };
+    // **Et qu'il ne date pas d'avant la dernière modification des sources.**
+    //
+    // `cargo run --example kernel-entry` reconstruit la bibliothèque et cet
+    // exemple, **pas** le binaire séparé qu'il lance. Le contrôle d'existence
+    // juste au-dessus laissait donc passer un traducteur périmé, qui décode le
+    // jeu d'instructions d'il y a une heure — et la mesure accuse alors une
+    // instruction que la tranche vient d'ajouter.
+    //
+    // C'est arrivé à #253 : trois mesures d'affilée ont buté sur `fxrstor`
+    // **après** que `fxrstor` eut été décodée, parce que ce binaire-là datait
+    // d'une demi-heure plus tôt. Deux sondes écrites à côté traduisaient la
+    // même région sans broncher, ce qui se lisait comme une contradiction de
+    // l'outil avec lui-même. Ce sont deux dates de fichier qui ont tranché,
+    // pas une relecture.
+    //
+    // **Le repère est la source, pas l'autre binaire.** Une première version
+    // comparait le traducteur à ce pilote-ci ; construits par le même
+    // `cargo build`, leur ordre de liaison est arbitraire, et la garde a
+    // refusé une mesure parfaitement fraîche — elle est tombée sur son
+    // premier essai, ce qui est la meilleure chose qui pouvait lui arriver.
+    // La question réellement posée est « ce binaire est-il postérieur au
+    // dernier `.rs` du cœur ? », et c'est celle-là qu'on pose.
+    let derniere_source = std::fs::read_dir(root.join("crates/wisq-vm/src"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entree| entree.path().extension().is_some_and(|fin| fin == "rs"))
+        .filter_map(|entree| entree.metadata().and_then(|meta| meta.modified()).ok())
+        .max();
+    if let (Some(source), Ok(binaire)) = (
+        derniere_source,
+        translator.metadata().and_then(|meta| meta.modified()),
+    ) {
+        if binaire < source {
+            println!(
+                "`x86-translate` date d'avant la dernière modification des sources : \
+                     il décoderait le jeu d'instructions d'avant.\n\
+                     Le reconstruire : cargo build -p wisq-vm --release --bin x86-translate"
+            );
+            std::process::exit(1);
+        }
+    }
+    translator
 }
 
 fn main() {
@@ -619,68 +747,72 @@ fn main() {
     // et `/init` n'arrive en mémoire qu'une fois déballé de l'archive. C'est
     // l'hôte qui les a, et il les passe en troisième argument de `translate` ;
     // il ne restait plus qu'à les prendre.
-    // **Où le traducteur se trouve.** À côté de cet exemple dans `target`, ou
-    // sous la racine. S'il manque, le dire avec la commande qui le construit
-    // plutôt que d'échouer sur un `spawnSync` dont le message ne nomme rien.
-    let translator = std::env::current_exe()
-        .ok()
-        .and_then(|exe| {
-            exe.parent()
-                .and_then(|dir| dir.parent())
-                .map(Path::to_path_buf)
-        })
-        .map(|dir| dir.join("x86-translate"))
-        .filter(|at| at.exists())
-        .or_else(|| {
-            let at = root.join("target/release/x86-translate");
-            at.exists().then_some(at)
-        });
-    let Some(translator) = translator else {
-        println!("`x86-translate` n'est pas construit : cargo build -p wisq-vm --release --bin x86-translate");
-        std::process::exit(1);
-    };
-    // **Et qu'il ne date pas d'avant la dernière modification des sources.**
-    //
-    // `cargo run --example kernel-entry` reconstruit la bibliothèque et cet
-    // exemple, **pas** le binaire séparé qu'il lance. Le contrôle d'existence
-    // juste au-dessus laissait donc passer un traducteur périmé, qui décode le
-    // jeu d'instructions d'il y a une heure — et la mesure accuse alors une
-    // instruction que la tranche vient d'ajouter.
-    //
-    // C'est arrivé à #253 : trois mesures d'affilée ont buté sur `fxrstor`
-    // **après** que `fxrstor` eut été décodée, parce que ce binaire-là datait
-    // d'une demi-heure plus tôt. Deux sondes écrites à côté traduisaient la
-    // même région sans broncher, ce qui se lisait comme une contradiction de
-    // l'outil avec lui-même. Ce sont deux dates de fichier qui ont tranché,
-    // pas une relecture.
-    //
-    // **Le repère est la source, pas l'autre binaire.** Une première version
-    // comparait le traducteur à ce pilote-ci ; construits par le même
-    // `cargo build`, leur ordre de liaison est arbitraire, et la garde a
-    // refusé une mesure parfaitement fraîche — elle est tombée sur son
-    // premier essai, ce qui est la meilleure chose qui pouvait lui arriver.
-    // La question réellement posée est « ce binaire est-il postérieur au
-    // dernier `.rs` du cœur ? », et c'est celle-là qu'on pose.
-    let derniere_source = std::fs::read_dir(root.join("crates/wisq-vm/src"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entree| entree.path().extension().is_some_and(|fin| fin == "rs"))
-        .filter_map(|entree| entree.metadata().and_then(|meta| meta.modified()).ok())
-        .max();
-    if let (Some(source), Ok(binaire)) = (
-        derniere_source,
-        translator.metadata().and_then(|meta| meta.modified()),
-    ) {
-        if binaire < source {
-            println!(
-                "`x86-translate` date d'avant la dernière modification des sources : \
-                 il décoderait le jeu d'instructions d'avant.\n\
-                 Le reconstruire : cargo build -p wisq-vm --release --bin x86-translate"
-            );
-            std::process::exit(1);
+    // **Quel traducteur, et pourquoi il y en a deux.** `page` (le défaut) est
+    // l'émetteur compilé en WebAssembly (`crates/wisq-page`), chargé une fois
+    // dans le pilote par `web/page-emitter.js` : une région se traduit par un
+    // appel dans le même fil, comme dans la page de l'application. `processus`
+    // est la forme d'avant, un `Bun.spawnSync` sur `x86-translate` par région.
+    // Les deux rendent les mêmes octets — `crates/wisq-page/tests/page.rs` le
+    // tient fenêtre par fenêtre — et le démarrage de 6.6.142 jusqu'à la sonde
+    // a été mesuré avec l'un et l'autre (JOURNAL, 14 novembre 2026). La forme
+    // d'avant reste pour comparer, et pour une machine sans la cible wasm32.
+    let traducteur = match declared_translator() {
+        Ok(traducteur) => traducteur,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
         }
-    }
+    };
+    let (prelude, emission) = match traducteur {
+        Translator::Page => {
+            let module = page_module(&root);
+            println!("traducteur : dans la page, {}", module.display());
+            (
+                format!(
+                    "import {{ emetteur }} from {page:?};\n\
+                     const porte = emetteur(new WebAssembly.Module(readFileSync({module:?})));",
+                    page = root.join("web/page-emitter.js").to_string_lossy(),
+                    module = module.to_string_lossy(),
+                ),
+                // **Une coupe est refusée ici comme `x86-translate` la refuse**
+                // (sortie 2) : ce pilote n'a jamais rendu `"encore"`, et le
+                // traducteur de la page ne change pas ce qu'il fait — seulement
+                // ce qu'il coûte. Honorer `"encore"` est un autre changement, à
+                // mesurer à part ; `porte.traducteur` le fait déjà pour la page.
+                // Une trappe de l'émetteur est relevée comme un refus, sous son
+                // nom : `translate` rend `null`, `host.js` arrête la machine sur
+                // « refusée », et la boucle des tours sort — la mesure finit sur
+                // « refusée 0x… Trappe(…) », comme dans le mode processus quand
+                // `x86-translate` meurt. L'instance est déjà remplacée, mais
+                // personne ne s'en sert : ce pilote mesure un démarrage, il ne le
+                // reprend pas.
+                format!(
+                    "const r = porte.resoudre(code, address, slot, {pages});\n    \
+                     const rendu = r.module !== undefined ? {{ module: r.module }} \
+                     : {{ pourquoi: r.encore ?? r.refus ?? `Trappe(${{r.trappe}})` }};"
+                ),
+            )
+        }
+        Translator::Process => {
+            let translator = process_translator(&root);
+            println!(
+                "traducteur : un processus par région, {}",
+                translator.display()
+            );
+            (
+                String::new(),
+                format!(
+                    "const out = Bun.spawnSync({{\n      \
+                     cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],\n      \
+                     stdin: code,\n    }});\n    \
+                     const rendu = out.exitCode === 0\n      \
+                     ? {{ module: out.stdout }}\n      \
+                     : {{ pourquoi: out.stderr.toString().trim() }};",
+                    translator = translator.to_string_lossy(),
+                ),
+            )
+        }
+    };
     println!();
 
     // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.
@@ -756,8 +888,14 @@ fn main() {
                 r#"
 import {{ machine }} from {host:?};
 import {{ readFileSync }} from "fs";
+{prelude}
 
 let manquante = null;
+// **Ce que les traductions ont coûté**, mesuré autour de l'appel seul : la
+// compilation du module rendu par WebKit — ici JavaScriptCore — n'y est pas,
+// elle est la même pour les deux traducteurs.
+let tempsDeTraduction = 0;
+let demandesDeTraduction = 0;
 let place = 0;
 // **Combien de régions le pilote s'autorise à traduire.** C'est ce que
 // `WISQ_ROUNDS` réglait quand chaque région coûtait une exécution entière ;
@@ -796,11 +934,14 @@ const vm = machine({{
     // laissait le traducteur rouvrir l'image ELF : sur ce noyau-ci, 15 761
     // des 16 189 fenêtres traduites différaient de ce que la mémoire portait
     // à la même adresse.
-    const out = Bun.spawnSync({{
-      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
-      stdin: code,
-    }});
-    if (out.exitCode !== 0) {{
+    //
+    // **Le traducteur est l'un des deux de `WISQ_TRADUCTEUR`**, et la suite ne
+    // sait pas lequel : `rendu` porte un module, ou la raison d'un refus.
+    const debut = performance.now();
+    {emission}
+    tempsDeTraduction += performance.now() - debut;
+    demandesDeTraduction += 1;
+    if (rendu.module === undefined) {{
       if (manquante === null) {{ manquante = address; place = slot; }}
       // **Et les octets refusés, tels que l'hôte les a lus.** Depuis #254 ils
       // viennent de la mémoire de l'invité : les relire dans le fichier ELF
@@ -811,13 +952,13 @@ const vm = machine({{
       const tete = Array.from(code.subarray(0, 16))
         .map((o) => o.toString(16).padStart(2, "0")).join("");
       console.log("refusée 0x" + address.toString(16) + " emplacement " + slot
-        + " " + out.stderr.toString().trim() + " octets " + tete);
+        + " " + rendu.pourquoi + " octets " + tete);
       return null;
     }}
     traduites += 1;
     console.log("traduit 0x" + address.toString(16) + " emplacement " + slot
-      + " octets " + out.stdout.length);
-    return out.stdout;
+      + " octets " + rendu.module.length);
+    return rendu.module;
   }},
   pages: {pages},
 }});
@@ -881,6 +1022,7 @@ for (let tour = 0; tour < {turns}; tour++) {{
   }}
 }}
 console.log("arret " + why.stopped);
+console.log("traducteur " + demandesDeTraduction + " " + tempsDeTraduction.toFixed(1));
 console.log("marche " + tours + " " + (neuf === null ? "aucun" : neuf)
   + " " + retours.size + " " + queue.size);
 console.log("retours " + [...retours.entries()]
@@ -1033,7 +1175,8 @@ console.log("controle " + controle
                 beat = Progress::beat(turns),
                 rounds = rounds,
                 veille = veille,
-                translator = translator.to_string_lossy(),
+                prelude = prelude,
+                emission = emission,
                 pages = pages,
                 rip = RIP_SLOT,
                 stop = STOP_SLOT,
@@ -1095,6 +1238,15 @@ console.log("controle " + controle
                             why.join(" ")
                         );
                     }
+                }
+                // **Ce que les traductions ont coûté**, appel compris, sans la
+                // compilation des modules rendus.
+                ["traducteur", count, ms] => {
+                    let per = match (count.parse::<f64>(), ms.parse::<f64>()) {
+                        (Ok(count), Ok(ms)) if count > 0.0 => format!("{:.3}", ms / count),
+                        _ => "?".to_string(),
+                    };
+                    println!("traductions : {count} demandes, {ms} ms, {per} ms par demande");
                 }
                 ["plafond", _] => {
                     println!(
