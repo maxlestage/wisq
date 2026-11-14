@@ -8,6 +8,128 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le disque de la page : une borne sur la somme, des noms qui ne reviennent pas, un statut qui n'est plus écrasé
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente (le
+disque virtio de la carte de la page, juste en dessous) a trouvé quatre
+défauts, tous reproduits par lui avec un test temporaire, et je les ai
+relus dans le code avant d'y toucher.
+
+1. **La borne de 64 Mio ne valait que par requête.** Le code et l'entrée
+   d'en dessous disaient que « la page n'allouera pas ce que l'invité
+   choisit » ; mais une seule notification pouvait faire partir 128
+   requêtes de 64 Mio, chacune recopiée dans la mémoire de la carte, soit
+   8 Gio, plus que les 4 Gio d'une mémoire wasm32 : l'allocation échoue, la
+   carte trappe, et rien ne rattrape la trappe. Le contrôleur a mesuré
+   512 Mio tenus d'un coup sans aucun refus.
+2. **Un nom de requête pouvait resservir.** `brancher_disque` créait un
+   disque neuf dont les noms repartaient à 1 : la réponse en retard d'une
+   lecture de l'ancien disque remplissait la première lecture du neuf avec
+   les octets d'un autre secteur, et la disait réussie.
+3. **Le chemin d'échec de l'arrière dans `web/carte.js` n'était jugé par
+   rien** : deux sabotages d'une ligne survivaient (une promesse rejetée
+   annoncée réussie ; un `PUT` refusé par le magasin annoncé réussi).
+4. **Le commentaire de la borne de 128 était faux** : une tête encore
+   partie n'était pas refusée, mais acceptée jusqu'à 128 fois ; et le refus
+   de la 129ᵉ écrivait « erreur » dans l'octet de statut que partageaient
+   les 128 requêtes encore en vol.
+
+**Ce qui change** (`crates/wisq-page/src/carte/virtio_blk.rs`, `mod.rs`,
+`web/carte.js`).
+
+- **Une borne sur la somme, `PLUS_TENU` = 64 Mio** : la carte ne tient
+  jamais plus, pour toutes les requêtes en vol à la fois (prises ou non).
+  Ce qui ne tient pas **attend** : l'entrée reste dans l'anneau des
+  disponibles, non lue, avec toutes les suivantes, et la carte la reprend
+  dès qu'une réponse rend de la place (`lu` et `fini` relisent la file).
+  J'ai préféré l'attente au refus : un pilote correct qui charge beaucoup
+  ne reçoit ainsi jamais d'erreur d'entrée-sortie qu'il n'a pas méritée,
+  et virtio n'oblige pas le disque à lire l'anneau au rythme du pilote. La
+  borne par requête vaut la borne de la somme : une requête seule tient
+  toujours, la file ne peut donc pas attendre sans requête en vol pour la
+  reprendre ; au-delà, elle est refusée, comme avant. `web/carte.js`
+  confie à l'arrière ce qui part à la réponse, avant de décompter
+  `enVol`.
+- **Les noms continuent d'un disque à l'autre** : `brancher_disque` donne
+  au neuf le prochain nom de l'ancien (`prochain_nom`,
+  `reprendre_les_noms`).
+- **Une tête encore partie, ou une chaîne dont l'octet de statut est celui
+  d'une requête en vol, est rendue en erreur sans écrire ce statut** :
+  l'anneau des servies reçoit son entrée (aucune entrée publiée ne reste
+  sans réponse), mais l'octet appartient à la requête en vol, que sa
+  réponse seule pose. La borne de 128 requêtes dehors reste, pour les têtes
+  au-delà de la table (rien ne les interdit, du côté Swift non plus), et
+  son commentaire dit ce qu'elle fait.
+- **Le chemin d'échec de l'arrière est jugé sous Bun**, par la carte
+  entière, de l'`out` qui notifie à l'octet de statut.
+
+**Comment c'est vérifié.**
+
+- Six tests neufs, et un réécrit. En natif (`--lib`, 76 → 80) :
+  `the_card_never_holds_more_than_its_bound_at_once` (trois lectures de
+  32 Mio d'une notification : deux partent, 64 Mio tenus, la troisième
+  attend sans refus ni statut, puis part à la première réponse),
+  `a_head_still_out_is_refused_without_touching_its_status` (la tête 0
+  publiée deux cents fois : une partie, 199 refusées, le statut reste
+  `0xFF` jusqu'à la réponse ; et une demande d'identifiant dont le statut
+  est celui d'une requête en vol n'écrit rien),
+  `a_disk_plugged_anew_never_reuses_a_name` (le cas exact du contrôleur :
+  la vieille réponse rend `false`, rien n'est copié, puis la jeune lit le
+  secteur 3), `names_carry_over_within_their_range`. Et
+  `no_more_requests_are_out_than_the_queue_has_places`, réécrit : il
+  faisait partir 128 fois la même tête, ce qui est désormais refusé ; il
+  fait maintenant partir 128 têtes distinctes au-delà de la table, chacune
+  avec son statut, refuse la 129ᵉ dans son propre octet, et vérifie que les
+  128 autres n'ont pas été touchés. Sous Bun (`--test carte`, 4 → 6) :
+  `a_failing_backend_is_an_io_error_for_the_driver` (`PUT` refusé, `GET`
+  refusé, plage tronquée, promesse rejetée, écriture qui lève, arrière qui
+  ne sait pas écrire : `0x1` chaque fois, et `0x0` dans les deux sens pour
+  le même magasin qui répond bien) et
+  `what_waits_for_room_leaves_on_the_answer` (deux lectures de 40 Mio par
+  `web/carte.js` : une confiée, la seconde confiée dès la réponse de la
+  première, `enVol` à 1 et non 0 au moment de cette réponse).
+- **Neuf sabotages d'une ligne, chacun tombé, puis restauré** avec
+  `git diff --quiet` vérifié : la borne de la somme retirée, la reprise
+  après réponse retirée (tous deux font tomber
+  `the_card_never_holds_more_than_its_bound_at_once`) ; les noms non
+  repris (`a_disk_plugged_anew_never_reuses_a_name`) ; le refus de la tête
+  partie retiré, puis le statut de ce refus écrit
+  (`a_head_still_out_is_refused_without_touching_its_status`) ; la borne
+  de 128 retirée (`no_more_requests_are_out_than_the_queue_has_places`) ;
+  dans `web/carte.js`, `disqueFini(id, false)` → `true` et
+  `return reponse.ok` → `return true` (tous deux font tomber
+  `a_failing_backend_is_an_io_error_for_the_driver`), et la reprise à la
+  réponse retirée (`what_waits_for_room_leaves_on_the_answer`).
+- `cargo test --release` : 595 réussis, 0 échec (589 avant) ; même chose
+  avec `RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes"`
+  (595/0). `cargo test --release -p wisq-page` : lib 80, carte 6, page 6.
+  `cargo fmt --all --check`, les deux `cargo clippy` (`-D warnings`) et
+  `clippy -p wisq-page --target wasm32-unknown-unknown` : propres. Compte
+  publié : 3486 → 3492 (Swift 2897 + Rust 595). Site : `typecheck` et
+  `build` propres ; `bun test` 470/0 deux fois sur quatre, 469/1 les deux
+  autres, toujours sur `la bande > elle avance seule…`
+  (`site/tests/mouvement.test.ts`, un délai d'animation), qui n'est pas
+  touché ici.
+- Mesure, refaite : seize lectures d'un mébioctet par la file, 2,59 ms par
+  Mio, 386 Mio/s (417 Mio/s à la tranche d'avant : même ordre, la borne
+  de la somme ne gêne pas une requête d'un mébioctet).
+
+**Ce qui reste.**
+
+- Par la carte, une plage tronquée est refusée deux fois : par
+  `arriereParUrl`, et par la carte elle-même, qui refuse des octets d'une
+  autre longueur que demandée (`a_wrong_answer_is_an_io_error`, en natif).
+  Le cas `tronquee` du test neuf ne distingue donc pas les deux gardes ;
+  retirer celle d'`arriereParUrl` fait tomber l'ancien test Bun, qui
+  l'essaie seule (vérifié, restauré).
+- L'affirmation « `enVol` ne passe jamais par zéro » n'est jugée qu'au
+  moment de `surReponse` ; entre deux microtâches, aucune boucle hôte ne
+  peut de toute façon l'observer.
+- Rien n'est encore branché dans `web/host.js` (le flux A y travaille) : le
+  raccord reste celui de l'entrée d'en dessous.
+- La borne de 64 Mio n'a pas été mesurée contre un vrai noyau sous charge :
+  le chiffre de 1 280 Kio par requête est de mémoire du pilote.
+
 ## 2026-11-14 — Le disque de la page : pont PCI et virtio-blk de forme ancienne, servi plus tard
 
 **Ce qui n'allait pas.** La carte de la page (l'i8042 et l'horloge, en
