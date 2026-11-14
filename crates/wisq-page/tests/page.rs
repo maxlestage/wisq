@@ -719,6 +719,15 @@ console.log("pourquoi_illisible " + porte.pourquoi);
 console.log("ram " + decrire(quinze(0x300000n, 0, {petit})));
 console.log("pourquoi_ram " + porte.pourquoi);
 console.log("refus_vus " + refus.map(([a, r]) => "0x" + a.toString(16) + "=" + r).join(" | "));
+// **Un module après un refus, puis après une coupe** : le premier appel du
+// pilote trouvait `pourquoi` déjà à `null`, sa valeur de départ, et ne
+// prouvait donc pas que la branche module l'efface.
+console.log("module_apres_refus " + decrire(traduire(0x100000n, 7, {petit})));
+console.log("pourquoi_apres_refus " + porte.pourquoi);
+traduire(0x100000n, 0, {coupe});
+console.log("pourquoi_avant_effacement " + porte.pourquoi);
+console.log("module_apres_coupe " + decrire(traduire(0x100000n, 7, {petit})));
+console.log("pourquoi_apres_coupe " + porte.pourquoi);
 console.log("instances " + porte.instances);
 "#,
         prelude = prelude(&module),
@@ -766,6 +775,25 @@ console.log("instances " + porte.instances);
         format!("0x200000={illisible_natif:?} | 0x300000={ram}"),
         "`surRefus` reçoit l'adresse et la raison de chaque refus franc, et rien d'autre"
     );
+
+    // **La branche module efface la raison**, qu'elle suive un refus ou une
+    // coupe : sans cela, `pourquoi` nommerait après une traduction réussie un
+    // refus qui ne la concerne plus.
+    assert_eq!(
+        said(&text, "module_apres_refus "),
+        format!("octets {}", hex(&attendu))
+    );
+    assert_eq!(said(&text, "pourquoi_apres_refus "), "null", "{text}");
+    assert_eq!(
+        said(&text, "pourquoi_avant_effacement "),
+        format!("{coupe:?}"),
+        "la coupe doit avoir laissé sa raison, sinon l'effacement ne prouve rien"
+    );
+    assert_eq!(
+        said(&text, "module_apres_coupe "),
+        format!("octets {}", hex(&attendu))
+    );
+    assert_eq!(said(&text, "pourquoi_apres_coupe "), "null", "{text}");
     assert_eq!(said(&text, "instances "), "1", "aucune trappe ici");
 }
 
@@ -920,6 +948,7 @@ const avant = porte.resoudre({petit}, 0x100000n, 7, 16);
 console.log("avant " + hex(avant.module));
 const trappe = porte.resoudre(impossible, 0x100000n, 7, 16);
 console.log("trappe " + (trappe.trappe !== undefined));
+console.log("trappe_texte " + trappe.trappe);
 const apres = porte.resoudre({petit}, 0x100000n, 7, 16);
 console.log("apres " + (apres.module === undefined ? JSON.stringify(apres) : hex(apres.module)));
 console.log("instances " + porte.instances);
@@ -928,10 +957,16 @@ console.log("instances " + porte.instances);
 // et la traduction suivante rend des octets.
 const traduire = porte.traducteur(16);
 let leve = "non";
-try {{ traduire(0x100000n, 7, impossible); }} catch (pourquoi) {{ leve = "oui"; }}
+let message = "";
+try {{ traduire(0x100000n, 7, impossible); }} catch (erreur) {{ leve = "oui"; message = erreur.message; }}
 console.log("leve " + leve);
+console.log("leve_message " + message);
+// **Ce que la trappe laisse dans `pourquoi`** : le getter promet « la raison
+// du dernier refus — ou de la dernière trappe ».
+console.log("pourquoi_trappe " + porte.pourquoi);
 const ensuite = traduire(0x100000n, 7, {petit});
 console.log("ensuite " + (ensuite instanceof Uint8Array ? hex(ensuite) : String(ensuite)));
+console.log("pourquoi_ensuite " + porte.pourquoi);
 
 // **Dans la boucle hôte** : la première demande trappe, la machine s'arrête
 // sur cette région, et un second départ la retraduit et fait tourner l'anneau.
@@ -984,7 +1019,22 @@ console.log("instances_fin " + porte.instances);
         "une instance neuve, une seule"
     );
     assert_eq!(said(&text, "leve "), "oui", "une trappe n'est pas un refus");
+    // **La raison d'une trappe est le message du moteur**, le même que
+    // `resoudre` a rendu pour la même fenêtre : il ne vient pas des octets de
+    // l'invité, et c'est ce que le pilote doit pouvoir journaliser.
+    let raison = said(&text, "trappe_texte ");
+    assert!(
+        raison.starts_with("RuntimeError"),
+        "une trappe du module est une `RuntimeError` du moteur : {text}"
+    );
+    assert_eq!(said(&text, "pourquoi_trappe "), raison, "{text}");
+    assert_eq!(
+        said(&text, "leve_message "),
+        format!("l'émetteur de la page a trappé : {raison}"),
+        "l'erreur levée nomme la trappe"
+    );
     assert_eq!(said(&text, "ensuite "), hex);
+    assert_eq!(said(&text, "pourquoi_ensuite "), "null", "{text}");
     assert_eq!(
         said(&text, "panne "),
         format!("traduction en panne 0x{BASE:x}"),
