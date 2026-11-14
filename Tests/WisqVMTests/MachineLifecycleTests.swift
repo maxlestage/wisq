@@ -148,4 +148,169 @@ final class MachineLifecycleTests: XCTestCase {
         XCTAssertFalse(life.forgotten, "une nouvelle course n'est pas oubliée")
         XCTAssertEqual(life.steppedAway(), .save)
     }
+
+    // MARK: - Une session refusée est gardée
+
+    /// **« Arrêter » n'efface pas une session refusée.** La console vient de
+    /// dire « gardée telle quelle », rien ne tourne, et le bouton reste dans
+    /// la barre : il effaçait le fichier sans avertissement — pour un bureau
+    /// prêt sauvé par une version plus récente, la perte que tout le refus
+    /// voulait empêcher.
+    func testStoppingARefusedSessionKeepsIt() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertEqual(life.sessionRefused(), .nothing)
+        XCTAssertEqual(life.state, .refused)
+        XCTAssertEqual(life.userStopped(), .nothing, "la session refusée est promise gardée")
+        XCTAssertEqual(life.state, .refused)
+        // « Arrêter » ferme aussi l'écran : le départ qui suit n'écrit rien.
+        XCTAssertEqual(life.steppedAway(), .nothing)
+        XCTAssertEqual(life.guestFinished(), .nothing)
+        XCTAssertFalse(life.shouldResumeOnReturn, "rien à reprendre : rien n'a tourné")
+        XCTAssertFalse(life.reportsGuestExit)
+    }
+
+    /// **La course du refus.** Quand c'est `restore` qui refuse, le fil
+    /// d'émulation le dit au fil principal par une tâche qui passe plus
+    /// tard ; une mise en arrière-plan dans l'intervalle trouve encore
+    /// `running`. Le fil, lui, a déjà noté le refus : `suspend` le lit après
+    /// l'avoir attendu, et n'écrit pas la machine vide par-dessus la session.
+    func testARefusalSeenOnlyByTheThreadIsNotSavedOver() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertEqual(life.steppedAway(), .save, "le fil principal n'a encore rien vu")
+        XCTAssertEqual(life.interpreterStopped(after: .refused), .nothing, "la machine vide ne s'écrit pas")
+        XCTAssertEqual(life.state, .refused)
+        XCTAssertFalse(life.shouldResumeOnReturn, "le retour au premier plan ne relance rien")
+        // La tâche du fil arrive ensuite, puis « Arrêter » : toujours rien.
+        XCTAssertEqual(life.sessionRefused(), .nothing)
+        XCTAssertEqual(life.guestFinished(), .nothing)
+        XCTAssertEqual(life.userStopped(), .nothing)
+    }
+
+    /// Le cas ordinaire n'a pas changé : une machine reprise ou chargée se
+    /// sauve en partant, et revient.
+    func testAMachineTheInterpreterHadIsSavedOnTheWayOut() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertEqual(life.steppedAway(), .save)
+        XCTAssertEqual(life.interpreterStopped(after: .running), .save)
+        XCTAssertEqual(life.state, .suspended)
+        XCTAssertTrue(life.shouldResumeOnReturn)
+    }
+
+    /// Un démarrage qui a échoué n'a pas de machine à sauver ; ce qu'on
+    /// aurait écrit est une machine neuve, jamais chargée, que la visite
+    /// suivante « reprendrait ». La session qu'il n'a pas pu reprendre ne
+    /// décrit plus rien non plus : elle part, comme la tâche du fil le fait
+    /// pour ce même échec.
+    func testABootThatNeverRanIsNotSaved() {
+        for start in [MachineLifecycle.Start.failed, .pending] {
+            var life = MachineLifecycle()
+            life.booted()
+            XCTAssertEqual(life.steppedAway(), .save)
+            XCTAssertEqual(life.interpreterStopped(after: start), .forget, "\(start)")
+            XCTAssertEqual(life.state, .ended)
+            XCTAssertFalse(life.shouldResumeOnReturn)
+        }
+        // Et hors d'une mise de côté, la question ne se pose pas.
+        var running = MachineLifecycle()
+        running.booted()
+        XCTAssertEqual(running.interpreterStopped(after: .running), .nothing)
+        XCTAssertEqual(running.state, .running)
+    }
+
+    /// Rouvrir la machine refusée la rejuge : c'est une course neuve, et un
+    /// « Arrêter » sur une machine qui tourne efface de nouveau.
+    func testOpeningARefusedMachineAgainStartsANewRun() {
+        var life = MachineLifecycle()
+        life.booted()
+        life.sessionRefused()
+        life.booted()
+        XCTAssertEqual(life.state, .running)
+        XCTAssertEqual(life.userStopped(), .forget)
+        XCTAssertEqual(life.state, .ended)
+    }
+
+    // MARK: - La mémoire trop courte, et l'invité qui finit pendant le départ
+
+    /// **Une session qui ne tient pas dans la mémoire libre est gardée.** La
+    /// console dit « gardée telle quelle » ; ce refus passait par
+    /// `guestFinished`, l'état valait `ended`, et « Arrêter », resté dans la
+    /// barre, effaçait la session — le bureau prêt de 1 Gio sur un téléphone
+    /// qui manque de mémoire libre.
+    func testStoppingASessionThatDidNotFitKeepsIt() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertNil(life.machineSize(.tooLittleRoom(saved: 1 << 30, room: 512 << 20)))
+        XCTAssertEqual(life.state, .refused)
+        XCTAssertEqual(life.userStopped(), .nothing, "la session trop grande est promise gardée")
+        XCTAssertEqual(life.steppedAway(), .nothing)
+        XCTAssertEqual(life.guestFinished(), .nothing)
+        XCTAssertFalse(life.shouldResumeOnReturn, "rien n'a tourné")
+    }
+
+    /// Le cas ordinaire : la taille passe telle quelle, et la course continue.
+    func testASessionThatFitsIsBuiltAtItsSize() {
+        for (choice, size) in [(SessionMemory.Choice.boot(256 << 20), 256 << 20), (.resume(1 << 30), 1 << 30)] {
+            var life = MachineLifecycle()
+            life.booted()
+            XCTAssertEqual(life.machineSize(choice), size, "\(choice)")
+            XCTAssertEqual(life.state, .running)
+            XCTAssertEqual(life.userStopped(), .forget, "une machine qui tourne s'arrête pour de bon")
+        }
+    }
+
+    /// Seul l'arrêt qu'on a demandé laisse une machine à sauver ; un invité
+    /// éteint, redémarré ou en faute a fini.
+    func testTheEndOfARunSaysWhetherTheMachineIsWorthSaving() {
+        XCTAssertEqual(MachineLifecycle.Start.after(.stopped), .running)
+        for outcome in [GuestOutcome.powerOff, .reboot, .faulted("ud2")] {
+            XCTAssertEqual(MachineLifecycle.Start.after(outcome), .finished, "\(outcome)")
+        }
+    }
+
+    /// **La course de la fin.** L'invité s'éteint ; avant que la tâche du fil
+    /// ne passe, la personne quitte l'écran. Le fil a noté la fin : rien ne
+    /// s'écrit, la session devenue fausse part, et la tâche qui suit dit la
+    /// fin sans relancer la machine.
+    func testAGuestThatFinishedJustBeforeTheDepartureIsNotSaved() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertEqual(life.steppedAway(), .save, "le fil principal n'a encore rien vu")
+        XCTAssertEqual(life.interpreterStopped(after: .finished), .forget, "une machine éteinte ne s'écrit pas")
+        XCTAssertEqual(life.state, .ended)
+        XCTAssertFalse(life.shouldResumeOnReturn, "le retour au premier plan ne reprend pas une machine éteinte")
+        // La tâche du fil arrive ensuite : elle dit la fin…
+        XCTAssertTrue(life.reportsGuestExit)
+        // … sans relancer un invité qui redémarrait derrière un écran parti.
+        XCTAssertFalse(life.restartsOnReboot)
+        XCTAssertEqual(life.guestFinished(), .forget)
+    }
+
+    /// Un redémarrage ne relance qu'une machine qui tournait encore — pas
+    /// celle que la personne vient d'arrêter.
+    func testOnlyARunningMachineRestartsOnReboot() {
+        var life = MachineLifecycle()
+        XCTAssertFalse(life.restartsOnReboot)
+        life.booted()
+        XCTAssertTrue(life.restartsOnReboot)
+        _ = life.userStopped()
+        XCTAssertFalse(life.restartsOnReboot, "« Arrêter » puis un redémarrage de l'invité : rien ne repart")
+    }
+
+    /// `RunStart` passe d'un fil à l'autre : noté sur le fil d'émulation
+    /// avant son signal de fin, lu par le fil principal après l'attente.
+    func testWhatTheThreadRecordedIsReadAfterItSignals() {
+        let start = RunStart()
+        XCTAssertEqual(start.recorded, .pending)
+        let finished = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            defer { finished.signal() }
+            start.record(.refused)
+        }
+        thread.start()
+        XCTAssertEqual(finished.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(start.recorded, .refused)
+    }
 }

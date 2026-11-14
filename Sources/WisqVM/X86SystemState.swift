@@ -206,8 +206,13 @@ public enum X86CPUID {
     /// **Et AES (25) et PCLMULQDQ (1)** : un tour d'AES et la multiplication
     /// sans retenue de GCM en une instruction (`X86AES.swift`). OpenSSL
     /// chiffre alors le TLS et LUKS sans ses tables.
+    ///
+    /// **Et RDRAND (30)** : un nombre tiré de la source de la machine
+    /// (`X86Entropy`). Le noyau le lit une fois, au démarrage, et le mélange
+    /// ensuite à chaque réensemencement de son générateur : c'est ce qui
+    /// fait diverger deux téléphones repris du même bureau prêt.
     public static let featuresECX: UInt32 = 1 | (1 << 1) | (1 << 9) | (1 << 12) | (1 << 13) | (1 << 19) | (1 << 20)
-        | (1 << 22) | (1 << 23) | (1 << 25) | (1 << 26) | (1 << 28) | (1 << 29)
+        | (1 << 22) | (1 << 23) | (1 << 25) | (1 << 26) | (1 << 28) | (1 << 29) | (1 << 30)
     /// CPUID.1:ECX.OSXSAVE.
     public static let osxsaveBit: UInt32 = 1 << 27
     /// **Feuille 7, EBX : BMI1 (3) et BMI2 (8)**, la part de x86-64-v3 qui
@@ -220,7 +225,9 @@ public enum X86CPUID {
     /// **Et SHA (29)**, les sept instructions de `X86SHA.swift` : OpenSSL,
     /// la libgcrypt et le noyau hachent alors un bloc en une quarantaine
     /// d'instructions au lieu de plusieurs centaines.
-    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8) | (1 << 19) | (1 << 29)
+    /// **Et RDSEED (18)**, la même source que RDRAND : le noyau s'en sert
+    /// pour ensemencer, RDRAND pour mélanger.
+    public static let extendedLeaf7EBX: UInt32 = (1 << 3) | (1 << 5) | (1 << 8) | (1 << 18) | (1 << 19) | (1 << 29)
     /// Feuille 0x80000001, EDX : LM (29) dit que le mode long existe. Sans ce
     /// bit, un noyau 64 bits refuse de démarrer et le dit.
     public static let extendedFeatures: UInt32 = 1 << 29

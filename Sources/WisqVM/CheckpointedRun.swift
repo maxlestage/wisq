@@ -84,7 +84,18 @@ public final class CheckpointedRun: @unchecked Sendable {
         var workAtSave = machine.retiredInstructions
         while true {
             let outcome = machine.runGuest(instructionBudget: slice)
-            guard outcome == .stopped, !stopWasRequested else { return outcome }
+            guard outcome == .stopped else {
+                // **L'invité a fini de lui-même** (extinction, redémarrage,
+                // faute) : une sauvegarde encore en compression ne doit plus
+                // s'écrire. La tâche de fin efface la session juste après ;
+                // écrite ensuite, elle ferait reprendre la machine à l'instant
+                // d'avant son extinction, ou, après un redémarrage, une
+                // mémoire d'avant sur un disque déjà réécrit. Pris sous le
+                // verrou : une écriture en cours finit avant le retour.
+                stopSaving()
+                return outcome
+            }
+            guard !stopWasRequested else { return outcome }
             let now = clock()
             let work = machine.retiredInstructions &- workAtSave
             guard now.timeIntervalSince(savedAt) >= interval, work >= minimumWork else { continue }
