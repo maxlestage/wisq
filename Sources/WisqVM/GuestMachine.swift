@@ -357,6 +357,10 @@ public enum GuestMachineFactory {
         case .riscv32: return riscv(ramSizeBytes, onOutput)
         case .x86_64:
             let machine = X86Machine(ramSize: ramSizeBytes, onOutput: onOutput)
+            // **L'aléa du système**, et pas la suite fixée des tests : un
+            // bureau prêt est repris du même fichier sur tous les téléphones,
+            // et c'est `RDRAND` qui les fait diverger. Voir `X86Entropy`.
+            machine.entropy = .system()
             if let backend = network() { machine.attach(network: VirtioNet(backend: backend)) }
             return machine
         }

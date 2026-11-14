@@ -344,7 +344,21 @@ public final class LocalVMModel {
             return
         }
         kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
-        let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
+        // **« Pas de session » et « session illisible » ne se confondent
+        // plus.** Une session qu'on ne sait pas relire — abîmée, ou sauvée par
+        // une version plus récente de wisq — démarrait le noyau à neuf sans un
+        // mot, et la sauvegarde continue l'écrasait cinq minutes plus tard.
+        // Elle est gardée, rien ne démarre, et la console dit pourquoi et quoi
+        // faire. La décision vit dans `SavedSession`, que la CI Linux juge.
+        let session = SavedSession.find(kernel: kernelName, in: storage, core: core)
+        if case .unreadable(let refusal) = session {
+            _ = life.guestFinished()
+            finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+        let saved = session.snapshot
         // **Une reprise que la console n'a pas vue partir se dit.** Revenir
         // d'une suspension garde l'écran ; revenir après une application tuée
         // le trouve vide, devant un invité qui attend en silence. Voir
@@ -460,17 +474,21 @@ public final class LocalVMModel {
         // porte les deux. Refuser de la reprendre parce que le fichier a été
         // supprimé depuis lui coûterait sa session pour une raison qui ne la
         // concerne pas.
-        let ramdisk: Data?
+        //
+        // **Et il n'est lu que pour un démarrage à froid.** Il l'était à
+        // chaque ouverture, session ou pas, et la fermeture du fil
+        // d'émulation le gardait toute la session : 151 Mo pour le bureau
+        // Xfce, lus pour rien. Seul son emplacement est résolu ici.
+        let ramdisk: URL?
         if let isoRamdisk {
             // **Celui de l'image passe avant la bibliothèque.** L'appariement
             // par le nom sert à deux fichiers importés séparément ; ici la
             // recette a nommé l'initramfs elle-même, et il n'y a rien à
             // deviner.
-            ramdisk = try? Data(contentsOf: isoRamdisk)
+            ramdisk = isoRamdisk
         } else if core == .x86_64 {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
-            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media)
-                .url.flatMap { try? Data(contentsOf: $0) }
+            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media).url
             if ramdisk == nil, saved == nil {
                 _ = life.guestFinished()
                 finish(with: """
@@ -530,6 +548,11 @@ public final class LocalVMModel {
         // sauvegarde au lieu de refaire un démarrage de vingt minutes. Le nom
         // est lu ici pour la même raison que `storage`.
         let savedUnder = kernelName
+        // **La session passe au fil d'émulation dans une boîte**, et pas dans
+        // la fermeture elle-même : la fermeture vit autant que la machine, et
+        // l'instantané décompressé — 842 Mio pour le bureau Xfce — y restait
+        // toute la session. La reprise vide la boîte. Voir `PendingSession`.
+        let pending = PendingSession(saved)
         let checkpointed = CheckpointedRun(machine: machine, write: { packed in
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
         })
@@ -563,11 +586,11 @@ public final class LocalVMModel {
                             for: keys.overlay(forDisk: secondDiskURL.lastPathComponent),
                             in: storageFolder))
                 }
-                // A saved machine is resumed in place of booting. If the file
-                // is not a snapshot — an older format, a truncated write — the
-                // restore throws and the kernel is booted instead, which is the
-                // only useful answer and better than refusing to start.
-                if let saved, (try? machine.restore(saved)) != nil {
+                // A saved machine is resumed in place of booting. **Une reprise
+                // refusée ne retombe plus sur un démarrage à froid** : elle
+                // lève `SavedSession.Unreadable`, la session est gardée, et la
+                // console le dit (le `catch` plus bas).
+                if try pending.resume(into: machine) {
                     // **L'heure de l'invité rattrape le temps passé dehors** :
                     // sans ça, une session reprise le lendemain se croyait la
                     // veille. Voir `GuestMachine.elapse(seconds:)`, pour le
@@ -584,14 +607,27 @@ public final class LocalVMModel {
                         }
                     }
                 } else {
+                    // Lu ici, et seulement ici : voir `ramdisk` plus haut. Un
+                    // fichier qui ne se lit plus est un démarrage impossible,
+                    // dit comme tel, plutôt qu'un noyau sans ses pilotes.
                     try machine.load(
                         kernelImage: image, commandLine: isoCommandLine,
-                        initialRamdisk: ramdisk)
+                        initialRamdisk: ramdisk.map { try Data(contentsOf: $0) })
                 }
                 outcome = checkpointed.run()
                 // Lu sur le fil d'émulation, pendant que la machine est encore
                 // à nous : la vue n'y touche pas.
                 activity = machine.diskActivity
+            } catch let refusal as SavedSession.Unreadable {
+                // **La session n'a pas pu être reprise : elle est gardée.**
+                // Pas d'effacement ici, à la différence du `catch` suivant —
+                // c'est tout l'objet de `SavedSession`.
+                Task { @MainActor [weak self] in
+                    guard let self, thisRun == self.run else { return }
+                    _ = self.life.guestFinished()
+                    self.finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+                }
+                return
             } catch {
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }

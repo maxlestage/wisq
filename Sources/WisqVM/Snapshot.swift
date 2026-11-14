@@ -78,6 +78,12 @@ enum Snapshot {
     /// La tablette virtio : sa BAR, son état, ses files. Voir `VirtioTablet`.
     static let tabletSection: UInt64 = 0x6261_745F_5153_4957  // « WISQ_tab »
 
+    /// **Le niveau de la machine PC** (`X86Machine.snapshotLevel`), posé
+    /// juste derrière la mémoire, devant la pile x87. Un instantané d'avant
+    /// passe de la mémoire à la pile x87, à l'horloge ou au disque, et aucun
+    /// ne commence par ces huit octets ; son absence se lit « niveau zéro ».
+    static let levelSection: UInt64 = 0x6C76_6C5F_5153_4957  // « WISQ_lvl »
+
     /// `x[0..32]` then the sixteen control registers, in the order the Rust
     /// `Core` declares them. The two lists must not drift; the cross-core test
     /// is what notices if they do.
@@ -87,6 +93,9 @@ enum Snapshot {
         case notASnapshot
         case corrupt
         case ramSizeMismatch(saved: UInt64, expected: UInt64)
+        /// Pris par une machine plus récente que celle qui reprend : voir
+        /// `X86Machine.snapshotLevel`.
+        case newerMachine(saved: UInt64, supported: UInt64)
     }
 
     // MARK: - Writing
@@ -221,24 +230,46 @@ enum Snapshot {
     // MARK: - Reading
 
     struct Reader {
-        private let bytes: [UInt8]
+        /// **Les octets eux-mêmes, pas une copie.** Un `[UInt8]` ici obligeait
+        /// chaque reprise à recopier l'instantané entier — `[UInt8](data)` —
+        /// avant d'en lire le premier mot : pour le bureau Xfce, 842 Mio de
+        /// plus pendant la reprise. `Data` se partage sans copie, et ses
+        /// octets se lisent en place. Toutes les positions sont relatives au
+        /// début de `bytes`, qui peut être une tranche.
+        private let bytes: Data
         private var at: Int
 
-        init(_ bytes: [UInt8]) throws {
-            guard bytes.count >= Snapshot.magic.count,
-                  Array(bytes[..<Snapshot.magic.count]) == Snapshot.magic else {
+        init(_ data: Data) throws {
+            guard data.count >= Snapshot.magic.count,
+                  data.prefix(Snapshot.magic.count).elementsEqual(Snapshot.magic) else {
                 throw Failure.notASnapshot
             }
-            self.bytes = bytes
+            self.bytes = data
             at = Snapshot.magic.count
         }
 
+        /// La forme des tests et des petites sections : une copie, sans
+        /// conséquence à cette taille.
+        init(_ bytes: [UInt8]) throws {
+            try self.init(Data(bytes))
+        }
+
         mutating func u32() throws -> UInt32 {
-            try UInt32(littleEndian: scalar(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+            try UInt32(littleEndian: scalar(4, as: UInt32.self))
         }
 
         mutating func u64() throws -> UInt64 {
-            try UInt64(littleEndian: scalar(8).withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) })
+            try UInt64(littleEndian: scalar(8, as: UInt64.self))
+        }
+
+        /// Les huit prochains octets, sans les prendre ; `nil` s'il n'y en a
+        /// pas autant. Sert à lire la taille de la mémoire avant de la passer.
+        func peekedU64() -> UInt64? {
+            guard 8 <= bytes.count - at else { return nil }
+            let from = at
+            return bytes.withUnsafeBytes {
+                UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: from, as: UInt64.self))
+            }
         }
 
         // **Les bornes se comparent par soustraction.** Une longueur lue dans
@@ -246,17 +277,19 @@ enum Snapshot {
         // faisait tomber l'application — à chaque ouverture de la machine,
         // qu'un `try?` ne peut pas rattraper — au lieu de refuser un
         // instantané abîmé ou importé. `at` ne dépasse jamais `bytes.count`.
-        private mutating func scalar(_ count: Int) throws -> [UInt8] {
+        private mutating func scalar<T: FixedWidthInteger>(_ count: Int, as type: T.Type) throws -> T {
             guard count <= bytes.count - at else { throw Failure.corrupt }
             defer { at += count }
-            return Array(bytes[at..<(at + count)])
+            let from = at
+            return bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: from, as: T.self) }
         }
 
         mutating func blob() throws -> [UInt8] {
             let length = try Int(exactly: u64()) ?? -1
             guard length >= 0, length <= bytes.count - at else { throw Failure.corrupt }
             defer { at += length }
-            return Array(bytes[at..<(at + length)])
+            let from = at
+            return bytes.withUnsafeBytes { [UInt8]($0[from..<(from + length)]) }
         }
 
         /// Fills `ram`, which must already be the saved size — the caller
@@ -304,9 +337,10 @@ enum Snapshot {
                     throw Failure.corrupt
                 }
                 if length > 0, let target = ram.baseAddress {
+                    let from = at
                     bytes.withUnsafeBytes { source in
                         (target + cursor).copyMemory(
-                            from: source.baseAddress! + at, byteCount: length)
+                            from: source.baseAddress! + from, byteCount: length)
                     }
                 }
                 at += length
@@ -348,11 +382,7 @@ enum Snapshot {
         /// vient. Regarder sans consommer est ce qui permet de trancher tout
         /// en laissant un instantané d'avant se lire comme il se lisait.
         func peeks(_ mark: UInt64) -> Bool {
-            guard at + 8 <= bytes.count else { return false }
-            let seen = Array(bytes[at..<(at + 8)]).withUnsafeBytes {
-                UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self))
-            }
-            return seen == mark
+            peekedU64() == mark
         }
 
         /// Refuses trailing bytes: a snapshot with something after its last

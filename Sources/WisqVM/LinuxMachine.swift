@@ -514,13 +514,13 @@ public final class LinuxMachine: @unchecked Sendable {
     /// **La mémoire avec laquelle un instantané a été pris**, sans le
     /// reprendre : elle suit les mots du cœur. Voir `X86Machine.savedRAMSize`.
     public static func savedRAMSize(in data: Data) -> Int? {
-        guard var reader = try? Snapshot.Reader(Array(data)) else { return nil }
+        guard var reader = try? Snapshot.Reader(data) else { return nil }
         for _ in 0..<Snapshot.coreWords where (try? reader.u32()) == nil { return nil }
         return (try? reader.u64()).flatMap { Int(exactly: $0) }
     }
 
     public func restore(_ data: Data) throws {
-        var reader = try Snapshot.Reader(Array(data))
+        var reader = try Snapshot.Reader(data)
         var words = [UInt32](repeating: 0, count: Snapshot.coreWords)
         for index in 0..<Snapshot.coreWords { words[index] = try reader.u32() }
 
