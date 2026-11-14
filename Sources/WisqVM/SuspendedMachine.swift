@@ -128,6 +128,10 @@ public enum SuspendedMachine {
     /// failure it can do nothing about only invites it to be ignored. What must
     /// not happen — a damaged file becoming a damaged machine — is refused by
     /// `LinuxMachine.restore`, which checks the bytes it is given.
+    ///
+    /// **L'application ne décide plus par ici** : « pas de fichier » et
+    /// « fichier illisible » n'y appellent pas la même réponse, et c'est
+    /// `SavedSession.find` qui les distingue.
     public static func load(kernel: String, in directory: URL? = nil) -> Data? {
         guard let folder = try? (directory ?? Self.directory()),
               let file = try? Data(contentsOf: folder.appendingPathComponent(fileName(kernel: kernel)))
