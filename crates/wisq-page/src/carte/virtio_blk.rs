@@ -49,7 +49,8 @@ pub const LIMITE_DE_FILE: u32 = 128;
 
 /// **Ce que la carte tient au plus, en octets, pour toutes les requêtes
 /// parties à la fois** : la somme des longueurs de celles qui attendent leur
-/// réponse, prises ou non.
+/// réponse, prises ou non — **y compris celles qu'une remise à zéro ou une
+/// file reposée a oubliées** et que l'arrière sert encore.
 ///
 /// Le cœur Swift n'en a pas besoin : ses octets sont là, et il copie ce qu'on
 /// lui demande pendant la notification. Ici, une écriture est recopiée de la
@@ -59,6 +60,15 @@ pub const LIMITE_DE_FILE: u32 = 128;
 /// seule notification peut faire partir cent vingt-huit requêtes, et cent
 /// vingt-huit fois 64 Mio font 8 Gio, plus que les 4 Gio d'une mémoire
 /// wasm32 — l'allocation échouerait, et la carte trapperait.
+///
+/// **Une requête oubliée reste comptée jusqu'à sa réponse.** Une remise à
+/// zéro ne rappelle pas ce qui est déjà confié : `web/carte.js` a donné la
+/// requête à l'arrière, qui alloue toute sa longueur pour la lire, et la
+/// réponse viendra quand même (elle ne touchera simplement plus à la RAM).
+/// Si l'oubli rendait la place, un invité qui boucle « remise, file, lecture
+/// de 64 Mio, notification » ferait partir 64 Mio de plus à chaque tour, sans
+/// limite, chez l'arrière. Une requête qui n'avait pas encore été prise,
+/// elle, n'est jamais partie : l'oubli la lâche pour de bon.
 ///
 /// **Au-delà, la file attend** plutôt que de refuser : la requête qui ne
 /// tient plus reste dans l'anneau des disponibles, non lue, avec toutes
@@ -176,6 +186,17 @@ pub struct VirtioBlk {
     a_envoyer: VecDeque<RequeteDisque>,
     /// Celles qui attendent leur réponse, prises ou non.
     en_vol: Vec<EnVol>,
+    /// **Les requêtes confiées puis oubliées** (une remise à zéro, une file
+    /// reposée, un disque rebranché), par leur nom et leur longueur : leur
+    /// réponse ne trouvera personne, mais l'arrière les sert encore, et elles
+    /// comptent dans [`PLUS_TENU`] et dans les 128 places jusqu'à ce qu'elle
+    /// vienne.
+    oubliees: Vec<(u32, u64)>,
+    /// **La file attend** : le dernier passage s'est arrêté sur une requête
+    /// qui ne tenait pas encore. Une réponse, même celle d'une requête
+    /// oubliée, la fera reprendre ; un `hlt` qui attend le disque attend
+    /// donc une réponse.
+    file_attend: bool,
 }
 
 impl VirtioBlk {
@@ -201,6 +222,8 @@ impl VirtioBlk {
             prochain_id: 1,
             a_envoyer: VecDeque::new(),
             en_vol: Vec::new(),
+            oubliees: Vec::new(),
+            file_attend: false,
         }
     }
 
@@ -226,10 +249,13 @@ impl VirtioBlk {
     }
 
     /// **Une réponse peut encore lever la ligne sans que l'invité agisse** :
-    /// des requêtes sont parties et n'ont pas leur réponse. Ce que `wakeable`
-    /// doit compter : un `hlt` qui attend le disque attend cette réponse-là.
+    /// des requêtes sont parties et n'ont pas leur réponse, ou la file attend
+    /// de la place (qu'une réponse, même d'une requête oubliée, lui rendra).
+    /// Ce que `wakeable` doit compter : un `hlt` qui attend le disque attend
+    /// cette réponse-là. Une requête oubliée seule, sans file qui attend, ne
+    /// lèvera rien : sa réponse ne touche pas à la RAM.
     pub fn en_attente(&self) -> bool {
-        !self.en_vol.is_empty()
+        !self.en_vol.is_empty() || self.file_attend
     }
 
     /// Combien de requêtes attendent que la boucle hôte les prenne.
@@ -238,10 +264,36 @@ impl VirtioBlk {
     }
 
     /// **Combien d'octets la carte tient pour l'arrière** : la somme des
-    /// longueurs des requêtes parties qui attendent leur réponse. Jamais plus
-    /// que [`PLUS_TENU`].
+    /// longueurs des requêtes parties qui attendent leur réponse, oubliées
+    /// comprises. Jamais plus que [`PLUS_TENU`].
     pub fn tenus(&self) -> u64 {
-        self.en_vol.iter().map(|v| v.longueur).sum()
+        self.en_vol.iter().map(|v| v.longueur).sum::<u64>()
+            + self.oubliees.iter().map(|&(_, n)| n).sum::<u64>()
+    }
+
+    /// Combien de requêtes la carte compte dehors : en vol, et oubliées sans
+    /// réponse encore.
+    pub fn dehors(&self) -> usize {
+        self.en_vol.len() + self.oubliees.len()
+    }
+
+    /// **Prendre la suite d'un disque débranché** : ses noms, et ce qu'il a
+    /// confié à l'arrière sans réponse encore, qui reste compté ici jusqu'à
+    /// la réponse (voir [`PLUS_TENU`]). Ses requêtes sont oubliées : leurs
+    /// réponses ne toucheront pas à la RAM.
+    pub fn succeder_a(&mut self, ancien: &VirtioBlk) {
+        self.reprendre_les_noms(ancien.prochain_nom());
+        self.oubliees = ancien.oubliees.clone();
+        self.oubliees.extend(ancien.confiees());
+    }
+
+    /// Les requêtes en vol déjà prises par la boucle hôte, donc confiées à
+    /// l'arrière : celles d'`a_envoyer` ne sont jamais parties.
+    fn confiees(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.en_vol
+            .iter()
+            .filter(|v| !self.a_envoyer.iter().any(|r| r.id == v.id))
+            .map(|v| (v.id, v.longueur))
     }
 
     /// **Le nom que portera la prochaine requête partie.** Un disque neuf
@@ -344,10 +396,16 @@ impl VirtioBlk {
     }
 
     /// Les requêtes parties sont oubliées : leur réponse, quand elle viendra,
-    /// ne trouvera personne et ne touchera pas à la RAM.
+    /// ne trouvera personne et ne touchera pas à la RAM. Celles déjà confiées
+    /// à l'arrière restent pourtant comptées jusqu'à cette réponse
+    /// ([`PLUS_TENU`]) ; celles que la boucle n'avait pas prises ne sont
+    /// jamais parties, et sont lâchées.
     fn oublier_les_requetes(&mut self) {
+        let confiees: Vec<(u32, u64)> = self.confiees().collect();
+        self.oubliees.extend(confiees);
         self.a_envoyer.clear();
         self.en_vol.clear();
+        self.file_attend = false;
     }
 
     // ----------------------------------------------------------------- file
@@ -378,6 +436,7 @@ impl VirtioBlk {
         {
             return;
         }
+        self.file_attend = false;
         let Some(cible) = lire_u16(ram, self.anneau_disponible.wrapping_add(2)) else {
             return;
         };
@@ -391,6 +450,7 @@ impl VirtioBlk {
             // La file attend : cette entrée et les suivantes restent dans
             // l'anneau, et une réponse les fera reprendre.
             if !self.recevoir(tete, ram) {
+                self.file_attend = true;
                 return;
             }
             self.prochain_disponible = self.prochain_disponible.wrapping_add(1);
@@ -544,10 +604,18 @@ impl VirtioBlk {
             self.refuser(tete, statut_a, ram);
             return true;
         }
+        // Les oubliées prennent aussi une place : sans quoi un invité qui
+        // boucle « remise, 128 requêtes » en ferait partir sans fin. Le
+        // pilote n'y est pour rien (ses têtes sont distinctes) : sa requête
+        // attend, et la réponse d'une oubliée la fera reprendre.
+        if self.dehors() >= LIMITE_DE_FILE as usize {
+            return false;
+        }
         // **La borne de la somme, avant d'allouer quoi que ce soit.** Ce qui
         // ne tient pas attend une réponse ; une requête seule tient toujours
         // (la borne par requête vaut la borne de la somme), donc la file ne
-        // peut pas attendre sans requête en vol pour la reprendre.
+        // peut pas attendre sans requête dehors, en vol ou oubliée, dont la
+        // réponse la reprendra.
         if self.tenus() + etendue > PLUS_TENU {
             return false;
         }
@@ -653,6 +721,7 @@ impl VirtioBlk {
     /// nouvelles requêtes peuvent être à prendre après la réponse.
     pub fn lu(&mut self, id: u32, octets: &[u8], ram: &mut dyn Ram) -> bool {
         let Some(vol) = self.retirer(id) else {
+            self.liberer_une_oubliee(id, ram);
             return false;
         };
         self.copier_et_rendre(&vol, octets, ram);
@@ -687,6 +756,17 @@ impl VirtioBlk {
         }
     }
 
+    /// **La réponse d'une requête oubliée** : rien n'est rendu au pilote, rien
+    /// n'est écrit dans la RAM, mais sa place est rendue, et la file qui
+    /// l'attendait reprend.
+    fn liberer_une_oubliee(&mut self, id: u32, ram: &mut dyn Ram) {
+        let Some(rang) = self.oubliees.iter().position(|&(nom, _)| nom == id) else {
+            return;
+        };
+        self.oubliees.swap_remove(rang);
+        self.reprendre(ram);
+    }
+
     /// **Une requête est finie sans octets à rendre** : une écriture que
     /// l'arrière a faite (`reussi`), ou toute requête qu'il n'a pas pu faire.
     /// Une lecture « réussie » sans ses octets n'existe pas : elle est rendue
@@ -694,6 +774,7 @@ impl VirtioBlk {
     /// [`VirtioBlk::lu`], la réponse peut faire partir ce qui attendait.
     pub fn fini(&mut self, id: u32, reussi: bool, ram: &mut dyn Ram) -> bool {
         let Some(vol) = self.retirer(id) else {
+            self.liberer_une_oubliee(id, ram);
             return false;
         };
         if reussi && vol.sens == Sens::Ecrire {
@@ -1643,6 +1724,210 @@ mod tests {
         assert_eq!(ram.0[0x4801..0x4803], [1, 0]);
         assert_eq!((disque.servies, disque.refusees), (2, 1));
         assert_eq!(ram.0[TAMPON as usize], 9);
+    }
+
+    /// **Une écriture finie, ou un échec, fait aussi partir ce qui
+    /// attendait** : `fini` rend de la place comme `lu`. Trois écritures de
+    /// 32 Mio publiées d'un coup : deux partent, la troisième attend. La
+    /// première finie avec succès la fait partir ; une quatrième publiée
+    /// ensuite attend à son tour, et l'échec de la deuxième la fait partir.
+    /// Sans cette reprise, l'invité resterait figé : son pilote a publié, il
+    /// ne notifiera plus.
+    #[test]
+    fn a_finished_write_or_a_failure_lets_what_waited_leave() {
+        const MORCEAU: u32 = 32 << 20;
+        const TAMPON: u64 = 0x10_0000;
+        let mut disque = VirtioBlk::nouveau(1 << 20);
+        let mut ram = RamPlate(vec![0x5A; TAMPON as usize + MORCEAU as usize]);
+        ram.0[..TAMPON as usize].fill(0);
+        File::demarrer(&mut disque, &mut ram);
+        let secteurs = u64::from(MORCEAU / 512);
+        let ecriture = |ram: &mut RamPlate, k: u16| {
+            poser(
+                ram,
+                3 * k,
+                (1, secteurs * u64::from(k)),
+                (TAMPON, MORCEAU, false),
+                (0x4000 + 0x10 * u64::from(k), 0x4800 + u64::from(k)),
+                k,
+            );
+        };
+        for k in 0..3u16 {
+            ecriture(&mut ram, k);
+        }
+        publier(&mut ram, 3);
+        notifier(&mut disque, &mut ram);
+        let premiere = disque.prendre_requete().expect("partie");
+        let deuxieme = disque.prendre_requete().expect("partie");
+        assert_eq!(disque.prendre_requete(), None, "la troisième attend");
+        assert!(disque.en_attente());
+        // Une écriture faite : sans octets à rendre, elle rend sa place.
+        assert!(disque.fini(premiere.id, true, &mut ram));
+        assert_eq!(ram.0[0x4800], 0);
+        let troisieme = disque.prendre_requete().expect("partie à la réponse");
+        assert_eq!(troisieme.sens, Sens::Ecrire);
+        assert_eq!(troisieme.decalage, 2 * u64::from(MORCEAU));
+        assert_eq!(troisieme.octets.len(), MORCEAU as usize);
+        // Une quatrième attend ; l'échec de la deuxième la fait partir.
+        ecriture(&mut ram, 3);
+        publier(&mut ram, 4);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.prendre_requete(), None, "la quatrième attend");
+        assert!(disque.fini(deuxieme.id, false, &mut ram));
+        assert_eq!(ram.0[0x4801], 1, "l'échec est dit au pilote");
+        let quatrieme = disque.prendre_requete().expect("partie à l'échec");
+        assert_eq!(quatrieme.decalage, 3 * u64::from(MORCEAU));
+        assert!(disque.fini(troisieme.id, true, &mut ram));
+        assert!(disque.fini(quatrieme.id, true, &mut ram));
+        assert_eq!(disque.tenus(), 0);
+        assert!(!disque.en_attente());
+        assert_eq!(File::servies(&ram), 4);
+        assert_eq!(ram.0[0x4800..0x4804], [0, 1, 0, 0]);
+        assert_eq!((disque.servies, disque.refusees), (3, 1));
+    }
+
+    /// Le pilote recommence : sa file rendue (`del_vq` remet le numéro de
+    /// page à zéro), l'index des disponibles remis à zéro, puis la poignée de
+    /// main, qui commence par la remise à zéro et repose la file à la même
+    /// page.
+    fn recommencer(disque: &mut VirtioBlk, ram: &mut RamPlate) {
+        disque.ecrire_port(0x08, 0, ram);
+        ram.ecrire(File::DISPONIBLES + 2, &0u16.to_le_bytes());
+        File::demarrer(disque, ram);
+    }
+
+    /// **Une remise à zéro ne rend pas la place de ce que l'arrière tient
+    /// encore** : dix fois de suite, le pilote recommence et demande une
+    /// lecture de 64 Mio. La première part ; les neuf autres attendent, car
+    /// la lecture oubliée est toujours chez l'arrière, qui alloue toute sa
+    /// longueur pour la servir. Sans cela, dix tours confieraient 640 Mio à
+    /// l'arrière pendant que la carte en annonce 64. Quand la réponse oubliée
+    /// arrive, elle ne touche à rien, mais la requête du pilote d'aujourd'hui
+    /// part, et se sert normalement.
+    #[test]
+    fn a_reset_does_not_give_back_what_the_backend_still_holds() {
+        const TAMPON: u64 = 0x10_0000;
+        let longueur = PLUS_TENU as u32;
+        let mut disque = VirtioBlk::nouveau(1 << 20);
+        let mut ram = RamPlate(vec![0; TAMPON as usize + longueur as usize]);
+        let mut confiees = Vec::new();
+        for tour in 0..10u64 {
+            recommencer(&mut disque, &mut ram);
+            poser(
+                &mut ram,
+                0,
+                (0, tour),
+                (TAMPON, longueur, true),
+                (0x4000, 0x4800),
+                0,
+            );
+            publier(&mut ram, 1);
+            notifier(&mut disque, &mut ram);
+            confiees.extend(disque.prendre_requete());
+            assert!(disque.tenus() <= PLUS_TENU, "tour {tour}");
+        }
+        assert_eq!(confiees.len(), 1, "une seule lecture confiée en dix tours");
+        let somme: u64 = confiees.iter().map(|r| r.longueur).sum();
+        assert_eq!(somme, PLUS_TENU);
+        assert_eq!(disque.tenus(), PLUS_TENU, "l'oubliée compte encore");
+        assert_eq!(disque.refusees, 0, "le pilote d'aujourd'hui attend");
+        assert_eq!(ram.0[0x4800], 0xFF);
+        assert!(disque.en_attente(), "sa réponse viendra d'une oubliée");
+        // La réponse de l'oubliée : rien n'est rendu, rien n'est copié.
+        let vieille = &confiees[0];
+        assert!(!disque.lu(vieille.id, &vec![7; longueur as usize], &mut ram));
+        assert_eq!(ram.0[TAMPON as usize], 0, "rien n'est copié");
+        assert_eq!(File::servies(&ram), 0);
+        // Mais la place est rendue : la lecture du dernier tour part.
+        let jeune = disque.prendre_requete().expect("partie à la réponse");
+        assert_eq!(jeune.decalage, 9 * 512);
+        assert_eq!(disque.tenus(), PLUS_TENU);
+        assert!(disque.lu(jeune.id, &vec![9; longueur as usize], &mut ram));
+        assert_eq!(ram.0[TAMPON as usize], 9);
+        assert_eq!(ram.0[0x4800], 0);
+        assert_eq!(disque.tenus(), 0);
+        assert!(!disque.en_attente());
+    }
+
+    /// **Les oubliées prennent aussi leur place parmi les 128** : cent
+    /// vingt-huit lectures confiées, puis une remise à zéro. La première
+    /// requête du pilote qui recommence attend, sans refus ; la première
+    /// réponse oubliée la fait partir. Sans cela, un invité qui boucle
+    /// « remise, 128 requêtes » ferait grossir sans fin ce que l'arrière sert.
+    #[test]
+    fn forgotten_requests_still_take_their_place_in_the_queue() {
+        let (mut disque, mut ram) = demarre();
+        let tete = |k: u16| 0x600 + 3 * k;
+        for k in 0..128 {
+            poser(
+                &mut ram,
+                tete(k),
+                (0, 0),
+                (0x5000, 512, true),
+                (0x4000, 0x9000 + u64::from(k)),
+                k,
+            );
+        }
+        publier(&mut ram, 128);
+        notifier(&mut disque, &mut ram);
+        let vieilles: Vec<_> = std::iter::from_fn(|| disque.prendre_requete()).collect();
+        assert_eq!(vieilles.len(), 128);
+        recommencer(&mut disque, &mut ram);
+        assert_eq!(disque.dehors(), 128);
+        File::requete(&mut ram, 0, 1, (0x5000, 512, true), 0);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.prendre_requete(), None, "elle attend une place");
+        assert_eq!(disque.refusees, 0);
+        assert_eq!(File::statut(&ram), 0xFF);
+        assert!(disque.en_attente());
+        assert!(!disque.fini(vieilles[0].id, false, &mut ram));
+        let jeune = disque.prendre_requete().expect("partie à la réponse");
+        assert_eq!(disque.dehors(), 128);
+        assert!(disque.lu(jeune.id, &image()[512..1024], &mut ram));
+        assert_eq!(ram.0[0x5000], 2);
+        for vieille in &vieilles[1..] {
+            assert!(!disque.lu(vieille.id, &image()[..512], &mut ram));
+        }
+        assert_eq!(disque.dehors(), 0);
+        assert_eq!(ram.0[0x5000], 2, "aucune oubliée n'a rien copié");
+    }
+
+    /// **Un disque rebranché garde le compte de ce que l'ancien a confié** :
+    /// la lecture de 64 Mio de l'ancien est encore chez l'arrière, et la
+    /// première lecture du neuf attend sa réponse, qui ne remplit rien.
+    #[test]
+    fn a_disk_plugged_anew_still_counts_what_the_old_one_left_out() {
+        const TAMPON: u64 = 0x10_0000;
+        let longueur = PLUS_TENU as u32;
+        let mut carte = Carte::nouvelle();
+        let mut ram = RamPlate(vec![0; TAMPON as usize + longueur as usize]);
+        carte.brancher_disque(1 << 20);
+        ouvrir(&mut carte, 0xC000);
+        par_les_ports(&mut carte, &mut ram);
+        poser(
+            &mut ram,
+            0,
+            (0, 0),
+            (TAMPON, longueur, true),
+            (0x4000, 0x4800),
+            0,
+        );
+        publier(&mut ram, 1);
+        carte.port_ecrire(0xC010, 2, 0, &mut ram);
+        let vieille = carte.requete_disque().expect("partie");
+        carte.brancher_disque(1 << 20);
+        ram.ecrire(File::DISPONIBLES + 2, &0u16.to_le_bytes());
+        ouvrir(&mut carte, 0xC000);
+        par_les_ports(&mut carte, &mut ram);
+        File::requete(&mut ram, 0, 3, (0x5000, 512, true), 0);
+        carte.port_ecrire(0xC010, 2, 0, &mut ram);
+        assert_eq!(carte.requete_disque(), None, "elle attend l'ancienne");
+        assert!(carte.reveil(), "une réponse la fera partir");
+        assert!(!carte.disque_lu(vieille.id, &vec![7; longueur as usize], &mut ram));
+        assert_eq!(ram.0[TAMPON as usize], 0);
+        let jeune = carte.requete_disque().expect("partie à la réponse");
+        assert!(carte.disque_lu(jeune.id, &image()[1536..], &mut ram));
+        assert_eq!(ram.0[0x5000], 4, "le secteur 3");
     }
 
     /// **Un disque rebranché ne reprend pas les noms de l'ancien** : la
