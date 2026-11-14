@@ -329,6 +329,61 @@ maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
   lira (virtio, P4) ajoutera `ram_lire`/`ram_ecrire`, et l'émetteur devra
   les recevoir aussi.
 - Ni l'horloge ni le 8042 ne passent dans un instantané (P9).
+
+## 2026-11-14 — Sous l'émetteur, deux gardes du chemin lent sont enfin tenues par un test
+
+Le contrôle de l'entrée « un accès à cheval sur deux pages va dans les deux
+pages » (plus bas) a trouvé sa sémantique juste, mais deux gardes du nouveau
+chemin lent (`far_load_body`, `far_store_body`) qu'aucun test ne tenait : on
+pouvait les casser sans qu'un seul des 136 tests de `tests/host_loop.rs`
+tombe.
+
+**Ce qui n'allait pas.**
+
+1. **L'écriture sur une page entièrement absente**, le tampon de traduction
+   vide. Si `far_store_body` ne regarde pas le témoin après la première
+   marche, il écrit avec la trame que la marche rend en fautant : zéro. La
+   valeur part donc au début de la mémoire physique, au décalage de
+   l'adresse. Mesuré par le contrôle : `mov %rax,(%rdi)` avec RDI = la page
+   absente + `0x10` laissait `11 22 33 … 88` à l'adresse physique `0x10`.
+   Aucun test ne regardait la trame 0.
+2. **L'accès qui finit pile sur la frontière.** `far_fits` dit « au plus
+   4096 » ; avec « strictement moins », `mov -8(%rsi),%rax` (RSI = la page
+   d'après, absente) marchait la page d'après et fautait dessus — CR2 sur une
+   page que l'instruction ne touche pas. Mesuré par le contrôle : ce mutant
+   empêche 6.12.115 de démarrer.
+
+**Ce qui change** (`crates/wisq-vm/tests/host_loop.rs` seulement ; l'émetteur
+ne bouge pas).
+
+- Le banc `MidFault` relève aussi les soixante-quatre premiers octets de la
+  mémoire physique, avant et après.
+- `a_write_to_a_missing_page_writes_nothing_anywhere` : six écritures (huit,
+  quatre, deux, un octet, un immédiat, un `add`) sur la page absente +
+  `0x10`. Faute, CR2 sur l'adresse, RIP sur l'instruction, registres
+  intacts, et rien d'écrit nulle part, trame 0 comprise.
+- `an_access_that_ends_on_the_page_boundary_stays_in_its_page` : lectures de
+  huit, quatre et deux octets, écritures des mêmes largeurs, un `pop` et un
+  `push`, chacun finissant pile sur la frontière, la page d'après absente.
+  Pas de faute, la machine va jusqu'au `ud2`, RAX = `0x403f3e3d3c3b3a39` pour
+  la lecture de huit octets, et ce qui est écrit l'est à la fin de la page.
+- Deux commentaires nommaient encore `guest()`, qui n'existe plus
+  (`web/host.js`, `tests/x86_wasm.rs`) : ils nomment `Body::peek` et
+  `Body::poke`.
+
+**Comment c'est vérifié.**
+
+- Sabotage de l'écriture sans contrôle du témoin : 1 test tombe sur 138
+  (la trame 0 porte `11 22 33 … 88` à `0x10`). Sabotage `I32_LE_U` →
+  `I32_LT_U` dans `far_fits` : 1 test tombe sur 138 (« rien ne faute » sur
+  `mov -8(%rsi),%rax`). Chacun restauré depuis une copie, `cmp` identique,
+  `git diff` de `x86_wasm.rs` vide.
+- `cargo test --release -p wisq-vm` : 400 tests, 0 échec. `cargo fmt` et
+  `cargo clippy` propres.
+
+**Ce qui reste.** Le mur de l'émetteur est le même que dans cette entrée-là :
+`movq %rbx,%xmm0`, aucune instruction SSE décodée.
+
 ## 2026-11-14 — La session trop grande gardée, et l'invité éteint jamais sauvé
 
 Le contrôle de la tranche précédente a trouvé une voie de plus par laquelle
@@ -757,6 +812,127 @@ région : c'est sa vitesse qui compte.
   cela est une autre mesure.
 - Rien n'est encore mesuré sur un vrai iPhone.
 
+## 2026-11-14 — Sous l'émetteur, un accès à cheval sur deux pages va dans les deux pages, et une instruction qui faute n'a rien fait
+
+Reprise de l'entrée ci-dessous, après un second contrôle. Il y a trouvé trois
+défauts ; les trois étaient vrais.
+
+**Ce qui n'allait pas.**
+
+1. **Un chiffre faux.** L'entrée ci-dessous disait que la faute du `rep movsl`
+   de `copy_bootdata` nommait une lecture « six octets plus haut ». Mesuré :
+   **trente-six**. `objdump` sur les deux noyaux : le `rep movsl` est à
+   `copy_bootdata+37`, et la seule lecture mémoire avant lui est à
+   `copy_bootdata+1`. Les relevés le disent aussi : la machine réclamait
+   `copy_bootdata + 1` avant la correction, `copy_bootdata + 37` après. Six
+   était la distance dans le test synthétique. La phrase était recopiée dans
+   un commentaire de l'émetteur et dans un commentaire de test. (Le message du
+   commit 9f3d1ddb la porte aussi ; il ne se corrige pas sans réécrire
+   l'historique.)
+2. **Un accès à cheval sur deux pages était faux**, et l'était déjà sur
+   `master`. L'émetteur traduisait la page du premier octet, puis lisait ou
+   écrivait deux, quatre ou huit octets d'un coup en mémoire. Deux pages
+   voisines en virtuel ne sont voisines en mémoire physique que par accident :
+   dans le direct map du noyau, oui ; dans `vmalloc` et dans tout programme,
+   non. Mesuré, la page d'après absente : `mov (%rsi),%rax` à quatre octets de
+   la frontière ne fautait pas et prenait ses quatre octets hauts dans la
+   trame voisine ; `mov %rax,(%rsi)` écrivait quatre octets dans une trame
+   qu'aucune table ne porte ; un `rep movsq` fautait un élément trop tard.
+3. **`lidt` et `lgdt` rangeaient la limite avant d'avoir lu la base.** Quand
+   la base fautait, la faute était délivrée avec la nouvelle limite et
+   l'ancienne base : l'arrêt disait « une faute pendant la délivrance », CR2 =
+   `0xe0`. En cherchant la même faute ailleurs : `sgdt` et `sidt` écrivaient la
+   limite avant de fauter sur la base, `fxsave` écrivait son aire jusqu'à la
+   faute (son commentaire la donnait pour la seule dans ce cas), et `lretq` ne
+   lisait pas le mot du sélecteur — il ne fautait donc pas quand ce mot
+   manquait.
+
+**Ce qui change** (`crates/wisq-vm/src/x86_wasm.rs`).
+
+- `Body::guest`, qui rendait une adresse, devient `peek` et `poke`, qui font
+  l'accès **avec sa largeur**. Trois chemins : pagination éteinte ; le tampon
+  tient la page et l'accès y tient — une seule comparaison, l'étiquette contre
+  la page du *dernier* octet ; et tout le reste, par deux fonctions du module
+  (`far_load_body`, `far_store_body`) qui marchent les tables, les deux pages
+  s'il le faut, et font l'accès octet par octet quand il franchit. Rien n'est
+  lu ni écrit tant qu'une page peut manquer.
+- Le contrôle de faute ne suit plus que ce chemin lent, le seul qui peut
+  fauter.
+- La deuxième case de travail de la traduction change de rôle : elle portait
+  le numéro de page, elle porte la valeur d'une écriture. Pas de globale de
+  plus.
+- `lidt` et `lgdt` lisent les dix octets, puis rangent. `sgdt` et `sidt`
+  atteignent les dix octets avant d'écrire. `fxsave` sonde le dernier octet de
+  ses 512, puis le premier, avant d'écrire. `lretq` lit le sélecteur.
+- `scripts/x86-page-straddle-probe.c` : la mesure sur le silicium, à refaire
+  par qui veut. Un accès (`mov`, `push`, `pop`) à cheval sur une page
+  inaccessible faute avec CR2 sur le premier octet de cette page et n'a rien
+  écrit ; `fxsave` exige ses 512 octets, nomme le dernier, et n'a rien écrit.
+  C'est ce que l'émetteur fait maintenant. `sgdt` et `sidt` ne se mesurent pas
+  ainsi (en anneau 3, Linux les émule).
+
+**Comment c'est vérifié.**
+
+- Cinq tests de plus dans `tests/host_loop.rs`, tous rouges avant la
+  correction (131 passés, 5 échoués), sur un banc où la page d'après est posée
+  sur une trame éloignée : les lectures, les écritures (dont `cmpxchg16b` et
+  les tables de descripteurs), la pile et les chaînes ; puis les mêmes formes
+  la page d'après absente — faute, CR2 sur la page absente, RIP sur
+  l'instruction, registres, RFLAGS et mémoire intacts ; puis les instructions
+  à plusieurs accès.
+- Neuf sabotages, chacun vu tomber puis restauré (même empreinte du fichier) :
+  la largeur ôtée de la comparaison (5 tests tombent sur 136), la suite prise
+  dans la première trame (3), la page d'après non marchée (5), l'écriture
+  lente qui ne regarde pas le témoin (1), `lidt` remis dans l'ancien ordre
+  (1), `sgdt` sans sonde (1), `fxsave` sans sonde (1), `fxsave` sondée sur 416
+  octets (1), `lretq` sans le sélecteur (1).
+- `cargo test --release -p wisq-vm` : 398 tests, 0 échec ; pareil avec les
+  débordements et les assertions armés. `cargo fmt` et `cargo clippy` propres.
+  `swift test --filter WisqVMRustTests` : 113 tests, 0 échec.
+- Les deux modules confinés épinglés de `WebKitBench.swift` sont régénérés
+  (2166 → 2552 et 2021 → 2429 octets) ; le module libre n'a pas changé d'un
+  octet (1058).
+- Les vrais noyaux, relancés : les mêmes relevés qu'avant, au tour près.
+
+  | noyau | régions | port série | `marche` |
+  | --- | --- | --- | --- |
+  | 6.6.142, 4096 tours | 1032 | journal du noyau | `4096 1648 1031 2` |
+  | 6.6.142 | 10 390 | `WISQ-USERSPACE-OK` | `700000 521620 10389 42` |
+  | 6.12.115 | 10 981 | `WISQ-USERSPACE-OK` | `460000 439473 10980 1231` |
+  | 6.18.60 | 12 177 | `WISQ-USERSPACE-OK` | `8000000 3500288 12176 77` |
+  | 6.18.60, initramfs d'Alpine | 11 413 | arrêt à `0x7f5d055d9089` | `1169354 1169353 11413 0` |
+
+- Ce que ça coûte : +6,1 % de WebAssembly sur 6.12.115 (144 970 146 →
+  153 795 073 octets) et autant sur 6.18.60. En temps, rien de séparable du
+  bruit : le démarrage de 6.12.115, avant et après en alternance, dure 60 à
+  65 s d'un côté et 60 à 74 s de l'autre sur une machine chargée — les
+  chiffres sont dans `docs/DEMARRAGE.md`.
+
+**Ce qui reste.**
+
+1. Le mur est le même : `0x7f5d055d9089`, `movq %rbx,%xmm0`. L'émetteur ne
+   décode aucune instruction SSE.
+2. `modprobe[372]: segfault at b …` est **toujours là, à l'identique**. Le
+   contrôle y voyait une conséquence possible des accès à cheval : ce n'en est
+   pas une, le relevé n'a pas bougé d'un tour. Cause toujours non prouvée ; la
+   piste qui reste est la marche des tables, qui ne regarde que le bit
+   « présent » (ni écriture, ni utilisateur).
+3. L'hôte (`web/host.js`, `physical`) traduit lui aussi le premier octet de
+   ce qu'il lit pour délivrer une faute — une porte de l'IDT, un descripteur
+   de la GDT, un mot du segment de tâche — puis lit huit ou seize octets à la
+   suite. Ce n'est pas corrigé. Les quatre démarrages ci-dessus n'en
+   souffrent pas ; je n'ai pas vérifié où Linux pose chacune de ces tables.
+4. `fxrstor` balaie son aire depuis le début : sur une faute, CR2 nomme le
+   premier octet absent, là où le silicium nomme le dernier de l'aire. La page
+   est la même.
+5. Un accès à cheval marche les tables deux fois sans consulter le tampon.
+   Coût non mesuré ; rare par construction.
+6. Chaque accès teste encore CR0.PG en ligne. Le tampon pourrait porter
+   l'identité quand la pagination est éteinte, et ce test disparaîtrait : une
+   vingtaine d'octets de moins par accès — compté en lisant le code émis, pas
+   mesuré —, de quoi reprendre les 6 %. Pas fait ici : un hôte qui change CR0
+   de l'extérieur devrait alors vider le tampon.
+
 ## 2026-11-14 — L'émetteur mène Linux 6.12 et 6.18 jusqu'à l'espace utilisateur
 
 **Ce qui n'allait pas.** Sous l'émetteur (x86-64 → WebAssembly), Linux 6.6
@@ -768,9 +944,9 @@ qui portent un opérande mémoire. Celles qui atteignent la mémoire sans
 opérande — `rep movs` et `rep stos` (par RSI et RDI), `push`, `pop`, `leave`,
 `call`, `ret`, `jmp *` — fautaient avec le RIP de la dernière instruction
 mémoire d'avant. Dans `copy_bootdata`, la faute du `rep movsl` nommait une
-lecture six octets plus haut : le noyau y reprenait, refaisait un `push`, la
-pile gardait un mot de trop, et le `ret` sautait à `0x90`. Linux 6.6 ne passe
-pas par là.
+lecture trente-six octets plus haut (`copy_bootdata+1`) : le noyau y reprenait,
+refaisait un `push`, la pile gardait un mot de trop, et le `ret` sautait à
+`0x90`. Linux 6.6 ne passe pas par là.
 
 **Ce qui change** (`crates/wisq-vm/src/x86_wasm.rs`).
 

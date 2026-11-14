@@ -260,26 +260,37 @@ pub const SCRATCH_COUNT: usize = 10;
 /// retour : il arrête l'émulateur entier, alors qu'une faute doit rendre la
 /// main au noyau invité. La boucle de répartition rend déjà la main dès qu'un
 /// bloc rend un indice négatif ; une faute pose ce témoin, et le contrôle en
-/// ligne qui suit chaque traduction fait rendre −1.
+/// ligne qui suit chaque marche des tables fait rendre −1.
 ///
 /// **Le contrôle est en ligne, et ça a été mesuré avant d'être décidé** — voir
 /// `docs/DEMARRAGE.md` : −0,17 à +0,30 ns par accès sur un balayage, la plage
 /// incluant zéro. L'autre conception, une page piège contrôlée une fois par
 /// bloc, laissait l'instruction fautive agir à moitié pour une économie
-/// qu'aucune des trois mesures ne voit.
+/// qu'aucune des trois mesures ne voit. Il ne suit plus que le chemin lent —
+/// le seul qui marche les tables, donc le seul qui peut fauter ; voir
+/// `Body::translated`.
 ///
 /// **L'adresse fautive va dans CR2**, comme sur le silicium : c'est là que le
 /// gestionnaire du noyau la lira le jour où les fautes seront délivrées.
-/// **Les trois globales de travail de la traduction.** L'adresse invitée, son
-/// numéro de page, et l'adresse de la case du tampon.
+/// **Les trois globales de travail de la traduction.** L'adresse invitée, la
+/// valeur qu'une écriture attend de poser, et l'adresse de la case du tampon.
 ///
 /// **Elles sont à elle seule, et c'est délibéré.** Les dix emplacements de
 /// `SCRATCH` sont pris à l'intérieur d'une instruction — une chaîne d'octets en
-/// occupe trois — et `guest()` est appelé *au milieu* de ces instructions-là.
-/// S'en partager un écraserait une valeur vivante, et le défaut ne se verrait
-/// que sur les formes qui en ont besoin.
+/// occupe trois — et un accès mémoire a lieu *au milieu* de ces
+/// instructions-là. S'en partager un écraserait une valeur vivante, et le
+/// défaut ne se verrait que sur les formes qui en ont besoin.
+///
+/// **La deuxième a changé de rôle.** Elle portait le numéro de page, lu deux
+/// fois ; depuis que la comparaison d'étiquette regarde la page du *dernier*
+/// octet de l'accès, il se calcule une fois de chaque façon et n'a plus à
+/// être gardé. La case tient maintenant la valeur d'une écriture, le temps
+/// que son adresse soit traduite — voir `Body::poke`.
 pub const TRANSLATE_SLOT: usize = SCRATCH_SLOT + SCRATCH_COUNT;
 pub const TRANSLATE_COUNT: usize = 3;
+const TRANSLATE_ADDRESS: usize = TRANSLATE_SLOT;
+const TRANSLATE_VALUE: usize = TRANSLATE_SLOT + 1;
+const TRANSLATE_CELL: usize = TRANSLATE_SLOT + 2;
 
 pub const FAULT_SLOT: usize = TRANSLATE_SLOT + TRANSLATE_COUNT;
 
@@ -799,9 +810,9 @@ pub const BENCH_LOOP: [u8; 15] = [
 /// sans le moindre rapport avec ce que le bureau fera tourner. Les deux boucles
 /// ensemble bornent le coût par le bas et par le haut.
 ///
-/// **Une lecture et une écriture**, pas seulement une lecture : `guest()` est
-/// traversée par `load_at` et par `store_at`, et rien ne garantit que les deux
-/// coûtent la même chose.
+/// **Une lecture et une écriture**, pas seulement une lecture : `load_at` passe
+/// par `peek`, `store_at` par `poke`, et rien ne garantit que les deux coûtent
+/// la même chose.
 ///
 /// **La densité est délibérément haute** — deux accès pour quatre instructions
 /// — et ce n'est pas ce que fait du vrai code. C'est voulu : cette boucle
@@ -974,7 +985,13 @@ mod code {
     pub const I32_EQZ: u8 = 0x45;
     pub const I32_NE: u8 = 0x47;
     pub const I32_ADD: u8 = 0x6a;
+    pub const I32_SUB: u8 = 0x6b;
     pub const I32_MUL: u8 = 0x6c;
+    /// Les comparaisons de trente-deux bits des deux fonctions d'accès lent :
+    /// une largeur, un décalage dans la page.
+    pub const I32_EQ: u8 = 0x46;
+    pub const I32_LT_U: u8 = 0x49;
+    pub const I32_LE_U: u8 = 0x4d;
     pub const I32_LOAD: u8 = 0x28;
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
@@ -1063,6 +1080,13 @@ const HOST_IN: u32 = 1;
 /// Le décalage que ces imports imposent à tout indice de fonction.
 const HOST_IMPORTS: u32 = 2;
 
+/// **Les deux fonctions d'accès lent, comptées depuis la marche.** Un module
+/// paginé range ses fonctions dans cet ordre : les blocs, la marche, `run`,
+/// l'accesseur des débuts, puis ces deux-là — en queue, pour ne décaler
+/// l'indice de personne. Voir `Module::far_load_body`.
+const FAR_LOAD: u32 = 3;
+const FAR_STORE: u32 = 4;
+
 /// Les deux registres que le codage des entrées-sorties impose. La valeur est
 /// toujours dans l'accumulateur ; le port des formes non immédiates est dans
 /// DX. Nommés parce qu'un `2` nu, ici, ne se relit pas.
@@ -1074,26 +1098,29 @@ const RDX: u8 = 2;
 struct Body {
     bytes: Vec<u8>,
     /// **Le masque qui enferme l'invité dans sa RAM**, ou `None` s'il n'y en a
-    /// pas. Voir `Body::guest`.
+    /// pas. Voir `Body::peek`.
     confine: Option<u32>,
     /// **L'indice de la fonction de marche**, quand le module en a une — donc
     /// quand il est confiné, puisque c'est le confinement qui ouvre la place
-    /// où vivent les tables et le tampon. `None` rend `guest()` à sa forme
-    /// d'avant la pagination, mot pour mot.
+    /// où vivent les tables et le tampon. `None` rend `peek` et `poke` à
+    /// leur forme d'avant la pagination, mot pour mot.
     walk: Option<u32>,
     /// **L'adresse de l'instruction en cours de traduction.** `build` la pose
     /// avant chaque instruction — celles que `terminate` traite comprises —,
-    /// et la sortie de faute de `guest()` la range dans RIP : une faute nomme
+    /// et la sortie de faute de `translated` la range dans RIP : une faute nomme
     /// ainsi l'instruction qui l'a prise, quelle que soit la façon dont cette
     /// instruction désigne sa mémoire.
     here: u64,
 }
 
 impl Body {
-    /// **Le seul chemin par lequel une adresse invitée devient une adresse de
-    /// mémoire linéaire.** Tout accès à la RAM de l'invité passe ici, et c'est
-    /// ce qui rend le confinement possible : un seul endroit à changer, et
-    /// aucun accès qui l'oublie.
+    /// **Lire la mémoire invitée : l'adresse est sur la pile, en `i64`, et la
+    /// valeur la remplace, étendue par zéro.**
+    ///
+    /// Avec `poke`, c'est **le seul chemin par lequel une adresse invitée
+    /// devient une adresse de mémoire linéaire**. Tout accès à la RAM de
+    /// l'invité passe par l'un des deux, et c'est ce qui rend le confinement
+    /// possible : un seul endroit à changer, et aucun accès qui l'oublie.
     ///
     /// L'adresse arrive en `i64` — un registre invité, plus un déplacement.
     /// `i32.wrap_i64` la ramène aux trente-deux bits que WebAssembly adresse.
@@ -1102,48 +1129,191 @@ impl Body {
     ///
     /// **Ce que ça coûte, mesuré** : rien, et même un peu moins que rien —
     /// voir `Module::confined`, qui porte les chiffres.
-    fn guest(&mut self) -> &mut Self {
+    ///
+    /// **La largeur fait partie de l'accès, et c'est une correction.** Ce
+    /// chemin s'appelait `guest()` et rendait une adresse : il traduisait la
+    /// page du **premier** octet, et l'appelant lisait ensuite deux, quatre ou
+    /// huit octets contigus en mémoire linéaire. Contigus physiquement — alors
+    /// que deux pages voisines en virtuel ne le sont en physique que par
+    /// accident. Un accès à cheval sur une frontière prenait donc ses octets
+    /// hauts dans la trame voisine, et ne fautait pas quand la page d'après
+    /// manquait. Voir `translated`, qui dit comment la largeur y entre.
+    fn peek(&mut self, width: Width) -> &mut Self {
+        let load = match width {
+            Width::Byte => code::I64_LOAD8_U,
+            Width::Word => code::I64_LOAD16_U,
+            Width::Dword => code::I64_LOAD32_U,
+            Width::Qword => code::I64_LOAD,
+        };
         let (Some(walk), Some(mask)) = (self.walk, self.confine) else {
             // **Sans pagination possible, la forme d'avant, mot pour mot.**
-            self.op(code::I32_WRAP_I64);
-            if let Some(mask) = self.confine {
-                self.bytes.push(code::I32_CONST);
-                signed(i64::from(mask), &mut self.bytes);
-                self.bytes.push(code::I32_AND);
-            }
-            return self;
+            self.plain();
+            // Alignement zéro : le module n'exige rien, et un invité aligne
+            // ce qu'il veut. Prétendre un alignement que l'invité ne tient
+            // pas ferait refuser le module par le moteur.
+            return self.access(load, 0);
         };
-        let tlb = tlb_base((mask + 1) / 65536);
-        let (va, vpn, slot) = (TRANSLATE_SLOT, TRANSLATE_SLOT + 1, TRANSLATE_SLOT + 2);
-        let fold = |b: &mut Self| {
-            b.bytes.push(code::I32_CONST);
-            signed(i64::from(mask), &mut b.bytes);
-            b.bytes.push(code::I32_AND);
-        };
-
         // L'adresse est rangée : le repli comme le tampon la relisent, et
         // WebAssembly n'a pas de quoi dupliquer une valeur.
         self.bytes.push(code::GLOBAL_SET);
-        unsigned(va as u64, &mut self.bytes);
+        unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
+        self.translated(
+            mask,
+            width,
+            0x7e, // le résultat : un i64, la valeur lue
+            |b| {
+                b.access(load, 0);
+            },
+            |b| {
+                b.load(TRANSLATE_ADDRESS)
+                    .constant32(width as u32)
+                    .call(walk + FAR_LOAD);
+            },
+        )
+    }
 
-        // CR0.PG éteint ? C'est l'état d'un processeur au démarrage.
+    /// **Écrire la mémoire invitée.** `address` pousse l'adresse, `value` la
+    /// valeur — dans cet ordre, qui est celui de WebAssembly.
+    ///
+    /// **La valeur est rangée avant que l'adresse ne soit traduite**, dans la
+    /// case de travail `TRANSLATE_VALUE`. Une écriture à cheval sur deux pages
+    /// ne peut pas être un `i64.store` : c'est une fonction du module qui la
+    /// pose octet par octet, et il faut lui passer la valeur. Les blocs n'ont
+    /// aucune locale ; la case tient ce rôle.
+    ///
+    /// Ce que `value` pousse doit donc être **sans effet** — une case de
+    /// travail, un registre, une constante. C'est le cas de tous les
+    /// appelants : une valeur qui se calcule en lisant la mémoire est lue
+    /// d'abord, dans une case, et c'est aussi ce qui laisse sa faute passer
+    /// avant toute écriture.
+    fn poke(
+        &mut self,
+        width: Width,
+        address: impl FnOnce(&mut Body),
+        value: impl FnOnce(&mut Body),
+    ) -> &mut Self {
+        let store = match width {
+            Width::Byte => code::I64_STORE8,
+            Width::Word => code::I64_STORE16,
+            Width::Dword => code::I64_STORE32,
+            Width::Qword => code::I64_STORE,
+        };
+        address(self);
+        let (Some(walk), Some(mask)) = (self.walk, self.confine) else {
+            // **Sans pagination possible, la forme d'avant, mot pour mot** :
+            // l'adresse repliée, la valeur, l'écriture.
+            self.plain();
+            value(self);
+            return self.access(store, 0);
+        };
+        value(self);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_VALUE as u64, &mut self.bytes);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
+        self.translated(
+            mask,
+            width,
+            code::VOID,
+            |b| {
+                b.load(TRANSLATE_VALUE).access(store, 0);
+            },
+            |b| {
+                b.load(TRANSLATE_ADDRESS)
+                    .load(TRANSLATE_VALUE)
+                    .constant32(width as u32)
+                    .call(walk + FAR_STORE);
+            },
+        )
+    }
+
+    /// L'adresse `i64` du sommet de la pile, ramenée à une adresse de mémoire
+    /// linéaire quand il n'y a pas de pagination : tronquée, et repliée dans
+    /// la RAM s'il y a un masque.
+    fn plain(&mut self) -> &mut Self {
+        self.op(code::I32_WRAP_I64);
+        if let Some(mask) = self.confine {
+            self.bytes.push(code::I32_CONST);
+            signed(i64::from(mask), &mut self.bytes);
+            self.bytes.push(code::I32_AND);
+        }
+        self
+    }
+
+    /// **Le corps commun d'une lecture et d'une écriture paginées.** L'adresse
+    /// est dans `TRANSLATE_ADDRESS`. Trois chemins :
+    ///
+    /// 1. **CR0.PG éteint** — l'état d'un processeur au démarrage : l'adresse
+    ///    est repliée, et `direct` fait l'accès.
+    /// 2. **Le tampon répond, et l'accès tient dans sa page** : la trame du
+    ///    tampon plus le décalage dans la page, et `direct` fait l'accès. Son
+    ///    coût a été mesuré avant d'être écrit : un dixième à un demi de
+    ///    nanoseconde par accès — voir `docs/DEMARRAGE.md`.
+    /// 3. **Tout le reste** : `far` appelle la fonction d'accès lent du
+    ///    module (`far_load_body`, `far_store_body`), qui marche les tables,
+    ///    fait l'accès elle-même, et pose le témoin de faute si une page
+    ///    manque.
+    ///
+    /// **Une seule comparaison sépare 2 de 3, et elle voit la frontière.**
+    /// L'étiquette de la case est le numéro de la page du **premier** octet ;
+    /// elle est comparée au numéro de la page du **dernier**. Quand l'accès
+    /// tient dans sa page, les deux sont le même nombre et la comparaison est
+    /// celle d'avant. Quand il franchit, le dernier octet est dans la page
+    /// d'après, la comparaison échoue, et l'accès part par le chemin lent —
+    /// qui traduit les **deux** pages. Le chemin rapide ne paie donc qu'une
+    /// addition de constante, et rien du tout pour un octet seul.
+    ///
+    /// **Le contrôle de faute est en ligne, sur le seul chemin qui peut
+    /// fauter.** La fonction d'accès lent ne touche à rien quand une page
+    /// manque : l'instruction fautive n'a alors rien fait, ce qui est la seule
+    /// façon de la rejouer. Rendre un indice de bloc négatif est ce que fait
+    /// déjà chaque fin de région : la boucle de répartition rend la main à
+    /// l'hôte. Les deux autres chemins ne peuvent pas fauter — pas de tables
+    /// à marcher, ou une page que le tampon tient déjà — et ne relisent plus
+    /// le témoin.
+    ///
+    /// **Et c'est cette sortie qui nomme l'instruction fautive dans RIP.**
+    /// RIP était posé en tête de l'instruction, par `translate`, quand elle
+    /// portait un opérande mémoire. Celles qui atteignent la mémoire sans
+    /// opérande — `rep movs` par RSI et RDI, `push`, `call` et `ret` par RSP —
+    /// fautaient donc avec le RIP de la dernière instruction qui en avait un.
+    /// Linux 6.12 le prenait dans `copy_bootdata` : la faute d'un `rep movsl`
+    /// nommait une lecture trente-six octets plus haut (`copy_bootdata+1`), le
+    /// noyau y reprenait, refaisait un `push`, et le `ret` sautait à `0x90`.
+    /// Posé ici, RIP ne dépend plus d'une liste d'instructions à tenir : aucun
+    /// accès ne peut fauter sans dire d'où. Et sur le chemin sans faute, ça ne
+    /// coûte rien : la constante n'est écrite que dans la branche qui rend la
+    /// main.
+    fn translated(
+        &mut self,
+        mask: u32,
+        width: Width,
+        result: u8,
+        direct: impl Fn(&mut Body),
+        far: impl FnOnce(&mut Body),
+    ) -> &mut Self {
+        let tlb = tlb_base((mask + 1) / 65536);
+        let (va, slot) = (TRANSLATE_ADDRESS, TRANSLATE_CELL);
+
+        // CR0.PG éteint ?
         self.load(Module::control_slot(0))
             .constant(PAGING_BIT)
             .op(code::I64_AND)
             .op(code::I64_EQZ);
-        self.op(code::IF).op(0x7f); // if (result i32)
+        self.op(code::IF).op(result);
         self.load(va).op(code::I32_WRAP_I64);
-        fold(self);
+        self.bytes.push(code::I32_CONST);
+        signed(i64::from(mask), &mut self.bytes);
+        self.op(code::I32_AND);
+        direct(self);
         self.op(0x05); // else
 
-        // **Le tampon, consulté en ligne.** Son coût a été mesuré avant d'être
-        // écrit : un dixième à un demi de nanoseconde par accès tant qu'il
-        // répond — voir `docs/DEMARRAGE.md`.
-        self.store(vpn, |b| {
-            b.load(va).constant(12).op(code::I64_SHR_U);
-        });
+        // **Le tampon, consulté en ligne.** La case est celle de la page du
+        // premier octet.
         self.store(slot, |b| {
-            b.load(vpn)
+            b.load(va)
+                .constant(12)
+                .op(code::I64_SHR_U)
                 .constant(u64::from(TLB_SLOTS - 1))
                 .op(code::I64_AND)
                 .constant(u64::from(TLB_ENTRY))
@@ -1154,43 +1324,29 @@ impl Body {
         self.load(slot).op(code::I32_WRAP_I64);
         self.access(code::I64_LOAD, 0);
         // L'étiquette est le numéro de page **plus un** : zéro veut dire vide,
-        // sans quoi la page zéro passerait pour déjà là.
-        self.load(vpn)
+        // sans quoi la page zéro passerait pour déjà là. Et le numéro comparé
+        // est celui de la page du **dernier** octet de l'accès.
+        self.load(va);
+        if width as u64 > 1 {
+            self.constant(width as u64 - 1).op(code::I64_ADD);
+        }
+        self.constant(12)
+            .op(code::I64_SHR_U)
             .constant(1)
             .op(code::I64_ADD)
             .op(code::I64_EQ);
-        self.op(code::IF).op(0x7f);
+        self.op(code::IF).op(result);
+        // La trame, plus le décalage dans la page.
         self.load(slot).op(code::I32_WRAP_I64);
         self.access(code::I64_LOAD32_U, 8);
         self.op(code::I32_WRAP_I64);
-        self.op(0x05); // else
-        self.load(va).call(walk);
-        self.op(code::END);
-        // La trame, plus le décalage dans la page.
         self.load(va).op(code::I32_WRAP_I64);
         self.bytes.push(code::I32_CONST);
         signed(0xFFF, &mut self.bytes);
         self.op(code::I32_AND).op(code::I32_OR);
-        self.op(code::END);
-
-        // **Le contrôle de faute, en ligne et avant l'accès.** L'instruction
-        // fautive n'a alors rien fait, ce qui est la seule façon de la rejouer.
-        // Rendre un indice de bloc négatif est ce que fait déjà chaque fin de
-        // région : la boucle de répartition rend la main à l'hôte.
-        //
-        // **Et c'est cette sortie qui nomme l'instruction fautive dans RIP.**
-        // RIP était posé en tête de l'instruction, par `translate`, quand
-        // elle portait un opérande mémoire. Celles qui atteignent la mémoire
-        // sans opérande — `rep movs` par RSI et RDI, `push`, `call` et `ret`
-        // par RSP — fautaient donc avec le RIP de la dernière instruction qui
-        // en avait un. Linux 6.12 le prenait dans `copy_bootdata` : la faute
-        // d'un `rep movsl` nommait une lecture six octets plus haut, le noyau
-        // y reprenait, refaisait un `push`, et le `ret` sautait à `0x90`.
-        // Posé ici, RIP ne dépend plus d'une liste d'instructions à tenir :
-        // aucun accès ne peut fauter sans dire d'où.
-        //
-        // **Sur le chemin sans faute, ça ne coûte plus rien** : la constante
-        // n'est écrite que dans la branche qui rend la main.
+        direct(self);
+        self.op(0x05); // else
+        far(self);
         self.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
         self.op(code::IF).op(code::VOID);
         let here = self.here;
@@ -1200,6 +1356,8 @@ impl Body {
         self.bytes.push(code::I32_CONST);
         signed(-1, &mut self.bytes);
         self.op(code::RETURN);
+        self.op(code::END);
+        self.op(code::END);
         self.op(code::END);
         self
     }
@@ -1227,7 +1385,7 @@ impl Body {
         self
     }
 
-    /// **Un accès à la mémoire linéaire, sans passer par `guest()`.**
+    /// **Un accès à la mémoire linéaire, sans traduction d'adresse.**
     ///
     /// C'est ce dont la marche a besoin : une entrée de table porte une adresse
     /// **physique**, et la faire traduire serait une récursion sans fond.
@@ -1315,16 +1473,10 @@ impl Body {
         SCRATCH_SLOT + index
     }
 
-    /// Pousser l'adresse effective, en `i32`, prête pour un accès mémoire.
-    fn address(&mut self, address: &Address) -> &mut Self {
-        self.wide_address(address);
-        self.guest()
-    }
-
-    /// **La même adresse, laissée en `i64`.** La chaîne de bits en a besoin
-    /// entière : elle lui ajoute un déplacement de mot **signé**, calculé à
-    /// l'exécution, et tronquer avant cette addition la ferait déborder dans
-    /// les trente-deux bits bas.
+    /// **L'adresse effective, en `i64`**, telle que `peek` et `poke` la
+    /// prennent. La chaîne de bits en a besoin entière aussi : elle lui ajoute
+    /// un déplacement de mot **signé**, calculé à l'exécution, et tronquer
+    /// avant cette addition la ferait déborder dans les trente-deux bits bas.
     fn wide_address(&mut self, address: &Address) -> &mut Self {
         self.constant(address.displacement as u64);
         // **La base du segment, lue à l'exécution.** Elle ne peut pas être
@@ -1349,49 +1501,24 @@ impl Body {
     /// globale de travail. La chaîne de bits ne peut pas passer par `Address` :
     /// son adresse dépend d'un registre lu à l'exécution.
     fn load_at(&mut self, slot: usize, width: Width) -> &mut Self {
-        self.load(slot).guest();
-        self.op(match width {
-            Width::Byte => code::I64_LOAD8_U,
-            Width::Word => code::I64_LOAD16_U,
-            Width::Dword => code::I64_LOAD32_U,
-            Width::Qword => code::I64_LOAD,
-        });
-        self.bytes.push(0);
-        self.bytes.push(0);
-        self
+        self.load(slot).peek(width)
     }
 
     /// Et l'écriture qui lui répond.
     fn store_at(&mut self, slot: usize, width: Width, value: impl FnOnce(&mut Body)) -> &mut Self {
-        self.load(slot).guest();
-        value(self);
-        self.op(match width {
-            Width::Byte => code::I64_STORE8,
-            Width::Word => code::I64_STORE16,
-            Width::Dword => code::I64_STORE32,
-            Width::Qword => code::I64_STORE,
-        });
-        self.bytes.push(0);
-        self.bytes.push(0);
-        self
+        self.poke(
+            width,
+            |b| {
+                b.load(slot);
+            },
+            value,
+        )
     }
 
     /// Lire la mémoire invitée à cette adresse, à cette largeur, **étendue par
     /// zéro**. L'extension de signe, quand `movsx` la demande, se fait après.
     fn load_memory(&mut self, address: &Address, width: Width) -> &mut Self {
-        self.address(address);
-        self.op(match width {
-            Width::Byte => code::I64_LOAD8_U,
-            Width::Word => code::I64_LOAD16_U,
-            Width::Dword => code::I64_LOAD32_U,
-            Width::Qword => code::I64_LOAD,
-        });
-        // Alignement zéro : le module n'exige rien, et un invité aligne ce
-        // qu'il veut. Prétendre un alignement que l'invité ne tient pas ferait
-        // refuser le module par le moteur.
-        self.bytes.push(0);
-        self.bytes.push(0);
-        self
+        self.wide_address(address).peek(width)
     }
 
     /// Écrire la mémoire invitée. **L'adresse d'abord, la valeur ensuite** —
@@ -1403,17 +1530,13 @@ impl Body {
         width: Width,
         value: impl FnOnce(&mut Body),
     ) -> &mut Self {
-        self.address(address);
-        value(self);
-        self.op(match width {
-            Width::Byte => code::I64_STORE8,
-            Width::Word => code::I64_STORE16,
-            Width::Dword => code::I64_STORE32,
-            Width::Qword => code::I64_STORE,
-        });
-        self.bytes.push(0);
-        self.bytes.push(0);
-        self
+        self.poke(
+            width,
+            |b| {
+                b.wide_address(address);
+            },
+            value,
+        )
     }
 }
 
@@ -1686,7 +1809,7 @@ impl Module {
         let mask = shape.confine.map(|pages| pages * 65536 - 1);
         // **La pagination n'existe que sous confinement** : c'est lui qui ouvre
         // la place au-dessus de la RAM déclarée, où vivent la correspondance et
-        // le tampon. Sans masque, `guest()` garde sa forme d'avant.
+        // le tampon. Sans masque, `peek` et `poke` gardent leur forme d'avant.
         let (blocks, _) = Self::discover(bytes, entry)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
@@ -2265,11 +2388,7 @@ impl Module {
                 // l'exécution. Le module la cherche parmi ses propres blocs, et
                 // rend la main si elle n'en est pas un.
                 body.store(RIP_SLOT, |b| {
-                    b.load(Self::slot(4));
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.load(Self::slot(4)).peek(Width::Qword);
                 });
                 body.store(Self::slot(4), |b| {
                     // **Huit octets de retour, plus ce que `ret imm16` jette.**
@@ -2305,12 +2424,20 @@ impl Module {
                 // passage d'un anneau à l'autre — n'est pas dans ce chemin :
                 // `startup_64` s'en sert pour recharger CS avec le même
                 // privilège.
+                //
+                // **Jeté, mais lu.** Le mot du sélecteur fait partie du cadre :
+                // s'il est dans une page absente — ou à cheval dessus — le
+                // silicium faute, et le noyau pose la page. Ne pas le lire
+                // laissait passer un `lretq` que la machine imitée arrête. La
+                // cible attend dans une case de travail que les deux mots
+                // soient lus : une faute sur le second laisse RSP en place.
+                body.store(Body::scratch(0), |b| {
+                    b.load(Self::slot(4)).peek(Width::Qword);
+                });
+                body.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                body.peek(Width::Qword).op(code::DROP);
                 body.store(RIP_SLOT, |b| {
-                    b.load(Self::slot(4));
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.load(Body::scratch(0));
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(16).op(code::I64_ADD);
@@ -2466,17 +2593,14 @@ impl Module {
                 // écritures.
                 //
                 // RIP n'a plus à être posé ici avant la première lecture : la
-                // sortie de faute de `guest()` le pose sur l'`iretq`, comme
+                // sortie de faute de `translated` le pose sur l'`iretq`, comme
                 // pour tout autre accès.
                 let word = |b: &mut Body, offset: u64| {
                     b.load(Self::slot(4));
                     if offset != 0 {
                         b.constant(offset).op(code::I64_ADD);
                     }
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.peek(Width::Qword);
                 };
                 // Dans l'ordre du cadre : RIP, CS, RFLAGS, RSP, SS.
                 for rank in 0..5 {
@@ -2681,20 +2805,27 @@ impl Module {
         // l'invité est interrompu. Un vrai noyau n'en sortait plus : 217 lignes
         // de console sans la ligne, 77 avec. Le rendre ne coûte rien : la
         // locale existe déjà et se décrémente déjà.
-        section(
-            1,
-            vec![
-                0x07, //
-                0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
-                0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
-                0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
-                0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
-                0x60, 0x01, 0x7e, 0x01, 0x7f, // 4 : (i64) -> i32, la marche
-                0x60, 0x01, 0x7f, 0x01, 0x7e, // 5 : (i32) -> i64, les débuts
-                0x60, 0x01, 0x7e, 0x01, 0x7e, // 6 : (i64) -> i64, `run`
-            ],
-            &mut module,
-        );
+        let mut types = vec![
+            0x07, //
+            0x60, 0x00, 0x01, 0x7f, // 0 : () -> i32
+            0x60, 0x01, 0x7e, 0x00, // 1 : (i64) -> ()
+            0x60, 0x03, 0x7e, 0x7e, 0x7e, 0x00, // 2 : (i64, i64, i64) -> ()
+            0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e, // 3 : (i64, i64) -> i64
+            0x60, 0x01, 0x7e, 0x01, 0x7f, // 4 : (i64) -> i32, la marche
+            0x60, 0x01, 0x7f, 0x01, 0x7e, // 5 : (i32) -> i64, les débuts
+            0x60, 0x01, 0x7e, 0x01, 0x7e, // 6 : (i64) -> i64, `run`
+        ];
+        // **Les deux accès lents n'existent que sous pagination**, et leurs
+        // types avec eux : la forme libre reste, à l'octet près, celle que le
+        // corpus matériel juge depuis le début.
+        if paging {
+            types[0] = 0x09;
+            types.extend_from_slice(&[
+                0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7e, // 7 : (i64, i32) -> i64, lire
+                0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x00, // 8 : (i64, i64, i32) -> (), écrire
+            ]);
+        }
+        section(1, types, &mut module);
 
         // **La mémoire et les registres viennent de l'hôte.**
         //
@@ -2774,8 +2905,11 @@ impl Module {
         }
         section(2, imports, &mut module);
 
+        // Un module paginé porte trois fonctions de plus : la marche, et les
+        // deux accès lents.
+        let extra = if paging { 3 } else { 0 };
         let mut functions = Vec::new();
-        unsigned(count as u64 + 2 + u64::from(paging), &mut functions);
+        unsigned(count as u64 + 2 + extra, &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
         // ensuite la marche quand il y en a une, du type quatre ; puis la
         // boucle de répartition, du type **six** — `(i64) -> i64`, le budget
@@ -2795,6 +2929,13 @@ impl Module {
         // pour la même raison que la marche est après les blocs : ce qui est
         // ajouté en queue ne décale l'indice de personne.
         functions.push(0x05);
+        // **Puis les deux accès lents**, des types sept et huit, pour la même
+        // raison encore : `FAR_LOAD` et `FAR_STORE` les comptent depuis la
+        // marche, et ni `run` ni l'accesseur ne bougent.
+        if paging {
+            functions.push(0x07);
+            functions.push(0x08);
+        }
         section(3, functions, &mut module);
 
         // Table : les blocs, pour le `call_indirect` de la boucle.
@@ -2876,7 +3017,7 @@ impl Module {
         section(9, elements, &mut module);
 
         let mut code_section = Vec::new();
-        unsigned(count as u64 + 2 + u64::from(paging), &mut code_section);
+        unsigned(count as u64 + 2 + extra, &mut code_section);
         for body in &bodies {
             let mut entry = vec![0x00];
             entry.extend_from_slice(body);
@@ -2987,6 +3128,13 @@ impl Module {
         reader.push(code::END);
         unsigned(reader.len() as u64, &mut code_section);
         code_section.extend_from_slice(&reader);
+        if paging {
+            let walk = HOST_IMPORTS + count as u32;
+            for entry in [Self::far_load_body(walk), Self::far_store_body(walk)] {
+                unsigned(entry.len() as u64, &mut code_section);
+                code_section.extend_from_slice(&entry);
+            }
+        }
         section(10, code_section, &mut module);
 
         module
@@ -3139,6 +3287,216 @@ impl Module {
         body
     }
 
+    /// **La lecture lente : tout ce que le tampon n'a pas su servir en
+    /// ligne.** Elle prend l'adresse invitée et la largeur en octets, et rend
+    /// la valeur, étendue par zéro. Deux cas y arrivent — voir
+    /// `Body::translated` :
+    ///
+    /// - **le tampon ne tenait pas la page.** La marche la pose, et la
+    ///   lecture se fait à la largeur demandée, d'un coup ;
+    /// - **l'accès franchit une frontière de page.** Les **deux** pages sont
+    ///   marchées, puis la valeur est assemblée octet par octet, chacun pris
+    ///   dans la trame de sa page. Deux pages voisines en virtuel ne sont
+    ///   voisines en physique que par accident : dans le direct map de Linux
+    ///   elles le sont, dans `vmalloc` et dans tout l'espace utilisateur elles
+    ///   ne le sont pas. Lire huit octets contigus depuis la première trame
+    ///   prenait la fin de la valeur chez un voisin physique — le défaut que
+    ///   le cœur Swift a porté (`Sources/WisqVM/X86PageStraddle.swift`) et que
+    ///   l'interprète Rust a évité (`x86_paging.rs`).
+    ///
+    /// **Une page qui manque arrête tout avant la première lecture.** La
+    /// marche a posé le témoin et CR2 — l'adresse elle-même si c'est la
+    /// première page, le premier octet de la seconde sinon, ce qui est ce que
+    /// le silicium rend (mesuré : `mov`, `push`, `pop` à cheval sur une page
+    /// inaccessible) — et la fonction rend zéro. L'appelant voit le témoin et
+    /// rend la main.
+    ///
+    /// **Une fonction du module, pas du code en ligne** : ce chemin est rare
+    /// et long, et le poser à chaque accès coûterait des centaines d'octets
+    /// par instruction. Un accès à cheval paie deux marches entières, sans
+    /// consulter le tampon — non mesuré, et rare par construction.
+    fn far_load_body(walk: u32) -> Vec<u8> {
+        // Paramètres : 0, l'adresse ; 1, la largeur. Locales : le décalage
+        // dans la page et les deux trames, puis la valeur.
+        let mut body = vec![
+            0x02, // deux groupes
+            0x03, 0x7f, // 2, 3, 4 : i32
+            0x01, 0x7e, // 5 : i64
+        ];
+        const WIDTH: u32 = 1;
+        const OFFSET: u32 = 2;
+        const LOW: u32 = 3;
+        const HIGH: u32 = 4;
+        const VALUE: u32 = 5;
+        let mut b = Body::default();
+
+        Self::far_first_page(&mut b, walk, OFFSET, LOW, |b| {
+            b.constant(0);
+        });
+        // L'accès tient dans sa page : une lecture, à sa largeur.
+        Self::far_fits(&mut b, OFFSET, WIDTH);
+        b.op(code::IF).op(code::VOID);
+        for (bytes, load) in [
+            (8, code::I64_LOAD),
+            (4, code::I64_LOAD32_U),
+            (2, code::I64_LOAD16_U),
+        ] {
+            b.local_get(WIDTH).constant32(bytes).op(code::I32_EQ);
+            b.op(code::IF).op(code::VOID);
+            b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+            b.access(load, 0).op(code::RETURN);
+            b.op(code::END);
+        }
+        b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+        b.access(code::I64_LOAD8_U, 0).op(code::RETURN);
+        b.op(code::END);
+
+        Self::far_second_page(&mut b, walk, HIGH, |b| {
+            b.constant(0);
+        });
+        // **Du dernier octet au premier** : chacun entre par le bas, après que
+        // les précédents sont montés de huit bits. La largeur sert de compte.
+        b.op(code::LOOP).op(code::VOID);
+        b.local_get(WIDTH)
+            .constant32(1)
+            .op(code::I32_SUB)
+            .local_set(WIDTH);
+        b.local_get(VALUE).constant(8).op(code::I64_SHL);
+        Self::far_byte_address(&mut b, OFFSET, LOW, HIGH, WIDTH);
+        b.access(code::I64_LOAD8_U, 0);
+        b.op(code::I64_OR).local_set(VALUE);
+        b.local_get(WIDTH).op(code::BRANCH_IF);
+        unsigned(0, &mut b.bytes);
+        b.op(code::END);
+        b.local_get(VALUE);
+        b.op(code::END);
+
+        body.extend(b.bytes);
+        body
+    }
+
+    /// **L'écriture lente**, le pendant de `far_load_body` : l'adresse, la
+    /// valeur, la largeur.
+    ///
+    /// **Rien n'est écrit tant qu'une page peut manquer.** Les deux marches
+    /// passent avant le premier octet : une écriture à cheval sur une page
+    /// absente ne laisse pas sa première moitié dans la page présente. Le
+    /// silicium non plus — mesuré.
+    fn far_store_body(walk: u32) -> Vec<u8> {
+        // Paramètres : 0, l'adresse ; 1, la valeur ; 2, la largeur. Locales :
+        // le décalage dans la page, les deux trames, et le rang de l'octet.
+        let mut body = vec![
+            0x01, // un groupe
+            0x04, 0x7f, // 3, 4, 5, 6 : i32
+        ];
+        const VALUE: u32 = 1;
+        const WIDTH: u32 = 2;
+        const OFFSET: u32 = 3;
+        const LOW: u32 = 4;
+        const HIGH: u32 = 5;
+        const RANK: u32 = 6;
+        let mut b = Body::default();
+
+        Self::far_first_page(&mut b, walk, OFFSET, LOW, |_| {});
+        // L'accès tient dans sa page : une écriture, à sa largeur.
+        Self::far_fits(&mut b, OFFSET, WIDTH);
+        b.op(code::IF).op(code::VOID);
+        for (bytes, store) in [
+            (8, code::I64_STORE),
+            (4, code::I64_STORE32),
+            (2, code::I64_STORE16),
+        ] {
+            b.local_get(WIDTH).constant32(bytes).op(code::I32_EQ);
+            b.op(code::IF).op(code::VOID);
+            b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+            b.local_get(VALUE).access(store, 0).op(code::RETURN);
+            b.op(code::END);
+        }
+        b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+        b.local_get(VALUE)
+            .access(code::I64_STORE8, 0)
+            .op(code::RETURN);
+        b.op(code::END);
+
+        Self::far_second_page(&mut b, walk, HIGH, |_| {});
+        // **Du premier octet au dernier** : l'octet bas de la valeur part, et
+        // la valeur descend de huit bits.
+        b.op(code::LOOP).op(code::VOID);
+        Self::far_byte_address(&mut b, OFFSET, LOW, HIGH, RANK);
+        b.local_get(VALUE).access(code::I64_STORE8, 0);
+        b.local_get(VALUE)
+            .constant(8)
+            .op(code::I64_SHR_U)
+            .local_set(VALUE);
+        b.local_get(RANK)
+            .constant32(1)
+            .op(code::I32_ADD)
+            .local_tee(RANK);
+        b.local_get(WIDTH).op(code::I32_LT_U).op(code::BRANCH_IF);
+        unsigned(0, &mut b.bytes);
+        b.op(code::END);
+        b.op(code::END);
+
+        body.extend(b.bytes);
+        body
+    }
+
+    /// Le début commun des deux accès lents : le décalage dans la page, la
+    /// trame de la page du premier octet, et la sortie si elle manque —
+    /// `nothing` pousse ce que la fonction rend alors.
+    fn far_first_page(
+        b: &mut Body,
+        walk: u32,
+        offset: u32,
+        low: u32,
+        nothing: impl FnOnce(&mut Body),
+    ) {
+        b.local_get(0).op(code::I32_WRAP_I64).constant32(0xFFF);
+        b.op(code::I32_AND).local_set(offset);
+        b.local_get(0).call(walk).local_set(low);
+        b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
+        b.op(code::IF).op(code::VOID);
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+    }
+
+    /// Vrai quand l'accès tient dans la page de son premier octet.
+    fn far_fits(b: &mut Body, offset: u32, width: u32) {
+        b.local_get(offset).local_get(width).op(code::I32_ADD);
+        b.constant32(0x1000).op(code::I32_LE_U);
+    }
+
+    /// **La page d'après, marchée à son tour** — son premier octet est
+    /// l'adresse que CR2 portera si elle manque — et la sortie dans ce cas.
+    fn far_second_page(b: &mut Body, walk: u32, high: u32, nothing: impl FnOnce(&mut Body)) {
+        b.local_get(0)
+            .constant(0xFFF)
+            .op(code::I64_OR)
+            .constant(1)
+            .op(code::I64_ADD);
+        b.call(walk).local_set(high);
+        b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
+        b.op(code::IF).op(code::VOID);
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+    }
+
+    /// **L'adresse, en mémoire linéaire, de l'octet de rang `rank` d'un accès
+    /// à cheval** : dans la première trame tant que le décalage n'a pas
+    /// atteint la fin de la page, dans la seconde ensuite, repris à zéro.
+    fn far_byte_address(b: &mut Body, offset: u32, low: u32, high: u32, rank: u32) {
+        b.local_get(low).local_get(offset).op(code::I32_ADD);
+        b.local_get(rank).op(code::I32_ADD);
+        b.local_get(high).local_get(offset).op(code::I32_ADD);
+        b.local_get(rank).op(code::I32_ADD);
+        b.constant32(0x1000).op(code::I32_SUB);
+        b.local_get(offset).local_get(rank).op(code::I32_ADD);
+        b.constant32(0x1000).op(code::I32_LT_U);
+        b.op(code::SELECT);
+    }
+
     /// L'emplacement d'un registre de contrôle. Les numéros ne sont pas
     /// contigus — le décodeur n'accepte que 0, 2, 3, 4 et 8 — donc la
     /// correspondance est écrite plutôt que calculée.
@@ -3282,7 +3640,7 @@ impl Module {
         // rende la main sur elle. Le critère laissait passer celles qui
         // atteignent la mémoire sans opérande — les chaînes, la pile, `call`
         // et `ret` — et leur faute nommait une instruction d'avant. C'est la
-        // sortie de faute de `Body::guest` qui le pose maintenant, depuis
+        // sortie de faute de `Body::translated` qui le pose maintenant, depuis
         // `body.here` : un seul endroit, par lequel tout accès passe.
         debug_assert_eq!(
             body.here, address,
@@ -3639,11 +3997,24 @@ impl Module {
             let mut high = low;
             high.displacement = high.displacement.wrapping_add(2);
             let (limit, base) = Self::table_slots(interrupts);
-            body.store(limit, |b| {
+            // **Les deux lectures d'abord, les deux registres ensuite.** La
+            // limite était rangée dès qu'elle était lue : quand la lecture de
+            // la base fautait — la table à cheval sur une page absente — la
+            // faute était délivrée avec la **nouvelle** limite et l'ancienne
+            // base. Pour un `lidt`, c'est avec cette IDT-là que l'hôte allait
+            // chercher la porte de la faute. La même règle que pour `iretq` :
+            // tout lire, puis écrire.
+            body.store(Body::scratch(0), |b| {
                 b.load_memory(&low, Width::Word);
             });
-            body.store(base, |b| {
+            body.store(Body::scratch(1), |b| {
                 b.load_memory(&high, Width::Qword);
+            });
+            body.store(limit, |b| {
+                b.load(Body::scratch(0));
+            });
+            body.store(base, |b| {
+                b.load(Body::scratch(1));
             });
             return Some(());
         }
@@ -3652,6 +4023,19 @@ impl Module {
             let mut high = low;
             high.displacement = high.displacement.wrapping_add(2);
             let (limit, base) = Self::table_slots(interrupts);
+            // **Les dix octets sont atteints avant qu'un seul ne soit écrit.**
+            // Deux écritures l'une après l'autre laissaient, quand la seconde
+            // fautait, la limite déjà en mémoire : une instruction fautive
+            // qui a écrit. Les deux lectures ci-dessous ne servent qu'à faire
+            // traduire les pages — et à fauter si l'une manque, dans l'ordre
+            // des adresses ; ce qu'elles lisent est jeté. Après elles, aucune
+            // des deux écritures ne peut plus fauter.
+            //
+            // (Ce que le silicium laisse en mémoire dans ce cas ne se mesure
+            // pas d'un programme : en anneau 3, Linux émule `sgdt` et `sidt`.
+            // La règle tenue ici est celle de toutes les autres écritures.)
+            body.load_memory(&low, Width::Word).op(code::DROP);
+            body.load_memory(&high, Width::Qword).op(code::DROP);
             body.store_memory(&low, Width::Word, |b| {
                 b.load(limit);
             });
@@ -3933,14 +4317,27 @@ impl Module {
         // été justes aussi, et auraient coûté soixante-quatre copies du
         // parcours de tables — plusieurs kibioctets de module par `fxsave`.
         //
-        // **Une faute au milieu de l'aire laisse une aire à moitié écrite, et
-        // ça se rejoue.** `fxsave` ne modifie rien du coprocesseur : réexécutée
-        // depuis son début, elle réécrit exactement les mêmes octets. C'est
-        // l'unique instruction de cet émetteur dont le contrôle de faute ne
-        // peut pas tenir la promesse « elle n'a rien fait », et l'idempotence
-        // est ce qui rend ça sans conséquence.
+        // **L'aire entière est atteinte avant qu'un octet ne soit écrit.** Ce
+        // paragraphe disait l'inverse : une faute au milieu laissait une aire
+        // à moitié écrite, « l'unique instruction de cet émetteur dont le
+        // contrôle de faute ne peut pas tenir la promesse », rattrapée par
+        // l'idempotence. Elle n'était pas l'unique — `sgdt`, `sidt`, `lgdt`
+        // et `lidt` faisaient pareil — et le silicium ne fait pas ça.
+        //
+        // Mesuré le 14 novembre sur la machine de développement, l'aire à
+        // cheval sur une page inaccessible, un enfant par décalage : `fxsave`
+        // exige les **512** octets (elle faute encore avec 496 en page), CR2
+        // nomme le **dernier** octet de l'aire — même quand le premier manque
+        // aussi —, et la page présente est intacte. D'où les deux sondes : le
+        // dernier octet, puis le premier. Une aire de 512 octets touche deux
+        // pages au plus ; après elles, la boucle ne peut plus fauter.
         if step.op == Op::FxSave {
             let area = *step.memory.as_ref()?;
+            body.wide_address(&area)
+                .constant(FPU_AREA_BYTES - 1)
+                .op(code::I64_ADD);
+            body.peek(Width::Byte).op(code::DROP);
+            body.wide_address(&area).peek(Width::Byte).op(code::DROP);
             // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
@@ -4004,7 +4401,8 @@ impl Module {
         // laisserait, sur une aire à cheval sur une page absente, un
         // coprocesseur à moitié restauré qu'aucun rejeu ne rattraperait. Dans
         // cet ordre, **ou tout est lisible et l'état change, ou rien ne
-        // change** — ce qui est plus fort que ce que `fxsave` peut promettre.
+        // change** — ce que `fxsave` tient aussi, depuis qu'elle sonde son
+        // aire avant de l'écrire.
         if step.op == Op::FxRestore {
             let area = *step.memory.as_ref()?;
             // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
@@ -5931,10 +6329,17 @@ impl Module {
     /// l'écriture passent avant que RSI, RDI ou RCX ne bougent : le tour qui
     /// faute n'a rien fait, et les tours d'avant sont faits et comptés. RCX,
     /// RSI et RDI disent donc exactement ce qui reste, comme sur le silicium,
-    /// et RIP — posé par la sortie de faute de `Body::guest` — nomme le `rep`
-    /// lui-même : rejoué, il finit la copie au lieu de la recommencer. C'est
-    /// ce que fait toute copie à cheval sur une page que le noyau pose à la
-    /// demande, et la première de Linux 6.12 est `copy_bootdata`.
+    /// et RIP — posé par la sortie de faute de `Body::translated` — nomme le
+    /// `rep` lui-même : rejoué, il finit la copie au lieu de la recommencer.
+    /// C'est ce que fait toute copie à cheval sur une page que le noyau pose
+    /// à la demande, et la première de Linux 6.12 est `copy_bootdata`.
+    ///
+    /// **« Le tour qui faute n'a rien fait » vaut aussi pour un élément qui
+    /// franchit une frontière de page.** Cette phrase était fausse dans ce
+    /// cas, mesuré : l'élément était lu à moitié dans la trame voisine, le
+    /// tour passait, et la faute tombait un élément trop tard, avec CR2
+    /// quatre octets trop loin. `peek` et `poke` traduisent les deux pages
+    /// avant de lire ou d'écrire le premier octet.
     fn string(step: &Decoded, body: &mut Body) -> Option<()> {
         let repeat = matches!(
             step.op,
@@ -5971,15 +6376,7 @@ impl Module {
         let moves = matches!(step.op, Op::StringMove { .. });
         body.store(Body::scratch(1), |b| {
             if moves {
-                b.load(Self::slot(6)).guest();
-                b.op(match width {
-                    Width::Byte => code::I64_LOAD8_U,
-                    Width::Word => code::I64_LOAD16_U,
-                    Width::Dword => code::I64_LOAD32_U,
-                    Width::Qword => code::I64_LOAD,
-                });
-                b.bytes.push(0);
-                b.bytes.push(0);
+                b.load(Self::slot(6)).peek(width);
             } else {
                 b.load(Self::slot(0))
                     .constant(width.mask())
@@ -6092,11 +6489,7 @@ impl Module {
             // relecture. Ce que le masque écarte, le processeur l'écarte aussi.
             Op::PopFlags => {
                 body.store(RFLAGS_SLOT, |b| {
-                    b.load(Self::slot(4));
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.load(Self::slot(4)).peek(Width::Qword);
                     b.constant(WRITABLE_FLAGS).op(code::I64_AND);
                     b.constant(ALWAYS_ONE).op(code::I64_OR);
                 });
@@ -6130,11 +6523,7 @@ impl Module {
             // elle écrase la remontée, exactement comme le silicium.
             Op::Pop => {
                 body.store(Body::scratch(0), |b| {
-                    b.load(Self::slot(4));
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.load(Self::slot(4)).peek(Width::Qword);
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
@@ -6154,11 +6543,7 @@ impl Module {
                 // s'écrivait sous RBP, et le RSP qu'il sauvait n'était plus
                 // celui d'avant le `leave`.
                 body.store(Body::scratch(0), |b| {
-                    b.load(Self::slot(5));
-                    b.guest();
-                    b.op(code::I64_LOAD);
-                    b.bytes.push(0);
-                    b.bytes.push(0);
+                    b.load(Self::slot(5)).peek(Width::Qword);
                 });
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(5)).constant(8).op(code::I64_ADD);
@@ -6184,14 +6569,13 @@ impl Module {
     /// La valeur est poussée **après** l'adresse et **avant** que RSP ne
     /// bouge : `push %rsp` empile donc bien le RSP d'avant.
     fn push(body: &mut Body, value: impl FnOnce(&mut Body)) {
-        body.load(Self::slot(4))
-            .constant(8)
-            .op(code::I64_SUB)
-            .guest();
-        value(body);
-        body.op(code::I64_STORE);
-        body.bytes.push(0);
-        body.bytes.push(0);
+        body.poke(
+            Width::Qword,
+            |b| {
+                b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+            },
+            value,
+        );
         body.store(Self::slot(4), |b| {
             b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
         });
