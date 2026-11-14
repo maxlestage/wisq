@@ -8,6 +8,75 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — L'émetteur de la page survit à une trappe, et sa coupe est jugée
+
+**Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé deux
+défauts réels.
+
+- **Une seule trappe tuait l'émetteur de la page pour toujours.** Le module
+  est construit avec `panic = "abort"` : dans la page, un panic ou une
+  allocation qui échoue est une trappe `unreachable`, et rien n'est déroulé.
+  Le verrou de la porte restait pris, et chaque appel suivant trappait à son
+  tour. Reproduit sous Bun : une fenêtre impossible à allouer, puis plus
+  aucune traduction, même de `mov $1,%eax ; ret`. Dans `host.js`, chaque
+  région suivante serait devenue « traduction en panne ». Le commentaire de
+  `crates/wisq-page/src/lib.rs` disait le contraire.
+- **La branche « coupe » du traducteur n'était jugée par rien.** Rendre
+  `null` au lieu de `"encore"` dans `web/page-emitter.js` laissait tous les
+  tests verts. C'est pourtant ce `"encore"` qui fait relire à `host.js` la
+  fenêtre à 16 Kio. Le refus, `surRefus` et `pourquoi` n'étaient pas jugés
+  non plus.
+- La branche n'était plus à jour avec `master` (#700) : cinq conflits, tous
+  sur le compte de tests et la tête du journal.
+
+**Ce qui change.**
+
+- `web/page-emitter.js` jette l'instance qui a trappé et en recrée une
+  neuve depuis le même module compilé. `resoudre` rend alors `{ trappe }`.
+  `traducteur` lève, et `host.js` nomme la panne sur cette région seulement :
+  au départ suivant, la région se redemande à une instance saine. Un
+  compteur `instances` le dit. `kernel-entry` imprime une trappe comme un
+  refus, sous le nom `Trappe(…)`.
+- Le commentaire faux de `lib.rs` est corrigé : l'empoisonnement du verrou
+  ne sert qu'aux tests natifs, où un panic se déroule.
+- `master` est fusionné (un commit de fusion, pas de réécriture). Le compte
+  de tests est refait : 3 362 après la fusion, 3 365 avec les trois tests
+  neufs.
+
+**Comment c'est vérifié.**
+
+- Trois tests neufs dans `crates/wisq-page/tests/page.rs`, sous Bun :
+  - les trois réponses du traducteur (module, `"encore"`, `null`), avec
+    `pourquoi` et `surRefus`, comparées au natif ; deux refus francs
+    d'espèces différentes (`push %es` illisible, RAM de 15 pages) ;
+  - la coupe dans la vraie boucle hôte : au bord de la RAM, `host.js` lit
+    4 octets, reçoit `"encore"`, relit, puis s'arrête sur « refusée » ; et
+    une première lecture courte (3 octets) relue à 16 384 octets, dont le
+    module fait tourner l'anneau 200 fois ;
+  - une trappe : la même fenêtre rend le même module après, `traducteur`
+    lève, et dans `host.js` la machine s'arrête sur « traduction en panne »,
+    puis repart et tourne sur l'instance neuve.
+- Sabotages vus rouges, chacun restauré et vérifié par `cmp` : `"encore"`
+  rendu comme `null` (deux tests tombent), plus de nouvelle instance après
+  une trappe, `surRefus` jamais appelé, une trappe rendue comme un refus, le
+  getter `pourquoi` qui rend toujours `null`.
+- `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
+  les débordements armés. `cargo fmt`, les trois `clippy` (dont wasm32)
+  propres. Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
+- `kernel-entry` sur l'arbre fusionné, 6.6.142 + sonde, 700 000 tours, les
+  deux traducteurs lancés en même temps : relevés identiques hors les lignes
+  du traducteur, `WISQ-USERSPACE-OK` des deux côtés, 10 390 demandes chacun.
+  Traduction : 0,119 ms par demande dans la page, 4,32 ms par processus. Le
+  temps de mur (514 s contre 551 s) ne vaut rien ici : d'autres flux
+  compilaient, la charge de la machine montait jusqu'à 10,6 pour 4 cœurs.
+
+**Ce qui reste.**
+
+- La page de l'application ne se sert toujours pas de ce traducteur.
+- Une trappe en vrai n'a jamais été vue. Le contrôle a passé 8,2 millions
+  de fenêtres aléatoires ou mutées en natif, sans un panic ; je ne l'ai pas
+  refait. Le déclencheur réaliste reste un manque de mémoire.
+
 ## 2026-11-14 — L'émetteur traduit dans la page, sans pont
 
 **Ce qui n'allait pas.** Une région de code se traduisait par un aller-retour.

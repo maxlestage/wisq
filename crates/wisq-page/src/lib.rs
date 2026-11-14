@@ -38,6 +38,15 @@
 //! tampons (l'entrée et le dernier résultat). Le `Mutex` ne sert qu'à le dire
 //! au compilateur sans `static mut` : sur `wasm32-unknown-unknown` sans fils,
 //! il ne coûte rien.
+//!
+//! **Ce qu'une trappe laisse derrière elle.** Le profil `release` du workspace
+//! a `panic = "abort"` : dans la page, un panic — ou une allocation qui
+//! échoue — est une trappe `unreachable`, et rien n'est déroulé. Le verrou
+//! reste donc pris, et chaque appel suivant de cette instance trappe à son
+//! tour (reproduit sous Bun). Ce n'est pas réparable de l'intérieur : une
+//! instance trappée a pu s'arrêter au milieu de n'importe quoi. C'est
+//! `web/page-emitter.js` qui la jette et en recrée une, et
+//! `tests/page.rs` qui le juge.
 
 use std::sync::Mutex;
 
@@ -71,8 +80,11 @@ static PORTE: Mutex<Porte> = Mutex::new(Porte {
 });
 
 fn porte() -> std::sync::MutexGuard<'static, Porte> {
-    // Un panic ne laisse ici aucun état à moitié écrit qui vaille d'être
-    // protégé : les deux tampons sont réécrits en entier à chaque appel.
+    // **L'empoisonnement ne sert qu'aux tests natifs**, où un panic se
+    // déroule et lâche le verrou : les deux tampons y sont réécrits en entier
+    // à chaque appel, donc rien d'à moitié écrit ne vaut d'être protégé. Dans
+    // la page il n'y a pas de déroulement, et pas d'empoisonnement non plus :
+    // voir « Ce qu'une trappe laisse derrière elle », plus haut.
     PORTE.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 

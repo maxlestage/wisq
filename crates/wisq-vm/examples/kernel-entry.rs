@@ -779,10 +779,12 @@ fn main() {
                 // traducteur de la page ne change pas ce qu'il fait — seulement
                 // ce qu'il coûte. Honorer `"encore"` est un autre changement, à
                 // mesurer à part ; `porte.traducteur` le fait déjà pour la page.
+                // Une trappe de l'émetteur est relevée comme un refus, sous son
+                // nom : l'instance est déjà remplacée, la suite continue.
                 format!(
                     "const r = porte.resoudre(code, address, slot, {pages});\n    \
                      const rendu = r.module !== undefined ? {{ module: r.module }} \
-                     : {{ pourquoi: r.encore ?? r.refus }};"
+                     : {{ pourquoi: r.encore ?? r.refus ?? `Trappe(${{r.trappe}})` }};"
                 ),
             )
         }
