@@ -8,6 +8,131 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le disque de la page : pont PCI et virtio-blk de forme ancienne, servi plus tard
+
+**Ce qui n'allait pas.** La carte de la page (l'i8042 et l'horloge, en
+Rust compilé en wasm32) ne connaissait ni le bus PCI ni aucun disque. Un
+noyau sous l'émetteur dans la page disait donc « PCI: System does not
+support PCI » et ne trouvait pas de `/dev/vda`. Et le disque ne peut pas
+se porter tel quel depuis le cœur Swift : `VirtioBlock.serve` lit les
+secteurs pendant l'`out` qui notifie, parce que ses octets sont à portée
+de main. Dans la page ils ne le sont pas : une ISO de 1,4 Gio ne tient pas
+à côté de 1 Gio de RAM, et Swift, qui la tient, ne répond que par message,
+donc plus tard.
+
+**Ce qui change.**
+
+- **Le pont PCI** (`crates/wisq-page/src/carte/pci.rs`), porté de
+  `X86PCIHost` : la configuration par les ports `0xCF8` et `0xCFC` à
+  `0xCFF`, le pont 440FX en 00:00.0 (`8086:1237`), le disque en 00:03.0
+  (`1AF4:1001`, classe stockage de masse, sous-système `1AF4:0002`), une
+  BAR0 de `0x40` ports mesurée, placée et ouverte par le registre de
+  commande, la ligne 5 au départ, et celle que le noyau écrit ensuite. Les
+  écritures partielles relisent et remplacent leurs octets, comme du côté
+  Swift.
+- **Le disque virtio de forme ancienne** (`carte/virtio_blk.rs`), porté de
+  `VirtioBlock` dans sa forme par ports : mêmes registres, même file de 128
+  places calculée depuis un numéro de page (`vring_init`), aucune fonction
+  annoncée, mêmes refus (chaîne mal formée, secteur au-delà du disque sans
+  arithmétique qui fait le tour, type inconnu, identifiant « wisq-disk »).
+  La file est lue et écrite dans la RAM de l'invité par le trait `Ram`.
+- **L'arrière est asynchrone.** À la notification, une lecture ou une
+  écriture **part** : la carte pose une requête (nom, sens, plage en octets,
+  et les octets d'une écriture, recopiés de la RAM au départ), et l'`out`
+  rend tout de suite. Quand l'arrière répond, la carte copie les octets dans
+  les tampons du pilote, pose l'octet de statut, écrit l'anneau des servies,
+  et c'est alors seulement que la ligne 5 monte. Les réponses peuvent
+  revenir dans le désordre. Une remise à zéro ou une file reposée ailleurs
+  oublie ce qui était parti, et les noms ne reviennent jamais : une réponse
+  en retard ne touche plus la RAM. Ce qui se juge sans les octets du disque
+  (les refus, l'identifiant) est rendu tout de suite, comme en Swift.
+- **Trois choses plus strictes que le cœur Swift**, dites dans le code : un
+  tampon qui sort de la RAM est refusé avant de partir (Swift perd l'octet
+  en silence) ; une requête de plus de 64 Mio est refusée (la page
+  n'allouera pas ce que l'invité choisit) ; pas plus de 128 requêtes dehors.
+- **La porte du module** (`carte/porte.rs`) : `carte_disque`,
+  `carte_requetes`, `carte_requete` et ses accesseurs, `carte_disque_place`,
+  `carte_disque_lu`, `carte_disque_fini`. Le module importe désormais deux
+  fonctions, `carte.ram_lire` et `carte.ram_ecrire` : la RAM de l'invité
+  est dans une autre mémoire que celle du module. `web/page-emitter.js` les
+  donne à l'émetteur sous une forme qui lève (il ne les appelle jamais).
+- **`web/carte.js`** : les options `ram` (`ramDeMemoire(memoire, octets)`,
+  la RAM linéaire de `host.js`), `disque` (un arrière : `octets`,
+  `lire(décalage, longueur)` et `ecrire(décalage, octets)` qui rendent des
+  promesses) et `surReponse` ; un `out` qui notifie confie lui-même ses
+  requêtes à l'arrière. `arriereParUrl(url, octets)` est un arrière qui lit
+  par plages dans l'URL (`?a=…&n=…`, `PUT` pour écrire), le contrat que le
+  magasin de la page devra servir, et refuse une plage tronquée.
+- `host.js`, `x86.rs`, `x86_wasm.rs`, `crates/wisq-vm` et le Swift ne sont
+  pas touchés.
+
+**Comment c'est vérifié.**
+
+- **37 tests** : les 12 de `X86PCITests` portés (les trois « par les
+  instructions » passent par `port_ecrire`/`port_lire` avec la largeur de
+  l'instruction, faute de processeur ici) ; les 17 de `VirtioBlockTests`
+  portés à la forme ancienne, la file bâtie en mémoire comme
+  `VirtioQueue.swift` (les quatre qui jugent le transport MMIO sont portés
+  vers ce que la forme ancienne présente à leur place, et le disent dans
+  leur nom), chacun vérifiant que rien n'est rendu avant la réponse ; 6 sur
+  ce que l'attente ajoute (le désordre, une réponse fausse, ce qui ne part
+  pas, la file reposée, les noms jamais réemployés, la borne de 128) ; un
+  sur les exports ; et un sous Bun.
+- **Le test Bun** : un fichier creux de 1 503 238 144 octets (moins d'un
+  mébioctet sur le disque), servi par `Bun.serve` en lisant
+  `Bun.file(…).slice(a, a + n)`. Le noyau est joué par les ports :
+  énumération, BAR mesurée (`0xffffffc1`) et placée, ligne 5, capacité
+  `0x2ccccc` secteurs, poignée de main, file à la page 1. La notification
+  rend tout de suite ; l'arrière retenu par une porte fermée, rien n'est
+  rendu vingt millisecondes plus tard ; la porte ouverte, **une seule
+  plage** est lue (4 096 octets à 1 503 234 048), la marque arrive dans la
+  RAM, la ligne 5 monte au 8259 maître et retombe à l'acquittement. Une
+  écriture change le fichier au secteur 8 ; un secteur au-delà est refusé
+  sans requête.
+- **Mesure** (Bun 1.4.2, ce conteneur) : seize lectures d'un mébioctet par
+  la file, de la notification à la ligne levée, 2,40 ms par Mio, soit
+  417 Mio/s par `fetch` sur `127.0.0.1`. Ce n'est pas un chiffre de
+  téléphone.
+- **31 sabotages** d'une ligne (identifiants, emplacement vide, mesure de la
+  BAR, bord de la fenêtre, commande, octet de la ligne, écriture partielle,
+  largeur, priorité des ports fixes, ligne, réveil et tenue du disque,
+  acquittement, longueur d'une réponse, sonde de la RAM, oubli à la remise
+  à zéro et à la file reposée, noms réemployés, bornes, garde du bout du
+  disque, octets d'une écriture, sens des tampons, lecture « finie »,
+  place des octets, `servir` jamais appelé, RAM qui n'écrit pas, plage
+  tronquée acceptée, émetteur instancié avec `{}`), chacun restauré et
+  vérifié : tous font tomber au moins un test. Trois survivaient d'abord
+  (une réponse trop longue, la borne de 64 Mio masquée par la sonde de la
+  RAM, une plage tronquée) et ont fait renforcer les tests.
+- `cargo test --release -p wisq-page --lib` : 76 réussis (40 avant) ;
+  `--test carte` : 4 (3 avant). `cargo test --release` : 582 réussis, 0
+  échec ; pareil avec les assertions et les débordements armés.
+  `cargo fmt --check`, les deux `clippy`, `clippy` pour
+  `wasm32-unknown-unknown` sur `wisq-page`, `check-whitespace`,
+  `check-project-sources`, SwiftLint `--strict` : propres.
+- Compte publié : 3 442 → 3 479 (Swift 2 897 + Rust 582 ; 3 442 est le
+  compte après la fusion de master, #702). Site reconstruit, `bun test` du
+  site : 470 réussis.
+- Le module de la page passe de 282 646 à 298 011 octets (62 219 à 67 626
+  en gzip -9).
+
+**Ce qui reste.**
+
+- **Le raccord dans `host.js`**, quand le flux A l'aura libéré : créer la
+  carte avec `ram: ramDeMemoire(memory, pages × 65536)` et un arrière ;
+  donner à `env.in`/`env.out` les ports que ses puces ne prennent pas ;
+  recopier `lignes()` dans les 8259 à chaque tour ; compter `reveil()` dans
+  `wakeable`. **Et un `hlt` qui attend le disque doit rendre la main** :
+  aujourd'hui la boucle saute dans le temps sans céder le fil, et une
+  promesse de l'arrière ne se résout jamais pendant ce temps-là.
+- Un octet écrit dans la RAM par le disque ne retire pas les régions déjà
+  traduites qui le couvrent (la boucle n'en retire aucune, aujourd'hui).
+- Le magasin de la page (P7) : un `WKURLSchemeHandler` qui sert
+  `wisq://disque/N?a=…&n=…` depuis `DiskStore`, et un cache de blocs côté
+  page pour ne pas payer un message par requête.
+- Le second disque, la carte réseau, l'écran, la tablette, et l'instantané
+  de la carte.
+
 ## 2026-11-14 — La carte de la page ne laisse plus de touche enfoncée, et ses trous de tests sont bouchés
 
 **Ce qui n'allait pas.** Le contrôle de la tranche « la carte de la page »
