@@ -8,6 +8,79 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — L'émetteur traduit dans la page, sans pont
+
+**Ce qui n'allait pas.** Une région de code se traduisait par un aller-retour.
+Dans l'application, la page envoie la fenêtre à Swift, Swift appelle
+l'émetteur Rust, puis renvoie le module en source JavaScript : 5,35 à
+8,68 ms par région relevés en CI sur un iPhone simulé. Sous Bun,
+`kernel-entry` payait l'équivalent : un processus `x86-translate` lancé par
+région. Presque tout ce temps est du transport, pas de la traduction.
+
+**Ce qui change.**
+
+- `crates/wisq-vm/src/lib.rs` garde `ffi`, `store`, `machine` et `virtio`
+  hors de la cible `wasm32` (rien ne change en natif). Le crate se compile
+  alors en WebAssembly sans une ligne de l'émetteur touchée.
+- Un crate neuf, `crates/wisq-page`, compile l'émetteur en un module
+  WebAssembly de quatre exports : `allouer`, `emettre`, `dernier`,
+  `taille`. Après un refus, `dernier` donne la raison en texte, la même que
+  celle qu'`x86-translate` écrit.
+- `scripts/build-page-emitter.sh` le construit dans `target/page`.
+  Le job « Rust » de la CI installe la cible `wasm32-unknown-unknown`, comme
+  la porte Rust de `release.yml`, qui reçoit aussi Bun.
+- `web/page-emitter.js` charge ce module et rend, pour une fenêtre, le même
+  module que `Module::resolving_or_why`. `traducteur(pages)` est exactement
+  la fonction `translate` que `machine()` de `web/host.js` attend. Aucune
+  ligne de `host.js` ne change.
+- `kernel-entry` s'en sert par défaut. `WISQ_TRADUCTEUR=processus` reprend la
+  forme d'avant.
+
+**Comment c'est vérifié.**
+
+- `crates/wisq-page/tests/page.rs`, sous Bun, sur 1 845 fenêtres tirées du
+  corpus d'instructions du dépôt et placées aux adresses du noyau : 888 modules,
+  163 coupes et 794 refus, tous identiques au natif, au même octet et avec la
+  même raison. Avec le vrai 6.6.142 (`WISQ_PAGE_NOYAU`), **4 000 fenêtres
+  sur 4 000 sont identiques**, et `x86-translate` rend les mêmes octets
+  (0 divergence).
+- Un second test fait tourner `host.js` tel quel avec ce seul traducteur :
+  trois régions découvertes et traduites dans le moteur, puis 200 tours sans
+  rien retraduire.
+- Quatre tests natifs jugent la porte elle-même. Sept tests en tout ;
+  sabotages vus rouges : adresse passée par `Number`, coupe classée en refus,
+  emplacement perdu, code JavaScript faux, `store` laissé en wasm32.
+
+**Les chiffres** (ce conteneur, Bun 1.4.2, rustc 1.97.0) :
+
+| | porte wasm | un processus par région |
+| --- | ---: | ---: |
+| 4 000 entrées de 6.6.142 | 0,147 ms par région | 1,887 ms |
+| démarrage 6.6.142 + sonde, 10 390 régions, deux passages | 1 347 et 1 347 ms en tout (0,130 ms) | 22 596 et 19 493 ms (2,18 et 1,88 ms) |
+| temps de mur de ce démarrage, deux passages | **77,9 s et 77,7 s** | 99,8 s et 96,2 s (108,0 s avec le code d'avant) |
+
+Les relevés des cinq démarrages sont **identiques au caractère près**, hors
+les deux lignes qui nomment le traducteur et son coût : même
+journal série jusqu'à `WISQ-USERSPACE-OK`, mêmes registres, même arrêt.
+Le module pèse 265 245 octets (57 277 en gzip -9), et sa première
+construction prend 6,4 s.
+
+**Le profil `release`, pas celui du site.** Le profil `wasm-release`
+(optimisé pour la taille) donne un module de 97 821 octets, mais plus lent :
+0,113 à 0,155 ms par région contre 0,100 à 0,113 ms en `release`, sur trois
+passages de 4 000 entrées. Ce module est chargé une fois et sert à chaque
+région : c'est sa vitesse qui compte.
+
+**Ce qui reste.**
+
+- La page de l'application (`desktop.rs`, `LocalDesktop`) ne l'utilise pas
+  encore. Il faut lui livrer le module et le passer en `translate`, en
+  gardant le pont en repli ; seul « App iOS » peut en juger.
+- `kernel-entry` refuse toujours une coupe au lieu de redemander une fenêtre
+  plus large (`"encore"`), avec l'un comme avec l'autre traducteur. Changer
+  cela est une autre mesure.
+- Rien n'est encore mesuré sur un vrai iPhone.
+
 ## 2026-11-04 — Un bureau qui revient après une sauvegarde
 
 L'application sauve la machine quand on quitte l'écran et la reprend au
