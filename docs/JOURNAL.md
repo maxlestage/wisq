@@ -8,6 +8,58 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Sous l'émetteur, deux gardes du chemin lent sont enfin tenues par un test
+
+Le contrôle de l'entrée ci-dessous a trouvé sa sémantique juste, mais deux
+gardes du nouveau chemin lent (`far_load_body`, `far_store_body`) qu'aucun
+test ne tenait : on pouvait les casser sans qu'un seul des 136 tests de
+`tests/host_loop.rs` tombe.
+
+**Ce qui n'allait pas.**
+
+1. **L'écriture sur une page entièrement absente**, le tampon de traduction
+   vide. Si `far_store_body` ne regarde pas le témoin après la première
+   marche, il écrit avec la trame que la marche rend en fautant : zéro. La
+   valeur part donc au début de la mémoire physique, au décalage de
+   l'adresse. Mesuré par le contrôle : `mov %rax,(%rdi)` avec RDI = la page
+   absente + `0x10` laissait `11 22 33 … 88` à l'adresse physique `0x10`.
+   Aucun test ne regardait la trame 0.
+2. **L'accès qui finit pile sur la frontière.** `far_fits` dit « au plus
+   4096 » ; avec « strictement moins », `mov -8(%rsi),%rax` (RSI = la page
+   d'après, absente) marchait la page d'après et fautait dessus — CR2 sur une
+   page que l'instruction ne touche pas. Mesuré par le contrôle : ce mutant
+   empêche 6.12.115 de démarrer.
+
+**Ce qui change** (`crates/wisq-vm/tests/host_loop.rs` seulement ; l'émetteur
+ne bouge pas).
+
+- Le banc `MidFault` relève aussi les soixante-quatre premiers octets de la
+  mémoire physique, avant et après.
+- `a_write_to_a_missing_page_writes_nothing_anywhere` : six écritures (huit,
+  quatre, deux, un octet, un immédiat, un `add`) sur la page absente +
+  `0x10`. Faute, CR2 sur l'adresse, RIP sur l'instruction, registres
+  intacts, et rien d'écrit nulle part, trame 0 comprise.
+- `an_access_that_ends_on_the_page_boundary_stays_in_its_page` : lectures de
+  huit, quatre et deux octets, écritures des mêmes largeurs, un `pop` et un
+  `push`, chacun finissant pile sur la frontière, la page d'après absente.
+  Pas de faute, la machine va jusqu'au `ud2`, RAX = `0x403f3e3d3c3b3a39` pour
+  la lecture de huit octets, et ce qui est écrit l'est à la fin de la page.
+- Deux commentaires nommaient encore `guest()`, qui n'existe plus
+  (`web/host.js`, `tests/x86_wasm.rs`) : ils nomment `Body::peek` et
+  `Body::poke`.
+
+**Comment c'est vérifié.**
+
+- Sabotage de l'écriture sans contrôle du témoin : 1 test tombe sur 138
+  (la trame 0 porte `11 22 33 … 88` à `0x10`). Sabotage `I32_LE_U` →
+  `I32_LT_U` dans `far_fits` : 1 test tombe sur 138 (« rien ne faute » sur
+  `mov -8(%rsi),%rax`). Chacun restauré depuis une copie, `cmp` identique,
+  `git diff` de `x86_wasm.rs` vide.
+- `cargo test --release -p wisq-vm` : 400 tests, 0 échec. `cargo fmt` et
+  `cargo clippy` propres.
+
+**Ce qui reste.** Le mur est le même que ci-dessous : `movq %rbx,%xmm0`.
+
 ## 2026-11-14 — Sous l'émetteur, un accès à cheval sur deux pages va dans les deux pages, et une instruction qui faute n'a rien fait
 
 Reprise de l'entrée ci-dessous, après un second contrôle. Il y a trouvé trois

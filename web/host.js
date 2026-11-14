@@ -1194,9 +1194,9 @@ export function machine({
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
-  /// `guest()`. Allumée, c'est `walk`, qui pose le témoin et CR2 quand la page
-  /// manque : `null` alors, et c'est à l'appelant de nommer ce qui vient de
-  /// fauter pendant qu'il faisait autre chose.
+  /// `Body::peek` et `Body::poke`. Allumée, c'est `walk`, qui pose le témoin
+  /// et CR2 quand la page manque : `null` alors, et c'est à l'appelant de
+  /// nommer ce qui vient de fauter pendant qu'il faisait autre chose.
   function physical(address) {
     const paging = (BigInt.asUintN(64, globals[SLOTS.control].value) & PAGING_BIT) !== 0n;
     if (!paging || walk === null) return Number(address & BigInt(base - 1));
