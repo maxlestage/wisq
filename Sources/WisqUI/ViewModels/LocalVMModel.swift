@@ -55,11 +55,9 @@ public final class LocalVMModel {
     /// RISC-V). La vue relit ses pixels quand sa révision change.
     public private(set) var screen: X86Framebuffer?
 
-    /// La taille de l'écran qu'on donne à une machine PC : celle d'un écran
-    /// de bureau modeste, que `simpledrm` prend telle quelle et qu'un
-    /// téléphone affiche en paysage sans trop réduire. Plus grand, chaque
-    /// défilement de la console coûterait plus à l'interprète.
-    public static let screenSize = (width: 1024, height: 768)
+    // La taille de l'écran d'une machine PC vit dans `WisqVM` :
+    // `GuestMachineFactory.screenSize`, que la fabrique du bureau prêt lit
+    // aussi.
 
     private var machine: GuestMachine?
     private let sink = ConsoleSink()
@@ -448,7 +446,7 @@ public final class LocalVMModel {
         // l'annonce au noyau dans la page zéro, et une machine reprise
         // repeint dans le cadre qu'elle avait.
         if let pc = machine as? X86Machine {
-            try? pc.attachDisplay(width: Self.screenSize.width, height: Self.screenSize.height)
+            try? GuestMachineFactory.attachScreen(to: pc)
             screen = pc.display
         } else {
             screen = nil
