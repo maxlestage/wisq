@@ -43,8 +43,23 @@ cette même tâche aurait relancé la machine derrière un écran parti — et,
 défaut plus ancien, un « Arrêter » tombé pendant un redémarrage de l'invité
 la relançait aussi.
 
+**3. La sauvegarde continue écrivait encore après l'extinction.** La
+compression part sur une autre file ; elle n'était jetée que sur
+« Arrêter » ou « Oublier ». Un invité qui s'éteint seul pendant qu'elle
+tourne (2,4 s pour 122 Mio, bien plus pour le bureau Xfce) faisait écrire
+la session **après** son effacement par la tâche de fin : la visite
+suivante reprenait la machine à l'instant d'avant son extinction, et, après
+un redémarrage, une mémoire d'avant sur un disque déjà réécrit.
+`CheckpointedRun.run` coupe maintenant les sauvegardes dès que l'invité
+finit de lui-même, sous le verrou (une écriture en cours finit avant le
+retour). Reproduit par le contrôle avec une compression retenue, puis par
+`testASaveStillPackingWhenTheGuestPowersOffIsDiscarded` (1 écriture au lieu
+de 0 sans la correction).
+
 **Vérifié** :
 
+- Le test de la sauvegarde jetée après l'extinction, et son sabotage
+  (l'appel retiré : 2 échecs, restauré ensuite).
 - Cinq tests nouveaux dans `MachineLifecycleTests` (23 au lieu de 18) : la
   session trop grande gardée après « Arrêter », la taille qui passe telle
   quelle sinon, la fin de course jugée par son issue, l'invité fini avant le
