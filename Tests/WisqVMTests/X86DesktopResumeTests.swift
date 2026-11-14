@@ -134,6 +134,10 @@ final class X86DesktopResumeTests: XCTestCase {
         }
         let console = GuestConsole()
         let (machine, _) = try Self.machine(environment, writes: writes, console: console, ramSize: ramSize)
+        // **L'aléa du système, comme le téléphone** (`GuestMachineFactory.make`) :
+        // la fabrique tire une suite fixée, la reprise non. C'est ce qui fait
+        // que deux reprises du même bureau n'ont pas les mêmes clés SSH.
+        machine.entropy = .system()
         defer { Self.keep(console, at: from + "-repris.console") }
         try machine.restore(saved)
         XCTAssertNotNil(machine.network, "la carte réseau n'est pas revenue")
@@ -161,6 +165,13 @@ final class X86DesktopResumeTests: XCTestCase {
         try script.expect("REPRIS_42", budget: budget)
         print("la console répond \(String(format: "%.1f", Date().timeIntervalSince(started))) s après la reprise")
 
+        // **L'aléa du noyau, juste après la reprise** : relevé, pas jugé. Deux
+        // reprises qui rendent les mêmes octets ici disent que l'état du
+        // générateur vient de l'instantané — la raison pour laquelle le
+        // guetteur des clés attend (`ReadyDesktopBuild.keyWatcher`).
+        script.type("echo ALEA_$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' ')_FIN$((2+3))\n")
+        try script.expect("_FIN5", budget: budget)
+
         // La carte réseau, vue de l'invité : son pilote tient un périphérique.
         script.type("echo NET_$(ls /sys/bus/virtio/drivers/virtio_net | grep -c virtio)_FIN$((1+1))\n")
         try script.expect("_FIN2", budget: budget)
@@ -187,6 +198,20 @@ final class X86DesktopResumeTests: XCTestCase {
         XCTAssertTrue(machine.touch(x: 0.3, y: 0.4, buttons: 0))
         XCTAssertTrue(machine.touch(x: 0.6, y: 0.5, buttons: 0))
         XCTAssertNoThrow(try script.expect("LU_96", budget: budget), "la tablette ne parle plus à l'invité")
+
+        // **Les clés SSH, refaites ici** : le guetteur laissé par la fabrique
+        // voit l'horloge repartir, attend que le noyau réensemence son
+        // générateur, refait les clés et relance `sshd`. Puis on demande à
+        // `sshd` lui-même quelle clé il présente : celle du fichier neuf, et
+        // pas une clé gardée en mémoire depuis la fabrique.
+        script.type("until pgrep -x sshd >/dev/null && [ -s /etc/ssh/ssh_host_ed25519_key.pub ]; do sleep 5; done; "
+            + "sleep 5; A=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2); "
+            + "B=$(ssh-keyscan -t ed25519 127.0.0.1 2>/dev/null | ssh-keygen -lf - | cut -d' ' -f2); "
+            + "[ -n \"$A\" ] && [ \"$A\" = \"$B\" ] && echo CLE_SERVIE_$((1+1)) $A; echo CLE_$((3+3))\n")
+        try script.expect("CLE_6", budget: budget)
+        XCTAssertTrue(console.contains("CLE_SERVIE_2", after: script.mark),
+                      "sshd ne présente pas la clé refaite après la reprise")
+        print("clés refaites \(String(format: "%.1f", Date().timeIntervalSince(started))) s après la reprise")
         Self.dump(display, to: from + "-apres.ppm")
         XCTAssertGreaterThan(GuestScript.litFraction(display.snapshot()), 0.5, "l'écran s'est éteint après la reprise")
         print(console.text.suffix(600))
