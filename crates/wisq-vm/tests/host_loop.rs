@@ -15583,6 +15583,9 @@ console.log("cs0 " + lire({cs}));
 console.log("rflags0 " + lire({rflags}));
 console.log("gdt0 " + lire({table}) + " " + lire({table} + 1));
 console.log("idt0 " + lire({table} + 2) + " " + lire({table} + 3));
+// La trame physique 0, avant : c'est là qu'irait un accès dont la marche a
+// fauté mais dont la trame — zéro, faute de mieux — servirait quand même.
+console.log("zero0 " + hex(0, 64));
 const why = await vm.run({{ budget: 256n, rounds: 4 }});
 console.log("arret " + why.stopped);
 for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
@@ -15597,7 +15600,8 @@ console.log("haut " + hex({frame} + 0xfc0, 64));
 console.log("bas " + hex({frame}, 64));
 console.log("suite " + hex({next_frame}, 64));
 console.log("voisine " + hex({frame} + 0x1000, 64));
-console.log("gdt " + lire({table}) + " " + lire({table} + 1));
+console.log("zero " + hex(0, 64));
+console.log("gdt " +lire({table}) + " " + lire({table} + 1));
 console.log("idt " + lire({table} + 2) + " " + lire({table} + 3));
 "#,
                 host = workspace_root().join("web/host.js").to_string_lossy(),
@@ -15697,13 +15701,26 @@ console.log("idt " + lire({table} + 2) + " " + lire({table} + 3));
         );
     }
 
+    /// **La trame physique 0 garde ses octets d'avant.** Une marche qui
+    /// faute rend la trame zéro ; un accès qui ne regarderait pas le témoin
+    /// irait donc lire ou écrire au début de la mémoire, au décalage de son
+    /// adresse dans la page.
+    fn leaves_frame_zero_alone(&self, what: &str) {
+        assert_eq!(
+            self.bytes("zero "),
+            self.bytes("zero0 "),
+            "{what} : rien n'est écrit dans la trame physique 0 : {}",
+            self.text
+        );
+    }
+
     /// Le programme est allé au bout sans fauter : la machine s'arrête sur le
     /// `ud2` qui suit, que personne ne recueille.
     fn finishes(&self, what: &str) {
         assert_eq!(
             self.number("faute "),
             0,
-            "{what} : les deux pages sont posées, rien ne faute : {}",
+            "{what} : aucun accès ne touche une page absente, rien ne faute : {}",
             self.text
         );
         assert_eq!(
@@ -17206,6 +17223,181 @@ fn an_access_across_a_missing_page_faults_before_it_touches_anything() {
         fault.names_it(what, MidFault::PAGE - 4);
         fault.keeps(what, &below);
         untouched(&fault, what);
+    }
+}
+
+/// **Une écriture sur une page entièrement absente n'écrit rien, nulle part
+/// — pas même dans la trame physique 0.**
+///
+/// Le tampon de traduction est vide : c'est le premier accès du programme,
+/// et il prend le chemin lent, `far_store_body`. Sa première marche faute et
+/// rend la trame zéro. Si l'écriture ne regardait pas le témoin avant de
+/// servir, elle irait au **début de la mémoire physique**, au décalage de
+/// l'adresse dans sa page — ici `0x10`, au milieu de ce qui n'est à
+/// personne. Le noyau invité poserait la page, rejouerait l'instruction, et
+/// la première écriture resterait là où rien ne la relit. Aucun test ne
+/// regardait la trame 0 : le mutant qui y écrit passait tout.
+///
+/// Chaque largeur, et une écriture qui lit d'abord.
+#[test]
+fn a_write_to_a_missing_page_writes_nothing_anywhere() {
+    const AT: u64 = MidFault::ABSENT + 0x10;
+    let state: State = vec![(0, STRADDLE_VALUE), (7, AT), (4, MidFault::STACK)];
+    let forms: [(&str, &[u8]); 6] = [
+        ("mov %rax,(%rdi)", &[0x48, 0x89, 0x07]),
+        ("mov %eax,(%rdi)", &[0x89, 0x07]),
+        ("mov %ax,(%rdi)", &[0x66, 0x89, 0x07]),
+        ("mov %al,(%rdi)", &[0x88, 0x07]),
+        (
+            "movq $0x71727374,(%rdi)",
+            &[0x48, 0xc7, 0x07, 0x74, 0x73, 0x72, 0x71],
+        ),
+        ("add %rax,(%rdi)", &[0x48, 0x01, 0x07]),
+    ];
+    for (rank, (what, bytes)) in forms.iter().enumerate() {
+        let fault = MidFault::run(&format!("absente{rank}"), &registers(&state), bytes);
+        fault.names_it(what, AT);
+        fault.keeps(what, &state);
+        fault.leaves_frame_zero_alone(what);
+        fault.leaves_the_frame_next_door_alone(what);
+        assert_eq!(
+            fault.bytes("haut "),
+            (1..=64).collect::<Vec<u8>>(),
+            "{what} : rien n'est écrit dans la page posée : {}",
+            fault.text
+        );
+        for window in ["dest ", "sous ", "bas "] {
+            assert_eq!(
+                fault.bytes(window),
+                vec![0; 64],
+                "{what} : rien n'est écrit ailleurs non plus : {}",
+                fault.text
+            );
+        }
+    }
+}
+
+/// **Un accès qui finit pile sur la frontière reste dans sa page, et ne
+/// faute pas quand la page d'après manque.**
+///
+/// Huit octets dont le dernier est le dernier de la page n'ont rien à voir
+/// avec la page d'après. Le chemin lent le décide par `far_fits` : le
+/// décalage plus la largeur **au plus** quatre kibioctets. Un « strictement
+/// moins » enverrait cet accès marcher la page d'après, et fauter dessus —
+/// CR2 sur une page que l'instruction ne touche pas. Le noyau poserait une
+/// page pour rien ; ou, sur une page qu'il ne peut pas poser, s'arrêterait.
+/// Mesuré par le contrôle du 14 novembre : ce mutant empêche 6.12.115 de
+/// démarrer, et passait toute la suite.
+///
+/// Le tampon de traduction est vide à chaque cas — un programme par accès —
+/// pour que ce soit bien le chemin lent qui juge. Les lectures de huit,
+/// quatre et deux octets, les écritures des mêmes largeurs, et la pile dans
+/// les deux sens.
+#[test]
+fn an_access_that_ends_on_the_page_boundary_stays_in_its_page() {
+    const ABSENT: u64 = MidFault::ABSENT;
+    const GARBAGE: u64 = 0xdead_beef_dead_beef;
+    let ends = |rsp: u64| -> State {
+        vec![
+            (0, STRADDLE_VALUE),
+            (2, GARBAGE),
+            (3, GARBAGE),
+            (1, GARBAGE),
+            (6, ABSENT),
+            (7, ABSENT),
+            (4, rsp),
+        ]
+    };
+    let value = STRADDLE_VALUE.to_le_bytes();
+    // (la forme, ses octets, la pile, le registre lu et sa valeur attendue,
+    // ce qui doit être écrit à la fin de la page)
+    type Case<'a> = (&'a str, &'a [u8], u64, Option<(u8, u64)>, &'a [u8]);
+    let cases: [Case; 8] = [
+        (
+            "mov -8(%rsi),%rax",
+            &[0x48, 0x8b, 0x46, 0xf8],
+            MidFault::STACK,
+            Some((0, MidFault::seam_value(-8, 8))),
+            &[],
+        ),
+        (
+            "mov -4(%rsi),%ebx",
+            &[0x8b, 0x5e, 0xfc],
+            MidFault::STACK,
+            Some((3, MidFault::seam_value(-4, 4))),
+            &[],
+        ),
+        (
+            "movzwl -2(%rsi),%edx",
+            &[0x0f, 0xb7, 0x56, 0xfe],
+            MidFault::STACK,
+            Some((2, MidFault::seam_value(-2, 2))),
+            &[],
+        ),
+        (
+            "mov %rax,-8(%rdi)",
+            &[0x48, 0x89, 0x47, 0xf8],
+            MidFault::STACK,
+            None,
+            &value,
+        ),
+        (
+            "mov %eax,-4(%rdi)",
+            &[0x89, 0x47, 0xfc],
+            MidFault::STACK,
+            None,
+            &value[..4],
+        ),
+        (
+            "mov %ax,-2(%rdi)",
+            &[0x66, 0x89, 0x47, 0xfe],
+            MidFault::STACK,
+            None,
+            &value[..2],
+        ),
+        (
+            "pop %rcx, le sommet huit octets sous la frontière",
+            &[0x59],
+            ABSENT - 8,
+            Some((1, MidFault::seam_value(-8, 8))),
+            &[],
+        ),
+        (
+            "push %rax, la pile sur la frontière",
+            &[0x50],
+            ABSENT,
+            None,
+            &value,
+        ),
+    ];
+    assert_eq!(
+        MidFault::seam_value(-8, 8),
+        0x403f_3e3d_3c3b_3a39,
+        "les huit derniers octets de la page : 57, 58, … 64"
+    );
+    for (rank, (what, bytes, rsp, read, written)) in cases.iter().enumerate() {
+        let run = MidFault::run(&format!("frontiere{rank}"), &registers(&ends(*rsp)), bytes);
+        // `finishes` tient l'essentiel : pas de témoin, et RIP sur le `ud2`
+        // qui suit — l'instruction a été jouée, pas refusée.
+        run.finishes(what);
+        if let Some((register, expected)) = read {
+            assert_eq!(
+                run.register(*register),
+                *expected,
+                "{what} : les octets lus sont ceux de la fin de la page : {}",
+                run.text
+            );
+        }
+        let at = -(written.len() as i64);
+        assert_eq!(
+            run.bytes("haut "),
+            MidFault::seam_with(&[(at, written)])[..64].to_vec(),
+            "{what} : ce qui est écrit l'est à la fin de la page, et rien \
+             d'autre : {}",
+            run.text
+        );
+        run.leaves_the_frame_next_door_alone(what);
+        run.leaves_frame_zero_alone(what);
     }
 }
 
