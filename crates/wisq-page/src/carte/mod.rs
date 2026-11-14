@@ -235,10 +235,14 @@ impl Carte {
     /// donnerait à sa première requête le nom d'une requête de l'ancien, et
     /// la réponse en retard remplirait ses tampons avec les octets d'un autre
     /// secteur, en la disant réussie.
+    ///
+    /// **Ce que l'ancien a confié reste compté** dans la borne du neuf
+    /// ([`virtio_blk::PLUS_TENU`]) jusqu'à sa réponse : l'arrière le sert
+    /// encore, quel que soit le disque branché.
     pub fn brancher_disque(&mut self, secteurs: u64) {
         let mut neuf = VirtioBlk::nouveau(secteurs);
         if let Some(ancien) = &self.pci.disque {
-            neuf.reprendre_les_noms(ancien.prochain_nom());
+            neuf.succeder_a(ancien);
         }
         self.pci.disque = Some(neuf);
     }
