@@ -103,6 +103,60 @@ gardes (tranche 3) ; l'heure de la première reprise (l'invité se croit le
 `elapse`, tranche 4) ; un réchauffement du cache avant la sauvegarde, si le
 premier usage gêne ; l'essai sur un iPhone, que rien ici ne remplace.
 
+## 2026-11-14 — Sous l'émetteur, deux gardes du chemin lent sont enfin tenues par un test
+
+Le contrôle de l'entrée « un accès à cheval sur deux pages va dans les deux
+pages » (plus bas) a trouvé sa sémantique juste, mais deux gardes du nouveau
+chemin lent (`far_load_body`, `far_store_body`) qu'aucun test ne tenait : on
+pouvait les casser sans qu'un seul des 136 tests de `tests/host_loop.rs`
+tombe.
+
+**Ce qui n'allait pas.**
+
+1. **L'écriture sur une page entièrement absente**, le tampon de traduction
+   vide. Si `far_store_body` ne regarde pas le témoin après la première
+   marche, il écrit avec la trame que la marche rend en fautant : zéro. La
+   valeur part donc au début de la mémoire physique, au décalage de
+   l'adresse. Mesuré par le contrôle : `mov %rax,(%rdi)` avec RDI = la page
+   absente + `0x10` laissait `11 22 33 … 88` à l'adresse physique `0x10`.
+   Aucun test ne regardait la trame 0.
+2. **L'accès qui finit pile sur la frontière.** `far_fits` dit « au plus
+   4096 » ; avec « strictement moins », `mov -8(%rsi),%rax` (RSI = la page
+   d'après, absente) marchait la page d'après et fautait dessus — CR2 sur une
+   page que l'instruction ne touche pas. Mesuré par le contrôle : ce mutant
+   empêche 6.12.115 de démarrer.
+
+**Ce qui change** (`crates/wisq-vm/tests/host_loop.rs` seulement ; l'émetteur
+ne bouge pas).
+
+- Le banc `MidFault` relève aussi les soixante-quatre premiers octets de la
+  mémoire physique, avant et après.
+- `a_write_to_a_missing_page_writes_nothing_anywhere` : six écritures (huit,
+  quatre, deux, un octet, un immédiat, un `add`) sur la page absente +
+  `0x10`. Faute, CR2 sur l'adresse, RIP sur l'instruction, registres
+  intacts, et rien d'écrit nulle part, trame 0 comprise.
+- `an_access_that_ends_on_the_page_boundary_stays_in_its_page` : lectures de
+  huit, quatre et deux octets, écritures des mêmes largeurs, un `pop` et un
+  `push`, chacun finissant pile sur la frontière, la page d'après absente.
+  Pas de faute, la machine va jusqu'au `ud2`, RAX = `0x403f3e3d3c3b3a39` pour
+  la lecture de huit octets, et ce qui est écrit l'est à la fin de la page.
+- Deux commentaires nommaient encore `guest()`, qui n'existe plus
+  (`web/host.js`, `tests/x86_wasm.rs`) : ils nomment `Body::peek` et
+  `Body::poke`.
+
+**Comment c'est vérifié.**
+
+- Sabotage de l'écriture sans contrôle du témoin : 1 test tombe sur 138
+  (la trame 0 porte `11 22 33 … 88` à `0x10`). Sabotage `I32_LE_U` →
+  `I32_LT_U` dans `far_fits` : 1 test tombe sur 138 (« rien ne faute » sur
+  `mov -8(%rsi),%rax`). Chacun restauré depuis une copie, `cmp` identique,
+  `git diff` de `x86_wasm.rs` vide.
+- `cargo test --release -p wisq-vm` : 400 tests, 0 échec. `cargo fmt` et
+  `cargo clippy` propres.
+
+**Ce qui reste.** Le mur de l'émetteur est le même que dans cette entrée-là :
+`movq %rbx,%xmm0`, aucune instruction SSE décodée.
+
 ## 2026-11-14 — La session trop grande gardée, et l'invité éteint jamais sauvé
 
 Le contrôle de la tranche précédente a trouvé une voie de plus par laquelle
@@ -324,6 +378,334 @@ iOS ». La décompression écrit encore tout l'instantané avant la reprise
 ouverture. L'heure de la première reprise (tranche 4.2) et la sauvegarde
 d'une grosse machine (4.4) sont d'autres tranches.
 
+## 2026-11-14 — La raison que l'émetteur de la page garde est jugée
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « survit à une trappe »
+a trouvé deux trous dans les tests et deux commentaires faux.
+
+- **L'effacement de `pourquoi` n'était jugé par rien.** Le test des trois
+  réponses dit juger « ce que chaque branche laisse dans `pourquoi` ». Mais
+  le seul module qu'il demandait venait en premier, quand `pourquoi` valait
+  encore `null`, sa valeur de départ. Retirer `pourquoi = null;` de la
+  branche module laissait les 6 tests verts.
+- **Ce qu'une trappe laisse dans `pourquoi` non plus.** Le getter promet
+  « la raison du dernier refus — ou de la dernière trappe ». Retirer
+  `pourquoi = rendu.trappe;` laissait aussi les 6 tests verts.
+- **`kernel-entry` disait qu'après une trappe « la suite continue ».** C'est
+  faux. `translate` rend `null`, `host.js` arrête la machine sur
+  « refusée », et la boucle des tours sort. La tête de
+  `web/page-emitter.js` laissait croire la même chose. Le getter `memoire`
+  disait « ne rétrécit jamais », ce qui n'est plus vrai depuis qu'une
+  trappe remplace l'instance.
+- L'entrée précédente du journal annonçait « trois `clippy` » ; il y en a
+  quatre.
+
+**Ce qui change.**
+
+- `the_page_translator_answers_each_way_the_host_loop_reads` redemande un
+  module après un refus, puis après une coupe. Il vérifie que la coupe a
+  bien laissé sa raison, puis que `pourquoi` revient à `null`.
+- `a_trap_in_the_page_emitter_costs_one_region_not_the_emitter` lit
+  `pourquoi` après la trappe vue par `traducteur`. Il doit valoir le message
+  du moteur, le même que `resoudre` rend pour la même fenêtre, et commencer
+  par `RuntimeError`. L'erreur levée doit le nommer. Il doit aussi
+  contenir « Unreachable » : le nom seul (`trappe.name` au lieu de
+  `String(trappe)`) passait encore, relevé par le contrôle et refait ici
+  (le test tombe, restauré ensuite). Après la traduction
+  suivante, `pourquoi` doit valoir `null`.
+- Les trois commentaires sont corrigés, et le chiffre du journal aussi. Le
+  code de `web/page-emitter.js` ne change pas.
+
+**Comment c'est vérifié.**
+
+- Les deux sabotages du contrôle, refaits. Chacun est restauré, puis
+  vérifié par `cmp` :
+  - sans `pourquoi = null;`, deux tests tombent (`RamIsNotAPowerOfTwo(15)`
+    au lieu de `null`, et la trappe au lieu de `null`) ;
+  - sans `pourquoi = rendu.trappe;`, le test de la trappe tombe (`null` au
+    lieu de `RuntimeError: Unreachable code…`).
+- Le compte de tests ne bouge pas : 3 365 (Swift 2 859 + Rust 506). Aucun
+  test n'est ajouté ; deux sont renforcés.
+- `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
+  les débordements armés. `cargo test --release -p wisq-page --test page` :
+  6 sur 6. `cargo fmt` et les quatre `clippy` propres ; SwiftLint
+  `--strict` : 0.
+- Le chiffre de la page que le contrôle n'avait pas relu est bien dans le
+  relevé de la tranche précédente (`ke-page-66.log`) : « 10390 demandes,
+  1235.9 ms, 0.119 ms par demande ». Je n'ai pas relancé `kernel-entry`.
+
+**Ce qui reste.**
+
+- Aucun code ne lit encore `porte.pourquoi` ; il servira quand la page de
+  l'application se servira de ce traducteur.
+- Le commentaire de `kernel-entry` ne peut pas avoir de test. Seul le
+  pilote complet l'exerce, et une trappe n'y a jamais été vue.
+
+## 2026-11-14 — L'émetteur de la page survit à une trappe, et sa coupe est jugée
+
+**Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé deux
+défauts réels.
+
+- **Une seule trappe tuait l'émetteur de la page pour toujours.** Le module
+  est construit avec `panic = "abort"` : dans la page, un panic ou une
+  allocation qui échoue est une trappe `unreachable`, et rien n'est déroulé.
+  Le verrou de la porte restait pris, et chaque appel suivant trappait à son
+  tour. Reproduit sous Bun : une fenêtre impossible à allouer, puis plus
+  aucune traduction, même de `mov $1,%eax ; ret`. Dans `host.js`, chaque
+  région suivante serait devenue « traduction en panne ». Le commentaire de
+  `crates/wisq-page/src/lib.rs` disait le contraire.
+- **La branche « coupe » du traducteur n'était jugée par rien.** Rendre
+  `null` au lieu de `"encore"` dans `web/page-emitter.js` laissait tous les
+  tests verts. C'est pourtant ce `"encore"` qui fait relire à `host.js` la
+  fenêtre à 16 Kio. Le refus, `surRefus` et `pourquoi` n'étaient pas jugés
+  non plus.
+- La branche n'était plus à jour avec `master` (#700) : cinq conflits, tous
+  sur le compte de tests et la tête du journal.
+
+**Ce qui change.**
+
+- `web/page-emitter.js` jette l'instance qui a trappé et en recrée une
+  neuve depuis le même module compilé. `resoudre` rend alors `{ trappe }`.
+  `traducteur` lève, et `host.js` nomme la panne sur cette région seulement :
+  au départ suivant, la région se redemande à une instance saine. Un
+  compteur `instances` le dit. `kernel-entry` imprime une trappe comme un
+  refus, sous le nom `Trappe(…)`.
+- Le commentaire faux de `lib.rs` est corrigé : l'empoisonnement du verrou
+  ne sert qu'aux tests natifs, où un panic se déroule.
+- `master` est fusionné (un commit de fusion, pas de réécriture). Le compte
+  de tests est refait : 3 362 après la fusion, 3 365 avec les trois tests
+  neufs.
+
+**Comment c'est vérifié.**
+
+- Trois tests neufs dans `crates/wisq-page/tests/page.rs`, sous Bun :
+  - les trois réponses du traducteur (module, `"encore"`, `null`), avec
+    `pourquoi` et `surRefus`, comparées au natif ; deux refus francs
+    d'espèces différentes (`push %es` illisible, RAM de 15 pages) ;
+  - la coupe dans la vraie boucle hôte : au bord de la RAM, `host.js` lit
+    4 octets, reçoit `"encore"`, relit, puis s'arrête sur « refusée » ; et
+    une première lecture courte (3 octets) relue à 16 384 octets, dont le
+    module fait tourner l'anneau 200 fois ;
+  - une trappe : la même fenêtre rend le même module après, `traducteur`
+    lève, et dans `host.js` la machine s'arrête sur « traduction en panne »,
+    puis repart et tourne sur l'instance neuve.
+- Sabotages vus rouges, chacun restauré et vérifié par `cmp` : `"encore"`
+  rendu comme `null` (deux tests tombent), plus de nouvelle instance après
+  une trappe, `surRefus` jamais appelé, une trappe rendue comme un refus, le
+  getter `pourquoi` qui rend toujours `null`.
+- `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
+  les débordements armés. `cargo fmt`, les quatre `clippy` (`--all-features`,
+  toutes cibles, `wisq-vm --lib` et `wisq-page` en wasm32) propres ; sans
+  `--lib`, `wisq-vm` ne passe pas en wasm32 (le binaire `wisq-bench-rs`).
+  Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
+- `kernel-entry` sur l'arbre fusionné, 6.6.142 + sonde, 700 000 tours, les
+  deux traducteurs lancés en même temps : relevés identiques hors les lignes
+  du traducteur, `WISQ-USERSPACE-OK` des deux côtés, 10 390 demandes chacun.
+  Traduction : 0,119 ms par demande dans la page, 4,32 ms par processus. Le
+  temps de mur (514 s contre 551 s) ne vaut rien ici : d'autres flux
+  compilaient, la charge de la machine montait jusqu'à 10,6 pour 4 cœurs.
+
+**Ce qui reste.**
+
+- La page de l'application ne se sert toujours pas de ce traducteur.
+- Une trappe en vrai n'a jamais été vue. Le contrôle a passé 8,2 millions
+  de fenêtres aléatoires ou mutées en natif, sans un panic ; je ne l'ai pas
+  refait. Le déclencheur réaliste reste un manque de mémoire.
+
+## 2026-11-14 — L'émetteur traduit dans la page, sans pont
+
+**Ce qui n'allait pas.** Une région de code se traduisait par un aller-retour.
+Dans l'application, la page envoie la fenêtre à Swift, Swift appelle
+l'émetteur Rust, puis renvoie le module en source JavaScript : 5,35 à
+8,68 ms par région relevés en CI sur un iPhone simulé. Sous Bun,
+`kernel-entry` payait l'équivalent : un processus `x86-translate` lancé par
+région. Presque tout ce temps est du transport, pas de la traduction.
+
+**Ce qui change.**
+
+- `crates/wisq-vm/src/lib.rs` garde `ffi`, `store`, `machine` et `virtio`
+  hors de la cible `wasm32` (rien ne change en natif). Le crate se compile
+  alors en WebAssembly sans une ligne de l'émetteur touchée.
+- Un crate neuf, `crates/wisq-page`, compile l'émetteur en un module
+  WebAssembly de quatre exports : `allouer`, `emettre`, `dernier`,
+  `taille`. Après un refus, `dernier` donne la raison en texte, la même que
+  celle qu'`x86-translate` écrit.
+- `scripts/build-page-emitter.sh` le construit dans `target/page`.
+  Le job « Rust » de la CI installe la cible `wasm32-unknown-unknown`, comme
+  la porte Rust de `release.yml`, qui reçoit aussi Bun.
+- `web/page-emitter.js` charge ce module et rend, pour une fenêtre, le même
+  module que `Module::resolving_or_why`. `traducteur(pages)` est exactement
+  la fonction `translate` que `machine()` de `web/host.js` attend. Aucune
+  ligne de `host.js` ne change.
+- `kernel-entry` s'en sert par défaut. `WISQ_TRADUCTEUR=processus` reprend la
+  forme d'avant.
+
+**Comment c'est vérifié.**
+
+- `crates/wisq-page/tests/page.rs`, sous Bun, sur 1 845 fenêtres tirées du
+  corpus d'instructions du dépôt et placées aux adresses du noyau : 888 modules,
+  163 coupes et 794 refus, tous identiques au natif, au même octet et avec la
+  même raison. Avec le vrai 6.6.142 (`WISQ_PAGE_NOYAU`), **4 000 fenêtres
+  sur 4 000 sont identiques**, et `x86-translate` rend les mêmes octets
+  (0 divergence).
+- Un second test fait tourner `host.js` tel quel avec ce seul traducteur :
+  trois régions découvertes et traduites dans le moteur, puis 200 tours sans
+  rien retraduire.
+- Quatre tests natifs jugent la porte elle-même. Sept tests en tout ;
+  sabotages vus rouges : adresse passée par `Number`, coupe classée en refus,
+  emplacement perdu, code JavaScript faux, `store` laissé en wasm32.
+
+**Les chiffres** (ce conteneur, Bun 1.4.2, rustc 1.97.0) :
+
+| | porte wasm | un processus par région |
+| --- | ---: | ---: |
+| 4 000 entrées de 6.6.142 | 0,147 ms par région | 1,887 ms |
+| démarrage 6.6.142 + sonde, 10 390 régions, deux passages | 1 347 et 1 347 ms en tout (0,130 ms) | 22 596 et 19 493 ms (2,18 et 1,88 ms) |
+| temps de mur de ce démarrage, deux passages | **77,9 s et 77,7 s** | 99,8 s et 96,2 s (108,0 s avec le code d'avant) |
+
+Les relevés des cinq démarrages sont **identiques au caractère près**, hors
+les deux lignes qui nomment le traducteur et son coût : même
+journal série jusqu'à `WISQ-USERSPACE-OK`, mêmes registres, même arrêt.
+Le module pèse 265 245 octets (57 277 en gzip -9), et sa première
+construction prend 6,4 s.
+
+**Le profil `release`, pas celui du site.** Le profil `wasm-release`
+(optimisé pour la taille) donne un module de 97 821 octets, mais plus lent :
+0,113 à 0,155 ms par région contre 0,100 à 0,113 ms en `release`, sur trois
+passages de 4 000 entrées. Ce module est chargé une fois et sert à chaque
+région : c'est sa vitesse qui compte.
+
+**Ce qui reste.**
+
+- La page de l'application (`desktop.rs`, `LocalDesktop`) ne l'utilise pas
+  encore. Il faut lui livrer le module et le passer en `translate`, en
+  gardant le pont en repli ; seul « App iOS » peut en juger.
+- `kernel-entry` refuse toujours une coupe au lieu de redemander une fenêtre
+  plus large (`"encore"`), avec l'un comme avec l'autre traducteur. Changer
+  cela est une autre mesure.
+- Rien n'est encore mesuré sur un vrai iPhone.
+
+## 2026-11-14 — Sous l'émetteur, un accès à cheval sur deux pages va dans les deux pages, et une instruction qui faute n'a rien fait
+
+Reprise de l'entrée ci-dessous, après un second contrôle. Il y a trouvé trois
+défauts ; les trois étaient vrais.
+
+**Ce qui n'allait pas.**
+
+1. **Un chiffre faux.** L'entrée ci-dessous disait que la faute du `rep movsl`
+   de `copy_bootdata` nommait une lecture « six octets plus haut ». Mesuré :
+   **trente-six**. `objdump` sur les deux noyaux : le `rep movsl` est à
+   `copy_bootdata+37`, et la seule lecture mémoire avant lui est à
+   `copy_bootdata+1`. Les relevés le disent aussi : la machine réclamait
+   `copy_bootdata + 1` avant la correction, `copy_bootdata + 37` après. Six
+   était la distance dans le test synthétique. La phrase était recopiée dans
+   un commentaire de l'émetteur et dans un commentaire de test. (Le message du
+   commit 9f3d1ddb la porte aussi ; il ne se corrige pas sans réécrire
+   l'historique.)
+2. **Un accès à cheval sur deux pages était faux**, et l'était déjà sur
+   `master`. L'émetteur traduisait la page du premier octet, puis lisait ou
+   écrivait deux, quatre ou huit octets d'un coup en mémoire. Deux pages
+   voisines en virtuel ne sont voisines en mémoire physique que par accident :
+   dans le direct map du noyau, oui ; dans `vmalloc` et dans tout programme,
+   non. Mesuré, la page d'après absente : `mov (%rsi),%rax` à quatre octets de
+   la frontière ne fautait pas et prenait ses quatre octets hauts dans la
+   trame voisine ; `mov %rax,(%rsi)` écrivait quatre octets dans une trame
+   qu'aucune table ne porte ; un `rep movsq` fautait un élément trop tard.
+3. **`lidt` et `lgdt` rangeaient la limite avant d'avoir lu la base.** Quand
+   la base fautait, la faute était délivrée avec la nouvelle limite et
+   l'ancienne base : l'arrêt disait « une faute pendant la délivrance », CR2 =
+   `0xe0`. En cherchant la même faute ailleurs : `sgdt` et `sidt` écrivaient la
+   limite avant de fauter sur la base, `fxsave` écrivait son aire jusqu'à la
+   faute (son commentaire la donnait pour la seule dans ce cas), et `lretq` ne
+   lisait pas le mot du sélecteur — il ne fautait donc pas quand ce mot
+   manquait.
+
+**Ce qui change** (`crates/wisq-vm/src/x86_wasm.rs`).
+
+- `Body::guest`, qui rendait une adresse, devient `peek` et `poke`, qui font
+  l'accès **avec sa largeur**. Trois chemins : pagination éteinte ; le tampon
+  tient la page et l'accès y tient — une seule comparaison, l'étiquette contre
+  la page du *dernier* octet ; et tout le reste, par deux fonctions du module
+  (`far_load_body`, `far_store_body`) qui marchent les tables, les deux pages
+  s'il le faut, et font l'accès octet par octet quand il franchit. Rien n'est
+  lu ni écrit tant qu'une page peut manquer.
+- Le contrôle de faute ne suit plus que ce chemin lent, le seul qui peut
+  fauter.
+- La deuxième case de travail de la traduction change de rôle : elle portait
+  le numéro de page, elle porte la valeur d'une écriture. Pas de globale de
+  plus.
+- `lidt` et `lgdt` lisent les dix octets, puis rangent. `sgdt` et `sidt`
+  atteignent les dix octets avant d'écrire. `fxsave` sonde le dernier octet de
+  ses 512, puis le premier, avant d'écrire. `lretq` lit le sélecteur.
+- `scripts/x86-page-straddle-probe.c` : la mesure sur le silicium, à refaire
+  par qui veut. Un accès (`mov`, `push`, `pop`) à cheval sur une page
+  inaccessible faute avec CR2 sur le premier octet de cette page et n'a rien
+  écrit ; `fxsave` exige ses 512 octets, nomme le dernier, et n'a rien écrit.
+  C'est ce que l'émetteur fait maintenant. `sgdt` et `sidt` ne se mesurent pas
+  ainsi (en anneau 3, Linux les émule).
+
+**Comment c'est vérifié.**
+
+- Cinq tests de plus dans `tests/host_loop.rs`, tous rouges avant la
+  correction (131 passés, 5 échoués), sur un banc où la page d'après est posée
+  sur une trame éloignée : les lectures, les écritures (dont `cmpxchg16b` et
+  les tables de descripteurs), la pile et les chaînes ; puis les mêmes formes
+  la page d'après absente — faute, CR2 sur la page absente, RIP sur
+  l'instruction, registres, RFLAGS et mémoire intacts ; puis les instructions
+  à plusieurs accès.
+- Neuf sabotages, chacun vu tomber puis restauré (même empreinte du fichier) :
+  la largeur ôtée de la comparaison (5 tests tombent sur 136), la suite prise
+  dans la première trame (3), la page d'après non marchée (5), l'écriture
+  lente qui ne regarde pas le témoin (1), `lidt` remis dans l'ancien ordre
+  (1), `sgdt` sans sonde (1), `fxsave` sans sonde (1), `fxsave` sondée sur 416
+  octets (1), `lretq` sans le sélecteur (1).
+- `cargo test --release -p wisq-vm` : 398 tests, 0 échec ; pareil avec les
+  débordements et les assertions armés. `cargo fmt` et `cargo clippy` propres.
+  `swift test --filter WisqVMRustTests` : 113 tests, 0 échec.
+- Les deux modules confinés épinglés de `WebKitBench.swift` sont régénérés
+  (2166 → 2552 et 2021 → 2429 octets) ; le module libre n'a pas changé d'un
+  octet (1058).
+- Les vrais noyaux, relancés : les mêmes relevés qu'avant, au tour près.
+
+  | noyau | régions | port série | `marche` |
+  | --- | --- | --- | --- |
+  | 6.6.142, 4096 tours | 1032 | journal du noyau | `4096 1648 1031 2` |
+  | 6.6.142 | 10 390 | `WISQ-USERSPACE-OK` | `700000 521620 10389 42` |
+  | 6.12.115 | 10 981 | `WISQ-USERSPACE-OK` | `460000 439473 10980 1231` |
+  | 6.18.60 | 12 177 | `WISQ-USERSPACE-OK` | `8000000 3500288 12176 77` |
+  | 6.18.60, initramfs d'Alpine | 11 413 | arrêt à `0x7f5d055d9089` | `1169354 1169353 11413 0` |
+
+- Ce que ça coûte : +6,1 % de WebAssembly sur 6.12.115 (144 970 146 →
+  153 795 073 octets) et autant sur 6.18.60. En temps, rien de séparable du
+  bruit : le démarrage de 6.12.115, avant et après en alternance, dure 60 à
+  65 s d'un côté et 60 à 74 s de l'autre sur une machine chargée — les
+  chiffres sont dans `docs/DEMARRAGE.md`.
+
+**Ce qui reste.**
+
+1. Le mur est le même : `0x7f5d055d9089`, `movq %rbx,%xmm0`. L'émetteur ne
+   décode aucune instruction SSE.
+2. `modprobe[372]: segfault at b …` est **toujours là, à l'identique**. Le
+   contrôle y voyait une conséquence possible des accès à cheval : ce n'en est
+   pas une, le relevé n'a pas bougé d'un tour. Cause toujours non prouvée ; la
+   piste qui reste est la marche des tables, qui ne regarde que le bit
+   « présent » (ni écriture, ni utilisateur).
+3. L'hôte (`web/host.js`, `physical`) traduit lui aussi le premier octet de
+   ce qu'il lit pour délivrer une faute — une porte de l'IDT, un descripteur
+   de la GDT, un mot du segment de tâche — puis lit huit ou seize octets à la
+   suite. Ce n'est pas corrigé. Les quatre démarrages ci-dessus n'en
+   souffrent pas ; je n'ai pas vérifié où Linux pose chacune de ces tables.
+4. `fxrstor` balaie son aire depuis le début : sur une faute, CR2 nomme le
+   premier octet absent, là où le silicium nomme le dernier de l'aire. La page
+   est la même.
+5. Un accès à cheval marche les tables deux fois sans consulter le tampon.
+   Coût non mesuré ; rare par construction.
+6. Chaque accès teste encore CR0.PG en ligne. Le tampon pourrait porter
+   l'identité quand la pagination est éteinte, et ce test disparaîtrait : une
+   vingtaine d'octets de moins par accès — compté en lisant le code émis, pas
+   mesuré —, de quoi reprendre les 6 %. Pas fait ici : un hôte qui change CR0
+   de l'extérieur devrait alors vider le tampon.
+
 ## 2026-11-14 — L'émetteur mène Linux 6.12 et 6.18 jusqu'à l'espace utilisateur
 
 **Ce qui n'allait pas.** Sous l'émetteur (x86-64 → WebAssembly), Linux 6.6
@@ -335,9 +717,9 @@ qui portent un opérande mémoire. Celles qui atteignent la mémoire sans
 opérande — `rep movs` et `rep stos` (par RSI et RDI), `push`, `pop`, `leave`,
 `call`, `ret`, `jmp *` — fautaient avec le RIP de la dernière instruction
 mémoire d'avant. Dans `copy_bootdata`, la faute du `rep movsl` nommait une
-lecture six octets plus haut : le noyau y reprenait, refaisait un `push`, la
-pile gardait un mot de trop, et le `ret` sautait à `0x90`. Linux 6.6 ne passe
-pas par là.
+lecture trente-six octets plus haut (`copy_bootdata+1`) : le noyau y reprenait,
+refaisait un `push`, la pile gardait un mot de trop, et le `ret` sautait à
+`0x90`. Linux 6.6 ne passe pas par là.
 
 **Ce qui change** (`crates/wisq-vm/src/x86_wasm.rs`).
 
@@ -8744,7 +9126,6 @@ choses pour qu'on ne s'en prive pas en cours de route. Et une distribution
 complète tourne **aujourd'hui** sur un hôte, avec wisq comme écran — le lot 7
 ajoute un chemin, il n'en remplace aucun.
 
-
 ## 2026-09-03, ~19h30 UTC — « Ça fonctionne pas je te l'avais dit ! »
 
 Maxime a envoyé une capture. L'application refuse `omarchy-4.0.2.iso 2` avec :
@@ -8800,7 +9181,6 @@ Un refus juste peut égarer autant qu'un refus faux, s'il désigne la mauvaise
 cause. « Trop gros » et « pas la bonne machine » mènent à deux gestes
 différents, et le premier était un cul-de-sac déguisé en piste.
 
-
 ## 2026-09-03, ~18h UTC — arrêter d'inventer un plafond, et demander à iOS
 
 Maxime : « je voudrais aussi que tu utilises la mémoire de mon téléphone pour
@@ -8845,7 +9225,6 @@ infligé une fois, sur l'image d'Omarchy.
 Donc une phrase, avec **les deux chiffres et quoi en faire**. « Pas assez de
 mémoire » sans nombre est une impasse : le lecteur ne peut pas savoir s'il doit
 fermer une application ou baisser le curseur. Un test l'exige explicitement.
-
 
 ## 2026-09-03, ~17h45 UTC — un curseur en gigaoctets, et le défaut que la question a fait sortir
 
@@ -8913,7 +9292,6 @@ Il glisse sur les **indices** des paliers, pas sur des octets : il saute donc
 de puissance de deux en puissance de deux au lieu de proposer des tailles
 qu'aucune machine n'a jamais eues.
 
-
 ## 2026-09-03, ~17h20 UTC — la garde que ni l'une ni l'autre des deux suites ne pouvait tenir
 
 Petite tranche, et sa justification tient en une mesure.
@@ -8950,7 +9328,6 @@ se trompe, c'est-à-dire de façon cohérente.
 Au passage, le second test dit une chose qui n'allait pas de soi : **démarrer
 une VM n'efface pas sa mémoire**. C'est une propriété de la machine, pas de sa
 session, et `settle` aurait pu la remettre à zéro sans que rien ne le remarque.
-
 
 ## 2026-09-03, ~17h UTC — la mémoire des VM distantes, lue avant d'être écrite
 
@@ -9022,7 +9399,6 @@ Huit au total, tous mordants : l'unité qui n'est plus vérifiée, les deux nomb
 confondus, les deux étiquettes échangées, l'état que `dominfo` ne rend plus, le
 JSON qui écrit un zéro plutôt que rien, la liste que perd une mémoire illisible,
 les deux nombres toujours dits, et les tailles comptées en puissances de dix.
-
 
 ## 2026-09-03, ~16h30 UTC — « l'espace de stockage », et ce que ça peut vouloir dire
 
@@ -9118,7 +9494,6 @@ mémoire en puissances de deux ; un chiffre de stockage en puissances de dix à
 côté d'un chiffre de mémoire qui ne l'est pas rendrait les deux incomparables,
 et c'est précisément côte à côte qu'ils apparaissent maintenant.
 
-
 ## 2026-09-03, ~16h UTC — le réglage de mémoire, et ce qu'il coûte
 
 La tranche précédente a rendu la mémoire réglable dans les deux cœurs. Celle-ci
@@ -9185,7 +9560,6 @@ n'est plus rognée par le plafond de l'appareil, le plafond qui redevient un
 quart, `clearAll` qui redevient un test de préfixe, le réglage qui cesse d'être
 classé par noyau, le retour au défaut qui écrit le nombre au lieu d'effacer
 l'entrée, et la garde qui refusait une valeur hors de la liste offerte.
-
 
 ## 2026-09-03, ~15h UTC — la mémoire réglable, et l'invité qui l'apprend
 
@@ -9273,7 +9647,6 @@ lisaient ainsi, tous dans du code que seul le job « App iOS » compile — donc
 la bascule vers une propriété d'instance aurait cassé la construction sans
 qu'aucun job Linux le dise. `LocalMachineMemory` porte maintenant la taille et
 le seuil, en un point ; c'est la ligne que le réglage déplacera.
-
 
 ## 2026-09-03, ~13h UTC — l'application a disparu, et la garde existait
 
@@ -19406,7 +19779,6 @@ est pas. L'argument était **ignoré**.
 Un « SURVÉCU » est une hypothèse, pas un résultat. Celle-ci se vérifie en une
 minute, et le vrai sabotage — ajouter 6 à la liste des vecteurs à code d'erreur,
 ce qui décale la pile du gestionnaire de huit octets — tombe aussitôt.
-
 
 ## Quatre fois de suite, la règle était déjà écrite ailleurs
 
@@ -29999,7 +30371,6 @@ plus clair du dégradé. Le pire pixel sous le grain passe de 5,11 à 5,52.
 construite : `theme.rs` et la page de développement l'écrivent donc sous cette
 forme. La garde « la couleur de la barre vient de la palette, partout » l'a
 vérifié sans qu'on ait à le lui dire.
-
 
 ## #339 — « mesuré » ne dit pas sur quelle machine, et mon témoin n'en était pas un
 

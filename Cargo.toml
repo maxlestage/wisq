@@ -7,12 +7,14 @@
 #   crates/wisq-site   the site's front end: Yew components, pre-rendered at
 #                      build time, two islands hydrated and the motion run in
 #                      WebAssembly
+#   crates/wisq-page   l'émetteur x86-64 → WebAssembly compilé en wasm32, pour
+#                      que la page WebKit traduise elle-même ses régions
 #
 # The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
 # desktop client built on Network.framework.
 [workspace]
 resolver = "2"
-members = ["crates/wisq-vm", "crates/wisq-agent", "crates/wisq-site"]
+members = ["crates/wisq-vm", "crates/wisq-agent", "crates/wisq-site", "crates/wisq-page"]
 
 [profile.release]
 opt-level = 3
