@@ -1081,6 +1081,12 @@ struct Body {
     /// où vivent les tables et le tampon. `None` rend `guest()` à sa forme
     /// d'avant la pagination, mot pour mot.
     walk: Option<u32>,
+    /// **L'adresse de l'instruction en cours de traduction.** `build` la pose
+    /// avant chaque instruction — celles que `terminate` traite comprises —,
+    /// et la sortie de faute de `guest()` la range dans RIP : une faute nomme
+    /// ainsi l'instruction qui l'a prise, quelle que soit la façon dont cette
+    /// instruction désigne sa mémoire.
+    here: u64,
 }
 
 impl Body {
@@ -1171,8 +1177,26 @@ impl Body {
         // fautive n'a alors rien fait, ce qui est la seule façon de la rejouer.
         // Rendre un indice de bloc négatif est ce que fait déjà chaque fin de
         // région : la boucle de répartition rend la main à l'hôte.
+        //
+        // **Et c'est cette sortie qui nomme l'instruction fautive dans RIP.**
+        // RIP était posé en tête de l'instruction, par `translate`, quand
+        // elle portait un opérande mémoire. Celles qui atteignent la mémoire
+        // sans opérande — `rep movs` par RSI et RDI, `push`, `call` et `ret`
+        // par RSP — fautaient donc avec le RIP de la dernière instruction qui
+        // en avait un. Linux 6.12 le prenait dans `copy_bootdata` : la faute
+        // d'un `rep movsl` nommait une lecture six octets plus haut, le noyau
+        // y reprenait, refaisait un `push`, et le `ret` sautait à `0x90`.
+        // Posé ici, RIP ne dépend plus d'une liste d'instructions à tenir :
+        // aucun accès ne peut fauter sans dire d'où.
+        //
+        // **Sur le chemin sans faute, ça ne coûte plus rien** : la constante
+        // n'est écrite que dans la branche qui rend la main.
         self.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
         self.op(code::IF).op(code::VOID);
+        let here = self.here;
+        self.store(RIP_SLOT, |b| {
+            b.constant(here);
+        });
         self.bytes.push(code::I32_CONST);
         signed(-1, &mut self.bytes);
         self.op(code::RETURN);
@@ -1683,6 +1707,12 @@ impl Module {
                 // suivante : une division qui refuse doit y renvoyer l'hôte.
                 let here = base.wrapping_add(at as u64);
                 at += step.length;
+                // **Et c'est elle qu'une faute nommera** — posée avant le tri
+                // qui suit, parce que les instructions laissées à `terminate`
+                // (`call`, `ret`, `jmp *`, `iretq`) lisent et écrivent la
+                // mémoire elles aussi, et sortent de cette boucle avant
+                // `translate`. La dernière du bloc est la leur.
+                body.here = here;
                 // **`iretd` est refusé en étant nommé.** Le décodeur lit `cf`
                 // sans REX.W ; en mode long c'est un retour de trente-deux
                 // bits qu'aucun noyau n'exécute, et le produire demanderait
@@ -2211,10 +2241,7 @@ impl Module {
                 // inverse marcherait tant que la cible n'est pas prise sur la
                 // pile elle-même — et `call *-8(%rsp)` est écrivable.
                 body.store(Body::scratch(0), reach);
-                body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
-                });
-                Self::at_top(body, |b| {
+                Self::push(body, |b| {
                     b.constant(base.wrapping_add(after as u64));
                 });
                 // La cible n'est pas connue à la compilation : si elle tombe
@@ -2228,10 +2255,7 @@ impl Module {
             Op::Call => {
                 // L'adresse de retour est empilée ici — c'est la seule partie
                 // de `call` qui touche l'état — puis le bloc change.
-                body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
-                });
-                Self::at_top(body, |b| {
+                Self::push(body, |b| {
                     b.constant(base.wrapping_add(after as u64));
                 });
                 place(body, target);
@@ -2431,17 +2455,19 @@ impl Module {
                 // c'est au gestionnaire d'ajouter huit à RSP avant, et Linux le
                 // fait. Le dépiler ici décalerait tout le cadre d'un mot.
                 //
-                // **RIP est posé sur l'`iretq` lui-même avant la première
-                // lecture.** Ce cadre est en mémoire paginée, et l'une des cinq
-                // lectures peut fauter ; l'hôte doit alors reprendre *ici*, pas
-                // au début du bloc. Les cinq mots sont lus avant que RSP ne
-                // change — RSP est la base des quatre autres — et RIP est lu en
-                // dernier, pour qu'une faute sur le mot d'avant le laisse encore
-                // sur l'`iretq`.
-                let here = base.wrapping_add((after - step.length) as u64);
-                body.store(RIP_SLOT, |b| {
-                    b.constant(here);
-                });
+                // **Les cinq mots sont lus avant qu'un seul registre ne
+                // change.** Ce cadre est en mémoire paginée, et l'une des cinq
+                // lectures peut fauter ; l'`iretq` doit alors se rejouer, donc
+                // n'avoir rien fait. Ranger CS ou RFLAGS au fil des lectures
+                // laissait, sur un cadre à cheval sur une page absente, une
+                // faute délivrée avec le sélecteur et les drapeaux *du
+                // retour* — et la délivrance lit CS pour décider de changer
+                // de pile. D'où les cinq cases de travail, puis les cinq
+                // écritures.
+                //
+                // RIP n'a plus à être posé ici avant la première lecture : la
+                // sortie de faute de `guest()` le pose sur l'`iretq`, comme
+                // pour tout autre accès.
                 let word = |b: &mut Body, offset: u64| {
                     b.load(Self::slot(4));
                     if offset != 0 {
@@ -2452,28 +2478,27 @@ impl Module {
                     b.bytes.push(0);
                     b.bytes.push(0);
                 };
+                // Dans l'ordre du cadre : RIP, CS, RFLAGS, RSP, SS.
+                for rank in 0..5 {
+                    body.store(Body::scratch(rank), |b| {
+                        word(b, 8 * rank as u64);
+                    });
+                }
                 body.store(Self::segment_slot(Segment::Cs), |b| {
-                    word(b, 8);
-                    b.constant(0xffff).op(code::I64_AND);
+                    b.load(Body::scratch(1)).constant(0xffff).op(code::I64_AND);
                 });
                 body.store(RFLAGS_SLOT, |b| {
-                    word(b, 16);
+                    b.load(Body::scratch(2));
                     b.constant(WRITABLE_FLAGS).op(code::I64_AND);
                     b.constant(ALWAYS_ONE).op(code::I64_OR);
                 });
                 body.store(Self::segment_slot(Segment::Ss), |b| {
-                    word(b, 32);
-                    b.constant(0xffff).op(code::I64_AND);
-                });
-                // La nouvelle pile, gardée de côté : la lire dans RSP tout de
-                // suite déplacerait la base sous la lecture de RIP.
-                body.store(Body::scratch(0), |b| {
-                    word(b, 24);
-                });
-                body.store(RIP_SLOT, |b| {
-                    word(b, 0);
+                    b.load(Body::scratch(4)).constant(0xffff).op(code::I64_AND);
                 });
                 body.store(Self::slot(4), |b| {
+                    b.load(Body::scratch(3));
+                });
+                body.store(RIP_SLOT, |b| {
                     b.load(Body::scratch(0));
                 });
                 Self::resolve(starts, body, shape);
@@ -3252,21 +3277,17 @@ impl Module {
     }
 
     fn translate(step: &Decoded, address: u64, body: &mut Body) -> Option<()> {
-        // **RIP est posé avant tout accès mémoire, quand la pagination
-        // existe.** Sans lui, une faute rendrait la main à l'hôte sur un RIP
-        // laissé par le bloc précédent, et l'hôte reprendrait n'importe où.
-        // `terminate` ne le pose qu'à la fin d'un bloc, ce qui suffisait tant
-        // que rien ne pouvait s'arrêter au milieu.
-        //
-        // **Ce que ça coûte : rien de mesurable.** La forme `garde_rip` de
-        // `examples/paging-probe.rs` la chronomètre — de −0,45 à +0,62 ns par
-        // accès sur trois exécutions, une plage qui inclut zéro des deux
-        // côtés. Voir `docs/DEMARRAGE.md`.
-        if body.walk.is_some() && step.memory.is_some() {
-            body.store(RIP_SLOT, |b| {
-                b.constant(address);
-            });
-        }
+        // **RIP n'est plus posé ici.** Il l'était, en tête de toute
+        // instruction qui portait un opérande mémoire, pour qu'une faute
+        // rende la main sur elle. Le critère laissait passer celles qui
+        // atteignent la mémoire sans opérande — les chaînes, la pile, `call`
+        // et `ret` — et leur faute nommait une instruction d'avant. C'est la
+        // sortie de faute de `Body::guest` qui le pose maintenant, depuis
+        // `body.here` : un seul endroit, par lequel tout accès passe.
+        debug_assert_eq!(
+            body.here, address,
+            "`build` pose l'adresse avant de traduire"
+        );
         // **Un saut n'est pas une instruction comme une autre** : il change le
         // bloc, pas l'état. Il est traité par le compilateur de région, qui
         // seul connaît les autres blocs ; en ligne droite, il n'a aucun sens.
@@ -5904,6 +5925,16 @@ impl Module {
     /// Les deux cœurs se conduisent pareil, ce qui est la propriété qui compte
     /// ici ; borner la boucle demanderait de rendre la main à mi-course, avec
     /// RIP sur le `rep` — l'architecture le permet, rien ne le réclame encore.
+    ///
+    /// **Une faute de page au milieu d'un `rep` rend la main à mi-course, et
+    /// la copie reprend où elle en était.** Dans un tour, la lecture et
+    /// l'écriture passent avant que RSI, RDI ou RCX ne bougent : le tour qui
+    /// faute n'a rien fait, et les tours d'avant sont faits et comptés. RCX,
+    /// RSI et RDI disent donc exactement ce qui reste, comme sur le silicium,
+    /// et RIP — posé par la sortie de faute de `Body::guest` — nomme le `rep`
+    /// lui-même : rejoué, il finit la copie au lieu de la recommencer. C'est
+    /// ce que fait toute copie à cheval sur une page que le noyau pose à la
+    /// demande, et la première de Linux 6.12 est `copy_bootdata`.
     fn string(step: &Decoded, body: &mut Body) -> Option<()> {
         let repeat = matches!(
             step.op,
@@ -5984,14 +6015,22 @@ impl Module {
         Some(())
     }
 
-    /// **La pile.** L'ordre est le sujet : `push` descend RSP **puis** écrit,
-    /// `pop` lit **puis** remonte. L'inverser écrirait huit octets au-dessus
-    /// du sommet, là où une interruption a le droit de passer.
+    /// **La pile.** L'ordre est le sujet, deux fois.
+    ///
+    /// Le mot d'un `push` s'écrit **sous** le sommet — à RSP moins huit —, et
+    /// un `pop` lit **au** sommet : huit octets plus haut, on écrirait là où
+    /// une interruption a le droit de passer.
+    ///
+    /// **Et RSP ne bouge qu'une fois l'accès abouti.** Chaque forme ci-dessous
+    /// lit ou écrit d'abord, et ne touche à RSP (ou à RBP, pour `leave`)
+    /// qu'ensuite : une faute de page au milieu laisse les registres comme le
+    /// silicium les laisse, c'est-à-dire intacts, et l'instruction se rejoue.
     fn stack(step: &Decoded, body: &mut Body) {
         match step.op {
             Op::Push => {
-                // scratch 0 : la valeur, lue **avant** que RSP ne bouge —
-                // `push %rsp` empile la valeur d'avant la descente.
+                // scratch 0 : la valeur, lue **avant** tout le reste — un
+                // `pushq (%rsi)` peut fauter sur sa source, et `push %rsp`
+                // empile la valeur d'avant la descente.
                 body.store(Body::scratch(0), |b| {
                     if step.immediate {
                         b.constant(step.imm);
@@ -6005,10 +6044,7 @@ impl Module {
                         b.load(Self::slot(step.dst));
                     }
                 });
-                body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
-                });
-                Self::at_top(body, |b| {
+                Self::push(body, |b| {
                     b.load(Body::scratch(0));
                 });
             }
@@ -6037,14 +6073,8 @@ impl Module {
             // écrirait dans RFLAGS des bits dont aucun n'est modélisé ici,
             // et le refus les nomme un par un plutôt que de les perdre.
             Op::PushFlags => {
-                body.store(Body::scratch(0), |b| {
+                Self::push(body, |b| {
                     b.load(RFLAGS_SLOT);
-                });
-                body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
-                });
-                Self::at_top(body, |b| {
-                    b.load(Body::scratch(0));
                 });
             }
             // **`popf`, et le masque qui vient du cœur Swift.**
@@ -6115,30 +6145,56 @@ impl Module {
             }
             _ => {
                 // `leave` : RSP reprend RBP, puis RBP se dépile.
-                body.store(Self::slot(4), |b| {
+                //
+                // **Le mot est lu à RBP avant que RSP ne le rejoigne.** C'est
+                // la même lecture — après `mov %rbp,%rsp`, le sommet *est*
+                // RBP — mais dans cet ordre une faute laisse RSP où il
+                // était. Dans l'autre, la faute était délivrée avec un RSP
+                // que l'instruction n'avait pas fini de poser : son cadre
+                // s'écrivait sous RBP, et le RSP qu'il sauvait n'était plus
+                // celui d'avant le `leave`.
+                body.store(Body::scratch(0), |b| {
                     b.load(Self::slot(5));
-                });
-                body.store(Self::slot(5), |b| {
-                    b.load(Self::slot(4));
                     b.guest();
                     b.op(code::I64_LOAD);
                     b.bytes.push(0);
                     b.bytes.push(0);
                 });
                 body.store(Self::slot(4), |b| {
-                    b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
+                    b.load(Self::slot(5)).constant(8).op(code::I64_ADD);
+                });
+                body.store(Self::slot(5), |b| {
+                    b.load(Body::scratch(0));
                 });
             }
         }
     }
 
-    /// Écrire huit octets au sommet de la pile, RSP étant déjà à sa place.
-    fn at_top(body: &mut Body, value: impl FnOnce(&mut Body)) {
-        body.load(Self::slot(4)).guest();
+    /// **Empiler huit octets : le mot s'écrit sous le sommet, puis RSP
+    /// descend.**
+    ///
+    /// Sur le silicium les deux n'en font qu'un : un `push` qui faute laisse
+    /// RSP où il était, et c'est ce qui permet de le rejouer une fois la page
+    /// posée. L'ordre inverse — descendre, puis écrire — donnait le même
+    /// résultat tant que l'écriture aboutissait ; quand elle fautait, RSP
+    /// restait descendu, le rejeu le descendait encore, et la pile gardait un
+    /// mot de trop. Une pile qui grandit d'une page à la demande, ce que fait
+    /// tout programme, passe par là à chaque page neuve.
+    ///
+    /// La valeur est poussée **après** l'adresse et **avant** que RSP ne
+    /// bouge : `push %rsp` empile donc bien le RSP d'avant.
+    fn push(body: &mut Body, value: impl FnOnce(&mut Body)) {
+        body.load(Self::slot(4))
+            .constant(8)
+            .op(code::I64_SUB)
+            .guest();
         value(body);
         body.op(code::I64_STORE);
         body.bytes.push(0);
         body.bytes.push(0);
+        body.store(Self::slot(4), |b| {
+            b.load(Self::slot(4)).constant(8).op(code::I64_SUB);
+        });
     }
 
     /// **Un bit, lu dans la retenue et parfois changé.**
