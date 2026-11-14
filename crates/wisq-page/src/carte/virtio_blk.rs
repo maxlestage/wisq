@@ -47,19 +47,35 @@ use super::Ram;
 /// ses anneaux (`vring_init`).
 pub const LIMITE_DE_FILE: u32 = 128;
 
-/// **La plus grande requête qui part vers l'arrière**, en octets.
+/// **Ce que la carte tient au plus, en octets, pour toutes les requêtes
+/// parties à la fois** : la somme des longueurs de celles qui attendent leur
+/// réponse, prises ou non.
 ///
-/// Le cœur Swift n'en a pas : ses octets sont là, et il copie ce qu'on lui
-/// demande. Ici, une écriture est recopiée de la RAM dans la mémoire de la
-/// carte au moment où elle part, et une lecture fait allouer autant à
-/// l'arrière ; sans borne, c'est l'invité qui choisirait combien la page
-/// alloue (le garde du bout du disque borne la somme par la taille du disque,
-/// soit 1,4 Gio pour une ISO). Un noyau à qui l'on n'annonce ni `SEG_MAX` ni
-/// `SIZE_MAX` découpe ses requêtes bien en deçà — 1 280 Kio par défaut pour
-/// `max_sectors_kb`, de mémoire du pilote, non mesuré ici. Au-delà de la
-/// borne, la requête est refusée par une erreur d'entrée-sortie, que le
-/// pilote voit, plutôt que de faire tomber la page.
-pub const PLUS_GRANDE_REQUETE: u64 = 64 << 20;
+/// Le cœur Swift n'en a pas besoin : ses octets sont là, et il copie ce qu'on
+/// lui demande pendant la notification. Ici, une écriture est recopiée de la
+/// RAM dans la mémoire de la carte au moment où elle part (puis encore une
+/// fois par `web/carte.js`, qui la donne à l'arrière), et une lecture fait
+/// allouer autant à l'arrière. Une borne par requête ne suffit pas : une
+/// seule notification peut faire partir cent vingt-huit requêtes, et cent
+/// vingt-huit fois 64 Mio font 8 Gio, plus que les 4 Gio d'une mémoire
+/// wasm32 — l'allocation échouerait, et la carte trapperait.
+///
+/// **Au-delà, la file attend** plutôt que de refuser : la requête qui ne
+/// tient plus reste dans l'anneau des disponibles, non lue, avec toutes
+/// celles d'après, et la carte la reprend dès qu'une réponse rend de la
+/// place. Virtio le permet (rien n'oblige le disque à lire l'anneau au
+/// rythme du pilote), et un pilote correct qui charge beaucoup ne reçoit
+/// ainsi jamais d'erreur d'entrée-sortie qu'il n'a pas méritée. Un noyau à
+/// qui l'on n'annonce ni `SEG_MAX` ni `SIZE_MAX` découpe ses requêtes à
+/// 1 280 Kio par défaut (`max_sectors_kb`, de mémoire du pilote, non mesuré
+/// ici) : il lui faudrait plus de cinquante requêtes dehors pour attendre.
+pub const PLUS_TENU: u64 = 64 << 20;
+
+/// **La plus grande requête qui part vers l'arrière**, en octets : celle
+/// qui, seule, remplit [`PLUS_TENU`]. Au-delà, elle ne tiendrait jamais, et
+/// la file l'attendrait pour toujours : elle est refusée par une erreur
+/// d'entrée-sortie, que le pilote voit.
+pub const PLUS_GRANDE_REQUETE: u64 = PLUS_TENU;
 
 /// Le sens d'une requête qui part vers l'arrière.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,8 +89,9 @@ pub enum Sens {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequeteDisque {
     /// Le nom de la requête pour la réponse. Jamais réemployé tant que la
-    /// carte vit : une réponse en retard, après une remise à zéro, ne peut pas
-    /// tomber sur une requête plus jeune.
+    /// carte vit, même quand le disque est rebranché : une réponse en retard,
+    /// après une remise à zéro ou un disque neuf, ne peut pas tomber sur une
+    /// requête plus jeune.
     pub id: u32,
     pub sens: Sens,
     /// Le début de la plage, en octets depuis le début du disque.
@@ -220,6 +237,27 @@ impl VirtioBlk {
         self.a_envoyer.len()
     }
 
+    /// **Combien d'octets la carte tient pour l'arrière** : la somme des
+    /// longueurs des requêtes parties qui attendent leur réponse. Jamais plus
+    /// que [`PLUS_TENU`].
+    pub fn tenus(&self) -> u64 {
+        self.en_vol.iter().map(|v| v.longueur).sum()
+    }
+
+    /// **Le nom que portera la prochaine requête partie.** Un disque neuf
+    /// branché à la place de celui-ci le reprend ([`VirtioBlk::reprendre_les_noms`]) :
+    /// les réponses de l'ancien, qui peuvent encore arriver, ne doivent pas
+    /// nommer une requête du neuf.
+    pub fn prochain_nom(&self) -> u32 {
+        self.prochain_id
+    }
+
+    /// **Continuer les noms d'un disque d'avant** : la prochaine requête
+    /// partie s'appellera `nom` (ramené entre 1 et 2³¹ − 1, comme tous).
+    pub fn reprendre_les_noms(&mut self, nom: u32) {
+        self.prochain_id = (nom.wrapping_sub(1) % 0x7FFF_FFFF) + 1;
+    }
+
     // ---------------------------------------------------------------- ports
 
     /// **Lire un registre de la fenêtre**, à `decalage` de son début. Le
@@ -350,7 +388,11 @@ impl VirtioBlk {
             else {
                 return;
             };
-            self.recevoir(tete, ram);
+            // La file attend : cette entrée et les suivantes restent dans
+            // l'anneau, et une réponse les fera reprendre.
+            if !self.recevoir(tete, ram) {
+                return;
+            }
             self.prochain_disponible = self.prochain_disponible.wrapping_add(1);
         }
     }
@@ -360,7 +402,11 @@ impl VirtioBlk {
     /// Le silence est un mensonge : une chaîne mal formée, un secteur hors du
     /// disque ou un type inconnu se répondent par un statut d'erreur, jamais
     /// en ne répondant rien — un pilote sans réponse attend pour toujours.
-    fn recevoir(&mut self, tete: u16, ram: &mut dyn Ram) {
+    ///
+    /// Rend `false` quand la requête ne tient pas encore ([`PLUS_TENU`]) :
+    /// elle n'est pas lue, et la file attend. `true` quand elle est reçue —
+    /// partie, ou déjà rendue.
+    fn recevoir(&mut self, tete: u16, ram: &mut dyn Ram) -> bool {
         let mut chaine: Vec<Descripteur> = Vec::new();
         let mut index = tete;
         while chaine.len() <= LIMITE_DE_FILE as usize {
@@ -380,22 +426,41 @@ impl VirtioBlk {
             .filter(|d| d.inscriptible() && d.longueur >= 1)
             .map(|d| d.adresse.wrapping_add(u64::from(d.longueur) - 1));
 
+        // **Une tête encore partie, ou un octet de statut qu'une requête
+        // partie attend d'écrire, n'appartient pas à cette entrée.** Le
+        // pilote ne republie une tête qu'après l'avoir reçue servie ; celle-ci
+        // est donc une erreur du pilote, rendue en erreur pour ne pas le
+        // laisser attendre — mais sans écrire l'octet de statut, qui est
+        // celui de la requête en vol : son « réussi », plus tard, ne doit pas
+        // avoir été précédé d'un « erreur » qu'elle n'a pas mérité.
+        if self
+            .en_vol
+            .iter()
+            .any(|v| v.tete == tete || (statut_a.is_some() && v.statut_a == statut_a))
+        {
+            self.refuser(tete, None, ram);
+            return true;
+        }
+
         let (Some(entete), Some(dernier)) = (chaine.first().copied(), chaine.last().copied())
         else {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         };
         if chaine.len() < 2
             || entete.longueur < 16
             || !dernier.inscriptible()
             || dernier.longueur < 1
         {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         }
         let (Some(genre), Some(secteur)) = (
             lire_u32(ram, entete.adresse),
             lire_u64(ram, entete.adresse.wrapping_add(8)),
         ) else {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         };
         let donnees = &chaine[1..chaine.len() - 1];
         let etendue: u64 = donnees.iter().map(|d| u64::from(d.longueur)).sum();
@@ -403,12 +468,13 @@ impl VirtioBlk {
         // un système de fichiers y lirait un superbloc vide au lieu
         // d'apprendre qu'il a demandé trop loin.
         if (genre == 0 || genre == 1) && au_dela_du_disque(secteur, etendue, self.secteurs) {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         }
         match genre {
             0 | 1 => {
                 let sens = if genre == 0 { Sens::Lire } else { Sens::Ecrire };
-                self.faire_partir(tete, sens, secteur, etendue, donnees, statut_a, ram);
+                return self.faire_partir(tete, sens, secteur, etendue, donnees, statut_a, ram);
             }
             8 => {
                 // L'identifiant du disque, vingt octets, que le noyau lit pour
@@ -426,10 +492,12 @@ impl VirtioBlk {
                 self.rendre(tete, 0, NON_SUPPORTE, statut_a, ram);
             }
         }
+        true
     }
 
     /// **Faire partir une lecture ou une écriture**, ou la refuser tout de
-    /// suite si elle ne peut pas aboutir.
+    /// suite si elle ne peut pas aboutir. `false` : elle ne tient pas encore,
+    /// rien n'est fait, la file attend.
     #[allow(clippy::too_many_arguments)]
     fn faire_partir(
         &mut self,
@@ -440,12 +508,13 @@ impl VirtioBlk {
         donnees: &[Descripteur],
         statut_a: Option<u64>,
         ram: &mut dyn Ram,
-    ) {
+    ) -> bool {
         // Le sens de chaque tampon : le disque écrit dans ceux d'une
         // lecture, et lit ceux d'une écriture.
         let lecture = sens == Sens::Lire;
         if donnees.iter().any(|d| d.inscriptible() != lecture) || etendue > PLUS_GRANDE_REQUETE {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         }
         // **Chaque tampon entier dans la RAM, vérifié avant de partir.** Le
         // cœur Swift perd en silence l'octet d'une lecture qui tombe hors de
@@ -457,18 +526,30 @@ impl VirtioBlk {
             .iter()
             .all(|d| dans_la_ram(ram, d.adresse, d.longueur))
         {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
         }
         // Rien à lire ni à écrire : réussi, sans déranger l'arrière.
         if donnees.is_empty() {
             self.servies += 1;
-            return self.rendre(tete, 0, REUSSI, statut_a, ram);
+            self.rendre(tete, 0, REUSSI, statut_a, ram);
+            return true;
         }
-        // Une file de 128 places n'a jamais plus de 128 requêtes dehors ; un
-        // pilote qui republie une tête encore partie est refusé plutôt que de
-        // faire grossir la liste.
+        // **Pas plus de 128 requêtes dehors.** Une tête encore partie est déjà
+        // refusée plus haut ; mais rien n'oblige le pilote à nommer des têtes
+        // de moins de 128 (le cœur Swift ne le vérifie pas non plus, et suit
+        // la table aussi loin qu'on lui dit), si bien qu'un pilote fautif
+        // pourrait en faire partir des milliers. La 129ᵉ est refusée.
         if self.en_vol.len() >= LIMITE_DE_FILE as usize {
-            return self.refuser(tete, statut_a, ram);
+            self.refuser(tete, statut_a, ram);
+            return true;
+        }
+        // **La borne de la somme, avant d'allouer quoi que ce soit.** Ce qui
+        // ne tient pas attend une réponse ; une requête seule tient toujours
+        // (la borne par requête vaut la borne de la somme), donc la file ne
+        // peut pas attendre sans requête en vol pour la reprendre.
+        if self.tenus() + etendue > PLUS_TENU {
+            return false;
         }
         let mut octets = Vec::new();
         if sens == Sens::Ecrire {
@@ -477,7 +558,8 @@ impl VirtioBlk {
             for d in donnees {
                 let fin = a + d.longueur as usize;
                 if !ram.lire(d.adresse, &mut octets[a..fin]) {
-                    return self.refuser(tete, statut_a, ram);
+                    self.refuser(tete, statut_a, ram);
+                    return true;
                 }
                 a = fin;
             }
@@ -505,6 +587,7 @@ impl VirtioBlk {
             },
             statut_a,
         });
+        true
     }
 
     fn refuser(&mut self, tete: u16, statut_a: Option<u64>, ram: &mut dyn Ram) {
@@ -565,32 +648,50 @@ impl VirtioBlk {
     /// sont pas de la longueur demandée (un fichier plus court que le disque
     /// annoncé) rendent la requête en erreur d'entrée-sortie : jamais des
     /// zéros à la place de ce qui manque.
+    ///
+    /// La place rendue fait partir ce que la file laissait attendre : de
+    /// nouvelles requêtes peuvent être à prendre après la réponse.
     pub fn lu(&mut self, id: u32, octets: &[u8], ram: &mut dyn Ram) -> bool {
         let Some(vol) = self.retirer(id) else {
             return false;
         };
+        self.copier_et_rendre(&vol, octets, ram);
+        self.reprendre(ram);
+        true
+    }
+
+    fn copier_et_rendre(&mut self, vol: &EnVol, octets: &[u8], ram: &mut dyn Ram) {
         if vol.sens != Sens::Lire || octets.len() as u64 != vol.longueur {
-            self.refuser(vol.tete, vol.statut_a, ram);
-            return true;
+            return self.refuser(vol.tete, vol.statut_a, ram);
         }
         let mut a = 0usize;
         for &(adresse, longueur) in &vol.tampons {
             let fin = a + longueur as usize;
             if !ram.ecrire(adresse, &octets[a..fin]) {
-                self.refuser(vol.tete, vol.statut_a, ram);
-                return true;
+                return self.refuser(vol.tete, vol.statut_a, ram);
             }
             a = fin;
         }
         self.servies += 1;
         self.rendre(vol.tete, vol.longueur as u32, REUSSI, vol.statut_a, ram);
-        true
+    }
+
+    /// **Une réponse a rendu de la place** : ce que la file avait laissé
+    /// attendre ([`PLUS_TENU`]) est lu maintenant, sans attendre une autre
+    /// notification que le pilote n'enverra pas — il a déjà publié. La boucle
+    /// hôte prend donc les requêtes après chaque réponse, comme après chaque
+    /// `out`.
+    fn reprendre(&mut self, ram: &mut dyn Ram) {
+        if self.prete {
+            self.servir(ram);
+        }
     }
 
     /// **Une requête est finie sans octets à rendre** : une écriture que
     /// l'arrière a faite (`reussi`), ou toute requête qu'il n'a pas pu faire.
     /// Une lecture « réussie » sans ses octets n'existe pas : elle est rendue
-    /// en erreur. `false` quand `id` ne nomme aucune requête partie.
+    /// en erreur. `false` quand `id` ne nomme aucune requête partie. Comme
+    /// [`VirtioBlk::lu`], la réponse peut faire partir ce qui attendait.
     pub fn fini(&mut self, id: u32, reussi: bool, ram: &mut dyn Ram) -> bool {
         let Some(vol) = self.retirer(id) else {
             return false;
@@ -601,6 +702,7 @@ impl VirtioBlk {
         } else {
             self.refuser(vol.tete, vol.statut_a, ram);
         }
+        self.reprendre(ram);
         true
     }
 }
@@ -1367,20 +1469,221 @@ mod tests {
         assert_eq!(ram.0[0x5000], 2);
     }
 
-    /// **Pas plus de requêtes dehors que la file n'a de places** : un pilote
-    /// qui republie une tête encore partie est refusé, et la liste ne grossit
-    /// pas.
+    /// **Une requête aux descripteurs `tete`, `tete + 1`, `tete + 2`**, chacune
+    /// avec son en-tête et son octet de statut à elle (posé à `0xFF`), mise à
+    /// l'entrée `entree` de l'anneau des disponibles. L'index, qui publie,
+    /// est laissé au test.
+    fn poser(
+        ram: &mut RamPlate,
+        tete: u16,
+        (genre, secteur): (u32, u64),
+        tampon: (u64, u32, bool),
+        (entete, statut): (u64, u64),
+        entree: u16,
+    ) {
+        ram.ecrire(entete, &genre.to_le_bytes());
+        ram.ecrire(entete + 4, &0u32.to_le_bytes());
+        ram.ecrire(entete + 8, &secteur.to_le_bytes());
+        let t = u64::from(tete);
+        File::decrire(ram, t, entete, 16, false, Some(tete + 1));
+        File::decrire(ram, t + 1, tampon.0, tampon.1, tampon.2, Some(tete + 2));
+        File::decrire(ram, t + 2, statut, 1, true, None);
+        ram.ecrire(statut, &[0xFF]);
+        ram.ecrire(
+            File::DISPONIBLES + 4 + u64::from(entree % 128) * 2,
+            &tete.to_le_bytes(),
+        );
+    }
+
+    fn publier(ram: &mut RamPlate, index: u16) {
+        ram.ecrire(File::DISPONIBLES + 2, &index.to_le_bytes());
+    }
+
+    /// **Une tête encore partie est refusée, sans toucher à son statut** : le
+    /// pilote ne republie une tête qu'après l'avoir reçue servie. La tête 0,
+    /// publiée deux cents fois d'un coup, ne part qu'une fois ; les cent
+    /// quatre-vingt-dix-neuf autres entrées sont rendues en erreur dans
+    /// l'anneau des servies (aucune ne reste sans réponse), mais l'octet de
+    /// statut reste celui de la requête en vol, jusqu'à sa réponse. Même chose
+    /// pour une autre tête dont l'octet de statut est celui d'une requête en
+    /// vol, même quand elle se répondrait tout de suite (l'identifiant).
+    #[test]
+    fn a_head_still_out_is_refused_without_touching_its_status() {
+        let (mut disque, mut ram) = demarre();
+        File::requete(&mut ram, 0, 0, (0x5000, 512, true), 0);
+        // L'index publié 200 entrées plus loin ; la RAM est à zéro, donc
+        // toutes les entrées nomment la tête 0.
+        publier(&mut ram, 200);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.a_prendre(), 1, "une seule fois dehors");
+        assert_eq!(disque.refusees, 199);
+        assert_eq!(File::servies(&ram), 199, "chacune a sa réponse");
+        assert_eq!(File::servie(&ram, 198 % 128), (0, 0));
+        assert_eq!(File::statut(&ram), 0xFF, "le statut de la requête en vol");
+        // Une autre tête, la demande d'identifiant, dont le statut est celui
+        // de la requête en vol.
+        File::decrire(&mut ram, 3, File::BROUILLON + 0x100, 16, false, Some(4));
+        ram.ecrire(File::BROUILLON + 0x100, &8u32.to_le_bytes());
+        File::decrire(&mut ram, 4, 0x6000, 20, true, Some(5));
+        File::decrire(&mut ram, 5, File::STATUT, 1, true, None);
+        ram.ecrire(File::DISPONIBLES + 4 + (200 % 128) * 2, &3u16.to_le_bytes());
+        publier(&mut ram, 201);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.refusees, 200);
+        assert_eq!(File::servie(&ram, 199 % 128), (3, 0));
+        assert_eq!(ram.0[0x6000], 0, "refusée, elle n'a rien écrit");
+        assert_eq!(File::statut(&ram), 0xFF);
+        // La réponse arrive : elle seule pose le statut.
+        assert_eq!(repondre(&mut disque, &mut image(), &mut ram), 1);
+        assert_eq!(File::statut(&ram), 0);
+        assert_eq!(File::servies(&ram), 201);
+        assert_eq!(File::servie(&ram, 200 % 128), (0, 512));
+        assert_eq!(ram.0[0x5000], 1);
+    }
+
+    /// **Pas plus de requêtes dehors que la file n'a de places**, même pour
+    /// un pilote qui nomme des têtes au-delà de la table (rien ne l'en
+    /// empêche, du côté Swift non plus) : cent vingt-huit têtes distinctes,
+    /// chacune avec son statut, partent ; la cent vingt-neuvième est refusée,
+    /// dans son propre octet de statut, et la liste ne grossit pas.
     #[test]
     fn no_more_requests_are_out_than_the_queue_has_places() {
         let (mut disque, mut ram) = demarre();
-        File::requete(&mut ram, 0, 0, (0x5000, 512, true), 0);
-        // L'index publié 200 entrées plus loin, toutes sur la même tête.
-        ram.ecrire(File::DISPONIBLES + 2, &200u16.to_le_bytes());
+        // Les têtes à partir de 0x600 : leurs descripteurs tombent de 0x7000
+        // à 0x8830, sous les statuts à 0x9000 et au-delà.
+        let tete = |k: u16| 0x600 + 3 * k;
+        let statut = |k: u16| 0x9000 + u64::from(k);
+        for k in 0..128 {
+            poser(
+                &mut ram,
+                tete(k),
+                (0, 0),
+                (0x5000, 512, true),
+                (0x4000, statut(k)),
+                k,
+            );
+        }
+        publier(&mut ram, 128);
         notifier(&mut disque, &mut ram);
         assert_eq!(disque.a_prendre(), 128);
-        assert_eq!(disque.refusees, 72);
+        assert_eq!(disque.refusees, 0);
+        poser(
+            &mut ram,
+            tete(128),
+            (0, 0),
+            (0x5000, 512, true),
+            (0x4000, statut(128)),
+            128,
+        );
+        publier(&mut ram, 129);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.a_prendre(), 128, "la liste ne grossit pas");
+        assert_eq!(disque.refusees, 1);
+        assert_eq!(ram.0[statut(128) as usize], 1, "son statut à elle");
+        assert!((0..128).all(|k| ram.0[statut(k) as usize] == 0xFF));
+        assert_eq!(File::servie(&ram, 0), (u32::from(tete(128)), 0));
         assert_eq!(repondre(&mut disque, &mut image(), &mut ram), 128);
-        assert_eq!(File::servies(&ram), 200, "chacune a sa réponse");
+        assert_eq!(File::servies(&ram), 129, "chacune a sa réponse");
+        assert!((0..128).all(|k| ram.0[statut(k) as usize] == 0));
+    }
+
+    /// **La carte ne tient jamais plus que sa borne à la fois** : trois
+    /// lectures de 32 Mio publiées d'une seule notification. Les deux
+    /// premières partent (64 Mio, la borne tout juste) ; la troisième ne
+    /// tient plus et **attend**, non lue, sans refus ni statut posé. La
+    /// première réponse lui rend sa place, et elle part alors d'elle-même,
+    /// sans autre notification.
+    ///
+    /// C'est le cas que la borne par requête laissait passer : cent
+    /// vingt-huit requêtes de 64 Mio, 8 Gio, dans une mémoire wasm32 de
+    /// 4 Gio au plus.
+    #[test]
+    fn the_card_never_holds_more_than_its_bound_at_once() {
+        const MORCEAU: u32 = 32 << 20;
+        const TAMPON: u64 = 0x10_0000;
+        let mut disque = VirtioBlk::nouveau(1 << 20);
+        let mut ram = RamPlate(vec![0; TAMPON as usize + MORCEAU as usize]);
+        File::demarrer(&mut disque, &mut ram);
+        let secteurs = u64::from(MORCEAU / 512);
+        for k in 0..3u16 {
+            poser(
+                &mut ram,
+                3 * k,
+                (0, secteurs * u64::from(k)),
+                (TAMPON, MORCEAU, true),
+                (0x4000 + 0x10 * u64::from(k), 0x4800 + u64::from(k)),
+                k,
+            );
+        }
+        publier(&mut ram, 3);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.a_prendre(), 2, "la troisième ne tient plus");
+        assert_eq!(disque.tenus(), PLUS_TENU);
+        assert_eq!(disque.refusees, 0, "elle attend, elle n'est pas refusée");
+        assert_eq!(File::servies(&ram), 0);
+        assert_eq!(ram.0[0x4802], 0xFF);
+        // Une notification de plus n'y change rien : la place manque encore.
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.a_prendre(), 2);
+        let premiere = disque.prendre_requete().expect("partie");
+        let deuxieme = disque.prendre_requete().expect("partie");
+        assert_eq!(premiere.decalage, 0);
+        assert!(disque.lu(premiere.id, &vec![7; MORCEAU as usize], &mut ram));
+        assert_eq!(File::servies(&ram), 1);
+        assert_eq!(ram.0[0x4800], 0);
+        // La place rendue fait partir la troisième.
+        let troisieme = disque.prendre_requete().expect("partie après la réponse");
+        assert_eq!(troisieme.decalage, 2 * u64::from(MORCEAU));
+        assert_eq!(disque.tenus(), PLUS_TENU);
+        assert!(disque.fini(deuxieme.id, false, &mut ram));
+        assert!(disque.lu(troisieme.id, &vec![9; MORCEAU as usize], &mut ram));
+        assert_eq!(disque.tenus(), 0);
+        assert!(!disque.en_attente());
+        assert_eq!(File::servies(&ram), 3);
+        assert_eq!(ram.0[0x4801..0x4803], [1, 0]);
+        assert_eq!((disque.servies, disque.refusees), (2, 1));
+        assert_eq!(ram.0[TAMPON as usize], 9);
+    }
+
+    /// **Un disque rebranché ne reprend pas les noms de l'ancien** : la
+    /// réponse en retard d'une lecture de l'ancien disque (le secteur 0) ne
+    /// remplit pas la première lecture du neuf (le secteur 3), et ne la dit
+    /// pas réussie.
+    #[test]
+    fn a_disk_plugged_anew_never_reuses_a_name() {
+        let mut carte = Carte::nouvelle();
+        let mut ram = RamPlate(vec![0; 0x10000]);
+        let lire = |carte: &mut Carte, ram: &mut RamPlate, secteur| {
+            ouvrir(carte, 0xC000);
+            par_les_ports(carte, ram);
+            File::requete(ram, 0, secteur, (0x5000, 512, true), 0);
+            carte.port_ecrire(0xC010, 2, 0, ram);
+            carte.requete_disque().expect("partie")
+        };
+        carte.brancher_disque(4);
+        let vieille = lire(&mut carte, &mut ram, 0);
+        carte.brancher_disque(4);
+        let jeune = lire(&mut carte, &mut ram, 3);
+        assert_ne!(vieille.id, jeune.id);
+        assert!(!carte.disque_lu(vieille.id, &[0xAA; 512], &mut ram));
+        assert_eq!(File::statut(&ram), 0xFF, "rien n'est dit au pilote");
+        assert_eq!(ram.0[0x5000], 0, "rien n'est copié");
+        assert!(carte.disque_lu(jeune.id, &image()[1536..], &mut ram));
+        assert_eq!(ram.0[0x5000], 4, "le secteur 3");
+        assert_eq!(File::statut(&ram), 0);
+    }
+
+    /// Les noms continuent tels quels, et restent entre 1 et 2³¹ − 1.
+    #[test]
+    fn names_carry_over_within_their_range() {
+        let mut disque = VirtioBlk::nouveau(4);
+        assert_eq!(disque.prochain_nom(), 1);
+        for nom in [1, 2, 0x7FFF_FFFE, 0x7FFF_FFFF] {
+            disque.reprendre_les_noms(nom);
+            assert_eq!(disque.prochain_nom(), nom);
+        }
+        disque.reprendre_les_noms(0x8000_0000);
+        assert_eq!(disque.prochain_nom(), 1, "ramené dans l'intervalle");
     }
 
     /// Ouvrir la fenêtre du disque à `base`, par les ports, comme le noyau.

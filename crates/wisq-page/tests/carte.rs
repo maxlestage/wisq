@@ -605,3 +605,215 @@ serveur.stop(true);
     let mesure = said(&text, "mesure ");
     eprintln!("disque par plages : {mesure}");
 }
+
+/// **Le noyau, joué par les ports, pour les tests du disque** : un fragment
+/// JavaScript qui attend `c` (la carte) et `memoire` (la RAM de l'invité),
+/// et définit `brancher()` (l'énumération, la BAR à `0xC000`, la poignée de
+/// main, la file à la page 1), `requete(…)` (une chaîne de trois
+/// descripteurs à partir de `tete`, publiée, puis la notification),
+/// `statut(a)`, `servies()` et `attendre()` (jusqu'à ce que l'arrière n'ait
+/// plus rien, ou deux secondes au plus : un test qui attend pour rien tombe
+/// au lieu de pendre).
+const PILOTE_DU_DISQUE: &str = r#"
+const vue = () => new DataView(memoire.buffer);
+const sortir = (port, valeur, largeur) => c.ports.out(BigInt(port), BigInt(valeur), BigInt(largeur));
+const entrer = (port, largeur) => Number(c.ports.in(BigInt(port), BigInt(largeur)));
+function brancher() {
+  sortir(0xcf8, 0x80001810, 4);
+  sortir(0xcfc, 0xc000, 4);
+  sortir(0xcf8, 0x80001804, 4);
+  sortir(0xcfc, 0x0005, 2);
+  for (const s of [0, 1, 3]) sortir(0xc012, s, 1);
+  sortir(0xc004, entrer(0xc000, 4), 4);
+  sortir(0xc012, 11, 1);
+  sortir(0xc00e, 0, 2);
+  sortir(0xc008, 1, 4);
+  sortir(0xc012, 15, 1);
+}
+let publiees = 0;
+function poser({ tete = 0, genre, secteur, tampon = 0x10000, longueur = 512, entete = 0x4000, statut = 0x4800 }) {
+  const v = vue();
+  v.setUint32(entete, genre, true);
+  v.setBigUint64(entete + 8, BigInt(secteur), true);
+  const dire = (i, a, n, drapeaux, suivant) => {
+    v.setBigUint64(0x1000 + i * 16, BigInt(a), true);
+    v.setUint32(0x1008 + i * 16, n, true);
+    v.setUint16(0x100c + i * 16, drapeaux, true);
+    v.setUint16(0x100e + i * 16, suivant, true);
+  };
+  dire(tete, entete, 16, 1, tete + 1);
+  dire(tete + 1, tampon, longueur, genre === 0 ? 3 : 1, tete + 2);
+  dire(tete + 2, statut, 1, 2, 0);
+  v.setUint8(statut, 0xff);
+  v.setUint16(0x1804 + (publiees % 128) * 2, tete, true);
+  publiees += 1;
+}
+function requete(...demandes) {
+  for (const d of demandes) poser(d);
+  vue().setUint16(0x1802, publiees, true);
+  return sortir(0xc010, 0, 2);
+}
+const statut = (a = 0x4800) => "0x" + vue().getUint8(a).toString(16);
+const servies = () => vue().getUint16(0x2002, true);
+const attendre = async () => {
+  const fin = performance.now() + 2000;
+  while (c.disque.enVol() > 0 && performance.now() < fin) await new Promise((r) => setTimeout(r, 1));
+};
+"#;
+
+/// **Un arrière qui échoue est une erreur d'entrée-sortie pour le pilote**,
+/// jamais une réussite : c'est ce que `web/carte.js` promet, jugé par la
+/// carte entière, de l'`out` qui notifie à l'octet de statut.
+///
+/// Le magasin est un faux `fetch` donné à `arriereParUrl`, qui répond selon
+/// le cas : un `PUT` refusé (500), un `GET` refusé (500), une plage rendue
+/// tronquée. Puis un arrière dont l'écriture rejette sa promesse, un dont
+/// l'écriture lève tout de suite, et un qui ne sait pas écrire du tout.
+/// Chaque cas doit rendre le statut `0x1` ; une lecture refusée ne doit
+/// rien laisser dans le tampon. Et, pour que les refus ne viennent pas du
+/// montage, le même magasin qui répond bien rend `0x0`, dans les deux sens.
+#[test]
+fn a_failing_backend_is_an_io_error_for_the_driver() {
+    let module = page_module();
+    let carte_js = workspace_root().join("web/carte.js");
+    let script = format!(
+        r#"{prelude}
+import {{ arriereParUrl, ramDeMemoire }} from {carte_js:?};
+let mode = "bien";
+const faux = async (url, init) => {{
+  const n = Number(new URL(url).searchParams.get("n"));
+  if (init?.method === "PUT") return new Response(null, {{ status: mode === "put_refuse" ? 500 : 204 }});
+  if (mode === "get_refuse") return new Response("non", {{ status: 500 }});
+  if (mode === "tronquee") return new Response(new Uint8Array(n - 10).fill(0x5a));
+  return new Response(new Uint8Array(n).fill(0x5a));
+}};
+const parUrl = arriereParUrl("http://magasin/disque/0", 1 << 20, {{ fetch: faux }});
+const arriere = {{
+  octets: 1 << 20,
+  lire: (a, n) => parUrl.lire(a, n),
+  ecrire: (a, o) => {{
+    if (mode === "rejette") return Promise.reject(new Error("panne"));
+    if (mode === "leve") throw new Error("panne tout de suite");
+    return parUrl.ecrire(a, o);
+  }},
+}};
+const memoire = new WebAssembly.Memory({{ initial: 64 }});
+const c = carte(module, {{ heure: () => 0, ram: ramDeMemoire(memoire, 64 * 65536), disque: arriere }});
+{pilote}
+brancher();
+const tampon = () => "0x" + new Uint8Array(memoire.buffer)[0x10000].toString(16);
+async function cas(nom, genre) {{
+  mode = nom;
+  new Uint8Array(memoire.buffer, 0x10000, 512).fill(0);
+  requete({{ genre, secteur: 1 }});
+  await attendre();
+  entrer(0xc013, 1);
+  console.log(nom + (genre === 0 ? "_lu " : "_ecrit ") + statut() + " " + tampon() + " " + c.disque.enVol());
+}}
+await cas("bien", 0);
+await cas("bien", 1);
+await cas("put_refuse", 1);
+await cas("get_refuse", 0);
+await cas("tronquee", 0);
+await cas("rejette", 1);
+await cas("leve", 1);
+delete arriere.ecrire;
+await cas("sans", 1);
+console.log("servies " + servies());
+"#,
+        prelude = prelude(&module),
+        pilote = PILOTE_DU_DISQUE,
+    );
+    let text = run_driver("arriere-en-panne", &script);
+    assert_eq!(
+        said(&text, "bien_lu "),
+        "0x0 0x5a 0",
+        "le montage répond bien"
+    );
+    assert_eq!(said(&text, "bien_ecrit "), "0x0 0x0 0");
+    assert_eq!(
+        said(&text, "put_refuse_ecrit "),
+        "0x1 0x0 0",
+        "un PUT refusé n'est pas une écriture faite"
+    );
+    assert_eq!(said(&text, "get_refuse_lu "), "0x1 0x0 0");
+    assert_eq!(
+        said(&text, "tronquee_lu "),
+        "0x1 0x0 0",
+        "une plage tronquée n'est pas complétée"
+    );
+    assert_eq!(
+        said(&text, "rejette_ecrit "),
+        "0x1 0x0 0",
+        "une promesse rejetée n'est pas une écriture faite"
+    );
+    assert_eq!(said(&text, "leve_ecrit "), "0x1 0x0 0");
+    assert_eq!(said(&text, "sans_ecrit "), "0x1 0x0 0");
+    assert_eq!(said(&text, "servies "), "8", "chaque requête a sa réponse");
+}
+
+/// **Ce qui attendait de la place part à la réponse**, par `web/carte.js`,
+/// sans autre notification. Deux lectures de 40 Mio publiées d'un coup : la
+/// carte n'en tient que 64 à la fois, si bien qu'une seule est confiée à
+/// l'arrière ; la seconde attend dans la file. Quand la première revient,
+/// la seconde est confiée aussitôt, et le compte de ce qui est en vol ne
+/// passe jamais par zéro entre les deux — une boucle hôte qui dort tant
+/// qu'il est à zéro ne la manquerait donc pas.
+#[test]
+fn what_waits_for_room_leaves_on_the_answer() {
+    let module = page_module();
+    let carte_js = workspace_root().join("web/carte.js");
+    let script = format!(
+        r#"{prelude}
+import {{ ramDeMemoire }} from {carte_js:?};
+const MORCEAU = 40 << 20;
+const attentes = [];
+const arriere = {{
+  octets: 1 << 30,
+  lire: (a, n) => new Promise((rendre) => attentes.push({{ a, n, rendre }})),
+}};
+const pages = (0x100000 + MORCEAU) / 65536;
+const memoire = new WebAssembly.Memory({{ initial: pages }});
+const enVolALaReponse = [];
+const c = carte(module, {{ heure: () => 0, ram: ramDeMemoire(memoire, pages * 65536), disque: arriere, surReponse: () => enVolALaReponse.push(c.disque.enVol()) }});
+{pilote}
+brancher();
+const lecture = (k) => ({{ tete: 3 * k, genre: 0, secteur: (k * MORCEAU) / 512, tampon: 0x100000, longueur: MORCEAU, entete: 0x4000 + 0x10 * k, statut: 0x4800 + k }});
+console.log("notifie " + requete(lecture(0), lecture(1)));
+// L'arrière est appelé une tâche plus tard (`servir` passe par une
+// promesse) : le laisser venir avant de compter.
+await new Promise((r) => setTimeout(r, 5));
+console.log("confiees " + attentes.length + " " + c.disque.enVol() + " " + statut(0x4801));
+attentes[0].rendre(new Uint8Array(attentes[0].n).fill(1));
+const fin = performance.now() + 2000;
+while (attentes.length < 2 && performance.now() < fin) await new Promise((r) => setTimeout(r, 1));
+console.log("apres_la_premiere " + attentes.length + " " + c.disque.enVol() + " " + statut(0x4800) + " " + servies());
+console.log("seconde " + (attentes[1] ? attentes[1].a + "+" + attentes[1].n : "aucune"));
+attentes[1]?.rendre(new Uint8Array(attentes[1].n).fill(2));
+await attendre();
+console.log("fin " + statut(0x4800) + " " + statut(0x4801) + " " + servies() + " " + new Uint8Array(memoire.buffer)[0x100000] + " " + c.disque.enVol());
+console.log("en_vol_a_chaque_reponse " + enVolALaReponse.join(","));
+"#,
+        prelude = prelude(&module),
+        pilote = PILOTE_DU_DISQUE,
+    );
+    let text = run_driver("attente", &script);
+    assert_eq!(said(&text, "notifie "), "true");
+    assert_eq!(
+        said(&text, "confiees "),
+        "1 1 0xff",
+        "une seule confiée, la seconde attend sans refus"
+    );
+    assert_eq!(
+        said(&text, "apres_la_premiere "),
+        "2 1 0x0 1",
+        "la seconde confiée dès la réponse"
+    );
+    assert_eq!(said(&text, "seconde "), "41943040+41943040");
+    assert_eq!(said(&text, "fin "), "0x0 0x0 2 2 0");
+    assert_eq!(
+        said(&text, "en_vol_a_chaque_reponse "),
+        "1,0",
+        "jamais zéro tant qu'une requête reste à servir"
+    );
+}
