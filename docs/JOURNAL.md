@@ -93,8 +93,8 @@ carte réseau, mauvaise empreinte, écran de 800 × 600, garde de l'écran noir
 ôtée, garde du réseau ou de la tablette ôtée, marque oubliée à la frappe,
 une tranche de trop, l'heure perdue au chargement ou à la reprise, doigt
 ôté, fin de l'invité ignorée, marque cherchée dans le dernier morceau,
-garde de la mémoire ôtée. `swift test` : 2842 tests, aucun échec. Compte
-publié : 3418. L'ancien `bureau.snap` (883 Mo) est effacé du bloc-notes ;
+garde de la mémoire ôtée. `swift test` : 2842 tests, aucun échec (avant et
+après la fusion de master). Compte publié : 3435 après la fusion. L'ancien `bureau.snap` (883 Mo) est effacé du bloc-notes ;
 l'instantané brut du bureau prêt le remplace pour les bancs.
 
 **Ce qui reste.** La publication (tranche 2) ; l'entrée de catalogue et ses
