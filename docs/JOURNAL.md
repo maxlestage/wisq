@@ -228,6 +228,89 @@ iOS ». La décompression écrit encore tout l'instantané avant la reprise
 `IsoBoot` ressort toujours le noyau et l'initramfs de l'ISO à chaque
 ouverture. L'heure de la première reprise (tranche 4.2) et la sauvegarde
 d'une grosse machine (4.4) sont d'autres tranches.
+## 2026-11-14 — L'émetteur mène Linux 6.12 et 6.18 jusqu'à l'espace utilisateur
+
+**Ce qui n'allait pas.** Sous l'émetteur (x86-64 → WebAssembly), Linux 6.6
+démarrait, mais 6.12.115 et 6.18.60 s'arrêtaient après ≈130 régions, dans
+`native_halt`, sans une ligne sur le port série. La cause : quand une
+instruction prend une faute de page, RIP doit la nommer, pour que le noyau
+pose la page et la rejoue. L'émetteur ne posait RIP que pour les instructions
+qui portent un opérande mémoire. Celles qui atteignent la mémoire sans
+opérande — `rep movs` et `rep stos` (par RSI et RDI), `push`, `pop`, `leave`,
+`call`, `ret`, `jmp *` — fautaient avec le RIP de la dernière instruction
+mémoire d'avant. Dans `copy_bootdata`, la faute du `rep movsl` nommait une
+lecture six octets plus haut : le noyau y reprenait, refaisait un `push`, la
+pile gardait un mot de trop, et le `ret` sautait à `0x90`. Linux 6.6 ne passe
+pas par là.
+
+**Ce qui change** (`crates/wisq-vm/src/x86_wasm.rs`).
+
+- RIP est posé par la **sortie de faute** de `Body::guest`, le seul chemin par
+  lequel une adresse invitée devient une adresse de mémoire. Plus de liste
+  d'instructions à tenir : aucun accès ne peut fauter sans dire d'où. Le
+  chemin sans faute n'écrit plus RIP du tout.
+- `push`, `pushf`, `call` et `call *` écrivent **sous** le sommet, puis
+  descendent RSP. Avant, RSP descendait d'abord : une faute le laissait
+  descendu, et le rejeu le descendait une seconde fois.
+- `leave` lit à RBP avant de poser RSP ; `iretq` lit ses cinq mots avant de
+  changer CS, RFLAGS, SS ou RSP.
+- Un `rep` interrompu par une faute reprend où il en était : RCX, RSI et RDI
+  disent ce qui reste. C'était déjà le cas des registres ; il manquait RIP.
+  L'interprète Rust et le cœur Swift font la même chose.
+- `lods`, `cmps` et `scas` ne sont pas concernés : le décodeur de l'émetteur
+  ne les lit pas.
+
+**Comment c'est vérifié.**
+
+- Le test rouge `a_fault_in_a_string_copy_names_the_string_copy` passe. Quatre
+  tests de plus dans `tests/host_loop.rs` : les chaînes (quatre largeurs, avec
+  et sans `rep`, source ou destination absente, en arrière, compte nul), la
+  pile, les fins de bloc (`call`, `ret`, `lretq`, `jmp *`, `iretq`), et une
+  copie à cheval sur une page que le gestionnaire pose à la demande — une
+  faute, la copie entière.
+- Quatre sabotages, chacun vu tomber puis restauré : RIP retiré de la sortie
+  de faute (10 tests tombent sur 131), RSP descendu avant l'écriture (2),
+  `leave` remis dans l'ancien ordre (1), `iretq` aussi (1). Les dix du premier :
+  le test rouge, les quatre nouveaux, et cinq gardes qui existaient déjà —
+  `a_missing_page_stops_before_the_access_and_names_it`,
+  `a_page_fault_delivered_after_a_push_returns_to_the_same_stack`,
+  `a_page_fault_is_delivered_to_the_guest_and_iretq_resumes_the_faulting_instruction`,
+  `a_fault_right_after_a_push_keeps_the_push` et
+  `a_fault_taken_in_ring_three_lands_on_the_kernel_stack_from_the_task_segment`.
+  Le premier jet de cette entrée disait 8 : il oubliait les deux derniers. Le
+  contrôle l'a relevé, le sabotage a été refait et recompté.
+- `cargo test --release -p wisq-vm` : 393 tests, 0 échec ; pareil avec les
+  débordements et les assertions armés. `cargo fmt` et `cargo clippy` propres.
+  Le module mémoire épinglé de `WebKitBench.swift` est régénéré par
+  `--example bench-module` (même taille, 2021 octets).
+- Sur les vrais noyaux `linux-virt` d'Alpine, avec la sonde (`/init` qui écrit
+  une ligne puis sort) :
+
+  | noyau | régions | port série | tours du pilote |
+  | --- | --- | --- | --- |
+  | 6.6.142 | 10 390 | `WISQ-USERSPACE-OK` | 700 000 (dernière adresse neuve au tour 521 620) |
+  | 6.12.115 | 10 981 | `WISQ-USERSPACE-OK` | 460 000 (439 473) |
+  | 6.18.60 | 12 177 | `WISQ-USERSPACE-OK` | 8 000 000 (3 500 288) |
+
+  Les trois finissent sur « Attempted to kill init! exitcode=0x00001200 » :
+  c'est la sonde qui sort. Avec les 4096 tours par défaut, 6.6.142 rend le
+  même relevé qu'avant, au tour près (1032 régions, `marche 4096 1648 1031 2`).
+- Le commit précédent avait réécrit `"arret " + why` dans trois harnais qui
+  ne le demandaient pas, et
+  `the_pages_driver_talks_to_the_application_and_runs_the_machine` en
+  tombait ; les trois lignes sont remises comme sur `master`.
+
+**Ce qui reste.** La sonde ne fait qu'un `write` et un `exit`. Avec le vrai
+initramfs d'Alpine (6.18.60, `WISQ_RAM=256`), la machine va à 11 413 régions
+puis s'arrête dans `ld-musl`, en anneau 3 :
+
+1. `0x7f5d055d9089` ne se traduit pas — `66 48 0f 6e c3` (`movq %rbx,%xmm0`),
+   puis `punpcklqdq`. L'émetteur ne décode aucune instruction SSE et n'a pas
+   de registres XMM.
+2. Juste avant, `modprobe[372]: segfault at b … error 4 in ld-musl-x86_64.so.1`.
+   Cause non prouvée. Piste : la marche des tables ne regarde que le bit
+   « présent » — pas de faute en écriture, donc pas de copie à l'écriture ; le
+   noyau le voit lui-même (`rodata_test: test data was not read only`).
 
 ## 2026-11-04 — Un bureau qui revient après une sauvegarde
 
