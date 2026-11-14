@@ -617,3 +617,390 @@ console.log("rdx " + vm.globals[2].value.toString());
         "l'anneau traduit dans la page doit avoir tourné {LAPS} fois"
     );
 }
+
+/// **Lancer un pilote Bun** écrit dans un dossier de travail à part, et rendre
+/// ce qu'il a imprimé. Un pilote qui échoue fait tomber le test avec sa sortie
+/// d'erreur : une exception JavaScript non rattrapée ne doit jamais passer
+/// pour une réponse.
+fn run_driver(name: &str, script: &str) -> String {
+    let bun = bun();
+    let work = scratch(name);
+    let driver = work.join("d.mjs");
+    std::fs::write(&driver, script).expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun doit démarrer");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&work);
+    assert!(
+        output.status.success(),
+        "le pilote a échoué : {}\n{text}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    text
+}
+
+/// La valeur que le pilote a imprimée après `label`, ou le test tombe.
+fn said(text: &str, label: &str) -> String {
+    text.lines()
+        .find_map(|line| line.strip_prefix(label).map(|rest| rest.trim().to_string()))
+        .unwrap_or_else(|| panic!("le pilote n'a pas dit « {label} » :\n{text}"))
+}
+
+/// L'en-tête commun des pilotes : la boucle hôte, l'émetteur de la page, et
+/// la porte instanciée sur le module que le script construit.
+fn prelude(module: &Path) -> String {
+    let root = workspace_root();
+    format!(
+        "import {{ machine }} from {host:?};\n\
+         import {{ emetteur }} from {page:?};\n\
+         import {{ readFileSync }} from \"fs\";\n\
+         const porte = emetteur(new WebAssembly.Module(readFileSync({module:?})));\n\
+         const hex = (octets) => Array.from(octets, (o) => o.toString(16).padStart(2, \"0\")).join(\"\");\n",
+        host = root.join("web/host.js").to_string_lossy(),
+        page = root.join("web/page-emitter.js").to_string_lossy(),
+        module = module.to_string_lossy(),
+    )
+}
+
+/// `mov $1,%eax ; ret` : une région de deux instructions.
+const PETIT: [u8; 6] = [0xb8, 0x01, 0x00, 0x00, 0x00, 0xc3];
+
+/// `push %es` : invalide en mode 64 bits, suivi d'assez de `nop` pour que le
+/// bord soit loin. Le décodeur a toute la place qu'il lui faut et ne lit pas
+/// l'instruction : c'est un refus franc, pas une coupe.
+fn illisible() -> Vec<u8> {
+    let mut octets = vec![0x06];
+    octets.extend_from_slice(&[0x90; 31]);
+    octets
+}
+
+fn as_js(octets: &[u8]) -> String {
+    format!(
+        "new Uint8Array([{}])",
+        octets
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// **Les trois réponses du traducteur, telles que `host.js` les lit.**
+///
+/// La comparaison du corpus passe par `resoudre` ; la boucle hôte, elle,
+/// n'appelle que `traducteur`, et c'est sa traduction des trois cas qui décide
+/// de ce qu'elle fait : des octets s'instancient, `"encore"` fait relire la
+/// fenêtre à seize kibioctets, `null` arrête la machine sur « refusée ». Rendre
+/// une coupe comme un refus ferait perdre en silence chaque région que le
+/// second essai aurait traduite. Chaque branche est donc appelée ici, avec ce
+/// qu'elle laisse dans `pourquoi` et ce qu'elle passe à `surRefus`, et jugée
+/// contre `Module::resolving_or_why` en natif.
+#[test]
+fn the_page_translator_answers_each_way_the_host_loop_reads() {
+    let module = page_module();
+    let script = format!(
+        r#"{prelude}
+const refus = [];
+const traduire = porte.traducteur(16, (adresse, raison) => refus.push([adresse, raison]));
+const quinze = porte.traducteur(15, (adresse, raison) => refus.push([adresse, raison]));
+const decrire = (rendu) =>
+  rendu === null ? "null" : typeof rendu === "string" ? rendu : "octets " + hex(rendu);
+
+console.log("module " + decrire(traduire(0x100000n, 7, {petit})));
+console.log("pourquoi_module " + porte.pourquoi);
+console.log("coupe " + decrire(traduire(0x100000n, 0, {coupe})));
+console.log("pourquoi_coupe " + porte.pourquoi);
+console.log("refus_apres_coupe " + refus.length);
+console.log("illisible " + decrire(traduire(0x200000n, 0, {illisible})));
+console.log("pourquoi_illisible " + porte.pourquoi);
+console.log("ram " + decrire(quinze(0x300000n, 0, {petit})));
+console.log("pourquoi_ram " + porte.pourquoi);
+console.log("refus_vus " + refus.map(([a, r]) => "0x" + a.toString(16) + "=" + r).join(" | "));
+console.log("instances " + porte.instances);
+"#,
+        prelude = prelude(&module),
+        petit = as_js(&PETIT),
+        coupe = as_js(&PETIT[..2]),
+        illisible = as_js(&illisible()),
+    );
+    let text = run_driver("traducteur", &script);
+
+    let attendu = Module::resolving_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
+    let hex = |octets: &[u8]| -> String { octets.iter().map(|o| format!("{o:02x}")).collect() };
+    assert_eq!(said(&text, "module "), format!("octets {}", hex(&attendu)));
+    assert_eq!(said(&text, "pourquoi_module "), "null", "{text}");
+
+    // **La coupe** : la seule réponse qui fait relire la fenêtre plus large.
+    let coupe = Module::resolving_or_why(&PETIT[..2], 0x10_0000, 0, 0, 16)
+        .expect_err("deux octets d'un `mov $imm32` ne se traduisent pas");
+    assert!(matches!(coupe, Refused::MayBeCut { .. }), "{coupe:?}");
+    assert_eq!(said(&text, "coupe "), "encore", "{text}");
+    assert_eq!(said(&text, "pourquoi_coupe "), format!("{coupe:?}"));
+    assert_eq!(
+        said(&text, "refus_apres_coupe "),
+        "0",
+        "une coupe n'est pas un refus : `surRefus` ne doit pas l'avoir vue"
+    );
+
+    // **Deux refus francs**, d'espèces différentes : l'un vient du décodeur,
+    // l'autre de la RAM déclarée au traducteur.
+    let illisible_natif = Module::resolving_or_why(&illisible(), 0x20_0000, 0, 0, 16)
+        .expect_err("`push %es` n'existe pas en mode 64 bits");
+    assert!(
+        matches!(illisible_natif, Refused::CannotDecode { .. }),
+        "{illisible_natif:?}"
+    );
+    assert_eq!(said(&text, "illisible "), "null", "{text}");
+    assert_eq!(
+        said(&text, "pourquoi_illisible "),
+        format!("{illisible_natif:?}")
+    );
+    assert_eq!(said(&text, "ram "), "null", "{text}");
+    let ram = format!("{:?}", Refused::RamIsNotAPowerOfTwo(15));
+    assert_eq!(said(&text, "pourquoi_ram "), ram);
+    assert_eq!(
+        said(&text, "refus_vus "),
+        format!("0x200000={illisible_natif:?} | 0x300000={ram}"),
+        "`surRefus` reçoit l'adresse et la raison de chaque refus franc, et rien d'autre"
+    );
+    assert_eq!(said(&text, "instances "), "1", "aucune trappe ici");
+}
+
+/// **Un anneau de maillons** : `movq $n,%rax ; addq %rax,%rdx ; movabs
+/// $suivant,%rax ; jmp *%rax`, le saut indirect pour que chaque maillon soit
+/// une région à découvrir. RDX finit par porter la somme des tours.
+fn ring_link(base: u64, stride: u64, links: u64, index: u64) -> Vec<u8> {
+    let mut code = vec![0x48, 0xc7, 0xc0];
+    code.extend_from_slice(&(index as u32 + 1).to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x01, 0xc2]);
+    code.extend_from_slice(&[0x48, 0xb8]);
+    code.extend_from_slice(&(base + ((index + 1) % links) * stride).to_le_bytes());
+    code.extend_from_slice(&[0xff, 0xe0]);
+    code
+}
+
+/// Les maillons, en littéral JavaScript `[[adresse, octets], …]`, pour une RAM
+/// d'une page de 64 Kio.
+fn ring_literal(base: u64, stride: u64, links: u64) -> String {
+    let placed = (0..links)
+        .map(|index| {
+            format!(
+                "[{}, {}]",
+                (base + index * stride) & 0xffff,
+                as_js(&ring_link(base, stride, links, index))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{placed}]")
+}
+
+/// **`"encore"` fait vraiment relire la fenêtre, et le second essai compte.**
+///
+/// Deux machines, la boucle hôte inchangée et ce seul traducteur :
+///
+/// - **Au bord de la RAM**, une instruction de dix octets dont quatre seulement
+///   existent : `host.js` lit 4 octets, reçoit `"encore"`, relit à seize
+///   kibioctets — et retrouve les mêmes 4 octets, puisque la RAM s'arrête là.
+///   Deux demandes, puis « refusée ». C'est la coupe qu'aucun second essai ne
+///   guérit, et la seule que la vraie boucle peut rencontrer quand la
+///   pagination est éteinte.
+/// - **Une première lecture courte**, comme celle qu'une page absente juste
+///   après le point d'entrée produirait : la première demande ne reçoit que
+///   3 octets du premier maillon. `"encore"` fait relire 16 384 octets, le
+///   module de ce second essai est celui qui s'installe, et l'anneau tourne.
+///
+/// Rendre la coupe comme un refus (`null`) laisse une seule demande dans les
+/// deux cas, et la seconde machine s'arrête sur « refusée ».
+#[test]
+fn a_cut_first_instruction_makes_the_host_loop_read_a_wider_window() {
+    const BASE: u64 = 0x1_0000;
+    const STRIDE: u64 = 0x100;
+    const LINKS: u64 = 3;
+    const LAPS: u64 = 200;
+    const EDGE: u64 = 0xfffc;
+    let module = page_module();
+    let script = format!(
+        r#"{prelude}
+const traduire = porte.traducteur(1);
+
+// **Au bord de la RAM.**
+const auBord = [];
+const bord = machine({{
+  translate: (adresse, emplacement, code) => {{ auBord.push(code.length); return traduire(adresse, emplacement, code); }},
+  pages: 1,
+}});
+new Uint8Array(bord.memory.buffer).set({bord_octets}, {edge});
+bord.globals[{rip}].value = {edge}n;
+const arret = await bord.run({{ budget: 1000n, rounds: 2 }});
+console.log("bord_arret " + arret.stopped + " 0x" + arret.at.toString(16));
+console.log("bord_fenetres " + auBord.join(","));
+
+// **Une première lecture courte.**
+const fenetres = [];
+const anneau = machine({{
+  translate: (adresse, emplacement, code) => {{
+    const vue = fenetres.length === 0 ? code.subarray(0, 3) : code;
+    fenetres.push(vue.length);
+    return traduire(adresse, emplacement, vue);
+  }},
+  pages: 1,
+}});
+for (const [at, octets] of {ring}) new Uint8Array(anneau.memory.buffer).set(octets, at);
+anneau.globals[{rip}].value = {base}n;
+// La découverte d'abord, un tour par maillon (le motif de
+// `the_host_loop_runs_on_the_page_translator_alone`), puis le régime établi.
+await anneau.run({{ budget: 1000n, rounds: {links} }});
+console.log("anneau_fenetres " + fenetres.join(","));
+anneau.globals[{rip}].value = {base}n;
+anneau.globals[2].value = 0n;
+const tour = await anneau.run({{ budget: {budget}n, rounds: 1 }});
+console.log("anneau_arret " + tour.stopped);
+console.log("rdx " + anneau.globals[2].value.toString());
+"#,
+        prelude = prelude(&module),
+        // `movabs $0x…,%rax`, dont seuls l'opcode et deux octets de
+        // l'immédiat tiennent avant la fin de la RAM.
+        bord_octets = as_js(&[0x48, 0xb8, 0x01, 0x02]),
+        edge = EDGE,
+        rip = RIP_SLOT,
+        ring = ring_literal(BASE, STRIDE, LINKS),
+        base = BASE,
+        links = LINKS,
+        // Le même compte que `the_host_loop_runs_on_the_page_translator_alone` :
+        // finir sur le troisième maillon garde la somme sans ambiguïté.
+        budget = LAPS * LINKS + 2,
+    );
+    let text = run_driver("coupe", &script);
+    assert_eq!(
+        said(&text, "bord_fenetres "),
+        "4,4",
+        "une coupe doit faire relire la fenêtre une fois, et une seule :\n{text}"
+    );
+    assert_eq!(said(&text, "bord_arret "), format!("refusée 0x{EDGE:x}"));
+    assert_eq!(
+        said(&text, "anneau_fenetres "),
+        "3,16384,4096,4096",
+        "la coupe relue à seize kibioctets, puis les deux autres maillons :\n{text}"
+    );
+    assert_eq!(said(&text, "anneau_arret "), "tours épuisés", "{text}");
+    assert_eq!(
+        said(&text, "rdx "),
+        (LAPS * (1 + 2 + 3) + 1 + 2).to_string(),
+        "le module du second essai est celui qui tourne"
+    );
+}
+
+/// **Une trappe de l'émetteur ne coûte qu'une région.**
+///
+/// Dans la page, l'émetteur est construit avec `panic = "abort"` : un panic,
+/// ou une allocation qui échoue, est une trappe, et rien n'est déroulé — le
+/// verrou de la porte reste pris. Sans rien de plus, chaque appel suivant
+/// trappait à son tour, et `host.js` aurait vu « traduction en panne » sur
+/// toutes les régions à venir. La trappe vient ici d'une fenêtre que
+/// l'émetteur ne peut pas allouer (4 Gio moins un octet annoncés : seule sa
+/// `length` est lue avant `allouer`), le déclencheur réaliste étant un manque
+/// de mémoire. Ce qui doit suivre : une instance neuve, les mêmes octets
+/// qu'avant pour la même fenêtre, et, dans la boucle hôte, une panne nommée
+/// sur cette région-là — puis la machine qui repart.
+#[test]
+fn a_trap_in_the_page_emitter_costs_one_region_not_the_emitter() {
+    const BASE: u64 = 0x1_0000;
+    const STRIDE: u64 = 0x100;
+    const LINKS: u64 = 3;
+    const LAPS: u64 = 200;
+    let module = page_module();
+    let script = format!(
+        r#"{prelude}
+const impossible = {{ length: 0xffffffff }};
+const avant = porte.resoudre({petit}, 0x100000n, 7, 16);
+console.log("avant " + hex(avant.module));
+const trappe = porte.resoudre(impossible, 0x100000n, 7, 16);
+console.log("trappe " + (trappe.trappe !== undefined));
+const apres = porte.resoudre({petit}, 0x100000n, 7, 16);
+console.log("apres " + (apres.module === undefined ? JSON.stringify(apres) : hex(apres.module)));
+console.log("instances " + porte.instances);
+
+// **Par le traducteur** : une trappe lève (`host.js` la nomme « en panne »),
+// et la traduction suivante rend des octets.
+const traduire = porte.traducteur(16);
+let leve = "non";
+try {{ traduire(0x100000n, 7, impossible); }} catch (pourquoi) {{ leve = "oui"; }}
+console.log("leve " + leve);
+const ensuite = traduire(0x100000n, 7, {petit});
+console.log("ensuite " + (ensuite instanceof Uint8Array ? hex(ensuite) : String(ensuite)));
+
+// **Dans la boucle hôte** : la première demande trappe, la machine s'arrête
+// sur cette région, et un second départ la retraduit et fait tourner l'anneau.
+const unique = porte.traducteur(1);
+let demandes = 0;
+const vm = machine({{
+  translate: (adresse, emplacement, code) => {{
+    demandes++;
+    return unique(adresse, emplacement, demandes === 1 ? impossible : code);
+  }},
+  pages: 1,
+}});
+for (const [at, octets] of {ring}) new Uint8Array(vm.memory.buffer).set(octets, at);
+vm.globals[{rip}].value = {base}n;
+const panne = await vm.run({{ budget: 1000n, rounds: 1 }});
+console.log("panne " + panne.stopped + " 0x" + panne.at.toString(16));
+// Repartir du même endroit : la région qui a trappé n'est pas connue, elle se
+// redemande, puis les deux autres se découvrent ; enfin le régime établi.
+await vm.run({{ budget: 1000n, rounds: {links} }});
+console.log("demandes " + demandes);
+vm.globals[{rip}].value = {base}n;
+vm.globals[2].value = 0n;
+const repart = await vm.run({{ budget: {budget}n, rounds: 1 }});
+console.log("repart " + repart.stopped);
+console.log("demandes_en_regime " + (demandes - 4));
+console.log("rdx " + vm.globals[2].value.toString());
+console.log("instances_fin " + porte.instances);
+"#,
+        prelude = prelude(&module),
+        petit = as_js(&PETIT),
+        ring = ring_literal(BASE, STRIDE, LINKS),
+        rip = RIP_SLOT,
+        base = BASE,
+        links = LINKS,
+        budget = LAPS * LINKS + 2,
+    );
+    let text = run_driver("trappe", &script);
+    let attendu = Module::resolving_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
+    let hex: String = attendu.iter().map(|o| format!("{o:02x}")).collect();
+    assert_eq!(said(&text, "avant "), hex);
+    assert_eq!(said(&text, "trappe "), "true", "{text}");
+    assert_eq!(
+        said(&text, "apres "),
+        hex,
+        "après une trappe, la même fenêtre doit rendre le même module"
+    );
+    assert_eq!(
+        said(&text, "instances "),
+        "2",
+        "une instance neuve, une seule"
+    );
+    assert_eq!(said(&text, "leve "), "oui", "une trappe n'est pas un refus");
+    assert_eq!(said(&text, "ensuite "), hex);
+    assert_eq!(
+        said(&text, "panne "),
+        format!("traduction en panne 0x{BASE:x}"),
+        "{text}"
+    );
+    assert_eq!(said(&text, "repart "), "tours épuisés", "{text}");
+    assert_eq!(
+        said(&text, "demandes "),
+        "4",
+        "la région qui a trappé, retraduite, puis les deux autres"
+    );
+    assert_eq!(said(&text, "demandes_en_regime "), "0", "{text}");
+    assert_eq!(
+        said(&text, "rdx "),
+        (LAPS * (1 + 2 + 3) + 1 + 2).to_string(),
+        "l'anneau doit avoir tourné sur l'instance neuve"
+    );
+    assert_eq!(said(&text, "instances_fin "), "4", "{text}");
+}
