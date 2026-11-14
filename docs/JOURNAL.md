@@ -114,7 +114,12 @@ donc plus tard.
   compte après la fusion de master, #702). Site reconstruit, `bun test` du
   site : 470 réussis.
 - Le module de la page passe de 282 646 à 298 011 octets (62 219 à 67 626
-  en gzip -9).
+  en gzip -9), mesuré avant la fusion de #703, sur la même base.
+- **Après la fusion de master (#703)**, qui ajoute 7 tests Rust à
+  l'émetteur : compte publié 3 486 (Swift 2 897 + Rust 589) ;
+  `cargo test --release` 589 réussis, 0 échec, pareil armé ; `fmt`, les deux
+  `clippy` et le site (470 réussis) propres. Le module pèse alors
+  387 903 octets : la part de #703 dans ce saut n'est pas mesurée à part.
 
 **Ce qui reste.**
 
