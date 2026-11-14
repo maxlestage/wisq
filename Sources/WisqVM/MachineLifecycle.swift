@@ -22,6 +22,33 @@ public struct MachineLifecycle: Equatable, Sendable {
         case suspended
         /// Over for good — the user stopped it, or the guest did.
         case ended
+        /// **La session sauvée n'a pas pu être reprise, et elle est gardée.**
+        /// Rien ne tourne, et la console a promis « gardée telle quelle » :
+        /// de cet état, seul « Oublier » efface le fichier. Voir
+        /// `SavedSession`.
+        case refused
+    }
+
+    /// Ce que le fil d'émulation a fait avant de rendre la main — ce que
+    /// `suspend` doit savoir avant d'écrire quoi que ce soit.
+    ///
+    /// **La raison d'être : la fenêtre entre le fil et le fil principal.**
+    /// Quand c'est la reprise elle-même qui refuse la session, le fil le dit
+    /// au fil principal par une tâche qui passe *plus tard* ; entre-temps,
+    /// la machine neuve — jamais reprise, jamais chargée — est encore là et
+    /// l'état vaut `running`. Une mise en arrière-plan dans cette fenêtre
+    /// sauvait cette machine vide **par-dessus** la session promise gardée,
+    /// et la réouverture suivante reprenait le vide.
+    public enum Start: Equatable, Sendable {
+        /// Rien de dit encore : la reprise ou le chargement est en cours.
+        case pending
+        /// Reprise ou chargée : l'interprète a la vraie machine, et son état
+        /// vaut d'être sauvé.
+        case running
+        /// La reprise a refusé la session (`SavedSession.Unreadable`).
+        case refused
+        /// Le démarrage a échoué avant que l'interprète ne tourne.
+        case failed
     }
 
     /// What the caller has to do to the saved machine on disk.
@@ -61,9 +88,49 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// Ends it whatever the state, and forgets the saved machine: the word has
     /// to mean stopped rather than hidden, and a machine that reappears after
     /// being stopped is the version of this bug users would actually report.
+    ///
+    /// **Sauf une session refusée.** Rien ne tourne alors, donc rien à
+    /// arrêter, et la console vient de dire que la session est gardée et que
+    /// « Oublier » est le geste qui repart de zéro. Le bouton « Arrêter »,
+    /// lui, reste dans la barre : l'effacement qu'il faisait était sans
+    /// avertissement, et pour un bureau prêt sauvé par une version plus
+    /// récente, c'était exactement la perte que `SavedSession` empêche.
     public mutating func userStopped() -> Action {
+        if state == .refused { return .nothing }
         state = .ended
         return .forget
+    }
+
+    /// La session sauvée ne se reprend pas : elle est gardée, rien ne tourne.
+    ///
+    /// Dit par le fil principal quand il la juge avant de démarrer, et par
+    /// la tâche que le fil d'émulation envoie quand c'est `restore` qui la
+    /// refuse. Rend toujours `.nothing` : le fichier ne se touche pas.
+    @discardableResult
+    public mutating func sessionRefused() -> Action {
+        state = .refused
+        return .nothing
+    }
+
+    /// Le fil d'émulation est revenu après un `steppedAway() == .save` :
+    /// l'écriture n'a lieu que si l'interprète avait vraiment la machine.
+    ///
+    /// Une session refusée reste gardée et l'état le dit (rien à reprendre au
+    /// retour). Un démarrage qui a échoué n'a rien à sauver, et la session
+    /// qu'il n'a pas pu reprendre ne décrit plus rien : elle s'efface, comme
+    /// le fait la tâche du fil pour ce même échec.
+    public mutating func interpreterStopped(after start: Start) -> Action {
+        guard state == .suspended else { return .nothing }
+        switch start {
+        case .running:
+            return .save
+        case .refused:
+            state = .refused
+            return .nothing
+        case .pending, .failed:
+            state = .ended
+            return .forget
+        }
     }
 
     /// The screen went away, or iOS moved the app to the background.
@@ -122,4 +189,26 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// Whether the guest's exit is the machine's own — and so worth acting
     /// on — rather than the one suspending asked for.
     public var reportsGuestExit: Bool { state == .running || state == .ended }
+}
+
+/// **Ce que le fil d'émulation a fait de sa course, lisible du fil
+/// principal.** Le fil l'écrit avant de signaler sa fin ; `suspend` le lit
+/// après l'avoir attendue, donc sans course. Voir `MachineLifecycle.Start`.
+public final class RunStart: @unchecked Sendable {
+    private let lock = NSLock()
+    private var start: MachineLifecycle.Start = .pending
+
+    public init() {}
+
+    public func record(_ start: MachineLifecycle.Start) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.start = start
+    }
+
+    public var recorded: MachineLifecycle.Start {
+        lock.lock()
+        defer { lock.unlock() }
+        return start
+    }
 }
