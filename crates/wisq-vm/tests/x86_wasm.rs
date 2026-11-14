@@ -3041,9 +3041,9 @@ fn the_memory_bench_loop_really_touches_memory() {
         "une boucle de banc « mémoire » sans accès mémoire mesurerait \
          exactement ce que `BENCH_LOOP` mesure déjà"
     );
-    // **Une lecture et une écriture**, et pas deux du même côté : `guest()` est
-    // traversée par `load_at` et par `store_at`, et rien ne dit que les deux
-    // coûtent la même chose.
+    // **Une lecture et une écriture**, et pas deux du même côté : une lecture
+    // passe par `Body::peek`, une écriture par `Body::poke`, et rien ne dit que
+    // les deux coûtent la même chose.
     assert!(
         steps
             .iter()

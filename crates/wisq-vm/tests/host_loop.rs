@@ -15470,9 +15470,19 @@ console.log("rsp " + lire(4));
 /// et l'état se lit tel que l'instruction fautive l'a laissé. Les
 /// soixante-quatre derniers octets de la page portent 1, 2, … 64, pour qu'une
 /// copie partielle se reconnaisse.
+///
+/// **Et le même banc, la page d'après posée** (`across`) : sa trame est
+/// ailleurs, **pas** à côté de la première. Deux pages voisines en virtuel ne
+/// le sont en physique que par accident ; un accès qui franchit la frontière
+/// doit finir dans la seconde page, pas dans la trame qui suit la première en
+/// mémoire. Cette trame voisine est remplie de `0xee`, pour qu'un octet qui
+/// en vient ou qui y va se reconnaisse.
 struct MidFault {
     /// L'adresse de l'instruction qui doit fauter.
     at: u64,
+    /// L'adresse du `ud2` qui suit : là où s'arrête un programme qui n'a pas
+    /// fauté.
+    end: u64,
     /// Ce que le pilote a écrit.
     text: String,
 }
@@ -15496,9 +15506,25 @@ impl MidFault {
     /// Où les copies arrivent, et où commence le motif qu'elles lisent.
     const DEST: u64 = Self::PAGE + 0x100;
     const PATTERN: u64 = Self::PAGE + 0xfc0;
+    /// La trame de la page d'après, quand `across` la pose. **Pas
+    /// `FRAME + 0x1000`** : c'est tout le sujet.
+    const NEXT_FRAME: u64 = 0x3_8000;
+    /// L'adresse du premier octet de `prelude` : vingt-six octets allument la
+    /// pagination avant lui.
+    const START: u64 = Self::BASE + 26;
 
     /// Allumer la pagination, jouer `prelude` (qui réussit), puis `faulty`.
     fn run(name: &str, prelude: &[u8], faulty: &[u8]) -> MidFault {
+        Self::stage(name, prelude, faulty, false)
+    }
+
+    /// Le même montage, **la page d'après posée** sur `NEXT_FRAME` : `crossing`
+    /// franchit la frontière et ne doit pas fauter.
+    fn across(name: &str, prelude: &[u8], crossing: &[u8]) -> MidFault {
+        Self::stage(name, prelude, crossing, true)
+    }
+
+    fn stage(name: &str, prelude: &[u8], faulty: &[u8], next: bool) -> MidFault {
         let Some(bun) = bun() else {
             panic!("Bun est absent : ce test ne serait vérifié par rien.");
         };
@@ -15507,9 +15533,11 @@ impl MidFault {
         program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
         program.extend_from_slice(&movabs(0, 1 << 31));
         program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 — PG
+        assert_eq!(Self::BASE + program.len() as u64, Self::START);
         program.extend_from_slice(prelude);
         let at = Self::BASE + program.len() as u64;
         program.extend_from_slice(faulty);
+        let end = Self::BASE + program.len() as u64;
         program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : là où va un `call +0`
         program.resize(program.len() + 16, 0xcc);
 
@@ -15541,12 +15569,23 @@ vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
 vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
 // Le motif : 1, 2, … 64 dans les soixante-quatre derniers octets de la page.
 for (let i = 0; i < 64; i++) vue.setUint8({frame} + 0xfc0 + i, i + 1);
+// La page d'après, quand elle est posée : ailleurs qu'à côté, et le motif y
+// continue — 65, 66, … 128. La trame voisine de la première, elle, n'est à
+// personne : 0xee partout.
+if ({next}) vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {next_frame}n | 3n, true);
+for (let i = 0; i < 64; i++) vue.setUint8({next_frame} + i, i + 65);
+new Uint8Array(vm.memory.buffer, {frame} + 0x1000, 64).fill(0xee);
 vm.globals[{rip}].value = {base}n;
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
 const hex = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
   .map((o) => o.toString(16).padStart(2, "0")).join("");
 console.log("cs0 " + lire({cs}));
 console.log("rflags0 " + lire({rflags}));
+console.log("gdt0 " + lire({table}) + " " + lire({table} + 1));
+console.log("idt0 " + lire({table} + 2) + " " + lire({table} + 3));
+// La trame physique 0, avant : c'est là qu'irait un accès dont la marche a
+// fauté mais dont la trame — zéro, faute de mieux — servirait quand même.
+console.log("zero0 " + hex(0, 64));
 const why = await vm.run({{ budget: 256n, rounds: 4 }});
 console.log("arret " + why.stopped);
 for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
@@ -15558,6 +15597,12 @@ console.log("faute " + lire({fault}));
 console.log("dest " + hex({frame} + 0x100, 64));
 console.log("sous " + hex({frame} + 0x7c0, 64));
 console.log("haut " + hex({frame} + 0xfc0, 64));
+console.log("bas " + hex({frame}, 64));
+console.log("suite " + hex({next_frame}, 64));
+console.log("voisine " + hex({frame} + 0x1000, 64));
+console.log("zero " + hex(0, 64));
+console.log("gdt " +lire({table}) + " " + lire({table} + 1));
+console.log("idt " + lire({table} + 2) + " " + lire({table} + 3));
 "#,
                 host = workspace_root().join("web/host.js").to_string_lossy(),
                 path = path.to_string_lossy(),
@@ -15567,9 +15612,13 @@ console.log("haut " + hex({frame} + 0xfc0, 64));
                 cs = SEGMENT_SLOT + 1,
                 cr2 = CONTROL_SLOT + 1,
                 fault = FAULT_SLOT,
+                table = TABLE_SLOT,
                 base = Self::BASE,
                 page = Self::PAGE,
+                absent = Self::ABSENT,
                 frame = Self::FRAME,
+                next_frame = Self::NEXT_FRAME,
+                next = next,
                 pml4 = Self::PML4,
                 pdpt = Self::PDPT,
                 pd = Self::PD,
@@ -15579,7 +15628,7 @@ console.log("haut " + hex({frame} + 0xfc0, 64));
         .expect("le pilote");
         let text = run_driver(&bun, &driver);
         let _ = std::fs::remove_dir_all(&scratch);
-        MidFault { at, text }
+        MidFault { at, end, text }
     }
 
     fn line(&self, field: &str) -> &str {
@@ -15605,6 +15654,106 @@ console.log("haut " + hex({frame} + 0xfc0, 64));
         (0..text.len() / 2)
             .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet"))
             .collect()
+    }
+
+    /// **Les cent vingt-huit octets autour de la frontière** : les
+    /// soixante-quatre derniers de la page posée, puis les soixante-quatre
+    /// premiers de la trame de la page d'après. Intacts, ils valent 1, 2, …
+    /// 128.
+    fn seam(&self) -> Vec<u8> {
+        let mut out = self.bytes("haut ");
+        out.extend(self.bytes("suite "));
+        out
+    }
+
+    /// Ce que `seam` doit rendre : le motif, et par-dessus ce que le
+    /// programme a écrit. Les décalages se comptent **depuis la frontière** —
+    /// négatifs dans la page posée.
+    fn seam_with(written: &[(i64, &[u8])]) -> Vec<u8> {
+        let mut out: Vec<u8> = (1..=128).collect();
+        for (offset, bytes) in written {
+            let at = (64 + offset) as usize;
+            out[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        out
+    }
+
+    /// Ce qu'une lecture de `width` octets doit rendre à `offset` octets de la
+    /// frontière, dans le motif intact.
+    fn seam_value(offset: i64, width: usize) -> u64 {
+        let pattern = Self::seam_with(&[]);
+        let at = (64 + offset) as usize;
+        let mut bytes = [0u8; 8];
+        bytes[..width].copy_from_slice(&pattern[at..at + width]);
+        u64::from_le_bytes(bytes)
+    }
+
+    /// **La trame qui suit la première en mémoire physique n'est à
+    /// personne** : aucune table ne la porte à ces adresses, et un accès à
+    /// cheval ne doit ni la lire ni l'écrire.
+    fn leaves_the_frame_next_door_alone(&self, what: &str) {
+        assert_eq!(
+            self.bytes("voisine "),
+            vec![0xee; 64],
+            "{what} : la trame voisine en mémoire physique n'est pas la page \
+             d'après, rien ne doit y être écrit : {}",
+            self.text
+        );
+    }
+
+    /// **La trame physique 0 garde ses octets d'avant.** Une marche qui
+    /// faute rend la trame zéro ; un accès qui ne regarderait pas le témoin
+    /// irait donc lire ou écrire au début de la mémoire, au décalage de son
+    /// adresse dans la page.
+    fn leaves_frame_zero_alone(&self, what: &str) {
+        assert_eq!(
+            self.bytes("zero "),
+            self.bytes("zero0 "),
+            "{what} : rien n'est écrit dans la trame physique 0 : {}",
+            self.text
+        );
+    }
+
+    /// Le programme est allé au bout sans fauter : la machine s'arrête sur le
+    /// `ud2` qui suit, que personne ne recueille.
+    fn finishes(&self, what: &str) {
+        assert_eq!(
+            self.number("faute "),
+            0,
+            "{what} : aucun accès ne touche une page absente, rien ne faute : {}",
+            self.text
+        );
+        assert_eq!(
+            self.line("arret "),
+            UD2_SANS_PORTE,
+            "{what} : la machine va jusqu'au `ud2` : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number("rip "),
+            self.end,
+            "{what} : et s'y arrête : {}",
+            self.text
+        );
+    }
+
+    /// Ces registres valent ce que le prélude y a mis : l'instruction qui a
+    /// fauté n'y a pas touché.
+    fn keeps(&self, what: &str, registers: &[(u8, u64)]) {
+        for (register, value) in registers {
+            assert_eq!(
+                self.register(*register),
+                *value,
+                "{what} : le registre {register} est celui d'avant l'instruction : {}",
+                self.text
+            );
+        }
+        assert_eq!(
+            self.number("rflags "),
+            self.number("rflags0 "),
+            "{what} : RFLAGS est celui d'avant l'instruction : {}",
+            self.text
+        );
     }
 
     /// La faute a eu lieu, n'a été délivrée à personne, et **RIP nomme
@@ -15657,8 +15806,9 @@ fn movabs(register: u8, value: u64) -> Vec<u8> {
 ///
 /// Mesuré sur Linux 6.12.115 et 6.18.60 : le `rep movsl` de `copy_bootdata`
 /// faute sur la page de démarrage, que le noyau pose à la demande. RIP nommait
-/// une lecture six octets plus haut ; le noyau y reprenait, refaisait un
-/// `push`, et le `ret` sautait à `0x90`.
+/// une lecture trente-six octets plus haut (`copy_bootdata+1`, le `rep movsl`
+/// étant à `copy_bootdata+37`) ; le noyau y reprenait, refaisait un `push`, et
+/// le `ret` sautait à `0x90`.
 ///
 /// `lods`, `cmps` et `scas` ne sont pas ici : le décodeur ne les lit pas, et
 /// une région qui en porte est refusée avant d'avoir pu fauter.
@@ -16341,5 +16491,990 @@ console.log("dest " + Array.from(new Uint8Array(vm.memory.buffer, {frame} + 0x40
             expected,
             "rep {name} : la copie est entière, et rien après : {text}"
         );
+    }
+}
+
+/// La valeur que les bancs à cheval posent dans RAX : huit octets tous
+/// différents, pour qu'un octet tombé au mauvais endroit se voie.
+const STRADDLE_VALUE: u64 = 0x8877_6655_4433_2211;
+
+/// Des registres et leurs valeurs : ce qu'un prélude pose, ou ce qu'une
+/// instruction doit laisser.
+type State = Vec<(u8, u64)>;
+
+/// Plusieurs registres d'un coup, par `movabs`.
+fn registers(values: &[(u8, u64)]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|(register, value)| movabs(*register, *value))
+        .collect()
+}
+
+/// **Une lecture à cheval sur deux pages prend ses octets hauts dans la page
+/// d'après, pas dans la trame d'à côté.**
+///
+/// `Body::guest` traduisait l'adresse du **premier** octet, puis un seul
+/// `i64.load` lisait deux, quatre ou huit octets contigus en mémoire
+/// linéaire : contigus **physiquement**. Deux pages voisines en virtuel ne le
+/// sont en physique que par accident — dans le direct map du noyau elles le
+/// sont, et le défaut ne se voyait pas ; dans `vmalloc` et dans tout l'espace
+/// utilisateur elles ne le sont pas, et tout accès non aligné qui franchit
+/// quatre kibioctets lisait la moitié de sa valeur chez un voisin physique
+/// qui n'a rien à voir.
+///
+/// Ici la page d'après est posée sur une trame éloignée. Le motif continue
+/// d'une page à l'autre — 1, 2, … 64 puis 65, … 128 — et la trame voisine de
+/// la première porte `0xee` : une lecture qui s'y sert rend des `ee`.
+///
+/// Les trois largeurs qui peuvent franchir, à plusieurs découpes ; une
+/// lecture qui étend, une qui calcule, et un `pop`.
+#[test]
+fn a_read_across_two_pages_takes_its_high_bytes_from_the_next_page() {
+    const NEXT: u64 = MidFault::ABSENT;
+    let prelude = registers(&[(6, NEXT - 4), (12, 1)]);
+    let reads: &[u8] = &[
+        0x48, 0x8b, 0x06, // mov (%rsi),%rax — quatre octets ici, quatre là
+        0x48, 0x8b, 0x5e, 0x03, // mov 3(%rsi),%rbx — un et sept
+        0x48, 0x8b, 0x56, 0xfd, // mov -3(%rsi),%rdx — sept et un
+        0x44, 0x8b, 0x46, 0x02, // mov 2(%rsi),%r8d — deux et deux
+        0x44, 0x8b, 0x4e, 0x01, // mov 1(%rsi),%r9d — trois et un
+        0x44, 0x0f, 0xb7, 0x56, 0x03, // movzwl 3(%rsi),%r10d — un et un
+        0x4c, 0x0f, 0xbf, 0x5e, 0x03, // movswq 3(%rsi),%r11
+        0x4c, 0x03, 0x26, // add (%rsi),%r12
+        0x48, 0x89, 0xf4, // mov %rsi,%rsp
+        0x41, 0x5d, // pop %r13
+    ];
+    let run = MidFault::across("lectures", &prelude, reads);
+    let what = "lectures à cheval";
+    run.finishes(what);
+    let expected: [(u8, &str, u64); 10] = [
+        (0, "mov (%rsi),%rax", MidFault::seam_value(-4, 8)),
+        (3, "mov 3(%rsi),%rbx", MidFault::seam_value(-1, 8)),
+        (2, "mov -3(%rsi),%rdx", MidFault::seam_value(-7, 8)),
+        (8, "mov 2(%rsi),%r8d", MidFault::seam_value(-2, 4)),
+        (9, "mov 1(%rsi),%r9d", MidFault::seam_value(-3, 4)),
+        (10, "movzwl 3(%rsi),%r10d", MidFault::seam_value(-1, 2)),
+        (11, "movswq 3(%rsi),%r11", MidFault::seam_value(-1, 2)),
+        (12, "add (%rsi),%r12", MidFault::seam_value(-4, 8) + 1),
+        (13, "pop %r13", MidFault::seam_value(-4, 8)),
+        (4, "RSP après le pop", NEXT + 4),
+    ];
+    for (register, name, value) in expected {
+        assert_eq!(
+            run.register(register),
+            value,
+            "{name} : les octets au-delà de la frontière viennent de la page \
+             d'après ({value:#x}), pas de la trame voisine : {}",
+            run.text
+        );
+    }
+    assert_eq!(
+        run.seam(),
+        MidFault::seam_with(&[]),
+        "{what} : une lecture n'écrit rien : {}",
+        run.text
+    );
+    run.leaves_the_frame_next_door_alone(what);
+}
+
+/// **Une écriture à cheval sur deux pages tombe dans les deux pages, et nulle
+/// part ailleurs.**
+///
+/// Le pendant du test précédent, et le plus grave des deux : l'écriture
+/// posait ses octets hauts dans la trame qui suit la première **en mémoire
+/// physique** — une trame qui est à quelqu'un d'autre, ou à personne. Une
+/// corruption silencieuse, loin de l'instruction qui l'a faite.
+///
+/// Chaque forme tourne seule, parce qu'elles écrivent toutes au même
+/// endroit : les `mov` aux trois largeurs et à plusieurs découpes, un
+/// immédiat, les formes qui lisent puis écrivent (`add`, `not`, `inc`,
+/// `xadd`, `xchg`, `bts`, `cmpxchg` pris et manqué, `cmpxchg16b`), et les
+/// tables de descripteurs dans les deux sens — dix octets, deux accès.
+#[test]
+fn a_write_across_two_pages_lands_in_both_pages_and_nowhere_else() {
+    const NEXT: u64 = MidFault::ABSENT;
+    const RAX: u64 = STRADDLE_VALUE;
+    const NEW: u64 = 0xa1b2_c3d4_e5f6_0718;
+    let rax = RAX.to_le_bytes();
+    let there = MidFault::seam_value(-4, 8);
+
+    struct Case {
+        name: &'static str,
+        /// Les registres d'avant.
+        before: Vec<(u8, u64)>,
+        code: Vec<u8>,
+        /// Ce qui doit être écrit, compté depuis la frontière.
+        written: Vec<(i64, Vec<u8>)>,
+        /// Les registres d'après.
+        after: Vec<(u8, u64)>,
+        /// Les premiers octets de la destination, quand la forme y écrit.
+        dest: Vec<u8>,
+    }
+    let plain = |name: &'static str, code: &[u8], offset: i64, bytes: &[u8]| Case {
+        name,
+        before: vec![(0, RAX), (7, NEXT - 4)],
+        code: code.to_vec(),
+        written: vec![(offset, bytes.to_vec())],
+        after: vec![(0, RAX), (7, NEXT - 4)],
+        dest: Vec::new(),
+    };
+    let mut cases = vec![
+        plain("mov %rax,(%rdi)", &[0x48, 0x89, 0x07], -4, &rax),
+        plain("mov %rax,3(%rdi)", &[0x48, 0x89, 0x47, 0x03], -1, &rax),
+        plain("mov %rax,-3(%rdi)", &[0x48, 0x89, 0x47, 0xfd], -7, &rax),
+        plain("mov %eax,2(%rdi)", &[0x89, 0x47, 0x02], -2, &rax[..4]),
+        plain("mov %eax,3(%rdi)", &[0x89, 0x47, 0x03], -1, &rax[..4]),
+        plain("mov %eax,1(%rdi)", &[0x89, 0x47, 0x01], -3, &rax[..4]),
+        plain("mov %ax,3(%rdi)", &[0x66, 0x89, 0x47, 0x03], -1, &rax[..2]),
+        plain(
+            "movq $0x71727374,(%rdi)",
+            &[0x48, 0xc7, 0x07, 0x74, 0x73, 0x72, 0x71],
+            -4,
+            &0x7172_7374u64.to_le_bytes(),
+        ),
+        plain(
+            "add %rax,(%rdi)",
+            &[0x48, 0x01, 0x07],
+            -4,
+            &there.wrapping_add(RAX).to_le_bytes(),
+        ),
+        plain(
+            "notq (%rdi)",
+            &[0x48, 0xf7, 0x17],
+            -4,
+            &(!there).to_le_bytes(),
+        ),
+        plain(
+            "incl 2(%rdi)",
+            &[0xff, 0x47, 0x02],
+            -2,
+            &((MidFault::seam_value(-2, 4) + 1) as u32).to_le_bytes(),
+        ),
+        // Le bit 33 est dans la page d'après.
+        plain(
+            "btsq $33,(%rdi)",
+            &[0x48, 0x0f, 0xba, 0x2f, 0x21],
+            -4,
+            &(there | 1 << 33).to_le_bytes(),
+        ),
+    ];
+    cases.push(Case {
+        name: "xchg %rax,(%rdi)",
+        before: vec![(0, RAX), (7, NEXT - 4)],
+        code: vec![0x48, 0x87, 0x07],
+        written: vec![(-4, rax.to_vec())],
+        after: vec![(0, there)],
+        dest: Vec::new(),
+    });
+    cases.push(Case {
+        name: "xadd %rax,(%rdi)",
+        before: vec![(0, RAX), (7, NEXT - 4)],
+        code: vec![0x48, 0x0f, 0xc1, 0x07],
+        written: vec![(-4, there.wrapping_add(RAX).to_le_bytes().to_vec())],
+        after: vec![(0, there)],
+        dest: Vec::new(),
+    });
+    cases.push(Case {
+        name: "lock cmpxchg %rcx,(%rdi), pris",
+        before: vec![(0, there), (1, NEW), (7, NEXT - 4)],
+        code: vec![0xf0, 0x48, 0x0f, 0xb1, 0x0f],
+        written: vec![(-4, NEW.to_le_bytes().to_vec())],
+        after: vec![(0, there)],
+        dest: Vec::new(),
+    });
+    cases.push(Case {
+        name: "lock cmpxchg %rcx,(%rdi), manqué",
+        before: vec![(0, RAX), (1, NEW), (7, NEXT - 4)],
+        code: vec![0xf0, 0x48, 0x0f, 0xb1, 0x0f],
+        written: Vec::new(),
+        after: vec![(0, there)],
+        dest: Vec::new(),
+    });
+    // Seize octets à NEXT-12 : le mot bas tient dans la page, le mot haut
+    // franchit.
+    cases.push(Case {
+        name: "lock cmpxchg16b (%rdi)",
+        before: vec![
+            (0, MidFault::seam_value(-12, 8)),
+            (2, there),
+            (3, RAX),
+            (1, NEW),
+            (7, NEXT - 12),
+        ],
+        code: vec![0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+        written: vec![(-12, rax.to_vec()), (-4, NEW.to_le_bytes().to_vec())],
+        after: vec![(0, MidFault::seam_value(-12, 8)), (2, there)],
+        dest: Vec::new(),
+    });
+    // Les tables : la limite sur deux octets, la base sur huit. Lue en
+    // PATTERN (1, 2 puis 3 … 10), la table est rangée à NEXT-6 : la limite
+    // dans la page posée, la base à cheval. L'IDT est remise à zéro ensuite,
+    // pour que le `ud2` final s'arrête comme partout ailleurs.
+    let table: Vec<u8> = (1..=10).collect();
+    cases.push(Case {
+        name: "sgdt (%rdi)",
+        before: vec![(6, MidFault::PATTERN), (7, NEXT - 6)],
+        code: vec![0x0f, 0x01, 0x16, 0x0f, 0x01, 0x07], // lgdt (%rsi) ; sgdt (%rdi)
+        written: vec![(-6, table.clone())],
+        after: Vec::new(),
+        dest: Vec::new(),
+    });
+    let mut sidt = vec![0x0f, 0x01, 0x1e, 0x0f, 0x01, 0x0f]; // lidt (%rsi) ; sidt (%rdi)
+    sidt.extend(movabs(6, MidFault::DEST));
+    sidt.extend([0x0f, 0x01, 0x1e]); // lidt (%rsi) — dix zéros
+    cases.push(Case {
+        name: "sidt (%rdi)",
+        before: vec![(6, MidFault::PATTERN), (7, NEXT - 1)],
+        code: sidt,
+        written: vec![(-1, table.clone())],
+        after: Vec::new(),
+        dest: Vec::new(),
+    });
+    // Et dans l'autre sens : la table **lue** à cheval, puis rangée dans la
+    // page pour être comparée.
+    let mut lidt = vec![0x0f, 0x01, 0x1e, 0x0f, 0x01, 0x0f]; // lidt (%rsi) ; sidt (%rdi)
+    lidt.extend(movabs(6, MidFault::DEST + 32));
+    lidt.extend([0x0f, 0x01, 0x1e]); // lidt (%rsi) — dix zéros
+    cases.push(Case {
+        name: "lidt (%rsi)",
+        before: vec![(6, NEXT - 6), (7, MidFault::DEST)],
+        code: lidt,
+        written: Vec::new(),
+        after: Vec::new(),
+        dest: MidFault::seam_with(&[])[58..68].to_vec(),
+    });
+    cases.push(Case {
+        name: "lgdt (%rsi)",
+        before: vec![(6, NEXT - 1), (7, MidFault::DEST)],
+        code: vec![0x0f, 0x01, 0x16, 0x0f, 0x01, 0x07], // lgdt (%rsi) ; sgdt (%rdi)
+        written: Vec::new(),
+        after: Vec::new(),
+        dest: MidFault::seam_with(&[])[63..73].to_vec(),
+    });
+
+    for (rank, case) in cases.iter().enumerate() {
+        let run = MidFault::across(
+            &format!("ecriture{rank}"),
+            &registers(&case.before),
+            &case.code,
+        );
+        let what = case.name;
+        run.finishes(what);
+        let written: Vec<(i64, &[u8])> = case
+            .written
+            .iter()
+            .map(|(offset, bytes)| (*offset, bytes.as_slice()))
+            .collect();
+        assert_eq!(
+            run.seam(),
+            MidFault::seam_with(&written),
+            "{what} : les octets d'avant la frontière sont dans la page posée, \
+             ceux d'après dans la page d'après, et rien d'autre n'a changé : {}",
+            run.text
+        );
+        run.leaves_the_frame_next_door_alone(what);
+        for (register, value) in &case.after {
+            assert_eq!(
+                run.register(*register),
+                *value,
+                "{what} : le registre {register} : {}",
+                run.text
+            );
+        }
+        assert_eq!(
+            &run.bytes("dest ")[..case.dest.len()],
+            case.dest.as_slice(),
+            "{what} : ce qui a été lu à cheval, relu dans la page : {}",
+            run.text
+        );
+    }
+}
+
+/// **La pile et les chaînes franchissent une page comme tout autre accès.**
+///
+/// Elles n'ont pas d'opérande mémoire, et leurs accès sont écrits à part dans
+/// l'émetteur : il faut donc les tenir à part. Une pile non alignée dont le
+/// sommet est à quatre octets d'une frontière, un `call` et un `ret` dessus,
+/// un `leave`, un `rep movs` dont la source ou la destination n'est pas
+/// alignée — c'est ce que fait un `memcpy` sur un tampon quelconque.
+#[test]
+fn the_stack_and_the_strings_cross_a_page_like_any_other_access() {
+    const NEXT: u64 = MidFault::ABSENT;
+    const RAX: u64 = STRADDLE_VALUE;
+    let rax = RAX.to_le_bytes();
+    let there = MidFault::seam_value(-4, 8);
+    let pattern: Vec<u8> = (1..=16).collect();
+    let seam = MidFault::seam_with(&[]);
+
+    // (le nom, les registres d'avant, le code, ce qui est écrit autour de la
+    // frontière, les registres d'après, le début de la destination)
+    type Case = (
+        &'static str,
+        Vec<(u8, u64)>,
+        Vec<u8>,
+        Vec<(i64, Vec<u8>)>,
+        Vec<(u8, u64)>,
+        Vec<u8>,
+    );
+    let mut cases: Vec<Case> = vec![
+        (
+            "push %rax",
+            vec![(0, RAX), (4, NEXT + 4)],
+            vec![0x50],
+            vec![(-4, rax.to_vec())],
+            vec![(4, NEXT - 4)],
+            Vec::new(),
+        ),
+        (
+            "pushq (%rsi), la source à cheval",
+            vec![(6, NEXT - 4), (4, MidFault::DEST + 8)],
+            vec![0xff, 0x36],
+            Vec::new(),
+            vec![(4, MidFault::DEST)],
+            there.to_le_bytes().to_vec(),
+        ),
+        (
+            "pushq (%rsi), la pile à cheval",
+            vec![(6, MidFault::PATTERN), (4, NEXT + 4)],
+            vec![0xff, 0x36],
+            vec![(-4, pattern[..8].to_vec())],
+            vec![(4, NEXT - 4)],
+            Vec::new(),
+        ),
+        (
+            "leave",
+            vec![(5, NEXT - 4)],
+            vec![0xc9],
+            Vec::new(),
+            vec![(5, there), (4, NEXT + 4)],
+            Vec::new(),
+        ),
+        (
+            "movsq, la source à cheval",
+            vec![(6, NEXT - 4), (7, MidFault::DEST)],
+            vec![0x48, 0xa5],
+            Vec::new(),
+            vec![(6, NEXT + 4), (7, MidFault::DEST + 8)],
+            there.to_le_bytes().to_vec(),
+        ),
+        (
+            "rep movsq, le second élément de la source à cheval",
+            vec![(6, NEXT - 12), (7, MidFault::DEST), (1, 2)],
+            vec![0xf3, 0x48, 0xa5],
+            Vec::new(),
+            vec![(6, NEXT + 4), (7, MidFault::DEST + 16), (1, 0)],
+            seam[52..68].to_vec(),
+        ),
+        (
+            "rep movsl, le deuxième élément de la source à cheval",
+            vec![(6, NEXT - 6), (7, MidFault::DEST), (1, 3)],
+            vec![0xf3, 0xa5],
+            Vec::new(),
+            vec![(6, NEXT + 6), (7, MidFault::DEST + 12), (1, 0)],
+            seam[58..70].to_vec(),
+        ),
+        (
+            "rep movsq, la destination à cheval",
+            vec![(6, MidFault::PATTERN), (7, NEXT - 12), (1, 2)],
+            vec![0xf3, 0x48, 0xa5],
+            vec![(-12, pattern.clone())],
+            vec![(6, MidFault::PATTERN + 16), (7, NEXT + 4), (1, 0)],
+            Vec::new(),
+        ),
+        (
+            "rep movsw, la destination à cheval",
+            vec![(6, MidFault::PATTERN), (7, NEXT - 3), (1, 3)],
+            vec![0xf3, 0x66, 0xa5],
+            vec![(-3, pattern[..6].to_vec())],
+            vec![(6, MidFault::PATTERN + 6), (7, NEXT + 3), (1, 0)],
+            Vec::new(),
+        ),
+        (
+            "stosq",
+            vec![(0, RAX), (7, NEXT - 4)],
+            vec![0x48, 0xab],
+            vec![(-4, rax.to_vec())],
+            vec![(7, NEXT + 4)],
+            Vec::new(),
+        ),
+        (
+            "rep stosl",
+            vec![(0, RAX), (7, NEXT - 6), (1, 2)],
+            vec![0xf3, 0xab],
+            vec![(-6, [&rax[..4], &rax[..4]].concat())],
+            vec![(7, NEXT + 2), (1, 0)],
+            Vec::new(),
+        ),
+    ];
+    // `call`, `ret` et les sauts par la mémoire : leur cible est le `ud2` qui
+    // suit, dont l'adresse dépend de la longueur du programme.
+    let stack = registers(&[(4, NEXT + 4)]);
+    let after_call = MidFault::START + stack.len() as u64 + 5;
+    cases.push((
+        "call +0",
+        vec![(4, NEXT + 4)],
+        vec![0xe8, 0, 0, 0, 0],
+        vec![(-4, after_call.to_le_bytes().to_vec())],
+        vec![(4, NEXT - 4)],
+        Vec::new(),
+    ));
+    // `ret` : l'adresse de retour est d'abord rangée à cheval, par un `mov`.
+    //
+    // Le `jo` n'est jamais pris — rien ici ne pose OF. Il est là pour que le
+    // `ud2` final soit un bloc de la région : la pagination allumée, le code
+    // du banc n'est porté par aucune table, et l'hôte ne pourrait pas aller
+    // chercher une région de plus.
+    let target = MidFault::START + 10 + 10 + 4 + 2 + 1;
+    let mut ret = movabs(0, target);
+    ret.extend([0x48, 0x89, 0x04, 0x24]); // mov %rax,(%rsp)
+    ret.extend([0x70, 0x01, 0xc3]); // jo +1 ; ret
+    cases.push((
+        "ret",
+        vec![(4, NEXT - 4)],
+        ret,
+        vec![(-4, target.to_le_bytes().to_vec())],
+        vec![(4, NEXT + 4)],
+        Vec::new(),
+    ));
+    for (name, branch) in [("jmp *(%rsi)", 0x26u8), ("call *(%rsi)", 0x16)] {
+        let target = MidFault::START + 20 + 10 + 3 + 2 + 2;
+        let mut code = movabs(0, target);
+        code.extend([0x48, 0x89, 0x06]); // mov %rax,(%rsi)
+        code.extend([0x70, 0x02, 0xff, branch]); // jo +2 ; jmp/call *(%rsi)
+        let called = branch == 0x16;
+        cases.push((
+            name,
+            vec![(6, NEXT - 4), (4, MidFault::DEST + 8)],
+            code,
+            vec![(-4, target.to_le_bytes().to_vec())],
+            vec![(4, MidFault::DEST + if called { 0 } else { 8 })],
+            if called {
+                target.to_le_bytes().to_vec()
+            } else {
+                Vec::new()
+            },
+        ));
+    }
+
+    for (rank, (what, before, code, written, after, dest)) in cases.iter().enumerate() {
+        let run = MidFault::across(&format!("pile{rank}"), &registers(before), code);
+        run.finishes(what);
+        let written: Vec<(i64, &[u8])> = written
+            .iter()
+            .map(|(offset, bytes)| (*offset, bytes.as_slice()))
+            .collect();
+        assert_eq!(
+            run.seam(),
+            MidFault::seam_with(&written),
+            "{what} : les octets d'avant la frontière sont dans la page posée, \
+             ceux d'après dans la page d'après, et rien d'autre n'a changé : {}",
+            run.text
+        );
+        run.leaves_the_frame_next_door_alone(what);
+        for (register, value) in after {
+            assert_eq!(
+                run.register(*register),
+                *value,
+                "{what} : le registre {register} : {}",
+                run.text
+            );
+        }
+        assert_eq!(
+            &run.bytes("dest ")[..dest.len()],
+            dest.as_slice(),
+            "{what} : ce qui a été lu à cheval, relu dans la page : {}",
+            run.text
+        );
+    }
+}
+
+/// **Un accès à cheval sur une page absente faute avant d'avoir rien
+/// touché.**
+///
+/// C'est le cas où l'ancien défaut était le plus faux : l'accès ne fautait
+/// **pas du tout**. La page de son premier octet était là, donc il passait —
+/// en lisant ou en écrivant la suite dans la trame voisine. Le noyau invité
+/// n'apprenait jamais qu'il devait poser la page d'après : une pile qui
+/// grandit, un tampon lu par morceaux non alignés, et la donnée était perdue
+/// sans une faute.
+///
+/// Le silicium, mesuré le 14 novembre sur la machine de développement (un
+/// enfant par cas, la page d'après rendue inaccessible par `mprotect`) :
+/// `mov`, `push`, `pop` à un, quatre ou sept octets de la frontière fautent
+/// avec CR2 **sur le premier octet de la page absente**, et n'écrivent rien
+/// dans la page présente ; un `rep movsq` dont le deuxième élément franchit a
+/// copié le premier, et rien du second.
+///
+/// Chaque forme ci-dessous doit donc : fauter, nommer la page absente dans
+/// CR2, se nommer elle-même dans RIP, et laisser les registres, RFLAGS et la
+/// mémoire comme avant elle.
+#[test]
+fn an_access_across_a_missing_page_faults_before_it_touches_anything() {
+    const ABSENT: u64 = MidFault::ABSENT;
+    const RAX: u64 = STRADDLE_VALUE;
+    let before = |rsi: u64, rdi: u64, rsp: u64| -> Vec<(u8, u64)> {
+        vec![
+            (0, RAX),
+            (1, 2),
+            (2, 0x1111),
+            (3, 0x2222),
+            (5, 0x3333),
+            (6, rsi),
+            (7, rdi),
+            (4, rsp),
+        ]
+    };
+    let memory = before(ABSENT - 4, ABSENT - 4, MidFault::STACK);
+    let forms: [(&str, &[u8]); 20] = [
+        ("mov (%rsi),%rax", &[0x48, 0x8b, 0x06]),
+        ("mov 3(%rsi),%rbx", &[0x48, 0x8b, 0x5e, 0x03]),
+        ("mov 2(%rsi),%r8d", &[0x44, 0x8b, 0x46, 0x02]),
+        ("movzwl 3(%rsi),%r10d", &[0x44, 0x0f, 0xb7, 0x56, 0x03]),
+        ("add (%rsi),%r12", &[0x4c, 0x03, 0x26]),
+        ("cmp %rax,(%rdi)", &[0x48, 0x39, 0x07]),
+        ("test %eax,2(%rdi)", &[0x85, 0x47, 0x02]),
+        ("mov %rax,(%rdi)", &[0x48, 0x89, 0x07]),
+        ("mov %eax,2(%rdi)", &[0x89, 0x47, 0x02]),
+        ("mov %ax,3(%rdi)", &[0x66, 0x89, 0x47, 0x03]),
+        (
+            "movq $0x71727374,(%rdi)",
+            &[0x48, 0xc7, 0x07, 0x74, 0x73, 0x72, 0x71],
+        ),
+        ("add %rax,(%rdi)", &[0x48, 0x01, 0x07]),
+        ("notq (%rdi)", &[0x48, 0xf7, 0x17]),
+        ("incl 2(%rdi)", &[0xff, 0x47, 0x02]),
+        ("btsq $33,(%rdi)", &[0x48, 0x0f, 0xba, 0x2f, 0x21]),
+        ("xchg %rax,(%rdi)", &[0x48, 0x87, 0x07]),
+        ("xadd %rax,(%rdi)", &[0x48, 0x0f, 0xc1, 0x07]),
+        ("lock cmpxchg %rcx,(%rdi)", &[0xf0, 0x48, 0x0f, 0xb1, 0x0f]),
+        ("movsq", &[0x48, 0xa5]),
+        ("stosq", &[0x48, 0xab]),
+    ];
+    let untouched = |fault: &MidFault, what: &str| {
+        assert_eq!(
+            fault.bytes("haut "),
+            (1..=64).collect::<Vec<u8>>(),
+            "{what} : rien n'est écrit dans la page posée — pas même les \
+             octets d'avant la frontière : {}",
+            fault.text
+        );
+        fault.leaves_the_frame_next_door_alone(what);
+        for window in ["dest ", "sous ", "bas "] {
+            assert_eq!(
+                fault.bytes(window),
+                vec![0; 64],
+                "{what} : rien n'est écrit ailleurs non plus : {}",
+                fault.text
+            );
+        }
+    };
+    for (rank, (what, bytes)) in forms.iter().enumerate() {
+        let fault = MidFault::run(&format!("cheval{rank}"), &registers(&memory), bytes);
+        fault.names_it(what, ABSENT);
+        fault.keeps(what, &memory);
+        untouched(&fault, what);
+    }
+
+    // Seize octets dont le mot haut franchit.
+    let wide = before(ABSENT - 12, ABSENT - 12, MidFault::STACK);
+    let what = "lock cmpxchg16b (%rdi)";
+    let fault = MidFault::run(
+        "cheval-16",
+        &registers(&wide),
+        &[0xf0, 0x48, 0x0f, 0xc7, 0x0f],
+    );
+    fault.names_it(what, ABSENT);
+    fault.keeps(what, &wide);
+    untouched(&fault, what);
+
+    // La pile : le sommet à quatre octets de la frontière, d'un côté ou de
+    // l'autre selon que la forme écrit sous lui ou lit à lui.
+    let pushes = before(MidFault::PATTERN, MidFault::DEST, ABSENT + 4);
+    let pops = before(ABSENT - 4, MidFault::DEST, ABSENT - 4);
+    let mut leave = before(ABSENT - 4, MidFault::DEST, MidFault::STACK);
+    leave[4] = (5, ABSENT - 4);
+    let stack: [(&str, &[u8], &State); 10] = [
+        ("push %rax", &[0x50], &pushes),
+        ("pushf", &[0x9c], &pushes),
+        ("pushq (%rsi), la pile à cheval", &[0xff, 0x36], &pushes),
+        ("call +0", &[0xe8, 0, 0, 0, 0], &pushes),
+        ("pop %rax", &[0x58], &pops),
+        ("popf", &[0x9d], &pops),
+        ("ret", &[0xc3], &pops),
+        ("pushq (%rsi), la source à cheval", &[0xff, 0x36], &memory),
+        ("jmp *(%rsi)", &[0xff, 0x26], &memory),
+        ("leave", &[0xc9], &leave),
+    ];
+    for (rank, (what, bytes, state)) in stack.iter().enumerate() {
+        let fault = MidFault::run(&format!("cheval-pile{rank}"), &registers(state), bytes);
+        fault.names_it(what, ABSENT);
+        fault.keeps(what, state);
+        untouched(&fault, what);
+    }
+    // `call *(%rsi)` lit sa cible à cheval ; `lretq` et `iretq` lisent un
+    // cadre dont un mot franchit — le deuxième des deux, le troisième des
+    // cinq.
+    let frames: [(&str, &[u8], State); 3] = [
+        ("call *(%rsi)", &[0xff, 0x16], memory.clone()),
+        (
+            "lretq",
+            &[0x48, 0xcb],
+            before(ABSENT - 4, MidFault::DEST, ABSENT - 12),
+        ),
+        (
+            "iretq",
+            &[0x48, 0xcf],
+            before(ABSENT - 4, MidFault::DEST, ABSENT - 20),
+        ),
+    ];
+    for (rank, (what, bytes, state)) in frames.iter().enumerate() {
+        let fault = MidFault::run(&format!("cheval-cadre{rank}"), &registers(state), bytes);
+        fault.names_it(what, ABSENT);
+        fault.keeps(what, state);
+        untouched(&fault, what);
+        assert_eq!(
+            fault.number("cs "),
+            fault.number("cs0 "),
+            "{what} : CS est celui d'avant : {}",
+            fault.text
+        );
+    }
+
+    // **Un `rep` garde ce qui est fait, à l'élément près.** Le premier
+    // élément tient dans la page et passe ; le second franchit et faute — et
+    // de lui, rien n'est fait : ni lu à moitié, ni écrit à moitié.
+    let what = "rep movsq, le second élément de la source à cheval";
+    let state = before(ABSENT - 12, MidFault::DEST, MidFault::STACK);
+    let fault = MidFault::run("cheval-rep-source", &registers(&state), &[0xf3, 0x48, 0xa5]);
+    fault.names_it(what, ABSENT);
+    assert_eq!(
+        (fault.register(1), fault.register(6), fault.register(7)),
+        (1, ABSENT - 4, MidFault::DEST + 8),
+        "{what} : un élément copié, RCX, RSI et RDI sur le second : {}",
+        fault.text
+    );
+    let mut copied = vec![0u8; 64];
+    copied[..8].copy_from_slice(&(53..=60).collect::<Vec<u8>>());
+    assert_eq!(
+        fault.bytes("dest "),
+        copied,
+        "{what} : le premier élément est arrivé, rien du second : {}",
+        fault.text
+    );
+
+    let what = "rep movsq, le second élément de la destination à cheval";
+    let state = before(MidFault::PATTERN, ABSENT - 12, MidFault::STACK);
+    let fault = MidFault::run("cheval-rep-dest", &registers(&state), &[0xf3, 0x48, 0xa5]);
+    fault.names_it(what, ABSENT);
+    assert_eq!(
+        (fault.register(1), fault.register(6), fault.register(7)),
+        (1, MidFault::PATTERN + 8, ABSENT - 4),
+        "{what} : un élément copié, RCX, RSI et RDI sur le second : {}",
+        fault.text
+    );
+    let mut expected: Vec<u8> = (1..=64).collect();
+    expected[52..60].copy_from_slice(&(1..=8).collect::<Vec<u8>>());
+    assert_eq!(
+        fault.bytes("haut "),
+        expected,
+        "{what} : le premier élément est écrit, et **rien** du second — pas \
+         même ses quatre octets d'avant la frontière : {}",
+        fault.text
+    );
+    fault.leaves_the_frame_next_door_alone(what);
+
+    // Les deux `rep` que le contrôle a mesurés : la source franchit dès le
+    // premier élément. Rien n'est fait.
+    for (name, bytes, back) in [
+        ("rep movsq", &[0xf3u8, 0x48, 0xa5][..], 4),
+        ("rep movsl", &[0xf3, 0xa5][..], 2),
+        ("rep movsw", &[0xf3, 0x66, 0xa5][..], 1),
+    ] {
+        let what = format!("{name}, le premier élément de la source à cheval");
+        let state = before(ABSENT - back, MidFault::DEST, MidFault::STACK);
+        let fault = MidFault::run(&format!("cheval-{back}"), &registers(&state), bytes);
+        fault.names_it(&what, ABSENT);
+        fault.keeps(&what, &state);
+        untouched(&fault, &what);
+    }
+
+    // **Et dans l'autre sens : la page d'avant manque, celle du dernier
+    // octet est là.** L'adresse fautive est alors celle du premier octet de
+    // l'accès, et rien n'est écrit au début de la page posée.
+    let below = before(MidFault::PAGE - 4, MidFault::PAGE - 4, MidFault::STACK);
+    for (rank, (what, bytes)) in [
+        (
+            "mov (%rsi),%rax, la page d'avant absente",
+            &[0x48u8, 0x8b, 0x06][..],
+        ),
+        (
+            "mov %rax,(%rdi), la page d'avant absente",
+            &[0x48, 0x89, 0x07][..],
+        ),
+        (
+            "add %rax,(%rdi), la page d'avant absente",
+            &[0x48, 0x01, 0x07][..],
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let fault = MidFault::run(&format!("cheval-avant{rank}"), &registers(&below), bytes);
+        fault.names_it(what, MidFault::PAGE - 4);
+        fault.keeps(what, &below);
+        untouched(&fault, what);
+    }
+}
+
+/// **Une écriture sur une page entièrement absente n'écrit rien, nulle part
+/// — pas même dans la trame physique 0.**
+///
+/// Le tampon de traduction est vide : c'est le premier accès du programme,
+/// et il prend le chemin lent, `far_store_body`. Sa première marche faute et
+/// rend la trame zéro. Si l'écriture ne regardait pas le témoin avant de
+/// servir, elle irait au **début de la mémoire physique**, au décalage de
+/// l'adresse dans sa page — ici `0x10`, au milieu de ce qui n'est à
+/// personne. Le noyau invité poserait la page, rejouerait l'instruction, et
+/// la première écriture resterait là où rien ne la relit. Aucun test ne
+/// regardait la trame 0 : le mutant qui y écrit passait tout.
+///
+/// Chaque largeur, et une écriture qui lit d'abord.
+#[test]
+fn a_write_to_a_missing_page_writes_nothing_anywhere() {
+    const AT: u64 = MidFault::ABSENT + 0x10;
+    let state: State = vec![(0, STRADDLE_VALUE), (7, AT), (4, MidFault::STACK)];
+    let forms: [(&str, &[u8]); 6] = [
+        ("mov %rax,(%rdi)", &[0x48, 0x89, 0x07]),
+        ("mov %eax,(%rdi)", &[0x89, 0x07]),
+        ("mov %ax,(%rdi)", &[0x66, 0x89, 0x07]),
+        ("mov %al,(%rdi)", &[0x88, 0x07]),
+        (
+            "movq $0x71727374,(%rdi)",
+            &[0x48, 0xc7, 0x07, 0x74, 0x73, 0x72, 0x71],
+        ),
+        ("add %rax,(%rdi)", &[0x48, 0x01, 0x07]),
+    ];
+    for (rank, (what, bytes)) in forms.iter().enumerate() {
+        let fault = MidFault::run(&format!("absente{rank}"), &registers(&state), bytes);
+        fault.names_it(what, AT);
+        fault.keeps(what, &state);
+        fault.leaves_frame_zero_alone(what);
+        fault.leaves_the_frame_next_door_alone(what);
+        assert_eq!(
+            fault.bytes("haut "),
+            (1..=64).collect::<Vec<u8>>(),
+            "{what} : rien n'est écrit dans la page posée : {}",
+            fault.text
+        );
+        for window in ["dest ", "sous ", "bas "] {
+            assert_eq!(
+                fault.bytes(window),
+                vec![0; 64],
+                "{what} : rien n'est écrit ailleurs non plus : {}",
+                fault.text
+            );
+        }
+    }
+}
+
+/// **Un accès qui finit pile sur la frontière reste dans sa page, et ne
+/// faute pas quand la page d'après manque.**
+///
+/// Huit octets dont le dernier est le dernier de la page n'ont rien à voir
+/// avec la page d'après. Le chemin lent le décide par `far_fits` : le
+/// décalage plus la largeur **au plus** quatre kibioctets. Un « strictement
+/// moins » enverrait cet accès marcher la page d'après, et fauter dessus —
+/// CR2 sur une page que l'instruction ne touche pas. Le noyau poserait une
+/// page pour rien ; ou, sur une page qu'il ne peut pas poser, s'arrêterait.
+/// Mesuré par le contrôle du 14 novembre : ce mutant empêche 6.12.115 de
+/// démarrer, et passait toute la suite.
+///
+/// Le tampon de traduction est vide à chaque cas — un programme par accès —
+/// pour que ce soit bien le chemin lent qui juge. Les lectures de huit,
+/// quatre et deux octets, les écritures des mêmes largeurs, et la pile dans
+/// les deux sens.
+#[test]
+fn an_access_that_ends_on_the_page_boundary_stays_in_its_page() {
+    const ABSENT: u64 = MidFault::ABSENT;
+    const GARBAGE: u64 = 0xdead_beef_dead_beef;
+    let ends = |rsp: u64| -> State {
+        vec![
+            (0, STRADDLE_VALUE),
+            (2, GARBAGE),
+            (3, GARBAGE),
+            (1, GARBAGE),
+            (6, ABSENT),
+            (7, ABSENT),
+            (4, rsp),
+        ]
+    };
+    let value = STRADDLE_VALUE.to_le_bytes();
+    // (la forme, ses octets, la pile, le registre lu et sa valeur attendue,
+    // ce qui doit être écrit à la fin de la page)
+    type Case<'a> = (&'a str, &'a [u8], u64, Option<(u8, u64)>, &'a [u8]);
+    let cases: [Case; 8] = [
+        (
+            "mov -8(%rsi),%rax",
+            &[0x48, 0x8b, 0x46, 0xf8],
+            MidFault::STACK,
+            Some((0, MidFault::seam_value(-8, 8))),
+            &[],
+        ),
+        (
+            "mov -4(%rsi),%ebx",
+            &[0x8b, 0x5e, 0xfc],
+            MidFault::STACK,
+            Some((3, MidFault::seam_value(-4, 4))),
+            &[],
+        ),
+        (
+            "movzwl -2(%rsi),%edx",
+            &[0x0f, 0xb7, 0x56, 0xfe],
+            MidFault::STACK,
+            Some((2, MidFault::seam_value(-2, 2))),
+            &[],
+        ),
+        (
+            "mov %rax,-8(%rdi)",
+            &[0x48, 0x89, 0x47, 0xf8],
+            MidFault::STACK,
+            None,
+            &value,
+        ),
+        (
+            "mov %eax,-4(%rdi)",
+            &[0x89, 0x47, 0xfc],
+            MidFault::STACK,
+            None,
+            &value[..4],
+        ),
+        (
+            "mov %ax,-2(%rdi)",
+            &[0x66, 0x89, 0x47, 0xfe],
+            MidFault::STACK,
+            None,
+            &value[..2],
+        ),
+        (
+            "pop %rcx, le sommet huit octets sous la frontière",
+            &[0x59],
+            ABSENT - 8,
+            Some((1, MidFault::seam_value(-8, 8))),
+            &[],
+        ),
+        (
+            "push %rax, la pile sur la frontière",
+            &[0x50],
+            ABSENT,
+            None,
+            &value,
+        ),
+    ];
+    assert_eq!(
+        MidFault::seam_value(-8, 8),
+        0x403f_3e3d_3c3b_3a39,
+        "les huit derniers octets de la page : 57, 58, … 64"
+    );
+    for (rank, (what, bytes, rsp, read, written)) in cases.iter().enumerate() {
+        let run = MidFault::run(&format!("frontiere{rank}"), &registers(&ends(*rsp)), bytes);
+        // `finishes` tient l'essentiel : pas de témoin, et RIP sur le `ud2`
+        // qui suit — l'instruction a été jouée, pas refusée.
+        run.finishes(what);
+        if let Some((register, expected)) = read {
+            assert_eq!(
+                run.register(*register),
+                *expected,
+                "{what} : les octets lus sont ceux de la fin de la page : {}",
+                run.text
+            );
+        }
+        let at = -(written.len() as i64);
+        assert_eq!(
+            run.bytes("haut "),
+            MidFault::seam_with(&[(at, written)])[..64].to_vec(),
+            "{what} : ce qui est écrit l'est à la fin de la page, et rien \
+             d'autre : {}",
+            run.text
+        );
+        run.leaves_the_frame_next_door_alone(what);
+        run.leaves_frame_zero_alone(what);
+    }
+}
+
+/// **Une instruction qui fait plusieurs accès ne change rien tant qu'un seul
+/// peut encore fauter.**
+///
+/// `lidt` et `lgdt` lisent dix octets en deux fois, la limite puis la base.
+/// La limite était rangée avant que la base ne soit lue : quand la base
+/// fautait, la table avait déjà sa nouvelle limite et son ancienne base — et
+/// c'est avec **cette** IDT-là que la faute était délivrée. Mesuré par le
+/// contrôle : l'arrêt disait « une faute pendant la délivrance d'une faute de
+/// page », CR2 = `0xe0`, au lieu de la faute de page elle-même.
+///
+/// `sgdt` et `sidt` avaient le défaut symétrique, en mémoire : la limite
+/// écrite, puis la faute sur la base. Et `fxsave` écrivait son aire huit
+/// octets par huit jusqu'à la faute — le commentaire le disait, en la
+/// donnant pour la seule instruction dans ce cas.
+///
+/// Le silicium, mesuré le 14 novembre (`fxsave64` sur une aire à cheval sur
+/// une page inaccessible) : il exige les 512 octets, faute avec CR2 sur le
+/// **dernier** octet de l'aire — même quand le premier manque aussi — et n'a
+/// alors rien écrit. `sgdt` et `sidt` ne se mesurent pas ainsi : en anneau 3
+/// c'est le noyau qui les émule.
+#[test]
+fn an_instruction_with_several_accesses_changes_nothing_when_one_of_them_faults() {
+    const ABSENT: u64 = MidFault::ABSENT;
+    let state = |at: u64| -> Vec<(u8, u64)> { vec![(6, at), (7, at), (4, MidFault::STACK)] };
+    let untouched = |fault: &MidFault, what: &str| {
+        assert_eq!(
+            fault.bytes("haut "),
+            (1..=64).collect::<Vec<u8>>(),
+            "{what} : rien n'est écrit avant la faute : {}",
+            fault.text
+        );
+        fault.leaves_the_frame_next_door_alone(what);
+        assert_eq!(
+            (fault.line("gdt "), fault.line("idt ")),
+            (fault.line("gdt0 "), fault.line("idt0 ")),
+            "{what} : les deux tables sont celles d'avant, limite et base : {}",
+            fault.text
+        );
+    };
+    // (combien d'octets de la table sont dans la page posée) : la base
+    // absente, la limite à cheval, la base à cheval.
+    for back in [2u64, 1, 6] {
+        for (name, bytes) in [
+            ("lidt (%rsi)", [0x0f, 0x01, 0x1e]),
+            ("lgdt (%rsi)", [0x0f, 0x01, 0x16]),
+            ("sidt (%rdi)", [0x0f, 0x01, 0x0f]),
+            ("sgdt (%rdi)", [0x0f, 0x01, 0x07]),
+        ] {
+            let what = format!("{name}, {back} octets avant la frontière");
+            let before = state(ABSENT - back);
+            let fault = MidFault::run(
+                &format!("table{back}-{}", bytes[2]),
+                &registers(&before),
+                &bytes,
+            );
+            // `names_it` tient aussi l'arrêt : la faute de page **sans
+            // porte**, celle que rend une IDT restée vide.
+            fault.names_it(&what, ABSENT);
+            fault.keeps(&what, &before);
+            untouched(&fault, &what);
+        }
+    }
+    // `fxsave` : 256 octets en page ; puis 416, tout ce qu'elle écrit, mais
+    // pas les 512 qu'elle exige ; puis 496.
+    for inside in [0x100u64, 416, 496] {
+        let what = format!("fxsave (%rdi), {inside} octets en page");
+        let before = state(ABSENT - inside);
+        let fault = MidFault::run(
+            &format!("fxsave{inside}"),
+            &registers(&before),
+            &[0x0f, 0xae, 0x07],
+        );
+        fault.names_it(&what, ABSENT - inside + 511);
+        fault.keeps(&what, &before);
+        untouched(&fault, &what);
     }
 }
