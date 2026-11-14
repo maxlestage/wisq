@@ -139,8 +139,9 @@ export const SLOTS = {
   /// fautive.
   control: 32,
   controlCount: 5,
-  /// Les trois globales de travail de la traduction — l'adresse invitée, son
-  /// numéro de page, la case du tampon — puis le témoin de faute.
+  /// Les trois globales de travail de la traduction — l'adresse invitée, la
+  /// valeur qu'une écriture attend de poser, la case du tampon — puis le
+  /// témoin de faute.
   translate: 47,
   translateCount: 3,
   fault: 50,
@@ -1193,9 +1194,9 @@ export function machine({
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
-  /// `guest()`. Allumée, c'est `walk`, qui pose le témoin et CR2 quand la page
-  /// manque : `null` alors, et c'est à l'appelant de nommer ce qui vient de
-  /// fauter pendant qu'il faisait autre chose.
+  /// `Body::peek` et `Body::poke`. Allumée, c'est `walk`, qui pose le témoin
+  /// et CR2 quand la page manque : `null` alors, et c'est à l'appelant de
+  /// nommer ce qui vient de fauter pendant qu'il faisait autre chose.
   function physical(address) {
     const paging = (BigInt.asUintN(64, globals[SLOTS.control].value) & PAGING_BIT) !== 0n;
     if (!paging || walk === null) return Number(address & BigInt(base - 1));
