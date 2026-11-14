@@ -8,6 +8,61 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La session trop grande gardée, et l'invité éteint jamais sauvé
+
+Le contrôle de la tranche précédente a trouvé une voie de plus par laquelle
+la session « gardée telle quelle » partait, et une fenêtre de même nature
+que celle du refus.
+
+**1. « Arrêter » effaçait la session qui ne tenait pas en mémoire.** Quand
+la session demande plus de mémoire que le téléphone n'en a de libre
+(`SessionMemory.choose` rend `tooLittleRoom`), la console dit « Elle est
+gardée telle quelle. Fermez ce qui tourne à côté et réessayez. » Mais ce
+refus passait par `guestFinished` : l'état valait `ended`, et « Arrêter »,
+resté dans la barre, rendait « oublier » et effaçait le fichier sans
+avertissement. C'est le cas même du bureau prêt de 1 Gio sur un iPhone qui
+manque de mémoire libre. La taille passe maintenant par
+`MachineLifecycle.machineSize`, qui met l'état à `refused` pour ce cas,
+comme pour la session illisible : « Arrêter » et le départ de l'écran n'y
+touchent plus ; seul « Oublier » l'efface.
+
+**2. Un invité éteint juste avant un départ était sauvé.** Le fil
+d'émulation notait `running` avant `run()`, jamais la fin. Quand l'invité
+s'éteint, redémarre ou faute, le fil signale sa fin et sa tâche passe plus
+tard ; un départ de l'écran ou une mise en arrière-plan entre les deux
+voyait encore `running`, attendait le fil (déjà fini) et écrivait
+l'instantané de la machine éteinte, puis la tâche, trouvant `suspended`, ne
+disait rien. La visite suivante reprenait cette machine morte. Lu dans le
+code, pas reproduit. Le fil note maintenant la fin de la course
+(`MachineLifecycle.Start.after(outcome)` : `.stopped`, le seul arrêt
+demandé, reste à sauver ; le reste est `finished`), avant son signal ; le
+départ ne l'écrit pas, efface la session devenue fausse, et laisse l'état à
+`ended` pour que la tâche dise la fin. Un redémarrage de l'invité ne relance
+plus qu'une machine qui tournait encore (`restartsOnReboot`) : sans ça,
+cette même tâche aurait relancé la machine derrière un écran parti — et,
+défaut plus ancien, un « Arrêter » tombé pendant un redémarrage de l'invité
+la relançait aussi.
+
+**Vérifié** :
+
+- Cinq tests nouveaux dans `MachineLifecycleTests` (23 au lieu de 18) : la
+  session trop grande gardée après « Arrêter », la taille qui passe telle
+  quelle sinon, la fin de course jugée par son issue, l'invité fini avant le
+  départ jamais sauvé, et le redémarrage qui ne relance qu'une machine en
+  marche.
+- Quatre sabotages, chacun restauré et vérifié par `cmp` : `machineSize`
+  par `guestFinished` (3 échecs), `.finished` sauvé (5 échecs), `after`
+  toujours `running` (3 échecs), `restartsOnReboot` vrai en `ended`
+  (2 échecs).
+- La liaison dans `LocalVMModel` ne compile pas ici : relue ligne à ligne,
+  et `swiftc -frontend -parse` passe. Seul le job « App iOS » la juge.
+
+**Ce qui reste** : les autres refus du début de `boot` (image illisible,
+déballage de l'ISO, noyau trop grand pour la machine RISC-V) passent encore
+par `guestFinished` ; aucun ne promet de garder la session, mais un
+« Arrêter » qui suit efface celle d'une course précédente du même modèle,
+si `kernelName` en reste réglé. Non traité ici.
+
 ## 2026-11-14 — Une session refusée reste gardée, et l'aléa dit sans promettre trop
 
 Le contrôle de la tranche précédente (« Reprise sûre ») a trouvé que sa

@@ -409,18 +409,20 @@ public final class LocalVMModel {
         }
 
         // Une session lisible impose sa taille, si elle tient dans ce qui est
-        // libre ; sinon elle est gardée, et le démarrage refusé.
-        switch SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow)) {
-        case .boot(let size), .resume(let size):
-            machineRAM = size
-        case .tooLittleRoom(let needed, let room):
-            _ = life.guestFinished()
-            finish(with: SessionMemory.explanation(
-                saved: needed, room: room, name: kernelURL.lastPathComponent))
+        // libre ; sinon elle est gardée, et le démarrage refusé. Gardée pour
+        // de bon : `machineSize` met l'état à `refused`, que « Arrêter »
+        // n'efface pas — `guestFinished` ici le laissait l'effacer.
+        let memory = SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow))
+        guard let size = life.machineSize(memory) else {
+            if case .tooLittleRoom(let needed, let room) = memory {
+                finish(with: SessionMemory.explanation(
+                    saved: needed, room: room, name: kernelURL.lastPathComponent))
+            }
             self.machine = nil
             runFinished = nil
             return
         }
+        machineRAM = size
 
         // La console répond aux questions de l'invité (voir
         // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
@@ -626,6 +628,11 @@ public final class LocalVMModel {
                 // vaut d'être sauvé.
                 runStart.record(.running)
                 outcome = checkpointed.run()
+                // **La fin de la course, notée ici aussi**, avant le signal :
+                // un invité éteint, redémarré ou en faute ne vaut plus d'être
+                // sauvé, et un départ qui passe avant la tâche plus bas
+                // l'écrivait (`MachineLifecycle.Start.finished`).
+                runStart.record(.after(outcome))
                 // Lu sur le fil d'émulation, pendant que la machine est encore
                 // à nous : la vue n'y touche pas.
                 activity = machine.diskActivity
@@ -665,6 +672,8 @@ public final class LocalVMModel {
                 // stops it on purpose — so the lifecycle decides whether this
                 // exit is the machine's own, and only then is it reported.
                 let reports = self.life.reportsGuestExit
+                // Lu avant `guestFinished`, qui passe l'état à `ended`.
+                let restartsOnReboot = self.life.restartsOnReboot
                 if self.life.guestFinished() == .forget {
                     SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
                 }
@@ -685,6 +694,10 @@ public final class LocalVMModel {
                 }.map { "\n\n\($0)" } ?? ""
                 switch outcome {
                 case .powerOff: self.finish(with: "La machine s'est éteinte." + silence)
+                // Arrêtée par la personne, ou finie pendant un départ de
+                // l'écran : rien ne se relance derrière son dos.
+                case .reboot where !restartsOnReboot:
+                    self.finish(with: "La machine s'est arrêtée pour redémarrer." + silence)
                 // **Un invité qui redémarre repart de lui-même**, comme un
                 // vrai PC, sans boucler : voir `AutomaticRestart`. Ce qu'il
                 // démarre est ce qu'un démarrage ordinaire choisirait — le

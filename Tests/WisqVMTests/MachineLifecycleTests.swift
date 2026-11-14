@@ -232,6 +232,73 @@ final class MachineLifecycleTests: XCTestCase {
         XCTAssertEqual(life.state, .ended)
     }
 
+    // MARK: - La mémoire trop courte, et l'invité qui finit pendant le départ
+
+    /// **Une session qui ne tient pas dans la mémoire libre est gardée.** La
+    /// console dit « gardée telle quelle » ; ce refus passait par
+    /// `guestFinished`, l'état valait `ended`, et « Arrêter », resté dans la
+    /// barre, effaçait la session — le bureau prêt de 1 Gio sur un téléphone
+    /// qui manque de mémoire libre.
+    func testStoppingASessionThatDidNotFitKeepsIt() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertNil(life.machineSize(.tooLittleRoom(saved: 1 << 30, room: 512 << 20)))
+        XCTAssertEqual(life.state, .refused)
+        XCTAssertEqual(life.userStopped(), .nothing, "la session trop grande est promise gardée")
+        XCTAssertEqual(life.steppedAway(), .nothing)
+        XCTAssertEqual(life.guestFinished(), .nothing)
+        XCTAssertFalse(life.shouldResumeOnReturn, "rien n'a tourné")
+    }
+
+    /// Le cas ordinaire : la taille passe telle quelle, et la course continue.
+    func testASessionThatFitsIsBuiltAtItsSize() {
+        for (choice, size) in [(SessionMemory.Choice.boot(256 << 20), 256 << 20), (.resume(1 << 30), 1 << 30)] {
+            var life = MachineLifecycle()
+            life.booted()
+            XCTAssertEqual(life.machineSize(choice), size, "\(choice)")
+            XCTAssertEqual(life.state, .running)
+            XCTAssertEqual(life.userStopped(), .forget, "une machine qui tourne s'arrête pour de bon")
+        }
+    }
+
+    /// Seul l'arrêt qu'on a demandé laisse une machine à sauver ; un invité
+    /// éteint, redémarré ou en faute a fini.
+    func testTheEndOfARunSaysWhetherTheMachineIsWorthSaving() {
+        XCTAssertEqual(MachineLifecycle.Start.after(.stopped), .running)
+        for outcome in [GuestOutcome.powerOff, .reboot, .faulted("ud2")] {
+            XCTAssertEqual(MachineLifecycle.Start.after(outcome), .finished, "\(outcome)")
+        }
+    }
+
+    /// **La course de la fin.** L'invité s'éteint ; avant que la tâche du fil
+    /// ne passe, la personne quitte l'écran. Le fil a noté la fin : rien ne
+    /// s'écrit, la session devenue fausse part, et la tâche qui suit dit la
+    /// fin sans relancer la machine.
+    func testAGuestThatFinishedJustBeforeTheDepartureIsNotSaved() {
+        var life = MachineLifecycle()
+        life.booted()
+        XCTAssertEqual(life.steppedAway(), .save, "le fil principal n'a encore rien vu")
+        XCTAssertEqual(life.interpreterStopped(after: .finished), .forget, "une machine éteinte ne s'écrit pas")
+        XCTAssertEqual(life.state, .ended)
+        XCTAssertFalse(life.shouldResumeOnReturn, "le retour au premier plan ne reprend pas une machine éteinte")
+        // La tâche du fil arrive ensuite : elle dit la fin…
+        XCTAssertTrue(life.reportsGuestExit)
+        // … sans relancer un invité qui redémarrait derrière un écran parti.
+        XCTAssertFalse(life.restartsOnReboot)
+        XCTAssertEqual(life.guestFinished(), .forget)
+    }
+
+    /// Un redémarrage ne relance qu'une machine qui tournait encore — pas
+    /// celle que la personne vient d'arrêter.
+    func testOnlyARunningMachineRestartsOnReboot() {
+        var life = MachineLifecycle()
+        XCTAssertFalse(life.restartsOnReboot)
+        life.booted()
+        XCTAssertTrue(life.restartsOnReboot)
+        _ = life.userStopped()
+        XCTAssertFalse(life.restartsOnReboot, "« Arrêter » puis un redémarrage de l'invité : rien ne repart")
+    }
+
     /// `RunStart` passe d'un fil à l'autre : noté sur le fil d'émulation
     /// avant son signal de fin, lu par le fil principal après l'attente.
     func testWhatTheThreadRecordedIsReadAfterItSignals() {

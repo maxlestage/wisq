@@ -49,6 +49,21 @@ public struct MachineLifecycle: Equatable, Sendable {
         case refused
         /// Le démarrage a échoué avant que l'interprète ne tourne.
         case failed
+        /// **L'invité a fini de lui-même** : éteint, redémarré, ou arrêté par
+        /// une faute. Noté par le fil dès que `run()` rend la main, avant son
+        /// signal de fin : sa tâche, elle, passe plus tard, et une mise en
+        /// arrière-plan entre les deux voyait encore `running` — elle
+        /// écrivait l'instantané d'une machine éteinte, que la visite
+        /// suivante reprenait sans un mot.
+        case finished
+
+        /// Ce que dit la fin de la course. `.stopped` est le seul arrêt qu'on
+        /// a demandé (`CheckpointedRun.run` ne rend une tranche épuisée que
+        /// sur demande) : la machine est intacte et vaut d'être sauvée. Tout
+        /// le reste est l'invité qui a fini.
+        public static func after(_ outcome: GuestOutcome) -> Start {
+            outcome == .stopped ? .running : .finished
+        }
     }
 
     /// What the caller has to do to the saved machine on disk.
@@ -118,7 +133,11 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// Une session refusée reste gardée et l'état le dit (rien à reprendre au
     /// retour). Un démarrage qui a échoué n'a rien à sauver, et la session
     /// qu'il n'a pas pu reprendre ne décrit plus rien : elle s'efface, comme
-    /// le fait la tâche du fil pour ce même échec.
+    /// le fait la tâche du fil pour ce même échec. Un invité qui a fini de
+    /// lui-même juste avant le départ, pareil : sa session sauvée décrit une
+    /// machine qui n'existe plus, et c'est ce que sa tâche aurait effacé.
+    /// L'état `ended` laisse cette tâche dire la fin (`reportsGuestExit`)
+    /// sans rien relancer (`restartsOnReboot`).
     public mutating func interpreterStopped(after start: Start) -> Action {
         guard state == .suspended else { return .nothing }
         switch start {
@@ -127,9 +146,27 @@ public struct MachineLifecycle: Equatable, Sendable {
         case .refused:
             state = .refused
             return .nothing
-        case .pending, .failed:
+        case .pending, .failed, .finished:
             state = .ended
             return .forget
+        }
+    }
+
+    /// **La taille de la machine à construire**, ou `nil` quand la session
+    /// ne tient pas dans la mémoire libre (`SessionMemory.choose`).
+    ///
+    /// Ce refus-là aussi promet « gardée telle quelle », et il passait par
+    /// `guestFinished` : l'état valait `ended`, et « Arrêter », resté dans
+    /// la barre, effaçait la session sans avertissement. C'est le cas même
+    /// du bureau prêt de 1 Gio sur un téléphone qui manque de mémoire libre.
+    /// Il passe maintenant par `sessionRefused`, comme la session illisible.
+    public mutating func machineSize(_ choice: SessionMemory.Choice) -> Int? {
+        switch choice {
+        case .boot(let size), .resume(let size):
+            return size
+        case .tooLittleRoom:
+            sessionRefused()
+            return nil
         }
     }
 
@@ -189,6 +226,14 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// Whether the guest's exit is the machine's own — and so worth acting
     /// on — rather than the one suspending asked for.
     public var reportsGuestExit: Bool { state == .running || state == .ended }
+
+    /// Si un invité qui demande à redémarrer est relancé.
+    ///
+    /// Seulement une machine qui tournait encore. Arrêtée par la personne, ou
+    /// finie pendant un départ de l'écran (`interpreterStopped`), elle vaut
+    /// `ended` : la relancer ferait tourner une machine derrière un écran
+    /// parti, ou que la personne venait d'arrêter.
+    public var restartsOnReboot: Bool { state == .running }
 }
 
 /// **Ce que le fil d'émulation a fait de sa course, lisible du fil
