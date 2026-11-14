@@ -74,6 +74,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # **Ce que les tests Rust demandent au-delà de cargo**, comme le job
+      # « Rust » de `ci.yml` : Bun (JavaScriptCore, qui juge les modules de
+      # l'émetteur) et la cible wasm32 (l'émetteur de la page,
+      # `crates/wisq-page`). Sans eux, ces tests tombent en les nommant.
+      - uses: oven-sh/setup-bun@v2
+      - run: rustup target add wasm32-unknown-unknown
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --release
