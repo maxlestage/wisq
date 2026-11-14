@@ -8,6 +8,94 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La carte de la page ne laisse plus de touche enfoncée, et ses trous de tests sont bouchés
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « la carte de la page »
+a trouvé un défaut et trois trous.
+
+- **Une touche coincée.** La file des frappes est bornée (8 192) frappe par
+  frappe, pas caractère par caractère. Un texte qui la remplissait au milieu
+  d'un caractère gardait l'enfoncement et jetait le relâchement : Maj et la
+  touche restaient enfoncées dans l'invité, et Xorg répétait la touche sans
+  fin. Reproduit sur le module wasm32 : `taperTexte("a" + "A".repeat(2048))`
+  rendait 8 192 et finissait sur `9e aa 2a 1e` (Maj enfoncée 2 048 fois,
+  relâchée 2 047 fois). Le défaut vient de `X86PS2Controller.type` du cœur
+  Swift ; `taper_texte` et `carte_texte` l'avaient repris tel quel.
+- **Le détail du compte de tests de l'entrée précédente était faux** (le
+  total, 27, était juste) : corrigé dans l'entrée même.
+- **Les enveloppes `taper`, `touche` (touche étendue), `lever` et
+  `baisser` de `web/carte.js`** n'étaient appelées par aucun test : `taper`
+  qui oubliait `E0`, ou `lever` qui rendait toujours vrai, survivaient.
+- **Huit sabotages d'une ligne survivaient** dans les périphériques, sur
+  des comportements hérités que les cas Swift ne tenaient pas non plus :
+  `D2` rendu « de la souris », `F0 00` qui rend toujours `02`, `FF` de la
+  souris qui la laisse rapporter, une commande en attente qu'une nouvelle
+  commande n'annule pas, `E9` qui tait le bit « rapporte », le paramètre du
+  clavier oublié, la souris coupée par `A7` qui parle quand même, et le
+  réglage de l'horloge en binaire décodé en BCD.
+
+**Ce qui change.**
+
+- **La borne ne coupe plus jamais une touche**, par deux règles :
+  - un texte entre **caractère par caractère, entier ou pas du tout**
+    (`I8042::taper_groupe`), et s'arrête au premier caractère qui ne tient
+    plus — sans sauter celui-là pour taper les suivants, plus courts : pas
+    de texte troué. `"a" + "A" × 2048` met 8 190 frappes en file et finit
+    sur `2a 1e 9e aa` ;
+  - pour une frappe seule (`taper`, `carte_taper`), le relâchement d'une
+    touche que la file laisse enfoncée **passe toujours**, même au-delà de
+    la borne ; un enfoncement, ou le relâchement d'une touche déjà relevée,
+    n'entre que sous la borne. La file suit pour cela, une par touche (512 :
+    un code du jeu 1, avec ou sans `E0`), l'état de chaque touche une fois
+    la file jouée. Elle dépasse donc la borne de 512 relâchements au plus.
+  - `carte_taper` rend 1 ou 0, et `taper` de `web/carte.js` `true` ou
+    `false`.
+- **Dix tests** : neuf natifs (la file pleine qui ne laisse aucune touche
+  enfoncée, le dépassement borné à un relâchement par touche, un groupe
+  entier ou rien, un texte qui remplit la file ; et un cas par trou hérité :
+  où va chaque octet écrit, les paramètres du clavier, l'état et la remise à
+  zéro de la souris, la souris coupée par le contrôleur, l'horloge réglée en
+  binaire), et un sous Bun, sur le module wasm32, qui passe par les
+  enveloppes de `web/carte.js` : touches étendues tout de suite et à leur
+  tour, lignes du dehors levées, baissées et refusées, et le texte qui
+  remplit la file joué jusqu'au dernier octet.
+- **Le cœur Swift n'est pas touché** : il garde le défaut (voir plus bas).
+
+**Comment c'est vérifié.**
+
+- Vingt-deux sabotages d'une ligne, chacun restauré puis vérifié par `cmp` :
+  tous font tomber au moins un test. Sept sur la touche coincée (le texte
+  qui saute au lieu de s'arrêter, la borne d'un groupe vérifiée au début
+  seulement, le relâchement refusé à la borne, tout relâchement admis, le
+  relâchement qui n'efface pas la touche, `E0` oublié dans l'état des
+  touches, et l'ancien texte frappe par frappe vu du module wasm32) ; six
+  dans `web/carte.js` (`taper` sans `E0`, `taper` qui rend un nombre,
+  `touche` sans `E0`, `lever` et `baisser` toujours vrais, `baisser` qui
+  lève) ; les huit hérités du contrôle, et `F0 00` qui rend toujours `41`.
+- Le script de reproduction du contrôle, sur le module reconstruit :
+  8 190 frappes en file, derniers octets `2a 1e 9e aa`, Maj enfoncée et
+  relâchée 2 047 fois, A 2 048 fois.
+- `cargo test --release -p wisq-page --lib` : 40 réussis (31 avant) ;
+  `--test carte` : 3 réussis (2 avant). `cargo test --release` : 545
+  réussis, 0 échec ; pareil avec les assertions et les débordements armés.
+  `cargo fmt --check`, les deux `clippy`, `clippy` pour
+  `wasm32-unknown-unknown` sur `wisq-page`, `check-whitespace`,
+  `check-project-sources` et SwiftLint `--strict` : propres.
+- Compte publié : 3 394 → 3 404 (Swift 2 859 + Rust 545) ; site reconstruit,
+  `bun test` du site : 470 réussis, 0 échec.
+- Le module de la page passe de 282 502 à 282 646 octets (62 090 à 62 219
+  en gzip -9), mesuré sur `target/page`.
+
+**Ce qui reste.**
+
+- **Le même défaut dans le cœur Swift** : `X86PS2Controller.type` borne la
+  file frappe par frappe, et `LocalVMModel` (par `X86Machine`) y verse les
+  frappes d'un texte une à une. Un collage qui remplit la file (8 192
+  frappes : deux par caractère, quatre avec Maj) au milieu d'un caractère
+  avec Maj peut donc encore y laisser Maj et la touche enfoncées. La même
+  correction s'y porte en une tranche à part (le Swift ici n'a pas bougé).
+- Le raccord dans `host.js`, décrit dans l'entrée précédente.
+
 ## 2026-11-14 — La carte de la page : trait `Ram`, `Carte`, i8042 et horloge CMOS en Rust
 
 **Ce qui n'allait pas.** Dans la page WebKit, la boucle hôte (`web/host.js`)
@@ -73,12 +161,19 @@ maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
 
 **Comment c'est vérifié.**
 
-- 29 tests ajoutés. 27 natifs : les 5 cas de `X86CMOSClockTests` (le
-  cinquième par les ports de la carte), plus un sur le calendrier ; les 9
-  de `X86PS2Tests` (la cascade réduite à ce que la carte tient : la ligne
-  12, quatrième de l'esclave) et 2 de `X86KeystrokesTests` ; les 3 de
-  `X86RebootTests` qui tiennent le 8042 ; les touches perdues ; 7 sur la
-  carte (ports, lignes, rythme vu des lignes, RAM) ; 2 sur les exports.
+- 29 tests ajoutés. 27 natifs : les 5 cas de `X86CMOSClockTests` (4 dans
+  `cmos.rs`, le cinquième par les ports de la carte), plus un sur le
+  calendrier ; les 9 de `X86PS2Tests` (8 dans `i8042.rs`, la cascade sur
+  la carte, réduite à ce qu'elle tient : la ligne 12, quatrième de
+  l'esclave) ; 1 de `X86KeystrokesTests` (`text_is_typed_with_shift_where_needed` ;
+  `testTheBarKeysBecomePCKeys` et `testAScreenAddsTheVirtualConsoleFirst`
+  ne sont pas portés, la barre et l'écran sont à l'application) ; les 3 de
+  `X86RebootTests` qui tiennent le 8042 ; les touches perdues ; 5 autres
+  sur la carte (le 8042 par ses ports, les ports qui ne sont pas à elle,
+  le rythme vu des lignes, les lignes du dehors, la RAM) ; 2 sur les
+  exports. *(Ventilation corrigée par le contrôle : elle disait « 2 de
+  `X86KeystrokesTests` » et « 7 sur la carte », qui recomptaient deux cas
+  déjà nommés. Le total, 27, était juste.)*
   2 sous Bun (`crates/wisq-page/tests/carte.rs`), sur le module wasm32 : un
   aller-retour de port (horloge à heure figée, sonde du 8042, une valeur de
   64 bits qui garde son octet bas), et les lignes recopiées dans de faux
