@@ -139,8 +139,9 @@ export const SLOTS = {
   /// fautive.
   control: 32,
   controlCount: 5,
-  /// Les trois globales de travail de la traduction — l'adresse invitée, son
-  /// numéro de page, la case du tampon — puis le témoin de faute.
+  /// Les trois globales de travail de la traduction — l'adresse invitée, la
+  /// valeur qu'une écriture attend de poser, la case du tampon — puis le
+  /// témoin de faute.
   translate: 47,
   translateCount: 3,
   fault: 50,
