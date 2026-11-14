@@ -297,6 +297,39 @@ ne la paie plus. Les mêmes instructions lisent ou écrivent **avant** de bouger
 RSP : une faute les laisse rejouables, et un `rep` interrompu reprend où il en
 était (RCX, RSI et RDI disent ce qui reste).
 
+**Le contrôle ne suit plus que le chemin lent, et un accès connaît sa
+largeur** (14 novembre, reprise). La traduction rendait une adresse — celle du
+premier octet — et l'appelant lisait ensuite deux, quatre ou huit octets
+contigus en mémoire linéaire. Deux pages voisines en virtuel ne sont voisines
+en physique que par accident : un accès à cheval sur une frontière prenait ses
+octets hauts dans la trame voisine, et ne fautait pas quand la page d'après
+manquait. Trois chemins maintenant :
+
+- pagination éteinte : l'adresse repliée, l'accès en ligne ;
+- le tampon tient la page **et** l'accès y tient : l'accès en ligne. Une seule
+  comparaison le décide — l'étiquette de la case contre le numéro de la page
+  du **dernier** octet de l'accès ;
+- tout le reste (tampon vide, ou accès qui franchit) : une fonction du module
+  marche les tables — les deux pages s'il le faut —, fait l'accès elle-même,
+  octet par octet à cheval, et pose le témoin si une page manque. Le contrôle
+  de faute vient juste après son appel : c'est le seul endroit où il en faut
+  un.
+
+Ce que ça coûte en place, mesuré sur Linux 6.12.115 jusqu'à l'espace
+utilisateur (10 981 régions) : 144 970 146 octets de WebAssembly avant,
+153 795 073 après, soit +6,1 % (+6,1 % aussi sur 6.18.60) — 386 octets fixes
+par région pour les deux fonctions, et onze par accès sur la boucle mémoire du
+banc.
+
+Ce que ça coûte en temps n'est pas séparable du bruit. Le même démarrage de
+6.12.115 (460 000 tours du pilote), l'arbre d'avant et l'arbre d'après en
+alternance, sur une machine chargée par d'autres travaux : 61,6 / 60,2 /
+65,2 s avant, 61,1 / 60,4 / 73,5 s après. `--example speed`, qui tourne
+pagination éteinte, rend pour la boucle mémoire confinée 220 à 411 MIPS avant
+et 263 à 438 après, trois passages chacun : les plages se recouvrent. Le
+chemin rapide a perdu la relecture du témoin et gagné une addition ; une
+écriture range en plus sa valeur dans une globale.
+
 ## Les interruptions
 
 ### Ce qui existe
