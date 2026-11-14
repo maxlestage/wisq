@@ -780,7 +780,12 @@ fn main() {
                 // ce qu'il coûte. Honorer `"encore"` est un autre changement, à
                 // mesurer à part ; `porte.traducteur` le fait déjà pour la page.
                 // Une trappe de l'émetteur est relevée comme un refus, sous son
-                // nom : l'instance est déjà remplacée, la suite continue.
+                // nom : `translate` rend `null`, `host.js` arrête la machine sur
+                // « refusée », et la boucle des tours sort — la mesure finit sur
+                // « refusée 0x… Trappe(…) », comme dans le mode processus quand
+                // `x86-translate` meurt. L'instance est déjà remplacée, mais
+                // personne ne s'en sert : ce pilote mesure un démarrage, il ne le
+                // reprend pas.
                 format!(
                     "const r = porte.resoudre(code, address, slot, {pages});\n    \
                      const rendu = r.module !== undefined ? {{ module: r.module }} \

@@ -8,6 +8,66 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La raison que l'émetteur de la page garde est jugée
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « survit à une trappe »
+a trouvé deux trous dans les tests et deux commentaires faux.
+
+- **L'effacement de `pourquoi` n'était jugé par rien.** Le test des trois
+  réponses dit juger « ce que chaque branche laisse dans `pourquoi` ». Mais
+  le seul module qu'il demandait venait en premier, quand `pourquoi` valait
+  encore `null`, sa valeur de départ. Retirer `pourquoi = null;` de la
+  branche module laissait les 6 tests verts.
+- **Ce qu'une trappe laisse dans `pourquoi` non plus.** Le getter promet
+  « la raison du dernier refus — ou de la dernière trappe ». Retirer
+  `pourquoi = rendu.trappe;` laissait aussi les 6 tests verts.
+- **`kernel-entry` disait qu'après une trappe « la suite continue ».** C'est
+  faux. `translate` rend `null`, `host.js` arrête la machine sur
+  « refusée », et la boucle des tours sort. La tête de
+  `web/page-emitter.js` laissait croire la même chose. Le getter `memoire`
+  disait « ne rétrécit jamais », ce qui n'est plus vrai depuis qu'une
+  trappe remplace l'instance.
+- L'entrée précédente du journal annonçait « trois `clippy` » ; il y en a
+  quatre.
+
+**Ce qui change.**
+
+- `the_page_translator_answers_each_way_the_host_loop_reads` redemande un
+  module après un refus, puis après une coupe. Il vérifie que la coupe a
+  bien laissé sa raison, puis que `pourquoi` revient à `null`.
+- `a_trap_in_the_page_emitter_costs_one_region_not_the_emitter` lit
+  `pourquoi` après la trappe vue par `traducteur`. Il doit valoir le message
+  du moteur, le même que `resoudre` rend pour la même fenêtre, et commencer
+  par `RuntimeError`. L'erreur levée doit le nommer. Après la traduction
+  suivante, `pourquoi` doit valoir `null`.
+- Les trois commentaires sont corrigés, et le chiffre du journal aussi. Le
+  code de `web/page-emitter.js` ne change pas.
+
+**Comment c'est vérifié.**
+
+- Les deux sabotages du contrôle, refaits. Chacun est restauré, puis
+  vérifié par `cmp` :
+  - sans `pourquoi = null;`, deux tests tombent (`RamIsNotAPowerOfTwo(15)`
+    au lieu de `null`, et la trappe au lieu de `null`) ;
+  - sans `pourquoi = rendu.trappe;`, le test de la trappe tombe (`null` au
+    lieu de `RuntimeError: Unreachable code…`).
+- Le compte de tests ne bouge pas : 3 365 (Swift 2 859 + Rust 506). Aucun
+  test n'est ajouté ; deux sont renforcés.
+- `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
+  les débordements armés. `cargo test --release -p wisq-page --test page` :
+  6 sur 6. `cargo fmt` et les quatre `clippy` propres ; SwiftLint
+  `--strict` : 0.
+- Le chiffre de la page que le contrôle n'avait pas relu est bien dans le
+  relevé de la tranche précédente (`ke-page-66.log`) : « 10390 demandes,
+  1235.9 ms, 0.119 ms par demande ». Je n'ai pas relancé `kernel-entry`.
+
+**Ce qui reste.**
+
+- Aucun code ne lit encore `porte.pourquoi` ; il servira quand la page de
+  l'application se servira de ce traducteur.
+- Le commentaire de `kernel-entry` ne peut pas avoir de test. Seul le
+  pilote complet l'exerce, et une trappe n'y a jamais été vue.
+
 ## 2026-11-14 — L'émetteur de la page survit à une trappe, et sa coupe est jugée
 
 **Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé deux
@@ -61,8 +121,8 @@ défauts réels.
   une trappe, `surRefus` jamais appelé, une trappe rendue comme un refus, le
   getter `pourquoi` qui rend toujours `null`.
 - `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
-  les débordements armés. `cargo fmt`, les trois `clippy` (dont wasm32)
-  propres. Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
+  les débordements armés. `cargo fmt`, les quatre `clippy` (tous
+  dispositifs, toutes cibles, `wisq-vm` et `wisq-page` en wasm32) propres. Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
 - `kernel-entry` sur l'arbre fusionné, 6.6.142 + sonde, 700 000 tours, les
   deux traducteurs lancés en même temps : relevés identiques hors les lignes
   du traducteur, `WISQ-USERSPACE-OK` des deux côtés, 10 390 demandes chacun.

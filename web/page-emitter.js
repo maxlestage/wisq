@@ -34,8 +34,14 @@
 // saine, on la jette : `resoudre` en recrée une neuve depuis le même
 // `WebAssembly.Module`, déjà compilé, et la région suivante repart sur un
 // émetteur intact. Le mode processus de `kernel-entry` avait la même
-// propriété sans la chercher : un `x86-translate` qui meurt n'emporte que sa
-// région.
+// propriété sans la chercher : un `x86-translate` qui meurt ne laisse rien au
+// suivant, qui part d'un processus neuf.
+//
+// **Ce qui se passe ensuite n'est pas décidé ici.** La région qui a trappé
+// n'est pas traduite : `host.js` arrête la machine sur « traduction en
+// panne », et c'est au départ suivant qu'elle se redemande. `kernel-entry`,
+// lui, la relève comme un refus et arrête le démarrage sur « refusée » — dans
+// ses deux modes, une région que le traducteur ne rend pas finit la mesure.
 
 /// Les codes que rend `emettre` quand il ne rend pas de module. Les mêmes
 /// nombres que `ENCORE`, `REFUS` et `MAL_FORME` de `crates/wisq-page` ; un test
@@ -142,7 +148,9 @@ export function emetteur(source) {
     get pourquoi() {
       return pourquoi;
     },
-    /// Ce que l'émetteur occupe, en octets : sa mémoire ne rétrécit jamais.
+    /// Ce que l'émetteur occupe, en octets. Une instance ne rend jamais sa
+    /// mémoire ; une instance neuve, après une trappe, repart de la taille
+    /// initiale du module : le chiffre peut donc baisser.
     get memoire() {
       return porte.memory.buffer.byteLength;
     },
