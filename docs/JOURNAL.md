@@ -38,7 +38,10 @@ a trouvé deux trous dans les tests et deux commentaires faux.
 - `a_trap_in_the_page_emitter_costs_one_region_not_the_emitter` lit
   `pourquoi` après la trappe vue par `traducteur`. Il doit valoir le message
   du moteur, le même que `resoudre` rend pour la même fenêtre, et commencer
-  par `RuntimeError`. L'erreur levée doit le nommer. Après la traduction
+  par `RuntimeError`. L'erreur levée doit le nommer. Il doit aussi
+  contenir « Unreachable » : le nom seul (`trappe.name` au lieu de
+  `String(trappe)`) passait encore, relevé par le contrôle et refait ici
+  (le test tombe, restauré ensuite). Après la traduction
   suivante, `pourquoi` doit valoir `null`.
 - Les trois commentaires sont corrigés, et le chiffre du journal aussi. Le
   code de `web/page-emitter.js` ne change pas.
@@ -121,8 +124,10 @@ défauts réels.
   une trappe, `surRefus` jamais appelé, une trappe rendue comme un refus, le
   getter `pourquoi` qui rend toujours `null`.
 - `cargo test --release` : 506 tests, 0 échec ; pareil avec les assertions et
-  les débordements armés. `cargo fmt`, les quatre `clippy` (tous
-  dispositifs, toutes cibles, `wisq-vm` et `wisq-page` en wasm32) propres. Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
+  les débordements armés. `cargo fmt`, les quatre `clippy` (`--all-features`,
+  toutes cibles, `wisq-vm --lib` et `wisq-page` en wasm32) propres ; sans
+  `--lib`, `wisq-vm` ne passe pas en wasm32 (le binaire `wisq-bench-rs`).
+  Site : 470 tests, 0 échec. SwiftLint `--strict` : 0.
 - `kernel-entry` sur l'arbre fusionné, 6.6.142 + sonde, 700 000 tours, les
   deux traducteurs lancés en même temps : relevés identiques hors les lignes
   du traducteur, `WISQ-USERSPACE-OK` des deux côtés, 10 390 demandes chacun.
