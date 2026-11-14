@@ -12,6 +12,16 @@ import Foundation
 /// `RDRAND` à chaque réensemencement : avec une vraie source, deux reprises
 /// du même fichier divergent dès le premier.
 ///
+/// **Ce que cela ne règle pas** (d'après `random.c` de Linux 5.18 et
+/// suivants ; ni relu ici, ni mesuré sous un invité) : jusqu'à ce premier
+/// réensemencement — au plus une minute de temps de l'invité après le
+/// précédent —, le générateur du noyau repris tire la même suite sur chaque
+/// téléphone, à partir de l'état que l'instantané contient. Les générateurs que les programmes déjà lancés
+/// gardent en mémoire restent clonés, eux aussi. Et seul un noyau **démarré**
+/// sous le CPUID qui annonce `RDRAND` s'en sert : un instantané d'avant
+/// (niveau 0) n'en tire rien. Fermer la fenêtre demande de réensemencer à la
+/// reprise même (un vmgenid, qui fait appeler `add_vmfork_randomness`).
+///
 /// **Deux sources, et le choix est celui de qui construit la machine.**
 /// - `system()` : le générateur du système hôte
 ///   (`SystemRandomNumberGenerator`, `getrandom` sous Linux,

@@ -8,6 +8,83 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Une session refusée reste gardée, et l'aléa dit sans promettre trop
+
+Le contrôle de la tranche précédente (« Reprise sûre ») a trouvé que sa
+promesse principale ne tenait pas, et que le journal en disait trop.
+
+**1. « Arrêter » effaçait la session refusée.** Après le refus, la console
+dit « Rien n'a démarré, pour ne pas l'écraser : elle est gardée telle
+quelle ». Mais le bouton « Arrêter » reste dans la barre, et
+`MachineLifecycle.userStopped` rendait toujours « oublier » : un toucher, et
+le fichier partait sans avertissement — pour un bureau prêt sauvé par une
+version plus récente, exactement la perte que le refus devait empêcher.
+`MachineLifecycle` a maintenant un état `refused` : rien ne tourne, la
+session est gardée, « Arrêter » et le départ de l'écran n'y touchent pas ;
+seul « Oublier » l'efface. Rouvrir la machine la rejuge.
+
+**2. Une mise en arrière-plan pouvait écraser la session par une machine
+vide.** Quand c'est `restore` qui refuse, sur le fil d'émulation, le fil
+principal ne l'apprenait que par une tâche qui passe plus tard ; entre les
+deux, la machine neuve était là et l'état valait `running`. `suspend`
+voyait « à sauver », attendait le fil (déjà fini), et écrivait cette
+machine jamais chargée par-dessus la session ; la visite suivante l'aurait
+jugée lisible et reprise. Le fil note maintenant ce qu'il a fait
+(`RunStart` : reprise ou chargée, refusée, échouée) **avant** son signal de
+fin, et `suspend` le lit après l'attente
+(`MachineLifecycle.interpreterStopped`) : seule une machine que
+l'interprète avait vraiment s'écrit. Un démarrage échoué n'écrit plus
+rien non plus (même fenêtre, même défaut). « Arrêter » lit le même relevé,
+pour le refus que le fil a vu et que sa tâche n'a pas encore dit.
+
+**3. L'aléa : ce que RDRAND et RDSEED règlent, et ce qu'ils ne règlent
+pas.** Le message du commit `bef108e9` et l'entrée précédente laissaient
+entendre que les clés tirées juste après la reprise ne se devinent plus.
+D'après `random.c` (Linux 5.18 et suivants ; non relu ici, et aucun test de
+la tranche ne fait tourner un noyau invité), le noyau ne mélange RDSEED et
+RDRAND qu'à un réensemencement, au plus une minute de temps de l'invité
+après le précédent : jusque-là, chaque téléphone repris du même instantané
+tire la même suite. Les générateurs que les programmes déjà lancés gardent
+en mémoire (OpenSSL, `sshd`) restent clonés. Et seul un noyau démarré sous
+le nouveau CPUID se sert de RDRAND : le `bureau.snap` du 4 novembre
+(niveau 0) n'en tire rien. L'entrée précédente et le commentaire de
+`X86Entropy` le disent maintenant ; le message du commit, déjà poussé, ne
+se corrige pas.
+
+**Vérifié** :
+
+- Six tests nouveaux dans `MachineLifecycleTests` (18 au lieu de 12) :
+  « Arrêter » sur une session refusée, le refus vu par le seul fil après
+  le départ, la machine qui a tourné toujours sauvée, le démarrage échoué
+  ou pas encore décidé jamais sauvé, la réouverture qui rejuge, et le
+  relevé lu d'un fil à l'autre.
+- Quatre sabotages, quatre détectés, restaurations vérifiées (`cmp`
+  identique) : `userStopped` qui oublie même refusé (5 échecs), le refus
+  vu par le fil qui sauve quand même (3), le démarrage échoué qui sauve
+  (6), le relevé qui n'enregistre rien (1).
+
+**Ce qui reste** :
+
+- La liaison dans `LocalVMModel` (le relevé noté par le fil, lu par
+  `suspend` et `stop`) n'est compilée que par le job « App iOS » ; ici,
+  analyse syntaxique et relecture seulement. Le bouton « Arrêter » reste
+  visible : il ne fait plus que fermer l'écran quand la session est
+  refusée.
+- L'aléa : fermer la fenêtre d'avant le premier réensemencement demande de
+  réensemencer **à la reprise même** — un vmgenid, qui fait appeler
+  `add_vmfork_randomness` par le noyau. Écrire dans `/dev/urandom` par la
+  console à la première reprise (tranche 4.2) ne suffirait pas seul :
+  d'après le même code, l'écriture nourrit la réserve sans réensemencer
+  tout de suite. Les
+  générateurs des programmes déjà lancés ne se ferment qu'en n'en laissant
+  tourner aucun à la fabrication. Et le bureau publié doit être **démarré**
+  sous ce code, pas repris du `bureau.snap` du 4 novembre.
+- Une mise en arrière-plan pendant une reprise qui dure plus de cinq
+  secondes efface encore la session (`couldNotSave`), même lisible : c'est
+  la sauvegarde d'une grosse machine (tranche 4.4).
+- `LOCK RDRAND` (`F0 0F C7 F0`) s'exécute au lieu de lever #UD : le cœur
+  ignore LOCK partout, ce n'est pas propre à RDRAND.
+
 ## 2026-11-14 — Reprise sûre : l'aléa, la mémoire, le refus dit
 
 Premier pas du « bureau prêt » : un bureau Void Xfce déjà démarré, qu'on
@@ -25,7 +102,9 @@ l'application (`GuestMachineFactory.make`), une suite fixée partout
 ailleurs, pour que les tests, les bancs et la fabrication restent
 reproductibles. La source n'entre pas dans l'instantané : elle est celle de
 la machine qui reprend. `RDPID` et les formes mémoire (VMX) restent
-refusés.
+refusés. **Cela ne règle pas tout** (voir l'entrée suivante, plus haut) :
+Linux ne mélange RDRAND et RDSEED qu'à un réensemencement, et seul un noyau
+démarré sous ce CPUID s'en sert.
 
 **2. La reprise pesait deux fois l'instantané.** `restore` recopiait
 l'instantané en `[UInt8]` avant d'en lire un mot, `savedRAMSize` aussi pour
