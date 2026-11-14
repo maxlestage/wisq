@@ -1223,6 +1223,33 @@ export function machine({
     return (page + Number(address & 0xfffn)) & (base - 1);
   }
 
+  /// **Huit octets lus à une adresse invitée, chacun dans la page qui le
+  /// porte.** `physical` traduit **une** adresse ; lire ensuite huit octets
+  /// contigus en mémoire linéaire, ce que faisaient la délivrance et la
+  /// lecture du segment de tâche, prend la fin d'un mot à cheval dans la
+  /// trame physiquement voisine — pas dans la page virtuelle d'après. Le
+  /// défaut exact que `far_load_body` corrige côté module. Linux aligne son
+  /// IDT, sa GDT et son TSS sur une page, et ne le voit pas ; un mot à cheval
+  /// reste un mot, et le silicium le lit dans ses deux pages.
+  ///
+  /// Rend `null` quand l'une des deux pages manque, le témoin et CR2 posés
+  /// par la marche — CR2 sur le premier octet de la seconde.
+  function peekWord(address) {
+    const start = physical(address);
+    if (start === null) return null;
+    const vue = new DataView(memory.buffer);
+    const head = 4096 - Number(address & 0xfffn);
+    if (head >= 8) return vue.getBigUint64(start, true);
+    const next = physical(address + BigInt(head));
+    if (next === null) return null;
+    let value = 0n;
+    for (let i = 7; i >= 0; i--) {
+      const at = i < head ? start + i : next + (i - head);
+      value = (value << 8n) | BigInt(vue.getUint8(at));
+    }
+    return value;
+  }
+
   /// **Délivrer une exception à l'invité**, comme le processeur le ferait :
   /// la porte lue dans l'IDT, le cadre du mode long posé sur la pile — SS,
   /// RSP, RFLAGS, CS, RIP, puis le code d'erreur pour les vecteurs qui en
@@ -1300,13 +1327,11 @@ export function machine({
     if (position + 15n > limit) {
       return `${what} avec un changement de pile : le sélecteur de tâche 0x${selector.toString(16)} est hors de la GDT`;
     }
-    const entry = physical(gdt + position);
-    if (entry === null) {
+    const low = peekWord(gdt + position);
+    const high = low === null ? null : peekWord(gdt + position + 8n);
+    if (high === null) {
       return `une faute pendant la délivrance d'${what} : la GDT n'est pas cartographiée`;
     }
-    const vue = new DataView(memory.buffer);
-    const low = vue.getBigUint64(entry, true);
-    const high = vue.getBigUint64(entry + 8, true);
     // Neuf c'est « TSS long disponible », onze « TSS long occupé ». Rien
     // d'autre ne porte de pile, et un descripteur de code lu comme un TSS
     // rendrait une base plausible.
@@ -1331,11 +1356,11 @@ export function machine({
     const offset = interruptStack !== 0n
       ? 0x24n + (interruptStack - 1n) * 8n
       : 4n + BigInt(level) * 8n;
-    const where = physical(taskBase + offset);
-    if (where === null) {
+    const pile = peekWord(taskBase + offset);
+    if (pile === null) {
       return `une faute pendant la délivrance d'${what} : le segment de tâche n'est pas cartographié`;
     }
-    return vue.getBigUint64(where, true);
+    return pile;
   }
 
   function deliver(vector, errorCode, what) {
@@ -1345,13 +1370,11 @@ export function machine({
     if (at + 15n > limit) {
       return `${what} sans porte : aucune IDT ne porte le vecteur ${vector}`;
     }
-    const gate = physical(idt + at);
-    if (gate === null) {
+    const low = peekWord(idt + at);
+    const high = low === null ? null : peekWord(idt + at + 8n);
+    if (high === null) {
       return `une faute pendant la délivrance d'${what} : l'IDT n'est pas cartographiée`;
     }
-    const vue = new DataView(memory.buffer);
-    const low = vue.getBigUint64(gate, true);
-    const high = vue.getBigUint64(gate + 8, true);
     if ((low & (1n << 47n)) === 0n) {
       return `${what} sans porte : la porte du vecteur ${vector} n'est pas présente`;
     }
@@ -1387,6 +1410,9 @@ export function machine({
     // parce qu'il est déjà passé en anneau zéro à ce moment-là. Le CS d'avant
     // est dans `words` — c'est lui que l'`iretq` rendra.
     globals[SLOTS.segment + 1].value = BigInt.asIntN(64, selector);
+    // **Les mots du cadre ne sont jamais à cheval** : le sommet est aligné
+    // sur seize, et chaque mot descend de huit. Une seule traduction par mot
+    // suffit donc, et c'est la seule écriture de l'hôte.
     let pointer = top & ~0xfn;
     for (const word of words) {
       pointer -= 8n;

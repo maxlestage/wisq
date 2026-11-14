@@ -18386,3 +18386,63 @@ fn a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user() {
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **Un mot du segment de tâche à cheval sur deux pages est lu dans les deux.**
+///
+/// L'hôte traduisait l'adresse du premier octet, puis lisait huit octets
+/// contigus en mémoire linéaire : la fin du mot venait de la trame
+/// **physiquement** voisine, pas de la page virtuelle d'après. Le défaut que
+/// `far_load_body` corrige dans le module, resté dans la délivrance — qui lit
+/// la porte dans l'IDT, le descripteur dans la GDT et `RSP0` dans le TSS.
+/// Linux aligne les trois sur une page et ne le voit pas ; le silicium lit un
+/// mot à cheval dans ses deux pages.
+///
+/// Le montage est celui du segment de tâche, son descripteur déplacé pour que
+/// `RSP0` commence six octets avant la fin de la page du TSS. La page d'après
+/// est posée **loin** de la voisine, qui est remplie de `0xee` : un mot pris
+/// d'un trait y prendrait ses deux octets hauts.
+#[test]
+fn a_task_segment_word_across_two_pages_is_read_from_both() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FAR_FRAME: u64 = 0x3_4000;
+    let scratch = tss_scratch("tss-a-cheval");
+    let tweak = format!(
+        r#"// Le TSS commence à 0xff6 dans sa page : RSP0, à +4, est à cheval.
+poser({tss}n + 0xff6n, {limit}, 9);
+vue.setBigUint64({tss_pt} + idx({tss}n + 0x1000n, 12) * 8, {far}n | present, true);
+new Uint8Array(vm.memory.buffer, {tss_frame} + 0x1000, 16).fill(0xee);
+const pile = BigInt({kernel});
+for (let i = 0; i < 6; i++) vue.setUint8({tss_frame} + 0xffa + i, Number((pile >> BigInt(8 * i)) & 0xffn));
+for (let i = 6; i < 8; i++) vue.setUint8({far} + i - 6, Number((pile >> BigInt(8 * i)) & 0xffn));"#,
+        tss = TSS_AT,
+        limit = TSS_LIMIT,
+        tss_pt = TSS_PT,
+        tss_frame = TSS_FRAME,
+        far = FAR_FRAME,
+        kernel = TSS_KERNEL_STACK,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        false,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire a tourné : la pile du noyau a été trouvée : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rsp "),
+        format!("0x{:x}", (TSS_KERNEL_STACK & !0xf) - 48),
+        "**le cadre est sur `RSP0`, lu dans ses deux pages** — pris d'un trait, \
+         ses deux octets hauts seraient `0xeeee` : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}

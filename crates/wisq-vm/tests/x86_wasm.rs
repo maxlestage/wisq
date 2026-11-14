@@ -4455,3 +4455,29 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_branch_corpus() {
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// **Un `lret` sans REX.W est refusé en étant nommé, pas émis en `lretq`.**
+///
+/// `cb` seul dépile EIP puis CS sur **quatre** octets chacun, et `66 cb` sur
+/// deux. Le décodeur les donnait tous pour `lretq`, et l'émetteur dépilait
+/// seize octets : une pile décalée de huit, et un saut à une adresse faite de
+/// deux moitiés de mots. Le noyau n'écrit que `48 cb` ; les deux autres
+/// doivent donc s'arrêter sur un refus franc, à l'octet de l'instruction,
+/// comme `iretd` — et `48 cb` doit toujours passer, sans quoi un émetteur
+/// qui refuserait tout retour lointain passerait ce test.
+#[test]
+fn a_far_return_without_rex_w_is_refused_by_name() {
+    for bytes in [&[0xcb][..], &[0x66, 0xcb][..]] {
+        assert!(
+            matches!(
+                Module::resolving_or_why(bytes, CODE, 0, 0, 16),
+                Err(Refused::CannotTranslate { at: 0 })
+            ),
+            "{bytes:02x?} : un retour lointain court se refuse à l'octet zéro"
+        );
+    }
+    assert!(
+        Module::resolving_or_why(&[0x48, 0xcb], CODE, 0, 0, 16).is_ok(),
+        "`lretq` se traduit toujours"
+    );
+}

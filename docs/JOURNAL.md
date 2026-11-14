@@ -8,6 +8,135 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Sous l'émetteur, les pages ont des droits : écriture, utilisateur, et le code d'erreur juste
+
+**Ce qui n'allait pas.** La marche des tables de l'émetteur
+(`walk_body`, `crates/wisq-vm/src/x86_wasm.rs`) ne regardait que le bit de
+présence, et posait toujours le code d'erreur zéro. Trois conséquences :
+
+1. **Une écriture sur une page en lecture seule passait.** Pas de copie à
+   l'écriture après un `fork` : le fils écrivait dans les pages du père. Et
+   la première écriture dans une page anonyme neuve, annoncée « lecture »,
+   faisait poser à Linux la **page zéro partagée** en lecture seule, puis
+   l'instruction rejouée écrivait dedans — dans la page zéro de tout le
+   système.
+2. **Un programme d'anneau trois lisait la mémoire du noyau**, et chargeait
+   ses instructions dans une page du noyau.
+3. **Le tampon de traduction ne portait que le numéro de page** : même avec
+   une marche juste, une lecture remplissait la case et l'écriture suivante
+   y trouvait sa trame sans être jugée.
+
+Avec l'initramfs d'Alpine (6.18.60, `WISQ_RAM=256`), le premier programme
+lancé par le noyau mourait : `modprobe[372]: segfault at b ip
+00007fbcc71fd105 … error 4 in ld-musl-x86_64.so.1`.
+
+**Ce qui change.**
+
+- **La marche juge les droits, comme le cœur Swift (`allowed`) et le
+  silicium.** Le ET des bits R/W et U/S des quatre niveaux ; en anneau trois,
+  tout accès veut U et toute écriture veut W, CR0.WP ou non ; hors de
+  l'anneau trois, seule l'écriture est jugée, et seulement sous CR0.WP. Pas
+  de SMAP ni de SMEP : cette machine ne les annonce pas, et le noyau lit et
+  écrit les pages des programmes. La marche prend un second argument, ce que
+  l'accès venait faire (`WALK_MACHINE`, `WALK_READ`, `WALK_WRITE`,
+  `WALK_FETCH`) ; elle a son propre type, le neuvième, et la forme libre ne
+  bouge pas d'un octet.
+- **Le code d'erreur est juste** : P quand la page est là et qu'un droit
+  manque, W pour une écriture, **présente ou non**. U et I restent posés par
+  l'hôte (il lit CS, et c'est lui qui charge les instructions). **I n'est
+  jamais posé** : il demande NXE ou SMEP, et cette machine n'annonce ni NX
+  ni SMEP — le bit XD des entrées n'est donc pas lu. C'est dit, pas tenu.
+- **L'étiquette du tampon porte les droits de la page** :
+  `(page + 1) << 2 | W << 1 | U`. Le contrôle en ligne met à un ce que
+  l'accès n'exige pas (W pour une lecture, U hors de l'anneau trois, lu dans
+  CS) et compare à la page attendue, ses deux bits à un. La disposition
+  d'une case ne change pas (seize octets). Le noyau qui écrit sur une page en
+  lecture seule sans WP passe par le chemin lent à chaque fois : juste, et
+  rare (Linux allume WP).
+- **L'hôte charge les instructions en `WALK_FETCH`** : un programme ne lit sa
+  fenêtre que dans ses propres pages, et la faute de chargement porte le P
+  que la marche a rendu (`unread`). La délivrance — porte, descripteur, TSS,
+  cadre — passe `WALK_MACHINE`, qu'aucun droit n'arrête. `SLOTS` porte les
+  deux nombres, comparés à ceux du Rust.
+- **Deux restes du contrôle précédent, corrigés.** `cb` seul (un `lret` de
+  trente-deux bits) était décodé en `lretq` et dépilait seize octets au lieu
+  de huit : le décodeur dit maintenant la largeur (REX.W, `0x66`), et
+  l'émetteur refuse `cb` et `66 cb` en les nommant, comme `iretd`. Et l'hôte
+  lisait les mots de l'IDT, de la GDT et du TSS d'un trait après avoir
+  traduit leur premier octet : `peekWord` lit un mot à cheval dans ses deux
+  pages.
+- Les modules épinglés de `Sources/WisqCore/WebKitBench.swift` sont
+  régénérés par `--example bench-module` (les deux confinés changent ; le
+  libre est identique).
+- Le montage du segment de tâche de `host_loop.rs` pose ses tables avec le
+  bit utilisateur (`0x7`) : son programme tourne en anneau trois, et le
+  silicium refuserait de charger sa première instruction sinon.
+
+**Comment c'est vérifié.**
+
+- Un banc neuf, `Rights` (`tests/host_loop.rs`) : la pagination et l'anneau
+  posés par le pilote, une page de données dont on choisit les bits de la
+  feuille et des trois niveaux, les régions traduites à la demande par
+  `x86-translate`. Sept tests : lecture seule en anneau zéro avec et sans
+  WP, et sous des tables en lecture seule ; une écriture puis un `add` après
+  une lecture de la même page (le tampon) ; anneau trois sur une feuille et
+  sous des tables du superviseur, et le noyau sur une page utilisateur ;
+  anneau trois sans WP ; une case remplie en anneau zéro relue par l'anneau
+  trois, en lecture et — WP éteint — en écriture ; W sur une page absente ;
+  une écriture à cheval dont la seconde page est en lecture seule (rien
+  d'écrit, CR2 sur la seconde). Deux tests sur le montage du TSS pour le
+  code complet tel que le gestionnaire le trouve : `0x5` pour une lecture et
+  pour un chargement d'anneau trois dans une page du noyau. Un test pour
+  `lret` sans REX.W, un pour le mot du TSS à cheval.
+- **Douze sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  l'écriture comparée comme une lecture dans le tampon (2 tests tombent) ;
+  l'anneau ignoré dans le tampon (1) ; WP toujours allumé (2) ; les droits de
+  la seule feuille (2) ; W absent du code (7) ; P absent du code (8) ; le
+  bit utilisateur ignoré par la marche (4) ; le chargement en `WALK_MACHINE`
+  (1 — il ne tombait pas d'abord : la page de zéros s'exécutait en `add
+  %al,(%rax)` et fautait au même endroit avec le même code ; la page porte
+  maintenant un `ud2`) ; le code de chargement remis à zéro (1) ; `cb` émis
+  en `lretq` (1), `cb` décodé en 64 bits (2) ; le mot du TSS lu d'un trait
+  (1).
+- `cargo test --release` : 524 tests, 0 échec, aussi avec les débordements
+  armés. `cargo fmt`, les deux `clippy` propres. Le site : 470 tests.
+- **Le vrai noyau.** 6.6.142, 6.12.115 et 6.18.60 avec la sonde écrivent
+  toujours `WISQ-USERSPACE-OK` (10 401, 11 003 et 12 169 régions, contre
+  10 390, 10 981 et 12 156 avant : la copie à l'écriture du noyau a ses
+  régions). **Avec l'initramfs d'Alpine, le segfault de `modprobe`
+  disparaît.** `modprobe` va jusqu'à `arch_prctl` (son TLS) puis s'arrête
+  dans ld-musl, à `0x7fbcc7208089`, sur `66 48 0f 6e c3` (`movq
+  %rbx,%xmm0`) : la même instruction SSE au même endroit de ld-musl que le
+  mur d'avant, mais atteinte par le premier programme au lieu d'un suivant
+  — 11 080 régions.
+- **Ce que ça coûte**, contre la branche d'avant, mêmes commandes : le wasm
+  émis grandit de **7,4 %** à régions égales (171,5 Mo → 184,3 Mo pour les
+  12 154 régions communes de 6.18 ; 7,4 % aussi sur 6.6 et 6.12) ; le
+  traducteur de la page de 356 203 à 370 852 octets. **Le temps, lui, n'est
+  pas tranché** : une course avant, une ou deux après — 6.18 et la sonde,
+  deux millions de tours : 31,3 s avant, 35,2 s puis 38,3 s après ; 6.12 :
+  142 s → 151 s et 6.6 : 212 s → 229 s pour six cent mille tours. Mais la
+  même commande sur Alpine a rendu 39,8 s puis 30,7 s après, au même arrêt :
+  le bruit d'une course à l'autre est aussi grand que l'écart. Neuf
+  instructions WebAssembly de plus par écriture en ligne, onze par lecture ;
+  ce qu'elles coûtent en temps demande un banc répété, pas une course.
+
+**Ce qui reste.**
+
+- Le mur suivant est SSE (§ 2.4 de la carte : XMM, `movq`, `punpcklqdq`).
+- Le coût de l'anneau par accès pourrait tomber : le code d'une page du
+  noyau ne s'exécute jamais en anneau trois (le chargement faute), donc une
+  région pourrait être traduite pour l'anneau où l'hôte la demande — à
+  condition que la correspondance des régions distingue les deux. Non fait.
+- Une région déjà traduite se ré-exécute sans repasser par le chargement :
+  un programme qui sauterait dans du code du noyau déjà traduit ne fauterait
+  pas. Sécurité de l'invité, pas un mur de démarrage.
+- La toute première fenêtre est lue avant qu'aucune région n'existe, donc
+  sans marche : par repli, même pagination allumée.
+- Les bits A et D ne sont pas écrits (le cœur Swift non plus).
+- `fxrstor` nomme dans CR2 le premier octet absent plutôt que le dernier de
+  l'aire : non vérifié contre le silicium, laissé.
+
 ## 2026-11-14 — Sous l'émetteur, deux gardes du chemin lent sont enfin tenues par un test
 
 Le contrôle de l'entrée « un accès à cheval sur deux pages va dans les deux
