@@ -4782,7 +4782,7 @@ for (const [adresse, octets] of posé) {{
 }}
 
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 console.log("demandes " + asked.length);
 console.log("vues " + asked.join(","));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
@@ -13398,7 +13398,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 console.log("rdx " + window.wisqMachine.globals[2].value.toString());
 console.log("fini");
 "#,
@@ -14502,7 +14502,7 @@ for (const [adresse, octets] of posé) {{
   new Uint8Array(window.wisqMachine.memory.buffer, at, octets.length).set(octets);
 }}
 const why = await window.wisqRun();
-console.log("arret " + why);
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
 const lu = window.wisqConsole();
 console.log("console " + lu.octets);
 console.log("perdus " + lu.perdus);
@@ -14801,4 +14801,569 @@ console.log("fini");
         rdx_second: number("rdxdeux "),
         text: text.clone(),
     }
+}
+
+/// **Deux retours par le même `ret` partagé, et la pile doit revenir où elle
+/// était.**
+///
+/// Mesuré sur Alpine 6.18.60 : `x86_64_start_kernel` appelle `copy_bootdata`,
+/// qui pousse RBP et RBX, appelle `sanitize_boot_params`, dépile, et rend la
+/// main par `jmp __x86_return_thunk` — un `ret` seul, dans une autre région.
+/// `sanitize_boot_params` finit de la même façon. Sous l'émetteur, le `ret`
+/// final dépilait **le RBP sauvé** (qui valait CR4, `0x90`) au lieu de
+/// l'adresse de retour : la machine sautait à `0x90`, et le noyau s'arrêtait
+/// dans `native_halt` avant d'avoir écrit une seule ligne.
+///
+/// Le programme reprend les deux fonctions réduites à ce qui touche la pile,
+/// chacune dans sa région, et le `ret` partagé dans une troisième.
+/// Le programme de `two_returns_…`, avec le corps de `sanitize_boot_params`
+/// fourni par l'appelant (entre les poussées et les dépilements). Le `jmp`
+/// vers le thunk est **calculé** : écrit à la main, un rel32 faux a d'abord
+/// fait échouer ce banc pour une raison qui n'était pas la sienne.
+fn returns_through_a_shared_thunk(name: &str, middle: &[u8]) -> (u64, u64, String) {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const THUNK: usize = 0x300;
+    let mut program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0x48, 0xc7, 0xc5, 0x90, 0x00, 0x00, 0x00, // mov $0x90,%rbp — CR4, dans le noyau
+        0xe8, 0x2d, 0x00, 0x00, 0x00, // call 0x40 (copy_bootdata) — retour à 0x13
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi — la pile au retour
+        0x48, 0xc7, 0xc6, 0x37, 0x13, 0x00, 0x00, // mov $0x1337,%rsi — arrivé ici
+        0x0f, 0x0b, // ud2
+    ];
+    program.resize(0x40, 0xcc);
+    // 0x40 — copy_bootdata : push rbp ; push rbx ; call sanitize ; pop rbx ;
+    // pop rbp ; jmp thunk.
+    program.extend_from_slice(&[
+        0x55, // push %rbp
+        0x53, // push %rbx
+        0xe8, 0x39, 0x00, 0x00, 0x00, // call 0x80 (sanitize_boot_params) — retour à 0x47
+        0x5b, // pop %rbx
+        0x5d, // pop %rbp
+        0xe9, 0xb2, 0x02, 0x00, 0x00, // jmp 0x300 (le thunk) — suivante 0x4e
+    ]);
+    program.resize(0x80, 0xcc);
+    // 0x80 — sanitize_boot_params : quatre poussées, le corps, quatre
+    // dépilements, puis le même thunk.
+    program.extend_from_slice(&[
+        0x41, 0x55, // push %r13
+        0x41, 0x54, // push %r12
+        0x55, // push %rbp
+        0x53, // push %rbx
+    ]);
+    program.extend_from_slice(middle);
+    program.extend_from_slice(&[
+        0x5b, // pop %rbx
+        0x5d, // pop %rbp
+        0x41, 0x5c, // pop %r12
+        0x41, 0x5d, // pop %r13
+    ]);
+    let next = program.len() + 5;
+    assert!(next <= THUNK, "le corps de sanitize déborde sur le thunk");
+    program.push(0xe9); // jmp THUNK
+    program.extend_from_slice(&((THUNK as i32 - next as i32).to_le_bytes()));
+    program.resize(THUNK, 0xcc);
+    program.extend_from_slice(&[0xc3, 0xcc]); // __x86_return_thunk : ret
+    program.resize(0x400, 0xcc); // le rembourrage du noyau, que le décodeur lit
+    let scratch = std::env::temp_dir().join(format!("wisq-host-thunk-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (slot, offset) in [0usize, 0x40, 0x80, THUNK, 0x13, 0x47].into_iter().enumerate() {
+        let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+        let path = scratch.join(format!("r{offset:x}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        served += &format!(
+            "    if (address === {}n) return readFileSync({:?});\n",
+            BASE + offset as u64,
+            path.to_string_lossy()
+        );
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 64 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + JSON.stringify(why, (k, v) => typeof v === "bigint" ? v.toString() : v));
+console.log("rip " + lire({rip}));
+console.log("rsp " + lire(4));
+console.log("rdi " + lire(7));
+console.log("rsi " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    let line = |field: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    let _ = std::fs::remove_dir_all(&scratch);
+    (line("rsi "), line("rdi "), text)
+}
+
+#[test]
+fn two_returns_through_a_shared_thunk_leave_the_stack_where_it_was() {
+    let (arrived, stack, text) = returns_through_a_shared_thunk("simple", &[
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+    ]);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
+}
+
+/// **Le même retour, avec la copie de `sanitize_boot_params` sur sa pile** :
+/// `rep movsl` de 0x28 mots, d'une table vers la réserve que `RDI = RSP`
+/// désigne.
+#[test]
+fn a_string_copy_onto_the_stack_leaves_the_stack_where_it_was() {
+    let (arrived, stack, text) = returns_through_a_shared_thunk("movsl", &[
+        0x48, 0xc7, 0xc6, 0x00, 0x02, 0x01, 0x00, // mov $0x10200,%rsi — la table
+        0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
+        0x31, 0xc0, // xor %eax,%eax
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, // sub $0xa0,%rsp
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi
+        0x49, 0x89, 0xe5, // mov %rsp,%r13
+        0xf3, 0xa5, // rep movsl
+        0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00, // add $0xa0,%rsp
+    ]);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
+}
+
+/// **Le vrai corps de `sanitize_boot_params`**, octet pour octet, pris dans
+/// Alpine 6.18.60 (`linux-virt-6.18.60-r0`, de `0xffffffff81201c01` à
+/// `0xffffffff81201cd6`) : la réserve, la copie de la table sur la pile, le
+/// `rep stos` de la page de travail, la boucle à deux `cmov` et son
+/// `rep movsb`, et la copie finale de 0x400 mots. Les adresses absolues se
+/// replient sur la RAM du banc comme sur la vraie machine ; les deux `call`
+/// ne mènent qu'aux avertissements, que des données nulles ne prennent pas.
+#[test]
+fn the_real_body_of_sanitize_boot_params_leaves_the_stack_where_it_was() {
+    let mut middle: Vec<u8> = vec![
+        0x48, 0xc7, 0xc6, 0x20, 0x5d, 0x00, 0x82, // mov $0xffffffff82005d20,%rsi — la table
+        0xb9, 0x28, 0x00, 0x00, 0x00, // mov $0x28,%ecx
+        0x31, 0xc0, // xor %eax,%eax
+    ];
+    middle.extend_from_slice(&[
+        0x48, 0x81, 0xec, 0xa0, 0x00, 0x00, 0x00, 0x48, 0x89, 0xe7, 0x49, 0x89,
+        0xe5, 0xf3, 0xa5, 0xb9, 0x00, 0x04, 0x00, 0x00, 0x48, 0xc7, 0xc7, 0x40,
+        0xa6, 0x2e, 0x83, 0xf3, 0xab, 0x41, 0x8b, 0x6d, 0x00, 0xb8, 0x00, 0x10,
+        0x00, 0x00, 0xb9, 0x00, 0x10, 0x00, 0x00, 0x41, 0x8b, 0x5d, 0x04, 0x48,
+        0x39, 0xc5, 0x4c, 0x8d, 0xa5, 0x40, 0xa6, 0x2e, 0x83, 0x48, 0x0f, 0x43,
+        0xc5, 0x48, 0x89, 0xc6, 0x48, 0x29, 0xee, 0x48, 0x81, 0xc5, 0xe0, 0xba,
+        0x2e, 0x83, 0x48, 0x39, 0xce, 0x48, 0x0f, 0x46, 0xce, 0x48, 0x39, 0xde,
+        0x73, 0x0d, 0x48, 0x89, 0xda, 0xbf, 0x11, 0x00, 0x00, 0x00, 0xe8, 0x5c,
+        0xf9, 0x01, 0x00, 0x48, 0x81, 0xfe, 0x00, 0x10, 0x00, 0x00, 0x76, 0x2d,
+        0x48, 0x39, 0xd9, 0x73, 0x28, 0x80, 0x3d, 0x25, 0xda, 0x9b, 0x01, 0x00,
+        0x75, 0x1f, 0x48, 0xc7, 0xc2, 0x68, 0xd5, 0x3e, 0x82, 0x48, 0x89, 0xde,
+        0x48, 0xc7, 0xc7, 0x20, 0xcd, 0x3e, 0x82, 0xc6, 0x05, 0x0b, 0xda, 0x9b,
+        0x01, 0x01, 0xe8, 0x88, 0x16, 0x0f, 0x00, 0x0f, 0x0b, 0x49, 0x83, 0xc5,
+        0x08, 0x48, 0x89, 0xd9, 0x4c, 0x89, 0xe7, 0x48, 0x89, 0xee, 0x48, 0x8d,
+        0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, 0xf3, 0xa4, 0x49, 0x39, 0xc5, 0x0f,
+        0x85, 0x64, 0xff, 0xff, 0xff, 0x48, 0xc7, 0xc6, 0x40, 0xa6, 0x2e, 0x83,
+        0x48, 0xc7, 0xc7, 0xe0, 0xba, 0x2e, 0x83, 0xb9, 0x00, 0x04, 0x00, 0x00,
+        0xf3, 0xa5, 0x48, 0x81, 0xc4, 0xa0, 0x00, 0x00, 0x00,
+    ]);
+    let (arrived, stack, text) = returns_through_a_shared_thunk("vrai", &middle);
+    assert_eq!(arrived, 0x1337, "la machine doit revenir derrière le premier `call` : {text}");
+    assert_eq!(stack, 0xf000, "et la pile, à son point de départ : {text}");
+}
+
+/// **Une faute juste après un `push` : RIP et RSP doivent dire la même chose.**
+///
+/// Mesuré sur Alpine 6.18.60 : `copy_bootdata` fait `push %rbp`, et
+/// l'instruction suivante lit une globale dont la page n'est pas encore
+/// posée. Le noyau pose la page et rend la main par `iretq` à cette même
+/// instruction. Sous l'émetteur, la pile revenait décalée de huit octets, et
+/// le `ret` de `copy_bootdata` dépilait le RBP sauvé : la machine sautait à
+/// `0x90`.
+///
+/// Sans IDT, la machine s'arrête sur la faute et l'état se lit tel quel :
+/// RIP nomme la lecture fautive, donc le `push` d'avant **a eu lieu** — RSP
+/// est descendu de huit, et le mot est sur la pile.
+#[test]
+fn a_fault_right_after_a_push_keeps_the_push() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const STACK_PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const STACK_FRAME: u64 = 0x3_0000;
+    const TOP: u64 = STACK_PAGE + 0x800;
+    const ABSENT: u64 = 0xFFFF_8000_0020_5000;
+    const PUSHED: u64 = 0x90;
+
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    program.extend_from_slice(&PML4.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    program.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    program.extend_from_slice(&[0x48, 0xbc]); // movabs $TOP,%rsp
+    program.extend_from_slice(&TOP.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbd]); // movabs $PUSHED,%rbp
+    program.extend_from_slice(&PUSHED.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    program.extend_from_slice(&ABSENT.to_le_bytes());
+    program.push(0x55); // push %rbp — comme copy_bootdata
+    let faults_at = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax — la page absente
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pfpush-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la région se traduit");
+    let path = scratch.join("pf.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({absent}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({absent}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({absent}n, 21) * 8, {pt}n | 3n, true);
+// La pile, elle, est posée.
+vue.setBigUint64({pt} + idx({stack}n, 12) * 8, {frame}n | 3n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 4 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rip " + lire({rip}));
+console.log("rsp " + lire(4));
+console.log("mot " + vue.getBigUint64({frame} + 0x7f8, true).toString());
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            absent = ABSENT,
+            stack = STACK_PAGE,
+            frame = STACK_FRAME,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    let number = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(number("rip "), faults_at, "RIP nomme la lecture fautive : {text}");
+    assert_eq!(number("rsp "), TOP - 8, "le `push` d'avant a eu lieu : RSP est descendu de huit : {text}");
+    assert_eq!(number("mot "), PUSHED, "et le mot poussé est sur la pile : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une faute de page délivrée juste après un `push`, et rendue par
+/// `iretq` : la pile revient avec le `push`, et pas un mot de plus.**
+///
+/// C'est le chemin que Linux 6.12 et 6.18 prennent dans `copy_bootdata` et
+/// que 6.6 ne prend pas : `push %rbp`, puis la lecture d'une globale dont la
+/// page n'est pas encore posée, la faute délivrée au gestionnaire précoce,
+/// et le retour par `iretq` sur la même instruction. Sous l'émetteur, 6.6
+/// démarre ; 6.12 et 6.18 sautaient à `0x90` au `ret` suivant.
+///
+/// Le gestionnaire ne pose pas la page : il jette le code d'erreur et avance
+/// le RIP du cadre par-dessus la lecture de trois octets. Ce qui est mesuré
+/// est la pile au retour, pas la page.
+#[test]
+fn a_page_fault_delivered_after_a_push_returns_to_the_same_stack() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = BASE + 0x100;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    // Une page posée pour l'IDT (en bas), la pile (au milieu) et le
+    // descripteur de `lidt` (en haut) ; et une page absente juste après.
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    const TOP: u64 = PAGE + 0x800;
+    const DESCRIPTOR: u64 = PAGE + 0xf00;
+    const ABSENT: u64 = 0xFFFF_8000_0020_5000;
+
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    program.extend_from_slice(&PML4.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    program.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $DESCRIPTOR,%rax
+    program.extend_from_slice(&DESCRIPTOR.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x18]); // lidt (%rax)
+    program.extend_from_slice(&[0x48, 0xbc]); // movabs $TOP,%rsp
+    program.extend_from_slice(&TOP.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbd]); // movabs $0x90,%rbp
+    program.extend_from_slice(&0x90u64.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    program.extend_from_slice(&ABSENT.to_le_bytes());
+    program.push(0x55); // push %rbp — comme copy_bootdata
+    program.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax — faute
+    let resumes = program.len();
+    program.extend_from_slice(&[0x48, 0x89, 0xe7]); // mov %rsp,%rdi — la pile au retour
+    program.extend_from_slice(&[0x48, 0x8b, 0x1c, 0x24]); // mov (%rsp),%rbx — son sommet
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : vecteur 6 sans porte, l'arrêt
+    assert!(program.len() <= 0x100);
+    program.resize(0x100, 0xcc);
+    program.extend_from_slice(&[
+        0x48, 0x83, 0xc4, 0x08, // add $8,%rsp — le code d'erreur
+        0x48, 0x83, 0x04, 0x24, 0x03, // addq $3,(%rsp) — par-dessus la lecture
+        0x48, 0xcf, // iretq
+    ]);
+    program.resize(0x140, 0xcc);
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pfiret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut served = String::new();
+    for (slot, offset) in [0usize, 0x100, resumes].into_iter().enumerate() {
+        let module = Module::resolving(&program[offset..], BASE + offset as u64, 0, slot as u32, PAGES)
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+        let path = scratch.join(format!("r{offset:x}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        served += &format!(
+            "    if (address === {}n) return readFileSync({:?});\n",
+            BASE + offset as u64,
+            path.to_string_lossy()
+        );
+    }
+    // La porte du vecteur 14 : une porte d'interruption 64 bits, présente,
+    // sélecteur 0x10.
+    let gate_low = (HANDLER & 0xffff) | (0x10 << 16) | (0x8e00u64 << 32) | ((HANDLER >> 16) & 0xffff) << 48;
+    let gate_high = HANDLER >> 32;
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+// Le code, cartographié sur lui-même : la délivrance lit le gestionnaire
+// à travers les tables, comme le processeur.
+vue.setBigUint64({pml4} + idx({base}n, 39) * 8, 0x24000n | 3n, true);
+vue.setBigUint64(0x24000 + idx({base}n, 30) * 8, 0x25000n | 3n, true);
+vue.setBigUint64(0x25000 + idx({base}n, 21) * 8, 0x26000n | 3n, true);
+vue.setBigUint64(0x26000 + idx({base}n, 12) * 8, {base}n | 3n, true);
+// L'IDT : quinze portes, seule la quatorzième est présente.
+vue.setBigUint64({frame} + 14 * 16, {gate_low}n, true);
+vue.setBigUint64({frame} + 14 * 16 + 8, {gate_high}n, true);
+// Le descripteur de `lidt` : limite, puis base.
+vue.setUint16({frame} + 0xf00, 15 * 16 - 1, true);
+vue.setBigUint64({frame} + 0xf02, {page}n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 512n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rdi " + lire(7));
+console.log("rbx " + lire(3));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            page = PAGE,
+            frame = FRAME,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+            gate_low = gate_low,
+            gate_high = gate_high,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    let number = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(number("rdi "), TOP - 8, "au retour, la pile garde le `push` et rien de plus : {text}");
+    assert_eq!(number("rbx "), 0x90, "et son sommet est le mot poussé : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une faute dans un `rep movs` nomme le `rep movs`**, pas la dernière
+/// instruction qui avait posé RIP.
+///
+/// Dans `copy_bootdata` de Linux 6.12 et 6.18 : une lecture de globale
+/// (`+1`), `push %rbx`, puis `rep movsl` depuis la page de démarrage, qui
+/// n'est pas encore posée. Si la faute nomme la lecture de `+1`, le noyau y
+/// reprend, refait `push %rbx`, et la pile a un mot de trop : le `ret` final
+/// dépile RBP, qui vaut `0x90`.
+#[test]
+fn a_fault_in_a_string_copy_names_the_string_copy() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    const TOP: u64 = PAGE + 0x800;
+    const ABSENT: u64 = 0xFFFF_8000_0020_5000;
+
+    let mut program: Vec<u8> = Vec::new();
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PML4,%rax
+    program.extend_from_slice(&PML4.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    program.extend_from_slice(&[0x48, 0xb8]); // movabs $PG,%rax
+    program.extend_from_slice(&(1u64 << 31).to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    program.extend_from_slice(&[0x48, 0xbc]); // movabs $TOP,%rsp
+    program.extend_from_slice(&TOP.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $ABSENT,%rsi
+    program.extend_from_slice(&ABSENT.to_le_bytes());
+    program.extend_from_slice(&[0x48, 0xbf]); // movabs $PAGE+0x100,%rdi
+    program.extend_from_slice(&(PAGE + 0x100).to_le_bytes());
+    program.extend_from_slice(&[0xb9, 0x04, 0x00, 0x00, 0x00]); // mov $4,%ecx
+    program.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, 0xf8]); // mov -8(%rsp),%rax — une lecture qui réussit
+    program.push(0x53); // push %rbx
+    let faults_at = BASE + program.len() as u64;
+    program.extend_from_slice(&[0xf3, 0xa5]); // rep movsl — la lecture de la page absente
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2, jamais atteint
+
+    let scratch = std::env::temp_dir().join(format!("wisq-host-pfrep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("la région se traduit");
+    let path = scratch.join("pf.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 4 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rip " + lire({rip}));
+console.log("rsp " + lire(4));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+            page = PAGE,
+            frame = FRAME,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            pt = PT,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun).arg("run").arg(&driver).output().expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(errors.is_empty(), "le pilote ne doit rien écrire en erreur : {errors}");
+    let number = |name: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim()
+            .parse::<u64>()
+            .expect("un nombre")
+    };
+    assert_eq!(number("rsp "), TOP - 8, "le `push` a eu lieu, une fois : {text}");
+    assert_eq!(number("rip "), faults_at, "RIP nomme le `rep movs` qui a fauté, pas une instruction d'avant : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
 }
