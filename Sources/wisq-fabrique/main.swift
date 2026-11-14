@@ -90,7 +90,7 @@ func fabricate() throws {
     let out = URL(fileURLWithPath: positional[1], isDirectory: true)
     let imageName = argument("--nom") ?? iso.lastPathComponent
     let title = argument("--titre") ?? "Void Xfce (prêt)"
-    let budget = UInt64(argument("--budget") ?? "") ?? 2_000_000_000_000
+    let budget = try ReadyDesktopBuild.budget(argument("--budget"))
     let base = imageName.hasSuffix(".iso") ? String(imageName.dropLast(4)) : imageName
     let frozen: Date
     if let text = argument("--heure") {
@@ -119,7 +119,9 @@ func fabricate() throws {
     }
     let kernel = try Data(contentsOf: boot.kernel)
     let initrd = try boot.initrd.map { try Data(contentsOf: $0) }
-    let ram = max(X86Machine.minimumRAMSize, boot.minimumRAM, (Int(argument("--ram") ?? "") ?? 0) << 20)
+    // Jugée ici, avant la demi-heure de démarrage : une taille que
+    // l'application ne règle pas n'était refusée qu'à l'assemblage.
+    let ram = try ReadyDesktopBuild.memory(requestedMiB: argument("--ram"), minimum: boot.minimumRAM)
     let line = ReadyDesktopBuild.commandLine(recipeLine, zeroingFreedPages: !flag("--sans-zero"))
     journal.say("noyau \(kernel.count) octets, empreinte \(ReadyDesktopBuild.kernelDigest(kernel)) ; "
         + "initramfs \(initrd?.count ?? 0) octets ; mémoire \(ram >> 20) Mio")
@@ -171,7 +173,8 @@ func fabricate() throws {
         kernelDigest: ReadyDesktopBuild.kernelDigest(kernel), ramBytes: UInt64(ram),
         screen: [GuestMachineFactory.screenSize.width, GuestMachineFactory.screenSize.height],
         commandLine: line, madeAt: Date(), guestClock: frozen, instructions: instructions,
-        snapshotBytes: UInt64(snapshot.count), packedBytes: packed, commit: argument("--commit"))
+        snapshotBytes: UInt64(snapshot.count), packedBytes: packed,
+        snapshotSHA256: SHA256Stream.hex(snapshot), commit: argument("--commit"))
     let sheetURL = out.appendingPathComponent(base + "-pret.json")
     try sheet.encoded().write(to: sheetURL)
     journal.say("fiche : \(sheetURL.path)")

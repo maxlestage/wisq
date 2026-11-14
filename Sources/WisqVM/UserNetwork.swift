@@ -56,13 +56,21 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     /// Vrai pour le réseau coupé : ce qui voudrait sortir est refusé tout de
     /// suite par la passerelle, au lieu de se perdre. Voir `refusal`.
     public let refusesOutside: Bool
+    /// **L'heure que la passerelle sert** (NTP) : celle du système, sauf
+    /// pour la fabrication d'un bureau prêt, où l'hôte a l'heure figée de
+    /// l'horloge CMOS (`X86Machine.frozenHostTime`). Servir l'heure vraie à
+    /// côté d'une horloge figée, c'était offrir à un client NTP de l'invité
+    /// — `chronyd` tourne dans le bureau Void — l'heure à laquelle on
+    /// fabrique : le dehors entrait par là dans le bureau.
+    public let hostClock: @Sendable () -> Date
 
     public init(relay: DatagramRelay? = nil, streams: HostStreams? = nil, echoes: HostEchoes? = nil,
-                refusesOutside: Bool = false) {
+                refusesOutside: Bool = false, hostClock: @escaping @Sendable () -> Date = { Date() }) {
         self.relay = relay
         self.streams = streams
         self.echoes = echoes
         self.refusesOutside = refusesOutside
+        self.hostClock = hostClock
     }
 
     /// Le réseau complet : l'UDP et le TCP de l'invité sortent par l'hôte.
@@ -75,13 +83,15 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     /// — ARP, bail, ping de `10.0.2.2` —, mais rien ne sort. Le TCP reste
     /// pour les ports relayés vers l'invité, et lui seul : ce que l'invité
     /// ouvre vers le dehors est refusé tout de suite, sans attendre.
-    public static func isolated() -> UserNetwork {
-        UserNetwork(streams: HostStreams(reachesOutside: false), refusesOutside: true)
+    ///
+    /// `hostClock` est l'heure que la passerelle sert : voir la propriété.
+    public static func isolated(hostClock: @escaping @Sendable () -> Date = { Date() }) -> UserNetwork {
+        UserNetwork(streams: HostStreams(reachesOutside: false), refusesOutside: true, hostClock: hostClock)
     }
 
     public func send(_ frame: [UInt8]) {
         guard frame.count >= 14 else { return }
-        let replies = Self.answer(frame)
+        let replies = Self.answer(frame, clock: hostClock)
         lock.lock()
         guestMAC = Array(frame[6..<12])
         outgoing += replies
@@ -317,13 +327,14 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     static let broadcastMAC: [UInt8] = [UInt8](repeating: 0xFF, count: 6)
 
     /// Les trames à rendre pour une trame reçue de l'invité, peut-être aucune.
-    static func answer(_ frame: [UInt8]) -> [[UInt8]] {
+    /// `clock` n'est lue que pour une demande d'heure.
+    static func answer(_ frame: [UInt8], clock: () -> Date = { Date() }) -> [[UInt8]] {
         guard frame.count >= 14 else { return [] }
         let source = Array(frame[6..<12])
         let payload = Array(frame[14...])
         switch be16(frame, 12) {
         case arpType: return arp(payload).map { [ethernet(to: source, type: arpType, $0)] } ?? []
-        case ipv4Type: return ipv4(payload, from: source)
+        case ipv4Type: return ipv4(payload, from: source, clock: clock)
         default: return []
         }
     }
@@ -342,7 +353,7 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
         return reply
     }
 
-    static func ipv4(_ packet: [UInt8], from source: [UInt8]) -> [[UInt8]] {
+    static func ipv4(_ packet: [UInt8], from source: [UInt8], clock: () -> Date = { Date() }) -> [[UInt8]] {
         guard packet.count >= 20, packet[0] >> 4 == 4 else { return [] }
         let headerLength = Int(packet[0] & 0x0F) * 4
         let total = Int(be16(packet, 2))
@@ -371,7 +382,7 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
                                  ipv4Packet(from: gateway, to: [255, 255, 255, 255], protocol: 17, udp))]
             }
             // L'heure, servie par la passerelle elle-même : voir `ntp`.
-            if destination == gateway, destinationPort == ntpPort, let reply = ntp(Array(body[8..<length]), now: Date()) {
+            if destination == gateway, destinationPort == ntpPort, let reply = ntp(Array(body[8..<length]), now: clock()) {
                 let udp = udpDatagram(sourcePort: ntpPort, destinationPort: be16(body, 0), reply,
                                       from: gateway, to: sourceIP)
                 return [ethernet(to: source, type: ipv4Type,
@@ -458,7 +469,8 @@ public final class UserNetwork: NetworkBackend, @unchecked Sendable {
     /// chargé prend du retard. Son client NTP le rattrape, à condition de
     /// joindre un serveur. Celui-ci est toujours là, sans réseau dehors,
     /// réseau coupé compris (`UserNetwork.isolated()`), et le bail l'annonce
-    /// (option 42).
+    /// (option 42). L'heure servie est `now`, que `send` lit à `hostClock` :
+    /// figée pendant la fabrication d'un bureau prêt, comme l'horloge CMOS.
     ///
     /// Strate un, référence « WISQ » : l'horloge de l'hôte est la référence
     /// de ce petit réseau. Seule une demande de client (mode trois) reçoit

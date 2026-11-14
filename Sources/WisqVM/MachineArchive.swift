@@ -130,7 +130,15 @@ public enum MachineArchive {
             ownDiskBytes: ownDiskBytes, files: entries,
             ownDisk: ownDiskBytes == nil ? nil : machine.ownDisk)
 
-        let encoded = try JSONEncoder().encode(manifest)
+        // **Les clés triées** : sans cela, l'ordre des clés du manifeste
+        // change d'un lancement à l'autre (le hachage de Swift est tiré au
+        // sort par processus), et deux exports de la même machine ne sont
+        // pas les mêmes octets. Mesuré : six lancements, six ordres. Deux
+        // fabrications du même bureau ne se comparaient donc pas par leur
+        // somme. L'import lit le JSON quel qu'en soit l'ordre.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(manifest)
         guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
