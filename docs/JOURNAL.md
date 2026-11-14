@@ -49,8 +49,16 @@ pas par là.
   copie à cheval sur une page que le gestionnaire pose à la demande — une
   faute, la copie entière.
 - Quatre sabotages, chacun vu tomber puis restauré : RIP retiré de la sortie
-  de faute (8 tests tombent), RSP descendu avant l'écriture (2), `leave` et
-  `iretq` remis dans l'ancien ordre (2).
+  de faute (10 tests tombent sur 131), RSP descendu avant l'écriture (2),
+  `leave` remis dans l'ancien ordre (1), `iretq` aussi (1). Les dix du premier :
+  le test rouge, les quatre nouveaux, et cinq gardes qui existaient déjà —
+  `a_missing_page_stops_before_the_access_and_names_it`,
+  `a_page_fault_delivered_after_a_push_returns_to_the_same_stack`,
+  `a_page_fault_is_delivered_to_the_guest_and_iretq_resumes_the_faulting_instruction`,
+  `a_fault_right_after_a_push_keeps_the_push` et
+  `a_fault_taken_in_ring_three_lands_on_the_kernel_stack_from_the_task_segment`.
+  Le premier jet de cette entrée disait 8 : il oubliait les deux derniers. Le
+  contrôle l'a relevé, le sabotage a été refait et recompté.
 - `cargo test --release -p wisq-vm` : 393 tests, 0 échec ; pareil avec les
   débordements et les assertions armés. `cargo fmt` et `cargo clippy` propres.
   Le module mémoire épinglé de `WebKitBench.swift` est régénéré par
