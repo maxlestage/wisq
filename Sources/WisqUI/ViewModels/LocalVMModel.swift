@@ -72,6 +72,9 @@ public final class LocalVMModel {
     /// `CheckpointedRun`. C'est par elle qu'on arrête : son `stop` attend une
     /// écriture en cours, qu'« Arrêter » efface juste après.
     private var checkpointed: CheckpointedRun?
+    /// Ce que le fil d'émulation a fait de la course en cours : `suspend` le
+    /// lit avant d'écrire, `stop` avant d'effacer. Voir `RunStart`.
+    private var runStart: RunStart?
     /// What becomes of the saved machine on each event, decided by a type that
     /// builds on Linux and is therefore covered by tests — this wiring is not.
     private var life = MachineLifecycle()
@@ -344,7 +347,22 @@ public final class LocalVMModel {
             return
         }
         kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
-        let saved = SuspendedMachine.load(kernel: kernelName, in: storage)
+        // **« Pas de session » et « session illisible » ne se confondent
+        // plus.** Une session qu'on ne sait pas relire — abîmée, ou sauvée par
+        // une version plus récente de wisq — démarrait le noyau à neuf sans un
+        // mot, et la sauvegarde continue l'écrasait cinq minutes plus tard.
+        // Elle est gardée, rien ne démarre, et la console dit pourquoi et quoi
+        // faire. La décision vit dans `SavedSession`, que la CI Linux juge.
+        let session = SavedSession.find(kernel: kernelName, in: storage, core: core)
+        if case .unreadable(let refusal) = session {
+            // Gardée : « Arrêter » n'effacera rien de cet état (`userStopped`).
+            life.sessionRefused()
+            finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+            self.machine = nil
+            runFinished = nil
+            return
+        }
+        let saved = session.snapshot
         // **Une reprise que la console n'a pas vue partir se dit.** Revenir
         // d'une suspension garde l'écran ; revenir après une application tuée
         // le trouve vide, devant un invité qui attend en silence. Voir
@@ -391,18 +409,20 @@ public final class LocalVMModel {
         }
 
         // Une session lisible impose sa taille, si elle tient dans ce qui est
-        // libre ; sinon elle est gardée, et le démarrage refusé.
-        switch SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow)) {
-        case .boot(let size), .resume(let size):
-            machineRAM = size
-        case .tooLittleRoom(let needed, let room):
-            _ = life.guestFinished()
-            finish(with: SessionMemory.explanation(
-                saved: needed, room: room, name: kernelURL.lastPathComponent))
+        // libre ; sinon elle est gardée, et le démarrage refusé. Gardée pour
+        // de bon : `machineSize` met l'état à `refused`, que « Arrêter »
+        // n'efface pas — `guestFinished` ici le laissait l'effacer.
+        let memory = SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow))
+        guard let size = life.machineSize(memory) else {
+            if case .tooLittleRoom(let needed, let room) = memory {
+                finish(with: SessionMemory.explanation(
+                    saved: needed, room: room, name: kernelURL.lastPathComponent))
+            }
             self.machine = nil
             runFinished = nil
             return
         }
+        machineRAM = size
 
         // La console répond aux questions de l'invité (voir
         // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
@@ -460,17 +480,21 @@ public final class LocalVMModel {
         // porte les deux. Refuser de la reprendre parce que le fichier a été
         // supprimé depuis lui coûterait sa session pour une raison qui ne la
         // concerne pas.
-        let ramdisk: Data?
+        //
+        // **Et il n'est lu que pour un démarrage à froid.** Il l'était à
+        // chaque ouverture, session ou pas, et la fermeture du fil
+        // d'émulation le gardait toute la session : 151 Mo pour le bureau
+        // Xfce, lus pour rien. Seul son emplacement est résolu ici.
+        let ramdisk: URL?
         if let isoRamdisk {
             // **Celui de l'image passe avant la bibliothèque.** L'appariement
             // par le nom sert à deux fichiers importés séparément ; ici la
             // recette a nommé l'initramfs elle-même, et il n'y a rien à
             // deviner.
-            ramdisk = try? Data(contentsOf: isoRamdisk)
+            ramdisk = isoRamdisk
         } else if core == .x86_64 {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
-            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media)
-                .url.flatMap { try? Data(contentsOf: $0) }
+            ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media).url
             if ramdisk == nil, saved == nil {
                 _ = life.guestFinished()
                 finish(with: """
@@ -530,10 +554,19 @@ public final class LocalVMModel {
         // sauvegarde au lieu de refaire un démarrage de vingt minutes. Le nom
         // est lu ici pour la même raison que `storage`.
         let savedUnder = kernelName
+        // **La session passe au fil d'émulation dans une boîte**, et pas dans
+        // la fermeture elle-même : la fermeture vit autant que la machine, et
+        // l'instantané décompressé — 842 Mio pour le bureau Xfce — y restait
+        // toute la session. La reprise vide la boîte. Voir `PendingSession`.
+        let pending = PendingSession(saved)
         let checkpointed = CheckpointedRun(machine: machine, write: { packed in
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
         })
         self.checkpointed = checkpointed
+        // Écrit par le fil **avant** qu'il ne signale `finished` : `suspend`,
+        // qui attend ce signal, le lit donc sans course.
+        let runStart = RunStart()
+        self.runStart = runStart
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -563,11 +596,11 @@ public final class LocalVMModel {
                             for: keys.overlay(forDisk: secondDiskURL.lastPathComponent),
                             in: storageFolder))
                 }
-                // A saved machine is resumed in place of booting. If the file
-                // is not a snapshot — an older format, a truncated write — the
-                // restore throws and the kernel is booted instead, which is the
-                // only useful answer and better than refusing to start.
-                if let saved, (try? machine.restore(saved)) != nil {
+                // A saved machine is resumed in place of booting. **Une reprise
+                // refusée ne retombe plus sur un démarrage à froid** : elle
+                // lève `SavedSession.Unreadable`, la session est gardée, et la
+                // console le dit (le `catch` plus bas).
+                if try pending.resume(into: machine) {
                     // **L'heure de l'invité rattrape le temps passé dehors** :
                     // sans ça, une session reprise le lendemain se croyait la
                     // veille. Voir `GuestMachine.elapse(seconds:)`, pour le
@@ -584,15 +617,42 @@ public final class LocalVMModel {
                         }
                     }
                 } else {
+                    // Lu ici, et seulement ici : voir `ramdisk` plus haut. Un
+                    // fichier qui ne se lit plus est un démarrage impossible,
+                    // dit comme tel, plutôt qu'un noyau sans ses pilotes.
                     try machine.load(
                         kernelImage: image, commandLine: isoCommandLine,
-                        initialRamdisk: ramdisk)
+                        initialRamdisk: ramdisk.map { try Data(contentsOf: $0) })
                 }
+                // L'interprète a la vraie machine : à partir d'ici, son état
+                // vaut d'être sauvé.
+                runStart.record(.running)
                 outcome = checkpointed.run()
+                // **La fin de la course, notée ici aussi**, avant le signal :
+                // un invité éteint, redémarré ou en faute ne vaut plus d'être
+                // sauvé, et un départ qui passe avant la tâche plus bas
+                // l'écrivait (`MachineLifecycle.Start.finished`).
+                runStart.record(.after(outcome))
                 // Lu sur le fil d'émulation, pendant que la machine est encore
                 // à nous : la vue n'y touche pas.
                 activity = machine.diskActivity
+            } catch let refusal as SavedSession.Unreadable {
+                // **La session n'a pas pu être reprise : elle est gardée.**
+                // Pas d'effacement ici, à la différence du `catch` suivant —
+                // c'est tout l'objet de `SavedSession`. Le refus est noté
+                // **ici, sur ce fil**, avant le signal de fin : la tâche
+                // ci-dessous passe plus tard, et une mise en arrière-plan
+                // entre les deux sauvait la machine vide par-dessus la
+                // session (`MachineLifecycle.interpreterStopped`).
+                runStart.record(.refused)
+                Task { @MainActor [weak self] in
+                    guard let self, thisRun == self.run else { return }
+                    self.life.sessionRefused()
+                    self.finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+                }
+                return
             } catch {
+                runStart.record(.failed)
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
                     // A boot that never happened still ends the session, so the
@@ -612,6 +672,8 @@ public final class LocalVMModel {
                 // stops it on purpose — so the lifecycle decides whether this
                 // exit is the machine's own, and only then is it reported.
                 let reports = self.life.reportsGuestExit
+                // Lu avant `guestFinished`, qui passe l'état à `ended`.
+                let restartsOnReboot = self.life.restartsOnReboot
                 if self.life.guestFinished() == .forget {
                     SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
                 }
@@ -632,6 +694,10 @@ public final class LocalVMModel {
                 }.map { "\n\n\($0)" } ?? ""
                 switch outcome {
                 case .powerOff: self.finish(with: "La machine s'est éteinte." + silence)
+                // Arrêtée par la personne, ou finie pendant un départ de
+                // l'écran : rien ne se relance derrière son dos.
+                case .reboot where !restartsOnReboot:
+                    self.finish(with: "La machine s'est arrêtée pour redémarrer." + silence)
                 // **Un invité qui redémarre repart de lui-même**, comme un
                 // vrai PC, sans boucler : voir `AutomaticRestart`. Ce qu'il
                 // démarre est ce qu'un démarrage ordinaire choisirait — le
@@ -720,6 +786,9 @@ public final class LocalVMModel {
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
+        // Un refus que le fil a déjà vu, mais dont la tâche n'est pas encore
+        // passée, compte déjà : la session est gardée, rien ne s'efface.
+        if runStart?.recorded == .refused { life.sessionRefused() }
         let action = life.userStopped()
         // La machine d'abord, et à travers sa course : une écriture en
         // cours finit avant que `stop` ne rende la main, et l'effacement qui
@@ -762,7 +831,7 @@ public final class LocalVMModel {
     /// is a few megabytes. Given the choice between a brief hitch and a machine
     /// that silently fails to save, the hitch is the right one.
     public func suspend() {
-        guard let machine, let finished = runFinished else { return }
+        guard let machine, let finished = runFinished, let runStart else { return }
         switch life.steppedAway() {
         case .save: break
         case .nothing: return
@@ -780,6 +849,20 @@ public final class LocalVMModel {
             if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
             return
         }
+        // **N'écrire que la machine que l'interprète avait vraiment.** Le fil
+        // a fini ; ce qu'il a noté dit s'il a repris ou chargé la machine, ou
+        // s'il a refusé la session — gardée alors, et pas écrasée par une
+        // machine neuve qui n'a jamais tourné.
+        switch life.interpreterStopped(after: runStart.recorded) {
+        case .save: break
+        case .nothing:
+            letMachineGo()
+            return
+        case .forget:
+            SuspendedMachine.clear(kernel: kernelName, in: storage)
+            letMachineGo()
+            return
+        }
         // Le disque d'abord : ses écritures sont déjà sur le stockage, ceci
         // les y scelle avant que l'instantané ne prétende les connaître.
         machine.flushDisk()
@@ -788,9 +871,15 @@ public final class LocalVMModel {
         } catch {
             if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
         }
-        self.machine = nil
+        letMachineGo()
+    }
+
+    /// La machine lâchée après une mise de côté, écrite ou non.
+    private func letMachineGo() {
+        machine = nil
         runFinished = nil
         checkpointed = nil
+        runStart = nil
         status = .idle
     }
 
@@ -852,6 +941,7 @@ public final class LocalVMModel {
         machine = nil
         runFinished = nil
         checkpointed = nil
+        runStart = nil
         // La ligne d'état s'éteint avec la machine : un battement figé après
         // l'arrêt dirait « bloquée » là où le message entre crochets vient de
         // dire ce qui s'est passé.

@@ -270,4 +270,26 @@ final class CheckpointedRunTests: XCTestCase {
         XCTAssertEqual(box.all.count, 0)
         XCTAssertEqual(run.checkpoints, 0)
     }
+
+    /// **Un invité éteint n'est plus sauvé.** La compression lancée avant
+    /// l'extinction finit après : elle ne doit rien écrire, sinon la session
+    /// effacée par la fin de la course reviendrait.
+    func testASaveStillPackingWhenTheGuestPowersOffIsDiscarded() {
+        let machine = CountingMachine(work: 1, slicesBeforePowerOff: 3)
+        let clock = SteppingClock(step: 1_000)
+        let box = Saved()
+        final class Pending: @unchecked Sendable {
+            var jobs: [@Sendable () -> Void] = []
+        }
+        let pending = Pending()
+        let run = CheckpointedRun(machine: machine, interval: 1, minimumWork: 1,
+                                  clock: clock.read, pack: { $0 },
+                                  perform: { pending.jobs.append($0) },
+                                  write: { box.append($0) })
+        XCTAssertEqual(run.run(), .powerOff)
+        XCTAssertEqual(pending.jobs.count, 1, "une sauvegarde partie avant l'extinction")
+        pending.jobs.forEach { $0() }
+        XCTAssertEqual(box.all.count, 0, "une sauvegarde écrite après l'extinction")
+        XCTAssertEqual(run.checkpoints, 0)
+    }
 }
