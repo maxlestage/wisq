@@ -228,6 +228,7 @@ iOS ». La décompression écrit encore tout l'instantané avant la reprise
 `IsoBoot` ressort toujours le noyau et l'initramfs de l'ISO à chaque
 ouverture. L'heure de la première reprise (tranche 4.2) et la sauvegarde
 d'une grosse machine (4.4) sont d'autres tranches.
+
 ## 2026-11-14 — L'émetteur mène Linux 6.12 et 6.18 jusqu'à l'espace utilisateur
 
 **Ce qui n'allait pas.** Sous l'émetteur (x86-64 → WebAssembly), Linux 6.6
