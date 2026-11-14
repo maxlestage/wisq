@@ -759,6 +759,13 @@ console.log("servies " + servies());
 /// la seconde est confiée aussitôt, et le compte de ce qui est en vol ne
 /// passe jamais par zéro entre les deux — une boucle hôte qui dort tant
 /// qu'il est à zéro ne la manquerait donc pas.
+///
+/// **Ce « jamais » est observé, microtâche par microtâche** : pendant que la
+/// réponse se rend, une autre chaîne de promesses relève `enVol` à chacun de
+/// ses pas, comme le ferait la réaction d'une autre requête ou son
+/// `surReponse`. Elle voit 2 (la seconde confiée, la première pas encore
+/// décomptée) et jamais 0. Le compte relevé dans `surReponse` seul ne le
+/// prouve pas : il vaut 1 dans les deux ordres.
 #[test]
 fn what_waits_for_room_leaves_on_the_answer() {
     let module = page_module();
@@ -785,6 +792,14 @@ console.log("notifie " + requete(lecture(0), lecture(1)));
 await new Promise((r) => setTimeout(r, 5));
 console.log("confiees " + attentes.length + " " + c.disque.enVol() + " " + statut(0x4801));
 attentes[0].rendre(new Uint8Array(attentes[0].n).fill(1));
+// Une autre chaîne de promesses, qui relève le compte à chaque microtâche
+// pendant que la réponse se rend.
+const releves = [];
+for (let pas = 0; pas < 200; pas++) {{
+  releves.push(c.disque.enVol());
+  await null;
+}}
+console.log("releves " + Math.min(...releves) + " " + Math.max(...releves) + " " + releves.at(-1));
 const fin = performance.now() + 2000;
 while (attentes.length < 2 && performance.now() < fin) await new Promise((r) => setTimeout(r, 1));
 console.log("apres_la_premiere " + attentes.length + " " + c.disque.enVol() + " " + statut(0x4800) + " " + servies());
@@ -808,6 +823,11 @@ console.log("en_vol_a_chaque_reponse " + enVolALaReponse.join(","));
         said(&text, "apres_la_premiere "),
         "2 1 0x0 1",
         "la seconde confiée dès la réponse"
+    );
+    assert_eq!(
+        said(&text, "releves "),
+        "1 2 1",
+        "la seconde confiée avant que la première ne soit décomptée, à chaque microtâche"
     );
     assert_eq!(said(&text, "seconde "), "41943040+41943040");
     assert_eq!(said(&text, "fin "), "0x0 0x0 2 2 0");
