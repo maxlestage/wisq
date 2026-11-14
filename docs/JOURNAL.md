@@ -204,6 +204,226 @@ maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
   lira (virtio, P4) ajoutera `ram_lire`/`ram_ecrire`, et l'émetteur devra
   les recevoir aussi.
 - Ni l'horloge ni le 8042 ne passent dans un instantané (P9).
+## 2026-11-14 — La session trop grande gardée, et l'invité éteint jamais sauvé
+
+Le contrôle de la tranche précédente a trouvé une voie de plus par laquelle
+la session « gardée telle quelle » partait, et une fenêtre de même nature
+que celle du refus.
+
+**1. « Arrêter » effaçait la session qui ne tenait pas en mémoire.** Quand
+la session demande plus de mémoire que le téléphone n'en a de libre
+(`SessionMemory.choose` rend `tooLittleRoom`), la console dit « Elle est
+gardée telle quelle. Fermez ce qui tourne à côté et réessayez. » Mais ce
+refus passait par `guestFinished` : l'état valait `ended`, et « Arrêter »,
+resté dans la barre, rendait « oublier » et effaçait le fichier sans
+avertissement. C'est le cas même du bureau prêt de 1 Gio sur un iPhone qui
+manque de mémoire libre. La taille passe maintenant par
+`MachineLifecycle.machineSize`, qui met l'état à `refused` pour ce cas,
+comme pour la session illisible : « Arrêter » et le départ de l'écran n'y
+touchent plus ; seul « Oublier » l'efface.
+
+**2. Un invité éteint juste avant un départ était sauvé.** Le fil
+d'émulation notait `running` avant `run()`, jamais la fin. Quand l'invité
+s'éteint, redémarre ou faute, le fil signale sa fin et sa tâche passe plus
+tard ; un départ de l'écran ou une mise en arrière-plan entre les deux
+voyait encore `running`, attendait le fil (déjà fini) et écrivait
+l'instantané de la machine éteinte, puis la tâche, trouvant `suspended`, ne
+disait rien. La visite suivante reprenait cette machine morte. Lu dans le
+code, pas reproduit. Le fil note maintenant la fin de la course
+(`MachineLifecycle.Start.after(outcome)` : `.stopped`, le seul arrêt
+demandé, reste à sauver ; le reste est `finished`), avant son signal ; le
+départ ne l'écrit pas, efface la session devenue fausse, et laisse l'état à
+`ended` pour que la tâche dise la fin. Un redémarrage de l'invité ne relance
+plus qu'une machine qui tournait encore (`restartsOnReboot`) : sans ça,
+cette même tâche aurait relancé la machine derrière un écran parti — et,
+défaut plus ancien, un « Arrêter » tombé pendant un redémarrage de l'invité
+la relançait aussi.
+
+**3. La sauvegarde continue écrivait encore après l'extinction.** La
+compression part sur une autre file ; elle n'était jetée que sur
+« Arrêter » ou « Oublier ». Un invité qui s'éteint seul pendant qu'elle
+tourne (2,4 s pour 122 Mio, bien plus pour le bureau Xfce) faisait écrire
+la session **après** son effacement par la tâche de fin : la visite
+suivante reprenait la machine à l'instant d'avant son extinction, et, après
+un redémarrage, une mémoire d'avant sur un disque déjà réécrit.
+`CheckpointedRun.run` coupe maintenant les sauvegardes dès que l'invité
+finit de lui-même, sous le verrou (une écriture en cours finit avant le
+retour). Reproduit par le contrôle avec une compression retenue, puis par
+`testASaveStillPackingWhenTheGuestPowersOffIsDiscarded` (1 écriture au lieu
+de 0 sans la correction).
+
+**Vérifié** :
+
+- Le test de la sauvegarde jetée après l'extinction, et son sabotage
+  (l'appel retiré : 2 échecs, restauré ensuite).
+- Cinq tests nouveaux dans `MachineLifecycleTests` (23 au lieu de 18) : la
+  session trop grande gardée après « Arrêter », la taille qui passe telle
+  quelle sinon, la fin de course jugée par son issue, l'invité fini avant le
+  départ jamais sauvé, et le redémarrage qui ne relance qu'une machine en
+  marche.
+- Quatre sabotages, chacun restauré et vérifié par `cmp` : `machineSize`
+  par `guestFinished` (3 échecs), `.finished` sauvé (5 échecs), `after`
+  toujours `running` (3 échecs), `restartsOnReboot` vrai en `ended`
+  (2 échecs).
+- La liaison dans `LocalVMModel` ne compile pas ici : relue ligne à ligne,
+  et `swiftc -frontend -parse` passe. Seul le job « App iOS » la juge.
+
+**Ce qui reste** : les autres refus du début de `boot` (image illisible,
+déballage de l'ISO, noyau trop grand pour la machine RISC-V) passent encore
+par `guestFinished` ; aucun ne promet de garder la session, mais un
+« Arrêter » qui suit efface celle d'une course précédente du même modèle,
+si `kernelName` en reste réglé. Non traité ici.
+
+## 2026-11-14 — Une session refusée reste gardée, et l'aléa dit sans promettre trop
+
+Le contrôle de la tranche précédente (« Reprise sûre ») a trouvé que sa
+promesse principale ne tenait pas, et que le journal en disait trop.
+
+**1. « Arrêter » effaçait la session refusée.** Après le refus, la console
+dit « Rien n'a démarré, pour ne pas l'écraser : elle est gardée telle
+quelle ». Mais le bouton « Arrêter » reste dans la barre, et
+`MachineLifecycle.userStopped` rendait toujours « oublier » : un toucher, et
+le fichier partait sans avertissement — pour un bureau prêt sauvé par une
+version plus récente, exactement la perte que le refus devait empêcher.
+`MachineLifecycle` a maintenant un état `refused` : rien ne tourne, la
+session est gardée, « Arrêter » et le départ de l'écran n'y touchent pas ;
+seul « Oublier » l'efface. Rouvrir la machine la rejuge.
+
+**2. Une mise en arrière-plan pouvait écraser la session par une machine
+vide.** Quand c'est `restore` qui refuse, sur le fil d'émulation, le fil
+principal ne l'apprenait que par une tâche qui passe plus tard ; entre les
+deux, la machine neuve était là et l'état valait `running`. `suspend`
+voyait « à sauver », attendait le fil (déjà fini), et écrivait cette
+machine jamais chargée par-dessus la session ; la visite suivante l'aurait
+jugée lisible et reprise. Le fil note maintenant ce qu'il a fait
+(`RunStart` : reprise ou chargée, refusée, échouée) **avant** son signal de
+fin, et `suspend` le lit après l'attente
+(`MachineLifecycle.interpreterStopped`) : seule une machine que
+l'interprète avait vraiment s'écrit. Un démarrage échoué n'écrit plus
+rien non plus (même fenêtre, même défaut). « Arrêter » lit le même relevé,
+pour le refus que le fil a vu et que sa tâche n'a pas encore dit.
+
+**3. L'aléa : ce que RDRAND et RDSEED règlent, et ce qu'ils ne règlent
+pas.** Le message du commit `bef108e9` et l'entrée précédente laissaient
+entendre que les clés tirées juste après la reprise ne se devinent plus.
+D'après `random.c` (Linux 5.18 et suivants ; non relu ici, et aucun test de
+la tranche ne fait tourner un noyau invité), le noyau ne mélange RDSEED et
+RDRAND qu'à un réensemencement, au plus une minute de temps de l'invité
+après le précédent : jusque-là, chaque téléphone repris du même instantané
+tire la même suite. Les générateurs que les programmes déjà lancés gardent
+en mémoire (OpenSSL, `sshd`) restent clonés. Et seul un noyau démarré sous
+le nouveau CPUID se sert de RDRAND : le `bureau.snap` du 4 novembre
+(niveau 0) n'en tire rien. L'entrée précédente et le commentaire de
+`X86Entropy` le disent maintenant ; le message du commit, déjà poussé, ne
+se corrige pas.
+
+**Vérifié** :
+
+- Six tests nouveaux dans `MachineLifecycleTests` (18 au lieu de 12) :
+  « Arrêter » sur une session refusée, le refus vu par le seul fil après
+  le départ, la machine qui a tourné toujours sauvée, le démarrage échoué
+  ou pas encore décidé jamais sauvé, la réouverture qui rejuge, et le
+  relevé lu d'un fil à l'autre.
+- Quatre sabotages, quatre détectés, restaurations vérifiées (`cmp`
+  identique) : `userStopped` qui oublie même refusé (5 échecs), le refus
+  vu par le fil qui sauve quand même (3), le démarrage échoué qui sauve
+  (6), le relevé qui n'enregistre rien (1).
+
+**Ce qui reste** :
+
+- La liaison dans `LocalVMModel` (le relevé noté par le fil, lu par
+  `suspend` et `stop`) n'est compilée que par le job « App iOS » ; ici,
+  analyse syntaxique et relecture seulement. Le bouton « Arrêter » reste
+  visible : il ne fait plus que fermer l'écran quand la session est
+  refusée.
+- L'aléa : fermer la fenêtre d'avant le premier réensemencement demande de
+  réensemencer **à la reprise même** — un vmgenid, qui fait appeler
+  `add_vmfork_randomness` par le noyau. Écrire dans `/dev/urandom` par la
+  console à la première reprise (tranche 4.2) ne suffirait pas seul :
+  d'après le même code, l'écriture nourrit la réserve sans réensemencer
+  tout de suite. Les
+  générateurs des programmes déjà lancés ne se ferment qu'en n'en laissant
+  tourner aucun à la fabrication. Et le bureau publié doit être **démarré**
+  sous ce code, pas repris du `bureau.snap` du 4 novembre.
+- Une mise en arrière-plan pendant une reprise qui dure plus de cinq
+  secondes efface encore la session (`couldNotSave`), même lisible : c'est
+  la sauvegarde d'une grosse machine (tranche 4.4).
+- `LOCK RDRAND` (`F0 0F C7 F0`) s'exécute au lieu de lever #UD : le cœur
+  ignore LOCK partout, ce n'est pas propre à RDRAND.
+
+## 2026-11-14 — Reprise sûre : l'aléa, la mémoire, le refus dit
+
+Premier pas du « bureau prêt » : un bureau Void Xfce déjà démarré, qu'on
+télécharge au lieu d'attendre trente-deux minutes. Avant de fabriquer ce
+fichier, la reprise devait tenir quatre promesses qu'elle ne tenait pas.
+
+**1. L'aléa était le même pour tous.** Le processeur n'annonçait ni RDRAND
+ni RDSEED, et RDTSC est le compteur d'instructions : chaque téléphone qui
+reprend le même instantané repart du même état du générateur du noyau, et
+les clés tirées juste après se devinent. `RDRAND` et `RDSEED` (`0F C7 /6`
+et `/7` en registre, trois largeurs) sont maintenant exécutés, et annoncés
+par CPUID (feuille 1, ECX 30 ; feuille 7, EBX 18). Ils tirent dans une
+source qui appartient à la machine (`X86Entropy`) : l'aléa du système dans
+l'application (`GuestMachineFactory.make`), une suite fixée partout
+ailleurs, pour que les tests, les bancs et la fabrication restent
+reproductibles. La source n'entre pas dans l'instantané : elle est celle de
+la machine qui reprend. `RDPID` et les formes mémoire (VMX) restent
+refusés. **Cela ne règle pas tout** (voir l'entrée suivante, plus haut) :
+Linux ne mélange RDRAND et RDSEED qu'à un réensemencement, et seul un noyau
+démarré sous ce CPUID s'en sert.
+
+**2. La reprise pesait deux fois l'instantané.** `restore` recopiait
+l'instantané en `[UInt8]` avant d'en lire un mot, `savedRAMSize` aussi pour
+n'en lire que huit octets, et l'application gardait l'instantané et
+l'initramfs toute la session dans la fermeture du fil d'émulation. Le
+lecteur lit maintenant les octets de `Data` en place ; la session passe au
+fil d'émulation dans une boîte (`PendingSession`) que la reprise vide ; le
+fichier est projeté en mémoire (`.mappedIfSafe`) ; l'initramfs n'est lu que
+pour un démarrage à froid.
+
+**3. Une session illisible démarrait le noyau à neuf sans un mot**, et la
+sauvegarde continue l'écrasait cinq minutes plus tard. `SavedSession`
+distingue « pas de session » de « session illisible » (abîmée, ou prise par
+une machine plus récente) ; la seconde est gardée, rien ne démarre, et la
+console dit pourquoi et que « Oublier » repart de zéro. Une reprise refusée
+plus loin, par la machine elle-même, suit le même chemin.
+
+**4. Un niveau de machine.** `X86Machine.snapshotLevel` (1 : RDRAND
+annoncé) est écrit juste derrière la mémoire (`WISQ_lvl`). Une machine plus
+récente est refusée en le disant (`newerMachine`) ; un instantané d'avant la
+section est de niveau zéro et se reprend comme avant.
+
+**Vérifié** :
+
+- La mémoire, mesurée par le noyau (`/proc/self/statm`, et le pic `VmHWM`
+  remis à zéro par `/proc/self/clear_refs`) sur un instantané de 96 Mio :
+  le pic de la reprise est de 105 Mio, contre 201 Mio avec l'ancienne
+  copie ; après une reprise par `PendingSession`, le processus pèse 9 Mio
+  de plus qu'avant, contre 105 Mio quand la boîte garde les octets.
+- Le bureau Xfce sauvé le 4 novembre (`bureau.snap`, 883 Mo, sans la
+  section du niveau) se reprend avec ce code : fond vivant, console série,
+  Ctrl+Alt+T, tablette (`testTheDesktopComesBackAfterASave`, 71,6 s, le
+  conteneur partagé avec d'autres compilations).
+- Pas de recul de vitesse visible : 2 milliards d'instructions depuis
+  `milieu.snap` en 49,9 s (la référence connue est d'environ 53 s ; une
+  seule mesure, conteneur chargé).
+- Quatorze sabotages, quatorze détectés, restaurations vérifiées : copie
+  dans `restore`, copie dans `savedRAMSize`, boîte qui garde les octets, CF
+  non posé, largeur ignorée, fabrique sans l'aléa du système, source perdue
+  à la reprise, bit de CPUID retiré, machine plus récente acceptée, session
+  illisible prise pour aucune, niveau non écrit, `RDPID` accepté, REX.R
+  laissé dans le champ d'opcode, reprise refusée prise pour un succès.
+- `swift test` : 2805 tests, 0 échec. 26 tests nouveaux (`X86RandomTests`,
+  `X86SnapshotLevelTests`, `SavedSessionTests`, `X86ResumeMemoryTests`) ; le
+  test qui fige la feuille 7 de CPUID compte RDSEED.
+
+**Ce qui reste** : la liaison dans `LocalVMModel` (le message, l'initramfs
+lu au démarrage à froid seulement) n'est compilée que par le job « App
+iOS ». La décompression écrit encore tout l'instantané avant la reprise
+(décompresser bloc par bloc vers la RAM ôterait l'instantané décompressé, 842 Mio pour le bureau, du pic), et
+`IsoBoot` ressort toujours le noyau et l'initramfs de l'ISO à chaque
+ouverture. L'heure de la première reprise (tranche 4.2) et la sauvegarde
+d'une grosse machine (4.4) sont d'autres tranches.
 
 ## 2026-11-14 — La raison que l'émetteur de la page garde est jugée
 

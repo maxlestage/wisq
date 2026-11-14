@@ -337,7 +337,36 @@ public final class X86Machine: @unchecked Sendable {
         self.onOutput = onOutput
         memory = X86Memory.pc(ram: self.ramSize)
         core = X86Core(registers: [UInt64](repeating: 0, count: 16), rip: 0, memory: memory)
+        core.entropy = entropy
     }
+
+    /// **La source de `RDRAND` et `RDSEED`** : voir `X86Entropy`. Une suite
+    /// fixée tant que personne n'en donne d'autre — tests, bancs et
+    /// fabrication restent reproductibles —, celle du système dans
+    /// l'application (`GuestMachineFactory.make`).
+    ///
+    /// Gardée ici plutôt que dans le seul cœur : `load` et `restore`
+    /// construisent un cœur neuf, et la source doit passer de l'un à l'autre.
+    /// Elle n'entre pas dans l'instantané.
+    public var entropy = X86Entropy.seeded(X86Entropy.reproducibleSeed) {
+        didSet { core.entropy = entropy }
+    }
+
+    /// **Le niveau de cette machine**, écrit dans chaque instantané
+    /// (`Snapshot.levelSection`) et comparé à la reprise.
+    ///
+    /// Le format se relit d'une version à l'autre, mais pas la machine que le
+    /// noyau a découverte au démarrage : un bit de `CPUID`, un emplacement
+    /// PCI, la taille de la mémoire vidéo. Un instantané pris par une machine
+    /// plus récente que celle-ci peut compter sur ce qu'elle n'a pas — un
+    /// programme qui exécute `RDRAND` sur une machine qui ne le connaît pas
+    /// reçoit « Illegal instruction » — : il est refusé, et la reprise le dit
+    /// (`Snapshot.Failure.newerMachine`). Un instantané plus ancien se reprend,
+    /// comme toujours ; sans la section, il est de niveau zéro.
+    ///
+    /// **À monter** à chaque section ajoutée et à chaque changement de ce que
+    /// l'invité voit de la machine. Un : `RDRAND` et `RDSEED` annoncés.
+    public static let snapshotLevel: UInt64 = 1
 
     /// Où la pagination d'identité est posée : hors du chemin du noyau, qui
     /// commence à seize mébioctets, et hors de la page zéro.
@@ -376,6 +405,7 @@ public final class X86Machine: @unchecked Sendable {
 
         core = X86Core(registers: [UInt64](repeating: 0, count: 16),
                        rip: placement.entryPoint, memory: memory)
+        core.entropy = entropy
         // Ce que le protocole de démarrage 64 bits exige à l'entrée : le mode
         // long actif, la pagination en place, et RSI sur la page zéro.
         core.system.control[3] = Self.pageTableRoot
@@ -614,6 +644,11 @@ public final class X86Machine: @unchecked Sendable {
         lock.unlock()
         writer.blob(queued)
         writer.ram(UnsafeRawBufferPointer(start: memory.bytes, count: memory.size))
+        // **Le niveau de la machine, juste derrière la mémoire** : la première
+        // chose que la reprise juge, avant de lire quoi que ce soit d'autre.
+        // Voir `snapshotLevel`.
+        writer.u64(Snapshot.levelSection)
+        writer.u64(Self.snapshotLevel)
         // **La pile x87, derrière sa marque.** Le mot de contrôle, le mot
         // d'état et MXCSR sont écrits plus haut depuis toujours ; les huit
         // registres qu'ils décrivent et le mot d'étiquettes ne l'étaient pas.
@@ -699,7 +734,10 @@ public final class X86Machine: @unchecked Sendable {
     /// laisse la machine telle qu'elle était plutôt qu'à moitié restaurée,
     /// parce qu'une machine à moitié restaurée est pire qu'une machine perdue.
     public func restore(_ data: Data) throws {
-        var reader = try Snapshot.Reader([UInt8](data))
+        // **Sur les octets donnés, sans les recopier** : `[UInt8](data)`
+        // doublait l'instantané le temps de la reprise — 842 Mio de plus pour
+        // le bureau Xfce, sur un téléphone qui en a déjà autant à rendre.
+        var reader = try Snapshot.Reader(data)
         var restored = try Self.readCore(&reader, memory: memory)
         // **La mémoire en dernier.** Elle s'écrivait ici, directement dans
         // celle de la machine, et une section abîmée plus loin faisait
@@ -710,6 +748,9 @@ public final class X86Machine: @unchecked Sendable {
         // mémoire en vérifiant les mêmes bornes, et on n'écrit qu'ensuite.
         var tail = reader
         try tail.skipRAM(count: memory.size)
+        // Le niveau, d'abord : une machine plus récente que celle-ci est
+        // refusée avant qu'on lise ce qu'elle seule sait écrire.
+        _ = try Self.readLevel(&tail)
         // La pile x87, si la marque est là. Son absence veut dire « un
         // instantané d'avant cette section », pas « un instantané abîmé » :
         // la machine garde alors la pile vide d'un départ, ce qu'elle faisait
@@ -876,6 +917,9 @@ public final class X86Machine: @unchecked Sendable {
             install(bus: restoredBus)
         }
         core = restored
+        // La source d'aléa est celle de la machine qui reprend, pas celle
+        // qui a sauvé : voir `X86Entropy`.
+        core.entropy = entropy
         // Le mode ne s'écrit pas dans l'instantané : il se relit dans CS.
         core.refreshCompatibilityMode()
     }
@@ -927,10 +971,42 @@ public final class X86Machine: @unchecked Sendable {
     /// donc le savoir avant, pour construire la bonne. `nil` quand ce n'est
     /// pas un instantané lisible.
     public static func savedRAMSize(in data: Data) -> Int? {
-        guard var reader = try? Snapshot.Reader([UInt8](data)),
+        // Sur les octets donnés, comme `restore` : une copie ici doublait la
+        // session sur le fil principal pour n'en lire que huit octets.
+        guard var reader = try? Snapshot.Reader(data),
               (try? readCore(&reader, memory: X86Memory(size: 0x1000, base: 0))) != nil,
               let size = try? reader.u64() else { return nil }
         return Int(exactly: size)
+    }
+
+    /// **Le niveau de la machine qui a pris cet instantané** (voir
+    /// `snapshotLevel`), sans le reprendre : zéro pour un instantané d'avant
+    /// la section, `nil` pour des octets illisibles jusque-là. Une session ou
+    /// un bureau prêt se juge avec ceci avant qu'on construise une machine.
+    ///
+    /// **Le niveau se lit même quand il est trop haut** : c'est le dire qui
+    /// importe, et `restore` est celui qui refuse.
+    public static func savedLevel(in data: Data) -> UInt64? {
+        guard var reader = try? Snapshot.Reader(data),
+              (try? readCore(&reader, memory: X86Memory(size: 0x1000, base: 0))) != nil,
+              let size = reader.peekedU64(), let count = Int(exactly: size),
+              (try? reader.skipRAM(count: count)) != nil
+        else { return nil }
+        guard reader.peeks(Snapshot.levelSection) else { return 0 }
+        _ = try? reader.u64()
+        return try? reader.u64()
+    }
+
+    /// Lit la section du niveau si elle est là, et refuse une machine plus
+    /// récente que celle-ci. Zéro sans la section : un instantané d'avant.
+    static func readLevel(_ reader: inout Snapshot.Reader) throws -> UInt64 {
+        guard reader.peeks(Snapshot.levelSection) else { return 0 }
+        _ = try reader.u64()
+        let level = try reader.u64()
+        guard level <= snapshotLevel else {
+            throw Snapshot.Failure.newerMachine(saved: level, supported: snapshotLevel)
+        }
+        return level
     }
 
     private func write(_ writer: inout Snapshot.Writer, _ devices: X86LegacyDevices) {
