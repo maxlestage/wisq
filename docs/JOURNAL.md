@@ -8,6 +8,195 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Émetteur : un cache de code borné, rangé par contexte, et l'anneau dans la clé
+
+**Ce qui n'allait pas.** Trois défauts, tous portés par les entrées
+d'avant :
+
+1. **Le cache de code n'avait aucune borne.** Chaque `exec` remet ses
+   bibliothèques à des adresses neuves, chaque programme se retraduisait, et
+   Alpine 6.18.60 jusqu'à son shell de secours remplissait les quinze
+   gibioctets du conteneur vers cent mille régions : le pilote tué par
+   manque de mémoire à 1 182 s, l'invite au tour 7,4 millions.
+2. **Une région du noyau déjà traduite se ré-entrait depuis l'anneau
+   trois.** Les régions étaient gardées par leur seule adresse, dans `known`
+   comme dans la correspondance : un programme qui sautait sur le noyau y
+   faisait tourner son code au lieu de prendre la faute de page du
+   silicium. La sonde `surveiller` le tenait par une branche « défaut ».
+3. **Un programme servait les régions d'un autre**, à la même adresse.
+
+**Ce qui change.**
+
+- **La clé d'une région est son adresse et son contexte**
+  (`x86_wasm::context_tag`) : l'anneau, et hors de l'anneau zéro la racine
+  des tables (CR3 replié par le masque de la RAM, sans ses douze bits bas —
+  cette machine n'annonce pas PCID). L'anneau zéro n'a qu'un contexte, quel
+  que soit CR3 : le texte du noyau est le même dans toutes ses tables, et le
+  compter par processus ferait retraduire tout le chemin des appels système
+  à chaque processus neuf. Le contexte est rangé dans les quatre derniers
+  octets de la case de la correspondance, qui étaient du rembourrage
+  (`TABLE_CONTEXT`), avec un bit « prise » (`CONTEXT_PRESENT`) : une case
+  vide ne passe plus pour l'adresse zéro en anneau zéro.
+- **L'émetteur compare le contexte** à chaque recherche, recalculé depuis
+  CS et CR3 comme l'anneau des accès mémoire. Les blocs d'une forme qui
+  cherche déclarent deux locales — le seau et le contexte —, et le seau
+  n'est plus recalculé quatre fois par recherche : les modules de la sonde
+  de l'appareil perdent 32 octets (3 413 → 3 381, 3 319 → 3 287), et
+  `WebKitBench.swift` est régénéré par `--example bench-module`.
+- **`syscall`, `sysretq` et `iretq` ne se résolvent plus dans les blocs de
+  leur propre région** (`resolve_across`) : après un changement d'anneau,
+  seule la correspondance, qui juge le contexte, ou l'hôte peuvent répondre.
+- **`host.js` range ses régions par contexte, borne le cache et évince la
+  moins récemment servie.** Deux bornes (`CACHE_PAR_DEFAUT`, réglables par
+  `machine({ cache })`) : 16 384 régions et **64 Mio de modules**. Une région
+  évincée quitte `known`, ses cases de la correspondance (celles qui portent
+  son adresse, son contexte **et** son indice) et ses blocs dans la table ;
+  sa place est rendue et fusionnée à ses voisines. Une région servie par
+  l'hôte devient la plus récente **et reprend sa case** dans la
+  correspondance si une autre la lui a prise.
+- **La place dans la table se choisit avant la traduction, la longueur se
+  lit après** : l'hôte lit l'offset et la longueur du segment d'éléments
+  dans les octets du module avant de l'instancier (`blocsDuModule`) — une
+  région plus longue que le trou où on l'essaie écraserait sinon sa
+  voisine. Elle se pose au haut de la table tant qu'il reste sous un million
+  de cases (huit mébioctets de pointeurs), puis dans la plus grande place
+  rendue ; si elle n'y tient pas, elle est retraduite ailleurs. Un module
+  qui ne pose pas ses blocs à l'emplacement demandé est refusé franchement.
+  Une première forme (la première place rendue d'au moins 64 blocs) refaisait
+  8 906 traductions sur 123 134 sur Alpine ; celle-ci, zéro.
+- **`revoir` ne relit plus les régions d'un autre espace d'adressage** à
+  travers les tables en service : elles sont nommées à part (`ailleurs`).
+- `kernel-entry` : `WISQ_CACHE=<régions>,<octets>`, `WISQ_RAMASSER=0`, une
+  ligne « cache au tour … » à chaque battement et une ligne `cache` à la fin
+  (bornes, pics, évincées, retraduites, mémoire résidente).
+
+**Ce qu'une région coûte au moteur, mesuré** (Bun 1.4.4, `--smol`) :
+3 000 fenêtres de quatre kibioctets aux débuts de fonctions de 6.18.60,
+72,6 Mio de wasm, coûtent **316 à 322 Mio résidents : 4,4 octets par octet
+de wasm, 108 Kio par module**. Une région d'Alpine pèse en moyenne quatorze
+kibioctets de wasm. **Et lâchés, ils restent** : le code compilé ne pèse rien
+sur le tas de JavaScript, rien ne déclenche de collecte pour lui. Quatre
+tours lâchés sans pause montent à 1,4 Gio ; un `setTimeout(…, 0)` ne rend
+rien, 4 à 64 Mio de `ArrayBuffer` jetés non plus ; une pause de huit
+millisecondes, oui, dans ce banc. **Dans la vraie boucle, non** : les modules
+évincés ont survécu à bien des collectes jeunes, et seule une collecte
+pleine les rend. D'où `respirerSiBesoin` — une pause de huit millisecondes
+chaque fois qu'un quart de la borne a été évincé (ou vidé) — et un rappel
+`ramasser`, que `kernel-entry` remplit de `Bun.gc(true)`. La sonde 6.18 aux
+bornes de 2 000 régions et 16 Mio : 2,0 Gio résidents avec la pause seule,
+**270 Mio** avec `ramasser`.
+
+**Comment c'est vérifié.**
+
+- Dix tests neufs dans `host_loop`, un renommé, un renforcé dans `x86_wasm` :
+  - `the_code_cache_evicts_the_least_recently_served_region_and_retranslates_it`
+    (A → B → C dans un cache de deux ; A évincée quitte `known`, sa case et
+    son bloc, puis, réécrite, se retraduit sur ses octets neufs : RDI 111
+    puis 223, trois retraductions) ;
+  - `serving_a_region_keeps_it_in_the_code_cache` ;
+  - `the_code_cache_holds_under_its_byte_bound` (et `ramasser` appelé) ;
+  - `a_flush_lets_the_engine_collect_too` ;
+  - `a_region_too_long_for_the_hole_it_was_tried_in_is_placed_elsewhere`
+    (une région de 111 blocs essayée dans un trou de 71 devant une région
+    vivante : retraduite une fois, ailleurs, la voisine intacte) ;
+  - `a_module_for_another_slot_is_refused` ;
+  - `a_region_served_by_the_host_takes_its_case_back` ;
+  - `a_program_does_not_run_the_region_of_another_address_space` (deux CR3,
+    deux codes à `0x400000`, atteints par l'hôte puis par la correspondance :
+    RDI 1, 2, 1, 2 ; `revoir` les dit « ailleurs ») ;
+  - `a_ring_change_does_not_resolve_into_the_regions_own_blocks` (un
+    `sysretq` vers un bloc de sa propre région, sur une page du
+    superviseur : la faute de chargement, CR2 sur la cible, RDI nul) ;
+  - `the_view_computes_the_context_as_the_emitter_does` ;
+  - la sonde de `surveiller` devient
+    `a_kernel_region_already_translated_is_not_reentered_from_ring_three` :
+    sa branche « silicium » passe, la branche du défaut est retirée, et le
+    test exige maintenant témoin zéro, l'arrêt « une faute de page sur un
+    chargement d'instruction » et rien d'entré ;
+  - `a_region_finds_another_region_through_the_correspondence`
+    (`x86_wasm`) : la bonne adresse sous un autre anneau, et sous les tables
+    d'un autre programme, ne fait plus sauter le module ; sous celles du
+    programme, si.
+- Deux montages tenaient l'ancienne forme de la case : les étrangères de
+  `a_block_start_never_evicts_a_region_entry` portent maintenant un contexte
+  (une case sans contexte est vide), et `the_view_…` compare `tableContext`
+  et `contextPresent` aux constantes Rust.
+- **Sabotages**, chacun vu tomber puis restauré (`cmp` avec la copie) :
+  l'hôte qui cherche sans contexte (la sonde et les deux espaces tombent) ;
+  le module qui ne compare pas le contexte (les deux espaces, et le test
+  `x86_wasm`) ; le module sans CR3 dans le contexte (`x86_wasm`) ; l'hôte
+  sans CR3 (les deux espaces) ; `sysretq` résolu dans ses propres blocs ;
+  aucune éviction (quatre tests) ; servir sans rendre récente ; la borne en
+  octets ignorée ; une région posée dans un trou trop court ; `ramasser`
+  jamais appelé (deux tests) ; le vidage qui ne compte pas pour la
+  respiration ; les cases d'une région évincée gardées ; ses blocs gardés ;
+  l'emplacement du module non vérifié ; servir sans reprendre la case ;
+  `revoir` qui relit tout.
+- `cargo test --release --no-fail-fast` : 654 passés, 0 échec.
+  `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`,
+  `check-whitespace`, `check-project-sources` : propres. `swift build
+  --build-tests` puis la suite entière : 2 906 exécutés (67 sautés), 0
+  échec ; `WebKitBenchTests` compris. SwiftLint `--strict` : 0 violation.
+  Compte publié : 3 630 → 3 640 (Swift 2 986 + Rust 654), par `recompte.sh` ;
+  site : 476 passés, 0 échec.
+- **Sur le vrai noyau.** Les fichiers ont été retéléchargés (le bloc-notes
+  avait été effacé) : 6.18.60 et 6.12.115 ne sont plus servis que par les
+  répertoires `netboot` des versions publiées (3.24.4 et 3.22.8), leur
+  `vmlinuz-virt` identique à celui des ISO `alpine-virt` dont la somme est
+  vérifiée ; 6.6.142 vient de `linux-virt-6.6.142-r0.apk`, vérifié contre
+  l'APKINDEX de 3.20. Alpine 6.18.60, son initramfs (`netboot`) et son
+  `/init`, `WISQ_RAM=256`, `console=ttyS0`, les bornes par défaut, `ramasser`
+  allumé : « Mounting boot media: failed », le shell de secours, puis dix
+  commandes tapées — `uname -a`, `ls /`, `mount -t proc`, `head -3
+  /proc/meminfo`, `ps`, `ls /bin | wc -l` (220), `cat /proc/cmdline`,
+  `echo $((6*7))` (42), `dmesg | tail -2`, et la fin. **Plus de mort par
+  manque de mémoire** :
+
+  | bornes | mur | pic résident | demandes | retraduites | pic de régions |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16 384, 64 Mio (défaut) | 182 s | 813 Mio | 139 952 | 66 046 (47 %) | 4 857 |
+  | 16 384, 96 Mio | 170 s | 1 270 Mio | 123 244 | 41 606 (34 %) | 7 112 |
+  | 16 384, 64 Mio, sans `ramasser` | tué à 68 s | 6,3 Gio | 57 226 | — | — |
+
+  Sept espaces d'adressage au plus à la fois, 160 respirations, l'invite au
+  tour 239 877 (7,4 millions avant). La course à 96 Mio a tourné pendant des
+  sabotages ; son mur n'est pas comparable à la lettre.
+- **La sonde**, bornes par défaut, `WISQ_FIN=WISQ-USERSPACE-OK` :
+
+  | noyau | demandes | retraduites | tours | mur | pic résident |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 6.6.142 | 10 230 | 1 346 | 17 438 | 26 s | 745 Mio |
+  | 6.12.115 | 10 762 | 1 448 | 15 299 | 16 s | 783 Mio |
+  | 6.18.60 | 11 492 | 1 683 | 17 002 | 17 s | 862 Mio |
+
+  Les tours (retours de main entre deux `vm.run`) tombent de 499 496,
+  475 795 et 1 621 364 à quelques dizaines de milliers, et c'est la case
+  reprise par une région servie : la même sonde 6.18 sans elle (le sabotage
+  de `servir`) fait 816 384 tours en 33 s. Les sauts de module à module qui
+  repassaient par l'hôte faute de case n'y repassent plus.
+
+**Ce qui reste.**
+
+- **La collecte du code évincé, dans une page.** Rien dans une page ne force
+  une collecte pleine, et sous Bun, sans elle, la borne du cache ne borne
+  pas la mémoire : 6,3 Gio en 68 s. Sur un appareil, c'est au gestionnaire
+  de pression mémoire de WebKit de la faire ; **ce n'est pas mesuré**, et si
+  jetsam frappe avant, la vue meurt comme avant. `ramasser` est le point
+  d'accroche. Le pilote du bureau (`desktop::driver`) n'en passe aucun.
+- **Un CR3 recyclé** : un processus neuf dont les tables tombent sur la page
+  de celles d'un mort hérite du contexte, et une région du mort à la même
+  adresse le servirait. Moins large qu'avant (toutes les adresses de tous
+  les programmes), pas nul. Le remède reste de voir les écritures dans les
+  pages de code — comme pour le texte réécrit après le premier passage en
+  anneau trois, que rien ne voit toujours.
+- Le taux de retraduction (47 % sur Alpine au défaut) est le prix de la
+  borne ; un cache des modules compilés par octets de fenêtre, ou une borne
+  plus haute sur les appareils qui l'acceptent, le baisseraient.
+- Les 4,4 octets par octet de wasm sont ceux du JavaScriptCore de Bun ;
+  celui d'un iPhone n'est pas mesuré. Le disque (« Mounting boot media:
+  failed ») reste à raccorder.
+- Seule la CI juge le pont Swift sous un vrai WebKit (« App iOS »).
+
 ## 2026-11-15 — Le décodeur lit « ni moins » que le silicium, et `bureaux-1` est publié
 
 **Le trou de test.** Le dernier contrôle du flux de l'émetteur a montré
