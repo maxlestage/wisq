@@ -125,9 +125,19 @@ public enum SavedSession: Sendable {
 public final class PendingSession: @unchecked Sendable {
     private let lock = NSLock()
     private var snapshot: Data?
+    /// **Une session lisible attendait d'être reprise** quand la boîte a été
+    /// faite. Fixé une fois : la reprise vide la boîte, pas ce fait.
+    ///
+    /// C'est ce que dit l'échec du démarrage sur le fil
+    /// (`BootRefusal.couldNotStart`, `sessionKept:`) : la session qu'il n'a
+    /// pas pu reprendre est gardée, et la console le promet. L'application le
+    /// calculait elle-même, dans `LocalVMModel`, que rien ne juge sous Linux :
+    /// une promesse forcée à faux, ou à vrai, n'y faisait tomber aucun test.
+    public let awaited: Bool
 
     public init(_ snapshot: Data?) {
         self.snapshot = snapshot
+        awaited = snapshot != nil
     }
 
     /// Reste-t-il une session à reprendre ?

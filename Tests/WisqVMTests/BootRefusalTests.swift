@@ -201,5 +201,12 @@ final class BootRefusalTests: XCTestCase {
         XCTAssertTrue(source.contains("life.userStopped(seen: runStart?.recorded)"),
                       "« Arrêter » lit ce que le fil a déjà noté")
         XCTAssertTrue(source.contains("life.identified("), "le nom de la session vient de la course")
+        // La promesse de l'échec sur le fil vient de la boîte, que
+        // `SavedSessionTests` juge ; forcée à vrai ou à faux ici, rien d'autre
+        // ne la verrait.
+        XCTAssertEqual(source.components(separatedBy: ".couldNotStart(").count - 1, 1,
+                       "un seul échec sur le fil")
+        XCTAssertTrue(source.contains(".couldNotStart(reason, sessionKept: pending.awaited)"),
+                      "l'échec du fil promet la session gardée quand une attendait")
     }
 }
