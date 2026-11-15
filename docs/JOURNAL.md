@@ -8,6 +8,109 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureau prêt : chaque copie a sa clé SSH, et deux fabrications donnent la même archive, mesuré
+
+Le contrôle de l'entrée suivante (plus bas) a trouvé cinq défauts réels et
+deux approximations. Corrigés ici, et la fabrication refaite deux fois par le
+code final.
+
+**Ce qui n'allait pas.**
+
+1. **La clé SSH de la fabrication partait avec toutes les copies.** La
+   préparation effaçait `/etc/ssh/ssh_host_*`, mais `sshd` tournait :
+   l'instantané montrait `sshd: /usr/bin/sshd -D [listener]` et
+   `OpenSSH_9.9p1`. Depuis 9.8, l'écouteur garde les clés **en mémoire** et
+   les passe à `sshd-session` ; rien ne le relançait.
+2. **Le NTP de la passerelle servait l'heure vraie** à côté de l'horloge
+   CMOS figée, et le bail l'annonce. `chronyd` tourne dans le bureau ; sa
+   configuration (`pool pool.ntp.org`, lue dans l'instantané) demande un DNS
+   que le réseau isolé ne sert pas, donc il n'a sans doute rien reçu — non
+   vérifié. La fuite était possible, pas prouvée.
+3. **Deux exports de la même machine n'étaient pas les mêmes octets.** Pas à
+   cause de la clé tirée au sort ni de la date d'installation, comme le
+   contrôle le supposait (aucune des deux n'entre dans l'archive : la session
+   y est nommée par l'empreinte du noyau seule), mais du manifeste JSON :
+   `JSONEncoder` sans `.sortedKeys` écrit les clés dans un ordre qui change
+   d'un lancement à l'autre. Mesuré sur un petit programme : six lancements,
+   six ordres.
+4. La garde du niveau et le refus « illisible » de `check` n'étaient tenus
+   par aucun test ; `--ram 1500` tournait 42 minutes avant d'être refusé, et
+   un `--budget` illisible était remplacé sans un mot.
+5. La fusion de master (`30ef8bbc`) avait ôté onze lignes blanches doublées
+   d'entrées anciennes du journal : rendues (le journal ne diffère plus de
+   master que par les entrées de cette branche).
+
+**Ce qui change.**
+
+- **La préparation** : `sv down sshd`, puis l'effacement des clés, puis un
+  **guetteur** (`ReadyDesktopBuild.keyWatcher`, un `sh` lancé par `setsid`)
+  qui dort dans l'instantané. Il lit l'horloge CMOS
+  (`/sys/class/rtc/rtc0/since_epoch`, relue à chaque lecture) : figée à la
+  fabrique, elle avance sur le téléphone. Dès qu'elle bouge, il attend
+  soixante-cinq secondes, puis `ssh-keygen -A` et `sv up sshd`. Pourquoi
+  attendre : l'état du générateur du noyau est dans l'instantané ; il n'est
+  réensemencé (avec `RDSEED`/`RDRAND`, donc l'aléa du téléphone) qu'au plus
+  toutes les soixante secondes. **Mesuré** : deux reprises avec l'aléa du
+  système lisent les mêmes huit octets de `/dev/urandom` juste après la
+  reprise (`078985254fb68a9f` les deux fois). Des clés tirées tout de suite
+  auraient donc pu être les mêmes partout.
+- La préparation prouve son effet avant sa marque : `PRET_2` seulement si
+  aucun `sshd` ne tourne et que l'horloge existe, sinon `REFUS_4`, et la
+  fabrication s'arrête tout de suite (`GuestScript.Step.expectUnless`).
+- `UserNetwork.hostClock` : la passerelle sert l'heure qu'on lui donne ; la
+  machine de la fabrique lui donne l'heure figée.
+- `MachineArchive.export` écrit le manifeste clés triées (l'import lit
+  n'importe quel ordre).
+- `ReadyDesktopBuild.memory` et `budget` jugent `--ram` et `--budget` au
+  départ : `--ram 1500` est refusé en 0,23 s, `--budget 2e12` en 0,01 s,
+  `--ram 512` (sous le plancher de l'image) en 0,17 s. La fiche porte la
+  somme de l'instantané brut (`snapshotSHA256`).
+- Le banc de reprise prend l'aléa du système, comme le téléphone, et
+  vérifie par `ssh-keyscan` que `sshd` présente la clé du fichier neuf.
+
+**Mesuré.** Deux fabrications en même temps, au commit `4dd45909`, même
+heure figée (`<bloc-notes>/bureau-pret/fabrique.log`, `fabrique-B.log`,
+`fiche-B.json`) :
+
+| | A | B |
+| --- | --- | --- |
+| instructions | 97 879 571 324 | 97 879 571 324 |
+| instantané brut | 364 460 793 octets | 364 460 793 octets |
+| somme de l'instantané | `d85083cd…1626c` | `d85083cd…1626c` |
+| archive | 163 919 297 octets | 163 919 297 octets |
+| somme de l'archive | `a93fbff5…d9488` | `a93fbff5…d9488` |
+| clé de la machine installée | `installee-cd1…` | `installee-fba…` |
+| durée (charge 5 à 11 sur 4 cœurs) | 3552 s | 3535 s |
+
+Dans l'instantané : plus aucun `sshd: … [listener]` (0, contre 3 dans l'archive de `10352795`), le
+guetteur présent. **Deux reprises** de cette archive, importée dans un
+dossier vierge, aléa du système : `FOND_VIVANT_4`, `REPRIS_42`,
+`NET_1_FIN2`, `TERMINAL_2`, `LU_96`, puis `CLE_SERVIE_2` — la clé que
+`sshd` présente est celle du fichier — avec deux empreintes différentes
+(`SHA256:zP3ZDB9F…` et `SHA256:WWESgDR2…`), 260 et 274 s après la reprise.
+Banc entier : 262 et 276 s, pic résident 957 Mio. L'archive de `10352795`
+est remplacée par celle-ci dans `<bloc-notes>/bureau-pret/` (ses journaux
+sont dans `ancien-10352795/`).
+
+**Tests** : douze de plus (`ReadyDesktopBuildTests` 8, `GuestScriptTests`
+2, `MachineArchiveTests` 1, `UserNetworkTimeTests` 1), dont un guetteur
+joué par un vrai `sh` avec des doublures de `ssh-keygen` et `sv`. Treize
+sabotages, treize chutes : refus ignoré, garde du niveau (`|| true`), refus
+« illisible » ôté, NTP à l'heure vraie, fabrique sans heure figée au NTP,
+manifeste non trié, `sv down` ôté, guetteur sans attente, mémoire non
+jugée, budget remplacé, préparation sans refus, clé de machine dans
+l'archive, mémoire sous le plancher relevée. `swift test` : 2854 tests,
+aucun échec. Compte publié : 3447.
+
+**Ce qui reste.** L'heure de la première reprise (l'invité se croit au
+14 novembre à minuit) ; SSH n'est servi qu'au bout de quatre minutes et
+demie dans le banc (le guetteur, puis `ssh-keygen` sous l'interprète) ;
+l'ancien `bureau.snap` des bancs de profil n'est pas refait (les cartes du
+bloc-notes le disent) ; un import d'archive par un lien symbolique est
+refusé comme « abîmé » (vu en passant, non corrigé) ; la reproductibilité
+n'est mesurée que sur deux fabrications d'un même conteneur, pas en CI ;
+l'essai sur un iPhone.
+
 ## 2026-11-14 — Le bureau prêt se fabrique d'une commande, et pèse trois fois moins
 
 **Ce qui n'allait pas.** Le seul bureau Xfce déjà démarré du bloc-notes
