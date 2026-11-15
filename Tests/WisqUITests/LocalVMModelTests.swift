@@ -325,6 +325,33 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), damaged, "« Arrêter » après le refus n'efface rien")
     }
 
+    /// **La même promesse, quand c'est la machine qui refuse la reprise, sur
+    /// le fil d'émulation.** La session privée de son dernier octet passe le
+    /// jugement du fil principal (`SavedSessionTests` le tient sous Linux),
+    /// puis `PendingSession.resume` lève « abîmée » sur le fil, et le refus
+    /// `.session` passe par la tâche du `catch`. Ce refus-là, affiché par un
+    /// `finish` direct, laissait l'état à `running` et effaçait `runStart` :
+    /// « Arrêter » rendait `.forget`, et la session promise gardée partait.
+    @MainActor
+    func testStoppingAfterASessionTheMachineRefusedKeepsIt() throws {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: identity(named: "Image")))
+        let saved = try SnapshotFile.unpack(try Data(contentsOf: file))
+        let cut = SnapshotFile.pack(saved.dropLast(1))
+        try cut.write(to: file)
+
+        model.boot(kernelURL: kernel)
+        waitUntil("le refus du fil doit promettre la session gardée") {
+            if case .finished(let message) = model.status { return message.contains("gardée telle quelle") }
+            return false
+        }
+        model.stop()
+        XCTAssertEqual(try Data(contentsOf: file), cut, "« Arrêter » après le refus du fil n'efface rien")
+    }
+
     /// Suspending with nothing running is what `onDisappear` does after the
     /// machine has already ended. It must be harmless.
     @MainActor

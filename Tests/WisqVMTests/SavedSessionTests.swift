@@ -105,6 +105,24 @@ final class SavedSessionTests: XCTestCase {
         }
     }
 
+    /// **Une session que `judge` lit et que la machine refuse** : privée de
+    /// son dernier octet, une session RISC-V garde son en-tête (le jugement
+    /// la dit lisible, et l'application lance le fil d'émulation), mais sa
+    /// dernière section s'arrête court, et la reprise lève « abîmée ». C'est le chemin du
+    /// refus `.session` sur le fil, que `LocalVMModelTests` fait de bout en
+    /// bout avec cette même coupure ; ce test-ci, qui tourne sous Linux, dit
+    /// que la coupure mène bien là.
+    func testARISCVSessionCutShortIsJudgedReadableButRefusedOnResume() throws {
+        let saved = LinuxMachine(ramSize: 1 << 20, onOutput: { _ in }).snapshot()
+        let cut = saved.dropLast(1)
+        XCTAssertEqual(SavedSession.judge(cut, core: .riscv32).snapshot, cut, "le jugement ne lit que l'en-tête")
+        let pending = PendingSession(cut)
+        XCTAssertThrowsError(try pending.resume(into: LinuxMachine(ramSize: 1 << 20, onOutput: { _ in }))) { error in
+            XCTAssertEqual(error as? SavedSession.Unreadable, .damaged)
+        }
+        XCTAssertTrue(pending.awaited)
+    }
+
     /// La phrase dit les trois choses : gardée, pourquoi, et le geste qui
     /// repart de zéro.
     func testTheExplanationSaysKeptWhyAndWhatToDo() {
