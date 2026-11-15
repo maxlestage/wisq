@@ -230,6 +230,31 @@ final class IsoBootTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: plan.kernel), IsoGravure.kernel)
     }
 
+    /// **L'empreinte du noyau d'une image est celle du noyau qui démarre** :
+    /// celle des octets que `unpack` sort, pas celle de l'image. Le noyau
+    /// sorti pour la mesurer ne reste pas derrière ; ce qui n'est pas une
+    /// image n'en a pas, ni un noyau plus gros que le plafond. C'est contre
+    /// elle qu'un bureau prêt se vérifie avant de s'installer.
+    func testTheKernelDigestOfAnImageIsTheUnpackedKernels() throws {
+        let image = try IsoGravure().write()
+        defer { try? FileManager.default.removeItem(at: image) }
+        let scratch = folder.appendingPathComponent("empreinte")
+
+        let digest = IsoBoot.kernelDigest(of: image, scratch: scratch, ceiling: 1 << 20)
+        let plan = try plan(IsoBoot.unpack(image, into: folder.appendingPathComponent("iso"), ceiling: 1 << 20))
+        XCTAssertEqual(digest, ReadyDesktopBuild.kernelDigest(try Data(contentsOf: plan.kernel)))
+        XCTAssertEqual(digest, ReadyDesktopBuild.kernelDigest(IsoGravure.kernel))
+        XCTAssertNotEqual(digest, ReadyDesktopBuild.kernelDigest(try Data(contentsOf: image)))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scratch.path), [],
+                       "le noyau sorti pour la mesure est resté")
+
+        XCTAssertNil(IsoBoot.kernelDigest(
+            of: image, scratch: scratch, ceiling: UInt64(IsoGravure.kernel.count - 1)))
+        let plain = folder.appendingPathComponent("pas-une-image")
+        try Data(repeating: 7, count: 4096).write(to: plain)
+        XCTAssertNil(IsoBoot.kernelDigest(of: plain, scratch: scratch, ceiling: 1 << 20))
+    }
+
     /// Le plafond refuse avant d'écrire, et le dossier reste vide.
     func testTheCeilingRefusesAndLeavesNothing() throws {
         let image = try IsoGravure().write()

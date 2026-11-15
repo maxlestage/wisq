@@ -306,6 +306,28 @@ public enum IsoBoot {
         recipe.split(separator: " ").contains { $0.hasPrefix("root=live:") } ? liveSystemRAM : 0
     }
 
+    /// **L'empreinte du noyau que `unpack` sortirait de l'image**
+    /// (`ReadyDesktopBuild.kernelDigest`) : c'est elle qui nomme la session
+    /// d'une machine qui démarre cette image. Un bureau prêt la compare à la
+    /// sienne avant de s'installer (`ReadyDesktop.install`).
+    ///
+    /// Le noyau seul est sorti — pas l'initramfs, cent cinquante mégaoctets
+    /// pour rien —, par le même `extract` et la même recette que `unpack` ;
+    /// le fichier est effacé ensuite, et `folder` n'est pas le dossier du
+    /// démarrage. `nil` quand l'image n'a pas de recette ou que son noyau ne
+    /// sort pas.
+    public static func kernelDigest(of image: URL, scratch folder: URL, ceiling: UInt64) -> String? {
+        guard let recipe = IsoImage.recipe(of: image),
+              (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil
+        else { return nil }
+        let kernel = folder.appendingPathComponent("noyau-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: kernel) }
+        guard IsoImage.extract(recipe.kernel, from: image, to: kernel, ceiling: ceiling),
+              let bytes = try? Data(contentsOf: kernel)
+        else { return nil }
+        return ReadyDesktopBuild.kernelDigest(bytes)
+    }
+
     /// Ouvre l'image, en sort de quoi démarrer, ou dit pourquoi non.
     ///
     /// `ceiling` est ce que l'appelant accepte d'écrire pour **chaque** membre.

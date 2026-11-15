@@ -282,6 +282,11 @@ public enum LocalStorage {
             let url = machines.appendingPathComponent(file)
             freed += size(of: url)
             try? manager.removeItem(at: url)
+            // La marque d'une première reprise part avec sa session : sans
+            // elle, elle n'attend plus rien (`FirstResume.pending`) et
+            // resterait pour toujours. Pas comptée : quelques octets, que le
+            // relevé ne compte pas non plus.
+            try? manager.removeItem(at: URL(fileURLWithPath: url.path + FirstResume.markerSuffix))
         }
         // Les couches que plus rien ne lit, comptées au relevé avec elles.
         if let writes {

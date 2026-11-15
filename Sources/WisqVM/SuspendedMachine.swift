@@ -24,7 +24,13 @@ public enum SuspendedMachine {
     /// it is so that a person looking in the directory can tell which file is
     /// which, which a wall of hex cannot.
     public static func identity(of image: Data, named name: String) -> String {
-        "\(safeName(name))-\(String(digest(image), radix: 16))"
+        identity(digest: String(digest(image), radix: 16), named: name)
+    }
+
+    /// La même identité, d'une empreinte déjà calculée — celle qu'un bureau
+    /// prêt annonce (`ReadyDesktop.kernelDigest`), sans relire le noyau.
+    public static func identity(digest: String, named name: String) -> String {
+        "\(safeName(name))-\(digest)"
     }
 
     /// The form a kernel's own name takes inside an identity.
@@ -111,6 +117,12 @@ public enum SuspendedMachine {
         try packed.write(
             to: folder.appendingPathComponent(fileName(kernel: kernel)), options: .atomic
         )
+        // **Écrite ici, la session n'est plus celle qui a été téléchargée** :
+        // la première reprise d'un bureau prêt est faite, ou sera refaite par
+        // la ligne qui attend encore dans l'instantané. Retirée après
+        // l'écriture, pas avant : une écriture qui échoue laisse le fichier
+        // téléchargé, et sa marque avec. Voir `FirstResume`.
+        FirstResume.disarm(kernel: kernel, in: folder)
     }
 
     /// Quand la machine sauvée l'a été : la date du fichier. C'est ce que
@@ -146,6 +158,9 @@ public enum SuspendedMachine {
         try? FileManager.default.removeItem(
             at: folder.appendingPathComponent(fileName(kernel: kernel))
         )
+        // La marque d'une première reprise part avec la session qu'elle
+        // décrivait (`FirstResume`).
+        FirstResume.disarm(kernel: kernel, in: folder)
     }
 
     public static func exists(kernel: String, in directory: URL? = nil) -> Bool {
@@ -179,6 +194,7 @@ public enum SuspendedMachine {
         var removed = 0
         for file in savedMachineFiles(named: name, in: directory) {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(file))
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(file + FirstResume.markerSuffix))
             removed += 1
         }
         return removed

@@ -1,0 +1,182 @@
+name: Bureaux prêts
+
+# **Fabriquer un bureau prêt et le publier.** Une ISO de Void, vérifiée
+# contre la somme que Void publie ; `wisq-fabrique` la démarre jusqu'au
+# bureau Xfce (une demi-heure environ sous l'interprète), vérifie l'instantané
+# dans une machine de l'application neuve, et l'emporte dans une archive
+# `.wisqmachine` avec sa fiche. L'application télécharge l'ISO chez Void et
+# l'archive ici, et le bureau s'ouvre en moins d'une minute.
+#
+# **À la main seulement** (`workflow_dispatch`) : publier une release est un
+# geste que tout le monde voit, et ce workflow n'a rien à juger dans une PR.
+# Il ne se déclenche pas sur `pull_request`, et n'entre donc pas dans le
+# compte des portes de la CI.
+#
+# **Deux releases de données, jamais « latest »** : `scripts/install.sh`
+# résout la dernière release pour y chercher l'agent, et une release de
+# bureaux qui deviendrait la dernière le casserait. Leur étiquette ne commence
+# pas par `v`, sans quoi `release.yml` partirait.
+#   - l'archive, la fiche et la capture vont dans `inputs.release`
+#     (`bureaux-N`), sous un nom qui porte l'ISO **et le niveau de machine**
+#     (`…-xfce-pret-niveau1.wisqmachine`, `ReadyDesktopBuild.outputStem`) ;
+#   - l'index `bureaux.json` va toujours dans `bureaux-1` : c'est l'adresse
+#     que l'application lit (`ReadyDesktop.index`). L'index neuf garde les
+#     entrées de l'ancien d'un autre niveau de machine (`Index.merged`) : une
+#     application d'avant y retrouve le bureau qu'elle sait reprendre, parce
+#     que l'archive de son niveau n'a pas été remplacée — un autre niveau,
+#     un autre nom. L'ancien index qui ne se laisse pas lire (autre chose
+#     qu'un 404) arrête le job (`scripts/bureaux-ancien-index.sh`) : rien
+#     n'est publié. Et si deux fichiers différents se retrouvaient à la même
+#     adresse, `wisq-fabrique index` refuse d'écrire l'index
+#     (`Index.publishable`) : ce job tombe, et rien n'est publié.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "La release où attacher l'archive (bureaux-N)"
+        default: bureaux-1
+        type: string
+      iso:
+        description: "L'ISO de Void (void-live-x86_64-AAAAMMJJ-xfce.iso)"
+        default: void-live-x86_64-20250202-xfce.iso
+        type: string
+      dossier:
+        description: "Le dossier daté de l'ISO chez Void (live/AAAAMMJJ)"
+        default: "20250202"
+        type: string
+      heure:
+        description: "L'heure figée de la fabrication (UTC, ISO 8601)"
+        default: "2026-11-14T00:00:00Z"
+        type: string
+      publier:
+        description: "Attacher le résultat aux releases (sinon : l'artefact du run seulement)"
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  fabriquer:
+    name: Démarrer le bureau et l'emporter
+    runs-on: ubuntu-latest
+    container: swift:6.3
+    # Le budget de chaque attente est de deux mille milliards d'instructions :
+    # sans cette laisse, un bureau qui ne vient jamais tiendrait le coureur
+    # six heures. Mesuré ici : 1 934 s pour 95 milliards (49 MIPS).
+    timeout-minutes: 240
+    env:
+      RELEASE: ${{ inputs.release }}
+      ISO: ${{ inputs.iso }}
+      DOSSIER: ${{ inputs.dossier }}
+      HEURE: ${{ inputs.heure }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Les entrées, refusées si elles n'ont pas leur forme
+        # Elles finissent dans des chemins, des adresses et des noms de
+        # release : rien d'autre que la forme attendue n'y passe.
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE" =~ ^bureaux-[0-9]+$ ]] || { echo "::error::release : $RELEASE"; exit 1; }
+          [[ "$ISO" =~ ^void-live-x86_64-[0-9]{8}-xfce\.iso$ ]] || { echo "::error::iso : $ISO"; exit 1; }
+          [[ "$DOSSIER" =~ ^[0-9]{8}$ ]] || { echo "::error::dossier : $DOSSIER"; exit 1; }
+          [[ "$HEURE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || { echo "::error::heure : $HEURE"; exit 1; }
+      - name: Outils, Rust, et le cœur qu'il construit
+        # Comme « Cœur (Linux) » dans ci.yml : `wisq-fabrique` sort le noyau
+        # de l'ISO par `IsoBoot`, le lecteur Rust, le même code que sur le
+        # téléphone — c'est l'empreinte de ce noyau qui nomme la session.
+        # `netpbm` pour la capture de l'écran.
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates netpbm
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          . "$HOME/.cargo/env"
+          cargo build --release -p wisq-vm
+      - name: L'ISO, gardée d'un lancement à l'autre
+        uses: actions/cache@v4
+        with:
+          path: bureau-iso
+          key: void-${{ inputs.dossier }}-${{ inputs.iso }}
+      - name: L'ISO, vérifiée contre la somme que Void publie
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bureau-iso bureau
+          base="https://repo-default.voidlinux.org/live/$DOSSIER"
+          [ -f "bureau-iso/$ISO" ] || curl -fSL --retry 3 -o "bureau-iso/$ISO" "$base/$ISO"
+          curl -fsSL --retry 3 "$base/sha256sum.txt" > bureau/sommes-void.txt
+          # Le format de BSD : `SHA256 (nom) = somme`.
+          attendu=$(grep -F "SHA256 ($ISO) = " bureau/sommes-void.txt | sed 's/.* = //')
+          [ -n "$attendu" ] || { echo "::error::$ISO absent de sha256sum.txt"; exit 1; }
+          echo "$attendu  bureau-iso/$ISO" | sha256sum -c -
+      - name: wisq-fabrique, en release
+        run: swift build -c release --product wisq-fabrique
+      - name: Jusqu'au bureau, puis l'archive et sa fiche
+        shell: bash
+        run: |
+          set -euo pipefail
+          .build/release/wisq-fabrique "bureau-iso/$ISO" bureau \
+            --nom "$ISO" --heure "$HEURE" --commit "$GITHUB_SHA" 2>&1 | tee bureau/fabrique.log
+      - name: La capture de l'écran, et l'index
+        shell: bash
+        run: |
+          set -euo pipefail
+          # La fiche de la fabrication : une seule, nommée par l'ISO et le
+          # niveau de machine (`ReadyDesktopBuild.outputStem`).
+          fiches=(bureau/*-pret-niveau*.json)
+          [ "${#fiches[@]}" -eq 1 ] && [ -f "${fiches[0]}" ] || { echo "::error::une fiche attendue : ${fiches[*]}"; exit 1; }
+          nom=$(basename "${fiches[0]}" .json)
+          pnmtopng "bureau/$nom.ppm" > "bureau/$nom.png"
+          # L'index publié, s'il existe déjà : ses entrées d'un autre niveau
+          # sont gardées. Seul un 404 constaté veut dire « absent » (on part
+          # de rien) ; toute autre panne fait tomber ce job, plutôt que de
+          # publier un index qui aurait perdu le bureau du niveau d'avant.
+          garder=()
+          scripts/bureaux-ancien-index.sh \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/bureaux-1/bureaux.json" bureau/ancien.json
+          if [ -f bureau/ancien.json ]; then
+            garder=(--garder bureau/ancien.json)
+          fi
+          .build/release/wisq-fabrique index bureau/bureaux.json "bureau/$nom.json" \
+            --images "https://repo-default.voidlinux.org/live/$DOSSIER" \
+            --archives "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE" \
+            "${garder[@]}"
+          cat bureau/bureaux.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bureau
+          path: |
+            bureau/*-pret-niveau*.wisqmachine
+            bureau/*-pret-niveau*.json
+            bureau/*-pret-niveau*.png
+            bureau/*-pret-niveau*.console
+            bureau/bureaux.json
+            bureau/fabrique.log
+
+  publier:
+    name: Attacher aux releases de données
+    needs: fabriquer
+    if: ${{ inputs.publier }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE: ${{ inputs.release }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bureau
+      - name: L'archive, sa fiche, la capture ; puis l'index
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="Bureaux déjà démarrés par wisq, pour l'application : l'archive .wisqmachine, sa fiche (sommes, noyau, mémoire, date) et la capture de l'écran. L'ISO n'est pas ici : l'application la télécharge chez Void Linux, dont viennent tous les logiciels de ces bureaux (https://voidlinux.org)."
+          for tag in "$RELEASE" bureaux-1; do
+            gh release view "$tag" > /dev/null 2>&1 || \
+              gh release create "$tag" --prerelease --latest=false \
+                --title "Bureaux prêts ($tag)" --notes "$notes"
+          done
+          gh release upload "$RELEASE" ./*-pret-niveau*.wisqmachine ./*-pret-niveau*.json ./*-pret-niveau*.png --clobber
+          gh release upload bureaux-1 bureaux.json --clobber

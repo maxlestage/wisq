@@ -125,6 +125,26 @@ final class LocalStorageTests: XCTestCase {
         XCTAssertEqual(LocalStorage.freeOrphanedMachines(kernels: kernels, machines: machines), 0)
     }
 
+    /// **La marque d'une première reprise part avec sa session orpheline**
+    /// (`FirstResume`) : sans session, elle n'attend plus rien, et resterait
+    /// pour toujours. Celle d'une session encore à son noyau reste.
+    func testFreeingAnOrphanTakesItsFirstResumeMarkerWithIt() throws {
+        let image = try writeKernel("Image", bytes: 100)
+        try saveMachine(for: image, named: "Image", bytes: 2000)
+        try saveMachine(for: Data([1]), named: "disparu", bytes: 3000)
+        let kept = SuspendedMachine.identity(of: image, named: "Image")
+        let orphan = SuspendedMachine.identity(of: Data([1]), named: "disparu")
+        try FirstResume.arm(FirstResume(madeAt: nil), kernel: kept, in: machines)
+        try FirstResume.arm(FirstResume(madeAt: nil), kernel: orphan, in: machines)
+
+        LocalStorage.freeOrphanedMachines(kernels: kernels, machines: machines)
+
+        let left = try FileManager.default.contentsOfDirectory(atPath: machines.path).sorted()
+        let keptFile = SuspendedMachine.fileName(kernel: kept)
+        XCTAssertEqual(left, [keptFile, keptFile + FirstResume.markerSuffix], "la marque orpheline est restée")
+        XCTAssertNotNil(FirstResume.pending(kernel: kept, in: machines))
+    }
+
     /// Un noyau dont le nom est le préfixe d'un autre ne s'attribue pas ses
     /// machines : le même piège que pour l'oubli, ici il fausserait un total.
     func testANameThatIsAPrefixOfAnotherDoesNotStealItsMachines() throws {
