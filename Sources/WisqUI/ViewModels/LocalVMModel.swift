@@ -35,6 +35,14 @@ public final class LocalVMModel {
     /// ligne existe pour lever.
     public private(set) var heartbeat: String?
 
+    /// **« Reprise du bureau en cours — 6 s »**, pendant la première reprise
+    /// d'un bureau prêt, jusqu'à ce que la console réponde. `nil` le reste du
+    /// temps. La décision vit dans `ResumeWait`, que la CI Linux juge ; ce
+    /// fichier la relève à chaque battement et à chaque écriture de l'invité.
+    public private(set) var resumeWait: String?
+    /// L'attente que `resumeWait` dit, ou `nil`.
+    private var waiting: ResumeWait?
+
     /// Le battement qui relit la machine pendant qu'elle tourne.
     ///
     /// **Il faut une horloge, et pas un rappel.** Tout ce que la vue reçoit
@@ -368,6 +376,11 @@ public final class LocalVMModel {
         let resumeNote = firstResume?.note ?? (saved != nil && !resuming
             ? ResumeNote.text(savedAt: savedAt, now: Date())
             : nil)
+        // **L'attente se dit dès le toucher** : l'instantané se déplie, puis
+        // l'invité rejoue jusqu'à lire la ligne tapée — une douzaine de
+        // secondes d'un écran qui ne répond pas. Voir `ResumeWait`.
+        waiting = firstResume == nil ? nil : ResumeWait(since: Date(), guestBytes: sink.guestBytes)
+        resumeWait = waiting?.phrase(now: Date())
 
         // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
         // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
@@ -416,6 +429,9 @@ public final class LocalVMModel {
             for: core, ramSizeBytes: machineRAM, settingsKey: keys.settings, storage: storage
         ) { [sink] chunk in
             let (refresh, replies) = sink.append(chunk)
+            // Compté à part des phrases de wisq : seul l'invité met fin à
+            // l'attente de la reprise (`ResumeWait`).
+            sink.countGuestOutput(chunk.count)
             answers.send(replies)
             guard refresh else { return }
             // Trente fois par seconde au plus : voir `ConsolePacer`. Les
@@ -424,6 +440,7 @@ public final class LocalVMModel {
                 let wait = sink.refreshDelay()
                 if wait > 0 { try? await Task.sleep(nanoseconds: wait) }
                 self?.consoleLines = sink.takeLines()
+                self?.relayResumeWait()
             }
         }
         answers.machine = machine
@@ -879,6 +896,8 @@ public final class LocalVMModel {
 
     /// La machine lâchée après une mise de côté, écrite ou non.
     private func letMachineGo() {
+        waiting = nil
+        resumeWait = nil
         machine = nil
         runFinished = nil
         checkpointed = nil
@@ -930,6 +949,9 @@ public final class LocalVMModel {
                 if let pc = machine as? X86Machine, self.typist.inProgress {
                     self.typist.resume(on: pc)
                 }
+                // Avant la garde qui suit : un cœur qui ne publie pas son
+                // avancement a quand même une reprise qui attend.
+                self.relayResumeWait()
                 // Un cœur qui ne publie pas se tait — voir `liveProgress`.
                 guard let now = machine.liveProgress else { return }
                 let at = Date()
@@ -939,6 +961,15 @@ public final class LocalVMModel {
                 previousAt = at
             }
         }
+    }
+
+    /// Relit l'attente de la reprise contre ce que l'invité a écrit, et la
+    /// phrase qu'elle donne maintenant.
+    private func relayResumeWait() {
+        guard var wait = waiting else { return }
+        wait.observe(guestBytes: sink.guestBytes)
+        waiting = wait.answered ? nil : wait
+        resumeWait = wait.phrase(now: Date())
     }
 
     /// **Un démarrage refusé avant la première instruction** : la raison à
@@ -969,6 +1000,8 @@ public final class LocalVMModel {
         ticker?.cancel()
         ticker = nil
         heartbeat = nil
+        waiting = nil
+        resumeWait = nil
         typist.reset()
         // L'état, lui, garde le message **intact** : il n'est pas destiné à une
         // grille, et le replier ici y poserait des retours à la ligne qu'aucune
@@ -992,8 +1025,24 @@ private final class ConsoleSink: @unchecked Sendable {
     private var refreshPending = false
     private var pacer = ConsolePacer()
 
+    /// Les octets que l'invité a écrits sur sa console, depuis la création
+    /// de ce relais : les phrases de wisq n'y sont pas (`countGuestOutput`).
+    private var guestWritten = 0
+
     init() {
         columns = console.columns
+    }
+
+    func countGuestOutput(_ count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guestWritten += count
+    }
+
+    var guestBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return guestWritten
     }
 
     /// La largeur de la grille, pour que la prose se replie **avant** d'y

@@ -1098,6 +1098,19 @@ struct LocalVMTerminalView: View {
             // quelques lignes puis se tait dix minutes, sans que rien ne dise
             // s'il tournait encore. « Il tourne en rond » et « il est mort »
             // ne se corrigent pas pareil.
+            // **La première reprise d'un bureau prêt, dite pendant qu'elle se
+            // fait** : une douzaine de secondes où l'écran montre le bureau
+            // sans répondre au doigt. Même en plein écran : c'est là qu'il
+            // a l'air figé. Voir `ResumeWait`.
+            if let resumeWait = model.resumeWait {
+                Label(resumeWait, systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .accessibilityLabel(resumeWait)
+            }
             if !fullScreen, let heartbeat = model.heartbeat {
                 Text(heartbeat)
                     .font(.system(.caption, design: .monospaced))
