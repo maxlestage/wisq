@@ -222,8 +222,18 @@ public struct X86PS2Controller: Sendable, Equatable {
     public struct Keystroke: Sendable, Equatable {
         public var code: X86ScanCode
         public var down: Bool
+
+        public init(code: X86ScanCode, down: Bool) {
+            self.code = code
+            self.down = down
+        }
     }
     public private(set) var typing: [Keystroke] = []
+    /// **Les touches que la file laisse enfoncées** : celles dont la dernière
+    /// frappe admise est un enfoncement. C'est l'état de l'invité une fois la
+    /// file jouée jusqu'au bout ; qu'une frappe parte (`pace`) ne le change
+    /// donc pas.
+    public private(set) var heldInQueue = X86HeldKeys()
     /// Le tic (horloge à 1,193182 MHz) avant lequel rien d'autre ne part.
     var typingResumesAt: UInt64 = 0
     /// Trente millisecondes tenue, vingt entre deux touches : assez long pour
@@ -231,13 +241,49 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// défaut chez Xorg) parte.
     public static let holdTicks: UInt64 = 35_795
     public static let gapTicks: UInt64 = 23_864
-    /// Une file bornée : un collage démesuré ne fait pas grossir la machine.
+    /// **Une file bornée** : un collage démesuré ne fait pas grossir la
+    /// machine.
+    ///
+    /// La borne ne doit jamais couper une touche en deux. La file d'avant
+    /// gardait l'enfoncement et jetait le relâchement : un collage qui la
+    /// remplissait au milieu d'une majuscule laissait Maj et la lettre
+    /// enfoncées dans l'invité, et Xorg répétait la lettre sans fin. D'où
+    /// deux règles, les mêmes que la carte Rust (`I8042::taper_groupe` et
+    /// `I8042::taper`, `crates/wisq-page/src/carte/i8042.rs`) : un caractère
+    /// entre entier ou pas du tout (`type(_:)` sur un groupe), et le
+    /// relâchement d'une touche que la file laisse enfoncée passe toujours.
+    /// La file peut donc dépasser la borne, de `X86HeldKeys.count`
+    /// relâchements au plus.
     public static let typingLimit = 8192
 
-    /// Une frappe de l'hôte, à poser quand son tour viendra (`pace`).
-    public mutating func type(_ code: X86ScanCode, down: Bool) {
-        guard typing.count < Self.typingLimit else { return }
-        typing.append(Keystroke(code: code, down: down))
+    /// **Une frappe de l'hôte**, à poser quand son tour viendra (`pace`).
+    /// Rend `false` si la file pleine la refuse.
+    ///
+    /// Un enfoncement n'entre que sous la borne. Le relâchement d'une touche
+    /// que la file laisse enfoncée entre toujours, même au-delà : le refuser
+    /// laisserait la touche enfoncée dans l'invité pour de bon. Un autre
+    /// relâchement (d'une touche déjà relevée) n'entre que sous la borne,
+    /// comme un enfoncement, pour que rien ne fasse grossir la file sans fin.
+    @discardableResult
+    public mutating func type(_ code: X86ScanCode, down: Bool) -> Bool {
+        if typing.count >= Self.typingLimit && (down || !heldInQueue.contains(code)) { return false }
+        pose(Keystroke(code: code, down: down))
+        return true
+    }
+
+    /// **Des frappes qui vont ensemble** (un caractère : Maj, la touche
+    /// enfoncée puis relâchée, Maj), admises toutes ou aucune : `false`, et
+    /// rien en file, si elles ne tiennent pas entières sous la borne.
+    @discardableResult
+    public mutating func type(_ group: [Keystroke]) -> Bool {
+        guard typing.count + group.count <= Self.typingLimit else { return false }
+        for keystroke in group { pose(keystroke) }
+        return true
+    }
+
+    private mutating func pose(_ keystroke: Keystroke) {
+        heldInQueue.record(keystroke)
+        typing.append(keystroke)
     }
 
     /// Pose la frappe suivante si son heure est venue, à `now` tics : une
@@ -364,6 +410,11 @@ public struct X86ScanCode: Sendable, Equatable, Hashable {
         table[" "] = (0x39, false)
         table["\n"] = (0x1C, false)
         table["\r"] = (0x1C, false)
+        // **`\r\n` est un seul caractère en Swift** (un groupe de graphèmes),
+        // et pas `\r` suivi de `\n` : sans cette entrée, un texte venu de
+        // Windows collé sur l'écran perdait tous ses retours à la ligne, sans
+        // rien dire. Une touche Entrée, comme `TerminalPaste` en fait un.
+        table["\r\n"] = (0x1C, false)
         table["\t"] = (0x0F, false)
         return table
     }()
@@ -409,13 +460,24 @@ public enum X86Keystrokes {
         return events
     }
 
+    /// **Les frappes d'un caractère** : la touche enfoncée puis relâchée, Maj
+    /// autour quand il le faut. Vide pour ce qu'un clavier QWERTY n'a pas. Un
+    /// caractère est l'unité qu'admet la file (`X86PS2Controller.type(_:)`
+    /// sur un groupe) : chaque touche y est relâchée.
+    public static func character(_ character: Character) -> [Event] {
+        guard let key = X86ScanCode.typing(character) else { return [] }
+        return press(key.code, shift: key.shift)
+    }
+
     /// Un texte, caractère par caractère, sur un clavier américain. Ce qu'un
     /// clavier QWERTY n'a pas est laissé de côté.
     public static func typing(_ text: String) -> [Event] {
-        text.flatMap { character -> [Event] in
-            guard let key = X86ScanCode.typing(character) else { return [] }
-            return press(key.code, shift: key.shift)
-        }
+        text.flatMap(character)
+    }
+
+    /// Des événements, en frappes pour la file du contrôleur.
+    public static func keystrokes(_ events: [Event]) -> [X86PS2Controller.Keystroke] {
+        events.map { X86PS2Controller.Keystroke(code: $0.code, down: $0.down) }
     }
 
     /// Une touche de la barre de la console.

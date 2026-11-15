@@ -229,12 +229,18 @@ public final class X86Machine: @unchecked Sendable {
         return step
     }
     private var inputQueue: [UInt8] = []
-    /// Les touches et les mouvements envoyés par l'hôte, en attente du
-    /// prochain tour — sous le même verrou que `inputQueue`.
+    /// Les mouvements de souris envoyés par l'hôte, en attente du prochain
+    /// tour — sous le même verrou que `inputQueue`.
     private var pointerQueue: [PS2Event] = []
+    /// **Les frappes envoyées par l'hôte**, sous le même verrou, bornées avec
+    /// la file du contrôleur : voir `X86TypingHandoff`.
+    var typingHandoff = X86TypingHandoff()
+    /// Ce que la file du contrôleur tenait à la dernière tranche, publié par
+    /// le fil d'émulation sous le verrou : la file elle-même ne se lit pas
+    /// d'un autre fil.
+    private var typingInDevice = 0
 
     enum PS2Event {
-        case key(X86ScanCode, down: Bool)
         case mouse(dx: Int, dy: Int, buttons: UInt8)
     }
     private var pendingOutput: [UInt8] = []
@@ -454,11 +460,11 @@ public final class X86Machine: @unchecked Sendable {
             }
             for event in pointerQueue {
                 switch event {
-                case .key(let code, let down): core.devices.ps2.type(code, down: down)
                 case .mouse(let dx, let dy, let buttons): core.devices.ps2.mouse(dx: dx, dy: dy, buttons: buttons)
                 }
             }
             pointerQueue.removeAll()
+            handTypingToTheController()
             lock.unlock()
             if stopped { flushOutput(); return .stopped }
 
@@ -559,12 +565,69 @@ public final class X86Machine: @unchecked Sendable {
     }
 
     /// Une touche du clavier PS/2 de l'invité, enfoncée ou relâchée.
-    /// Utilisable depuis n'importe quel fil.
-    public func key(_ code: X86ScanCode, down: Bool) {
+    /// Utilisable depuis n'importe quel fil. Rend `false` si la file des
+    /// frappes, pleine, la refuse — jamais pour le relâchement d'une touche
+    /// qu'elle laisse enfoncée (`X86PS2Controller.typingLimit`).
+    @discardableResult
+    public func key(_ code: X86ScanCode, down: Bool) -> Bool {
+        press([(code, down)])
+    }
+
+    /// **Des frappes qui vont ensemble** — une touche de la barre, Ctrl ou
+    /// Maj autour —, admises toutes ou aucune. Utilisable depuis n'importe
+    /// quel fil.
+    @discardableResult
+    public func press(_ events: [X86Keystrokes.Event]) -> Bool {
         lock.lock()
-        pointerQueue.append(.key(code, down: down))
+        let taken = typingHandoff.admit(X86Keystrokes.keystrokes(events), inDevice: typingInDevice)
         lock.unlock()
-        nudge.signal()
+        if taken { nudge.signal() }
+        return taken
+    }
+
+    /// **Un texte tapé au clavier PS/2**, caractère par caractère, chacun
+    /// entier ou pas du tout. Le texte s'arrête au premier caractère qui ne
+    /// tient plus dans la file : le rapport rend ce qui reste à taper, que
+    /// l'application reprend plus tard (`ScreenTypist`), et ce qu'un clavier
+    /// QWERTY n'a pas. Utilisable depuis n'importe quel fil.
+    public func type(_ text: Substring) -> X86TypingReport {
+        var report = X86TypingReport()
+        lock.lock()
+        var index = text.startIndex
+        while index < text.endIndex {
+            let events = X86Keystrokes.character(text[index])
+            if events.isEmpty {
+                report.skipped += 1
+            } else if typingHandoff.admit(X86Keystrokes.keystrokes(events), inDevice: typingInDevice) {
+                report.typed += 1
+            } else {
+                break
+            }
+            index = text.index(after: index)
+        }
+        lock.unlock()
+        report.untyped = text[index...]
+        if report.typed > 0 { nudge.signal() }
+        return report
+    }
+
+    public func type(_ text: String) -> X86TypingReport { type(text[...]) }
+
+    /// **Ce que chaque tranche fait des frappes**, sous le verrou que
+    /// l'appelant tient : les passer au contrôleur, entières, et publier ce
+    /// que sa file tient pour les admissions suivantes.
+    func handTypingToTheController() {
+        typingHandoff.feed(into: &core.devices.ps2)
+        typingInDevice = core.devices.ps2.typing.count
+    }
+
+    /// **Les frappes qui attendent encore**, dans cette file et dans celle du
+    /// contrôleur (telle que la dernière tranche l'a laissée). Utilisable
+    /// depuis n'importe quel fil.
+    public var pendingKeystrokes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return typingHandoff.count + typingInDevice
     }
 
     /// **Un toucher à un endroit de l'écran**, par la tablette : `x` et `y`
