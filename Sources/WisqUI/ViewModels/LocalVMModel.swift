@@ -1367,6 +1367,33 @@ public enum KernelLibrary {
         }
     }
 
+    /// **Installe un bureau prêt téléchargé** : l'archive, vérifiée contre
+    /// l'empreinte du noyau de l'image présente (`ReadyDesktop.install`),
+    /// importée comme `importMachine` le fait d'une machine exportée, puis
+    /// effacée. `kernelDigest` est celle que donne `IsoBoot.kernelDigest`.
+    public static func installReadyDesktop(
+        _ desktop: ReadyDesktop, archive: URL, kernelDigest: String?
+    ) throws -> InstalledMachine {
+        let folder = try directory()
+        var created: String?
+        do {
+            return try desktop.install(
+                archive: archive, imageKernelDigest: kernelDigest, library: list().map(\.lastPathComponent)
+            ) { name, bytes in
+                let disk = BlankDisk.fileName(
+                    forMachine: name, among: list().map(\.lastPathComponent))
+                try BlankDisk.create(at: folder.appendingPathComponent(disk), bytes: bytes)
+                created = disk
+                return disk
+            }
+        } catch {
+            if let created {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(created))
+            }
+            throw error
+        }
+    }
+
     /// Retire une machine installée, et le disque vierge créé pour elle.
     ///
     /// Le disque propre part parce que ce qui le remplissait part aussi : ses

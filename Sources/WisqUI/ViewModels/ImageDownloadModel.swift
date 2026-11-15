@@ -3,6 +3,11 @@ import Foundation
 import Observation
 import WisqVM
 
+// Le lecteur d'image vit du côté Rust : voir `LocalVMModel.swift`.
+#if WISQ_RUST_CORE
+import WisqVMRust
+#endif
+
 /// `RangeFetcher` sur `URLSession` : la seule partie du téléchargement qui
 /// touche le réseau, et la seule qui ne tourne pas sous Linux.
 ///
@@ -56,8 +61,8 @@ struct URLSessionRangeFetcher: RangeFetcher {
     }
 }
 
-/// L'état de la feuille « Télécharger » : l'index, puis un téléchargement à
-/// la fois, avec son progrès.
+/// L'état de la feuille « Télécharger » : les bureaux prêts et les images des
+/// distributions, puis un téléchargement à la fois, avec son progrès.
 @Observable
 @MainActor
 final class ImageDownloadModel {
@@ -65,13 +70,22 @@ final class ImageDownloadModel {
         case loadingIndex
         case ready
         case downloading(file: String)
+        /// Les deux fichiers d'un bureau prêt, puis son installation.
+        case fetchingDesktop(title: String)
+        case installingDesktop(title: String)
         case failed(String)
     }
 
+    private(set) var desktops: [ReadyDesktop] = []
     private(set) var releases: [ImageDownload.Release] = []
     private(set) var phase = Phase.loadingIndex
     /// Octets reçus et taille attendue, pendant un téléchargement.
     private(set) var progress: (have: Int, total: Int) = (0, 0)
+    /// Où en est le bureau prêt qu'on télécharge : l'étape, sur les deux.
+    private(set) var desktopProgress: ReadyDesktop.Progress?
+    /// Pourquoi le dernier bureau prêt n'a pas été installé. À part de
+    /// `phase` : la liste reste à l'écran, et la raison sous sa ligne.
+    private(set) var desktopFailure: (title: String, why: String)?
 
     private let downloader: ImageDownloader?
 
@@ -87,12 +101,22 @@ final class ImageDownloadModel {
             return
         }
         phase = .loadingIndex
-        do {
-            releases = try await downloader.bootableReleases()
-            phase = .ready
-        } catch {
-            phase = .failed(error.localizedDescription)
-        }
+        // **Les bureaux prêts et les distributions ensemble**, et l'un qui ne
+        // répond pas ne cache pas l'autre (`ImageDownloader.catalog`). Tant
+        // que la release des bureaux n'existe pas, leur section ne se montre
+        // pas, sans un mot.
+        let catalog = await downloader.catalog()
+        desktops = catalog.desktops
+        releases = catalog.releases
+        phase = catalog.failure.map(Phase.failed) ?? .ready
+    }
+
+    /// La mémoire que ce téléphone peut donner à une machine PC, maintenant.
+    var ceiling: UInt64 { KernelMemory.ceiling(for: .x86_64) }
+
+    /// L'image du bureau est-elle déjà dans la bibliothèque ?
+    func imagePresent(_ desktop: ReadyDesktop) -> Bool {
+        (try? KernelLibrary.directory()).map(desktop.imagePresent(in:)) ?? false
     }
 
     /// Télécharge `release` dans la bibliothèque ; rend son adresse, ou `nil`
@@ -122,6 +146,66 @@ final class ImageDownloadModel {
             return url
         } catch {
             phase = .failed(error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// **Un bureau prêt** : l'image dans la bibliothèque, l'archive dans les
+    /// téléchargements — les deux par la session d'arrière-plan, vérifiés à
+    /// leur somme —, puis l'installation, qui vérifie le noyau de l'image
+    /// avant d'importer (`ReadyDesktop.install`). Rend la machine installée,
+    /// ou `nil` ; la raison est alors dans `desktopFailure`.
+    func install(_ desktop: ReadyDesktop) async -> InstalledMachine? {
+        desktopFailure = nil
+        guard desktop.fits(ceiling: ceiling) else {
+            desktopFailure = (desktop.title, desktop.memoryPhrase(ceiling: ceiling))
+            return nil
+        }
+        guard let library = try? KernelLibrary.directory(),
+              let downloads = try? KernelLibrary.downloadsDirectory()
+        else {
+            desktopFailure = (desktop.title, "la bibliothèque n'a pas pu être ouverte.")
+            return nil
+        }
+        phase = .fetchingDesktop(title: desktop.title)
+        desktopProgress = nil
+        // Une image du même nom, d'une autre taille, sera remplacée : voir
+        // `download`.
+        let replacing = !desktop.imagePresent(in: library)
+            && FileManager.default.fileExists(atPath: library.appendingPathComponent(desktop.image.file).path)
+        defer {
+            desktopProgress = nil
+            phase = .ready
+        }
+        do {
+            let files = try await desktop.fetch(
+                library: library, downloads: downloads,
+                download: { release, destination, progress in
+                    try await BackgroundImageDownloads.shared.download(
+                        release, into: destination, progress: progress)
+                },
+                progress: { step in
+                    Task { @MainActor [weak self] in self?.desktopProgress = step }
+                })
+            if replacing { KernelLibrary.replaced(desktop.image.file) }
+            phase = .installingDesktop(title: desktop.title)
+            // **Hors du fil principal** : le noyau sort de l'image de 1,4 Gio,
+            // et l'archive, de quelques centaines de mégaoctets, est recopiée.
+            return try await Task.detached(priority: .userInitiated) {
+                #if WISQ_RUST_CORE
+                let digest = IsoBoot.kernelDigest(
+                    of: files.image, scratch: FileManager.default.temporaryDirectory
+                        .appendingPathComponent("wisq-empreinte", isDirectory: true),
+                    ceiling: 256 << 20)
+                #else
+                // Sans le cœur Rust, pas de lecteur d'image : le noyau ne se
+                // lit pas, et l'installation le refuse en le disant.
+                let digest: String? = nil
+                #endif
+                return try KernelLibrary.installReadyDesktop(desktop, archive: files.archive, kernelDigest: digest)
+            }.value
+        } catch {
+            desktopFailure = (desktop.title, error.localizedDescription)
             return nil
         }
     }
