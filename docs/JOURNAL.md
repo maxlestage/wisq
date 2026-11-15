@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureau prêt : le test du guetteur mesure enfin son attente
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée suivante l'a montré : ôter
+`sleep \(settle)` du guetteur des clés ne faisait tomber aucun test
+(« Executed 35 tests, with 0 failures »). C'est pourtant cette attente qui
+rend chaque clé SSH unique : sans elle, `ssh-keygen` tire dans l'état du
+générateur sauvé dans l'instantané, le même pour toutes les copies. Le test
+au vrai `sh` ne jugeait que l'ordre des appels, et l'autre test ne figeait que
+le texte « 65 », pas son usage. Seconde remarque, juste aussi : le test
+supposait que `sh` avait lu l'horloge dans les 0,6 s suivant son lancement ;
+sur une machine très chargée, il pouvait attendre sans fin (faux rouge).
+
+**Ce qui change.**
+
+- `testTheWatcherWaitsForTheClockToMove` donne au guetteur une attente d'une
+  seconde et la mesure : aucun appel noté une demi-seconde après que
+  l'horloge a bougé, puis au moins une seconde entre l'horloge (instant pris
+  *avant* l'écriture) et la fin du guetteur. Ces bornes ne tiennent que s'il a
+  dormi ; une machine chargée ne fait que les élargir.
+- Une doublure de `sleep` note chaque somme, puis dort vraiment. Le test
+  attend le premier somme de la boucle avant de bouger l'horloge : `t` est
+  alors lu, quelle que soit la charge. Il vérifie aussi que l'attente
+  (`sleep 1`) vient après la boucle.
+- La valeur de l'invité devient `ReadyDesktopBuild.reseedWait` (65), et le
+  test la juge plus grande que les soixante secondes du réensemencement du
+  noyau. Le texte du guetteur ne change pas d'un octet : l'archive et
+  l'instantané fabriqués restent ceux du code final.
+
+**Vérifié.** Les sabotages, chacun restauré par `git checkout` (diff vide
+ensuite) : `sleep` ôté → 3 chutes ; attente de 55 s → 1 chute ; attente
+déplacée avant la boucle → 4 chutes ; `sv up` avant `ssh-keygen` → 1 chute.
+Sous douze boucles actives (charge 13,6 sur 4 cœurs), le test passe cinq fois
+sur cinq, en 1,6 à 1,8 s. Aucun test ajouté ni retiré : le compte publié ne
+bouge pas.
+
+**Ce qui reste.** Que le noyau réensemence bien à la première lecture après
+soixante secondes tient au fonctionnement de `random.c` : je ne l'ai ni relu
+pour cette entrée, ni mesuré dans l'invité. Ce qui est mesuré, ce sont deux
+reprises qui servent deux empreintes différentes (entrée suivante).
+
 ## 2026-11-14 — Bureau prêt : chaque copie a sa clé SSH, et deux fabrications donnent la même archive, mesuré
 
 Le contrôle de l'entrée suivante (plus bas) a trouvé cinq défauts réels et
