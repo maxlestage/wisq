@@ -2943,6 +2943,56 @@ fn port_width(opcode: u8, prefixes: Prefixes) -> Width {
     }
 }
 
+/// **Ce qu'une instruction x86-64 occupe au plus**, préfixes compris. Au-delà,
+/// le silicium rend `#GP` : aucune suite ne rend lisible ce que quinze octets
+/// n'ont pas suffi à lire.
+pub const LONGEST: usize = 15;
+
+/// **Le décodeur a-t-il échoué faute d'octets, ou parce qu'il ne lit pas
+/// l'instruction ?** À appeler sur des octets que `decode` refuse.
+///
+/// La question est celle du silicium devant une instruction posée au bout
+/// d'une page dont la suivante manque : il ne charge la page d'après que si
+/// l'instruction déborde. Trois octets complets que ce décodeur refuse —
+/// `67 8b 00`, un `mov` à adresse de trente-deux bits — ne débordent pas, et
+/// le silicium ne fait aucune faute ; les prendre pour une coupe faisait
+/// délivrer une faute de page sur la page d'après, et sous Linux, au bout
+/// d'une projection de texte, un `SIGSEGV` muet à la place du refus nommé.
+///
+/// **Ce qu'on ne voit pas, ce sont les lectures du décodeur ; ce qu'on voit,
+/// c'est ce qu'il rend.** Il est déterministe et ne lit qu'en avançant : s'il
+/// a échoué sans lire au-delà du bord, il refait le même chemin devant
+/// n'importe quelle suite et échoue de même. S'il existe donc une suite qui
+/// le fait réussir, il a lu au-delà — et l'instruction lue est plus longue que
+/// ce qu'on avait. La réciproque est ce qu'on cherche : on essaie les suites
+/// qui comptent — chaque valeur du premier octet manquant, des zéros
+/// derrière. Un zéro convient à tout ce qui suit l'octet qui décide (ModRM,
+/// SIB, déplacement, immédiat). Essayer aussi chaque paire n'a rien trouvé de
+/// plus : sur les 65 792 débuts d'un ou deux octets, mesuré, aucun que la
+/// paire déclare coupé et que le seul premier octet manque.
+///
+/// **Ce qui peut échapper, et dans quel sens.** Une vraie coupe dont aucune de
+/// ces suites ne se lit est rendue « illisible » : la région est refusée sur
+/// l'instruction, comme avant que les coupes ne fautent. Le décodeur ne
+/// l'aurait de toute façon pas lue, et le refus le dit. L'inverse — une
+/// instruction complète prise pour une coupe — ne peut pas arriver.
+///
+/// **Le prix** : au plus 256 décodages, et seulement sur un échec à moins de
+/// quinze octets du bord. Une coupe vraie sort presque toujours au premier
+/// essai : un immédiat ou un déplacement se lisent devant n'importe quoi.
+pub fn cut_short(bytes: &[u8]) -> bool {
+    let have = bytes.len();
+    if have >= LONGEST {
+        return false;
+    }
+    let mut padded = [0u8; LONGEST];
+    padded[..have].copy_from_slice(bytes);
+    (0..=u8::MAX).any(|first| {
+        padded[have] = first;
+        decode(&padded).is_some_and(|step| step.length > have)
+    })
+}
+
 pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     // **`f2` n'est pas un préfixe que ce décodeur lit — sauf devant `lkgs`.**
     // Le lire en général et l'oublier ensuite rendrait `movsd` (`f2 0f 10`)

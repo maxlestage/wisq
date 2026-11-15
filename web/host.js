@@ -1792,6 +1792,22 @@ export function machine({
   /// **Ce que ça ne couvre pas, et c'est dit** : une réécriture **après** —
   /// un saut statique basculé plus tard, `text_poke` — n'est vue par rien. Le
   /// remède complet est de voir les écritures dans les pages de code.
+  /// **Le premier passage en anneau trois, vu une fois.** Rend vrai si le
+  /// cache vient d'être vidé : la région en main n'est plus dans `known`, et
+  /// l'appelant ne doit plus la faire tourner.
+  ///
+  /// Le passage a lieu dans une région (`sysretq`, `iretq`) : l'adresse où il
+  /// mène, du code de programme, n'a jamais été traduite, donc la région rend
+  /// la main en anneau trois. C'est pourquoi la boucle regarde **au retour de
+  /// chaque région**, et pas seulement en tête de tour.
+  const voirAnneauTrois = () => {
+    if (sawUser) return false;
+    if ((BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n) !== 3n) return false;
+    sawUser = true;
+    oublierTout();
+    return true;
+  };
+
   const oublierTout = () => {
     vidages.fois += 1;
     vidages.regions += known.size;
@@ -2046,10 +2062,9 @@ export function machine({
           dernier = performance.now();
         }
         const here = rip();
-        if (!sawUser && (BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n) === 3n) {
-          sawUser = true;
-          oublierTout();
-        }
+        // Une machine posée en anneau trois avant le premier tour (une reprise,
+        // un pilote) : le passage n'est passé par aucune région.
+        voirAnneauTrois();
         let region = known.get(here);
         if (region === undefined) {
           region = await install(here);
@@ -2171,6 +2186,16 @@ export function machine({
           }
         }
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
+        // **Le passage en anneau trois se voit ici, dès que la région rend la
+        // main, et avant toute délivrance.** Le regarder seulement en tête de
+        // tour le manquait dès qu'une interruption attendait : la région qui
+        // fait le `sysretq` rend la main en anneau trois, la boucle délivre
+        // l'IRQ — CS repasse en anneau zéro — et revient en tête de tour sans
+        // avoir rien vu. Le gestionnaire tournait alors sur ses traductions
+        // d'avant les réécritures, ce que le vidage existe pour empêcher, et
+        // le vidage n'avait jamais lieu. Une délivrance de faute ou d'`int`
+        // juste après le `sysretq` passe par le même chemin.
+        if (voirAnneauTrois()) region = null;
         // **Le temps de l'invité avance ici, et pas dans le module.**
         //
         // Le faire dans le module coûterait un ajout par bloc, payé partout et
@@ -2382,8 +2407,9 @@ export function machine({
         // ne fait pas bouger RIP, plus rien ne le fera. C'est `ud2`, ou une
         // instruction que l'émetteur ne traduit pas. Le bloc supplémentaire
         // est du vrai travail dans le cas bénin, et il n'est payé que quand
-        // RIP retombe sur son point de départ.
-        if (rip() === here) {
+        // RIP retombe sur son point de départ. Une région que le vidage vient
+        // d'oublier ne tourne plus : le tour suivant la retraduira.
+        if (region !== null && rip() === here) {
           region.run(1n);
           if (rip() === here) {
             return { stopped: "sur place", at: here };

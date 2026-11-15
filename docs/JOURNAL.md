@@ -8,6 +8,107 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Émetteur : le vidage au premier anneau trois tient avec une interruption en attente, une instruction complète au bout d'une page n'est plus une coupe, et `rep lods` est jugé par le silicium
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « Alpine jusqu'à son
+shell » a trouvé quatre trous, chacun avec sa reproduction :
+
+1. **Le vidage du cache de code était sauté par une interruption en
+   attente.** Le passage en anneau trois n'était regardé qu'en tête de tour.
+   La région qui fait le `sysretq` rend la main en anneau trois, la boucle
+   délivre l'IRQ en attente — CS repasse en anneau zéro — et revient en tête
+   de tour sans rien voir : le gestionnaire tournait sur ses traductions
+   d'avant les réécritures (le défaut même d'`error_entry` que le vidage
+   corrige), et le vidage n'avait jamais lieu. Mesuré : `rdi 1 vidages 0`
+   au lieu de `rdi 2 vidages 1`.
+2. **Une instruction complète que le décodeur refuse, à moins de quinze
+   octets de la fin d'une page dont la suivante manque, recevait une faute
+   de page sur la page d'après.** La découverte prenait tout échec près du
+   bord pour une coupe (`MayBeCut`), et l'hôte délivrait la faute. Le
+   silicium ne charge jamais cette page : `67 8b 00` à `0x12ffd` donnait
+   `cr2 0x13000` au lieu de « refusée ». Sous Linux, au bout d'une projection
+   de texte, un `SIGSEGV` muet à la place du refus nommé.
+3. **`rep lods` d'un seul tour passait tous les tests**, dans l'interprète
+   comme dans l'émetteur : le corpus de chaîne n'avait aucune forme
+   `rep lods`.
+4. **Le bit I (0x10) du code d'erreur de la faute sur coupe n'était tenu par
+   rien** : le test tournait sans NXE, alors qu'Alpine l'allume.
+
+**Ce qui change.**
+
+- `host.js` : `voirAnneauTrois()` regarde le passage **au retour de chaque
+  région**, avant toute délivrance, et toujours en tête de tour (une machine
+  posée en anneau trois par un pilote). Une région que le vidage vient
+  d'oublier ne tourne plus, même pour le bloc de plus du « sur place ».
+- `x86::cut_short` : le décodeur a-t-il lu au-delà du bord ? Il est
+  déterministe et ne lit qu'en avançant : s'il a échoué sans lire au-delà,
+  aucune suite n'y change rien. On essaie donc chaque valeur du premier octet
+  manquant, des zéros derrière (256 décodages au plus, seulement sur un échec
+  près du bord). Essayer aussi chaque paire n'a rien trouvé de plus, mesuré
+  sur les 65 792 débuts d'un ou deux octets. La découverte ne rend plus
+  `MayBeCut` que pour une vraie coupe ; une instruction complète refusée
+  près du bord est un arrêt nommé, et `CannotDecode` au point d'entrée. Les
+  octets émis ne changent pas (la garde `bench_module_matches_the_probe`
+  passe sans régénération).
+- Le corpus de chaîne gagne cinq formes, ajoutées **en dernier** pour que
+  les indices d'avant ne bougent pas : `rep lodsb/w/l/q` et `rep lodsb` à
+  compte nul. Régénéré sur le silicium de ce conteneur par
+  `scripts/build-x86-string-oracle.py` : les 439 lignes d'avant ressortent à
+  l'octet près, 52 formes et 416 cas. Les deux cœurs Rust et le cœur Swift
+  (`X86StringOracleTests`) s'y accordent.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs ou renforcés :
+  `the_first_entry_into_ring_three_empties_the_cache_even_with_an_interrupt_waiting`
+  (la reproduction du contrôle, et son témoin sans IRQ),
+  `a_complete_refused_instruction_at_the_end_of_a_page_is_refused_not_cut`
+  (sous Bun, NXE allumé : `67 8b 00` et `06` refusés sans faute, la vraie
+  coupe `48 b8 01 02` faute avec `0x14`),
+  `a_complete_refused_instruction_near_the_edge_is_not_a_cut` (le
+  traducteur seul), et la faute sur coupe tenue sans puis avec NXE (`0x4`,
+  `0x5`, `0x14`, `0x15`). `the_edge_is_fifteen_bytes_and_both_sides_are_held`
+  tenait l'ancien défaut — un `06` complet à quatorze octets du bord pris
+  pour une coupe — : il tient maintenant le seuil sur quatorze et quinze
+  préfixes `66`, une vraie coupe d'un côté, un vrai refus de l'autre. Le test
+  des fautes dans les chaînes gagne `rep lods` à cheval sur une page absente
+  (RCX, RSI, RAX sous la règle de largeur). Planchers du corpus de chaîne :
+  376 → 416. Trois tests de plus au compte publié (3 626). Le programme C de
+  l'ABI (`tests/abi/x86.c`) et `testATranslationHasThreeOutcomesAndNotTwo`
+  (Swift) tenaient aussi « `06` à quatorze octets du bord demande des
+  octets » : ils tiennent maintenant le refus, et le seuil sur quatorze et
+  quinze préfixes `66` ; le commentaire de `WISQ_X86_NEEDS_MORE` dans
+  l'en-tête dit la nouvelle règle (aucune fonction ajoutée).
+- Sabotages, chacun vu tomber puis restauré : le regard au retour de région
+  retiré (le test à l'IRQ tombe), celui de tête de tour retiré (l'ancien test
+  tombe) ; `cut_short` retiré de la découverte (les deux tests du refus près
+  du bord tombent) ; `rep lods` d'un seul tour dans l'émetteur seul (le
+  corpus de l'émetteur et le test des fautes tombent), dans l'interprète seul
+  (son corpus tombe) ; `pageFaultCode(…, false)` sur la coupe (les deux tests
+  de coupe tombent sur `0x14`).
+- Les reproductions du contrôle : `rdi 2 vidages 1 cs 0x10 delivrees 1
+  premiere 0x10400` (témoin : `rdi 0 vidages 1 cs 0x33`) ; `67 8b 00` et `06`
+  « refusée » sans faute, `48` et `48 b8 01 02` fautent sur `0x13000`.
+- **Sur le vrai noyau**, Alpine 6.18.60, `rdinit=/bin/sh`, `WISQ_RAM=256`,
+  `/bin/busybox --install -s ;; uname -a ;; echo WISQ-CTRL-$((6*7))` :
+  l'invite, « Linux (none) 6.18.60-0-virt … x86_64 Linux », `WISQ-CTRL-42` ;
+  17 183 demandes de traduction, un vidage de 11 045 régions, 50 s de mur —
+  les chiffres du contrôle, au même compte. La sonde : 6.6.142 en 10 267
+  demandes (25 s), 6.12.115 en 10 893 (27 s), 6.18.60 en 11 997 (34 s),
+  `WISQ-USERSPACE-OK` chaque fois, les mêmes comptes qu'avant.
+
+**Ce qui reste.**
+
+- Une vraie coupe dont aucune suite essayée ne se lit est rendue « refusée »
+  sur l'instruction au lieu de fauter : le décodeur ne l'aurait pas lue de
+  toute façon, mais le silicium aurait d'abord fauté sur la page d'après.
+- `cmps` et `scas` n'ont pas encore de cas de faute au milieu d'une
+  répétition dans le test des chaînes.
+- Les deux remarques du contrôle, non mesurées ici : le passage du mode deux
+  au mode quatre du 8254 ne remet ni `loaded` ni `raised` à zéro ; et la base
+  de FS pourrait se juger sur le silicium par un `mov %fs:0` sur la base de
+  glibc.
+
 ## 2026-11-14 — Sous l'émetteur, Alpine va jusqu'à son shell : FS, `addr32 call`, l'instruction coupée, les chaînes qui comparent, le mode quatre du 8254 et un cache de code vidé une fois
 
 **Ce qui n'allait pas.** Alpine 6.18.60 avec son initramfs (`WISQ_RAM=256`)

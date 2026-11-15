@@ -2774,10 +2774,12 @@ fn an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it() {
 
 /// **Le seuil de quinze octets, tenu des deux côtés.**
 ///
-/// C'est le test qui compte : le même octet inconnu, à la même place, ne rend
-/// pas la même réponse selon ce qui le suit. Quinze octets après lui, le
-/// décodeur avait toute la place qu'une instruction x86-64 peut demander —
-/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe.
+/// Le même début d'instruction, à la même place, ne rend pas la même réponse
+/// selon la place qui le suit. Quatorze préfixes `66` sans opcode derrière :
+/// le décodeur lit au-delà du bord, et une suite le rendrait lisible — un
+/// `nop` en quinzième octet — donc c'est une coupe. Quinze : une instruction
+/// x86-64 n'en fait pas plus, le silicium rend `#GP`, et aucune suite n'y
+/// changerait rien — c'est un vrai refus.
 ///
 /// **Ce que la tranche de l'arrêt nommé a déplacé.** La distinction ne se lit
 /// plus dans le sort de la région : depuis qu'un octet illisible arrête son
@@ -2793,22 +2795,33 @@ fn an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it() {
 ///   qu'un bord de fenêtre — exactement la confusion que `REACH` existe pour
 ///   éviter.
 ///
+/// **Ce que le seuil ne départage plus seul.** Ce test posait un octet inconnu
+/// complet (`06`) à quatorze octets du bord et y voyait une coupe : c'était
+/// « ça peut en être une ». Le décodeur dit maintenant s'il a lu au-delà, et
+/// une instruction complète refusée près du bord est un refus franc — le test
+/// qui suit le tient.
+///
 /// Sans les deux moitiés, un seuil de zéro ou de mille passerait aussi bien.
 #[test]
 fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
-    // `restants` compte à partir de l'octet fautif, celui-ci compris : c'est la
-    // place dont le décodeur disposait pour lire une instruction entière.
+    // `restants` compte à partir du premier préfixe : la place dont le
+    // décodeur disposait pour lire une instruction entière.
+    let prefixes = |restants: usize| vec![0x66u8; restants];
     let at_entry = |restants: usize| {
-        let mut bytes = vec![UNKNOWN];
-        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
-        assert_eq!(bytes.len(), restants, "le montage du cas lui-même");
+        let bytes = prefixes(restants);
         Module::region_or_why(&bytes, CODE, 0).map(|_| ())
     };
+    let mut lisible = prefixes(14);
+    lisible.push(0x90);
+    assert!(
+        wisq_vm::x86::decode(&lisible).is_some_and(|step| step.length == 15),
+        "le montage : quatorze `66` et un `nop` font une instruction de quinze octets"
+    );
     assert_eq!(
         at_entry(14),
         Err(Refused::MayBeCut { at: 0 }),
-        "quatorze octets restants : le décodeur a pu manquer de place, et rien \
-         de complet ne précède — la vue redemande"
+        "quatorze octets restants : le décodeur a manqué de place, et rien de \
+         complet ne précède — la vue redemande"
     );
     assert_eq!(
         at_entry(15),
@@ -2820,9 +2833,7 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
     // plus du seuil — seul le nom en dépend.
     let after_three_nops = |restants: usize| {
         let mut bytes = vec![0x90; 3];
-        bytes.push(UNKNOWN);
-        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
-        assert_eq!(bytes.len() - 3, restants, "le montage du cas lui-même");
+        bytes.extend(prefixes(restants));
         (
             Module::region_or_why(&bytes, CODE, 0).map(|_| ()),
             Module::outline(&bytes, 0)
@@ -2835,13 +2846,61 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
         after_three_nops(14),
         (Ok(()), Some(3), Ok(vec![])),
         "quatorze restants : la région se traduit jusqu'à l'octet et reprend \
-         dessus, mais il n'est pas nommé — ce peut n'être que la fenêtre"
+         dessus, mais il n'est pas nommé — ce n'est que la fenêtre"
     );
     assert_eq!(
         after_three_nops(15),
         (Ok(()), Some(3), Ok(vec![3])),
         "quinze restants : même traduction, même reprise, et l'octet est nommé"
     );
+}
+
+/// **Une instruction complète que le décodeur refuse est un refus franc, même
+/// à un octet du bord.**
+///
+/// Tout échec à moins de quinze octets de la fin passait pour une coupe. Sur
+/// une page dont la suivante manque, l'hôte délivrait alors une faute de page
+/// sur la page d'après — que le silicium ne fait pas, puisque l'instruction
+/// n'y déborde pas. `67 8b 00` est un `mov (%eax),%eax`, trois octets complets
+/// que ce décodeur ne lit pas (la taille d'adresse n'est lue que devant un
+/// saut relatif) ; `06` est `push es`, qui n'existe pas en mode 64 bits.
+/// Les vraies coupes, elles, restent des coupes : un `48` seul (le mur de
+/// busybox), un `48 b8` à l'immédiat tronqué, un `0f` seul, un `f3 0f 1e`
+/// sans son `fa`.
+#[test]
+fn a_complete_refused_instruction_near_the_edge_is_not_a_cut() {
+    for (bytes, name) in [
+        (&[0x67u8, 0x8b, 0x00][..], "addr32 mov (%eax),%eax"),
+        (&[0x06][..], "push es"),
+        (&[0x06, 0x90, 0x90][..], "push es et deux nop"),
+    ] {
+        assert!(!wisq_vm::x86::cut_short(bytes), "{name} : rien ne déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::CannotDecode { at: 0 }),
+            "{name} : un refus franc, pas « il m'en faut plus »"
+        );
+        let mut after_a_nop = vec![0x90];
+        after_a_nop.extend_from_slice(bytes);
+        assert_eq!(
+            Module::unreadable(&after_a_nop, 0),
+            Ok(vec![1]),
+            "{name} : et il est nommé parmi les illisibles"
+        );
+    }
+    for (bytes, name) in [
+        (&[0x48u8][..], "un REX seul"),
+        (&[0x48, 0xb8, 1, 2, 3][..], "un immédiat tronqué"),
+        (&[0x0f][..], "un 0f seul"),
+        (&[0xf3, 0x0f, 0x1e][..], "endbr64 sans son dernier octet"),
+    ] {
+        assert!(wisq_vm::x86::cut_short(bytes), "{name} : déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::MayBeCut { at: 0 }),
+            "{name} : une coupe, que plus d'octets rendraient lisible"
+        );
+    }
 }
 
 /// **Un octet illisible sur une branche que personne ne prend ne coûte plus
@@ -3720,8 +3779,8 @@ fn read_string_oracle() -> StringOracle {
         }
     }
     assert_eq!(states.len(), 8, "les huit états du corpus de chaîne");
-    assert_eq!(instructions.len(), 47, "ses quarante-sept formes");
-    assert_eq!(cases.len(), 376, "et ses trois cent soixante-seize cas");
+    assert_eq!(instructions.len(), 52, "ses cinquante-deux formes");
+    assert_eq!(cases.len(), 416, "et ses quatre cent seize cas");
     // **La fenêtre vient du fichier qui la déclare**, et non d'un motif écrit
     // ici : le corpus de chaîne ne la déclare pas, le corpus arithmétique si,
     // et le test Swift la reconstruit en 0x10 + i. Les trois doivent tomber
@@ -3953,7 +4012,9 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_string_corpus() {
 /// `movs` et `stos` seuls — tant que `lods`, `cmps` et `scas` ne se
 /// traduisaient pas ; `repne scasb` et `repe cmpsb` sont le `strlen` et le
 /// `memcmp` de busybox compilé en `-Os`, et les 376 cas sont jugés depuis.
-const STRING_CASES_FLOOR: usize = 376;
+/// Les cinq `rep lods` portent le compte à 416 : l'émetteur les traduisait, et
+/// un `rep lods` d'un seul tour n'était vu par aucun test.
+const STRING_CASES_FLOOR: usize = 416;
 
 /// **Le quatrième corpus branché sur l'émetteur : les branchements.**
 ///
