@@ -3,10 +3,12 @@ import Foundation
 /// **L'attente de la première reprise d'un bureau prêt**, dite en une phrase
 /// tant que la console n'a pas répondu.
 ///
-/// **Ce qui n'allait pas.** Au banc, la console d'un bureau prêt répond
-/// 12,0 s après la reprise (l'entrée du 14 novembre de `docs/JOURNAL.md`,
-/// comptées après `restore`) : l'interprète, encore froid, rejoue l'invité
-/// jusqu'à ce que son shell lise la ligne de `FirstResume`. Avant cela,
+/// **Ce qui n'allait pas.** Au banc, la console d'un bureau prêt rend
+/// `REPRIS_42` 12,0 s après la reprise (l'entrée du 14 novembre de
+/// `docs/JOURNAL.md`) : comptées après `restore`, et après une première
+/// commande (`pgrep`, `dmesg`) que le banc tape avant celle-là.
+/// L'interprète, encore froid, rejoue l'invité jusqu'à ce que son shell
+/// lise ce qu'on lui tape. Avant cela,
 /// l'application lit l'image et déplie l'instantané brut de 345,8 Mio, sur
 /// le fil principal. Pendant tout ce temps, l'écran montrait le bureau tel
 /// que la fabrique l'avait laissé, et rien ne répondait au doigt : un écran
@@ -30,9 +32,12 @@ import Foundation
 /// retrouve un invité silencieux à son invite, et la phrase ne s'y tairait
 /// jamais.
 public struct ResumeWait: Equatable, Sendable {
-    /// L'attente ordinaire, en secondes : 12,0 s mesurées au banc après
-    /// `restore`, et la marge d'un téléphone plus lent ou plus chargé que le
-    /// banc, et du dépliage d'avant, que le banc ne comptait pas.
+    /// L'attente ordinaire, en secondes, autour des 12,0 s du banc. Ce
+    /// n'est pas la mesure de ce que la phrase compte : le banc part après
+    /// `restore` et s'arrête à la réponse de sa deuxième commande, quand la
+    /// phrase part du toucher (le dépliage compris) et se tait au premier
+    /// écho. Ni ce dépliage sur un téléphone, ni ce premier écho n'ont été
+    /// mesurés : la fourchette est une estimation, à reprendre sur un iPhone.
     public static let usual: ClosedRange<Int> = 11...15
 
     /// Le toucher qui a lancé la reprise : pris avant l'image lue et
