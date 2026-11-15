@@ -12,9 +12,11 @@ import WisqVM
 /// reprise reste la nôtre — l'en-tête `Range` que dit `backgroundRequest` —,
 /// et une coupure garde ce que le `.part` avait déjà.
 ///
-/// Chaque tâche porte l'image qu'elle télécharge dans sa description
-/// (`Release.backgroundTag`) : c'est la seule chose qu'une session garde
-/// d'une vie de l'application à la suivante.
+/// Chaque tâche porte l'image qu'elle télécharge, et le dossier où la ranger,
+/// dans sa description (`ImageDownload.BackgroundJob.tag`) : c'est la seule
+/// chose qu'une session garde d'une vie de l'application à la suivante. Une
+/// image va dans la bibliothèque ; l'archive d'un bureau prêt, dans les
+/// téléchargements, d'où `ReadyDesktop.install` l'importe.
 final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     static let shared = BackgroundImageDownloads()
     static let identifier = "fr.wisq.telechargements"
@@ -55,18 +57,27 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
         ImageDownloader(fetcher: URLSessionRangeFetcher(), partsFolder: try KernelLibrary.downloadsDirectory())
     }
 
-    /// Télécharge `release` par la session d'arrière-plan, et rend l'image
-    /// rangée. `progress` reçoit les octets reçus — ceux du `.part` compris —
-    /// et la taille attendue.
-    func download(_ release: ImageDownload.Release,
+    /// Le dossier d'une destination.
+    static func folder(for destination: ImageDownload.Destination) throws -> URL {
+        switch destination {
+        case .library: return try KernelLibrary.directory()
+        case .downloads: return try KernelLibrary.downloadsDirectory()
+        }
+    }
+
+    /// Télécharge `release` par la session d'arrière-plan, et rend le fichier
+    /// rangé sous `destination`. `progress` reçoit les octets reçus — ceux du
+    /// `.part` compris — et la taille attendue.
+    func download(_ release: ImageDownload.Release, into destination: ImageDownload.Destination = .library,
                   progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
         let downloader = try makeDownloader()
-        let library = try KernelLibrary.directory()
+        let folder = try Self.folder(for: destination)
+        let job = ImageDownload.BackgroundJob(release: release, destination: destination)
         // Plus rien à recevoir : il ne reste qu'à vérifier ce qui est là.
         guard let request = try downloader.backgroundRequest(for: release) else {
             return try downloader.adopt(URL(fileURLWithPath: "/dev/null"), status: 416,
                                         contentRange: "bytes */\(release.size)",
-                                        for: release, into: library)
+                                        for: release, into: folder)
         }
         let have = release.size - (try partRemaining(release))
         progress(have, release.size)
@@ -84,12 +95,18 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
             }
             session.getAllTasks { tasks in
                 // Une tâche déjà en cours pour ce fichier — lancée avant que
-                // l'application ne s'endorme — continue : on l'attend.
-                if tasks.contains(where: { $0.taskDescription == release.backgroundTag && $0.state == .running }) {
+                // l'application ne s'endorme — continue : on l'attend. Les
+                // tâches se comparent par ce qu'elles décrivent, pas par leur
+                // texte : celui d'une version d'avant n'avait pas ses clés
+                // dans un ordre fixe.
+                if tasks.contains(where: { task in
+                    task.state == .running
+                        && task.taskDescription.flatMap(ImageDownload.BackgroundJob.init(tag:)) == job
+                }) {
                     return
                 }
                 let task = self.session.downloadTask(with: urlRequest)
-                task.taskDescription = release.backgroundTag
+                task.taskDescription = job.tag
                 task.resume()
             }
         }
@@ -116,21 +133,21 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
         guard let tag = downloadTask.taskDescription,
-              let release = ImageDownload.Release(backgroundTag: tag) else { return }
+              let job = ImageDownload.BackgroundJob(tag: tag) else { return }
         let http = downloadTask.response as? HTTPURLResponse
         let outcome: Outcome = Result {
             try makeDownloader().adopt(location, status: http?.statusCode ?? 0,
                                    contentRange: http?.value(forHTTPHeaderField: "Content-Range"),
-                                   for: release, into: try KernelLibrary.directory())
+                                   for: job.release, into: try Self.folder(for: job.destination))
         }
-        finish(release.file, outcome)
+        finish(job.release.file, outcome)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
         guard let tag = downloadTask.taskDescription,
-              let release = ImageDownload.Release(backgroundTag: tag) else { return }
+              let release = ImageDownload.BackgroundJob(tag: tag)?.release else { return }
         // Un `200` à une demande de reprise : le serveur renvoie tout, et
         // `adopt` repartira de zéro — le progrès aussi, au lieu de rester à
         // 100 % pendant tout le transfert.
@@ -146,7 +163,7 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
     /// reprend là.
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error, let tag = task.taskDescription,
-              let release = ImageDownload.Release(backgroundTag: tag) else { return }
+              let release = ImageDownload.BackgroundJob(tag: tag)?.release else { return }
         finish(release.file, .failure(error))
     }
 

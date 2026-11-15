@@ -359,14 +359,21 @@ struct LocalVMListView: View {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
         }
         .sheet(isPresented: $showDownload) {
-            ImageDownloadSheet { url in
+            ImageDownloadSheet(onDownloaded: { url in
                 reloadLibrary()
                 storage = KernelLibrary.storageReport()
                 importError = nil
                 note = Note(
                     text: "« \(url.lastPathComponent) » est téléchargée et vérifiée : touchez-la pour la démarrer.",
                     symbol: "checkmark.seal")
-            }
+            }, onInstalled: { machine in
+                reloadLibrary()
+                storage = KernelLibrary.storageReport()
+                importError = nil
+                note = Note(
+                    text: "« \(machine.name) » est installée : touchez-la, le bureau sera là en moins d'une minute.",
+                    symbol: "checkmark.seal")
+            })
         }
         .sheet(item: $exported) { file in
             VStack(spacing: 18) {

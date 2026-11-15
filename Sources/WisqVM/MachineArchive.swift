@@ -180,18 +180,7 @@ public enum MachineArchive {
     ) throws -> InstalledMachine {
         let input = try FileHandle(forReadingFrom: source)
         defer { try? input.close() }
-        guard let mark = try input.read(upToCount: magic.count), [UInt8](mark) == magic else {
-            throw Refusal.notAnArchive
-        }
-        guard let lengthBytes = try input.read(upToCount: 8), lengthBytes.count == 8 else {
-            throw Refusal.damaged
-        }
-        let length = lengthBytes.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
-        guard length <= 1 << 20, let body = try input.read(upToCount: Int(length)),
-              body.count == Int(length),
-              let manifest = try? JSONDecoder().decode(Manifest.self, from: body),
-              manifest.version == 1
-        else { throw Refusal.damaged }
+        let (manifest, length) = try readManifest(from: input)
 
         for name in [manifest.image] + manifest.files.map(\.name) + [manifest.disk, manifest.ownDisk].compactMap({ $0 })
         where !isSafe(name) {
@@ -256,6 +245,42 @@ public enum MachineArchive {
             throw error is Refusal ? error : Refusal.damaged
         }
         return machine
+    }
+
+    /// **Ce qu'une archive porte, lu sans rien installer** : l'image qu'elle
+    /// démarre, et l'empreinte du noyau de chacune de ses sessions. C'est ce
+    /// qu'un bureau prêt vérifie avant l'import — une archive faite pour une
+    /// autre image, ou dont la session ne porte pas le nom du noyau de l'image
+    /// présente, s'importerait sans erreur et démarrerait à froid sans le dire.
+    public struct Contents: Equatable, Sendable {
+        public let image: String
+        public let sessions: [String]
+    }
+
+    public static func contents(of source: URL) throws -> Contents {
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        let (manifest, _) = try readManifest(from: input)
+        return Contents(image: manifest.image,
+                        sessions: manifest.files.filter { $0.kind == .session }.map(\.name))
+    }
+
+    /// La marque, la longueur et le manifeste, lus et vérifiés ; `input` est
+    /// laissé juste après, au début des fichiers.
+    private static func readManifest(from input: FileHandle) throws -> (Manifest, UInt64) {
+        guard let mark = try input.read(upToCount: magic.count), [UInt8](mark) == magic else {
+            throw Refusal.notAnArchive
+        }
+        guard let lengthBytes = try input.read(upToCount: 8), lengthBytes.count == 8 else {
+            throw Refusal.damaged
+        }
+        let length = lengthBytes.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(as: UInt64.self)) }
+        guard length <= 1 << 20, let body = try input.read(upToCount: Int(length)),
+              body.count == Int(length),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: body),
+              manifest.version == 1
+        else { throw Refusal.damaged }
+        return (manifest, length)
     }
 
     // MARK: - Outils
