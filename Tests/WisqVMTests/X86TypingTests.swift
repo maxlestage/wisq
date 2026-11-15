@@ -116,6 +116,15 @@ final class X86TypingTests: XCTestCase {
         XCTAssertEqual(pc.core.devices.ps2.typing.count, 2_000 + admitted)
         XCTAssertEqual(pc.pendingKeystrokes, 2_000 + admitted)
         XCTAssertTrue(pc.core.devices.ps2.heldInQueue.isEmpty)
+
+        // Une touche de la barre se compte de même contre la file du
+        // contrôleur : deux places, Ctrl-C n'entre pas, une flèche si.
+        let bar = machine()
+        for _ in 0..<(limit / 2 - 1) { bar.core.devices.ps2.type(X86Keystrokes.keystrokes(X86Keystrokes.character("q"))) }
+        bar.handTypingToTheController()
+        XCTAssertFalse(bar.press(X86Keystrokes.key(.control("c"))))
+        XCTAssertTrue(bar.press(X86Keystrokes.key(.up)))
+        XCTAssertFalse(bar.key(.space, down: true))
     }
 
     // MARK: - De bout en bout, par ScreenTypist
