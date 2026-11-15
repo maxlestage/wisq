@@ -137,6 +137,10 @@ public final class LocalVMModel {
     /// `MachineKeys`, que la CI Linux juge ; ce fichier ne fait que la suivre.
     public func boot(kernelURL: URL, installed: InstalledMachine? = nil, keepingConsole: Bool = false) {
         guard machine == nil else { return }
+        // **Le toucher**, d'où l'attente d'une première reprise se compte
+        // (`ResumeWait`) : avant l'image lue et l'instantané déplié, qui se
+        // font plus bas sur ce fil, l'écran figé.
+        let touchedAt = Date()
         self.installed = installed
         bootedKernel = kernelURL
         let keys = installed?.keys ?? .image(kernelURL.lastPathComponent)
@@ -376,10 +380,13 @@ public final class LocalVMModel {
         let resumeNote = firstResume?.note ?? (saved != nil && !resuming
             ? ResumeNote.text(savedAt: savedAt, now: Date())
             : nil)
-        // **L'attente se dit dès le toucher** : l'instantané se déplie, puis
-        // l'invité rejoue jusqu'à lire la ligne tapée — une douzaine de
-        // secondes d'un écran qui ne répond pas. Voir `ResumeWait`.
-        waiting = firstResume == nil ? nil : ResumeWait(since: Date(), guestBytes: sink.guestBytes)
+        // **L'attente se dit dès que ce fil la rend** : l'image a été lue et
+        // l'instantané de 345,8 Mio déplié, ici même, l'écran figé et sans
+        // phrase. Puis l'invité rejoue jusqu'à lire la ligne tapée — une
+        // douzaine de secondes d'un écran qui ne répond pas. Les secondes se
+        // comptent **depuis le toucher** (`touchedAt`), ce travail compris :
+        // partir d'ici les comptait sans lui. Voir `ResumeWait`.
+        waiting = firstResume == nil ? nil : ResumeWait(since: touchedAt, guestBytes: sink.guestBytes)
         resumeWait = waiting?.phrase(now: Date())
 
         // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
