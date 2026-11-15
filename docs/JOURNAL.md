@@ -8,6 +8,81 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le collage sur l'écran ne laisse plus de touche enfoncée dans le cœur Swift
+
+**Ce qui n'allait pas.** Le défaut que la carte Rust a corrigé en #704
+venait de ce cœur, et il y était encore. `X86PS2Controller.type` bornait sa
+file frappe par frappe, et `LocalVMModel.typeOnScreen` y versait un texte
+frappe par frappe (par `X86Machine.key` et une file sans borne entre les
+deux fils). Un collage qui remplissait la file au milieu d'une majuscule y
+laissait Maj et la lettre enfoncées : l'invité les tenait pour de bon, et
+Xorg répétait la lettre sans fin. Toute la suite du texte était jetée sans
+un mot. En passant, deux pertes silencieuses de plus : « \r\n » est **un
+seul caractère** en Swift, absent de la table du clavier, donc un texte
+venu de Windows perdait tous ses retours à la ligne ; et ce qu'un clavier
+américain n'a pas (é, émojis, guillemets typographiques) disparaissait
+sans que rien ne le dise.
+
+**Ce qui change.**
+
+- Le contrôleur suit la règle de `crates/wisq-page/src/carte/i8042.rs` :
+  un groupe de frappes (un caractère, modificateurs compris) entre entier
+  ou pas du tout ; le relâchement d'une touche que la file laisse enfoncée
+  passe toujours, même au-delà de la borne (512 touches suivies,
+  `X86HeldKeys`). La file peut donc dépasser la borne de 512 relâchements
+  au plus.
+- La file d'`X86Machine` entre les fils (`X86TypingHandoff`) a la même
+  borne, **comptée avec celle du contrôleur** (que le fil d'émulation
+  publie à chaque tranche) : ce qu'elle admet, le contrôleur le prend
+  entier à la tranche suivante. `X86Machine.type(_:)` s'arrête au premier
+  caractère qui ne tient plus et rend ce qui reste à taper
+  (`X86TypingReport`) ; `press(_:)` admet une touche de la barre entière.
+- `ScreenTypist` garde ce qui reste, dans l'ordre (un texte tapé ou une
+  touche frappée entre-temps passe derrière), et `LocalVMModel` le reprend
+  à chaque battement de la ligne d'état, une fois par seconde. Au-delà d'un
+  million de caractères en attente, et pour ce qu'un clavier américain n'a
+  pas, une ligne sous l'écran le dit.
+- « \r\n » devient une touche Entrée.
+- **La console série ne coupait rien**, vérifié : un collage de plus de
+  50 000 octets (accents, émojis, tabulations, `\r\n`, un `ESC [201~`
+  caché) arrive au port octet pour octet, et l'instantané emporte ce qui
+  n'a pas été lu. Seuls les contrôles sont retirés, exprès
+  (`TerminalPaste`). Un test le tient désormais.
+
+**Comment c'est vérifié.** Treize tests neufs : trois portés de
+`i8042.rs` dans `X86PS2Tests`, un dans `X86KeystrokesTests` (`\r\n`),
+neuf dans `X86TypingTests` (long collage avec majuscules, file pleine au
+milieu d'un caractère, arrêt au premier caractère qui ne tient plus,
+relâchement toujours admis, accord des deux files, un collage de 400
+lignes tapé en plusieurs passes et décodé depuis le port 0x60 — tout,
+dans l'ordre, Ctrl-C compris, clavier au repos à la fin —, l'ordre et les
+avis de `ScreenTypist`, la console série). Onze sabotages d'une ligne,
+chacun restauré (`git diff` vide) : relâchement refusé à la borne dans le
+contrôleur (2 tests tombent), groupe coupé frappe par frappe (1), groupe
+jugé sur sa première frappe dans la machine (3), caractère qui ne tient
+pas sauté au lieu d'arrêter le texte (6), relâchement refusé dans la
+machine (1), sans l'entrée `\r\n` (2), ce qui vient passant devant ce qui
+attend (2), `type` puis `press` oubliant ce que tient le contrôleur (1
+chacun), instantané sans l'entrée série en attente (1), `ScreenTypist`
+sans borne (1). Suite Swift entière : 2 919 tests exécutés, 55 sautés, aucun échec (8 min). Compte publié : 3 630 → 3 643 (2 999 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le SwiftUI (`LocalVMModel`, la ligne sous l'écran dans `LocalVMView`)
+  n'est jugé que par la CI « App iOS » ; ici, `swiftc -frontend -parse`
+  et SwiftLint seulement.
+- **L'état du contrôleur PS/2 n'est pas dans l'instantané.** Une machine
+  suspendue pendant qu'un collage s'écrit perd sa file, et si une frappe
+  enfoncée était partie sans son relâchement, l'invité la tient encore à
+  la reprise. Le corriger demande une section de plus et un niveau
+  d'instantané de plus ; pas fait ici.
+- Le port série lit son entrée par `removeFirst`, en temps quadratique :
+  mesuré 0,48 s (compilation de mise au point) pour lire 61 Ko. Un collage
+  d'un mégaoctet coûterait, extrapolé et non mesuré, de l'ordre de la
+  minute au fil d'émulation. Rien n'est perdu, mais c'est lent.
+- Dans l'invité, une ligne de plus de 4 095 caractères en mode canonique
+  est tronquée par Linux lui-même (`n_tty`) : wisq n'y peut rien.
+
 ## 2026-11-15 — Le décodeur lit « ni moins » que le silicium, et `bureaux-1` est publié
 
 **Le trou de test.** Le dernier contrôle du flux de l'émetteur a montré
