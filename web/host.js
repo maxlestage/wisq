@@ -1507,7 +1507,17 @@ export function machine({
   /// `unread` — le code d'erreur plus un, comme le témoin —, parce que c'est
   /// lui que la faute de chargement délivre : P quand la page est là et que
   /// le programme n'y a pas droit.
-  function read(address, window) {
+  ///
+  /// **Sauf quand l'hôte ne vient pas charger, mais regarder.** `kind` vaut
+  /// `SLOTS.walkFetch` pour la fenêtre qu'on va traduire, et c'est le cas par
+  /// défaut ; les mesures — `revoir`, la sonde de `surveiller` — passent
+  /// `SLOTS.walkMachine`. Elles demandent « quels octets la page porte-t-elle
+  /// maintenant ? », pas « l'anneau courant a-t-il le droit d'y prendre une
+  /// instruction ? ». Jugées comme un chargement, elles dépendraient de
+  /// l'anneau où la machine s'est arrêtée : un arrêt en anneau trois rendait
+  /// illisibles les onze mille fenêtres du noyau d'Alpine, et le compte des
+  /// régions périmées tombait à zéro sans un mot.
+  function read(address, window, kind = SLOTS.walkFetch) {
     const temoin = globals[SLOTS.fault].value;
     const cr2 = globals[SLOTS.control + 1].value;
     const out = new Uint8Array(window);
@@ -1515,7 +1525,7 @@ export function machine({
     unread = 0n;
     while (filled < window) {
       globals[SLOTS.fault].value = 0n;
-      const at = physical(address + BigInt(filled), SLOTS.walkFetch);
+      const at = physical(address + BigInt(filled), kind);
       if (at === null) {
         if (filled === 0) unread = globals[SLOTS.fault].value;
         break;
@@ -1844,13 +1854,20 @@ export function machine({
     /// **Illisible n'est pas périmé.** Une région que les tables ne portent
     /// plus à la fin — un CR3 qui a changé, une page rendue — ne dit rien sur
     /// ses octets. La confondre avec un changement inventerait des défauts.
+    ///
+    /// **Et l'anneau de l'arrêt n'y est pour rien.** La relecture se fait en
+    /// `SLOTS.walkMachine`, sans juger aucun droit : une page du noyau
+    /// toujours dans les tables reste comparée quand la machine s'arrête dans
+    /// un programme. Lue comme un chargement, elle passait illisible — 11 044
+    /// régions sur 11 080 à l'arrêt d'Alpine en anneau trois, et « 0
+    /// périmée » là où l'arrêt en anneau zéro en compte 373.
     revoir() {
       const changees = [];
       const illisibles = [];
       for (const [adresse, region] of known) {
         const avant = region.lu;
         if (avant === undefined) continue;
-        const maintenant = read(adresse, avant.length);
+        const maintenant = read(adresse, avant.length, SLOTS.walkMachine);
         if (maintenant === null || maintenant.length < avant.length) {
           illisibles.push(adresse.toString());
           continue;
@@ -1949,9 +1966,12 @@ export function machine({
         // qu'une lecture directe parce qu'il remet le témoin de faute et CR2
         // comme il les a trouvés : une sonde qui laisserait une faute
         // derrière elle ferait prendre à l'invité, plus tard, une faute que
-        // *l'hôte* a causée en mesurant.
+        // *l'hôte* a causée en mesurant. Et il lit en `SLOTS.walkMachine`,
+        // comme `revoir` : une région du noyau déjà traduite se ré-entre en
+        // anneau trois sans faute — les régions sont gardées par adresse —, et
+        // jugée comme un chargement, la sonde ne verrait pas qu'elle a changé.
         if (surveiller && region.lu !== undefined) {
-          const octet = read(here, 1);
+          const octet = read(here, 1, SLOTS.walkMachine);
           if (octet !== null && octet[0] !== region.lu[0]) {
             surveillees.entrees += 1n;
             // **Les deux octets, pas seulement le compte.** « Cent vingt mille
