@@ -316,6 +316,18 @@ public enum ReadyDesktopBuild {
         return identity
     }
 
+    /// **Le nom commun des fichiers d'une fabrication** (archive, fiche,
+    /// capture, console) : l'image, puis le niveau de machine —
+    /// `void-live-x86_64-20250202-xfce-pret-niveau1`. Le niveau est dans le
+    /// nom parce que l'archive d'un niveau neuf, attachée à la même release,
+    /// remplaçait celle du niveau d'avant sous le même nom, et l'entrée gardée
+    /// pour les applications d'avant (`Index.merged`) promettait une somme que
+    /// l'asset n'avait plus.
+    public static func outputStem(image: String, level: UInt64) -> String {
+        let base = image.hasSuffix(".iso") ? String(image.dropLast(4)) : image
+        return "\(base)-pret-niveau\(level)"
+    }
+
     /// L'empreinte d'un noyau, telle qu'elle nomme sa session.
     public static func kernelDigest(_ kernel: Data) -> String {
         String(SuspendedMachine.digest(kernel), radix: 16)

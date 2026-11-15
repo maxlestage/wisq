@@ -50,6 +50,12 @@ public struct ReadyDesktop: Equatable, Sendable {
     public static let archiveHosts: Set<String> = ["github.com", "objects.githubusercontent.com"]
     /// Sur `github.com`, les releases **de ce dépôt** seulement.
     static let releasePath = ["/", "maxlestage", "wisq", "releases", "download"]
+    /// **La plus grande taille qu'une entrée peut annoncer**, image ou
+    /// archive : 64 Gio, bien au-delà de l'ISO de 1,4 Gio et de ce qu'un
+    /// téléphone range. Sans plafond, deux tailles proches d'`Int.max / 2`
+    /// passaient, et leur somme (`sizePhrase`, `fetch`) faisait tomber
+    /// l'application dès l'ouverture de la feuille.
+    public static let largestFile = 64 << 30
 
     // MARK: - L'index
 
@@ -118,12 +124,65 @@ public struct ReadyDesktop: Equatable, Sendable {
         /// **Le nouvel index, et ce qu'il garde de l'ancien** : une entrée
         /// neuve remplace celle du même titre et du même niveau ; les autres
         /// restent. Un bureau d'un niveau neuf ne retire donc pas celui que les
-        /// applications d'avant savent encore reprendre.
+        /// applications d'avant savent encore reprendre — à condition qu'il
+        /// ne prenne pas son adresse (`clashes`).
         public func merged(keeping old: Index) -> Index {
             let kept = old.desktops.filter { previous in
                 !desktops.contains { $0.title == previous.title && $0.level == previous.level }
             }
             return Index(format: format, desktops: desktops + kept)
+        }
+
+        /// **Une adresse, un fichier** : les adresses où l'index annonce deux
+        /// fichiers différents (une autre taille, ou une autre somme), dans
+        /// l'ordre où elles paraissent. Une même ISO pour deux niveaux est
+        /// permise ; une même archive, non : l'asset republié sous le même nom
+        /// a remplacé l'ancien, et l'entrée gardée promet une somme qu'il n'a
+        /// plus. L'application d'avant téléchargeait alors l'archive neuve, la
+        /// trouvait fausse, l'effaçait, et recommençait à chaque essai.
+        public var clashes: [String] {
+            var seen: [String: (bytes: Int, sha256: String)] = [:]
+            var clashing: [String] = []
+            for link in desktops.flatMap({ [$0.image, $0.archive] }) {
+                let file = (bytes: link.bytes, sha256: link.sha256.lowercased())
+                if let previous = seen[link.url] {
+                    if previous != file, !clashing.contains(link.url) { clashing.append(link.url) }
+                } else {
+                    seen[link.url] = file
+                }
+            }
+            return clashing
+        }
+
+        /// Pourquoi un index n'est pas écrit.
+        public enum Fault: Error, Equatable, CustomStringConvertible {
+            /// L'application écarterait cette entrée (`refused`).
+            case refused(title: String, url: String)
+            /// Deux fichiers différents à cette adresse (`clashes`).
+            case clash(url: String)
+
+            public var description: String {
+                switch self {
+                case .refused(let title, let url):
+                    return "l'application écarterait « \(title) » (\(url)) : index non écrit"
+                case .clash(let url):
+                    return "deux fichiers différents annoncés à la même adresse (\(url)) : l'un a remplacé "
+                        + "l'autre dans la release ; index non écrit"
+                }
+            }
+        }
+
+        /// **L'index que la fabrique publie** : les entrées neuves, jugées
+        /// comme l'application les jugera, puis l'ancien gardé (`merged`),
+        /// puis l'adresse de chaque fichier vérifiée unique (`clashes`). Une
+        /// faute arrête tout avant que rien ne parte dans une release.
+        public static func publishable(_ fresh: Index, keeping old: Index? = nil) throws -> Index {
+            if let refused = fresh.refused.first {
+                throw Fault.refused(title: refused.title, url: refused.archive.url)
+            }
+            let index = old.map(fresh.merged(keeping:)) ?? fresh
+            if let url = index.clashes.first { throw Fault.clash(url: url) }
+            return index
         }
 
         /// **Les entrées que l'application écarterait** (`parse`), chacune
@@ -160,6 +219,10 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// **Un par titre** : le plus haut niveau que cette version sait
     /// reprendre, puis le plus récent. Un index peut porter le bureau d'un
     /// niveau neuf à côté de celui d'avant (`Index.merged`).
+    ///
+    /// **Une adresse où deux entrées valables annoncent deux fichiers**
+    /// (`Index.clashes`) n'en propose aucun : l'un des deux est forcément
+    /// faux, et c'est celui qu'on téléchargerait en boucle.
     public static func parse(_ json: String, index: URL = ReadyDesktop.index,
                              supportedLevel: UInt64 = X86Machine.snapshotLevel) -> [ReadyDesktop] {
         guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
@@ -168,11 +231,20 @@ public struct ReadyDesktop: Equatable, Sendable {
         else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        let entries = list.compactMap { item -> Index.Entry? in
+            guard item is [String: Any], let data = try? JSONSerialization.data(withJSONObject: item) else { return nil }
+            return try? decoder.decode(Index.Entry.self, from: data)
+        }
+        // Les adresses en conflit, entre entrées valables seulement — chacune
+        // jugée à son propre niveau, comme `Index.refused` : une entrée
+        // fautive ne se télécharge jamais, et n'emporte pas la propre d'à côté.
+        let valid = entries.filter {
+            desktop(from: $0, index: index, supportedLevel: max($0.level, 1)) != nil
+        }
+        let clashing = Set(Index(desktops: valid).clashes)
         var chosen: [ReadyDesktop] = []
-        for item in list {
-            guard item is [String: Any],
-                  let data = try? JSONSerialization.data(withJSONObject: item),
-                  let entry = try? decoder.decode(Index.Entry.self, from: data),
+        for entry in entries {
+            guard !clashing.contains(entry.image.url), !clashing.contains(entry.archive.url),
                   let desktop = desktop(from: entry, index: index, supportedLevel: supportedLevel)
             else { continue }
             if let same = chosen.firstIndex(where: { $0.title == desktop.title }) {
@@ -192,7 +264,7 @@ public struct ReadyDesktop: Equatable, Sendable {
         guard !title.isEmpty, title.count <= 80, !title.contains(where: \.isNewline),
               (1...supportedLevel).contains(entry.level),
               ReadyDesktopBuild.isRecordable(Int(clamping: entry.ramBytes)),
-              (1...16).contains(digest.count), digest.allSatisfy(\.isHexDigit),
+              (1...16).contains(digest.count), digest.allSatisfy(ImageDownload.isASCIIHexDigit),
               // L'archive est une machine, l'image n'en est pas une : la
               // bibliothèque ne doit jamais recevoir l'archive.
               entry.archive.name.hasSuffix("." + MachineArchive.fileExtension),
@@ -217,7 +289,8 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// **Une adresse qu'on accepte** : HTTPS, sur un hôte attendu, sans
     /// port, ni identifiants, ni requête, ni `..` ; son dernier segment est
     /// le nom du fichier, et ce nom n'est qu'un nom (`ImageDownload.isPlainName`).
-    /// Sur `github.com`, une release de ce dépôt, et rien d'autre.
+    /// Sur `github.com`, une release de ce dépôt, et rien d'autre. Une taille
+    /// entre un octet et `largestFile`.
     static func link(_ link: Index.Link, hosts: Set<String>) -> (url: URL, sha256: String)? {
         let sha256 = link.sha256.lowercased()
         guard let url = URL(string: link.url), url.scheme == "https",
@@ -225,7 +298,7 @@ public struct ReadyDesktop: Equatable, Sendable {
               url.port == nil, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
               !url.pathComponents.contains(where: { $0 == ".." || $0 == "." }),
               url.lastPathComponent == link.name, ImageDownload.isPlainName(link.name),
-              ImageDownload.isHexDigest(sha256), link.bytes > 0
+              ImageDownload.isHexDigest(sha256), (1...largestFile).contains(link.bytes)
         else { return nil }
         if host == "github.com" {
             guard url.pathComponents.count == releasePath.count + 2,
@@ -357,13 +430,22 @@ public struct ReadyDesktop: Equatable, Sendable {
     ///
     /// Une coupure de l'archive garde l'image : le prochain essai ne reprend
     /// que l'archive, là où elle s'était arrêtée.
+    ///
+    /// **`replacedImage` est appelé dès que l'image a remplacé un fichier du
+    /// même nom**, d'une autre taille (`KernelLibrary.replaced` : ce qui
+    /// avait été écrit sur l'ancien ne vaut plus rien), avant l'archive. Le
+    /// dire après les deux le perdait quand l'archive tombait : l'essai
+    /// suivant trouvait l'image à sa taille, et ne le disait plus jamais.
     public func fetch(
         library: URL, downloads: URL,
         download: @Sendable (ImageDownload.Release, ImageDownload.Destination,
                              @escaping @Sendable (Int, Int) -> Void) async throws -> URL,
-        progress: @escaping @Sendable (Progress) -> Void = { _ in }
+        progress: @escaping @Sendable (Progress) -> Void = { _ in },
+        replacedImage: @Sendable (String) -> Void = { _ in }
     ) async throws -> (image: URL, archive: URL) {
         let needImage = !imagePresent(in: library)
+        let replacing = needImage
+            && FileManager.default.fileExists(atPath: library.appendingPathComponent(image.file).path)
         let needArchive = !archivePresent(in: downloads)
         let steps = (needImage ? 1 : 0) + (needArchive ? 1 : 0)
         let total = (needImage ? image.size : 0) + (needArchive ? archive.size : 0)
@@ -372,6 +454,7 @@ public struct ReadyDesktop: Equatable, Sendable {
             _ = try await download(image, .library) { have, _ in
                 progress(Progress(step: .image, number: 1, steps: steps, have: min(have, imageSize), total: total))
             }
+            if replacing { replacedImage(image.file) }
         }
         if needArchive {
             let offset = needImage ? imageSize : 0

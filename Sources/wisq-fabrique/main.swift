@@ -99,7 +99,8 @@ func fabricate() throws {
     let imageName = argument("--nom") ?? iso.lastPathComponent
     let title = argument("--titre") ?? "Void Xfce (prêt)"
     let budget = try ReadyDesktopBuild.budget(argument("--budget"))
-    let base = imageName.hasSuffix(".iso") ? String(imageName.dropLast(4)) : imageName
+    // Le niveau dans le nom : voir `ReadyDesktopBuild.outputStem`.
+    let stem = ReadyDesktopBuild.outputStem(image: imageName, level: X86Machine.snapshotLevel)
     let frozen: Date
     if let text = argument("--heure") {
         guard let date = ISO8601DateFormatter().date(from: text) else { throw Stop("--heure illisible : \(text)") }
@@ -138,7 +139,7 @@ func fabricate() throws {
 
     let (installed, writes) = try ReadyDesktopBuild.install(image: imageName, name: title, in: work)
     let console = GuestConsole()
-    let consolePath = out.appendingPathComponent(base + "-pret.console")
+    let consolePath = out.appendingPathComponent(stem + ".console")
     let snapshot: Data
     let instructions: UInt64
     do {
@@ -151,7 +152,7 @@ func fabricate() throws {
         try script.run(ReadyDesktopBuild.voidXfce, budget: budget)
         machine.flushDisk()
         if let display = machine.display {
-            _ = files.createFile(atPath: out.appendingPathComponent(base + "-pret.ppm").path,
+            _ = files.createFile(atPath: out.appendingPathComponent(stem + ".ppm").path,
                              contents: GuestScript.ppm(display))
         }
         snapshot = machine.snapshot()
@@ -159,7 +160,7 @@ func fabricate() throws {
     }
     journal.say("instantané : \(snapshot.count) octets à \(instructions) instructions")
     if flag("--brut") {
-        try snapshot.write(to: out.appendingPathComponent(base + "-pret.snap"))
+        try snapshot.write(to: out.appendingPathComponent(stem + ".snap"))
     }
 
     // **Repris dans une machine de l'application neuve**, avant d'emporter
@@ -167,7 +168,7 @@ func fabricate() throws {
     let lit = try ReadyDesktopBuild.check(snapshot, ramSize: ram)
     journal.say("vérifié : repris dans une machine neuve, écran allumé à \(Int(lit * 100)) %")
 
-    let archive = out.appendingPathComponent(base + "-pret." + MachineArchive.fileExtension)
+    let archive = out.appendingPathComponent(stem + "." + MachineArchive.fileExtension)
     let identity = try ReadyDesktopBuild.assemble(
         installed, snapshot: snapshot, kernel: kernel, in: work, to: archive)
     let packed = (try files.attributesOfItem(atPath: work.appendingPathComponent(
@@ -183,7 +184,7 @@ func fabricate() throws {
         commandLine: line, madeAt: Date(), guestClock: frozen, instructions: instructions,
         snapshotBytes: UInt64(snapshot.count), packedBytes: packed,
         snapshotSHA256: SHA256Stream.hex(snapshot), commit: argument("--commit"))
-    let sheetURL = out.appendingPathComponent(base + "-pret.json")
+    let sheetURL = out.appendingPathComponent(stem + ".json")
     try sheet.encoded().write(to: sheetURL)
     journal.say("fiche : \(sheetURL.path)")
     FileHandle.standardOutput.write(try sheet.encoded() + Data("\n".utf8))
@@ -192,7 +193,8 @@ func fabricate() throws {
 /// **L'index des bureaux prêts**, écrit par le même type que celui que
 /// l'application lit (`ReadyDesktop.Index`), et relu comme elle le lira : une
 /// entrée qu'elle écarterait — un hôte, un nom, une somme — arrête tout, au
-/// lieu de partir dans une release où personne ne la verrait jamais.
+/// lieu de partir dans une release où personne ne la verrait jamais ; deux
+/// fichiers à la même adresse aussi (`Index.publishable`).
 func makeIndex() throws {
     var positional: [String] = []
     var rest = CommandLine.arguments.dropFirst(2)[...]
@@ -213,13 +215,12 @@ func makeIndex() throws {
             sheet: sheet, image: images.appendingPathComponent(sheet.image.name),
             archive: archives.appendingPathComponent(sheet.archive.name))
     }
-    let fresh = ReadyDesktop.Index(desktops: entries)
-    if let refused = fresh.refused.first {
-        throw Stop("l'application écarterait « \(refused.title) » (\(refused.archive.url)) : index non écrit")
-    }
-    var index = fresh
-    if let old = argument("--garder") {
-        index = fresh.merged(keeping: try ReadyDesktop.Index.decode(Data(contentsOf: URL(fileURLWithPath: old))))
+    let old = try argument("--garder").map { try ReadyDesktop.Index.decode(Data(contentsOf: URL(fileURLWithPath: $0))) }
+    let index: ReadyDesktop.Index
+    do {
+        index = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: entries), keeping: old)
+    } catch let fault as ReadyDesktop.Index.Fault {
+        throw Stop(fault.description)
     }
     try index.encoded().write(to: URL(fileURLWithPath: positional[0]))
     FileHandle.standardOutput.write(Data("index : \(positional[0]), \(index.desktops.count) bureau(x)\n".utf8))

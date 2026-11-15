@@ -94,16 +94,30 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
                 startedAt[release.file] = have
             }
             session.getAllTasks { tasks in
-                // Une tâche déjà en cours pour ce fichier — lancée avant que
-                // l'application ne s'endorme — continue : on l'attend. Les
-                // tâches se comparent par ce qu'elles décrivent, pas par leur
-                // texte : celui d'une version d'avant n'avait pas ses clés
-                // dans un ordre fixe.
-                if tasks.contains(where: { task in
-                    task.state == .running
-                        && task.taskDescription.flatMap(ImageDownload.BackgroundJob.init(tag:)) == job
-                }) {
-                    return
+                // Les tâches se comparent par ce qu'elles décrivent, pas par
+                // leur texte : celui d'une version d'avant n'avait pas ses
+                // clés dans un ordre fixe. Et **par le fichier qu'elles
+                // recousent** (`BackgroundJob.overlap`), pas par toute leur
+                // description : la même ISO demandée par la liste des
+                // distributions puis par « Bureaux prêts » se décrit
+                // autrement, et deux transferts partaient sur un seul `.part`.
+                let running = tasks.compactMap { task -> (URLSessionTask, ImageDownload.BackgroundJob)? in
+                    guard task.state == .running,
+                          let other = task.taskDescription.flatMap(ImageDownload.BackgroundJob.init(tag:))
+                    else { return nil }
+                    return (task, other)
+                }
+                // Une tâche déjà en cours pour ce fichier, à la même somme —
+                // lancée avant que l'application ne s'endorme, ou depuis
+                // l'autre liste — continue : on l'attend.
+                if running.contains(where: { job.overlap(with: $0.1) == .same }) { return }
+                // Le même `.part` pour un autre fichier attendu : l'ancienne
+                // cesse. **Muette d'abord** — sans étiquette, sa fin ne
+                // recoud rien et ne rend rien à celui qui attend ce fichier,
+                // qui est désormais nous (`finish` cherche par nom).
+                for (task, other) in running where job.overlap(with: other) == .conflicting {
+                    task.taskDescription = nil
+                    task.cancel()
                 }
                 let task = self.session.downloadTask(with: urlRequest)
                 task.taskDescription = job.tag

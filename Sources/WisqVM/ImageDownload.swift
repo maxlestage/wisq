@@ -164,7 +164,15 @@ public enum ImageDownload {
     }
 
     static func isHexDigest(_ text: String, length: Int = 64) -> Bool {
-        text.count == length && text.allSatisfy { $0.isHexDigit }
+        text.count == length && text.allSatisfy(isASCIIHexDigit)
+    }
+
+    /// **Un chiffre hexadécimal ASCII**, et rien d'autre : `isHexDigit`
+    /// accepte aussi les chiffres pleine chasse (« ０ », « ｄ »), qui ne
+    /// sont jamais ceux d'une somme. Une somme écrite ainsi passait, et
+    /// n'était refusée qu'une fois le fichier entier reçu.
+    static func isASCIIHexDigit(_ character: Character) -> Bool {
+        character.isASCII && character.isHexDigit
     }
 
     /// Un nom de fichier, et rien d'autre : l'index vient du réseau, et un
@@ -710,6 +718,36 @@ extension ImageDownload {
         public var tag: String {
             guard destination == .downloads else { return release.backgroundTag }
             return ImageDownload.sortedJSON(self)
+        }
+
+        /// Ce qu'une tâche déjà en cours veut dire pour celle qu'on lancerait.
+        public enum Overlap: Equatable, Sendable {
+            /// Un autre fichier : chacune le sien.
+            case unrelated
+            /// Le même fichier, attendu à la même taille, à la même somme, au
+            /// même endroit : on attend celle qui court.
+            case same
+            /// Le même `.part`, mais un autre fichier attendu : celle qui
+            /// court doit cesser avant que la nôtre parte.
+            case conflicting
+        }
+
+        /// **Deux tâches qui recoudraient le même `.part`** : c'est le nom du
+        /// fichier qui le désigne (`partURL`), et c'est par lui que
+        /// `BackgroundImageDownloads` range qui attend et le progrès. Comparer
+        /// toute la `Release` ne suffisait pas : la même ISO de Void, lancée
+        /// depuis la liste des distributions puis demandée par « Bureaux
+        /// prêts », se décrit autrement (distribution, saveur, index,
+        /// adresse), et une seconde tâche partait sur le même `.part`.
+        /// L'adresse ne compte pas : le même fichier, à sa somme, vient
+        /// d'où il vient.
+        public func overlap(with running: BackgroundJob) -> Overlap {
+            guard running.release.file == release.file else { return .unrelated }
+            let same = running.destination == destination
+                && running.release.size == release.size
+                && running.release.checksum.algorithm == release.checksum.algorithm
+                && running.release.checksum.expected == release.checksum.expected
+            return same ? .same : .conflicting
         }
 
         /// La tâche qu'une étiquette décrit : la forme neuve, ou celle d'avant

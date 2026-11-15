@@ -169,10 +169,6 @@ final class ImageDownloadModel {
         }
         phase = .fetchingDesktop(title: desktop.title)
         desktopProgress = nil
-        // Une image du même nom, d'une autre taille, sera remplacée : voir
-        // `download`.
-        let replacing = !desktop.imagePresent(in: library)
-            && FileManager.default.fileExists(atPath: library.appendingPathComponent(desktop.image.file).path)
         defer {
             desktopProgress = nil
             phase = .ready
@@ -186,8 +182,11 @@ final class ImageDownloadModel {
                 },
                 progress: { step in
                     Task { @MainActor [weak self] in self?.desktopProgress = step }
-                })
-            if replacing { KernelLibrary.replaced(desktop.image.file) }
+                },
+                // Une image du même nom, d'une autre taille, vient d'être
+                // remplacée : dit **tout de suite**, avant l'archive, qui
+                // peut encore tomber (voir `download`, et `ReadyDesktop.fetch`).
+                replacedImage: { KernelLibrary.replaced($0) })
             phase = .installingDesktop(title: desktop.title)
             // **Hors du fil principal** : le noyau sort de l'image de 1,4 Gio,
             // et l'archive, de quelques centaines de mégaoctets, est recopiée.
