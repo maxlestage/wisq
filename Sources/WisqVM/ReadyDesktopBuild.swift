@@ -91,7 +91,12 @@ public enum ReadyDesktopBuild {
     /// Après soixante-cinq secondes, le premier tirage le provoque.
     ///
     /// Puis `ssh-keygen -A` (les clés qui manquent) et `sv up sshd`.
-    public static let keyWatcher = watcher(clock: rtcSeconds, poll: "5", settle: "65")
+    public static let keyWatcher = watcher(clock: rtcSeconds, poll: "5", settle: "\(reseedWait)")
+
+    /// L'attente, en secondes de l'invité, entre l'horloge qui bouge et les
+    /// clés : plus que l'intervalle de réensemencement du noyau
+    /// (`CRNG_RESEED_INTERVAL`, soixante secondes), avec de la marge.
+    static let reseedWait = 65
 
     /// Le guetteur sur une autre horloge et d'autres attentes : celui de
     /// l'invité, en secondes, ou celui d'un test, en fractions.
