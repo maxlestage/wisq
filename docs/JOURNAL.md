@@ -8,6 +8,66 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La réservation de seize octets tenue aussi quand sa première page est connue du tampon
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, deux points,
+tous deux réels).
+
+1. **Le chemin en ligne de la réservation de seize octets n'était tenu par
+   aucun test.** Dans `Body::claim`, passer l'étendue de `16` à `1` ne fait
+   plus juger que la page du premier octet : un `movups` à cheval, dont la
+   première page est déjà dans le tampon de traduction, passe la
+   réservation, écrit sa moitié basse, puis faute sur la seconde. Ce
+   sabotage laissait verte toute la suite de `wisq-vm` (424 tests) : les cas
+   de faute du test d'écriture partaient tous d'un tampon vide, donc par la
+   marche (`far_store_body`), et les réservations de `fxsave` ne font qu'un
+   octet. C'est pourtant le cas courant sous Linux : un programme écrit dans
+   sa page, puis une écriture de seize octets déborde sur une page absente
+   ou à copier à l'écriture.
+2. **Un commentaire de `web/host.js` comptait « quatre délivrances
+   au-dessus »** de l'interruption d'horloge. Depuis `STOP_MXCSR`, il y en a
+   cinq (faute de page, interruption logicielle, MSR, MXCSR, `ud2`).
+
+**Ce qui change.**
+
+- `a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing`
+  (`host_loop.rs`) joue, pour `movups` et `movdqu` à +0xff8, quatre cas où
+  une instruction d'avant a rempli le tampon : une écriture dans la page de
+  données (`mov %rbx,-0x100(%rax)`), la page d'après absente (CR2 au début
+  de la seconde page, code W) puis en lecture seule (code W et P) ; les deux
+  pages dans le tampon, la seconde lue (`mov 0x100(%rax),%rcx`), en lecture
+  seule ; et la page de données en lecture seule et lue (CR2 sur l'adresse,
+  code W et P). Dans les quatre, rien n'est écrit. Les CR2 et codes
+  attendus sont ceux mesurés sur le silicium dans l'entrée d'en dessous.
+  **Ce n'est pas mesuré avec un tampon amorcé** : les programmes C
+  écrivaient bien la mémoire avant l'essai, mais `mprotect` peut vider le
+  TLB entre les deux. L'attente repose sur la règle de l'architecture : le
+  processeur ne garde aucune traduction d'une page absente, et une écriture
+  sur une traduction sans W refait la marche avant de fauter. Un assistant
+  neuf, `xmm_after`, place l'instruction qui remplit le tampon juste avant
+  l'accès jugé.
+- Le commentaire de `host.js` dit « les délivrances au-dessus sont toutes
+  synchrones », sans compte : il ne peut plus vieillir à la prochaine.
+
+L'émetteur ne change pas : ses octets sont ceux d'avant (`x86_wasm.rs`
+comparé par `cmp` à `HEAD`), et `WebKitBench.swift` n'a pas à être
+régénéré.
+
+**Comment c'est vérifié.**
+
+- **Sabotage, vu tomber puis restauré (`cmp` identique)** : l'étendue de la
+  réservation à `1` dans `Body::claim`. Le test d'écriture tombe sur le
+  premier cas neuf (`movups`, page d'après absente) : la faute part bien,
+  mais la moitié basse est écrite dans la première page.
+- Le test passe sur le code restauré.
+- Le compte de tests ne change pas (aucun `#[test]` ajouté) ; le recompte
+  le confirme.
+
+**Ce qui reste.** Ce que l'entrée d'en dessous laisse : U vient de l'hôte,
+l'alignement de `movaps`/`movdqa` n'est pas vérifié, le mur d'Alpine. Et les
+oracles matériels de `Tests/Fixtures/` ne sont toujours pas rejoués sous
+l'émetteur.
+
 ## 2026-11-14 — Les fautes des accès de seize octets, mesurées sur le silicium, et MXCSR délivré
 
 **Ce qui n'allait pas** (le contrôle du socle SSE, cinq points, tous réels).
