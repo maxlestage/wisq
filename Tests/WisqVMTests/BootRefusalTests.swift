@@ -11,7 +11,9 @@ import XCTest
 /// course précédente quand le refus tombait avant la lecture de l'image.
 /// Chaque chemin de refus de `LocalVMModel.boot` est ici, par son cas de
 /// `BootRefusal`, et le dernier test lit `LocalVMModel.swift` pour tenir la
-/// liaison, que le compilateur de Linux ne voit pas.
+/// liaison, que le compilateur de Linux ne voit pas. Sauf un : la session
+/// trop grande pour la mémoire libre passe par `MachineLifecycle.machineSize`,
+/// que `MachineLifecycleTests` juge.
 final class BootRefusalTests: XCTestCase {
     /// Un exemple de chaque refus, dans l'ordre où `boot` les rencontre.
     static let examples: [BootRefusal] = [
@@ -235,7 +237,8 @@ final class BootRefusalTests: XCTestCase {
 
     /// **Chaque refus de `LocalVMModel` passe par `refuseToStart`**, et aucun
     /// par `guestFinished`, qui ne sert plus qu'à la fin d'un invité qui a
-    /// tourné.
+    /// tourné. L'exception, la session trop grande pour la mémoire libre,
+    /// passe par `life.machineSize`, qui met l'état à `refused`.
     ///
     /// Ce fichier-là ne se compile que pour iOS : seule la CI d'Apple le voit,
     /// et aucun test d'ici ne l'exécute. Ce test en lit donc le **texte**. Il
@@ -266,6 +269,8 @@ final class BootRefusalTests: XCTestCase {
         XCTAssertTrue(source.contains("life.userStopped(seen: runStart?.recorded)"),
                       "« Arrêter » lit ce que le fil a déjà noté")
         XCTAssertTrue(source.contains("life.identified("), "le nom de la session vient de la course")
+        XCTAssertTrue(source.contains("guard let size = life.machineSize(memory) else {"),
+                      "la session trop grande pour la mémoire libre est refusée par le cycle de vie")
         // La promesse de l'échec sur le fil vient de la boîte, que
         // `SavedSessionTests` juge ; forcée à vrai ou à faux ici, rien d'autre
         // ne la verrait.

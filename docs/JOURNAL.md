@@ -8,6 +8,130 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Contrôle des refus du début de démarrage : la liaison tenue, et quatre phrases rendues vraies
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé cinq choses.
+Toutes sont réelles ; voici comment chacune est corrigée.
+
+**Ce qui n'allait pas.**
+
+- **La ligne qui porte toute la tranche n'était tenue par aucun test.**
+  `life.refusedToStart(refusal)`, dans `LocalVMModel.refuseToStart`, a été
+  remplacée par `_ = refusal` : rien n'est tombé, ni les 7 tests de
+  `BootRefusalTests` ni les 23 de `MachineLifecycleTests`. Sans elle,
+  l'état reste `running` après chaque refus, et « Arrêter » efface, y
+  compris la session illisible que la console vient de promettre
+  « gardée telle quelle ». Le test qui lit le source vérifiait la présence
+  des appels `refuseToStart(.cas`, pas le corps de la fonction. Le test
+  iOS de l'entrée d'en dessous serait passé lui aussi : son refus tombe
+  avant la lecture de l'image, et la course n'y nomme aucune session, si
+  bien qu'un « Arrêter » qui efface n'efface rien.
+- **La promesse de l'échec sur le fil n'était tenue par rien.** Avec
+  `let sessionAwaited = saved != nil` forcé à `false`, la console ne
+  promettait plus la session gardée et l'état devenait `notStarted`.
+  Forcé à `true`, elle la promettait sans qu'il y ait de session. Aucun
+  test ne tombait dans les deux cas. Le sabotage (H) de l'entrée d'en
+  dessous portait sur `keepsASession`, pas sur ce câblage.
+- **La doc de `MachineArchive.size(of:)` disait faux.** Elle affirmait
+  qu'un lien mort rend l'erreur du système de fichiers. Ce n'est pas le
+  cas : `resolvingSymlinksInPath` rend le lien mort tel quel, sans
+  erreur, et `attributesOfItem` décrit alors le lien (mesuré sous Swift
+  6.3 Linux : 90 octets, type lien symbolique). Le test du lien mort
+  passait seulement parce que l'import ouvre la source d'abord, et que
+  l'ouverture échoue. Conséquence réelle : à l'export, un disque propre
+  en lien mort était annoncé à la taille du lien. Aucun disque vierge n'a
+  cette taille, et l'import d'en face refusait l'archive entière comme
+  « abîmée ».
+- **Un message faux dans une fenêtre étroite.** Quand « Arrêter » ou
+  « Oublier » est touché pendant que le fil n'a encore rien noté
+  (`Start.pending`), la session est effacée, comme demandé. Si le fil
+  échoue ensuite (un disque qui ne se branche pas) ou refuse la session,
+  sa tâche passe plus tard, et la console affirmait « La session sauvée
+  de … est gardée telle quelle ». C'était déjà le cas du refus `.session`
+  depuis #702 ; l'entrée d'en dessous l'avait étendu à l'échec.
+- **L'entrée d'en dessous disait plus que le code.** D'abord, « Chaque
+  refus passe par `LocalVMModel.refuseToStart` » est faux pour la session
+  trop grande pour la mémoire libre (`SessionMemory.tooLittleRoom`). Elle
+  passe par `life.machineSize`, puis `sessionRefused`, et n'a pas de cas
+  dans `BootRefusal`. Son comportement est sûr : l'état vaut `refused`, et
+  rien ne s'efface. Ensuite, la doc de `State.notStarted` disait « aucune
+  session n'était en jeu ». Or le cas même mis en avant (retour
+  d'arrière-plan avec moins de mémoire libre) arrive avec une session
+  lisible sur le disque. Enfin, le rapport de la tranche comptait
+  9 appels à `life.guestFinished()` avant elle ; il y en avait 10 (huit
+  refus, l'échec du fil, la fin de l'invité). Et « un lien mort rend
+  l'erreur du système de fichiers », plus bas, était faux, comme dit
+  plus haut.
+
+**Ce qui change.**
+
+- `refuseToStart` n'a plus qu'une ligne :
+  `finish(with: life.refusedToStart(refusal, name: name))`. Le test qui
+  lit `LocalVMModel.swift` exige ce corps mot pour mot. Un test iOS neuf,
+  `testStoppingAfterAnUnreadableSessionKeepsIt`, fait le parcours
+  complet : il sauve une machine, abîme sa session, rouvre l'écran (la
+  console promet « gardée telle quelle »), touche « Arrêter », puis
+  retrouve le fichier intact.
+- « Une session lisible attendait » est maintenant un fait de
+  `PendingSession` (`awaited`). Il est fixé à la construction, et la
+  reprise, réussie ou refusée, ne le vide pas. `SavedSessionTests` le
+  juge. `LocalVMModel` n'a plus son propre booléen, et le test qui lit le
+  source exige `.couldNotStart(reason, sessionKept: pending.awaited)`.
+- `MachineLifecycle.refusedToStart(_:name:)` rend la phrase à afficher, et
+  il sait si la session de la course a déjà été effacée : « Arrêter »
+  (tout passage à `ended` rend `.forget`) ou « Oublier » (`forgotten`).
+  Dans ce cas, la console dit « effacée pendant le démarrage : la
+  prochaine ouverture ne reprendra rien », et l'état vaut `notStarted`, pas
+  `refused`. Quand c'est le fil qui a déjà noté l'échec, « Arrêter »
+  n'efface rien (`userStopped(seen:)`), et la promesse reste vraie.
+- `MachineArchive.size(of:)` lève « fichier introuvable » quand le chemin
+  résolu est encore un lien (mort, ou qui boucle). Un disque propre en
+  lien mort n'est plus annoncé, et la machine part sans lui.
+- Les commentaires sont corrigés. La session trop grande pour la mémoire
+  libre est nommée comme l'exception, dans `LocalVMModel` et dans
+  `BootRefusalTests`, et le test qui lit le source exige qu'elle passe par
+  `life.machineSize`. `State.notStarted` dit « sans que la console
+  promette une session gardée ».
+
+**Comment c'est vérifié.** Trois tests neufs sous Linux :
+`testARefusalAfterTheSessionWasErasedPromisesNothing` dans
+`BootRefusalTests`, `testABoxRemembersThatASessionWasAwaited` dans
+`SavedSessionTests`, `testADeadLinkHasNoSize` dans `MachineArchiveTests`.
+S'y ajoutent le test iOS neuf, et trois assertions de plus dans le test
+qui lit `LocalVMModel.swift` (le corps de `refuseToStart`, la promesse
+tirée de `pending.awaited`, l'exception par `machineSize`). Chaque
+sabotage d'une ligne fait tomber au moins un test :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| corps de `refuseToStart` sans le cycle de vie (`finish(with: refusal.explanation(…))`) | le test qui lit le source |
+| `sessionKept: false`, puis `sessionKept: true`, dans `LocalVMModel` | le test qui lit le source, chaque fois |
+| `awaited = false` dans `PendingSession` | 3 assertions |
+| `sessionErased` toujours faux | 18 assertions |
+| `sessionErased` sans `forgotten` | 9 assertions |
+| la phrase rendue sans `sessionErased` | 12 assertions |
+| l'état `refused` malgré l'effacement | 6 assertions |
+| l'échec qui promet malgré l'effacement | 5 assertions |
+| `machineSize` contourné dans `LocalVMModel` | le test qui lit le source |
+| `size(of:)` sans la garde du lien mort | 2 (l'erreur attendue, puis l'import refusé « abîmé ») |
+
+Chaque fichier saboté a été restauré depuis une copie, et les sommes
+vérifiées. Suite Swift entière : 2 937 tests exécutés (3 de plus), 67 sautés,
+aucun échec (6 min 37 s). Site : 476 tests. Compte publié : 3 659 →
+3 663 (3 019 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le test iOS neuf ne tourne que sur la CI « App iOS ». Il n'y a toujours
+  pas de test iOS pour l'échec sur le fil avec une session lisible : le
+  disque branché vient de `KernelLibrary.list()`, la bibliothèque réelle
+  de l'application, qu'un test ne peut pas remplir sans y toucher.
+  `PendingSession.awaited`, la phrase et l'état sont jugés sous Linux ; la
+  liaison ne l'est que par le texte.
+- Le test qui lit `LocalVMModel.swift` dépend de chaînes exactes ; il y en
+  a trois de plus. Une reformulation du code le fera tomber, exprès.
+- Ce qui reste de l'entrée d'en dessous tient toujours.
+
 ## 2026-11-15 — Les refus du début de démarrage n'effacent plus la session d'une autre course
 
 **D'abord, le contrôle adverse des sept commits de la frappe** (les deux

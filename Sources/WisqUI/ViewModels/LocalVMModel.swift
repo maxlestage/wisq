@@ -169,6 +169,9 @@ public final class LocalVMModel {
         // **Chaque refus d'ici à la première instruction passe par
         // `refuseToStart`**, et aucun par `guestFinished` : voir
         // `BootRefusal`. Un test sous Linux lit ce fichier pour le tenir.
+        // Une exception : la session trop grande pour la mémoire libre passe
+        // par `life.machineSize`, qui la dit refusée (`sessionRefused`) ; rien
+        // ne s'efface non plus de cet état.
         if ramSize > roomNow {
             refuseToStart(.notEnoughRoom(requested: ramSize, ceiling: roomNow), name: kernelURL.lastPathComponent)
             return
