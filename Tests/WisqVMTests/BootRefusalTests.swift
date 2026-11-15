@@ -243,19 +243,51 @@ final class BootRefusalTests: XCTestCase {
     /// Ce fichier-là ne se compile que pour iOS : seule la CI d'Apple le voit,
     /// et aucun test d'ici ne l'exécute. Ce test en lit donc le **texte**. Il
     /// ne remplace pas cette CI ; il attrape, sous Linux et en un instant, le
-    /// retour d'un refus par l'ancien chemin, ou un cas de `BootRefusal` que
-    /// personne n'emploie.
+    /// retour d'un refus par l'ancien chemin, un refus affiché par un
+    /// `finish` direct, un appel de moins (ou de plus) pour un cas — le refus
+    /// `.session` en a deux, l'un sur le fil d'émulation —, ou un cas de
+    /// `BootRefusal` que personne n'emploie.
     func testEveryRefusalOfTheAppGoesThroughRefuseToStart() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/WisqUI/ViewModels/LocalVMModel.swift"), encoding: .utf8)
         XCTAssertEqual(source.components(separatedBy: "life.guestFinished()").count - 1, 1,
                        "seule la fin d'un invité qui a tourné passe par guestFinished")
-        for name in Set(Self.examples.map(Self.name)) {
+        // **Combien d'appels, cas par cas**, et non « au moins un » : le refus
+        // `.session` a deux lieux, le fil principal et le fil d'émulation
+        // (la reprise refusée par la machine après un `judge` réussi). Celui
+        // du fil remplacé par un `finish` direct laissait l'autre seul tenir
+        // l'assertion : rien ne tombait, l'état restait `running`, et
+        // « Arrêter » effaçait la session que la console venait de promettre
+        // gardée. Un appel ajouté ou retiré change ce tableau, exprès.
+        let expected = [
+            "notEnoughRoom": 1, "image": 1, "bootMedia": 1, "cannotRunHere": 1,
+            "tooLargeForRiscv": 1, "unreadableKernel": 1, "pcNeedsMoreRoom": 1,
+            "pcNeedsInitramfs": 1, "session": 2, "couldNotStart": 1,
+        ]
+        // Les commentaires en moins : ils citent ces appels sans en être.
+        let code = source.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        XCTAssertEqual(Set(expected.keys), Set(Self.examples.map(Self.name)), "un compte par cas de BootRefusal")
+        for (name, count) in expected {
             let call = try NSRegularExpression(pattern: #"refuseToStart\(\s*\.\#(name)\b"#)
-            XCTAssertNotNil(call.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
-                            "aucun refus .\(name) dans LocalVMModel")
+            XCTAssertEqual(call.numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code)),
+                           count, "appels à refuseToStart(.\(name) dans LocalVMModel")
         }
+        XCTAssertEqual(code.components(separatedBy: "refuseToStart(").count - 1,
+                       expected.values.reduce(0, +) + 1, "chaque appel est compté, plus la définition")
+        // **Aucun refus par `finish` en direct.** Les seuls `finish(with:`
+        // permis hors de la fin d'un invité qui a tourné (celles qui
+        // finissent par `+ silence`) sont le corps de `refuseToStart` et
+        // l'exception de la session trop grande.
+        let direct = code.components(separatedBy: "\n").filter {
+            $0.contains("finish(with:") && !$0.contains("+ silence)") && !$0.contains("func finish(with")
+        }.map { $0.trimmingCharacters(in: .whitespaces) }
+        XCTAssertEqual(direct, [
+            "finish(with: SessionMemory.explanation(",
+            "finish(with: life.refusedToStart(refusal, name: name))",
+        ], "un refus affiché sans passer par refuseToStart")
         // **Le corps de `refuseToStart`**, mot pour mot : c'est la ligne qui
         // porte toute la liaison. Sans elle, l'état restait `running` après
         // chaque refus, et « Arrêter » effaçait — la session illisible promise
