@@ -21423,9 +21423,10 @@ console.log("rdi " + lire(vm, 7) + " cs 0x" + (lire(vm, SLOTS.segment + 1) & 0xf
 
 /// **Le vidage du premier passage en anneau trois rend aussi au moteur.**
 ///
-/// Ce qu'oublie `oublierTout` est du code évincé comme un autre : sur Alpine,
-/// onze mille régions, et la mémoire résidente montait d'un demi-gibioctet
-/// faute de collecte après le vidage. Le montage : une région du noyau dont
+/// Ce qu'oublie `oublierTout` est du code évincé comme un autre : 4 008
+/// régions sur Alpine aux bornes par défaut, 11 074 sur la sonde 6.18 aux
+/// bornes d'un million de régions, et rien ne les rendait au moteur faute de
+/// collecte après le vidage. Le montage : une région du noyau dont
 /// le module pèse plus d'un quart de la borne en octets, un passage en anneau
 /// trois qui la vide, puis une région du programme : son installation
 /// respire, et `ramasser` est appelé.
@@ -21607,5 +21608,369 @@ fn the_view_computes_the_context_as_the_emitter_does() {
     assert!(
         text.contains(&format!("contextes {}", attendus.join(","))),
         "les contextes de l'hôte sont ceux de `context_tag` : {text}"
+    );
+}
+
+/// Une région de `blocks` sauts `jnz .+2` — chacun finit un bloc, et sa cible
+/// en commence un —, puis `add $add,%rdi ; ud2`.
+fn many_blocks(blocks: usize, add: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    for _ in 0..blocks {
+        out.extend_from_slice(&[0x75, 0x00]);
+    }
+    out.extend(add_rdi(add));
+    out.extend_from_slice(&[0x0f, 0x0b]);
+    out
+}
+
+/// **`iretq` vers l'anneau trois ne se résout pas dans les blocs de sa propre
+/// région.**
+///
+/// C'est le chemin ordinaire de Linux vers l'espace utilisateur, et le même
+/// trou que celui de `sysretq` : une région du noyau, sur une page du
+/// superviseur, finit par un `iretq` dont le cadre mène à l'un de ses propres
+/// blocs (`mov $7,%edi ; ud2`, atteignable par un `jnz` jamais pris), sous
+/// CS = 0x33. Ce bloc, traduit pour l'anneau zéro et exécuté en anneau trois,
+/// serait du code du noyau pris par un programme. Le silicium faute sur le
+/// chargement (P|U). Juste : RDI reste nul, la machine s'arrête sur une faute
+/// de page au chargement, CR2 sur la cible. Résolu par `resolve` au lieu de
+/// `resolve_across`, le bloc tournerait, et RDI vaudrait sept.
+#[test]
+fn an_iretq_to_ring_three_does_not_resolve_into_the_regions_own_blocks() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut kernel = vec![0x48, 0x85, 0xc0, 0x75, 0x1b]; // test %rax,%rax ; jnz +0x20
+    kernel.extend_from_slice(&[0x48, 0xcf]); // iretq
+    kernel.resize(0x20, 0xcc);
+    kernel.extend_from_slice(&[0xbf, 0x07, 0x00, 0x00, 0x00, 0x0f, 0x0b]); // mov $7,%edi ; ud2
+    let outline = Module::outline(&kernel, 0).expect("le relevé");
+    assert!(
+        outline.iter().any(|block| block.start == 0x20),
+        "la cible de l'`iretq` doit être un bloc de la région, sinon ce test ne juge rien"
+    );
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 128 }});
+const m = new Uint8Array(vm.memory.buffer);
+const vue = new DataView(vm.memory.buffer);
+// Les deux premiers mébioctets, sans le bit utilisateur.
+vue.setBigUint64(0x20000, 0x21000n | 0x7n, true);
+vue.setBigUint64(0x21000, 0x22000n | 0x7n, true);
+vue.setBigUint64(0x22000, 0x0n | 0x83n, true);
+m.set({kernel}, 0x10000);
+// Le cadre de l'`iretq` : RIP, CS, RFLAGS, RSP, SS.
+[0x10020n, 0x33n, 0x2n, 0x38000n, 0x2bn].forEach((mot, rang) => {{
+  vue.setBigUint64(0x30000 + rang * 8, mot, true);
+}});
+vm.globals[4].value = 0x30000n;
+vm.globals[SLOTS.control].value = 1n << 31n;
+vm.globals[SLOTS.control + 2].value = 0x20000n;
+vm.globals[SLOTS.segment + 1].value = 0x10n;
+vm.globals[SLOTS.segment + 2].value = 0x18n;
+const arret = await courir(vm, 0x10000n);
+console.log("rdi " + lire(vm, 7) + " cs 0x" + (lire(vm, SLOTS.segment + 1) & 0xffffn).toString(16)
+  + " cr2 0x" + lire(vm, SLOTS.control + 1).toString(16) + " arret " + arret);
+"#,
+        kernel = js_bytes(&kernel),
+    );
+    let text = cache_course(&bun, "iretq", 128, &corps);
+    assert!(
+        text.contains(
+            "rdi 0 cs 0x33 cr2 0x10020 arret une faute de page sur un chargement d'instruction"
+        ),
+        "le bloc du noyau ne tourne pas en anneau trois après l'`iretq` : le chargement \
+         faute, comme sur le silicium : {text}"
+    );
+}
+
+/// **`syscall` ne se résout pas dans les blocs de sa propre région.**
+///
+/// L'autre sens du changement d'anneau. Un programme, sur une page
+/// utilisateur, finit par `syscall`, et `LSTAR` désigne l'un de ses propres
+/// blocs (`mov $7,%edi ; ud2`, atteignable par un `jnz` jamais pris). Les
+/// octets sont les mêmes dans les deux anneaux, et cette machine n'arme pas
+/// SMEP : ce qui tourne ne se voit pas dans RDI. Ce qui se voit, c'est **sous
+/// quelle région** : la clé promet qu'un bloc ne tourne que sous le contexte
+/// de sa région (`context_tag`). Le bloc du programme, exécuté en anneau zéro,
+/// tiendrait la porte du noyau hors de tout ce que l'hôte range sous l'anneau
+/// zéro — ni `revoir`, ni l'éviction, ni le vidage de ce contexte ne le
+/// verraient. Juste : la cible est demandée à l'hôte une seconde fois, sous
+/// l'anneau zéro, et deux régions sont connues. Résolu par `resolve`, la
+/// cible ne serait jamais demandée.
+#[test]
+fn a_syscall_does_not_resolve_into_the_regions_own_blocks() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = vec![0x48, 0x85, 0xc0, 0x75, 0x1b]; // test %rax,%rax ; jnz +0x20
+    program.extend_from_slice(&[0x0f, 0x05]); // syscall
+    program.resize(0x20, 0xcc);
+    program.extend_from_slice(&[0xbf, 0x07, 0x00, 0x00, 0x00, 0x0f, 0x0b]); // mov $7,%edi ; ud2
+    let outline = Module::outline(&program, 0).expect("le relevé");
+    assert!(
+        outline.iter().any(|block| block.start == 0x20),
+        "la cible du `syscall` doit être un bloc de la région, sinon ce test ne juge rien"
+    );
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 128 }});
+const m = new Uint8Array(vm.memory.buffer);
+const vue = new DataView(vm.memory.buffer);
+// Les deux premiers mébioctets, avec le bit utilisateur.
+vue.setBigUint64(0x20000, 0x21000n | 0x7n, true);
+vue.setBigUint64(0x21000, 0x22000n | 0x7n, true);
+vue.setBigUint64(0x22000, 0x0n | 0x87n, true);
+m.set({program}, 0x10000);
+vm.globals[SLOTS.control].value = 1n << 31n;
+vm.globals[SLOTS.control + 2].value = 0x20000n;
+vm.globals[SLOTS.syscall].value = 0x10n << 32n;
+vm.globals[SLOTS.syscall + 1].value = 0x10020n;
+vm.globals[SLOTS.efer].value |= 1n;
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+const arret = await courir(vm, 0x10000n);
+console.log("rdi " + lire(vm, 7) + " cs 0x" + (lire(vm, SLOTS.segment + 1) & 0xffffn).toString(16)
+  + " demandes " + demandes.map((at) => at.toString(16)).join(",") + " connues " + vm.known.size);
+"#,
+        program = js_bytes(&program),
+    );
+    let text = cache_course(&bun, "syscall", 128, &corps);
+    assert!(
+        text.contains("rdi 7 cs 0x10 demandes 10000,10020 connues 2"),
+        "après `syscall`, la cible tourne sous une région de l'anneau zéro, que l'hôte a \
+         traduite, et non dans le bloc du programme : {text}"
+    );
+}
+
+/// **Le vidage rend toute la table, depuis le bas, et oublie ses trous.**
+///
+/// `oublierTout` vide la table des blocs : le haut redescend à zéro, et les
+/// places rendues avant le vidage ne sont plus des trous — tout est libre.
+/// Les garder serait réemployer une place déjà reprise : une région posée
+/// au haut, depuis zéro, puis une seconde posée dans l'ancien « trou »… qui
+/// est la place de la première. Ses blocs écraseraient ceux de la première,
+/// qui exécuterait ensuite le code de la seconde — en silence.
+///
+/// Le montage, sous `emplacements: 1` (les places rendues sont essayées dès
+/// la première) et deux régions au plus : A, de quatre-vingts blocs, puis B,
+/// puis C, qui évince A et laisse son trou de quatre-vingts places. Le
+/// premier passage en anneau trois vide tout. D se pose alors à la place
+/// zéro, E juste après, et D, servie de nouveau, ajoute toujours quatre.
+/// Sans `libres.length = 0`, E serait posée sur D (RDI monterait de cinq au
+/// lieu de quatre) ; sans `next = 0`, D se poserait au-dessus de l'ancien
+/// haut, et le bas de la table serait perdu à jamais.
+#[test]
+fn a_flush_gives_the_whole_table_back_and_forgets_its_holes() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let a = many_blocks(80, 1);
+    assert!(
+        Module::outline(&a, 0).expect("le relevé").len() > 64,
+        "le trou de A doit dépasser `PROBABLE`, sinon il ne serait jamais essayé"
+    );
+    let small = |add: u32| {
+        let mut out = add_rdi(add);
+        out.extend_from_slice(&[0x0f, 0x0b]);
+        js_bytes(&out)
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 2, emplacements: 1 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x12000); m.set({c}, 0x13000);
+m.set({d}, 0x14000); m.set({e}, 0x15000);
+const pas = [];
+const voir = async (at) => {{
+  const avant = lire(vm, 7);
+  await courir(vm, at);
+  pas.push(String(lire(vm, 7) - avant));
+}};
+for (const at of [0x10000n, 0x12000n, 0x13000n]) await voir(at);
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+for (const at of [0x14000n, 0x15000n, 0x14000n]) await voir(at);
+console.log("pas " + pas.join(",") + " places " + vm.known.get(0x14000n).slot + ","
+  + vm.known.get(0x15000n).slot + " vidages " + vm.vidages.fois + " evincees " + vm.cache.evincees);
+"#,
+        a = js_bytes(&a),
+        b = small(2),
+        c = small(3),
+        d = small(4),
+        e = small(5),
+    );
+    let text = cache_course(&bun, "vidage-trous", 4, &corps);
+    assert!(
+        text.contains("pas 1,2,3,4,5,4 places 0,1 vidages 1 evincees 1"),
+        "après le vidage, D se pose au bas de la table, E juste après, et D tourne toujours \
+         son propre code : {text}"
+    );
+}
+
+/// **Le trou qu'une région laisse sous le haut de la table est rendu.**
+///
+/// La place d'une région se choisit avant l'éviction qui lui fait de la
+/// place. Quand l'éviction rend la région du haut, le haut redescend sous la
+/// place choisie ; `prendre` le fait remonter, et l'écart entre les deux est
+/// un trou qui doit être rendu, sans quoi ces places sont perdues pour
+/// toujours. Le montage, sous une seule région et `emplacements: 1` : A, de
+/// quatre-vingts blocs, puis B, qui l'évince et se pose au-dessus de sa
+/// place ; puis C, qui doit trouver la place de A — la plus grande rendue —
+/// et se poser à zéro. Le haut de la table n'a jamais dépassé A et B.
+#[test]
+fn a_hole_left_under_the_top_of_the_table_is_reused() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let a = many_blocks(80, 1);
+    let blocks_a = Module::outline(&a, 0).expect("le relevé").len();
+    assert!(blocks_a > 64, "le trou de A doit dépasser `PROBABLE`");
+    let small = |add: u32| {
+        let mut out = add_rdi(add);
+        out.extend_from_slice(&[0x0f, 0x0b]);
+        out
+    };
+    let b = small(2);
+    let blocks_b = Module::outline(&b, 0).expect("le relevé").len();
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 1, emplacements: 1 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x12000); m.set({c}, 0x13000);
+const pas = [];
+for (const at of [0x10000n, 0x12000n, 0x13000n]) {{
+  const avant = lire(vm, 7);
+  await courir(vm, at);
+  pas.push(String(lire(vm, 7) - avant));
+}}
+console.log("pas " + pas.join(",") + " place " + vm.known.get(0x13000n).slot
+  + " haut " + vm.cache.pic.emplacements);
+"#,
+        a = js_bytes(&a),
+        b = js_bytes(&b),
+        c = js_bytes(&small(3)),
+    );
+    let text = cache_course(&bun, "trou-sous-le-haut", 4, &corps);
+    assert!(
+        text.contains(&format!("pas 1,2,3 place 0 haut {}", blocks_a + blocks_b)),
+        "C se pose dans la place que A a rendue, sous le haut : {text}"
+    );
+}
+
+/// **Une région qui ne s'instancie pas rend sa place, et le haut redescend.**
+///
+/// La place est prise avant l'instanciation ; si celle-ci échoue, la région
+/// n'occupe rien, et la place prise au haut de la table doit y revenir :
+/// rendue, puis fusionnée dans le haut, qui redescend. Le montage : la
+/// première traduction rend un module tronqué de son dernier octet — sa
+/// section d'éléments se lit, sa compilation échoue. La région suivante doit
+/// se poser à zéro. Sans le `rendre` de l'échec, ou si `rendre` ne faisait
+/// plus redescendre le haut, elle se poserait au-dessus, et le bas de la table
+/// serait perdu.
+#[test]
+fn a_region_that_fails_to_instantiate_gives_its_place_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let small = |add: u32| {
+        let mut out = add_rdi(add);
+        out.extend_from_slice(&[0x0f, 0x0b]);
+        js_bytes(&out)
+    };
+    let corps = format!(
+        r#"
+let casse = true;
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = traduire(address, slot, code);
+    if (!casse || !(out instanceof Uint8Array)) return out;
+    casse = false;
+    return out.slice(0, out.length - 1);
+  }},
+  pages: 4,
+}});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x12000);
+try {{
+  await courir(vm, 0x10000n);
+  console.log("instanciee");
+}} catch (why) {{
+  console.log("echec " + why.constructor.name);
+}}
+await courir(vm, 0x12000n);
+console.log("rdi " + lire(vm, 7) + " connues " + vm.known.size + " place " + vm.known.get(0x12000n).slot);
+"#,
+        a = small(1),
+        b = small(2),
+    );
+    let text = cache_course(&bun, "instanciation", 4, &corps);
+    assert!(
+        text.contains("echec CompileError"),
+        "le module tronqué ne se compile pas, sinon ce test ne juge rien : {text}"
+    );
+    assert!(
+        text.contains("rdi 2 connues 1 place 0"),
+        "la place de la région qui ne s'est pas instanciée est rendue, et la suivante s'y \
+         pose : {text}"
+    );
+}
+
+/// **L'éviction n'efface que les cases qui mènent à ses propres blocs.**
+///
+/// Une adresse peut être un début de bloc d'une région et l'entrée d'une
+/// autre : R2 commence à `Y` par un `jnz .+2`, dont la cible `X` est un de ses
+/// blocs ; R1 commence à `X`. Installée après, R1 reprend la case de `X` dans
+/// la correspondance (même adresse, même contexte), avec son propre indice.
+/// Quand R2 est évincée, elle efface les cases de ses blocs — mais celle de
+/// `X` n'est plus la sienne : la même adresse, le même contexte, **un autre
+/// indice**. Effacée quand même, R1 perdrait la seule case par laquelle les
+/// sauts de module à module la trouvent, et chacun repasserait par l'hôte.
+#[test]
+fn an_eviction_leaves_a_case_another_region_took_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut r2 = vec![0x75, 0x00]; // jnz .+2
+    r2.extend(add_rdi(1));
+    r2.extend_from_slice(&[0x0f, 0x0b]);
+    let outline = Module::outline(&r2, 0).expect("le relevé");
+    assert!(
+        outline.iter().any(|block| block.start == 2),
+        "X doit être un bloc de R2, sinon ce test ne juge rien"
+    );
+    let mut r3 = add_rdi(100);
+    r3.extend_from_slice(&[0x0f, 0x0b]);
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 2 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({r2}, 0x10000); m.set({r3}, 0x12000);
+const X = 0x10002n;
+const vue = new DataView(vm.memory.buffer);
+const seau = vm.tableBase + (vm.tableSlot(X) & ~1) * 16;
+const caseDeX = () => {{
+  for (const voie of [0, 1]) {{
+    const at = seau + voie * 16;
+    if (vue.getBigUint64(at, true) === X) return String(vue.getInt32(at + 8, true));
+  }}
+  return "aucune";
+}};
+await courir(vm, 0x10000n);
+const avant = caseDeX();
+await courir(vm, X);
+const r1 = String(vm.known.get(X).slot);
+const reprise = caseDeX();
+await courir(vm, 0x12000n);
+console.log("bloc " + avant + " r1 " + r1 + " reprise " + reprise + " apres " + caseDeX()
+  + " evincees " + vm.cache.evincees + " r2 " + (vm.known.get(0x10000n) === undefined ? "partie" : "la"));
+"#,
+        r2 = js_bytes(&r2),
+        r3 = js_bytes(&r3),
+    );
+    let text = cache_course(&bun, "effacer", 4, &corps);
+    assert!(
+        text.contains("bloc 1 r1 2 reprise 2 apres 2 evincees 1 r2 partie"),
+        "R2 évincée n'efface pas la case de X, que R1 a reprise avec son indice : {text}"
     );
 }

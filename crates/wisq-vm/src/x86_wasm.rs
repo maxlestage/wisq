@@ -3003,7 +3003,8 @@ impl Module {
     /// simplement pas trouvée, et le module rend la main comme il le faisait
     /// déjà pour toutes. Une collision coûte donc ce que coûtait la situation
     /// d'avant, jamais plus — et ça évite une boucle de sondage dans un corps
-    /// de bloc qui n'a aucune variable locale.
+    /// de bloc qui n'a que deux locales `i32`, le seau et le contexte : un
+    /// sondage demanderait un compteur de plus et une structure de boucle.
     ///
     /// **L'indice rendu est relatif à l'emplacement de la région.** La table
     /// range des indices absolus, mais la boucle de répartition ajoute

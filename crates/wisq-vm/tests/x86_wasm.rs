@@ -2325,7 +2325,11 @@ const hostPages = pages => pages + rooms;
 // sous un **autre contexte** — celui de l'anneau trois, alors que la machine
 // est en anneau zéro (CS vaut zéro). 4 : l'anneau trois sous les tables
 // 0x5000, et la case rangée sous ce contexte-là ; 5 : la même machine, la case
-// rangée sous les tables 0x6000 — un autre programme.
+// rangée sous les tables 0x6000 — un autre programme. 6 et 7 : l'anneau trois
+// sous des tables que le module doit replier comme `context_tag` — 0x5abc,
+// dont les douze bits bas ne sont pas la racine, et 0x15000, au-delà de la
+// RAM, que le masque ramène à 0x5000 ; la case rangée sous le contexte que
+// `context_tag` calcule pour elles.
 function attempt(fill, pages) {{
   const memory = new WebAssembly.Memory({{ initial: pages }});
   const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
@@ -2348,11 +2352,11 @@ function attempt(fill, pages) {{
     // **Le contexte de la case** : celui de l'anneau zéro, sauf pour le
     // quatrième cas. Les deux viennent de `context_tag`, côté Rust.
     new Uint32Array(memory.buffer, at + 12, 1)[0] =
-      [0, {noyau}, {noyau}, {ailleurs}, {programme}, {autre}][fill];
+      [0, {noyau}, {noyau}, {ailleurs}, {programme}, {autre}, {bas}, {loin}][fill];
   }}
   if (fill >= 4) {{
     slots[{cs}].value = 0x33n;
-    slots[{cr3}].value = 0x5000n;
+    slots[{cr3}].value = [0x5000n, 0x5abcn, 0x15000n][Math.max(fill - 5, 0)];
   }}
 
   slots[0].value = {away}n;   // rax : la cible du saut indirect
@@ -2367,6 +2371,8 @@ console.log("etrangere " + attempt(2, hostPages({pages})));
 console.log("autre-contexte " + attempt(3, hostPages({pages})));
 console.log("programme " + attempt(4, hostPages({pages})));
 console.log("autre-programme " + attempt(5, hostPages({pages})));
+console.log("bits-bas " + attempt(6, hostPages({pages})));
+console.log("hors-ram " + attempt(7, hostPages({pages})));
 
 // **Et une mémoire sans place pour la correspondance ni pour le tampon de
 // traduction ne doit pas démarrer.**
@@ -2394,6 +2400,8 @@ try {{
             ailleurs = context_tag(3, 0, PAGES),
             programme = context_tag(0x33, 0x5000, PAGES),
             autre = context_tag(0x33, 0x6000, PAGES),
+            bas = context_tag(0x33, 0x5abc, PAGES),
+            loin = context_tag(0x33, 0x1_5000, PAGES),
             cs = wisq_vm::x86_wasm::SEGMENT_SLOT + 1,
             cr3 = wisq_vm::x86_wasm::CONTROL_SLOT + 2,
         ),
@@ -2462,6 +2470,22 @@ try {{
         seen("autre-programme"),
         "1",
         "et celle d'un autre programme, à la même adresse, ne l'est pas"
+    );
+    // **Le repli de CR3, gravé dans le module, est celui de `context_tag`** :
+    // sans ses douze bits bas, et par le masque de la RAM. L'hôte range ses
+    // cases sous `context_tag` ; un module qui calculerait autrement ne les
+    // trouverait jamais sous de telles tables, et tous les sauts de module à
+    // module de ce programme repasseraient par l'hôte, sans que rien ne soit
+    // faux.
+    assert_eq!(
+        seen("bits-bas"),
+        "3",
+        "sous des tables aux bits bas non nuls, le module calcule le contexte de l'hôte"
+    );
+    assert_eq!(
+        seen("hors-ram"),
+        "3",
+        "sous des tables au-delà de la RAM, le module les replie comme l'hôte"
     );
     // Et une mémoire trop courte doit refuser au démarrage plutôt que piéger
     // au premier saut.

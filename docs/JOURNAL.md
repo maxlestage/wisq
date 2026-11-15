@@ -8,6 +8,146 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Émetteur : les gardes du cache de code ont chacune un test, et les chiffres résidents sont en Mio
+
+**Ce qui n'allait pas.** Le contrôle adverse de l'entrée suivante (le cache
+borné) a trouvé des gardes que rien ne tenait. Chacune, retirée seule,
+laissait passer les 179 tests de `host_loop` :
+
+1. **`iretq` et `syscall` résolus dans leurs propres blocs.** Seul `sysretq`
+   avait un test. Or `iretq` est le chemin ordinaire de Linux vers l'espace
+   utilisateur : un bloc du noyau de la région, ré-entré en anneau trois
+   après le retour, c'est le trou même que la clé bouchait.
+2. **`oublierTout` qui garde ses places rendues** (`libres.length = 0`
+   retiré). Ce n'est pas qu'une fuite : la place d'un ancien trou est
+   réemployée par-dessus une région posée depuis au même endroit. Le pilote
+   de stress du contrôle (24 régions de 1 à 150 blocs, quatre régions au
+   plus, anneau trois au pas 200) faisait tourner à la région 4 le code de
+   la région 16, puis « la région à 86016 ne tient pas à l'emplacement 73 »
+   et `call_indirect to a signature that does not match`.
+3. **Cinq gardes de fuite ou de vitesse** : `effacer` sans la comparaison
+   d'indice, `rendre` qui ne fait plus redescendre le haut, `prendre` qui ne
+   rend pas le trou laissé sous le haut, `oublierTout` sans `next = 0`, et
+   l'échec d'instanciation qui ne rend pas la place.
+4. **Le contexte gravé dans le module** n'était tenu que par les octets
+   épinglés de la sonde : le test de `x86_wasm` n'essayait que CR3 = 0x5000.
+   Un module qui garderait les douze bits bas de CR3, ou qui ne le
+   replierait pas par le masque de la RAM, ne trouverait plus aucune case
+   rangée par l'hôte sous de telles tables, sans qu'aucun test de
+   comportement ne tombe.
+5. **Les mémoires résidentes publiées étaient fausses d'unité.** `course.sh`
+   relève des Kio ; l'entrée suivante, son message de commit et `host.js`
+   les divisaient par mille et écrivaient Mio ou Gio. 813 456 Kio font
+   794 Mio, pas 813.
+6. **Des commentaires inexacts** : la place d'essai de `install` décrite
+   comme « la première étendue rendue » (c'est le haut, puis la **plus
+   grande** rendue, ce que `choisir` dit lui-même) ; un corps de bloc « sans
+   aucune variable locale », alors que ceux qui cherchent en déclarent
+   deux ; « onze mille régions sur Alpine » oubliées au vidage, alors que
+   c'est la sonde 6.18 aux bornes d'un million de régions (11 074) — Alpine
+   aux bornes par défaut en oublie 4 008.
+
+Aucun de ces défauts n'est dans le code qui tourne : les gardes y étaient,
+et le pilote de stress rend zéro erreur sur quatre graines (de 314 à 344
+évictions, et de 29 à 39 replacements chacune). Ce qui manquait, c'est le
+test qui tombe sans elles.
+
+**Ce qui change.**
+
+- Six tests neufs dans `host_loop` :
+  - `an_iretq_to_ring_three_does_not_resolve_into_the_regions_own_blocks`
+    (le pendant de celui de `sysretq` : un cadre d'`iretq` vers un bloc de
+    sa propre région, sur une page du superviseur, sous CS = 0x33 : la
+    faute de chargement, CR2 sur la cible, RDI nul) ;
+  - `a_syscall_does_not_resolve_into_the_regions_own_blocks`. Un programme
+    dont `LSTAR` désigne l'un de ses propres blocs, sur une page
+    utilisateur. Les octets sont les mêmes dans les deux anneaux, et cette
+    machine n'arme pas SMEP : RDI ne voit rien. Le test juge donc **sous
+    quelle région** la cible tourne : demandée à l'hôte une seconde fois,
+    sous l'anneau zéro, et deux régions connues. C'est la promesse de la
+    clé, qu'un bloc ne tourne que sous le contexte de sa région ; c'est un
+    défaut de rangement, pas de justesse, et c'est écrit dans le test ;
+  - `a_flush_gives_the_whole_table_back_and_forgets_its_holes`. A, de
+    quatre-vingts blocs, puis B, puis C qui évince A : un trou de
+    quatre-vingts places. Le passage en anneau trois vide tout. D se pose à zéro,
+    E juste après, et D, servie de nouveau, ajoute toujours quatre. Sans
+    `libres.length = 0`, on lit `pas 1,2,3,4,5,5 places 0,0` : E est posée
+    sur D, et D tourne le code de E. Sans `next = 0`, D se pose au-dessus de
+    l'ancien haut ;
+  - `a_hole_left_under_the_top_of_the_table_is_reused` (une seule région :
+    C trouve à zéro la place que A a rendue, et le haut n'a jamais dépassé
+    A et B) ;
+  - `a_region_that_fails_to_instantiate_gives_its_place_back` (la première
+    traduction rend un module tronqué de son dernier octet : sa section
+    d'éléments se lit, sa compilation échoue ; la région suivante se pose à
+    zéro) ;
+  - `an_eviction_leaves_a_case_another_region_took_back` (R2 a un bloc à
+    `X`, R1 commence à `X` et reprend sa case avec son propre indice ; R2
+    évincée n'efface pas la case de R1).
+- `a_region_finds_another_region_through_the_correspondence` (`x86_wasm`)
+  essaie deux CR3 de plus : 0x5abc, aux bits bas non nuls, et 0x15000,
+  au-delà de la RAM d'une page, que le masque ramène à 0x5000. La case est
+  rangée sous `context_tag`, et le module doit la trouver.
+- Les commentaires de `host.js` (`install`, la reprise de place,
+  `oublierTout`, `CACHE_PAR_DEFAUT`, `respirerSiBesoin`), de `x86_wasm.rs`
+  (`lookup`) et de `a_flush_lets_the_engine_collect_too` sont corrigés.
+  Aucun octet émis ne change ; `WebKitBench.swift` reste tel quel, et
+  `bench_module_matches_the_probe` passe.
+- **Les chiffres résidents de l'entrée suivante sont corrigés sur place**,
+  en Mio de 1 024 Kio, depuis les relevés de `course.sh` :
+
+  | relevé | Kio | publié | juste |
+  | --- | ---: | ---: | ---: |
+  | Alpine, 16 384 / 64 Mio | 813 456 | 813 Mio | 794 Mio |
+  | Alpine, 16 384 / 96 Mio | 1 269 852 | 1 270 Mio | 1 240 Mio |
+  | Alpine, sans `ramasser` | 6 340 240 | 6,3 Gio | 6,05 Gio |
+  | sonde 6.6.142 | 745 036 | 745 Mio | 728 Mio |
+  | sonde 6.12.115 | 782 668 | 783 Mio | 764 Mio |
+  | sonde 6.18.60 | 861 876 | 862 Mio | 842 Mio |
+  | sonde 6.18, 2 000 / 16 Mio, pause seule | 2 011 660 | 2,0 Gio | 1,9 Gio |
+  | sonde 6.18, 2 000 / 16 Mio, `ramasser` | 279 648 | 270 Mio | 273 Mio |
+
+  Le banc du coût d'un module (316 à 322 Mio, 1,4 Gio après quatre tours)
+  lisait `process.memoryUsage().rss / 1048576` : il était juste. Le message
+  du commit 0d5d9f3c, déjà poussé, garde « 813 Mio » et « dix-sept
+  sabotages » (il y en a seize distincts) : il n'est pas réécrit, l'amend
+  étant exclu ; c'est ici que c'est dit.
+
+**Sabotages**, chacun d'une ligne, vu tomber, puis restauré (`cmp`
+identique à la copie) — `host_loop`, `x86_wasm` et `webkit_probe` lancés :
+
+- `iretq` par `resolve` au lieu de `resolve_across` → l'`iretq` neuf tombe
+  (184 passent sur 185) ;
+- `syscall` de même → `a_syscall_…` tombe ;
+- `oublierTout` sans `libres.length = 0` → `a_flush_gives_…` tombe, sur
+  `pas 1,2,3,4,5,5 places 0,0` ;
+- `oublierTout` sans `next = 0` → `a_flush_gives_…` tombe ;
+- `prendre` sans `rendre(haut, debut - haut)` → `a_hole_left_…` tombe ;
+- l'échec d'instanciation sans `rendre` → `a_region_that_fails_…` tombe ;
+- `rendre` qui ne fait plus redescendre le haut → `a_region_that_fails_…`
+  tombe ;
+- `effacer` sans la comparaison d'indice → `an_eviction_leaves_…` tombe ;
+- le contexte du module avec `mask` au lieu de `mask & !0xfff` → le test de
+  `x86_wasm` tombe, sur « bits-bas » ;
+- `Self::context(u32::MAX, body)` → le même, sur « hors-ram ».
+
+**Comment c'est vérifié.** `cargo fmt --all --check` et `cargo clippy
+--all-targets --all-features -- -D warnings` : propres. `cargo test
+--release --no-fail-fast` sur tout l'espace de travail : 660 passés, 0
+échec (`host_loop` 185, `x86_wasm` 40, `webkit_probe` 7). Compte publié
+3 640 → 3 646 (Swift 2 986 + Rust 660), par `recompte.sh` ; site : `bun run
+build` puis `bun test`, 476 passés ; `wisq-site` passe.
+`check-whitespace` et `check-project-sources` : propres. Aucun Swift
+touché. Le pilote de stress du contrôle, sur le code de la branche : zéro
+erreur sur quatre graines.
+
+**Ce qui reste.** Rien de neuf sur le vrai noyau : aucun octet émis ni
+aucune ligne exécutée de `host.js` ne change, et la sonde et Alpine n'ont pas
+été relancées. Ce qui restait à l'entrée suivante reste : la collecte du
+code évincé dans une vraie page, le CR3 recyclé, le texte réécrit après le
+premier passage en anneau trois, et le disque (« Mounting boot media:
+failed »).
+
 ## 2026-11-15 — Émetteur : un cache de code borné, rangé par contexte, et l'anneau dans la clé
 
 **Ce qui n'allait pas.** Trois défauts, tous portés par les entrées
@@ -83,8 +223,8 @@ millisecondes, oui, dans ce banc. **Dans la vraie boucle, non** : les modules
 pleine les rend. D'où `respirerSiBesoin` — une pause de huit millisecondes
 chaque fois qu'un quart de la borne a été évincé (ou vidé) — et un rappel
 `ramasser`, que `kernel-entry` remplit de `Bun.gc(true)`. La sonde 6.18 aux
-bornes de 2 000 régions et 16 Mio : 2,0 Gio résidents avec la pause seule,
-**270 Mio** avec `ramasser`.
+bornes de 2 000 régions et 16 Mio : 1,9 Gio résidents avec la pause seule,
+**273 Mio** avec `ramasser`.
 
 **Comment c'est vérifié.**
 
@@ -154,9 +294,9 @@ bornes de 2 000 régions et 16 Mio : 2,0 Gio résidents avec la pause seule,
 
   | bornes | mur | pic résident | demandes | retraduites | pic de régions |
   | --- | ---: | ---: | ---: | ---: | ---: |
-  | 16 384, 64 Mio (défaut) | 182 s | 813 Mio | 139 952 | 66 046 (47 %) | 4 857 |
-  | 16 384, 96 Mio | 170 s | 1 270 Mio | 123 244 | 41 606 (34 %) | 7 112 |
-  | 16 384, 64 Mio, sans `ramasser` | tué à 68 s | 6,3 Gio | 57 226 | — | — |
+  | 16 384, 64 Mio (défaut) | 182 s | 794 Mio | 139 952 | 66 046 (47 %) | 4 857 |
+  | 16 384, 96 Mio | 170 s | 1 240 Mio | 123 244 | 41 606 (34 %) | 7 112 |
+  | 16 384, 64 Mio, sans `ramasser` | tué à 68 s | 6,05 Gio | 57 226 | — | — |
 
   Sept espaces d'adressage au plus à la fois, 160 respirations, l'invite au
   tour 239 877 (7,4 millions avant). La course à 96 Mio a tourné pendant des
@@ -165,9 +305,9 @@ bornes de 2 000 régions et 16 Mio : 2,0 Gio résidents avec la pause seule,
 
   | noyau | demandes | retraduites | tours | mur | pic résident |
   | --- | ---: | ---: | ---: | ---: | ---: |
-  | 6.6.142 | 10 230 | 1 346 | 17 438 | 26 s | 745 Mio |
-  | 6.12.115 | 10 762 | 1 448 | 15 299 | 16 s | 783 Mio |
-  | 6.18.60 | 11 492 | 1 683 | 17 002 | 17 s | 862 Mio |
+  | 6.6.142 | 10 230 | 1 346 | 17 438 | 26 s | 728 Mio |
+  | 6.12.115 | 10 762 | 1 448 | 15 299 | 16 s | 764 Mio |
+  | 6.18.60 | 11 492 | 1 683 | 17 002 | 17 s | 842 Mio |
 
   Les tours (retours de main entre deux `vm.run`) tombent de 499 496,
   475 795 et 1 621 364 à quelques dizaines de milliers, et c'est la case
@@ -179,7 +319,7 @@ bornes de 2 000 régions et 16 Mio : 2,0 Gio résidents avec la pause seule,
 
 - **La collecte du code évincé, dans une page.** Rien dans une page ne force
   une collecte pleine, et sous Bun, sans elle, la borne du cache ne borne
-  pas la mémoire : 6,3 Gio en 68 s. Sur un appareil, c'est au gestionnaire
+  pas la mémoire : 6,05 Gio en 68 s. Sur un appareil, c'est au gestionnaire
   de pression mémoire de WebKit de la faire ; **ce n'est pas mesuré**, et si
   jetsam frappe avant, la vue meurt comme avant. `ramasser` est le point
   d'accroche. Le pilote du bureau (`desktop::driver`) n'en passe aucun.
