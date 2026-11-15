@@ -91,9 +91,9 @@ final class ImageDownloadModel {
     /// « Réessayer », au lieu d'une section qui disparaît sans un mot.
     private(set) var desktopsFailure: String?
     /// Les fichiers que la session d'arrière-plan a encore en cours, lus à
-    /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé. Ceux
-    /// d'un bureau suivi par « Installer » en sortent quand son `fetch` rend
-    /// la main (`ReadyDesktop.followed`) : ils ne sont pas relus ailleurs.
+    /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé.
+    /// Relus quand « Installer » est touché, avant `fetch` ; ceux du bureau
+    /// suivi en sortent quand son `fetch` rend la main (`ReadyDesktop.followed`).
     private(set) var runningFiles: Set<String> = []
     /// Le téléchargement du bureau prêt en cours, pour « Annuler ».
     private var desktopTask: Task<InstalledMachine?, Never>?
@@ -148,7 +148,14 @@ final class ImageDownloadModel {
     /// Un téléchargement de ce bureau qui continue en arrière-plan, dit.
     func inBackground(_ desktop: ReadyDesktop) -> String? {
         guard phase != .fetchingDesktop(title: desktop.title) else { return nil }
-        return desktop.backgroundPhrase(running: runningFiles)
+        // Un fichier rangé depuis l'ouverture ne « continue » plus : la
+        // ligne dirait le contraire de la phrase de la place.
+        guard let library = try? KernelLibrary.directory(),
+              let downloads = try? KernelLibrary.downloadsDirectory() else {
+            return desktop.backgroundPhrase(running: runningFiles)
+        }
+        return desktop.backgroundPhrase(
+            running: desktop.followable(running: runningFiles, library: library, downloads: downloads))
     }
 
     /// **« Annuler »** : la tâche du bureau prêt est annulée, ce qui arrête
@@ -231,9 +238,15 @@ final class ImageDownloadModel {
         }
         phase = .fetchingDesktop(title: desktop.title)
         desktopProgress = nil
-        // Lus avant de suivre : `fetch` ne refuse pas un téléchargement de
-        // ce bureau qui court déjà en arrière-plan, il le suit.
-        let running = runningFiles
+        // **Relus au toucher, pas repris de l'ouverture** : `fetch` ne
+        // refuse pas un téléchargement de ce bureau qui court déjà en
+        // arrière-plan, il le suit sans garde de place. Le relevé de
+        // l'ouverture a pu vieillir, la feuille ouverte : une tâche de fond
+        // tombée depuis y figurait encore, et toute l'image repartait sans
+        // que la place soit comptée. Un fichier fini depuis, lui, est écarté
+        // par `ReadyDesktop.followable`.
+        let running = await BackgroundImageDownloads.shared.runningFiles()
+        runningFiles = running
         defer {
             // Suivi jusqu'au bout — fini, refusé, en panne ou annulé : plus
             // rien de ce bureau ne court en arrière-plan, et la ligne ne le
