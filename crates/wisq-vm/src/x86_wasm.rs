@@ -709,10 +709,56 @@ pub const TABLE_IMPORT: &str = "blocks";
 /// faut pouvoir les tronquer par un décalage.
 pub const TABLE_SLOTS: u32 = 1 << 16;
 
-/// Ce qu'occupe une case : l'adresse rangée (huit octets) puis l'indice absolu
-/// dans la table de blocs (quatre), et quatre de rembourrage pour que la
-/// suivante reste alignée sur huit.
+/// Ce qu'occupe une case : l'adresse rangée (huit octets), l'indice absolu
+/// dans la table de blocs (quatre), puis **le contexte** de la région
+/// (quatre, voir `context_tag`), si bien que la suivante reste alignée sur
+/// huit. Les quatre derniers octets étaient du rembourrage.
 pub const TABLE_ENTRY: u32 = 16;
+
+/// **Où le contexte est rangé dans une case** : après l'adresse et l'indice.
+pub const TABLE_CONTEXT: u32 = 12;
+
+/// **Le bit qui dit « une région est rangée ici »** dans le contexte d'une
+/// case. Une case vide vaut zéro partout ; sans ce bit, l'adresse zéro en
+/// anneau zéro aurait le contexte d'une case vide, et le module y aurait
+/// trouvé l'indice zéro.
+pub const CONTEXT_PRESENT: u32 = 4;
+
+/// **Le contexte d'une région : l'anneau, et l'espace d'adressage hors du
+/// noyau.** C'est la seconde moitié de la clé de la correspondance — l'adresse
+/// seule ne suffit pas, et c'est ce qui laissait deux trous :
+///
+/// - **une région du noyau ré-entrée en anneau trois.** Un programme qui
+///   saute sur une adresse du noyau prend, sur le silicium, une faute de page
+///   sur le chargement (P|U). Ici, la région déjà traduite était trouvée par
+///   son adresse, dans la correspondance ou par l'hôte, et tournait. L'anneau
+///   dans la clé fait manquer la recherche : l'hôte relit la fenêtre comme un
+///   chargement de l'anneau trois, et c'est la marche qui faute.
+/// - **un programme qui sert les régions d'un autre**, à la même adresse.
+///   Hors de l'anneau zéro, le contexte porte la racine des tables (CR3,
+///   repliée par le masque de la RAM comme la marche la replie, sans ses
+///   douze bits bas : cette machine n'annonce pas PCID, et ces bits n'y sont
+///   que PWT et PCD).
+///
+/// **L'anneau zéro n'a qu'un contexte, quel que soit CR3**, et c'est un
+/// choix : le texte du noyau est le même dans toutes ses tables — sous
+/// isolation, chaque processus a ses propres tables du noyau, et les compter
+/// à part ferait retraduire tout le chemin des appels système à chaque
+/// processus neuf.
+///
+/// Le module le recalcule **à chaque recherche**, depuis CS et CR3, comme la
+/// lecture de l'anneau des accès mémoire : le tenir dans une globale
+/// demanderait de la mettre à jour partout où CS ou CR3 changent, et une
+/// seule oubliée rouvrirait le premier trou.
+#[must_use]
+pub fn context_tag(cs: u64, cr3: u64, pages: u32) -> u32 {
+    let ring = (cs & 3) as u32;
+    if ring == 0 {
+        return CONTEXT_PRESENT;
+    }
+    let mask = (u64::from(pages) * 65536 - 1) as u32;
+    (cr3 as u32 & mask & !0xfff) | CONTEXT_PRESENT | ring
+}
 
 /// **Combien de cases un seau porte.** La correspondance tenait une seule case
 /// par empreinte, sans sondage : deux adresses qui tombaient au même endroit ne
@@ -1156,7 +1202,18 @@ mod code {
     /// la condition est vraie. C'est ce qui permet de traduire « un compte nul
     /// ne change rien » **sans branchement** : on calcule tout, puis on choisit.
     pub const SELECT: u8 = 0x1b;
+    /// Les deux locales d'un bloc qui cherche dans la correspondance : le
+    /// seau et le contexte (voir `Module::lookup`).
+    pub const LOCAL_GET: u8 = 0x20;
+    pub const LOCAL_SET: u8 = 0x21;
 }
+
+/// **Les deux locales `i32` d'un bloc qui cherche**, déclarées par
+/// `Module::assemble` quand la forme a une correspondance : l'adresse du seau,
+/// puis le contexte courant (`context_tag`). Un bloc n'a pas de paramètre,
+/// donc elles portent les indices zéro et un.
+const LOOKUP_BUCKET: u32 = 0;
+const LOOKUP_CONTEXT: u32 = 1;
 
 /// Un `cmpxchg` vu comme la comparaison qu'il porte : c'est sous cette forme
 /// que la routine des drapeaux sait le lire.
@@ -2748,7 +2805,7 @@ impl Module {
                 body.store(RIP_SLOT, |b| {
                     b.load(SYSCALL_SLOT + 1);
                 });
-                Self::resolve(starts, body, shape);
+                Self::resolve_across(starts, body, shape);
             }
             Op::SystemReturn => {
                 // **`sysretq` : rendre la main au programme.**
@@ -2809,7 +2866,7 @@ impl Module {
                         .constant(3)
                         .op(code::I64_OR);
                 });
-                Self::resolve(starts, body, shape);
+                Self::resolve_across(starts, body, shape);
             }
             Op::InterruptReturn => {
                 // **`iretq` défait le cadre qu'une faute a posé** : RIP, CS,
@@ -2867,10 +2924,27 @@ impl Module {
                 body.store(RIP_SLOT, |b| {
                     b.load(Body::scratch(0));
                 });
-                Self::resolve(starts, body, shape);
+                Self::resolve_across(starts, body, shape);
             }
             _ => place(body, after as i64),
         }
+    }
+
+    /// **Résoudre la cible d'une instruction qui change d'anneau** —
+    /// `syscall`, `sysretq`, `iretq` — sans les blocs de la région.
+    ///
+    /// Une région est traduite pour un anneau (voir `context_tag`). Ses blocs
+    /// « gagnent toujours » dans `resolve` parce qu'ils sont déjà là ; après
+    /// un changement d'anneau, ils ne sont plus les nôtres. Seule la
+    /// correspondance, qui juge le contexte, peut répondre, et sinon l'hôte.
+    /// La forme libre, qui n'a ni hôte ni correspondance, garde ses blocs.
+    fn resolve_across(starts: &[u64], body: &mut Body, shape: Shape) {
+        let own = if Self::lookup_base(shape).is_some() {
+            &[][..]
+        } else {
+            starts
+        };
+        Self::resolve(own, body, shape);
     }
 
     /// **Retrouver un bloc depuis une adresse connue seulement à l'exécution.**
@@ -2937,10 +3011,22 @@ impl Module {
     /// la traduction indépendante de l'endroit où l'hôte pose la région. Le
     /// retranchement d'ici le respecte au lieu de l'entamer.
     fn lookup(base: u32, body: &mut Body) {
+        // **Le seau et le contexte, calculés une fois** et gardés dans les
+        // deux locales que tout bloc d'une forme qui cherche déclare (voir
+        // `assemble`). Le seau était recalculé à chaque lecture — quatre
+        // multiplications par recherche ; le contexte l'aurait été deux fois
+        // de plus.
+        body.entry(base);
+        body.op(code::LOCAL_SET);
+        unsigned(u64::from(LOOKUP_BUCKET), &mut body.bytes);
+        Self::context(base - 1, body);
+        body.op(code::LOCAL_SET);
+        unsigned(u64::from(LOOKUP_CONTEXT), &mut body.bytes);
         // Les indices rangés dans chaque voie du seau, ramenés au repère de la
         // région, empilés de la première voie à la dernière.
         for way in 0..TABLE_WAYS {
-            body.entry(base);
+            body.op(code::LOCAL_GET);
+            unsigned(u64::from(LOOKUP_BUCKET), &mut body.bytes);
             // Décalage : l'indice suit l'adresse, et chaque voie suit la
             // précédente. Alignement : quatre octets.
             body.cell(code::I32_LOAD, 2, way * TABLE_ENTRY + 8);
@@ -2955,12 +3041,44 @@ impl Module {
         // à voir de la tranche qui a posé la correspondance. `select` rend sa
         // première valeur quand la condition tient : dépiler à l'envers laisse
         // donc la voie la plus basse décider en dernier, et gagner.
+        //
+        // **Et le contexte doit être le nôtre**, pas seulement l'adresse : une
+        // région du noyau ne se trouve pas depuis l'anneau trois, ni celle
+        // d'un programme depuis un autre (`context_tag`).
         for way in (0..TABLE_WAYS).rev() {
-            body.entry(base);
+            body.op(code::LOCAL_GET);
+            unsigned(u64::from(LOOKUP_BUCKET), &mut body.bytes);
             body.cell(code::I64_LOAD, 3, way * TABLE_ENTRY);
             body.load(RIP_SLOT).op(code::I64_EQ);
+            body.op(code::LOCAL_GET);
+            unsigned(u64::from(LOOKUP_BUCKET), &mut body.bytes);
+            body.cell(code::I32_LOAD, 2, way * TABLE_ENTRY + TABLE_CONTEXT);
+            body.op(code::LOCAL_GET);
+            unsigned(u64::from(LOOKUP_CONTEXT), &mut body.bytes);
+            body.op(code::I32_EQ).op(code::I32_AND);
             body.op(code::SELECT);
         }
+    }
+
+    /// **Le contexte courant, en `i32`** : le même calcul que `context_tag`,
+    /// gravé dans les octets. `mask` est celui de la RAM.
+    ///
+    /// `ring ? (cr3 & mask & ~0xfff) : 0`, puis `| ring | CONTEXT_PRESENT` —
+    /// l'anneau lu deux fois dans CS, faute d'une troisième locale.
+    fn context(mask: u32, body: &mut Body) {
+        let ring = |b: &mut Body| {
+            b.load(Self::segment_slot(Segment::Cs))
+                .op(code::I32_WRAP_I64);
+            b.constant32(3).op(code::I32_AND);
+        };
+        body.load(Self::control_slot(3)).op(code::I32_WRAP_I64);
+        body.constant32(mask & !0xfff).op(code::I32_AND);
+        body.constant32(0);
+        ring(body);
+        body.op(code::SELECT);
+        ring(body);
+        body.op(code::I32_OR);
+        body.constant32(CONTEXT_PRESENT).op(code::I32_OR);
     }
 
     /// **Pousser l'indice d'une cible statique.**
@@ -3265,8 +3383,16 @@ impl Module {
 
         let mut code_section = Vec::new();
         unsigned(count as u64 + 2 + extra, &mut code_section);
+        // **Les blocs d'une forme qui cherche déclarent deux locales** — le
+        // seau et le contexte de `lookup` —, les autres aucune : la forme
+        // libre reste, à l'octet près, ce qu'elle était.
+        let locals: &[u8] = if Self::lookup_base(shape).is_some() {
+            &[0x01, 0x02, 0x7f]
+        } else {
+            &[0x00]
+        };
         for body in &bodies {
-            let mut entry = vec![0x00];
+            let mut entry = locals.to_vec();
             entry.extend_from_slice(body);
             unsigned(entry.len() as u64, &mut code_section);
             code_section.extend_from_slice(&entry);

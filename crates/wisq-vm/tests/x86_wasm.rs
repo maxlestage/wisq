@@ -20,9 +20,9 @@ use std::process::Command;
 
 use wisq_vm::x86::{decode, Cpu, Op, Step, Width};
 use wisq_vm::x86_wasm::{
-    host_pages, table_base, table_slot, tlb_base, Module, Refused, BENCH_MEMORY_ACCESSES_PER_TURN,
-    BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
+    context_tag, host_pages, table_base, table_slot, tlb_base, Module, Refused,
+    BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, GLOBAL_COUNT,
+    GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
 };
 
 // **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
@@ -2321,7 +2321,11 @@ const hostPages = pages => pages + rooms;
 
 // `fill` : 0 rien, 1 la bonne adresse, 2 une **autre** adresse dans la même
 // case. Le troisième cas est celui qui compte le plus : sans la comparaison,
-// le module sauterait dans un bloc qui n'a rien à voir.
+// le module sauterait dans un bloc qui n'a rien à voir. 3 : la bonne adresse,
+// sous un **autre contexte** — celui de l'anneau trois, alors que la machine
+// est en anneau zéro (CS vaut zéro). 4 : l'anneau trois sous les tables
+// 0x5000, et la case rangée sous ce contexte-là ; 5 : la même machine, la case
+// rangée sous les tables 0x6000 — un autre programme.
 function attempt(fill, pages) {{
   const memory = new WebAssembly.Memory({{ initial: pages }});
   const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
@@ -2339,8 +2343,16 @@ function attempt(fill, pages) {{
   // Les deux nombres viennent de `table_base` et `table_slot`, côté Rust.
   if (fill) {{
     const at = {base} + {slot} * 16;
-    new BigUint64Array(memory.buffer, at, 1)[0] = fill === 1 ? {away}n : {away}n + 1n;
+    new BigUint64Array(memory.buffer, at, 1)[0] = fill === 2 ? {away}n + 1n : {away}n;
     new Int32Array(memory.buffer, at + 8, 1)[0] = {there};
+    // **Le contexte de la case** : celui de l'anneau zéro, sauf pour le
+    // quatrième cas. Les deux viennent de `context_tag`, côté Rust.
+    new Uint32Array(memory.buffer, at + 12, 1)[0] =
+      [0, {noyau}, {noyau}, {ailleurs}, {programme}, {autre}][fill];
+  }}
+  if (fill >= 4) {{
+    slots[{cs}].value = 0x33n;
+    slots[{cr3}].value = 0x5000n;
   }}
 
   slots[0].value = {away}n;   // rax : la cible du saut indirect
@@ -2352,6 +2364,9 @@ function attempt(fill, pages) {{
 console.log("remplie " + attempt(1, hostPages({pages})));
 console.log("vide " + attempt(0, hostPages({pages})));
 console.log("etrangere " + attempt(2, hostPages({pages})));
+console.log("autre-contexte " + attempt(3, hostPages({pages})));
+console.log("programme " + attempt(4, hostPages({pages})));
+console.log("autre-programme " + attempt(5, hostPages({pages})));
 
 // **Et une mémoire sans place pour la correspondance ni pour le tampon de
 // traduction ne doit pas démarrer.**
@@ -2375,6 +2390,12 @@ try {{
             slot = table_slot(AWAY),
             away = AWAY,
             there = THERE,
+            noyau = context_tag(0, 0, PAGES),
+            ailleurs = context_tag(3, 0, PAGES),
+            programme = context_tag(0x33, 0x5000, PAGES),
+            autre = context_tag(0x33, 0x6000, PAGES),
+            cs = wisq_vm::x86_wasm::SEGMENT_SLOT + 1,
+            cr3 = wisq_vm::x86_wasm::CONTROL_SLOT + 2,
         ),
     )
     .expect("le pilote");
@@ -2419,6 +2440,28 @@ try {{
         seen("etrangere"),
         "1",
         "une case qui range une autre adresse ne doit pas faire sauter le module"
+    );
+    // **La bonne adresse sous un autre contexte.** C'est le trou que le
+    // contexte dans la case bouche : une région du noyau trouvée depuis
+    // l'anneau trois, ou celle d'un programme depuis un autre. Sans la
+    // comparaison du contexte, le module y sauterait.
+    assert_eq!(
+        seen("autre-contexte"),
+        "1",
+        "une case rangée sous un autre contexte ne doit pas faire sauter le module"
+    );
+    // **Et le contexte d'un programme, calculé dans le module comme par
+    // `context_tag`** : l'anneau trois et la racine de ses tables. Trouvé sous
+    // les siennes, pas sous celles d'un autre.
+    assert_eq!(
+        seen("programme"),
+        "3",
+        "en anneau trois, la case rangée sous le contexte du programme est trouvée"
+    );
+    assert_eq!(
+        seen("autre-programme"),
+        "1",
+        "et celle d'un autre programme, à la même adresse, ne l'est pas"
     );
     // Et une mémoire trop courte doit refuser au démarrage plutôt que piéger
     // au premier saut.
