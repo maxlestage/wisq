@@ -3195,6 +3195,491 @@ console.log("noyau " + lire(7));
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// **`%fs:` lit et écrit à la base que `wrmsr` a posée dans `FS_BASE`.**
+///
+/// C'est le mur où Alpine s'arrêtait : `mov %fs:0x0,%rdx` dans `__dls3`, le
+/// pointeur de fil de `ld-musl`. La base est lue **à l'exécution**, dans sa
+/// case, et pas repliée dans le déplacement : le noyau la change à chaque
+/// changement de tâche, entre deux entrées dans la même région.
+///
+/// Ce que le test sépare : la base de FS de celle de GS (posées toutes les
+/// deux, comme sous Linux), l'adresse segmentée de l'adresse nue (une écriture
+/// sous `%fs:` doit se relire à `base + 0x28` sans préfixe, et pas à `0x28`),
+/// le dernier préfixe de segment, et `lea`, qui n'en prend aucun.
+#[test]
+fn the_fs_prefix_reads_and_writes_at_the_base_wrmsr_set() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0xb9, 0x00, 0x01, 0x00, 0xc0, // mov $0xc0000100,%ecx — FS_BASE
+        0xb8, 0x00, 0x30, 0x00, 0x00, // mov $0x3000,%eax
+        0x31, 0xd2, // xor %edx,%edx
+        0x0f, 0x30, // wrmsr
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx — GS_BASE
+        0xb8, 0x00, 0x50, 0x00, 0x00, // mov $0x5000,%eax
+        0x0f, 0x30, // wrmsr
+        0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+        0x11, // movabs $0x1122334455667788,%rax
+        0x64, 0x48, 0x89, 0x04, 0x25, 0x28, 0x00, 0x00, 0x00, // mov %rax,%fs:0x28
+        0x48, 0x8b, 0x34, 0x25, 0x28, 0x30, 0x00, 0x00, // mov 0x3028,%rsi
+        0x64, 0x48, 0x8b, 0x3c, 0x25, 0x28, 0x00, 0x00, 0x00, // mov %fs:0x28,%rdi
+        0x48, 0x8b, 0x1c, 0x25, 0x28, 0x00, 0x00, 0x00, // mov 0x28,%rbx
+        0x64, 0x48, 0x8d, 0x14, 0x25, 0x28, 0x00, 0x00, 0x00, // lea %fs:0x28,%rdx
+        0x64, 0x65, 0x4c, 0x8b, 0x04, 0x25, 0x28, 0x00, 0x00,
+        0x00, // mov %gs:0x28,%r8 (GS en dernier)
+        0x65, 0x64, 0x4c, 0x8b, 0x0c, 0x25, 0x28, 0x00, 0x00,
+        0x00, // mov %fs:0x28,%r9 (FS en dernier)
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-fs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("fs.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+for (const [nom, at] of [["rsi", 6], ["rdi", 7], ["rbx", 3], ["rdx", 2], ["r8", 8], ["r9", 9]]) {{
+  console.log(nom + " " + lire(at));
+}}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    const VALUE: u64 = 0x1122_3344_5566_7788;
+    assert_eq!(
+        line("rsi "),
+        VALUE,
+        "l'écriture sous %fs: tombe à base + 0x28"
+    );
+    assert_eq!(line("rdi "), VALUE, "et se relit sous %fs:");
+    assert_eq!(line("rbx "), 0, "rien n'est écrit à 0x28 sans segment");
+    assert_eq!(line("rdx "), 0x28, "lea ignore la base de FS");
+    assert_eq!(
+        line("r8 "),
+        0,
+        "64 65 : GS gagne, et rien n'est à la base de GS + 0x28"
+    );
+    assert_eq!(line("r9 "), VALUE, "65 64 : FS gagne");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`addr32 call` empile l'adresse d'après ses six octets et saute.**
+///
+/// La forme que l'éditeur de liens écrit dans `libcrypto.so.3` (45 264 fois)
+/// à la place d'un appel par la GOT. Le préfixe ne change rien au saut, mais
+/// il compte dans la longueur : un émetteur qui l'oublierait reviendrait un
+/// octet trop tôt, au milieu de l'instruction d'après.
+#[test]
+fn an_addr32_call_pushes_the_address_after_its_six_bytes() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x48, 0xc7, 0xc4, 0x00, 0x80, 0x00, 0x00, // mov $0x8000,%rsp
+        0x67, 0xe8, 0x02, 0x00, 0x00, 0x00, // addr32 call +2
+        0x0f, 0x0b, // ud2 — l'adresse de retour, jamais exécutée
+        0x48, 0x8b, 0x34, 0x24, // mov (%rsp),%rsi
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-addr32-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("addr32.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rip " + lire({rip}));
+console.log("rsi " + lire(6));
+console.log("rdi " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line("rip "),
+        BASE + 22,
+        "l'arrêt est le second ud2, à la cible"
+    );
+    assert_eq!(
+        line("rsi "),
+        BASE + 13,
+        "l'adresse de retour suit les six octets de l'appel"
+    );
+    assert_eq!(line("rdi "), 0x8000 - 8, "un mot empilé");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`scas` ne compare que la largeur de la chaîne de l'accumulateur.**
+///
+/// `scasb` compare AL, pas RAX. L'égalité ne le montre pas — le résultat de la
+/// soustraction est ramené à la largeur, donc ZF tombe juste même avec RAX
+/// entier — mais la retenue si : AL = 0 sous un octet 0x77 emprunte, RAX =
+/// 0x1122…7700 non. Le corpus de chaîne ne porte aucun état où les deux
+/// diffèrent, et c'est ce cas-là qu'un `strchr` en `-Os` rencontre.
+#[test]
+fn scas_compares_only_the_width_of_the_accumulator() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program = vec![
+        0xc6, 0x04, 0x25, 0x00, 0x20, 0x00, 0x00, 0x77, // movb $0x77,0x2000
+        0xbf, 0x00, 0x20, 0x00, 0x00, // mov $0x2000,%edi
+        0x48, 0xb8, 0x00, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+        0x11, // movabs $0x1122334455667700,%rax
+        0xae, // scasb
+        0x0f, 0x92, 0xc3, // setc %bl
+        0x0f, 0x94, 0xc1, // setz %cl
+    ];
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let scratch = std::env::temp_dir().join(format!("wisq-host-scas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("scas.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("cf " + lire(3));
+console.log("zf " + lire(1));
+console.log("rdi " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(line("cf ") & 0xff, 1, "AL = 0 sous 0x77 emprunte : {text}");
+    assert_eq!(line("zf ") & 0xff, 0, "et ce n'est pas égal : {text}");
+    assert_eq!(line("rdi "), 0x2001, "RDI avance d'un octet : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Ce qu'on tape arrive sur le port série, dans l'ordre.**
+///
+/// `send` range les octets dans la file de réception du 16550 : le bit 0 du
+/// registre d'état de ligne dit qu'il y en a, la lecture du registre de
+/// réception les rend un par un, et la ligne quatre monte quand l'invité a
+/// autorisé l'interruption de réception. C'est par là que le shell d'un
+/// initramfs lit ses commandes.
+#[test]
+fn what_is_typed_arrives_on_the_serial_port_in_order() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x66, 0xba, 0xfd, 0x03, // mov $0x3fd,%dx — l'état de ligne
+        0xec, // 1: in (%dx),%al
+        0xa8, 0x01, // test $1,%al
+        0x74, 0xfb, // jz 1b
+        0x66, 0xba, 0xf8, 0x03, // mov $0x3f8,%dx — la réception
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xd8, // movzbl %al,%ebx
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xc8, // movzbl %al,%ecx
+        0x66, 0xba, 0xfd, 0x03, // mov $0x3fd,%dx
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xf0, // movzbl %al,%esi — l'état, la file vidée
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-send-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("send.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+// La ligne quatre suit la file quand la réception est autorisée.
+vm.uart.interruptEnable = 1;
+vm.send(new Uint8Array([0x6f, 0x6b]));
+console.log("ligne " + ((vm.pics.master.request & 0x10) !== 0));
+vm.uart.interruptEnable = 0;
+vm.pics.master.request = 0;
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("rsi " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert!(
+        text.contains("ligne true"),
+        "la ligne quatre monte quand la réception est autorisée : {text}"
+    );
+    assert!(
+        text.contains(&format!("arret {UD2_SANS_PORTE}")),
+        "le programme lit et s'arrête : {text}"
+    );
+    assert_eq!(line("rbx "), 0x6f, "le premier octet tapé d'abord : {text}");
+    assert_eq!(line("rcx "), 0x6b, "le second ensuite : {text}");
+    assert_eq!(line("rsi ") & 1, 0, "et la file est vide : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Au premier passage en anneau trois, le cache de code est vidé, une fois.**
+///
+/// Le noyau réécrit son texte pendant qu'il démarre (`apply_alternatives`) ;
+/// une région traduite avant garde l'ancien code. Sur Alpine, c'était la
+/// bascule de tables d'`error_entry`, et une interruption prise en anneau
+/// trois fautait dans la faute jusqu'à l'IDT.
+///
+/// Le montage : deux régions, `mov $1,%esi ; jmp *%rbx` et, là où RBX
+/// pointe, `mov $1,%edi ; ud2`, tournent en anneau zéro ; la seconde est
+/// atteinte **par la correspondance**, de module à module. Le pilote réécrit
+/// les deux en `mov $2`, pose CS en anneau trois et relance. Sans vidage,
+/// l'ancienne traduction tourne et RSI vaut 1 ; avec, la première région est
+/// retraduite depuis la mémoire — et la seconde aussi, à condition que la
+/// correspondance ait été vidée avec le reste : sinon le saut retomberait sur
+/// un ancien bloc. Une troisième course, encore en anneau trois, ne vide pas
+/// une seconde fois : le prix est payé une fois.
+#[test]
+fn the_first_entry_into_ring_three_empties_the_code_cache_once() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    let scratch = std::env::temp_dir().join(format!("wisq-host-vidage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+let traduites = 0;
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    traduites += 1;
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    return out.exitCode === 0 ? out.stdout : null;
+  }},
+  pages: {pages},
+}});
+const octets = new Uint8Array(vm.memory.buffer);
+const poser = (valeur) => {{
+  // mov $valeur,%esi ; mov $base+0x100,%rbx ; jmp *%rbx
+  octets.set([0xbe, valeur, 0, 0, 0, 0x48, 0xc7, 0xc3, 0x00, 0x01, 0x01, 0x00, 0xff, 0xe3], {base});
+  // mov $valeur,%edi ; ud2
+  octets.set([0xbf, valeur, 0, 0, 0, 0x0f, 0x0b], {base} + 0x100);
+}};
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+const course = async (valeur, cs) => {{
+  poser(valeur);
+  // L'arrêt de la course d'avant est effacé, et les deux témoins remis à zéro :
+  // une course relancée sur un `ud2` déjà rendu le rendrait de nouveau.
+  vm.globals[{stop}].value = 0n;
+  vm.globals[6].value = 0n;
+  vm.globals[7].value = 0n;
+  vm.globals[{segment} + 1].value = cs;
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  console.log("course " + valeur + " rsi " + lire(6) + " rdi " + lire(7) + " vidages " + vm.vidages.fois
+    + " traduites " + traduites + " arret " + why.stopped);
+}};
+await course(1, 0x10n);
+await course(2, 0x33n);
+await course(3, 0x33n);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            segment = SEGMENT_SLOT,
+            stop = STOP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let course = |n: u8| -> String {
+        text.lines()
+            .find(|l| l.starts_with(&format!("course {n} ")))
+            .unwrap_or_else(|| panic!("la course {n} : {text}"))
+            .to_string()
+    };
+    assert!(
+        course(1).contains(" rsi 1 rdi 1 vidages 0 traduites 2 "),
+        "en anneau zéro, rien n'est vidé : {text}"
+    );
+    assert!(
+        course(2).contains(" rsi 2 rdi 2 vidages 1 traduites 4 "),
+        "au premier passage en anneau trois, les deux régions sont retraduites depuis la \
+         mémoire, la seconde atteinte par une correspondance vidée : {text}"
+    );
+    assert!(
+        course(3).contains(" vidages 1 traduites 4 "),
+        "et une seule fois : la troisième course ne retraduit rien : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **Les tables de descripteurs : dix octets qui font l'aller-retour.**
 ///
 /// `lgdt` lit une limite de seize bits et une base de soixante-quatre, `sgdt`
@@ -11498,6 +11983,9 @@ const vm = machine({{
       cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
       stdin: code,
     }});
+    // **4 est une coupe** : l'hôte relit plus large, ou délivre la faute de
+    // la page qui manque — ce que fait la page, et `kernel-entry`.
+    if (out.exitCode === 4) return "encore";
     if (out.exitCode !== 0) return null;
     return out.stdout;
   }},
@@ -12686,6 +13174,68 @@ fn a_halt_waits_for_a_tick_that_has_not_come_yet() {
     );
 }
 
+/// **Le mode quatre du 8254 lève IRQ0 une fois, au bout de son compte.**
+///
+/// C'est le mode de l'horloge sans tic de Linux : `pit_set_oneshot` écrit
+/// `0x38` sur le port de commande, et chaque échéance est un compte chargé
+/// par `pit_next_event`. Il n'était pas modélisé — la ligne ne montait jamais,
+/// et sur Alpine l'heure restait figée à 1,121 s dès que le noyau passait en
+/// coup unique.
+///
+/// **Une fois, même acquittée** : un coup unique ne recharge pas. Le second
+/// `hlt` n'a plus rien pour le réveiller et s'arrête — la moitié qui sépare
+/// ce mode du mode deux, où la ligne acquittée rouvre au tour suivant.
+#[test]
+fn a_one_shot_count_in_mode_four_wakes_a_halted_guest_once() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            oneshot: true,
+            acknowledge: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.handled, 1,
+        "le compte du mode quatre a levé IRQ0 une fois et une seule : {}",
+        seen.text
+    );
+    assert_eq!(
+        (seen.stopped.as_str(), seen.rip),
+        ("arrêtée sur hlt", seen.after_second_halt),
+        "et le second hlt n'est réveillé par rien : {}",
+        seen.text
+    );
+}
+
+/// **Et un compte rechargé arme l'échéance suivante**, comme `pit_next_event`
+/// le fait à chaque tic du noyau : la ligne remonte, autant de fois qu'on
+/// recharge.
+#[test]
+fn reloading_the_mode_four_count_arms_the_next_tick() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            oneshot: true,
+            acknowledge: true,
+            rearm: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert!(
+        seen.handled > 1,
+        "rechargé, le mode quatre lève une échéance de plus : {} délivrance(s) seulement\n{}",
+        seen.handled,
+        seen.text
+    );
+}
+
 /// **L'hôte délivrait des interruptions sans jamais en nommer une.**
 ///
 /// Ce n'est pas une absence théorique : elle a coûté un diagnostic entier.
@@ -13031,6 +13581,13 @@ struct TimerSetup {
     /// quand même — le masque le tient à l'écart —, parce qu'un montage qui
     /// changerait deux choses à la fois ne dirait pas laquelle a délivré.
     transmit: bool,
+    /// **Le 8254 en mode quatre, un coup unique**, comme Linux le programme
+    /// dès que son horloge d'événements passe en coup unique
+    /// (`pit_set_oneshot` : `0x38` sur `0x43`), au lieu du mode deux.
+    oneshot: bool,
+    /// Le gestionnaire recharge-t-il le compte avant de rendre la main — ce
+    /// que fait `pit_next_event` à chaque échéance ?
+    rearm: bool,
 }
 
 impl Default for TimerSetup {
@@ -13042,6 +13599,8 @@ impl Default for TimerSetup {
             enable: true,
             warp: 0,
             transmit: false,
+            oneshot: false,
+            rearm: false,
         }
     }
 }
@@ -13054,6 +13613,8 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
         enable,
         warp,
         transmit,
+        oneshot,
+        rearm,
     } = setup;
     const PAGES: u32 = 4;
     const BASE: u64 = 0x1_0000;
@@ -13077,7 +13638,7 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
                                                     // fois par tour de boucle hôte, comme celle d'un vrai noyau tourne
                                                     // plusieurs fois par tranche d'exécution.
     for (value, port) in [
-        (0x34u8, 0x43u8),
+        (if oneshot { 0x38u8 } else { 0x34 }, 0x43u8),
         (100, 0x40),
         (0, 0x40),
         // Le 8259 maître : ICW1 avec un quatrième mot, la base de vecteur,
@@ -13108,6 +13669,11 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
     program.extend_from_slice(&[0x0f, 0x0b]); // ud2
 
     let mut handler: Vec<u8> = vec![0x49, 0x83, 0xc7, 0x01]; // add $1,%r15
+    if rearm {
+        // Le compte suivant, bas puis haut : l'échéance d'après.
+        handler.extend_from_slice(&[0xb0, 100, 0xe6, 0x40]); // mov $100,%al ; out %al,$0x40
+        handler.extend_from_slice(&[0xb0, 0, 0xe6, 0x40]); // mov $0,%al ; out %al,$0x40
+    }
     if acknowledge {
         handler.extend_from_slice(&[0xb0, 0x20]); // mov $0x20,%al
         handler.extend_from_slice(&[0xe6, 0x20]); // out %al,$0x20
@@ -13864,6 +14430,19 @@ vm.globals[{control}].value = BigInt(1) << 31n;
 vm.globals[{control} + 2].value = {pml4}n;
 vm.globals[{syscall}].value = BigInt({exit}) << 48n;
 vm.globals[{efer}].value |= 1n; // SCE : sans lui, pas de `sysretq`
+// **Un premier tour en anneau trois, sur le programme, avant tout le reste.**
+// Le premier passage en anneau trois vide le cache de code (`oublierTout`) :
+// sans ce tour, la région du noyau serait oubliée au `sysretq` même, et ce que
+// ces tests regardent — une région du noyau encore connue quand la machine
+// s'arrête en anneau trois — n'existerait plus. Le programme s'y arrête sur
+// son propre code, et l'arrêt est effacé.
+vm.globals[{segment} + 1].value = 0x33n;
+vm.globals[{segment} + 2].value = 0x2bn;
+vm.globals[{rip}].value = {user}n;
+const avant = await vm.run({{ budget: 1n, rounds: 16 }});
+console.log("avant " + avant.stopped + " vidages " + vm.vidages.fois);
+vm.globals[{stop}].value = 0n;
+vm.globals[{fault}].value = 0n;
 vm.globals[{segment} + 1].value = 0x10n;
 vm.globals[{segment} + 2].value = 0x18n;
 vm.globals[{rip}].value = {kernel}n;
@@ -13907,6 +14486,8 @@ console.log("fini");
             efer = EFER_SLOT,
             segment = SEGMENT_SLOT,
             rip = RIP_SLOT,
+            user = RING_THREE_USER,
+            stop = STOP_SLOT,
             kernel = if pti {
                 RING_THREE_TRAMPOLINE + 0x100
             } else {
@@ -17369,6 +17950,237 @@ console.log("dest " + Array.from(new Uint8Array(vm.memory.buffer, {frame} + 0x40
     }
 }
 
+/// **Une comparaison de chaîne qui faute sur sa seconde lecture n'a rien
+/// fait du tour, et reprend où elle s'était arrêtée.**
+///
+/// Le jumeau de la copie ci-dessus pour `repe cmpsb` et `repne scasb`, dont
+/// l'élément de RDI franchit une page que le noyau pose à la demande. Pour
+/// `cmps`, c'est la **seconde** lecture du tour qui faute — celle de RDI, la
+/// source RSI étant déjà lue — : RSI ne doit pas avoir avancé, ni RCX
+/// décompté, ni les drapeaux changé. Le gestionnaire relève RCX, RSI, RDI et
+/// le RFLAGS du cadre ; le `rep` rejoué finit la comparaison.
+///
+/// `repe cmpsb` compare deux suites égales sur treize octets, puis un
+/// quatorzième différent (14 contre 0x5e) : il sort sur ZF, RCX à
+/// `20 - 14`. `repne scasb` cherche 13 dans 1, 2, 3… : il sort sur le treizième
+/// élément, RCX à `20 - 13`, ZF posé — et il ne compare que AL, les sept
+/// octets hauts de RAX étant tous à un.
+#[test]
+fn a_string_compare_across_a_page_that_arrives_on_demand_finishes_where_it_stopped() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = BASE + 0x100;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    const ARRIVES: u64 = PAGE + 0x1000;
+    const ARRIVING_FRAME: u64 = 0x3_1000;
+    const TOP: u64 = PAGE + 0x800;
+    const SOURCE: u64 = PAGE + 0x400;
+    const DESCRIPTOR: u64 = PAGE + 0xf00;
+    const BEFORE: u64 = 5;
+    const COUNT: u64 = 20;
+    // (le nom, les octets, RAX, l'élément où la répétition s'arrête)
+    let compares: [(&str, &[u8], u64, u64); 2] = [
+        ("repe cmpsb", &[0xf3, 0xa6], 0, 14),
+        // **Seul AL compte** : les sept octets hauts de RAX sont posés, et un
+        // `scas` qui comparerait RAX entier ne trouverait jamais 13.
+        ("repne scasb", &[0xf2, 0xae], 0xffff_ffff_ffff_ff0d, 13),
+    ];
+    for (name, bytes, rax, stop) in compares {
+        let scans = bytes[1] == 0xae;
+        let mut program: Vec<u8> = Vec::new();
+        program.extend_from_slice(&movabs(0, PML4));
+        program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+        program.extend_from_slice(&movabs(0, 1 << 31));
+        program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+        program.extend_from_slice(&movabs(0, DESCRIPTOR));
+        program.extend_from_slice(&[0x0f, 0x01, 0x18]); // lidt (%rax)
+        program.extend_from_slice(&movabs(4, TOP));
+        program.extend_from_slice(&movabs(6, SOURCE));
+        program.extend_from_slice(&movabs(7, ARRIVES - BEFORE));
+        program.extend_from_slice(&movabs(1, COUNT));
+        program.extend_from_slice(&movabs(0, rax));
+        let at = program.len();
+        program.extend_from_slice(bytes); // la répétition, à cheval par RDI
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : l'arrêt
+        assert!(program.len() <= 0x100);
+        program.resize(0x100, 0xcc);
+        program.extend_from_slice(&[
+            0x49, 0x89, 0xc8, // mov %rcx,%r8
+            0x49, 0x89, 0xf1, // mov %rsi,%r9
+            0x49, 0x89, 0xfa, // mov %rdi,%r10
+            0x49, 0xff, 0xc3, // inc %r11
+            0x4c, 0x8b, 0x64, 0x24, 0x08, // mov 8(%rsp),%r12 — le RIP du cadre
+            0x4c, 0x8b, 0x6c, 0x24, 0x18, // mov 24(%rsp),%r13 — son RFLAGS
+        ]);
+        let leaf = PT + ((ARRIVES >> 12) & 0x1ff) * 8;
+        program.extend_from_slice(&movabs(0, leaf));
+        program.extend_from_slice(&[0x48, 0xc7, 0x00]); // movq $ARRIVING_FRAME|3,(%rax)
+        program.extend_from_slice(&((ARRIVING_FRAME | 3) as u32).to_le_bytes());
+        program.extend_from_slice(&movabs(0, rax)); // RAX, rendu à `scas`
+        program.extend_from_slice(&[
+            0x48, 0x83, 0xc4, 0x08, // add $8,%rsp — le code d'erreur
+            0x48, 0xcf, // iretq
+        ]);
+        program.resize(0x180, 0xcc);
+
+        let tag = name.replace(' ', "-");
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-pfcmp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let mut served = String::new();
+        for (slot, offset) in [0usize, 0x100, at].into_iter().enumerate() {
+            let module = Module::resolving(
+                &program[offset..],
+                BASE + offset as u64,
+                0,
+                slot as u32,
+                PAGES,
+            )
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+            let path = scratch.join(format!("r{offset:x}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            served += &format!(
+                "    if (address === {}n) return readFileSync({:?});\n",
+                BASE + offset as u64,
+                path.to_string_lossy()
+            );
+        }
+        let gate_low = (HANDLER & 0xffff)
+            | (0x10 << 16)
+            | (0x8e00u64 << 32)
+            | ((HANDLER >> 16) & 0xffff) << 48;
+        let gate_high = HANDLER >> 32;
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    console.log("demandee " + address.toString());
+    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+vue.setBigUint64({pml4} + idx({base}n, 39) * 8, 0x24000n | 3n, true);
+vue.setBigUint64(0x24000 + idx({base}n, 30) * 8, 0x25000n | 3n, true);
+vue.setBigUint64(0x25000 + idx({base}n, 21) * 8, 0x26000n | 3n, true);
+vue.setBigUint64(0x26000 + idx({base}n, 12) * 8, {base}n | 3n, true);
+vue.setBigUint64(0x26000 + idx({pt}n, 12) * 8, {pt}n | 3n, true);
+vue.setBigUint64({frame} + 14 * 16, {gate_low}n, true);
+vue.setBigUint64({frame} + 14 * 16 + 8, {gate_high}n, true);
+vue.setUint16({frame} + 0xf00, 15 * 16 - 1, true);
+vue.setBigUint64({frame} + 0xf02, {page}n, true);
+// À RDI, 1, 2, 3… à cheval sur la frontière ; à RSI, la même suite sur
+// treize octets, puis 0x5e.
+const dest = {arriving} - {before};
+for (let i = 0; i < {count}; i++) vue.setUint8(dest + i, i + 1);
+for (let i = 0; i < {count}; i++) vue.setUint8({frame} + 0x400 + i, i < 13 ? i + 1 : 0x5e);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 512n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
+console.log("rflags " + lire({flags}));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                flags = RFLAGS_SLOT,
+                base = BASE,
+                page = PAGE,
+                frame = FRAME,
+                arriving = ARRIVING_FRAME,
+                before = BEFORE,
+                count = COUNT,
+                pml4 = PML4,
+                pdpt = PDPT,
+                pd = PD,
+                pt = PT,
+                gate_low = gate_low,
+                gate_high = gate_high,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        let line = |field: &str| -> u64 {
+            text.lines()
+                .find_map(|l| l.strip_prefix(field))
+                .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {text}"))
+                .trim()
+                .parse()
+                .expect("un nombre")
+        };
+        let register = |number: u8| line(&format!("r{number} "));
+        assert!(
+            text.contains(&format!("arret {UD2_PORTE_ABSENTE}")),
+            "{name} : la machine va au bout, jusqu'au `ud2` : {text}"
+        );
+        assert_eq!(register(11), 1, "{name} : une faute, une seule : {text}");
+        assert_eq!(
+            register(12),
+            BASE + at as u64,
+            "{name} : le RIP du cadre nomme la répétition : {text}"
+        );
+        assert_eq!(
+            register(8),
+            COUNT - BEFORE,
+            "{name} : à la faute, RCX compte ce qui reste, le tour fautif compris : {text}"
+        );
+        assert_eq!(
+            register(9),
+            if scans { SOURCE } else { SOURCE + BEFORE },
+            "{name} : à la faute, RSI n'a pas avancé pour le tour fautif : {text}"
+        );
+        assert_eq!(
+            register(10),
+            ARRIVES,
+            "{name} : à la faute, RDI est sur l'élément fautif : {text}"
+        );
+        // Les cinq tours d'avant étaient égaux pour `cmps` (ZF posé) et
+        // différents pour `scas` (ZF effacé) : le tour fautif n'a rien posé.
+        const ZF: u64 = 0x40;
+        assert_eq!(
+            register(13) & ZF,
+            if scans { 0 } else { ZF },
+            "{name} : à la faute, ZF est celui du dernier tour fait : {text}"
+        );
+        assert_eq!(
+            register(1),
+            COUNT - stop,
+            "{name} : à la fin, RCX dit où la répétition s'est arrêtée : {text}"
+        );
+        assert_eq!(
+            register(7),
+            ARRIVES - BEFORE + stop,
+            "{name} : RDI est un cran après l'élément qui l'a arrêtée : {text}"
+        );
+        assert_eq!(
+            line("rflags ") & ZF,
+            if scans { ZF } else { 0 },
+            "{name} : ZF dit pourquoi elle s'est arrêtée : {text}"
+        );
+    }
+}
+
 /// La valeur que les bancs à cheval posent dans RAX : huit octets tous
 /// différents, pour qu'un octet tombé au mauvais endroit se voie.
 const STRADDLE_VALUE: u64 = 0x8877_6655_4433_2211;
@@ -19242,6 +20054,89 @@ fn a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user() {
         "CR2 porte l'adresse qu'on n'a pas pu charger : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une instruction coupée par une page absente faute sur la page d'après.**
+///
+/// Le mur d'Alpine juste après `addr32 call` : busybox saute sur un `48` posé
+/// au dernier octet d'une page, et la page qui porte la suite de
+/// l'instruction n'a pas encore été chargée — le texte d'un programme arrive à
+/// la demande. Le traducteur demandait plus d'octets, l'hôte n'en trouvait pas,
+/// et la machine s'arrêtait « refusée ».
+///
+/// Sur le silicium, c'est une faute de page sur le chargement de la **suite**
+/// de l'instruction : CR2 sur le premier octet de la page qui manque, RIP —
+/// donc le cadre — sur l'instruction elle-même, et le code d'erreur d'un
+/// chargement absent en anneau trois (U, ici sans le bit I : ni NX ni SMEP ne
+/// sont allumés). Le noyau pose la page et rejoue l'instruction entière.
+#[test]
+fn an_instruction_cut_by_an_absent_page_faults_on_the_page_after() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // (la feuille de la page d'après, le code d'erreur attendu) : absente,
+    // puis présente mais réservée au noyau — P et U, comme tout chargement
+    // refusé en anneau trois.
+    for (next_leaf, code) in [(None, "0x4"), (Some(0x3u64), "0x5")] {
+        let scratch = tss_scratch(&format!("coupe-par-une-page-{code}"));
+        // La page d'avant la page qui manque : présente, utilisateur, et rien
+        // d'autre qu'un `48` — le premier octet de `mov %rax,%rbx` — à son
+        // dernier octet. Le saut du programme est détourné vers lui.
+        let mut tweak = format!(
+            "vue.setBigUint64({pt} + idx({before}n, 12) * 8, {frame}n | 0x7n, true);\n\
+             vue.setUint8({frame} + 0xfff, 0x48);\n\
+             vue.setBigUint64({base} + 2, {before}n + 0xfffn, true);\n",
+            pt = RIG_PT,
+            before = RIG_ABSENT - 0x1000,
+            frame = RIG_FRAME,
+            base = RIG_BASE,
+        );
+        if let Some(leaf) = next_leaf {
+            // La suite de l'instruction est bien là, dans une trame à elle :
+            // seul le droit manque.
+            tweak.push_str(&format!(
+                "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n + 0x1000n | {leaf}n, true);\n\
+                 vue.setUint16({frame} + 0x1000, 0xc389, true);\n",
+                pt = RIG_PT,
+                absent = RIG_ABSENT,
+                frame = RIG_FRAME,
+            ));
+        }
+        let driver = tss_driver(
+            &scratch,
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0,
+            true,
+            false,
+            &tweak,
+        );
+        let text = run_driver(&bun, &driver);
+        assert_eq!(
+            line_of(&text, "rbx "),
+            format!("0x{TSS_WITNESS:x}"),
+            "{code} : le gestionnaire a tourné — la faute est délivrée, pas « refusée » : {text}"
+        );
+        let words: Vec<String> = line_of(&text, "cadre ")
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            words[0], code,
+            "le code de la page d'après, vu d'un chargement en anneau trois : {text}"
+        );
+        assert_eq!(
+            words[1],
+            format!("0x{:x}", RIG_ABSENT - 1),
+            "{code} : le cadre pointe sur l'instruction coupée, pas sur la page d'après : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "cr2 "),
+            format!("0x{RIG_ABSENT:x}"),
+            "{code} : CR2 porte le premier octet de la page qui manque : {text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
 }
 
 /// **Un mot du segment de tâche à cheval sur deux pages est lu dans les deux.**
