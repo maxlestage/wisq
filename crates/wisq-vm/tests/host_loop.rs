@@ -3807,6 +3807,96 @@ await course(false);
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
+/// **Une région que le vidage vient d'oublier ne tourne plus, même pour le
+/// bloc de plus du « sur place ».**
+///
+/// Quand RIP retombe sur le point de départ d'une région, la boucle la fait
+/// tourner d'un bloc de plus pour distinguer une boucle d'une machine
+/// bloquée. Si cette région est celle qui vient de passer en anneau trois,
+/// le vidage l'a oubliée : la faire tourner, c'est exécuter une traduction
+/// d'avant les réécritures, ce que le vidage existe pour empêcher. Le
+/// contrôle a montré que rien ne le tenait : dans les deux tests d'avant,
+/// RIP n'est jamais au point de départ après le vidage.
+///
+/// Le montage : le noyau, `mov $0x10000,%rcx ; mov $2,%r11d ; sysretq`,
+/// revient au **début de sa propre région**, en anneau trois. Au moment où
+/// la région est traduite, le pilote réécrit ces octets en
+/// `mov $2,%edi ; ud2` — la réécriture du démarrage, faite après la
+/// traduction. Juste : un vidage, la région retraduite depuis la mémoire,
+/// RDI à 2 et l'arrêt sur `ud2`, cinq octets plus loin que le départ. Faux,
+/// mesuré en remplaçant `if (voirAnneauTrois()) region = null;` par
+/// `voirAnneauTrois();` : le bloc de plus appelle l'ancien module, dont les
+/// blocs ont quitté la table, et Bun meurt sur `RuntimeError: call_indirect
+/// to a signature that does not match`. Une région oubliée n'est pas
+/// seulement périmée : elle n'a plus de quoi tourner.
+#[test]
+fn a_region_the_flush_just_forgot_does_not_run_again() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-vidage-surplace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+let traduites = 0;
+let m = null;
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    traduites += 1;
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    // La réécriture du démarrage, faite une fois la première traduction
+    // prise : mov $2,%edi ; ud2.
+    if (traduites === 1) m.set([0xbf, 2, 0, 0, 0, 0x0f, 0x0b, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90], 0x10000);
+    if (out.exitCode === 4) return "encore";
+    return out.exitCode === 0 ? out.stdout : null;
+  }},
+  pages: {pages},
+}});
+m = new Uint8Array(vm.memory.buffer);
+// Le noyau : mov $0x10000,%rcx ; mov $0x2,%r11d ; sysretq — vers son propre début.
+m.set([0x48, 0xc7, 0xc1, 0x00, 0x00, 0x01, 0x00, 0x41, 0xbb, 0x02, 0x00, 0x00, 0x00, 0x48, 0x0f, 0x07], 0x10000);
+vm.globals[SLOTS.syscall].value = 0x20n << 48n;
+vm.globals[SLOTS.efer].value |= 1n;
+vm.globals[SLOTS.segment + 1].value = 0x10n;
+vm.globals[SLOTS.segment + 2].value = 0x18n;
+vm.globals[SLOTS.rflags].value = 0x2n;
+vm.globals[4].value = 0x18000n;
+vm.globals[SLOTS.rip].value = 0x10000n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("vidages " + vm.vidages.fois + " traduites " + traduites + " rdi " + lire(7)
+  + " cs 0x" + (lire(SLOTS.segment + 1) & 0xffffn).toString(16)
+  + " rip 0x" + lire(SLOTS.rip).toString(16) + " arret " + why.stopped + " fin");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    assert!(
+        text.contains("vidages 1 traduites 2 rdi 2 cs 0x33 rip 0x10005 "),
+        "le passage en anneau trois vide le cache, et la région d'avant ne tourne plus : \
+         le nouveau texte est retraduit et s'arrête sur son `ud2` : {text}"
+    );
+    assert!(
+        !text.contains("arret sur place"),
+        "la machine n'est pas bloquée : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
 /// **Les tables de descripteurs : dix octets qui font l'aller-retour.**
 ///
 /// `lgdt` lit une limite de seize bits et une base de soixante-quatre, `sgdt`

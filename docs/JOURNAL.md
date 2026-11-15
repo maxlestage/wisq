@@ -8,6 +8,99 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Émetteur : `pushw $imm16` fait quatre octets, et la région oubliée par le vidage est tenue par un test
+
+**Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé
+quatre défauts, tous vérifiés ici avant d'être corrigés :
+
+1. **Une garantie écrite sans test.** L'entrée d'avant dit qu'« une région
+   que le vidage vient d'oublier ne tourne plus, même pour le bloc de plus du
+   « sur place » ». Remplacer `if (voirAnneauTrois()) region = null;` par
+   `voirAnneauTrois();` laissait passer les 168 tests de `host_loop` : dans
+   les deux montages du vidage, RIP n'est jamais au point de départ après le
+   `sysretq`.
+2. **La doc de `oublierTout` documentait `voirAnneauTrois`** : le bloc de la
+   seconde avait été inséré entre la doc de la première et sa déclaration.
+3. **Le miroir Swift de `WISQ_X86_NEEDS_MORE`** (`Translation.needsMoreBytes`)
+   disait encore l'ancienne règle — « à moins de quinze octets du bord,
+   l'instruction a pu être coupée » —, alors que le jumeau C avait été mis à
+   jour.
+4. **La doc de `cut_short` affirmait qu'une instruction complète ne peut
+   jamais passer pour une coupe. C'était faux**, à cause d'un défaut plus
+   ancien du décodeur : `66 68` (`pushw $imm16`, quatre octets, `instr 22
+   66683412` dans le corpus de pile) se lisait avec un immédiat de
+   trente-deux bits, donc en six octets devant n'importe quelle suite.
+   `cut_short(66 68 aa 0f)` rendait vrai, et ces quatre octets au bout d'une
+   page dont la suivante manque recevaient la faute de page sur la page
+   d'après. Le même bras donnait à `66 6a ib` la bonne longueur mais la
+   mauvaise largeur : l'interprète empilait huit octets au lieu de deux, en
+   silence.
+
+**Ce qui change.**
+
+- `x86::decode` : `68` et `6a` prennent leur largeur de `width(false)`,
+  comme `ff /6` — seize bits avec `0x66` seul, soixante-quatre sinon (REX.W
+  l'emporte). `66 68` lit un immédiat de seize bits. Le silicium de ce
+  conteneur, interrogé par un petit programme C (`66 6a 80` puis
+  `66 68 34 12`) : la pile descend de quatre en tout, mots `0xff80` puis
+  `0x1234` ; l'interprète rend maintenant la même chose. L'émetteur refuse
+  toujours ces formes (il ne descend la pile que de huit), mais d'un refus
+  franc (`CannotTranslate`), plus d'une coupe ; `66 68 aa`, vraie coupe,
+  reste `MayBeCut`.
+- La doc de `cut_short` dit ce qui est vrai : la garantie est celle du
+  décodeur, pas de la fonction, et elle est tenue par un test qui rejoue les
+  corpus matériels.
+- `host.js` : `voirAnneauTrois` est déclarée après `oublierTout`, chacune
+  sous sa propre doc.
+- `DesktopTranslator.Translation.needsMoreBytes` dit la règle du jumeau C :
+  seule une instruction qui déborde rend ce cas.
+
+**Comment c'est vérifié.**
+
+- Quatre tests nouveaux, chacun vu tomber sous son sabotage puis restauré
+  (`cmp` avec la copie, `git diff` du sabotage vide) :
+  - `the_decoder_reads_exactly_what_the_silicon_reads` (`x86_oracle.rs`) :
+    chaque `instr` des dix-sept corpus matériels — 5 063 programmes, 5 509
+    instructions lues, 4 025 refus — est parcouru instruction après
+    instruction, suivi de zéros puis de `0xff` ; aucune ne se lit plus longue
+    que le silicium, et aucun refus ne passe pour une coupe. Sous le sabotage
+    (`66 68` relu en soixante-quatre bits) : « pushw $0x1234 à l'octet 0 : lu
+    en 6 octets, il n'en reste que 4 ».
+  - `a_sixteen_bit_immediate_push_moves_the_stack_by_two` (`x86_oracle.rs`) :
+    les deux descentes de deux, les deux mots mesurés sur le silicium.
+  - `a_sixteen_bit_immediate_push_at_the_edge_is_not_a_cut` (`x86_wasm.rs`) :
+    le contre-exemple du contrôle, `66 68 aa 0f`, n'est plus une coupe.
+  - `a_region_the_flush_just_forgot_does_not_run_again` (`host_loop.rs`) : un
+    noyau dont le `sysretq` revient **au début de sa propre région**, réécrite
+    en `mov $2,%edi ; ud2` après sa traduction. Juste : `vidages 1 traduites 2
+    rdi 2 cs 0x33 rip 0x10005`. Sous le sabotage du contrôle, le bloc de plus
+    appelle l'ancien module, dont les blocs ont quitté la table, et Bun meurt
+    sur `RuntimeError: call_indirect to a signature that does not match` : une
+    région oubliée n'a même plus de quoi tourner.
+- Le corpus de pile juge **huit cas de plus** dans l'interprète Rust
+  (`pushw $0x1234`, zéro écart) : 600 sur 712, contre 592 avant. Le plancher,
+  resté à 568 depuis un corpus de 648 cas, passe à 600.
+- `cargo test --release --no-fail-fast` : 644 passés, 0 échec ; la passe
+  armée (débordements et assertions) : 644, 0 échec. La garde
+  `bench_module_matches_the_probe` passe : les octets émis ne changent pas.
+  `cargo fmt`, les deux `clippy -D warnings`, `check-whitespace`,
+  `check-project-sources` : propres. `swift build --build-tests`, puis
+  `WisqVMRustTests`, `X86StackOracleTests`, `X86StringOracleTests` : 0 échec.
+  SwiftLint `--strict` : 0 violation sur 635 fichiers.
+- La sonde Alpine 6.18.60 (`WISQ_FIN=WISQ-USERSPACE-OK`, `WISQ_TURNS=4000000`)
+  : `WISQ-USERSPACE-OK` sur le port série, « vidages 1 fois, 11796 region(s)
+  oubliee(s) », 11 998 lignes « traduction », 47 s de mur compilation
+  comprise — les chiffres d'avant.
+- Compte publié : 3 626 → 3 630 (Swift 2 986 + Rust 644), par `recompte.sh` ;
+  site : 476 passés, 0 échec.
+
+**Ce qui reste.** `66 6a` n'est porté par aucun corpus : sa largeur est
+jugée par un cas écrit d'après le silicium de ce conteneur, pas par le
+fichier. L'ajouter au corpus de pile changerait ses comptes dans les trois
+cœurs, Swift compris ; c'est une tranche à part. Les `pushw` restent refusés
+par l'émetteur. Le pont Swift sous un vrai WebKit, seule la CI (« App iOS »)
+le juge.
+
 ## 2026-11-14 — Émetteur : le vidage au premier anneau trois tient avec une interruption en attente, une instruction complète au bout d'une page n'est plus une coupe, et `rep lods` est jugé par le silicium
 
 **Ce qui n'allait pas.** Le contrôle de la tranche « Alpine jusqu'à son
