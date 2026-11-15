@@ -24,7 +24,9 @@ name: Bureaux prêts
 #     entrées de l'ancien d'un autre niveau de machine (`Index.merged`) : une
 #     application d'avant y retrouve le bureau qu'elle sait reprendre, parce
 #     que l'archive de son niveau n'a pas été remplacée — un autre niveau,
-#     un autre nom. Et si deux fichiers différents se retrouvaient à la même
+#     un autre nom. L'ancien index qui ne se laisse pas lire (autre chose
+#     qu'un 404) arrête le job (`scripts/bureaux-ancien-index.sh`) : rien
+#     n'est publié. Et si deux fichiers différents se retrouvaient à la même
 #     adresse, `wisq-fabrique index` refuse d'écrire l'index
 #     (`Index.publishable`) : ce job tombe, et rien n'est publié.
 on:
@@ -128,10 +130,13 @@ jobs:
           nom=$(basename "${fiches[0]}" .json)
           pnmtopng "bureau/$nom.ppm" > "bureau/$nom.png"
           # L'index publié, s'il existe déjà : ses entrées d'un autre niveau
-          # sont gardées. Absent (404), on part de rien.
+          # sont gardées. Seul un 404 constaté veut dire « absent » (on part
+          # de rien) ; toute autre panne fait tomber ce job, plutôt que de
+          # publier un index qui aurait perdu le bureau du niveau d'avant.
           garder=()
-          if curl -fsSL --retry 3 -o bureau/ancien.json \
-              "https://github.com/$GITHUB_REPOSITORY/releases/download/bureaux-1/bureaux.json"; then
+          scripts/bureaux-ancien-index.sh \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/bureaux-1/bureaux.json" bureau/ancien.json
+          if [ -f bureau/ancien.json ]; then
             garder=(--garder bureau/ancien.json)
           fi
           .build/release/wisq-fabrique index bureau/bureaux.json "bureau/$nom.json" \

@@ -273,6 +273,40 @@ final class ReadyDesktopTests: XCTestCase {
         }
     }
 
+    /// **Une adresse, un fichier, pour l'image aussi.** Deux bureaux de deux
+    /// titres, chacun avec sa propre archive, qui annoncent la même ISO à deux
+    /// sommes (ou à deux tailles) : l'un des deux promet un fichier que
+    /// l'adresse ne sert pas, et c'est celui qu'on téléchargerait en boucle —
+    /// 1,4 Gio à chaque essai. L'application n'en propose aucun ; la fabrique
+    /// refuse d'écrire l'index. Les deux archives à des adresses distinctes :
+    /// seule la garde de l'image peut les écarter.
+    func testTwoImagesAtOneAddressAreRefused() throws {
+        let first = entry()
+        var second = entry()
+        second.title = "Void Xfce (autre)"
+        second.archive.name = "void-live-x86_64-20250202-xfce-autre-niveau1.wisqmachine"
+        second.archive.url = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(second.archive.name)"
+        XCTAssertEqual(ReadyDesktop.parse(try json([first, second])).count, 2, "deux bureaux sans conflit")
+
+        var otherSum = second
+        var otherISO = iso
+        otherISO[0] ^= 0xFF
+        otherSum.image.sha256 = SHA256Stream.hex(otherISO)
+        XCTAssertEqual(otherSum.image.url, first.image.url)
+        XCTAssertNotEqual(otherSum.archive.url, first.archive.url)
+        let sums = ReadyDesktop.Index(desktops: [first, otherSum])
+        XCTAssertEqual(sums.clashes, [Self.isoURL])
+        XCTAssertEqual(ReadyDesktop.parse(try json([first, otherSum])), [], "deux sommes, une adresse")
+        XCTAssertThrowsError(try ReadyDesktop.Index.publishable(sums)) {
+            XCTAssertEqual($0 as? ReadyDesktop.Index.Fault, .clash(url: Self.isoURL))
+        }
+
+        var otherSize = second
+        otherSize.image.bytes += 1
+        XCTAssertEqual(ReadyDesktop.Index(desktops: [first, otherSize]).clashes, [Self.isoURL])
+        XCTAssertEqual(ReadyDesktop.parse(try json([otherSize, first])), [], "deux tailles, une adresse")
+    }
+
     /// **Un index que l'application écarterait n'est pas écrit** : la
     /// fabrique demande à l'index les entrées refusées, jugées chacune à son
     /// niveau — un bureau d'un niveau neuf n'est pas une faute.
@@ -537,6 +571,36 @@ final class ReadyDesktopTests: XCTestCase {
         _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
                                     replacedImage: { fresh.add($0) })
         XCTAssertEqual(fresh.all, [])
+    }
+
+    /// **L'image qui tombe ne dit rien.** Dire « remplacée » efface ce qui
+    /// avait été écrit sur l'ancien fichier (`KernelLibrary.replaced`) : le
+    /// dire avant que l'image neuve ne soit reçue et vérifiée l'effacerait
+    /// alors que l'ancien fichier est toujours là, intact. Rien n'est donc dit
+    /// tant que l'image n'est pas rangée ; l'essai suivant, qui la reçoit, le
+    /// dit une fois.
+    func testAnImageThatFailsSaysNothingReplaced() async throws {
+        let old = Data("une autre image".utf8)
+        try old.write(to: library.appendingPathComponent(Self.isoName))
+        let desktop = try desktop(entry())
+        let image = Server(iso), archive = Server(archiveBytes)
+        image.cutAfter = 20_000
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        let replaced = Names()
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
+                                        replacedImage: { replaced.add($0) })
+            XCTFail("la coupure doit remonter")
+        } catch is Server.Cut {}
+        XCTAssertEqual(replaced.all, [], "rien n'a remplacé l'ancien fichier")
+        XCTAssertEqual(try Data(contentsOf: library.appendingPathComponent(Self.isoName)), old,
+                       "l'ancien fichier est toujours en place")
+        XCTAssertEqual(archive.ranges, [], "l'archive n'est pas demandée")
+
+        _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
+                                    replacedImage: { replaced.add($0) })
+        XCTAssertEqual(replaced.all, [Self.isoName], "dit une fois, quand l'image est là")
+        XCTAssertEqual(try Data(contentsOf: library.appendingPathComponent(Self.isoName)), Data(iso))
     }
 
     /// Les noms reçus, dans l'ordre.
