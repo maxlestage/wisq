@@ -128,7 +128,16 @@ public struct ImageDownloader: Sendable {
             guard response.status == 200 else {
                 return ([], Self.readyFailure("le serveur a répondu \(response.status)"))
             }
-            return (ReadyDesktop.parse(try await collect(response.body), index: index), nil)
+            let text = try await collect(response.body)
+            // **Un 200 qui n'est pas un index se dit aussi** : un réseau qui
+            // demande de se connecter d'abord (Wi-Fi d'hôtel, de gare) rend sa
+            // page en 200 à la place de tout. Lue comme un index, elle ne
+            // proposait rien, et la section disparaissait sans un mot.
+            guard ReadyDesktop.isIndex(text) else {
+                return ([], Self.readyFailure("la réponse n'est pas l'index des bureaux ; un réseau qui demande "
+                    + "de se connecter d'abord, comme un Wi-Fi d'hôtel ou de gare ?"))
+            }
+            return (ReadyDesktop.parse(text, index: index), nil)
         } catch {
             return ([], Self.readyFailure(error.localizedDescription))
         }

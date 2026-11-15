@@ -177,7 +177,7 @@ struct ImageDownloadSheet: View {
                     // **Annuler**, pendant l'un ou l'autre fichier : le
                     // transfert s'arrête, et la ligne dit ce qui est gardé.
                     Button {
-                        model.cancelDesktop()
+                        model.cancelDesktop(desktop)
                     } label: {
                         Label("Annuler", systemImage: "xmark.circle")
                             .labelStyle(.iconOnly)

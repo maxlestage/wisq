@@ -894,7 +894,7 @@ final class ReadyDesktopTests: XCTestCase {
         let image = Server(iso), archive = Server(archiveBytes)
         let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
         let room = desktop.room(library: library, downloads: downloads)
-        XCTAssertEqual(room, .init(download: iso.count + archiveBytes.count,
+        XCTAssertEqual(room, .init(image: iso.count, archive: archiveBytes.count,
                                    install: 2 * archiveBytes.count + ReadyDesktop.digestScratch))
         do {
             _ = try await desktop.fetch(library: library, downloads: downloads, available: room.total - 1,
@@ -1083,6 +1083,14 @@ final class ReadyDesktopTests: XCTestCase {
         let second = try install(desktop, archive: try makeArchive(kernel: kernel),
                                  digest: ReadyDesktopBuild.kernelDigest(kernel))
         XCTAssertNotEqual(second.id, first.id)
+        // Deux machines, chacune avec sa session : le pluriel, et aucune
+        // n'est dite sans la sienne.
+        let both = desktop.installedCopies(among: InstalledMachines.list(in: storage), in: storage)
+        XCTAssertEqual(both.map(\.hasSession), [true, true])
+        let names = both.map { "« \($0.machine.name) »" }.joined(separator: ", ")
+        XCTAssertEqual(desktop.alreadyInstalledPhrase(both),
+                       "\(names) démarrent déjà cette image, chacune avec sa session. Installer ajoute une autre "
+                        + "machine, prête au jour de la fabrication ; celles-ci et leurs sessions restent telles quelles.")
         XCTAssertEqual(try Data(contentsOf: storage.appendingPathComponent(SuspendedMachine.fileName(kernel: session))),
                        before, "la session de la première est intacte")
         // Une machine de la même image sans session : dit aussi.
@@ -1113,6 +1121,159 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertEqual(desktop.backgroundPhrase(running: [Self.archiveName]),
                        "Le téléchargement du bureau continue en arrière-plan. Touchez « Installer » pour le "
                         + "suivre : il reprend là où il en est, rien n'est redemandé.")
+    }
+
+    // MARK: - Le contrôle de la reprise de la tranche
+
+    /// L'entrée de `bureaux-1`, à ses vraies tailles : l'ISO de 1,4 Gio et
+    /// le bureau de 156 Mio. Rien n'est téléchargé de ces tailles-là.
+    private func realSizes() throws -> ReadyDesktop {
+        var real = entry()
+        real.image.bytes = 1_446_789_120
+        real.archive.bytes = 163_919_297
+        return try desktop(real)
+    }
+
+    /// **La recopie de l'image est le moment le plus lourd**, et la garde le
+    /// compte. La session d'arrière-plan rend l'image entière dans son
+    /// fichier ; `adopt` la recopie sur le `.part` pendant que ce fichier
+    /// existe encore : deux fois ce qui restait à recevoir. Pour `bureaux-1`
+    /// sans rien de déjà là, 2 893 578 240 octets (2,69 Gio), quand la garde
+    /// n'en demandait que 2 206 982 467 (2,06 Gio) : un téléphone à 2,3 Gio
+    /// libres recevait toute l'image, et tombait à sa recopie.
+    func testTheRoomHoldsTheCopyOfABackgroundDownload() async throws {
+        // Ce que la garde suppose, vu sur `adopt` lui-même : après la
+        // recopie, le fichier de la session est encore là, et l'image rangée
+        // aussi — deux fois ce qui restait à recevoir.
+        let small = try desktop(entry())
+        let room = small.room(library: library, downloads: downloads)
+        XCTAssertEqual(room.image, iso.count)
+        let received = folder.appendingPathComponent("recu-par-la-session")
+        try Data(iso).write(to: received)
+        let downloader = ImageDownloader(fetcher: Router([:]), partsFolder: downloads)
+        let url = try downloader.adopt(received, status: 200, contentRange: nil, for: small.image, into: library)
+        let footprint = try XCTUnwrap(ReadyDesktop.size(of: received)) + XCTUnwrap(ReadyDesktop.size(of: url))
+        XCTAssertEqual(footprint, 2 * room.image, "la session garde son fichier pendant la recopie")
+        XCTAssertGreaterThanOrEqual(room.total, footprint)
+
+        // Aux vraies tailles : refusé avant le premier octet.
+        let real = try realSizes()
+        let needed = real.room(library: folder.appendingPathComponent("vide"), downloads: downloads)
+        XCTAssertEqual(needed.download + needed.install, 2_206_982_467, "l'ancien compte")
+        XCTAssertEqual(needed.total, 2_893_578_240, "deux fois l'image")
+        let available = 2_300 << 20
+        let image = Server(iso), archive = Server(archiveBytes)
+        let fetching = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        let empty = folder.appendingPathComponent("vide")
+        do {
+            _ = try await real.fetch(library: empty, downloads: downloads, available: available,
+                                     download: download(with: fetching))
+            XCTFail("2,3 Gio ne suffisent pas à recopier l'image")
+        } catch let refusal as ReadyDesktop.Refusal {
+            XCTAssertEqual(refusal, .notEnoughSpace(needed, available: available))
+            XCTAssertEqual(refusal.errorDescription,
+                           "Pas assez de place sur le téléphone : ce bureau demande 2,7 Gio de libre au plus fort "
+                            + "(1,5 Gio à télécharger ; l'image reçue, 1,3 Gio, est recopiée avant d'être rangée, "
+                            + "et prend un moment deux fois sa place), et il en reste 2,2 Gio. Libérez au moins "
+                            + "459,5 Mio (Réglages, Général, Stockage de l'iPhone), puis réessayez. Rien n'a été "
+                            + "téléchargé.")
+        }
+        XCTAssertEqual(image.ranges, [], "rien n'a été demandé")
+        // L'image déjà là : la recopie du bureau ne dépasse pas l'installation,
+        // et la phrase reste celle de la somme.
+        XCTAssertFalse(ReadyDesktop.Room(image: 0, archive: 163_919_297, install: 596_274_050).copyIsThePeak)
+    }
+
+    /// **Le `.part` de l'image compte**, comme celui du bureau : ce qu'il a
+    /// déjà reçu n'est plus à recevoir, ni à recopier.
+    func testTheRoomCountsThePartOfTheImage() throws {
+        let desktop = try desktop(entry())
+        try Data(iso.prefix(20_000))
+            .write(to: ImageDownload.partURL(for: downloads.appendingPathComponent(Self.isoName)))
+        let room = desktop.room(library: library, downloads: downloads)
+        XCTAssertEqual(room.image, iso.count - 20_000)
+        XCTAssertEqual(room.download, iso.count - 20_000 + archiveBytes.count)
+    }
+
+    /// **Un téléchargement en cours en arrière-plan se suit, il ne se refuse
+    /// pas** : son fichier a déjà pris de la place que `room` ne voit pas,
+    /// et la feuille rouverte disait à la fois « continue en arrière-plan »
+    /// et « Rien n'a été téléchargé », le bouton éteint. Le fichier d'un
+    /// autre bureau, lui, ne change rien.
+    func testABackgroundDownloadIsFollowedNotRefused() async throws {
+        let desktop = try desktop(entry())
+        let short = desktop.room(library: library, downloads: downloads).total - 1
+        XCTAssertNotNil(desktop.spaceShortfall(available: short, library: library, downloads: downloads,
+                                               running: ["alpine-virt.iso"]))
+        XCTAssertNil(desktop.spaceShortfall(available: short, library: library, downloads: downloads,
+                                            running: [Self.isoName]), "l'image en cours : on la suit")
+        XCTAssertNil(desktop.spaceShortfall(available: short, library: library, downloads: downloads,
+                                            running: [Self.archiveName]), "le bureau en cours : pareil")
+        let image = Server(iso), archive = Server(archiveBytes)
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        _ = try await desktop.fetch(library: library, downloads: downloads, available: short,
+                                    running: [Self.isoName], download: download(with: downloader))
+        XCTAssertEqual(image.ranges, [nil], "suivi, pas refusé")
+        XCTAssertTrue(desktop.archivePresent(in: downloads))
+    }
+
+    /// **Suivi, il ne se dit plus en arrière-plan** : une fois `fetch`
+    /// rendu — annulé, fini, refusé —, la ligne ne dit plus qu'il continue.
+    /// Elle le disait encore à côté de « Téléchargement arrêté ».
+    func testAFollowedDesktopIsNoLongerSaidInTheBackground() throws {
+        let desktop = try desktop(entry())
+        let running: Set<String> = [Self.isoName, Self.archiveName, "alpine-virt.iso"]
+        XCTAssertEqual(desktop.backgroundFiles(running: running), [Self.isoName, Self.archiveName])
+        let after = desktop.followed(running: running)
+        XCTAssertEqual(after, ["alpine-virt.iso"], "les fichiers des autres restent")
+        XCTAssertNil(desktop.backgroundPhrase(running: after))
+    }
+
+    /// **Annulée avant de commencer, rien n'est demandé** : ni requête, ni
+    /// `.part`. Sans le relevé du début de `fetch`, le premier morceau de
+    /// l'image s'écrivait avant que l'annulation ne se voie.
+    func testACancelledTaskAsksForNothing() async throws {
+        let desktop = try desktop(entry())
+        let image = Server(iso), archive = Server(archiveBytes)
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        let library = self.library, downloads = self.downloads, plain = download(with: downloader)
+        do {
+            _ = try await Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try await desktop.fetch(library: library, downloads: downloads, download: plain)
+            }.value
+            XCTFail("l'annulation doit remonter")
+        } catch is CancellationError {}
+        XCTAssertEqual(image.ranges, [], "rien n'a été demandé")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: downloads.path), [], "aucun .part")
+    }
+
+    /// **Les deux reçus, et le téléphone plein avant l'installation** : la
+    /// phrase dit qu'il n'y a rien à télécharger, pas « 0 o à télécharger ».
+    func testNothingLeftToDownloadIsSaid() {
+        let room = ReadyDesktop.Room(image: 0, archive: 0, install: 300 << 20)
+        let text = ReadyDesktop.Refusal.notEnoughSpace(room, available: 100 << 20).errorDescription ?? ""
+        XCTAssertTrue(text.hasPrefix("Pas assez de place sur le téléphone : ce bureau demande 300,0 Mio de libre "
+                                     + "(rien à télécharger, puis 300,0 Mio pour l'installer"), text)
+    }
+
+    /// **Une page à la place de l'index se dit** : un réseau qui demande de
+    /// se connecter d'abord rend sa page en 200. Un index d'un format plus
+    /// récent, lui, ne propose rien sans que ce soit une panne.
+    func testAPageInsteadOfTheIndexIsSaid() async throws {
+        let portal = Server(Array("<html><body>Connectez-vous au Wi-Fi de l'hôtel</body></html>".utf8))
+        let caught = await ImageDownloader(fetcher: Router([ReadyDesktop.index: portal]), partsFolder: downloads)
+            .readyCatalog()
+        XCTAssertEqual(caught.desktops, [])
+        XCTAssertEqual(caught.failure,
+                       "Les bureaux prêts n'ont pas pu être lus (la réponse n'est pas l'index des bureaux ; un "
+                        + "réseau qui demande de se connecter d'abord, comme un Wi-Fi d'hôtel ou de gare ?). Les "
+                        + "images des distributions ne dépendent pas de cet index. Touchez « Réessayer » pour le relire.")
+        let newer = Server(Array(#"{"format": 2, "bureaux": []}"#.utf8))
+        let later = await ImageDownloader(fetcher: Router([ReadyDesktop.index: newer]), partsFolder: downloads)
+            .readyCatalog()
+        XCTAssertEqual(later.desktops, [])
+        XCTAssertNil(later.failure, "un format plus récent n'est pas une panne")
     }
 
     /// Un fetcher qui ne joint rien : le réseau coupé.

@@ -91,7 +91,9 @@ final class ImageDownloadModel {
     /// « Réessayer », au lieu d'une section qui disparaît sans un mot.
     private(set) var desktopsFailure: String?
     /// Les fichiers que la session d'arrière-plan a encore en cours, lus à
-    /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé.
+    /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé. Ceux
+    /// d'un bureau suivi par « Installer » en sortent quand son `fetch` rend
+    /// la main (`ReadyDesktop.followed`) : ils ne sont pas relus ailleurs.
     private(set) var runningFiles: Set<String> = []
     /// Le téléchargement du bureau prêt en cours, pour « Annuler ».
     private var desktopTask: Task<InstalledMachine?, Never>?
@@ -132,7 +134,10 @@ final class ImageDownloadModel {
     func spaceShortfall(_ desktop: ReadyDesktop) -> String? {
         guard let library = try? KernelLibrary.directory(),
               let downloads = try? KernelLibrary.downloadsDirectory() else { return nil }
-        return desktop.spaceShortfall(available: available, library: library, downloads: downloads)
+        // Un fichier de ce bureau en cours en arrière-plan : la ligne dit
+        // qu'il continue, et le bouton reste là pour le suivre.
+        return desktop.spaceShortfall(available: available, library: library, downloads: downloads,
+                                      running: runningFiles)
     }
 
     /// Ce qu'installer de nouveau laisserait tel quel, dit avant (`ReadyDesktop.alreadyInstalledPhrase`).
@@ -149,8 +154,16 @@ final class ImageDownloadModel {
     /// **« Annuler »** : la tâche du bureau prêt est annulée, ce qui arrête
     /// le transfert de la session d'arrière-plan (`BackgroundImageDownloads.download`)
     /// et empêche l'archive de partir après l'image (`ReadyDesktop.fetch`).
-    func cancelDesktop() {
+    /// Les fichiers de ce bureau qui couraient déjà en arrière-plan à
+    /// l'ouverture sont arrêtés aussi : `fetch` ne les a peut-être pas encore
+    /// rejoints (annulé avant, ou encore à l'image quand c'est le bureau qui
+    /// court), et la ligne, qui les retire des fichiers en cours, ne doit
+    /// pas laisser un transfert courir sans le dire.
+    func cancelDesktop(_ desktop: ReadyDesktop) {
         desktopTask?.cancel()
+        for file in desktop.backgroundFiles(running: runningFiles) {
+            BackgroundImageDownloads.shared.cancel(file)
+        }
     }
 
     /// La mémoire que ce téléphone peut donner à une machine PC, maintenant.
@@ -218,7 +231,14 @@ final class ImageDownloadModel {
         }
         phase = .fetchingDesktop(title: desktop.title)
         desktopProgress = nil
+        // Lus avant de suivre : `fetch` ne refuse pas un téléchargement de
+        // ce bureau qui court déjà en arrière-plan, il le suit.
+        let running = runningFiles
         defer {
+            // Suivi jusqu'au bout — fini, refusé, en panne ou annulé : plus
+            // rien de ce bureau ne court en arrière-plan, et la ligne ne le
+            // dit plus.
+            runningFiles = desktop.followed(running: runningFiles)
             desktopProgress = nil
             phase = .ready
         }
@@ -226,7 +246,7 @@ final class ImageDownloadModel {
             // **La place, avant le premier octet** : sans elle, le téléphone
             // plein faisait tomber l'écriture au milieu de 1,4 Gio.
             let files = try await desktop.fetch(
-                library: library, downloads: downloads, available: available,
+                library: library, downloads: downloads, available: available, running: running,
                 download: { release, destination, progress in
                     try await BackgroundImageDownloads.shared.download(
                         release, into: destination, progress: progress)
