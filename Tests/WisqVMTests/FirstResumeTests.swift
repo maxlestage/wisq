@@ -134,12 +134,24 @@ final class FirstResumeTests: XCTestCase {
             atPath: folder.appendingPathComponent("machine-bureau-ab12.wisqvm.premiere").path))
     }
 
-    /// Une écriture qui échoue laisse le fichier téléchargé, et sa marque.
+    /// **Une écriture qui échoue laisse sa marque** : la marque n'est retirée
+    /// qu'après une écriture réussie, pas avant.
+    ///
+    /// L'écriture doit échouer **dans le dossier de la marque** : une écriture
+    /// ratée ailleurs ne toucherait jamais la marque, et ne prouverait rien de
+    /// l'ordre des deux gestes. Un dossier occupe ici la place du fichier de
+    /// session : le renommage final de l'écriture `.atomic` est refusé. Pas un
+    /// dossier en lecture seule : les tests tournent parfois sous `root`, qui
+    /// passe outre.
     func testAFailedWriteKeepsTheMarker() throws {
-        try SuspendedMachine.save(Data(repeating: 1, count: 100), kernel: "bureau-ab12", in: folder)
         try FirstResume.arm(FirstResume(madeAt: madeAt), kernel: "bureau-ab12", in: folder)
-        let missing = folder.appendingPathComponent("absent", isDirectory: true)
-        XCTAssertThrowsError(try SuspendedMachine.savePacked(Data([1]), kernel: "bureau-ab12", in: missing))
+        let marker = folder.appendingPathComponent("machine-bureau-ab12.wisqvm.premiere")
+        let session = folder.appendingPathComponent("machine-bureau-ab12.wisqvm", isDirectory: true)
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: false)
+        try Data([0]).write(to: session.appendingPathComponent("occupe"))
+        XCTAssertThrowsError(try SuspendedMachine.savePacked(Data([1]), kernel: "bureau-ab12", in: folder))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path),
+                      "la marque est partie avant une écriture qui a échoué")
         XCTAssertEqual(FirstResume.pending(kernel: "bureau-ab12", in: folder), FirstResume(madeAt: madeAt))
     }
 
