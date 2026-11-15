@@ -13155,23 +13155,39 @@ fn a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three() {
     );
 }
 
-/// **Sous isolation des tables, le noyau arrêté en anneau trois reste
-/// illisible, et ce n'est pas compté comme périmé.**
+/// **Sous isolation des tables, le noyau arrêté en anneau trois n'est jamais
+/// relu à travers l'identité.**
 ///
 /// C'est le cas d'Alpine tel quel (« Kernel/User page tables isolation:
 /// enabled ») : à l'arrêt en anneau trois, CR3 désigne les tables **du
 /// programme**, qui ne portent du noyau que son passage d'entrée et de
 /// sortie. Mesuré : « perimees 7 / illisibles 11 030 », les sept dans
-/// `.entry.text`. Lire en `walkMachine` n'y change rien, et rien ne doit le
-/// faire croire : une région que les tables en service ne portent pas est
-/// **illisible**, jamais comparée à des octets pris ailleurs.
+/// `.entry.text`. Lire en `walkMachine` n'y change rien. Une région que les
+/// tables en service ne portent pas n'a que deux issues justes :
 ///
-/// Le montage : le même noyau réécrit un octet de sa fenêtre, puis saute
-/// sur un passage posé sur une troisième grande page, cartographiée dans les
-/// deux tables, qui change CR3 pour les tables du programme et fait
-/// `sysretq`. Les tables du programme ne portent pas la page du noyau.
+/// - **illisible**, et rien n'est compté : c'est ce que fait l'hôte
+///   aujourd'hui ;
+/// - **relue par des tables du noyau qu'on sait vivantes**, et alors comparée
+///   aux vrais octets — l'octet réécrit est nommé, lui seul. C'est
+///   l'amélioration que le JOURNAL propose ; ce test ne s'y oppose pas.
+///
+/// Ce qu'il refuse, c'est le défaut : comparer la fenêtre à des octets pris
+/// ailleurs, en relisant l'adresse virtuelle comme si elle était physique.
+/// Pour que ce défaut se voie, **le noyau tourne ici sur un alias** : son
+/// adresse virtuelle (`RING_THREE_KERNEL_ALIAS`) n'est pas l'adresse
+/// physique de ses octets (`RING_THREE_KERNEL`). Relue par l'identité, sa
+/// fenêtre tombe sur de la mémoire vide, et la première différence est à
+/// l'octet zéro.
+///
+/// Le montage : le noyau réécrit un octet de sa fenêtre, puis saute sur un
+/// passage posé sur une troisième grande page, cartographiée dans les deux
+/// tables, qui change CR3 pour les tables du programme et fait `sysretq`.
+/// Les tables du programme ne portent ni la page du noyau ni son alias. Le
+/// passage, lui, reste lisible sous les tables du programme, comme
+/// `.entry.text` d'Alpine ; rien n'écrit dedans, il n'y a donc là aucune
+/// région périmée.
 #[test]
-fn under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three() {
+fn under_page_table_isolation_the_kernel_window_is_never_reread_through_identity() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
@@ -13183,17 +13199,19 @@ fn under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three()
          programme, sinon ce test ne juge rien : {}",
         seen.text
     );
-    assert_eq!(
-        seen.unreadable,
-        vec![RING_THREE_KERNEL],
-        "**la fenêtre du noyau est illisible**, et elle seule — le passage et \
-         le programme sont dans les tables du programme : {}",
-        seen.text
+    let unreadable = (vec![RING_THREE_KERNEL_ALIAS], Vec::new());
+    let reread = (
+        Vec::new(),
+        vec![(RING_THREE_KERNEL_ALIAS, 0x100, 0x00, 0x90)],
     );
+    let got = (seen.unreadable.clone(), seen.changed.clone());
     assert!(
-        seen.changed.is_empty(),
-        "et l'octet réécrit n'est pas compté : une page que les tables ne \
-         portent pas ne dit rien de ses octets : {}",
+        got == unreadable || got == reread,
+        "**la fenêtre du noyau est illisible, ou relue par les tables du \
+         noyau** — et seul l'octet réécrit compte. Le passage et le programme \
+         sont dans les tables du programme. Une différence à l'octet zéro \
+         vient d'une relecture par l'identité, qui lit la mémoire vide sous \
+         l'alias : {}",
         seen.text
     );
 }
@@ -13221,11 +13239,15 @@ fn under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three()
 ///   l'ajoute d'après CS en délivrant, et sans porte il ne délivre pas) ; la
 ///   sonde doit alors avoir compté l'entrée, et nommé la région du noyau ;
 /// - **le silicium** (le jour où le trou sera bouché) : la région ne tourne
-///   pas, le chargement faute (témoin nul, CR2 et RIP sur la cible) et, sans
-///   porte, la machine s'arrête sur cette faute de chargement. La sonde n'a
-///   alors plus rien à juger ici.
+///   pas, le chargement faute (CR2 et RIP sur la cible) et, sans porte, la
+///   machine s'arrête sur une faute de page. Ce qui le prouve n'est pas le
+///   témoin : c'est qu'aucune écriture n'a fauté et que rien n'est entré. Le
+///   témoin vaut zéro si c'est l'hôte qui refuse le chargement — son chemin
+///   `UNMAPPED` remet le témoin — et un code **sans le bit W** si c'est le
+///   module qui faute (P, plus un). Les deux bouchages possibles passent.
 ///
-/// Toute autre issue fait tomber le test.
+/// Toute autre issue fait tomber le test, notamment un témoin qui porte W
+/// sans que la région ait été comptée.
 #[test]
 fn the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open() {
     let Some(bun) = bun() else {
@@ -13259,13 +13281,23 @@ fn the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole
                 seen.text
             );
         }
-        0 => assert!(
-            seen.text
-                .contains("une faute de page sur un chargement d'instruction"),
-            "le trou est bouché : c'est le chargement qui faute, comme sur le \
-             silicium : {}",
-            seen.text
-        ),
+        // Zéro (l'hôte refuse le chargement) ou un code sans W (le module
+        // faute avant d'exécuter quoi que ce soit) : le chargement a fauté.
+        temoin if temoin == 0 || (temoin - 1) & 0x2 == 0 => {
+            assert!(
+                seen.text.contains("arret une faute de page"),
+                "le trou est bouché : c'est le chargement qui faute, comme sur \
+                 le silicium, et l'arrêt nomme une faute de page : {}",
+                seen.text
+            );
+            assert_eq!(
+                (seen.entries, seen.regions.len()),
+                (0, 0),
+                "et la région du noyau n'a pas tourné : la sonde n'a rien vu \
+                 entrer : {}",
+                seen.text
+            );
+        }
         other => panic!(
             "ni le défaut connu ni le silicium (témoin {other:#x}) : {}",
             seen.text
@@ -13275,6 +13307,11 @@ fn the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole
 
 /// Le noyau, sur une page du superviseur.
 const RING_THREE_KERNEL: u64 = 0x1_0000;
+/// Le même noyau vu par un alias, sous isolation des tables : la quatrième
+/// grande page des tables du noyau porte les deux premiers mébioctets. Son
+/// adresse virtuelle n'est pas celle de ses octets — l'identité, à cette
+/// adresse, ne lit que de la mémoire vide.
+const RING_THREE_KERNEL_ALIAS: u64 = 0x60_0000 + RING_THREE_KERNEL;
 /// Le programme, sur une page utilisateur.
 const RING_THREE_USER: u64 = 0x20_1000;
 /// Le passage de sortie sous isolation des tables : une page du superviseur
@@ -13309,7 +13346,8 @@ struct RingThreeStop {
 /// **`pti`, l'isolation des tables** : le noyau ne fait pas `sysretq`
 /// lui-même, il saute sur le passage, qui charge dans CR3 les tables du
 /// programme — elles portent le programme et le passage, pas le noyau — puis
-/// fait `sysretq`.
+/// fait `sysretq`. Le noyau y tourne sur son alias,
+/// `RING_THREE_KERNEL_ALIAS`, que seules les tables du noyau portent.
 fn ring_three_stop(
     bun: &Path,
     offset: u32,
@@ -13348,6 +13386,15 @@ fn ring_three_stop(
         0x0f, 0x22, 0xdb, // mov %rbx,%cr3
         0x48, 0x0f, 0x07, // sysretq
     ];
+    // **L'entrée de l'alias passe par une page à l'identité.** La toute
+    // première fenêtre est lue avant qu'aucun module n'exporte sa marche :
+    // l'hôte la lit alors par le repli, l'identité — juste pour un noyau qui
+    // démarre sans pagination, faux pour un alias. Le premier bloc est donc
+    // posé sur le passage, que les deux tables portent à l'identité, et
+    // saute sur l'alias.
+    let mut entry = vec![0x48, 0xb8]; // movabs $ALIAS,%rax
+    entry.extend_from_slice(&RING_THREE_KERNEL_ALIAS.to_le_bytes());
+    entry.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
 
     static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -13360,6 +13407,7 @@ fn ring_three_stop(
         ("noyau.bin", &kernel[..], RING_THREE_KERNEL),
         ("programme.bin", user, RING_THREE_USER),
         ("passage.bin", trampoline, RING_THREE_TRAMPOLINE),
+        ("entree.bin", &entry[..], RING_THREE_TRAMPOLINE + 0x100),
     ] {
         let path = scratch.join(name);
         std::fs::write(&path, bytes).expect(name);
@@ -13395,6 +13443,9 @@ vue.setBigUint64({pdpt}, {pd}n | 0x7n, true);
 vue.setBigUint64({pd}, 0x0n | 0x83n, true);
 vue.setBigUint64({pd} + 8, 0x20_0000n | 0x87n, true);
 vue.setBigUint64({pd} + 16, {trampoline}n | 0x83n, true);
+// L'alias du noyau, dans ses seules tables : la quatrième grande page porte
+// la première.
+vue.setBigUint64({pd} + 24, 0x0n | 0x83n, true);
 // Les tables du programme, pour l'isolation : le programme et le passage,
 // pas la page du noyau (l'entrée 0 reste vide).
 vue.setBigUint64({user_pml4}, {user_pdpt}n | 0x7n, true);
@@ -13448,7 +13499,11 @@ console.log("fini");
             efer = EFER_SLOT,
             segment = SEGMENT_SLOT,
             rip = RIP_SLOT,
-            kernel = RING_THREE_KERNEL,
+            kernel = if pti {
+                RING_THREE_TRAMPOLINE + 0x100
+            } else {
+                RING_THREE_KERNEL
+            },
         ),
     )
     .expect("le pilote");

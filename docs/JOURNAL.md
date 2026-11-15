@@ -44,8 +44,10 @@ les fenêtres sans juger l'anneau ») a trouvé deux défauts, tous deux réels.
   qui ne portent pas la page du noyau, puis fait `sysretq`. À l'arrêt, CS
   vaut `0x33` et CR3 désigne les tables du programme ; seule la fenêtre du
   noyau est illisible, et rien n'est compté comme périmé. Le passage, lui,
-  est relu, ce qui reproduit en petit les sept périmées d'Alpine, toutes dans
-  `.entry.text`.
+  reste lisible sous les tables du programme, comme `.entry.text` d'Alpine ;
+  rien n'y écrit, il n'y a donc aucune région périmée dans ce montage.
+  *(Corrigé par la tranche suivante, qui a aussi renommé ce test : voir
+  plus haut.)*
 - **Le test de la sonde est réécrit pour ne plus consacrer le défaut** :
   `the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open`.
   Le pilote dit maintenant RIP, CR2, CR3 et le témoin de faute, et le test
@@ -57,9 +59,10 @@ les fenêtres sans juger l'anneau ») a trouvé deux défauts, tous deux réels.
   - le **silicium**, le jour où le trou sera bouché : témoin nul, CR2 et RIP
     sur la cible, et l'arrêt nomme la faute de chargement.
 
-  Toute autre issue fait tomber le test. Ce que l'entrée d'avant annonçait
-  (« le jour où ce chargement fautera, le second test devra changer de
-  montage ») ne tient donc plus : il passera tel quel.
+  Toute autre issue fait tomber le test. *(Trop promis : la branche
+  « silicium » exigeait un témoin nul, que seul un bouchon côté hôte donne ;
+  un bouchage dans le module l'aurait fait tomber. Corrigé par la tranche
+  suivante, voir plus haut.)*
 - **Le trou lui-même n'est pas bouché.** Une région s'entre aussi par la
   table du module (`call_indirect`), sans repasser par l'hôte : le boucher
   demande que l'émetteur ou la correspondance des régions connaisse l'anneau.
