@@ -11,10 +11,12 @@
 //!
 //! **Une instruction qui faute n'a rien fait.** Les opérandes mémoire sont lus
 //! en entier dans des cases de travail avant qu'un registre change ; une
-//! écriture de seize octets sonde d'abord, en écriture, son dernier octet,
-//! puis écrit ses deux moitiés : la première ne peut fauter que sur la page
-//! du premier octet, avant que rien ne soit écrit, et la seconde ne peut plus
-//! fauter du tout. Aucune de ces instructions ne touche RFLAGS.
+//! écriture de seize octets est jugée entière pour l'écriture, sans rien
+//! écrire, puis écrit ses deux moitiés, qui ne peuvent plus fauter. Les deux
+//! tiennent par un test chacune
+//! (`a_sixteen_byte_load_that_faults_changes_no_register`,
+//! `a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing`).
+//! Aucune de ces instructions ne touche RFLAGS.
 //!
 //! **Ce que l'alignement ne fait pas ici.** `movaps`, `movdqa` et les formes
 //! arithmétiques en mémoire exigent seize octets alignés, et le silicium lève
@@ -595,29 +597,22 @@ impl Module {
         }
     }
 
-    /// **Seize octets écrits sans jamais en écrire la moitié.** Le dernier
-    /// octet est relu puis réécrit tel quel : c'est une sonde **en écriture**
-    /// de la page du bout, qui faute — avant tout effet — si elle manque ou
-    /// si elle est en lecture seule (une page à copier sur écriture, par
-    /// exemple). Après elle, la moitié basse ne peut fauter que sur la page du
-    /// premier octet, et rien n'est encore écrit ; la moitié haute tient dans
-    /// les deux pages déjà vues, et ne faute plus.
+    /// **Seize octets écrits sans jamais en écrire la moitié.** Les seize
+    /// octets sont d'abord **jugés pour l'écriture**, sans rien écrire
+    /// (`Body::claim`) : si la page du premier octet ou celle du dernier manque
+    /// ou refuse l'écriture, la faute part là, avec le code d'une écriture et
+    /// CR2 où le silicium le met. Après elle, les deux moitiés tiennent dans
+    /// des pages déjà jugées, et ne fautent plus.
+    ///
+    /// Ce n'était pas le cas avant : le dernier octet était **relu** puis
+    /// réécrit. Sur une page absente, la relecture fautait en lecture (code 0,
+    /// pas W), CR2 sur le dernier octet. Mesuré sur le silicium : W, et CR2
+    /// sur le premier octet de l'accès qui tombe dans la page fautive
+    /// (`docs/JOURNAL.md`).
     fn store_wide(address: &crate::x86::Address, register: u8, body: &mut Body) {
-        body.store(HELD, |b| {
-            b.wide_address(address)
-                .constant(15)
-                .op(code::I64_ADD)
-                .peek(Width::Byte);
+        body.claim(16, |b| {
+            b.wide_address(address);
         });
-        body.poke(
-            Width::Byte,
-            |b| {
-                b.wide_address(address).constant(15).op(code::I64_ADD);
-            },
-            |b| {
-                b.load(HELD);
-            },
-        );
         body.store_memory(address, Width::Qword, |b| {
             b.load(xmm(register, false));
         });
