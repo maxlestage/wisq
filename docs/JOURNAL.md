@@ -8,6 +8,168 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Bureaux prêts de bout en bout : la place, l'annulation, l'image en faute, et la première reprise dite
+
+Deux parties : le reste du contrôle adverse de l'entrée juste en dessous,
+puis le parcours de qui installe le bureau prêt de la release `bureaux-1`
+(ISO Void de 1,4 Gio, bureau de 156 Mio, 1 Gio de mémoire), relu en
+adversaire cas par cas.
+
+**Le reste du contrôle : deux défauts réels.**
+
+- **Le test qui lit `LocalVMModel.swift` n'écartait que les lignes qui
+  commencent par `//`.** Le refus `.session` du fil mis entre `/* */`,
+  derrière `_ = refusal //`, ou dans un `if false {` passait : 8 tests,
+  aucun échec, et l'état restait `running`. L'entrée d'en dessous disait
+  pourtant qu'un refus « commenté » le faisait tomber.
+- **« Déplacé » était faux** : le test comptait des occurrences. Le refus
+  du fil retiré et un autre ajouté sur le fil principal laissaient le
+  compte à deux.
+
+Corrigé (`BootRefusalTests`) : tous les commentaires sont ôtés, blocs
+imbriqués et fins de ligne compris, hors des chaînes (`withoutComments`,
+tenu par un test neuf). Ensuite, chaque appel est cherché **à sa place**,
+avec la condition qui le déclenche et le `return` qui le suit
+(`refusalSites`, un lieu par appel compté). Le commentaire de
+`LocalVMModel` et la doc du test disent ce qui échappe encore : un `return`
+placé plus tôt, ou une valeur changée avant la condition.
+
+**Le parcours : ce qui n'allait pas.**
+
+1. **Rien ne regardait la place libre.** 1,4 Gio partaient sur un
+   téléphone plein, et l'écriture tombait au milieu de l'image, ou l'import
+   après les deux téléchargements.
+2. **« Annuler » n'existait pas**, et fermer la feuille n'arrêtait rien.
+   L'attente de la session d'arrière-plan ne voyait pas l'annulation de la
+   tâche qui l'attendait. Dans `ReadyDesktop.fetch`, une image finie au
+   moment de l'annulation lançait quand même l'archive. Dans
+   `ImageDownloader.download`, l'annulation remontait comme un transfert
+   coupé.
+3. **Une image en faute effaçait le bureau reçu.** Le refus `wrongKernel`
+   (une ISO à la bonne taille, mais pas la bonne image) ou `missingImage`
+   effaçait l'archive, pourtant vérifiée à sa somme. L'essai suivant
+   trouvait l'image à sa taille, retéléchargeait 156 Mio, et refusait de
+   nouveau, sans fin. La phrase ne disait pas quoi faire.
+4. **Déjà installé, et rien ne le disait.** Toucher de nouveau
+   « Installer » ajoute une machine sous une clé neuve, sans rien
+   remplacer. Mais la ligne ne nommait pas la machine qui démarre déjà
+   cette image, ni si sa session était en cours : on pouvait croire le
+   bureau en cours reparti du jour de la fabrication.
+5. **L'index injoignable était muet.** Une panne réseau ou un 503 était
+   traité comme le 404 d'une release absente : la section disparaissait
+   sans un mot ni « Réessayer ». Or `bureaux-1` est publiée.
+6. **L'application rouverte ne disait pas qu'un téléchargement continuait
+   en arrière-plan.** La ligne proposait le bureau comme si rien n'avait
+   commencé.
+7. **La première reprise laissait un écran figé une douzaine de secondes**
+   (12,0 s au banc, voir l'entrée du 14 novembre) : le bureau à l'écran ne
+   répondait pas au doigt, et la phrase de `FirstResume` n'arrivait que
+   dans la console, à la fin du dépliage.
+
+La mémoire trop faible était déjà tenue : le bouton est éteint, et la
+phrase en orange (`fits`, `memoryPhrase`, `testWhatTheSheetSays`). Une ISO
+déjà là à sa somme ne se redemande pas
+(`testAnImageAlreadyThereIsNotFetchedAgain`).
+
+**Ce qui change.**
+
+- `ReadyDesktop.room` compte la place : ce qu'il reste à recevoir (les
+  `.part` déduits), plus deux fois le bureau (l'import le recopie, la
+  première sauvegarde s'écrit à côté de la session), plus 256 Mio pour le
+  noyau sorti de l'image (`digestScratch`). Pour `bureaux-1`, sans rien de
+  déjà là : environ 2,1 Gio. `fetch(available:)` refuse **avant toute
+  requête** (`Refusal.notEnoughSpace`). Le refus dit combien il faut,
+  combien il reste, combien libérer et où, et que rien n'a été téléchargé.
+  La feuille montre la même phrase avant qu'on touche, et éteint le
+  bouton. `LocalStorage.availableBytes` lit la place « pour un usage
+  important » sur iOS, la place brute ailleurs. Si la place ne se lit pas,
+  rien n'est refusé.
+- Annuler : un bouton pendant les deux fichiers. Dans
+  `BackgroundImageDownloads`, `withTaskCancellationHandler` arrête la
+  tâche de la session, muette. `fetch` s'arrête entre les deux fichiers, et
+  `download` lève `CancellationError` après avoir écrit le morceau reçu. La
+  ligne dit ce qui est gardé, tel qu'il est sur le disque
+  (`keptPhrase`). Pendant le téléchargement, la feuille dit que la fermer
+  ne l'arrête pas.
+- `install` ne garde l'archive que si l'image est en faute. La phrase
+  dit : « Le bureau reçu est gardé. Supprimez cette image de la
+  bibliothèque, puis touchez de nouveau « Installer » : seule l'image sera
+  retéléchargée. »
+- `installedCopies` et `alreadyInstalledPhrase` nomment les machines qui
+  démarrent déjà l'image, avec ou sans session. La feuille le dit, puis
+  demande confirmation avant d'en installer une autre.
+- `ImageDownloader.readyCatalog` : un 404 reste muet ; toute autre panne
+  donne `Catalog.desktopsFailure`, montrée avec « Réessayer ».
+- `backgroundPhrase` : la feuille rouverte lit les tâches de la session en
+  cours (`runningFiles`) et dit « Le téléchargement de l'image continue en
+  arrière-plan. Touchez « Installer » pour le suivre… ».
+- `ResumeWait` (nouveau, `Sources/WisqVM`). Dès le toucher d'une première
+  reprise, la phrase « Reprise du bureau en cours — 6 s. L'écran ne répond
+  pas encore : la console répond d'habitude en 11 à 15 s. » s'affiche hors
+  de la console et de l'écran, même en plein écran. Au-delà de 15 s, elle
+  le dit. Elle se tait au premier octet de l'invité (l'écho de la ligne
+  tapée) : `ConsoleSink` compte les octets de l'invité à part des phrases
+  de wisq. `LocalVMModel.resumeWait` la relève à chaque battement et à
+  chaque écriture.
+
+**Comment c'est vérifié.** 15 tests neufs : `BootRefusalTests` (1),
+`ReadyDesktopTests` (10, contre le serveur scripté d'`ImageDownloaderTests`),
+`ResumeWaitTests` (3), `LocalStorageTests` (1). Un test change de sens :
+`testAnImageWithAnotherKernelIsRefused` exigeait l'archive effacée ; il
+l'exige gardée, et le test neuf vérifie que l'essai suivant ne la redemande
+pas.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| (a) le refus `.session` du fil entre `/* */` | 3 assertions (compte, total, lieu) ; avant : rien |
+| (b) le même derrière `_ = refusal //` | 3 ; avant : rien |
+| (c) le même dans `if false {` | 1 (le lieu) ; avant : rien |
+| le refus du fil retiré, un second ajouté sur le fil principal, dans le `if` ou après lui | 2, ou 1 ; avant : rien |
+| `.bootMedia` dans `if false {` | 1 (le lieu) |
+| `withoutComments` sans les blocs | 3 (`testCommentsAreStrippedWhereverTheyStand`) |
+| la garde de place retirée de `fetch` | `testNotEnoughSpaceRefusesBeforeAnyRequest` (5 assertions) |
+| l'installation comptée une fois au lieu de deux | le même test (2) |
+| les `.part` ignorés par `room` | 3 tests |
+| pas d'arrêt entre l'image et l'archive | `testACancelAsTheImageEndsDoesNotStartTheArchive` |
+| pas d'arrêt dans le flux de `download` | les deux tests d'annulation au milieu |
+| l'archive effacée avant les gardes de l'image | `testAnImageAtFaultKeepsTheDownloadedArchive`, `testAnImageWithAnotherKernelIsRefused` |
+| l'index injoignable rendu muet | `testAnUnreachableIndexIsSaid` |
+| le 404 dit comme une panne | 2 tests |
+| la session des copies supposée là | `testAnInstalledDesktopIsNamedAndNotReplaced` |
+| l'attente sans repère (`guestBytes > 0`) | `testTheFirstGuestByteEndsIt` |
+| l'attente sans le cas « plus long » | `testTheWaitIsSaidFromTheFirstTouch` |
+| la place jamais lue | `testTheFreeSpaceOfAVolumeIsRead` |
+| le bureau en arrière-plan muet | `testABackgroundDownloadIsSaid` |
+
+Suite Swift entière : 2 953 tests exécutés (15 de plus), 67 sautés, aucun
+échec (6 min 46 s). SwiftLint strict : 0 violation. Le SwiftUI touché passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 665 → 3 680
+(3 036 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Toute la liaison iOS ne se juge que sur la CI « App iOS » et sur un
+  iPhone : le bouton « Annuler », `withTaskCancellationHandler`, la
+  confirmation, la ligne « Reprise du bureau en cours ». Ici, seuls le
+  parse et SwiftLint l'ont vue. Aucun test iOS neuf.
+- **Annuler perd les octets de la tâche d'arrière-plan en cours** : la
+  session ne rend son fichier qu'à la fin, et le `.part` n'a que ce qu'il
+  avait au départ de la tâche. La phrase le dit (`keptPhrase` ne compte
+  que le disque). Même perte quand on force à quitter wisq depuis le
+  sélecteur d'applications : iOS annule alors les transferts. Les données
+  de reprise d'`URLSession` (`NSURLSessionDownloadTaskResumeData`) ne sont
+  pas employées. Les recoudre demanderait de savoir ce que rend une tâche
+  reprise, et seul un iPhone peut le dire.
+- La place « pour un usage important » d'iOS et la marge choisie (deux fois
+  le bureau, plus 256 Mio) ne sont pas mesurées sur un téléphone.
+- L'attente de 11 à 15 s vient du banc Linux. Sur un iPhone, l'interprète
+  et le dépliage de 842 Mio n'ont pas la même vitesse.
+- Une ISO à la bonne taille mais fausse n'est toujours reconnue qu'à
+  l'installation, par son noyau : sa somme n'est pas refaite (1,4 Gio).
+
 ## 2026-11-15 — Second contrôle des refus du début de démarrage : chaque appel compté
 
 Le contrôle adverse de l'entrée juste en dessous a trouvé deux choses.
