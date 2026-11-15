@@ -840,8 +840,8 @@ fn read_string_oracle() -> StringOracle {
         }
     }
     assert_eq!(states.len(), 8, "les huit états du corpus de chaîne");
-    assert_eq!(instructions.len(), 47, "ses quarante-sept formes");
-    assert_eq!(cases.len(), 376, "et ses trois cent soixante-seize cas");
+    assert_eq!(instructions.len(), 52, "ses cinquante-deux formes");
+    assert_eq!(cases.len(), 416, "et ses quatre cent seize cas");
     // **La fenêtre vient du fichier qui la déclare**, pas de ce code : le
     // corpus de chaîne ne la porte pas, le corpus arithmétique si, et le test
     // Swift la reconstruit en 0x10 + i. Les trois doivent tomber d'accord, et
@@ -871,8 +871,10 @@ fn read_string_oracle() -> StringOracle {
 /// **Le plancher du corpus de chaîne pour l'interpréteur : tout le corpus.**
 /// Il valait 144 — `movs` et `stos` seuls — tant que `lods`, `cmps` et `scas`
 /// ne se décodaient pas ; les quarante-sept formes se lisent depuis, et un cas
-/// qui cesserait d'être jugé ferait tomber ce test.
-const STRING_CASES_FLOOR: usize = 376;
+/// qui cesserait d'être jugé ferait tomber ce test. Les cinq `rep lods` sont
+/// venus ensuite (416) : le décodeur les acceptait, et rien ne jugeait ce
+/// qu'ils faisaient — un `rep lods` d'un seul tour passait tout.
+const STRING_CASES_FLOOR: usize = 416;
 
 /// **L'interpréteur Rust jugé sur le corpus de chaîne.** Le jumeau de
 /// `every_accepted_instruction_matches_the_silicon_on_the_stack_corpus`, sur le

@@ -32,7 +32,7 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF,
+    cut_short, decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF,
     ALWAYS_ONE, CF, DF, IF, OF, PF, SF, WRITABLE_FLAGS, ZF,
 };
 
@@ -763,6 +763,11 @@ pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 /// le fait, mais **après coup et par un détour** : il rejuge l'octet fautif
 /// avec tout le reste du fichier, ce qu'une vue n'a pas sous la main.
 ///
+/// **Près du bord, c'est le décodeur qui départage** (`x86::cut_short`) :
+/// une coupe est un décodage qui a lu au-delà des octets fournis. Le seuil
+/// de quinze octets reste la borne au-delà de laquelle la question ne se pose
+/// pas.
+///
 /// **Le seuil de quinze octets est mesuré, pas déduit.** Une instruction
 /// x86-64 fait au plus quinze octets, donc un échec à quinze octets ou plus du
 /// bord ne peut pas être une coupe : c'est la borne théorique. Ce qui la rend
@@ -772,14 +777,16 @@ pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 /// bord d'un précipice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// **La première instruction déjà s'est arrêtée tout près du bord** : à
-    /// `at`, il restait moins de quinze octets, et rien de complet ne la
-    /// précède. Ça peut être une coupe. La vue redemande la même région avec
-    /// davantage d'octets, et n'a besoin de le faire que là.
+    /// **La première instruction déjà déborde du bord** : à `at`, il restait
+    /// moins de quinze octets, le décodeur a lu au-delà (`x86::cut_short`), et
+    /// rien de complet ne la précède. La vue redemande la même région avec
+    /// davantage d'octets, et n'a besoin de le faire que là ; si la page
+    /// d'après manque, c'est la faute de page que le silicium ferait.
     ///
-    /// Ça *peut* aussi être une vraie instruction inconnue qui se trouvait par
-    /// hasard près du bord ; elle coûte alors un aller-retour de plus, et se
-    /// fait refuser franchement au second essai.
+    /// **Une instruction complète que le décodeur refuse n'est plus rendue
+    /// ici**, même tout près du bord : c'était « ça peut être une coupe », et
+    /// l'hôte, devant une page suivante absente, délivrait pour elle une
+    /// faute de page que le silicium ne fait pas. C'est `CannotDecode`.
     ///
     /// **Une coupe après une instruction complète n'est plus un refus.** La
     /// région se traduit jusqu'à la coupe, le bloc coupé rend la main sur
@@ -823,7 +830,7 @@ pub enum Refused {
 
 /// **Ce qu'une instruction x86-64 peut occuper au plus.** En deçà de ça du
 /// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
-const REACH: usize = 15;
+const REACH: usize = crate::x86::LONGEST;
 
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
@@ -2287,7 +2294,9 @@ impl Module {
     /// **Ce n'est pas la même chose qu'une coupe.** Une instruction que le bord
     /// de la fenêtre a tranchée n'est pas nommée ici : elle serait lisible avec
     /// plus d'octets, et la compter ferait chercher une instruction manquante
-    /// là où il n'y a qu'un bord. C'est `REACH` qui départage, et lui seul.
+    /// là où il n'y a qu'un bord. C'est `REACH` qui départage, puis, en deçà,
+    /// `cut_short` : une instruction complète refusée tout près du bord est
+    /// nommée ici, comme ailleurs.
     ///
     /// **Ce que ces adresses ne disent pas** : que l'exécution y aille. La
     /// découverte est spéculative — elle suit les deux issues de chaque saut —
@@ -2307,7 +2316,8 @@ impl Module {
         let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
             std::collections::BTreeMap::new();
         // **Où le relevé a rencontré le bord**, s'il l'a rencontré : une
-        // instruction qui ne se décode pas à moins de `REACH` octets de la fin.
+        // instruction qui ne se décode pas à moins de `REACH` octets de la fin,
+        // et qui se lirait avec la suite.
         let mut cut = None;
         // **Et où il a rencontré un octet qu'il ne sait pas lire**, avec toute
         // la place qu'il lui fallait. Chacun arrête son bloc ; aucun ne refuse
@@ -2328,7 +2338,15 @@ impl Module {
                     // **Coupé par le bord, ou vraiment inconnu ?** C'est la
                     // place restante qui répond, et elle seule : le décodeur
                     // ne sait pas dire s'il lui manquait des octets.
-                    if bytes.len() - at >= REACH {
+                    //
+                    // **Et, près du bord, ce que la suite y changerait.** La
+                    // place seule prenait pour une coupe toute instruction
+                    // refusée à moins de quinze octets de la fin — trois
+                    // octets complets aussi. Sur une page dont la suivante
+                    // manque, l'hôte délivrait alors une faute de page que le
+                    // silicium ne fait pas. `cut_short` demande au décodeur
+                    // s'il a lu au-delà du bord.
+                    if bytes.len() - at >= REACH || !cut_short(&bytes[at..]) {
                         // **Un arrêt nommé, et non plus un refus.** Le bloc
                         // finit devant l'octet, exactement comme devant une
                         // coupe ; ce qui change est ce que l'hôte trouvera en

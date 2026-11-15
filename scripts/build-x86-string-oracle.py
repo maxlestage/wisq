@@ -77,6 +77,16 @@ def forms():
     out.append(("rep movsb", 0))
     out.append(("rep stosq", 0))
     out.append(("repe cmpsb", 0))
+    # **`rep lods`, ajouté en dernier pour que les indices d'avant ne bougent
+    # pas.** Il ne sert presque à rien — seul le dernier élément reste dans
+    # l'accumulateur —, mais le décodeur l'accepte et l'émetteur le traduit :
+    # sans lui ici, un cœur qui ne ferait qu'un tour passait tous les tests.
+    # Ce qu'il fixe : RCX compté jusqu'à zéro, RSI avancé de N éléments dans
+    # le sens du drapeau, RAX sur le dernier lu, et le compte nul qui ne fait
+    # rien.
+    for name, width in [("lodsb", 1), ("lodsw", 2), ("lodsl", 4), ("lodsq", 8)]:
+        out.append((f"rep {name}", 32 // width))
+    out.append(("rep lodsb", 0))
     return out
 
 
