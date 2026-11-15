@@ -97,6 +97,14 @@ final class X86TypingTests: XCTestCase {
         XCTAssertFalse(pc.key(.leftControl, down: false), "une seule fois")
         XCTAssertEqual(pc.pendingKeystrokes, limit + 2)
         XCTAssertEqual(X86KeystrokesTests.held(after: pc.typingHandoff.strokes), [])
+
+        // Et le contrôleur les prend, au-delà de sa borne lui aussi : un
+        // relâchement seul passe par `type(_:down:)`, pas par le chemin des
+        // groupes, qui le refuserait à la borne.
+        pc.handTypingToTheController()
+        XCTAssertEqual(pc.typingHandoff.count, 0, "rien n'attend une tranche de plus")
+        XCTAssertEqual(pc.core.devices.ps2.typing.count, limit + 2)
+        XCTAssertTrue(pc.core.devices.ps2.heldInQueue.isEmpty)
     }
 
     /// **Ce que la machine admet, le contrôleur le prend entier**, compté
