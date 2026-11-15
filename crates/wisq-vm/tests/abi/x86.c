@@ -554,11 +554,12 @@ int main(int argc, char **argv) {
           "une instruction coupée demande des octets au lieu d'être refusée");
     check(nothing == NULL && nothing_len == 0,
           "et elle ne touche pas aux sorties de l'appelant");
-    /* **Le même octet inconnu, mais avec de la place derrière.** `INVALID` seul
-     * fait un octet : à un octet du bord, l'émetteur ne *peut pas* distinguer
-     * une coupe d'une instruction inconnue, et il demande donc davantage — ce
-     * qui est la bonne réponse. Il faut quinze octets de marge, la longueur
-     * maximale d'une instruction x86-64, pour que le refus soit franc. */
+    /* **Une instruction complète que l'émetteur refuse est un refus franc,
+     * avec ou sans place derrière.** `06` (`push es`) ne déborde pas : à
+     * quinze octets du bord comme à un seul, aucune suite ne le rendrait
+     * lisible, et l'émetteur le sait — il demande au décodeur s'il a lu
+     * au-delà du bord. Le rendre « coupé » faisait délivrer à l'hôte une faute
+     * de page sur la page d'après, que le silicium ne fait pas. */
     static const uint8_t UNKNOWN_WITH_ROOM[] = {
         0x06, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
         0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
@@ -569,8 +570,22 @@ int main(int argc, char **argv) {
           "une instruction inconnue avec de la place derrière est un refus franc");
     check(wisq_x86_emit_resolving(UNKNOWN_WITH_ROOM, sizeof UNKNOWN_WITH_ROOM - 1,
                                   GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_REFUSED,
+          "un octet de moins, et c'est toujours un refus : rien ne déborde");
+    /* **Le seuil de quinze octets, tenu par une vraie coupe.** Quatorze
+     * préfixes `66` sans opcode : le décodeur lit au-delà du bord, et un
+     * quinzième octet le rendrait lisible. Quinze : aucune instruction x86-64
+     * n'est plus longue, c'est un refus. */
+    static const uint8_t PREFIXES[15] = {
+        0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+    };
+    check(wisq_x86_emit_resolving(PREFIXES, sizeof PREFIXES - 1, GUEST_BASE, 0, 0, 1,
                                   &nothing, &nothing_len) == WISQ_X86_NEEDS_MORE,
-          "un octet de moins, et il n'avait plus la place d'en juger");
+          "quatorze préfixes sans opcode : une coupe, qui demande des octets");
+    check(wisq_x86_emit_resolving(PREFIXES, sizeof PREFIXES, GUEST_BASE, 0, 0, 1,
+                                  &nothing, &nothing_len) == WISQ_X86_REFUSED,
+          "quinze : plus longue que toute instruction, un refus franc");
     check(wisq_x86_emit_resolving(LOOP, sizeof LOOP, GUEST_BASE, 0, 0, 1,
                                   &nothing, &nothing_len) == WISQ_X86_TRANSLATED,
           "et une région entière se traduit");

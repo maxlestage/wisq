@@ -8,6 +8,1042 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Le décodeur lit « ni moins » que le silicium, et `bureaux-1` est publié
+
+**Le trou de test.** Le dernier contrôle du flux de l'émetteur a montré
+que `the_decoder_reads_exactly_what_the_silicon_reads` ne tenait que le
+« ni plus ». Un décodeur qui lisait `68 imm32` en trois octets passait,
+puisque le reste se lisait comme une autre instruction. Seul
+`push $-2147483648` tombait, et par hasard. Le test exige maintenant
+qu'une instruction lue le soit en entier, d'un seul pas, dans les corpus
+d'une instruction par programme : tous sauf le corpus général, celui de
+branchement et celui de MMX, qui portent des suites (mesuré : les 39
+programmes du corpus général sont des suites).
+
+Sabotage : le même que celui du contrôle (`true || width == Width::Word`
+dans le bras `0x68`) fait maintenant tomber le test sur les deux `push`
+de 32 bits du corpus de pile, au lieu d'un seul. Le compte de tests ne
+change pas.
+
+**La publication.** Sur la foi du « Merge » de l'utilisateur, et après
+l'avoir annoncé sans recevoir d'objection, j'ai lancé `bureaux.yml` sur
+`master` 9d1ba25b (run 43677616054, 46 min). La release `bureaux-1`
+est une pré-version, jamais « latest ». L'archive publiée a la même
+somme que celle fabriquée dans ce conteneur (a93fbff5…, 163 919 297
+octets) : la fabrication se reproduit d'une machine à l'autre. L'index
+publié ne diffère du local que par `madeAt`. TestFlight n° 127 est parti
+du même commit et a réussi.
+
+## 2026-11-14 — Émetteur : `pushw $imm16` fait quatre octets, et la région oubliée par le vidage est tenue par un test
+
+**Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé
+quatre défauts, tous vérifiés ici avant d'être corrigés :
+
+1. **Une garantie écrite sans test.** L'entrée d'avant dit qu'« une région
+   que le vidage vient d'oublier ne tourne plus, même pour le bloc de plus du
+   « sur place » ». Remplacer `if (voirAnneauTrois()) region = null;` par
+   `voirAnneauTrois();` laissait passer les 168 tests de `host_loop` : dans
+   les deux montages du vidage, RIP n'est jamais au point de départ après le
+   `sysretq`.
+2. **La doc de `oublierTout` documentait `voirAnneauTrois`** : le bloc de la
+   seconde avait été inséré entre la doc de la première et sa déclaration.
+3. **Le miroir Swift de `WISQ_X86_NEEDS_MORE`** (`Translation.needsMoreBytes`)
+   disait encore l'ancienne règle — « à moins de quinze octets du bord,
+   l'instruction a pu être coupée » —, alors que le jumeau C avait été mis à
+   jour.
+4. **La doc de `cut_short` affirmait qu'une instruction complète ne peut
+   jamais passer pour une coupe. C'était faux**, à cause d'un défaut plus
+   ancien du décodeur : `66 68` (`pushw $imm16`, quatre octets, `instr 22
+   66683412` dans le corpus de pile) se lisait avec un immédiat de
+   trente-deux bits, donc en six octets devant n'importe quelle suite.
+   `cut_short(66 68 aa 0f)` rendait vrai, et ces quatre octets au bout d'une
+   page dont la suivante manque recevaient la faute de page sur la page
+   d'après. Le même bras donnait à `66 6a ib` la bonne longueur mais la
+   mauvaise largeur : l'interprète empilait huit octets au lieu de deux, en
+   silence.
+
+**Ce qui change.**
+
+- `x86::decode` : `68` et `6a` prennent leur largeur de `width(false)`,
+  comme `ff /6` — seize bits avec `0x66` seul, soixante-quatre sinon (REX.W
+  l'emporte). `66 68` lit un immédiat de seize bits. Le silicium de ce
+  conteneur, interrogé par un petit programme C (`66 6a 80` puis
+  `66 68 34 12`) : la pile descend de quatre en tout, mots `0xff80` puis
+  `0x1234` ; l'interprète rend maintenant la même chose. L'émetteur refuse
+  toujours ces formes (il ne descend la pile que de huit), mais d'un refus
+  franc (`CannotTranslate`), plus d'une coupe ; `66 68 aa`, vraie coupe,
+  reste `MayBeCut`.
+- La doc de `cut_short` dit ce qui est vrai : la garantie est celle du
+  décodeur, pas de la fonction, et elle est tenue par un test qui rejoue les
+  corpus matériels.
+- `host.js` : `voirAnneauTrois` est déclarée après `oublierTout`, chacune
+  sous sa propre doc.
+- `DesktopTranslator.Translation.needsMoreBytes` dit la règle du jumeau C :
+  seule une instruction qui déborde rend ce cas.
+
+**Comment c'est vérifié.**
+
+- Quatre tests nouveaux, chacun vu tomber sous son sabotage puis restauré
+  (`cmp` avec la copie, `git diff` du sabotage vide) :
+  - `the_decoder_reads_exactly_what_the_silicon_reads` (`x86_oracle.rs`) :
+    chaque `instr` des dix-sept corpus matériels — 5 063 programmes, 5 509
+    instructions lues, 4 025 refus — est parcouru instruction après
+    instruction, suivi de zéros puis de `0xff` ; aucune ne se lit plus longue
+    que le silicium, et aucun refus ne passe pour une coupe. Sous le sabotage
+    (`66 68` relu en soixante-quatre bits) : « pushw $0x1234 à l'octet 0 : lu
+    en 6 octets, il n'en reste que 4 ».
+  - `a_sixteen_bit_immediate_push_moves_the_stack_by_two` (`x86_oracle.rs`) :
+    les deux descentes de deux, les deux mots mesurés sur le silicium.
+  - `a_sixteen_bit_immediate_push_at_the_edge_is_not_a_cut` (`x86_wasm.rs`) :
+    le contre-exemple du contrôle, `66 68 aa 0f`, n'est plus une coupe.
+  - `a_region_the_flush_just_forgot_does_not_run_again` (`host_loop.rs`) : un
+    noyau dont le `sysretq` revient **au début de sa propre région**, réécrite
+    en `mov $2,%edi ; ud2` après sa traduction. Juste : `vidages 1 traduites 2
+    rdi 2 cs 0x33 rip 0x10005`. Sous le sabotage du contrôle, le bloc de plus
+    appelle l'ancien module, dont les blocs ont quitté la table, et Bun meurt
+    sur `RuntimeError: call_indirect to a signature that does not match` : une
+    région oubliée n'a même plus de quoi tourner.
+- Le corpus de pile juge **huit cas de plus** dans l'interprète Rust
+  (`pushw $0x1234`, zéro écart) : 600 sur 712, contre 592 avant. Le plancher,
+  resté à 568 depuis un corpus de 648 cas, passe à 600.
+- `cargo test --release --no-fail-fast` : 644 passés, 0 échec ; la passe
+  armée (débordements et assertions) : 644, 0 échec. La garde
+  `bench_module_matches_the_probe` passe : les octets émis ne changent pas.
+  `cargo fmt`, les deux `clippy -D warnings`, `check-whitespace`,
+  `check-project-sources` : propres. `swift build --build-tests`, puis
+  `WisqVMRustTests`, `X86StackOracleTests`, `X86StringOracleTests` : 0 échec.
+  SwiftLint `--strict` : 0 violation sur 635 fichiers.
+- La sonde Alpine 6.18.60 (`WISQ_FIN=WISQ-USERSPACE-OK`, `WISQ_TURNS=4000000`)
+  : `WISQ-USERSPACE-OK` sur le port série, « vidages 1 fois, 11796 region(s)
+  oubliee(s) », 11 998 lignes « traduction », 47 s de mur compilation
+  comprise — les chiffres d'avant.
+- Compte publié : 3 626 → 3 630 (Swift 2 986 + Rust 644), par `recompte.sh` ;
+  site : 476 passés, 0 échec.
+
+**Ce qui reste.** `66 6a` n'est porté par aucun corpus : sa largeur est
+jugée par un cas écrit d'après le silicium de ce conteneur, pas par le
+fichier. L'ajouter au corpus de pile changerait ses comptes dans les trois
+cœurs, Swift compris ; c'est une tranche à part. Les `pushw` restent refusés
+par l'émetteur. Le pont Swift sous un vrai WebKit, seule la CI (« App iOS »)
+le juge.
+
+## 2026-11-14 — Émetteur : le vidage au premier anneau trois tient avec une interruption en attente, une instruction complète au bout d'une page n'est plus une coupe, et `rep lods` est jugé par le silicium
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « Alpine jusqu'à son
+shell » a trouvé quatre trous, chacun avec sa reproduction :
+
+1. **Le vidage du cache de code était sauté par une interruption en
+   attente.** Le passage en anneau trois n'était regardé qu'en tête de tour.
+   La région qui fait le `sysretq` rend la main en anneau trois, la boucle
+   délivre l'IRQ en attente — CS repasse en anneau zéro — et revient en tête
+   de tour sans rien voir : le gestionnaire tournait sur ses traductions
+   d'avant les réécritures (le défaut même d'`error_entry` que le vidage
+   corrige), et le vidage n'avait jamais lieu. Mesuré : `rdi 1 vidages 0`
+   au lieu de `rdi 2 vidages 1`.
+2. **Une instruction complète que le décodeur refuse, à moins de quinze
+   octets de la fin d'une page dont la suivante manque, recevait une faute
+   de page sur la page d'après.** La découverte prenait tout échec près du
+   bord pour une coupe (`MayBeCut`), et l'hôte délivrait la faute. Le
+   silicium ne charge jamais cette page : `67 8b 00` à `0x12ffd` donnait
+   `cr2 0x13000` au lieu de « refusée ». Sous Linux, au bout d'une projection
+   de texte, un `SIGSEGV` muet à la place du refus nommé.
+3. **`rep lods` d'un seul tour passait tous les tests**, dans l'interprète
+   comme dans l'émetteur : le corpus de chaîne n'avait aucune forme
+   `rep lods`.
+4. **Le bit I (0x10) du code d'erreur de la faute sur coupe n'était tenu par
+   rien** : le test tournait sans NXE, alors qu'Alpine l'allume.
+
+**Ce qui change.**
+
+- `host.js` : `voirAnneauTrois()` regarde le passage **au retour de chaque
+  région**, avant toute délivrance, et toujours en tête de tour (une machine
+  posée en anneau trois par un pilote). Une région que le vidage vient
+  d'oublier ne tourne plus, même pour le bloc de plus du « sur place ».
+- `x86::cut_short` : le décodeur a-t-il lu au-delà du bord ? Il est
+  déterministe et ne lit qu'en avançant : s'il a échoué sans lire au-delà,
+  aucune suite n'y change rien. On essaie donc chaque valeur du premier octet
+  manquant, des zéros derrière (256 décodages au plus, seulement sur un échec
+  près du bord). Essayer aussi chaque paire n'a rien trouvé de plus, mesuré
+  sur les 65 792 débuts d'un ou deux octets. La découverte ne rend plus
+  `MayBeCut` que pour une vraie coupe ; une instruction complète refusée
+  près du bord est un arrêt nommé, et `CannotDecode` au point d'entrée. Les
+  octets émis ne changent pas (la garde `bench_module_matches_the_probe`
+  passe sans régénération).
+- Le corpus de chaîne gagne cinq formes, ajoutées **en dernier** pour que
+  les indices d'avant ne bougent pas : `rep lodsb/w/l/q` et `rep lodsb` à
+  compte nul. Régénéré sur le silicium de ce conteneur par
+  `scripts/build-x86-string-oracle.py` : les 439 lignes d'avant ressortent à
+  l'octet près, 52 formes et 416 cas. Les deux cœurs Rust et le cœur Swift
+  (`X86StringOracleTests`) s'y accordent.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs ou renforcés :
+  `the_first_entry_into_ring_three_empties_the_cache_even_with_an_interrupt_waiting`
+  (la reproduction du contrôle, et son témoin sans IRQ),
+  `a_complete_refused_instruction_at_the_end_of_a_page_is_refused_not_cut`
+  (sous Bun, NXE allumé : `67 8b 00` et `06` refusés sans faute, la vraie
+  coupe `48 b8 01 02` faute avec `0x14`),
+  `a_complete_refused_instruction_near_the_edge_is_not_a_cut` (le
+  traducteur seul), et la faute sur coupe tenue sans puis avec NXE (`0x4`,
+  `0x5`, `0x14`, `0x15`). `the_edge_is_fifteen_bytes_and_both_sides_are_held`
+  tenait l'ancien défaut — un `06` complet à quatorze octets du bord pris
+  pour une coupe — : il tient maintenant le seuil sur quatorze et quinze
+  préfixes `66`, une vraie coupe d'un côté, un vrai refus de l'autre. Le test
+  des fautes dans les chaînes gagne `rep lods` à cheval sur une page absente
+  (RCX, RSI, RAX sous la règle de largeur). Planchers du corpus de chaîne :
+  376 → 416. Trois tests de plus au compte publié (3 626). Le programme C de
+  l'ABI (`tests/abi/x86.c`) et `testATranslationHasThreeOutcomesAndNotTwo`
+  (Swift) tenaient aussi « `06` à quatorze octets du bord demande des
+  octets » : ils tiennent maintenant le refus, et le seuil sur quatorze et
+  quinze préfixes `66` ; le commentaire de `WISQ_X86_NEEDS_MORE` dans
+  l'en-tête dit la nouvelle règle (aucune fonction ajoutée).
+- Sabotages, chacun vu tomber puis restauré : le regard au retour de région
+  retiré (le test à l'IRQ tombe), celui de tête de tour retiré (l'ancien test
+  tombe) ; `cut_short` retiré de la découverte (les deux tests du refus près
+  du bord tombent) ; `rep lods` d'un seul tour dans l'émetteur seul (le
+  corpus de l'émetteur et le test des fautes tombent), dans l'interprète seul
+  (son corpus tombe) ; `pageFaultCode(…, false)` sur la coupe (les deux tests
+  de coupe tombent sur `0x14`).
+- Les reproductions du contrôle : `rdi 2 vidages 1 cs 0x10 delivrees 1
+  premiere 0x10400` (témoin : `rdi 0 vidages 1 cs 0x33`) ; `67 8b 00` et `06`
+  « refusée » sans faute, `48` et `48 b8 01 02` fautent sur `0x13000`.
+- **Sur le vrai noyau**, Alpine 6.18.60, `rdinit=/bin/sh`, `WISQ_RAM=256`,
+  `/bin/busybox --install -s ;; uname -a ;; echo WISQ-CTRL-$((6*7))` :
+  l'invite, « Linux (none) 6.18.60-0-virt … x86_64 Linux », `WISQ-CTRL-42` ;
+  17 183 demandes de traduction, un vidage de 11 045 régions, 50 s de mur —
+  les chiffres du contrôle, au même compte. La sonde : 6.6.142 en 10 267
+  demandes (25 s), 6.12.115 en 10 893 (27 s), 6.18.60 en 11 997 (34 s),
+  `WISQ-USERSPACE-OK` chaque fois, les mêmes comptes qu'avant.
+
+**Ce qui reste.**
+
+- Une vraie coupe dont aucune suite essayée ne se lit est rendue « refusée »
+  sur l'instruction au lieu de fauter : le décodeur ne l'aurait pas lue de
+  toute façon, mais le silicium aurait d'abord fauté sur la page d'après.
+- `cmps` et `scas` n'ont pas encore de cas de faute au milieu d'une
+  répétition dans le test des chaînes.
+- Les deux remarques du contrôle, non mesurées ici : le passage du mode deux
+  au mode quatre du 8254 ne remet ni `loaded` ni `raised` à zéro ; et la base
+  de FS pourrait se juger sur le silicium par un `mov %fs:0` sur la base de
+  glibc.
+
+## 2026-11-14 — Sous l'émetteur, Alpine va jusqu'à son shell : FS, `addr32 call`, l'instruction coupée, les chaînes qui comparent, le mode quatre du 8254 et un cache de code vidé une fois
+
+**Ce qui n'allait pas.** Alpine 6.18.60 avec son initramfs (`WISQ_RAM=256`)
+s'arrêtait « refusée » en anneau trois, à 11 078 régions, dans `__dls3` de
+`ld-musl`, sur `mov %fs:0x0,%rdx`. Levé mur par mur, chacun mesuré sur le vrai
+noyau, nommé, puis remesuré :
+
+| mur | où | instruction | régions avant l'arrêt |
+| --- | --- | --- | ---: |
+| 1 | `ld-musl`, `__dls3` | `64 48 8b 14 25 …` (`mov %fs:0x0,%rdx`) | 11 078 |
+| 2 | `libcrypto.so.3 + 0x16e8c2` | `67 e8 18 25 01 00` (`addr32 call`) | 11 492 |
+| 3 | busybox, `0x55742c668fff` | un `48` seul au dernier octet d'une page dont la suivante n'est pas chargée | 11 818 |
+| 4 | « Mounting boot media » | l'heure figée à 1,121 s : le mode quatre du 8254 n'était pas modélisé | — |
+| 5 | après l'heure rendue | `asm_exc_page_fault` en boucle, la pile jusque dans l'IDT : une région d'`error_entry` traduite avant `apply_alternatives` | 14 268 |
+
+**Ce qui change.**
+
+- **Le préfixe FS** (`0x64`) se lit : `Address::fs`, la base de
+  `FS_BASE_SLOT` ajoutée à l'exécution comme celle de GS ; le dernier préfixe
+  de segment gagne ; `lea` n'en prend aucun ; une source de `movs`, `lods` ou
+  `cmps` sous FS ou GS est refusée plutôt que lue sans segment. Le test
+  `the_fs_prefix_is_refused_for_want_of_an_oracle` est retiré : il tenait le
+  refus que cette tranche lève, et deux tests plus forts le remplacent.
+- **`addr32 call` et `addr32 jmp`** (`67 e8`, `67 e9`) : la taille d'adresse
+  est lue devant une branche proche, où elle ne change rien sauf la longueur —
+  l'éditeur de liens l'écrit 45 264 fois dans `libcrypto` —, et refusée
+  partout ailleurs.
+- **Une instruction coupée par une page absente faute sur la page d'après.**
+  `x86-translate` rend 4 pour une coupe (`MayBeCut`), `kernel-entry` rend
+  `"encore"` comme la page le faisait déjà, et `host.js`, quand la fenêtre
+  large s'arrête elle aussi sur une page illisible, délivre la faute de
+  chargement : CR2 sur le premier octet de la page qui manque, RIP sur
+  l'instruction, le code de cette page-là (U ; P|U si elle est réservée au
+  noyau).
+- **`lods`, `cmps`, `scas`, avec `repe` et `repne`** (`f2` lu comme `repne`
+  devant `cmps` et `scas`), dans l'interprète et dans l'émetteur : les deux
+  lectures d'un tour avant tout changement, la sortie sur ZF après la
+  décrémentation de RCX.
+- **Le mode quatre du 8254**, celui de `pit_set_oneshot` : un coup unique,
+  comme le mode zéro. Sans lui, dès que Linux passait son horloge en coup
+  unique, plus aucun tic : l'heure restait à 1,121 s et le premier
+  `tcsetattr` du shell ne revenait pas.
+- **Le cache de code vidé une fois, au premier passage en anneau trois**
+  (`oublierTout`) : les régions, la correspondance, les blocs. Une relecture
+  région par région au moment d'y entrer a été essayée d'abord et rejetée,
+  mesuré : le mélange de code réécrit et d'ancien code donnait « Unpatched
+  return thunk in use » puis une oops `int3` dans le texte d'init libéré. Le
+  vidage jette 11 045 régions sur Alpine.
+- **L'entrée série** : `vm.send(octets)` dans `host.js`. Et trois réglages de
+  `kernel-entry` : `WISQ_SERIE=<fichier>` (le port série recopié au fil de
+  l'eau, parce qu'un pilote tué en route n'imprimait rien),
+  `WISQ_ENTREE="ligne;;ligne"` (tapé quand l'invite `WISQ_INVITE`, `# ` par
+  défaut, paraît), `WISQ_FIN=<texte>` (s'arrêter quand le port série l'a dit).
+
+**Comment c'est vérifié.**
+
+- Le corpus de chaîne du silicium (`x86-string-oracle.tsv`) juge les deux
+  cœurs Rust sur ses 47 formes et 376 cas, zéro écart ; les planchers passent
+  de 144 à 376. Douze tests de plus (3 623 au compte publié), dont un retiré.
+- Sabotages, chacun vu tomber puis restauré (`cmp` identique) : FS lu dans la
+  case de GS, 0x64 qui n'efface pas GS, `fs_base` oubliée par l'interprète,
+  `lea` qui prend FS, `movs` sous FS lu ; la longueur d'`addr32 call` sans son
+  préfixe, 0x67 lu partout ; la coupe rendue « refusée », CR2 sur
+  l'instruction, le code d'erreur de la première page ou d'une page absente ;
+  `repe` et `repne` inversés, la sortie sur ZF avant la décrémentation, `cmps`
+  à l'envers, `scas` sur RAX entier, `lods` pleine largeur, `scas` qui avance
+  RSI, RSI avancé avant la lecture de RDI, RCX décompté avant le corps, `f2`
+  lu comme `f3`, l'interprète sans sortie sur ZF ; le mode quatre absent ou
+  périodique ; aucun vidage, un vidage à chaque tour, la correspondance gardée ;
+  `send` sans la ligne quatre, ou à l'envers. Deux sabotages ont d'abord
+  **survécu** et ont fait écrire un test : `scas` sur RAX entier (le corpus n'a
+  aucun état où AL et RAX divergent sous la retenue) et la correspondance
+  gardée après le vidage.
+- Deux tests de `revoir` (`a_kernel_window_is_still_compared…`,
+  `under_page_table_isolation…`) tombaient : le vidage oubliait au `sysretq`
+  la région du noyau qu'ils regardent. Leur montage fait maintenant un premier
+  tour en anneau trois avant le reste ; leurs assertions n'ont pas bougé.
+- **Sur le vrai noyau**, Alpine 6.18.60 et son initramfs, `WISQ_RAM=256` :
+  - avec `rdinit=/bin/sh` : l'invite à 15 007 régions (50 s) ; puis, une fois
+    l'heure rendue et le cache vidé, des commandes tapées par `WISQ_ENTREE`
+    tournent — `busybox --install -s`, `uname -a` (« Linux (none) 6.18.60-0-virt
+    … x86_64 Linux »), `mount -t proc`, `head -3 /proc/meminfo`, `ls /`, `ps`
+    (des `fork` et des `exec`) : 20 722 régions, 4 000 000 de tours, 69 s ;
+  - avec l'`/init` d'Alpine tel quel : « Alpine Init 3.14.1-r0 », « Loading
+    boot drivers: ok », « Mounting boot media: failed » (7,37 s d'heure
+    invitée), « Launching initramfs emergency recovery shell », l'invite, et
+    `uname -a` et `ps | head -5` tapés y répondent — au tour 7,4 millions.
+    La course entière : 107 677 régions, puis le pilote tué par manque de
+    mémoire, 1 182 s de mur.
+  - les trois noyaux avec la sonde atteignent toujours `WISQ-USERSPACE-OK`,
+    comptés jusqu'à ce texte (`WISQ_FIN`) — régions traduites, vidage
+    compris :
+
+    | noyau | régions | tours | mur |
+    | --- | ---: | ---: | ---: |
+    | 6.6.142 | 10 267 | 499 496 | 25 s |
+    | 6.12.115 | 10 893 | 475 795 | 25 s |
+    | 6.18.60 | 11 997 | 1 621 364 | 30 s |
+
+    Une première course sans `WISQ_FIN` a été coupée à 1 500 s sur 6.6 sans
+    relevé : la sonde avait dit son texte, mais le noyau, qui panique quand
+    `/init` sort, attend maintenant dans `panic` au lieu de se figer sur un
+    `hlt`, et le pilote usait ses tours jusqu'au bout.
+
+**Ce qui reste.**
+
+- **La mémoire.** Le cache de code n'est jamais borné : chaque `exec` remet
+  ses bibliothèques à des adresses neuves (ASLR), et chaque programme se
+  retraduit. Le démarrage d'Alpine remplit les 15 Gio de ce conteneur vers
+  cent mille régions ; le relevé de 40 millions de tours a été tué à 99 658.
+  C'est le cache borné et par espace d'adressage de la feuille de route.
+- **Le texte réécrit après le premier passage en anneau trois** (un saut
+  statique basculé plus tard, `text_poke`) n'est vu par rien ; et une région
+  d'un programme peut encore servir un autre programme à la même adresse.
+  Le remède est de voir les écritures dans les pages de code.
+- Aucun des autres murs de la liste n'a été rencontré par Alpine jusqu'au
+  shell : `mov` moffs, `pop r/m`, `lahf`/`sahf`, `cmpxchg8b`, le SSE2 scalaire
+  restent refusés, nommés si on les atteint. `cb` (lret court) est refusé par
+  nom depuis #703.
+- Le préfixe FS n'est jugé par aucun oracle matériel (le harnais ne peut pas
+  poser la base de FS sans perdre son TLS) : il l'est contre l'interprète et
+  par des cas écrits d'après le manuel.
+- `blocks.set(…, null)` au vidage rend les anciens modules au ramasse-miettes ;
+  ce que ça libère n'est pas mesuré.
+
+## 2026-11-14 — La réservation de seize octets tenue aussi quand sa première page est connue du tampon
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, deux points,
+tous deux réels).
+
+1. **Le chemin en ligne de la réservation de seize octets n'était tenu par
+   aucun test.** Dans `Body::claim`, passer l'étendue de `16` à `1` ne fait
+   plus juger que la page du premier octet : un `movups` à cheval, dont la
+   première page est déjà dans le tampon de traduction, passe la
+   réservation, écrit sa moitié basse, puis faute sur la seconde. Ce
+   sabotage laissait verte toute la suite de `wisq-vm` (424 tests) : les cas
+   de faute du test d'écriture partaient tous d'un tampon vide, donc par la
+   marche (`far_store_body`), et les réservations de `fxsave` ne font qu'un
+   octet. C'est pourtant le cas courant sous Linux : un programme écrit dans
+   sa page, puis une écriture de seize octets déborde sur une page absente
+   ou à copier à l'écriture.
+2. **Un commentaire de `web/host.js` comptait « quatre délivrances
+   au-dessus »** de l'interruption d'horloge. Depuis `STOP_MXCSR`, il y en a
+   cinq (faute de page, interruption logicielle, MSR, MXCSR, `ud2`).
+
+**Ce qui change.**
+
+- `a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing`
+  (`host_loop.rs`) joue, pour `movups` et `movdqu` à +0xff8, quatre cas où
+  une instruction d'avant a rempli le tampon : une écriture dans la page de
+  données (`mov %rbx,-0x100(%rax)`), la page d'après absente (CR2 au début
+  de la seconde page, code W) puis en lecture seule (code W et P) ; les deux
+  pages dans le tampon, la seconde lue (`mov 0x100(%rax),%rcx`), en lecture
+  seule ; et la page de données en lecture seule et lue (CR2 sur l'adresse,
+  code W et P). Dans les quatre, rien n'est écrit. Les CR2 et codes
+  attendus sont ceux mesurés sur le silicium dans l'entrée d'en dessous.
+  **Ce n'est pas mesuré avec un tampon amorcé** : les programmes C
+  écrivaient bien la mémoire avant l'essai, mais `mprotect` peut vider le
+  TLB entre les deux. L'attente repose sur la règle de l'architecture : le
+  processeur ne garde aucune traduction d'une page absente, et une écriture
+  sur une traduction sans W refait la marche avant de fauter. Un assistant
+  neuf, `xmm_after`, place l'instruction qui remplit le tampon juste avant
+  l'accès jugé.
+- Le commentaire de `host.js` dit « les délivrances au-dessus sont toutes
+  synchrones », sans compte : il ne peut plus vieillir à la prochaine.
+
+L'émetteur ne change pas : ses octets sont ceux d'avant (`x86_wasm.rs`
+comparé par `cmp` à `HEAD`), et `WebKitBench.swift` n'a pas à être
+régénéré.
+
+**Comment c'est vérifié.**
+
+- **Sabotage, vu tomber puis restauré (`cmp` identique)** : l'étendue de la
+  réservation à `1` dans `Body::claim`. Le test d'écriture tombe sur le
+  premier cas neuf (`movups`, page d'après absente) : la faute part bien,
+  mais la moitié basse est écrite dans la première page.
+- Le test passe sur le code restauré.
+- Le compte de tests ne change pas (aucun `#[test]` ajouté) ; le recompte
+  le confirme.
+
+**Ce qui reste.** Ce que l'entrée d'en dessous laisse : U vient de l'hôte,
+l'alignement de `movaps`/`movdqa` n'est pas vérifié, le mur d'Alpine. Et les
+oracles matériels de `Tests/Fixtures/` ne sont toujours pas rejoués sous
+l'émetteur.
+
+## 2026-11-14 — Les fautes des accès de seize octets, mesurées sur le silicium, et MXCSR délivré
+
+**Ce qui n'allait pas** (le contrôle du socle SSE, cinq points, tous réels).
+
+1. **Une écriture de seize octets sur une page absente fautait comme une
+   lecture.** `movups`, `movdqu`, `movaps` en mémoire « sondaient » leur
+   dernier octet en le relisant puis en le réécrivant. Sur une page absente,
+   la relecture fautait la première : code d'erreur 0 au lieu de W, CR2 sur
+   le dernier octet. Sous Linux, la première écriture dans une page anonyme
+   neuve coûtait deux fautes : la page zéro posée pour la « lecture », puis
+   une protection en écriture et une copie. Le test l'avait gravé
+   (`("absente", 0x0, 0x0)`), et le commit comme le journal disaient « sonde
+   en écriture ». `fxsave` avait le même défaut, que le contrôle n'avait pas
+   relevé : ses deux sondes étaient des lectures. Sur une page en lecture
+   seule, une lecture passe, et `fxsave` écrivait la moitié de son aire avant
+   de fauter sur l'autre page.
+2. **« Une source mémoire est lue entière avant tout effet » n'était tenu par
+   aucun test.** Poser la moitié basse de XMM avant de lire la haute laissait
+   toute la suite verte.
+3. **Un MXCSR aux bits réservés arrêtait la machine entière.** `ldmxcsr` est
+   permise en anneau trois : n'importe quel programme pouvait arrêter la
+   machine, là où le silicium ne fait fauter que lui (`#GP(0)`, un `SIGSEGV`).
+   Le commentaire de `STOP_MXCSR` disait que Linux masquait tout MXCSR venu
+   d'un programme : c'est faux pour `ldmxcsr`, que le noyau ne voit pas.
+4. Le commentaire de `hand_back` était collé sur `stop_on`, et `hand_back`
+   n'avait plus de doc.
+5. Le tableau des tailles de l'entrée d'avant donnait 2 668 octets pour la
+   région d'un `nop` (c'est 2 653, et 2 668 est la région de
+   `movq %rbx,%xmm0`), et 563 pour `movups` en écriture (c'était 551). Les
+   autres lignes se reproduisaient.
+
+**Ce que dit le silicium**, mesuré le 15 novembre sur le processeur de ce
+conteneur (Xeon à 2,10 GHz) par un programme C : deux pages, la seconde
+rendue absente (`PROT_NONE`) ou en lecture seule (`PROT_READ`), `si_addr`
+(CR2) et `REG_ERR` lus dans le gestionnaire de `SIGSEGV`.
+
+| accès | où | CR2 | code |
+| --- | --- | --- | --- |
+| `movups`/`movdqu` en écriture, à cheval (+0xff8, +0xff1) | seconde absente | début de la seconde page | `0x6` (U, W) |
+| idem | seconde en lecture seule | début de la seconde page | `0x7` |
+| idem, tout entière dans la page absente (+0x1000, +0x1008) | | l'adresse | `0x6` |
+| idem, à cheval | première absente | l'adresse | `0x6` |
+| `movups` en lecture, à cheval | seconde absente | début de la seconde page | `0x4` |
+| `fxsave64` à 256 octets de la fin | première absente | début de l'aire | `0x6` |
+| idem | seconde absente, ou les deux | dernier octet de l'aire | `0x6` |
+| idem | seconde en lecture seule | dernier octet de l'aire | `0x7` |
+
+Dans tous les cas, **rien n'est écrit**, pas même dans la page qui le
+permet.
+
+**Ce qui change.**
+
+- *`Body::claim`* (`x86_wasm.rs`) : juge une écriture de `span` octets
+  **pour écrire**, sans rien écrire. Le chemin en ligne est celui d'une
+  écriture (la case du tampon doit dire « inscriptible »). Le chemin lent est
+  `far_store_body`, avec un bit neuf, `CLAIM`, dans la largeur : les deux
+  marches d'écriture ont lieu, puis la fonction rend la main sans écrire. Un
+  bit plutôt qu'une sixième fonction : même marche, même type, aucun indice
+  décalé. `translated` prend maintenant une étendue en octets, plus une
+  `Width`.
+- *`movups`, `movdqu`, `movaps` en écriture* : une réservation de seize
+  octets, puis les deux moitiés. *`fxsave`* : deux réservations d'un octet,
+  le dernier puis le premier (l'ordre qui donne les CR2 du tableau).
+- *`STOP_MXCSR` est délivré* par `web/host.js` comme `#GP(0)`, code nul, RIP
+  sur l'instruction, comme un MSR inconnu. Sans porte, l'arrêt dit le MXCSR
+  refusé et le vecteur 13. Le 9 sort du tableau des arrêts, et le test des
+  constantes répétées compare désormais `STOP_MXCSR` et `STOP_UNDEFINED`.
+- Le commentaire de `hand_back` est rendu à `hand_back`. Les phrases
+  fausses de l'entrée d'avant sont corrigées sur place, avec renvoi ici.
+- `WebKitBench.swift` : les trois modules épinglés sont régénérés par
+  `--example bench-module` (la fonction d'écriture lente a grandi).
+
+**Ce que ça coûte**, en octets de module, mesuré avec `x86-translate`
+(forme paginée, 65 536 pages) :
+
+| région | avant | après |
+| --- | ---: | ---: |
+| `nop` seul | 2 653 | 2 683 |
+| `movups` en écriture, au-delà du `nop` | 551 | 408 |
+| `fxsave`, au-delà du `nop` | 5 540 | 5 532 |
+| `mov %rax,(%rsi)`, au-delà du `nop` | 149 | 149 |
+
+Les trente octets de base sont ceux de `far_store_body`, une fois par
+module. Une réservation coûte moins que la relecture plus la réécriture
+qu'elle remplace.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs dans `host_loop.rs`, sur le banc des droits des pages
+  (qui relève maintenant XMM0) :
+  - `a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing` :
+    `movups` et `movdqu`, les six cas de faute du tableau (CR2, témoin, rien
+    d'écrit), puis à cheval sur deux trames inscriptibles non voisines, puis
+    les seize derniers octets d'une page. Il remplace l'ancien test de
+    `movups`, qui gravait le code faux ;
+  - `a_sixteen_byte_load_that_faults_changes_no_register` : `movups`,
+    `movdqu`, `paddb`, `pxor` à cheval sur une page absente, XMM0 intact ;
+    sur une page en lecture seule, XMM0 juste ;
+  - `fxsave_claims_its_area_for_writing_before_it_writes` : les quatre cas
+    du tableau, plus la page en lecture seule déjà lue (la case du tampon
+    remplie) ;
+  - `an_mxcsr_with_reserved_bits_is_delivered_as_a_general_protection_fault` :
+    `ldmxcsr` et `fxrstor`, la porte 13 tourne, code nul, cadre sur
+    l'instruction, reprise après, rien de restauré.
+- Deux tests existants exigent davantage : celui de l'arrêt MXCSR sans porte
+  (l'arrêt exact) et celui de `fxsave` à cheval (les octets 416 à 511
+  intacts, le dernier compris).
+- **Sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - `movups` sans réservation : le test d'écriture tombe, la moitié basse
+    écrite dans la première page ;
+  - la réservation jugée comme une lecture dans le chemin en ligne : le test
+    de `fxsave` tombe sur la page en lecture seule déjà lue (CR2 au milieu,
+    aire à moitié écrite) ;
+  - `far_store_body` qui écrit quand une réservation tient dans sa page : le
+    test de `fxsave` à cheval tombe, un zéro à l'octet 511 ;
+  - `fxsave` qui sonde en lisant : son test tombe (code sans W) ;
+  - le sabotage du contrôle, XMM posé avant la lecture dans `Vector::Load` :
+    le test de lecture tombe ;
+  - l'hôte qui ne délivre plus `STOP_MXCSR` : les deux tests MXCSR tombent ;
+    l'hôte qui répète 10 au lieu de 9 : le test des constantes tombe aussi.
+- Un sabotage reste invisible, et c'est dit : sauter le retour d'une
+  réservation **à cheval** sur deux pages inscriptibles lui ferait écrire
+  seize zéros, que l'écriture qui suit recouvre aussitôt. Aucun programme à
+  un seul fil ne peut le voir.
+- `cargo test --release` : 625 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt`, les deux `clippy`, les
+  scripts de mise en forme et des sources, SwiftLint `--strict` : propres.
+  `swiftc -parse` de `WebKitBench.swift`, puis `swift build --build-tests` et
+  `swift test --filter "WebKitBench|WisqVMRustTests|X86VectorOracle"` :
+  0 échec (la suite Swift entière n'a pas été relancée). Le site :
+  typecheck, build, 470 tests. Le compte publié passe à 3 522 (Swift 2 897 +
+  Rust 625) : quatre tests neufs, un retiré (l'ancien test de `movups`).
+
+**Ce qui reste.**
+
+- U (bit 2) vient toujours de l'hôte à la délivrance ; les tests jugent le
+  témoin du module, sans U, et les CR2 mesurés en anneau trois.
+- L'alignement de `movaps`/`movdqa` n'est toujours pas vérifié (`#GP` sur
+  le silicium) : infidélité dite dans le fichier, inchangée.
+- Le mur d'Alpine reste le préfixe FS dans `__dls3`.
+
+## 2026-11-14 — Le socle SSE de l'émetteur : seize XMM, MXCSR, les déplacements et l'entier, jugés par le silicium
+
+**Ce qui n'allait pas.**
+
+- **Le contrôle de la tranche d'avant était rouge, et les trois restes étaient
+  réels.**
+  - Le test de l'isolation des tables exigeait que la fenêtre du noyau reste
+    illisible. Il serait tombé devant l'amélioration que le JOURNAL propose :
+    relire par des tables du noyau encore vivantes.
+  - La branche « silicium » du test de la sonde exigeait un témoin nul. Seul un
+    bouchon côté hôte le donne ; un bouchage dans le module l'aurait fait
+    tomber, alors que le journal promettait « il passera tel quel ».
+  - Le journal disait que le montage « reproduit les sept périmées ». Le test
+    exige au contraire qu'aucune région ne soit périmée.
+- **L'émetteur n'avait aucun registre vectoriel.** Alpine (6.18.60, son
+  initramfs, `WISQ_RAM=256`) s'arrêtait en anneau trois dans le `memset` de
+  `ld-musl`, sur `66 48 0f 6e c3` (`movq %rbx,%xmm0`). `fxsave` écrivait des
+  zéros à la place des XMM et de MXCSR, et `fxrstor` ne les rendait pas : un
+  programme aurait perdu ses registres à chaque changement de contexte.
+
+**Ce qui change.**
+
+- *Les restes du contrôle* (commit à part) :
+  - le test de l'isolation accepte les deux issues justes : illisible, ou relue
+    avec les vrais octets, l'octet réécrit nommé seul. Il refuse la relecture
+    par l'identité. Pour que celle-ci se voie, le noyau tourne sur un alias :
+    son adresse virtuelle n'est pas celle de ses octets. On y entre par une
+    page à l'identité, parce que la première fenêtre est lue avant qu'aucun
+    module n'exporte sa marche (constaté en montant le test) ;
+  - la branche « silicium » se juge sur ce qui la prouve : aucune écriture n'a
+    fauté (témoin nul, ou un code sans W), rien n'est entré, l'arrêt nomme une
+    faute de page, CR2 et RIP sur la cible ;
+  - les deux phrases fausses de l'entrée d'avant sont corrigées sur place.
+- *L'état* : seize XMM en deux globales `i64` chacun (`XMM_SLOT`, 60 à 91),
+  et MXCSR (92). `GLOBAL_COUNT` passe de 60 à 93. Ni `v128` (jamais sondé sous
+  le `WKWebView` d'un iPhone), ni mémoire au-dessus de la RAM : un seul modèle
+  de l'état, celui que l'hôte crée déjà. `web/host.js` les déclare (`SLOTS`,
+  comparés par le test des constantes) et pose MXCSR à `0x1f80`.
+- *Le décodeur* (`x86_vector.rs`, neuf) : le préfixe `f2` est lu, mais
+  seulement comme octet d'opcode de la page `0f`. Il ne lit que ce que
+  l'émetteur produit. Soit :
+  - les déplacements : `movd`/`movq` dans les deux sens, `f3 0f 7e`,
+    `66 0f d6`, `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`,
+    `movss`/`movsd`, `movlps`/`movhps`/`movlpd`/`movhpd`, `movhlps`/`movlhps` ;
+  - la logique en `p`, `ps` et `pd`, et les entrelacements `punpck*`/`unpck*` ;
+  - l'entier SSE2 : `padd`/`psub` (saturés ou non), `pcmpeq`/`pcmpgt`,
+    `pmin`/`pmax`, `pavg`, `pmullw`/`pmulh*`/`pmuludq`/`pmaddwd`, `psadbw`,
+    `pack*`, les décalages (immédiat, compte, octets), `pshufd`/`pshuflw`/
+    `pshufhw`/`shufps`/`shufpd`, `pmovmskb`/`movmskps`/`movmskpd`,
+    `pextrw`/`pinsrw` ;
+  - `ldmxcsr` et `stmxcsr`.
+
+  Le flottant (`addsd`, `cvtsi2sd`…) et MMX restent illisibles : un arrêt de
+  bloc, pas un refus de région.
+- *L'émission* (`x86_wasm_vector.rs`, neuf) : chaque voie est extraite,
+  calculée en soixante-quatre bits, puis remise en place. Une instruction qui
+  faute n'a rien fait :
+  - les seize octets d'une source mémoire sont lus avant que rien ne change ;
+  - une écriture de seize octets sonde d'abord son dernier octet. Elle faute
+    donc sur une page en lecture seule (copie à l'écriture) avant tout effet.
+    (Corrigé le lendemain : la sonde était une relecture, pas une écriture,
+    et fautait en lecture sur une page absente ; voir l'entrée du dessus.)
+
+  Aucune ne touche RFLAGS. L'alignement de `movaps` n'est pas vérifié
+  (le silicium lèverait `#GP`) : infidélité dite dans le fichier.
+- *`fxsave`/`fxrstor` complets* : MXCSR en 24, son masque `0xffff` en 28 (ce
+  que le silicium de `x86-fxsave-oracle.tsv` écrit), les seize XMM de 160 à
+  415. Le x87 garde ses mots par défaut : étiquettes et pile nulles.
+  `fxrstor` juge MXCSR avant de rien poser : des bits réservés donnent un
+  arrêt nommé, `STOP_MXCSR` (9), RIP sur l'instruction, rien de restauré.
+  `ldmxcsr` fait de même. (Corrigé le lendemain : l'hôte délivre désormais
+  ce témoin comme `#GP(0)` ; voir l'entrée du dessus.)
+- *CPUID, vérifié* : il n'annonce **pas** SSE ni SSE2 (EDX = FPU, TSC,
+  CLFLUSH ; ECX = CX16), contrairement à ce que la consigne supposait. Ce qui
+  manque pour les annoncer honnêtement, c'est le flottant SSE. musl ne
+  consulte pas CPUID, et le noyau 64 bits suppose FXSR et SSE2 sans les lire.
+  Rien n'est donc annoncé de plus.
+- `WebKitBench.swift` : `globalCount` passe à 93, et les trois modules épinglés
+  sont régénérés par `--example bench-module`.
+
+**Comment c'est vérifié.**
+
+- **Les deux oracles matériels sont rejoués sous l'émetteur et
+  JavaScriptCore**, un module par instruction, sans aucun cas écrit à la main :
+  - `x86-xmm-oracle.tsv` : 58 formes, 976 cas, 0 écart ;
+  - `x86-simd-oracle.tsv` : 128 formes, 9 204 cas, 0 écart.
+
+  Chaque cas doit aller au bout de son module, rendre XMM0, XMM1, RAX et la
+  fenêtre du silicium, et laisser intacts les drapeaux, RSI, MXCSR et les
+  quatorze autres XMM. Le Swift jugeait déjà ces corpus ; l'émetteur était à
+  « XMM 0/58, SSE2 entier 0/128 ».
+- **Un balayage tient l'accord du décodeur et de l'émetteur** : chaque
+  deuxième octet de `0f`, sous huit jeux de préfixes et huit formes
+  d'opérande. Toute forme vectorielle lue doit se traduire.
+- `fxsave` (aire seule, puis à cheval sur deux trames non contiguës) et
+  `fxrstor` sont comparés octet pour octet à une image construite d'après le
+  manuel. Un test neuf couvre MXCSR aux bits réservés, pour `fxrstor` et
+  `ldmxcsr`.
+- **Sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - `pxor` fait un `ou` : l'oracle XMM tombe, 39 écarts ;
+  - `movd` ne vide pas le haut ; `movss` entre registres recopie tout : l'oracle
+    XMM tombe ;
+  - `pmovmskb` rassemble mal sa moitié haute : l'oracle SSE2 tombe ;
+  - `movhlps` refusé à la traduction : le balayage tombe ;
+  - la sonde des écritures de seize octets retirée : le test neuf de `movups`
+    à cheval tombe, sa moitié basse écrite dans la première page ;
+  - `fxsave` oublie MXCSR ; `fxrstor` oublie les XMM ; `fxrstor` ne juge plus
+    MXCSR : chacun fait tomber son test ;
+  - l'hôte ne pose plus MXCSR à l'allumage : le test neuf de `stmxcsr` tombe.
+
+  Les restes du contrôle ont les leurs :
+  - `revoir` qui relit par l'identité fait tomber le test de l'isolation (une
+    différence à l'octet zéro sous l'alias) ;
+  - l'amélioration du contrôle (relire avec CR3 posé un instant sur les tables
+    du noyau) le fait passer, par la branche « relue », vérifiée ;
+  - la branche « silicium » de la sonde passe sous deux bouchons joués : côté
+    hôte (témoin 0) et façon module (témoin 2, P plus un, arrêt « une faute de
+    page sans porte ») ;
+  - la sonde qui lit sans `walkMachine` la fait toujours tomber.
+- **Sur le vrai noyau** :
+  - Alpine 6.18.60 avec son initramfs (`WISQ_RAM=256`, `WISQ_ROUNDS=200000`,
+    `WISQ_TURNS=3000000`) passe le `memset` de `ld-musl`. 11 078 régions, 29 s
+    de mur. Le mur suivant est nommé : arrêt « refusée » en anneau trois à
+    `0x7fd025529961`, soit `ld-musl + 0x39961`, dans `__dls3`, sur
+    `64 48 8b 14 25 00 00 00 00` (`mov %fs:0x0,%rdx`). C'est **le préfixe FS**,
+    le point 2 de la liste de travail. (La base se lit sur R9, R10 et R11, qui
+    tombent dans les segments du fichier.)
+  - 6.6.142, 6.12.115 et 6.18.60 avec la sonde atteignent toujours
+    `WISQ-USERSPACE-OK` :
+
+    | noyau | régions | `WISQ_TURNS` | mur |
+    | --- | ---: | ---: | ---: |
+    | 6.6.142 | 10 409 | 530 000 | 70 s |
+    | 6.12.115 | 10 986 | 800 000 | 4 min 45 |
+    | 6.18.60 | 12 174 | 3 000 000 | 38 s |
+
+    Avant, c'était 10 390, 10 981 et 12 177 régions. Une première course de
+    6.6 à 2 000 000 tours a été arrêtée après 21 minutes sans relevé : la
+    machine était chargée par un processus Bun orphelin d'un contrôle
+    précédent, et ce chiffre n'en dit rien.
+- Ce que coûte une forme, en octets de module au-delà d'un `nop` (2 653 octets
+  pour la région seule, mesuré avec `x86-translate`, forme paginée ; corrigé
+  le lendemain, l'entrée disait 2 668, la taille de la région de `movq`) :
+
+  | forme | octets |
+  | --- | ---: |
+  | `movq %rbx,%xmm0` | 15 |
+  | `pxor` | 22 |
+  | `punpcklqdq` | 24 |
+  | `pmovmskb` | 60 |
+  | `pshufd` | 84 |
+  | `pcmpeqb` | 497 |
+  | `psadbw` | 551 |
+  | `movups` en écriture | 551 (l'entrée disait 563 ; 408 depuis l'entrée du dessus) |
+  | `pminub` | 625 |
+  | `packsswb` | 705 |
+
+  Les formes octet par octet sont chères ; `v128` les rendrait petites, le
+  jour où il sera sondé sur l'appareil.
+- `cargo test --release` : 622 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt` et les deux `clippy` sont
+  propres, ainsi que les scripts de mise en forme et des sources, et
+  SwiftLint `--strict`. Le site : typecheck, build, 470 tests. Le compte
+  publié passe à 3 519 (Swift 2 897 + Rust 622) : sept tests neufs, un
+  décodeur, trois émetteur, trois boucle hôte. `swift test` : 2 817 tests exécutés, 54 sautés, 0 échec, avec la bibliothèque Rust reconstruite.
+- Trois tests existants disaient l'état d'avant. Ils exigent maintenant
+  davantage :
+  - `fxsave`, `fxrstor` et l'aire à cheval sur deux trames comparent l'image
+    entière, octet pour octet ;
+  - le test de `lkgs` exige que `movsd` se lise en `movsd` ; `addsd`,
+    `repne movs` et `f2 90` restent refusés ;
+  - celui des barrières exige que `ldmxcsr`/`stmxcsr` portent leur adresse,
+    et non qu'ils soient refusés.
+
+**Ce qui reste.**
+
+- Le préfixe FS, le mur suivant mesuré.
+- Le flottant SSE2 (point 5), x87, puis l'annonce honnête de SSE/SSE2/FXSR
+  dans CPUID.
+- `#GP` sur l'alignement et sur un MXCSR refusé : aujourd'hui, pas de faute
+  pour l'un et un arrêt nommé pour l'autre.
+- Le coût en taille des formes octet par octet.
+- Seule la CI (« App iOS ») juge les modules régénérés sous un vrai WebKit.
+
+## 2026-11-14 — `revoir` sous isolation des tables, et une sonde qui ne s'oppose plus à la protection
+
+**Ce qui n'allait pas.** Le contrôle de la tranche d'avant (« `revoir` relit
+les fenêtres sans juger l'anneau ») a trouvé deux défauts, tous deux réels.
+
+- **Les commentaires disaient le contraire de la mesure.** `web/host.js`
+  (deux passages) et la docstring du premier test de `host_loop.rs`
+  attribuaient à l'anneau les 11 044 régions illisibles de l'arrêt d'Alpine
+  en anneau trois, et laissaient croire que `walkMachine` les rendait
+  comparables. Rejoué par le contrôle avec la correction : « perimees 7 /
+  illisibles 11 030 / relues-sous anneau 3 cr3 0x6acb000 ». L'isolation des
+  tables retire le texte du noyau des tables du programme ; seul `nopti`
+  donne 2 001 / 9. Le JOURNAL le disait, le code non.
+- **Le test de la sonde exigeait un comportement faux du processeur.** Un
+  programme en anneau trois saute sur une grande page du superviseur ; le
+  test exigeait que la région connue y tourne, et que la sonde la compte. Sur
+  le silicium, ce saut est une faute de page (P|U). Le test ne passait que
+  grâce au trou de protection (une région déjà traduite se ré-entre sans
+  repasser par le chargement), et il se serait dressé contre sa correction.
+
+**Ce qui change.**
+
+- Les commentaires de `read`, de `revoir` et de la sonde, et la docstring du
+  premier test, disent ce qui est mesuré : `walkMachine` ne rend lisible que
+  ce que les tables en service portent ; « la page est toujours dans les
+  tables » vaut pour Alpine **lancé avec `nopti`**, pas pour Alpine tel quel.
+  Le commentaire de la sonde dit que son `walkMachine` n'a d'effet que sur le
+  défaut, et pourquoi il le garde : la sonde compte ce qui va tourner.
+- **Un test neuf épingle le cas d'Alpine tel quel** :
+  `under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three`.
+  Le noyau réécrit un octet de sa fenêtre, puis saute sur un passage posé
+  sur une troisième grande page du superviseur, que les deux tables portent
+  (comme `.entry.text`). Le passage charge dans CR3 les tables du programme,
+  qui ne portent pas la page du noyau, puis fait `sysretq`. À l'arrêt, CS
+  vaut `0x33` et CR3 désigne les tables du programme ; seule la fenêtre du
+  noyau est illisible, et rien n'est compté comme périmé. Le passage, lui,
+  reste lisible sous les tables du programme, comme `.entry.text` d'Alpine ;
+  rien n'y écrit, il n'y a donc aucune région périmée dans ce montage.
+  *(Corrigé par la tranche suivante, qui a aussi renommé ce test : voir
+  plus haut.)*
+- **Le test de la sonde est réécrit pour ne plus consacrer le défaut** :
+  `the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open`.
+  Le pilote dit maintenant RIP, CR2, CR3 et le témoin de faute, et le test
+  reconnaît deux issues, et deux seulement :
+  - le **défaut**, aujourd'hui : la région du noyau tourne en anneau trois et
+    faute sur son écriture (témoin `0x4`, P|W plus un ; U s'ajoute d'après
+    CS à la délivrance). La sonde doit alors avoir compté l'entrée et nommé
+    la région ;
+  - le **silicium**, le jour où le trou sera bouché : témoin nul, CR2 et RIP
+    sur la cible, et l'arrêt nomme la faute de chargement.
+
+  Toute autre issue fait tomber le test. *(Trop promis : la branche
+  « silicium » exigeait un témoin nul, que seul un bouchon côté hôte donne ;
+  un bouchage dans le module l'aurait fait tomber. Corrigé par la tranche
+  suivante, voir plus haut.)*
+- **Le trou lui-même n'est pas bouché.** Une région s'entre aussi par la
+  table du module (`call_indirect`), sans repasser par l'hôte : le boucher
+  demande que l'émetteur ou la correspondance des régions connaisse l'anneau.
+  C'est hors de cette tranche.
+- `master` (#704, la carte de la page) est fusionné dans la branche. Les
+  seuls conflits étaient le compte publié et la tête du JOURNAL.
+
+**Comment c'est vérifié.**
+
+- **La branche « silicium » a été jouée, pas seulement écrite.** Un bouchon
+  temporaire dans la boucle de `run` oublie une région connue dont le
+  premier octet ne se charge pas sous l'anneau courant. Sous ce bouchon,
+  l'arrêt devient « une faute de page sur un chargement d'instruction sans
+  porte », avec un témoin nul et 0 entrée sondée, et le test passe. La branche
+  a été forcée à tomber pour prouver que c'est bien elle qui a jugé. Le
+  bouchon est retiré (`cmp` identique).
+- **Trois sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - la sonde lit sans `walkMachine` : le test de la sonde tombe ;
+  - `revoir` relit par l'identité quand les tables ne portent pas la page :
+    le test de l'isolation tombe, l'octet réécrit est compté ;
+  - `read` ignore `kind` (le sabotage du contrôle) : les trois tests tombent.
+    Celui de l'isolation tombe aussi, parce que le passage du superviseur
+    devient illisible.
+- `cargo test --release` : 615 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt` et les deux `clippy`
+  sont propres. Les scripts de mise en forme et des sources passent, ainsi
+  que SwiftLint `--strict`. Le site : typecheck, build, 470 tests. Le compte
+  publié passe à 3 512 (Swift 2 897 + Rust 615) : 3 511 après la fusion,
+  plus le test neuf.
+- Aucun octet émis ne change : `bench_module_matches_the_probe` passe sans
+  régénérer `WebKitBench.swift`. Le code de `web/host.js` ne change pas
+  non plus, seuls ses commentaires bougent : les mesures d'Alpine du
+  contrôle (373 / 9 en anneau zéro, 7 / 11 030 en anneau trois) restent
+  celles de ce code, et elles n'ont pas été rejouées.
+
+**Ce qui reste.**
+
+- Le trou de protection : un programme qui saute dans du code du noyau déjà
+  traduit ne faute pas. Le test de la sonde est prêt pour sa correction.
+- À un arrêt en anneau trois sous isolation, `revoir` ne voit toujours pas
+  le texte du noyau. Pour mesurer à cet arrêt-là, `nopti` ; pour le voir
+  sans `nopti`, il faudrait relire par des tables du noyau dont on saurait
+  qu'elles vivent encore. Non fait.
+
+## 2026-11-14 — `revoir` relit les fenêtres sans juger l'anneau, et dit par quelles tables
+
+**Ce qui n'allait pas.** La tranche des droits (plus bas) fait lire à l'hôte
+la fenêtre d'une région en `WALK_FETCH`, comme un chargement d'instruction :
+en anneau trois, une page sans le bit utilisateur ne se lit pas. C'est juste
+pour la fenêtre qu'on va traduire. Mais `read` servait aussi aux **mesures** :
+`vm.revoir()`, qui relit toutes les fenêtres à la fin de la course, et la
+sonde de `surveiller`, qui relit l'octet d'entrée d'une région. Les deux
+prenaient l'anneau de l'instant. Le contrôle l'a trouvé sur Alpine (6.18.60,
+`WISQ_RAM=256`, `WISQ_TURNS=2000000`) : arrêt en anneau trois à
+`0x7fbcc7208089`, « perimees 0 », « illisibles 11 044 » sur 11 080 régions.
+
+**Ce que le contrôle n'avait pas vu, et qui compte autant.** Corrigé, le
+même arrêt rend « perimees 7 », « illisibles 11 030 » : presque rien ne
+change. Le noyau d'Alpine tourne avec l'isolation des tables (« Kernel/User
+page tables isolation: enabled » sur le port série) ; arrêté en anneau trois,
+il tient les tables **du programme** — CR3 vaut `0x6acb000`, le bit 12 de
+l'isolation allumé —, et son texte n'y est pas cartographié. Ces fenêtres-là
+sont illisibles pour de bon : « la page est toujours dans les tables » est
+faux sur ce noyau. Ce que la correction rend, ce sont les pages du noyau que
+les tables du programme portent bien — `.entry.text`, que l'isolation y
+laisse : les sept périmées relevées sont toutes là (`asm_exc_int3`,
+`asm_common_interrupt`, `irq_entries_start`…) —, et, sur un noyau sans
+isolation, toutes. Mesuré avec `nopti`, même arrêt, même
+instruction de ld-musl : **avant, « perimees 0 », « illisibles 11 048 » ;
+après, « perimees 2 001 », « illisibles 9 »**.
+
+**Ce qui change.**
+
+- `read(address, window, kind)` : `kind` vaut `SLOTS.walkFetch` par défaut
+  (la fenêtre à traduire), et `revoir` comme la sonde passent
+  `SLOTS.walkMachine`. Elles demandent ce que la page porte, pas si
+  l'anneau courant a le droit d'y prendre une instruction.
+- `kernel-entry` écrit `relues-sous anneau <n> cr3 0x…` après « illisibles » :
+  un zéro périmé à un arrêt en anneau trois sous isolation ne se lit plus
+  comme une absence de régions périmées. Pour mesurer à cet arrêt-là,
+  `nopti` sur la ligne de commande.
+- **Pas fait, exprès** : relire chaque fenêtre par le CR3 qui l'a traduite.
+  Ça rendrait les fenêtres du noyau à l'arrêt d'Alpine, mais les tables d'un
+  programme mort ont pu être rendues et réemployées : la marche y lirait
+  n'importe quoi, et `revoir` inventerait des régions périmées — ce que son
+  commentaire interdit.
+
+**Comment c'est vérifié.**
+
+- `a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three`
+  (`tests/host_loop.rs`) : le noyau, sur une grande page du superviseur,
+  réécrit un octet de sa fenêtre puis `sysretq` ; le programme, sur une page
+  utilisateur, s'arrête sur un `ud2` sans porte. CS vaut `0x33` à l'arrêt,
+  rien n'est illisible, et le changement est nommé (décalage `0x100`, `0x00`
+  → `0x90`).
+- `the_watch_probe_still_sees_a_kernel_region_reentered_from_ring_three` :
+  le noyau réécrit son propre premier octet, le programme saute dessus ; la
+  région connue est ré-entrée en anneau trois, et la sonde la compte. Le
+  pilote tourne à un bloc par tour : au budget de 256, mesuré, le saut
+  indirect passait par la table du module sans revenir à l'hôte, et la sonde
+  ne regardait pas.
+- **Trois sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  `revoir` sans `walkMachine` (le premier test tombe, « illisible 65536 ») ;
+  la sonde sans `walkMachine` (le second, « entrees 0 ») ; `walkMachine` par
+  défaut dans `read`
+  (`a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user`
+  tombe : le chargement reste jugé).
+- Alpine, les trois courses ci-dessus, plus l'arrêt en anneau zéro sans
+  `WISQ_TURNS` : « perimees 373 », « illisibles 9 », comme avant.
+- `cargo test --release` : 526 tests, 0 échec, aussi avec les débordements
+  armés ; `cargo fmt`, les deux `clippy` propres ; le compte publié passe de
+  3 421 à 3 423.
+
+**Ce qui reste.**
+
+- À un arrêt en anneau trois sous isolation des tables, `revoir` ne voit
+  toujours pas le texte du noyau. Le relire par les tables du noyau demande
+  de savoir lesquelles sont encore vivantes ; non fait.
+- La sonde ne voit une région du noyau ré-entrée en anneau trois que parce
+  que les régions sont gardées par adresse (le défaut que l'entrée d'en
+  dessous porte dans « Ce qui reste ») : le jour où ce chargement fautera, le
+  second test devra changer de montage.
+
+## 2026-11-14 — Sous l'émetteur, les pages ont des droits : écriture, utilisateur, et le code d'erreur juste
+
+**Ce qui n'allait pas.** La marche des tables de l'émetteur
+(`walk_body`, `crates/wisq-vm/src/x86_wasm.rs`) ne regardait que le bit de
+présence, et posait toujours le code d'erreur zéro. Trois conséquences :
+
+1. **Une écriture sur une page en lecture seule passait.** Pas de copie à
+   l'écriture après un `fork` : le fils écrivait dans les pages du père. Et
+   la première écriture dans une page anonyme neuve, annoncée « lecture »,
+   faisait poser à Linux la **page zéro partagée** en lecture seule, puis
+   l'instruction rejouée écrivait dedans — dans la page zéro de tout le
+   système.
+2. **Un programme d'anneau trois lisait la mémoire du noyau**, et chargeait
+   ses instructions dans une page du noyau.
+3. **Le tampon de traduction ne portait que le numéro de page** : même avec
+   une marche juste, une lecture remplissait la case et l'écriture suivante
+   y trouvait sa trame sans être jugée.
+
+Avec l'initramfs d'Alpine (6.18.60, `WISQ_RAM=256`), le premier programme
+lancé par le noyau mourait : `modprobe[372]: segfault at b ip
+00007fbcc71fd105 … error 4 in ld-musl-x86_64.so.1`.
+
+**Ce qui change.**
+
+- **La marche juge les droits, comme le cœur Swift (`allowed`) et le
+  silicium.** Le ET des bits R/W et U/S des quatre niveaux ; en anneau trois,
+  tout accès veut U et toute écriture veut W, CR0.WP ou non ; hors de
+  l'anneau trois, seule l'écriture est jugée, et seulement sous CR0.WP. Pas
+  de SMAP ni de SMEP : cette machine ne les annonce pas, et le noyau lit et
+  écrit les pages des programmes. La marche prend un second argument, ce que
+  l'accès venait faire (`WALK_MACHINE`, `WALK_READ`, `WALK_WRITE`,
+  `WALK_FETCH`) ; elle a son propre type, le neuvième, et la forme libre ne
+  bouge pas d'un octet.
+- **Le code d'erreur est juste** : P quand la page est là et qu'un droit
+  manque, W pour une écriture, **présente ou non**. U et I restent posés par
+  l'hôte (il lit CS, et c'est lui qui charge les instructions). **I n'est
+  jamais posé** : il demande NXE ou SMEP, et cette machine n'annonce ni NX
+  ni SMEP — le bit XD des entrées n'est donc pas lu. C'est dit, pas tenu.
+- **L'étiquette du tampon porte les droits de la page** :
+  `(page + 1) << 2 | W << 1 | U`. Le contrôle en ligne met à un ce que
+  l'accès n'exige pas (W pour une lecture, U hors de l'anneau trois, lu dans
+  CS) et compare à la page attendue, ses deux bits à un. La disposition
+  d'une case ne change pas (seize octets). Le noyau qui écrit sur une page en
+  lecture seule sans WP passe par le chemin lent à chaque fois : juste, et
+  rare (Linux allume WP).
+- **L'hôte charge les instructions en `WALK_FETCH`** : un programme ne lit sa
+  fenêtre que dans ses propres pages, et la faute de chargement porte le P
+  que la marche a rendu (`unread`). La délivrance — porte, descripteur, TSS,
+  cadre — passe `WALK_MACHINE`, qu'aucun droit n'arrête. `SLOTS` porte les
+  deux nombres, comparés à ceux du Rust.
+- **Deux restes du contrôle précédent, corrigés.** `cb` seul (un `lret` de
+  trente-deux bits) était décodé en `lretq` et dépilait seize octets au lieu
+  de huit : le décodeur dit maintenant la largeur (REX.W, `0x66`), et
+  l'émetteur refuse `cb` et `66 cb` en les nommant, comme `iretd`. Et l'hôte
+  lisait les mots de l'IDT, de la GDT et du TSS d'un trait après avoir
+  traduit leur premier octet : `peekWord` lit un mot à cheval dans ses deux
+  pages.
+- Les modules épinglés de `Sources/WisqCore/WebKitBench.swift` sont
+  régénérés par `--example bench-module` (les deux confinés changent ; le
+  libre est identique).
+- Le montage du segment de tâche de `host_loop.rs` pose ses tables avec le
+  bit utilisateur (`0x7`) : son programme tourne en anneau trois, et le
+  silicium refuserait de charger sa première instruction sinon.
+
+**Comment c'est vérifié.**
+
+- Un banc neuf, `Rights` (`tests/host_loop.rs`) : la pagination et l'anneau
+  posés par le pilote, une page de données dont on choisit les bits de la
+  feuille et des trois niveaux, les régions traduites à la demande par
+  `x86-translate`. Sept tests : lecture seule en anneau zéro avec et sans
+  WP, et sous des tables en lecture seule ; une écriture puis un `add` après
+  une lecture de la même page (le tampon) ; anneau trois sur une feuille et
+  sous des tables du superviseur, et le noyau sur une page utilisateur ;
+  anneau trois sans WP ; une case remplie en anneau zéro relue par l'anneau
+  trois, en lecture et — WP éteint — en écriture ; W sur une page absente ;
+  une écriture à cheval dont la seconde page est en lecture seule (rien
+  d'écrit, CR2 sur la seconde). Deux tests sur le montage du TSS pour le
+  code complet tel que le gestionnaire le trouve : `0x5` pour une lecture et
+  pour un chargement d'anneau trois dans une page du noyau. Un test pour
+  `lret` sans REX.W, un pour le mot du TSS à cheval.
+- **Douze sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  l'écriture comparée comme une lecture dans le tampon (2 tests tombent) ;
+  l'anneau ignoré dans le tampon (1) ; WP toujours allumé (2) ; les droits de
+  la seule feuille (2) ; W absent du code (7) ; P absent du code (8) ; le
+  bit utilisateur ignoré par la marche (4) ; le chargement en `WALK_MACHINE`
+  (1 — il ne tombait pas d'abord : la page de zéros s'exécutait en `add
+  %al,(%rax)` et fautait au même endroit avec le même code ; la page porte
+  maintenant un `ud2`) ; le code de chargement remis à zéro (1) ; `cb` émis
+  en `lretq` (1), `cb` décodé en 64 bits (2) ; le mot du TSS lu d'un trait
+  (1).
+- `cargo test --release` : 524 tests, 0 échec, aussi avec les débordements
+  armés. `cargo fmt`, les deux `clippy` propres. Le site : 470 tests.
+- **Le vrai noyau.** 6.6.142, 6.12.115 et 6.18.60 avec la sonde écrivent
+  toujours `WISQ-USERSPACE-OK` (10 401, 11 003 et 12 169 régions, contre
+  10 390, 10 981 et 12 156 avant : la copie à l'écriture du noyau a ses
+  régions). **Avec l'initramfs d'Alpine, le segfault de `modprobe`
+  disparaît.** `modprobe` va jusqu'à `arch_prctl` (son TLS) puis s'arrête
+  dans ld-musl, à `0x7fbcc7208089`, sur `66 48 0f 6e c3` (`movq
+  %rbx,%xmm0`) : la même instruction SSE au même endroit de ld-musl que le
+  mur d'avant, mais atteinte par le premier programme au lieu d'un suivant
+  — 11 080 régions.
+- **Ce que ça coûte**, contre la branche d'avant, mêmes commandes : le wasm
+  émis grandit de **7,4 %** à régions égales (171,5 Mo → 184,3 Mo pour les
+  12 154 régions communes de 6.18 ; 7,4 % aussi sur 6.6 et 6.12) ; le
+  traducteur de la page de 356 203 à 370 852 octets. **Le temps, lui, n'est
+  pas tranché** : une course avant, une ou deux après — 6.18 et la sonde,
+  deux millions de tours : 31,3 s avant, 35,2 s puis 38,3 s après ; 6.12 :
+  142 s → 151 s et 6.6 : 212 s → 229 s pour six cent mille tours. Mais la
+  même commande sur Alpine a rendu 39,8 s puis 30,7 s après, au même arrêt :
+  le bruit d'une course à l'autre est aussi grand que l'écart. Neuf
+  instructions WebAssembly de plus par écriture en ligne, onze par lecture ;
+  ce qu'elles coûtent en temps demande un banc répété, pas une course.
+
+**Ce qui reste.**
+
+- Le mur suivant est SSE (§ 2.4 de la carte : XMM, `movq`, `punpcklqdq`).
+- Le coût de l'anneau par accès pourrait tomber : le code d'une page du
+  noyau ne s'exécute jamais en anneau trois (le chargement faute), donc une
+  région pourrait être traduite pour l'anneau où l'hôte la demande — à
+  condition que la correspondance des régions distingue les deux. Non fait.
+- Une région déjà traduite se ré-exécute sans repasser par le chargement :
+  un programme qui sauterait dans du code du noyau déjà traduit ne fauterait
+  pas. Sécurité de l'invité, pas un mur de démarrage.
+- La toute première fenêtre est lue avant qu'aucune région n'existe, donc
+  sans marche : par repli, même pagination allumée.
+- Les bits A et D ne sont pas écrits (le cœur Swift non plus).
+- `fxrstor` nomme dans CR2 le premier octet absent plutôt que le dernier de
+  l'aire : non vérifié contre le silicium, laissé.
 ## 2026-11-14 — Première reprise d'un bureau prêt : deux règles enfin tenues par un test, et la marque d'une session orpheline effacée
 
 Le contrôle de la tranche précédente (la première reprise d'un bureau

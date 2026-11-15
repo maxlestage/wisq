@@ -32,7 +32,7 @@
 //! calculer.
 
 use crate::x86::{
-    decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF,
+    cut_short, decode, Address, BitAction, CarryAction, Condition, Decoded, Op, Segment, Width, AF,
     ALWAYS_ONE, CF, DF, IF, OF, PF, SF, WRITABLE_FLAGS, ZF,
 };
 
@@ -136,9 +136,9 @@ pub const TABLE_COUNT: usize = 4;
 /// aller-retour : ça change réellement où il lit. C'est ce qui sépare cette
 /// tranche des trois précédentes.
 ///
-/// `FS_BASE` est rangée et rendue, **sans plus** : le décodeur refuse le
-/// préfixe `0x64`, donc aucune adresse n'en dépend aujourd'hui. Le dire vaut
-/// mieux que laisser croire à une symétrie avec GS.
+/// `FS_BASE` est consultée de la même façon à chaque adresse préfixée par
+/// `%fs:` — le TLS de l'espace utilisateur. Elle a été rangée et rendue sans
+/// servir tant que le décodeur refusait `0x64`.
 ///
 /// `KERNEL_GS_BASE` est la base que `swapgs` échange avec celle de GS — un
 /// noyau le fait à chaque entrée d'appel système.
@@ -178,9 +178,11 @@ pub const MSR_KERNEL_GS_BASE: u64 = 0xc000_0102;
 /// `reg` du ModRM. « Refuser par le numéro », infaisable pour un MSR dont le
 /// numéro arrive dans ECX, est donc parfaitement possible ici.
 ///
-/// **Ce que ces registres ne font pas** : rien ne lit ces bits. Ni la
-/// protection en écriture de CR0, ni le SMEP/SMAP de CR4. Accepter une écriture
-/// dit « on la range », pas « on l'applique ».
+/// **Ce que ces registres font, et ne font pas.** CR0.PG allume la marche, et
+/// CR0.WP y est lu : allumé, le noyau faute sur une page en lecture seule
+/// comme un programme (voir `walk_body`). Rien d'autre n'est lu — ni le
+/// SMEP/SMAP de CR4, que `cpuid` n'annonce pas. Pour tous ces autres bits,
+/// accepter une écriture dit « on la range », pas « on l'applique ».
 pub const CONTROL_SLOT: usize = KERNEL_GS_SLOT + 1;
 pub const CONTROL_COUNT: usize = 5;
 
@@ -402,6 +404,21 @@ pub const STOP_MSR: u64 = 1 << 32;
 /// posée.
 pub const STOP_UNDEFINED: u64 = 8;
 
+/// **Un MXCSR aux bits réservés levés**, que `ldmxcsr` ou `fxrstor`
+/// voulaient charger. Le silicium lève `#GP(0)`, RIP **sur** l'instruction,
+/// rien de changé ; le module pose ce témoin dans le même état, et **l'hôte
+/// délivre la `#GP(0)`**, comme pour `STOP_MSR`. Sans porte, l'arrêt reste et
+/// se nomme.
+///
+/// Ce n'est pas un cas qu'on peut laisser arrêter la machine : `ldmxcsr` est
+/// permise en anneau trois, et n'importe quel programme peut y charger un bit
+/// réservé. Sur le silicium, c'est ce programme-là qui reçoit la faute — un
+/// `SIGSEGV` sous Linux —, pas la machine entière qui s'arrête. Ce
+/// commentaire disait que Linux passait tout MXCSR venu d'un programme par
+/// son masque, et qu'un arrêt ici serait donc un défaut à lire : c'était
+/// faux pour `ldmxcsr`, que le noyau ne voit jamais passer.
+pub const STOP_MXCSR: u64 = 9;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -530,8 +547,8 @@ pub const FXSAVE_WRITTEN: u64 = 416;
 /// À ne pas confondre avec `FXSAVE_WRITTEN`, qui en vaut 416 : ce sont deux
 /// nombres différents, et les confondre est facile. `fxsave` **écrit** 416
 /// octets et **exige** que les 512 soient accessibles ; `fxrstor` en
-/// **consomme** quatre ici — les deux mots que cette machine porte — et exige
-/// les mêmes 512.
+/// **consomme** ici ce que cette machine porte — les deux mots, MXCSR et les
+/// seize XMM, rien au-delà de `0x1a0` — et exige les mêmes 512.
 ///
 /// Mesuré plutôt que lu, le 15 septembre, sur le silicium de la machine de
 /// développement : l'aire posée à cheval sur une page rendue illisible par
@@ -547,8 +564,51 @@ pub const FXSAVE_WRITTEN: u64 = 416;
 /// n'est pas une mesure.
 pub const FPU_AREA_BYTES: u64 = 512;
 
+/// **Où les XMM vivent dans l'aire** : seize octets chacun à partir de
+/// l'octet 160, après l'en-tête (32 octets) et les huit registres x87
+/// (8 × 16). Le format 64 bits du manuel Intel, volume 1, table 10-2.
+pub const FXSAVE_XMM: u64 = 160;
+
+/// **Les seize registres XMM, deux globales chacun** : la moitié basse
+/// (bits 63:0) à `XMM_SLOT + 2 * n`, la haute juste après.
+///
+/// **Des globales, pas de la mémoire au-dessus de la RAM.** Les deux se
+/// valaient sur le papier ; les globales gardent un seul modèle de l'état de
+/// la machine — celui que l'hôte crée, sauve et lit déjà par numéro — et un
+/// accès coûte deux octets de module au lieu de neuf. Le prix a été pesé :
+/// trente-trois imports de plus par module, recopiés dans `web/host.js` et
+/// `WebKitBench.swift`, et les trois modules épinglés régénérés.
+///
+/// **Pas de `v128`.** WebAssembly SIMD existe sous WebKit, mais son
+/// acceptation par le `WKWebView` d'un iPhone n'a jamais été mesurée ici.
+/// Deux `i64` par registre ne demandent rien que le moteur n'exécute déjà, et
+/// le jour où `v128` sera sondé, seule l'émission changera.
+pub const XMM_SLOT: usize = FPU_STATUS_SLOT + 1;
+pub const XMM_COUNT: usize = 16;
+
+/// **MXCSR**, le registre de contrôle et d'état de SSE. Rien ne calcule en
+/// flottant ici, donc rien ne lit ses masques ni son arrondi : il est rangé
+/// par `ldmxcsr` et `fxrstor`, rendu par `stmxcsr` et `fxsave`, et il doit
+/// l'être fidèlement, parce que le noyau le sauve et le rend à chaque
+/// changement de contexte. Sa valeur de départ appartient à l'hôte, comme
+/// celle d'EFER : `MXCSR_RESET`.
+pub const MXCSR_SLOT: usize = XMM_SLOT + 2 * XMM_COUNT;
+
+/// Ce que MXCSR vaut à l'allumage : toutes les exceptions masquées, arrondi
+/// au plus proche (manuel Intel, volume 1, 10.2.3.1). C'est aussi ce que le
+/// cœur Swift pose.
+pub const MXCSR_RESET: u64 = 0x1f80;
+
+/// **Les bits de MXCSR qu'un processeur accepte**, et ce que `fxsave` écrit
+/// à l'octet 28 de l'aire. `0xffff` est ce que le silicium de l'oracle
+/// `x86-fxsave-oracle.tsv` y écrit, et ce que le cœur Swift annonce. Ce
+/// paragraphe valait zéro tant que cette machine n'avait pas de MXCSR —
+/// « cas que Linux prévoit » ; elle en a un, et le masque dit ce qu'elle
+/// accepte.
+pub const MXCSR_MASK: u64 = 0xffff;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = FPU_STATUS_SLOT + 1;
+pub const GLOBAL_COUNT: usize = MXCSR_SLOT + 1;
 
 /// Les numéros des quatre registres de l'appel système, dans l'ordre des cases.
 pub const MSR_STAR: u64 = 0xc000_0081;
@@ -563,6 +623,46 @@ pub const PAGING_BIT: u64 = 1 << 31;
 /// de l'entrée appartient au système d'exploitation et ne veut rien dire.
 pub const ENTRY_PRESENT: u64 = 1;
 
+/// **Le bit d'écriture d'une entrée.** C'est la copie à l'écriture : quand un
+/// programme se dédouble, le noyau donne les mêmes pages aux deux et retire
+/// ce bit des deux côtés. Une marche qui ne le regarde pas laisse le fils
+/// écrire dans la mémoire du père.
+pub const ENTRY_WRITABLE: u64 = 1 << 1;
+
+/// **Le bit utilisateur d'une entrée** : l'anneau trois peut atteindre ce
+/// qu'elle couvre. Sans lui, un programme lit la mémoire du noyau.
+pub const ENTRY_USER: u64 = 1 << 2;
+
+/// **CR0.WP.** Allumé, le noyau faute comme un programme sur une page en
+/// lecture seule ; éteint, il écrit à travers. Linux l'allume.
+pub const WRITE_PROTECT_BIT: u64 = 1 << 16;
+
+/// **Ce que l'accès venait faire, dit à la marche.** Le second argument de la
+/// fonction `walk` que le module exporte.
+///
+/// - `WALK_MACHINE` : un accès que le **processeur** fait pour lui-même —
+///   lire une porte dans l'IDT, un descripteur, le segment de tâche, poser le
+///   cadre d'une faute. Aucun droit n'y est jugé, comme `.machine` dans le
+///   cœur Swift. C'est ce que l'hôte passe pour la délivrance, et ce que
+///   rend un appel JavaScript qui oublie l'argument : zéro.
+/// - `WALK_READ`, `WALK_WRITE` : les accès de l'invité, ceux des deux
+///   fonctions d'accès lent.
+/// - `WALK_FETCH` : un chargement d'instruction, que seul l'hôte fait — il
+///   lit la fenêtre d'une région. Il veut le bit utilisateur en anneau trois,
+///   jamais celui d'écriture.
+pub const WALK_MACHINE: u32 = 0;
+pub const WALK_READ: u32 = 1;
+pub const WALK_WRITE: u32 = 2;
+pub const WALK_FETCH: u32 = 3;
+
+/// **Les deux droits qu'une case du tampon de traduction range**, dans les
+/// deux bits du bas de son étiquette — voir `TLB_SLOTS`. Ce sont ceux de la
+/// **page**, le ET des quatre niveaux, pas ceux de l'accès qui l'a remplie :
+/// une case remplie par le noyau sert ensuite le programme, et une case
+/// remplie par une lecture sert ensuite une écriture.
+pub const TLB_USER: u64 = 1;
+pub const TLB_WRITABLE: u64 = 1 << 1;
+
 /// « Cette entrée est une grande page et le parcours s'arrête ici. »
 pub const ENTRY_HUGE: u64 = 1 << 7;
 
@@ -574,6 +674,17 @@ pub const ENTRY_FRAME: u64 = 0x000F_FFFF_FFFF_F000;
 /// Direct, une case par page, l'étiquette étant l'adresse de page **plus un**
 /// pour que zéro veuille dire « vide » — sans quoi la page zéro passerait pour
 /// déjà là, et l'hôte devrait empoisonner le tampon au démarrage.
+///
+/// **L'étiquette porte aussi les droits de la page** : `(page + 1) << 2`,
+/// puis `TLB_WRITABLE` et `TLB_USER` dans les deux bits du bas. Le tampon ne
+/// portait que le numéro de page, et c'était une porte ouverte : une lecture
+/// le remplissait, l'écriture qui suivait y trouvait sa trame sans repasser
+/// par la marche, et personne ne regardait le bit d'écriture. Le contrôle en
+/// ligne compare donc l'étiquette, **ce que l'accès n'exige pas mis à un**,
+/// à la page attendue avec ses deux droits : voir `Body::translated`. La
+/// disposition d'une case ne change pas — huit octets d'étiquette, quatre de
+/// trame —, et zéro veut toujours dire « vide » : aucune page attendue ne
+/// s'écrit avec moins de trois bits.
 ///
 /// Il vit **au-dessus de la RAM déclarée**, juste après la correspondance
 /// adresse → indice. C'est la place que `Module::confined` a ouverte : l'hôte
@@ -652,6 +763,11 @@ pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 /// le fait, mais **après coup et par un détour** : il rejuge l'octet fautif
 /// avec tout le reste du fichier, ce qu'une vue n'a pas sous la main.
 ///
+/// **Près du bord, c'est le décodeur qui départage** (`x86::cut_short`) :
+/// une coupe est un décodage qui a lu au-delà des octets fournis. Le seuil
+/// de quinze octets reste la borne au-delà de laquelle la question ne se pose
+/// pas.
+///
 /// **Le seuil de quinze octets est mesuré, pas déduit.** Une instruction
 /// x86-64 fait au plus quinze octets, donc un échec à quinze octets ou plus du
 /// bord ne peut pas être une coupe : c'est la borne théorique. Ce qui la rend
@@ -661,14 +777,16 @@ pub const TABLE_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 /// bord d'un précipice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// **La première instruction déjà s'est arrêtée tout près du bord** : à
-    /// `at`, il restait moins de quinze octets, et rien de complet ne la
-    /// précède. Ça peut être une coupe. La vue redemande la même région avec
-    /// davantage d'octets, et n'a besoin de le faire que là.
+    /// **La première instruction déjà déborde du bord** : à `at`, il restait
+    /// moins de quinze octets, le décodeur a lu au-delà (`x86::cut_short`), et
+    /// rien de complet ne la précède. La vue redemande la même région avec
+    /// davantage d'octets, et n'a besoin de le faire que là ; si la page
+    /// d'après manque, c'est la faute de page que le silicium ferait.
     ///
-    /// Ça *peut* aussi être une vraie instruction inconnue qui se trouvait par
-    /// hasard près du bord ; elle coûte alors un aller-retour de plus, et se
-    /// fait refuser franchement au second essai.
+    /// **Une instruction complète que le décodeur refuse n'est plus rendue
+    /// ici**, même tout près du bord : c'était « ça peut être une coupe », et
+    /// l'hôte, devant une page suivante absente, délivrait pour elle une
+    /// faute de page que le silicium ne fait pas. C'est `CannotDecode`.
     ///
     /// **Une coupe après une instruction complète n'est plus un refus.** La
     /// région se traduit jusqu'à la coupe, le bloc coupé rend la main sur
@@ -712,7 +830,7 @@ pub enum Refused {
 
 /// **Ce qu'une instruction x86-64 peut occuper au plus.** En deçà de ça du
 /// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
-const REACH: usize = 15;
+const REACH: usize = crate::x86::LONGEST;
 
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
@@ -1011,6 +1129,7 @@ mod code {
     pub const DROP: u8 = 0x1a;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LE_U: u8 = 0x58;
+    pub const I64_GE_S: u8 = 0x59;
     /// Le reste d'une division non signée. C'est ce qui ramène un compte de
     /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
     /// revient à le tourner d'un.
@@ -1086,6 +1205,13 @@ const HOST_IMPORTS: u32 = 2;
 /// l'indice de personne. Voir `Module::far_load_body`.
 const FAR_LOAD: u32 = 3;
 const FAR_STORE: u32 = 4;
+/// **Ce bit dans la largeur passée à `FAR_STORE` en fait une réservation** :
+/// les deux marches d'écriture ont lieu, et rien n'est écrit. Voir
+/// `Body::claim`. Un bit plutôt qu'une sixième fonction : la même marche, le
+/// même type, et aucun indice à décaler. La largeur réelle tient dans les
+/// bits d'en dessous — seize octets pour `movups`, un pour les sondes de
+/// `fxsave`.
+const CLAIM: u32 = 1 << 16;
 
 /// Les deux registres que le codage des entrées-sorties impose. La valeur est
 /// toujours dans l'accumulateur ; le port des formes non immédiates est dans
@@ -1159,7 +1285,8 @@ impl Body {
         unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
         self.translated(
             mask,
-            width,
+            width as u32,
+            false,
             0x7e, // le résultat : un i64, la valeur lue
             |b| {
                 b.access(load, 0);
@@ -1213,7 +1340,8 @@ impl Body {
         unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
         self.translated(
             mask,
-            width,
+            width as u32,
+            true,
             code::VOID,
             |b| {
                 b.load(TRANSLATE_VALUE).access(store, 0);
@@ -1222,6 +1350,51 @@ impl Body {
                 b.load(TRANSLATE_ADDRESS)
                     .load(TRANSLATE_VALUE)
                     .constant32(width as u32)
+                    .call(walk + FAR_STORE);
+            },
+        )
+    }
+
+    /// **Juger une écriture de `span` octets sans rien écrire** : `address`
+    /// pousse l'adresse, en `i64`. La page du premier octet, puis celle du
+    /// dernier si elle est autre, sont traduites **pour écrire** ; si l'une
+    /// manque ou refuse l'écriture, la faute part d'ici, avant tout effet, avec
+    /// le code d'erreur d'une écriture (W) et CR2 où le silicium le met —
+    /// l'adresse elle-même pour la première page, le premier octet de la
+    /// seconde sinon. C'est le travail de `far_store_body` avec `CLAIM` : les
+    /// mêmes marches, et rien d'écrit.
+    ///
+    /// **Pourquoi pas une lecture.** C'était la sonde d'avant : `movups`
+    /// relisait son dernier octet et le réécrivait tel quel, `fxsave` lisait
+    /// les deux bouts de son aire. Sur une page **absente**, la lecture faute la
+    /// première, en lecture (code 0, pas W), et Linux répond à une faute de
+    /// lecture sur une page anonyme neuve en posant la page zéro partagée, en
+    /// lecture seule : l'écriture rejouée fautait une seconde fois, en
+    /// protection, pour une copie — deux fautes au lieu d'une. Et sur une page
+    /// en lecture seule, une relecture passe : `fxsave` écrivait alors la
+    /// moitié de son aire avant de fauter sur l'autre page.
+    ///
+    /// Sans pagination possible, rien ne peut fauter, et rien n'est émis.
+    fn claim(&mut self, span: u32, address: impl FnOnce(&mut Body)) -> &mut Self {
+        let (Some(walk), Some(mask)) = (self.walk, self.confine) else {
+            return self;
+        };
+        address(self);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
+        self.translated(
+            mask,
+            span,
+            true,
+            code::VOID,
+            // La page permet l'écriture : l'adresse traduite ne sert à rien.
+            |b| {
+                b.op(code::DROP);
+            },
+            |b| {
+                b.load(TRANSLATE_ADDRESS)
+                    .constant(0)
+                    .constant32(CLAIM | span)
                     .call(walk + FAR_STORE);
             },
         )
@@ -1284,10 +1457,31 @@ impl Body {
     /// accès ne peut fauter sans dire d'où. Et sur le chemin sans faute, ça ne
     /// coûte rien : la constante n'est écrite que dans la branche qui rend la
     /// main.
+    ///
+    /// **Et le tampon ne répond que si la page permet l'accès.** L'étiquette
+    /// porte les deux droits de la page (`TLB_WRITABLE`, `TLB_USER`) ; on y
+    /// met à un ce que l'accès **n'exige pas** — l'écriture pour une lecture,
+    /// l'utilisateur hors de l'anneau trois —, et on compare à la page
+    /// attendue, ses deux bits à un. Une lecture qui a rempli la case ne la
+    /// rend donc pas bonne pour une écriture, ni le noyau pour un programme :
+    /// l'accès part par le chemin lent, dont la marche juge et faute. Ce qui
+    /// échappe à la comparaison, c'est le noyau qui écrit sur une page en
+    /// lecture seule quand CR0.WP est éteint : la case dit « pas
+    /// d'écriture », la marche la permet, et chaque écriture de ce genre
+    /// passe par le chemin lent. Linux allume WP ; c'est donc rare, et
+    /// toujours juste.
+    ///
+    /// **L'anneau est lu dans CS à chaque accès**, deux bits du bas. Le garder
+    /// dans une globale de plus demanderait de la tenir à jour partout où CS
+    /// change — `iretq`, `sysretq`, `syscall`, la délivrance de l'hôte, un
+    /// `lretq` —, et une seule oubliée ouvrirait le noyau aux programmes. Le
+    /// prix : neuf instructions WebAssembly de plus par écriture en ligne,
+    /// onze par lecture, et 7,4 % de wasm émis en plus — mesuré au JOURNAL.
     fn translated(
         &mut self,
         mask: u32,
-        width: Width,
+        span: u32,
+        write: bool,
         result: u8,
         direct: impl Fn(&mut Body),
         far: impl FnOnce(&mut Body),
@@ -1323,16 +1517,35 @@ impl Body {
         });
         self.load(slot).op(code::I32_WRAP_I64);
         self.access(code::I64_LOAD, 0);
-        // L'étiquette est le numéro de page **plus un** : zéro veut dire vide,
-        // sans quoi la page zéro passerait pour déjà là. Et le numéro comparé
-        // est celui de la page du **dernier** octet de l'accès.
-        self.load(va);
-        if width as u64 > 1 {
-            self.constant(width as u64 - 1).op(code::I64_ADD);
+        // Ce que l'accès n'exige pas, mis à un dans l'étiquette lue : une
+        // lecture ne demande pas l'écriture…
+        if !write {
+            self.constant(TLB_WRITABLE).op(code::I64_OR);
         }
-        self.constant(12)
+        // … et hors de l'anneau trois, rien ne demande le bit utilisateur :
+        // `(CS & 3) ≠ 3` vaut un, et c'est la place de `TLB_USER`.
+        self.load(Module::segment_slot(Segment::Cs))
+            .constant(3)
+            .op(code::I64_AND)
+            .constant(3)
+            .op(code::I64_NE)
+            .op(code::I64_EXTEND_I32_U)
+            .op(code::I64_OR);
+        // La page attendue : le numéro **plus un** — zéro veut dire vide, sans
+        // quoi la page zéro passerait pour déjà là —, décalé de deux, ses deux
+        // droits à un. Le numéro est celui de la page du **dernier** octet de
+        // l'accès. `((x >> 10) | 3) + 4` est `((x >> 12) + 1) << 2 | 3` en
+        // trois instructions : les deux bits que `| 3` écrase sont ceux que
+        // `<< 2` aurait mis à zéro.
+        self.load(va);
+        if span > 1 {
+            self.constant(u64::from(span) - 1).op(code::I64_ADD);
+        }
+        self.constant(10)
             .op(code::I64_SHR_U)
-            .constant(1)
+            .constant(TLB_USER | TLB_WRITABLE)
+            .op(code::I64_OR)
+            .constant(4)
             .op(code::I64_ADD)
             .op(code::I64_EQ);
         self.op(code::IF).op(result);
@@ -1485,6 +1698,9 @@ impl Body {
         if address.gs {
             self.load(GS_SLOT).op(code::I64_ADD);
         }
+        if address.fs {
+            self.load(FS_BASE_SLOT).op(code::I64_ADD);
+        }
         if let Some(base) = address.base {
             self.load(base as usize).op(code::I64_ADD);
         }
@@ -1542,6 +1758,9 @@ impl Body {
 
 /// Le module émis pour un bloc.
 pub struct Module;
+
+#[path = "x86_wasm_vector.rs"]
+mod vector;
 
 impl Module {
     /// Émettre un module qui exécute ce bloc, ou `None` si une instruction
@@ -1841,7 +2060,14 @@ impl Module {
                 // bits qu'aucun noyau n'exécute, et le produire demanderait
                 // un cadre que cette machine ne pose jamais. Un refus ici,
                 // avant `terminate`, plutôt qu'un cadre à moitié lu.
-                if step.op == Op::InterruptReturn && step.width != Width::Qword {
+                //
+                // **Et `lret` sans REX.W pareil.** `cb` seul dépile EIP puis
+                // CS sur quatre octets chacun ; l'émettre en `lretq`, ce que
+                // faisait l'émetteur tant que le décodeur ne disait pas la
+                // largeur, dépilait seize octets au lieu de huit.
+                if matches!(step.op, Op::InterruptReturn | Op::FarReturn)
+                    && step.width != Width::Qword
+                {
                     return Err(Refused::CannotTranslate {
                         at: at - step.length,
                     });
@@ -1904,6 +2130,7 @@ impl Module {
                         // déplacement, pas la base : `%gs:x(%rip)` reste une
                         // adresse à laquelle la base du segment s'ajoutera.
                         gs: address.gs,
+                        fs: address.fs,
                     }),
                     ..*step
                 }
@@ -1946,7 +2173,11 @@ impl Module {
             survey.instructions += steps.len();
             for step in steps {
                 match step.op {
-                    Op::StringMove { repeat: true } | Op::StringStore { repeat: true } => {
+                    Op::StringMove { repeat: true }
+                    | Op::StringStore { repeat: true }
+                    | Op::StringLoad { repeat: true }
+                    | Op::StringCompare { repeat: Some(_) }
+                    | Op::StringScan { repeat: Some(_) } => {
                         survey.repeats += 1;
                     }
                     Op::Undefined => survey.always += 1,
@@ -2063,7 +2294,9 @@ impl Module {
     /// **Ce n'est pas la même chose qu'une coupe.** Une instruction que le bord
     /// de la fenêtre a tranchée n'est pas nommée ici : elle serait lisible avec
     /// plus d'octets, et la compter ferait chercher une instruction manquante
-    /// là où il n'y a qu'un bord. C'est `REACH` qui départage, et lui seul.
+    /// là où il n'y a qu'un bord. C'est `REACH` qui départage, puis, en deçà,
+    /// `cut_short` : une instruction complète refusée tout près du bord est
+    /// nommée ici, comme ailleurs.
     ///
     /// **Ce que ces adresses ne disent pas** : que l'exécution y aille. La
     /// découverte est spéculative — elle suit les deux issues de chaque saut —
@@ -2083,7 +2316,8 @@ impl Module {
         let mut blocks: std::collections::BTreeMap<usize, Vec<Decoded>> =
             std::collections::BTreeMap::new();
         // **Où le relevé a rencontré le bord**, s'il l'a rencontré : une
-        // instruction qui ne se décode pas à moins de `REACH` octets de la fin.
+        // instruction qui ne se décode pas à moins de `REACH` octets de la fin,
+        // et qui se lirait avec la suite.
         let mut cut = None;
         // **Et où il a rencontré un octet qu'il ne sait pas lire**, avec toute
         // la place qu'il lui fallait. Chacun arrête son bloc ; aucun ne refuse
@@ -2104,7 +2338,15 @@ impl Module {
                     // **Coupé par le bord, ou vraiment inconnu ?** C'est la
                     // place restante qui répond, et elle seule : le décodeur
                     // ne sait pas dire s'il lui manquait des octets.
-                    if bytes.len() - at >= REACH {
+                    //
+                    // **Et, près du bord, ce que la suite y changerait.** La
+                    // place seule prenait pour une coupe toute instruction
+                    // refusée à moins de quinze octets de la fin — trois
+                    // octets complets aussi. Sur une page dont la suivante
+                    // manque, l'hôte délivrait alors une faute de page que le
+                    // silicium ne fait pas. `cut_short` demande au décodeur
+                    // s'il a lu au-delà du bord.
+                    if bytes.len() - at >= REACH || !cut_short(&bytes[at..]) {
                         // **Un arrêt nommé, et non plus un refus.** Le bloc
                         // finit devant l'octet, exactement comme devant une
                         // coupe ; ce qui change est ce que l'hôte trouvera en
@@ -2819,10 +3061,15 @@ impl Module {
         // types avec eux : la forme libre reste, à l'octet près, celle que le
         // corpus matériel juge depuis le début.
         if paging {
-            types[0] = 0x09;
+            types[0] = 0x0a;
             types.extend_from_slice(&[
                 0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7e, // 7 : (i64, i32) -> i64, lire
                 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x00, // 8 : (i64, i64, i32) -> (), écrire
+                // 9 : (i64, i32) -> i32, la marche — l'adresse, et ce que
+                // l'accès venait faire. Le type quatre, sans le second
+                // argument, reste pour que la forme libre ne bouge pas d'un
+                // octet ; aucune fonction ne s'en sert plus.
+                0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7f,
             ]);
         }
         section(1, types, &mut module);
@@ -2911,7 +3158,7 @@ impl Module {
         let mut functions = Vec::new();
         unsigned(count as u64 + 2 + extra, &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
-        // ensuite la marche quand il y en a une, du type quatre ; puis la
+        // ensuite la marche quand il y en a une, du type neuf ; puis la
         // boucle de répartition, du type **six** — `(i64) -> i64`, le budget
         // et ce qu'il en reste ; et l'accesseur des débuts en dernier, du type
         // cinq.
@@ -2922,7 +3169,7 @@ impl Module {
         // l'indice exporté de `run` bouge.
         functions.resize(functions.len() + count, 0x00);
         if paging {
-            functions.push(0x04);
+            functions.push(0x09);
         }
         functions.push(0x06);
         // **Et l'accesseur des débuts de blocs, tout à la fin.** Après `run`
@@ -3144,8 +3391,10 @@ impl Module {
     ///
     /// Une fonction interne, pas un import : un retour de main à l'hôte coûte
     /// 125 à 190 ns, ce qui rendrait un défaut de tampon plus cher que tout le
-    /// reste. Elle prend une adresse invitée et rend la **trame** — l'adresse
-    /// physique de sa page, alignée — après l'avoir posée dans le tampon.
+    /// reste. Elle prend une adresse invitée et ce que l'accès venait faire —
+    /// `WALK_MACHINE`, `WALK_READ`, `WALK_WRITE` ou `WALK_FETCH` —, et rend la
+    /// **trame** — l'adresse physique de sa page, alignée — après l'avoir
+    /// posée dans le tampon.
     ///
     /// **Chaque niveau est replié par le masque.** Une entrée de table qui
     /// nommerait une trame au-dessus de la RAM déclarée atteindrait sinon le
@@ -3156,23 +3405,58 @@ impl Module {
     /// faute et l'adresse dans CR2, et rend zéro. C'est l'appelant qui rend la
     /// main, en ligne, avant d'avoir touché la mémoire.
     ///
+    /// **Et sur un droit qui manque, pareil.** Elle ne regardait que le bit de
+    /// présence : une écriture sur une page en lecture seule passait — la
+    /// copie à l'écriture d'après un `fork` n'avait jamais lieu —, et un
+    /// programme lisait la mémoire du noyau. Elle tient maintenant ce que
+    /// tiennent le cœur Swift (`allowed`) et le silicium :
+    ///
+    /// - les droits sont le **ET des quatre niveaux** : une table qui n'est
+    ///   pas inscriptible, ou pas utilisateur, ferme tout ce qu'elle couvre ;
+    /// - en anneau trois, tout accès veut le bit utilisateur, et une écriture
+    ///   veut le bit d'écriture, CR0.WP ou non ;
+    /// - hors de l'anneau trois, seule l'écriture est jugée, et seulement
+    ///   quand CR0.WP est allumé. Le noyau lit et écrit les pages des
+    ///   programmes : cette machine n'annonce pas SMAP, et SMEP pas davantage ;
+    /// - un accès du processeur pour lui-même (`WALK_MACHINE`) n'est pas jugé.
+    ///
+    /// **Le code d'erreur est juste**, et le témoin le porte, plus un : P
+    /// (bit 0) quand la page est là et que c'est un droit qui manque, W (bit 1)
+    /// pour une écriture, **présente ou non**. Une écriture annoncée
+    /// « lecture » sur une page absente fait poser à Linux la page zéro
+    /// partagée, en lecture seule, puis rejouer — et sans protection en
+    /// écriture, l'instruction rejouée écrivait dans la page zéro de tout le
+    /// système. U (bit 2) et I (bit 4), c'est l'hôte qui les ajoute à la
+    /// délivrance : il lit CS, et c'est lui qui charge les instructions. I
+    /// n'apparaît d'ailleurs jamais — il demande NXE ou SMEP, et cette machine
+    /// n'annonce ni NX ni SMEP ; le bit XD d'une entrée n'est donc pas lu.
+    ///
+    /// **La case du tampon range les droits de la page, pas ceux de
+    /// l'accès** — voir `TLB_SLOTS`. Elle est posée avant le jugement : une
+    /// case juste ne permet rien de plus que la marche, puisque le contrôle en
+    /// ligne la juge à son tour.
+    ///
     /// Les grandes pages s'arrêtent où le bit PS les arrête, à n'importe quel
     /// niveau au-dessus de la feuille — ce qui couvre les deux mébioctets du
     /// direct map de Linux et le gibioctet des mêmes lignes.
     fn walk_body(mask: u32) -> Vec<u8> {
-        // Locales, après le paramètre : l'entrée lue, la table courante, la
-        // trame trouvée, et la case du tampon.
+        // Locales, après les deux paramètres : l'entrée lue, la table
+        // courante, la trame trouvée, la case du tampon, et le ET des bits des
+        // niveaux déjà lus.
         let mut body = vec![
-            0x04, // quatre groupes
-            0x01, 0x7e, // 1 : i64, l'entrée
-            0x01, 0x7f, // 2 : i32, la table
-            0x01, 0x7e, // 3 : i64, la trame
-            0x01, 0x7f, // 4 : i32, la case
+            0x05, // cinq groupes
+            0x01, 0x7e, // 2 : i64, l'entrée
+            0x01, 0x7f, // 3 : i32, la table
+            0x01, 0x7e, // 4 : i64, la trame
+            0x01, 0x7f, // 5 : i32, la case
+            0x01, 0x7e, // 6 : i64, les droits
         ];
-        const ENTRY: u32 = 1;
-        const TABLE: u32 = 2;
-        const FRAME: u32 = 3;
-        const CELL: u32 = 4;
+        const KIND: u32 = 1;
+        const ENTRY: u32 = 2;
+        const TABLE: u32 = 3;
+        const FRAME: u32 = 4;
+        const CELL: u32 = 5;
+        const RIGHTS: u32 = 6;
         let tlb = tlb_base((mask + 1) / 65536);
         let mut b = Body::default();
 
@@ -3182,9 +3466,29 @@ impl Module {
             signed(i64::from(mask), &mut b.bytes);
             b.op(code::I32_AND);
         };
-        // Poser la trame dans le tampon, puis la rendre. Écrit deux fois — une
-        // fois pour les grandes pages, une fois pour la feuille — parce que
-        // les deux sorties sont à des profondeurs différentes du code.
+        // Le témoin, le code d'erreur plus un — pour qu'il ne se confonde pas
+        // avec « rien n'a fauté » —, et CR2. `present` dit si c'est un droit
+        // qui manque (P) plutôt qu'une page ; W vient de l'accès.
+        let fault = |b: &mut Body, present: bool| {
+            b.store(FAULT_SLOT, |b| {
+                b.local_get(KIND).constant32(WALK_WRITE).op(code::I32_EQ);
+                b.op(code::I64_EXTEND_I32_U)
+                    .constant(1)
+                    .op(code::I64_SHL)
+                    .constant(1 + u64::from(present))
+                    .op(code::I64_ADD);
+            });
+            b.store(Self::control_slot(2), |b| {
+                b.local_get(0);
+            });
+            b.bytes.push(code::I32_CONST);
+            signed(0, &mut b.bytes);
+            b.op(code::RETURN);
+        };
+        // Poser la trame dans le tampon, juger l'accès, puis rendre la trame.
+        // Écrit deux fois — une fois pour les grandes pages, une fois pour la
+        // feuille — parce que les deux sorties sont à des profondeurs
+        // différentes du code.
         let install = |b: &mut Body| {
             b.local_get(0)
                 .constant(12)
@@ -3198,37 +3502,80 @@ impl Module {
             b.bytes.push(code::I32_CONST);
             signed(i64::from(tlb), &mut b.bytes);
             b.op(code::I32_ADD).local_tee(CELL);
-            // L'étiquette : le numéro de page plus un.
+            // L'étiquette : le numéro de page plus un, décalé de deux, et les
+            // deux droits de la page — l'écriture est au bit 1 dans l'entrée
+            // comme dans l'étiquette, l'utilisateur descend du bit 2 au bit 0.
             b.local_get(0)
                 .constant(12)
                 .op(code::I64_SHR_U)
                 .constant(1)
-                .op(code::I64_ADD);
+                .op(code::I64_ADD)
+                .constant(2)
+                .op(code::I64_SHL)
+                .local_get(RIGHTS)
+                .constant(ENTRY_WRITABLE)
+                .op(code::I64_AND)
+                .op(code::I64_OR)
+                .local_get(RIGHTS)
+                .constant(2)
+                .op(code::I64_SHR_U)
+                .constant(TLB_USER)
+                .op(code::I64_AND)
+                .op(code::I64_OR);
             b.access(code::I64_STORE, 0);
             b.local_get(CELL).local_get(FRAME);
             b.access(code::I64_STORE32, 8);
+
+            // **Le jugement.** Refusé quand l'accès n'est pas du processeur
+            // pour lui-même, et que :
+            // - l'anneau est trois et la page n'est pas utilisateur ; ou
+            // - c'est une écriture, la page n'est pas inscriptible, et l'on
+            //   est en anneau trois ou CR0.WP est allumé.
+            b.local_get(KIND).constant32(WALK_MACHINE).op(code::I32_NE);
+            // L'anneau trois, sur la pile, deux fois : pour l'utilisateur,
+            // puis pour l'écriture.
+            let ring_three = |b: &mut Body| {
+                b.load(Self::segment_slot(Segment::Cs))
+                    .constant(3)
+                    .op(code::I64_AND)
+                    .constant(3)
+                    .op(code::I64_EQ);
+            };
+            ring_three(b);
+            b.local_get(RIGHTS)
+                .constant(ENTRY_USER)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ)
+                .op(code::I32_AND);
+            b.local_get(KIND).constant32(WALK_WRITE).op(code::I32_EQ);
+            b.local_get(RIGHTS)
+                .constant(ENTRY_WRITABLE)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ)
+                .op(code::I32_AND);
+            ring_three(b);
+            b.load(Self::control_slot(0))
+                .constant(WRITE_PROTECT_BIT)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ)
+                .op(code::I32_EQZ)
+                .op(code::I32_OR)
+                .op(code::I32_AND);
+            b.op(code::I32_OR).op(code::I32_AND);
+            b.op(code::IF).op(code::VOID);
+            fault(b, true);
+            b.op(code::END);
             b.local_get(FRAME).op(code::I32_WRAP_I64).op(code::RETURN);
         };
-        let fault = |b: &mut Body| {
-            // Le code d'erreur zéro — une lecture sur une page absente — plus
-            // un, pour qu'il ne se confonde pas avec « rien n'a fauté ».
-            b.store(FAULT_SLOT, |b| {
-                b.constant(1);
-            });
-            b.store(Self::control_slot(2), |b| {
-                b.local_get(0);
-            });
-            b.bytes.push(code::I32_CONST);
-            signed(0, &mut b.bytes);
-            b.op(code::RETURN);
-        };
 
-        // La racine : CR3, ses bits d'adresse, repliée.
+        // La racine : CR3, ses bits d'adresse, repliée. Les droits partent de
+        // tout permis, et chaque niveau en retire.
         b.load(Self::control_slot(3))
             .constant(ENTRY_FRAME)
             .op(code::I64_AND);
         fold(&mut b);
         b.local_set(TABLE);
+        b.constant(ENTRY_WRITABLE | ENTRY_USER).local_set(RIGHTS);
 
         for level in [39u64, 30, 21, 12] {
             b.local_get(TABLE)
@@ -3247,8 +3594,15 @@ impl Module {
                 .op(code::I64_AND)
                 .op(code::I64_EQZ);
             b.op(code::IF).op(code::VOID);
-            fault(&mut b);
+            fault(&mut b, false);
             b.op(code::END);
+            // **Le ET des niveaux**, pris après le contrôle de présence : une
+            // page absente faute sans P, quels que soient les droits lus au-
+            // dessus d'elle.
+            b.local_get(RIGHTS)
+                .local_get(ENTRY)
+                .op(code::I64_AND)
+                .local_set(RIGHTS);
 
             if level > 12 {
                 let size = 1u64 << level;
@@ -3330,7 +3684,7 @@ impl Module {
         const VALUE: u32 = 5;
         let mut b = Body::default();
 
-        Self::far_first_page(&mut b, walk, OFFSET, LOW, |b| {
+        Self::far_first_page(&mut b, walk, WALK_READ, OFFSET, LOW, |b| {
             b.constant(0);
         });
         // L'accès tient dans sa page : une lecture, à sa largeur.
@@ -3351,7 +3705,7 @@ impl Module {
         b.access(code::I64_LOAD8_U, 0).op(code::RETURN);
         b.op(code::END);
 
-        Self::far_second_page(&mut b, walk, HIGH, |b| {
+        Self::far_second_page(&mut b, walk, WALK_READ, HIGH, |b| {
             b.constant(0);
         });
         // **Du dernier octet au premier** : chacun entre par le bas, après que
@@ -3376,18 +3730,22 @@ impl Module {
     }
 
     /// **L'écriture lente**, le pendant de `far_load_body` : l'adresse, la
-    /// valeur, la largeur.
+    /// valeur, la largeur. Avec `CLAIM` dans la largeur, elle juge et
+    /// n'écrit pas — voir `Body::claim`.
     ///
     /// **Rien n'est écrit tant qu'une page peut manquer.** Les deux marches
     /// passent avant le premier octet : une écriture à cheval sur une page
     /// absente ne laisse pas sa première moitié dans la page présente. Le
-    /// silicium non plus — mesuré.
+    /// silicium non plus — mesuré. Et les deux marches sont des marches
+    /// **d'écriture** : une seconde page en lecture seule arrête l'écriture
+    /// comme une seconde page absente, avant le premier octet.
     fn far_store_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la valeur ; 2, la largeur. Locales :
-        // le décalage dans la page, les deux trames, et le rang de l'octet.
+        // le décalage dans la page, les deux trames, le rang de l'octet, et
+        // le bit `CLAIM` ôté de la largeur.
         let mut body = vec![
             0x01, // un groupe
-            0x04, 0x7f, // 3, 4, 5, 6 : i32
+            0x05, 0x7f, // 3, 4, 5, 6, 7 : i32
         ];
         const VALUE: u32 = 1;
         const WIDTH: u32 = 2;
@@ -3395,12 +3753,24 @@ impl Module {
         const LOW: u32 = 4;
         const HIGH: u32 = 5;
         const RANK: u32 = 6;
+        const CLAIMING: u32 = 7;
         let mut b = Body::default();
+        // Une réservation : le bit mis à part, la largeur rendue à elle-même.
+        b.local_get(WIDTH).constant32(CLAIM).op(code::I32_AND);
+        b.local_set(CLAIMING);
+        b.local_get(WIDTH).constant32(CLAIM - 1).op(code::I32_AND);
+        b.local_set(WIDTH);
+        // Une réservation jugée s'en va là où l'écriture aurait commencé.
+        let claimed = |b: &mut Body| {
+            b.local_get(CLAIMING).op(code::IF).op(code::VOID);
+            b.op(code::RETURN).op(code::END);
+        };
 
-        Self::far_first_page(&mut b, walk, OFFSET, LOW, |_| {});
+        Self::far_first_page(&mut b, walk, WALK_WRITE, OFFSET, LOW, |_| {});
         // L'accès tient dans sa page : une écriture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
         b.op(code::IF).op(code::VOID);
+        claimed(&mut b);
         for (bytes, store) in [
             (8, code::I64_STORE),
             (4, code::I64_STORE32),
@@ -3418,7 +3788,8 @@ impl Module {
             .op(code::RETURN);
         b.op(code::END);
 
-        Self::far_second_page(&mut b, walk, HIGH, |_| {});
+        Self::far_second_page(&mut b, walk, WALK_WRITE, HIGH, |_| {});
+        claimed(&mut b);
         // **Du premier octet au dernier** : l'octet bas de la valeur part, et
         // la valeur descend de huit bits.
         b.op(code::LOOP).op(code::VOID);
@@ -3447,13 +3818,14 @@ impl Module {
     fn far_first_page(
         b: &mut Body,
         walk: u32,
+        kind: u32,
         offset: u32,
         low: u32,
         nothing: impl FnOnce(&mut Body),
     ) {
         b.local_get(0).op(code::I32_WRAP_I64).constant32(0xFFF);
         b.op(code::I32_AND).local_set(offset);
-        b.local_get(0).call(walk).local_set(low);
+        b.local_get(0).constant32(kind).call(walk).local_set(low);
         b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
         b.op(code::IF).op(code::VOID);
         nothing(b);
@@ -3469,13 +3841,19 @@ impl Module {
 
     /// **La page d'après, marchée à son tour** — son premier octet est
     /// l'adresse que CR2 portera si elle manque — et la sortie dans ce cas.
-    fn far_second_page(b: &mut Body, walk: u32, high: u32, nothing: impl FnOnce(&mut Body)) {
+    fn far_second_page(
+        b: &mut Body,
+        walk: u32,
+        kind: u32,
+        high: u32,
+        nothing: impl FnOnce(&mut Body),
+    ) {
         b.local_get(0)
             .constant(0xFFF)
             .op(code::I64_OR)
             .constant(1)
             .op(code::I64_ADD);
-        b.call(walk).local_set(high);
+        b.constant32(kind).call(walk).local_set(high);
         b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
         b.op(code::IF).op(code::VOID);
         nothing(b);
@@ -3672,6 +4050,11 @@ impl Module {
         // comportée *presque* bien, ce qui est pire qu'un refus franc.
         if matches!(step.op, Op::PortIn | Op::PortOut) {
             return Self::port(step, body);
+        }
+        // **Les instructions vectorielles ont leur propre fichier**, et aucune
+        // ne touche aux drapeaux : elles sortent avant tout le reste.
+        if let Op::Vector(vector) = step.op {
+            return Self::vector(vector, step, body);
         }
         // **Le compteur d'horodatage, produit et non refusé.** Il ne demande
         // aucun modèle privilégié : une globale qui monte, et ses deux moitiés
@@ -4300,14 +4683,17 @@ impl Module {
         // **416 octets, pas 512** — voir `FXSAVE_WRITTEN`, qui dit pourquoi
         // et d'où vient le nombre.
         //
-        // Le mot de contrôle et le mot d'état du x87 existent, et sortent de
-        // leurs globales. Tout le reste est nul, et **c'est la vérité, pas un
-        // remplissage** : l'émetteur n'a aucun registre XMM et aucune
-        // instruction XMM ne se décode, donc aucun invité n'a jamais pu écrire
-        // dans cette moitié de l'aire ; aucun registre x87 n'est occupé, donc
-        // le mot d'étiquettes abrégé est nul ; et cette machine n'a pas de
-        // MXCSR, donc son masque est nul — cas que Linux prévoit, et où il
-        // prend sa valeur par défaut documentée.
+        // Ce que la machine a : le mot de contrôle et le mot d'état du x87
+        // (octets 0 et 2), MXCSR et son masque (24 et 28), et les seize XMM
+        // (160 à 415). Ce paragraphe disait que les XMM et MXCSR étaient nuls
+        // parce que cette machine n'en avait pas ; elle en a, et le noyau les
+        // sauve ici à chaque changement de contexte — un programme qui perdrait
+        // ses registres à chaque interruption ne serait pas un programme.
+        //
+        // Ce qu'elle n'a pas reste nul, et **c'est la vérité, pas un
+        // remplissage** : aucun registre x87 n'est occupé, donc le mot
+        // d'étiquettes abrégé est nul, et les huit registres de la pile aussi ;
+        // aucune instruction x87 n'a tourné, donc ni opcode ni pointeurs.
         //
         // **Une boucle plutôt que soixante-quatre écritures en ligne.** Chaque
         // tour écrit huit octets par le même chemin qu'un accès ordinaire,
@@ -4333,11 +4719,19 @@ impl Module {
         // pages au plus ; après elles, la boucle ne peut plus fauter.
         if step.op == Op::FxSave {
             let area = *step.memory.as_ref()?;
-            body.wide_address(&area)
-                .constant(FPU_AREA_BYTES - 1)
-                .op(code::I64_ADD);
-            body.peek(Width::Byte).op(code::DROP);
-            body.wide_address(&area).peek(Width::Byte).op(code::DROP);
+            // Deux réservations d'écriture, pas deux lectures : sur une page
+            // absente, une lecture faute sans W ; sur une page en lecture
+            // seule, elle passe, et la boucle fautait au milieu de l'aire.
+            // Mesuré le 15 novembre : W dans les deux cas, CR2 sur le dernier
+            // octet, rien d'écrit. Voir `Body::claim`.
+            body.claim(1, |b| {
+                b.wide_address(&area)
+                    .constant(FPU_AREA_BYTES - 1)
+                    .op(code::I64_ADD);
+            });
+            body.claim(1, |b| {
+                b.wide_address(&area);
+            });
             // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
@@ -4363,7 +4757,7 @@ impl Module {
             body.op(code::BRANCH_IF);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop
-                                // Et les deux mots qui existent, posés par-dessus les zéros.
+                                // Et ce qui existe, posé par-dessus les zéros.
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
             });
@@ -4376,21 +4770,45 @@ impl Module {
             body.store_at(Body::scratch(0), Width::Word, |b| {
                 b.load(FPU_STATUS_SLOT);
             });
+            // MXCSR à 24 et son masque à 28, en un seul mot de huit octets.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area).constant(24).op(code::I64_ADD);
+            });
+            body.store_at(Body::scratch(0), Width::Qword, |b| {
+                b.load(MXCSR_SLOT)
+                    .constant(MXCSR_MASK << 32)
+                    .op(code::I64_OR);
+            });
+            for (index, slot) in (XMM_SLOT..XMM_SLOT + 2 * XMM_COUNT).enumerate() {
+                body.store(Body::scratch(0), |b| {
+                    b.wide_address(&area)
+                        .constant(FXSAVE_XMM + 8 * index as u64)
+                        .op(code::I64_ADD);
+                });
+                body.store_at(Body::scratch(0), Width::Qword, |b| {
+                    b.load(slot);
+                });
+            }
             return Some(());
         }
-        // **`fxrstor` relit l'aire : les deux mots que cette machine porte, et
-        // rien d'autre.**
+        // **`fxrstor` relit l'aire : ce que cette machine porte — les deux
+        // mots, MXCSR et les seize XMM.**
         //
         // C'est la moitié relecture du couple, et elle est arrivée six tranches
         // après son jumeau — le premier chemin qui la réclame est celui qui
         // bascule vers `/init`.
         //
-        // **Elle ne restaure que le mot de contrôle et le mot d'état.** MXCSR,
-        // les huit registres x87 et les seize XMM ne sont pas restaurés parce
-        // qu'ils **n'existent pas ici**, et non parce qu'on aurait choisi de
-        // les ignorer : les restaurer demanderait de les avoir. Le cœur Swift,
-        // qui les a, fait l'inverse — la divergence est entre deux machines qui
-        // n'ont pas le même matériel.
+        // **Elle restaure ce que la machine a** : le mot de contrôle, le mot
+        // d'état, MXCSR et les seize XMM. Ce bloc disait « les deux mots, et
+        // rien d'autre », parce que MXCSR et les XMM n'existaient
+        // pas ici ; ils existent, et un noyau qui rend la main à un programme
+        // passe par ici pour lui rendre ses registres. Les huit registres x87
+        // et leur mot d'étiquettes ne sont toujours pas restaurés : ils
+        // n'existent pas, et aucune instruction de calcul x87 ne se décode.
+        //
+        // **MXCSR se juge avant que rien ne change.** Des bits réservés levés
+        // valent `#GP(0)` sur le silicium : le témoin `STOP_MXCSR`, RIP sur
+        // l'instruction et la machine intacte, et l'hôte la délivre.
         //
         // **Le balayage d'abord, la restauration ensuite, et l'ordre est le
         // fond de l'affaire.** Un vrai processeur exige que les 512 octets
@@ -4430,7 +4848,25 @@ impl Module {
             body.op(code::BRANCH_IF);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop
-                                // L'aire est entière : les deux mots peuvent entrer.
+                                // L'aire est entière. MXCSR d'abord, jugé.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area).constant(24).op(code::I64_ADD);
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load_at(Body::scratch(0), Width::Dword);
+            });
+            body.load(Body::scratch(1))
+                .constant(!MXCSR_MASK)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ)
+                .op(code::I32_EQZ);
+            body.op(code::IF).op(code::VOID);
+            Self::stop_on(address, STOP_MXCSR, body);
+            body.op(code::END);
+            // Plus rien ne peut fauter : les deux pages ont été lues.
+            body.store(MXCSR_SLOT, |b| {
+                b.load(Body::scratch(1));
+            });
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
             });
@@ -4443,6 +4879,16 @@ impl Module {
             body.store(FPU_STATUS_SLOT, |b| {
                 b.load_at(Body::scratch(0), Width::Word);
             });
+            for (index, slot) in (XMM_SLOT..XMM_SLOT + 2 * XMM_COUNT).enumerate() {
+                body.store(Body::scratch(0), |b| {
+                    b.wide_address(&area)
+                        .constant(FXSAVE_XMM + 8 * index as u64)
+                        .op(code::I64_ADD);
+                });
+                body.store(slot, |b| {
+                    b.load_at(Body::scratch(0), Width::Qword);
+                });
+            }
             return Some(());
         }
         // **`verw` : l'opérande est lu, et c'est tout ce que cette machine
@@ -4516,6 +4962,12 @@ impl Module {
         }
         if matches!(step.op, Op::StringMove { .. } | Op::StringStore { .. }) {
             return Self::string(step, body);
+        }
+        if matches!(
+            step.op,
+            Op::StringLoad { .. } | Op::StringCompare { .. } | Op::StringScan { .. }
+        ) {
+            return Self::string_read(step, body);
         }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
@@ -4701,6 +5153,7 @@ impl Module {
                 | Op::FpuInit
                 | Op::FxSave
                 | Op::FxRestore
+                | Op::Vector(_)
                 | Op::VerifySegmentWrite
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
@@ -4769,7 +5222,12 @@ impl Module {
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
                 Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
-                Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
+                Op::DirectionFlag(_)
+                | Op::StringMove { .. }
+                | Op::StringStore { .. }
+                | Op::StringLoad { .. }
+                | Op::StringCompare { .. }
+                | Op::StringScan { .. } => {
                     unreachable!("la direction et les chaînes sortent avant")
                 }
                 Op::Push
@@ -5099,6 +5557,7 @@ impl Module {
             | Op::FpuInit
             | Op::FxSave
             | Op::FxRestore
+            | Op::Vector(_)
             | Op::VerifySegmentWrite
             | Op::ReadModelRegister
             | Op::WriteModelRegister
@@ -5226,6 +5685,9 @@ impl Module {
             | Op::DirectionFlag(_)
             | Op::StringMove { .. }
             | Op::StringStore { .. }
+            | Op::StringLoad { .. }
+            | Op::StringCompare { .. }
+            | Op::StringScan { .. }
             | Op::Push
             | Op::Pop
             | Op::PushFlags
@@ -5287,6 +5749,15 @@ impl Module {
         if condition.negated() {
             b.constant(1).op(code::I64_XOR);
         }
+    }
+
+    /// **S'arrêter sur l'instruction et dire pourquoi** : RIP sur elle, le
+    /// témoin d'arrêt posé, et la main rendue. Rien d'autre ne change.
+    fn stop_on(address: u64, stop: u64, body: &mut Body) {
+        body.store(STOP_SLOT, |b| {
+            b.constant(stop);
+        });
+        Self::hand_back(address, body);
     }
 
     /// **Rendre la main au milieu d'un bloc.**
@@ -6404,6 +6875,113 @@ impl Module {
             body.store(Self::slot(1), |b| {
                 b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
             });
+            body.op(code::BRANCH);
+            unsigned(0, &mut body.bytes);
+            body.op(code::END); // loop
+            body.op(code::END); // block
+        }
+        Some(())
+    }
+
+    /// **Les trois chaînes qui lisent sans écrire : `lods`, `cmps`, `scas`.**
+    ///
+    /// La boucle de `string`, à deux différences près. **Les drapeaux** : `cmps`
+    /// et `scas` posent ceux de `cmp` — gauche moins droite, où la gauche est
+    /// la source (RSI) pour `cmps` et l'accumulateur pour `scas`, la droite
+    /// l'élément à RDI —, par le même calcul que `cmp` (`flags`, sur les cases
+    /// de travail 0 à 2). **La sortie sur ZF** : `repe` s'arrête quand ce
+    /// n'est plus égal, `repne` quand ça l'est, testé après la décrémentation
+    /// de RCX. Un `repne scasb` qui trouve son octet sort donc RDI un cran
+    /// après lui et RCX décompté, ce que `strlen` relit.
+    ///
+    /// Le pas vit dans la case 5 : les cases 0 à 2 sont celles de `flags`.
+    /// **Les deux lectures d'un tour passent avant tout changement** — ni
+    /// registre ni drapeau ne bouge avant elles —, donc une faute de page sur
+    /// la seconde laisse RCX, RSI, RDI et RFLAGS tels qu'au début du tour, et
+    /// le `rep` se rejoue où il s'était arrêté.
+    fn string_read(step: &Decoded, body: &mut Body) -> Option<()> {
+        let (repeat, until) = match step.op {
+            Op::StringLoad { repeat } => (repeat, None),
+            Op::StringCompare { repeat } | Op::StringScan { repeat } => (repeat.is_some(), repeat),
+            _ => unreachable!("seules les trois chaînes qui lisent arrivent ici"),
+        };
+        let width = step.width;
+        let size = width as u64;
+        let pace = Body::scratch(5);
+        body.store(pace, |b| {
+            b.constant(size.wrapping_neg());
+            b.constant(size);
+            b.load(RFLAGS_SLOT).constant(DF).op(code::I64_AND);
+            b.constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+        if repeat {
+            body.op(code::BLOCK).op(code::VOID);
+            body.op(code::LOOP).op(code::VOID);
+            // Le compte nul ne fait rien, pas même poser un drapeau.
+            body.load(Self::slot(1)).op(code::I64_EQZ);
+            body.op(code::BRANCH_IF);
+            unsigned(1, &mut body.bytes);
+        }
+        let advance = |slot: usize, body: &mut Body| {
+            body.store(slot, |b| {
+                b.load(slot).load(pace).op(code::I64_ADD);
+            });
+        };
+        if let Op::StringLoad { .. } = step.op {
+            body.store(Body::scratch(1), |b| {
+                b.load(Self::slot(6)).peek(width);
+            });
+            Self::put(0, width, body, |b| {
+                b.load(Body::scratch(1));
+            });
+            advance(Self::slot(6), body);
+        } else {
+            let scans = matches!(step.op, Op::StringScan { .. });
+            let mask = width.mask();
+            body.store(Body::scratch(0), |b| {
+                if scans {
+                    b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+                } else {
+                    b.load(Self::slot(6)).peek(width);
+                }
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load(Self::slot(7)).peek(width);
+            });
+            body.store(Body::scratch(2), |b| {
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(1))
+                    .op(code::I64_SUB)
+                    .constant(mask)
+                    .op(code::I64_AND);
+            });
+            // Les drapeaux de `cmp`, à la largeur de la chaîne.
+            let compare = Decoded {
+                op: Op::Cmp,
+                ..*step
+            };
+            Self::flags(&compare, mask, width.sign(), body);
+            if !scans {
+                advance(Self::slot(6), body);
+            }
+            advance(Self::slot(7), body);
+        }
+        if repeat {
+            body.store(Self::slot(1), |b| {
+                b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
+            });
+            if let Some(while_equal) = until {
+                // **Sortir sur ZF** : vers le `block`, une profondeur de un.
+                body.load(RFLAGS_SLOT).constant(ZF).op(code::I64_AND);
+                if while_equal {
+                    body.op(code::I64_EQZ);
+                } else {
+                    body.constant(0).op(code::I64_NE);
+                }
+                body.op(code::BRANCH_IF);
+                unsigned(1, &mut body.bytes);
+            }
             body.op(code::BRANCH);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop

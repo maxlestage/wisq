@@ -19,8 +19,8 @@ use wisq_vm::x86::{Cpu, GuestMemory, Step, ALWAYS_ONE, IF, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, EFER_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON,
     FPU_CONTROL_SLOT, FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT,
-    RFLAGS_SLOT, RIP_SLOT, SEGMENT_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES,
-    TABLE_SLOT, TABLE_SLOTS, TASK_SLOT,
+    MXCSR_SLOT, RFLAGS_SLOT, RIP_SLOT, SEGMENT_SLOT, STOP_MXCSR, STOP_SLOT, SYSCALL_COUNT,
+    SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOT, TABLE_SLOTS, TASK_SLOT, XMM_SLOT,
 };
 
 /// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
@@ -104,6 +104,51 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         value("globalCount"),
         GLOBAL_COUNT.to_string(),
         "le nombre de globales"
+    );
+    // **Les registres vectoriels et MXCSR, comparés dès leur arrivée.** Une
+    // case fausse ici ne casserait rien de visible tant que l'hôte ne fait que
+    // poser MXCSR : il le poserait sur un XMM, et `stmxcsr` rendrait zéro.
+    assert_eq!(
+        value("xmm"),
+        wisq_vm::x86_wasm::XMM_SLOT.to_string(),
+        "le premier registre XMM"
+    );
+    assert_eq!(
+        value("xmmCount"),
+        wisq_vm::x86_wasm::XMM_COUNT.to_string(),
+        "le nombre de registres XMM"
+    );
+    assert_eq!(
+        value("mxcsr"),
+        wisq_vm::x86_wasm::MXCSR_SLOT.to_string(),
+        "l'emplacement de MXCSR"
+    );
+    assert_eq!(
+        value("mxcsrReset"),
+        format!("{:#x}", wisq_vm::x86_wasm::MXCSR_RESET),
+        "la valeur d'allumage de MXCSR"
+    );
+    // **Les témoins que la boucle délivre au lieu de s'arrêter.** Un nombre
+    // faux ici ferait passer une `#GP` ou une `#UD` pour un arrêt de raison
+    // inconnue : la machine s'arrêterait là où le silicium délivre.
+    let stop = |name: &str| -> String {
+        text.lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix(&format!("const {name} = "))
+                    .map(|rest| rest.trim_end_matches(';').trim_end_matches('n').to_string())
+            })
+            .unwrap_or_else(|| panic!("host.js ne déclare pas « {name} »"))
+    };
+    assert_eq!(
+        stop("STOP_MXCSR"),
+        STOP_MXCSR.to_string(),
+        "le témoin d'un MXCSR refusé"
+    );
+    assert_eq!(
+        stop("STOP_UNDEFINED"),
+        wisq_vm::x86_wasm::STOP_UNDEFINED.to_string(),
+        "le témoin de `ud2`"
     );
     // **Le nombre de voies par seau, comparé dès son arrivée.** L'hôte choisit
     // la voie où il range une adresse ; le module, lui, consulte un nombre de
@@ -269,6 +314,20 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         value("tlbPages"),
         wisq_vm::x86_wasm::TLB_PAGES.to_string(),
         "les pages qu'occupe le tampon"
+    );
+    // **Ce que l'hôte dit à la marche qu'il vient faire.** Un `walkMachine`
+    // faux ferait juger la délivrance d'une faute sur les droits de la page —
+    // et fauter en posant un cadre sur la pile du noyau ; un `walkFetch` faux
+    // laisserait un programme exécuter une page du noyau.
+    assert_eq!(
+        value("walkMachine"),
+        wisq_vm::x86_wasm::WALK_MACHINE.to_string(),
+        "l'accès du processeur pour lui-même"
+    );
+    assert_eq!(
+        value("walkFetch"),
+        wisq_vm::x86_wasm::WALK_FETCH.to_string(),
+        "le chargement d'instruction"
     );
 }
 
@@ -3132,6 +3191,708 @@ console.log("noyau " + lire(7));
         line("noyau "),
         0x1111,
         "et le noyau porte celle qu'avait GS"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`%fs:` lit et écrit à la base que `wrmsr` a posée dans `FS_BASE`.**
+///
+/// C'est le mur où Alpine s'arrêtait : `mov %fs:0x0,%rdx` dans `__dls3`, le
+/// pointeur de fil de `ld-musl`. La base est lue **à l'exécution**, dans sa
+/// case, et pas repliée dans le déplacement : le noyau la change à chaque
+/// changement de tâche, entre deux entrées dans la même région.
+///
+/// Ce que le test sépare : la base de FS de celle de GS (posées toutes les
+/// deux, comme sous Linux), l'adresse segmentée de l'adresse nue (une écriture
+/// sous `%fs:` doit se relire à `base + 0x28` sans préfixe, et pas à `0x28`),
+/// le dernier préfixe de segment, et `lea`, qui n'en prend aucun.
+#[test]
+fn the_fs_prefix_reads_and_writes_at_the_base_wrmsr_set() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0xb9, 0x00, 0x01, 0x00, 0xc0, // mov $0xc0000100,%ecx — FS_BASE
+        0xb8, 0x00, 0x30, 0x00, 0x00, // mov $0x3000,%eax
+        0x31, 0xd2, // xor %edx,%edx
+        0x0f, 0x30, // wrmsr
+        0xb9, 0x01, 0x01, 0x00, 0xc0, // mov $0xc0000101,%ecx — GS_BASE
+        0xb8, 0x00, 0x50, 0x00, 0x00, // mov $0x5000,%eax
+        0x0f, 0x30, // wrmsr
+        0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+        0x11, // movabs $0x1122334455667788,%rax
+        0x64, 0x48, 0x89, 0x04, 0x25, 0x28, 0x00, 0x00, 0x00, // mov %rax,%fs:0x28
+        0x48, 0x8b, 0x34, 0x25, 0x28, 0x30, 0x00, 0x00, // mov 0x3028,%rsi
+        0x64, 0x48, 0x8b, 0x3c, 0x25, 0x28, 0x00, 0x00, 0x00, // mov %fs:0x28,%rdi
+        0x48, 0x8b, 0x1c, 0x25, 0x28, 0x00, 0x00, 0x00, // mov 0x28,%rbx
+        0x64, 0x48, 0x8d, 0x14, 0x25, 0x28, 0x00, 0x00, 0x00, // lea %fs:0x28,%rdx
+        0x64, 0x65, 0x4c, 0x8b, 0x04, 0x25, 0x28, 0x00, 0x00,
+        0x00, // mov %gs:0x28,%r8 (GS en dernier)
+        0x65, 0x64, 0x4c, 0x8b, 0x0c, 0x25, 0x28, 0x00, 0x00,
+        0x00, // mov %fs:0x28,%r9 (FS en dernier)
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-fs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("fs.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+for (const [nom, at] of [["rsi", 6], ["rdi", 7], ["rbx", 3], ["rdx", 2], ["r8", 8], ["r9", 9]]) {{
+  console.log(nom + " " + lire(at));
+}}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    const VALUE: u64 = 0x1122_3344_5566_7788;
+    assert_eq!(
+        line("rsi "),
+        VALUE,
+        "l'écriture sous %fs: tombe à base + 0x28"
+    );
+    assert_eq!(line("rdi "), VALUE, "et se relit sous %fs:");
+    assert_eq!(line("rbx "), 0, "rien n'est écrit à 0x28 sans segment");
+    assert_eq!(line("rdx "), 0x28, "lea ignore la base de FS");
+    assert_eq!(
+        line("r8 "),
+        0,
+        "64 65 : GS gagne, et rien n'est à la base de GS + 0x28"
+    );
+    assert_eq!(line("r9 "), VALUE, "65 64 : FS gagne");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`addr32 call` empile l'adresse d'après ses six octets et saute.**
+///
+/// La forme que l'éditeur de liens écrit dans `libcrypto.so.3` (45 264 fois)
+/// à la place d'un appel par la GOT. Le préfixe ne change rien au saut, mais
+/// il compte dans la longueur : un émetteur qui l'oublierait reviendrait un
+/// octet trop tôt, au milieu de l'instruction d'après.
+#[test]
+fn an_addr32_call_pushes_the_address_after_its_six_bytes() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x48, 0xc7, 0xc4, 0x00, 0x80, 0x00, 0x00, // mov $0x8000,%rsp
+        0x67, 0xe8, 0x02, 0x00, 0x00, 0x00, // addr32 call +2
+        0x0f, 0x0b, // ud2 — l'adresse de retour, jamais exécutée
+        0x48, 0x8b, 0x34, 0x24, // mov (%rsp),%rsi
+        0x48, 0x89, 0xe7, // mov %rsp,%rdi
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-addr32-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("addr32.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rip " + lire({rip}));
+console.log("rsi " + lire(6));
+console.log("rdi " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        errors.is_empty(),
+        "le pilote ne doit rien écrire en erreur : {errors}"
+    );
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(
+        line("rip "),
+        BASE + 22,
+        "l'arrêt est le second ud2, à la cible"
+    );
+    assert_eq!(
+        line("rsi "),
+        BASE + 13,
+        "l'adresse de retour suit les six octets de l'appel"
+    );
+    assert_eq!(line("rdi "), 0x8000 - 8, "un mot empilé");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **`scas` ne compare que la largeur de la chaîne de l'accumulateur.**
+///
+/// `scasb` compare AL, pas RAX. L'égalité ne le montre pas — le résultat de la
+/// soustraction est ramené à la largeur, donc ZF tombe juste même avec RAX
+/// entier — mais la retenue si : AL = 0 sous un octet 0x77 emprunte, RAX =
+/// 0x1122…7700 non. Le corpus de chaîne ne porte aucun état où les deux
+/// diffèrent, et c'est ce cas-là qu'un `strchr` en `-Os` rencontre.
+#[test]
+fn scas_compares_only_the_width_of_the_accumulator() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let mut program = vec![
+        0xc6, 0x04, 0x25, 0x00, 0x20, 0x00, 0x00, 0x77, // movb $0x77,0x2000
+        0xbf, 0x00, 0x20, 0x00, 0x00, // mov $0x2000,%edi
+        0x48, 0xb8, 0x00, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+        0x11, // movabs $0x1122334455667700,%rax
+        0xae, // scasb
+        0x0f, 0x92, 0xc3, // setc %bl
+        0x0f, 0x94, 0xc1, // setz %cl
+    ];
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let scratch = std::env::temp_dir().join(format!("wisq-host-scas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("scas.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("cf " + lire(3));
+console.log("zf " + lire(1));
+console.log("rdi " + lire(7));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let output = Command::new(&bun)
+        .arg("run")
+        .arg(&driver)
+        .output()
+        .expect("bun");
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert_eq!(
+        text.lines().next(),
+        Some(format!("arret {UD2_SANS_PORTE}")).as_deref(),
+        "le `ud2` arrête : {text}"
+    );
+    assert_eq!(line("cf ") & 0xff, 1, "AL = 0 sous 0x77 emprunte : {text}");
+    assert_eq!(line("zf ") & 0xff, 0, "et ce n'est pas égal : {text}");
+    assert_eq!(line("rdi "), 0x2001, "RDI avance d'un octet : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Ce qu'on tape arrive sur le port série, dans l'ordre.**
+///
+/// `send` range les octets dans la file de réception du 16550 : le bit 0 du
+/// registre d'état de ligne dit qu'il y en a, la lecture du registre de
+/// réception les rend un par un, et la ligne quatre monte quand l'invité a
+/// autorisé l'interruption de réception. C'est par là que le shell d'un
+/// initramfs lit ses commandes.
+#[test]
+fn what_is_typed_arrives_on_the_serial_port_in_order() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0x66, 0xba, 0xfd, 0x03, // mov $0x3fd,%dx — l'état de ligne
+        0xec, // 1: in (%dx),%al
+        0xa8, 0x01, // test $1,%al
+        0x74, 0xfb, // jz 1b
+        0x66, 0xba, 0xf8, 0x03, // mov $0x3f8,%dx — la réception
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xd8, // movzbl %al,%ebx
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xc8, // movzbl %al,%ecx
+        0x66, 0xba, 0xfd, 0x03, // mov $0x3fd,%dx
+        0xec, // in (%dx),%al
+        0x0f, 0xb6, 0xf0, // movzbl %al,%esi — l'état, la file vidée
+        0x0f, 0x0b, // ud2
+    ];
+    let scratch = std::env::temp_dir().join(format!("wisq-host-send-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let module = Module::resolving(&program, BASE, 0, 0, PAGES).expect("le programme se traduit");
+    let path = scratch.join("send.wasm");
+    std::fs::write(&path, &module).expect("le module");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+// La ligne quatre suit la file quand la réception est autorisée.
+vm.uart.interruptEnable = 1;
+vm.send(new Uint8Array([0x6f, 0x6b]));
+console.log("ligne " + ((vm.pics.master.request & 0x10) !== 0));
+vm.uart.interruptEnable = 0;
+vm.pics.master.request = 0;
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString(16);
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("rsi " + lire(6));
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            path = path.to_string_lossy(),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let line = |name: &str| {
+        let value = text
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {name} » : {text}"))
+            .trim();
+        u64::from_str_radix(value, 16).expect("un nombre")
+    };
+    assert!(
+        text.contains("ligne true"),
+        "la ligne quatre monte quand la réception est autorisée : {text}"
+    );
+    assert!(
+        text.contains(&format!("arret {UD2_SANS_PORTE}")),
+        "le programme lit et s'arrête : {text}"
+    );
+    assert_eq!(line("rbx "), 0x6f, "le premier octet tapé d'abord : {text}");
+    assert_eq!(line("rcx "), 0x6b, "le second ensuite : {text}");
+    assert_eq!(line("rsi ") & 1, 0, "et la file est vide : {text}");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Au premier passage en anneau trois, le cache de code est vidé, une fois.**
+///
+/// Le noyau réécrit son texte pendant qu'il démarre (`apply_alternatives`) ;
+/// une région traduite avant garde l'ancien code. Sur Alpine, c'était la
+/// bascule de tables d'`error_entry`, et une interruption prise en anneau
+/// trois fautait dans la faute jusqu'à l'IDT.
+///
+/// Le montage : deux régions, `mov $1,%esi ; jmp *%rbx` et, là où RBX
+/// pointe, `mov $1,%edi ; ud2`, tournent en anneau zéro ; la seconde est
+/// atteinte **par la correspondance**, de module à module. Le pilote réécrit
+/// les deux en `mov $2`, pose CS en anneau trois et relance. Sans vidage,
+/// l'ancienne traduction tourne et RSI vaut 1 ; avec, la première région est
+/// retraduite depuis la mémoire — et la seconde aussi, à condition que la
+/// correspondance ait été vidée avec le reste : sinon le saut retomberait sur
+/// un ancien bloc. Une troisième course, encore en anneau trois, ne vide pas
+/// une seconde fois : le prix est payé une fois.
+#[test]
+fn the_first_entry_into_ring_three_empties_the_code_cache_once() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    let scratch = std::env::temp_dir().join(format!("wisq-host-vidage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+let traduites = 0;
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    traduites += 1;
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    return out.exitCode === 0 ? out.stdout : null;
+  }},
+  pages: {pages},
+}});
+const octets = new Uint8Array(vm.memory.buffer);
+const poser = (valeur) => {{
+  // mov $valeur,%esi ; mov $base+0x100,%rbx ; jmp *%rbx
+  octets.set([0xbe, valeur, 0, 0, 0, 0x48, 0xc7, 0xc3, 0x00, 0x01, 0x01, 0x00, 0xff, 0xe3], {base});
+  // mov $valeur,%edi ; ud2
+  octets.set([0xbf, valeur, 0, 0, 0, 0x0f, 0x0b], {base} + 0x100);
+}};
+const lire = at => BigInt.asUintN(64, vm.globals[at].value).toString();
+const course = async (valeur, cs) => {{
+  poser(valeur);
+  // L'arrêt de la course d'avant est effacé, et les deux témoins remis à zéro :
+  // une course relancée sur un `ud2` déjà rendu le rendrait de nouveau.
+  vm.globals[{stop}].value = 0n;
+  vm.globals[6].value = 0n;
+  vm.globals[7].value = 0n;
+  vm.globals[{segment} + 1].value = cs;
+  vm.globals[{rip}].value = {base}n;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  console.log("course " + valeur + " rsi " + lire(6) + " rdi " + lire(7) + " vidages " + vm.vidages.fois
+    + " traduites " + traduites + " arret " + why.stopped);
+}};
+await course(1, 0x10n);
+await course(2, 0x33n);
+await course(3, 0x33n);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            rip = RIP_SLOT,
+            segment = SEGMENT_SLOT,
+            stop = STOP_SLOT,
+            base = BASE,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let course = |n: u8| -> String {
+        text.lines()
+            .find(|l| l.starts_with(&format!("course {n} ")))
+            .unwrap_or_else(|| panic!("la course {n} : {text}"))
+            .to_string()
+    };
+    assert!(
+        course(1).contains(" rsi 1 rdi 1 vidages 0 traduites 2 "),
+        "en anneau zéro, rien n'est vidé : {text}"
+    );
+    assert!(
+        course(2).contains(" rsi 2 rdi 2 vidages 1 traduites 4 "),
+        "au premier passage en anneau trois, les deux régions sont retraduites depuis la \
+         mémoire, la seconde atteinte par une correspondance vidée : {text}"
+    );
+    assert!(
+        course(3).contains(" vidages 1 traduites 4 "),
+        "et une seule fois : la troisième course ne retraduit rien : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Le premier passage en anneau trois vide le cache même quand une
+/// interruption l'attend.**
+///
+/// Le passage se regardait seulement en tête de tour. Or la région qui fait
+/// le `sysretq` rend la main en anneau trois, et si une IRQ est en attente la
+/// boucle la délivre — CS repasse en anneau zéro — puis revient en tête de
+/// tour sans avoir rien vu. Le gestionnaire tournait sur ses traductions
+/// d'avant les réécritures du noyau, le défaut même d'`error_entry` que le
+/// vidage corrige, et le vidage n'avait jamais lieu.
+///
+/// Le montage : le gestionnaire du vecteur 0x20, `mov $V,%edi ; ud2`, est
+/// traduit en anneau zéro avec V=1, puis réécrit avec V=2. Le noyau fait
+/// ensuite `sysretq` vers un `jmp .` avec IF levé et IRQ0 en attente. Juste :
+/// un vidage, l'interruption délivrée depuis le programme, et RDI à 2. Le
+/// témoin, sans IRQ, vide aussi et reste en anneau trois.
+#[test]
+fn the_first_entry_into_ring_three_empties_the_cache_even_with_an_interrupt_waiting() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    let scratch = std::env::temp_dir().join(format!("wisq-host-vidage-irq-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+const course = async (irq) => {{
+  const vm = machine({{
+    translate: (address, slot, code) => {{
+      const out = Bun.spawnSync({{
+        cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+        stdin: code,
+      }});
+      if (out.exitCode === 4) return "encore";
+      return out.exitCode === 0 ? out.stdout : null;
+    }},
+    pages: {pages},
+  }});
+  const m = new Uint8Array(vm.memory.buffer);
+  const vue = new DataView(vm.memory.buffer);
+  // Le noyau : mov $0x10400,%rcx ; mov $0x202,%r11d ; sysretq
+  m.set([0x48, 0xc7, 0xc1, 0x00, 0x04, 0x01, 0x00, 0x41, 0xbb, 0x02, 0x02, 0x00, 0x00, 0x48, 0x0f, 0x07], 0x10000);
+  // Le programme : jmp .
+  m.set([0xeb, 0xfe], 0x10400);
+  const gestionnaire = (v) => m.set([0xbf, v, 0, 0, 0, 0x0f, 0x0b], 0x11000);
+  // La GDT et le TSS : la pile du noyau pour l'interruption prise en anneau trois.
+  const GDT = 0x14000, TSS = 0x15000, SEL = 0x40;
+  const bas = 0x67n | ((BigInt(TSS) & 0xffffffn) << 16n) | (9n << 40n) | (1n << 47n)
+    | (((BigInt(TSS) >> 24n) & 0xffn) << 56n);
+  vue.setBigUint64(GDT + SEL, bas, true);
+  vue.setBigUint64(GDT + SEL + 8, 0n, true);
+  vm.globals[SLOTS.table].value = 0xffffn;
+  vm.globals[SLOTS.table + 1].value = BigInt(GDT);
+  vue.setBigUint64(TSS + 4, 0x19000n, true);
+  vm.globals[SLOTS.task].value = BigInt(SEL);
+  // L'IDT : le vecteur 0x20 vers le gestionnaire.
+  const IDT = 0x12000, H = 0x11000n;
+  const low = (H & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n) | ((H & 0xffff0000n) << 32n);
+  vue.setBigUint64(IDT + 0x20 * 16, low, true);
+  vue.setBigUint64(IDT + 0x20 * 16 + 8, 0n, true);
+  vm.globals[SLOTS.table + 2].value = 0xffffn;
+  vm.globals[SLOTS.table + 3].value = BigInt(IDT);
+  vm.globals[SLOTS.syscall].value = 0x20n << 48n;
+  vm.globals[SLOTS.efer].value |= 1n;
+  vm.pics.master.base = 0x20;
+  vm.pics.master.mask = 0xfe;
+  const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+  // Le gestionnaire traduit en anneau zéro, avec V=1.
+  gestionnaire(1);
+  vm.globals[SLOTS.segment + 1].value = 0x10n;
+  vm.globals[SLOTS.segment + 2].value = 0x18n;
+  vm.globals[SLOTS.rip].value = H;
+  await vm.run({{ budget: 64n, rounds: 16 }});
+  const avant = "rdi " + lire(7) + " vidages " + vm.vidages.fois;
+  // Le noyau réécrit son texte, comme `apply_alternatives` : V=2.
+  gestionnaire(2);
+  vm.globals[SLOTS.stop].value = 0n;
+  vm.globals[7].value = 0n;
+  vm.globals[4].value = 0x18000n;
+  vm.globals[SLOTS.rflags].value = 0x2n;
+  vm.globals[SLOTS.rip].value = 0x10000n;
+  vm.pics.master.request = irq ? 1 : 0;
+  const why = await vm.run({{ budget: 64n, rounds: 16 }});
+  console.log("irq " + irq + " avant " + avant + " apres rdi " + lire(7) + " vidages " + vm.vidages.fois
+    + " cs 0x" + (lire(SLOTS.segment + 1) & 0xffffn).toString(16) + " delivrees " + vm.materiel.delivrees
+    + " premiere 0x" + (vm.materiel.premiere ?? 0n).toString(16) + " arret " + why.stopped);
+}};
+await course(true);
+await course(false);
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    let course = |irq: bool| -> String {
+        text.lines()
+            .find(|l| l.starts_with(&format!("irq {irq} ")))
+            .unwrap_or_else(|| panic!("la course irq={irq} : {text}"))
+            .to_string()
+    };
+    for irq in [true, false] {
+        assert!(
+            course(irq).contains(" avant rdi 1 vidages 0 "),
+            "irq={irq} : en anneau zéro, le gestionnaire est traduit avec V=1 et rien n'est \
+             vidé : {text}"
+        );
+    }
+    assert!(
+        course(true).contains(" apres rdi 2 vidages 1 cs 0x10 delivrees 1 premiere 0x10400 "),
+        "l'interruption est délivrée depuis le programme, et le gestionnaire tourne sur sa \
+         traduction refaite après le vidage — pas sur celle d'avant : {text}"
+    );
+    assert!(
+        course(false).contains(" apres rdi 0 vidages 1 cs 0x33 delivrees 0 "),
+        "le témoin : sans interruption, le programme tourne en anneau trois, et le cache est \
+         vidé une fois : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une région que le vidage vient d'oublier ne tourne plus, même pour le
+/// bloc de plus du « sur place ».**
+///
+/// Quand RIP retombe sur le point de départ d'une région, la boucle la fait
+/// tourner d'un bloc de plus pour distinguer une boucle d'une machine
+/// bloquée. Si cette région est celle qui vient de passer en anneau trois,
+/// le vidage l'a oubliée : la faire tourner, c'est exécuter une traduction
+/// d'avant les réécritures, ce que le vidage existe pour empêcher. Le
+/// contrôle a montré que rien ne le tenait : dans les deux tests d'avant,
+/// RIP n'est jamais au point de départ après le vidage.
+///
+/// Le montage : le noyau, `mov $0x10000,%rcx ; mov $2,%r11d ; sysretq`,
+/// revient au **début de sa propre région**, en anneau trois. Au moment où
+/// la région est traduite, le pilote réécrit ces octets en
+/// `mov $2,%edi ; ud2` — la réécriture du démarrage, faite après la
+/// traduction. Juste : un vidage, la région retraduite depuis la mémoire,
+/// RDI à 2 et l'arrêt sur `ud2`, cinq octets plus loin que le départ. Faux,
+/// mesuré en remplaçant `if (voirAnneauTrois()) region = null;` par
+/// `voirAnneauTrois();` : le bloc de plus appelle l'ancien module, dont les
+/// blocs ont quitté la table, et Bun meurt sur `RuntimeError: call_indirect
+/// to a signature that does not match`. Une région oubliée n'est pas
+/// seulement périmée : elle n'a plus de quoi tourner.
+#[test]
+fn a_region_the_flush_just_forgot_does_not_run_again() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-vidage-surplace-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine, SLOTS }} from {host:?};
+let traduites = 0;
+let m = null;
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    traduites += 1;
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    // La réécriture du démarrage, faite une fois la première traduction
+    // prise : mov $2,%edi ; ud2.
+    if (traduites === 1) m.set([0xbf, 2, 0, 0, 0, 0x0f, 0x0b, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90], 0x10000);
+    if (out.exitCode === 4) return "encore";
+    return out.exitCode === 0 ? out.stdout : null;
+  }},
+  pages: {pages},
+}});
+m = new Uint8Array(vm.memory.buffer);
+// Le noyau : mov $0x10000,%rcx ; mov $0x2,%r11d ; sysretq — vers son propre début.
+m.set([0x48, 0xc7, 0xc1, 0x00, 0x00, 0x01, 0x00, 0x41, 0xbb, 0x02, 0x00, 0x00, 0x00, 0x48, 0x0f, 0x07], 0x10000);
+vm.globals[SLOTS.syscall].value = 0x20n << 48n;
+vm.globals[SLOTS.efer].value |= 1n;
+vm.globals[SLOTS.segment + 1].value = 0x10n;
+vm.globals[SLOTS.segment + 2].value = 0x18n;
+vm.globals[SLOTS.rflags].value = 0x2n;
+vm.globals[4].value = 0x18000n;
+vm.globals[SLOTS.rip].value = 0x10000n;
+const why = await vm.run({{ budget: 64n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+console.log("vidages " + vm.vidages.fois + " traduites " + traduites + " rdi " + lire(7)
+  + " cs 0x" + (lire(SLOTS.segment + 1) & 0xffffn).toString(16)
+  + " rip 0x" + lire(SLOTS.rip).toString(16) + " arret " + why.stopped + " fin");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(&bun, &driver);
+    assert!(
+        text.contains("vidages 1 traduites 2 rdi 2 cs 0x33 rip 0x10005 "),
+        "le passage en anneau trois vide le cache, et la région d'avant ne tourne plus : \
+         le nouveau texte est retraduit et s'arrête sur son `ud2` : {text}"
+    );
+    assert!(
+        !text.contains("arret sur place"),
+        "la machine n'est pas bloquée : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
@@ -9378,7 +10139,8 @@ const vm = machine({{
 }});
 vm.globals[{rip}].value = {base}n;
 {setup}
-await vm.run({{ budget: 1000n, rounds: 4 }});
+const pourquoi = await vm.run({{ budget: 1000n, rounds: 4 }});
+console.log("arret " + pourquoi.stopped);
 console.log("rax " + BigInt.asUintN(64, vm.globals[0].value).toString(16));
 console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
 {extra}
@@ -9721,20 +10483,20 @@ console.log("fsw " + vm.globals[{status}].value);"#,
 /// C'est le mur mesuré après #224 — la machine s'arrête pour de vrai à
 /// `fpu__init_system + 183`, sur `0f ae 05 d2 f1 13 00`.
 ///
-/// **Les zéros ne sont pas un remplissage, ils sont la vérité.** L'émetteur
-/// n'a aucun registre XMM et aucune instruction XMM ne se décode : personne
-/// n'a jamais pu écrire dans cette moitié de l'aire. Le mot d'étiquettes
-/// abrégé vaut zéro pour la même raison — aucun registre x87 n'est occupé.
-/// MXCSR et son masque valent zéro parce que cette machine n'a pas de MXCSR,
-/// et Linux prévoit ce cas : masque nul, il prend sa valeur par défaut
-/// documentée.
+/// **Ce que la machine a, depuis la tranche du socle SSE** : les deux mots du
+/// x87 en 0 et 2, MXCSR en 24, son masque (`0xffff`, ce que le silicium de
+/// `x86-fxsave-oracle.tsv` écrit) en 28, et les seize XMM de 160 à 415. Ce
+/// test exigeait des zéros pour ces trois-là, parce que la machine n'en avait
+/// pas ; c'est l'image entière qu'il compare maintenant, octet par octet.
+///
+/// **Les zéros qui restent sont la vérité** : aucun registre x87 n'est occupé,
+/// donc le mot d'étiquettes abrégé et les huit registres de la pile sont nuls.
 ///
 /// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** L'aire est
-/// pré-remplie de `0xee` : un `fxsave` qui n'écrirait rien, ou qui n'écrirait
-/// que les quatre premiers octets, laisserait ces témoins en place. Et les
-/// deux mots venus des globales portent des valeurs que `fninit` ne produit
-/// pas — `0x1234` et `0xabcd` —, donc un émetteur qui écrirait `0x037f` et
-/// zéro en dur tomberait aussi.
+/// pré-remplie de `0xee` : un `fxsave` qui n'écrirait rien, ou qu'une partie,
+/// laisserait ces témoins en place. Les mots, MXCSR et chaque moitié de
+/// chaque XMM portent des valeurs distinctes : un registre écrit à la place
+/// d'un autre, ou une moitié à la place de l'autre, se voit.
 ///
 /// Les huit octets de part et d'autre sont gardés : une aire de 513 octets
 /// écraserait la mémoire du voisin.
@@ -9766,55 +10528,44 @@ fn fxsave_writes_the_state_the_machine_has_and_zero_for_what_it_has_not() {
             r#"vm.globals[0].value = {area}n;
 vm.globals[{control}].value = 0x1234n;
 vm.globals[{status}].value = 0xabcdn;
+{vectors}
 new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xee);"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
+            vectors = fx_registers_setup(),
         ),
         &format!(
-            r#"const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
-console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
-console.log("reste " + aire.slice(4, {written}).reduce((n, o) => n + (o === 0 ? 0 : 1), 0));
-console.log("reserve " + aire.slice({written}).every((o) => o === 0xee));
-console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).join(","));
-console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).join(","));
+            r#"const hexa = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("aire " + hexa({area}, 512));
+console.log("avant " + hexa({area} - 8, 8));
+console.log("apres " + hexa({area} + 512, 8));
 console.log("fcw " + vm.globals[{control}].value);
 console.log("fsw " + vm.globals[{status}].value);"#,
             area = AREA,
-            written = WRITTEN,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
         ),
     );
+    let mut wanted = fx_image(0x1234, 0xabcd);
+    wanted.extend(std::iter::repeat_n(0xee, 512 - WRITTEN));
     assert_eq!(
-        line_of(&text, "tete "),
-        "3412cdab00000000",
-        "le mot de contrôle en 0x00, le mot d'état en 0x02, et le mot \
-         d'étiquettes abrégé nul en 0x04 — aucun registre x87 n'est occupé : \
-         {text}"
-    );
-    assert_eq!(
-        line_of(&text, "reste "),
-        "0",
-        "les 412 octets qui suivent doivent être écrits à zéro, pas laissés \
-         tels quels : ST0-7 et XMM0-15 n'existent pas ici, et MXCSR non plus \
-         — Linux prend sa valeur par défaut quand le masque lit zéro : {text}"
-    );
-    assert_eq!(
-        line_of(&text, "reserve "),
-        "true",
-        "et les 96 derniers octets de l'aire restent tels quels : le corpus \
-         matériel a mesuré qu'un vrai processeur ne les touche pas, et le \
-         cœur Swift s'arrête au même octet : {text}"
+        line_of(&text, "aire "),
+        hex_of(&wanted),
+        "l'aire entière : les deux mots en 0 et 2, le mot d'étiquettes abrégé \
+         nul en 4, MXCSR et son masque en 24 et 28, les huit registres x87 \
+         nuls, les seize XMM de 160 à 415 — et les 96 derniers octets laissés \
+         tels quels, comme le silicium et le cœur Swift : {text}"
     );
     assert_eq!(
         line_of(&text, "avant "),
-        "238,238,238,238,238,238,238,238",
+        "eeeeeeeeeeeeeeee",
         "rien au-dessous de l'aire : {text}"
     );
     assert_eq!(
         line_of(&text, "apres "),
-        "238,238,238,238,238,238,238,238",
+        "eeeeeeeeeeeeeeee",
         "ni au-dessus : 512 octets, pas un de plus : {text}"
     );
     assert_eq!(
@@ -9826,6 +10577,57 @@ console.log("fsw " + vm.globals[{status}].value);"#,
     assert_eq!(line_of(&text, "fsw "), "43981", "et le mot d'état : {text}");
 }
 
+/// La valeur de MXCSR que les tests de l'aire posent : un arrondi vers zéro
+/// et deux drapeaux, rien que des bits que le masque `0xffff` accepte, et
+/// pas la valeur d'allumage — un `fxsave` qui écrirait `0x1f80` en dur
+/// tomberait.
+const FX_MXCSR: u64 = 0x7f83;
+
+/// La moitié `high` du registre XMM `n` dans les tests de l'aire : seize
+/// valeurs distinctes, et deux moitiés distinctes par registre.
+fn fx_half(n: usize, high: bool) -> u64 {
+    let byte = (n as u64) * 2 + u64::from(high) + 1;
+    (byte * 0x0101_0101_0101_0101) ^ 0x0011_2233_4455_6677
+}
+
+/// Les lignes de pilote qui posent MXCSR et les seize XMM à leurs valeurs de
+/// test.
+fn fx_registers_setup() -> String {
+    let mut out = format!("vm.globals[{MXCSR_SLOT}].value = {FX_MXCSR:#x}n;\n");
+    for n in 0..16 {
+        for high in [false, true] {
+            out.push_str(&format!(
+                "vm.globals[{}].value = {:#x}n;\n",
+                XMM_SLOT + 2 * n + usize::from(high),
+                fx_half(n, high)
+            ));
+        }
+    }
+    out
+}
+
+/// **Ce que `fxsave` doit écrire, construit d'après le manuel** (Intel,
+/// volume 1, table 10-2, format 64 bits) et non d'après l'émetteur : 416
+/// octets, les deux mots, MXCSR et son masque, les seize XMM.
+fn fx_image(control: u16, status: u16) -> Vec<u8> {
+    let mut image = vec![0u8; 416];
+    image[0..2].copy_from_slice(&control.to_le_bytes());
+    image[2..4].copy_from_slice(&status.to_le_bytes());
+    image[24..28].copy_from_slice(&(FX_MXCSR as u32).to_le_bytes());
+    image[28..32].copy_from_slice(&0xffffu32.to_le_bytes());
+    for n in 0..16 {
+        for high in [false, true] {
+            let at = 160 + 16 * n + 8 * usize::from(high);
+            image[at..at + 8].copy_from_slice(&fx_half(n, high).to_le_bytes());
+        }
+    }
+    image
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// **`fxrstor` relit ce que `fxsave` a écrit, et ne touche pas l'aire.**
 ///
 /// Le mur mesuré à #252 : la machine s'arrête pour de vrai à
@@ -9833,13 +10635,18 @@ console.log("fsw " + vm.globals[{status}].value);"#,
 /// qui relit l'état neuf du coprocesseur au moment de basculer vers `/init`.
 /// **`fxsave` était décodée depuis #225 ; celle-ci ne l'a jamais été.**
 ///
-/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** Les deux
-/// globales portent avant l'instruction des valeurs que l'aire ne contient
-/// pas : un `fxrstor` qui ne ferait rien les laisserait en place, un qui
-/// n'en relirait qu'une laisserait l'autre, et un qui les échangerait
-/// donnerait deux fois le mauvais mot. L'aire est en outre relue après coup :
-/// `fxrstor` **lit**, elle n'écrit pas — la confondre avec son jumeau
-/// écraserait l'état qu'on vient de lui donner.
+/// **Depuis le socle SSE, elle rend aussi MXCSR et les seize XMM** : c'est
+/// par elle qu'un noyau rend ses registres à un programme. L'aire porte
+/// l'image que `fx_image` construit d'après le manuel, et tout ce qu'elle ne
+/// lit pas — le mot d'étiquettes, la pile x87, le masque, la queue — vaut
+/// `0xaa`, pour qu'un octet lu au mauvais endroit se voie.
+///
+/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** Les globales
+/// portent avant l'instruction des valeurs que l'aire ne contient pas : un
+/// `fxrstor` qui ne ferait rien les laisserait en place, un qui n'en relirait
+/// qu'une partie laisserait le reste, et un qui les échangerait donnerait les
+/// mauvais registres. L'aire est relue après coup : `fxrstor` **lit**, elle
+/// n'écrit pas.
 #[test]
 fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
     let Some(bun) = bun() else {
@@ -9848,6 +10655,23 @@ fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
     const PAGES: u32 = 1;
     const BASE: u64 = 0x1_0000;
     const AREA: u32 = 0x2000;
+    // L'image, puis `0xaa` partout où `fxrstor` ne doit rien lire.
+    let mut area = fx_image(0x0ff1, 0x0ee2);
+    for at in (4..24).chain(28..160) {
+        area[at] = 0xaa;
+    }
+    area.extend(std::iter::repeat_n(0xaa, 96));
+    let mut placed = String::new();
+    for (at, byte) in area.iter().enumerate() {
+        placed.push_str(&format!("aire[{at}] = {byte};\n"));
+    }
+    // Les registres avant l'instruction : autre chose que l'image.
+    let mut before = format!("vm.globals[{MXCSR_SLOT}].value = 0x1f80n;\n");
+    for slot in XMM_SLOT..XMM_SLOT + 32 {
+        before.push_str(&format!(
+            "vm.globals[{slot}].value = 0x5a5a5a5a5a5a5a5an;\n"
+        ));
+    }
     let text = drive_with(
         &bun,
         &[0x0f, 0xae, 0x08, 0x0f, 0x0b], // fxrstor (%rax) ; ud2
@@ -9856,15 +10680,11 @@ fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
         "fxrstor",
         &format!(
             r#"vm.globals[0].value = {area}n;
-// L'aire est remplie de témoins, puis les deux mots que la machine porte
-// vraiment y sont posés. Les témoins doivent être lus sans être consommés.
-new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xaa);
-const vue = new DataView(vm.memory.buffer);
-vue.setUint16({area} + 0x00, 0x0ff1, true);
-vue.setUint16({area} + 0x02, 0x0ee2, true);
-// Et les globales portent autre chose : ce qui doit être remplacé.
-vm.globals[{control}].value = 0x1234n;
-vm.globals[{status}].value = 0xabcdn;"#,
+new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xbb);
+const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+{placed}vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;
+{before}"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
@@ -9872,14 +10692,22 @@ vm.globals[{status}].value = 0xabcdn;"#,
         &format!(
             r#"console.log("fcw " + vm.globals[{control}].value);
 console.log("fsw " + vm.globals[{status}].value);
-const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
-console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
-console.log("temoins " + aire.slice(4).every((o) => o === 0xaa));
-console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).every((o) => o === 0xaa));
-console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).every((o) => o === 0xaa));"#,
+console.log("mxcsr " + vm.globals[{mxcsr}].value.toString(16));
+const moities = [];
+for (let slot = {xmm}; slot < {xmm} + 32; slot++) {{
+  moities.push(BigInt.asUintN(64, vm.globals[slot].value).toString(16));
+}}
+console.log("xmm " + moities.join(","));
+const hexa = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("aire " + hexa({area}, 512));
+console.log("avant " + hexa({area} - 8, 8));
+console.log("apres " + hexa({area} + 512, 8));"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
+            mxcsr = MXCSR_SLOT,
+            xmm = XMM_SLOT,
         ),
     );
     assert_eq!(
@@ -9895,20 +10723,304 @@ console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).every((
          diffèrent exprès — les échanger donnerait 3810 et 4081 : {text}"
     );
     assert_eq!(
-        line_of(&text, "tete "),
-        "f10fe20eaaaaaaaa",
-        "`fxrstor` **lit** l'aire : les deux mots doivent y être restés tels \
-         quels, et les témoins juste après aussi. La confondre avec `fxsave` \
-         écraserait l'état qu'on vient de lui donner : {text}"
+        line_of(&text, "mxcsr "),
+        format!("{FX_MXCSR:x}"),
+        "MXCSR vient de l'octet 24, pas du masque qui le suit : {text}"
+    );
+    let wanted: Vec<String> = (0..16)
+        .flat_map(|n| [fx_half(n, false), fx_half(n, true)])
+        .map(|half| format!("{half:x}"))
+        .collect();
+    assert_eq!(
+        line_of(&text, "xmm "),
+        wanted.join(","),
+        "les seize XMM viennent de 160 à 415, chacun à sa place et chaque \
+         moitié de son côté : {text}"
     );
     assert_eq!(
-        line_of(&text, "temoins "),
-        "true",
-        "et les 508 octets qui suivent restent 0xaa — rien n'est écrit dans \
-         l'aire : {text}"
+        line_of(&text, "aire "),
+        hex_of(&area),
+        "`fxrstor` **lit** l'aire : elle doit être restée octet pour octet. La \
+         confondre avec `fxsave` écraserait l'état qu'on vient de lui donner : \
+         {text}"
     );
-    assert_eq!(line_of(&text, "avant "), "true", "rien au-dessous : {text}");
-    assert_eq!(line_of(&text, "apres "), "true", "ni au-dessus : {text}");
+    assert_eq!(
+        line_of(&text, "avant "),
+        "bbbbbbbbbbbbbbbb",
+        "rien au-dessous : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "apres "),
+        "bbbbbbbbbbbbbbbb",
+        "ni au-dessus : {text}"
+    );
+}
+
+/// **Un MXCSR aux bits réservés levés ne restaure rien, et sans porte l'arrêt
+/// le nomme.**
+///
+/// Le silicium refuse par `#GP(0)` un `fxrstor` ou un `ldmxcsr` dont MXCSR
+/// lève un bit hors du masque (`0xffff`). L'hôte délivre cette faute — voir
+/// `an_mxcsr_with_reserved_bits_is_delivered_as_a_general_protection_fault` ;
+/// ici il n'y a pas d'IDT, et la machine s'arrête en disant le MXCSR refusé
+/// et le vecteur qui manquait, RIP sur l'instruction, le témoin `STOP_MXCSR`
+/// remis. Et rien n'a changé : MXCSR est jugé **avant** que le premier
+/// registre soit posé.
+#[test]
+fn an_mxcsr_with_reserved_bits_stops_by_name_and_restores_nothing() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const AREA: u32 = 0x2000;
+    for (name, program, value) in [
+        ("fxrstor", &[0x0f, 0xae, 0x08, 0x0f, 0x0b][..], 0x1_1f80u32),
+        (
+            "ldmxcsr",
+            &[0x0f, 0xae, 0x10, 0x0f, 0x0b][..],
+            0x8000_1f80u32,
+        ),
+    ] {
+        let area = fx_image(0x0ff1, 0x0ee2);
+        let mut placed = String::new();
+        for (at, byte) in area.iter().enumerate() {
+            placed.push_str(&format!("aire[{at}] = {byte};\n"));
+        }
+        // `ldmxcsr` lit MXCSR à l'adresse même ; `fxrstor` à l'octet 24.
+        let offset = if name == "fxrstor" { 24 } else { 0 };
+        let text = drive_with(
+            &bun,
+            program,
+            BASE,
+            PAGES,
+            &format!("mxcsr-{name}"),
+            &format!(
+                r#"vm.globals[0].value = {area}n;
+const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+{placed}new DataView(vm.memory.buffer).setUint32({area} + {offset}, {value}, true);
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{mxcsr}].value = 0x1f80n;
+vm.globals[{xmm}].value = 0x5an;"#,
+                area = AREA,
+                control = FPU_CONTROL_SLOT,
+                mxcsr = MXCSR_SLOT,
+                xmm = XMM_SLOT,
+            ),
+            &format!(
+                r#"console.log("ici " + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
+console.log("temoin " + vm.globals[{stop}].value);
+console.log("fcw " + vm.globals[{control}].value);
+console.log("mxcsr " + vm.globals[{mxcsr}].value.toString(16));
+console.log("xmm0 " + vm.globals[{xmm}].value.toString(16));"#,
+                rip = RIP_SLOT,
+                stop = STOP_SLOT,
+                control = FPU_CONTROL_SLOT,
+                mxcsr = MXCSR_SLOT,
+                xmm = XMM_SLOT,
+            ),
+        );
+        assert_eq!(
+            line_of(&text, "arret "),
+            "un MXCSR aux bits réservés levés, que ldmxcsr ou fxrstor voulaient \
+             charger sans porte : aucune IDT ne porte le vecteur 13",
+            "{name} : l'arrêt nomme le MXCSR refusé, et la #GP qui n'a pas de \
+             porte : {text}"
+        );
+        assert_eq!(
+            (
+                line_of(&text, "ici "),
+                line_of(&text, "temoin "),
+                line_of(&text, "fcw "),
+                line_of(&text, "mxcsr "),
+                line_of(&text, "xmm0 "),
+            ),
+            (
+                format!("{BASE:x}"),
+                STOP_MXCSR.to_string(),
+                "4660".to_string(),
+                "1f80".to_string(),
+                "5a".to_string(),
+            ),
+            "{name} : RIP sur l'instruction, le témoin posé, et rien de \
+             restauré — ni le mot de contrôle, ni MXCSR, ni XMM0 : {text}"
+        );
+    }
+}
+
+/// **Un MXCSR aux bits réservés est délivré à l'invité comme une `#GP(0)`.**
+///
+/// `ldmxcsr` est permise en anneau trois : n'importe quel programme peut
+/// demander un bit réservé, et le silicium ne fait fauter que lui — un
+/// `SIGSEGV` sous Linux. Cette machine s'arrêtait en entier, sur un témoin
+/// qu'aucune porte ne rattrapait. L'hôte délivre maintenant la faute, comme
+/// pour un MSR inconnu.
+///
+/// Le gestionnaire fait ce que ferait la table d'exceptions du noyau : il
+/// dépile le code d'erreur, avance le RIP empilé après l'instruction (trois
+/// octets, `0f ae /2` ou `0f ae /1` sur `(%rax)`), et `iretq` reprend là. Ce
+/// que chaque assertion tient : le gestionnaire du vecteur 13 a tourné, le
+/// code d'erreur est nul, le cadre porte l'instruction fautive et non la
+/// suivante, l'exécution a continué après, le témoin est effacé, et rien n'a
+/// été restauré — ni MXCSR, ni le mot de contrôle, ni XMM0.
+#[test]
+fn an_mxcsr_with_reserved_bits_is_delivered_as_a_general_protection_fault() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 4;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = 0x1_1000;
+    const IDT: u64 = 0x1_2000;
+    const IDT_POINTER: u64 = 0x1_3000;
+    const STACK: u64 = 0xf000;
+    const AREA: u64 = 0x2000;
+    for (name, instruction, offset, value) in [
+        ("ldmxcsr", [0x0f, 0xae, 0x10], 0u64, 0x8000_1f80u32),
+        ("fxrstor", [0x0f, 0xae, 0x08], 24, 0x1_1f80),
+    ] {
+        let mut program = movabs(3, IDT_POINTER);
+        program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+        program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+        program.extend_from_slice(&(STACK as u32).to_le_bytes());
+        program.extend_from_slice(&[0x48, 0xc7, 0xc3, 0x11, 0x11, 0x00, 0x00]); // mov $0x1111,%rbx
+        program.extend(movabs(0, AREA));
+        let faults_at = BASE + program.len() as u64;
+        program.extend_from_slice(&instruction); // la #GP
+        let after = BASE + program.len() as u64;
+        program.extend_from_slice(&[0x48, 0xc7, 0xc3, 0x22, 0x22, 0x00, 0x00]); // mov $0x2222,%rbx
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+        let handler: Vec<u8> = vec![
+            0x48, 0xc7, 0xc1, 0x33, 0x33, 0x00, 0x00, // mov $0x3333,%rcx
+            0x41, 0x58, // pop %r8 — le code d'erreur
+            0x4c, 0x8b, 0x0c, 0x24, // mov (%rsp),%r9 — le RIP empilé
+            0x48, 0x83, 0x04, 0x24, 0x03, // addq $3,(%rsp) — RIP après l'instruction
+            0x48, 0xcf, // iretq
+        ];
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-gp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let mut served = String::new();
+        for (file, bytes, at, slot) in [
+            ("programme.wasm", &program[..], BASE, 0u32),
+            ("gestionnaire.wasm", &handler[..], HANDLER, 1),
+            (
+                "reprise.wasm",
+                &program[(after - BASE) as usize..],
+                after,
+                2,
+            ),
+        ] {
+            let module = Module::resolving(bytes, at, 0, slot, PAGES)
+                .unwrap_or_else(|| panic!("{name} : {file} se traduit"));
+            let path = scratch.join(file);
+            std::fs::write(&path, &module).expect(file);
+            served.push_str(&format!(
+                "    if (address === {at}n && slot === {slot}) return readFileSync({:?});\n",
+                path.to_string_lossy()
+            ));
+        }
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address, slot) => {{
+{served}    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const porte = (offset) => [
+  (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n),
+  BigInt(offset) >> 32n,
+];
+const [bas, haut] = porte({handler});
+vue.setBigUint64({idt} + 13 * 16, bas, true);
+vue.setBigUint64({idt} + 13 * 16 + 8, haut, true);
+vue.setUint16({idt_pointer}, 256 * 16 - 1, true);
+vue.setBigUint64({idt_pointer} + 2, {idt}n, true);
+vue.setUint32({area} + {offset}, {value}, true);
+vm.globals[{rip}].value = {base}n;
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{mxcsr}].value = 0x1f80n;
+vm.globals[{xmm}].value = 0x5an;
+const why = await vm.run({{ budget: 256n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const mot = (at) => vue.getBigUint64(at, true).toString();
+console.log("arret " + why.stopped);
+console.log("rbx " + lire(3));
+console.log("rcx " + lire(1));
+console.log("r8 " + lire(8));
+console.log("r9 " + lire(9));
+console.log("rsp " + lire(4));
+console.log("stop " + lire({stop}));
+console.log("fcw " + lire({control}));
+console.log("mxcsr " + lire({mxcsr}));
+console.log("xmm0 " + lire({xmm}));
+console.log("cadre-rip " + mot({stack} - 8 * 5));
+console.log("cadre-code " + mot({stack} - 8 * 6));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                stop = STOP_SLOT,
+                base = BASE,
+                handler = HANDLER,
+                idt = IDT,
+                idt_pointer = IDT_POINTER,
+                stack = STACK,
+                area = AREA,
+                control = FPU_CONTROL_SLOT,
+                mxcsr = MXCSR_SLOT,
+                xmm = XMM_SLOT,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(
+            line_of(&text, "arret "),
+            UD2_PORTE_ABSENTE,
+            "{name} : l'arrêt final est le `ud2`, pas le MXCSR : {text}"
+        );
+        let number = |label: &str| -> u64 {
+            line_of(&text, label)
+                .parse()
+                .unwrap_or_else(|_| panic!("{name} : « {label} » est un nombre : {text}"))
+        };
+        assert_eq!(
+            (number("rcx "), number("r8 "), number("r9 ")),
+            (0x3333, 0, faults_at),
+            "{name} : le gestionnaire du vecteur 13 a tourné, le code d'erreur \
+             est nul, et le cadre portait l'instruction elle-même — une faute, \
+             pas un piège : {text}"
+        );
+        assert_eq!(
+            (number("cadre-rip "), number("cadre-code ")),
+            (after, 0),
+            "{name} : le gestionnaire a avancé le RIP du cadre, et le code \
+             empilé est nul : {text}"
+        );
+        assert_eq!(
+            (number("rbx "), number("rsp "), number("stop ")),
+            (0x2222, STACK, wisq_vm::x86_wasm::STOP_UNDEFINED),
+            "{name} : l'exécution a repris après l'instruction, la pile est \
+             revenue, et le témoin est celui du `ud2` final — celui du MXCSR a \
+             été effacé par la délivrance : {text}"
+        );
+        assert_eq!(
+            (number("fcw "), number("mxcsr "), number("xmm0 ")),
+            (0x1234, 0x1f80, 0x5a),
+            "{name} : rien n'est restauré — ni le mot de contrôle, ni MXCSR, ni \
+             XMM0 : {text}"
+        );
+    }
 }
 
 /// **Une aire de `fxrstor` dont un octet manque ne restaure rien du tout.**
@@ -10148,17 +11260,18 @@ for (const trame of [{frameA}, {frameB}, {next}]) {{
 vm.globals[{rip}].value = {base}n;
 vm.globals[{control}].value = 0x1234n;
 vm.globals[{status}].value = 0xabcdn;
+{vectors}
 const why = await vm.run({{ budget: 256n, rounds: 8 }});
 console.log("arret " + why.stopped);
 const octets = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
   .map((o) => o.toString(16).padStart(2, "0")).join("");
 const compte = (at, n) => new Uint8Array(vm.memory.buffer, at, n)
   .reduce((c, o) => c + (o === 0 ? 0 : 1), 0);
-console.log("tete " + octets({frameA} + {at}, 8));
-console.log("basse " + compte({frameA} + {at} + 4, 0x100 - 4));
-console.log("haute " + compte({frameB}, {written} - 0x100));
+console.log("basse " + octets({frameA} + {at}, 0x100));
+console.log("haute " + octets({frameB}, {written} - 0x100));
 console.log("avant " + octets({frameA} + {at} - 8, 8));
 console.log("apres " + octets({frameB} + {written} - 0x100, 8));
+console.log("queue " + octets({frameB} + {written} - 0x100, 512 - {written}));
 console.log("voisine " + compte({next}, 0x1000));
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
@@ -10178,6 +11291,7 @@ console.log("voisine " + compte({next}, 0x1000));
             frameA = FRAME_A,
             frameB = FRAME_B,
             next = NEXT,
+            vectors = fx_registers_setup(),
         ),
     )
     .expect("le pilote");
@@ -10198,22 +11312,22 @@ console.log("voisine " + compte({next}, 0x1000));
         UD2_SANS_PORTE,
         "le `ud2` arrête : {text}"
     );
-    assert_eq!(
-        line_of(&text, "tete "),
-        "3412cdab00000000",
-        "les deux mots du coprocesseur sont au début de l'aire, dans la \
-         première trame : {text}"
-    );
+    // L'image que le manuel prescrit, coupée où la page se coupe : les 256
+    // premiers octets dans la première trame — les mots, MXCSR, la pile x87
+    // vide, XMM0 à XMM5 —, les 160 suivants dans la seconde — XMM6 à XMM15.
+    let image = fx_image(0x1234, 0xabcd);
     assert_eq!(
         line_of(&text, "basse "),
-        "0",
-        "le reste de la première page est écrit à zéro : {text}"
+        hex_of(&image[..0x100]),
+        "le début de l'aire est dans la première trame, octet pour octet : \
+         {text}"
     );
     assert_eq!(
         line_of(&text, "haute "),
-        "0",
+        hex_of(&image[0x100..]),
         "et les 160 octets qui débordent tombent dans la **seconde** trame, \
-         que seule une vraie deuxième traduction peut atteindre : {text}"
+         que seule une vraie deuxième traduction peut atteindre — ce sont les \
+         dix derniers XMM, qu'aucun zéro ne peut imiter : {text}"
     );
     assert_eq!(
         line_of(&text, "avant "),
@@ -10224,6 +11338,16 @@ console.log("voisine " + compte({next}, 0x1000));
         line_of(&text, "apres "),
         "eeeeeeeeeeeeeeee",
         "ni au-dessus : 416 octets écrits, pas un de plus : {text}"
+    );
+    // **Les quatre-vingt-seize derniers octets de l'aire, jusqu'au dernier.**
+    // C'est là que la réservation d'écriture de `fxsave` regarde : la page du
+    // bout se juge par l'octet 511, et une réservation qui écrirait —
+    // `far_store_body` sans son `CLAIM` — y laisserait un zéro.
+    assert_eq!(
+        line_of(&text, "queue "),
+        "ee".repeat(512 - WRITTEN as usize),
+        "les octets 416 à 511 restent ce qu'ils étaient, le dernier compris : \
+         {text}"
     );
     assert_eq!(
         line_of(&text, "voisine "),
@@ -11076,13 +12200,23 @@ const vm = machine({{
       cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
       stdin: code,
     }});
+    // **4 est une coupe** : l'hôte relit plus large, ou délivre la faute de
+    // la page qui manque — ce que fait la page, et `kernel-entry`.
+    if (out.exitCode === 4) return "encore";
     if (out.exitCode !== 0) return null;
     return out.stdout;
   }},
   pages: {pages},
 }});
 {placed}const vue = new DataView(vm.memory.buffer);
-const present = 0x3n;
+// **Présente, inscriptible, et utilisateur.** Le programme de ce montage tourne
+// en anneau trois : son code et la page qu'il lit doivent porter le bit
+// utilisateur à tous les niveaux, sinon le chargement de sa première
+// instruction faute — c'est ce que fait le silicium, et ce que fait l'émetteur
+// depuis que sa marche juge les droits. Les pages du noyau qui vivent dans la
+// même identité (la GDT, le TSS, les piles) ne sont lues que par le
+// processeur pour lui-même, qu'aucun droit n'arrête.
+const present = 0x7n;
 const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
 // L'identité sur les quatre premiers mébioctets : le code, les tables, la GDT,
 // le TSS et les trois piles y vivent.
@@ -12257,6 +13391,68 @@ fn a_halt_waits_for_a_tick_that_has_not_come_yet() {
     );
 }
 
+/// **Le mode quatre du 8254 lève IRQ0 une fois, au bout de son compte.**
+///
+/// C'est le mode de l'horloge sans tic de Linux : `pit_set_oneshot` écrit
+/// `0x38` sur le port de commande, et chaque échéance est un compte chargé
+/// par `pit_next_event`. Il n'était pas modélisé — la ligne ne montait jamais,
+/// et sur Alpine l'heure restait figée à 1,121 s dès que le noyau passait en
+/// coup unique.
+///
+/// **Une fois, même acquittée** : un coup unique ne recharge pas. Le second
+/// `hlt` n'a plus rien pour le réveiller et s'arrête — la moitié qui sépare
+/// ce mode du mode deux, où la ligne acquittée rouvre au tour suivant.
+#[test]
+fn a_one_shot_count_in_mode_four_wakes_a_halted_guest_once() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            oneshot: true,
+            acknowledge: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert_eq!(
+        seen.handled, 1,
+        "le compte du mode quatre a levé IRQ0 une fois et une seule : {}",
+        seen.text
+    );
+    assert_eq!(
+        (seen.stopped.as_str(), seen.rip),
+        ("arrêtée sur hlt", seen.after_second_halt),
+        "et le second hlt n'est réveillé par rien : {}",
+        seen.text
+    );
+}
+
+/// **Et un compte rechargé arme l'échéance suivante**, comme `pit_next_event`
+/// le fait à chaque tic du noyau : la ligne remonte, autant de fois qu'on
+/// recharge.
+#[test]
+fn reloading_the_mode_four_count_arms_the_next_tick() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = timer_interrupt(
+        &bun,
+        TimerSetup {
+            oneshot: true,
+            acknowledge: true,
+            rearm: true,
+            ..TimerSetup::default()
+        },
+    );
+    assert!(
+        seen.handled > 1,
+        "rechargé, le mode quatre lève une échéance de plus : {} délivrance(s) seulement\n{}",
+        seen.handled,
+        seen.text
+    );
+}
+
 /// **L'hôte délivrait des interruptions sans jamais en nommer une.**
 ///
 /// Ce n'est pas une absence théorique : elle a coûté un diagnostic entier.
@@ -12602,6 +13798,13 @@ struct TimerSetup {
     /// quand même — le masque le tient à l'écart —, parce qu'un montage qui
     /// changerait deux choses à la fois ne dirait pas laquelle a délivré.
     transmit: bool,
+    /// **Le 8254 en mode quatre, un coup unique**, comme Linux le programme
+    /// dès que son horloge d'événements passe en coup unique
+    /// (`pit_set_oneshot` : `0x38` sur `0x43`), au lieu du mode deux.
+    oneshot: bool,
+    /// Le gestionnaire recharge-t-il le compte avant de rendre la main — ce
+    /// que fait `pit_next_event` à chaque échéance ?
+    rearm: bool,
 }
 
 impl Default for TimerSetup {
@@ -12613,6 +13816,8 @@ impl Default for TimerSetup {
             enable: true,
             warp: 0,
             transmit: false,
+            oneshot: false,
+            rearm: false,
         }
     }
 }
@@ -12625,6 +13830,8 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
         enable,
         warp,
         transmit,
+        oneshot,
+        rearm,
     } = setup;
     const PAGES: u32 = 4;
     const BASE: u64 = 0x1_0000;
@@ -12648,7 +13855,7 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
                                                     // fois par tour de boucle hôte, comme celle d'un vrai noyau tourne
                                                     // plusieurs fois par tranche d'exécution.
     for (value, port) in [
-        (0x34u8, 0x43u8),
+        (if oneshot { 0x38u8 } else { 0x34 }, 0x43u8),
         (100, 0x40),
         (0, 0x40),
         // Le 8259 maître : ICW1 avec un quatrième mot, la base de vecteur,
@@ -12679,6 +13886,11 @@ fn timer_interrupt(bun: &Path, setup: TimerSetup) -> TimerRun {
     program.extend_from_slice(&[0x0f, 0x0b]); // ud2
 
     let mut handler: Vec<u8> = vec![0x49, 0x83, 0xc7, 0x01]; // add $1,%r15
+    if rearm {
+        // Le compte suivant, bas puis haut : l'échéance d'après.
+        handler.extend_from_slice(&[0xb0, 100, 0xe6, 0x40]); // mov $100,%al ; out %al,$0x40
+        handler.extend_from_slice(&[0xb0, 0, 0xe6, 0x40]); // mov $0,%al ; out %al,$0x40
+    }
     if acknowledge {
         handler.extend_from_slice(&[0xb0, 0x20]); // mov $0x20,%al
         handler.extend_from_slice(&[0xe6, 0x20]); // out %al,$0x20
@@ -13082,6 +14294,467 @@ console.log("fini");
         unreadable: text
             .lines()
             .filter(|line| line.starts_with("illisible "))
+            .map(|line| numbers(line)[0])
+            .collect(),
+        text: text.clone(),
+    }
+}
+
+/// **Un arrêt en anneau trois ne rend pas le noyau illisible à `revoir`,
+/// tant que les tables en service le portent.**
+///
+/// Depuis que la marche juge les droits, `read` lit la fenêtre d'une région
+/// comme un **chargement d'instruction** : en anneau trois, une page sans le
+/// bit utilisateur ne se lit pas. C'est juste pour la fenêtre qu'on va
+/// traduire. Ça ne l'est pas pour `revoir`, qui relit toutes les fenêtres à la
+/// fin de la course **avec l'anneau de l'arrêt** : Alpine lancé avec `nopti`
+/// — sans isolation des tables, donc le texte du noyau toujours dans les
+/// tables du programme —, arrêté en anneau trois, rangeait 11 048 régions
+/// parmi les illisibles et n'en comptait aucune de périmée ; corrigé, 9 et
+/// 2 001. **Sans `nopti`, la prémisse ne tient pas** : l'isolation retire le
+/// texte du noyau des tables du programme, et ses fenêtres restent
+/// illisibles pour de bon (11 030 sur 11 080) — c'est le test suivant.
+///
+/// Le montage : le noyau, en anneau zéro sur une page du superviseur, réécrit
+/// un octet de sa propre fenêtre puis rend la main au programme par
+/// `sysretq`. Le programme, sur une page utilisateur, s'arrête sur un `ud2`
+/// sans porte. Une seule table pour les deux, comme sous `nopti` : la page du
+/// noyau y est toujours, sa fenêtre doit être comparée, et le changement
+/// nommé.
+#[test]
+fn a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false, false);
+    assert_eq!(
+        seen.cs, 0x33,
+        "la machine doit s'arrêter en anneau trois, sinon ce test ne juge rien : {}",
+        seen.text
+    );
+    assert!(
+        seen.unreadable.is_empty(),
+        "**la page du noyau est toujours dans les tables** : rien n'est \
+         illisible, quel que soit l'anneau de l'arrêt : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.changed,
+        vec![(RING_THREE_KERNEL, 0x100, 0x00, 0x90)],
+        "et l'octet que le noyau a réécrit est nommé : {}",
+        seen.text
+    );
+}
+
+/// **Sous isolation des tables, le noyau arrêté en anneau trois n'est jamais
+/// relu à travers l'identité.**
+///
+/// C'est le cas d'Alpine tel quel (« Kernel/User page tables isolation:
+/// enabled ») : à l'arrêt en anneau trois, CR3 désigne les tables **du
+/// programme**, qui ne portent du noyau que son passage d'entrée et de
+/// sortie. Mesuré : « perimees 7 / illisibles 11 030 », les sept dans
+/// `.entry.text`. Lire en `walkMachine` n'y change rien. Une région que les
+/// tables en service ne portent pas n'a que deux issues justes :
+///
+/// - **illisible**, et rien n'est compté : c'est ce que fait l'hôte
+///   aujourd'hui ;
+/// - **relue par des tables du noyau qu'on sait vivantes**, et alors comparée
+///   aux vrais octets — l'octet réécrit est nommé, lui seul. C'est
+///   l'amélioration que le JOURNAL propose ; ce test ne s'y oppose pas.
+///
+/// Ce qu'il refuse, c'est le défaut : comparer la fenêtre à des octets pris
+/// ailleurs, en relisant l'adresse virtuelle comme si elle était physique.
+/// Pour que ce défaut se voie, **le noyau tourne ici sur un alias** : son
+/// adresse virtuelle (`RING_THREE_KERNEL_ALIAS`) n'est pas l'adresse
+/// physique de ses octets (`RING_THREE_KERNEL`). Relue par l'identité, sa
+/// fenêtre tombe sur de la mémoire vide, et la première différence est à
+/// l'octet zéro.
+///
+/// Le montage : le noyau réécrit un octet de sa fenêtre, puis saute sur un
+/// passage posé sur une troisième grande page, cartographiée dans les deux
+/// tables, qui change CR3 pour les tables du programme et fait `sysretq`.
+/// Les tables du programme ne portent ni la page du noyau ni son alias. Le
+/// passage, lui, reste lisible sous les tables du programme, comme
+/// `.entry.text` d'Alpine ; rien n'écrit dedans, il n'y a donc là aucune
+/// région périmée.
+#[test]
+fn under_page_table_isolation_the_kernel_window_is_never_reread_through_identity() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false, true);
+    assert_eq!(
+        (seen.cs, seen.cr3),
+        (0x33, RING_THREE_USER_PML4),
+        "la machine doit s'arrêter en anneau trois sous les tables du \
+         programme, sinon ce test ne juge rien : {}",
+        seen.text
+    );
+    let unreadable = (vec![RING_THREE_KERNEL_ALIAS], Vec::new());
+    let reread = (
+        Vec::new(),
+        vec![(RING_THREE_KERNEL_ALIAS, 0x100, 0x00, 0x90)],
+    );
+    let got = (seen.unreadable.clone(), seen.changed.clone());
+    assert!(
+        got == unreadable || got == reread,
+        "**la fenêtre du noyau est illisible, ou relue par les tables du \
+         noyau** — et seul l'octet réécrit compte. Le passage et le programme \
+         sont dans les tables du programme. Une différence à l'octet zéro \
+         vient d'une relecture par l'identité, qui lit la mémoire vide sous \
+         l'alias : {}",
+        seen.text
+    );
+}
+
+/// **La sonde de `surveiller` compte une région du noyau ré-entrée depuis
+/// l'anneau trois — tant que le trou de protection est là.**
+///
+/// **Ce que ce test épingle est un défaut, et il est écrit pour ne pas s'y
+/// opposer.** Un programme qui saute dans une page du superviseur prend, sur
+/// le silicium, une faute de page sur le chargement (P|U, `0x5` sans NXE ni
+/// SMEP). Ici, une région **déjà traduite** est gardée par adresse : elle se
+/// ré-entre en anneau trois sans repasser par le chargement, et son code
+/// tourne (le JOURNAL le porte dans « Ce qui reste »). C'est le seul cas où
+/// la sonde lit autrement selon qu'elle juge ou non l'anneau : en anneau
+/// zéro le chargement ne juge pas la lecture, et en anneau trois sur une page
+/// utilisateur il réussit. Tant que le code périmé tourne, la sonde doit le
+/// voir.
+///
+/// Le montage : le noyau réécrit **son propre premier octet**, puis
+/// `sysretq` ; le programme saute sur le noyau. Deux issues, et le test dit
+/// laquelle a eu lieu par le témoin de faute à l'arrêt :
+///
+/// - **le défaut** (aujourd'hui) : la région connue tourne en anneau trois
+///   et faute sur son écriture (témoin `0x4`, P|W plus un : U, l'hôte
+///   l'ajoute d'après CS en délivrant, et sans porte il ne délivre pas) ; la
+///   sonde doit alors avoir compté l'entrée, et nommé la région du noyau ;
+/// - **le silicium** (le jour où le trou sera bouché) : la région ne tourne
+///   pas, le chargement faute (CR2 et RIP sur la cible) et, sans porte, la
+///   machine s'arrête sur une faute de page. Ce qui le prouve n'est pas le
+///   témoin : c'est qu'aucune écriture n'a fauté et que rien n'est entré. Le
+///   témoin vaut zéro si c'est l'hôte qui refuse le chargement — son chemin
+///   `UNMAPPED` remet le témoin — et un code **sans le bit W** si c'est le
+///   module qui faute (P, plus un). Les deux bouchages possibles passent.
+///
+/// Toute autre issue fait tomber le test, notamment un témoin qui porte W
+/// sans que la région ait été comptée.
+#[test]
+fn the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut user = vec![0x48, 0xb8]; // movabs $KERNEL,%rax
+    user.extend_from_slice(&RING_THREE_KERNEL.to_le_bytes());
+    user.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    user.extend_from_slice(&[0x0f, 0x0b]); // ud2 — jamais atteint
+    let seen = ring_three_stop(&bun, 0, &user, true, false);
+    assert_eq!(
+        (seen.cs, seen.rip, seen.cr2),
+        (0x33, RING_THREE_KERNEL, RING_THREE_KERNEL),
+        "le saut part de l'anneau trois et s'arrête sur une faute à la cible, \
+         quelle que soit l'issue : {}",
+        seen.text
+    );
+    match seen.fault {
+        // P|W plus un : l'écriture du noyau, faite depuis l'anneau trois.
+        0x4 => {
+            assert!(
+                seen.entries >= 1,
+                "**défaut connu, la région du noyau a tourné en anneau trois** : \
+                 la sonde doit avoir vu son premier octet changé : {}",
+                seen.text
+            );
+            assert_eq!(
+                seen.regions,
+                vec![RING_THREE_KERNEL],
+                "et c'est la région du noyau qui est nommée, elle seule : {}",
+                seen.text
+            );
+        }
+        // Zéro (l'hôte refuse le chargement) ou un code sans W (le module
+        // faute avant d'exécuter quoi que ce soit) : le chargement a fauté.
+        temoin if temoin == 0 || (temoin - 1) & 0x2 == 0 => {
+            assert!(
+                seen.text.contains("arret une faute de page"),
+                "le trou est bouché : c'est le chargement qui faute, comme sur \
+                 le silicium, et l'arrêt nomme une faute de page : {}",
+                seen.text
+            );
+            assert_eq!(
+                (seen.entries, seen.regions.len()),
+                (0, 0),
+                "et la région du noyau n'a pas tourné : la sonde n'a rien vu \
+                 entrer : {}",
+                seen.text
+            );
+        }
+        other => panic!(
+            "ni le défaut connu ni le silicium (témoin {other:#x}) : {}",
+            seen.text
+        ),
+    }
+}
+
+/// Le noyau, sur une page du superviseur.
+const RING_THREE_KERNEL: u64 = 0x1_0000;
+/// Le même noyau vu par un alias, sous isolation des tables : la quatrième
+/// grande page des tables du noyau porte les deux premiers mébioctets. Son
+/// adresse virtuelle n'est pas celle de ses octets — l'identité, à cette
+/// adresse, ne lit que de la mémoire vide.
+const RING_THREE_KERNEL_ALIAS: u64 = 0x60_0000 + RING_THREE_KERNEL;
+/// Le programme, sur une page utilisateur.
+const RING_THREE_USER: u64 = 0x20_1000;
+/// Le passage de sortie sous isolation des tables : une page du superviseur
+/// que les deux tables portent, comme `.entry.text` sous Linux.
+const RING_THREE_TRAMPOLINE: u64 = 0x40_0000;
+/// Les tables du programme, sous isolation : sans la page du noyau.
+const RING_THREE_USER_PML4: u64 = 0x2_3000;
+
+struct RingThreeStop {
+    cs: u64,
+    rip: u64,
+    cr2: u64,
+    cr3: u64,
+    /// Le témoin de faute à l'arrêt : le code d'erreur plus un, ou zéro.
+    fault: u64,
+    changed: Vec<(u64, u64, u64, u64)>,
+    unreadable: Vec<u64>,
+    entries: u64,
+    regions: Vec<u64>,
+    text: String,
+}
+
+/// Le noyau écrit `0x90` à `RING_THREE_KERNEL + offset`, rend la main au
+/// programme `user` par `sysretq`, et le pilote dit ce que `revoir` et la
+/// sonde ont vu une fois la machine arrêtée.
+///
+/// **Les tables en grandes pages** : les deux premiers mébioctets sans le bit
+/// utilisateur — le noyau, les tables —, les deux suivants avec, puis le
+/// passage de sortie sans. Les trois niveaux du haut le portent, pour que
+/// seule la feuille décide.
+///
+/// **`pti`, l'isolation des tables** : le noyau ne fait pas `sysretq`
+/// lui-même, il saute sur le passage, qui charge dans CR3 les tables du
+/// programme — elles portent le programme et le passage, pas le noyau — puis
+/// fait `sysretq`. Le noyau y tourne sur son alias,
+/// `RING_THREE_KERNEL_ALIAS`, que seules les tables du noyau portent.
+fn ring_three_stop(
+    bun: &Path,
+    offset: u32,
+    user: &[u8],
+    surveiller: bool,
+    pti: bool,
+) -> RingThreeStop {
+    /// Huit mébioctets — une puissance de deux : le passage de sortie est sur
+    /// la troisième grande page.
+    const PAGES: u32 = 128;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const USER_PDPT: u64 = 0x2_4000;
+    const USER_PD: u64 = 0x2_5000;
+    /// `STAR[63:48]` : `+16` donne `0x30`, et le processeur ajoute l'anneau.
+    const EXIT_SELECTOR: u64 = 0x20;
+
+    let mut kernel: Vec<u8> = vec![0xc6, 0x05]; // movb $0x90, disp(%rip)
+    kernel.extend_from_slice(&(offset as i32 - 7).to_le_bytes());
+    kernel.push(0x90);
+    kernel.extend_from_slice(&[0x48, 0xb9]); // movabs $USER,%rcx — où rendre la main
+    kernel.extend_from_slice(&RING_THREE_USER.to_le_bytes());
+    kernel.extend_from_slice(&[0x41, 0xbb, 0x02, 0x00, 0x00, 0x00]); // mov $2,%r11d — RFLAGS
+    if pti {
+        kernel.extend_from_slice(&[0x48, 0xbb]); // movabs $USER_PML4,%rbx
+        kernel.extend_from_slice(&RING_THREE_USER_PML4.to_le_bytes());
+        kernel.extend_from_slice(&[0x48, 0xb8]); // movabs $TRAMPOLINE,%rax
+        kernel.extend_from_slice(&RING_THREE_TRAMPOLINE.to_le_bytes());
+        kernel.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    } else {
+        kernel.extend_from_slice(&[0x48, 0x0f, 0x07]); // sysretq
+    }
+    // Le passage : les tables du programme, puis la sortie.
+    let trampoline: &[u8] = &[
+        0x0f, 0x22, 0xdb, // mov %rbx,%cr3
+        0x48, 0x0f, 0x07, // sysretq
+    ];
+    // **L'entrée de l'alias passe par une page à l'identité.** La toute
+    // première fenêtre est lue avant qu'aucun module n'exporte sa marche :
+    // l'hôte la lit alors par le repli, l'identité — juste pour un noyau qui
+    // démarre sans pagination, faux pour un alias. Le premier bloc est donc
+    // posé sur le passage, que les deux tables portent à l'identité, et
+    // saute sur l'alias.
+    let mut entry = vec![0x48, 0xb8]; // movabs $ALIAS,%rax
+    entry.extend_from_slice(&RING_THREE_KERNEL_ALIAS.to_le_bytes());
+    entry.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-anneau3-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut placed = String::new();
+    for (name, bytes, at) in [
+        ("noyau.bin", &kernel[..], RING_THREE_KERNEL),
+        ("programme.bin", user, RING_THREE_USER),
+        ("passage.bin", trampoline, RING_THREE_TRAMPOLINE),
+        ("entree.bin", &entry[..], RING_THREE_TRAMPOLINE + 0x100),
+    ] {
+        let path = scratch.join(name);
+        std::fs::write(&path, bytes).expect(name);
+        placed.push_str(&format!(
+            "new Uint8Array(vm.memory.buffer).set(readFileSync({:?}), {at});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+  surveiller: {surveiller},
+}});
+{placed}const vue = new DataView(vm.memory.buffer);
+// Présente et inscriptible partout ; le bit utilisateur (4) en haut, et sur
+// la seule grande page du programme.
+vue.setBigUint64({pml4}, {pdpt}n | 0x7n, true);
+vue.setBigUint64({pdpt}, {pd}n | 0x7n, true);
+vue.setBigUint64({pd}, 0x0n | 0x83n, true);
+vue.setBigUint64({pd} + 8, 0x20_0000n | 0x87n, true);
+vue.setBigUint64({pd} + 16, {trampoline}n | 0x83n, true);
+// L'alias du noyau, dans ses seules tables : la quatrième grande page porte
+// la première.
+vue.setBigUint64({pd} + 24, 0x0n | 0x83n, true);
+// Les tables du programme, pour l'isolation : le programme et le passage,
+// pas la page du noyau (l'entrée 0 reste vide).
+vue.setBigUint64({user_pml4}, {user_pdpt}n | 0x7n, true);
+vue.setBigUint64({user_pdpt}, {user_pd}n | 0x7n, true);
+vue.setBigUint64({user_pd} + 8, 0x20_0000n | 0x87n, true);
+vue.setBigUint64({user_pd} + 16, {trampoline}n | 0x83n, true);
+vm.globals[{control}].value = BigInt(1) << 31n;
+vm.globals[{control} + 2].value = {pml4}n;
+vm.globals[{syscall}].value = BigInt({exit}) << 48n;
+vm.globals[{efer}].value |= 1n; // SCE : sans lui, pas de `sysretq`
+// **Un premier tour en anneau trois, sur le programme, avant tout le reste.**
+// Le premier passage en anneau trois vide le cache de code (`oublierTout`) :
+// sans ce tour, la région du noyau serait oubliée au `sysretq` même, et ce que
+// ces tests regardent — une région du noyau encore connue quand la machine
+// s'arrête en anneau trois — n'existerait plus. Le programme s'y arrête sur
+// son propre code, et l'arrêt est effacé.
+vm.globals[{segment} + 1].value = 0x33n;
+vm.globals[{segment} + 2].value = 0x2bn;
+vm.globals[{rip}].value = {user}n;
+const avant = await vm.run({{ budget: 1n, rounds: 16 }});
+console.log("avant " + avant.stopped + " vidages " + vm.vidages.fois);
+vm.globals[{stop}].value = 0n;
+vm.globals[{fault}].value = 0n;
+vm.globals[{segment} + 1].value = 0x10n;
+vm.globals[{segment} + 2].value = 0x18n;
+vm.globals[{rip}].value = {kernel}n;
+// **Un bloc par tour** : un saut indirect vers une région connue passe par la
+// table du module sans revenir à l'hôte, et la sonde ne regarderait pas. Au
+// budget de 256, mesuré, le programme ré-entrait le noyau sans elle.
+const why = await vm.run({{ budget: 1n, rounds: 16 }});
+console.log("arret " + why.stopped);
+console.log("rip 0x" + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
+console.log("cs " + (BigInt.asUintN(64, vm.globals[{segment} + 1].value) & 0xffffn));
+console.log("ici " + BigInt.asUintN(64, vm.globals[{rip}].value));
+console.log("temoin " + BigInt.asUintN(64, vm.globals[{fault}].value));
+console.log("cr2 " + BigInt.asUintN(64, vm.globals[{control} + 1].value));
+console.log("cr3 " + BigInt.asUintN(64, vm.globals[{control} + 2].value));
+const vu = vm.revoir();
+for (const quoi of vu.changees) {{
+  console.log("changee " + quoi.adresse + " " + quoi.decalage
+    + " " + quoi.lu + " " + quoi.maintenant);
+}}
+for (const adresse of vu.illisibles) console.log("illisible " + adresse);
+console.log("entrees " + vm.surveillees.entrees);
+for (const [adresse] of vm.surveillees.regions) console.log("veille " + adresse);
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            surveiller = surveiller,
+            placed = placed,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            user_pml4 = RING_THREE_USER_PML4,
+            user_pdpt = USER_PDPT,
+            user_pd = USER_PD,
+            trampoline = RING_THREE_TRAMPOLINE,
+            fault = FAULT_SLOT,
+            control = CONTROL_SLOT,
+            syscall = SYSCALL_SLOT,
+            exit = EXIT_SELECTOR,
+            efer = EFER_SLOT,
+            segment = SEGMENT_SLOT,
+            rip = RIP_SLOT,
+            user = RING_THREE_USER,
+            stop = STOP_SLOT,
+            kernel = if pti {
+                RING_THREE_TRAMPOLINE + 0x100
+            } else {
+                RING_THREE_KERNEL
+            },
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le pilote doit aller au bout : {text}"
+    );
+    let numbers = |line: &str| -> Vec<u64> {
+        line.split_whitespace()
+            .skip(1)
+            .map(|word| word.parse::<u64>().expect("un nombre"))
+            .collect()
+    };
+    let first = |label: &str| -> u64 {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(label))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {label} » : {text}"));
+        numbers(line)[0]
+    };
+    RingThreeStop {
+        cs: first("cs "),
+        rip: first("ici "),
+        cr2: first("cr2 "),
+        cr3: first("cr3 "),
+        fault: first("temoin "),
+        changed: text
+            .lines()
+            .filter(|line| line.starts_with("changee "))
+            .map(|line| {
+                let values = numbers(line);
+                (values[0], values[1], values[2], values[3])
+            })
+            .collect(),
+        unreadable: text
+            .lines()
+            .filter(|line| line.starts_with("illisible "))
+            .map(|line| numbers(line)[0])
+            .collect(),
+        entries: first("entrees "),
+        regions: text
+            .lines()
+            .filter(|line| line.starts_with("veille "))
             .map(|line| numbers(line)[0])
             .collect(),
         text: text.clone(),
@@ -15810,8 +17483,10 @@ fn movabs(register: u8, value: u64) -> Vec<u8> {
 /// étant à `copy_bootdata+37`) ; le noyau y reprenait, refaisait un `push`, et
 /// le `ret` sautait à `0x90`.
 ///
-/// `lods`, `cmps` et `scas` ne sont pas ici : le décodeur ne les lit pas, et
-/// une région qui en porte est refusée avant d'avoir pu fauter.
+/// `rep lods` y est aussi, la source à cheval : le décodeur le lit et
+/// l'émetteur le traduit depuis la tranche des chaînes qui lisent, et seul
+/// le corpus matériel jugeait ce qu'il fait sans faute. `cmps` et `scas` n'y
+/// sont pas encore.
 #[test]
 fn a_fault_in_any_string_instruction_names_it_and_keeps_what_was_done() {
     const RAX: u64 = 0x8877_6655_4433_2211;
@@ -15994,6 +17669,53 @@ fn a_fault_in_any_string_instruction_names_it_and_keeps_what_was_done() {
             fault.bytes("haut ")[64 - written.len()..],
             written[..],
             "{what} : deux éléments écrits : {}",
+            fault.text
+        );
+    }
+
+    // **`rep lods`, la source à cheval** : deux éléments lus dans la page, le
+    // troisième faute. RCX compte ce qui reste, RSI est sur l'élément fautif,
+    // et l'accumulateur garde le dernier élément lu — le second, le haut de
+    // la page —, sous la règle de largeur : l'octet et le mot laissent le
+    // haut de RAX, le double mot l'efface.
+    let loads: [(&str, &[u8], u64); 4] = [
+        ("lodsb", &[0xac], 1),
+        ("lodsw", &[0x66, 0xad], 2),
+        ("lodsl", &[0xad], 4),
+        ("lodsq", &[0x48, 0xad], 8),
+    ];
+    for (name, bytes, size) in loads {
+        let what = format!("rep {name}, source à cheval");
+        let fault = MidFault::run(
+            name,
+            &set(MidFault::ABSENT - 2 * size, MidFault::DEST, 5),
+            &repeated(bytes),
+        );
+        fault.names_it(&what, MidFault::ABSENT);
+        assert_eq!(
+            fault.register(1),
+            3,
+            "{what} : RCX compte ce qui reste : {}",
+            fault.text
+        );
+        assert_eq!(
+            fault.register(6),
+            MidFault::ABSENT,
+            "{what} : RSI est sur l'élément fautif : {}",
+            fault.text
+        );
+        let mut last = [0u8; 8];
+        last[..size as usize].copy_from_slice(&pattern[64 - size as usize..]);
+        let element = u64::from_le_bytes(last);
+        let rax = match size {
+            1 => (RAX & !0xff) | element,
+            2 => (RAX & !0xffff) | element,
+            _ => element,
+        };
+        assert_eq!(
+            fault.register(0),
+            rax,
+            "{what} : RAX porte le second élément, le dernier lu : {}",
             fault.text
         );
     }
@@ -16490,6 +18212,237 @@ console.log("dest " + Array.from(new Uint8Array(vm.memory.buffer, {frame} + 0x40
             line("dest "),
             expected,
             "rep {name} : la copie est entière, et rien après : {text}"
+        );
+    }
+}
+
+/// **Une comparaison de chaîne qui faute sur sa seconde lecture n'a rien
+/// fait du tour, et reprend où elle s'était arrêtée.**
+///
+/// Le jumeau de la copie ci-dessus pour `repe cmpsb` et `repne scasb`, dont
+/// l'élément de RDI franchit une page que le noyau pose à la demande. Pour
+/// `cmps`, c'est la **seconde** lecture du tour qui faute — celle de RDI, la
+/// source RSI étant déjà lue — : RSI ne doit pas avoir avancé, ni RCX
+/// décompté, ni les drapeaux changé. Le gestionnaire relève RCX, RSI, RDI et
+/// le RFLAGS du cadre ; le `rep` rejoué finit la comparaison.
+///
+/// `repe cmpsb` compare deux suites égales sur treize octets, puis un
+/// quatorzième différent (14 contre 0x5e) : il sort sur ZF, RCX à
+/// `20 - 14`. `repne scasb` cherche 13 dans 1, 2, 3… : il sort sur le treizième
+/// élément, RCX à `20 - 13`, ZF posé — et il ne compare que AL, les sept
+/// octets hauts de RAX étant tous à un.
+#[test]
+fn a_string_compare_across_a_page_that_arrives_on_demand_finishes_where_it_stopped() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const HANDLER: u64 = BASE + 0x100;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const PAGE: u64 = 0xFFFF_8000_0020_4000;
+    const FRAME: u64 = 0x3_0000;
+    const ARRIVES: u64 = PAGE + 0x1000;
+    const ARRIVING_FRAME: u64 = 0x3_1000;
+    const TOP: u64 = PAGE + 0x800;
+    const SOURCE: u64 = PAGE + 0x400;
+    const DESCRIPTOR: u64 = PAGE + 0xf00;
+    const BEFORE: u64 = 5;
+    const COUNT: u64 = 20;
+    // (le nom, les octets, RAX, l'élément où la répétition s'arrête)
+    let compares: [(&str, &[u8], u64, u64); 2] = [
+        ("repe cmpsb", &[0xf3, 0xa6], 0, 14),
+        // **Seul AL compte** : les sept octets hauts de RAX sont posés, et un
+        // `scas` qui comparerait RAX entier ne trouverait jamais 13.
+        ("repne scasb", &[0xf2, 0xae], 0xffff_ffff_ffff_ff0d, 13),
+    ];
+    for (name, bytes, rax, stop) in compares {
+        let scans = bytes[1] == 0xae;
+        let mut program: Vec<u8> = Vec::new();
+        program.extend_from_slice(&movabs(0, PML4));
+        program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+        program.extend_from_slice(&movabs(0, 1 << 31));
+        program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+        program.extend_from_slice(&movabs(0, DESCRIPTOR));
+        program.extend_from_slice(&[0x0f, 0x01, 0x18]); // lidt (%rax)
+        program.extend_from_slice(&movabs(4, TOP));
+        program.extend_from_slice(&movabs(6, SOURCE));
+        program.extend_from_slice(&movabs(7, ARRIVES - BEFORE));
+        program.extend_from_slice(&movabs(1, COUNT));
+        program.extend_from_slice(&movabs(0, rax));
+        let at = program.len();
+        program.extend_from_slice(bytes); // la répétition, à cheval par RDI
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2 : l'arrêt
+        assert!(program.len() <= 0x100);
+        program.resize(0x100, 0xcc);
+        program.extend_from_slice(&[
+            0x49, 0x89, 0xc8, // mov %rcx,%r8
+            0x49, 0x89, 0xf1, // mov %rsi,%r9
+            0x49, 0x89, 0xfa, // mov %rdi,%r10
+            0x49, 0xff, 0xc3, // inc %r11
+            0x4c, 0x8b, 0x64, 0x24, 0x08, // mov 8(%rsp),%r12 — le RIP du cadre
+            0x4c, 0x8b, 0x6c, 0x24, 0x18, // mov 24(%rsp),%r13 — son RFLAGS
+        ]);
+        let leaf = PT + ((ARRIVES >> 12) & 0x1ff) * 8;
+        program.extend_from_slice(&movabs(0, leaf));
+        program.extend_from_slice(&[0x48, 0xc7, 0x00]); // movq $ARRIVING_FRAME|3,(%rax)
+        program.extend_from_slice(&((ARRIVING_FRAME | 3) as u32).to_le_bytes());
+        program.extend_from_slice(&movabs(0, rax)); // RAX, rendu à `scas`
+        program.extend_from_slice(&[
+            0x48, 0x83, 0xc4, 0x08, // add $8,%rsp — le code d'erreur
+            0x48, 0xcf, // iretq
+        ]);
+        program.resize(0x180, 0xcc);
+
+        let tag = name.replace(' ', "-");
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-pfcmp-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let mut served = String::new();
+        for (slot, offset) in [0usize, 0x100, at].into_iter().enumerate() {
+            let module = Module::resolving(
+                &program[offset..],
+                BASE + offset as u64,
+                0,
+                slot as u32,
+                PAGES,
+            )
+            .unwrap_or_else(|| panic!("la région {offset:#x} se traduit"));
+            let path = scratch.join(format!("r{offset:x}.wasm"));
+            std::fs::write(&path, &module).expect("le module");
+            served += &format!(
+                "    if (address === {}n) return readFileSync({:?});\n",
+                BASE + offset as u64,
+                path.to_string_lossy()
+            );
+        }
+        let gate_low = (HANDLER & 0xffff)
+            | (0x10 << 16)
+            | (0x8e00u64 << 32)
+            | ((HANDLER >> 16) & 0xffff) << 48;
+        let gate_high = HANDLER >> 32;
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: async (address) => {{
+{served}    console.log("demandee " + address.toString());
+    return null;
+  }},
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | 3n, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | 3n, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | 3n, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | 3n, true);
+vue.setBigUint64({pml4} + idx({base}n, 39) * 8, 0x24000n | 3n, true);
+vue.setBigUint64(0x24000 + idx({base}n, 30) * 8, 0x25000n | 3n, true);
+vue.setBigUint64(0x25000 + idx({base}n, 21) * 8, 0x26000n | 3n, true);
+vue.setBigUint64(0x26000 + idx({base}n, 12) * 8, {base}n | 3n, true);
+vue.setBigUint64(0x26000 + idx({pt}n, 12) * 8, {pt}n | 3n, true);
+vue.setBigUint64({frame} + 14 * 16, {gate_low}n, true);
+vue.setBigUint64({frame} + 14 * 16 + 8, {gate_high}n, true);
+vue.setUint16({frame} + 0xf00, 15 * 16 - 1, true);
+vue.setBigUint64({frame} + 0xf02, {page}n, true);
+// À RDI, 1, 2, 3… à cheval sur la frontière ; à RSI, la même suite sur
+// treize octets, puis 0x5e.
+const dest = {arriving} - {before};
+for (let i = 0; i < {count}; i++) vue.setUint8(dest + i, i + 1);
+for (let i = 0; i < {count}; i++) vue.setUint8({frame} + 0x400 + i, i < 13 ? i + 1 : 0x5e);
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 512n, rounds: 16 }});
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+for (let r = 0; r < 16; r++) console.log("r" + r + " " + lire(r));
+console.log("rflags " + lire({flags}));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                flags = RFLAGS_SLOT,
+                base = BASE,
+                page = PAGE,
+                frame = FRAME,
+                arriving = ARRIVING_FRAME,
+                before = BEFORE,
+                count = COUNT,
+                pml4 = PML4,
+                pdpt = PDPT,
+                pd = PD,
+                pt = PT,
+                gate_low = gate_low,
+                gate_high = gate_high,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        let line = |field: &str| -> u64 {
+            text.lines()
+                .find_map(|l| l.strip_prefix(field))
+                .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {text}"))
+                .trim()
+                .parse()
+                .expect("un nombre")
+        };
+        let register = |number: u8| line(&format!("r{number} "));
+        assert!(
+            text.contains(&format!("arret {UD2_PORTE_ABSENTE}")),
+            "{name} : la machine va au bout, jusqu'au `ud2` : {text}"
+        );
+        assert_eq!(register(11), 1, "{name} : une faute, une seule : {text}");
+        assert_eq!(
+            register(12),
+            BASE + at as u64,
+            "{name} : le RIP du cadre nomme la répétition : {text}"
+        );
+        assert_eq!(
+            register(8),
+            COUNT - BEFORE,
+            "{name} : à la faute, RCX compte ce qui reste, le tour fautif compris : {text}"
+        );
+        assert_eq!(
+            register(9),
+            if scans { SOURCE } else { SOURCE + BEFORE },
+            "{name} : à la faute, RSI n'a pas avancé pour le tour fautif : {text}"
+        );
+        assert_eq!(
+            register(10),
+            ARRIVES,
+            "{name} : à la faute, RDI est sur l'élément fautif : {text}"
+        );
+        // Les cinq tours d'avant étaient égaux pour `cmps` (ZF posé) et
+        // différents pour `scas` (ZF effacé) : le tour fautif n'a rien posé.
+        const ZF: u64 = 0x40;
+        assert_eq!(
+            register(13) & ZF,
+            if scans { 0 } else { ZF },
+            "{name} : à la faute, ZF est celui du dernier tour fait : {text}"
+        );
+        assert_eq!(
+            register(1),
+            COUNT - stop,
+            "{name} : à la fin, RCX dit où la répétition s'est arrêtée : {text}"
+        );
+        assert_eq!(
+            register(7),
+            ARRIVES - BEFORE + stop,
+            "{name} : RDI est un cran après l'élément qui l'a arrêtée : {text}"
+        );
+        assert_eq!(
+            line("rflags ") & ZF,
+            if scans { ZF } else { 0 },
+            "{name} : ZF dit pourquoi elle s'est arrêtée : {text}"
         );
     }
 }
@@ -17477,4 +19430,1554 @@ fn an_instruction_with_several_accesses_changes_nothing_when_one_of_them_faults(
         fault.keeps(&what, &before);
         untouched(&fault, &what);
     }
+}
+
+/// **Le banc des droits des pages** : l'écriture, l'anneau, et le code
+/// d'erreur que la faute porte.
+///
+/// La marche de l'émetteur ne regardait que le bit de présence, et posait
+/// toujours le code d'erreur zéro. Une écriture sur une page en lecture seule
+/// passait donc : la copie à l'écriture d'après un `fork` n'avait jamais lieu
+/// — le fils écrivait dans les pages du père —, et la première écriture dans
+/// une page anonyme neuve allait dans la **page zéro** que le noyau partage
+/// entre tous, parce qu'une faute annoncée « lecture » lui fait poser cette
+/// page-là, en lecture seule, et rejouer. Un programme d'anneau trois lisait
+/// aussi la mémoire du noyau. Le cœur Swift (`X86Paging.swift`, `allowed`) et
+/// l'interprète Rust (`x86_paging.rs`, `permits`) tiennent ces bits ; le
+/// silicium aussi, et c'est ce que ce banc lui demande.
+///
+/// La machine : la pagination posée par le pilote — CR0.PG, avec ou sans
+/// CR0.WP —, l'anneau aussi, une page de code en identité à `RIGHTS_CODE`, et
+/// une page de données haute, `RIGHTS_PAGE`, dont le pilote choisit les bits :
+/// ceux des trois niveaux au-dessus d'elle et ceux de sa feuille. La page
+/// d'après est absente, ou posée sur une trame **qui n'est pas la voisine**.
+/// Pas d'IDT : une faute arrête la machine, et l'état se lit tel que
+/// l'instruction fautive l'a laissé — le témoin porte le code d'erreur que le
+/// module a posé, **plus un** ; le bit utilisateur, l'hôte l'ajoute à la
+/// délivrance (voir `a_ring_three_access_to_a_present_supervisor_page_says_present_and_user`).
+///
+/// **Les régions se traduisent à la demande**, par `x86-translate` sur la
+/// fenêtre que l'hôte a lue **par les tables** : c'est aussi le chargement
+/// d'instruction qui est éprouvé, et un second programme peut suivre le
+/// premier sans qu'on ait à graver son créneau.
+struct Rights {
+    text: String,
+}
+
+/// Un cas du banc.
+struct RightsCase {
+    /// L'anneau du premier programme : zéro ou trois.
+    ring: u8,
+    /// CR0.WP.
+    write_protect: bool,
+    /// Les bits des trois niveaux au-dessus de la page de données.
+    upper: u64,
+    /// Ceux de sa feuille.
+    leaf: u64,
+    /// Ceux de la feuille de la page d'après, ou rien : absente.
+    next: Option<u64>,
+    /// Ceux des quatre niveaux qui portent la page de code.
+    code: u64,
+    program: Vec<u8>,
+    /// **Un second programme, son anneau**, joué après le premier sur le même
+    /// tampon de traduction : le pilote ne touche ni à CR0 ni à CR3 entre les
+    /// deux, donc rien ne le vide.
+    then: Option<(u8, Vec<u8>)>,
+}
+
+const RIGHTS_PAGES: u32 = 64;
+const RIGHTS_CODE: u64 = 0x1_0000;
+/// Où le second programme est posé : dans la même page de code.
+const RIGHTS_THEN: u64 = 0x1_0800;
+const RIGHTS_PML4: u64 = 0x2_0000;
+const RIGHTS_PDPT: u64 = 0x2_1000;
+const RIGHTS_PD: u64 = 0x2_2000;
+const RIGHTS_PT: u64 = 0x2_3000;
+const RIGHTS_PDPT_LOW: u64 = 0x2_4000;
+const RIGHTS_PD_LOW: u64 = 0x2_5000;
+const RIGHTS_PT_LOW: u64 = 0x2_6000;
+/// La page de données, et sa trame.
+const RIGHTS_PAGE: u64 = 0xFFFF_8000_0020_4000;
+const RIGHTS_FRAME: u64 = 0x3_0000;
+/// La trame de la page d'après, quand elle est posée. **Pas
+/// `RIGHTS_FRAME + 0x1000`.**
+const RIGHTS_NEXT_FRAME: u64 = 0x3_8000;
+
+/// Les trois bits d'une entrée que ce banc fait varier.
+const PTE_PRESENT: u64 = 1;
+const PTE_WRITABLE: u64 = 1 << 1;
+const PTE_USER: u64 = 1 << 2;
+/// Une entrée que tout le monde peut lire et écrire.
+const PTE_ALL: u64 = PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+
+/// **Le témoin de faute que le module pose : le code d'erreur plus un.** P
+/// (bit 0) dit « la page est là, c'est un droit qui manque », W (bit 1) dit
+/// « c'était une écriture ». Le bit 2, l'anneau, l'hôte l'ajoute.
+const WITNESS_ABSENT_READ: u64 = 1;
+const WITNESS_ABSENT_WRITE: u64 = 0b10 + 1;
+const WITNESS_DENIED_READ: u64 = 0b01 + 1;
+const WITNESS_DENIED_WRITE: u64 = 0b11 + 1;
+
+/// Ce que le motif de la page de données vaut en `RIGHTS_PAGE + 0xfc0`, lu
+/// sur huit octets : 1, 2, … 8.
+const RIGHTS_PATTERN: u64 = 0x0807_0605_0403_0201;
+/// Ce que les programmes écrivent.
+const RIGHTS_VALUE: u64 = 0x8877_6655_4433_2211;
+
+impl RightsCase {
+    /// Un cas d'anneau zéro, WP allumé — ce que Linux pose —, la page de
+    /// données lisible et inscriptible par tous, la page d'après absente.
+    fn new(program: Vec<u8>) -> Self {
+        RightsCase {
+            ring: 0,
+            write_protect: true,
+            upper: PTE_ALL,
+            leaf: PTE_ALL,
+            next: None,
+            code: PTE_ALL,
+            program,
+            then: None,
+        }
+    }
+}
+
+impl Rights {
+    fn run(name: &str, case: &RightsCase) -> Rights {
+        let Some(bun) = bun() else {
+            panic!("Bun est absent : ce test ne serait vérifié par rien.");
+        };
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-host-droits-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let first = scratch.join("premier.bin");
+        std::fs::write(&first, &case.program).expect("le programme");
+        let second = scratch.join("second.bin");
+        let (then_ring, then) = match &case.then {
+            Some((ring, bytes)) => {
+                assert!(
+                    bytes.len() < 0x800,
+                    "le second programme tient dans sa demi-page"
+                );
+                std::fs::write(&second, bytes).expect("le second programme");
+                (*ring, true)
+            }
+            None => (0, false),
+        };
+        assert!(
+            case.program.len() < 0x800,
+            "le premier programme tient dans sa demi-page"
+        );
+        let selectors = |ring: u8| {
+            if ring == 3 {
+                (0x33u64, 0x2bu64)
+            } else {
+                (0x10, 0x18)
+            }
+        };
+        let (cs, ss) = selectors(case.ring);
+        let (then_cs, then_ss) = selectors(then_ring);
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+}});
+const octets = new Uint8Array(vm.memory.buffer);
+octets.set(readFileSync({first:?}), {code});
+if ({then}) octets.set(readFileSync({second:?}), {then_at});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+// La page de code, en identité, par quatre niveaux qui portent tous ses bits.
+const code = BigInt({code_flags});
+vue.setBigUint64({pml4} + idx({code}n, 39) * 8, {pdpt_low}n | code, true);
+vue.setBigUint64({pdpt_low} + idx({code}n, 30) * 8, {pd_low}n | code, true);
+vue.setBigUint64({pd_low} + idx({code}n, 21) * 8, {pt_low}n | code, true);
+vue.setBigUint64({pt_low} + idx({code}n, 12) * 8, {code}n | code, true);
+// La page de données : les bits des trois niveaux, puis ceux de la feuille.
+const haut = BigInt({upper});
+vue.setBigUint64({pml4} + idx({page}n, 39) * 8, {pdpt}n | haut, true);
+vue.setBigUint64({pdpt} + idx({page}n, 30) * 8, {pd}n | haut, true);
+vue.setBigUint64({pd} + idx({page}n, 21) * 8, {pt}n | haut, true);
+vue.setBigUint64({pt} + idx({page}n, 12) * 8, {frame}n | BigInt({leaf}), true);
+if ({next} !== null) {{
+  vue.setBigUint64({pt} + idx({page}n + 0x1000n, 12) * 8, {next_frame}n | BigInt({next}), true);
+}}
+// Le motif : 1, 2, … 64 au bout de la page, 65, … 128 au début de la suivante.
+for (let i = 0; i < 64; i++) vue.setUint8({frame} + 0xfc0 + i, i + 1);
+for (let i = 0; i < 64; i++) vue.setUint8({next_frame} + i, i + 65);
+new Uint8Array(vm.memory.buffer, {frame} + 0x1000, 64).fill(0xee);
+// La pagination et l'anneau, posés : un programme d'anneau trois ne pourrait
+// écrire ni CR0 ni CR3.
+vm.globals[{control}].value = (1n << 31n) | ({wp} ? 1n << 16n : 0n);
+vm.globals[{control} + 2].value = {pml4}n;
+vm.globals[{segment} + 1].value = {cs}n;
+vm.globals[{segment} + 2].value = {ss}n;
+vm.globals[{rip}].value = {code}n;
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+const hex = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+const releve = (avant, why) => {{
+  console.log(avant + "arret " + why.stopped);
+  for (let r = 0; r < 16; r++) console.log(avant + "r" + r + " " + lire(r));
+  console.log(avant + "rip " + lire({rip}));
+  console.log(avant + "cr2 " + lire({control} + 1));
+  console.log(avant + "faute " + lire({fault}));
+  console.log(avant + "haut " + hex({frame} + 0xfc0, 64));
+  console.log(avant + "suite " + hex({next_frame}, 64));
+  console.log(avant + "voisine " + hex({frame} + 0x1000, 64));
+  console.log(avant + "x0 " + lire({xmm}));
+  console.log(avant + "x0h " + lire({xmm} + 1));
+}};
+releve("", await vm.run({{ budget: 256n, rounds: 8 }}));
+if ({then}) {{
+  // Le premier s'est arrêté sur son `ud2` : son arrêt est effacé, rien
+  // d'autre. Le tampon de traduction reste tel qu'il l'a laissé.
+  vm.globals[{stop}].value = 0n;
+  vm.globals[{segment} + 1].value = {then_cs}n;
+  vm.globals[{segment} + 2].value = {then_ss}n;
+  vm.globals[{rip}].value = {then_at}n;
+  releve("2:", await vm.run({{ budget: 256n, rounds: 8 }}));
+}}
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                translator = env!("CARGO_BIN_EXE_x86-translate"),
+                pages = RIGHTS_PAGES,
+                first = first.to_string_lossy(),
+                second = second.to_string_lossy(),
+                then = then,
+                then_at = RIGHTS_THEN,
+                code = RIGHTS_CODE,
+                code_flags = case.code,
+                upper = case.upper,
+                leaf = case.leaf,
+                next = case
+                    .next
+                    .map_or("null".to_string(), |bits| bits.to_string()),
+                page = RIGHTS_PAGE,
+                frame = RIGHTS_FRAME,
+                next_frame = RIGHTS_NEXT_FRAME,
+                pml4 = RIGHTS_PML4,
+                pdpt = RIGHTS_PDPT,
+                pd = RIGHTS_PD,
+                pt = RIGHTS_PT,
+                pdpt_low = RIGHTS_PDPT_LOW,
+                pd_low = RIGHTS_PD_LOW,
+                pt_low = RIGHTS_PT_LOW,
+                wp = case.write_protect,
+                control = CONTROL_SLOT,
+                segment = SEGMENT_SLOT,
+                cs = cs,
+                ss = ss,
+                then_cs = then_cs,
+                then_ss = then_ss,
+                rip = RIP_SLOT,
+                fault = FAULT_SLOT,
+                stop = wisq_vm::x86_wasm::STOP_SLOT,
+                xmm = XMM_SLOT,
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        let _ = std::fs::remove_dir_all(&scratch);
+        Rights { text }
+    }
+
+    fn line(&self, field: &str) -> &str {
+        self.text
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {field} » : {}", self.text))
+            .trim()
+    }
+
+    fn number(&self, field: &str) -> u64 {
+        self.line(field).parse().expect("un nombre")
+    }
+
+    /// Les soixante-quatre octets d'une des trois fenêtres relevées.
+    fn bytes(&self, field: &str) -> Vec<u8> {
+        let text = self.line(field);
+        (0..text.len() / 2)
+            .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet"))
+            .collect()
+    }
+
+    /// Les huit premiers octets du motif, au bout de la page de données.
+    fn first_word(&self, phase: &str) -> u64 {
+        let text = self.line(&format!("{phase}haut "));
+        let mut bytes = [0u8; 8];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).expect("un octet");
+        }
+        u64::from_le_bytes(bytes)
+    }
+
+    /// Le programme est allé jusqu'à son `ud2` sans fauter.
+    fn finishes(&self, what: &str, phase: &str) {
+        assert_eq!(
+            self.number(&format!("{phase}faute ")),
+            0,
+            "{what} : l'accès a le droit, rien ne faute : {}",
+            self.text
+        );
+        assert_eq!(
+            self.line(&format!("{phase}arret ")),
+            UD2_SANS_PORTE,
+            "{what} : la machine va jusqu'au `ud2` : {}",
+            self.text
+        );
+    }
+
+    /// **La faute a eu lieu, sur `rip`, avec `cr2`, et le témoin porte le
+    /// code d'erreur juste**, plus un.
+    fn faults(&self, what: &str, phase: &str, rip: u64, cr2: u64, witness: u64) {
+        assert_eq!(
+            self.line(&format!("{phase}arret ")),
+            FAUTE_SANS_PORTE,
+            "{what} : la machine s'arrête sur une faute de page : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}faute ")),
+            witness,
+            "{what} : le témoin porte le code d'erreur plus un — P pour un droit \
+             qui manque, W pour une écriture : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}rip ")),
+            rip,
+            "{what} : RIP nomme l'instruction fautive : {}",
+            self.text
+        );
+        assert_eq!(
+            self.number(&format!("{phase}cr2 ")),
+            cr2,
+            "{what} : CR2 porte l'adresse fautive : {}",
+            self.text
+        );
+    }
+}
+
+/// Les octets qui lisent huit octets à `RIGHTS_PAGE + 0xfc0` dans RAX, et
+/// l'adresse de la lecture.
+fn rights_read(into: &mut Vec<u8>) -> u64 {
+    into.extend_from_slice(&movabs(6, RIGHTS_PAGE + 0xfc0)); // movabs $PAGE+0xfc0,%rsi
+    let at = into.len() as u64;
+    into.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax
+    at
+}
+
+/// Les octets qui écrivent `RIGHTS_VALUE` à `RIGHTS_PAGE + 0xfc0`, et
+/// l'adresse de l'écriture.
+fn rights_write(into: &mut Vec<u8>) -> u64 {
+    into.extend_from_slice(&movabs(6, RIGHTS_PAGE + 0xfc0));
+    into.extend_from_slice(&movabs(3, RIGHTS_VALUE)); // movabs $VALUE,%rbx
+    let at = into.len() as u64;
+    into.extend_from_slice(&[0x48, 0x89, 0x1e]); // mov %rbx,(%rsi)
+    at
+}
+
+/// Un programme fait d'un accès puis d'un `ud2` ; rend le programme et
+/// l'adresse de l'accès.
+fn rights_program(access: fn(&mut Vec<u8>) -> u64) -> (Vec<u8>, u64) {
+    let mut program = Vec::new();
+    let at = access(&mut program);
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    (program, RIGHTS_CODE + at)
+}
+
+/// **Une écriture sur une page en lecture seule faute en anneau zéro quand
+/// CR0.WP est allumé, et passe quand il est éteint.**
+///
+/// C'est la règle du manuel (« CR0.WP … inhibits supervisor-level procedures
+/// from writing into read-only pages ») et celle du cœur Swift (`allowed`) :
+/// Linux allume WP, et c'est ce qui rend la copie à l'écriture sûre même quand
+/// c'est le noyau qui écrit dans la mémoire d'un programme — un `read(2)` dans
+/// un tampon que `fork` vient de partager.
+///
+/// **Les droits sont le ET des quatre niveaux.** Une table qui n'est pas
+/// inscriptible interdit d'écrire dans tout ce qu'elle couvre, même si la
+/// feuille dit le contraire : le deuxième cas le tient.
+///
+/// Le code d'erreur porte P (la page est là, c'est le droit qui manque) et W
+/// (c'était une écriture) : le témoin vaut `0b11 + 1`. Et la faute arrive
+/// **avant** l'écriture : le motif est intact.
+#[test]
+fn a_write_to_a_read_only_page_faults_under_write_protect_and_passes_without() {
+    let (program, at) = rights_program(rights_write);
+    let address = RIGHTS_PAGE + 0xfc0;
+
+    let mut case = RightsCase::new(program.clone());
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let leaf = Rights::run("wp-feuille", &case);
+    leaf.faults(
+        "WP allumé, feuille en lecture seule",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        leaf.first_word(""),
+        RIGHTS_PATTERN,
+        "la faute arrive avant l'écriture : rien n'est écrit : {}",
+        leaf.text
+    );
+
+    case.leaf = PTE_ALL;
+    case.upper = PTE_PRESENT | PTE_USER;
+    let upper = Rights::run("wp-niveaux", &case);
+    upper.faults(
+        "WP allumé, feuille inscriptible sous des tables qui ne le sont pas",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        upper.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        upper.text
+    );
+
+    case.write_protect = false;
+    case.upper = PTE_ALL;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let through = Rights::run("sans-wp", &case);
+    through.finishes(
+        "WP éteint : le noyau écrit à travers une page en lecture seule",
+        "",
+    );
+    assert_eq!(
+        through.first_word(""),
+        RIGHTS_VALUE,
+        "sans WP, l'écriture du noyau a lieu : {}",
+        through.text
+    );
+
+    let (read, _) = rights_program(rights_read);
+    let mut case = RightsCase::new(read);
+    case.leaf = PTE_PRESENT;
+    let reads = Rights::run("lecture", &case);
+    reads.finishes("une lecture n'a besoin que de la présence", "");
+    assert_eq!(
+        reads.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a rendu le motif : {}",
+        reads.text
+    );
+}
+
+/// **Le tampon de traduction ne laisse pas passer une écriture par une entrée
+/// qu'une lecture a remplie.**
+///
+/// Le tampon de l'émetteur ne portait que le numéro de page : la lecture le
+/// remplissait, et l'écriture qui suivait sur la même page y trouvait sa trame
+/// sans repasser par la marche — donc sans que personne ne regarde le bit
+/// d'écriture. Un contrôle dans la seule marche ne suffit pas : c'est ce que le
+/// commentaire d'`allowed` dit côté Swift, et ce que ce test tient. La
+/// lecture, l'écriture, puis un `add` en mémoire — une lecture et une écriture
+/// dans la même instruction — sur une page en lecture seule.
+#[test]
+fn the_buffer_does_not_let_a_write_through_an_entry_a_read_filled() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let mut program = Vec::new();
+    rights_read(&mut program);
+    let at = RIGHTS_CODE + rights_write(&mut program);
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let mut case = RightsCase::new(program);
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("tampon", &case);
+    fault.faults(
+        "une écriture après une lecture de la même page",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture d'avant a eu lieu — c'est elle qui a rempli le tampon : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, address));
+    program.extend_from_slice(&movabs(3, RIGHTS_VALUE));
+    let at = RIGHTS_CODE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x01, 0x1e]); // add %rbx,(%rsi)
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("ajout", &case);
+    fault.faults(
+        "un `add` en mémoire : il lit, puis il écrit",
+        "",
+        at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+}
+
+/// **Un programme d'anneau trois n'atteint pas une page du superviseur.**
+///
+/// Le bit utilisateur, lui aussi, est le ET des quatre niveaux : une feuille
+/// qui le porte sous une table qui ne le porte pas reste fermée. Le noyau,
+/// lui, lit et écrit les pages d'un programme — cette machine n'annonce pas
+/// SMAP, donc rien ne l'en empêche, et `copy_to_user` en dépend.
+#[test]
+fn ring_three_cannot_reach_a_supervisor_page() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let (read, read_at) = rights_program(rights_read);
+    let (write, write_at) = rights_program(rights_write);
+
+    let mut case = RightsCase::new(read.clone());
+    case.ring = 3;
+    case.leaf = PTE_PRESENT | PTE_WRITABLE;
+    Rights::run("u-lecture", &case).faults(
+        "anneau trois, lecture d'une feuille du superviseur",
+        "",
+        read_at,
+        address,
+        WITNESS_DENIED_READ,
+    );
+    case.program = write.clone();
+    let fault = Rights::run("u-ecriture", &case);
+    fault.faults(
+        "anneau trois, écriture dans une feuille du superviseur",
+        "",
+        write_at,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+
+    case.program = read.clone();
+    case.leaf = PTE_ALL;
+    case.upper = PTE_PRESENT | PTE_WRITABLE;
+    Rights::run("u-niveaux", &case).faults(
+        "anneau trois, feuille utilisateur sous des tables du superviseur",
+        "",
+        read_at,
+        address,
+        WITNESS_DENIED_READ,
+    );
+
+    case.upper = PTE_ALL;
+    let reads = Rights::run("u-permis", &case);
+    reads.finishes("anneau trois, une page à lui", "");
+    assert_eq!(
+        reads.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a eu lieu : {}",
+        reads.text
+    );
+    case.program = write;
+    let writes = Rights::run("u-permis-ecriture", &case);
+    writes.finishes("anneau trois, une page à lui, inscriptible", "");
+    assert_eq!(
+        writes.first_word(""),
+        RIGHTS_VALUE,
+        "l'écriture a eu lieu : {}",
+        writes.text
+    );
+
+    case.ring = 0;
+    case.program = read;
+    let kernel = Rights::run("noyau-sur-page-utilisateur", &case);
+    kernel.finishes(
+        "anneau zéro sur une page utilisateur : pas de SMAP annoncé",
+        "",
+    );
+    assert_eq!(
+        kernel.number("r0 "),
+        RIGHTS_PATTERN,
+        "la lecture a eu lieu : {}",
+        kernel.text
+    );
+}
+
+/// **En anneau trois, une page en lecture seule le reste, WP ou non.** CR0.WP
+/// ne règle que le superviseur ; un programme qui écrit dans une page que
+/// `fork` a partagée doit fauter, sinon le fils écrit dans la mémoire du père.
+#[test]
+fn ring_three_cannot_write_a_read_only_page_even_without_write_protect() {
+    let (write, at) = rights_program(rights_write);
+    let mut case = RightsCase::new(write);
+    case.ring = 3;
+    case.write_protect = false;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    let fault = Rights::run("u-sans-wp", &case);
+    fault.faults(
+        "anneau trois, WP éteint, page en lecture seule",
+        "",
+        at,
+        RIGHTS_PAGE + 0xfc0,
+        WITNESS_DENIED_WRITE,
+    );
+    assert_eq!(
+        fault.first_word(""),
+        RIGHTS_PATTERN,
+        "rien n'est écrit : {}",
+        fault.text
+    );
+}
+
+/// **Une entrée du tampon remplie en anneau zéro n'ouvre rien à l'anneau
+/// trois.**
+///
+/// Le tampon survit aux changements d'anneau — un vrai processeur ne le vide
+/// pas à chaque appel système, et l'émetteur non plus. Ce qu'il range doit
+/// donc dire **ce que la page permet**, pas ce que l'accès qui l'a rempli
+/// avait le droit de faire : sinon le noyau lit une page à lui, rend la main
+/// au programme, et le programme la lit par la même case.
+///
+/// Et le cas jumeau, le plus sournois : WP éteint, le noyau **écrit** dans une
+/// page utilisateur en lecture seule — il le peut —, puis le programme écrit
+/// au même endroit. L'écriture du noyau ne doit pas avoir rangé « on peut
+/// écrire ».
+#[test]
+fn an_entry_filled_in_ring_zero_does_not_open_a_page_to_ring_three() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    let (first, _) = rights_program(rights_read);
+    let (second, at) = rights_program(rights_read);
+    let mut case = RightsCase::new(first);
+    case.leaf = PTE_PRESENT | PTE_WRITABLE;
+    case.then = Some((3, second));
+    let run = Rights::run("anneaux-lecture", &case);
+    run.finishes("le noyau lit sa page", "");
+    run.faults(
+        "puis le programme, par la même case du tampon",
+        "2:",
+        at - RIGHTS_CODE + RIGHTS_THEN,
+        address,
+        WITNESS_DENIED_READ,
+    );
+
+    let (first, _) = rights_program(rights_write);
+    let (second, at) = rights_program(rights_write);
+    let mut case = RightsCase::new(first);
+    case.write_protect = false;
+    case.leaf = PTE_PRESENT | PTE_USER;
+    case.then = Some((3, second));
+    let run = Rights::run("anneaux-ecriture", &case);
+    run.finishes(
+        "WP éteint, le noyau écrit dans une page en lecture seule",
+        "",
+    );
+    run.faults(
+        "puis le programme écrit au même endroit",
+        "2:",
+        at - RIGHTS_CODE + RIGHTS_THEN,
+        address,
+        WITNESS_DENIED_WRITE,
+    );
+}
+
+/// **Une faute sur une page absente dit si c'était une écriture.**
+///
+/// Le bit W du code d'erreur ne dépend pas de la présence. Linux s'en sert dès
+/// la première écriture dans une page anonyme neuve : annoncée « lecture »,
+/// elle lui fait poser la page zéro partagée, en lecture seule, puis rejouer
+/// l'instruction — qui faute une seconde fois, ou, sans protection en
+/// écriture, **écrit dans la page zéro de tout le système**.
+#[test]
+fn a_fault_on_an_absent_page_says_whether_it_was_a_write() {
+    let address = RIGHTS_PAGE + 0xfc0;
+    for (name, access, witness) in [
+        (
+            "absente-lecture",
+            rights_read as fn(&mut Vec<u8>) -> u64,
+            WITNESS_ABSENT_READ,
+        ),
+        ("absente-ecriture", rights_write, WITNESS_ABSENT_WRITE),
+    ] {
+        let (program, at) = rights_program(access);
+        let mut case = RightsCase::new(program);
+        case.leaf = 0;
+        Rights::run(name, &case).faults(name, "", at, address, witness);
+    }
+}
+
+/// **Une écriture à cheval sur une page en lecture seule n'écrit ni dans
+/// l'une ni dans l'autre**, et CR2 nomme le premier octet de la seconde.
+///
+/// Le chemin lent marche les deux pages avant le premier octet : la seconde
+/// doit y être jugée **en écriture**, pas seulement en présence. Une lecture
+/// à cheval, elle, passe.
+#[test]
+fn a_write_across_into_a_read_only_page_writes_neither_page() {
+    let start = RIGHTS_PAGE + 0xffc;
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, start));
+    program.extend_from_slice(&movabs(3, RIGHTS_VALUE));
+    let at = RIGHTS_CODE + program.len() as u64;
+    program.extend_from_slice(&[0x48, 0x89, 0x1e]); // mov %rbx,(%rsi)
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.next = Some(PTE_PRESENT | PTE_USER);
+    let fault = Rights::run("cheval-ecriture", &case);
+    fault.faults(
+        "une écriture à cheval, la seconde page en lecture seule",
+        "",
+        at,
+        RIGHTS_PAGE + 0x1000,
+        WITNESS_DENIED_WRITE,
+    );
+    let pattern: Vec<u8> = (1..=64).collect();
+    let suite: Vec<u8> = (65..=128).collect();
+    assert_eq!(
+        fault.bytes("haut "),
+        pattern,
+        "rien dans la première page : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.bytes("suite "),
+        suite,
+        "rien dans la seconde : {}",
+        fault.text
+    );
+    assert_eq!(
+        fault.bytes("voisine "),
+        vec![0xee; 64],
+        "ni à côté : {}",
+        fault.text
+    );
+
+    let mut program = Vec::new();
+    program.extend_from_slice(&movabs(6, start));
+    program.extend_from_slice(&[0x48, 0x8b, 0x06]); // mov (%rsi),%rax
+    program.extend_from_slice(&[0x0f, 0x0b]);
+    let mut case = RightsCase::new(program);
+    case.next = Some(PTE_PRESENT | PTE_USER);
+    let reads = Rights::run("cheval-lecture", &case);
+    reads.finishes("une lecture à cheval sur une page en lecture seule", "");
+    assert_eq!(
+        reads.number("r0 "),
+        u64::from_le_bytes([61, 62, 63, 64, 65, 66, 67, 68]),
+        "les quatre derniers octets de la page, puis les quatre premiers de la suivante : {}",
+        reads.text
+    );
+}
+
+/// **Un accès d'anneau trois à une page présente du noyau dit « présente » et
+/// « utilisateur ».** Le code d'erreur complet, tel que le gestionnaire le
+/// trouve sur sa pile : P, posé par la marche du module, et U, que l'hôte
+/// ajoute d'après CS. `0x5`. Linux y lit « un programme a touché ce qui n'est
+/// pas à lui », et lui envoie `SIGSEGV` — au lieu de chercher une page qui
+/// manque, et de la trouver.
+///
+/// Le montage est celui du segment de tâche, la feuille de la page lue posée
+/// **sans** le bit utilisateur.
+#[test]
+fn a_ring_three_access_to_a_present_supervisor_page_says_present_and_user() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("superviseur");
+    let tweak = format!(
+        "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n | 0x3n, true); \
+         // présente, inscriptible, pas utilisateur",
+        pt = RIG_PT,
+        absent = RIG_ABSENT,
+        frame = RIG_FRAME,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        false,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire doit avoir tourné pour que le cadre existe : {text}"
+    );
+    let words: Vec<String> = line_of(&text, "cadre ")
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        words[0], "0x5",
+        "**P et U** : la page est là, c'est le droit qui manque, et l'accès \
+         venait d'un programme : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "cr2 "),
+        format!("0x{RIG_ABSENT:x}"),
+        "CR2 porte l'adresse lue : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rdx "),
+        "0",
+        "et la lecture n'a rien rendu : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un programme ne charge pas ses instructions dans une page du noyau.**
+///
+/// L'hôte lit la fenêtre d'une région par la marche du module, et la marche
+/// juge ce chargement-là aussi : en anneau trois, une page sans le bit
+/// utilisateur ne se lit pas plus qu'une page absente. La faute délivrée
+/// porte P et U — `0x5`, sans le bit 4 tant que ni NXE ni SMEP ne sont
+/// armés —, CR2 et RIP sur la cible du saut.
+///
+/// Le montage est celui du segment de tâche, dans sa forme « chargement » : le
+/// programme saute sur `RIG_ABSENT`, dont la feuille est ici posée **sans**
+/// le bit utilisateur. Pas sur sa propre première instruction : la toute
+/// première fenêtre est lue avant qu'aucune région n'existe, donc avant que
+/// l'hôte ait une marche à appeler, et il la lit par repli.
+#[test]
+fn a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let scratch = tss_scratch("chargement-superviseur");
+    // **La page porte un `ud2`**, et pas les zéros de la mémoire neuve. Deux
+    // octets nuls sont `add %al,(%rax)` — RAX vaut la cible du saut —, et un
+    // hôte qui chargerait la page sans la juger exécuterait cette lecture,
+    // qui fauterait à la même adresse avec le même code : le test passait
+    // ainsi sous un sabotage. Un `ud2` exécuté s'arrête sans porte, et le
+    // gestionnaire ne tourne pas.
+    let tweak = format!(
+        "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n | 0x3n, true); \
+         // présente, inscriptible, pas utilisateur\n\
+         vue.setUint16({frame}, 0x0b0f, true); // ud2",
+        pt = RIG_PT,
+        absent = RIG_ABSENT,
+        frame = RIG_FRAME,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        true,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire a tourné — la faute de chargement est délivrée : {text}"
+    );
+    let words: Vec<String> = line_of(&text, "cadre ")
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        words[0], "0x5",
+        "**P et U** pour un chargement refusé : {text}"
+    );
+    assert_eq!(
+        words[1],
+        format!("0x{RIG_ABSENT:x}"),
+        "le cadre pointe sur la cible du saut : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "cr2 "),
+        format!("0x{RIG_ABSENT:x}"),
+        "CR2 porte l'adresse qu'on n'a pas pu charger : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une instruction coupée par une page absente faute sur la page d'après.**
+///
+/// Le mur d'Alpine juste après `addr32 call` : busybox saute sur un `48` posé
+/// au dernier octet d'une page, et la page qui porte la suite de
+/// l'instruction n'a pas encore été chargée — le texte d'un programme arrive à
+/// la demande. Le traducteur demandait plus d'octets, l'hôte n'en trouvait pas,
+/// et la machine s'arrêtait « refusée ».
+///
+/// Sur le silicium, c'est une faute de page sur le chargement de la **suite**
+/// de l'instruction : CR2 sur le premier octet de la page qui manque, RIP —
+/// donc le cadre — sur l'instruction elle-même, et le code d'erreur d'un
+/// chargement absent en anneau trois. Le noyau pose la page et rejoue
+/// l'instruction entière.
+///
+/// **Le bit I (0x10) est tenu des deux côtés.** Sans NX ni SMEP, le manuel
+/// veut un code sans lui ; Alpine allume EFER.NXE, et c'est alors `0x14` ou
+/// `0x15` — la branche que le noyau visé prend vraiment. Un chargement de
+/// suite d'instruction jugé comme une lecture perdrait ce bit, et rien ne le
+/// voyait : le montage ne tournait que sans NXE.
+#[test]
+fn an_instruction_cut_by_an_absent_page_faults_on_the_page_after() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // (la feuille de la page d'après, NXE, le code d'erreur attendu) :
+    // absente, puis présente mais réservée au noyau — P et U, comme tout
+    // chargement refusé en anneau trois — et chacune sans puis avec NXE.
+    for (next_leaf, nxe, code) in [
+        (None, false, "0x4"),
+        (Some(0x3u64), false, "0x5"),
+        (None, true, "0x14"),
+        (Some(0x3u64), true, "0x15"),
+    ] {
+        let scratch = tss_scratch(&format!("coupe-par-une-page-{code}"));
+        // La page d'avant la page qui manque : présente, utilisateur, et rien
+        // d'autre qu'un `48` — le premier octet de `mov %rax,%rbx` — à son
+        // dernier octet. Le saut du programme est détourné vers lui.
+        let mut tweak = format!(
+            "vue.setBigUint64({pt} + idx({before}n, 12) * 8, {frame}n | 0x7n, true);\n\
+             vue.setUint8({frame} + 0xfff, 0x48);\n\
+             vue.setBigUint64({base} + 2, {before}n + 0xfffn, true);\n",
+            pt = RIG_PT,
+            before = RIG_ABSENT - 0x1000,
+            frame = RIG_FRAME,
+            base = RIG_BASE,
+        );
+        if let Some(leaf) = next_leaf {
+            // La suite de l'instruction est bien là, dans une trame à elle :
+            // seul le droit manque.
+            tweak.push_str(&format!(
+                "vue.setBigUint64({pt} + idx({absent}n, 12) * 8, {frame}n + 0x1000n | {leaf}n, true);\n\
+                 vue.setUint16({frame} + 0x1000, 0xc389, true);\n",
+                pt = RIG_PT,
+                absent = RIG_ABSENT,
+                frame = RIG_FRAME,
+            ));
+        }
+        if nxe {
+            tweak.push_str(&format!(
+                "vm.globals[{EFER_SLOT}].value |= 1n << 11n; // NXE\n"
+            ));
+        }
+        let driver = tss_driver(
+            &scratch,
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0,
+            true,
+            false,
+            &tweak,
+        );
+        let text = run_driver(&bun, &driver);
+        assert_eq!(
+            line_of(&text, "rbx "),
+            format!("0x{TSS_WITNESS:x}"),
+            "{code} : le gestionnaire a tourné — la faute est délivrée, pas « refusée » : {text}"
+        );
+        let words: Vec<String> = line_of(&text, "cadre ")
+            .split(' ')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            words[0], code,
+            "le code de la page d'après, vu d'un chargement en anneau trois : {text}"
+        );
+        assert_eq!(
+            words[1],
+            format!("0x{:x}", RIG_ABSENT - 1),
+            "{code} : le cadre pointe sur l'instruction coupée, pas sur la page d'après : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "cr2 "),
+            format!("0x{RIG_ABSENT:x}"),
+            "{code} : CR2 porte le premier octet de la page qui manque : {text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+/// **Une instruction complète que le décodeur refuse, au bout d'une page dont
+/// la suivante manque, est refusée — sans faute sur la page d'après.**
+///
+/// Le silicium ne charge la page d'après que si l'instruction déborde. Trois
+/// octets complets — `67 8b 00`, un `mov (%eax),%eax` que ce décodeur ne lit
+/// pas — posés aux trois derniers octets d'une page n'y touchent pas ; `06`
+/// (`push es`, qui n'existe pas en mode 64 bits) au dernier non plus. Le
+/// traducteur rendait pourtant « coupé, il m'en faut plus » pour tout échec à
+/// moins de quinze octets du bord, et l'hôte délivrait la faute de la page
+/// d'après : sous Linux, au bout d'une projection de texte, un `SIGSEGV` muet
+/// à la place du refus nommé. Le témoin est la vraie coupe, `48 b8` et deux
+/// octets d'immédiat : elle, faute.
+#[test]
+fn a_complete_refused_instruction_at_the_end_of_a_page_is_refused_not_cut() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let before = RIG_ABSENT - 0x1000;
+    for (name, bytes, refused) in [
+        ("addr32", &[0x67u8, 0x8b, 0x00][..], true),
+        ("push-es", &[0x06][..], true),
+        ("coupe", &[0x48, 0xb8, 0x01, 0x02][..], false),
+    ] {
+        let scratch = tss_scratch(&format!("refus-au-bord-{name}"));
+        let at = before + 0x1000 - bytes.len() as u64;
+        let mut tweak = format!(
+            "vue.setBigUint64({pt} + idx({before}n, 12) * 8, {frame}n | 0x7n, true);\n\
+             vue.setBigUint64({base} + 2, {at}n, true);\n",
+            pt = RIG_PT,
+            frame = RIG_FRAME,
+            base = RIG_BASE,
+        );
+        for (rank, byte) in bytes.iter().enumerate() {
+            tweak.push_str(&format!(
+                "vue.setUint8({frame} + 0x{offset:x}, 0x{byte:x});\n",
+                frame = RIG_FRAME,
+                offset = 0x1000 - bytes.len() + rank,
+            ));
+        }
+        // NXE allumé, comme sur Alpine : la branche du code d'erreur que le
+        // noyau visé prend.
+        tweak.push_str(&format!("vm.globals[{EFER_SLOT}].value |= 1n << 11n;\n"));
+        let driver = tss_driver(
+            &scratch,
+            TSS_USER_CODE,
+            TSS_USER_STACK_SELECTOR,
+            0,
+            true,
+            false,
+            &tweak,
+        );
+        // L'adresse de l'arrêt, que le pilote commun n'imprime pas.
+        let script = std::fs::read_to_string(&driver).expect("le pilote");
+        std::fs::write(
+            &driver,
+            script.replace(
+                "console.log(\"arret \" + why.stopped);",
+                "console.log(\"arret \" + why.stopped);\nconsole.log(\"a 0x\" + why.at.toString(16));",
+            ),
+        )
+        .expect("le pilote");
+        let text = run_driver(&bun, &driver);
+        if refused {
+            assert_eq!(
+                line_of(&text, "arret "),
+                "refusée",
+                "{name} : une instruction complète ne déborde pas — refus nommé : {text}"
+            );
+            assert_eq!(
+                line_of(&text, "a "),
+                format!("0x{at:x}"),
+                "{name} : le refus nomme l'instruction : {text}"
+            );
+            assert_ne!(
+                line_of(&text, "rbx "),
+                format!("0x{TSS_WITNESS:x}"),
+                "{name} : aucune faute délivrée : {text}"
+            );
+            assert_ne!(
+                line_of(&text, "cr2 "),
+                format!("0x{RIG_ABSENT:x}"),
+                "{name} : la page d'après n'a pas été touchée : {text}"
+            );
+        } else {
+            assert_eq!(
+                line_of(&text, "rbx "),
+                format!("0x{TSS_WITNESS:x}"),
+                "{name} : la vraie coupe faute, elle : {text}"
+            );
+            assert_eq!(
+                line_of(&text, "cr2 "),
+                format!("0x{RIG_ABSENT:x}"),
+                "{name} : sur le premier octet de la page qui manque : {text}"
+            );
+            let words: Vec<String> = line_of(&text, "cadre ")
+                .split(' ')
+                .map(str::to_string)
+                .collect();
+            assert_eq!(
+                words[0], "0x14",
+                "{name} : U et I, la page absente : {text}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+}
+
+/// **Un mot du segment de tâche à cheval sur deux pages est lu dans les deux.**
+///
+/// L'hôte traduisait l'adresse du premier octet, puis lisait huit octets
+/// contigus en mémoire linéaire : la fin du mot venait de la trame
+/// **physiquement** voisine, pas de la page virtuelle d'après. Le défaut que
+/// `far_load_body` corrige dans le module, resté dans la délivrance — qui lit
+/// la porte dans l'IDT, le descripteur dans la GDT et `RSP0` dans le TSS.
+/// Linux aligne les trois sur une page et ne le voit pas ; le silicium lit un
+/// mot à cheval dans ses deux pages.
+///
+/// Le montage est celui du segment de tâche, son descripteur déplacé pour que
+/// `RSP0` commence six octets avant la fin de la page du TSS. La page d'après
+/// est posée **loin** de la voisine, qui est remplie de `0xee` : un mot pris
+/// d'un trait y prendrait ses deux octets hauts.
+#[test]
+fn a_task_segment_word_across_two_pages_is_read_from_both() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FAR_FRAME: u64 = 0x3_4000;
+    let scratch = tss_scratch("tss-a-cheval");
+    let tweak = format!(
+        r#"// Le TSS commence à 0xff6 dans sa page : RSP0, à +4, est à cheval.
+poser({tss}n + 0xff6n, {limit}, 9);
+vue.setBigUint64({tss_pt} + idx({tss}n + 0x1000n, 12) * 8, {far}n | present, true);
+new Uint8Array(vm.memory.buffer, {tss_frame} + 0x1000, 16).fill(0xee);
+const pile = BigInt({kernel});
+for (let i = 0; i < 6; i++) vue.setUint8({tss_frame} + 0xffa + i, Number((pile >> BigInt(8 * i)) & 0xffn));
+for (let i = 6; i < 8; i++) vue.setUint8({far} + i - 6, Number((pile >> BigInt(8 * i)) & 0xffn));"#,
+        tss = TSS_AT,
+        limit = TSS_LIMIT,
+        tss_pt = TSS_PT,
+        tss_frame = TSS_FRAME,
+        far = FAR_FRAME,
+        kernel = TSS_KERNEL_STACK,
+    );
+    let driver = tss_driver(
+        &scratch,
+        TSS_USER_CODE,
+        TSS_USER_STACK_SELECTOR,
+        0,
+        false,
+        false,
+        &tweak,
+    );
+    let text = run_driver(&bun, &driver);
+    assert_eq!(
+        line_of(&text, "rbx "),
+        format!("0x{TSS_WITNESS:x}"),
+        "le gestionnaire a tourné : la pile du noyau a été trouvée : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rsp "),
+        format!("0x{:x}", (TSS_KERNEL_STACK & !0xf) - 48),
+        "**le cadre est sur `RSP0`, lu dans ses deux pages** — pris d'un trait, \
+         ses deux octets hauts seraient `0xeeee` : {text}"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un programme du banc des droits qui pose XMM0, puis joue `instruction`
+/// sur `(%rax)`, à `at`.** XMM0 vaut `RIGHTS_VALUE` dans ses deux moitiés —
+/// `movq %rbx,%xmm0`, puis `punpcklqdq` qui recopie la basse en haut —, et
+/// `instruction` porte le ModRM `00` : XMM0 et `(%rax)`. Rend le programme et
+/// l'adresse de `instruction`.
+fn xmm_at(instruction: &[u8], at: u64) -> (Vec<u8>, u64) {
+    xmm_after(&[], instruction, at)
+}
+
+/// **`xmm_at`, avec `prime` joué juste avant `instruction`**, RAX déjà sur
+/// `at` : de quoi remplir le tampon de traduction d'une page avant l'accès
+/// jugé, comme un programme qui a déjà travaillé dans sa page.
+fn xmm_after(prime: &[u8], instruction: &[u8], at: u64) -> (Vec<u8>, u64) {
+    let mut program = movabs(3, RIGHTS_VALUE);
+    program.extend_from_slice(&[0x66, 0x48, 0x0f, 0x6e, 0xc3]); // movq %rbx,%xmm0
+    program.extend_from_slice(&[0x66, 0x0f, 0x6c, 0xc0]); // punpcklqdq %xmm0,%xmm0
+    program.extend(movabs(0, at));
+    program.extend_from_slice(prime);
+    let rip = RIGHTS_CODE + program.len() as u64;
+    program.extend_from_slice(instruction);
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    (program, rip)
+}
+
+/// Le motif du banc des droits, tel qu'il est avant que rien ne l'écrive :
+/// 1 à 64 au bout de la page de données, 65 à 128 au début de la suivante.
+fn rights_pattern(from: u8) -> Vec<u8> {
+    (from..from + 64).collect()
+}
+
+/// **Une écriture de seize octets faute où le silicium faute, avec son code
+/// d'erreur, et n'écrit rien.**
+///
+/// Ce que ce test exige a été **mesuré le 15 novembre** sur le processeur de la
+/// machine de développement — `movups %xmm0,(%rdi)` et `movdqu` dans un
+/// programme Linux, la page d'après rendue absente (`PROT_NONE`) ou en lecture
+/// seule (`PROT_READ`), `si_addr` et `REG_ERR` lus dans le gestionnaire de
+/// `SIGSEGV` (`docs/JOURNAL.md`) :
+///
+/// - **le code dit toujours W**, la page soit absente (`0x6`, utilisateur et
+///   écriture) soit en lecture seule (`0x7`) ;
+/// - **CR2 est le premier octet de l'accès qui tombe dans la page fautive** :
+///   l'adresse elle-même quand c'est la première page, ou quand l'écriture
+///   tient dans la page qui manque ; le premier octet de la seconde page
+///   sinon ;
+/// - **rien n'est écrit**, pas même la moitié dans la page qui le permet.
+///
+/// L'émetteur sondait le dernier octet en le **relisant** puis en le
+/// réécrivant. Sur une page absente, la relecture fautait la première : code
+/// 0 — une lecture —, CR2 sur le dernier octet. Linux répond à une lecture
+/// dans une page anonyme neuve par la page zéro partagée, en lecture seule ;
+/// l'écriture rejouée fautait une seconde fois pour la copie. Une seule faute,
+/// juste, maintenant : les seize octets sont jugés **pour l'écriture** avant
+/// d'être écrits.
+///
+/// Et ce qui doit passer passe : à cheval sur deux pages inscriptibles, les
+/// deux moitiés tombent chacune dans sa trame, qui ne sont pas voisines.
+#[test]
+fn a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing() {
+    const READ_ONLY: u64 = PTE_PRESENT | PTE_USER;
+    let value = RIGHTS_VALUE.to_le_bytes();
+    for (form, instruction) in [
+        ("movups", &[0x0f, 0x11, 0x00][..]),
+        ("movdqu", &[0xf3, 0x0f, 0x7f, 0x00][..]),
+    ] {
+        // (décalage dans la page de données, sa feuille, la page d'après,
+        // CR2 attendu, témoin attendu).
+        for (offset, leaf, next, cr2, witness) in [
+            // À cheval, la page d'après absente : la moitié basse tiendrait.
+            (0xff8u64, PTE_ALL, None, 0x1000u64, WITNESS_ABSENT_WRITE),
+            (0xff1, PTE_ALL, None, 0x1000, WITNESS_ABSENT_WRITE),
+            // À cheval, la page d'après en lecture seule : la copie à
+            // l'écriture d'un `fork`.
+            (
+                0xff8,
+                PTE_ALL,
+                Some(READ_ONLY),
+                0x1000,
+                WITNESS_DENIED_WRITE,
+            ),
+            // Tout entière dans la page qui manque : CR2 sur son premier
+            // octet, pas sur le dernier.
+            (0x1000, PTE_ALL, None, 0x1000, WITNESS_ABSENT_WRITE),
+            (0x1008, PTE_ALL, None, 0x1008, WITNESS_ABSENT_WRITE),
+            // La première page absente, la seconde là : CR2 sur l'adresse.
+            (0xff8, 0, Some(PTE_ALL), 0xff8, WITNESS_ABSENT_WRITE),
+        ] {
+            let what = format!("{form} à +{offset:#x}, feuille {leaf:#x}, page d'après {next:?}");
+            let (program, rip) = xmm_at(instruction, RIGHTS_PAGE + offset);
+            let mut case = RightsCase::new(program);
+            case.leaf = leaf;
+            case.next = next;
+            let run = Rights::run(&format!("st16-{form}-{offset:x}-{leaf}"), &case);
+            run.faults(&what, "", rip, RIGHTS_PAGE + cr2, witness);
+            assert_eq!(
+                (run.bytes("haut "), run.bytes("suite ")),
+                (rights_pattern(1), rights_pattern(65)),
+                "{what} : **rien n'est écrit**, ni dans la page qui le permet, \
+                 ni dans l'autre : {}",
+                run.text
+            );
+        }
+        // **La première page déjà dans le tampon de traduction** — le cas
+        // courant sous Linux : le programme a écrit dans sa page, puis une
+        // écriture de seize octets déborde sur la page d'après, absente ou à
+        // copier à l'écriture. Partis d'un tampon vide, les cas d'au-dessus
+        // passent tous par la marche ; ceux-ci prennent le chemin en ligne de
+        // la réservation, qui doit voir que les seize octets sortent de la
+        // page qu'il connaît. Juger la seule page du premier octet laissait
+        // passer la réservation, et la moitié basse était écrite avant la
+        // faute.
+        const WRITE_BELOW: &[u8] = &[0x48, 0x89, 0x98, 0x00, 0xff, 0xff, 0xff]; // mov %rbx,-0x100(%rax)
+        const READ_BELOW: &[u8] = &[0x48, 0x8b, 0x88, 0x00, 0xff, 0xff, 0xff]; // mov -0x100(%rax),%rcx
+        const READ_ABOVE: &[u8] = &[0x48, 0x8b, 0x88, 0x00, 0x01, 0x00, 0x00]; // mov 0x100(%rax),%rcx
+                                                                               // (ce qui est joué d'abord, la feuille de la page de données, la page
+                                                                               // d'après, CR2 attendu, témoin attendu) ; l'écriture est à +0xff8.
+        for (prime, leaf, next, cr2, witness) in [
+            (
+                WRITE_BELOW.to_vec(),
+                PTE_ALL,
+                None,
+                0x1000u64,
+                WITNESS_ABSENT_WRITE,
+            ),
+            (
+                WRITE_BELOW.to_vec(),
+                PTE_ALL,
+                Some(READ_ONLY),
+                0x1000,
+                WITNESS_DENIED_WRITE,
+            ),
+            // Les deux pages dans le tampon, la seconde parce qu'on l'a lue.
+            (
+                [WRITE_BELOW, READ_ABOVE].concat(),
+                PTE_ALL,
+                Some(READ_ONLY),
+                0x1000,
+                WITNESS_DENIED_WRITE,
+            ),
+            // La première page en lecture seule, et lue : sa case dans le
+            // tampon ne dit pas « inscriptible ».
+            (
+                READ_BELOW.to_vec(),
+                READ_ONLY,
+                Some(PTE_ALL),
+                0xff8,
+                WITNESS_DENIED_WRITE,
+            ),
+        ] {
+            let what = format!(
+                "{form} à +0xff8 après {prime:02x?}, feuille {leaf:#x}, page d'après {next:?}"
+            );
+            let (program, rip) = xmm_after(&prime, instruction, RIGHTS_PAGE + 0xff8);
+            let mut case = RightsCase::new(program);
+            case.leaf = leaf;
+            case.next = next;
+            let run = Rights::run(
+                &format!(
+                    "st16-{form}-amorce-{}-{leaf}-{}",
+                    prime.len(),
+                    next.unwrap_or(9)
+                ),
+                &case,
+            );
+            run.faults(&what, "", rip, RIGHTS_PAGE + cr2, witness);
+            assert_eq!(
+                (run.bytes("haut "), run.bytes("suite ")),
+                (rights_pattern(1), rights_pattern(65)),
+                "{what} : **rien n'est écrit**, la page du premier octet soit-elle \
+                 déjà connue du tampon : {}",
+                run.text
+            );
+        }
+        // Ce qui a le droit passe : à cheval sur deux trames non voisines, et
+        // tout entière au bout de la page.
+        let (program, _) = xmm_at(instruction, RIGHTS_PAGE + 0xff8);
+        let mut case = RightsCase::new(program);
+        case.next = Some(PTE_ALL);
+        let run = Rights::run(&format!("st16-{form}-passe"), &case);
+        let what = format!("{form} à cheval sur deux pages inscriptibles");
+        run.finishes(&what, "");
+        let (mut high, mut next) = (rights_pattern(1), rights_pattern(65));
+        high[56..].copy_from_slice(&value);
+        next[..8].copy_from_slice(&value);
+        assert_eq!(
+            (
+                run.bytes("haut "),
+                run.bytes("suite "),
+                run.bytes("voisine ")
+            ),
+            (high, next, vec![0xee; 64]),
+            "{what} : la moitié basse au bout de la première trame, la haute au \
+             début de la seconde, et la trame voisine intacte : {}",
+            run.text
+        );
+        let (program, _) = xmm_at(instruction, RIGHTS_PAGE + 0xff0);
+        let run = Rights::run(&format!("st16-{form}-bout"), &RightsCase::new(program));
+        let what = format!("{form} sur les seize derniers octets, la page d'après absente");
+        run.finishes(&what, "");
+        let mut high = rights_pattern(1);
+        high[48..56].copy_from_slice(&value);
+        high[56..].copy_from_slice(&value);
+        assert_eq!(
+            run.bytes("haut "),
+            high,
+            "{what} : les seize octets sont écrits : {}",
+            run.text
+        );
+    }
+}
+
+/// **Une lecture de seize octets qui faute ne change aucun registre.**
+///
+/// Le commit du socle SSE l'affirmait — « une source mémoire est lue entière
+/// avant tout effet » — et aucun test ne le tenait : poser la moitié basse de
+/// XMM0 avant de lire la haute laissait toute la suite verte. Ce test tient la
+/// promesse, pour les deux chemins qui lisent seize octets : le déplacement
+/// (`movups`, `movdqu`) et l'arithmétique dont la source est en mémoire
+/// (`paddb`, `pxor`).
+///
+/// La lecture est à cheval : sa moitié basse dans la page de données, sa
+/// moitié haute dans la page d'après, absente. Le silicium — mesuré le même
+/// jour que l'écriture — faute en lecture (`0x4` en anneau trois, sans W), CR2
+/// sur le premier octet de la page d'après. XMM0 doit être ce qu'il était.
+/// La page d'après en lecture seule, elle, ne faute pas : une lecture en a le
+/// droit, et XMM0 reçoit les seize octets des deux trames.
+#[test]
+fn a_sixteen_byte_load_that_faults_changes_no_register() {
+    const READ_ONLY: u64 = PTE_PRESENT | PTE_USER;
+    let value = RIGHTS_VALUE.to_le_bytes();
+    // Les seize octets que la lecture à cheval trouve : 57 à 64, puis 65 à 72.
+    let read: Vec<u8> = (57..73).collect();
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().expect("huit octets"));
+    for (form, instruction, combine) in [
+        ("movups", &[0x0f, 0x10, 0x00][..], None),
+        ("movdqu", &[0xf3, 0x0f, 0x6f, 0x00][..], None),
+        (
+            "paddb",
+            &[0x66, 0x0f, 0xfc, 0x00][..],
+            Some(u8::wrapping_add as fn(u8, u8) -> u8),
+        ),
+        (
+            "pxor",
+            &[0x66, 0x0f, 0xef, 0x00][..],
+            Some((|a: u8, b: u8| a ^ b) as fn(u8, u8) -> u8),
+        ),
+    ] {
+        let (program, rip) = xmm_at(instruction, RIGHTS_PAGE + 0xff8);
+        let what = format!("{form} à cheval, la page d'après absente");
+        let run = Rights::run(&format!("ld16-{form}"), &RightsCase::new(program.clone()));
+        run.faults(&what, "", rip, RIGHTS_PAGE + 0x1000, WITNESS_ABSENT_READ);
+        assert_eq!(
+            (run.number("x0 "), run.number("x0h ")),
+            (RIGHTS_VALUE, RIGHTS_VALUE),
+            "{what} : **XMM0 est ce qu'il était**, ses deux moitiés — la basse \
+             était lisible, et n'est pas posée pour autant : {}",
+            run.text
+        );
+
+        let mut case = RightsCase::new(program);
+        case.next = Some(READ_ONLY);
+        let run = Rights::run(&format!("ld16-{form}-passe"), &case);
+        let what = format!("{form} à cheval, la page d'après en lecture seule");
+        run.finishes(&what, "");
+        let expected: Vec<u8> = match combine {
+            None => read.clone(),
+            Some(lane) => (0..16).map(|i| lane(value[i % 8], read[i])).collect(),
+        };
+        assert_eq!(
+            (run.number("x0 "), run.number("x0h ")),
+            (word(&expected[..8]), word(&expected[8..])),
+            "{what} : XMM0 reçoit les seize octets des deux trames : {}",
+            run.text
+        );
+    }
+}
+
+/// **`fxsave` juge son aire pour l'écriture avant d'en écrire un octet.**
+///
+/// Elle sondait les deux bouts de l'aire en les **lisant**. Sur une page en
+/// lecture seule, une lecture passe : la boucle écrivait alors les octets de
+/// la première page, puis fautait sur la seconde — une aire à moitié écrite,
+/// ce que le silicium ne fait jamais. Et sur une page absente, la faute était
+/// celle d'une lecture.
+///
+/// Le silicium, mesuré le 15 novembre (`fxsave64` à 256 octets de la fin
+/// d'une page, dans un programme Linux) :
+///
+/// | première page | seconde page | CR2 | code |
+/// | --- | --- | --- | --- |
+/// | absente | là | le premier octet de l'aire | `0x6` |
+/// | là | absente | le dernier octet de l'aire | `0x6` |
+/// | absente | absente | le dernier octet de l'aire | `0x6` |
+/// | là | lecture seule | le dernier octet de l'aire | `0x7` |
+///
+/// Et dans les quatre cas, rien n'est écrit.
+///
+/// **Le dernier cas est rejoué après une lecture de la page en lecture
+/// seule**, qui en remplit la case du tampon de traduction. La réservation
+/// doit alors refuser la case — elle ne dit pas « inscriptible » — et partir
+/// par la marche : une réservation jugée comme une lecture passerait là, et
+/// la boucle écrirait la première page avant de fauter sur la seconde.
+#[test]
+fn fxsave_claims_its_area_for_writing_before_it_writes() {
+    const READ_ONLY: u64 = PTE_PRESENT | PTE_USER;
+    const AT: u64 = 0xf00;
+    for (leaf, next, cr2, witness, read_first) in [
+        (0, Some(PTE_ALL), AT, WITNESS_ABSENT_WRITE, false),
+        (PTE_ALL, None, AT + 511, WITNESS_ABSENT_WRITE, false),
+        (0, None, AT + 511, WITNESS_ABSENT_WRITE, false),
+        (
+            PTE_ALL,
+            Some(READ_ONLY),
+            AT + 511,
+            WITNESS_DENIED_WRITE,
+            false,
+        ),
+        (
+            PTE_ALL,
+            Some(READ_ONLY),
+            AT + 511,
+            WITNESS_DENIED_WRITE,
+            true,
+        ),
+    ] {
+        let what =
+            format!("fxsave, feuille {leaf:#x}, page d'après {next:?}, lue d'abord : {read_first}");
+        let mut program = movabs(0, RIGHTS_PAGE + AT);
+        if read_first {
+            // mov 0x100(%rax),%rcx : le premier mot de la page d'après.
+            program.extend_from_slice(&[0x48, 0x8b, 0x88, 0x00, 0x01, 0x00, 0x00]);
+        }
+        let rip = RIGHTS_CODE + program.len() as u64;
+        program.extend_from_slice(&[0x0f, 0xae, 0x00]); // fxsave (%rax)
+        program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+        let mut case = RightsCase::new(program);
+        case.leaf = leaf;
+        case.next = next;
+        let run = Rights::run(
+            &format!("fxsave-{leaf}-{}-{read_first}", next.unwrap_or(9)),
+            &case,
+        );
+        run.faults(&what, "", rip, RIGHTS_PAGE + cr2, witness);
+        assert_eq!(
+            (run.bytes("haut "), run.bytes("suite ")),
+            (rights_pattern(1), rights_pattern(65)),
+            "{what} : rien n'est écrit, ni la fin de la première page ni le \
+             début de la seconde : {}",
+            run.text
+        );
+    }
+}
+
+/// **MXCSR part à sa valeur d'allumage, et `stmxcsr` la rend.**
+///
+/// Les globales sont importées : leur valeur de départ appartient à l'hôte,
+/// et c'est `web/host.js` qui pose `0x1f80` — toutes les exceptions
+/// flottantes masquées, arrondi au plus proche. Partie de zéro, la machine
+/// démasquerait tout, ce qu'aucun processeur ne fait au démarrage, et le
+/// noyau rangerait ce zéro dans l'aire de chaque tâche par `fxsave`.
+#[test]
+fn a_fresh_machine_holds_the_power_on_mxcsr_and_stmxcsr_writes_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const AREA: u32 = 0x2000;
+    let text = drive_with(
+        &bun,
+        &[0x0f, 0xae, 0x18, 0x0f, 0x0b], // stmxcsr (%rax) ; ud2
+        0x1_0000,
+        1,
+        "stmxcsr",
+        &format!(
+            "vm.globals[0].value = {AREA}n;\n\
+             new Uint8Array(vm.memory.buffer, {AREA}, 8).fill(0xee);"
+        ),
+        &format!(
+            "console.log(\"mot \" + new DataView(vm.memory.buffer).getUint32({AREA}, true).toString(16));\n\
+             console.log(\"suite \" + new Uint8Array(vm.memory.buffer, {AREA} + 4, 4).join(\",\"));"
+        ),
+    );
+    assert_eq!(line_of(&text, "arret "), UD2_SANS_PORTE, "{text}");
+    assert_eq!(
+        line_of(&text, "mot "),
+        "1f80",
+        "MXCSR vaut sa valeur d'allumage, et `stmxcsr` l'écrit : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "suite "),
+        "238,238,238,238",
+        "quatre octets, pas huit : {text}"
+    );
 }

@@ -256,11 +256,13 @@ int wisq_x86_emit_resolving(const uint8_t *code, size_t len, uint64_t base, size
    franc et un manque d'octets ne se corrigent pas pareil. */
 #define WISQ_X86_TRANSLATED   0
 #define WISQ_X86_REFUSED     -1
-/* L'émetteur s'est arrêté à moins de quinze octets du bord de ce qu'on lui a
-   donné : l'instruction qui l'a bloqué a pu être coupée plutôt qu'être
-   inconnue. Redemandez la même région avec une fenêtre plus large, une seule
-   fois. Sur un vrai noyau, 91 régions sur 10 116 tombent là avec quatre
-   kibioctets, et toutes se traduisent au second essai. */
+/* La première instruction déborde du bord de ce qu'on lui a donné : à moins
+   de quinze octets de la fin, le décodeur a lu au-delà, et une suite la
+   rendrait lisible. Une instruction complète qu'il refuse, même tout près du
+   bord, est WISQ_X86_REFUSED. Redemandez la même région avec une fenêtre plus
+   large, une seule fois ; si la page d'après manque, c'est la faute de page
+   que le silicium ferait. Sur un vrai noyau, 91 régions sur 10 116 tombaient
+   là avec quatre kibioctets, et toutes se traduisaient au second essai. */
 #define WISQ_X86_NEEDS_MORE  -2
 
 /*
