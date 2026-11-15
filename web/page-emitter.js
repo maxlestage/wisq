@@ -48,6 +48,21 @@
 /// natif les compare (`page.rs`).
 export const CODES = Object.freeze({ encore: -1, refus: -2, malForme: -3 });
 
+/// **Des imports qui lèvent**, un par fonction que le module importe. Ce
+/// qui n'est pas une fonction (une mémoire, une table) n'y est pas : le module
+/// de la page n'en importe pas, et l'instanciation le dirait.
+function importsRefuses(module) {
+  const imports = {};
+  for (const { module: espace, name, kind } of WebAssembly.Module.imports(module)) {
+    if (kind !== "function") continue;
+    imports[espace] ??= {};
+    imports[espace][name] = () => {
+      throw new Error(`l'émetteur n'importe rien, et a appelé ${espace}.${name}`);
+    };
+  }
+  return imports;
+}
+
 /// **Instancier l'émetteur.** `source` est le module de `wisq_page.wasm`, déjà
 /// compilé (`WebAssembly.Module`) ou en octets. Synchrone, comme la boucle :
 /// l'appelant qui veut compiler hors du fil le fait avant, avec
@@ -63,9 +78,13 @@ export function emetteur(source) {
   // pilote imprime pour dire qu'une trappe a eu lieu, et ce que le test lit.
   let instances = 0;
   function instancier() {
-    // **Aucun import.** L'émetteur est du calcul pur sur ses deux tampons : il
-    // ne lit ni l'heure, ni un fichier, ni la mémoire de l'invité.
-    porte = new WebAssembly.Instance(module, {}).exports;
+    // **Aucun import qui serve.** L'émetteur est du calcul pur sur ses deux
+    // tampons : il ne lit ni l'heure, ni un fichier, ni la mémoire de
+    // l'invité. Le module en déclare pourtant — ceux de la carte, qui partage
+    // ce module (`carte.ram_lire`, `carte.ram_ecrire`, voir `web/carte.js`) :
+    // ils sont remplis ici de fonctions qui lèvent, pour qu'un appel venu de
+    // l'émetteur se voie au lieu de lire une RAM qui n'est pas la sienne.
+    porte = new WebAssembly.Instance(module, importsRefuses(module)).exports;
     instances += 1;
   }
   instancier();
