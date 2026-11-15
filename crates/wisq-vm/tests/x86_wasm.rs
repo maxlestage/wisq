@@ -3949,8 +3949,11 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_string_corpus() {
     );
 }
 
-/// **Le plancher du corpus de chaîne, à mesurer.**
-const STRING_CASES_FLOOR: usize = 144;
+/// **Le plancher du corpus de chaîne : tout le corpus.** Il valait 144 —
+/// `movs` et `stos` seuls — tant que `lods`, `cmps` et `scas` ne se
+/// traduisaient pas ; `repne scasb` et `repe cmpsb` sont le `strlen` et le
+/// `memcmp` de busybox compilé en `-Os`, et les 376 cas sont jugés depuis.
+const STRING_CASES_FLOOR: usize = 376;
 
 /// **Le quatrième corpus branché sur l'émetteur : les branchements.**
 ///

@@ -774,11 +774,12 @@ fn main() {
                     page = root.join("web/page-emitter.js").to_string_lossy(),
                     module = module.to_string_lossy(),
                 ),
-                // **Une coupe est refusée ici comme `x86-translate` la refuse**
-                // (sortie 2) : ce pilote n'a jamais rendu `"encore"`, et le
-                // traducteur de la page ne change pas ce qu'il fait — seulement
-                // ce qu'il coûte. Honorer `"encore"` est un autre changement, à
-                // mesurer à part ; `porte.traducteur` le fait déjà pour la page.
+                // **Une coupe rend `"encore"`, comme `porte.traducteur` dans la
+                // page** : l'hôte relit une fenêtre plus large, et si la page
+                // d'après manque, il délivre la faute de chargement qu'elle
+                // vaut au lieu de s'arrêter « refusée ». Ce pilote refusait
+                // les coupes ; Alpine s'arrêtait sur un `48` au dernier octet
+                // d'une page de busybox dont la suite n'était pas chargée.
                 // Une trappe de l'émetteur est relevée comme un refus, sous son
                 // nom : `translate` rend `null`, `host.js` arrête la machine sur
                 // « refusée », et la boucle des tours sort — la mesure finit sur
@@ -789,7 +790,8 @@ fn main() {
                 format!(
                     "const r = porte.resoudre(code, address, slot, {pages});\n    \
                      const rendu = r.module !== undefined ? {{ module: r.module }} \
-                     : {{ pourquoi: r.encore ?? r.refus ?? `Trappe(${{r.trappe}})` }};"
+                     : r.encore !== undefined ? {{ encore: r.encore }} \
+                     : {{ pourquoi: r.refus ?? `Trappe(${{r.trappe}})` }};"
                 ),
             )
         }
@@ -807,6 +809,8 @@ fn main() {
                      stdin: code,\n    }});\n    \
                      const rendu = out.exitCode === 0\n      \
                      ? {{ module: out.stdout }}\n      \
+                     : out.exitCode === 4\n      \
+                     ? {{ encore: out.stderr.toString().trim() }}\n      \
                      : {{ pourquoi: out.stderr.toString().trim() }};",
                     translator = translator.to_string_lossy(),
                 ),
@@ -842,6 +846,26 @@ fn main() {
     // Éteint par défaut : ça coûte une lecture d'un octet par entrée de
     // région, et les relevés d'avant ont été pris sans.
     let veille = std::env::var("WISQ_VEILLE").is_ok_and(|value| value != "0");
+    // **`WISQ_SERIE=<fichier>` : le port série, recopié au fil de l'eau.** Le
+    // relevé ne l'imprime qu'à la fin ; un pilote tué en route — le cache de
+    // code d'un démarrage d'Alpine remplit la mémoire vers cent mille régions
+    // — n'imprimait rien, et l'on ne savait pas jusqu'où l'invité était allé.
+    let serie = std::env::var("WISQ_SERIE").unwrap_or_default();
+    // **`WISQ_ENTREE` : ce qu'on tape au shell**, une ligne par `;;`. Chaque
+    // fois que l'invite (`WISQ_INVITE`, `# ` par défaut) paraît sur le port
+    // série après la dernière ligne tapée — un shell qui attend la suivante —,
+    // celle-ci part, suivie d'un retour chariot. Attendre un `hlt` définitif ne
+    // marche pas : l'horloge du noyau réveille toujours la machine.
+    let entree: Vec<String> = std::env::var("WISQ_ENTREE")
+        .map(|text| text.split(";;").map(str::to_string).collect())
+        .unwrap_or_default();
+    let invite = std::env::var("WISQ_INVITE").unwrap_or_else(|_| "# ".to_string());
+    // **`WISQ_FIN=<texte>` : s'arrêter quand le port série l'a dit.** Depuis
+    // que l'horloge avance, un noyau qui panique ne s'arrête plus sur un
+    // `hlt` : il attend dans `panic` à coups de `mdelay`, et le pilote usait
+    // ses tours jusqu'au bout. La sonde dit `WISQ-USERSPACE-OK` et s'en va ;
+    // c'est là qu'il faut compter.
+    let fin = std::env::var("WISQ_FIN").unwrap_or_default();
     // **`WISQ_PILE` : combien de mots de pile relever.** Huit par défaut,
     // comme les relevés d'avant. Une exception précoce (`early_idt_handler`)
     // range son cadre — et le RIP fautif — plus bas que huit mots : sans en
@@ -887,7 +911,7 @@ fn main() {
             format!(
                 r#"
 import {{ machine }} from {host:?};
-import {{ readFileSync }} from "fs";
+import {{ readFileSync, appendFileSync }} from "fs";
 {prelude}
 
 let manquante = null;
@@ -907,8 +931,12 @@ const plafond = {rounds};
 // `host.js` l'écoute déjà. Gardé en entier et imprimé à la fin, pour ne pas se
 // mêler au relevé.
 let serie = "";
+const fichierSerie = {serie_file:?};
 const vm = machine({{
-  serial: (octet) => {{ serie += String.fromCharCode(octet); }},
+  serial: (octet) => {{
+    serie += String.fromCharCode(octet);
+    if (fichierSerie !== "") appendFileSync(fichierSerie, String.fromCharCode(octet));
+  }},
   // **`WISQ_VEILLE=1` compte les régions qui tournent après que leur premier
   // octet a bougé.** Éteint par défaut, parce que ça coûte la lecture d'un
   // octet par entrée de région — sur le chemin le plus chaud de la boucle —,
@@ -941,6 +969,11 @@ const vm = machine({{
     {emission}
     tempsDeTraduction += performance.now() - debut;
     demandesDeTraduction += 1;
+    if (rendu.encore !== undefined) {{
+      console.log("encore 0x" + address.toString(16) + " emplacement " + slot
+        + " " + rendu.encore + " sur " + code.length + " octets");
+      return "encore";
+    }}
     if (rendu.module === undefined) {{
       if (manquante === null) {{ manquante = address; place = slot; }}
       // **Et les octets refusés, tels que l'hôte les a lus.** Depuis #254 ils
@@ -999,9 +1032,23 @@ const debutDeLaQueue = {turns} - Math.floor({turns} / 10);
 // étaient de vrais tours. Le même mot comptait deux choses.
 let tours = 0;
 let why = {{ stopped: "tours épuisés", at: lire({rip}) }};
+const entree = {entree:?};
+const invite = {invite:?};
+const fin = {fin:?};
+let depuis = 0;
 for (let tour = 0; tour < {turns}; tour++) {{
   why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
   tours = tour + 1;
+  if (fin !== "" && serie.includes(fin)) {{
+    why = {{ stopped: "le port série a dit " + JSON.stringify(fin), at: lire({rip}) }};
+    break;
+  }}
+  if (entree.length > 0 && serie.indexOf(invite, depuis) >= 0) {{
+    const ligne = entree.shift();
+    console.log("tape " + JSON.stringify(ligne) + " au tour " + tours);
+    vm.send(new TextEncoder().encode(ligne + "\r"));
+    depuis = serie.length;
+  }}
   if (why.stopped !== "tours épuisés") break;
   const at = lire({rip});
   if (!retours.has(at)) neuf = tour + 1;
@@ -1036,6 +1083,7 @@ console.log("derniers " + derniers.map((at) => "0x" + at.toString(16)).join(" ; 
 // s'injectent entre deux instructions et ne font rendre la main à personne.
 // Sans cette ligne, savoir *quand* la première est tombée demandait de
 // repérer la traduction du stub d'entrée au milieu de deux mille lignes.
+console.log("vidages " + vm.vidages.fois + " fois, " + vm.vidages.regions + " region(s) oubliee(s)");
 console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
   + (vm.materiel.premiere === null
       ? ", aucune" : ", la premiere a 0x" + vm.materiel.premiere.toString(16)));
@@ -1187,6 +1235,10 @@ console.log("controle " + controle
                 beat = Progress::beat(turns),
                 rounds = rounds,
                 veille = veille,
+                serie_file = serie,
+                entree = entree,
+                invite = invite,
+                fin = fin,
                 prelude = prelude,
                 emission = emission,
                 pages = pages,

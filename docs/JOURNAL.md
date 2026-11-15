@@ -8,6 +8,131 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Sous l'émetteur, Alpine va jusqu'à son shell : FS, `addr32 call`, l'instruction coupée, les chaînes qui comparent, le mode quatre du 8254 et un cache de code vidé une fois
+
+**Ce qui n'allait pas.** Alpine 6.18.60 avec son initramfs (`WISQ_RAM=256`)
+s'arrêtait « refusée » en anneau trois, à 11 078 régions, dans `__dls3` de
+`ld-musl`, sur `mov %fs:0x0,%rdx`. Levé mur par mur, chacun mesuré sur le vrai
+noyau, nommé, puis remesuré :
+
+| mur | où | instruction | régions avant l'arrêt |
+| --- | --- | --- | ---: |
+| 1 | `ld-musl`, `__dls3` | `64 48 8b 14 25 …` (`mov %fs:0x0,%rdx`) | 11 078 |
+| 2 | `libcrypto.so.3 + 0x16e8c2` | `67 e8 18 25 01 00` (`addr32 call`) | 11 492 |
+| 3 | busybox, `0x55742c668fff` | un `48` seul au dernier octet d'une page dont la suivante n'est pas chargée | 11 818 |
+| 4 | « Mounting boot media » | l'heure figée à 1,121 s : le mode quatre du 8254 n'était pas modélisé | — |
+| 5 | après l'heure rendue | `asm_exc_page_fault` en boucle, la pile jusque dans l'IDT : une région d'`error_entry` traduite avant `apply_alternatives` | 14 268 |
+
+**Ce qui change.**
+
+- **Le préfixe FS** (`0x64`) se lit : `Address::fs`, la base de
+  `FS_BASE_SLOT` ajoutée à l'exécution comme celle de GS ; le dernier préfixe
+  de segment gagne ; `lea` n'en prend aucun ; une source de `movs`, `lods` ou
+  `cmps` sous FS ou GS est refusée plutôt que lue sans segment. Le test
+  `the_fs_prefix_is_refused_for_want_of_an_oracle` est retiré : il tenait le
+  refus que cette tranche lève, et deux tests plus forts le remplacent.
+- **`addr32 call` et `addr32 jmp`** (`67 e8`, `67 e9`) : la taille d'adresse
+  est lue devant une branche proche, où elle ne change rien sauf la longueur —
+  l'éditeur de liens l'écrit 45 264 fois dans `libcrypto` —, et refusée
+  partout ailleurs.
+- **Une instruction coupée par une page absente faute sur la page d'après.**
+  `x86-translate` rend 4 pour une coupe (`MayBeCut`), `kernel-entry` rend
+  `"encore"` comme la page le faisait déjà, et `host.js`, quand la fenêtre
+  large s'arrête elle aussi sur une page illisible, délivre la faute de
+  chargement : CR2 sur le premier octet de la page qui manque, RIP sur
+  l'instruction, le code de cette page-là (U ; P|U si elle est réservée au
+  noyau).
+- **`lods`, `cmps`, `scas`, avec `repe` et `repne`** (`f2` lu comme `repne`
+  devant `cmps` et `scas`), dans l'interprète et dans l'émetteur : les deux
+  lectures d'un tour avant tout changement, la sortie sur ZF après la
+  décrémentation de RCX.
+- **Le mode quatre du 8254**, celui de `pit_set_oneshot` : un coup unique,
+  comme le mode zéro. Sans lui, dès que Linux passait son horloge en coup
+  unique, plus aucun tic : l'heure restait à 1,121 s et le premier
+  `tcsetattr` du shell ne revenait pas.
+- **Le cache de code vidé une fois, au premier passage en anneau trois**
+  (`oublierTout`) : les régions, la correspondance, les blocs. Une relecture
+  région par région au moment d'y entrer a été essayée d'abord et rejetée,
+  mesuré : le mélange de code réécrit et d'ancien code donnait « Unpatched
+  return thunk in use » puis une oops `int3` dans le texte d'init libéré. Le
+  vidage jette 11 045 régions sur Alpine.
+- **L'entrée série** : `vm.send(octets)` dans `host.js`. Et trois réglages de
+  `kernel-entry` : `WISQ_SERIE=<fichier>` (le port série recopié au fil de
+  l'eau, parce qu'un pilote tué en route n'imprimait rien),
+  `WISQ_ENTREE="ligne;;ligne"` (tapé quand l'invite `WISQ_INVITE`, `# ` par
+  défaut, paraît), `WISQ_FIN=<texte>` (s'arrêter quand le port série l'a dit).
+
+**Comment c'est vérifié.**
+
+- Le corpus de chaîne du silicium (`x86-string-oracle.tsv`) juge les deux
+  cœurs Rust sur ses 47 formes et 376 cas, zéro écart ; les planchers passent
+  de 144 à 376. Douze tests de plus (3 623 au compte publié), dont un retiré.
+- Sabotages, chacun vu tomber puis restauré (`cmp` identique) : FS lu dans la
+  case de GS, 0x64 qui n'efface pas GS, `fs_base` oubliée par l'interprète,
+  `lea` qui prend FS, `movs` sous FS lu ; la longueur d'`addr32 call` sans son
+  préfixe, 0x67 lu partout ; la coupe rendue « refusée », CR2 sur
+  l'instruction, le code d'erreur de la première page ou d'une page absente ;
+  `repe` et `repne` inversés, la sortie sur ZF avant la décrémentation, `cmps`
+  à l'envers, `scas` sur RAX entier, `lods` pleine largeur, `scas` qui avance
+  RSI, RSI avancé avant la lecture de RDI, RCX décompté avant le corps, `f2`
+  lu comme `f3`, l'interprète sans sortie sur ZF ; le mode quatre absent ou
+  périodique ; aucun vidage, un vidage à chaque tour, la correspondance gardée ;
+  `send` sans la ligne quatre, ou à l'envers. Deux sabotages ont d'abord
+  **survécu** et ont fait écrire un test : `scas` sur RAX entier (le corpus n'a
+  aucun état où AL et RAX divergent sous la retenue) et la correspondance
+  gardée après le vidage.
+- Deux tests de `revoir` (`a_kernel_window_is_still_compared…`,
+  `under_page_table_isolation…`) tombaient : le vidage oubliait au `sysretq`
+  la région du noyau qu'ils regardent. Leur montage fait maintenant un premier
+  tour en anneau trois avant le reste ; leurs assertions n'ont pas bougé.
+- **Sur le vrai noyau**, Alpine 6.18.60 et son initramfs, `WISQ_RAM=256` :
+  - avec `rdinit=/bin/sh` : l'invite à 15 007 régions (50 s) ; puis, une fois
+    l'heure rendue et le cache vidé, des commandes tapées par `WISQ_ENTREE`
+    tournent — `busybox --install -s`, `uname -a` (« Linux (none) 6.18.60-0-virt
+    … x86_64 Linux »), `mount -t proc`, `head -3 /proc/meminfo`, `ls /`, `ps`
+    (des `fork` et des `exec`) : 20 722 régions, 4 000 000 de tours, 69 s ;
+  - avec l'`/init` d'Alpine tel quel : « Alpine Init 3.14.1-r0 », « Loading
+    boot drivers: ok », « Mounting boot media: failed » (7,37 s d'heure
+    invitée), « Launching initramfs emergency recovery shell », l'invite, et
+    `uname -a` et `ps | head -5` tapés y répondent — au tour 7,4 millions.
+    La course entière : 107 677 régions, puis le pilote tué par manque de
+    mémoire, 1 182 s de mur.
+  - les trois noyaux avec la sonde atteignent toujours `WISQ-USERSPACE-OK`,
+    comptés jusqu'à ce texte (`WISQ_FIN`) — régions traduites, vidage
+    compris :
+
+    | noyau | régions | tours | mur |
+    | --- | ---: | ---: | ---: |
+    | 6.6.142 | 10 267 | 499 496 | 25 s |
+    | 6.12.115 | 10 893 | 475 795 | 25 s |
+    | 6.18.60 | 11 997 | 1 621 364 | 30 s |
+
+    Une première course sans `WISQ_FIN` a été coupée à 1 500 s sur 6.6 sans
+    relevé : la sonde avait dit son texte, mais le noyau, qui panique quand
+    `/init` sort, attend maintenant dans `panic` au lieu de se figer sur un
+    `hlt`, et le pilote usait ses tours jusqu'au bout.
+
+**Ce qui reste.**
+
+- **La mémoire.** Le cache de code n'est jamais borné : chaque `exec` remet
+  ses bibliothèques à des adresses neuves (ASLR), et chaque programme se
+  retraduit. Le démarrage d'Alpine remplit les 15 Gio de ce conteneur vers
+  cent mille régions ; le relevé de 40 millions de tours a été tué à 99 658.
+  C'est le cache borné et par espace d'adressage de la feuille de route.
+- **Le texte réécrit après le premier passage en anneau trois** (un saut
+  statique basculé plus tard, `text_poke`) n'est vu par rien ; et une région
+  d'un programme peut encore servir un autre programme à la même adresse.
+  Le remède est de voir les écritures dans les pages de code.
+- Aucun des autres murs de la liste n'a été rencontré par Alpine jusqu'au
+  shell : `mov` moffs, `pop r/m`, `lahf`/`sahf`, `cmpxchg8b`, le SSE2 scalaire
+  restent refusés, nommés si on les atteint. `cb` (lret court) est refusé par
+  nom depuis #703.
+- Le préfixe FS n'est jugé par aucun oracle matériel (le harnais ne peut pas
+  poser la base de FS sans perdre son TLS) : il l'est contre l'interprète et
+  par des cas écrits d'après le manuel.
+- `blocks.set(…, null)` au vidage rend les anciens modules au ramasse-miettes ;
+  ce que ça libère n'est pas mesuré.
+
 ## 2026-11-14 — La réservation de seize octets tenue aussi quand sa première page est connue du tampon
 
 **Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, deux points,

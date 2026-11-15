@@ -500,8 +500,9 @@ const PIT_OUT_TWO = 0x20;
 /// date à partir d'un compte — qui n'aurait été juste que par accident.
 function counter() {
   return {
-    /// Le mode du 8254. Ce noyau n'en programme que deux : le zéro pour
-    /// l'étalonnage, le deux pour sa cadence périodique.
+    /// Le mode du 8254. Ce noyau en programme trois : le zéro pour
+    /// l'étalonnage, le deux pour sa cadence périodique, et le quatre pour
+    /// ses échéances une fois l'horloge passée en coup unique.
     mode: 0,
     /// Comment les octets se lisent et s'écrivent : 1 le bas seul, 2 le haut
     /// seul, 3 le bas puis le haut.
@@ -695,6 +696,11 @@ export function machine({
     }
     return Number((BigInt(reload) - steps) & 0xffffn);
   };
+  /// **Les deux coups uniques**, zéro et quatre : une seule ligne, au bout du
+  /// compte, et plus rien jusqu'au prochain chargement.
+  const oneShot = (mode) => mode === 0 || mode === 4;
+  /// Les modes dont la descente est écrite ici.
+  const counted = (mode) => oneShot(mode) || mode === 2 || mode === 6;
   /// Charger un diviseur : le compteur repart de son sommet, maintenant.
   const load = (chip, value) => {
     chip.reload = value & 0xffff;
@@ -780,11 +786,9 @@ export function machine({
     transmitPending: false,
     /// Ce qui est arrivé et que l'invité n'a pas encore lu.
     ///
-    /// **Rien ne tape encore.** La boucle hôte n'a pas d'entrée série, et la
-    /// seule chose qui remplisse cette file est la boucle de test du modem, où
-    /// l'octet émis revient par la réception. C'est par elle que passe la
-    /// deuxième question de la sonde, donc le chemin est emprunté — et non
-    /// défensif.
+    /// Deux choses la remplissent : la boucle de test du modem, où l'octet
+    /// émis revient par la réception — c'est par elle que passe la deuxième
+    /// question de la sonde —, et `send`, ce qu'on tape.
     input: [],
   };
   const dlab = () => (uart.lineControl & 0x80) !== 0;
@@ -900,11 +904,13 @@ export function machine({
   /// **Elle n'entre pas dans `wakeable`, et c'est raisonné plutôt que
   /// recopié.** Du côté Swift, `devicesArmed` compte le port parmi ce qui peut
   /// réveiller une machine arrêtée, et c'est juste là-bas : `serialInput` est
-  /// rempli du dehors, par une frappe. Ici rien ne tape, donc la condition du
-  /// port ne change **que** par une écriture de l'invité — et un invité arrêté
-  /// n'écrit pas. L'y mettre ferait tourner la boucle d'attente du `hlt`
-  /// jusqu'au bout de sa patience, un mébi-tour, sur une ligne qui ne montera
-  /// jamais. Le jour où une entrée série existera, les deux iront ensemble.
+  /// rempli du dehors, par une frappe. Ici la frappe — `send` — n'arrive
+  /// qu'**entre** deux `run`, jamais pendant : à l'intérieur d'un `run`, la
+  /// condition du port ne change donc que par une écriture de l'invité, et un
+  /// invité arrêté n'écrit pas. L'y mettre ferait tourner la boucle d'attente
+  /// du `hlt` jusqu'au bout de sa patience, un mébi-tour, sur une ligne qui
+  /// ne montera pas avant la fin du `run`. Ce qui a été tapé avant est déjà
+  /// dans la file quand le `run` commence, et `pendingIrq` le voit.
   const raiseSerial = () => {
     if (serialInterrupting()) pics.master.request |= 0x10;
     else pics.master.request &= ~0x10;
@@ -930,17 +936,26 @@ export function machine({
   /// n'avance qu'entre deux tours.
   ///
   /// **Les modes sont ceux que `countOf` descend déjà**, et pas un de plus :
-  /// deux et six rechargent, donc une ligne par tour de roue ; zéro est un
-  /// coup unique, donc une ligne quand le compte atteint zéro. Les modes
-  /// un, trois, quatre, cinq et sept ne sont descendus nulle part ici — les
-  /// faire lever une ligne serait les deviner.
+  /// deux et six rechargent, donc une ligne par tour de roue ; zéro et
+  /// quatre sont des coups uniques, donc une ligne quand le compte atteint
+  /// zéro. Les modes un, trois, cinq et sept ne sont descendus nulle part ici
+  /// — les faire lever une ligne serait les deviner.
+  ///
+  /// **Le mode quatre est celui de l'horloge sans tic de Linux.** Dès que le
+  /// noyau passe son horloge d'événements en coup unique — `pit_set_oneshot`,
+  /// `outb(0x38, 0x43)` —, chaque échéance est un mode quatre rechargé par
+  /// `pit_next_event`. Sa sortie descend d'un pas au bout du compte et
+  /// remonte : c'est ce front qui lève IRQ0, une fois, comme le mode zéro.
+  /// Il n'était pas modélisé, et Alpine s'arrêtait là sans le dire : plus
+  /// aucun tic, l'heure figée à 1,121 s, et le premier `sleep` du shell — un
+  /// `tcsetattr` qui attend que le port série se vide — ne revenait jamais.
   const raise8254 = () => {
     const chip = pits[0];
     if (!chip.loaded) return;
-    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return;
+    if (!counted(chip.mode)) return;
     const reload = BigInt(chip.reload === 0 ? 0x10000 : chip.reload);
     const steps = stepsOf(chip);
-    const turns = chip.mode === 0 ? (steps >= reload ? 1n : 0n) : steps / reload;
+    const turns = oneShot(chip.mode) ? (steps >= reload ? 1n : 0n) : steps / reload;
     if (turns > chip.raised) {
       chip.raised = turns;
       pics.master.request |= 1;
@@ -1009,9 +1024,10 @@ export function machine({
     // Un compteur que personne n'a programmé, ou dans un mode dont la
     // descente n'est pas modélisée, ne fera rien monter.
     if (!chip.loaded) return false;
-    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return false;
-    // Le mode zéro est un coup unique : tiré, il ne tirera plus.
-    if (chip.mode === 0 && chip.raised > 0n) return false;
+    if (!counted(chip.mode)) return false;
+    // Les modes zéro et quatre sont des coups uniques : tirés, ils ne
+    // tireront plus.
+    if (oneShot(chip.mode) && chip.raised > 0n) return false;
     // Et la ligne elle-même : masquée, ou en service sans acquittement, elle
     // ne réveillera personne — l'invité arrêté n'ira ni la démasquer ni
     // l'acquitter.
@@ -1225,6 +1241,12 @@ export function machine({
   /// Ce que la marche a rendu sur la première page de la dernière fenêtre
   /// que `read` n'a pas pu lire du tout : le code d'erreur plus un, ou zéro.
   let unread = 0n;
+  /// **Où la dernière lecture s'est arrêtée sur une page illisible après en
+  /// avoir lu d'autres**, et ce que la marche y a dit (le code plus un) ;
+  /// `null` quand elle s'est arrêtée ailleurs — au bout de la fenêtre ou de
+  /// la RAM. C'est ce que demande une instruction coupée par une page
+  /// absente : voir `CUT`.
+  let stopped = null;
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
@@ -1552,11 +1574,13 @@ export function machine({
     const out = new Uint8Array(window);
     let filled = 0;
     unread = 0n;
+    stopped = null;
     while (filled < window) {
       globals[SLOTS.fault].value = 0n;
       const at = physical(address + BigInt(filled), kind);
       if (at === null) {
         if (filled === 0) unread = globals[SLOTS.fault].value;
+        else stopped = { at: address + BigInt(filled), witness: globals[SLOTS.fault].value };
         break;
       }
       // **Le bout de la RAM est une borne dure** : la correspondance des
@@ -1599,12 +1623,27 @@ export function machine({
     if (bytes === MORE) {
       const wider = read(address, WIDER);
       if (wider === null) return UNMAPPED;
+      // **Ce qui a arrêté cette lecture-là**, gardé avant que la traduction
+      // ne relise quoi que ce soit.
+      const cut = stopped;
       lu = wider;
       bytes = await answered(
         () => translate(address, slot, wider),
         patience,
       );
-      if (bytes === MORE) return null;
+      if (bytes === MORE) {
+        // **La première instruction est coupée par une page qu'on ne peut
+        // pas lire.** Plus d'octets ne viendront pas : la page d'après est
+        // absente (ou interdite à l'anneau courant). Sur le silicium, c'est
+        // une faute de page sur le chargement de la **suite** de
+        // l'instruction — CR2 sur le premier octet de la page qui manque, RIP
+        // sur l'instruction — et le noyau pose la page. Alpine s'arrêtait
+        // là, « refusée » sur un `48` seul au dernier octet d'une page de
+        // busybox. Une coupe sans page qui manque — la fenêtre large lue en
+        // entier, ou le bout de la RAM — reste un refus.
+        if (cut !== null) return { coupe: cut.at, temoin: cut.witness };
+        return null;
+      }
     }
     if (bytes === MUTE || bytes === BROKEN) return bytes;
     if (!bytes) return null;
@@ -1710,6 +1749,61 @@ export function machine({
     return region;
   }
 
+  /// L'anneau trois a-t-il déjà été atteint ? C'est l'événement qui vide le
+  /// cache de code, une fois. Voir `oublierTout`.
+  let sawUser = false;
+  /// **Ce que les vidages ont jeté** : combien de vidages, et combien de
+  /// régions au total. Lecture ; rien ne se décide dessus.
+  const vidages = { fois: 0, regions: 0 };
+
+  /// **Oublier toutes les régions traduites**, une fois, au premier passage en
+  /// anneau trois.
+  ///
+  /// Le noyau réécrit son propre texte pendant qu'il démarre :
+  /// `apply_alternatives`, `apply_returns`, les sauts et appels statiques.
+  /// Une région traduite **avant** garde l'ancien code, et c'est ce qui
+  /// tourne — mesuré sur Alpine 6.18 : 2 001 régions dont la fenêtre a changé
+  /// (`revoir`, sous `nopti`). La plupart sont sans effet ici, l'ancien code
+  /// étant la forme générique. Une ne l'est pas : dans `error_entry`, la
+  /// bascule vers les tables du noyau (`SWITCH_TO_KERNEL_CR3`) est un `jmp`
+  /// par-dessus, que le noyau remplace par des `nop` quand l'isolation des
+  /// tables est en service. La région d'`asm_common_interrupt` est traduite à
+  /// la première interruption d'horloge, **avant** ce remplacement : une
+  /// interruption prise en anneau trois gardait les tables du programme, et
+  /// `sync_regs` fautait sur la pile du noyau — faute dans la faute, jusqu'à
+  /// ce que la pile descende dans l'IDT. Tant que l'horloge était figée, aucune
+  /// interruption ne tombait en anneau trois et rien ne le montrait.
+  ///
+  /// **Tout, et pas seulement ce qui a changé.** Un premier essai relisait
+  /// chaque région au moment d'y entrer et n'oubliait que celles dont les
+  /// octets avaient bougé : le cache devenait un mélange de code réécrit et de
+  /// code d'avant, et ce mélange est pire que l'un ou l'autre — une région
+  /// fraîche de `__x86_return_thunk` (devenu `jmp warn_thunk_thunk`) appelée
+  /// par une région ancienne qui n'avait pas été réécrite en `ret` :
+  /// « Unpatched return thunk in use », puis une oops. Et sous isolation des
+  /// tables, à ce moment-là, le texte du noyau ne se relit pas du tout.
+  ///
+  /// **Pourquoi à ce moment-là** : les réécritures du démarrage
+  /// (`alternative_instructions`) sont faites avant que le moindre programme
+  /// ne tourne, et rien ne passe en anneau trois avant elles. Le prix est une
+  /// seconde traduction de ce qui sert encore — quelques milliers de régions,
+  /// une fois.
+  ///
+  /// **Ce que ça ne couvre pas, et c'est dit** : une réécriture **après** —
+  /// un saut statique basculé plus tard, `text_poke` — n'est vue par rien. Le
+  /// remède complet est de voir les écritures dans les pages de code.
+  const oublierTout = () => {
+    vidages.fois += 1;
+    vidages.regions += known.size;
+    known.clear();
+    // La correspondance entière : plus aucune adresse ne mène à un ancien
+    // bloc, et le premier saut de module à module rend la main à l'hôte.
+    new Uint8Array(memory.buffer, base, SLOTS.tableSlots * SLOTS.tableEntry).fill(0);
+    // Les anciens blocs quittent la table, et leurs modules peuvent être
+    // rendus à la mémoire : rien ne les désigne plus.
+    for (let at = 0; at < next; at += 1) blocks.set(at, null);
+  };
+
   /// **Rendre la main à la page.**
   ///
   /// Une machine qui tourne occupe le seul fil de la page. Tant qu'elle ne
@@ -1777,6 +1871,18 @@ export function machine({
     globals,
     blocks,
     known,
+    /// **Taper sur le port série** : les octets entrent dans la file de
+    /// réception, dans l'ordre, et la ligne quatre monte si l'invité a
+    /// autorisé l'interruption de réception. Le shell d'un initramfs lit là.
+    ///
+    /// **À appeler entre deux `run`**, quand la machine a rendu la main — sur
+    /// un `hlt` sans rien pour la réveiller, typiquement : un shell qui
+    /// attend une ligne. Le prochain `run` délivre l'interruption avant de
+    /// regarder le `hlt`, et l'invité repart.
+    send(octets) {
+      for (const octet of octets) uart.input.push(octet & 0xff);
+      raiseSerial();
+    },
     /// **Lire la mémoire de l'invité à une adresse invitée**, à travers les
     /// tables de pages quand elles sont en service — le même lecteur que la
     /// traduction emploie pour aller chercher ses fenêtres d'octets, et pas un
@@ -1857,6 +1963,7 @@ export function machine({
     /// était à la première.** Lecture ; rien ne se décide dessus.
     materiel,
     surveillees,
+    vidages,
     uart,
     /// **Les régions dont les octets ont bougé sous elles.**
     ///
@@ -1939,6 +2046,10 @@ export function machine({
           dernier = performance.now();
         }
         const here = rip();
+        if (!sawUser && (BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n) === 3n) {
+          sawUser = true;
+          oublierTout();
+        }
         let region = known.get(here);
         if (region === undefined) {
           region = await install(here);
@@ -1986,6 +2097,29 @@ export function machine({
               PAGE_FAULT,
               pageFaultCode(unread === 0n ? 0n : unread - 1n, true),
               "une faute de page sur un chargement d'instruction",
+            );
+            if (why !== null) return { stopped: why, at: here };
+            continue;
+          }
+          if (region !== null && region.coupe !== undefined) {
+            // **La même faute que la précédente, sur la page d'après** : la
+            // suite de l'instruction. Le même garde-fou contre une
+            // délivrance qui ne mènerait nulle part.
+            unfetchable += 1;
+            if (unfetchable > 1) {
+              return {
+                stopped:
+                  "une faute pendant la délivrance d'une faute de page sur un " +
+                  "chargement d'instruction : le gestionnaire lui-même n'est pas " +
+                  "cartographié",
+                at: here,
+              };
+            }
+            globals[SLOTS.control + 1].value = BigInt.asIntN(64, region.coupe);
+            const why = deliver(
+              PAGE_FAULT,
+              pageFaultCode(region.temoin === 0n ? 0n : region.temoin - 1n, true),
+              "une faute de page sur la suite d'une instruction coupée",
             );
             if (why !== null) return { stopped: why, at: here };
             continue;

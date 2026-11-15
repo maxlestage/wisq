@@ -868,8 +868,11 @@ fn read_string_oracle() -> StringOracle {
     }
 }
 
-/// **Le plancher du corpus de chaîne pour l'interpréteur**, à mesurer.
-const STRING_CASES_FLOOR: usize = 144;
+/// **Le plancher du corpus de chaîne pour l'interpréteur : tout le corpus.**
+/// Il valait 144 — `movs` et `stos` seuls — tant que `lods`, `cmps` et `scas`
+/// ne se décodaient pas ; les quarante-sept formes se lisent depuis, et un cas
+/// qui cesserait d'être jugé ferait tomber ce test.
+const STRING_CASES_FLOOR: usize = 376;
 
 /// **L'interpréteur Rust jugé sur le corpus de chaîne.** Le jumeau de
 /// `every_accepted_instruction_matches_the_silicon_on_the_stack_corpus`, sur le

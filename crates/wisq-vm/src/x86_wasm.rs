@@ -136,9 +136,9 @@ pub const TABLE_COUNT: usize = 4;
 /// aller-retour : ça change réellement où il lit. C'est ce qui sépare cette
 /// tranche des trois précédentes.
 ///
-/// `FS_BASE` est rangée et rendue, **sans plus** : le décodeur refuse le
-/// préfixe `0x64`, donc aucune adresse n'en dépend aujourd'hui. Le dire vaut
-/// mieux que laisser croire à une symétrie avec GS.
+/// `FS_BASE` est consultée de la même façon à chaque adresse préfixée par
+/// `%fs:` — le TLS de l'espace utilisateur. Elle a été rangée et rendue sans
+/// servir tant que le décodeur refusait `0x64`.
 ///
 /// `KERNEL_GS_BASE` est la base que `swapgs` échange avec celle de GS — un
 /// noyau le fait à chaque entrée d'appel système.
@@ -1691,6 +1691,9 @@ impl Body {
         if address.gs {
             self.load(GS_SLOT).op(code::I64_ADD);
         }
+        if address.fs {
+            self.load(FS_BASE_SLOT).op(code::I64_ADD);
+        }
         if let Some(base) = address.base {
             self.load(base as usize).op(code::I64_ADD);
         }
@@ -2120,6 +2123,7 @@ impl Module {
                         // déplacement, pas la base : `%gs:x(%rip)` reste une
                         // adresse à laquelle la base du segment s'ajoutera.
                         gs: address.gs,
+                        fs: address.fs,
                     }),
                     ..*step
                 }
@@ -2162,7 +2166,11 @@ impl Module {
             survey.instructions += steps.len();
             for step in steps {
                 match step.op {
-                    Op::StringMove { repeat: true } | Op::StringStore { repeat: true } => {
+                    Op::StringMove { repeat: true }
+                    | Op::StringStore { repeat: true }
+                    | Op::StringLoad { repeat: true }
+                    | Op::StringCompare { repeat: Some(_) }
+                    | Op::StringScan { repeat: Some(_) } => {
                         survey.repeats += 1;
                     }
                     Op::Undefined => survey.always += 1,
@@ -4937,6 +4945,12 @@ impl Module {
         if matches!(step.op, Op::StringMove { .. } | Op::StringStore { .. }) {
             return Self::string(step, body);
         }
+        if matches!(
+            step.op,
+            Op::StringLoad { .. } | Op::StringCompare { .. } | Op::StringScan { .. }
+        ) {
+            return Self::string_read(step, body);
+        }
         // La pile écrit **deux** choses — RSP et la mémoire, ou RSP et un
         // registre — et sort donc de la machinerie à une destination.
         if matches!(
@@ -5190,7 +5204,12 @@ impl Module {
                 }
                 Op::Nop => unreachable!("ne rien faire sort avant"),
                 Op::Undefined => unreachable!("l'instruction indéfinie sort avant"),
-                Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
+                Op::DirectionFlag(_)
+                | Op::StringMove { .. }
+                | Op::StringStore { .. }
+                | Op::StringLoad { .. }
+                | Op::StringCompare { .. }
+                | Op::StringScan { .. } => {
                     unreachable!("la direction et les chaînes sortent avant")
                 }
                 Op::Push
@@ -5648,6 +5667,9 @@ impl Module {
             | Op::DirectionFlag(_)
             | Op::StringMove { .. }
             | Op::StringStore { .. }
+            | Op::StringLoad { .. }
+            | Op::StringCompare { .. }
+            | Op::StringScan { .. }
             | Op::Push
             | Op::Pop
             | Op::PushFlags
@@ -6835,6 +6857,113 @@ impl Module {
             body.store(Self::slot(1), |b| {
                 b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
             });
+            body.op(code::BRANCH);
+            unsigned(0, &mut body.bytes);
+            body.op(code::END); // loop
+            body.op(code::END); // block
+        }
+        Some(())
+    }
+
+    /// **Les trois chaînes qui lisent sans écrire : `lods`, `cmps`, `scas`.**
+    ///
+    /// La boucle de `string`, à deux différences près. **Les drapeaux** : `cmps`
+    /// et `scas` posent ceux de `cmp` — gauche moins droite, où la gauche est
+    /// la source (RSI) pour `cmps` et l'accumulateur pour `scas`, la droite
+    /// l'élément à RDI —, par le même calcul que `cmp` (`flags`, sur les cases
+    /// de travail 0 à 2). **La sortie sur ZF** : `repe` s'arrête quand ce
+    /// n'est plus égal, `repne` quand ça l'est, testé après la décrémentation
+    /// de RCX. Un `repne scasb` qui trouve son octet sort donc RDI un cran
+    /// après lui et RCX décompté, ce que `strlen` relit.
+    ///
+    /// Le pas vit dans la case 5 : les cases 0 à 2 sont celles de `flags`.
+    /// **Les deux lectures d'un tour passent avant tout changement** — ni
+    /// registre ni drapeau ne bouge avant elles —, donc une faute de page sur
+    /// la seconde laisse RCX, RSI, RDI et RFLAGS tels qu'au début du tour, et
+    /// le `rep` se rejoue où il s'était arrêté.
+    fn string_read(step: &Decoded, body: &mut Body) -> Option<()> {
+        let (repeat, until) = match step.op {
+            Op::StringLoad { repeat } => (repeat, None),
+            Op::StringCompare { repeat } | Op::StringScan { repeat } => (repeat.is_some(), repeat),
+            _ => unreachable!("seules les trois chaînes qui lisent arrivent ici"),
+        };
+        let width = step.width;
+        let size = width as u64;
+        let pace = Body::scratch(5);
+        body.store(pace, |b| {
+            b.constant(size.wrapping_neg());
+            b.constant(size);
+            b.load(RFLAGS_SLOT).constant(DF).op(code::I64_AND);
+            b.constant(0).op(code::I64_NE);
+            b.op(code::SELECT);
+        });
+        if repeat {
+            body.op(code::BLOCK).op(code::VOID);
+            body.op(code::LOOP).op(code::VOID);
+            // Le compte nul ne fait rien, pas même poser un drapeau.
+            body.load(Self::slot(1)).op(code::I64_EQZ);
+            body.op(code::BRANCH_IF);
+            unsigned(1, &mut body.bytes);
+        }
+        let advance = |slot: usize, body: &mut Body| {
+            body.store(slot, |b| {
+                b.load(slot).load(pace).op(code::I64_ADD);
+            });
+        };
+        if let Op::StringLoad { .. } = step.op {
+            body.store(Body::scratch(1), |b| {
+                b.load(Self::slot(6)).peek(width);
+            });
+            Self::put(0, width, body, |b| {
+                b.load(Body::scratch(1));
+            });
+            advance(Self::slot(6), body);
+        } else {
+            let scans = matches!(step.op, Op::StringScan { .. });
+            let mask = width.mask();
+            body.store(Body::scratch(0), |b| {
+                if scans {
+                    b.load(Self::slot(0)).constant(mask).op(code::I64_AND);
+                } else {
+                    b.load(Self::slot(6)).peek(width);
+                }
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load(Self::slot(7)).peek(width);
+            });
+            body.store(Body::scratch(2), |b| {
+                b.load(Body::scratch(0))
+                    .load(Body::scratch(1))
+                    .op(code::I64_SUB)
+                    .constant(mask)
+                    .op(code::I64_AND);
+            });
+            // Les drapeaux de `cmp`, à la largeur de la chaîne.
+            let compare = Decoded {
+                op: Op::Cmp,
+                ..*step
+            };
+            Self::flags(&compare, mask, width.sign(), body);
+            if !scans {
+                advance(Self::slot(6), body);
+            }
+            advance(Self::slot(7), body);
+        }
+        if repeat {
+            body.store(Self::slot(1), |b| {
+                b.load(Self::slot(1)).constant(1).op(code::I64_SUB);
+            });
+            if let Some(while_equal) = until {
+                // **Sortir sur ZF** : vers le `block`, une profondeur de un.
+                body.load(RFLAGS_SLOT).constant(ZF).op(code::I64_AND);
+                if while_equal {
+                    body.op(code::I64_EQZ);
+                } else {
+                    body.constant(0).op(code::I64_NE);
+                }
+                body.op(code::BRANCH_IF);
+                unsigned(1, &mut body.bytes);
+            }
             body.op(code::BRANCH);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop

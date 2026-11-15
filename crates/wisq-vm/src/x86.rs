@@ -319,6 +319,9 @@ pub struct Cpu {
     /// ce qui rend `%gs:x` équivalent à `x` — la conduite d'un noyau qui n'a
     /// pas encore installé ses variables par cœur.
     pub gs_base: u64,
+    /// **La base du segment FS**, au même titre : posée par l'hôte, zéro par
+    /// défaut.
+    pub fs_base: u64,
     /// **Les registres de contrôle**, par leur numéro. Cinq existent — 0, 2, 3,
     /// 4 et 8 — et le tableau en porte neuf pour que l'indice *soit* le numéro
     /// : une table compacte demanderait une correspondance, et c'est
@@ -937,6 +940,23 @@ pub enum Op {
     StringStore {
         repeat: bool,
     },
+    /// **`lods` : RSI vers l'accumulateur.** La forme répétée existe et ne
+    /// sert à rien — elle garde le dernier élément — mais elle se lit.
+    StringLoad {
+        repeat: bool,
+    },
+    /// **`cmps` : comparer RSI à RDI, et poser les drapeaux de `cmp`.**
+    /// `repeat` vaut `Some(true)` pour `repe` (on continue tant que c'est
+    /// égal), `Some(false)` pour `repne` (tant que c'est différent) : c'est le
+    /// `memcmp` et le `strchr` de busybox compilé en `-Os`.
+    StringCompare {
+        repeat: Option<bool>,
+    },
+    /// **`scas` : comparer l'accumulateur à RDI.** `repne scasb` est le
+    /// `strlen` d'un code qui optimise la taille. Même `repeat` que `cmps`.
+    StringScan {
+        repeat: Option<bool>,
+    },
     /// **`rcl` et `rcr`** : la rotation passe **à travers** la retenue. Le
     /// registre tourné fait donc la largeur **plus un bit** — soixante-cinq
     /// pour un quadruple mot — et c'est ce qui les sépare de `rol` et `ror`.
@@ -1102,10 +1122,23 @@ pub struct Address {
     /// une adresse plausible et fausse ; le refuser rejetait, à la mesure sur
     /// un vrai noyau Alpine, 18 795 instructions.
     ///
-    /// **FS n'a pas d'équivalent ici**, et le décodeur le refuse : l'oracle
-    /// matériel ne peut pas poser sa base sans se détruire lui-même, donc
-    /// aucune conduite ne serait vérifiée.
+    /// **FS est porté à côté, par `fs`** : c'est le segment de l'espace
+    /// utilisateur, celui du TLS et du canari de pile. Les deux ne sont
+    /// jamais vrais ensemble — le dernier préfixe de segment lu gagne, comme
+    /// sur le silicium.
     pub gs: bool,
+    /// **Le préfixe de segment FS.** Sa base est celle que `wrmsr` pose dans
+    /// `FS_BASE` (et que `arch_prctl(ARCH_SET_FS)` fait poser par le noyau) :
+    /// `mov %fs:0x0,%rdx` lit le pointeur de fil de musl, `%fs:0x28` le canari
+    /// de pile de tout programme compilé avec `-fstack-protector`. Le refuser
+    /// arrêtait Alpine à la première fonction de `ld-musl` qui demande son
+    /// fil (`__dls3`).
+    ///
+    /// L'oracle matériel ne le juge pas : son harnais ne peut pas poser la
+    /// base de FS sans perdre son propre TLS. Il est jugé contre l'interprète
+    /// et par des cas écrits d'après le manuel — la base s'ajoute exactement
+    /// comme celle de GS, que l'oracle juge.
+    pub fs: bool,
 }
 
 /// Une instruction décodée, prête à rejouer sans relire d'octets.
@@ -1385,6 +1418,9 @@ impl Cpu {
         // en porte un cas exprès, parce que « personne » n'est pas « jamais ».
         if address.gs {
             value = value.wrapping_add(self.gs_base);
+        }
+        if address.fs {
+            value = value.wrapping_add(self.fs_base);
         }
         if address.relative {
             return value.wrapping_add(after);
@@ -2033,6 +2069,90 @@ impl Cpu {
         }
     }
 
+    /// **Les trois chaînes qui lisent sans écrire : `lods`, `cmps`, `scas`.**
+    ///
+    /// Les règles de `string` valent ici — le sens vient de DF, le pas est la
+    /// largeur, un compte nul ne fait rien — plus une : **`repe` et `repne`
+    /// s'arrêtent aussi sur ZF**, testé *après* la décrémentation de RCX. Un
+    /// `repne scasb` qui trouve son octet sort donc avec RDI un cran après lui
+    /// et RCX déjà décompté, ce que `strlen` en `-Os` relit pour calculer la
+    /// longueur.
+    ///
+    /// `cmps` compare la source (RSI) à la destination (RDI) — `cmp` de RSI
+    /// moins RDI, dans cet ordre, et c'est la retenue qui le dit. `scas`
+    /// compare l'accumulateur à RDI. Les deux lectures passent avant tout
+    /// changement : une faute sur la seconde laisse la machine comme avant le
+    /// tour.
+    fn string_read(&mut self, instruction: &Decoded) {
+        let width = instruction.width;
+        let size = width as u64;
+        let step = if self.flags.read() & DF != 0 {
+            size.wrapping_neg()
+        } else {
+            size
+        };
+        let (repeat, until) = match instruction.op {
+            Op::StringLoad { repeat } => (repeat, None),
+            Op::StringCompare { repeat } | Op::StringScan { repeat } => (repeat.is_some(), repeat),
+            _ => unreachable!("seules les trois chaînes qui lisent arrivent ici"),
+        };
+        loop {
+            if repeat && self.regs[1] == 0 {
+                return;
+            }
+            match instruction.op {
+                Op::StringLoad { .. } => {
+                    let Ok(value) = self.read_memory(self.regs[6], width) else {
+                        self.faulted = true;
+                        return;
+                    };
+                    self.set(0, width, false, value);
+                    self.regs[6] = self.regs[6].wrapping_add(step);
+                }
+                _ => {
+                    let scans = matches!(instruction.op, Op::StringScan { .. });
+                    let left = if scans {
+                        self.get(0, width, false)
+                    } else {
+                        let Ok(value) = self.read_memory(self.regs[6], width) else {
+                            self.faulted = true;
+                            return;
+                        };
+                        value
+                    };
+                    let Ok(right) = self.read_memory(self.regs[7], width) else {
+                        self.faulted = true;
+                        return;
+                    };
+                    self.flags = Flags {
+                        op: FlagOp::Sub,
+                        left,
+                        right,
+                        result: left.wrapping_sub(right),
+                        width,
+                        carry_in: 0,
+                        arithmetic: 0,
+                        other: self.flags.other,
+                    };
+                    if !scans {
+                        self.regs[6] = self.regs[6].wrapping_add(step);
+                    }
+                    self.regs[7] = self.regs[7].wrapping_add(step);
+                }
+            }
+            if !repeat {
+                return;
+            }
+            self.regs[1] = self.regs[1].wrapping_sub(1);
+            if let Some(while_equal) = until {
+                let equal = self.flags.read() & ZF != 0;
+                if equal != while_equal {
+                    return;
+                }
+            }
+        }
+    }
+
     /// **Un bit, lu dans la retenue et parfois changé.**
     ///
     /// Trois formes, et la troisième n'est pas une variante des deux autres :
@@ -2211,6 +2331,13 @@ impl Cpu {
             self.string(instruction);
             return;
         }
+        if matches!(
+            instruction.op,
+            Op::StringLoad { .. } | Op::StringCompare { .. } | Op::StringScan { .. }
+        ) {
+            self.string_read(instruction);
+            return;
+        }
         // **L'instruction indéfinie, avant tout le reste.** Elle ne calcule
         // rien, n'écrit rien, et n'avance pas : le processeur lève une
         // exception, et ce cœur pose une faute que l'hôte lira.
@@ -2326,6 +2453,7 @@ impl Cpu {
                 // vérifie sur le silicium.
                 let address = Address {
                     gs: false,
+                    fs: false,
                     ..address
                 };
                 let value = self.effective_address(&address, after);
@@ -2629,7 +2757,12 @@ impl Cpu {
             Op::ReadControlRegister { .. } | Op::WriteControlRegister { .. } => {
                 unreachable!("les registres de contrôle sortent avant, exécutés")
             }
-            Op::DirectionFlag(_) | Op::StringMove { .. } | Op::StringStore { .. } => {
+            Op::DirectionFlag(_)
+            | Op::StringMove { .. }
+            | Op::StringStore { .. }
+            | Op::StringLoad { .. }
+            | Op::StringCompare { .. }
+            | Op::StringScan { .. } => {
                 unreachable!("la direction et les chaînes sortent avant")
             }
             Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
@@ -2739,6 +2872,12 @@ struct Prefixes {
     /// en a un : sur une instruction sans accès mémoire il est légal et sans
     /// effet, et le processeur ne s'en plaint pas.
     segment_gs: bool,
+    /// Le préfixe 0x64 a été lu : le même sens que 0x65, pour FS. Lire l'un
+    /// efface l'autre — le dernier préfixe de segment décide.
+    segment_fs: bool,
+    /// **Le préfixe 0x67, la taille d'adresse.** Il n'est accepté que devant
+    /// `call` et `jmp` relatifs, où il ne change rien : voir son bras.
+    address_size: bool,
 }
 
 impl Prefixes {
@@ -2866,6 +3005,16 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // produit. Le sens du préfixe est porté par l'adresse, pas ici.
             0x65 => {
                 prefixes.segment_gs = true;
+                prefixes.segment_fs = false;
+                prefixes.rex = None;
+                at += 1;
+            }
+            // **Le préfixe de segment FS**, le jumeau du précédent : le TLS de
+            // l'espace utilisateur. busybox en porte 1 524 dans son seul
+            // `.text`, le canari de pile de chaque fonction qui a un tableau.
+            0x64 => {
+                prefixes.segment_fs = true;
+                prefixes.segment_gs = false;
                 prefixes.rex = None;
                 at += 1;
             }
@@ -2876,6 +3025,22 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // plein. Le jour où wisq aura plusieurs fils d'exécution invités,
             // ce bras devra porter une vraie sémantique.
             0xf0 => {
+                prefixes.rex = None;
+                at += 1;
+            }
+            // **La taille d'adresse.** Sur un accès mémoire elle ramène
+            // l'adresse à trente-deux bits, et sur une chaîne elle fait
+            // compter ECX, ESI et EDI : ce décodeur ne porte ni l'un ni
+            // l'autre, et le préfixe est refusé partout — sauf devant un
+            // `call` ou un `jmp` relatif, où le silicium l'ignore (une
+            // branche proche n'a pas d'adresse à calculer, sa taille
+            // d'opérande est fixée à soixante-quatre bits). C'est la forme
+            // que l'éditeur de liens écrit quand il relâche
+            // `call *f@GOTPCREL(%rip)` (six octets) en `addr32 call f` (six
+            // aussi) : 45 264 fois dans `libcrypto.so.3` d'Alpine, 80 dans
+            // busybox, et le premier mur de `libcrypto` après FS.
+            0x67 => {
+                prefixes.address_size = true;
                 prefixes.rex = None;
                 at += 1;
             }
@@ -2890,9 +3055,13 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
 
     let opcode = *bytes.get(at)?;
     at += 1;
-    // `f2` devant autre chose qu'une instruction vectorielle : `repne`, ou
-    // rien. Ni l'un ni l'autre n'est lu ici.
-    if prefixes.repeat_not && opcode != 0x0f {
+    // `f2` n'est lu que devant la page vectorielle, où il est un octet
+    // d'opcode, et devant `cmps` et `scas`, où il est `repne`. Partout
+    // ailleurs — `repne movs` compris — il est refusé plutôt qu'avalé.
+    if prefixes.repeat_not && !matches!(opcode, 0x0f | 0xa6 | 0xa7 | 0xae | 0xaf) {
+        return None;
+    }
+    if prefixes.address_size && !matches!(opcode, 0xe8 | 0xe9) {
         return None;
     }
 
@@ -3831,6 +4000,15 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
         // préfixe 0xF3 en fait la forme répétée, et c'est celle-là que le
         // noyau met partout.
         0xa4 | 0xa5 | 0xaa | 0xab => {
+            // **Un segment sur la source n'est pas lu, il est refusé.** FS ou
+            // GS devant `movs` déplace la source (DS:RSI), pas la
+            // destination, et la boucle de l'émetteur lit RSI tel quel :
+            // l'accepter copierait depuis la mauvaise adresse sans le dire.
+            // `stos` n'a pas de source, et ES:RDI ne se change pas : le
+            // préfixe y est sans effet.
+            if opcode < 0xaa && (prefixes.segment_fs || prefixes.segment_gs) {
+                return None;
+            }
             let width = prefixes.width(opcode & 1 == 0);
             let repeat = prefixes.repeat;
             Some(Decoded {
@@ -3838,6 +4016,45 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     Op::StringMove { repeat }
                 } else {
                     Op::StringStore { repeat }
+                },
+                length: at,
+                ..Decoded::nothing(width)
+            })
+        }
+        // **Les trois chaînes qui lisent sans écrire** : `lods` (ac, ad),
+        // `cmps` (a6, a7), `scas` (ae, af). Le bit bas dit l'octet contre la
+        // largeur des préfixes, comme pour `movs`.
+        //
+        // **`f3` et `f2` ne disent pas la même chose ici** : devant `cmps` et
+        // `scas`, `f3` est `repe` et `f2` `repne` — la répétition s'arrête
+        // aussi sur ZF. Les deux à la fois ne se lisent pas : le silicium
+        // prend le dernier, et ce décodeur ne garde pas l'ordre. Devant
+        // `lods`, `f2` n'a pas de sens défini, et il est refusé plus haut.
+        //
+        // Un segment FS ou GS déplacerait la source (DS:RSI) de `lods` et de
+        // `cmps` : refusé, comme pour `movs`. `scas` n'a que ES:RDI, que rien
+        // ne change.
+        0xa6 | 0xa7 | 0xac | 0xad | 0xae | 0xaf => {
+            let scans = opcode >= 0xae;
+            if !scans && (prefixes.segment_fs || prefixes.segment_gs) {
+                return None;
+            }
+            if prefixes.repeat && prefixes.repeat_not {
+                return None;
+            }
+            let width = prefixes.width(opcode & 1 == 0);
+            let repeat = match (prefixes.repeat, prefixes.repeat_not) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            };
+            Some(Decoded {
+                op: match opcode {
+                    0xa6 | 0xa7 => Op::StringCompare { repeat },
+                    0xac | 0xad => Op::StringLoad {
+                        repeat: prefixes.repeat,
+                    },
+                    _ => Op::StringScan { repeat },
                 },
                 length: at,
                 ..Decoded::nothing(width)
@@ -4483,6 +4700,7 @@ fn read_address(bytes: &[u8], at: &mut usize, prefixes: Prefixes, modrm: u8) -> 
     let mut address = Address {
         scale: 1,
         gs: prefixes.segment_gs,
+        fs: prefixes.segment_fs,
         ..Address::default()
     };
 
@@ -5086,9 +5304,10 @@ mod tests {
     /// **Le préfixe `f2` n'est pas lu en général**, exprès : `f2 0f 10` est
     /// `movsd`, et un `f2` avalé sans être compris rendrait `movups` — une
     /// instruction plausible et fausse. Depuis le socle SSE, il est lu **comme
-    /// octet d'opcode** de la page vectorielle, et nulle part ailleurs :
-    /// `movsd` se décode en `movsd`, et `repne movs`, `addsd` ou le reste de
-    /// la page `0f 01` restent refusés.
+    /// octet d'opcode** de la page vectorielle ; et depuis les chaînes qui
+    /// comparent, comme `repne` devant `cmps` et `scas`, où il a un sens
+    /// défini. `movsd` se décode en `movsd`, et `repne movs`, `addsd` ou le
+    /// reste de la page `0f 01` restent refusés.
     #[test]
     fn lkgs_is_read_and_the_rest_of_the_f2_page_stays_refused() {
         let step = decode(&[0xf2, 0x0f, 0x00, 0xf7]).expect("lkgs %edi se décode");
@@ -5992,6 +6211,280 @@ mod tests {
         assert!(!plain.memory.expect("mémoire").gs);
     }
 
+    /// **`%fs:` ajoute sa base à lui, et le dernier préfixe de segment gagne.**
+    ///
+    /// `64 48 8b 14 25 00 00 00 00` — `mov %fs:0x0,%rdx` — est le mur où Alpine
+    /// s'arrêtait : `__dls3`, dans `ld-musl`, y lit le pointeur de son fil. La
+    /// confusion à écarter est la même que pour GS, plus une : prendre la
+    /// base de GS pour celle de FS rendrait un pointeur plausible dès que les
+    /// deux sont posées, ce qui est le cas de tout programme sous Linux.
+    ///
+    /// Quand deux préfixes de segment se suivent, le silicium prend le
+    /// dernier (manuel AMD, vol. 3, § 1.2.4) ; et `lea` n'en prend aucun.
+    #[test]
+    fn the_fs_prefix_adds_its_own_base_and_the_last_segment_wins() {
+        let step = decode(&[0x64, 0x48, 0x8b, 0x14, 0x25, 0x00, 0x00, 0x00, 0x00])
+            .expect("le préfixe FS se lit");
+        let address = step.memory.expect("un opérande mémoire");
+        assert!(
+            address.fs,
+            "le segment FS doit être porté jusqu'à l'exécution"
+        );
+        assert!(!address.gs, "et ce n'est pas GS");
+        assert_eq!((address.base, address.index), (None, None));
+        assert_eq!(step.length, 9);
+        assert_eq!(step.dst, 2, "la destination est RDX");
+
+        let window: Vec<u8> = (0..64u8).map(|byte| 0x10 + byte).collect();
+        let mut cpu = Cpu {
+            fs_base: 0x3000_1008,
+            gs_base: 0x3000_1020,
+            memory: GuestMemory {
+                base: 0x3000_1000,
+                bytes: window.clone(),
+            },
+            ..Default::default()
+        };
+        cpu.execute(&step);
+        assert!(!cpu.faulted, "l'accès tombe dans la fenêtre");
+        assert_eq!(
+            cpu.regs[2], 0x1f1e_1d1c_1b1a_1918,
+            "l'octet lu est celui de fs_base, pas celui de gs_base ni de 0"
+        );
+
+        // **Le dernier préfixe de segment gagne**, dans les deux ordres.
+        for (bytes, fs, gs) in [
+            (
+                &[0x65u8, 0x64, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00][..],
+                true,
+                false,
+            ),
+            (
+                &[0x64, 0x65, 0x48, 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00][..],
+                false,
+                true,
+            ),
+        ] {
+            let address = decode(bytes)
+                .expect("deux préfixes de segment")
+                .memory
+                .unwrap();
+            assert_eq!((address.fs, address.gs), (fs, gs), "{bytes:02x?}");
+        }
+
+        // **`lea` ne passe pas par la segmentation** : `lea %fs:0x28,%rdx`
+        // rend 0x28.
+        let lea = decode(&[0x64, 0x48, 0x8d, 0x14, 0x25, 0x28, 0x00, 0x00, 0x00]).expect("lea");
+        cpu.execute(&lea);
+        assert_eq!(cpu.regs[2], 0x28, "lea ignore la base de FS");
+
+        // **Une source de `movs` sous FS ou GS est refusée**, pas lue sans
+        // segment ; `stos` n'a pas de source et garde son préfixe sans effet.
+        for prefix in [0x64u8, 0x65] {
+            assert_eq!(decode(&[prefix, 0xa4]), None, "{prefix:02x} a4");
+            assert_eq!(
+                decode(&[prefix, 0xf3, 0x48, 0xa5]),
+                None,
+                "{prefix:02x} rep movsq"
+            );
+            assert!(decode(&[prefix, 0xaa]).is_some(), "{prefix:02x} aa");
+        }
+    }
+
+    /// **`addr32 call` est un `call`, et la taille d'adresse est refusée
+    /// partout ailleurs.**
+    ///
+    /// `67 e8 18 25 01 00` est le mur de `libcrypto.so.3` d'Alpine, juste après
+    /// celui du préfixe FS : l'éditeur de liens remplace un appel par la GOT
+    /// (`ff 15`, six octets) par un appel direct de même longueur, et comble
+    /// l'octet de trop avec le préfixe de taille d'adresse. Une branche proche
+    /// n'a pas d'adresse à calculer : le préfixe n'y change rien, mais il
+    /// **compte dans la longueur**, et l'adresse de retour est donc six octets
+    /// après le début, pas cinq.
+    ///
+    /// Ailleurs il change l'adresse (trente-deux bits) ou les registres d'une
+    /// chaîne (ECX, ESI, EDI), et rien de cela n'est porté : refus.
+    #[test]
+    fn an_address_size_prefix_is_read_before_a_relative_call_and_refused_elsewhere() {
+        let call = decode(&[0x67, 0xe8, 0x18, 0x25, 0x01, 0x00]).expect("addr32 call");
+        assert_eq!(call.op, Op::Call);
+        assert_eq!(call.length, 6, "le préfixe compte dans la longueur");
+        assert_eq!(call.imm, 0x12518);
+        let jump = decode(&[0x67, 0xe9, 0xfb, 0xff, 0xff, 0xff]).expect("addr32 jmp");
+        assert_eq!(jump.op, Op::Jump(None));
+        assert_eq!(jump.length, 6);
+        assert_eq!(jump.imm as i64, -5);
+
+        // L'adresse de retour empilée est celle d'après les six octets.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            memory: GuestMemory {
+                base: 0x3000_1000,
+                bytes: vec![0; 64],
+            },
+            ..Default::default()
+        };
+        cpu.regs[4] = 0x3000_1040;
+        cpu.execute(&call);
+        assert!(!cpu.faulted);
+        assert_eq!(
+            cpu.rip,
+            0x3000_0006 + 0x12518,
+            "la cible se compte depuis la fin"
+        );
+        assert_eq!(cpu.regs[4], 0x3000_1038);
+        assert_eq!(
+            cpu.memory.bytes[0x38..0x40],
+            0x3000_0006u64.to_le_bytes(),
+            "l'adresse de retour est après le préfixe et les cinq octets"
+        );
+
+        for (bytes, what) in [
+            (&[0x67, 0x8b, 0x00][..], "mov (%eax),%eax"),
+            (&[0x67, 0x48, 0x8d, 0x04, 0x08][..], "lea (%eax,%ecx),%rax"),
+            (&[0x67, 0xf3, 0xa4][..], "rep movsb sur ECX/ESI/EDI"),
+            (&[0x67, 0xe3, 0x00][..], "jecxz"),
+            (
+                &[0x67, 0xeb, 0x00][..],
+                "jmp court : pas produit par l'éditeur de liens",
+            ),
+            (&[0x67, 0x0f, 0x1f, 0x00][..], "nop long en mémoire"),
+        ] {
+            assert_eq!(decode(bytes), None, "{what}");
+        }
+    }
+
+    /// **`lods`, `cmps` et `scas` se lisent, avec `repe` et `repne`.**
+    ///
+    /// busybox est compilé en `-Os`, et `-Os` écrit `repne scasb` pour
+    /// `strlen` et `repe cmpsb` pour `memcmp`. Le piège est le préfixe : `f3`
+    /// est `rep` devant `movs` mais `repe` devant `cmps`, et `f2`, refusé
+    /// devant `movs`, est `repne` ici. Le corpus de chaîne juge ce qu'elles
+    /// calculent ; ce test juge ce que le décodeur en dit.
+    #[test]
+    fn the_strings_that_read_decode_with_their_repeat() {
+        for (bytes, op, width) in [
+            (&[0xac][..], Op::StringLoad { repeat: false }, Width::Byte),
+            (
+                &[0x48, 0xad][..],
+                Op::StringLoad { repeat: false },
+                Width::Qword,
+            ),
+            (
+                &[0xf3, 0xad][..],
+                Op::StringLoad { repeat: true },
+                Width::Dword,
+            ),
+            (&[0xa6][..], Op::StringCompare { repeat: None }, Width::Byte),
+            (
+                &[0xf3, 0xa6][..],
+                Op::StringCompare { repeat: Some(true) },
+                Width::Byte,
+            ),
+            (
+                &[0x66, 0xf2, 0xa7][..],
+                Op::StringCompare {
+                    repeat: Some(false),
+                },
+                Width::Word,
+            ),
+            (
+                &[0xf2, 0xae][..],
+                Op::StringScan {
+                    repeat: Some(false),
+                },
+                Width::Byte,
+            ),
+            (
+                &[0xf3, 0x48, 0xaf][..],
+                Op::StringScan { repeat: Some(true) },
+                Width::Qword,
+            ),
+            (&[0xaf][..], Op::StringScan { repeat: None }, Width::Dword),
+            // `scas` n'a pas de source à déplacer : FS n'y change rien.
+            (
+                &[0x64, 0xae][..],
+                Op::StringScan { repeat: None },
+                Width::Byte,
+            ),
+        ] {
+            let step = decode(bytes).unwrap_or_else(|| panic!("{bytes:02x?} se lit"));
+            assert_eq!((step.op, step.width), (op, width), "{bytes:02x?}");
+            assert_eq!(step.length, bytes.len(), "{bytes:02x?} : longueur");
+            assert_eq!(step.memory, None, "{bytes:02x?} : RSI et RDI, pas un ModRM");
+        }
+        for (bytes, what) in [
+            (&[0xf2, 0xac][..], "repne lods n'a pas de sens défini"),
+            (
+                &[0xf2, 0xf3, 0xa6][..],
+                "deux répétitions : l'ordre n'est pas gardé",
+            ),
+            (
+                &[0x64, 0xa6][..],
+                "cmps sous FS : la source changerait de segment",
+            ),
+            (&[0x65, 0xac][..], "lods sous GS"),
+        ] {
+            assert_eq!(decode(bytes), None, "{what}");
+        }
+    }
+
+    /// **`repne scasb` s'arrête sur l'octet trouvé, RCX déjà décompté.**
+    ///
+    /// C'est le `strlen` de `-Os` : `xor %eax,%eax ; mov $-1,%rcx ; repne
+    /// scasb ; not %rcx ; dec %rcx`. La longueur se lit dans RCX, qui doit
+    /// donc compter aussi le tour qui a trouvé le zéro, et RDI se pose un cran
+    /// après lui. Un compte nul ne pose aucun drapeau.
+    #[test]
+    fn repne_scasb_stops_past_the_byte_it_found_with_rcx_counted() {
+        let mut bytes = b"wisq\0rest".to_vec();
+        bytes.resize(64, 0xee);
+        let mut cpu = Cpu {
+            memory: GuestMemory {
+                base: 0x3000_1000,
+                bytes,
+            },
+            ..Default::default()
+        };
+        cpu.regs[1] = u64::MAX;
+        cpu.regs[7] = 0x3000_1000;
+        let scan = decode(&[0xf2, 0xae]).expect("repne scasb");
+        cpu.execute(&scan);
+        assert!(!cpu.faulted);
+        assert_eq!(cpu.regs[7], 0x3000_1005, "RDI un cran après le zéro");
+        assert_eq!(
+            !cpu.regs[1] - 1,
+            4,
+            "not ; dec rend la longueur de « wisq »"
+        );
+        assert_ne!(cpu.flags.read() & ZF, 0, "ZF dit qu'il a trouvé");
+
+        // `repe cmpsb` sur « wisq » contre « wiso » : trois égaux, le
+        // quatrième différent, et la retenue dit q > o.
+        let mut bytes = b"wisq".to_vec();
+        bytes.resize(32, 0);
+        bytes.extend_from_slice(b"wiso");
+        bytes.resize(64, 0);
+        cpu.memory.bytes = bytes;
+        cpu.regs[1] = 8;
+        cpu.regs[6] = 0x3000_1000;
+        cpu.regs[7] = 0x3000_1020;
+        cpu.execute(&decode(&[0xf3, 0xa6]).expect("repe cmpsb"));
+        assert_eq!(cpu.regs[1], 4, "quatre tours, le dernier compté");
+        assert_eq!(cpu.regs[6], 0x3000_1004);
+        assert_eq!(
+            cpu.flags.read() & (ZF | CF),
+            0,
+            "différent, et q - o sans retenue"
+        );
+
+        // Un compte nul : rien ne bouge, pas même les drapeaux.
+        let before = cpu.flags.read();
+        cpu.regs[1] = 0;
+        cpu.execute(&decode(&[0xf3, 0xa6]).expect("repe cmpsb"));
+        assert_eq!((cpu.regs[6], cpu.flags.read()), (0x3000_1004, before));
+    }
+
     /// **Les quatre segments que le mode 64 bits a vidés.**
     ///
     /// CS, SS, DS et ES ont une base forcée à zéro : les préfixes qui les
@@ -6414,14 +6907,6 @@ mod tests {
             crate::x86_wasm::Module::region(&bytes, 0x3000_0000, 0).is_some(),
             "la région doit se compiler : ce qui suit le `ud2` n'est pas atteint"
         );
-    }
-
-    /// **FS est refusé, et c'est délibéré.** L'oracle ne peut pas le poser : sa
-    /// base est celle des variables de fil de la glibc, et le canari de pile
-    /// vit derrière. Un préfixe sans oracle serait une conduite devinée.
-    #[test]
-    fn the_fs_prefix_is_refused_for_want_of_an_oracle() {
-        assert!(decode(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00]).is_none());
     }
 
     /// **`cmpxchg16b` se lit avec REX.W, dans sa forme mémoire, et rien d'autre
