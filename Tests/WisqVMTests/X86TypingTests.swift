@@ -212,6 +212,35 @@ final class X86TypingTests: XCTestCase {
         XCTAssertEqual(held, [], "le clavier de l'invité finit au repos")
     }
 
+    /// **L'annulation jette aussi ce qui attend entre les deux fils.** Un
+    /// collage tout juste admis par la machine n'est pas encore passé au
+    /// contrôleur : si la tranche suivante le lui passait quand même, le texte
+    /// annulé s'écrirait, et Ctrl-C frappé ensuite attendrait derrière lui
+    /// (relevé par le contrôle adverse : sans `typingHandoff` vidé dans
+    /// `abandonTyping`, aucun test ne tombait).
+    func testCancellingDropsWhatTheMachineHadNotHandedOverYet() {
+        let pc = machine()
+        var typist = ScreenTypist()
+        typist.type(String(repeating: "Wisq ", count: 10_000), on: pc)
+        XCTAssertEqual(pc.typingHandoff.count, limit, "la file entre les fils est pleine, rien n'est passé")
+        typist.cancel(on: pc)
+        XCTAssertEqual(pc.typingHandoff.count, 0)
+        typist.press(X86Keystrokes.key(.control("c")), on: pc)
+        XCTAssertTrue(typist.waiting.isEmpty, "Ctrl-C entre aussitôt")
+        pc.handTypingToTheController()
+        XCTAssertEqual(pc.core.devices.ps2.typing.count, 4, "Ctrl-C seul : rien du collage")
+        var now: UInt64 = 0
+        var bytes: [UInt8] = []
+        while !pc.core.devices.ps2.typing.isEmpty {
+            now += X86PS2Controller.holdTicks
+            pc.core.devices.ps2.pace(now: now)
+            while pc.core.devices.ps2.status() & 0x01 != 0 { bytes.append(pc.core.devices.ps2.readData()) }
+        }
+        let (typed, held) = Self.decode(bytes)
+        XCTAssertEqual(typed, "^C")
+        XCTAssertEqual(held, [])
+    }
+
     /// Ce qu'un noyau lit au port 0x60, en jeu 1 traduit, redevenu texte :
     /// Maj et Ctrl suivis, `^C` pour Ctrl-C. Rend aussi les touches restées
     /// enfoncées.

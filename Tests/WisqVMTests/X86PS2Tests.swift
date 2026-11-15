@@ -176,6 +176,25 @@ final class X86PS2Tests: XCTestCase {
         XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
     }
 
+    /// **Abandonner la file oublie aussi ce qu'elle aurait laissé enfoncé.**
+    /// Une touche tenue au clavier physique, dont l'enfoncement attend encore
+    /// en file, n'est jamais partie : l'invité ne la tient pas, rien n'est à
+    /// relâcher, et la file vidée ne la compte plus pour tenue. Sinon le
+    /// relâchement de cette touche passerait la borne, et `heldInQueue` ne
+    /// dirait plus l'état de la file (relevé par le contrôle adverse : aucun
+    /// test ne tenait la remise à zéro).
+    func testAbandoningForgetsWhatTheDroppedKeystrokesWouldHaveHeld() {
+        var ps2 = X86PS2Controller()
+        XCTAssertTrue(ps2.type(.leftControl, down: true))
+        XCTAssertTrue(ps2.heldInQueue.contains(.leftControl))
+        ps2.abandonTyping()
+        XCTAssertTrue(ps2.typing.isEmpty, "l'invité n'a jamais vu Ctrl : rien à relâcher")
+        XCTAssertTrue(ps2.heldInQueue.isEmpty, "la file vidée ne laisse rien enfoncé")
+        while ps2.type(.space, down: ps2.typing.count % 2 == 0) {}
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
+        XCTAssertFalse(ps2.type(.leftControl, down: false), "au-delà de la borne, Ctrl n'est plus tenue")
+    }
+
     /// Un caractère se tape sur un clavier américain.
     func testACharacterMapsToItsUSKey() {
         XCTAssertEqual(X86ScanCode.typing("a")?.code, X86ScanCode(0x1E))
