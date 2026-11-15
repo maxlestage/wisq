@@ -1211,10 +1211,85 @@ final class ReadyDesktopTests: XCTestCase {
                                             running: [Self.archiveName]), "le bureau en cours : pareil")
         let image = Server(iso), archive = Server(archiveBytes)
         let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        // L'image d'une distribution en cours ne coupe pas la garde de ce
+        // bureau-ci : `fetch` refuse comme sans elle, avant toute requête.
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, available: short,
+                                        running: ["alpine-virt.iso"], download: download(with: downloader))
+            XCTFail("le fichier d'un autre ne doit pas couper la garde")
+        } catch let refusal as ReadyDesktop.Refusal {
+            XCTAssertEqual(refusal, .notEnoughSpace(desktop.room(library: library, downloads: downloads),
+                                                    available: short))
+        }
+        XCTAssertEqual(image.ranges, [], "refusé avant toute requête")
         _ = try await desktop.fetch(library: library, downloads: downloads, available: short,
                                     running: [Self.isoName], download: download(with: downloader))
         XCTAssertEqual(image.ranges, [nil], "suivi, pas refusé")
         XCTAssertTrue(desktop.archivePresent(in: downloads))
+    }
+
+    /// **Un fichier rangé depuis le relevé ne coupe plus la garde** : la
+    /// feuille lit les fichiers en cours à son ouverture, et l'image a pu
+    /// finir depuis, la feuille ouverte. Le relevé disait encore « l'image
+    /// court » : `spaceShortfall` se taisait, et `fetch` demandait l'archive
+    /// sans rien compter, jusqu'à l'erreur du système sur un téléphone plein.
+    /// Pareil pour l'archive rangée pendant que l'image manque. L'image qui
+    /// manque encore, elle, reste suivie.
+    func testAFileStoredSinceTheReadingNoLongerWaivesTheGuard() async throws {
+        let desktop = try desktop(entry())
+        let image = Server(iso), archive = Server(archiveBytes)
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        try Data(iso).write(to: library.appendingPathComponent(Self.isoName))
+        let room = desktop.room(library: library, downloads: downloads)
+        XCTAssertEqual(room.image, 0, "l'image est rangée")
+        let short = room.total - 1
+        XCTAssertEqual(desktop.followable(running: [Self.isoName], library: library, downloads: downloads), [])
+        XCTAssertEqual(desktop.spaceShortfall(available: short, library: library, downloads: downloads,
+                                              running: [Self.isoName]),
+                       ReadyDesktop.Refusal.notEnoughSpace(room, available: short).errorDescription,
+                       "la feuille le dit, malgré le relevé")
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, available: short,
+                                        running: [Self.isoName], download: download(with: downloader))
+            XCTFail("l'image rangée ne court plus : la garde joue")
+        } catch let refusal as ReadyDesktop.Refusal {
+            XCTAssertEqual(refusal, .notEnoughSpace(room, available: short))
+        }
+        XCTAssertEqual(archive.ranges, [], "l'archive n'a pas été demandée")
+        XCTAssertEqual(image.ranges, [])
+
+        // L'archive rangée, l'image qui manque : le relevé « le bureau court »
+        // ne coupe pas la garde ; « l'image court », si.
+        try FileManager.default.removeItem(at: library.appendingPathComponent(Self.isoName))
+        try Data(archiveBytes).write(to: downloads.appendingPathComponent(Self.archiveName))
+        let left = desktop.room(library: library, downloads: downloads)
+        XCTAssertEqual(left.archive, 0)
+        let both: Set<String> = [Self.isoName, Self.archiveName]
+        XCTAssertEqual(desktop.followable(running: both, library: library, downloads: downloads), [Self.isoName])
+        XCTAssertNotNil(desktop.spaceShortfall(available: left.total - 1, library: library, downloads: downloads,
+                                               running: [Self.archiveName]))
+        XCTAssertNil(desktop.spaceShortfall(available: left.total - 1, library: library, downloads: downloads,
+                                            running: [Self.isoName]), "l'image manque : on la suit")
+    }
+
+    /// **« Installer » relit les fichiers en cours avant de suivre** : le
+    /// relevé de l'ouverture a pu vieillir, la feuille ouverte. Une tâche de
+    /// fond tombée depuis y figurait encore, et toute l'image repartait sans
+    /// garde de place. Ceci se lit dans `ImageDownloadModel` (SwiftUI, qui
+    /// ne se construit pas sous Linux), commentaires ôtés.
+    func testInstallReadsTheRunningFilesAgain() throws {
+        let source = BootRefusalTests.withoutComments(try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/WisqUI/ViewModels/ImageDownloadModel.swift"), encoding: .utf8))
+        let start = try XCTUnwrap(source.range(of: "private func fetchAndInstall("), "fetchAndInstall introuvable")
+        let body = source[start.upperBound...]
+        let reread = try XCTUnwrap(body.range(of: "let running = await BackgroundImageDownloads.shared.runningFiles()"),
+                                   "les fichiers en cours ne sont pas relus")
+        let fetch = try XCTUnwrap(body.range(of: "desktop.fetch("))
+        XCTAssertLessThan(reread.lowerBound, fetch.lowerBound, "relus avant de suivre")
+        XCTAssertNotNil(body[fetch.upperBound...].range(of: "running: running,"), "et passés à fetch")
     }
 
     /// **Suivi, il ne se dit plus en arrière-plan** : une fois `fetch`
@@ -1274,6 +1349,16 @@ final class ReadyDesktopTests: XCTestCase {
             .readyCatalog()
         XCTAssertEqual(later.desktops, [])
         XCTAssertNil(later.failure, "un format plus récent n'est pas une panne")
+        // Un objet JSON sans `format` n'est pas un index non plus : le corps
+        // d'erreur d'un service, rendu en 200, que le seul `[String: Any]`
+        // laissait passer pour un index vide.
+        let message = Server(Array(#"{"message": "Not Found"}"#.utf8))
+        let error = await ImageDownloader(fetcher: Router([ReadyDesktop.index: message]), partsFolder: downloads)
+            .readyCatalog()
+        XCTAssertEqual(error.desktops, [])
+        XCTAssertEqual(error.failure, caught.failure, "un objet sans son format se dit comme la page")
+        XCTAssertFalse(ReadyDesktop.isIndex(#"{"desktops": []}"#), "des entrées sans format")
+        XCTAssertTrue(ReadyDesktop.isIndex(try json([entry()])))
     }
 
     /// Un fetcher qui ne joint rien : le réseau coupé.

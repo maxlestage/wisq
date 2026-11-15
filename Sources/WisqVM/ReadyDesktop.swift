@@ -458,12 +458,14 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// n'est refusé sur une supposition.
     ///
     /// **`running` sont les fichiers que la session d'arrière-plan a en
-    /// cours** (`backgroundFiles`). Quand l'un d'eux est à ce bureau, la
-    /// garde ne joue pas : ce transfert a déjà pris de la place dans le
-    /// fichier de la session, que `room` ne voit pas, et `fetch` ne fait que
-    /// le suivre. Le refuser disait « Rien n'a été téléchargé » d'un
-    /// téléchargement à moitié fait, et laissait la tâche courir sans
-    /// personne pour la recoudre ou l'arrêter.
+    /// cours** (`backgroundFiles`). Quand l'un d'eux est à ce bureau et
+    /// manque encore (`followable`), la garde ne joue pas : ce transfert a
+    /// déjà pris de la place dans le fichier de la session, que `room` ne
+    /// voit pas, et `fetch` ne fait que le suivre. Le refuser disait « Rien
+    /// n'a été téléchargé » d'un téléchargement à moitié fait, et laissait la
+    /// tâche courir sans personne pour la recoudre ou l'arrêter. Un fichier
+    /// déjà rangé à sa taille, lui, ne court plus, quoi que dise un relevé
+    /// ancien : la garde joue pour le reste.
     ///
     /// **Une annulation entre les deux fichiers arrête là** : l'image finie
     /// au moment où « Annuler » est touché ne lance pas l'archive.
@@ -474,7 +476,7 @@ public struct ReadyDesktop: Equatable, Sendable {
         progress: @escaping @Sendable (Progress) -> Void = { _ in },
         replacedImage: @Sendable (String) -> Void = { _ in }
     ) async throws -> (image: URL, archive: URL) {
-        if let available, backgroundFiles(running: running).isEmpty {
+        if let available, followable(running: running, library: library, downloads: downloads).isEmpty {
             let room = room(library: library, downloads: downloads)
             if room.total > available { throw Refusal.notEnoughSpace(room, available: available) }
         }
@@ -583,11 +585,13 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// La phrase de la feuille quand la place manque, ou `nil` quand elle
     /// suffit : la même que le refus de `fetch`, dite avant qu'on touche.
     /// Rien non plus quand un fichier de ce bureau est en cours dans la
-    /// session d'arrière-plan (`running`) : la ligne dit alors qu'il
-    /// continue, et « Installer » reste là pour le suivre (voir `fetch`).
+    /// session d'arrière-plan (`running`) et manque encore (`followable`) :
+    /// la ligne dit alors qu'il continue, et « Installer » reste là pour le
+    /// suivre (voir `fetch`).
     public func spaceShortfall(available: Int?, library: URL, downloads: URL,
                                running: Set<String> = []) -> String? {
-        guard let available, backgroundFiles(running: running).isEmpty else { return nil }
+        guard let available, followable(running: running, library: library, downloads: downloads).isEmpty
+        else { return nil }
         let room = room(library: library, downloads: downloads)
         guard room.total > available else { return nil }
         return Refusal.notEnoughSpace(room, available: available).errorDescription
@@ -638,6 +642,26 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// image, son archive.
     public func backgroundFiles(running files: Set<String>) -> Set<String> {
         files.intersection([image.file, archive.file])
+    }
+
+    /// **Ceux des fichiers de ce bureau en cours qui manquent encore** :
+    /// l'image absente de la bibliothèque à sa taille, l'archive absente des
+    /// téléchargements à la sienne. Ce sont les seuls que `fetch` suit sans
+    /// garde de place.
+    ///
+    /// `running` est un relevé : la feuille le lit à son ouverture, et un
+    /// transfert de fond a pu finir depuis, la feuille ouverte. Le croire
+    /// encore coupait toute la garde, alors que le fichier était là : sur un
+    /// téléphone plein, le reste partait sans être compté, et l'installation
+    /// tombait ensuite sur l'erreur du système au lieu de la phrase de la
+    /// place. La taille seule suffit ici, comme dans `room` : un fichier
+    /// fini par la session y est rangé entier, et sa somme se vérifie plus
+    /// loin (`archivePresent`, l'empreinte du noyau).
+    public func followable(running files: Set<String>, library: URL, downloads: URL) -> Set<String> {
+        backgroundFiles(running: files).filter { file in
+            if file == image.file { return !imagePresent(in: library) }
+            return Self.size(of: downloads.appendingPathComponent(archive.file)) != archive.size
+        }
     }
 
     /// **Les fichiers en cours, une fois ce bureau suivi** : quand `fetch`
