@@ -62,7 +62,12 @@ public enum BootRefusal: Equatable, Sendable {
 
     /// **Ce que la personne lit**, dans la console, à la place d'un démarrage.
     /// `name` : le fichier qu'elle a touché.
-    public func explanation(name: String) -> String {
+    ///
+    /// `sessionErased` : la session promise gardée a été effacée plus tôt
+    /// dans la course — « Arrêter » ou « Oublier » touché pendant que le fil
+    /// n'avait encore rien dit. La phrase le dit au lieu de la promettre.
+    /// Voir `MachineLifecycle.refusedToStart(_:name:)`, qui en décide.
+    public func explanation(name: String, sessionErased: Bool = false) -> String {
         switch self {
         case .notEnoughRoom(let requested, let ceiling):
             return KernelMemory.notEnoughRoomExplanation(requested: requested, ceiling: ceiling, name: name)
@@ -105,9 +110,24 @@ public enum BootRefusal: Equatable, Sendable {
                 le prendra avec ce noyau.
                 """
         case .session(let refusal):
+            guard !sessionErased else {
+                return """
+                    La session de \(name) n'a pas pu être relue, et elle a été \
+                    effacée pendant le démarrage : la prochaine ouverture ne \
+                    reprendra rien.
+                    """
+            }
             return SavedSession.explanation(refusal, name: name)
         case .couldNotStart(let reason, let kept):
             guard kept else { return "Démarrage impossible : \(reason)" }
+            guard !sessionErased else {
+                return """
+                    Démarrage impossible : \(reason)
+
+                    La session sauvée de \(name) a été effacée pendant le \
+                    démarrage : la prochaine ouverture ne reprendra rien.
+                    """
+            }
             return """
                 Démarrage impossible : \(reason)
 

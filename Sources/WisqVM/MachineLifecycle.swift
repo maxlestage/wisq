@@ -27,10 +27,13 @@ public struct MachineLifecycle: Equatable, Sendable {
         /// de cet état, seul « Oublier » efface le fichier. Voir
         /// `SavedSession`.
         case refused
-        /// **Le démarrage a été refusé avant la première instruction**, et
-        /// aucune session n'était en jeu : la console a dit pourquoi, rien ne
-        /// tourne, et rien ne s'efface de cet état — ni par « Arrêter », ni
-        /// par la fin tardive d'une course précédente. Voir `BootRefusal`.
+        /// **Le démarrage a été refusé avant la première instruction**, sans
+        /// que la console promette une session gardée : la console a dit
+        /// pourquoi, rien ne tourne, et rien ne s'efface de cet état — ni par
+        /// « Arrêter », ni par la fin tardive d'une course précédente. Une
+        /// session sauvée peut très bien être là, lisible et intacte : celle
+        /// qu'une mémoire libre trop basse au retour empêche de reprendre
+        /// (`BootRefusal.notEnoughRoom`), par exemple. Voir `BootRefusal`.
         case notStarted
     }
 
@@ -110,11 +113,35 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// **Le démarrage est refusé avant la première instruction** : rien ne
     /// tourne, et la session sauvée — de cette machine ou d'une autre — n'est
     /// pas touchée. Rend toujours `.nothing`. Voir `BootRefusal`.
+    ///
+    /// `refused` seulement quand la session promise gardée l'est vraiment :
+    /// effacée plus tôt dans la course (`sessionErased`), il n'y a plus rien
+    /// à garder.
     @discardableResult
     public mutating func refusedToStart(_ refusal: BootRefusal) -> Action {
-        state = refusal.keepsASession ? .refused : .notStarted
+        state = refusal.keepsASession && !sessionErased ? .refused : .notStarted
         return .nothing
     }
+
+    /// **Le refus, et la phrase qui le dit** : ce que `LocalVMModel` affiche.
+    ///
+    /// La phrase dépend de la course, pas seulement du refus. Un échec sur le
+    /// fil arrive par une tâche qui passe plus tard ; si « Arrêter » ou
+    /// « Oublier » a été touché entre-temps, quand le fil n'avait encore rien
+    /// noté (`Start.pending`), la session a déjà été effacée, comme demandé.
+    /// La console affirmait pourtant « gardée telle quelle ». Elle dit
+    /// maintenant qu'elle a été effacée.
+    public mutating func refusedToStart(_ refusal: BootRefusal, name: String) -> String {
+        let erased = sessionErased
+        refusedToStart(refusal)
+        return refusal.explanation(name: name, sessionErased: erased)
+    }
+
+    /// **La session de cette course a déjà été effacée.** Chaque passage à
+    /// `ended` rend `.forget` — « Arrêter », un départ après « Oublier », une
+    /// sauvegarde manquée, une fin de course —, et « Oublier » efface sans
+    /// rien arrêter (`forgotten`). Chaque démarrage remet les deux à zéro.
+    private var sessionErased: Bool { state == .ended || forgotten }
 
     /// The user pressed "Oublier": keep running now, and do not come back to
     /// this machine next time.

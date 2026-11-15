@@ -933,10 +933,11 @@ public final class LocalVMModel {
 
     /// **Un démarrage refusé avant la première instruction** : la raison à
     /// l'écran, et rien d'effacé — ni la session de cette machine, ni celle
-    /// d'une course précédente. Voir `BootRefusal`.
+    /// d'une course précédente. Voir `BootRefusal`. La phrase vient du cycle
+    /// de vie, qui sait si la session promise gardée l'est encore ; un test
+    /// sous Linux exige ce corps-là mot pour mot.
     private func refuseToStart(_ refusal: BootRefusal, name: String) {
-        life.refusedToStart(refusal)
-        finish(with: refusal.explanation(name: name))
+        finish(with: life.refusedToStart(refusal, name: name))
     }
 
     /// **Un message écrit pour une personne, replié avant d'entrer dans la
