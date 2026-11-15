@@ -24,9 +24,12 @@
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
-/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG`, `STOP_MXCSR` — et un nombre que ce tableau ne connaît pas se dit quand
-/// même, plutôt que de passer pour « rien ». `STOP_MSR` n'y est pas : il porte
-/// le numéro du registre dans ses trente-deux bits bas, et se lit à part.
+/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre
+/// que ce tableau ne connaît pas se dit quand même, plutôt que de passer pour
+/// « rien ». `STOP_MSR` n'y est pas : il porte le numéro du registre dans ses
+/// trente-deux bits bas, et se lit à part. `STOP_MXCSR` non plus : c'est une
+/// `#GP(0)` que la boucle délivre, et son arrêt, sans porte, se dit par la
+/// délivrance.
 const STOPS = {
   1n: "arrêtée sur hlt",
   2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
@@ -35,7 +38,6 @@ const STOPS = {
   5n: "arrêtée sur invpcid : purger le tampon par identifiant de contexte, et cette machine n'a pas de PCID",
   6n: "arrêtée sur lldt : une table de descripteurs locale non nulle, sans table globale où la trouver",
   7n: "arrêtée sur une écriture dans un registre de débogage : cette machine n'a pas de points d'arrêt matériels",
-  9n: "arrêtée sur ldmxcsr ou fxrstor : un MXCSR aux bits réservés levés, que le silicium refuserait par #GP",
 };
 /// **`STOP_HALTED`** : l'invité s'est arrêté sur un `hlt`. Nommé ici parce que
 /// la boucle en décide — un `hlt` qu'une interruption peut encore réveiller
@@ -54,6 +56,12 @@ const STOP_UNDEFINED = 8n;
 /// au noyau de décider, sa table d'exceptions rattrape ces fautes-là. Sans
 /// porte, l'arrêt reste, et nomme le numéro.
 const STOP_MSR = 1n << 32n;
+/// **`STOP_MXCSR`** : `ldmxcsr` ou `fxrstor` voulaient charger un MXCSR aux
+/// bits réservés levés. RIP est sur l'instruction, rien n'a changé, et c'est
+/// une `#GP(0)` que l'hôte délivre. `ldmxcsr` est permise en anneau trois :
+/// sans cette délivrance, n'importe quel programme arrêtait la machine
+/// entière, là où le silicium ne fait fauter que lui.
+const STOP_MXCSR = 9n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -2118,6 +2126,21 @@ export function machine({
           const why = deliver(
             GENERAL_PROTECTION, 0n,
             `un registre spécifique au modèle que cette machine ne modélise pas (0x${number})`);
+          if (why !== null) {
+            globals[SLOTS.stop].value = stop;
+            return { stopped: why, at: rip() };
+          }
+          continue;
+        }
+        // **Un MXCSR aux bits réservés est une `#GP(0)`, délivrée** — à un
+        // programme d'anneau trois comme au noyau. RIP est sur l'instruction,
+        // rien n'a changé. Sans porte, le témoin est remis et l'arrêt dit
+        // pourquoi et quel vecteur manquait.
+        if (stop === STOP_MXCSR) {
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(
+            GENERAL_PROTECTION, 0n,
+            "un MXCSR aux bits réservés levés, que ldmxcsr ou fxrstor voulaient charger");
           if (why !== null) {
             globals[SLOTS.stop].value = stop;
             return { stopped: why, at: rip() };

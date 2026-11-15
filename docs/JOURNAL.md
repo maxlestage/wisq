@@ -8,6 +8,147 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Les fautes des accès de seize octets, mesurées sur le silicium, et MXCSR délivré
+
+**Ce qui n'allait pas** (le contrôle du socle SSE, cinq points, tous réels).
+
+1. **Une écriture de seize octets sur une page absente fautait comme une
+   lecture.** `movups`, `movdqu`, `movaps` en mémoire « sondaient » leur
+   dernier octet en le relisant puis en le réécrivant. Sur une page absente,
+   la relecture fautait la première : code d'erreur 0 au lieu de W, CR2 sur
+   le dernier octet. Sous Linux, la première écriture dans une page anonyme
+   neuve coûtait deux fautes : la page zéro posée pour la « lecture », puis
+   une protection en écriture et une copie. Le test l'avait gravé
+   (`("absente", 0x0, 0x0)`), et le commit comme le journal disaient « sonde
+   en écriture ». `fxsave` avait le même défaut, que le contrôle n'avait pas
+   relevé : ses deux sondes étaient des lectures. Sur une page en lecture
+   seule, une lecture passe, et `fxsave` écrivait la moitié de son aire avant
+   de fauter sur l'autre page.
+2. **« Une source mémoire est lue entière avant tout effet » n'était tenu par
+   aucun test.** Poser la moitié basse de XMM avant de lire la haute laissait
+   toute la suite verte.
+3. **Un MXCSR aux bits réservés arrêtait la machine entière.** `ldmxcsr` est
+   permise en anneau trois : n'importe quel programme pouvait arrêter la
+   machine, là où le silicium ne fait fauter que lui (`#GP(0)`, un `SIGSEGV`).
+   Le commentaire de `STOP_MXCSR` disait que Linux masquait tout MXCSR venu
+   d'un programme : c'est faux pour `ldmxcsr`, que le noyau ne voit pas.
+4. Le commentaire de `hand_back` était collé sur `stop_on`, et `hand_back`
+   n'avait plus de doc.
+5. Le tableau des tailles de l'entrée d'avant donnait 2 668 octets pour la
+   région d'un `nop` (c'est 2 653, et 2 668 est la région de
+   `movq %rbx,%xmm0`), et 563 pour `movups` en écriture (c'était 551). Les
+   autres lignes se reproduisaient.
+
+**Ce que dit le silicium**, mesuré le 15 novembre sur le processeur de ce
+conteneur (Xeon à 2,10 GHz) par un programme C : deux pages, la seconde
+rendue absente (`PROT_NONE`) ou en lecture seule (`PROT_READ`), `si_addr`
+(CR2) et `REG_ERR` lus dans le gestionnaire de `SIGSEGV`.
+
+| accès | où | CR2 | code |
+| --- | --- | --- | --- |
+| `movups`/`movdqu` en écriture, à cheval (+0xff8, +0xff1) | seconde absente | début de la seconde page | `0x6` (U, W) |
+| idem | seconde en lecture seule | début de la seconde page | `0x7` |
+| idem, tout entière dans la page absente (+0x1000, +0x1008) | | l'adresse | `0x6` |
+| idem, à cheval | première absente | l'adresse | `0x6` |
+| `movups` en lecture, à cheval | seconde absente | début de la seconde page | `0x4` |
+| `fxsave64` à 256 octets de la fin | première absente | début de l'aire | `0x6` |
+| idem | seconde absente, ou les deux | dernier octet de l'aire | `0x6` |
+| idem | seconde en lecture seule | dernier octet de l'aire | `0x7` |
+
+Dans tous les cas, **rien n'est écrit**, pas même dans la page qui le
+permet.
+
+**Ce qui change.**
+
+- *`Body::claim`* (`x86_wasm.rs`) : juge une écriture de `span` octets
+  **pour écrire**, sans rien écrire. Le chemin en ligne est celui d'une
+  écriture (la case du tampon doit dire « inscriptible »). Le chemin lent est
+  `far_store_body`, avec un bit neuf, `CLAIM`, dans la largeur : les deux
+  marches d'écriture ont lieu, puis la fonction rend la main sans écrire. Un
+  bit plutôt qu'une sixième fonction : même marche, même type, aucun indice
+  décalé. `translated` prend maintenant une étendue en octets, plus une
+  `Width`.
+- *`movups`, `movdqu`, `movaps` en écriture* : une réservation de seize
+  octets, puis les deux moitiés. *`fxsave`* : deux réservations d'un octet,
+  le dernier puis le premier (l'ordre qui donne les CR2 du tableau).
+- *`STOP_MXCSR` est délivré* par `web/host.js` comme `#GP(0)`, code nul, RIP
+  sur l'instruction, comme un MSR inconnu. Sans porte, l'arrêt dit le MXCSR
+  refusé et le vecteur 13. Le 9 sort du tableau des arrêts, et le test des
+  constantes répétées compare désormais `STOP_MXCSR` et `STOP_UNDEFINED`.
+- Le commentaire de `hand_back` est rendu à `hand_back`. Les phrases
+  fausses de l'entrée d'avant sont corrigées sur place, avec renvoi ici.
+- `WebKitBench.swift` : les trois modules épinglés sont régénérés par
+  `--example bench-module` (la fonction d'écriture lente a grandi).
+
+**Ce que ça coûte**, en octets de module, mesuré avec `x86-translate`
+(forme paginée, 65 536 pages) :
+
+| région | avant | après |
+| --- | ---: | ---: |
+| `nop` seul | 2 653 | 2 683 |
+| `movups` en écriture, au-delà du `nop` | 551 | 408 |
+| `fxsave`, au-delà du `nop` | 5 540 | 5 532 |
+| `mov %rax,(%rsi)`, au-delà du `nop` | 149 | 149 |
+
+Les trente octets de base sont ceux de `far_store_body`, une fois par
+module. Une réservation coûte moins que la relecture plus la réécriture
+qu'elle remplace.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs dans `host_loop.rs`, sur le banc des droits des pages
+  (qui relève maintenant XMM0) :
+  - `a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing` :
+    `movups` et `movdqu`, les six cas de faute du tableau (CR2, témoin, rien
+    d'écrit), puis à cheval sur deux trames inscriptibles non voisines, puis
+    les seize derniers octets d'une page. Il remplace l'ancien test de
+    `movups`, qui gravait le code faux ;
+  - `a_sixteen_byte_load_that_faults_changes_no_register` : `movups`,
+    `movdqu`, `paddb`, `pxor` à cheval sur une page absente, XMM0 intact ;
+    sur une page en lecture seule, XMM0 juste ;
+  - `fxsave_claims_its_area_for_writing_before_it_writes` : les quatre cas
+    du tableau, plus la page en lecture seule déjà lue (la case du tampon
+    remplie) ;
+  - `an_mxcsr_with_reserved_bits_is_delivered_as_a_general_protection_fault` :
+    `ldmxcsr` et `fxrstor`, la porte 13 tourne, code nul, cadre sur
+    l'instruction, reprise après, rien de restauré.
+- Deux tests existants exigent davantage : celui de l'arrêt MXCSR sans porte
+  (l'arrêt exact) et celui de `fxsave` à cheval (les octets 416 à 511
+  intacts, le dernier compris).
+- **Sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - `movups` sans réservation : le test d'écriture tombe, la moitié basse
+    écrite dans la première page ;
+  - la réservation jugée comme une lecture dans le chemin en ligne : le test
+    de `fxsave` tombe sur la page en lecture seule déjà lue (CR2 au milieu,
+    aire à moitié écrite) ;
+  - `far_store_body` qui écrit quand une réservation tient dans sa page : le
+    test de `fxsave` à cheval tombe, un zéro à l'octet 511 ;
+  - `fxsave` qui sonde en lisant : son test tombe (code sans W) ;
+  - le sabotage du contrôle, XMM posé avant la lecture dans `Vector::Load` :
+    le test de lecture tombe ;
+  - l'hôte qui ne délivre plus `STOP_MXCSR` : les deux tests MXCSR tombent ;
+    l'hôte qui répète 10 au lieu de 9 : le test des constantes tombe aussi.
+- Un sabotage reste invisible, et c'est dit : sauter le retour d'une
+  réservation **à cheval** sur deux pages inscriptibles lui ferait écrire
+  seize zéros, que l'écriture qui suit recouvre aussitôt. Aucun programme à
+  un seul fil ne peut le voir.
+- `cargo test --release` : 625 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt`, les deux `clippy`, les
+  scripts de mise en forme et des sources, SwiftLint `--strict` : propres.
+  `swiftc -parse` de `WebKitBench.swift`, puis `swift build --build-tests` et
+  `swift test --filter "WebKitBench|WisqVMRustTests|X86VectorOracle"` :
+  0 échec (la suite Swift entière n'a pas été relancée). Le site :
+  typecheck, build, 470 tests. Le compte publié passe à 3 522 (Swift 2 897 +
+  Rust 625) : quatre tests neufs, un retiré (l'ancien test de `movups`).
+
+**Ce qui reste.**
+
+- U (bit 2) vient toujours de l'hôte à la délivrance ; les tests jugent le
+  témoin du module, sans U, et les CR2 mesurés en anneau trois.
+- L'alignement de `movaps`/`movdqa` n'est toujours pas vérifié (`#GP` sur
+  le silicium) : infidélité dite dans le fichier, inchangée.
+- Le mur d'Alpine reste le préfixe FS dans `__dls3`.
+
 ## 2026-11-14 — Le socle SSE de l'émetteur : seize XMM, MXCSR, les déplacements et l'entier, jugés par le silicium
 
 **Ce qui n'allait pas.**
@@ -66,9 +207,10 @@ L'ordre est antéchronologique : le plus récent en haut.
   calculée en soixante-quatre bits, puis remise en place. Une instruction qui
   faute n'a rien fait :
   - les seize octets d'une source mémoire sont lus avant que rien ne change ;
-  - une écriture de seize octets sonde d'abord en écriture son dernier octet.
-    Elle faute donc sur une page en lecture seule (copie à l'écriture) avant
-    tout effet.
+  - une écriture de seize octets sonde d'abord son dernier octet. Elle faute
+    donc sur une page en lecture seule (copie à l'écriture) avant tout effet.
+    (Corrigé le lendemain : la sonde était une relecture, pas une écriture,
+    et fautait en lecture sur une page absente ; voir l'entrée du dessus.)
 
   Aucune ne touche RFLAGS. L'alignement de `movaps` n'est pas vérifié
   (le silicium lèverait `#GP`) : infidélité dite dans le fichier.
@@ -77,7 +219,8 @@ L'ordre est antéchronologique : le plus récent en haut.
   415. Le x87 garde ses mots par défaut : étiquettes et pile nulles.
   `fxrstor` juge MXCSR avant de rien poser : des bits réservés donnent un
   arrêt nommé, `STOP_MXCSR` (9), RIP sur l'instruction, rien de restauré.
-  `ldmxcsr` fait de même.
+  `ldmxcsr` fait de même. (Corrigé le lendemain : l'hôte délivre désormais
+  ce témoin comme `#GP(0)` ; voir l'entrée du dessus.)
 - *CPUID, vérifié* : il n'annonce **pas** SSE ni SSE2 (EDX = FPU, TSC,
   CLFLUSH ; ECX = CX16), contrairement à ce que la consigne supposait. Ce qui
   manque pour les annoncer honnêtement, c'est le flottant SSE. musl ne
@@ -146,8 +289,9 @@ L'ordre est antéchronologique : le plus récent en haut.
     6.6 à 2 000 000 tours a été arrêtée après 21 minutes sans relevé : la
     machine était chargée par un processus Bun orphelin d'un contrôle
     précédent, et ce chiffre n'en dit rien.
-- Ce que coûte une forme, en octets de module au-delà d'un `nop` (2 668 octets
-  pour la région seule, mesuré avec `x86-translate`, forme paginée) :
+- Ce que coûte une forme, en octets de module au-delà d'un `nop` (2 653 octets
+  pour la région seule, mesuré avec `x86-translate`, forme paginée ; corrigé
+  le lendemain, l'entrée disait 2 668, la taille de la région de `movq`) :
 
   | forme | octets |
   | --- | ---: |
@@ -158,7 +302,7 @@ L'ordre est antéchronologique : le plus récent en haut.
   | `pshufd` | 84 |
   | `pcmpeqb` | 497 |
   | `psadbw` | 551 |
-  | `movups` en écriture | 563 |
+  | `movups` en écriture | 551 (l'entrée disait 563 ; 408 depuis l'entrée du dessus) |
   | `pminub` | 625 |
   | `packsswb` | 705 |
 

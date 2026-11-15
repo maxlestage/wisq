@@ -405,10 +405,18 @@ pub const STOP_MSR: u64 = 1 << 32;
 pub const STOP_UNDEFINED: u64 = 8;
 
 /// **Un MXCSR aux bits réservés levés**, que `ldmxcsr` ou `fxrstor`
-/// voulaient charger. Le silicium lève `#GP(0)` ; ce cœur s'arrête et le
-/// nomme, RIP **sur** l'instruction, rien de changé. Linux ne le fait jamais —
-/// il passe tout MXCSR venu d'un programme par son masque avant de le rendre
-/// —, donc un arrêt ici est un défaut à lire, pas une conduite à imiter.
+/// voulaient charger. Le silicium lève `#GP(0)`, RIP **sur** l'instruction,
+/// rien de changé ; le module pose ce témoin dans le même état, et **l'hôte
+/// délivre la `#GP(0)`**, comme pour `STOP_MSR`. Sans porte, l'arrêt reste et
+/// se nomme.
+///
+/// Ce n'est pas un cas qu'on peut laisser arrêter la machine : `ldmxcsr` est
+/// permise en anneau trois, et n'importe quel programme peut y charger un bit
+/// réservé. Sur le silicium, c'est ce programme-là qui reçoit la faute — un
+/// `SIGSEGV` sous Linux —, pas la machine entière qui s'arrête. Ce
+/// commentaire disait que Linux passait tout MXCSR venu d'un programme par
+/// son masque, et qu'un arrêt ici serait donc un défaut à lire : c'était
+/// faux pour `ldmxcsr`, que le noyau ne voit jamais passer.
 pub const STOP_MXCSR: u64 = 9;
 
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
@@ -1190,6 +1198,13 @@ const HOST_IMPORTS: u32 = 2;
 /// l'indice de personne. Voir `Module::far_load_body`.
 const FAR_LOAD: u32 = 3;
 const FAR_STORE: u32 = 4;
+/// **Ce bit dans la largeur passée à `FAR_STORE` en fait une réservation** :
+/// les deux marches d'écriture ont lieu, et rien n'est écrit. Voir
+/// `Body::claim`. Un bit plutôt qu'une sixième fonction : la même marche, le
+/// même type, et aucun indice à décaler. La largeur réelle tient dans les
+/// bits d'en dessous — seize octets pour `movups`, un pour les sondes de
+/// `fxsave`.
+const CLAIM: u32 = 1 << 16;
 
 /// Les deux registres que le codage des entrées-sorties impose. La valeur est
 /// toujours dans l'accumulateur ; le port des formes non immédiates est dans
@@ -1263,7 +1278,7 @@ impl Body {
         unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
         self.translated(
             mask,
-            width,
+            width as u32,
             false,
             0x7e, // le résultat : un i64, la valeur lue
             |b| {
@@ -1318,7 +1333,7 @@ impl Body {
         unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
         self.translated(
             mask,
-            width,
+            width as u32,
             true,
             code::VOID,
             |b| {
@@ -1328,6 +1343,51 @@ impl Body {
                 b.load(TRANSLATE_ADDRESS)
                     .load(TRANSLATE_VALUE)
                     .constant32(width as u32)
+                    .call(walk + FAR_STORE);
+            },
+        )
+    }
+
+    /// **Juger une écriture de `span` octets sans rien écrire** : `address`
+    /// pousse l'adresse, en `i64`. La page du premier octet, puis celle du
+    /// dernier si elle est autre, sont traduites **pour écrire** ; si l'une
+    /// manque ou refuse l'écriture, la faute part d'ici, avant tout effet, avec
+    /// le code d'erreur d'une écriture (W) et CR2 où le silicium le met —
+    /// l'adresse elle-même pour la première page, le premier octet de la
+    /// seconde sinon. C'est le travail de `far_store_body` avec `CLAIM` : les
+    /// mêmes marches, et rien d'écrit.
+    ///
+    /// **Pourquoi pas une lecture.** C'était la sonde d'avant : `movups`
+    /// relisait son dernier octet et le réécrivait tel quel, `fxsave` lisait
+    /// les deux bouts de son aire. Sur une page **absente**, la lecture faute la
+    /// première, en lecture (code 0, pas W), et Linux répond à une faute de
+    /// lecture sur une page anonyme neuve en posant la page zéro partagée, en
+    /// lecture seule : l'écriture rejouée fautait une seconde fois, en
+    /// protection, pour une copie — deux fautes au lieu d'une. Et sur une page
+    /// en lecture seule, une relecture passe : `fxsave` écrivait alors la
+    /// moitié de son aire avant de fauter sur l'autre page.
+    ///
+    /// Sans pagination possible, rien ne peut fauter, et rien n'est émis.
+    fn claim(&mut self, span: u32, address: impl FnOnce(&mut Body)) -> &mut Self {
+        let (Some(walk), Some(mask)) = (self.walk, self.confine) else {
+            return self;
+        };
+        address(self);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
+        self.translated(
+            mask,
+            span,
+            true,
+            code::VOID,
+            // La page permet l'écriture : l'adresse traduite ne sert à rien.
+            |b| {
+                b.op(code::DROP);
+            },
+            |b| {
+                b.load(TRANSLATE_ADDRESS)
+                    .constant(0)
+                    .constant32(CLAIM | span)
                     .call(walk + FAR_STORE);
             },
         )
@@ -1413,7 +1473,7 @@ impl Body {
     fn translated(
         &mut self,
         mask: u32,
-        width: Width,
+        span: u32,
         write: bool,
         result: u8,
         direct: impl Fn(&mut Body),
@@ -1471,8 +1531,8 @@ impl Body {
         // trois instructions : les deux bits que `| 3` écrase sont ceux que
         // `<< 2` aurait mis à zéro.
         self.load(va);
-        if width as u64 > 1 {
-            self.constant(width as u64 - 1).op(code::I64_ADD);
+        if span > 1 {
+            self.constant(u64::from(span) - 1).op(code::I64_ADD);
         }
         self.constant(10)
             .op(code::I64_SHR_U)
@@ -3644,7 +3704,8 @@ impl Module {
     }
 
     /// **L'écriture lente**, le pendant de `far_load_body` : l'adresse, la
-    /// valeur, la largeur.
+    /// valeur, la largeur. Avec `CLAIM` dans la largeur, elle juge et
+    /// n'écrit pas — voir `Body::claim`.
     ///
     /// **Rien n'est écrit tant qu'une page peut manquer.** Les deux marches
     /// passent avant le premier octet : une écriture à cheval sur une page
@@ -3654,10 +3715,11 @@ impl Module {
     /// comme une seconde page absente, avant le premier octet.
     fn far_store_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la valeur ; 2, la largeur. Locales :
-        // le décalage dans la page, les deux trames, et le rang de l'octet.
+        // le décalage dans la page, les deux trames, le rang de l'octet, et
+        // le bit `CLAIM` ôté de la largeur.
         let mut body = vec![
             0x01, // un groupe
-            0x04, 0x7f, // 3, 4, 5, 6 : i32
+            0x05, 0x7f, // 3, 4, 5, 6, 7 : i32
         ];
         const VALUE: u32 = 1;
         const WIDTH: u32 = 2;
@@ -3665,12 +3727,24 @@ impl Module {
         const LOW: u32 = 4;
         const HIGH: u32 = 5;
         const RANK: u32 = 6;
+        const CLAIMING: u32 = 7;
         let mut b = Body::default();
+        // Une réservation : le bit mis à part, la largeur rendue à elle-même.
+        b.local_get(WIDTH).constant32(CLAIM).op(code::I32_AND);
+        b.local_set(CLAIMING);
+        b.local_get(WIDTH).constant32(CLAIM - 1).op(code::I32_AND);
+        b.local_set(WIDTH);
+        // Une réservation jugée s'en va là où l'écriture aurait commencé.
+        let claimed = |b: &mut Body| {
+            b.local_get(CLAIMING).op(code::IF).op(code::VOID);
+            b.op(code::RETURN).op(code::END);
+        };
 
         Self::far_first_page(&mut b, walk, WALK_WRITE, OFFSET, LOW, |_| {});
         // L'accès tient dans sa page : une écriture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
         b.op(code::IF).op(code::VOID);
+        claimed(&mut b);
         for (bytes, store) in [
             (8, code::I64_STORE),
             (4, code::I64_STORE32),
@@ -3689,6 +3763,7 @@ impl Module {
         b.op(code::END);
 
         Self::far_second_page(&mut b, walk, WALK_WRITE, HIGH, |_| {});
+        claimed(&mut b);
         // **Du premier octet au dernier** : l'octet bas de la valeur part, et
         // la valeur descend de huit bits.
         b.op(code::LOOP).op(code::VOID);
@@ -4618,11 +4693,19 @@ impl Module {
         // pages au plus ; après elles, la boucle ne peut plus fauter.
         if step.op == Op::FxSave {
             let area = *step.memory.as_ref()?;
-            body.wide_address(&area)
-                .constant(FPU_AREA_BYTES - 1)
-                .op(code::I64_ADD);
-            body.peek(Width::Byte).op(code::DROP);
-            body.wide_address(&area).peek(Width::Byte).op(code::DROP);
+            // Deux réservations d'écriture, pas deux lectures : sur une page
+            // absente, une lecture faute sans W ; sur une page en lecture
+            // seule, elle passe, et la boucle fautait au milieu de l'aire.
+            // Mesuré le 15 novembre : W dans les deux cas, CR2 sur le dernier
+            // octet, rien d'écrit. Voir `Body::claim`.
+            body.claim(1, |b| {
+                b.wide_address(&area)
+                    .constant(FPU_AREA_BYTES - 1)
+                    .op(code::I64_ADD);
+            });
+            body.claim(1, |b| {
+                b.wide_address(&area);
+            });
             // scratch 0 : où on en est dans l'aire. scratch 1 : sa fin.
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
@@ -4698,8 +4781,8 @@ impl Module {
         // n'existent pas, et aucune instruction de calcul x87 ne se décode.
         //
         // **MXCSR se juge avant que rien ne change.** Des bits réservés levés
-        // valent `#GP(0)` sur le silicium ; ici un arrêt nommé, `STOP_MXCSR`,
-        // RIP sur l'instruction et la machine intacte.
+        // valent `#GP(0)` sur le silicium : le témoin `STOP_MXCSR`, RIP sur
+        // l'instruction et la machine intacte, et l'hôte la délivre.
         //
         // **Le balayage d'abord, la restauration ensuite, et l'ordre est le
         // fond de l'affaire.** Un vrai processeur exige que les 512 octets
@@ -5628,13 +5711,6 @@ impl Module {
         }
     }
 
-    /// **Rendre la main au milieu d'un bloc.**
-    ///
-    /// C'est ce que fait le module quand il refuse une instruction : il pose
-    /// RIP sur **cette** instruction — pas sur la suivante — et rend -1. L'hôte
-    /// reprend là, avec l'interpréteur, qui sait exécuter depuis n'importe
-    /// quelle adresse et sait lever une faute. Les instructions d'avant dans le
-    /// même bloc ont déjà tourné, et c'est exact : elles ont vraiment eu lieu.
     /// **S'arrêter sur l'instruction et dire pourquoi** : RIP sur elle, le
     /// témoin d'arrêt posé, et la main rendue. Rien d'autre ne change.
     fn stop_on(address: u64, stop: u64, body: &mut Body) {
@@ -5644,6 +5720,13 @@ impl Module {
         Self::hand_back(address, body);
     }
 
+    /// **Rendre la main au milieu d'un bloc.**
+    ///
+    /// C'est ce que fait le module quand il refuse une instruction : il pose
+    /// RIP sur **cette** instruction — pas sur la suivante — et rend -1. L'hôte
+    /// reprend là, avec l'interpréteur, qui sait exécuter depuis n'importe
+    /// quelle adresse et sait lever une faute. Les instructions d'avant dans le
+    /// même bloc ont déjà tourné, et c'est exact : elles ont vraiment eu lieu.
     fn hand_back(address: u64, body: &mut Body) {
         body.store(RIP_SLOT, |b| {
             b.constant(address);
