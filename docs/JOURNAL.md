@@ -8,6 +8,582 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Le disque de la page : les deux branches que rien ne jugeait
+
+Le dernier contrôle adverse du flux C a trouvé deux lignes de la
+correction juste en dessous qu'aucun test ne faisait tomber. Je les ai
+couvertes moi-même, sans toucher au code.
+
+- **La requête jamais prise par la boucle.** Le filtre de `confiees`
+  écarte, à la remise, ce qui est encore dans `a_envoyer`. Sans lui, une
+  requête jamais confiée restait comptée pour toujours. Nouveau test :
+  `a_reset_drops_a_request_the_loop_never_took`.
+- **Les oubliées de l'ancien disque.** `succeder_a` reporte sur le neuf
+  ce que l'ancien avait oublié à une remise. Nouveau test :
+  `a_disk_plugged_anew_after_a_reset_still_counts_the_forgotten`.
+
+Sabotages : retirer l'une ou l'autre ligne fait tomber le test qui lui
+correspond, et lui seul (85 réussis, 1 échec). `cargo fmt --check` et
+clippy en `-D warnings` sont propres. Le compte publié passe à 3498.
+
+## 2026-11-14 — Le disque de la page : une remise ne rend plus la place de ce que l'arrière tient encore
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche juste en
+dessous a trouvé un défaut et deux trous, que j'ai relus dans le code
+avant d'y toucher.
+
+1. **La borne de 64 Mio ne survivait pas à une remise.** Une remise à
+   zéro (statut 0) ou une file reposée (registre `0x08`) vidait la liste
+   des requêtes en vol, et `tenus()` retombait à zéro. Mais les lectures
+   déjà confiées à l'arrière par `web/carte.js` restaient en vol, et
+   chacune y alloue toute sa longueur (l'`arrayBuffer` de `fetch`). Un
+   invité qui boucle « remise, file, lecture de 64 Mio, notification »
+   faisait donc partir 64 Mio de plus à chaque tour : le contrôleur a
+   mesuré dix lectures confiées, 640 Mio, pendant que `tenus()` en
+   annonçait 64. L'entrée d'en dessous disait « la carte ne tient jamais
+   plus, pour toutes les requêtes en vol » : c'était faux après une remise.
+2. **La reprise par `fini` n'était jugée par rien.** Retirer
+   `self.reprendre(ram)` de `fini` laissait toute la suite verte ; or ce
+   retrait fige l'invité (trois écritures de 32 Mio : la troisième ne part
+   jamais, car le pilote a publié et ne notifiera plus). L'entrée d'en
+   dessous affirmait « `lu` et `fini` relisent la file » sans que la
+   seconde moitié soit vérifiée.
+3. **Le test « `enVol` ne passe jamais par zéro » ne le prouvait pas.**
+   Inverser dans `web/carte.js` le décompte et la reprise (`finally` avant
+   le `then`) laissait `what_waits_for_room_leaves_on_the_answer` vert : le
+   compte n'y était relevé que dans `surReponse`, où il vaut 1 dans les
+   deux ordres. Et la justification de l'entrée d'en dessous (« entre deux
+   microtâches, aucune boucle hôte ne peut l'observer ») était fausse :
+   toute autre réaction de promesse déjà en file, la réponse d'une autre
+   requête ou son `surReponse`, s'exécute entre ces deux microtâches.
+
+**Ce qui change** (`crates/wisq-page/src/carte/virtio_blk.rs`, `mod.rs`,
+`tests/carte.rs`).
+
+- **Une requête confiée puis oubliée reste comptée jusqu'à sa réponse.**
+  L'oubli (remise, file reposée) range les requêtes déjà prises par la
+  boucle hôte dans une liste d'oubliées, par nom et longueur. Leur réponse
+  ne touche toujours pas à la RAM (`lu` et `fini` rendent `false`), mais
+  elles comptent dans `tenus()` et dans les 128 places jusqu'à ce qu'elle
+  vienne, et cette réponse fait reprendre la file. Une requête que la
+  boucle n'avait pas encore prise n'est jamais partie : elle est lâchée.
+- **Les oubliées prennent aussi une place parmi les 128.** Sans quoi un
+  invité qui boucle « remise, 128 requêtes » ferait grossir sans fin ce que
+  l'arrière sert. Le pilote n'y est pour rien : sa requête **attend**
+  (elle n'est pas refusée), comme pour la borne des octets. La 129ᵉ
+  requête *en vol*, elle, reste refusée comme avant.
+- **Un disque rebranché hérite de ce que l'ancien a confié**
+  (`succeder_a`, appelé par `brancher_disque`) : ses noms, comme avant, et
+  ses requêtes confiées sans réponse, qui restent comptées.
+- **`en_attente` compte une file qui attend de la place** : sa reprise
+  peut venir de la réponse d'une oubliée, donc `wakeable` doit l'attendre.
+  Une oubliée seule, sans file qui attend, ne lèvera rien.
+- **La file ne peut toujours pas rester bloquée** : elle n'attend que si
+  quelque chose est dehors (en vol ou oubliée), et chaque réponse la
+  relit. Cela suppose que l'arrière réponde à toute requête confiée, ce que
+  `web/carte.js` fait (résolue ou rejetée, `disqueLu` ou `disqueFini`).
+- **Le test Bun relève `enVol` à chaque microtâche** pendant que la
+  réponse se rend, par une autre chaîne de promesses : il doit voir 2 (la
+  seconde confiée, la première pas encore décomptée) et jamais 0.
+
+**Comment c'est vérifié.**
+
+- Quatre tests neufs en natif (`--lib`, 80 → 84) :
+  `a_reset_does_not_give_back_what_the_backend_still_holds` (le cas du
+  contrôleur, dix tours « remise, file, lecture de 64 Mio, notification » :
+  une seule lecture confiée, somme 64 Mio, aucun refus ; la réponse
+  oubliée ne copie rien, puis la lecture du dixième tour part et se sert),
+  `forgotten_requests_still_take_their_place_in_the_queue` (128 lectures
+  confiées, une remise : la requête suivante attend, la réponse d'une
+  oubliée la fait partir),
+  `a_disk_plugged_anew_still_counts_what_the_old_one_left_out` (par la
+  carte entière : la lecture de 64 Mio de l'ancien disque fait attendre la
+  première du neuf, et `reveil()` le dit),
+  `a_finished_write_or_a_failure_lets_what_waited_leave` (trois écritures
+  de 32 Mio : la troisième part quand la première est finie ; une
+  quatrième part quand la deuxième échoue). Sous Bun,
+  `what_waits_for_room_leaves_on_the_answer` relève maintenant `1 2 1`
+  (minimum, maximum, dernier relevé).
+- **Neuf sabotages d'une ligne, chacun tombé, puis restauré** avec
+  `git diff --quiet` vérifié : l'oubli qui ne compte pas les confiées
+  (deux tests tombent) ; la borne des places sans les oubliées
+  (`forgotten_requests…`) ; la succession sans les oubliées
+  (`a_disk_plugged_anew_still_counts…`) ; **`reprendre` retiré de `fini`**
+  (`a_finished_write_or_a_failure…`, le trou 2) ; la reprise retirée à la
+  réponse d'une oubliée, `file_attend` jamais levé, `lu` puis `fini` qui
+  ignorent les oubliées (de un à trois tests tombent chaque fois) ; et
+  **dans `web/carte.js`, le `finally` placé avant la reprise** :
+  `what_waits_for_room_leaves_on_the_answer` tombe, relevé `0 1 1` au lieu
+  de `1 2 1` (le trou 3).
+- `cargo test --release` : 599 réussis, 0 échec (595 avant) ; même chose
+  avec `RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes"`
+  (599/0). `cargo test --release -p wisq-page` : lib 84, carte 6, page 6.
+  `cargo fmt --all --check`, les deux `cargo clippy` (`-D warnings`) et
+  `clippy -p wisq-page --target wasm32-unknown-unknown` : propres ;
+  `cargo build --release -p wisq-vm` : propre (rien n'y est touché).
+  Compte publié : 3492 → 3496 (Swift 2897 + Rust 599). Site :
+  `typecheck` et `build` propres, `bun test` 470/0.
+
+**Ce qui reste.**
+
+- Le contrat demandé à l'arrière : répondre à toute requête confiée. Un
+  arrière qui perdrait une réponse garderait sa place pour toujours, et la
+  file attendrait ; `web/carte.js` répond toujours, mais rien ne borne le
+  temps de cette réponse (pas de délai d'abandon).
+- Rien n'est encore branché dans `web/host.js` (le flux A y travaille) : le
+  raccord reste celui de l'avant-dernière entrée (« Le disque de la page :
+  pont PCI… »).
+- La borne de 64 Mio n'a pas été mesurée contre un vrai noyau sous charge.
+
+## 2026-11-14 — Le disque de la page : une borne sur la somme, des noms qui ne reviennent pas, un statut qui n'est plus écrasé
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente (le
+disque virtio de la carte de la page, juste en dessous) a trouvé quatre
+défauts, tous reproduits par lui avec un test temporaire, et je les ai
+relus dans le code avant d'y toucher.
+
+1. **La borne de 64 Mio ne valait que par requête.** Le code et l'entrée
+   d'en dessous disaient que « la page n'allouera pas ce que l'invité
+   choisit » ; mais une seule notification pouvait faire partir 128
+   requêtes de 64 Mio, chacune recopiée dans la mémoire de la carte, soit
+   8 Gio, plus que les 4 Gio d'une mémoire wasm32 : l'allocation échoue, la
+   carte trappe, et rien ne rattrape la trappe. Le contrôleur a mesuré
+   512 Mio tenus d'un coup sans aucun refus.
+2. **Un nom de requête pouvait resservir.** `brancher_disque` créait un
+   disque neuf dont les noms repartaient à 1 : la réponse en retard d'une
+   lecture de l'ancien disque remplissait la première lecture du neuf avec
+   les octets d'un autre secteur, et la disait réussie.
+3. **Le chemin d'échec de l'arrière dans `web/carte.js` n'était jugé par
+   rien** : deux sabotages d'une ligne survivaient (une promesse rejetée
+   annoncée réussie ; un `PUT` refusé par le magasin annoncé réussi).
+4. **Le commentaire de la borne de 128 était faux** : une tête encore
+   partie n'était pas refusée, mais acceptée jusqu'à 128 fois ; et le refus
+   de la 129ᵉ écrivait « erreur » dans l'octet de statut que partageaient
+   les 128 requêtes encore en vol.
+
+**Ce qui change** (`crates/wisq-page/src/carte/virtio_blk.rs`, `mod.rs`,
+`web/carte.js`).
+
+- **Une borne sur la somme, `PLUS_TENU` = 64 Mio** : la carte ne tient
+  jamais plus, pour toutes les requêtes en vol à la fois (prises ou non).
+  Ce qui ne tient pas **attend** : l'entrée reste dans l'anneau des
+  disponibles, non lue, avec toutes les suivantes, et la carte la reprend
+  dès qu'une réponse rend de la place (`lu` et `fini` relisent la file).
+  J'ai préféré l'attente au refus : un pilote correct qui charge beaucoup
+  ne reçoit ainsi jamais d'erreur d'entrée-sortie qu'il n'a pas méritée,
+  et virtio n'oblige pas le disque à lire l'anneau au rythme du pilote. La
+  borne par requête vaut la borne de la somme : une requête seule tient
+  toujours, la file ne peut donc pas attendre sans requête en vol pour la
+  reprendre ; au-delà, elle est refusée, comme avant. `web/carte.js`
+  confie à l'arrière ce qui part à la réponse, avant de décompter
+  `enVol`.
+- **Les noms continuent d'un disque à l'autre** : `brancher_disque` donne
+  au neuf le prochain nom de l'ancien (`prochain_nom`,
+  `reprendre_les_noms`).
+- **Une tête encore partie, ou une chaîne dont l'octet de statut est celui
+  d'une requête en vol, est rendue en erreur sans écrire ce statut** :
+  l'anneau des servies reçoit son entrée (aucune entrée publiée ne reste
+  sans réponse), mais l'octet appartient à la requête en vol, que sa
+  réponse seule pose. La borne de 128 requêtes dehors reste, pour les têtes
+  au-delà de la table (rien ne les interdit, du côté Swift non plus), et
+  son commentaire dit ce qu'elle fait.
+- **Le chemin d'échec de l'arrière est jugé sous Bun**, par la carte
+  entière, de l'`out` qui notifie à l'octet de statut.
+
+**Comment c'est vérifié.**
+
+- Six tests neufs, et un réécrit. En natif (`--lib`, 76 → 80) :
+  `the_card_never_holds_more_than_its_bound_at_once` (trois lectures de
+  32 Mio d'une notification : deux partent, 64 Mio tenus, la troisième
+  attend sans refus ni statut, puis part à la première réponse),
+  `a_head_still_out_is_refused_without_touching_its_status` (la tête 0
+  publiée deux cents fois : une partie, 199 refusées, le statut reste
+  `0xFF` jusqu'à la réponse ; et une demande d'identifiant dont le statut
+  est celui d'une requête en vol n'écrit rien),
+  `a_disk_plugged_anew_never_reuses_a_name` (le cas exact du contrôleur :
+  la vieille réponse rend `false`, rien n'est copié, puis la jeune lit le
+  secteur 3), `names_carry_over_within_their_range`. Et
+  `no_more_requests_are_out_than_the_queue_has_places`, réécrit : il
+  faisait partir 128 fois la même tête, ce qui est désormais refusé ; il
+  fait maintenant partir 128 têtes distinctes au-delà de la table, chacune
+  avec son statut, refuse la 129ᵉ dans son propre octet, et vérifie que les
+  128 autres n'ont pas été touchés. Sous Bun (`--test carte`, 4 → 6) :
+  `a_failing_backend_is_an_io_error_for_the_driver` (`PUT` refusé, `GET`
+  refusé, plage tronquée, promesse rejetée, écriture qui lève, arrière qui
+  ne sait pas écrire : `0x1` chaque fois, et `0x0` dans les deux sens pour
+  le même magasin qui répond bien) et
+  `what_waits_for_room_leaves_on_the_answer` (deux lectures de 40 Mio par
+  `web/carte.js` : une confiée, la seconde confiée dès la réponse de la
+  première, `enVol` à 1 et non 0 au moment de cette réponse).
+- **Neuf sabotages d'une ligne, chacun tombé, puis restauré** avec
+  `git diff --quiet` vérifié : la borne de la somme retirée, la reprise
+  après réponse retirée (tous deux font tomber
+  `the_card_never_holds_more_than_its_bound_at_once`) ; les noms non
+  repris (`a_disk_plugged_anew_never_reuses_a_name`) ; le refus de la tête
+  partie retiré, puis le statut de ce refus écrit
+  (`a_head_still_out_is_refused_without_touching_its_status`) ; la borne
+  de 128 retirée (`no_more_requests_are_out_than_the_queue_has_places`) ;
+  dans `web/carte.js`, `disqueFini(id, false)` → `true` et
+  `return reponse.ok` → `return true` (tous deux font tomber
+  `a_failing_backend_is_an_io_error_for_the_driver`), et la reprise à la
+  réponse retirée (`what_waits_for_room_leaves_on_the_answer`).
+- `cargo test --release` : 595 réussis, 0 échec (589 avant) ; même chose
+  avec `RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes"`
+  (595/0). `cargo test --release -p wisq-page` : lib 80, carte 6, page 6.
+  `cargo fmt --all --check`, les deux `cargo clippy` (`-D warnings`) et
+  `clippy -p wisq-page --target wasm32-unknown-unknown` : propres. Compte
+  publié : 3486 → 3492 (Swift 2897 + Rust 595). Site : `typecheck` et
+  `build` propres ; `bun test` 470/0 deux fois sur quatre, 469/1 les deux
+  autres, toujours sur `la bande > elle avance seule…`
+  (`site/tests/mouvement.test.ts`, un délai d'animation), qui n'est pas
+  touché ici.
+- Mesure, refaite : seize lectures d'un mébioctet par la file, 2,59 ms par
+  Mio, 386 Mio/s (417 Mio/s à la tranche d'avant : même ordre, la borne
+  de la somme ne gêne pas une requête d'un mébioctet).
+
+**Ce qui reste.**
+
+- Par la carte, une plage tronquée est refusée deux fois : par
+  `arriereParUrl`, et par la carte elle-même, qui refuse des octets d'une
+  autre longueur que demandée (`a_wrong_answer_is_an_io_error`, en natif).
+  Le cas `tronquee` du test neuf ne distingue donc pas les deux gardes ;
+  retirer celle d'`arriereParUrl` fait tomber l'ancien test Bun, qui
+  l'essaie seule (vérifié, restauré).
+- L'affirmation « `enVol` ne passe jamais par zéro » n'est jugée qu'au
+  moment de `surReponse` ; entre deux microtâches, aucune boucle hôte ne
+  peut de toute façon l'observer.
+- Rien n'est encore branché dans `web/host.js` (le flux A y travaille) : le
+  raccord reste celui de l'entrée d'en dessous.
+- La borne de 64 Mio n'a pas été mesurée contre un vrai noyau sous charge :
+  le chiffre de 1 280 Kio par requête est de mémoire du pilote.
+
+## 2026-11-14 — Le disque de la page : pont PCI et virtio-blk de forme ancienne, servi plus tard
+
+**Ce qui n'allait pas.** La carte de la page (l'i8042 et l'horloge, en
+Rust compilé en wasm32) ne connaissait ni le bus PCI ni aucun disque. Un
+noyau sous l'émetteur dans la page disait donc « PCI: System does not
+support PCI » et ne trouvait pas de `/dev/vda`. Et le disque ne peut pas
+se porter tel quel depuis le cœur Swift : `VirtioBlock.serve` lit les
+secteurs pendant l'`out` qui notifie, parce que ses octets sont à portée
+de main. Dans la page ils ne le sont pas : une ISO de 1,4 Gio ne tient pas
+à côté de 1 Gio de RAM, et Swift, qui la tient, ne répond que par message,
+donc plus tard.
+
+**Ce qui change.**
+
+- **Le pont PCI** (`crates/wisq-page/src/carte/pci.rs`), porté de
+  `X86PCIHost` : la configuration par les ports `0xCF8` et `0xCFC` à
+  `0xCFF`, le pont 440FX en 00:00.0 (`8086:1237`), le disque en 00:03.0
+  (`1AF4:1001`, classe stockage de masse, sous-système `1AF4:0002`), une
+  BAR0 de `0x40` ports mesurée, placée et ouverte par le registre de
+  commande, la ligne 5 au départ, et celle que le noyau écrit ensuite. Les
+  écritures partielles relisent et remplacent leurs octets, comme du côté
+  Swift.
+- **Le disque virtio de forme ancienne** (`carte/virtio_blk.rs`), porté de
+  `VirtioBlock` dans sa forme par ports : mêmes registres, même file de 128
+  places calculée depuis un numéro de page (`vring_init`), aucune fonction
+  annoncée, mêmes refus (chaîne mal formée, secteur au-delà du disque sans
+  arithmétique qui fait le tour, type inconnu, identifiant « wisq-disk »).
+  La file est lue et écrite dans la RAM de l'invité par le trait `Ram`.
+- **L'arrière est asynchrone.** À la notification, une lecture ou une
+  écriture **part** : la carte pose une requête (nom, sens, plage en octets,
+  et les octets d'une écriture, recopiés de la RAM au départ), et l'`out`
+  rend tout de suite. Quand l'arrière répond, la carte copie les octets dans
+  les tampons du pilote, pose l'octet de statut, écrit l'anneau des servies,
+  et c'est alors seulement que la ligne 5 monte. Les réponses peuvent
+  revenir dans le désordre. Une remise à zéro ou une file reposée ailleurs
+  oublie ce qui était parti, et les noms ne reviennent jamais : une réponse
+  en retard ne touche plus la RAM. Ce qui se juge sans les octets du disque
+  (les refus, l'identifiant) est rendu tout de suite, comme en Swift.
+- **Trois choses plus strictes que le cœur Swift**, dites dans le code : un
+  tampon qui sort de la RAM est refusé avant de partir (Swift perd l'octet
+  en silence) ; une requête de plus de 64 Mio est refusée (la page
+  n'allouera pas ce que l'invité choisit) ; pas plus de 128 requêtes dehors.
+- **La porte du module** (`carte/porte.rs`) : `carte_disque`,
+  `carte_requetes`, `carte_requete` et ses accesseurs, `carte_disque_place`,
+  `carte_disque_lu`, `carte_disque_fini`. Le module importe désormais deux
+  fonctions, `carte.ram_lire` et `carte.ram_ecrire` : la RAM de l'invité
+  est dans une autre mémoire que celle du module. `web/page-emitter.js` les
+  donne à l'émetteur sous une forme qui lève (il ne les appelle jamais).
+- **`web/carte.js`** : les options `ram` (`ramDeMemoire(memoire, octets)`,
+  la RAM linéaire de `host.js`), `disque` (un arrière : `octets`,
+  `lire(décalage, longueur)` et `ecrire(décalage, octets)` qui rendent des
+  promesses) et `surReponse` ; un `out` qui notifie confie lui-même ses
+  requêtes à l'arrière. `arriereParUrl(url, octets)` est un arrière qui lit
+  par plages dans l'URL (`?a=…&n=…`, `PUT` pour écrire), le contrat que le
+  magasin de la page devra servir, et refuse une plage tronquée.
+- `host.js`, `x86.rs`, `x86_wasm.rs`, `crates/wisq-vm` et le Swift ne sont
+  pas touchés.
+
+**Comment c'est vérifié.**
+
+- **37 tests** : les 12 de `X86PCITests` portés (les trois « par les
+  instructions » passent par `port_ecrire`/`port_lire` avec la largeur de
+  l'instruction, faute de processeur ici) ; les 17 de `VirtioBlockTests`
+  portés à la forme ancienne, la file bâtie en mémoire comme
+  `VirtioQueue.swift` (les quatre qui jugent le transport MMIO sont portés
+  vers ce que la forme ancienne présente à leur place, et le disent dans
+  leur nom), chacun vérifiant que rien n'est rendu avant la réponse ; 6 sur
+  ce que l'attente ajoute (le désordre, une réponse fausse, ce qui ne part
+  pas, la file reposée, les noms jamais réemployés, la borne de 128) ; un
+  sur les exports ; et un sous Bun.
+- **Le test Bun** : un fichier creux de 1 503 238 144 octets (moins d'un
+  mébioctet sur le disque), servi par `Bun.serve` en lisant
+  `Bun.file(…).slice(a, a + n)`. Le noyau est joué par les ports :
+  énumération, BAR mesurée (`0xffffffc1`) et placée, ligne 5, capacité
+  `0x2ccccc` secteurs, poignée de main, file à la page 1. La notification
+  rend tout de suite ; l'arrière retenu par une porte fermée, rien n'est
+  rendu vingt millisecondes plus tard ; la porte ouverte, **une seule
+  plage** est lue (4 096 octets à 1 503 234 048), la marque arrive dans la
+  RAM, la ligne 5 monte au 8259 maître et retombe à l'acquittement. Une
+  écriture change le fichier au secteur 8 ; un secteur au-delà est refusé
+  sans requête.
+- **Mesure** (Bun 1.4.2, ce conteneur) : seize lectures d'un mébioctet par
+  la file, de la notification à la ligne levée, 2,40 ms par Mio, soit
+  417 Mio/s par `fetch` sur `127.0.0.1`. Ce n'est pas un chiffre de
+  téléphone.
+- **31 sabotages** d'une ligne (identifiants, emplacement vide, mesure de la
+  BAR, bord de la fenêtre, commande, octet de la ligne, écriture partielle,
+  largeur, priorité des ports fixes, ligne, réveil et tenue du disque,
+  acquittement, longueur d'une réponse, sonde de la RAM, oubli à la remise
+  à zéro et à la file reposée, noms réemployés, bornes, garde du bout du
+  disque, octets d'une écriture, sens des tampons, lecture « finie »,
+  place des octets, `servir` jamais appelé, RAM qui n'écrit pas, plage
+  tronquée acceptée, émetteur instancié avec `{}`), chacun restauré et
+  vérifié : tous font tomber au moins un test. Trois survivaient d'abord
+  (une réponse trop longue, la borne de 64 Mio masquée par la sonde de la
+  RAM, une plage tronquée) et ont fait renforcer les tests.
+- `cargo test --release -p wisq-page --lib` : 76 réussis (40 avant) ;
+  `--test carte` : 4 (3 avant). `cargo test --release` : 582 réussis, 0
+  échec ; pareil avec les assertions et les débordements armés.
+  `cargo fmt --check`, les deux `clippy`, `clippy` pour
+  `wasm32-unknown-unknown` sur `wisq-page`, `check-whitespace`,
+  `check-project-sources`, SwiftLint `--strict` : propres.
+- Compte publié : 3 442 → 3 479 (Swift 2 897 + Rust 582 ; 3 442 est le
+  compte après la fusion de master, #702). Site reconstruit, `bun test` du
+  site : 470 réussis.
+- Le module de la page passe de 282 646 à 298 011 octets (62 219 à 67 626
+  en gzip -9), mesuré avant la fusion de #703, sur la même base.
+- **Après la fusion de master (#703)**, qui ajoute 7 tests Rust à
+  l'émetteur : compte publié 3 486 (Swift 2 897 + Rust 589) ;
+  `cargo test --release` 589 réussis, 0 échec, pareil armé ; `fmt`, les deux
+  `clippy` et le site (470 réussis) propres. Le module pèse alors
+  387 903 octets : la part de #703 dans ce saut n'est pas mesurée à part.
+
+**Ce qui reste.**
+
+- **Le raccord dans `host.js`**, quand le flux A l'aura libéré : créer la
+  carte avec `ram: ramDeMemoire(memory, pages × 65536)` et un arrière ;
+  donner à `env.in`/`env.out` les ports que ses puces ne prennent pas ;
+  recopier `lignes()` dans les 8259 à chaque tour ; compter `reveil()` dans
+  `wakeable`. **Et un `hlt` qui attend le disque doit rendre la main** :
+  aujourd'hui la boucle saute dans le temps sans céder le fil, et une
+  promesse de l'arrière ne se résout jamais pendant ce temps-là.
+- Un octet écrit dans la RAM par le disque ne retire pas les régions déjà
+  traduites qui le couvrent (la boucle n'en retire aucune, aujourd'hui).
+- Le magasin de la page (P7) : un `WKURLSchemeHandler` qui sert
+  `wisq://disque/N?a=…&n=…` depuis `DiskStore`, et un cache de blocs côté
+  page pour ne pas payer un message par requête.
+- Le second disque, la carte réseau, l'écran, la tablette, et l'instantané
+  de la carte.
+
+## 2026-11-14 — La carte de la page ne laisse plus de touche enfoncée, et ses trous de tests sont bouchés
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « la carte de la page »
+a trouvé un défaut et trois trous.
+
+- **Une touche coincée.** La file des frappes est bornée (8 192) frappe par
+  frappe, pas caractère par caractère. Un texte qui la remplissait au milieu
+  d'un caractère gardait l'enfoncement et jetait le relâchement : Maj et la
+  touche restaient enfoncées dans l'invité, et Xorg répétait la touche sans
+  fin. Reproduit sur le module wasm32 : `taperTexte("a" + "A".repeat(2048))`
+  rendait 8 192 et finissait sur `9e aa 2a 1e` (Maj enfoncée 2 048 fois,
+  relâchée 2 047 fois). Le défaut vient de `X86PS2Controller.type` du cœur
+  Swift ; `taper_texte` et `carte_texte` l'avaient repris tel quel.
+- **Le détail du compte de tests de l'entrée précédente était faux** (le
+  total, 27, était juste) : corrigé dans l'entrée même.
+- **Les enveloppes `taper`, `touche` (touche étendue), `lever` et
+  `baisser` de `web/carte.js`** n'étaient appelées par aucun test : `taper`
+  qui oubliait `E0`, ou `lever` qui rendait toujours vrai, survivaient.
+- **Huit sabotages d'une ligne survivaient** dans les périphériques, sur
+  des comportements hérités que les cas Swift ne tenaient pas non plus :
+  `D2` rendu « de la souris », `F0 00` qui rend toujours `02`, `FF` de la
+  souris qui la laisse rapporter, une commande en attente qu'une nouvelle
+  commande n'annule pas, `E9` qui tait le bit « rapporte », le paramètre du
+  clavier oublié, la souris coupée par `A7` qui parle quand même, et le
+  réglage de l'horloge en binaire décodé en BCD.
+
+**Ce qui change.**
+
+- **La borne ne coupe plus jamais une touche**, par deux règles :
+  - un texte entre **caractère par caractère, entier ou pas du tout**
+    (`I8042::taper_groupe`), et s'arrête au premier caractère qui ne tient
+    plus — sans sauter celui-là pour taper les suivants, plus courts : pas
+    de texte troué. `"a" + "A" × 2048` met 8 190 frappes en file et finit
+    sur `2a 1e 9e aa` ;
+  - pour une frappe seule (`taper`, `carte_taper`), le relâchement d'une
+    touche que la file laisse enfoncée **passe toujours**, même au-delà de
+    la borne ; un enfoncement, ou le relâchement d'une touche déjà relevée,
+    n'entre que sous la borne. La file suit pour cela, une par touche (512 :
+    un code du jeu 1, avec ou sans `E0`), l'état de chaque touche une fois
+    la file jouée. Elle dépasse donc la borne de 512 relâchements au plus.
+  - `carte_taper` rend 1 ou 0, et `taper` de `web/carte.js` `true` ou
+    `false`.
+- **Dix tests** : neuf natifs (la file pleine qui ne laisse aucune touche
+  enfoncée, le dépassement borné à un relâchement par touche, un groupe
+  entier ou rien, un texte qui remplit la file ; et un cas par trou hérité :
+  où va chaque octet écrit, les paramètres du clavier, l'état et la remise à
+  zéro de la souris, la souris coupée par le contrôleur, l'horloge réglée en
+  binaire), et un sous Bun, sur le module wasm32, qui passe par les
+  enveloppes de `web/carte.js` : touches étendues tout de suite et à leur
+  tour, lignes du dehors levées, baissées et refusées, et le texte qui
+  remplit la file joué jusqu'au dernier octet.
+- **Le cœur Swift n'est pas touché** : il garde le défaut (voir plus bas).
+
+**Comment c'est vérifié.**
+
+- Vingt-deux sabotages d'une ligne, chacun restauré puis vérifié par `cmp` :
+  tous font tomber au moins un test. Sept sur la touche coincée (le texte
+  qui saute au lieu de s'arrêter, la borne d'un groupe vérifiée au début
+  seulement, le relâchement refusé à la borne, tout relâchement admis, le
+  relâchement qui n'efface pas la touche, `E0` oublié dans l'état des
+  touches, et l'ancien texte frappe par frappe vu du module wasm32) ; six
+  dans `web/carte.js` (`taper` sans `E0`, `taper` qui rend un nombre,
+  `touche` sans `E0`, `lever` et `baisser` toujours vrais, `baisser` qui
+  lève) ; les huit hérités du contrôle, et `F0 00` qui rend toujours `41`.
+- Le script de reproduction du contrôle, sur le module reconstruit :
+  8 190 frappes en file, derniers octets `2a 1e 9e aa`, Maj enfoncée et
+  relâchée 2 047 fois, A 2 048 fois.
+- `cargo test --release -p wisq-page --lib` : 40 réussis (31 avant) ;
+  `--test carte` : 3 réussis (2 avant). `cargo test --release` : 545
+  réussis, 0 échec ; pareil avec les assertions et les débordements armés.
+  `cargo fmt --check`, les deux `clippy`, `clippy` pour
+  `wasm32-unknown-unknown` sur `wisq-page`, `check-whitespace`,
+  `check-project-sources` et SwiftLint `--strict` : propres.
+- Compte publié : 3 394 → 3 404 (Swift 2 859 + Rust 545) ; site reconstruit,
+  `bun test` du site : 470 réussis, 0 échec.
+- Le module de la page passe de 282 502 à 282 646 octets (62 090 à 62 219
+  en gzip -9), mesuré sur `target/page`.
+
+**Ce qui reste.**
+
+- **Le même défaut dans le cœur Swift** : `X86PS2Controller.type` borne la
+  file frappe par frappe, et `LocalVMModel` (par `X86Machine`) y verse les
+  frappes d'un texte une à une. Un collage qui remplit la file (8 192
+  frappes : deux par caractère, quatre avec Maj) au milieu d'un caractère
+  avec Maj peut donc encore y laisser Maj et la touche enfoncées. La même
+  correction s'y porte en une tranche à part (le Swift ici n'a pas bougé).
+- Le raccord dans `host.js`, décrit dans l'entrée précédente.
+
+## 2026-11-14 — La carte de la page : trait `Ram`, `Carte`, i8042 et horloge CMOS en Rust
+
+**Ce qui n'allait pas.** Dans la page WebKit, la boucle hôte (`web/host.js`)
+ne connaît que deux 8259, un 8254 et un 16550. Tout autre port rend `0xff`,
+personne. Un noyau n'y trouve donc ni clavier, ni souris, ni horloge murale :
+« i8042: Can't read CTR », et une date de 1970 (carte du 14 novembre,
+§ 1.6 et § 1.9). Le cœur Swift a ces périphériques, mais un port est un
+appel synchrone depuis le module d'une région : ils ne peuvent pas rester en
+Swift, derrière un message.
+
+**Ce qui change.**
+
+- **Un module `carte` dans `crates/wisq-page`**, compilé dans le même
+  `wisq_page.wasm` que l'émetteur, et en natif pour les tests :
+  - le trait `Ram` (lire, écrire des octets de la RAM invitée par adresse
+    physique ; une plage entière ou rien), `RamPlate` pour les tests,
+    `SansRam` pour la page ;
+  - la `Carte`, qui aiguille les ports (in/out de 1, 2 ou 4 octets ; `None`
+    pour « personne ») et tient les lignes à niveau : `lignes()` (seize bits,
+    maître puis esclave), `tenues()` (celles à effacer quand elles
+    retombent), `lever`/`baisser` pour une source du dehors. Elle refuse les
+    lignes 0, 2 et 4, que les puces de `host.js` tiennent ;
+  - **l'horloge CMOS** aux ports `0x70`/`0x71`, portée registre pour
+    registre depuis `X86CMOSClock.swift`. L'heure UTC est injectée en
+    millisecondes : `SystemTime::now` panique sur `wasm32-unknown-unknown`.
+    Le calendrier (Howard Hinnant) est écrit dans le crate, sans dépendance ;
+  - **l'i8042** aux ports `0x60`/`0x64`, lignes 1 et 12, porté commande pour
+    commande depuis `X86PS2.swift` : CTR, autotests, bouclage, souris par
+    `D4`, jeux 1 et 2, paquets de souris, remise à zéro par `0xFE` (et par
+    `D1` bit zéro à zéro), et le **rythme de frappe humain** (30 ms tenue,
+    20 ms d'écart, en tics du 8254 ; une frappe ne part que quand le noyau
+    a tout lu). La disposition américaine et le texte en frappes, Maj
+    autour, viennent avec.
+- **Quinze exports `carte_*`** du module (lire, écrire, lignes, tenues,
+  lever, baisser, battre, heure, touche, taper, texte_place, texte, souris, remise,
+  réveil). Le module n'a **toujours aucun import** : l'émetteur s'instancie
+  encore avec `{}`.
+- **`web/carte.js`** charge la carte dans une instance à elle (une trappe de
+  l'émetteur jette son instance, pas le clavier) et expose `ports.in`/
+  `ports.out` à la forme exacte d'`env.in`/`env.out`, `lignes()`,
+  `battre(tics)`, `reveil()`, `remise()`, et `touche`, `taper`,
+  `taperTexte`, `souris`. **`host.js` n'est pas touché** : le flux A y
+  travaille. Le raccord (une dizaine de lignes) est décrit pour la suite.
+
+**Trois trous des tests Swift, bouchés du côté Rust.** Les sabotages les ont
+montrés :
+
+- retirer « une frappe ne part que si le noyau a tout lu » laissait le cas
+  du rythme vert, en Swift comme dans la première version portée : la
+  seconde demande tombait aussi avant l'heure. Le cas Rust ajoute une
+  frappe en attente, une heure largement passée, et un octet non lu ;
+- retirer la copie des registres au début d'un réglage (bit SET) laissait le
+  cas du réglage vert : chaque écriture prenait effet tout de suite, au
+  même résultat. Le cas Rust fait passer une heure chez l'hôte pendant le
+  réglage, et l'heure lue doit rester figée ;
+- forcer le siècle à vingt laissait aussi le cas du réglage vert : aucun
+  cas n'écrivait le siècle. Le cas Rust écrit 19, puis 0 (qui vaut 20).
+
+Les tests Swift ne sont pas modifiés. Un quatrième sabotage a survécu, du
+côté JavaScript : `Number(valeur)` au lieu de la valeur ramenée sur 32 bits
+dans `ports.out`. Le test n'essayait qu'une valeur sous 2³² ; il passe
+maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
+
+**Comment c'est vérifié.**
+
+- 29 tests ajoutés. 27 natifs : les 5 cas de `X86CMOSClockTests` (4 dans
+  `cmos.rs`, le cinquième par les ports de la carte), plus un sur le
+  calendrier ; les 9 de `X86PS2Tests` (8 dans `i8042.rs`, la cascade sur
+  la carte, réduite à ce qu'elle tient : la ligne 12, quatrième de
+  l'esclave) ; 1 de `X86KeystrokesTests` (`text_is_typed_with_shift_where_needed` ;
+  `testTheBarKeysBecomePCKeys` et `testAScreenAddsTheVirtualConsoleFirst`
+  ne sont pas portés, la barre et l'écran sont à l'application) ; les 3 de
+  `X86RebootTests` qui tiennent le 8042 ; les touches perdues ; 5 autres
+  sur la carte (le 8042 par ses ports, les ports qui ne sont pas à elle,
+  le rythme vu des lignes, les lignes du dehors, la RAM) ; 2 sur les
+  exports. *(Ventilation corrigée par le contrôle : elle disait « 2 de
+  `X86KeystrokesTests` » et « 7 sur la carte », qui recomptaient deux cas
+  déjà nommés. Le total, 27, était juste.)*
+  2 sous Bun (`crates/wisq-page/tests/carte.rs`), sur le module wasm32 : un
+  aller-retour de port (horloge à heure figée, sonde du 8042, une valeur de
+  64 bits qui garde son octet bas), et les lignes recopiées dans de faux
+  8259 au rythme d'une main, les lignes 0 et 4 de l'hôte intactes.
+- Vingt sabotages d'une ligne (quatorze dans le Rust des périphériques,
+  six dans `web/carte.js` et l'export de l'heure), chacun restauré puis
+  vérifié par `cmp` : seize font tomber au moins un test du premier coup ;
+  les quatre autres ont survécu, ont fait renforcer les tests (voir plus
+  haut), et tombent maintenant.
+- `cargo test --release` : 535 tests, 0 échec ; pareil avec les assertions
+  et les débordements armés. `cargo fmt --check`, les deux `clippy`, et
+  `clippy` pour `wasm32-unknown-unknown` sur `wisq-page` : propres.
+- Le module de la page passe de 266 311 à 282 502 octets (57 391 à 62 090
+  en gzip -9) ; mesuré sur `target/page`.
+- Compte publié : 3 365 → 3 394 (Swift 2 859 + Rust 535) ; site reconstruit,
+  `bun test` du site : 470 réussis, 0 échec.
+
+**Ce qui reste.**
+
+- **Le raccord dans `host.js`**, quand le flux A aura fini : un paramètre
+  `carte` à `machine()`, la carte en dernier dans `env.in` et `env.out`, ses
+  lignes recopiées à chaque tour et dans l'attente du `hlt`, `reveil()` dans
+  `wakeable`, et `remise()` rendue comme « redémarrage ». Puis un test Bun
+  où un invité lit l'horloge et le 8042 par de vrais `in`/`out`.
+- Les messages de l'application (`wisqTouche`, `wisqSouris`, `wisqTaper`)
+  et `LocalDesktop.key`/`mouse` côté Swift.
+- La RAM n'est pas branchée dans la page : le premier périphérique qui la
+  lira (virtio, P4) ajoutera `ram_lire`/`ram_ecrire`, et l'émetteur devra
+  les recevoir aussi.
+- Ni l'horloge ni le 8042 ne passent dans un instantané (P9).
+
 ## 2026-11-14 — Bureau prêt : le test du guetteur mesure enfin son attente
 
 **Ce qui n'allait pas.** Le contrôle de l'entrée suivante l'a montré : ôter
