@@ -144,6 +144,26 @@ final class SavedSessionTests: XCTestCase {
         XCTAssertFalse(try pending.resume(into: machine), "plus rien : démarrage à froid")
     }
 
+    /// **La boîte sait qu'une session attendait, même vidée.** L'échec du
+    /// démarrage sur le fil le lit pour promettre la session gardée : une
+    /// reprise réussie ou refusée vide la boîte, et la promesse ne doit pas
+    /// tomber avec elle.
+    func testABoxRemembersThatASessionWasAwaited() throws {
+        XCTAssertFalse(PendingSession(nil).awaited, "aucune session : rien à promettre")
+        let machine = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
+
+        let resumed = PendingSession(try Self.pcSnapshot())
+        XCTAssertTrue(resumed.awaited)
+        XCTAssertTrue(try resumed.resume(into: machine))
+        XCTAssertTrue(resumed.isEmpty)
+        XCTAssertTrue(resumed.awaited, "vidée par la reprise, elle sait encore qu'une session attendait")
+
+        let refused = PendingSession(try X86RestoreAllOrNothingTests.damagedSnapshot())
+        XCTAssertThrowsError(try refused.resume(into: machine))
+        XCTAssertTrue(refused.isEmpty)
+        XCTAssertTrue(refused.awaited, "vidée par un refus aussi")
+    }
+
     func testNoSessionMeansAColdBoot() throws {
         let machine = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
         XCTAssertFalse(try PendingSession(nil).resume(into: machine))

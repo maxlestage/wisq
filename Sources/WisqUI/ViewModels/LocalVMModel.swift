@@ -530,10 +530,6 @@ public final class LocalVMModel {
         // qui attend ce signal, le lit donc sans course.
         let runStart = RunStart()
         self.runStart = runStart
-        // Une session lisible attendait : un échec du démarrage la garde, et
-        // le dit. Un booléen et pas `saved` : la fermeture du fil garderait
-        // sinon l'instantané décompressé toute la session.
-        let sessionAwaited = saved != nil
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -632,8 +628,11 @@ public final class LocalVMModel {
                     // does not exist. **Mais il n'efface rien** : la session
                     // qu'il n'a pas pu reprendre — un disque qui ne se branche
                     // plus — est gardée, et la console le dit (`BootRefusal`).
+                    // Une session lisible attendait : elle est gardée, et la
+                    // console le dit. La boîte le sait encore une fois vidée
+                    // (`PendingSession.awaited`).
                     self.refuseToStart(
-                        .couldNotStart(reason, sessionKept: sessionAwaited),
+                        .couldNotStart(reason, sessionKept: pending.awaited),
                         name: kernelURL.lastPathComponent)
                 }
                 return
