@@ -4,19 +4,25 @@ import Foundation
 /// tant que la console n'a pas répondu.
 ///
 /// **Ce qui n'allait pas.** Au banc, la console d'un bureau prêt répond
-/// 12,0 s après la reprise (l'entrée du 14 novembre de `docs/JOURNAL.md`) :
-/// l'instantané de 842 Mio se déplie, puis l'interprète, encore froid, rejoue
-/// l'invité jusqu'à ce que son shell lise la ligne de `FirstResume`. Pendant
-/// ce temps, l'écran montrait le bureau tel que la fabrique l'avait laissé,
-/// et rien ne répondait au doigt : un écran figé, juste après un
-/// téléchargement de 1,5 Gio. La phrase de `FirstResume.note` n'arrive qu'à
-/// la fin du dépliage, dans la console, que l'écran du bureau cache.
+/// 12,0 s après la reprise (l'entrée du 14 novembre de `docs/JOURNAL.md`,
+/// comptées après `restore`) : l'interprète, encore froid, rejoue l'invité
+/// jusqu'à ce que son shell lise la ligne de `FirstResume`. Avant cela,
+/// l'application lit l'image et déplie l'instantané brut de 345,8 Mio, sur
+/// le fil principal. Pendant tout ce temps, l'écran montrait le bureau tel
+/// que la fabrique l'avait laissé, et rien ne répondait au doigt : un écran
+/// figé, juste après un téléchargement de 1,5 Gio. La phrase de
+/// `FirstResume.note` n'arrive qu'à la fin du dépliage, dans la console, que
+/// l'écran du bureau cache.
 ///
-/// **Ce qui est fait.** Dès le toucher, une phrase hors de la console et de
-/// l'écran : « Reprise du bureau en cours — 6 s ». Elle se tait au premier
-/// octet que l'invité écrit sur sa console : l'écho de la ligne tapée, qui
-/// prouve que l'invité lit de nouveau ce qu'on lui envoie. Au-delà de
-/// l'attente ordinaire, elle le dit, sans crier à la panne : le signe de vie
+/// **Ce qui est fait.** Une phrase hors de la console et de l'écran :
+/// « Reprise du bureau en cours — 6 s ». **Elle ne se montre qu'une fois le
+/// fil principal rendu**, l'image lue et l'instantané déplié : ce travail se
+/// fait sur ce fil, et rien ne s'affiche tant qu'il dure. **Ses secondes se
+/// comptent depuis le toucher** (`since`, pris en tête de
+/// `LocalVMModel.boot`), ce travail compris. Elle se tait au premier octet
+/// que l'invité écrit sur sa console : l'écho de la ligne tapée, qui prouve
+/// que l'invité lit de nouveau ce qu'on lui envoie. Au-delà de l'attente
+/// ordinaire, elle le dit, sans crier à la panne : le signe de vie
 /// (`GuestHeartbeat`) dit, lui, si la machine avance.
 ///
 /// Seule la première reprise l'emploie : c'est la seule où une ligne est
@@ -24,11 +30,13 @@ import Foundation
 /// retrouve un invité silencieux à son invite, et la phrase ne s'y tairait
 /// jamais.
 public struct ResumeWait: Equatable, Sendable {
-    /// L'attente ordinaire, en secondes : 12,0 s mesurées au banc, et la
-    /// marge d'un téléphone plus lent ou plus chargé que le banc.
+    /// L'attente ordinaire, en secondes : 12,0 s mesurées au banc après
+    /// `restore`, et la marge d'un téléphone plus lent ou plus chargé que le
+    /// banc, et du dépliage d'avant, que le banc ne comptait pas.
     public static let usual: ClosedRange<Int> = 11...15
 
-    /// Le toucher qui a lancé la reprise.
+    /// Le toucher qui a lancé la reprise : pris avant l'image lue et
+    /// l'instantané déplié, pas après.
     public let since: Date
     /// Ce que l'invité avait écrit sur sa console au moment du toucher.
     let baseline: Int
