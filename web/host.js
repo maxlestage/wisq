@@ -2163,7 +2163,7 @@ export function machine({
         }
         // **Et voici l'interruption qui vient du dehors.**
         //
-        // Les quatre délivrances au-dessus sont synchrones : l'instruction que
+        // Les délivrances au-dessus sont toutes synchrones : l'instruction que
         // l'invité vient d'exécuter les a causées, et le module les signale en
         // rendant la main. Celle-ci n'a causé personne. Le temps a passé, le
         // canal zéro du 8254 a fini un tour, le 8259 a routé la ligne, et
