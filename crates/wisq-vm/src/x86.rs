@@ -4990,8 +4990,6 @@ mod tests {
         );
     }
 
-    /// **`lkgs` se lit, et le reste de la page `f2` reste refusé.**
-    ///
     /// **Le premier mur de `ld-musl` se lit, et ses voisins se lisent juste.**
     ///
     /// `66 48 0f 6e c3` est l'entrée du `memset` de musl — `movq %rbx,%xmm0` —,
@@ -5076,6 +5074,8 @@ mod tests {
         assert_eq!(cpu.rip, 0x3000_0000);
     }
 
+    /// **`lkgs` se lit, et le reste de la page `f2` reste refusé.**
+    ///
     /// `f2 0f 00 /6` charge la base GS du noyau depuis un sélecteur — l'arrivée
     /// de FRED. Le noyau Alpine la porte dans `native_lkgs`, à 1572 octets de
     /// `init_scattered_cpuid_features`, et ne l'exécute que si CPUID annonce

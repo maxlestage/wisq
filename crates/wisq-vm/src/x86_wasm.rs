@@ -547,8 +547,8 @@ pub const FXSAVE_WRITTEN: u64 = 416;
 /// À ne pas confondre avec `FXSAVE_WRITTEN`, qui en vaut 416 : ce sont deux
 /// nombres différents, et les confondre est facile. `fxsave` **écrit** 416
 /// octets et **exige** que les 512 soient accessibles ; `fxrstor` en
-/// **consomme** quatre ici — les deux mots que cette machine porte — et exige
-/// les mêmes 512.
+/// **consomme** ici ce que cette machine porte — les deux mots, MXCSR et les
+/// seize XMM, rien au-delà de `0x1a0` — et exige les mêmes 512.
 ///
 /// Mesuré plutôt que lu, le 15 septembre, sur le silicium de la machine de
 /// développement : l'aire posée à cheval sur une page rendue illisible par
@@ -4765,16 +4765,16 @@ impl Module {
             }
             return Some(());
         }
-        // **`fxrstor` relit l'aire : les deux mots que cette machine porte, et
-        // rien d'autre.**
+        // **`fxrstor` relit l'aire : ce que cette machine porte — les deux
+        // mots, MXCSR et les seize XMM.**
         //
         // C'est la moitié relecture du couple, et elle est arrivée six tranches
         // après son jumeau — le premier chemin qui la réclame est celui qui
         // bascule vers `/init`.
         //
         // **Elle restaure ce que la machine a** : le mot de contrôle, le mot
-        // d'état, MXCSR et les seize XMM. Ce paragraphe disait « les deux
-        // mots, et rien d'autre », parce que MXCSR et les XMM n'existaient
+        // d'état, MXCSR et les seize XMM. Ce bloc disait « les deux mots, et
+        // rien d'autre », parce que MXCSR et les XMM n'existaient
         // pas ici ; ils existent, et un noyau qui rend la main à un programme
         // passe par ici pour lui rendre ses registres. Les huit registres x87
         // et leur mot d'étiquettes ne sont toujours pas restaurés : ils
