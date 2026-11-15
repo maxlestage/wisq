@@ -671,6 +671,22 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertFalse(exists(archive), "l'archive lue ne garde pas sa place")
     }
 
+    /// **Le bureau installé attend sa première reprise** : la marque est
+    /// posée sous l'identité de sa session, avec le jour de la fabrication. Sans
+    /// elle, la reprise rattrapait le temps depuis l'import, et l'invité
+    /// restait au jour de la fabrique. Voir `FirstResume`.
+    func testAnInstalledDesktopWaitsForItsFirstResume() throws {
+        let archive = try makeArchive(kernel: kernel)
+        let desktop = try desktop(forKernel: kernel)
+        let machine = try install(desktop, archive: archive, digest: ReadyDesktopBuild.kernelDigest(kernel))
+        let identity = SuspendedMachine.identity(of: kernel, named: machine.key)
+        XCTAssertEqual(FirstResume.pending(kernel: identity, in: storage), FirstResume(madeAt: Self.moment))
+        // La première écriture de la session la retire : c'est la reprise
+        // suivante qui rattrape, comme pour toute machine.
+        try SuspendedMachine.save(Data(repeating: 3, count: 64), kernel: identity, in: storage)
+        XCTAssertNil(FirstResume.pending(kernel: identity, in: storage))
+    }
+
     /// **Une image au noyau différent est refusée avant l'import** : la
     /// session ne serait jamais trouvée, et la machine démarrerait à froid
     /// sans le dire. Rien n'est installé ; une image illisible (`nil`) non

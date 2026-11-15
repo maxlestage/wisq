@@ -366,9 +366,14 @@ public final class LocalVMModel {
         // le trouve vide, devant un invité qui attend en silence. Voir
         // `ResumeNote`.
         let savedAt = saved == nil ? nil : SuspendedMachine.savedAt(kernel: kernelName, in: storage)
-        let resumeNote = saved != nil && !resuming
+        // **La première reprise d'un bureau prêt téléchargé** : l'invité est
+        // encore au jour de la fabrique, et l'état de son générateur est celui
+        // de toutes les copies. Elle reçoit l'heure du téléphone et de l'aléa
+        // neuf, une fois, au lieu du rattrapage ordinaire. Voir `FirstResume`.
+        let firstResume = saved == nil ? nil : FirstResume.pending(kernel: kernelName, in: storage)
+        let resumeNote = firstResume?.note ?? (saved != nil && !resuming
             ? ResumeNote.text(savedAt: savedAt, now: Date())
-            : nil
+            : nil)
 
         // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
         // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
@@ -602,8 +607,12 @@ public final class LocalVMModel {
                     // **L'heure de l'invité rattrape le temps passé dehors** :
                     // sans ça, une session reprise le lendemain se croyait la
                     // veille. Voir `GuestMachine.elapse(seconds:)`, pour le
-                    // PC comme pour la machine RISC-V.
-                    machine.elapse(since: savedAt)
+                    // PC comme pour la machine RISC-V. **Sauf à la première
+                    // reprise d'un bureau prêt**, qui reçoit l'heure du
+                    // téléphone d'un coup, et de l'aléa : `FirstResume`. La
+                    // ligne attend dans la file de la console, que l'invité
+                    // lit dès qu'il tourne.
+                    FirstResume.resumed(machine, first: firstResume, savedAt: savedAt)
                     // L'invité est déjà en vie ; il reste à le dire, si l'écran
                     // ne l'a pas vu partir.
                     if let resumeNote {

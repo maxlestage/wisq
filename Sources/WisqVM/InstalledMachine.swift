@@ -456,9 +456,17 @@ public enum InstalledMachines {
         let from = "machine-\(SuspendedMachine.safeName(source.key))-"
         let to = "machine-\(SuspendedMachine.safeName(copy.key))-"
         for file in SuspendedMachine.savedMachineFiles(named: source.key, in: directory) {
+            let copied = to + file.dropFirst(from.count)
             try manager.copyItem(
-                at: folder.appendingPathComponent(file),
-                to: folder.appendingPathComponent(to + file.dropFirst(from.count)))
+                at: folder.appendingPathComponent(file), to: folder.appendingPathComponent(copied))
+            // **La copie d'un bureau prêt jamais repris l'est aussi** : sa
+            // session est celle qui a été téléchargée, et sans la marque la
+            // copie reprendrait au jour de la fabrication. Voir `FirstResume`.
+            let marker = folder.appendingPathComponent(file + FirstResume.markerSuffix)
+            if manager.fileExists(atPath: marker.path) {
+                try manager.copyItem(
+                    at: marker, to: folder.appendingPathComponent(copied + FirstResume.markerSuffix))
+            }
         }
     }
 

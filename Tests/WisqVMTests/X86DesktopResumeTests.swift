@@ -30,6 +30,15 @@ import XCTest
 /// l'image dans la bibliothèque, quand ce n'est pas celui de
 /// `WISQ_PC_DISK_FILE`.
 ///
+/// Repris depuis une archive, le bureau passe par **sa première reprise**,
+/// comme sur le téléphone (`FirstResume`) : la marque posée comme à
+/// l'installation, lue comme l'application la lit, la ligne tapée avant le
+/// premier tour. Puis l'heure de l'invité est comparée à celle que l'horloge
+/// CMOS sert. `WISQ_PC_HOST_AHEAD_DAYS` fige cette horloge autant de jours
+/// après maintenant — un bureau prêt repris un mois après sa fabrication — et
+/// `WISQ_PC_FIRST_RESUME=0` saute la première reprise, pour mesurer l'écart
+/// qu'elle corrige.
+///
 /// Le pilotage par la console est celui de la fabrique : `GuestScript`.
 final class X86DesktopResumeTests: XCTestCase {
     static func machine(_ environment: [String: String], writes: URL, console: GuestConsole,
@@ -106,6 +115,8 @@ final class X86DesktopResumeTests: XCTestCase {
         let saved: Data
         let writes: URL
         var ramSize: Int?
+        var firstResume: FirstResume?
+        var savedAt: Date?
         if raw != nil {
             writes = folder.appendingPathComponent("disque.writes")
             for suffix in ["", ".map"] where FileManager.default.fileExists(atPath: from + ".writes" + suffix) {
@@ -127,6 +138,13 @@ final class X86DesktopResumeTests: XCTestCase {
                 return XCTFail("pas de session lisible sous l'empreinte du noyau \(identity)")
             }
             saved = session
+            // **La marque de l'installation**, posée comme `ReadyDesktop.install`
+            // la pose, puis lue comme l'application la lit.
+            if environment["WISQ_PC_FIRST_RESUME"] != "0" {
+                try FirstResume.arm(FirstResume(madeAt: nil), kernel: identity, in: folder)
+            }
+            firstResume = FirstResume.pending(kernel: identity, in: folder)
+            savedAt = SuspendedMachine.savedAt(kernel: identity, in: folder)
             writes = try LocalDisk.writesURL(for: installed.keys.overlay(forDisk: image), in: folder)
             XCTAssertTrue(FileManager.default.fileExists(atPath: writes.path + ".map"), "la couche du disque manque")
             ramSize = Int(KernelMemory.size(forKernel: installed.key, in: folder, ceiling: .max))
@@ -138,8 +156,17 @@ final class X86DesktopResumeTests: XCTestCase {
         // la fabrique tire une suite fixée, la reprise non. C'est ce qui fait
         // que deux reprises du même bureau n'ont pas les mêmes clés SSH.
         machine.entropy = .system()
+        // L'horloge du téléphone, des jours plus tard si on le demande.
+        let ahead = environment["WISQ_PC_HOST_AHEAD_DAYS"].flatMap(Double.init).map { Date().addingTimeInterval($0 * 86_400) }
+        machine.frozenHostTime = ahead
         defer { Self.keep(console, at: from + "-repris.console") }
         try machine.restore(saved)
+        // **Comme l'application, entre la reprise et le premier tour** : la
+        // première reprise tape sa ligne, une reprise ordinaire rattrape.
+        let firstLine = FirstResume.resumed(machine, first: firstResume, savedAt: savedAt)
+        if archive != nil, environment["WISQ_PC_FIRST_RESUME"] != "0" {
+            XCTAssertNotNil(firstLine, "la première reprise n'a rien tapé")
+        }
         XCTAssertNotNil(machine.network, "la carte réseau n'est pas revenue")
         let display = try XCTUnwrap(machine.display)
         // **L'écran d'abord, avant la moindre instruction** : c'est ce que
@@ -164,6 +191,19 @@ final class X86DesktopResumeTests: XCTestCase {
         script.type("echo REPRIS_$((6*7))\n")
         try script.expect("REPRIS_42", budget: budget)
         print("la console répond \(String(format: "%.1f", Date().timeIntervalSince(started))) s après la reprise")
+
+        // **L'heure de l'invité**, contre celle que sert son horloge CMOS : à
+        // la minute près après une première reprise, au jour de la fabrique
+        // sans elle.
+        script.type("echo HEURE_$(date +%s)_FIN$((3+4))\n")
+        try script.expect("_FIN7", budget: budget)
+        let tail = console.text.components(separatedBy: "HEURE_").last ?? ""
+        let guest = TimeInterval(tail.prefix { $0.isNumber }) ?? 0
+        let host = (ahead ?? Date()).timeIntervalSince1970
+        print("heure de l'invité : \(Int(guest)), de l'horloge CMOS : \(Int(host)), écart \(Int(host - guest)) s")
+        if firstLine != nil {
+            XCTAssertLessThan(abs(host - guest), 120, "la première reprise n'a pas remis l'heure")
+        }
 
         // **L'aléa du noyau, juste après la reprise** : relevé, pas jugé. Deux
         // reprises qui rendent les mêmes octets ici disent que l'état du

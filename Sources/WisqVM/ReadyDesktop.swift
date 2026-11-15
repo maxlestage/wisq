@@ -528,7 +528,22 @@ public struct ReadyDesktop: Equatable, Sendable {
         let contents = try MachineArchive.contents(of: file)
         guard contents.image == image.file else { throw Refusal.archiveForAnotherImage(contents.image) }
         guard contents.sessions.contains(kernelDigest) else { throw Refusal.noSession(kernelDigest) }
-        return try MachineArchive.import(
+        let machine = try MachineArchive.import(
             from: file, library: library, in: directory, now: now, id: id, createOwnDisk: createOwnDisk)
+        // **Sa première reprise lui donnera l'heure et de l'aléa** : la
+        // session vient d'être écrite par l'import, sa date est celle
+        // d'aujourd'hui, et l'invité est encore au jour de la fabrication.
+        // Sans la marque, la machine reprendrait à ce jour-là. Une marque qui
+        // ne s'écrit pas défait l'installation plutôt que de la laisser à
+        // moitié juste. Voir `FirstResume`.
+        do {
+            try FirstResume.arm(FirstResume(madeAt: madeAt),
+                                kernel: SuspendedMachine.identity(digest: kernelDigest, named: machine.key),
+                                in: directory)
+        } catch {
+            _ = try? InstalledMachines.remove(id: machine.id, in: directory)
+            throw error
+        }
+        return machine
     }
 }
