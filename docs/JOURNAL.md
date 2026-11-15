@@ -8,6 +8,61 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Première reprise d'un bureau prêt : deux règles enfin tenues par un test, et la marque d'une session orpheline effacée
+
+Le contrôle de la tranche précédente (la première reprise d'un bureau
+téléchargé) a trouvé trois défauts. Le code des deux premiers était juste ;
+c'est la preuve qui manquait.
+
+**Ce qui n'allait pas.**
+
+1. **« La marque est retirée après l'écriture, pas avant »**
+   (`SuspendedMachine.savePacked`) n'était tenu par aucun test.
+   `testAFailedWriteKeepsTheMarker` faisait échouer l'écriture dans un
+   **autre** dossier que celui de la marque : la marque n'était donc jamais
+   touchée, quel que soit l'ordre. Sabotage du contrôleur (le retrait
+   déplacé avant l'écriture) : 43 tests verts, 0 échec.
+2. **« Une marque qui ne s'écrit pas défait l'installation »**
+   (`ReadyDesktop.install`) n'était tenu par aucun test. Sabotage du
+   contrôleur (la ligne `InstalledMachines.remove` supprimée) : 74 tests
+   verts, 0 échec.
+3. **Le nettoyage des sessions orphelines** (`LocalStorage.freeOrphanedMachines`)
+   effaçait la session mais laissait sa marque `.wisqvm.premiere` : un petit
+   fichier inerte (`pending` exige une session), mais qui ne partait jamais.
+
+**Ce qui change.**
+
+- `testAFailedWriteKeepsTheMarker` fait échouer l'écriture **dans le dossier
+  de la marque** : un dossier non vide occupe la place du fichier de session,
+  et le renommage final de l'écriture `.atomic` est refusé. Pas un dossier en
+  lecture seule : ce conteneur tourne sous `root`, qui passe outre. Le test
+  vérifie la marque sur le disque, puis par `pending`.
+- `testAMarkerThatCannotBeWrittenUndoesTheInstallation` (nouveau,
+  `ReadyDesktopTests`) : un dossier occupe la place de la marque. L'installation
+  rend l'erreur, la machine n'est plus dans la liste, sa session est effacée,
+  et l'archive aussi.
+- `freeOrphanedMachines` efface la marque avec la session orpheline. Elle
+  n'est pas comptée dans les octets libérés (quelques octets, que le relevé ne
+  compte pas non plus). Test : `testFreeingAnOrphanTakesItsFirstResumeMarkerWithIt`
+  (`LocalStorageTests`) ; la marque d'une session encore à son noyau reste.
+
+**Comment c'est vérifié.** Trois sabotages d'une ligne, chacun restauré par
+copie et vérifié par `cmp` :
+
+- le retrait de la marque avant l'écriture : `FirstResumeTests|ReadyDesktopTests`
+  donne 44 tests, **2 échecs** (`testAFailedWriteKeepsTheMarker`) ;
+- la ligne du défaire supprimée :
+  `FirstResumeTests|ReadyDesktopTests|MachineArchive|InstalledMachine` donne
+  75 tests, **2 échecs** (`testAMarkerThatCannotBeWrittenUndoesTheInstallation`) ;
+- la ligne qui efface la marque orpheline supprimée :
+  `LocalStorageTests|FirstResumeTests` donne 31 tests, **1 échec**.
+
+Sans sabotage, ces filtres réunis : 94 tests, 0 échec. Compte publié :
+3585 → 3587 (Swift 2986 + Rust 601).
+
+**Ce qui reste.** Rien de neuf pour la CI : seuls des fichiers de `WisqVM`
+et de ses tests ont bougé. macOS (« Cœur (Apple) ») n'est pas vérifié ici.
+
 ## 2026-11-14 — Bureau prêt : la première reprise donne l'heure et de l'aléa, et des instantanés témoins tiennent le format
 
 **Ce qui n'allait pas.**
