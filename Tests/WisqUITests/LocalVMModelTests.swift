@@ -275,6 +275,29 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertNil(savedMachine)
     }
 
+    /// **Un refus de démarrage n'efface pas la session d'une autre course.**
+    /// Le refus passait par `guestFinished` et laissait le nom de la course
+    /// précédente : « Arrêter », qui suit, effaçait la session de la machine
+    /// mise de côté juste avant, et « Oublier » était offert sur elle. Voir
+    /// `BootRefusal`.
+    @MainActor
+    func testARefusalBeforeTheFirstInstructionKeepsTheSessionOfAnotherRun() {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        XCTAssertNotNil(savedMachine, "préalable : la première machine est sauvée")
+
+        model.boot(kernelURL: folder.appendingPathComponent("absent"))
+        waitUntil("le refus doit être dit") {
+            if case .finished = model.status { return true }
+            return false
+        }
+        XCTAssertFalse(model.hasSavedMachine, "« Oublier » ne vise pas la session d'une autre machine")
+        model.stop()
+        XCTAssertNotNil(savedMachine, "« Arrêter » après le refus n'efface rien")
+    }
+
     /// Suspending with nothing running is what `onDisappear` does after the
     /// machine has already ended. It must be harmless.
     @MainActor

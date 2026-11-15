@@ -201,18 +201,26 @@ final class MachineLifecycleTests: XCTestCase {
 
     /// Un démarrage qui a échoué n'a pas de machine à sauver ; ce qu'on
     /// aurait écrit est une machine neuve, jamais chargée, que la visite
-    /// suivante « reprendrait ». La session qu'il n'a pas pu reprendre ne
-    /// décrit plus rien non plus : elle part, comme la tâche du fil le fait
-    /// pour ce même échec.
+    /// suivante « reprendrait ». **Et il n'efface rien** : la session qu'il
+    /// n'a pas pu reprendre — un disque qui ne se branchait plus — est
+    /// gardée, comme la tâche du fil la garde pour ce même échec
+    /// (`BootRefusal.couldNotStart`). Elle partait, sans un mot. Une course
+    /// dont le fil n'a rien noté, elle, ne décrit rien qu'on puisse garder.
     func testABootThatNeverRanIsNotSaved() {
-        for start in [MachineLifecycle.Start.failed, .pending] {
-            var life = MachineLifecycle()
-            life.booted()
-            XCTAssertEqual(life.steppedAway(), .save)
-            XCTAssertEqual(life.interpreterStopped(after: start), .forget, "\(start)")
-            XCTAssertEqual(life.state, .ended)
-            XCTAssertFalse(life.shouldResumeOnReturn)
-        }
+        var failed = MachineLifecycle()
+        failed.booted()
+        XCTAssertEqual(failed.steppedAway(), .save)
+        XCTAssertEqual(failed.interpreterStopped(after: .failed), .nothing, "ni écrite, ni effacée")
+        XCTAssertEqual(failed.state, .notStarted)
+        XCTAssertFalse(failed.shouldResumeOnReturn)
+        XCTAssertEqual(failed.userStopped(), .nothing, "« Arrêter » qui suit n'efface rien non plus")
+
+        var pending = MachineLifecycle()
+        pending.booted()
+        XCTAssertEqual(pending.steppedAway(), .save)
+        XCTAssertEqual(pending.interpreterStopped(after: .pending), .forget)
+        XCTAssertEqual(pending.state, .ended)
+        XCTAssertFalse(pending.shouldResumeOnReturn)
         // Et hors d'une mise de côté, la question ne se pose pas.
         var running = MachineLifecycle()
         running.booted()

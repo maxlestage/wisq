@@ -79,7 +79,11 @@ public final class LocalVMModel {
     /// What becomes of the saved machine on each event, decided by a type that
     /// builds on Linux and is therefore covered by tests — this wiring is not.
     private var life = MachineLifecycle()
-    private var kernelName = ""
+    /// Le nom sous lequel la session de **cette** course est rangée, vide tant
+    /// que l'image n'est pas lue. Tenu par `MachineLifecycle.session`, que
+    /// chaque démarrage remet à zéro : un nom resté d'une course précédente
+    /// faisait effacer, après un refus, la session d'une autre machine.
+    private var kernelName: String { life.session ?? "" }
     /// Which run a thread's completion belongs to. Suspending releases the
     /// machine while its thread is still unwinding, so a completion can arrive
     /// after the next machine has already booted; without this it would report
@@ -96,7 +100,9 @@ public final class LocalVMModel {
     }
 
     /// Whether leaving and coming back would resume rather than restart.
-    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName, in: storage) }
+    public var willResume: Bool {
+        life.session.map { SuspendedMachine.exists(kernel: $0, in: storage) } ?? false
+    }
 
     /// Whether returning to the foreground should pick the machine back up.
     /// The view asks, because iOS can take the app away and give it back
@@ -160,13 +166,11 @@ public final class LocalVMModel {
         // iOS au milieu du démarrage : le plantage sans cause apparente que
         // cette application a déjà infligé une fois.
         let roomNow = KernelMemory.ceiling
+        // **Chaque refus d'ici à la première instruction passe par
+        // `refuseToStart`**, et aucun par `guestFinished` : voir
+        // `BootRefusal`. Un test sous Linux lit ce fichier pour le tenir.
         if ramSize > roomNow {
-            _ = life.guestFinished()
-            finish(with: KernelMemory.notEnoughRoomExplanation(
-                requested: ramSize, ceiling: roomNow,
-                name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.notEnoughRoom(requested: ramSize, ceiling: roomNow), name: kernelURL.lastPathComponent)
             return
         }
         // **Ce que le fichier est, avant de fabriquer quoi que ce soit.**
@@ -245,10 +249,9 @@ public final class LocalVMModel {
             isoCommandLine = boot.commandLine
             isoRamdisk = boot.initrd
         case .failure(let refusal):
-            _ = life.guestFinished()
-            finish(with: IsoBoot.explanation(refusal, name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(
+                .image(IsoBoot.explanation(refusal, name: kernelURL.lastPathComponent)),
+                name: kernelURL.lastPathComponent)
             return
         }
         #else
@@ -269,25 +272,12 @@ public final class LocalVMModel {
         // liste ; le toucher rendait le refus d'un noyau compressé, qui envoie
         // chercher une version non compressée d'un fichier qui n'en a pas.
         if kind.core == nil, BootMedia.couldBeMedia(fileAt: kernelURL) {
-            _ = life.guestFinished()
-            finish(with: """
-                \(kernelURL.lastPathComponent) est un fichier compressé — wisq \
-                le garde comme initramfs.
-
-                Un initramfs ne démarre pas tout seul : c'est le noyau qui le \
-                déballe. Touchez le noyau — `vmlinuz…`, `bzImage` — et wisq \
-                prendra celui-ci avec.
-                """)
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.bootMedia, name: kernelURL.lastPathComponent)
             return
         }
         if let refusal = KernelImageKind.cannotRunHereExplanation(
             kind, name: bootURL.lastPathComponent) {
-            _ = life.guestFinished()
-            finish(with: refusal)
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.cannotRunHere(refusal), name: kernelURL.lastPathComponent)
             return
         }
         // Un fichier que personne n'a reconnu part sur le cœur historique :
@@ -324,16 +314,13 @@ public final class LocalVMModel {
             atPath: bootURL.path)[.size] as? Int,
             size > LinuxMachine.maximumKernelImageBytes(
                 forRAMSize: KernelMemory.riscvMachine(holding: ramSize)) {
-            _ = life.guestFinished()
             // La machine que le noyau aura vraiment, pas le réglage : les deux
             // ne coïncident plus depuis que le réglage peut monter au-delà de
             // ce que le rv32 adresse, et annoncer le second ferait nommer au
             // refus une machine sur laquelle il n'a rien jugé.
-            finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent,
-                ramSize: KernelMemory.riscvMachine(holding: ramSize)))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(
+                .tooLargeForRiscv(size: size, ramSize: KernelMemory.riscvMachine(holding: ramSize)),
+                name: kernelURL.lastPathComponent)
             return
         }
 
@@ -341,13 +328,10 @@ public final class LocalVMModel {
         do {
             image = try Data(contentsOf: bootURL)
         } catch {
-            _ = life.guestFinished()
-            finish(with: "Démarrage impossible : \(error.localizedDescription)")
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.unreadableKernel(error.localizedDescription), name: kernelURL.lastPathComponent)
             return
         }
-        kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
+        life.identified(SuspendedMachine.identity(of: image, named: keys.settings))
         // **« Pas de session » et « session illisible » ne se confondent
         // plus.** Une session qu'on ne sait pas relire — abîmée, ou sauvée par
         // une version plus récente de wisq — démarrait le noyau à neuf sans un
@@ -357,10 +341,7 @@ public final class LocalVMModel {
         let session = SavedSession.find(kernel: kernelName, in: storage, core: core)
         if case .unreadable(let refusal) = session {
             // Gardée : « Arrêter » n'effacera rien de cet état (`userStopped`).
-            life.sessionRefused()
-            finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.session(refusal), name: kernelURL.lastPathComponent)
             return
         }
         let saved = session.snapshot
@@ -394,22 +375,9 @@ public final class LocalVMModel {
             // démarre quand l'image en donne un (`IsoBoot.Boot.minimumRAM`).
             machineRAM = max(machineRAM, X86Machine.minimumRAMSize, minimumRAM)
             if machineRAM > Int(roomNow) {
-                _ = life.guestFinished()
-                // Le plancher qui a joué est celui qu'on nomme : celui du
-                // système démarré, quand il dépasse celui de la machine.
-                let need = minimumRAM > X86Machine.minimumRAMSize
-                    ? "le système de cette image a besoin d'au moins \(minimumRAM >> 20) Mo pour démarrer."
-                    : "une machine PC a besoin d'au moins \(X86Machine.minimumRAMSize >> 20) Mo — son noyau "
-                        + "décompressé en fait trente-cinq à lui seul."
-                finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et \
-                    \(need)
-
-                    Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
-                    moment. Fermez ce qui tourne à côté et réessayez.
-                    """)
-                self.machine = nil
-                runFinished = nil
+                refuseToStart(
+                    .pcNeedsMoreRoom(minimumRAM: minimumRAM, room: roomNow),
+                    name: kernelURL.lastPathComponent)
                 return
             }
         }
@@ -502,18 +470,7 @@ public final class LocalVMModel {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
             ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media).url
             if ramdisk == nil, saved == nil {
-                _ = life.guestFinished()
-                finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et un \
-                    noyau de PC a besoin d'un initramfs pour démarrer : ses \
-                    pilotes de disque n'y sont pas compilés, ils vivent dedans.
-
-                    Importez celui de votre distribution — il s'appelle \
-                    `initramfs-…` ou `initrd.img-…`, et il est compressé — et \
-                    wisq le prendra avec ce noyau.
-                    """)
-                self.machine = nil
-                runFinished = nil
+                refuseToStart(.pcNeedsInitramfs, name: kernelURL.lastPathComponent)
                 return
             }
         } else {
@@ -573,6 +530,10 @@ public final class LocalVMModel {
         // qui attend ce signal, le lit donc sans course.
         let runStart = RunStart()
         self.runStart = runStart
+        // Une session lisible attendait : un échec du démarrage la garde, et
+        // le dit. Un booléen et pas `saved` : la fermeture du fil garderait
+        // sinon l'instantané décompressé toute la session.
+        let sessionAwaited = saved != nil
 
         let thread = Thread { [weak self] in
             defer { finished.signal() }
@@ -657,22 +618,23 @@ public final class LocalVMModel {
                 runStart.record(.refused)
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
-                    self.life.sessionRefused()
-                    self.finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+                    self.refuseToStart(.session(refusal), name: kernelURL.lastPathComponent)
                 }
                 return
             } catch {
                 runStart.record(.failed)
+                let reason = error.localizedDescription
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
                     // A boot that never happened still ends the session, so the
                     // lifecycle has to hear about it: leaving it in `running`
                     // would let a later departure try to save a machine that
-                    // does not exist.
-                    if self.life.guestFinished() == .forget {
-                        SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
-                    }
-                    self.finish(with: "Démarrage impossible : \(error.localizedDescription)")
+                    // does not exist. **Mais il n'efface rien** : la session
+                    // qu'il n'a pas pu reprendre — un disque qui ne se branche
+                    // plus — est gardée, et la console le dit (`BootRefusal`).
+                    self.refuseToStart(
+                        .couldNotStart(reason, sessionKept: sessionAwaited),
+                        name: kernelURL.lastPathComponent)
                 }
                 return
             }
@@ -818,10 +780,10 @@ public final class LocalVMModel {
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
-        // Un refus que le fil a déjà vu, mais dont la tâche n'est pas encore
-        // passée, compte déjà : la session est gardée, rien ne s'efface.
-        if runStart?.recorded == .refused { life.sessionRefused() }
-        let action = life.userStopped()
+        // Un refus ou un échec que le fil a déjà vu, mais dont la tâche n'est
+        // pas encore passée, compte déjà : la session est gardée, rien ne
+        // s'efface.
+        let action = life.userStopped(seen: runStart?.recorded)
         // La machine d'abord, et à travers sa course : une écriture en
         // cours finit avant que `stop` ne rende la main, et l'effacement qui
         // suit est donc le dernier mot. Dans l'autre ordre, l'écriture
@@ -968,6 +930,14 @@ public final class LocalVMModel {
                 previousAt = at
             }
         }
+    }
+
+    /// **Un démarrage refusé avant la première instruction** : la raison à
+    /// l'écran, et rien d'effacé — ni la session de cette machine, ni celle
+    /// d'une course précédente. Voir `BootRefusal`.
+    private func refuseToStart(_ refusal: BootRefusal, name: String) {
+        life.refusedToStart(refusal)
+        finish(with: refusal.explanation(name: name))
     }
 
     /// **Un message écrit pour une personne, replié avant d'entrer dans la

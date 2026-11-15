@@ -8,6 +8,118 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Les refus du début de démarrage n'effacent plus la session d'une autre course
+
+**D'abord, le contrôle adverse des sept commits de la frappe** (les deux
+entrées juste en dessous), perdu au redémarrage du conteneur et refait
+ici. Les tests passent, les sabotages tenus en sont bien. Trois choses
+n'allaient pas. Deux lignes que rien ne tenait : sans `typingHandoff`
+vidé dans `X86Machine.abandonTyping`, un collage admis par la machine et
+pas encore passé au contrôleur s'écrivait quand même après l'annulation,
+Ctrl-C derrière lui ; sans `heldInQueue = heldByGuest` dans
+`X86PS2Controller.abandonTyping`, une touche dont l'enfoncement attendait
+encore restait comptée tenue une fois la file vidée. Les deux sabotages
+passaient sans faire tomber un seul test ; un test neuf pour chacun les
+fait tomber maintenant (4 assertions, 2 assertions). Et les deux entrées
+portaient la date de la veille, au-dessus d'une entrée du jour : corrigé.
+
+**Ce qui n'allait pas.** Le reste connu de la reprise sûre (#702). Les
+refus du début de `LocalVMModel.boot` passaient par `guestFinished`,
+comme la fin d'un invité qui a tourné : l'état valait `ended`, et
+« Arrêter », toujours dans la barre, effaçait la session rangée sous
+`kernelName`. Ce nom n'est connu qu'une fois l'image lue. Huit refus
+tombent avant, ou sans session : mémoire libre trop basse, image
+illisible ou déballage de l'ISO qui échoue, initramfs touché à la place
+du noyau, processeur non émulé, noyau trop grand pour la machine RISC-V,
+noyau illisible, machine PC qui ne tient pas, noyau de PC sans initramfs.
+Pour les six premiers, `kernelName` était encore celui de la course
+précédente du même écran. Le cas qui arrive : une machine mise de côté
+quand l'application passe en arrière-plan, et au retour moins de mémoire
+libre qu'elle n'en demande. Le refus tombe avant la lecture de l'image,
+et « Arrêter » effaçait la session qu'on venait de sauver, celle d'un
+démarrage de vingt minutes. Le nom pouvait aussi être celui d'une autre
+image que celle qu'on ouvre (le fichier remplacé entre-temps), et
+« Oublier » était alors offert sur une session qui n'était pas la sienne.
+La fin tardive de la course précédente, qui passe encore sous le même
+numéro de course quand le refus tombe avant le fil, l'effaçait aussi. Et
+sur le fil d'émulation, un échec avant la première instruction (un disque
+qui ne se branche plus, un chargeur qui refuse) effaçait **la session
+lisible qu'il n'avait pas pu reprendre**, par la tâche du fil comme par
+`interpreterStopped`. Enfin, `MachineArchive.import` refusait comme
+« abîmée » une archive passée par un lien symbolique : `size(of:)` lisait
+la taille du lien. Le même défaut, à l'export, annonçait une couche liée
+à la taille de son lien et l'emportait tronquée, sans erreur.
+
+**Ce qui change.**
+
+- `BootRefusal` (WisqVM) nomme chaque refus d'avant la première
+  instruction et en porte la phrase. Les phrases écrites dans
+  `LocalVMModel` y descendent, mot pour mot. Chaque refus passe par
+  `LocalVMModel.refuseToStart`, puis `MachineLifecycle.refusedToStart`,
+  qui rend toujours `.nothing`. L'état devient `notStarted` (neuf), ou
+  `refused` quand une session est promise gardée. « Arrêter », le départ
+  de l'écran, la fin tardive d'une autre course : rien de cet état ne
+  touche au disque. `guestFinished` ne sert plus qu'à la fin d'un invité
+  qui a tourné.
+- Le nom de la session vit dans `MachineLifecycle.session`, remis à zéro
+  par chaque `booted()` et posé par `identified` une fois l'image lue. Un
+  refus d'avant la lecture ne nomme aucune session : « Oublier » n'est
+  plus offert sur celle d'une autre machine.
+- L'échec sur le fil (`Start.failed`) garde la session et le dit : « La
+  session sauvée de … est gardée telle quelle […] touchez « Oublier » ».
+  `userStopped(seen:)` lit ce que le fil a déjà noté, échec compris, comme
+  il lisait déjà le refus.
+- `MachineArchive.size(of:)` suit les liens. Un lien mort rend l'erreur du
+  système de fichiers, pas « abîmée ».
+
+**Un test changé, et pourquoi.** `testABootThatNeverRanIsNotSaved`
+exigeait que `interpreterStopped(after: .failed)` efface la session. C'est
+exactement le comportement que cette tranche retire. Il exige maintenant
+qu'elle ne soit ni écrite ni effacée, et qu'« Arrêter » qui suit n'efface
+rien non plus. Le cas `.pending` garde son assertion d'avant.
+
+**Comment c'est vérifié.** Sept tests neufs dans `BootRefusalTests`.
+Chaque refus, contre tout le cycle de vie : « Arrêter », départ, fin
+tardive, `interpreterStopped` sur chaque `Start`, reprise, relance. Puis
+qui dit `refused`, le nom de session remis à zéro, l'échec vu par le fil
+avant sa tâche, les phrases, le plancher nommé. Un dernier test lit
+`LocalVMModel.swift`, que Linux ne compile pas : `guestFinished` n'y
+paraît qu'une fois, et chaque cas de `BootRefusal` y passe par
+`refuseToStart`. Deux tests dans `MachineArchiveTests` (archive liée,
+couche liée), un dans `LocalVMModelTests`, que seule la CI « App iOS »
+exécute : une machine sauvée, puis un fichier absent ouvert sur le même
+écran, puis « Arrêter », et la session est toujours là. **Douze
+sabotages d'une ligne** (plus les deux du contrôle), chacun restauré
+depuis une copie, sommes vérifiées. Chacun fait tomber au moins un test :
+un refus repassé par `guestFinished` (2 assertions), un cas joint sans
+`refuseToStart` (1), « Arrêter » qui efface `notStarted` (une quarantaine),
+`refusedToStart` vers `ended` (une quarantaine), `booted` qui garde le nom
+(2), l'échec qui efface dans `interpreterStopped` (3), `userStopped` qui
+ignore l'échec (2), `stop` qui ne lit plus le fil (1), l'échec qui ne
+garde pas la session (1), la phrase sans la session gardée (3),
+`guestFinished` qui accepte `notStarted` (une trentaine), et `size(of:)`
+qui ne suit plus les liens (2 tests). Suite Swift entière : 2 934 tests
+exécutés, 67 sautés, aucun échec (6 min). Les douze sautés de plus que la
+dernière fois attendent des images que le redémarrage du conteneur a
+effacées du bloc-notes et qui n'ont pas été retéléchargées : aucun ne
+touche à cette tranche. Site : 476 tests. Compte publié : 3 647 →
+3 659 (3 015 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La liaison dans `LocalVMModel`, et le test neuf de `LocalVMModelTests`,
+  ne sont jugés que par la CI « App iOS ». Ici, seulement
+  `swiftc -frontend -parse`, SwiftLint, et le test qui lit le texte.
+- Une session gardée après un échec du fil revient à chaque ouverture tant
+  que la cause demeure (un disque supprimé, par exemple) : la console dit
+  quoi faire, et « Oublier » efface. C'est voulu ; repartir de zéro sans le
+  demander était la perte.
+- Après un refus tombé avant la lecture de l'image, « Oublier » n'est plus
+  offert du tout, même quand c'est la même machine qui revient : son nom
+  dépend des octets de l'image, qu'on n'a pas lus.
+- Ce qui reste des entrées ci-dessous tient toujours : l'état PS/2 n'est
+  pas dans l'instantané.
+
 ## 2026-11-15 — La frappe sur l'écran s'annule, et un collage trop long ne garde plus tout le presse-papiers
 
 Suite de l'entrée juste en dessous, après un contrôle adverse.
