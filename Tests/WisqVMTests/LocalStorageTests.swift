@@ -301,6 +301,20 @@ final class LocalStorageTests: XCTestCase {
         XCTAssertNotNil(LocalStorage.unpackedIsoFolder(in: nil),
                         "sans dossier donné, il en trouve un quand même")
     }
+
+    /// **La place libre se lit**, celle du volume qui porte le dossier, et
+    /// une adresse qui n'existe pas n'en invente pas : la garde des bureaux
+    /// prêts ne refuse rien sur une supposition (`ReadyDesktop.fetch`).
+    func testTheFreeSpaceOfAVolumeIsRead() throws {
+        let here = FileManager.default.temporaryDirectory
+        let free = try XCTUnwrap(LocalStorage.availableBytes(at: here))
+        let system = try XCTUnwrap(
+            (try FileManager.default.attributesOfFileSystem(forPath: here.path))[.systemFreeSize] as? NSNumber)
+        XCTAssertGreaterThan(free, 0)
+        // Le même volume, lu deux fois à un instant d'écart : à 64 Mio près.
+        XCTAssertLessThan(abs(free - system.intValue), 64 << 20)
+        XCTAssertNil(LocalStorage.availableBytes(at: here.appendingPathComponent("absent-\(UUID().uuidString)")))
+    }
 }
 
 /// Ce qu'une machine sauvegardée coûte vraiment, mesuré sur un vrai noyau.
