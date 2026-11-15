@@ -436,13 +436,29 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// avait été écrit sur l'ancien ne vaut plus rien), avant l'archive. Le
     /// dire après les deux le perdait quand l'archive tombait : l'essai
     /// suivant trouvait l'image à sa taille, et ne le disait plus jamais.
+    ///
+    /// **`available` est la place libre du téléphone** (`LocalStorage.availableBytes`),
+    /// lue juste avant : quand elle ne suffit pas à ce qu'il reste à recevoir
+    /// et à installer (`room`), rien n'est demandé, et le refus dit combien
+    /// il faut libérer (`Refusal.notEnoughSpace`). Sans cette garde, 1,4 Gio
+    /// partaient, et le téléphone plein faisait tomber l'écriture au milieu
+    /// de l'image, ou l'import après les deux téléchargements. `nil` : la
+    /// place ne s'est pas laissé lire, et rien n'est refusé sur une supposition.
+    ///
+    /// **Une annulation entre les deux fichiers arrête là** : l'image finie
+    /// au moment où « Annuler » est touché ne lance pas l'archive.
     public func fetch(
-        library: URL, downloads: URL,
+        library: URL, downloads: URL, available: Int? = nil,
         download: @Sendable (ImageDownload.Release, ImageDownload.Destination,
                              @escaping @Sendable (Int, Int) -> Void) async throws -> URL,
         progress: @escaping @Sendable (Progress) -> Void = { _ in },
         replacedImage: @Sendable (String) -> Void = { _ in }
     ) async throws -> (image: URL, archive: URL) {
+        if let available {
+            let room = room(library: library, downloads: downloads)
+            if room.total > available { throw Refusal.notEnoughSpace(room, available: available) }
+        }
+        try Task.checkCancellation()
         let needImage = !imagePresent(in: library)
         let replacing = needImage
             && FileManager.default.fileExists(atPath: library.appendingPathComponent(image.file).path)
@@ -457,6 +473,10 @@ public struct ReadyDesktop: Equatable, Sendable {
             if replacing { replacedImage(image.file) }
         }
         if needArchive {
+            // L'image a pu finir au moment même où « Annuler » était touché :
+            // son téléchargement rend alors le fichier sans lever, et
+            // l'archive partait quand même.
+            try Task.checkCancellation()
             let offset = needImage ? imageSize : 0
             let number = needImage ? 2 : 1
             _ = try await download(archive, .downloads) { have, _ in
@@ -465,6 +485,133 @@ public struct ReadyDesktop: Equatable, Sendable {
             }
         }
         return (library.appendingPathComponent(image.file), downloads.appendingPathComponent(archive.file))
+    }
+
+    // MARK: - La place
+
+    /// **La place que le bureau demande au téléphone**, en deux parts : ce
+    /// qu'il reste à recevoir, et ce que l'installation et la première
+    /// sauvegarde écrivent ensuite.
+    public struct Room: Equatable, Sendable {
+        /// Ce qu'il reste à télécharger : les fichiers absents, moins ce que
+        /// leurs `.part` ont déjà.
+        public let download: Int
+        /// L'import, qui recopie l'archive avant de l'effacer ; la première
+        /// sauvegarde, écrite à côté de la session avant de la remplacer ;
+        /// et le noyau sorti de l'image pour en prendre l'empreinte.
+        public let install: Int
+        public var total: Int { download + install }
+
+        public init(download: Int, install: Int) {
+            self.download = download
+            self.install = install
+        }
+    }
+
+    /// Ce que le noyau sorti de l'image peut occuper, au plus, le temps d'en
+    /// prendre l'empreinte : le plafond que l'application donne à
+    /// `IsoBoot.kernelDigest`.
+    public static let digestScratch = 256 << 20
+
+    /// Ce que le `.part` d'un fichier a déjà reçu, borné à sa taille.
+    func partHave(_ release: ImageDownload.Release, downloads: URL) -> Int {
+        let part = ImageDownload.partURL(for: downloads.appendingPathComponent(release.file))
+        return min(Self.size(of: part) ?? 0, release.size)
+    }
+
+    /// **La place qu'il faut**, d'après ce qui est déjà là. L'archive est
+    /// prise à sa taille, sans refaire sa somme : ceci se lit à chaque
+    /// affichage de la feuille.
+    public func room(library: URL, downloads: URL) -> Room {
+        let image = imagePresent(in: library) ? 0 : self.image.size - partHave(self.image, downloads: downloads)
+        let archiveThere = Self.size(of: downloads.appendingPathComponent(archive.file)) == archive.size
+        let archive = archiveThere ? 0 : self.archive.size - partHave(self.archive, downloads: downloads)
+        return Room(download: image + archive, install: 2 * self.archive.size + Self.digestScratch)
+    }
+
+    /// La phrase de la feuille quand la place manque, ou `nil` quand elle
+    /// suffit : la même que le refus de `fetch`, dite avant qu'on touche.
+    public func spaceShortfall(available: Int?, library: URL, downloads: URL) -> String? {
+        guard let available else { return nil }
+        let room = room(library: library, downloads: downloads)
+        guard room.total > available else { return nil }
+        return Refusal.notEnoughSpace(room, available: available).errorDescription
+    }
+
+    /// **Ce qui reste après « Annuler »**, dit tel qu'il est sur le disque :
+    /// l'image entière, ou ce que son `.part` a reçu, puis pareil pour le
+    /// bureau. Les octets qu'une tâche d'arrière-plan avait reçus sans les
+    /// avoir encore rendus ne sont pas comptés : ils ne sont nulle part où le
+    /// prochain essai les retrouverait.
+    public func keptPhrase(library: URL, downloads: URL) -> String {
+        func kept(_ release: ImageDownload.Release, what: String, whole: Bool) -> String? {
+            if whole { return "\(what) : entier" }
+            let have = partHave(release, downloads: downloads)
+            guard have > 0 else { return nil }
+            return "\(what) : \(LocalStorage.describe(bytes: have)) sur \(LocalStorage.describe(bytes: release.size))"
+        }
+        let archiveThere = Self.size(of: downloads.appendingPathComponent(archive.file)) == archive.size
+        let parts = [kept(image, what: "l'image", whole: imagePresent(in: library)),
+                     kept(archive, what: "le bureau", whole: archiveThere)].compactMap { $0 }
+        guard !parts.isEmpty else {
+            return "Téléchargement arrêté. Rien n'avait encore été rangé : le prochain essai repartira du début."
+        }
+        return "Téléchargement arrêté. Gardé — " + parts.joined(separator: " ; ")
+            + ". Le prochain essai reprendra là."
+    }
+
+    /// **Un téléchargement de ce bureau qui continue en arrière-plan**,
+    /// d'après les fichiers que la session d'arrière-plan a encore en cours :
+    /// lancé avant que wisq ne soit fermé, ou par une feuille fermée depuis.
+    /// La feuille rouverte le dit au lieu de proposer le bureau comme si
+    /// rien n'avait commencé. `nil` quand rien de lui n'est en cours.
+    public func backgroundPhrase(running files: Set<String>) -> String? {
+        let what: String
+        if files.contains(image.file) {
+            what = "de l'image"
+        } else if files.contains(archive.file) {
+            what = "du bureau"
+        } else {
+            return nil
+        }
+        return "Le téléchargement \(what) continue en arrière-plan. Touchez « Installer » pour le suivre : "
+            + "il reprend là où il en est, rien n'est redemandé."
+    }
+
+    // MARK: - Déjà installé
+
+    /// **Les machines de la liste qui démarrent déjà l'image de ce bureau**,
+    /// et si chacune a une session sous le noyau de la fabrication : celle
+    /// qu'installer de nouveau ne doit pas laisser croire remplacée.
+    public func installedCopies(among machines: [InstalledMachine], in storage: URL? = nil)
+        -> [(machine: InstalledMachine, hasSession: Bool)] {
+        machines.filter { $0.image == image.file }.map { machine in
+            (machine, SuspendedMachine.exists(
+                kernel: SuspendedMachine.identity(digest: kernelDigest, named: machine.key), in: storage))
+        }
+    }
+
+    /// **Ce que la feuille dit avant de réinstaller**, ou `nil` quand aucune
+    /// machine ne démarre cette image. Installer ne remplace rien : une
+    /// machine neuve s'ajoute, sous une clé neuve (`install`). Encore faut-il
+    /// le dire — la même ligne, touchée de nouveau, laissait croire que le
+    /// bureau en cours repartait du jour de la fabrication.
+    public func alreadyInstalledPhrase(_ copies: [(machine: InstalledMachine, hasSession: Bool)]) -> String? {
+        guard !copies.isEmpty else { return nil }
+        let names = copies.map { "« \($0.machine.name) »" }.joined(separator: ", ")
+        let running = copies.filter(\.hasSession)
+        let verb = copies.count > 1 ? "démarrent" : "démarre"
+        var line = "\(names) \(verb) déjà cette image"
+        if running.count == copies.count {
+            line += copies.count > 1 ? ", chacune avec sa session." : ", avec sa session."
+        } else if running.isEmpty {
+            line += ", sans session : l'ouvrir la fait repartir de zéro (une demi-heure)."
+        } else {
+            line += " ; " + running.map { "« \($0.machine.name) »" }.joined(separator: ", ")
+                + " seulement avec sa session."
+        }
+        return line + " Installer ajoute une autre machine, prête au jour de la fabrication ; "
+            + "celles-ci et leurs sessions restent telles quelles."
     }
 
     // MARK: - L'installation
@@ -480,23 +627,45 @@ public struct ReadyDesktop: Equatable, Sendable {
         case archiveForAnotherImage(String)
         /// L'archive ne porte pas de session sous l'empreinte du noyau.
         case noSession(String)
+        /// Le téléphone n'a pas la place (`fetch`) : rien n'a été demandé.
+        case notEnoughSpace(Room, available: Int)
 
         public var errorDescription: String? {
             switch self {
             case .missingImage(let image):
-                return "L'image \(image) n'est plus dans la bibliothèque ; le bureau prêt n'a pas été installé."
+                return "L'image \(image) n'est plus dans la bibliothèque ; le bureau prêt n'a pas été installé. "
+                    + "Le bureau reçu est gardé : touchez de nouveau « Installer », seule l'image sera "
+                    + "téléchargée."
             case .wrongKernel(_, nil):
                 return "Le noyau de l'image ne s'est pas laissé lire : le bureau ne pourrait pas "
-                    + "reprendre. Rien n'a été installé."
+                    + "reprendre. Rien n'a été installé. " + Self.replaceTheImage
             case .wrongKernel:
                 return "L'image présente n'a pas le noyau avec lequel ce bureau a été démarré : "
-                    + "il ne pourrait pas reprendre. Rien n'a été installé."
+                    + "il ne pourrait pas reprendre. Rien n'a été installé. " + Self.replaceTheImage
+            case .notEnoughSpace(let room, let available):
+                let short = LocalStorage.describe(bytes: room.total - available)
+                let download = room.download == 0 ? "rien à télécharger"
+                    : "\(LocalStorage.describe(bytes: room.download)) à télécharger"
+                return "Pas assez de place sur le téléphone : ce bureau demande "
+                    + "\(LocalStorage.describe(bytes: room.total)) de libre (\(download), puis "
+                    + "\(LocalStorage.describe(bytes: room.install)) pour l'installer et le sauver une "
+                    + "première fois), et il en reste \(LocalStorage.describe(bytes: available)). "
+                    + "Libérez au moins \(short) (Réglages, Général, Stockage de l'iPhone), puis réessayez. "
+                    + "Rien n'a été téléchargé."
             case .archiveForAnotherImage(let image):
                 return "Ce bureau prêt a été fait pour une autre image (\(image)) ; rien n'a été installé."
             case .noSession:
                 return "Ce bureau prêt ne porte pas de bureau démarré pour cette image ; rien n'a été installé."
             }
         }
+
+        /// **L'image est en faute, pas le bureau** : le bureau reçu est gardé
+        /// (`install`), et c'est l'image qu'il faut refaire. Sans cette
+        /// phrase, et avec le bureau effacé, chaque nouvel essai trouvait
+        /// l'image à sa taille, retéléchargeait le bureau, et le refusait de
+        /// nouveau.
+        static let replaceTheImage = "Le bureau reçu est gardé. Supprimez cette image de la bibliothèque, "
+            + "puis touchez de nouveau « Installer » : seule l'image sera retéléchargée."
     }
 
     /// **Installer le bureau téléchargé** : vérifier, puis importer
@@ -511,20 +680,24 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// (`IsoBoot.kernelDigest`, que `WisqVM` ne voit pas) ; `nil` quand
     /// l'image ne s'est pas laissé lire.
     ///
-    /// **L'archive est effacée ensuite**, installée ou refusée : quelques
-    /// centaines de mégaoctets qui ne servent plus — la machine installée
-    /// porte ce qu'elle contenait.
+    /// **L'archive est effacée ensuite**, installée ou refusée pour une
+    /// faute qui est la sienne : quelques centaines de mégaoctets qui ne
+    /// servent plus — la machine installée porte ce qu'elle contenait.
+    /// **Pas quand c'est l'image qui est en faute** (`missingImage`,
+    /// `wrongKernel`) : l'archive, vérifiée à sa somme, est bonne, et
+    /// l'effacer faisait retélécharger 156 Mio à chaque essai, refusés de
+    /// nouveau tant que l'image restait la même.
     @discardableResult
     public func install(
         archive file: URL, imageKernelDigest: String?, library: [String], in directory: URL? = nil,
         now: Date = Date(), id: String = InstalledMachines.newIdentifier(),
         createOwnDisk: (String, UInt64) throws -> String
     ) throws -> InstalledMachine {
-        defer { try? FileManager.default.removeItem(at: file) }
         guard library.contains(image.file) else { throw Refusal.missingImage(image.file) }
         guard imageKernelDigest?.lowercased() == kernelDigest else {
             throw Refusal.wrongKernel(expected: kernelDigest, found: imageKernelDigest)
         }
+        defer { try? FileManager.default.removeItem(at: file) }
         let contents = try MachineArchive.contents(of: file)
         guard contents.image == image.file else { throw Refusal.archiveForAnotherImage(contents.image) }
         guard contents.sessions.contains(kernelDigest) else { throw Refusal.noSession(kernelDigest) }
