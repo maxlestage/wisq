@@ -98,18 +98,27 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
                           request urlRequest: URLRequest, have: Int,
                           progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            // Annulée avant même d'attendre : rien ne part.
-            if Task.isCancelled {
-                continuation.resume(throwing: CancellationError())
-                return
-            }
-            lock.withLock {
+            // **Annulée avant même d'attendre : rien ne part.** Le relevé se
+            // fait sous le verrou, avec l'inscription : l'annulation lève le
+            // drapeau de la tâche avant d'appeler `cancel`, qui prend ce même
+            // verrou. Ou bien `cancel` est passé avant, et le drapeau se voit
+            // ici ; ou bien il passe après, et il trouve l'attente. Relevé
+            // hors du verrou, un `cancel` glissé entre les deux ne trouvait
+            // rien, l'attente s'inscrivait ensuite, et la tâche partait :
+            // l'annulation perdue, l'attente durait tout le transfert.
+            let cancelled = lock.withLock { () -> Bool in
+                if Task.isCancelled { return true }
                 // Un second appui pendant un téléchargement : le premier est
                 // remplacé, et c'est la dernière feuille qui l'apprend.
                 waiting[release.file]?.resume(throwing: CancellationError())
                 waiting[release.file] = continuation
                 observers[release.file] = progress
                 startedAt[release.file] = have
+                return false
+            }
+            if cancelled {
+                continuation.resume(throwing: CancellationError())
+                return
             }
             session.getAllTasks { tasks in
                 // Les tâches se comparent par ce qu'elles décrivent, pas par
@@ -138,11 +147,16 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
                     task.cancel()
                 }
                 // Annulée pendant qu'on cherchait les tâches : `cancel` a
-                // déjà rendu la main à celui qui attendait, rien ne part.
-                guard self.lock.withLock({ self.waiting[release.file] != nil }) else { return }
-                let task = self.session.downloadTask(with: urlRequest)
-                task.taskDescription = job.tag
-                task.resume()
+                // déjà rendu la main à celui qui attendait, rien ne part. La
+                // tâche naît sous le même verrou : un `cancel` qui passe
+                // après la trouve, puisqu'il ne cherche les tâches qu'une
+                // fois ce verrou rendu.
+                self.lock.withLock {
+                    guard self.waiting[release.file] != nil else { return }
+                    let task = self.session.downloadTask(with: urlRequest)
+                    task.taskDescription = job.tag
+                    task.resume()
+                }
             }
         }
     }
