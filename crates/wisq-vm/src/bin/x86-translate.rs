@@ -32,9 +32,13 @@
 //!
 //! **Les codes de sortie sont le protocole** : 0 avec le module sur la sortie
 //! standard ; 2 quand l'émetteur refuse, la raison sur la sortie d'erreur ;
-//! 3 quand il n'y a **aucun octet** à traduire ; 1 quand l'appel lui-même est
-//! mal formé. Un pilote qui confondrait 2 et 3 chercherait une instruction
-//! manquante là où il n'y a rien du tout.
+//! 3 quand il n'y a **aucun octet** à traduire ; 4 quand la première
+//! instruction est peut-être **coupée** par le bout de la fenêtre
+//! (`Refused::MayBeCut`), ce que l'hôte entend comme `"encore"` ; 1 quand
+//! l'appel lui-même est mal formé. Un pilote qui confondrait 2 et 3
+//! chercherait une instruction manquante là où il n'y a rien du tout ; un qui
+//! confondrait 2 et 4 refuserait une instruction dont la page d'après n'est
+//! pas encore là, au lieu de la laisser fauter.
 //!
 //! **Le manifeste a disparu avec la lecture du fichier.** Il portait le chemin
 //! de l'image et la table des segments chargeables, qui ne servaient qu'à
@@ -42,7 +46,7 @@
 //! décide du masque de confinement du module — et il tient dans un argument.
 use std::io::{Read, Write};
 
-use wisq_vm::x86_wasm::Module;
+use wisq_vm::x86_wasm::{Module, Refused};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -81,7 +85,11 @@ fn main() {
         }
         Err(why) => {
             eprintln!("{why:?}");
-            std::process::exit(2);
+            std::process::exit(if matches!(why, Refused::MayBeCut { .. }) {
+                4
+            } else {
+                2
+            });
         }
     }
 }

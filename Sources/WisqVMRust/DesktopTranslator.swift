@@ -98,11 +98,17 @@ public enum DesktopTranslator {
         /// L'émetteur ne sait pas traduire cette région, et davantage d'octets
         /// n'y changerait rien.
         case refused
-        /// L'émetteur s'est arrêté à moins de quinze octets du bord de ce qu'on
-        /// lui a donné : l'instruction qui l'a bloqué a pu être coupée.
+        /// La première instruction **déborde** du bord de ce qu'on lui a
+        /// donné : à moins de quinze octets de la fin, le décodeur a lu
+        /// au-delà, et une suite la rendrait lisible. Une instruction complète
+        /// qu'il refuse, même tout près du bord, est `.refused` — la prendre
+        /// pour une coupe faisait délivrer une faute de page sur la page
+        /// d'après, que le silicium ne fait pas. C'est la règle de
+        /// `WISQ_X86_NEEDS_MORE` dans `wisq_vm.h`, que ce cas reflète.
         /// Redemander la même région avec une fenêtre plus large, **une seule
-        /// fois**. Sur un vrai noyau, 91 régions sur 10 116 tombent là avec
-        /// quatre kibioctets, et toutes se traduisent au second essai.
+        /// fois**. Sur un vrai noyau, 91 régions sur 10 116 tombaient là avec
+        /// quatre kibioctets, sous l'ancienne règle, et toutes se traduisaient
+        /// au second essai.
         case needsMoreBytes
     }
 

@@ -24,9 +24,12 @@
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
-/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre que ce tableau ne connaît pas se dit quand
-/// même, plutôt que de passer pour « rien ». `STOP_MSR` n'y est pas : il porte
-/// le numéro du registre dans ses trente-deux bits bas, et se lit à part.
+/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre
+/// que ce tableau ne connaît pas se dit quand même, plutôt que de passer pour
+/// « rien ». `STOP_MSR` n'y est pas : il porte le numéro du registre dans ses
+/// trente-deux bits bas, et se lit à part. `STOP_MXCSR` non plus : c'est une
+/// `#GP(0)` que la boucle délivre, et son arrêt, sans porte, se dit par la
+/// délivrance.
 const STOPS = {
   1n: "arrêtée sur hlt",
   2n: "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
@@ -53,6 +56,12 @@ const STOP_UNDEFINED = 8n;
 /// au noyau de décider, sa table d'exceptions rattrape ces fautes-là. Sans
 /// porte, l'arrêt reste, et nomme le numéro.
 const STOP_MSR = 1n << 32n;
+/// **`STOP_MXCSR`** : `ldmxcsr` ou `fxrstor` voulaient charger un MXCSR aux
+/// bits réservés levés. RIP est sur l'instruction, rien n'a changé, et c'est
+/// une `#GP(0)` que l'hôte délivre. `ldmxcsr` est permise en anneau trois :
+/// sans cette délivrance, n'importe quel programme arrêtait la machine
+/// entière, là où le silicium ne fait fauter que lui.
+const STOP_MXCSR = 9n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -194,7 +203,17 @@ export const SLOTS = {
   /// rarement le mot sans l'avoir initialisé, donc laisser zéro ici ne se
   /// verrait pas — c'est exactement pour ça que ça se pose.
   fpuControlPowerOn: 0x40,
-  globalCount: 60,
+  /// **Les seize registres XMM**, deux globales chacun — la moitié basse, puis
+  /// la haute —, puis **MXCSR**. Le module les lit et les écrit ; l'hôte les
+  /// crée, pose MXCSR à sa valeur d'allumage, et ne les touche plus : la
+  /// délivrance d'une faute ne sauve aucun registre vectoriel, le silicium
+  /// non plus — c'est le noyau qui les range, par `fxsave`.
+  xmm: 60,
+  xmmCount: 16,
+  mxcsr: 92,
+  /// Toutes les exceptions masquées, arrondi au plus proche : `MXCSR_RESET`.
+  mxcsrReset: 0x1f80,
+  globalCount: 93,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -211,6 +230,14 @@ export const SLOTS = {
   tlbPages: 1,
   tlbEntry: 16,
   tlbSlots: 4096,
+  /// **Ce que l'hôte dit à la marche du module qu'il vient faire** — son
+  /// second argument, `WALK_MACHINE` et `WALK_FETCH` côté Rust. Le processeur
+  /// qui lit une porte, un descripteur ou pose un cadre n'est jugé sur aucun
+  /// droit ; un chargement d'instruction veut le bit utilisateur en anneau
+  /// trois. Un nombre faux ici ouvrirait le noyau aux programmes, ou ferait
+  /// fauter la délivrance d'une faute.
+  walkMachine: 0,
+  walkFetch: 3,
   mix: 0x9e3779b97f4a7c15n,
 };
 
@@ -473,8 +500,9 @@ const PIT_OUT_TWO = 0x20;
 /// date à partir d'un compte — qui n'aurait été juste que par accident.
 function counter() {
   return {
-    /// Le mode du 8254. Ce noyau n'en programme que deux : le zéro pour
-    /// l'étalonnage, le deux pour sa cadence périodique.
+    /// Le mode du 8254. Ce noyau en programme trois : le zéro pour
+    /// l'étalonnage, le deux pour sa cadence périodique, et le quatre pour
+    /// ses échéances une fois l'horloge passée en coup unique.
     mode: 0,
     /// Comment les octets se lisent et s'écrivent : 1 le bas seul, 2 le haut
     /// seul, 3 le bas puis le haut.
@@ -627,6 +655,10 @@ export function machine({
   // tables de pages.
   globals[SLOTS.efer].value = 0x500n;
   globals[SLOTS.fpuControl].value = BigInt(SLOTS.fpuControlPowerOn);
+  // **MXCSR part à sa valeur d'allumage**, pas à zéro : zéro démasquerait
+  // toutes les exceptions flottantes, ce qu'aucun processeur ne fait au
+  // démarrage, et `fxsave` la rangerait telle quelle dans l'aire du noyau.
+  globals[SLOTS.mxcsr].value = BigInt(SLOTS.mxcsrReset);
   // **Les deux fonctions par lesquelles l'invité touche le monde.**
   //
   // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un
@@ -664,6 +696,11 @@ export function machine({
     }
     return Number((BigInt(reload) - steps) & 0xffffn);
   };
+  /// **Les deux coups uniques**, zéro et quatre : une seule ligne, au bout du
+  /// compte, et plus rien jusqu'au prochain chargement.
+  const oneShot = (mode) => mode === 0 || mode === 4;
+  /// Les modes dont la descente est écrite ici.
+  const counted = (mode) => oneShot(mode) || mode === 2 || mode === 6;
   /// Charger un diviseur : le compteur repart de son sommet, maintenant.
   const load = (chip, value) => {
     chip.reload = value & 0xffff;
@@ -749,11 +786,9 @@ export function machine({
     transmitPending: false,
     /// Ce qui est arrivé et que l'invité n'a pas encore lu.
     ///
-    /// **Rien ne tape encore.** La boucle hôte n'a pas d'entrée série, et la
-    /// seule chose qui remplisse cette file est la boucle de test du modem, où
-    /// l'octet émis revient par la réception. C'est par elle que passe la
-    /// deuxième question de la sonde, donc le chemin est emprunté — et non
-    /// défensif.
+    /// Deux choses la remplissent : la boucle de test du modem, où l'octet
+    /// émis revient par la réception — c'est par elle que passe la deuxième
+    /// question de la sonde —, et `send`, ce qu'on tape.
     input: [],
   };
   const dlab = () => (uart.lineControl & 0x80) !== 0;
@@ -869,11 +904,13 @@ export function machine({
   /// **Elle n'entre pas dans `wakeable`, et c'est raisonné plutôt que
   /// recopié.** Du côté Swift, `devicesArmed` compte le port parmi ce qui peut
   /// réveiller une machine arrêtée, et c'est juste là-bas : `serialInput` est
-  /// rempli du dehors, par une frappe. Ici rien ne tape, donc la condition du
-  /// port ne change **que** par une écriture de l'invité — et un invité arrêté
-  /// n'écrit pas. L'y mettre ferait tourner la boucle d'attente du `hlt`
-  /// jusqu'au bout de sa patience, un mébi-tour, sur une ligne qui ne montera
-  /// jamais. Le jour où une entrée série existera, les deux iront ensemble.
+  /// rempli du dehors, par une frappe. Ici la frappe — `send` — n'arrive
+  /// qu'**entre** deux `run`, jamais pendant : à l'intérieur d'un `run`, la
+  /// condition du port ne change donc que par une écriture de l'invité, et un
+  /// invité arrêté n'écrit pas. L'y mettre ferait tourner la boucle d'attente
+  /// du `hlt` jusqu'au bout de sa patience, un mébi-tour, sur une ligne qui
+  /// ne montera pas avant la fin du `run`. Ce qui a été tapé avant est déjà
+  /// dans la file quand le `run` commence, et `pendingIrq` le voit.
   const raiseSerial = () => {
     if (serialInterrupting()) pics.master.request |= 0x10;
     else pics.master.request &= ~0x10;
@@ -899,17 +936,26 @@ export function machine({
   /// n'avance qu'entre deux tours.
   ///
   /// **Les modes sont ceux que `countOf` descend déjà**, et pas un de plus :
-  /// deux et six rechargent, donc une ligne par tour de roue ; zéro est un
-  /// coup unique, donc une ligne quand le compte atteint zéro. Les modes
-  /// un, trois, quatre, cinq et sept ne sont descendus nulle part ici — les
-  /// faire lever une ligne serait les deviner.
+  /// deux et six rechargent, donc une ligne par tour de roue ; zéro et
+  /// quatre sont des coups uniques, donc une ligne quand le compte atteint
+  /// zéro. Les modes un, trois, cinq et sept ne sont descendus nulle part ici
+  /// — les faire lever une ligne serait les deviner.
+  ///
+  /// **Le mode quatre est celui de l'horloge sans tic de Linux.** Dès que le
+  /// noyau passe son horloge d'événements en coup unique — `pit_set_oneshot`,
+  /// `outb(0x38, 0x43)` —, chaque échéance est un mode quatre rechargé par
+  /// `pit_next_event`. Sa sortie descend d'un pas au bout du compte et
+  /// remonte : c'est ce front qui lève IRQ0, une fois, comme le mode zéro.
+  /// Il n'était pas modélisé, et Alpine s'arrêtait là sans le dire : plus
+  /// aucun tic, l'heure figée à 1,121 s, et le premier `sleep` du shell — un
+  /// `tcsetattr` qui attend que le port série se vide — ne revenait jamais.
   const raise8254 = () => {
     const chip = pits[0];
     if (!chip.loaded) return;
-    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return;
+    if (!counted(chip.mode)) return;
     const reload = BigInt(chip.reload === 0 ? 0x10000 : chip.reload);
     const steps = stepsOf(chip);
-    const turns = chip.mode === 0 ? (steps >= reload ? 1n : 0n) : steps / reload;
+    const turns = oneShot(chip.mode) ? (steps >= reload ? 1n : 0n) : steps / reload;
     if (turns > chip.raised) {
       chip.raised = turns;
       pics.master.request |= 1;
@@ -978,9 +1024,10 @@ export function machine({
     // Un compteur que personne n'a programmé, ou dans un mode dont la
     // descente n'est pas modélisée, ne fera rien monter.
     if (!chip.loaded) return false;
-    if (chip.mode !== 0 && chip.mode !== 2 && chip.mode !== 6) return false;
-    // Le mode zéro est un coup unique : tiré, il ne tirera plus.
-    if (chip.mode === 0 && chip.raised > 0n) return false;
+    if (!counted(chip.mode)) return false;
+    // Les modes zéro et quatre sont des coups uniques : tirés, ils ne
+    // tireront plus.
+    if (oneShot(chip.mode) && chip.raised > 0n) return false;
     // Et la ligne elle-même : masquée, ou en service sans acquittement, elle
     // ne réveillera personne — l'invité arrêté n'ira ni la démasquer ni
     // l'acquitter.
@@ -1191,19 +1238,61 @@ export function machine({
 
   const rip = () => BigInt.asUintN(64, globals[SLOTS.rip].value);
   let walk = null;
+  /// Ce que la marche a rendu sur la première page de la dernière fenêtre
+  /// que `read` n'a pas pu lire du tout : le code d'erreur plus un, ou zéro.
+  let unread = 0n;
+  /// **Où la dernière lecture s'est arrêtée sur une page illisible après en
+  /// avoir lu d'autres**, et ce que la marche y a dit (le code plus un) ;
+  /// `null` quand elle s'est arrêtée ailleurs — au bout de la fenêtre ou de
+  /// la RAM. C'est ce que demande une instruction coupée par une page
+  /// absente : voir `CUT`.
+  let stopped = null;
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
   /// `Body::peek` et `Body::poke`. Allumée, c'est `walk`, qui pose le témoin
   /// et CR2 quand la page manque : `null` alors, et c'est à l'appelant de
   /// nommer ce qui vient de fauter pendant qu'il faisait autre chose.
-  function physical(address) {
+  ///
+  /// **`kind` dit ce que l'hôte vient faire**, et c'est la marche qui juge :
+  /// `SLOTS.walkMachine` pour le processeur qui travaille pour lui-même — la
+  /// porte, le descripteur, le segment de tâche, le cadre —, qu'aucun droit
+  /// n'arrête ; `SLOTS.walkFetch` pour la fenêtre d'une région, qu'un
+  /// programme ne lit que dans ses propres pages.
+  function physical(address, kind = SLOTS.walkMachine) {
     const paging = (BigInt.asUintN(64, globals[SLOTS.control].value) & PAGING_BIT) !== 0n;
     if (!paging || walk === null) return Number(address & BigInt(base - 1));
-    const frame = walk(BigInt.asIntN(64, address));
+    const frame = walk(BigInt.asIntN(64, address), kind);
     if (globals[SLOTS.fault].value !== 0n) return null;
     const page = Number(BigInt.asUintN(32, BigInt(frame)));
     return (page + Number(address & 0xfffn)) & (base - 1);
+  }
+
+  /// **Huit octets lus à une adresse invitée, chacun dans la page qui le
+  /// porte.** `physical` traduit **une** adresse ; lire ensuite huit octets
+  /// contigus en mémoire linéaire, ce que faisaient la délivrance et la
+  /// lecture du segment de tâche, prend la fin d'un mot à cheval dans la
+  /// trame physiquement voisine — pas dans la page virtuelle d'après. Le
+  /// défaut exact que `far_load_body` corrige côté module. Linux aligne son
+  /// IDT, sa GDT et son TSS sur une page, et ne le voit pas ; un mot à cheval
+  /// reste un mot, et le silicium le lit dans ses deux pages.
+  ///
+  /// Rend `null` quand l'une des deux pages manque, le témoin et CR2 posés
+  /// par la marche — CR2 sur le premier octet de la seconde.
+  function peekWord(address) {
+    const start = physical(address);
+    if (start === null) return null;
+    const vue = new DataView(memory.buffer);
+    const head = 4096 - Number(address & 0xfffn);
+    if (head >= 8) return vue.getBigUint64(start, true);
+    const next = physical(address + BigInt(head));
+    if (next === null) return null;
+    let value = 0n;
+    for (let i = 7; i >= 0; i--) {
+      const at = i < head ? start + i : next + (i - head);
+      value = (value << 8n) | BigInt(vue.getUint8(at));
+    }
+    return value;
   }
 
   /// **Délivrer une exception à l'invité**, comme le processeur le ferait :
@@ -1231,10 +1320,12 @@ export function machine({
   /// sait.**
   ///
   /// Le module pose le bit de présence et celui d'écriture — il est le seul à
-  /// savoir ce que l'accès tentait. Il ne sait pas dire l'anneau : il range le
-  /// témoin et rend la main, et c'est ici que CS est lu. Et le chargement
-  /// d'instruction, il ne le voit pas du tout : c'est l'hôte qui va chercher
-  /// les octets d'une région.
+  /// savoir ce que l'accès tentait. Ce commentaire le disait déjà quand c'était
+  /// faux : le module posait toujours zéro. Il les pose depuis que sa marche
+  /// juge les droits des pages. Il ne dit pas l'anneau : il range le témoin et
+  /// rend la main, et c'est ici que CS est lu. Et le chargement d'instruction,
+  /// il ne le voit pas du tout : c'est l'hôte qui va chercher les octets d'une
+  /// région — et qui lui demande le bit de présence, par `read`.
   function pageFaultCode(base, fetch) {
     const code = BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 0xffffn;
     let out = base;
@@ -1281,13 +1372,11 @@ export function machine({
     if (position + 15n > limit) {
       return `${what} avec un changement de pile : le sélecteur de tâche 0x${selector.toString(16)} est hors de la GDT`;
     }
-    const entry = physical(gdt + position);
-    if (entry === null) {
+    const low = peekWord(gdt + position);
+    const high = low === null ? null : peekWord(gdt + position + 8n);
+    if (high === null) {
       return `une faute pendant la délivrance d'${what} : la GDT n'est pas cartographiée`;
     }
-    const vue = new DataView(memory.buffer);
-    const low = vue.getBigUint64(entry, true);
-    const high = vue.getBigUint64(entry + 8, true);
     // Neuf c'est « TSS long disponible », onze « TSS long occupé ». Rien
     // d'autre ne porte de pile, et un descripteur de code lu comme un TSS
     // rendrait une base plausible.
@@ -1312,11 +1401,11 @@ export function machine({
     const offset = interruptStack !== 0n
       ? 0x24n + (interruptStack - 1n) * 8n
       : 4n + BigInt(level) * 8n;
-    const where = physical(taskBase + offset);
-    if (where === null) {
+    const pile = peekWord(taskBase + offset);
+    if (pile === null) {
       return `une faute pendant la délivrance d'${what} : le segment de tâche n'est pas cartographié`;
     }
-    return vue.getBigUint64(where, true);
+    return pile;
   }
 
   function deliver(vector, errorCode, what) {
@@ -1326,13 +1415,11 @@ export function machine({
     if (at + 15n > limit) {
       return `${what} sans porte : aucune IDT ne porte le vecteur ${vector}`;
     }
-    const gate = physical(idt + at);
-    if (gate === null) {
+    const low = peekWord(idt + at);
+    const high = low === null ? null : peekWord(idt + at + 8n);
+    if (high === null) {
       return `une faute pendant la délivrance d'${what} : l'IDT n'est pas cartographiée`;
     }
-    const vue = new DataView(memory.buffer);
-    const low = vue.getBigUint64(gate, true);
-    const high = vue.getBigUint64(gate + 8, true);
     if ((low & (1n << 47n)) === 0n) {
       return `${what} sans porte : la porte du vecteur ${vector} n'est pas présente`;
     }
@@ -1368,6 +1455,9 @@ export function machine({
     // parce qu'il est déjà passé en anneau zéro à ce moment-là. Le CS d'avant
     // est dans `words` — c'est lui que l'`iretq` rendra.
     globals[SLOTS.segment + 1].value = BigInt.asIntN(64, selector);
+    // **Les mots du cadre ne sont jamais à cheval** : le sommet est aligné
+    // sur seize, et chaque mot descend de huit. Une seule traduction par mot
+    // suffit donc, et c'est la seule écriture de l'hôte.
     let pointer = top & ~0xfn;
     for (const word of words) {
       pointer -= 8n;
@@ -1455,15 +1545,44 @@ export function machine({
   /// détache si la mémoire grandit, et l'invité peut la réécrire pendant
   /// l'aller-retour vers l'application — qui traduirait alors des octets qui
   /// ont bougé sous son nez.
-  function read(address, window) {
+  ///
+  /// **C'est un chargement d'instruction**, et la marche le juge comme tel :
+  /// en anneau trois, une page du superviseur ne se lit pas plus qu'une page
+  /// absente. Ce que la marche a dit de la **première** page reste dans
+  /// `unread` — le code d'erreur plus un, comme le témoin —, parce que c'est
+  /// lui que la faute de chargement délivre : P quand la page est là et que
+  /// le programme n'y a pas droit.
+  ///
+  /// **Sauf quand l'hôte ne vient pas charger, mais regarder.** `kind` vaut
+  /// `SLOTS.walkFetch` pour la fenêtre qu'on va traduire, et c'est le cas par
+  /// défaut ; les mesures — `revoir`, la sonde de `surveiller` — passent
+  /// `SLOTS.walkMachine`. Elles demandent « quels octets la page porte-t-elle
+  /// maintenant ? », pas « l'anneau courant a-t-il le droit d'y prendre une
+  /// instruction ? ». Jugées comme un chargement, elles dépendraient de
+  /// l'anneau où la machine s'est arrêtée : en anneau trois, une page du
+  /// noyau que les tables en service portent bien passerait illisible.
+  ///
+  /// **Ça ne rend lisible que ce que les tables en service portent.** Un
+  /// noyau à isolation des tables — celui d'Alpine — arrêté en anneau trois
+  /// tient les tables du programme, où son texte n'est pas cartographié du
+  /// tout : là, aucun `kind` n'y change rien. Mesuré sur Alpine à cet arrêt,
+  /// 11 030 fenêtres sur 11 080 restent illisibles avec `walkMachine` (11 044
+  /// avec `walkFetch`) ; seul `nopti` en rend presque toutes — 9 illisibles.
+  function read(address, window, kind = SLOTS.walkFetch) {
     const temoin = globals[SLOTS.fault].value;
     const cr2 = globals[SLOTS.control + 1].value;
     const out = new Uint8Array(window);
     let filled = 0;
+    unread = 0n;
+    stopped = null;
     while (filled < window) {
       globals[SLOTS.fault].value = 0n;
-      const at = physical(address + BigInt(filled));
-      if (at === null) break;
+      const at = physical(address + BigInt(filled), kind);
+      if (at === null) {
+        if (filled === 0) unread = globals[SLOTS.fault].value;
+        else stopped = { at: address + BigInt(filled), witness: globals[SLOTS.fault].value };
+        break;
+      }
       // **Le bout de la RAM est une borne dure** : la correspondance des
       // blocs et le tampon de traduction vivent juste au-dessus, et lire plus
       // loin les enverrait à l'application, qui les prendrait pour du code.
@@ -1504,12 +1623,27 @@ export function machine({
     if (bytes === MORE) {
       const wider = read(address, WIDER);
       if (wider === null) return UNMAPPED;
+      // **Ce qui a arrêté cette lecture-là**, gardé avant que la traduction
+      // ne relise quoi que ce soit.
+      const cut = stopped;
       lu = wider;
       bytes = await answered(
         () => translate(address, slot, wider),
         patience,
       );
-      if (bytes === MORE) return null;
+      if (bytes === MORE) {
+        // **La première instruction est coupée par une page qu'on ne peut
+        // pas lire.** Plus d'octets ne viendront pas : la page d'après est
+        // absente (ou interdite à l'anneau courant). Sur le silicium, c'est
+        // une faute de page sur le chargement de la **suite** de
+        // l'instruction — CR2 sur le premier octet de la page qui manque, RIP
+        // sur l'instruction — et le noyau pose la page. Alpine s'arrêtait
+        // là, « refusée » sur un `48` seul au dernier octet d'une page de
+        // busybox. Une coupe sans page qui manque — la fenêtre large lue en
+        // entier, ou le bout de la RAM — reste un refus.
+        if (cut !== null) return { coupe: cut.at, temoin: cut.witness };
+        return null;
+      }
     }
     if (bytes === MUTE || bytes === BROKEN) return bytes;
     if (!bytes) return null;
@@ -1615,6 +1749,77 @@ export function machine({
     return region;
   }
 
+  /// L'anneau trois a-t-il déjà été atteint ? C'est l'événement qui vide le
+  /// cache de code, une fois. Voir `oublierTout`.
+  let sawUser = false;
+  /// **Ce que les vidages ont jeté** : combien de vidages, et combien de
+  /// régions au total. Lecture ; rien ne se décide dessus.
+  const vidages = { fois: 0, regions: 0 };
+
+  /// **Oublier toutes les régions traduites**, une fois, au premier passage en
+  /// anneau trois.
+  ///
+  /// Le noyau réécrit son propre texte pendant qu'il démarre :
+  /// `apply_alternatives`, `apply_returns`, les sauts et appels statiques.
+  /// Une région traduite **avant** garde l'ancien code, et c'est ce qui
+  /// tourne — mesuré sur Alpine 6.18 : 2 001 régions dont la fenêtre a changé
+  /// (`revoir`, sous `nopti`). La plupart sont sans effet ici, l'ancien code
+  /// étant la forme générique. Une ne l'est pas : dans `error_entry`, la
+  /// bascule vers les tables du noyau (`SWITCH_TO_KERNEL_CR3`) est un `jmp`
+  /// par-dessus, que le noyau remplace par des `nop` quand l'isolation des
+  /// tables est en service. La région d'`asm_common_interrupt` est traduite à
+  /// la première interruption d'horloge, **avant** ce remplacement : une
+  /// interruption prise en anneau trois gardait les tables du programme, et
+  /// `sync_regs` fautait sur la pile du noyau — faute dans la faute, jusqu'à
+  /// ce que la pile descende dans l'IDT. Tant que l'horloge était figée, aucune
+  /// interruption ne tombait en anneau trois et rien ne le montrait.
+  ///
+  /// **Tout, et pas seulement ce qui a changé.** Un premier essai relisait
+  /// chaque région au moment d'y entrer et n'oubliait que celles dont les
+  /// octets avaient bougé : le cache devenait un mélange de code réécrit et de
+  /// code d'avant, et ce mélange est pire que l'un ou l'autre — une région
+  /// fraîche de `__x86_return_thunk` (devenu `jmp warn_thunk_thunk`) appelée
+  /// par une région ancienne qui n'avait pas été réécrite en `ret` :
+  /// « Unpatched return thunk in use », puis une oops. Et sous isolation des
+  /// tables, à ce moment-là, le texte du noyau ne se relit pas du tout.
+  ///
+  /// **Pourquoi à ce moment-là** : les réécritures du démarrage
+  /// (`alternative_instructions`) sont faites avant que le moindre programme
+  /// ne tourne, et rien ne passe en anneau trois avant elles. Le prix est une
+  /// seconde traduction de ce qui sert encore — quelques milliers de régions,
+  /// une fois.
+  ///
+  /// **Ce que ça ne couvre pas, et c'est dit** : une réécriture **après** —
+  /// un saut statique basculé plus tard, `text_poke` — n'est vue par rien. Le
+  /// remède complet est de voir les écritures dans les pages de code.
+  const oublierTout = () => {
+    vidages.fois += 1;
+    vidages.regions += known.size;
+    known.clear();
+    // La correspondance entière : plus aucune adresse ne mène à un ancien
+    // bloc, et le premier saut de module à module rend la main à l'hôte.
+    new Uint8Array(memory.buffer, base, SLOTS.tableSlots * SLOTS.tableEntry).fill(0);
+    // Les anciens blocs quittent la table, et leurs modules peuvent être
+    // rendus à la mémoire : rien ne les désigne plus.
+    for (let at = 0; at < next; at += 1) blocks.set(at, null);
+  };
+
+  /// **Le premier passage en anneau trois, vu une fois.** Rend vrai si le
+  /// cache vient d'être vidé : la région en main n'est plus dans `known`, et
+  /// l'appelant ne doit plus la faire tourner.
+  ///
+  /// Le passage a lieu dans une région (`sysretq`, `iretq`) : l'adresse où il
+  /// mène, du code de programme, n'a jamais été traduite, donc la région rend
+  /// la main en anneau trois. C'est pourquoi la boucle regarde **au retour de
+  /// chaque région**, et pas seulement en tête de tour.
+  const voirAnneauTrois = () => {
+    if (sawUser) return false;
+    if ((BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n) !== 3n) return false;
+    sawUser = true;
+    oublierTout();
+    return true;
+  };
+
   /// **Rendre la main à la page.**
   ///
   /// Une machine qui tourne occupe le seul fil de la page. Tant qu'elle ne
@@ -1682,6 +1887,18 @@ export function machine({
     globals,
     blocks,
     known,
+    /// **Taper sur le port série** : les octets entrent dans la file de
+    /// réception, dans l'ordre, et la ligne quatre monte si l'invité a
+    /// autorisé l'interruption de réception. Le shell d'un initramfs lit là.
+    ///
+    /// **À appeler entre deux `run`**, quand la machine a rendu la main — sur
+    /// un `hlt` sans rien pour la réveiller, typiquement : un shell qui
+    /// attend une ligne. Le prochain `run` délivre l'interruption avant de
+    /// regarder le `hlt`, et l'invité repart.
+    send(octets) {
+      for (const octet of octets) uart.input.push(octet & 0xff);
+      raiseSerial();
+    },
     /// **Lire la mémoire de l'invité à une adresse invitée**, à travers les
     /// tables de pages quand elles sont en service — le même lecteur que la
     /// traduction emploie pour aller chercher ses fenêtres d'octets, et pas un
@@ -1762,6 +1979,7 @@ export function machine({
     /// était à la première.** Lecture ; rien ne se décide dessus.
     materiel,
     surveillees,
+    vidages,
     uart,
     /// **Les régions dont les octets ont bougé sous elles.**
     ///
@@ -1788,13 +2006,27 @@ export function machine({
     /// **Illisible n'est pas périmé.** Une région que les tables ne portent
     /// plus à la fin — un CR3 qui a changé, une page rendue — ne dit rien sur
     /// ses octets. La confondre avec un changement inventerait des défauts.
+    ///
+    /// **Et l'anneau de l'arrêt n'y est pour rien.** La relecture se fait en
+    /// `SLOTS.walkMachine`, sans juger aucun droit : une page du noyau que
+    /// les tables en service portent encore reste comparée quand la machine
+    /// s'arrête dans un programme. Lue comme un chargement, elle passait
+    /// illisible. Sur Alpine **lancé avec `nopti`**, arrêté en anneau trois :
+    /// 11 048 illisibles et 0 périmée avant, 9 et 2 001 après.
+    ///
+    /// **Mais sous isolation des tables, le texte du noyau n'est pas dans les
+    /// tables du programme**, et il reste illisible pour de bon : Alpine tel
+    /// quel, au même arrêt, rend 11 030 illisibles et 7 périmées — toutes
+    /// dans `.entry.text`, que l'isolation laisse cartographié. Ce zéro-là ne
+    /// dit rien du noyau ; `kernel-entry` écrit donc l'anneau et CR3 de la
+    /// relecture, et l'arrêt en anneau zéro compte 373 périmées.
     revoir() {
       const changees = [];
       const illisibles = [];
       for (const [adresse, region] of known) {
         const avant = region.lu;
         if (avant === undefined) continue;
-        const maintenant = read(adresse, avant.length);
+        const maintenant = read(adresse, avant.length, SLOTS.walkMachine);
         if (maintenant === null || maintenant.length < avant.length) {
           illisibles.push(adresse.toString());
           continue;
@@ -1830,6 +2062,9 @@ export function machine({
           dernier = performance.now();
         }
         const here = rip();
+        // Une machine posée en anneau trois avant le premier tour (une reprise,
+        // un pilote) : le passage n'est passé par aucune région.
+        voirAnneauTrois();
         let region = known.get(here);
         if (region === undefined) {
           region = await install(here);
@@ -1869,10 +2104,37 @@ export function machine({
               };
             }
             globals[SLOTS.control + 1].value = BigInt.asIntN(64, here);
+            // **Le code d'erreur vient de la marche**, par `read` : P quand
+            // la page est là mais réservée au noyau. Il valait toujours zéro,
+            // ce qui était juste tant que rien d'autre qu'une page absente
+            // ne pouvait arrêter un chargement.
             const why = deliver(
               PAGE_FAULT,
-              pageFaultCode(0n, true),
+              pageFaultCode(unread === 0n ? 0n : unread - 1n, true),
               "une faute de page sur un chargement d'instruction",
+            );
+            if (why !== null) return { stopped: why, at: here };
+            continue;
+          }
+          if (region !== null && region.coupe !== undefined) {
+            // **La même faute que la précédente, sur la page d'après** : la
+            // suite de l'instruction. Le même garde-fou contre une
+            // délivrance qui ne mènerait nulle part.
+            unfetchable += 1;
+            if (unfetchable > 1) {
+              return {
+                stopped:
+                  "une faute pendant la délivrance d'une faute de page sur un " +
+                  "chargement d'instruction : le gestionnaire lui-même n'est pas " +
+                  "cartographié",
+                at: here,
+              };
+            }
+            globals[SLOTS.control + 1].value = BigInt.asIntN(64, region.coupe);
+            const why = deliver(
+              PAGE_FAULT,
+              pageFaultCode(region.temoin === 0n ? 0n : region.temoin - 1n, true),
+              "une faute de page sur la suite d'une instruction coupée",
             );
             if (why !== null) return { stopped: why, at: here };
             continue;
@@ -1889,9 +2151,21 @@ export function machine({
         // qu'une lecture directe parce qu'il remet le témoin de faute et CR2
         // comme il les a trouvés : une sonde qui laisserait une faute
         // derrière elle ferait prendre à l'invité, plus tard, une faute que
-        // *l'hôte* a causée en mesurant.
+        // *l'hôte* a causée en mesurant. Et il lit en `SLOTS.walkMachine`,
+        // comme `revoir`, parce que la sonde compte ce qui **va tourner**.
+        //
+        // **Ce choix n'a d'effet que sur un défaut.** En anneau zéro, le
+        // chargement ne juge pas la lecture ; en anneau trois sur une page
+        // utilisateur, il réussit. Reste un programme qui saute dans une
+        // région du noyau **déjà traduite** : sur le silicium, c'est une faute
+        // de page (P|U) ; ici, les régions étant gardées par adresse, la
+        // région tourne en anneau trois sans repasser par le chargement — le
+        // trou de protection que le JOURNAL porte dans « Ce qui reste ». Tant
+        // qu'il est là, la sonde voit ce code périmé ; jugée comme un
+        // chargement, elle ne le verrait pas. Le jour où ce chargement
+        // fautera, la région ne tournera plus et ce choix ne changera rien.
         if (surveiller && region.lu !== undefined) {
-          const octet = read(here, 1);
+          const octet = read(here, 1, SLOTS.walkMachine);
           if (octet !== null && octet[0] !== region.lu[0]) {
             surveillees.entrees += 1n;
             // **Les deux octets, pas seulement le compte.** « Cent vingt mille
@@ -1912,6 +2186,16 @@ export function machine({
           }
         }
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
+        // **Le passage en anneau trois se voit ici, dès que la région rend la
+        // main, et avant toute délivrance.** Le regarder seulement en tête de
+        // tour le manquait dès qu'une interruption attendait : la région qui
+        // fait le `sysretq` rend la main en anneau trois, la boucle délivre
+        // l'IRQ — CS repasse en anneau zéro — et revient en tête de tour sans
+        // avoir rien vu. Le gestionnaire tournait alors sur ses traductions
+        // d'avant les réécritures, ce que le vidage existe pour empêcher, et
+        // le vidage n'avait jamais lieu. Une délivrance de faute ou d'`int`
+        // juste après le `sysretq` passe par le même chemin.
+        if (voirAnneauTrois()) region = null;
         // **Le temps de l'invité avance ici, et pas dans le module.**
         //
         // Le faire dans le module coûterait un ajout par bloc, payé partout et
@@ -2007,6 +2291,21 @@ export function machine({
           }
           continue;
         }
+        // **Un MXCSR aux bits réservés est une `#GP(0)`, délivrée** — à un
+        // programme d'anneau trois comme au noyau. RIP est sur l'instruction,
+        // rien n'a changé. Sans porte, le témoin est remis et l'arrêt dit
+        // pourquoi et quel vecteur manquait.
+        if (stop === STOP_MXCSR) {
+          globals[SLOTS.stop].value = 0n;
+          const why = deliver(
+            GENERAL_PROTECTION, 0n,
+            "un MXCSR aux bits réservés levés, que ldmxcsr ou fxrstor voulaient charger");
+          if (why !== null) {
+            globals[SLOTS.stop].value = stop;
+            return { stopped: why, at: rip() };
+          }
+          continue;
+        }
         // **Une instruction indéfinie est délivrée, pas un arrêt.** Le module a
         // posé RIP **sur** le `ud2` — une faute, pas un piège : c'est le
         // gestionnaire qui décide d'avancer, et Linux y ajoute lui-même la
@@ -2023,7 +2322,7 @@ export function machine({
         }
         // **Et voici l'interruption qui vient du dehors.**
         //
-        // Les quatre délivrances au-dessus sont synchrones : l'instruction que
+        // Les délivrances au-dessus sont toutes synchrones : l'instruction que
         // l'invité vient d'exécuter les a causées, et le module les signale en
         // rendant la main. Celle-ci n'a causé personne. Le temps a passé, le
         // canal zéro du 8254 a fini un tour, le 8259 a routé la ligne, et
@@ -2108,8 +2407,9 @@ export function machine({
         // ne fait pas bouger RIP, plus rien ne le fera. C'est `ud2`, ou une
         // instruction que l'émetteur ne traduit pas. Le bloc supplémentaire
         // est du vrai travail dans le cas bénin, et il n'est payé que quand
-        // RIP retombe sur son point de départ.
-        if (rip() === here) {
+        // RIP retombe sur son point de départ. Une région que le vidage vient
+        // d'oublier ne tourne plus : le tour suivant la retraduira.
+        if (region !== null && rip() === here) {
           region.run(1n);
           if (rip() === here) {
             return { stopped: "sur place", at: here };

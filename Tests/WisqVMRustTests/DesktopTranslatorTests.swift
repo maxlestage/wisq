@@ -245,12 +245,34 @@ final class DesktopTranslatorTests: XCTestCase {
             .refused,
             "avec la place d'en juger, c'est un refus franc"
         )
+        // Un octet de moins, et c'est toujours un refus : `06` est complet, il
+        // ne déborde pas, et l'émetteur demande au décodeur s'il a lu au-delà
+        // du bord. Le rendre « coupé » faisait fauter l'hôte sur la page
+        // d'après, ce que le silicium ne fait pas.
         XCTAssertEqual(
             DesktopTranslator.resolvingRegion(
                 withRoom.prefix(14), base: guestBase, entry: 0, slot: 0, pages: 16
             ),
+            .refused,
+            "un octet de moins, et rien ne déborde : un refus franc"
+        )
+        // Le seuil tenu par une vraie coupe : quatorze préfixes `66` sans
+        // opcode demandent des octets ; quinze sont plus longs que toute
+        // instruction x86-64.
+        let prefixes = Data([UInt8](repeating: 0x66, count: 15))
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                prefixes.prefix(14), base: guestBase, entry: 0, slot: 0, pages: 16
+            ),
             .needsMoreBytes,
-            "un octet de moins, et il n'avait plus la place"
+            "quatorze préfixes sans opcode : une coupe"
+        )
+        XCTAssertEqual(
+            DesktopTranslator.resolvingRegion(
+                prefixes, base: guestBase, entry: 0, slot: 0, pages: 16
+            ),
+            .refused,
+            "quinze : un refus franc"
         )
         guard case .module = DesktopTranslator.resolvingRegion(
             loop, base: guestBase, entry: 0, slot: 0, pages: 16

@@ -2774,10 +2774,12 @@ fn an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it() {
 
 /// **Le seuil de quinze octets, tenu des deux côtés.**
 ///
-/// C'est le test qui compte : le même octet inconnu, à la même place, ne rend
-/// pas la même réponse selon ce qui le suit. Quinze octets après lui, le
-/// décodeur avait toute la place qu'une instruction x86-64 peut demander —
-/// donc c'est un vrai refus. Quatorze, et ça pourrait n'être qu'une coupe.
+/// Le même début d'instruction, à la même place, ne rend pas la même réponse
+/// selon la place qui le suit. Quatorze préfixes `66` sans opcode derrière :
+/// le décodeur lit au-delà du bord, et une suite le rendrait lisible — un
+/// `nop` en quinzième octet — donc c'est une coupe. Quinze : une instruction
+/// x86-64 n'en fait pas plus, le silicium rend `#GP`, et aucune suite n'y
+/// changerait rien — c'est un vrai refus.
 ///
 /// **Ce que la tranche de l'arrêt nommé a déplacé.** La distinction ne se lit
 /// plus dans le sort de la région : depuis qu'un octet illisible arrête son
@@ -2793,22 +2795,33 @@ fn an_unreadable_byte_refuses_flatly_only_when_the_region_starts_on_it() {
 ///   qu'un bord de fenêtre — exactement la confusion que `REACH` existe pour
 ///   éviter.
 ///
+/// **Ce que le seuil ne départage plus seul.** Ce test posait un octet inconnu
+/// complet (`06`) à quatorze octets du bord et y voyait une coupe : c'était
+/// « ça peut en être une ». Le décodeur dit maintenant s'il a lu au-delà, et
+/// une instruction complète refusée près du bord est un refus franc — le test
+/// qui suit le tient.
+///
 /// Sans les deux moitiés, un seuil de zéro ou de mille passerait aussi bien.
 #[test]
 fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
-    // `restants` compte à partir de l'octet fautif, celui-ci compris : c'est la
-    // place dont le décodeur disposait pour lire une instruction entière.
+    // `restants` compte à partir du premier préfixe : la place dont le
+    // décodeur disposait pour lire une instruction entière.
+    let prefixes = |restants: usize| vec![0x66u8; restants];
     let at_entry = |restants: usize| {
-        let mut bytes = vec![UNKNOWN];
-        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
-        assert_eq!(bytes.len(), restants, "le montage du cas lui-même");
+        let bytes = prefixes(restants);
         Module::region_or_why(&bytes, CODE, 0).map(|_| ())
     };
+    let mut lisible = prefixes(14);
+    lisible.push(0x90);
+    assert!(
+        wisq_vm::x86::decode(&lisible).is_some_and(|step| step.length == 15),
+        "le montage : quatorze `66` et un `nop` font une instruction de quinze octets"
+    );
     assert_eq!(
         at_entry(14),
         Err(Refused::MayBeCut { at: 0 }),
-        "quatorze octets restants : le décodeur a pu manquer de place, et rien \
-         de complet ne précède — la vue redemande"
+        "quatorze octets restants : le décodeur a manqué de place, et rien de \
+         complet ne précède — la vue redemande"
     );
     assert_eq!(
         at_entry(15),
@@ -2820,9 +2833,7 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
     // plus du seuil — seul le nom en dépend.
     let after_three_nops = |restants: usize| {
         let mut bytes = vec![0x90; 3];
-        bytes.push(UNKNOWN);
-        bytes.extend(std::iter::repeat_n(0x90, restants - 1));
-        assert_eq!(bytes.len() - 3, restants, "le montage du cas lui-même");
+        bytes.extend(prefixes(restants));
         (
             Module::region_or_why(&bytes, CODE, 0).map(|_| ()),
             Module::outline(&bytes, 0)
@@ -2835,13 +2846,109 @@ fn the_edge_is_fifteen_bytes_and_both_sides_are_held() {
         after_three_nops(14),
         (Ok(()), Some(3), Ok(vec![])),
         "quatorze restants : la région se traduit jusqu'à l'octet et reprend \
-         dessus, mais il n'est pas nommé — ce peut n'être que la fenêtre"
+         dessus, mais il n'est pas nommé — ce n'est que la fenêtre"
     );
     assert_eq!(
         after_three_nops(15),
         (Ok(()), Some(3), Ok(vec![3])),
         "quinze restants : même traduction, même reprise, et l'octet est nommé"
     );
+}
+
+/// **Une instruction complète que le décodeur refuse est un refus franc, même
+/// à un octet du bord.**
+///
+/// Tout échec à moins de quinze octets de la fin passait pour une coupe. Sur
+/// une page dont la suivante manque, l'hôte délivrait alors une faute de page
+/// sur la page d'après — que le silicium ne fait pas, puisque l'instruction
+/// n'y déborde pas. `67 8b 00` est un `mov (%eax),%eax`, trois octets complets
+/// que ce décodeur ne lit pas (la taille d'adresse n'est lue que devant un
+/// saut relatif) ; `06` est `push es`, qui n'existe pas en mode 64 bits.
+/// Les vraies coupes, elles, restent des coupes : un `48` seul (le mur de
+/// busybox), un `48 b8` à l'immédiat tronqué, un `0f` seul, un `f3 0f 1e`
+/// sans son `fa`.
+#[test]
+fn a_complete_refused_instruction_near_the_edge_is_not_a_cut() {
+    for (bytes, name) in [
+        (&[0x67u8, 0x8b, 0x00][..], "addr32 mov (%eax),%eax"),
+        (&[0x06][..], "push es"),
+        (&[0x06, 0x90, 0x90][..], "push es et deux nop"),
+    ] {
+        assert!(!wisq_vm::x86::cut_short(bytes), "{name} : rien ne déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::CannotDecode { at: 0 }),
+            "{name} : un refus franc, pas « il m'en faut plus »"
+        );
+        let mut after_a_nop = vec![0x90];
+        after_a_nop.extend_from_slice(bytes);
+        assert_eq!(
+            Module::unreadable(&after_a_nop, 0),
+            Ok(vec![1]),
+            "{name} : et il est nommé parmi les illisibles"
+        );
+    }
+    for (bytes, name) in [
+        (&[0x48u8][..], "un REX seul"),
+        (&[0x48, 0xb8, 1, 2, 3][..], "un immédiat tronqué"),
+        (&[0x0f][..], "un 0f seul"),
+        (&[0xf3, 0x0f, 0x1e][..], "endbr64 sans son dernier octet"),
+    ] {
+        assert!(wisq_vm::x86::cut_short(bytes), "{name} : déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::MayBeCut { at: 0 }),
+            "{name} : une coupe, que plus d'octets rendraient lisible"
+        );
+    }
+}
+
+/// **`pushw $imm16` fait quatre octets, et au bout d'une page ce n'est pas une
+/// coupe.**
+///
+/// Le décodeur lisait `66 68` avec un immédiat de trente-deux bits : les
+/// quatre octets seuls étaient refusés, et suivis de n'importe quoi ils se
+/// lisaient en six. `cut_short` en concluait que l'instruction débordait, et
+/// une région qui commençait sur un `pushw $imm16` aux quatre derniers octets
+/// d'une page dont la suivante manque recevait la faute de page sur la page
+/// d'après — que le silicium ne fait pas (`instr 22 66683412 pushw $0x1234`,
+/// quatre octets, dans le corpus de pile). Le contrôle l'a trouvé en
+/// énumérant ; `66 68 aa 0f` est son contre-exemple.
+///
+/// L'émetteur refuse toujours ces formes — il ne descend la pile que de
+/// huit —, mais d'un refus franc sur une instruction lue, plus d'une coupe.
+/// Et les vraies coupes du même opcode restent des coupes.
+#[test]
+fn a_sixteen_bit_immediate_push_at_the_edge_is_not_a_cut() {
+    for (bytes, name) in [
+        (&[0x66u8, 0x68, 0xaa, 0x0f][..], "pushw $0xfaa"),
+        (&[0x66, 0x68, 0x34, 0x12][..], "pushw $0x1234"),
+        (&[0x66, 0x6a, 0x80][..], "pushw $-128"),
+    ] {
+        assert_eq!(
+            wisq_vm::x86::decode(bytes).map(|step| (step.length, step.width)),
+            Some((bytes.len(), Width::Word)),
+            "{name} : lu tel quel, en seize bits"
+        );
+        assert!(!wisq_vm::x86::cut_short(bytes), "{name} : rien ne déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::CannotTranslate { at: 0 }),
+            "{name} : un refus franc, pas « il m'en faut plus »"
+        );
+    }
+    for (bytes, name) in [
+        (&[0x66u8, 0x68][..], "pushw sans immédiat"),
+        (&[0x66, 0x68, 0xaa][..], "pushw à l'immédiat tronqué"),
+        (&[0x66, 0x6a][..], "pushw $ib sans son octet"),
+    ] {
+        assert!(wisq_vm::x86::cut_short(bytes), "{name} : déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::MayBeCut { at: 0 }),
+            "{name} : une coupe, que plus d'octets rendraient lisible"
+        );
+    }
 }
 
 /// **Un octet illisible sur une branche que personne ne prend ne coûte plus
@@ -3720,8 +3827,8 @@ fn read_string_oracle() -> StringOracle {
         }
     }
     assert_eq!(states.len(), 8, "les huit états du corpus de chaîne");
-    assert_eq!(instructions.len(), 47, "ses quarante-sept formes");
-    assert_eq!(cases.len(), 376, "et ses trois cent soixante-seize cas");
+    assert_eq!(instructions.len(), 52, "ses cinquante-deux formes");
+    assert_eq!(cases.len(), 416, "et ses quatre cent seize cas");
     // **La fenêtre vient du fichier qui la déclare**, et non d'un motif écrit
     // ici : le corpus de chaîne ne la déclare pas, le corpus arithmétique si,
     // et le test Swift la reconstruit en 0x10 + i. Les trois doivent tomber
@@ -3949,8 +4056,13 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_string_corpus() {
     );
 }
 
-/// **Le plancher du corpus de chaîne, à mesurer.**
-const STRING_CASES_FLOOR: usize = 144;
+/// **Le plancher du corpus de chaîne : tout le corpus.** Il valait 144 —
+/// `movs` et `stos` seuls — tant que `lods`, `cmps` et `scas` ne se
+/// traduisaient pas ; `repne scasb` et `repe cmpsb` sont le `strlen` et le
+/// `memcmp` de busybox compilé en `-Os`, et les 376 cas sont jugés depuis.
+/// Les cinq `rep lods` portent le compte à 416 : l'émetteur les traduisait, et
+/// un `rep lods` d'un seul tour n'était vu par aucun test.
+const STRING_CASES_FLOOR: usize = 416;
 
 /// **Le quatrième corpus branché sur l'émetteur : les branchements.**
 ///
@@ -4454,4 +4566,445 @@ fn what_the_emitter_produces_matches_the_silicon_on_the_branch_corpus() {
     }
 
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Un `lret` sans REX.W est refusé en étant nommé, pas émis en `lretq`.**
+///
+/// `cb` seul dépile EIP puis CS sur **quatre** octets chacun, et `66 cb` sur
+/// deux. Le décodeur les donnait tous pour `lretq`, et l'émetteur dépilait
+/// seize octets : une pile décalée de huit, et un saut à une adresse faite de
+/// deux moitiés de mots. Le noyau n'écrit que `48 cb` ; les deux autres
+/// doivent donc s'arrêter sur un refus franc, à l'octet de l'instruction,
+/// comme `iretd` — et `48 cb` doit toujours passer, sans quoi un émetteur
+/// qui refuserait tout retour lointain passerait ce test.
+#[test]
+fn a_far_return_without_rex_w_is_refused_by_name() {
+    for bytes in [&[0xcb][..], &[0x66, 0xcb][..]] {
+        assert!(
+            matches!(
+                Module::resolving_or_why(bytes, CODE, 0, 0, 16),
+                Err(Refused::CannotTranslate { at: 0 })
+            ),
+            "{bytes:02x?} : un retour lointain court se refuse à l'octet zéro"
+        );
+    }
+    assert!(
+        Module::resolving_or_why(&[0x48, 0xcb], CODE, 0, 0, 16).is_ok(),
+        "`lretq` se traduit toujours"
+    );
+}
+
+/// **Le pilote des corpus vectoriels.** Il pose XMM0, XMM1, RAX, RFLAGS et
+/// RSI, remet la fenêtre de données dans son motif, exécute, et rend ce que
+/// l'oracle relève — plus les quatorze autres XMM, qu'aucune de ces
+/// instructions ne doit toucher, et RIP, qui dit si le module est allé au
+/// bout. Un module par instruction, instancié une fois pour tous ses états,
+/// comme le pilote du corpus arithmétique.
+const VECTOR_DRIVER: &str = r#"
+const fs = require("fs");
+const job = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const memory = new WebAssembly.Memory({ initial: job.pages });
+const slots = [];
+for (let slot = 0; slot < job.globals; slot++) {
+  slots.push(new WebAssembly.Global({ value: "i64", mutable: true }, 0n));
+}
+const imports = { env: { mem: memory, out: () => undefined, in: () => 0n } };
+slots.forEach((global, slot) => { imports.env["g" + slot] = global; });
+const guest = new Uint8Array(memory.buffer);
+const pristine = Uint8Array.from(job.window.match(/../g).map(p => parseInt(p, 16)));
+const hex = value => BigInt.asUintN(64, value).toString(16);
+const out = {};
+for (const unit of job.jobs) {
+  const instance = new WebAssembly.Instance(
+    new WebAssembly.Module(fs.readFileSync(unit.module)), imports);
+  for (const test of unit.cases) {
+    for (const global of slots) { global.value = 0n; }
+    guest.set(pristine, job.at);
+    // Les quatorze autres registres : un motif que rien ne doit changer.
+    for (let n = 2; n < 16; n++) {
+      slots[job.xmm + 2 * n].value = BigInt(n) * 0x0101010101010101n;
+      slots[job.xmm + 2 * n + 1].value = ~(BigInt(n) * 0x0101010101010101n);
+    }
+    slots[job.xmm].value = BigInt("0x" + test.x0lo);
+    slots[job.xmm + 1].value = BigInt("0x" + test.x0hi);
+    slots[job.xmm + 2].value = BigInt("0x" + test.x1lo);
+    slots[job.xmm + 3].value = BigInt("0x" + test.x1hi);
+    slots[0].value = BigInt("0x" + test.rax);
+    slots[6].value = BigInt(job.at);
+    slots[job.flags].value = BigInt("0x" + test.flags);
+    slots[job.mxcsr].value = 0x1f80n;
+    try {
+      instance.exports.run(100n);
+    } catch (error) {
+      throw new Error(test.id + " (" + unit.module + ") : " + error.message);
+    }
+    const seen = guest.subarray(job.at, job.at + pristine.length);
+    let same = true;
+    for (let i = 0; i < pristine.length; i++) { if (seen[i] !== pristine[i]) { same = false; } }
+    const others = [];
+    for (let n = 2; n < 16; n++) {
+      if (BigInt.asUintN(64, slots[job.xmm + 2 * n].value) !== BigInt(n) * 0x0101010101010101n
+        || BigInt.asUintN(64, slots[job.xmm + 2 * n + 1].value)
+          !== BigInt.asUintN(64, ~(BigInt(n) * 0x0101010101010101n))) {
+        others.push(n);
+      }
+    }
+    out[test.id] = {
+      rip: hex(slots[job.rip].value),
+      x0lo: hex(slots[job.xmm].value),
+      x0hi: hex(slots[job.xmm + 1].value),
+      x1lo: hex(slots[job.xmm + 2].value),
+      x1hi: hex(slots[job.xmm + 3].value),
+      rax: hex(slots[0].value),
+      rsi: hex(slots[6].value),
+      flags: hex(slots[job.flags].value),
+      stop: hex(slots[job.stop].value),
+      fault: hex(slots[job.fault].value),
+      mxcsr: hex(slots[job.mxcsr].value),
+      others: others.join(","),
+      memory: same ? "-" : [...seen].map(b => b.toString(16).padStart(2, "0")).join(""),
+    };
+  }
+}
+fs.writeFileSync(process.argv[3], JSON.stringify(out));
+"#;
+
+/// Un corpus vectoriel lu : les états d'entrée, les instructions, les cas.
+struct VectorOracle {
+    /// `(xmm0 bas, xmm0 haut, xmm1 bas, xmm1 haut, rax, drapeaux)`.
+    states: HashMap<String, [u64; 6]>,
+    /// Les octets et le mnémonique.
+    instructions: Vec<(String, Vec<u8>, String)>,
+    /// `(instruction, état, xmm0 bas, xmm0 haut, xmm1 bas, xmm1 haut, rax,
+    /// mémoire)` — la mémoire `None` quand la fenêtre n'a pas bougé.
+    cases: Vec<(String, String, [u64; 5], Option<String>)>,
+}
+
+fn read_vector_oracle(name: &str) -> VectorOracle {
+    let text = std::fs::read_to_string(workspace_root().join("Tests/Fixtures").join(name))
+        .expect("l'oracle matériel doit être lisible");
+    let mut oracle = VectorOracle {
+        states: HashMap::new(),
+        instructions: Vec::new(),
+        cases: Vec::new(),
+    };
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            "état" => {
+                let mut state = [0u64; 6];
+                for (slot, field) in state.iter_mut().zip(&f[2..8]) {
+                    *slot = hex(field);
+                }
+                oracle.states.insert(f[1].into(), state);
+            }
+            "instr" => oracle
+                .instructions
+                .push((f[1].into(), bytes(f[2]), f[3].into())),
+            "cas" => {
+                let mut after = [0u64; 5];
+                for (slot, field) in after.iter_mut().zip(&f[3..8]) {
+                    *slot = hex(field);
+                }
+                let memory = match f.get(8) {
+                    Some(&"-") | None => None,
+                    Some(text) => Some((*text).to_string()),
+                };
+                oracle.cases.push((f[1].into(), f[2].into(), after, memory));
+            }
+            _ => {}
+        }
+    }
+    oracle
+}
+
+/// La fenêtre de données des deux corpus : soixante-quatre octets, de `0x10`
+/// à `0x4f`, à l'adresse où pointe RSI.
+const VECTOR_DATA: u64 = 0x3000_1000;
+
+/// **Rejouer un corpus vectoriel sous l'émetteur et JavaScriptCore**, et
+/// rendre la liste des écarts — vide quand tout est juste. Chaque forme doit
+/// se traduire : une forme refusée est un écart, pas un cas en moins.
+fn replay_vector_oracle(bun: &Path, name: &str) -> (usize, Vec<String>) {
+    use wisq_vm::x86_wasm::{FAULT_SLOT, MXCSR_SLOT, STOP_SLOT, XMM_SLOT};
+    let oracle = read_vector_oracle(name);
+    let scratch = std::env::temp_dir().join(format!(
+        "wisq-x86-vector-{}-{}",
+        name.trim_end_matches(".tsv"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let driver = scratch.join("driver.js");
+    std::fs::write(&driver, VECTOR_DRIVER).expect("le pilote");
+    let window: String = (0x10u8..0x50).map(|byte| format!("{byte:02x}")).collect();
+
+    let mut wrong = Vec::new();
+    let mut units = Vec::new();
+    for (index, (id, code, mnemonic)) in oracle.instructions.iter().enumerate() {
+        let cases: Vec<_> = oracle.cases.iter().filter(|case| &case.0 == id).collect();
+        let Some(module) = Module::region(code, CODE, 0) else {
+            wrong.push(format!(
+                "{mnemonic} : refusée par l'émetteur ({} cas)",
+                cases.len()
+            ));
+            continue;
+        };
+        let path = scratch.join(format!("v{index}.wasm"));
+        std::fs::write(&path, &module).expect("le module");
+        let mut unit = format!("{{\"module\":{:?},\"cases\":[", path.to_string_lossy());
+        for (position, (instruction, state, _, _)) in cases.iter().enumerate() {
+            let s = oracle.states[state];
+            if position > 0 {
+                unit.push(',');
+            }
+            unit.push_str(&format!(
+                "{{\"id\":\"{instruction}|{state}\",\"x0lo\":\"{:x}\",\"x0hi\":\"{:x}\",\
+                 \"x1lo\":\"{:x}\",\"x1hi\":\"{:x}\",\"rax\":\"{:x}\",\"flags\":\"{:x}\"}}",
+                s[0],
+                s[1],
+                s[2],
+                s[3],
+                s[4],
+                s[5] | 2
+            ));
+        }
+        unit.push_str("]}");
+        units.push(unit);
+    }
+    let job = format!(
+        "{{\"pages\":{GUEST_PAGES},\"globals\":{GLOBAL_COUNT},\"rip\":{RIP_SLOT},\
+         \"xmm\":{XMM_SLOT},\"mxcsr\":{MXCSR_SLOT},\"flags\":{RFLAGS_SLOT},\
+         \"stop\":{STOP_SLOT},\"fault\":{FAULT_SLOT},\"at\":{VECTOR_DATA},\
+         \"window\":\"{window}\",\"jobs\":[{}]}}",
+        units.join(",")
+    );
+    let job_path = scratch.join("job.json");
+    let result_path = scratch.join("result.json");
+    std::fs::write(&job_path, &job).expect("la liste de travail");
+    let output = Command::new(bun)
+        .arg("run")
+        .arg(&driver)
+        .arg(&job_path)
+        .arg(&result_path)
+        .output()
+        .expect("bun doit démarrer");
+    assert!(
+        output.status.success(),
+        "JavaScriptCore a refusé un module émis :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = std::fs::read_to_string(&result_path).expect("le résultat");
+    let _ = std::fs::remove_dir_all(&scratch);
+    let produced = serde_free_flat_object(&text);
+
+    let mut checked = 0usize;
+    for (instruction, state, want, memory) in &oracle.cases {
+        let (_, code, mnemonic) = oracle
+            .instructions
+            .iter()
+            .find(|(id, _, _)| id == instruction)
+            .expect("une instruction du corpus");
+        let Some(got) = produced.get(&format!("{instruction}|{state}")) else {
+            continue;
+        };
+        checked += 1;
+        let field = |name: &str| hex(&got[name]);
+        let end = CODE + code.len() as u64;
+        let flags = oracle.states[state][5] | 2;
+        let mut differences = Vec::new();
+        if field("rip") != end || field("stop") != 0 || field("fault") != 0 {
+            differences.push(format!(
+                "n'est pas allée au bout : rip {:x}, témoins {} / {}",
+                field("rip"),
+                got["stop"],
+                got["fault"]
+            ));
+        }
+        for (label, value, wanted) in [
+            ("xmm0 bas", field("x0lo"), want[0]),
+            ("xmm0 haut", field("x0hi"), want[1]),
+            ("xmm1 bas", field("x1lo"), want[2]),
+            ("xmm1 haut", field("x1hi"), want[3]),
+            ("rax", field("rax"), want[4]),
+            ("drapeaux", field("flags"), flags),
+            ("rsi", field("rsi"), VECTOR_DATA),
+            ("mxcsr", field("mxcsr"), 0x1f80),
+        ] {
+            if value != wanted {
+                differences.push(format!("{label} {value:x} au lieu de {wanted:x}"));
+            }
+        }
+        if !got["others"].is_empty() {
+            differences.push(format!("a écrit dans xmm{}", got["others"]));
+        }
+        let wanted_memory = memory.clone().unwrap_or_else(|| "-".into());
+        if got["memory"] != wanted_memory {
+            differences.push(format!(
+                "mémoire {} au lieu de {wanted_memory}",
+                got["memory"]
+            ));
+        }
+        if !differences.is_empty() {
+            wrong.push(format!(
+                "{mnemonic}, état {state} : {}",
+                differences.join(" ; ")
+            ));
+        }
+    }
+    (checked, wrong)
+}
+
+/// Lire le résultat du pilote vectoriel : un objet d'objets de chaînes, sans
+/// dépendance. Le format est celui que `VECTOR_DRIVER` écrit, et lui seul.
+fn serde_free_flat_object(text: &str) -> HashMap<String, HashMap<String, String>> {
+    let mut out = HashMap::new();
+    let body = text.trim().trim_start_matches('{').trim_end_matches('}');
+    for entry in body.split("},") {
+        let Some((key, fields)) = entry.split_once(":{") else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"').to_string();
+        let mut map = HashMap::new();
+        for pair in fields.trim_end_matches('}').split(',') {
+            if let Some((name, value)) = pair.split_once(':') {
+                map.insert(
+                    name.trim().trim_matches('"').to_string(),
+                    value.trim().trim_matches('"').to_string(),
+                );
+            }
+        }
+        out.insert(key, map);
+    }
+    out
+}
+
+/// **Les déplacements, la logique et les entrelacements de `x86-xmm-oracle.tsv`,
+/// rejoués sous l'émetteur et jugés par le silicium.**
+///
+/// C'est le corpus que le cœur Swift juge depuis #318, et que l'émetteur ne
+/// pouvait pas : « XMM 0/58 » formes traduites. `ld-musl` s'arrêtait sur la
+/// première d'entre elles (`movq %rbx,%xmm0`). Chaque forme doit maintenant se
+/// traduire, aller au bout de son module, rendre XMM0, XMM1, RAX et la
+/// fenêtre que le processeur a rendus, et ne toucher ni aux drapeaux, ni à
+/// RSI, ni à MXCSR, ni aux quatorze autres registres XMM.
+#[test]
+fn the_emitter_matches_the_silicon_on_the_xmm_corpus() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : l'émetteur ne serait vérifié par rien.");
+    };
+    let (checked, wrong) = replay_vector_oracle(&bun, "x86-xmm-oracle.tsv");
+    assert!(
+        wrong.is_empty(),
+        "{} écarts sur {checked} cas :\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Le corpus déclare 58 formes et 976 cas ; un compte plus bas voudrait
+    // dire qu'un cas n'a pas été jugé.
+    assert_eq!(checked, 976, "tous les cas du corpus doivent être jugés");
+}
+
+/// **L'arithmétique SSE2 entière de `x86-simd-oracle.tsv`**, au même juge :
+/// comparaisons, additions saturées ou non, permutations, décalages,
+/// multiplications, `pmovmskb`, `pextrw`/`pinsrw`, empaquetages. Ce sont les
+/// formes dont les fonctions de chaîne et le compilateur se servent ; aucune
+/// ne calcule en flottant.
+#[test]
+fn the_emitter_matches_the_silicon_on_the_sse2_integer_corpus() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : l'émetteur ne serait vérifié par rien.");
+    };
+    let (checked, wrong) = replay_vector_oracle(&bun, "x86-simd-oracle.tsv");
+    assert!(
+        wrong.is_empty(),
+        "{} écarts sur {checked} cas :\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let cases = read_vector_oracle("x86-simd-oracle.tsv").cases.len();
+    assert_eq!(checked, cases, "tous les cas du corpus doivent être jugés");
+}
+
+/// **Tout ce que le décodeur vectoriel lit, l'émetteur le traduit.**
+///
+/// Une instruction illisible n'arrête que son bloc ; une instruction lue et
+/// non traduite refuse **la région entière** (`Refused::CannotTranslate`),
+/// même sur une branche que rien n'exécute. Le décodeur et l'émetteur des XMM
+/// tiennent donc la même liste, et ce balayage le vérifie : chaque deuxième
+/// octet de la page `0f`, sous chaque préfixe obligatoire, avec et sans REX,
+/// en registre et en trois formes mémoire (base, base et déplacement, relatif
+/// à RIP). Les formes sans préfixe que les oracles n'exercent pas — `pmovmskb`
+/// en REX.W, `movhps` en écriture… — y passent aussi.
+#[test]
+fn every_vector_form_the_decoder_reads_is_one_the_emitter_translates() {
+    let mut seen = 0usize;
+    let mut refused = Vec::new();
+    for prefix in [
+        &[][..],
+        &[0x66],
+        &[0xf3],
+        &[0xf2],
+        &[0x66, 0x48],
+        &[0x66, 0x4d],
+        &[0x44],
+        &[0xf3, 0x41],
+    ] {
+        for second in 0u8..=255 {
+            for operand in [
+                &[0xc1][..],
+                &[0x06],
+                &[0x46, 0x20],
+                &[0x05, 0x10, 0, 0, 0],
+                &[0xd0], // reg=2 : les décalages à immédiat
+                &[0xe0], // reg=4
+                &[0xf8], // reg=7
+                &[0x10], // ldmxcsr (%rax), dans `0f ae`
+            ] {
+                let mut code = prefix.to_vec();
+                code.extend_from_slice(&[0x0f, second]);
+                code.extend_from_slice(operand);
+                code.push(0x1b); // un immédiat, pour les formes qui en portent
+                code.extend_from_slice(&[0x0f, 0x0b]);
+                let Some(step) = decode(&code) else {
+                    continue;
+                };
+                if !matches!(step.op, Op::Vector(_)) {
+                    continue;
+                }
+                seen += 1;
+                // La région ne porte que l'instruction : le `ud2` qui suit
+                // n'est atteint que si sa longueur est juste, et il n'importe
+                // pas ici.
+                if let Err(why) = Module::region_or_why(&code[..step.length], CODE, 0) {
+                    refused.push(format!("{code:02x?} ({:?}) : {why:?}", step.op));
+                }
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} formes lues et refusées :\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
+    // Les deux oracles portent 186 formes ; le balayage en voit bien plus,
+    // parce qu'il essaie chaque registre et chaque adressage.
+    assert!(
+        seen > 186,
+        "le balayage n'a vu que {seen} formes vectorielles"
+    );
 }
