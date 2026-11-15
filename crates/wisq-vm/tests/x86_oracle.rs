@@ -1268,7 +1268,9 @@ fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus() {
 /// reste **suivi d'octets de plus** — des zéros, puis des `0xff` — et ne doit
 /// jamais finir au-delà de la fin ; sans eux, il doit rendre la même chose.
 /// S'il refuse, ce qui reste est fait d'instructions complètes, et `cut_short`
-/// ne doit pas y voir une coupe.
+/// ne doit pas y voir une coupe. Dans les corpus d'une instruction par
+/// programme (tous sauf le général, le branchement et le MMX), une instruction lue doit
+/// l'être en entier, d'un seul pas : c'est le « ni moins ».
 #[test]
 fn the_decoder_reads_exactly_what_the_silicon_reads() {
     let fixtures = oracle_path()
@@ -1292,6 +1294,12 @@ fn the_decoder_reads_exactly_what_the_silicon_reads() {
     for path in &names {
         let text = std::fs::read_to_string(path).expect("un corpus");
         let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        // Le corpus général, ceux de branchement et de MMX portent des suites
+        // d'instructions ; tous les autres, une seule par programme.
+        let sequences = matches!(
+            file,
+            "x86-oracle.tsv" | "x86-branch-oracle.tsv" | "x86-mmx-oracle.tsv"
+        );
         for line in text.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
             if fields.first() != Some(&"instr") || fields.len() < 4 {
@@ -1335,6 +1343,18 @@ fn the_decoder_reads_exactly_what_the_silicon_reads() {
                     }
                     break;
                 };
+                // **Ni moins** : dans un corpus d'une instruction par
+                // programme, une instruction lue doit finir sur le dernier
+                // octet. Sans cela, une lecture trop courte passerait dès que
+                // le reste se lit comme une autre instruction (`68 imm32` lu
+                // en trois octets, puis `xor $0x12,%al`).
+                if at == 0 && !sequences && length != code.len() {
+                    wrong.push(format!(
+                        "{file} « {mnemonic} » : lu en {length} octets, le silicium en {}",
+                        code.len()
+                    ));
+                    break;
+                }
                 steps += 1;
                 at += length;
             }
