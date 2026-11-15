@@ -47,6 +47,13 @@
 //! instance trappée a pu s'arrêter au milieu de n'importe quoi. C'est
 //! `web/page-emitter.js` qui la jette et en recrée une, et
 //! `tests/page.rs` qui le juge.
+//!
+//! **Et la carte de la machine PC.** Le même module porte les périphériques
+//! que la boucle hôte ne modélise pas — l'i8042 et l'horloge CMOS d'abord —,
+//! derrière une seconde famille d'exports, préfixés `carte_` : voir
+//! [`carte`]. `web/carte.js` les sert à `host.js`.
+
+pub mod carte;
 
 use std::sync::Mutex;
 
