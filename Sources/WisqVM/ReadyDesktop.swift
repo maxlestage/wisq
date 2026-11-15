@@ -126,6 +126,16 @@ public struct ReadyDesktop: Equatable, Sendable {
             return Index(format: format, desktops: desktops + kept)
         }
 
+        /// **Les entrées que l'application écarterait** (`parse`), chacune
+        /// jugée à son propre niveau : de quoi refuser d'écrire un index dont
+        /// une entrée ne serait jamais proposée.
+        public var refused: [Entry] {
+            desktops.filter { entry in
+                ReadyDesktop.desktop(from: entry, index: ReadyDesktop.index,
+                                     supportedLevel: max(entry.level, 1)) == nil
+            }
+        }
+
         /// En JSON lisible, clés triées, dates ISO 8601.
         public func encoded() throws -> Data {
             let encoder = JSONEncoder()
