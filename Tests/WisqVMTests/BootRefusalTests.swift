@@ -241,12 +241,17 @@ final class BootRefusalTests: XCTestCase {
     /// passe par `life.machineSize`, qui met l'état à `refused`.
     ///
     /// Ce fichier-là ne se compile que pour iOS : seule la CI d'Apple le voit,
-    /// et aucun test d'ici ne l'exécute. Ce test en lit donc le **texte**. Il
-    /// ne remplace pas cette CI ; il attrape, sous Linux et en un instant, le
-    /// retour d'un refus par l'ancien chemin, un refus affiché par un
-    /// `finish` direct, un appel de moins (ou de plus) pour un cas — le refus
-    /// `.session` en a deux, l'un sur le fil d'émulation —, ou un cas de
-    /// `BootRefusal` que personne n'emploie.
+    /// et aucun test d'ici ne l'exécute. Ce test en lit donc le **texte**,
+    /// sans ses commentaires (`withoutComments`). Il ne remplace pas cette
+    /// CI ; il attrape, sous Linux et en un instant, le retour d'un refus par
+    /// l'ancien chemin, un refus affiché par un `finish` direct, un appel de
+    /// moins (ou de plus) pour un cas — le refus `.session` en a deux, l'un
+    /// sur le fil d'émulation —, un cas de `BootRefusal` que personne
+    /// n'emploie, et un appel qui n'est plus à sa place : sorti de sa
+    /// condition, enfermé dans un bloc qui ne s'exécute pas (`if false {`),
+    /// ou séparé du `return` qui le suit (`refusalSites`). Il ne juge pas
+    /// le code en amont : un `return` placé plus tôt, ou une valeur changée
+    /// avant la condition, lui échappe.
     func testEveryRefusalOfTheAppGoesThroughRefuseToStart() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -266,9 +271,11 @@ final class BootRefusalTests: XCTestCase {
             "pcNeedsInitramfs": 1, "session": 2, "couldNotStart": 1,
         ]
         // Les commentaires en moins : ils citent ces appels sans en être.
-        let code = source.components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-            .joined(separator: "\n")
+        // **Tous les commentaires**, pas seulement les lignes qui commencent
+        // par `//` : un appel mis entre `/* */` ou derrière `_ = refusal //`
+        // était encore compté, et le refus du fil, désactivé ainsi, passait
+        // ce test (`withoutComments`).
+        let code = Self.withoutComments(source)
         XCTAssertEqual(Set(expected.keys), Set(Self.examples.map(Self.name)), "un compte par cas de BootRefusal")
         for (name, count) in expected {
             let call = try NSRegularExpression(pattern: #"refuseToStart\(\s*\.\#(name)\b"#)
@@ -277,6 +284,18 @@ final class BootRefusalTests: XCTestCase {
         }
         XCTAssertEqual(code.components(separatedBy: "refuseToStart(").count - 1,
                        expected.values.reduce(0, +) + 1, "chaque appel est compté, plus la définition")
+        // **Chaque appel à sa place**, et non un compte d'occurrences : le
+        // refus du fil retiré et un second ajouté sur le fil principal
+        // laissaient le compte à deux, et rien ne tombait ; un appel enfermé
+        // dans un `if false {` aussi. Chaque appel est donc cherché avec la
+        // condition qui le déclenche et le `return` qui le suit, tels quels.
+        for (name, site) in Self.refusalSites {
+            let pattern = try NSRegularExpression(pattern: Self.pattern(site))
+            XCTAssertEqual(pattern.numberOfMatches(in: code, range: NSRange(code.startIndex..., in: code)), 1,
+                           "le refus .\(name) n'est plus à sa place : \(site)")
+        }
+        XCTAssertEqual(Dictionary(Self.refusalSites.map { ($0.0, 1) }, uniquingKeysWith: +), expected,
+                       "un lieu par appel compté")
         // **Aucun refus par `finish` en direct.** Les seuls `finish(with:`
         // permis hors de la fin d'un invité qui a tourné (celles qui
         // finissent par `+ silence`) sont le corps de `refuseToStart` et
@@ -310,5 +329,123 @@ final class BootRefusalTests: XCTestCase {
                        "un seul échec sur le fil")
         XCTAssertTrue(source.contains(".couldNotStart(reason, sessionKept: pending.awaited)"),
                       "l'échec du fil promet la session gardée quand une attendait")
+    }
+
+    /// **Chaque lieu de refus de `LocalVMModel`**, tel qu'il s'écrit : la
+    /// condition qui le déclenche, l'appel, et le `return` qui suit. Les
+    /// espaces y comptent pour « au moins un blanc » (`pattern`).
+    static let refusalSites: [(String, String)] = [
+        ("notEnoughRoom", """
+            if ramSize > roomNow { refuseToStart(.notEnoughRoom(requested: ramSize, ceiling: roomNow), \
+            name: kernelURL.lastPathComponent) return }
+            """),
+        ("image", """
+            case .failure(let refusal): refuseToStart( .image(IsoBoot.explanation(refusal, \
+            name: kernelURL.lastPathComponent)), name: kernelURL.lastPathComponent) return }
+            """),
+        ("bootMedia", """
+            if kind.core == nil, BootMedia.couldBeMedia(fileAt: kernelURL) { \
+            refuseToStart(.bootMedia, name: kernelURL.lastPathComponent) return }
+            """),
+        ("cannotRunHere", """
+            kind, name: bootURL.lastPathComponent) { \
+            refuseToStart(.cannotRunHere(refusal), name: kernelURL.lastPathComponent) return }
+            """),
+        ("tooLargeForRiscv", """
+            forRAMSize: KernelMemory.riscvMachine(holding: ramSize)) { refuseToStart( \
+            .tooLargeForRiscv(size: size, ramSize: KernelMemory.riscvMachine(holding: ramSize)), \
+            name: kernelURL.lastPathComponent) return }
+            """),
+        ("unreadableKernel", """
+            image = try Data(contentsOf: bootURL) } catch { \
+            refuseToStart(.unreadableKernel(error.localizedDescription), name: kernelURL.lastPathComponent) \
+            return }
+            """),
+        ("pcNeedsMoreRoom", """
+            if machineRAM > Int(roomNow) { refuseToStart( .pcNeedsMoreRoom(minimumRAM: minimumRAM, room: roomNow), \
+            name: kernelURL.lastPathComponent) return }
+            """),
+        ("pcNeedsInitramfs", """
+            if ramdisk == nil, saved == nil { refuseToStart(.pcNeedsInitramfs, name: kernelURL.lastPathComponent) \
+            return }
+            """),
+        // Le fil principal : la session que `SavedSession.find` dit illisible.
+        ("session", """
+            if case .unreadable(let refusal) = session { \
+            refuseToStart(.session(refusal), name: kernelURL.lastPathComponent) return }
+            """),
+        // Le fil d'émulation : la reprise que la machine refuse après un
+        // `judge` réussi, notée sur ce fil puis dite sur le fil principal.
+        ("session", """
+            } catch let refusal as SavedSession.Unreadable { runStart.record(.refused) \
+            Task { @MainActor [weak self] in guard let self, thisRun == self.run else { return } \
+            self.refuseToStart(.session(refusal), name: kernelURL.lastPathComponent) } return }
+            """),
+        ("couldNotStart", """
+            } catch { runStart.record(.failed) let reason = error.localizedDescription \
+            Task { @MainActor [weak self] in guard let self, thisRun == self.run else { return } \
+            self.refuseToStart( .couldNotStart(reason, sessionKept: pending.awaited), \
+            name: kernelURL.lastPathComponent) } return }
+            """),
+    ]
+
+    /// Un extrait de code en motif : chaque blanc de l'extrait vaut « au
+    /// moins un blanc » dans le source, tout le reste est pris à la lettre.
+    static func pattern(_ site: String) -> String {
+        site.split(whereSeparator: { $0 == " " || $0 == "\n" })
+            .map { NSRegularExpression.escapedPattern(for: String($0)) }
+            .joined(separator: #"\s+"#)
+    }
+
+    /// Le source sans ses commentaires : les blocs `/* */` et tout ce qui suit
+    /// un `//` hors d'une chaîne. Les chaînes sont lues d'un guillemet à
+    /// l'autre, échappements compris ; `LocalVMModel` n'a pas de chaîne sur
+    /// plusieurs lignes, et `testCommentsAreStrippedWhereverTheyStand` le
+    /// vérifie sur des formes choisies.
+    static func withoutComments(_ source: String) -> String {
+        var out = ""
+        var chars = Array(source)[...]
+        var inString = false
+        var blockDepth = 0
+        while let char = chars.first {
+            let next = chars.dropFirst().first
+            if blockDepth > 0 {
+                if char == "*", next == "/" { blockDepth -= 1; chars = chars.dropFirst(2); continue }
+                if char == "/", next == "*" { blockDepth += 1; chars = chars.dropFirst(2); continue }
+                if char == "\n" { out.append(char) }
+                chars = chars.dropFirst()
+                continue
+            }
+            if inString {
+                out.append(char)
+                if char == "\\", let next { out.append(next); chars = chars.dropFirst(2); continue }
+                if char == "\"" || char == "\n" { inString = false }
+                chars = chars.dropFirst()
+                continue
+            }
+            if char == "/", next == "/" {
+                chars = chars.drop { $0 != "\n" }
+                continue
+            }
+            if char == "/", next == "*" { blockDepth = 1; chars = chars.dropFirst(2); continue }
+            if char == "\"" { inString = true }
+            out.append(char)
+            chars = chars.dropFirst()
+        }
+        return out
+    }
+
+    /// Les formes de commentaire qui laissaient un appel compté : la ligne
+    /// entière en bloc, la fin de ligne, le bloc au milieu d'une ligne ; et
+    /// un `//` dans une chaîne, qui n'est pas un commentaire.
+    func testCommentsAreStrippedWhereverTheyStand() {
+        let call = "self.refuseToStart(.session(refusal), name: kernelURL.lastPathComponent)"
+        XCTAssertFalse(Self.withoutComments("    /* \(call) */\n").contains("refuseToStart"))
+        XCTAssertFalse(Self.withoutComments("    _ = refusal // \(call)\n").contains("refuseToStart"))
+        XCTAssertFalse(Self.withoutComments("a /* b /* \(call) */ c */ d").contains("refuseToStart"),
+                       "les blocs s'imbriquent en Swift")
+        XCTAssertEqual(Self.withoutComments("a /* b */ c\nd // e\nf"), "a  c\nd \nf")
+        XCTAssertEqual(Self.withoutComments(#"let u = "https://x" // y"#), #"let u = "https://x" "#)
+        XCTAssertEqual(Self.withoutComments(#"let q = "a\"//b" + c"#), #"let q = "a\"//b" + c"#)
     }
 }
