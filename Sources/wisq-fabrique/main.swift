@@ -13,6 +13,14 @@ import WisqVMRust
 //       [--ram 1024] [--budget 2000000000000] [--heure 2026-11-14T00:00:00Z] \
 //       [--commit <sha>] [--brut] [--sans-zero]
 //
+// Et l'index que l'application lit (`ReadyDesktop.index`), à partir des
+// fiches, aux adresses où l'image et l'archive sont publiées :
+//
+//   .build/release/wisq-fabrique index <bureaux.json> <fiche.json>... \
+//       --images https://repo-default.voidlinux.org/live/20250202 \
+//       --archives https://github.com/maxlestage/wisq/releases/download/bureaux-1 \
+//       [--garder <ancien bureaux.json>]
+//
 // Tout ce qui décide vit dans `WisqVM` (`ReadyDesktopBuild`, `GuestScript`),
 // jugé par les tests sous Linux ; ce fichier ne fait que l'enchaîner, avec le
 // noyau sorti de l'image par `IsoBoot`, comme sur le téléphone.
@@ -181,8 +189,48 @@ func fabricate() throws {
     FileHandle.standardOutput.write(try sheet.encoded() + Data("\n".utf8))
 }
 
+/// **L'index des bureaux prêts**, écrit par le même type que celui que
+/// l'application lit (`ReadyDesktop.Index`), et relu comme elle le lira : une
+/// entrée qu'elle écarterait — un hôte, un nom, une somme — arrête tout, au
+/// lieu de partir dans une release où personne ne la verrait jamais.
+func makeIndex() throws {
+    var positional: [String] = []
+    var rest = CommandLine.arguments.dropFirst(2)[...]
+    while let word = rest.popFirst() {
+        if word.hasPrefix("--") { _ = rest.popFirst(); continue }
+        positional.append(word)
+    }
+    guard positional.count >= 2,
+          let images = argument("--images").flatMap(URL.init(string:)),
+          let archives = argument("--archives").flatMap(URL.init(string:))
+    else {
+        throw Stop("usage : wisq-fabrique index <bureaux.json> <fiche.json>... --images URL --archives URL "
+            + "[--garder ancien.json]")
+    }
+    let entries = try positional.dropFirst().map { path in
+        let sheet = try ReadyDesktopBuild.Sheet.decode(Data(contentsOf: URL(fileURLWithPath: path)))
+        return ReadyDesktop.Index.Entry(
+            sheet: sheet, image: images.appendingPathComponent(sheet.image.name),
+            archive: archives.appendingPathComponent(sheet.archive.name))
+    }
+    let fresh = ReadyDesktop.Index(desktops: entries)
+    if let refused = fresh.refused.first {
+        throw Stop("l'application écarterait « \(refused.title) » (\(refused.archive.url)) : index non écrit")
+    }
+    var index = fresh
+    if let old = argument("--garder") {
+        index = fresh.merged(keeping: try ReadyDesktop.Index.decode(Data(contentsOf: URL(fileURLWithPath: old))))
+    }
+    try index.encoded().write(to: URL(fileURLWithPath: positional[0]))
+    FileHandle.standardOutput.write(Data("index : \(positional[0]), \(index.desktops.count) bureau(x)\n".utf8))
+}
+
 do {
-    try fabricate()
+    if CommandLine.arguments.dropFirst().first == "index" {
+        try makeIndex()
+    } else {
+        try fabricate()
+    }
 } catch {
     FileHandle.standardError.write(Data("wisq-fabrique : \(error)\n".utf8))
     exit(1)

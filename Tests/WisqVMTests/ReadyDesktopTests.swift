@@ -174,6 +174,21 @@ final class ReadyDesktopTests: XCTestCase {
         }
     }
 
+    /// **Un index que l'application écarterait n'est pas écrit** : la
+    /// fabrique demande à l'index les entrées refusées, jugées chacune à son
+    /// niveau — un bureau d'un niveau neuf n'est pas une faute.
+    func testTheIndexNamesTheEntriesTheApplicationWouldRefuse() throws {
+        var hostile = entry()
+        hostile.title = "Ailleurs"
+        hostile.archive.url = "https://evil.example.com/\(Self.archiveName)"
+        var newer = entry(level: X86Machine.snapshotLevel + 1)
+        newer.title = "Plus neuf"
+        var nothing = entry(level: 0)
+        nothing.title = "Niveau nul"
+        let index = ReadyDesktop.Index(desktops: [entry(), hostile, newer, nothing])
+        XCTAssertEqual(index.refused.map(\.title), ["Ailleurs", "Niveau nul"])
+    }
+
     /// Un index illisible, d'un autre format, ou dont une entrée n'a pas la
     /// forme d'une entrée, ne propose rien de faux.
     func testAnIndexThatIsNotOneOffersNothing() throws {
@@ -409,9 +424,15 @@ final class ReadyDesktopTests: XCTestCase {
         let work = folder.appendingPathComponent("atelier-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
-        let (installed, _) = try ReadyDesktopBuild.install(image: image, name: "Void Xfce (prêt)", in: work)
+        let (installed, writes) = try ReadyDesktopBuild.install(image: image, name: "Void Xfce (prêt)", in: work)
         let machine = try ReadyDesktopBuild.machine(
             ramSize: ReadyDesktopBuildTests.ram, frozenAt: Self.moment) { _ in }
+        // Le disque branché, comme à la fabrique : l'archive porte alors sa
+        // couche et sa carte à côté de la session, nommées par le disque.
+        let disk = work.appendingPathComponent(image)
+        try Data(repeating: 0x5A, count: 64 << 10).write(to: disk)
+        try machine.attach(diskFileAt: disk, writes: writes)
+        machine.flushDisk()
         let snapshot = try ReadyDesktopBuildTests.snapshot(of: machine)
         let archive = downloads.appendingPathComponent(Self.archiveName)
         try ReadyDesktopBuild.assemble(installed, snapshot: snapshot, kernel: kernel, in: work, to: archive)
