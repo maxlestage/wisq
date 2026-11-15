@@ -239,6 +239,9 @@ public final class X86Machine: @unchecked Sendable {
     /// le fil d'émulation sous le verrou : la file elle-même ne se lit pas
     /// d'un autre fil.
     private var typingInDevice = 0
+    /// La personne a annulé la frappe : la tranche suivante vide la file du
+    /// contrôleur (`X86PS2Controller.abandonTyping`), sous le verrou.
+    private var typingAbandoned = false
 
     enum PS2Event {
         case mouse(dx: Int, dy: Int, buttons: UInt8)
@@ -617,8 +620,31 @@ public final class X86Machine: @unchecked Sendable {
     /// l'appelant tient : les passer au contrôleur, entières, et publier ce
     /// que sa file tient pour les admissions suivantes.
     func handTypingToTheController() {
+        if typingAbandoned {
+            core.devices.ps2.abandonTyping()
+            typingAbandoned = false
+        }
         typingHandoff.feed(into: &core.devices.ps2)
         typingInDevice = core.devices.ps2.typing.count
+    }
+
+    /// **Annuler la frappe en cours** : ce qui attend ici est jeté sur-le-champ,
+    /// et la tranche suivante jette ce que la file du contrôleur n'a pas
+    /// encore joué, en relâchant les touches que l'invité tient. Ce qui est
+    /// tapé ensuite part aussitôt, au lieu d'attendre derrière des minutes de
+    /// collage. Utilisable depuis n'importe quel fil.
+    public func abandonTyping() {
+        lock.lock()
+        typingHandoff = X86TypingHandoff()
+        typingAbandoned = true
+        // Après la tranche suivante, la file du contrôleur ne tient plus que
+        // des relâchements, un par touche tenue au plus. Ce majorant laisse
+        // entrer tout de suite ce qu'on tape après l'annulation, sans que le
+        // contrôleur en refuse rien. (Pas `min` avec l'ancien compte : une
+        // touche tenue sur une file vide donne un relâchement de plus que lui.)
+        typingInDevice = X86HeldKeys.count
+        lock.unlock()
+        nudge.signal()
     }
 
     /// **Les frappes qui attendent encore**, dans cette file et dans celle du
@@ -627,7 +653,10 @@ public final class X86Machine: @unchecked Sendable {
     public var pendingKeystrokes: Int {
         lock.lock()
         defer { lock.unlock() }
-        return typingHandoff.count + typingInDevice
+        // Une annulation en suspens : la file du contrôleur ne sera plus que
+        // quelques relâchements, que le compte ne dit pas — il ne dit pas non
+        // plus le majorant pris pour les admissions (`abandonTyping`).
+        return typingHandoff.count + (typingAbandoned ? 0 : typingInDevice)
     }
 
     /// **Un toucher à un endroit de l'écran**, par la tablette : `x` et `y`

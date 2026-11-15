@@ -24,6 +24,16 @@ public struct X86HeldKeys: Sendable, Equatable {
     /// clavier au repos.
     public var isEmpty: Bool { words.allSatisfy { $0 == 0 } }
 
+    /// Les touches enfoncées, dans l'ordre des codes : de quoi les relâcher
+    /// toutes (`X86PS2Controller.abandonTyping`).
+    public var codes: [X86ScanCode] {
+        var codes: [X86ScanCode] = []
+        for index in 0..<Self.count where words[index / 64] & (1 << UInt64(index % 64)) != 0 {
+            codes.append(X86ScanCode(UInt8(index & 0xFF), extended: index >= 256))
+        }
+        return codes
+    }
+
     public mutating func record(_ keystroke: X86PS2Controller.Keystroke) {
         let (word, bit) = Self.rank(keystroke.code)
         if keystroke.down { words[word] |= bit } else { words[word] &= ~bit }

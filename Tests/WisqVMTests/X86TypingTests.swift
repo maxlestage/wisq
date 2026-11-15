@@ -168,6 +168,42 @@ final class X86TypingTests: XCTestCase {
         XCTAssertEqual(held, [], "le clavier de l'invité finit au repos")
     }
 
+    /// **Annuler un collage l'arrête pour de bon, sans touche enfoncée**, et
+    /// ce qu'on frappe ensuite part aussitôt. Le collage commence par une
+    /// majuscule : l'invité tient Maj quand la personne annule.
+    func testCancellingAPasteStopsItWithoutLeavingAKeyDown() {
+        let pc = machine()
+        var typist = ScreenTypist()
+        typist.type(String(repeating: "Wisq ", count: 10_000), on: pc)
+        XCTAssertTrue(typist.inProgress)
+        pc.handTypingToTheController()
+
+        var bytes: [UInt8] = []
+        var now: UInt64 = 0
+        func play() {
+            now += X86PS2Controller.holdTicks
+            pc.core.devices.ps2.pace(now: now)
+            while pc.core.devices.ps2.status() & 0x01 != 0 { bytes.append(pc.core.devices.ps2.readData()) }
+        }
+        play()
+        XCTAssertTrue(pc.core.devices.ps2.heldByGuest.contains(.leftShift), "Maj est partie, W pas encore")
+
+        typist.cancel(on: pc)
+        XCTAssertTrue(typist.waiting.isEmpty)
+        XCTAssertEqual(pc.pendingKeystrokes, 0, "plus rien à jouer")
+        XCTAssertFalse(typist.inProgress)
+        typist.press(X86Keystrokes.key(.control("c")), on: pc)
+        XCTAssertTrue(typist.waiting.isEmpty, "Ctrl-C entre aussitôt, sans attendre la tranche")
+
+        pc.handTypingToTheController()
+        XCTAssertEqual(pc.core.devices.ps2.typing.count, 1 + 4, "Maj relâchée, puis Ctrl-C")
+        XCTAssertTrue(pc.core.devices.ps2.heldInQueue.isEmpty)
+        while !pc.core.devices.ps2.typing.isEmpty { play() }
+        let (typed, held) = Self.decode(bytes)
+        XCTAssertEqual(typed, "^C", "rien du collage après l'annulation")
+        XCTAssertEqual(held, [], "le clavier de l'invité finit au repos")
+    }
+
     /// Ce qu'un noyau lit au port 0x60, en jeu 1 traduit, redevenu texte :
     /// Maj et Ctrl suivis, `^C` pour Ctrl-C. Rend aussi les touches restées
     /// enfoncées.
@@ -204,6 +240,16 @@ final class X86TypingTests: XCTestCase {
     private final class FakeKeyboard: ScreenKeyboard {
         var room = 0
         var log = ""
+        /// Les frappes prises et pas encore jouées ; `abandonTyping` les jette.
+        var queued = 0
+        var abandons = 0
+
+        var pendingKeystrokes: Int { queued }
+
+        func abandonTyping() {
+            abandons += 1
+            queued = 0
+        }
 
         func type(_ text: Substring) -> X86TypingReport {
             var report = X86TypingReport()
@@ -214,6 +260,7 @@ final class X86TypingTests: XCTestCase {
                     report.skipped += 1
                 } else if strokes <= room {
                     room -= strokes
+                    queued += strokes
                     log.append(text[index])
                     report.typed += 1
                 } else {
@@ -228,6 +275,7 @@ final class X86TypingTests: XCTestCase {
         func press(_ events: [X86Keystrokes.Event]) -> Bool {
             guard events.count <= room else { return false }
             room -= events.count
+            queued += events.count
             log += "<\(events.count)>"
             return true
         }
@@ -253,6 +301,47 @@ final class X86TypingTests: XCTestCase {
         XCTAssertEqual(keyboard.log, "abcdef<4>g")
         XCTAssertTrue(typist.waiting.isEmpty)
         XCTAssertEqual(typist.waitingCount, 0)
+        XCTAssertNil(typist.note)
+    }
+
+    /// **Ce qui attend s'annule**, et ce qui vient ensuite part aussitôt :
+    /// sans cela, une touche frappée après un gros collage attendrait derrière
+    /// lui des heures. L'avis dit ce qui n'a pas été tapé.
+    func testCancellingDropsWhatWaitsAndWhatComesNextGoesAtOnce() {
+        let keyboard = FakeKeyboard()
+        keyboard.room = 6
+        var typist = ScreenTypist()
+        typist.type("abcdef", on: keyboard)
+        typist.press(X86Keystrokes.key(.control("c")), on: keyboard)
+        XCTAssertEqual(keyboard.log, "abc")
+        XCTAssertTrue(typist.inProgress)
+
+        typist.cancel(on: keyboard)
+        XCTAssertEqual(keyboard.abandons, 1, "la machine jette ce qu'elle n'a pas joué")
+        XCTAssertTrue(typist.waiting.isEmpty)
+        XCTAssertEqual(typist.waitingCount, 0)
+        XCTAssertFalse(typist.inProgress)
+        XCTAssertEqual(typist.note, "Frappe annulée : 4 caractères n'ont pas été tapés.")
+
+        keyboard.room = 100
+        typist.press(X86Keystrokes.key(.control("c")), on: keyboard)
+        XCTAssertEqual(keyboard.log, "abc<4>", "Ctrl-C part aussitôt, rien du collage avant lui")
+        XCTAssertNil(typist.note, "l'avis s'efface à l'action suivante")
+    }
+
+    /// **La frappe se dit en cours, et s'annule, tant que la machine a des
+    /// secondes de frappe à jouer**, même quand plus rien n'attend ici : un
+    /// collage de deux mille caractères tient entier dans sa file.
+    func testTheMachinesQueueKeepsTheTypingInProgress() {
+        let keyboard = FakeKeyboard()
+        var typist = ScreenTypist()
+        keyboard.queued = ScreenTypist.busyStrokes
+        typist.resume(on: keyboard)
+        XCTAssertTrue(typist.inProgress)
+        XCTAssertEqual(typist.note, "Frappe en cours sur l'écran.")
+        keyboard.queued = ScreenTypist.busyStrokes - 1
+        typist.resume(on: keyboard)
+        XCTAssertFalse(typist.inProgress, "quelques touches tapées ne font pas clignoter l'avis")
         XCTAssertNil(typist.note)
     }
 

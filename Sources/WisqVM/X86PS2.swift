@@ -234,6 +234,11 @@ public struct X86PS2Controller: Sendable, Equatable {
     /// file jouée jusqu'au bout ; qu'une frappe parte (`pace`) ne le change
     /// donc pas.
     public private(set) var heldInQueue = X86HeldKeys()
+    /// **Les touches que l'invité tient en ce moment** : celles dont la
+    /// dernière frappe **partie** (`pace`) est un enfoncement. C'est ce qu'il
+    /// faut relâcher quand on abandonne ce qui reste en file
+    /// (`abandonTyping`).
+    public private(set) var heldByGuest = X86HeldKeys()
     /// Le tic (horloge à 1,193182 MHz) avant lequel rien d'autre ne part.
     var typingResumesAt: UInt64 = 0
     /// Trente millisecondes tenue, vingt entre deux touches : assez long pour
@@ -286,11 +291,24 @@ public struct X86PS2Controller: Sendable, Equatable {
         typing.append(keystroke)
     }
 
+    /// **Abandonner ce qui reste en file, sans laisser de touche enfoncée** :
+    /// la personne annule un collage qui s'écrit encore. Les frappes pas
+    /// encore parties sont jetées ; à leur place, un relâchement pour chaque
+    /// touche que l'invité tient (au plus `X86HeldKeys.count`, sous la
+    /// borne). Couper sans eux laisserait Maj ou Ctrl enfoncée pour de bon,
+    /// le défaut même que la borne évite.
+    public mutating func abandonTyping() {
+        typing.removeAll()
+        heldInQueue = heldByGuest
+        for code in heldByGuest.codes { pose(Keystroke(code: code, down: false)) }
+    }
+
     /// Pose la frappe suivante si son heure est venue, à `now` tics : une
     /// à la fois, et seulement quand le noyau a lu ce qui précède.
     public mutating func pace(now: UInt64) {
         guard let next = typing.first, now >= typingResumesAt, output.isEmpty else { return }
         typing.removeFirst()
+        heldByGuest.record(next)
         key(next.code, down: next.down)
         typingResumesAt = now &+ (next.down ? Self.holdTicks : Self.gapTicks)
     }
