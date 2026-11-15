@@ -345,6 +345,25 @@ final class X86TypingTests: XCTestCase {
         XCTAssertNil(typist.note)
     }
 
+    /// **Ce qui est gardé d'un texte trop long est copié** : une sous-chaîne
+    /// garderait vivant tout le texte collé, la partie refusée comprise,
+    /// jusqu'à ce que la dernière lettre gardée soit tapée.
+    func testWhatIsKeptOfATooLongTextIsAllThatStaysInMemory() throws {
+        let keyboard = FakeKeyboard()
+        var typist = ScreenTypist()
+        typist.type(String(repeating: "z", count: ScreenTypist.limit + 1_000), on: keyboard)
+        XCTAssertEqual(typist.refused, 1_000)
+        guard case .text(let kept) = try XCTUnwrap(typist.waiting.first) else { return XCTFail("un texte attend") }
+        XCTAssertEqual(kept.count, ScreenTypist.limit)
+        XCTAssertEqual(kept.base.utf8.count, ScreenTypist.limit, "rien de la partie refusée n'est gardé")
+
+        keyboard.room = 10
+        typist.resume(on: keyboard)
+        guard case .text(let rest) = try XCTUnwrap(typist.waiting.first) else { return XCTFail("un texte attend") }
+        XCTAssertEqual(rest.count, ScreenTypist.limit - 5)
+        XCTAssertEqual(rest.base.utf8.count, ScreenTypist.limit, "la suite garde la copie, pas plus")
+    }
+
     /// **Ce qui n'a pas pu être tapé est dit** : ce qu'un clavier américain
     /// n'a pas, et ce qui dépasse la borne de ce qui peut attendre.
     func testTheTypistSaysWhatItCouldNotType() {

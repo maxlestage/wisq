@@ -78,11 +78,18 @@ public struct ScreenTypist: Sendable, Equatable {
     /// Un texte tapé ou collé sur l'écran : derrière ce qui attend encore.
     public mutating func type(_ text: String, on keyboard: some ScreenKeyboard) {
         begin()
-        let room = Self.limit - waitingCount
-        let count = text.count
-        guard count > 0 else { return }
-        let kept = text.prefix(room)
-        refused += count - kept.count
+        guard !text.isEmpty else { return }
+        var kept = text.prefix(Self.limit - waitingCount)
+        if kept.endIndex != text.endIndex {
+            // Le texte ne tient pas entier : ce qui en est gardé est **copié**.
+            // Une sous-chaîne garde vivant tout le tampon de la chaîne d'où
+            // elle vient, la partie refusée comprise, jusqu'à ce qu'elle soit
+            // tapée — des heures, et tout le presse-papiers sur le téléphone.
+            // Compter le reste parcourt le texte une fois (0,2 s pour 100 Mo
+            // mesurés ici), et seulement quand il est trop long.
+            refused += text[kept.endIndex...].count
+            kept = Substring(String(kept))
+        }
         if !kept.isEmpty {
             waiting.append(.text(kept))
             waitingCount += kept.count
