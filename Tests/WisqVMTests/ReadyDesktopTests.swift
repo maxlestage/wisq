@@ -29,7 +29,7 @@ final class ReadyDesktopTests: XCTestCase {
 
     static let moment = Date(timeIntervalSince1970: 1_794_614_400)  // 2026-11-14T00:00:00Z
     static let isoName = "void-live-x86_64-20250202-xfce.iso"
-    static let archiveName = "void-live-x86_64-20250202-xfce-pret.wisqmachine"
+    static let archiveName = "void-live-x86_64-20250202-xfce-pret-niveau1.wisqmachine"
     static let isoURL = "https://repo-default.voidlinux.org/live/20250202/\(isoName)"
     static let archiveURL = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(archiveName)"
 
@@ -165,12 +165,111 @@ final class ReadyDesktopTests: XCTestCase {
         change("mémoire que l'application ne règle pas") { $0.ramBytes = (1 << 30) + 1 }
         change("titre vide") { $0.title = "  " }
         change("titre sur deux lignes") { $0.title = "Void\nXfce" }
+        change("titre de 81 caractères") { $0.title = String(repeating: "x", count: 81) }
+        change("identifiants dans l'adresse de l'archive") {
+            $0.archive.url = Self.archiveURL.replacingOccurrences(of: "https://", with: "https://moi:secret@")
+        }
+        change("un nom d'utilisateur dans l'adresse de l'image") {
+            $0.image.url = Self.isoURL.replacingOccurrences(of: "https://", with: "https://moi@")
+        }
+        change("un fragment") { $0.image.url = Self.isoURL + "#x" }
+        change("un fragment vide") { $0.archive.url = Self.archiveURL + "#" }
+        change("taille énorme de l'image") { $0.image.bytes = Int.max / 2 + 1 }
+        change("taille énorme de l'archive") { $0.archive.bytes = Int.max }
+        change("taille au-delà du plafond") { $0.archive.bytes = ReadyDesktop.largestFile + 1 }
+        change("empreinte en chiffres pleine chasse") { $0.kernelDigest = "\u{FF44}63775f2e341116a" }
+        change("somme en chiffres pleine chasse") {
+            $0.image.sha256 = "\u{FF10}" + String(SHA256Stream.hex(self.iso).dropFirst())
+        }
+        XCTAssertEqual(cases.count, 35)
         for (why, mutated) in cases {
             XCTAssertEqual(ReadyDesktop.parse(try json([mutated])), [], why)
             // Et une entrée fautive n'emporte pas l'entrée propre d'à côté.
             var other = base
             other.title = "Autre bureau"
             XCTAssertEqual(ReadyDesktop.parse(try json([mutated, other])).map(\.title), ["Autre bureau"], why)
+        }
+    }
+
+    /// **Les bords qui passent** : un titre de 80 caractères, des tailles au
+    /// plafond. Et la feuille dit ce qu'il reste à télécharger sans tomber :
+    /// la somme des deux tailles débordait à `Int.max / 2 + 1` chacune.
+    func testTheEdgesThatPassAndTheSheetDoesNotOverflow() throws {
+        var edge = entry()
+        edge.title = String(repeating: "x", count: 80)
+        edge.image.bytes = ReadyDesktop.largestFile
+        edge.archive.bytes = ReadyDesktop.largestFile
+        let desktop = try desktop(edge)
+        XCTAssertEqual(desktop.title.count, 80)
+        XCTAssertEqual(desktop.sizePhrase(imagePresent: false),
+                       "À télécharger : 128,0 Gio, soit l'image (64,0 Gio) et le bureau (64,0 Gio).")
+        XCTAssertEqual(ReadyDesktop.largestFile, 64 << 30)
+    }
+
+    /// **Les chiffres pleine chasse ne sont pas des chiffres** : `isHexDigit`
+    /// les accepte, une somme ou une empreinte écrite ainsi passait, et
+    /// n'était refusée qu'après le téléchargement entier. La garde vaut pour
+    /// toutes les listes (`ImageDownload.isHexDigest`).
+    func testFullWidthDigitsAreNotDigits() {
+        let ascii = String(repeating: "a", count: 63) + "0"
+        XCTAssertTrue(ImageDownload.isHexDigest(ascii))
+        XCTAssertFalse(ImageDownload.isHexDigest(String(repeating: "a", count: 63) + "\u{FF10}"))
+        XCTAssertFalse(ImageDownload.isHexDigest(String(repeating: "\u{FF41}", count: 64)))
+        XCTAssertEqual(ImageDownload.bsdChecksum("SHA256 (x.iso) = \(ascii)", for: "x.iso"), ascii)
+        XCTAssertNil(ImageDownload.bsdChecksum("SHA256 (x.iso) = \(String(ascii.dropLast()))\u{FF10}", for: "x.iso"))
+        XCTAssertFalse(ImageDownload.isASCIIHexDigit("\u{FF44}"))
+        XCTAssertTrue(ImageDownload.isASCIIHexDigit("D"))
+    }
+
+    /// **Une adresse, un fichier.** L'archive du niveau 2 attachée à la même
+    /// release sous le même nom remplaçait celle du niveau 1, et l'entrée du
+    /// niveau 1, gardée, promettait l'ancienne somme : l'application d'avant
+    /// téléchargeait l'archive neuve, la trouvait fausse, l'effaçait, à
+    /// chaque essai. La fabrique refuse d'écrire un tel index ; l'application
+    /// qui en lirait un ne propose aucune des deux ; et le niveau dans le nom
+    /// des fichiers (`outputStem`) évite le cas avec les réglages par défaut.
+    func testTwoFilesAtOneAddressAreRefused() throws {
+        let old = ReadyDesktop.Index(desktops: [entry(level: 1)])
+        var other = archiveBytes
+        other[0] ^= 0xFF
+        var second = entry(level: 2, archive: other)
+        second.kernelDigest = "abc"
+        XCTAssertEqual(second.archive.url, old.desktops[0].archive.url)
+        let fresh = ReadyDesktop.Index(desktops: [second])
+        XCTAssertThrowsError(try ReadyDesktop.Index.publishable(fresh, keeping: old)) {
+            XCTAssertEqual($0 as? ReadyDesktop.Index.Fault, .clash(url: Self.archiveURL))
+        }
+        let both = fresh.merged(keeping: old)
+        XCTAssertEqual(both.clashes, [Self.archiveURL])
+        let text = String(decoding: try both.encoded(), as: UTF8.self)
+        XCTAssertEqual(ReadyDesktop.parse(text, supportedLevel: 1), [], "le niveau 1 ne télécharge pas en boucle")
+        XCTAssertEqual(ReadyDesktop.parse(text, supportedLevel: 2), [])
+        // Une autre taille à la même adresse, la même somme : deux fichiers
+        // aussi.
+        var longer = entry(level: 2)
+        longer.archive.bytes += 1
+        XCTAssertEqual(ReadyDesktop.Index(desktops: [longer]).merged(keeping: old).clashes, [Self.archiveURL])
+
+        // Le niveau dans le nom : deux archives, deux adresses ; la même ISO,
+        // à la même somme, sert les deux niveaux.
+        let stem2 = ReadyDesktopBuild.outputStem(image: Self.isoName, level: 2)
+        XCTAssertEqual(ReadyDesktopBuild.outputStem(image: Self.isoName, level: 1) + ".wisqmachine", Self.archiveName)
+        XCTAssertEqual(stem2, "void-live-x86_64-20250202-xfce-pret-niveau2")
+        second.archive.name = stem2 + ".wisqmachine"
+        second.archive.url = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(second.archive.name)"
+        let published = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [second]), keeping: old)
+        XCTAssertEqual(published.desktops.map(\.level), [2, 1])
+        XCTAssertEqual(published.clashes, [])
+        let written = String(decoding: try published.encoded(), as: UTF8.self)
+        XCTAssertEqual(ReadyDesktop.parse(written, supportedLevel: 1).map(\.archive.file), [Self.archiveName])
+        XCTAssertEqual(ReadyDesktop.parse(written, supportedLevel: 2).map(\.archive.file), [second.archive.name])
+
+        // Et une entrée que l'application écarterait arrête tout, avant.
+        var hostile = entry()
+        hostile.archive.url = "https://evil.example.com/\(Self.archiveName)"
+        XCTAssertThrowsError(try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [hostile]))) {
+            XCTAssertEqual($0 as? ReadyDesktop.Index.Fault,
+                           .refused(title: "Void Xfce (prêt)", url: hostile.archive.url))
         }
     }
 
@@ -407,6 +506,47 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertFalse(exists(downloads.appendingPathComponent(Self.archiveName)))
     }
 
+    /// **L'image qui remplace un fichier du même nom le dit tout de suite**,
+    /// avant l'archive. Le dire après les deux le perdait quand l'archive
+    /// tombait : l'essai suivant trouvait l'image à sa taille, et les couches
+    /// et sessions posées sur l'ancien fichier restaient sur le nouveau
+    /// (`KernelLibrary.replaced`).
+    func testAReplacedImageIsSaidBeforeTheArchiveCanFail() async throws {
+        try Data("une autre image".utf8).write(to: library.appendingPathComponent(Self.isoName))
+        let desktop = try desktop(entry())
+        let image = Server(iso), archive = Server(archiveBytes)
+        archive.cutAfter = 20_000
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        let replaced = Names()
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
+                                        replacedImage: { replaced.add($0) })
+            XCTFail("la coupure doit remonter")
+        } catch is Server.Cut {}
+        XCTAssertEqual(replaced.all, [Self.isoName], "dit avant que l'archive ne tombe")
+        XCTAssertEqual(try Data(contentsOf: library.appendingPathComponent(Self.isoName)), Data(iso))
+
+        _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
+                                    replacedImage: { replaced.add($0) })
+        XCTAssertEqual(replaced.all, [Self.isoName], "une fois, pas à chaque essai")
+
+        // Rien à remplacer : une bibliothèque sans ce fichier ne dit rien.
+        try FileManager.default.removeItem(at: library.appendingPathComponent(Self.isoName))
+        try FileManager.default.removeItem(at: downloads.appendingPathComponent(Self.archiveName))
+        let fresh = Names()
+        _ = try await desktop.fetch(library: library, downloads: downloads, download: download(with: downloader),
+                                    replacedImage: { fresh.add($0) })
+        XCTAssertEqual(fresh.all, [])
+    }
+
+    /// Les noms reçus, dans l'ordre.
+    final class Names: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+        func add(_ name: String) { lock.withLock { values.append(name) } }
+        var all: [String] { lock.withLock { values } }
+    }
+
     /// Les étapes reçues, dans l'ordre.
     final class Steps: @unchecked Sendable {
         private let lock = NSLock()
@@ -577,6 +717,35 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertNil(ImageDownload.Release(backgroundTag: toDownloads.tag),
                      "une version d'avant ne prend pas une archive pour une image")
         XCTAssertNil(ImageDownload.BackgroundJob(tag: "une tâche d'ailleurs"))
+    }
+
+    /// **Deux tâches sur le même `.part` se reconnaissent** : l'ISO de Void
+    /// lancée depuis la liste des distributions, puis demandée par « Bureaux
+    /// prêts », se décrit autrement (distribution, saveur, index, adresse) ;
+    /// c'est le même fichier à la même somme, et on attend celle qui court.
+    /// Le même nom pour un autre fichier attendu est un conflit ; un autre
+    /// nom, une autre affaire.
+    func testTwoBackgroundJobsForOnePartRecogniseEachOther() throws {
+        let desktop = try desktop(entry())
+        let fromList = ImageDownload.voidRelease(file: Self.isoName, version: "2025.02.02",
+                                                 sha256: SHA256Stream.hex(iso).uppercased(), size: iso.count)
+        XCTAssertNotEqual(fromList, desktop.image, "deux descriptions du même fichier")
+        let listJob = ImageDownload.BackgroundJob(release: fromList, destination: .library)
+        let readyJob = ImageDownload.BackgroundJob(release: desktop.image, destination: .library)
+        XCTAssertEqual(readyJob.overlap(with: listJob), .same)
+        XCTAssertEqual(listJob.overlap(with: readyJob), .same)
+        XCTAssertEqual(readyJob.overlap(with: readyJob), .same)
+
+        let otherSum = ImageDownload.voidRelease(file: Self.isoName, version: "2025.02.02",
+                                                 sha256: String(repeating: "0", count: 64), size: iso.count)
+        XCTAssertEqual(readyJob.overlap(with: .init(release: otherSum, destination: .library)), .conflicting)
+        let otherSize = ImageDownload.voidRelease(file: Self.isoName, version: "2025.02.02",
+                                                  sha256: SHA256Stream.hex(iso), size: iso.count + 1)
+        XCTAssertEqual(readyJob.overlap(with: .init(release: otherSize, destination: .library)), .conflicting)
+        XCTAssertEqual(readyJob.overlap(with: .init(release: fromList, destination: .downloads)), .conflicting)
+        let archiveJob = ImageDownload.BackgroundJob(release: desktop.archive, destination: .downloads)
+        XCTAssertEqual(readyJob.overlap(with: archiveJob), .unrelated)
+        XCTAssertEqual(archiveJob.overlap(with: readyJob), .unrelated)
     }
 
     /// **La même tâche a toujours la même étiquette.** Les clés du JSON

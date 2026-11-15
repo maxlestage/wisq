@@ -17,11 +17,16 @@ name: Bureaux prêts
 # bureaux qui deviendrait la dernière le casserait. Leur étiquette ne commence
 # pas par `v`, sans quoi `release.yml` partirait.
 #   - l'archive, la fiche et la capture vont dans `inputs.release`
-#     (`bureaux-N`) ;
+#     (`bureaux-N`), sous un nom qui porte l'ISO **et le niveau de machine**
+#     (`…-xfce-pret-niveau1.wisqmachine`, `ReadyDesktopBuild.outputStem`) ;
 #   - l'index `bureaux.json` va toujours dans `bureaux-1` : c'est l'adresse
 #     que l'application lit (`ReadyDesktop.index`). L'index neuf garde les
 #     entrées de l'ancien d'un autre niveau de machine (`Index.merged`) : une
-#     application d'avant y retrouve le bureau qu'elle sait reprendre.
+#     application d'avant y retrouve le bureau qu'elle sait reprendre, parce
+#     que l'archive de son niveau n'a pas été remplacée — un autre niveau,
+#     un autre nom. Et si deux fichiers différents se retrouvaient à la même
+#     adresse, `wisq-fabrique index` refuse d'écrire l'index
+#     (`Index.publishable`) : ce job tombe, et rien n'est publié.
 on:
   workflow_dispatch:
     inputs:
@@ -116,7 +121,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          nom="${ISO%.iso}-pret"
+          # La fiche de la fabrication : une seule, nommée par l'ISO et le
+          # niveau de machine (`ReadyDesktopBuild.outputStem`).
+          fiches=(bureau/*-pret-niveau*.json)
+          [ "${#fiches[@]}" -eq 1 ] && [ -f "${fiches[0]}" ] || { echo "::error::une fiche attendue : ${fiches[*]}"; exit 1; }
+          nom=$(basename "${fiches[0]}" .json)
           pnmtopng "bureau/$nom.ppm" > "bureau/$nom.png"
           # L'index publié, s'il existe déjà : ses entrées d'un autre niveau
           # sont gardées. Absent (404), on part de rien.
@@ -134,10 +143,10 @@ jobs:
         with:
           name: bureau
           path: |
-            bureau/*-pret.wisqmachine
-            bureau/*-pret.json
-            bureau/*-pret.png
-            bureau/*-pret.console
+            bureau/*-pret-niveau*.wisqmachine
+            bureau/*-pret-niveau*.json
+            bureau/*-pret-niveau*.png
+            bureau/*-pret-niveau*.console
             bureau/bureaux.json
             bureau/fabrique.log
 
@@ -164,5 +173,5 @@ jobs:
               gh release create "$tag" --prerelease --latest=false \
                 --title "Bureaux prêts ($tag)" --notes "$notes"
           done
-          gh release upload "$RELEASE" ./*-pret.wisqmachine ./*-pret.json ./*-pret.png --clobber
+          gh release upload "$RELEASE" ./*-pret-niveau*.wisqmachine ./*-pret-niveau*.json ./*-pret-niveau*.png --clobber
           gh release upload bureaux-1 bureaux.json --clobber
