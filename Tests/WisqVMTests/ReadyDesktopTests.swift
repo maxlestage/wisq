@@ -687,6 +687,30 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertNil(FirstResume.pending(kernel: identity, in: storage))
     }
 
+    /// **Une marque qui ne s'écrit pas défait l'installation** : sans elle,
+    /// la machine reprendrait au jour de la fabrique, sans le dire. Rien ne
+    /// reste — ni la machine dans la liste, ni sa session —, l'erreur est
+    /// rendue, et l'archive est effacée comme après tout refus.
+    ///
+    /// Un dossier occupe la place de la marque : son écriture `.atomic` est
+    /// refusée au renommage, même sous `root`.
+    func testAMarkerThatCannotBeWrittenUndoesTheInstallation() throws {
+        let archive = try makeArchive(kernel: kernel)
+        let desktop = try desktop(forKernel: kernel)
+        let id = "0123456789ab"
+        let identity = SuspendedMachine.identity(of: kernel, named: InstalledMachine.keyPrefix + id)
+        let marker = storage.appendingPathComponent(SuspendedMachine.fileName(kernel: identity)
+                                                    + FirstResume.markerSuffix, isDirectory: true)
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: true)
+        try Data([0]).write(to: marker.appendingPathComponent("occupe"))
+        XCTAssertThrowsError(try desktop.install(
+            archive: archive, imageKernelDigest: ReadyDesktopBuild.kernelDigest(kernel), library: [Self.isoName],
+            in: storage, id: id, createOwnDisk: { _, _ in throw MachineArchive.Refusal.damaged }))
+        XCTAssertEqual(InstalledMachines.list(in: storage).map(\.id), [], "l'installation n'a pas été défaite")
+        XCTAssertFalse(SuspendedMachine.exists(kernel: identity, in: storage), "la session est restée")
+        XCTAssertFalse(exists(archive))
+    }
+
     /// **Une image au noyau différent est refusée avant l'import** : la
     /// session ne serait jamais trouvée, et la machine démarrerait à froid
     /// sans le dire. Rien n'est installé ; une image illisible (`nil`) non
