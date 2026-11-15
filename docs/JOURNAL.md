@@ -8,6 +8,32 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Le décodeur lit « ni moins » que le silicium, et `bureaux-1` est publié
+
+**Le trou de test.** Le dernier contrôle du flux de l'émetteur a montré
+que `the_decoder_reads_exactly_what_the_silicon_reads` ne tenait que le
+« ni plus ». Un décodeur qui lisait `68 imm32` en trois octets passait,
+puisque le reste se lisait comme une autre instruction. Seul
+`push $-2147483648` tombait, et par hasard. Le test exige maintenant
+qu'une instruction lue le soit en entier, d'un seul pas, dans les corpus
+d'une instruction par programme : tous sauf le corpus général, celui de
+branchement et celui de MMX, qui portent des suites (mesuré : les 39
+programmes du corpus général sont des suites).
+
+Sabotage : le même que celui du contrôle (`true || width == Width::Word`
+dans le bras `0x68`) fait maintenant tomber le test sur les deux `push`
+de 32 bits du corpus de pile, au lieu d'un seul. Le compte de tests ne
+change pas.
+
+**La publication.** Sur la foi du « Merge » de l'utilisateur, et après
+l'avoir annoncé sans recevoir d'objection, j'ai lancé `bureaux.yml` sur
+`master` 9d1ba25b (run 43677616054, 46 min). La release `bureaux-1`
+est une pré-version, jamais « latest ». L'archive publiée a la même
+somme que celle fabriquée dans ce conteneur (a93fbff5…, 163 919 297
+octets) : la fabrication se reproduit d'une machine à l'autre. L'index
+publié ne diffère du local que par `madeAt`. TestFlight n° 127 est parti
+du même commit et a réussi.
+
 ## 2026-11-14 — Émetteur : `pushw $imm16` fait quatre octets, et la région oubliée par le vidage est tenue par un test
 
 **Ce qui n'allait pas.** Le contrôle de la tranche précédente a trouvé
