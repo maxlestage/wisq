@@ -294,8 +294,8 @@ export function tableBucket(address) {
 /// d'Alpine pèse en moyenne quatorze kibioctets de wasm. Soixante-quatre
 /// mébioctets de modules, c'est donc près de trois cents mébioctets de code
 /// compilé, à côté de la RAM de l'invité : Alpine jusqu'à son shell de secours
-/// et dix commandes y tient en 814 Mio résidents au plus (256 Mio de RAM
-/// invitée), contre 1,27 Gio à quatre-vingt-seize mébioctets de modules. Le
+/// et dix commandes y tient en 794 Mio résidents au plus (256 Mio de RAM
+/// invitée), contre 1 240 Mio à quatre-vingt-seize mébioctets de modules. Le
 /// prix est la retraduction : 47 % des traductions refont une région évincée,
 /// contre 34 %. Seize mille régions ne se franchissent qu'avec de toutes
 /// petites régions ; c'est la borne du nombre d'objets, pas du poids.
@@ -1592,8 +1592,8 @@ export function machine({
   /// **Et la pause ne suffit pas toujours, mesuré aussi.** Dans la vraie
   /// boucle, les modules évincés ont survécu à bien des collectes jeunes avant
   /// de partir : seule une collecte **pleine** les rend. Sous Bun, une sonde
-  /// Alpine aux bornes de 2 000 régions et 16 Mio monte à 2 Gio résidents
-  /// avec la pause seule, et reste à 270 Mio avec `Bun.gc(true)` à chaque
+  /// Alpine aux bornes de 2 000 régions et 16 Mio monte à 1,9 Gio résidents
+  /// avec la pause seule, et reste à 273 Mio avec `Bun.gc(true)` à chaque
   /// respiration — d'où `ramasser`. Rien dans une page ne force une collecte
   /// pleine ; sur un appareil, c'est le gestionnaire de pression mémoire de
   /// WebKit qui la fait, et ce n'est **pas mesuré ici**.
@@ -2008,9 +2008,11 @@ export function machine({
     // que sa fenêtre est lue : `read` juge le chargement avec l'anneau
     // courant.
     const ctx = contexte();
-    // **Une place d'essai**, la première étendue rendue où une région
-    // ordinaire tiendrait. Le nombre de blocs ne se sait qu'une fois le module
-    // rendu ; s'il ne tient pas, la région est retraduite ailleurs, plus bas.
+    // **Une place d'essai** (`choisir`) : le haut de la table tant qu'une
+    // région ordinaire y tient sous `emplacements`, sinon la plus grande des
+    // places rendues si elle a `PROBABLE` blocs, sinon le haut quand même. Le
+    // nombre de blocs ne se sait qu'une fois le module rendu ; s'il ne tient
+    // pas, la région est retraduite ailleurs, plus bas.
     let slot = choisir(PROBABLE);
     // **Rien à traduire est une réponse, pas un incident.** Elle remonte
     // jusqu'au relevé sous son nom au lieu de se confondre avec un refus de
@@ -2075,10 +2077,11 @@ export function machine({
     await respirerSiBesoin();
     if (!prendre(slot, pose.count)) {
       // **La région ne tient pas dans le trou essayé.** Sa longueur est
-      // connue maintenant : la première place qui la tient, ou le haut, et
-      // une seconde traduction des mêmes octets — la fenêtre gardée, pas une
+      // connue maintenant : `choisir` la reprend avec elle — la plus grande
+      // place rendue si elle la tient, sinon le haut —, et une seconde
+      // traduction des mêmes octets suit, sur la fenêtre gardée, pas une
       // relecture. Seulement une fois le haut de la table passé, et rare
-      // alors : la place d'essai est la plus grande des rendues.
+      // alors : la place d'essai était déjà la plus grande des rendues.
       slot = choisir(pose.count);
       caches.replacees += 1;
       const encore = await answered(() => translate(address, slot, lu), patience);
@@ -2241,8 +2244,15 @@ export function machine({
     vidages.fois += 1;
     vidages.regions += known.size;
     // Ce qui est oublié ici est rendu au moteur comme ce qui est évincé :
-    // onze mille régions sur Alpine, et la mémoire résidente montait d'un
-    // demi-gibioctet faute de respiration après le vidage.
+    // 4 008 régions sur Alpine aux bornes par défaut, 11 074 sur la sonde
+    // 6.18 aux bornes d'un million de régions et de quatre gigaoctets. Sans
+    // respiration après le vidage, leur code restait résident comme celui
+    // d'une région évincée qu'aucune collecte pleine ne rend.
+    //
+    // **Et la table entière redevient libre** : le haut à zéro, et plus
+    // aucun trou. Une place rendue avant le vidage, gardée, serait réemployée
+    // par-dessus une région posée depuis au même endroit — qui exécuterait
+    // ensuite le code d'une autre.
     evincesDepuis += tenu.octets;
     espaces.clear();
     recentes.clear();
