@@ -8,6 +8,84 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureaux prêts : l'ancien index n'est plus perdu sur une panne, et deux gardes enfin tenues
+
+**Ce qui n'allait pas.** Le second contrôle adverse de la tranche « Bureaux
+prêts » (commit ce2e1fdc) a relevé trois défauts :
+
+1. **La garde de l'image, dans `parse`, n'avait pas de test.** « Une
+   adresse, un fichier » vaut pour l'ISO comme pour l'archive, mais
+   `testTwoFilesAtOneAddressAreRefused` ne mettait en conflit que des
+   archives. Retirer `!clashing.contains(entry.image.url)` laissait les
+   98 tests filtrés verts.
+2. **Le workflow perdait l'ancien index sur n'importe quelle panne.**
+   `.github/workflows/bureaux.yml` lisait l'index publié par
+   `if curl -fsSL … ; then garder=(--garder …); fi`. Or le code 22 de
+   `curl -f` est le même pour un 404, un 500 après les essais ou un 403 de
+   limite de débit, et une panne DNS ou réseau tombait dans la même branche.
+   Le job publiait alors, code 0, un index sans l'entrée du niveau d'avant,
+   et les applications de ce niveau perdaient leur bureau sans un mot.
+   L'entrée précédente promettait le contraire.
+3. **« Dit juste après l'image » n'était vérifié qu'à moitié.** Le test
+   vérifiait « avant l'archive », pas « après l'image ». Annoncer le
+   remplacement avant de recevoir l'image laissait tout vert. Or ce signal
+   efface les écritures et l'ISO dépaquetée de l'ancien fichier
+   (`KernelLibrary.replaced`), alors même qu'un téléchargement d'image qui
+   tombe laisse l'ancien fichier en place, intact.
+
+**Ce qui change.**
+
+- `testTwoImagesAtOneAddressAreRefused` : deux bureaux de deux titres, chacun
+  avec son archive à sa propre adresse, annoncent la même ISO à deux sommes,
+  puis à deux tailles. L'application n'en propose aucun, `clashes` nomme
+  l'adresse de l'ISO, et `publishable` refuse d'écrire l'index. Comme les
+  archives sont à des adresses distinctes, seule la garde de l'image peut
+  écarter ces deux bureaux.
+- `scripts/bureaux-ancien-index.sh` lit l'ancien index sans `-f`, avec
+  `-w '%{http_code}'`. Un 200 l'écrit. Un 404 constaté veut dire « rien de
+  publié » : aucun fichier, code 0. Tout le reste (500, 403, une autre
+  réponse, un serveur injoignable) rend le code 1, sans fichier. Un fichier
+  d'un essai d'avant est effacé d'abord, pour qu'il ne passe jamais pour la
+  réponse. Le workflow appelle ce script dans une étape en
+  `set -euo pipefail`, et ne passe `--garder` que si le fichier existe : une
+  panne fait tomber le job, et rien n'est publié.
+- `site/tests/bureaux-ancien-index.test.ts` met le script devant un serveur
+  Bun qui répond chaque cas : 200, 302 vers 200, 404, 302 vers 404, 500, 403,
+  418, un port fermé, et un 503 suivi d'un 200 (réessayé). Le test vérifie
+  aussi que `bureaux.yml` passe par le script, seul sur sa ligne (sans
+  `|| true`, `if` ni `!` qui avaleraient l'échec), et ne lit plus l'index par
+  `curl`.
+- `testAnImageThatFailsSaysNothingReplaced` : un fichier de même nom, une
+  image coupée en route. Rien n'est dit, l'ancien fichier reste intact, et
+  l'archive n'est pas demandée. L'essai suivant reçoit l'image et le dit,
+  une fois.
+
+**Vérifié.**
+
+- Sabotages, chacun restauré (`git checkout` ou copie d'origine, puis `cmp`) :
+  - la garde de l'image retirée de `parse` : `testTwoImagesAtOneAddressAreRefused`
+    tombe (2 assertions) ;
+  - `replacedImage` déplacé avant le téléchargement de l'image :
+    `testAnImageThatFailsSaysNothingReplaced` tombe ;
+  - dans le script, une panne qui rend 0 : 2 tests tombent ;
+  - sans l'effacement initial : 3 tests tombent ;
+  - avec `curl -f` : le test du 404 tombe ;
+  - le workflow d'avant (`if curl -fsSL …`), ou le script suivi de
+    `|| true`, ou appelé sous `if` : le test du workflow tombe.
+- Lancé à la main : contre l'adresse réelle de `bureaux-1/bureaux.json`, le
+  script répond « 404 : l'index neuf part de rien », code 0 (aucun index
+  n'est encore publié). Contre `nonexistent.invalid`, il rend le code 1 :
+  « curl 56, HTTP 000 ».
+- Le compte de tests publié passe à 3566 (Swift 2965 + Rust 601). Les
+  chiffres de la suite entière et des contrôles sont dans le compte rendu de
+  la tranche.
+
+**Ce qui reste.** Le workflow n'a pas été lancé : il le sera après accord.
+Une course reste ouverte entre le job qui lit l'ancien index et celui qui
+publie le neuf. Deux fabrications lancées en même temps pourraient chacune
+publier un index sans l'entrée de l'autre ; il faut donc les lancer l'une
+après l'autre.
+
 ## 2026-11-14 — Bureaux prêts : six défauts du contrôle, corrigés à leur source
 
 **Ce qui n'allait pas.** Le contrôle adverse de la tranche « Bureaux prêts »
