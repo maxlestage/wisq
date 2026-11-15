@@ -8,6 +8,132 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Contrôle des bureaux prêts : la recopie comptée, le transfert de fond suivi, l'attente comptée depuis le toucher
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé sept défauts et
+deux points plausibles. Tous sont réels ; tous sont corrigés.
+
+**Ce qui n'allait pas.**
+
+1. **La garde de place sous-estimait le pic.** L'application télécharge
+   par la session d'arrière-plan, qui rend chaque fichier entier dans le
+   sien ; `ImageDownloader.adopt` le recopie ensuite sur le `.part` pendant
+   que ce fichier existe encore. Ce qui restait de l'image occupe donc un
+   moment deux fois sa place. Pour `bureaux-1` sans rien de déjà là,
+   `room.total` valait 2 206 982 467 octets (2,06 Gio), et le pic de la
+   recopie 2 893 578 240 (2,69 Gio). Un téléphone à 2,3 Gio libres
+   recevait toute l'image, puis tombait à sa recopie. Aucun test ne jouait
+   `adopt` contre `room`.
+2. **La feuille rouverte pendant un transfert de fond se contredisait.**
+   Le fichier de la session avait déjà pris de la place, que `room` ne
+   voit pas : la ligne disait à la fois « continue en arrière-plan » et
+   « Pas assez de place… Rien n'a été téléchargé », et « Installer »
+   était éteint. On ne pouvait plus suivre le transfert.
+3. **« Continue en arrière-plan » restait affiché après « Annuler »**, ou
+   après un téléchargement fini puis refusé : `runningFiles` n'était lu
+   qu'à l'ouverture.
+4. **L'entrée d'en dessous et la doc de `ResumeWait` disaient faux.**
+   « Dès le toucher… l'instantané de 842 Mio se déplie » : `IsoBoot.decide`,
+   la lecture du noyau et `SavedSession.find` (le dépliage LZ4 de 155 Mio
+   en 345,8 Mio) tournent sur le fil principal **avant** que l'attente
+   n'existe. L'écran est figé et sans phrase pendant ce travail, et les
+   secondes partaient après lui. 842 Mio est la taille de l'ancien
+   `bureau.snap` ; l'instantané brut du bureau prêt fait 345,8 Mio (le
+   tableau de l'entrée du 14 novembre).
+5. **Le `.part` de l'image dans `room` n'avait pas de test** : ignoré, 42
+   tests, aucun échec.
+6. **Le `checkCancellation` du début de `fetch` non plus** : retiré, une
+   tâche déjà annulée écrivait un premier morceau avant de lever.
+7. **Deux branches de phrases non plus** : « chacune avec sa session » et
+   « rien à télécharger ».
+
+Les deux points plausibles :
+
+- `BackgroundImageDownloads.transfer` relevait `Task.isCancelled` hors du
+  verrou : un `cancel` glissé entre ce relevé et l'inscription de l'attente
+  ne trouvait rien, et la tâche partait ensuite, l'annulation perdue.
+- Un réseau qui demande de se connecter d'abord (Wi-Fi d'hôtel) rend sa
+  page en 200 : lue comme un index, elle ne proposait rien, et la section
+  disparaissait sans un mot.
+
+**Ce qui change.**
+
+- `ReadyDesktop.Room` garde à part ce qui reste de l'image et du bureau,
+  et son `total` est le moment le plus lourd des trois : l'image
+  recopiée, le bureau recopié, l'installation. Pour `bureaux-1` : 2,69 Gio.
+  Quand c'est la recopie qui fixe le compte, le refus le dit : « l'image
+  reçue, 1,3 Gio, est recopiée avant d'être rangée, et prend un moment
+  deux fois sa place ».
+- `fetch(running:)` et `spaceShortfall(running:)` : un fichier du bureau en
+  cours en arrière-plan n'est pas refusé, il est suivi. La ligne dit qu'il
+  continue, et « Installer » reste allumé.
+- `followed(running:)` : quand `fetch` rend la main, les fichiers du
+  bureau sortent des fichiers en cours. « Annuler » arrête aussi ceux que
+  `fetch` n'avait pas encore rejoints (`cancelDesktop(_:)`), pour que la
+  ligne ne cache pas un transfert qui court.
+- `LocalVMModel.boot` prend le toucher en tête (`touchedAt`), et
+  `ResumeWait` compte depuis lui, ce travail compris. La doc dit
+  maintenant que la phrase ne se montre qu'une fois le fil principal
+  rendu, et que les 12,0 s du banc se comptent après `restore`.
+- `transfer` relève l'annulation sous le verrou de l'inscription, et la
+  tâche de la session naît sous celui que `cancel` prend avant de chercher
+  les tâches.
+- `ImageDownloader.readyCatalog` : un 200 qui n'est pas un objet JSON avec
+  son `format` se dit (`ReadyDesktop.isIndex`). Un index d'un format plus
+  récent reste muet.
+
+**Comment c'est vérifié.** 8 tests neufs : `ReadyDesktopTests` (7, dont un
+qui joue `adopt` et mesure les deux fichiers présents ensemble, puis les
+vraies tailles de `bureaux-1` refusées à 2,3 Gio avant toute requête) et
+`ResumeWaitTests` (1, qui lit `LocalVMModel` commentaires ôtés). Une
+assertion ajoutée à `testAnInstalledDesktopIsNamedAndNotReplaced` (deux
+machines, chacune avec sa session). `testNotEnoughSpaceRefusesBeforeAnyRequest`
+écrit `Room` sous sa nouvelle forme ; ses valeurs ne changent pas.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| `total` sans la recopie (`download + install`) | `testTheRoomHoldsTheCopyOfABackgroundDownload` |
+| la phrase de la recopie jamais choisie | le même |
+| le `.part` de l'image ignoré par `room` | `testTheRoomCountsThePartOfTheImage` |
+| le `checkCancellation` du début de `fetch` retiré | `testACancelledTaskAsksForNothing` |
+| « chacune avec sa session » neutralisé | `testAnInstalledDesktopIsNamedAndNotReplaced` |
+| « rien à télécharger » neutralisé | `testNothingLeftToDownloadIsSaid` |
+| `spaceShortfall` qui ignore `running` | `testABackgroundDownloadIsFollowedNotRefused` (2) |
+| `fetch` qui ignore `running` | le même (1) |
+| `followed` qui ne retire rien | `testAFollowedDesktopIsNoLongerSaidInTheBackground` |
+| la page prise pour un index | `testAPageInsteadOfTheIndexIsSaid` |
+| `ResumeWait(since: Date(), …)` dans `boot` | `testTheAppCountsTheWaitFromTheTouch` |
+
+Suite Swift entière : 2 961 tests exécutés (8 de plus), 67 sautés, aucun
+échec (6 min 12 s). SwiftLint strict : 0 violation. Le SwiftUI touché passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 680 → 3 688
+(3 044 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La liaison iOS ne se juge que sur la CI « App iOS » et sur un iPhone :
+  `cancelDesktop(_:)`, `runningFiles` après un suivi, et la course de
+  `transfer`, que rien ne rejoue ici. Le verrou se raisonne (l'annulation
+  lève le drapeau de la tâche avant d'appeler `cancel`), il ne se teste
+  pas sous Linux.
+- **L'écran reste figé, sans phrase, pendant la lecture de l'image et le
+  dépliage** de la première reprise. Le compte des secondes le comprend
+  désormais, mais rien ne s'affiche tant que ce travail tient le fil
+  principal. Le sortir de là demande de rendre `boot` asynchrone, avec
+  `kernelName` réglé avant que la vue ne puisse appeler `stop()` ou
+  `suspend()` : un chantier à part, qui ne se juge que sur un iPhone.
+  Sa durée sur un téléphone n'est pas mesurée.
+- Le compte de `room` suppose des serveurs qui reprennent (`206`). Un
+  `200` à une reprise recevrait le fichier entier, et la recopie
+  demanderait alors plus que ce qui est compté.
+- Un transfert de fond suivi sans garde peut encore manquer de place à sa
+  recopie, s'il a été lancé par une version d'avant (sans la recopie
+  comptée) ou si le téléphone s'est rempli depuis. L'écriture tombe
+  alors avec l'erreur du système, et le `.part` garde ce qu'il avait.
+
 ## 2026-11-15 — Bureaux prêts de bout en bout : la place, l'annulation, l'image en faute, et la première reprise dite
 
 Deux parties : le reste du contrôle adverse de l'entrée juste en dessous,
