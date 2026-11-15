@@ -85,11 +85,13 @@ public enum ImageDownload {
         /// la relancer pour lui rendre le fichier —, et la seule chose qu'elle
         /// garde de chaque tâche est cette chaîne : c'est elle qui dit, au
         /// réveil, quelle image recoudre et contre quelle somme.
-        public var backgroundTag: String {
-            // Un `Release` n'a que des chaînes, un entier et des adresses :
-            // l'encodage ne peut pas échouer.
-            String(decoding: (try? JSONEncoder().encode(self)) ?? Data(), as: UTF8.self)
-        }
+        ///
+        /// **Les clés triées** : sans cela, deux encodages de la même image ne
+        /// donnaient pas la même chaîne (l'ordre des clés est tiré au sort,
+        /// d'un appel à l'autre — mesuré dans `ReadyDesktopTests`), et la
+        /// tâche déjà en cours pour une image, cherchée par sa description,
+        /// n'était jamais retrouvée.
+        public var backgroundTag: String { ImageDownload.sortedJSON(self) }
 
         /// L'image qu'une étiquette décrit, ou `nil` pour une étiquette qui
         /// n'en est pas une — une tâche d'une autre version de wisq.
@@ -162,7 +164,15 @@ public enum ImageDownload {
     }
 
     static func isHexDigest(_ text: String, length: Int = 64) -> Bool {
-        text.count == length && text.allSatisfy { $0.isHexDigit }
+        text.count == length && text.allSatisfy(isASCIIHexDigit)
+    }
+
+    /// **Un chiffre hexadécimal ASCII**, et rien d'autre : `isHexDigit`
+    /// accepte aussi les chiffres pleine chasse (« ０ », « ｄ »), qui ne
+    /// sont jamais ceux d'une somme. Une somme écrite ainsi passait, et
+    /// n'était refusée qu'une fois le fichier entier reçu.
+    static func isASCIIHexDigit(_ character: Character) -> Bool {
+        character.isASCII && character.isHexDigit
     }
 
     /// Un nom de fichier, et rien d'autre : l'index vient du réseau, et un
@@ -661,5 +671,96 @@ public enum ImageDownload {
         }
         if manager.fileExists(atPath: destination.path) { try manager.removeItem(at: destination) }
         try manager.moveItem(at: part, to: destination)
+    }
+}
+
+// MARK: - Où le fichier va
+
+extension ImageDownload {
+    /// **Le dossier où un téléchargement finit.** Une image va dans la
+    /// bibliothèque, qui la liste et la démarre. L'archive d'un bureau prêt,
+    /// elle, ne doit **pas** y aller : la bibliothèque la listerait comme une
+    /// image. Elle attend dans le dossier des téléchargements, le temps d'être
+    /// importée (`ReadyDesktop.install`), puis elle est effacée.
+    public enum Destination: String, Codable, Equatable, Sendable {
+        case library
+        case downloads
+    }
+
+    /// Une valeur en JSON, clés triées : la même valeur donne toujours la
+    /// même chaîne. Une image n'a que des chaînes, un entier et des adresses :
+    /// l'encodage ne peut pas échouer.
+    static func sortedJSON(_ value: some Encodable) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: (try? encoder.encode(value)) ?? Data(), as: UTF8.self)
+    }
+
+    /// **Ce qu'une tâche d'arrière-plan doit savoir au réveil** : quel
+    /// fichier recoudre, contre quelle somme, et où le ranger. Le dossier
+    /// voyage avec l'image dans la description de la tâche — la seule chose
+    /// que la session garde d'une vie de l'application à la suivante —, sans
+    /// quoi une archive finie pendant que l'application dormait atterrirait
+    /// dans la bibliothèque.
+    public struct BackgroundJob: Equatable, Sendable, Codable {
+        public let release: Release
+        public let destination: Destination
+
+        public init(release: Release, destination: Destination) {
+            self.release = release
+            self.destination = destination
+        }
+
+        /// L'étiquette de la tâche. **Vers la bibliothèque, c'est celle d'avant**
+        /// (`Release.backgroundTag`) : une tâche lancée par une version
+        /// précédente de wisq, encore en cours, est reconnue comme la même au
+        /// lieu d'être doublée.
+        public var tag: String {
+            guard destination == .downloads else { return release.backgroundTag }
+            return ImageDownload.sortedJSON(self)
+        }
+
+        /// Ce qu'une tâche déjà en cours veut dire pour celle qu'on lancerait.
+        public enum Overlap: Equatable, Sendable {
+            /// Un autre fichier : chacune le sien.
+            case unrelated
+            /// Le même fichier, attendu à la même taille, à la même somme, au
+            /// même endroit : on attend celle qui court.
+            case same
+            /// Le même `.part`, mais un autre fichier attendu : celle qui
+            /// court doit cesser avant que la nôtre parte.
+            case conflicting
+        }
+
+        /// **Deux tâches qui recoudraient le même `.part`** : c'est le nom du
+        /// fichier qui le désigne (`partURL`), et c'est par lui que
+        /// `BackgroundImageDownloads` range qui attend et le progrès. Comparer
+        /// toute la `Release` ne suffisait pas : la même ISO de Void, lancée
+        /// depuis la liste des distributions puis demandée par « Bureaux
+        /// prêts », se décrit autrement (distribution, saveur, index,
+        /// adresse), et une seconde tâche partait sur le même `.part`.
+        /// L'adresse ne compte pas : le même fichier, à sa somme, vient
+        /// d'où il vient.
+        public func overlap(with running: BackgroundJob) -> Overlap {
+            guard running.release.file == release.file else { return .unrelated }
+            let same = running.destination == destination
+                && running.release.size == release.size
+                && running.release.checksum.algorithm == release.checksum.algorithm
+                && running.release.checksum.expected == release.checksum.expected
+            return same ? .same : .conflicting
+        }
+
+        /// La tâche qu'une étiquette décrit : la forme neuve, ou celle d'avant
+        /// (une image seule, donc la bibliothèque). `nil` pour une étiquette
+        /// qui n'est ni l'une ni l'autre.
+        public init?(tag: String) {
+            if let job = try? JSONDecoder().decode(BackgroundJob.self, from: Data(tag.utf8)) {
+                self = job
+            } else if let release = Release(backgroundTag: tag) {
+                self.init(release: release, destination: .library)
+            } else {
+                return nil
+            }
+        }
     }
 }

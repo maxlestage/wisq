@@ -352,6 +352,18 @@ public final class X86Machine: @unchecked Sendable {
         didSet { core.entropy = entropy }
     }
 
+    /// **L'heure de l'hôte, figée**, pour l'horloge CMOS : `nil` (le défaut,
+    /// celui de l'application) lit l'horloge du système à chaque accès.
+    ///
+    /// Pour la fabrication d'un bureau prêt (`ReadyDesktopBuild`) : deux
+    /// fabrications du même bureau au même instant figé lisent la même date,
+    /// et ne diffèrent pas par l'heure à laquelle on les a lancées. Gardée ici
+    /// pour la même raison que `entropy` : `load` et `restore` refont le cœur,
+    /// et son horloge avec.
+    public var frozenHostTime: Date? {
+        didSet { core.cmos.fixedHostTime = frozenHostTime }
+    }
+
     /// **Le niveau de cette machine**, écrit dans chaque instantané
     /// (`Snapshot.levelSection`) et comparé à la reprise.
     ///
@@ -406,6 +418,7 @@ public final class X86Machine: @unchecked Sendable {
         core = X86Core(registers: [UInt64](repeating: 0, count: 16),
                        rip: placement.entryPoint, memory: memory)
         core.entropy = entropy
+        core.cmos.fixedHostTime = frozenHostTime
         // Ce que le protocole de démarrage 64 bits exige à l'entrée : le mode
         // long actif, la pagination en place, et RSI sur la page zéro.
         core.system.control[3] = Self.pageTableRoot
@@ -920,6 +933,7 @@ public final class X86Machine: @unchecked Sendable {
         // La source d'aléa est celle de la machine qui reprend, pas celle
         // qui a sauvé : voir `X86Entropy`.
         core.entropy = entropy
+        core.cmos.fixedHostTime = frozenHostTime
         // Le mode ne s'écrit pas dans l'instantané : il se relit dans CS.
         core.refreshCompatibilityMode()
     }

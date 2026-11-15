@@ -699,6 +699,533 @@ lancé par le noyau mourait : `modprobe[372]: segfault at b ip
 - Les bits A et D ne sont pas écrits (le cœur Swift non plus).
 - `fxrstor` nomme dans CR2 le premier octet absent plutôt que le dernier de
   l'aire : non vérifié contre le silicium, laissé.
+## 2026-11-14 — Première reprise d'un bureau prêt : deux règles enfin tenues par un test, et la marque d'une session orpheline effacée
+
+Le contrôle de la tranche précédente (la première reprise d'un bureau
+téléchargé) a trouvé trois défauts. Le code des deux premiers était juste ;
+c'est la preuve qui manquait.
+
+**Ce qui n'allait pas.**
+
+1. **« La marque est retirée après l'écriture, pas avant »**
+   (`SuspendedMachine.savePacked`) n'était tenu par aucun test.
+   `testAFailedWriteKeepsTheMarker` faisait échouer l'écriture dans un
+   **autre** dossier que celui de la marque : la marque n'était donc jamais
+   touchée, quel que soit l'ordre. Sabotage du contrôleur (le retrait
+   déplacé avant l'écriture) : 43 tests verts, 0 échec.
+2. **« Une marque qui ne s'écrit pas défait l'installation »**
+   (`ReadyDesktop.install`) n'était tenu par aucun test. Sabotage du
+   contrôleur (la ligne `InstalledMachines.remove` supprimée) : 74 tests
+   verts, 0 échec.
+3. **Le nettoyage des sessions orphelines** (`LocalStorage.freeOrphanedMachines`)
+   effaçait la session mais laissait sa marque `.wisqvm.premiere` : un petit
+   fichier inerte (`pending` exige une session), mais qui ne partait jamais.
+
+**Ce qui change.**
+
+- `testAFailedWriteKeepsTheMarker` fait échouer l'écriture **dans le dossier
+  de la marque** : un dossier non vide occupe la place du fichier de session,
+  et le renommage final de l'écriture `.atomic` est refusé. Pas un dossier en
+  lecture seule : ce conteneur tourne sous `root`, qui passe outre. Le test
+  vérifie la marque sur le disque, puis par `pending`.
+- `testAMarkerThatCannotBeWrittenUndoesTheInstallation` (nouveau,
+  `ReadyDesktopTests`) : un dossier occupe la place de la marque. L'installation
+  rend l'erreur, la machine n'est plus dans la liste, sa session est effacée,
+  et l'archive aussi.
+- `freeOrphanedMachines` efface la marque avec la session orpheline. Elle
+  n'est pas comptée dans les octets libérés (quelques octets, que le relevé ne
+  compte pas non plus). Test : `testFreeingAnOrphanTakesItsFirstResumeMarkerWithIt`
+  (`LocalStorageTests`) ; la marque d'une session encore à son noyau reste.
+
+**Comment c'est vérifié.** Trois sabotages d'une ligne, chacun restauré par
+copie et vérifié par `cmp` :
+
+- le retrait de la marque avant l'écriture : `FirstResumeTests|ReadyDesktopTests`
+  donne 44 tests, **2 échecs** (`testAFailedWriteKeepsTheMarker`) ;
+- la ligne du défaire supprimée :
+  `FirstResumeTests|ReadyDesktopTests|MachineArchive|InstalledMachine` donne
+  75 tests, **2 échecs** (`testAMarkerThatCannotBeWrittenUndoesTheInstallation`) ;
+- la ligne qui efface la marque orpheline supprimée :
+  `LocalStorageTests|FirstResumeTests` donne 31 tests, **1 échec**.
+
+Sans sabotage, ces filtres réunis : 94 tests, 0 échec. Compte publié :
+3585 → 3587 (Swift 2986 + Rust 601).
+
+**Ce qui reste.** Rien de neuf pour la CI : seuls des fichiers de `WisqVM`
+et de ses tests ont bougé. macOS (« Cœur (Apple) ») n'est pas vérifié ici.
+
+## 2026-11-14 — Bureau prêt : la première reprise donne l'heure et de l'aléa, et des instantanés témoins tiennent le format
+
+**Ce qui n'allait pas.**
+
+1. **Un bureau prêt reprenait au jour de sa fabrication.** L'import de
+   l'archive écrit la session sur le téléphone, et la date du fichier est
+   celle de l'import. La reprise rattrapait donc le temps passé depuis
+   l'import (`elapse(since:)`), c'est-à-dire presque rien. Mesuré au banc,
+   sans correction, sur l'archive fabriquée le 15 novembre : l'invité se
+   croyait le **14 novembre à 00 h 04 min 47 s** (1794614687), soit
+   **97 903 s** (27 h) de retard sur l'horloge de l'hôte. Pour un bureau
+   repris un mois plus tard, l'écart serait d'un mois : certificats TLS « pas
+   encore valides », signatures de paquets refusées.
+2. **L'aléa du noyau était le même pour toutes les copies.** L'état du
+   générateur est dans l'instantané. `RDSEED` et `RDRAND` le font diverger
+   au réensemencement suivant, mais rien ne venait du téléphone lui-même.
+3. **Rien ne tenait le format d'un instantané d'une version à l'autre, ni
+   d'un hôte à l'autre.** Le bureau est fabriqué sous Linux x86-64 et repris
+   sur un iPhone arm64, par une version plus récente. Un champ ajouté au
+   milieu d'une section, ou un périphérique déplacé sur le bus PCI, cassait en
+   silence tous les bureaux publiés. Preuve : avec un champ glissé après
+   MXCSR (écrit et relu), les 29 tests de l'instantané (`X86DiskSnapshotTests`,
+   `X86ScreenSnapshotTests`, `X86SnapshotLevelTests`,
+   `X86SnapshotX87SectionTests`, `VirtioNetTests`,
+   `X86RestoreAllOrNothingTests`) restent verts.
+
+**Ce qui change.**
+
+- **`FirstResume`** (nouveau, `Sources/WisqVM/FirstResume.swift`). À la toute
+  première reprise d'un bureau téléchargé, rien n'est rattrapé. Une ligne est
+  tapée sur la console série, où la fabrique a laissé un shell `root` :
+  `date -s @$(cat /sys/class/rtc/rtc0/since_epoch) >/dev/null; echo <64
+  chiffres> > /dev/urandom`.
+  - L'heure est lue **par l'invité**, à son horloge CMOS, que le téléphone
+    sert en UTC. Elle est lue au moment où la ligne s'exécute, et pas tapée
+    en chiffres par l'hôte : sous l'interprète, la ligne s'exécute quelques
+    secondes après avoir été tapée.
+  - `date -s` plutôt que `hwclock -s`, qui croit `/etc/adjtime`.
+    `hwclock -s` n'a pas été essayé au banc.
+  - L'aléa : 32 octets de `SystemRandomNumberGenerator`.
+- **« Une seule fois »** tient à une marque, `machine-<identité>.wisqvm.premiere`,
+  posée à côté de la session :
+  - `ReadyDesktop.install` la pose, sous l'identité de la session
+    (`SuspendedMachine.identity(digest:named:)`, nouvelle), avec le jour de la
+    fabrication. Si elle ne s'écrit pas, l'installation est défaite ;
+  - **la première écriture de la session la retire** (`SuspendedMachine.savePacked`).
+    Une application tuée avant sa première sauvegarde rouvre donc le bureau
+    téléchargé et lui redonne l'heure. Une ligne tapée mais pas encore lue
+    au moment de la sauvegarde est dans l'instantané (les octets tapés en
+    attente), et la reprise suivante l'exécute ;
+  - « Oublier » (`clear`, `clearAll`) la retire avec la session. La copie
+    d'un bureau jamais repris (`InstalledMachines.duplicate`) la reçoit aussi.
+    Elle ne finit pas en `.wisqvm`, donc elle n'est ni une session, ni un
+    fichier emporté par l'export.
+- **La liaison** (`LocalVMModel.boot`) : la marque est lue avec la session,
+  `FirstResume.resumed` remplace `machine.elapse(since:)` entre la reprise et
+  le premier tour, et la console dit « Bureau prêt du 15 novembre 2026,
+  repris pour la première fois : l'heure du téléphone et un aléa neuf lui
+  sont donnés par la ligne qui suit. ».
+- **Le banc du bureau repris** (`testTheDesktopComesBackAfterASave`) passe
+  par la première reprise quand il reprend une archive. Il compare ensuite
+  `date +%s` de l'invité à l'horloge CMOS. Deux variables :
+  `WISQ_PC_HOST_AHEAD_DAYS` (l'horloge du téléphone figée N jours plus tard)
+  et `WISQ_PC_FIRST_RESUME=0` (sans la première reprise, pour mesurer).
+- **L'instantané témoin** `Tests/Fixtures/x86-instantane-1.wisqvm`
+  (1 568 octets compressés, 5 358 bruts) : la machine de l'application à
+  128 Mio (carte réseau, écran et tablette, deux disques sur fichier), avec
+  une valeur reconnaissable dans chaque champ. Les périphériques sont
+  programmés **par les ports**, comme un noyau : BAR, commandes, poignées de
+  main virtio, une lecture servie sur le disque, un mode Bochs avec la
+  seconde page montrée. `X86SnapshotWitnessTests` le tient par six tests :
+  - le niveau courant a son témoin ;
+  - un lecteur écrit d'après le format, et pas celui de la machine, relit
+    chaque section à sa valeur, puis vérifie qu'aucun octet ne suit ;
+  - la machine d'aujourd'hui le reprend, et retrouve chaque périphérique à
+    l'emplacement PCI où l'invité l'a programmé. Les emplacements, les
+    lignes, l'adresse MAC et les bases sont écrits en chiffres dans le test,
+    pas lus dans le code ;
+  - la machine d'aujourd'hui écrit encore le témoin octet pour octet ;
+  - repris puis resauvé, il redonne ses octets ;
+  - un test armé (`WISQ_ECRIRE_TEMOIN=1`) écrit le témoin d'un niveau neuf,
+    jamais par-dessus un témoin existant.
+
+  « Cœur (Linux) » et « Cœur (Apple) » lancent ces tests : c'est la preuve
+  que l'instantané passe d'un hôte à l'autre.
+
+**Comment c'est vérifié.**
+
+- Le banc, sur l'archive de la fabrication (`void-live-x86_64-20250202-xfce-pret.wisqmachine`),
+  horloge du téléphone figée **30 jours** plus tard : heure de l'invité
+  1797304570, horloge CMOS 1797304569, **écart 0 s**. La console répond
+  12,0 s après la reprise, les clés SSH sont refaites à 198,7 s, le test
+  passe en 200,9 s, pic résident 958 Mio. Sans la première reprise : écart
+  97 903 s (ci-dessus).
+- 19 tests ajoutés : `FirstResumeTests` (12), `ReadyDesktopTests` (1),
+  `X86SnapshotWitnessTests` (6). Compte publié : 3566 → 3585 (Swift 2984 + Rust 601).
+- Sabotages, un à la fois, chacun restauré et vérifié à `cmp` :
+  - sans le retrait dans `savePacked` : 4 tests rouges ;
+  - la marque posée sous le nom au lieu de la clé : 1 rouge ;
+  - un rattrapage en plus à la première reprise : 1 rouge ;
+  - la marque non copiée par `duplicate` : 2 rouges ;
+  - `clear` sans le retrait : 1 rouge ; `clearAll` sans le retrait : 1 rouge ;
+  - **un champ ajouté au milieu d'une section** (après MXCSR, écrit et
+    relu) : 3 tests du témoin rouges (« corrupt » à la reprise, et l'écart à
+    l'octet), alors que les 29 autres tests de l'instantané restent verts ;
+  - **la carte réseau déplacée de l'emplacement 5 au 6** : 5 rouges (la
+    carte absente en 00:05.0, sa fenêtre perdue, une carte en 00:06.0, le
+    témoin changé) ;
+  - la ligne de la tablette changée (10 → 11) : 1 rouge (le témoin changé).
+- Suite Swift entière : 2904 tests exécutés, 55 sautés (les bancs armés), 0 échec, en 450 s. `WISQ_SWIFT_CORE=1 swift build` passe ; SwiftLint strict : 0 violation.
+
+**Ce qui reste.**
+
+- La liaison dans `LocalVMModel` ne compile pas sous Linux : seul le job
+  « App iOS » la juge. Rien n'a tourné sur un téléphone.
+- L'export d'un bureau jamais repris n'emporte pas la marque : réimporté, il
+  reprendrait au jour de la fabrication.
+- La ligne suppose un shell à l'invite de la console série, comme la
+  fabrique le laisse. Un bureau prêt fabriqué autrement devra le garantir.
+- Le témoin ne voit pas ce que l'instantané ne porte pas : un bit de `CPUID`
+  retiré dans le code. Pour celui-là, et ce qui lui ressemble,
+  la règle reste de monter `X86Machine.snapshotLevel`.
+
+## 2026-11-14 — Bureaux prêts : l'ancien index n'est plus perdu sur une panne, et deux gardes enfin tenues
+
+**Ce qui n'allait pas.** Le second contrôle adverse de la tranche « Bureaux
+prêts » (commit ce2e1fdc) a relevé trois défauts :
+
+1. **La garde de l'image, dans `parse`, n'avait pas de test.** « Une
+   adresse, un fichier » vaut pour l'ISO comme pour l'archive, mais
+   `testTwoFilesAtOneAddressAreRefused` ne mettait en conflit que des
+   archives. Retirer `!clashing.contains(entry.image.url)` laissait les
+   98 tests filtrés verts.
+2. **Le workflow perdait l'ancien index sur n'importe quelle panne.**
+   `.github/workflows/bureaux.yml` lisait l'index publié par
+   `if curl -fsSL … ; then garder=(--garder …); fi`. Or le code 22 de
+   `curl -f` est le même pour un 404, un 500 après les essais ou un 403 de
+   limite de débit, et une panne DNS ou réseau tombait dans la même branche.
+   Le job publiait alors, code 0, un index sans l'entrée du niveau d'avant,
+   et les applications de ce niveau perdaient leur bureau sans un mot.
+   L'entrée précédente promettait le contraire.
+3. **« Dit juste après l'image » n'était vérifié qu'à moitié.** Le test
+   vérifiait « avant l'archive », pas « après l'image ». Annoncer le
+   remplacement avant de recevoir l'image laissait tout vert. Or ce signal
+   efface les écritures et l'ISO dépaquetée de l'ancien fichier
+   (`KernelLibrary.replaced`), alors même qu'un téléchargement d'image qui
+   tombe laisse l'ancien fichier en place, intact.
+
+**Ce qui change.**
+
+- `testTwoImagesAtOneAddressAreRefused` : deux bureaux de deux titres, chacun
+  avec son archive à sa propre adresse, annoncent la même ISO à deux sommes,
+  puis à deux tailles. L'application n'en propose aucun, `clashes` nomme
+  l'adresse de l'ISO, et `publishable` refuse d'écrire l'index. Comme les
+  archives sont à des adresses distinctes, seule la garde de l'image peut
+  écarter ces deux bureaux.
+- `scripts/bureaux-ancien-index.sh` lit l'ancien index sans `-f`, avec
+  `-w '%{http_code}'`. Un 200 l'écrit. Un 404 constaté veut dire « rien de
+  publié » : aucun fichier, code 0. Tout le reste (500, 403, une autre
+  réponse, un serveur injoignable) rend le code 1, sans fichier. Un fichier
+  d'un essai d'avant est effacé d'abord, pour qu'il ne passe jamais pour la
+  réponse. Le workflow appelle ce script dans une étape en
+  `set -euo pipefail`, et ne passe `--garder` que si le fichier existe : une
+  panne fait tomber le job, et rien n'est publié.
+- `site/tests/bureaux-ancien-index.test.ts` met le script devant un serveur
+  Bun qui répond chaque cas : 200, 302 vers 200, 404, 302 vers 404, 500, 403,
+  418, un port fermé, et un 503 suivi d'un 200 (réessayé). Le test vérifie
+  aussi que `bureaux.yml` passe par le script, seul sur sa ligne (sans
+  `|| true`, `if` ni `!` qui avaleraient l'échec), et ne lit plus l'index par
+  `curl`.
+- `testAnImageThatFailsSaysNothingReplaced` : un fichier de même nom, une
+  image coupée en route. Rien n'est dit, l'ancien fichier reste intact, et
+  l'archive n'est pas demandée. L'essai suivant reçoit l'image et le dit,
+  une fois.
+
+**Vérifié.**
+
+- Sabotages, chacun restauré (`git checkout` ou copie d'origine, puis `cmp`) :
+  - la garde de l'image retirée de `parse` : `testTwoImagesAtOneAddressAreRefused`
+    tombe (2 assertions) ;
+  - `replacedImage` déplacé avant le téléchargement de l'image :
+    `testAnImageThatFailsSaysNothingReplaced` tombe ;
+  - dans le script, une panne qui rend 0 : 2 tests tombent ;
+  - sans l'effacement initial : 3 tests tombent ;
+  - avec `curl -f` : le test du 404 tombe ;
+  - le workflow d'avant (`if curl -fsSL …`), ou le script suivi de
+    `|| true`, ou appelé sous `if` : le test du workflow tombe.
+- Lancé à la main : contre l'adresse réelle de `bureaux-1/bureaux.json`, le
+  script répond « 404 : l'index neuf part de rien », code 0 (aucun index
+  n'est encore publié). Contre `nonexistent.invalid`, il rend le code 1 :
+  « curl 56, HTTP 000 ».
+- Le compte de tests publié passe à 3566 (Swift 2965 + Rust 601). Les
+  chiffres de la suite entière et des contrôles sont dans le compte rendu de
+  la tranche.
+
+**Ce qui reste.** Le workflow n'a pas été lancé : il le sera après accord.
+Une course reste ouverte entre le job qui lit l'ancien index et celui qui
+publie le neuf. Deux fabrications lancées en même temps pourraient chacune
+publier un index sans l'entrée de l'autre ; il faut donc les lancer l'une
+après l'autre.
+
+## 2026-11-14 — Bureaux prêts : six défauts du contrôle, corrigés à leur source
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche « Bureaux prêts »
+(commit 4184d6e3) a relevé six défauts, et deux inexactitudes dans le compte
+rendu :
+
+1. **Une taille énorme faisait tomber l'application.** Rien ne plafonnait la
+   taille d'une entrée : `bytes = Int.max / 2 + 1` passait, et la somme des
+   deux tailles (`sizePhrase`, `fetch`) débordait. Le contrôle l'a mesuré :
+   « arithmetic overflow », signal 4, dès l'ouverture de la feuille.
+2. **Le niveau 2 aurait cassé le bureau du niveau 1.** L'archive ne portait
+   que le nom de l'ISO (`…-xfce-pret.wisqmachine`), et le workflow
+   l'attache par défaut à `bureaux-1` avec `--clobber`. L'archive d'un
+   niveau neuf remplaçait donc celle d'avant, alors que l'entrée gardée par
+   `Index.merged` promettait encore l'ancienne somme à la même adresse. Une
+   application d'avant aurait téléchargé l'archive neuve, l'aurait trouvée
+   fausse et effacée, et cela à chaque essai. `wisq-fabrique index` écrivait
+   un tel index sans broncher (code 0, deux entrées à la même adresse).
+3. **Deux tâches d'arrière-plan sur un seul `.part`.** La garde « une tâche
+   déjà en cours pour ce fichier » comparait toute la `Release`. Or la même
+   ISO de Void, lancée depuis la liste des distributions puis demandée par
+   « Bureaux prêts », se décrit autrement (distribution, saveur, index,
+   adresse). Une seconde tâche partait donc sur le même `.part`.
+4. **`KernelLibrary.replaced` pouvait se perdre.** Il n'était appelé
+   qu'après les deux téléchargements. Si l'archive tombait après que l'image
+   avait remplacé un fichier du même nom, l'essai suivant trouvait l'image à
+   sa taille et ne l'appelait plus jamais. Les couches et sessions posées
+   sur l'ancien fichier restaient alors sur le nouveau.
+5. **Deux gardes sans test.** La garde des identifiants et du fragment de
+   l'adresse, et celle du titre de 80 caractères : les retirer ne faisait
+   tomber aucun test.
+6. **Les chiffres pleine chasse passaient pour des chiffres.**
+   `Character.isHexDigit` accepte « ｄ » et « ０ ». Une empreinte ou une
+   somme écrite ainsi était proposée, puis refusée seulement après 1,5 Gio
+   de téléchargement.
+
+Et deux inexactitudes du compte rendu précédent :
+- « le travail d'avant est dans master (#702–#704) » est faux. Seul « Reprise
+  sûre » (#702) y est. `ReadyDesktopBuild`, `GuestScript` et `wisq-fabrique`
+  ne sont encore que sur cette branche.
+- « 24 sabotages, chacun fait tomber son test » s'appuyait sur un journal de
+  sabotages périmé dans le bloc-notes (`sab3/sabotages2.log`). Il portait
+  encore `index refusé  PASSE (mauvais)`, la ligne du sabotage remplacé, et
+  pas celle qui le remplaçait. Le contrôle a refait ce sabotage, et il tombe
+  bien. Les sabotages de cette entrée-ci sont dans un journal neuf (plus
+  bas).
+
+**Ce qui change.**
+
+- `ReadyDesktop.largestFile` (64 Gio) : une taille va d'un octet à ce
+  plafond (`link`). La somme de deux tailles ne peut donc plus déborder.
+- **Une adresse, un fichier.**
+  - Les fichiers d'une fabrication portent le niveau de machine dans leur
+    nom (`ReadyDesktopBuild.outputStem` :
+    `void-live-x86_64-20250202-xfce-pret-niveau1`). L'archive d'un autre
+    niveau a donc un autre nom, même dans la même release.
+  - `Index.clashes` donne les adresses où l'index annonce deux fichiers
+    différents (une autre taille ou une autre somme). La même ISO, à la même
+    somme, peut servir deux niveaux.
+  - `Index.publishable` (utilisé par `wisq-fabrique index`) juge les entrées
+    neuves, garde l'ancien index, puis refuse les conflits. Le job du
+    workflow tombe alors avant que rien ne soit publié.
+  - `parse` ne propose aucune des entrées valables qui se disputent une
+    adresse. Une entrée fautive, qui ne se téléchargera jamais, n'emporte
+    pas la propre d'à côté.
+  - Le workflow cherche la fiche sous ce nom, et attache les fichiers
+    `*-pret-niveau*`.
+- `ImageDownload.BackgroundJob.overlap` : deux tâches se reconnaissent par
+  le fichier qu'elles recousent. C'est `same` quand la taille, la somme et
+  le dossier sont aussi les mêmes : on attend celle qui court. C'est
+  `conflicting` quand le nom est le même mais que le fichier attendu
+  diffère : `BackgroundImageDownloads` retire d'abord l'étiquette de
+  l'ancienne tâche, pour que sa fin ne recouse rien et ne réveille personne,
+  puis l'annule. C'est `unrelated` pour un autre fichier.
+- `ReadyDesktop.fetch(…, replacedImage:)` dit le remplacement juste après
+  l'image, avant l'archive. `ImageDownloadModel.install` y branche
+  `KernelLibrary.replaced`.
+- `ImageDownload.isASCIIHexDigit` : un chiffre hexadécimal ASCII. Toutes les
+  sommes de toutes les listes (`isHexDigest`) et l'empreinte du noyau
+  passent par lui.
+- Dans le bloc-notes, `bureau-pret/publication-niveau1/` contient
+  `bureaux.json`, l'archive (liée sous son nom neuf, même somme
+  a93fbff5…), sa fiche et la capture. Tout est sous les noms `…-niveau1`
+  que le workflow produirait. `index-bureaux.sh` les fabrique désormais
+  ainsi. L'ancien dossier `publication/` n'a pas été touché.
+
+**Comment c'est vérifié.**
+- 5 tests nouveaux dans `ReadyDesktopTests` :
+  - `testTheEdgesThatPassAndTheSheetDoesNotOverflow` ;
+  - `testFullWidthDigitsAreNotDigits` ;
+  - `testTwoFilesAtOneAddressAreRefused` ;
+  - `testAReplacedImageIsSaidBeforeTheArchiveCanFail` ;
+  - `testTwoBackgroundJobsForOnePartRecogniseEachOther`.
+
+  Les cas hostiles passent de 25 à 35 : identifiants, nom
+  d'utilisateur, fragment, fragment vide, titre de 81 caractères, trois
+  tailles hors plafond, empreinte et somme en pleine chasse.
+- Le défaut 2, refait avec le vrai outil, sur la fiche de niveau 2 du
+  contrôle : `wisq-fabrique index … --garder publication/bureaux.json` rend
+  maintenant le code 1 : « deux fichiers différents annoncés à la même
+  adresse ». La même fiche, avec une archive `…-niveau2`, donne le code 0 et
+  2 entrées à deux adresses.
+- 14 sabotages, chacun d'une ligne, refaits par script
+  (`<bloc-notes>/bp-fix/sab/sab.py`, journal `sab/sabotages.log`). Chacun
+  est compilé, lancé sur son test, puis restauré (`git checkout`, l'heure du
+  fichier remise). **Tous les 14 font tomber leur test**, et `git status`
+  est vide après chacun. Ils visent : le plafond, les identifiants, le
+  fragment, le titre de 80 caractères, les chiffres ASCII (deux tests), le
+  refus de la fabrique, le refus de l'application, les conflits comptés
+  entre entrées valables seulement, le niveau dans le nom, la tâche
+  reconnue par le fichier, la somme qui compte pour la tâche, l'image
+  remplacée dite avant l'archive, et l'index jugé au niveau de chaque
+  entrée (celui que l'ancien journal donnait à tort comme passant).
+- `swift test` complet : 2 883 tests exécutés, 54 sautés, 0 échec, en 6 min 57 s. `WISQ_SWIFT_CORE=1 swift build` passe.
+  SwiftLint `--strict` : 0. `swiftc -frontend -parse` sur WisqUI, App et les
+  tests hébergés : code 0. Compte publié : 3559 → 3564 (Swift 2963 + Rust 601). Site : 470 tests, 0 échec.
+
+**Ce qui reste.**
+- Seul « App iOS » juge `BackgroundImageDownloads` et `ImageDownloadModel`.
+  La décision est testée dans `WisqVM`, mais la liaison n'a été que relue.
+- Une petite course reste possible : une tâche « en conflit » qui finirait
+  entre `getAllTasks` et son annulation rendrait son fichier à celui qui
+  attend ce nom. Pour un bureau prêt, l'empreinte du noyau vérifiée à
+  l'installation l'arrête.
+- Un cas qui préexistait, dans les deux chemins (liste et bureaux prêts) :
+  quand l'application est tuée et que le système finit seul le transfert
+  d'une image qui en remplace une autre, `replaced` n'est pas appelé
+  (`finish` sans personne qui attend). Ce n'est pas corrigé ici.
+- Le workflow `--clobber` encore, au même niveau : entre l'envoi de
+  l'archive refaite et celui de l'index, l'ancien index promet l'ancienne
+  somme pendant quelques secondes.
+- Publier reste à faire valider par le propriétaire. Le workflow n'a jamais
+  tourné.
+
+## 2026-11-14 — Bureaux prêts : l'entrée de catalogue, les deux téléchargements, l'installation vérifiée, et le workflow qui les publie
+
+**Ce qui manquait.** La tranche d'avant fabrique un bureau Void Xfce déjà
+démarré (`wisq-fabrique`, une archive `.wisqmachine` de 164 Mio et sa
+fiche). Rien ne permettait encore à l'application de le trouver, de le
+télécharger ni de l'installer, et rien ne le publiait.
+
+**Ce qui change.**
+
+- `Sources/WisqVM/ReadyDesktop.swift` (nouveau). Un bureau prêt, c'est une
+  image publiée par sa distribution (l'ISO de Void, à son adresse **datée**)
+  et une archive, asset d'une release du dépôt. L'index `bureaux.json` est
+  lu comme un fichier du réseau. Une entrée n'est proposée que si :
+  - ses adresses sont en HTTPS, sur les hôtes attendus
+    (`repo-default.voidlinux.org` pour l'image ; `github.com`, releases de
+    ce dépôt seulement, ou `objects.githubusercontent.com` pour l'archive),
+    sans port, requête ni `..` ;
+  - ses noms sont des noms simples, égaux au dernier segment de l'adresse ;
+    l'archive finit en `.wisqmachine`, l'image non ;
+  - ses sommes sont des SHA-256, l'empreinte du noyau a la forme d'une
+    empreinte, et la mémoire est un réglage de l'application ;
+  - son niveau de machine va de 1 à `X86Machine.snapshotLevel`.
+
+  Il y a un bureau par titre : le plus haut niveau que cette version sait
+  reprendre. Une entrée fautive est écartée seule, pas tout l'index.
+- **Les deux téléchargements** (`ReadyDesktop.fetch`). L'image va dans la
+  bibliothèque. L'archive va dans les téléchargements : elle ne doit pas être
+  listée comme une image. La feuille montre un seul progrès sur les deux
+  fichiers. Une image déjà là, à sa taille, n'est pas redemandée. Une
+  archive déjà là n'est reprise qu'à sa somme. Une coupure de l'archive
+  garde l'image et reprend l'archive à son dernier octet.
+- **L'installation** (`ReadyDesktop.install`). Deux gardes avant l'import,
+  parce qu'un import qui réussit ne prouve rien ici :
+  - l'empreinte du noyau de l'image présente (`IsoBoot.kernelDigest`,
+    nouveau, qui sort le noyau seul par la recette de `unpack`) doit être
+    celle de la fabrication ;
+  - l'archive doit démarrer cette image et porter une session sous cette
+    empreinte (`MachineArchive.contents`, nouveau, lit le manifeste sans
+    rien installer).
+
+  Sans elles, la machine se serait installée sans erreur, puis aurait
+  démarré à froid pendant une demi-heure sans dire pourquoi. L'archive,
+  lue, est effacée.
+- `ImageDownloader.readyDesktops(index:)` et `catalog()`. Les bureaux et les
+  distributions sont lus en même temps, et l'un qui ne répond pas ne cache
+  pas l'autre. **Un index des bureaux absent ne dit rien** : la release
+  `bureaux-1` n'existe pas encore, GitHub répond 404, et la feuille reste
+  celle d'avant.
+- **Un défaut trouvé en route.** L'étiquette d'une tâche d'arrière-plan
+  (`Release.backgroundTag`, du JSON) n'avait pas ses clés dans un ordre
+  fixe. Deux encodages de la même image, dans le même processus, donnaient
+  deux chaînes différentes : le premier essai du test l'a montré. La
+  recherche « une tâche est déjà en cours pour ce fichier »
+  (`BackgroundImageDownloads`) ne trouvait donc jamais rien. Les clés sont
+  maintenant triées, et la recherche compare les tâches décodées.
+- `ImageDownload.BackgroundJob` : la tâche porte sa destination. Une
+  archive finie pendant que l'application dormait atterrissait sinon dans
+  la bibliothèque. Vers la bibliothèque, l'étiquette reste celle d'avant.
+- L'écran (`ImageDownloadModel`, `ImageDownloadSheet`, `LocalVMView`) :
+  - une section « Bureaux prêts » en tête : le titre, « Démarré par wisq le
+    14 novembre 2026, puis mis en pause : prêt en moins d'une minute », ce
+    qu'il reste à télécharger, et la mémoire qu'il faut ;
+  - le bouton est grisé quand le téléphone ne peut pas donner cette
+    mémoire ;
+  - pendant le téléchargement : « Étape 1 sur 2 : l'image — … sur … » ;
+  - sous la section : les mots de passe partagés, les clés SSH refaites
+    sur chaque téléphone, et ce qu'Arrêter coûte ;
+  - à la fin : « « Void Xfce (prêt) » est installée : touchez-la ».
+
+  Le lecteur d'image n'existe qu'avec le cœur Rust : sans lui, l'empreinte
+  est `nil`, et l'installation le refuse en le disant.
+- `.github/workflows/bureaux.yml` (nouveau), **lancé à la main seulement**,
+  et **pas lancé** : il attend l'accord du propriétaire. Ses étapes :
+  1. les entrées sont vérifiées par leur forme ;
+  2. Rust et `cargo build -p wisq-vm` ;
+  3. l'ISO est gardée en cache et vérifiée contre le `sha256sum.txt` de son
+     dossier daté ;
+  4. `wisq-fabrique` est construit en release, puis lancé, avec le commit
+     et l'heure figée ;
+  5. la capture `.ppm` devient un `.png` ;
+  6. `wisq-fabrique index` écrit l'index, en gardant les entrées d'un autre
+     niveau de l'index publié ;
+  7. l'archive, la fiche et la capture sont attachées à `bureaux-N`, et
+     l'index à `bureaux-1`.
+
+  Les deux releases sont en préversion, hors de « latest », pour ne pas
+  casser `scripts/install.sh`. Le workflow n'a pas de `pull_request` dans
+  son `on:` : le compte des portes (7) ne bouge pas.
+- `wisq-fabrique index <bureaux.json> <fiche.json>… --images … --archives …
+  [--garder …]`. L'index est écrit par le type que l'application lit, et
+  relu comme elle le lira : une entrée qu'elle écarterait arrête tout
+  (`Index.refused`).
+- Dans le bloc-notes, `bureau-pret/index-bureaux.sh` fabrique `bureaux.json`
+  à partir de la fiche et de l'archive de la tranche d'avant. Il vérifie
+  d'abord la somme de l'archive. Il prépare ensuite les fichiers à attacher
+  à la main.
+
+**Comment c'est vérifié.** 24 tests nouveaux : 23 dans `ReadyDesktopTests`
+et 1 dans `IsoBootTests`. Ils couvrent :
+- 25 entrées hostiles, chacune seule, puis à côté d'une entrée propre ;
+- le serveur scripté d'`ImageDownloaderTests` : coupure au milieu de
+  l'archive, somme fausse, `416` sur une archive que l'index décrit mal,
+  archive de la bonne taille mais pas de la bonne somme ;
+- l'installation, sur de vraies archives assemblées par `ReadyDesktopBuild` :
+  la session retrouvée sous l'empreinte, et quatre refus (autre noyau ou
+  image illisible, archive d'une autre image, sans session, image
+  manquante) ;
+- l'étiquette identique sur vingt encodages.
+
+24 sabotages, un par garde : chacun fait tomber son test. Le
+premier passage avait un piège : une restauration gardait l'heure de la
+copie, et `swift build` ne recompilait pas le fichier rendu, si bien que
+les sabotages s'empilaient. Il a donc été refait, l'heure du fichier remise
+à chaque restauration ; il a aussi montré un trou (le filtre des sessions de
+`MachineArchive.contents`, que rien ne tenait : l'archive de test n'avait
+pas de couche), bouché en branchant un disque, et un sabotage de
+`Index.refused` qui ne changeait rien, remplacé par celui qui compte (juger
+chaque entrée au niveau de l'application, et non au sien, refuse le bureau
+d'un niveau neuf). `bureaux.json` a été fabriqué
+pour de vrai à partir de l'archive de la tranche d'avant, puis relu par
+l'application ; un index dont l'archive serait ailleurs n'est pas écrit
+(code 1, mesuré). La suite Swift entière : 2 878 tests exécutés, 54 sautés,
+0 échec (7 min) ; `WISQ_SWIFT_CORE=1 swift build` passe ; le site : 470
+tests, 0 échec. Compte publié : 3535 → 3559 (Swift 2958 + Rust 601). Le
+SwiftUI ne compile pas ici : `swiftc -frontend -parse` et
+SwiftLint `--strict` passent, chaque ligne a été relue, et seul le job
+« App iOS » le jugera.
+
+**Ce qui reste.**
+- Publier, c'est-à-dire lancer le workflow ou attacher à la main les
+  fichiers du bloc-notes à `bureaux-1` : à faire valider par le
+  propriétaire.
+- La première reprise sur un téléphone (l'heure, tranche 4).
+- `URLSession` d'arrière-plan derrière la redirection de GitHub : non
+  essayé.
+- Le workflow n'a jamais tourné.
+
 ## 2026-11-15 — Le disque de la page : les deux branches que rien ne jugeait
 
 Le dernier contrôle adverse du flux C a trouvé deux lignes de la
@@ -1274,6 +1801,244 @@ maintenant un registre de 64 bits, où un `Number` perd l'octet bas.
   lira (virtio, P4) ajoutera `ram_lire`/`ram_ecrire`, et l'émetteur devra
   les recevoir aussi.
 - Ni l'horloge ni le 8042 ne passent dans un instantané (P9).
+
+## 2026-11-14 — Bureau prêt : le test du guetteur mesure enfin son attente
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée suivante l'a montré : ôter
+`sleep \(settle)` du guetteur des clés ne faisait tomber aucun test
+(« Executed 35 tests, with 0 failures »). C'est pourtant cette attente qui
+rend chaque clé SSH unique : sans elle, `ssh-keygen` tire dans l'état du
+générateur sauvé dans l'instantané, le même pour toutes les copies. Le test
+au vrai `sh` ne jugeait que l'ordre des appels, et l'autre test ne figeait que
+le texte « 65 », pas son usage. Seconde remarque, juste aussi : le test
+supposait que `sh` avait lu l'horloge dans les 0,6 s suivant son lancement ;
+sur une machine très chargée, il pouvait attendre sans fin (faux rouge).
+
+**Ce qui change.**
+
+- `testTheWatcherWaitsForTheClockToMove` donne au guetteur une attente d'une
+  seconde et la mesure : aucun appel noté une demi-seconde après que
+  l'horloge a bougé, puis au moins une seconde entre l'horloge (instant pris
+  *avant* l'écriture) et la fin du guetteur. Ces bornes ne tiennent que s'il a
+  dormi ; une machine chargée ne fait que les élargir.
+- Une doublure de `sleep` note chaque somme, puis dort vraiment. Le test
+  attend le premier somme de la boucle avant de bouger l'horloge : `t` est
+  alors lu, quelle que soit la charge. Il vérifie aussi que l'attente
+  (`sleep 1`) vient après la boucle.
+- La valeur de l'invité devient `ReadyDesktopBuild.reseedWait` (65), et le
+  test la juge plus grande que les soixante secondes du réensemencement du
+  noyau. Le texte du guetteur ne change pas d'un octet : l'archive et
+  l'instantané fabriqués restent ceux du code final.
+
+**Vérifié.** Les sabotages, chacun restauré par `git checkout` (diff vide
+ensuite) : `sleep` ôté → 3 chutes ; attente de 55 s → 1 chute ; attente
+déplacée avant la boucle → 4 chutes ; `sv up` avant `ssh-keygen` → 1 chute.
+Sous douze boucles actives (charge 13,6 sur 4 cœurs), le test passe cinq fois
+sur cinq, en 1,6 à 1,8 s. Aucun test ajouté ni retiré : le compte publié ne
+bouge pas.
+
+**Ce qui reste.** Que le noyau réensemence bien à la première lecture après
+soixante secondes tient au fonctionnement de `random.c` : je ne l'ai ni relu
+pour cette entrée, ni mesuré dans l'invité. Ce qui est mesuré, ce sont deux
+reprises qui servent deux empreintes différentes (entrée suivante).
+
+## 2026-11-14 — Bureau prêt : chaque copie a sa clé SSH, et deux fabrications donnent la même archive, mesuré
+
+Le contrôle de l'entrée suivante (plus bas) a trouvé cinq défauts réels et
+deux approximations. Corrigés ici, et la fabrication refaite deux fois par le
+code final.
+
+**Ce qui n'allait pas.**
+
+1. **La clé SSH de la fabrication partait avec toutes les copies.** La
+   préparation effaçait `/etc/ssh/ssh_host_*`, mais `sshd` tournait :
+   l'instantané montrait `sshd: /usr/bin/sshd -D [listener]` et
+   `OpenSSH_9.9p1`. Depuis 9.8, l'écouteur garde les clés **en mémoire** et
+   les passe à `sshd-session` ; rien ne le relançait.
+2. **Le NTP de la passerelle servait l'heure vraie** à côté de l'horloge
+   CMOS figée, et le bail l'annonce. `chronyd` tourne dans le bureau ; sa
+   configuration (`pool pool.ntp.org`, lue dans l'instantané) demande un DNS
+   que le réseau isolé ne sert pas, donc il n'a sans doute rien reçu — non
+   vérifié. La fuite était possible, pas prouvée.
+3. **Deux exports de la même machine n'étaient pas les mêmes octets.** Pas à
+   cause de la clé tirée au sort ni de la date d'installation, comme le
+   contrôle le supposait (aucune des deux n'entre dans l'archive : la session
+   y est nommée par l'empreinte du noyau seule), mais du manifeste JSON :
+   `JSONEncoder` sans `.sortedKeys` écrit les clés dans un ordre qui change
+   d'un lancement à l'autre. Mesuré sur un petit programme : six lancements,
+   six ordres.
+4. La garde du niveau et le refus « illisible » de `check` n'étaient tenus
+   par aucun test ; `--ram 1500` tournait 42 minutes avant d'être refusé, et
+   un `--budget` illisible était remplacé sans un mot.
+5. La fusion de master (`30ef8bbc`) avait ôté onze lignes blanches doublées
+   d'entrées anciennes du journal : rendues (le journal ne diffère plus de
+   master que par les entrées de cette branche).
+
+**Ce qui change.**
+
+- **La préparation** : `sv down sshd`, puis l'effacement des clés, puis un
+  **guetteur** (`ReadyDesktopBuild.keyWatcher`, un `sh` lancé par `setsid`)
+  qui dort dans l'instantané. Il lit l'horloge CMOS
+  (`/sys/class/rtc/rtc0/since_epoch`, relue à chaque lecture) : figée à la
+  fabrique, elle avance sur le téléphone. Dès qu'elle bouge, il attend
+  soixante-cinq secondes, puis `ssh-keygen -A` et `sv up sshd`. Pourquoi
+  attendre : l'état du générateur du noyau est dans l'instantané ; il n'est
+  réensemencé (avec `RDSEED`/`RDRAND`, donc l'aléa du téléphone) qu'au plus
+  toutes les soixante secondes. **Mesuré** : deux reprises avec l'aléa du
+  système lisent les mêmes huit octets de `/dev/urandom` juste après la
+  reprise (`078985254fb68a9f` les deux fois). Des clés tirées tout de suite
+  auraient donc pu être les mêmes partout.
+- La préparation prouve son effet avant sa marque : `PRET_2` seulement si
+  aucun `sshd` ne tourne et que l'horloge existe, sinon `REFUS_4`, et la
+  fabrication s'arrête tout de suite (`GuestScript.Step.expectUnless`).
+- `UserNetwork.hostClock` : la passerelle sert l'heure qu'on lui donne ; la
+  machine de la fabrique lui donne l'heure figée.
+- `MachineArchive.export` écrit le manifeste clés triées (l'import lit
+  n'importe quel ordre).
+- `ReadyDesktopBuild.memory` et `budget` jugent `--ram` et `--budget` au
+  départ : `--ram 1500` est refusé en 0,23 s, `--budget 2e12` en 0,01 s,
+  `--ram 512` (sous le plancher de l'image) en 0,17 s. La fiche porte la
+  somme de l'instantané brut (`snapshotSHA256`).
+- Le banc de reprise prend l'aléa du système, comme le téléphone, et
+  vérifie par `ssh-keyscan` que `sshd` présente la clé du fichier neuf.
+
+**Mesuré.** Deux fabrications en même temps, au commit `4dd45909`, même
+heure figée (`<bloc-notes>/bureau-pret/fabrique.log`, `fabrique-B.log`,
+`fiche-B.json`) :
+
+| | A | B |
+| --- | --- | --- |
+| instructions | 97 879 571 324 | 97 879 571 324 |
+| instantané brut | 364 460 793 octets | 364 460 793 octets |
+| somme de l'instantané | `d85083cd…1626c` | `d85083cd…1626c` |
+| archive | 163 919 297 octets | 163 919 297 octets |
+| somme de l'archive | `a93fbff5…d9488` | `a93fbff5…d9488` |
+| clé de la machine installée | `installee-cd1…` | `installee-fba…` |
+| durée (charge 5 à 11 sur 4 cœurs) | 3552 s | 3535 s |
+
+Dans l'instantané : plus aucun `sshd: … [listener]` (0, contre 3 dans l'archive de `10352795`), le
+guetteur présent. **Deux reprises** de cette archive, importée dans un
+dossier vierge, aléa du système : `FOND_VIVANT_4`, `REPRIS_42`,
+`NET_1_FIN2`, `TERMINAL_2`, `LU_96`, puis `CLE_SERVIE_2` — la clé que
+`sshd` présente est celle du fichier — avec deux empreintes différentes
+(`SHA256:zP3ZDB9F…` et `SHA256:WWESgDR2…`), 260 et 274 s après la reprise.
+Banc entier : 262 et 276 s, pic résident 957 Mio. L'archive de `10352795`
+est remplacée par celle-ci dans `<bloc-notes>/bureau-pret/` (ses journaux
+sont dans `ancien-10352795/`).
+
+**Tests** : douze de plus (`ReadyDesktopBuildTests` 8, `GuestScriptTests`
+2, `MachineArchiveTests` 1, `UserNetworkTimeTests` 1), dont un guetteur
+joué par un vrai `sh` avec des doublures de `ssh-keygen` et `sv`. Treize
+sabotages, treize chutes : refus ignoré, garde du niveau (`|| true`), refus
+« illisible » ôté, NTP à l'heure vraie, fabrique sans heure figée au NTP,
+manifeste non trié, `sv down` ôté, guetteur sans attente, mémoire non
+jugée, budget remplacé, préparation sans refus, clé de machine dans
+l'archive, mémoire sous le plancher relevée. `swift test` : 2854 tests,
+aucun échec. Compte publié : 3447.
+
+**Ce qui reste.** L'heure de la première reprise (l'invité se croit au
+14 novembre à minuit) ; SSH n'est servi qu'au bout de quatre minutes et
+demie dans le banc (le guetteur, puis `ssh-keygen` sous l'interprète) ;
+l'ancien `bureau.snap` des bancs de profil n'est pas refait (les cartes du
+bloc-notes le disent) ; un import d'archive par un lien symbolique est
+refusé comme « abîmé » (vu en passant, non corrigé) ; la reproductibilité
+n'est mesurée que sur deux fabrications d'un même conteneur, pas en CI ;
+l'essai sur un iPhone.
+
+## 2026-11-14 — Le bureau prêt se fabrique d'une commande, et pèse trois fois moins
+
+**Ce qui n'allait pas.** Le seul bureau Xfce déjà démarré du bloc-notes
+(`images/xfce/bureau.snap`) sortait du banc `X86DesktopResumeTests` : une
+machine nue, **sans carte réseau** (repris dans l'application, le bureau
+n'aurait plus eu de réseau), un noyau extrait à la main par `xorriso`, une
+ligne de commande écrite à la main, et 842 Mio bruts (497 Mio en LZ4) parce
+que Linux remplit la mémoire libre de cache. Rien ne l'emballait dans une
+archive que l'application sait importer.
+
+**Ce qui change.**
+
+- **`wisq-fabrique`**, une cible exécutable (`Sources/wisq-fabrique`, avec
+  le cœur Rust seulement) : une ISO en entrée, une archive `.wisqmachine` et
+  sa fiche JSON en sortie. Le noyau, l'initramfs et la ligne sortent de
+  l'image par `IsoBoot.decide`, **le code du téléphone** : c'est l'empreinte
+  du noyau qui nomme la session (`d63775f2e341116a`, la même que celle du
+  noyau extrait à la main).
+- **La machine de la fabrique est celle de l'application**
+  (`ReadyDesktopBuild.machine`) : `GuestMachineFactory.make` avec sa carte
+  réseau, l'écran de l'application et sa tablette. L'écran
+  (`GuestMachineFactory.screenSize`, 1024 × 768) est descendu de
+  `LocalVMModel` dans `WisqVM`, et l'application le branche par
+  `GuestMachineFactory.attachScreen`. Pour que deux fabrications donnent le
+  même bureau : réseau isolé (le bail est servi, rien ne sort), aléa fixé,
+  heure figée (`X86Machine.frozenHostTime`, gardée à travers `load` et
+  `restore`).
+- **Le pilotage par la console vit dans `WisqVM`** (`GuestConsole`,
+  `GuestScript`) : un déroulé en données (`expect`, `type`, `screenLit`),
+  le même pour la fabrique et pour le banc. Les marques se cherchent en
+  octets, dans tout ce qui suit la dernière frappe.
+- **Avant de sauver** : `rm -f /etc/ssh/ssh_host_*; sync; echo 3 >
+  /proc/sys/vm/drop_caches`, avec `init_on_free=1` ajouté à la ligne de la
+  fabrication — sans lui, une page libérée garde son contenu.
+- **Vérifié avant d'être emporté** (`ReadyDesktopBuild.check`) : repris dans
+  une machine de l'application neuve, l'instantané doit rendre la carte
+  réseau, une tablette prise par son pilote, un écran allumé à plus de
+  moitié, la mémoire et le niveau attendus.
+- **L'assemblage** : `InstalledMachines.install` dans un dossier à part, la
+  couche d'écriture du disque sous la clé de cette machine, la mémoire de
+  l'instantané (`KernelMemory.setSize` ; une taille hors réglage est refusée
+  au lieu d'être ignorée), la session rangée par `SuspendedMachine` sous
+  l'empreinte du noyau, puis `MachineArchive.export`.
+- **Le banc** passe par la même machine et le même pilote, reprend aussi
+  une archive importée dans un dossier vierge (`WISQ_PC_DESKTOP_ARCHIVE`,
+  `WISQ_PC_IMAGE_NAME`), vérifie la carte réseau dans l'invité — et son
+  contrôle « `xfdesktop` vivant » ne passe plus toujours : la console répète
+  la ligne tapée, et `FOND_VIVANT` y était écrit en clair.
+
+**Mesuré ici** (archive, fiche, console et écran dans
+`<bloc-notes>/bureau-pret/`) :
+
+| | ancien `bureau.snap` | bureau prêt |
+| --- | --- | --- |
+| instructions de la fabrication | 95,09 G | 97,70 G (2527 s, 39 à 46 MIPS) |
+| instantané brut | 842,0 Mio | **345,8 Mio** (362 643 017 octets) |
+| pages non nulles | 935,8 Mio | 397,9 Mio (61 % de pages nulles) |
+| LZ4 par blocs (ce que range le téléphone) | 497,0 Mio | **155,0 Mio** (archive : 162 570 340 octets) |
+| LZ4-HC 9, même format | 436,4 Mio | 128,6 Mio |
+| zstd -3 / -19 par blocs de 1 Mio | 367,9 / 333,9 Mio | 105,4 / 88,9 Mio |
+| zstd -19 d'un seul flux | 293,6 Mio | 82,2 Mio |
+
+L'invite de connexion vient vers 43 G instructions, le panneau vers 88 G.
+**La reprise** : l'archive importée dans un dossier vierge, la session
+trouvée sous `installee-…-d63775f2e341116a`, l'écran dessiné avant la
+première instruction, la console qui répond 14,2 s après la reprise,
+`xfdesktop` vivant, `NET_1` (la carte réseau dans l'invité), Ctrl+Alt+T qui
+ouvre un terminal, la tablette qui livre ses 96 octets. Le banc entier :
+128 s, pic résident 929 Mio — l'ancien instantané, par le même banc :
+57 s, 1862 Mio, et il **échoue** sur la carte réseau (`NET_0`), comme
+attendu.
+
+**Le prix : le premier usage est plus lent.** Une sonde jetable a tapé trois
+fois la même commande (`pgrep`, `dmesg | grep`, `ls | wc`) après la
+reprise : 680 M instructions la première fois contre 255 M pour l'ancien
+instantané, puis 73 M contre 72 M. `init_on_free=1` ne coûte donc rien une
+fois le bureau repris ; c'est le cache vidé qui se relit dans le squashfs de
+l'ISO (`free -m` : 576 Mio libres et 180 de cache, contre 68 et 690).
+
+**Tests** : 25 de plus (`GuestScriptTests` 11 contre une fausse machine,
+`ReadyDesktopBuildTests` 14) ; quatorze sabotages, quatorze chutes — sans
+carte réseau, mauvaise empreinte, écran de 800 × 600, garde de l'écran noir
+ôtée, garde du réseau ou de la tablette ôtée, marque oubliée à la frappe,
+une tranche de trop, l'heure perdue au chargement ou à la reprise, doigt
+ôté, fin de l'invité ignorée, marque cherchée dans le dernier morceau,
+garde de la mémoire ôtée. `swift test` : 2842 tests, aucun échec (avant et
+après la fusion de master). Compte publié : 3435 après la fusion. L'ancien `bureau.snap` (883 Mo) est effacé du bloc-notes ;
+l'instantané brut du bureau prêt le remplace pour les bancs.
+
+**Ce qui reste.** La publication (tranche 2) ; l'entrée de catalogue et ses
+gardes (tranche 3) ; l'heure de la première reprise (l'invité se croit le
+14 novembre à minuit, l'heure figée de la fabrication : `hwclock -s` ou
+`elapse`, tranche 4) ; un réchauffement du cache avant la sauvegarde, si le
+premier usage gêne ; l'essai sur un iPhone, que rien ici ne remplace.
 
 ## 2026-11-14 — Sous l'émetteur, deux gardes du chemin lent sont enfin tenues par un test
 

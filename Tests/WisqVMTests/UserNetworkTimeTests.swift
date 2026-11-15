@@ -74,6 +74,21 @@ final class UserNetworkTimeTests: XCTestCase {
         XCTAssertEqual(seconds, before.timeIntervalSince1970, accuracy: 2)
     }
 
+    /// **L'heure servie est celle qu'on donne au réseau** : la fabrication
+    /// d'un bureau prêt lui donne l'heure figée de son horloge CMOS. La
+    /// passerelle servait toujours l'heure vraie de l'hôte, à côté d'une
+    /// horloge figée.
+    func testACutNetworkServesTheClockItIsGiven() throws {
+        let moment = Date(timeIntervalSince1970: 1_794_614_400)
+        let cut = UserNetwork.isolated(hostClock: { moment })
+        defer { cut.streams?.close() }
+        cut.send(Self.frame(Self.request(sent: [1, 1, 1, 1, 1, 1, 1, 1])))
+        let served = try XCTUnwrap(cut.receive().first)
+        let udp = Array(served[(14 + 20)...])
+        XCTAssertEqual(UserNetwork.be32(Array(udp[8...]), 40), 1_794_614_400 + 2_208_988_800)
+        XCTAssertEqual(Array(udp[8 + 44..<8 + 48]), [0, 0, 0, 0], "pas une fraction de l'heure vraie")
+    }
+
     /// **Réseau coupé, l'heure reste** : la passerelle répond d'elle-même,
     /// et une demande vers un serveur du dehors est refusée (voir
     /// `UserNetwork.refusal`), pas servie.

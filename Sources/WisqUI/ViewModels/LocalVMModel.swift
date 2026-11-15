@@ -55,11 +55,9 @@ public final class LocalVMModel {
     /// RISC-V). La vue relit ses pixels quand sa révision change.
     public private(set) var screen: X86Framebuffer?
 
-    /// La taille de l'écran qu'on donne à une machine PC : celle d'un écran
-    /// de bureau modeste, que `simpledrm` prend telle quelle et qu'un
-    /// téléphone affiche en paysage sans trop réduire. Plus grand, chaque
-    /// défilement de la console coûterait plus à l'interprète.
-    public static let screenSize = (width: 1024, height: 768)
+    // La taille de l'écran d'une machine PC vit dans `WisqVM` :
+    // `GuestMachineFactory.screenSize`, que la fabrique du bureau prêt lit
+    // aussi.
 
     private var machine: GuestMachine?
     private let sink = ConsoleSink()
@@ -368,9 +366,14 @@ public final class LocalVMModel {
         // le trouve vide, devant un invité qui attend en silence. Voir
         // `ResumeNote`.
         let savedAt = saved == nil ? nil : SuspendedMachine.savedAt(kernel: kernelName, in: storage)
-        let resumeNote = saved != nil && !resuming
+        // **La première reprise d'un bureau prêt téléchargé** : l'invité est
+        // encore au jour de la fabrique, et l'état de son générateur est celui
+        // de toutes les copies. Elle reçoit l'heure du téléphone et de l'aléa
+        // neuf, une fois, au lieu du rattrapage ordinaire. Voir `FirstResume`.
+        let firstResume = saved == nil ? nil : FirstResume.pending(kernel: kernelName, in: storage)
+        let resumeNote = firstResume?.note ?? (saved != nil && !resuming
             ? ResumeNote.text(savedAt: savedAt, now: Date())
-            : nil
+            : nil)
 
         // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
         // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
@@ -448,7 +451,7 @@ public final class LocalVMModel {
         // l'annonce au noyau dans la page zéro, et une machine reprise
         // repeint dans le cadre qu'elle avait.
         if let pc = machine as? X86Machine {
-            try? pc.attachDisplay(width: Self.screenSize.width, height: Self.screenSize.height)
+            try? GuestMachineFactory.attachScreen(to: pc)
             screen = pc.display
         } else {
             screen = nil
@@ -604,8 +607,12 @@ public final class LocalVMModel {
                     // **L'heure de l'invité rattrape le temps passé dehors** :
                     // sans ça, une session reprise le lendemain se croyait la
                     // veille. Voir `GuestMachine.elapse(seconds:)`, pour le
-                    // PC comme pour la machine RISC-V.
-                    machine.elapse(since: savedAt)
+                    // PC comme pour la machine RISC-V. **Sauf à la première
+                    // reprise d'un bureau prêt**, qui reçoit l'heure du
+                    // téléphone d'un coup, et de l'aléa : `FirstResume`. La
+                    // ligne attend dans la file de la console, que l'invité
+                    // lit dès qu'il tourne.
+                    FirstResume.resumed(machine, first: firstResume, savedAt: savedAt)
                     // L'invité est déjà en vie ; il reste à le dire, si l'écran
                     // ne l'a pas vu partir.
                     if let resumeNote {
@@ -1354,6 +1361,33 @@ public enum KernelLibrary {
         do {
             return try MachineArchive.import(
                 from: source, library: list().map(\.lastPathComponent)
+            ) { name, bytes in
+                let disk = BlankDisk.fileName(
+                    forMachine: name, among: list().map(\.lastPathComponent))
+                try BlankDisk.create(at: folder.appendingPathComponent(disk), bytes: bytes)
+                created = disk
+                return disk
+            }
+        } catch {
+            if let created {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(created))
+            }
+            throw error
+        }
+    }
+
+    /// **Installe un bureau prêt téléchargé** : l'archive, vérifiée contre
+    /// l'empreinte du noyau de l'image présente (`ReadyDesktop.install`),
+    /// importée comme `importMachine` le fait d'une machine exportée, puis
+    /// effacée. `kernelDigest` est celle que donne `IsoBoot.kernelDigest`.
+    public static func installReadyDesktop(
+        _ desktop: ReadyDesktop, archive: URL, kernelDigest: String?
+    ) throws -> InstalledMachine {
+        let folder = try directory()
+        var created: String?
+        do {
+            return try desktop.install(
+                archive: archive, imageKernelDigest: kernelDigest, library: list().map(\.lastPathComponent)
             ) { name, bytes in
                 let disk = BlankDisk.fileName(
                     forMachine: name, among: list().map(\.lastPathComponent))
