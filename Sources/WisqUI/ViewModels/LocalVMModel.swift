@@ -169,10 +169,12 @@ public final class LocalVMModel {
         // **Chaque refus d'ici à la première instruction passe par
         // `refuseToStart`**, et aucun par `guestFinished` : voir
         // `BootRefusal`. Un test sous Linux lit ce fichier pour le tenir
-        // (`BootRefusalTests`) : il compte les appels cas par cas — deux pour
-        // `.session`, ici et sur le fil d'émulation —, et n'admet que deux
-        // `finish(with:` hors de la fin d'un invité qui a tourné, le corps de
-        // `refuseToStart` et l'exception qui suit. Un refus ajouté ou déplacé
+        // (`BootRefusalTests`), sans ses commentaires : il compte les appels
+        // cas par cas — deux pour `.session`, ici et sur le fil d'émulation —,
+        // cherche chacun avec la condition qui le déclenche et le `return` qui
+        // le suit, et n'admet que deux `finish(with:` hors de la fin d'un
+        // invité qui a tourné, le corps de `refuseToStart` et l'exception qui
+        // suit. Un refus ajouté, retiré ou déplacé, ou sa condition récrite,
         // doit donc changer ce test aussi. L'exception : la session trop
         // grande pour la mémoire libre passe par `life.machineSize`, qui la
         // dit refusée (`sessionRefused`) ; rien ne s'efface non plus de cet
