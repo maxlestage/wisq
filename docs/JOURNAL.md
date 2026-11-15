@@ -8,6 +8,84 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — La frappe sur l'écran s'annule, et un collage trop long ne garde plus tout le presse-papiers
+
+Suite de l'entrée juste en dessous, après un contrôle adverse.
+
+**Ce qui n'allait pas.**
+
+- **Un collage long ne pouvait plus être arrêté.** Ce qui attend dans
+  `ScreenTypist` passe avant ce qu'on tape ensuite, Ctrl-C compris, et
+  l'attente allait jusqu'à un million de caractères. À cinquante
+  millisecondes la touche (30 ms tenue, 20 ms d'écart), un gros fichier
+  collé par erreur tenait le clavier de la machine environ quatorze heures,
+  le double avec des majuscules. Avant, la file s'arrêtait à 8 192 frappes.
+  Seul « Arrêter » la vidait, et cela effaçait aussi l'instantané sauvé.
+- **La borne ne bornait pas la mémoire.** `ScreenTypist` gardait
+  `text.prefix(room)`, une sous-chaîne. Elle tient vivant tout le tampon du
+  texte collé, partie refusée comprise, tant que la dernière lettre gardée
+  n'est pas tapée. Mesuré par le contrôle : 114 096 kB de mémoire résidente
+  pour un texte de 100 Mo dont on garde un million de caractères, contre
+  18 808 kB après copie.
+- **Un trou de test.** Avec `size == 1` changé en `size == 0` dans
+  `X86TypingHandoff.feed`, les relâchements seuls passaient par le chemin
+  des groupes, que le contrôleur refuse à la borne, et aucun test ne
+  tombait. Le code était juste ; rien ne le tenait.
+
+**Ce qui change.**
+
+- Un bouton **« Annuler la frappe »** sous l'écran, à côté de l'avis
+  (`ScreenTypist.cancel`). Il jette ce qui attend dans `ScreenTypist` et
+  demande à la machine de jeter ce qu'elle n'a pas encore joué
+  (`X86Machine.abandonTyping`, sous le verrou). La tranche suivante vide la
+  file du contrôleur (`X86PS2Controller.abandonTyping`) et pose à la place
+  un relâchement pour chaque touche que l'invité tient. Ces touches sont
+  maintenant suivies (`heldByGuest`, tenu à jour par `pace`), et aucune ne
+  reste enfoncée. Ce qu'on frappe ensuite part aussitôt : la machine
+  compte la file du contrôleur pour 512 frappes au plus (un relâchement
+  par touche) au lieu de son ancien compte. L'avis dit ce qui n'a pas été
+  tapé.
+- La frappe se dit « en cours », et s'annule, tant que la machine a encore
+  200 frappes ou plus à jouer (cinq secondes), même quand rien n'attend
+  dans `ScreenTypist` : un collage de deux mille caractères tient entier
+  dans la file de la machine. En dessous de ce seuil, l'avis clignoterait
+  à chaque touche. Le battement relit la file pour l'éteindre.
+- Ce qui est gardé d'un texte trop long est **copié** dans une chaîne à
+  lui. Le texte n'est plus compté deux fois : le reste n'est compté que
+  s'il est refusé (0,2 s pour 100 Mo, mesuré ici avec `swiftc -O`).
+- Le test du relâchement passe maintenant la file au contrôleur.
+
+**Comment c'est vérifié.** Quatre tests neufs et un test renforcé, tous
+dans `X86TypingTests`. Le premier va de bout en bout : un collage de
+50 000 caractères qui commence par une majuscule, l'invité tient Maj au
+moment de l'annulation, puis seuls Maj relâchée et Ctrl-C arrivent au
+port 0x60, et le clavier finit au repos. Les autres : l'annulation contre
+le faux clavier ; le seuil « en cours » ; la base de la sous-chaîne
+gardée, et de sa suite, limitée à un million de caractères ; et le
+relâchement au-delà de la borne pris par le contrôleur. **Treize
+sabotages d'une ligne**, chacun restauré par `git checkout`, `git status`
+vide après chacun. Chacun fait tomber au moins un test :
+`cancel` sans `abandonTyping` (2 tests), sans vider ce qui attend (2),
+la machine qui ne lève pas l'annulation (1), qui garde l'ancien compte du
+contrôleur (1), la tranche qui n'abandonne pas (1), le contrôleur sans
+relâchements (1), `pace` qui ne suit pas les touches tenues (1), les codes
+étendus inversés (1), le compte publié qui ignore l'annulation (1), le
+seuil strict (1), `resume` qui ne relit pas la file (1), sans la copie (1),
+et le sabotage du contrôle dans `feed` (1). Suite Swift entière :
+2 923 tests exécutés, 55 sautés, aucun échec (8 min). Site : 476 tests.
+Compte publié : 3 643 → 3 647 (3 003 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le bouton et la ligne sous l'écran (`LocalVMView`, `LocalVMModel`) ne
+  sont jugés que par la CI « App iOS ». Ici, seulement
+  `swiftc -frontend -parse` et SwiftLint, plus une relecture.
+- Ctrl-C frappé pendant un collage passe toujours **derrière** lui, exprès :
+  le faire passer devant enverrait au shell la suite du collage après le
+  Ctrl-C. Pour l'arrêter, on annule, puis on frappe.
+- Ce qui reste de l'entrée ci-dessous tient toujours : l'état PS/2 n'est
+  pas dans l'instantané.
+
 ## 2026-11-14 — Le collage sur l'écran ne laisse plus de touche enfoncée dans le cœur Swift
 
 **Ce qui n'allait pas.** Le défaut que la carte Rust a corrigé en #704
