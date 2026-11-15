@@ -42,6 +42,9 @@ public final class LocalVMModel {
     /// déclenche donc plus rien du tout, et c'est précisément lui qu'il faut
     /// pouvoir regarder.
     private var ticker: Task<Void, Never>?
+    /// Ce qui reste à taper sur l'écran d'une machine PC, repris à chaque
+    /// battement. Voir `typeOnScreen`.
+    private var typist = ScreenTypist()
     /// **Les lignes de la console**, une par une : scrollback puis écran,
     /// ANSI interprété, bornées en nombre. La vue en fait une pile
     /// paresseuse — voir `TerminalGrid.lines`.
@@ -738,16 +741,27 @@ public final class LocalVMModel {
 
     /// Du texte tapé sur le clavier PS/2 de la machine PC — ce que l'écran
     /// reçoit, là où la console reçoit des octets sur le port série.
+    ///
+    /// **Par `ScreenTypist`, pas frappe par frappe** : la file du clavier est
+    /// bornée, et un collage qui la remplissait au milieu d'une majuscule
+    /// laissait Maj et la lettre enfoncées dans l'invité, puis jetait la
+    /// suite sans rien dire. Ce qui ne tient pas attend dans `typist`, dans
+    /// l'ordre, et le battement le reprend (`beat`).
     public func typeOnScreen(_ text: String) {
         guard let pc = machine as? X86Machine else { return }
-        for event in X86Keystrokes.typing(text) { pc.key(event.code, down: event.down) }
+        typist.type(text, on: pc)
     }
 
-    /// Une touche de la barre, sur le clavier PS/2.
+    /// Une touche de la barre, sur le clavier PS/2 : ses frappes ensemble,
+    /// derrière ce qui reste à taper.
     public func pressOnScreen(_ key: TerminalKey) {
         guard let pc = machine as? X86Machine else { return }
-        for event in X86Keystrokes.key(key) { pc.key(event.code, down: event.down) }
+        typist.press(X86Keystrokes.key(key), on: pc)
     }
+
+    /// **Ce que la frappe sur l'écran a à dire** : ce qui reste à taper, ce
+    /// qui n'a pas pu l'être. Voir `ScreenTypist.note`.
+    public var typingNote: String? { typist.note }
 
     /// Un toucher à un endroit de l'écran, par la tablette ; faux quand
     /// l'invité ne l'a pas prise. Voir `X86Machine.touch`.
@@ -919,12 +933,20 @@ public final class LocalVMModel {
     private func beat(_ machine: GuestMachine) {
         ticker?.cancel()
         heartbeat = nil
+        // Une autre machine : ce qui restait à taper était pour la précédente,
+        // dont le clavier n'est plus là.
+        typist.reset()
         ticker = Task { @MainActor [weak self] in
             var previous: GuestProgress?
             var previousAt = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self, self.machine === machine else { return }
+                // La file du clavier s'est vidée d'une seconde de frappe : ce
+                // qui attendait y reprend sa place.
+                if let pc = machine as? X86Machine, !self.typist.waiting.isEmpty {
+                    self.typist.resume(on: pc)
+                }
                 // Un cœur qui ne publie pas se tait — voir `liveProgress`.
                 guard let now = machine.liveProgress else { return }
                 let at = Date()
@@ -955,6 +977,7 @@ public final class LocalVMModel {
         ticker?.cancel()
         ticker = nil
         heartbeat = nil
+        typist.reset()
         // L'état, lui, garde le message **intact** : il n'est pas destiné à une
         // grille, et le replier ici y poserait des retours à la ligne qu'aucune
         // vue ne demande.

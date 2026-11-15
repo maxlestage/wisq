@@ -1106,6 +1106,17 @@ struct LocalVMTerminalView: View {
                     .accessibilityLabel("Avancement de la machine : \(heartbeat)")
             }
 
+            // **Ce que la frappe sur l'écran a à dire** : un collage long qui
+            // s'écrit encore, ou des caractères qu'un clavier américain n'a
+            // pas. Sans cette ligne, la fin d'un collage disparaissait sans
+            // que rien ne le dise. Voir `ScreenTypist`.
+            if !fullScreen, typesOnScreen, let typingNote = model.typingNote {
+                Text(typingNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             // **Les touches qu'un shell demande.** Tabulation pour compléter,
             // flèches pour l'historique, Échap et Ctrl pour un éditeur : sans
             // elles on lance des commandes, on ne travaille pas. Ce que chaque
