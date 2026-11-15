@@ -19310,10 +19310,18 @@ for (let i = 6; i < 8; i++) vue.setUint8({far} + i - 6, Number((pile >> BigInt(8
 /// `instruction` porte le ModRM `00` : XMM0 et `(%rax)`. Rend le programme et
 /// l'adresse de `instruction`.
 fn xmm_at(instruction: &[u8], at: u64) -> (Vec<u8>, u64) {
+    xmm_after(&[], instruction, at)
+}
+
+/// **`xmm_at`, avec `prime` joué juste avant `instruction`**, RAX déjà sur
+/// `at` : de quoi remplir le tampon de traduction d'une page avant l'accès
+/// jugé, comme un programme qui a déjà travaillé dans sa page.
+fn xmm_after(prime: &[u8], instruction: &[u8], at: u64) -> (Vec<u8>, u64) {
     let mut program = movabs(3, RIGHTS_VALUE);
     program.extend_from_slice(&[0x66, 0x48, 0x0f, 0x6e, 0xc3]); // movq %rbx,%xmm0
     program.extend_from_slice(&[0x66, 0x0f, 0x6c, 0xc0]); // punpcklqdq %xmm0,%xmm0
     program.extend(movabs(0, at));
+    program.extend_from_slice(prime);
     let rip = RIGHTS_CODE + program.len() as u64;
     program.extend_from_slice(instruction);
     program.extend_from_slice(&[0x0f, 0x0b]); // ud2
@@ -19395,6 +19403,77 @@ fn a_sixteen_byte_store_faults_where_the_silicon_does_and_writes_nothing() {
                 (rights_pattern(1), rights_pattern(65)),
                 "{what} : **rien n'est écrit**, ni dans la page qui le permet, \
                  ni dans l'autre : {}",
+                run.text
+            );
+        }
+        // **La première page déjà dans le tampon de traduction** — le cas
+        // courant sous Linux : le programme a écrit dans sa page, puis une
+        // écriture de seize octets déborde sur la page d'après, absente ou à
+        // copier à l'écriture. Partis d'un tampon vide, les cas d'au-dessus
+        // passent tous par la marche ; ceux-ci prennent le chemin en ligne de
+        // la réservation, qui doit voir que les seize octets sortent de la
+        // page qu'il connaît. Juger la seule page du premier octet laissait
+        // passer la réservation, et la moitié basse était écrite avant la
+        // faute.
+        const WRITE_BELOW: &[u8] = &[0x48, 0x89, 0x98, 0x00, 0xff, 0xff, 0xff]; // mov %rbx,-0x100(%rax)
+        const READ_BELOW: &[u8] = &[0x48, 0x8b, 0x88, 0x00, 0xff, 0xff, 0xff]; // mov -0x100(%rax),%rcx
+        const READ_ABOVE: &[u8] = &[0x48, 0x8b, 0x88, 0x00, 0x01, 0x00, 0x00]; // mov 0x100(%rax),%rcx
+                                                                               // (ce qui est joué d'abord, la feuille de la page de données, la page
+                                                                               // d'après, CR2 attendu, témoin attendu) ; l'écriture est à +0xff8.
+        for (prime, leaf, next, cr2, witness) in [
+            (
+                WRITE_BELOW.to_vec(),
+                PTE_ALL,
+                None,
+                0x1000u64,
+                WITNESS_ABSENT_WRITE,
+            ),
+            (
+                WRITE_BELOW.to_vec(),
+                PTE_ALL,
+                Some(READ_ONLY),
+                0x1000,
+                WITNESS_DENIED_WRITE,
+            ),
+            // Les deux pages dans le tampon, la seconde parce qu'on l'a lue.
+            (
+                [WRITE_BELOW, READ_ABOVE].concat(),
+                PTE_ALL,
+                Some(READ_ONLY),
+                0x1000,
+                WITNESS_DENIED_WRITE,
+            ),
+            // La première page en lecture seule, et lue : sa case dans le
+            // tampon ne dit pas « inscriptible ».
+            (
+                READ_BELOW.to_vec(),
+                READ_ONLY,
+                Some(PTE_ALL),
+                0xff8,
+                WITNESS_DENIED_WRITE,
+            ),
+        ] {
+            let what = format!(
+                "{form} à +0xff8 après {prime:02x?}, feuille {leaf:#x}, page d'après {next:?}"
+            );
+            let (program, rip) = xmm_after(&prime, instruction, RIGHTS_PAGE + 0xff8);
+            let mut case = RightsCase::new(program);
+            case.leaf = leaf;
+            case.next = next;
+            let run = Rights::run(
+                &format!(
+                    "st16-{form}-amorce-{}-{leaf}-{}",
+                    prime.len(),
+                    next.unwrap_or(9)
+                ),
+                &case,
+            );
+            run.faults(&what, "", rip, RIGHTS_PAGE + cr2, witness);
+            assert_eq!(
+                (run.bytes("haut "), run.bytes("suite ")),
+                (rights_pattern(1), rights_pattern(65)),
+                "{what} : **rien n'est écrit**, la page du premier octet soit-elle \
+                 déjà connue du tampon : {}",
                 run.text
             );
         }
