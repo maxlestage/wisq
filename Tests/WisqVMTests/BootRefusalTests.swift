@@ -129,6 +129,61 @@ final class BootRefusalTests: XCTestCase {
         }
     }
 
+    /// **Une session effacée pendant le démarrage n'est plus promise
+    /// gardée.** « Arrêter » ou « Oublier » touché pendant que le fil n'avait
+    /// encore rien noté (`Start.pending`) efface la session, comme demandé ;
+    /// l'échec ou le refus du fil arrivait ensuite par sa tâche, et la
+    /// console affirmait « gardée telle quelle ».
+    func testARefusalAfterTheSessionWasErasedPromisesNothing() {
+        let name = "vmlinuz-lts"
+        for refusal in Self.examples {
+            var stopped = MachineLifecycle()
+            stopped.booted()
+            stopped.identified("Image-1a2b")
+            XCTAssertEqual(stopped.userStopped(seen: .pending), .forget, "préalable : « Arrêter » efface")
+            var forgot = MachineLifecycle()
+            forgot.booted()
+            forgot.identified("Image-1a2b")
+            forgot.userForgot()
+            for var life in [stopped, forgot] {
+                let text = life.refusedToStart(refusal, name: name)
+                XCTAssertFalse(text.contains("gardée"), "\(refusal) : \(text)")
+                XCTAssertEqual(text.contains("effacée pendant le démarrage"), refusal.keepsASession,
+                               "\(refusal) : \(text)")
+                XCTAssertEqual(life.state, .notStarted, "plus rien de gardé : \(refusal)")
+                XCTAssertEqual(life.userStopped(), .nothing, "\(refusal)")
+            }
+        }
+
+        // Sans effacement, la phrase est celle du refus, promesse comprise —
+        // y compris quand « Arrêter » arrive après que le fil a noté l'échec.
+        for refusal in Self.examples {
+            var life = MachineLifecycle()
+            life.booted()
+            XCTAssertEqual(life.refusedToStart(refusal, name: name), refusal.explanation(name: name), "\(refusal)")
+        }
+        var seen = MachineLifecycle()
+        seen.booted()
+        XCTAssertEqual(seen.userStopped(seen: .failed), .nothing)
+        let kept = BootRefusal.couldNotStart("disque absent", sessionKept: true)
+        XCTAssertEqual(seen.refusedToStart(kept, name: name), kept.explanation(name: name))
+        XCTAssertEqual(seen.state, .refused)
+
+        XCTAssertEqual(BootRefusal.couldNotStart("disque absent", sessionKept: true)
+            .explanation(name: name, sessionErased: true),
+                       """
+                       Démarrage impossible : disque absent
+
+                       La session sauvée de vmlinuz-lts a été effacée pendant le démarrage : la \
+                       prochaine ouverture ne reprendra rien.
+                       """)
+        XCTAssertEqual(BootRefusal.session(.damaged).explanation(name: name, sessionErased: true),
+                       """
+                       La session de vmlinuz-lts n'a pas pu être relue, et elle a été effacée \
+                       pendant le démarrage : la prochaine ouverture ne reprendra rien.
+                       """)
+    }
+
     // MARK: - Ce qui est dit
 
     /// **Chaque refus dit sa raison**, et la phrase des refus qui gardent une
@@ -198,6 +253,16 @@ final class BootRefusalTests: XCTestCase {
             XCTAssertNotNil(call.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
                             "aucun refus .\(name) dans LocalVMModel")
         }
+        // **Le corps de `refuseToStart`**, mot pour mot : c'est la ligne qui
+        // porte toute la liaison. Sans elle, l'état restait `running` après
+        // chaque refus, et « Arrêter » effaçait — la session illisible promise
+        // gardée comprise ; les appels à `refuseToStart` restaient là, et
+        // aucune autre assertion de ce test ne tombait.
+        let body = try NSRegularExpression(
+            pattern: #"private func refuseToStart\(_ refusal: BootRefusal, name: String\) \{\s*"#
+                + #"finish\(with: life\.refusedToStart\(refusal, name: name\)\)\s*\}"#)
+        XCTAssertNotNil(body.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
+                        "refuseToStart dit le refus au cycle de vie, et affiche la phrase qu'il rend")
         XCTAssertTrue(source.contains("life.userStopped(seen: runStart?.recorded)"),
                       "« Arrêter » lit ce que le fil a déjà noté")
         XCTAssertTrue(source.contains("life.identified("), "le nom de la session vient de la course")

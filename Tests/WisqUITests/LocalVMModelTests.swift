@@ -298,6 +298,33 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertNotNil(savedMachine, "« Arrêter » après le refus n'efface rien")
     }
 
+    /// **Une session illisible, puis « Arrêter » : elle est toujours là.** La
+    /// console vient de la promettre « gardée telle quelle ». Le test d'avant
+    /// ne tient pas ce cas : son refus tombe avant la lecture de l'image, et
+    /// la course n'y nomme aucune session, si bien qu'un « Arrêter » qui
+    /// efface n'y efface rien. Ici, l'image est lue et nomme la session ;
+    /// sans `life.refusedToStart` dans `refuseToStart`, l'état restait
+    /// `running`, et « Arrêter » l'effaçait.
+    @MainActor
+    func testStoppingAfterAnUnreadableSessionKeepsIt() throws {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: identity(named: "Image")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "préalable : la machine est sauvée")
+        let damaged = Data("une session abîmée".utf8)
+        try damaged.write(to: file)
+
+        model.boot(kernelURL: kernel)
+        waitUntil("le refus doit promettre la session gardée") {
+            if case .finished(let message) = model.status { return message.contains("gardée telle quelle") }
+            return false
+        }
+        model.stop()
+        XCTAssertEqual(try Data(contentsOf: file), damaged, "« Arrêter » après le refus n'efface rien")
+    }
+
     /// Suspending with nothing running is what `onDisappear` does after the
     /// machine has already ended. It must be harmless.
     @MainActor
