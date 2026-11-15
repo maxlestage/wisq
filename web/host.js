@@ -1514,9 +1514,15 @@ export function machine({
   /// `SLOTS.walkMachine`. Elles demandent « quels octets la page porte-t-elle
   /// maintenant ? », pas « l'anneau courant a-t-il le droit d'y prendre une
   /// instruction ? ». Jugées comme un chargement, elles dépendraient de
-  /// l'anneau où la machine s'est arrêtée : un arrêt en anneau trois rendait
-  /// illisibles les onze mille fenêtres du noyau d'Alpine, et le compte des
-  /// régions périmées tombait à zéro sans un mot.
+  /// l'anneau où la machine s'est arrêtée : en anneau trois, une page du
+  /// noyau que les tables en service portent bien passerait illisible.
+  ///
+  /// **Ça ne rend lisible que ce que les tables en service portent.** Un
+  /// noyau à isolation des tables — celui d'Alpine — arrêté en anneau trois
+  /// tient les tables du programme, où son texte n'est pas cartographié du
+  /// tout : là, aucun `kind` n'y change rien. Mesuré sur Alpine à cet arrêt,
+  /// 11 030 fenêtres sur 11 080 restent illisibles avec `walkMachine` (11 044
+  /// avec `walkFetch`) ; seul `nopti` en rend presque toutes — 9 illisibles.
   function read(address, window, kind = SLOTS.walkFetch) {
     const temoin = globals[SLOTS.fault].value;
     const cr2 = globals[SLOTS.control + 1].value;
@@ -1856,11 +1862,18 @@ export function machine({
     /// ses octets. La confondre avec un changement inventerait des défauts.
     ///
     /// **Et l'anneau de l'arrêt n'y est pour rien.** La relecture se fait en
-    /// `SLOTS.walkMachine`, sans juger aucun droit : une page du noyau
-    /// toujours dans les tables reste comparée quand la machine s'arrête dans
-    /// un programme. Lue comme un chargement, elle passait illisible — 11 044
-    /// régions sur 11 080 à l'arrêt d'Alpine en anneau trois, et « 0
-    /// périmée » là où l'arrêt en anneau zéro en compte 373.
+    /// `SLOTS.walkMachine`, sans juger aucun droit : une page du noyau que
+    /// les tables en service portent encore reste comparée quand la machine
+    /// s'arrête dans un programme. Lue comme un chargement, elle passait
+    /// illisible. Sur Alpine **lancé avec `nopti`**, arrêté en anneau trois :
+    /// 11 048 illisibles et 0 périmée avant, 9 et 2 001 après.
+    ///
+    /// **Mais sous isolation des tables, le texte du noyau n'est pas dans les
+    /// tables du programme**, et il reste illisible pour de bon : Alpine tel
+    /// quel, au même arrêt, rend 11 030 illisibles et 7 périmées — toutes
+    /// dans `.entry.text`, que l'isolation laisse cartographié. Ce zéro-là ne
+    /// dit rien du noyau ; `kernel-entry` écrit donc l'anneau et CR3 de la
+    /// relecture, et l'arrêt en anneau zéro compte 373 périmées.
     revoir() {
       const changees = [];
       const illisibles = [];
@@ -1967,9 +1980,18 @@ export function machine({
         // comme il les a trouvés : une sonde qui laisserait une faute
         // derrière elle ferait prendre à l'invité, plus tard, une faute que
         // *l'hôte* a causée en mesurant. Et il lit en `SLOTS.walkMachine`,
-        // comme `revoir` : une région du noyau déjà traduite se ré-entre en
-        // anneau trois sans faute — les régions sont gardées par adresse —, et
-        // jugée comme un chargement, la sonde ne verrait pas qu'elle a changé.
+        // comme `revoir`, parce que la sonde compte ce qui **va tourner**.
+        //
+        // **Ce choix n'a d'effet que sur un défaut.** En anneau zéro, le
+        // chargement ne juge pas la lecture ; en anneau trois sur une page
+        // utilisateur, il réussit. Reste un programme qui saute dans une
+        // région du noyau **déjà traduite** : sur le silicium, c'est une faute
+        // de page (P|U) ; ici, les régions étant gardées par adresse, la
+        // région tourne en anneau trois sans repasser par le chargement — le
+        // trou de protection que le JOURNAL porte dans « Ce qui reste ». Tant
+        // qu'il est là, la sonde voit ce code périmé ; jugée comme un
+        // chargement, elle ne le verrait pas. Le jour où ce chargement
+        // fautera, la région ne tournera plus et ce choix ne changera rien.
         if (surveiller && region.lu !== undefined) {
           const octet = read(here, 1, SLOTS.walkMachine);
           if (octet !== null && octet[0] !== region.lu[0]) {

@@ -13109,29 +13109,33 @@ console.log("fini");
     }
 }
 
-/// **Un arrêt en anneau trois ne rend pas le noyau illisible à `revoir`.**
+/// **Un arrêt en anneau trois ne rend pas le noyau illisible à `revoir`,
+/// tant que les tables en service le portent.**
 ///
 /// Depuis que la marche juge les droits, `read` lit la fenêtre d'une région
 /// comme un **chargement d'instruction** : en anneau trois, une page sans le
 /// bit utilisateur ne se lit pas. C'est juste pour la fenêtre qu'on va
 /// traduire. Ça ne l'est pas pour `revoir`, qui relit toutes les fenêtres à la
-/// fin de la course **avec l'anneau de l'arrêt** : l'arrêt d'Alpine en anneau
-/// trois rangeait 11 044 régions sur 11 080 parmi les illisibles, et le compte
-/// des périmées tombait à zéro, faux et sans un mot — là même où le journal
-/// place le prochain mur. Arrêtée en anneau zéro, la même machine en comptait
-/// 373.
+/// fin de la course **avec l'anneau de l'arrêt** : Alpine lancé avec `nopti`
+/// — sans isolation des tables, donc le texte du noyau toujours dans les
+/// tables du programme —, arrêté en anneau trois, rangeait 11 048 régions
+/// parmi les illisibles et n'en comptait aucune de périmée ; corrigé, 9 et
+/// 2 001. **Sans `nopti`, la prémisse ne tient pas** : l'isolation retire le
+/// texte du noyau des tables du programme, et ses fenêtres restent
+/// illisibles pour de bon (11 030 sur 11 080) — c'est le test suivant.
 ///
 /// Le montage : le noyau, en anneau zéro sur une page du superviseur, réécrit
 /// un octet de sa propre fenêtre puis rend la main au programme par
 /// `sysretq`. Le programme, sur une page utilisateur, s'arrête sur un `ud2`
-/// sans porte. La page du noyau est toujours dans les tables : sa fenêtre doit
-/// être comparée, et le changement nommé.
+/// sans porte. Une seule table pour les deux, comme sous `nopti` : la page du
+/// noyau y est toujours, sa fenêtre doit être comparée, et le changement
+/// nommé.
 #[test]
 fn a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
-    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false);
+    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false, false);
     assert_eq!(
         seen.cs, 0x33,
         "la machine doit s'arrêter en anneau trois, sinon ce test ne juge rien : {}",
@@ -13151,21 +13155,79 @@ fn a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three() {
     );
 }
 
-/// **La sonde de `surveiller` ne perd pas non plus le noyau en anneau trois.**
+/// **Sous isolation des tables, le noyau arrêté en anneau trois reste
+/// illisible, et ce n'est pas compté comme périmé.**
 ///
-/// Elle lit l'octet d'entrée par `read`, au même titre que `revoir`, et pour la
-/// même raison doit lire en `SLOTS.walkMachine`. Le cas existe tant que les
-/// régions sont gardées par adresse : une région du noyau déjà traduite se
-/// ré-entre en anneau trois sans faute de chargement (le JOURNAL le porte dans
-/// « Ce qui reste »). Elle exécute alors du code périmé, et c'est exactement ce
-/// que la sonde est là pour compter.
+/// C'est le cas d'Alpine tel quel (« Kernel/User page tables isolation:
+/// enabled ») : à l'arrêt en anneau trois, CR3 désigne les tables **du
+/// programme**, qui ne portent du noyau que son passage d'entrée et de
+/// sortie. Mesuré : « perimees 7 / illisibles 11 030 », les sept dans
+/// `.entry.text`. Lire en `walkMachine` n'y change rien, et rien ne doit le
+/// faire croire : une région que les tables en service ne portent pas est
+/// **illisible**, jamais comparée à des octets pris ailleurs.
+///
+/// Le montage : le même noyau réécrit un octet de sa fenêtre, puis saute
+/// sur un passage posé sur une troisième grande page, cartographiée dans les
+/// deux tables, qui change CR3 pour les tables du programme et fait
+/// `sysretq`. Les tables du programme ne portent pas la page du noyau.
+#[test]
+fn under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false, true);
+    assert_eq!(
+        (seen.cs, seen.cr3),
+        (0x33, RING_THREE_USER_PML4),
+        "la machine doit s'arrêter en anneau trois sous les tables du \
+         programme, sinon ce test ne juge rien : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.unreadable,
+        vec![RING_THREE_KERNEL],
+        "**la fenêtre du noyau est illisible**, et elle seule — le passage et \
+         le programme sont dans les tables du programme : {}",
+        seen.text
+    );
+    assert!(
+        seen.changed.is_empty(),
+        "et l'octet réécrit n'est pas compté : une page que les tables ne \
+         portent pas ne dit rien de ses octets : {}",
+        seen.text
+    );
+}
+
+/// **La sonde de `surveiller` compte une région du noyau ré-entrée depuis
+/// l'anneau trois — tant que le trou de protection est là.**
+///
+/// **Ce que ce test épingle est un défaut, et il est écrit pour ne pas s'y
+/// opposer.** Un programme qui saute dans une page du superviseur prend, sur
+/// le silicium, une faute de page sur le chargement (P|U, `0x5` sans NXE ni
+/// SMEP). Ici, une région **déjà traduite** est gardée par adresse : elle se
+/// ré-entre en anneau trois sans repasser par le chargement, et son code
+/// tourne (le JOURNAL le porte dans « Ce qui reste »). C'est le seul cas où
+/// la sonde lit autrement selon qu'elle juge ou non l'anneau : en anneau
+/// zéro le chargement ne juge pas la lecture, et en anneau trois sur une page
+/// utilisateur il réussit. Tant que le code périmé tourne, la sonde doit le
+/// voir.
 ///
 /// Le montage : le noyau réécrit **son propre premier octet**, puis
-/// `sysretq` ; le programme saute sur le noyau. L'hôte trouve la région déjà
-/// connue, la sonde compare, puis la région périmée tourne en anneau trois et
-/// faute sur son écriture — sans porte, la machine s'arrête là.
+/// `sysretq` ; le programme saute sur le noyau. Deux issues, et le test dit
+/// laquelle a eu lieu par le témoin de faute à l'arrêt :
+///
+/// - **le défaut** (aujourd'hui) : la région connue tourne en anneau trois
+///   et faute sur son écriture (témoin `0x4`, P|W plus un : U, l'hôte
+///   l'ajoute d'après CS en délivrant, et sans porte il ne délivre pas) ; la
+///   sonde doit alors avoir compté l'entrée, et nommé la région du noyau ;
+/// - **le silicium** (le jour où le trou sera bouché) : la région ne tourne
+///   pas, le chargement faute (témoin nul, CR2 et RIP sur la cible) et, sans
+///   porte, la machine s'arrête sur cette faute de chargement. La sonde n'a
+///   alors plus rien à juger ici.
+///
+/// Toute autre issue fait tomber le test.
 #[test]
-fn the_watch_probe_still_sees_a_kernel_region_reentered_from_ring_three() {
+fn the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
@@ -13173,33 +13235,61 @@ fn the_watch_probe_still_sees_a_kernel_region_reentered_from_ring_three() {
     user.extend_from_slice(&RING_THREE_KERNEL.to_le_bytes());
     user.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
     user.extend_from_slice(&[0x0f, 0x0b]); // ud2 — jamais atteint
-    let seen = ring_three_stop(&bun, 0, &user, true);
+    let seen = ring_three_stop(&bun, 0, &user, true, false);
     assert_eq!(
-        seen.cs, 0x33,
-        "la région du noyau a été ré-entrée depuis l'anneau trois : {}",
+        (seen.cs, seen.rip, seen.cr2),
+        (0x33, RING_THREE_KERNEL, RING_THREE_KERNEL),
+        "le saut part de l'anneau trois et s'arrête sur une faute à la cible, \
+         quelle que soit l'issue : {}",
         seen.text
     );
-    assert!(
-        seen.entries >= 1,
-        "**la sonde a vu le premier octet changé** sous une région ré-entrée \
-         en anneau trois : {}",
-        seen.text
-    );
-    assert_eq!(
-        seen.regions,
-        vec![RING_THREE_KERNEL],
-        "et c'est la région du noyau qui est nommée, elle seule : {}",
-        seen.text
-    );
+    match seen.fault {
+        // P|W plus un : l'écriture du noyau, faite depuis l'anneau trois.
+        0x4 => {
+            assert!(
+                seen.entries >= 1,
+                "**défaut connu, la région du noyau a tourné en anneau trois** : \
+                 la sonde doit avoir vu son premier octet changé : {}",
+                seen.text
+            );
+            assert_eq!(
+                seen.regions,
+                vec![RING_THREE_KERNEL],
+                "et c'est la région du noyau qui est nommée, elle seule : {}",
+                seen.text
+            );
+        }
+        0 => assert!(
+            seen.text
+                .contains("une faute de page sur un chargement d'instruction"),
+            "le trou est bouché : c'est le chargement qui faute, comme sur le \
+             silicium : {}",
+            seen.text
+        ),
+        other => panic!(
+            "ni le défaut connu ni le silicium (témoin {other:#x}) : {}",
+            seen.text
+        ),
+    }
 }
 
 /// Le noyau, sur une page du superviseur.
 const RING_THREE_KERNEL: u64 = 0x1_0000;
 /// Le programme, sur une page utilisateur.
 const RING_THREE_USER: u64 = 0x20_1000;
+/// Le passage de sortie sous isolation des tables : une page du superviseur
+/// que les deux tables portent, comme `.entry.text` sous Linux.
+const RING_THREE_TRAMPOLINE: u64 = 0x40_0000;
+/// Les tables du programme, sous isolation : sans la page du noyau.
+const RING_THREE_USER_PML4: u64 = 0x2_3000;
 
 struct RingThreeStop {
     cs: u64,
+    rip: u64,
+    cr2: u64,
+    cr3: u64,
+    /// Le témoin de faute à l'arrêt : le code d'erreur plus un, ou zéro.
+    fault: u64,
     changed: Vec<(u64, u64, u64, u64)>,
     unreadable: Vec<u64>,
     entries: u64,
@@ -13212,13 +13302,29 @@ struct RingThreeStop {
 /// sonde ont vu une fois la machine arrêtée.
 ///
 /// **Les tables en grandes pages** : les deux premiers mébioctets sans le bit
-/// utilisateur — le noyau, les tables —, les deux suivants avec. Les trois
-/// niveaux du haut le portent, pour que seule la feuille décide.
-fn ring_three_stop(bun: &Path, offset: u32, user: &[u8], surveiller: bool) -> RingThreeStop {
-    const PAGES: u32 = 64;
+/// utilisateur — le noyau, les tables —, les deux suivants avec, puis le
+/// passage de sortie sans. Les trois niveaux du haut le portent, pour que
+/// seule la feuille décide.
+///
+/// **`pti`, l'isolation des tables** : le noyau ne fait pas `sysretq`
+/// lui-même, il saute sur le passage, qui charge dans CR3 les tables du
+/// programme — elles portent le programme et le passage, pas le noyau — puis
+/// fait `sysretq`.
+fn ring_three_stop(
+    bun: &Path,
+    offset: u32,
+    user: &[u8],
+    surveiller: bool,
+    pti: bool,
+) -> RingThreeStop {
+    /// Huit mébioctets — une puissance de deux : le passage de sortie est sur
+    /// la troisième grande page.
+    const PAGES: u32 = 128;
     const PML4: u64 = 0x2_0000;
     const PDPT: u64 = 0x2_1000;
     const PD: u64 = 0x2_2000;
+    const USER_PDPT: u64 = 0x2_4000;
+    const USER_PD: u64 = 0x2_5000;
     /// `STAR[63:48]` : `+16` donne `0x30`, et le processeur ajoute l'anneau.
     const EXIT_SELECTOR: u64 = 0x20;
 
@@ -13228,7 +13334,20 @@ fn ring_three_stop(bun: &Path, offset: u32, user: &[u8], surveiller: bool) -> Ri
     kernel.extend_from_slice(&[0x48, 0xb9]); // movabs $USER,%rcx — où rendre la main
     kernel.extend_from_slice(&RING_THREE_USER.to_le_bytes());
     kernel.extend_from_slice(&[0x41, 0xbb, 0x02, 0x00, 0x00, 0x00]); // mov $2,%r11d — RFLAGS
-    kernel.extend_from_slice(&[0x48, 0x0f, 0x07]); // sysretq
+    if pti {
+        kernel.extend_from_slice(&[0x48, 0xbb]); // movabs $USER_PML4,%rbx
+        kernel.extend_from_slice(&RING_THREE_USER_PML4.to_le_bytes());
+        kernel.extend_from_slice(&[0x48, 0xb8]); // movabs $TRAMPOLINE,%rax
+        kernel.extend_from_slice(&RING_THREE_TRAMPOLINE.to_le_bytes());
+        kernel.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    } else {
+        kernel.extend_from_slice(&[0x48, 0x0f, 0x07]); // sysretq
+    }
+    // Le passage : les tables du programme, puis la sortie.
+    let trampoline: &[u8] = &[
+        0x0f, 0x22, 0xdb, // mov %rbx,%cr3
+        0x48, 0x0f, 0x07, // sysretq
+    ];
 
     static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -13240,6 +13359,7 @@ fn ring_three_stop(bun: &Path, offset: u32, user: &[u8], surveiller: bool) -> Ri
     for (name, bytes, at) in [
         ("noyau.bin", &kernel[..], RING_THREE_KERNEL),
         ("programme.bin", user, RING_THREE_USER),
+        ("passage.bin", trampoline, RING_THREE_TRAMPOLINE),
     ] {
         let path = scratch.join(name);
         std::fs::write(&path, bytes).expect(name);
@@ -13274,6 +13394,13 @@ vue.setBigUint64({pml4}, {pdpt}n | 0x7n, true);
 vue.setBigUint64({pdpt}, {pd}n | 0x7n, true);
 vue.setBigUint64({pd}, 0x0n | 0x83n, true);
 vue.setBigUint64({pd} + 8, 0x20_0000n | 0x87n, true);
+vue.setBigUint64({pd} + 16, {trampoline}n | 0x83n, true);
+// Les tables du programme, pour l'isolation : le programme et le passage,
+// pas la page du noyau (l'entrée 0 reste vide).
+vue.setBigUint64({user_pml4}, {user_pdpt}n | 0x7n, true);
+vue.setBigUint64({user_pdpt}, {user_pd}n | 0x7n, true);
+vue.setBigUint64({user_pd} + 8, 0x20_0000n | 0x87n, true);
+vue.setBigUint64({user_pd} + 16, {trampoline}n | 0x83n, true);
 vm.globals[{control}].value = BigInt(1) << 31n;
 vm.globals[{control} + 2].value = {pml4}n;
 vm.globals[{syscall}].value = BigInt({exit}) << 48n;
@@ -13288,6 +13415,10 @@ const why = await vm.run({{ budget: 1n, rounds: 16 }});
 console.log("arret " + why.stopped);
 console.log("rip 0x" + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
 console.log("cs " + (BigInt.asUintN(64, vm.globals[{segment} + 1].value) & 0xffffn));
+console.log("ici " + BigInt.asUintN(64, vm.globals[{rip}].value));
+console.log("temoin " + BigInt.asUintN(64, vm.globals[{fault}].value));
+console.log("cr2 " + BigInt.asUintN(64, vm.globals[{control} + 1].value));
+console.log("cr3 " + BigInt.asUintN(64, vm.globals[{control} + 2].value));
 const vu = vm.revoir();
 for (const quoi of vu.changees) {{
   console.log("changee " + quoi.adresse + " " + quoi.decalage
@@ -13306,6 +13437,11 @@ console.log("fini");
             pml4 = PML4,
             pdpt = PDPT,
             pd = PD,
+            user_pml4 = RING_THREE_USER_PML4,
+            user_pdpt = USER_PDPT,
+            user_pd = USER_PD,
+            trampoline = RING_THREE_TRAMPOLINE,
+            fault = FAULT_SLOT,
             control = CONTROL_SLOT,
             syscall = SYSCALL_SLOT,
             exit = EXIT_SELECTOR,
@@ -13337,6 +13473,10 @@ console.log("fini");
     };
     RingThreeStop {
         cs: first("cs "),
+        rip: first("ici "),
+        cr2: first("cr2 "),
+        cr3: first("cr3 "),
+        fault: first("temoin "),
         changed: text
             .lines()
             .filter(|line| line.starts_with("changee "))
