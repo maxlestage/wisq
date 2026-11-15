@@ -404,6 +404,13 @@ pub const STOP_MSR: u64 = 1 << 32;
 /// posée.
 pub const STOP_UNDEFINED: u64 = 8;
 
+/// **Un MXCSR aux bits réservés levés**, que `ldmxcsr` ou `fxrstor`
+/// voulaient charger. Le silicium lève `#GP(0)` ; ce cœur s'arrête et le
+/// nomme, RIP **sur** l'instruction, rien de changé. Linux ne le fait jamais —
+/// il passe tout MXCSR venu d'un programme par son masque avant de le rendre
+/// —, donc un arrêt ici est un défaut à lire, pas une conduite à imiter.
+pub const STOP_MXCSR: u64 = 9;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -549,8 +556,51 @@ pub const FXSAVE_WRITTEN: u64 = 416;
 /// n'est pas une mesure.
 pub const FPU_AREA_BYTES: u64 = 512;
 
+/// **Où les XMM vivent dans l'aire** : seize octets chacun à partir de
+/// l'octet 160, après l'en-tête (32 octets) et les huit registres x87
+/// (8 × 16). Le format 64 bits du manuel Intel, volume 1, table 10-2.
+pub const FXSAVE_XMM: u64 = 160;
+
+/// **Les seize registres XMM, deux globales chacun** : la moitié basse
+/// (bits 63:0) à `XMM_SLOT + 2 * n`, la haute juste après.
+///
+/// **Des globales, pas de la mémoire au-dessus de la RAM.** Les deux se
+/// valaient sur le papier ; les globales gardent un seul modèle de l'état de
+/// la machine — celui que l'hôte crée, sauve et lit déjà par numéro — et un
+/// accès coûte deux octets de module au lieu de neuf. Le prix a été pesé :
+/// trente-trois imports de plus par module, recopiés dans `web/host.js` et
+/// `WebKitBench.swift`, et les trois modules épinglés régénérés.
+///
+/// **Pas de `v128`.** WebAssembly SIMD existe sous WebKit, mais son
+/// acceptation par le `WKWebView` d'un iPhone n'a jamais été mesurée ici.
+/// Deux `i64` par registre ne demandent rien que le moteur n'exécute déjà, et
+/// le jour où `v128` sera sondé, seule l'émission changera.
+pub const XMM_SLOT: usize = FPU_STATUS_SLOT + 1;
+pub const XMM_COUNT: usize = 16;
+
+/// **MXCSR**, le registre de contrôle et d'état de SSE. Rien ne calcule en
+/// flottant ici, donc rien ne lit ses masques ni son arrondi : il est rangé
+/// par `ldmxcsr` et `fxrstor`, rendu par `stmxcsr` et `fxsave`, et il doit
+/// l'être fidèlement, parce que le noyau le sauve et le rend à chaque
+/// changement de contexte. Sa valeur de départ appartient à l'hôte, comme
+/// celle d'EFER : `MXCSR_RESET`.
+pub const MXCSR_SLOT: usize = XMM_SLOT + 2 * XMM_COUNT;
+
+/// Ce que MXCSR vaut à l'allumage : toutes les exceptions masquées, arrondi
+/// au plus proche (manuel Intel, volume 1, 10.2.3.1). C'est aussi ce que le
+/// cœur Swift pose.
+pub const MXCSR_RESET: u64 = 0x1f80;
+
+/// **Les bits de MXCSR qu'un processeur accepte**, et ce que `fxsave` écrit
+/// à l'octet 28 de l'aire. `0xffff` est ce que le silicium de l'oracle
+/// `x86-fxsave-oracle.tsv` y écrit, et ce que le cœur Swift annonce. Ce
+/// paragraphe valait zéro tant que cette machine n'avait pas de MXCSR —
+/// « cas que Linux prévoit » ; elle en a un, et le masque dit ce qu'elle
+/// accepte.
+pub const MXCSR_MASK: u64 = 0xffff;
+
 /// Le nombre de globales que le module déclare et exporte.
-pub const GLOBAL_COUNT: usize = FPU_STATUS_SLOT + 1;
+pub const GLOBAL_COUNT: usize = MXCSR_SLOT + 1;
 
 /// Les numéros des quatre registres de l'appel système, dans l'ordre des cases.
 pub const MSR_STAR: u64 = 0xc000_0081;
@@ -1064,6 +1114,7 @@ mod code {
     pub const DROP: u8 = 0x1a;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LE_U: u8 = 0x58;
+    pub const I64_GE_S: u8 = 0x59;
     /// Le reste d'une division non signée. C'est ce qui ramène un compte de
     /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
     /// revient à le tourner d'un.
@@ -1637,6 +1688,9 @@ impl Body {
 
 /// Le module émis pour un bloc.
 pub struct Module;
+
+#[path = "x86_wasm_vector.rs"]
+mod vector;
 
 impl Module {
     /// Émettre un module qui exécute ce bloc, ou `None` si une instruction
@@ -3896,6 +3950,11 @@ impl Module {
         if matches!(step.op, Op::PortIn | Op::PortOut) {
             return Self::port(step, body);
         }
+        // **Les instructions vectorielles ont leur propre fichier**, et aucune
+        // ne touche aux drapeaux : elles sortent avant tout le reste.
+        if let Op::Vector(vector) = step.op {
+            return Self::vector(vector, step, body);
+        }
         // **Le compteur d'horodatage, produit et non refusé.** Il ne demande
         // aucun modèle privilégié : une globale qui monte, et ses deux moitiés
         // dans EAX et EDX.
@@ -4523,14 +4582,17 @@ impl Module {
         // **416 octets, pas 512** — voir `FXSAVE_WRITTEN`, qui dit pourquoi
         // et d'où vient le nombre.
         //
-        // Le mot de contrôle et le mot d'état du x87 existent, et sortent de
-        // leurs globales. Tout le reste est nul, et **c'est la vérité, pas un
-        // remplissage** : l'émetteur n'a aucun registre XMM et aucune
-        // instruction XMM ne se décode, donc aucun invité n'a jamais pu écrire
-        // dans cette moitié de l'aire ; aucun registre x87 n'est occupé, donc
-        // le mot d'étiquettes abrégé est nul ; et cette machine n'a pas de
-        // MXCSR, donc son masque est nul — cas que Linux prévoit, et où il
-        // prend sa valeur par défaut documentée.
+        // Ce que la machine a : le mot de contrôle et le mot d'état du x87
+        // (octets 0 et 2), MXCSR et son masque (24 et 28), et les seize XMM
+        // (160 à 415). Ce paragraphe disait que les XMM et MXCSR étaient nuls
+        // parce que cette machine n'en avait pas ; elle en a, et le noyau les
+        // sauve ici à chaque changement de contexte — un programme qui perdrait
+        // ses registres à chaque interruption ne serait pas un programme.
+        //
+        // Ce qu'elle n'a pas reste nul, et **c'est la vérité, pas un
+        // remplissage** : aucun registre x87 n'est occupé, donc le mot
+        // d'étiquettes abrégé est nul, et les huit registres de la pile aussi ;
+        // aucune instruction x87 n'a tourné, donc ni opcode ni pointeurs.
         //
         // **Une boucle plutôt que soixante-quatre écritures en ligne.** Chaque
         // tour écrit huit octets par le même chemin qu'un accès ordinaire,
@@ -4586,7 +4648,7 @@ impl Module {
             body.op(code::BRANCH_IF);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop
-                                // Et les deux mots qui existent, posés par-dessus les zéros.
+                                // Et ce qui existe, posé par-dessus les zéros.
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
             });
@@ -4599,6 +4661,25 @@ impl Module {
             body.store_at(Body::scratch(0), Width::Word, |b| {
                 b.load(FPU_STATUS_SLOT);
             });
+            // MXCSR à 24 et son masque à 28, en un seul mot de huit octets.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area).constant(24).op(code::I64_ADD);
+            });
+            body.store_at(Body::scratch(0), Width::Qword, |b| {
+                b.load(MXCSR_SLOT)
+                    .constant(MXCSR_MASK << 32)
+                    .op(code::I64_OR);
+            });
+            for (index, slot) in (XMM_SLOT..XMM_SLOT + 2 * XMM_COUNT).enumerate() {
+                body.store(Body::scratch(0), |b| {
+                    b.wide_address(&area)
+                        .constant(FXSAVE_XMM + 8 * index as u64)
+                        .op(code::I64_ADD);
+                });
+                body.store_at(Body::scratch(0), Width::Qword, |b| {
+                    b.load(slot);
+                });
+            }
             return Some(());
         }
         // **`fxrstor` relit l'aire : les deux mots que cette machine porte, et
@@ -4608,12 +4689,17 @@ impl Module {
         // après son jumeau — le premier chemin qui la réclame est celui qui
         // bascule vers `/init`.
         //
-        // **Elle ne restaure que le mot de contrôle et le mot d'état.** MXCSR,
-        // les huit registres x87 et les seize XMM ne sont pas restaurés parce
-        // qu'ils **n'existent pas ici**, et non parce qu'on aurait choisi de
-        // les ignorer : les restaurer demanderait de les avoir. Le cœur Swift,
-        // qui les a, fait l'inverse — la divergence est entre deux machines qui
-        // n'ont pas le même matériel.
+        // **Elle restaure ce que la machine a** : le mot de contrôle, le mot
+        // d'état, MXCSR et les seize XMM. Ce paragraphe disait « les deux
+        // mots, et rien d'autre », parce que MXCSR et les XMM n'existaient
+        // pas ici ; ils existent, et un noyau qui rend la main à un programme
+        // passe par ici pour lui rendre ses registres. Les huit registres x87
+        // et leur mot d'étiquettes ne sont toujours pas restaurés : ils
+        // n'existent pas, et aucune instruction de calcul x87 ne se décode.
+        //
+        // **MXCSR se juge avant que rien ne change.** Des bits réservés levés
+        // valent `#GP(0)` sur le silicium ; ici un arrêt nommé, `STOP_MXCSR`,
+        // RIP sur l'instruction et la machine intacte.
         //
         // **Le balayage d'abord, la restauration ensuite, et l'ordre est le
         // fond de l'affaire.** Un vrai processeur exige que les 512 octets
@@ -4653,7 +4739,25 @@ impl Module {
             body.op(code::BRANCH_IF);
             unsigned(0, &mut body.bytes);
             body.op(code::END); // loop
-                                // L'aire est entière : les deux mots peuvent entrer.
+                                // L'aire est entière. MXCSR d'abord, jugé.
+            body.store(Body::scratch(0), |b| {
+                b.wide_address(&area).constant(24).op(code::I64_ADD);
+            });
+            body.store(Body::scratch(1), |b| {
+                b.load_at(Body::scratch(0), Width::Dword);
+            });
+            body.load(Body::scratch(1))
+                .constant(!MXCSR_MASK)
+                .op(code::I64_AND)
+                .op(code::I64_EQZ)
+                .op(code::I32_EQZ);
+            body.op(code::IF).op(code::VOID);
+            Self::stop_on(address, STOP_MXCSR, body);
+            body.op(code::END);
+            // Plus rien ne peut fauter : les deux pages ont été lues.
+            body.store(MXCSR_SLOT, |b| {
+                b.load(Body::scratch(1));
+            });
             body.store(Body::scratch(0), |b| {
                 b.wide_address(&area);
             });
@@ -4666,6 +4770,16 @@ impl Module {
             body.store(FPU_STATUS_SLOT, |b| {
                 b.load_at(Body::scratch(0), Width::Word);
             });
+            for (index, slot) in (XMM_SLOT..XMM_SLOT + 2 * XMM_COUNT).enumerate() {
+                body.store(Body::scratch(0), |b| {
+                    b.wide_address(&area)
+                        .constant(FXSAVE_XMM + 8 * index as u64)
+                        .op(code::I64_ADD);
+                });
+                body.store(slot, |b| {
+                    b.load_at(Body::scratch(0), Width::Qword);
+                });
+            }
             return Some(());
         }
         // **`verw` : l'opérande est lu, et c'est tout ce que cette machine
@@ -4924,6 +5038,7 @@ impl Module {
                 | Op::FpuInit
                 | Op::FxSave
                 | Op::FxRestore
+                | Op::Vector(_)
                 | Op::VerifySegmentWrite
                 | Op::SoftwareInterrupt => {
                     unreachable!("une instruction privilégiée n'est pas un calcul : `translate` la traite avant")
@@ -5322,6 +5437,7 @@ impl Module {
             | Op::FpuInit
             | Op::FxSave
             | Op::FxRestore
+            | Op::Vector(_)
             | Op::VerifySegmentWrite
             | Op::ReadModelRegister
             | Op::WriteModelRegister
@@ -5519,6 +5635,15 @@ impl Module {
     /// reprend là, avec l'interpréteur, qui sait exécuter depuis n'importe
     /// quelle adresse et sait lever une faute. Les instructions d'avant dans le
     /// même bloc ont déjà tourné, et c'est exact : elles ont vraiment eu lieu.
+    /// **S'arrêter sur l'instruction et dire pourquoi** : RIP sur elle, le
+    /// témoin d'arrêt posé, et la main rendue. Rien d'autre ne change.
+    fn stop_on(address: u64, stop: u64, body: &mut Body) {
+        body.store(STOP_SLOT, |b| {
+            b.constant(stop);
+        });
+        Self::hand_back(address, body);
+    }
+
     fn hand_back(address: u64, body: &mut Body) {
         body.store(RIP_SLOT, |b| {
             b.constant(address);

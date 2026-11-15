@@ -8,6 +8,187 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Le socle SSE de l'émetteur : seize XMM, MXCSR, les déplacements et l'entier, jugés par le silicium
+
+**Ce qui n'allait pas.**
+
+- **Le contrôle de la tranche d'avant était rouge, et les trois restes étaient
+  réels.**
+  - Le test de l'isolation des tables exigeait que la fenêtre du noyau reste
+    illisible. Il serait tombé devant l'amélioration que le JOURNAL propose :
+    relire par des tables du noyau encore vivantes.
+  - La branche « silicium » du test de la sonde exigeait un témoin nul. Seul un
+    bouchon côté hôte le donne ; un bouchage dans le module l'aurait fait
+    tomber, alors que le journal promettait « il passera tel quel ».
+  - Le journal disait que le montage « reproduit les sept périmées ». Le test
+    exige au contraire qu'aucune région ne soit périmée.
+- **L'émetteur n'avait aucun registre vectoriel.** Alpine (6.18.60, son
+  initramfs, `WISQ_RAM=256`) s'arrêtait en anneau trois dans le `memset` de
+  `ld-musl`, sur `66 48 0f 6e c3` (`movq %rbx,%xmm0`). `fxsave` écrivait des
+  zéros à la place des XMM et de MXCSR, et `fxrstor` ne les rendait pas : un
+  programme aurait perdu ses registres à chaque changement de contexte.
+
+**Ce qui change.**
+
+- *Les restes du contrôle* (commit à part) :
+  - le test de l'isolation accepte les deux issues justes : illisible, ou relue
+    avec les vrais octets, l'octet réécrit nommé seul. Il refuse la relecture
+    par l'identité. Pour que celle-ci se voie, le noyau tourne sur un alias :
+    son adresse virtuelle n'est pas celle de ses octets. On y entre par une
+    page à l'identité, parce que la première fenêtre est lue avant qu'aucun
+    module n'exporte sa marche (constaté en montant le test) ;
+  - la branche « silicium » se juge sur ce qui la prouve : aucune écriture n'a
+    fauté (témoin nul, ou un code sans W), rien n'est entré, l'arrêt nomme une
+    faute de page, CR2 et RIP sur la cible ;
+  - les deux phrases fausses de l'entrée d'avant sont corrigées sur place.
+- *L'état* : seize XMM en deux globales `i64` chacun (`XMM_SLOT`, 60 à 91),
+  et MXCSR (92). `GLOBAL_COUNT` passe de 60 à 93. Ni `v128` (jamais sondé sous
+  le `WKWebView` d'un iPhone), ni mémoire au-dessus de la RAM : un seul modèle
+  de l'état, celui que l'hôte crée déjà. `web/host.js` les déclare (`SLOTS`,
+  comparés par le test des constantes) et pose MXCSR à `0x1f80`.
+- *Le décodeur* (`x86_vector.rs`, neuf) : le préfixe `f2` est lu, mais
+  seulement comme octet d'opcode de la page `0f`. Il ne lit que ce que
+  l'émetteur produit. Soit :
+  - les déplacements : `movd`/`movq` dans les deux sens, `f3 0f 7e`,
+    `66 0f d6`, `movaps`/`movups`/`movapd`/`movupd`/`movdqa`/`movdqu`,
+    `movss`/`movsd`, `movlps`/`movhps`/`movlpd`/`movhpd`, `movhlps`/`movlhps` ;
+  - la logique en `p`, `ps` et `pd`, et les entrelacements `punpck*`/`unpck*` ;
+  - l'entier SSE2 : `padd`/`psub` (saturés ou non), `pcmpeq`/`pcmpgt`,
+    `pmin`/`pmax`, `pavg`, `pmullw`/`pmulh*`/`pmuludq`/`pmaddwd`, `psadbw`,
+    `pack*`, les décalages (immédiat, compte, octets), `pshufd`/`pshuflw`/
+    `pshufhw`/`shufps`/`shufpd`, `pmovmskb`/`movmskps`/`movmskpd`,
+    `pextrw`/`pinsrw` ;
+  - `ldmxcsr` et `stmxcsr`.
+
+  Le flottant (`addsd`, `cvtsi2sd`…) et MMX restent illisibles : un arrêt de
+  bloc, pas un refus de région.
+- *L'émission* (`x86_wasm_vector.rs`, neuf) : chaque voie est extraite,
+  calculée en soixante-quatre bits, puis remise en place. Une instruction qui
+  faute n'a rien fait :
+  - les seize octets d'une source mémoire sont lus avant que rien ne change ;
+  - une écriture de seize octets sonde d'abord en écriture son dernier octet.
+    Elle faute donc sur une page en lecture seule (copie à l'écriture) avant
+    tout effet.
+
+  Aucune ne touche RFLAGS. L'alignement de `movaps` n'est pas vérifié
+  (le silicium lèverait `#GP`) : infidélité dite dans le fichier.
+- *`fxsave`/`fxrstor` complets* : MXCSR en 24, son masque `0xffff` en 28 (ce
+  que le silicium de `x86-fxsave-oracle.tsv` écrit), les seize XMM de 160 à
+  415. Le x87 garde ses mots par défaut : étiquettes et pile nulles.
+  `fxrstor` juge MXCSR avant de rien poser : des bits réservés donnent un
+  arrêt nommé, `STOP_MXCSR` (9), RIP sur l'instruction, rien de restauré.
+  `ldmxcsr` fait de même.
+- *CPUID, vérifié* : il n'annonce **pas** SSE ni SSE2 (EDX = FPU, TSC,
+  CLFLUSH ; ECX = CX16), contrairement à ce que la consigne supposait. Ce qui
+  manque pour les annoncer honnêtement, c'est le flottant SSE. musl ne
+  consulte pas CPUID, et le noyau 64 bits suppose FXSR et SSE2 sans les lire.
+  Rien n'est donc annoncé de plus.
+- `WebKitBench.swift` : `globalCount` passe à 93, et les trois modules épinglés
+  sont régénérés par `--example bench-module`.
+
+**Comment c'est vérifié.**
+
+- **Les deux oracles matériels sont rejoués sous l'émetteur et
+  JavaScriptCore**, un module par instruction, sans aucun cas écrit à la main :
+  - `x86-xmm-oracle.tsv` : 58 formes, 976 cas, 0 écart ;
+  - `x86-simd-oracle.tsv` : 128 formes, 9 204 cas, 0 écart.
+
+  Chaque cas doit aller au bout de son module, rendre XMM0, XMM1, RAX et la
+  fenêtre du silicium, et laisser intacts les drapeaux, RSI, MXCSR et les
+  quatorze autres XMM. Le Swift jugeait déjà ces corpus ; l'émetteur était à
+  « XMM 0/58, SSE2 entier 0/128 ».
+- **Un balayage tient l'accord du décodeur et de l'émetteur** : chaque
+  deuxième octet de `0f`, sous huit jeux de préfixes et huit formes
+  d'opérande. Toute forme vectorielle lue doit se traduire.
+- `fxsave` (aire seule, puis à cheval sur deux trames non contiguës) et
+  `fxrstor` sont comparés octet pour octet à une image construite d'après le
+  manuel. Un test neuf couvre MXCSR aux bits réservés, pour `fxrstor` et
+  `ldmxcsr`.
+- **Sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - `pxor` fait un `ou` : l'oracle XMM tombe, 39 écarts ;
+  - `movd` ne vide pas le haut ; `movss` entre registres recopie tout : l'oracle
+    XMM tombe ;
+  - `pmovmskb` rassemble mal sa moitié haute : l'oracle SSE2 tombe ;
+  - `movhlps` refusé à la traduction : le balayage tombe ;
+  - la sonde des écritures de seize octets retirée : le test neuf de `movups`
+    à cheval tombe, sa moitié basse écrite dans la première page ;
+  - `fxsave` oublie MXCSR ; `fxrstor` oublie les XMM ; `fxrstor` ne juge plus
+    MXCSR : chacun fait tomber son test ;
+  - l'hôte ne pose plus MXCSR à l'allumage : le test neuf de `stmxcsr` tombe.
+
+  Les restes du contrôle ont les leurs :
+  - `revoir` qui relit par l'identité fait tomber le test de l'isolation (une
+    différence à l'octet zéro sous l'alias) ;
+  - l'amélioration du contrôle (relire avec CR3 posé un instant sur les tables
+    du noyau) le fait passer, par la branche « relue », vérifiée ;
+  - la branche « silicium » de la sonde passe sous deux bouchons joués : côté
+    hôte (témoin 0) et façon module (témoin 2, P plus un, arrêt « une faute de
+    page sans porte ») ;
+  - la sonde qui lit sans `walkMachine` la fait toujours tomber.
+- **Sur le vrai noyau** :
+  - Alpine 6.18.60 avec son initramfs (`WISQ_RAM=256`, `WISQ_ROUNDS=200000`,
+    `WISQ_TURNS=3000000`) passe le `memset` de `ld-musl`. 11 078 régions, 29 s
+    de mur. Le mur suivant est nommé : arrêt « refusée » en anneau trois à
+    `0x7fd025529961`, soit `ld-musl + 0x39961`, dans `__dls3`, sur
+    `64 48 8b 14 25 00 00 00 00` (`mov %fs:0x0,%rdx`). C'est **le préfixe FS**,
+    le point 2 de la liste de travail. (La base se lit sur R9, R10 et R11, qui
+    tombent dans les segments du fichier.)
+  - 6.6.142, 6.12.115 et 6.18.60 avec la sonde atteignent toujours
+    `WISQ-USERSPACE-OK` :
+
+    | noyau | régions | `WISQ_TURNS` | mur |
+    | --- | ---: | ---: | ---: |
+    | 6.6.142 | 10 409 | 530 000 | 70 s |
+    | 6.12.115 | 10 986 | 800 000 | 4 min 45 |
+    | 6.18.60 | 12 174 | 3 000 000 | 38 s |
+
+    Avant, c'était 10 390, 10 981 et 12 177 régions. Une première course de
+    6.6 à 2 000 000 tours a été arrêtée après 21 minutes sans relevé : la
+    machine était chargée par un processus Bun orphelin d'un contrôle
+    précédent, et ce chiffre n'en dit rien.
+- Ce que coûte une forme, en octets de module au-delà d'un `nop` (2 668 octets
+  pour la région seule, mesuré avec `x86-translate`, forme paginée) :
+
+  | forme | octets |
+  | --- | ---: |
+  | `movq %rbx,%xmm0` | 15 |
+  | `pxor` | 22 |
+  | `punpcklqdq` | 24 |
+  | `pmovmskb` | 60 |
+  | `pshufd` | 84 |
+  | `pcmpeqb` | 497 |
+  | `psadbw` | 551 |
+  | `movups` en écriture | 563 |
+  | `pminub` | 625 |
+  | `packsswb` | 705 |
+
+  Les formes octet par octet sont chères ; `v128` les rendrait petites, le
+  jour où il sera sondé sur l'appareil.
+- `cargo test --release` : 622 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt` et les deux `clippy` sont
+  propres, ainsi que les scripts de mise en forme et des sources, et
+  SwiftLint `--strict`. Le site : typecheck, build, 470 tests. Le compte
+  publié passe à 3 519 (Swift 2 897 + Rust 622) : sept tests neufs, un
+  décodeur, trois émetteur, trois boucle hôte. `swift test` : 2 817 tests exécutés, 54 sautés, 0 échec, avec la bibliothèque Rust reconstruite.
+- Trois tests existants disaient l'état d'avant. Ils exigent maintenant
+  davantage :
+  - `fxsave`, `fxrstor` et l'aire à cheval sur deux trames comparent l'image
+    entière, octet pour octet ;
+  - le test de `lkgs` exige que `movsd` se lise en `movsd` ; `addsd`,
+    `repne movs` et `f2 90` restent refusés ;
+  - celui des barrières exige que `ldmxcsr`/`stmxcsr` portent leur adresse,
+    et non qu'ils soient refusés.
+
+**Ce qui reste.**
+
+- Le préfixe FS, le mur suivant mesuré.
+- Le flottant SSE2 (point 5), x87, puis l'annonce honnête de SSE/SSE2/FXSR
+  dans CPUID.
+- `#GP` sur l'alignement et sur un MXCSR refusé : aujourd'hui, pas de faute
+  pour l'un et un arrêt nommé pour l'autre.
+- Le coût en taille des formes octet par octet.
+- Seule la CI (« App iOS ») juge les modules régénérés sous un vrai WebKit.
+
 ## 2026-11-14 — `revoir` sous isolation des tables, et une sonde qui ne s'oppose plus à la protection
 
 **Ce qui n'allait pas.** Le contrôle de la tranche d'avant (« `revoir` relit
