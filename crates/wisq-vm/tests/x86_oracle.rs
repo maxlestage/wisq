@@ -604,23 +604,29 @@ const STACK_REGISTER_NAMES: [&str; 16] = [
 /// **Le plancher du corpus de pile pour l'interpréteur**, mesuré et non
 /// souhaité.
 ///
-/// 568 cas jugés sur 648, zéro écart. Les 80 qui manquent sont dix formes que
-/// le **décodeur** ne décode pas, et le relevé les nomme quand le plancher
-/// tombe :
+/// 568 cas jugés sur 648, zéro écart, quand ce plancher a été posé. Le corpus
+/// a grandi depuis (712 cas) et le plancher était resté là : mesuré le
+/// 14 novembre, 592 jugés. **600 depuis que `66 68` se lit en quatre octets**
+/// (`pushw $0x1234`, huit cas de plus, zéro écart) : avant, le décodeur y
+/// lisait un immédiat de trente-deux bits, refusait les quatre octets seuls, et
+/// le silicium ne jugeait rien. Ce qui manque, le relevé le nomme quand le
+/// plancher tombe :
 ///
-/// - les formes **courtes** de seize bits — `66 50`, `66 55`, `66 68`,
+/// - les formes **courtes** de seize bits sur registre — `66 50`, `66 55`,
 ///   `66 58`, `66 5d` — refusées à dessein par `if !prefixes.operand_size` ;
-///   les formes longues (`ff /6`), elles, sont décodées et désormais justes ;
+///   les formes longues (`ff /6`) et l'immédiat (`66 68`, `66 6a`), elles,
+///   sont décodées et justes ;
 /// - **tout le groupe `8f /0`** — `pop (%rsi)`, `pop %rax`, `pop %rbp`,
 ///   `popw %bp` —, y compris en soixante-quatre bits. Pas une largeur qui
 ///   manque : un opcode entier. Un noyau dépile par `5d`, donc ça ne l'a
 ///   jamais arrêté ; c'est un trou nommé, et l'émetteur a le même.
 ///
-/// L'interpréteur en juge **seize de plus** que l'émetteur (552), parce que
-/// l'émetteur refuse en plus les `pushw` qu'il ne sait pas descendre de deux.
+/// L'interpréteur en juge **plus** que l'émetteur (plancher 552), parce que
+/// l'émetteur refuse en plus les `pushw` qu'il ne sait pas descendre de deux —
+/// `pushw $0x1234` compris, maintenant qu'il arrive décodé en seize bits.
 /// Les deux sont justes là où ils agissent ; ils ne couvrent simplement pas la
 /// même étendue.
-const STACK_CASES_FLOOR: usize = 568;
+const STACK_CASES_FLOOR: usize = 600;
 
 /// **L'interpréteur Rust jugé sur le corpus de pile, les seize registres
 /// comparés.** Le jumeau de `every_accepted_instruction_matches_the_silicon`,
@@ -1241,5 +1247,156 @@ fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus() {
         "l'interpréteur ne juge plus que {checked} cas de branchement sur {} ; \
          formes refusées : {refused:?}",
         oracle.cases.len()
+    );
+}
+
+/// **Le décodeur lit exactement ce que le silicium lit : ni plus, ni moins.**
+///
+/// `cut_short` décide qu'une instruction au bout d'une page est coupée quand
+/// le décodeur, devant une suite d'octets, rendrait une instruction plus
+/// longue que ce qu'on a. C'est juste tant que le décodeur a la longueur du
+/// silicium, et faux dès qu'il lit trop loin : `66 68 34 12` (`pushw
+/// $0x1234`, quatre octets) se lisait en six, et ces quatre octets complets
+/// passaient pour une coupe — une faute de page sur la page d'après, que le
+/// processeur ne fait pas. Le contrôle l'a trouvé en énumérant ; ce test le
+/// trouve dans les corpus, où chaque instruction est une longueur que le
+/// silicium a exécutée et qu'objdump a désassemblée.
+///
+/// Chaque `instr` de chaque corpus matériel est parcouru comme le parcourt la
+/// découverte : de l'octet zéro, instruction après instruction (les corpus de
+/// branchement et MMX portent des suites). À chaque pas, le décodeur reçoit le
+/// reste **suivi d'octets de plus** — des zéros, puis des `0xff` — et ne doit
+/// jamais finir au-delà de la fin ; sans eux, il doit rendre la même chose.
+/// S'il refuse, ce qui reste est fait d'instructions complètes, et `cut_short`
+/// ne doit pas y voir une coupe.
+#[test]
+fn the_decoder_reads_exactly_what_the_silicon_reads() {
+    let fixtures = oracle_path()
+        .parent()
+        .expect("le répertoire des fixtures")
+        .to_path_buf();
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&fixtures)
+        .expect("Tests/Fixtures")
+        .map(|entry| entry.expect("une entrée").path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("x86-") && name.ends_with("oracle.tsv"))
+        })
+        .collect();
+    names.sort();
+    let mut programs = 0usize;
+    let mut steps = 0usize;
+    let mut refused = 0usize;
+    let mut wrong: Vec<String> = Vec::new();
+    for path in &names {
+        let text = std::fs::read_to_string(path).expect("un corpus");
+        let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.first() != Some(&"instr") || fields.len() < 4 {
+                continue;
+            }
+            programs += 1;
+            let code = bytes(fields[2]);
+            let mnemonic = fields[fields.len() - 1];
+            let mut at = 0usize;
+            while at < code.len() {
+                let rest = &code[at..];
+                let alone = decode(rest).map(|step| step.length);
+                let mut followed: Vec<Option<usize>> = Vec::new();
+                for filler in [0x00u8, 0xff] {
+                    let mut padded = rest.to_vec();
+                    padded.extend_from_slice(&[filler; 16]);
+                    followed.push(decode(&padded).map(|step| step.length));
+                }
+                if let Some(longer) = followed.iter().flatten().find(|&&n| n > rest.len()) {
+                    wrong.push(format!(
+                        "{file} « {mnemonic} » à l'octet {at} : lu en {longer} octets, \
+                         il n'en reste que {}",
+                        rest.len()
+                    ));
+                    break;
+                }
+                if followed.iter().any(|&n| n != alone) {
+                    wrong.push(format!(
+                        "{file} « {mnemonic} » à l'octet {at} : seul {alone:?}, suivi {followed:?}"
+                    ));
+                    break;
+                }
+                let Some(length) = alone else {
+                    refused += 1;
+                    if wisq_vm::x86::cut_short(rest) {
+                        wrong.push(format!(
+                            "{file} « {mnemonic} » à l'octet {at} : {} est complet et \
+                             passe pour une coupe",
+                            hexadecimal(rest)
+                        ));
+                    }
+                    break;
+                };
+                steps += 1;
+                at += length;
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} écart(s) de longueur entre le décodeur et le silicium :\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+    // **Un plancher**, pour que le test ne passe pas sur des corpus vides ou
+    // un décodeur qui refuserait tout : mesuré, pas souhaité.
+    // 17 corpus, 5 063 programmes, 5 509 instructions lues, 4 025 refus (des
+    // formes que ce décodeur ne lit pas : un refus n'est jugé que par
+    // `cut_short`, qui ne doit pas y voir de coupe).
+    assert!(names.len() >= 17, "les corpus matériels : {names:?}");
+    assert!(
+        programs >= 5_063 && steps >= 5_509,
+        "{programs} programmes, {steps} instructions lues, {refused} refus"
+    );
+}
+
+/// **`66 6a ib` empile deux octets, pas huit.** Le décodeur lui donnait la
+/// bonne longueur (trois octets) et la mauvaise largeur : l'interpréteur
+/// descendait la pile de huit, en silence. Aucun corpus ne porte cette forme ;
+/// le silicium de ce conteneur, lui, a répondu (un programme C qui exécute
+/// `66 6a 80` puis `66 68 34 12`) : la pile descend de **quatre** en tout, et
+/// les deux mots sont `0xff80` — l'octet étendu en signe sur seize bits — puis
+/// `0x1234`. `66 68` est déjà jugé par le corpus de pile ; il est ici pour que
+/// les deux descentes se suivent.
+#[test]
+fn a_sixteen_bit_immediate_push_moves_the_stack_by_two() {
+    let program = [0x66, 0x6a, 0x80, 0x66, 0x68, 0x34, 0x12];
+    let mut regs = [0u64; 16];
+    regs[4] = STACK_TOP;
+    let mut cpu = Cpu {
+        regs,
+        memory: GuestMemory {
+            base: STACK_TOP - 0x40,
+            bytes: vec![0xaa; 0x80],
+        },
+        ..Default::default()
+    };
+    cpu.rip = CODE;
+    for _ in 0..2 {
+        let at = cpu.rip.wrapping_sub(CODE) as usize;
+        assert_ne!(cpu.step(&program[at..]), Step::Unknown, "à l'octet {at}");
+    }
+    assert!(!cpu.faulted, "aucune faute");
+    assert_eq!(cpu.rip, CODE + 7, "trois octets, puis quatre");
+    assert_eq!(cpu.regs[4], STACK_TOP - 4, "deux descentes de deux");
+    let word = |at: u64| cpu.memory.read(at, wisq_vm::x86::Width::Word);
+    assert_eq!(word(STACK_TOP - 2), Some(0xff80), "l'octet étendu en signe");
+    assert_eq!(
+        word(STACK_TOP - 4),
+        Some(0x1234),
+        "puis l'immédiat de seize bits"
+    );
+    assert_eq!(
+        cpu.memory.read(STACK_TOP - 8, wisq_vm::x86::Width::Dword),
+        Some(0xaaaa_aaaa),
+        "et rien en dessous n'est touché"
     );
 }

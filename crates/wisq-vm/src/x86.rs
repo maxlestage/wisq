@@ -2975,7 +2975,15 @@ pub const LONGEST: usize = 15;
 /// ces suites ne se lit est rendue « illisible » : la région est refusée sur
 /// l'instruction, comme avant que les coupes ne fautent. Le décodeur ne
 /// l'aurait de toute façon pas lue, et le refus le dit. L'inverse — une
-/// instruction complète prise pour une coupe — ne peut pas arriver.
+/// instruction complète prise pour une coupe — n'arrive que si le décodeur se
+/// trompe de **longueur** : s'il lit une instruction plus longue que celle du
+/// silicium, il lit bien au-delà du bord, et cette fonction le croit. Ce n'est
+/// donc pas une garantie de cette fonction mais du décodeur, et elle était
+/// écrite ici comme absolue alors qu'elle était fausse : `66 68 iw`
+/// (`pushw $imm16`, quatre octets) se lisait en six. Ce qui la tient est le
+/// test `the_decoder_reads_exactly_what_the_silicon_reads`, qui rejoue chaque
+/// instruction des corpus matériels : aucune n'est prise pour une coupe, et
+/// aucune ne se lit plus longue qu'elle n'est, même suivie d'autres octets.
 ///
 /// **Le prix** : au plus 256 décodages, et seulement sur un échec à moins de
 /// quinze octets du bord. Une coupe vraie sort presque toujours au premier
@@ -3880,12 +3888,39 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
-        // `push` d'un immédiat, étendu en signe sur huit octets.
+        // `push` d'un immédiat, étendu en signe sur huit octets — ou sur deux
+        // avec `0x66`.
+        //
+        // **Le préfixe changeait la longueur, et ce bras l'ignorait.** `66 68`
+        // est `pushw $imm16` : quatre octets, pas six, et le silicium le dit
+        // (`instr 22 66683412 pushw $0x1234` dans le corpus de pile). Ce bras
+        // lisait trente-deux bits d'immédiat quand même : devant les quatre
+        // octets seuls il refusait, devant n'importe quelle suite il rendait
+        // une instruction de six, et `cut_short` prenait donc ces quatre
+        // octets complets pour une coupe — une faute de page sur la page
+        // d'après, que le silicium ne fait pas. `66 6a ib` avait la bonne
+        // longueur mais pas la bonne largeur : huit octets empilés au lieu de
+        // deux, en silence.
+        //
+        // La largeur vient de `width(false)`, comme pour `ff /6` : `Word` avec
+        // `0x66` seul, `Qword` sinon — REX.W l'emporte sur `0x66`, et sans
+        // préfixe il n'y a pas de forme de quatre octets en mode long.
+        // L'émetteur refuse la forme de deux (il ne sait descendre la pile que
+        // de huit) ; l'interpréteur l'exécute, et le corpus de pile la juge.
         0x68 | 0x6a => {
+            let width = match prefixes.width(false) {
+                Width::Word => Width::Word,
+                _ => Width::Qword,
+            };
             let value = if opcode == 0x6a {
                 let byte = *bytes.get(at)?;
                 at += 1;
                 i64::from(byte as i8)
+            } else if width == Width::Word {
+                let low = *bytes.get(at)?;
+                let high = *bytes.get(at + 1)?;
+                at += 2;
+                i64::from(i16::from_le_bytes([low, high]))
             } else {
                 i64::from(read_i32(bytes, &mut at)?)
             };
@@ -3894,7 +3929,7 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                 imm: value as u64,
                 immediate: true,
                 length: at,
-                ..Decoded::nothing(Width::Qword)
+                ..Decoded::nothing(width)
             })
         }
         0xe8 => {

@@ -1792,6 +1792,18 @@ export function machine({
   /// **Ce que ça ne couvre pas, et c'est dit** : une réécriture **après** —
   /// un saut statique basculé plus tard, `text_poke` — n'est vue par rien. Le
   /// remède complet est de voir les écritures dans les pages de code.
+  const oublierTout = () => {
+    vidages.fois += 1;
+    vidages.regions += known.size;
+    known.clear();
+    // La correspondance entière : plus aucune adresse ne mène à un ancien
+    // bloc, et le premier saut de module à module rend la main à l'hôte.
+    new Uint8Array(memory.buffer, base, SLOTS.tableSlots * SLOTS.tableEntry).fill(0);
+    // Les anciens blocs quittent la table, et leurs modules peuvent être
+    // rendus à la mémoire : rien ne les désigne plus.
+    for (let at = 0; at < next; at += 1) blocks.set(at, null);
+  };
+
   /// **Le premier passage en anneau trois, vu une fois.** Rend vrai si le
   /// cache vient d'être vidé : la région en main n'est plus dans `known`, et
   /// l'appelant ne doit plus la faire tourner.
@@ -1806,18 +1818,6 @@ export function machine({
     sawUser = true;
     oublierTout();
     return true;
-  };
-
-  const oublierTout = () => {
-    vidages.fois += 1;
-    vidages.regions += known.size;
-    known.clear();
-    // La correspondance entière : plus aucune adresse ne mène à un ancien
-    // bloc, et le premier saut de module à module rend la main à l'hôte.
-    new Uint8Array(memory.buffer, base, SLOTS.tableSlots * SLOTS.tableEntry).fill(0);
-    // Les anciens blocs quittent la table, et leurs modules peuvent être
-    // rendus à la mémoire : rien ne les désigne plus.
-    for (let at = 0; at < next; at += 1) blocks.set(at, null);
   };
 
   /// **Rendre la main à la page.**

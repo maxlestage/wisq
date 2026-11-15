@@ -2903,6 +2903,54 @@ fn a_complete_refused_instruction_near_the_edge_is_not_a_cut() {
     }
 }
 
+/// **`pushw $imm16` fait quatre octets, et au bout d'une page ce n'est pas une
+/// coupe.**
+///
+/// Le décodeur lisait `66 68` avec un immédiat de trente-deux bits : les
+/// quatre octets seuls étaient refusés, et suivis de n'importe quoi ils se
+/// lisaient en six. `cut_short` en concluait que l'instruction débordait, et
+/// une région qui commençait sur un `pushw $imm16` aux quatre derniers octets
+/// d'une page dont la suivante manque recevait la faute de page sur la page
+/// d'après — que le silicium ne fait pas (`instr 22 66683412 pushw $0x1234`,
+/// quatre octets, dans le corpus de pile). Le contrôle l'a trouvé en
+/// énumérant ; `66 68 aa 0f` est son contre-exemple.
+///
+/// L'émetteur refuse toujours ces formes — il ne descend la pile que de
+/// huit —, mais d'un refus franc sur une instruction lue, plus d'une coupe.
+/// Et les vraies coupes du même opcode restent des coupes.
+#[test]
+fn a_sixteen_bit_immediate_push_at_the_edge_is_not_a_cut() {
+    for (bytes, name) in [
+        (&[0x66u8, 0x68, 0xaa, 0x0f][..], "pushw $0xfaa"),
+        (&[0x66, 0x68, 0x34, 0x12][..], "pushw $0x1234"),
+        (&[0x66, 0x6a, 0x80][..], "pushw $-128"),
+    ] {
+        assert_eq!(
+            wisq_vm::x86::decode(bytes).map(|step| (step.length, step.width)),
+            Some((bytes.len(), Width::Word)),
+            "{name} : lu tel quel, en seize bits"
+        );
+        assert!(!wisq_vm::x86::cut_short(bytes), "{name} : rien ne déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::CannotTranslate { at: 0 }),
+            "{name} : un refus franc, pas « il m'en faut plus »"
+        );
+    }
+    for (bytes, name) in [
+        (&[0x66u8, 0x68][..], "pushw sans immédiat"),
+        (&[0x66, 0x68, 0xaa][..], "pushw à l'immédiat tronqué"),
+        (&[0x66, 0x6a][..], "pushw $ib sans son octet"),
+    ] {
+        assert!(wisq_vm::x86::cut_short(bytes), "{name} : déborde");
+        assert_eq!(
+            Module::region_or_why(bytes, CODE, 0),
+            Err(Refused::MayBeCut { at: 0 }),
+            "{name} : une coupe, que plus d'octets rendraient lisible"
+        );
+    }
+}
+
 /// **Un octet illisible sur une branche que personne ne prend ne coûte plus
 /// rien.**
 ///
