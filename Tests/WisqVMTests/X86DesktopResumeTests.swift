@@ -17,25 +17,39 @@ import XCTest
 ///
 /// La machine se décrit comme dans `X86CloudResumeTests.profiledMachine` :
 /// `WISQ_PC_KERNEL`, `WISQ_PC_INITRD`, `WISQ_PC_DISK_FILE`,
-/// `WISQ_PC_RAM_MIB`, `WISQ_PC_CMDLINE`, et l'écran toujours branché.
+/// `WISQ_PC_RAM_MIB`, `WISQ_PC_CMDLINE` ; `WISQ_PC_BUDGET` borne chaque
+/// attente. **C'est la machine de l'application** (`ReadyDesktopBuild.machine`) :
+/// carte réseau, écran de l'application et tablette. Le banc branchait une
+/// machine nue, sans carte réseau, et un instantané pris ainsi reprend sans
+/// réseau dans l'application.
+///
+/// Le second temps reprend aussi **une archive** (`WISQ_PC_DESKTOP_ARCHIVE`,
+/// fabriquée par `wisq-fabrique`) : importée dans un dossier vierge comme le
+/// ferait le bouton « Importer », la session cherchée sous l'empreinte du
+/// noyau, comme le ferait l'application. `WISQ_PC_IMAGE_NAME` est le nom de
+/// l'image dans la bibliothèque, quand ce n'est pas celui de
+/// `WISQ_PC_DISK_FILE`.
+///
+/// Repris depuis une archive, le bureau passe par **sa première reprise**,
+/// comme sur le téléphone (`FirstResume`) : la marque posée comme à
+/// l'installation, lue comme l'application la lit, la ligne tapée avant le
+/// premier tour. Puis l'heure de l'invité est comparée à celle que l'horloge
+/// CMOS sert. `WISQ_PC_HOST_AHEAD_DAYS` fige cette horloge autant de jours
+/// après maintenant — un bureau prêt repris un mois après sa fabrication — et
+/// `WISQ_PC_FIRST_RESUME=0` saute la première reprise, pour mesurer l'écart
+/// qu'elle corrige.
+///
+/// Le pilotage par la console est celui de la fabrique : `GuestScript`.
 final class X86DesktopResumeTests: XCTestCase {
-    /// Ce que la console série a écrit, lu depuis le fil de la machine.
-    final class Console: @unchecked Sendable {
-        private let lock = NSLock()
-        private var bytes = Data()
-        func append(_ data: Data) { lock.lock(); bytes += data; lock.unlock() }
-        var text: String { lock.lock(); defer { lock.unlock() }; return String(decoding: bytes, as: UTF8.self) }
-    }
-
-    static func machine(_ environment: [String: String], writes: URL, console: Console) throws -> (X86Machine, () throws -> Void) {
+    static func machine(_ environment: [String: String], writes: URL, console: GuestConsole,
+                        ramSize: Int? = nil) throws -> (X86Machine, () throws -> Void) {
         let kernel = try XCTUnwrap(environment["WISQ_PC_KERNEL"])
-        let machine = X86Machine(ramSize: (environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? 1024) << 20) {
-            console.append($0)
-        }
+        let machine = try ReadyDesktopBuild.machine(
+            ramSize: ramSize ?? (environment["WISQ_PC_RAM_MIB"].flatMap(Int.init) ?? 1024) << 20,
+            frozenAt: nil) { console.append($0) }
         if let disk = environment["WISQ_PC_DISK_FILE"] {
             try machine.attach(diskFileAt: URL(fileURLWithPath: disk), writes: writes)
         }
-        try machine.attachDisplay(width: 1024, height: 768)
         let line = [X86BootLoader.defaultCommandLine, environment["WISQ_PC_CMDLINE"] ?? ""]
             .filter { !$0.isEmpty }.joined(separator: " ")
         return (machine, {
@@ -46,58 +60,18 @@ final class X86DesktopResumeTests: XCTestCase {
         })
     }
 
-    /// Faire tourner jusqu'à ce que la console montre `marker` après
-    /// `from`, ou que le budget soit épuisé. Faux dans ce cas. Le budget
-    /// compte l'attente comme `X86Machine.run` : un invité qui dort l'use
-    /// aussi, et une marque qui ne vient jamais finit par rendre la main.
-    static func run(_ machine: X86Machine, until marker: String, after from: Int = 0, console: Console,
-                    budget: UInt64) -> Bool {
-        let slice: UInt64 = 50_000_000
-        for turn in 0..<(budget / slice) {
-            _ = machine.run(instructionBudget: slice)
-            if console.text.dropFirst(from).contains(marker) { return true }
-            // **Un doigt qui bouge de temps en temps**, toutes les cinq
-            // secondes de l'invité : sans rien en entrée, Xorg éteint
-            // l'écran au bout de dix minutes, et le bureau ne se voit plus.
-            if turn % 34 == 0 { _ = machine.touch(x: turn % 68 == 0 ? 0.25 : 0.5, y: 0.75, buttons: 0) }
-        }
-        return false
+    static func budget(_ environment: [String: String], default fallback: UInt64) -> UInt64 {
+        environment["WISQ_PC_BUDGET"].flatMap(UInt64.init) ?? fallback
     }
 
     /// La console, à côté de l'instantané : ce qui s'est passé, même quand un
     /// test échoue.
-    static func keep(_ console: Console, at path: String) {
+    static func keep(_ console: GuestConsole, at path: String) {
         FileManager.default.createFile(atPath: path, contents: Data(console.text.utf8))
     }
 
-    /// Faire tourner jusqu'à ce que plus de la moitié de l'écran soit
-    /// allumée, en touchant de temps en temps comme `run(until:)`.
-    static func runUntilLit(_ machine: X86Machine, _ display: X86Framebuffer, budget: UInt64) -> Bool {
-        let slice: UInt64 = 50_000_000
-        for turn in 0..<(budget / slice) {
-            if litFraction(display) > 0.5 { return true }
-            _ = machine.run(instructionBudget: slice)
-            if turn % 34 == 0 { _ = machine.touch(x: turn % 68 == 0 ? 0.25 : 0.5, y: 0.75, buttons: 0) }
-        }
-        return false
-    }
-
-    /// La part de l'écran qui n'est pas noire, de 0 à 1.
-    static func litFraction(_ display: X86Framebuffer) -> Double {
-        let pixels = display.snapshot()
-        var lit = 0
-        for index in stride(from: 0, to: pixels.count, by: 4)
-        where pixels[index] | pixels[index + 1] | pixels[index + 2] != 0 { lit += 1 }
-        return Double(lit) / Double(max(1, pixels.count / 4))
-    }
-
     static func dump(_ display: X86Framebuffer, to path: String) {
-        let pixels = display.snapshot()
-        var ppm = Data("P6\n\(display.width) \(display.height)\n255\n".utf8)
-        for index in stride(from: 0, to: pixels.count, by: 4) {
-            ppm += [pixels[index + 2], pixels[index + 1], pixels[index]]
-        }
-        FileManager.default.createFile(atPath: path, contents: ppm)
+        FileManager.default.createFile(atPath: path, contents: GuestScript.ppm(display))
     }
 
     /// **Premier temps** : jusqu'au bureau, puis l'instantané.
@@ -108,35 +82,18 @@ final class X86DesktopResumeTests: XCTestCase {
         }
         let writes = URL(fileURLWithPath: out + ".writes")
         for suffix in ["", ".map"] { try? FileManager.default.removeItem(atPath: writes.path + suffix) }
-        let console = Console()
+        let console = GuestConsole()
         let (machine, boot) = try Self.machine(environment, writes: writes, console: console)
         defer { Self.keep(console, at: out + ".console") }
         try boot()
-        let budget: UInt64 = 2_000_000_000_000
-        XCTAssertTrue(Self.run(machine, until: "login:", console: console, budget: budget), "pas d'invite")
-        machine.send(Data("root\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "Password:", console: console, budget: budget))
-        var mark = console.text.count
-        machine.send(Data("voidlinux\n".utf8))
-        // **L'invite d'abord** : ce qui est tapé pendant que `login` vérifie
-        // le mot de passe est jeté, et la commande suivante se perdait.
-        XCTAssertTrue(Self.run(machine, until: "# ", after: mark, console: console, budget: budget), "pas de shell")
-        // Le bureau et son panneau, puis le temps qu'ils se posent. Les
-        // marques s'écrivent par calcul : la ligne de commande, que la
-        // console répète, ne les contient pas telles quelles.
-        mark = console.text.count
-        machine.send(Data("until pgrep -x xfce4-panel >/dev/null; do sleep 5; done; sleep 30; echo BUREAU_$((1+1))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "BUREAU_2", after: mark, console: console, budget: budget),
-                      "le bureau n'est pas venu")
+        // **Le déroulé de la fabrique**, pas une copie : connexion, bureau,
+        // écran dessiné, préparation (`drop_caches`), écran encore.
+        let script = GuestScript(machine: machine, console: console)
+        try script.run(ReadyDesktopBuild.voidXfce, budget: Self.budget(environment, default: 2_000_000_000_000))
         let display = try XCTUnwrap(machine.display)
-        // **Attendre que le bureau soit dessiné**, pas un temps fixé : sous
-        // l'interprète, `xfdesktop` met longtemps à charger son fond. Trente
-        // secondes après le panneau, deux passages ont sauvé un écran encore
-        // tout noir, `xfdesktop` bien vivant.
-        let lit = Self.runUntilLit(machine, display, budget: budget)
-        XCTAssertTrue(lit, "le bureau ne s'est pas dessiné")
         Self.dump(display, to: out + "-avant.ppm")
-        XCTAssertGreaterThan(Self.litFraction(display), 0.5, "le bureau est à l'écran avant la sauvegarde")
+        XCTAssertGreaterThan(GuestScript.litFraction(display.snapshot()), 0.5,
+                             "le bureau est à l'écran avant la sauvegarde")
         machine.flushDisk()
         try machine.snapshot().write(to: URL(fileURLWithPath: out))
         print("bureau sauvé à \(machine.retiredInstructions) instructions : \(out)")
@@ -144,72 +101,159 @@ final class X86DesktopResumeTests: XCTestCase {
 
     /// **Second temps** : une machine neuve reprend l'instantané. L'écran
     /// revient tel quel, puis l'invité prouve qu'il écoute encore, par la
-    /// console série, par le clavier et par la tablette.
+    /// console série, par le clavier, par la tablette et par sa carte réseau.
     func testTheDesktopComesBackAfterASave() throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["WISQ_PC_KERNEL"] != nil, let from = environment["WISQ_PC_DESKTOP_RESUME"] else {
-            throw XCTSkip("définir WISQ_PC_KERNEL (et l'ISO) et WISQ_PC_DESKTOP_RESUME")
+        let raw = environment["WISQ_PC_DESKTOP_RESUME"]
+        let archive = environment["WISQ_PC_DESKTOP_ARCHIVE"]
+        guard environment["WISQ_PC_KERNEL"] != nil, let from = raw ?? archive else {
+            throw XCTSkip("définir WISQ_PC_KERNEL (et l'ISO) et WISQ_PC_DESKTOP_RESUME ou WISQ_PC_DESKTOP_ARCHIVE")
         }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisq-bureau-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let writes = folder.appendingPathComponent("disque.writes")
-        for suffix in ["", ".map"] where FileManager.default.fileExists(atPath: from + ".writes" + suffix) {
-            try FileManager.default.copyItem(atPath: from + ".writes" + suffix, toPath: writes.path + suffix)
+        let saved: Data
+        let writes: URL
+        var ramSize: Int?
+        var firstResume: FirstResume?
+        var savedAt: Date?
+        if raw != nil {
+            writes = folder.appendingPathComponent("disque.writes")
+            for suffix in ["", ".map"] where FileManager.default.fileExists(atPath: from + ".writes" + suffix) {
+                try FileManager.default.copyItem(atPath: from + ".writes" + suffix, toPath: writes.path + suffix)
+            }
+            saved = try Data(contentsOf: URL(fileURLWithPath: from), options: .mappedIfSafe)
+        } else {
+            // **Comme le téléphone** : l'archive importée dans un dossier
+            // vierge, la session cherchée sous l'empreinte du noyau, la
+            // couche et la mémoire là où l'application les lit.
+            let disk = try XCTUnwrap(environment["WISQ_PC_DISK_FILE"])
+            let image = environment["WISQ_PC_IMAGE_NAME"] ?? URL(fileURLWithPath: disk).lastPathComponent
+            let installed = try MachineArchive.import(
+                from: URL(fileURLWithPath: from), library: [image], in: folder,
+                createOwnDisk: { _, _ in throw MachineArchive.Refusal.damaged })
+            let kernel = try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(environment["WISQ_PC_KERNEL"])))
+            let identity = SuspendedMachine.identity(of: kernel, named: installed.key)
+            guard case .readable(let session) = SavedSession.find(kernel: identity, in: folder, core: .x86_64) else {
+                return XCTFail("pas de session lisible sous l'empreinte du noyau \(identity)")
+            }
+            saved = session
+            // **La marque de l'installation**, posée comme `ReadyDesktop.install`
+            // la pose, puis lue comme l'application la lit.
+            if environment["WISQ_PC_FIRST_RESUME"] != "0" {
+                try FirstResume.arm(FirstResume(madeAt: nil), kernel: identity, in: folder)
+            }
+            firstResume = FirstResume.pending(kernel: identity, in: folder)
+            savedAt = SuspendedMachine.savedAt(kernel: identity, in: folder)
+            writes = try LocalDisk.writesURL(for: installed.keys.overlay(forDisk: image), in: folder)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: writes.path + ".map"), "la couche du disque manque")
+            ramSize = Int(KernelMemory.size(forKernel: installed.key, in: folder, ceiling: .max))
+            XCTAssertEqual(ramSize, X86Machine.savedRAMSize(in: saved), "la mémoire réglée n'est pas celle de la session")
         }
-        let console = Console()
-        let (machine, _) = try Self.machine(environment, writes: writes, console: console)
+        let console = GuestConsole()
+        let (machine, _) = try Self.machine(environment, writes: writes, console: console, ramSize: ramSize)
+        // **L'aléa du système, comme le téléphone** (`GuestMachineFactory.make`) :
+        // la fabrique tire une suite fixée, la reprise non. C'est ce qui fait
+        // que deux reprises du même bureau n'ont pas les mêmes clés SSH.
+        machine.entropy = .system()
+        // L'horloge du téléphone, des jours plus tard si on le demande.
+        let ahead = environment["WISQ_PC_HOST_AHEAD_DAYS"].flatMap(Double.init).map { Date().addingTimeInterval($0 * 86_400) }
+        machine.frozenHostTime = ahead
         defer { Self.keep(console, at: from + "-repris.console") }
-        try machine.restore(try Data(contentsOf: URL(fileURLWithPath: from)))
+        try machine.restore(saved)
+        // **Comme l'application, entre la reprise et le premier tour** : la
+        // première reprise tape sa ligne, une reprise ordinaire rattrape.
+        let firstLine = FirstResume.resumed(machine, first: firstResume, savedAt: savedAt)
+        if archive != nil, environment["WISQ_PC_FIRST_RESUME"] != "0" {
+            XCTAssertNotNil(firstLine, "la première reprise n'a rien tapé")
+        }
+        XCTAssertNotNil(machine.network, "la carte réseau n'est pas revenue")
         let display = try XCTUnwrap(machine.display)
         // **L'écran d'abord, avant la moindre instruction** : c'est ce que
         // l'utilisateur voit en revenant.
         Self.dump(display, to: from + "-repris.ppm")
-        XCTAssertGreaterThan(Self.litFraction(display), 0.5, "l'écran repris est noir")
-        let budget: UInt64 = 400_000_000_000
+        XCTAssertGreaterThan(GuestScript.litFraction(display.snapshot()), 0.5, "l'écran repris est noir")
+        let script = GuestScript(machine: machine, console: console)
+        let budget = Self.budget(environment, default: 400_000_000_000)
+        let started = Date()
 
         // **Le bureau lui-même** : `xfdesktop` dessine le fond et les
         // icônes. Un passage a repris un écran au fond noir : on demande s'il
         // vit encore, et ce que le noyau a dit des plantages.
-        var mark = console.text.count
-        machine.send(Data("pgrep -x xfdesktop >/dev/null && echo FOND_VIVANT || echo FOND_MORT; dmesg | grep -i -E 'segfault|trap|killed' | tail -4; echo FOND_$((1+1))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "FOND_2", after: mark, console: console, budget: budget))
-        XCTAssertTrue(console.text.dropFirst(mark).contains("FOND_VIVANT"), "xfdesktop ne tourne plus")
+        // La réponse s'écrit par calcul, elle aussi : la console répète la
+        // ligne tapée, et « FOND_VIVANT » écrit en clair y était déjà — la
+        // vérification passait que `xfdesktop` vive ou non.
+        script.type("pgrep -x xfdesktop >/dev/null && echo FOND_VIVANT_$((2+2)) || echo FOND_MORT; dmesg | grep -i -E 'segfault|trap|killed' | tail -4; echo FOND_$((1+1))\n")
+        try script.expect("FOND_2", budget: budget)
+        XCTAssertTrue(console.contains("FOND_VIVANT_4", after: script.mark), "xfdesktop ne tourne plus")
 
         // La console série.
-        mark = console.text.count
-        machine.send(Data("echo REPRIS_$((6*7))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "REPRIS_42", after: mark, console: console, budget: budget),
-                      "la console série ne répond plus")
+        script.type("echo REPRIS_$((6*7))\n")
+        try script.expect("REPRIS_42", budget: budget)
+        print("la console répond \(String(format: "%.1f", Date().timeIntervalSince(started))) s après la reprise")
+
+        // **L'heure de l'invité**, contre celle que sert son horloge CMOS : à
+        // la minute près après une première reprise, au jour de la fabrique
+        // sans elle.
+        script.type("echo HEURE_$(date +%s)_FIN$((3+4))\n")
+        try script.expect("_FIN7", budget: budget)
+        let tail = console.text.components(separatedBy: "HEURE_").last ?? ""
+        let guest = TimeInterval(tail.prefix { $0.isNumber }) ?? 0
+        let host = (ahead ?? Date()).timeIntervalSince1970
+        print("heure de l'invité : \(Int(guest)), de l'horloge CMOS : \(Int(host)), écart \(Int(host - guest)) s")
+        if firstLine != nil {
+            XCTAssertLessThan(abs(host - guest), 120, "la première reprise n'a pas remis l'heure")
+        }
+
+        // **L'aléa du noyau, juste après la reprise** : relevé, pas jugé. Deux
+        // reprises qui rendent les mêmes octets ici disent que l'état du
+        // générateur vient de l'instantané — la raison pour laquelle le
+        // guetteur des clés attend (`ReadyDesktopBuild.keyWatcher`).
+        script.type("echo ALEA_$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' ')_FIN$((2+3))\n")
+        try script.expect("_FIN5", budget: budget)
+
+        // La carte réseau, vue de l'invité : son pilote tient un périphérique.
+        script.type("echo NET_$(ls /sys/bus/virtio/drivers/virtio_net | grep -c virtio)_FIN$((1+1))\n")
+        try script.expect("_FIN2", budget: budget)
+        XCTAssertTrue(console.contains("NET_1_FIN2", after: script.mark), "l'invité n'a plus de carte réseau")
 
         // Le clavier : Ctrl+Alt+T ouvre un terminal.
-        mark = console.text.count
-        machine.send(Data("pkill -x xfce4-terminal; sleep 5; echo CLAVIER_$((1+1))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "CLAVIER_2", after: mark, console: console, budget: budget))
+        script.type("pkill -x xfce4-terminal; sleep 5; echo CLAVIER_$((1+1))\n")
+        try script.expect("CLAVIER_2", budget: budget)
         machine.key(.leftControl, down: true)
         machine.key(.leftAlt, down: true)
         for event in X86Keystrokes.typing("t") { machine.key(event.code, down: event.down) }
         machine.key(.leftAlt, down: false)
         machine.key(.leftControl, down: false)
-        mark = console.text.count
-        machine.send(Data("sleep 20; pgrep -x xfce4-terminal >/dev/null && echo TERMINAL_$((1+1))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "TERMINAL_2", after: mark, console: console, budget: budget),
-                      "le raccourci du clavier n'a pas ouvert de terminal")
+        script.type("sleep 20; pgrep -x xfce4-terminal >/dev/null && echo TERMINAL_$((1+1))\n")
+        XCTAssertNoThrow(try script.expect("TERMINAL_2", budget: budget),
+                         "le raccourci du clavier n'a pas ouvert de terminal")
 
         // La tablette : deux touchers à deux endroits, et `dd` lit dans
         // evdev les quatre premiers événements qui en sortent (96 octets).
         let tablet = try XCTUnwrap(machine.tablet)
         XCTAssertTrue(tablet.isReady, "le pilote de la tablette a disparu")
-        mark = console.text.count
-        machine.send(Data("D=$(grep -A6 'wisq tablet' /proc/bus/input/devices | grep -o 'event[0-9]*'); (dd if=/dev/input/$D bs=24 count=4 status=none | wc -c | sed 's/^/LU_/' &); sleep 3; echo PRET_$((1+1))\n".utf8))
-        XCTAssertTrue(Self.run(machine, until: "PRET_2", after: mark, console: console, budget: budget))
-        mark = console.text.count
+        script.type("D=$(grep -A6 'wisq tablet' /proc/bus/input/devices | grep -o 'event[0-9]*'); (dd if=/dev/input/$D bs=24 count=4 status=none | wc -c | sed 's/^/LU_/' &); sleep 3; echo PRET_$((1+1))\n")
+        try script.expect("PRET_2", budget: budget)
         XCTAssertTrue(machine.touch(x: 0.3, y: 0.4, buttons: 0))
         XCTAssertTrue(machine.touch(x: 0.6, y: 0.5, buttons: 0))
-        XCTAssertTrue(Self.run(machine, until: "LU_96", after: mark, console: console, budget: budget),
-                      "la tablette ne parle plus à l'invité")
+        XCTAssertNoThrow(try script.expect("LU_96", budget: budget), "la tablette ne parle plus à l'invité")
+
+        // **Les clés SSH, refaites ici** : le guetteur laissé par la fabrique
+        // voit l'horloge repartir, attend que le noyau réensemence son
+        // générateur, refait les clés et relance `sshd`. Puis on demande à
+        // `sshd` lui-même quelle clé il présente : celle du fichier neuf, et
+        // pas une clé gardée en mémoire depuis la fabrique.
+        script.type("until pgrep -x sshd >/dev/null && [ -s /etc/ssh/ssh_host_ed25519_key.pub ]; do sleep 5; done; "
+            + "sleep 5; A=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2); "
+            + "B=$(ssh-keyscan -t ed25519 127.0.0.1 2>/dev/null | ssh-keygen -lf - | cut -d' ' -f2); "
+            + "[ -n \"$A\" ] && [ \"$A\" = \"$B\" ] && echo CLE_SERVIE_$((1+1)) $A; echo CLE_$((3+3))\n")
+        try script.expect("CLE_6", budget: budget)
+        XCTAssertTrue(console.contains("CLE_SERVIE_2", after: script.mark),
+                      "sshd ne présente pas la clé refaite après la reprise")
+        print("clés refaites \(String(format: "%.1f", Date().timeIntervalSince(started))) s après la reprise")
         Self.dump(display, to: from + "-apres.ppm")
-        XCTAssertGreaterThan(Self.litFraction(display), 0.5, "l'écran s'est éteint après la reprise")
+        XCTAssertGreaterThan(GuestScript.litFraction(display.snapshot()), 0.5, "l'écran s'est éteint après la reprise")
         print(console.text.suffix(600))
     }
 }

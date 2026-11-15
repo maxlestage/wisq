@@ -9,8 +9,14 @@ import WisqVM
 /// Rien n'est promis avant la fin : l'image n'entre dans la bibliothèque
 /// qu'entière et à la somme que publie la distribution. Une coupure garde ce
 /// qui est arrivé ; le bouton, rappuyé, reprend là.
+///
+/// **En tête, les bureaux prêts** (`ReadyDesktop`) : un bureau déjà démarré
+/// par wisq, prêt en moins d'une minute. La section ne se montre que si leur
+/// index a répondu ; tant que la release des bureaux n'existe pas, la feuille
+/// est celle d'avant.
 struct ImageDownloadSheet: View {
     let onDownloaded: (URL) -> Void
+    let onInstalled: (InstalledMachine) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var model = ImageDownloadModel()
 
@@ -32,6 +38,17 @@ struct ImageDownloadSheet: View {
                     }
                 default:
                     EmptyView()
+                }
+                if !model.desktops.isEmpty {
+                    Section {
+                        ForEach(model.desktops, id: \.title) { desktop in
+                            desktopRow(desktop)
+                        }
+                    } header: {
+                        Text("Bureaux prêts")
+                    } footer: {
+                        Text(ReadyDesktop.sharedNote)
+                    }
                 }
                 if !model.releases.isEmpty {
                     Section {
@@ -96,9 +113,76 @@ struct ImageDownloadSheet: View {
         .padding(.vertical, 4)
     }
 
+    /// **Une ligne de bureau prêt** : ce que c'est, ce que ça coûte, ce que
+    /// ça donne ; puis, pendant le téléchargement, l'étape et un seul progrès
+    /// sur les deux fichiers.
+    @ViewBuilder
+    private func desktopRow(_ desktop: ReadyDesktop) -> some View {
+        let busy = model.phase == .fetchingDesktop(title: desktop.title)
+            || model.phase == .installingDesktop(title: desktop.title)
+        let fits = desktop.fits(ceiling: model.ceiling)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(desktop.title)
+                        .font(.body.weight(.semibold))
+                    Text(desktop.madePhrase)
+                        .font(.caption)
+                    Text(desktop.sizePhrase(imagePresent: model.imagePresent(desktop)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(desktop.memoryPhrase(ceiling: model.ceiling))
+                        .font(.caption)
+                        .foregroundStyle(fits ? Color.secondary : Color.orange)
+                }
+                Spacer(minLength: 12)
+                if busy {
+                    ProgressView()
+                } else {
+                    Button {
+                        Task {
+                            if let machine = await model.install(desktop) {
+                                onInstalled(machine)
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        Label("Installer", systemImage: "arrow.down.circle")
+                            .labelStyle(.iconOnly)
+                            .font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isDownloading || !fits)
+                    .accessibilityLabel("Installer \(desktop.title)")
+                }
+            }
+            if model.phase == .fetchingDesktop(title: desktop.title), let step = model.desktopProgress,
+               step.total > 0 {
+                ProgressView(value: Double(step.have), total: Double(step.total))
+                Text(step.phrase)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if model.phase == .installingDesktop(title: desktop.title) {
+                Text("Vérification de l'image et installation du bureau…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let failure = model.desktopFailure, failure.title == desktop.title {
+                RefusalLabel(text: failure.why)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Un téléchargement en cours, d'une image ou d'un bureau prêt : un seul
+    /// à la fois.
     private var isDownloading: Bool {
-        if case .downloading = model.phase { return true }
-        return false
+        switch model.phase {
+        case .downloading, .fetchingDesktop, .installingDesktop: return true
+        default: return false
+        }
     }
 }
 #endif

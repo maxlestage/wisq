@@ -95,6 +95,18 @@ let rustLinkerSettings: [LinkerSetting] = haveXCFramework ? [] : [
     .linkedLibrary("wisq_vm"),
 ] + rustSystemLibraries
 
+// **La fabrique du bureau prêt** : démarre une image jusqu'à son bureau et
+// l'écrit en archive `.wisqmachine`. Avec le cœur Rust seulement, parce que le
+// noyau doit sortir de l'image par `IsoBoot` (`WisqVMRust`), le code même du
+// téléphone ; jamais construite pour iOS.
+#if os(iOS)
+let fabriqueTargets: [Target] = []
+#else
+let fabriqueTargets: [Target] = [
+    .executableTarget(name: "wisq-fabrique", dependencies: ["WisqVM", "WisqVMRust"]),
+]
+#endif
+
 let rustCoreTargets: [Target] = rustCoreEnabled ? [
     rustLibraryTarget,
 
@@ -109,7 +121,7 @@ let rustCoreTargets: [Target] = rustCoreEnabled ? [
     // Both cores, driven through the same script and compared.
     .testTarget(name: "WisqVMRustTests",
                 dependencies: ["WisqVMRust", "WisqVM", "WisqVMTestKit"]),
-] : []
+] + fabriqueTargets : []
 
 let rustCoreProducts: [Product] = rustCoreEnabled
     ? [.library(name: "WisqVMRust", targets: ["WisqVMRust"])]

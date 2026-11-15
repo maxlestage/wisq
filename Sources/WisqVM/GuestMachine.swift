@@ -365,6 +365,26 @@ public enum GuestMachineFactory {
             return machine
         }
     }
+
+    /// **L'écran de l'application**, en pixels : celui que `LocalVMModel`
+    /// branche sur chaque machine PC. Celui d'un écran de bureau modeste, que
+    /// `simpledrm` prend tel quel et qu'un téléphone affiche en paysage sans
+    /// trop réduire. Plus grand, chaque défilement de la console coûterait
+    /// plus à l'interprète.
+    ///
+    /// Ici plutôt que dans `WisqUI`, où il vivait : un bureau prêt est
+    /// fabriqué sous Linux (`wisq-fabrique`), et son noyau a réglé son mode
+    /// graphique sur l'écran qu'il a trouvé au démarrage. Repris sur un écran
+    /// d'une autre taille, l'instantané laisse l'écran noir
+    /// (`X86Machine.restore`). La fabrique et l'application doivent donc lire
+    /// le même nombre, et seul ce module est vu des deux.
+    public static let screenSize = (width: 1024, height: 768)
+
+    /// Brancher l'écran de l'application — et sa tablette — sur une machine
+    /// PC, avant `load` ou `restore`.
+    public static func attachScreen(to machine: X86Machine) throws {
+        try machine.attachDisplay(width: screenSize.width, height: screenSize.height)
+    }
 }
 
 extension GuestMachine {

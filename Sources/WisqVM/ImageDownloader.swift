@@ -105,6 +105,42 @@ public struct ImageDownloader: Sendable {
         return releases
     }
 
+    /// **Les bureaux prêts** (`ReadyDesktop`), lus dans leur index, par le
+    /// même lecteur que les autres (`read`, borné à 1 Mio).
+    ///
+    /// **Un index qui ne répond pas ne propose rien, et ne le dit pas** : tant
+    /// que la release des bureaux n'existe pas, GitHub répond 404, et ce n'est
+    /// pas une panne à montrer. La section ne se montre simplement pas.
+    public func readyDesktops(index: URL = ReadyDesktop.index) async -> [ReadyDesktop] {
+        guard let text = try? await read(index) else { return [] }
+        return ReadyDesktop.parse(text, index: index)
+    }
+
+    /// Ce que la feuille « Télécharger » montre : les bureaux prêts, les
+    /// images des distributions, et la raison quand aucune image n'a pu être
+    /// lue.
+    public struct Catalog: Sendable {
+        public let desktops: [ReadyDesktop]
+        public let releases: [ImageDownload.Release]
+        /// L'échec des index des distributions, quand aucun n'a répondu. Les
+        /// bureaux prêts restent proposés : ils ont leur propre index.
+        public let failure: String?
+    }
+
+    /// **Tout, en même temps** : l'index des bureaux et ceux des
+    /// distributions. L'un qui ne répond pas ne cache pas l'autre — la règle
+    /// de `bootableReleases`, étendue aux bureaux.
+    public func catalog(readyIndex: URL = ReadyDesktop.index) async -> Catalog {
+        async let desktops = readyDesktops(index: readyIndex)
+        async let releases = attempt { try await bootableReleases() }
+        switch await releases {
+        case .success(let found):
+            return Catalog(desktops: await desktops, releases: found, failure: nil)
+        case .failure(let error):
+            return Catalog(desktops: await desktops, releases: [], failure: error.localizedDescription)
+        }
+    }
+
     private func attempt(_ body: () async throws -> [ImageDownload.Release]) async
         -> Result<[ImageDownload.Release], Error> {
         do { return .success(try await body()) } catch { return .failure(error) }
