@@ -8,6 +8,129 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureau prêt : la première reprise donne l'heure et de l'aléa, et des instantanés témoins tiennent le format
+
+**Ce qui n'allait pas.**
+
+1. **Un bureau prêt reprenait au jour de sa fabrication.** L'import de
+   l'archive écrit la session sur le téléphone, et la date du fichier est
+   celle de l'import. La reprise rattrapait donc le temps passé depuis
+   l'import (`elapse(since:)`), c'est-à-dire presque rien. Mesuré au banc,
+   sans correction, sur l'archive fabriquée le 15 novembre : l'invité se
+   croyait le **14 novembre à 00 h 04 min 47 s** (1794614687), soit
+   **97 903 s** (27 h) de retard sur l'horloge de l'hôte. Pour un bureau
+   repris un mois plus tard, l'écart serait d'un mois : certificats TLS « pas
+   encore valides », signatures de paquets refusées.
+2. **L'aléa du noyau était le même pour toutes les copies.** L'état du
+   générateur est dans l'instantané. `RDSEED` et `RDRAND` le font diverger
+   au réensemencement suivant, mais rien ne venait du téléphone lui-même.
+3. **Rien ne tenait le format d'un instantané d'une version à l'autre, ni
+   d'un hôte à l'autre.** Le bureau est fabriqué sous Linux x86-64 et repris
+   sur un iPhone arm64, par une version plus récente. Un champ ajouté au
+   milieu d'une section, ou un périphérique déplacé sur le bus PCI, cassait en
+   silence tous les bureaux publiés. Preuve : avec un champ glissé après
+   MXCSR (écrit et relu), les 29 tests de l'instantané (`X86DiskSnapshotTests`,
+   `X86ScreenSnapshotTests`, `X86SnapshotLevelTests`,
+   `X86SnapshotX87SectionTests`, `VirtioNetTests`,
+   `X86RestoreAllOrNothingTests`) restent verts.
+
+**Ce qui change.**
+
+- **`FirstResume`** (nouveau, `Sources/WisqVM/FirstResume.swift`). À la toute
+  première reprise d'un bureau téléchargé, rien n'est rattrapé. Une ligne est
+  tapée sur la console série, où la fabrique a laissé un shell `root` :
+  `date -s @$(cat /sys/class/rtc/rtc0/since_epoch) >/dev/null; echo <64
+  chiffres> > /dev/urandom`.
+  - L'heure est lue **par l'invité**, à son horloge CMOS, que le téléphone
+    sert en UTC. Elle est lue au moment où la ligne s'exécute, et pas tapée
+    en chiffres par l'hôte : sous l'interprète, la ligne s'exécute quelques
+    secondes après avoir été tapée.
+  - `date -s` plutôt que `hwclock -s`, qui croit `/etc/adjtime`.
+    `hwclock -s` n'a pas été essayé au banc.
+  - L'aléa : 32 octets de `SystemRandomNumberGenerator`.
+- **« Une seule fois »** tient à une marque, `machine-<identité>.wisqvm.premiere`,
+  posée à côté de la session :
+  - `ReadyDesktop.install` la pose, sous l'identité de la session
+    (`SuspendedMachine.identity(digest:named:)`, nouvelle), avec le jour de la
+    fabrication. Si elle ne s'écrit pas, l'installation est défaite ;
+  - **la première écriture de la session la retire** (`SuspendedMachine.savePacked`).
+    Une application tuée avant sa première sauvegarde rouvre donc le bureau
+    téléchargé et lui redonne l'heure. Une ligne tapée mais pas encore lue
+    au moment de la sauvegarde est dans l'instantané (les octets tapés en
+    attente), et la reprise suivante l'exécute ;
+  - « Oublier » (`clear`, `clearAll`) la retire avec la session. La copie
+    d'un bureau jamais repris (`InstalledMachines.duplicate`) la reçoit aussi.
+    Elle ne finit pas en `.wisqvm`, donc elle n'est ni une session, ni un
+    fichier emporté par l'export.
+- **La liaison** (`LocalVMModel.boot`) : la marque est lue avec la session,
+  `FirstResume.resumed` remplace `machine.elapse(since:)` entre la reprise et
+  le premier tour, et la console dit « Bureau prêt du 15 novembre 2026,
+  repris pour la première fois : l'heure du téléphone et un aléa neuf lui
+  sont donnés par la ligne qui suit. ».
+- **Le banc du bureau repris** (`testTheDesktopComesBackAfterASave`) passe
+  par la première reprise quand il reprend une archive. Il compare ensuite
+  `date +%s` de l'invité à l'horloge CMOS. Deux variables :
+  `WISQ_PC_HOST_AHEAD_DAYS` (l'horloge du téléphone figée N jours plus tard)
+  et `WISQ_PC_FIRST_RESUME=0` (sans la première reprise, pour mesurer).
+- **L'instantané témoin** `Tests/Fixtures/x86-instantane-1.wisqvm`
+  (1 568 octets compressés, 5 358 bruts) : la machine de l'application à
+  128 Mio (carte réseau, écran et tablette, deux disques sur fichier), avec
+  une valeur reconnaissable dans chaque champ. Les périphériques sont
+  programmés **par les ports**, comme un noyau : BAR, commandes, poignées de
+  main virtio, une lecture servie sur le disque, un mode Bochs avec la
+  seconde page montrée. `X86SnapshotWitnessTests` le tient par six tests :
+  - le niveau courant a son témoin ;
+  - un lecteur écrit d'après le format, et pas celui de la machine, relit
+    chaque section à sa valeur, puis vérifie qu'aucun octet ne suit ;
+  - la machine d'aujourd'hui le reprend, et retrouve chaque périphérique à
+    l'emplacement PCI où l'invité l'a programmé. Les emplacements, les
+    lignes, l'adresse MAC et les bases sont écrits en chiffres dans le test,
+    pas lus dans le code ;
+  - la machine d'aujourd'hui écrit encore le témoin octet pour octet ;
+  - repris puis resauvé, il redonne ses octets ;
+  - un test armé (`WISQ_ECRIRE_TEMOIN=1`) écrit le témoin d'un niveau neuf,
+    jamais par-dessus un témoin existant.
+
+  « Cœur (Linux) » et « Cœur (Apple) » lancent ces tests : c'est la preuve
+  que l'instantané passe d'un hôte à l'autre.
+
+**Comment c'est vérifié.**
+
+- Le banc, sur l'archive de la fabrication (`void-live-x86_64-20250202-xfce-pret.wisqmachine`),
+  horloge du téléphone figée **30 jours** plus tard : heure de l'invité
+  1797304570, horloge CMOS 1797304569, **écart 0 s**. La console répond
+  12,0 s après la reprise, les clés SSH sont refaites à 198,7 s, le test
+  passe en 200,9 s, pic résident 958 Mio. Sans la première reprise : écart
+  97 903 s (ci-dessus).
+- 19 tests ajoutés : `FirstResumeTests` (12), `ReadyDesktopTests` (1),
+  `X86SnapshotWitnessTests` (6). Compte publié : 3566 → 3585 (Swift 2984 + Rust 601).
+- Sabotages, un à la fois, chacun restauré et vérifié à `cmp` :
+  - sans le retrait dans `savePacked` : 4 tests rouges ;
+  - la marque posée sous le nom au lieu de la clé : 1 rouge ;
+  - un rattrapage en plus à la première reprise : 1 rouge ;
+  - la marque non copiée par `duplicate` : 2 rouges ;
+  - `clear` sans le retrait : 1 rouge ; `clearAll` sans le retrait : 1 rouge ;
+  - **un champ ajouté au milieu d'une section** (après MXCSR, écrit et
+    relu) : 3 tests du témoin rouges (« corrupt » à la reprise, et l'écart à
+    l'octet), alors que les 29 autres tests de l'instantané restent verts ;
+  - **la carte réseau déplacée de l'emplacement 5 au 6** : 5 rouges (la
+    carte absente en 00:05.0, sa fenêtre perdue, une carte en 00:06.0, le
+    témoin changé) ;
+  - la ligne de la tablette changée (10 → 11) : 1 rouge (le témoin changé).
+- Suite Swift entière : 2904 tests exécutés, 55 sautés (les bancs armés), 0 échec, en 450 s. `WISQ_SWIFT_CORE=1 swift build` passe ; SwiftLint strict : 0 violation.
+
+**Ce qui reste.**
+
+- La liaison dans `LocalVMModel` ne compile pas sous Linux : seul le job
+  « App iOS » la juge. Rien n'a tourné sur un téléphone.
+- L'export d'un bureau jamais repris n'emporte pas la marque : réimporté, il
+  reprendrait au jour de la fabrication.
+- La ligne suppose un shell à l'invite de la console série, comme la
+  fabrique le laisse. Un bureau prêt fabriqué autrement devra le garantir.
+- Le témoin ne voit pas ce que l'instantané ne porte pas : un bit de `CPUID`
+  retiré dans le code. Pour celui-là, et ce qui lui ressemble,
+  la règle reste de monter `X86Machine.snapshotLevel`.
+
 ## 2026-11-14 — Bureaux prêts : l'ancien index n'est plus perdu sur une panne, et deux gardes enfin tenues
 
 **Ce qui n'allait pas.** Le second contrôle adverse de la tranche « Bureaux
