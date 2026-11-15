@@ -8,6 +8,10 @@ public protocol ScreenKeyboard: AnyObject {
     func type(_ text: Substring) -> X86TypingReport
     /// Des frappes qui vont ensemble, toutes ou aucune.
     func press(_ events: [X86Keystrokes.Event]) -> Bool
+    /// Les frappes que la machine n'a pas encore jouées.
+    var pendingKeystrokes: Int { get }
+    /// Jeter ce qui n'a pas encore été joué, sans laisser de touche enfoncée.
+    func abandonTyping()
 }
 
 extension X86Machine: ScreenKeyboard {}
@@ -28,6 +32,12 @@ extension X86Machine: ScreenKeyboard {}
 ///
 /// Ce qui est gardé est borné aussi (`limit`) ; au-delà, c'est **dit**
 /// (`note`), comme ce qu'un clavier américain n'a pas.
+///
+/// **Et la frappe s'annule** (`cancel`). Ce qui attend passe avant ce qu'on
+/// tape ensuite, Ctrl-C compris : un gros fichier collé par erreur, à
+/// cinquante millisecondes la touche, tiendrait le clavier des heures. Annuler
+/// jette ce qui attend ici **et** ce que la machine n'a pas encore joué, et
+/// relâche les touches que l'invité tient (`X86Machine.abandonTyping`).
 public struct ScreenTypist: Sendable, Equatable {
     public enum Item: Sendable, Equatable {
         case text(Substring)
@@ -46,6 +56,22 @@ public struct ScreenTypist: Sendable, Equatable {
     public private(set) var skipped = 0
     /// Les caractères refusés parce que ce qui attend était déjà à la borne.
     public private(set) var refused = 0
+    /// Les frappes que la machine n'avait pas encore jouées à la dernière
+    /// action (ou au dernier battement, `resume`).
+    public private(set) var queued = 0
+    /// La frappe vient d'être annulée, et ce qui attendait encore ici.
+    public private(set) var cancelled = false
+    public private(set) var abandoned = 0
+
+    /// À partir de combien de frappes encore à jouer la frappe se dit « en
+    /// cours » et s'annule : deux cents, cinq secondes au rythme d'une main
+    /// (deux frappes toutes les cinquante millisecondes). En dessous, l'avis
+    /// clignoterait à chaque touche tapée, pour une attente qu'on ne voit pas.
+    public static let busyStrokes = 200
+
+    /// **Une frappe qu'on peut annuler est en cours** : du texte attend ici,
+    /// ou la machine a encore des secondes de frappe à jouer.
+    public var inProgress: Bool { waitingCount > 0 || queued >= Self.busyStrokes }
 
     public init() {}
 
@@ -81,6 +107,7 @@ public struct ScreenTypist: Sendable, Equatable {
     /// **Reprendre ce qui attend**, autant que la file en prend, dans
     /// l'ordre, et s'arrêter au premier morceau qui ne tient plus.
     public mutating func resume(on keyboard: some ScreenKeyboard) {
+        defer { queued = keyboard.pendingKeystrokes }
         while let first = waiting.first {
             switch first {
             case .text(let text):
@@ -99,6 +126,18 @@ public struct ScreenTypist: Sendable, Equatable {
         }
     }
 
+    /// **Annuler la frappe en cours** : ce qui attend ici, et ce que la
+    /// machine n'a pas encore joué. L'avis dit ce qui n'a pas été tapé, et
+    /// s'efface à l'action suivante, qui part aussitôt.
+    public mutating func cancel(on keyboard: some ScreenKeyboard) {
+        let left = waitingCount
+        self = ScreenTypist()
+        keyboard.abandonTyping()
+        cancelled = true
+        abandoned = left
+        queued = keyboard.pendingKeystrokes
+    }
+
     /// Tout oublier : la machine n'est plus là, ou c'en est une autre.
     public mutating func reset() {
         self = ScreenTypist()
@@ -110,6 +149,8 @@ public struct ScreenTypist: Sendable, Equatable {
         guard waiting.isEmpty else { return }
         skipped = 0
         refused = 0
+        cancelled = false
+        abandoned = 0
     }
 
     /// **La phrase sous l'écran**, ou `nil` s'il n'y a rien à dire.
@@ -117,6 +158,13 @@ public struct ScreenTypist: Sendable, Equatable {
         var parts: [String] = []
         if waitingCount > 0 {
             parts.append("Frappe en cours : encore \(Self.characters(waitingCount)) à taper sur l'écran.")
+        } else if inProgress {
+            parts.append("Frappe en cours sur l'écran.")
+        }
+        if cancelled {
+            parts.append(abandoned > 0
+                         ? "Frappe annulée : \(Self.characters(abandoned)) \(Self.verb(abandoned))."
+                         : "Frappe annulée.")
         }
         if refused > 0 {
             parts.append("\(Self.characters(refused)) \(Self.verb(refused)) : le texte est trop long "

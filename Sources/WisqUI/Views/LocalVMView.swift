@@ -1110,11 +1110,25 @@ struct LocalVMTerminalView: View {
             // s'écrit encore, ou des caractères qu'un clavier américain n'a
             // pas. Sans cette ligne, la fin d'un collage disparaissait sans
             // que rien ne le dise. Voir `ScreenTypist`.
+            //
+            // **Et un bouton pour l'annuler** : ce qui attend passe avant ce
+            // qu'on tape ensuite, Ctrl-C compris, et un gros fichier collé
+            // par erreur tiendrait le clavier de la machine des heures.
             if !fullScreen, typesOnScreen, let typingNote = model.typingNote {
-                Text(typingNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(typingNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if model.typingInProgress {
+                        Button("Annuler la frappe", role: .destructive) {
+                            model.cancelTyping()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
             }
 
             // **Les touches qu'un shell demande.** Tabulation pour compléter,

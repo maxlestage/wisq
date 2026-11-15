@@ -763,6 +763,17 @@ public final class LocalVMModel {
     /// qui n'a pas pu l'être. Voir `ScreenTypist.note`.
     public var typingNote: String? { typist.note }
 
+    /// Une frappe qu'on peut annuler est en cours : voir `ScreenTypist.inProgress`.
+    public var typingInProgress: Bool { typist.inProgress }
+
+    /// **Annuler la frappe en cours** : un collage pris par erreur ne tient
+    /// plus le clavier de la machine des heures, et ce qu'on tape ensuite —
+    /// Ctrl-C d'abord — part aussitôt. Voir `ScreenTypist.cancel`.
+    public func cancelTyping() {
+        guard let pc = machine as? X86Machine else { return }
+        typist.cancel(on: pc)
+    }
+
     /// Un toucher à un endroit de l'écran, par la tablette ; faux quand
     /// l'invité ne l'a pas prise. Voir `X86Machine.touch`.
     public func touch(x: Double, y: Double, buttons: UInt8) -> Bool {
@@ -943,8 +954,9 @@ public final class LocalVMModel {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self, self.machine === machine else { return }
                 // La file du clavier s'est vidée d'une seconde de frappe : ce
-                // qui attendait y reprend sa place.
-                if let pc = machine as? X86Machine, !self.typist.waiting.isEmpty {
+                // qui attendait y reprend sa place, et l'avis « en cours »
+                // s'éteint quand la machine a tout joué.
+                if let pc = machine as? X86Machine, self.typist.inProgress {
                     self.typist.resume(on: pc)
                 }
                 // Un cœur qui ne publie pas se tait — voir `liveProgress`.
