@@ -13109,6 +13109,257 @@ console.log("fini");
     }
 }
 
+/// **Un arrêt en anneau trois ne rend pas le noyau illisible à `revoir`.**
+///
+/// Depuis que la marche juge les droits, `read` lit la fenêtre d'une région
+/// comme un **chargement d'instruction** : en anneau trois, une page sans le
+/// bit utilisateur ne se lit pas. C'est juste pour la fenêtre qu'on va
+/// traduire. Ça ne l'est pas pour `revoir`, qui relit toutes les fenêtres à la
+/// fin de la course **avec l'anneau de l'arrêt** : l'arrêt d'Alpine en anneau
+/// trois rangeait 11 044 régions sur 11 080 parmi les illisibles, et le compte
+/// des périmées tombait à zéro, faux et sans un mot — là même où le journal
+/// place le prochain mur. Arrêtée en anneau zéro, la même machine en comptait
+/// 373.
+///
+/// Le montage : le noyau, en anneau zéro sur une page du superviseur, réécrit
+/// un octet de sa propre fenêtre puis rend la main au programme par
+/// `sysretq`. Le programme, sur une page utilisateur, s'arrête sur un `ud2`
+/// sans porte. La page du noyau est toujours dans les tables : sa fenêtre doit
+/// être comparée, et le changement nommé.
+#[test]
+fn a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let seen = ring_three_stop(&bun, 0x100, &[0x0f, 0x0b], false);
+    assert_eq!(
+        seen.cs, 0x33,
+        "la machine doit s'arrêter en anneau trois, sinon ce test ne juge rien : {}",
+        seen.text
+    );
+    assert!(
+        seen.unreadable.is_empty(),
+        "**la page du noyau est toujours dans les tables** : rien n'est \
+         illisible, quel que soit l'anneau de l'arrêt : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.changed,
+        vec![(RING_THREE_KERNEL, 0x100, 0x00, 0x90)],
+        "et l'octet que le noyau a réécrit est nommé : {}",
+        seen.text
+    );
+}
+
+/// **La sonde de `surveiller` ne perd pas non plus le noyau en anneau trois.**
+///
+/// Elle lit l'octet d'entrée par `read`, au même titre que `revoir`, et pour la
+/// même raison doit lire en `SLOTS.walkMachine`. Le cas existe tant que les
+/// régions sont gardées par adresse : une région du noyau déjà traduite se
+/// ré-entre en anneau trois sans faute de chargement (le JOURNAL le porte dans
+/// « Ce qui reste »). Elle exécute alors du code périmé, et c'est exactement ce
+/// que la sonde est là pour compter.
+///
+/// Le montage : le noyau réécrit **son propre premier octet**, puis
+/// `sysretq` ; le programme saute sur le noyau. L'hôte trouve la région déjà
+/// connue, la sonde compare, puis la région périmée tourne en anneau trois et
+/// faute sur son écriture — sans porte, la machine s'arrête là.
+#[test]
+fn the_watch_probe_still_sees_a_kernel_region_reentered_from_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut user = vec![0x48, 0xb8]; // movabs $KERNEL,%rax
+    user.extend_from_slice(&RING_THREE_KERNEL.to_le_bytes());
+    user.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    user.extend_from_slice(&[0x0f, 0x0b]); // ud2 — jamais atteint
+    let seen = ring_three_stop(&bun, 0, &user, true);
+    assert_eq!(
+        seen.cs, 0x33,
+        "la région du noyau a été ré-entrée depuis l'anneau trois : {}",
+        seen.text
+    );
+    assert!(
+        seen.entries >= 1,
+        "**la sonde a vu le premier octet changé** sous une région ré-entrée \
+         en anneau trois : {}",
+        seen.text
+    );
+    assert_eq!(
+        seen.regions,
+        vec![RING_THREE_KERNEL],
+        "et c'est la région du noyau qui est nommée, elle seule : {}",
+        seen.text
+    );
+}
+
+/// Le noyau, sur une page du superviseur.
+const RING_THREE_KERNEL: u64 = 0x1_0000;
+/// Le programme, sur une page utilisateur.
+const RING_THREE_USER: u64 = 0x20_1000;
+
+struct RingThreeStop {
+    cs: u64,
+    changed: Vec<(u64, u64, u64, u64)>,
+    unreadable: Vec<u64>,
+    entries: u64,
+    regions: Vec<u64>,
+    text: String,
+}
+
+/// Le noyau écrit `0x90` à `RING_THREE_KERNEL + offset`, rend la main au
+/// programme `user` par `sysretq`, et le pilote dit ce que `revoir` et la
+/// sonde ont vu une fois la machine arrêtée.
+///
+/// **Les tables en grandes pages** : les deux premiers mébioctets sans le bit
+/// utilisateur — le noyau, les tables —, les deux suivants avec. Les trois
+/// niveaux du haut le portent, pour que seule la feuille décide.
+fn ring_three_stop(bun: &Path, offset: u32, user: &[u8], surveiller: bool) -> RingThreeStop {
+    const PAGES: u32 = 64;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    /// `STAR[63:48]` : `+16` donne `0x30`, et le processeur ajoute l'anneau.
+    const EXIT_SELECTOR: u64 = 0x20;
+
+    let mut kernel: Vec<u8> = vec![0xc6, 0x05]; // movb $0x90, disp(%rip)
+    kernel.extend_from_slice(&(offset as i32 - 7).to_le_bytes());
+    kernel.push(0x90);
+    kernel.extend_from_slice(&[0x48, 0xb9]); // movabs $USER,%rcx — où rendre la main
+    kernel.extend_from_slice(&RING_THREE_USER.to_le_bytes());
+    kernel.extend_from_slice(&[0x41, 0xbb, 0x02, 0x00, 0x00, 0x00]); // mov $2,%r11d — RFLAGS
+    kernel.extend_from_slice(&[0x48, 0x0f, 0x07]); // sysretq
+
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-host-anneau3-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let mut placed = String::new();
+    for (name, bytes, at) in [
+        ("noyau.bin", &kernel[..], RING_THREE_KERNEL),
+        ("programme.bin", user, RING_THREE_USER),
+    ] {
+        let path = scratch.join(name);
+        std::fs::write(&path, bytes).expect(name);
+        placed.push_str(&format!(
+            "new Uint8Array(vm.memory.buffer).set(readFileSync({:?}), {at});\n",
+            path.to_string_lossy()
+        ));
+    }
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+const vm = machine({{
+  translate: (address, slot, code) => {{
+    const out = Bun.spawnSync({{
+      cmd: [{translator:?}, String({pages}), address.toString(), String(slot)],
+      stdin: code,
+    }});
+    if (out.exitCode !== 0) return null;
+    return out.stdout;
+  }},
+  pages: {pages},
+  surveiller: {surveiller},
+}});
+{placed}const vue = new DataView(vm.memory.buffer);
+// Présente et inscriptible partout ; le bit utilisateur (4) en haut, et sur
+// la seule grande page du programme.
+vue.setBigUint64({pml4}, {pdpt}n | 0x7n, true);
+vue.setBigUint64({pdpt}, {pd}n | 0x7n, true);
+vue.setBigUint64({pd}, 0x0n | 0x83n, true);
+vue.setBigUint64({pd} + 8, 0x20_0000n | 0x87n, true);
+vm.globals[{control}].value = BigInt(1) << 31n;
+vm.globals[{control} + 2].value = {pml4}n;
+vm.globals[{syscall}].value = BigInt({exit}) << 48n;
+vm.globals[{efer}].value |= 1n; // SCE : sans lui, pas de `sysretq`
+vm.globals[{segment} + 1].value = 0x10n;
+vm.globals[{segment} + 2].value = 0x18n;
+vm.globals[{rip}].value = {kernel}n;
+// **Un bloc par tour** : un saut indirect vers une région connue passe par la
+// table du module sans revenir à l'hôte, et la sonde ne regarderait pas. Au
+// budget de 256, mesuré, le programme ré-entrait le noyau sans elle.
+const why = await vm.run({{ budget: 1n, rounds: 16 }});
+console.log("arret " + why.stopped);
+console.log("rip 0x" + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
+console.log("cs " + (BigInt.asUintN(64, vm.globals[{segment} + 1].value) & 0xffffn));
+const vu = vm.revoir();
+for (const quoi of vu.changees) {{
+  console.log("changee " + quoi.adresse + " " + quoi.decalage
+    + " " + quoi.lu + " " + quoi.maintenant);
+}}
+for (const adresse of vu.illisibles) console.log("illisible " + adresse);
+console.log("entrees " + vm.surveillees.entrees);
+for (const [adresse] of vm.surveillees.regions) console.log("veille " + adresse);
+console.log("fini");
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            translator = env!("CARGO_BIN_EXE_x86-translate"),
+            pages = PAGES,
+            surveiller = surveiller,
+            placed = placed,
+            pml4 = PML4,
+            pdpt = PDPT,
+            pd = PD,
+            control = CONTROL_SLOT,
+            syscall = SYSCALL_SLOT,
+            exit = EXIT_SELECTOR,
+            efer = EFER_SLOT,
+            segment = SEGMENT_SLOT,
+            rip = RIP_SLOT,
+            kernel = RING_THREE_KERNEL,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        text.lines().any(|line| line == "fini"),
+        "le pilote doit aller au bout : {text}"
+    );
+    let numbers = |line: &str| -> Vec<u64> {
+        line.split_whitespace()
+            .skip(1)
+            .map(|word| word.parse::<u64>().expect("un nombre"))
+            .collect()
+    };
+    let first = |label: &str| -> u64 {
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(label))
+            .unwrap_or_else(|| panic!("le pilote doit dire « {label} » : {text}"));
+        numbers(line)[0]
+    };
+    RingThreeStop {
+        cs: first("cs "),
+        changed: text
+            .lines()
+            .filter(|line| line.starts_with("changee "))
+            .map(|line| {
+                let values = numbers(line);
+                (values[0], values[1], values[2], values[3])
+            })
+            .collect(),
+        unreadable: text
+            .lines()
+            .filter(|line| line.starts_with("illisible "))
+            .map(|line| numbers(line)[0])
+            .collect(),
+        entries: first("entrees "),
+        regions: text
+            .lines()
+            .filter(|line| line.starts_with("veille "))
+            .map(|line| numbers(line)[0])
+            .collect(),
+        text: text.clone(),
+    }
+}
+
 /// **#307 a mesuré que 1 397 régions voient leurs octets changer après leur
 /// traduction. Elle n'a pas pu dire si l'une d'elles a *tourné* ensuite.**
 ///

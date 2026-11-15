@@ -8,6 +8,85 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — `revoir` relit les fenêtres sans juger l'anneau, et dit par quelles tables
+
+**Ce qui n'allait pas.** La tranche des droits (plus bas) fait lire à l'hôte
+la fenêtre d'une région en `WALK_FETCH`, comme un chargement d'instruction :
+en anneau trois, une page sans le bit utilisateur ne se lit pas. C'est juste
+pour la fenêtre qu'on va traduire. Mais `read` servait aussi aux **mesures** :
+`vm.revoir()`, qui relit toutes les fenêtres à la fin de la course, et la
+sonde de `surveiller`, qui relit l'octet d'entrée d'une région. Les deux
+prenaient l'anneau de l'instant. Le contrôle l'a trouvé sur Alpine (6.18.60,
+`WISQ_RAM=256`, `WISQ_TURNS=2000000`) : arrêt en anneau trois à
+`0x7fbcc7208089`, « perimees 0 », « illisibles 11 044 » sur 11 080 régions.
+
+**Ce que le contrôle n'avait pas vu, et qui compte autant.** Corrigé, le
+même arrêt rend « perimees 7 », « illisibles 11 030 » : presque rien ne
+change. Le noyau d'Alpine tourne avec l'isolation des tables (« Kernel/User
+page tables isolation: enabled » sur le port série) ; arrêté en anneau trois,
+il tient les tables **du programme** — CR3 vaut `0x6acb000`, le bit 12 de
+l'isolation allumé —, et son texte n'y est pas cartographié. Ces fenêtres-là
+sont illisibles pour de bon : « la page est toujours dans les tables » est
+faux sur ce noyau. Ce que la correction rend, ce sont les pages du noyau que
+les tables du programme portent bien — `.entry.text`, que l'isolation y
+laisse : les sept périmées relevées sont toutes là (`asm_exc_int3`,
+`asm_common_interrupt`, `irq_entries_start`…) —, et, sur un noyau sans
+isolation, toutes. Mesuré avec `nopti`, même arrêt, même
+instruction de ld-musl : **avant, « perimees 0 », « illisibles 11 048 » ;
+après, « perimees 2 001 », « illisibles 9 »**.
+
+**Ce qui change.**
+
+- `read(address, window, kind)` : `kind` vaut `SLOTS.walkFetch` par défaut
+  (la fenêtre à traduire), et `revoir` comme la sonde passent
+  `SLOTS.walkMachine`. Elles demandent ce que la page porte, pas si
+  l'anneau courant a le droit d'y prendre une instruction.
+- `kernel-entry` écrit `relues-sous anneau <n> cr3 0x…` après « illisibles » :
+  un zéro périmé à un arrêt en anneau trois sous isolation ne se lit plus
+  comme une absence de régions périmées. Pour mesurer à cet arrêt-là,
+  `nopti` sur la ligne de commande.
+- **Pas fait, exprès** : relire chaque fenêtre par le CR3 qui l'a traduite.
+  Ça rendrait les fenêtres du noyau à l'arrêt d'Alpine, mais les tables d'un
+  programme mort ont pu être rendues et réemployées : la marche y lirait
+  n'importe quoi, et `revoir` inventerait des régions périmées — ce que son
+  commentaire interdit.
+
+**Comment c'est vérifié.**
+
+- `a_kernel_window_is_still_compared_when_the_machine_stops_in_ring_three`
+  (`tests/host_loop.rs`) : le noyau, sur une grande page du superviseur,
+  réécrit un octet de sa fenêtre puis `sysretq` ; le programme, sur une page
+  utilisateur, s'arrête sur un `ud2` sans porte. CS vaut `0x33` à l'arrêt,
+  rien n'est illisible, et le changement est nommé (décalage `0x100`, `0x00`
+  → `0x90`).
+- `the_watch_probe_still_sees_a_kernel_region_reentered_from_ring_three` :
+  le noyau réécrit son propre premier octet, le programme saute dessus ; la
+  région connue est ré-entrée en anneau trois, et la sonde la compte. Le
+  pilote tourne à un bloc par tour : au budget de 256, mesuré, le saut
+  indirect passait par la table du module sans revenir à l'hôte, et la sonde
+  ne regardait pas.
+- **Trois sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  `revoir` sans `walkMachine` (le premier test tombe, « illisible 65536 ») ;
+  la sonde sans `walkMachine` (le second, « entrees 0 ») ; `walkMachine` par
+  défaut dans `read`
+  (`a_ring_three_fetch_from_a_supervisor_page_faults_present_and_user`
+  tombe : le chargement reste jugé).
+- Alpine, les trois courses ci-dessus, plus l'arrêt en anneau zéro sans
+  `WISQ_TURNS` : « perimees 373 », « illisibles 9 », comme avant.
+- `cargo test --release` : 526 tests, 0 échec, aussi avec les débordements
+  armés ; `cargo fmt`, les deux `clippy` propres ; le compte publié passe de
+  3 421 à 3 423.
+
+**Ce qui reste.**
+
+- À un arrêt en anneau trois sous isolation des tables, `revoir` ne voit
+  toujours pas le texte du noyau. Le relire par les tables du noyau demande
+  de savoir lesquelles sont encore vivantes ; non fait.
+- La sonde ne voit une région du noyau ré-entrée en anneau trois que parce
+  que les régions sont gardées par adresse (le défaut que l'entrée d'en
+  dessous porte dans « Ce qui reste ») : le jour où ce chargement fautera, le
+  second test devra changer de montage.
+
 ## 2026-11-14 — Sous l'émetteur, les pages ont des droits : écriture, utilisateur, et le code d'erreur juste
 
 **Ce qui n'allait pas.** La marche des tables de l'émetteur

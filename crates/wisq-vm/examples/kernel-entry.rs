@@ -1067,6 +1067,18 @@ console.log("cases " + cases.join(" ; "));
 const revu = vm.revoir();
 console.log("perimees " + revu.changees.length + " sur " + {rounds});
 console.log("illisibles " + revu.illisibles.length);
+// **Par quelles tables elles ont été relues.** `revoir` relit par les tables
+// en service à l'arrêt, sans juger aucun droit : c'est la question « que
+// porte cette page maintenant ? ». Mais un noyau à isolation des tables
+// (« Kernel/User page tables isolation: enabled », le cas d'Alpine) arrêté en
+// anneau trois tient les tables **du programme**, où son texte n'est pas
+// cartographié : ses fenêtres sont alors illisibles pour de bon, et
+// « perimees » ne dit rien du noyau. L'anneau et CR3 posés ici empêchent de
+// lire ce zéro comme une absence de régions périmées ; `nopti` sur la ligne
+// de commande rend la mesure à cet arrêt-là.
+console.log("relues-sous anneau "
+  + (BigInt.asUintN(64, vm.globals[{segment} + 1].value) & 3n)
+  + " cr3 0x" + BigInt.asUintN(64, vm.globals[{control} + 2].value).toString(16));
 // **Le compte par transition d'octet, sur toutes les régions et non sur un
 // échantillon.** Vingt-quatre noms montrent un motif ; ils ne peuvent pas
 // exclure qu'un cas sur mille soit d'une autre nature, et c'est justement ce
