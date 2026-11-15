@@ -8,6 +8,143 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureaux prêts : l'entrée de catalogue, les deux téléchargements, l'installation vérifiée, et le workflow qui les publie
+
+**Ce qui manquait.** La tranche d'avant fabrique un bureau Void Xfce déjà
+démarré (`wisq-fabrique`, une archive `.wisqmachine` de 164 Mio et sa
+fiche). Rien ne permettait encore à l'application de le trouver, de le
+télécharger ni de l'installer, et rien ne le publiait.
+
+**Ce qui change.**
+
+- `Sources/WisqVM/ReadyDesktop.swift` (nouveau). Un bureau prêt, c'est une
+  image publiée par sa distribution (l'ISO de Void, à son adresse **datée**)
+  et une archive, asset d'une release du dépôt. L'index `bureaux.json` est
+  lu comme un fichier du réseau. Une entrée n'est proposée que si :
+  - ses adresses sont en HTTPS, sur les hôtes attendus
+    (`repo-default.voidlinux.org` pour l'image ; `github.com`, releases de
+    ce dépôt seulement, ou `objects.githubusercontent.com` pour l'archive),
+    sans port, requête ni `..` ;
+  - ses noms sont des noms simples, égaux au dernier segment de l'adresse ;
+    l'archive finit en `.wisqmachine`, l'image non ;
+  - ses sommes sont des SHA-256, l'empreinte du noyau a la forme d'une
+    empreinte, et la mémoire est un réglage de l'application ;
+  - son niveau de machine va de 1 à `X86Machine.snapshotLevel`.
+
+  Il y a un bureau par titre : le plus haut niveau que cette version sait
+  reprendre. Une entrée fautive est écartée seule, pas tout l'index.
+- **Les deux téléchargements** (`ReadyDesktop.fetch`). L'image va dans la
+  bibliothèque. L'archive va dans les téléchargements : elle ne doit pas être
+  listée comme une image. La feuille montre un seul progrès sur les deux
+  fichiers. Une image déjà là, à sa taille, n'est pas redemandée. Une
+  archive déjà là n'est reprise qu'à sa somme. Une coupure de l'archive
+  garde l'image et reprend l'archive à son dernier octet.
+- **L'installation** (`ReadyDesktop.install`). Deux gardes avant l'import,
+  parce qu'un import qui réussit ne prouve rien ici :
+  - l'empreinte du noyau de l'image présente (`IsoBoot.kernelDigest`,
+    nouveau, qui sort le noyau seul par la recette de `unpack`) doit être
+    celle de la fabrication ;
+  - l'archive doit démarrer cette image et porter une session sous cette
+    empreinte (`MachineArchive.contents`, nouveau, lit le manifeste sans
+    rien installer).
+
+  Sans elles, la machine se serait installée sans erreur, puis aurait
+  démarré à froid pendant une demi-heure sans dire pourquoi. L'archive,
+  lue, est effacée.
+- `ImageDownloader.readyDesktops(index:)` et `catalog()`. Les bureaux et les
+  distributions sont lus en même temps, et l'un qui ne répond pas ne cache
+  pas l'autre. **Un index des bureaux absent ne dit rien** : la release
+  `bureaux-1` n'existe pas encore, GitHub répond 404, et la feuille reste
+  celle d'avant.
+- **Un défaut trouvé en route.** L'étiquette d'une tâche d'arrière-plan
+  (`Release.backgroundTag`, du JSON) n'avait pas ses clés dans un ordre
+  fixe. Deux encodages de la même image, dans le même processus, donnaient
+  deux chaînes différentes : le premier essai du test l'a montré. La
+  recherche « une tâche est déjà en cours pour ce fichier »
+  (`BackgroundImageDownloads`) ne trouvait donc jamais rien. Les clés sont
+  maintenant triées, et la recherche compare les tâches décodées.
+- `ImageDownload.BackgroundJob` : la tâche porte sa destination. Une
+  archive finie pendant que l'application dormait atterrissait sinon dans
+  la bibliothèque. Vers la bibliothèque, l'étiquette reste celle d'avant.
+- L'écran (`ImageDownloadModel`, `ImageDownloadSheet`, `LocalVMView`) :
+  - une section « Bureaux prêts » en tête : le titre, « Démarré par wisq le
+    14 novembre 2026, puis mis en pause : prêt en moins d'une minute », ce
+    qu'il reste à télécharger, et la mémoire qu'il faut ;
+  - le bouton est grisé quand le téléphone ne peut pas donner cette
+    mémoire ;
+  - pendant le téléchargement : « Étape 1 sur 2 : l'image — … sur … » ;
+  - sous la section : les mots de passe partagés, les clés SSH refaites
+    sur chaque téléphone, et ce qu'Arrêter coûte ;
+  - à la fin : « « Void Xfce (prêt) » est installée : touchez-la ».
+
+  Le lecteur d'image n'existe qu'avec le cœur Rust : sans lui, l'empreinte
+  est `nil`, et l'installation le refuse en le disant.
+- `.github/workflows/bureaux.yml` (nouveau), **lancé à la main seulement**,
+  et **pas lancé** : il attend l'accord du propriétaire. Ses étapes :
+  1. les entrées sont vérifiées par leur forme ;
+  2. Rust et `cargo build -p wisq-vm` ;
+  3. l'ISO est gardée en cache et vérifiée contre le `sha256sum.txt` de son
+     dossier daté ;
+  4. `wisq-fabrique` est construit en release, puis lancé, avec le commit
+     et l'heure figée ;
+  5. la capture `.ppm` devient un `.png` ;
+  6. `wisq-fabrique index` écrit l'index, en gardant les entrées d'un autre
+     niveau de l'index publié ;
+  7. l'archive, la fiche et la capture sont attachées à `bureaux-N`, et
+     l'index à `bureaux-1`.
+
+  Les deux releases sont en préversion, hors de « latest », pour ne pas
+  casser `scripts/install.sh`. Le workflow n'a pas de `pull_request` dans
+  son `on:` : le compte des portes (7) ne bouge pas.
+- `wisq-fabrique index <bureaux.json> <fiche.json>… --images … --archives …
+  [--garder …]`. L'index est écrit par le type que l'application lit, et
+  relu comme elle le lira : une entrée qu'elle écarterait arrête tout
+  (`Index.refused`).
+- Dans le bloc-notes, `bureau-pret/index-bureaux.sh` fabrique `bureaux.json`
+  à partir de la fiche et de l'archive de la tranche d'avant. Il vérifie
+  d'abord la somme de l'archive. Il prépare ensuite les fichiers à attacher
+  à la main.
+
+**Comment c'est vérifié.** 24 tests nouveaux : 23 dans `ReadyDesktopTests`
+et 1 dans `IsoBootTests`. Ils couvrent :
+- 25 entrées hostiles, chacune seule, puis à côté d'une entrée propre ;
+- le serveur scripté d'`ImageDownloaderTests` : coupure au milieu de
+  l'archive, somme fausse, `416` sur une archive que l'index décrit mal,
+  archive de la bonne taille mais pas de la bonne somme ;
+- l'installation, sur de vraies archives assemblées par `ReadyDesktopBuild` :
+  la session retrouvée sous l'empreinte, et quatre refus (autre noyau ou
+  image illisible, archive d'une autre image, sans session, image
+  manquante) ;
+- l'étiquette identique sur vingt encodages.
+
+24 sabotages, un par garde : chacun fait tomber son test. Le
+premier passage avait un piège : une restauration gardait l'heure de la
+copie, et `swift build` ne recompilait pas le fichier rendu, si bien que
+les sabotages s'empilaient. Il a donc été refait, l'heure du fichier remise
+à chaque restauration ; il a aussi montré un trou (le filtre des sessions de
+`MachineArchive.contents`, que rien ne tenait : l'archive de test n'avait
+pas de couche), bouché en branchant un disque, et un sabotage de
+`Index.refused` qui ne changeait rien, remplacé par celui qui compte (juger
+chaque entrée au niveau de l'application, et non au sien, refuse le bureau
+d'un niveau neuf). `bureaux.json` a été fabriqué
+pour de vrai à partir de l'archive de la tranche d'avant, puis relu par
+l'application ; un index dont l'archive serait ailleurs n'est pas écrit
+(code 1, mesuré). La suite Swift entière : 2 878 tests exécutés, 54 sautés,
+0 échec (7 min) ; `WISQ_SWIFT_CORE=1 swift build` passe ; le site : 470
+tests, 0 échec. Compte publié : 3535 → 3559 (Swift 2958 + Rust 601). Le
+SwiftUI ne compile pas ici : `swiftc -frontend -parse` et
+SwiftLint `--strict` passent, chaque ligne a été relue, et seul le job
+« App iOS » le jugera.
+
+**Ce qui reste.**
+- Publier, c'est-à-dire lancer le workflow ou attacher à la main les
+  fichiers du bloc-notes à `bureaux-1` : à faire valider par le
+  propriétaire.
+- La première reprise sur un téléphone (l'heure, tranche 4).
+- `URLSession` d'arrière-plan derrière la redirection de GitHub : non
+  essayé.
+- Le workflow n'a jamais tourné.
+
 ## 2026-11-15 — Le disque de la page : les deux branches que rien ne jugeait
 
 Le dernier contrôle adverse du flux C a trouvé deux lignes de la
