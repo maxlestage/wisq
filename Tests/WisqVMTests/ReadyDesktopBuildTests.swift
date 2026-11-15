@@ -220,45 +220,73 @@ final class ReadyDesktopBuildTests: XCTestCase {
             + ReadyDesktopBuild.rtcSeconds + "; then echo REFUS_$((2+2)); else echo PRET_$((1+1)); fi"))
         XCTAssertLessThan(erase.lowerBound, proof.lowerBound)
         XCTAssertEqual(ReadyDesktopBuild.preparationRefused, "REFUS_4")
+        XCTAssertGreaterThan(ReadyDesktopBuild.reseedWait, 60,
+                             "plus de soixante secondes : le noyau réensemence alors son générateur")
         XCTAssertEqual(ReadyDesktopBuild.keyWatcher,
-                       ReadyDesktopBuild.watcher(clock: ReadyDesktopBuild.rtcSeconds, poll: "5", settle: "65"),
-                       "plus de soixante secondes : le noyau réensemence alors son générateur")
+                       ReadyDesktopBuild.watcher(clock: ReadyDesktopBuild.rtcSeconds, poll: "5",
+                                                 settle: "\(ReadyDesktopBuild.reseedWait)"))
     }
 
     /// **Le guetteur, joué par un vrai `sh`** : tant que l'horloge ne bouge
-    /// pas, il ne fait rien ; dès qu'elle bouge, il refait les clés, **puis**
-    /// relance `sshd`, et s'en va. `ssh-keygen` et `sv` sont des doublures
-    /// qui notent leur appel.
+    /// pas, il ne fait rien ; dès qu'elle bouge, il **attend** encore
+    /// (`settle`), puis refait les clés, **puis** relance `sshd`, et s'en
+    /// va. `ssh-keygen`, `sv` et `sleep` sont des doublures qui notent leur
+    /// appel ; `sleep` dort vraiment ensuite.
+    ///
+    /// L'attente est ce qui rend chaque clé unique (`keyWatcher`) : le test
+    /// la mesure. Une seconde, et aucun appel noté une demi-seconde après
+    /// que l'horloge a bougé ; puis au moins une seconde entre l'horloge et
+    /// la fin du guetteur. Les deux bornes ne tiennent que si le guetteur
+    /// a dormi : une machine chargée ne fait que les élargir.
     func testTheWatcherWaitsForTheClockToMove() throws {
         let files = FileManager.default
         let folder = files.temporaryDirectory.appendingPathComponent("wisq-guetteur-\(UUID().uuidString)")
         try files.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? files.removeItem(at: folder) }
         let log = folder.appendingPathComponent("appels")
-        for tool in ["ssh-keygen", "sv"] {
+        let naps = folder.appendingPathComponent("sommes")
+        func write(_ script: String, as tool: String) throws {
             let stub = folder.appendingPathComponent(tool)
-            try Data("#!/bin/sh\necho \(tool) \"$@\" >> '\(log.path)'\n".utf8).write(to: stub)
+            try Data(script.utf8).write(to: stub)
             try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        }
+        for tool in ["ssh-keygen", "sv"] {
+            try write("#!/bin/sh\necho \(tool) \"$@\" >> '\(log.path)'\n", as: tool)
+        }
+        try write("#!/bin/sh\necho sleep \"$@\" >> '\(naps.path)'\nexec /bin/sleep \"$@\"\n", as: "sleep")
+        func text(_ file: URL) -> String { String(decoding: (try? Data(contentsOf: file)) ?? Data(), as: UTF8.self) }
+        func waitUntil(_ done: () -> Bool) {
+            let deadline = Date().addingTimeInterval(10)
+            while !done(), Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         }
         let clock = folder.appendingPathComponent("since_epoch")
         try Data("1794614400\n".utf8).write(to: clock)
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", ReadyDesktopBuild.watcher(clock: clock.path, poll: "0.05", settle: "0.1")]
+        shell.arguments = ["-c", ReadyDesktopBuild.watcher(clock: clock.path, poll: "0.05", settle: "1")]
         shell.environment = ["PATH": folder.path + ":/usr/bin:/bin"]
         try shell.run()
         defer { if shell.isRunning { shell.terminate() } }
 
-        Thread.sleep(forTimeInterval: 0.6)
+        // Le premier somme de la boucle prouve que `t` est lu : l'horloge ne
+        // change pas avant, même si `sh` tarde à démarrer.
+        waitUntil { text(naps).hasPrefix("sleep 0.05\n") }
+        XCTAssertTrue(text(naps).hasPrefix("sleep 0.05\n"), "le guetteur est entré dans sa boucle")
+        Thread.sleep(forTimeInterval: 0.3)
         XCTAssertTrue(shell.isRunning, "l'horloge figée : le guetteur attend")
         XCTAssertFalse(files.fileExists(atPath: log.path), "rien refait à la fabrique")
 
-        try Data("1794614401\n".utf8).write(to: clock)
-        let deadline = Date().addingTimeInterval(10)
-        while shell.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        // L'instant est pris avant l'écriture : le guetteur ne peut pas voir
+        // l'horloge bouger plus tôt, la borne d'une seconde est donc sûre.
+        let moved = Date()
+        try Data("1794614401\n".utf8).write(to: clock, options: .atomic)
+        Thread.sleep(forTimeInterval: 0.5)
+        XCTAssertFalse(files.fileExists(atPath: log.path), "pas de clé avant la fin de l'attente")
+        waitUntil { !shell.isRunning }
         XCTAssertFalse(shell.isRunning, "le guetteur a fini")
-        XCTAssertEqual(String(decoding: (try? Data(contentsOf: log)) ?? Data(), as: UTF8.self),
-                       "ssh-keygen -A\nsv up sshd\n")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(moved), 1, "le guetteur a dormi son attente")
+        XCTAssertTrue(text(naps).hasSuffix("sleep 0.05\nsleep 1\n"), "l'attente vient après la boucle")
+        XCTAssertEqual(text(log), "ssh-keygen -A\nsv up sshd\n")
     }
 
     // MARK: - Les réglages
