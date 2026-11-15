@@ -84,7 +84,25 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
         var built = URLRequest(url: request.url)
         if let range = request.range { built.setValue(range, forHTTPHeaderField: "Range") }
         let urlRequest = built
-        return try await withCheckedThrowingContinuation { continuation in
+        // **Une annulation arrête le transfert**, et pas seulement l'attente :
+        // la continuation ne voit pas l'annulation de la tâche qui l'attend,
+        // et « Annuler » laissait 1,4 Gio continuer en arrière-plan.
+        return try await withTaskCancellationHandler {
+            try await transfer(release, job: job, request: urlRequest, have: have, progress: progress)
+        } onCancel: {
+            self.cancel(release.file)
+        }
+    }
+
+    private func transfer(_ release: ImageDownload.Release, job: ImageDownload.BackgroundJob,
+                          request urlRequest: URLRequest, have: Int,
+                          progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            // Annulée avant même d'attendre : rien ne part.
+            if Task.isCancelled {
+                continuation.resume(throwing: CancellationError())
+                return
+            }
             lock.withLock {
                 // Un second appui pendant un téléchargement : le premier est
                 // remplacé, et c'est la dernière feuille qui l'apprend.
@@ -119,9 +137,51 @@ final class BackgroundImageDownloads: NSObject, URLSessionDownloadDelegate, @unc
                     task.taskDescription = nil
                     task.cancel()
                 }
+                // Annulée pendant qu'on cherchait les tâches : `cancel` a
+                // déjà rendu la main à celui qui attendait, rien ne part.
+                guard self.lock.withLock({ self.waiting[release.file] != nil }) else { return }
                 let task = self.session.downloadTask(with: urlRequest)
                 task.taskDescription = job.tag
                 task.resume()
+            }
+        }
+    }
+
+    /// **Arrêter le téléchargement de `file`** : celui qui l'attend apprend
+    /// l'annulation, et la tâche de la session cesse, muette — sa fin ne
+    /// recoud rien. Le `.part` garde ce qu'il avait quand elle est partie ;
+    /// ce qu'elle avait reçu depuis est perdu, et la feuille le dit
+    /// (`ReadyDesktop.keptPhrase`).
+    func cancel(_ file: String) {
+        let continuation = lock.withLock {
+            defer {
+                waiting[file] = nil
+                observers[file] = nil
+                startedAt[file] = nil
+            }
+            return waiting[file]
+        }
+        continuation?.resume(throwing: CancellationError())
+        session.getAllTasks { tasks in
+            for task in tasks {
+                guard let job = task.taskDescription.flatMap(ImageDownload.BackgroundJob.init(tag:)),
+                      job.release.file == file else { continue }
+                task.taskDescription = nil
+                task.cancel()
+            }
+        }
+    }
+
+    /// **Les fichiers que la session a encore en cours**, lancés par cette
+    /// vie de l'application ou par une précédente : de quoi dire, à la
+    /// feuille rouverte, qu'un bureau prêt continue de se télécharger.
+    func runningFiles() async -> Set<String> {
+        await withCheckedContinuation { continuation in
+            session.getAllTasks { tasks in
+                continuation.resume(returning: Set(tasks.compactMap { task -> String? in
+                    guard task.state == .running else { return nil }
+                    return task.taskDescription.flatMap(ImageDownload.BackgroundJob.init(tag:))?.release.file
+                }))
             }
         }
     }

@@ -19,6 +19,9 @@ struct ImageDownloadSheet: View {
     let onInstalled: (InstalledMachine) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var model = ImageDownloadModel()
+    /// Le bureau qu'on s'apprête à réinstaller à côté d'une machine qui
+    /// démarre déjà son image : la feuille demande d'abord.
+    @State private var confirming: ReadyDesktop?
 
     var body: some View {
         NavigationStack {
@@ -38,6 +41,17 @@ struct ImageDownloadSheet: View {
                     }
                 default:
                     EmptyView()
+                }
+                if let why = model.desktopsFailure {
+                    // **L'index des bureaux n'a pas répondu** : dit, et
+                    // relisible, au lieu d'une section absente sans un mot.
+                    Section {
+                        RefusalLabel(text: why)
+                            .foregroundStyle(.orange)
+                        Button("Réessayer") { Task { await model.loadIndex() } }
+                    } header: {
+                        Text("Bureaux prêts")
+                    }
                 }
                 if !model.desktops.isEmpty {
                     Section {
@@ -68,6 +82,27 @@ struct ImageDownloadSheet: View {
                 }
             }
             .task { await model.loadIndex() }
+            .confirmationDialog(
+                "Installer une autre machine ?",
+                isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+                titleVisibility: .visible,
+                presenting: confirming
+            ) { desktop in
+                Button("Installer une autre machine") { start(desktop) }
+                Button("Annuler", role: .cancel) {}
+            } message: { desktop in
+                Text(model.alreadyInstalled(desktop) ?? "")
+            }
+        }
+    }
+
+    /// Lance le téléchargement et l'installation d'un bureau prêt.
+    private func start(_ desktop: ReadyDesktop) {
+        Task {
+            if let machine = await model.install(desktop) {
+                onInstalled(machine)
+                dismiss()
+            }
         }
     }
 
@@ -121,6 +156,8 @@ struct ImageDownloadSheet: View {
         let busy = model.phase == .fetchingDesktop(title: desktop.title)
             || model.phase == .installingDesktop(title: desktop.title)
         let fits = desktop.fits(ceiling: model.ceiling)
+        let shortfall = busy ? nil : model.spaceShortfall(desktop)
+        let installed = model.alreadyInstalled(desktop)
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -136,31 +173,58 @@ struct ImageDownloadSheet: View {
                         .foregroundStyle(fits ? Color.secondary : Color.orange)
                 }
                 Spacer(minLength: 12)
-                if busy {
+                if model.phase == .fetchingDesktop(title: desktop.title) {
+                    // **Annuler**, pendant l'un ou l'autre fichier : le
+                    // transfert s'arrête, et la ligne dit ce qui est gardé.
+                    Button {
+                        model.cancelDesktop()
+                    } label: {
+                        Label("Annuler", systemImage: "xmark.circle")
+                            .labelStyle(.iconOnly)
+                            .font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Annuler le téléchargement de \(desktop.title)")
+                } else if busy {
                     ProgressView()
                 } else {
                     Button {
-                        Task {
-                            if let machine = await model.install(desktop) {
-                                onInstalled(machine)
-                                dismiss()
-                            }
-                        }
+                        // Une machine démarre déjà cette image : installer en
+                        // ajoute une autre, et la feuille le demande d'abord.
+                        if installed != nil { confirming = desktop } else { start(desktop) }
                     } label: {
                         Label("Installer", systemImage: "arrow.down.circle")
                             .labelStyle(.iconOnly)
                             .font(.title2)
                     }
                     .buttonStyle(.borderless)
-                    .disabled(isDownloading || !fits)
+                    .disabled(isDownloading || !fits || shortfall != nil)
                     .accessibilityLabel("Installer \(desktop.title)")
                 }
+            }
+            if let shortfall {
+                Text(shortfall)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let installed {
+                Text(installed)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let background = model.inBackground(desktop) {
+                Text(background)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if model.phase == .fetchingDesktop(title: desktop.title), let step = model.desktopProgress,
                step.total > 0 {
                 ProgressView(value: Double(step.have), total: Double(step.total))
                 Text(step.phrase)
                     .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Text("Fermer la feuille ne l'arrête pas : le téléchargement continue en arrière-plan.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if model.phase == .installingDesktop(title: desktop.title) {
