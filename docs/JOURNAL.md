@@ -8,7 +8,7 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-11-14 — La frappe sur l'écran s'annule, et un collage trop long ne garde plus tout le presse-papiers
+## 2026-11-15 — La frappe sur l'écran s'annule, et un collage trop long ne garde plus tout le presse-papiers
 
 Suite de l'entrée juste en dessous, après un contrôle adverse.
 
@@ -86,7 +86,7 @@ Compte publié : 3 643 → 3 647 (3 003 Swift + 644 Rust).
 - Ce qui reste de l'entrée ci-dessous tient toujours : l'état PS/2 n'est
   pas dans l'instantané.
 
-## 2026-11-14 — Le collage sur l'écran ne laisse plus de touche enfoncée dans le cœur Swift
+## 2026-11-15 — Le collage sur l'écran ne laisse plus de touche enfoncée dans le cœur Swift
 
 **Ce qui n'allait pas.** Le défaut que la carte Rust a corrigé en #704
 venait de ce cœur, et il y était encore. `X86PS2Controller.type` bornait sa
