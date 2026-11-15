@@ -129,6 +129,27 @@ final class MachineArchiveTests: XCTestCase {
                        Data(repeating: 0xAB, count: 3 * MachineArchive.chunk + 17))
     }
 
+    /// **Un lien mort n'a pas de taille.** `size(of:)` rendait celle du lien
+    /// lui-même, sans erreur : l'export annonçait un disque propre en lien
+    /// mort à cette taille, qu'aucun disque vierge n'a, et l'import d'en face
+    /// refusait l'archive entière comme « abîmée ». Elle part maintenant sans
+    /// disque propre, comme une machine qui n'en a pas.
+    func testADeadLinkHasNoSize() throws {
+        let machine = try InstalledMachines.install(image: iso, name: "Neuve", in: here)
+        let own = kernels(here).appendingPathComponent("Neuve-disque.img")
+        try FileManager.default.createSymbolicLink(
+            at: own, withDestinationURL: here.appendingPathComponent("parti.img"))
+        XCTAssertThrowsError(try MachineArchive.size(of: own), "un lien mort n'est pas un fichier vide")
+
+        try InstalledMachines.setOwnDisk("Neuve-disque.img", id: machine.id, in: here)
+        try MachineArchive.export(
+            try XCTUnwrap(InstalledMachines.machine(id: machine.id, in: here)),
+            kernels: kernels(here), in: here, to: archive)
+        let back = try importThere()
+        XCTAssertNil(back.ownDisk, "aucun disque vierge recréé à la taille d'un lien")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: kernels(there).path), [])
+    }
+
     /// **Le manifeste s'écrit clés triées.** Sans cela, l'ordre des clés
     /// changeait d'un lancement à l'autre (le hachage de Swift est tiré au
     /// sort), et deux exports de la même machine n'étaient pas les mêmes
