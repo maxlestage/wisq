@@ -8,6 +8,102 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — `revoir` sous isolation des tables, et une sonde qui ne s'oppose plus à la protection
+
+**Ce qui n'allait pas.** Le contrôle de la tranche d'avant (« `revoir` relit
+les fenêtres sans juger l'anneau ») a trouvé deux défauts, tous deux réels.
+
+- **Les commentaires disaient le contraire de la mesure.** `web/host.js`
+  (deux passages) et la docstring du premier test de `host_loop.rs`
+  attribuaient à l'anneau les 11 044 régions illisibles de l'arrêt d'Alpine
+  en anneau trois, et laissaient croire que `walkMachine` les rendait
+  comparables. Rejoué par le contrôle avec la correction : « perimees 7 /
+  illisibles 11 030 / relues-sous anneau 3 cr3 0x6acb000 ». L'isolation des
+  tables retire le texte du noyau des tables du programme ; seul `nopti`
+  donne 2 001 / 9. Le JOURNAL le disait, le code non.
+- **Le test de la sonde exigeait un comportement faux du processeur.** Un
+  programme en anneau trois saute sur une grande page du superviseur ; le
+  test exigeait que la région connue y tourne, et que la sonde la compte. Sur
+  le silicium, ce saut est une faute de page (P|U). Le test ne passait que
+  grâce au trou de protection (une région déjà traduite se ré-entre sans
+  repasser par le chargement), et il se serait dressé contre sa correction.
+
+**Ce qui change.**
+
+- Les commentaires de `read`, de `revoir` et de la sonde, et la docstring du
+  premier test, disent ce qui est mesuré : `walkMachine` ne rend lisible que
+  ce que les tables en service portent ; « la page est toujours dans les
+  tables » vaut pour Alpine **lancé avec `nopti`**, pas pour Alpine tel quel.
+  Le commentaire de la sonde dit que son `walkMachine` n'a d'effet que sur le
+  défaut, et pourquoi il le garde : la sonde compte ce qui va tourner.
+- **Un test neuf épingle le cas d'Alpine tel quel** :
+  `under_page_table_isolation_the_kernel_window_stays_unreadable_in_ring_three`.
+  Le noyau réécrit un octet de sa fenêtre, puis saute sur un passage posé
+  sur une troisième grande page du superviseur, que les deux tables portent
+  (comme `.entry.text`). Le passage charge dans CR3 les tables du programme,
+  qui ne portent pas la page du noyau, puis fait `sysretq`. À l'arrêt, CS
+  vaut `0x33` et CR3 désigne les tables du programme ; seule la fenêtre du
+  noyau est illisible, et rien n'est compté comme périmé. Le passage, lui,
+  est relu, ce qui reproduit en petit les sept périmées d'Alpine, toutes dans
+  `.entry.text`.
+- **Le test de la sonde est réécrit pour ne plus consacrer le défaut** :
+  `the_watch_probe_sees_a_kernel_region_reentered_from_ring_three_while_the_hole_is_open`.
+  Le pilote dit maintenant RIP, CR2, CR3 et le témoin de faute, et le test
+  reconnaît deux issues, et deux seulement :
+  - le **défaut**, aujourd'hui : la région du noyau tourne en anneau trois et
+    faute sur son écriture (témoin `0x4`, P|W plus un ; U s'ajoute d'après
+    CS à la délivrance). La sonde doit alors avoir compté l'entrée et nommé
+    la région ;
+  - le **silicium**, le jour où le trou sera bouché : témoin nul, CR2 et RIP
+    sur la cible, et l'arrêt nomme la faute de chargement.
+
+  Toute autre issue fait tomber le test. Ce que l'entrée d'avant annonçait
+  (« le jour où ce chargement fautera, le second test devra changer de
+  montage ») ne tient donc plus : il passera tel quel.
+- **Le trou lui-même n'est pas bouché.** Une région s'entre aussi par la
+  table du module (`call_indirect`), sans repasser par l'hôte : le boucher
+  demande que l'émetteur ou la correspondance des régions connaisse l'anneau.
+  C'est hors de cette tranche.
+- `master` (#704, la carte de la page) est fusionné dans la branche. Les
+  seuls conflits étaient le compte publié et la tête du JOURNAL.
+
+**Comment c'est vérifié.**
+
+- **La branche « silicium » a été jouée, pas seulement écrite.** Un bouchon
+  temporaire dans la boucle de `run` oublie une région connue dont le
+  premier octet ne se charge pas sous l'anneau courant. Sous ce bouchon,
+  l'arrêt devient « une faute de page sur un chargement d'instruction sans
+  porte », avec un témoin nul et 0 entrée sondée, et le test passe. La branche
+  a été forcée à tomber pour prouver que c'est bien elle qui a jugé. Le
+  bouchon est retiré (`cmp` identique).
+- **Trois sabotages, chacun vu tomber puis restauré (`cmp` identique)** :
+  - la sonde lit sans `walkMachine` : le test de la sonde tombe ;
+  - `revoir` relit par l'identité quand les tables ne portent pas la page :
+    le test de l'isolation tombe, l'octet réécrit est compté ;
+  - `read` ignore `kind` (le sabotage du contrôle) : les trois tests tombent.
+    Celui de l'isolation tombe aussi, parce que le passage du superviseur
+    devient illisible.
+- `cargo test --release` : 615 tests, 0 échec, aussi avec les débordements
+  et les assertions de débogage armés. `cargo fmt` et les deux `clippy`
+  sont propres. Les scripts de mise en forme et des sources passent, ainsi
+  que SwiftLint `--strict`. Le site : typecheck, build, 470 tests. Le compte
+  publié passe à 3 512 (Swift 2 897 + Rust 615) : 3 511 après la fusion,
+  plus le test neuf.
+- Aucun octet émis ne change : `bench_module_matches_the_probe` passe sans
+  régénérer `WebKitBench.swift`. Le code de `web/host.js` ne change pas
+  non plus, seuls ses commentaires bougent : les mesures d'Alpine du
+  contrôle (373 / 9 en anneau zéro, 7 / 11 030 en anneau trois) restent
+  celles de ce code, et elles n'ont pas été rejouées.
+
+**Ce qui reste.**
+
+- Le trou de protection : un programme qui saute dans du code du noyau déjà
+  traduit ne faute pas. Le test de la sonde est prêt pour sa correction.
+- À un arrêt en anneau trois sous isolation, `revoir` ne voit toujours pas
+  le texte du noyau. Pour mesurer à cet arrêt-là, `nopti` ; pour le voir
+  sans `nopti`, il faudrait relire par des tables du noyau dont on saurait
+  qu'elles vivent encore. Non fait.
+
 ## 2026-11-14 — `revoir` relit les fenêtres sans juger l'anneau, et dit par quelles tables
 
 **Ce qui n'allait pas.** La tranche des droits (plus bas) fait lire à l'hôte
