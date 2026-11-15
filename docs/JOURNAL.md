@@ -8,6 +8,24 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Le disque de la page : les deux branches que rien ne jugeait
+
+Le dernier contrôle adverse du flux C a trouvé deux lignes de la
+correction juste en dessous qu'aucun test ne faisait tomber. Je les ai
+couvertes moi-même, sans toucher au code.
+
+- **La requête jamais prise par la boucle.** Le filtre de `confiees`
+  écarte, à la remise, ce qui est encore dans `a_envoyer`. Sans lui, une
+  requête jamais confiée restait comptée pour toujours. Nouveau test :
+  `a_reset_drops_a_request_the_loop_never_took`.
+- **Les oubliées de l'ancien disque.** `succeder_a` reporte sur le neuf
+  ce que l'ancien avait oublié à une remise. Nouveau test :
+  `a_disk_plugged_anew_after_a_reset_still_counts_the_forgotten`.
+
+Sabotages : retirer l'une ou l'autre ligne fait tomber le test qui lui
+correspond, et lui seul (85 réussis, 1 échec). `cargo fmt --check` et
+clippy en `-D warnings` sont propres. Le compte publié passe à 3498.
+
 ## 2026-11-14 — Le disque de la page : une remise ne rend plus la place de ce que l'arrière tient encore
 
 **Ce qui n'allait pas.** Le contrôle adverse de la tranche juste en

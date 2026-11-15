@@ -1930,6 +1930,49 @@ mod tests {
         assert_eq!(ram.0[0x5000], 4, "le secteur 3");
     }
 
+    /// **Une requête que la boucle n'a pas encore prise est lâchée par une
+    /// remise** : elle n'a jamais été confiée à l'arrière, aucune réponse ne
+    /// viendra, donc elle ne doit plus rien compter. Sans cela, une lecture
+    /// de 64 Mio restée dans `a_envoyer` au moment d'une remise ferait
+    /// attendre le disque pour toujours.
+    #[test]
+    fn a_reset_drops_a_request_the_loop_never_took() {
+        let (mut disque, mut ram) = demarre();
+        File::requete(&mut ram, 0, 1, (0x5000, 512, true), 0);
+        notifier(&mut disque, &mut ram);
+        assert_eq!(disque.a_prendre(), 1);
+        recommencer(&mut disque, &mut ram);
+        assert_eq!(disque.dehors(), 0, "rien n'est parti");
+        assert_eq!(disque.tenus(), 0);
+        assert_eq!(disque.prendre_requete(), None, "elle ne part plus");
+        File::requete(&mut ram, 0, 2, (0x5000, 512, true), 0);
+        notifier(&mut disque, &mut ram);
+        let jeune = disque.prendre_requete().expect("partie tout de suite");
+        assert!(disque.lu(jeune.id, &image()[1024..1536], &mut ram));
+        assert_eq!(ram.0[0x5000], 3, "le secteur 2");
+    }
+
+    /// **Un disque rebranché après une remise compte encore les oubliées de
+    /// l'ancien** : une lecture confiée, une remise qui l'oublie, puis un
+    /// disque neuf à la place. Sa réponse peut encore venir : le neuf la
+    /// compte jusqu'à elle, et elle ne touche à rien.
+    #[test]
+    fn a_disk_plugged_anew_after_a_reset_still_counts_the_forgotten() {
+        let (mut disque, mut ram) = demarre();
+        File::requete(&mut ram, 0, 1, (0x5000, 512, true), 0);
+        notifier(&mut disque, &mut ram);
+        let vieille = disque.prendre_requete().expect("partie");
+        recommencer(&mut disque, &mut ram);
+        assert_eq!(disque.dehors(), 1, "oubliée, mais dehors");
+        let mut neuf = VirtioBlk::nouveau(4);
+        neuf.succeder_a(&disque);
+        assert_eq!(neuf.dehors(), 1);
+        assert_eq!(neuf.tenus(), 512);
+        assert!(!neuf.lu(vieille.id, &image()[512..1024], &mut ram));
+        assert_eq!(neuf.dehors(), 0);
+        assert_eq!(ram.0[0x5000], 0, "rien n'est copié");
+    }
+
     /// **Un disque rebranché ne reprend pas les noms de l'ancien** : la
     /// réponse en retard d'une lecture de l'ancien disque (le secteur 0) ne
     /// remplit pas la première lecture du neuf (le secteur 3), et ne la dit
