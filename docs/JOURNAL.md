@@ -8,6 +8,86 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-15 — Second contrôle des refus du début de démarrage : chaque appel compté
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé deux choses.
+Les deux sont réelles.
+
+**Ce qui n'allait pas.**
+
+- **Un des deux refus `.session` n'était tenu par aucun test : celui du
+  fil d'émulation.** Il vient de la tâche du `catch let refusal as
+  SavedSession.Unreadable`, quand la machine refuse une reprise que
+  `SavedSession.judge` avait acceptée. Le test qui lit
+  `LocalVMModel.swift` demandait *au moins un* `refuseToStart(.cas` par
+  cas, et `.session` en a deux. Avec l'appel du fil remplacé par
+  `self.finish(with: BootRefusal.session(refusal).explanation(…))`,
+  `BootRefusalTests` passait (8 tests, aucun échec). Conséquence : l'état
+  reste `running`, `finish` met `runStart` à `nil`, et « Arrêter » appelle
+  `userStopped(seen: nil)`, qui rend `.forget`. La session que la console
+  vient de promettre « gardée telle quelle » est effacée, et la phrase
+  « effacée pendant le démarrage » de l'entrée d'en dessous disparaît
+  aussi pour ce chemin. Aucun test iOS ne faisait non plus de reprise
+  refusée par la machine après un jugement réussi.
+- **Le commentaire de `LocalVMModel` et le rapport disaient plus que le
+  test.** Le commentaire affirme que chaque refus passe par
+  `refuseToStart` et qu'« un test sous Linux lit ce fichier pour le
+  tenir ». Le test ne tenait que la présence d'un appel par cas. Le
+  rapport de l'entrée d'en dessous lui prêtait en plus une phrase, « rien
+  n'oblige tous les refus à passer par `refuseToStart` », qu'elle ne
+  contient pas (`grep -n oblige` ne rend aucune ligne d'elle). Sa section
+  « Ce qui reste » ne citait pas ce trou.
+
+**Ce qui change.**
+
+- Le test qui lit `LocalVMModel.swift` (commentaires écartés) compte les
+  appels **cas par cas** : un pour chaque cas, deux pour `.session`. Il
+  compte aussi leur total. Enfin, il n'admet que deux `finish(with:` hors
+  de la fin d'un invité qui a tourné (les lignes qui finissent par
+  `+ silence`) : le corps de `refuseToStart` et l'exception de la session
+  trop grande. Un refus ajouté, retiré, déplacé ou affiché en direct le
+  fait tomber. C'est voulu : qui en ajoute un met ce tableau à jour.
+- Le chemin du fil a son test de bout en bout. Une session RISC-V privée
+  de son dernier octet passe `judge`, puis `PendingSession.resume` lève
+  « abîmée ». `SavedSessionTests.testARISCVSessionCutShortIsJudgedReadableButRefusedOnResume`
+  le tient sous Linux. `LocalVMModelTests.testStoppingAfterASessionTheMachineRefusedKeepsIt`
+  fait le parcours complet avec la même coupure : il sauve la machine,
+  coupe sa session, rouvre (la console promet « gardée telle quelle »),
+  touche « Arrêter », et retrouve le fichier intact.
+- Le commentaire de `LocalVMModel` et la doc du test disent ce que le test
+  tient vraiment.
+
+**Comment c'est vérifié.** Chaque sabotage d'une ligne fait tomber au
+moins une assertion :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| le refus `.session` du fil remplacé par un `finish` direct (la reproduction du contrôle) | 3 assertions (compte de `.session`, total, `finish` direct) ; avant : rien |
+| le même appel retiré (`_ = refusal`) | 2 (compte de `.session`, total) |
+| l'appel du fil commenté, et un `finish` direct dessous | 3 |
+| `refuseToStart(.bootMedia` remplacé par un `finish` direct | 3 |
+| le refus `.session` du fil principal changé en `.unreadableKernel` | 2 (les deux comptes) |
+| `try? machine.restore(snapshot)` dans `PendingSession.resume` | le test Linux neuf (« aucune erreur levée ») |
+
+Chaque fichier saboté a été restauré depuis une copie, et les sommes
+vérifiées. Suite Swift entière : 2 938 tests exécutés (1 de plus), 67 sautés,
+aucun échec (6 min 19 s). Site : 476 tests. Compte publié :
+3 663 → 3 665 (3 021 Swift + 644 Rust : un test sous Linux, un sur iOS).
+
+**Ce qui reste.**
+
+- Le test iOS neuf ne tourne que sur la CI « App iOS » ; ici, seuls le
+  parse et SwiftLint l'ont vu. La coupure qu'il emploie est jugée sous
+  Linux sur une machine RISC-V vierge, pas sur celle du test iOS. Un essai
+  à part, non gardé, l'a aussi vue lever sur une machine RISC-V avec un
+  disque branché : la dernière section, quelle qu'elle soit, s'arrête
+  court.
+- Le compte des `finish(with:` repose sur la forme `+ silence)` des fins
+  d'invité. Une fin d'invité écrite autrement fera tomber le test, et il
+  faudra le dire là.
+- Il n'y a toujours pas de test iOS pour l'échec sur le fil avec une
+  session lisible (voir l'entrée d'en dessous).
+
 ## 2026-11-15 — Contrôle des refus du début de démarrage : la liaison tenue, et quatre phrases rendues vraies
 
 Le contrôle adverse de l'entrée juste en dessous a trouvé cinq choses.
