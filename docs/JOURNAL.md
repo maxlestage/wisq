@@ -8,6 +8,140 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-14 — Bureaux prêts : six défauts du contrôle, corrigés à leur source
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche « Bureaux prêts »
+(commit 4184d6e3) a relevé six défauts, et deux inexactitudes dans le compte
+rendu :
+
+1. **Une taille énorme faisait tomber l'application.** Rien ne plafonnait la
+   taille d'une entrée : `bytes = Int.max / 2 + 1` passait, et la somme des
+   deux tailles (`sizePhrase`, `fetch`) débordait. Le contrôle l'a mesuré :
+   « arithmetic overflow », signal 4, dès l'ouverture de la feuille.
+2. **Le niveau 2 aurait cassé le bureau du niveau 1.** L'archive ne portait
+   que le nom de l'ISO (`…-xfce-pret.wisqmachine`), et le workflow
+   l'attache par défaut à `bureaux-1` avec `--clobber`. L'archive d'un
+   niveau neuf remplaçait donc celle d'avant, alors que l'entrée gardée par
+   `Index.merged` promettait encore l'ancienne somme à la même adresse. Une
+   application d'avant aurait téléchargé l'archive neuve, l'aurait trouvée
+   fausse et effacée, et cela à chaque essai. `wisq-fabrique index` écrivait
+   un tel index sans broncher (code 0, deux entrées à la même adresse).
+3. **Deux tâches d'arrière-plan sur un seul `.part`.** La garde « une tâche
+   déjà en cours pour ce fichier » comparait toute la `Release`. Or la même
+   ISO de Void, lancée depuis la liste des distributions puis demandée par
+   « Bureaux prêts », se décrit autrement (distribution, saveur, index,
+   adresse). Une seconde tâche partait donc sur le même `.part`.
+4. **`KernelLibrary.replaced` pouvait se perdre.** Il n'était appelé
+   qu'après les deux téléchargements. Si l'archive tombait après que l'image
+   avait remplacé un fichier du même nom, l'essai suivant trouvait l'image à
+   sa taille et ne l'appelait plus jamais. Les couches et sessions posées
+   sur l'ancien fichier restaient alors sur le nouveau.
+5. **Deux gardes sans test.** La garde des identifiants et du fragment de
+   l'adresse, et celle du titre de 80 caractères : les retirer ne faisait
+   tomber aucun test.
+6. **Les chiffres pleine chasse passaient pour des chiffres.**
+   `Character.isHexDigit` accepte « ｄ » et « ０ ». Une empreinte ou une
+   somme écrite ainsi était proposée, puis refusée seulement après 1,5 Gio
+   de téléchargement.
+
+Et deux inexactitudes du compte rendu précédent :
+- « le travail d'avant est dans master (#702–#704) » est faux. Seul « Reprise
+  sûre » (#702) y est. `ReadyDesktopBuild`, `GuestScript` et `wisq-fabrique`
+  ne sont encore que sur cette branche.
+- « 24 sabotages, chacun fait tomber son test » s'appuyait sur un journal de
+  sabotages périmé dans le bloc-notes (`sab3/sabotages2.log`). Il portait
+  encore `index refusé  PASSE (mauvais)`, la ligne du sabotage remplacé, et
+  pas celle qui le remplaçait. Le contrôle a refait ce sabotage, et il tombe
+  bien. Les sabotages de cette entrée-ci sont dans un journal neuf (plus
+  bas).
+
+**Ce qui change.**
+
+- `ReadyDesktop.largestFile` (64 Gio) : une taille va d'un octet à ce
+  plafond (`link`). La somme de deux tailles ne peut donc plus déborder.
+- **Une adresse, un fichier.**
+  - Les fichiers d'une fabrication portent le niveau de machine dans leur
+    nom (`ReadyDesktopBuild.outputStem` :
+    `void-live-x86_64-20250202-xfce-pret-niveau1`). L'archive d'un autre
+    niveau a donc un autre nom, même dans la même release.
+  - `Index.clashes` donne les adresses où l'index annonce deux fichiers
+    différents (une autre taille ou une autre somme). La même ISO, à la même
+    somme, peut servir deux niveaux.
+  - `Index.publishable` (utilisé par `wisq-fabrique index`) juge les entrées
+    neuves, garde l'ancien index, puis refuse les conflits. Le job du
+    workflow tombe alors avant que rien ne soit publié.
+  - `parse` ne propose aucune des entrées valables qui se disputent une
+    adresse. Une entrée fautive, qui ne se téléchargera jamais, n'emporte
+    pas la propre d'à côté.
+  - Le workflow cherche la fiche sous ce nom, et attache les fichiers
+    `*-pret-niveau*`.
+- `ImageDownload.BackgroundJob.overlap` : deux tâches se reconnaissent par
+  le fichier qu'elles recousent. C'est `same` quand la taille, la somme et
+  le dossier sont aussi les mêmes : on attend celle qui court. C'est
+  `conflicting` quand le nom est le même mais que le fichier attendu
+  diffère : `BackgroundImageDownloads` retire d'abord l'étiquette de
+  l'ancienne tâche, pour que sa fin ne recouse rien et ne réveille personne,
+  puis l'annule. C'est `unrelated` pour un autre fichier.
+- `ReadyDesktop.fetch(…, replacedImage:)` dit le remplacement juste après
+  l'image, avant l'archive. `ImageDownloadModel.install` y branche
+  `KernelLibrary.replaced`.
+- `ImageDownload.isASCIIHexDigit` : un chiffre hexadécimal ASCII. Toutes les
+  sommes de toutes les listes (`isHexDigest`) et l'empreinte du noyau
+  passent par lui.
+- Dans le bloc-notes, `bureau-pret/publication-niveau1/` contient
+  `bureaux.json`, l'archive (liée sous son nom neuf, même somme
+  a93fbff5…), sa fiche et la capture. Tout est sous les noms `…-niveau1`
+  que le workflow produirait. `index-bureaux.sh` les fabrique désormais
+  ainsi. L'ancien dossier `publication/` n'a pas été touché.
+
+**Comment c'est vérifié.**
+- 5 tests nouveaux dans `ReadyDesktopTests` :
+  - `testTheEdgesThatPassAndTheSheetDoesNotOverflow` ;
+  - `testFullWidthDigitsAreNotDigits` ;
+  - `testTwoFilesAtOneAddressAreRefused` ;
+  - `testAReplacedImageIsSaidBeforeTheArchiveCanFail` ;
+  - `testTwoBackgroundJobsForOnePartRecogniseEachOther`.
+
+  Les cas hostiles passent de 25 à 35 : identifiants, nom
+  d'utilisateur, fragment, fragment vide, titre de 81 caractères, trois
+  tailles hors plafond, empreinte et somme en pleine chasse.
+- Le défaut 2, refait avec le vrai outil, sur la fiche de niveau 2 du
+  contrôle : `wisq-fabrique index … --garder publication/bureaux.json` rend
+  maintenant le code 1 : « deux fichiers différents annoncés à la même
+  adresse ». La même fiche, avec une archive `…-niveau2`, donne le code 0 et
+  2 entrées à deux adresses.
+- 14 sabotages, chacun d'une ligne, refaits par script
+  (`<bloc-notes>/bp-fix/sab/sab.py`, journal `sab/sabotages.log`). Chacun
+  est compilé, lancé sur son test, puis restauré (`git checkout`, l'heure du
+  fichier remise). **Tous les 14 font tomber leur test**, et `git status`
+  est vide après chacun. Ils visent : le plafond, les identifiants, le
+  fragment, le titre de 80 caractères, les chiffres ASCII (deux tests), le
+  refus de la fabrique, le refus de l'application, les conflits comptés
+  entre entrées valables seulement, le niveau dans le nom, la tâche
+  reconnue par le fichier, la somme qui compte pour la tâche, l'image
+  remplacée dite avant l'archive, et l'index jugé au niveau de chaque
+  entrée (celui que l'ancien journal donnait à tort comme passant).
+- `swift test` complet : 2 883 tests exécutés, 54 sautés, 0 échec, en 6 min 57 s. `WISQ_SWIFT_CORE=1 swift build` passe.
+  SwiftLint `--strict` : 0. `swiftc -frontend -parse` sur WisqUI, App et les
+  tests hébergés : code 0. Compte publié : 3559 → 3564 (Swift 2963 + Rust 601). Site : 470 tests, 0 échec.
+
+**Ce qui reste.**
+- Seul « App iOS » juge `BackgroundImageDownloads` et `ImageDownloadModel`.
+  La décision est testée dans `WisqVM`, mais la liaison n'a été que relue.
+- Une petite course reste possible : une tâche « en conflit » qui finirait
+  entre `getAllTasks` et son annulation rendrait son fichier à celui qui
+  attend ce nom. Pour un bureau prêt, l'empreinte du noyau vérifiée à
+  l'installation l'arrête.
+- Un cas qui préexistait, dans les deux chemins (liste et bureaux prêts) :
+  quand l'application est tuée et que le système finit seul le transfert
+  d'une image qui en remplace une autre, `replaced` n'est pas appelé
+  (`finish` sans personne qui attend). Ce n'est pas corrigé ici.
+- Le workflow `--clobber` encore, au même niveau : entre l'envoi de
+  l'archive refaite et celui de l'index, l'ancien index promet l'ancienne
+  somme pendant quelques secondes.
+- Publier reste à faire valider par le propriétaire. Le workflow n'a jamais
+  tourné.
+
 ## 2026-11-14 — Bureaux prêts : l'entrée de catalogue, les deux téléchargements, l'installation vérifiée, et le workflow qui les publie
 
 **Ce qui manquait.** La tranche d'avant fabrique un bureau Void Xfce déjà
