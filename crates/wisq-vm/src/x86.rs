@@ -61,6 +61,10 @@
 //! portent sur ce groupe viennent d'un vrai processeur, pas d'un modèle. Un
 //! cœur qui se juge lui-même ne se juge pas.
 
+#[path = "x86_vector.rs"]
+mod vector;
+pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector};
+
 /// La largeur d'une opération, en octets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Width {
@@ -864,14 +868,11 @@ pub enum Op {
     /// `x86_wasm`, et `X86FloatingPointState.swift` du côté Swift.
     ///
     /// **Ce que l'aire contient ici.** Le mot de contrôle et le mot d'état du
-    /// x87, qui existent ; zéro partout ailleurs, ce qui est **la vérité** et
-    /// non un remplissage : aucune instruction XMM ne se décode et l'émetteur
-    /// n'a aucun registre vectoriel, donc aucun invité n'a jamais pu écrire
-    /// dans cette moitié de l'aire — le cœur Swift, lui, les tient, et y écrit
-    /// leur vrai contenu. Le mot d'étiquettes abrégé vaut zéro pour
-    /// la même raison — aucun registre x87 n'est occupé. MXCSR et son masque
-    /// valent zéro parce que cette machine n'a pas de MXCSR ; Linux prévoit ce
-    /// cas et prend sa valeur par défaut documentée quand le masque lit zéro.
+    /// x87, MXCSR et son masque (`0xffff`), et les seize XMM — tout ce que
+    /// l'émetteur porte depuis le socle SSE. Ce paragraphe disait « zéro
+    /// partout ailleurs » quand la machine n'avait ni XMM ni MXCSR. Ce qui
+    /// reste nul l'est parce que c'est **la vérité** : aucun registre x87
+    /// n'est occupé, donc le mot d'étiquettes abrégé et la pile sont nuls.
     ///
     /// **`fxsave64` est le même octet derrière REX.W**, et il rend la même
     /// chose : le préfixe ne change que le format de FIP et FDP, nuls dans les
@@ -890,12 +891,12 @@ pub enum Op {
     /// savoir relire n'est pas la moitié d'une capacité, c'est une capacité
     /// qui ne sert à rien.
     ///
-    /// **Ce qu'elle consomme ici : deux mots, et rien d'autre.** Le mot de
-    /// contrôle en `0x00` et le mot d'état en `0x02` sont les seuls registres
-    /// du coprocesseur que cette machine porte. MXCSR, les huit registres x87
-    /// et les seize XMM ne sont pas restaurés parce qu'ils n'existent pas ici
-    /// — et non parce qu'on aurait choisi de les ignorer : les restaurer
-    /// demanderait de les avoir, et le cœur Swift, qui les a, fait l'inverse.
+    /// **Ce qu'elle consomme ici** : le mot de contrôle en `0x00`, le mot
+    /// d'état en `0x02`, MXCSR en `0x18` et les seize XMM de `0xa0` à `0x19f`.
+    /// Ce paragraphe disait « deux mots, et rien d'autre » tant que MXCSR et
+    /// les XMM n'existaient pas ici. Les huit registres x87 ne sont toujours
+    /// pas restaurés : ils n'existent pas, et le cœur Swift, qui les a, fait
+    /// l'inverse.
     ///
     /// **Ce qu'elle exige : que l'aire entière soit lisible.** Mesuré sur le
     /// silicium plutôt que lu : posée à cheval sur une page illisible, la vraie
@@ -978,6 +979,11 @@ pub enum Op {
     /// saut sur des frontières de cache, et ce qui reste quand une correction
     /// à chaud efface une instruction.
     Nop,
+    /// **Une instruction SSE ou SSE2 entière** : voir `x86_vector.rs`, qui dit
+    /// lesquelles et pourquoi celles-là. L'interprète Rust ne les exécute pas
+    /// — il n'a pas de registre XMM — et faute dessus comme devant toute
+    /// instruction qu'il ne porte pas ; c'est l'émetteur qui les produit.
+    Vector(Vector),
 }
 
 /// Ce que `clc`, `stc` et `cmc` font de la retenue.
@@ -2301,6 +2307,7 @@ impl Cpu {
                 | Op::FpuInit
                 | Op::FxSave
                 | Op::FxRestore
+                | Op::Vector(_)
                 | Op::PushFlags
                 | Op::PopFlags
         ) {
@@ -2613,6 +2620,7 @@ impl Cpu {
             | Op::FpuInit
             | Op::FxSave
             | Op::FxRestore
+            | Op::Vector(_)
             | Op::VerifySegmentWrite
             | Op::PushFlags
             | Op::PopFlags => {
@@ -2721,6 +2729,11 @@ const GRID: [Op; 8] = [
 struct Prefixes {
     operand_size: bool,
     repeat: bool,
+    /// **Le préfixe 0xF2**, lu depuis que les instructions vectorielles en
+    /// font un octet d'opcode (`f2 0f 10` est `movsd`, `f2 0f 70` est
+    /// `pshuflw`). Il n'a de sens que là : tout autre opcode qui le porte est
+    /// refusé, plutôt que lu comme s'il n'y était pas.
+    repeat_not: bool,
     rex: Option<u8>,
     /// Le préfixe 0x65 a été lu. Il ne concerne que l'opérande mémoire, s'il y
     /// en a un : sur une instruction sans accès mémoire il est légal et sans
@@ -2797,7 +2810,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     // comme un `movups` : une instruction plausible et fausse. Une seule forme
     // le porte ici, exactement, et tout autre `f2` reste refusé comme avant.
     if bytes.first() == Some(&0xf2) {
-        return decode_load_kernel_gs(bytes);
+        if let Some(decoded) = decode_load_kernel_gs(bytes) {
+            return Some(decoded);
+        }
     }
     let mut at = 0usize;
     let mut prefixes = Prefixes::default();
@@ -2818,6 +2833,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             // faux — le premier bit à un au lieu de leur compte.
             0xf3 => {
                 prefixes.repeat = true;
+                prefixes.rex = None;
+                at += 1;
+            }
+            // **0xF2 n'est lu que pour la page vectorielle.** Voir
+            // `Prefixes::repeat_not` : après l'opcode, il est refusé partout
+            // ailleurs.
+            0xf2 => {
+                prefixes.repeat_not = true;
                 prefixes.rex = None;
                 at += 1;
             }
@@ -2867,6 +2890,11 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
 
     let opcode = *bytes.get(at)?;
     at += 1;
+    // `f2` devant autre chose qu'une instruction vectorielle : `repne`, ou
+    // rien. Ni l'un ni l'autre n'est lu ici.
+    if prefixes.repeat_not && opcode != 0x0f {
+        return None;
+    }
 
     // **La deuxième page.** 0x0F n'est pas une instruction, c'est une bascule :
     // l'octet suivant recommence une grille entière. La confondre avec un
@@ -2875,6 +2903,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     if opcode == 0x0f {
         let second = *bytes.get(at)?;
         at += 1;
+        if prefixes.repeat_not {
+            return vector::decode(second, bytes, at, prefixes);
+        }
         return match second {
             // **Les quatre instructions privilégiées d'un noyau, sans
             // opérande.** Deux octets, et c'est tout : aucun ModRM, aucun
@@ -3280,6 +3311,17 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                         ..Decoded::nothing(Width::Qword)
                     });
                 }
+                // **`/2` et `/3` en mémoire : `ldmxcsr` et `stmxcsr`**,
+                // depuis que cette machine a un MXCSR.
+                if let Some(vector) = vector::control(reg, field.memory.is_some(), prefixes) {
+                    return Some(Decoded {
+                        op: Op::Vector(vector),
+                        length: at,
+                        memory: field.memory,
+                        memory_is_source: vector == Vector::LoadControl,
+                        ..Decoded::nothing(Width::Dword)
+                    });
+                }
                 let inert = match field.memory {
                     None => (5..=7).contains(&reg),
                     Some(_) => reg == 7 && !prefixes.repeat,
@@ -3512,7 +3554,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
                     memory_is_source: true,
                 })
             }
-            _ => None,
+            // **Tout le reste de la page est vectoriel, ou illisible.** Le
+            // décodeur des XMM ne rend que ce que l'émetteur sait produire.
+            _ => vector::decode(second, bytes, at, prefixes),
         };
     }
 
@@ -4948,6 +4992,90 @@ mod tests {
 
     /// **`lkgs` se lit, et le reste de la page `f2` reste refusé.**
     ///
+    /// **Le premier mur de `ld-musl` se lit, et ses voisins se lisent juste.**
+    ///
+    /// `66 48 0f 6e c3` est l'entrée du `memset` de musl — `movq %rbx,%xmm0` —,
+    /// suivie de `punpcklqdq %xmm0,%xmm0`. Autour d'elles, les confusions qui
+    /// rendraient une instruction plausible et fausse : la forme MMX sans
+    /// préfixe (`0f 6f`, huit octets dans un registre que ce cœur n'a pas),
+    /// deux préfixes obligatoires à la fois, et `0f 12`, qui est `movlps` en
+    /// mémoire et `movhlps` en registre.
+    #[test]
+    fn the_first_wall_of_ld_musl_reads_and_its_neighbours_read_right() {
+        let movq = decode(&[0x66, 0x48, 0x0f, 0x6e, 0xc3]).expect("movq %rbx,%xmm0");
+        assert_eq!(
+            (movq.op, movq.width, movq.dst, movq.src, movq.length),
+            (Op::Vector(Vector::MoveIn), Width::Qword, 0, 3, 5)
+        );
+        let movd = decode(&[0x66, 0x0f, 0x6e, 0xc3]).expect("movd %ebx,%xmm0");
+        assert_eq!(movd.width, Width::Dword, "sans REX.W, quatre octets");
+        let unpack = decode(&[0x66, 0x0f, 0x6c, 0xc0]).expect("punpcklqdq");
+        assert_eq!(
+            unpack.op,
+            Op::Vector(Vector::Unpack {
+                lane: Width::Qword,
+                high: false
+            })
+        );
+        // REX.R et REX.B donnent leur quatrième bit aux deux registres.
+        let high = decode(&[0x66, 0x45, 0x0f, 0xef, 0xc9]).expect("pxor %xmm9,%xmm9");
+        assert_eq!((high.dst, high.src), (9, 9));
+        let low = decode(&[0x0f, 0x12, 0x06]).expect("movlps (%rsi),%xmm0");
+        assert_eq!(low.op, Op::Vector(Vector::LoadHalf { high: false }));
+        assert!(low.memory.is_some() && low.memory_is_source);
+        let move_high = decode(&[0x0f, 0x12, 0xc1]).expect("movhlps %xmm1,%xmm0");
+        assert_eq!(move_high.op, Op::Vector(Vector::HighToLow));
+        let store = decode(&[0xf3, 0x0f, 0x7f, 0x4e, 0x11]).expect("movdqu %xmm1,0x11(%rsi)");
+        assert_eq!(store.op, Op::Vector(Vector::Store));
+        assert!(
+            store.memory.is_some() && !store.memory_is_source,
+            "une écriture n'est pas une source"
+        );
+        let shuffle = decode(&[0x66, 0x0f, 0x70, 0x05, 0, 0, 0, 0, 0x1b])
+            .expect("pshufd $0x1b, 0(%rip), %xmm0");
+        assert_eq!(
+            (shuffle.imm, shuffle.length),
+            (0x1b, 9),
+            "l'immédiat suit l'adresse, et compte dans la longueur dont une \
+             adresse relative à RIP se déduit"
+        );
+        for (bytes, why) in [
+            (
+                &[0x0f, 0x6f, 0xc1][..],
+                "movq MMX : pas de registre MMX ici",
+            ),
+            (&[0x0f, 0xef, 0xc1][..], "pxor MMX"),
+            (
+                &[0x66, 0xf3, 0x0f, 0x6f, 0xc1][..],
+                "deux préfixes obligatoires",
+            ),
+            (&[0xf3, 0x0f, 0x58, 0xc1][..], "addss calcule en flottant"),
+            (
+                &[0x66, 0x0f, 0x12, 0xc1][..],
+                "movlpd n'a pas de forme à registre",
+            ),
+            (
+                &[0x66, 0x0f, 0xd7, 0x06][..],
+                "pmovmskb n'a pas de forme mémoire",
+            ),
+            (&[0x66, 0x0f, 0x73, 0xe0, 0x01][..], "pas de psraq en SSE2"),
+            (
+                &[0x66, 0x0f, 0x72, 0x00, 0x01][..],
+                "un décalage à immédiat vise un registre",
+            ),
+        ] {
+            assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
+        }
+        // L'interprète Rust n'a pas de XMM : il faute, RIP sur l'instruction.
+        let mut cpu = Cpu {
+            rip: 0x3000_0000,
+            ..Default::default()
+        };
+        cpu.step(&[0x66, 0x48, 0x0f, 0x6e, 0xc3]);
+        assert!(cpu.faulted, "l'interprète ne porte pas les XMM");
+        assert_eq!(cpu.rip, 0x3000_0000);
+    }
+
     /// `f2 0f 00 /6` charge la base GS du noyau depuis un sélecteur — l'arrivée
     /// de FRED. Le noyau Alpine la porte dans `native_lkgs`, à 1572 octets de
     /// `init_scattered_cpuid_features`, et ne l'exécute que si CPUID annonce
@@ -4957,8 +5085,10 @@ mod tests {
     ///
     /// **Le préfixe `f2` n'est pas lu en général**, exprès : `f2 0f 10` est
     /// `movsd`, et un `f2` avalé sans être compris rendrait `movups` — une
-    /// instruction plausible et fausse. Seule cette forme le lit, et les
-    /// voisins qui étaient refusés le restent.
+    /// instruction plausible et fausse. Depuis le socle SSE, il est lu **comme
+    /// octet d'opcode** de la page vectorielle, et nulle part ailleurs :
+    /// `movsd` se décode en `movsd`, et `repne movs`, `addsd` ou le reste de
+    /// la page `0f 01` restent refusés.
     #[test]
     fn lkgs_is_read_and_the_rest_of_the_f2_page_stays_refused() {
         let step = decode(&[0xf2, 0x0f, 0x00, 0xf7]).expect("lkgs %edi se décode");
@@ -4987,9 +5117,11 @@ mod tests {
                 "f2 n'ouvre pas le reste de la page",
             ),
             (
-                &[0xf2, 0x0f, 0x10, 0xc1][..],
-                "movsd reste refusé, pas avalé en movups",
+                &[0xf2, 0x0f, 0x58, 0xc1][..],
+                "addsd calcule en flottant : refusé",
             ),
+            (&[0xf2, 0x48, 0xa5][..], "repne movs n'est pas lu"),
+            (&[0xf2, 0x90][..], "f2 devant une instruction ordinaire"),
             (
                 &[0xf2, 0x48, 0x0f, 0x00, 0xf7][..],
                 "un REX entre les deux n'est pas lu",
@@ -4997,6 +5129,13 @@ mod tests {
         ] {
             assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
+        // `movsd %xmm1,%xmm0` : huit octets, pas les seize de `movups`.
+        let movsd = decode(&[0xf2, 0x0f, 0x10, 0xc1]).expect("movsd se décode");
+        assert_eq!(
+            (movsd.op, movsd.width, movsd.dst, movsd.src),
+            (Op::Vector(Vector::LoadScalar), Width::Qword, 0, 1),
+            "movsd est un déplacement de huit octets, pas avalé en movups"
+        );
 
         // **Refusée par nom dans l'interpréteur**, RIP dessus : il n'a pas de
         // table de descripteurs pour en lire une base, et le dire vaut mieux
@@ -5927,17 +6066,25 @@ mod tests {
         // Et les quatre que la forme mémoire cache derrière les mêmes numéros.
         // Aucune n'est un `nop` : `ldmxcsr` change l'arrondi de toute la
         // virgule flottante vectorielle, `xrstor` relit des centaines
-        // d'octets. Ce cœur-ci ne porte ni XMM ni MXCSR, donc il refuse — et
-        // ce refus est ce que le test tient.
+        // d'octets. **`ldmxcsr` et `stmxcsr` se lisent depuis le socle SSE**,
+        // en instructions vectorielles qui portent leur adresse — jamais en
+        // `nop`. `xsave` et `xrstor` restent refusées : CPUID n'annonce pas
+        // XSAVE, et l'état qu'elles rangent n'existe pas tout entier ici.
+        for (modrm, vector, name) in [
+            (0x10u8, Vector::LoadControl, "ldmxcsr (%rax)"),
+            (0x18, Vector::StoreControl, "stmxcsr (%rax)"),
+        ] {
+            let step = decode(&[0x0f, 0xae, modrm]).unwrap_or_else(|| panic!("{name} se lit"));
+            assert_eq!(step.op, Op::Vector(vector), "{name}");
+            assert!(step.memory.is_some(), "{name} porte son adresse");
+        }
         //
         // **`/1` n'est plus de la liste depuis #253.** `fxrstor` y figurait,
         // et c'est ce qui rendait le défaut invisible : le dépôt *garantissait*
         // par un test que la moitié relecture du couple resterait manquante,
         // pendant que `fxsave` se décodait trois lignes plus haut.
         for (modrm, name) in [
-            (0x10u8, "ldmxcsr (%rax)"),
-            (0x18, "stmxcsr (%rax)"),
-            (0x20, "xsave (%rax)"),
+            (0x20u8, "xsave (%rax)"),
             (0x28, "xrstor (%rax)"),
             // `/0` en mémoire est `fxsave`, et `/7` est `clflush` : toutes
             // deux lues depuis la tranche qui les a rencontrées dans un vrai

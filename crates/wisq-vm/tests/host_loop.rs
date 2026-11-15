@@ -19,8 +19,8 @@ use wisq_vm::x86::{Cpu, GuestMemory, Step, ALWAYS_ONE, IF, WRITABLE_FLAGS, ZF};
 use wisq_vm::x86_wasm::{
     table_slot, Module, CONTROL_SLOT, EFER_SLOT, FAULT_SLOT, FPU_CONTROL_POWER_ON,
     FPU_CONTROL_SLOT, FPU_STATUS_SLOT, FS_BASE_SLOT, FXSAVE_WRITTEN, GLOBAL_COUNT, GS_SLOT,
-    RFLAGS_SLOT, RIP_SLOT, SEGMENT_SLOT, SYSCALL_COUNT, SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES,
-    TABLE_SLOT, TABLE_SLOTS, TASK_SLOT,
+    MXCSR_SLOT, RFLAGS_SLOT, RIP_SLOT, SEGMENT_SLOT, STOP_MXCSR, STOP_SLOT, SYSCALL_COUNT,
+    SYSCALL_SLOT, TABLE_ENTRY, TABLE_PAGES, TABLE_SLOT, TABLE_SLOTS, TASK_SLOT, XMM_SLOT,
 };
 
 /// **Ce qu'un `ud2` rend quand aucune IDT ne le rattrape**, depuis #227.
@@ -104,6 +104,29 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         value("globalCount"),
         GLOBAL_COUNT.to_string(),
         "le nombre de globales"
+    );
+    // **Les registres vectoriels et MXCSR, comparés dès leur arrivée.** Une
+    // case fausse ici ne casserait rien de visible tant que l'hôte ne fait que
+    // poser MXCSR : il le poserait sur un XMM, et `stmxcsr` rendrait zéro.
+    assert_eq!(
+        value("xmm"),
+        wisq_vm::x86_wasm::XMM_SLOT.to_string(),
+        "le premier registre XMM"
+    );
+    assert_eq!(
+        value("xmmCount"),
+        wisq_vm::x86_wasm::XMM_COUNT.to_string(),
+        "le nombre de registres XMM"
+    );
+    assert_eq!(
+        value("mxcsr"),
+        wisq_vm::x86_wasm::MXCSR_SLOT.to_string(),
+        "l'emplacement de MXCSR"
+    );
+    assert_eq!(
+        value("mxcsrReset"),
+        format!("{:#x}", wisq_vm::x86_wasm::MXCSR_RESET),
+        "la valeur d'allumage de MXCSR"
     );
     // **Le nombre de voies par seau, comparé dès son arrivée.** L'hôte choisit
     // la voie où il range une adresse ; le module, lui, consulte un nombre de
@@ -9392,7 +9415,8 @@ const vm = machine({{
 }});
 vm.globals[{rip}].value = {base}n;
 {setup}
-await vm.run({{ budget: 1000n, rounds: 4 }});
+const pourquoi = await vm.run({{ budget: 1000n, rounds: 4 }});
+console.log("arret " + pourquoi.stopped);
 console.log("rax " + BigInt.asUintN(64, vm.globals[0].value).toString(16));
 console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
 {extra}
@@ -9735,20 +9759,20 @@ console.log("fsw " + vm.globals[{status}].value);"#,
 /// C'est le mur mesuré après #224 — la machine s'arrête pour de vrai à
 /// `fpu__init_system + 183`, sur `0f ae 05 d2 f1 13 00`.
 ///
-/// **Les zéros ne sont pas un remplissage, ils sont la vérité.** L'émetteur
-/// n'a aucun registre XMM et aucune instruction XMM ne se décode : personne
-/// n'a jamais pu écrire dans cette moitié de l'aire. Le mot d'étiquettes
-/// abrégé vaut zéro pour la même raison — aucun registre x87 n'est occupé.
-/// MXCSR et son masque valent zéro parce que cette machine n'a pas de MXCSR,
-/// et Linux prévoit ce cas : masque nul, il prend sa valeur par défaut
-/// documentée.
+/// **Ce que la machine a, depuis la tranche du socle SSE** : les deux mots du
+/// x87 en 0 et 2, MXCSR en 24, son masque (`0xffff`, ce que le silicium de
+/// `x86-fxsave-oracle.tsv` écrit) en 28, et les seize XMM de 160 à 415. Ce
+/// test exigeait des zéros pour ces trois-là, parce que la machine n'en avait
+/// pas ; c'est l'image entière qu'il compare maintenant, octet par octet.
+///
+/// **Les zéros qui restent sont la vérité** : aucun registre x87 n'est occupé,
+/// donc le mot d'étiquettes abrégé et les huit registres de la pile sont nuls.
 ///
 /// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** L'aire est
-/// pré-remplie de `0xee` : un `fxsave` qui n'écrirait rien, ou qui n'écrirait
-/// que les quatre premiers octets, laisserait ces témoins en place. Et les
-/// deux mots venus des globales portent des valeurs que `fninit` ne produit
-/// pas — `0x1234` et `0xabcd` —, donc un émetteur qui écrirait `0x037f` et
-/// zéro en dur tomberait aussi.
+/// pré-remplie de `0xee` : un `fxsave` qui n'écrirait rien, ou qu'une partie,
+/// laisserait ces témoins en place. Les mots, MXCSR et chaque moitié de
+/// chaque XMM portent des valeurs distinctes : un registre écrit à la place
+/// d'un autre, ou une moitié à la place de l'autre, se voit.
 ///
 /// Les huit octets de part et d'autre sont gardés : une aire de 513 octets
 /// écraserait la mémoire du voisin.
@@ -9780,55 +9804,44 @@ fn fxsave_writes_the_state_the_machine_has_and_zero_for_what_it_has_not() {
             r#"vm.globals[0].value = {area}n;
 vm.globals[{control}].value = 0x1234n;
 vm.globals[{status}].value = 0xabcdn;
+{vectors}
 new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xee);"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
+            vectors = fx_registers_setup(),
         ),
         &format!(
-            r#"const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
-console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
-console.log("reste " + aire.slice(4, {written}).reduce((n, o) => n + (o === 0 ? 0 : 1), 0));
-console.log("reserve " + aire.slice({written}).every((o) => o === 0xee));
-console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).join(","));
-console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).join(","));
+            r#"const hexa = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("aire " + hexa({area}, 512));
+console.log("avant " + hexa({area} - 8, 8));
+console.log("apres " + hexa({area} + 512, 8));
 console.log("fcw " + vm.globals[{control}].value);
 console.log("fsw " + vm.globals[{status}].value);"#,
             area = AREA,
-            written = WRITTEN,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
         ),
     );
+    let mut wanted = fx_image(0x1234, 0xabcd);
+    wanted.extend(std::iter::repeat_n(0xee, 512 - WRITTEN));
     assert_eq!(
-        line_of(&text, "tete "),
-        "3412cdab00000000",
-        "le mot de contrôle en 0x00, le mot d'état en 0x02, et le mot \
-         d'étiquettes abrégé nul en 0x04 — aucun registre x87 n'est occupé : \
-         {text}"
-    );
-    assert_eq!(
-        line_of(&text, "reste "),
-        "0",
-        "les 412 octets qui suivent doivent être écrits à zéro, pas laissés \
-         tels quels : ST0-7 et XMM0-15 n'existent pas ici, et MXCSR non plus \
-         — Linux prend sa valeur par défaut quand le masque lit zéro : {text}"
-    );
-    assert_eq!(
-        line_of(&text, "reserve "),
-        "true",
-        "et les 96 derniers octets de l'aire restent tels quels : le corpus \
-         matériel a mesuré qu'un vrai processeur ne les touche pas, et le \
-         cœur Swift s'arrête au même octet : {text}"
+        line_of(&text, "aire "),
+        hex_of(&wanted),
+        "l'aire entière : les deux mots en 0 et 2, le mot d'étiquettes abrégé \
+         nul en 4, MXCSR et son masque en 24 et 28, les huit registres x87 \
+         nuls, les seize XMM de 160 à 415 — et les 96 derniers octets laissés \
+         tels quels, comme le silicium et le cœur Swift : {text}"
     );
     assert_eq!(
         line_of(&text, "avant "),
-        "238,238,238,238,238,238,238,238",
+        "eeeeeeeeeeeeeeee",
         "rien au-dessous de l'aire : {text}"
     );
     assert_eq!(
         line_of(&text, "apres "),
-        "238,238,238,238,238,238,238,238",
+        "eeeeeeeeeeeeeeee",
         "ni au-dessus : 512 octets, pas un de plus : {text}"
     );
     assert_eq!(
@@ -9840,6 +9853,57 @@ console.log("fsw " + vm.globals[{status}].value);"#,
     assert_eq!(line_of(&text, "fsw "), "43981", "et le mot d'état : {text}");
 }
 
+/// La valeur de MXCSR que les tests de l'aire posent : un arrondi vers zéro
+/// et deux drapeaux, rien que des bits que le masque `0xffff` accepte, et
+/// pas la valeur d'allumage — un `fxsave` qui écrirait `0x1f80` en dur
+/// tomberait.
+const FX_MXCSR: u64 = 0x7f83;
+
+/// La moitié `high` du registre XMM `n` dans les tests de l'aire : seize
+/// valeurs distinctes, et deux moitiés distinctes par registre.
+fn fx_half(n: usize, high: bool) -> u64 {
+    let byte = (n as u64) * 2 + u64::from(high) + 1;
+    (byte * 0x0101_0101_0101_0101) ^ 0x0011_2233_4455_6677
+}
+
+/// Les lignes de pilote qui posent MXCSR et les seize XMM à leurs valeurs de
+/// test.
+fn fx_registers_setup() -> String {
+    let mut out = format!("vm.globals[{MXCSR_SLOT}].value = {FX_MXCSR:#x}n;\n");
+    for n in 0..16 {
+        for high in [false, true] {
+            out.push_str(&format!(
+                "vm.globals[{}].value = {:#x}n;\n",
+                XMM_SLOT + 2 * n + usize::from(high),
+                fx_half(n, high)
+            ));
+        }
+    }
+    out
+}
+
+/// **Ce que `fxsave` doit écrire, construit d'après le manuel** (Intel,
+/// volume 1, table 10-2, format 64 bits) et non d'après l'émetteur : 416
+/// octets, les deux mots, MXCSR et son masque, les seize XMM.
+fn fx_image(control: u16, status: u16) -> Vec<u8> {
+    let mut image = vec![0u8; 416];
+    image[0..2].copy_from_slice(&control.to_le_bytes());
+    image[2..4].copy_from_slice(&status.to_le_bytes());
+    image[24..28].copy_from_slice(&(FX_MXCSR as u32).to_le_bytes());
+    image[28..32].copy_from_slice(&0xffffu32.to_le_bytes());
+    for n in 0..16 {
+        for high in [false, true] {
+            let at = 160 + 16 * n + 8 * usize::from(high);
+            image[at..at + 8].copy_from_slice(&fx_half(n, high).to_le_bytes());
+        }
+    }
+    image
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// **`fxrstor` relit ce que `fxsave` a écrit, et ne touche pas l'aire.**
 ///
 /// Le mur mesuré à #252 : la machine s'arrête pour de vrai à
@@ -9847,13 +9911,18 @@ console.log("fsw " + vm.globals[{status}].value);"#,
 /// qui relit l'état neuf du coprocesseur au moment de basculer vers `/init`.
 /// **`fxsave` était décodée depuis #225 ; celle-ci ne l'a jamais été.**
 ///
-/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** Les deux
-/// globales portent avant l'instruction des valeurs que l'aire ne contient
-/// pas : un `fxrstor` qui ne ferait rien les laisserait en place, un qui
-/// n'en relirait qu'une laisserait l'autre, et un qui les échangerait
-/// donnerait deux fois le mauvais mot. L'aire est en outre relue après coup :
-/// `fxrstor` **lit**, elle n'écrit pas — la confondre avec son jumeau
-/// écraserait l'état qu'on vient de lui donner.
+/// **Depuis le socle SSE, elle rend aussi MXCSR et les seize XMM** : c'est
+/// par elle qu'un noyau rend ses registres à un programme. L'aire porte
+/// l'image que `fx_image` construit d'après le manuel, et tout ce qu'elle ne
+/// lit pas — le mot d'étiquettes, la pile x87, le masque, la queue — vaut
+/// `0xaa`, pour qu'un octet lu au mauvais endroit se voie.
+///
+/// **Ce que le test tient et qu'un bouchon ne tiendrait pas.** Les globales
+/// portent avant l'instruction des valeurs que l'aire ne contient pas : un
+/// `fxrstor` qui ne ferait rien les laisserait en place, un qui n'en relirait
+/// qu'une partie laisserait le reste, et un qui les échangerait donnerait les
+/// mauvais registres. L'aire est relue après coup : `fxrstor` **lit**, elle
+/// n'écrit pas.
 #[test]
 fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
     let Some(bun) = bun() else {
@@ -9862,6 +9931,23 @@ fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
     const PAGES: u32 = 1;
     const BASE: u64 = 0x1_0000;
     const AREA: u32 = 0x2000;
+    // L'image, puis `0xaa` partout où `fxrstor` ne doit rien lire.
+    let mut area = fx_image(0x0ff1, 0x0ee2);
+    for at in (4..24).chain(28..160) {
+        area[at] = 0xaa;
+    }
+    area.extend(std::iter::repeat_n(0xaa, 96));
+    let mut placed = String::new();
+    for (at, byte) in area.iter().enumerate() {
+        placed.push_str(&format!("aire[{at}] = {byte};\n"));
+    }
+    // Les registres avant l'instruction : autre chose que l'image.
+    let mut before = format!("vm.globals[{MXCSR_SLOT}].value = 0x1f80n;\n");
+    for slot in XMM_SLOT..XMM_SLOT + 32 {
+        before.push_str(&format!(
+            "vm.globals[{slot}].value = 0x5a5a5a5a5a5a5a5an;\n"
+        ));
+    }
     let text = drive_with(
         &bun,
         &[0x0f, 0xae, 0x08, 0x0f, 0x0b], // fxrstor (%rax) ; ud2
@@ -9870,15 +9956,11 @@ fn fxrstor_reads_the_state_back_into_the_machine_and_writes_nothing() {
         "fxrstor",
         &format!(
             r#"vm.globals[0].value = {area}n;
-// L'aire est remplie de témoins, puis les deux mots que la machine porte
-// vraiment y sont posés. Les témoins doivent être lus sans être consommés.
-new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xaa);
-const vue = new DataView(vm.memory.buffer);
-vue.setUint16({area} + 0x00, 0x0ff1, true);
-vue.setUint16({area} + 0x02, 0x0ee2, true);
-// Et les globales portent autre chose : ce qui doit être remplacé.
-vm.globals[{control}].value = 0x1234n;
-vm.globals[{status}].value = 0xabcdn;"#,
+new Uint8Array(vm.memory.buffer, {area} - 8, 512 + 16).fill(0xbb);
+const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+{placed}vm.globals[{control}].value = 0x1234n;
+vm.globals[{status}].value = 0xabcdn;
+{before}"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
@@ -9886,14 +9968,22 @@ vm.globals[{status}].value = 0xabcdn;"#,
         &format!(
             r#"console.log("fcw " + vm.globals[{control}].value);
 console.log("fsw " + vm.globals[{status}].value);
-const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
-console.log("tete " + Array.from(aire.slice(0, 8)).map((o) => o.toString(16).padStart(2, "0")).join(""));
-console.log("temoins " + aire.slice(4).every((o) => o === 0xaa));
-console.log("avant " + new Uint8Array(vm.memory.buffer, {area} - 8, 8).every((o) => o === 0xaa));
-console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).every((o) => o === 0xaa));"#,
+console.log("mxcsr " + vm.globals[{mxcsr}].value.toString(16));
+const moities = [];
+for (let slot = {xmm}; slot < {xmm} + 32; slot++) {{
+  moities.push(BigInt.asUintN(64, vm.globals[slot].value).toString(16));
+}}
+console.log("xmm " + moities.join(","));
+const hexa = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("aire " + hexa({area}, 512));
+console.log("avant " + hexa({area} - 8, 8));
+console.log("apres " + hexa({area} + 512, 8));"#,
             area = AREA,
             control = FPU_CONTROL_SLOT,
             status = FPU_STATUS_SLOT,
+            mxcsr = MXCSR_SLOT,
+            xmm = XMM_SLOT,
         ),
     );
     assert_eq!(
@@ -9909,20 +9999,124 @@ console.log("apres " + new Uint8Array(vm.memory.buffer, {area} + 512, 8).every((
          diffèrent exprès — les échanger donnerait 3810 et 4081 : {text}"
     );
     assert_eq!(
-        line_of(&text, "tete "),
-        "f10fe20eaaaaaaaa",
-        "`fxrstor` **lit** l'aire : les deux mots doivent y être restés tels \
-         quels, et les témoins juste après aussi. La confondre avec `fxsave` \
-         écraserait l'état qu'on vient de lui donner : {text}"
+        line_of(&text, "mxcsr "),
+        format!("{FX_MXCSR:x}"),
+        "MXCSR vient de l'octet 24, pas du masque qui le suit : {text}"
+    );
+    let wanted: Vec<String> = (0..16)
+        .flat_map(|n| [fx_half(n, false), fx_half(n, true)])
+        .map(|half| format!("{half:x}"))
+        .collect();
+    assert_eq!(
+        line_of(&text, "xmm "),
+        wanted.join(","),
+        "les seize XMM viennent de 160 à 415, chacun à sa place et chaque \
+         moitié de son côté : {text}"
     );
     assert_eq!(
-        line_of(&text, "temoins "),
-        "true",
-        "et les 508 octets qui suivent restent 0xaa — rien n'est écrit dans \
-         l'aire : {text}"
+        line_of(&text, "aire "),
+        hex_of(&area),
+        "`fxrstor` **lit** l'aire : elle doit être restée octet pour octet. La \
+         confondre avec `fxsave` écraserait l'état qu'on vient de lui donner : \
+         {text}"
     );
-    assert_eq!(line_of(&text, "avant "), "true", "rien au-dessous : {text}");
-    assert_eq!(line_of(&text, "apres "), "true", "ni au-dessus : {text}");
+    assert_eq!(
+        line_of(&text, "avant "),
+        "bbbbbbbbbbbbbbbb",
+        "rien au-dessous : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "apres "),
+        "bbbbbbbbbbbbbbbb",
+        "ni au-dessus : {text}"
+    );
+}
+
+/// **Un MXCSR aux bits réservés levés ne restaure rien, et l'arrêt le
+/// nomme.**
+///
+/// Le silicium refuse par `#GP(0)` un `fxrstor` ou un `ldmxcsr` dont MXCSR
+/// lève un bit hors du masque (`0xffff`). Ce cœur ne délivre pas cette faute :
+/// il s'arrête, RIP sur l'instruction, le témoin `STOP_MXCSR` posé — un arrêt
+/// nommé plutôt qu'un MXCSR que rien ne pourrait produire. Et rien n'a changé :
+/// MXCSR est jugé **avant** que le premier registre soit posé.
+#[test]
+fn an_mxcsr_with_reserved_bits_stops_by_name_and_restores_nothing() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    const AREA: u32 = 0x2000;
+    for (name, program, value) in [
+        ("fxrstor", &[0x0f, 0xae, 0x08, 0x0f, 0x0b][..], 0x1_1f80u32),
+        (
+            "ldmxcsr",
+            &[0x0f, 0xae, 0x10, 0x0f, 0x0b][..],
+            0x8000_1f80u32,
+        ),
+    ] {
+        let area = fx_image(0x0ff1, 0x0ee2);
+        let mut placed = String::new();
+        for (at, byte) in area.iter().enumerate() {
+            placed.push_str(&format!("aire[{at}] = {byte};\n"));
+        }
+        // `ldmxcsr` lit MXCSR à l'adresse même ; `fxrstor` à l'octet 24.
+        let offset = if name == "fxrstor" { 24 } else { 0 };
+        let text = drive_with(
+            &bun,
+            program,
+            BASE,
+            PAGES,
+            &format!("mxcsr-{name}"),
+            &format!(
+                r#"vm.globals[0].value = {area}n;
+const aire = new Uint8Array(vm.memory.buffer, {area}, 512);
+{placed}new DataView(vm.memory.buffer).setUint32({area} + {offset}, {value}, true);
+vm.globals[{control}].value = 0x1234n;
+vm.globals[{mxcsr}].value = 0x1f80n;
+vm.globals[{xmm}].value = 0x5an;"#,
+                area = AREA,
+                control = FPU_CONTROL_SLOT,
+                mxcsr = MXCSR_SLOT,
+                xmm = XMM_SLOT,
+            ),
+            &format!(
+                r#"console.log("ici " + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
+console.log("temoin " + vm.globals[{stop}].value);
+console.log("fcw " + vm.globals[{control}].value);
+console.log("mxcsr " + vm.globals[{mxcsr}].value.toString(16));
+console.log("xmm0 " + vm.globals[{xmm}].value.toString(16));"#,
+                rip = RIP_SLOT,
+                stop = STOP_SLOT,
+                control = FPU_CONTROL_SLOT,
+                mxcsr = MXCSR_SLOT,
+                xmm = XMM_SLOT,
+            ),
+        );
+        assert!(
+            text.contains("arret arrêtée sur ldmxcsr ou fxrstor"),
+            "{name} : l'arrêt nomme le MXCSR refusé : {text}"
+        );
+        assert_eq!(
+            (
+                line_of(&text, "ici "),
+                line_of(&text, "temoin "),
+                line_of(&text, "fcw "),
+                line_of(&text, "mxcsr "),
+                line_of(&text, "xmm0 "),
+            ),
+            (
+                format!("{BASE:x}"),
+                STOP_MXCSR.to_string(),
+                "4660".to_string(),
+                "1f80".to_string(),
+                "5a".to_string(),
+            ),
+            "{name} : RIP sur l'instruction, le témoin posé, et rien de \
+             restauré — ni le mot de contrôle, ni MXCSR, ni XMM0 : {text}"
+        );
+    }
 }
 
 /// **Une aire de `fxrstor` dont un octet manque ne restaure rien du tout.**
@@ -10162,15 +10356,15 @@ for (const trame of [{frameA}, {frameB}, {next}]) {{
 vm.globals[{rip}].value = {base}n;
 vm.globals[{control}].value = 0x1234n;
 vm.globals[{status}].value = 0xabcdn;
+{vectors}
 const why = await vm.run({{ budget: 256n, rounds: 8 }});
 console.log("arret " + why.stopped);
 const octets = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
   .map((o) => o.toString(16).padStart(2, "0")).join("");
 const compte = (at, n) => new Uint8Array(vm.memory.buffer, at, n)
   .reduce((c, o) => c + (o === 0 ? 0 : 1), 0);
-console.log("tete " + octets({frameA} + {at}, 8));
-console.log("basse " + compte({frameA} + {at} + 4, 0x100 - 4));
-console.log("haute " + compte({frameB}, {written} - 0x100));
+console.log("basse " + octets({frameA} + {at}, 0x100));
+console.log("haute " + octets({frameB}, {written} - 0x100));
 console.log("avant " + octets({frameA} + {at} - 8, 8));
 console.log("apres " + octets({frameB} + {written} - 0x100, 8));
 console.log("voisine " + compte({next}, 0x1000));
@@ -10192,6 +10386,7 @@ console.log("voisine " + compte({next}, 0x1000));
             frameA = FRAME_A,
             frameB = FRAME_B,
             next = NEXT,
+            vectors = fx_registers_setup(),
         ),
     )
     .expect("le pilote");
@@ -10212,22 +10407,22 @@ console.log("voisine " + compte({next}, 0x1000));
         UD2_SANS_PORTE,
         "le `ud2` arrête : {text}"
     );
-    assert_eq!(
-        line_of(&text, "tete "),
-        "3412cdab00000000",
-        "les deux mots du coprocesseur sont au début de l'aire, dans la \
-         première trame : {text}"
-    );
+    // L'image que le manuel prescrit, coupée où la page se coupe : les 256
+    // premiers octets dans la première trame — les mots, MXCSR, la pile x87
+    // vide, XMM0 à XMM5 —, les 160 suivants dans la seconde — XMM6 à XMM15.
+    let image = fx_image(0x1234, 0xabcd);
     assert_eq!(
         line_of(&text, "basse "),
-        "0",
-        "le reste de la première page est écrit à zéro : {text}"
+        hex_of(&image[..0x100]),
+        "le début de l'aire est dans la première trame, octet pour octet : \
+         {text}"
     );
     assert_eq!(
         line_of(&text, "haute "),
-        "0",
+        hex_of(&image[0x100..]),
         "et les 160 octets qui débordent tombent dans la **seconde** trame, \
-         que seule une vraie deuxième traduction peut atteindre : {text}"
+         que seule une vraie deuxième traduction peut atteindre — ce sont les \
+         dix derniers XMM, qu'aucun zéro ne peut imiter : {text}"
     );
     assert_eq!(
         line_of(&text, "avant "),
@@ -18891,4 +19086,196 @@ for (let i = 6; i < 8; i++) vue.setUint8({far} + i - 6, Number((pile >> BigInt(8
          ses deux octets hauts seraient `0xeeee` : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Une écriture de seize octets à cheval sur une page qu'elle n'a pas le
+/// droit d'écrire n'écrit rien du tout — pas même sa moitié basse.**
+///
+/// `movups %xmm0, (%rax)` à huit octets de la fin d'une page : la moitié basse
+/// tombe dans la première page, inscriptible, la haute dans la seconde. Deux
+/// secondes pages, deux défauts du même genre :
+///
+/// - **en lecture seule** — une page à copier sur écriture, ce qu'un `fork`
+///   laisse partout : le silicium faute en écriture (P|W) avant d'avoir rien
+///   écrit, le noyau copie la page, et l'instruction rejouée écrit tout ;
+/// - **absente** : la faute dit « page absente », et rien n'est écrit non plus.
+///
+/// Écrire les deux moitiés l'une après l'autre, sans sonde, poserait la basse
+/// puis fauterait sur la haute : la première page porterait la moitié d'un
+/// registre que le programme n'a jamais écrit — et ce que le rejeu réécrirait
+/// par-dessus ne changerait rien à ce qu'un autre fil aurait pu lire
+/// entre-temps. C'est la sonde en écriture du dernier octet qui l'empêche.
+#[test]
+fn a_sixteen_byte_store_across_a_page_it_may_not_write_writes_nothing() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 64;
+    const BASE: u64 = 0x1_0000;
+    const PML4: u64 = 0x2_0000;
+    const PDPT: u64 = 0x2_1000;
+    const PD: u64 = 0x2_2000;
+    const PT: u64 = 0x2_3000;
+    const FRAME_A: u64 = 0x3_0000;
+    const FRAME_B: u64 = 0x3_8000;
+    const VA: u64 = 0xFFFF_8000_0020_0000;
+    /// Huit octets avant la fin de la première page.
+    const AT: u64 = 0xff8;
+
+    let mut program: Vec<u8> = Vec::new();
+    let mut push = |bytes: &[u8]| program.extend_from_slice(bytes);
+    push(&[0x48, 0xb8]); // movabs $PML4,%rax
+    push(&PML4.to_le_bytes());
+    push(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    push(&[0x48, 0xb8]); // movabs $(PG|WP),%rax — WP : le noyau aussi est jugé
+    push(&((1u64 << 31) | (1 << 16)).to_le_bytes());
+    push(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0
+    push(&[0x48, 0xb8]); // movabs $VA+AT,%rax
+    push(&(VA + AT).to_le_bytes());
+    push(&[0x0f, 0x11, 0x00]); // movups %xmm0,(%rax)
+    push(&[0x0f, 0x0b]); // ud2
+                         // L'adresse du `movups` : cinq octets avant la fin.
+    let store = BASE + program.len() as u64 - 5;
+
+    let module =
+        Module::resolving(&program, BASE, 0, 0, PAGES).expect("une région paginée se traduit");
+    for (name, second, code) in [("lecture-seule", 0x1u64, 0x3u64), ("absente", 0x0, 0x0)] {
+        let scratch =
+            std::env::temp_dir().join(format!("wisq-movups-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+        let path = scratch.join("m.wasm");
+        std::fs::write(&path, &module).expect("le module");
+        let driver = scratch.join("d.mjs");
+        std::fs::write(
+            &driver,
+            format!(
+                r#"
+import {{ machine }} from {host:?};
+import {{ readFileSync }} from "fs";
+let asked = 0;
+const vm = machine({{
+  translate: async () => (asked++ === 0 ? readFileSync({path:?}) : null),
+  pages: {pages},
+}});
+const vue = new DataView(vm.memory.buffer);
+const idx = (va, shift) => Number((BigInt(va) >> BigInt(shift)) & 0x1ffn);
+vue.setBigUint64({pml4} + idx({va}n, 39) * 8, {pdpt}n | 0x3n, true);
+vue.setBigUint64({pdpt} + idx({va}n, 30) * 8, {pd}n | 0x3n, true);
+vue.setBigUint64({pd} + idx({va}n, 21) * 8, {pt}n | 0x3n, true);
+vue.setBigUint64({pt} + idx({va}n, 12) * 8, {frame_a}n | 0x3n, true);
+vue.setBigUint64({pt} + idx({va}n + 0x1000n, 12) * 8, {frame_b}n | {second}n, true);
+for (const trame of [{frame_a}, {frame_b}]) {{
+  new Uint8Array(vm.memory.buffer, trame, 0x1000).fill(0xee);
+}}
+vm.globals[{xmm}].value = 0x1111111111111111n;
+vm.globals[{xmm} + 1].value = 0x2222222222222222n;
+vm.globals[{rip}].value = {base}n;
+const why = await vm.run({{ budget: 256n, rounds: 8 }});
+console.log("arret " + why.stopped);
+console.log("ici " + BigInt.asUintN(64, vm.globals[{rip}].value).toString(16));
+console.log("cr2 " + BigInt.asUintN(64, vm.globals[{control} + 1].value).toString(16));
+console.log("temoin " + vm.globals[{fault}].value);
+const octets = (at, n) => Array.from(new Uint8Array(vm.memory.buffer, at, n))
+  .map((o) => o.toString(16).padStart(2, "0")).join("");
+console.log("basse " + octets({frame_a} + {at}, 8));
+console.log("haute " + octets({frame_b}, 8));
+"#,
+                host = workspace_root().join("web/host.js").to_string_lossy(),
+                path = path.to_string_lossy(),
+                pages = PAGES,
+                rip = RIP_SLOT,
+                base = BASE,
+                control = CONTROL_SLOT,
+                fault = FAULT_SLOT,
+                xmm = XMM_SLOT,
+                va = VA,
+                at = AT,
+                pml4 = PML4,
+                pdpt = PDPT,
+                pd = PD,
+                pt = PT,
+                frame_a = FRAME_A,
+                frame_b = FRAME_B,
+                second = second,
+            ),
+        )
+        .expect("le pilote");
+        let output = Command::new(&bun)
+            .arg("run")
+            .arg(&driver)
+            .output()
+            .expect("bun");
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert_eq!(
+            line_of(&text, "arret "),
+            FAUTE_SANS_PORTE,
+            "{name} : l'écriture faute : {text}"
+        );
+        assert_eq!(
+            (
+                line_of(&text, "ici "),
+                line_of(&text, "cr2 "),
+                line_of(&text, "temoin "),
+            ),
+            (
+                format!("{store:x}"),
+                format!("{:x}", VA + AT + 15),
+                (code + 1).to_string(),
+            ),
+            "{name} : RIP sur le `movups`, CR2 dans la seconde page, et le code \
+             d'erreur de la page qui manque à l'écriture : {text}"
+        );
+        assert_eq!(
+            (line_of(&text, "basse "), line_of(&text, "haute ")),
+            (
+                "eeeeeeeeeeeeeeee".to_string(),
+                "eeeeeeeeeeeeeeee".to_string()
+            ),
+            "{name} : **rien n'est écrit**, ni la moitié basse dans la première \
+             page, ni la haute : {text}"
+        );
+    }
+}
+
+/// **MXCSR part à sa valeur d'allumage, et `stmxcsr` la rend.**
+///
+/// Les globales sont importées : leur valeur de départ appartient à l'hôte,
+/// et c'est `web/host.js` qui pose `0x1f80` — toutes les exceptions
+/// flottantes masquées, arrondi au plus proche. Partie de zéro, la machine
+/// démasquerait tout, ce qu'aucun processeur ne fait au démarrage, et le
+/// noyau rangerait ce zéro dans l'aire de chaque tâche par `fxsave`.
+#[test]
+fn a_fresh_machine_holds_the_power_on_mxcsr_and_stmxcsr_writes_it() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const AREA: u32 = 0x2000;
+    let text = drive_with(
+        &bun,
+        &[0x0f, 0xae, 0x18, 0x0f, 0x0b], // stmxcsr (%rax) ; ud2
+        0x1_0000,
+        1,
+        "stmxcsr",
+        &format!(
+            "vm.globals[0].value = {AREA}n;\n\
+             new Uint8Array(vm.memory.buffer, {AREA}, 8).fill(0xee);"
+        ),
+        &format!(
+            "console.log(\"mot \" + new DataView(vm.memory.buffer).getUint32({AREA}, true).toString(16));\n\
+             console.log(\"suite \" + new Uint8Array(vm.memory.buffer, {AREA} + 4, 4).join(\",\"));"
+        ),
+    );
+    assert_eq!(line_of(&text, "arret "), UD2_SANS_PORTE, "{text}");
+    assert_eq!(
+        line_of(&text, "mot "),
+        "1f80",
+        "MXCSR vaut sa valeur d'allumage, et `stmxcsr` l'écrit : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "suite "),
+        "238,238,238,238",
+        "quatre octets, pas huit : {text}"
+    );
 }

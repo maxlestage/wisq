@@ -24,7 +24,7 @@
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
-/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre que ce tableau ne connaît pas se dit quand
+/// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG`, `STOP_MXCSR` — et un nombre que ce tableau ne connaît pas se dit quand
 /// même, plutôt que de passer pour « rien ». `STOP_MSR` n'y est pas : il porte
 /// le numéro du registre dans ses trente-deux bits bas, et se lit à part.
 const STOPS = {
@@ -35,6 +35,7 @@ const STOPS = {
   5n: "arrêtée sur invpcid : purger le tampon par identifiant de contexte, et cette machine n'a pas de PCID",
   6n: "arrêtée sur lldt : une table de descripteurs locale non nulle, sans table globale où la trouver",
   7n: "arrêtée sur une écriture dans un registre de débogage : cette machine n'a pas de points d'arrêt matériels",
+  9n: "arrêtée sur ldmxcsr ou fxrstor : un MXCSR aux bits réservés levés, que le silicium refuserait par #GP",
 };
 /// **`STOP_HALTED`** : l'invité s'est arrêté sur un `hlt`. Nommé ici parce que
 /// la boucle en décide — un `hlt` qu'une interruption peut encore réveiller
@@ -194,7 +195,17 @@ export const SLOTS = {
   /// rarement le mot sans l'avoir initialisé, donc laisser zéro ici ne se
   /// verrait pas — c'est exactement pour ça que ça se pose.
   fpuControlPowerOn: 0x40,
-  globalCount: 60,
+  /// **Les seize registres XMM**, deux globales chacun — la moitié basse, puis
+  /// la haute —, puis **MXCSR**. Le module les lit et les écrit ; l'hôte les
+  /// crée, pose MXCSR à sa valeur d'allumage, et ne les touche plus : la
+  /// délivrance d'une faute ne sauve aucun registre vectoriel, le silicium
+  /// non plus — c'est le noyau qui les range, par `fxsave`.
+  xmm: 60,
+  xmmCount: 16,
+  mxcsr: 92,
+  /// Toutes les exceptions masquées, arrondi au plus proche : `MXCSR_RESET`.
+  mxcsrReset: 0x1f80,
+  globalCount: 93,
   tablePages: 16,
   tableEntry: 16,
   tableSlots: 1 << 16,
@@ -635,6 +646,10 @@ export function machine({
   // tables de pages.
   globals[SLOTS.efer].value = 0x500n;
   globals[SLOTS.fpuControl].value = BigInt(SLOTS.fpuControlPowerOn);
+  // **MXCSR part à sa valeur d'allumage**, pas à zéro : zéro démasquerait
+  // toutes les exceptions flottantes, ce qu'aucun processeur ne fait au
+  // démarrage, et `fxsave` la rangerait telle quelle dans l'aire du noyau.
+  globals[SLOTS.mxcsr].value = BigInt(SLOTS.mxcsrReset);
   // **Les deux fonctions par lesquelles l'invité touche le monde.**
   //
   // Elles sont *importées* plutôt qu'atteintes en sortant de la région : un
