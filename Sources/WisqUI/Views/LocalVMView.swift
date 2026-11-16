@@ -1098,12 +1098,50 @@ struct LocalVMTerminalView: View {
             // quelques lignes puis se tait dix minutes, sans que rien ne dise
             // s'il tournait encore. « Il tourne en rond » et « il est mort »
             // ne se corrigent pas pareil.
+            // **La première reprise d'un bureau prêt, dite pendant qu'elle se
+            // fait** : une douzaine de secondes où l'écran montre le bureau
+            // sans répondre au doigt. Même en plein écran : c'est là qu'il
+            // a l'air figé. Voir `ResumeWait`.
+            if let resumeWait = model.resumeWait {
+                Label(resumeWait, systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .accessibilityLabel(resumeWait)
+            }
             if !fullScreen, let heartbeat = model.heartbeat {
                 Text(heartbeat)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("Avancement de la machine : \(heartbeat)")
+            }
+
+            // **Ce que la frappe sur l'écran a à dire** : un collage long qui
+            // s'écrit encore, ou des caractères qu'un clavier américain n'a
+            // pas. Sans cette ligne, la fin d'un collage disparaissait sans
+            // que rien ne le dise. Voir `ScreenTypist`.
+            //
+            // **Et un bouton pour l'annuler** : ce qui attend passe avant ce
+            // qu'on tape ensuite, Ctrl-C compris, et un gros fichier collé
+            // par erreur tiendrait le clavier de la machine des heures.
+            if !fullScreen, typesOnScreen, let typingNote = model.typingNote {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(typingNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if model.typingInProgress {
+                        Button("Annuler la frappe", role: .destructive) {
+                            model.cancelTyping()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
             }
 
             // **Les touches qu'un shell demande.** Tabulation pour compléter,

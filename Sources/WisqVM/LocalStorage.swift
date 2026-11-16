@@ -365,6 +365,23 @@ public enum LocalStorage {
         return size
     }
 
+    /// **La place libre du volume qui porte `url`**, ou `nil` quand elle ne
+    /// se laisse pas lire. Sur iOS, celle « pour un usage important » : ce
+    /// que le système libérera de ses caches pour un fichier que la personne
+    /// a demandé — plus que la place brute, et c'est elle qui décide si
+    /// l'écriture passera. Ailleurs, la place brute (`statvfs`).
+    public static func availableBytes(at url: URL) -> Int? {
+        #if canImport(Darwin)
+        if let important = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage, important > 0 {
+            return Int(clamping: important)
+        }
+        #endif
+        guard let free = (try? FileManager.default.attributesOfFileSystem(forPath: url.path))?[.systemFreeSize]
+            as? NSNumber else { return nil }
+        return Int(clamping: free.int64Value)
+    }
+
     /// A size as someone reads it, in French, with the unit that keeps the
     /// number under a thousand.
     ///
