@@ -459,13 +459,17 @@ public struct ReadyDesktop: Equatable, Sendable {
     ///
     /// **`running` sont les fichiers que la session d'arrière-plan a en
     /// cours** (`backgroundFiles`). Quand l'un d'eux est à ce bureau et
-    /// manque encore (`followable`), la garde ne joue pas : ce transfert a
-    /// déjà pris de la place dans le fichier de la session, que `room` ne
-    /// voit pas, et `fetch` ne fait que le suivre. Le refuser disait « Rien
-    /// n'a été téléchargé » d'un téléchargement à moitié fait, et laissait la
-    /// tâche courir sans personne pour la recoudre ou l'arrêter. Un fichier
-    /// déjà rangé à sa taille, lui, ne court plus, quoi que dise un relevé
-    /// ancien : la garde joue pour le reste.
+    /// manque encore (`followable`), **lui seul** échappe à la garde : ce
+    /// transfert a déjà pris de la place dans le fichier de la session, que
+    /// `room` ne voit pas, et `fetch` ne fait que le suivre. Le reste — le
+    /// fichier qui n'a pas commencé, et l'installation — se compte encore
+    /// (`room(library:downloads:running:)`). Lever la garde pour tout le
+    /// bureau laissait partir toute l'ISO, ou l'archive, sur un téléphone à
+    /// un octet libre, jusqu'à l'erreur du système. Le refus dit alors que
+    /// le transfert en cours continue, au lieu de « Rien n'a été
+    /// téléchargé » : la session le range à sa fin, sans la feuille. Un
+    /// fichier déjà rangé à sa taille, lui, ne court plus, quoi que dise un
+    /// relevé ancien : il ne se met pas à part.
     ///
     /// **Une annulation entre les deux fichiers arrête là** : l'image finie
     /// au moment où « Annuler » est touché ne lance pas l'archive.
@@ -476,9 +480,9 @@ public struct ReadyDesktop: Equatable, Sendable {
         progress: @escaping @Sendable (Progress) -> Void = { _ in },
         replacedImage: @Sendable (String) -> Void = { _ in }
     ) async throws -> (image: URL, archive: URL) {
-        if let available, followable(running: running, library: library, downloads: downloads).isEmpty {
-            let room = room(library: library, downloads: downloads)
-            if room.total > available { throw Refusal.notEnoughSpace(room, available: available) }
+        if let available, let refusal = spaceRefusal(available: available, library: library,
+                                                     downloads: downloads, running: running) {
+            throw refusal
         }
         // Annulée avant même de commencer : rien n'est demandé. Sans ce
         // relevé, le premier morceau de l'image s'écrivait avant que
@@ -582,19 +586,40 @@ public struct ReadyDesktop: Equatable, Sendable {
         return Room(image: image, archive: archive, install: 2 * self.archive.size + Self.digestScratch)
     }
 
+    /// **La place qu'il faut, le transfert déjà en cours mis à part** : ce
+    /// qui reste à recevoir d'un fichier que la session d'arrière-plan a en
+    /// cours et qui manque encore (`followable`) ne compte pas, sa place est
+    /// déjà prise dans le fichier de la session. L'autre fichier et
+    /// l'installation comptent, eux, comme dans `room(library:downloads:)`.
+    public func room(library: URL, downloads: URL, running: Set<String>) -> Room {
+        let whole = room(library: library, downloads: downloads)
+        let following = followable(running: running, library: library, downloads: downloads)
+        return Room(image: following.contains(image.file) ? 0 : whole.image,
+                    archive: following.contains(archive.file) ? 0 : whole.archive,
+                    install: whole.install)
+    }
+
+    /// Le refus de la place, ou `nil` quand elle suffit : la garde de
+    /// `fetch`, et la phrase de `spaceShortfall`.
+    func spaceRefusal(available: Int, library: URL, downloads: URL, running: Set<String>) -> Refusal? {
+        let room = room(library: library, downloads: downloads, running: running)
+        guard room.total > available else { return nil }
+        let following = followable(running: running, library: library, downloads: downloads)
+        return .notEnoughSpace(room, available: available,
+                               following: Set(following.map { $0 == image.file ? .image : .archive }))
+    }
+
     /// La phrase de la feuille quand la place manque, ou `nil` quand elle
     /// suffit : la même que le refus de `fetch`, dite avant qu'on touche.
-    /// Rien non plus quand un fichier de ce bureau est en cours dans la
-    /// session d'arrière-plan (`running`) et manque encore (`followable`) :
-    /// la ligne dit alors qu'il continue, et « Installer » reste là pour le
-    /// suivre (voir `fetch`).
+    /// Un fichier de ce bureau en cours dans la session d'arrière-plan
+    /// (`running`) et qui manque encore (`followable`) est mis à part, et
+    /// lui seul (voir `fetch`) : quand le reste tient, rien n'est dit, et
+    /// « Installer » reste là pour le suivre.
     public func spaceShortfall(available: Int?, library: URL, downloads: URL,
                                running: Set<String> = []) -> String? {
-        guard let available, followable(running: running, library: library, downloads: downloads).isEmpty
-        else { return nil }
-        let room = room(library: library, downloads: downloads)
-        guard room.total > available else { return nil }
-        return Refusal.notEnoughSpace(room, available: available).errorDescription
+        guard let available else { return nil }
+        return spaceRefusal(available: available, library: library, downloads: downloads, running: running)?
+            .errorDescription
     }
 
     /// **Ce qui reste après « Annuler »**, dit tel qu'il est sur le disque :
@@ -624,7 +649,10 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// lancé avant que wisq ne soit fermé, ou par une feuille fermée depuis.
     /// La feuille rouverte le dit au lieu de proposer le bureau comme si
     /// rien n'avait commencé. `nil` quand rien de lui n'est en cours.
-    public func backgroundPhrase(running files: Set<String>) -> String? {
+    ///
+    /// Le relevé brut, tel quel : la feuille passe par
+    /// `backgroundPhrase(running:library:downloads:available:)`.
+    func backgroundPhrase(running files: Set<String>) -> String? {
         let mine = backgroundFiles(running: files)
         let what: String
         if mine.contains(image.file) {
@@ -636,6 +664,25 @@ public struct ReadyDesktop: Equatable, Sendable {
         }
         return "Le téléchargement \(what) continue en arrière-plan. Touchez « Installer » pour le suivre : "
             + "il reprend là où il en est, rien n'est redemandé."
+    }
+
+    /// **La ligne « continue en arrière-plan » de la feuille.** Seuls les
+    /// fichiers en cours qui manquent encore (`followable`) continuent : le
+    /// relevé est lu à l'ouverture, et une image rangée depuis, la feuille
+    /// ouverte, faisait dire « continue » à côté de la phrase de la place,
+    /// qui, elle, la comptait rangée. `library` ou `downloads` illisibles :
+    /// le relevé tel quel, rien d'autre ne se lit.
+    ///
+    /// **Rien non plus quand la place manque au reste** (`spaceShortfall`,
+    /// qui la lit dans `available`) : sa phrase dit déjà que le transfert
+    /// continue, et « Installer » est éteint. « Touchez « Installer » pour
+    /// le suivre » aurait montré un bouton qu'on ne peut pas toucher.
+    public func backgroundPhrase(running files: Set<String>, library: URL?, downloads: URL?,
+                                 available: Int?) -> String? {
+        guard let library, let downloads else { return backgroundPhrase(running: files) }
+        guard spaceShortfall(available: available, library: library, downloads: downloads,
+                             running: files) == nil else { return nil }
+        return backgroundPhrase(running: followable(running: files, library: library, downloads: downloads))
     }
 
     /// Ceux des fichiers en cours (`running`) qui sont à ce bureau : son
@@ -672,6 +719,15 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// qu'« Annuler » venait d'arrêter. Les fichiers des autres restent.
     public func followed(running files: Set<String>) -> Set<String> {
         files.subtracting(backgroundFiles(running: files))
+    }
+
+    /// **Les fichiers en cours, une fois `fetch` rendu sur `error`** (`nil`
+    /// quand il a fini) : `followed`, sauf après le refus de la place. Ce
+    /// refus ne suit rien et n'arrête rien : le transfert de fond qui
+    /// courait continue (`fetch`), et la ligne doit encore le dire.
+    public func followed(running files: Set<String>, after error: Error?) -> Set<String> {
+        if let refusal = error as? Refusal, case .notEnoughSpace = refusal { return files }
+        return followed(running: files)
     }
 
     // MARK: - Déjà installé
@@ -724,7 +780,9 @@ public struct ReadyDesktop: Equatable, Sendable {
         /// L'archive ne porte pas de session sous l'empreinte du noyau.
         case noSession(String)
         /// Le téléphone n'a pas la place (`fetch`) : rien n'a été demandé.
-        case notEnoughSpace(Room, available: Int)
+        /// `following` : ce qui se télécharge déjà en arrière-plan, mis à
+        /// part du compte, et qui continue.
+        case notEnoughSpace(Room, available: Int, following: Set<Progress.Step> = [])
 
         public var errorDescription: String? {
             switch self {
@@ -738,26 +796,26 @@ public struct ReadyDesktop: Equatable, Sendable {
             case .wrongKernel:
                 return "L'image présente n'a pas le noyau avec lequel ce bureau a été démarré : "
                     + "il ne pourrait pas reprendre. Rien n'a été installé. " + Self.replaceTheImage
-            case .notEnoughSpace(let room, let available) where room.copyIsThePeak:
+            case .notEnoughSpace(let room, let available, let following) where room.copyIsThePeak:
                 // L'image reçue est recopiée avant d'être rangée : c'est elle,
                 // et non l'installation, qui fixe ce qu'il faut de libre.
-                return "Pas assez de place sur le téléphone : ce bureau demande "
+                return Self.spaceLead(following) + "ce bureau demande "
                     + "\(LocalStorage.describe(bytes: room.total)) de libre au plus fort "
                     + "(\(LocalStorage.describe(bytes: room.download)) à télécharger ; l'image reçue, "
                     + "\(LocalStorage.describe(bytes: room.image)), est recopiée avant d'être rangée, et prend un "
                     + "moment deux fois sa place), et il en reste \(LocalStorage.describe(bytes: available)). "
                     + "Libérez au moins \(LocalStorage.describe(bytes: room.total - available)) (Réglages, "
-                    + "Général, Stockage de l'iPhone), puis réessayez. Rien n'a été téléchargé."
-            case .notEnoughSpace(let room, let available):
+                    + "Général, Stockage de l'iPhone), puis réessayez. " + Self.spaceEnd(following)
+            case .notEnoughSpace(let room, let available, let following):
                 let short = LocalStorage.describe(bytes: room.total - available)
                 let download = room.download == 0 ? "rien à télécharger"
                     : "\(LocalStorage.describe(bytes: room.download)) à télécharger"
-                return "Pas assez de place sur le téléphone : ce bureau demande "
+                return Self.spaceLead(following) + "ce bureau demande "
                     + "\(LocalStorage.describe(bytes: room.total)) de libre (\(download), puis "
                     + "\(LocalStorage.describe(bytes: room.install)) pour l'installer et le sauver une "
                     + "première fois), et il en reste \(LocalStorage.describe(bytes: available)). "
                     + "Libérez au moins \(short) (Réglages, Général, Stockage de l'iPhone), puis réessayez. "
-                    + "Rien n'a été téléchargé."
+                    + Self.spaceEnd(following)
             case .archiveForAnotherImage(let image):
                 return "Ce bureau prêt a été fait pour une autre image (\(image)) ; rien n'a été installé."
             case .noSession:
@@ -772,6 +830,34 @@ public struct ReadyDesktop: Equatable, Sendable {
         /// nouveau.
         static let replaceTheImage = "Le bureau reçu est gardé. Supprimez cette image de la bibliothèque, "
             + "puis touchez de nouveau « Installer » : seule l'image sera retéléchargée."
+
+        /// Ce qui se télécharge déjà en arrière-plan, nommé : « l'image »,
+        /// « le bureau », ou les deux ; `nil` quand rien ne court.
+        private static func followingName(_ following: Set<Progress.Step>) -> String? {
+            switch (following.contains(.image), following.contains(.archive)) {
+            case (true, true): return "l'image et le bureau"
+            case (true, false): return "l'image"
+            case (false, true): return "le bureau"
+            case (false, false): return nil
+            }
+        }
+
+        /// Le début du refus de la place : ce qui court déjà est mis à part
+        /// du compte, et la phrase le dit.
+        private static func spaceLead(_ following: Set<Progress.Step>) -> String {
+            guard let what = followingName(following) else { return "Pas assez de place sur le téléphone : " }
+            let verb = following.count > 1 ? "se téléchargent" : "se télécharge"
+            return "Pas assez de place sur le téléphone : outre \(what) qui \(verb) en arrière-plan, "
+        }
+
+        /// **La fin du refus de la place.** « Rien n'a été téléchargé » est
+        /// faux d'un transfert de fond à moitié fait : il continue, et la
+        /// session le range à sa fin ; rien d'autre n'a été demandé.
+        private static func spaceEnd(_ following: Set<Progress.Step>) -> String {
+            guard let what = followingName(following) else { return "Rien n'a été téléchargé." }
+            let verb = following.count > 1 ? "continuent" : "continue"
+            return "Rien d'autre n'a été demandé : \(what) \(verb) de se télécharger en arrière-plan."
+        }
     }
 
     /// **Installer le bureau téléchargé** : vérifier, puis importer
