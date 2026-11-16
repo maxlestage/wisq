@@ -8,6 +8,95 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-16 — Second contrôle des bureaux prêts : un relevé ancien ne coupe plus la garde de place
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts et
+une phrase sans mesure. Les quatre sont réels.
+
+**Ce qui n'allait pas.**
+
+1. **Le fichier d'un autre bureau dans `fetch` n'avait pas de test.**
+   Remplacer la garde par `running.isEmpty` laissait les 66 tests verts :
+   une ISO de la liste des distributions en cours coupait la garde des
+   1,4 Gio de `bureaux-1` sur un téléphone plein, sans qu'un test le dise.
+   Seul `spaceShortfall` était joué avec `alpine-virt.iso`.
+2. **Le `format` de `isIndex` non plus.** `return true` passait : le test
+   ne jouait qu'une page HTML, que le `[String: Any]` rejetait déjà. Un 200
+   qui rend un objet JSON sans `format` (le corps d'erreur d'un service,
+   `{"message": …}`) n'était pas couvert.
+3. **Un relevé ancien coupait toute la garde, alors que le fichier était
+   là.** `runningFiles` n'est lu qu'à l'ouverture de la feuille. L'image
+   finie en arrière-plan la feuille ouverte, le relevé disait encore
+   `[image]` : `spaceShortfall` se taisait, et `fetch` demandait l'archive
+   sans rien compter (sonde du contrôle : `archive.ranges == [nil]`). Sur
+   un téléphone plein, 156 Mio partaient, et l'installation tombait sur
+   l'erreur du système. Une tâche de fond tombée depuis, elle, faisait
+   repartir toute l'image sans garde.
+4. **La doc de `ResumeWait.usual` affirmait sans mesure** que 11…15 s
+   couvraient « le dépliage d'avant ». La fourchette n'avait pas bougé, et
+   les 12,0 s du banc se comptent après `restore`, jusqu'à `REPRIS_42`,
+   qui vient après une première commande : ce n'est pas le premier écho,
+   qui tait la phrase.
+
+**Ce qui change.**
+
+- `ReadyDesktop.followable(running:library:downloads:)` : ceux des
+  fichiers en cours de ce bureau qui **manquent encore** (l'image absente
+  de la bibliothèque à sa taille, l'archive absente des téléchargements à
+  la sienne). `fetch` et `spaceShortfall` ne lèvent la garde que pour
+  eux ; un fichier rangé depuis le relevé ne la coupe plus.
+- `ImageDownloadModel.fetchAndInstall` relit les fichiers en cours
+  (`BackgroundImageDownloads.runningFiles()`) au toucher, avant `fetch`,
+  au lieu de reprendre le relevé de l'ouverture : une tâche tombée depuis
+  ne fait plus partir l'image sans garde. La ligne « continue en
+  arrière-plan » passe aussi par `followable`, pour ne pas dire le
+  contraire de la phrase de la place.
+- La doc de `ResumeWait` dit ce que le banc mesure (`REPRIS_42`, après
+  `restore` et une première commande) et que la fourchette est une
+  estimation, à reprendre sur un iPhone. La fourchette ne change pas.
+
+**Comment c'est vérifié.** 2 tests neufs dans `ReadyDesktopTests` :
+`testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (l'image rangée,
+relevé `[image]` : refus `notEnoughSpace` et phrase de la feuille, aucune
+requête ; l'archive rangée, relevé `[bureau]` : la garde joue ; l'image qui
+manque reste suivie) et `testInstallReadsTheRunningFilesAgain` (lit
+`ImageDownloadModel` commentaires ôtés : relu avant `fetch`, et passé à
+lui). Assertions ajoutées : `testABackgroundDownloadIsFollowedNotRefused`
+appelle `fetch` avec `alpine-virt.iso` en cours (refus, aucune requête) ;
+`testAPageInsteadOfTheIndexIsSaid` joue `{"message": "Not Found"}` en 200
+et `isIndex` sans `format`.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après), filtre `ReadyDesktop|ImageDownloader|ResumeWait|BootRefusal`
+(81 tests) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| la garde de `fetch` en `running.isEmpty` (celui du contrôle) | `testABackgroundDownloadIsFollowedNotRefused`, `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (4) |
+| `isIndex` rend `true` | `testAPageInsteadOfTheIndexIsSaid` (2) |
+| `followable` garde toujours l'image | `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (4) |
+| `followable` garde toujours l'archive | le même (2) |
+| `fetch` par `backgroundFiles` au lieu de `followable` | le même (2) |
+| `spaceShortfall` par `backgroundFiles` | le même (2) |
+| `fetchAndInstall` reprend le relevé de l'ouverture | `testInstallReadsTheRunningFilesAgain` (1) |
+
+Suite Swift entière : 2 963 tests exécutés (2 de plus), 67 sautés, aucun
+échec (6 min 29 s). SwiftLint strict : 0 violation. `ImageDownloadModel` passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 688 → 3 690
+(3 046 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La relecture au toucher et la ligne passée par `followable` ne se
+  jugent que sur la CI « App iOS » et un iPhone ; ici, le parse, SwiftLint
+  et un test qui lit la source.
+- La feuille ouverte ne relit toujours pas les fichiers en cours d'elle-même :
+  une tâche tombée la feuille ouverte laisse la ligne « continue en
+  arrière-plan » jusqu'au toucher, qui la corrige. Rien ne part plus sans
+  garde.
+- La fourchette de `ResumeWait.usual` reste une estimation : le dépliage
+  sur un téléphone et le temps jusqu'au premier écho ne sont pas mesurés.
+
 ## 2026-11-15 — Contrôle des bureaux prêts : la recopie comptée, le transfert de fond suivi, l'attente comptée depuis le toucher
 
 Le contrôle adverse de l'entrée juste en dessous a trouvé sept défauts et
