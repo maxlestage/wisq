@@ -867,6 +867,10 @@ fn main() {
     // c'est là qu'il faut compter.
     let fin = std::env::var("WISQ_FIN").unwrap_or_default();
     let ramasser = std::env::var("WISQ_RAMASSER").map_or(true, |value| value != "0");
+    // **`WISQ_VIDAGE=0` : pas de vidage au premier passage en anneau trois.**
+    // La carte du code traduit voit les écritures une à une ; éteindre le
+    // vidage mesure ce qu'elle tient seule.
+    let vider = std::env::var("WISQ_VIDAGE").map_or(true, |value| value != "0");
     // **`WISQ_CACHE=<régions>,<octets>` : les bornes du cache de code.** Sans
     // lui, celles de `CACHE_PAR_DEFAUT` dans `host.js`. La forme est refusée
     // plutôt que devinée, comme `WISQ_SCREEN`.
@@ -975,6 +979,9 @@ const vm = machine({{
   // sa borne : sans elle, Bun garde le code des régions évincées, et la
   // mémoire résidente ne dit plus rien de la borne (voir `respirerSiBesoin`).
   ramasser: {ramasser} ? () => Bun.gc(true) : null,
+  // **`WISQ_VIDAGE=0` : la carte du code traduit seule**, sans le vidage du
+  // premier passage en anneau trois.
+  vider: {vider},
   // **Le pilote va chercher l'émetteur au lieu d'attendre le tour suivant.**
   //
   // `x86-translate` rend les octets d'une région en quelques millisecondes.
@@ -1132,6 +1139,11 @@ console.log("vidages " + vm.vidages.fois + " fois, " + vm.vidages.regions + " re
     + " ; traduites " + c.traduites + " evincees " + c.evincees
     + " retraduites " + c.retraduites + " replacees " + c.replacees + " respirations " + c.respirations
     + " ; rss " + Math.round(process.memoryUsage().rss / 1048576) + " Mio");
+  // **Ce que la carte du code traduit a vu** : les lignes de code écrites,
+  // les régions oubliées pour ça, les journaux débordés, et combien de trames
+  // ont porté du code à la fois au plus.
+  console.log("carte ecritures " + c.ecritures + " invalidees " + c.invalidees
+    + " debordements " + c.debordements + " ; pic " + c.pic.trames + " trames");
 }}
 console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
   + (vm.materiel.premiere === null
@@ -1286,6 +1298,7 @@ console.log("controle " + controle
                 veille = veille,
                 cache = cache,
                 ramasser = ramasser,
+                vider = vider,
                 serie_file = serie,
                 entree = entree,
                 invite = invite,

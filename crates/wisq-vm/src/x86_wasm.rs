@@ -419,6 +419,15 @@ pub const STOP_UNDEFINED: u64 = 8;
 /// faux pour `ldmxcsr`, que le noyau ne voit jamais passer.
 pub const STOP_MXCSR: u64 = 9;
 
+/// **Une écriture est tombée sur du code traduit**, et l'instruction qui l'a
+/// faite est finie : RIP est sur la suivante (ou sur la cible d'un `call`).
+/// Posé par l'inscription au journal (`Module::note_body`), lu après chaque
+/// instruction qui écrit (`Body::written`) : c'est le seul test que le chemin
+/// rapide paie, une globale déjà là plutôt qu'un mot de mémoire à aller lire.
+/// L'hôte l'efface en lisant le journal, avant tout autre témoin : ce n'est
+/// pas un arrêt de la machine, c'est une demande d'oublier des régions.
+pub const STOP_WRITTEN: u64 = 10;
+
 /// **Une interruption logicielle, avec son vecteur dans les huit bits bas.**
 /// `int3` et `int n` posent `STOP_INTERRUPT | vecteur` et rendent la main, RIP
 /// déjà posé **après** l'instruction : c'est un appel, et c'est là que
@@ -699,6 +708,54 @@ pub const TLB_ENTRY: u32 = 16;
 /// Ce que le tampon occupe, en pages. Exactement une, par construction.
 pub const TLB_PAGES: u32 = TLB_SLOTS * TLB_ENTRY / 65536;
 
+/// **La carte du code traduit, et le journal de ce qui y a été écrit.**
+///
+/// Une région traduite garde le code d'alors. Si l'invité réécrit ses octets
+/// — le noyau qui bascule un saut statique (`text_poke`), un chargeur qui pose
+/// un programme neuf dans une trame qui portait l'ancien, un programme qui
+/// s'écrit lui-même —, c'est l'ancien code qui tourne. Le seul garde-fou était
+/// un vidage unique au premier passage en anneau trois, aveugle à tout ce qui
+/// est écrit après.
+///
+/// **Au-dessus du tampon de traduction**, hors de portée de l'invité comme
+/// lui (`code_pages`) :
+///
+/// - une page de **journal** (`code_log_base`) : un mot de trente-deux bits,
+///   le nombre d'écritures vues, puis jusqu'à `CODE_LOG_SLOTS` numéros de
+///   ligne, dans l'ordre ;
+/// - la **carte** (`code_map_base`) : un bit par ligne de soixante-quatre
+///   octets de RAM, levé par l'hôte pour chaque ligne d'où vient le code
+///   d'une région vivante. Les soixante-quatre lignes d'une trame de quatre
+///   kibioctets font un mot de huit octets, à `8 × trame`.
+///
+/// **La ligne, pas la page**, et c'est mesuré sur les tests de ce dépôt avant
+/// d'être écrit : un programme pose ses données et sa pile dans la page de son
+/// code, et une carte par page faisait rendre la main à chaque écriture de
+/// données — puis retraduire, depuis le milieu d'un bloc, une région que rien
+/// n'avait touchée. Et un `text_poke` d'un octet n'oublie que les régions qui
+/// lisent cette ligne-là, pas les dizaines que porte une page du noyau.
+///
+/// **Le chemin rapide d'une écriture n'en paie rien.** Une case du tampon de
+/// traduction ne dit « inscriptible » que si aucune ligne de sa trame n'est
+/// marquée : la marche efface ce droit dans l'étiquette, et l'hôte l'efface
+/// des cases déjà remplies quand il marque une trame neuve. Une écriture dans
+/// une page de code part donc par l'accès lent, qui écrit, **baisse le bit**
+/// de chaque ligne marquée qu'elle touche et l'inscrit au journal
+/// (`note_body`). Ce que paie toute instruction qui écrit, c'est **un test** :
+/// le témoin d'arrêt, lu après elle (`Body::written`). À `STOP_WRITTEN`,
+/// l'instruction est finie et la région rend la main, RIP sur la suivante ;
+/// l'hôte oublie les régions de ces lignes avant que rien d'autre n'entre.
+#[must_use]
+pub fn code_pages(pages: u32) -> u32 {
+    1 + pages.div_ceil(512).max(1)
+}
+
+/// **Combien de lignes le journal tient.** Au-delà, le compte continue de
+/// monter mais les numéros ne sont plus écrits : l'hôte relit alors la carte
+/// — les bits baissés de lignes qui portent encore des régions — au lieu du
+/// journal. Une page moins le mot du compte.
+pub const CODE_LOG_SLOTS: u32 = 65536 / 4 - 1;
+
 /// **Le nom sous lequel un module lié importe la table de l'hôte.** Les blocs
 /// de toutes les régions y vivent ensemble, ce qui est la condition pour qu'un
 /// `call_indirect` passe d'une région à l'autre sans repasser par l'hôte.
@@ -897,7 +954,8 @@ pub fn tlb_base(pages: u32) -> u32 {
 /// **Combien de pages de 64 Kio un hôte doit allouer pour un module confiné.**
 ///
 /// La RAM de l'invité, plus la correspondance adresse → indice, plus le tampon
-/// de traduction. Le module **déclare** ce nombre comme minimum : un hôte qui
+/// de traduction, plus la carte du code traduit et son journal. Le module
+/// **déclare** ce nombre comme minimum : un hôte qui
 /// en fournit moins ne démarre pas, au lieu de piéger plus tard sur une adresse
 /// qu'il croyait sienne.
 ///
@@ -911,7 +969,21 @@ pub fn tlb_base(pages: u32) -> u32 {
 /// d'en oublier un ; celle-ci est écrite ici.
 #[must_use]
 pub fn host_pages(guest_pages: u32) -> u32 {
-    guest_pages + TABLE_PAGES + TLB_PAGES
+    guest_pages + TABLE_PAGES + TLB_PAGES + code_pages(guest_pages)
+}
+
+/// **Où vit le journal des écritures dans le code traduit** : juste
+/// au-dessus du tampon de traduction. Voir `code_pages`.
+#[must_use]
+pub fn code_log_base(pages: u32) -> u32 {
+    tlb_base(pages) + TLB_PAGES * 65536
+}
+
+/// **Où vit la carte du code traduit** : la page d'après le journal, un bit
+/// par ligne de soixante-quatre octets.
+#[must_use]
+pub fn code_map_base(pages: u32) -> u32 {
+    code_log_base(pages) + 65536
 }
 
 /// **La case d'une adresse, et c'est le point d'accord.** L'hôte remplit la
@@ -1206,6 +1278,13 @@ mod code {
     /// seau et le contexte (voir `Module::lookup`).
     pub const LOCAL_GET: u8 = 0x20;
     pub const LOCAL_SET: u8 = 0x21;
+    /// Ce que la carte du code traduit demande (voir `code_pages`) : un mot
+    /// de trente-deux bits écrit, et les décalages et le `ou exclusif` qui
+    /// isolent un bit.
+    pub const I32_STORE: u8 = 0x36;
+    pub const I32_XOR: u8 = 0x73;
+    pub const I32_SHL: u8 = 0x74;
+    pub const I32_SHR_U: u8 = 0x76;
 }
 
 /// **Les deux locales `i32` d'un bloc qui cherche**, déclarées par
@@ -1262,6 +1341,11 @@ const HOST_IMPORTS: u32 = 2;
 /// l'indice de personne. Voir `Module::far_load_body`.
 const FAR_LOAD: u32 = 3;
 const FAR_STORE: u32 = 4;
+/// **Et deux de plus, encore en queue** : l'inscription d'une écriture dans
+/// une page de code (`Module::note_body`), et l'étendue des octets que la
+/// région a traduits, que l'hôte lit pour savoir quelles trames marquer.
+const NOTE: u32 = 5;
+const EXTENT: u32 = 6;
 /// **Ce bit dans la largeur passée à `FAR_STORE` en fait une réservation** :
 /// les deux marches d'écriture ont lieu, et rien n'est écrit. Voir
 /// `Body::claim`. Un bit plutôt qu'une sixième fonction : la même marche, le
@@ -1276,6 +1360,16 @@ const CLAIM: u32 = 1 << 16;
 const RAX: u8 = 0;
 const RCX: u8 = 1;
 const RDX: u8 = 2;
+
+/// **Ce qu'un accès paginé vient faire** (`Body::translated`) : lire, juger
+/// une écriture sans écrire (`Body::claim`), ou écrire — la seule des trois
+/// qu'inscrit la carte du code traduit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Read,
+    Claim,
+    Store,
+}
 
 #[derive(Default)]
 struct Body {
@@ -1294,6 +1388,10 @@ struct Body {
     /// ainsi l'instruction qui l'a prise, quelle que soit la façon dont cette
     /// instruction désigne sa mémoire.
     here: u64,
+    /// **L'instruction en cours écrit-elle la mémoire ?** Posé par `poke`,
+    /// lu et remis à faux par `written`, qui ajoute après elle le test du
+    /// journal des pages de code.
+    wrote: bool,
 }
 
 impl Body {
@@ -1343,7 +1441,7 @@ impl Body {
         self.translated(
             mask,
             width as u32,
-            false,
+            Access::Read,
             0x7e, // le résultat : un i64, la valeur lue
             |b| {
                 b.access(load, 0);
@@ -1395,10 +1493,13 @@ impl Body {
         unsigned(TRANSLATE_VALUE as u64, &mut self.bytes);
         self.bytes.push(code::GLOBAL_SET);
         unsigned(TRANSLATE_ADDRESS as u64, &mut self.bytes);
+        // **L'instruction écrit** : `written` ajoutera après elle le test du
+        // journal des pages de code.
+        self.wrote = true;
         self.translated(
             mask,
             width as u32,
-            true,
+            Access::Store,
             code::VOID,
             |b| {
                 b.load(TRANSLATE_VALUE).access(store, 0);
@@ -1442,7 +1543,7 @@ impl Body {
         self.translated(
             mask,
             span,
-            true,
+            Access::Claim,
             code::VOID,
             // La page permet l'écriture : l'adresse traduite ne sert à rien.
             |b| {
@@ -1538,13 +1639,14 @@ impl Body {
         &mut self,
         mask: u32,
         span: u32,
-        write: bool,
+        access: Access,
         result: u8,
         direct: impl Fn(&mut Body),
         far: impl FnOnce(&mut Body),
     ) -> &mut Self {
         let tlb = tlb_base((mask + 1) / 65536);
         let (va, slot) = (TRANSLATE_ADDRESS, TRANSLATE_CELL);
+        let write = access != Access::Read;
 
         // CR0.PG éteint ?
         self.load(Module::control_slot(0))
@@ -1557,6 +1659,20 @@ impl Body {
         signed(i64::from(mask), &mut self.bytes);
         self.op(code::I32_AND);
         direct(self);
+        // **Sans pagination, aucun tampon ne protège le code traduit** :
+        // l'écriture faite, l'adresse repliée et sa largeur vont à
+        // `note_body`, qui baisse le bit de chaque ligne marquée touchée et
+        // l'inscrit au journal. Un appel par écriture, sur un chemin qu'un noyau
+        // x86-64 ne prend que le temps de ses premières instructions — le
+        // mode long exige la pagination.
+        // L'adresse part sans repli : `note_body` replie lui-même, et c'est
+        // cinq octets de moins par écriture que le masque gravé ici.
+        if let (Access::Store, Some(walk)) = (access, self.walk) {
+            self.load(va)
+                .op(code::I32_WRAP_I64)
+                .constant32(span)
+                .call(walk + NOTE);
+        }
         self.op(0x05); // else
 
         // **Le tampon, consulté en ligne.** La case est celle de la page du
@@ -1629,6 +1745,34 @@ impl Body {
         self.op(code::END);
         self.op(code::END);
         self.op(code::END);
+        self
+    }
+
+    /// **Après une instruction qui écrit, le test du témoin d'arrêt** — le
+    /// seul prix que le chemin rapide paie pour le code traduit (voir
+    /// `code_pages`). `STOP_WRITTEN` veut dire qu'une écriture de cette
+    /// instruction est tombée sur une ligne de code traduit :
+    /// l'instruction est finie, RIP prend ce que `next` pousse — l'adresse de
+    /// la suivante, ou la cible d'un `call` —, et la région rend la main.
+    /// L'hôte oublie les régions de ces lignes **avant** la prochaine entrée,
+    /// celle-ci comprise si elle s'est écrite elle-même.
+    ///
+    /// Rien n'est émis hors pagination : la forme libre n'a pas de carte.
+    fn written(&mut self, next: impl FnOnce(&mut Body)) -> &mut Self {
+        if !std::mem::take(&mut self.wrote) {
+            return self;
+        }
+        if self.confine.is_none() {
+            return self;
+        }
+        self.load(STOP_SLOT).op(code::I32_WRAP_I64);
+        self.op(code::IF).op(code::VOID);
+        next(self);
+        self.bytes.push(code::GLOBAL_SET);
+        unsigned(RIP_SLOT as u64, &mut self.bytes);
+        self.bytes.push(code::I32_CONST);
+        signed(-1, &mut self.bytes);
+        self.op(code::RETURN).op(code::END);
         self
     }
 
@@ -2094,6 +2238,12 @@ impl Module {
             .collect();
 
         let mut bodies: Vec<Vec<u8>> = Vec::new();
+        // **Jusqu'où la région a lu** : la fin de l'instruction la plus loin,
+        // tous blocs confondus. L'hôte marque les trames de `[base, base +
+        // extent)` dans la carte du code traduit ; la fenêtre entière en
+        // marquerait d'autres — souvent la page de données qui suit le texte,
+        // dont chaque écriture ferait alors retraduire la région.
+        let mut extent = 0usize;
         for (start, steps) in &blocks {
             let mut body = Body {
                 confine: mask,
@@ -2155,12 +2305,20 @@ impl Module {
                         at: at - step.length,
                     });
                 }
+                // **Une instruction qui écrit finit, puis regarde le
+                // journal** : si elle a écrit dans une page de code — la
+                // sienne comprise —, la région rend la main sur la suivante.
+                let next = base.wrapping_add(at as u64);
+                body.written(|b| {
+                    b.constant(next);
+                });
             }
+            extent = extent.max(at);
             Self::terminate(steps.last(), base, at, &index, &starts, &mut body, shape);
             body.op(code::END);
             bodies.push(body.bytes);
         }
-        Ok(Self::assemble(bodies, &starts, shape))
+        Ok(Self::assemble(bodies, &starts, extent, shape))
     }
 
     /// **Une adresse relative au pointeur d'instruction est une constante** —
@@ -2672,6 +2830,13 @@ impl Module {
                 body.store(RIP_SLOT, |b| {
                     b.load(Body::scratch(0));
                 });
+                // **L'adresse de retour a pu tomber sur du code traduit** :
+                // l'appel est fait, RIP est déjà sur sa cible, et c'est là que
+                // la main revient. Regardé après RIP et pas avant : `push` se
+                // sert lui aussi de la case de travail où la cible attendait.
+                body.written(|b| {
+                    b.load(RIP_SLOT);
+                });
                 Self::resolve(starts, body, shape);
             }
             Op::Call => {
@@ -2679,6 +2844,9 @@ impl Module {
                 // de `call` qui touche l'état — puis le bloc change.
                 Self::push(body, |b| {
                     b.constant(base.wrapping_add(after as u64));
+                });
+                body.written(|b| {
+                    b.constant(base.wrapping_add(target as u64));
                 });
                 place(body, target);
             }
@@ -3140,7 +3308,7 @@ impl Module {
     /// section d'éléments les pose dans la table de l'hôte. C'est le même
     /// vecteur que `resolve` compare à RIP : les deux relevés ne peuvent pas
     /// diverger, puisqu'ils n'en font qu'un.
-    fn assemble(bodies: Vec<Vec<u8>>, starts: &[u64], shape: Shape) -> Vec<u8> {
+    fn assemble(bodies: Vec<Vec<u8>>, starts: &[u64], extent: usize, shape: Shape) -> Vec<u8> {
         let Shape {
             shared, confine, ..
         } = shape;
@@ -3180,7 +3348,7 @@ impl Module {
         // types avec eux : la forme libre reste, à l'octet près, celle que le
         // corpus matériel juge depuis le début.
         if paging {
-            types[0] = 0x0a;
+            types[0] = 0x0b;
             types.extend_from_slice(&[
                 0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7e, // 7 : (i64, i32) -> i64, lire
                 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x00, // 8 : (i64, i64, i32) -> (), écrire
@@ -3189,6 +3357,9 @@ impl Module {
                 // argument, reste pour que la forme libre ne bouge pas d'un
                 // octet ; aucune fonction ne s'en sert plus.
                 0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7f,
+                // 10 : (i32, i32) -> (), l'inscription d'une écriture dans
+                // une page de code — l'adresse physique et la largeur.
+                0x60, 0x02, 0x7f, 0x7f, 0x00,
             ]);
         }
         section(1, types, &mut module);
@@ -3271,9 +3442,10 @@ impl Module {
         }
         section(2, imports, &mut module);
 
-        // Un module paginé porte trois fonctions de plus : la marche, et les
-        // deux accès lents.
-        let extra = if paging { 3 } else { 0 };
+        // Un module paginé porte cinq fonctions de plus : la marche, les deux
+        // accès lents, l'inscription au journal des pages de code et
+        // l'étendue.
+        let extra = if paging { 5 } else { 0 };
         let mut functions = Vec::new();
         unsigned(count as u64 + 2 + extra, &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
@@ -3301,6 +3473,10 @@ impl Module {
         if paging {
             functions.push(0x07);
             functions.push(0x08);
+            // **L'inscription et l'étendue**, encore en queue : `NOTE` et
+            // `EXTENT` se comptent depuis la marche comme les accès lents.
+            functions.push(0x0a);
+            functions.push(0x00);
         }
         section(3, functions, &mut module);
 
@@ -3329,7 +3505,7 @@ impl Module {
         // Une seconde marche écrite en JavaScript aurait fini par diverger de
         // celle-ci, en silence, sur une grande page ou un bit réservé.
         let mut exports = Vec::new();
-        unsigned(2 + u64::from(paging), &mut exports);
+        unsigned(2 + 2 * u64::from(paging), &mut exports);
         exports.extend_from_slice(&[0x03, b'r', b'u', b'n', 0x00]);
         unsigned(
             u64::from(HOST_IMPORTS) + count as u64 + u64::from(paging),
@@ -3368,6 +3544,13 @@ impl Module {
         if paging {
             exports.extend_from_slice(&[0x04, b'w', b'a', b'l', b'k', 0x00]);
             unsigned(u64::from(HOST_IMPORTS) + count as u64, &mut exports);
+            // **L'étendue des octets traduits**, que l'hôte lit à
+            // l'installation pour marquer les trames de la région.
+            exports.extend_from_slice(&[0x06, b'e', b'x', b't', b'e', b'n', b't', 0x00]);
+            unsigned(
+                u64::from(HOST_IMPORTS) + count as u64 + u64::from(EXTENT),
+                &mut exports,
+            );
         }
         section(7, exports, &mut module);
 
@@ -3502,9 +3685,19 @@ impl Module {
         reader.push(code::END);
         unsigned(reader.len() as u64, &mut code_section);
         code_section.extend_from_slice(&reader);
-        if paging {
+        if let Some(mask) = mask {
             let walk = HOST_IMPORTS + count as u32;
-            for entry in [Self::far_load_body(walk), Self::far_store_body(walk)] {
+            let pages = (mask + 1) / 65536;
+            // L'étendue : une constante, sans locale.
+            let mut reach = vec![0x00, code::I32_CONST];
+            signed(extent as i64, &mut reach);
+            reach.push(code::END);
+            for entry in [
+                Self::far_load_body(walk),
+                Self::far_store_body(walk),
+                Self::note_body(pages),
+                reach,
+            ] {
                 unsigned(entry.len() as u64, &mut code_section);
                 code_section.extend_from_slice(&entry);
             }
@@ -3585,6 +3778,7 @@ impl Module {
         const CELL: u32 = 5;
         const RIGHTS: u32 = 6;
         let tlb = tlb_base((mask + 1) / 65536);
+        let map = code_map_base((mask + 1) / 65536);
         let mut b = Body::default();
 
         let fold = |b: &mut Body| {
@@ -3641,6 +3835,24 @@ impl Module {
                 .op(code::I64_SHL)
                 .local_get(RIGHTS)
                 .constant(ENTRY_WRITABLE)
+                .op(code::I64_AND);
+            // **Une trame qui porte du code traduit ne se dit pas
+            // inscriptible**, même quand la page l'est : si l'une de ses
+            // soixante-quatre lignes est marquée dans la carte (voir
+            // `code_pages`), `TLB_WRITABLE` est effacé de l'étiquette, et chaque
+            // écriture y part par l'accès lent, qui l'inscrit au journal. Le
+            // droit lui-même n'est pas touché : le jugement plus bas lit
+            // `RIGHTS`, pas l'étiquette. Sans branchement : « aucune ligne
+            // marquée », décalé d'un cran, est le masque de `TLB_WRITABLE`.
+            b.local_get(FRAME)
+                .op(code::I32_WRAP_I64)
+                .constant32(9)
+                .op(code::I32_SHR_U)
+                .access(code::I64_LOAD, map)
+                .op(code::I64_EQZ)
+                .op(code::I64_EXTEND_I32_U)
+                .constant(1)
+                .op(code::I64_SHL)
                 .op(code::I64_AND)
                 .op(code::I64_OR)
                 .local_get(RIGHTS)
@@ -3893,11 +4105,22 @@ impl Module {
             b.op(code::RETURN).op(code::END);
         };
 
+        // **L'écriture vue par la carte du code traduit** : l'adresse
+        // physique et la largeur poussées vont à `note_body`, qui inscrit au
+        // journal chaque ligne marquée touchée. Une trame qui porte une ligne
+        // marquée ne se dit jamais inscriptible dans le tampon : c'est ici, et
+        // nulle part ailleurs sous pagination, qu'une écriture la touche.
+        let noted = |b: &mut Body| {
+            b.call(walk + NOTE);
+        };
         Self::far_first_page(&mut b, walk, WALK_WRITE, OFFSET, LOW, |_| {});
         // L'accès tient dans sa page : une écriture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
         b.op(code::IF).op(code::VOID);
         claimed(&mut b);
+        b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+        b.local_get(WIDTH);
+        noted(&mut b);
         for (bytes, store) in [
             (8, code::I64_STORE),
             (4, code::I64_STORE32),
@@ -3917,6 +4140,18 @@ impl Module {
 
         Self::far_second_page(&mut b, walk, WALK_WRITE, HIGH, |_| {});
         claimed(&mut b);
+        // Les deux trames, que rien ne fait se suivre : la fin de la première
+        // depuis le décalage, le début de la seconde pour le reste.
+        b.local_get(LOW).local_get(OFFSET).op(code::I32_OR);
+        b.constant32(0x1000).local_get(OFFSET).op(code::I32_SUB);
+        noted(&mut b);
+        b.local_get(HIGH);
+        b.local_get(OFFSET)
+            .local_get(WIDTH)
+            .op(code::I32_ADD)
+            .constant32(0x1000)
+            .op(code::I32_SUB);
+        noted(&mut b);
         // **Du premier octet au dernier** : l'octet bas de la valeur part, et
         // la valeur descend de huit bits.
         b.op(code::LOOP).op(code::VOID);
@@ -3935,6 +4170,91 @@ impl Module {
         b.op(code::END);
         b.op(code::END);
 
+        body.extend(b.bytes);
+        body
+    }
+
+    /// **Inscrire une écriture dans du code traduit** : l'adresse physique —
+    /// repliée ici, l'appelant sans pagination la passant telle quelle — et la
+    /// largeur — un seul morceau contigu en physique, ce que
+    /// passent les deux formes qui l'appellent : l'écriture sans pagination,
+    /// et chaque trame de l'accès lent prise seule. Un morceau de seize octets
+    /// au plus touche une ou deux lignes, la première et la dernière.
+    ///
+    /// Pour chaque ligne dont le bit est levé dans la carte (voir
+    /// `code_pages`) : le bit est **baissé** — la ligne n'est inscrite qu'une
+    /// fois —, son numéro va au journal, à la suite, et le témoin d'arrêt dit
+    /// `STOP_WRITTEN`. Le compte monte
+    /// toujours ; les numéros ne s'écrivent que sous `CODE_LOG_SLOTS`, et
+    /// au-delà l'hôte relit la carte.
+    fn note_body(pages: u32) -> Vec<u8> {
+        // Paramètres : 0, l'adresse ; 1, la largeur. Locales : la ligne,
+        // l'adresse de son mot dans la carte, le bit, le compte.
+        let mut body = vec![
+            0x01, // un groupe
+            0x04, 0x7f, // 2, 3, 4, 5 : i32
+        ];
+        const SPAN: u32 = 1;
+        const LINE: u32 = 2;
+        const WORD: u32 = 3;
+        const BIT: u32 = 4;
+        const COUNT: u32 = 5;
+        let mask = pages * 65536 - 1;
+        let map = code_map_base(pages);
+        let log = code_log_base(pages);
+        let mut b = Body::default();
+        let once = |b: &mut Body| {
+            // L'adresse sur la pile devient la ligne, puis son mot et son bit.
+            b.constant32(6).op(code::I32_SHR_U).local_tee(LINE);
+            b.constant32(5)
+                .op(code::I32_SHR_U)
+                .constant32(4)
+                .op(code::I32_MUL)
+                .local_set(WORD);
+            b.constant32(1)
+                .local_get(LINE)
+                .constant32(31)
+                .op(code::I32_AND)
+                .op(code::I32_SHL)
+                .local_set(BIT);
+            b.local_get(WORD).access(code::I32_LOAD, map);
+            b.local_get(BIT).op(code::I32_AND);
+            b.op(code::IF).op(code::VOID);
+            b.local_get(WORD);
+            b.local_get(WORD).access(code::I32_LOAD, map);
+            b.local_get(BIT)
+                .constant32(u32::MAX)
+                .op(code::I32_XOR)
+                .op(code::I32_AND);
+            b.access(code::I32_STORE, map);
+            b.constant32(0).access(code::I32_LOAD, log).local_tee(COUNT);
+            b.constant32(CODE_LOG_SLOTS).op(code::I32_LT_U);
+            b.op(code::IF).op(code::VOID);
+            b.local_get(COUNT).constant32(4).op(code::I32_MUL);
+            b.local_get(LINE);
+            b.access(code::I32_STORE, log + 4);
+            b.op(code::END);
+            b.constant32(0);
+            b.local_get(COUNT).constant32(1).op(code::I32_ADD);
+            b.access(code::I32_STORE, log);
+            b.store(STOP_SLOT, |b| {
+                b.constant(STOP_WRITTEN);
+            });
+            b.op(code::END);
+        };
+        b.local_get(0).constant32(mask).op(code::I32_AND);
+        once(&mut b);
+        // Le dernier octet, replié lui aussi : sa ligne est la même que la
+        // première, et ne fait alors plus rien, ou la suivante.
+        b.local_get(0)
+            .local_get(SPAN)
+            .op(code::I32_ADD)
+            .constant32(1)
+            .op(code::I32_SUB)
+            .constant32(mask)
+            .op(code::I32_AND);
+        once(&mut b);
+        b.op(code::END);
         body.extend(b.bytes);
         body
     }

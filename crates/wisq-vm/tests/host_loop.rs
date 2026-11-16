@@ -150,6 +150,14 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         wisq_vm::x86_wasm::STOP_UNDEFINED.to_string(),
         "le témoin de `ud2`"
     );
+    // **Le témoin d'une écriture sur du code traduit.** Faux ici, l'hôte ne
+    // l'effacerait pas : la région rendrait la main, et la boucle prendrait
+    // ce témoin pour un arrêt de raison inconnue.
+    assert_eq!(
+        stop("STOP_WRITTEN"),
+        wisq_vm::x86_wasm::STOP_WRITTEN.to_string(),
+        "le témoin d'une écriture sur du code traduit"
+    );
     // **Le nombre de voies par seau, comparé dès son arrivée.** L'hôte choisit
     // la voie où il range une adresse ; le module, lui, consulte un nombre de
     // voies gravé dans ses octets. S'ils divergent, l'hôte rangerait dans une
@@ -327,6 +335,16 @@ fn the_view_repeats_the_emitters_numbers_and_they_still_agree() {
         value("tlbPages"),
         wisq_vm::x86_wasm::TLB_PAGES.to_string(),
         "les pages qu'occupe le tampon"
+    );
+    // **Le journal du code traduit**, que l'hôte lit au retour de chaque
+    // région. Un nombre plus grand ici lui ferait lire, sur un journal plein,
+    // des numéros que le module n'a jamais écrits — des lignes au hasard,
+    // et leurs régions oubliées pour rien ; plus petit, il prendrait un
+    // journal complet pour un débordement.
+    assert_eq!(
+        value("codeLogSlots"),
+        wisq_vm::x86_wasm::CODE_LOG_SLOTS.to_string(),
+        "les numéros de ligne que le journal tient"
     );
     // **Ce que l'hôte dit à la marche qu'il vient faire.** Un `walkMachine`
     // faux ferait juger la délivrance d'une faute sur les droits de la page —
@@ -14412,9 +14430,16 @@ fn under_page_table_isolation_the_kernel_window_is_never_reread_through_identity
         Vec::new(),
         vec![(RING_THREE_KERNEL_ALIAS, 0x100, 0x00, 0x90)],
     );
+    // **La troisième issue juste, depuis la carte du code traduit.** Sous
+    // isolation, le noyau finit sur `jmp *%rax`, que la découverte suit
+    // jusqu'au bout de la fenêtre : la région lit la ligne de l'octet réécrit,
+    // l'écriture l'oublie, et la machine repart sur l'instruction d'après
+    // (`movb` fait sept octets) — une région neuve, illisible elle aussi sous
+    // les tables du programme. Rien n'y est relu par l'identité.
+    let forgotten = (vec![RING_THREE_KERNEL_ALIAS + 7], Vec::new());
     let got = (seen.unreadable.clone(), seen.changed.clone());
     assert!(
-        got == unreadable || got == reread,
+        got == unreadable || got == reread || got == forgotten,
         "**la fenêtre du noyau est illisible, ou relue par les tables du \
          noyau** — et seul l'octet réécrit compte. Le passage et le programme \
          sont dans les tables du programme. Une différence à l'octet zéro \
@@ -14771,16 +14796,23 @@ console.log("fini");
 /// n'est pas comptée ici. Le compte est donc une borne inférieure, jamais une
 /// fausse alerte.
 ///
-/// Le montage : la région A saute dans B, B réécrit le premier octet de A,
-/// puis saute dans A. L'hôte réentre donc dans A **après** que ses octets ont
-/// bougé — ce qui ne peut pas arriver dans une seule région, puisqu'un saut
-/// interne au module ne repasse pas par l'hôte.
+/// Le montage : la région A saute dans B, B saute dans A. Entre deux `run`,
+/// le pilote réécrit le premier octet de A **du dehors**, sans le dire à
+/// l'hôte par `ecrit` ; l'hôte réentre donc dans A **après** que ses octets
+/// ont bougé — ce qui ne peut pas arriver dans une seule région, puisqu'un
+/// saut interne au module ne repasse pas par l'hôte.
+///
+/// **Du dehors, et c'est la carte du code traduit qui l'impose.** C'était B
+/// qui réécrivait A : l'écriture de l'invité est maintenant vue, A oubliée et
+/// retraduite (`a_region_rewritten_by_another_is_translated_again`). La
+/// sonde reste l'instrument de ce que rien ne voit : une écriture qui ne
+/// passe ni par le module ni par `ecrit`.
 #[test]
 fn a_region_that_runs_after_its_first_byte_changed_is_counted() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
-    let seen = watched(&bun, 0);
+    let seen = watched(&bun, 0x2000, Some(WATCH_BASE));
     assert!(
         seen.entries >= 1,
         "A est réentrée après que B a réécrit son premier octet : {}",
@@ -14811,7 +14843,7 @@ fn a_region_reentered_without_changing_is_not_counted() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
-    let seen = watched(&bun, 0x2000);
+    let seen = watched(&bun, 0x2000, None);
     assert_eq!(
         seen.entries, 0,
         "rien n'a changé sous une entrée de région : {}",
@@ -14833,8 +14865,10 @@ struct Watched {
 }
 
 /// Les deux régions, et où B écrit. `shift` nul met l'écriture sur l'entrée de
-/// A ; `0x1000` la met deux pages plus loin, hors de toute entrée.
-fn watched(bun: &Path, shift: i64) -> Watched {
+/// A ; `0x2000` la met deux pages plus loin, hors de toute entrée. `outside`,
+/// s'il est donné, est l'adresse où le pilote pose `0xcc` lui-même, entre
+/// deux `run`, sans rien dire à l'hôte.
+fn watched(bun: &Path, shift: i64, outside: Option<u64>) -> Watched {
     const PAGES: u32 = 2;
     let first = WATCH_BASE;
     let second = WATCH_BASE + 0x1000;
@@ -14889,7 +14923,12 @@ const vm = machine({{
   surveiller: true,
 }});
 vm.globals[{rip}].value = {first}n;
-const why = await vm.run({{ budget: 4n, rounds: 64 }});
+let why = await vm.run({{ budget: 4n, rounds: 64 }});
+const dehors = {outside};
+if (dehors !== null) {{
+  new Uint8Array(vm.memory.buffer)[dehors] = 0xcc;
+  why = await vm.run({{ budget: 4n, rounds: 64 }});
+}}
 console.log("arret " + why.stopped);
 console.log("entrees " + vm.surveillees.entrees);
 for (const [adresse, quoi] of vm.surveillees.regions) {{
@@ -14902,6 +14941,7 @@ console.log("fini");
             pages = PAGES,
             rip = RIP_SLOT,
             first = first,
+            outside = outside.map_or("null".to_string(), |at| at.to_string()),
         ),
     )
     .expect("le pilote");
@@ -22001,12 +22041,15 @@ fn small_region(add: u32) -> Vec<u8> {
 ///
 /// Le montage, sous trois régions et `emplacements: 1` (les places rendues
 /// sont essayées dès la première région) : R1 (71 blocs) en `[0, 71)`, S (un
-/// bloc) en 71, R3 (58 blocs) en `[72, 130)`, puis U, S, U, V, S, U, qui
-/// évincent R1, R3 et V. Les trous sont alors `[0, 71)` — fusionné avec la
-/// place de V — et `[72, 130)`, avec S vivante en 71 entre les deux. R2, de
-/// 111 blocs, essaie le plus grand trou, à zéro : elle n'y tient pas, et doit
-/// être replacée au haut, en 131. Sans la garde, elle se pose en `[1, 112)`
-/// par-dessus S, et S ajoute ensuite mille à RDI au lieu de dix.
+/// bloc) en 71, R3 (58 blocs) en `[72, 130)`. U, posée au haut en 130,
+/// évince R1 ; S et U servies, V se pose en 0, dans la place de R1, et évince
+/// R3. Quand R2 (111 blocs) arrive, V est encore vivante en 0 : les trous
+/// sont `[1, 71)` et `[72, 130)`, et R2 est traduite pour le plus grand,
+/// en 1. C'est sa propre place qui évince V, et la place de V se fusionne alors
+/// en `[0, 71)` ; S reste vivante en 71 entre les deux trous. R2 n'y tient
+/// pas, et doit être replacée au haut, en 131. Sans la garde, `prendre`
+/// passe au trou d'après et la pose en `[1, 112)` par-dessus S, qui ajoute
+/// ensuite mille à RDI au lieu de dix.
 #[test]
 fn a_region_never_lands_over_a_live_region_above_its_hole() {
     let Some(bun) = bun() else {
@@ -22211,7 +22254,9 @@ console.log("vivantes " + places.join(",") + " g " + vm.known.get(0x17000n).slot
 
 /// **Une borne du cache nulle, négative ou non entière est refusée**, avec
 /// son nom. Une borne nulle acceptée en silence ferait un cache qui évince
-/// tout ce qu'il installe — `regions: 0` — ou une table sans haut.
+/// tout ce qu'il installe — `regions: 0` — ou une table sans haut. Chacune
+/// des quatre valeurs fausses est essayée sur **chacune** des quatre bornes :
+/// ce test n'en essayait que six sur douze, et le JOURNAL disait douze.
 #[test]
 fn a_cache_bound_must_be_a_positive_integer() {
     let Some(bun) = bun() else {
@@ -22219,8 +22264,11 @@ fn a_cache_bound_must_be_a_positive_integer() {
     };
     let corps = r#"
 const vus = [];
-for (const [nom, valeur] of [["regions", 0], ["octets", 0], ["emplacements", 0],
-  ["regions", -1], ["octets", 1.5], ["emplacements", "8"]]) {
+const essais = [];
+for (const nom of ["regions", "octets", "emplacements", "oubliees"]) {
+  for (const valeur of [0, -1, 1.5, "8"]) essais.push([nom, valeur]);
+}
+for (const [nom, valeur] of essais) {
   try {
     machine({ translate: traduire, pages: 4, cache: { [nom]: valeur } });
     vus.push(nom + "=" + valeur + ":accepte");
@@ -22228,15 +22276,19 @@ for (const [nom, valeur] of [["regions", 0], ["octets", 0], ["emplacements", 0],
     vus.push(nom + "=" + valeur + ":" + (why.message.includes(`« ${nom} » doit être un entier positif`) ? "refuse" : why.message));
   }
 }
-const juste = machine({ translate: traduire, pages: 4, cache: { regions: 1, octets: 1, emplacements: 1 } });
-console.log("bornes " + vus.join(" ") + " juste " + juste.cache.limite.regions);
+const juste = machine({
+  translate: traduire,
+  pages: 4,
+  cache: { regions: 1, octets: 1, emplacements: 1, oubliees: 1 },
+});
+const refusees = vus.filter((vu) => vu.endsWith(":refuse")).length;
+console.log("bornes " + refusees + " sur " + essais.length + " ; autres "
+  + vus.filter((vu) => !vu.endsWith(":refuse")).join(" ") + " ; juste "
+  + Object.values(juste.cache.limite).join(","));
 "#;
     let text = cache_course(&bun, "bornes", 4, corps);
     assert!(
-        text.contains(
-            "bornes regions=0:refuse octets=0:refuse emplacements=0:refuse regions=-1:refuse \
-             octets=1.5:refuse emplacements=8:refuse juste 1"
-        ),
+        text.contains("bornes 16 sur 16 ; autres  ; juste 1,1,1,1"),
         "chaque borne nulle, négative ou non entière est refusée, et un est accepté : {text}"
     );
 }
@@ -22284,5 +22336,1095 @@ console.log("rdi " + lire(vm, 7) + " vidages " + vm.vidages.fois + " traduites "
         text.contains("rdi 113 vidages 1 traduites 5 retraduites 1,1 evincees 3"),
         "A évincée puis revenue est une retraduction ; A traduite après le vidage n'en est \
          pas une : {text}"
+    );
+}
+
+/// **Une place rendue qui touchait le haut quitte `libres` quand le haut
+/// redescend.**
+///
+/// `rendre` fait redescendre le haut sur la dernière place quand elle le
+/// touche, et la retire de `libres`. Gardée, cette place serait à la fois au
+/// haut et rendue : une région se pose au haut, **sur** elle, et la suivante,
+/// qui prend la plus grande place rendue, se pose sur la première. Le montage
+/// du contrôle, sous deux régions et `emplacements: 1` : S (un bloc, +10) en
+/// 0, Big (70 blocs, +1000) en `[1, 71)`, S servie, puis X (+20) au haut en
+/// 71, qui évince Big ; Y (+30) prend sa place en 1, et X évincée rend 71,
+/// qui touche le haut : le haut redescend à 71. Z (+40) se pose en 2, dans ce
+/// qui reste de la place de Big. Sans le retrait, Z se pose en 1, sur Y
+/// vivante, et Y exécute ensuite le code de Z : +40 au lieu de +30.
+#[test]
+fn a_place_given_back_at_the_top_leaves_the_places() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let big = many_blocks(69, 1000);
+    assert_eq!(Module::outline(&big, 0).expect("le relevé").len(), 70);
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 2, emplacements: 1 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({s}, 0x10000); m.set({big}, 0x11000); m.set({x}, 0x12000);
+m.set({y}, 0x13000); m.set({z}, 0x14000);
+const pas = [];
+for (const at of [0x10000n, 0x11000n, 0x10000n, 0x12000n, 0x13000n, 0x14000n, 0x13000n, 0x14000n]) {{
+  const avant = lire(vm, 7);
+  await courir(vm, at);
+  pas.push(String(lire(vm, 7) - avant) + "@" + vm.known.get(at).slot);
+}}
+const places = vm.cache.places();
+console.log("pas " + pas.join(",") + " replacees " + vm.cache.replacees
+  + " sous-le-haut " + places.every((p) => p.debut + p.longueur < vm.cache.haut()));
+"#,
+        s = js_bytes(&small_region(10)),
+        big = js_bytes(&big),
+        x = js_bytes(&small_region(20)),
+        y = js_bytes(&small_region(30)),
+        z = js_bytes(&small_region(40)),
+    );
+    let text = cache_course(&bun, "haut-rendu", 4, &corps);
+    assert!(
+        text.contains(
+            "pas 10@0,1000@1,10@0,20@71,30@1,40@2,30@1,40@2 replacees 0 sous-le-haut true"
+        ),
+        "le haut redescendu ne laisse aucune place rendue au-dessus de lui, et Z ne se pose \
+         pas sur Y : {text}"
+    );
+}
+
+/// **Une région replacée tient sous la borne en octets, elle aussi.**
+///
+/// La place se fait avant de savoir où la région se posera : pour la
+/// longueur de sa **première** traduction. Quand elle ne tient pas dans la
+/// place essayée, elle est retraduite pour une autre, et ce second module
+/// est plus long — ses indices de bloc dépassent 63 et s'écrivent sur un
+/// octet de plus. La place faite pour le premier laissait passer le second.
+/// Le montage du contrôle, sous deux régions et `emplacements: 1` : H (70
+/// blocs) en `[0, 70)`, S en 70, T au haut en 71, qui évince H ; B (100
+/// blocs) essaie la place de H, évince S, n'y tient pas, et est retraduite au
+/// haut, en 72. La borne est ce que pèsent T posée en 71 et B traduite en 0 :
+/// la première traduction de B tient avec T, la seconde non. Juste : T part
+/// aussi, et le cache ne dépasse jamais sa borne.
+#[test]
+fn a_region_placed_again_still_holds_under_the_byte_bound() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let h = many_blocks(69, 1);
+    let b = many_blocks(99, 5);
+    assert_eq!(Module::outline(&h, 0).expect("le relevé").len(), 70);
+    assert_eq!(Module::outline(&b, 0).expect("le relevé").len(), 100);
+    let corps = format!(
+        r#"
+const poser = (vm) => {{
+  const m = new Uint8Array(vm.memory.buffer);
+  m.set({h}, 0x10000); m.set({s}, 0x12000); m.set({t}, 0x13000); m.set({b}, 0x14000);
+}};
+const libre = machine({{ translate: traduire, pages: 4 }});
+poser(libre);
+const t71 = traduire(0x13000n, 71, libre.read(0x13000n, 4096)).length;
+const b0 = traduire(0x14000n, 0, libre.read(0x14000n, 4096)).length;
+const b72 = traduire(0x14000n, 72, libre.read(0x14000n, 4096)).length;
+const borne = t71 + b0;
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 2, octets: borne, emplacements: 1 }} }});
+poser(vm);
+const pas = [];
+for (const at of [0x10000n, 0x12000n, 0x13000n, 0x14000n]) {{
+  const avant = lire(vm, 7);
+  await courir(vm, at);
+  pas.push(String(lire(vm, 7) - avant));
+}}
+console.log("plus-long " + (b72 > b0) + " pas " + pas.join(",") + " b " + vm.known.get(0x14000n).slot
+  + " replacees " + vm.cache.replacees + " sous-la-borne " + (vm.cache.pic.octets <= borne)
+  + " tenu " + (vm.cache.tenu.octets === b72) + " connues " + vm.known.size);
+"#,
+        h = js_bytes(&h),
+        s = js_bytes(&small_region(10)),
+        t = js_bytes(&small_region(20)),
+        b = js_bytes(&b),
+    );
+    let text = cache_course(&bun, "replacee-octets", 4, &corps);
+    assert!(
+        text.contains(
+            "plus-long true pas 1,10,20,5 b 72 replacees 1 sous-la-borne true tenu true connues 1"
+        ),
+        "B, retraduite plus longue au haut, fait sa place pour sa vraie longueur : T part, \
+         et le pic reste sous la borne : {text}"
+    );
+}
+
+/// **Une respiration remet à zéro ce qui a été évincé depuis la dernière.**
+///
+/// `respirerSiBesoin` fait une pause de huit millisecondes et une collecte
+/// pleine (`ramasser`) chaque fois qu'un quart de la borne en octets a été
+/// évincé. Sans la remise à zéro, une fois ce premier quart passé, **chaque**
+/// installation respirerait : sur Alpine, des milliers de pauses et de
+/// collectes pleines. Le montage : Big puis trois petites régions tiennent
+/// sous la borne ; la quatrième évince Big, plus d'un quart de la borne, et
+/// respire une fois ; les deux suivantes tiennent sans rien évincer (Big pèse
+/// plus de deux petites et demie : la borne a leur place), et ne respirent
+/// pas.
+#[test]
+fn a_breath_resets_what_was_evicted_since() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const poser = (vm) => {{
+  const m = new Uint8Array(vm.memory.buffer);
+  m.set({big}, 0x10000);
+  for (let rang = 1; rang <= 7; rang += 1) m.set({petite}, 0x10000 + rang * 0x1000);
+}};
+const libre = machine({{ translate: traduire, pages: 4 }});
+poser(libre);
+await courir(libre, 0x10000n);
+const b = libre.cache.tenu.octets;
+await courir(libre, 0x11000n);
+const s = libre.cache.tenu.octets - b;
+const borne = b + 3 * s + Math.floor(s / 2);
+let ramasses = 0;
+const vm = machine({{
+  translate: traduire,
+  pages: 4,
+  cache: {{ octets: borne }},
+  ramasser: () => {{ ramasses += 1; }},
+}});
+poser(vm);
+for (let rang = 0; rang <= 6; rang += 1) await courir(vm, BigInt(0x10000 + rang * 0x1000));
+console.log("quart " + (b >= borne / 4) + " place " + (b >= 2.5 * s) + " connues " + vm.known.size + " evincees "
+  + vm.cache.evincees + " respirations " + vm.cache.respirations + " ramasses " + ramasses);
+"#,
+        big = js_bytes(&many_blocks(199, 1)),
+        petite = js_bytes(&small_region(1)),
+    );
+    let text = cache_course(&bun, "respiration", 4, &corps);
+    assert!(
+        text.contains("quart true place true connues 6 evincees 1 respirations 1 ramasses 1"),
+        "une seule éviction d'un quart, une seule respiration, même avec deux \
+         installations derrière : {text}"
+    );
+}
+
+/// **Le vidage vide aussi la table des blocs.**
+///
+/// `oublierTout` remet le haut à zéro et efface la correspondance ; il doit
+/// aussi effacer les blocs eux-mêmes. Sinon la table garde une référence vers
+/// chaque module oublié, jusqu'à ce qu'une place soit réemployée, et aucun ne
+/// peut être rendu à la mémoire — 4 008 régions sur Alpine, 11 074 sur la
+/// sonde. Le montage : Big (70 blocs) en anneau zéro, puis une région d'un
+/// bloc en anneau trois, qui vide tout et se pose en zéro. Les places 1 à 69
+/// doivent être vides.
+#[test]
+fn a_flush_empties_the_block_table_too() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({big}, 0x10000); m.set({petite}, 0x12000);
+await courir(vm, 0x10000n);
+const avant = vm.blocks.get(69) === null ? "vide" : "pris";
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+await courir(vm, 0x12000n);
+let pris = 0;
+for (let at = 1; at < 70; at += 1) if (vm.blocks.get(at) !== null) pris += 1;
+console.log("avant " + avant + " vidages " + vm.vidages.fois + " petite "
+  + vm.known.get(0x12000n).slot + " pris " + pris);
+"#,
+        big = js_bytes(&many_blocks(69, 1)),
+        petite = js_bytes(&small_region(2)),
+    );
+    let text = cache_course(&bun, "vidage-table", 4, &corps);
+    assert!(
+        text.contains("avant pris vidages 1 petite 0 pris 0"),
+        "après le vidage, aucune place de la table ne garde un bloc d'une région oubliée : \
+         {text}"
+    );
+}
+
+/// **Une place prise entière, ou par son début, ne laisse pas de place
+/// vide.**
+///
+/// `prendre` coupe la place rendue en ce qui reste devant et derrière la
+/// région, et jette les morceaux de longueur nulle. Gardé, un morceau vide se
+/// glisse entre deux places qui se touchent, et `rendre` ne les fusionne
+/// plus : on retombe dans une table qui grandit quand une place assez grande
+/// attend. Le montage, sous trois régions et `emplacements: 1` : A (64 blocs)
+/// en `[0, 64)`, B en 64, C en 65 ; X au haut, en 66, évince A ; B servie, D
+/// (64 blocs aussi) prend la place de A entière, et évince C. Il ne reste
+/// alors qu'une place rendue, celle de C. D évincée à son tour, sa place et
+/// celle de C n'en font pas une — B est entre elles — mais `[0, 64)` revient
+/// seule, sans morceau vide devant.
+#[test]
+fn a_place_taken_whole_leaves_no_empty_place() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let a = many_blocks(63, 1);
+    let d = many_blocks(63, 4);
+    assert_eq!(Module::outline(&a, 0).expect("le relevé").len(), 64);
+    assert_eq!(Module::outline(&d, 0).expect("le relevé").len(), 64);
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 3, emplacements: 1 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x12000); m.set({c}, 0x13000); m.set({x}, 0x14000);
+m.set({d}, 0x15000); m.set({e}, 0x17000);
+const dire = () => vm.cache.places().map((p) => p.debut + "+" + p.longueur).join(";");
+for (const at of [0x10000n, 0x12000n, 0x13000n, 0x14000n, 0x12000n]) await courir(vm, at);
+const avant = lire(vm, 7);
+await courir(vm, 0x15000n);
+const d = vm.known.get(0x15000n).slot + " +" + (lire(vm, 7) - avant) + " places " + dire();
+await courir(vm, 0x12000n); await courir(vm, 0x14000n);
+await courir(vm, 0x17000n);
+console.log("d " + d + " puis " + dire() + " replacees " + vm.cache.replacees);
+"#,
+        a = js_bytes(&a),
+        b = js_bytes(&small_region(2)),
+        c = js_bytes(&small_region(3)),
+        x = js_bytes(&small_region(5)),
+        d = js_bytes(&d),
+        e = js_bytes(&small_region(6)),
+    );
+    let text = cache_course(&bun, "place-entiere", 4, &corps);
+    assert!(
+        text.contains("d 0 +4 places 65+1 puis 0+64;65+1 replacees 0"),
+        "D prend la place de A entière sans laisser de morceau vide, et la place rendue \
+         par D revient seule : {text}"
+    );
+}
+
+/// **Les deux bornes de `choisir` sont atteintes, pas seulement approchées.**
+///
+/// - Le haut sert tant que `next + voulu` **ne dépasse pas** `emplacements` :
+///   à l'égalité, la région se pose encore au haut.
+/// - Une place rendue de **exactement** `PROBABLE` blocs est prise.
+///
+/// Les deux montages, sous deux régions : A (64 blocs) en `[0, 64)`, C en
+/// 64, X au haut en 65, qui évince A ; puis D, d'un bloc. Avec `emplacements`
+/// à 130, D voit `66 + 64 = 130` et se pose au haut, en 66 — un `<` la
+/// mettrait dans la place de A. Avec `emplacements: 1`, la place de A, de 64
+/// blocs tout juste, est la plus grande et la prend, en zéro — un `>` la
+/// refuserait, et D irait au haut.
+#[test]
+fn choosing_a_place_honours_both_bounds_exactly() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let a = many_blocks(63, 1);
+    assert_eq!(Module::outline(&a, 0).expect("le relevé").len(), 64);
+    let corps = format!(
+        r#"
+const montage = async (emplacements) => {{
+  const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 2, emplacements }} }});
+  const m = new Uint8Array(vm.memory.buffer);
+  m.set({a}, 0x10000); m.set({c}, 0x12000); m.set({x}, 0x13000); m.set({d}, 0x14000);
+  for (const at of [0x10000n, 0x12000n, 0x13000n]) await courir(vm, at);
+  const haut = vm.cache.haut();
+  await courir(vm, 0x14000n);
+  return "haut " + haut + " d " + vm.known.get(0x14000n).slot;
+}};
+console.log("egalite " + await montage(130) + " exacte " + await montage(1));
+"#,
+        a = js_bytes(&a),
+        c = js_bytes(&small_region(2)),
+        x = js_bytes(&small_region(3)),
+        d = js_bytes(&small_region(4)),
+    );
+    let text = cache_course(&bun, "bornes-choisir", 4, &corps);
+    assert!(
+        text.contains("egalite haut 66 d 66 exacte haut 66 d 0"),
+        "à l'égalité avec `emplacements`, le haut ; une place de 64 blocs tout juste est \
+         prise : {text}"
+    );
+}
+
+/// **Les pics sont des pics**, pas la dernière valeur.
+///
+/// `pic.regions` et `pic.octets` sont publiés au JOURNAL comme ce que le cache
+/// a tenu **au plus**. Le montage : trois régions en anneau zéro, puis le
+/// vidage du premier passage en anneau trois et une seule région après. Le
+/// pic doit rester à trois régions et à leur poids.
+#[test]
+fn the_peaks_are_peaks_not_the_last_value() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({big}, 0x11000); m.set({c}, 0x13000); m.set({d}, 0x14000);
+for (const at of [0x10000n, 0x11000n, 0x13000n]) await courir(vm, at);
+const poids = vm.cache.tenu.octets;
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+await courir(vm, 0x14000n);
+console.log("tenu " + vm.cache.tenu.regions + " pic " + vm.cache.pic.regions + " octets "
+  + (vm.cache.pic.octets === poids) + " " + (vm.cache.tenu.octets < poids));
+"#,
+        a = js_bytes(&small_region(1)),
+        big = js_bytes(&many_blocks(69, 2)),
+        c = js_bytes(&small_region(3)),
+        d = js_bytes(&small_region(4)),
+    );
+    let text = cache_course(&bun, "pics", 4, &corps);
+    assert!(
+        text.contains("tenu 1 pic 3 octets true true"),
+        "après le vidage, le pic garde les trois régions et leur poids : {text}"
+    );
+}
+
+/// **Les clés évincées restent sous leur borne.**
+///
+/// `oubliees` garde une clé par éviction, pour compter les retraductions.
+/// Bornée (`limite.oubliees`), elle repart vide quand elle l'atteint. Le
+/// montage : une région au plus, et deux clés au plus. A, B, C, D : trois
+/// évictions, et jamais plus de deux clés.
+#[test]
+fn the_forgotten_keys_stay_under_their_bound() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 1, oubliees: 2 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+for (let rang = 0; rang < 4; rang += 1) m.set({p}, 0x10000 + rang * 0x1000);
+const vues = [];
+for (let rang = 0; rang < 4; rang += 1) {{
+  await courir(vm, BigInt(0x10000 + rang * 0x1000));
+  vues.push(vm.cache.oubliees);
+}}
+console.log("cles " + vues.join(",") + " evincees " + vm.cache.evincees);
+"#,
+        p = js_bytes(&small_region(1)),
+    );
+    let text = cache_course(&bun, "oubliees", 4, &corps);
+    assert!(
+        text.contains("cles 0,1,2,1 evincees 3"),
+        "la troisième éviction trouve l'ensemble plein et le vide d'abord : {text}"
+    );
+}
+
+/// `movl $imm32, addr` — l'adresse absolue sur trente-deux bits.
+fn movl_abs(addr: u32, imm: u32) -> Vec<u8> {
+    let mut out = vec![0xc7, 0x04, 0x25];
+    out.extend_from_slice(&addr.to_le_bytes());
+    out.extend_from_slice(&imm.to_le_bytes());
+    out
+}
+
+/// `movb $imm8, addr`.
+fn movb_abs(addr: u32, imm: u8) -> Vec<u8> {
+    let mut out = vec![0xc6, 0x04, 0x25];
+    out.extend_from_slice(&addr.to_le_bytes());
+    out.push(imm);
+    out
+}
+
+/// `movq $imm32, addr` — l'immédiat étendu par le signe sur huit octets.
+fn movq_abs(addr: u32, imm: u32) -> Vec<u8> {
+    let mut out = vec![0x48, 0xc7, 0x04, 0x25];
+    out.extend_from_slice(&addr.to_le_bytes());
+    out.extend_from_slice(&imm.to_le_bytes());
+    out
+}
+
+/// **Des tables de pages en JavaScript**, pour les montages de la carte du
+/// code traduit : une racine en `racine`, sa table de niveau trois juste
+/// après, puis sa table de niveau deux, dont `grandes` donne les entrées de
+/// deux mébioctets — `[rang, trame]`, l'utilisateur permis partout.
+const POSER_TABLES: &str = r#"
+const poserTables = (vm, racine, grandes) => {
+  const v = new DataView(vm.memory.buffer);
+  v.setBigUint64(racine, BigInt(racine + 0x1000) | 7n, true);
+  v.setBigUint64(racine + 0x1000, BigInt(racine + 0x2000) | 7n, true);
+  for (const [rang, trame] of grandes) {
+    v.setBigUint64(racine + 0x2000 + rang * 8, BigInt(trame) | 0x87n, true);
+  }
+};
+const paginer = (vm, racine) => {
+  vm.globals[SLOTS.control].value = (1n << 31n) | 0x11n;
+  vm.globals[SLOTS.control + 2].value = BigInt(racine);
+};
+const anneau = (vm, trois) => {
+  vm.globals[SLOTS.segment + 1].value = trois ? 0x33n : 0x10n;
+  vm.globals[SLOTS.segment + 2].value = trois ? 0x2bn : 0x18n;
+};
+"#;
+
+/// **Une région qu'une autre réécrit est retraduite avant de tourner de
+/// nouveau.**
+///
+/// A ajoute un à RDI. W, une autre région, réécrit l'immédiat de A (cinq),
+/// puis saute dans A. L'écriture tombe sur une ligne marquée : le bit baisse,
+/// la ligne va au journal, W finit son instruction et rend la main ; l'hôte
+/// oublie A, et le saut la retraduit sur ses octets neufs. Juste : RDI vaut
+/// six. Sans la carte, A garderait son ancien code, et RDI vaudrait deux.
+#[test]
+fn a_region_rewritten_by_another_is_translated_again() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut w = movl_abs(0x1_0003, 5);
+    w.extend(jmp_to(0x1_1000 + w.len() as u64, 0x1_0000));
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({w}, 0x11000);
+await courir(vm, 0x10000n);
+const arret = await courir(vm, 0x11000n);
+console.log("rdi " + lire(vm, 7) + " invalidees " + vm.cache.invalidees + " evincees "
+  + vm.cache.evincees + " a " + vm.known.get(0x10000n).lu[3] + " arret " + arret);
+"#,
+        a = js_bytes(&small_region(1)),
+        w = js_bytes(&w),
+    );
+    let text = cache_course(&bun, "reecrite", 4, &corps);
+    assert!(
+        text.contains("rdi 6 invalidees 1 evincees 0 a 5 arret une instruction indéfinie"),
+        "W réécrit A : A est oubliée et retraduite sur ses octets neufs : {text}"
+    );
+}
+
+/// **Une région qui s'écrit elle-même finit son instruction, puis rend la
+/// main.**
+///
+/// `movb $5, 3(%rip)` réécrit l'immédiat de l'`add $1,%rdi` qui le suit, dans
+/// le même bloc. Le silicium exécute l'instruction réécrite : RDI vaut cinq.
+/// Ici, le `movb` fini, le test du journal le voit non nul, RIP passe à
+/// l'`add`, et la région rend la main ; l'hôte l'oublie, et l'`add` se
+/// retraduit depuis la mémoire. Sans le test après l'instruction, la suite du
+/// bloc tournerait sur son ancienne traduction : RDI vaudrait un.
+#[test]
+fn a_region_that_rewrites_itself_runs_its_new_code() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // movb $5, 3(%rip) ; add $1,%rdi ; ud2
+    let mut s = vec![0xc6, 0x05, 0x03, 0x00, 0x00, 0x00, 0x05];
+    s.extend(small_region(1));
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+new Uint8Array(vm.memory.buffer).set({s}, 0x10000);
+await courir(vm, 0x10000n);
+console.log("rdi " + lire(vm, 7) + " invalidees " + vm.cache.invalidees + " demandes "
+  + demandes.map((at) => at.toString(16)).join(","));
+"#,
+        s = js_bytes(&s),
+    );
+    let text = cache_course(&bun, "elle-meme", 4, &corps);
+    assert!(
+        text.contains("rdi 5 invalidees 1 demandes 10000,10007"),
+        "la région s'est réécrite : elle rend la main après le `movb`, et l'`add` \
+         retraduit ajoute cinq : {text}"
+    );
+}
+
+/// **`text_poke` après le premier passage en anneau trois**, par un alias.
+///
+/// C'est ce que le vidage unique ne voyait pas : un saut statique basculé
+/// après le démarrage. Linux écrit le texte par une autre adresse virtuelle
+/// que celle où il s'exécute (le `poking_mm`) ; seule la **trame** est
+/// commune. Le montage, sous pagination : A s'exécute en `0x10000`, et
+/// `0x210000` est un alias de la même trame. Le passage en anneau trois a
+/// lieu d'abord, et vide le cache. Puis, en anneau zéro :
+///
+/// 1. W0 écrit par l'alias **avant** que A soit traduite : la case du tampon
+///    de cette page se remplit, inscriptible ;
+/// 2. A se traduit (+1) et marque sa trame : l'hôte retire l'inscriptibilité
+///    à la case déjà remplie ;
+/// 3. W écrit une donnée sur une autre ligne de la même page — par l'accès
+///    lent, et la marche remplit la case **sans** l'inscriptibilité —, puis
+///    l'immédiat de A, cinq ;
+/// 4. A, retraduite, ajoute cinq.
+///
+/// Juste : RDI vaut six. Si l'hôte laissait la case de W0 inscriptible, ou
+/// si la marche la redisait inscriptible, la seconde écriture de W passerait
+/// par le chemin rapide sans que rien la voie, et RDI vaudrait deux.
+#[test]
+fn text_poke_after_the_first_entry_into_ring_three_is_seen_through_an_alias() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut w0 = movl_abs(0x21_0003, 1);
+    w0.extend_from_slice(&[0x0f, 0x0b]);
+    let mut w = movl_abs(0x21_0800, 9);
+    w.extend(movl_abs(0x21_0003, 5));
+    w.extend_from_slice(&[0x0f, 0x0b]);
+    let corps = format!(
+        r#"{tables}
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+poserTables(vm, 0x20000, [[0, 0], [1, 0]]);
+m.set({a}, 0x10000); m.set({w0}, 0x11000); m.set({w}, 0x12000); m.set({u}, 0x13000);
+paginer(vm, 0x20000);
+anneau(vm, true);
+await courir(vm, 0x13000n);
+anneau(vm, false);
+const pas = [];
+for (const at of [0x11000n, 0x10000n, 0x12000n, 0x10000n]) {{
+  const avant = lire(vm, 7);
+  await courir(vm, at);
+  pas.push(String(lire(vm, 7) - avant));
+}}
+console.log("pas " + pas.join(",") + " vidages " + vm.vidages.fois + " invalidees "
+  + vm.cache.invalidees + " donnee " + m[0x10800]);
+"#,
+        tables = POSER_TABLES,
+        a = js_bytes(&small_region(1)),
+        w0 = js_bytes(&w0),
+        w = js_bytes(&w),
+        u = js_bytes(&small_region(0)),
+    );
+    let text = cache_course(&bun, "text-poke", 4, &corps);
+    assert!(
+        text.contains("pas 0,1,0,5 vidages 1 invalidees 1 donnee 9"),
+        "après le vidage, l'écriture de W par l'alias oublie A, qui se retraduit et \
+         ajoute cinq : {text}"
+    );
+}
+
+/// **Deux programmes l'un après l'autre à la même adresse, dans la même
+/// trame.**
+///
+/// P1 tourne en anneau trois en `0x10000` et ajoute un. Le « noyau », en
+/// anneau zéro, pose P2 par-dessus d'un `rep movsb` — ce que fait un
+/// chargeur —, et P2 tourne au même endroit, sous le même CR3 : il doit
+/// ajouter deux. Sans la carte, la région de P1, rangée sous ce contexte et
+/// cette adresse, servirait P2 : un.
+#[test]
+fn two_programs_one_after_the_other_at_the_same_address_each_run_their_own_code() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"{tables}
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({p1}, 0x10000); m.set({p2}, 0x30000); m.set([0xf3, 0xa4, 0x0f, 0x0b], 0x11000);
+vm.globals[SLOTS.control + 2].value = 0x5000n;
+const pas = [];
+anneau(vm, true);
+await courir(vm, 0x10000n);
+pas.push(String(lire(vm, 7)));
+anneau(vm, false);
+vm.globals[6].value = 0x30000n;
+vm.globals[7].value = 0x10000n;
+vm.globals[1].value = {longueur}n;
+await courir(vm, 0x11000n);
+vm.globals[7].value = 0n;
+anneau(vm, true);
+await courir(vm, 0x10000n);
+pas.push(String(lire(vm, 7)));
+console.log("pas " + pas.join(",") + " invalidees " + vm.cache.invalidees);
+"#,
+        tables = POSER_TABLES,
+        p1 = js_bytes(&small_region(1)),
+        p2 = js_bytes(&small_region(2)),
+        longueur = small_region(2).len(),
+    );
+    let text = cache_course(&bun, "deux-programmes", 4, &corps);
+    assert!(
+        text.contains("pas 1,2 invalidees 1"),
+        "le chargeur pose P2 sur P1 : la région de P1 est oubliée, et P2 tourne son \
+         code : {text}"
+    );
+}
+
+/// **Deux programmes à la même adresse sous la même racine de tables, dans
+/// deux trames** : la racine recyclée.
+///
+/// Un processus neuf dont les tables tombent sur la page de celles d'un mort
+/// hérite de son contexte : même anneau, même CR3. P1, en `0x400000`, vient de
+/// la trame `0x200000` ; le noyau réécrit ensuite la racine pour d'autres
+/// tables, où `0x400000` vient de `0x600000`, celle de P2. Aucune écriture ne
+/// touche le code de P1 — mais chaque région d'un programme marque la page de
+/// sa racine, et c'est cette écriture-là qui l'oublie. Juste : un, puis deux.
+/// Sans la racine marquée, la région de P1 servirait P2.
+#[test]
+fn a_root_rewritten_for_another_program_forgets_the_regions_of_the_first() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut k = movq_abs(0x2_0000, 0x2_4007);
+    k.extend_from_slice(&[0x0f, 0x0b]);
+    let corps = format!(
+        r#"{tables}
+const vm = machine({{ translate: traduire, pages: 128 }});
+const m = new Uint8Array(vm.memory.buffer);
+poserTables(vm, 0x20000, [[0, 0], [2, 0x200000]]);
+poserTables(vm, 0x23000, [[0, 0], [2, 0x600000]]);
+m.set({p1}, 0x200000); m.set({p2}, 0x600000); m.set({k}, 0x10000); m.set({u}, 0x13000);
+paginer(vm, 0x20000);
+// **Une région d'anneau zéro d'abord**, à l'identité : la toute première
+// fenêtre se lit avant qu'aucun module n'ait exporté sa marche, donc par le
+// repli, et `0x400000` replié n'est pas la trame de P1.
+anneau(vm, false);
+await courir(vm, 0x13000n);
+const pas = [];
+const arrets = [];
+anneau(vm, true);
+arrets.push(await courir(vm, 0x400000n));
+pas.push(String(lire(vm, 7)));
+anneau(vm, false);
+arrets.push(await courir(vm, 0x10000n));
+vm.globals[7].value = 0n;
+anneau(vm, true);
+arrets.push(await courir(vm, 0x400000n));
+pas.push(String(lire(vm, 7)));
+console.log("pas " + pas.join(",") + " invalidees " + vm.cache.invalidees + " racine "
+  + new DataView(vm.memory.buffer).getBigUint64(0x20000, true).toString(16) + " arrets "
+  + arrets.join("/"));
+"#,
+        tables = POSER_TABLES,
+        p1 = js_bytes(&small_region(1)),
+        p2 = js_bytes(&small_region(2)),
+        k = js_bytes(&k),
+        u = js_bytes(&small_region(0)),
+    );
+    let text = cache_course(&bun, "racine", 128, &corps);
+    assert!(
+        text.contains("pas 1,2 invalidees 1 racine 24007"),
+        "la racine réécrite oublie la région de P1, et P2 tourne son code : {text}"
+    );
+}
+
+/// **Une écriture dans la page du code, mais sur une autre ligne, ne rend
+/// pas la main.**
+///
+/// Un programme pose ses données près de son code ; ce dépôt en est plein.
+/// S écrit un octet huit lignes plus loin que son code, puis ajoute un. La
+/// trame est marquée, la ligne non : rien au journal, rien d'oublié, une seule
+/// traduction. Une carte par page ferait rendre la main après le `movb`, et
+/// retraduire l'`add` comme une région à part.
+#[test]
+fn a_write_beside_the_code_on_another_line_hands_nothing_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut s = movb_abs(0x1_0200, 7);
+    s.extend(small_region(1));
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({s}, 0x10000);
+await courir(vm, 0x10000n);
+console.log("rdi " + lire(vm, 7) + " octet " + m[0x10200] + " traduites " + vm.cache.traduites
+  + " invalidees " + vm.cache.invalidees + " ecritures " + vm.cache.ecritures);
+"#,
+        s = js_bytes(&s),
+    );
+    let text = cache_course(&bun, "autre-ligne", 4, &corps);
+    assert!(
+        text.contains("rdi 1 octet 7 traduites 1 invalidees 0 ecritures 0"),
+        "une donnée sur une autre ligne que le code ne coûte ni retour de main ni \
+         retraduction : {text}"
+    );
+}
+
+/// **Ce qu'on écrit du dehors et qu'on dit par `ecrit` oublie les régions de
+/// ces lignes.**
+///
+/// Le disque écrira ainsi des pages où un programme a tourné. A tourne (+1) ;
+/// le pilote réécrit son immédiat lui-même, et le dit : `ecrit` rend une
+/// région oubliée, et A, retraduite, ajoute cinq. Sans l'appel, rien ne le
+/// verrait : c'est ce que la sonde de `surveiller` compte.
+#[test]
+fn a_write_from_outside_said_through_ecrit_forgets_the_region() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000);
+await courir(vm, 0x10000n);
+m.set([5, 0, 0, 0], 0x10003);
+const oubliees = vm.ecrit(0x10003, 4);
+const ailleurs = vm.ecrit(0x10800, 4);
+await courir(vm, 0x10000n);
+console.log("oubliees " + oubliees + "," + ailleurs + " rdi " + lire(vm, 7));
+"#,
+        a = js_bytes(&small_region(1)),
+    );
+    let text = cache_course(&bun, "ecrit", 4, &corps);
+    assert!(
+        text.contains("oubliees 1,0 rdi 6"),
+        "`ecrit` sur le code de A l'oublie, ailleurs rien : {text}"
+    );
+}
+
+/// **Le cadre d'une délivrance est une écriture de l'hôte, et elle oublie le
+/// code qu'elle recouvre.**
+///
+/// A (dix `add`) est traduite ; la pile est ensuite posée juste au-dessus de
+/// son code, et `int $0x30` fait poser par l'hôte un cadre de cinq mots
+/// par-dessus. A ne doit plus être connue.
+#[test]
+fn a_frame_the_host_lays_over_translated_code_forgets_that_code() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut a = Vec::new();
+    for _ in 0..10 {
+        a.extend(add_rdi(1));
+    }
+    a.extend_from_slice(&[0x0f, 0x0b]);
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+const v = new DataView(vm.memory.buffer);
+m.set({a}, 0x10000); m.set([0xcd, 0x30, 0x0f, 0x0b], 0x11000); m.set([0x0f, 0x0b], 0x12000);
+// La porte du vecteur 0x30 : une porte d'interruption de l'anneau zéro vers 0x12000.
+v.setUint16(0x3000 + 0x30 * 16, 0x2000, true);
+v.setUint16(0x3000 + 0x30 * 16 + 2, 0x10, true);
+m[0x3000 + 0x30 * 16 + 5] = 0x8e;
+v.setUint16(0x3000 + 0x30 * 16 + 6, 0x1, true);
+vm.globals[SLOTS.table + 2].value = 0xfffn;
+vm.globals[SLOTS.table + 3].value = 0x3000n;
+await courir(vm, 0x10000n);
+const avant = vm.known.get(0x10000n) === undefined ? "partie" : "la";
+vm.globals[4].value = 0x10040n;
+const arret = await courir(vm, 0x11000n);
+console.log("rdi " + lire(vm, 7) + " avant " + avant + " apres "
+  + (vm.known.get(0x10000n) === undefined ? "partie" : "la") + " invalidees "
+  + vm.cache.invalidees + " pile " + lire(vm, 4).toString(16) + " arret " + arret);
+"#,
+        a = js_bytes(&a),
+    );
+    let text = cache_course(&bun, "cadre", 4, &corps);
+    assert!(
+        text.contains("rdi 10 avant la apres partie invalidees 1 pile 10018"),
+        "le cadre posé par l'hôte sur le code de A oublie A : {text}"
+    );
+}
+
+/// **Un `call` dont l'adresse de retour tombe sur du code rend la main sur sa
+/// cible**, directe ou indirecte.
+///
+/// La pile est posée sur la première ligne de A, traduite, juste après son
+/// code. C appelle T : le mot empilé tombe sur cette ligne, le `call` est fini, et la région rend la
+/// main avec RIP sur T, pas sur l'instruction d'après. T ajoute trois. Une
+/// fois par un `call rel32`, une fois par `call *%rax` — T est alors déjà
+/// connue, et seules A, retraduite, et C sont demandées.
+#[test]
+fn a_call_whose_return_address_lands_on_code_hands_back_at_its_target() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // call 0x12000 depuis 0x11000
+    let mut direct = vec![0xe8];
+    direct.extend_from_slice(&((0x1_2000i64 - (0x1_1000 + 5)) as i32).to_le_bytes());
+    // mov $0x12000,%eax ; call *%rax
+    let indirect = vec![0xb8, 0x00, 0x20, 0x01, 0x00, 0xff, 0xd0];
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+const v = new DataView(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({direct}, 0x11000); m.set({indirect}, 0x11800); m.set({t}, 0x12000);
+const vus = [];
+for (const [appel, retour] of [[0x11000n, 0x11005n], [0x11800n, 0x11807n]]) {{
+  vm.globals[7].value = 0n;
+  vm.globals[4].value = 0x10038n;
+  await courir(vm, 0x10000n);
+  vm.globals[4].value = 0x10038n;
+  const avant = vm.cache.invalidees;
+  await courir(vm, appel);
+  vus.push(lire(vm, 7) + ":" + lire(vm, 4).toString(16) + ":"
+    + (v.getBigUint64(0x10030, true) === retour) + ":" + (vm.cache.invalidees - avant) + ":"
+    + demandes.slice(-2).map((at) => at.toString(16)).join("/"));
+}}
+console.log("appels " + vus.join(" "));
+"#,
+        a = js_bytes(&small_region(1)),
+        direct = js_bytes(&direct),
+        indirect = js_bytes(&indirect),
+        t = js_bytes(&small_region(3)),
+    );
+    let text = cache_course(&bun, "appel", 4, &corps);
+    assert!(
+        text.contains("appels 4:10030:true:1:11000/12000 4:10030:true:1:10000/11800"),
+        "le `call` empile sur le code de A, A est oubliée, et la main revient sur T : \
+         {text}"
+    );
+}
+
+/// **Un journal débordé se relit dans la carte.**
+///
+/// Au-delà de `codeLogSlots` lignes en une instruction, le module compte
+/// encore mais n'écrit plus les numéros. Ce que l'hôte relit alors, c'est la
+/// carte : une région dont une ligne n'est plus marquée a été écrite. Le
+/// montage fait le module à la main — seize mille lignes de code écrites en
+/// une instruction demanderaient un mébioctet de régions : A et B traduites,
+/// la ligne de A baissée et le compte posé au-delà du journal. A est oubliée,
+/// B reste.
+#[test]
+fn an_overflowed_log_is_read_back_from_the_map() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x11000); m.set({b}, 0x12000);
+await courir(vm, 0x10000n);
+await courir(vm, 0x11000n);
+const journal = new Uint32Array(vm.memory.buffer, vm.tableBase + 17 * 65536, 2);
+const carte = new Uint32Array(vm.memory.buffer, vm.tableBase + 18 * 65536, 4096);
+const tenu = carte[0x10 * 2];
+carte[0x10 * 2] = 0;
+journal[0] = SLOTS.codeLogSlots + 1;
+await courir(vm, 0x12000n);
+console.log("a " + (vm.known.get(0x10000n) === undefined ? "partie" : "la") + " b "
+  + (vm.known.get(0x11000n) === undefined ? "partie" : "la") + " debordements "
+  + vm.cache.debordements + " journal " + journal[0] + " ligne " + tenu);
+"#,
+        a = js_bytes(&small_region(1)),
+        b = js_bytes(&small_region(2)),
+    );
+    let text = cache_course(&bun, "debordement", 4, &corps);
+    assert!(
+        text.contains("a partie b la debordements 1 journal 0 ligne 1"),
+        "le journal débordé, la carte dit que A a été écrite, et elle seule : {text}"
+    );
+}
+
+/// **`vider: false` ne vide pas le cache au premier passage en anneau trois.**
+///
+/// C'est le réglage qui mesure ce que la carte tient seule (JOURNAL). Le
+/// montage de `a_flush_empties_the_block_table_too`, le réglage en plus : la
+/// région d'anneau zéro reste connue.
+#[test]
+fn a_machine_that_does_not_flush_keeps_its_regions_in_ring_three() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, vider: false }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x12000);
+await courir(vm, 0x10000n);
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+await courir(vm, 0x12000n);
+console.log("vidages " + vm.vidages.fois + " connues " + vm.known.size);
+"#,
+        a = js_bytes(&small_region(1)),
+        b = js_bytes(&small_region(2)),
+    );
+    let text = cache_course(&bun, "sans-vidage", 4, &corps);
+    assert!(
+        text.contains("vidages 0 connues 2"),
+        "sans vidage, la région d'anneau zéro reste : {text}"
+    );
+}
+
+/// **Une écriture à cheval sur deux pages voit le code de la seconde.**
+///
+/// Huit octets écrits quatre octets avant le début de la page de A : la
+/// moitié haute tombe sur la première ligne de A. Sans pagination, c'est la
+/// dernière ligne de l'écriture que l'inscription regarde ; sous pagination,
+/// l'accès lent prend les deux trames une à une. Dans les deux cas A est
+/// oubliée, et se retraduit sur ses octets neufs : le mot écrit pose cinq
+/// dans son immédiat.
+#[test]
+fn a_write_across_two_pages_sees_the_code_of_the_second() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // mov %rax,0x10ffc ; ud2 — RAX porte, en mémoire, 00 00 00 00 48 81 c7 05.
+    let w = vec![0x48, 0x89, 0x04, 0x25, 0xfc, 0x0f, 0x01, 0x00, 0x0f, 0x0b];
+    let corps = format!(
+        r#"{tables}
+const montage = async (pagine) => {{
+  const vm = machine({{ translate: traduire, pages: 4 }});
+  const m = new Uint8Array(vm.memory.buffer);
+  m.set({a}, 0x11000); m.set({w}, 0x12000); m.set({u}, 0x13000);
+  if (pagine) {{
+    poserTables(vm, 0x20000, [[0, 0]]);
+    paginer(vm, 0x20000);
+  }}
+  vm.globals[0].value = 0x05c7814800000000n;
+  await courir(vm, 0x13000n);
+  const avant = lire(vm, 7);
+  await courir(vm, 0x11000n);
+  await courir(vm, 0x12000n);
+  await courir(vm, 0x11000n);
+  return (lire(vm, 7) - avant) + ":" + vm.cache.invalidees;
+}};
+console.log("sans " + await montage(false) + " avec " + await montage(true));
+"#,
+        tables = POSER_TABLES,
+        a = js_bytes(&small_region(1)),
+        w = js_bytes(&w),
+        u = js_bytes(&small_region(0)),
+    );
+    let text = cache_course(&bun, "a-cheval", 4, &corps);
+    assert!(
+        text.contains("sans 6:1 avec 6:1"),
+        "la moitié haute de l'écriture réécrit A, avec ou sans pagination : A est \
+         oubliée, et ajoute cinq : {text}"
+    );
+}
+
+/// **Une écriture n'oublie que les régions qui lisent sa ligne.**
+///
+/// A et B sont dans la même trame, A sur la première ligne, B sur la
+/// quatrième. W réécrit l'immédiat de B : B est oubliée, A reste — une page
+/// du noyau porte des dizaines de régions, et un `text_poke` d'un octet ne
+/// doit pas les retraduire toutes.
+#[test]
+fn a_write_forgets_only_the_regions_that_read_its_line() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut w = movl_abs(0x1_00c3, 5);
+    w.extend_from_slice(&[0x0f, 0x0b]);
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x100c0); m.set({w}, 0x11000);
+for (const at of [0x10000n, 0x100c0n, 0x11000n]) await courir(vm, at);
+console.log("a " + (vm.known.get(0x10000n) === undefined ? "partie" : "la") + " b "
+  + (vm.known.get(0x100c0n) === undefined ? "partie" : "la") + " invalidees "
+  + vm.cache.invalidees);
+"#,
+        a = js_bytes(&small_region(1)),
+        b = js_bytes(&small_region(2)),
+        w = js_bytes(&w),
+    );
+    let text = cache_course(&bun, "sa-ligne", 4, &corps);
+    assert!(
+        text.contains("a la b partie invalidees 1"),
+        "seule B lisait la ligne écrite : {text}"
+    );
+}
+
+/// **Une région évincée rend ses lignes.**
+///
+/// Une seule région au plus : A est traduite, puis B l'évince. Les lignes de
+/// A ne portent plus rien, et une écriture dessus ne doit plus rendre la
+/// main : C, qui écrit sur la ligne de A puis ajoute trois, se traduit une
+/// fois. Des lignes gardées marquées feraient rendre la main après l'écriture
+/// et retraduire la suite de C comme une région à part.
+#[test]
+fn an_evicted_region_gives_its_lines_back() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut c = movb_abs(0x1_0003, 9);
+    c.extend(small_region(3));
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 1 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({b}, 0x11000); m.set({c}, 0x12000);
+for (const at of [0x10000n, 0x11000n]) await courir(vm, at);
+const avant = demandes.length;
+await courir(vm, 0x12000n);
+console.log("rdi " + lire(vm, 7) + " demandes " + (demandes.length - avant) + " ecritures "
+  + vm.cache.ecritures);
+"#,
+        a = js_bytes(&small_region(1)),
+        b = js_bytes(&small_region(2)),
+        c = js_bytes(&c),
+    );
+    let text = cache_course(&bun, "lignes-rendues", 4, &corps);
+    assert!(
+        text.contains("rdi 6 demandes 1 ecritures 0"),
+        "les lignes de A évincée ne sont plus marquées : {text}"
+    );
+}
+
+/// **Le vidage oublie aussi la carte.**
+///
+/// A est traduite en anneau zéro ; le passage en anneau trois vide tout. Un
+/// programme écrit ensuite sur la ligne de A, puis continue. Rien ne porte
+/// plus de code là : l'écriture passe sans rendre la main, et rien n'est
+/// oublié — une carte gardée désignerait une région qui n'existe plus.
+#[test]
+fn a_flush_forgets_the_map_too() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut p = movb_abs(0x1_0003, 9);
+    p.extend(small_region(3));
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({a}, 0x10000); m.set({p}, 0x12000);
+await courir(vm, 0x10000n);
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+const arret = await courir(vm, 0x12000n);
+console.log("rdi " + lire(vm, 7) + " vidages " + vm.vidages.fois + " traduites "
+  + vm.cache.traduites + " ecritures " + vm.cache.ecritures + " arret " + arret);
+"#,
+        a = js_bytes(&small_region(1)),
+        p = js_bytes(&p),
+    );
+    let text = cache_course(&bun, "vidage-carte", 4, &corps);
+    assert!(
+        text.contains("rdi 4 vidages 1 traduites 2 ecritures 0 arret une instruction indéfinie"),
+        "après le vidage, la ligne de A n'est plus marquée : {text}"
+    );
+}
+
+/// **Un `call *%rax` qui empile sur le code de sa propre cible ne l'entre
+/// pas sur son ancienne traduction.**
+///
+/// T est traduite (+3). La pile est posée huit octets après T, et C appelle T
+/// par un registre : l'adresse de retour, `0x11807`, recouvre les huit
+/// premiers octets de T. Sur le silicium, T commence alors par `07`, qui n'est
+/// pas une instruction en mode long. Ici, le `call` fini, la région rend la
+/// main avant le saut ; l'hôte oublie T et relit ses octets neufs, que
+/// l'émetteur refuse. Sans le test après le `call`, le saut résolu dans le
+/// module entrerait dans l'ancienne T, qui ajouterait trois. Deux régions
+/// oubliées, et c'est juste : la découverte de C suit les octets après son
+/// `call` jusqu'au bout de sa fenêtre, donc jusque dans T, et C lit cette
+/// ligne-là aussi.
+#[test]
+fn an_indirect_call_that_pushes_over_its_target_does_not_enter_it_stale() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    // mov $0x12000,%eax ; call *%rax
+    let indirect = vec![0xb8, 0x00, 0x20, 0x01, 0x00, 0xff, 0xd0];
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4 }});
+const m = new Uint8Array(vm.memory.buffer);
+m.set({indirect}, 0x11800); m.set({t}, 0x12000);
+await courir(vm, 0x12000n);
+const avant = lire(vm, 7);
+vm.globals[4].value = 0x12008n;
+const arret = await courir(vm, 0x11800n);
+console.log("t " + avant + " puis +" + (lire(vm, 7) - avant) + " premier " + m[0x12000]
+  + " invalidees " + vm.cache.invalidees + " arret " + arret + " rip "
+  + lire(vm, SLOTS.rip).toString(16));
+"#,
+        indirect = js_bytes(&indirect),
+        t = js_bytes(&small_region(3)),
+    );
+    let text = cache_course(&bun, "appel-sur-cible", 4, &corps);
+    assert!(
+        text.contains("t 3 puis +0 premier 7 invalidees 2 arret refusée rip 12000"),
+        "T recouverte par l'adresse de retour n'est pas entrée sur son ancienne \
+         traduction : {text}"
     );
 }

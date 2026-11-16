@@ -8,6 +8,262 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-16 — Émetteur : les écritures dans le code traduit sont vues, ligne par ligne, et Alpine ne voit plus de thunk de retour non corrigé
+
+**Ce qui n'allait pas.** Deux choses, la seconde étant la tranche.
+
+1. **Le contrôle de l'entrée suivante a trouvé dix points**, tous vérifiés
+   dans le code, tous réels :
+   - une **corruption silencieuse** que rien ne tenait : `rendre` sans le
+     `libres.pop()` qui suit la descente du haut laissait une place rendue
+     au-dessus du haut ; Z se posait alors en 1, sur Y vivante, et Y
+     exécutait le code de Z (+40 au lieu de +30) ;
+   - un **vrai défaut** : une région replacée, retraduite pour une autre
+     place, est plus longue (ses indices de bloc passent à deux octets de
+     LEB au-delà de 63), et la place faite pour la première traduction la
+     laissait passer : le pic du cache dépassait sa borne en octets de
+     129 octets dans le montage du contrôle ;
+   - six gardes sans test : la remise à zéro de `evincesDepuis` (sans elle,
+     chaque installation après le premier quart évincé faisait une pause et
+     une collecte pleine), l'effacement de la table des blocs au vidage, le
+     filtre des places vides de `prendre`, les deux bornes de `choisir`
+     (`<=` et `>=`), les deux pics (`Math.max`), la borne de `oubliees`
+     (non réglable, donc non testable) ;
+   - deux récits faux, dans l'entrée suivante et un commentaire de test :
+     « zéro, moins un, 1,5 et "8" refusés pour chacune des trois bornes »
+     (six essais sur douze), et « R2 essaie zéro » (V est vivante en 0, R2
+     essaie `[1, 71)`, et c'est sa place qui évince V).
+2. **Le texte réécrit après le premier passage en anneau trois n'était vu
+   par rien**, ni le CR3 recyclé, ni un programme posé dans la trame d'un
+   autre. Le vidage unique était le seul garde-fou. Et il ne suffisait pas
+   même au démarrage : **les courses d'Alpine de la tranche d'avant
+   portaient toutes un « Unpatched return thunk in use. This should not
+   happen! », un `WARNING` à `__warn_thunk`**, que personne n'avait lu
+   (`alpine-final.serie`, `alpine-defaut.serie`, et la course de base
+   d'aujourd'hui). C'est exactement le mélange de code réécrit et d'ancien
+   code que le commentaire d'`oublierTout` décrivait.
+
+**Ce qui change.**
+
+- **Les dix points du contrôle.** `faireDeLaPlace` refait la place pour la
+  longueur de la seconde traduction (et respire) ; la borne des clés
+  oubliées devient un réglage du cache (`cache.oubliees`, `1 << 18` par
+  défaut, validé comme les trois autres) ; `vm.cache` expose les places
+  rendues et le haut (`places()`, `haut()`), en lecture, pour que les tests
+  tiennent ce que `libres` promet ; le test des bornes essaie les quatre
+  valeurs fausses sur les quatre bornes, seize essais ; les deux récits
+  sont corrigés sur place, dans l'entrée suivante et dans le commentaire du
+  test.
+- **La carte du code traduit** (`code_pages`, `code_log_base`,
+  `code_map_base` côté Rust ; `codePages`, `codeLogSlots` côté hôte).
+  Au-dessus du tampon de traduction : une page de **journal** (un compte,
+  puis jusqu'à 16 383 numéros de ligne), puis la **carte**, un bit par
+  ligne de soixante-quatre octets de RAM — huit octets par trame, deux
+  mébioctets pour un gibioctet. `host_pages` l'ajoute ; `WebKitBench`
+  passe de 16 401 à 16 434 pages.
+- **La ligne et pas la page**, et c'est mesuré avant d'être choisi : une
+  première forme par trame faisait tomber neuf tests de `host_loop`, des
+  programmes qui posent données et pile dans la page de leur code — chaque
+  écriture de données rendait la main, et la suite se retraduisait comme
+  une région à part. Et un `text_poke` d'un octet n'oublie que les régions
+  qui lisent cette ligne, pas les dizaines que porte une page du noyau.
+- **Le chemin rapide ne paie qu'un test.** Une case du tampon ne se dit
+  inscriptible que si aucune ligne de sa trame n'est marquée : la marche
+  efface `TLB_WRITABLE` de l'étiquette (sans toucher au jugement des
+  droits), et l'hôte l'efface des cases déjà remplies quand il marque une
+  trame neuve. Une écriture dans une page de code part donc par l'accès
+  lent, qui écrit, baisse le bit de chaque ligne marquée touchée, l'inscrit
+  au journal et pose `STOP_WRITTEN` (`note_body`, une fonction de plus par
+  module paginé, et `extent`, l'étendue traduite). **Après chaque
+  instruction qui écrit, un seul test : le témoin d'arrêt** — l'instruction
+  finie, la région rend la main, RIP sur la suivante ou sur la cible d'un
+  `call`. Sans pagination, l'écriture appelle `note_body` elle-même (un
+  noyau x86-64 n'y passe que ses premières instructions).
+- **L'hôte oublie avant la prochaine entrée** (`voirEcritures`, au retour
+  de chaque région) les régions qui lisent les lignes inscrites — la région
+  qui s'est écrite elle-même comprise. Un journal débordé se relit dans la
+  carte : une région dont une ligne n'est plus marquée a été écrite. Les
+  écritures de l'hôte passent par `ecrit` (le cadre d'une délivrance), qui
+  est exporté pour ce qui écrit la RAM du dehors — le disque demain. Les
+  invalidées sont comptées à part des évincées (`invalidees`), sans clé
+  dans `oubliees`.
+- **La racine des tables d'un programme est une trame de toutes ses
+  régions**, marquée en entier : une racine neuve s'écrit avant de servir,
+  et cette écriture oublie toutes les régions de l'ancien contexte. C'est
+  le CR3 recyclé.
+- Les régions marquent `[adresse, adresse + extent)`, pas la fenêtre : la
+  découverte suit spéculativement ce qui suit un `jmp *` ou un `call`, et
+  une région peut lire au-delà de ce qu'elle exécute — écrire là l'oublie
+  aussi, à tort mais sans dommage (deux tests le disent).
+- **Le vidage au premier passage en anneau trois reste, par défaut**, pour
+  ce qui s'écrit du dehors sans passer par `ecrit` ; `vider: false`
+  (`WISQ_VIDAGE=0`) l'éteint. `kernel-entry` imprime une ligne `carte`.
+- Le pont Swift : `wisq_desktop_code_pages(pages)` dans l'en-tête et
+  `DesktopTranslator.codePages(_:)`, appelée par `disk.c` et par le test du
+  minimum déclaré. L'ABI C passe à trente-huit fonctions, et la page
+  d'architecture du site le dit (le test du site les recompte).
+
+**Mesures.**
+
+- **Le chemin rapide**, une boucle d'un bloc sous pagination, le tampon qui
+  répond, 134 217 728 tours (`banc/ecritures.mjs` du bloc-notes, l'arbre de
+  base ff4ab65c contre celui-ci, sept fois chacun en alternance, médianes) :
+  avec une écriture par tour, 1 751,6 → 1 818,9 ms, **+0,5 ns par
+  écriture (+3,8 %)** ; le témoin sans écriture, 1 377,1 → 1 357,8 ms (le
+  bruit : les étendues se recouvrent, 1 615–2 126 contre 1 705–2 475).
+- **La taille des modules**, 600 fenêtres de fonctions de 6.18.60 :
+  18 604 → 19 749 octets en moyenne, **+6,2 %** — 388 octets par module
+  (l'inscription, l'étendue), 22 par instruction qui écrit (15 pour le
+  test, 7 pour l'appel sans pagination). Le test lisait d'abord le compte
+  du journal en mémoire : 8,2 % ; le témoin d'arrêt et le repli fait par
+  `note_body` ont rendu deux points.
+- **La sonde**, bornes par défaut, `WISQ_FIN=WISQ-USERSPACE-OK`, base puis
+  carte (les comptes sont déterministes ; mur et pic de deux ou trois
+  courses) :
+
+  | noyau | traduites | évincées | retraduites | invalidées | tours | wasm | mur | pic résident |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 6.6.142 base | 10 230 | 5 882 | 1 346 | — | 17 438 | 158,5 Mo | 16–17 s | 775–821 Mio |
+  | 6.6.142 carte | 9 904 | 3 732 | 1 046 | 2 161 | 17 601 | 164,2 Mo | 17 s | 679–691 Mio |
+  | 6.12.115 base | 10 762 | 6 270 | 1 448 | — | 15 299 | 163,4 Mo | 16–17 s | 745–783 Mio |
+  | 6.12.115 carte | 10 639 | 3 873 | 1 107 | 2 575 | 18 492 | 176,8 Mo | 17 s | 700–731 Mio |
+  | 6.18.60 base | 11 492 | 7 176 | 1 683 | — | 17 002 | 173,8 Mo | 17 s | 743–837 Mio |
+  | 6.18.60 carte | 11 223 | 4 537 | 1 228 | 2 714 | 17 588 | 183,1 Mo | 18 s | 749–750 Mio |
+
+  Le mur est celui des courses deux et trois : la première de chaque arbre
+  construit l'émetteur de la page (26 et 28 s). Le coût du chemin rapide
+  ne se lit pas à cette échelle ; les tours montent (jusqu'à +21 % sur
+  6.12) parce que chaque écriture sur du code traduit rend la main.
+
+  Sans vidage (`WISQ_VIDAGE=0`), les trois vont au bout : 9 791, 10 538 et
+  11 140 traductions, 16 à 17 s. Le pic : un peu plus d'un millier de
+  trames portent du code à la fois.
+- **Alpine 6.18.60**, son initramfs, `WISQ_RAM=256`, bornes par défaut,
+  `ramasser`, jusqu'au shell de secours puis les dix commandes :
+
+  | | mur | pic résident | traduites | évincées | retraduites | invalidées | invite au tour |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | base (ff4ab65c) | 162 s | 847 Mio | 139 946 | 132 330 | 66 046 (47 %) | — | 239 877 |
+  | carte | **117 s** | 851 Mio | 86 041 | 24 141 | 14 835 (17 %) | 54 994 | 180 372 |
+  | carte, sans vidage | 123 s | 845 Mio | 84 562 | 26 425 | 15 866 (19 %) | 54 895 | 183 434 |
+
+  **Plus d'avertissement** : l'« Unpatched return thunk in use » de la base
+  a disparu des deux courses, avec ou sans vidage, et la seule ligne qui
+  ressemble à une alerte est `printk: debug: skip boot console
+  de-registration`. Les dix commandes répondent pareil (220 dans `/bin`,
+  42). « Mounting boot media: failed » reste : le disque n'est pas
+  raccordé. **Les traductions tombent d'un tiers** et le taux de
+  retraduction de 47 à 17 % : 2 275 lignes écrites oublient 54 994
+  régions, presque toutes celles de processus morts — leur racine
+  réécrite, ou leurs trames remises à zéro avant de resservir —, qui
+  n'encombrent plus le cache jusqu'à leur éviction par l'âge.
+
+**Comment c'est vérifié.**
+
+- **Vingt-quatre tests neufs dans `host_loop`** (191 → 215). Pour le
+  contrôle : `a_place_given_back_at_the_top_leaves_the_places` (le montage
+  du contrôle, `pas 10@0,1000@1,10@0,20@71,30@1,40@2,30@1,40@2`),
+  `a_region_placed_again_still_holds_under_the_byte_bound`,
+  `a_breath_resets_what_was_evicted_since`,
+  `a_flush_empties_the_block_table_too`,
+  `a_place_taken_whole_leaves_no_empty_place`,
+  `choosing_a_place_honours_both_bounds_exactly`,
+  `the_peaks_are_peaks_not_the_last_value`,
+  `the_forgotten_keys_stay_under_their_bound`. Pour la carte :
+  `a_region_rewritten_by_another_is_translated_again`,
+  `a_region_that_rewrites_itself_runs_its_new_code` (`movb` sur l'immédiat
+  de l'`add` qui le suit, dans le même bloc : RDI vaut cinq),
+  `text_poke_after_the_first_entry_into_ring_three_is_seen_through_an_alias`
+  (après le vidage, par un alias de la trame, avec une case du tampon
+  remplie avant le marquage),
+  `two_programs_one_after_the_other_at_the_same_address_each_run_their_own_code`
+  (un `rep movsb` de chargeur),
+  `a_root_rewritten_for_another_program_forgets_the_regions_of_the_first`
+  (la racine recyclée, deux trames),
+  `a_write_beside_the_code_on_another_line_hands_nothing_back`,
+  `a_write_forgets_only_the_regions_that_read_its_line`,
+  `a_write_across_two_pages_sees_the_code_of_the_second` (avec et sans
+  pagination), `a_write_from_outside_said_through_ecrit_forgets_the_region`,
+  `a_frame_the_host_lays_over_translated_code_forgets_that_code`,
+  `a_call_whose_return_address_lands_on_code_hands_back_at_its_target`,
+  `an_indirect_call_that_pushes_over_its_target_does_not_enter_it_stale`,
+  `an_overflowed_log_is_read_back_from_the_map`,
+  `an_evicted_region_gives_its_lines_back`, `a_flush_forgets_the_map_too`,
+  `a_machine_that_does_not_flush_keeps_its_regions_in_ring_three`.
+- **Des tests existants changent, et aucun ne s'affaiblit.**
+  `a_region_that_runs_after_its_first_byte_changed_is_counted` : c'était B
+  qui réécrivait A ; l'écriture de l'invité est maintenant vue, et la sonde
+  de `surveiller` reste l'instrument de ce que rien ne voit — le pilote
+  réécrit A **du dehors**, mêmes assertions. `under_page_table_isolation_…`
+  admet une troisième issue juste : la région du noyau lit la ligne de
+  l'octet réécrit (sa découverte suit le `jmp *%rax`), est oubliée, et la
+  région neuve d'après le `movb` est illisible sous les tables du
+  programme ; ce qui est refusé — une relecture par l'identité — l'est
+  toujours. `a_breath_resets_…` prend un Big de deux cents blocs : les
+  modules ont grandi. Le test du minimum déclaré (`x86_wasm`) dérive le
+  sommet de la carte et sa couverture de la RAM, à sept tailles ; les deux
+  pilotes qui faisaient `pages + host_pages(0)` prennent `host_pages` à
+  leur taille. `DesktopTranslatorTests` ajoute `codePages(pages)`.
+- **Sabotages**, chacun d'une ligne, vu tomber, puis restauré (`cmp` avec la
+  copie) — `host_loop` en entier à chaque fois :
+  - le contrôle : `libres.pop()` retiré ; la place refaite après
+    replacement ; `evincesDepuis = 0` ; l'effacement des blocs au vidage ;
+    le filtre des places vides ; `<=` en `<` et `>=` en `>` dans `choisir` ;
+    les deux `Math.max` des pics ; la borne de `oubliees` — dix, chacun fait
+    tomber son test ;
+  - l'émetteur : pas de test après l'instruction (trois tests) ; la marche
+    qui dit inscriptible (`text_poke_…`) ; l'accès lent qui n'inscrit pas
+    (deux) ; l'accès à cheval sans sa seconde trame (`a_write_across_…`) ;
+    l'écriture sans pagination qui n'inscrit pas (six) ; le `call` direct
+    qui rend la main après lui au lieu de sur sa cible ; le `call *` sans
+    test (`an_indirect_call_…`) ; l'inscription sans son dernier octet ;
+    l'inscription sans `STOP_WRITTEN` (quatre) ; l'adresse sans pagination
+    non repliée ;
+  - l'hôte : le journal pas lu (dix) ; le tampon pas retouché au marquage ;
+    la racine pas marquée ; la page entière au lieu des lignes (huit) ; le
+    cadre sans `ecrit` ; le débordement ignoré ; les lignes pas recalculées
+    à l'éviction ; `vider` ignoré ; le vidage qui garde la carte ; toutes
+    les régions d'une trame au lieu de celles de la ligne ; l'invalidée
+    comptée comme évincée (neuf) ; `ecrit` qui ne baisse rien (deux) ;
+    `STOP_WRITTEN` pas effacé (six) ;
+  - le pont : `codePages` décalé d'un fait tomber le test Swift du minimum.
+- `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`
+  propres ; `cargo test --release` sur tout l'espace de travail : 690
+  passés, 0 échec. `WebKitBench.swift` régénéré par `--example
+  bench-module` (3 769 et 3 699 octets pour les deux modules confinés).
+  `swift build --build-tests`, les tests touchés (`DesktopTranslatorTests`,
+  `WebKitBench`, 31 passés), puis la suite entière : 2 906 exécutés (67
+  sautés), 0 échec ; SwiftLint `--strict` : rien ; `check-whitespace` et
+  `check-project-sources` propres.
+  Compte publié : 3 652 → 3 676 (Swift 2 986 + Rust 690), par
+  `recompte.sh` ; le site se construit et passe ses tests.
+
+**Ce qui reste.**
+
+- **Ce qui s'écrit du dehors sans `ecrit` n'est vu par rien** : le pilote
+  qui pose l'image, un test, et le disque quand `carte.js` sera raccordé —
+  son DMA devra appeler `ecrit` pour chaque tampon rendu. C'est pourquoi le
+  vidage reste allumé par défaut.
+- **Un changement de correspondance sans écriture** : un programme qui
+  défait une page de code et en pose une autre à la même adresse, dans le
+  même espace, sans que rien n'écrive ni l'ancien code ni la racine — les
+  tables en dessous de la racine ne sont pas surveillées. Les surveiller
+  toutes ferait oublier les régions d'un programme à chaque faute de page
+  dans son tas.
+- L'étendue est spéculative : une région oubliée pour une écriture dans des
+  octets qu'elle a lus sans les exécuter, ce que deux tests montrent.
+- Le coût du chemin rapide est celui du JavaScriptCore de Bun, sur une
+  boucle d'un bloc ; celui d'un iPhone n'est pas mesuré, ni la taille des
+  modules sur la vraie page (+6 %). Seule la CI juge le pont Swift sous un
+  vrai WebKit.
+- **Un défaut vu en mesurant, pas corrigé** : une boucle d'un seul bloc
+  dont le budget s'épuise sur sa propre tête est déclarée « sur place » —
+  le bloc de plus qui devait trancher revient au même RIP. Le banc
+  l'a montré à 2²⁷ tours ; un noyau qui tourne plus de 2²⁴ blocs dans une
+  telle boucle s'arrêterait là.
+- Le disque (« Mounting boot media: failed »), la collecte du code évincé
+  dans une page.
+
 ## 2026-11-16 — Émetteur : six gardes du cache de code de plus ont leur test, et le titre d'avant était faux
 
 **Ce qui n'allait pas.** L'entrée suivante et son commit (942a52fd) se
@@ -54,11 +310,13 @@ change ; `WebKitBench.swift` reste tel quel) :
 
 - `a_region_never_lands_over_a_live_region_above_its_hole` (l'essai du
   contrôle, documenté). Trois régions au plus, `emplacements: 1` : R1
-  (71 blocs), S, R3 (58 blocs), puis U, S, U, V, S, U. Les trous sont
-  `[0, 71)` et `[72, 130)`, S vivante en 71. R2, de 111 blocs, essaie zéro,
-  n'y tient pas, et est replacée en 131. Attendu `pas
-  1,10,3,20,10,20,30,10,20,1000,10 replacees 1 r2 131 s 71` ; sans la
-  garde, `…,1000,1000 replacees 0` : R2 est posée en 1, sur S ;
+  (71 blocs), S, R3 (58 blocs), puis U, S, U, V, S, U. Quand R2 (111
+  blocs) arrive, V est vivante en 0 : R2 est traduite pour le plus grand
+  trou, `[1, 71)`, et c'est sa propre place qui évince V *(corrigé
+  depuis, voir l'entrée de la carte du code traduit : ce paragraphe disait
+  « R2 essaie zéro »)*. Elle n'y tient pas, et est replacée en 131.
+  Attendu `pas 1,10,3,20,10,20,30,10,20,1000,10 replacees 1 r2 131 s 71` ;
+  sans la garde, `…,1000,1000 replacees 0` : R2 est posée en 1, sur S ;
 - `an_address_space_without_regions_leaves_the_cache` : une région au plus,
   en anneau trois, sous cinq CR3 à la suite. `vm.cache.pic.espaces` vaut 1 ;
   sans la garde, 5 ;
@@ -72,8 +330,10 @@ change ; `WebKitBench.swift` reste tel quel) :
   dans le grand, en 41 ; la première venue, trop petite, l'enverrait au
   haut, en 124 ;
 - `a_cache_bound_must_be_a_positive_integer` : zéro, moins un, 1,5 et la
-  chaîne « 8 » sont refusés pour chacune des trois bornes, nommée ; un est
-  accepté ;
+  chaîne « 8 » sont refusés, chacun sur une borne *(corrigé depuis, voir
+  l'entrée de la carte du code traduit : ce paragraphe disait « pour
+  chacune des trois bornes », et le test n'en faisait que six essais sur
+  douze)* ; un est accepté ;
 - `a_retranslation_counts_once_per_eviction` : une région au plus. A, B,
   puis A qui revient (une retraduction) ; le passage en anneau trois vide
   tout sans rien évincer ; A traduite de nouveau en anneau zéro n'est pas
