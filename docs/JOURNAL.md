@@ -8,7 +8,122 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-11-15 — Émetteur : les gardes du cache de code ont chacune un test, et les chiffres résidents sont en Mio
+## 2026-11-16 — Émetteur : six gardes du cache de code de plus ont leur test, et le titre d'avant était faux
+
+**Ce qui n'allait pas.** L'entrée suivante et son commit (942a52fd) se
+titraient « chaque garde du cache de code a son test ». C'était faux. Le
+contrôle adverse a retiré une ligne à la fois dans `host.js`, et chacune des
+gardes que voici laissait passer les 185 tests de `host_loop` :
+
+1. **`prendre` sans `if (etendue.debut > debut) return false;`.** C'est une
+   corruption silencieuse, reproduite : quand la place voulue commence dans
+   un trou trop court, la boucle essayait le trou suivant, plus haut, le
+   trouvait assez long pour `[debut, debut + longueur)`, et la région se
+   posait jusque par-dessus la région vivante qui sépare les deux trous.
+   Celle-ci exécutait ensuite le code de l'autre (+1000 au lieu de +10).
+2. **`evincer` sans `espaces.delete` de la carte vide.** C'est elle qui fait
+   qu'un processus mort rend sa place : sans elle, chaque CR3 mort laisse une
+   `Map` vide pour toujours, et `vm.cache.pic.espaces` (« sept espaces
+   d'adressage au plus ») compte les morts.
+3. **Les deux fusions de `rendre`**, avec la place d'après et avec celle
+   d'avant. Sans elles, `libres` n'est plus « jamais contiguë » : deux trous
+   voisins restent deux, une région qui tient dans leur union n'y tient pas,
+   et la table grandit.
+4. **`choisir` qui prend la plus grande place rendue**, et non la première
+   venue — un choix mesuré (8 906 traductions refaites sur 123 134 avec la
+   première venue).
+5. **La validation des bornes** : `valeur <= 0` devenu `valeur < 0`
+   acceptait `cache: { regions: 0 }` en silence.
+6. **Le compte des retraductions** : `oubliees.delete(clef)` devenu `has`
+   comptait encore, après un vidage, une région que rien n'avait évincée
+   depuis sa retraduction. Le taux publié (47 % / 34 %) vient de ce
+   compteur.
+7. **Le contexte de l'hôte n'était essayé qu'en anneaux zéro et trois.**
+   `if (anneau !== 3)` au lieu de `=== 0` dans `contexte()` rangeait les
+   anneaux un et deux sous le contexte du noyau, alors que `context_tag` et
+   le module y mettent CR3 et l'anneau. Linux ne s'en sert pas : un trou de
+   test, pas une panne observée.
+
+Comme dans l'entrée suivante, le code qui tourne était juste : chacune de ces
+gardes y est. Ce qui manquait, c'est le test qui tombe sans elle — et un
+titre qui le disait.
+
+**Ce qui change.** Six tests neufs dans `host_loop` et un renforcé, sans
+rien toucher au code de `host.js` ni de l'émetteur (aucun octet émis ne
+change ; `WebKitBench.swift` reste tel quel) :
+
+- `a_region_never_lands_over_a_live_region_above_its_hole` (l'essai du
+  contrôle, documenté). Trois régions au plus, `emplacements: 1` : R1
+  (71 blocs), S, R3 (58 blocs), puis U, S, U, V, S, U. Les trous sont
+  `[0, 71)` et `[72, 130)`, S vivante en 71. R2, de 111 blocs, essaie zéro,
+  n'y tient pas, et est replacée en 131. Attendu `pas
+  1,10,3,20,10,20,30,10,20,1000,10 replacees 1 r2 131 s 71` ; sans la
+  garde, `…,1000,1000 replacees 0` : R2 est posée en 1, sur S ;
+- `an_address_space_without_regions_leaves_the_cache` : une région au plus,
+  en anneau trois, sous cinq CR3 à la suite. `vm.cache.pic.espaces` vaut 1 ;
+  sans la garde, 5 ;
+- `two_places_given_back_side_by_side_merge` : A et B, quarante blocs
+  chacune, côte à côte, évincées dans un ordre puis dans l'autre. Seule
+  leur union a les `PROBABLE` blocs qu'une région neuve demande, et G doit
+  se poser à zéro. Sans la fusion d'après, ou sans celle d'avant, G va au
+  haut, en 83 ;
+- `a_new_region_tries_the_largest_place_given_back` : un trou de quarante
+  places sous un de quatre-vingts, séparés par une région vivante. G se pose
+  dans le grand, en 41 ; la première venue, trop petite, l'enverrait au
+  haut, en 124 ;
+- `a_cache_bound_must_be_a_positive_integer` : zéro, moins un, 1,5 et la
+  chaîne « 8 » sont refusés pour chacune des trois bornes, nommée ; un est
+  accepté ;
+- `a_retranslation_counts_once_per_eviction` : une région au plus. A, B,
+  puis A qui revient (une retraduction) ; le passage en anneau trois vide
+  tout sans rien évincer ; A traduite de nouveau en anneau zéro n'est pas
+  une retraduction. Attendu `retraduites 1,1` ; avec `has`, `1,2` ;
+- `the_view_computes_the_context_as_the_emitter_does` essaie aussi CS =
+  0x09 (anneau un) et CS = 0x1a (anneau deux), comparés à `context_tag`.
+
+**Le titre de l'entrée suivante est corrigé sur place** (« des gardes du
+cache de code ont leur test », plus « chacune »). Le message du commit
+942a52fd, déjà poussé, garde le sien : l'amend est exclu, c'est ici que
+c'est dit. Et ce qu'on peut dire maintenant est plus étroit qu'un
+« chaque » : **chaque garde que deux contrôles ont sabotée une ligne à la
+fois a un test qui tombe sans elle** ; ce n'est pas une preuve qu'il n'en
+reste aucune.
+
+**Sabotages**, chacun d'une ligne de `host.js`, vu tomber, puis restauré
+(`filecmp` identique à la copie) — `host_loop` lancé en entier, 190 passent
+sur 191 à chaque fois :
+
+- `prendre` sans `if (etendue.debut > debut) return false;` →
+  `a_region_never_lands_…` tombe, sur `pas …,1000,1000 replacees 0 r2 1 s
+  71` ;
+- `evincer` sans `espaces.delete` → `an_address_space_…` tombe, sur
+  `espaces 5` ;
+- `rendre` sans la fusion d'après (`if (false && …)`) →
+  `two_places_…` tombe, sur `apres g 83` ;
+- `rendre` sans la fusion d'avant → le même tombe, sur `avant g 83` ;
+- `choisir` qui garde la première place venue → `a_new_region_tries_…`
+  tombe, sur `g 124` ;
+- `valeur < 0` au lieu de `valeur <= 0` → `a_cache_bound_…` tombe : les
+  trois bornes nulles sont acceptées ;
+- `oubliees.has(clef)` au lieu de `delete` → `a_retranslation_…` tombe, sur
+  `retraduites 1,2` ;
+- `if (anneau !== 3)` dans `contexte()` → `the_view_computes_…` tombe : les
+  anneaux un et deux rendent 4, le contexte du noyau.
+
+**Vérifications.** `cargo fmt --all --check` et `cargo clippy --all-targets
+--all-features -- -D warnings` propres ; `cargo test --release` sur tout
+l'espace de travail : 666 passés, 0 échec (`host_loop` 191, `x86_wasm` 40,
+`webkit_probe` 7) ; `check-whitespace.sh` et `check-project-sources.sh`
+propres ; le compte des tests suit dans les README, `content.rs` et
+`claims.test.ts`, et le site se construit et passe ses tests.
+
+**Ce qui reste.** Ce qui restait à la tranche reste : la collecte du code
+évincé dans une vraie page (WebKit, non mesurée), le CR3 recyclé, le texte
+du noyau réécrit après le premier passage en anneau trois, et le disque
+(le raccord de `carte.js`, « Mounting boot media: failed »). Ni la sonde
+ni Alpine ne sont relancées : seuls des tests changent.
+
+## 2026-11-15 — Émetteur : des gardes du cache de code ont leur test, et les chiffres résidents sont en Mio
 
 **Ce qui n'allait pas.** Le contrôle adverse de l'entrée suivante (le cache
 borné) a trouvé des gardes que rien ne tenait. Chacune, retirée seule,
