@@ -29,6 +29,11 @@ public enum DesktopTranslator {
     /// l'ajoute lui aussi : un module confiné le déclare dans son minimum.
     public static var tlbPages: UInt32 { wisq_desktop_tlb_pages() }
 
+    /// Ce que la **carte du code traduit** et son journal occupent, encore
+    /// au-dessus, pour une RAM de `pages` pages : un bit par ligne de
+    /// soixante-quatre octets, donc une taille qui suit celle de la RAM.
+    public static func codePages(_ pages: UInt32) -> UInt32 { wisq_desktop_code_pages(pages) }
+
     /// Combien de globales `env.g0 … env.g<n-1>` le module importe.
     public static var globalCount: Int { wisq_x86_global_count() }
 
