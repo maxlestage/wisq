@@ -1274,6 +1274,128 @@ final class ReadyDesktopTests: XCTestCase {
                                             running: [Self.isoName]), "l'image manque : on la suit")
     }
 
+    /// **Seul le transfert déjà en cours échappe à la garde.** Le relevé
+    /// « l'image court » levait la garde pour tout le bureau : avec un octet
+    /// libre et rien sur le disque, `spaceShortfall` se taisait et `fetch`
+    /// demandait l'archive sans compter ; « le bureau court », l'image absente,
+    /// et toute l'ISO partait. Ce qui reste de l'autre fichier, et
+    /// l'installation, se comptent encore ; le refus dit que le transfert en
+    /// cours continue, au lieu de « Rien n'a été téléchargé ».
+    func testOnlyTheFollowedTransferEscapesTheGuard() async throws {
+        let desktop = try desktop(entry())
+        let image = Server(iso), archive = Server(archiveBytes)
+        let downloader = ImageDownloader(fetcher: router(image: image, archive: archive), partsFolder: downloads)
+        let whole = desktop.room(library: library, downloads: downloads)
+
+        // L'image court : le bureau et l'installation se comptent.
+        let besideImage = ReadyDesktop.Room(image: 0, archive: archiveBytes.count, install: whole.install)
+        XCTAssertEqual(desktop.room(library: library, downloads: downloads, running: [Self.isoName]), besideImage)
+        let imageRefusal = ReadyDesktop.Refusal.notEnoughSpace(besideImage, available: 1, following: [.image])
+        let said = try XCTUnwrap(desktop.spaceShortfall(available: 1, library: library, downloads: downloads,
+                                                        running: [Self.isoName]), "un octet libre : la feuille le dit")
+        XCTAssertEqual(said, imageRefusal.errorDescription)
+        XCTAssertTrue(said.hasPrefix("Pas assez de place sur le téléphone : outre l'image qui se télécharge en "
+                                     + "arrière-plan, ce bureau demande 256,1 Mio de libre (49 Kio à télécharger"),
+                      said)
+        XCTAssertTrue(said.hasSuffix("Rien d'autre n'a été demandé : l'image continue de se télécharger en "
+                                     + "arrière-plan."), said)
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, available: 1,
+                                        running: [Self.isoName], download: download(with: downloader))
+            XCTFail("un octet libre : l'archive ne doit pas partir")
+        } catch let refusal as ReadyDesktop.Refusal {
+            XCTAssertEqual(refusal, imageRefusal)
+        }
+        XCTAssertEqual(archive.ranges, [], "l'archive n'a pas été demandée")
+        XCTAssertEqual(image.ranges, [])
+        // Juste assez pour le reste : rien n'est dit, et l'image se suit.
+        XCTAssertNotNil(desktop.spaceShortfall(available: besideImage.total - 1, library: library,
+                                               downloads: downloads, running: [Self.isoName]))
+        XCTAssertNil(desktop.spaceShortfall(available: besideImage.total, library: library, downloads: downloads,
+                                            running: [Self.isoName]))
+
+        // Le bureau court, l'image absente : toute l'ISO se compte.
+        let besideArchive = ReadyDesktop.Room(image: iso.count, archive: 0, install: whole.install)
+        XCTAssertEqual(desktop.room(library: library, downloads: downloads, running: [Self.archiveName]),
+                       besideArchive)
+        let archiveRefusal = ReadyDesktop.Refusal.notEnoughSpace(besideArchive, available: 1, following: [.archive])
+        XCTAssertEqual(desktop.spaceShortfall(available: 1, library: library, downloads: downloads,
+                                              running: [Self.archiveName]), archiveRefusal.errorDescription)
+        XCTAssertTrue(try XCTUnwrap(archiveRefusal.errorDescription).contains("outre le bureau qui se télécharge"))
+        do {
+            _ = try await desktop.fetch(library: library, downloads: downloads, available: 1,
+                                        running: [Self.archiveName], download: download(with: downloader))
+            XCTFail("un octet libre : l'image ne doit pas partir")
+        } catch let refusal as ReadyDesktop.Refusal {
+            XCTAssertEqual(refusal, archiveRefusal)
+        }
+        XCTAssertEqual(image.ranges, [], "l'image n'a pas été demandée")
+        XCTAssertEqual(archive.ranges, [])
+
+        // Les deux courent : l'installation se compte encore.
+        let both: Set<String> = [Self.isoName, Self.archiveName]
+        let installOnly = ReadyDesktop.Room(image: 0, archive: 0, install: whole.install)
+        XCTAssertEqual(desktop.room(library: library, downloads: downloads, running: both), installOnly)
+        let bothRefusal = ReadyDesktop.Refusal.notEnoughSpace(installOnly, available: 1, following: [.image, .archive])
+        XCTAssertEqual(desktop.spaceShortfall(available: 1, library: library, downloads: downloads, running: both),
+                       bothRefusal.errorDescription)
+        XCTAssertTrue(try XCTUnwrap(bothRefusal.errorDescription).hasSuffix(
+            "Rien d'autre n'a été demandé : l'image et le bureau continuent de se télécharger en arrière-plan."))
+        XCTAssertTrue(try XCTUnwrap(bothRefusal.errorDescription).contains(
+            "outre l'image et le bureau qui se téléchargent en arrière-plan, ce bureau demande"))
+    }
+
+    /// **La ligne « continue en arrière-plan » se décide sur ce qui manque**,
+    /// dans `WisqVM`, où elle se teste : l'image rangée depuis le relevé ne
+    /// « continue » plus, celle qui manque, si. La place qui manque au reste
+    /// la tait : sa phrase dit déjà que le transfert continue, et « Installer »,
+    /// qu'elle aurait dit de toucher, est éteint.
+    func testTheBackgroundLineIsDecidedOnWhatIsMissing() throws {
+        let desktop = try desktop(entry())
+        let following = "Le téléchargement de l'image continue en arrière-plan. Touchez « Installer » pour le "
+            + "suivre : il reprend là où il en est, rien n'est redemandé."
+        XCTAssertEqual(desktop.backgroundPhrase(running: [Self.isoName], library: library, downloads: downloads,
+                                                available: nil), following, "l'image manque : elle continue")
+        XCTAssertNil(desktop.backgroundPhrase(running: ["alpine-virt.iso"], library: library, downloads: downloads,
+                                              available: nil))
+        XCTAssertNil(desktop.backgroundPhrase(running: [Self.isoName], library: library, downloads: downloads,
+                                              available: 1), "la place manque : sa phrase le dit")
+        XCTAssertEqual(desktop.backgroundPhrase(running: [Self.isoName], library: nil, downloads: nil,
+                                                available: 1), following, "dossiers illisibles : le relevé")
+        try Data(iso).write(to: library.appendingPathComponent(Self.isoName))
+        XCTAssertNil(desktop.backgroundPhrase(running: [Self.isoName], library: library, downloads: downloads,
+                                              available: nil), "l'image rangée ne continue plus")
+    }
+
+    /// **Un fichier de la mauvaise taille sous le nom final reste suivi** :
+    /// c'est la taille qui dit qu'il est rangé, pas le nom. Une image d'un
+    /// autre jour sous le même nom, une archive tronquée : la session les
+    /// remplacera, et leur transfert court encore.
+    func testAFileOfTheWrongSizeUnderItsNameIsStillFollowed() throws {
+        let desktop = try desktop(entry())
+        try Data(iso.prefix(1_000)).write(to: library.appendingPathComponent(Self.isoName))
+        try Data(archiveBytes.prefix(1_000)).write(to: downloads.appendingPathComponent(Self.archiveName))
+        XCTAssertEqual(desktop.followable(running: [Self.isoName], library: library, downloads: downloads),
+                       [Self.isoName], "l'image de la mauvaise taille court encore")
+        XCTAssertEqual(desktop.followable(running: [Self.archiveName], library: library, downloads: downloads),
+                       [Self.archiveName], "l'archive de la mauvaise taille aussi")
+    }
+
+    /// **Le refus de la place ne suit rien** : le transfert de fond qui
+    /// courait continue, et la ligne doit encore le dire. Fini, en panne ou
+    /// annulé, ce bureau sort des fichiers en cours ; les autres restent.
+    func testARefusalOfSpaceKeepsTheRunningFiles() throws {
+        let desktop = try desktop(entry())
+        let running: Set<String> = [Self.isoName, "alpine-virt.iso"]
+        let room = ReadyDesktop.Room(image: 0, archive: 1, install: 1)
+        let refused = ReadyDesktop.Refusal.notEnoughSpace(room, available: 1, following: [.image])
+        XCTAssertEqual(desktop.followed(running: running, after: refused), running, "refusé : il court encore")
+        XCTAssertEqual(desktop.followed(running: running, after: nil), ["alpine-virt.iso"])
+        XCTAssertEqual(desktop.followed(running: running, after: CancellationError()), ["alpine-virt.iso"])
+        XCTAssertEqual(desktop.followed(running: running, after: ReadyDesktop.Refusal.missingImage(Self.isoName)),
+                       ["alpine-virt.iso"])
+    }
+
     /// **« Installer » relit les fichiers en cours avant de suivre** : le
     /// relevé de l'ouverture a pu vieillir, la feuille ouverte. Une tâche de
     /// fond tombée depuis y figurait encore, et toute l'image repartait sans

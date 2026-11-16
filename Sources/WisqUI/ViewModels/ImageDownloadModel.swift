@@ -93,7 +93,8 @@ final class ImageDownloadModel {
     /// Les fichiers que la session d'arrière-plan a encore en cours, lus à
     /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé.
     /// Relus quand « Installer » est touché, avant `fetch` ; ceux du bureau
-    /// suivi en sortent quand son `fetch` rend la main (`ReadyDesktop.followed`).
+    /// suivi en sortent quand son `fetch` rend la main, sauf sur le refus de
+    /// la place, qui ne suit rien (`ReadyDesktop.followed(running:after:)`).
     private(set) var runningFiles: Set<String> = []
     /// Le téléchargement du bureau prêt en cours, pour « Annuler ».
     private var desktopTask: Task<InstalledMachine?, Never>?
@@ -134,8 +135,8 @@ final class ImageDownloadModel {
     func spaceShortfall(_ desktop: ReadyDesktop) -> String? {
         guard let library = try? KernelLibrary.directory(),
               let downloads = try? KernelLibrary.downloadsDirectory() else { return nil }
-        // Un fichier de ce bureau en cours en arrière-plan : la ligne dit
-        // qu'il continue, et le bouton reste là pour le suivre.
+        // Un fichier de ce bureau en cours en arrière-plan est mis à part du
+        // compte, et lui seul : le reste et l'installation se comptent.
         return desktop.spaceShortfall(available: available, library: library, downloads: downloads,
                                       running: runningFiles)
     }
@@ -148,14 +149,12 @@ final class ImageDownloadModel {
     /// Un téléchargement de ce bureau qui continue en arrière-plan, dit.
     func inBackground(_ desktop: ReadyDesktop) -> String? {
         guard phase != .fetchingDesktop(title: desktop.title) else { return nil }
-        // Un fichier rangé depuis l'ouverture ne « continue » plus : la
-        // ligne dirait le contraire de la phrase de la place.
-        guard let library = try? KernelLibrary.directory(),
-              let downloads = try? KernelLibrary.downloadsDirectory() else {
-            return desktop.backgroundPhrase(running: runningFiles)
-        }
-        return desktop.backgroundPhrase(
-            running: desktop.followable(running: runningFiles, library: library, downloads: downloads))
+        // Ce qui se dit est décidé dans `WisqVM`, où il se teste : un fichier
+        // rangé depuis l'ouverture ne « continue » plus, et la place qui
+        // manque au reste le dit à sa place.
+        return desktop.backgroundPhrase(running: runningFiles, library: try? KernelLibrary.directory(),
+                                        downloads: try? KernelLibrary.downloadsDirectory(),
+                                        available: available)
     }
 
     /// **« Annuler »** : la tâche du bureau prêt est annulée, ce qui arrête
@@ -247,11 +246,13 @@ final class ImageDownloadModel {
         // par `ReadyDesktop.followable`.
         let running = await BackgroundImageDownloads.shared.runningFiles()
         runningFiles = running
+        var failure: Error?
         defer {
-            // Suivi jusqu'au bout — fini, refusé, en panne ou annulé : plus
-            // rien de ce bureau ne court en arrière-plan, et la ligne ne le
-            // dit plus.
-            runningFiles = desktop.followed(running: runningFiles)
+            // Suivi jusqu'au bout — fini, en panne ou annulé : plus rien de
+            // ce bureau ne court en arrière-plan, et la ligne ne le dit plus.
+            // Sauf après le refus de la place : rien n'a été suivi, et le
+            // transfert de fond qui courait continue (`ReadyDesktop.followed`).
+            runningFiles = desktop.followed(running: runningFiles, after: failure)
             desktopProgress = nil
             phase = .ready
         }
@@ -288,10 +289,12 @@ final class ImageDownloadModel {
                 return try KernelLibrary.installReadyDesktop(desktop, archive: files.archive, kernelDigest: digest)
             }.value
         } catch is CancellationError {
+            failure = CancellationError()
             // Ce qui reste, dit tel qu'il est sur le disque.
             desktopFailure = (desktop.title, desktop.keptPhrase(library: library, downloads: downloads))
             return nil
         } catch {
+            failure = error
             desktopFailure = (desktop.title, error.localizedDescription)
             return nil
         }
