@@ -1757,7 +1757,10 @@ impl Body {
     /// L'hôte oublie les régions de ces lignes **avant** la prochaine entrée,
     /// celle-ci comprise si elle s'est écrite elle-même.
     ///
-    /// Rien n'est émis hors pagination : la forme libre n'a pas de carte.
+    /// **Rien n'est émis pour la forme libre** (non confinée), qui n'a pas de
+    /// carte. Un module confiné porte ce test **pagination éteinte comprise** :
+    /// sans pagination aussi, chaque écriture passe par l'inscription
+    /// (`note_body`), et c'est ce test qui lui fait rendre la main.
     fn written(&mut self, next: impl FnOnce(&mut Body)) -> &mut Self {
         if !std::mem::take(&mut self.wrote) {
             return self;
