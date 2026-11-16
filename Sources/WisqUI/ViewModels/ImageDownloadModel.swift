@@ -86,6 +86,18 @@ final class ImageDownloadModel {
     /// Pourquoi le dernier bureau prêt n'a pas été installé. À part de
     /// `phase` : la liste reste à l'écran, et la raison sous sa ligne.
     private(set) var desktopFailure: (title: String, why: String)?
+    /// Pourquoi l'index des bureaux prêts n'a pas été lu, sauf un 404
+    /// (`ImageDownloader.readyCatalog`) : dit dans la feuille, avec
+    /// « Réessayer », au lieu d'une section qui disparaît sans un mot.
+    private(set) var desktopsFailure: String?
+    /// Les fichiers que la session d'arrière-plan a encore en cours, lus à
+    /// l'ouverture : un bureau prêt lancé avant que wisq ne soit fermé.
+    /// Relus quand « Installer » est touché, avant `fetch` ; ceux du bureau
+    /// suivi en sortent quand son `fetch` rend la main, sauf sur le refus de
+    /// la place, qui ne suit rien (`ReadyDesktop.followed(running:after:)`).
+    private(set) var runningFiles: Set<String> = []
+    /// Le téléchargement du bureau prêt en cours, pour « Annuler ».
+    private var desktopTask: Task<InstalledMachine?, Never>?
 
     private let downloader: ImageDownloader?
 
@@ -108,7 +120,56 @@ final class ImageDownloadModel {
         let catalog = await downloader.catalog()
         desktops = catalog.desktops
         releases = catalog.releases
+        desktopsFailure = catalog.desktopsFailure
+        runningFiles = await BackgroundImageDownloads.shared.runningFiles()
         phase = catalog.failure.map(Phase.failed) ?? .ready
+    }
+
+    /// La place libre du téléphone, lue à chaque affichage : elle change
+    /// quand la personne en libère, la feuille ouverte.
+    var available: Int? {
+        (try? KernelLibrary.directory()).flatMap(LocalStorage.availableBytes(at:))
+    }
+
+    /// La phrase de la place qui manque pour `desktop`, ou `nil`.
+    func spaceShortfall(_ desktop: ReadyDesktop) -> String? {
+        guard let library = try? KernelLibrary.directory(),
+              let downloads = try? KernelLibrary.downloadsDirectory() else { return nil }
+        // Un fichier de ce bureau en cours en arrière-plan est mis à part du
+        // compte, et lui seul : le reste et l'installation se comptent.
+        return desktop.spaceShortfall(available: available, library: library, downloads: downloads,
+                                      running: runningFiles)
+    }
+
+    /// Ce qu'installer de nouveau laisserait tel quel, dit avant (`ReadyDesktop.alreadyInstalledPhrase`).
+    func alreadyInstalled(_ desktop: ReadyDesktop) -> String? {
+        desktop.alreadyInstalledPhrase(desktop.installedCopies(among: InstalledMachines.list()))
+    }
+
+    /// Un téléchargement de ce bureau qui continue en arrière-plan, dit.
+    func inBackground(_ desktop: ReadyDesktop) -> String? {
+        guard phase != .fetchingDesktop(title: desktop.title) else { return nil }
+        // Ce qui se dit est décidé dans `WisqVM`, où il se teste : un fichier
+        // rangé depuis l'ouverture ne « continue » plus, et la place qui
+        // manque au reste le dit à sa place.
+        return desktop.backgroundPhrase(running: runningFiles, library: try? KernelLibrary.directory(),
+                                        downloads: try? KernelLibrary.downloadsDirectory(),
+                                        available: available)
+    }
+
+    /// **« Annuler »** : la tâche du bureau prêt est annulée, ce qui arrête
+    /// le transfert de la session d'arrière-plan (`BackgroundImageDownloads.download`)
+    /// et empêche l'archive de partir après l'image (`ReadyDesktop.fetch`).
+    /// Les fichiers de ce bureau qui couraient déjà en arrière-plan à
+    /// l'ouverture sont arrêtés aussi : `fetch` ne les a peut-être pas encore
+    /// rejoints (annulé avant, ou encore à l'image quand c'est le bureau qui
+    /// court), et la ligne, qui les retire des fichiers en cours, ne doit
+    /// pas laisser un transfert courir sans le dire.
+    func cancelDesktop(_ desktop: ReadyDesktop) {
+        desktopTask?.cancel()
+        for file in desktop.backgroundFiles(running: runningFiles) {
+            BackgroundImageDownloads.shared.cancel(file)
+        }
     }
 
     /// La mémoire que ce téléphone peut donner à une machine PC, maintenant.
@@ -156,6 +217,13 @@ final class ImageDownloadModel {
     /// avant d'importer (`ReadyDesktop.install`). Rend la machine installée,
     /// ou `nil` ; la raison est alors dans `desktopFailure`.
     func install(_ desktop: ReadyDesktop) async -> InstalledMachine? {
+        let task = Task { await fetchAndInstall(desktop) }
+        desktopTask = task
+        defer { desktopTask = nil }
+        return await task.value
+    }
+
+    private func fetchAndInstall(_ desktop: ReadyDesktop) async -> InstalledMachine? {
         desktopFailure = nil
         guard desktop.fits(ceiling: ceiling) else {
             desktopFailure = (desktop.title, desktop.memoryPhrase(ceiling: ceiling))
@@ -169,13 +237,30 @@ final class ImageDownloadModel {
         }
         phase = .fetchingDesktop(title: desktop.title)
         desktopProgress = nil
+        // **Relus au toucher, pas repris de l'ouverture** : `fetch` ne
+        // refuse pas un téléchargement de ce bureau qui court déjà en
+        // arrière-plan, il le suit sans garde de place. Le relevé de
+        // l'ouverture a pu vieillir, la feuille ouverte : une tâche de fond
+        // tombée depuis y figurait encore, et toute l'image repartait sans
+        // que la place soit comptée. Un fichier fini depuis, lui, est écarté
+        // par `ReadyDesktop.followable`.
+        let running = await BackgroundImageDownloads.shared.runningFiles()
+        runningFiles = running
+        var failure: Error?
         defer {
+            // Suivi jusqu'au bout — fini, en panne ou annulé : plus rien de
+            // ce bureau ne court en arrière-plan, et la ligne ne le dit plus.
+            // Sauf après le refus de la place : rien n'a été suivi, et le
+            // transfert de fond qui courait continue (`ReadyDesktop.followed`).
+            runningFiles = desktop.followed(running: runningFiles, after: failure)
             desktopProgress = nil
             phase = .ready
         }
         do {
+            // **La place, avant le premier octet** : sans elle, le téléphone
+            // plein faisait tomber l'écriture au milieu de 1,4 Gio.
             let files = try await desktop.fetch(
-                library: library, downloads: downloads,
+                library: library, downloads: downloads, available: available, running: running,
                 download: { release, destination, progress in
                     try await BackgroundImageDownloads.shared.download(
                         release, into: destination, progress: progress)
@@ -203,7 +288,13 @@ final class ImageDownloadModel {
                 #endif
                 return try KernelLibrary.installReadyDesktop(desktop, archive: files.archive, kernelDigest: digest)
             }.value
+        } catch is CancellationError {
+            failure = CancellationError()
+            // Ce qui reste, dit tel qu'il est sur le disque.
+            desktopFailure = (desktop.title, desktop.keptPhrase(library: library, downloads: downloads))
+            return nil
         } catch {
+            failure = error
             desktopFailure = (desktop.title, error.localizedDescription)
             return nil
         }

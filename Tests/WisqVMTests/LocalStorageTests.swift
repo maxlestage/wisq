@@ -301,6 +301,33 @@ final class LocalStorageTests: XCTestCase {
         XCTAssertNotNil(LocalStorage.unpackedIsoFolder(in: nil),
                         "sans dossier donné, il en trouve un quand même")
     }
+
+    /// **La place libre se lit**, celle du volume qui porte le dossier, et
+    /// une adresse qui n'existe pas n'en invente pas : la garde des bureaux
+    /// prêts ne refuse rien sur une supposition (`ReadyDesktop.fetch`).
+    func testTheFreeSpaceOfAVolumeIsRead() throws {
+        let here = FileManager.default.temporaryDirectory
+        let free = try XCTUnwrap(LocalStorage.availableBytes(at: here))
+        let system = try XCTUnwrap(
+            (try FileManager.default.attributesOfFileSystem(forPath: here.path))[.systemFreeSize] as? NSNumber)
+        XCTAssertGreaterThan(free, 0)
+        // La place lue est celle que la fonction annonce : sur Apple, celle
+        // « pour un usage important », qui compte en plus ce que le système
+        // purgera de ses caches (mesuré sur le coureur macOS de la CI : 937 Mio
+        // de plus que la place brute). Ailleurs, la place brute.
+        var expected = system.intValue
+        #if canImport(Darwin)
+        if let important = try? here.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage, important > 0 {
+            expected = Int(clamping: important)
+            // Le purgeable s'ajoute à la place brute, il ne s'en retranche pas.
+            XCTAssertGreaterThan(free, system.intValue - (64 << 20))
+        }
+        #endif
+        // Le même volume, lu deux fois à un instant d'écart : à 64 Mio près.
+        XCTAssertLessThan(abs(free - expected), 64 << 20)
+        XCTAssertNil(LocalStorage.availableBytes(at: here.appendingPathComponent("absent-\(UUID().uuidString)")))
+    }
 }
 
 /// Ce qu'une machine sauvegardée coûte vraiment, mesuré sur un vrai noyau.
