@@ -274,8 +274,10 @@ export function hostPages(pages) {
 /// **Ce que la carte du code traduit et son journal occupent**, au-dessus du
 /// tampon : une page de journal — un compte, puis des numéros de ligne —, et
 /// la carte, un bit par ligne de soixante-quatre octets de RAM, huit octets
-/// par trame. Le pendant exact de `code_pages` côté Rust, et un test les
-/// compare.
+/// par trame. Le pendant exact de `code_pages` côté Rust :
+/// `the_view_and_the_emitter_count_the_same_code_pages` (tests/host_loop.rs)
+/// les compare, et `hostPages` avec `host_pages`, de part et d'autre de chaque
+/// marche de 512 pages.
 export function codePages(pages) {
   return 1 + Math.max(1, Math.ceil(pages / 512));
 }
