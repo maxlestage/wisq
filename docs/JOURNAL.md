@@ -8,6 +8,97 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-16 — Troisième contrôle des bureaux prêts : seul le transfert en cours échappe à la garde
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts.
+Les trois sont réels, et la phrase « Rien ne part plus sans garde » de
+cette entrée était fausse.
+
+**Ce qui n'allait pas.**
+
+1. **Un fichier suivi levait la garde pour tout le bureau.** Dès que
+   `followable` n'était pas vide, `fetch` et `spaceShortfall` sautaient
+   la comparaison à `available`, y compris pour le fichier qui n'avait pas
+   commencé et pour l'installation. Avec 1 octet libre, rien sur le
+   disque : relevé `[image]`, `spaceShortfall` rendait `nil` et `fetch`
+   demandait l'archive ; relevé `[bureau]`, l'image absente, toute l'ISO
+   partait. Le téléphone plein tombait ensuite sur l'erreur du système.
+2. **La garde de la ligne « continue en arrière-plan » n'avait aucun
+   test.** Elle vivait dans `ImageDownloadModel.inBackground` (SwiftUI,
+   pas construit sous Linux) : y passer `running: runningFiles` au lieu
+   de `followable` laissait tout vert.
+3. **« À sa taille » dans `followable` n'était pas testé.** `!imagePresent`
+   en `size(of:) == nil`, ou `!= archive.size` en `== nil`, laissaient
+   tout vert : aucun test ne posait un fichier de la mauvaise taille sous
+   le nom final.
+
+**Ce qui change.**
+
+- `ReadyDesktop.room(library:downloads:running:)` : la place, **le seul
+  transfert en cours mis à part** (ce qui reste à recevoir d'un fichier
+  `followable` compte 0). L'autre fichier et l'installation se comptent.
+  `fetch` et `spaceShortfall` passent tous deux par `spaceRefusal`, qui
+  compare ce compte à `available` sans exception.
+- `Refusal.notEnoughSpace` porte `following` (l'image, le bureau, ou les
+  deux, `[]` par défaut). Le refus le dit : « outre l'image qui se
+  télécharge en arrière-plan, ce bureau demande… », et finit par « Rien
+  d'autre n'a été demandé : l'image continue de se télécharger en
+  arrière-plan. » au lieu de « Rien n'a été téléchargé », faux d'un
+  transfert à moitié fait. La session le range à sa fin, sans la feuille.
+- `backgroundPhrase(running:library:downloads:available:)` : la ligne de
+  fond décidée dans `WisqVM`, sur `followable`, et tue quand la place
+  manque au reste (le refus dit déjà que le transfert continue, et
+  « Touchez « Installer » » aurait montré un bouton éteint). La version à
+  un argument devient interne : la feuille ne peut plus passer le relevé
+  brut. `ImageDownloadModel.inBackground` ne fait plus que l'appeler.
+- `followed(running:after:)` : après le refus de la place, les fichiers
+  en cours restent (rien n'a été suivi ni arrêté), et la ligne le dit
+  encore ; fini, en panne ou annulé, ce bureau en sort comme avant.
+  `fetchAndInstall` garde l'erreur pour son `defer`.
+
+**Comment c'est vérifié.** 4 tests neufs dans `ReadyDesktopTests` :
+`testOnlyTheFollowedTransferEscapesTheGuard` (les deux repros du
+contrôle avec 1 octet libre : refus exact, phrase, aucune requête ni sur
+l'image ni sur l'archive ; la borne `besideImage.total` à un octet près ;
+les deux fichiers suivis, l'installation encore comptée),
+`testTheBackgroundLineIsDecidedOnWhatIsMissing` (image rangée et relevé
+`[image]` : rien ; image absente : la ligne ; place qui manque : rien ;
+dossiers illisibles : le relevé), `testAFileOfTheWrongSizeUnderItsNameIsStillFollowed`
+(1 000 octets sous le nom de l'image, puis de l'archive : suivis) et
+`testARefusalOfSpaceKeepsTheRunningFiles`.
+
+Sabotages d'une ligne, chacun restauré (`git checkout`, `git diff` vide
+ensuite), filtre `ReadyDesktop|ImageDownloader|ResumeWait|BootRefusal`
+(108 tests) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| `fetch` reprend l'ancienne garde (`followable` vide, sinon rien) | `testOnlyTheFollowedTransferEscapesTheGuard` |
+| `spaceShortfall` muette dès qu'un fichier est suivi | le même, et `testTheBackgroundLineIsDecidedOnWhatIsMissing` |
+| la garde compte tout le bureau, transfert en cours compris | `testABackgroundDownloadIsFollowedNotRefused`, `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard`, `testOnlyTheFollowedTransferEscapesTheGuard` |
+| la ligne de fond sur le relevé brut (celui du contrôle) | `testTheBackgroundLineIsDecidedOnWhatIsMissing` |
+| la ligne de fond ne se tait plus quand la place manque | le même |
+| `followable` : `!imagePresent` en `size(of:) == nil` (du contrôle) | `testAFileOfTheWrongSizeUnderItsNameIsStillFollowed` |
+| `followable` : `!= archive.size` en `== nil` (du contrôle) | le même |
+| le refus de la place vide les fichiers en cours | `testARefusalOfSpaceKeepsTheRunningFiles` |
+| le refus dit « Rien n'a été téléchargé » d'un transfert en cours | `testOnlyTheFollowedTransferEscapesTheGuard` |
+
+Suite Swift entière : 2 967 tests exécutés (4 de plus), 67 sautés, aucun
+échec (6 min 14 s). SwiftLint strict : 0 violation. `ImageDownloadModel`
+passe `swiftc -frontend -parse`. Site : 476 tests (un premier passage,
+lancé pendant la suite Swift, a vu « la bande » dépasser son délai ; seul,
+sur la machine au repos, tout passe). Compte publié : 3 690 → 3 694
+(3 050 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- `ImageDownloadModel` (l'appel de la ligne, l'erreur gardée pour le
+  `defer`) ne se juge que sur la CI « App iOS » et un iPhone ; ici, le
+  parse et SwiftLint. Passer `library: nil` à la ligne de fond la
+  ramènerait au relevé brut sans qu'un test le voie.
+- Le transfert mis à part n'est pas compté du tout : sa recopie peut
+  encore manquer de place (l'entrée du 2026-11-15 le dit déjà).
+
 ## 2026-11-16 — Second contrôle des bureaux prêts : un relevé ancien ne coupe plus la garde de place
 
 Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts et
@@ -92,8 +183,10 @@ Suite Swift entière : 2 963 tests exécutés (2 de plus), 67 sautés, aucun
   et un test qui lit la source.
 - La feuille ouverte ne relit toujours pas les fichiers en cours d'elle-même :
   une tâche tombée la feuille ouverte laisse la ligne « continue en
-  arrière-plan » jusqu'au toucher, qui la corrige. Rien ne part plus sans
-  garde.
+  arrière-plan » jusqu'au toucher, qui la corrige. (Ici était écrit « Rien
+  ne part plus sans garde » : c'était faux, un fichier suivi levait encore
+  la garde pour tout le bureau. Corrigé par l'entrée du dessus : seul le
+  transfert déjà en cours y échappe.)
 - La fourchette de `ResumeWait.usual` reste une estimation : le dépliage
   sur un téléphone et le temps jusqu'au premier écho ne sont pas mesurés.
 
