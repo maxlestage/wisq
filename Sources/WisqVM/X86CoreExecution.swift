@@ -218,8 +218,14 @@ extension X86Core {
     /// **étendu au signe**, pas complété de zéros — c'est pour ça que
     /// `addq $-1, %rax` fonctionne.
     static func immediate(_ instruction: X86Instruction, _ size: Int) -> UInt64 {
-        let raw = instruction.immediate
-        switch instruction.immediateBytes {
+        immediate(instruction.immediate, bytes: instruction.immediateBytes, size)
+    }
+
+    /// Le même immédiat, depuis ses deux champs : pour qui lit l'instruction
+    /// là où elle est rangée, sans la recopier.
+    @inline(__always)
+    static func immediate(_ raw: UInt64, bytes: Int, _ size: Int) -> UInt64 {
+        switch bytes {
         case 1: return signExtend(raw & 0xFF, 1) & mask(size)
         case 2: return signExtend(raw & 0xFFFF, 2) & mask(size)
         case 4: return signExtend(raw & 0xFFFF_FFFF, 4) & mask(size)
