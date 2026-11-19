@@ -112,8 +112,42 @@ public struct ImageDownloader: Sendable {
     /// que la release des bureaux n'existe pas, GitHub répond 404, et ce n'est
     /// pas une panne à montrer. La section ne se montre simplement pas.
     public func readyDesktops(index: URL = ReadyDesktop.index) async -> [ReadyDesktop] {
-        guard let text = try? await read(index) else { return [] }
-        return ReadyDesktop.parse(text, index: index)
+        await readyCatalog(index: index).desktops
+    }
+
+    /// **Les bureaux prêts, et pourquoi il n'y en a pas** quand l'index ne
+    /// s'est pas laissé lire. Un 404 reste muet : la release n'existe pas
+    /// (encore, ou plus). **Tout le reste se dit** — réseau coupé, serveur en
+    /// panne, réponse démesurée : la release `bureaux-1` est publiée, et une
+    /// section qui disparaissait sans un mot, sur un téléphone hors ligne, se
+    /// lisait « il n'y a pas de bureau prêt », sans rien pour réessayer.
+    public func readyCatalog(index: URL = ReadyDesktop.index) async -> (desktops: [ReadyDesktop], failure: String?) {
+        do {
+            let response = try await fetcher.fetch(index, range: nil)
+            if response.status == 404 { return ([], nil) }
+            guard response.status == 200 else {
+                return ([], Self.readyFailure("le serveur a répondu \(response.status)"))
+            }
+            let text = try await collect(response.body)
+            // **Un 200 qui n'est pas un index se dit aussi** : un réseau qui
+            // demande de se connecter d'abord (Wi-Fi d'hôtel, de gare) rend sa
+            // page en 200 à la place de tout. Lue comme un index, elle ne
+            // proposait rien, et la section disparaissait sans un mot.
+            guard ReadyDesktop.isIndex(text) else {
+                return ([], Self.readyFailure("la réponse n'est pas l'index des bureaux ; un réseau qui demande "
+                    + "de se connecter d'abord, comme un Wi-Fi d'hôtel ou de gare ?"))
+            }
+            return (ReadyDesktop.parse(text, index: index), nil)
+        } catch {
+            return ([], Self.readyFailure(error.localizedDescription))
+        }
+    }
+
+    /// La phrase d'un index des bureaux qui n'a pas répondu.
+    static func readyFailure(_ why: String) -> String {
+        let reason = why.hasSuffix(".") ? String(why.dropLast()) : why
+        return "Les bureaux prêts n'ont pas pu être lus (\(reason)). Les images des distributions ne "
+            + "dépendent pas de cet index. Touchez « Réessayer » pour le relire."
     }
 
     /// Ce que la feuille « Télécharger » montre : les bureaux prêts, les
@@ -125,19 +159,24 @@ public struct ImageDownloader: Sendable {
         /// L'échec des index des distributions, quand aucun n'a répondu. Les
         /// bureaux prêts restent proposés : ils ont leur propre index.
         public let failure: String?
+        /// L'échec de l'index des bureaux prêts, sauf un 404 (`readyCatalog`).
+        public let desktopsFailure: String?
     }
 
     /// **Tout, en même temps** : l'index des bureaux et ceux des
     /// distributions. L'un qui ne répond pas ne cache pas l'autre — la règle
     /// de `bootableReleases`, étendue aux bureaux.
     public func catalog(readyIndex: URL = ReadyDesktop.index) async -> Catalog {
-        async let desktops = readyDesktops(index: readyIndex)
+        async let ready = readyCatalog(index: readyIndex)
         async let releases = attempt { try await bootableReleases() }
+        let desktops = await ready
         switch await releases {
         case .success(let found):
-            return Catalog(desktops: await desktops, releases: found, failure: nil)
+            return Catalog(desktops: desktops.desktops, releases: found, failure: nil,
+                           desktopsFailure: desktops.failure)
         case .failure(let error):
-            return Catalog(desktops: await desktops, releases: [], failure: error.localizedDescription)
+            return Catalog(desktops: desktops.desktops, releases: [], failure: error.localizedDescription,
+                           desktopsFailure: desktops.failure)
         }
     }
 
@@ -240,8 +279,13 @@ public struct ImageDownloader: Sendable {
         guard response.status == 200 else {
             throw Failure.refused("l'index de la distribution n'a pas pu être lu (\(response.status)).")
         }
+        return try await collect(response.body)
+    }
+
+    /// Le corps d'un index, en texte, borné à 1 Mio.
+    func collect(_ body: AsyncThrowingStream<Data, Error>) async throws -> String {
         var text = Data()
-        for try await chunk in response.body {
+        for try await chunk in body {
             text.append(chunk)
             // Un index fait quelques kilo-octets ; au-delà, ce n'en est pas un.
             guard text.count <= 1 << 20 else { throw Failure.refused("l'index est démesuré.") }
@@ -302,6 +346,10 @@ public struct ImageDownloader: Sendable {
                     try handle.write(contentsOf: chunk)
                     have += chunk.count
                     progress(have, release.size)
+                    // **Annulé : ce qui est écrit reste**, et l'annulation se
+                    // dit comme telle. Sans ce relevé, le flux se taisait, et
+                    // l'annulation remontait comme un transfert coupé.
+                    try Task.checkCancellation()
                 }
                 // Une réponse qui finit proprement mais trop tôt n'est pas un
                 // fichier faux : c'est un transfert coupé. Le passer à

@@ -105,6 +105,24 @@ final class SavedSessionTests: XCTestCase {
         }
     }
 
+    /// **Une session que `judge` lit et que la machine refuse** : privée de
+    /// son dernier octet, une session RISC-V garde son en-tête (le jugement
+    /// la dit lisible, et l'application lance le fil d'émulation), mais sa
+    /// dernière section s'arrête court, et la reprise lève « abîmée ». C'est le chemin du
+    /// refus `.session` sur le fil, que `LocalVMModelTests` fait de bout en
+    /// bout avec cette même coupure ; ce test-ci, qui tourne sous Linux, dit
+    /// que la coupure mène bien là.
+    func testARISCVSessionCutShortIsJudgedReadableButRefusedOnResume() throws {
+        let saved = LinuxMachine(ramSize: 1 << 20, onOutput: { _ in }).snapshot()
+        let cut = saved.dropLast(1)
+        XCTAssertEqual(SavedSession.judge(cut, core: .riscv32).snapshot, cut, "le jugement ne lit que l'en-tête")
+        let pending = PendingSession(cut)
+        XCTAssertThrowsError(try pending.resume(into: LinuxMachine(ramSize: 1 << 20, onOutput: { _ in }))) { error in
+            XCTAssertEqual(error as? SavedSession.Unreadable, .damaged)
+        }
+        XCTAssertTrue(pending.awaited)
+    }
+
     /// La phrase dit les trois choses : gardée, pourquoi, et le geste qui
     /// repart de zéro.
     func testTheExplanationSaysKeptWhyAndWhatToDo() {
@@ -142,6 +160,26 @@ final class SavedSessionTests: XCTestCase {
         XCTAssertEqual(machine.memory.bytes[0x10_0000], UInt8(ascii: "l"))
         XCTAssertTrue(pending.isEmpty, "les octets sont relâchés")
         XCTAssertFalse(try pending.resume(into: machine), "plus rien : démarrage à froid")
+    }
+
+    /// **La boîte sait qu'une session attendait, même vidée.** L'échec du
+    /// démarrage sur le fil le lit pour promettre la session gardée : une
+    /// reprise réussie ou refusée vide la boîte, et la promesse ne doit pas
+    /// tomber avec elle.
+    func testABoxRemembersThatASessionWasAwaited() throws {
+        XCTAssertFalse(PendingSession(nil).awaited, "aucune session : rien à promettre")
+        let machine = X86Machine(ramSize: X86Machine.minimumRAMSize, onOutput: { _ in })
+
+        let resumed = PendingSession(try Self.pcSnapshot())
+        XCTAssertTrue(resumed.awaited)
+        XCTAssertTrue(try resumed.resume(into: machine))
+        XCTAssertTrue(resumed.isEmpty)
+        XCTAssertTrue(resumed.awaited, "vidée par la reprise, elle sait encore qu'une session attendait")
+
+        let refused = PendingSession(try X86RestoreAllOrNothingTests.damagedSnapshot())
+        XCTAssertThrowsError(try refused.resume(into: machine))
+        XCTAssertTrue(refused.isEmpty)
+        XCTAssertTrue(refused.awaited, "vidée par un refus aussi")
     }
 
     func testNoSessionMeansAColdBoot() throws {

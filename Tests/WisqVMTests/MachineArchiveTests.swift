@@ -89,6 +89,67 @@ final class MachineArchiveTests: XCTestCase {
             Data("la session".utf8), "la session reprendra là-bas")
     }
 
+    /// **Une archive passée par un lien symbolique s'importe.** La taille
+    /// vérifiée contre le manifeste était celle du lien lui-même, quelques
+    /// dizaines d'octets : l'archive, intacte, était refusée comme « abîmée ».
+    /// Et un lien qui ne mène nulle part dit la vraie raison, pas « abîmée ».
+    func testAnArchiveReachedThroughASymbolicLinkImports() throws {
+        let real = archive.deletingLastPathComponent().appendingPathComponent("vraie", isDirectory: true)
+            .appendingPathComponent("machine.\(MachineArchive.fileExtension)")
+        try FileManager.default.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try MachineArchive.export(try furnishedMachine(), kernels: kernels(here), in: here, to: real)
+        try FileManager.default.createSymbolicLink(at: archive, withDestinationURL: real)
+        XCTAssertTrue(MachineArchive.isArchive(archive))
+        let back = try importThere()
+        XCTAssertEqual(back.name, "Travail")
+        XCTAssertEqual(try Data(contentsOf: LocalDisk.writesURL(
+            for: back.keys.overlay(forDisk: iso), in: there)), Data([9, 9]))
+
+        _ = try InstalledMachines.remove(id: back.id, in: there)
+        try FileManager.default.removeItem(at: real)
+        XCTAssertThrowsError(try importThere()) {
+            XCTAssertNotEqual($0 as? MachineArchive.Refusal, .damaged, "un lien mort n'est pas une archive abîmée")
+        }
+        XCTAssertEqual(InstalledMachines.list(in: there), [])
+    }
+
+    /// **Une couche liée s'exporte entière.** L'export annonçait la taille du
+    /// lien et n'en copiait que ces quelques octets : l'archive se relisait
+    /// sans erreur, et la machine revenait avec un disque tronqué.
+    func testALinkedLayerIsExportedWhole() throws {
+        let machine = try furnishedMachine()
+        let layer = try LocalDisk.writesURL(for: machine.keys.overlay(forDisk: "donnees.img"), in: here)
+        let elsewhere = here.appendingPathComponent("ailleurs.writes")
+        try FileManager.default.moveItem(at: layer, to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: layer, withDestinationURL: elsewhere)
+        try MachineArchive.export(machine, kernels: kernels(here), in: here, to: archive)
+        let back = try importThere()
+        XCTAssertEqual(try Data(contentsOf: LocalDisk.writesURL(
+            for: back.keys.overlay(forDisk: "donnees.img"), in: there)),
+                       Data(repeating: 0xAB, count: 3 * MachineArchive.chunk + 17))
+    }
+
+    /// **Un lien mort n'a pas de taille.** `size(of:)` rendait celle du lien
+    /// lui-même, sans erreur : l'export annonçait un disque propre en lien
+    /// mort à cette taille, qu'aucun disque vierge n'a, et l'import d'en face
+    /// refusait l'archive entière comme « abîmée ». Elle part maintenant sans
+    /// disque propre, comme une machine qui n'en a pas.
+    func testADeadLinkHasNoSize() throws {
+        let machine = try InstalledMachines.install(image: iso, name: "Neuve", in: here)
+        let own = kernels(here).appendingPathComponent("Neuve-disque.img")
+        try FileManager.default.createSymbolicLink(
+            at: own, withDestinationURL: here.appendingPathComponent("parti.img"))
+        XCTAssertThrowsError(try MachineArchive.size(of: own), "un lien mort n'est pas un fichier vide")
+
+        try InstalledMachines.setOwnDisk("Neuve-disque.img", id: machine.id, in: here)
+        try MachineArchive.export(
+            try XCTUnwrap(InstalledMachines.machine(id: machine.id, in: here)),
+            kernels: kernels(here), in: here, to: archive)
+        let back = try importThere()
+        XCTAssertNil(back.ownDisk, "aucun disque vierge recréé à la taille d'un lien")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: kernels(there).path), [])
+    }
+
     /// **Le manifeste s'écrit clés triées.** Sans cela, l'ordre des clés
     /// changeait d'un lancement à l'autre (le hachage de Swift est tiré au
     /// sort), et deux exports de la même machine n'étaient pas les mêmes
