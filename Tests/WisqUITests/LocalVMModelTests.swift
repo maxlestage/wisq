@@ -275,6 +275,83 @@ final class LocalVMModelTests: XCTestCase {
         XCTAssertNil(savedMachine)
     }
 
+    /// **Un refus de démarrage n'efface pas la session d'une autre course.**
+    /// Le refus passait par `guestFinished` et laissait le nom de la course
+    /// précédente : « Arrêter », qui suit, effaçait la session de la machine
+    /// mise de côté juste avant, et « Oublier » était offert sur elle. Voir
+    /// `BootRefusal`.
+    @MainActor
+    func testARefusalBeforeTheFirstInstructionKeepsTheSessionOfAnotherRun() {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        XCTAssertNotNil(savedMachine, "préalable : la première machine est sauvée")
+
+        model.boot(kernelURL: folder.appendingPathComponent("absent"))
+        waitUntil("le refus doit être dit") {
+            if case .finished = model.status { return true }
+            return false
+        }
+        XCTAssertFalse(model.hasSavedMachine, "« Oublier » ne vise pas la session d'une autre machine")
+        model.stop()
+        XCTAssertNotNil(savedMachine, "« Arrêter » après le refus n'efface rien")
+    }
+
+    /// **Une session illisible, puis « Arrêter » : elle est toujours là.** La
+    /// console vient de la promettre « gardée telle quelle ». Le test d'avant
+    /// ne tient pas ce cas : son refus tombe avant la lecture de l'image, et
+    /// la course n'y nomme aucune session, si bien qu'un « Arrêter » qui
+    /// efface n'y efface rien. Ici, l'image est lue et nomme la session ;
+    /// sans `life.refusedToStart` dans `refuseToStart`, l'état restait
+    /// `running`, et « Arrêter » l'effaçait.
+    @MainActor
+    func testStoppingAfterAnUnreadableSessionKeepsIt() throws {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: identity(named: "Image")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "préalable : la machine est sauvée")
+        let damaged = Data("une session abîmée".utf8)
+        try damaged.write(to: file)
+
+        model.boot(kernelURL: kernel)
+        waitUntil("le refus doit promettre la session gardée") {
+            if case .finished(let message) = model.status { return message.contains("gardée telle quelle") }
+            return false
+        }
+        model.stop()
+        XCTAssertEqual(try Data(contentsOf: file), damaged, "« Arrêter » après le refus n'efface rien")
+    }
+
+    /// **La même promesse, quand c'est la machine qui refuse la reprise, sur
+    /// le fil d'émulation.** La session privée de son dernier octet passe le
+    /// jugement du fil principal (`SavedSessionTests` le tient sous Linux),
+    /// puis `PendingSession.resume` lève « abîmée » sur le fil, et le refus
+    /// `.session` passe par la tâche du `catch`. Ce refus-là, affiché par un
+    /// `finish` direct, laissait l'état à `running` et effaçait `runStart` :
+    /// « Arrêter » rendait `.forget`, et la session promise gardée partait.
+    @MainActor
+    func testStoppingAfterASessionTheMachineRefusedKeepsIt() throws {
+        let model = self.model()
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.suspend()
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: identity(named: "Image")))
+        let saved = try SnapshotFile.unpack(try Data(contentsOf: file))
+        let cut = SnapshotFile.pack(saved.dropLast(1))
+        try cut.write(to: file)
+
+        model.boot(kernelURL: kernel)
+        waitUntil("le refus du fil doit promettre la session gardée") {
+            if case .finished(let message) = model.status { return message.contains("gardée telle quelle") }
+            return false
+        }
+        model.stop()
+        XCTAssertEqual(try Data(contentsOf: file), cut, "« Arrêter » après le refus du fil n'efface rien")
+    }
+
     /// Suspending with nothing running is what `onDisappear` does after the
     /// machine has already ended. It must be harmless.
     @MainActor

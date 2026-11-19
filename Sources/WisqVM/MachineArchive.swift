@@ -290,8 +290,27 @@ public enum MachineArchive {
         !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\0")
     }
 
+    /// **La taille du fichier, à travers un lien symbolique.**
+    /// `attributesOfItem` ne suit pas les liens : il rendait la taille du
+    /// lien lui-même, quelques dizaines d'octets. Une archive passée par un
+    /// lien était refusée comme « abîmée », puisque sa taille ne valait pas
+    /// celle que le manifeste annonce ; et une couche ou une session liée,
+    /// à l'export, était annoncée à cette taille et copiée tronquée.
+    ///
+    /// **Un lien qui ne mène nulle part lève** « fichier introuvable ».
+    /// `resolvingSymlinksInPath` le rend tel quel, sans erreur, et
+    /// `attributesOfItem` décrit alors le lien lui-même : sa taille revenait
+    /// comme celle du fichier. L'import n'en souffrait pas (il ouvre la
+    /// source d'abord, et l'ouverture échoue), mais l'export annonçait un
+    /// disque propre en lien mort à la taille du lien : une taille qu'aucun
+    /// disque vierge n'a, et l'archive entière était refusée « abîmée » de
+    /// l'autre côté, au lieu de partir sans disque propre.
     static func size(of url: URL) throws -> UInt64 {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)
+        // Encore un lien après la résolution : il est mort, ou il boucle.
+        guard attributes[.type] as? FileAttributeType != .typeSymbolicLink else {
+            throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
+        }
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
     }
 

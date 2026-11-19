@@ -27,6 +27,14 @@ public struct MachineLifecycle: Equatable, Sendable {
         /// de cet état, seul « Oublier » efface le fichier. Voir
         /// `SavedSession`.
         case refused
+        /// **Le démarrage a été refusé avant la première instruction**, sans
+        /// que la console promette une session gardée : la console a dit
+        /// pourquoi, rien ne tourne, et rien ne s'efface de cet état — ni par
+        /// « Arrêter », ni par la fin tardive d'une course précédente. Une
+        /// session sauvée peut très bien être là, lisible et intacte : celle
+        /// qu'une mémoire libre trop basse au retour empêche de reprendre
+        /// (`BootRefusal.notEnoughRoom`), par exemple. Voir `BootRefusal`.
+        case notStarted
     }
 
     /// Ce que le fil d'émulation a fait avant de rendre la main — ce que
@@ -79,13 +87,61 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// « Oublier » a été touché pendant cette course : plus rien d'elle ne
     /// doit être écrit.
     public private(set) var forgotten = false
+    /// **La session que cette course peut toucher** : l'identité de l'image
+    /// qu'elle a lue (`SuspendedMachine.identity`), ou `nil` tant qu'elle ne
+    /// l'a pas lue.
+    ///
+    /// Le nom vivait dans l'application, d'une course à l'autre : un refus
+    /// tombé avant la lecture de l'image laissait celui de la course d'avant,
+    /// et « Oublier », offert sur cette session-là, effaçait celle d'une autre
+    /// machine. Chaque démarrage l'oublie (`booted`).
+    public private(set) var session: String?
 
     public init() {}
 
     public mutating func booted() {
         state = .running
         forgotten = false
+        session = nil
     }
+
+    /// L'image est lue : la course sait sous quel nom sa session est rangée.
+    public mutating func identified(_ session: String) {
+        self.session = session
+    }
+
+    /// **Le démarrage est refusé avant la première instruction** : rien ne
+    /// tourne, et la session sauvée — de cette machine ou d'une autre — n'est
+    /// pas touchée. Rend toujours `.nothing`. Voir `BootRefusal`.
+    ///
+    /// `refused` seulement quand la session promise gardée l'est vraiment :
+    /// effacée plus tôt dans la course (`sessionErased`), il n'y a plus rien
+    /// à garder.
+    @discardableResult
+    public mutating func refusedToStart(_ refusal: BootRefusal) -> Action {
+        state = refusal.keepsASession && !sessionErased ? .refused : .notStarted
+        return .nothing
+    }
+
+    /// **Le refus, et la phrase qui le dit** : ce que `LocalVMModel` affiche.
+    ///
+    /// La phrase dépend de la course, pas seulement du refus. Un échec sur le
+    /// fil arrive par une tâche qui passe plus tard ; si « Arrêter » ou
+    /// « Oublier » a été touché entre-temps, quand le fil n'avait encore rien
+    /// noté (`Start.pending`), la session a déjà été effacée, comme demandé.
+    /// La console affirmait pourtant « gardée telle quelle ». Elle dit
+    /// maintenant qu'elle a été effacée.
+    public mutating func refusedToStart(_ refusal: BootRefusal, name: String) -> String {
+        let erased = sessionErased
+        refusedToStart(refusal)
+        return refusal.explanation(name: name, sessionErased: erased)
+    }
+
+    /// **La session de cette course a déjà été effacée.** Chaque passage à
+    /// `ended` rend `.forget` — « Arrêter », un départ après « Oublier », une
+    /// sauvegarde manquée, une fin de course —, et « Oublier » efface sans
+    /// rien arrêter (`forgotten`). Chaque démarrage remet les deux à zéro.
+    private var sessionErased: Bool { state == .ended || forgotten }
 
     /// The user pressed "Oublier": keep running now, and do not come back to
     /// this machine next time.
@@ -110,8 +166,20 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// lui, reste dans la barre : l'effacement qu'il faisait était sans
     /// avertissement, et pour un bureau prêt sauvé par une version plus
     /// récente, c'était exactement la perte que `SavedSession` empêche.
-    public mutating func userStopped() -> Action {
-        if state == .refused { return .nothing }
+    ///
+    /// **Ni un démarrage refusé** (`notStarted`), pour la même raison.
+    ///
+    /// `seen` : ce que le fil d'émulation a noté de la course
+    /// (`RunStart.recorded`). Un refus ou un échec qu'il a déjà vu, mais dont
+    /// la tâche n'est pas encore passée sur le fil principal, compte déjà :
+    /// rien n'a tourné, rien ne s'efface.
+    public mutating func userStopped(seen start: Start? = nil) -> Action {
+        switch start {
+        case .refused?: state = .refused
+        case .failed?: state = .notStarted
+        default: break
+        }
+        if state == .refused || state == .notStarted { return .nothing }
         state = .ended
         return .forget
     }
@@ -131,13 +199,14 @@ public struct MachineLifecycle: Equatable, Sendable {
     /// l'écriture n'a lieu que si l'interprète avait vraiment la machine.
     ///
     /// Une session refusée reste gardée et l'état le dit (rien à reprendre au
-    /// retour). Un démarrage qui a échoué n'a rien à sauver, et la session
-    /// qu'il n'a pas pu reprendre ne décrit plus rien : elle s'efface, comme
-    /// le fait la tâche du fil pour ce même échec. Un invité qui a fini de
-    /// lui-même juste avant le départ, pareil : sa session sauvée décrit une
-    /// machine qui n'existe plus, et c'est ce que sa tâche aurait effacé.
-    /// L'état `ended` laisse cette tâche dire la fin (`reportsGuestExit`)
-    /// sans rien relancer (`restartsOnReboot`).
+    /// retour). **Un démarrage qui a échoué** n'a rien à sauver, et rien à
+    /// effacer non plus : la session qu'il n'a pas pu reprendre — un disque
+    /// qui ne se branchait plus — est gardée, comme la tâche du fil la garde
+    /// pour ce même échec (`BootRefusal.couldNotStart`). Elle s'effaçait. Un
+    /// invité qui a fini de lui-même juste avant le départ, lui, emporte sa
+    /// session : elle décrit une machine qui n'existe plus, et c'est ce que
+    /// sa tâche aurait effacé. L'état `ended` laisse cette tâche dire la fin
+    /// (`reportsGuestExit`) sans rien relancer (`restartsOnReboot`).
     public mutating func interpreterStopped(after start: Start) -> Action {
         guard state == .suspended else { return .nothing }
         switch start {
@@ -146,7 +215,10 @@ public struct MachineLifecycle: Equatable, Sendable {
         case .refused:
             state = .refused
             return .nothing
-        case .pending, .failed, .finished:
+        case .failed:
+            state = .notStarted
+            return .nothing
+        case .pending, .finished:
             state = .ended
             return .forget
         }

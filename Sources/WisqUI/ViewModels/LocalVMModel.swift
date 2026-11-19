@@ -35,6 +35,14 @@ public final class LocalVMModel {
     /// ligne existe pour lever.
     public private(set) var heartbeat: String?
 
+    /// **« Reprise du bureau en cours — 6 s »**, pendant la première reprise
+    /// d'un bureau prêt, jusqu'à ce que la console réponde. `nil` le reste du
+    /// temps. La décision vit dans `ResumeWait`, que la CI Linux juge ; ce
+    /// fichier la relève à chaque battement et à chaque écriture de l'invité.
+    public private(set) var resumeWait: String?
+    /// L'attente que `resumeWait` dit, ou `nil`.
+    private var waiting: ResumeWait?
+
     /// Le battement qui relit la machine pendant qu'elle tourne.
     ///
     /// **Il faut une horloge, et pas un rappel.** Tout ce que la vue reçoit
@@ -42,6 +50,9 @@ public final class LocalVMModel {
     /// déclenche donc plus rien du tout, et c'est précisément lui qu'il faut
     /// pouvoir regarder.
     private var ticker: Task<Void, Never>?
+    /// Ce qui reste à taper sur l'écran d'une machine PC, repris à chaque
+    /// battement. Voir `typeOnScreen`.
+    private var typist = ScreenTypist()
     /// **Les lignes de la console**, une par une : scrollback puis écran,
     /// ANSI interprété, bornées en nombre. La vue en fait une pile
     /// paresseuse — voir `TerminalGrid.lines`.
@@ -76,7 +87,11 @@ public final class LocalVMModel {
     /// What becomes of the saved machine on each event, decided by a type that
     /// builds on Linux and is therefore covered by tests — this wiring is not.
     private var life = MachineLifecycle()
-    private var kernelName = ""
+    /// Le nom sous lequel la session de **cette** course est rangée, vide tant
+    /// que l'image n'est pas lue. Tenu par `MachineLifecycle.session`, que
+    /// chaque démarrage remet à zéro : un nom resté d'une course précédente
+    /// faisait effacer, après un refus, la session d'une autre machine.
+    private var kernelName: String { life.session ?? "" }
     /// Which run a thread's completion belongs to. Suspending releases the
     /// machine while its thread is still unwinding, so a completion can arrive
     /// after the next machine has already booted; without this it would report
@@ -93,7 +108,9 @@ public final class LocalVMModel {
     }
 
     /// Whether leaving and coming back would resume rather than restart.
-    public var willResume: Bool { SuspendedMachine.exists(kernel: kernelName, in: storage) }
+    public var willResume: Bool {
+        life.session.map { SuspendedMachine.exists(kernel: $0, in: storage) } ?? false
+    }
 
     /// Whether returning to the foreground should pick the machine back up.
     /// The view asks, because iOS can take the app away and give it back
@@ -120,6 +137,10 @@ public final class LocalVMModel {
     /// `MachineKeys`, que la CI Linux juge ; ce fichier ne fait que la suivre.
     public func boot(kernelURL: URL, installed: InstalledMachine? = nil, keepingConsole: Bool = false) {
         guard machine == nil else { return }
+        // **Le toucher**, d'où l'attente d'une première reprise se compte
+        // (`ResumeWait`) : avant l'image lue et l'instantané déplié, qui se
+        // font plus bas sur ce fil, l'écran figé.
+        let touchedAt = Date()
         self.installed = installed
         bootedKernel = kernelURL
         let keys = installed?.keys ?? .image(kernelURL.lastPathComponent)
@@ -157,13 +178,21 @@ public final class LocalVMModel {
         // iOS au milieu du démarrage : le plantage sans cause apparente que
         // cette application a déjà infligé une fois.
         let roomNow = KernelMemory.ceiling
+        // **Chaque refus d'ici à la première instruction passe par
+        // `refuseToStart`**, et aucun par `guestFinished` : voir
+        // `BootRefusal`. Un test sous Linux lit ce fichier pour le tenir
+        // (`BootRefusalTests`), sans ses commentaires : il compte les appels
+        // cas par cas — deux pour `.session`, ici et sur le fil d'émulation —,
+        // cherche chacun avec la condition qui le déclenche et le `return` qui
+        // le suit, et n'admet que deux `finish(with:` hors de la fin d'un
+        // invité qui a tourné, le corps de `refuseToStart` et l'exception qui
+        // suit. Un refus ajouté, retiré ou déplacé, ou sa condition récrite,
+        // doit donc changer ce test aussi. L'exception : la session trop
+        // grande pour la mémoire libre passe par `life.machineSize`, qui la
+        // dit refusée (`sessionRefused`) ; rien ne s'efface non plus de cet
+        // état.
         if ramSize > roomNow {
-            _ = life.guestFinished()
-            finish(with: KernelMemory.notEnoughRoomExplanation(
-                requested: ramSize, ceiling: roomNow,
-                name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.notEnoughRoom(requested: ramSize, ceiling: roomNow), name: kernelURL.lastPathComponent)
             return
         }
         // **Ce que le fichier est, avant de fabriquer quoi que ce soit.**
@@ -242,10 +271,9 @@ public final class LocalVMModel {
             isoCommandLine = boot.commandLine
             isoRamdisk = boot.initrd
         case .failure(let refusal):
-            _ = life.guestFinished()
-            finish(with: IsoBoot.explanation(refusal, name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(
+                .image(IsoBoot.explanation(refusal, name: kernelURL.lastPathComponent)),
+                name: kernelURL.lastPathComponent)
             return
         }
         #else
@@ -266,25 +294,12 @@ public final class LocalVMModel {
         // liste ; le toucher rendait le refus d'un noyau compressé, qui envoie
         // chercher une version non compressée d'un fichier qui n'en a pas.
         if kind.core == nil, BootMedia.couldBeMedia(fileAt: kernelURL) {
-            _ = life.guestFinished()
-            finish(with: """
-                \(kernelURL.lastPathComponent) est un fichier compressé — wisq \
-                le garde comme initramfs.
-
-                Un initramfs ne démarre pas tout seul : c'est le noyau qui le \
-                déballe. Touchez le noyau — `vmlinuz…`, `bzImage` — et wisq \
-                prendra celui-ci avec.
-                """)
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.bootMedia, name: kernelURL.lastPathComponent)
             return
         }
         if let refusal = KernelImageKind.cannotRunHereExplanation(
             kind, name: bootURL.lastPathComponent) {
-            _ = life.guestFinished()
-            finish(with: refusal)
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.cannotRunHere(refusal), name: kernelURL.lastPathComponent)
             return
         }
         // Un fichier que personne n'a reconnu part sur le cœur historique :
@@ -321,16 +336,13 @@ public final class LocalVMModel {
             atPath: bootURL.path)[.size] as? Int,
             size > LinuxMachine.maximumKernelImageBytes(
                 forRAMSize: KernelMemory.riscvMachine(holding: ramSize)) {
-            _ = life.guestFinished()
             // La machine que le noyau aura vraiment, pas le réglage : les deux
             // ne coïncident plus depuis que le réglage peut monter au-delà de
             // ce que le rv32 adresse, et annoncer le second ferait nommer au
             // refus une machine sur laquelle il n'a rien jugé.
-            finish(with: LinuxMachine.tooLargeExplanation(
-                size: size, name: kernelURL.lastPathComponent,
-                ramSize: KernelMemory.riscvMachine(holding: ramSize)))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(
+                .tooLargeForRiscv(size: size, ramSize: KernelMemory.riscvMachine(holding: ramSize)),
+                name: kernelURL.lastPathComponent)
             return
         }
 
@@ -338,13 +350,10 @@ public final class LocalVMModel {
         do {
             image = try Data(contentsOf: bootURL)
         } catch {
-            _ = life.guestFinished()
-            finish(with: "Démarrage impossible : \(error.localizedDescription)")
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.unreadableKernel(error.localizedDescription), name: kernelURL.lastPathComponent)
             return
         }
-        kernelName = SuspendedMachine.identity(of: image, named: keys.settings)
+        life.identified(SuspendedMachine.identity(of: image, named: keys.settings))
         // **« Pas de session » et « session illisible » ne se confondent
         // plus.** Une session qu'on ne sait pas relire — abîmée, ou sauvée par
         // une version plus récente de wisq — démarrait le noyau à neuf sans un
@@ -354,10 +363,7 @@ public final class LocalVMModel {
         let session = SavedSession.find(kernel: kernelName, in: storage, core: core)
         if case .unreadable(let refusal) = session {
             // Gardée : « Arrêter » n'effacera rien de cet état (`userStopped`).
-            life.sessionRefused()
-            finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
-            self.machine = nil
-            runFinished = nil
+            refuseToStart(.session(refusal), name: kernelURL.lastPathComponent)
             return
         }
         let saved = session.snapshot
@@ -374,6 +380,14 @@ public final class LocalVMModel {
         let resumeNote = firstResume?.note ?? (saved != nil && !resuming
             ? ResumeNote.text(savedAt: savedAt, now: Date())
             : nil)
+        // **L'attente se dit dès que ce fil la rend** : l'image a été lue et
+        // l'instantané de 345,8 Mio déplié, ici même, l'écran figé et sans
+        // phrase. Puis l'invité rejoue jusqu'à lire la ligne tapée — une
+        // douzaine de secondes d'un écran qui ne répond pas. Les secondes se
+        // comptent **depuis le toucher** (`touchedAt`), ce travail compris :
+        // partir d'ici les comptait sans lui. Voir `ResumeWait`.
+        waiting = firstResume == nil ? nil : ResumeWait(since: touchedAt, guestBytes: sink.guestBytes)
+        resumeWait = waiting?.phrase(now: Date())
 
         // Une machine PC a besoin de plus que le réglage d'une machine RISC-V
         // — son noyau décompressé fait à lui seul trente-cinq mébioctets — et
@@ -391,22 +405,9 @@ public final class LocalVMModel {
             // démarre quand l'image en donne un (`IsoBoot.Boot.minimumRAM`).
             machineRAM = max(machineRAM, X86Machine.minimumRAMSize, minimumRAM)
             if machineRAM > Int(roomNow) {
-                _ = life.guestFinished()
-                // Le plancher qui a joué est celui qu'on nomme : celui du
-                // système démarré, quand il dépasse celui de la machine.
-                let need = minimumRAM > X86Machine.minimumRAMSize
-                    ? "le système de cette image a besoin d'au moins \(minimumRAM >> 20) Mo pour démarrer."
-                    : "une machine PC a besoin d'au moins \(X86Machine.minimumRAMSize >> 20) Mo — son noyau "
-                        + "décompressé en fait trente-cinq à lui seul."
-                finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et \
-                    \(need)
-
-                    Cet appareil n'a que \(roomNow >> 20) Mo de libre en ce \
-                    moment. Fermez ce qui tourne à côté et réessayez.
-                    """)
-                self.machine = nil
-                runFinished = nil
+                refuseToStart(
+                    .pcNeedsMoreRoom(minimumRAM: minimumRAM, room: roomNow),
+                    name: kernelURL.lastPathComponent)
                 return
             }
         }
@@ -435,6 +436,9 @@ public final class LocalVMModel {
             for: core, ramSizeBytes: machineRAM, settingsKey: keys.settings, storage: storage
         ) { [sink] chunk in
             let (refresh, replies) = sink.append(chunk)
+            // Compté à part des phrases de wisq : seul l'invité met fin à
+            // l'attente de la reprise (`ResumeWait`).
+            sink.countGuestOutput(chunk.count)
             answers.send(replies)
             guard refresh else { return }
             // Trente fois par seconde au plus : voir `ConsolePacer`. Les
@@ -443,6 +447,7 @@ public final class LocalVMModel {
                 let wait = sink.refreshDelay()
                 if wait > 0 { try? await Task.sleep(nanoseconds: wait) }
                 self?.consoleLines = sink.takeLines()
+                self?.relayResumeWait()
             }
         }
         answers.machine = machine
@@ -499,18 +504,7 @@ public final class LocalVMModel {
             let media = KernelLibrary.list().filter { BootMedia.couldBeMedia(fileAt: $0) }
             ramdisk = BootMedia.pair(kernel: kernelURL.lastPathComponent, among: media).url
             if ramdisk == nil, saved == nil {
-                _ = life.guestFinished()
-                finish(with: """
-                    \(kernelURL.lastPathComponent) est un noyau pour PC, et un \
-                    noyau de PC a besoin d'un initramfs pour démarrer : ses \
-                    pilotes de disque n'y sont pas compilés, ils vivent dedans.
-
-                    Importez celui de votre distribution — il s'appelle \
-                    `initramfs-…` ou `initrd.img-…`, et il est compressé — et \
-                    wisq le prendra avec ce noyau.
-                    """)
-                self.machine = nil
-                runFinished = nil
+                refuseToStart(.pcNeedsInitramfs, name: kernelURL.lastPathComponent)
                 return
             }
         } else {
@@ -654,22 +648,26 @@ public final class LocalVMModel {
                 runStart.record(.refused)
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
-                    self.life.sessionRefused()
-                    self.finish(with: SavedSession.explanation(refusal, name: kernelURL.lastPathComponent))
+                    self.refuseToStart(.session(refusal), name: kernelURL.lastPathComponent)
                 }
                 return
             } catch {
                 runStart.record(.failed)
+                let reason = error.localizedDescription
                 Task { @MainActor [weak self] in
                     guard let self, thisRun == self.run else { return }
                     // A boot that never happened still ends the session, so the
                     // lifecycle has to hear about it: leaving it in `running`
                     // would let a later departure try to save a machine that
-                    // does not exist.
-                    if self.life.guestFinished() == .forget {
-                        SuspendedMachine.clear(kernel: self.kernelName, in: self.storage)
-                    }
-                    self.finish(with: "Démarrage impossible : \(error.localizedDescription)")
+                    // does not exist. **Mais il n'efface rien** : la session
+                    // qu'il n'a pas pu reprendre — un disque qui ne se branche
+                    // plus — est gardée, et la console le dit (`BootRefusal`).
+                    // Une session lisible attendait : elle est gardée, et la
+                    // console le dit. La boîte le sait encore une fois vidée
+                    // (`PendingSession.awaited`).
+                    self.refuseToStart(
+                        .couldNotStart(reason, sessionKept: pending.awaited),
+                        name: kernelURL.lastPathComponent)
                 }
                 return
             }
@@ -738,15 +736,37 @@ public final class LocalVMModel {
 
     /// Du texte tapé sur le clavier PS/2 de la machine PC — ce que l'écran
     /// reçoit, là où la console reçoit des octets sur le port série.
+    ///
+    /// **Par `ScreenTypist`, pas frappe par frappe** : la file du clavier est
+    /// bornée, et un collage qui la remplissait au milieu d'une majuscule
+    /// laissait Maj et la lettre enfoncées dans l'invité, puis jetait la
+    /// suite sans rien dire. Ce qui ne tient pas attend dans `typist`, dans
+    /// l'ordre, et le battement le reprend (`beat`).
     public func typeOnScreen(_ text: String) {
         guard let pc = machine as? X86Machine else { return }
-        for event in X86Keystrokes.typing(text) { pc.key(event.code, down: event.down) }
+        typist.type(text, on: pc)
     }
 
-    /// Une touche de la barre, sur le clavier PS/2.
+    /// Une touche de la barre, sur le clavier PS/2 : ses frappes ensemble,
+    /// derrière ce qui reste à taper.
     public func pressOnScreen(_ key: TerminalKey) {
         guard let pc = machine as? X86Machine else { return }
-        for event in X86Keystrokes.key(key) { pc.key(event.code, down: event.down) }
+        typist.press(X86Keystrokes.key(key), on: pc)
+    }
+
+    /// **Ce que la frappe sur l'écran a à dire** : ce qui reste à taper, ce
+    /// qui n'a pas pu l'être. Voir `ScreenTypist.note`.
+    public var typingNote: String? { typist.note }
+
+    /// Une frappe qu'on peut annuler est en cours : voir `ScreenTypist.inProgress`.
+    public var typingInProgress: Bool { typist.inProgress }
+
+    /// **Annuler la frappe en cours** : un collage pris par erreur ne tient
+    /// plus le clavier de la machine des heures, et ce qu'on tape ensuite —
+    /// Ctrl-C d'abord — part aussitôt. Voir `ScreenTypist.cancel`.
+    public func cancelTyping() {
+        guard let pc = machine as? X86Machine else { return }
+        typist.cancel(on: pc)
     }
 
     /// Un toucher à un endroit de l'écran, par la tablette ; faux quand
@@ -793,10 +813,10 @@ public final class LocalVMModel {
     /// Ends the machine for good, at the user's request. The saved state goes
     /// too: "Arrêter" has to mean stopped, not hidden.
     public func stop() {
-        // Un refus que le fil a déjà vu, mais dont la tâche n'est pas encore
-        // passée, compte déjà : la session est gardée, rien ne s'efface.
-        if runStart?.recorded == .refused { life.sessionRefused() }
-        let action = life.userStopped()
+        // Un refus ou un échec que le fil a déjà vu, mais dont la tâche n'est
+        // pas encore passée, compte déjà : la session est gardée, rien ne
+        // s'efface.
+        let action = life.userStopped(seen: runStart?.recorded)
         // La machine d'abord, et à travers sa course : une écriture en
         // cours finit avant que `stop` ne rende la main, et l'effacement qui
         // suit est donc le dernier mot. Dans l'autre ordre, l'écriture
@@ -883,6 +903,8 @@ public final class LocalVMModel {
 
     /// La machine lâchée après une mise de côté, écrite ou non.
     private func letMachineGo() {
+        waiting = nil
+        resumeWait = nil
         machine = nil
         runFinished = nil
         checkpointed = nil
@@ -919,12 +941,24 @@ public final class LocalVMModel {
     private func beat(_ machine: GuestMachine) {
         ticker?.cancel()
         heartbeat = nil
+        // Une autre machine : ce qui restait à taper était pour la précédente,
+        // dont le clavier n'est plus là.
+        typist.reset()
         ticker = Task { @MainActor [weak self] in
             var previous: GuestProgress?
             var previousAt = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self, self.machine === machine else { return }
+                // La file du clavier s'est vidée d'une seconde de frappe : ce
+                // qui attendait y reprend sa place, et l'avis « en cours »
+                // s'éteint quand la machine a tout joué.
+                if let pc = machine as? X86Machine, self.typist.inProgress {
+                    self.typist.resume(on: pc)
+                }
+                // Avant la garde qui suit : un cœur qui ne publie pas son
+                // avancement a quand même une reprise qui attend.
+                self.relayResumeWait()
                 // Un cœur qui ne publie pas se tait — voir `liveProgress`.
                 guard let now = machine.liveProgress else { return }
                 let at = Date()
@@ -934,6 +968,24 @@ public final class LocalVMModel {
                 previousAt = at
             }
         }
+    }
+
+    /// Relit l'attente de la reprise contre ce que l'invité a écrit, et la
+    /// phrase qu'elle donne maintenant.
+    private func relayResumeWait() {
+        guard var wait = waiting else { return }
+        wait.observe(guestBytes: sink.guestBytes)
+        waiting = wait.answered ? nil : wait
+        resumeWait = wait.phrase(now: Date())
+    }
+
+    /// **Un démarrage refusé avant la première instruction** : la raison à
+    /// l'écran, et rien d'effacé — ni la session de cette machine, ni celle
+    /// d'une course précédente. Voir `BootRefusal`. La phrase vient du cycle
+    /// de vie, qui sait si la session promise gardée l'est encore ; un test
+    /// sous Linux exige ce corps-là mot pour mot.
+    private func refuseToStart(_ refusal: BootRefusal, name: String) {
+        finish(with: life.refusedToStart(refusal, name: name))
     }
 
     /// **Un message écrit pour une personne, replié avant d'entrer dans la
@@ -955,6 +1007,9 @@ public final class LocalVMModel {
         ticker?.cancel()
         ticker = nil
         heartbeat = nil
+        waiting = nil
+        resumeWait = nil
+        typist.reset()
         // L'état, lui, garde le message **intact** : il n'est pas destiné à une
         // grille, et le replier ici y poserait des retours à la ligne qu'aucune
         // vue ne demande.
@@ -977,8 +1032,24 @@ private final class ConsoleSink: @unchecked Sendable {
     private var refreshPending = false
     private var pacer = ConsolePacer()
 
+    /// Les octets que l'invité a écrits sur sa console, depuis la création
+    /// de ce relais : les phrases de wisq n'y sont pas (`countGuestOutput`).
+    private var guestWritten = 0
+
     init() {
         columns = console.columns
+    }
+
+    func countGuestOutput(_ count: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guestWritten += count
+    }
+
+    var guestBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return guestWritten
     }
 
     /// La largeur de la grille, pour que la prose se replie **avant** d'y

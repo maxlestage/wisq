@@ -847,6 +847,944 @@ bornes de 2 000 régions et 16 Mio : 1,9 Gio résidents avec la pause seule,
   celui d'un iPhone n'est pas mesuré. Le disque (« Mounting boot media:
   failed ») reste à raccorder.
 - Seule la CI juge le pont Swift sous un vrai WebKit (« App iOS »).
+## 2026-11-16 — Troisième contrôle des bureaux prêts : seul le transfert en cours échappe à la garde
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts.
+Les trois sont réels, et la phrase « Rien ne part plus sans garde » de
+cette entrée était fausse.
+
+**Ce qui n'allait pas.**
+
+1. **Un fichier suivi levait la garde pour tout le bureau.** Dès que
+   `followable` n'était pas vide, `fetch` et `spaceShortfall` sautaient
+   la comparaison à `available`, y compris pour le fichier qui n'avait pas
+   commencé et pour l'installation. Avec 1 octet libre, rien sur le
+   disque : relevé `[image]`, `spaceShortfall` rendait `nil` et `fetch`
+   demandait l'archive ; relevé `[bureau]`, l'image absente, toute l'ISO
+   partait. Le téléphone plein tombait ensuite sur l'erreur du système.
+2. **La garde de la ligne « continue en arrière-plan » n'avait aucun
+   test.** Elle vivait dans `ImageDownloadModel.inBackground` (SwiftUI,
+   pas construit sous Linux) : y passer `running: runningFiles` au lieu
+   de `followable` laissait tout vert.
+3. **« À sa taille » dans `followable` n'était pas testé.** `!imagePresent`
+   en `size(of:) == nil`, ou `!= archive.size` en `== nil`, laissaient
+   tout vert : aucun test ne posait un fichier de la mauvaise taille sous
+   le nom final.
+
+**Ce qui change.**
+
+- `ReadyDesktop.room(library:downloads:running:)` : la place, **le seul
+  transfert en cours mis à part** (ce qui reste à recevoir d'un fichier
+  `followable` compte 0). L'autre fichier et l'installation se comptent.
+  `fetch` et `spaceShortfall` passent tous deux par `spaceRefusal`, qui
+  compare ce compte à `available` sans exception.
+- `Refusal.notEnoughSpace` porte `following` (l'image, le bureau, ou les
+  deux, `[]` par défaut). Le refus le dit : « outre l'image qui se
+  télécharge en arrière-plan, ce bureau demande… », et finit par « Rien
+  d'autre n'a été demandé : l'image continue de se télécharger en
+  arrière-plan. » au lieu de « Rien n'a été téléchargé », faux d'un
+  transfert à moitié fait. La session le range à sa fin, sans la feuille.
+- `backgroundPhrase(running:library:downloads:available:)` : la ligne de
+  fond décidée dans `WisqVM`, sur `followable`, et tue quand la place
+  manque au reste (le refus dit déjà que le transfert continue, et
+  « Touchez « Installer » » aurait montré un bouton éteint). La version à
+  un argument devient interne : la feuille ne peut plus passer le relevé
+  brut. `ImageDownloadModel.inBackground` ne fait plus que l'appeler.
+- `followed(running:after:)` : après le refus de la place, les fichiers
+  en cours restent (rien n'a été suivi ni arrêté), et la ligne le dit
+  encore ; fini, en panne ou annulé, ce bureau en sort comme avant.
+  `fetchAndInstall` garde l'erreur pour son `defer`.
+
+**Comment c'est vérifié.** 4 tests neufs dans `ReadyDesktopTests` :
+`testOnlyTheFollowedTransferEscapesTheGuard` (les deux repros du
+contrôle avec 1 octet libre : refus exact, phrase, aucune requête ni sur
+l'image ni sur l'archive ; la borne `besideImage.total` à un octet près ;
+les deux fichiers suivis, l'installation encore comptée),
+`testTheBackgroundLineIsDecidedOnWhatIsMissing` (image rangée et relevé
+`[image]` : rien ; image absente : la ligne ; place qui manque : rien ;
+dossiers illisibles : le relevé), `testAFileOfTheWrongSizeUnderItsNameIsStillFollowed`
+(1 000 octets sous le nom de l'image, puis de l'archive : suivis) et
+`testARefusalOfSpaceKeepsTheRunningFiles`.
+
+Sabotages d'une ligne, chacun restauré (`git checkout`, `git diff` vide
+ensuite), filtre `ReadyDesktop|ImageDownloader|ResumeWait|BootRefusal`
+(108 tests) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| `fetch` reprend l'ancienne garde (`followable` vide, sinon rien) | `testOnlyTheFollowedTransferEscapesTheGuard` |
+| `spaceShortfall` muette dès qu'un fichier est suivi | le même, et `testTheBackgroundLineIsDecidedOnWhatIsMissing` |
+| la garde compte tout le bureau, transfert en cours compris | `testABackgroundDownloadIsFollowedNotRefused`, `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard`, `testOnlyTheFollowedTransferEscapesTheGuard` |
+| la ligne de fond sur le relevé brut (celui du contrôle) | `testTheBackgroundLineIsDecidedOnWhatIsMissing` |
+| la ligne de fond ne se tait plus quand la place manque | le même |
+| `followable` : `!imagePresent` en `size(of:) == nil` (du contrôle) | `testAFileOfTheWrongSizeUnderItsNameIsStillFollowed` |
+| `followable` : `!= archive.size` en `== nil` (du contrôle) | le même |
+| le refus de la place vide les fichiers en cours | `testARefusalOfSpaceKeepsTheRunningFiles` |
+| le refus dit « Rien n'a été téléchargé » d'un transfert en cours | `testOnlyTheFollowedTransferEscapesTheGuard` |
+
+Suite Swift entière : 2 967 tests exécutés (4 de plus), 67 sautés, aucun
+échec (6 min 14 s). SwiftLint strict : 0 violation. `ImageDownloadModel`
+passe `swiftc -frontend -parse`. Site : 476 tests (un premier passage,
+lancé pendant la suite Swift, a vu « la bande » dépasser son délai ; seul,
+sur la machine au repos, tout passe). Compte publié : 3 690 → 3 694
+(3 050 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- `ImageDownloadModel` (l'appel de la ligne, l'erreur gardée pour le
+  `defer`) ne se juge que sur la CI « App iOS » et un iPhone ; ici, le
+  parse et SwiftLint. Passer `library: nil` à la ligne de fond la
+  ramènerait au relevé brut sans qu'un test le voie.
+- Le transfert mis à part n'est pas compté du tout : sa recopie peut
+  encore manquer de place (l'entrée du 2026-11-15 le dit déjà).
+
+## 2026-11-16 — Second contrôle des bureaux prêts : un relevé ancien ne coupe plus la garde de place
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts et
+une phrase sans mesure. Les quatre sont réels.
+
+**Ce qui n'allait pas.**
+
+1. **Le fichier d'un autre bureau dans `fetch` n'avait pas de test.**
+   Remplacer la garde par `running.isEmpty` laissait les 66 tests verts :
+   une ISO de la liste des distributions en cours coupait la garde des
+   1,4 Gio de `bureaux-1` sur un téléphone plein, sans qu'un test le dise.
+   Seul `spaceShortfall` était joué avec `alpine-virt.iso`.
+2. **Le `format` de `isIndex` non plus.** `return true` passait : le test
+   ne jouait qu'une page HTML, que le `[String: Any]` rejetait déjà. Un 200
+   qui rend un objet JSON sans `format` (le corps d'erreur d'un service,
+   `{"message": …}`) n'était pas couvert.
+3. **Un relevé ancien coupait toute la garde, alors que le fichier était
+   là.** `runningFiles` n'est lu qu'à l'ouverture de la feuille. L'image
+   finie en arrière-plan la feuille ouverte, le relevé disait encore
+   `[image]` : `spaceShortfall` se taisait, et `fetch` demandait l'archive
+   sans rien compter (sonde du contrôle : `archive.ranges == [nil]`). Sur
+   un téléphone plein, 156 Mio partaient, et l'installation tombait sur
+   l'erreur du système. Une tâche de fond tombée depuis, elle, faisait
+   repartir toute l'image sans garde.
+4. **La doc de `ResumeWait.usual` affirmait sans mesure** que 11…15 s
+   couvraient « le dépliage d'avant ». La fourchette n'avait pas bougé, et
+   les 12,0 s du banc se comptent après `restore`, jusqu'à `REPRIS_42`,
+   qui vient après une première commande : ce n'est pas le premier écho,
+   qui tait la phrase.
+
+**Ce qui change.**
+
+- `ReadyDesktop.followable(running:library:downloads:)` : ceux des
+  fichiers en cours de ce bureau qui **manquent encore** (l'image absente
+  de la bibliothèque à sa taille, l'archive absente des téléchargements à
+  la sienne). `fetch` et `spaceShortfall` ne lèvent la garde que pour
+  eux ; un fichier rangé depuis le relevé ne la coupe plus.
+- `ImageDownloadModel.fetchAndInstall` relit les fichiers en cours
+  (`BackgroundImageDownloads.runningFiles()`) au toucher, avant `fetch`,
+  au lieu de reprendre le relevé de l'ouverture : une tâche tombée depuis
+  ne fait plus partir l'image sans garde. La ligne « continue en
+  arrière-plan » passe aussi par `followable`, pour ne pas dire le
+  contraire de la phrase de la place.
+- La doc de `ResumeWait` dit ce que le banc mesure (`REPRIS_42`, après
+  `restore` et une première commande) et que la fourchette est une
+  estimation, à reprendre sur un iPhone. La fourchette ne change pas.
+
+**Comment c'est vérifié.** 2 tests neufs dans `ReadyDesktopTests` :
+`testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (l'image rangée,
+relevé `[image]` : refus `notEnoughSpace` et phrase de la feuille, aucune
+requête ; l'archive rangée, relevé `[bureau]` : la garde joue ; l'image qui
+manque reste suivie) et `testInstallReadsTheRunningFilesAgain` (lit
+`ImageDownloadModel` commentaires ôtés : relu avant `fetch`, et passé à
+lui). Assertions ajoutées : `testABackgroundDownloadIsFollowedNotRefused`
+appelle `fetch` avec `alpine-virt.iso` en cours (refus, aucune requête) ;
+`testAPageInsteadOfTheIndexIsSaid` joue `{"message": "Not Found"}` en 200
+et `isIndex` sans `format`.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après), filtre `ReadyDesktop|ImageDownloader|ResumeWait|BootRefusal`
+(81 tests) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| la garde de `fetch` en `running.isEmpty` (celui du contrôle) | `testABackgroundDownloadIsFollowedNotRefused`, `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (4) |
+| `isIndex` rend `true` | `testAPageInsteadOfTheIndexIsSaid` (2) |
+| `followable` garde toujours l'image | `testAFileStoredSinceTheReadingNoLongerWaivesTheGuard` (4) |
+| `followable` garde toujours l'archive | le même (2) |
+| `fetch` par `backgroundFiles` au lieu de `followable` | le même (2) |
+| `spaceShortfall` par `backgroundFiles` | le même (2) |
+| `fetchAndInstall` reprend le relevé de l'ouverture | `testInstallReadsTheRunningFilesAgain` (1) |
+
+Suite Swift entière : 2 963 tests exécutés (2 de plus), 67 sautés, aucun
+échec (6 min 29 s). SwiftLint strict : 0 violation. `ImageDownloadModel` passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 688 → 3 690
+(3 046 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La relecture au toucher et la ligne passée par `followable` ne se
+  jugent que sur la CI « App iOS » et un iPhone ; ici, le parse, SwiftLint
+  et un test qui lit la source.
+- La feuille ouverte ne relit toujours pas les fichiers en cours d'elle-même :
+  une tâche tombée la feuille ouverte laisse la ligne « continue en
+  arrière-plan » jusqu'au toucher, qui la corrige. (Ici était écrit « Rien
+  ne part plus sans garde » : c'était faux, un fichier suivi levait encore
+  la garde pour tout le bureau. Corrigé par l'entrée du dessus : seul le
+  transfert déjà en cours y échappe.)
+- La fourchette de `ResumeWait.usual` reste une estimation : le dépliage
+  sur un téléphone et le temps jusqu'au premier écho ne sont pas mesurés.
+
+## 2026-11-15 — Contrôle des bureaux prêts : la recopie comptée, le transfert de fond suivi, l'attente comptée depuis le toucher
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé sept défauts et
+deux points plausibles. Tous sont réels ; tous sont corrigés.
+
+**Ce qui n'allait pas.**
+
+1. **La garde de place sous-estimait le pic.** L'application télécharge
+   par la session d'arrière-plan, qui rend chaque fichier entier dans le
+   sien ; `ImageDownloader.adopt` le recopie ensuite sur le `.part` pendant
+   que ce fichier existe encore. Ce qui restait de l'image occupe donc un
+   moment deux fois sa place. Pour `bureaux-1` sans rien de déjà là,
+   `room.total` valait 2 206 982 467 octets (2,06 Gio), et le pic de la
+   recopie 2 893 578 240 (2,69 Gio). Un téléphone à 2,3 Gio libres
+   recevait toute l'image, puis tombait à sa recopie. Aucun test ne jouait
+   `adopt` contre `room`.
+2. **La feuille rouverte pendant un transfert de fond se contredisait.**
+   Le fichier de la session avait déjà pris de la place, que `room` ne
+   voit pas : la ligne disait à la fois « continue en arrière-plan » et
+   « Pas assez de place… Rien n'a été téléchargé », et « Installer »
+   était éteint. On ne pouvait plus suivre le transfert.
+3. **« Continue en arrière-plan » restait affiché après « Annuler »**, ou
+   après un téléchargement fini puis refusé : `runningFiles` n'était lu
+   qu'à l'ouverture.
+4. **L'entrée d'en dessous et la doc de `ResumeWait` disaient faux.**
+   « Dès le toucher… l'instantané de 842 Mio se déplie » : `IsoBoot.decide`,
+   la lecture du noyau et `SavedSession.find` (le dépliage LZ4 de 155 Mio
+   en 345,8 Mio) tournent sur le fil principal **avant** que l'attente
+   n'existe. L'écran est figé et sans phrase pendant ce travail, et les
+   secondes partaient après lui. 842 Mio est la taille de l'ancien
+   `bureau.snap` ; l'instantané brut du bureau prêt fait 345,8 Mio (le
+   tableau de l'entrée du 14 novembre).
+5. **Le `.part` de l'image dans `room` n'avait pas de test** : ignoré, 42
+   tests, aucun échec.
+6. **Le `checkCancellation` du début de `fetch` non plus** : retiré, une
+   tâche déjà annulée écrivait un premier morceau avant de lever.
+7. **Deux branches de phrases non plus** : « chacune avec sa session » et
+   « rien à télécharger ».
+
+Les deux points plausibles :
+
+- `BackgroundImageDownloads.transfer` relevait `Task.isCancelled` hors du
+  verrou : un `cancel` glissé entre ce relevé et l'inscription de l'attente
+  ne trouvait rien, et la tâche partait ensuite, l'annulation perdue.
+- Un réseau qui demande de se connecter d'abord (Wi-Fi d'hôtel) rend sa
+  page en 200 : lue comme un index, elle ne proposait rien, et la section
+  disparaissait sans un mot.
+
+**Ce qui change.**
+
+- `ReadyDesktop.Room` garde à part ce qui reste de l'image et du bureau,
+  et son `total` est le moment le plus lourd des trois : l'image
+  recopiée, le bureau recopié, l'installation. Pour `bureaux-1` : 2,69 Gio.
+  Quand c'est la recopie qui fixe le compte, le refus le dit : « l'image
+  reçue, 1,3 Gio, est recopiée avant d'être rangée, et prend un moment
+  deux fois sa place ».
+- `fetch(running:)` et `spaceShortfall(running:)` : un fichier du bureau en
+  cours en arrière-plan n'est pas refusé, il est suivi. La ligne dit qu'il
+  continue, et « Installer » reste allumé.
+- `followed(running:)` : quand `fetch` rend la main, les fichiers du
+  bureau sortent des fichiers en cours. « Annuler » arrête aussi ceux que
+  `fetch` n'avait pas encore rejoints (`cancelDesktop(_:)`), pour que la
+  ligne ne cache pas un transfert qui court.
+- `LocalVMModel.boot` prend le toucher en tête (`touchedAt`), et
+  `ResumeWait` compte depuis lui, ce travail compris. La doc dit
+  maintenant que la phrase ne se montre qu'une fois le fil principal
+  rendu, et que les 12,0 s du banc se comptent après `restore`.
+- `transfer` relève l'annulation sous le verrou de l'inscription, et la
+  tâche de la session naît sous celui que `cancel` prend avant de chercher
+  les tâches.
+- `ImageDownloader.readyCatalog` : un 200 qui n'est pas un objet JSON avec
+  son `format` se dit (`ReadyDesktop.isIndex`). Un index d'un format plus
+  récent reste muet.
+
+**Comment c'est vérifié.** 8 tests neufs : `ReadyDesktopTests` (7, dont un
+qui joue `adopt` et mesure les deux fichiers présents ensemble, puis les
+vraies tailles de `bureaux-1` refusées à 2,3 Gio avant toute requête) et
+`ResumeWaitTests` (1, qui lit `LocalVMModel` commentaires ôtés). Une
+assertion ajoutée à `testAnInstalledDesktopIsNamedAndNotReplaced` (deux
+machines, chacune avec sa session). `testNotEnoughSpaceRefusesBeforeAnyRequest`
+écrit `Room` sous sa nouvelle forme ; ses valeurs ne changent pas.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| `total` sans la recopie (`download + install`) | `testTheRoomHoldsTheCopyOfABackgroundDownload` |
+| la phrase de la recopie jamais choisie | le même |
+| le `.part` de l'image ignoré par `room` | `testTheRoomCountsThePartOfTheImage` |
+| le `checkCancellation` du début de `fetch` retiré | `testACancelledTaskAsksForNothing` |
+| « chacune avec sa session » neutralisé | `testAnInstalledDesktopIsNamedAndNotReplaced` |
+| « rien à télécharger » neutralisé | `testNothingLeftToDownloadIsSaid` |
+| `spaceShortfall` qui ignore `running` | `testABackgroundDownloadIsFollowedNotRefused` (2) |
+| `fetch` qui ignore `running` | le même (1) |
+| `followed` qui ne retire rien | `testAFollowedDesktopIsNoLongerSaidInTheBackground` |
+| la page prise pour un index | `testAPageInsteadOfTheIndexIsSaid` |
+| `ResumeWait(since: Date(), …)` dans `boot` | `testTheAppCountsTheWaitFromTheTouch` |
+
+Suite Swift entière : 2 961 tests exécutés (8 de plus), 67 sautés, aucun
+échec (6 min 12 s). SwiftLint strict : 0 violation. Le SwiftUI touché passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 680 → 3 688
+(3 044 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La liaison iOS ne se juge que sur la CI « App iOS » et sur un iPhone :
+  `cancelDesktop(_:)`, `runningFiles` après un suivi, et la course de
+  `transfer`, que rien ne rejoue ici. Le verrou se raisonne (l'annulation
+  lève le drapeau de la tâche avant d'appeler `cancel`), il ne se teste
+  pas sous Linux.
+- **L'écran reste figé, sans phrase, pendant la lecture de l'image et le
+  dépliage** de la première reprise. Le compte des secondes le comprend
+  désormais, mais rien ne s'affiche tant que ce travail tient le fil
+  principal. Le sortir de là demande de rendre `boot` asynchrone, avec
+  `kernelName` réglé avant que la vue ne puisse appeler `stop()` ou
+  `suspend()` : un chantier à part, qui ne se juge que sur un iPhone.
+  Sa durée sur un téléphone n'est pas mesurée.
+- Le compte de `room` suppose des serveurs qui reprennent (`206`). Un
+  `200` à une reprise recevrait le fichier entier, et la recopie
+  demanderait alors plus que ce qui est compté.
+- Un transfert de fond suivi sans garde peut encore manquer de place à sa
+  recopie, s'il a été lancé par une version d'avant (sans la recopie
+  comptée) ou si le téléphone s'est rempli depuis. L'écriture tombe
+  alors avec l'erreur du système, et le `.part` garde ce qu'il avait.
+
+## 2026-11-15 — Bureaux prêts de bout en bout : la place, l'annulation, l'image en faute, et la première reprise dite
+
+Deux parties : le reste du contrôle adverse de l'entrée juste en dessous,
+puis le parcours de qui installe le bureau prêt de la release `bureaux-1`
+(ISO Void de 1,4 Gio, bureau de 156 Mio, 1 Gio de mémoire), relu en
+adversaire cas par cas.
+
+**Le reste du contrôle : deux défauts réels.**
+
+- **Le test qui lit `LocalVMModel.swift` n'écartait que les lignes qui
+  commencent par `//`.** Le refus `.session` du fil mis entre `/* */`,
+  derrière `_ = refusal //`, ou dans un `if false {` passait : 8 tests,
+  aucun échec, et l'état restait `running`. L'entrée d'en dessous disait
+  pourtant qu'un refus « commenté » le faisait tomber.
+- **« Déplacé » était faux** : le test comptait des occurrences. Le refus
+  du fil retiré et un autre ajouté sur le fil principal laissaient le
+  compte à deux.
+
+Corrigé (`BootRefusalTests`) : tous les commentaires sont ôtés, blocs
+imbriqués et fins de ligne compris, hors des chaînes (`withoutComments`,
+tenu par un test neuf). Ensuite, chaque appel est cherché **à sa place**,
+avec la condition qui le déclenche et le `return` qui le suit
+(`refusalSites`, un lieu par appel compté). Le commentaire de
+`LocalVMModel` et la doc du test disent ce qui échappe encore : un `return`
+placé plus tôt, ou une valeur changée avant la condition.
+
+**Le parcours : ce qui n'allait pas.**
+
+1. **Rien ne regardait la place libre.** 1,4 Gio partaient sur un
+   téléphone plein, et l'écriture tombait au milieu de l'image, ou l'import
+   après les deux téléchargements.
+2. **« Annuler » n'existait pas**, et fermer la feuille n'arrêtait rien.
+   L'attente de la session d'arrière-plan ne voyait pas l'annulation de la
+   tâche qui l'attendait. Dans `ReadyDesktop.fetch`, une image finie au
+   moment de l'annulation lançait quand même l'archive. Dans
+   `ImageDownloader.download`, l'annulation remontait comme un transfert
+   coupé.
+3. **Une image en faute effaçait le bureau reçu.** Le refus `wrongKernel`
+   (une ISO à la bonne taille, mais pas la bonne image) ou `missingImage`
+   effaçait l'archive, pourtant vérifiée à sa somme. L'essai suivant
+   trouvait l'image à sa taille, retéléchargeait 156 Mio, et refusait de
+   nouveau, sans fin. La phrase ne disait pas quoi faire.
+4. **Déjà installé, et rien ne le disait.** Toucher de nouveau
+   « Installer » ajoute une machine sous une clé neuve, sans rien
+   remplacer. Mais la ligne ne nommait pas la machine qui démarre déjà
+   cette image, ni si sa session était en cours : on pouvait croire le
+   bureau en cours reparti du jour de la fabrication.
+5. **L'index injoignable était muet.** Une panne réseau ou un 503 était
+   traité comme le 404 d'une release absente : la section disparaissait
+   sans un mot ni « Réessayer ». Or `bureaux-1` est publiée.
+6. **L'application rouverte ne disait pas qu'un téléchargement continuait
+   en arrière-plan.** La ligne proposait le bureau comme si rien n'avait
+   commencé.
+7. **La première reprise laissait un écran figé une douzaine de secondes**
+   (12,0 s au banc, voir l'entrée du 14 novembre) : le bureau à l'écran ne
+   répondait pas au doigt, et la phrase de `FirstResume` n'arrivait que
+   dans la console, à la fin du dépliage.
+
+La mémoire trop faible était déjà tenue : le bouton est éteint, et la
+phrase en orange (`fits`, `memoryPhrase`, `testWhatTheSheetSays`). Une ISO
+déjà là à sa somme ne se redemande pas
+(`testAnImageAlreadyThereIsNotFetchedAgain`).
+
+**Ce qui change.**
+
+- `ReadyDesktop.room` compte la place : ce qu'il reste à recevoir (les
+  `.part` déduits), plus deux fois le bureau (l'import le recopie, la
+  première sauvegarde s'écrit à côté de la session), plus 256 Mio pour le
+  noyau sorti de l'image (`digestScratch`). Pour `bureaux-1`, sans rien de
+  déjà là : environ 2,1 Gio. `fetch(available:)` refuse **avant toute
+  requête** (`Refusal.notEnoughSpace`). Le refus dit combien il faut,
+  combien il reste, combien libérer et où, et que rien n'a été téléchargé.
+  La feuille montre la même phrase avant qu'on touche, et éteint le
+  bouton. `LocalStorage.availableBytes` lit la place « pour un usage
+  important » sur iOS, la place brute ailleurs. Si la place ne se lit pas,
+  rien n'est refusé.
+- Annuler : un bouton pendant les deux fichiers. Dans
+  `BackgroundImageDownloads`, `withTaskCancellationHandler` arrête la
+  tâche de la session, muette. `fetch` s'arrête entre les deux fichiers, et
+  `download` lève `CancellationError` après avoir écrit le morceau reçu. La
+  ligne dit ce qui est gardé, tel qu'il est sur le disque
+  (`keptPhrase`). Pendant le téléchargement, la feuille dit que la fermer
+  ne l'arrête pas.
+- `install` ne garde l'archive que si l'image est en faute. La phrase
+  dit : « Le bureau reçu est gardé. Supprimez cette image de la
+  bibliothèque, puis touchez de nouveau « Installer » : seule l'image sera
+  retéléchargée. »
+- `installedCopies` et `alreadyInstalledPhrase` nomment les machines qui
+  démarrent déjà l'image, avec ou sans session. La feuille le dit, puis
+  demande confirmation avant d'en installer une autre.
+- `ImageDownloader.readyCatalog` : un 404 reste muet ; toute autre panne
+  donne `Catalog.desktopsFailure`, montrée avec « Réessayer ».
+- `backgroundPhrase` : la feuille rouverte lit les tâches de la session en
+  cours (`runningFiles`) et dit « Le téléchargement de l'image continue en
+  arrière-plan. Touchez « Installer » pour le suivre… ».
+- `ResumeWait` (nouveau, `Sources/WisqVM`). Dès le toucher d'une première
+  reprise, la phrase « Reprise du bureau en cours — 6 s. L'écran ne répond
+  pas encore : la console répond d'habitude en 11 à 15 s. » s'affiche hors
+  de la console et de l'écran, même en plein écran. Au-delà de 15 s, elle
+  le dit. Elle se tait au premier octet de l'invité (l'écho de la ligne
+  tapée) : `ConsoleSink` compte les octets de l'invité à part des phrases
+  de wisq. `LocalVMModel.resumeWait` la relève à chaque battement et à
+  chaque écriture.
+
+**Comment c'est vérifié.** 15 tests neufs : `BootRefusalTests` (1),
+`ReadyDesktopTests` (10, contre le serveur scripté d'`ImageDownloaderTests`),
+`ResumeWaitTests` (3), `LocalStorageTests` (1). Un test change de sens :
+`testAnImageWithAnotherKernelIsRefused` exigeait l'archive effacée ; il
+l'exige gardée, et le test neuf vérifie que l'essai suivant ne la redemande
+pas.
+
+Sabotages d'une ligne, chacun restauré par copie (`git diff --stat`
+identique avant et après) :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| (a) le refus `.session` du fil entre `/* */` | 3 assertions (compte, total, lieu) ; avant : rien |
+| (b) le même derrière `_ = refusal //` | 3 ; avant : rien |
+| (c) le même dans `if false {` | 1 (le lieu) ; avant : rien |
+| le refus du fil retiré, un second ajouté sur le fil principal, dans le `if` ou après lui | 2, ou 1 ; avant : rien |
+| `.bootMedia` dans `if false {` | 1 (le lieu) |
+| `withoutComments` sans les blocs | 3 (`testCommentsAreStrippedWhereverTheyStand`) |
+| la garde de place retirée de `fetch` | `testNotEnoughSpaceRefusesBeforeAnyRequest` (5 assertions) |
+| l'installation comptée une fois au lieu de deux | le même test (2) |
+| les `.part` ignorés par `room` | 3 tests |
+| pas d'arrêt entre l'image et l'archive | `testACancelAsTheImageEndsDoesNotStartTheArchive` |
+| pas d'arrêt dans le flux de `download` | les deux tests d'annulation au milieu |
+| l'archive effacée avant les gardes de l'image | `testAnImageAtFaultKeepsTheDownloadedArchive`, `testAnImageWithAnotherKernelIsRefused` |
+| l'index injoignable rendu muet | `testAnUnreachableIndexIsSaid` |
+| le 404 dit comme une panne | 2 tests |
+| la session des copies supposée là | `testAnInstalledDesktopIsNamedAndNotReplaced` |
+| l'attente sans repère (`guestBytes > 0`) | `testTheFirstGuestByteEndsIt` |
+| l'attente sans le cas « plus long » | `testTheWaitIsSaidFromTheFirstTouch` |
+| la place jamais lue | `testTheFreeSpaceOfAVolumeIsRead` |
+| le bureau en arrière-plan muet | `testABackgroundDownloadIsSaid` |
+
+Suite Swift entière : 2 953 tests exécutés (15 de plus), 67 sautés, aucun
+échec (6 min 46 s). SwiftLint strict : 0 violation. Le SwiftUI touché passe
+`swiftc -frontend -parse`. Site : 476 tests. Compte publié : 3 665 → 3 680
+(3 036 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Toute la liaison iOS ne se juge que sur la CI « App iOS » et sur un
+  iPhone : le bouton « Annuler », `withTaskCancellationHandler`, la
+  confirmation, la ligne « Reprise du bureau en cours ». Ici, seuls le
+  parse et SwiftLint l'ont vue. Aucun test iOS neuf.
+- **Annuler perd les octets de la tâche d'arrière-plan en cours** : la
+  session ne rend son fichier qu'à la fin, et le `.part` n'a que ce qu'il
+  avait au départ de la tâche. La phrase le dit (`keptPhrase` ne compte
+  que le disque). Même perte quand on force à quitter wisq depuis le
+  sélecteur d'applications : iOS annule alors les transferts. Les données
+  de reprise d'`URLSession` (`NSURLSessionDownloadTaskResumeData`) ne sont
+  pas employées. Les recoudre demanderait de savoir ce que rend une tâche
+  reprise, et seul un iPhone peut le dire.
+- La place « pour un usage important » d'iOS et la marge choisie (deux fois
+  le bureau, plus 256 Mio) ne sont pas mesurées sur un téléphone.
+- L'attente de 11 à 15 s vient du banc Linux. Sur un iPhone, l'interprète
+  et le dépliage de 842 Mio n'ont pas la même vitesse.
+- Une ISO à la bonne taille mais fausse n'est toujours reconnue qu'à
+  l'installation, par son noyau : sa somme n'est pas refaite (1,4 Gio).
+
+## 2026-11-15 — Second contrôle des refus du début de démarrage : chaque appel compté
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé deux choses.
+Les deux sont réelles.
+
+**Ce qui n'allait pas.**
+
+- **Un des deux refus `.session` n'était tenu par aucun test : celui du
+  fil d'émulation.** Il vient de la tâche du `catch let refusal as
+  SavedSession.Unreadable`, quand la machine refuse une reprise que
+  `SavedSession.judge` avait acceptée. Le test qui lit
+  `LocalVMModel.swift` demandait *au moins un* `refuseToStart(.cas` par
+  cas, et `.session` en a deux. Avec l'appel du fil remplacé par
+  `self.finish(with: BootRefusal.session(refusal).explanation(…))`,
+  `BootRefusalTests` passait (8 tests, aucun échec). Conséquence : l'état
+  reste `running`, `finish` met `runStart` à `nil`, et « Arrêter » appelle
+  `userStopped(seen: nil)`, qui rend `.forget`. La session que la console
+  vient de promettre « gardée telle quelle » est effacée, et la phrase
+  « effacée pendant le démarrage » de l'entrée d'en dessous disparaît
+  aussi pour ce chemin. Aucun test iOS ne faisait non plus de reprise
+  refusée par la machine après un jugement réussi.
+- **Le commentaire de `LocalVMModel` et le rapport disaient plus que le
+  test.** Le commentaire affirme que chaque refus passe par
+  `refuseToStart` et qu'« un test sous Linux lit ce fichier pour le
+  tenir ». Le test ne tenait que la présence d'un appel par cas. Le
+  rapport de l'entrée d'en dessous lui prêtait en plus une phrase, « rien
+  n'oblige tous les refus à passer par `refuseToStart` », qu'elle ne
+  contient pas (`grep -n oblige` ne rend aucune ligne d'elle). Sa section
+  « Ce qui reste » ne citait pas ce trou.
+
+**Ce qui change.**
+
+- Le test qui lit `LocalVMModel.swift` (commentaires écartés) compte les
+  appels **cas par cas** : un pour chaque cas, deux pour `.session`. Il
+  compte aussi leur total. Enfin, il n'admet que deux `finish(with:` hors
+  de la fin d'un invité qui a tourné (les lignes qui finissent par
+  `+ silence`) : le corps de `refuseToStart` et l'exception de la session
+  trop grande. Un refus ajouté, retiré, déplacé ou affiché en direct le
+  fait tomber. C'est voulu : qui en ajoute un met ce tableau à jour.
+- Le chemin du fil a son test de bout en bout. Une session RISC-V privée
+  de son dernier octet passe `judge`, puis `PendingSession.resume` lève
+  « abîmée ». `SavedSessionTests.testARISCVSessionCutShortIsJudgedReadableButRefusedOnResume`
+  le tient sous Linux. `LocalVMModelTests.testStoppingAfterASessionTheMachineRefusedKeepsIt`
+  fait le parcours complet avec la même coupure : il sauve la machine,
+  coupe sa session, rouvre (la console promet « gardée telle quelle »),
+  touche « Arrêter », et retrouve le fichier intact.
+- Le commentaire de `LocalVMModel` et la doc du test disent ce que le test
+  tient vraiment.
+
+**Comment c'est vérifié.** Chaque sabotage d'une ligne fait tomber au
+moins une assertion :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| le refus `.session` du fil remplacé par un `finish` direct (la reproduction du contrôle) | 3 assertions (compte de `.session`, total, `finish` direct) ; avant : rien |
+| le même appel retiré (`_ = refusal`) | 2 (compte de `.session`, total) |
+| l'appel du fil commenté, et un `finish` direct dessous | 3 |
+| `refuseToStart(.bootMedia` remplacé par un `finish` direct | 3 |
+| le refus `.session` du fil principal changé en `.unreadableKernel` | 2 (les deux comptes) |
+| `try? machine.restore(snapshot)` dans `PendingSession.resume` | le test Linux neuf (« aucune erreur levée ») |
+
+Chaque fichier saboté a été restauré depuis une copie, et les sommes
+vérifiées. Suite Swift entière : 2 938 tests exécutés (1 de plus), 67 sautés,
+aucun échec (6 min 19 s). Site : 476 tests. Compte publié :
+3 663 → 3 665 (3 021 Swift + 644 Rust : un test sous Linux, un sur iOS).
+
+**Ce qui reste.**
+
+- Le test iOS neuf ne tourne que sur la CI « App iOS » ; ici, seuls le
+  parse et SwiftLint l'ont vu. La coupure qu'il emploie est jugée sous
+  Linux sur une machine RISC-V vierge, pas sur celle du test iOS. Un essai
+  à part, non gardé, l'a aussi vue lever sur une machine RISC-V avec un
+  disque branché : la dernière section, quelle qu'elle soit, s'arrête
+  court.
+- Le compte des `finish(with:` repose sur la forme `+ silence)` des fins
+  d'invité. Une fin d'invité écrite autrement fera tomber le test, et il
+  faudra le dire là.
+- Il n'y a toujours pas de test iOS pour l'échec sur le fil avec une
+  session lisible (voir l'entrée d'en dessous).
+
+## 2026-11-15 — Contrôle des refus du début de démarrage : la liaison tenue, et quatre phrases rendues vraies
+
+Le contrôle adverse de l'entrée juste en dessous a trouvé cinq choses.
+Toutes sont réelles ; voici comment chacune est corrigée.
+
+**Ce qui n'allait pas.**
+
+- **La ligne qui porte toute la tranche n'était tenue par aucun test.**
+  `life.refusedToStart(refusal)`, dans `LocalVMModel.refuseToStart`, a été
+  remplacée par `_ = refusal` : rien n'est tombé, ni les 7 tests de
+  `BootRefusalTests` ni les 23 de `MachineLifecycleTests`. Sans elle,
+  l'état reste `running` après chaque refus, et « Arrêter » efface, y
+  compris la session illisible que la console vient de promettre
+  « gardée telle quelle ». Le test qui lit le source vérifiait la présence
+  des appels `refuseToStart(.cas`, pas le corps de la fonction. Le test
+  iOS de l'entrée d'en dessous serait passé lui aussi : son refus tombe
+  avant la lecture de l'image, et la course n'y nomme aucune session, si
+  bien qu'un « Arrêter » qui efface n'efface rien.
+- **La promesse de l'échec sur le fil n'était tenue par rien.** Avec
+  `let sessionAwaited = saved != nil` forcé à `false`, la console ne
+  promettait plus la session gardée et l'état devenait `notStarted`.
+  Forcé à `true`, elle la promettait sans qu'il y ait de session. Aucun
+  test ne tombait dans les deux cas. Le sabotage (H) de l'entrée d'en
+  dessous portait sur `keepsASession`, pas sur ce câblage.
+- **La doc de `MachineArchive.size(of:)` disait faux.** Elle affirmait
+  qu'un lien mort rend l'erreur du système de fichiers. Ce n'est pas le
+  cas : `resolvingSymlinksInPath` rend le lien mort tel quel, sans
+  erreur, et `attributesOfItem` décrit alors le lien (mesuré sous Swift
+  6.3 Linux : 90 octets, type lien symbolique). Le test du lien mort
+  passait seulement parce que l'import ouvre la source d'abord, et que
+  l'ouverture échoue. Conséquence réelle : à l'export, un disque propre
+  en lien mort était annoncé à la taille du lien. Aucun disque vierge n'a
+  cette taille, et l'import d'en face refusait l'archive entière comme
+  « abîmée ».
+- **Un message faux dans une fenêtre étroite.** Quand « Arrêter » ou
+  « Oublier » est touché pendant que le fil n'a encore rien noté
+  (`Start.pending`), la session est effacée, comme demandé. Si le fil
+  échoue ensuite (un disque qui ne se branche pas) ou refuse la session,
+  sa tâche passe plus tard, et la console affirmait « La session sauvée
+  de … est gardée telle quelle ». C'était déjà le cas du refus `.session`
+  depuis #702 ; l'entrée d'en dessous l'avait étendu à l'échec.
+- **L'entrée d'en dessous disait plus que le code.** D'abord, « Chaque
+  refus passe par `LocalVMModel.refuseToStart` » est faux pour la session
+  trop grande pour la mémoire libre (`SessionMemory.tooLittleRoom`). Elle
+  passe par `life.machineSize`, puis `sessionRefused`, et n'a pas de cas
+  dans `BootRefusal`. Son comportement est sûr : l'état vaut `refused`, et
+  rien ne s'efface. Ensuite, la doc de `State.notStarted` disait « aucune
+  session n'était en jeu ». Or le cas même mis en avant (retour
+  d'arrière-plan avec moins de mémoire libre) arrive avec une session
+  lisible sur le disque. Enfin, le rapport de la tranche comptait
+  9 appels à `life.guestFinished()` avant elle ; il y en avait 10 (huit
+  refus, l'échec du fil, la fin de l'invité). Et « un lien mort rend
+  l'erreur du système de fichiers », plus bas, était faux, comme dit
+  plus haut.
+
+**Ce qui change.**
+
+- `refuseToStart` n'a plus qu'une ligne :
+  `finish(with: life.refusedToStart(refusal, name: name))`. Le test qui
+  lit `LocalVMModel.swift` exige ce corps mot pour mot. Un test iOS neuf,
+  `testStoppingAfterAnUnreadableSessionKeepsIt`, fait le parcours
+  complet : il sauve une machine, abîme sa session, rouvre l'écran (la
+  console promet « gardée telle quelle »), touche « Arrêter », puis
+  retrouve le fichier intact.
+- « Une session lisible attendait » est maintenant un fait de
+  `PendingSession` (`awaited`). Il est fixé à la construction, et la
+  reprise, réussie ou refusée, ne le vide pas. `SavedSessionTests` le
+  juge. `LocalVMModel` n'a plus son propre booléen, et le test qui lit le
+  source exige `.couldNotStart(reason, sessionKept: pending.awaited)`.
+- `MachineLifecycle.refusedToStart(_:name:)` rend la phrase à afficher, et
+  il sait si la session de la course a déjà été effacée : « Arrêter »
+  (tout passage à `ended` rend `.forget`) ou « Oublier » (`forgotten`).
+  Dans ce cas, la console dit « effacée pendant le démarrage : la
+  prochaine ouverture ne reprendra rien », et l'état vaut `notStarted`, pas
+  `refused`. Quand c'est le fil qui a déjà noté l'échec, « Arrêter »
+  n'efface rien (`userStopped(seen:)`), et la promesse reste vraie.
+- `MachineArchive.size(of:)` lève « fichier introuvable » quand le chemin
+  résolu est encore un lien (mort, ou qui boucle). Un disque propre en
+  lien mort n'est plus annoncé, et la machine part sans lui.
+- Les commentaires sont corrigés. La session trop grande pour la mémoire
+  libre est nommée comme l'exception, dans `LocalVMModel` et dans
+  `BootRefusalTests`, et le test qui lit le source exige qu'elle passe par
+  `life.machineSize`. `State.notStarted` dit « sans que la console
+  promette une session gardée ».
+
+**Comment c'est vérifié.** Trois tests neufs sous Linux :
+`testARefusalAfterTheSessionWasErasedPromisesNothing` dans
+`BootRefusalTests`, `testABoxRemembersThatASessionWasAwaited` dans
+`SavedSessionTests`, `testADeadLinkHasNoSize` dans `MachineArchiveTests`.
+S'y ajoutent le test iOS neuf, et trois assertions de plus dans le test
+qui lit `LocalVMModel.swift` (le corps de `refuseToStart`, la promesse
+tirée de `pending.awaited`, l'exception par `machineSize`). Chaque
+sabotage d'une ligne fait tomber au moins un test :
+
+| Sabotage | Ce qui tombe |
+|---|---|
+| corps de `refuseToStart` sans le cycle de vie (`finish(with: refusal.explanation(…))`) | le test qui lit le source |
+| `sessionKept: false`, puis `sessionKept: true`, dans `LocalVMModel` | le test qui lit le source, chaque fois |
+| `awaited = false` dans `PendingSession` | 3 assertions |
+| `sessionErased` toujours faux | 18 assertions |
+| `sessionErased` sans `forgotten` | 9 assertions |
+| la phrase rendue sans `sessionErased` | 12 assertions |
+| l'état `refused` malgré l'effacement | 6 assertions |
+| l'échec qui promet malgré l'effacement | 5 assertions |
+| `machineSize` contourné dans `LocalVMModel` | le test qui lit le source |
+| `size(of:)` sans la garde du lien mort | 2 (l'erreur attendue, puis l'import refusé « abîmé ») |
+
+Chaque fichier saboté a été restauré depuis une copie, et les sommes
+vérifiées. Suite Swift entière : 2 937 tests exécutés (3 de plus), 67 sautés,
+aucun échec (6 min 37 s). Site : 476 tests. Compte publié : 3 659 →
+3 663 (3 019 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le test iOS neuf ne tourne que sur la CI « App iOS ». Il n'y a toujours
+  pas de test iOS pour l'échec sur le fil avec une session lisible : le
+  disque branché vient de `KernelLibrary.list()`, la bibliothèque réelle
+  de l'application, qu'un test ne peut pas remplir sans y toucher.
+  `PendingSession.awaited`, la phrase et l'état sont jugés sous Linux ; la
+  liaison ne l'est que par le texte.
+- Le test qui lit `LocalVMModel.swift` dépend de chaînes exactes ; il y en
+  a trois de plus. Une reformulation du code le fera tomber, exprès.
+- Ce qui reste de l'entrée d'en dessous tient toujours.
+
+## 2026-11-15 — Les refus du début de démarrage n'effacent plus la session d'une autre course
+
+**D'abord, le contrôle adverse des sept commits de la frappe** (les deux
+entrées juste en dessous), perdu au redémarrage du conteneur et refait
+ici. Les tests passent, les sabotages tenus en sont bien. Trois choses
+n'allaient pas. Deux lignes que rien ne tenait : sans `typingHandoff`
+vidé dans `X86Machine.abandonTyping`, un collage admis par la machine et
+pas encore passé au contrôleur s'écrivait quand même après l'annulation,
+Ctrl-C derrière lui ; sans `heldInQueue = heldByGuest` dans
+`X86PS2Controller.abandonTyping`, une touche dont l'enfoncement attendait
+encore restait comptée tenue une fois la file vidée. Les deux sabotages
+passaient sans faire tomber un seul test ; un test neuf pour chacun les
+fait tomber maintenant (4 assertions, 2 assertions). Et les deux entrées
+portaient la date de la veille, au-dessus d'une entrée du jour : corrigé.
+
+**Ce qui n'allait pas.** Le reste connu de la reprise sûre (#702). Les
+refus du début de `LocalVMModel.boot` passaient par `guestFinished`,
+comme la fin d'un invité qui a tourné : l'état valait `ended`, et
+« Arrêter », toujours dans la barre, effaçait la session rangée sous
+`kernelName`. Ce nom n'est connu qu'une fois l'image lue. Huit refus
+tombent avant, ou sans session : mémoire libre trop basse, image
+illisible ou déballage de l'ISO qui échoue, initramfs touché à la place
+du noyau, processeur non émulé, noyau trop grand pour la machine RISC-V,
+noyau illisible, machine PC qui ne tient pas, noyau de PC sans initramfs.
+Pour les six premiers, `kernelName` était encore celui de la course
+précédente du même écran. Le cas qui arrive : une machine mise de côté
+quand l'application passe en arrière-plan, et au retour moins de mémoire
+libre qu'elle n'en demande. Le refus tombe avant la lecture de l'image,
+et « Arrêter » effaçait la session qu'on venait de sauver, celle d'un
+démarrage de vingt minutes. Le nom pouvait aussi être celui d'une autre
+image que celle qu'on ouvre (le fichier remplacé entre-temps), et
+« Oublier » était alors offert sur une session qui n'était pas la sienne.
+La fin tardive de la course précédente, qui passe encore sous le même
+numéro de course quand le refus tombe avant le fil, l'effaçait aussi. Et
+sur le fil d'émulation, un échec avant la première instruction (un disque
+qui ne se branche plus, un chargeur qui refuse) effaçait **la session
+lisible qu'il n'avait pas pu reprendre**, par la tâche du fil comme par
+`interpreterStopped`. Enfin, `MachineArchive.import` refusait comme
+« abîmée » une archive passée par un lien symbolique : `size(of:)` lisait
+la taille du lien. Le même défaut, à l'export, annonçait une couche liée
+à la taille de son lien et l'emportait tronquée, sans erreur.
+
+**Ce qui change.**
+
+- `BootRefusal` (WisqVM) nomme chaque refus d'avant la première
+  instruction et en porte la phrase. Les phrases écrites dans
+  `LocalVMModel` y descendent, mot pour mot. Chaque refus passe par
+  `LocalVMModel.refuseToStart`, puis `MachineLifecycle.refusedToStart`,
+  qui rend toujours `.nothing`. L'état devient `notStarted` (neuf), ou
+  `refused` quand une session est promise gardée. « Arrêter », le départ
+  de l'écran, la fin tardive d'une autre course : rien de cet état ne
+  touche au disque. `guestFinished` ne sert plus qu'à la fin d'un invité
+  qui a tourné.
+- Le nom de la session vit dans `MachineLifecycle.session`, remis à zéro
+  par chaque `booted()` et posé par `identified` une fois l'image lue. Un
+  refus d'avant la lecture ne nomme aucune session : « Oublier » n'est
+  plus offert sur celle d'une autre machine.
+- L'échec sur le fil (`Start.failed`) garde la session et le dit : « La
+  session sauvée de … est gardée telle quelle […] touchez « Oublier » ».
+  `userStopped(seen:)` lit ce que le fil a déjà noté, échec compris, comme
+  il lisait déjà le refus.
+- `MachineArchive.size(of:)` suit les liens. Un lien mort rend l'erreur du
+  système de fichiers, pas « abîmée ».
+
+**Un test changé, et pourquoi.** `testABootThatNeverRanIsNotSaved`
+exigeait que `interpreterStopped(after: .failed)` efface la session. C'est
+exactement le comportement que cette tranche retire. Il exige maintenant
+qu'elle ne soit ni écrite ni effacée, et qu'« Arrêter » qui suit n'efface
+rien non plus. Le cas `.pending` garde son assertion d'avant.
+
+**Comment c'est vérifié.** Sept tests neufs dans `BootRefusalTests`.
+Chaque refus, contre tout le cycle de vie : « Arrêter », départ, fin
+tardive, `interpreterStopped` sur chaque `Start`, reprise, relance. Puis
+qui dit `refused`, le nom de session remis à zéro, l'échec vu par le fil
+avant sa tâche, les phrases, le plancher nommé. Un dernier test lit
+`LocalVMModel.swift`, que Linux ne compile pas : `guestFinished` n'y
+paraît qu'une fois, et chaque cas de `BootRefusal` y passe par
+`refuseToStart`. Deux tests dans `MachineArchiveTests` (archive liée,
+couche liée), un dans `LocalVMModelTests`, que seule la CI « App iOS »
+exécute : une machine sauvée, puis un fichier absent ouvert sur le même
+écran, puis « Arrêter », et la session est toujours là. **Douze
+sabotages d'une ligne** (plus les deux du contrôle), chacun restauré
+depuis une copie, sommes vérifiées. Chacun fait tomber au moins un test :
+un refus repassé par `guestFinished` (2 assertions), un cas joint sans
+`refuseToStart` (1), « Arrêter » qui efface `notStarted` (une quarantaine),
+`refusedToStart` vers `ended` (une quarantaine), `booted` qui garde le nom
+(2), l'échec qui efface dans `interpreterStopped` (3), `userStopped` qui
+ignore l'échec (2), `stop` qui ne lit plus le fil (1), l'échec qui ne
+garde pas la session (1), la phrase sans la session gardée (3),
+`guestFinished` qui accepte `notStarted` (une trentaine), et `size(of:)`
+qui ne suit plus les liens (2 tests). Suite Swift entière : 2 934 tests
+exécutés, 67 sautés, aucun échec (6 min). Les douze sautés de plus que la
+dernière fois attendent des images que le redémarrage du conteneur a
+effacées du bloc-notes et qui n'ont pas été retéléchargées : aucun ne
+touche à cette tranche. Site : 476 tests. Compte publié : 3 647 →
+3 659 (3 015 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- La liaison dans `LocalVMModel`, et le test neuf de `LocalVMModelTests`,
+  ne sont jugés que par la CI « App iOS ». Ici, seulement
+  `swiftc -frontend -parse`, SwiftLint, et le test qui lit le texte.
+- Une session gardée après un échec du fil revient à chaque ouverture tant
+  que la cause demeure (un disque supprimé, par exemple) : la console dit
+  quoi faire, et « Oublier » efface. C'est voulu ; repartir de zéro sans le
+  demander était la perte.
+- Après un refus tombé avant la lecture de l'image, « Oublier » n'est plus
+  offert du tout, même quand c'est la même machine qui revient : son nom
+  dépend des octets de l'image, qu'on n'a pas lus.
+- Ce qui reste des entrées ci-dessous tient toujours : l'état PS/2 n'est
+  pas dans l'instantané.
+
+## 2026-11-15 — La frappe sur l'écran s'annule, et un collage trop long ne garde plus tout le presse-papiers
+
+Suite de l'entrée juste en dessous, après un contrôle adverse.
+
+**Ce qui n'allait pas.**
+
+- **Un collage long ne pouvait plus être arrêté.** Ce qui attend dans
+  `ScreenTypist` passe avant ce qu'on tape ensuite, Ctrl-C compris, et
+  l'attente allait jusqu'à un million de caractères. À cinquante
+  millisecondes la touche (30 ms tenue, 20 ms d'écart), un gros fichier
+  collé par erreur tenait le clavier de la machine environ quatorze heures,
+  le double avec des majuscules. Avant, la file s'arrêtait à 8 192 frappes.
+  Seul « Arrêter » la vidait, et cela effaçait aussi l'instantané sauvé.
+- **La borne ne bornait pas la mémoire.** `ScreenTypist` gardait
+  `text.prefix(room)`, une sous-chaîne. Elle tient vivant tout le tampon du
+  texte collé, partie refusée comprise, tant que la dernière lettre gardée
+  n'est pas tapée. Mesuré par le contrôle : 114 096 kB de mémoire résidente
+  pour un texte de 100 Mo dont on garde un million de caractères, contre
+  18 808 kB après copie.
+- **Un trou de test.** Avec `size == 1` changé en `size == 0` dans
+  `X86TypingHandoff.feed`, les relâchements seuls passaient par le chemin
+  des groupes, que le contrôleur refuse à la borne, et aucun test ne
+  tombait. Le code était juste ; rien ne le tenait.
+
+**Ce qui change.**
+
+- Un bouton **« Annuler la frappe »** sous l'écran, à côté de l'avis
+  (`ScreenTypist.cancel`). Il jette ce qui attend dans `ScreenTypist` et
+  demande à la machine de jeter ce qu'elle n'a pas encore joué
+  (`X86Machine.abandonTyping`, sous le verrou). La tranche suivante vide la
+  file du contrôleur (`X86PS2Controller.abandonTyping`) et pose à la place
+  un relâchement pour chaque touche que l'invité tient. Ces touches sont
+  maintenant suivies (`heldByGuest`, tenu à jour par `pace`), et aucune ne
+  reste enfoncée. Ce qu'on frappe ensuite part aussitôt : la machine
+  compte la file du contrôleur pour 512 frappes au plus (un relâchement
+  par touche) au lieu de son ancien compte. L'avis dit ce qui n'a pas été
+  tapé.
+- La frappe se dit « en cours », et s'annule, tant que la machine a encore
+  200 frappes ou plus à jouer (cinq secondes), même quand rien n'attend
+  dans `ScreenTypist` : un collage de deux mille caractères tient entier
+  dans la file de la machine. En dessous de ce seuil, l'avis clignoterait
+  à chaque touche. Le battement relit la file pour l'éteindre.
+- Ce qui est gardé d'un texte trop long est **copié** dans une chaîne à
+  lui. Le texte n'est plus compté deux fois : le reste n'est compté que
+  s'il est refusé (0,2 s pour 100 Mo, mesuré ici avec `swiftc -O`).
+- Le test du relâchement passe maintenant la file au contrôleur.
+
+**Comment c'est vérifié.** Quatre tests neufs et un test renforcé, tous
+dans `X86TypingTests`. Le premier va de bout en bout : un collage de
+50 000 caractères qui commence par une majuscule, l'invité tient Maj au
+moment de l'annulation, puis seuls Maj relâchée et Ctrl-C arrivent au
+port 0x60, et le clavier finit au repos. Les autres : l'annulation contre
+le faux clavier ; le seuil « en cours » ; la base de la sous-chaîne
+gardée, et de sa suite, limitée à un million de caractères ; et le
+relâchement au-delà de la borne pris par le contrôleur. **Treize
+sabotages d'une ligne**, chacun restauré par `git checkout`, `git status`
+vide après chacun. Chacun fait tomber au moins un test :
+`cancel` sans `abandonTyping` (2 tests), sans vider ce qui attend (2),
+la machine qui ne lève pas l'annulation (1), qui garde l'ancien compte du
+contrôleur (1), la tranche qui n'abandonne pas (1), le contrôleur sans
+relâchements (1), `pace` qui ne suit pas les touches tenues (1), les codes
+étendus inversés (1), le compte publié qui ignore l'annulation (1), le
+seuil strict (1), `resume` qui ne relit pas la file (1), sans la copie (1),
+et le sabotage du contrôle dans `feed` (1). Suite Swift entière :
+2 923 tests exécutés, 55 sautés, aucun échec (8 min). Site : 476 tests.
+Compte publié : 3 643 → 3 647 (3 003 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le bouton et la ligne sous l'écran (`LocalVMView`, `LocalVMModel`) ne
+  sont jugés que par la CI « App iOS ». Ici, seulement
+  `swiftc -frontend -parse` et SwiftLint, plus une relecture.
+- Ctrl-C frappé pendant un collage passe toujours **derrière** lui, exprès :
+  le faire passer devant enverrait au shell la suite du collage après le
+  Ctrl-C. Pour l'arrêter, on annule, puis on frappe.
+- Ce qui reste de l'entrée ci-dessous tient toujours : l'état PS/2 n'est
+  pas dans l'instantané.
+
+## 2026-11-15 — Le collage sur l'écran ne laisse plus de touche enfoncée dans le cœur Swift
+
+**Ce qui n'allait pas.** Le défaut que la carte Rust a corrigé en #704
+venait de ce cœur, et il y était encore. `X86PS2Controller.type` bornait sa
+file frappe par frappe, et `LocalVMModel.typeOnScreen` y versait un texte
+frappe par frappe (par `X86Machine.key` et une file sans borne entre les
+deux fils). Un collage qui remplissait la file au milieu d'une majuscule y
+laissait Maj et la lettre enfoncées : l'invité les tenait pour de bon, et
+Xorg répétait la lettre sans fin. Toute la suite du texte était jetée sans
+un mot. En passant, deux pertes silencieuses de plus : « \r\n » est **un
+seul caractère** en Swift, absent de la table du clavier, donc un texte
+venu de Windows perdait tous ses retours à la ligne ; et ce qu'un clavier
+américain n'a pas (é, émojis, guillemets typographiques) disparaissait
+sans que rien ne le dise.
+
+**Ce qui change.**
+
+- Le contrôleur suit la règle de `crates/wisq-page/src/carte/i8042.rs` :
+  un groupe de frappes (un caractère, modificateurs compris) entre entier
+  ou pas du tout ; le relâchement d'une touche que la file laisse enfoncée
+  passe toujours, même au-delà de la borne (512 touches suivies,
+  `X86HeldKeys`). La file peut donc dépasser la borne de 512 relâchements
+  au plus.
+- La file d'`X86Machine` entre les fils (`X86TypingHandoff`) a la même
+  borne, **comptée avec celle du contrôleur** (que le fil d'émulation
+  publie à chaque tranche) : ce qu'elle admet, le contrôleur le prend
+  entier à la tranche suivante. `X86Machine.type(_:)` s'arrête au premier
+  caractère qui ne tient plus et rend ce qui reste à taper
+  (`X86TypingReport`) ; `press(_:)` admet une touche de la barre entière.
+- `ScreenTypist` garde ce qui reste, dans l'ordre (un texte tapé ou une
+  touche frappée entre-temps passe derrière), et `LocalVMModel` le reprend
+  à chaque battement de la ligne d'état, une fois par seconde. Au-delà d'un
+  million de caractères en attente, et pour ce qu'un clavier américain n'a
+  pas, une ligne sous l'écran le dit.
+- « \r\n » devient une touche Entrée.
+- **La console série ne coupait rien**, vérifié : un collage de plus de
+  50 000 octets (accents, émojis, tabulations, `\r\n`, un `ESC [201~`
+  caché) arrive au port octet pour octet, et l'instantané emporte ce qui
+  n'a pas été lu. Seuls les contrôles sont retirés, exprès
+  (`TerminalPaste`). Un test le tient désormais.
+
+**Comment c'est vérifié.** Treize tests neufs : trois portés de
+`i8042.rs` dans `X86PS2Tests`, un dans `X86KeystrokesTests` (`\r\n`),
+neuf dans `X86TypingTests` (long collage avec majuscules, file pleine au
+milieu d'un caractère, arrêt au premier caractère qui ne tient plus,
+relâchement toujours admis, accord des deux files, un collage de 400
+lignes tapé en plusieurs passes et décodé depuis le port 0x60 — tout,
+dans l'ordre, Ctrl-C compris, clavier au repos à la fin —, l'ordre et les
+avis de `ScreenTypist`, la console série). Onze sabotages d'une ligne,
+chacun restauré (`git diff` vide) : relâchement refusé à la borne dans le
+contrôleur (2 tests tombent), groupe coupé frappe par frappe (1), groupe
+jugé sur sa première frappe dans la machine (3), caractère qui ne tient
+pas sauté au lieu d'arrêter le texte (6), relâchement refusé dans la
+machine (1), sans l'entrée `\r\n` (2), ce qui vient passant devant ce qui
+attend (2), `type` puis `press` oubliant ce que tient le contrôleur (1
+chacun), instantané sans l'entrée série en attente (1), `ScreenTypist`
+sans borne (1). Suite Swift entière : 2 919 tests exécutés, 55 sautés, aucun échec (8 min). Compte publié : 3 630 → 3 643 (2 999 Swift + 644 Rust).
+
+**Ce qui reste.**
+
+- Le SwiftUI (`LocalVMModel`, la ligne sous l'écran dans `LocalVMView`)
+  n'est jugé que par la CI « App iOS » ; ici, `swiftc -frontend -parse`
+  et SwiftLint seulement.
+- **L'état du contrôleur PS/2 n'est pas dans l'instantané.** Une machine
+  suspendue pendant qu'un collage s'écrit perd sa file, et si une frappe
+  enfoncée était partie sans son relâchement, l'invité la tient encore à
+  la reprise. Le corriger demande une section de plus et un niveau
+  d'instantané de plus ; pas fait ici.
+- Le port série lit son entrée par `removeFirst`, en temps quadratique :
+  mesuré 0,48 s (compilation de mise au point) pour lire 61 Ko. Un collage
+  d'un mégaoctet coûterait, extrapolé et non mesuré, de l'ordre de la
+  minute au fil d'émulation. Rien n'est perdu, mais c'est lent.
+- Dans l'invité, une ligne de plus de 4 095 caractères en mode canonique
+  est tronquée par Linux lui-même (`n_tty`) : wisq n'y peut rien.
 
 ## 2026-11-15 — Le décodeur lit « ni moins » que le silicium, et `bureaux-1` est publié
 

@@ -257,6 +257,17 @@ public struct ReadyDesktop: Equatable, Sendable {
         return chosen
     }
 
+    /// **Ce texte est-il un index des bureaux**, d'un format ou d'un autre ?
+    /// Un objet JSON qui porte son numéro de format. Un index d'un format
+    /// plus récent ne propose rien à cette version (`parse`), sans que ce
+    /// soit une panne ; une page HTML rendue à sa place en est une.
+    public static func isIndex(_ json: String) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else {
+            return false
+        }
+        return root["format"] is NSNumber
+    }
+
     /// Une entrée, jugée.
     static func desktop(from entry: Index.Entry, index: URL, supportedLevel: UInt64) -> ReadyDesktop? {
         let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -436,13 +447,47 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// avait été écrit sur l'ancien ne vaut plus rien), avant l'archive. Le
     /// dire après les deux le perdait quand l'archive tombait : l'essai
     /// suivant trouvait l'image à sa taille, et ne le disait plus jamais.
+    ///
+    /// **`available` est la place libre du téléphone** (`LocalStorage.availableBytes`),
+    /// lue juste avant : quand elle ne suffit pas à ce qu'il reste à recevoir,
+    /// à recoudre et à installer (`room`), rien n'est demandé, et le refus
+    /// dit combien il faut libérer (`Refusal.notEnoughSpace`). Sans cette
+    /// garde, 1,4 Gio partaient, et le téléphone plein faisait tomber
+    /// l'écriture au milieu de l'image, ou l'import après les deux
+    /// téléchargements. `nil` : la place ne s'est pas laissé lire, et rien
+    /// n'est refusé sur une supposition.
+    ///
+    /// **`running` sont les fichiers que la session d'arrière-plan a en
+    /// cours** (`backgroundFiles`). Quand l'un d'eux est à ce bureau et
+    /// manque encore (`followable`), **lui seul** échappe à la garde : ce
+    /// transfert a déjà pris de la place dans le fichier de la session, que
+    /// `room` ne voit pas, et `fetch` ne fait que le suivre. Le reste — le
+    /// fichier qui n'a pas commencé, et l'installation — se compte encore
+    /// (`room(library:downloads:running:)`). Lever la garde pour tout le
+    /// bureau laissait partir toute l'ISO, ou l'archive, sur un téléphone à
+    /// un octet libre, jusqu'à l'erreur du système. Le refus dit alors que
+    /// le transfert en cours continue, au lieu de « Rien n'a été
+    /// téléchargé » : la session le range à sa fin, sans la feuille. Un
+    /// fichier déjà rangé à sa taille, lui, ne court plus, quoi que dise un
+    /// relevé ancien : il ne se met pas à part.
+    ///
+    /// **Une annulation entre les deux fichiers arrête là** : l'image finie
+    /// au moment où « Annuler » est touché ne lance pas l'archive.
     public func fetch(
-        library: URL, downloads: URL,
+        library: URL, downloads: URL, available: Int? = nil, running: Set<String> = [],
         download: @Sendable (ImageDownload.Release, ImageDownload.Destination,
                              @escaping @Sendable (Int, Int) -> Void) async throws -> URL,
         progress: @escaping @Sendable (Progress) -> Void = { _ in },
         replacedImage: @Sendable (String) -> Void = { _ in }
     ) async throws -> (image: URL, archive: URL) {
+        if let available, let refusal = spaceRefusal(available: available, library: library,
+                                                     downloads: downloads, running: running) {
+            throw refusal
+        }
+        // Annulée avant même de commencer : rien n'est demandé. Sans ce
+        // relevé, le premier morceau de l'image s'écrivait avant que
+        // l'annulation ne se voie, dans le flux de `download`.
+        try Task.checkCancellation()
         let needImage = !imagePresent(in: library)
         let replacing = needImage
             && FileManager.default.fileExists(atPath: library.appendingPathComponent(image.file).path)
@@ -457,6 +502,10 @@ public struct ReadyDesktop: Equatable, Sendable {
             if replacing { replacedImage(image.file) }
         }
         if needArchive {
+            // L'image a pu finir au moment même où « Annuler » était touché :
+            // son téléchargement rend alors le fichier sans lever, et
+            // l'archive partait quand même.
+            try Task.checkCancellation()
             let offset = needImage ? imageSize : 0
             let number = needImage ? 2 : 1
             _ = try await download(archive, .downloads) { have, _ in
@@ -465,6 +514,256 @@ public struct ReadyDesktop: Equatable, Sendable {
             }
         }
         return (library.appendingPathComponent(image.file), downloads.appendingPathComponent(archive.file))
+    }
+
+    // MARK: - La place
+
+    /// **La place que le bureau demande au téléphone** : ce qu'il reste à
+    /// recevoir de chaque fichier, et ce que l'installation et la première
+    /// sauvegarde écrivent ensuite.
+    ///
+    /// **Le total est celui du moment le plus lourd**, pas une somme. La
+    /// session d'arrière-plan rend chaque fichier entier, dans le sien ;
+    /// `ImageDownloader.adopt` le recopie alors sur le `.part`, morceau par
+    /// morceau, pendant que le fichier de la session existe encore. Ce qui
+    /// restait à recevoir d'un fichier occupe donc, un moment, **deux fois**
+    /// sa place. Pour l'image de 1,4 Gio, c'est le pic : 2,69 Gio, quand la
+    /// somme « à télécharger plus à installer » n'en comptait que 2,06, et
+    /// un téléphone qui avait 2,3 Gio libres recevait toute l'image pour
+    /// tomber à sa recopie.
+    ///
+    /// Les trois moments, dans l'ordre où `fetch` et l'installation les
+    /// traversent : l'image recopiée (deux fois ce qui en restait) ; le
+    /// bureau recopié (l'image rangée, plus deux fois ce qui restait du
+    /// bureau) ; l'installation (les deux reçus, plus `install`). Une
+    /// reprise que le serveur refuserait (un `200` au lieu d'un `206`)
+    /// recevrait tout le fichier au lieu de ce qui manquait : le compte
+    /// suppose des serveurs qui reprennent, comme le miroir de Void et
+    /// GitHub.
+    public struct Room: Equatable, Sendable {
+        /// Ce qu'il reste à recevoir de l'image : rien quand elle est dans
+        /// la bibliothèque, sinon sa taille moins ce que son `.part` a déjà.
+        public let image: Int
+        /// Pareil pour le bureau.
+        public let archive: Int
+        /// L'import, qui recopie l'archive avant de l'effacer ; la première
+        /// sauvegarde, écrite à côté de la session avant de la remplacer ;
+        /// et le noyau sorti de l'image pour en prendre l'empreinte.
+        public let install: Int
+        /// Ce qu'il reste à télécharger, les deux fichiers.
+        public var download: Int { image + archive }
+        /// Le moment le plus lourd des trois.
+        public var total: Int { max(2 * image, image + 2 * archive, download + install) }
+        /// La recopie de l'image est-elle ce moment-là ? La phrase du refus
+        /// le dit alors, au lieu d'une somme qui ne tombe pas juste.
+        var copyIsThePeak: Bool { total > download + install }
+
+        public init(image: Int, archive: Int, install: Int) {
+            self.image = image
+            self.archive = archive
+            self.install = install
+        }
+    }
+
+    /// Ce que le noyau sorti de l'image peut occuper, au plus, le temps d'en
+    /// prendre l'empreinte : le plafond que l'application donne à
+    /// `IsoBoot.kernelDigest`.
+    public static let digestScratch = 256 << 20
+
+    /// Ce que le `.part` d'un fichier a déjà reçu, borné à sa taille.
+    func partHave(_ release: ImageDownload.Release, downloads: URL) -> Int {
+        let part = ImageDownload.partURL(for: downloads.appendingPathComponent(release.file))
+        return min(Self.size(of: part) ?? 0, release.size)
+    }
+
+    /// **La place qu'il faut**, d'après ce qui est déjà là. L'archive est
+    /// prise à sa taille, sans refaire sa somme : ceci se lit à chaque
+    /// affichage de la feuille.
+    public func room(library: URL, downloads: URL) -> Room {
+        let image = imagePresent(in: library) ? 0 : self.image.size - partHave(self.image, downloads: downloads)
+        let archiveThere = Self.size(of: downloads.appendingPathComponent(archive.file)) == archive.size
+        let archive = archiveThere ? 0 : self.archive.size - partHave(self.archive, downloads: downloads)
+        return Room(image: image, archive: archive, install: 2 * self.archive.size + Self.digestScratch)
+    }
+
+    /// **La place qu'il faut, le transfert déjà en cours mis à part** : ce
+    /// qui reste à recevoir d'un fichier que la session d'arrière-plan a en
+    /// cours et qui manque encore (`followable`) ne compte pas, sa place est
+    /// déjà prise dans le fichier de la session. L'autre fichier et
+    /// l'installation comptent, eux, comme dans `room(library:downloads:)`.
+    public func room(library: URL, downloads: URL, running: Set<String>) -> Room {
+        let whole = room(library: library, downloads: downloads)
+        let following = followable(running: running, library: library, downloads: downloads)
+        return Room(image: following.contains(image.file) ? 0 : whole.image,
+                    archive: following.contains(archive.file) ? 0 : whole.archive,
+                    install: whole.install)
+    }
+
+    /// Le refus de la place, ou `nil` quand elle suffit : la garde de
+    /// `fetch`, et la phrase de `spaceShortfall`.
+    func spaceRefusal(available: Int, library: URL, downloads: URL, running: Set<String>) -> Refusal? {
+        let room = room(library: library, downloads: downloads, running: running)
+        guard room.total > available else { return nil }
+        let following = followable(running: running, library: library, downloads: downloads)
+        return .notEnoughSpace(room, available: available,
+                               following: Set(following.map { $0 == image.file ? .image : .archive }))
+    }
+
+    /// La phrase de la feuille quand la place manque, ou `nil` quand elle
+    /// suffit : la même que le refus de `fetch`, dite avant qu'on touche.
+    /// Un fichier de ce bureau en cours dans la session d'arrière-plan
+    /// (`running`) et qui manque encore (`followable`) est mis à part, et
+    /// lui seul (voir `fetch`) : quand le reste tient, rien n'est dit, et
+    /// « Installer » reste là pour le suivre.
+    public func spaceShortfall(available: Int?, library: URL, downloads: URL,
+                               running: Set<String> = []) -> String? {
+        guard let available else { return nil }
+        return spaceRefusal(available: available, library: library, downloads: downloads, running: running)?
+            .errorDescription
+    }
+
+    /// **Ce qui reste après « Annuler »**, dit tel qu'il est sur le disque :
+    /// l'image entière, ou ce que son `.part` a reçu, puis pareil pour le
+    /// bureau. Les octets qu'une tâche d'arrière-plan avait reçus sans les
+    /// avoir encore rendus ne sont pas comptés : ils ne sont nulle part où le
+    /// prochain essai les retrouverait.
+    public func keptPhrase(library: URL, downloads: URL) -> String {
+        func kept(_ release: ImageDownload.Release, what: String, whole: Bool) -> String? {
+            if whole { return "\(what) : entier" }
+            let have = partHave(release, downloads: downloads)
+            guard have > 0 else { return nil }
+            return "\(what) : \(LocalStorage.describe(bytes: have)) sur \(LocalStorage.describe(bytes: release.size))"
+        }
+        let archiveThere = Self.size(of: downloads.appendingPathComponent(archive.file)) == archive.size
+        let parts = [kept(image, what: "l'image", whole: imagePresent(in: library)),
+                     kept(archive, what: "le bureau", whole: archiveThere)].compactMap { $0 }
+        guard !parts.isEmpty else {
+            return "Téléchargement arrêté. Rien n'avait encore été rangé : le prochain essai repartira du début."
+        }
+        return "Téléchargement arrêté. Gardé — " + parts.joined(separator: " ; ")
+            + ". Le prochain essai reprendra là."
+    }
+
+    /// **Un téléchargement de ce bureau qui continue en arrière-plan**,
+    /// d'après les fichiers que la session d'arrière-plan a encore en cours :
+    /// lancé avant que wisq ne soit fermé, ou par une feuille fermée depuis.
+    /// La feuille rouverte le dit au lieu de proposer le bureau comme si
+    /// rien n'avait commencé. `nil` quand rien de lui n'est en cours.
+    ///
+    /// Le relevé brut, tel quel : la feuille passe par
+    /// `backgroundPhrase(running:library:downloads:available:)`.
+    func backgroundPhrase(running files: Set<String>) -> String? {
+        let mine = backgroundFiles(running: files)
+        let what: String
+        if mine.contains(image.file) {
+            what = "de l'image"
+        } else if mine.contains(archive.file) {
+            what = "du bureau"
+        } else {
+            return nil
+        }
+        return "Le téléchargement \(what) continue en arrière-plan. Touchez « Installer » pour le suivre : "
+            + "il reprend là où il en est, rien n'est redemandé."
+    }
+
+    /// **La ligne « continue en arrière-plan » de la feuille.** Seuls les
+    /// fichiers en cours qui manquent encore (`followable`) continuent : le
+    /// relevé est lu à l'ouverture, et une image rangée depuis, la feuille
+    /// ouverte, faisait dire « continue » à côté de la phrase de la place,
+    /// qui, elle, la comptait rangée. `library` ou `downloads` illisibles :
+    /// le relevé tel quel, rien d'autre ne se lit.
+    ///
+    /// **Rien non plus quand la place manque au reste** (`spaceShortfall`,
+    /// qui la lit dans `available`) : sa phrase dit déjà que le transfert
+    /// continue, et « Installer » est éteint. « Touchez « Installer » pour
+    /// le suivre » aurait montré un bouton qu'on ne peut pas toucher.
+    public func backgroundPhrase(running files: Set<String>, library: URL?, downloads: URL?,
+                                 available: Int?) -> String? {
+        guard let library, let downloads else { return backgroundPhrase(running: files) }
+        guard spaceShortfall(available: available, library: library, downloads: downloads,
+                             running: files) == nil else { return nil }
+        return backgroundPhrase(running: followable(running: files, library: library, downloads: downloads))
+    }
+
+    /// Ceux des fichiers en cours (`running`) qui sont à ce bureau : son
+    /// image, son archive.
+    public func backgroundFiles(running files: Set<String>) -> Set<String> {
+        files.intersection([image.file, archive.file])
+    }
+
+    /// **Ceux des fichiers de ce bureau en cours qui manquent encore** :
+    /// l'image absente de la bibliothèque à sa taille, l'archive absente des
+    /// téléchargements à la sienne. Ce sont les seuls que `fetch` suit sans
+    /// garde de place.
+    ///
+    /// `running` est un relevé : la feuille le lit à son ouverture, et un
+    /// transfert de fond a pu finir depuis, la feuille ouverte. Le croire
+    /// encore coupait toute la garde, alors que le fichier était là : sur un
+    /// téléphone plein, le reste partait sans être compté, et l'installation
+    /// tombait ensuite sur l'erreur du système au lieu de la phrase de la
+    /// place. La taille seule suffit ici, comme dans `room` : un fichier
+    /// fini par la session y est rangé entier, et sa somme se vérifie plus
+    /// loin (`archivePresent`, l'empreinte du noyau).
+    public func followable(running files: Set<String>, library: URL, downloads: URL) -> Set<String> {
+        backgroundFiles(running: files).filter { file in
+            if file == image.file { return !imagePresent(in: library) }
+            return Self.size(of: downloads.appendingPathComponent(archive.file)) != archive.size
+        }
+    }
+
+    /// **Les fichiers en cours, une fois ce bureau suivi** : quand `fetch`
+    /// a rendu la main — fini, refusé, en panne ou annulé —, aucune tâche
+    /// de ce bureau ne court plus en arrière-plan. Les fichiers lus à
+    /// l'ouverture de la feuille ne sont relus nulle part ailleurs, et la
+    /// ligne disait encore « continue en arrière-plan » d'un téléchargement
+    /// qu'« Annuler » venait d'arrêter. Les fichiers des autres restent.
+    public func followed(running files: Set<String>) -> Set<String> {
+        files.subtracting(backgroundFiles(running: files))
+    }
+
+    /// **Les fichiers en cours, une fois `fetch` rendu sur `error`** (`nil`
+    /// quand il a fini) : `followed`, sauf après le refus de la place. Ce
+    /// refus ne suit rien et n'arrête rien : le transfert de fond qui
+    /// courait continue (`fetch`), et la ligne doit encore le dire.
+    public func followed(running files: Set<String>, after error: Error?) -> Set<String> {
+        if let refusal = error as? Refusal, case .notEnoughSpace = refusal { return files }
+        return followed(running: files)
+    }
+
+    // MARK: - Déjà installé
+
+    /// **Les machines de la liste qui démarrent déjà l'image de ce bureau**,
+    /// et si chacune a une session sous le noyau de la fabrication : celle
+    /// qu'installer de nouveau ne doit pas laisser croire remplacée.
+    public func installedCopies(among machines: [InstalledMachine], in storage: URL? = nil)
+        -> [(machine: InstalledMachine, hasSession: Bool)] {
+        machines.filter { $0.image == image.file }.map { machine in
+            (machine, SuspendedMachine.exists(
+                kernel: SuspendedMachine.identity(digest: kernelDigest, named: machine.key), in: storage))
+        }
+    }
+
+    /// **Ce que la feuille dit avant de réinstaller**, ou `nil` quand aucune
+    /// machine ne démarre cette image. Installer ne remplace rien : une
+    /// machine neuve s'ajoute, sous une clé neuve (`install`). Encore faut-il
+    /// le dire — la même ligne, touchée de nouveau, laissait croire que le
+    /// bureau en cours repartait du jour de la fabrication.
+    public func alreadyInstalledPhrase(_ copies: [(machine: InstalledMachine, hasSession: Bool)]) -> String? {
+        guard !copies.isEmpty else { return nil }
+        let names = copies.map { "« \($0.machine.name) »" }.joined(separator: ", ")
+        let running = copies.filter(\.hasSession)
+        let verb = copies.count > 1 ? "démarrent" : "démarre"
+        var line = "\(names) \(verb) déjà cette image"
+        if running.count == copies.count {
+            line += copies.count > 1 ? ", chacune avec sa session." : ", avec sa session."
+        } else if running.isEmpty {
+            line += ", sans session : l'ouvrir la fait repartir de zéro (une demi-heure)."
+        } else {
+            line += " ; " + running.map { "« \($0.machine.name) »" }.joined(separator: ", ")
+                + " seulement avec sa session."
+        }
+        return line + " Installer ajoute une autre machine, prête au jour de la fabrication ; "
+            + "celles-ci et leurs sessions restent telles quelles."
     }
 
     // MARK: - L'installation
@@ -480,22 +779,84 @@ public struct ReadyDesktop: Equatable, Sendable {
         case archiveForAnotherImage(String)
         /// L'archive ne porte pas de session sous l'empreinte du noyau.
         case noSession(String)
+        /// Le téléphone n'a pas la place (`fetch`) : rien n'a été demandé.
+        /// `following` : ce qui se télécharge déjà en arrière-plan, mis à
+        /// part du compte, et qui continue.
+        case notEnoughSpace(Room, available: Int, following: Set<Progress.Step> = [])
 
         public var errorDescription: String? {
             switch self {
             case .missingImage(let image):
-                return "L'image \(image) n'est plus dans la bibliothèque ; le bureau prêt n'a pas été installé."
+                return "L'image \(image) n'est plus dans la bibliothèque ; le bureau prêt n'a pas été installé. "
+                    + "Le bureau reçu est gardé : touchez de nouveau « Installer », seule l'image sera "
+                    + "téléchargée."
             case .wrongKernel(_, nil):
                 return "Le noyau de l'image ne s'est pas laissé lire : le bureau ne pourrait pas "
-                    + "reprendre. Rien n'a été installé."
+                    + "reprendre. Rien n'a été installé. " + Self.replaceTheImage
             case .wrongKernel:
                 return "L'image présente n'a pas le noyau avec lequel ce bureau a été démarré : "
-                    + "il ne pourrait pas reprendre. Rien n'a été installé."
+                    + "il ne pourrait pas reprendre. Rien n'a été installé. " + Self.replaceTheImage
+            case .notEnoughSpace(let room, let available, let following) where room.copyIsThePeak:
+                // L'image reçue est recopiée avant d'être rangée : c'est elle,
+                // et non l'installation, qui fixe ce qu'il faut de libre.
+                return Self.spaceLead(following) + "ce bureau demande "
+                    + "\(LocalStorage.describe(bytes: room.total)) de libre au plus fort "
+                    + "(\(LocalStorage.describe(bytes: room.download)) à télécharger ; l'image reçue, "
+                    + "\(LocalStorage.describe(bytes: room.image)), est recopiée avant d'être rangée, et prend un "
+                    + "moment deux fois sa place), et il en reste \(LocalStorage.describe(bytes: available)). "
+                    + "Libérez au moins \(LocalStorage.describe(bytes: room.total - available)) (Réglages, "
+                    + "Général, Stockage de l'iPhone), puis réessayez. " + Self.spaceEnd(following)
+            case .notEnoughSpace(let room, let available, let following):
+                let short = LocalStorage.describe(bytes: room.total - available)
+                let download = room.download == 0 ? "rien à télécharger"
+                    : "\(LocalStorage.describe(bytes: room.download)) à télécharger"
+                return Self.spaceLead(following) + "ce bureau demande "
+                    + "\(LocalStorage.describe(bytes: room.total)) de libre (\(download), puis "
+                    + "\(LocalStorage.describe(bytes: room.install)) pour l'installer et le sauver une "
+                    + "première fois), et il en reste \(LocalStorage.describe(bytes: available)). "
+                    + "Libérez au moins \(short) (Réglages, Général, Stockage de l'iPhone), puis réessayez. "
+                    + Self.spaceEnd(following)
             case .archiveForAnotherImage(let image):
                 return "Ce bureau prêt a été fait pour une autre image (\(image)) ; rien n'a été installé."
             case .noSession:
                 return "Ce bureau prêt ne porte pas de bureau démarré pour cette image ; rien n'a été installé."
             }
+        }
+
+        /// **L'image est en faute, pas le bureau** : le bureau reçu est gardé
+        /// (`install`), et c'est l'image qu'il faut refaire. Sans cette
+        /// phrase, et avec le bureau effacé, chaque nouvel essai trouvait
+        /// l'image à sa taille, retéléchargeait le bureau, et le refusait de
+        /// nouveau.
+        static let replaceTheImage = "Le bureau reçu est gardé. Supprimez cette image de la bibliothèque, "
+            + "puis touchez de nouveau « Installer » : seule l'image sera retéléchargée."
+
+        /// Ce qui se télécharge déjà en arrière-plan, nommé : « l'image »,
+        /// « le bureau », ou les deux ; `nil` quand rien ne court.
+        private static func followingName(_ following: Set<Progress.Step>) -> String? {
+            switch (following.contains(.image), following.contains(.archive)) {
+            case (true, true): return "l'image et le bureau"
+            case (true, false): return "l'image"
+            case (false, true): return "le bureau"
+            case (false, false): return nil
+            }
+        }
+
+        /// Le début du refus de la place : ce qui court déjà est mis à part
+        /// du compte, et la phrase le dit.
+        private static func spaceLead(_ following: Set<Progress.Step>) -> String {
+            guard let what = followingName(following) else { return "Pas assez de place sur le téléphone : " }
+            let verb = following.count > 1 ? "se téléchargent" : "se télécharge"
+            return "Pas assez de place sur le téléphone : outre \(what) qui \(verb) en arrière-plan, "
+        }
+
+        /// **La fin du refus de la place.** « Rien n'a été téléchargé » est
+        /// faux d'un transfert de fond à moitié fait : il continue, et la
+        /// session le range à sa fin ; rien d'autre n'a été demandé.
+        private static func spaceEnd(_ following: Set<Progress.Step>) -> String {
+            guard let what = followingName(following) else { return "Rien n'a été téléchargé." }
+            let verb = following.count > 1 ? "continuent" : "continue"
+            return "Rien d'autre n'a été demandé : \(what) \(verb) de se télécharger en arrière-plan."
         }
     }
 
@@ -511,20 +872,24 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// (`IsoBoot.kernelDigest`, que `WisqVM` ne voit pas) ; `nil` quand
     /// l'image ne s'est pas laissé lire.
     ///
-    /// **L'archive est effacée ensuite**, installée ou refusée : quelques
-    /// centaines de mégaoctets qui ne servent plus — la machine installée
-    /// porte ce qu'elle contenait.
+    /// **L'archive est effacée ensuite**, installée ou refusée pour une
+    /// faute qui est la sienne : quelques centaines de mégaoctets qui ne
+    /// servent plus — la machine installée porte ce qu'elle contenait.
+    /// **Pas quand c'est l'image qui est en faute** (`missingImage`,
+    /// `wrongKernel`) : l'archive, vérifiée à sa somme, est bonne, et
+    /// l'effacer faisait retélécharger 156 Mio à chaque essai, refusés de
+    /// nouveau tant que l'image restait la même.
     @discardableResult
     public func install(
         archive file: URL, imageKernelDigest: String?, library: [String], in directory: URL? = nil,
         now: Date = Date(), id: String = InstalledMachines.newIdentifier(),
         createOwnDisk: (String, UInt64) throws -> String
     ) throws -> InstalledMachine {
-        defer { try? FileManager.default.removeItem(at: file) }
         guard library.contains(image.file) else { throw Refusal.missingImage(image.file) }
         guard imageKernelDigest?.lowercased() == kernelDigest else {
             throw Refusal.wrongKernel(expected: kernelDigest, found: imageKernelDigest)
         }
+        defer { try? FileManager.default.removeItem(at: file) }
         let contents = try MachineArchive.contents(of: file)
         guard contents.image == image.file else { throw Refusal.archiveForAnotherImage(contents.image) }
         guard contents.sessions.contains(kernelDigest) else { throw Refusal.noSession(kernelDigest) }

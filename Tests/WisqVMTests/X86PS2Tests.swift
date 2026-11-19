@@ -118,6 +118,83 @@ final class X86PS2Tests: XCTestCase {
         XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
     }
 
+    /// **Une file pleine ne coupe jamais une touche en deux.** Le défaut
+    /// d'avant : à la borne, l'enfoncement entrait et le relâchement était
+    /// jeté, et la touche restait enfoncée dans l'invité — Xorg la répétait
+    /// sans fin. Le pendant de `a_full_queue_never_leaves_a_key_down` dans
+    /// `crates/wisq-page/src/carte/i8042.rs`.
+    func testAFullQueueNeverLeavesAKeyDown() {
+        var ps2 = X86PS2Controller()
+        let (a, b) = (X86ScanCode(0x1E), X86ScanCode(0x30))
+        // Remplie jusqu'à une place de la borne, l'espace enfoncé en dernier.
+        while ps2.typing.count < X86PS2Controller.typingLimit - 1 {
+            XCTAssertTrue(ps2.type(.space, down: ps2.typing.count % 2 == 0))
+        }
+        XCTAssertTrue(ps2.type(a, down: true), "la dernière place")
+        XCTAssertFalse(ps2.type(b, down: true), "plus de place pour un enfoncement")
+        XCTAssertFalse(ps2.type(b, down: false), "ni pour relâcher une touche relevée")
+        XCTAssertTrue(ps2.type(a, down: false), "A était enfoncée : son relâchement passe")
+        XCTAssertTrue(ps2.type(.space, down: false), "l'espace aussi")
+        XCTAssertFalse(ps2.type(a, down: false), "mais une seule fois")
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit + 2)
+        XCTAssertEqual(X86KeystrokesTests.held(after: ps2.typing), [], "jouée jusqu'au bout, chaque touche est relevée")
+        XCTAssertTrue(ps2.heldInQueue.isEmpty)
+    }
+
+    /// **Le dépassement est borné** : au plus un relâchement par touche
+    /// distincte, quoi que l'hôte envoie.
+    func testTheQueueOverflowsByOneReleasePerKeyAtMost() {
+        var ps2 = X86PS2Controller()
+        let all = (0...UInt8.max).flatMap { [X86ScanCode($0), X86ScanCode($0, extended: true)] }
+        XCTAssertEqual(all.count, X86HeldKeys.count)
+        for code in all { XCTAssertTrue(ps2.type(code, down: true)) }
+        while ps2.type(.space, down: true) {}
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
+        for code in all { XCTAssertTrue(ps2.type(code, down: false), "\(code)") }
+        for code in all {
+            XCTAssertFalse(ps2.type(code, down: false), "déjà relâchée : \(code)")
+            XCTAssertFalse(ps2.type(code, down: true), "\(code)")
+        }
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit + X86HeldKeys.count)
+    }
+
+    /// **Un caractère entre entier ou pas du tout**, sous la borne : Maj, la
+    /// lettre, et leurs relâchements, les quatre ou aucun.
+    func testAGroupOfKeystrokesIsTakenWholeOrNotAtAll() {
+        var ps2 = X86PS2Controller()
+        let capital = X86Keystrokes.keystrokes(X86Keystrokes.character("A"))
+        let small = X86Keystrokes.keystrokes(X86Keystrokes.character("a"))
+        XCTAssertEqual(capital.count, 4)
+        while ps2.typing.count + 2 <= X86PS2Controller.typingLimit - 2 { XCTAssertTrue(ps2.type(small)) }
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit - 2)
+        XCTAssertFalse(ps2.type(capital), "quatre frappes, deux places")
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit - 2, "rien n'est entré")
+        XCTAssertFalse(ps2.heldInQueue.contains(.leftShift), "Maj n'est pas restée en file")
+        XCTAssertTrue(ps2.type(small), "deux tiennent")
+        XCTAssertTrue(ps2.type([]), "un groupe vide tient toujours")
+        XCTAssertFalse(ps2.type(small))
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
+    }
+
+    /// **Abandonner la file oublie aussi ce qu'elle aurait laissé enfoncé.**
+    /// Une touche tenue au clavier physique, dont l'enfoncement attend encore
+    /// en file, n'est jamais partie : l'invité ne la tient pas, rien n'est à
+    /// relâcher, et la file vidée ne la compte plus pour tenue. Sinon le
+    /// relâchement de cette touche passerait la borne, et `heldInQueue` ne
+    /// dirait plus l'état de la file (relevé par le contrôle adverse : aucun
+    /// test ne tenait la remise à zéro).
+    func testAbandoningForgetsWhatTheDroppedKeystrokesWouldHaveHeld() {
+        var ps2 = X86PS2Controller()
+        XCTAssertTrue(ps2.type(.leftControl, down: true))
+        XCTAssertTrue(ps2.heldInQueue.contains(.leftControl))
+        ps2.abandonTyping()
+        XCTAssertTrue(ps2.typing.isEmpty, "l'invité n'a jamais vu Ctrl : rien à relâcher")
+        XCTAssertTrue(ps2.heldInQueue.isEmpty, "la file vidée ne laisse rien enfoncé")
+        while ps2.type(.space, down: ps2.typing.count % 2 == 0) {}
+        XCTAssertEqual(ps2.typing.count, X86PS2Controller.typingLimit)
+        XCTAssertFalse(ps2.type(.leftControl, down: false), "au-delà de la borne, Ctrl n'est plus tenue")
+    }
+
     /// Un caractère se tape sur un clavier américain.
     func testACharacterMapsToItsUSKey() {
         XCTAssertEqual(X86ScanCode.typing("a")?.code, X86ScanCode(0x1E))
@@ -195,6 +272,23 @@ final class X86PS2Tests: XCTestCase {
 final class X86KeystrokesTests: XCTestCase {
     private func codes(_ events: [X86Keystrokes.Event]) -> [String] {
         events.map { String(format: "%@%02X%@", $0.code.extended ? "E0 " : "", $0.code.set1, $0.down ? "↓" : "↑") }
+    }
+
+    /// Les touches que des frappes laissent enfoncées, jouées jusqu'au bout.
+    static func held(after strokes: [X86PS2Controller.Keystroke]) -> Set<X86ScanCode> {
+        var held: Set<X86ScanCode> = []
+        for stroke in strokes {
+            if stroke.down { held.insert(stroke.code) } else { held.remove(stroke.code) }
+        }
+        return held
+    }
+
+    /// **`\r\n` est un seul caractère en Swift**, et il n'était dans aucune
+    /// table : un texte venu de Windows, collé sur l'écran, perdait tous ses
+    /// retours à la ligne sans rien dire. C'est une touche Entrée, une seule.
+    func testAWindowsLineBreakIsOneEnter() {
+        XCTAssertEqual("a\r\nb".count, 3, "le groupe de graphèmes que Swift en fait")
+        XCTAssertEqual(codes(X86Keystrokes.typing("a\r\nb")), ["1E↓", "1E↑", "1C↓", "1C↑", "30↓", "30↑"])
     }
 
     func testTextIsTypedWithShiftWhereNeeded() {
