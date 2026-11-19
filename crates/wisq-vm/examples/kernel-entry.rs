@@ -866,6 +866,35 @@ fn main() {
     // ses tours jusqu'au bout. La sonde dit `WISQ-USERSPACE-OK` et s'en va ;
     // c'est là qu'il faut compter.
     let fin = std::env::var("WISQ_FIN").unwrap_or_default();
+    let ramasser = std::env::var("WISQ_RAMASSER").map_or(true, |value| value != "0");
+    // **`WISQ_VIDAGE=0` : pas de vidage au premier passage en anneau trois.**
+    // La carte du code traduit voit les écritures une à une ; éteindre le
+    // vidage mesure ce qu'elle tient seule.
+    let vider = std::env::var("WISQ_VIDAGE").map_or(true, |value| value != "0");
+    // **`WISQ_CACHE=<régions>,<octets>` : les bornes du cache de code.** Sans
+    // lui, celles de `CACHE_PAR_DEFAUT` dans `host.js`. La forme est refusée
+    // plutôt que devinée, comme `WISQ_SCREEN`.
+    let cache = match std::env::var("WISQ_CACHE").ok() {
+        None => "{}".to_string(),
+        Some(value) => {
+            let parts: Vec<Option<u64>> = value
+                .split(',')
+                .map(|part| part.trim().parse().ok())
+                .collect();
+            match parts.as_slice() {
+                [Some(regions), Some(octets)] => {
+                    format!("{{ regions: {regions}, octets: {octets} }}")
+                }
+                _ => {
+                    eprintln!(
+                        "WISQ_CACHE={value} ne se lit pas : il faut « régions,octets », \
+                         par exemple 16384,100663296"
+                    );
+                    std::process::exit(2);
+                }
+            }
+        }
+    };
     // **`WISQ_PILE` : combien de mots de pile relever.** Huit par défaut,
     // comme les relevés d'avant. Une exception précoce (`early_idt_handler`)
     // range son cadre — et le RIP fautif — plus bas que huit mots : sans en
@@ -944,6 +973,15 @@ const vm = machine({{
   // allumer un en silence rendrait incomparables des mesures que le journal
   // met côte à côte.
   surveiller: {veille},
+  cache: {cache},
+  // **`WISQ_RAMASSER=0` laisse le moteur collecter quand il veut.** Par
+  // défaut, une collecte pleine chaque fois que le cache a évincé un quart de
+  // sa borne : sans elle, Bun garde le code des régions évincées, et la
+  // mémoire résidente ne dit plus rien de la borne (voir `respirerSiBesoin`).
+  ramasser: {ramasser} ? () => Bun.gc(true) : null,
+  // **`WISQ_VIDAGE=0` : la carte du code traduit seule**, sans le vidage du
+  // premier passage en anneau trois.
+  vider: {vider},
   // **Le pilote va chercher l'émetteur au lieu d'attendre le tour suivant.**
   //
   // `x86-translate` rend les octets d'une région en quelques millisecondes.
@@ -1066,6 +1104,12 @@ for (let tour = 0; tour < {turns}; tour++) {{
   if ((tour + 1) % {beat} === 0) {{
     console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
       + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);{guet}
+    // **Ce que le cache tient pendant la course**, et ce que le moteur pèse :
+    // une course tuée par manque de mémoire doit avoir dit jusqu'où elle
+    // était montée.
+    console.log("cache-en-cours " + (tour + 1) + " " + vm.cache.tenu.regions
+      + " " + vm.cache.tenu.octets + " " + vm.cache.traduites + " " + vm.cache.evincees
+      + " " + Math.round(process.memoryUsage().rss / 1048576));
   }}
 }}
 console.log("arret " + why.stopped);
@@ -1084,6 +1128,23 @@ console.log("derniers " + derniers.map((at) => "0x" + at.toString(16)).join(" ; 
 // Sans cette ligne, savoir *quand* la première est tombée demandait de
 // repérer la traduction du stub d'entrée au milieu de deux mille lignes.
 console.log("vidages " + vm.vidages.fois + " fois, " + vm.vidages.regions + " region(s) oubliee(s)");
+// **Le cache de code** : ses bornes, son pic, ce qu'il a évincé et
+// retraduit, et la mémoire résidente du moteur à la fin.
+{{
+  const c = vm.cache;
+  console.log("cache bornes " + c.limite.regions + " regions " + c.limite.octets + " octets"
+    + " ; tenu " + c.tenu.regions + " " + c.tenu.octets
+    + " ; pic " + c.pic.regions + " regions " + c.pic.octets + " octets "
+    + c.pic.emplacements + " emplacements " + c.pic.espaces + " espaces"
+    + " ; traduites " + c.traduites + " evincees " + c.evincees
+    + " retraduites " + c.retraduites + " replacees " + c.replacees + " respirations " + c.respirations
+    + " ; rss " + Math.round(process.memoryUsage().rss / 1048576) + " Mio");
+  // **Ce que la carte du code traduit a vu** : les lignes de code écrites,
+  // les régions oubliées pour ça, les journaux débordés, et combien de trames
+  // ont porté du code à la fois au plus.
+  console.log("carte ecritures " + c.ecritures + " invalidees " + c.invalidees
+    + " debordements " + c.debordements + " ; pic " + c.pic.trames + " trames");
+}}
 console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
   + (vm.materiel.premiere === null
       ? ", aucune" : ", la premiere a 0x" + vm.materiel.premiere.toString(16)));
@@ -1235,6 +1296,9 @@ console.log("controle " + controle
                 beat = Progress::beat(turns),
                 rounds = rounds,
                 veille = veille,
+                cache = cache,
+                ramasser = ramasser,
+                vider = vider,
                 serie_file = serie,
                 entree = entree,
                 invite = invite,
@@ -1339,6 +1403,14 @@ console.log("controle " + controle
                             map.describe_loaded(at, KERNEL_MAP)
                         );
                     }
+                }
+                // **Le cache, dit au fil de l'eau** : tour, régions tenues,
+                // octets tenus, traduites, évincées, mémoire résidente.
+                ["cache-en-cours", turn, regions, octets, traduites, evincees, rss] => {
+                    println!(
+                        "cache au tour {turn} : {regions} régions, {octets} octets, \
+                         {traduites} traduites, {evincees} évincées, {rss} Mio résidents"
+                    );
                 }
                 _ => {
                     last.push_str(&line);
