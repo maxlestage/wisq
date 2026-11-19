@@ -122,6 +122,845 @@ x86, corpus matériels compris, passent par les formes courtes). SwiftLint
   (3,4 %), `mov` d'un octet vers la mémoire (1,6 %), `mov` sous préfixe 66
   (1,5 %), `test`/`cmp` d'un octet (2 %).
 
+## 2026-11-16 — Émetteur : la moitié haute de la carte, les écritures sur deux lignes et sept gardes du code traduit ont leur test
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée suivante a trouvé huit
+points. Chacun est vérifié dans le code, et chacun est réel. **Aucun n'est
+une faute de l'invalidation elle-même** : le code donnait partout le bon
+résultat. Mais chacune de ces gardes pouvait être retirée d'une ligne sans
+qu'un seul test tombe (host_loop 215 et x86_wasm 40 restaient au vert), et
+les sondes du contrôle (`ctl/x3.mjs` à `x10.mjs` du bloc-notes) montrent ce
+que chaque retrait aurait coûté.
+
+1. **La moitié haute de la carte n'était jamais testée** : les lignes 32 à
+   63 d'une trame, c'est-à-dire tout code posé à partir du décalage `0x800`
+   d'une page. Tous les montages posaient leur code sur les lignes 0 à 3.
+   Quatre retraits passaient : l'étendue qui n'inscrit pas sa moitié haute,
+   le marquage qui ne la recopie pas, l'invalidation limitée à
+   `rang < 32`, et la marche qui ne lit que le premier mot de la carte
+   (`I64_LOAD32_U`). Dans chacun de ces cas, l'ancien code tournait sur la
+   ligne 40.
+2. **Sous pagination, une écriture qui tient dans sa page mais chevauche
+   deux lignes** n'était pas couverte. Une largeur réduite à un octet dans
+   `far_store_body` n'inscrivait que la première ligne.
+3. **`ecrit` sur plus d'une ligne** n'était pas testé. Or c'est le chemin
+   annoncé pour le DMA du disque, et les seuls appels testés faisaient 4 et
+   8 octets.
+4. **La région oubliée sur son propre départ.** Retirer la garde
+   `!recentes.has(region)` faisait tourner le bloc de plus de la
+   vérification « sur place » à une région évincée, et `vm.run` levait
+   (`call_indirect to a signature that does not match`).
+5. **`trames.clear()` au vidage.** Sans lui, une région d'avant le vidage
+   était « évincée » une seconde fois. Sa place était alors effacée dans la
+   table et rendue, alors qu'une région vivante l'occupait. Le contrôle le
+   voyait par une invalidée de trop. **Le montage d'ici va plus loin** : la
+   région vivante, U en anneau trois, tourne ensuite sur une place vide, et
+   `vm.run` lève.
+6. **Cinq gardes de bord** :
+   - la borne du journal (`I32_LT_U`) : avec `<=`, le numéro 16 383
+     s'écrivait sur le premier mot de la carte ;
+   - le `voirEcritures()` après le bloc de plus ;
+   - la fusion des morceaux d'une même trame ;
+   - la racine qui est aussi une trame de code ;
+   - la moitié haute du chemin de débordement.
+7. **Un commentaire faux dans `web/host.js`** : il disait de `codePages`
+   qu'« un test les compare » avec `code_pages`. Aucun test ne le faisait,
+   et une page de trop passait.
+8. **Un commentaire faux dans `Body::written`** : « rien n'est émis hors
+   pagination ». Le test du témoin est émis pour tout module confiné,
+   pagination éteinte comprise. Il le faut d'ailleurs, puisque l'écriture
+   sans pagination appelle `note_body`. Ce qui en est exclu, c'est la forme
+   libre.
+
+**Ce qui change.** Onze tests dans `host_loop` (215 → 226) et deux
+commentaires. Le code de l'émetteur et de l'hôte ne change pas : les octets
+émis sont les mêmes, et `WebKitBench.swift` n'a pas à être régénéré.
+
+- `a_line_in_the_upper_half_of_a_page_is_watched_too` : A sur la ligne 3,
+  40 ou 63, avec ou sans pagination. Sous pagination, W écrit par un alias
+  de la trame après qu'une autre écriture par l'alias a rempli la case du
+  tampon. C'est donc la marche qui décide de l'inscriptibilité. Résultat
+  attendu : +1, puis +5, une invalidée, sur les six montages.
+- `a_write_across_two_lines_of_one_page_sees_the_code_of_the_second` : huit
+  octets écrits en `0x1003c`, à cheval sur les lignes 0 et 1, avec et sans
+  pagination.
+- `a_sector_said_through_ecrit_forgets_every_line_it_covers` : A sur la
+  ligne 3, B sur la ligne 40. `ecrit(0x10000, 512)` oublie A et pas B ;
+  `ecrit(0x10000, 4096)` oublie B. A et B, retraduites, ajoutent cinq et
+  sept.
+- `a_region_forgotten_on_its_own_start_does_not_run_its_extra_block` :
+  le montage de `ctl/x5.mjs`. R fait `add ; call R`, avec la pile sur sa
+  ligne. Attendu : « tours épuisés », trois invalidées, aucune exception.
+- `a_flush_forgets_which_regions_hold_which_frames` : le montage de
+  `ctl/x8.mjs`, plus U qui tourne de nouveau en anneau trois.
+- `the_log_writes_its_last_slot_and_nothing_past_it` : le compte posé à
+  `codeLogSlots - 1` puis à `codeLogSlots`. La dernière case reçoit
+  `0x400`. Au-delà, rien n'est écrit : la carte de la trame zéro reste vide,
+  et une écriture ordinaire sur la trame zéro ne rend pas la main.
+- `the_extra_block_of_the_standstill_check_has_its_writes_seen` :
+  `push %rax ; jmp` posé à la fin de la ligne 0. Le bloc de plus pose
+  `int3` à la place du `push`. Juste : `int3` sans porte, la pile en
+  `0x10038`. Si le journal est lu un tour trop tard, un `push` qui n'existe
+  plus tourne encore, et la pile descend en `0x10030`. C'est un effet plus
+  net que la divergence de `ctl/x7.mjs`.
+- `two_pages_of_one_window_on_one_frame_add_up_their_lines` : des pages
+  de quatre kibioctets, avec `0x40000` et `0x41000` sur la même trame. R
+  commence par un `nop` sur la ligne 63 ; son `add` est sur la ligne 0.
+- `a_root_that_also_holds_code_is_watched_whole` : P1 dans la trame de la
+  racine, une fois sur chaque moitié, et la racine réécrite sur l'autre
+  moitié.
+- `an_overflowed_log_is_read_back_from_the_upper_half_of_the_map`.
+- `the_view_and_the_emitter_count_the_same_code_pages` : `codePages` et
+  `hostPages` sont comparées à `code_pages` et `host_pages` sur dix tailles,
+  de part et d'autre de chaque marche de 512 pages. Le commentaire de
+  `codePages` nomme maintenant ce test, et celui de `Body::written` dit ce
+  qui est vrai.
+
+**Sabotages**, chacun d'une ligne, host_loop entier à chaque fois, puis
+restauration vérifiée par un `git diff` vide (`ctl/sab.py` et `ctl/sab2.sh`
+du bloc-notes). Les seize tombent.
+
+- Dans `web/host.js` :
+  - `haut |= 0` dans l'étendue (3 tests tombent) ;
+  - `carte[m.trame * 2 + 1] |= m.haut` retiré du marquage (3) ;
+  - `rang < 64` dans `invaliderLigne` (2) ;
+  - `derniere = premiere` dans `ecrit` (1) ;
+  - la garde `!recentes.has(region)` retirée (1) ;
+  - `trames.clear()` retiré d'`oublierTout` (1) ;
+  - le `voirEcritures()` du bloc de plus retiré (1) ;
+  - la fusion `deja` neutralisée (1) ;
+  - `deja.bas = -1` neutralisé (1), puis `deja.haut = -1` (1) ;
+  - la moitié haute du débordement retirée (1) ;
+  - `2 + Math.max` dans `codePages` (1).
+- Dans `x86_wasm.rs` :
+  - la marche lit `I64_LOAD32_U` (1) ;
+  - la largeur remplacée par `1` dans `far_store_body` (1) ;
+  - `I32_LE_U` à la borne du journal (1) ;
+  - la borne à `CODE_LOG_SLOTS - 1` (1).
+
+**Ce qui reste.** Rien de neuf côté code. La limite déclarée par le contrôle
+demeure, et ce n'est pas un défaut caché : un changement de correspondance
+sans aucune écriture n'est pas vu. Deux cas le montrent :
+
+- la copie à l'écriture après un `fork` : l'écriture tombe dans la trame
+  neuve, et l'ancienne région reste sous le même contexte et à la même
+  adresse ;
+- en anneau zéro, un module ou une section `.init.text` libérée puis
+  réallouée à la même adresse vmalloc sur d'autres trames. Toutes les
+  régions de l'anneau zéro partagent `contextPresent` et ne marquent
+  aucune racine.
+
+Ni `invlpg` ni le rechargement de CR3 ne sont regardés. Le vidage unique,
+resté allumé par défaut, ne couvre que ce qui précède le premier passage en
+anneau trois. Les points laissés par l'entrée suivante restent aussi :
+
+- le DMA de `carte.js` devra appeler `ecrit` ;
+- la boucle d'un seul bloc déclarée « sur place » ;
+- le disque.
+
+## 2026-11-16 — Émetteur : les écritures dans le code traduit sont vues, ligne par ligne, et Alpine ne voit plus de thunk de retour non corrigé
+
+**Ce qui n'allait pas.** Deux choses, la seconde étant la tranche.
+
+1. **Le contrôle de l'entrée suivante a trouvé dix points**, tous vérifiés
+   dans le code, tous réels :
+   - une **corruption silencieuse** que rien ne tenait : `rendre` sans le
+     `libres.pop()` qui suit la descente du haut laissait une place rendue
+     au-dessus du haut ; Z se posait alors en 1, sur Y vivante, et Y
+     exécutait le code de Z (+40 au lieu de +30) ;
+   - un **vrai défaut** : une région replacée, retraduite pour une autre
+     place, est plus longue (ses indices de bloc passent à deux octets de
+     LEB au-delà de 63), et la place faite pour la première traduction la
+     laissait passer : le pic du cache dépassait sa borne en octets de
+     129 octets dans le montage du contrôle ;
+   - six gardes sans test : la remise à zéro de `evincesDepuis` (sans elle,
+     chaque installation après le premier quart évincé faisait une pause et
+     une collecte pleine), l'effacement de la table des blocs au vidage, le
+     filtre des places vides de `prendre`, les deux bornes de `choisir`
+     (`<=` et `>=`), les deux pics (`Math.max`), la borne de `oubliees`
+     (non réglable, donc non testable) ;
+   - deux récits faux, dans l'entrée suivante et un commentaire de test :
+     « zéro, moins un, 1,5 et "8" refusés pour chacune des trois bornes »
+     (six essais sur douze), et « R2 essaie zéro » (V est vivante en 0, R2
+     essaie `[1, 71)`, et c'est sa place qui évince V).
+2. **Le texte réécrit après le premier passage en anneau trois n'était vu
+   par rien**, ni le CR3 recyclé, ni un programme posé dans la trame d'un
+   autre. Le vidage unique était le seul garde-fou. Et il ne suffisait pas
+   même au démarrage : **les courses d'Alpine de la tranche d'avant
+   portaient toutes un « Unpatched return thunk in use. This should not
+   happen! », un `WARNING` à `__warn_thunk`**, que personne n'avait lu
+   (`alpine-final.serie`, `alpine-defaut.serie`, et la course de base
+   d'aujourd'hui). C'est exactement le mélange de code réécrit et d'ancien
+   code que le commentaire d'`oublierTout` décrivait.
+
+**Ce qui change.**
+
+- **Les dix points du contrôle.** `faireDeLaPlace` refait la place pour la
+  longueur de la seconde traduction (et respire) ; la borne des clés
+  oubliées devient un réglage du cache (`cache.oubliees`, `1 << 18` par
+  défaut, validé comme les trois autres) ; `vm.cache` expose les places
+  rendues et le haut (`places()`, `haut()`), en lecture, pour que les tests
+  tiennent ce que `libres` promet ; le test des bornes essaie les quatre
+  valeurs fausses sur les quatre bornes, seize essais ; les deux récits
+  sont corrigés sur place, dans l'entrée suivante et dans le commentaire du
+  test.
+- **La carte du code traduit** (`code_pages`, `code_log_base`,
+  `code_map_base` côté Rust ; `codePages`, `codeLogSlots` côté hôte).
+  Au-dessus du tampon de traduction : une page de **journal** (un compte,
+  puis jusqu'à 16 383 numéros de ligne), puis la **carte**, un bit par
+  ligne de soixante-quatre octets de RAM — huit octets par trame, deux
+  mébioctets pour un gibioctet. `host_pages` l'ajoute ; `WebKitBench`
+  passe de 16 401 à 16 434 pages.
+- **La ligne et pas la page**, et c'est mesuré avant d'être choisi : une
+  première forme par trame faisait tomber neuf tests de `host_loop`, des
+  programmes qui posent données et pile dans la page de leur code — chaque
+  écriture de données rendait la main, et la suite se retraduisait comme
+  une région à part. Et un `text_poke` d'un octet n'oublie que les régions
+  qui lisent cette ligne, pas les dizaines que porte une page du noyau.
+- **Le chemin rapide ne paie qu'un test.** Une case du tampon ne se dit
+  inscriptible que si aucune ligne de sa trame n'est marquée : la marche
+  efface `TLB_WRITABLE` de l'étiquette (sans toucher au jugement des
+  droits), et l'hôte l'efface des cases déjà remplies quand il marque une
+  trame neuve. Une écriture dans une page de code part donc par l'accès
+  lent, qui écrit, baisse le bit de chaque ligne marquée touchée, l'inscrit
+  au journal et pose `STOP_WRITTEN` (`note_body`, une fonction de plus par
+  module paginé, et `extent`, l'étendue traduite). **Après chaque
+  instruction qui écrit, un seul test : le témoin d'arrêt** — l'instruction
+  finie, la région rend la main, RIP sur la suivante ou sur la cible d'un
+  `call`. Sans pagination, l'écriture appelle `note_body` elle-même (un
+  noyau x86-64 n'y passe que ses premières instructions).
+- **L'hôte oublie avant la prochaine entrée** (`voirEcritures`, au retour
+  de chaque région) les régions qui lisent les lignes inscrites — la région
+  qui s'est écrite elle-même comprise. Un journal débordé se relit dans la
+  carte : une région dont une ligne n'est plus marquée a été écrite. Les
+  écritures de l'hôte passent par `ecrit` (le cadre d'une délivrance), qui
+  est exporté pour ce qui écrit la RAM du dehors — le disque demain. Les
+  invalidées sont comptées à part des évincées (`invalidees`), sans clé
+  dans `oubliees`.
+- **La racine des tables d'un programme est une trame de toutes ses
+  régions**, marquée en entier : une racine neuve s'écrit avant de servir,
+  et cette écriture oublie toutes les régions de l'ancien contexte. C'est
+  le CR3 recyclé.
+- Les régions marquent `[adresse, adresse + extent)`, pas la fenêtre : la
+  découverte suit spéculativement ce qui suit un `jmp *` ou un `call`, et
+  une région peut lire au-delà de ce qu'elle exécute — écrire là l'oublie
+  aussi, à tort mais sans dommage (deux tests le disent).
+- **Le vidage au premier passage en anneau trois reste, par défaut**, pour
+  ce qui s'écrit du dehors sans passer par `ecrit` ; `vider: false`
+  (`WISQ_VIDAGE=0`) l'éteint. `kernel-entry` imprime une ligne `carte`.
+- Le pont Swift : `wisq_desktop_code_pages(pages)` dans l'en-tête et
+  `DesktopTranslator.codePages(_:)`, appelée par `disk.c` et par le test du
+  minimum déclaré. L'ABI C passe à trente-huit fonctions, et la page
+  d'architecture du site le dit (le test du site les recompte).
+
+**Mesures.**
+
+- **Le chemin rapide**, une boucle d'un bloc sous pagination, le tampon qui
+  répond, 134 217 728 tours (`banc/ecritures.mjs` du bloc-notes, l'arbre de
+  base ff4ab65c contre celui-ci, sept fois chacun en alternance, médianes) :
+  avec une écriture par tour, 1 751,6 → 1 818,9 ms, **+0,5 ns par
+  écriture (+3,8 %)** ; le témoin sans écriture, 1 377,1 → 1 357,8 ms (le
+  bruit : les étendues se recouvrent, 1 615–2 126 contre 1 705–2 475).
+- **La taille des modules**, 600 fenêtres de fonctions de 6.18.60 :
+  18 604 → 19 749 octets en moyenne, **+6,2 %** — 388 octets par module
+  (l'inscription, l'étendue), 22 par instruction qui écrit (15 pour le
+  test, 7 pour l'appel sans pagination). Le test lisait d'abord le compte
+  du journal en mémoire : 8,2 % ; le témoin d'arrêt et le repli fait par
+  `note_body` ont rendu deux points.
+- **La sonde**, bornes par défaut, `WISQ_FIN=WISQ-USERSPACE-OK`, base puis
+  carte (les comptes sont déterministes ; mur et pic de deux ou trois
+  courses) :
+
+  | noyau | traduites | évincées | retraduites | invalidées | tours | wasm | mur | pic résident |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 6.6.142 base | 10 230 | 5 882 | 1 346 | — | 17 438 | 158,5 Mo | 16–17 s | 775–821 Mio |
+  | 6.6.142 carte | 9 904 | 3 732 | 1 046 | 2 161 | 17 601 | 164,2 Mo | 17 s | 679–691 Mio |
+  | 6.12.115 base | 10 762 | 6 270 | 1 448 | — | 15 299 | 163,4 Mo | 16–17 s | 745–783 Mio |
+  | 6.12.115 carte | 10 639 | 3 873 | 1 107 | 2 575 | 18 492 | 176,8 Mo | 17 s | 700–731 Mio |
+  | 6.18.60 base | 11 492 | 7 176 | 1 683 | — | 17 002 | 173,8 Mo | 17 s | 743–837 Mio |
+  | 6.18.60 carte | 11 223 | 4 537 | 1 228 | 2 714 | 17 588 | 183,1 Mo | 18 s | 749–750 Mio |
+
+  Le mur est celui des courses deux et trois : la première de chaque arbre
+  construit l'émetteur de la page (26 et 28 s). Le coût du chemin rapide
+  ne se lit pas à cette échelle ; les tours montent (jusqu'à +21 % sur
+  6.12) parce que chaque écriture sur du code traduit rend la main.
+
+  Sans vidage (`WISQ_VIDAGE=0`), les trois vont au bout : 9 791, 10 538 et
+  11 140 traductions, 16 à 17 s. Le pic : un peu plus d'un millier de
+  trames portent du code à la fois.
+- **Alpine 6.18.60**, son initramfs, `WISQ_RAM=256`, bornes par défaut,
+  `ramasser`, jusqu'au shell de secours puis les dix commandes :
+
+  | | mur | pic résident | traduites | évincées | retraduites | invalidées | invite au tour |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | base (ff4ab65c) | 162 s | 847 Mio | 139 946 | 132 330 | 66 046 (47 %) | — | 239 877 |
+  | carte | **117 s** | 851 Mio | 86 041 | 24 141 | 14 835 (17 %) | 54 994 | 180 372 |
+  | carte, sans vidage | 123 s | 845 Mio | 84 562 | 26 425 | 15 866 (19 %) | 54 895 | 183 434 |
+
+  **Plus d'avertissement** : l'« Unpatched return thunk in use » de la base
+  a disparu des deux courses, avec ou sans vidage, et la seule ligne qui
+  ressemble à une alerte est `printk: debug: skip boot console
+  de-registration`. Les dix commandes répondent pareil (220 dans `/bin`,
+  42). « Mounting boot media: failed » reste : le disque n'est pas
+  raccordé. **Les traductions tombent d'un tiers** et le taux de
+  retraduction de 47 à 17 % : 2 275 lignes écrites oublient 54 994
+  régions, presque toutes celles de processus morts — leur racine
+  réécrite, ou leurs trames remises à zéro avant de resservir —, qui
+  n'encombrent plus le cache jusqu'à leur éviction par l'âge.
+
+**Comment c'est vérifié.**
+
+- **Vingt-quatre tests neufs dans `host_loop`** (191 → 215). Pour le
+  contrôle : `a_place_given_back_at_the_top_leaves_the_places` (le montage
+  du contrôle, `pas 10@0,1000@1,10@0,20@71,30@1,40@2,30@1,40@2`),
+  `a_region_placed_again_still_holds_under_the_byte_bound`,
+  `a_breath_resets_what_was_evicted_since`,
+  `a_flush_empties_the_block_table_too`,
+  `a_place_taken_whole_leaves_no_empty_place`,
+  `choosing_a_place_honours_both_bounds_exactly`,
+  `the_peaks_are_peaks_not_the_last_value`,
+  `the_forgotten_keys_stay_under_their_bound`. Pour la carte :
+  `a_region_rewritten_by_another_is_translated_again`,
+  `a_region_that_rewrites_itself_runs_its_new_code` (`movb` sur l'immédiat
+  de l'`add` qui le suit, dans le même bloc : RDI vaut cinq),
+  `text_poke_after_the_first_entry_into_ring_three_is_seen_through_an_alias`
+  (après le vidage, par un alias de la trame, avec une case du tampon
+  remplie avant le marquage),
+  `two_programs_one_after_the_other_at_the_same_address_each_run_their_own_code`
+  (un `rep movsb` de chargeur),
+  `a_root_rewritten_for_another_program_forgets_the_regions_of_the_first`
+  (la racine recyclée, deux trames),
+  `a_write_beside_the_code_on_another_line_hands_nothing_back`,
+  `a_write_forgets_only_the_regions_that_read_its_line`,
+  `a_write_across_two_pages_sees_the_code_of_the_second` (avec et sans
+  pagination), `a_write_from_outside_said_through_ecrit_forgets_the_region`,
+  `a_frame_the_host_lays_over_translated_code_forgets_that_code`,
+  `a_call_whose_return_address_lands_on_code_hands_back_at_its_target`,
+  `an_indirect_call_that_pushes_over_its_target_does_not_enter_it_stale`,
+  `an_overflowed_log_is_read_back_from_the_map`,
+  `an_evicted_region_gives_its_lines_back`, `a_flush_forgets_the_map_too`,
+  `a_machine_that_does_not_flush_keeps_its_regions_in_ring_three`.
+- **Des tests existants changent, et aucun ne s'affaiblit.**
+  `a_region_that_runs_after_its_first_byte_changed_is_counted` : c'était B
+  qui réécrivait A ; l'écriture de l'invité est maintenant vue, et la sonde
+  de `surveiller` reste l'instrument de ce que rien ne voit — le pilote
+  réécrit A **du dehors**, mêmes assertions. `under_page_table_isolation_…`
+  admet une troisième issue juste : la région du noyau lit la ligne de
+  l'octet réécrit (sa découverte suit le `jmp *%rax`), est oubliée, et la
+  région neuve d'après le `movb` est illisible sous les tables du
+  programme ; ce qui est refusé — une relecture par l'identité — l'est
+  toujours. `a_breath_resets_…` prend un Big de deux cents blocs : les
+  modules ont grandi. Le test du minimum déclaré (`x86_wasm`) dérive le
+  sommet de la carte et sa couverture de la RAM, à sept tailles ; les deux
+  pilotes qui faisaient `pages + host_pages(0)` prennent `host_pages` à
+  leur taille. `DesktopTranslatorTests` ajoute `codePages(pages)`.
+- **Sabotages**, chacun d'une ligne, vu tomber, puis restauré (`cmp` avec la
+  copie) — `host_loop` en entier à chaque fois :
+  - le contrôle : `libres.pop()` retiré ; la place refaite après
+    replacement ; `evincesDepuis = 0` ; l'effacement des blocs au vidage ;
+    le filtre des places vides ; `<=` en `<` et `>=` en `>` dans `choisir` ;
+    les deux `Math.max` des pics ; la borne de `oubliees` — dix, chacun fait
+    tomber son test ;
+  - l'émetteur : pas de test après l'instruction (trois tests) ; la marche
+    qui dit inscriptible (`text_poke_…`) ; l'accès lent qui n'inscrit pas
+    (deux) ; l'accès à cheval sans sa seconde trame (`a_write_across_…`) ;
+    l'écriture sans pagination qui n'inscrit pas (six) ; le `call` direct
+    qui rend la main après lui au lieu de sur sa cible ; le `call *` sans
+    test (`an_indirect_call_…`) ; l'inscription sans son dernier octet ;
+    l'inscription sans `STOP_WRITTEN` (quatre) ; l'adresse sans pagination
+    non repliée ;
+  - l'hôte : le journal pas lu (dix) ; le tampon pas retouché au marquage ;
+    la racine pas marquée ; la page entière au lieu des lignes (huit) ; le
+    cadre sans `ecrit` ; le débordement ignoré ; les lignes pas recalculées
+    à l'éviction ; `vider` ignoré ; le vidage qui garde la carte ; toutes
+    les régions d'une trame au lieu de celles de la ligne ; l'invalidée
+    comptée comme évincée (neuf) ; `ecrit` qui ne baisse rien (deux) ;
+    `STOP_WRITTEN` pas effacé (six) ;
+  - le pont : `codePages` décalé d'un fait tomber le test Swift du minimum.
+- `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`
+  propres ; `cargo test --release` sur tout l'espace de travail : 690
+  passés, 0 échec. `WebKitBench.swift` régénéré par `--example
+  bench-module` (3 769 et 3 699 octets pour les deux modules confinés).
+  `swift build --build-tests`, les tests touchés (`DesktopTranslatorTests`,
+  `WebKitBench`, 31 passés), puis la suite entière : 2 906 exécutés (67
+  sautés), 0 échec ; SwiftLint `--strict` : rien ; `check-whitespace` et
+  `check-project-sources` propres.
+  Compte publié : 3 652 → 3 676 (Swift 2 986 + Rust 690), par
+  `recompte.sh` ; le site se construit et passe ses tests.
+
+**Ce qui reste.**
+
+- **Ce qui s'écrit du dehors sans `ecrit` n'est vu par rien** : le pilote
+  qui pose l'image, un test, et le disque quand `carte.js` sera raccordé —
+  son DMA devra appeler `ecrit` pour chaque tampon rendu. C'est pourquoi le
+  vidage reste allumé par défaut.
+- **Un changement de correspondance sans écriture** : un programme qui
+  défait une page de code et en pose une autre à la même adresse, dans le
+  même espace, sans que rien n'écrive ni l'ancien code ni la racine — les
+  tables en dessous de la racine ne sont pas surveillées. Les surveiller
+  toutes ferait oublier les régions d'un programme à chaque faute de page
+  dans son tas.
+- L'étendue est spéculative : une région oubliée pour une écriture dans des
+  octets qu'elle a lus sans les exécuter, ce que deux tests montrent.
+- Le coût du chemin rapide est celui du JavaScriptCore de Bun, sur une
+  boucle d'un bloc ; celui d'un iPhone n'est pas mesuré, ni la taille des
+  modules sur la vraie page (+6 %). Seule la CI juge le pont Swift sous un
+  vrai WebKit.
+- **Un défaut vu en mesurant, pas corrigé** : une boucle d'un seul bloc
+  dont le budget s'épuise sur sa propre tête est déclarée « sur place » —
+  le bloc de plus qui devait trancher revient au même RIP. Le banc
+  l'a montré à 2²⁷ tours ; un noyau qui tourne plus de 2²⁴ blocs dans une
+  telle boucle s'arrêterait là.
+- Le disque (« Mounting boot media: failed »), la collecte du code évincé
+  dans une page.
+
+## 2026-11-16 — Émetteur : six gardes du cache de code de plus ont leur test, et le titre d'avant était faux
+
+**Ce qui n'allait pas.** L'entrée suivante et son commit (942a52fd) se
+titraient « chaque garde du cache de code a son test ». C'était faux. Le
+contrôle adverse a retiré une ligne à la fois dans `host.js`, et chacune des
+gardes que voici laissait passer les 185 tests de `host_loop` :
+
+1. **`prendre` sans `if (etendue.debut > debut) return false;`.** C'est une
+   corruption silencieuse, reproduite : quand la place voulue commence dans
+   un trou trop court, la boucle essayait le trou suivant, plus haut, le
+   trouvait assez long pour `[debut, debut + longueur)`, et la région se
+   posait jusque par-dessus la région vivante qui sépare les deux trous.
+   Celle-ci exécutait ensuite le code de l'autre (+1000 au lieu de +10).
+2. **`evincer` sans `espaces.delete` de la carte vide.** C'est elle qui fait
+   qu'un processus mort rend sa place : sans elle, chaque CR3 mort laisse une
+   `Map` vide pour toujours, et `vm.cache.pic.espaces` (« sept espaces
+   d'adressage au plus ») compte les morts.
+3. **Les deux fusions de `rendre`**, avec la place d'après et avec celle
+   d'avant. Sans elles, `libres` n'est plus « jamais contiguë » : deux trous
+   voisins restent deux, une région qui tient dans leur union n'y tient pas,
+   et la table grandit.
+4. **`choisir` qui prend la plus grande place rendue**, et non la première
+   venue — un choix mesuré (8 906 traductions refaites sur 123 134 avec la
+   première venue).
+5. **La validation des bornes** : `valeur <= 0` devenu `valeur < 0`
+   acceptait `cache: { regions: 0 }` en silence.
+6. **Le compte des retraductions** : `oubliees.delete(clef)` devenu `has`
+   comptait encore, après un vidage, une région que rien n'avait évincée
+   depuis sa retraduction. Le taux publié (47 % / 34 %) vient de ce
+   compteur.
+7. **Le contexte de l'hôte n'était essayé qu'en anneaux zéro et trois.**
+   `if (anneau !== 3)` au lieu de `=== 0` dans `contexte()` rangeait les
+   anneaux un et deux sous le contexte du noyau, alors que `context_tag` et
+   le module y mettent CR3 et l'anneau. Linux ne s'en sert pas : un trou de
+   test, pas une panne observée.
+
+Comme dans l'entrée suivante, le code qui tourne était juste : chacune de ces
+gardes y est. Ce qui manquait, c'est le test qui tombe sans elle — et un
+titre qui le disait.
+
+**Ce qui change.** Six tests neufs dans `host_loop` et un renforcé, sans
+rien toucher au code de `host.js` ni de l'émetteur (aucun octet émis ne
+change ; `WebKitBench.swift` reste tel quel) :
+
+- `a_region_never_lands_over_a_live_region_above_its_hole` (l'essai du
+  contrôle, documenté). Trois régions au plus, `emplacements: 1` : R1
+  (71 blocs), S, R3 (58 blocs), puis U, S, U, V, S, U. Quand R2 (111
+  blocs) arrive, V est vivante en 0 : R2 est traduite pour le plus grand
+  trou, `[1, 71)`, et c'est sa propre place qui évince V *(corrigé
+  depuis, voir l'entrée de la carte du code traduit : ce paragraphe disait
+  « R2 essaie zéro »)*. Elle n'y tient pas, et est replacée en 131.
+  Attendu `pas 1,10,3,20,10,20,30,10,20,1000,10 replacees 1 r2 131 s 71` ;
+  sans la garde, `…,1000,1000 replacees 0` : R2 est posée en 1, sur S ;
+- `an_address_space_without_regions_leaves_the_cache` : une région au plus,
+  en anneau trois, sous cinq CR3 à la suite. `vm.cache.pic.espaces` vaut 1 ;
+  sans la garde, 5 ;
+- `two_places_given_back_side_by_side_merge` : A et B, quarante blocs
+  chacune, côte à côte, évincées dans un ordre puis dans l'autre. Seule
+  leur union a les `PROBABLE` blocs qu'une région neuve demande, et G doit
+  se poser à zéro. Sans la fusion d'après, ou sans celle d'avant, G va au
+  haut, en 83 ;
+- `a_new_region_tries_the_largest_place_given_back` : un trou de quarante
+  places sous un de quatre-vingts, séparés par une région vivante. G se pose
+  dans le grand, en 41 ; la première venue, trop petite, l'enverrait au
+  haut, en 124 ;
+- `a_cache_bound_must_be_a_positive_integer` : zéro, moins un, 1,5 et la
+  chaîne « 8 » sont refusés, chacun sur une borne *(corrigé depuis, voir
+  l'entrée de la carte du code traduit : ce paragraphe disait « pour
+  chacune des trois bornes », et le test n'en faisait que six essais sur
+  douze)* ; un est accepté ;
+- `a_retranslation_counts_once_per_eviction` : une région au plus. A, B,
+  puis A qui revient (une retraduction) ; le passage en anneau trois vide
+  tout sans rien évincer ; A traduite de nouveau en anneau zéro n'est pas
+  une retraduction. Attendu `retraduites 1,1` ; avec `has`, `1,2` ;
+- `the_view_computes_the_context_as_the_emitter_does` essaie aussi CS =
+  0x09 (anneau un) et CS = 0x1a (anneau deux), comparés à `context_tag`.
+
+**Le titre de l'entrée suivante est corrigé sur place** (« des gardes du
+cache de code ont leur test », plus « chacune »). Le message du commit
+942a52fd, déjà poussé, garde le sien : l'amend est exclu, c'est ici que
+c'est dit. Et ce qu'on peut dire maintenant est plus étroit qu'un
+« chaque » : **chaque garde que deux contrôles ont sabotée une ligne à la
+fois a un test qui tombe sans elle** ; ce n'est pas une preuve qu'il n'en
+reste aucune.
+
+**Sabotages**, chacun d'une ligne de `host.js`, vu tomber, puis restauré
+(`filecmp` identique à la copie) — `host_loop` lancé en entier, 190 passent
+sur 191 à chaque fois :
+
+- `prendre` sans `if (etendue.debut > debut) return false;` →
+  `a_region_never_lands_…` tombe, sur `pas …,1000,1000 replacees 0 r2 1 s
+  71` ;
+- `evincer` sans `espaces.delete` → `an_address_space_…` tombe, sur
+  `espaces 5` ;
+- `rendre` sans la fusion d'après (`if (false && …)`) →
+  `two_places_…` tombe, sur `apres g 83` ;
+- `rendre` sans la fusion d'avant → le même tombe, sur `avant g 83` ;
+- `choisir` qui garde la première place venue → `a_new_region_tries_…`
+  tombe, sur `g 124` ;
+- `valeur < 0` au lieu de `valeur <= 0` → `a_cache_bound_…` tombe : les
+  trois bornes nulles sont acceptées ;
+- `oubliees.has(clef)` au lieu de `delete` → `a_retranslation_…` tombe, sur
+  `retraduites 1,2` ;
+- `if (anneau !== 3)` dans `contexte()` → `the_view_computes_…` tombe : les
+  anneaux un et deux rendent 4, le contexte du noyau.
+
+**Vérifications.** `cargo fmt --all --check` et `cargo clippy --all-targets
+--all-features -- -D warnings` propres ; `cargo test --release` sur tout
+l'espace de travail : 666 passés, 0 échec (`host_loop` 191, `x86_wasm` 40,
+`webkit_probe` 7) ; `check-whitespace.sh` et `check-project-sources.sh`
+propres ; le compte des tests suit dans les README, `content.rs` et
+`claims.test.ts`, et le site se construit et passe ses tests.
+
+**Ce qui reste.** Ce qui restait à la tranche reste : la collecte du code
+évincé dans une vraie page (WebKit, non mesurée), le CR3 recyclé, le texte
+du noyau réécrit après le premier passage en anneau trois, et le disque
+(le raccord de `carte.js`, « Mounting boot media: failed »). Ni la sonde
+ni Alpine ne sont relancées : seuls des tests changent.
+
+## 2026-11-15 — Émetteur : des gardes du cache de code ont leur test, et les chiffres résidents sont en Mio
+
+**Ce qui n'allait pas.** Le contrôle adverse de l'entrée suivante (le cache
+borné) a trouvé des gardes que rien ne tenait. Chacune, retirée seule,
+laissait passer les 179 tests de `host_loop` :
+
+1. **`iretq` et `syscall` résolus dans leurs propres blocs.** Seul `sysretq`
+   avait un test. Or `iretq` est le chemin ordinaire de Linux vers l'espace
+   utilisateur : un bloc du noyau de la région, ré-entré en anneau trois
+   après le retour, c'est le trou même que la clé bouchait.
+2. **`oublierTout` qui garde ses places rendues** (`libres.length = 0`
+   retiré). Ce n'est pas qu'une fuite : la place d'un ancien trou est
+   réemployée par-dessus une région posée depuis au même endroit. Le pilote
+   de stress du contrôle (24 régions de 1 à 150 blocs, quatre régions au
+   plus, anneau trois au pas 200) faisait tourner à la région 4 le code de
+   la région 16, puis « la région à 86016 ne tient pas à l'emplacement 73 »
+   et `call_indirect to a signature that does not match`.
+3. **Cinq gardes de fuite ou de vitesse** : `effacer` sans la comparaison
+   d'indice, `rendre` qui ne fait plus redescendre le haut, `prendre` qui ne
+   rend pas le trou laissé sous le haut, `oublierTout` sans `next = 0`, et
+   l'échec d'instanciation qui ne rend pas la place.
+4. **Le contexte gravé dans le module** n'était tenu que par les octets
+   épinglés de la sonde : le test de `x86_wasm` n'essayait que CR3 = 0x5000.
+   Un module qui garderait les douze bits bas de CR3, ou qui ne le
+   replierait pas par le masque de la RAM, ne trouverait plus aucune case
+   rangée par l'hôte sous de telles tables, sans qu'aucun test de
+   comportement ne tombe.
+5. **Les mémoires résidentes publiées étaient fausses d'unité.** `course.sh`
+   relève des Kio ; l'entrée suivante, son message de commit et `host.js`
+   les divisaient par mille et écrivaient Mio ou Gio. 813 456 Kio font
+   794 Mio, pas 813.
+6. **Des commentaires inexacts** : la place d'essai de `install` décrite
+   comme « la première étendue rendue » (c'est le haut, puis la **plus
+   grande** rendue, ce que `choisir` dit lui-même) ; un corps de bloc « sans
+   aucune variable locale », alors que ceux qui cherchent en déclarent
+   deux ; « onze mille régions sur Alpine » oubliées au vidage, alors que
+   c'est la sonde 6.18 aux bornes d'un million de régions (11 074) — Alpine
+   aux bornes par défaut en oublie 4 008.
+
+Aucun de ces défauts n'est dans le code qui tourne : les gardes y étaient,
+et le pilote de stress rend zéro erreur sur quatre graines (de 314 à 344
+évictions, et de 29 à 39 replacements chacune). Ce qui manquait, c'est le
+test qui tombe sans elles.
+
+**Ce qui change.**
+
+- Six tests neufs dans `host_loop` :
+  - `an_iretq_to_ring_three_does_not_resolve_into_the_regions_own_blocks`
+    (le pendant de celui de `sysretq` : un cadre d'`iretq` vers un bloc de
+    sa propre région, sur une page du superviseur, sous CS = 0x33 : la
+    faute de chargement, CR2 sur la cible, RDI nul) ;
+  - `a_syscall_does_not_resolve_into_the_regions_own_blocks`. Un programme
+    dont `LSTAR` désigne l'un de ses propres blocs, sur une page
+    utilisateur. Les octets sont les mêmes dans les deux anneaux, et cette
+    machine n'arme pas SMEP : RDI ne voit rien. Le test juge donc **sous
+    quelle région** la cible tourne : demandée à l'hôte une seconde fois,
+    sous l'anneau zéro, et deux régions connues. C'est la promesse de la
+    clé, qu'un bloc ne tourne que sous le contexte de sa région ; c'est un
+    défaut de rangement, pas de justesse, et c'est écrit dans le test ;
+  - `a_flush_gives_the_whole_table_back_and_forgets_its_holes`. A, de
+    quatre-vingts blocs, puis B, puis C qui évince A : un trou de
+    quatre-vingts places. Le passage en anneau trois vide tout. D se pose à zéro,
+    E juste après, et D, servie de nouveau, ajoute toujours quatre. Sans
+    `libres.length = 0`, on lit `pas 1,2,3,4,5,5 places 0,0` : E est posée
+    sur D, et D tourne le code de E. Sans `next = 0`, D se pose au-dessus de
+    l'ancien haut ;
+  - `a_hole_left_under_the_top_of_the_table_is_reused` (une seule région :
+    C trouve à zéro la place que A a rendue, et le haut n'a jamais dépassé
+    A et B) ;
+  - `a_region_that_fails_to_instantiate_gives_its_place_back` (la première
+    traduction rend un module tronqué de son dernier octet : sa section
+    d'éléments se lit, sa compilation échoue ; la région suivante se pose à
+    zéro) ;
+  - `an_eviction_leaves_a_case_another_region_took_back` (R2 a un bloc à
+    `X`, R1 commence à `X` et reprend sa case avec son propre indice ; R2
+    évincée n'efface pas la case de R1).
+- `a_region_finds_another_region_through_the_correspondence` (`x86_wasm`)
+  essaie deux CR3 de plus : 0x5abc, aux bits bas non nuls, et 0x15000,
+  au-delà de la RAM d'une page, que le masque ramène à 0x5000. La case est
+  rangée sous `context_tag`, et le module doit la trouver.
+- Les commentaires de `host.js` (`install`, la reprise de place,
+  `oublierTout`, `CACHE_PAR_DEFAUT`, `respirerSiBesoin`), de `x86_wasm.rs`
+  (`lookup`) et de `a_flush_lets_the_engine_collect_too` sont corrigés.
+  Aucun octet émis ne change ; `WebKitBench.swift` reste tel quel, et
+  `bench_module_matches_the_probe` passe.
+- **Les chiffres résidents de l'entrée suivante sont corrigés sur place**,
+  en Mio de 1 024 Kio, depuis les relevés de `course.sh` :
+
+  | relevé | Kio | publié | juste |
+  | --- | ---: | ---: | ---: |
+  | Alpine, 16 384 / 64 Mio | 813 456 | 813 Mio | 794 Mio |
+  | Alpine, 16 384 / 96 Mio | 1 269 852 | 1 270 Mio | 1 240 Mio |
+  | Alpine, sans `ramasser` | 6 340 240 | 6,3 Gio | 6,05 Gio |
+  | sonde 6.6.142 | 745 036 | 745 Mio | 728 Mio |
+  | sonde 6.12.115 | 782 668 | 783 Mio | 764 Mio |
+  | sonde 6.18.60 | 861 876 | 862 Mio | 842 Mio |
+  | sonde 6.18, 2 000 / 16 Mio, pause seule | 2 011 660 | 2,0 Gio | 1,9 Gio |
+  | sonde 6.18, 2 000 / 16 Mio, `ramasser` | 279 648 | 270 Mio | 273 Mio |
+
+  Le banc du coût d'un module (316 à 322 Mio, 1,4 Gio après quatre tours)
+  lisait `process.memoryUsage().rss / 1048576` : il était juste. Le message
+  du commit 0d5d9f3c, déjà poussé, garde « 813 Mio » et « dix-sept
+  sabotages » (il y en a seize distincts) : il n'est pas réécrit, l'amend
+  étant exclu ; c'est ici que c'est dit.
+
+**Sabotages**, chacun d'une ligne, vu tomber, puis restauré (`cmp`
+identique à la copie) — `host_loop`, `x86_wasm` et `webkit_probe` lancés :
+
+- `iretq` par `resolve` au lieu de `resolve_across` → l'`iretq` neuf tombe
+  (184 passent sur 185) ;
+- `syscall` de même → `a_syscall_…` tombe ;
+- `oublierTout` sans `libres.length = 0` → `a_flush_gives_…` tombe, sur
+  `pas 1,2,3,4,5,5 places 0,0` ;
+- `oublierTout` sans `next = 0` → `a_flush_gives_…` tombe ;
+- `prendre` sans `rendre(haut, debut - haut)` → `a_hole_left_…` tombe ;
+- l'échec d'instanciation sans `rendre` → `a_region_that_fails_…` tombe ;
+- `rendre` qui ne fait plus redescendre le haut → `a_region_that_fails_…`
+  tombe ;
+- `effacer` sans la comparaison d'indice → `an_eviction_leaves_…` tombe ;
+- le contexte du module avec `mask` au lieu de `mask & !0xfff` → le test de
+  `x86_wasm` tombe, sur « bits-bas » ;
+- `Self::context(u32::MAX, body)` → le même, sur « hors-ram ».
+
+**Comment c'est vérifié.** `cargo fmt --all --check` et `cargo clippy
+--all-targets --all-features -- -D warnings` : propres. `cargo test
+--release --no-fail-fast` sur tout l'espace de travail : 660 passés, 0
+échec (`host_loop` 185, `x86_wasm` 40, `webkit_probe` 7). Compte publié
+3 640 → 3 646 (Swift 2 986 + Rust 660), par `recompte.sh` ; site : `bun run
+build` puis `bun test`, 476 passés ; `wisq-site` passe.
+`check-whitespace` et `check-project-sources` : propres. Aucun Swift
+touché. Le pilote de stress du contrôle, sur le code de la branche : zéro
+erreur sur quatre graines.
+
+**Ce qui reste.** Rien de neuf sur le vrai noyau : aucun octet émis ni
+aucune ligne exécutée de `host.js` ne change, et la sonde et Alpine n'ont pas
+été relancées. Ce qui restait à l'entrée suivante reste : la collecte du
+code évincé dans une vraie page, le CR3 recyclé, le texte réécrit après le
+premier passage en anneau trois, et le disque (« Mounting boot media:
+failed »).
+
+## 2026-11-15 — Émetteur : un cache de code borné, rangé par contexte, et l'anneau dans la clé
+
+**Ce qui n'allait pas.** Trois défauts, tous portés par les entrées
+d'avant :
+
+1. **Le cache de code n'avait aucune borne.** Chaque `exec` remet ses
+   bibliothèques à des adresses neuves, chaque programme se retraduisait, et
+   Alpine 6.18.60 jusqu'à son shell de secours remplissait les quinze
+   gibioctets du conteneur vers cent mille régions : le pilote tué par
+   manque de mémoire à 1 182 s, l'invite au tour 7,4 millions.
+2. **Une région du noyau déjà traduite se ré-entrait depuis l'anneau
+   trois.** Les régions étaient gardées par leur seule adresse, dans `known`
+   comme dans la correspondance : un programme qui sautait sur le noyau y
+   faisait tourner son code au lieu de prendre la faute de page du
+   silicium. La sonde `surveiller` le tenait par une branche « défaut ».
+3. **Un programme servait les régions d'un autre**, à la même adresse.
+
+**Ce qui change.**
+
+- **La clé d'une région est son adresse et son contexte**
+  (`x86_wasm::context_tag`) : l'anneau, et hors de l'anneau zéro la racine
+  des tables (CR3 replié par le masque de la RAM, sans ses douze bits bas —
+  cette machine n'annonce pas PCID). L'anneau zéro n'a qu'un contexte, quel
+  que soit CR3 : le texte du noyau est le même dans toutes ses tables, et le
+  compter par processus ferait retraduire tout le chemin des appels système
+  à chaque processus neuf. Le contexte est rangé dans les quatre derniers
+  octets de la case de la correspondance, qui étaient du rembourrage
+  (`TABLE_CONTEXT`), avec un bit « prise » (`CONTEXT_PRESENT`) : une case
+  vide ne passe plus pour l'adresse zéro en anneau zéro.
+- **L'émetteur compare le contexte** à chaque recherche, recalculé depuis
+  CS et CR3 comme l'anneau des accès mémoire. Les blocs d'une forme qui
+  cherche déclarent deux locales — le seau et le contexte —, et le seau
+  n'est plus recalculé quatre fois par recherche : les modules de la sonde
+  de l'appareil perdent 32 octets (3 413 → 3 381, 3 319 → 3 287), et
+  `WebKitBench.swift` est régénéré par `--example bench-module`.
+- **`syscall`, `sysretq` et `iretq` ne se résolvent plus dans les blocs de
+  leur propre région** (`resolve_across`) : après un changement d'anneau,
+  seule la correspondance, qui juge le contexte, ou l'hôte peuvent répondre.
+- **`host.js` range ses régions par contexte, borne le cache et évince la
+  moins récemment servie.** Deux bornes (`CACHE_PAR_DEFAUT`, réglables par
+  `machine({ cache })`) : 16 384 régions et **64 Mio de modules**. Une région
+  évincée quitte `known`, ses cases de la correspondance (celles qui portent
+  son adresse, son contexte **et** son indice) et ses blocs dans la table ;
+  sa place est rendue et fusionnée à ses voisines. Une région servie par
+  l'hôte devient la plus récente **et reprend sa case** dans la
+  correspondance si une autre la lui a prise.
+- **La place dans la table se choisit avant la traduction, la longueur se
+  lit après** : l'hôte lit l'offset et la longueur du segment d'éléments
+  dans les octets du module avant de l'instancier (`blocsDuModule`) — une
+  région plus longue que le trou où on l'essaie écraserait sinon sa
+  voisine. Elle se pose au haut de la table tant qu'il reste sous un million
+  de cases (huit mébioctets de pointeurs), puis dans la plus grande place
+  rendue ; si elle n'y tient pas, elle est retraduite ailleurs. Un module
+  qui ne pose pas ses blocs à l'emplacement demandé est refusé franchement.
+  Une première forme (la première place rendue d'au moins 64 blocs) refaisait
+  8 906 traductions sur 123 134 sur Alpine ; celle-ci, zéro.
+- **`revoir` ne relit plus les régions d'un autre espace d'adressage** à
+  travers les tables en service : elles sont nommées à part (`ailleurs`).
+- `kernel-entry` : `WISQ_CACHE=<régions>,<octets>`, `WISQ_RAMASSER=0`, une
+  ligne « cache au tour … » à chaque battement et une ligne `cache` à la fin
+  (bornes, pics, évincées, retraduites, mémoire résidente).
+
+**Ce qu'une région coûte au moteur, mesuré** (Bun 1.4.4, `--smol`) :
+3 000 fenêtres de quatre kibioctets aux débuts de fonctions de 6.18.60,
+72,6 Mio de wasm, coûtent **316 à 322 Mio résidents : 4,4 octets par octet
+de wasm, 108 Kio par module**. Une région d'Alpine pèse en moyenne quatorze
+kibioctets de wasm. **Et lâchés, ils restent** : le code compilé ne pèse rien
+sur le tas de JavaScript, rien ne déclenche de collecte pour lui. Quatre
+tours lâchés sans pause montent à 1,4 Gio ; un `setTimeout(…, 0)` ne rend
+rien, 4 à 64 Mio de `ArrayBuffer` jetés non plus ; une pause de huit
+millisecondes, oui, dans ce banc. **Dans la vraie boucle, non** : les modules
+évincés ont survécu à bien des collectes jeunes, et seule une collecte
+pleine les rend. D'où `respirerSiBesoin` — une pause de huit millisecondes
+chaque fois qu'un quart de la borne a été évincé (ou vidé) — et un rappel
+`ramasser`, que `kernel-entry` remplit de `Bun.gc(true)`. La sonde 6.18 aux
+bornes de 2 000 régions et 16 Mio : 1,9 Gio résidents avec la pause seule,
+**273 Mio** avec `ramasser`.
+
+**Comment c'est vérifié.**
+
+- Dix tests neufs dans `host_loop`, un renommé, un renforcé dans `x86_wasm` :
+  - `the_code_cache_evicts_the_least_recently_served_region_and_retranslates_it`
+    (A → B → C dans un cache de deux ; A évincée quitte `known`, sa case et
+    son bloc, puis, réécrite, se retraduit sur ses octets neufs : RDI 111
+    puis 223, trois retraductions) ;
+  - `serving_a_region_keeps_it_in_the_code_cache` ;
+  - `the_code_cache_holds_under_its_byte_bound` (et `ramasser` appelé) ;
+  - `a_flush_lets_the_engine_collect_too` ;
+  - `a_region_too_long_for_the_hole_it_was_tried_in_is_placed_elsewhere`
+    (une région de 111 blocs essayée dans un trou de 71 devant une région
+    vivante : retraduite une fois, ailleurs, la voisine intacte) ;
+  - `a_module_for_another_slot_is_refused` ;
+  - `a_region_served_by_the_host_takes_its_case_back` ;
+  - `a_program_does_not_run_the_region_of_another_address_space` (deux CR3,
+    deux codes à `0x400000`, atteints par l'hôte puis par la correspondance :
+    RDI 1, 2, 1, 2 ; `revoir` les dit « ailleurs ») ;
+  - `a_ring_change_does_not_resolve_into_the_regions_own_blocks` (un
+    `sysretq` vers un bloc de sa propre région, sur une page du
+    superviseur : la faute de chargement, CR2 sur la cible, RDI nul) ;
+  - `the_view_computes_the_context_as_the_emitter_does` ;
+  - la sonde de `surveiller` devient
+    `a_kernel_region_already_translated_is_not_reentered_from_ring_three` :
+    sa branche « silicium » passe, la branche du défaut est retirée, et le
+    test exige maintenant témoin zéro, l'arrêt « une faute de page sur un
+    chargement d'instruction » et rien d'entré ;
+  - `a_region_finds_another_region_through_the_correspondence`
+    (`x86_wasm`) : la bonne adresse sous un autre anneau, et sous les tables
+    d'un autre programme, ne fait plus sauter le module ; sous celles du
+    programme, si.
+- Deux montages tenaient l'ancienne forme de la case : les étrangères de
+  `a_block_start_never_evicts_a_region_entry` portent maintenant un contexte
+  (une case sans contexte est vide), et `the_view_…` compare `tableContext`
+  et `contextPresent` aux constantes Rust.
+- **Sabotages**, chacun vu tomber puis restauré (`cmp` avec la copie) :
+  l'hôte qui cherche sans contexte (la sonde et les deux espaces tombent) ;
+  le module qui ne compare pas le contexte (les deux espaces, et le test
+  `x86_wasm`) ; le module sans CR3 dans le contexte (`x86_wasm`) ; l'hôte
+  sans CR3 (les deux espaces) ; `sysretq` résolu dans ses propres blocs ;
+  aucune éviction (quatre tests) ; servir sans rendre récente ; la borne en
+  octets ignorée ; une région posée dans un trou trop court ; `ramasser`
+  jamais appelé (deux tests) ; le vidage qui ne compte pas pour la
+  respiration ; les cases d'une région évincée gardées ; ses blocs gardés ;
+  l'emplacement du module non vérifié ; servir sans reprendre la case ;
+  `revoir` qui relit tout.
+- `cargo test --release --no-fail-fast` : 654 passés, 0 échec.
+  `cargo fmt --check`, `clippy --all-targets --all-features -D warnings`,
+  `check-whitespace`, `check-project-sources` : propres. `swift build
+  --build-tests` puis la suite entière : 2 906 exécutés (67 sautés), 0
+  échec ; `WebKitBenchTests` compris. SwiftLint `--strict` : 0 violation.
+  Compte publié : 3 630 → 3 640 (Swift 2 986 + Rust 654), par `recompte.sh` ;
+  site : 476 passés, 0 échec.
+- **Sur le vrai noyau.** Les fichiers ont été retéléchargés (le bloc-notes
+  avait été effacé) : 6.18.60 et 6.12.115 ne sont plus servis que par les
+  répertoires `netboot` des versions publiées (3.24.4 et 3.22.8), leur
+  `vmlinuz-virt` identique à celui des ISO `alpine-virt` dont la somme est
+  vérifiée ; 6.6.142 vient de `linux-virt-6.6.142-r0.apk`, vérifié contre
+  l'APKINDEX de 3.20. Alpine 6.18.60, son initramfs (`netboot`) et son
+  `/init`, `WISQ_RAM=256`, `console=ttyS0`, les bornes par défaut, `ramasser`
+  allumé : « Mounting boot media: failed », le shell de secours, puis dix
+  commandes tapées — `uname -a`, `ls /`, `mount -t proc`, `head -3
+  /proc/meminfo`, `ps`, `ls /bin | wc -l` (220), `cat /proc/cmdline`,
+  `echo $((6*7))` (42), `dmesg | tail -2`, et la fin. **Plus de mort par
+  manque de mémoire** :
+
+  | bornes | mur | pic résident | demandes | retraduites | pic de régions |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 16 384, 64 Mio (défaut) | 182 s | 794 Mio | 139 952 | 66 046 (47 %) | 4 857 |
+  | 16 384, 96 Mio | 170 s | 1 240 Mio | 123 244 | 41 606 (34 %) | 7 112 |
+  | 16 384, 64 Mio, sans `ramasser` | tué à 68 s | 6,05 Gio | 57 226 | — | — |
+
+  Sept espaces d'adressage au plus à la fois, 160 respirations, l'invite au
+  tour 239 877 (7,4 millions avant). La course à 96 Mio a tourné pendant des
+  sabotages ; son mur n'est pas comparable à la lettre.
+- **La sonde**, bornes par défaut, `WISQ_FIN=WISQ-USERSPACE-OK` :
+
+  | noyau | demandes | retraduites | tours | mur | pic résident |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 6.6.142 | 10 230 | 1 346 | 17 438 | 26 s | 728 Mio |
+  | 6.12.115 | 10 762 | 1 448 | 15 299 | 16 s | 764 Mio |
+  | 6.18.60 | 11 492 | 1 683 | 17 002 | 17 s | 842 Mio |
+
+  Les tours (retours de main entre deux `vm.run`) tombent de 499 496,
+  475 795 et 1 621 364 à quelques dizaines de milliers, et c'est la case
+  reprise par une région servie : la même sonde 6.18 sans elle (le sabotage
+  de `servir`) fait 816 384 tours en 33 s. Les sauts de module à module qui
+  repassaient par l'hôte faute de case n'y repassent plus.
+
+**Ce qui reste.**
+
+- **La collecte du code évincé, dans une page.** Rien dans une page ne force
+  une collecte pleine, et sous Bun, sans elle, la borne du cache ne borne
+  pas la mémoire : 6,05 Gio en 68 s. Sur un appareil, c'est au gestionnaire
+  de pression mémoire de WebKit de la faire ; **ce n'est pas mesuré**, et si
+  jetsam frappe avant, la vue meurt comme avant. `ramasser` est le point
+  d'accroche. Le pilote du bureau (`desktop::driver`) n'en passe aucun.
+- **Un CR3 recyclé** : un processus neuf dont les tables tombent sur la page
+  de celles d'un mort hérite du contexte, et une région du mort à la même
+  adresse le servirait. Moins large qu'avant (toutes les adresses de tous
+  les programmes), pas nul. Le remède reste de voir les écritures dans les
+  pages de code — comme pour le texte réécrit après le premier passage en
+  anneau trois, que rien ne voit toujours.
+- Le taux de retraduction (47 % sur Alpine au défaut) est le prix de la
+  borne ; un cache des modules compilés par octets de fenêtre, ou une borne
+  plus haute sur les appareils qui l'acceptent, le baisseraient.
+- Les 4,4 octets par octet de wasm sont ceux du JavaScriptCore de Bun ;
+  celui d'un iPhone n'est pas mesuré. Le disque (« Mounting boot media:
+  failed ») reste à raccorder.
+- Seule la CI juge le pont Swift sous un vrai WebKit (« App iOS »).
 ## 2026-11-16 — Troisième contrôle des bureaux prêts : seul le transfert en cours échappe à la garde
 
 Le contrôle adverse de l'entrée juste en dessous a trouvé trois défauts.

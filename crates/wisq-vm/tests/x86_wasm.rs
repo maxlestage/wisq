@@ -20,9 +20,10 @@ use std::process::Command;
 
 use wisq_vm::x86::{decode, Cpu, Op, Step, Width};
 use wisq_vm::x86_wasm::{
-    host_pages, table_base, table_slot, tlb_base, Module, Refused, BENCH_MEMORY_ACCESSES_PER_TURN,
-    BENCH_MEMORY_LOOP, BENCH_MEMORY_PER_TURN, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT,
-    RIP_SLOT, TABLE_IMPORT, TABLE_MIX, TLB_PAGES,
+    code_log_base, code_map_base, code_pages, context_tag, host_pages, table_base, table_slot,
+    tlb_base, Module, Refused, BENCH_MEMORY_ACCESSES_PER_TURN, BENCH_MEMORY_LOOP,
+    BENCH_MEMORY_PER_TURN, GLOBAL_COUNT, GS_SLOT, GUEST_PAGES, RFLAGS_SLOT, RIP_SLOT, TABLE_IMPORT,
+    TABLE_MIX, TLB_PAGES,
 };
 
 // **Pourquoi chacun des dix pilotes de ce fichier porte `out` et `in`.**
@@ -2144,8 +2145,8 @@ const FOLDED = 0x00008;
 const MARK = 0xc0ffeen;
 
 // **Ce qu'un hôte doit allouer, calculé une seule fois.** Le nombre vient de
-// `host_pages`, côté Rust : la RAM de l'invité, la correspondance, et le
-// tampon de traduction. Un pilote qui refaisait la somme lui-même a manqué le
+// `host_pages`, côté Rust : la RAM de l'invité, la correspondance, le tampon
+// de traduction, et la carte du code traduit. Un pilote qui refaisait la somme lui-même a manqué le
 // tampon et ne s'instanciait plus.
 const rooms = {rooms};
 const hostPages = pages => pages + rooms;
@@ -2184,7 +2185,11 @@ console.log("libre.repliée " + loose[1]);
             held.to_string_lossy(),
             loose.to_string_lossy(),
             GUEST_PAGES,
-            rooms = host_pages(0),
+            // Ce qui est au-dessus de la RAM dépend de sa taille — la carte du
+            // code traduit en suit les lignes : compté pour les deux pages du
+            // module tenu, et c'est assez pour la forme libre, qui ne déclare
+            // que `GUEST_PAGES`.
+            rooms = host_pages(2) - 2,
         ),
     )
     .expect("le pilote");
@@ -2321,7 +2326,15 @@ const hostPages = pages => pages + rooms;
 
 // `fill` : 0 rien, 1 la bonne adresse, 2 une **autre** adresse dans la même
 // case. Le troisième cas est celui qui compte le plus : sans la comparaison,
-// le module sauterait dans un bloc qui n'a rien à voir.
+// le module sauterait dans un bloc qui n'a rien à voir. 3 : la bonne adresse,
+// sous un **autre contexte** — celui de l'anneau trois, alors que la machine
+// est en anneau zéro (CS vaut zéro). 4 : l'anneau trois sous les tables
+// 0x5000, et la case rangée sous ce contexte-là ; 5 : la même machine, la case
+// rangée sous les tables 0x6000 — un autre programme. 6 et 7 : l'anneau trois
+// sous des tables que le module doit replier comme `context_tag` — 0x5abc,
+// dont les douze bits bas ne sont pas la racine, et 0x15000, au-delà de la
+// RAM, que le masque ramène à 0x5000 ; la case rangée sous le contexte que
+// `context_tag` calcule pour elles.
 function attempt(fill, pages) {{
   const memory = new WebAssembly.Memory({{ initial: pages }});
   const blocks = new WebAssembly.Table({{ element: "anyfunc", initial: 16 }});
@@ -2339,8 +2352,16 @@ function attempt(fill, pages) {{
   // Les deux nombres viennent de `table_base` et `table_slot`, côté Rust.
   if (fill) {{
     const at = {base} + {slot} * 16;
-    new BigUint64Array(memory.buffer, at, 1)[0] = fill === 1 ? {away}n : {away}n + 1n;
+    new BigUint64Array(memory.buffer, at, 1)[0] = fill === 2 ? {away}n + 1n : {away}n;
     new Int32Array(memory.buffer, at + 8, 1)[0] = {there};
+    // **Le contexte de la case** : celui de l'anneau zéro, sauf pour le
+    // quatrième cas. Les deux viennent de `context_tag`, côté Rust.
+    new Uint32Array(memory.buffer, at + 12, 1)[0] =
+      [0, {noyau}, {noyau}, {ailleurs}, {programme}, {autre}, {bas}, {loin}][fill];
+  }}
+  if (fill >= 4) {{
+    slots[{cs}].value = 0x33n;
+    slots[{cr3}].value = [0x5000n, 0x5abcn, 0x15000n][Math.max(fill - 5, 0)];
   }}
 
   slots[0].value = {away}n;   // rax : la cible du saut indirect
@@ -2352,6 +2373,11 @@ function attempt(fill, pages) {{
 console.log("remplie " + attempt(1, hostPages({pages})));
 console.log("vide " + attempt(0, hostPages({pages})));
 console.log("etrangere " + attempt(2, hostPages({pages})));
+console.log("autre-contexte " + attempt(3, hostPages({pages})));
+console.log("programme " + attempt(4, hostPages({pages})));
+console.log("autre-programme " + attempt(5, hostPages({pages})));
+console.log("bits-bas " + attempt(6, hostPages({pages})));
+console.log("hors-ram " + attempt(7, hostPages({pages})));
 
 // **Et une mémoire sans place pour la correspondance ni pour le tampon de
 // traduction ne doit pas démarrer.**
@@ -2370,11 +2396,19 @@ try {{
             pages = PAGES,
             tableName = TABLE_IMPORT,
             globals = GLOBAL_COUNT,
-            rooms = host_pages(0),
+            rooms = host_pages(PAGES) - PAGES,
             base = table_base(PAGES),
             slot = table_slot(AWAY),
             away = AWAY,
             there = THERE,
+            noyau = context_tag(0, 0, PAGES),
+            ailleurs = context_tag(3, 0, PAGES),
+            programme = context_tag(0x33, 0x5000, PAGES),
+            autre = context_tag(0x33, 0x6000, PAGES),
+            bas = context_tag(0x33, 0x5abc, PAGES),
+            loin = context_tag(0x33, 0x1_5000, PAGES),
+            cs = wisq_vm::x86_wasm::SEGMENT_SLOT + 1,
+            cr3 = wisq_vm::x86_wasm::CONTROL_SLOT + 2,
         ),
     )
     .expect("le pilote");
@@ -2419,6 +2453,44 @@ try {{
         seen("etrangere"),
         "1",
         "une case qui range une autre adresse ne doit pas faire sauter le module"
+    );
+    // **La bonne adresse sous un autre contexte.** C'est le trou que le
+    // contexte dans la case bouche : une région du noyau trouvée depuis
+    // l'anneau trois, ou celle d'un programme depuis un autre. Sans la
+    // comparaison du contexte, le module y sauterait.
+    assert_eq!(
+        seen("autre-contexte"),
+        "1",
+        "une case rangée sous un autre contexte ne doit pas faire sauter le module"
+    );
+    // **Et le contexte d'un programme, calculé dans le module comme par
+    // `context_tag`** : l'anneau trois et la racine de ses tables. Trouvé sous
+    // les siennes, pas sous celles d'un autre.
+    assert_eq!(
+        seen("programme"),
+        "3",
+        "en anneau trois, la case rangée sous le contexte du programme est trouvée"
+    );
+    assert_eq!(
+        seen("autre-programme"),
+        "1",
+        "et celle d'un autre programme, à la même adresse, ne l'est pas"
+    );
+    // **Le repli de CR3, gravé dans le module, est celui de `context_tag`** :
+    // sans ses douze bits bas, et par le masque de la RAM. L'hôte range ses
+    // cases sous `context_tag` ; un module qui calculerait autrement ne les
+    // trouverait jamais sous de telles tables, et tous les sauts de module à
+    // module de ce programme repasseraient par l'hôte, sans que rien ne soit
+    // faux.
+    assert_eq!(
+        seen("bits-bas"),
+        "3",
+        "sous des tables aux bits bas non nuls, le module calcule le contexte de l'hôte"
+    );
+    assert_eq!(
+        seen("hors-ram"),
+        "3",
+        "sous des tables au-delà de la RAM, le module les replie comme l'hôte"
     );
     // Et une mémoire trop courte doit refuser au démarrage plutôt que piéger
     // au premier saut.
@@ -3358,7 +3430,7 @@ fn every_driver_supplies_the_functions_a_module_imports() {
 #[test]
 fn a_confined_module_asks_for_exactly_what_host_pages_says() {
     let code = [0x48, 0xff, 0xc2, 0xc3]; // incq %rdx ; ret
-    for pages in [1u32, 16, 1024, 0x4000] {
+    for pages in [1u32, 16, 512, 1024, 2048, 0x4000, 0x8000] {
         let confined = Module::confined(&code, CODE, 0, pages).expect("la forme confinée");
         assert_eq!(
             memory_minimum(&confined),
@@ -3367,15 +3439,28 @@ fn a_confined_module_asks_for_exactly_what_host_pages_says() {
         );
         // **Et le même nombre par un autre chemin.** `host_pages` seul serait
         // creux : le module tire son minimum de cette fonction, donc les deux
-        // côtés bougeraient ensemble. Celui-ci vient de `tlb_base`, la
-        // fonction que l'hôte emploie pour **placer** le tampon : le minimum
-        // doit couvrir le sommet de ce tampon, sinon l'hôte écrirait au-delà
-        // de ce que le module déclare. Deux dérivations qui ne partagent que
+        // côtés bougeraient ensemble. Celui-ci vient de `code_map_base`, la
+        // fonction qui **place** la carte du code traduit, le plus haut des
+        // morceaux, au-dessus du tampon (`tlb_base`) et du journal : le
+        // minimum doit couvrir le sommet de la carte, sinon le module lirait
+        // au-delà de ce qu'il déclare. Deux dérivations qui ne partagent que
         // les constantes.
         assert_eq!(
             memory_minimum(&confined),
-            u64::from(tlb_base(pages) / 65536 + TLB_PAGES),
-            "le minimum déclaré ne couvre pas le sommet du tampon, à {pages} pages"
+            u64::from(code_map_base(pages) / 65536 + code_pages(pages) - 1),
+            "le minimum déclaré ne couvre pas le sommet de la carte, à {pages} pages"
+        );
+        assert_eq!(
+            code_log_base(pages),
+            tlb_base(pages) + TLB_PAGES * 65536,
+            "le journal suit le tampon, à {pages} pages"
+        );
+        // **Et la carte a la place d'un bit par ligne de soixante-quatre
+        // octets de RAM.** Plus courte, la marche et l'inscription liraient et
+        // écriraient au-delà de ce qui est déclaré dès la fin de la RAM.
+        assert!(
+            u64::from(code_pages(pages) - 1) * 65536 * 8 >= u64::from(pages) * 65536 / 64,
+            "la carte ne couvre pas toute la RAM, à {pages} pages"
         );
         let resolving = Module::resolving(&code, CODE, 0, 0, pages).expect("la forme résolvante");
         assert_eq!(

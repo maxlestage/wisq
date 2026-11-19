@@ -727,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "3697",
+        "3754",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -1460,7 +1460,7 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "37",
+        "38",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
@@ -1475,7 +1475,9 @@ const accounted = new Map<string, Map<string, string>>([
           "#314 : `wisq_kernel_loads`, le lecteur ELF que le montage de mesure " +
           "emploie depuis #304 et que rien n'exposait à l'application. " +
           "Trente-sept : `wisq_vm_elapse`, le temps passé hors de la machine, " +
-          "que la machine RISC-V rattrape à la reprise d'une session.",
+          "que la machine RISC-V rattrape à la reprise d'une session. " +
+          "Trente-huit : `wisq_desktop_code_pages`, ce que la carte du code " +
+          "traduit occupe au-dessus du tampon pour une RAM donnée.",
       ],
       [
         "8",

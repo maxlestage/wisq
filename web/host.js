@@ -62,6 +62,11 @@ const STOP_MSR = 1n << 32n;
 /// sans cette délivrance, n'importe quel programme arrêtait la machine
 /// entière, là où le silicium ne fait fauter que lui.
 const STOP_MXCSR = 9n;
+/// **Une écriture est tombée sur du code traduit** : `STOP_WRITTEN` côté
+/// Rust. Ce n'est pas un arrêt, c'est la région qui rend la main, son
+/// instruction finie, pour que l'hôte oublie ce qui a été écrit ;
+/// `voirEcritures` l'efface avant de regarder quoi que ce soit d'autre.
+const STOP_WRITTEN = 10n;
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -223,6 +228,12 @@ export const SLOTS = {
   /// autant de cases qu'avant, mais une collision ne coûte plus une éviction.
   /// Le pendant exact de `TABLE_WAYS` côté Rust, et un test les compare.
   tableWays: 2,
+  /// **Où le contexte de la région est rangé dans une case** — après
+  /// l'adresse et l'indice —, et **le bit qui dit qu'une case est prise**.
+  /// Les pendants de `TABLE_CONTEXT` et `CONTEXT_PRESENT` côté Rust, et un
+  /// test les compare. Voir `contexte` plus bas, et `context_tag` là-bas.
+  tableContext: 12,
+  contextPresent: 4,
   /// **Le tampon de traduction**, juste au-dessus de la correspondance, donc
   /// encore plus haut que la RAM. Le module le déclare dans son minimum : un
   /// hôte qui ne le pose pas ne démarre pas, au lieu de piéger au premier
@@ -230,6 +241,10 @@ export const SLOTS = {
   tlbPages: 1,
   tlbEntry: 16,
   tlbSlots: 4096,
+  /// **Combien de numéros de ligne le journal du code traduit tient** — voir
+  /// `codePages` et `voirEcritures`. Le pendant de `CODE_LOG_SLOTS` côté
+  /// Rust, et un test les compare.
+  codeLogSlots: 16383,
   /// **Ce que l'hôte dit à la marche du module qu'il vient faire** — son
   /// second argument, `WALK_MACHINE` et `WALK_FETCH` côté Rust. Le processeur
   /// qui lit une porte, un descripteur ou pose un cadre n'est jugé sur aucun
@@ -243,7 +258,8 @@ export const SLOTS = {
 
 /// **Combien de pages de 64 Kio allouer pour un module confiné** : la RAM de
 /// l'invité, la correspondance, et le tampon de traduction. Le pendant exact de
-/// `host_pages` côté Rust, et la seule addition de ce fichier.
+/// `host_pages` côté Rust, et la seule addition de ce fichier. La carte des
+/// pages de code et son journal sont le troisième morceau au-dessus.
 ///
 /// **Pourquoi une fonction pour une addition.** La somme a changé deux fois —
 /// la correspondance, puis le tampon — et à chaque fois il a fallu retrouver
@@ -252,7 +268,18 @@ export const SLOTS = {
 /// sortait avec zéro. Un test refuse maintenant l'addition sur place, ici
 /// comme là-bas.
 export function hostPages(pages) {
-  return pages + SLOTS.tablePages + SLOTS.tlbPages;
+  return pages + SLOTS.tablePages + SLOTS.tlbPages + codePages(pages);
+}
+
+/// **Ce que la carte du code traduit et son journal occupent**, au-dessus du
+/// tampon : une page de journal — un compte, puis des numéros de ligne —, et
+/// la carte, un bit par ligne de soixante-quatre octets de RAM, huit octets
+/// par trame. Le pendant exact de `code_pages` côté Rust :
+/// `the_view_and_the_emitter_count_the_same_code_pages` (tests/host_loop.rs)
+/// les compare, et `hostPages` avec `host_pages`, de part et d'autre de chaque
+/// marche de 512 pages.
+export function codePages(pages) {
+  return 1 + Math.max(1, Math.ceil(pages / 512));
 }
 
 /// La case d'une adresse : le même calcul que `table_slot` côté Rust et que
@@ -271,6 +298,101 @@ export function tableSlot(address) {
 /// dans les octets du module, et un test les compare.
 export function tableBucket(address) {
   return tableSlot(address) & ~(SLOTS.tableWays - 1);
+}
+
+/// **Ce que le cache de code garde au plus, par défaut** : un nombre de
+/// régions et un nombre d'octets de modules compilés. La première borne qui
+/// serait franchie fait évincer la région la moins récemment servie.
+///
+/// **Les deux, et pas l'une ou l'autre.** Le nombre seul laisserait passer
+/// des régions de cinquante kibioctets — il y en a, à l'entrée du noyau —, et
+/// les octets seuls laisseraient s'accumuler des milliers de petites régions,
+/// chacune avec son objet module, son instance et sa fenêtre gardée.
+///
+/// **Les chiffres sont mesurés** (JOURNAL, 15 novembre 2026, sous le
+/// JavaScriptCore de Bun) : un module coûte au moteur **4,4 octets de mémoire
+/// résidente par octet de wasm** — le code machine, l'instance —, et une région
+/// d'Alpine pèse en moyenne quatorze kibioctets de wasm. Soixante-quatre
+/// mébioctets de modules, c'est donc près de trois cents mébioctets de code
+/// compilé, à côté de la RAM de l'invité : Alpine jusqu'à son shell de secours
+/// et dix commandes y tient en 794 Mio résidents au plus (256 Mio de RAM
+/// invitée), contre 1 240 Mio à quatre-vingt-seize mébioctets de modules. Le
+/// prix est la retraduction : 47 % des traductions refont une région évincée,
+/// contre 34 %. Seize mille régions ne se franchissent qu'avec de toutes
+/// petites régions ; c'est la borne du nombre d'objets, pas du poids.
+///
+/// **Et un haut de table** (`emplacements`), qui n'est pas une borne de la même
+/// sorte : tant que le haut de la table des blocs reste sous lui, une région
+/// neuve se pose au haut, où tout tient ; au-delà, elle essaie la plus grande
+/// des places rendues. Une case de la table est un pointeur : un million de
+/// cases, huit mébioctets.
+///
+/// **Et `oubliees`**, qui ne borne pas le cache mais ce qu'il retient de ce
+/// qu'il a jeté : le nombre de clés évincées gardées pour compter les
+/// retraductions. Passé ce nombre, l'ensemble repart vide, et le compte des
+/// retraductions devient un plancher. Réglable pour qu'un test puisse voir la
+/// borne tenir sans évincer un quart de million de régions.
+export const CACHE_PAR_DEFAUT = Object.freeze({
+  regions: 16384,
+  octets: 64 << 20,
+  emplacements: 1 << 20,
+  oubliees: 1 << 18,
+});
+
+/// **Où un module pose ses blocs dans la table, et combien** : l'offset et la
+/// longueur de son unique segment d'éléments actif, lus dans ses octets
+/// **avant** l'instanciation. `null` pour un module qui n'en a pas.
+///
+/// **Pourquoi avant.** C'est l'instanciation qui écrit les blocs dans la
+/// table commune, à l'emplacement gravé dans le module. Tant que les régions
+/// se posaient toujours en queue, il suffisait de lire la table après coup.
+/// Depuis que le cache évince et réemploie les places rendues, une région
+/// plus longue que le trou où on l'a posée écraserait **en silence** les blocs
+/// de sa voisine — qui sauterait ensuite dans le code d'une autre. Il faut
+/// donc le savoir avant, et l'émetteur ne l'annonce que dans ses octets.
+export function blocsDuModule(bytes) {
+  let at = 8;
+  const leb = () => {
+    let value = 0;
+    let shift = 0;
+    for (;;) {
+      const byte = bytes[at++];
+      value += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+      if ((byte & 0x80) === 0) return value;
+    }
+  };
+  const signedLeb = () => {
+    let value = 0;
+    let shift = 0;
+    let byte;
+    do {
+      byte = bytes[at++];
+      value += (byte & 0x7f) * 2 ** shift;
+      shift += 7;
+    } while ((byte & 0x80) !== 0);
+    if ((byte & 0x40) !== 0) value -= 2 ** shift;
+    return value;
+  };
+  while (at < bytes.length) {
+    const id = bytes[at++];
+    const size = leb();
+    const end = at + size;
+    if (id === 9) {
+      const segments = leb();
+      // **Une seule forme est lue, celle que l'émetteur écrit** : un segment
+      // actif sur la table zéro (drapeau zéro), d'offset `i32.const`. Toute
+      // autre forme est refusée plutôt que devinée.
+      if (segments !== 1 || bytes[at++] !== 0x00 || bytes[at++] !== 0x41) {
+        throw new Error("un segment d'éléments que l'hôte ne sait pas lire");
+      }
+      const offset = signedLeb();
+      if (bytes[at++] !== 0x0b) throw new Error("un offset d'éléments mal terminé");
+      return { offset, count: leb() };
+    }
+    at = end;
+  }
+  return null;
 }
 
 /// **Construire la machine.**
@@ -617,13 +739,29 @@ export function machine({
   screen,
   serial,
   // **La taille de départ de la table des blocs**, pas sa taille : elle
-  // grandit devant chaque région qui en a besoin (voir `HEADROOM`).
+  // grandit devant chaque région qui en a besoin (voir `install`).
   regions = 4096,
   patience = 30000,
   // **Compter les régions qui tournent après que leurs octets ont bougé**, ou
   // non. Éteint, la boucle n'y paie qu'un test de booléen ; allumé, une
   // lecture d'un octet par entrée de région. Voir `surveillees`.
   surveiller = false,
+  // **Les bornes du cache de code** : `{ regions, octets, emplacements }`,
+  // toutes ou certaines. Ce qui manque prend `CACHE_PAR_DEFAUT`.
+  cache = {},
+  // **Ce qui collecte, quand un quart de la borne en octets a été évincé** :
+  // une fonction, appelée avant la pause de huit millisecondes de
+  // `respirerSiBesoin`. Aucune par défaut — une page n'a pas de quoi forcer
+  // une collecte ; un pilote sous Bun passe `() => Bun.gc(true)`, ce que fait
+  // le gestionnaire de pression mémoire de WebKit sur un appareil.
+  ramasser = null,
+  // **Vider le cache au premier passage en anneau trois**, ou non. C'était le
+  // seul garde-fou contre le texte que le noyau réécrit en démarrant ; les
+  // écritures dans les pages de code sont maintenant vues une à une (voir
+  // `voirEcritures`), et le vidage reste, allumé par défaut, pour ce que rien
+  // ne voit : ce qu'on écrit dans la mémoire **du dehors**, sans passer par
+  // `ecrit`. Éteint, la mesure dit ce que la carte tient seule.
+  vider = true,
 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
@@ -1220,8 +1358,491 @@ export function machine({
   };
   const imports = { env };
   const base = pages * 65536;
-  const known = new Map();
+
+  // ---------------------------------------------------------------------
+  // **Le cache de code : borné, rangé par contexte, évincé au plus ancien.**
+  //
+  // Il n'avait aucune borne. Chaque `exec` remet ses bibliothèques à des
+  // adresses neuves, chaque programme se retraduit, et le démarrage d'Alpine
+  // remplissait les quinze gibioctets de ce conteneur vers cent mille
+  // régions (JOURNAL, 14 novembre 2026). Sur un iPhone, le processus de la
+  // vue meurt bien avant.
+  //
+  // **Trois règles, chacune tenue par un test de `host_loop`** :
+  //
+  // 1. **Une région est rangée sous son contexte** (`contexte`, le pendant de
+  //    `context_tag`) : l'anneau, et l'espace d'adressage hors de l'anneau
+  //    zéro. Une région du noyau ne se trouve plus depuis l'anneau trois — ni
+  //    par l'hôte, ni par la correspondance, qui compare le contexte rangé
+  //    dans la case — et un programme ne sert plus celles d'un autre.
+  // 2. **Deux bornes, un nombre de régions et un nombre d'octets de modules**
+  //    (`limite`) ; franchir l'une fait évincer la région **la moins
+  //    récemment servie** par l'hôte (`recentes`). Un processus mort ne sert
+  //    plus rien : ses régions vieillissent et partent les premières.
+  // 3. **Une région évincée quitte tout** — sa place dans `espaces`, ses cases
+  //    de la correspondance, ses blocs dans la table — et sa place dans la
+  //    table est rendue (`libres`) pour une région qui y tient. Revenir à son
+  //    adresse la retraduit, sur les octets d'alors.
+  // ---------------------------------------------------------------------
+  const limite = {
+    regions: cache.regions ?? CACHE_PAR_DEFAUT.regions,
+    octets: cache.octets ?? CACHE_PAR_DEFAUT.octets,
+    emplacements: cache.emplacements ?? CACHE_PAR_DEFAUT.emplacements,
+    oubliees: cache.oubliees ?? CACHE_PAR_DEFAUT.oubliees,
+  };
+  for (const [nom, valeur] of Object.entries(limite)) {
+    if (!Number.isInteger(valeur) || valeur <= 0) {
+      throw new Error(`la borne du cache « ${nom} » doit être un entier positif, pas ${valeur}`);
+    }
+  }
+  /// Les régions, par contexte puis par adresse.
+  const espaces = new Map();
+  /// **Toutes les régions, de la moins récemment servie à la plus récente.**
+  /// Un `Set` garde l'ordre d'insertion ; servir une région la retire et la
+  /// remet, donc la première est toujours la prochaine à partir. « Servie »
+  /// veut dire **par l'hôte** : un saut de module à module par la
+  /// correspondance ne repasse pas par ici, et c'est le prix d'un chemin
+  /// chaud qui ne coûte rien — une région que seuls des sauts directs
+  /// atteignent vieillit, et se retraduit si elle part.
+  const recentes = new Set();
+  /// **Les places rendues dans la table des blocs**, sous `next`, triées et
+  /// jamais contiguës entre elles : `{ debut, longueur }`.
+  const libres = [];
+  /// La première place jamais prise de la table : tout ce qui est au-dessus
+  /// est libre.
   let next = 0;
+  /// **Ce que le cache tient, ce qu'il a tenu au plus, et ce qu'il a jeté.**
+  /// Lecture ; rien ne se décide dessus hors de `tenu`.
+  ///
+  /// - `traduites` : les régions installées ; `retraduites`, celles d'entre
+  ///   elles dont la même adresse, sous le même contexte, avait été évincée —
+  ///   le taux de retraduction est leur rapport ;
+  /// - `replacees` : les traductions refaites parce que la région ne tenait
+  ///   pas dans la place choisie (voir `install`) ;
+  /// - `emplacements` : le haut de la table des blocs au plus haut.
+  const tenu = { regions: 0, octets: 0 };
+  const caches = {
+    limite,
+    tenu,
+    pic: { regions: 0, octets: 0, emplacements: 0, espaces: 0 },
+    traduites: 0,
+    evincees: 0,
+    retraduites: 0,
+    replacees: 0,
+    respirations: 0,
+    /// Les clés évincées que le cache retient pour compter les retraductions
+    /// (voir `oubliees`), jamais plus que `limite.oubliees`.
+    get oubliees() {
+      return oubliees.size;
+    },
+    /// **Les places rendues et le haut de la table**, en copie. Lecture : les
+    /// tests y vérifient ce que `libres` promet — triées, jamais vides,
+    /// jamais contiguës, toutes sous le haut.
+    places: () => libres.map(({ debut, longueur }) => ({ debut, longueur })),
+    haut: () => next,
+  };
+  /// **Ce que la carte des pages de code a vu** : les trames écrites alors
+  /// qu'elles portaient du code traduit (`ecritures`), les régions oubliées
+  /// pour ça (`invalidees`, à part des évictions : ce n'est pas la borne qui
+  /// les chasse), et les relectures de la carte entière quand le journal a
+  /// débordé (`debordements`). Lecture.
+  caches.ecritures = 0;
+  caches.invalidees = 0;
+  caches.debordements = 0;
+  caches.pic.trames = 0;
+  /// **Les octets évincés depuis la dernière respiration du ramasse-miettes**
+  /// (voir `respirerSiBesoin`).
+  let evincesDepuis = 0;
+  /// **Les clés évincées, pour compter les retraductions** — et seulement
+  /// pour ça. Bornée par `limite.oubliees` (`1 << 18` par défaut) : passé ce
+  /// nombre, elle repart vide, et le compte des retraductions devient un
+  /// plancher. C'est dit plutôt que caché.
+  const oubliees = new Set();
+  const vue = new DataView(memory.buffer);
+
+  /// **Le contexte courant** : le même calcul que `context_tag` côté Rust et
+  /// que celui gravé dans les octets du module. Un nombre, jamais négatif :
+  /// la racine et les bits bas ne se chevauchent pas, d'où l'addition plutôt
+  /// qu'un `|` qui passerait par trente-deux bits signés.
+  const racine = BigInt(base - 1) & ~0xfffn;
+  const contexte = () => {
+    const anneau = Number(BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n);
+    if (anneau === 0) return SLOTS.contextPresent;
+    return (
+      Number(BigInt.asUintN(64, globals[SLOTS.control + 2].value) & racine) +
+      SLOTS.contextPresent +
+      anneau
+    );
+  };
+  /// La région à cette adresse **sous le contexte courant**, ou rien.
+  const trouver = (adresse) => espaces.get(contexte())?.get(adresse);
+
+  /// **Ranger une adresse dans la correspondance**, sous un contexte.
+  ///
+  /// Une voie libre du seau, sinon la sienne, sinon on évince la première.
+  /// Chercher d'abord une voie vide ou déjà à cette adresse **sous ce
+  /// contexte**, c'est ce qui fait qu'une collision cesse de coûter une
+  /// éviction : deux adresses de même empreinte tiennent ensemble. Une voie
+  /// qui porte la même adresse sous un autre contexte n'est pas la sienne :
+  /// c'est la région d'un autre programme, ou d'un autre anneau. Quand les
+  /// deux voies sont prises par d'autres, il faut bien en sacrifier une — la
+  /// première, et le défaut redevient ce qu'il était, muet et seulement plus
+  /// lent.
+  ///
+  /// **Un début de bloc ne chasse jamais une entrée de région.** C'est la
+  /// leçon de la première mesure de la tranche qui a rangé les blocs, et elle
+  /// est chiffrée : ranger *toutes* les cases sans distinction a fait passer
+  /// les retours de main sur `pv_native_irq_disable` de 2938 à 66 340. Dix
+  /// fois plus d'adresses pour deux voies par seau, et les entrées les plus
+  /// chaudes se faisaient évincer par des blocs qu'on ne visite qu'une fois.
+  /// L'entrée d'une région est la seule adresse par laquelle toute la région
+  /// reste atteignable ; un début de bloc n'est qu'un raccourci.
+  const ranger = (quoi, où, ctx, évincer) => {
+    const seau = base + tableBucket(quoi) * SLOTS.tableEntry;
+    let libre = -1;
+    for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
+      const at = seau + essai * SLOTS.tableEntry;
+      const rangee = vue.getBigUint64(at, true);
+      const sien = vue.getUint32(at + SLOTS.tableContext, true);
+      if ((rangee === quoi && sien === ctx) || sien === 0) {
+        libre = essai;
+        break;
+      }
+    }
+    if (!évincer && libre === -1) return;
+    const at = seau + (libre === -1 ? 0 : libre) * SLOTS.tableEntry;
+    vue.setBigUint64(at, quoi, true);
+    vue.setInt32(at + 8, où, true);
+    vue.setUint32(at + SLOTS.tableContext, ctx, true);
+  };
+  /// **Effacer de la correspondance la case qui mène à ce bloc**, s'il y en
+  /// a une : la même adresse, le même contexte **et** le même indice. Une case
+  /// qu'une autre région a reprise depuis n'est pas touchée.
+  const effacer = (quoi, où, ctx) => {
+    const seau = base + tableBucket(quoi) * SLOTS.tableEntry;
+    for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
+      const at = seau + essai * SLOTS.tableEntry;
+      if (
+        vue.getBigUint64(at, true) === quoi &&
+        vue.getUint32(at + SLOTS.tableContext, true) === ctx &&
+        vue.getInt32(at + 8, true) === où
+      ) {
+        vue.setBigUint64(at, 0n, true);
+        vue.setInt32(at + 8, 0, true);
+        vue.setUint32(at + SLOTS.tableContext, 0, true);
+      }
+    }
+  };
+
+  /// **Rendre une étendue de la table**, en la fusionnant à ses voisines ; si
+  /// elle touche le haut, le haut redescend.
+  const rendre = (debut, longueur) => {
+    let rang = 0;
+    while (rang < libres.length && libres[rang].debut < debut) rang += 1;
+    libres.splice(rang, 0, { debut, longueur });
+    if (rang + 1 < libres.length && debut + longueur === libres[rang + 1].debut) {
+      libres[rang].longueur += libres[rang + 1].longueur;
+      libres.splice(rang + 1, 1);
+    }
+    if (rang > 0 && libres[rang - 1].debut + libres[rang - 1].longueur === debut) {
+      libres[rang - 1].longueur += libres[rang].longueur;
+      libres.splice(rang, 1);
+      rang -= 1;
+    }
+    const dernier = libres[libres.length - 1];
+    if (dernier !== undefined && dernier.debut + dernier.longueur === next) {
+      next = dernier.debut;
+      libres.pop();
+    }
+  };
+  /// **Prendre `[debut, debut + longueur)` dans la table**, si c'est libre :
+  /// dans une étendue rendue, ou au-dessus du haut. Rend faux sans rien
+  /// prendre si une région vivante y est.
+  const prendre = (debut, longueur) => {
+    if (debut >= next) {
+      // Le haut monte d'abord : le trou laissé entre l'ancien haut et
+      // `debut`, s'il y en a un, est alors rendu sous le haut, pas au haut.
+      const haut = next;
+      next = debut + longueur;
+      if (debut > haut) rendre(haut, debut - haut);
+      return true;
+    }
+    for (let rang = 0; rang < libres.length; rang += 1) {
+      const etendue = libres[rang];
+      if (etendue.debut > debut) return false;
+      const fin = etendue.debut + etendue.longueur;
+      if (debut + longueur > fin) continue;
+      // Ce qui reste devant et derrière la région.
+      const apres = { debut: debut + longueur, longueur: fin - debut - longueur };
+      const avant = { debut: etendue.debut, longueur: debut - etendue.debut };
+      const morceaux = [avant, apres].filter((m) => m.longueur > 0);
+      libres.splice(rang, 1, ...morceaux);
+      return true;
+    }
+    return false;
+  };
+  /// **La place où essayer une région d'environ `voulu` blocs.**
+  ///
+  /// Le haut de la table tant qu'il reste sous `limite.emplacements` : tout y
+  /// tient, et rien n'est jamais retraduit pour sa place. Au-delà, la plus
+  /// **grande** des places rendues, si elle a `voulu` blocs ; sinon le haut
+  /// quand même, et la table grandit. La plus grande et pas la première : la
+  /// première venue était mesurée sur Alpine, et une région sur quatorze n'y
+  /// tenait pas — 8 906 traductions refaites sur 123 134.
+  const choisir = (voulu) => {
+    if (next + voulu <= limite.emplacements) return next;
+    let grande = null;
+    for (const etendue of libres) {
+      if (grande === null || etendue.longueur > grande.longueur) grande = etendue;
+    }
+    return grande !== null && grande.longueur >= voulu ? grande.debut : next;
+  };
+
+  // ---------------------------------------------------------------------
+  // **La carte du code traduit : voir les écritures au lieu de vider.**
+  //
+  // Chaque ligne de soixante-quatre octets d'où vient le code d'une région
+  // vivante a son bit levé dans la carte (`code_pages` côté Rust), et l'hôte
+  // sait quelles régions chaque trame porte, et sur quelles lignes
+  // (`trames`). Toute écriture sur une ligne marquée oublie ses régions avant
+  // la prochaine entrée :
+  //
+  // - **celles du module** : le tampon ne dit jamais inscriptible une trame
+  //   qui porte une ligne marquée, l'accès lent baisse le bit et inscrit la
+  //   ligne au journal, et l'instruction finie, la région rend la main
+  //   (`Body::written`). La boucle lit le journal au retour de chaque région
+  //   (`voirEcritures`) ;
+  // - **celles de l'hôte** — le cadre d'une délivrance, et demain le disque —
+  //   passent par `ecrit`, qui oublie les régions sur place ;
+  // - **celles du dehors**, `memory.buffer` écrit sans rien dire, ne sont vues
+  //   par rien. `ecrit` est exporté pour elles.
+  //
+  // **Et la racine des tables d'un programme porte toutes ses régions.** Un
+  // processus neuf dont les tables tombent sur la page de celles d'un mort
+  // hérite de son contexte, et une région du mort à la même adresse le
+  // servirait. Mais une racine neuve s'écrit avant de servir — Linux la met à
+  // zéro et y recopie la moitié du noyau —, et cette écriture-là oublie toutes
+  // les régions de l'ancien contexte : chacune marque la page entière de sa
+  // racine.
+  // ---------------------------------------------------------------------
+  const journalBase = base + (SLOTS.tablePages + SLOTS.tlbPages) * 65536;
+  const journal = new Uint32Array(memory.buffer, journalBase, 65536 / 4);
+  /// La carte : deux mots de trente-deux bits par trame, les lignes 0 à 31
+  /// puis 32 à 63.
+  const carte = new Uint32Array(memory.buffer, journalBase + 65536, (pages * 65536) / 2048);
+  const tampon = new Uint32Array(
+    memory.buffer, base + SLOTS.tablePages * 65536, (SLOTS.tlbSlots * SLOTS.tlbEntry) / 4);
+  /// Les régions de chaque trame marquée, par numéro de trame.
+  const trames = new Map();
+  /// **Les lignes qu'une région lit dans une trame**, en deux mots.
+  const lignesDe = (region, trame) => region.morceaux.find((m) => m.trame === trame);
+  /// **Recalculer les bits d'une trame** depuis les régions qu'elle porte
+  /// encore. Une trame qui n'en porte plus aucune est démarquée, et ses
+  /// écritures reprennent le chemin rapide dès que la marche remplit sa case.
+  const recompter = (trame) => {
+    let bas = 0;
+    let haut = 0;
+    const ici = trames.get(trame);
+    if (ici !== undefined) {
+      for (const region of ici) {
+        const m = lignesDe(region, trame);
+        bas |= m.bas;
+        haut |= m.haut;
+      }
+    }
+    carte[trame * 2] = bas;
+    carte[trame * 2 + 1] = haut;
+  };
+  /// **Marquer les lignes d'une région.** Une trame qui n'en avait aucune
+  /// fait aussi oublier `TLB_WRITABLE` aux cases du tampon qui la portent
+  /// déjà : remplies avant, elles laisseraient une écriture passer par le
+  /// chemin rapide, sans que rien ne la voie.
+  const marquer = (region) => {
+    for (const m of region.morceaux) {
+      let ici = trames.get(m.trame);
+      if (ici === undefined) {
+        ici = new Set();
+        trames.set(m.trame, ici);
+      }
+      ici.add(region);
+      const vierge = (carte[m.trame * 2] | carte[m.trame * 2 + 1]) === 0;
+      carte[m.trame * 2] |= m.bas;
+      carte[m.trame * 2 + 1] |= m.haut;
+      if (!vierge) continue;
+      const physique = m.trame * 4096;
+      for (let at = 0; at < tampon.length; at += SLOTS.tlbEntry / 4) {
+        if (tampon[at + 2] === physique && (tampon[at] & 2) !== 0) tampon[at] &= ~2;
+      }
+    }
+  };
+  /// **Une région quitte ses trames**, et leurs bits sont recalculés.
+  const demarquer = (region) => {
+    for (const m of region.morceaux) {
+      const ici = trames.get(m.trame);
+      if (ici === undefined) continue;
+      ici.delete(region);
+      if (ici.size === 0) trames.delete(m.trame);
+      recompter(m.trame);
+    }
+  };
+  /// **Oublier les régions qui lisent une ligne écrite.** Rend combien.
+  const invaliderLigne = (ligne) => {
+    caches.ecritures += 1;
+    const trame = Math.floor(ligne / 64);
+    const ici = trames.get(trame);
+    if (ici === undefined) return 0;
+    const rang = ligne % 64;
+    const regions = [...ici].filter((region) => {
+      const m = lignesDe(region, trame);
+      return ((rang < 32 ? m.bas >>> rang : m.haut >>> (rang - 32)) & 1) !== 0;
+    });
+    for (const region of regions) evincer(region, true);
+    return regions.length;
+  };
+  /// **Ce que le module a inscrit au journal depuis la dernière fois**, et
+  /// les régions oubliées pour ça. Rend vrai s'il y avait quelque chose : la
+  /// région qui vient de tourner peut être du nombre.
+  ///
+  /// **Quand le journal a débordé** — une instruction qui écrit plus de seize
+  /// mille lignes de code —, les numéros manquent, mais la carte les dit : le
+  /// module a baissé le bit de chaque ligne écrite, et une région dont une
+  /// ligne n'est plus marquée est une région dont le code a été écrit.
+  const voirEcritures = () => {
+    if (globals[SLOTS.stop].value === STOP_WRITTEN) globals[SLOTS.stop].value = 0n;
+    const compte = journal[0];
+    if (compte === 0) return false;
+    journal[0] = 0;
+    if (compte <= SLOTS.codeLogSlots) {
+      for (const ligne of Array.from(journal.subarray(1, 1 + compte))) invaliderLigne(ligne);
+      return true;
+    }
+    caches.debordements += 1;
+    const touchees = new Set();
+    for (const [trame, ici] of trames) {
+      for (const region of ici) {
+        const m = lignesDe(region, trame);
+        if ((m.bas & ~carte[trame * 2]) !== 0 || (m.haut & ~carte[trame * 2 + 1]) !== 0) {
+          touchees.add(region);
+        }
+      }
+    }
+    caches.ecritures += touchees.size;
+    for (const region of touchees) evincer(region, true);
+    return true;
+  };
+  /// **Une écriture de l'hôte dans la mémoire de l'invité** : `longueur`
+  /// octets à l'adresse **physique** `physique`, déjà écrits. Les régions
+  /// des lignes marquées qu'elle touche sont oubliées sur-le-champ. Rend
+  /// combien.
+  const ecrit = (physique, longueur) => {
+    let oubliees = 0;
+    if (!(longueur > 0)) return oubliees;
+    const premiere = Math.floor(physique / 64);
+    const derniere = Math.floor((physique + longueur - 1) / 64);
+    for (let ligne = premiere; ligne <= derniere; ligne += 1) {
+      const mot = Math.floor(ligne / 32);
+      const bit = 1 << (ligne % 32);
+      if ((carte[mot] & bit) === 0) continue;
+      carte[mot] &= ~bit;
+      oubliees += invaliderLigne(ligne);
+    }
+    return oubliees;
+  };
+
+  /// **Évincer une région** : elle quitte son contexte, l'ordre des
+  /// récentes, la correspondance et la table, et sa place est rendue.
+  ///
+  /// **Invalidée, ce n'est pas la borne qui la chasse** : comptée dans
+  /// `invalidees` et non `evincees`, et sa clé n'entre pas dans `oubliees` —
+  /// la retraduire n'est pas le prix de la borne.
+  const evincer = (region, invalidee = false) => {
+    const ici = espaces.get(region.contexte);
+    ici.delete(region.adresse);
+    if (ici.size === 0) espaces.delete(region.contexte);
+    recentes.delete(region);
+    for (let rang = 0; rang < region.debuts.length; rang += 1) {
+      effacer(region.debuts[rang], region.slot + rang, region.contexte);
+      blocks.set(region.slot + rang, null);
+    }
+    rendre(region.slot, region.debuts.length);
+    demarquer(region);
+    tenu.regions -= 1;
+    tenu.octets -= region.octets;
+    evincesDepuis += region.octets;
+    if (invalidee) {
+      caches.invalidees += 1;
+      return;
+    }
+    caches.evincees += 1;
+    if (oubliees.size >= limite.oubliees) oubliees.clear();
+    oubliees.add(`${region.contexte}:${region.adresse}`);
+  };
+  /// **Faire de la place pour une région de `octets` octets**, en évinçant
+  /// les moins récemment servies jusqu'à tenir sous les deux bornes.
+  const faireDeLaPlace = (octets) => {
+    for (const region of recentes) {
+      if (tenu.regions + 1 <= limite.regions && tenu.octets + octets <= limite.octets) return;
+      evincer(region);
+    }
+  };
+  /// **Laisser le moteur rendre ce qu'on a évincé**, une fois qu'un quart de
+  /// la borne en octets est parti depuis la dernière fois.
+  ///
+  /// **Évincer ne rend rien tout seul, et c'est mesuré** (JOURNAL, 15
+  /// novembre 2026, sous le JavaScriptCore de Bun) : trois mille modules
+  /// d'Alpine, 72,6 Mio de wasm, coûtent 320 Mio de mémoire résidente —
+  /// 4,4 octets par octet de wasm, 108 Kio par région —, et une fois lâchés
+  /// ils restent là. Le code compilé d'un module ne pèse rien sur le tas de
+  /// JavaScript, donc rien ne déclenche de collecte pour lui ; quatre tours
+  /// lâchés sans pause montent à 1,4 Gio. Un `setTimeout(…, 0)` ne suffit
+  /// pas ; **huit millisecondes de repos**, oui : le moteur collecte quand il
+  /// a la main, et la mémoire redescend au niveau d'un seul tour. La boucle
+  /// respire déjà toutes les huit millisecondes, mais d'un `setTimeout(…, 0)`
+  /// — juste assez pour la page, pas pour le ramasse-miettes.
+  ///
+  /// Le prix : huit millisecondes par quart de borne évincé — sur Alpine, une
+  /// fois toutes les quelques centaines de régions traduites, qui coûtent
+  /// chacune plus que ça.
+  ///
+  /// **Et la pause ne suffit pas toujours, mesuré aussi.** Dans la vraie
+  /// boucle, les modules évincés ont survécu à bien des collectes jeunes avant
+  /// de partir : seule une collecte **pleine** les rend. Sous Bun, une sonde
+  /// Alpine aux bornes de 2 000 régions et 16 Mio monte à 1,9 Gio résidents
+  /// avec la pause seule, et reste à 273 Mio avec `Bun.gc(true)` à chaque
+  /// respiration — d'où `ramasser`. Rien dans une page ne force une collecte
+  /// pleine ; sur un appareil, c'est le gestionnaire de pression mémoire de
+  /// WebKit qui la fait, et ce n'est **pas mesuré ici**.
+  const respirerSiBesoin = async () => {
+    if (evincesDepuis < limite.octets / 4) return;
+    evincesDepuis = 0;
+    caches.respirations += 1;
+    if (ramasser !== null) ramasser();
+    await new Promise((settle) => setTimeout(settle, 8));
+  };
+  /// **Servir une région connue** : elle devient la plus récente, et son
+  /// entrée reprend sa case dans la correspondance si une autre la lui a
+  /// prise — une collision, ou l'autre contexte à la même adresse. Sans ça,
+  /// deux programmes qui se relaient à la même adresse (un `fork`)
+  /// repasseraient par l'hôte à chaque saut.
+  const servir = (region) => {
+    recentes.delete(region);
+    recentes.add(region);
+    ranger(region.adresse, region.slot, region.contexte, true);
+  };
+
+  /// **La vue des régions que le relevé et les tests lisent** : leur nombre,
+  /// celle d'une adresse sous le contexte courant, et toutes, de la moins
+  /// récemment servie à la plus récente.
+  const known = {
+    get size() {
+      return recentes.size;
+    },
+    get: trouver,
+    values: () => recentes.values(),
+    *[Symbol.iterator]() {
+      for (const region of recentes) yield [region.adresse, region];
+    },
+  };
 
   // **Le cadre doit tenir dans la RAM invitée.** Sinon il chevaucherait la
   // correspondance : l'invité peindrait la table des blocs à l'écran, et la
@@ -1247,6 +1868,9 @@ export function machine({
   /// la RAM. C'est ce que demande une instruction coupée par une page
   /// absente : voir `CUT`.
   let stopped = null;
+  /// **Les trames que la dernière lecture a traversées**, la page de chaque
+  /// morceau dans l'ordre : `install` y prend celles de sa fenêtre.
+  let luesTrames = [];
 
   /// **Une adresse invitée, rendue en adresse de mémoire linéaire — par la
   /// marche du module.** Pagination éteinte, c'est le repli, comme dans
@@ -1466,6 +2090,9 @@ export function machine({
         return `une faute pendant la délivrance d'${what} : la pile où le cadre s'écrit n'est pas cartographiée`;
       }
       new DataView(memory.buffer).setBigUint64(where, word, true);
+      // Le cadre est une écriture de l'hôte : sur une trame de code, ses
+      // régions s'en vont.
+      ecrit(where, 8);
     }
     globals[4].value = BigInt.asIntN(64, pointer);
     globals[SLOTS.rip].value = BigInt.asIntN(64, offset);
@@ -1495,20 +2122,18 @@ export function machine({
   // vite avec la taille de fenêtre, donc petite d'abord, grande sur demande.
   const WINDOW = 4096;
   const WIDER = 16384;
-  // **La marge que la table garde devant la prochaine région**, et pourquoi
-  // c'est une borne et non une estimation. Le module déclare pour minimum
-  // `emplacement + blocs` sur la table qu'il importe ; une table plus courte
-  // ne le laisse pas s'instancier — `LinkError`, sans retour. Or chaque bloc
-  // commence à une adresse distincte de la fenêtre, et la fenêtre fait au plus
-  // `WIDER` octets : aucune région ne peut poser plus de `WIDER` blocs. Une
-  // table qui a toujours `WIDER` entrées libres devant l'emplacement ne refuse
-  // donc **jamais** une région pour sa taille. Une entrée est un pointeur :
-  // la marge coûte 128 Kio, une fois.
+  // **Combien de blocs une place d'essai doit pouvoir tenir.** Le nombre de
+  // blocs d'une région ne se sait qu'une fois son module rendu ; la place où
+  // la traduire se choisit avant (`choisir`). Une place rendue d'au moins
+  // `PROBABLE` blocs, sinon le haut de la table — où tout tient. Une région
+  // plus longue que le trou essayé est retraduite ailleurs
+  // (`caches.replacees`).
   //
-  // Le noyau Alpine a rencontré ce mur à sa 155ᵉ région, sur son premier
-  // `printk` : l'emplacement 4049 d'une table de 4096 créée une fois pour
-  // toutes. La plus grande région relevée y posait 203 blocs.
-  const HEADROOM = WIDER;
+  // Le noyau Alpine a rencontré le mur de la taille à sa 155ᵉ région, sur son
+  // premier `printk` : l'emplacement 4049 d'une table de 4096 créée une fois
+  // pour toutes. La plus grande région relevée y posait 203 blocs ; la table
+  // grandit maintenant devant chaque région, de ce qu'elle annonce.
+  const PROBABLE = 64;
 
   /// **Lire la fenêtre là où la machine lirait**, et nulle part ailleurs.
   ///
@@ -1575,6 +2200,7 @@ export function machine({
     let filled = 0;
     unread = 0n;
     stopped = null;
+    luesTrames = [];
     while (filled < window) {
       globals[SLOTS.fault].value = 0n;
       const at = physical(address + BigInt(filled), kind);
@@ -1589,6 +2215,7 @@ export function machine({
       const edge = base - at;
       const take = Math.min(4096 - (at & 0xfff), window - filled, edge);
       if (take <= 0) break;
+      luesTrames.push(Math.floor(at / 4096));
       out.set(new Uint8Array(memory.buffer, at, take), filled);
       filled += take;
       if (take === edge) break;
@@ -1599,12 +2226,23 @@ export function machine({
   }
 
   async function install(address) {
-    const slot = next;
+    // **Le contexte de la région est celui de l'instant** — l'anneau et
+    // l'espace d'adressage où la machine va l'exécuter —, et c'est sous lui
+    // que sa fenêtre est lue : `read` juge le chargement avec l'anneau
+    // courant.
+    const ctx = contexte();
+    // **Une place d'essai** (`choisir`) : le haut de la table tant qu'une
+    // région ordinaire y tient sous `emplacements`, sinon la plus grande des
+    // places rendues si elle a `PROBABLE` blocs, sinon le haut quand même. Le
+    // nombre de blocs ne se sait qu'une fois le module rendu ; s'il ne tient
+    // pas, la région est retraduite ailleurs, plus bas.
+    let slot = choisir(PROBABLE);
     // **Rien à traduire est une réponse, pas un incident.** Elle remonte
     // jusqu'au relevé sous son nom au lieu de se confondre avec un refus de
     // l'émetteur.
     const window = read(address, WINDOW);
     if (window === null) return UNMAPPED;
+    let lues = luesTrames;
     // **La fenêtre telle que le traducteur l'a vue**, gardée pour `revoir`.
     // Ce n'est pas celle du fichier ELF : sur le noyau Alpine, 15 761 des
     // 16 189 fenêtres traduites en diffèrent, parce que le noyau a déjà
@@ -1626,6 +2264,7 @@ export function machine({
       // **Ce qui a arrêté cette lecture-là**, gardé avant que la traduction
       // ne relise quoi que ce soit.
       const cut = stopped;
+      lues = luesTrames;
       lu = wider;
       bytes = await answered(
         () => translate(address, slot, wider),
@@ -1647,15 +2286,64 @@ export function machine({
     }
     if (bytes === MUTE || bytes === BROKEN) return bytes;
     if (!bytes) return null;
+    // **Combien de blocs, et où.** Lu dans les octets avant l'instanciation
+    // (`blocsDuModule`) : c'est elle qui écrit les blocs dans la table, à la
+    // place gravée dans le module. Une place gravée qui n'est pas celle
+    // demandée est une panne de l'application, pas une région.
+    let pose = blocsDuModule(bytes);
+    if (pose === null || pose.offset !== slot || pose.count <= 0) {
+      throw new Error(
+        `la région à ${address} ne pose pas ses blocs à l'emplacement ${slot} demandé`,
+      );
+    }
+    // **Faire de la place d'abord** : évincer peut rendre la place essayée
+    // plus longue, jamais plus courte.
+    faireDeLaPlace(bytes.length);
+    await respirerSiBesoin();
+    if (!prendre(slot, pose.count)) {
+      // **La région ne tient pas dans le trou essayé.** Sa longueur est
+      // connue maintenant : `choisir` la reprend avec elle — la plus grande
+      // place rendue si elle la tient, sinon le haut —, et une seconde
+      // traduction des mêmes octets suit, sur la fenêtre gardée, pas une
+      // relecture. Seulement une fois le haut de la table passé, et rare
+      // alors : la place d'essai était déjà la plus grande des rendues.
+      slot = choisir(pose.count);
+      caches.replacees += 1;
+      const encore = await answered(() => translate(address, slot, lu), patience);
+      if (encore === MUTE || encore === BROKEN) return encore;
+      if (!encore || encore === MORE) return null;
+      bytes = encore;
+      // **Et la place se refait pour sa longueur à elle.** Retraduite pour
+      // un autre emplacement, la région n'a pas forcément la même longueur :
+      // ses indices de bloc sont des LEB, plus larges au-delà de 63. La place
+      // faite pour la première traduction laissait passer la seconde, et le
+      // cache tenait au-dessus de sa borne en octets.
+      faireDeLaPlace(bytes.length);
+      await respirerSiBesoin();
+      pose = blocsDuModule(bytes);
+      if (pose === null || pose.offset !== slot || !prendre(slot, pose.count)) {
+        throw new Error(
+          `la région à ${address} ne tient pas à l'emplacement ${slot} qu'on lui a choisi`,
+        );
+      }
+    }
     // **La table grandit devant la région, avant qu'elle ne s'instancie.**
     // C'est l'instanciation qui compare le minimum déclaré à la longueur de
-    // la table ; après, il est trop tard.
-    const wanted = slot + HEADROOM;
-    if (blocks.length < wanted) blocks.grow(wanted - blocks.length);
-    // **Combien de blocs le module pose, on ne le sait qu'après.** L'émetteur
-    // ne l'annonce pas, et l'instanciation est ce qui les met dans la table.
-    // L'emplacement suivant se lit donc dans la table elle-même.
-    const exports = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports;
+    // la table ; après, il est trop tard. Elle grandit par quarts au moins,
+    // pour ne pas payer une croissance par région.
+    const wanted = slot + pose.count;
+    if (blocks.length < wanted) {
+      blocks.grow(Math.max(wanted - blocks.length, blocks.length >> 2));
+    }
+    let exports;
+    try {
+      exports = new WebAssembly.Instance(new WebAssembly.Module(bytes), imports).exports;
+    } catch (why) {
+      // La place prise est rendue : une région qui ne s'instancie pas n'en
+      // occupe aucune.
+      rendre(slot, pose.count);
+      throw why;
+    }
     const run = exports.run;
     // **La marche du module, gardée pour la délivrance.** Chaque région
     // paginée exporte la sienne, et elles sont toutes le même code sur la
@@ -1663,8 +2351,10 @@ export function machine({
     // traduit *jamais* par un autre chemin — une seconde marche, écrite ici,
     // finirait par diverger de celle du module sur une grande page ou un bit.
     if (walk === null && exports.walk !== undefined) walk = exports.walk;
-    next = occupied(slot) + 1;
-    if (next <= slot) {
+    // **Les blocs sont-ils bien là où le module l'a annoncé ?** Le dernier
+    // doit être posé : sinon la lecture des octets et l'instanciation ne
+    // s'accordent pas, et la place prise ne serait pas la bonne.
+    if (blocks.get(slot + pose.count - 1) === null) {
       throw new Error(`la région à ${address} n'a posé aucun bloc à l'emplacement ${slot}`);
     }
     // **Chaque bloc de la région entre dans la correspondance, pas seulement
@@ -1690,44 +2380,6 @@ export function machine({
     // `tableWays` voies. Celui qui écrit en dernier gagne, et l'entrée est
     // l'adresse qu'on préfère ne jamais perdre — c'est la seule par laquelle
     // toute la région reste atteignable.
-    const ranger = (quoi, où, évincer) => {
-      // **Une voie libre du seau, sinon la sienne, sinon on évince la
-      // première.** Chercher d'abord une voie vide ou déjà à cette adresse,
-      // c'est ce qui fait qu'une collision cesse de coûter une éviction :
-      // deux adresses de même empreinte tiennent ensemble. Quand les deux
-      // voies sont prises par d'autres, il faut bien en sacrifier une — la
-      // première, et le défaut redevient ce qu'il était, muet et seulement
-      // plus lent.
-      const seau = base + tableBucket(quoi) * SLOTS.tableEntry;
-      let libre = -1;
-      for (let essai = 0; essai < SLOTS.tableWays; essai += 1) {
-        const rangee = new BigUint64Array(
-          memory.buffer,
-          seau + essai * SLOTS.tableEntry,
-          1,
-        )[0];
-        if (rangee === quoi || rangee === 0n) {
-          libre = essai;
-          break;
-        }
-      }
-      // **Un début de bloc ne chasse jamais une entrée de région.**
-      //
-      // C'est la leçon de la première mesure de cette tranche, et elle est
-      // chiffrée : ranger *toutes* les cases sans distinction a fait passer
-      // les retours de main sur `pv_native_irq_disable` de 2938 à 66 340. Dix
-      // fois plus d'adresses pour deux voies par seau, et les entrées les plus
-      // chaudes se faisaient évincer par des blocs qu'on ne visite qu'une
-      // fois. Le noyau allait **moins** loin qu'avant la correction.
-      //
-      // L'entrée d'une région est la seule adresse par laquelle toute la
-      // région reste atteignable ; un début de bloc n'est qu'un raccourci. Une
-      // optimisation qui évince une nécessité n'est pas une optimisation.
-      if (!évincer && libre === -1) return;
-      const at = seau + (libre === -1 ? 0 : libre) * SLOTS.tableEntry;
-      new BigUint64Array(memory.buffer, at, 1)[0] = quoi;
-      new Int32Array(memory.buffer, at + 8, 1)[0] = où;
-    };
     // **Un module sans accesseur ne démarre pas**, au lieu de tourner plus
     // lentement en silence. Tolérer son absence créerait une branche que rien
     // n'exercerait jamais — tous les modules que cet hôte voit sortent du même
@@ -1740,12 +2392,84 @@ export function machine({
         `le module à ${address} n'exporte pas ses débuts de blocs`,
       );
     }
-    for (let bloc = slot + 1; bloc < next; bloc += 1) {
-      ranger(BigInt.asUintN(64, exports.starts(bloc - slot)), bloc, false);
+    // **Les débuts de blocs sont gardés** : l'éviction doit effacer chacune
+    // de leurs cases, et seulement les leurs.
+    const debuts = new BigUint64Array(pose.count);
+    debuts[0] = address;
+    for (let rang = 1; rang < pose.count; rang += 1) {
+      debuts[rang] = BigInt.asUintN(64, exports.starts(rang));
+      ranger(debuts[rang], slot + rang, ctx, false);
     }
-    ranger(address, slot, true);
-    const region = { run, slot, lu };
-    known.set(address, region);
+    ranger(address, slot, ctx, true);
+    // **Les trames d'où vient son code**, celles que la carte marque : les
+    // pages de la fenêtre jusqu'au bout de ce que le module a traduit
+    // (`extent`), pas la fenêtre entière — la page d'après, souvent des
+    // données, ferait retraduire la région à chaque écriture. Hors de
+    // l'anneau zéro, la racine des tables en est aussi : la réécrire, c'est
+    // changer d'espace d'adressage sous le même contexte.
+    if (typeof exports.extent !== "function") {
+      throw new Error(`le module à ${address} n'exporte pas son étendue`);
+    }
+    // Une trame par page de la fenêtre lue, et dans chacune les lignes de
+    // `[address, address + extent)`.
+    const morceaux = [];
+    const debutDansPage = Number(address & 0xfffn);
+    const fin = debutDansPage + Math.max(exports.extent(), 1);
+    for (let page = 0; page * 4096 < fin && page < lues.length; page += 1) {
+      const de = Math.max(debutDansPage, page * 4096) - page * 4096;
+      const a = Math.min(fin, (page + 1) * 4096) - page * 4096;
+      let bas = 0;
+      let haut = 0;
+      for (let ligne = Math.floor(de / 64); ligne <= Math.floor((a - 1) / 64); ligne += 1) {
+        if (ligne < 32) bas |= 1 << ligne;
+        else haut |= 1 << (ligne - 32);
+      }
+      const deja = morceaux.find((m) => m.trame === lues[page]);
+      if (deja !== undefined) {
+        deja.bas |= bas;
+        deja.haut |= haut;
+      } else {
+        morceaux.push({ trame: lues[page], bas, haut });
+      }
+    }
+    if (ctx !== SLOTS.contextPresent) {
+      const racineDe = Number(BigInt.asUintN(64, globals[SLOTS.control + 2].value) & racine) / 4096;
+      const deja = morceaux.find((m) => m.trame === racineDe);
+      if (deja !== undefined) {
+        deja.bas = -1;
+        deja.haut = -1;
+      } else {
+        morceaux.push({ trame: racineDe, bas: -1, haut: -1 });
+      }
+    }
+    const region = {
+      run,
+      slot,
+      lu,
+      adresse: address,
+      contexte: ctx,
+      debuts,
+      octets: bytes.length,
+      morceaux,
+    };
+    marquer(region);
+    let ici = espaces.get(ctx);
+    if (ici === undefined) {
+      ici = new Map();
+      espaces.set(ctx, ici);
+    }
+    ici.set(address, region);
+    recentes.add(region);
+    tenu.regions += 1;
+    tenu.octets += bytes.length;
+    caches.traduites += 1;
+    const clef = `${ctx}:${address}`;
+    if (oubliees.delete(clef)) caches.retraduites += 1;
+    caches.pic.regions = Math.max(caches.pic.regions, tenu.regions);
+    caches.pic.octets = Math.max(caches.pic.octets, tenu.octets);
+    caches.pic.emplacements = Math.max(caches.pic.emplacements, next);
+    caches.pic.espaces = Math.max(caches.pic.espaces, espaces.size);
+    caches.pic.trames = Math.max(caches.pic.trames, trames.size);
     return region;
   }
 
@@ -1789,19 +2513,48 @@ export function machine({
   /// seconde traduction de ce qui sert encore — quelques milliers de régions,
   /// une fois.
   ///
-  /// **Ce que ça ne couvre pas, et c'est dit** : une réécriture **après** —
-  /// un saut statique basculé plus tard, `text_poke` — n'est vue par rien. Le
-  /// remède complet est de voir les écritures dans les pages de code.
+  /// **Ce que ça ne couvrait pas** : une réécriture **après** — un saut
+  /// statique basculé plus tard, `text_poke`. La carte du code traduit la
+  /// voit maintenant (voir `voirEcritures`), comme celles d'avant : Alpine
+  /// 6.18 va jusqu'à son shell et ses dix commandes avec `vider: false`
+  /// (JOURNAL, 16 novembre 2026), et sans l'avertissement « Unpatched return
+  /// thunk in use » que le vidage seul laissait passer. Le vidage reste, par
+  /// défaut, pour ce qui s'écrit du dehors sans passer par `ecrit`.
+  ///
+  /// La carte est remise à zéro avec le reste : plus aucune ligne ne porte de
+  /// code traduit, et une écriture sur l'ancien code d'une région oubliée ne
+  /// désigne plus rien.
   const oublierTout = () => {
     vidages.fois += 1;
     vidages.regions += known.size;
-    known.clear();
+    // Ce qui est oublié ici est rendu au moteur comme ce qui est évincé :
+    // 4 008 régions sur Alpine aux bornes par défaut, 11 074 sur la sonde
+    // 6.18 aux bornes d'un million de régions et de quatre gigaoctets. Sans
+    // respiration après le vidage, leur code restait résident comme celui
+    // d'une région évincée qu'aucune collecte pleine ne rend.
+    //
+    // **Et la table entière redevient libre** : le haut à zéro, et plus
+    // aucun trou. Une place rendue avant le vidage, gardée, serait réemployée
+    // par-dessus une région posée depuis au même endroit — qui exécuterait
+    // ensuite le code d'une autre.
+    evincesDepuis += tenu.octets;
+    espaces.clear();
+    recentes.clear();
+    tenu.regions = 0;
+    tenu.octets = 0;
     // La correspondance entière : plus aucune adresse ne mène à un ancien
     // bloc, et le premier saut de module à module rend la main à l'hôte.
     new Uint8Array(memory.buffer, base, SLOTS.tableSlots * SLOTS.tableEntry).fill(0);
     // Les anciens blocs quittent la table, et leurs modules peuvent être
-    // rendus à la mémoire : rien ne les désigne plus.
+    // rendus à la mémoire : rien ne les désigne plus. Toute la table est
+    // libre de nouveau, depuis le bas.
     for (let at = 0; at < next; at += 1) blocks.set(at, null);
+    libres.length = 0;
+    next = 0;
+    // Et plus aucune trame ne porte de code traduit.
+    trames.clear();
+    carte.fill(0);
+    journal[0] = 0;
   };
 
   /// **Le premier passage en anneau trois, vu une fois.** Rend vrai si le
@@ -1813,7 +2566,7 @@ export function machine({
   /// la main en anneau trois. C'est pourquoi la boucle regarde **au retour de
   /// chaque région**, et pas seulement en tête de tour.
   const voirAnneauTrois = () => {
-    if (sawUser) return false;
+    if (sawUser || !vider) return false;
     if ((BigInt.asUintN(64, globals[SLOTS.segment + 1].value) & 3n) !== 3n) return false;
     sawUser = true;
     oublierTout();
@@ -1870,23 +2623,19 @@ export function machine({
     return new Promise((settle) => setTimeout(settle, 0));
   }
 
-  // Jusqu'où la table est occupée à partir de `from` : les blocs d'un module
-  // s'y posent à l'instanciation, et c'est le seul moyen de savoir combien il
-  // en a mis.
-  function occupied(from) {
-    let last = from - 1;
-    for (let index = from; index < blocks.length; index++) {
-      if (blocks.get(index) === null) break;
-      last = index;
-    }
-    return last;
-  }
 
   return {
     memory,
     globals,
     blocks,
     known,
+    /// **Écrire dans la mémoire de l'invité sans passer par lui, et le
+    /// dire** : `longueur` octets à l'adresse **physique** `physique`, déjà
+    /// écrits. Les régions traduites depuis ces trames sont oubliées ; rend
+    /// combien. C'est ce que doit appeler tout ce qui écrit la RAM du dehors
+    /// — un chargeur, un test, et demain le disque, dont le DMA écrit des
+    /// pages où un programme a pu tourner. Sans cet appel, rien ne le voit.
+    ecrit,
     /// **Taper sur le port série** : les octets entrent dans la file de
     /// réception, dans l'ordre, et la ligne quatre monte si l'invité a
     /// autorisé l'interruption de réception. Le shell d'un initramfs lit là.
@@ -1969,6 +2718,12 @@ export function machine({
     /// haut). Lecture seule ; rien ne se décide dessus.
     tableSlot,
     tableBase: base,
+    /// **Le cache de code** : ses bornes, ce qu'il tient, ses pics, ce qu'il a
+    /// évincé et retraduit. Lecture ; rien ne se décide dessus.
+    cache: caches,
+    /// **Le contexte courant**, celui sous lequel une région serait cherchée
+    /// et rangée maintenant (voir `context_tag` côté Rust).
+    contexte,
     /// Les deux contrôleurs d'interruptions, pour que le relevé puisse dire ce
     /// qu'ils tiennent — le masque, et la base de vecteur qu'ICW2 a posée.
     /// Lecture ; rien ne se décide dessus.
@@ -2023,9 +2778,21 @@ export function machine({
     revoir() {
       const changees = [];
       const illisibles = [];
+      // **Les régions d'un autre programme ne se relisent pas ici** : les
+      // tables en service sont celles d'un autre espace d'adressage, et ce
+      // qu'elles portent à cette adresse n'a rien à voir avec la fenêtre
+      // traduite. Les compter comme changées inventerait des défauts ; elles
+      // sont nommées à part. Celles du noyau (anneau zéro, un seul contexte)
+      // et celles de l'espace en service se relisent.
+      const ailleurs = [];
+      const ici = BigInt.asUintN(64, globals[SLOTS.control + 2].value) & racine;
       for (const [adresse, region] of known) {
         const avant = region.lu;
         if (avant === undefined) continue;
+        if (region.contexte !== SLOTS.contextPresent && (BigInt(region.contexte) & racine) !== ici) {
+          ailleurs.push(adresse.toString());
+          continue;
+        }
         const maintenant = read(adresse, avant.length, SLOTS.walkMachine);
         if (maintenant === null || maintenant.length < avant.length) {
           illisibles.push(adresse.toString());
@@ -2046,7 +2813,7 @@ export function machine({
           maintenant: String(maintenant[decalage]),
         });
       }
-      return { changees, illisibles };
+      return { changees, illisibles, ailleurs };
     },
     async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
@@ -2065,8 +2832,10 @@ export function machine({
         // Une machine posée en anneau trois avant le premier tour (une reprise,
         // un pilote) : le passage n'est passé par aucune région.
         voirAnneauTrois();
-        let region = known.get(here);
-        if (region === undefined) {
+        let region = trouver(here);
+        if (region !== undefined) {
+          servir(region);
+        } else {
           region = await install(here);
           // **Trois pannes, trois noms.** « Ça ne marche pas » n'aide
           // personne à chercher : une région que l'émetteur refuse, une
@@ -2154,16 +2923,14 @@ export function machine({
         // *l'hôte* a causée en mesurant. Et il lit en `SLOTS.walkMachine`,
         // comme `revoir`, parce que la sonde compte ce qui **va tourner**.
         //
-        // **Ce choix n'a d'effet que sur un défaut.** En anneau zéro, le
-        // chargement ne juge pas la lecture ; en anneau trois sur une page
-        // utilisateur, il réussit. Reste un programme qui saute dans une
-        // région du noyau **déjà traduite** : sur le silicium, c'est une faute
-        // de page (P|U) ; ici, les régions étant gardées par adresse, la
-        // région tourne en anneau trois sans repasser par le chargement — le
-        // trou de protection que le JOURNAL porte dans « Ce qui reste ». Tant
-        // qu'il est là, la sonde voit ce code périmé ; jugée comme un
-        // chargement, elle ne le verrait pas. Le jour où ce chargement
-        // fautera, la région ne tournera plus et ce choix ne changera rien.
+        // **Ce choix n'a plus d'effet.** En anneau zéro, le chargement ne
+        // juge pas la lecture ; en anneau trois sur une page utilisateur, il
+        // réussit. Le seul cas où les deux lectures différaient était un
+        // programme qui saute dans une région du noyau déjà traduite : elle
+        // était gardée par sa seule adresse et tournait en anneau trois. Elle
+        // l'est maintenant sous son contexte (`contexte`), l'anneau compris :
+        // depuis l'anneau trois, elle n'est pas trouvée, et c'est le
+        // chargement qui faute, comme sur le silicium.
         if (surveiller && region.lu !== undefined) {
           const octet = read(here, 1, SLOTS.walkMachine);
           if (octet !== null && octet[0] !== region.lu[0]) {
@@ -2186,6 +2953,11 @@ export function machine({
           }
         }
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
+        // **Ce que la région a écrit dans des pages de code**, oublié avant
+        // toute autre chose : la délivrance qui suit peut entrer dans une
+        // région de ces trames. Si c'est elle-même qu'elle a réécrite, elle
+        // ne tournera plus.
+        if (voirEcritures() && !recentes.has(region)) region = null;
         // **Le passage en anneau trois se voit ici, dès que la région rend la
         // main, et avant toute délivrance.** Le regarder seulement en tête de
         // tour le manquait dès qu'une interruption attendait : la région qui
@@ -2411,6 +3183,7 @@ export function machine({
         // d'oublier ne tourne plus : le tour suivant la retraduira.
         if (region !== null && rip() === here) {
           region.run(1n);
+          voirEcritures();
           if (rip() === here) {
             return { stopped: "sur place", at: here };
           }
