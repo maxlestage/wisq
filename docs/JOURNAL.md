@@ -8,6 +8,142 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-16 — Émetteur : la moitié haute de la carte, les écritures sur deux lignes et sept gardes du code traduit ont leur test
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée suivante a trouvé huit
+points. Chacun est vérifié dans le code, et chacun est réel. **Aucun n'est
+une faute de l'invalidation elle-même** : le code donnait partout le bon
+résultat. Mais chacune de ces gardes pouvait être retirée d'une ligne sans
+qu'un seul test tombe (host_loop 215 et x86_wasm 40 restaient au vert), et
+les sondes du contrôle (`ctl/x3.mjs` à `x10.mjs` du bloc-notes) montrent ce
+que chaque retrait aurait coûté.
+
+1. **La moitié haute de la carte n'était jamais testée** : les lignes 32 à
+   63 d'une trame, c'est-à-dire tout code posé à partir du décalage `0x800`
+   d'une page. Tous les montages posaient leur code sur les lignes 0 à 3.
+   Quatre retraits passaient : l'étendue qui n'inscrit pas sa moitié haute,
+   le marquage qui ne la recopie pas, l'invalidation limitée à
+   `rang < 32`, et la marche qui ne lit que le premier mot de la carte
+   (`I64_LOAD32_U`). Dans chacun de ces cas, l'ancien code tournait sur la
+   ligne 40.
+2. **Sous pagination, une écriture qui tient dans sa page mais chevauche
+   deux lignes** n'était pas couverte. Une largeur réduite à un octet dans
+   `far_store_body` n'inscrivait que la première ligne.
+3. **`ecrit` sur plus d'une ligne** n'était pas testé. Or c'est le chemin
+   annoncé pour le DMA du disque, et les seuls appels testés faisaient 4 et
+   8 octets.
+4. **La région oubliée sur son propre départ.** Retirer la garde
+   `!recentes.has(region)` faisait tourner le bloc de plus de la
+   vérification « sur place » à une région évincée, et `vm.run` levait
+   (`call_indirect to a signature that does not match`).
+5. **`trames.clear()` au vidage.** Sans lui, une région d'avant le vidage
+   était « évincée » une seconde fois. Sa place était alors effacée dans la
+   table et rendue, alors qu'une région vivante l'occupait. Le contrôle le
+   voyait par une invalidée de trop. **Le montage d'ici va plus loin** : la
+   région vivante, U en anneau trois, tourne ensuite sur une place vide, et
+   `vm.run` lève.
+6. **Cinq gardes de bord** :
+   - la borne du journal (`I32_LT_U`) : avec `<=`, le numéro 16 383
+     s'écrivait sur le premier mot de la carte ;
+   - le `voirEcritures()` après le bloc de plus ;
+   - la fusion des morceaux d'une même trame ;
+   - la racine qui est aussi une trame de code ;
+   - la moitié haute du chemin de débordement.
+7. **Un commentaire faux dans `web/host.js`** : il disait de `codePages`
+   qu'« un test les compare » avec `code_pages`. Aucun test ne le faisait,
+   et une page de trop passait.
+8. **Un commentaire faux dans `Body::written`** : « rien n'est émis hors
+   pagination ». Le test du témoin est émis pour tout module confiné,
+   pagination éteinte comprise. Il le faut d'ailleurs, puisque l'écriture
+   sans pagination appelle `note_body`. Ce qui en est exclu, c'est la forme
+   libre.
+
+**Ce qui change.** Onze tests dans `host_loop` (215 → 226) et deux
+commentaires. Le code de l'émetteur et de l'hôte ne change pas : les octets
+émis sont les mêmes, et `WebKitBench.swift` n'a pas à être régénéré.
+
+- `a_line_in_the_upper_half_of_a_page_is_watched_too` : A sur la ligne 3,
+  40 ou 63, avec ou sans pagination. Sous pagination, W écrit par un alias
+  de la trame après qu'une autre écriture par l'alias a rempli la case du
+  tampon. C'est donc la marche qui décide de l'inscriptibilité. Résultat
+  attendu : +1, puis +5, une invalidée, sur les six montages.
+- `a_write_across_two_lines_of_one_page_sees_the_code_of_the_second` : huit
+  octets écrits en `0x1003c`, à cheval sur les lignes 0 et 1, avec et sans
+  pagination.
+- `a_sector_said_through_ecrit_forgets_every_line_it_covers` : A sur la
+  ligne 3, B sur la ligne 40. `ecrit(0x10000, 512)` oublie A et pas B ;
+  `ecrit(0x10000, 4096)` oublie B. A et B, retraduites, ajoutent cinq et
+  sept.
+- `a_region_forgotten_on_its_own_start_does_not_run_its_extra_block` :
+  le montage de `ctl/x5.mjs`. R fait `add ; call R`, avec la pile sur sa
+  ligne. Attendu : « tours épuisés », trois invalidées, aucune exception.
+- `a_flush_forgets_which_regions_hold_which_frames` : le montage de
+  `ctl/x8.mjs`, plus U qui tourne de nouveau en anneau trois.
+- `the_log_writes_its_last_slot_and_nothing_past_it` : le compte posé à
+  `codeLogSlots - 1` puis à `codeLogSlots`. La dernière case reçoit
+  `0x400`. Au-delà, rien n'est écrit : la carte de la trame zéro reste vide,
+  et une écriture ordinaire sur la trame zéro ne rend pas la main.
+- `the_extra_block_of_the_standstill_check_has_its_writes_seen` :
+  `push %rax ; jmp` posé à la fin de la ligne 0. Le bloc de plus pose
+  `int3` à la place du `push`. Juste : `int3` sans porte, la pile en
+  `0x10038`. Si le journal est lu un tour trop tard, un `push` qui n'existe
+  plus tourne encore, et la pile descend en `0x10030`. C'est un effet plus
+  net que la divergence de `ctl/x7.mjs`.
+- `two_pages_of_one_window_on_one_frame_add_up_their_lines` : des pages
+  de quatre kibioctets, avec `0x40000` et `0x41000` sur la même trame. R
+  commence par un `nop` sur la ligne 63 ; son `add` est sur la ligne 0.
+- `a_root_that_also_holds_code_is_watched_whole` : P1 dans la trame de la
+  racine, une fois sur chaque moitié, et la racine réécrite sur l'autre
+  moitié.
+- `an_overflowed_log_is_read_back_from_the_upper_half_of_the_map`.
+- `the_view_and_the_emitter_count_the_same_code_pages` : `codePages` et
+  `hostPages` sont comparées à `code_pages` et `host_pages` sur dix tailles,
+  de part et d'autre de chaque marche de 512 pages. Le commentaire de
+  `codePages` nomme maintenant ce test, et celui de `Body::written` dit ce
+  qui est vrai.
+
+**Sabotages**, chacun d'une ligne, host_loop entier à chaque fois, puis
+restauration vérifiée par un `git diff` vide (`ctl/sab.py` et `ctl/sab2.sh`
+du bloc-notes). Les seize tombent.
+
+- Dans `web/host.js` :
+  - `haut |= 0` dans l'étendue (3 tests tombent) ;
+  - `carte[m.trame * 2 + 1] |= m.haut` retiré du marquage (3) ;
+  - `rang < 64` dans `invaliderLigne` (2) ;
+  - `derniere = premiere` dans `ecrit` (1) ;
+  - la garde `!recentes.has(region)` retirée (1) ;
+  - `trames.clear()` retiré d'`oublierTout` (1) ;
+  - le `voirEcritures()` du bloc de plus retiré (1) ;
+  - la fusion `deja` neutralisée (1) ;
+  - `deja.bas = -1` neutralisé (1), puis `deja.haut = -1` (1) ;
+  - la moitié haute du débordement retirée (1) ;
+  - `2 + Math.max` dans `codePages` (1).
+- Dans `x86_wasm.rs` :
+  - la marche lit `I64_LOAD32_U` (1) ;
+  - la largeur remplacée par `1` dans `far_store_body` (1) ;
+  - `I32_LE_U` à la borne du journal (1) ;
+  - la borne à `CODE_LOG_SLOTS - 1` (1).
+
+**Ce qui reste.** Rien de neuf côté code. La limite déclarée par le contrôle
+demeure, et ce n'est pas un défaut caché : un changement de correspondance
+sans aucune écriture n'est pas vu. Deux cas le montrent :
+
+- la copie à l'écriture après un `fork` : l'écriture tombe dans la trame
+  neuve, et l'ancienne région reste sous le même contexte et à la même
+  adresse ;
+- en anneau zéro, un module ou une section `.init.text` libérée puis
+  réallouée à la même adresse vmalloc sur d'autres trames. Toutes les
+  régions de l'anneau zéro partagent `contextPresent` et ne marquent
+  aucune racine.
+
+Ni `invlpg` ni le rechargement de CR3 ne sont regardés. Le vidage unique,
+resté allumé par défaut, ne couvre que ce qui précède le premier passage en
+anneau trois. Les points laissés par l'entrée suivante restent aussi :
+
+- le DMA de `carte.js` devra appeler `ecrit` ;
+- la boucle d'un seul bloc déclarée « sur place » ;
+- le disque.
+
 ## 2026-11-16 — Émetteur : les écritures dans le code traduit sont vues, ligne par ligne, et Alpine ne voit plus de thunk de retour non corrigé
 
 **Ce qui n'allait pas.** Deux choses, la seconde étant la tranche.
