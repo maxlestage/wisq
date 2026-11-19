@@ -141,7 +141,8 @@ final class DesktopTranslatorTests: XCTestCase {
     /// l'invité, et le **tampon de traduction** encore au-dessus d'elle. Le
     /// module déclare le total ; un hôte qui crée une mémoire de `pages`
     /// seulement n'instancie rien. Comparer le minimum déclaré à
-    /// `pages + tablePages + tlbPages` tient les trois morceaux ensemble.
+    /// `pages + tablePages + tlbPages + codePages(pages)` tient les quatre
+    /// morceaux ensemble — le dernier, la carte du code traduit, suit la RAM.
     func testTheConfinedModuleAsksForTheCorrespondenceOnTopOfTheGuestsRAM() throws {
         for pages: UInt32 in [1, 16, 1024] {
             let module = try XCTUnwrap(
@@ -153,7 +154,8 @@ final class DesktopTranslatorTests: XCTestCase {
             let memory = try XCTUnwrap(Imports(of: module).memory, "\(pages) pages")
             XCTAssertEqual(
                 memory,
-                pages + DesktopTranslator.tablePages + DesktopTranslator.tlbPages,
+                pages + DesktopTranslator.tablePages + DesktopTranslator.tlbPages
+                    + DesktopTranslator.codePages(pages),
                 "\(pages) pages"
             )
         }

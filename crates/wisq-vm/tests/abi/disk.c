@@ -162,6 +162,10 @@ int main(void) {
     uint32_t tlb = wisq_desktop_tlb_pages();
     check(tlb > 0, "le tampon de traduction n'occupe aucune page");
     check(tlb < 1024, "le tampon de traduction occupe plus de 64 Mio");
+    /* And the map of translated code, which follows the RAM: a page of log,
+     * then a bit per 64-byte line — 2 MiB of bits for a GiB of RAM. */
+    check(wisq_desktop_code_pages(1) == 2, "la carte du code d'une page de RAM");
+    check(wisq_desktop_code_pages(16384) == 33, "la carte du code d'un gibioctet de RAM");
 
     printf("disque, arbre, frappe et tampon : %u pages de tampon, %zu octets de console\n",
            tlb, written);
