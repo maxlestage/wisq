@@ -8,6 +8,120 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-19 — Cœur x86 : les formes courtes, 12 % de temps en moins sur le démarrage d'Alpine
+
+**La demande.** « Reprends et optimise l'application. » La reprise est la
+PR #708 (l'émetteur, coupé par la limite hebdomadaire au milieu d'une
+reprise : son dernier commit et son entrée de journal étaient écrits, je les
+ai vérifiés, fusionnés avec `master` et poussés). L'optimisation est ici : la
+machine PC de l'application est le cœur Swift (`X86Core`), et c'est sa
+vitesse que l'utilisateur attend.
+
+**Mesuré avant d'écrire.** Le banc est le chemin de l'application sur un vrai
+noyau : Alpine 6.18.60 et son initramfs jusqu'au shell de secours, 1,92
+milliard d'instructions (`X86BootAttemptTests`, tests construits en release).
+
+- `perf` : `run` 49 % des échantillons, `oneByte` 21 %, `arithmetic` 6 %.
+- callgrind, 150 premiers millions d'instructions : **environ 220
+  instructions de l'hôte par instruction de l'invité**, dont 85 dans la
+  boucle (lecture, cache de décodage, aiguillage) et 130 dans `oneByte` et
+  ses aides.
+- Un histogramme posé le temps d'une course (sonde jetée) : une trentaine de
+  formes font 75 % des instructions exécutées — `movzx` depuis la mémoire
+  (8,1 %), le groupe 1 entre registre et immédiat (10,2 %), `mov` entre
+  registres (7,0 %), les sauts conditionnels (15 %), `mov` avec la mémoire
+  (7 %), `xor`/`cmp`/`sub`/`add`/`and`/`test` entre registres (17 %), `lea`
+  (4 %).
+
+**Ce qui est fait : les formes courtes** (`X86FastForms.swift`). Le décodeur
+reconnaît vingt et une formes — en mode 64 bits, sans aucun préfixe hérité,
+hors VEX — et leur donne un code d'aiguillage au-dessus des tables. `run`
+exécute une forme courte depuis sa case du cache de décodage, sans recopier
+l'instruction ni passer par `execute`, `perform` et `oneByte`. Elle ne
+calcule rien autrement : les drapeaux sortent d'`arithmetic` et de `logic`,
+la mémoire de `readRMMemory` et `writeRMMemory`, la pile de `push` et `pop`.
+Le témoin armé garde le chemin d'avant. `perform` envoie aux formes courtes
+toute instruction arrivée par valeur : les corpus matériels les jugent donc.
+
+**Mesures.**
+
+- callgrind, mêmes 150 millions d'instructions : 33,83 → 28,50 milliards
+  d'instructions de l'hôte (−15,8 %).
+- Le banc, quatre courses alternées avant/après dans la même minute (deux
+  arbres construits en release) :
+
+  | | courses (s) | médiane | débit |
+  |---|---|---|---|
+  | `master` 58635682 | 37,8 · 37,2 · 36,3 · 36,7 | 36,9 s | 51,9 MIPS |
+  | formes courtes | 33,7 · 32,2 · 31,9 · 32,9 | 32,5 s | 59,0 MIPS |
+
+  **12 % de temps en moins.** Une première mesure, non alternée, donnait
+  38 → 31 s : la machine varie d'une minute à l'autre de plus d'une seconde,
+  et seul le chiffre alterné est gardé.
+
+**Ce qui a été essayé et abandonné**, chacun mesuré :
+
+- la case du cache de décodage sur une ligne de cache (64 octets alignés,
+  masques recalculés depuis la longueur) : plus lent, 39,9 à 41,8 s contre
+  37,1 à 39,1 ;
+- précharger la case de l'instruction suivante (`__builtin_prefetch` par une
+  cible C) : aucun gain, 38,3 à 39,5 s ;
+- les formes entre registres exécutées dans la boucle même, les autres par
+  appel : plus lent, 33,6 à 34,0 s contre 30,9 à 31,6 dans la même séance —
+  deux aiguillages au lieu d'un ;
+- toute la table des formes courtes inlinée de force dans `run`
+  (`@_transparent`) : aucun gain, 30,4 à 31,9 s.
+
+Le temps ne suit donc pas le compte des instructions de l'hôte : ce qui
+reste coûte en prédictions de branchement et en attentes de mémoire, que
+cette machine virtuelle ne laisse pas compter (`perf stat` n'y a aucun
+compteur matériel).
+
+**Tests** (`X86FastFormsTests`, trois) :
+
+- `testEveryFastFormMatchesTheGeneralPath` : vingt-quatre familles
+  d'encodages, deux cents tirages chacune (REX ou non, toutes les formes
+  d'adresse, relatif à RIP compris, registres dans la mémoire ou n'importe
+  où). Trois exécutions comparées — le chemin général
+  (`X86Instruction.generic`), la forme courte par valeur, la forme courte
+  depuis le cache par `run` au second passage : registres, RIP, drapeaux,
+  mémoire entière, adresse du dernier opérande, compte des instructions,
+  faute.
+- `testEveryConditionJumpsAsTheGeneralPathDoes` : les seize conditions devant
+  les trente-deux combinaisons de CF, PF, ZF, SF et OF, sauts courts et
+  longs.
+- `testAPrefixOrTheCompatibilityModeKeepsTheGeneralPath`.
+
+**Sabotages**, d'une ligne, chacun restauré : dix-sept tombent — `mov` qui
+écrit dans le mauvais registre, `mov` sans masque, écriture toujours sur
+huit octets, condition inversée, index du groupe 1 avec REX.R, `pop` sans
+REX.B, `lea` sans masque, `movzx` sans octet haut, `movzx` qui lit deux
+octets, `call` qui empile son propre début, relatif à RIP sans la longueur,
+`cmp` aux opérandes inversés, `test` devenu `or`, `run` qui avance d'un
+octet, `run` qui ne compte pas l'instruction, les préfixes admis, le mode
+compatibilité admis. **Un survit, et il est dit** : retirer le masque des
+lectures en mémoire (`load`, `loadByte`, `loadWord`) ne change rien devant
+de la mémoire vive, qui ne rend jamais plus large que demandé. Le masque est
+celui que `write` applique sur le chemin général ; il ne se verrait que
+devant un périphérique qui rendrait trop.
+
+**Vérifications.** Suite Swift entière : 2 970 tests, 0 échec (les 628 tests
+x86, corpus matériels compris, passent par les formes courtes). SwiftLint
+`--strict`, `check-whitespace.sh`, `check-project-sources.sh` : propres.
+
+**Ce qui reste.**
+
+- Rien n'est mesuré sur un iPhone : le gain est celui d'un Xeon sous Linux.
+- La boucle elle-même coûte encore environ 80 instructions de l'hôte par
+  instruction de l'invité. La réduire demande de sortir de « une recherche
+  dans le cache par instruction » (des blocs décodés d'un tenant), ce qui
+  touche à la détection du code qui se réécrit.
+- Les drapeaux sont calculés à chaque opération ; les calculer à la demande
+  est l'autre gros gain connu, et un chantier à part.
+- Formes fréquentes encore sur le chemin général : les décalages par CL
+  (3,4 %), `mov` d'un octet vers la mémoire (1,6 %), `mov` sous préfixe 66
+  (1,5 %), `test`/`cmp` d'un octet (2 %).
+
 ## 2026-11-16 — Émetteur : la moitié haute de la carte, les écritures sur deux lignes et sept gardes du code traduit ont leur test
 
 **Ce qui n'allait pas.** Le contrôle de l'entrée suivante a trouvé huit
