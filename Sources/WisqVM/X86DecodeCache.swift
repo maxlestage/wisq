@@ -64,6 +64,12 @@ final class X86DecodeCache: @unchecked Sendable {
 
     private let entries: UnsafeMutablePointer<Entry>
 
+    /// Où l'instruction commence dans sa case : `run` exécute les formes
+    /// courtes depuis là, sans les recopier. Une constante, vérifiée à la
+    /// construction — `MemoryLayout.offset(of:)` rend un optionnel, et un
+    /// `static let` se paie d'un `swift_once`.
+    static var instructionOffset: Int { 32 }
+
     /// **Ce que porte une case vide** : une instruction d'un octet de plus que
     /// la plus longue qui existe. Ses masques nuls laissent passer n'importe
     /// quels octets, mais sa longueur ne tient jamais dans ce qui reste
@@ -100,6 +106,7 @@ final class X86DecodeCache: @unchecked Sendable {
     init() {
         counts = .allocate(capacity: 2)
         counts.initialize(repeating: 0, count: 2)
+        precondition(MemoryLayout<Entry>.offset(of: \Entry.instruction) == Self.instructionOffset)
         entries = .allocate(capacity: Self.slots)
         entries.initialize(repeating: Entry(low: 0, high: 0, lowMask: 0, highMask: 0,
                                             instruction: Self.emptySlot),

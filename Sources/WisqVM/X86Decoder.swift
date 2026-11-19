@@ -62,7 +62,7 @@ public struct X86Instruction: Equatable, Sendable {
     /// sa table, comme dans `perform` —, 5 pour une table inconnue. `perform`
     /// testait `vexCount`, puis comparait l'énumération à valeur associée
     /// avant d'atteindre sa table de sauts.
-    let dispatchCode: UInt8
+    var dispatchCode: UInt8
     /// L'octet d'opcode lui-même, sans les échappements qui l'ont désigné.
     public let opcode: UInt8
     public let modrm: UInt8?
@@ -144,7 +144,10 @@ public struct X86Instruction: Equatable, Sendable {
         case .threeByte3A: mapCode = 3
         case .unknown(let raw): mapCode = 0x80 | (raw & 0x7F)
         }
-        dispatchCode = vexCount != 0 ? 4 : mapCode < 4 ? mapCode : 5
+        // Une forme courte, si l'instruction en est une : voir `FastForm`.
+        let table: UInt8 = vexCount != 0 ? 4 : mapCode < 4 ? mapCode : 5
+        let plain = prefixMask == 0 && vexCount == 0 && !compatibility
+        dispatchCode = (plain ? Self.fastForm(mapCode: mapCode, opcode: opcode, modrm: modrm) : nil) ?? table
         self.opcode = opcode
         self.modrm = modrm
         self.sib = sib

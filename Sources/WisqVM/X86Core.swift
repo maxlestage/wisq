@@ -648,7 +648,17 @@ public struct X86Core: @unchecked Sendable {
                 }
                 if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
                                                        available: available) {
-                    try step(known.pointee.instruction, watchArmed: watchArmed)
+                    // **Une forme courte s'exécute depuis sa case**, sans
+                    // copie ni table : voir `X86FastForms`. Le témoin, armé,
+                    // veut voir chaque instruction par le chemin d'avant.
+                    let fast = UnsafeRawPointer(known).advanced(by: X86DecodeCache.instructionOffset)
+                        .assumingMemoryBound(to: X86Instruction.self)
+                    if fast.pointee.dispatchCode >= X86Instruction.FastForm.base, !watchArmed {
+                        if try !performFast(fast) { rip &+= UInt64(fast.pointee.lengthByte) }
+                        retired &+= 1
+                    } else {
+                        try step(known.pointee.instruction, watchArmed: watchArmed)
+                    }
                 } else {
                     let instruction: X86Instruction
                     do {
@@ -974,7 +984,9 @@ public struct X86Core: @unchecked Sendable {
         case 2: try threeByte38(instruction, opcode)
         case 3: try threeByte3A(instruction, opcode)
         case 4: try vexInstruction(instruction, opcode)
-        default: throw Self.unsupportedMap(instruction.map)
+        case 5: throw Self.unsupportedMap(instruction.map)
+        // Une forme courte arrivée par valeur : voir `X86FastForms`.
+        default: try performFastByValue(instruction)
         }
     }
 
