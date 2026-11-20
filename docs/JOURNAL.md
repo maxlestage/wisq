@@ -8,6 +8,265 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran Bochs et sa mémoire, la tablette virtio ; troisième reprise après contrôle
+
+**La demande.** Deux choses, dans cet ordre. D'abord le troisième contrôle
+de la tranche « la carte en natif » : cinq gardes annoncées que rien ne
+tenait. Puis la tranche suivante du flux : porter dans la Carte l'écran
+Bochs (QEMU « std VGA ») et sa mémoire vidéo, et la tablette virtio, depuis
+le cœur Swift (`X86BochsDisplay.swift`, `X86Framebuffer.swift`,
+`VirtioTablet.swift`), avec leurs tests, un aller-retour par le module
+wasm32 de la page, et le mode d'emploi du flux « cœur » mis à jour.
+
+### La reprise après contrôle (commit fd927249)
+
+Les cinq défauts sont réels : le contrôle avait vu ses dix-huit mutants
+passer sur le code poussé (e8d35194), et chacun visait une garde annoncée
+sans test. Ce qui est fait, sans changer aucun comportement pour l'invité :
+
+1. *Le tampon gardé.* Une garde de `TAMPON_GARDE` entre 64 Kio et 4 Mio ne
+   faisait rien tomber : avec une garde à 1 Mio, le tampon était rendu après
+   chaque lecture de 1 280 Kio, et l'égalité « même adresse, même capacité »
+   comparait deux vecteurs vides. Le tampon grandit maintenant à la taille
+   demandée (`reserve_exact`), pas au double : un tampon de 1 100 Kio doublé
+   pour une requête de 1 280 passait la garde, et était rendu à chaque fois.
+   Un cas neuf tient la borne en toutes lettres (deux mébioctets tout juste
+   gardés, un secteur de plus rendu), et le cas des lectures affirme que la
+   capacité gardée est entre la requête ordinaire et la garde.
+2. *L'heure d'une horloge, à la seconde.* Le cas lisait seulement l'année par
+   `carte.horloge(…)`. L'horloge donne maintenant un jour, une heure, une
+   minute et une seconde plus tard, lus champ par champ, puis la minute
+   suivante ; `regler_heure` est reposée plus tard, puis un an plus tôt.
+3. *Les arguments de la façade.* `taper_texte`, `souris`, `regler_heure` et la
+   largeur de `port_ecrire` passent avec plusieurs valeurs, chacune jugée par
+   ce que l'invité lit.
+4. *Une écriture sur un disque sans arrière* est une erreur d'entrée-sortie,
+   jugée cette fois par une écriture (une lecture rendait déjà une erreur).
+5. *Les bords du disque sur fichier* : une base d'un secteur tout juste est un
+   disque ; une écriture partielle sur un secteur que la base a perdu est une
+   erreur ; une couche où l'on ne peut pas écrire (`/dev/full`, Linux
+   seulement) aussi, sans rien nommer dans la carte ; rebrancher un disque
+   garde la notification notée de l'autre.
+
+Les dix-huit mutants tombent maintenant (liste plus bas).
+
+### L'écran et la tablette
+
+**Ce qui est porté**, registre pour registre, avec la carte du cœur Swift :
+
+- `carte/ecran.rs` — la carte graphique en **00:02.0**, `1234:1111`, classe
+  `0300`, révision 2, sous-système `1AF4:1100`, sans ligne d'interruption.
+  BAR0 : la mémoire vidéo, **16 Mio** préchargeables à **`0xE000_0000`** ;
+  BAR2 : **4 Kio** de registres à **`0xE100_0000`** — l'EDID absent (des
+  zéros : `bochs-drm` prend alors ses modes par défaut, 1024 × 768 en tête,
+  comme du côté Swift, qui n'en sert pas), les registres DISPI à `0x500`
+  (seize bits chacun, un accès de quatre octets en prend deux), les deux
+  registres étendus de QEMU à `0x600`. Les mêmes registres DISPI par les
+  ports **`0x1CE`/`0x1CF`**, qui deviennent des ports fixes de la carte quand
+  un écran est branché, et passent alors avant toute fenêtre de disque. La
+  résolution négociée : `ENABLE` avec `LFB` et 32 bits montre le rectangle
+  (largeur, hauteur, largeur virtuelle, décalages) ; l'allumage remet la
+  largeur virtuelle et les décalages et efface, sauf `NOCLEARMEM` ;
+  `GETCAPS` rend 2560 × 1600 × 32 ; un mode qui ne tient pas est refusé à
+  l'octet près. Le cadre (`Cadre`, de `X86Framebuffer`) porte les pixels, le
+  mode montré et **le compte des changements** (`revision`) : une écriture,
+  un bloc, un effacement ou un autre mode l'avancent, une lecture non.
+- `carte/tablette.rs` — la tablette en **00:07.0**, `1AF4:1052`, révision 1,
+  classe `0980`, **ligne 10** tant que le noyau n'en écrit pas une autre,
+  transport virtio 1.0 « moderne » : quatre capacités chaînées depuis `0x34`,
+  BAR0 de **16 Kio** en mémoire à **`0xE101_0000`**, `VIRTIO_F_VERSION_1`
+  seul offert, pas de MSI-X (`0xFFFF`), deux files de 64. Les mêmes
+  événements evdev : `ABS_X`/`ABS_Y` de 0 à 32 767, `BTN_LEFT`, `BTN_RIGHT`,
+  `BTN_MIDDLE`, `REL_WHEEL` un paquet par cran (32 au plus), `SYN_REPORT`,
+  le nom « wisq tablet », les identifiants de QEMU ; 1 024 événements en
+  attente au plus, un paquet entier ou rien ; le rythme d'un doigt (un
+  paquet qui suit un changement de boutons attend 35 795 tics du 8254,
+  30 ms, comptés depuis la lecture de l'ISR, et la sonnette ne commence pas
+  l'attente).
+- `carte/mod.rs`, `carte/pci.rs` — le bus passe la configuration au pont,
+  à l'écran, à la tablette, puis aux disques, l'ordre de `X86PCIHost`.
+  `Carte::brancher_ecran(largeur, hauteur)` branche l'écran **et** sa
+  tablette (`X86Machine.attachDisplay`). `Carte::mem_lire`,
+  `Carte::mem_ecrire`, `mem_lire_bloc`, `mem_ecrire_bloc` et `region`
+  disent à qui est une adresse hors de la RAM, dans l'ordre de
+  `X86Memory.readSlowly` : la mémoire vidéo, les registres, la tablette.
+  `toucher(x, y, boutons)` et `defiler(crans)` rendent `false` tant que
+  l'invité n'a pas pris la tablette (`DRIVER_OK` et la file des événements
+  active) : l'application garde alors la souris PS/2. `lignes`, `tenues` et
+  `reveil` comptent la ligne de la tablette ; une ligne de l'hôte (0, 2, 4)
+  écrite par le noyau la fait taire plutôt qu'effacer ce que le 16550 y pose.
+- `carte/pc.rs` — la façade : `brancher_ecran`, `ecran`, `tablette`,
+  `mem_lire`, `mem_ecrire` (la sonnette de la tablette, seul accès mémoire
+  qui lise la RAM, y est **notée** comme la notification d'un disque),
+  `mem_lire_bloc`, `mem_ecrire_bloc`, `toucher`, `defiler` ; `servir` sonne
+  puis rend les gestes à l'heure du dernier `battre`.
+- `src/carte_porte.rs` — les exports de la page : `carte_ecran`,
+  `carte_mem_lire` puis `carte_mem_valeur` (en deux temps : un mot de huit
+  octets prend toutes les valeurs d'un `i64`), `carte_mem_ecrire` (la
+  sonnette lit la file par les deux imports, pendant l'appel),
+  `carte_ecran_pixels`, `_taille`, `_base`, `_revision`, `_mode` (quatre
+  mots), `carte_toucher`, `carte_defiler`, `carte_livrer`. Toujours deux
+  imports et rien d'autre.
+
+**Ce qui change par rapport au Swift.** Pas de verrou (la carte a un seul
+propriétaire). `Tablette::reveil` dit si un geste peut encore partir sans
+le pilote ; le Swift tient la machine éveillée dès qu'une tablette existe.
+Un cadre de démarrage plus grand que 16 Mio est **refusé**
+(`brancher_ecran` rend `false`) : le Swift agrandissait sa mémoire vidéo
+alors que sa BAR0 en annonce seize. La sonnette, dans la façade, est servie
+au `servir` qui suit, pas pendant l'écriture.
+
+**Pas porté** : l'instantané (`State`, `save`, `restore`, et
+`testTheCardComesBackWithTheMachine`, `testTheTabletComesBackWithTheMachine`),
+qui viendra avec celui de la machine ; `testTheFingerIsPlacedOnTheGuestScreen`,
+qui juge `ScreenTouch.fraction`, de l'interface. `web/carte.js` ne sert pas
+encore l'écran ni la tablette à `host.js`, qui ne dirige aucun accès mémoire
+vers la carte (fichiers hors de ce flux).
+
+**Le mode d'emploi, pour le flux « cœur » : cinq lignes de plus** après les
+dix de l'entrée « la carte en natif » ci-dessous. Elles sont compilées et
+exécutées telles quelles par `crates/wisq-page/tests/disque.rs`
+(`the_five_screen_lines_of_the_journal_compile_and_run`) :
+
+```rust
+carte.brancher_ecran(1024, 768); // avant le démarrage : l'écran en 00:02.0, sa tablette en 00:07.0, ligne 10
+let pris = carte.mem_ecrire(adresse, largeur, valeur); // un accès hors RAM ; false : la faute « hors mémoire »
+let lu: Option<u64> = carte.mem_lire(adresse + 4, largeur); // None : la faute aussi
+let touche = carte.toucher(x, y, boutons) || carte.defiler(crans); // false : pas encore prise, la souris PS/2
+let cadre = &carte.ecran().expect("branché").cadre; // la vue : revision(), mode(), octets(), image_dans(…)
+```
+
+Ce qu'il faut savoir autour :
+
+- **Les adresses.** La mémoire vidéo : 16 Mio à `0xE000_0000` ; les
+  registres : 4 Kio à `0xE100_0000` ; la tablette : 16 Kio à `0xE101_0000`
+  — tant que le noyau ne déplace pas les BAR, et la carte suit s'il le fait
+  (`ecran().cadre.base()`, `ecran().base_des_registres()`,
+  `tablette().base()`). **La RAM de l'invité ne doit pas couvrir
+  `0xE000_0000` à `0xE101_4000`** : comme `X86Machine.attachDisplay`, la
+  machine coupe sa RAM autour du trou sous 4 Gio, ou refuse l'écran. La
+  carte ne connaît pas la RAM.
+- **Diriger les accès.** Toute lecture ou écriture de l'invité qui tombe
+  hors de la RAM va à `mem_lire(adresse, largeur)` /
+  `mem_ecrire(adresse, largeur, valeur)`, largeur de 1 à 8 (les largeurs
+  impaires sont les moitiés d'un accès à cheval sur une page) ; `None` ou
+  `false` : la faute « hors mémoire ». L'accès doit tenir entier dans une
+  fenêtre. Une copie d'un bloc (`rep movs`) peut passer par
+  `mem_lire_bloc`/`mem_ecrire_bloc`, qui n'avancent la révision qu'une fois.
+  `mem_lire` prend `&mut` : lire l'ISR de la tablette l'efface.
+- **Le chargeur** annonce le cadre au noyau (`screen_info`, comme
+  `X86BootLoader.Framebuffer`) : `cadre.base()`, `cadre.mode_de_depart()`
+  (largeur, hauteur, `octets_par_ligne` = largeur × 4) et `cadre.taille()`
+  (`lfb_size` : 256 unités de 64 Kio).
+- **La vue** compare `cadre.revision()` à celle de sa dernière image : égale,
+  rien à repeindre. `cadre.image_dans(&mut tampon)` copie le rectangle
+  montré sans le remplissage, et rend le mode pris avec l'image ;
+  `cadre.octets()` est la mémoire vidéo entière, sans copie.
+- **À chaque tour** : `carte.battre(tics)` puis `carte.servir(&mut ram)` —
+  il sonne les files que le pilote a notifiées et rend les gestes à l'heure
+  du dernier `battre`. `carte.reveil()` compte la tablette.
+
+**Mesures.**
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+**565 144 octets avant** (e8d35194, reconstruit, SHA-256 `cd5e23a3…c6ffd861`,
+107 707 en gzip -9), **578 472 après** (+13 328, +2,4 %, `7143fcf8…47558f14`,
+113 094 en gzip -9). L'écran et la tablette branchés dans la carte, sans les
+exports, en faisaient déjà 567 396 : ce sont les exports qui rendent leur
+code atteignable.
+
+*Le prix des tests* : la suite de `wisq-carte` passe de 127 à 176 cas, en
+2,0 s en construction de mise au point et 0,26 s en `release` (2,1 s et
+0,24 s avant : la lecture de 64 Mio domine toujours). Le cas Bun neuf :
+1,5 s, la construction du module comprise.
+
+**Tests.** Côté Rust, 751 → 806 au compte publié (les deux de la reprise,
+puis 53) : `wisq-carte` 125 → 176, dont 27 pour l'écran (les douze de
+`X86BochsDisplayTests` sans l'instantané, les neuf de `X86FramebufferTests`
+en huit cas, et sept de plus : un cadre jamais plus petit que son mode de
+départ, un mode qui tient à l'octet près, l'image recopiée dans le même
+tampon, un cadre qui n'imprime pas ses pixels, la largeur des accès aux
+registres, les ports fixes seulement avec un écran, un bloc compté une fois)
+et 22 pour la tablette (les treize de `VirtioTabletTests` sans l'instantané
+ni `ScreenTouch`, et neuf de plus : les registres communs par file, un
+tampon trop court rendu vide, une file que la RAM ne porte pas, la file
+d'état, l'attente bornée, deux pour la façade, la sonnette qui rend le
+réveil, la carte de la page à l'heure qu'on lui donne) ; deux
+cas d'exports en natif (`carte_porte`), un cas Bun sur le module wasm32
+(`the_screen_and_the_tablet_answer_through_the_page_module`), les cinq
+lignes du mode d'emploi. Le compte publié passe à **3 871** (Swift 3 065 +
+Rust 806). Le cas `the_system_clock_is_a_date_of_this_century` est marqué
+natif seulement : `cargo clippy -p wisq-carte --target wasm32-unknown-unknown
+--all-targets` passe maintenant, les tests compris.
+
+**Sabotages**, d'une ligne chacun, 82, tous tombent, l'arbre rendu identique
+après chacun (un script les applique, lance les tests, rend le fichier) :
+
+- *ceux du contrôle (18)* : la garde du tampon à 1 Mio, à 64 Kio, à
+  4 Mio − 1, la garde comparée à sa moitié ; l'heure d'une horloge ramenée
+  au jour ; `taper_texte` qui tape toujours « a », le premier caractère
+  seul, un compte borné à 2 ; la souris à (5, 3, 1), `dy` figé, les boutons
+  figés ; l'heure figée ; `port_ecrire` toujours de quatre octets ; un
+  disque sans arrière qui réussit ; une base d'un secteur refusée ; la
+  lecture de la base ignorée dans une écriture partielle ; une écriture
+  ratée dite réussie ; le rebranchement qui efface la notification de
+  l'autre.
+- *l'écran (23)* : l'identifiant, la BAR0 mesurée non préchargeable, la
+  largeur maximale, l'effacement à l'envers, la ligne sans la largeur
+  virtuelle, le début compté en lignes montrées, la fenêtre trop courte d'un
+  octet, un mode refusé à l'octet près, une écriture sans révision, une
+  révision pour un mode inchangé, les registres écrits puis lus sur seize
+  bits seulement par la BAR2, les ports DISPI sans la largeur, les ports
+  DISPI pas fixes, la BAR0 déplacée ignorée, un bloc sans révision, l'image
+  avec son remplissage, un cadre de 16 Mio tout juste refusé, la mémoire
+  annoncée à moitié, l'écran en 00:01.0, `mem_lire` sans masque, la
+  configuration de l'écran perdue, la BAR2 mesurée deux fois trop grande.
+- *la tablette (19)* : l'identité, les sonnettes en seize octets, la fenêtre
+  sans le bit de mémoire, l'ISR lu non effacé, des fonctions non offertes
+  acceptées, l'axe tronqué au lieu d'arrondi, un tic de moins, sans attendre
+  l'ISR, la sonnette qui lance l'attente, 33 crans, la file pleine à 1 023,
+  le réveil malgré une file à court, la sonnette qui ne lève pas « à court »,
+  tout tampon inscriptible, la remise qui garde les gestes, la ligne PCI
+  figée, la molette annoncée comme `ABS_X`, une taille de file non puissance
+  de deux, `queue_notify_off` nul.
+- *la carte et la façade (12)* : la ligne 10 jamais levée, pas tenue, le
+  réveil sans la tablette, un toucher sans pilote, zéro cran accepté,
+  `Carte::livrer` sans heure, une ligne de l'hôte prise par la tablette ;
+  `battre` qui oublie l'heure, toute sonnette à la file zéro, les sonnettes
+  gardées au rebranchement de l'écran, `a_servir` sans les sonnettes,
+  `servir` qui livre sans heure.
+- *les exports (5 en natif, 5 sous Bun)* : `carte_mem_lire` toujours prise,
+  la ligne du mode égale à la largeur, `carte_livrer` à l'heure zéro,
+  `carte_toucher` sans boutons, la valeur tronquée à 32 bits ; et sous Bun,
+  sur le module wasm32 : la valeur tronquée, l'heure zéro, les pixels
+  décalés de quatre octets, `carte_mem_ecrire` sans la RAM de la page, la
+  ligne du mode égale à la largeur.
+
+Six de ces sabotages passaient au premier essai : le début compté en lignes
+montrées, un cadre de 16 Mio tout juste, « à court » jamais levé par la
+sonnette, `Carte::livrer` sans heure, la ligne du mode par l'export (en
+natif et sous Bun), `carte_mem_ecrire` sans la RAM. Un cas a été complété
+ou écrit pour chacun ; aucun n'est écarté.
+
+**Ce qui reste.**
+
+1. Le flux « cœur » ne branche pas encore la Carte : aucun noyau n'a vu cet
+   écran ni cette tablette par `CartePc`. Rien n'a été démarré : le premier
+   juge sera `bochs-drm` et `virtio_input` d'un vrai noyau.
+2. La page : `web/carte.js` et `host.js` ne dirigent pas les accès mémoire
+   vers la carte, ni n'affichent ses pixels.
+3. La carte réseau (00:05.0, ligne 3) est pour la tranche suivante.
+4. Les instantanés de l'écran et de la tablette, avec celui de la machine ;
+   les formats de disque à tables.
+5. Ce que seule la CI juge : la construction sur macOS et iOS, le job Rust
+   complet. Le cas `/dev/full` ne tourne que sous Linux.
+
+**Risques.** Le compte publié (3 871) entrera en conflit avec celui de la
+branche du cœur à la fusion : relancer le recompte plutôt que de choisir.
+La mémoire vidéo est un `Vec` de 16 Mio alloué au branchement, dans la page
+aussi (sa mémoire grandit d'autant) ; une vue de la page doit refaire sa
+`Uint8Array` à chaque image, la mémoire du module pouvant grandir.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise après contrôle, six gardes de la façade que rien ne tenait
 
 **La demande.** Le second contrôle adverse de la tranche « la carte en
