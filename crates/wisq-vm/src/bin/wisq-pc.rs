@@ -14,6 +14,11 @@
 //! s'arrête quand l'invite revient après la dernière ligne tapée. `--budget`
 //! borne les instructions retirées, et `--patience` les secondes de l'invité
 //! passées à dormir sans rien dire.
+//!
+//! `--horloge` pose l'heure de l'horloge CMOS (des secondes depuis 1970) au
+//! lieu de celle de l'hôte : deux courses du même noyau retirent alors les
+//! mêmes instructions. `--sans-blocs` éteint le chemin rapide (`pc::blocs`) :
+//! chaque instruction passe par le pas à pas, le terme de comparaison.
 
 use std::io::Write;
 use std::time::Instant;
@@ -39,6 +44,37 @@ fn ram_en_octets(mebioctets: u64) -> Option<u64> {
     mebioctets.checked_mul(1 << 20)
 }
 
+/// **Où `motif` paraît dans `texte`, à partir de l'octet `depuis`** : la
+/// position, en octets depuis le début. Par octets, pour qu'un départ au
+/// milieu d'un caractère ne fasse pas paniquer.
+fn trouver(texte: &str, motif: &str, depuis: usize) -> Option<usize> {
+    let octets = texte.as_bytes().get(depuis..)?;
+    let motif = motif.as_bytes();
+    if motif.is_empty() {
+        return Some(depuis);
+    }
+    octets
+        .windows(motif.len())
+        .position(|fenetre| fenetre == motif)
+        .map(|ici| ici + depuis)
+}
+
+/// **L'heure que l'horloge CMOS de l'invité reçoit**, en secondes depuis
+/// 1970 : celle que `--horloge` donne, sinon celle de l'hôte.
+fn heure(fixee: Option<u64>) -> u64 {
+    fixee.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |depuis| depuis.as_secs())
+    })
+}
+
+/// Jusqu'où une recherche de `motif` qui n'a rien trouvé dans `texte` n'a
+/// plus à revenir : tout sauf la fin, où un motif à cheval peut commencer.
+fn deja_examine(texte: &str, motif: &str) -> usize {
+    texte.len().saturating_sub(motif.len().saturating_sub(1))
+}
+
 struct Options {
     noyau: String,
     initramfs: Option<String>,
@@ -51,13 +87,16 @@ struct Options {
     patience: u64,
     muet: bool,
     battement: Option<u64>,
+    horloge: Option<u64>,
+    sans_blocs: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage : wisq-pc --kernel <bzImage> [--initrd <fichier>] [--cmdline <texte>] \
          [--ram <Mio>] [--budget <instructions>] [--input 'cmd;;cmd'] [--until <texte>] \
-         [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet]"
+         [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
+         [--horloge <secondes>] [--sans-blocs]"
     );
     std::process::exit(2);
 }
@@ -75,6 +114,8 @@ fn options() -> Options {
         patience: 24,
         muet: false,
         battement: None,
+        horloge: None,
+        sans_blocs: false,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(nom) = arguments.next() {
@@ -97,6 +138,8 @@ fn options() -> Options {
             "--patience" => options.patience = valeur().parse().unwrap_or_else(|_| usage()),
             "--tick" => options.battement = Some(valeur().parse().unwrap_or_else(|_| usage())),
             "--quiet" => options.muet = true,
+            "--horloge" => options.horloge = Some(valeur().parse().unwrap_or_else(|_| usage())),
+            "--sans-blocs" => options.sans_blocs = true,
             _ => usage(),
         }
     }
@@ -141,11 +184,10 @@ fn main() {
     if let Some(battement) = options.battement {
         machine.instructions_par_battement = battement.max(1);
     }
-    // L'heure de l'hôte, lue une fois : l'horloge CMOS de l'invité part de là.
-    let maintenant = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |depuis| depuis.as_secs());
-    machine.herites.cmos.regler(maintenant);
+    // L'heure de l'hôte, lue une fois : l'horloge CMOS de l'invité part de là,
+    // sauf quand `--horloge` en donne une.
+    machine.herites.cmos.regler(heure(options.horloge));
+    machine.blocs_actifs = !options.sans_blocs;
     if let Err(refus) =
         machine.charger(&noyau, options.ligne.as_deref(), initramfs.as_deref(), None)
     {
@@ -161,6 +203,12 @@ fn main() {
     let mut serie = String::new();
     // Où la recherche de l'invite reprend : derrière ce qui a déjà servi.
     let mut depuis = 0usize;
+    // **Ne chercher que dans ce qui n'a pas encore été examiné**, plus de quoi
+    // tenir un motif à cheval : chercher dans toute la sortie à chaque tranche
+    // faisait un coût qui croît avec elle, et que le banc comptait. Ce qui est
+    // avant ces positions a été examiné sans rien trouver (ou a déjà servi).
+    let mut examine_invite = 0usize;
+    let mut examine_jusqu_a = 0usize;
     // L'attente au dernier signe de vie, pour compter le silence.
     let mut attente_au_dernier_signe = 0u64;
     let sortie = std::io::stdout();
@@ -190,12 +238,17 @@ fn main() {
             Ok(_) => {}
         }
         if let Some(texte) = &options.jusqu_a {
-            if serie.contains(texte.as_str()) {
+            if trouver(&serie, texte, examine_jusqu_a).is_some() {
                 fin = format!("le port série a dit « {texte} »");
                 break;
             }
+            examine_jusqu_a = deja_examine(&serie, texte);
         }
-        if let Some(position) = serie[depuis..].find(&options.invite) {
+        let trouvee = trouver(&serie, &options.invite, depuis.max(examine_invite));
+        if trouvee.is_none() {
+            examine_invite = deja_examine(&serie, &options.invite);
+        }
+        if let Some(position) = trouvee.map(|ici| ici - depuis) {
             match prochaine.take() {
                 Some(ligne) => {
                     machine.taper(ligne.as_bytes());
@@ -247,6 +300,9 @@ fn main() {
         machine.attente,
         (retirees + machine.attente) as f64 / hertz as f64
     );
+    if machine.blocs_actifs {
+        eprintln!("blocs construits : {}", machine.blocs.construits);
+    }
     eprintln!(
         "secondes : {secondes:.2} ; MIPS : {:.1}",
         retirees as f64 / secondes.max(1e-9) / 1e6
@@ -259,6 +315,33 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`--horloge` fixe l'heure de l'invité** ; sans lui, c'est celle de
+    /// l'hôte (après le 20 novembre 2026, jour où ceci est écrit).
+    #[test]
+    fn the_clock_is_the_one_given_or_the_hosts() {
+        assert_eq!(heure(Some(1_800_000_000)), 1_800_000_000);
+        assert_eq!(heure(Some(0)), 0);
+        assert!(heure(None) > 1_795_000_000);
+    }
+
+    /// **La recherche reprend où elle s'était arrêtée**, sans rien manquer
+    /// d'un motif à cheval sur deux tranches, ni d'un caractère sur deux
+    /// octets.
+    #[test]
+    fn the_search_resumes_where_it_stopped() {
+        let mut texte = String::from("démarrage... (no");
+        assert_eq!(trouver(&texte, "(none) # ", 0), None);
+        let reprise = deja_examine(&texte, "(none) # ");
+        assert_eq!(reprise, texte.len() - 8);
+        texte.push_str("ne) # ");
+        assert_eq!(trouver(&texte, "(none) # ", reprise), Some(14));
+        assert_eq!(trouver(&texte, "# ", 14), Some(21));
+        // Un départ au milieu de « é » ne panique pas.
+        assert_eq!(trouver(&texte, "m", 2), Some(3));
+        assert_eq!(trouver(&texte, "x", 99), None);
+        assert_eq!(deja_examine("ab", "abcdef"), 0);
+    }
 
     /// **Un mébioctet fait 2^20 octets, et le plafond est compris** : 65 536
     /// Mio s'acceptent, 65 537 non.

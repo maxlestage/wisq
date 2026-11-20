@@ -12,6 +12,7 @@
 //! boucle qui sert le matériel. Rien ici ne demande de fichier ni de système :
 //! la cible `wasm32` le compile aussi.
 
+pub mod blocs;
 pub mod chargeur;
 pub mod herites;
 pub mod machine;

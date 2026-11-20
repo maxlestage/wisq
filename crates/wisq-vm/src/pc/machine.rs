@@ -8,15 +8,26 @@
 //! `instructions_par_battement` instructions, le matériel est regardé toutes
 //! les deux cent cinquante-six instructions, et une machine arrêtée sur `hlt`
 //! saute jusqu'à la prochaine échéance de l'horloge.
+//!
+//! **Deux chemins, qui retirent les mêmes instructions.** Le pas à pas
+//! (`pas`) : une instruction, son cache de décodage, `Cpu::execute`. Le
+//! chemin rapide (`bloc`, quand `blocs_actifs`) : des blocs d'instructions
+//! décodées côte à côte (`pc::blocs`), chacune par la forme choisie à son
+//! décodage (`x86::rapide`). Le second ne prend jamais une instruction de
+//! système, ne dépasse jamais le prochain service du matériel ni le budget,
+//! et laisse au premier tout ce qu'il ne sait pas faire — les deux arrivent
+//! au shell d'Alpine en 1 907 638 318 instructions, à l'instruction près.
 
 use std::collections::BTreeMap;
 
+use crate::x86::rapide::Suite;
 use crate::x86::{
     decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Op, Segment,
     VectorFault, Width, ARITHMETIC, CF, IF,
 };
 use crate::x86_paging::{Access, Unmapped};
 
+use super::blocs::{Blocs, PORTEE};
 use super::chargeur::{self, Ecran, Placement, Refus};
 use super::herites::{Herites, INSTRUCTIONS_PAR_BATTEMENT};
 use super::memoire;
@@ -124,6 +135,41 @@ impl From<Exception> for Evenement {
     fn from(exception: Exception) -> Self {
         Self::Exception(exception)
     }
+}
+
+/// Où reprendre un bloc coupé : sa case, son début, l'instruction suivante,
+/// et l'adresse physique de celle-ci.
+#[derive(Clone, Copy)]
+struct Reprise {
+    place: usize,
+    debut: u64,
+    rang: usize,
+    physique: u64,
+}
+
+/// Le décalage, dans son bloc, de l'instruction de rang `rang`.
+#[inline(always)]
+fn physique_du_rang(bloc: &super::blocs::Bloc, rang: usize) -> usize {
+    bloc.uops[..rang]
+        .iter()
+        .map(|uop| uop.longueur as usize)
+        .sum()
+}
+
+/// L'instruction qui commence à l'octet `debut` de la RAM, si elle tient
+/// dans `disponibles` octets.
+fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> {
+    decode(ram.get(debut..debut + disponibles)?)
+}
+
+/// Ce qu'un passage par un bloc a donné.
+enum Passage {
+    /// Pas de bloc ici : l'instruction passe par le pas à pas.
+    Aucun,
+    /// Tant d'instructions retirées, sans faute.
+    Fait(u64),
+    /// Tant d'instructions retirées, puis celle d'après a fauté.
+    Faute(u64, Evenement),
 }
 
 /// Une instruction lue : par le décodeur que l'émetteur partage, ou par le
@@ -239,6 +285,16 @@ pub struct Machine {
     page_generation: u64,
     /// La page zéro telle que le chargeur l'a posée, pour qui veut la relire.
     placement: Option<Placement>,
+    /// **Le chemin rapide** : les blocs d'instructions décodées et leurs
+    /// formes spécialisées (`pc::blocs`, `x86::rapide`). Éteint, chaque
+    /// instruction passe par le pas à pas et `Cpu::execute` : c'est le terme
+    /// de comparaison, et les deux chemins retirent les mêmes instructions.
+    pub blocs_actifs: bool,
+    pub blocs: Blocs,
+    /// Le bloc coupé par le dernier passage, à reprendre.
+    reprise: Option<Reprise>,
+    /// La case du dernier bloc exécuté (`Blocs::enchainer`).
+    dernier_bloc: usize,
 }
 
 impl Machine {
@@ -287,6 +343,10 @@ impl Machine {
             page_physique: 0,
             page_generation: 0,
             placement: None,
+            blocs_actifs: true,
+            blocs: Blocs::default(),
+            reprise: None,
+            dernier_bloc: usize::MAX,
         })
     }
 
@@ -463,6 +523,27 @@ impl Machine {
                 faites += pas;
                 continue;
             }
+            if self.blocs_actifs {
+                // Ce qu'un bloc peut retirer : jusqu'au prochain service du
+                // matériel, et jusqu'à la fin du budget.
+                let permis = (0x100 - (faites & 0xFF)).min(budget - faites);
+                match self.bloc(permis) {
+                    Passage::Aucun => {}
+                    Passage::Fait(retirees) => {
+                        faites += retirees;
+                        continue;
+                    }
+                    Passage::Faute(retirees, evenement) => {
+                        faites += retirees;
+                        match evenement {
+                            Evenement::Exception(exception) => self.livrer(exception)?,
+                            Evenement::Arret(pourquoi) => return Err(pourquoi),
+                        }
+                        faites += 1;
+                        continue;
+                    }
+                }
+            }
             match self.pas() {
                 Ok(()) => {}
                 Err(Evenement::Exception(exception)) => self.livrer(exception)?,
@@ -637,15 +718,12 @@ impl Machine {
         )
     }
 
-    /// **Trouver l'instruction à RIP** : sa case du cache, vérifiée contre les
-    /// octets en mémoire, ou un décodage neuf. Rend la **place** de la case :
-    /// l'instruction s'y lit sur place, sans être recopiée à chaque pas.
+    /// **L'adresse physique de RIP**, par la page d'instructions courante
+    /// quand rien n'a bougé : presque toutes les instructions suivent la
+    /// précédente dans la même page, et la page se garde hors du tampon.
     #[inline(always)]
-    fn chercher(&mut self) -> Result<usize, Evenement> {
+    fn physique_de_rip(&mut self) -> Result<u64, Evenement> {
         let rip = self.cpu.rip;
-        let dans_la_page = rip & 0xFFF;
-        // La page d'instructions courante se garde hors du tampon : presque
-        // toutes les instructions suivent la précédente dans la même page.
         let cle = (rip & !0xFFF) | (u64::from(self.cpu.segments[1] & 3) << 1) | 1;
         let generation = self.cpu.tlb.as_ref().map_or(0, |tlb| tlb.generation);
         if self.page_cle != cle || self.page_generation != generation {
@@ -661,7 +739,16 @@ impl Machine {
                 }
             }
         }
-        let physique = self.page_physique | dans_la_page;
+        Ok(self.page_physique | (rip & 0xFFF))
+    }
+
+    /// **Trouver l'instruction à RIP** : sa case du cache, vérifiée contre les
+    /// octets en mémoire, ou un décodage neuf. Rend la **place** de la case :
+    /// l'instruction s'y lit sur place, sans être recopiée à chaque pas.
+    #[inline(always)]
+    fn chercher(&mut self) -> Result<usize, Evenement> {
+        let physique = self.physique_de_rip()?;
+        let dans_la_page = physique & 0xFFF;
         let memoire = &self.cpu.memory.bytes;
         let debut = physique as usize;
         let emplacement = debut & (CASES - 1);
@@ -676,6 +763,175 @@ impl Machine {
             }
         }
         self.decoder(physique, dans_la_page as usize)
+    }
+
+    /// **Un passage par un bloc** (`pc::blocs`) : trouver celui qui commence
+    /// à RIP, ou le construire, puis exécuter au plus `permis` de ses
+    /// instructions par leurs formes (`x86::rapide`). `Aucun` quand
+    /// l'instruction à RIP ne va dans aucun bloc : le pas à pas s'en charge,
+    /// fautes de lecture comprises.
+    #[inline(always)]
+    fn bloc(&mut self, permis: u64) -> Passage {
+        // **De bloc en bloc sans repasser par la boucle** : entre deux blocs,
+        // `tourner` n'aurait rien fait — le matériel ne se sert qu'aux
+        // multiples de 256, que `permis` ne dépasse pas, et aucun bloc ne
+        // s'arrête sur `hlt`.
+        let mut faites = 0u64;
+        loop {
+            match self.un_bloc(permis - faites) {
+                Passage::Aucun if faites == 0 => return Passage::Aucun,
+                Passage::Aucun => return Passage::Fait(faites),
+                Passage::Fait(retirees) => {
+                    faites += retirees;
+                    if faites == permis {
+                        return Passage::Fait(faites);
+                    }
+                }
+                Passage::Faute(retirees, evenement) => {
+                    return Passage::Faute(faites + retirees, evenement)
+                }
+            }
+        }
+    }
+
+    /// Un bloc : celui qui commence à RIP, ou celui qu'une coupure a laissé.
+    #[inline(always)]
+    fn un_bloc(&mut self, permis: u64) -> Passage {
+        let physique = match self.physique_de_rip() {
+            Ok(physique) => physique,
+            Err(evenement) => return Passage::Faute(0, evenement),
+        };
+        let debut = physique as usize;
+        // Le bloc se compare sur soixante-quatre octets lus d'un coup : il
+        // faut qu'ils soient dans la RAM, hors du trou des périphériques.
+        if debut.wrapping_add(PORTEE) > self.cpu.memory.bytes.len()
+            || (self.cpu.memory_hole.1 != 0
+                && physique.wrapping_sub(self.cpu.memory_hole.0) < self.cpu.memory_hole.1)
+        {
+            return Passage::Aucun;
+        }
+        if let Some(passage) = self.reprendre(physique, permis) {
+            return passage;
+        }
+        let place = match self.blocs.trouver(&self.cpu.memory.bytes, physique) {
+            Some(place) => place,
+            None => {
+                let reste = 0x1000 - (debut & 0xFFF);
+                let memoire = &self.cpu.memory.bytes;
+                self.blocs
+                    .construire(memoire, physique, reste, &mut |ici, disponibles| {
+                        lire_en_ram(memoire, ici, disponibles)
+                    })
+            }
+        };
+        let bloc = self.blocs.bloc(place);
+        let nombre = u64::from(bloc.nombre).min(permis);
+        if nombre == 0 {
+            return Passage::Aucun;
+        }
+        self.parcourir(place, 0, nombre)
+    }
+
+    /// **Reprendre un bloc là où le service du matériel l'a coupé.** Sans
+    /// elle, l'instruction d'après la coupure commençait un bloc neuf, à une
+    /// adresse où aucun saut n'arrive : un bloc construit toutes les 256
+    /// instructions, et une table qui se chasse elle-même. La reprise ne
+    /// suppose rien de ce qui s'est passé entre-temps : l'adresse physique de
+    /// RIP doit être celle de l'instruction qui suit la coupure, et les
+    /// octets du bloc les siens — décoder à cette adresse rendrait alors la
+    /// même instruction.
+    #[inline(always)]
+    fn reprendre(&mut self, physique: u64, permis: u64) -> Option<Passage> {
+        let reprise = self.reprise.take()?;
+        if reprise.physique != physique {
+            return None;
+        }
+        let bloc = self.blocs.bloc(reprise.place);
+        let debut = bloc.etiquette.wrapping_sub(1);
+        if debut != reprise.debut || !bloc.intact(&self.cpu.memory.bytes, debut as usize) {
+            return None;
+        }
+        let nombre = (u64::from(bloc.nombre) - reprise.rang as u64).min(permis);
+        if nombre == 0 {
+            return None;
+        }
+        Some(self.parcourir(reprise.place, reprise.rang, nombre))
+    }
+
+    /// Exécuter `nombre` instructions du bloc de `place`, depuis `premier`.
+    #[inline(always)]
+    fn parcourir(&mut self, place: usize, premier: usize, nombre: u64) -> Passage {
+        self.blocs.enchainer(self.dernier_bloc, place);
+        self.dernier_bloc = place;
+        let bloc = self.blocs.bloc(place);
+        let debut = bloc.etiquette.wrapping_sub(1) as usize;
+        let cpu = &mut self.cpu;
+        let fin = premier + nombre as usize;
+        let mut rang = premier;
+        let mut octet = physique_du_rang(bloc, premier);
+        let faites = loop {
+            let uop = &bloc.uops[rang];
+            match (uop.executer)(cpu, uop, &bloc.generales) {
+                Suite::Suivante => {
+                    cpu.rip = cpu.rip.wrapping_add(u64::from(uop.longueur));
+                    octet += uop.longueur as usize;
+                    rang += 1;
+                    if rang == fin {
+                        // Coupé avant sa fin par le budget ou le service du
+                        // matériel : la suite reprendra ici.
+                        if rang < bloc.nombre as usize {
+                            self.reprise = Some(Reprise {
+                                place,
+                                debut: debut as u64,
+                                rang,
+                                physique: (debut + octet) as u64,
+                            });
+                        }
+                        break nombre;
+                    }
+                    // Une écriture a pu tomber dans le bloc même : ce qui reste
+                    // à exécuter se recompare avant l'instruction suivante.
+                    if bloc.ecrit & (1 << (rang - 1)) != 0
+                        && !bloc.intact_depuis(&cpu.memory.bytes, debut, octet)
+                    {
+                        break (rang - premier) as u64;
+                    }
+                }
+                Suite::Saut => break (rang - premier) as u64 + 1,
+                Suite::Faute => {
+                    // L'instruction entière, pour nommer la faute : la sienne
+                    // si elle est générale, sinon relue à son adresse — les
+                    // octets du bloc sont intacts (comparés à l'entrée et après
+                    // chaque écriture), et une instruction qui faute n'a rien
+                    // écrit.
+                    let instruction = match bloc.generales.get(uop.generale as usize) {
+                        Some(instruction) => *instruction,
+                        None => {
+                            let ici = debut + octet;
+                            let disponibles = 15.min(0x1000 - (ici & 0xFFF));
+                            match lire_en_ram(&cpu.memory.bytes, ici, disponibles) {
+                                Some(instruction) => instruction,
+                                None => {
+                                    return Passage::Faute(
+                                        (rang - premier) as u64,
+                                        Evenement::Arret(format!(
+                                        "une instruction d'un bloc ne se relit plus à rip {:#x}",
+                                        cpu.rip
+                                    )),
+                                    )
+                                }
+                            }
+                        }
+                    };
+                    let faites = (rang - premier) as u64;
+                    self.retirees = self.retirees.wrapping_add(faites);
+                    let evenement = self.faute_d_execution(&instruction);
+                    return Passage::Faute(faites, evenement);
+                }
+            }
+        };
+        self.retirees = self.retirees.wrapping_add(faites);
+        Passage::Fait(faites)
     }
 
     /// Le chemin lent de `chercher` : lire les octets, décoder, garder.

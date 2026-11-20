@@ -165,7 +165,9 @@ struct Walked {
 /// silicium ; les suivantes ne paient rien.
 #[derive(Clone, Debug)]
 pub struct Tlb {
-    entries: Vec<TlbEntry>,
+    /// Les cases, dans la boîte même : une lecture du chemin rapide va du
+    /// processeur à la case sans passer par un second pointeur.
+    entries: [TlbEntry; TLB_SLOTS],
     /// Le nombre de vidages. Qui garde une traduction hors du tampon — la
     /// page d'instructions de la boucle d'exécution — la compare à ce compte.
     pub generation: u64,
@@ -188,7 +190,7 @@ const TLB_DIRTY: u8 = 8;
 impl Default for Tlb {
     fn default() -> Self {
         Self {
-            entries: vec![TlbEntry::default(); TLB_SLOTS],
+            entries: [TlbEntry::default(); TLB_SLOTS],
             generation: 0,
         }
     }
@@ -581,6 +583,77 @@ impl Cpu {
         self.memory
             .write_bytes(high, tail, value >> (8 * head))
             .ok_or_else(outside)
+    }
+
+    /// **La lecture du chemin rapide** (`x86::rapide`) : ce que `read_memory`
+    /// rend, par le plus court quand la page est au tampon avec le droit de
+    /// lire pour l'anneau courant et que l'accès ne sort pas de sa page. Une
+    /// case du tampon ne tient jamais une page hors de la RAM ni dans le trou
+    /// (`fill`), donc la place se lit sans autre question. Tout le reste —
+    /// pas de pagination, pas de tampon, une page à cheval, une case absente
+    /// ou sans le droit — passe par `read_memory`, hors de la ligne.
+    #[inline(always)]
+    pub fn read_memory_fast(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        if let Some(place) = self.fast_place(at, width, 0, TLB_USER) {
+            if let Some(value) = self.memory.read(place, width) {
+                return Ok(value);
+            }
+        }
+        self.read_memory_slow(at, width)
+    }
+
+    /// **L'écriture du chemin rapide** : ce que `write_memory` fait, par le
+    /// plus court quand la page est au tampon déjà salie et inscriptible (et
+    /// à l'utilisateur pour l'anneau trois). Une page en lecture seule que
+    /// le noyau écrit sans CR0.WP, ou pas encore salie, passe par
+    /// `write_memory`, qui en décide comme toujours.
+    #[inline(always)]
+    pub fn write_memory_fast(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
+        if let Some(place) = self.fast_place(
+            at,
+            width,
+            TLB_WRITABLE | TLB_DIRTY,
+            TLB_USER | TLB_WRITABLE | TLB_DIRTY,
+        ) {
+            if self.memory.write(place, width, value).is_some() {
+                return Ok(());
+            }
+        }
+        self.write_memory_slow(at, width, value)
+    }
+
+    /// La place physique d'un accès qui tient dans sa page et dont la case
+    /// du tampon porte les droits demandés : `kernel` en anneau zéro à deux,
+    /// `user` en anneau trois.
+    #[inline(always)]
+    fn fast_place(&self, at: u64, width: Width, kernel: u8, user: u8) -> Option<u64> {
+        let tlb = self.tlb.as_deref()?;
+        if self.control[0] & PAGING == 0 || (at & 0xFFF) > 0x1000 - width as u64 {
+            return None;
+        }
+        let page = at & !0xFFF;
+        let entry = &tlb.entries[(page >> 12) as usize & (TLB_SLOTS - 1)];
+        let needed = if self.segments[1] & 3 == 3 {
+            user
+        } else {
+            kernel
+        };
+        if entry.tag == page.wrapping_add(1) && entry.flags & needed == needed {
+            return Some(entry.frame | (at & 0xFFF));
+        }
+        None
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn read_memory_slow(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        self.read_memory(at, width)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn write_memory_slow(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
+        self.write_memory(at, width, value)
     }
 
     /// Ranger le refus là où le reste du cœur peut le lire, et lever
