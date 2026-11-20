@@ -550,6 +550,11 @@ public struct X86Core: @unchecked Sendable {
         // chargements et deux tests par instruction de l'invité.
         let plainFetch = watchedAddress == nil
         let watchArmed = canonicalWatchArmed
+        // Les blocs de formes courtes : voir `X86BlockCache`.
+        let blocks = usesBlocks && !watchArmed
+        // Le pointeur de la table, lu une fois, et pas l'objet : voir
+        // `X86BlockCache.storage`.
+        let blockStorage: UnsafeMutableRawPointer? = blocks ? self.blockCache.storage : nil
         while executed < budget {
             // Le matériel, entre deux instructions. Le masque plutôt qu'un
             // test à chaque tour : voir `serviceInterrupts`. **Le masque
@@ -615,7 +620,8 @@ public struct X86Core: @unchecked Sendable {
                 let start: Int
                 let available: Int
                 let page = rip & ~UInt64(0xFFF)
-                if fetchTag == page | fetchKey, plainFetch {
+                let paged = fetchTag == page | fetchKey && plainFetch
+                if paged {
                     // La page gardée tient entière dans la mémoire : ce qui
                     // reste lisible est ce qui reste de la page, sans
                     // reprendre la pagination ni la taille de la mémoire.
@@ -646,8 +652,67 @@ public struct X86Core: @unchecked Sendable {
                         : X86Instruction.maximumLength
                     available = min(room, memory.size &- start)
                 }
-                if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
-                                                       available: available) {
+                // **Un bloc d'abord**, si la page est gardée : voir
+                // `X86BlockCache`. Pas en mode compatibilité, où les mêmes
+                // octets se lisent autrement, ni sous le témoin.
+                var block: UnsafeMutableRawPointer?
+                var count = 0
+                if paged, !compatibilityMode, let blockStorage {
+                    block = X86BlockCache.find(blockStorage, memory.bytes, at: start, size: memory.size)
+                        ?? X86BlockCache.build(blockStorage, memory.bytes, at: start, size: memory.size,
+                                            room: 0x1000 &- Int(truncatingIfNeeded: rip & 0xFFF))
+                    if let block {
+                        count = Int(block.load(fromByteOffset: X86BlockCache.countOffset, as: UInt8.self))
+                    }
+                }
+                if let block, count > 0 {
+                    // **Les instructions du bloc, l'une après l'autre.**
+                    // `executed` compte celles qui sont finies avant celle
+                    // qu'on exécute : une faute le trouve juste, et la
+                    // dernière se compte en bas de la boucle, comme toujours.
+                    typealias Form = X86Instruction.FastForm
+                    var instruction = UnsafePointer(
+                        (block + X86BlockCache.instructionsOffset).assumingMemoryBound(to: X86Instruction.self))
+                    var index = 0
+                    while true {
+                        let code = instruction.pointee.dispatchCode
+                        let general = code < Form.base
+                        let moved: Bool
+                        if general {
+                            moved = try performStored(instruction)
+                        } else {
+                            moved = try performFast(instruction)
+                            retired &+= 1
+                            if !moved { rip &+= UInt64(instruction.pointee.lengthByte) }
+                        }
+                        // Un saut pris, un appel, un retour, une chaîne
+                        // qui reprendra : on sort, et la boucle relit RIP.
+                        if moved { break }
+                        index &+= 1
+                        if index == count { break }
+                        if general {
+                            // **Une instruction générale a pu tout changer** :
+                            // l'arrêt, la page gardée, l'anneau, le mode, et
+                            // le code lui-même. Ce que la tête de boucle
+                            // vérifie pour chaque instruction, vérifié ici.
+                            if halted || fetchTag != page | fetchKey || compatibilityMode
+                                || !X86BlockCache.matches(block, memory.bytes, at: start) {
+                                break
+                            }
+                        } else if code == Form.store || code == Form.push {
+                            // Une écriture en mémoire a pu tomber dans le
+                            // bloc même : ses octets se recomparent.
+                            if !X86BlockCache.matches(block, memory.bytes, at: start) { break }
+                        }
+                        // Le matériel se sert tous les 256, le budget se
+                        // tient : les deux se jugent en tête de boucle.
+                        let next = executed &+ 1
+                        if next & 0xFF == 0 || next >= budget { break }
+                        executed = next
+                        instruction += 1
+                    }
+                } else if let known = decodeCache.lookupEntry(memory.bytes, at: start, size: memory.size,
+                                                              available: available) {
                     // **Une forme courte s'exécute depuis sa case**, sans
                     // copie ni table : voir `X86FastForms`. Le témoin, armé,
                     // veut voir chaque instruction par le chemin d'avant.
@@ -657,7 +722,7 @@ public struct X86Core: @unchecked Sendable {
                         if try !performFast(fast) { rip &+= UInt64(fast.pointee.lengthByte) }
                         retired &+= 1
                     } else {
-                        try step(known.pointee.instruction, watchArmed: watchArmed)
+                        try stepStored(fast, watchArmed: watchArmed)
                     }
                 } else {
                     let instruction: X86Instruction
@@ -707,6 +772,52 @@ public struct X86Core: @unchecked Sendable {
         } else {
             try execute(instruction)
         }
+    }
+
+    /// **La même chose, pour une instruction lue dans sa case du cache.**
+    ///
+    /// `step` la prenait par valeur, et `execute` puis `perform`, inlinées,
+    /// la reprenaient chacune : quarante octets recopiés deux fois sur la
+    /// pile, champ par champ, puis relus d'un seul tenant. Le processeur de
+    /// l'hôte ne sait pas rendre à une lecture large ce que des écritures
+    /// étroites viennent de poser : il attend qu'elles soient en mémoire.
+    /// `perf` mettait là un dixième des échantillons de `run` sur `master`,
+    /// et un quart quand la boucle a grossi.
+    ///
+    /// Ici l'aiguillage lit ses champs dans la case, et chaque table reçoit
+    /// l'instruction depuis la case : une copie, pas deux. La case ne bouge
+    /// pas pendant l'exécution — seul `run` range, avant d'exécuter.
+    @inline(__always)
+    mutating func stepStored(_ instruction: UnsafePointer<X86Instruction>, watchArmed: Bool) throws {
+        if watchArmed && privilege == 3 {
+            try executeWatched(instruction.pointee)
+            return
+        }
+        _ = try performStored(instruction)
+    }
+
+    /// Exécute une instruction depuis sa case, avance RIP et la compte.
+    /// **Rend vrai si elle a posé RIP elle-même** : un bloc s'arrête là.
+    @inline(__always)
+    mutating func performStored(_ instruction: UnsafePointer<X86Instruction>) throws -> Bool {
+        let opcode = instruction.pointee.opcode
+        switch instruction.pointee.dispatchCode {
+        case 0: try oneByte(instruction.pointee, opcode)
+        case 1: try performTwoByte(instruction.pointee, opcode)
+        case 2: try threeByte38(instruction.pointee, opcode)
+        case 3: try threeByte3A(instruction.pointee, opcode)
+        case 4: try vexInstruction(instruction.pointee, opcode)
+        case 5: throw Self.unsupportedMap(instruction.pointee.map)
+        default: try performFastByValue(instruction.pointee)
+        }
+        // Comme `execute` : un branchement a posé RIP et le dit par `jumped`.
+        retired &+= 1
+        if jumped {
+            jumped = false
+            return true
+        }
+        rip &+= UInt64(instruction.pointee.lengthByte)
+        return false
     }
 
     /// Une instruction exécutée sous le regard du témoin : ce que `run` faisait
@@ -814,6 +925,24 @@ public struct X86Core: @unchecked Sendable {
     /// entre deux instructions d'un même programme —, si bien que la boucle
     /// n'en lit toujours qu'un, sans test de plus.
     private(set) var decodeCache = X86DecodeCache()
+    /// Les blocs de formes courtes. Voir `X86BlockCache`.
+    ///
+    /// **Rangés à la première course qui s'en sert**, pas à la construction :
+    /// les tests et les corpus fabriquent des milliers de cœurs qui
+    /// n'appellent jamais `run`, et treize mébioctets d'adresses demandés
+    /// puis rendus à chaque fois se voyaient sur la suite entière.
+    private(set) var storedBlockCache: X86BlockCache?
+    var blockCache: X86BlockCache {
+        mutating get {
+            if let storedBlockCache { return storedBlockCache }
+            let fresh = X86BlockCache()
+            storedBlockCache = fresh
+            return fresh
+        }
+    }
+    /// Éteint, `run` exécute une instruction à la fois, comme avant les
+    /// blocs : le test qui compare les deux chemins s'en sert.
+    var usesBlocks = true
     /// Le cache de l'autre mode, tant qu'il ne sert pas. Créé au premier
     /// programme 32 bits : une machine qui n'en lance pas n'en paie pas les
     /// neuf mébioctets.
