@@ -67,6 +67,9 @@ pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector, VectorFault, MXCSR_
 
 #[path = "x86_extended.rs"]
 mod extended;
+
+#[path = "x86_rapide.rs"]
+pub mod rapide;
 use crate::x86_paging::is_canonical;
 pub use extended::{decode_extended, Extended, ExtendedFault, Extra, FpuWord, FXSAVE_WRITTEN};
 

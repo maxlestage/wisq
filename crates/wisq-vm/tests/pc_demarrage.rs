@@ -254,6 +254,38 @@ fn the_tool_boots_the_tiny_kernel_and_says_how_it_ended() {
     assert!(erreurs.contains("\nram : 512 Mio\n"), "{erreurs}");
 }
 
+/// **Avec ou sans blocs, l'outil retire les mêmes instructions** : le
+/// chemin rapide (`pc::blocs`) ne change pas ce que l'invité exécute, et
+/// `--sans-blocs` l'éteint — l'outil ne dit alors aucun bloc construit.
+#[test]
+fn the_tool_retires_the_same_instructions_with_and_without_blocks() {
+    let noyau = fichier("outil-blocs.bin", &image());
+    let compte = |erreurs: &str| {
+        erreurs
+            .lines()
+            .find(|ligne| ligne.starts_with("instructions retirées : "))
+            .map(str::to_string)
+    };
+    let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau, "--horloge", "1800000000"]);
+    assert_eq!(code, Some(0), "{erreurs}");
+    let (code_lent, sortie_lente, erreurs_lentes) = wisq_pc(&[
+        "--kernel",
+        &noyau,
+        "--horloge",
+        "1800000000",
+        "--sans-blocs",
+    ]);
+    assert_eq!(code_lent, Some(0), "{erreurs_lentes}");
+    assert_eq!(sortie, sortie_lente);
+    assert!(compte(&erreurs).is_some(), "{erreurs}");
+    assert_eq!(compte(&erreurs), compte(&erreurs_lentes));
+    assert!(erreurs.contains("blocs construits : "), "{erreurs}");
+    assert!(
+        !erreurs_lentes.contains("blocs construits"),
+        "{erreurs_lentes}"
+    );
+}
+
 /// **Ce que `--ram` demande est ce que la machine reçoit**, au mébioctet près,
 /// jusqu'au plafond compris : 65 536 Mio ne sont pas refusés par le plafond.
 /// Sur un hôte qui n'a pas la place, c'est l'hôte qui refuse, en code 2 et

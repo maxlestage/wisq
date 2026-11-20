@@ -8,6 +8,241 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust : des blocs d'instructions et leurs formes, de 46 à 114 MIPS sur le démarrage d'Alpine
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de la reprise* a trouvé un défaut et six gardes sans test.
+  Le défaut : `push (%rax)` dont l'empilement faute juste derrière
+  l'opérande (RAX lisible à 0x7FFF_FFFF_FF00, RSP à 0x8000_0000_0008) était
+  livré en `#GP` au lieu de `#SS` : la fenêtre de 512 octets de
+  `faute_d_operande` prenait la pile pour l'opérande. Les gardes : `call`
+  relatif parmi les références implicites, la fenêtre elle-même (l'accès à
+  cheval sur le bord, `fxsave` qui sort par sa fin), `%gs:(%rbp)`, `sgdt` et
+  `mov` vers un segment par `faute_de`, et le témoin de saut d'un refus de
+  cible, que seul `Cpu::step` voit. Et une condition morte (`relative`).
+- *La vitesse* : 46 MIPS sur le banc commun, contre 62,5 pour le cœur
+  Swift. La tranche en demandait le double de celui-ci : 125.
+
+**Où passait le temps**, mesuré avant de rien toucher (a8abc88e, Alpine
+6.18.60 jusqu'à l'invite après `echo wisq-parle`, 512 Mio) : `perf` mettait
+45 % des échantillons dans la boucle (`tourner`, `pas`, `chercher`), dont un
+cinquième sur une seule instruction — la lecture de la case du cache de
+décodage, une table de six mébioctets lue au hasard, une ligne attendue par
+instruction ; 24 % dans `execute`, 14,5 % dans `compute`, 3 % dans
+`Flags::read`, 5 % à décoder. callgrind, sur les 150 premiers millions
+d'instructions : 217 instructions de l'hôte par instruction de l'invité. Et
+1 % dans l'outil lui-même : `wisq-pc` cherchait l'invite dans toute la
+sortie du port série à chaque tranche de 200 000 instructions.
+
+**Ce qui est fait.**
+
+- *`faute_d_operande`* : une instruction sans référence implicite n'a que
+  son opérande, quelle que soit l'adresse refusée ; une qui a les deux
+  (`push`, `pop`, `call *` vers la mémoire) le reconnaît à ses octets — sa
+  largeur, pas 512. La condition morte est retirée, le commentaire dit
+  pourquoi.
+- *`pc/blocs.rs`* — le port de `X86BlockCache.swift` : des blocs d'au plus
+  seize instructions sur soixante-quatre octets, dans une page, vérifiés par
+  comparaison d'octets à l'entrée et, après chaque instruction qui peut
+  écrire, sur ce qui reste à exécuter. Aucune instruction de système n'y
+  entre (`hlt`, `sti`, `mov cr`, `wrmsr`, `iretq`, `invlpg`, les ports…), ni
+  vectorielle, ni x87, ni `rdrand` : elles passent par le pas à pas, qui reste
+  tel quel. La boucle ne donne à un bloc que ce qui reste jusqu'au prochain
+  service du matériel (les multiples de 256) et jusqu'à la fin du budget ; un
+  bloc coupé là reprend à l'instruction d'après si l'adresse physique de RIP
+  est la sienne et ses octets intacts. Deux cases par adresse, la
+  construction sur place, et le préchargement des deux blocs qui ont suivi
+  celui qu'on exécute.
+- *`x86_rapide.rs`* — les formes : pour chaque instruction, la fonction qui
+  l'exécute, choisie une fois au décodage parmi des instances génériques sur
+  l'opération, la largeur, la forme des opérandes (registre, immédiat, la
+  mémoire en source ou en destination) et celle de l'adresse (base, base et
+  index, relative à RIP, générale) : `add`, `or`, `and`, `sub`, `xor`,
+  `cmp`, `test`, `inc`, `dec`, `not`, `neg`, les décalages par un immédiat ou
+  par CL, `mov`, `movzx`, `movsx`, `lea`, `jcc` (une instance par condition,
+  sans aiguillage), `jmp`, `call`, `ret`, `push`, `pop`, `nop`. Les drapeaux
+  sont calculés tout de suite (PF par une table). Une instruction prête tient
+  sur trente-deux octets ; ce que rien ne spécialise garde son `Decoded` au
+  bout du bloc (quatre au plus) et passe par `execute`.
+- *`x86_paging.rs`* — `read_memory_fast` et `write_memory_fast` : la place
+  physique tirée de la case du tampon de traduction (dans la boîte même, sans
+  second pointeur), le droit jugé sur ses bits pour l'anneau courant, la page
+  salie et inscriptible pour écrire ; tout le reste — page à cheval, case
+  absente, page propre, lecture seule sans CR0.WP — par `read_memory` et
+  `write_memory`, hors de la ligne. La case ne tient jamais une page hors de
+  la RAM ni dans le trou : la place est l'indice de l'octet dans la RAM de
+  l'hôte, lu sans autre question qu'une borne. Pas de pointeur brut : la RAM
+  est un `Vec` que rien n'empêche un appelant de remplacer, et le gain d'un
+  pointeur ne valait pas un `unsafe` de plus.
+- *`wisq-pc`* : `--horloge <secondes>` fixe l'horloge CMOS (deux courses
+  retirent alors les mêmes instructions), `--sans-blocs` éteint le chemin
+  rapide, la fin dit les blocs construits, et la recherche de l'invite et de
+  `--until` reprend où elle s'était arrêtée.
+
+**Le chemin pour y arriver, mesuré à chaque pas** (courses alternées,
+secondes du banc ; la machine était bruyante : le même binaire a couru de
+15,8 à 18,1 s dans la même heure) :
+
+| pas | secondes | blocs construits |
+|---|---|---|
+| a8abc88e, le pas à pas | 41,3 · 41,9 | — |
+| blocs, tout par `execute` | 43,5 (sans blocs : 41,4) | |
+| les formes spécialisées (8 192 cases) | 26,4 | 8 942 665 |
+| 32 768 cases | 23,4 | 3 172 879 |
+| la reprise après une coupure | 20,6 | 2 110 532 |
+| l'étiquette en tête du bloc (`repr(C)`) | 19,4 | |
+| lecture et écriture rapides, le lent hors de la ligne | 20,7 · 20,3 contre 22,5 · 22,2 | |
+| le préchargement du suivant | 19,87 contre 20,39 (médianes, 4 paires) | |
+| la construction sur place | 17,83 contre 19,44 (3 paires) | |
+| deux cases par adresse | 19,09 contre 19,20 (3 paires) | 476 379 |
+| de bloc en bloc sans repasser par `tourner` | 18,11 contre 18,57 (4 paires) | |
+| deux suivants préchargés, six lignes | 17,85 contre 18,25 (4 paires) | |
+| les formes d'adresse | 17,41 contre 18,21 (4 paires) | |
+| des instructions prêtes de 32 octets | 17,39 contre 17,76 (4 paires) | 478 671 |
+
+Sans préchargement, le code d'alors prenait 18,49 s contre 17,52 (4 paires,
+toutes dans le même sens) : c'est le pas le plus net après les formes
+elles-mêmes. Deux cases par adresse ne changent pas le temps du banc, mais
+divisent par quatre les constructions : gardées, parce qu'un bureau a bien
+plus de code chaud qu'un démarrage. PF par une table et la recomparaison de
+la seule suite après une écriture ne se voient pas dans le bruit ; gardés,
+ils retirent des instructions de l'hôte.
+
+**Les drapeaux à la demande, mesurés sur le vrai noyau** comme la tranche le
+demandait : l'opération notée à la place des six bits, relus par
+`Flags::read` au saut, +7,6 % (20,17 · 20,43 · 19,60 s contre 18,75 · 19,24
+· 18,58) ; relus sans `compute`, la note lue en place pour `sub`, `add` et la
+logique, une égalité (médianes de cinq paires : 18,38 contre 18,39 s). Gardés
+calculés, comme dans le cœur Swift : un second état des drapeaux sans rien
+rendre.
+
+**Ce qui a été essayé et abandonné** : le cache de décodage réutilisé pour
+construire (+6 %), huit instructions par bloc au lieu de seize (+5 à 8 %), une
+table de 131 072 cases (quatre fois moins de constructions, même temps),
+`cmp`/`test` et le `jcc` qui suit en une forme (+9 % : la boucle teste une
+paire coupée à chaque instruction, et la suite d'une forme passe de trois à
+six cas).
+
+**Mesures finales.** Cinq courses alternées entre a8abc88e et le code
+final, puis trois entre le cœur Swift (e70e123b, `X86BootAttemptTests`) et
+le code final :
+
+| | courses (s) | médiane | débit |
+|---|---|---|---|
+| a8abc88e | 40,82 · 41,57 · 41,05 · 40,19 · 40,81 | 40,82 s | 46,7 MIPS |
+| les blocs | 17,46 · 16,79 · 17,03 · 16,70 · 16,71 | 16,79 s | **113,6 MIPS** |
+| cœur Swift | 31,81 · 31,45 · 32,55 | 31,81 s | 60,2 MIPS |
+| les blocs, alternés avec lui | 16,56 · 17,00 · 17,74 | 17,00 s | 112,2 MIPS |
+
+**2,43 fois** la machine d'avant, **1,87 fois** le cœur Swift (dont le temps
+compte le cas de test entier, chargement compris : l'écart réel est un peu
+moindre). **L'objectif de la tranche, 125 MIPS, n'est pas atteint** : les
+meilleures courses de la journée passent 15,8 s (120 MIPS), la médiane non.
+callgrind, sur les 150 premiers millions d'instructions : 83 instructions de
+l'hôte par instruction de l'invité, contre 217.
+
+**Ce qui borne le pas suivant**, d'après `perf` sur l'avant-dernier pas : la
+boucle des blocs pèse encore 44 % des échantillons, dont plus d'un quart en
+attentes de mémoire sur les blocs eux-mêmes (l'étiquette et les octets comparés d'un
+bloc qu'aucun préchargement n'a annoncé : la table fait vingt-cinq
+mébioctets, le cache de second niveau de l'hôte deux), un cinquième sur
+l'appel indirect de chaque instruction, et le reste sur la comparaison des
+octets et la tenue du compte. Les formes elles-mêmes coûtent surtout leurs
+lectures de la mémoire de l'invité. Ce qui reste à essayer : enchaîner les
+blocs d'une même page sans repasser par la table, un bloc qui suit un saut
+sans condition, un tampon de traduction plus grand (les marches des tables
+font 1 % du temps), et surtout mesurer sur une puce Apple, dont les caches
+n'ont rien de ceux de ce Xeon.
+
+**Le compte d'instructions ne change pas d'un chemin à l'autre** : avec
+`--horloge 1800000000`, 1 907 638 318 instructions retirées jusqu'à l'invite,
+avec et sans blocs, à chaque course de cette tranche. Sans `--horloge`, le
+compte varie d'une course à l'autre (de 1 907,4 à 1 909,1 millions sur la
+journée) : l'horloge CMOS part de l'heure de l'hôte, le noyau l'écrit dans
+ses messages, et la course s'arrête à la tranche de 200 000 instructions où
+l'invite paraît. L'écart avec le cœur Swift (1,92 milliard) vient des deux
+cœurs, pas du chemin.
+
+**Tests** : 20 de plus (3 922 → 3 942). `pc_rapide` (douze) : chaque forme contre `execute` sur
+vingt mille instructions tirées (deux anneaux, seize pages de droits tirés —
+absentes, lecture seule, noyau seul, propres, salies puis protégées —, des
+trames à l'envers pour les accès à cheval, le tampon rempli d'avance par le
+noyau, les drapeaux en clair ou à la demande), cent programmes tirés avec et
+sans blocs sous l'horloge qui interrompt et des budgets hachés, puis une
+garde par test — le bloc qui se réécrit (par une forme, par `xchg`, `stosb`,
+`add`), le code réécrit du dehors jusqu'au dernier octet couvert, le budget
+au milieu d'un bloc, la reprise qui ne reprend que si rien n'a changé,
+l'horloge à la même instruction, `hlt`, `mov %rax,%cr3`, l'instruction à
+cheval sur deux pages, la faute au milieu d'un bloc nommée par sa propre
+instruction, le déplacement de plus de trente-deux bits. Les quatre corpus
+matériels de `x86_oracle` jugent aussi les formes (`_on_the_fast_path`), et
+tous les tests de la machine tournent avec les blocs, qui sont le défaut.
+`pc_interruptions` +1 (le bord de la moitié basse : accès à cheval, `fxsave`,
+`push (%rax)` des deux côtés), quatre cas de plus dans sa table (`call`
+relatif, `sgdt`, `mov` vers DS, `%gs:(%rbp)`), `x86_replay` (le refus par
+`Cpu::step`), `pc_demarrage` +1 (`--sans-blocs` retire les mêmes
+instructions), `wisq-pc` +2 (l'horloge, la recherche reprise).
+
+**Sabotages**, d'une ligne, en profil de publication : **48**, tous tombent, l'arbre
+identique après chacun (somme du `git diff` comparée). Les défauts du
+contrôle (neuf) : `call` relatif retiré des références implicites, GS
+ignoré, `sgdt` et `mov` vers un segment par `faute_d_acces`, le témoin de
+saut d'un refus retiré, la fenêtre à 512 octets (le défaut d'avant), à un
+octet, la fenêtre jugée sans référence implicite, RBP oublié. Les blocs :
+le service du matériel ignoré, le budget ignoré, pas de recomparaison après
+une écriture, `stos` puis `mov` vers la mémoire comptés pour des lectures,
+les octets non comparés à l'entrée, le dernier mot d'un octet trop court
+(partiel et plein), un mot de moins, la reprise sans comparer, sans
+l'adresse, `hlt` et `mov cr` admis dans un bloc, une instruction lue
+au-delà de la page, un saut pris non compté (`pc_interruptions` ne finit
+plus : arrêté à la main après 28 minutes, compté comme tombé), une faute
+comptée retirée, les générales sans borne, toutes au rang zéro, une faute
+relue au début du bloc, la recomparaison qui saute le mot de l'instruction
+suivante. Les formes : la condition sans sa négation, AF oublié, trente-deux
+bits sans effacer la moitié haute, un décalage nul qui n'écrit pas, `lea`
+avec le segment, la base sans déplacement, l'index sans échelle, le relatif
+sans la longueur, le segment ignoré dans le choix de la forme d'adresse, la
+forme générale sans le relatif, sans GS, un déplacement tronqué. Le tampon :
+la lecture rapide sans le bit utilisateur, l'écriture rapide sans le droit
+d'écrire, sur une page propre, un accès à cheval pris pour un accès simple.
+L'outil : `--sans-blocs` ignoré, `--horloge` ignoré, la recherche reprise
+depuis la fin. **Deux mutants équivalents sont dits plutôt que testés** :
+le choix de la case dans une paire (n'importe laquelle donne un bloc juste,
+la seconde n'est qu'une économie), et le préchargement (une indication à
+l'hôte, sans effet sur ce qui s'exécute). Script
+`<bloc-notes>/vit/sabotages.py`, journaux `<bloc-notes>/vit/sabotages*.log`
+et `sabotages-final.out`.
+
+**Vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release` sur tout l'espace de
+travail, `cargo build --release -p wisq-page --target wasm32-unknown-unknown`
+et `-p wisq-vm --lib` en wasm32, `wisq-vm` en `aarch64-apple-ios`
+(l'indication de préchargement y est un `prfm`), `check-whitespace` et
+`check-project-sources`, le recompte puis `bun run build` et `bun test`.
+Démarrage réel avec le binaire final : l'invite revient après `echo
+wisq-parle`, aucun refus dans un programme. Aucun fichier Swift, ni de
+`crates/wisq-page`, ni de l'émetteur n'est touché.
+
+**Ce qui reste.**
+
+- *125 MIPS* : non atteints (113,6 en médiane). Voir plus haut ce qui borne
+  le pas suivant.
+- *Le chemin général* garde les instructions vectorielles, le x87, les
+  chaînes, `adc`/`sbb`, `cmov`, `setcc`, les multiplications et divisions,
+  les rotations, les formes à octet haut et toute instruction de système :
+  rares au démarrage d'Alpine, sans doute moins dans un bureau (la glibc
+  copie la mémoire en SSE2) — à mesurer sur Void Xfce.
+- *La mémoire* : la table des blocs prend vingt-cinq mébioctets par machine,
+  écrits à la construction.
+- *Rien n'est mesuré sur un iPhone ni sur un Mac* ; seule la compilation
+  pour `aarch64-apple-ios` est vérifiée ici. Ce que seule la CI juge : la
+  construction iOS et macOS entière, et les suites Swift (aucun Swift n'est
+  touché).
+- *Inchangés* : l'ABI C (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`), la
+  `Carte` de `wisq-page`, les SSE flottants et le calcul x87, la double
+  faute, l'instantané.
+
 ## 2026-11-20 — Machine PC en Rust : les sauts non canoniques, `#SS`, la RAM que l'hôte refuse, et trois gardes sans test
 
 **Ce qui n'allait pas.** Le second contrôle adverse de la tranche a relu les
