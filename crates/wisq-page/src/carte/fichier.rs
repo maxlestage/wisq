@@ -669,6 +669,29 @@ mod tests {
             Some(Refus::PasUnDisque)
         );
         assert!(!dossier.couche().exists() && !dossier.carte().exists());
+        // **Le bord exact** : un octet de moins qu'un secteur n'est pas un
+        // disque ; un secteur tout juste en est un, d'un secteur ; un octet
+        // de plus n'en ajoute pas (`size / sectorSize >= 1`).
+        std::fs::write(&minuscule, [7; 511]).unwrap();
+        assert_eq!(
+            DisqueFichier::ouvrir(&minuscule, &dossier.couche()).err(),
+            Some(Refus::PasUnDisque)
+        );
+        assert!(!dossier.couche().exists() && !dossier.carte().exists());
+        for taille in [512, 513] {
+            let dossier = Dossier::nouveau();
+            let juste = dossier.0.join("un-secteur");
+            std::fs::write(&juste, vec![7; taille]).unwrap();
+            let mut disque = DisqueFichier::ouvrir(&juste, &dossier.couche())
+                .unwrap_or_else(|refus| panic!("{taille} octets : {refus}"));
+            assert_eq!(disque.secteurs(), 1, "{taille} octets");
+            assert_eq!(lu(&mut disque, 0, 512).unwrap(), [7; 512]);
+            assert_eq!(
+                lu(&mut disque, 512, 1),
+                None,
+                "la queue n'est pas du disque"
+            );
+        }
     }
 
     /// **Une couche tronquée est refusée, pas devinée.**
@@ -945,6 +968,79 @@ mod tests {
         assert!(disque.ecrire(0, &[9; 512]));
         assert_eq!(lu(&mut disque, 0, 1024).unwrap()[510..514], [9, 9, 2, 2]);
         assert_eq!(lu(&mut disque, 0, 8 * 512), None);
+        // **Une écriture partielle dans un secteur que la base a perdu est
+        // une erreur aussi** : elle doit d'abord recopier ce que le secteur
+        // valait, et il n'y est plus. La dire réussie rangerait des zéros
+        // autour des octets écrits, à la place de ce que le disque portait.
+        let avant = (
+            disque.octets_ecrits(),
+            std::fs::read(dossier.carte()).unwrap(),
+        );
+        assert!(
+            !disque.ecrire(5 * 512 + 10, &[7; 20]),
+            "le secteur 5 manque"
+        );
+        assert!(!disque.ecrire(3 * 512 + 500, &[7; 100]), "le 4 aussi");
+        assert_eq!(
+            disque.octets_ecrits(),
+            avant.0 + 512,
+            "le 3 seul, entier là"
+        );
+        assert_eq!(lu(&mut disque, 5 * 512, 512), None, "toujours une erreur");
+        assert_eq!(lu(&mut disque, 4 * 512, 512), None);
+        // Un secteur écrit en entier, lui, n'a rien à recopier : il passe.
+        assert!(disque.ecrire(6 * 512, &[8; 512]));
+        assert_eq!(lu(&mut disque, 6 * 512, 512).unwrap(), [8; 512]);
+        assert_eq!(
+            std::fs::read(dossier.carte()).unwrap().len(),
+            avant.1.len() + 16,
+            "deux noms de plus : le 3 et le 6"
+        );
+    }
+
+    /// **Une couche où l'on ne peut pas écrire est une erreur d'écriture**,
+    /// pas une écriture réussie qu'on ne relira jamais : la couche est ici
+    /// `/dev/full`, où toute écriture échoue faute de place. Rien n'est
+    /// nommé dans la carte, rien n'est compté, et le secteur se relit de la
+    /// base. Et une carte où l'en-tête ne s'écrit pas est une couche
+    /// illisible, à l'ouverture.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_layer_that_cannot_be_written_is_an_error() {
+        let dossier = Dossier::nouveau();
+        let base = dossier.base(8, "base.img");
+        std::os::unix::fs::symlink("/dev/full", dossier.couche()).unwrap();
+        let mut disque = DisqueFichier::ouvrir(&base, &dossier.couche()).unwrap();
+        assert!(!disque.ecrire(512, &[0xAB; 512]), "un secteur entier");
+        assert!(
+            !disque.ecrire(1024 + 7, &[0xAB; 3]),
+            "une écriture partielle"
+        );
+        assert!(!disque.ecrire(0, &[0xAB; 8 * 512]), "tout le disque");
+        assert_eq!(disque.octets_ecrits(), 0, "rien n'est compté");
+        assert_eq!(
+            std::fs::read(dossier.carte()).unwrap().len(),
+            16,
+            "l'en-tête seul : aucun emplacement nommé"
+        );
+        assert_eq!(lu(&mut disque, 512, 512).unwrap(), [2; 512], "la base");
+        assert_eq!(lu(&mut disque, 1024, 512).unwrap(), [3; 512]);
+        drop(disque);
+        // Rouverte sur une vraie couche, la même carte ne nomme rien.
+        std::fs::remove_file(dossier.couche()).unwrap();
+        let mut disque = DisqueFichier::ouvrir(&base, &dossier.couche()).unwrap();
+        assert_eq!(disque.octets_ecrits(), 0);
+        assert!(disque.ecrire(512, &[0xAB; 512]));
+        assert_eq!(lu(&mut disque, 512, 512).unwrap(), [0xAB; 512]);
+
+        // La carte, cette fois : son en-tête ne s'écrit pas.
+        let dossier = Dossier::nouveau();
+        let base = dossier.base(8, "base.img");
+        std::os::unix::fs::symlink("/dev/full", dossier.carte()).unwrap();
+        assert_eq!(
+            DisqueFichier::ouvrir(&base, &dossier.couche()).err(),
+            Some(Refus::CoucheIllisible)
+        );
     }
 
     // ------------------------------------------------ à travers la carte
