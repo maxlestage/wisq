@@ -8,6 +8,254 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC native en Rust : Alpine 6.18 démarre jusqu'à son shell
+
+**La demande.** « Je veux faire tourner un desktop, tu peux utiliser l'ABI C
+et tout faire en Rust. » La machine PC de l'application est le cœur Swift
+(`Sources/WisqVM/X86*.swift`) ; on la refait en Rust, dans `crates/wisq-vm`.
+Première tranche du flux « cœur » : une machine PC native, sans JIT ni
+WebView, qui démarre un vrai Linux jusqu'à un shell et se mesure contre le
+cœur Swift sur le banc commun.
+
+**Ce qu'il y avait.** `x86.rs` : un décodeur et un interpréteur jugés par les
+corpus matériels, mais faits pour être le juge de l'émetteur — une fenêtre de
+mémoire plate, une marche des tables à chaque accès, et un refus nommé devant
+tout ce qui demande une machine (ports, MSR, `iretq`, `hlt`, les XMM). Aucun
+périphérique natif hors `crates/wisq-page`.
+
+**Ce qui est fait.** `crates/wisq-vm/src/pc/`, porté du cœur Swift fichier par
+fichier :
+
+- `memoire.rs` — la carte de `X86Memory.pc` : la RAM d'un tenant jusqu'à trois
+  gibioctets, le trou sous quatre au-delà, que le processeur refuse de prendre
+  pour de la RAM (`Cpu::memory_hole`).
+- `chargeur.rs` — `LinuxBootProtocol` et `X86BootLoader` : l'en-tête du
+  `bzImage`, le noyau à son adresse préférée, la page zéro, la ligne de
+  commande, l'initramfs en haut de la mémoire, la carte e820, l'écran annoncé.
+- `herites.rs` — deux 8259 (initialisation, masque, les deux fins
+  d'interruption, la cascade), le 8253 (modes périodiques et coup unique,
+  l'horloge sans tic et son plancher de quatre millisecondes, le canal deux et
+  le port 0x61), le 16550 tel que le pilote 8250 le sonde, et une horloge CMOS
+  minimale, réglée par l'hôte.
+- `systeme.rs` — les tables de descripteurs, le registre de tâche, les MSR,
+  `CPUID`, la livraison des fautes et des interruptions en mode long (portes,
+  piles du TSS, piles d'interruption), `iretq`, `syscall`, `sysretq`.
+- `machine.rs` — la machine : un cache de décodage vérifié par comparaison
+  d'octets, la page d'instructions gardée, les instructions de système, et la
+  boucle de `X86Core.run` à l'instruction près (le temps de l'invité est le
+  compteur d'instructions, 288 par battement du 8253, le matériel regardé
+  toutes les 256 instructions, le saut d'attente sur `hlt`).
+- `src/bin/wisq-pc.rs` — `wisq-pc --kernel … --initrd … --cmdline … --ram 512
+  [--budget N] [--input 'cmd;;cmd'] [--until TEXTE]` : la série sur la sortie
+  standard, et à la fin les instructions retirées, les secondes, les MIPS.
+
+Le processeur reste `Cpu`. `execute` refuse toujours ce qu'il refusait — les
+tests de l'émetteur y tiennent — et la machine exécute elle-même ce qui
+demande une machine. `Cpu` gagne : les XMM et `execute_vector` (les formes SSE
+et SSE2 entières que le décodeur lisait déjà pour l'émetteur) ; un tampon de
+traduction que seule la machine allume (`with_translation_cache`), avec
+l'anneau trois, le bit 63 sous EFER.NXE, et les bits « accédée » et « salie »
+posés dans les tables ; et **un second décodeur, à côté** (`x86_extended.rs`).
+`Op` est jugé cas par cas dans `x86_wasm.rs`, et une forme lue sans être
+traduite refuse sa région entière : ce que la machine native exécute et que
+l'émetteur ne traduit pas ne peut donc pas entrer dans `decode`. Le second
+décodeur n'est consulté que par la machine, quand le premier a refusé.
+
+**Les murs, trouvés par l'arrêt.** La machine s'arrête en nommant les octets
+qu'elle ne lit pas. Il y en a eu deux :
+
+1. `dd 7c 24 0e` / `d9 7c 24 0c`, à 512 529 instructions : `fnstsw` et
+   `fnstcw`, par lesquels le décompresseur cherche un coprocesseur. Ajoutés
+   avec `fldcw`, `fnstsw %ax` et `fnclex`.
+2. `0f 77 db 07`, à 1,48 milliard : `emms` puis `fildl (%rdi)`, la parade du
+   noyau à `X86_BUG_FXSAVE_LEAK` sur tout processeur AMD
+   (`restore_fpregs_from_fpstate`). D'où une vraie pile x87 — huit registres,
+   les étiquettes, le sommet dans le mot d'état —, `fild` aux trois largeurs,
+   et `fxsave`/`fxrstor` qui la portent.
+
+Après quoi Alpine 6.18.60 va jusqu'à son shell de secours, et `uname -a`, `ps`,
+`cat /proc/cpuinfo`, `ls /`, `dmesg` y répondent, sans qu'aucun programme
+reçoive d'instruction refusée.
+
+**Trois défauts de l'interpréteur, que le démarrage ou les tests portés ont
+montrés.**
+
+- *Une instruction qui écrit en mémoire et faute avait déjà changé quelque
+  chose.* `adc`, `sbb`, les décalages et les rotations posaient leurs drapeaux
+  avant d'écrire ; `xchg` et `xadd` échangeaient le registre même quand
+  l'écriture était refusée. Sur une page en copie sur écriture, le noyau
+  rejoue l'instruction : `adc` relisait une retenue qu'il avait lui-même
+  changée, `xchg` rendait deux fois la valeur de la mémoire. L'écriture passe
+  maintenant avant tout le reste.
+- *Un `mov` vers la mémoire lisait sa destination.* Sur une page absente, la
+  faute disait « lecture » pour une écriture — le test porté de
+  `X86InterruptTests` l'a montré, code d'erreur 0 au lieu de 2 — et chaque
+  rangement payait un chargement.
+- *`rep movs` et `rep stos` traduisaient chaque élément.* Ils vont par pages
+  entières, comme `bulkString` du cœur Swift, avec la même garde : une
+  destination qui commence dans la source répète un motif, et reste élément
+  par élément.
+
+**CPUID.** Le nom et la signature du cœur Swift (`AuthenticAMD`, famille 15,
+modèle 107), pour que le noyau prenne les mêmes chemins — un nom inconnu lui
+ferait isoler ses tables de pages à chaque entrée. Les capacités d'un x86-64
+de base : FPU, PSE, TSC, MSR, PAE, CX8, PGE, CMOV, MMX, FXSR, SSE, SSE2,
+CX16, le mode long ; ni SSE3, ni SSSE3, ni SSE4, ni AVX, ni BMI, ni AES, ni
+XSAVE. Les chaînes rapides (ERMS, FSRM, FSRS), comme le cœur Swift. Et
+`rdrand`/`rdseed`, avec une source (`Alea`, la suite SplitMix64 du cœur
+Swift, même graine) : voir l'écart ci-dessous.
+
+**Mesures.** Le banc commun : Alpine 6.18.60, `vmlinuz-virt` et
+`initramfs-virt` du netboot, 512 Mio, la ligne de commande du banc Swift
+(`console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep console=ttyS0`),
+jusqu'au shell de secours, `echo wisq-parle` tapé, arrêt au retour de
+l'invite. Cinq courses alternées, cœur Swift (`X86BootAttemptTests`, release)
+puis `wisq-pc`, sur le même conteneur, bruyant ce jour-là :
+
+| | instructions retirées | courses (s) | médiane | débit |
+|---|---|---|---|---|
+| cœur Swift | 1 916 457 192 à 1 916 576 992 | 34,7 · 33,0 · 33,5 · 32,3 · 31,7 | 33,0 s | 58,1 MIPS |
+| machine PC en Rust | 1 908 017 128 à 1 909 283 278 | 44,3 · 42,5 · 43,3 · 39,6 · 40,9 | 42,5 s | 44,9 MIPS |
+
+**La machine en Rust est plus lente que le cœur Swift : 29 % de temps en
+plus.** Elle n'est pas lente partout pareil : le premier 1,4 milliard
+d'instructions (la décompression, puis le noyau jusqu'au déballage de
+l'initramfs) passe à 58 MIPS, autant que le cœur Swift ; la suite — `/init`,
+les modules, les programmes qui se lancent — tombe entre 23 et 37 MIPS. Là,
+`perf` donne dix fois plus de décodages (11 % des échantillons, contre 1,2 %
+avant), et le reste ralenti d'un bloc.
+
+**Ce qui a rendu, mesuré en courses alternées** sur le premier 1,2 milliard
+d'instructions :
+
+| | courses (s) | débit |
+|---|---|---|
+| avant | 37,5 · 34,4 | 32 à 35 MIPS |
+| un aiguillage en tête d'`execute`, les comparaisons d'`Op` par `matches!` | 25,6 · 24,8 | 47 à 48 MIPS |
+| l'instruction lue dans sa case du cache, sans recopie | 20,2 · 19,7 | 59 à 61 MIPS |
+
+Le premier : `execute` posait une vingtaine de questions l'une après l'autre
+avant d'arriver à un `mov`, et chaque `instruction.op == Op::X` appelait le
+`PartialEq` dérivé — 12 % du temps à lui seul sous `perf`. Le second : chaque
+pas recopiait les 56 octets de l'instruction hors du cache. Avant eux, ne plus
+lire la destination d'un `mov` avait rendu 14 % sur la course entière (77,6 s
+→ 67,0 s, une course de chaque).
+
+**Ce qui n'a rien rendu, et qui est retiré** : lire d'avance la case de
+l'instruction suivante (20,2 · 20,6 s contre 20,6 · 19,4 s) ; un cache de
+décodage de 16 384 cases au lieu de 65 536 (20,2 · 20,2 contre 20,3 · 20,1),
+ou de 262 144 et d'un million (40,8 · 40,4 et 41,9 · 41,0 s contre 40,9 ·
+40,5 s sur 1,9 milliard). La ligne la plus chère de la boucle reste la
+comparaison de l'étiquette d'une case — une case fait 96 octets, une par
+adresse d'octet, et deux instructions qui se suivent sont dans deux lignes de
+cache. C'est ce que les blocs du cœur Swift (#710) évitent, et que cette
+machine n'a pas.
+
+**Le compte d'instructions, et l'écart cherché.** Le premier démarrage complet
+retirait **2 033 190 146** instructions, 6 % de plus que le cœur Swift. Les
+deux consoles, comparées ligne à ligne et par leurs horodatages, s'écartaient
+d'un coup de 126 ms de temps de l'invité (43 millions d'instructions) entre
+« mem auto-init » et « SLUB » : sans `rdrand`, le générateur du noyau n'est
+pas prêt, et chaque nombre demandé par le tirage des listes libres de SLUB
+réextrait son réservoir. Avec `rdrand` et `rdseed` annoncés et servis par la
+même suite que le cœur Swift : **1 919 047 271**, puis **1 908 300 554** une
+fois le `mov` corrigé — 0,4 % sous le cœur Swift. Ce qui reste d'écart a ses
+causes dans la console : `x87 FPU will use FXSAVE` au lieu de XSAVE (CPUID),
+`i8042: No controller found` (le clavier est à la carte de `wisq-page`, pas
+encore branchée), et les fautes de page en moins.
+
+**Tests.** 96 de plus (3 766 → 3 862), tous sans noyau ni moteur JavaScript :
+
+- `pc_chargeur` (18) — portés de `LinuxBootProtocolTests` et
+  `X86BootLoaderTests`, plus la carte au-delà de trois gibioctets.
+- `pc_herites` (27) — portés de `X86LegacyDevicesTests`, plus la sonde du
+  pilote 8250, la cascade, l'horloge CMOS, les ports muets.
+- `pc_interruptions` (28) — portés de `X86InterruptTests`, plus ce que ce cœur
+  ajoute : les instructions du noyau refusées aux programmes (`#GP`), le
+  privilège des portes devant `int n`, un `iretq` qui ne monte pas en
+  privilège, `popf` en anneau trois, l'ombre de `sti`, `syscall`/`sysretq`,
+  les MSR, `ltr`, CPUID, `rdrand`, le code réécrit sur place, l'instruction à
+  cheval sur deux pages.
+- `pc_demarrage` (5) — **un noyau factice** de 229 octets dans un vrai
+  `bzImage` : il lit la page zéro, écrit sur le port série, pose son IDT,
+  initialise le 8259, arme le 8253, dort sur `hlt`, se fait réveiller cinq
+  fois et s'éteint. Et le vrai noyau quand on le désigne (`WISQ_PC_KERNEL`,
+  `WISQ_PC_INITRD`, `WISQ_PC_ATTENDU`) : avec la sonde de
+  `scripts/build-userspace-probe.py`, `WISQ-USERSPACE-OK` en 33 s.
+- `x86_vector_oracle` (4) — `execute_vector` devant `x86-xmm-oracle.tsv`
+  (976 cas) et `x86-simd-oracle.tsv` (9 204 cas), sans Bun.
+- `x86_extended_oracle` (6) — le second décodeur devant `x86-x87-oracle.tsv`
+  (neuf formes, 540 cas) et `fxrstor` puis `fxsave` devant
+  `x86-fxsave-oracle.tsv` (280 aires). Ce dernier a dit ce que le silicium
+  corrige en relisant : le bit 6 du mot de contrôle toujours à un, les bits
+  « résumé d'erreur » et « occupé » recalculés.
+- `x86_replay` (8) — une instruction qui faute n'a rien changé (douze formes,
+  avec et sans tampon, puis rejouées), le `mov` qui ne lit pas sa destination,
+  les bits « accédée » et « salie », les vidages du tampon, l'anneau trois, le
+  bit 63, et `rep` par pages contre `rep` élément par élément.
+
+**Sabotages**, d'une ligne : **59, tous tombent**, l'arbre propre après chacun
+(`git diff` vide). Quatre ne tombaient pas au premier passage, et ont fait
+durcir trois tests : `xchg` (le registre du test valait la mémoire, l'échange
+ne se voyait pas), les mots d'initialisation du 8259 (le masque final cachait
+les masques intermédiaires), et « la page suivante chargée sans débordement »
+(aucun test ne posait une forme inconnue au bout d'une page) ; le quatrième
+était un motif de sabotage mal écrit. La liste : `pandn` nié du mauvais côté,
+`pavg` sans arrondi, `ldmxcsr` sans contrôle, le `mov` qui lit sa
+destination, les drapeaux posés malgré la faute, `xchg` malgré la faute, `rep`
+sans garde de recouvrement, CR3 sans vidage, une case qui écrit sans être
+salie, l'anneau trois sans bit utilisateur, le bit 63 ignoré, le code d'erreur
+sans l'écriture, le trou pris pour de la RAM (deux), `fild` (exposant, sommet),
+`fxrstor` (bit 6, bits de résumé), `fxsave` (512 octets, la fin de l'aire non
+vérifiée), `fld` lu pour `fnstcw`, `type_of_loader`, l'alignement de
+l'initramfs, le trou du premier mégaoctet, `lfb_size` en octets, un fichier
+tronqué accepté, les fins d'interruption, les mots d'initialisation, une
+ligne en service, le mode du 8253, le plancher du coup unique, le verrou,
+l'identification du 16550, la boucle du modem, la cascade, le BCD de
+l'horloge, la pile non alignée, la porte de trappe, le code d'erreur de la
+faute de page, la pile en quittant l'anneau trois, le privilège de la porte,
+`iretq`, `popf`, R11 de `syscall`, la base de `ltr`, SSE3 annoncé, LMA perdu,
+le privilège du noyau, l'ombre de `sti`, la retenue de `rdrand`, `swapgs`, le
+cache de décodage sans comparaison, l'instruction à cheval gardée au cache, la
+page suivante chargée d'office, le port muet à zéro, le `hlt` sans réveil,
+RSI, le réveil du `hlt`, la demande retirée sans livraison.
+
+**Vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release` sur tout l'espace de
+travail (l'émetteur compris : `host_loop` 226, `x86_wasm` 40), les tests
+neufs sous le profil de mise au point aussi (débordements vérifiés),
+`scripts/build-page-emitter.sh` (la cible wasm32 construit `pc/`),
+`check-whitespace.sh`, `check-project-sources.sh`, le site (`bun run build`,
+`bun test`). Aucun fichier Swift n'est touché.
+
+**Ce qui reste.**
+
+- *La vitesse.* 29 % derrière le cœur Swift. Les blocs d'instructions (#710)
+  sont le premier chantier ; le tampon de traduction ne garde pas de pointeur
+  vers la page de l'hôte, `invlpg` vide tout, et la phase des programmes
+  (23 à 37 MIPS) n'est pas expliquée au-delà des décodages.
+- *L'ABI C.* Ni `ffi.rs`, ni `wisq_vm.h`, ni `Sources/WisqVMRust` : la machine
+  n'est pas encore dans l'application. `Machine` n'est pas `Send` (`Alea::Hote`
+  et `Peripheriques` sont des boîtes sans borne).
+- *Les périphériques.* La `Carte` de `wisq-page` n'est pas branchée ; le
+  trait `Peripheriques` l'attend (ports, lignes à niveau, réveil,
+  battements), mais passe la RAM en tranche d'octets et non par son trait
+  `Ram`, et il n'y a pas encore de porte pour les adresses hors de la RAM
+  (écran, BAR) : un accès au trou arrête la machine en le nommant.
+- *Le jeu d'instructions.* Aucun calcul en x87, pas de MMX, pas de SSE ni de
+  SSE2 flottants (`addsd`, `cvtsi2sd`, `ucomisd`…), alors que CPUID les
+  annonce — ils font partie de x86-64, et un programme qui en exécute reçoit
+  « Illegal instruction », la machine continue et le nomme (`Machine::refus`).
+  Aucun n'a été rencontré jusqu'au shell d'Alpine. Pas de mode compatibilité
+  32 bits, pas de préfixe 0x67.
+- *Ce qui n'est pas porté du cœur Swift.* L'instantané et la reprise, le
+  rythme d'attente à l'horloge murale, le temps dû (`elapse`), le
+  redémarrage demandé par l'invité, l'écriture de la date CMOS, LAR, LSL,
+  STR, la longueur exacte d'une instruction refusée. Pas de double faute :
+  une faute pendant une livraison arrête la machine en la nommant.
+- *Ce que la mesure ne dit pas.* Tout est mesuré sur un Xeon, pas sur une
+  puce Apple ; et jusqu'au shell de secours d'Alpine, pas sur un bureau.
+
 ## 2026-11-20 — Cœur x86 : les drapeaux à la demande ne rapportent rien ; les conditions sans aiguillage, 3 à 6 %
 
 **La demande.** Le second chantier de « Fais tout » : calculer les drapeaux

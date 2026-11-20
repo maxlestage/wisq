@@ -2,9 +2,9 @@
 //! silicium.**
 //!
 //! `x86_extended.rs` lit ce que `decode` refuse et que la machine exécute
-//! quand même. Deux corpus matériels portent de ces formes :
-//! `x86-x87-oracle.tsv` (les chargements d'entiers et les mots du x87) et
-//! `x86-fxsave-oracle.tsv` (ce que `fxrstor` puis `fxsave` font d'une aire).
+//! quand même. Ces formes sont portées par `x86-x87-oracle.tsv` (les
+//! chargements d'entiers et les mots du x87) et par `x86-fxsave-oracle.tsv`
+//! (ce que `fxrstor` puis `fxsave` font d'une aire), relevés sur le silicium.
 //! Seules les formes que le décodeur lit sont jugées, et leur compte est
 //! tenu : une forme qui cesserait d'être lue ferait tomber le test.
 
