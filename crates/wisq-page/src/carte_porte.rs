@@ -997,7 +997,17 @@ mod tests {
         assert_eq!(carte_reseau_entrer(4), 0);
         assert_eq!(carte_reseau_compte(0), 0);
         ram(&mut |r| *r = vec![0; 1 << 20]);
+        // Le câble, au branchement et ensuite : une carte au câble branché
+        // tient la machine éveillée, une carte débranchée sans rien en
+        // attente ne la tient pas.
+        carte_reseau(0x0171_7369_7702, 0);
+        assert_eq!(carte_reveil(), 0, "branchée câble débranché");
+        assert_eq!(carte_reseau_cable(1), 1);
+        assert_eq!(carte_reveil(), 1);
+        assert_eq!(carte_reseau_cable(0), 1);
+        assert_eq!(carte_reveil(), 0);
         carte_reseau(0x0171_7369_7702, 1);
+        assert_eq!(carte_reveil(), 1, "branchée câble branché");
         carte_ecrire(0xCF8, 4, 0x8000_2800);
         assert_eq!(carte_lire(0xCFC, 4), 0x1000_1AF4);
         carte_ecrire(0xCF8, 4, 0x8000_2810);

@@ -524,15 +524,14 @@ impl CartePc {
             return true;
         }
         // La notification de la carte réseau : la file un émet, la zéro
-        // reçoit ; une autre ne sert rien, mais le port est pris.
+        // reçoit ; une autre ne sert rien, mais le port est pris. La fenêtre
+        // ne s'ouvre que carte branchée (`Emplacement::fenetre_ouverte`).
         if let Some(REGISTRE_DE_NOTIFICATION) = self.carte.reseau_au_port(port) {
-            if self.carte.reseau().is_some() {
-                let file = u64::from(valeur) & masque(largeur);
-                if let Some(notifiee) = self.reseau_notifie.get_mut(file as usize) {
-                    *notifiee = true;
-                }
-                return true;
+            let file = u64::from(valeur) & masque(largeur);
+            if let Some(notifiee) = self.reseau_notifie.get_mut(file as usize) {
+                *notifiee = true;
             }
+            return true;
         }
         self.carte.port_ecrire(port, largeur, valeur, &mut SansRam)
     }
