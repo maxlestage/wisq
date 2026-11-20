@@ -219,8 +219,8 @@ impl Pci {
     pub const fn nouveau() -> Self {
         Self {
             adresse: 0,
-            premier: Emplacement::nouveau(LIGNE_DU_DISQUE),
-            second: Emplacement::nouveau(LIGNE_DU_SECOND_DISQUE),
+            premier: Emplacement::nouveau(Disque::Premier.ligne()),
+            second: Emplacement::nouveau(Disque::Second.ligne()),
         }
     }
 
