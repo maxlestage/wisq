@@ -814,9 +814,11 @@ fn code_at_the_end_of_ram_takes_the_step_by_step_path() {
 /// n = 1). Le bloc qu'on y construirait couvrirait les `n` octets et en
 /// comparerait le multiple de huit d'au-dessus : au-delà de la RAM dès que
 /// `n` n'en est pas un. Le test de trois octets plus haut laissait passer
-/// toute borne de quatre octets ou plus ; ici, une borne de seize ou de huit
-/// fait lire l'hôte hors de la RAM. Et la borne n'est pas trop large : à
-/// L−64, les soixante-quatre octets tiennent, le bloc se construit.
+/// toute borne de quatre octets ou plus ; ici, une borne de seize (ou de
+/// huit) tombe dès n = 16 (ou n = 8) : un bloc s'y construit là où le pas à
+/// pas est attendu, avant même qu'un `n` fasse lire l'hôte hors de la RAM.
+/// Et la borne n'est pas trop large : à L−64, les soixante-quatre octets
+/// tiennent, le bloc se construit.
 #[test]
 fn every_start_in_the_last_64_bytes_of_ram_is_bounded_exactly() {
     for n in 1usize..=64 {
@@ -1088,4 +1090,69 @@ fn a_displacement_wider_than_32_bits_takes_the_general_path() {
     juge.execute(&instruction);
     executer_une(&mut cpu, &instruction);
     assert_eq!(etat(&cpu), etat(&juge));
+}
+
+/// **Un bloc s'arrête au plafond de soixante-quatre octets**, même en ligne
+/// droite. Seize `mov $imm32,%eax` (cinq octets chacun) puis un saut qui
+/// revient : douze instructions font soixante octets, la treizième finirait
+/// au soixante-cinquième. `Blocs::construire` doit donc en ranger douze,
+/// comparer huit mots, et la machine à blocs doit faire ce que fait le pas à
+/// pas. Un plafond plus large (`PORTEE + 8 - position`) rangerait la
+/// treizième, comparerait neuf mots alors que le bloc n'en a que huit, et
+/// l'hôte paniquerait en construisant le bloc ; il lirait aussi au-delà des
+/// soixante-quatre octets que la borne de la fin de la RAM vérifie.
+#[test]
+fn a_straight_block_stops_at_sixty_four_bytes() {
+    let mut code = Vec::new();
+    for rang in 0..16u8 {
+        code.extend([0xB8, rang + 1, 0x00, 0x00, 0x00]);
+    }
+    code.extend([0xEB, (-(code.len() as i64 + 2)) as u8]);
+    // Par la table seule : la même construction que la machine fait.
+    let mut ram = vec![0u8; 0x2000];
+    ram[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+    let mut blocs = wisq_vm::pc::blocs::Blocs::default();
+    let copie = ram.clone();
+    let mut lire = |debut: usize, disponibles: usize| decode(&copie[debut..debut + disponibles]);
+    let place = blocs.construire(&ram, 0x1000, 0x1000, &mut lire);
+    let bloc = blocs.bloc(place);
+    assert_eq!(bloc.nombre, 12, "douze instructions de cinq octets");
+    assert_eq!(bloc.mots, 8, "soixante octets : huit mots comparés");
+    // Et par la machine : les deux chemins s'accordent, des blocs ont servi.
+    let rapide = les_deux(&code, 400, |_| {});
+    assert!(rapide.blocs.construits > 0, "des blocs ont servi");
+    assert!(
+        (1..=16).contains(&(rapide.cpu.regs[0] & 0xFFFF_FFFF)),
+        "un des seize mov a été exécuté"
+    );
+}
+
+/// **Un bloc vide compare quand même seize octets** : la case retient que la
+/// première instruction (`in (%dx),%al`, qu'aucun bloc ne prend) passe par le
+/// pas à pas, et un code réécrit dans ces seize octets la fait refaire. Un
+/// octet changé au douzième rang perd la case ; un octet changé au vingtième
+/// ne la perd pas. Avec huit octets comparés, le douzième ne se verrait plus.
+#[test]
+fn an_empty_block_compares_its_first_sixteen_bytes() {
+    let mut ram = vec![0x90u8; 0x2000];
+    ram[0x1000] = 0xEC;
+    let mut blocs = wisq_vm::pc::blocs::Blocs::default();
+    let copie = ram.clone();
+    let mut lire = |debut: usize, disponibles: usize| decode(&copie[debut..debut + disponibles]);
+    let place = blocs.construire(&ram, 0x1000, 0x1000, &mut lire);
+    assert_eq!(blocs.bloc(place).nombre, 0, "un bloc vide");
+    assert_eq!(blocs.bloc(place).mots, 2, "seize octets comparés");
+    assert_eq!(blocs.trouver(&ram, 0x1000), Some(place));
+    let mut loin = ram.clone();
+    loin[0x1000 + 20] = 0xCC;
+    assert_eq!(
+        blocs.trouver(&loin, 0x1000),
+        Some(place),
+        "au-delà des seize"
+    );
+    for rang in [0usize, 7, 8, 12, 15] {
+        let mut change = ram.clone();
+        change[0x1000 + rang] = 0xCC;
+        assert_eq!(blocs.trouver(&change, 0x1000), None, "octet {rang} réécrit");
+    }
 }

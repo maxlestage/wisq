@@ -45,8 +45,8 @@ d'avant, sur trois octets, reste.
 
 | sabotage | tombe par |
 |---|---|
-| `PORTEE` → `16` | `every_start…` (n = 17 : un bloc construit) |
-| `PORTEE` → `8` | `every_start…` |
+| `PORTEE` → `16` | `every_start…` (n = 16 : un bloc construit là où le pas à pas est attendu) |
+| `PORTEE` → `8` | `every_start…` (n = 8, de même) |
 | `PORTEE` → `PORTEE - 1` | `every_start…` (n = 63) |
 | `PORTEE` → `PORTEE + 1` | `every_start…` (n = 64 : plus de bloc) |
 | `>` → `>=` | `every_start…` (n = 64) |
