@@ -5350,7 +5350,9 @@ mod tests {
                 &[0x66, 0xf3, 0x0f, 0x6f, 0xc1][..],
                 "deux préfixes obligatoires",
             ),
-            (&[0xf3, 0x0f, 0x58, 0xc1][..], "addss calcule en flottant"),
+            // `addss` se lit depuis le calcul flottant (`Vector::Float`) ; les
+            // formes de SSE3, que CPUID n'annonce pas, restent illisibles.
+            (&[0xf2, 0x0f, 0x7c, 0xc1][..], "haddps est du SSE3"),
             (
                 &[0x66, 0x0f, 0x12, 0xc1][..],
                 "movlpd n'a pas de forme à registre",
@@ -5367,6 +5369,14 @@ mod tests {
         ] {
             assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
+        assert_eq!(
+            decode(&[0xf3, 0x0f, 0x58, 0xc1]).map(|step| step.op),
+            Some(Op::Vector(Vector::Float(Float::Scalar {
+                operation: FloatOp::Add,
+                double: false,
+            }))),
+            "addss se lit en calcul flottant, en simple"
+        );
         // L'interprète Rust n'a pas de XMM : il faute, RIP sur l'instruction.
         let mut cpu = Cpu {
             rip: 0x3000_0000,
@@ -5391,8 +5401,10 @@ mod tests {
     /// instruction plausible et fausse. Depuis le socle SSE, il est lu **comme
     /// octet d'opcode** de la page vectorielle ; et depuis les chaînes qui
     /// comparent, comme `repne` devant `cmps` et `scas`, où il a un sens
-    /// défini. `movsd` se décode en `movsd`, et `repne movs`, `addsd` ou le
-    /// reste de la page `0f 01` restent refusés.
+    /// défini. `movsd` se décode en `movsd`, `addsd` en calcul flottant
+    /// (`Vector::Float`, depuis que l'émetteur le traduit), et `repne movs`,
+    /// `haddps` (SSE3, que CPUID n'annonce pas) ou le reste de la page `0f 01`
+    /// restent refusés.
     #[test]
     fn lkgs_is_read_and_the_rest_of_the_f2_page_stays_refused() {
         let step = decode(&[0xf2, 0x0f, 0x00, 0xf7]).expect("lkgs %edi se décode");
@@ -5420,10 +5432,7 @@ mod tests {
                 &[0xf2, 0x0f, 0x01, 0xf8][..],
                 "f2 n'ouvre pas le reste de la page",
             ),
-            (
-                &[0xf2, 0x0f, 0x58, 0xc1][..],
-                "addsd calcule en flottant : refusé",
-            ),
+            (&[0xf2, 0x0f, 0x7c, 0xc1][..], "haddps est du SSE3 : refusé"),
             (&[0xf2, 0x48, 0xa5][..], "repne movs n'est pas lu"),
             (&[0xf2, 0x90][..], "f2 devant une instruction ordinaire"),
             (
@@ -5433,6 +5442,15 @@ mod tests {
         ] {
             assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
+        // `addsd` se lit depuis le calcul flottant, en scalaire double.
+        let addsd = decode(&[0xf2, 0x0f, 0x58, 0xc1]).expect("addsd se décode");
+        assert_eq!(
+            addsd.op,
+            Op::Vector(Vector::Float(Float::Scalar {
+                operation: FloatOp::Add,
+                double: true,
+            }))
+        );
         // `movsd %xmm1,%xmm0` : huit octets, pas les seize de `movups`.
         let movsd = decode(&[0xf2, 0x0f, 0x10, 0xc1]).expect("movsd se décode");
         assert_eq!(

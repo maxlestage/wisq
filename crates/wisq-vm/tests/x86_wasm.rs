@@ -5142,7 +5142,8 @@ fn the_float_forms_the_corpus_lacks_follow_the_same_rules() {
     let below = f64::from_bits(two_to_63.to_bits() - 1);
     let high = 0x4142_4344_4546_4748u64;
     // (octets, mnémonique, xmm0 bas, xmm1 bas, rax, xmm0 bas attendu, rax attendu)
-    let forms: Vec<(Vec<u8>, &str, u64, u64, u64, u64, u64)> = vec![
+    type Forme = (Vec<u8>, &'static str, u64, u64, u64, u64, u64);
+    let forms: Vec<Forme> = vec![
         (
             vec![0xf2, 0x0f, 0x2a, 0x46, 0x20],
             "cvtsi2sd 0x20(%rsi),%xmm0",
