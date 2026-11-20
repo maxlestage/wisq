@@ -8,6 +8,202 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : la carte réseau virtio, et l'état des lieux de la bascule
+
+**La demande.** Porter `VirtioNet` du cœur Swift comme périphérique de la
+carte, avec un arrière abstrait (une trame sort, une trame entre), sans pile
+réseau ni sockets ; un câble débranché et un câble en boucle pour les tests ;
+décrire l'interface qu'il faudra au réseau en mode utilisateur du Swift
+(`UserNetwork`, `HostDatagrams`) pour se brancher par le C ABI. Porter
+`VirtioNetTests`, en natif et en wasm32, avec des sabotages. Finir par un état
+des lieux de chaque périphérique de `X86Machine`. Avant tout, le défaut
+laissé par le contrôle de la tablette.
+
+**Le défaut du contrôle, d'abord.** Il est réel. Le masque par largeur de
+`Tablette::lire_commun`, porté de `VirtioTablet.swift:267`, n'était jugé
+qu'à quatre octets : `valeur & 0xFFFF_FFFF` à sa place passait tout.
+`the_common_registers_read_back_per_queue` relit maintenant 0x20, 0x24,
+0x28, 0x2C, 0x30 et `msix_config` sur deux octets et sur un (0x7788, 0x88,
+0x3344, 0xBBBB, 0xDD, 0x00, 0xFF). Le cas appelle `Tablette::lire` sans la
+carte, qui ramène elle aussi la valeur à la largeur : c'est le seul chemin
+où le masque de la tablette se voit. Aucun code de production ne change.
+
+**Ce qui est fait.**
+
+- *`src/carte/virtio_net.rs`* (neuf) : la carte de forme ancienne, registre
+  pour registre avec le Swift. `1AF4:1000`, contrôleur Ethernet, sous-système
+  `1AF4:0001`, en 00:05.0, ligne 3. La seule fonction offerte est
+  `VIRTIO_NET_F_MAC`, l'adresse par défaut `02:77:69:73:71:01`. Deux files
+  de 256, l'en-tête de dix octets, 512 trames en attente au plus, 1 514
+  octets par trame. Au travail, le câble n'est questionné qu'un passage sur
+  quatre ; au repos, à chaque passage.
+- *Le câble* : le trait `Cable` (`envoyer`, `recevoir`), le `NetworkBackend`
+  du Swift. Il n'est pas dans la carte, qui se clone, se compare et vit dans
+  une `static` de la page. L'écriture d'un port n'a donc pas le câble sous la
+  main. Une trame émise est rangée dans la carte (`VirtioNet::sortir`), et
+  c'est la machine qui la donne au câble. Les compteurs restent ceux du Swift :
+  une trame rangée compte comme émise, une trame sans câble comme perdue.
+  `CableEnBoucle` sert aux tests. « Débranché », c'est l'absence de câble,
+  comme le Swift sans `backend`.
+- *Le bus* : l'emplacement devient générique (`Emplacement<P: Fonction>`). Le
+  disque et la carte réseau ont la même commande, la même fenêtre de
+  `0x40` ports, la même mesure et la même ligne. Ils ne diffèrent que par
+  trois registres (0x00, 0x08, 0x2C). Le champ `disque` d'un emplacement
+  s'appelle désormais `peripherique`. Un port que la fenêtre d'un disque et
+  celle de la carte couvrent toutes deux va au disque, comme dans `portWrite`
+  et `portRead` du Swift.
+- *La carte* : `brancher_reseau`, `reseau`, `reseau_mut`, `reseau_au_port`.
+  La ligne est levée à niveau et tenue. La carte compte dans le réveil tant
+  que son câble est branché, puisqu'une trame peut arriver à tout moment. Le
+  Swift dit de même avec `devicesArmed` dès qu'une carte existe : il ne
+  l'attache jamais sans réseau. Câble débranché, la carte ne compte que si sa
+  ligne est levée ou qu'une trame attend un tampon.
+- *La façade `CartePc`* : `brancher_reseau`, `brancher_cable`,
+  `debrancher_cable` (qui rend le câble), `reseau` et `sonder_reseau(ram,
+  occupe)`. La notification d'une file est notée pendant l'`out` et servie
+  par `servir`. L'émission y donne la trame au câble tout de suite : c'est
+  le `backend.send` que le Swift fait pendant l'`out`. `servir` ne
+  questionne jamais le câble ; c'est `sonder_reseau` qui le fait, à chaque
+  tour, comme `poll` dans `serviceInterrupts`. Le mode d'emploi gagne trois
+  lignes.
+- *La page* : les exports `carte_reseau` (l'adresse dans un `u64`, l'octet
+  bas d'abord), `carte_reseau_cable`, `carte_reseau_place`,
+  `carte_reseau_entrer`, `carte_reseau_livrer`, `carte_reseau_sortie`,
+  `carte_reseau_sortie_octets` et `carte_reseau_compte`. Comme pour la
+  tablette, `web/carte.js` ne les sert pas encore à `host.js`.
+
+**Deux écarts au Swift, voulus.**
+- *Un tampon hors de la RAM perd la trame.* À l'émission, le Swift lirait
+  des zéros (`copyOut`) et les enverrait. À la réception, il poserait ce qui
+  tient (`copyIn`) et dirait la trame livrée. Ici, la trame est perdue et
+  comptée comme telle, et la requête est rendue. C'est la règle du disque de
+  la carte : jamais des zéros à la place de ce qui manque.
+- *L'attente des trames émises est bornée* (512) : une page qui ne les
+  prendrait pas ne fait pas grandir la mémoire du module. Le Swift n'en a pas
+  besoin, il envoie pendant l'`out`.
+
+**Pas de statut du lien**, comme le Swift : `VIRTIO_NET_F_STATUS` n'est pas
+offert, et le pilote tient alors le lien pour établi. Le statut du lien que
+demandait la tranche est donc celui-là : « toujours établi » pour l'invité.
+Le câble débranché ne se voit qu'aux trames perdues. L'annoncer ferait une
+carte différente de la référence. Le cas `the_address_and_the_feature_are_announced`
+vérifie que 0x1A, où ce champ serait, rend zéro.
+
+**L'interface qu'il faudra au réseau en mode utilisateur**, par le C ABI
+(`ffi.rs`, au flux « cœur ») : un `Cable` dont les deux méthodes appellent
+deux fonctions de l'application, sur le fil de la machine, comme
+aujourd'hui `VirtioNet` appelle `UserNetwork.send` et `receive`.
+
+```c
+/* Une trame Ethernet que l'invité envoie, sans l'en-tête virtio. */
+typedef void (*wisq_pc_cable_envoyer)(void *contexte, const uint8_t *trame, size_t longueur);
+/* La prochaine trame pour l'invité, copiée dans `vers` (1 514 octets) :
+   sa longueur, ou 0 quand il n'y en a plus. */
+typedef size_t (*wisq_pc_cable_recevoir)(void *contexte, uint8_t *vers, size_t place);
+void wisq_pc_brancher_reseau(WisqPc *pc, const uint8_t mac[6]);
+void wisq_pc_brancher_cable(WisqPc *pc, void *contexte, wisq_pc_cable_envoyer, wisq_pc_cable_recevoir);
+void wisq_pc_debrancher_cable(WisqPc *pc);
+```
+
+Côté Swift, un `UserNetwork` derrière ces deux fonctions ne change pas.
+`MachineNetwork.backend(forKernel:)` le choisit, coupé ou par l'hôte, et
+`HostStreams.forward` reste à lui. La cadence ne change pas non plus : la
+boucle appelle `sonder_reseau(ram, !hlt)` à chaque passage, et les quatre
+verrous de `UserNetwork` ne sont pris qu'un passage sur quatre au travail.
+Le contexte doit vivre aussi longtemps que la machine, et les deux fonctions
+ne doivent pas rappeler la machine. **À savoir pour le flux « cœur »** : le
+trait `Peripheriques` de `pc/machine.rs` n'a pas de quoi appeler
+`sonder_reseau` avec la RAM, puisque `battre` ne la reçoit pas. Il faudra lui
+ajouter ce passage, ou sonder depuis le sien.
+
+**État des lieux pour la bascule** : chaque périphérique de `X86Machine`
+(`X86Machine.swift`, `X86PCI.swift`, et les ports de `X86CoreDispatch.swift`
+et la mémoire lente de `X86Memory.swift`, où ils répondent).
+
+| Périphérique (Swift) | Où il répond | En Rust (« ici » : `crates/wisq-page/src/carte`) |
+| --- | --- | --- |
+| 16550, port série (0x3F8–0x3FF, ligne 4) — `X86SerialPort` | ports | flux « cœur », `pc/herites.rs` |
+| Deux 8259 (0x20, 0x21, 0xA0, 0xA1) — `X86LegacyDevices` | ports | flux « cœur », `pc/herites.rs` |
+| 8253 canal 0 (0x40, 0x43, ligne 0) | ports | flux « cœur », `pc/herites.rs` |
+| 8253 canal 2 et haut-parleur (0x42, 0x61) | ports | flux « cœur », `pc/herites.rs` |
+| i8042, clavier et souris (0x60, 0x64, lignes 1 et 12), la frappe au rythme d'une main — `X86PS2`, `X86Typing` | ports | ici, `i8042.rs` |
+| Horloge CMOS (0x70, 0x71) — `X86CMOSClock` | ports | **les deux** : ici, `cmos.rs` (date entière, écriture, heure injectée ou figée), et une horloge minimale au flux « cœur », `HorlogeCmos` de `pc/herites.rs`, qui le dit provisoire. À la bascule, une seule doit répondre : celle d'ici. |
+| Pont PCI 440FX en 00:00.0 (0xCF8, 0xCFC à 0xCFF) — `X86PCIHost` | ports | ici, `pci.rs` |
+| Carte graphique Bochs en 00:02.0 : DISPI (0x1CE, 0x1CF), 16 Mio à 0xE000_0000, registres à 0xE100_0000 — `X86BochsDisplay`, `X86Framebuffer` | ports, mémoire | ici, `ecran.rs` |
+| Premier disque virtio-blk en 00:03.0, ligne 5, par ports — `VirtioBlock` | ports | ici, `virtio_blk.rs`, `pc.rs` |
+| Le même disque, transport MMIO à 0xD000_0000 (0x200 octets, ligne 5) | mémoire | **manquant**, exprès : le noyau d'Alpine ne le trouve pas, faute de `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES`, et ceux de Void non plus. Rien ne l'emploie. |
+| Second disque en 00:04.0, ligne 6 | ports | ici |
+| Disque sur fichier et sa couche d'écriture — `FileDiskStore`, `LocalDisk` | — | ici, `fichier.rs` |
+| Formats d'image à tables (`VirtualDiskImage`, `VmdkDescriptorDisk`), disque vierge (`BlankDisk`) | — | **manquant** |
+| Carte réseau virtio-net en 00:05.0, ligne 3 — `VirtioNet` | ports | ici, `virtio_net.rs` (cette tranche) |
+| Réseau en mode utilisateur, sa coupure, les relais (`UserNetwork`, `HostDatagrams`, `HostStreams`, `HostEchoes`, `MachineNetwork`) | — | **restent en Swift**, derrière le C ABI décrit plus haut, qui est **manquant** (`ffi.rs`, flux « cœur ») |
+| Tablette virtio moderne en 00:07.0, BAR à 0xE101_0000, ligne 10 — `VirtioTablet` | mémoire | ici, `tablette.rs` |
+| `rdrand` et `rdseed` — `X86Entropy` | processeur | flux « cœur », `pc/machine.rs` |
+| Registres spécifiques au modèle — `X86ModelSpecific` | processeur | flux « cœur », `pc/systeme.rs` |
+| Chargeur : page zéro, e820, `screen_info`, ligne de commande — `X86BootLoader` | — | flux « cœur », `pc/chargeur.rs`. Le cadre annoncé vient d'ici (`Cadre::mode_de_depart`, `Cadre::base`). |
+| Le sommeil au rythme de l'horloge murale (`pacesIdleToWallClock`), l'heure figée de l'hôte (`frozenHostTime`) | boucle | la boucle au flux « cœur » ; l'heure figée, ici (`CartePc::regler_heure`, ou une horloge injectée) |
+| L'instantané de chaque périphérique (`save`, `restore`, sections du disque, du second disque, de la carte réseau, de l'écran, de la tablette) | — | **manquant** des deux côtés pour les périphériques. Il faudra le même format que le Swift, pour qu'un instantané passe d'un cœur à l'autre. |
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 578 503 octets
+  avant, 586 469 après (+7 966, +1,4 %), gzip -9 de 113 096 à 115 565
+  (+2 469). sha baf746d646960706.
+- Tests : wisq-carte passe de 180 à 211 cas (0,31 s en release),
+  wisq-page lib de 9 à 10, `tests/carte.rs` de 7 à 8 sous Bun. Rust passe
+  de 810 à 843, et le total publié de 3 875 à 3 908 (`recompte.sh`).
+
+**Sabotages** : soixante-quatorze sabotages d'une ligne, chacun restauré depuis
+une copie. `git status` est vide après chaque série.
+- *Le masque de la tablette* : `valeur & 0xFFFF_FFFF`, puis `largeur >= 2`
+  à la place de `largeur >= 8`. Les deux tombent.
+- *Soixante-dix sur la carte réseau* (`virtio_net.rs` 37, `mod.rs` 7,
+  `pci.rs` 8, `pc.rs` 12, `carte_porte.rs` 6). Les constantes : la fonction
+  offerte, la plage de l'adresse, la taille des files, l'en-tête, les deux
+  bornes, la cadence, l'emplacement, la ligne et les trois identifiants. Les
+  registres : les fonctions acceptées non masquées, la file choisie bornée
+  autrement, 0x0E relu à zéro, l'ISR qui ne s'efface pas, l'émission prise
+  pour la réception, un statut non nul pris pour une remise. La remise qui
+  garde l'attente ou la file choisie. Les files : la chaîne bornée au double,
+  les tampons inscriptibles émis, une lecture ratée ignorée, un en-tête seul
+  émis, l'émission sans câble ou au-delà de la borne, la longueur rendue,
+  une trame plus grande, les tampons en lecture seule remplis, une trame
+  livrée tronquée, la longueur sans l'en-tête, une écriture ratée ignorée,
+  un en-tête non nul, l'interruption oubliée, l'index des servies non écrit,
+  les deux modulos, l'index des disponibles décalé. La cadence : `<=`, la
+  livraison au travail retirée, le compte jamais remis. La carte : la ligne
+  jamais levée, jamais tenue, figée à 3 ; chacun des trois termes du réveil ;
+  le port fixe donné à la carte. Le bus : la fenêtre du disque qui ne passe
+  plus devant, l'emplacement vide qui répond, l'écriture de configuration
+  perdue. La façade : la file notifiée inversée, le câble jamais servi, la
+  réception jamais servie, la largeur non masquée, la note jamais posée, le
+  réveil sans la note, la note gardée d'une carte à l'autre, le câble
+  oublié au branchement, au rebranchement, au débranchement, et à la sonde.
+  Les exports : le câble au branchement, la place ignorée, les compteurs
+  confondus, l'adresse permutée, le câble de `carte_reseau_cable` et
+  l'attente.
+  **Soixante-cinq tombaient au premier passage. Les cinq survivants** : les
+  bornes de 512 et 1 514, que les tests ne jugeaient que par leurs
+  constantes (ils les écrivent maintenant en clair) ; le modulo de l'anneau
+  des servies, puisque la place 2 récrite sans modulo gardait la même tête
+  (chaque trame a maintenant sa longueur, et la place dit laquelle l'a
+  écrite) ; le câble débranché de `carte_reseau`, jamais essayé (le test
+  natif le branche d'abord débranché, puis lit le réveil). Le cinquième
+  était équivalent : `CartePc::port_ecrire` vérifiait une carte que la
+  fenêtre ouverte suppose déjà, et la vérification est retirée. Rejoués,
+  les quatre tombent.
+- *Sous Bun*, sur le module wasm32 : l'adresse permutée dans `carte_reseau`
+  et le pointeur de `carte_reseau_sortie_octets` décalé d'un octet. Les
+  deux tombent dans `the_network_card_answers_through_the_page_module`.
+
+**Ce qui reste.**
+- Le C ABI du câble, avec l'interface plus haut, et le passage de
+  `sonder_reseau` dans la boucle du flux « cœur » : aucun vrai noyau n'a
+  encore vu cette carte, ni `virtio_net` chargé sur elle.
+- `web/carte.js` ne sert pas encore les exports du réseau à `host.js`.
+- L'instantané de la carte, les formats d'image à tables, et le transport
+  MMIO du disque (non nécessaire) ; voir l'état des lieux.
+- Le flux « cœur » ne branche toujours pas la carte.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : la tablette, deuxième reprise après contrôle
 
 **La demande.** Le contrôle de la reprise précédente (39cc5aae) a trouvé six
