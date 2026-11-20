@@ -8,6 +8,160 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise après contrôle, six gardes de la façade que rien ne tenait
+
+**La demande.** Le second contrôle adverse de la tranche « la carte en
+natif ». Verdict : toujours aucun défaut de comportement, les 33 sabotages
+de la reprise ci-dessous tombent bien, mais treize mutants d'une ligne de
+plus passent sans qu'un test tombe, et font six gardes annoncées — par une
+doc, un titre de cas ou ce journal — que rien ne tient. Les treize ont été
+rejoués tels quels sur le code poussé (fd2f5e30) avant toute correction :
+les treize passent. Les six points sont réels, aucun n'est jugé faux.
+Aucun comportement de la carte ne change pour l'invité : ce qui change est
+ce que les tests tiennent, et une ligne de la façade (plus bas).
+
+**Ce qui n'allait pas, et ce qui est fait.**
+
+1. *Le vidage des deux disques.* `CartePc::vider` annonce « `false` si un
+   arrière l'a refusé », et le cas s'intitule « vider pousse chaque disque,
+   une fois chacun » ; aucun cas n'avait deux disques dont un seul refuse.
+   « Le dernier l'emporte » (l'ISO refuse, le disque vierge accepte : une
+   perte annoncée comme réussie) et « arrêt au premier refus » (le second
+   disque jamais poussé) passaient tous deux. Le cas branche maintenant
+   deux arrières qui comptent chacun leurs vidages, et rejoue les trois
+   refus possibles — le premier seul, le second seul, les deux : `vider`
+   rend `false`, et **chacun** a été poussé une fois. Un second disque seul
+   qui refuse se sait aussi.
+2. *Les arguments de `touche` et de `taper`.* Le cas de la façade ne les
+   appelait qu'avec la barre d'espace enfoncée : une façade qui ne
+   relâcherait jamais une touche, ou qui poserait toujours la même, n'était
+   vue par personne (quatre mutants). Cinq frappes passent maintenant par
+   chacune des deux, jugées par ce que l'invité lit au port `0x60` : espace
+   relâchée (`B9`), une autre touche enfoncée puis relâchée (`1E`, `9E`),
+   une touche étendue dans les deux sens, avec son préfixe (`E0 48`,
+   `E0 C8`) — tout de suite pour `touche`, au battement pour `taper`. Et la
+   file pleine : elle refuse l'enfoncement et le relâchement d'une touche
+   déjà relevée, prend **une fois** le relâchement de celle qu'elle laisse
+   enfoncée — la règle de l'i8042, vue par la façade.
+3. *Le contenu d'une lecture au-delà de 2 048 octets.* La plus grande
+   lecture comparée octet pour octet par la façade faisait 1 536 octets ;
+   celles de 64 Kio, 2 Mio et 4 Mio ne regardaient que le statut, et deux
+   octets au plus, sur une image qui se répète tous les 128 Kio. `TAMPON_GARDE`
+   annonce pourtant un tampon réemployé d'une requête à l'autre. Un cas neuf
+   lit un disque **sans période** (un mot de splitmix64 par rang de huit
+   octets : deux endroits ne se ressemblent pas) et compare chaque octet
+   rendu : 1 280 Kio ; 1 280 Kio ailleurs, par le même tampon (même adresse,
+   même capacité : rien n'est alloué) ; trois secteurs derrière une longue,
+   la suite de la RAM encore celle d'avant ; **64 Mio**, la plus grande
+   requête que le disque accepte, jusqu'au dernier secteur ; puis une
+   ordinaire par un tampon neuf.
+4. *Le remplacement de l'arrière au rebranchement* (« un disque déjà
+   branché là est remplacé »). Le seul cas qui rebranchait remettait la même
+   image et ne servait rien ensuite : garder l'ancien arrière passait, et le
+   disque rebranché annonçait la capacité du neuf en servant les octets de
+   l'ancien. Un cas neuf branche huit secteurs, y fait écrire l'invité,
+   rebranche seize secteurs d'autres octets au même emplacement, et lit : la
+   capacité, les octets changés, le secteur écrit sur l'ancien, un secteur
+   que l'ancien avait, deux qu'il n'avait pas — tous du neuf ; une écriture
+   s'y relit ; l'autre disque est toujours servi par le sien.
+5. *« Le premier n'a rien vu ».* Quand le second était notifié seul, le
+   premier n'avait aucune requête publiée : rien ne pouvait montrer qu'il
+   avait été servi à tort, alors que le cœur Swift ne sert un disque que sur
+   sa propre notification. Le cas publie maintenant une requête dans la
+   file du premier **sans la notifier** avant de notifier le second : elle
+   garde son `0xFF`, l'anneau des servies ne bouge pas, ses compteurs
+   restent à zéro, un `servir` de plus n'y change rien — et c'est elle que
+   la notification suivante du premier sert. Dans l'autre sens aussi : le
+   premier notifié seul, la requête publiée du second attend la sienne.
+6. *Le bord exact du disque.* Rien du tout, posé exactement à la fin, est
+   dans le disque (`FileDiskStore.inRange`, `MemoryDiskStore.range`) ; rien
+   du tout, posé un octet plus loin, n'y est pas. Aucun cas n'essayait une
+   longueur nulle, et le tirage de 6 000 opérations ne tombe pas sur ce
+   bord. `beyond_the_end_is_refused` le fait maintenant pour `lire` et
+   `ecrire`, sur la base entière et sur la base à queue boiteuse (la queue
+   est dans le fichier, pas dans le disque, même pour zéro octet), et le
+   cas du disque en mémoire tient les mêmes bords.
+
+**Au-delà de la liste**, ce que les mutants écartés ou non comptés du
+contrôle montraient quand même :
+
+- *L'écriture, par le même bout que la grande lecture.* Aucune écriture de
+  plus de 512 octets ne passait par la façade : tronquer une écriture à
+  2 048 octets en la disant réussie — une perte muette — ne faisait rien
+  tomber (rejoué sans le cas neuf : passe). Un cas neuf écrit 1 280 Kio
+  d'un trait et les relit avec le secteur d'avant et celui d'après, puis le
+  premier et le dernier du disque.
+- *`lever`* nommait toujours la ligne 9 : la 10 levée ne relève pas la 9,
+  et chacune retombe seule.
+- *`regler_heure`* n'était lue qu'à l'année : secondes, minutes, heures,
+  jour et mois le sont aussi.
+- *L'horloge consultée « pour `0x70` et `0x71`, et alors seulement »* : le
+  port voisin `0x72` et une largeur impossible ne la consultent pas. **Seul
+  changement de code de cette reprise** : `CartePc::port_lire` refuse une
+  largeur impossible avant de consulter l'horloge, comme `port_ecrire` le
+  faisait déjà — elle la lisait pour rien, puis rendait `None`. Sans effet
+  pour l'invité : un processeur ne fait pas d'`in` de trois octets.
+
+**Mesures.**
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+565 144 octets avant (fd2f5e30, reconstruit), **565 144** après, même
+SHA-256 (`cd5e23a3…c6ffd861`). La façade n'est pas dans la page.
+
+*Le prix des cas neufs* : la suite de `wisq-carte` passe de 0,69 s à 2,1 s
+en construction de mise au point, de 0,17 s à 0,24 s en `release`. Presque
+tout est la lecture de 64 Mio (1,9 s et 0,16 s seule) : un disque de
+65 Mio, une RAM de 66 Mio — celle que `virtio_blk` emploie déjà pour sa
+plus grande requête — et le tampon de 64 Mio que la façade rend aussitôt.
+
+**Tests.** Trois de plus, 748 → 751 côté Rust (`wisq-carte` : 122 → 125) :
+la lecture octet pour octet, la grande écriture, le disque rebranché. Six
+cas complétés, sans qu'aucune affirmation ne soit retirée : le vidage, la
+façade (clavier, lignes), le second disque, l'heure injectée, le disque en
+mémoire, la fin du disque sur fichier. Dans le cas du second disque, la
+requête du premier est publiée plus tôt qu'avant, et le dernier `servir`,
+dont le compte n'était pas lu, est maintenant affirmé.
+
+**Sabotages**, d'une ligne chacun, 37, tous tombent, l'arbre rendu identique
+après chacun :
+
+- *ceux du contrôle qui passaient (13)* : `vider`, le dernier l'emporte ;
+  `vider`, arrêt au premier refus ; `touche` et `taper` toujours enfoncées ;
+  `touche` et `taper` toujours la barre d'espace ; seuls les 2 048 premiers
+  octets d'une lecture viennent de l'arrière, ou seul le premier
+  mébioctet ; l'ancien arrière gardé au rebranchement ; une notification du
+  second sert aussi le premier, et sa variante `1 - rang` ; rien, posé à la
+  fin exacte, est refusé ; une écriture vide au-delà de la fin est
+  acceptée.
+- *les mêmes gardes, par l'autre bout (17)* : `vider` oublie le refus du
+  second ; rend vrai dès qu'un disque réussit ; ne pousse jamais le
+  second ; `touche` et `taper` toujours relâchées ; `touche` et `taper`
+  perdent le préfixe `E0` ; le dernier octet d'une lecture ne vient pas de
+  l'arrière ; le tampon ne grandit pas au-delà de 8 Mio ; l'arrière lit
+  toujours dans les 64 premiers Kio ; l'arrière branché à l'autre
+  emplacement ; la capacité annoncée reste celle de l'ancien ; une
+  notification du premier note aussi le second ; rien, posé au-delà, est
+  accepté par `dans_le_disque`, puis par `lire` ; le disque en mémoire
+  refuse rien-à-la-fin, puis accepte rien-dans-la-queue.
+- *ce que le contrôle avait écarté ou non compté, tenu maintenant (5)* :
+  `lever` lève aussi la ligne 9 ; `regler_heure` ramenée au jour ;
+  l'horloge lue au port `0x72` ; l'horloge lue avant le refus de largeur, à
+  l'écriture, puis à la lecture.
+- *l'écriture (2)* : seuls les 2 048 premiers octets vont à l'arrière ;
+  l'écriture retombe dans les 64 premiers Kio.
+
+**Ce que rien ne tient, toujours.** `fsync` dans `vider` de `DisqueFichier`
+et l'ordre des deux écritures, comme avant : aucun test ne peut faire
+échouer un `fsync`. Trois mutants du contrôle restent sans test parce
+qu'ils ne changent rien : une borne à 64 requêtes par `servir` (une file de
+128 descripteurs en porte 42 de trois), `secteur == u64::MAX` (aucun disque
+n'a ce secteur), et `taper_texte(…) & !1` (un caractère fait deux ou quatre
+frappes : le compte est toujours pair).
+
+**Ce qui reste.** La liste de la première entrée de la tranche, inchangée,
+et le compte publié passe à 3 816. Pour le flux « cœur » : rien ne change
+dans le trait `Arriere` ni dans les dix lignes du mode d'emploi.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : reprise après contrôle, les gardes annoncées que rien ne tenait
 
 **La demande.** Le contrôle adverse de la tranche ci-dessous. Verdict :
