@@ -8,6 +8,112 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : reprise de la carte réseau après contrôle
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente a
+relevé six points. Chacun a été vérifié dans le code et contre le Swift
+(`VirtioNet.swift`, `X86PCI.swift`, `X86Machine.attach(network:)`). Les six
+sont réels : trois gardes justes qu'aucun test ne jugeait, un écart au
+Swift, un cas limite, une doc périmée.
+- *Le modulo de la chaîne* (`VirtioNet::chaine`,
+  `index % queueLimit` du Swift) n'était tenu par rien. Le pilote des tests
+  réduit toujours la tête et le suivant modulo 256, et aucun cas ne publiait
+  une tête de 256 ou plus. Les « deux modulos » de l'entrée précédente
+  étaient ceux des anneaux.
+- *La garde `File::prete`* (`queue.ready`) survivait à `true`. Le cas de la
+  remise notifiait bien les deux files, mais l'index publié lu à l'adresse 2
+  valait zéro, et rien ne partait, garde ou pas.
+- *L'écriture de configuration vers un emplacement vide* : remplacer
+  `reseau_vise()` par « une carte est branchée » laissait passer toute
+  écriture vers 00:06.0, le pont, ou 00:04.0 sans second disque, jusqu'à la
+  commande, la fenêtre et la ligne de la carte. Seule la lecture d'un
+  emplacement vide était jugée.
+- *Le rebranchement gardait l'emplacement* : `brancher_reseau` ne
+  remplaçait que le périphérique. Le Swift fait
+  `bus.network = X86PCIHost(network: nic)` : un hôte neuf, fenêtre fermée,
+  commande nulle, ligne 3. Ici, la carte neuve répondait aussitôt dans la
+  fenêtre de l'ancienne, sur la ligne que le noyau avait écrite pour elle.
+  La doc disait « repart neuve ».
+- *Un tampon dont on ne lit rien perdait la trame.* `ram.lire(adresse, &mut [])`
+  rend faux hors de la RAM. Deux cas : un descripteur vide hors de la RAM, ou
+  un tampon hors de la RAM après une trame déjà pleine. Le Swift les envoie
+  (`copyOut` de zéro octet), et l'écart voulu (« pas de zéros que l'invité
+  n'a pas écrits ») ne s'applique pas, puisque rien n'est lu là. Même forme
+  dans `livrer` : un tampon inscriptible vide hors de la RAM coupait la
+  chaîne et perdait la trame. Linux ne pose pas de tels descripteurs, donc
+  l'effet pratique était faible.
+- *La doc de `CartePc::servir` et de `a_servir`* ne parlait pas de la carte
+  réseau, que les deux servent pourtant.
+
+**Ce qui est fait.**
+- `Pci::brancher_reseau` (neuf) pose la carte sur un emplacement neuf :
+  `Emplacement::nouveau(LIGNE_DU_RESEAU)`, sans mesure en cours.
+  `Carte::brancher_reseau` passe par lui, et `CartePc::brancher_reseau` par
+  elle. Les disques gardent leur emplacement, comme le Swift garde
+  `memory.bus`.
+- `VirtioNet::emettre` saute un tampon dont il n'y a rien à lire (`n == 0`),
+  où qu'il pointe. Un tampon hors de la RAM d'où il faut lire perd toujours
+  la trame. `livrer` saute de même un tampon vide au lieu de couper la
+  chaîne. Son `break` sur une trame déjà posée était équivalent : sans lui,
+  chaque tampon qui suit est vide, et sauté. Il est retiré, et il n'y a plus
+  de mutant équivalent à cet endroit.
+- Les docs de `servir`, `a_servir` et des deux `brancher_reseau` disent ce
+  que ces fonctions font.
+- Cinq cas neufs dans `virtio_net.rs` :
+  - `a_head_or_a_next_past_the_table_wraps_into_it` publie la tête 256 et
+    le suivant 257, puis la tête 0x0300 côté réception. La tête rendue est
+    celle que le pilote a publiée, telle quelle, comme `complete(head)`.
+  - `a_queue_without_a_page_reads_nothing` habille la RAM basse en anneau :
+    un index publié en 2, et un descripteur qui pointe une trame entière.
+    Il notifie avant la poignée de main, après une page retirée et après une
+    remise. Rien ne part, rien n'est perdu, la RAM reste intacte.
+  - `a_buffer_with_nothing_to_read_never_loses_the_frame` couvre les deux
+    cas du contrôle, le contre-cas (hors de la RAM et à lire : perdue) et
+    la réception.
+  - `a_configuration_write_elsewhere_leaves_the_card_alone` part d'une
+    carte ouverte en 0xC040. Il écrit la commande, la mesure, la fenêtre et
+    la ligne vers neuf adresses voisines : le pont, le disque, les
+    emplacements vides, une autre fonction et un autre bus de l'emplacement
+    cinq, une adresse sans son bit d'activation. La fenêtre répond encore,
+    et la carte garde sa commande, sa fenêtre et sa ligne 3.
+  - `a_replugged_card_gets_a_new_slot` rebranche une carte ouverte, en
+    mesure, sur la ligne 9. La fenêtre de l'ancienne est fermée, la commande
+    nulle, la BAR rend 1, et la ligne 3 est tenue. Le disque n'a pas bougé,
+    et la carte rouverte répond de sa nouvelle adresse.
+- `plugging_order_and_a_new_card` (façade) vérifie de plus que la fenêtre
+  est fermée après le rebranchement.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 586 469 octets
+  avant, 586 559 après (+90). gzip -9 passe de 115 565 à 115 596 (+31). Le
+  sha commence par 3470e2cb66f31cc9.
+- Tests : wisq-carte passe de 211 à 216 cas (0,33 s en release), et Rust de
+  843 à 848. Le total publié passe de 3 908 à 3 913 (`recompte.sh`).
+
+**Sabotages** : dix sabotages d'une ligne, rejoués par un script qui
+restaure chaque fichier (`git diff` vide après la série).
+- *Les trois du contrôle*, qui survivaient : le modulo de la chaîne retiré,
+  `prete` toujours vraie, l'écriture de configuration sans test
+  d'emplacement. Ils tombent maintenant, chacun dans son cas neuf.
+- *Le rebranchement* :
+  - l'emplacement gardé (`self.reseau.clone()`) tombe dans
+    `a_replugged_card_gets_a_new_slot` et `plugging_order_and_a_new_card` ;
+  - l'ancien code de `Carte::brancher_reseau` aussi ;
+  - un emplacement neuf sur la ligne 9 tombe dans quatre cas.
+- *Le tampon vide* : la garde retirée dans `emettre`, la garde retirée dans
+  `livrer` (c'est l'ancien code), et `continue` remplacé par `break` dans
+  `livrer`. Les trois tombent dans `a_buffer_with_nothing_to_read_never_loses_the_frame`.
+- *Le `break` de `livrer`*, retiré avant la correction : il survit, comme
+  au contrôle. Il était équivalent, et il est supprimé.
+
+**Ce qui reste.** Rien de neuf. Le reste de l'entrée précédente vaut
+toujours : le C ABI du câble, le passage de `sonder_reseau` dans la boucle
+du flux « cœur », `web/carte.js`, et les instantanés. Le disque se rebranche
+toujours en gardant son emplacement (`Carte::brancher`), alors que le Swift
+lui donne aussi un hôte neuf (`attach(device:)`). Ce n'est pas l'objet de
+cette reprise, et le changer toucherait la règle des noms qui continuent
+d'un disque à l'autre. C'est noté pour la bascule.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : la carte réseau virtio, et l'état des lieux de la bascule
 
 **La demande.** Porter `VirtioNet` du cœur Swift comme périphérique de la
