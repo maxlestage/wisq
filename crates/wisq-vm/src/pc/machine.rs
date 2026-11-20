@@ -1,0 +1,1105 @@
+//! **La machine PC** : le processeur, sa mémoire, les périphériques hérités,
+//! et la boucle qui exécute, sert le matériel et sait dormir sur `hlt` — le
+//! port de `X86Machine.swift` et de `X86Core.run`.
+//!
+//! **Ce que la boucle garde du cœur Swift, à l'instruction près**, pour que
+//! les deux cœurs se comparent : le temps de l'invité est le compteur
+//! d'instructions (`retirees + attente`), un battement du 8253 vaut
+//! `instructions_par_battement` instructions, le matériel est regardé toutes
+//! les deux cent cinquante-six instructions, et une machine arrêtée sur `hlt`
+//! saute jusqu'à la prochaine échéance de l'horloge.
+
+use std::collections::BTreeMap;
+
+use crate::x86::{
+    decode, decode_extended, Cpu, Decoded, Extended, ExtendedFault, Op, Segment, VectorFault,
+    Width, ARITHMETIC, CF, IF,
+};
+use crate::x86_paging::{Access, Unmapped};
+
+use super::chargeur::{self, Ecran, Placement, Refus};
+use super::herites::{Herites, INSTRUCTIONS_PAR_BATTEMENT};
+use super::memoire;
+use super::systeme::{
+    self, cpuid, drapeaux_permis, faute_de_page, Exception, Livraison, Systeme, EFER_LME, IOPL,
+};
+
+/// **D'autres périphériques, derrière les ports que la carte héritée ne sert
+/// pas** : c'est par là que la `Carte` de `wisq-page` (clavier, PCI, disque,
+/// écran) se branchera. Les noms sont les siens.
+pub trait Peripheriques {
+    /// Lire un port. `None` quand personne n'y répond.
+    fn port_lire(&mut self, port: u16, largeur: u8, ram: &mut [u8]) -> Option<u32>;
+    /// Écrire un port. `false` quand personne n'y répond.
+    fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut [u8]) -> bool;
+    /// Les lignes d'interruption levées, un bit par ligne de 0 à 15, à niveau.
+    fn lignes(&self) -> u16;
+    /// Quelque chose peut-il arriver sans que l'invité fasse rien ? Tant que
+    /// oui, une machine arrêtée sur `hlt` n'est pas éteinte.
+    fn reveil(&self) -> bool {
+        false
+    }
+    /// Le temps passe : `tics` battements du 8253 depuis le démarrage.
+    fn battre(&mut self, _tics: u64) {}
+}
+
+/// **D'où `rdrand` et `rdseed` tirent leurs nombres** — le port de
+/// `X86Entropy.swift`.
+///
+/// Sans aléa matériel, le générateur du noyau ne mélange que des instants
+/// comptés en instructions, et il met du temps à se dire prêt : mesuré sur
+/// Alpine 6.18, 43 millions d'instructions de plus avant `SLUB`, passées à
+/// réextraire son réservoir à chaque nombre demandé, et aucun « crng init
+/// done » avant le shell.
+///
+/// Deux sources, et le choix est celui de qui construit la machine : une
+/// suite fixée par sa graine (le défaut — deux exécutions du même noyau
+/// rendent la même chose, sinon un écart ne se rejoue pas), ou ce que l'hôte
+/// fournit.
+pub enum Alea {
+    /// SplitMix64, de cette graine : la même graine rend les mêmes nombres.
+    Fixe(u64),
+    /// Le générateur de l'hôte.
+    Hote(Box<dyn FnMut() -> u64>),
+}
+
+/// La graine d'une machine à qui l'on n'a rien donné : « wisq_rng », celle du
+/// cœur Swift, pour que les deux cœurs tirent la même suite.
+pub const GRAINE_REPRODUCTIBLE: u64 = 0x7769_7371_5F72_6E67;
+
+impl Alea {
+    /// Le nombre suivant, sur soixante-quatre bits.
+    pub fn suivant(&mut self) -> u64 {
+        match self {
+            Self::Fixe(etat) => {
+                *etat = etat.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut melange = *etat;
+                melange = (melange ^ (melange >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                melange = (melange ^ (melange >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                melange ^ (melange >> 31)
+            }
+            Self::Hote(source) => source(),
+        }
+    }
+}
+
+/// Comment un `executer` s'est terminé.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Issue {
+    /// Le budget s'est épuisé : la machine tourne ou dort encore.
+    Arretee,
+    /// L'invité s'est arrêté lui-même, et plus rien ne peut le réveiller.
+    Eteinte,
+    /// Le cœur a refusé quelque chose. Nommé, parce qu'un arrêt sans nom
+    /// envoie chercher partout.
+    Faute(String),
+}
+
+/// Ce qui interrompt le cours d'une instruction.
+enum Evenement {
+    /// Une faute à livrer au noyau invité.
+    Exception(Exception),
+    /// Un arrêt de la machine, avec son nom.
+    Arret(String),
+}
+
+impl From<Exception> for Evenement {
+    fn from(exception: Exception) -> Self {
+        Self::Exception(exception)
+    }
+}
+
+/// Une instruction lue : par le décodeur que l'émetteur partage, ou par le
+/// second, que seule cette machine consulte (`x86_extended.rs`).
+#[derive(Clone, Copy)]
+enum Lue {
+    Commune(Decoded),
+    Etendue(Extended),
+}
+
+impl Lue {
+    fn longueur(&self) -> usize {
+        match self {
+            Self::Commune(instruction) => instruction.length,
+            Self::Etendue(instruction) => instruction.length,
+        }
+    }
+}
+
+/// Lire une instruction, par l'un ou l'autre décodeur.
+fn lire(octets: &[u8]) -> Option<Lue> {
+    decode(octets)
+        .map(Lue::Commune)
+        .or_else(|| decode_extended(octets).map(Lue::Etendue))
+}
+
+/// **Le décodage a-t-il échoué faute d'octets ?** La question de
+/// `x86::cut_short`, posée aux deux décodeurs : on essaie chaque valeur du
+/// premier octet manquant, des zéros derrière, et l'instruction est coupée si
+/// l'une de ces suites se lit plus longue que ce qu'on avait.
+fn coupee(octets: &[u8]) -> bool {
+    let ici = octets.len();
+    if ici >= 15 {
+        return false;
+    }
+    let mut fenetre = [0u8; 15];
+    fenetre[..ici].copy_from_slice(octets);
+    (0..=u8::MAX).any(|premier| {
+        fenetre[ici] = premier;
+        lire(&fenetre).is_some_and(|lue| lue.longueur() > ici)
+    })
+}
+
+/// Une case du cache de décodage : l'adresse physique de l'instruction, ses
+/// octets, et ce que le décodeur en a lu.
+///
+/// **Vérifiée par comparaison d'octets**, comme celui du cœur Swift : une
+/// instruction réécrite (les alternatives du noyau, un module chargé, une page
+/// rendue puis redonnée) ne se retrouve simplement pas, et rien n'est à vider.
+#[derive(Clone, Copy)]
+struct Case {
+    /// L'adresse physique, plus un : zéro veut dire « vide ».
+    etiquette: u64,
+    /// Les octets de l'instruction, petit-boutistes, le reste à zéro.
+    octets: u128,
+    /// Les bits de `octets` qui comptent : huit par octet de l'instruction.
+    masque: u128,
+    lue: Lue,
+}
+
+const CASES: usize = 1 << 16;
+
+/// Où la pagination d'identité du démarrage est posée : hors du chemin du
+/// noyau, qui commence à seize mébioctets, et hors de la page zéro.
+pub const RACINE_DES_TABLES: u64 = 0x5_0000;
+/// La pile du démarrage, sous le premier mébioctet.
+pub const PILE_DU_DEMARRAGE: u64 = 0x9_0000;
+
+/// Une machine PC complète.
+pub struct Machine {
+    pub cpu: Cpu,
+    pub systeme: Systeme,
+    pub herites: Herites,
+    /// La RAM de l'invité, en octets, trou non compris.
+    pub ram: u64,
+    /// Ce que l'invité a vraiment exécuté. Une instruction qui faute n'y
+    /// compte pas, et le temps passé dans un `hlt` non plus.
+    pub retirees: u64,
+    /// Le temps passé à attendre sur `hlt`, en instructions : l'autre moitié
+    /// de l'horloge de l'invité.
+    pub attente: u64,
+    /// Le processeur est arrêté sur `hlt`, en attente d'une interruption.
+    pub arretee: bool,
+    /// Combien d'instructions valent un battement du 8253.
+    pub instructions_par_battement: u64,
+    /// Les autres périphériques, quand il y en a.
+    pub peripheriques: Option<Box<dyn Peripheriques>>,
+    /// La source de `rdrand` et `rdseed`.
+    pub alea: Alea,
+    /// **Ce qu'un programme a demandé et que ce processeur n'a pas** : il a
+    /// reçu son « Illegal instruction », la machine continue, et l'hôte peut
+    /// dire pourquoi.
+    pub refus: Vec<String>,
+    /// Les ports où personne ne répond, et combien de fois on y a frappé :
+    /// pour qui cherche pourquoi un pilote ne trouve pas son périphérique.
+    pub ports_muets: BTreeMap<u16, u64>,
+    /// `sti` retarde les interruptions d'une instruction : c'est l'adresse de
+    /// celle-là. Sans ce retard, une interruption passerait entre `sti` et
+    /// `hlt`, et le noyau s'endormirait sur un réveil déjà consommé.
+    ombre: Option<u64>,
+    cache: Vec<Case>,
+    /// La page d'instructions courante : son étiquette (la page virtuelle,
+    /// l'anneau, « valide »), sa page physique, et le compte de vidages du
+    /// tampon de traduction auquel elle a été prise.
+    page_cle: u64,
+    page_physique: u64,
+    page_generation: u64,
+    /// La page zéro telle que le chargeur l'a posée, pour qui veut la relire.
+    placement: Option<Placement>,
+}
+
+impl Machine {
+    /// Une machine de `ram` octets (au moins le plancher), éteinte.
+    pub fn nouvelle(ram: u64) -> Self {
+        let ram = ram.max(memoire::RAM_MINIMALE);
+        let mut cpu = Cpu::default().with_translation_cache();
+        memoire::brancher(&mut cpu, ram);
+        cpu.mxcsr = 0x1F80;
+        cpu.fpu_control = 0x037F;
+        Self {
+            cpu,
+            systeme: Systeme::default(),
+            herites: Herites::default(),
+            ram,
+            retirees: 0,
+            attente: 0,
+            arretee: false,
+            instructions_par_battement: INSTRUCTIONS_PAR_BATTEMENT,
+            peripheriques: None,
+            alea: Alea::Fixe(GRAINE_REPRODUCTIBLE),
+            refus: Vec::new(),
+            ports_muets: BTreeMap::new(),
+            ombre: None,
+            cache: vec![
+                Case {
+                    etiquette: 0,
+                    octets: 0,
+                    masque: 0,
+                    lue: Lue::Commune(Decoded::empty()),
+                };
+                // Une case de plus, hors de portée des adresses : celle de
+                // l'instruction à cheval sur deux pages, qui ne se garde pas.
+                CASES + 1
+            ],
+            page_cle: 0,
+            page_physique: 0,
+            page_generation: 0,
+            placement: None,
+        }
+    }
+
+    /// **Charger un noyau**, et éventuellement un initramfs, puis mettre le
+    /// processeur dans l'état que le protocole de démarrage 64 bits exige : le
+    /// mode long actif, la pagination en place, RSI sur la page zéro.
+    pub fn charger(
+        &mut self,
+        noyau: &[u8],
+        ligne: Option<&str>,
+        initramfs: Option<&[u8]>,
+        ecran: Option<Ecran>,
+    ) -> Result<Placement, Refus> {
+        let placement = chargeur::charger(
+            noyau,
+            &mut self.cpu.memory,
+            self.ram,
+            ligne.unwrap_or(chargeur::LIGNE_PAR_DEFAUT),
+            initramfs,
+            ecran,
+        )?;
+        // Quatre entrées de un gibioctet suffisent à couvrir les quatre
+        // premiers, là où des pages de quatre kibioctets en demanderaient un
+        // million. Le noyau posera les siennes dès qu'il en aura besoin.
+        let repertoire = RACINE_DES_TABLES + 0x1000;
+        let presente_et_inscriptible = 0x3;
+        let grande = 1 << 7;
+        let memoire = &mut self.cpu.memory;
+        memoire.write(
+            RACINE_DES_TABLES,
+            Width::Qword,
+            repertoire | presente_et_inscriptible,
+        );
+        for gibioctet in 0..4u64 {
+            memoire.write(
+                repertoire + gibioctet * 8,
+                Width::Qword,
+                (gibioctet << 30) | presente_et_inscriptible | grande,
+            );
+        }
+        self.cpu.regs = [0; 16];
+        self.cpu.rip = placement.entree;
+        self.cpu.flags.write(0);
+        self.cpu.segments = [0; 6];
+        self.systeme = Systeme::default();
+        self.cpu.control = [0; 9];
+        self.cpu.control[3] = RACINE_DES_TABLES;
+        self.cpu.control[4] = 1 << 5; // PAE
+        self.cpu.efer = EFER_LME;
+        self.cpu.control[0] = (1 << 31) | 1; // PG et PE
+        systeme::rafraichir_le_mode_long(&mut self.cpu);
+        self.cpu.flush_translations();
+        self.cpu.regs[6] = placement.page_zero;
+        self.cpu.regs[4] = PILE_DU_DEMARRAGE;
+        self.arretee = false;
+        self.placement = Some(placement);
+        Ok(placement)
+    }
+
+    /// Où le chargeur a tout posé, une fois un noyau chargé.
+    pub fn placement(&self) -> Option<Placement> {
+        self.placement
+    }
+
+    /// Le temps de l'invité, en battements du 8253.
+    pub fn tics(&self) -> u64 {
+        (self.retirees.wrapping_add(self.attente)) / self.instructions_par_battement
+    }
+
+    /// Donner des octets tapés au port série de l'invité.
+    pub fn taper(&mut self, octets: &[u8]) {
+        self.herites.serie.entree.extend(octets.iter().copied());
+    }
+
+    /// Prendre ce que l'invité a écrit sur son port série.
+    pub fn sortie(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.herites.serie.sortie)
+    }
+
+    /// Vrai quand quelque chose peut arriver sans que l'invité fasse rien.
+    fn armes(&self) -> bool {
+        self.herites.armes()
+            || self
+                .peripheriques
+                .as_ref()
+                .is_some_and(|autres| autres.reveil())
+    }
+
+    /// **Lever ce qui est dû, puis livrer la ligne la plus prioritaire.**
+    ///
+    /// Appelée périodiquement plutôt qu'à chaque instruction : un vrai
+    /// processeur regarde sa broche entre deux instructions, et le faire ici
+    /// coûterait un test sur le chemin le plus chaud pour un événement qui
+    /// arrive toutes les dizaines de milliers d'instructions. Le prix est une
+    /// latence bornée, qu'aucun noyau ne distingue d'une horloge un peu moins
+    /// précise.
+    pub fn servir(&mut self) -> Result<(), String> {
+        let tics = self.tics();
+        let lignes = match self.peripheriques.as_mut() {
+            Some(autres) => {
+                autres.battre(tics);
+                autres.lignes()
+            }
+            None => 0,
+        };
+        self.herites.lever(tics, lignes);
+        if !self.cpu.flags.interrupts_enabled() {
+            return Ok(());
+        }
+        // L'ombre de `sti` ne couvre qu'une instruction : celle où RIP se
+        // trouve encore. Ailleurs, elle est passée.
+        if let Some(ombre) = self.ombre.take() {
+            if ombre == self.cpu.rip {
+                self.ombre = Some(ombre);
+                return Ok(());
+            }
+        }
+        let Some(candidat) = self.herites.candidat() else {
+            return Ok(());
+        };
+        match self
+            .systeme
+            .entrer(&mut self.cpu, candidat.vecteur, 0, false)
+        {
+            Ok(()) => {
+                // La demande n'est retirée **que** si elle a été livrée.
+                self.herites.livree(candidat);
+                self.arretee = false; // une interruption réveille un `hlt`
+                Ok(())
+            }
+            // Pas de porte : la demande reste, et le noyau la trouvera quand
+            // il aura posé la sienne.
+            Err(Livraison::SansPorte) => Ok(()),
+            Err(pourquoi) => Err(format!(
+                "l'interruption {:#x} n'a pas pu être livrée ({pourquoi:?}), rip {:#x}",
+                candidat.vecteur, self.cpu.rip
+            )),
+        }
+    }
+
+    /// Combien d'instructions d'attente avant que le 8253 lève sa prochaine
+    /// interruption. Au moins une. Sans canal zéro armé, rien de ce qui peut
+    /// réveiller la machine ne dépend du temps, et l'on avance d'un tour.
+    fn pas_d_attente(&self) -> u64 {
+        let Some(echeance) = self.herites.minuterie.prochaine() else {
+            return 1;
+        };
+        let reveil = echeance.wrapping_mul(self.instructions_par_battement);
+        let maintenant = self.retirees.wrapping_add(self.attente);
+        if reveil > maintenant {
+            reveil - maintenant
+        } else {
+            1
+        }
+    }
+
+    /// **Exécuter jusqu'à `budget` instructions**, le temps d'attente compris,
+    /// et rendre combien l'ont été. S'arrête plus tôt quand le processeur est
+    /// arrêté sur un `hlt` que rien ne peut réveiller.
+    pub fn tourner(&mut self, budget: u64) -> Result<u64, String> {
+        let mut faites = 0u64;
+        while faites < budget {
+            if faites & 0xFF == 0 && self.armes() {
+                self.servir()?;
+            }
+            if self.arretee {
+                if !(self.armes() && self.cpu.flags.interrupts_enabled()) {
+                    break;
+                }
+                self.servir()?;
+                if !self.arretee {
+                    continue;
+                }
+                let pas = self.pas_d_attente().min(budget - faites);
+                self.attente = self.attente.wrapping_add(pas);
+                faites += pas;
+                continue;
+            }
+            match self.pas() {
+                Ok(()) => {}
+                Err(Evenement::Exception(exception)) => self.livrer(exception)?,
+                Err(Evenement::Arret(pourquoi)) => return Err(pourquoi),
+            }
+            faites += 1;
+        }
+        Ok(faites)
+    }
+
+    /// **Faire tourner l'invité** jusqu'à ce qu'il s'arrête ou que le budget
+    /// s'épuise. Le budget compte le temps, pas seulement le travail : un
+    /// processeur arrêté sur un `hlt` ne retire aucune instruction, et ne
+    /// compter que celles-là ferait tourner cette boucle sans fin autour d'un
+    /// invité qui dort.
+    pub fn executer(&mut self, budget: u64) -> Issue {
+        const TRANCHE: u64 = 200_000;
+        let mut reste = budget;
+        while reste > 0 {
+            match self.tourner(TRANCHE.min(reste)) {
+                // **Une tranche qui n'exécute rien veut dire que plus rien ne
+                // peut arriver** : un `hlt` sans horloge armée, ou avec les
+                // interruptions masquées.
+                Ok(0) => return Issue::Eteinte,
+                Ok(faites) => reste -= faites.min(reste),
+                Err(pourquoi) => return Issue::Faute(pourquoi),
+            }
+        }
+        Issue::Arretee
+    }
+
+    /// Livrer une faute au noyau invité. RIP pointe encore sur l'instruction
+    /// fautive : c'est l'adresse à reprendre après `iretq`.
+    fn livrer(&mut self, exception: Exception) -> Result<(), String> {
+        if let Exception::FauteDePage { adresse, .. } = exception {
+            self.cpu.control[2] = adresse;
+        }
+        match self
+            .systeme
+            .entrer(&mut self.cpu, exception.vecteur(), exception.code(), false)
+        {
+            Ok(()) => {
+                self.arretee = false;
+                Ok(())
+            }
+            Err(pourquoi) => Err(format!(
+                "{exception:x?} à rip {:#x}, sans livraison possible ({pourquoi:x?})",
+                self.cpu.rip
+            )),
+        }
+    }
+
+    /// Les octets de l'instruction à RIP, autant qu'il s'en lit, en
+    /// hexadécimal : pour nommer ce qu'on refuse.
+    fn octets_a_rip(&mut self) -> String {
+        let mut texte = String::new();
+        for rang in 0..15u64 {
+            let Ok(octet) = self
+                .cpu
+                .fetch_memory(self.cpu.rip.wrapping_add(rang), Width::Byte)
+            else {
+                break;
+            };
+            texte.push_str(&format!("{octet:02x} "));
+        }
+        self.cpu.faulted = false;
+        self.cpu.unmapped = None;
+        texte.trim_end().to_string()
+    }
+
+    /// Une instruction que ce cœur ne sait pas exécuter. **Dans un programme :
+    /// `#UD`, et le programme seul en meurt** — un « Illegal instruction »,
+    /// comme sur un processeur qui ne l'a pas —, et le nom est gardé. **Dans le
+    /// noyau, elle arrête la machine avec son nom** : c'est un trou de ce cœur,
+    /// et le livrer ferait croire au noyau que son propre code est faux.
+    fn refuser(&mut self, quoi: &str) -> Evenement {
+        let octets = self.octets_a_rip();
+        let nom = format!("{quoi} ({octets})");
+        if self.cpu.privilege() == 3 {
+            self.refus.push(nom);
+            Evenement::Exception(Exception::Indefinie)
+        } else {
+            Evenement::Arret(format!(
+                "{nom} à rip {:#x}, en anneau {}",
+                self.cpu.rip,
+                self.cpu.privilege()
+            ))
+        }
+    }
+
+    /// Ce que le dernier accès refusé de `cpu` veut dire : une faute de page à
+    /// livrer, ou — hors de la RAM — un arrêt nommé.
+    fn faute_d_acces(&mut self) -> Evenement {
+        match self.cpu.unmapped {
+            Some(Unmapped::Outside { address }) | Some(Unmapped::TableOutside { address, .. }) => {
+                self.cpu.faulted = false;
+                self.cpu.unmapped = None;
+                Evenement::Arret(format!(
+                    "un accès hors de la mémoire (adresse {address:#x}) à rip {:#x}",
+                    self.cpu.rip
+                ))
+            }
+            _ => Evenement::Exception(faute_de_page(&mut self.cpu)),
+        }
+    }
+
+    /// **Trouver l'instruction à RIP** : sa case du cache, vérifiée contre les
+    /// octets en mémoire, ou un décodage neuf. Rend la **place** de la case :
+    /// l'instruction s'y lit sur place, sans être recopiée à chaque pas.
+    #[inline(always)]
+    fn chercher(&mut self) -> Result<usize, Evenement> {
+        let rip = self.cpu.rip;
+        let dans_la_page = rip & 0xFFF;
+        // La page d'instructions courante se garde hors du tampon : presque
+        // toutes les instructions suivent la précédente dans la même page.
+        let cle = (rip & !0xFFF) | (u64::from(self.cpu.segments[1] & 3) << 1) | 1;
+        let generation = self.cpu.tlb.as_ref().map_or(0, |tlb| tlb.generation);
+        if self.page_cle != cle || self.page_generation != generation {
+            match self.cpu.translate_cached(rip, Access::Fetch) {
+                Ok(physique) => {
+                    self.page_physique = physique & !0xFFF;
+                    self.page_generation = self.cpu.tlb.as_ref().map_or(0, |tlb| tlb.generation);
+                    self.page_cle = if self.cpu.paging() { cle } else { 0 };
+                }
+                Err(pourquoi) => {
+                    self.cpu.unmapped = Some(pourquoi);
+                    return Err(self.faute_d_acces());
+                }
+            }
+        }
+        let physique = self.page_physique | dans_la_page;
+        let memoire = &self.cpu.memory.bytes;
+        let debut = physique as usize;
+        let emplacement = debut & (CASES - 1);
+        // Le chemin chaud : seize octets lus d'un coup, comparés sous le
+        // masque de la case.
+        if let Some(seize) = memoire.get(debut..debut.wrapping_add(16)) {
+            let lus = u128::from_le_bytes(seize.try_into().expect("seize octets"));
+            let case = &self.cache[emplacement];
+            if case.etiquette == physique.wrapping_add(1) && (lus ^ case.octets) & case.masque == 0
+            {
+                return Ok(emplacement);
+            }
+        }
+        self.decoder(physique, dans_la_page as usize)
+    }
+
+    /// Le chemin lent de `chercher` : lire les octets, décoder, garder.
+    #[inline(never)]
+    fn decoder(&mut self, physique: u64, dans_la_page: usize) -> Result<usize, Evenement> {
+        let rip = self.cpu.rip;
+        let disponibles = if self.cpu.paging() {
+            (0x1000 - dans_la_page).min(15)
+        } else {
+            15
+        };
+        let debut = physique as usize;
+        let memoire = &self.cpu.memory.bytes;
+        let Some(octets) = memoire.get(debut..(debut + disponibles).min(memoire.len())) else {
+            return Err(Evenement::Arret(format!(
+                "une instruction hors de la mémoire (adresse physique {physique:#x}) à rip {rip:#x}"
+            )));
+        };
+        if self.cpu.memory_hole.1 != 0
+            && physique.wrapping_sub(self.cpu.memory_hole.0) < self.cpu.memory_hole.1
+        {
+            return Err(Evenement::Arret(format!(
+                "une instruction dans le trou des périphériques (adresse physique {physique:#x}) à rip {rip:#x}"
+            )));
+        }
+        if let Some(lue) = lire(octets) {
+            let longueur = lue.longueur();
+            let mut garde = [0u8; 16];
+            garde[..longueur].copy_from_slice(&octets[..longueur]);
+            let emplacement = debut & (CASES - 1);
+            self.cache[emplacement] = Case {
+                etiquette: physique.wrapping_add(1),
+                octets: u128::from_le_bytes(garde),
+                masque: (1u128 << (8 * longueur)) - 1,
+                lue,
+            };
+            return Ok(emplacement);
+        }
+        // **L'instruction déborde-t-elle sur la page suivante ?** Seulement
+        // alors celle-ci se charge — et peut fauter, à sa propre adresse.
+        if octets.len() < 15 && coupee(octets) {
+            let mut fenetre = [0u8; 15];
+            let ici = octets.len();
+            fenetre[..ici].copy_from_slice(octets);
+            let suivante = (rip & !0xFFF).wrapping_add(0x1000);
+            for (rang, case) in fenetre.iter_mut().enumerate().skip(ici) {
+                match self
+                    .cpu
+                    .fetch_memory(suivante.wrapping_add((rang - ici) as u64), Width::Byte)
+                {
+                    Ok(octet) => *case = octet as u8,
+                    Err(_) if rang == ici => return Err(self.faute_d_acces()),
+                    Err(_) => {
+                        self.cpu.faulted = false;
+                        self.cpu.unmapped = None;
+                        break;
+                    }
+                }
+            }
+            if let Some(lue) = lire(&fenetre) {
+                // Hors du cache : ses octets ne sont pas d'un seul tenant, et
+                // la comparaison du chemin chaud ne saurait pas les vérifier.
+                self.cache[CASES].lue = lue;
+                return Ok(CASES);
+            }
+        }
+        Err(self.refuser("une instruction que ce cœur ne lit pas"))
+    }
+
+    /// **Un pas** : trouver l'instruction, l'exécuter, avancer.
+    #[inline(always)]
+    fn pas(&mut self) -> Result<(), Evenement> {
+        let emplacement = self.chercher()?;
+        // L'instruction se lit dans sa case : le processeur et le cache sont
+        // deux champs, et l'emprunt de l'un laisse l'autre libre.
+        let instruction = match &self.cache[emplacement].lue {
+            Lue::Commune(instruction) => instruction,
+            Lue::Etendue(instruction) => {
+                let instruction = *instruction;
+                return match self.cpu.execute_extended(&instruction) {
+                    Ok(()) => {
+                        self.cpu.rip = self.cpu.rip.wrapping_add(instruction.length as u64);
+                        self.retirees = self.retirees.wrapping_add(1);
+                        Ok(())
+                    }
+                    Err(ExtendedFault::Memory) => Err(self.faute_d_acces()),
+                    Err(ExtendedFault::ReservedControl) => {
+                        Err(Exception::ProtectionGenerale(0).into())
+                    }
+                };
+            }
+        };
+        self.cpu.jumped = false;
+        let longueur = instruction.length as u64;
+        match instruction.op {
+            // Tout ce que l'interpréteur nu refuse, et qu'une machine fait.
+            Op::PortIn
+            | Op::PortOut
+            | Op::ReadTimestamp
+            | Op::ReadTimestampAndProcessor
+            | Op::CpuId
+            | Op::ReadModelRegister
+            | Op::WriteModelRegister
+            | Op::FarReturn
+            | Op::InterruptReturn
+            | Op::SoftwareInterrupt
+            | Op::LoadDescriptorTable { .. }
+            | Op::StoreDescriptorTable { .. }
+            | Op::SwapGs
+            | Op::LoadKernelGs
+            | Op::HypervisorCall { .. }
+            | Op::InvalidatePcid
+            | Op::LoadTaskRegister
+            | Op::SystemCall
+            | Op::SystemReturn
+            | Op::LoadLocalDescriptorTable
+            | Op::ReadDebugRegister { .. }
+            | Op::WriteDebugRegister { .. }
+            | Op::LoadSegment { .. }
+            | Op::StoreSegment { .. }
+            | Op::InterruptFlag(_)
+            | Op::Halt
+            | Op::FpuInit
+            | Op::FxSave
+            | Op::FxRestore
+            | Op::PushFlags
+            | Op::PopFlags
+            | Op::Undefined
+            | Op::InvalidatePage
+            | Op::ReadControlRegister { .. }
+            | Op::WriteControlRegister { .. } => {
+                let instruction = *instruction;
+                self.systeme(&instruction)?;
+            }
+            // **`rdrand` et `rdseed`, avec une source.** L'interpréteur nu
+            // répond « rien de disponible » ; la machine en a une, et le dit :
+            // la retenue posée, les cinq autres drapeaux effacés.
+            Op::ReadRandom { .. } => {
+                let (registre, largeur) = (instruction.dst, instruction.width);
+                let nombre = self.alea.suivant();
+                self.cpu.set(registre, largeur, false, nombre);
+                let drapeaux = self.cpu.flags.read();
+                self.cpu.flags.write((drapeaux & !ARITHMETIC) | CF);
+            }
+            Op::Vector(_) => match self.cpu.execute_vector(instruction) {
+                Ok(()) => {}
+                Err(VectorFault::Memory) => return Err(self.faute_d_acces()),
+                Err(VectorFault::ReservedControl) => {
+                    return Err(Exception::ProtectionGenerale(0).into())
+                }
+            },
+            _ => {
+                self.cpu.execute(instruction);
+                if self.cpu.faulted {
+                    let instruction = *instruction;
+                    return Err(self.faute_d_execution(&instruction));
+                }
+            }
+        }
+        if !self.cpu.jumped {
+            self.cpu.rip = self.cpu.rip.wrapping_add(longueur);
+        }
+        self.retirees = self.retirees.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Ce que `faulted` veut dire après un `execute` : une faute de page, une
+    /// division qui lève, ou une instruction que l'interpréteur refuse.
+    #[inline(never)]
+    fn faute_d_execution(&mut self, instruction: &Decoded) -> Evenement {
+        if self.cpu.unmapped.is_some() {
+            return self.faute_d_acces();
+        }
+        self.cpu.faulted = false;
+        match instruction.op {
+            Op::Divide { .. } => Exception::Division.into(),
+            autre => self.refuser(&format!("{autre:?}, que l'interpréteur n'exécute pas")),
+        }
+    }
+
+    /// L'adresse de l'opérande mémoire d'une instruction.
+    fn adresse(&self, instruction: &Decoded) -> u64 {
+        let adresse = instruction
+            .memory
+            .expect("une instruction à opérande mémoire");
+        self.cpu
+            .effective_address(&adresse, self.cpu.after(instruction))
+    }
+
+    /// Lire en mémoire pour une instruction de système, la faute de page
+    /// prête à livrer.
+    fn lire(&mut self, adresse: u64, largeur: Width) -> Result<u64, Evenement> {
+        match self.cpu.read_memory(adresse, largeur) {
+            Ok(valeur) => Ok(valeur),
+            Err(_) => Err(self.faute_d_acces()),
+        }
+    }
+
+    fn ecrire(&mut self, adresse: u64, largeur: Width, valeur: u64) -> Result<(), Evenement> {
+        match self.cpu.write_memory(adresse, largeur, valeur) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(self.faute_d_acces()),
+        }
+    }
+
+    /// Réservé à l'anneau zéro : `#GP(0)` ailleurs.
+    fn exiger_le_noyau(&self) -> Result<(), Evenement> {
+        if self.cpu.privilege() != 0 {
+            return Err(Exception::ProtectionGenerale(0).into());
+        }
+        Ok(())
+    }
+
+    /// Réservé à qui a le privilège des entrées-sorties : `#GP(0)` quand
+    /// l'anneau dépasse IOPL.
+    fn exiger_les_entrees_sorties(&self) -> Result<(), Evenement> {
+        if u64::from(self.cpu.privilege()) > (self.cpu.flags.read() & IOPL) >> 12 {
+            return Err(Exception::ProtectionGenerale(0).into());
+        }
+        Ok(())
+    }
+
+    fn port_lire(&mut self, port: u16, largeur: Width) -> u64 {
+        let tics = self.tics();
+        if let Some(valeur) = self.herites.port_lire(port, tics) {
+            return u64::from(valeur);
+        }
+        if let Some(autres) = self.peripheriques.as_mut() {
+            if let Some(valeur) = autres.port_lire(port, largeur as u8, &mut self.cpu.memory.bytes)
+            {
+                return u64::from(valeur) & largeur.mask();
+            }
+        }
+        // Personne : le bus rend des uns, comme sur un vrai PC.
+        *self.ports_muets.entry(port).or_insert(0) += 1;
+        largeur.mask()
+    }
+
+    fn port_ecrire(&mut self, port: u16, largeur: Width, valeur: u64) {
+        let tics = self.tics();
+        if self.herites.port_ecrire(port, valeur as u32, tics) {
+            return;
+        }
+        if let Some(autres) = self.peripheriques.as_mut() {
+            if autres.port_ecrire(
+                port,
+                largeur as u8,
+                valeur as u32,
+                &mut self.cpu.memory.bytes,
+            ) {
+                return;
+            }
+        }
+        *self.ports_muets.entry(port).or_insert(0) += 1;
+    }
+
+    /// **Les instructions de système** : ce que `Cpu::execute` refuse en le
+    /// nommant, parce qu'il y faut une machine.
+    #[inline(never)]
+    fn systeme(&mut self, instruction: &Decoded) -> Result<(), Evenement> {
+        let largeur = instruction.width;
+        match instruction.op {
+            Op::PortIn | Op::PortOut => {
+                self.exiger_les_entrees_sorties()?;
+                let port = if instruction.immediate {
+                    instruction.imm as u16
+                } else {
+                    self.cpu.regs[2] as u16
+                };
+                if instruction.op == Op::PortIn {
+                    let valeur = self.port_lire(port, largeur);
+                    self.cpu.set(0, largeur, false, valeur);
+                } else {
+                    let valeur = self.cpu.get(0, largeur, false);
+                    self.port_ecrire(port, largeur, valeur);
+                }
+            }
+            Op::ReadTimestamp | Op::ReadTimestampAndProcessor => {
+                // Le compteur d'horodatage est l'horloge de l'invité : les
+                // instructions retirées, tours d'attente compris.
+                let cycles = self.retirees.wrapping_add(self.attente);
+                self.cpu.regs[0] = cycles & 0xFFFF_FFFF;
+                self.cpu.regs[2] = cycles >> 32;
+                if instruction.op == Op::ReadTimestampAndProcessor {
+                    self.cpu.regs[1] = self.systeme.tsc_aux & 0xFFFF_FFFF;
+                }
+            }
+            Op::CpuId => {
+                let [a, b, c, d] = cpuid(self.cpu.regs[0] as u32, self.cpu.regs[1] as u32);
+                self.cpu.regs[0] = u64::from(a);
+                self.cpu.regs[3] = u64::from(b);
+                self.cpu.regs[1] = u64::from(c);
+                self.cpu.regs[2] = u64::from(d);
+            }
+            Op::ReadModelRegister => {
+                self.exiger_le_noyau()?;
+                let valeur = self.systeme.lire_msr(&self.cpu, self.cpu.regs[1] as u32);
+                self.cpu.regs[0] = valeur & 0xFFFF_FFFF;
+                self.cpu.regs[2] = valeur >> 32;
+            }
+            Op::WriteModelRegister => {
+                self.exiger_le_noyau()?;
+                let valeur = (self.cpu.regs[2] << 32) | (self.cpu.regs[0] & 0xFFFF_FFFF);
+                let numero = self.cpu.regs[1] as u32;
+                self.systeme.ecrire_msr(&mut self.cpu, numero, valeur);
+            }
+            Op::FarReturn => {
+                if largeur != Width::Qword {
+                    return Err(self.refuser("un retour lointain hors du mode 64 bits"));
+                }
+                // Le décalage **puis** le sélecteur, lus avant que rien ne
+                // bouge.
+                let sommet = self.cpu.regs[4];
+                let cible = self.lire(sommet, Width::Qword)?;
+                let selecteur = self.lire(sommet.wrapping_add(8), Width::Qword)?;
+                self.cpu.regs[4] = sommet.wrapping_add(16);
+                self.cpu.segments[1] = selecteur as u16;
+                self.cpu.rip = cible;
+                self.cpu.jumped = true;
+            }
+            Op::InterruptReturn => {
+                if largeur != Width::Qword {
+                    return Err(self.refuser("un retour d'interruption hors du mode 64 bits"));
+                }
+                self.systeme.retour_d_interruption(&mut self.cpu)?;
+            }
+            Op::SoftwareInterrupt => {
+                // **Un appel, pas une faute** : l'adresse empilée est celle de
+                // l'instruction suivante.
+                let vecteur = instruction.imm as u8;
+                let ici = self.cpu.rip;
+                self.cpu.rip = ici.wrapping_add(instruction.length as u64);
+                match self.systeme.entrer(&mut self.cpu, vecteur, 0, true) {
+                    Ok(()) => self.cpu.jumped = true,
+                    Err(pourquoi) => {
+                        self.cpu.rip = ici;
+                        return Err(match pourquoi {
+                            // La porte manque ou ne l'admet pas : `#GP`, avec
+                            // le vecteur et le bit « IDT » pour code.
+                            Livraison::SansPorte | Livraison::Privilege => {
+                                Exception::ProtectionGenerale(u64::from(vecteur) * 8 + 2).into()
+                            }
+                            autre => Evenement::Arret(format!(
+                                "int {vecteur:#x} à rip {ici:#x} sans livraison possible ({autre:x?})"
+                            )),
+                        });
+                    }
+                }
+            }
+            Op::LoadDescriptorTable { interrupts } => {
+                self.exiger_le_noyau()?;
+                let adresse = self.adresse(instruction);
+                let limite = self.lire(adresse, Width::Word)?;
+                let base = self.lire(adresse.wrapping_add(2), Width::Qword)?;
+                let table = systeme::Table { base, limite };
+                if interrupts {
+                    self.systeme.idt = table;
+                } else {
+                    self.systeme.gdt = table;
+                }
+            }
+            Op::StoreDescriptorTable { interrupts } => {
+                let adresse = self.adresse(instruction);
+                let table = if interrupts {
+                    self.systeme.idt
+                } else {
+                    self.systeme.gdt
+                };
+                // Les dix octets tiennent, ou rien n'est écrit.
+                if self
+                    .cpu
+                    .probe_memory(adresse.wrapping_add(9), Access::Write)
+                    .is_err()
+                {
+                    return Err(self.faute_d_acces());
+                }
+                self.ecrire(adresse, Width::Word, table.limite)?;
+                self.ecrire(adresse.wrapping_add(2), Width::Qword, table.base)?;
+            }
+            Op::SwapGs => {
+                self.exiger_le_noyau()?;
+                std::mem::swap(&mut self.cpu.gs_base, &mut self.systeme.gs_du_noyau);
+            }
+            // Trois instructions que `CPUID` n'annonce pas : le silicium qui
+            // ne les a pas lève `#UD`, et c'est ce que le noyau attend.
+            Op::LoadKernelGs | Op::HypervisorCall { .. } | Op::InvalidatePcid => {
+                return Err(Exception::Indefinie.into());
+            }
+            Op::LoadTaskRegister => {
+                self.exiger_le_noyau()?;
+                let selecteur = self.cpu.regs[instruction.dst as usize] as u16;
+                self.systeme.charger_la_tache(&mut self.cpu, selecteur)?;
+            }
+            Op::LoadLocalDescriptorTable => {
+                self.exiger_le_noyau()?;
+                self.systeme.ldt = self.cpu.regs[instruction.dst as usize] as u16;
+            }
+            Op::SystemCall => self
+                .systeme
+                .appel_systeme(&mut self.cpu, instruction.length)?,
+            Op::SystemReturn => self.systeme.retour_systeme(&mut self.cpu)?,
+            Op::ReadDebugRegister { which } => {
+                self.exiger_le_noyau()?;
+                self.cpu.regs[instruction.dst as usize] = self.systeme.debug[which as usize];
+            }
+            Op::WriteDebugRegister { which } => {
+                self.exiger_le_noyau()?;
+                self.systeme.debug[which as usize] = self.cpu.regs[instruction.dst as usize];
+            }
+            Op::LoadSegment { segment } => {
+                let selecteur = match instruction.memory {
+                    Some(_) => self.lire(self.adresse(instruction), Width::Word)?,
+                    None => self.cpu.regs[instruction.dst as usize],
+                } as u16;
+                self.cpu.segments[segment as usize] = selecteur;
+                // **FS et GS gardent une base en mode long.** Un sélecteur nul
+                // la remet à zéro ; un autre la prend dans son descripteur.
+                if matches!(segment, Segment::Fs | Segment::Gs) {
+                    let base = if selecteur == 0 {
+                        Some(0)
+                    } else {
+                        self.systeme.base_du_descripteur(&mut self.cpu, selecteur)
+                    };
+                    if let Some(base) = base {
+                        if segment == Segment::Fs {
+                            self.cpu.fs_base = base;
+                        } else {
+                            self.cpu.gs_base = base;
+                        }
+                    }
+                }
+                // Charger SS retarde les interruptions d'une instruction.
+                if segment == Segment::Ss {
+                    self.ombre = Some(self.cpu.rip.wrapping_add(instruction.length as u64));
+                }
+            }
+            Op::StoreSegment { segment } => {
+                let selecteur = u64::from(self.cpu.segments[segment as usize]);
+                match instruction.memory {
+                    // En mémoire, toujours seize bits.
+                    Some(_) => self.ecrire(self.adresse(instruction), Width::Word, selecteur)?,
+                    None => self.cpu.set(instruction.dst, largeur, false, selecteur),
+                }
+            }
+            Op::InterruptFlag(allume) => {
+                self.exiger_les_entrees_sorties()?;
+                let avant = self.cpu.flags.read();
+                if allume {
+                    if avant & IF == 0 {
+                        self.ombre = Some(self.cpu.rip.wrapping_add(instruction.length as u64));
+                    }
+                    self.cpu.flags.write(avant | IF);
+                } else {
+                    self.cpu.flags.write(avant & !IF);
+                }
+            }
+            Op::Halt => {
+                self.exiger_le_noyau()?;
+                self.arretee = true;
+            }
+            Op::FpuInit => {
+                // Toutes les exceptions masquées, précision étendue, arrondi
+                // au plus proche ; mot d'état à zéro, pile vide.
+                self.cpu.fpu_control = 0x037F;
+                self.cpu.fpu_status = 0;
+                self.cpu.fpu_tags = 0;
+            }
+            Op::FxSave | Op::FxRestore => {
+                let adresse = self.adresse(instruction);
+                let rendu = if instruction.op == Op::FxSave {
+                    self.cpu.save_floating_point_state(adresse)
+                } else {
+                    self.cpu.restore_floating_point_state(adresse)
+                };
+                match rendu {
+                    Ok(()) => {}
+                    Err(ExtendedFault::Memory) => return Err(self.faute_d_acces()),
+                    Err(ExtendedFault::ReservedControl) => {
+                        return Err(Exception::ProtectionGenerale(0).into())
+                    }
+                }
+            }
+            Op::PushFlags => {
+                // VM et RF ne s'empilent pas.
+                let valeur = self.cpu.flags.read() & !((1 << 16) | (1 << 17));
+                let sommet = self.cpu.regs[4].wrapping_sub(largeur as u64);
+                self.ecrire(sommet, largeur, valeur)?;
+                self.cpu.regs[4] = sommet;
+            }
+            Op::PopFlags => {
+                let sommet = self.cpu.regs[4];
+                let depiles = self.lire(sommet, largeur)?;
+                let avant = self.cpu.flags.read();
+                // En seize bits, la moitié haute de RFLAGS ne bouge pas.
+                let demandes = if largeur == Width::Word {
+                    (avant & !0xFFFF) | depiles
+                } else {
+                    depiles
+                };
+                self.cpu.regs[4] = sommet.wrapping_add(largeur as u64);
+                self.cpu
+                    .flags
+                    .write(drapeaux_permis(avant, demandes, self.cpu.privilege()));
+            }
+            Op::Undefined => return Err(Exception::Indefinie.into()),
+            Op::InvalidatePage => {
+                self.exiger_le_noyau()?;
+                self.cpu.flush_translations();
+            }
+            Op::ReadControlRegister { .. } => {
+                self.exiger_le_noyau()?;
+                self.cpu.execute(instruction);
+            }
+            Op::WriteControlRegister { which } => {
+                self.exiger_le_noyau()?;
+                self.cpu.execute(instruction);
+                if which == 0 {
+                    systeme::rafraichir_le_mode_long(&mut self.cpu);
+                }
+            }
+            autre => unreachable!("{autre:?} n'est pas une instruction de système"),
+        }
+        Ok(())
+    }
+}
