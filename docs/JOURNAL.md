@@ -8,6 +8,72 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise de la carte réseau, deux gardes tenues
+
+**Ce qui n'allait pas.** Le contrôle de la reprise a relevé quatre points.
+Chacun a été vérifié dans le code. Les quatre sont réels : deux gardes justes
+qu'aucun test ne jugeait, deux phrases fausses dans l'entrée qui suit.
+- *Le `break` de `VirtioNet::livrer` sur une écriture refusée* survivait à
+  `continue`. Le seul cas, `a_buffer_outside_the_ram_loses_the_frame`,
+  n'avait qu'un tampon, où les deux font la même chose. Avec `continue`,
+  une chaîne `[hors de la RAM, 0x50000]` rendait la trame posée dans le
+  second tampon, avec une longueur de 70 : le pilote aurait lu d'abord le
+  premier, jamais écrit. L'entrée précédente annonçait « un tampon hors de
+  la RAM d'où il faut lire perd toujours la trame » sans le tenir.
+- *La garde `notifiees[FILE_DE_RECEPTION]` de `CartePc::servir`* survivait
+  à `true`. Le `transmit` du Swift (`VirtioNet.swift`, `notify`) ne fait pas
+  de `deliver` : une émission notifiée ne doit rien livrer, même avec un
+  tampon de réception posé. Aucun cas ne posait un tampon de réception sans
+  le notifier avant un `servir`.
+- *L'entrée précédente* disait « neuf adresses voisines » pour
+  `a_configuration_write_elsewhere_leaves_the_card_alone`. Le tableau en a
+  dix : 0:0, 3, 6, 4, 2, 7, 31, la fonction 1, le bus 1, l'adresse sans bit
+  d'activation.
+- *Elle disait aussi* « il n'y a plus de mutant équivalent à cet endroit ».
+  C'est faux : la garde `n == 0` de `livrer` écrite `tampon.longueur == 0`
+  survit, et elle est équivalente. Un tampon non vide après une trame posée
+  en entier donne `n = 0`, `ram.ecrire(adresse, &[])` réussit ou fait
+  sortir de la boucle, et `posees` vaut déjà la longueur de la trame.
+
+**Ce qui est fait.** Le code de production ne change pas : les deux gardes
+étaient justes. Un commentaire dit pourquoi le `break` coupe la chaîne.
+- `a_buffer_outside_the_ram_in_a_receive_chain_cuts_it` (neuf,
+  `virtio_net.rs`) : une chaîne `[hors de la RAM, 0x50000]`, puis
+  `[0x51000 de 30 octets, hors de la RAM, 0x52000]`. Les deux trames sont
+  perdues, rendues vides (`(0, 0, 1)` puis `(2, 0, 2)`), et les tampons qui
+  suivent restent à zéro. Une troisième trame passe ensuite, en `(5, 70, 3)`.
+- `a_transmit_notification_leaves_the_waiting_frame_to_the_probe` (neuf,
+  `pc.rs`) : une trame attend, un tampon de réception est posé sans
+  notification, une émission est notifiée, puis `servir`. La trame émise
+  part au câble, celle qui attend reste (`en_attente` à 1), rien n'est
+  rendu en réception, le tampon reste vide. La sonde suivante la livre.
+- Les deux phrases fausses de l'entrée qui suit sont corrigées sur place,
+  et la correction y est dite.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 586 559 octets avant
+  et après. gzip -9 passe de 115 596 à 115 595. Le sha passe de
+  3470e2cb66f31cc9 à 624776476e8f07f5. Les tests ne sont pas dans le module.
+  Le commentaire décale les numéros de ligne des messages de panique :
+  sans lui, le module rebâti redonne 3470e2cb66f31cc9.
+- Tests : wisq-carte passe de 216 à 218 cas, Rust de 848 à 850. Le total
+  publié passe de 3 913 à 3 915 (`recompte.sh`).
+
+**Sabotages** : cinq sabotages d'une ligne, rejoués par le script qui
+restaure chaque fichier (`git diff` sans eux après la série).
+- `break` remplacé par `continue` dans `livrer` : tombe dans
+  `a_buffer_outside_the_ram_in_a_receive_chain_cuts_it`.
+- `break` retiré, l'écriture refusée comptée comme posée : tombe dans ce
+  cas et dans `a_buffer_outside_the_ram_loses_the_frame`.
+- `notifiees[FILE_DE_RECEPTION]` remplacé par `true` dans `servir` : tombe
+  dans `a_transmit_notification_leaves_the_waiting_frame_to_the_probe`.
+- La même garde élargie à la notification d'émission : tombe dans le même
+  cas.
+- La garde `n == 0` de `livrer` écrite `tampon.longueur == 0` : survit,
+  comme attendu. C'est un mutant équivalent, et il le reste.
+
+**Ce qui reste.** Rien de neuf. Le reste de l'entrée qui suit vaut toujours.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : reprise de la carte réseau après contrôle
 
 **Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente a
@@ -55,8 +121,9 @@ Swift, un cas limite, une doc périmée.
   où qu'il pointe. Un tampon hors de la RAM d'où il faut lire perd toujours
   la trame. `livrer` saute de même un tampon vide au lieu de couper la
   chaîne. Son `break` sur une trame déjà posée était équivalent : sans lui,
-  chaque tampon qui suit est vide, et sauté. Il est retiré, et il n'y a plus
-  de mutant équivalent à cet endroit.
+  chaque tampon qui suit est vide, et sauté. Il est retiré. *(Corrigé à la
+  reprise suivante : il reste un mutant équivalent à cet endroit, la garde
+  `n == 0` écrite `tampon.longueur == 0`.)*
 - Les docs de `servir`, `a_servir` et des deux `brancher_reseau` disent ce
   que ces fonctions font.
 - Cinq cas neufs dans `virtio_net.rs` :
@@ -72,9 +139,10 @@ Swift, un cas limite, une doc périmée.
     la réception.
   - `a_configuration_write_elsewhere_leaves_the_card_alone` part d'une
     carte ouverte en 0xC040. Il écrit la commande, la mesure, la fenêtre et
-    la ligne vers neuf adresses voisines : le pont, le disque, les
-    emplacements vides, une autre fonction et un autre bus de l'emplacement
-    cinq, une adresse sans son bit d'activation. La fenêtre répond encore,
+    la ligne vers dix adresses voisines (*neuf*, écrit d'abord, était
+    faux) : le pont, le disque, les cinq emplacements vides, une autre
+    fonction et un autre bus de l'emplacement cinq, une adresse sans son
+    bit d'activation. La fenêtre répond encore,
     et la carte garde sa commande, sa fenêtre et sa ligne 3.
   - `a_replugged_card_gets_a_new_slot` rebranche une carte ouverte, en
     mesure, sur la ligne 9. La fenêtre de l'ancienne est fermée, la commande
