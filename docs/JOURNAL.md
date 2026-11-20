@@ -8,6 +8,157 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : reprise après contrôle, les gardes annoncées que rien ne tenait
+
+**La demande.** Le contrôle adverse de la tranche ci-dessous. Verdict :
+aucun défaut de comportement, mais dix de ses vingt-huit sabotages d'une
+ligne passaient sans qu'un test tombe, un commentaire contredisait le code,
+et une fonction publique n'avait aucun appelant. Chaque point a été rejoué
+sur le code poussé avant d'être corrigé : huit sabotages relancés tels
+quels, huit passent (`a_servir` sur le premier disque seul, la marque
+étrangère acceptée, la souris non passée, `taper` rendu faux, `baisser` qui
+ne baisse pas, `Disque::ligne()` faux, une phrase de refus changée, un
+`pread` par secteur). Tous étaient réels.
+
+**Ce qui n'allait pas, et ce qui est fait.**
+
+1. *La notification en attente du second disque n'était regardée par aucun
+   test.* Le journal disait que `reveil()` la compte pour les deux disques ;
+   le seul cas du second appelait `servir` aussitôt après la notification.
+   Le cas regarde maintenant entre les deux : le second seul notifié,
+   `a_servir()` et `reveil()` sont vrais, aucune ligne n'est levée et la RAM
+   n'a pas bougé.
+2. *Une carte de couche à la marque étrangère n'était refusée par aucun
+   test* : le seul fichier « pas une carte du tout » avait aussi un mauvais
+   compte de secteurs, et tombait sur la vérification suivante. Trois
+   marques fausses (`wisqdisq`, `WISQDISK`, huit zéros) suivies du **bon**
+   compte sont refusées, et la bonne marque avec ce même compte est prise —
+   c'est donc la marque seule qui est jugée.
+3. *Trois passages de la façade n'étaient pas tenus* : `souris`, `taper`, et
+   l'effet de `baisser` (seule sa valeur rendue était lue). Un cas neuf juge
+   chaque passage par ce que l'invité en lit : la frappe prise, en file,
+   posée au battement, la file pleine qui refuse à 8 192 ; la souris éteinte
+   qui se tait, puis allumée par l'invité (`A8`, `D4 F4`), la ligne 12 et le
+   paquet de trois octets ; la ligne 9 levée, tenue, puis **retombée** et
+   toujours tenue ; les lignes 0, 2, 4 et 16 refusées dans les deux sens.
+4. *`Disque::ligne()` était publique, sans appelant, et pouvait mentir* :
+   `Pci::nouveau` employait les constantes. Il emploie maintenant
+   `Disque::Premier.ligne()` et `Disque::Second.ligne()` : la fonction est
+   la source des deux lignes annoncées, et les tests du bus la tiennent.
+5. *Une seule des cinq phrases de `Refus` était comparée.* Les cinq le
+   sont, mot pour mot avec `FileDiskStore.Failure.errorDescription`, par
+   `Display` et par le trait d'erreur.
+6. *Le commentaire de `CartePc::servir` contredisait le code* (« le nombre
+   de requêtes passées par un arrière », alors qu'un disque sans arrière en
+   compte une). Le code est gardé, le commentaire dit ce qu'il compte : les
+   requêtes **prises au disque**, celles qui demandent des octets, servies,
+   refusées ou sans personne derrière ; ce que le disque juge seul (un
+   secteur au-delà de la fin, son nom) n'y est pas. Les trois cas — 1 sans
+   arrière, 2 avec un arrière qui échoue, 0 quand le disque juge seul —
+   étaient déjà affirmés ; la variante « seulement ce qui a un arrière »
+   fait tomber le premier.
+7. *La lecture par morceaux, le gain mis en avant, n'était tenue par rien* :
+   un retour au `pread` par secteur rend les mêmes octets. `DisqueFichier`
+   compte ses lectures de fichier (`lectures()`), et un cas tient le compte :
+   un mébioctet d'une base jamais écrite, **une** lecture ; trois secteurs
+   écrits à la file au milieu, trois (base, couche, base) ; deux secteurs
+   écrits à l'envers, chacun la sienne ; un secteur écrit en entier, aucune
+   relecture ; une écriture partielle, une par secteur touché ; un refus,
+   aucune.
+8. *Le raccourci « couche vide » de `lire` est retiré.* Le contrôle l'avait
+   noté comme un mutant sans effet, et le compte ci-dessus le confirme : la
+   boucle générale lit déjà une base jamais écrite d'un seul `pread`. Il ne
+   restait qu'à savoir s'il rendait du débit — mesure plus bas : non.
+9. *Les octets changés ne se relisaient pas une fois le disque branché* (le
+   contrôle le donnait « à savoir », pas comme un défaut) : l'arrière est
+   rangé dans un `Box<dyn Arriere>` privé, et `GuestMachine.diskBytesWritten`
+   n'aurait pas eu d'équivalent. `Arriere::octets_ecrits` entre dans le
+   trait, comme `DiskStore.bytesWritten` dans le protocole Swift (un disque
+   en mémoire répond la taille de son image), et
+   `CartePc::octets_ecrits(Disque)` le rend pour chaque disque, zéro sans
+   arrière. **Qui porte `Arriere` doit maintenant l'écrire** : une méthode de
+   plus, sans valeur par défaut.
+10. *Le journal* disait la lecture par morceaux comparée « à tous les
+    décalages » : c'était neuf décalages et dix longueurs choisis. La phrase
+    est corrigée, et un cas neuf fait ce qu'elle laissait croire — 6 000
+    lectures et écritures tirées d'un générateur, à n'importe quel décalage
+    et jusqu'à sept secteurs, contre une image tenue en mémoire, sur une base
+    à queue boiteuse, avec douze fermetures et réouvertures ; un refus ne
+    touche à rien. La ligne vide manquante avant l'entrée suivante est
+    remise.
+
+**Mesures.**
+
+*Le raccourci « couche vide »*, avec et sans, cinq courses alternées de
+l'exemple `debit-disque` sur l'ISO Void Xfce (1 379,8 Mio, cache chaud),
+médiane des cinq médianes, en Mio/s par la carte et `DisqueFichier` :
+
+| requête | avec le raccourci | sans (ce qui est poussé) | écart | le même écart sur le `pread` nu |
+|---|---|---|---|---|
+| 4 Kio | 4 555 | 4 624 | −1,5 % | +1,1 % |
+| 64 Kio | 6 130 | 6 001 | +2,1 % | +4,5 % |
+| 128 Kio | 6 118 | 5 951 | +2,8 % | −0,2 % |
+| 512 Kio | 6 536 | 6 182 | +5,7 % | +5,3 % |
+| 1 024 Kio | 5 179 | 4 982 | +4,0 % | +1,4 % |
+| 1 280 Kio | 4 727 | 4 707 | +0,4 % | −1,5 % |
+
+La dernière colonne est le bruit : le `pread` sans la carte est le même code
+dans les deux binaires, et il s'écarte autant d'une série à l'autre. Les
+étendues se recouvrent à chaque taille (à 512 Kio : 6 098 à 6 699 avec,
+5 417 à 6 406 sans). Rien qui sorte du bruit : le raccourci est retiré, et
+`lire` n'a plus qu'un chemin, celui que les tests tiennent. Le `pread` par
+secteur (`wisq_vm::store`) reste à 1 300 à 1 700 Mio/s dans les mêmes
+courses : la lecture par morceaux rend toujours 2,7 à 3,9 fois son débit.
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+565 144 octets avant, **565 144** après — le même fichier, octet pour octet
+(même SHA-256). La façade et le disque sur fichier ne sont pas dans la
+page, et `Pci::nouveau` s'y compile au même code.
+
+**Tests.** Cinq de plus, 743 → 748 côté Rust (`wisq-carte` : 117 → 122),
+et des cas existants complétés sans qu'aucune affirmation ne soit retirée :
+le second disque notifié seul, les marques étrangères, les octets changés
+lus par la façade dans les deux cas « à travers le périphérique ». Les
+affirmations sur le clavier et les lignes du dehors qui vivaient dans
+`the_facade_keeps_the_cards_ports_and_widths` sont passées, toutes, dans le
+cas neuf de la façade.
+
+**Sabotages**, d'une ligne chacun, 33, tous tombent, l'arbre rendu identique
+après chacun :
+
+- *ceux du contrôle qui passaient (8)* : `a_servir` ne regarde que le
+  premier disque ; une marque étrangère est acceptée ; la souris ne passe
+  pas la façade ; `taper` rend toujours faux ; `baisser` ne baisse pas ;
+  `Disque::ligne()` ment pour le second ; la phrase de `BaseIllisible`
+  change ; un `pread` par secteur.
+- *les mêmes gardes, par l'autre bout (9)* : `taper` rend vrai sans rien
+  poser ; `baisser` rend vrai sans rien faire ; `Disque::ligne()` ment pour
+  le premier ; les quatre autres phrases, une à une ; `reveil` oublie la
+  notification en attente ; `reveil` oublie celui de la carte.
+- *le compte des lectures (3)* : un morceau s'étend sans regarder sa
+  source ; un secteur entier est relu avant d'être écrit ; une lecture n'est
+  pas comptée.
+- *les octets changés (4)* : la façade lit toujours le premier disque ;
+  sans arrière elle ne rend pas zéro ; le fichier compte en emplacements ;
+  la mémoire oublie sa queue.
+- *ce que `servir` rend (2)* : il ne compte pas ce qu'il prend ; il ne
+  compte que ce qui a un arrière (l'ancien commentaire).
+- *le reste de la façade (7)* : `touche`, `taper_texte`, `battre`,
+  `regler_heure` ne passent pas ; `lever` ne lève pas ; `tenues` rend les
+  lignes levées ; `remise_demandee` toujours fausse.
+
+**Ce que rien ne tient, toujours.** `fsync` dans `vider` de `DisqueFichier`
+(le contrôle l'a rejoué : le retirer ne fait tomber aucun test, et aucun
+test ne peut voir ce qu'un disque a vraiment reçu), et l'ordre des deux
+écritures. Un troisième mutant du contrôle est sans effet par construction :
+passer aussi la notification à la carte sans RAM ne lit rien, la file y est
+illisible.
+
+**Ce qui reste.** La liste de l'entrée ci-dessous, inchangée, et le compte
+publié passe à 3 813. Pour le flux « cœur » : rien ne change dans les dix
+lignes du mode d'emploi ; `carte.octets_ecrits(Disque::Premier)` est ce que
+l'enveloppe Swift lira pour le rapport de stockage.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : la carte en natif, un second disque, les disques sur fichier
 
 **La demande.** « Je veux faire tourner un desktop, tu peux utiliser l'ABI C
@@ -165,7 +316,8 @@ a 117, et un exemple de documentation compilé et exécuté), 4 dans
   absente), son cas « à travers le périphérique » — par les ports, puis la
   machine rallumée sur les mêmes fichiers —, deux disques sur fichier dont
   les écritures ne se mélangent pas, la lecture par morceaux contre une image
-  témoin à tous les décalages, une base raccourcie sous le disque ouvert.
+  témoin à neuf décalages et dix longueurs choisis, une base raccourcie sous
+  le disque ouvert.
 - `pci.rs` et `mod.rs` : les quatre cas de bus de `X86SecondDiskTests`
   (l'emplacement quatre, le pont une seule fois, chacun sa fenêtre, l'ordre
   de branchement), les deux lignes, la ligne partagée, et les ports fixes
@@ -236,6 +388,7 @@ vraiment reçu.
 5. *Le compte de tests publié* (3 808 : README, site) changera aussi sur la
    branche du cœur : à la fusion des deux, relancer le recompte plutôt que
    de choisir l'un des deux nombres.
+
 ## 2026-11-20 — Cœur x86 : les drapeaux à la demande ne rapportent rien ; les conditions sans aiguillage, 3 à 6 %
 
 **La demande.** Le second chantier de « Fais tout » : calculer les drapeaux
