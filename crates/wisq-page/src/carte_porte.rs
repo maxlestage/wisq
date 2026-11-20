@@ -770,7 +770,8 @@ mod tests {
     /// pilote ne l'a pas prise ; la poignée de main de `virtio_input` par
     /// `carte_mem_ecrire`, la sonnette qui lit la file dans la RAM pendant
     /// l'appel, puis le toucher et la molette rendus par `carte_livrer`, au
-    /// rythme d'un doigt, sur la ligne 10.
+    /// rythme d'un doigt, sur la ligne 10 ; et chaque bit des boutons sur
+    /// le sien.
     #[test]
     fn the_tablet_goes_through_the_exports() {
         let _tour = tour();
@@ -849,5 +850,14 @@ mod tests {
             assert_eq!(evenement(k), [2, 8, u32::MAX], "le cran {k}");
             assert_eq!(evenement(k + 1), [0, 0, 0]);
         }
+        // Le droit et le milieu (bits 1 et 2), le gauche relâché : chaque
+        // bit de `boutons` passe l'export jusqu'à son bouton.
+        assert_eq!(carte_toucher(0.25, 0.75, 2 | 4), 1);
+        poser(0x2002, &24u16.to_le_bytes());
+        carte_livrer(2_000 + 35_795);
+        assert_eq!(mot(0x3002, 2), 18);
+        assert_eq!(evenement(14), [1, 0x110, 0], "le gauche");
+        assert_eq!(evenement(15), [1, 0x111, 1], "le droit");
+        assert_eq!(evenement(16), [1, 0x112, 1], "le milieu");
     }
 }
