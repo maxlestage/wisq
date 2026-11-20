@@ -1008,15 +1008,17 @@ pub(crate) mod tests {
     /// entre.
     #[test]
     fn what_arrives_waits_up_to_its_bound() {
+        // Les nombres du Swift (`waitingLimit`, `largestFrame`), écrits en
+        // clair : une borne déplacée se voit ici.
         let mut carte = VirtioNet::default();
-        for n in 0..PLUS_EN_ATTENTE {
+        for n in 0..512 {
             assert!(carte.entrer(trame_de(60, n as u8)), "{n}");
         }
         assert!(!carte.entrer(trame()), "la cinq cent treizième");
-        assert_eq!((carte.en_attente(), carte.perdues()), (PLUS_EN_ATTENTE, 1));
+        assert_eq!((carte.en_attente(), carte.perdues()), (512, 1));
         let mut carte = VirtioNet::default();
-        assert!(!carte.entrer(vec![0; PLUS_GRANDE_TRAME + 1]));
-        assert!(carte.entrer(vec![0; PLUS_GRANDE_TRAME]));
+        assert!(!carte.entrer(vec![0; 1515]));
+        assert!(carte.entrer(vec![0; 1514]));
         assert_eq!((carte.en_attente(), carte.perdues()), (1, 1));
         // Par le câble : la file pleine perd ce qui reste de la réponse, et
         // garde les cinq cent douze premières, dans l'ordre.
@@ -1220,11 +1222,21 @@ pub(crate) mod tests {
     #[test]
     fn the_rings_wrap_around() {
         let mut pilote = Pilote::branche();
+        // Chaque trame a sa longueur (60 à 66 octets) : la place 2 de
+        // l'anneau, écrite par la troisième puis par la 259e, dit laquelle
+        // l'a écrite en dernier.
         for n in 0..LIMITE_DE_FILE + 3 {
             pilote.poser(FILE_DE_RECEPTION, 0x50000, 2048, true);
-            pilote.carte.entrer(trame_de(60, n as u8));
+            pilote
+                .carte
+                .entrer(trame_de(60 + (n % 7) as usize, n as u8));
             pilote.notifier(0);
         }
+        assert_eq!(
+            pilote.servie(FILE_DE_RECEPTION, 2).1 as usize,
+            OCTETS_D_EN_TETE + 60 + 258 % 7,
+            "la longueur de la 259e, pas celle de la troisième"
+        );
         assert_eq!(pilote.carte.livrees(), u64::from(LIMITE_DE_FILE) + 3);
         assert_eq!(
             pilote.servie(FILE_DE_RECEPTION, 2).2,
