@@ -851,8 +851,8 @@ console.log("en_vol_a_chaque_reponse " + enVolALaReponse.join(","));
 /// La tablette : 00:07.0, la poignée de main de `virtio_input` par
 /// `carte_mem_ecrire`, un toucher qui attend faute de tampons, la sonnette
 /// qui en apporte et le rend en lisant la file dans la RAM de la page
-/// pendant l'appel, la ligne 10, que la lecture de l'ISR baisse, puis un cran
-/// de molette rendu par `carte_livrer` au rythme d'un doigt.
+/// pendant l'appel, la ligne 10, que la lecture de l'ISR baisse, puis trois
+/// crans de molette rendus par `carte_livrer` au rythme d'un doigt.
 #[test]
 fn the_screen_and_the_tablet_answer_through_the_page_module() {
     let module = page_module();
@@ -883,6 +883,12 @@ for (const [d, v] of [[0x508, 0], [0x502, 800], [0x504, 600], [0x506, 32], [0x50
 console.log("mode " + mode());
 ecrire(0xe100050c, 2, 1024);
 console.log("virtuelle " + mode());
+ecrire(0xe1000510, 2, 8);
+ecrire(0xe1000512, 2, 600);
+const decale = mode();
+ecrire(0xe1000510, 2, 0);
+ecrire(0xe1000512, 2, 0);
+console.log("debut " + decale + " / " + mode());
 const avant = m.carte_ecran_revision();
 console.log("pixel " + ecrire(0xe0000004, 4, 0x00112233) + " " + (m.carte_ecran_revision() - avant));
 const p = m.carte_ecran_pixels();
@@ -908,15 +914,16 @@ m.carte_livrer(1000n);
 console.log("a_court " + vue.getUint16(0x3002, true) + " " + m.carte_lignes());
 vue.setUint16(0x2002, 8, true);
 console.log("sonnette " + ecrire(t + 0x3000, 2, 0) + " " + vue.getUint16(0x3002, true));
-const evenement = (k) => {{ const a = 0x4000 + vue.getUint32(0x3004 + k * 8, true) * 8; return vue.getUint16(a, true) + "," + vue.getUint16(a + 2, true) + "," + vue.getUint32(a + 4, true); }};
+const evenement = (k) => {{ const a = 0x4000 + vue.getUint32(0x3004 + (k % 8) * 8, true) * 8; return vue.getUint16(a, true) + "," + vue.getUint16(a + 2, true) + "," + vue.getUint32(a + 4, true); }};
 console.log("rendus " + vue.getUint16(0x3002, true) + " " + [0, 1, 2, 3, 4, 5].map(evenement).join(" ") + " " + m.carte_lignes());
 console.log("isr " + mem(t + 0x1000, 1) + " " + m.carte_lignes());
-console.log("molette " + m.carte_defiler(-1));
+console.log("molette " + m.carte_defiler(-3));
+vue.setUint16(0x2002, 16, true);
 m.carte_livrer(2000n);
 m.carte_livrer(2000n + 35794n);
 const tot = vue.getUint16(0x3002, true);
 m.carte_livrer(2000n + 35795n);
-console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + evenement(6) + " " + evenement(7));
+console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + [6, 7, 8, 9, 10, 11].map(evenement).join(" "));
 "#,
         module = module.to_string_lossy(),
     );
@@ -934,6 +941,11 @@ console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + evenement(
         said(&text, "virtuelle "),
         "800 600 4096 0",
         "la ligne virtuelle"
+    );
+    assert_eq!(
+        said(&text, "debut "),
+        "800 600 4096 2457632 / 800 600 4096 0",
+        "le premier pixel montré : (600 × 1 024 + 8) × 4, puis la première page"
     );
     assert_eq!(said(&text, "pixel "), "1 1", "une écriture, une révision");
     assert_eq!(
@@ -963,7 +975,7 @@ console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + evenement(
     assert_eq!(said(&text, "molette "), "1");
     assert_eq!(
         said(&text, "cran "),
-        "6 8 2,8,4294967295 0,0,0",
-        "trente millisecondes après la lecture, pas une de moins"
+        "6 12 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0",
+        "trois crans, trente millisecondes après la lecture, pas une de moins"
     );
 }
