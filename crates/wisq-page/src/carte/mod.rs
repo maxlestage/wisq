@@ -32,6 +32,16 @@
 //! | `0xCF8`, `0xCFC` à `0xCFF` | pont PCI ([`pci`]) : 440FX en 00:00.0 | — |
 //! | la BAR0 du disque, `0x40` ports | virtio-blk de forme ancienne en 00:03.0 ([`virtio_blk`]) | 5, ou celle que le noyau écrit |
 //! | la BAR0 du second disque, `0x40` ports | le même, en 00:04.0 | 6, ou celle que le noyau écrit |
+//! | `0x1CE`, `0x1CF`, et en mémoire : 16 Mio à `0xE000_0000`, 4 Kio à `0xE100_0000` | l'écran Bochs en 00:02.0 ([`ecran`]), quand il est branché | aucune |
+//! | en mémoire : 16 Kio à `0xE101_0000` | la tablette virtio en 00:07.0 ([`tablette`]), avec l'écran | 10, ou celle que le noyau écrit |
+//!
+//! **Deux périphériques vivent en mémoire, pas dans les ports** : la mémoire
+//! vidéo et les registres de l'écran, et la tablette, dont le transport est
+//! le virtio « moderne ». Leurs adresses ne sont pas de la RAM : la machine
+//! passe à [`Carte::mem_lire`] et [`Carte::mem_ecrire`] tout accès de
+//! l'invité qui tombe hors de sa RAM, et la carte dit si l'adresse est à
+//! elle. Les adresses sont celles que le noyau écrit dans les BAR ; les
+//! valeurs du tableau sont celles du départ.
 //!
 //! **Les lignes sont à niveau.** [`Carte::lignes`] dit, à l'instant, quelles
 //! lignes ses périphériques tiennent levées, et [`Carte::tenues`] lesquelles
@@ -53,16 +63,20 @@
 //! ligne. Voir [`virtio_blk`].
 
 pub mod cmos;
+pub mod ecran;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fichier;
 pub mod i8042;
 pub mod pc;
 pub mod pci;
+pub mod tablette;
 pub mod virtio_blk;
 
 use cmos::Cmos;
+use ecran::Ecran;
 use i8042::{CodeTouche, I8042, LIGNE_CLAVIER, LIGNE_SOURIS, PORT_COMMANDE, PORT_DONNEES};
 use pci::{masque, Disque, Pci, PORT_ADRESSE, PORT_DONNEE};
+use tablette::Tablette;
 use virtio_blk::{RequeteDisque, VirtioBlk};
 
 /// **La RAM de l'invité, vue d'un périphérique**, par adresse physique.
@@ -128,6 +142,19 @@ pub const LIGNES_DES_PERIPHERIQUES: u16 = (1 << LIGNE_CLAVIER) | (1 << LIGNE_SOU
 /// effacerait à chaque tour ce que ses propres puces y ont posé.
 pub const LIGNES_DE_L_HOTE: u16 = (1 << 0) | (1 << 2) | (1 << 4);
 
+/// **À qui est une adresse hors de la RAM**, et où elle tombe dedans. Dans
+/// l'ordre où le cœur Swift les essaie (`X86Memory.readSlowly`) : la mémoire
+/// vidéo, les registres de la carte graphique, la tablette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    /// La mémoire vidéo, et le décalage dedans.
+    MemoireVideo(usize),
+    /// Les registres de la carte graphique (sa BAR2), et le décalage dedans.
+    RegistresDeLEcran(u64),
+    /// La BAR0 de la tablette, et le décalage dedans.
+    Tablette(u64),
+}
+
 /// **La carte** : les périphériques, et les lignes levées du dehors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Carte {
@@ -189,6 +216,13 @@ impl Carte {
             PORT_DONNEE..=0xCFF => {
                 return Some(self.pci.lire_donnee(u32::from(port - PORT_DONNEE), largeur))
             }
+            // Les registres DISPI de l'écran : seize bits, ramenés à la
+            // largeur de l'accès. Sans écran, ces deux ports ne sont à
+            // personne.
+            ecran::PORT_INDEX | ecran::PORT_DONNEE if self.pci.ecran.is_some() => {
+                let registre = self.pci.ecran.as_ref()?.lire_port(port);
+                return Some((u64::from(registre) & masque(largeur)) as u32);
+            }
             _ => {
                 let (quel, decalage) = self.fenetre_au_port(port)?;
                 let disque = self.pci.emplacement_mut(quel).disque.as_mut()?;
@@ -222,6 +256,13 @@ impl Carte {
                 self.pci
                     .ecrire_donnee(u32::from(port - PORT_DONNEE), largeur, valeur)
             }
+            // Les registres DISPI : la valeur ramenée à la largeur, puis à
+            // seize bits, comme `portWrite` du cœur Swift.
+            ecran::PORT_INDEX | ecran::PORT_DONNEE if self.pci.ecran.is_some() => {
+                if let Some(ecran) = self.pci.ecran.as_mut() {
+                    ecran.ecrire_port(port, valeur as u16);
+                }
+            }
             _ => {
                 let Some((quel, decalage)) = self.fenetre_au_port(port) else {
                     return false;
@@ -239,10 +280,216 @@ impl Carte {
     /// jamais pour un port fixe de la carte : une BAR posée par-dessus
     /// l'i8042 ne lui vole rien.
     pub fn fenetre_au_port(&self, port: u16) -> Option<(Disque, u16)> {
-        if port_fixe(port) {
+        if self.est_fixe(port) {
             return None;
         }
         self.pci.au_port(port)
+    }
+
+    /// **Un port fixe de cette carte** : ceux de toute carte ([`port_fixe`]),
+    /// et les deux ports DISPI quand un écran est branché. Ils passent avant
+    /// toute fenêtre de disque, dans l'ordre du cœur Swift (`portWrite`).
+    pub fn est_fixe(&self, port: u16) -> bool {
+        port_fixe(port)
+            || (self.pci.ecran.is_some() && matches!(port, ecran::PORT_INDEX | ecran::PORT_DONNEE))
+    }
+
+    // ------------------------------------------------- l'écran et la tablette
+
+    /// **Brancher l'écran** (`X86Machine.attachDisplay`) : la carte graphique
+    /// en 00:02.0, un cadre de `largeur` × `hauteur` au démarrage dans seize
+    /// mébioctets de mémoire vidéo, et **la tablette qui va avec** en 00:07.0
+    /// — un écran se touche. À faire avant le démarrage : c'est le chargeur
+    /// qui annonce le cadre au noyau ([`ecran::Cadre::mode_de_depart`],
+    /// [`ecran::Cadre::base`]). Un écran déjà branché est remplacé, sa
+    /// tablette aussi.
+    ///
+    /// `false`, sans rien changer, si le cadre du démarrage ne tient pas dans
+    /// la mémoire vidéo.
+    ///
+    /// **La RAM de l'invité ne doit pas couvrir ses adresses** (le trou sous
+    /// quatre gibioctets, à partir de `0xE000_0000`) : c'est à la machine de
+    /// le tenir, la carte ne connaît pas la RAM.
+    pub fn brancher_ecran(&mut self, largeur: u32, hauteur: u32) -> bool {
+        let Some(ecran) = Ecran::de_machine(largeur, hauteur) else {
+            return false;
+        };
+        self.pci.ecran = Some(ecran);
+        self.pci.tablette = Some(Tablette::de_machine());
+        true
+    }
+
+    /// L'écran, s'il est branché : son cadre ([`Ecran::cadre`]) porte la
+    /// mémoire vidéo, le mode montré et le compte des changements.
+    pub fn ecran(&self) -> Option<&Ecran> {
+        self.pci.ecran.as_ref()
+    }
+
+    /// Le même, pour y écrire d'un bloc ([`ecran::Cadre::octets_mut`]).
+    pub fn ecran_mut(&mut self) -> Option<&mut Ecran> {
+        self.pci.ecran.as_mut()
+    }
+
+    /// La tablette, si un écran est branché.
+    pub fn tablette(&self) -> Option<&Tablette> {
+        self.pci.tablette.as_ref()
+    }
+
+    /// La même, pour la conduire.
+    pub fn tablette_mut(&mut self) -> Option<&mut Tablette> {
+        self.pci.tablette.as_mut()
+    }
+
+    /// **À qui est cette adresse physique**, pour un accès de `largeur`
+    /// octets : la mémoire vidéo d'abord, puis les registres de la carte
+    /// graphique, puis la tablette — l'ordre du cœur Swift. `None` : pas à
+    /// la carte. L'accès doit tenir entier dans la région.
+    pub fn region(&self, adresse: u64, largeur: usize) -> Option<Region> {
+        if let Some(ecran) = &self.pci.ecran {
+            if let Some(a) = ecran.cadre.decalage(adresse, largeur) {
+                return Some(Region::MemoireVideo(a));
+            }
+            if let Some(decalage) = ecran.decalage_des_registres(adresse, largeur) {
+                return Some(Region::RegistresDeLEcran(decalage));
+            }
+        }
+        let decalage = self.pci.tablette.as_ref()?.decalage(adresse, largeur)?;
+        Some(Region::Tablette(decalage))
+    }
+
+    /// **Lire la mémoire d'un périphérique**, de `largeur` octets (un à
+    /// huit : les largeurs impaires sont les moitiés d'un accès à cheval sur
+    /// une page), à une adresse physique hors de la RAM. `None` : l'adresse
+    /// n'est pas à la carte, et la machine lève sa faute « hors mémoire ».
+    ///
+    /// `&mut`, parce que lire l'ISR de la tablette l'efface.
+    pub fn mem_lire(&mut self, adresse: u64, largeur: u8) -> Option<u64> {
+        if !(1..=8).contains(&largeur) {
+            return None;
+        }
+        let n = usize::from(largeur);
+        let valeur = match self.region(adresse, n)? {
+            Region::MemoireVideo(a) => self.pci.ecran.as_ref()?.cadre.lire(a, n),
+            Region::RegistresDeLEcran(decalage) => {
+                self.pci.ecran.as_ref()?.lire_registres(decalage, n)
+            }
+            Region::Tablette(decalage) => self.pci.tablette.as_mut()?.lire(decalage, n),
+        };
+        Some(if n >= 8 {
+            valeur
+        } else {
+            valeur & ((1u64 << (8 * n)) - 1)
+        })
+    }
+
+    /// **Écrire la mémoire d'un périphérique.** `false` : l'adresse n'est pas
+    /// à la carte. `ram` est celle de l'invité : la sonnette de la tablette y
+    /// lit sa file.
+    pub fn mem_ecrire(
+        &mut self,
+        adresse: u64,
+        largeur: u8,
+        valeur: u64,
+        ram: &mut dyn Ram,
+    ) -> bool {
+        if !(1..=8).contains(&largeur) {
+            return false;
+        }
+        let n = usize::from(largeur);
+        match self.region(adresse, n) {
+            Some(Region::MemoireVideo(a)) => {
+                if let Some(ecran) = self.pci.ecran.as_mut() {
+                    ecran.cadre.ecrire(a, n, valeur);
+                }
+            }
+            Some(Region::RegistresDeLEcran(decalage)) => {
+                if let Some(ecran) = self.pci.ecran.as_mut() {
+                    ecran.ecrire_registres(decalage, n, valeur);
+                }
+            }
+            Some(Region::Tablette(decalage)) => {
+                if let Some(tablette) = self.pci.tablette.as_mut() {
+                    tablette.ecrire(decalage, n, valeur, ram);
+                }
+            }
+            None => return false,
+        }
+        true
+    }
+
+    /// **Lire un bloc de la mémoire vidéo**, de n'importe quelle longueur :
+    /// la copie d'une ligne entière (`rep movs`). `false`, sans rien toucher,
+    /// si la plage ne tient pas entière dans la mémoire vidéo — les
+    /// registres ne se lisent pas par blocs.
+    pub fn mem_lire_bloc(&self, adresse: u64, vers: &mut [u8]) -> bool {
+        let Some(ecran) = &self.pci.ecran else {
+            return false;
+        };
+        let Some(a) = ecran.cadre.decalage(adresse, vers.len()) else {
+            return false;
+        };
+        vers.copy_from_slice(&ecran.cadre.octets()[a..a + vers.len()]);
+        true
+    }
+
+    /// **Écrire un bloc dans la mémoire vidéo.** La révision avance une
+    /// fois, pas une fois par octet. `false`, sans rien toucher, si la plage
+    /// ne tient pas entière.
+    pub fn mem_ecrire_bloc(&mut self, adresse: u64, depuis: &[u8]) -> bool {
+        let Some(ecran) = self.pci.ecran.as_mut() else {
+            return false;
+        };
+        let Some(a) = ecran.cadre.decalage(adresse, depuis.len()) else {
+            return false;
+        };
+        if !depuis.is_empty() {
+            ecran.cadre.octets_mut()[a..a + depuis.len()].copy_from_slice(depuis);
+            ecran.cadre.marquer();
+        }
+        true
+    }
+
+    /// **Un toucher**, par la tablette (`X86Machine.touch`) : la position
+    /// rapportée à l'écran, de 0 à 1 sur chaque axe, et les boutons (bit 0
+    /// gauche, 1 droit, 2 milieu). `false` quand l'invité n'a pas pris la
+    /// tablette — pas d'écran, ou pas encore de pilote : l'application garde
+    /// alors la souris PS/2 ([`Carte::souris`]). Le toucher part au prochain
+    /// [`Carte::livrer`].
+    pub fn toucher(&mut self, x: f64, y: f64, boutons: u8) -> bool {
+        match self.pci.tablette.as_mut() {
+            Some(tablette) if tablette.prete() => {
+                tablette.pointer(x, y, boutons);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// **La molette**, par la tablette (`X86Machine.scroll`) : des crans,
+    /// positifs vers le haut, un paquet par cran, trente-deux au plus d'un
+    /// coup. `false` quand la tablette n'est pas prise — la souris PS/2 de
+    /// l'invité n'a que trois octets, pas de molette — ou pour zéro cran.
+    pub fn defiler(&mut self, crans: i32) -> bool {
+        match self.pci.tablette.as_mut() {
+            Some(tablette) if tablette.prete() && crans != 0 => {
+                tablette.defiler(crans);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// **Rendre à l'invité ce que le doigt a fait**, dans les tampons de son
+    /// pilote, au rythme d'un doigt : `tics` est l'heure de la machine, en
+    /// tics du 8254, comme pour [`Carte::battre`]. La boucle hôte l'appelle
+    /// à chaque tour, avant de relire les lignes (`serviceInterrupts` du
+    /// côté Swift). Sans rien en attente, elle ne touche pas à la RAM.
+    pub fn livrer(&mut self, tics: u64, ram: &mut dyn Ram) {
+        if let Some(tablette) = self.pci.tablette.as_mut() {
+            if tablette.en_attente() {
+                tablette.livrer(ram, Some(tics));
+            }
+        }
     }
 
     /// **Brancher le disque** en 00:03.0 : `secteurs` secteurs de 512
@@ -359,6 +606,10 @@ impl Carte {
                 lignes |= self.bit_du_disque(quel);
             }
         }
+        // La tablette, tant que son ISR n'est pas lu.
+        if self.pci.tablette.as_ref().is_some_and(Tablette::interrompt) {
+            lignes |= self.bit_de_la_tablette();
+        }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la
         // quatrième de l'esclave. À niveau, comme le port série.
         if self.ps2.clavier_interrompt() {
@@ -373,7 +624,21 @@ impl Carte {
     /// **Les lignes que la carte tient**, levées ou non : celles que la
     /// boucle hôte doit effacer quand [`Carte::lignes`] ne les lève pas.
     pub fn tenues(&self) -> u16 {
-        LIGNES_DES_PERIPHERIQUES | self.bits_des_disques() | self.nommees_du_dehors
+        LIGNES_DES_PERIPHERIQUES
+            | self.bits_des_disques()
+            | self.bit_de_la_tablette()
+            | self.nommees_du_dehors
+    }
+
+    /// **La ligne de la tablette, en bit** : celle que le noyau a écrite dans
+    /// sa configuration, dix au départ — la deuxième de l'esclave. Zéro sans
+    /// tablette, ou pour une ligne que la carte ne peut pas tenir.
+    fn bit_de_la_tablette(&self) -> u16 {
+        self.pci
+            .tablette
+            .as_ref()
+            .and_then(|tablette| bit_du_dehors(tablette.ligne))
+            .unwrap_or(0)
     }
 
     /// **Lever une ligne du dehors**, jusqu'à [`Carte::baisser`]. Refusé
@@ -463,12 +728,17 @@ impl Carte {
     /// attend sa réponse, ou le disque tient sa ligne. Ce que `wakeable` de
     /// la boucle hôte doit compter, comme `devicesArmed` du côté Swift (qui
     /// compte `storage.interrupting`).
+    ///
+    /// La tablette compte quand sa ligne est levée ou qu'un geste attend son
+    /// heure ([`Tablette::reveil`]). Le cœur Swift, lui, tient la machine
+    /// éveillée dès qu'une tablette existe.
     pub fn reveil(&self) -> bool {
         !self.ps2.frappes.is_empty()
             || Disque::TOUS.into_iter().any(|quel| {
                 self.disque(quel)
                     .is_some_and(|d| d.en_attente() || d.interrompt())
             })
+            || self.pci.tablette.as_ref().is_some_and(Tablette::reveil)
     }
 }
 
@@ -476,8 +746,9 @@ pub(crate) fn largeur_valide(largeur: u8) -> bool {
     matches!(largeur, 1 | 2 | 4)
 }
 
-/// **Les ports fixes de la carte** : l'i8042, l'horloge et le bus. Ils
-/// passent avant toute fenêtre de disque.
+/// **Les ports fixes de toute carte** : l'i8042, l'horloge et le bus. Ils
+/// passent avant toute fenêtre de disque. Un écran branché en ajoute deux
+/// ([`Carte::est_fixe`]).
 const fn port_fixe(port: u16) -> bool {
     matches!(
         port,

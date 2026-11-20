@@ -22,6 +22,17 @@
 //! fois par tour avant de relire les lignes ; tant qu'une notification
 //! attend, [`CartePc::reveil`] le dit, et un `hlt` ne s'endort pas dessus.
 //!
+//! **La mémoire des périphériques ne demande pas la RAM non plus.** L'écran
+//! et la tablette vivent à des adresses physiques hors de la RAM
+//! ([`ecran`](super::ecran), [`tablette`](super::tablette)) : la machine
+//! passe à [`CartePc::mem_lire`] et [`CartePc::mem_ecrire`] tout accès qui
+//! tombe hors de la sienne, au milieu de l'instruction qui le fait. Une
+//! seule de ces écritures lit la RAM — la sonnette d'une file de la
+//! tablette — et elle est **notée** comme la notification d'un disque.
+//! [`CartePc::servir`] sonne, puis rend à l'invité ce que le doigt a fait
+//! ([`CartePc::toucher`], [`CartePc::defiler`]), à l'heure du dernier
+//! [`CartePc::battre`].
+//!
 //! **L'heure est injectée.** L'horloge CMOS ne lit aucune horloge d'elle-même
 //! ([`cmos`](super::cmos)). La machine pose l'heure
 //! ([`CartePc::regler_heure`]), ou donne une horloge ([`CartePc::horloge`])
@@ -39,19 +50,29 @@
 //! let mut carte = CartePc::nouvelle();
 //! carte.regler_heure(1_793_379_909_000); // ou `carte.horloge(horloge_du_systeme)`
 //! carte.brancher(Disque::Premier, ArriereMemoire(vec![0; 8 * 512])); // vda, 00:03.0, ligne 5
+//! carte.brancher_ecran(1024, 768); // l'écran en 00:02.0, sa tablette en 00:07.0, ligne 10
 //! // Dans la boucle, pour un `in` et un `out` que les puces du cœur ne prennent pas :
 //! let lu = carte.port_lire(0x64, 1); // `None` : personne, le bus flotte (0xFF)
 //! let pris = carte.port_ecrire(0x70, 1, 0x09); // `false` : personne non plus
-//! carte.servir(&mut ram); // après un `out` pris : le disque avance, la ligne se lève
-//! carte.battre(1_193); // le temps, en tics du 8254 : les frappes à leur heure
+//! // Pour un accès mémoire hors de la RAM (ici le premier pixel, puis un registre de l'écran) :
+//! let peint = carte.mem_ecrire(0xE000_0000, 4, 0x00FF_FFFF); // `false` : la faute « hors mémoire »
+//! let id = carte.mem_lire(0xE100_0500, 2); // `None` : la faute aussi
+//! carte.battre(1_193); // le temps, en tics du 8254 : les frappes et les touchers à leur heure
+//! carte.servir(&mut ram); // à chaque tour, et après un `out` pris : disques, tablette, lignes
 //! let (levees, tenues) = (carte.lignes(), carte.tenues()); // → les requêtes des deux 8259
 //! let peut_dormir = !carte.reveil(); // un `hlt` n'attend pas ce que personne ne lèvera
-//! assert_eq!((lu, pris, levees, tenues & 0x20, peut_dormir), (Some(0x14), true, 0, 0x20, true));
+//! assert_eq!((lu, pris, levees, tenues & 0x420, peut_dormir), (Some(0x14), true, 0, 0x420, true));
+//! // Pour la vue : l'image n'est recopiée que si elle a changé.
+//! let cadre = &carte.ecran().expect("branché").cadre;
+//! let (revision, mode) = (cadre.revision(), cadre.mode());
+//! assert_eq!((peint, id, revision, mode.largeur, cadre.octets()[..4] == [0xFF, 0xFF, 0xFF, 0]), (true, Some(0xB0C5), 1, 1024, true));
 //! ```
 
+use super::ecran::Ecran;
 use super::i8042::CodeTouche;
+use super::tablette::Tablette;
 use super::virtio_blk::{Sens, REGISTRE_DE_NOTIFICATION};
-use super::{largeur_valide, Carte, Ram, SansRam};
+use super::{largeur_valide, Carte, Ram, Region, SansRam};
 
 pub use super::pci::Disque;
 
@@ -153,6 +174,12 @@ pub struct CartePc {
     arrieres: [Option<Box<dyn Arriere>>; 2],
     /// Le pilote a notifié ce disque, et sa file n'a pas encore été relue.
     notifies: [bool; 2],
+    /// Le pilote de la tablette a sonné cette file (celle des événements,
+    /// puis celle de l'état), et elle n'a pas encore été relue.
+    sonnettes: [bool; 2],
+    /// L'heure du dernier [`CartePc::battre`], en tics du 8254 : celle des
+    /// touchers rendus par [`CartePc::servir`].
+    tics: u64,
     horloge: Option<Horloge>,
     /// Les octets d'une lecture, entre l'arrière et la RAM.
     tampon: Vec<u8>,
@@ -172,6 +199,8 @@ impl CartePc {
             carte: Carte::nouvelle(),
             arrieres: [None, None],
             notifies: [false; 2],
+            sonnettes: [false; 2],
+            tics: 0,
             horloge: None,
             tampon: Vec::new(),
         }
@@ -207,8 +236,13 @@ impl CartePc {
     /// d'entrée-sortie, et comptent quand même). Ce que le disque juge seul —
     /// un secteur au-delà de sa fin, son nom — n'y est pas compté.
     ///
-    /// Sans rien à faire, elle ne lit que deux booléens : la boucle peut
-    /// l'appeler après chaque `out`.
+    /// **Et la tablette** : les files que son pilote a sonnées sont relues,
+    /// puis ce que le doigt a fait est rendu dans ses tampons, à l'heure du
+    /// dernier [`CartePc::battre`] ([`Tablette::livrer`]). Ses événements ne
+    /// sont pas des requêtes : ils ne comptent pas dans ce qui est rendu.
+    ///
+    /// Sans rien à faire, elle ne lit que quelques booléens : la boucle peut
+    /// l'appeler après chaque `out`, et l'appelle une fois par tour.
     pub fn servir(&mut self, ram: &mut dyn Ram) -> usize {
         let mut passees = 0;
         for quel in Disque::TOUS {
@@ -260,6 +294,17 @@ impl CartePc {
         if self.tampon.capacity() > TAMPON_GARDE {
             self.tampon = Vec::new();
         }
+        let sonnees = std::mem::take(&mut self.sonnettes);
+        if let Some(tablette) = self.carte.tablette_mut() {
+            for (file, sonnee) in sonnees.into_iter().enumerate() {
+                if sonnee {
+                    tablette.sonner(file, ram);
+                }
+            }
+            if tablette.en_attente() {
+                tablette.livrer(ram, Some(self.tics));
+            }
+        }
         passees
     }
 
@@ -282,6 +327,85 @@ impl CartePc {
         self.arrieres[quel.rang()]
             .as_ref()
             .map_or(0, |arriere| arriere.octets_ecrits())
+    }
+
+    // ------------------------------------------------- l'écran et la tablette
+
+    /// **Brancher l'écran**, et la tablette qui va avec : voir
+    /// [`Carte::brancher_ecran`]. À faire avant le démarrage. `false` si le
+    /// cadre du démarrage ne tient pas dans seize mébioctets.
+    pub fn brancher_ecran(&mut self, largeur: u32, hauteur: u32) -> bool {
+        let branche = self.carte.brancher_ecran(largeur, hauteur);
+        if branche {
+            // Une sonnette notée pour l'ancienne tablette n'est pas pour la
+            // neuve.
+            self.sonnettes = [false; 2];
+        }
+        branche
+    }
+
+    /// **L'écran**, s'il est branché. Son cadre ([`Ecran::cadre`]) est ce
+    /// que la machine tend à la vue : le mode montré, la mémoire vidéo d'un
+    /// bloc, et le compte des changements — égal à celui de la dernière
+    /// image, il n'y a rien à repeindre.
+    pub fn ecran(&self) -> Option<&Ecran> {
+        self.carte.ecran()
+    }
+
+    /// La tablette, si un écran est branché : ce qu'un test regarde, et
+    /// [`Tablette::prete`].
+    pub fn tablette(&self) -> Option<&Tablette> {
+        self.carte.tablette()
+    }
+
+    /// **Lire la mémoire d'un périphérique**, à une adresse physique hors de
+    /// la RAM : voir [`Carte::mem_lire`]. `None` : pas à la carte.
+    pub fn mem_lire(&mut self, adresse: u64, largeur: u8) -> Option<u64> {
+        self.carte.mem_lire(adresse, largeur)
+    }
+
+    /// **Écrire la mémoire d'un périphérique** : voir [`Carte::mem_ecrire`].
+    /// `false` : pas à la carte.
+    ///
+    /// La sonnette d'une file de la tablette est notée, et servie par
+    /// [`CartePc::servir`] : elle seule a besoin de la RAM.
+    pub fn mem_ecrire(&mut self, adresse: u64, largeur: u8, valeur: u64) -> bool {
+        if (1..=8).contains(&largeur) {
+            if let Some(Region::Tablette(decalage)) =
+                self.carte.region(adresse, usize::from(largeur))
+            {
+                if let Some(file) = Tablette::sonnette(decalage) {
+                    self.sonnettes[file] = true;
+                    return true;
+                }
+            }
+        }
+        self.carte
+            .mem_ecrire(adresse, largeur, valeur, &mut SansRam)
+    }
+
+    /// Lire un bloc de la mémoire vidéo : voir [`Carte::mem_lire_bloc`].
+    pub fn mem_lire_bloc(&self, adresse: u64, vers: &mut [u8]) -> bool {
+        self.carte.mem_lire_bloc(adresse, vers)
+    }
+
+    /// Écrire un bloc dans la mémoire vidéo : voir
+    /// [`Carte::mem_ecrire_bloc`].
+    pub fn mem_ecrire_bloc(&mut self, adresse: u64, depuis: &[u8]) -> bool {
+        self.carte.mem_ecrire_bloc(adresse, depuis)
+    }
+
+    /// **Un toucher** : la position rapportée à l'écran (0 à 1), et les
+    /// boutons. `false` quand l'invité n'a pas pris la tablette : voir
+    /// [`Carte::toucher`]. Il part au prochain [`CartePc::servir`].
+    pub fn toucher(&mut self, x: f64, y: f64, boutons: u8) -> bool {
+        self.carte.toucher(x, y, boutons)
+    }
+
+    /// **La molette** : des crans, positifs vers le haut. Voir
+    /// [`Carte::defiler`].
+    pub fn defiler(&mut self, crans: i32) -> bool {
+        self.carte.defiler(crans)
     }
 
     // ------------------------------------------------------------------ ports
@@ -346,9 +470,10 @@ impl CartePc {
         self.a_servir() || self.carte.reveil()
     }
 
-    /// Une notification attend [`CartePc::servir`].
+    /// Une notification d'un disque, ou une sonnette de la tablette, attend
+    /// [`CartePc::servir`].
     pub fn a_servir(&self) -> bool {
-        self.notifies.contains(&true)
+        self.notifies.contains(&true) || self.sonnettes.contains(&true)
     }
 
     // ------------------------------------------------------------------ l'heure
@@ -377,8 +502,10 @@ impl CartePc {
     }
 
     /// **Le temps qui passe**, en tics du 8254 depuis le départ de la
-    /// machine : voir [`Carte::battre`].
+    /// machine : voir [`Carte::battre`]. C'est aussi l'heure des touchers
+    /// que le prochain [`CartePc::servir`] rendra.
     pub fn battre(&mut self, tics: u64) {
+        self.tics = tics;
         self.carte.battre(tics);
     }
 
@@ -1660,7 +1787,9 @@ pub(crate) mod tests {
         assert_eq!(lire_tout(&mut carte)[..2], [0x09, 0x07], "la minute suit");
     }
 
-    /// L'horloge du système donne une heure d'aujourd'hui, pas 1970.
+    /// L'horloge du système donne une heure d'aujourd'hui, pas 1970. En
+    /// natif seulement : la page n'a pas d'horloge du système, elle pose l'heure.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_system_clock_is_a_date_of_this_century() {
         let ms = horloge_du_systeme();
