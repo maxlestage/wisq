@@ -1986,16 +1986,29 @@ type Reference = (&'static str, &'static [u8], u64, u64, u64, u64);
 
 /// **Une référence par la pile à une adresse qui n'est pas canonique est
 /// `#SS(0)`, vecteur douze** ; une autre est `#GP(0)`. Linux en fait SIGBUS
-/// dans un cas, SIGSEGV dans l'autre. Implicite (`push`, `pop`, `call`,
-/// `ret`, `leave`, `pushf`, `popf`, `iretq`) ou par un opérande bâti sur RSP
-/// ou RBP — sauf derrière un préfixe FS ou GS, qui change de segment. Et la
-/// cible d'un `ret`, qui n'est pas un accès, reste `#GP(0)`.
+/// dans un cas, SIGSEGV dans l'autre. Implicite (`push`, `pop`, `call` relatif
+/// ou indirect, `ret`, `leave`, `pushf`, `popf`, `iretq`) ou par un opérande
+/// bâti sur RSP ou RBP — sauf derrière un préfixe FS ou GS, qui change de
+/// segment —, y compris pour les instructions de système qui lisent ou
+/// écrivent un opérande (`sgdt`, `mov` vers un segment). Et la cible d'un
+/// `ret`, qui n'est pas un accès, reste `#GP(0)`.
 #[test]
 fn a_non_canonical_stack_reference_is_a_stack_fault() {
     const DEHORS: u64 = 0x8000_0000_0000_6000;
     // (nom, code, RSP, RBP, RAX, vecteur attendu)
-    let cas: [Reference; 17] = [
+    let cas: [Reference; 21] = [
         ("push %rax", &[0x50], DEHORS, 0, 0, 12),
+        // La cible, 0x1015, est canonique : c'est l'empilement qui faute.
+        (
+            "call rel32",
+            &[0xE8, 0x10, 0x00, 0x00, 0x00],
+            DEHORS,
+            0,
+            0,
+            12,
+        ),
+        ("sgdt (%rsp)", &[0x0F, 0x01, 0x04, 0x24], DEHORS, 0, 0, 12),
+        ("mov (%rsp),%ds", &[0x8E, 0x1C, 0x24], DEHORS, 0, 0, 12),
         ("pop %rax", &[0x58], DEHORS, 0, 0, 12),
         ("pushfq", &[0x9C], DEHORS, 0, 0, 12),
         ("popfq", &[0x9D], DEHORS, 0, 0, 12),
@@ -2038,6 +2051,14 @@ fn a_non_canonical_stack_reference_is_a_stack_fault() {
             13,
         ),
         (
+            "mov %gs:(%rbp),%rax",
+            &[0x65, 0x48, 0x8B, 0x45, 0x00],
+            0xA800,
+            DEHORS,
+            0,
+            13,
+        ),
+        (
             "mov (%rax),%rcx",
             &[0x48, 0x8B, 0x08],
             0xA800,
@@ -2071,6 +2092,79 @@ fn a_non_canonical_stack_reference_is_a_stack_fault() {
         assert_eq!(lire(&machine, cadre + 32), rsp, "{nom} : RSP intact");
         assert_eq!(machine.cpu.regs[5], rbp, "{nom} : RBP intact");
         assert_eq!(machine.retirees, 0, "{nom}");
+    }
+}
+
+/// Un cas de `the_stack_fault_is_told_from_the_operand_at_the_edge` : le
+/// nom, le code, RSP, RBP, RAX, et le vecteur attendu.
+type AuBord = (&'static str, &'static [u8], u64, u64, u64, u64);
+
+/// **Au bord de la moitié basse, l'adresse refusée n'est pas celle de
+/// l'opérande, et la faute reste la sienne.** Un accès à cheval sur le bord
+/// faute sur sa moitié haute, quatre octets plus loin ; `fxsave` sort par sa
+/// fin, 0x100 octets plus loin : sans référence implicite, c'est l'opérande,
+/// et une base RBP ou RSP en fait `#SS(0)`. Une instruction qui a les deux
+/// (`push (%rax)`) : l'opérande si l'adresse refusée tombe dans ses huit
+/// octets (`#GP(0)`, base RAX), la pile sinon — même quand l'empilement faute
+/// juste derrière l'opérande, à 0x100 de lui.
+#[test]
+fn the_stack_fault_is_told_from_the_operand_at_the_edge() {
+    const BAS: u64 = 0x7FFF_FFFF_FFFC;
+    let cas: [AuBord; 4] = [
+        (
+            "mov (%rbp),%rax",
+            &[0x48, 0x8B, 0x45, 0x00],
+            0xA800,
+            BAS,
+            0,
+            12,
+        ),
+        (
+            "fxsave (%rsp)",
+            &[0x0F, 0xAE, 0x04, 0x24],
+            0x7FFF_FFFF_FF00,
+            0,
+            0,
+            12,
+        ),
+        (
+            "push (%rax), la pile juste derrière",
+            &[0xFF, 0x30],
+            0x8000_0000_0008,
+            0,
+            0x7FFF_FFFF_FF00,
+            12,
+        ),
+        (
+            "push (%rax), à cheval sur le bord",
+            &[0xFF, 0x30],
+            0xA800,
+            0,
+            BAS,
+            13,
+        ),
+    ];
+    for (nom, code, rsp, rbp, rax, vecteur) in cas {
+        let mut machine = au_bord(code);
+        porte(&mut machine, 12, GESTIONNAIRE + 0x20, 0x8E);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        machine.cpu.regs[4] = rsp;
+        machine.cpu.regs[5] = rbp;
+        machine.cpu.regs[0] = rax;
+        machine.tourner(1).expect("livrée");
+        let attendu = if vecteur == 12 {
+            GESTIONNAIRE + 0x20
+        } else {
+            GESTIONNAIRE
+        };
+        assert_eq!(machine.cpu.rip, attendu, "{nom} : vecteur {vecteur}");
+        let cadre = machine.cpu.regs[4];
+        assert_eq!(lire(&machine, cadre), 0, "{nom} : code 0");
+        assert_eq!(lire(&machine, cadre + 8), BORD, "{nom} : sur lui-même");
+        assert_eq!(lire(&machine, cadre + 32), rsp, "{nom} : RSP intact");
+        assert_eq!(machine.retirees, 0, "{nom}");
+        assert_eq!(machine.cpu.control[2], 0, "{nom} : pas une faute de page");
     }
 }
 

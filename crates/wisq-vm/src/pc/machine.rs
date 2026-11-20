@@ -590,15 +590,23 @@ impl Machine {
     /// c'est `#SS(0)`, vecteur douze ; sinon `#GP(0)`. Linux en fait SIGBUS
     /// dans un cas, SIGSEGV dans l'autre.
     ///
-    /// L'adresse refusée dit laquelle des deux références a fauté : celle de
-    /// l'opérande si elle tombe dans ses octets (au plus 512, ceux de
-    /// `fxsave`), l'implicite sinon. Une faute ne laisse aucune trace, donc les
-    /// registres sont encore ceux de l'adresse calculée.
+    /// **Laquelle des deux références a fauté.** Une instruction sans
+    /// référence implicite n'a que son opérande : c'est lui, quelle que soit
+    /// l'adresse refusée — un accès à cheval sur le bord de la moitié basse,
+    /// `fxsave` qui en sort par sa fin. Une instruction qui a les deux
+    /// (`push (%rax)`, `pop (%rax)`, `call *(%rax)`, toutes de `largeur`
+    /// octets au plus) : l'opérande si l'adresse refusée tombe dans ses
+    /// octets, l'implicite sinon — même juste derrière l'opérande, où une
+    /// fenêtre plus large les confondait. Une faute ne laisse aucune trace,
+    /// donc les registres sont encore ceux de l'adresse calculée. Un opérande
+    /// relatif à RIP n'a pas de base (le décodeur n'en pose pas), donc jamais
+    /// la pile.
     #[cold]
     #[inline(never)]
     fn faute_d_operande(
         &mut self,
         operande: Option<Address>,
+        largeur: u64,
         longueur: usize,
         pile_implicite: bool,
     ) -> Evenement {
@@ -606,12 +614,11 @@ impl Machine {
             let apres = self.cpu.rip.wrapping_add(longueur as u64);
             let par_la_pile = match operande {
                 Some(operande)
-                    if address.wrapping_sub(self.cpu.effective_address(&operande, apres)) < 512 =>
+                    if !pile_implicite
+                        || address.wrapping_sub(self.cpu.effective_address(&operande, apres))
+                            < largeur =>
                 {
-                    !operande.fs
-                        && !operande.gs
-                        && !operande.relative
-                        && matches!(operande.base, Some(4 | 5))
+                    !operande.fs && !operande.gs && matches!(operande.base, Some(4 | 5))
                 }
                 _ => pile_implicite,
             };
@@ -624,6 +631,7 @@ impl Machine {
     fn faute_de(&mut self, instruction: &Decoded) -> Evenement {
         self.faute_d_operande(
             instruction.memory,
+            instruction.width as u64,
             instruction.length,
             pile_implicite(instruction.op),
         )
@@ -754,7 +762,7 @@ impl Machine {
                         Ok(())
                     }
                     Err(ExtendedFault::Memory) => {
-                        Err(self.faute_d_operande(instruction.memory, instruction.length, false))
+                        Err(self.faute_d_operande(instruction.memory, 0, instruction.length, false))
                     }
                     Err(ExtendedFault::ReservedControl) => {
                         Err(Exception::ProtectionGenerale(0).into())
