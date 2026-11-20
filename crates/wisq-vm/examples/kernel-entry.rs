@@ -97,6 +97,34 @@ fn declared_pages() -> Result<u32, String> {
         .map_err(|_| format!("WISQ_RAM={mib} est trop grand pour être compté en pages"))
 }
 
+/// **Le disque que `WISQ_DISQUE` demande, ou aucun** : un fichier, servi par
+/// plages à l'arrière asynchrone de la carte (`web/carte.js`), en virtio-blk
+/// sur 00:03.0 — `/dev/vda` pour le noyau. Le fichier n'est jamais écrit : ce
+/// que l'invité écrit va dans une couche en mémoire, perdue à la fin de la
+/// course, comme le fichier de base du cœur Swift reste intact sous sa couche.
+///
+/// **Refusé plutôt que deviné**, comme `WISQ_SCREEN` : un chemin qui ne se lit
+/// pas donnerait une machine sans disque, et une course qui finit sur « boot
+/// media: failed » se lirait comme un défaut du noyau.
+fn declared_disk() -> Result<Option<(String, u64)>, String> {
+    let Ok(path) = std::env::var("WISQ_DISQUE") else {
+        return Ok(None);
+    };
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let bytes = std::fs::metadata(&path)
+        .map_err(|why| format!("WISQ_DISQUE={path} ne se lit pas : {why}"))?
+        .len();
+    if bytes < 512 {
+        return Err(format!(
+            "WISQ_DISQUE={path} fait {bytes} octets : moins d'un secteur"
+        ));
+    }
+    Ok(Some((path, bytes)))
+}
+
 /// **L'archive que `WISQ_INITRAMFS` demande, ou aucune.**
 ///
 /// Absente, le montage décrit une machine sans racine — ce qu'il a été jusqu'à
@@ -817,6 +845,91 @@ fn main() {
             )
         }
     };
+    // **Le disque, quand `WISQ_DISQUE` en demande un.** La carte des
+    // périphériques est alors branchée sur la boucle hôte : l'i8042, l'horloge
+    // CMOS, le bus PCI et le disque virtio, instanciés à part de l'émetteur
+    // sur le même module de la page (`web/carte.js`). L'arrière lit le fichier
+    // par plages, sur demande — l'ISO n'est jamais chargée entière —, et ce
+    // que l'invité écrit reste dans une couche en mémoire, secteur par
+    // secteur. Sans `WISQ_DISQUE`, pas de carte : la machine des relevés
+    // d'avant, au port près.
+    let disk = match declared_disk() {
+        Ok(disk) => disk,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+    };
+    let (prelude_carte, option_carte, releve_carte) = match &disk {
+        None => (String::new(), String::new(), String::new()),
+        Some((path, bytes)) => {
+            let module = page_module(&root);
+            println!(
+                "disque : {path}, {bytes} octets, en virtio-blk sur 00:03.0 (la carte de la page)"
+            );
+            (
+                format!(
+                    r#"import {{ carte }} from {carte_js:?};
+import {{ openSync, readSync }} from "fs";
+const moduleDeLaCarte = new WebAssembly.Module(readFileSync({module:?}));
+const fdDuDisque = openSync({path:?}, "r");
+const SECTEUR = 512;
+// **La couche d'écriture**, un secteur par entrée : le fichier n'est jamais
+// écrit, et une lecture voit ce que l'invité a écrit par-dessus.
+const couche = new Map();
+const compteDuDisque = {{ lectures: 0, lus: 0, ecritures: 0, ecrits: 0 }};
+const secteursDe = (decalage, longueur) => {{
+  const rendus = [];
+  for (let s = Math.floor(decalage / SECTEUR); s * SECTEUR < decalage + longueur; s++) {{
+    const debut = Math.max(decalage, s * SECTEUR);
+    const fin = Math.min(decalage + longueur, (s + 1) * SECTEUR);
+    rendus.push([s, debut, fin]);
+  }}
+  return rendus;
+}};
+const arriere = {{
+  octets: {bytes},
+  async lire(decalage, longueur) {{
+    const vers = new Uint8Array(longueur);
+    readSync(fdDuDisque, vers, 0, longueur, decalage);
+    if (couche.size > 0) {{
+      for (const [s, debut, fin] of secteursDe(decalage, longueur)) {{
+        const ecrit = couche.get(s);
+        if (ecrit !== undefined) vers.set(ecrit.subarray(debut - s * SECTEUR, fin - s * SECTEUR), debut - decalage);
+      }}
+    }}
+    compteDuDisque.lectures += 1;
+    compteDuDisque.lus += longueur;
+    return vers;
+  }},
+  async ecrire(decalage, depuis) {{
+    for (const [s, debut, fin] of secteursDe(decalage, depuis.length)) {{
+      let secteur = couche.get(s);
+      if (secteur === undefined) {{
+        secteur = new Uint8Array(SECTEUR);
+        readSync(fdDuDisque, secteur, 0, SECTEUR, s * SECTEUR);
+        couche.set(s, secteur);
+      }}
+      secteur.set(depuis.subarray(debut - decalage, fin - decalage), debut - s * SECTEUR);
+    }}
+    compteDuDisque.ecritures += 1;
+    compteDuDisque.ecrits += depuis.length;
+    return true;
+  }},
+}};
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere }});
+"#,
+                    carte_js = root.join("web/carte.js").to_string_lossy(),
+                    module = module.to_string_lossy(),
+                ),
+                "carte: brancherLaCarte,".to_string(),
+                r#"console.log("disque " + compteDuDisque.lectures + " lectures, "
+  + compteDuDisque.lus + " octets lus, " + compteDuDisque.ecritures + " écritures, "
+  + compteDuDisque.ecrits + " octets écrits, " + couche.size + " secteurs dans la couche");"#
+                    .to_string(),
+            )
+        }
+    };
     println!();
 
     // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.
@@ -856,6 +969,8 @@ fn main() {
     // série après la dernière ligne tapée — un shell qui attend la suivante —,
     // celle-ci part, suivie d'un retour chariot. Attendre un `hlt` définitif ne
     // marche pas : l'horloge du noyau réveille toujours la machine.
+    // `WISQ_INVITE` peut en nommer plusieurs, séparées par `;;` : sur une ISO
+    // qui démarre jusqu'au bout, `login: ` d'abord, le shell de `root` ensuite.
     let entree: Vec<String> = std::env::var("WISQ_ENTREE")
         .map(|text| text.split(";;").map(str::to_string).collect())
         .unwrap_or_default();
@@ -942,7 +1057,7 @@ fn main() {
 import {{ machine }} from {host:?};
 import {{ readFileSync, appendFileSync }} from "fs";
 {prelude}
-
+{prelude_carte}
 let manquante = null;
 // **Ce que les traductions ont coûté**, mesuré autour de l'appel seul : la
 // compilation du module rendu par WebKit — ici JavaScriptCore — n'y est pas,
@@ -1031,6 +1146,7 @@ const vm = machine({{
       + " octets " + rendu.module.length);
     return rendu.module;
   }},
+  {option_carte}
   pages: {pages},
 }});
 for (const [path, at] of {placements}) {{
@@ -1071,7 +1187,9 @@ const debutDeLaQueue = {turns} - Math.floor({turns} / 10);
 let tours = 0;
 let why = {{ stopped: "tours épuisés", at: lire({rip}) }};
 const entree = {entree:?};
-const invite = {invite:?};
+// **Plusieurs invites possibles**, séparées par `;;` : `login: ` puis le
+// shell de `root` sur un système démarré depuis son ISO.
+const invites = {invite:?}.split(";;");
 const fin = {fin:?};
 let depuis = 0;
 for (let tour = 0; tour < {turns}; tour++) {{
@@ -1081,7 +1199,7 @@ for (let tour = 0; tour < {turns}; tour++) {{
     why = {{ stopped: "le port série a dit " + JSON.stringify(fin), at: lire({rip}) }};
     break;
   }}
-  if (entree.length > 0 && serie.indexOf(invite, depuis) >= 0) {{
+  if (entree.length > 0 && invites.some((i) => serie.indexOf(i, depuis) >= 0)) {{
     const ligne = entree.shift();
     console.log("tape " + JSON.stringify(ligne) + " au tour " + tours);
     vm.send(new TextEncoder().encode(ligne + "\r"));
@@ -1145,6 +1263,7 @@ console.log("vidages " + vm.vidages.fois + " fois, " + vm.vidages.regions + " re
   console.log("carte ecritures " + c.ecritures + " invalidees " + c.invalidees
     + " debordements " + c.debordements + " ; pic " + c.pic.trames + " trames");
 }}
+{releve_carte}
 console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
   + (vm.materiel.premiere === null
       ? ", aucune" : ", la premiere a 0x" + vm.materiel.premiere.toString(16)));
@@ -1304,6 +1423,9 @@ console.log("controle " + controle
                 invite = invite,
                 fin = fin,
                 prelude = prelude,
+                prelude_carte = prelude_carte,
+                option_carte = option_carte,
+                releve_carte = releve_carte,
                 emission = emission,
                 pages = pages,
                 rip = RIP_SLOT,
