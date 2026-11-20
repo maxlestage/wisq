@@ -477,6 +477,9 @@ impl VirtioNet {
                 if n == 0 {
                     continue;
                 }
+                // Hors de la RAM : la chaîne est coupée, et la trame perdue.
+                // Passer au tampon suivant rendrait au pilote une longueur
+                // qui couvre celui-ci, jamais écrit.
                 if !ram.ecrire(tampon.adresse, &octets[posees..posees + n]) {
                     break;
                 }
@@ -1113,6 +1116,53 @@ pub(crate) mod tests {
         pilote.carte.livrer(&mut pilote.ram);
         assert_eq!(pilote.servie(FILE_DE_RECEPTION, 0), (0, 0, 1));
         assert_eq!((pilote.carte.livrees(), pilote.carte.perdues()), (0, 2));
+    }
+
+    /// **Un tampon hors de la RAM au milieu d'une chaîne de réception la
+    /// coupe** : la trame est perdue, même si les tampons qui suivent ont la
+    /// place. Les sauter rendrait au pilote une longueur qui couvre un
+    /// tampon jamais écrit, qu'il lirait en premier — un paquet corrompu.
+    /// Les tampons qui suivent restent intacts, et la trame suivante passe.
+    #[test]
+    fn a_buffer_outside_the_ram_in_a_receive_chain_cuts_it() {
+        let mut pilote = Pilote::branche();
+        let dehors = 0xFFFF_FFFF_0000;
+        // En tête de chaîne : rien n'est écrit, la trame est perdue.
+        pilote.poser_chaine(
+            FILE_DE_RECEPTION,
+            &[(dehors, 2048, true), (0x50000, 2048, true)],
+        );
+        pilote.carte.entrer(trame_de(60, 7));
+        pilote.carte.livrer(&mut pilote.ram);
+        assert_eq!(pilote.servie(FILE_DE_RECEPTION, 0), (0, 0, 1));
+        assert_eq!((pilote.carte.livrees(), pilote.carte.perdues()), (0, 1));
+        assert_eq!(pilote.octets(0x50000, 70), vec![0; 70], "le second intact");
+        // Au milieu, après un morceau posé : perdue de même, le troisième
+        // tampon jamais écrit.
+        pilote.poser_chaine(
+            FILE_DE_RECEPTION,
+            &[
+                (0x51000, 30, true),
+                (dehors, 2048, true),
+                (0x52000, 2048, true),
+            ],
+        );
+        pilote.carte.entrer(trame_de(60, 8));
+        pilote.carte.livrer(&mut pilote.ram);
+        assert_eq!(pilote.servie(FILE_DE_RECEPTION, 1), (2, 0, 2));
+        assert_eq!((pilote.carte.livrees(), pilote.carte.perdues()), (0, 2));
+        assert_eq!(
+            pilote.octets(0x52000, 70),
+            vec![0; 70],
+            "le troisième intact"
+        );
+        // La carte n'est pas bloquée : la trame suivante arrive.
+        pilote.poser(FILE_DE_RECEPTION, 0x53000, 2048, true);
+        pilote.carte.entrer(trame_de(60, 9));
+        pilote.carte.livrer(&mut pilote.ram);
+        assert_eq!(pilote.servie(FILE_DE_RECEPTION, 2), (5, 70, 3));
+        assert_eq!(pilote.octets(0x5300A, 60), trame_de(60, 9));
+        assert_eq!((pilote.carte.livrees(), pilote.carte.perdues()), (1, 2));
     }
 
     /// **Deux trames, deux tampons, une notification** : les deux arrivent,

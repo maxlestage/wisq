@@ -2093,6 +2093,39 @@ pub(crate) mod tests {
         assert_eq!(temoin.bouts().recues.len(), 1);
     }
 
+    /// **Une émission notifiée ne livre rien** : la trame qui attend un
+    /// tampon reste à la sonde, même si un tampon de réception est posé, tant
+    /// que la file de réception n'est pas notifiée — le `transmit` du cœur
+    /// Swift ne fait pas de `deliver`.
+    #[test]
+    fn a_transmit_notification_leaves_the_waiting_frame_to_the_probe() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        temoin.bouts().pour_l_invite.push(trame());
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(carte.reseau().map(VirtioNet::en_attente), Some(1));
+        // Un tampon posé, sans notification.
+        pilote.poser(0, 0x50000, 2048, true);
+        poser_une_emission(&mut pilote, &[9; 60], 0x40000);
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 1));
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().recues, vec![vec![9; 60]], "émise");
+        assert_eq!(
+            carte.reseau().map(VirtioNet::en_attente),
+            Some(1),
+            "la trame attend la sonde"
+        );
+        assert_eq!(pilote.servie(0, 0).2, 0, "rien de rendu en réception");
+        assert_eq!(
+            pilote.octets(0x5000A, trame().len()),
+            vec![0; trame().len()]
+        );
+        // La sonde suivante la livre.
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(carte.reseau().map(VirtioNet::en_attente), Some(0));
+        assert_eq!(pilote.octets(0x5000A, trame().len()), trame());
+        assert_eq!(pilote.servie(0, 0).2, 1);
+    }
+
     /// **Le câble n'est questionné qu'un tour sur quatre au travail**, et à
     /// chaque tour au repos, par la façade comme par la carte.
     #[test]
