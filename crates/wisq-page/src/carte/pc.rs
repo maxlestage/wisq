@@ -2126,6 +2126,32 @@ pub(crate) mod tests {
         assert_eq!(pilote.servie(0, 0).2, 1);
     }
 
+    /// **Une émission posée mais pas notifiée ne part pas**, même quand un
+    /// `servir` passe pour une autre raison (ici, la réception notifiée) : le
+    /// pilote pose ses tampons, puis notifie, et le cœur Swift n'envoie qu'à
+    /// l'`out` de la file un. Partir plus tôt enverrait une trame que le
+    /// pilote n'a peut-être pas finie d'écrire.
+    #[test]
+    fn a_transmit_posted_but_not_notified_does_not_leave() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        poser_une_emission(&mut pilote, &[7; 60], 0x40000);
+        pilote.poser(0, 0x50000, 2048, true);
+        assert!(
+            carte.port_ecrire(RESEAU + 0x10, 2, 0),
+            "la réception notifiée"
+        );
+        carte.servir(&mut pilote.ram);
+        assert!(
+            temoin.bouts().recues.is_empty(),
+            "l'émission attend son `out`"
+        );
+        assert_eq!(pilote.servie(1, 0).2, 0, "rien de rendu en émission");
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 1));
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().recues, vec![vec![7; 60]]);
+        assert_eq!(pilote.servie(1, 0).2, 1);
+    }
+
     /// **Le câble n'est questionné qu'un tour sur quatre au travail**, et à
     /// chaque tour au repos, par la façade comme par la carte.
     #[test]
