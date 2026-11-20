@@ -8,7 +8,126 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
-## 2026-11-21 — Émetteur : la carte raccordée à `host.js`, Alpine monte son ISO, le flottant de SSE2, et le mur suivant est le x87
+## 2026-11-20 — Émetteur : reprise du raccord après contrôle, six gardes de `host.js` et deux largeurs du flottant que rien ne tenait
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée d'en dessous a fait
+survivre six sabotages d'une ligne de `web/host.js` à toutes les suites
+(`host_loop`, `x86_wasm`, `kernel_elf`, `page`, `carte`), et deux du
+décodeur flottant à `--lib` et `x86_wasm`. Le code de `host.js` était juste
+— le contrôle l'a reproduit hors de l'arbre —, mais rien ne le tenait :
+
+- J1, **la garde de confinement du DMA** (`dansLaRam`) bornée à la taille
+  de la `WebAssembly.Memory` au lieu de celle de la RAM : la carte aurait
+  écrit le disque au-dessus de la RAM de l'invité, dans la correspondance et
+  la carte du code de l'hôte. `carte.js` ne borne rien de son côté : c'est
+  la seule garde ;
+- J2, **les lignes retombées de l'esclave** jamais effacées : seul le
+  maître était jugé ;
+- J8, **un 0 rendu par un port de la carte** pris pour « personne »
+  (`if (valeur)`) : l'ISR virtio lu à zéro, un statut de l'i8042, la
+  seconde CMOS à :00 seraient devenus `0xff` ;
+- J5, J6, J7, **l'attente du disque sur un `hlt`** : attendre même quand
+  une interruption est déjà prête, délivrer après un pas d'horloge sans
+  recopier les lignes (la borne `tsc < 64 << 20` était trop lâche pour le
+  voir), attendre même interruptions éteintes ;
+- J9, `enVol` jamais décrémenté dans `carte.js`, n'était attrapé que par un
+  blocage de `carte.rs` (plus de trente minutes, la limite de la tâche) ;
+- Ra, Rb, **la largeur décodée de `cvtss2sd` et de `ucomiss`/`comiss`**
+  passée à huit octets : rien ne tombait. Le contrôle en concluait que ces
+  formes fauteraient à tort au bord d'une page. **Ce n'était pas le cas, et
+  c'était pire** : la largeur décodée des formes scalaires n'était lue par
+  personne. `x86_wasm_float.rs` recalculait la sienne d'après le type de
+  l'élément, si bien qu'une largeur fausse dans le décodeur ne changeait rien
+  ici — vérifié : Ra survivait aussi au nouveau test du bord de page tant que
+  l'émetteur gardait son propre calcul. Deux sources pour une même largeur,
+  dont une sans effet.
+
+**Ce qui est fait.**
+
+- **Le flottant lit la largeur du décodeur** : `float_low_source` reçoit
+  `step.width` pour toutes les formes qui lisent un élément (scalaires,
+  comparaisons scalaires, `ucomis`/`comis`, `cvtss2sd`, `cvtsd2ss`,
+  `cvtps2pd`, `cvtdq2pd`). Seule `cvt(t)s*2si` garde la largeur de
+  l'élément : sa largeur décodée est celle de l'entier rendu (`REX.W`),
+  comme le dit l'énumération `Float`. Les octets émis ne changent pas
+  (`bench_module_matches_the_probe` passe, `WebKitBench.swift` n'a pas été
+  régénéré).
+- **Six tests neufs ou renforcés dans `host_loop`** :
+  - `a_disk_buffer_that_straddles_the_end_of_ram_is_refused_whole` : deux
+    requêtes, la première dans les 512 derniers octets de la RAM (finit pile
+    à la fin : lue, la garde n'est pas trop stricte d'un octet), la seconde
+    à cheval : statut d'erreur, l'arrière jamais appelé, le dedans laissé
+    tel que la première l'a rempli, et 4 Kio au-dessus de la RAM identiques
+    à ce qu'ils étaient avant la course ;
+  - `a_slave_line_that_falls_before_delivery_is_not_delivered` : l'invité
+    allume la souris (`A8`, `D4 F4`), son accusé `FA` lève l'IRQ 12, la
+    course s'arrête sur `cli ; hlt` la ligne 4 de l'esclave en requête, puis
+    l'invité lit l'accusé par interrogation et `sti ; hlt` : rien n'est
+    délivré, la requête est effacée ;
+  - `an_interrupt_ready_while_a_read_is_in_flight_passes_before_the_answer` :
+    une touche enfoncée et une lecture servie trente millisecondes plus tard ;
+    le gestionnaire du clavier lit l'octet de statut du disque, encore
+    `0xff` ; puis la ligne 5 réveille un second `hlt`, et un dernier
+    `sti ; hlt`, rien en vol, arrête la course au lieu d'attendre ;
+  - `a_halt_with_interrupts_closed_does_not_wait_for_the_disk` : `cli ; hlt`
+    rend la main la lecture encore en vol (statut `0xff`, `enVol` 1) ; la
+    course suivante, `sti ; hlt`, reçoit la réponse ;
+  - `a_disk_read_answered_later_wakes_the_halted_guest` renforcé : `rdtsc`
+    avant le `hlt` et après le gestionnaire, l'écart borné à 4 096 (un pas
+    d'attente en vaut 2²⁰), et l'ISR relu après le gestionnaire vaut 0 ;
+  - `a_single_float_at_the_end_of_a_page_reads_four_bytes_and_no_more` : la
+    pagination identité par pages de 4 Kio, `0x25000` absente, 2,5 à
+    `0x24FFC`, lu par `cvtss2sd`, `ucomiss`, `comiss`, `addss`, `cvtss2si`,
+    `cvtsi2ss` et `cmpss` ; la course finit sur le `ud2`, chaque résultat
+    juste.
+- **Un pilote qui pend tombe** : `avec_la_carte` arme une garde d'une
+  minute (sous Bun, une boucle hôte suspendue sur une promesse jamais tenue
+  ne rend pas la main : J9 pendait aussi `host_loop`), et l'attente du test
+  du disque par plages de `carte.rs` lève au bout de deux secondes au lieu
+  de boucler sans fin (celle de `PILOTE_DU_DISQUE` avait déjà sa borne).
+- L'espace manquante de `const blocks = new WebAssembly.Table`, et la date
+  de l'entrée d'en dessous : ses commits sont du 20 novembre (UTC), pas du
+  21. L'entrée « Carte réseau : l'émission ne part qu'à son `out` », venue
+  de `master`, porte la même erreur ; elle n'est pas corrigée ici, pour ne
+  pas créer de conflit avec `master`.
+- **Quinze sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` vide ensuite), tous tombent :
+  - `host.js` : J1 (`memory.buffer.byteLength`) et J1b (`<` au lieu de
+    `<=`) dans le test du tampon à cheval ; J2 dans celui de l'esclave ; J5
+    dans celui de l'interruption prête ; J6 et J8 dans le test du disque
+    renforcé ; J7 dans celui du `cli ; hlt` ;
+  - `carte.js`, J9 : dans le test de l'interruption prête, en 70 s (la
+    garde), et dans trois tests de `carte.rs` en 16 s (avant les gardes, le
+    premier pendait sept minutes avant d'être tué à la main) ;
+  - décodeur : Ra (`cvtss2sd` sur huit octets), Rb (`ucomiss`/`comiss`), Rc
+    (`addss`…), Rd (`cmpss`), Rf (`cvtsi2ss` lu sur huit octets) dans le
+    test du bord de page ; Re (`cvtss2si` rendu sur 64 bits) dans le corpus
+    flottant ;
+  - émetteur, Fw : `cvtss2sd` qui relit huit octets en dur, dans le test du
+    bord de page.
+- `cargo test --release` : 865 réussis, 0 échec ; `x86_wasm` aussi sous le
+  profil de développement. `cargo fmt --check`, les deux `clippy` (dont
+  `wisq-page` en `wasm32-unknown-unknown`), `check-whitespace`,
+  `check-project-sources` : propres. Le Swift n'est pas touché.
+- Compte publié : 3 924 → 3 929 (Swift 3 065 + Rust 864) ; site reconstruit,
+  `bun test` du site : 476 réussis.
+
+**Ce qui reste.** Tout ce que dit l'entrée d'en dessous, et :
+
+- **La fusion avec `claude/pc-rust-coeur` ne se fera pas d'elle-même.**
+  `git merge-tree` la dit en conflit dans `x86.rs` (la ligne
+  `pub use vector::{…}`), les deux README, `content.rs`, `claims.test.ts` et
+  ce journal ; `x86_vector.rs` se fond sans conflit, mais le `match vector`
+  de `Cpu::execute_vector` du cœur n'a pas de bras `Vector::Float` et ne
+  compilera pas sans lui. Ce fichier n'est au partage d'aucun des deux flux,
+  et l'ajout du flottant y fait 171 lignes : plus qu'un petit ajout au
+  décodeur partagé. C'est à décider à la fusion, avec le flux « cœur ».
+- La largeur décodée de `cvt(t)sd2si` est celle de l'entier, pas celle du
+  double lu : un consommateur qui prendrait `width` pour la largeur de
+  l'accès (l'interprète du cœur, demain) lirait quatre octets au lieu de
+  huit. L'émetteur ne s'en sert pas pour l'accès ; l'énumération le dit.
+
+## 2026-11-20 — Émetteur : la carte raccordée à `host.js`, Alpine monte son ISO, le flottant de SSE2, et le mur suivant est le x87
 
 **Ce qui n'allait pas.** La carte des périphériques (`web/carte.js` : i8042,
 horloge CMOS, bus PCI, disque virtio avec son arrière asynchrone) n'était
