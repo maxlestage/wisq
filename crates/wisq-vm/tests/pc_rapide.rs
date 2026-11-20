@@ -807,6 +807,52 @@ fn code_at_the_end_of_ram_takes_the_step_by_step_path() {
     assert_eq!(rapide.blocs.construits, 0);
 }
 
+/// **La borne de la fin de la RAM est juste, à l'octet près**, pour tous les
+/// débuts de L−64 à L−1 (L, la taille de la RAM). Le code remplit les `n`
+/// derniers octets et s'arrête pile au bout : des `inc %ecx`, un `nop` quand
+/// il faut pour la parité, et un `jmp` qui revient au début (`hlt` seul pour
+/// n = 1). Le bloc qu'on y construirait couvrirait les `n` octets et en
+/// comparerait le multiple de huit d'au-dessus : au-delà de la RAM dès que
+/// `n` n'en est pas un. Le test de trois octets plus haut laissait passer
+/// toute borne de quatre octets ou plus ; ici, une borne de seize ou de huit
+/// fait lire l'hôte hors de la RAM. Et la borne n'est pas trop large : à
+/// L−64, les soixante-quatre octets tiennent, le bloc se construit.
+#[test]
+fn every_start_in_the_last_64_bytes_of_ram_is_bounded_exactly() {
+    for n in 1usize..=64 {
+        let mut code = Vec::new();
+        if n == 1 {
+            code.push(0xF4);
+        } else {
+            if n % 2 == 1 {
+                code.push(0x90);
+            }
+            while code.len() < n - 2 {
+                code.extend([0xFF, 0xC1]);
+            }
+            code.extend([0xEB, (-(n as i64)) as u8]);
+        }
+        assert_eq!(code.len(), n);
+        let rapide = les_deux(&[0xF4], 300, |m| {
+            let taille = m.cpu.memory.bytes.len();
+            m.cpu.control[0] = 1;
+            m.cpu.rip = (taille - n) as u64;
+            m.cpu.memory.bytes[taille - n..].copy_from_slice(&code);
+        });
+        let incs = (n.saturating_sub(2) / 2) as u64;
+        if n == 1 {
+            assert!(rapide.arretee, "n = {n} : le hlt");
+        } else if incs > 0 {
+            assert!(rapide.cpu.regs[1] > 0, "n = {n} : la boucle a tourné");
+        }
+        if n < 64 {
+            assert_eq!(rapide.blocs.construits, 0, "n = {n} : le pas à pas");
+        } else {
+            assert!(rapide.blocs.construits > 0, "n = {n} : le bloc tient");
+        }
+    }
+}
+
 /// **Une adresse `%fs:` dans un bloc ajoute la base de FS**, par ses deux
 /// formes : sans base ni index (`%fs:0x10`, comme le canari `%fs:0x28`) et
 /// par une base (`%fs:(%rbx)`). FS à 0xA000 : RAX lit 0xA010, RCX 0xA020 —
