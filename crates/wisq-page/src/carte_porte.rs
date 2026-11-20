@@ -39,6 +39,15 @@
 //! encore à `host.js`, qui ne dirige aucun accès mémoire vers la carte :
 //! `tests/carte.rs` les juge sur le module nu.
 //!
+//! **La carte réseau, côté page** : `carte_reseau` la branche (00:05.0,
+//! ligne 3) ; la page est le câble. Une trame qui arrive est copiée à
+//! `carte_reseau_place` et donnée par `carte_reseau_entrer`, puis
+//! `carte_reseau_livrer` la pose dans les tampons de l'invité ; après un
+//! `out` qui a pu notifier l'émission, `carte_reseau_sortie` prend la
+//! prochaine trame émise, lue à `carte_reseau_sortie_octets`. Comme pour la
+//! tablette, `web/carte.js` ne les sert pas encore : `tests/carte.rs` les
+//! juge sur le module nu.
+//!
 //! **Pourquoi ces fonctions ne sont pas `pub`** : pour la même raison que
 //! celles de l'émetteur (`lib.rs`). Ce sont les exports d'un module
 //! WebAssembly, `#[no_mangle]` suffit ; elles ne font pas partie du C ABI de
@@ -63,6 +72,11 @@ static LUS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static LUE: Mutex<u64> = Mutex::new(0);
 /// Le mode montré, tel que `carte_ecran_mode` le rend.
 static MODE: Mutex<[u32; 4]> = Mutex::new([0; 4]);
+/// La place où la page copie une trame qui arrive.
+static ENTRANTE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// La dernière trame émise prise par `carte_reseau_sortie`, que
+/// `carte_reseau_sortie_octets` montre jusqu'à la suivante.
+static SORTANTE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 /// **La RAM de l'invité, par les deux imports de la page.** Une adresse
 /// au-delà de 2⁶⁴ n'existe pas ; une longueur au-delà de 4 Gio non plus dans
@@ -471,6 +485,109 @@ extern "C" fn carte_livrer(tics: u64) {
     avec_la_ram(|ram| carte().livrer(tics, ram));
 }
 
+// ---------------------------------------------------------- la carte réseau
+
+/// **Brancher la carte réseau** en 00:05.0 : son adresse dans les six octets
+/// bas de `mac`, le premier en bas (`0x0171_7369_7702` pour l'adresse par
+/// défaut, `02:77:69:73:71:01`), et le câble branché si `cable` n'est pas
+/// nul. Une carte déjà branchée est remplacée.
+#[no_mangle]
+extern "C" fn carte_reseau(mac: u64, cable: u32) {
+    let octets = mac.to_le_bytes();
+    let mut carte = carte();
+    carte.brancher_reseau([
+        octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+    ]);
+    if let Some(reseau) = carte.reseau_mut() {
+        reseau.brancher_cable(cable != 0);
+    }
+}
+
+/// **Brancher ou débrancher le câble** : 1, ou 0 sans carte.
+#[no_mangle]
+extern "C" fn carte_reseau_cable(branche: u32) -> u32 {
+    carte().reseau_mut().map_or(0, |reseau| {
+        reseau.brancher_cable(branche != 0);
+        1
+    })
+}
+
+/// La place où copier les `longueur` octets d'une trame qui arrive. Ne vaut
+/// que jusqu'au prochain appel.
+#[no_mangle]
+extern "C" fn carte_reseau_place(longueur: u32) -> *mut u8 {
+    let mut place = ENTRANTE.lock().unwrap_or_else(|poison| poison.into_inner());
+    place.resize(longueur as usize, 0);
+    place.as_mut_ptr()
+}
+
+/// **Une trame est arrivée**, posée à `carte_reseau_place` : 1 si elle
+/// attend un tampon de l'invité, 0 si elle est perdue (plus grande qu'une
+/// trame Ethernet, ou l'attente pleine), plus longue que la place, ou s'il
+/// n'y a pas de carte. Elle part au prochain `carte_reseau_livrer`.
+#[no_mangle]
+extern "C" fn carte_reseau_entrer(longueur: u32) -> u32 {
+    let place = ENTRANTE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(trame) = place.get(..longueur as usize) else {
+        return 0;
+    };
+    carte()
+        .reseau_mut()
+        .map_or(0, |reseau| u32::from(reseau.entrer(trame.to_vec())))
+}
+
+/// **Poser ce qui attend dans les tampons de l'invité**, par les deux imports
+/// de la RAM : à chaque tour, après les trames entrées, avant de relire les
+/// lignes.
+#[no_mangle]
+extern "C" fn carte_reseau_livrer() {
+    avec_la_ram(|ram| {
+        if let Some(reseau) = carte().reseau_mut() {
+            reseau.livrer(ram);
+        }
+    });
+}
+
+/// **La prochaine trame émise par l'invité** : sa longueur, et ses octets à
+/// `carte_reseau_sortie_octets` jusqu'au prochain appel ; 0 quand il n'y en a
+/// plus (une trame émise n'est jamais vide).
+#[no_mangle]
+extern "C" fn carte_reseau_sortie() -> u32 {
+    let trame = carte()
+        .reseau_mut()
+        .and_then(|reseau| reseau.sortir())
+        .unwrap_or_default();
+    let mut sortante = SORTANTE.lock().unwrap_or_else(|poison| poison.into_inner());
+    *sortante = trame;
+    sortante.len() as u32
+}
+
+/// Où lire la trame prise par `carte_reseau_sortie`, dans la mémoire de ce
+/// module ; nul quand elle n'en a pas pris.
+#[no_mangle]
+extern "C" fn carte_reseau_sortie_octets() -> *const u8 {
+    let sortante = SORTANTE.lock().unwrap_or_else(|poison| poison.into_inner());
+    if sortante.is_empty() {
+        std::ptr::null()
+    } else {
+        sortante.as_ptr()
+    }
+}
+
+/// **Les compteurs de la carte** : 0 les trames émises, 1 les livrées, 2 les
+/// perdues, 3 celles qui attendent un tampon. Zéro sans carte, ou pour un
+/// autre `quel`.
+#[no_mangle]
+extern "C" fn carte_reseau_compte(quel: u32) -> u64 {
+    carte().reseau().map_or(0, |reseau| match quel {
+        0 => reseau.emises(),
+        1 => reseau.livrees(),
+        2 => reseau.perdues(),
+        3 => reseau.en_attente() as u64,
+        _ => 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! Les exports appelés en natif, comme la page les appelle. Ce qui est
@@ -859,5 +976,109 @@ mod tests {
         assert_eq!(evenement(14), [1, 0x110, 0], "le gauche");
         assert_eq!(evenement(15), [1, 0x111, 1], "le droit");
         assert_eq!(evenement(16), [1, 0x112, 1], "le milieu");
+    }
+
+    /// **La carte réseau par les exports** : branchée à son adresse, trouvée
+    /// en 00:05.0, une trame émise par la notification de la file un, prise
+    /// par `carte_reseau_sortie` et lue à son adresse, la ligne 3 ; une trame
+    /// entrée par la place, livrée dans le tampon posé ; les refus (pas de
+    /// carte, plus longue que la place, plus grande qu'une trame) et le câble
+    /// débranché qui perd ce qui part.
+    #[test]
+    fn the_network_card_goes_through_the_exports() {
+        let _tour = tour();
+        let ram = |f: &mut dyn FnMut(&mut Vec<u8>)| {
+            f(&mut RAM_D_ESSAI.lock().unwrap_or_else(|p| p.into_inner()).0)
+        };
+        assert_eq!(carte_reseau_sortie(), 0, "pas de carte");
+        assert!(carte_reseau_sortie_octets().is_null());
+        assert_eq!(carte_reseau_cable(1), 0);
+        carte_reseau_place(4);
+        assert_eq!(carte_reseau_entrer(4), 0);
+        assert_eq!(carte_reseau_compte(0), 0);
+        ram(&mut |r| *r = vec![0; 1 << 20]);
+        carte_reseau(0x0171_7369_7702, 1);
+        carte_ecrire(0xCF8, 4, 0x8000_2800);
+        assert_eq!(carte_lire(0xCFC, 4), 0x1000_1AF4);
+        carte_ecrire(0xCF8, 4, 0x8000_2810);
+        carte_ecrire(0xCFC, 4, 0xC040);
+        carte_ecrire(0xCF8, 4, 0x8000_2804);
+        carte_ecrire(0xCFC, 2, 1);
+        assert_eq!(
+            carte_lire(0xC054, 4),
+            0x7369_7702,
+            "l'adresse, octet bas d'abord"
+        );
+        assert_eq!(carte_lire(0xC058, 2), 0x0171);
+        // Les deux files, aux pages 0x10 et 0x20.
+        for (file, page) in [(0, 0x10), (1, 0x20)] {
+            carte_ecrire(0xC04E, 2, file);
+            carte_ecrire(0xC048, 4, page);
+        }
+        let trame: Vec<u8> = (0..60u8).map(|i| i.wrapping_mul(3)).collect();
+        let decrire = |r: &mut Vec<u8>, table: usize, a: u64, n: u32, drapeaux: u16| {
+            r[table..table + 8].copy_from_slice(&a.to_le_bytes());
+            r[table + 8..table + 12].copy_from_slice(&n.to_le_bytes());
+            r[table + 12..table + 14].copy_from_slice(&drapeaux.to_le_bytes());
+        };
+        ram(&mut |r| {
+            r[0x4000A..0x4000A + 60].copy_from_slice(&trame);
+            decrire(r, 0x20000, 0x40000, 70, 0);
+            r[0x21002] = 1; // une entrée publiée, la tête zéro
+        });
+        assert_eq!(carte_ecrire(0xC050, 2, 1), 1);
+        assert_eq!(carte_lignes(), 1 << 3);
+        assert_eq!(carte_reseau_sortie(), 60);
+        let octets = carte_reseau_sortie_octets();
+        // SAFETY : l'adresse rendue porte les 60 octets de la trame prise.
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(octets, 60) },
+            &trame[..]
+        );
+        assert_eq!(carte_reseau_sortie(), 0, "plus rien");
+        assert!(carte_reseau_sortie_octets().is_null());
+        assert_eq!(carte_reseau_compte(0), 1);
+        assert_eq!(carte_lire(0xC053, 1), 1);
+        assert_eq!(carte_lignes(), 0);
+        // Une trame qui arrive, par la place.
+        let place = carte_reseau_place(60);
+        // SAFETY : la place vient d'être rendue, de 60 octets.
+        unsafe { std::ptr::copy_nonoverlapping(trame.as_ptr(), place, 60) };
+        assert_eq!(carte_reseau_entrer(61), 0, "plus longue que la place");
+        assert_eq!(carte_reseau_entrer(60), 1);
+        assert_eq!(carte_reseau_compte(3), 1, "elle attend un tampon");
+        carte_reseau_livrer();
+        assert_eq!(carte_reseau_compte(3), 1, "toujours pas de tampon");
+        ram(&mut |r| {
+            decrire(r, 0x10000, 0x50000, 2048, 2);
+            r[0x11002] = 1;
+        });
+        assert_eq!(carte_lignes(), 0);
+        carte_reseau_livrer();
+        assert_eq!((carte_reseau_compte(1), carte_reseau_compte(3)), (1, 0));
+        assert_eq!(carte_lignes(), 1 << 3);
+        ram(&mut |r| {
+            assert_eq!(&r[0x50000..0x5000A], &[0; 10], "l'en-tête nul");
+            assert_eq!(&r[0x5000A..0x5000A + 60], &trame[..]);
+            assert_eq!(
+                u32::from_le_bytes([r[0x12008], r[0x12009], r[0x1200A], r[0x1200B]]),
+                70
+            );
+        });
+        // Plus grande qu'une trame Ethernet : perdue.
+        carte_reseau_place(1515);
+        assert_eq!(carte_reseau_entrer(1515), 0);
+        assert_eq!(carte_reseau_compte(2), 1);
+        // Le câble débranché : ce qui part est perdu.
+        assert_eq!(carte_reseau_cable(0), 1);
+        ram(&mut |r| {
+            decrire(r, 0x20010, 0x40000, 70, 0);
+            r[0x21006] = 1; // la tête un, à la deuxième entrée
+            r[0x21002] = 2;
+        });
+        carte_ecrire(0xC050, 2, 1);
+        assert_eq!(carte_reseau_sortie(), 0);
+        assert_eq!((carte_reseau_compte(0), carte_reseau_compte(2)), (1, 2));
+        assert_eq!(carte_reseau_compte(9), 0, "un compteur qui n'existe pas");
     }
 }

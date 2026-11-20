@@ -1,7 +1,7 @@
 //! **Le pont PCI** : la configuration par les ports `0xCF8` et `0xCFC`, un
 //! pont hôte 440FX en 00:00.0, la carte graphique en 00:02.0, deux disques
-//! virtio de forme ancienne en 00:03.0 et 00:04.0, et la tablette virtio en
-//! 00:07.0. Porté depuis `X86PCIHost` du cœur Swift
+//! virtio de forme ancienne en 00:03.0 et 00:04.0, la carte réseau virtio de
+//! forme ancienne en 00:05.0, et la tablette virtio en 00:07.0. Porté depuis `X86PCIHost` du cœur Swift
 //! (`Sources/WisqVM/X86PCI.swift`), registre pour registre.
 //!
 //! **Pourquoi un bus.** Le noyau d'Alpine refuse le transport MMIO de virtio
@@ -24,9 +24,15 @@
 //! L'écran (00:02.0, [`ecran`](super::ecran)) et la tablette (00:07.0,
 //! [`tablette`](super::tablette)) tiennent chacun leur espace de
 //! configuration, et le bus le leur passe dans l'ordre du cœur Swift : le
-//! pont, l'écran, la tablette, puis les disques. La carte réseau (00:05.0)
-//! viendra à sa tranche ; son emplacement rend aujourd'hui tous les uns,
-//! « personne ».
+//! pont, l'écran, la tablette, puis les disques et la carte réseau.
+//!
+//! **La carte réseau** ([`virtio_net`](super::virtio_net)) est en 00:05.0,
+//! après les deux disques, sur la ligne 3 — celle du second port série d'un
+//! PC, que cette machine n'a pas (`X86PCIHost.networkSlot`,
+//! `networkInterruptLine`) : `1AF4:1000`, un contrôleur Ethernet, sous-système
+//! `1AF4:0001`. Sa fenêtre de ports est du même modèle que celle d'un disque
+//! ([`Emplacement`]), et un port que les deux fenêtres couvriraient va au
+//! disque, comme `portWrite` du cœur Swift.
 //!
 //! **Pourquoi un second disque.** Une image d'installation *est* le disque de
 //! sa machine : sa racine y vit. Installer une distribution demande un autre
@@ -41,6 +47,7 @@
 use super::ecran::{Ecran, EMPLACEMENT_DE_L_ECRAN};
 use super::tablette::{Tablette, EMPLACEMENT_DE_LA_TABLETTE};
 use super::virtio_blk::VirtioBlk;
+use super::virtio_net::VirtioNet;
 
 pub const PORT_ADRESSE: u16 = 0xCF8;
 pub const PORT_DONNEE: u16 = 0xCFC;
@@ -66,6 +73,13 @@ pub const LIGNE_DU_DISQUE: u8 = 5;
 /// sur le maître elle aussi : six est celle de la disquette sur un PC, et
 /// cette machine n'en a pas.
 pub const LIGNE_DU_SECOND_DISQUE: u8 = 6;
+/// **L'emplacement de la carte réseau**, après les deux disques
+/// (`X86PCIHost.networkSlot`).
+pub const EMPLACEMENT_DU_RESEAU: u32 = 5;
+/// **Sa ligne** : trois, celle du second port série sur un PC, que cette
+/// machine n'a pas ; sur le maître, pour la raison du second disque
+/// (`X86PCIHost.networkInterruptLine`).
+pub const LIGNE_DU_RESEAU: u8 = 3;
 
 /// **Lequel des deux disques.** Le premier est celui de la machine (`vda`,
 /// l'image qu'on démarre) ; le second celui qu'on lui ajoute (`vdb`).
@@ -104,44 +118,79 @@ impl Disque {
     }
 }
 
-/// **Un emplacement de disque** : ce que le noyau y a réglé, et le disque
-/// lui-même s'il y en a un.
+/// **Ce qu'une fonction virtio de forme ancienne dit d'elle au bus** : les
+/// trois registres qui la distinguent d'une autre. Tout le reste de son
+/// espace de configuration — la commande, la fenêtre de ports, sa mesure, la
+/// ligne — est le même pour toutes, et c'est [`Emplacement`] qui le tient.
+pub trait Fonction {
+    /// Le registre `0x00` : le modèle en haut, le fabricant (`1AF4`) en bas.
+    const IDENTIFIANT: u32;
+    /// Le registre `0x08` : la classe, la sous-classe, l'interface et la
+    /// révision (zéro : la forme ancienne).
+    const CLASSE: u32;
+    /// Le registre `0x2C` : le sous-système. C'est de là que vient le
+    /// `modalias` qui fait charger le pilote.
+    const SOUS_SYSTEME: u32;
+}
+
+/// Un disque : virtio-blk en version ancienne (`0x1001`), du stockage de
+/// masse, un bloc virtio (`X86PCIHost.configuration`).
+impl Fonction for VirtioBlk {
+    const IDENTIFIANT: u32 = 0x1001_1AF4;
+    const CLASSE: u32 = 0x0100_0000;
+    const SOUS_SYSTEME: u32 = 0x0002_1AF4;
+}
+
+/// La carte réseau : virtio-net en version ancienne (`0x1000`), un
+/// contrôleur Ethernet, une carte réseau virtio (`X86PCIHost.configuration`,
+/// `isNetwork`).
+impl Fonction for VirtioNet {
+    const IDENTIFIANT: u32 = 0x1000_1AF4;
+    const CLASSE: u32 = 0x0200_0000;
+    const SOUS_SYSTEME: u32 = 0x0001_1AF4;
+}
+
+/// **Un emplacement d'une fonction virtio de forme ancienne** — un disque, ou
+/// la carte réseau : ce que le noyau y a réglé, et le périphérique lui-même
+/// s'il y en a un. Le cœur Swift a un `X86PCIHost` par emplacement, du même
+/// type pour les trois ; ici, un `Emplacement` du même modèle, que le
+/// périphérique distingue ([`Fonction`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Emplacement {
+pub struct Emplacement<P = VirtioBlk> {
     /// Ce que le noyau a activé : bit 0 les ports, bit 2 la maîtrise du bus.
     pub commande: u16,
-    /// Où le noyau a placé la fenêtre de ports du disque (la BAR0).
+    /// Où le noyau a placé la fenêtre de ports du périphérique (la BAR0).
     pub fenetre: u32,
     /// La ligne d'interruption, telle que le noyau la lit **et l'écrit** :
-    /// c'est elle qui décide où le disque frappe.
+    /// c'est elle qui décide où le périphérique frappe.
     pub ligne: u8,
     /// Vrai entre l'écriture de tous les uns dans la BAR0 et l'écriture qui
     /// suit : c'est ainsi qu'un noyau demande la **taille** de la fenêtre.
     mesure: bool,
-    /// Le disque, ou rien. Sans lui l'emplacement est vide, ce qui est une
-    /// réponse honnête : le noyau énumère, ne trouve rien, et continue.
-    pub disque: Option<VirtioBlk>,
+    /// Le périphérique, ou rien. Sans lui l'emplacement est vide, ce qui est
+    /// une réponse honnête : le noyau énumère, ne trouve rien, et continue.
+    pub peripherique: Option<P>,
 }
 
-impl Emplacement {
+impl<P: Fonction> Emplacement<P> {
     const fn nouveau(ligne: u8) -> Self {
         Self {
             commande: 0,
             fenetre: 0,
             ligne,
             mesure: false,
-            disque: None,
+            peripherique: None,
         }
     }
 
-    /// Les trente-deux bits du registre `registre` de ce disque.
+    /// Les trente-deux bits du registre `registre` de ce périphérique.
     fn configuration(&self, registre: u32) -> u32 {
         match registre {
-            // virtio-blk, en version ancienne (l'identifiant 0x1001).
-            0x00 => 0x1001_1AF4,
+            // virtio, en version ancienne : l'identifiant du périphérique.
+            0x00 => P::IDENTIFIANT,
             0x04 => u32::from(self.commande), // aucun bit d'état à annoncer
-            // Stockage de masse, révision zéro : la forme ancienne.
-            0x08 => 0x0100_0000,
+            // Sa classe, révision zéro : la forme ancienne.
+            0x08 => P::CLASSE,
             0x10 => {
                 // Pendant la mesure, le masque : les bits que le noyau ne peut
                 // pas changer disent la taille. Le bit 0 dit « des ports ».
@@ -151,9 +200,7 @@ impl Emplacement {
                     self.fenetre | 1
                 }
             }
-            // Le sous-système : un bloc virtio. C'est de là que vient le
-            // `modalias` qui fait charger le pilote.
-            0x2C => 0x0002_1AF4,
+            0x2C => P::SOUS_SYSTEME,
             // La ligne, puis la broche A.
             0x3C => u32::from(self.ligne) | (1 << 8),
             _ => 0,
@@ -179,12 +226,12 @@ impl Emplacement {
         }
     }
 
-    /// Vrai quand les ports du disque sont placés et activés.
+    /// Vrai quand les ports du périphérique sont placés et activés.
     pub fn fenetre_ouverte(&self) -> bool {
-        self.disque.is_some() && self.fenetre != 0 && self.commande & 0x01 != 0
+        self.peripherique.is_some() && self.fenetre != 0 && self.commande & 0x01 != 0
     }
 
-    /// **Le décalage d'un port dans la fenêtre de ce disque**, ou rien. Une
+    /// **Le décalage d'un port dans la fenêtre de ce périphérique**, ou rien. Une
     /// fenêtre placée mais pas activée ne répond pas : un périphérique qui
     /// répondrait avant volerait des ports à un autre.
     pub fn dans_la_fenetre(&self, port: u16) -> Option<u16> {
@@ -195,7 +242,7 @@ impl Emplacement {
 }
 
 /// **Le bus** : l'adresse choisie, les deux emplacements de disque, l'écran
-/// et sa tablette.
+/// et sa tablette, et la carte réseau.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pci {
     /// Ce que le noyau a écrit dans le port d'adresse.
@@ -209,6 +256,8 @@ pub struct Pci {
     pub ecran: Option<Ecran>,
     /// La tablette, en 00:07.0, ou rien. Un écran vient avec la sienne.
     pub tablette: Option<Tablette>,
+    /// La carte réseau, en 00:05.0.
+    pub reseau: Emplacement<VirtioNet>,
 }
 
 impl Default for Pci {
@@ -235,6 +284,7 @@ impl Pci {
             second: Emplacement::nouveau(Disque::Second.ligne()),
             ecran: None,
             tablette: None,
+            reseau: Emplacement::nouveau(LIGNE_DU_RESEAU),
         }
     }
 
@@ -283,9 +333,14 @@ impl Pci {
     /// **Le disque que l'adresse désigne**, s'il est branché. Un emplacement
     /// sans disque n'est à personne.
     fn disque_vise(&self) -> Option<Disque> {
-        Disque::TOUS
-            .into_iter()
-            .find(|&quel| self.emplacement(quel).disque.is_some() && self.vise(quel.emplacement()))
+        Disque::TOUS.into_iter().find(|&quel| {
+            self.emplacement(quel).peripherique.is_some() && self.vise(quel.emplacement())
+        })
+    }
+
+    /// **L'adresse désigne la carte réseau**, et elle est branchée.
+    fn reseau_vise(&self) -> bool {
+        self.reseau.peripherique.is_some() && self.vise(EMPLACEMENT_DU_RESEAU)
     }
 
     /// **Les trente-deux bits du registre choisi.**
@@ -314,10 +369,13 @@ impl Pci {
         if let (Some(tablette), true) = (&self.tablette, self.vise(EMPLACEMENT_DE_LA_TABLETTE)) {
             return tablette.configuration(registre);
         }
-        match self.disque_vise() {
-            Some(quel) => self.emplacement(quel).configuration(registre),
-            None => 0xFFFF_FFFF,
+        if let Some(quel) = self.disque_vise() {
+            return self.emplacement(quel).configuration(registre);
         }
+        if self.reseau_vise() {
+            return self.reseau.configuration(registre);
+        }
+        0xFFFF_FFFF
     }
 
     /// **Écrire le registre choisi**, déjà recomposé sur trente-deux bits.
@@ -341,11 +399,13 @@ impl Pci {
                 return;
             }
         }
-        let Some(quel) = self.disque_vise() else {
-            return;
-        };
-        self.emplacement_mut(quel)
-            .ecrire_configuration(registre, valeur, largeur, octet);
+        if let Some(quel) = self.disque_vise() {
+            self.emplacement_mut(quel)
+                .ecrire_configuration(registre, valeur, largeur, octet);
+        } else if self.reseau_vise() {
+            self.reseau
+                .ecrire_configuration(registre, valeur, largeur, octet);
+        }
     }
 
     /// **Lire le port de donnée** `0xCFC + n`, de `largeur` octets : le mot
@@ -387,6 +447,17 @@ impl Pci {
                 .map(|decalage| (quel, decalage))
         })
     }
+
+    /// **Le décalage d'un port dans la fenêtre de la carte réseau**, s'il
+    /// n'est d'aucun disque : la fenêtre d'un disque passe devant, comme
+    /// `portWrite` et `portRead` du cœur Swift essaient `device(atPort:)`
+    /// avant `networkDevice(atPort:)`.
+    pub fn reseau_au_port(&self, port: u16) -> Option<u16> {
+        if self.au_port(port).is_some() {
+            return None;
+        }
+        self.reseau.dans_la_fenetre(port)
+    }
 }
 
 /// Les bits d'un accès de `largeur` octets.
@@ -423,7 +494,7 @@ pub(crate) mod tests {
     /// Le bus du cœur Swift dans ses tests : un disque de huit secteurs.
     fn bus() -> Pci {
         let mut pci = Pci::nouveau();
-        pci.premier.disque = Some(VirtioBlk::nouveau(8));
+        pci.premier.peripherique = Some(VirtioBlk::nouveau(8));
         pci
     }
 
@@ -613,7 +684,7 @@ pub(crate) mod tests {
     fn a_two_byte_write_reaches_the_device_as_two_bytes() {
         let mut carte = ouverte(0x0005);
         assert!(carte.port_ecrire(0xC00E, 2, 0xFFFF_0001, &mut SansRam));
-        let disque = carte.pci.premier.disque.as_ref().expect("le disque");
+        let disque = carte.pci.premier.peripherique.as_ref().expect("le disque");
         assert_eq!(disque.file_choisie(), 1, "deux octets, et pas quatre");
         // Et une écriture partielle du registre de commande, d'un mot de
         // deux octets, ne garde que ceux-là.
@@ -642,7 +713,7 @@ pub(crate) mod tests {
     /// 00:03.0, seize en 00:04.0.
     fn bus_a_deux_disques() -> Pci {
         let mut pci = bus();
-        pci.second.disque = Some(VirtioBlk::nouveau(16));
+        pci.second.peripherique = Some(VirtioBlk::nouveau(16));
         pci
     }
 
@@ -689,7 +760,7 @@ pub(crate) mod tests {
         assert_eq!(pci.au_port(0xC040), None);
         // Et le second seul n'est pas le premier.
         let mut pci = Pci::nouveau();
-        pci.second.disque = Some(VirtioBlk::nouveau(16));
+        pci.second.peripherique = Some(VirtioBlk::nouveau(16));
         pci.ecrire_adresse(adresse(3, 0));
         assert_eq!(pci.configuration(), 0xFFFF_FFFF, "trois, vide");
         pci.ecrire_adresse(adresse(4, 0));
@@ -728,7 +799,7 @@ pub(crate) mod tests {
         assert_eq!(pci.au_port(0xBFFF), None);
         // La capacité de chacun, lue par sa fenêtre : huit et seize secteurs.
         let capacite = |pci: &mut Pci, quel| {
-            let disque = pci.emplacement_mut(quel).disque.as_mut().unwrap();
+            let disque = pci.emplacement_mut(quel).peripherique.as_mut().unwrap();
             disque.lire_port(0x14, 4)
         };
         assert_eq!(capacite(&mut pci, Disque::Premier), 8);
