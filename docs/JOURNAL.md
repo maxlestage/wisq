@@ -8,6 +8,55 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust : la borne de la fin de la RAM jugée à l'octet
+
+**Ce qui n'allait pas.** L'entrée d'en dessous donnait la borne de la fin de
+la RAM (`un_bloc`, `debut + PORTEE > len`) pour testée et sabotée. Elle ne
+l'était qu'en un point : son test met le code dans les trois derniers octets
+de la RAM, et toute borne d'au moins quatre octets le laissait passer. Le
+contrôle l'a montré : `PORTEE` remplacé par `16` passait toute la suite de
+`wisq-vm`, et par `8` passait `pc_rapide`. Le défaut est réel. Avec la borne
+à 16, vingt octets de code au bout de la RAM font construire un bloc qui
+couvre 20 octets et en compare 24. L'hôte lit alors 4 octets au-delà de la
+RAM et panique dans `Blocs::construire`. Le sabotage S3 de l'entrée d'en
+dessous (la condition mise à `false`) ne jugeait que la présence de la garde,
+pas sa constante.
+
+**Le code est juste**, il n'a pas changé. Un bloc couvre au plus `PORTEE`
+octets : `disponibles` est borné par `PORTEE - position`. Il en compare le
+multiple de huit d'au-dessus, soit au plus 64 octets ; un bloc vide en compare
+16. `debut + 64 <= len` suffit donc toujours. Comme la RAM se termine sur une
+fin de page, une instruction n'en sort jamais au décodage. Seule la
+comparaison par mots dépasse, et seulement quand la longueur couverte n'est
+pas un multiple de huit : c'est pour cela qu'un seul point ne jugeait rien.
+
+**Ce qui est fait.** Un test, `every_start_in_the_last_64_bytes_of_ram_is_bounded_exactly`
+(`pc_rapide`), balaie toutes les longueurs `n` de 1 à 64. Il remplit les `n`
+derniers octets de la RAM, sans pagination, avec du code qui s'arrête pile
+au bout : des `inc %ecx`, un `nop` pour la parité et un `jmp` qui revient au
+début, ou un `hlt` seul pour n = 1. Il fait tourner les deux machines
+(300 instructions) et vérifie qu'elles sont d'accord. Pour n < 64, il attend
+le pas à pas, sans aucun bloc construit. Pour n = 64, il attend un bloc : les
+64 octets tiennent, et la borne n'est pas plus large que nécessaire. Le test
+d'avant, sur trois octets, reste.
+
+**Sabotages** (une ligne de `machine.rs`, `pc_rapide` en release ; script
+`<bloc-notes>/borne/sab.sh`, `git diff` des sources vide après) :
+
+| sabotage | tombe par |
+|---|---|
+| `PORTEE` → `16` | `every_start…` (n = 17 : un bloc construit) |
+| `PORTEE` → `8` | `every_start…` |
+| `PORTEE` → `PORTEE - 1` | `every_start…` (n = 63) |
+| `PORTEE` → `PORTEE + 1` | `every_start…` (n = 64 : plus de bloc) |
+| `>` → `>=` | `every_start…` (n = 64) |
+| la condition à `false` | `every_start…` et `code_at_the_end…` (panique de l'hôte) |
+
+**Ce qui reste.** Rien de neuf dans cette tranche : 113,6 MIPS en médiane,
+pour 125 visés. Le chemin général garde SSE, x87, les chaînes et le système.
+Restent aussi l'ABI C, la `Carte` de wisq-page et l'instantané. Aucune course
+de banc n'a été refaite, puisque le code de la machine n'a pas changé.
+
 ## 2026-11-20 — Machine PC en Rust : les quatre gardes des blocs que rien ne testait
 
 **Ce qui n'allait pas.** Le contrôle de la tranche « vitesse » a trouvé
