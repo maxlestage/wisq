@@ -38,7 +38,10 @@
 //! le cœur Swift lisent secteur par secteur, un `pread` de 512 octets à la
 //! fois. Ici les secteurs qui se suivent dans le même fichier se lisent d'un
 //! seul `pread` : une lecture d'un mébioctet dans une ISO que personne n'a
-//! écrite en fait un, pas deux mille quarante-huit.
+//! écrite en fait un, pas deux mille quarante-huit. Le disque compte ses
+//! lectures de fichier ([`DisqueFichier::lectures`]), et c'est ce compte que
+//! les tests tiennent : un retour au `pread` par secteur rendrait les mêmes
+//! octets, deux à quatre fois moins vite, sans qu'un test d'octets le voie.
 //!
 //! **Ce qui n'est pas porté** : les formats à tables (qcow2, VMDK, VDI, VHD,
 //! VHDX, OVA), que `FileDiskStore` lit à travers `VirtualDiskImages`. Le
@@ -117,6 +120,8 @@ pub struct DisqueFichier {
     /// emplacements.
     places: HashMap<u64, u64>,
     occupees: u64,
+    /// Combien de fois un fichier a été lu depuis l'ouverture.
+    lectures: u64,
 }
 
 impl DisqueFichier {
@@ -210,13 +215,17 @@ impl DisqueFichier {
             secteurs,
             places,
             occupees,
+            lectures: 0,
         })
     }
 
-    /// **Combien d'octets l'invité a changés** : 512 par secteur touché. Ce
-    /// que le rapport de stockage de l'application montre.
-    pub fn octets_ecrits(&self) -> u64 {
-        self.occupees * SECTEUR
+    /// **Combien de lectures de fichier** (`pread`) ce disque a faites
+    /// depuis son ouverture : la mesure de la lecture par morceaux. Une
+    /// requête d'un mébioctet dans une base que personne n'a écrite en
+    /// compte une, pas deux mille quarante-huit — et c'est ce compte, pas un
+    /// débit, qu'un test peut tenir.
+    pub fn lectures(&self) -> u64 {
+        self.lectures
     }
 
     fn dans_le_disque(&self, decalage: u64, longueur: usize) -> bool {
@@ -238,6 +247,14 @@ impl DisqueFichier {
             Source::Couche => &self.couche,
         }
     }
+
+    /// **Une lecture de fichier, comptée** : remplir `vers` en entier depuis
+    /// `depuis`, dans le fichier de `source`. `false` si le fichier ne les a
+    /// pas tous.
+    fn lire_dans(&mut self, source: Source, vers: &mut [u8], depuis: u64) -> bool {
+        self.lectures += 1;
+        self.fichier(source).read_exact_at(vers, depuis).is_ok()
+    }
 }
 
 impl Arriere for DisqueFichier {
@@ -249,10 +266,6 @@ impl Arriere for DisqueFichier {
         if !self.dans_le_disque(decalage, vers.len()) {
             return false;
         }
-        // Une base que personne n'a écrite — une ISO — se lit d'un trait.
-        if self.places.is_empty() {
-            return self.base.read_exact_at(vers, decalage).is_ok();
-        }
         let mut fait = 0usize;
         let mut a = decalage;
         while fait < vers.len() {
@@ -260,18 +273,18 @@ impl Arriere for DisqueFichier {
             let (source, depuis) = self.source(secteur, dedans);
             // Ce morceau s'étend tant que les secteurs suivants se suivent
             // aussi dans le fichier d'où celui-ci vient : la base toujours,
-            // la couche quand ils y ont été écrits à la file.
+            // la couche quand ils y ont été écrits à la file. Une base que
+            // personne n'a écrite — une ISO — se lit donc d'un trait, sans
+            // chemin à part : un raccourci « couche vide » a été mesuré
+            // (cinq courses alternées sur une ISO de 1,4 Gio) et ne rendait
+            // rien qui sorte du bruit.
             let mut n = (vers.len() - fait).min((SECTEUR - dedans) as usize);
             let mut suivant = secteur + 1;
             while fait + n < vers.len() && self.source(suivant, 0) == (source, depuis + n as u64) {
                 n += (vers.len() - fait - n).min(SECTEUR as usize);
                 suivant += 1;
             }
-            if self
-                .fichier(source)
-                .read_exact_at(&mut vers[fait..fait + n], depuis)
-                .is_err()
-            {
+            if !self.lire_dans(source, &mut vers[fait..fait + n], depuis) {
                 return false;
             }
             fait += n;
@@ -300,11 +313,7 @@ impl Arriere for DisqueFichier {
             let mut entier = [0u8; SECTEUR as usize];
             if n < SECTEUR as usize {
                 let (source, depuis) = self.source(secteur, 0);
-                if self
-                    .fichier(source)
-                    .read_exact_at(&mut entier, depuis)
-                    .is_err()
-                {
+                if !self.lire_dans(source, &mut entier, depuis) {
                     return false;
                 }
             }
@@ -338,6 +347,11 @@ impl Arriere for DisqueFichier {
         let couche = self.couche.sync_data();
         let carte = self.carte.sync_data();
         couche.is_ok() && carte.is_ok()
+    }
+
+    /// 512 octets par secteur touché (`FileDiskStore.bytesWritten`).
+    fn octets_ecrits(&self) -> u64 {
+        self.occupees * SECTEUR
     }
 }
 
@@ -597,6 +611,29 @@ mod tests {
             DisqueFichier::ouvrir(&dossier.base(8, "b.img"), &faux).err(),
             Some(Refus::CoucheDUnAutreDisque)
         );
+        // **La marque seule suffit à refuser** : huit octets qui ne sont pas
+        // `wisqdisk`, suivis du bon nombre de secteurs — le fichier d'un
+        // autre programme qui aurait, par hasard ou non, la bonne taille.
+        for marque in [b"wisqdisq", b"WISQDISK", b"\0\0\0\0\0\0\0\0"] {
+            let mut etrangere = marque.to_vec();
+            etrangere.extend_from_slice(&8u64.to_le_bytes());
+            std::fs::write(dossier.0.join("marque.writes.map"), &etrangere).unwrap();
+            assert_eq!(
+                DisqueFichier::ouvrir(&dossier.base(8, "m.img"), &dossier.0.join("marque.writes"))
+                    .err(),
+                Some(Refus::CoucheDUnAutreDisque),
+                "{marque:?}"
+            );
+        }
+        // Et la bonne marque avec ce compte-là est bien prise : c'est la
+        // marque, et elle seule, que les trois cas d'avant ont jugée.
+        let mut juste = b"wisqdisk".to_vec();
+        juste.extend_from_slice(&8u64.to_le_bytes());
+        std::fs::write(dossier.0.join("marque.writes.map"), &juste).unwrap();
+        assert!(
+            DisqueFichier::ouvrir(&dossier.base(8, "m.img"), &dossier.0.join("marque.writes"))
+                .is_ok()
+        );
         // Ni une carte plus courte que son en-tête.
         std::fs::write(dossier.0.join("court.writes.map"), b"wisqdisk").unwrap();
         assert_eq!(
@@ -654,10 +691,35 @@ mod tests {
             DisqueFichier::ouvrir(&base, &dossier.0.join("nulle/part.writes")).err(),
             Some(Refus::CoucheIllisible)
         );
-        assert_eq!(
-            Refus::CoucheTronquee.to_string(),
-            "la couche d'écriture du disque est incomplète."
-        );
+    }
+
+    /// **Les cinq refus disent les cinq phrases du cœur Swift**
+    /// (`FileDiskStore.Failure.errorDescription`), mot pour mot : c'est ce
+    /// que l'application montre à la personne dont le disque ne s'ouvre pas.
+    #[test]
+    fn each_refusal_says_the_sentence_of_the_swift_core() {
+        let phrases = [
+            (Refus::BaseIllisible, "le disque n'a pas pu être ouvert."),
+            (Refus::PasUnDisque, "le disque fait moins d'un secteur."),
+            (
+                Refus::CoucheIllisible,
+                "la couche d'écriture du disque n'a pas pu être créée.",
+            ),
+            (
+                Refus::CoucheDUnAutreDisque,
+                "la couche d'écriture trouvée appartient à un autre disque.",
+            ),
+            (
+                Refus::CoucheTronquee,
+                "la couche d'écriture du disque est incomplète.",
+            ),
+        ];
+        for (refus, phrase) in phrases {
+            assert_eq!(refus.to_string(), phrase, "{refus:?}");
+            // Et par le trait d'erreur, comme `?` la remonte.
+            let erreur: Box<dyn std::error::Error> = Box::new(refus);
+            assert_eq!(erreur.to_string(), phrase);
+        }
     }
 
     // ------------------------------------------------ la lecture par morceaux
@@ -665,7 +727,8 @@ mod tests {
     /// **Une lecture qui traverse la base et la couche rend chaque secteur de
     /// sa source**, que les secteurs écrits se suivent dans la couche, y
     /// soient à l'envers, ou soient séparés par des secteurs de la base. Une
-    /// image tenue en mémoire fait foi, à chaque décalage et chaque longueur.
+    /// image tenue en mémoire fait foi, à neuf décalages et dix longueurs
+    /// choisis autour des bords de secteur, puis d'un bout à l'autre.
     #[test]
     fn a_read_across_base_and_overlay_takes_each_sector_from_its_source() {
         let dossier = Dossier::nouveau();
@@ -713,6 +776,144 @@ mod tests {
             image(24, 1),
             "la base, intacte"
         );
+    }
+
+    /// **Une lecture de fichier par suite de secteurs, pas par secteur** :
+    /// c'est le gain de la lecture par morceaux, et un retour au `pread` par
+    /// secteur rendrait les mêmes octets. Le disque compte donc ses lectures
+    /// de fichier, et ce cas tient le compte.
+    #[test]
+    fn a_read_costs_one_file_read_per_run_of_sectors() {
+        let dossier = Dossier::nouveau();
+        let base = dossier.base(2048, "base.img");
+        let mut disque = DisqueFichier::ouvrir(&base, &dossier.couche()).unwrap();
+        let lectures = |disque: &mut DisqueFichier, decalage: u64, longueur: usize| {
+            let avant = disque.lectures();
+            lu(disque, decalage, longueur).expect("dans le disque");
+            disque.lectures() - avant
+        };
+        assert_eq!(disque.lectures(), 0, "ouvrir ne lit pas la base");
+        // Une base que personne n'a écrite : un mébioctet, une lecture.
+        assert_eq!(lectures(&mut disque, 0, 2048 * 512), 1, "une ISO, un trait");
+        assert_eq!(lectures(&mut disque, 700, 5000), 1, "de travers aussi");
+        assert_eq!(lectures(&mut disque, 0, 0), 0, "rien à lire, rien de lu");
+        assert_eq!(lu(&mut disque, 2048 * 512, 1), None);
+        assert_eq!(disque.lectures(), 2, "un refus ne lit rien");
+
+        // Trois secteurs écrits à la file se suivent dans la couche. Un
+        // secteur entier s'écrit sans rien relire.
+        let avant = disque.lectures();
+        for secteur in [100u64, 101, 102] {
+            assert!(disque.ecrire(secteur * 512, &[0xC0; 512]));
+        }
+        assert_eq!(disque.lectures(), avant, "trois écritures entières");
+        // La base, la couche, la base : trois lectures pour 2 048 secteurs.
+        assert_eq!(lectures(&mut disque, 0, 2048 * 512), 3);
+        assert_eq!(
+            lectures(&mut disque, 100 * 512, 3 * 512),
+            1,
+            "la couche seule"
+        );
+        assert_eq!(lectures(&mut disque, 101 * 512 + 9, 600), 1);
+        assert_eq!(
+            lectures(&mut disque, 102 * 512, 1024),
+            2,
+            "couche, puis base"
+        );
+        // Écrits à l'envers, 104 puis 103 ne se suivent pas dans la couche :
+        // chacun sa lecture, et pas un trait qui les lirait dans le désordre.
+        assert!(disque.ecrire(104 * 512, &[0xC4; 512]));
+        assert!(disque.ecrire(103 * 512, &[0xC3; 512]));
+        assert_eq!(lectures(&mut disque, 100 * 512, 5 * 512), 3);
+        assert_eq!(
+            lu(&mut disque, 103 * 512 - 1, 514).unwrap()[..3],
+            [0xC0, 0xC3, 0xC3]
+        );
+        assert_eq!(
+            lu(&mut disque, 104 * 512 - 1, 3).unwrap(),
+            [0xC3, 0xC4, 0xC4]
+        );
+        // Une écriture partielle relit son secteur, une fois ; à cheval sur
+        // deux secteurs, les deux.
+        let avant = disque.lectures();
+        assert!(disque.ecrire(7 * 512 + 3, &[1, 2, 3]));
+        assert_eq!(disque.lectures(), avant + 1);
+        assert!(disque.ecrire(9 * 512 - 2, &[1, 2, 3, 4]));
+        assert_eq!(disque.lectures(), avant + 3);
+    }
+
+    /// **Six mille lectures et écritures tirées au hasard, contre une image
+    /// tenue en mémoire** : n'importe quel décalage, n'importe quelle
+    /// longueur jusqu'à sept secteurs, sur une base dont la queue n'est pas
+    /// du disque, avec des fermetures et des réouvertures en route. Un
+    /// refus — au-delà de la fin — ne touche à rien.
+    #[test]
+    fn random_reads_and_writes_match_an_image_kept_in_memory() {
+        const SECTEURS: usize = 96;
+        const TAILLE: usize = SECTEURS * 512;
+        let dossier = Dossier::nouveau();
+        let base = dossier.0.join("boiteuse.img");
+        // Chaque octet de la base dit où il est, et la queue fait 300 octets.
+        let contenu: Vec<u8> = (0..TAILLE + 300).map(|i| (i * 7 + i / 512) as u8).collect();
+        std::fs::write(&base, &contenu).unwrap();
+        let mut temoin = contenu[..TAILLE].to_vec();
+        let mut disque = DisqueFichier::ouvrir(&base, &dossier.couche()).unwrap();
+        assert_eq!(disque.secteurs(), SECTEURS as u64);
+
+        // Un générateur à décalages (xorshift64) : la même suite à chaque
+        // course.
+        let mut etat = 0x9E37_79B9_7F4A_7C15u64;
+        let mut hasard = move |borne: usize| {
+            etat ^= etat << 13;
+            etat ^= etat >> 7;
+            etat ^= etat << 17;
+            (etat % borne as u64) as usize
+        };
+        let (mut refus, mut ecritures) = (0, 0);
+        for tour in 0..6000 {
+            // Un peu au-delà de la fin, pour que les refus soient du voyage.
+            let decalage = hasard(TAILLE + 600);
+            let longueur = hasard(7 * 512 + 1);
+            let dedans = decalage + longueur <= TAILLE;
+            if hasard(3) == 0 {
+                let octets: Vec<u8> = (0..longueur).map(|i| (tour + i * 3) as u8).collect();
+                assert_eq!(
+                    disque.ecrire(decalage as u64, &octets),
+                    dedans,
+                    "tour {tour}"
+                );
+                if dedans {
+                    temoin[decalage..decalage + longueur].copy_from_slice(&octets);
+                    ecritures += 1;
+                }
+            } else {
+                let rendu = lu(&mut disque, decalage as u64, longueur);
+                let attendu = dedans.then(|| temoin[decalage..decalage + longueur].to_vec());
+                assert_eq!(
+                    rendu, attendu,
+                    "tour {tour} : {longueur} octets à {decalage}"
+                );
+            }
+            refus += usize::from(!dedans);
+            if tour % 500 == 499 {
+                // La machine éteinte et rallumée : la couche reprend.
+                assert!(disque.vider());
+                let ecrits = disque.octets_ecrits();
+                disque = DisqueFichier::ouvrir(&base, &dossier.couche()).unwrap();
+                assert_eq!(disque.octets_ecrits(), ecrits, "tour {tour}");
+                assert_eq!(lu(&mut disque, 0, TAILLE).unwrap(), temoin, "tour {tour}");
+            }
+        }
+        assert!(
+            refus > 100 && ecritures > 1000,
+            "{refus} refus, {ecritures} écritures"
+        );
+        assert_eq!(
+            disque.octets_ecrits(),
+            TAILLE as u64,
+            "tout le disque y est passé"
+        );
+        assert_eq!(std::fs::read(&base).unwrap(), contenu, "la base, intacte");
     }
 
     /// **Une base raccourcie sous le disque ouvert est une erreur**, pas des
@@ -768,6 +969,9 @@ mod tests {
             assert_eq!(carte.servir(&mut ram), 1);
             assert_eq!(PREMIER.statut(&ram, 1), 0);
             assert_eq!(carte.carte().disque(Disque::Premier).unwrap().servies, 2);
+            // Ce que le rapport de stockage lit sur la machine vivante.
+            assert_eq!(carte.octets_ecrits(Disque::Premier), 512);
+            assert_eq!(carte.octets_ecrits(Disque::Second), 0);
             assert!(carte.vider());
         }
         // La machine rallumée : une carte neuve, les mêmes fichiers.
@@ -837,6 +1041,8 @@ mod tests {
         SECOND.notifier(&mut carte);
         assert_eq!(carte.servir(&mut ram), 1);
         assert_eq!(SECOND.statut(&ram, 0), 0);
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 0, "rien sur l'ISO");
+        assert_eq!(carte.octets_ecrits(Disque::Second), 512, "un secteur");
         assert!(carte.vider());
         drop(carte);
 

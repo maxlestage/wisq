@@ -81,6 +81,12 @@ pub trait Arriere: Send {
     fn vider(&mut self) -> bool {
         true
     }
+
+    /// **Combien d'octets l'invité a changés** : ce que le rapport de
+    /// stockage de l'application montre (`DiskStore.bytesWritten`). Un disque
+    /// en mémoire répond la taille de son image, comme du côté Swift : c'est
+    /// ce qu'un instantané emporterait.
+    fn octets_ecrits(&self) -> u64;
 }
 
 /// **L'image entière en mémoire** : la forme des tests et des petits disques
@@ -117,6 +123,10 @@ impl Arriere for ArriereMemoire {
         };
         self.0[plage].copy_from_slice(octets);
         true
+    }
+
+    fn octets_ecrits(&self) -> u64 {
+        self.0.len() as u64
     }
 }
 
@@ -184,7 +194,13 @@ impl CartePc {
     /// **Faire avancer les disques**, avec la RAM de l'invité : relire la
     /// file de ceux que le pilote a notifiés, servir chaque requête par
     /// l'arrière, rendre les réponses et lever les lignes — tout, avant de
-    /// rendre la main. Rend le nombre de requêtes passées par un arrière.
+    /// rendre la main.
+    ///
+    /// Rend le nombre de requêtes **prises au disque** : celles qui
+    /// demandent des octets, que l'arrière les ait servies ou refusées, ou
+    /// qu'il n'y ait pas d'arrière du tout (elles reçoivent alors une erreur
+    /// d'entrée-sortie, et comptent quand même). Ce que le disque juge seul —
+    /// un secteur au-delà de sa fin, son nom — n'y est pas compté.
     ///
     /// Sans rien à faire, elle ne lit que deux booléens : la boucle peut
     /// l'appeler après chaque `out`.
@@ -246,6 +262,16 @@ impl CartePc {
             reussi &= arriere.vider();
         }
         reussi
+    }
+
+    /// **Combien d'octets l'invité a changés sur ce disque**
+    /// ([`Arriere::octets_ecrits`]), lu sur la machine vivante : ce que
+    /// `GuestMachine.diskBytesWritten` rend du côté Swift, et que le rapport
+    /// de stockage additionne pour les deux disques. Zéro sans arrière.
+    pub fn octets_ecrits(&self, quel: Disque) -> u64 {
+        self.arrieres[quel.rang()]
+            .as_ref()
+            .map_or(0, |arriere| arriere.octets_ecrits())
     }
 
     // ------------------------------------------------------------------ ports
@@ -395,6 +421,7 @@ pub(crate) mod tests {
     //! notification, se retrouvent ici : c'est la façade qui rend ce
     //! comportement-là à la carte de la page, qui répond plus tard.
     use super::super::cmos::tests::MOMENT_MS;
+    use super::super::i8042::LIMITE_DE_FRAPPE;
     use super::super::pci::tests::adresse;
     use super::super::virtio_blk::{LIMITE_DE_FILE, PLUS_TENU};
     use super::super::RamPlate;
@@ -652,8 +679,15 @@ pub(crate) mod tests {
         // Une lecture sur le second seul : sa ligne, ses octets, et le
         // premier n'a rien vu.
         SECOND.requete(&mut ram, 0, 0, 3, (0x10_0000, 512));
+        assert!(!carte.a_servir() && !carte.reveil(), "rien n'attend encore");
         SECOND.notifier(&mut carte);
+        // Notée pour le second seul : elle compte autant que celle du
+        // premier, et un `hlt` ne s'endort pas dessus.
+        assert!(carte.a_servir() && carte.reveil(), "notée, pas servie");
+        assert_eq!(carte.lignes(), 0);
+        assert_eq!(SECOND.statut(&ram, 0), 0xFF, "rien n'a touché à la RAM");
         assert_eq!(carte.servir(&mut ram), 1);
+        assert!(!carte.a_servir());
         assert_eq!(ram.0[0x10_0000..0x10_0200], [0x83; 512]);
         assert_eq!(SECOND.statut(&ram, 0), 0);
         assert_eq!(carte.lignes(), 1 << 6);
@@ -732,6 +766,9 @@ pub(crate) mod tests {
         fn vider(&mut self) -> bool {
             self.vidages.fetch_add(1, Ordering::Relaxed);
             !self.casse
+        }
+        fn octets_ecrits(&self) -> u64 {
+            self.image.octets_ecrits()
         }
     }
 
@@ -819,7 +856,7 @@ pub(crate) mod tests {
         assert_eq!(
             carte.servir(&mut ram),
             0,
-            "aucune n'est passée par l'arrière"
+            "le disque les a jugées seul : aucune n'est prise"
         );
         assert_eq!(lectures.load(Ordering::Relaxed), 0);
         assert_eq!(PREMIER.statut(&ram, 0), 1, "le secteur huit n'existe pas");
@@ -896,9 +933,10 @@ pub(crate) mod tests {
         let mut ram = ram();
         PREMIER.requete(&mut ram, 0, 0, 0, (0x10_0000, 512));
         PREMIER.notifier(&mut carte);
-        assert_eq!(carte.servir(&mut ram), 1);
+        assert_eq!(carte.servir(&mut ram), 1, "prise au disque, donc comptée");
         assert_eq!(PREMIER.statut(&ram, 0), 1);
         assert_eq!(carte.lignes(), 1 << 5);
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 0, "personne derrière");
     }
 
     /// **Une notification devenue sans objet ne sert rien** : la remise à
@@ -942,19 +980,102 @@ pub(crate) mod tests {
         carte.port_ecrire(0xCFC, 2, 0);
         assert!(!carte.port_ecrire(0xC010, 2, 0));
         assert!(!carte.a_servir());
-        // Le clavier et la souris passent par la façade.
-        carte.touche(CodeTouche::ESPACE, true);
-        assert_eq!(carte.lignes(), 1 << 1);
-        assert_eq!(carte.port_lire(0x60, 1), Some(0x39));
-        assert_eq!(carte.taper_texte("a"), 2);
-        assert!(carte.reveil());
-        carte.battre(1);
-        assert_eq!(carte.port_lire(0x60, 1), Some(0x1E));
-        assert!(carte.lever(9) && carte.lignes() & (1 << 9) != 0);
-        assert!(carte.baisser(9) && !carte.lever(4));
         assert!(!carte.remise_demandee());
         carte.port_ecrire(0x64, 1, 0xFE);
         assert!(carte.remise_demandee());
+    }
+
+    /// **Le clavier, la souris et les lignes du dehors passent par la
+    /// façade** : chaque passage est jugé par ce que l'invité en lit, pas par
+    /// ce que la fonction rend.
+    #[test]
+    fn the_keyboard_the_mouse_and_the_outside_lines_go_through_the_facade() {
+        let mut carte = CartePc::nouvelle();
+        // Une touche posée tout de suite.
+        carte.touche(CodeTouche::ESPACE, true);
+        assert_eq!(carte.lignes(), 1 << 1);
+        assert_eq!(carte.port_lire(0x60, 1), Some(0x39));
+        // Un texte, à son rythme : rien avant le battement.
+        assert_eq!(carte.taper_texte("a"), 2);
+        assert!(carte.reveil());
+        assert_eq!(carte.lignes(), 0);
+        // Une seconde de l'invité par battement : toute frappe est à l'heure.
+        const SECONDE: u64 = 1_193_182;
+        let mut tics = 1;
+        carte.battre(tics);
+        assert_eq!(carte.port_lire(0x60, 1), Some(0x1E));
+        tics += SECONDE;
+        carte.battre(tics);
+        assert_eq!(carte.port_lire(0x60, 1), Some(0x9E), "puis relâchée");
+        assert!(!carte.reveil());
+
+        // Une frappe à son tour : prise, en file, posée au battement.
+        assert!(carte.taper(CodeTouche::ESPACE, true), "la file la prend");
+        assert!(carte.reveil(), "une frappe attend son heure");
+        assert_eq!(carte.lignes(), 0, "pas avant le battement");
+        tics += SECONDE;
+        carte.battre(tics);
+        assert_eq!(carte.lignes(), 1 << 1);
+        assert_eq!(carte.port_lire(0x60, 1), Some(0x39));
+        assert!(!carte.reveil());
+        // La file pleine refuse un enfoncement, et la façade le dit.
+        let mut prises = 0;
+        while carte.taper(CodeTouche::simple(0x1E), true) {
+            prises += 1;
+            assert!(prises <= LIMITE_DE_FRAPPE, "la file n'a pas de fond");
+        }
+        assert_eq!(prises, LIMITE_DE_FRAPPE);
+
+        // La souris, allumée par l'invité (`A8`, puis `F4` par `D4`) : un
+        // mouvement lève la ligne 12 et se lit en un paquet de trois octets.
+        let mut carte = CartePc::nouvelle();
+        carte.souris(5, 3, 1);
+        assert_eq!(carte.lignes(), 0, "éteinte, elle se tait");
+        for (port, octet) in [(0x64, 0xA8), (0x64, 0xD4), (0x60, 0xF4)] {
+            assert!(carte.port_ecrire(port, 1, octet));
+        }
+        assert_eq!(
+            carte.port_lire(0x60, 1),
+            Some(0xFA),
+            "l'accusé de la souris"
+        );
+        assert_eq!(carte.lignes(), 0);
+        carte.souris(5, 3, 1);
+        assert_eq!(carte.lignes(), 1 << 12);
+        let paquet = [(); 3].map(|()| carte.port_lire(0x60, 1));
+        assert_eq!(paquet, [Some(0x29), Some(5), Some(0xFD)], "Y vers le haut");
+        assert_eq!(carte.lignes(), 0, "lu, la ligne retombe");
+
+        // Une ligne du dehors : levée, tenue, puis baissée — et elle reste
+        // tenue, pour que la boucle l'efface.
+        assert_eq!(carte.tenues() & (1 << 9), 0);
+        assert!(carte.lever(9));
+        assert_eq!(carte.lignes(), 1 << 9);
+        assert_eq!(carte.tenues() & (1 << 9), 1 << 9);
+        assert!(carte.baisser(9));
+        assert_eq!(carte.lignes(), 0, "baissée : la ligne 9 est retombée");
+        assert_eq!(carte.tenues() & (1 << 9), 1 << 9);
+        // Les lignes des puces du cœur ne sont pas à la carte.
+        for ligne in [0, 2, 4, 16] {
+            assert!(!carte.lever(ligne) && !carte.baisser(ligne), "{ligne}");
+        }
+        assert_eq!(carte.lignes(), 0);
+    }
+
+    /// **Les octets changés se lisent sur la machine vivante**, disque par
+    /// disque, une fois l'arrière rangé derrière la façade
+    /// (`GuestMachine.diskBytesWritten`).
+    #[test]
+    fn the_bytes_written_are_read_through_the_facade() {
+        let mut carte = CartePc::nouvelle();
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 0, "sans disque");
+        assert_eq!(carte.octets_ecrits(Disque::Second), 0);
+        carte.brancher(Disque::Premier, ArriereMemoire(image(8, 1)));
+        carte.brancher(Disque::Second, ArriereMemoire(vec![0; 16 * 512 + 100]));
+        // Un disque en mémoire répond la taille de son image, queue comprise
+        // (`MemoryDiskStore.bytesWritten`).
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 8 * 512);
+        assert_eq!(carte.octets_ecrits(Disque::Second), 16 * 512 + 100);
     }
 
     /// **L'heure est celle qu'on injecte** : posée, ou lue à une horloge

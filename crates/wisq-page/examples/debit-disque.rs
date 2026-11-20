@@ -79,6 +79,9 @@ mod natif {
         fn ecrire(&mut self, decalage: u64, octets: &[u8]) -> bool {
             self.0.write(decalage, octets)
         }
+        fn octets_ecrits(&self) -> u64 {
+            self.0.bytes_written()
+        }
     }
 
     /// Le pilote : la carte, la RAM, et où il en est dans ses anneaux.
