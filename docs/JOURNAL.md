@@ -8,6 +8,234 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : la carte en natif, un second disque, les disques sur fichier
+
+**La demande.** « Je veux faire tourner un desktop, tu peux utiliser l'ABI C
+et tout faire en Rust. » Deux flux : le « cœur » écrit le processeur, la
+mémoire et la boucle dans `crates/wisq-vm/src/pc/` ; celui-ci rend la carte
+de la page (#704 : i8042, CMOS, pont PCI, virtio-blk) utilisable par cette
+machine native. Première tranche : un disque sur fichier, un second disque,
+et une façade pour une machine qui n'a pas de boucle d'événements.
+
+**Ce qui n'allait pas.**
+
+1. *La machine native ne pouvait pas nommer la carte.* Elle vivait dans
+   `wisq-page`, qui dépend de `wisq-vm` (l'émetteur) : `wisq-vm` ne peut pas
+   dépendre de `wisq-page` sans boucle.
+2. *La carte ne savait répondre que plus tard.* Une requête de disque part,
+   un arrière joignable par message répond quand il peut : c'est ce qu'il
+   faut à la page, et c'est trois temps de trop pour une machine qui a le
+   fichier sous la main.
+3. *Un seul disque.* Le cœur Swift en a deux (`X86PCIHost.secondSlot`) :
+   l'ISO qu'on démarre, et le disque vierge sur lequel on installe.
+4. *Aucun arrière sur fichier* du côté de la carte.
+
+**Ce qui est fait.**
+
+- **Un crate à elle : `wisq-carte`**, sans dépendance. Le dossier n'a pas
+  bougé — `crates/wisq-page/src/carte/` est le crate, `mod.rs` sa racine, et
+  l'espace de travail le compte comme membre. `wisq-page` le reprend sous son
+  ancien nom (`wisq_page::carte`) et garde ses exports `carte_*`
+  (`src/carte_porte.rs`, l'ancien `carte/porte.rs`) : la machine native ne
+  lie pas les symboles de la page. Le dossier est resté où il était parce
+  que le cœur Swift, ses tests et `web/carte.js` le nomment par ce chemin.
+  Une seule ligne hors du crate suit : le commentaire de `web/carte.js` qui
+  donnait la commande des tests natifs (`cargo test -p wisq-carte`).
+- **Un second disque** en 00:04.0, ligne 6, comme le cœur Swift
+  (`secondSlot`, `secondInterruptLine`) : `pci.rs` a deux `Emplacement` du
+  même modèle — commande, fenêtre, ligne, mesure —, le pont est annoncé une
+  seule fois, deux fenêtres superposées vont au premier disque
+  (`device(atPort:)`). La carte tient les deux lignes, et deux disques que le
+  noyau mettrait sur la même la partagent. La page n'en branche toujours
+  qu'un : aucun export ne touche au second.
+- **`pc::CartePc`, la façade.** Les ports ne demandent pas la RAM
+  (`port_lire(port, largeur) -> Option<u32>`, `port_ecrire(port, largeur,
+  valeur) -> bool`) : au milieu d'un `in` ou d'un `out`, la mémoire du cœur
+  est déjà empruntée. La seule écriture qui lit la RAM — la notification
+  d'un disque — est **notée**, et `servir(&mut ram)` fait tout le trajet d'un
+  coup : relire la file, lire ou écrire l'arrière, copier dans la RAM, poser
+  le statut, lever la ligne, avant de rendre la main. Tant qu'une
+  notification attend, `reveil()` le dit. L'heure est injectée :
+  `regler_heure(ms)`, ou `horloge(f)` que la façade lit avant chaque accès à
+  `0x70`/`0x71` et alors seulement.
+- **`pc::Arriere`**, là où vivent les octets (`DiskStore` du Swift, en
+  octets) : `secteurs`, `lire` (tout le tampon ou `false`), `ecrire`,
+  `vider`. `ArriereMemoire` pour les tests et les petits disques.
+- **`fichier::DisqueFichier`**, l'arrière sur fichier (natif seulement,
+  derrière `#[cfg(not(target_arch = "wasm32"))]`) : `FileDiskStore`, mêmes
+  garanties — la base ouverte en lecture seule et jamais touchée, la couche
+  tassée `couche` + `couche.map`, le contenu avant le nom, `fsync` par
+  `vider`, les cinq mêmes refus — et **le même format octet pour octet**.
+  Les couches déjà écrites par l'application se relisent donc telles
+  quelles. Une chose change : la lecture se fait par morceaux (les secteurs
+  qui se suivent dans le même fichier, d'un seul `pread`) au lieu d'un
+  `pread` par secteur.
+
+**Ce qui n'est pas porté, et pourquoi.** Les formats à tables (qcow2, VMDK,
+VDI, VHD, VHDX, OVA). `LocalVMModel` attache au bureau une ISO brute par
+`attach(diskFileAt:)` et, à côté, un disque vierge brut (`BlankDisk`, un
+fichier agrandi par `ftruncate`) : les deux sont lus octet pour octet. Le
+qcow2 ne sert qu'aux images de cloud. `DisqueFichier` lit sa base telle
+quelle ; c'est à l'enveloppe Swift de refuser une image à tables, comme
+`RustLinuxMachine.attach(diskFileAt:)` le fait déjà pour la machine RISC-V.
+Pas d'instantané de la carte non plus : il viendra avec celui de la machine.
+
+**Le mode d'emploi, pour le flux « cœur ».** Dans
+`crates/wisq-vm/Cargo.toml` : `wisq-carte = { path = "../wisq-page/src/carte" }`.
+Puis, avec `use wisq_carte::{fichier::DisqueFichier, pc::{horloge_du_systeme,
+CartePc, Disque}};` — ces dix lignes sont compilées et exécutées telles
+quelles par `crates/wisq-page/tests/disque.rs` :
+
+```rust
+let mut carte = CartePc::nouvelle();
+carte.horloge(horloge_du_systeme); // l'heure, lue avant chaque accès à la CMOS
+carte.brancher(Disque::Premier, DisqueFichier::ouvrir(&iso, &couche)?); // vda, 00:03.0, ligne 5
+carte.brancher(Disque::Second, DisqueFichier::ouvrir(&vierge, &couche2)?); // vdb, 00:04.0, ligne 6
+let pris = carte.port_ecrire(port, largeur, valeur); // `out` ; false : pas à la carte
+carte.servir(&mut ram); // après un `out` pris : le disque avance, sa ligne se lève
+let lu: Option<u32> = carte.port_lire(port + 1, largeur); // `in` ; None : pas à la carte
+carte.battre(tics); // à chaque tour : les frappes à leur heure (tics du 8254)
+let (levees, tenues, reveil) = (carte.lignes(), carte.tenues(), carte.reveil());
+carte.vider(); // au passage en arrière-plan : fsync des couches
+```
+
+Ce qu'il faut savoir autour :
+
+- `ram` est n'importe quoi qui porte `wisq_carte::Ram` : `lire(adresse,
+  &mut [u8]) -> bool` et `ecrire(adresse, &[u8]) -> bool`, par adresse
+  physique de l'invité, `false` sans rien toucher quand la plage ne tient
+  pas entière. `RamPlate(Vec<u8>)` le fait pour une RAM d'un bloc.
+- Les puces du cœur passent d'abord (8259, 8254, port `0x61`, 16550), puis
+  la carte ; `None` ou `false` : le port n'est à personne (lire `0xFF…`).
+  Les ports de la carte : `0x60`, `0x64`, `0x70`, `0x71`, `0xCF8`, `0xCFC` à
+  `0xCFF`, et les `0x40` ports de la fenêtre de chaque disque, là où le noyau
+  la place.
+- `lignes()` et `tenues()` sont à niveau, bit `n` = ligne `n` (0 à 7 au
+  maître, 8 à 15 à l'esclave). À chaque tour : `irr = (irr & !tenues) |
+  levees`, ce que `serviceInterrupts` fait du côté Swift. La carte ne lève
+  jamais les lignes 0, 2 et 4, qui sont celles des puces du cœur.
+- Un `hlt` peut dormir quand ni les minuteries du cœur ni `carte.reveil()`
+  n'ont plus rien à lever. `carte.remise_demandee()` : l'invité a demandé le
+  redémarrage (`0xFE` sur `0x64`).
+- Le clavier et la souris : `touche`, `taper`, `taper_texte`, `souris`.
+  `CartePc` est `Send`.
+
+**Mesures**, sur ce conteneur (4 cœurs, noyau 6.18).
+
+*Le débit de lecture de l'ISO Void Xfce* (`void-live-x86_64-20250202-xfce.iso`,
+1 446 789 120 octets, 1 379,8 Mio), lue entière par la carte comme le pilote
+`virtio_blk` la lirait — une requête à la fois dans la file, la
+notification, `servir`, l'acquittement —, après qu'une course a comparé
+chaque octet rendu à celui du fichier. `cargo run --release -p wisq-page
+--example debit-disque -- <iso> <dossier>`, trois courses par case, médiane,
+en Mio/s :
+
+| requête | la carte, `DisqueFichier` | la carte, un `pread` par secteur (`wisq_vm::store`) | `pread` sans la carte |
+|---|---|---|---|
+| 4 Kio | 4 066 | 1 646 | 5 661 |
+| 64 Kio | 5 673 | 1 551 | 7 899 |
+| 128 Kio | 5 611 | 1 473 | 7 558 |
+| 512 Kio | 6 321 | 1 597 | 8 123 |
+| 1 024 Kio | 4 363 | 1 242 | 7 632 |
+| 1 280 Kio | 5 177 | 1 334 | 7 117 |
+
+Cache de l'hôte chaud : **4,0 à 6,3 Gio/s** selon la taille de requête (la
+même mesure, vingt minutes plus tôt : 4,0 à 5,9). La carte coûte 22 à 43 %
+sur le `pread` nu — une copie de plus, du tampon vers la RAM de l'invité — et
+la lecture par morceaux rend deux fois et demie à quatre fois le débit du
+`pread` par secteur. **À froid** (`echo 3 >
+/proc/sys/vm/drop_caches` juste avant), la première lecture par 128 Kio :
+**552 Mio/s**, 2,50 s pour l'ISO — c'est le stockage du conteneur qui borne.
+Dans les deux cas le disque n'est pas ce qui retient un invité à 62 MIPS.
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`,
+`wisq_page.wasm`) : 564 245 octets avant ; 564 635 après la sortie du
+crate ; **565 144** après le second emplacement de disque — 899 octets de
+plus, 0,16 %. La façade et le disque sur fichier n'y sont pas : aucun export
+ne les atteint.
+
+**Tests.** 42 de plus, 701 → 743 côté Rust : 38 dans `wisq-carte` (qui en
+a 117, et un exemple de documentation compilé et exécuté), 4 dans
+`crates/wisq-page/tests/disque.rs`.
+
+- `fichier.rs` : les onze cas du magasin de `FileDiskStoreTests` portés un
+  pour un (couche d'écriture, relecture après fermeture, base jamais touchée,
+  lecture et écriture au-delà de la fin refusées, couche tassée, emplacement
+  orphelin, couche d'un autre disque, base trop petite, couche tronquée, base
+  absente), son cas « à travers le périphérique » — par les ports, puis la
+  machine rallumée sur les mêmes fichiers —, deux disques sur fichier dont
+  les écritures ne se mélangent pas, la lecture par morceaux contre une image
+  témoin à tous les décalages, une base raccourcie sous le disque ouvert.
+- `pci.rs` et `mod.rs` : les quatre cas de bus de `X86SecondDiskTests`
+  (l'emplacement quatre, le pont une seule fois, chacun sa fenêtre, l'ordre
+  de branchement), les deux lignes, la ligne partagée, et les ports fixes
+  comparés à l'aiguillage sur les 65 536 ports.
+- `pc.rs` : la façade conduite par les ports seuls — lecture, écriture,
+  second disque, arrière qui échoue, disque sans arrière, quarante lectures
+  de 2 Mio servies d'un seul `servir` au-delà des 64 Mio que le disque tient
+  dehors, notification suivie d'une remise à zéro, l'heure injectée.
+- `tests/disque.rs` : `DisqueFichier` et `wisq_vm::store::FileStore`
+  reçoivent 407 écritures tirées d'un générateur et rendent **les deux mêmes
+  fichiers** ; chacun rouvre la couche de l'autre et y écrit encore ; les
+  mêmes refus sur les mêmes fichiers. Le cœur Swift et `wisq_vm::store` sont
+  déjà comparés par `DifferentialDiskTests`.
+
+Les cas d'instantané de `FileDiskStoreTests` et de `X86SecondDiskTests` ne
+sont pas portés (pas d'instantané), ni les dix-sept de `VirtioBlockTests`,
+qui le sont depuis #704.
+
+**Sabotages**, d'une ligne chacun, 38, tous tombent, `git diff` vide après
+chaque restauration :
+
+- *la façade (14)* : `servir` ne relit pas la file ; la notification n'est
+  pas notée ; `reveil` ne compte pas la notification en attente ; une lecture
+  ratée de l'arrière passe pour réussie ; une écriture ratée aussi ; le
+  tampon géant est gardé ; l'horloge lue n'est pas posée ; l'horloge est lue
+  à chaque port ; rebrancher garde la notification de l'ancien disque ;
+  `vider` tait le refus d'un arrière ; une largeur de trois octets est
+  prise ; l'arrière du second disque va à la place du premier ; le disque en
+  mémoire compte sa queue ; un disque sans arrière ne répond rien.
+- *le bus et les lignes (10)* : la ligne du second vaut cinq ; le second est
+  à l'emplacement cinq ; un emplacement vide répond ; deux fenêtres
+  superposées vont au second ; la configuration du second s'écrit dans le
+  premier ; le second lève la ligne du premier ; la carte ne tient pas la
+  ligne du second ; `reveil` ne compte pas le second ; `0x71` n'est plus un
+  port fixe ; une fenêtre passe devant les ports fixes.
+- *le disque sur fichier (11)* : le nom de l'emplacement n'est pas écrit ;
+  une écriture partielle ne recopie pas le secteur ; un morceau s'étend sans
+  regarder sa source ; la borne de fin ne regarde que le décalage ; la couche
+  d'un autre disque est acceptée ; une couche tronquée est acceptée ; une
+  base de trois octets est un disque ; l'emplacement orphelin est compté ; la
+  lecture ignore la couche ; la carte range ses noms sans l'en-tête ; la
+  couche est lisible de tous (`0o644`).
+- *le format, par le différentiel (3)* : la marque change d'une lettre ; un
+  emplacement fait 513 octets ; les noms sont relus gros-boutistes.
+
+**Ce que rien ne tient.** L'ordre des deux écritures (le contenu avant le
+nom) n'est tenu que par relecture du code : aucun test ne tue le processus
+entre les deux. `fsync` non plus — un test ne voit pas ce qu'un disque a
+vraiment reçu.
+
+**Ce qui reste.**
+
+1. *Le cœur ne branche pas encore la carte* : la dépendance dans
+   `crates/wisq-vm/Cargo.toml` et le raccord derrière ses ports sont à lui.
+   Tant que ce n'est pas fait, aucun noyau n'a lu un disque par `CartePc` :
+   la file est conduite ici par des tests qui imitent `virtio_pci_legacy`,
+   et par la page sous Bun pour le premier disque (#704).
+2. *L'écran, la tablette et la carte réseau* du cœur Swift (00:02.0, la
+   tablette, 00:05.0 ligne 3) : les tranches suivantes de ce flux.
+3. *L'écriture se fait secteur par secteur* (deux `pwrite` par secteur
+   neuf), comme les deux autres mises en œuvre. Non mesurée : une
+   installation écrit des gigaoctets, et il faudra le chiffre avant de
+   décider d'un regroupement.
+4. *Trois mises en œuvre du même format* (Swift, `wisq_vm::store`,
+   `DisqueFichier`). Le différentiel les tient ensemble ; le jour où la
+   machine RISC-V prend aussi `wisq-carte`, `wisq_vm::store` peut céder la
+   place.
+5. *Le compte de tests publié* (3 808 : README, site) changera aussi sur la
+   branche du cœur : à la fusion des deux, relancer le recompte plutôt que
+   de choisir l'un des deux nombres.
 ## 2026-11-20 — Cœur x86 : les drapeaux à la demande ne rapportent rien ; les conditions sans aiguillage, 3 à 6 %
 
 **La demande.** Le second chantier de « Fais tout » : calculer les drapeaux
