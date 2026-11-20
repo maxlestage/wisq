@@ -63,6 +63,14 @@ pub enum Unmapped {
     /// manque à un niveau pour un accès de l'anneau trois, ou le bit 63
     /// interdit d'exécuter (EFER.NXE allumé).
     Forbidden { address: u64 },
+    /// **L'adresse n'est pas canonique** : ses bits 63 à 47 ne sont pas tous
+    /// égaux. Les tables n'en traduisent que quarante-huit, et la marcher
+    /// quand même la confondrait avec son alias — une lecture à
+    /// 0x8000_0000_0000_6000 rendrait le contenu de 0x6000. Le silicium lève
+    /// `#GP(0)`, pas une faute de page. Seule la traduction de la machine PC
+    /// (`translate_cached`, avec son tampon) la rend ; `translate`, le juge de
+    /// l'émetteur, marche les tables comme il l'a toujours fait.
+    NonCanonical { address: u64 },
 }
 
 impl Unmapped {
@@ -73,7 +81,8 @@ impl Unmapped {
             | Self::ReadOnly { address }
             | Self::TableOutside { address, .. }
             | Self::Outside { address }
-            | Self::Forbidden { address } => *address,
+            | Self::Forbidden { address }
+            | Self::NonCanonical { address } => *address,
         }
     }
 }
@@ -360,6 +369,14 @@ impl Cpu {
     /// Le chemin lent de `translate_cached` : marcher, juger, marquer, garder.
     #[inline(never)]
     fn fill(&mut self, virtual_address: u64, access: Access) -> Result<u64, Unmapped> {
+        // Une adresse canonique est l'extension de signe de ses quarante-huit
+        // bits bas. Le contrôle est ici, sur le chemin lent : une adresse qui
+        // ne l'est pas n'entre jamais au tampon, donc n'y est jamais trouvée.
+        if ((virtual_address as i64) << 16) >> 16 != virtual_address as i64 {
+            return Err(Unmapped::NonCanonical {
+                address: virtual_address,
+            });
+        }
         let walked = match self.walk(virtual_address) {
             Ok(walked) => walked,
             Err(why) => {

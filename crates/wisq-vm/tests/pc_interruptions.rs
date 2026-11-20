@@ -3,12 +3,15 @@
 //! `X86InterruptTests.swift`, puis ce que ce cœur ajoute : les contrôles de
 //! privilège, `syscall`, `swapgs`, les registres spécifiques au modèle.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use wisq_vm::pc::machine::{Alea, GRAINE_REPRODUCTIBLE};
 use wisq_vm::pc::systeme::{
     cpuid, Table, MSR_EFER, MSR_FS_BASE, MSR_GS_BASE, MSR_KERNEL_GS_BASE, MSR_LSTAR, MSR_SFMASK,
     MSR_STAR,
 };
-use wisq_vm::pc::Machine;
+use wisq_vm::pc::{Machine, Peripheriques};
 use wisq_vm::x86::{Width, CF, IF};
 
 const IDT: u64 = 0x9000;
@@ -444,9 +447,17 @@ fn lidt_copies_the_descriptor_rather_than_remembering_where_it_was() {
 /// rien n'a été fait.
 #[test]
 fn privileged_instructions_fault_in_ring_three() {
-    let reservees: [(&str, &[u8]); 9] = [
+    let reservees: [(&str, &[u8]); 17] = [
         ("hlt", &[0xF4]),
         ("cli", &[0xFA]),
+        ("sti", &[0xFB]),
+        ("lgdt (%rbx)", &[0x0F, 0x01, 0x13]),
+        ("lidt (%rbx)", &[0x0F, 0x01, 0x1B]),
+        ("invlpg (%rbx)", &[0x0F, 0x01, 0x3B]),
+        ("ltr %ax", &[0x0F, 0x00, 0xD8]),
+        ("lldt %ax", &[0x0F, 0x00, 0xD0]),
+        ("mov %rax,%dr7", &[0x0F, 0x23, 0xF8]),
+        ("mov %dr7,%rax", &[0x0F, 0x21, 0xF8]),
         ("in $0x21,%al", &[0xE4, 0x21]),
         ("out %al,$0x21", &[0xE6, 0x21]),
         ("rdmsr", &[0x0F, 0x32]),
@@ -462,7 +473,25 @@ fn privileged_instructions_fault_in_ring_three() {
         machine.cpu.regs[1] = u64::from(MSR_GS_BASE);
         machine.herites.maitre.masque = 0x55;
         charger_la_tache(&mut machine, SOMMET);
+        // De quoi voir ce qu'une instruction admise à tort aurait changé : un
+        // descripteur de table lisible sous RBX, un sélecteur de TSS valide
+        // dans RAX, un registre de débogage déjà rempli.
+        machine.cpu.regs[0] = 0x40;
+        machine.cpu.regs[3] = 0xA000;
+        poser(&mut machine, 0xA000, &0x77u16.to_le_bytes());
+        ecrire(&mut machine, 0xA002, 0x1234_5000);
+        machine.systeme.debug[7] = 0x400;
+        let tables = (machine.systeme.gdt, machine.systeme.idt);
         machine.tourner(1).expect("livrée");
+        assert_eq!(
+            (machine.systeme.gdt, machine.systeme.idt),
+            tables,
+            "{nom} : les tables de descripteurs"
+        );
+        assert_eq!(machine.systeme.ldt, 0, "{nom}");
+        assert_eq!(machine.systeme.debug[7], 0x400, "{nom}");
+        assert_eq!(machine.cpu.regs[0], 0x40, "{nom} : RAX");
+        assert!(!machine.cpu.flags.interrupts_enabled(), "{nom}");
         assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #GP livrée");
         assert_eq!(
             lire(&machine, machine.cpu.regs[4]),
@@ -1020,5 +1049,932 @@ fn only_an_instruction_that_overflows_its_page_loads_the_next_one() {
     assert_eq!(
         inconnue.cpu.regs[4], SOMMET,
         "aucune faute de page n'a été livrée"
+    );
+}
+
+// ---- L'ombre de `sti` ----
+
+/// De quoi faire demander la ligne quatre à volonté : le port série, sa
+/// réception autorisée, sa porte au vecteur 0x34. Un octet tapé, et la ligne
+/// demande au prochain regard sur le matériel.
+fn serie_a_l_ecoute(machine: &mut Machine) {
+    machine.systeme.idt.limite = 0xFFF;
+    porte(machine, 0x34, GESTIONNAIRE, 0x8E);
+    machine.herites.maitre.masque = 0xEF;
+    machine.herites.maitre.base_des_vecteurs = 0x30;
+    machine.herites.serie.autorisation = 1;
+}
+
+/// L'horloge, toutes les mille battements, au vecteur 0x20.
+fn horloge(machine: &mut Machine) {
+    machine.systeme.idt.limite = 0xFFF;
+    porte(machine, 0x20, GESTIONNAIRE, 0x8E);
+    machine.herites.maitre.masque = 0xFE;
+    machine.herites.maitre.base_des_vecteurs = 0x20;
+    machine.herites.minuterie.rechargement = 1000;
+}
+
+/// **L'ombre couvre une instruction, pas une adresse.** Une boucle d'attente
+/// placée juste après `sti` revient sur l'adresse que l'ombre couvrait ;
+/// tenue par l'adresse, l'ombre ne se levait jamais quand le matériel était
+/// regardé à cet instant-là — et il l'est toutes les 256 instructions, donc
+/// toujours au même point d'une boucle de une, deux ou quatre instructions.
+#[test]
+fn the_shadow_of_sti_lifts_even_when_a_loop_comes_back_under_it() {
+    let boucles: [(&str, &[u8]); 4] = [
+        ("sti ; jmp .", &[0xFB, 0xEB, 0xFE]),
+        (
+            "nop ; sti ; L: nop ; jmp L",
+            &[0x90, 0xFB, 0x90, 0xEB, 0xFD],
+        ),
+        ("sti ; L: nop ; jmp L", &[0xFB, 0x90, 0xEB, 0xFD]),
+        (
+            "nop ; nop ; nop ; sti ; L: nop ; nop ; nop ; jmp L",
+            &[0x90, 0x90, 0x90, 0xFB, 0x90, 0x90, 0x90, 0xEB, 0xFB],
+        ),
+    ];
+    for (nom, code) in boucles {
+        let mut machine = nouvelle(code);
+        horloge(&mut machine);
+        // Mille battements font 288 000 instructions : l'échéance tombe dans
+        // la troisième tranche.
+        for _ in 0..5 {
+            machine.tourner(200_000).expect("sans faute");
+        }
+        assert_eq!(
+            machine.cpu.rip,
+            GESTIONNAIRE + 1,
+            "{nom} : l'horloge interrompt la boucle (demande {:#x})",
+            machine.herites.maitre.demande
+        );
+        assert_eq!(machine.herites.maitre.service, 1, "{nom}");
+    }
+}
+
+/// Exactement une : l'instruction qui suit `sti` passe, la suivante non.
+#[test]
+fn the_shadow_of_sti_covers_exactly_one_instruction() {
+    // sti ; nop ; nop
+    let mut machine = nouvelle(&[0xFB, 0x90, 0x90]);
+    serie_a_l_ecoute(&mut machine);
+    machine.tourner(1).expect("sti");
+    machine.taper(b"x");
+    machine.servir().expect("sans faute");
+    assert_eq!(machine.cpu.rip, 0x1001, "sous l'ombre, rien n'entre");
+    machine.tourner(1).expect("le nop couvert");
+    assert_eq!(machine.cpu.rip, 0x1002, "il s'exécute, sans interruption");
+    machine.servir().expect("sans faute");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "puis l'ombre est levée");
+    assert_eq!(lire(&machine, machine.cpu.regs[4]), 0x1002);
+}
+
+/// `sti` ne pose l'ombre que s'il **lève** le drapeau : les interruptions déjà
+/// permises, il ne retarde rien.
+#[test]
+fn sti_with_interrupts_already_on_delays_nothing() {
+    let mut machine = nouvelle(&[0xFB, 0x90]);
+    serie_a_l_ecoute(&mut machine);
+    machine.cpu.flags.write(IF);
+    machine.tourner(1).expect("sti");
+    machine.taper(b"x");
+    machine.servir().expect("sans faute");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "entrée aussitôt");
+    assert_eq!(lire(&machine, machine.cpu.regs[4]), 0x1001);
+}
+
+/// Charger SS retarde les interruptions d'une instruction, comme `sti` : c'est
+/// ce qui laisse `mov %ax,%ss ; mov %bx,%sp` changer de pile d'un seul geste.
+#[test]
+fn loading_ss_holds_interrupts_for_one_instruction() {
+    // mov %eax,%ss ; nop ; nop
+    let mut machine = nouvelle(&[0x8E, 0xD0, 0x90, 0x90]);
+    serie_a_l_ecoute(&mut machine);
+    machine.cpu.flags.write(IF);
+    machine.cpu.regs[0] = 0x18;
+    machine.tourner(1).expect("mov ss");
+    assert_eq!(machine.cpu.segments[2], 0x18);
+    machine.taper(b"x");
+    machine.servir().expect("sans faute");
+    assert_eq!(machine.cpu.rip, 0x1002, "sous l'ombre");
+    machine.tourner(1).expect("le nop couvert");
+    machine.servir().expect("sans faute");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE);
+    assert_eq!(lire(&machine, machine.cpu.regs[4]), 0x1003);
+}
+
+/// L'instruction couverte faute : l'ombre ne passe pas à son gestionnaire.
+#[test]
+fn the_shadow_does_not_follow_a_fault_into_its_handler() {
+    // sti ; ud2 — la porte six est une trappe, qui laisse les interruptions.
+    let mut machine = nouvelle(&[0xFB, 0x0F, 0x0B]);
+    serie_a_l_ecoute(&mut machine);
+    porte(&mut machine, 6, GESTIONNAIRE + 0x10, 0x8F);
+    machine.tourner(1).expect("sti");
+    machine.taper(b"x");
+    machine.tourner(1).expect("ud2, livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE + 0x10, "dans la trappe");
+    assert!(machine.cpu.flags.interrupts_enabled());
+    machine.servir().expect("sans faute");
+    assert_eq!(
+        machine.cpu.rip, GESTIONNAIRE,
+        "la ligne entre : la faute a fini l'ombre"
+    );
+    assert_eq!(lire(&machine, machine.cpu.regs[4]), GESTIONNAIRE + 0x10);
+}
+
+// ---- `lretq` ----
+
+/// `lretq` à anneau égal — le seul que Linux exécute, pour changer de CS au
+/// démarrage : RIP puis CS, seize octets dépilés.
+#[test]
+fn lretq_pops_the_offset_then_the_selector() {
+    let mut machine = nouvelle(&[0x48, 0xCB]);
+    machine.cpu.segments[1] = 0x08;
+    machine.cpu.segments[2] = 0x18;
+    let pile = 0xA800;
+    for (rang, valeur) in [0xA000, 0x10, 0xDEAD].into_iter().enumerate() {
+        ecrire(&mut machine, pile + 8 * rang as u64, valeur);
+    }
+    machine.cpu.regs[4] = pile;
+    assert_eq!(machine.tourner(1), Ok(1));
+    assert_eq!(machine.cpu.rip, 0xA000);
+    assert_eq!(machine.cpu.segments[1], 0x10);
+    assert_eq!(machine.cpu.regs[4], pile + 16, "deux mots, pas un ni trois");
+    assert_eq!(machine.cpu.segments[2], 0x18, "SS ne bouge pas");
+    assert_eq!(machine.retirees, 1);
+}
+
+/// **Un programme ne se donne pas l'anneau zéro par `lretq`**, pas plus que
+/// par `iretq` : `#GP` avec le sélecteur refusé, et rien n'a bougé.
+#[test]
+fn lretq_never_raises_privilege() {
+    let mut machine = nouvelle(&[0x48, 0xCB]);
+    poser(&mut machine, 0xA000, &[0xF4]);
+    porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+    machine.cpu.segments[1] = 0x33;
+    charger_la_tache(&mut machine, SOMMET);
+    let pile = 0xA800;
+    ecrire(&mut machine, pile, 0xA000);
+    ecrire(&mut machine, pile + 8, 0x10);
+    machine.cpu.regs[4] = pile;
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "#GP, pas la cible");
+    let cadre = machine.cpu.regs[4];
+    assert_eq!(lire(&machine, cadre), 0x10, "le sélecteur refusé");
+    assert_eq!(lire(&machine, cadre + 8), 0x1000, "sur le lretq lui-même");
+    assert_eq!(lire(&machine, cadre + 16), 0x33, "parti de l'anneau trois");
+    assert_eq!(lire(&machine, cadre + 32), pile, "et sa pile n'a pas bougé");
+    assert_eq!(machine.retirees, 0);
+}
+
+/// Vers un anneau moins privilégié, RSP et SS suivent sur la pile ; et un
+/// cadre dont un mot manque laisse tout en place.
+#[test]
+fn lretq_to_an_outer_ring_pops_the_stack_too() {
+    let mut machine = nouvelle(&[0x48, 0xCB]);
+    machine.cpu.segments[1] = 0x10;
+    let pile = 0x6800;
+    for (rang, valeur) in [0xA000, 0x33, 0xA900, 0x2B].into_iter().enumerate() {
+        ecrire(&mut machine, pile + 8 * rang as u64, valeur);
+    }
+    machine.cpu.regs[4] = pile;
+    machine.tourner(1).expect("sans faute");
+    assert_eq!(machine.cpu.rip, 0xA000);
+    assert_eq!(machine.cpu.segments[1], 0x33);
+    assert_eq!(machine.cpu.regs[4], 0xA900, "la pile du programme");
+    assert_eq!(machine.cpu.segments[2], 0x2B);
+
+    // Le sélecteur est dans une page absente : la faute le dit, et la pile
+    // est où elle était.
+    let mut coupe = preparee(&[0x48, 0xCB]);
+    ecrire(&mut coupe, 0xAFF8, 0xA000);
+    coupe.cpu.regs[4] = 0xAFF8;
+    coupe.tourner(1).expect("livrée");
+    assert_eq!(coupe.cpu.rip, GESTIONNAIRE);
+    assert_eq!(coupe.cpu.control[2], 0xB000);
+    assert_eq!(lire(&coupe, coupe.cpu.regs[4] + 32), 0xAFF8);
+    assert_eq!(
+        coupe.cpu.segments[1], 0x10,
+        "le CS de la porte, pas un mot lu"
+    );
+}
+
+// ---- Qui empile un code d'erreur ----
+
+/// **C'est la faute qui porte un code, pas le numéro du vecteur.** Un 8259
+/// laissé à sa base d'origine livre ses lignes aux vecteurs huit à quinze —
+/// ceux de la double faute, de `#SS`, de `#GP` — et une interruption de
+/// matériel n'empile que cinq mots. Un `int $13` non plus.
+#[test]
+fn only_a_fault_pushes_an_error_code() {
+    let mut materiel = nouvelle(&[0x90]);
+    serie_a_l_ecoute(&mut materiel);
+    materiel.herites.maitre.base_des_vecteurs = 0x08;
+    porte(&mut materiel, 0x0C, GESTIONNAIRE, 0x8E);
+    materiel.cpu.flags.write(IF);
+    materiel.taper(b"x");
+    materiel.servir().expect("livrée");
+    assert_eq!(materiel.cpu.rip, GESTIONNAIRE);
+    assert_eq!(materiel.cpu.regs[4], SOMMET - 40, "cinq mots");
+    assert_eq!(lire(&materiel, SOMMET - 40), 0x1000, "RIP en haut du cadre");
+
+    // int $13, depuis le noyau.
+    let mut logicielle = nouvelle(&[0xCD, 0x0D]);
+    porte(&mut logicielle, 13, GESTIONNAIRE, 0x8E);
+    logicielle.tourner(1).expect("livrée");
+    assert_eq!(logicielle.cpu.regs[4], SOMMET - 40, "cinq mots");
+    assert_eq!(lire(&logicielle, SOMMET - 40), 0x1002);
+
+    // La faute, elle, en empile six : `hlt` en anneau trois.
+    let mut faute = nouvelle(&[0xF4]);
+    porte(&mut faute, 13, GESTIONNAIRE, 0x8E);
+    faute.cpu.segments[1] = 0x33;
+    charger_la_tache(&mut faute, SOMMET);
+    faute.tourner(1).expect("livrée");
+    assert_eq!(faute.cpu.regs[4], SOMMET - 48, "six mots");
+}
+
+// ---- La livraison, hors des valeurs commodes ----
+
+/// La cible d'une porte a soixante-quatre bits, en trois morceaux : les
+/// gestionnaires d'un noyau sont à 0xffffffff8…, pas sous quatre gibioctets.
+#[test]
+fn a_gate_reaches_a_handler_above_four_gigabytes() {
+    let cible = 0xFFFF_FFFF_8123_4560u64;
+    let mut machine = nouvelle(&[0x0F, 0x0B]);
+    porte(&mut machine, 6, cible, 0x8E);
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, cible);
+}
+
+/// Le pas-à-pas, la tâche imbriquée et la reprise s'éteignent en entrant ; le
+/// cadre garde les drapeaux d'avant, que l'`iretq` rendra.
+#[test]
+fn entering_a_handler_clears_trap_nested_task_and_resume() {
+    const TF: u64 = 1 << 8;
+    const NT: u64 = 1 << 14;
+    const RF: u64 = 1 << 16;
+    let mut machine = nouvelle(&[0x0F, 0x0B]);
+    porte(&mut machine, 6, GESTIONNAIRE, 0x8F);
+    let avant = TF | NT | RF | IF | CF | 2;
+    machine.cpu.flags.write(avant);
+    machine.tourner(1).expect("livrée");
+    assert_eq!(lire(&machine, machine.cpu.regs[4] + 16), avant);
+    assert_eq!(
+        machine.cpu.flags.read(),
+        IF | CF | 2,
+        "une trappe : les interruptions restent, les trois autres non"
+    );
+}
+
+/// **Le segment d'état de tâche doit porter ce qu'on y lit** : la fin d'IST7
+/// est son octet 0x5b. Un octet de moins, et le processeur ne sait pas quelle
+/// pile prendre.
+#[test]
+fn a_task_segment_too_short_cannot_give_a_stack() {
+    for (limite, suffit) in [(0x5Au64, false), (0x5B, true)] {
+        let mut machine = preparee(&[0x8A, 0x03]);
+        machine.cpu.regs[3] = ABSENTE;
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        ecrire(
+            &mut machine,
+            0x6040,
+            limite | ((0x6100 & 0xFF_FFFF) << 16) | (0x89 << 40),
+        );
+        machine
+            .systeme
+            .charger_la_tache(&mut machine.cpu, 0x40)
+            .expect("un TSS dans la GDT");
+        assert_eq!(machine.systeme.limite_de_tache, limite);
+        let rendu = machine.tourner(1);
+        if suffit {
+            assert_eq!(rendu, Ok(1), "limite {limite:#x}");
+            assert_eq!(machine.cpu.rip, GESTIONNAIRE);
+        } else {
+            let pourquoi = rendu.expect_err("trop court");
+            assert!(pourquoi.contains("SansTss"), "{pourquoi}");
+        }
+    }
+}
+
+/// **Une livraison qui échoue ne laisse rien derrière elle.** La pile du
+/// noyau que le TSS désigne n'est pas cartographiée : le processeur avait déjà
+/// changé de pile, de SS et de CS pour y écrire, et tout est défait.
+#[test]
+fn a_delivery_that_fails_undoes_the_stack_and_the_selectors() {
+    let mut machine = preparee(&[0x8A, 0x03]);
+    machine.cpu.regs[3] = ABSENTE;
+    machine.cpu.segments[1] = 0x33;
+    machine.cpu.segments[2] = 0x2B;
+    machine.cpu.regs[4] = 0xA800;
+    charger_la_tache(&mut machine, 0xB800);
+    let pourquoi = machine.tourner(1).expect_err("la pile du noyau manque");
+    assert!(pourquoi.contains("Memoire"), "{pourquoi}");
+    assert_eq!(machine.cpu.regs[4], 0xA800, "RSP");
+    assert_eq!(machine.cpu.segments[1], 0x33, "CS");
+    assert_eq!(machine.cpu.segments[2], 0x2B, "SS");
+    assert_eq!(machine.cpu.rip, 0x1000, "RIP");
+}
+
+/// `ltr`, hors du cas commode : la granularité compte la limite en pages, le
+/// sélecteur nul est refusé, et un descripteur dans une page absente est une
+/// faute de page à **son** adresse.
+#[test]
+fn ltr_scales_the_limit_refuses_the_null_selector_and_faults_where_it_reads() {
+    let mut machine = nouvelle(&[0x0F, 0x00, 0xD8]);
+    porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+    porte(&mut machine, 14, GESTIONNAIRE + 0x10, 0x8E);
+    let gdt = 0x6000u64;
+    // Limite 1, granularité en pages : deux pages, 0x1fff.
+    ecrire(
+        &mut machine,
+        gdt + 0x40,
+        0x1 | (0x6100 << 16) | (0x89 << 40) | (1 << 55),
+    );
+    ecrire(&mut machine, gdt + 0x48, 0);
+    machine.systeme.gdt = Table {
+        base: gdt,
+        limite: 0x4F,
+    };
+    machine.cpu.regs[0] = 0x40;
+    machine.tourner(1).expect("ltr");
+    assert_eq!(machine.systeme.limite_de_tache, 0x1FFF);
+    assert_eq!(machine.systeme.base_de_tache, 0x6100);
+
+    // Le sélecteur nul, avec ou sans bits de privilège.
+    for nul in [0u64, 3] {
+        machine.cpu.rip = 0x1000;
+        machine.cpu.regs[4] = SOMMET;
+        machine.cpu.regs[0] = nul;
+        machine.tourner(1).expect("livrée");
+        assert_eq!(machine.cpu.rip, GESTIONNAIRE, "sélecteur {nul}");
+        assert_eq!(lire(&machine, machine.cpu.regs[4]), 0);
+        assert_eq!(machine.systeme.tache, 0x40, "et rien n'a changé");
+    }
+
+    // Une GDT dont la page manque.
+    machine.cpu.rip = 0x1000;
+    machine.cpu.regs[4] = SOMMET;
+    machine.cpu.regs[0] = 0x40;
+    machine.systeme.gdt.base = 0xB000;
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE + 0x10, "une faute de page");
+    assert_eq!(machine.cpu.control[2], 0xB040, "à l'adresse du descripteur");
+    assert_eq!(
+        lire(&machine, machine.cpu.regs[4]),
+        0,
+        "absente, en lecture"
+    );
+}
+
+/// `sysretq`, hors des valeurs de Linux : réservé au noyau, absent sans
+/// EFER.SCE, et il rend toujours l'anneau trois — quels que soient les deux
+/// bits bas de STAR — sans les drapeaux de reprise et de tâche imbriquée.
+#[test]
+fn sysret_is_for_the_kernel_and_always_lands_in_ring_three() {
+    const NT: u64 = 1 << 14;
+    const RF: u64 = 1 << 16;
+    let prete = || {
+        let mut machine = nouvelle(&[0x48, 0x0F, 0x07]);
+        porte(&mut machine, 6, GESTIONNAIRE + 0x20, 0x8E);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.efer |= 1;
+        machine.systeme.star = 0x20 << 48;
+        machine.cpu.regs[1] = 0xA000;
+        machine.cpu.regs[11] = RF | NT | IF | CF;
+        machine
+    };
+    let mut noyau = prete();
+    noyau.tourner(1).expect("sysretq");
+    assert_eq!(noyau.cpu.rip, 0xA000);
+    assert_eq!(noyau.cpu.segments[1], 0x33, "0x20 + 16, et l'anneau trois");
+    assert_eq!(noyau.cpu.segments[2], 0x2B, "0x20 + 8, et l'anneau trois");
+    assert_eq!(noyau.cpu.flags.read(), IF | CF | 2, "ni RF ni NT");
+
+    let mut programme = prete();
+    programme.cpu.segments[1] = 0x33;
+    charger_la_tache(&mut programme, SOMMET);
+    programme.tourner(1).expect("livrée");
+    assert_eq!(programme.cpu.rip, GESTIONNAIRE, "#GP");
+    assert_eq!(lire(&programme, programme.cpu.regs[4]), 0);
+    assert_eq!(lire(&programme, programme.cpu.regs[4] + 8), 0x1000);
+
+    let mut sans = prete();
+    sans.cpu.efer &= !1;
+    sans.tourner(1).expect("livrée");
+    assert_eq!(sans.cpu.rip, GESTIONNAIRE + 0x20, "#UD");
+}
+
+// ---- Les instructions de système, hors de ce que le démarrage exerce ----
+
+/// Trois instructions que `CPUID` n'annonce pas, et que le noyau porte quand
+/// même dans son code : le silicium qui ne les a pas lève `#UD`, et c'est ce
+/// que le noyau attend d'elles — pas un arrêt, pas un succès.
+#[test]
+fn what_cpuid_does_not_announce_raises_invalid_opcode() {
+    let absentes: [(&str, &[u8]); 4] = [
+        ("lkgs %edi", &[0xF2, 0x0F, 0x00, 0xF7]),
+        ("vmcall", &[0x0F, 0x01, 0xC1]),
+        ("vmmcall", &[0x0F, 0x01, 0xD9]),
+        ("invpcid (%rdi),%rcx", &[0x66, 0x0F, 0x38, 0x82, 0x0F]),
+    ];
+    for (nom, code) in absentes {
+        let mut machine = nouvelle(code);
+        porte(&mut machine, 6, GESTIONNAIRE, 0x8E);
+        machine.cpu.regs[7] = 0xA000;
+        assert_eq!(machine.tourner(1), Ok(1), "{nom}");
+        assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #UD");
+        assert_eq!(machine.cpu.regs[4], SOMMET - 40, "{nom}");
+        assert_eq!(lire(&machine, SOMMET - 40), 0x1000, "{nom}");
+        assert_eq!(machine.retirees, 0, "{nom}");
+        assert!(machine.refus.is_empty(), "{nom} : pas un trou de ce cœur");
+    }
+}
+
+/// `pushf` n'empile ni VM ni RF, à la largeur demandée ; `popf` en seize bits
+/// ne touche pas la moitié haute de RFLAGS.
+#[test]
+fn pushf_hides_two_flags_and_a_word_popf_keeps_the_high_half() {
+    const RF: u64 = 1 << 16;
+    const VM: u64 = 1 << 17;
+    const AC: u64 = 1 << 18;
+    const ID: u64 = 1 << 21;
+    // pushfq ; pushfw
+    let mut machine = nouvelle(&[0x9C, 0x66, 0x9C]);
+    machine.cpu.regs[4] = 0xA800;
+    ecrire(&mut machine, 0xA7F0, u64::MAX);
+    machine.cpu.flags.write(RF | VM | AC | 0x3000 | IF | CF);
+    machine.tourner(1).expect("pushfq");
+    assert_eq!(machine.cpu.regs[4], 0xA7F8);
+    assert_eq!(lire(&machine, 0xA7F8), AC | 0x3000 | IF | CF | 2);
+    machine.tourner(1).expect("pushfw");
+    assert_eq!(machine.cpu.regs[4], 0xA7F6, "deux octets");
+    assert_eq!(
+        lire(&machine, 0xA7F0),
+        0x3203_FFFF_FFFF_FFFF,
+        "seize bits écrits, et rien autour"
+    );
+
+    // popfw
+    let mut machine = nouvelle(&[0x66, 0x9D]);
+    machine.cpu.regs[4] = 0xA800;
+    ecrire(&mut machine, 0xA800, 0xFFFF_FFFF_FFFF_0001);
+    machine.cpu.flags.write(AC | ID | IF);
+    machine.tourner(1).expect("popfw");
+    assert_eq!(machine.cpu.regs[4], 0xA802);
+    assert_eq!(
+        machine.cpu.flags.read(),
+        AC | ID | CF | 2,
+        "la moitié basse vient de la pile, la haute reste"
+    );
+}
+
+/// `sgdt` écrit dix octets ou aucun : à cheval sur une page absente, la faute
+/// nomme le dernier octet, et la limite n'a pas été écrite.
+#[test]
+fn sgdt_writes_its_ten_bytes_or_none() {
+    // sgdt (%rbx)
+    let mut machine = preparee(&[0x0F, 0x01, 0x03]);
+    machine.systeme.gdt = Table {
+        base: 0xFFFF_8000_1234_5000,
+        limite: 0x7F,
+    };
+    machine.cpu.regs[3] = 0xAFF8;
+    ecrire(&mut machine, 0xAFF8, 0xEEEE_EEEE_EEEE_EEEE);
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE);
+    assert_eq!(machine.cpu.control[2], 0xB001, "le dixième octet");
+    assert_eq!(lire(&machine, machine.cpu.regs[4]), 1 << 1, "en écriture");
+    assert_eq!(
+        lire(&machine, 0xAFF8),
+        0xEEEE_EEEE_EEEE_EEEE,
+        "rien d'écrit"
+    );
+    // Là où ils tiennent, la limite puis la base.
+    let mut machine = preparee(&[0x0F, 0x01, 0x03]);
+    machine.systeme.gdt = Table {
+        base: 0xFFFF_8000_1234_5000,
+        limite: 0x7F,
+    };
+    machine.cpu.regs[3] = 0xA100;
+    machine.tourner(1).expect("sans faute");
+    assert_eq!(lire(&machine, 0xA100) & 0xFFFF, 0x7F);
+    assert_eq!(lire(&machine, 0xA102), 0xFFFF_8000_1234_5000);
+}
+
+/// `rdtscp` rend en plus `IA32_TSC_AUX` dans ECX — le numéro du processeur,
+/// que `getcpu` lit sans appel système ; `rdtsc` laisse RCX.
+#[test]
+fn rdtscp_also_reads_the_auxiliary_register() {
+    // rdtsc ; rdtscp
+    let mut machine = nouvelle(&[0x0F, 0x31, 0x0F, 0x01, 0xF9]);
+    machine.systeme.tsc_aux = 0xAB_0000_0007;
+    machine.cpu.regs[1] = u64::MAX;
+    machine.tourner(1).expect("rdtsc");
+    assert_eq!(machine.cpu.regs[1], u64::MAX, "rdtsc ne touche pas RCX");
+    machine.tourner(1).expect("rdtscp");
+    assert_eq!(machine.cpu.regs[1], 7, "les trente-deux bits bas");
+    assert_eq!(machine.cpu.regs[0], 1, "et le compteur : une instruction");
+}
+
+/// **EFER.LMA suit la pagination** : écrire CR0 le rafraîchit. Le noyau éteint
+/// la pagination pour changer de nombre de niveaux, et relit EFER.
+#[test]
+fn writing_cr0_refreshes_the_long_mode_active_bit() {
+    // mov %rax,%cr0 ; mov %rbx,%cr0
+    let mut machine = nouvelle(&[0x0F, 0x22, 0xC0, 0x0F, 0x22, 0xC3]);
+    machine.cpu.regs[0] = 1;
+    machine.cpu.regs[3] = (1 << 31) | 1;
+    assert_ne!(machine.cpu.efer & (1 << 10), 0);
+    machine.tourner(1).expect("pagination éteinte");
+    assert_eq!(machine.cpu.efer, 1 << 8, "LME reste, LMA tombe");
+    machine.tourner(1).expect("pagination rallumée");
+    assert_eq!(machine.cpu.efer, (1 << 8) | (1 << 10));
+}
+
+/// `fninit` remet les trois mots du coprocesseur à ce que le silicium y
+/// laisse : le décompresseur du noyau les relit pour savoir s'il en a un.
+#[test]
+fn fninit_resets_control_status_and_tags() {
+    let mut machine = nouvelle(&[0xDB, 0xE3]);
+    machine.cpu.fpu_control = 0x0040;
+    machine.cpu.fpu_status = 0x3841;
+    machine.cpu.fpu_tags = 0xFF;
+    machine.tourner(1).expect("fninit");
+    assert_eq!(machine.cpu.fpu_control, 0x037F);
+    assert_eq!(machine.cpu.fpu_status, 0);
+    assert_eq!(machine.cpu.fpu_tags, 0);
+}
+
+/// Un MXCSR aux bits réservés levés est une `#GP(0)`, par `ldmxcsr` comme par
+/// `fxrstor` — c'est le signal que `sigreturn` attend d'un cadre abîmé —, et
+/// non une `#UD`.
+#[test]
+fn a_reserved_mxcsr_is_a_general_protection_fault() {
+    let formes: [(&str, &[u8], u64); 2] = [
+        ("ldmxcsr (%rbx)", &[0x0F, 0xAE, 0x13], 0),
+        ("fxrstor (%rbx)", &[0x0F, 0xAE, 0x0B], 24),
+    ];
+    for (nom, code, ou) in formes {
+        let mut machine = nouvelle(code);
+        porte(&mut machine, 6, GESTIONNAIRE + 0x10, 0x8E);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.regs[3] = 0xA000;
+        ecrire(&mut machine, 0xA000 + ou, 0x0001_0000);
+        machine.tourner(1).expect("livrée");
+        assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #GP, pas #UD");
+        assert_eq!(lire(&machine, machine.cpu.regs[4]), 0, "{nom}");
+        assert_eq!(machine.cpu.mxcsr, 0x1F80, "{nom} : rien de changé");
+    }
+}
+
+/// Une instruction dans le trou des périphériques n'est pas de la RAM : la
+/// machine s'arrête en le disant, plutôt que d'exécuter les zéros du bloc de
+/// l'hôte qui couvre le trou.
+#[test]
+fn an_instruction_in_the_device_hole_stops_the_machine_by_name() {
+    let mut machine = nouvelle(&[0x90]);
+    machine.cpu.memory_hole = (0x6000, 0x1000);
+    machine.cpu.rip = 0x6010;
+    let pourquoi = machine.tourner(1).expect_err("pas de la RAM");
+    assert!(pourquoi.contains("trou des périphériques"), "{pourquoi}");
+    assert!(pourquoi.contains("0x6010"), "{pourquoi}");
+    assert_eq!(machine.retirees, 0);
+    // Juste avant et juste après le trou, c'est de la RAM.
+    for rip in [0x5FFFu64, 0x8000] {
+        machine.cpu.memory.bytes[rip as usize] = 0x90;
+        machine.cpu.rip = rip;
+        assert_eq!(machine.tourner(1), Ok(1), "rip {rip:#x}");
+    }
+}
+
+/// Charger FS ou GS avec un sélecteur non nul prend la base dans son
+/// descripteur de la GDT ; un sélecteur de la LDT, ou hors de la table, la
+/// laisse. Et un sélecteur rangé en mémoire fait seize bits, quelle que soit
+/// la largeur de l'instruction.
+#[test]
+fn fs_and_gs_take_their_base_from_the_descriptor() {
+    // mov %eax,%fs ; mov %eax,%gs ; mov %fs,(%rbx)
+    let mut machine = nouvelle(&[0x8E, 0xE0, 0x8E, 0xE8, 0x8C, 0x23]);
+    let gdt = 0x6000u64;
+    let base = 0x1234_5678u64;
+    ecrire(
+        &mut machine,
+        gdt + 0x18,
+        0xFFFF | ((base & 0xFF_FFFF) << 16) | (0x93 << 40) | ((base >> 24) << 56),
+    );
+    machine.systeme.gdt = Table {
+        base: gdt,
+        limite: 0x1F,
+    };
+    machine.cpu.regs[0] = 0x18;
+    machine.cpu.regs[3] = 0xA000;
+    ecrire(&mut machine, 0xA000, u64::MAX);
+    machine.tourner(3).expect("sans faute");
+    assert_eq!(machine.cpu.fs_base, base);
+    assert_eq!(machine.cpu.gs_base, base);
+    assert_eq!(
+        lire(&machine, 0xA000),
+        0xFFFF_FFFF_FFFF_0018,
+        "seize bits rangés"
+    );
+    // Le même index, mais dans la LDT (bit 2) ; puis hors de la GDT.
+    for selecteur in [0x1Cu64, 0x20] {
+        machine.cpu.rip = 0x1000;
+        machine.cpu.fs_base = 0x7777;
+        machine.cpu.regs[0] = selecteur;
+        machine.tourner(1).expect("sans faute");
+        assert_eq!(machine.cpu.segments[4], selecteur as u16);
+        assert_eq!(machine.cpu.fs_base, 0x7777, "sélecteur {selecteur:#x}");
+    }
+}
+
+// ---- Ce que la page d'instructions gardée doit oublier ----
+
+/// **Écrire EFER vide le tampon de traduction** : NXE change ce que le bit 63
+/// d'une entrée veut dire. Une page exécutée avant que le noyau n'allume NXE
+/// ne s'exécute plus après.
+#[test]
+fn writing_efer_forgets_the_translations_it_changes_the_meaning_of() {
+    // wrmsr
+    let mut machine = preparee(&[0x0F, 0x30]);
+    ecrire(&mut machine, 0x5000 + 0xA * 8, 0xA000 | 0x7 | (1 << 63));
+    poser(&mut machine, 0xA000, &[0x90, 0x90]);
+    machine.cpu.rip = 0xA000;
+    assert_eq!(
+        machine.tourner(1),
+        Ok(1),
+        "sans NXE, le bit 63 n'interdit rien"
+    );
+    assert_eq!(machine.cpu.rip, 0xA001);
+    machine.cpu.rip = 0x1000;
+    machine.cpu.regs[1] = u64::from(MSR_EFER);
+    machine.cpu.regs[0] = (1 << 8) | (1 << 10) | (1 << 11);
+    machine.cpu.regs[2] = 0;
+    machine.tourner(1).expect("wrmsr");
+    machine.cpu.rip = 0xA001;
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "la page ne s'exécute plus");
+    assert_eq!(machine.cpu.control[2], 0xA001);
+    assert_eq!(
+        lire(&machine, machine.cpu.regs[4]),
+        1 | (1 << 4),
+        "présente, en lecture d'instruction"
+    );
+}
+
+/// **La page d'instructions gardée ne survit pas à un vidage du tampon.** Le
+/// noyau change l'entrée de la page où il s'exécute, recharge CR3, et
+/// l'instruction suivante vient de la nouvelle page physique — pas de
+/// l'ancienne, que la boucle gardait hors du tampon.
+#[test]
+fn the_current_code_page_is_forgotten_when_translations_are_flushed() {
+    let mut machine = nouvelle(&[]);
+    // 0xa000 : nop ; mov %rax,%cr3 ; mov $1,%bl
+    poser(&mut machine, 0xA000, &[0x90, 0x0F, 0x22, 0xD8, 0xB3, 0x01]);
+    // La même place dans une autre page physique : mov $2,%bl.
+    poser(&mut machine, 0x6004, &[0xB3, 0x02]);
+    machine.cpu.rip = 0xA000;
+    machine.cpu.regs[0] = 0x2000;
+    machine.tourner(1).expect("nop");
+    ecrire(&mut machine, 0x5000 + 0xA * 8, 0x6000 | 0x7);
+    machine.tourner(2).expect("mov cr3, puis ce qui le suit");
+    assert_eq!(machine.cpu.rip, 0xA006);
+    assert_eq!(
+        machine.cpu.regs[3] & 0xFF,
+        2,
+        "l'instruction vient de la nouvelle page"
+    );
+}
+
+/// **La page d'instructions gardée l'est pour un anneau.** Le noyau rend la
+/// main à un programme par `iretq`, à une adresse de la page où il s'exécute
+/// lui-même : le programme n'y a pas droit, et la lecture de son instruction
+/// faute — elle ne passe pas sur la traduction que le noyau venait d'obtenir.
+#[test]
+fn the_current_code_page_is_kept_for_one_ring_only() {
+    let mut machine = preparee(&[]);
+    // La page 0xa000, sans le bit utilisateur.
+    ecrire(&mut machine, 0x5000 + 0xA * 8, 0xA000 | 0x3);
+    // iretq ; nop
+    poser(&mut machine, 0xA000, &[0x48, 0xCF, 0x90]);
+    charger_la_tache(&mut machine, SOMMET);
+    let cadre = 0x6800;
+    for (rang, valeur) in [0xA002, 0x33, 2, 0x6F00, 0x2B].into_iter().enumerate() {
+        ecrire(&mut machine, cadre + 8 * rang as u64, valeur);
+    }
+    machine.cpu.regs[4] = cadre;
+    machine.cpu.rip = 0xA000;
+    machine.tourner(2).expect("iretq, puis la faute livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "le programme n'exécute rien");
+    assert_eq!(machine.cpu.control[2], 0xA002);
+    assert_eq!(
+        lire(&machine, machine.cpu.regs[4]),
+        1 | (1 << 2) | (1 << 4),
+        "présente, depuis l'anneau trois, en lecture d'instruction"
+    );
+    assert_eq!(machine.retirees, 1, "seul l'iretq est retiré");
+}
+
+// ---- Les adresses qui ne sont pas canoniques ----
+
+/// **Une adresse dont les bits 63 à 47 ne sont pas tous égaux n'est pas
+/// traduite comme son alias** : les tables n'en lisent que quarante-huit, et
+/// 0x8000_0000_0000_6000 retombait sur la page 0x6000. Le silicium lève
+/// `#GP(0)` ; une adresse canonique dont la page manque reste une faute de
+/// page.
+#[test]
+fn a_non_canonical_address_is_a_general_protection_fault() {
+    let acces: [(&str, &[u8]); 2] = [
+        ("mov (%rbx),%al", &[0x8A, 0x03]),
+        ("mov %al,(%rbx)", &[0x88, 0x03]),
+    ];
+    for (nom, code) in acces {
+        for adresse in [
+            0x8000_0000_0000_6000u64,
+            0x0000_8000_0000_6000,
+            0xFFFF_7FFF_FFFF_6000,
+        ] {
+            let mut machine = nouvelle(code);
+            porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+            porte(&mut machine, 14, GESTIONNAIRE + 0x10, 0x8E);
+            ecrire(&mut machine, 0x6000, 0x1111_1111_1111_1111);
+            machine.cpu.regs[0] = 0x22;
+            machine.cpu.regs[3] = adresse;
+            machine.tourner(1).expect("livrée");
+            assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} à {adresse:#x} : #GP");
+            assert_eq!(lire(&machine, machine.cpu.regs[4]), 0, "{nom}");
+            assert_eq!(lire(&machine, machine.cpu.regs[4] + 8), 0x1000, "{nom}");
+            assert_eq!(machine.cpu.regs[0], 0x22, "{nom} : rien de lu");
+            assert_eq!(
+                lire(&machine, 0x6000),
+                0x1111_1111_1111_1111,
+                "{nom} : rien d'écrit"
+            );
+            assert_eq!(machine.cpu.control[2], 0, "{nom} : CR2 n'est pas touché");
+        }
+    }
+    // La moitié haute canonique se marche comme le reste : sa page manque.
+    let mut haute = nouvelle(&[0x8A, 0x03]);
+    porte(&mut haute, 13, GESTIONNAIRE, 0x8E);
+    porte(&mut haute, 14, GESTIONNAIRE + 0x10, 0x8E);
+    haute.cpu.regs[3] = 0xFFFF_8000_0000_6000;
+    haute.tourner(1).expect("livrée");
+    assert_eq!(haute.cpu.rip, GESTIONNAIRE + 0x10, "une faute de page");
+    assert_eq!(haute.cpu.control[2], 0xFFFF_8000_0000_6000);
+    // Et un saut vers une adresse qui ne l'est pas.
+    let mut saut = nouvelle(&[0xFF, 0xE3]); // jmp *%rbx
+    porte(&mut saut, 13, GESTIONNAIRE, 0x8E);
+    saut.cpu.regs[3] = 0x8000_0000_0000_1000;
+    saut.tourner(2).expect("le saut, puis la faute livrée");
+    assert_eq!(saut.cpu.rip, GESTIONNAIRE);
+    assert_eq!(lire(&saut, saut.cpu.regs[4]), 0);
+}
+
+// ---- Le contrat avec les autres périphériques ----
+
+/// Ce qu'une carte branchée derrière la machine a vu passer.
+#[derive(Default)]
+struct Vu {
+    lus: Vec<(u16, u8)>,
+    ecrits: Vec<(u16, u8, u32)>,
+    tics: u64,
+    battements: u64,
+}
+
+/// Une carte de test : elle répond aux ports 0x64 et 0xcfc, lève la ligne
+/// cinq quand le temps atteint `leve_a` battements, et dit par `reveil` si
+/// quelque chose peut encore arriver.
+struct Carte {
+    vu: Rc<RefCell<Vu>>,
+    reveil: bool,
+    leve_a: u64,
+}
+
+impl Peripheriques for Carte {
+    fn port_lire(&mut self, port: u16, largeur: u8, _: &mut [u8]) -> Option<u32> {
+        self.vu.borrow_mut().lus.push((port, largeur));
+        match port {
+            0x64 => Some(0x1234_561C),
+            0xCFC => Some(0xDEAD_BEEF),
+            _ => None,
+        }
+    }
+
+    fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut [u8]) -> bool {
+        self.vu.borrow_mut().ecrits.push((port, largeur, valeur));
+        if port == 0x64 {
+            // Un périphérique écrit dans la RAM de l'invité : c'est bien elle
+            // qu'on lui passe.
+            ram[0xA100] = valeur as u8;
+        }
+        matches!(port, 0x64 | 0xCFC)
+    }
+
+    fn lignes(&self) -> u16 {
+        u16::from(self.vu.borrow().tics >= self.leve_a) << 5
+    }
+
+    fn reveil(&self) -> bool {
+        self.reveil
+    }
+
+    fn battre(&mut self, tics: u64) {
+        let mut vu = self.vu.borrow_mut();
+        vu.tics = tics;
+        vu.battements += 1;
+    }
+}
+
+/// **Les ports que la carte héritée ne sert pas vont aux autres
+/// périphériques**, avec la largeur de l'accès, et leur réponse revient dans
+/// le registre à cette largeur. Ceux que la carte héritée sert ne leur sont
+/// pas proposés ; ceux où personne ne répond rendent des uns.
+#[test]
+fn the_other_devices_answer_the_ports_the_legacy_board_does_not() {
+    // in $0x64,%al ; in (%dx),%eax ; out %al,$0x64 ; out %eax,(%dx) ;
+    // in $0x21,%al ; in $0x99,%al ; out %al,$0x99
+    let mut machine = nouvelle(&[
+        0xE4, 0x64, 0xED, 0xE6, 0x64, 0xEF, 0xE4, 0x21, 0xE4, 0x99, 0xE6, 0x99,
+    ]);
+    let vu = Rc::new(RefCell::new(Vu::default()));
+    machine.peripheriques = Some(Box::new(Carte {
+        vu: Rc::clone(&vu),
+        reveil: false,
+        leve_a: u64::MAX,
+    }));
+    machine.herites.maitre.masque = 0x5A;
+    machine.cpu.regs[0] = 0x1122_3344_5566_7788;
+    machine.cpu.regs[2] = 0xCFC;
+    machine.tourner(1).expect("in");
+    assert_eq!(
+        machine.cpu.regs[0], 0x1122_3344_5566_771C,
+        "un octet de la réponse, et le reste du registre intact"
+    );
+    machine.tourner(1).expect("in");
+    assert_eq!(machine.cpu.regs[0], 0xDEAD_BEEF, "trente-deux bits");
+    machine.tourner(2).expect("les deux out");
+    assert_eq!(
+        vu.borrow().ecrits,
+        [(0x64, 1, 0xEF), (0xCFC, 4, 0xDEAD_BEEF)]
+    );
+    assert_eq!(machine.cpu.memory.bytes[0xA100], 0xEF, "la RAM de l'invité");
+    machine.tourner(1).expect("in");
+    assert_eq!(machine.cpu.regs[0] & 0xFF, 0x5A, "le masque du 8259");
+    machine.tourner(2).expect("le port muet");
+    assert_eq!(machine.cpu.regs[0] & 0xFF, 0xFF);
+    assert_eq!(
+        vu.borrow().lus,
+        [(0x64, 1), (0xCFC, 4), (0x99, 1)],
+        "le port 0x21 n'a pas été proposé"
+    );
+    assert_eq!(machine.ports_muets.get(&0x99), Some(&2));
+    assert_eq!(machine.ports_muets.len(), 1);
+}
+
+/// **`reveil` tient éveillée une machine arrêtée, et `battre` lui donne
+/// l'heure** : sans horloge ni port série armés, un `hlt` attend la ligne
+/// qu'un autre périphérique lèvera plus tard — un disque qui finit, un
+/// clavier. Sans `reveil`, plus rien ne peut arriver, et la machine le dit.
+#[test]
+fn the_other_devices_keep_a_halted_machine_waiting_and_are_told_the_time() {
+    let prete = |reveil: bool| {
+        // sti ; hlt
+        let mut machine = nouvelle(&[0xFB, 0xF4]);
+        machine.systeme.idt.limite = 0xFFF;
+        porte(&mut machine, 0x35, GESTIONNAIRE, 0x8E);
+        machine.herites.maitre.masque = 0xDF;
+        machine.herites.maitre.base_des_vecteurs = 0x30;
+        machine.instructions_par_battement = 10;
+        let vu = Rc::new(RefCell::new(Vu::default()));
+        machine.peripheriques = Some(Box::new(Carte {
+            vu: Rc::clone(&vu),
+            reveil,
+            leve_a: 3,
+        }));
+        (machine, vu)
+    };
+    let (mut machine, vu) = prete(true);
+    machine.tourner(1000).expect("sans faute");
+    assert_eq!(
+        machine.cpu.rip,
+        GESTIONNAIRE + 1,
+        "la ligne cinq a réveillé le hlt"
+    );
+    assert_eq!(machine.herites.maitre.service, 1 << 5);
+    assert_eq!(vu.borrow().tics, 3, "l'heure du troisième battement");
+    assert_eq!(machine.retirees + machine.attente, 30 + 1);
+    assert!(vu.borrow().battements > 3);
+
+    // La même carte, qui ne promet rien : la machine s'éteint sur son hlt.
+    let (mut eteinte, vu) = prete(false);
+    assert_eq!(eteinte.tourner(1000), Ok(2));
+    assert_eq!(eteinte.tourner(1000), Ok(0), "plus rien ne peut arriver");
+    assert_eq!(eteinte.cpu.rip, 0x1002);
+    assert_eq!(
+        vu.borrow().battements,
+        0,
+        "personne n'a regardé le matériel"
     );
 }

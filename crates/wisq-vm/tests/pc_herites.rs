@@ -441,6 +441,9 @@ fn a_line_of_the_second_controller_comes_through_the_cascade() {
     cartes.livree(candidat);
     assert_eq!(cartes.second.service, 1 << 4);
     assert_eq!(cartes.maitre.service, 1 << 2);
+    // Livrée, la demande est passée en service : dans les deux contrôleurs.
+    assert_eq!(cartes.second.demande, 0);
+    assert_eq!(cartes.maitre.demande & 4, 0);
     // La ligne retombe : à niveau, la demande suit la condition.
     cartes.lever(0, 0);
     assert_eq!(cartes.second.demande, 0);
@@ -643,4 +646,201 @@ fn a_port_nobody_answers_reads_as_ones_and_is_remembered() {
     assert_eq!(machine.cpu.regs[0], 0x1122_3344_5566_FFFF);
     assert_eq!(machine.ports_muets.get(&0x64), Some(&2));
     assert_eq!(machine.ports_muets.get(&0x80), Some(&1));
+}
+
+// ---- Ce que le pilote lit en retour, et que rien ne tenait ----
+
+/// **OCW3 choisit ce que le port de commande rend** : 0x0B le registre de
+/// service, 0x0A celui de demande. Linux lit le premier pour reconnaître une
+/// interruption parasite (`i8259A_irq_real`).
+#[test]
+fn the_third_command_word_chooses_which_register_is_read() {
+    let mut cartes = Herites::default();
+    cartes.maitre.demande = 0x02;
+    cartes.maitre.service = 0x10;
+    cartes.second.demande = 0x40;
+    cartes.second.service = 0x08;
+    assert_eq!(cartes.port_lire(0x20, 0), Some(0x02), "la demande, d'abord");
+    cartes.port_ecrire(0x20, 0x0B, 0);
+    assert_eq!(cartes.port_lire(0x20, 0), Some(0x10), "le service");
+    assert_eq!(
+        cartes.port_lire(0xA0, 0),
+        Some(0x40),
+        "le second n'a rien reçu"
+    );
+    cartes.port_ecrire(0xA0, 0x0B, 0);
+    assert_eq!(cartes.port_lire(0xA0, 0), Some(0x08));
+    cartes.port_ecrire(0x20, 0x0A, 0);
+    assert_eq!(
+        cartes.port_lire(0x20, 0),
+        Some(0x02),
+        "et retour à la demande"
+    );
+    assert_eq!((cartes.maitre.demande, cartes.maitre.service), (0x02, 0x10));
+}
+
+/// Le second mot d'initialisation ne donne que les cinq bits hauts du
+/// vecteur : les trois bas sont le numéro de la ligne.
+#[test]
+fn the_vector_base_keeps_only_its_five_high_bits() {
+    let mut cartes = Herites::default();
+    for octet in [0x11, 0x27, 0x04, 0x01] {
+        cartes.port_ecrire(if octet == 0x11 { 0x20 } else { 0x21 }, octet, 0);
+    }
+    assert_eq!(cartes.maitre.base_des_vecteurs, 0x20);
+    cartes.maitre.masque = 0xFD;
+    cartes.lever(0, 1 << 1);
+    assert_eq!(cartes.candidat().map(|c| c.vecteur), Some(0x21));
+}
+
+/// Les registres du 16550 n'ont pas tous huit bits : quatre pour
+/// l'autorisation, cinq pour le modem. La sonde du pilote écrit des uns
+/// partout et compte ceux qui reviennent.
+#[test]
+fn the_serial_registers_keep_only_the_bits_the_chip_has() {
+    let mut cartes = Herites::default();
+    cartes.port_ecrire(SERIE + 1, 0xFF, 0);
+    assert_eq!(cartes.port_lire(SERIE + 1, 0), Some(0x0F));
+    cartes.port_ecrire(SERIE + 4, 0xEF, 0);
+    assert_eq!(cartes.port_lire(SERIE + 4, 0), Some(0x0F));
+    cartes.port_ecrire(SERIE + 4, 0xFF, 0);
+    assert_eq!(cartes.port_lire(SERIE + 4, 0), Some(0x1F));
+}
+
+/// **Autoriser l'émission la fait demander aussitôt** : le transmetteur est
+/// vide, et c'est par cette première interruption que le pilote commence à
+/// vider son tampon — sans elle, un `write` de l'espace utilisateur ne part
+/// jamais. Mais seulement au passage de zéro à un : la réécrire une fois
+/// acquittée ne la relève pas.
+#[test]
+fn enabling_the_transmit_interrupt_raises_it_once() {
+    let mut cartes = Herites::default();
+    cartes.maitre.masque = 0xEF;
+    cartes.maitre.base_des_vecteurs = 0x30;
+    cartes.lever(0, 0);
+    assert_eq!(cartes.candidat(), None, "rien n'est autorisé");
+    cartes.port_ecrire(SERIE + 1, 0x02, 0);
+    cartes.lever(0, 0);
+    assert_eq!(
+        cartes.candidat().map(|c| c.vecteur),
+        Some(0x34),
+        "aucun octet n'est parti, et l'émission demande quand même"
+    );
+    assert_eq!(cartes.port_lire(SERIE + 2, 0), Some(0x02), "acquittée");
+    cartes.port_ecrire(SERIE + 1, 0x02, 0);
+    cartes.lever(0, 0);
+    assert_eq!(cartes.candidat(), None, "déjà autorisée : rien de neuf");
+    // Éteinte puis rallumée, elle redemande.
+    cartes.port_ecrire(SERIE + 1, 0x00, 0);
+    cartes.port_ecrire(SERIE + 1, 0x02, 0);
+    cartes.lever(0, 0);
+    assert!(cartes.candidat().is_some());
+}
+
+/// Un rechargement du canal zéro repart de maintenant : les échéances déjà
+/// comptées ne retardent pas la prochaine.
+#[test]
+fn reloading_the_timer_forgets_the_beats_already_counted() {
+    let mut cartes = Herites::default();
+    cartes.maitre.masque = 0xFE;
+    for (port, octet) in [(0x43, 0x34), (0x40, 100), (0x40, 0)] {
+        cartes.port_ecrire(port, octet, 0);
+    }
+    cartes.lever(250, 0);
+    assert_eq!(cartes.minuterie.levees, 2);
+    assert_eq!(cartes.minuterie.prochaine(), Some(300));
+    cartes.maitre.demande = 0;
+    for (port, octet) in [(0x40, 100), (0x40, 0)] {
+        cartes.port_ecrire(port, octet, 1000);
+    }
+    assert_eq!(
+        cartes.minuterie.prochaine(),
+        Some(1100),
+        "une période après le rechargement, pas trois"
+    );
+    cartes.lever(1099, 0);
+    assert_eq!(cartes.maitre.demande & 1, 0);
+    cartes.lever(1100, 0);
+    assert_eq!(cartes.maitre.demande & 1, 1);
+}
+
+/// Le verrou ne tient que le temps d'une lecture en deux octets : la
+/// suivante suit de nouveau le temps.
+#[test]
+fn the_latch_is_released_once_both_halves_are_read() {
+    let mut cartes = Herites::default();
+    cartes.minuterie.rechargement = 0x3000;
+    cartes.port_ecrire(0x43, 0x00, 0x10);
+    assert_eq!(cartes.port_lire(0x40, 0x500), Some(0xF0));
+    assert_eq!(cartes.port_lire(0x40, 0x500), Some(0x2F));
+    assert_eq!(
+        cartes.port_lire(0x40, 0x520),
+        Some(0xE0),
+        "0x3000 - 0x520 = 0x2ae0 : le compte du moment, plus celui du verrou"
+    );
+    assert_eq!(cartes.port_lire(0x40, 0x520), Some(0x2A));
+}
+
+/// **Une commande adressée au canal un ne touche pas le canal zéro.** Le
+/// canal un rafraîchissait la mémoire d'un PC ; personne ne l'écoute ici,
+/// mais sa commande ne doit ni couper une écriture en deux octets du canal
+/// zéro, ni changer son mode.
+#[test]
+fn a_command_for_the_first_channel_leaves_the_clock_alone() {
+    let mut cartes = Herites::default();
+    cartes.port_ecrire(0x43, 0x34, 0); // canal zéro, deux octets, périodique
+    cartes.port_ecrire(0x40, 0x10, 0);
+    // Canal un, deux octets, mode zéro : pris pour le canal zéro, il en
+    // ferait un coup unique et remettrait l'écriture à son premier octet.
+    assert!(
+        cartes.port_ecrire(0x43, 0x70, 0),
+        "le port répond quand même"
+    );
+    cartes.port_ecrire(0x40, 0x20, 0);
+    assert_eq!(cartes.minuterie.rechargement, 0x2010);
+    assert!(!cartes.minuterie.coup_unique);
+}
+
+/// Le port 0x61, hors du bit 5 : le bit 4 bascule à chaque battement — un
+/// noyau l'attend pour mesurer un délai —, et ouvrir la porte du canal deux
+/// le fait repartir de là.
+#[test]
+fn port_sixty_one_toggles_its_refresh_bit_and_the_gate_restarts_the_count() {
+    let mut cartes = Herites::default();
+    assert_eq!(cartes.port_lire(0x61, 6).unwrap() & 0x10, 0);
+    assert_eq!(cartes.port_lire(0x61, 7).unwrap() & 0x10, 0x10);
+    // Le compte est écrit porte fermée, puis la porte s'ouvre bien plus
+    // tard : c'est de l'ouverture que les cinquante battements se comptent.
+    cartes.port_ecrire(0x43, 0xB0, 1000);
+    cartes.port_ecrire(0x42, 50, 1000);
+    cartes.port_ecrire(0x42, 0, 1000);
+    cartes.port_ecrire(0x61, 0x01, 5000);
+    assert_eq!(cartes.port_lire(0x61, 5020).unwrap() & 0x20, 0);
+    assert_eq!(cartes.port_lire(0x61, 5050).unwrap() & 0x20, 0x20);
+    // La réécrire ouverte ne relance rien ; la fermer puis la rouvrir, si.
+    cartes.port_ecrire(0x61, 0x01, 6000);
+    assert_eq!(cartes.port_lire(0x61, 6001).unwrap() & 0x20, 0x20);
+    cartes.port_ecrire(0x61, 0x00, 7000);
+    cartes.port_ecrire(0x61, 0x01, 8000);
+    assert_eq!(cartes.port_lire(0x61, 8020).unwrap() & 0x20, 0);
+}
+
+/// **L'index de la CMOS a sept bits** : le huitième, sur ce port, coupe les
+/// interruptions non masquables, et Linux l'écrit levé. Pris pour un index,
+/// il sortait de la mémoire de la puce — et arrêtait l'hôte.
+#[test]
+fn the_cmos_index_ignores_the_nmi_bit() {
+    let mut cartes = Herites::default();
+    cartes.port_ecrire(0x70, 0x8F, 0);
+    cartes.port_ecrire(0x71, 0x5A, 0);
+    assert_eq!(cartes.cmos.index, 0x0F);
+    assert_eq!(cartes.port_lire(0x71, 0), Some(0x5A));
+    cartes.port_ecrire(0x70, 0x0F, 0);
+    assert_eq!(cartes.port_lire(0x71, 0), Some(0x5A), "le même octet");
+    cartes.port_ecrire(0x70, 0xFF, 0);
+    assert_eq!(
+        cartes.port_lire(0x71, 0),
+        Some(0),
+        "le dernier, jamais écrit"
+    );
 }

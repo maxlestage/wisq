@@ -211,6 +211,88 @@ fn what_is_not_a_kernel_is_refused() {
     assert!(machine.placement().is_none());
 }
 
+// ---- L'outil `wisq-pc`, lancé pour de bon ----
+
+/// Un fichier de travail, dans le dossier que Cargo donne aux tests.
+fn fichier(nom: &str, octets: &[u8]) -> String {
+    let chemin = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(nom);
+    std::fs::write(&chemin, octets).expect("le dossier de travail des tests s'écrit");
+    chemin.to_str().expect("un chemin lisible").to_string()
+}
+
+/// Lancer `wisq-pc`, et rendre son code de sortie, sa sortie et sa sortie
+/// d'erreur.
+fn wisq_pc(arguments: &[&str]) -> (Option<i32>, String, String) {
+    let rendu = std::process::Command::new(env!("CARGO_BIN_EXE_wisq-pc"))
+        .args(arguments)
+        .output()
+        .expect("wisq-pc se lance");
+    (
+        rendu.status.code(),
+        String::from_utf8_lossy(&rendu.stdout).into_owned(),
+        String::from_utf8_lossy(&rendu.stderr).into_owned(),
+    )
+}
+
+/// L'outil démarre le noyau factice : le port série sort sur la sortie
+/// standard, et la fin est dite sur la sortie d'erreur.
+#[test]
+fn the_tool_boots_the_tiny_kernel_and_says_how_it_ended() {
+    let noyau = fichier("outil-noyau.bin", &image());
+    let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau, "--cmdline", "console=ttyS0 a=b"]);
+    assert_eq!(code, Some(0), "{erreurs}");
+    assert!(
+        sortie.starts_with("wisq-noyau-factice\nconsole=ttyS0 a=b\n.....\nFIN\n"),
+        "{sortie:?}"
+    );
+    assert!(erreurs.contains("fin : éteinte"), "{erreurs}");
+    assert!(erreurs.contains("instructions retirées : "), "{erreurs}");
+    assert!(
+        !erreurs.contains("--ram"),
+        "512 Mio : rien à dire : {erreurs}"
+    );
+}
+
+/// **Un noyau coupé est nommé comme tel**, et l'outil sort avec le code 1 sans
+/// rien démarrer.
+#[test]
+fn the_tool_names_a_truncated_kernel() {
+    let entier = image();
+    let noyau = fichier("outil-coupe.bin", &entier[..entier.len() - 100]);
+    let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau]);
+    assert_eq!(code, Some(1));
+    assert!(
+        erreurs.contains("le fichier est plus court que son en-tête ne l'annonce"),
+        "{erreurs}"
+    );
+    assert_eq!(sortie, "", "rien n'a démarré");
+}
+
+/// **`--ram` ne déborde pas en silence.** Deux puissance quarante-quatre
+/// mébioctets font zéro octet après un décalage de vingt bits, et la machine
+/// démarrait sur son plancher sans rien dire : c'est un refus. Sous le
+/// plancher, elle démarre — et le dit.
+#[test]
+fn the_tool_refuses_a_ram_size_it_cannot_give() {
+    let noyau = fichier("outil-ram.bin", &image());
+    for demande in ["17592186044416", "65537", "18446744073709551615"] {
+        let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau, "--ram", demande]);
+        assert_eq!(code, Some(2), "--ram {demande} : {erreurs}");
+        assert!(
+            erreurs.contains(&format!("--ram {demande} : au plus 65536 Mio")),
+            "{erreurs}"
+        );
+        assert_eq!(sortie, "", "--ram {demande} : rien n'a démarré");
+    }
+    let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau, "--ram", "4"]);
+    assert_eq!(code, Some(0), "{erreurs}");
+    assert!(sortie.contains("FIN"), "{sortie:?}");
+    assert!(
+        erreurs.contains("--ram 4 : sous le plancher, la machine prend 128 Mio"),
+        "{erreurs}"
+    );
+}
+
 /// **Un vrai noyau, quand on en désigne un.**
 ///
 ///     WISQ_PC_KERNEL=vmlinuz-virt WISQ_PC_INITRD=initramfs.cpio \

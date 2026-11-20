@@ -21,7 +21,8 @@ use super::chargeur::{self, Ecran, Placement, Refus};
 use super::herites::{Herites, INSTRUCTIONS_PAR_BATTEMENT};
 use super::memoire;
 use super::systeme::{
-    self, cpuid, drapeaux_permis, faute_de_page, Exception, Livraison, Systeme, EFER_LME, IOPL,
+    self, cpuid, drapeaux_permis, faute_du_dernier_acces, Exception, Livraison, Systeme, EFER_LME,
+    IOPL,
 };
 
 /// **D'autres périphériques, derrière les ports que la carte héritée ne sert
@@ -203,9 +204,15 @@ pub struct Machine {
     /// Les ports où personne ne répond, et combien de fois on y a frappé :
     /// pour qui cherche pourquoi un pilote ne trouve pas son périphérique.
     pub ports_muets: BTreeMap<u16, u64>,
-    /// `sti` retarde les interruptions d'une instruction : c'est l'adresse de
-    /// celle-là. Sans ce retard, une interruption passerait entre `sti` et
-    /// `hlt`, et le noyau s'endormirait sur un réveil déjà consommé.
+    /// **L'ombre de `sti`** (et de `mov ss`) : les interruptions attendent une
+    /// instruction de plus. Sans ce retard, une interruption passerait entre
+    /// `sti` et `hlt`, et le noyau s'endormirait sur un réveil déjà consommé.
+    ///
+    /// C'est le compte d'instructions retirées **juste après** celle qui pose
+    /// l'ombre : tant que `retirees` vaut encore cela, l'instruction couverte
+    /// n'a pas été exécutée. Une adresse ne le dirait pas — une boucle
+    /// d'attente revient sur la sienne (`sti ; jmp .`), et l'ombre ne se
+    /// lèverait jamais.
     ombre: Option<u64>,
     cache: Vec<Case>,
     /// La page d'instructions courante : son étiquette (la page virtuelle,
@@ -364,20 +371,18 @@ impl Machine {
         if !self.cpu.flags.interrupts_enabled() {
             return Ok(());
         }
-        // L'ombre de `sti` ne couvre qu'une instruction : celle où RIP se
-        // trouve encore. Ailleurs, elle est passée.
-        if let Some(ombre) = self.ombre.take() {
-            if ombre == self.cpu.rip {
-                self.ombre = Some(ombre);
-                return Ok(());
-            }
+        // L'ombre de `sti` ne couvre qu'une instruction : dès qu'une de plus
+        // est retirée, elle est passée.
+        if self.ombre == Some(self.retirees) {
+            return Ok(());
         }
+        self.ombre = None;
         let Some(candidat) = self.herites.candidat() else {
             return Ok(());
         };
         match self
             .systeme
-            .entrer(&mut self.cpu, candidat.vecteur, 0, false)
+            .entrer(&mut self.cpu, candidat.vecteur, None, false)
         {
             Ok(()) => {
                 // La demande n'est retirée **que** si elle a été livrée.
@@ -470,6 +475,10 @@ impl Machine {
         if let Exception::FauteDePage { adresse, .. } = exception {
             self.cpu.control[2] = adresse;
         }
+        // L'instruction que l'ombre de `sti` couvrait a fauté : l'ombre ne
+        // passe pas au gestionnaire, dont la première instruction n'est pas
+        // celle qui suivait `sti`.
+        self.ombre = None;
         match self
             .systeme
             .entrer(&mut self.cpu, exception.vecteur(), exception.code(), false)
@@ -523,8 +532,17 @@ impl Machine {
         }
     }
 
-    /// Ce que le dernier accès refusé de `cpu` veut dire : une faute de page à
-    /// livrer, ou — hors de la RAM — un arrêt nommé.
+    /// Ce que le dernier accès refusé de `cpu` veut dire : une faute à livrer
+    /// (de page, ou `#GP(0)` pour une adresse qui n'est pas canonique), ou —
+    /// hors de la RAM — un arrêt nommé.
+    ///
+    /// **Hors de la boucle chaude** : appelée de `pas`, elle y était recopiée.
+    /// Avec les corrections qui l'ont fait grossir (la `#GP` des adresses
+    /// non canoniques), le démarrage d'Alpine prenait 9 % de plus (médianes
+    /// de cinq courses alternées : 47,4 s contre 43,4 s) ; sortie de la
+    /// boucle, 44,3 s.
+    #[cold]
+    #[inline(never)]
     fn faute_d_acces(&mut self) -> Evenement {
         match self.cpu.unmapped {
             Some(Unmapped::Outside { address }) | Some(Unmapped::TableOutside { address, .. }) => {
@@ -535,7 +553,7 @@ impl Machine {
                     self.cpu.rip
                 ))
             }
-            _ => Evenement::Exception(faute_de_page(&mut self.cpu)),
+            _ => Evenement::Exception(faute_du_dernier_acces(&mut self.cpu)),
         }
     }
 
@@ -808,7 +826,10 @@ impl Machine {
         if let Some(autres) = self.peripheriques.as_mut() {
             if let Some(valeur) = autres.port_lire(port, largeur as u8, &mut self.cpu.memory.bytes)
             {
-                return u64::from(valeur) & largeur.mask();
+                // Pas de masque ici : `in` range la valeur par `Cpu::set`, à
+                // la largeur de l'instruction, et les bits en trop d'un
+                // périphérique n'atteignent jamais le registre.
+                return u64::from(valeur);
             }
         }
         // Personne : le bus rend des uns, comme sur un vrai PC.
@@ -888,15 +909,7 @@ impl Machine {
                 if largeur != Width::Qword {
                     return Err(self.refuser("un retour lointain hors du mode 64 bits"));
                 }
-                // Le décalage **puis** le sélecteur, lus avant que rien ne
-                // bouge.
-                let sommet = self.cpu.regs[4];
-                let cible = self.lire(sommet, Width::Qword)?;
-                let selecteur = self.lire(sommet.wrapping_add(8), Width::Qword)?;
-                self.cpu.regs[4] = sommet.wrapping_add(16);
-                self.cpu.segments[1] = selecteur as u16;
-                self.cpu.rip = cible;
-                self.cpu.jumped = true;
+                self.systeme.retour_lointain(&mut self.cpu)?;
             }
             Op::InterruptReturn => {
                 if largeur != Width::Qword {
@@ -910,7 +923,7 @@ impl Machine {
                 let vecteur = instruction.imm as u8;
                 let ici = self.cpu.rip;
                 self.cpu.rip = ici.wrapping_add(instruction.length as u64);
-                match self.systeme.entrer(&mut self.cpu, vecteur, 0, true) {
+                match self.systeme.entrer(&mut self.cpu, vecteur, None, true) {
                     Ok(()) => self.cpu.jumped = true,
                     Err(pourquoi) => {
                         self.cpu.rip = ici;
@@ -1011,7 +1024,7 @@ impl Machine {
                 }
                 // Charger SS retarde les interruptions d'une instruction.
                 if segment == Segment::Ss {
-                    self.ombre = Some(self.cpu.rip.wrapping_add(instruction.length as u64));
+                    self.ombre = Some(self.retirees.wrapping_add(1));
                 }
             }
             Op::StoreSegment { segment } => {
@@ -1026,8 +1039,10 @@ impl Machine {
                 self.exiger_les_entrees_sorties()?;
                 let avant = self.cpu.flags.read();
                 if allume {
+                    // Seulement quand `sti` **lève** le drapeau : s'il l'était
+                    // déjà, rien n'attendait derrière lui.
                     if avant & IF == 0 {
-                        self.ombre = Some(self.cpu.rip.wrapping_add(instruction.length as u64));
+                        self.ombre = Some(self.retirees.wrapping_add(1));
                     }
                     self.cpu.flags.write(avant | IF);
                 } else {

@@ -427,3 +427,96 @@ fn the_x87_words_follow_the_manual_where_the_corpus_is_silent() {
     assert_eq!(Cpu::x87_from_integer(i64::MIN), (1 << 63, 0xc03e));
     assert_eq!(Cpu::x87_from_integer(i64::MAX), (u64::MAX << 1, 0x403d));
 }
+
+/// **`fild` étend le signe de ce qu'il lit.** Le corpus ne charge que des
+/// octets de 0x10 à 0x4f : aucun entier de seize ou de trente-deux bits n'y a
+/// son bit de tête levé, et un `fild` qui prendrait 0xffff pour 65 535 passait.
+///
+/// Les valeurs attendues sont celles de l'arithmétique — un registre du x87
+/// est une mantisse de soixante-quatre bits au bit de tête explicite, et un
+/// exposant biaisé de 16 383 sous le signe — et, sur un hôte x86-64, le
+/// silicium est interrogé pour chacune.
+#[test]
+fn fild_extends_the_sign_of_what_it_reads() {
+    // (octets de ModRM derrière l'opcode, largeur, octets lus, ST(0) attendu)
+    let cases: [(&[u8], Width, u64, Register); 9] = [
+        // -1, aux trois largeurs : 1 × 2^0, négatif.
+        (&[0xdf, 0x06], Width::Word, 0xFFFF, (1 << 63, 0xBFFF)),
+        (&[0xdb, 0x06], Width::Dword, 0xFFFF_FFFF, (1 << 63, 0xBFFF)),
+        (&[0xdf, 0x2e], Width::Qword, u64::MAX, (1 << 63, 0xBFFF)),
+        // Le plus petit de chaque largeur : 2^15, 2^31, 2^63, négatifs.
+        (&[0xdf, 0x06], Width::Word, 0x8000, (1 << 63, 0xC00E)),
+        (&[0xdb, 0x06], Width::Dword, 0x8000_0000, (1 << 63, 0xC01E)),
+        (&[0xdf, 0x2e], Width::Qword, 1 << 63, (1 << 63, 0xC03E)),
+        // -3 sur seize bits : 1,1 en binaire × 2^1.
+        (&[0xdf, 0x06], Width::Word, 0xFFFD, (0xC << 60, 0xC000)),
+        // Et le plus grand positif reste positif : 2^15 - 1, 2^31 - 1.
+        (&[0xdf, 0x06], Width::Word, 0x7FFF, (0xFFFE << 48, 0x400D)),
+        (
+            &[0xdb, 0x06],
+            Width::Dword,
+            0x7FFF_FFFF,
+            (0xFFFF_FFFE << 32, 0x401D),
+        ),
+    ];
+    for (code, width, raw, wanted) in cases {
+        let decoded = decode_extended(code).expect("fild (%rsi)");
+        assert_eq!(decoded.width, width);
+        let mut cpu = x87_start((0, 0), (0, 0));
+        // Les octets au-delà de la largeur sont à un : ils ne doivent pas
+        // être lus.
+        let mut window = [0xFFu8; 8];
+        window[..width as usize].copy_from_slice(&raw.to_le_bytes()[..width as usize]);
+        cpu.memory.bytes[0x1000..0x1008].copy_from_slice(&window);
+        cpu.execute_extended(&decoded).expect("sans faute");
+        let top = cpu.x87_top();
+        assert_eq!(top, 5, "empilé sous le sommet de départ");
+        assert_eq!(
+            cpu.x87[top], wanted,
+            "fild {width:?} de {raw:#x} : {:x?}",
+            cpu.x87[top]
+        );
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            silicon_fild(&window, width),
+            wanted,
+            "fild {width:?} de {raw:#x} : ce que rend le processeur de l'hôte"
+        );
+    }
+}
+
+/// `fild` puis `fstp` sur le processeur de l'hôte : les dix octets du
+/// registre, tels que le silicium les range.
+#[cfg(target_arch = "x86_64")]
+fn silicon_fild(window: &[u8; 8], width: Width) -> Register {
+    use std::arch::asm;
+    let mut stored = [0u8; 16];
+    macro_rules! load {
+        ($fild:literal) => {
+            // SAFETY: les deux pointeurs désignent des tampons vivants et
+            // assez longs (huit octets lus au plus, dix écrits) ; la pile du
+            // x87 est vide à l'entrée — la convention d'appel l'exige — et
+            // `fstp` la rend vide.
+            unsafe {
+                asm!(
+                    $fild,
+                    "fstp tbyte ptr [{to}]",
+                    from = in(reg) window.as_ptr(),
+                    to = in(reg) stored.as_mut_ptr(),
+                    out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                    out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
+                    options(nostack),
+                )
+            }
+        };
+    }
+    match width {
+        Width::Word => load!("fild word ptr [{from}]"),
+        Width::Dword => load!("fild dword ptr [{from}]"),
+        _ => load!("fild qword ptr [{from}]"),
+    }
+    (
+        u64::from_le_bytes(stored[..8].try_into().unwrap()),
+        u16::from_le_bytes([stored[8], stored[9]]),
+    )
+}
