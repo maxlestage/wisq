@@ -443,7 +443,7 @@ impl Body {
     /// Ce qui ne tient pas — un NaN, un infini, un nombre trop grand — rend
     /// l'entier indéfini. La conversion de WebAssembly trappe hors de sa
     /// portée : elle ne voit donc jamais que zéro à la place.
-    fn to_integer(&mut self, kind: Kind, truncate: bool, wide: bool) -> &mut Self {
+    fn integer_of(&mut self, kind: Kind, truncate: bool, wide: bool) -> &mut Self {
         let (low, high, indefinite) = if wide {
             (MINUS_TWO_TO_63, TWO_TO_63, 0x8000_0000_0000_0000)
         } else {
@@ -506,7 +506,7 @@ impl Body {
 
     /// **Un entier signé de `RIGHT`** (`wide` : soixante-quatre bits, sinon
     /// les trente-deux bas) vers un flottant, au plus proche, poussé en bits.
-    fn from_integer(&mut self, kind: Kind, wide: bool) -> &mut Self {
+    fn float_of_integer(&mut self, kind: Kind, wide: bool) -> &mut Self {
         self.load(RIGHT);
         if !wide {
             self.op(code::I32_WRAP_I64).op(match kind.double {
@@ -765,7 +765,7 @@ impl Module {
                 });
                 let kind = Kind { double };
                 Self::float_scalar_result(reg, kind, body, |b| {
-                    b.from_integer(kind, wide);
+                    b.float_of_integer(kind, wide);
                 });
             }
             Float::ToInteger { double, truncate } => {
@@ -776,7 +776,7 @@ impl Module {
                     b.load(SOURCE.0);
                 });
                 body.store(Self::slot(reg), |b| {
-                    b.to_integer(kind, truncate, wide);
+                    b.integer_of(kind, truncate, wide);
                 });
             }
             // `cvtps2pd` : les deux simples du bas, huit octets lus.
@@ -811,7 +811,7 @@ impl Module {
                 for (index, out) in [(0, RESULT.0), (1, RESULT.1)] {
                     body.take(RIGHT, SOURCE.0, index, 32);
                     body.store(out, |b| {
-                        b.from_integer(kind, false);
+                        b.float_of_integer(kind, false);
                     });
                 }
                 Self::float_commit(reg, body);
@@ -823,7 +823,7 @@ impl Module {
                 for (source, out) in [(SOURCE.0, RESULT.0), (SOURCE.1, RESULT.1)] {
                     body.build_half(out, 32, |b, index| {
                         b.take(RIGHT, source, index, 32);
-                        b.from_integer(kind, false);
+                        b.float_of_integer(kind, false);
                     });
                 }
                 Self::float_commit(reg, body);
@@ -839,7 +839,7 @@ impl Module {
                     b.store(RIGHT, |b| {
                         b.load(if index == 0 { SOURCE.0 } else { SOURCE.1 });
                     });
-                    b.to_integer(kind, truncate, false);
+                    b.integer_of(kind, truncate, false);
                 });
                 body.store(RESULT.1, |b| {
                     b.constant(0);
@@ -856,7 +856,7 @@ impl Module {
                 for (source, out) in [(SOURCE.0, RESULT.0), (SOURCE.1, RESULT.1)] {
                     body.build_half(out, 32, |b, index| {
                         b.take(RIGHT, source, index, 32);
-                        b.to_integer(kind, truncate, false);
+                        b.integer_of(kind, truncate, false);
                     });
                 }
                 Self::float_commit(reg, body);

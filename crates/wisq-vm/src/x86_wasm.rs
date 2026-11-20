@@ -4887,11 +4887,21 @@ impl Module {
         // les seize bits bas changent. Les deux formes ont été mesurées sur un
         // vrai processeur avant d'être écrites ici.
         if let Op::StoreSegment { segment } = step.op {
-            // **La forme mémoire est refusée, et c'est une mesure, pas un
-            // oubli** : sur les treize occurrences du noyau Alpine, treize sont
-            // la forme registre. La produire demanderait un accès mémoire de
-            // seize bits pour un cas que rien n'exerce.
-            step.memory.is_none().then_some(())?;
+            // **La forme mémoire écrit seize bits, quelle que soit la largeur
+            // de l'opérande** (`mov %sreg, m16`). Elle était refusée — sur les
+            // treize occurrences du noyau Alpine, treize sont la forme
+            // registre —, et un refus refuse la région entière, même quand
+            // l'instruction est sur une branche que rien n'exécute : depuis
+            // que le flottant de SSE2 se lit, les fenêtres du corpus de
+            // `crates/wisq-page/tests/page.rs` allaient au-delà de leur forme
+            // flottante jusqu'à elle, et la moitié de leurs refus étaient
+            // celui-ci.
+            if let Some(address) = &step.memory {
+                body.store_memory(address, Width::Word, |b| {
+                    b.load(Self::segment_slot(segment));
+                });
+                return Some(());
+            }
             Self::put(step.dst, step.width, body, |b| {
                 b.load(Self::segment_slot(segment));
             });
@@ -8600,8 +8610,12 @@ mod port_tests {
             // Ce qui reste refusé à la traduction est la forme dont la source
             // est en **mémoire** : le sélecteur ne se connaît alors qu'après
             // une lecture, et rien n'exerce cette forme.
+            //
+            // **`mov %ds,(%rax)` a quitté cette liste** : ranger un sélecteur
+            // en mémoire écrit seize bits, et se produit depuis que le
+            // flottant de SSE2 se lit (voir `StoreSegment` plus haut, et
+            // `storing_a_segment_selector_to_memory_writes_sixteen_bits`).
             ("mov (%rax),%fs", &[0x8e, 0x20][..]),
-            ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
             // Lire est produit depuis cette tranche ; écrire CR4 aussi. Ce qui
             // reste est ce qui allumerait la pagination.
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
@@ -8627,9 +8641,9 @@ mod port_tests {
             // porte le masque du cœur Swift, et un test compare les deux
             // littéraux pour qu'ils ne divergent pas.
             //
-            // **Cette liste n'est plus qu'à deux entrées**, et les deux sont
-            // des formes que rien n'exerce : un sélecteur venu de la mémoire,
-            // et un segment rangé en mémoire.
+            // **Cette liste n'est plus qu'à deux entrées** : un sélecteur
+            // venu de la mémoire, forme que rien n'exerce, et les registres
+            // de contrôle qui allumeraient la pagination.
         ] {
             // Première moitié : le décodeur la lit, entière.
             let step =

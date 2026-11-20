@@ -24744,3 +24744,48 @@ console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
         "{text}"
     );
 }
+
+/// **`mov %sreg, m16` écrit seize bits, et seize seulement**, quel que soit le
+/// préfixe : sans préfixe, avec `66`, avec `REX.W` — le silicium n'en écrit
+/// jamais plus (le manuel d'Intel le dit de la forme mémoire, au contraire de
+/// la forme registre, qui zéro-étend). La forme était refusée par
+/// l'émetteur : voir `x86_wasm.rs`, et pourquoi le flottant l'a fait voir.
+/// Les octets voisins, posés à `0xaa` par le pilote, doivent rester.
+#[test]
+fn storing_a_segment_selector_to_memory_writes_sixteen_bits() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PAGES: u32 = 1;
+    const BASE: u64 = 0x1_0000;
+    let program = [
+        0xb8, 0x2b, 0x00, 0x00, 0x00, // mov $0x2b,%eax
+        0x8e, 0xd8, // mov %ax,%ds
+        0x48, 0xc7, 0xc6, 0x00, 0x80, 0x00, 0x00, // mov $0x8000,%rsi
+        0x8c, 0x1e, // mov %ds,(%rsi)
+        0x66, 0x8c, 0x5e, 0x04, // mov %ds,4(%rsi) — préfixe 66
+        0x48, 0x8c, 0x5e, 0x08, // mov %ds,8(%rsi) — REX.W
+        0x48, 0x8b, 0x1e, // mov (%rsi),%rbx
+        0x48, 0x8b, 0x4e, 0x08, // mov 8(%rsi),%rcx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "segment-memoire",
+        "new Uint8Array(vm.memory.buffer, 0x8000, 16).fill(0xaa);",
+        r#"console.log("rcx " + BigInt.asUintN(64, vm.globals[1].value).toString(16));"#,
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        0xaaaa_002b_aaaa_002bu64.to_string(),
+        "deux sélecteurs de seize bits, les octets d'à côté intacts : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rcx "),
+        "aaaaaaaaaaaa002b",
+        "même sous REX.W, seize bits : {text}"
+    );
+}
