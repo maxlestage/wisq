@@ -8,6 +8,117 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran et la tablette, reprise après contrôle
+
+**La demande.** Le contrôle de la tranche « l'écran Bochs et sa mémoire, la
+tablette virtio » (f5ad6cf4) a trouvé neuf groupes de gardes qu'aucun test
+ne tenait : 21 mutants d'une ligne survivaient sur 53. Les vérifier dans le
+code, corriger ceux qui sont réels, avec test et sabotage.
+
+**Ce qui n'allait pas.** Les neuf défauts sont réels. Aucun ne change ce que
+voit un Linux d'aujourd'hui, mais chacun est une garde portée du Swift, ou
+une promesse d'un commentaire, que rien ne jugeait :
+
+1. *La remise à zéro de la tablette* (`remettre_a_zero`) : chacune de ses
+   neuf affectations pouvait sauter sans qu'un test tombe. Trois des effets
+   se voient : `boutons_rendus` gardé, l'appui d'un pilote qui recommence
+   était jugé « sans changement » et sa relâche passait sans ses 30 ms ;
+   `reste_du_paquet` gardé, le premier paquet passait sans le jugement de
+   rythme ; `a_court` gardé, `reveil` disait faux alors qu'un geste pouvait
+   partir. Deux ne se voient pas du dehors (`acquitte`, `retenu_depuis` : la
+   première livraison les réécrit avant toute lecture), et sont donc jugées
+   sur l'état.
+2. *La moitié haute de l'adresse des descripteurs* (registre `0x24`) : jamais
+   écrite par un test. C'est elle qui place une table au-dessus de 4 Gio, en
+   deux mots de 32 bits (`vp_iowrite64_twopart`).
+3. *Le repli de l'anneau des servies* (`prochaine_servie % taille`) : l'aide
+   des tests relisait la place `k % 8`, donc une entrée écrite hors de
+   l'anneau, dans la mémoire du noyau, ne se voyait pas.
+4. *Une tête de chaîne hors de la file* (`entree % taille`) : aucun test n'en
+   offrait.
+5. *« Sans BAR, nulle part »* : le cas avait aussi la mémoire éteinte, et
+   c'était cette moitié de la condition qui répondait. Sans `base == 0`, une
+   tablette allumée sans BAR prenait les seize premiers kibioctets.
+6. *Rien ne se pose sur la file inexistante* : la valeur écrite à `0x1C` (1)
+   était déjà celle de la file un.
+7. *Le premier pixel montré* de `carte_ecran_mode` : lu seulement avec un
+   début nul, en natif comme sous Bun.
+8. *Le nombre de crans* de `carte_defiler` : seulement −1 et 0 essayés.
+9. *Mineur* : un choix écrit sur un octet garde le sous-choix (`width > 1`),
+   et une lecture de huit octets de la configuration rend huit octets.
+
+**Ce qui est fait.**
+
+- `remettre_a_zero` repart maintenant de `Tablette::nouvelle`, en gardant
+  ce qui n'est pas au pilote : l'espace de configuration PCI (BAR, commande,
+  mesure, ligne), les deux sélecteurs de fonctions (le `reset` du Swift les
+  garde aussi) et l'heure de la machine. Un champ ajouté plus tard ne peut
+  plus être oublié. Rien ne change pour l'invité : c'est la même liste de
+  champs remis.
+- Trois cas neufs pour la tablette :
+  - `a_reset_brings_back_the_tablet_of_power_on` compare la tablette remise,
+    champ par champ, à une tablette neuve passée par la même poignée de
+    main, depuis deux états : une moitié d'appui rendue faute de tampons
+    (« à court »), puis une relâche dont l'attente a commencé. Le pilote qui
+    recommence relit un choix et une file choisie nuls. Son premier appui
+    part entier et tout de suite ; sa relâche attend la lecture, puis
+    30 ms.
+  - `a_head_beyond_the_queue_is_brought_back_into_it` offre les têtes 11 et
+    21 dans une file de huit, et attend les descripteurs 3 et 5.
+  - `queues_above_four_gibibytes_are_served` sert une RAM vue à partir de
+    4 Gio : les trois adresses sont posées en deux moitiés, et le toucher y
+    arrive.
+- Cas complétés pour la tablette :
+  - les registres communs : les descripteurs en deux moitiés, et chaque
+    registre de la file inexistante écrit à 0 puis à 1 ;
+  - `rien_apres_l_anneau` après les 54 et les 12 événements rendus dans une
+    file de huit ;
+  - « sans BAR » avec la mémoire allumée ;
+  - le sous-choix gardé par un octet, et le nom lu sur huit octets.
+- Les exports, en natif et sous Bun sur le module wasm32 : un bureau à
+  double tampon (X 8, Y 600, ligne virtuelle de 1 024) rend un début de
+  2 457 632 octets, puis 0 à la première page. Trois crans de molette
+  rendent trois paquets. Le commentaire « deux crans » du cas natif, qui
+  n'en envoyait qu'un, est corrigé.
+
+**Mesures.** Le module de la page (`scripts/build-page-emitter.sh`) :
+578 472 octets avant (`7143fcf8…`, 113 094 en gzip -9), **578 503 après**
+(+31, `c6069974…`, 113 096 en gzip -9). C'est la remise à zéro écrite comme
+une construction. `wisq-carte` : 176 → 179 cas, 0,20 s en `release`.
+
+**Tests.** Rust 806 → 809, total publié **3 874** (Swift 3 065 + Rust 809).
+Le site reconstruit, puis `bun test` : 476 réussis.
+
+**Sabotages : 31, tous tombent**, et le `git diff` est identique après
+chacun. Le script réécrit le fichier d'origine au lieu de `git checkout`,
+puisque rien n'est commité pendant qu'il tourne. Ce sont :
+
+- *la remise à zéro (20)* : chacun des treize champs du pilote gardé
+  (`choix`, `sous_choix`, `boutons_rendus`, `dernier_changeait`, `acquitte`,
+  `retenu_depuis`, `reste_du_paquet`, `a_court`, `choix_de_file`,
+  `en_attente`, `files`, `etat_d_interruption`, `acceptees`). Puis, pour
+  montrer que le comportement suffit sans l'égalité d'état, sept doubles
+  sabotages : le champ gardé et l'égalité retirée, pour `boutons_rendus`,
+  `dernier_changeait`, `reste_du_paquet`, `a_court`, `choix`, `sous_choix`
+  et `choix_de_file`. Chacun tombe sur ce que le pilote voit.
+- *la tablette (7)* : `0x24` ignoré (tombe à deux endroits : les registres,
+  et la RAM au-dessus de 4 Gio) ; l'anneau des servies sans modulo ; la tête
+  sans modulo ; la garde `base == 0` retirée ; `0x1C` posé sur la file un
+  quand la file choisie n'existe pas ; `largeur >= 1` ; `largeur.min(4)`.
+- *les exports (4)* : le début du mode à zéro, et la molette à
+  `crans.signum()`, chacun tombant en natif et, séparément, sous Bun.
+
+Les mutants du contrôle sur l'ancienne remise (une affectation retirée)
+n'ont plus d'objet : il n'y a plus d'affectations. Leur équivalent, un champ
+gardé, est dans la liste ci-dessus.
+
+**Ce qui reste.** Inchangé depuis l'entrée précédente : le flux « cœur » ne
+branche pas encore la Carte, et aucun vrai noyau n'a vu cet écran ni cette
+tablette. La page ne dirige pas encore ses accès mémoire vers la carte. La
+carte réseau est la tranche suivante. Les instantanés ne sont pas portés.
+Le compte publié (3 874) entrera en conflit avec celui de la branche du
+cœur : à la fusion, relancer le recompte.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran Bochs et sa mémoire, la tablette virtio ; troisième reprise après contrôle
 
 **La demande.** Deux choses, dans cet ordre. D'abord le troisième contrôle
