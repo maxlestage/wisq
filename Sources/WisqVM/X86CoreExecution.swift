@@ -240,31 +240,34 @@ extension X86Core {
     /// tromper.
     ///
     /// Inlinée : voir `read(_:_:highByte:)`.
+    ///
+    /// **Sans aiguillage.** Les huit conditions de base se calculent d'un
+    /// coup depuis les cinq drapeaux qui en décident, un bit chacune, et le
+    /// code choisit la sienne par un décalage ; son bit du bas l'inverse.
+    ///
+    /// La première forme aiguillait sur le code : seize cas, un saut indirect
+    /// de l'hôte par saut conditionnel de l'invité. Ces sauts-là n'ont pas de
+    /// régularité que le processeur de l'hôte puisse deviner — une instruction
+    /// sur sept en est un, au démarrage d'un noyau. Mesuré sur celui d'Alpine,
+    /// courses alternées : 32,7 s → 31,6 s.
     @inline(__always)
     public func condition(_ code: UInt8) -> Bool {
-        let overflow = flags & Flag.overflow != 0
-        let carryFlag = flags & Flag.carry != 0
-        let zero = flags & Flag.zero != 0
-        let sign = flags & Flag.sign != 0
-        let parity = flags & Flag.parity != 0
-        switch code & 0x0F {
-        case 0x0: return overflow
-        case 0x1: return !overflow
-        case 0x2: return carryFlag
-        case 0x3: return !carryFlag
-        case 0x4: return zero
-        case 0x5: return !zero
-        case 0x6: return carryFlag || zero
-        case 0x7: return !carryFlag && !zero
-        case 0x8: return sign
-        case 0x9: return !sign
-        case 0xA: return parity
-        case 0xB: return !parity
-        case 0xC: return sign != overflow
-        case 0xD: return sign == overflow
-        case 0xE: return zero || sign != overflow
-        default: return !zero && sign == overflow
-        }
+        let flags = self.flags
+        let bits = Self.conditionBits(overflow: (flags &>> 11) & 1, carry: flags & 1,
+                                      zero: (flags &>> 6) & 1, sign: (flags &>> 7) & 1,
+                                      parity: (flags &>> 2) & 1)
+        return ((bits &>> UInt64((code & 0x0F) &>> 1)) ^ UInt64(code)) & 1 != 0
+    }
+
+    /// Les huit conditions de base, du bit 0 au bit 7 : O, B, E, BE, S, P, L,
+    /// LE — l'ordre des codes de `Jcc`, `SETcc` et `CMOVcc`, deux par deux.
+    /// Chaque drapeau arrive à zéro ou un.
+    @inline(__always)
+    static func conditionBits(overflow: UInt64, carry: UInt64, zero: UInt64,
+                              sign: UInt64, parity: UInt64) -> UInt64 {
+        let less = sign ^ overflow
+        return overflow | carry &<< 1 | zero &<< 2 | (carry | zero) &<< 3
+            | sign &<< 4 | parity &<< 5 | less &<< 6 | (zero | less) &<< 7
     }
 
     // MARK: - Décalages et rotations
