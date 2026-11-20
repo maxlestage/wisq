@@ -24663,3 +24663,84 @@ fn typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand() {
         "le temps a passé pendant l'attente : {tsc}\n{text}"
     );
 }
+
+/// **Une ligne qui retombe avant d'être délivrée n'est pas délivrée.**
+///
+/// Les lignes de la carte sont à niveau : la recopie doit aussi **effacer**
+/// du registre de requête une ligne qu'elle tient et ne lève plus. Délivrée,
+/// une ligne sort de toute façon du registre ; c'est donc avant la délivrance
+/// que l'effacement compte. Ici l'invité, interruptions éteintes, laisse la
+/// touche lever la ligne 1 (la course s'arrête sur `cli ; hlt`, la ligne en
+/// requête), puis la lit lui-même sur `0x60` — par interrogation, comme le
+/// fait un pilote qui vide l'i8042 —, rallume les interruptions et s'arrête.
+/// Personne ne doit l'interrompre : la ligne est retombée.
+#[test]
+fn a_card_line_that_falls_before_delivery_is_not_delivered() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff]); // xor %r15,%r15
+    for (port, valeur) in [
+        (0x20, 0x11),
+        (0x21, 0x30),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xfd),
+    ] {
+        out_al(&mut program, port, valeur);
+    }
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt — la ligne monte
+    let premier = BASE + program.len() as u64;
+    program.extend_from_slice(&[0xe4, 0x60, 0x4c, 0x0f, 0xb6, 0xe0]); // in $0x60 ; movzx → r12
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    let second = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let mut clavier = Vec::new();
+    out_al(&mut clavier, 0x20, 0x20);
+    clavier.extend_from_slice(&[0x49, 0x83, 0xc7, 0x01, 0x48, 0xcf]); // add $1,%r15 ; iretq
+    let text = avec_la_carte(
+        &bun,
+        "retombee",
+        &[(BASE, &program), (HANDLER, &clavier)],
+        &[(0x31, HANDLER)],
+        "const arriere = null;",
+        "vm.carte.touche(0x1e, false, true);",
+        &format!(
+            r#"
+console.log("requete_avant " + (vm.pics.master.request & 2));
+const encore = await vm.run({{ budget: 1n << 20n, rounds: 64 }});
+console.log("arret2 " + encore.stopped);
+console.log("rip2 " + BigInt.asUintN(64, vm.globals[{RIP_SLOT}].value));
+console.log("r12_2 " + BigInt.asUintN(64, vm.globals[12].value));
+console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
+"#
+        ),
+    );
+    assert_eq!(
+        (line_of(&text, "rip "), line_of(&text, "requete_avant ")),
+        (premier.to_string(), "2".to_string()),
+        "la première course s'arrête interruptions éteintes, la ligne 1 en requête : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12_2 "),
+        0x1e.to_string(),
+        "l'invité a lu la touche : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15_2 "),
+        "0",
+        "et la ligne retombée n'est pas délivrée : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret2 ").as_str(), line_of(&text, "rip2 ")),
+        ("arrêtée sur hlt", second.to_string()),
+        "{text}"
+    );
+}
