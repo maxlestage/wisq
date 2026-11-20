@@ -3,7 +3,7 @@
 //! Le même module que l'émetteur (`wisq_page.wasm`), d'autres exports, tous
 //! préfixés `carte_`. `web/carte.js` les lit et les sert à la boucle hôte ;
 //! ce fichier ne fait que passer des nombres, la carte est dans
-//! [`Carte`](super::Carte).
+//! [`Carte`] (le crate `wisq-carte`, `src/carte/`).
 //!
 //! **Une carte par instance.** L'état vit dans une `static` du module : deux
 //! instances du même `WebAssembly.Module` ont deux mémoires, donc deux cartes.
@@ -20,6 +20,11 @@
 //! lui en donne qui lèvent une erreur. L'heure, elle, reste posée
 //! (`carte_heure`) plutôt qu'importée.
 //!
+//! **Un seul disque, côté page.** Le bus a deux emplacements de disque
+//! (00:03.0 et 00:04.0), mais la page n'en branche qu'un : aucun export ne
+//! touche au second, que seule la machine native emploie
+//! (`wisq_carte::pc::CartePc`). Son emplacement reste vide ici.
+//!
 //! **Le disque, côté page** : `carte_disque` le branche ; après un `out`,
 //! `carte_requete` prend la prochaine requête partie et ses quatre
 //! accesseurs la décrivent ; `carte_disque_lu` et `carte_disque_fini`
@@ -32,9 +37,10 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use super::i8042::CodeTouche;
-use super::virtio_blk::{RequeteDisque, Sens};
-use super::{Carte, Ram, SansRam};
+use wisq_carte::i8042::CodeTouche;
+use wisq_carte::pci::Disque;
+use wisq_carte::virtio_blk::{RequeteDisque, Sens};
+use wisq_carte::{Carte, Ram, SansRam};
 
 static CARTE: Mutex<Carte> = Mutex::new(Carte::nouvelle());
 /// La place où la page copie un texte à taper, en UTF-8.
@@ -62,7 +68,7 @@ mod ram_de_la_page {
 
     pub struct RamDeLaPage;
 
-    impl super::Ram for RamDeLaPage {
+    impl wisq_carte::Ram for RamDeLaPage {
         fn lire(&self, adresse: u64, vers: &mut [u8]) -> bool {
             let Ok(longueur) = u32::try_from(vers.len()) else {
                 return false;
@@ -85,7 +91,7 @@ mod ram_de_la_page {
 /// **En natif, la RAM d'un test** : un tableau que les tests de ce fichier
 /// remplissent, à la place de celle que la page tiendrait.
 #[cfg(not(target_arch = "wasm32"))]
-static RAM_D_ESSAI: Mutex<super::RamPlate> = Mutex::new(super::RamPlate(Vec::new()));
+static RAM_D_ESSAI: Mutex<wisq_carte::RamPlate> = Mutex::new(wisq_carte::RamPlate(Vec::new()));
 
 /// Faire `f` avec la RAM de l'invité.
 fn avec_la_ram<T>(f: impl FnOnce(&mut dyn Ram) -> T) -> T {
@@ -246,9 +252,7 @@ extern "C" fn carte_disque(secteurs: u64) {
 #[no_mangle]
 extern "C" fn carte_requetes() -> u32 {
     carte()
-        .pci
-        .disque
-        .as_ref()
+        .disque(Disque::Premier)
         .map_or(0, |d| d.a_prendre() as u32)
 }
 
@@ -439,15 +443,14 @@ mod tests {
         // La file à la page 1, une lecture du secteur 5 vers 0x5000.
         carte_ecrire(0xC008, 4, 1);
         ram(&mut |r| {
-            let mut ram = super::super::RamPlate(std::mem::take(r));
-            let dire =
-                |ram: &mut super::super::RamPlate, i: u64, a: u64, n: u32, d: u16, s: u16| {
-                    let at = 0x1000 + i * 16;
-                    ram.ecrire(at, &a.to_le_bytes());
-                    ram.ecrire(at + 8, &n.to_le_bytes());
-                    ram.ecrire(at + 12, &d.to_le_bytes());
-                    ram.ecrire(at + 14, &s.to_le_bytes());
-                };
+            let mut ram = wisq_carte::RamPlate(std::mem::take(r));
+            let dire = |ram: &mut wisq_carte::RamPlate, i: u64, a: u64, n: u32, d: u16, s: u16| {
+                let at = 0x1000 + i * 16;
+                ram.ecrire(at, &a.to_le_bytes());
+                ram.ecrire(at + 8, &n.to_le_bytes());
+                ram.ecrire(at + 12, &d.to_le_bytes());
+                ram.ecrire(at + 14, &s.to_le_bytes());
+            };
             ram.ecrire(0x4008, &5u64.to_le_bytes());
             dire(&mut ram, 0, 0x4000, 16, 1, 1);
             dire(&mut ram, 1, 0x5000, 1024, 3, 2);
