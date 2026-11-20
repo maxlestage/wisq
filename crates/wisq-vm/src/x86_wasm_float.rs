@@ -586,8 +586,18 @@ impl Module {
         }
     }
 
-    /// **La moitié basse de la source** — `bytes` octets de la mémoire, ou le
+    /// **La moitié basse de la source** — `width` octets de la mémoire, ou le
     /// bas du XMM `rm` masqué à la même largeur — dans `SOURCE.0`.
+    ///
+    /// **La largeur est celle du décodeur** (`step.width`), passée telle
+    /// quelle par chaque forme qui lit un élément : c'est elle qui dit combien
+    /// d'octets l'accès touche, donc s'il franchit une fin de page. Un second
+    /// calcul ici (« un double lit huit octets ») laissait la largeur décodée
+    /// sans effet, et fausse sans que rien ne le voie : `cvtss2sd` et
+    /// `ucomiss` pouvaient y être déclarées sur huit octets, le module lisait
+    /// quand même quatre. Une seule source, et
+    /// `a_single_float_at_the_end_of_a_page_reads_four_bytes_and_no_more`
+    /// (`tests/host_loop.rs`) la tient au bord d'une page absente.
     fn float_low_source(step: &Decoded, body: &mut Body, width: Width) {
         body.store(SOURCE.0, |b| match &step.memory {
             Some(address) => {
@@ -641,7 +651,7 @@ impl Module {
         match float {
             Float::Scalar { operation, double } => {
                 let kind = Kind { double };
-                Self::float_low_source(step, body, kind.width());
+                Self::float_low_source(step, body, step.width);
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
                 });
@@ -669,7 +679,7 @@ impl Module {
             }
             Float::CompareScalar { double } => {
                 let kind = Kind { double };
-                Self::float_low_source(step, body, kind.width());
+                Self::float_low_source(step, body, step.width);
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
                 });
@@ -700,7 +710,7 @@ impl Module {
             // petite : CF ; plus grande : rien. OF, SF et AF effacés.
             Float::Order { double } => {
                 let kind = Kind { double };
-                Self::float_low_source(step, body, kind.width());
+                Self::float_low_source(step, body, step.width);
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
                 });
@@ -736,7 +746,7 @@ impl Module {
                 });
             }
             Float::Widen => {
-                Self::float_low_source(step, body, Width::Dword);
+                Self::float_low_source(step, body, step.width);
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
                 });
@@ -745,7 +755,7 @@ impl Module {
                 });
             }
             Float::Narrow => {
-                Self::float_low_source(step, body, Width::Qword);
+                Self::float_low_source(step, body, step.width);
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
                 });
@@ -771,6 +781,8 @@ impl Module {
             Float::ToInteger { double, truncate } => {
                 let kind = Kind { double };
                 let wide = step.width == Width::Qword;
+                // Seule exception : la largeur du décodeur est ici celle de l'entier
+                // rendu (`REX.W`) ; la mémoire lue est l'élément, simple ou double.
                 Self::float_low_source(step, body, kind.width());
                 body.store(RIGHT, |b| {
                     b.load(SOURCE.0);
@@ -781,7 +793,7 @@ impl Module {
             }
             // `cvtps2pd` : les deux simples du bas, huit octets lus.
             Float::PackedWiden => {
-                Self::float_low_source(step, body, Width::Qword);
+                Self::float_low_source(step, body, step.width);
                 for (index, out) in [(0, RESULT.0), (1, RESULT.1)] {
                     body.take(RIGHT, SOURCE.0, index, 32);
                     body.store(out, |b| {
@@ -806,7 +818,7 @@ impl Module {
             }
             // `cvtdq2pd` : deux entiers de trente-deux bits, exacts en double.
             Float::FromIntegers { double: true } => {
-                Self::float_low_source(step, body, Width::Qword);
+                Self::float_low_source(step, body, step.width);
                 let kind = Kind { double: true };
                 for (index, out) in [(0, RESULT.0), (1, RESULT.1)] {
                     body.take(RIGHT, SOURCE.0, index, 32);
