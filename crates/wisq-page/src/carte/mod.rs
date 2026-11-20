@@ -554,10 +554,12 @@ impl Carte {
     /// **Brancher la carte réseau** en 00:05.0 (`X86Machine.attach(network:)`),
     /// d'adresse `mac`, ligne 3, **câble débranché** : ce que l'invité envoie
     /// est perdu jusqu'à [`VirtioNet::brancher_cable`]. Une carte déjà
-    /// branchée est remplacée, ce qui l'attendait perdu — à faire avant le
-    /// démarrage.
+    /// branchée est remplacée, ce qui l'attendait perdu, **et son
+    /// emplacement repart neuf** ([`Pci::brancher_reseau`]) : fenêtre fermée,
+    /// commande nulle, ligne 3, comme l'hôte neuf du cœur Swift — à faire
+    /// avant le démarrage.
     pub fn brancher_reseau(&mut self, mac: [u8; 6]) {
-        self.pci.reseau.peripherique = Some(VirtioNet::nouvelle(mac));
+        self.pci.brancher_reseau(VirtioNet::nouvelle(mac));
     }
 
     /// La carte réseau, si elle est branchée.
