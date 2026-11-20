@@ -8,6 +8,82 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust, les périphériques : la tablette, deuxième reprise après contrôle
+
+**La demande.** Le contrôle de la reprise précédente (39cc5aae) a trouvé six
+gardes que rien ne jugeait, et une phrase inexacte dans ce journal. Les
+vérifier dans le code, corriger celles qui sont réelles, avec test et
+sabotage.
+
+**Ce qui n'allait pas.** Les sept points sont réels, tous dans les tests : le
+code faisait déjà ce qu'il promettait, mais rien ne le tenait.
+
+1. *La remise garde la ligne PCI* (`..Self::nouvelle(self.ligne)`) : toutes
+   les tablettes des tests étaient sur la ligne 10, celle de `nouvelle`. Une
+   remise qui reprendrait la ligne de `nouvelle` passait. L'effet n'est pas
+   nul : `Carte::lignes` et `Carte::tenues` lèvent `tablette.ligne`. Si le
+   noyau avait écrit 11 en 0x3C et que le pilote remettait le statut à zéro,
+   l'interruption repartait sur la ligne 10.
+2. *La remise garde la mesure de la BAR* (`mesure: self.mesure`) : aucun cas
+   ne partait d'une tablette en cours de mesure.
+3. *La moitié haute des disponibles* (0x2C) : relue seulement dans le mot
+   de huit octets, jamais seule.
+4. *`queue_enable` ne lit que son bit 0* (`value & 1 != 0` du Swift) :
+   aucun cas n'écrivait 2.
+5. *Seul un statut nul est une remise* (`status == 0` du Swift) : aucun cas
+   n'écrivait un statut non nul sans `ACKNOWLEDGE`.
+6. *Les boutons droit et milieu par l'export `carte_toucher`* : les exports
+   ne passaient que le gauche, en natif comme sous Bun.
+7. *Mineur, ce journal* : l'entrée précédente disait que « chacune de ses
+   neuf affectations » pouvait sauter. L'ancienne `remettre_a_zero`
+   (f5ad6cf4) en avait quatorze. Rejoué sur f5ad6cf4, un mutant par
+   affectation : dix survivaient. Neuf étaient de vrais défauts. La dixième,
+   `statut = 0`, est un mutant équivalent, puisque le statut vient d'être
+   écrit à zéro. La phrase est corrigée en « neuf de ses quatorze ».
+
+**Ce qui est fait.** Le code ne change pas : le module de la page est le
+même, octet pour octet. Les tests :
+
+- `a_reset_brings_back_the_tablet_of_power_on` a un troisième départ : une
+  tablette dont le noyau a mis la ligne à 11 et la BAR en mesure. Le cas
+  compare l'état entier, champ par champ, et relit 0x3C et 0x10.
+- `the_facade_delivers_touches_at_the_machines_time` finit par ce que voit
+  l'invité. Le noyau écrit 11, le pilote remet le statut à zéro : la ligne
+  tenue est la 11. Puis le pilote recommence sa poignée de main, et le geste
+  suivant lève la ligne 11. Une aide `prendre`, la poignée de main par la
+  mémoire, sert à `carte_prete` et à cette reprise.
+- `a_failed_status_alone_is_not_a_reset` (neuf) : 0x80 seul est gardé tel
+  quel, et la tablette ne livre plus. Ses files, ses fonctions acceptées et
+  le geste en attente restent. Avec `DRIVER_OK` de retour, le geste part.
+- `the_common_registers_read_back_per_queue` relit 0x28, 0x2C et 0x30 sur
+  quatre octets. Il écrit 2, 3, puis 2 à `queue_enable`.
+- Les exports, en natif (`the_tablet_goes_through_the_exports`) et sous Bun
+  sur le module wasm32 : un toucher du droit et du milieu, le gauche
+  relâché, rend `BTN_LEFT` 0, `BTN_RIGHT` 1 et `BTN_MIDDLE` 1.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 578 503 octets avant
+  comme après, sha c6069974a6c3970c, gzip -9 113 096.
+- Tests : wisq-carte passe de 179 à 180 cas, en 0,32 s en release. Rust
+  passe de 809 à 810, et le total publié de 3 874 à 3 875.
+
+**Sabotages** (onze, d'une ligne, tous tombent ; `git diff` identique avant
+et après) :
+- Remise : la ligne reprise de `nouvelle` tombe dans le cas de la remise et
+  dans celui de la façade. La mesure oubliée tombe dans le cas de la remise.
+- Lectures : 0x2C relu à zéro, et la moitié haute de 0x28 ou de 0x30 seule.
+- `queue_enable` écrit avec `valeur != 0`.
+- Le statut jugé avec `statut & 1 == 0`.
+- `carte_toucher` réduit à `boutons & 1`, puis à `boutons & 3` : chacun
+  tombe en natif et, lancé à part, sous Bun.
+
+**Ce qui reste.** Inchangé :
+- le flux « cœur » ne branche pas encore la Carte ;
+- la carte réseau (00:05.0, ligne 3) est la tranche suivante ;
+- les instantanés ne sont pas portés ;
+- à la fusion avec la branche du cœur, le compte publié se refait par
+  `recompte.sh`.
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran et la tablette, reprise après contrôle
 
 **La demande.** Le contrôle de la tranche « l'écran Bochs et sa mémoire, la
@@ -19,8 +95,10 @@ code, corriger ceux qui sont réels, avec test et sabotage.
 voit un Linux d'aujourd'hui, mais chacun est une garde portée du Swift, ou
 une promesse d'un commentaire, que rien ne jugeait :
 
-1. *La remise à zéro de la tablette* (`remettre_a_zero`) : chacune de ses
-   neuf affectations pouvait sauter sans qu'un test tombe. Trois des effets
+1. *La remise à zéro de la tablette* (`remettre_a_zero`) : neuf de ses
+   quatorze affectations pouvaient sauter sans qu'un test tombe (une
+   dixième, `statut = 0`, survivait aussi, mais sans effet : le statut
+   vient d'être écrit à zéro). Trois des effets
    se voient : `boutons_rendus` gardé, l'appui d'un pilote qui recommence
    était jugé « sans changement » et sa relâche passait sans ses 30 ms ;
    `reste_du_paquet` gardé, le premier paquet passait sans le jugement de
