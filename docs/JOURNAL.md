@@ -8,6 +8,102 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Cœur x86 : des blocs d'instructions, un dixième de temps en moins de plus
+
+**La demande.** « Fais tout » : les deux chantiers de vitesse laissés par
+l'entrée du 19 novembre. Celui-ci est le premier — exécuter par blocs.
+
+**Ce qui coûtait.** Après les formes courtes, `run` pesait encore la moitié
+des échantillons de `perf`, et sa première ligne était toujours la même : le
+chargement de la case du cache de décodage (21,8 % des échantillons de `run`
+sur `master`). Une case par instruction, à une adresse qui suit celle du
+code : chaque instruction de l'invité attend sa ligne de cache.
+
+**Ce qui est fait** (`X86BlockCache.swift`). Un bloc est une suite
+d'instructions qui se suivent dans une page — huit au plus, sur trente-deux
+octets au plus —, rangées côte à côte dans une table de 32 768 cases. `run`
+le trouve une fois, compare ses trente-deux octets à la mémoire, et exécute
+ses instructions l'une après l'autre : les formes courtes par `performFast`,
+les autres par leurs tables, lues dans le bloc. Ce que la tête de boucle
+garantit à chaque instruction tient au milieu d'un bloc :
+
+- le budget et le service du matériel tous les 256, à l'instruction près ;
+- après une instruction générale : l'arrêt, la page gardée (table rechargée,
+  anneau changé), le mode, et les octets du bloc recomparés ;
+- après un `mov` vers la mémoire ou un `push` : les octets recomparés — un
+  bloc qui se réécrit s'arrête là ;
+- un saut pris, un appel, un retour sortent du bloc ;
+- jamais en mode compatibilité, jamais sous le témoin, jamais au-delà de la
+  page.
+
+La table se range à la première course (`calloc`, 12,6 Mio d'adresses dont
+seules les pages touchées deviennent résidentes), pas à la construction du
+cœur. Et les instructions générales, hors bloc aussi, se lisent maintenant
+dans leur case (`stepStored`) au lieu d'être recopiées deux fois par valeur.
+
+**Le chemin pour y arriver, mesuré à chaque pas.**
+
+- *Des blocs de formes courtes seulement* : **plus lent**, 37,5 s contre
+  34,0. Une sonde jetée a compté : 80 % des instructions dans des blocs de
+  3,2 instructions en moyenne, mais 125 millions de recherches ratées (une
+  par instruction générale), et `perf` mettait 22 % des échantillons de `run`
+  sur le chargement des cases de bloc. Moins de recherches, mais chacune plus
+  chère : la table est lue au hasard.
+- *Les instructions générales dans les blocs* : des blocs plus longs, presque
+  plus de recherche par instruction. **29,7 s contre 33,7.**
+- *La taille de la table* : 16 384 cases, 30,3 s ; 65 536 cases, 29,6 s.
+  32 768 est gardé.
+- *L'objet dans une variable de la boucle* : 37 s. Un compte de références à
+  chaque bloc. `run` tient le pointeur de la table, et les fonctions du cache
+  sont statiques.
+
+**Mesures**, sur le code final. Huit courses alternées avant/après, Alpine
+6.18.60 jusqu'à son shell, 1,92 milliard d'instructions ; la machine était
+plus bruyante que la veille :
+
+| | courses (s) | médiane | débit |
+|---|---|---|---|
+| `master` d8a90af8 | 38,9 · 41,5 · 36,2 · 35,6 · 35,6 · 35,4 · 37,2 · 37,6 | 36,7 s | 52,2 MIPS |
+| blocs | 35,7 · 35,4 · 33,1 · 31,6 · 34,1 · 32,2 · 33,2 · 32,4 | 33,2 s | 57,8 MIPS |
+
+**9,6 % de temps en moins.** Une série de quatre, la machine au calme, avec
+une version qui lisait encore l'objet dans le cœur à chaque bloc, donnait
+34,8 → 30,0 s (−13,7 %).
+
+**Tests** (`X86BlockTests`, onze). Trois cents programmes tirés au hasard —
+formes courtes, mémoire relative à RIP, pile, sauts devant et derrière,
+instructions générales, une fois sur quatre en fin de page — exécutés sans
+blocs, avec, et avec des budgets hachés : même état, même mémoire, même
+compte. Puis chaque garde : le bloc qui se réécrit (par une forme courte, par
+une instruction générale), le code réécrit du dehors (un octet dans chacune
+des huit instructions), le bloc qui ne couvre pas plus qu'il ne compare,
+l'instruction à cheval sur deux pages dont la suite est dans une autre trame,
+`hlt` au milieu d'un bloc, le budget à l'instruction près, la table de pages
+rechargée au milieu d'un bloc, le mode compatibilité, et l'horloge qui
+interrompt à la même instruction.
+
+**Sabotages**, d'une ligne, sur le code final : treize, tous tombent —
+l'arrêt, la page gardée et les octets non revérifiés après une instruction
+générale, les octets non recomparés après un `mov` vers la mémoire, le
+service du matériel sauté, le budget dépassé, un bloc de 64 bits en mode
+compatibilité, une instruction non comptée, un saut pris ignoré, les octets
+non comparés à l'entrée, un bloc plus long que ce qui est comparé, un bloc lu
+au-delà de la page, le quatrième mot non comparé. Sept survivaient à la
+première version des tests : la première instruction d'une course passe par
+la boucle ordinaire, et mes montages mettaient l'instruction critique en
+tête. Ils la mettent maintenant au milieu.
+
+**Vérifications.** Suite Swift entière : 2 981 tests, 0 échec. SwiftLint
+`--strict`, `check-whitespace.sh`, `check-project-sources.sh` : propres.
+
+**Ce qui reste.**
+
+- Rien n'est mesuré sur un iPhone ni sur un Mac. Les caches de ce Xeon (2 Mio
+  de niveau 2) ne sont pas ceux d'une puce Apple, et c'est justement
+  l'attente de la mémoire que les blocs déplacent.
+- Les drapeaux calculés à la demande : le second chantier.
+- Un bloc ne suit pas un saut pris : chaque saut repasse par la table.
+
 ## 2026-11-19 — Cœur x86 : les formes courtes, 12 % de temps en moins sur le démarrage d'Alpine
 
 **La demande.** « Reprends et optimise l'application. » La reprise est la
