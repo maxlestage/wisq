@@ -1,9 +1,14 @@
 // La carte de la machine PC, dans la page.
 //
 // **Ce qu'elle apporte.** La boucle hôte (`web/host.js`) modélise deux 8259,
-// un 8254 et un 16550 ; tout autre port y rend `0xff`, personne. Un noyau n'y
-// trouve donc ni clavier, ni souris, ni horloge murale : « i8042: Can't read
-// CTR », et une date de 1970. Les périphériques qui manquent sont écrits en
+// un 8254 et un 16550 ; sans la carte, tout autre port y rend `0xff`,
+// personne. Un noyau n'y trouve alors ni clavier, ni souris, ni horloge
+// murale, ni disque : « i8042: Can't read CTR », et une date de 1970.
+// `machine({ carte: (ram) => carte(module, { ram, disque }) })` la branche :
+// ses ports après ceux des puces, ses lignes recopiées dans les deux 8259 à
+// chaque tour, `reveil()` compté dans l'attente d'un `hlt`, et un `hlt` qui
+// attend le disque cède le fil (`disque.attendre()`) le temps que l'arrière
+// réponde. Les périphériques qui manquent sont écrits en
 // Rust (`crates/wisq-page/src/carte/`), portés depuis le cœur Swift avec sa
 // carte exacte — l'i8042 aux ports `0x60`/`0x64` sur les lignes 1 et 12,
 // l'horloge CMOS aux ports `0x70`/`0x71`, le pont PCI aux ports
@@ -30,9 +35,11 @@
 //
 // **La RAM de l'invité**, que la file du disque lit et écrit, est donnée par
 // `ram` : `{ lire(adresse, vers), ecrire(adresse, depuis) }`, adresses
-// physiques, une plage entière ou `false`. `ramDeMemoire` en fait une de la
-// `WebAssembly.Memory` de `host.js`, où l'adresse physique est l'adresse
-// linéaire. Le module la demande par deux imports, `carte.ram_lire` et
+// physiques, une plage entière ou `false`. `host.js` en donne une à la
+// fabrique de sa carte, dont les écritures se disent à `ecrit` (le code
+// traduit d'une page que le disque réécrit est oublié). `ramDeMemoire` en
+// fait une nue d'une `WebAssembly.Memory`, pour qui conduit la carte sans
+// boucle hôte. Le module la demande par deux imports, `carte.ram_lire` et
 // `carte.ram_ecrire`, que ce fichier remplit.
 //
 // **Le disque est servi plus tard.** Ses octets ne sont pas dans la page (une
@@ -210,6 +217,18 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
   }
 
   let enVol = 0;
+  /// Ceux qui attendent la prochaine réponse rendue (`attendre`).
+  let attentes = [];
+  /// **Attendre la prochaine réponse du disque** : une promesse résolue quand
+  /// une réponse a été rendue — octets copiés, ligne levée —, ou tout de suite
+  /// s'il n'y a rien en vol. C'est ce que la boucle hôte attend sur un `hlt`
+  /// : sans céder le fil, la réponse ne viendrait jamais. Résolue aussi quand
+  /// la carte trappe en rendant la réponse : la boucle doit reprendre, et la
+  /// trappe se signale à part.
+  function attendre() {
+    if (enVol === 0) return Promise.resolve();
+    return new Promise((resoudre) => attentes.push(resoudre));
+  }
   /// **Confier à l'arrière tout ce qui est parti.** Rend le nombre de
   /// requêtes confiées. Un échec de l'arrière (une promesse rejetée, une
   /// écriture qu'il ne sait pas faire ou qu'il dit ratée) est rendu au pilote
@@ -241,6 +260,9 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
         })
         .finally(() => {
           enVol -= 1;
+          const reveilles = attentes;
+          attentes = [];
+          for (const resoudre of reveilles) resoudre();
         })
         .then(() => surReponse?.());
       confiees += 1;
@@ -304,6 +326,7 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
       lu: disqueLu,
       fini: disqueFini,
       servir,
+      attendre,
       enVol: () => enVol,
     },
   };

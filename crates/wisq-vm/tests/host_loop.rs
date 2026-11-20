@@ -24001,3 +24001,665 @@ for (const pages of {tailles:?}) console.log(pages + " " + codePages(pages) + " 
     let vu: Vec<&str> = text.lines().collect();
     assert_eq!(vu, attendu, "l'hôte et l'émetteur comptent les mêmes pages");
 }
+
+// ---------------------------------------------------------------------------
+// **La carte des périphériques, raccordée à la boucle hôte.**
+//
+// `web/carte.js` (l'i8042, l'horloge CMOS, le bus PCI et le disque virtio,
+// compilés en wasm32 dans le module de la page) était jugée seule, par ses
+// ports, dans `crates/wisq-page/tests/carte.rs`. Ces tests la branchent sur
+// `web/host.js` par `machine({ carte })` et la font conduire par un invité,
+// par de vrais `in` et `out` : les ports après les puces de l'hôte, les
+// lignes recopiées dans les deux 8259, l'attente d'un `hlt` qui cède le fil
+// au disque, et le DMA du disque qui passe par `ecrit`.
+//
+// **Le traducteur est celui de la page** (`web/page-emitter.js`), sur les
+// octets que l'hôte lit dans la RAM : le code y est posé par le pilote, et
+// une page que le disque réécrit se retraduit sur ses octets neufs.
+// ---------------------------------------------------------------------------
+
+/// Le module de la page (`scripts/build-page-emitter.sh`) : l'émetteur et la
+/// carte, dans le même `wisq_page.wasm`.
+fn page_module() -> PathBuf {
+    let root = workspace_root();
+    let output = Command::new("bash")
+        .arg(root.join("scripts/build-page-emitter.sh"))
+        .arg(&root)
+        .output()
+        .expect("bash");
+    assert!(
+        output.status.success(),
+        "le module de la page ne se construit pas :\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+/// `mov $valeur,%al ; out %al,$port`.
+fn out_al(program: &mut Vec<u8>, port: u8, valeur: u8) {
+    program.extend_from_slice(&[0xb0, valeur, 0xe6, port]);
+}
+
+/// `mov $port,%dx`.
+fn dx(program: &mut Vec<u8>, port: u16) {
+    program.extend_from_slice(&[0x66, 0xba]);
+    program.extend_from_slice(&port.to_le_bytes());
+}
+
+/// `mov $valeur,%eax`.
+fn eax(program: &mut Vec<u8>, valeur: u32) {
+    program.push(0xb8);
+    program.extend_from_slice(&valeur.to_le_bytes());
+}
+
+/// `movabs $valeur,%rax`.
+fn rax(program: &mut Vec<u8>, valeur: u64) {
+    program.extend_from_slice(&[0x48, 0xb8]);
+    program.extend_from_slice(&valeur.to_le_bytes());
+}
+
+/// **Un registre de configuration PCI écrit**, comme le noyau : l'adresse
+/// sur `0xCF8`, la valeur sur `0xCFC`, de `largeur` octets (2 ou 4).
+fn configurer(program: &mut Vec<u8>, adresse: u32, valeur: u32, largeur: u8) {
+    dx(program, 0xcf8);
+    eax(program, adresse);
+    program.push(0xef); // out %eax,%dx
+    dx(program, 0xcfc);
+    if largeur == 2 {
+        program.extend_from_slice(&[0x66, 0xb8]);
+        program.extend_from_slice(&(valeur as u16).to_le_bytes());
+        program.extend_from_slice(&[0x66, 0xef]); // out %ax,%dx
+    } else {
+        eax(program, valeur);
+        program.push(0xef);
+    }
+}
+
+/// Où le montage du disque range ce qu'il pose, dans 256 Kio de RAM.
+mod disque_montage {
+    pub const PAGES: u32 = 4;
+    pub const BASE: u64 = 0x1_0000;
+    pub const HANDLER: u64 = 0x1_1000;
+    pub const IDT: u64 = 0x1_2000;
+    pub const IDT_POINTER: u64 = 0x1_3000;
+    pub const STACK: u64 = 0xf000;
+    /// La file, à la page `0x20` : les descripteurs, les disponibles à
+    /// `+0x800`, les servis à la page d'après.
+    pub const FILE: u64 = 0x2_0000;
+    pub const ENTETE: u64 = 0x2_2000;
+    pub const STATUT: u64 = 0x2_2800;
+    pub const TAMPON: u64 = 0x2_3000;
+    /// La BAR0 que l'invité donne au disque, et le vecteur de sa ligne 5
+    /// (la base du maître, `0x30`, plus cinq).
+    pub const FENETRE: u16 = 0xc000;
+    pub const VECTEUR: u8 = 0x35;
+}
+
+/// **Le pilote du disque, par l'invité** : le 8259 maître initialisé à
+/// `0x30`, seule la ligne 5 démasquée ; la BAR0 à `0xC000`, les ports
+/// ouverts ; la poignée de main de virtio ancien et la file à la page
+/// `0x20`. La file et la requête sont posées par le pilote JavaScript
+/// (`requete_du_disque`) : ce que l'invité fait ensuite, c'est notifier.
+fn brancher_le_disque(program: &mut Vec<u8>) {
+    use disque_montage::*;
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff]); // xor %r15,%r15
+    for (port, valeur) in [
+        (0x20, 0x11),
+        (0x21, 0x30),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xdf),
+    ] {
+        out_al(program, port, valeur);
+    }
+    configurer(program, 0x8000_1810, u32::from(FENETRE), 4);
+    configurer(program, 0x8000_1804, 0x0005, 2);
+    dx(program, FENETRE + 0x12);
+    for statut in [0u8, 1, 3, 11] {
+        program.extend_from_slice(&[0xb0, statut, 0xee]); // mov $s,%al ; out %al,%dx
+    }
+    dx(program, FENETRE + 0x0e);
+    program.extend_from_slice(&[0x31, 0xc0, 0x66, 0xef]); // la file zéro
+    dx(program, FENETRE + 0x08);
+    eax(program, (FILE >> 12) as u32);
+    program.push(0xef); // son numéro de page
+    dx(program, FENETRE + 0x12);
+    program.extend_from_slice(&[0xb0, 15, 0xee]); // DRIVER_OK
+}
+
+/// `out %ax,$FENETRE+0x10` : la notification de la file zéro.
+fn notifier(program: &mut Vec<u8>) {
+    dx(program, disque_montage::FENETRE + 0x10);
+    program.extend_from_slice(&[0x31, 0xc0, 0x66, 0xef]);
+}
+
+/// Le gestionnaire de la ligne 5 : l'ISR lu (ce qui baisse la ligne) et
+/// gardé dans `%r12`, la fin d'interruption au maître, `%r15` compté.
+fn gestionnaire_du_disque() -> Vec<u8> {
+    let mut handler = Vec::new();
+    dx(&mut handler, disque_montage::FENETRE + 0x13);
+    handler.push(0xec); // in (%dx),%al
+    handler.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0xe0]); // movzx %al,%r12
+    out_al(&mut handler, 0x20, 0x20);
+    handler.extend_from_slice(&[0x49, 0x83, 0xc7, 0x01]); // add $1,%r15
+    handler.extend_from_slice(&[0x48, 0xcf]); // iretq
+    handler
+}
+
+/// **La requête, posée dans la RAM par le pilote JavaScript** : trois
+/// descripteurs (l'en-tête, le tampon de `longueur` octets à `tampon`, le
+/// statut), un disponible, et le statut à `0xff` — ce qu'un disque qui ne
+/// répond pas laisse.
+fn requete_du_disque(secteur: u64, tampon: u64, longueur: u32) -> String {
+    use disque_montage::*;
+    format!(
+        r#"
+{{
+  const v = new DataView(vm.memory.buffer);
+  const dire = (i, a, n, drapeaux, suivant) => {{
+    v.setBigUint64({FILE} + i * 16, BigInt(a), true);
+    v.setUint32({FILE} + 8 + i * 16, n, true);
+    v.setUint16({FILE} + 12 + i * 16, drapeaux, true);
+    v.setUint16({FILE} + 14 + i * 16, suivant, true);
+  }};
+  v.setUint32({ENTETE}, 0, true);
+  v.setBigUint64({ENTETE} + 8, {secteur}n, true);
+  dire(0, {ENTETE}, 16, 1, 1);
+  dire(1, {tampon}, {longueur}, 3, 2);
+  dire(2, {STATUT}, 1, 2, 0);
+  v.setUint8({STATUT}, 0xff);
+  v.setUint16({FILE} + 0x804, 0, true);
+  v.setUint16({FILE} + 0x802, 1, true);
+}}
+"#
+    )
+}
+
+/// **Une course avec la carte branchée.** `pieces` sont posées dans la RAM
+/// (le code en fait partie : le traducteur de la page lit ses octets là),
+/// `portes` dans l'IDT. `arriere` définit `const arriere` (l'arrière du
+/// disque, ou `null`) ; `avant` tourne une fois la machine faite, `apres`
+/// une fois la course finie. Rend le relevé du pilote.
+#[allow(clippy::too_many_arguments)]
+fn avec_la_carte(
+    bun: &Path,
+    nom: &str,
+    pieces: &[(u64, &[u8])],
+    portes: &[(u8, u64)],
+    arriere: &str,
+    avant: &str,
+    apres: &str,
+) -> String {
+    use disque_montage::*;
+    let module = page_module();
+    static COURSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let course = COURSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-carte-{nom}-{}-{course}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("répertoire de travail");
+    let pieces: Vec<String> = pieces
+        .iter()
+        .map(|(at, octets)| format!("[{at}, {octets:?}]"))
+        .collect();
+    let portes: Vec<String> = portes
+        .iter()
+        .map(|(vecteur, at)| format!("[{vecteur}, {at}]"))
+        .collect();
+    let driver = scratch.join("d.mjs");
+    std::fs::write(
+        &driver,
+        format!(
+            r#"
+import {{ machine }} from {host:?};
+import {{ carte }} from {carte_js:?};
+import {{ emetteur }} from {emetteur_js:?};
+import {{ readFileSync }} from "fs";
+const module = new WebAssembly.Module(readFileSync({module:?}));
+const traduire = emetteur(module).traducteur({PAGES});
+{arriere}
+// **L'heure de l'hôte, figée** : le 20 novembre 2026 à 12:34:56 UTC.
+const HEURE = Date.UTC(2026, 10, 20, 12, 34, 56);
+const vm = machine({{
+  translate: traduire,
+  pages: {PAGES},
+  carte: (ram) => carte(module, {{ ram, disque: arriere, heure: () => HEURE }}),
+}});
+const octets = new Uint8Array(vm.memory.buffer);
+for (const [at, contenu] of [{pieces}]) octets.set(contenu, at);
+const vue = new DataView(vm.memory.buffer);
+const porte = (offset) => [
+  (BigInt(offset) & 0xffffn) | (0x10n << 16n) | (0x0en << 40n) | (1n << 47n)
+    | ((BigInt(offset) & 0xffff0000n) << 32n),
+  BigInt(offset) >> 32n,
+];
+for (const [vecteur, at] of [{portes}]) {{
+  const [bas, haut] = porte(at);
+  vue.setBigUint64({IDT} + vecteur * 16, bas, true);
+  vue.setBigUint64({IDT} + vecteur * 16 + 8, haut, true);
+}}
+vue.setUint16({IDT_POINTER}, 256 * 16 - 1, true);
+vue.setBigUint64({IDT_POINTER} + 2, {IDT}n, true);
+vm.globals[{rip}].value = {BASE}n;
+{avant}
+const debut = performance.now();
+const why = await vm.run({{ budget: 1n << 20n, rounds: 256 }});
+const fin = performance.now();
+const lire = (at) => BigInt.asUintN(64, vm.globals[at].value).toString();
+console.log("arret " + why.stopped);
+console.log("rip " + lire({rip}));
+for (const [nom, at] of [["rbx", 3], ["r8", 8], ["r9", 9], ["r10", 10], ["r11", 11],
+  ["r12", 12], ["r13", 13], ["r14", 14], ["r15", 15]]) console.log(nom + " " + lire(at));
+console.log("tsc " + lire({tsc}));
+console.log("duree " + (fin - debut).toFixed(1));
+{apres}
+"#,
+            host = workspace_root().join("web/host.js").to_string_lossy(),
+            carte_js = workspace_root().join("web/carte.js").to_string_lossy(),
+            emetteur_js = workspace_root()
+                .join("web/page-emitter.js")
+                .to_string_lossy(),
+            module = module.to_string_lossy(),
+            pieces = pieces.join(", "),
+            portes = portes.join(", "),
+            rip = RIP_SLOT,
+            tsc = wisq_vm::x86_wasm::TSC_SLOT,
+        ),
+    )
+    .expect("le pilote");
+    let text = run_driver(bun, &driver);
+    let _ = std::fs::remove_dir_all(&scratch);
+    text
+}
+
+/// **Une lecture du disque servie plus tard, pendant un `hlt`, réveille
+/// l'invité.**
+///
+/// C'est le cas de tout noyau qui lit son disque : le pilote pose sa requête,
+/// notifie, et le fil qui attend s'endort — le processeur s'arrête sur un
+/// `hlt`. La réponse de l'arrière est une promesse (un `fetch` dans la page,
+/// un message vers Swift), et elle ne se résout que si la boucle rend la main
+/// au moteur. L'attente d'un `hlt` avançait l'horloge sans jamais céder : la
+/// réponse ne serait jamais venue, et Alpine aurait vu ses lectures expirer.
+///
+/// Ici l'arrière répond trente millisecondes après la demande, par un
+/// `setTimeout`. L'invité, arrêté entre les deux, doit être réveillé par la
+/// ligne 5 quand la réponse arrive — et seulement alors : le gestionnaire
+/// tourne une fois, lit l'ISR (`1`), et l'invité repart pour lire dans son
+/// tampon ce que le disque y a mis, et le statut. **L'horloge de l'invité n'a
+/// pas sauté pendant l'attente** : vu de lui, le disque a répondu
+/// sur-le-champ, et une attente qui avancerait l'horloge d'un mébi-tour
+/// passerait des secondes de temps invité à ne rien faire.
+#[test]
+fn a_disk_read_answered_later_wakes_the_halted_guest() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, TAMPON);
+    program.extend_from_slice(&[0x48, 0x8b, 0x18]); // mov (%rax),%rbx
+    rax(&mut program, STATUT);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "differee",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        r#"
+const lectures = [];
+let demandee = null;
+let rendue = null;
+const arriere = {
+  octets: 1 << 20,
+  lire: (decalage, longueur) => new Promise((rendre) => {
+    lectures.push(decalage + "+" + longueur);
+    demandee = performance.now();
+    const vers = new Uint8Array(longueur);
+    vers.set(new TextEncoder().encode("vda:" + decalage));
+    setTimeout(() => { rendue = performance.now(); rendre(vers); }, 30);
+  }),
+};
+"#,
+        &requete_du_disque(7, TAMPON, 512),
+        r#"
+console.log("lectures " + lectures.join(","));
+console.log("attente " + (rendue === null ? "jamais" : (rendue - demandee >= 25)));
+console.log("delivrees " + vm.materiel.delivrees);
+"#,
+    );
+    assert_eq!(
+        line_of(&text, "lectures "),
+        "3584+512",
+        "une lecture, celle du secteur 7 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "attente "),
+        "true",
+        "et l'arrière a répondu plus tard, pas tout de suite : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "1",
+        "le gestionnaire de la ligne 5 a tourné une fois : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12 "),
+        "1",
+        "l'ISR disait « la file » : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        u64::from_le_bytes(*b"vda:3584").to_string(),
+        "l'invité est reparti, et lit dans son tampon ce que le disque a rendu : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r9 "),
+        "0",
+        "le statut dit « réussi » : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "et la machine finit sur le dernier hlt, interruptions éteintes : {text}"
+    );
+    // Quelques tours de budget, pas un mébi-tour d'attente.
+    let tsc: u64 = line_of(&text, "tsc ").parse().expect("tsc");
+    assert!(
+        tsc < 64 << 20,
+        "l'horloge de l'invité n'a pas sauté pendant l'attente du disque : {tsc}\n{text}"
+    );
+}
+
+/// **Le disque qui réécrit une page de code par DMA fait oublier ses
+/// traductions.**
+///
+/// Une fonction à `0x18000` rend 1 dans `%ebx` ; l'invité l'appelle — elle
+/// est traduite, et ses lignes inscrites dans la carte du code —, puis lit un
+/// secteur du disque **par-dessus elle**, où la même fonction rend 2, et la
+/// rappelle. Sur le silicium, le second appel rend 2. Ici, la carte écrit la
+/// RAM par `carte.ram_ecrire` : si l'écriture ne passe pas par `ecrit`, la
+/// traduction d'avant reste en table, et le second appel rend 1 — du code que
+/// la mémoire ne porte plus. C'est ce que l'entrée du JOURNAL de #708
+/// demandait (« demain le disque, dont le DMA écrit des pages où un programme
+/// a pu tourner »).
+#[test]
+fn a_disk_read_over_translated_code_forgets_its_translation() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FONCTION: u64 = 0x1_8000;
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    rax(&mut program, FONCTION);
+    program.extend_from_slice(&[0xff, 0xd0]); // call *%rax — rend 1
+    program.extend_from_slice(&[0x49, 0x89, 0xde]); // mov %rbx,%r14
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, FONCTION);
+    program.extend_from_slice(&[0xff, 0xd0]); // call *%rax — rend 2 ?
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let un: &[u8] = &[0xbb, 0x01, 0x00, 0x00, 0x00, 0xc3]; // mov $1,%ebx ; ret
+    let text = avec_la_carte(
+        &bun,
+        "dma",
+        &[(BASE, &program), (HANDLER, &handler), (FONCTION, un)],
+        &[(VECTEUR, HANDLER)],
+        r#"
+const arriere = {
+  octets: 1 << 20,
+  // `mov $2,%ebx ; ret`, et des zéros.
+  lire: async (decalage, longueur) => {
+    const vers = new Uint8Array(longueur);
+    vers.set([0xbb, 0x02, 0x00, 0x00, 0x00, 0xc3]);
+    return vers;
+  },
+};
+"#,
+        &requete_du_disque(0, FONCTION, 512),
+        r#"console.log("invalidees " + vm.cache.invalidees);"#,
+    );
+    assert_eq!(
+        line_of(&text, "r14 "),
+        "1",
+        "le premier appel rend 1 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "1",
+        "la lecture a réveillé l'invité : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "2",
+        "le second appel tourne les octets que le disque a posés, pas la traduction d'avant : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
+/// **Les ports de la carte après ceux de l'hôte, ses lignes dans les deux
+/// 8259, et l'impulsion de remise à zéro.**
+///
+/// L'invité initialise les deux 8259 (maître à `0x30`, lignes 1 et 2
+/// démasquées ; esclave à `0x38`, sa ligne 1 — l'IRQ 9 — démasquée), relit
+/// le masque du maître, lit l'horloge CMOS (secondes, heures), un port où il
+/// n'y a personne, puis `sti ; hlt`. Le pilote a posé, avant la course, une
+/// touche dans l'i8042 (`A` enfoncé, `0x1e`) et levé l'IRQ 9 du dehors.
+///
+/// Ce qui doit arriver, et ce que chaque moitié tient :
+///
+/// - le masque relu est celui que l'invité a écrit : le port `0x21` est au
+///   8259 de l'hôte, la carte passe après ;
+/// - l'heure est celle de l'hôte, en BCD (`0x56` secondes, `0x12` heures) :
+///   `0x70`/`0x71` sont à la carte ;
+/// - `0x80` n'est à personne : `0xff`, le bus qui flotte ;
+/// - la ligne 1 de la carte réveille l'invité sur le vecteur `0x31`, une fois
+///   : le gestionnaire lit `0x60` (la touche), ce qui baisse la ligne — et la
+///   recopie l'efface du registre de requête, sans quoi elle serait
+///   redélivrée après la fin d'interruption ;
+/// - l'IRQ 9 passe par l'esclave et la cascade, sur le vecteur `0x39`, une
+///   fois (son gestionnaire la masque : elle reste levée) ;
+/// - puis `0xFE` sur `0x64` : la course s'arrête sur le redémarrage demandé.
+#[test]
+fn the_card_answers_behind_the_hosts_chips_and_its_lines_reach_both_8259s() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const CLAVIER: u64 = 0x1_1000;
+    const ESCLAVE: u64 = 0x1_1800;
+    let mut program = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff, 0x4d, 0x31, 0xed]); // xor %r15 ; xor %r13
+    for (port, valeur) in [
+        (0x20, 0x11),
+        (0x21, 0x30),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xf9),
+        (0xa0, 0x11),
+        (0xa1, 0x38),
+        (0xa1, 0x02),
+        (0xa1, 0x01),
+        (0xa1, 0xfd),
+    ] {
+        out_al(&mut program, port, valeur);
+    }
+    program.extend_from_slice(&[0xe4, 0x21, 0x4c, 0x0f, 0xb6, 0xd0]); // in $0x21 ; movzx → r10
+    out_al(&mut program, 0x70, 0x00);
+    program.extend_from_slice(&[0xe4, 0x71, 0x4c, 0x0f, 0xb6, 0xc0]); // les secondes → r8
+    out_al(&mut program, 0x70, 0x04);
+    program.extend_from_slice(&[0xe4, 0x71, 0x4c, 0x0f, 0xb6, 0xc8]); // les heures → r9
+    program.extend_from_slice(&[0xe4, 0x80, 0x4c, 0x0f, 0xb6, 0xd8]); // personne → r11
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    out_al(&mut program, 0x64, 0xfe); // l'impulsion de remise à zéro
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let mut clavier = vec![0xe4, 0x60, 0x4c, 0x0f, 0xb6, 0xe0]; // in $0x60 ; movzx → r12
+    out_al(&mut clavier, 0x20, 0x20);
+    clavier.extend_from_slice(&[0x49, 0x83, 0xc7, 0x01, 0x48, 0xcf]); // add $1,%r15 ; iretq
+    let mut esclave = Vec::new();
+    out_al(&mut esclave, 0xa1, 0xff); // la ligne reste levée : masquée
+    out_al(&mut esclave, 0xa0, 0x20);
+    out_al(&mut esclave, 0x20, 0x20);
+    esclave.extend_from_slice(&[0x49, 0x83, 0xc5, 0x01, 0x48, 0xcf]); // add $1,%r13 ; iretq
+    let text = avec_la_carte(
+        &bun,
+        "raccord",
+        &[(BASE, &program), (CLAVIER, &clavier), (ESCLAVE, &esclave)],
+        &[(0x31, CLAVIER), (0x39, ESCLAVE)],
+        "const arriere = null;",
+        r#"
+vm.carte.touche(0x1e, false, true);
+console.log("levee " + vm.carte.lever(9));
+"#,
+        r#"
+console.log("requete " + vm.pics.master.request.toString(16) + " " + vm.pics.slave.request.toString(16));
+console.log("remise " + vm.carte.remise());
+"#,
+    );
+    assert_eq!(line_of(&text, "levee "), "true", "{text}");
+    assert_eq!(
+        line_of(&text, "r10 "),
+        0xf9.to_string(),
+        "le masque relu est celui du 8259 de l'hôte : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r8 "), line_of(&text, "r9 ")),
+        (0x56.to_string(), 0x12.to_string()),
+        "l'horloge de la carte rend l'heure de l'hôte, en BCD : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r11 "),
+        0xff.to_string(),
+        "un port à personne flotte : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r15 "), line_of(&text, "r12 ")),
+        ("1".to_string(), 0x1e.to_string()),
+        "la ligne du clavier, au maître, une fois, et la touche lue : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r13 "),
+        "1",
+        "l'IRQ 9, par l'esclave et la cascade, une fois : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "arret "),
+        "redémarrage demandé (impulsion du 8042)",
+        "{text}"
+    );
+    assert_eq!(
+        line_of(&text, "requete "),
+        "0 2",
+        "à la fin : la ligne 1 du maître effacée, l'IRQ 9 toujours levée chez l'esclave : {text}"
+    );
+}
+
+/// **Un texte tapé réveille un invité arrêté, au rythme d'une main.**
+///
+/// `taperTexte` pose ses frappes en file, et la carte ne les rend qu'à leur
+/// heure — trente millisecondes tenues, vingt d'écart, en tics du 8254 —, par
+/// `battre`. Un invité qui attend une touche dort sur un `hlt`, et ici aucune
+/// horloge n'est programmée : rien d'autre que la carte ne peut le réveiller.
+/// L'attente du `hlt` doit donc compter la carte (`reveil`), faire passer le
+/// temps, et recopier ses lignes à chaque pas ; sans l'un des trois, la
+/// machine s'arrête sur son premier `hlt`, les frappes encore en file.
+///
+/// Le gestionnaire lit chaque octet de `0x60` et compte ; l'invité se
+/// rendort tant qu'il n'en a pas quatre (`a` enfoncé, relâché, `b` enfoncé,
+/// relâché), puis s'arrête pour de bon.
+#[test]
+fn typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff, 0x4d, 0x31, 0xe4]); // xor %r15 ; xor %r12
+    for (port, valeur) in [
+        (0x20, 0x11),
+        (0x21, 0x30),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xfd),
+    ] {
+        out_al(&mut program, port, valeur);
+    }
+    let boucle = program.len();
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    program.extend_from_slice(&[0x49, 0x83, 0xff, 0x04]); // cmp $4,%r15
+    let saut = (boucle as i64 - (program.len() as i64 + 2)) as i8;
+    program.extend_from_slice(&[0x72, saut as u8]); // jb boucle
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    // Chaque octet lu entre dans `%r12` par le haut : le dernier lu en bas.
+    let mut clavier = vec![0x49, 0xc1, 0xe4, 0x08]; // shl $8,%r12
+    clavier.extend_from_slice(&[0xe4, 0x60]); // in $0x60,%al
+    clavier.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0xc0, 0x4d, 0x09, 0xc4]); // movzx → r8 ; or %r8,%r12
+    out_al(&mut clavier, 0x20, 0x20);
+    clavier.extend_from_slice(&[0x49, 0x83, 0xc7, 0x01, 0x48, 0xcf]); // add $1,%r15 ; iretq
+    let text = avec_la_carte(
+        &bun,
+        "frappes",
+        &[(BASE, &program), (HANDLER, &clavier)],
+        &[(0x31, HANDLER)],
+        "const arriere = null;",
+        r#"console.log("en_file " + vm.carte.taperTexte("ab"));"#,
+        "",
+    );
+    assert_eq!(
+        line_of(&text, "en_file "),
+        "4",
+        "quatre frappes en file, deux par caractère : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "4",
+        "les quatre octets sont arrivés, chacun par une interruption : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12 "),
+        0x1e9e30b0u64.to_string(),
+        "dans l'ordre : a enfoncé, relâché, b enfoncé, relâché : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+    // La dernière frappe part quatre-vingts millisecondes après la première
+    // (trente tenues, vingt d'écart, trente tenues) : le temps de l'invité a
+    // passé, dans l'attente, au moins de ça — à un gigahertz.
+    let tsc: u64 = line_of(&text, "tsc ").parse().expect("tsc");
+    assert!(
+        tsc >= 80_000_000,
+        "le temps a passé pendant l'attente : {tsc}\n{text}"
+    );
+}
