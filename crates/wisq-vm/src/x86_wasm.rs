@@ -1963,6 +1963,8 @@ impl Body {
 /// Le module émis pour un bloc.
 pub struct Module;
 
+#[path = "x86_wasm_float.rs"]
+mod float;
 #[path = "x86_wasm_vector.rs"]
 mod vector;
 

@@ -63,7 +63,7 @@
 
 #[path = "x86_vector.rs"]
 mod vector;
-pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector};
+pub use vector::{Float, FloatOp, Lanes, Logic, Mask, Shift, Shuffle, Vector};
 
 /// La largeur d'une opération, en octets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

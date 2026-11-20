@@ -4763,6 +4763,10 @@ struct VectorOracle {
     /// `(instruction, état, xmm0 bas, xmm0 haut, xmm1 bas, xmm1 haut, rax,
     /// mémoire)` — la mémoire `None` quand la fenêtre n'a pas bougé.
     cases: Vec<(String, String, [u64; 5], Option<String>)>,
+    /// **Les drapeaux d'après, cas par cas**, pour le corpus flottant
+    /// seulement : `ucomis*` et `comis*` en écrivent. Les autres corpus ne les
+    /// gardent pas, et ce qu'ils exigent est que les drapeaux ne bougent pas.
+    flags: HashMap<(String, String), u64>,
 }
 
 fn read_vector_oracle(name: &str) -> VectorOracle {
@@ -4772,7 +4776,11 @@ fn read_vector_oracle(name: &str) -> VectorOracle {
         states: HashMap::new(),
         instructions: Vec::new(),
         cases: Vec::new(),
+        flags: HashMap::new(),
     };
+    // Le corpus flottant range les drapeaux d'après en neuvième colonne, à la
+    // place de la mémoire : aucune de ses formes n'écrit en mémoire.
+    let flags_after = name == FLOAT_ORACLE;
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -4795,6 +4803,10 @@ fn read_vector_oracle(name: &str) -> VectorOracle {
                     *slot = hex(field);
                 }
                 let memory = match f.get(8) {
+                    _ if flags_after => {
+                        oracle.flags.insert((f[1].into(), f[2].into()), hex(f[8]));
+                        None
+                    }
                     Some(&"-") | None => None,
                     Some(text) => Some((*text).to_string()),
                 };
@@ -4814,13 +4826,18 @@ const VECTOR_DATA: u64 = 0x3000_1000;
 /// rendre la liste des écarts — vide quand tout est juste. Chaque forme doit
 /// se traduire : une forme refusée est un écart, pas un cas en moins.
 fn replay_vector_oracle(bun: &Path, name: &str) -> (usize, Vec<String>) {
-    use wisq_vm::x86_wasm::{FAULT_SLOT, MXCSR_SLOT, STOP_SLOT, XMM_SLOT};
-    let oracle = read_vector_oracle(name);
-    let scratch = std::env::temp_dir().join(format!(
-        "wisq-x86-vector-{}-{}",
+    replay_oracle(
+        bun,
         name.trim_end_matches(".tsv"),
-        std::process::id()
-    ));
+        &read_vector_oracle(name),
+    )
+}
+
+/// La même, sur un corpus déjà lu — ou écrit à la main.
+fn replay_oracle(bun: &Path, tag: &str, oracle: &VectorOracle) -> (usize, Vec<String>) {
+    use wisq_vm::x86_wasm::{FAULT_SLOT, MXCSR_SLOT, STOP_SLOT, XMM_SLOT};
+    let scratch =
+        std::env::temp_dir().join(format!("wisq-x86-vector-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::create_dir_all(&scratch).expect("répertoire de travail");
     let driver = scratch.join("driver.js");
@@ -4899,7 +4916,12 @@ fn replay_vector_oracle(bun: &Path, name: &str) -> (usize, Vec<String>) {
         checked += 1;
         let field = |name: &str| hex(&got[name]);
         let end = CODE + code.len() as u64;
-        let flags = oracle.states[state][5] | 2;
+        let flags = oracle
+            .flags
+            .get(&(instruction.clone(), state.clone()))
+            .copied()
+            .unwrap_or(oracle.states[state][5])
+            | 2;
         let mut differences = Vec::new();
         if field("rip") != end || field("stop") != 0 || field("fault") != 0 {
             differences.push(format!(
@@ -5022,6 +5044,220 @@ fn the_emitter_matches_the_silicon_on_the_sse2_integer_corpus() {
     );
     let cases = read_vector_oracle("x86-simd-oracle.tsv").cases.len();
     assert_eq!(checked, cases, "tous les cas du corpus doivent être jugés");
+}
+
+/// Le corpus du flottant scalaire et empaqueté.
+const FLOAT_ORACLE: &str = "x86-float-oracle.tsv";
+
+/// **Le calcul flottant de `x86-float-oracle.tsv`**, au même juge : les
+/// quatre opérations, `min`, `max`, les racines, les comparaisons en masque
+/// et en drapeaux, et les conversions — 127 formes relevées sur le silicium
+/// (`scripts/build-x86-float-oracle.py`), dont le cœur Swift passe déjà
+/// chacune. C'est le mur qui arrêtait Alpine démarré depuis son ISO :
+/// `cvtsi2sd -0x34(%rbx),%xmm0`, dans le premier programme qui calcule.
+///
+/// **Ce qui est jugé en plus des autres corpus : les drapeaux d'après**, cas
+/// par cas (`ucomis*` et `comis*` en écrivent, et rien d'autre ne doit en
+/// toucher un). MXCSR doit rester à sa valeur d'allumage : l'émetteur ne
+/// lève pas les bits d'exception, et ne doit rien y écrire d'autre — le
+/// corpus ne les garde pas, et les juger demanderait de les modéliser.
+///
+/// **Les huit formes de SSE3** (`haddps`, `hsubps`, `haddpd`, `hsubpd`, en
+/// registre et en mémoire) **ne sont pas lues** : CPUID n'annonce pas SSE3,
+/// et la glibc ne les choisit donc pas. Elles doivent être refusées, pas
+/// traduites de travers ; toute autre forme refusée est un écart.
+#[test]
+fn the_emitter_matches_the_silicon_on_the_float_corpus() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : l'émetteur ne serait vérifié par rien.");
+    };
+    let (checked, wrong) = replay_vector_oracle(&bun, FLOAT_ORACLE);
+    let sse3 = |line: &str| line.starts_with("hadd") || line.starts_with("hsub");
+    let refused_sse3 = wrong
+        .iter()
+        .filter(|line| sse3(line) && line.contains("refusée par l'émetteur"))
+        .count();
+    let others: Vec<&String> = wrong
+        .iter()
+        .filter(|line| !(sse3(line) && line.contains("refusée par l'émetteur")))
+        .collect();
+    assert!(
+        others.is_empty(),
+        "{} écarts sur {checked} cas :\n{}",
+        others.len(),
+        others
+            .iter()
+            .take(40)
+            .map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert_eq!(
+        refused_sse3, 8,
+        "les huit formes de SSE3, et elles seules, sont refusées"
+    );
+    let oracle = read_vector_oracle(FLOAT_ORACLE);
+    let sse3_cases = oracle
+        .cases
+        .iter()
+        .filter(|case| {
+            oracle
+                .instructions
+                .iter()
+                .any(|(id, _, mnemonic)| id == &case.0 && sse3(mnemonic))
+        })
+        .count();
+    assert_eq!(
+        checked + sse3_cases,
+        oracle.cases.len(),
+        "tous les cas des autres formes doivent être jugés"
+    );
+}
+
+/// **Les formes que le corpus flottant ne porte pas, et les bornes qu'il ne
+/// touche pas.**
+///
+/// Le corpus prend ses opérandes mémoire dans les formes arithmétiques, et
+/// ses conversions vers et depuis un registre général en registre
+/// seulement. Or le mur d'Alpine était `cvtsi2sd -0x34(%rbx),%xmm0` : une
+/// conversion **depuis la mémoire**. Et aucune de ses valeurs n'est la borne
+/// d'une conversion de soixante-quatre bits — `2⁶³`, qui ne tient pas et rend
+/// l'entier indéfini, quand `2⁶³ - 1024` (le plus grand double en dessous)
+/// tient. Ces cas sont écrits ici, la valeur attendue calculée en Rust sur
+/// l'hôte (des nombres ordinaires, aucun NaN : l'arithmétique d'IEEE 754 y est
+/// la même partout), et rejoués par le même juge.
+///
+/// La fenêtre à `0x20(%rsi)` porte les octets `0x30`, `0x31`… ; le pilote
+/// pose les registres de l'état, et `rax` sert de source entière.
+#[test]
+fn the_float_forms_the_corpus_lacks_follow_the_same_rules() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : l'émetteur ne serait vérifié par rien.");
+    };
+    // Les huit octets à `0x20(%rsi)`, lus comme le fait l'invité.
+    let window: Vec<u8> = (0x30u8..0x38).collect();
+    let dword = u32::from_le_bytes(window[..4].try_into().expect("quatre octets"));
+    let qword = u64::from_le_bytes(window[..8].try_into().expect("huit octets"));
+    let two_to_63 = 9_223_372_036_854_775_808.0f64;
+    let below = f64::from_bits(two_to_63.to_bits() - 1);
+    let high = 0x4142_4344_4546_4748u64;
+    // (octets, mnémonique, xmm0 bas, xmm1 bas, rax, xmm0 bas attendu, rax attendu)
+    let forms: Vec<(Vec<u8>, &str, u64, u64, u64, u64, u64)> = vec![
+        (
+            vec![0xf2, 0x0f, 0x2a, 0x46, 0x20],
+            "cvtsi2sd 0x20(%rsi),%xmm0",
+            0,
+            0,
+            0,
+            f64::from(dword as i32).to_bits(),
+            0,
+        ),
+        (
+            vec![0xf2, 0x48, 0x0f, 0x2a, 0x46, 0x20],
+            "cvtsi2sdq 0x20(%rsi),%xmm0",
+            0,
+            0,
+            0,
+            (qword as i64 as f64).to_bits(),
+            0,
+        ),
+        (
+            vec![0xf3, 0x0f, 0x2a, 0x46, 0x20],
+            "cvtsi2ss 0x20(%rsi),%xmm0",
+            0x1111_1111_2222_2222,
+            0,
+            0,
+            0x1111_1111_0000_0000 | u64::from((dword as i32 as f32).to_bits()),
+            0,
+        ),
+        (
+            vec![0xf2, 0x48, 0x0f, 0x2a, 0xc0],
+            "cvtsi2sd %rax,%xmm0 (négatif)",
+            0,
+            0,
+            (-7i64) as u64,
+            (-7.0f64).to_bits(),
+            (-7i64) as u64,
+        ),
+        (
+            vec![0xf2, 0x48, 0x0f, 0x2c, 0xc1],
+            "cvttsd2si %xmm1,%rax (2⁶³, hors de portée)",
+            0,
+            two_to_63.to_bits(),
+            5,
+            0,
+            0x8000_0000_0000_0000,
+        ),
+        (
+            vec![0xf2, 0x48, 0x0f, 0x2c, 0xc1],
+            "cvttsd2si %xmm1,%rax (juste sous 2⁶³)",
+            0,
+            below.to_bits(),
+            5,
+            0,
+            below as i64 as u64,
+        ),
+        (
+            vec![0xf2, 0x48, 0x0f, 0x2c, 0xc1],
+            "cvttsd2si %xmm1,%rax (-2⁶³, qui tient)",
+            0,
+            (-two_to_63).to_bits(),
+            5,
+            0,
+            0x8000_0000_0000_0000,
+        ),
+        (
+            vec![0xf2, 0x0f, 0x2d, 0xc1],
+            "cvtsd2si %xmm1,%eax (2,5 au pair)",
+            0,
+            2.5f64.to_bits(),
+            u64::MAX,
+            0,
+            2,
+        ),
+        (
+            vec![0xf2, 0x0f, 0x2c, 0x46, 0x20],
+            "cvttsd2si 0x20(%rsi),%eax",
+            0,
+            0,
+            u64::MAX,
+            0,
+            f64::from_bits(qword) as i64 as u64 & 0xffff_ffff,
+        ),
+        (
+            vec![0xf2, 0x0f, 0x5a, 0x46, 0x20],
+            "cvtsd2ss 0x20(%rsi),%xmm0",
+            0x9999_9999_0000_0000,
+            0,
+            0,
+            0x9999_9999_0000_0000 | u64::from((f64::from_bits(qword) as f32).to_bits()),
+            0,
+        ),
+    ];
+    let mut oracle = VectorOracle {
+        states: HashMap::new(),
+        instructions: Vec::new(),
+        cases: Vec::new(),
+        flags: HashMap::new(),
+    };
+    for (index, (code, mnemonic, x0, x1, rax, x0_after, rax_after)) in forms.iter().enumerate() {
+        let id = format!("{index}");
+        oracle
+            .states
+            .insert(id.clone(), [*x0, high, *x1, high, *rax, 0]);
+        oracle
+            .instructions
+            .push((id.clone(), code.clone(), (*mnemonic).to_string()));
+        oracle.cases.push((
+            id.clone(),
+            id,
+            [*x0_after, high, *x1, high, *rax_after],
+            None,
+        ));
+    }
+    let (checked, wrong) = replay_oracle(&bun, "flottant-hors-corpus", &oracle);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert_eq!(checked, forms.len(), "chaque forme est jugée");
 }
 
 /// **Tout ce que le décodeur vectoriel lit, l'émetteur le traduit.**
