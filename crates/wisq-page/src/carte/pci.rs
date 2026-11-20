@@ -303,6 +303,19 @@ impl Pci {
         }
     }
 
+    /// **Brancher la carte réseau sur un emplacement neuf** : commande nulle,
+    /// fenêtre fermée et pas en mesure, ligne 3 — ce que le noyau avait réglé
+    /// pour l'ancienne carte part avec elle. C'est l'hôte neuf du cœur Swift
+    /// (`bus.network = X86PCIHost(network: nic)` dans
+    /// `X86Machine.attach(network:)`) : une carte neuve n'hérite pas de la
+    /// fenêtre d'une autre, et n'y répond qu'une fois que le noyau l'a
+    /// énumérée et ouverte.
+    pub fn brancher_reseau(&mut self, carte: VirtioNet) {
+        let mut neuf = Emplacement::nouveau(LIGNE_DU_RESEAU);
+        neuf.peripherique = Some(carte);
+        self.reseau = neuf;
+    }
+
     /// Le dernier mot écrit au port d'adresse, tel que le noyau le relit.
     pub fn adresse(&self) -> u32 {
         self.adresse

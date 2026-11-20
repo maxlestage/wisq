@@ -389,8 +389,10 @@ impl VirtioNet {
     /// Une trame sans octet après l'en-tête, sans câble, ou que la page
     /// laisse s'entasser au-delà de [`PLUS_EN_ATTENTE`], est perdue ; la
     /// requête est rendue dans tous les cas. **Un tampon hors de la RAM la
-    /// perd aussi** : le cœur Swift y lirait des zéros, mais une trame faite
-    /// en partie de zéros que l'invité n'a pas écrits n'est pas à envoyer.
+    /// perd aussi**, dès qu'on doit y lire : le cœur Swift y lirait des
+    /// zéros, mais une trame faite en partie de zéros que l'invité n'a pas
+    /// écrits n'est pas à envoyer. Un tampon dont on ne lit rien — vide, ou
+    /// venu après une trame pleine — ne la perd pas, où qu'il pointe.
     pub fn emettre(&mut self, ram: &mut dyn Ram) {
         while let Some(tete) = self.prochaine_tete(FILE_D_EMISSION, ram) {
             let mut octets = Vec::new();
@@ -401,6 +403,12 @@ impl VirtioNet {
                 }
                 let place = (OCTETS_D_EN_TETE + PLUS_GRANDE_TRAME).saturating_sub(octets.len());
                 let n = (tampon.longueur as usize).min(place);
+                // Rien à lire ici — un tampon vide, ou la trame déjà pleine :
+                // aucun octet n'en viendrait, pas même un zéro, et son adresse
+                // ne compte pas (le cœur Swift y copie zéro octet).
+                if n == 0 {
+                    continue;
+                }
                 let debut = octets.len();
                 octets.resize(debut + n, 0);
                 lisible &= ram.lire(tampon.adresse, &mut octets[debut..]);
@@ -444,7 +452,8 @@ impl VirtioNet {
     ///
     /// Un tampon trop petit pour la trame la perd et est rendu vide : la
     /// rendre tronquée ferait lire au pilote un paquet qui n'a jamais existé.
-    /// Un tampon hors de la RAM compte comme trop petit.
+    /// Un tampon hors de la RAM compte comme trop petit ; un tampon vide ne
+    /// compte pas, où qu'il pointe.
     pub fn livrer(&mut self, ram: &mut dyn Ram) {
         while !self.attente.is_empty() {
             let Some(tete) = self.prochaine_tete(FILE_DE_RECEPTION, ram) else {
@@ -460,10 +469,14 @@ impl VirtioNet {
                 if !tampon.inscriptible() {
                     continue;
                 }
-                if posees >= octets.len() {
-                    break;
-                }
                 let n = (tampon.longueur as usize).min(octets.len() - posees);
+                // Un tampon vide ne reçoit rien, où qu'il soit : il ne coupe
+                // pas la chaîne (le cœur Swift y copie zéro octet et passe au
+                // suivant). La trame déjà posée en entier, il ne reste rien à
+                // écrire, et chaque tampon qui suit est vide de même.
+                if n == 0 {
+                    continue;
+                }
                 if !ram.ecrire(tampon.adresse, &octets[posees..posees + n]) {
                     break;
                 }
@@ -1270,6 +1283,167 @@ pub(crate) mod tests {
         assert_eq!(pilote.servie(FILE_D_EMISSION, 0).2, 1);
     }
 
+    /// **Une tête ou un suivant au-delà de la file se lit modulo sa taille**
+    /// (`index % queueLimit` du Swift) : un invité qui publie 256 ou 257 ne
+    /// fait pas lire la carte hors de la table des descripteurs — dans
+    /// l'anneau des disponibles, puis au-delà. La tête rendue est celle que
+    /// le pilote a publiée, telle quelle, comme `complete(head)`.
+    #[test]
+    fn a_head_or_a_next_past_the_table_wraps_into_it() {
+        let mut pilote = Pilote::branche();
+        let (descripteurs, disponibles, _) = Pilote::anneaux(FILE_D_EMISSION);
+        pilote.ecrire(&[0; OCTETS_D_EN_TETE], 0x40000);
+        pilote.ecrire(&trame(), 0x41000);
+        pilote.poser_chaine(
+            FILE_D_EMISSION,
+            &[
+                (0x40000, OCTETS_D_EN_TETE as u32, false),
+                (0x41000, trame().len() as u32, false),
+            ],
+        );
+        // La tête publiée : 256, soit le descripteur zéro ; son suivant :
+        // 257, soit le un.
+        pilote.ram.ecrire(disponibles + 4, &256u16.to_le_bytes());
+        pilote.ram.ecrire(descripteurs + 14, &257u16.to_le_bytes());
+        pilote.notifier(1);
+        assert_eq!(pilote.carte.sortir(), Some(trame()));
+        assert_eq!((pilote.carte.emises(), pilote.carte.perdues()), (1, 0));
+        assert_eq!(pilote.servie(FILE_D_EMISSION, 0), (256, 0, 1));
+        // Du côté qui reçoit : la tête 0x0300, soit le descripteur zéro —
+        // sans le modulo, la carte la lirait trois tables plus loin, au-delà
+        // des anneaux de la file.
+        let (_, disponibles, _) = Pilote::anneaux(FILE_DE_RECEPTION);
+        pilote.poser(FILE_DE_RECEPTION, 0x50000, 2048, true);
+        pilote.ram.ecrire(disponibles + 4, &0x0300u16.to_le_bytes());
+        pilote.carte.entrer(trame_de(60, 4));
+        pilote.notifier(0);
+        assert_eq!(pilote.octets(0x5000A, 60), trame_de(60, 4));
+        assert_eq!(pilote.carte.livrees(), 1);
+        assert_eq!(pilote.servie(FILE_DE_RECEPTION, 0), (0x0300, 70, 1));
+    }
+
+    /// **Une file sans page ne lit rien** (`queue.ready` du Swift) : avant la
+    /// poignée de main, après une remise à zéro, ou une page retirée, une
+    /// notification ne prend pas la RAM basse pour un anneau. Ici, la RAM
+    /// basse en a l'air : à l'adresse deux un index publié, et à l'adresse
+    /// zéro un descripteur lisible qui pointe une trame entière — lue comme
+    /// une file, elle partirait.
+    #[test]
+    fn a_queue_without_a_page_reads_nothing() {
+        let mut ram = RamPlate(vec![0; 1 << 20]);
+        // L'index publié (un) est aussi le troisième octet de l'adresse du
+        // descripteur zéro : 0x1_0000, où l'on pose la trame.
+        ram.ecrire(2, &1u16.to_le_bytes());
+        let longueur = (OCTETS_D_EN_TETE + trame().len()) as u32;
+        ram.ecrire(8, &longueur.to_le_bytes());
+        let mut octets = vec![0u8; OCTETS_D_EN_TETE];
+        octets.extend(trame());
+        ram.ecrire(0x1_0000, &octets);
+        let avant = ram.0.clone();
+        let rien = |carte: &VirtioNet, ram: &RamPlate, quand: &str| {
+            assert_eq!(
+                (carte.emises(), carte.livrees(), carte.perdues()),
+                (0, 0, 0),
+                "{quand}"
+            );
+            assert!(!carte.interrompt(), "{quand}");
+            assert_eq!(carte.en_attente(), 1, "{quand} : la trame attend");
+            assert!(ram.0 == avant, "{quand} : la RAM basse intacte");
+        };
+        // Avant la poignée de main.
+        let mut carte = VirtioNet::default();
+        carte.brancher_cable(true);
+        carte.entrer(trame());
+        carte.ecrire_port(0x10, 1, &mut ram);
+        carte.ecrire_port(0x10, 0, &mut ram);
+        assert_eq!(carte.sortir(), None);
+        rien(&carte, &ram, "avant la poignée de main");
+        // Une page posée puis retirée.
+        for file in 0..2 {
+            carte.ecrire_port(0x0E, file, &mut ram);
+            carte.ecrire_port(0x08, PAGES[file as usize], &mut ram);
+            carte.ecrire_port(0x08, 0, &mut ram);
+        }
+        carte.ecrire_port(0x10, 1, &mut ram);
+        carte.ecrire_port(0x10, 0, &mut ram);
+        rien(&carte, &ram, "page retirée");
+        // Après la remise à zéro.
+        for file in 0..2 {
+            carte.ecrire_port(0x0E, file, &mut ram);
+            carte.ecrire_port(0x08, PAGES[file as usize], &mut ram);
+        }
+        carte.ecrire_port(0x12, 0, &mut ram);
+        carte.entrer(trame());
+        carte.ecrire_port(0x10, 1, &mut ram);
+        carte.ecrire_port(0x10, 0, &mut ram);
+        carte.sonder(None, &mut ram, false);
+        rien(&carte, &ram, "après la remise");
+    }
+
+    /// **Un tampon dont on ne lit rien ne perd pas la trame**, où qu'il
+    /// pointe : un descripteur vide hors de la RAM, ou un tampon hors de la
+    /// RAM après une trame déjà pleine. Aucun octet n'en vient, pas même un
+    /// zéro ; le cœur Swift y copie zéro octet et envoie. Du côté qui reçoit,
+    /// un tampon vide hors de la RAM ne coupe pas la chaîne. Un tampon hors
+    /// de la RAM dont il faut lire, lui, perd toujours la trame.
+    #[test]
+    fn a_buffer_with_nothing_to_read_never_loses_the_frame() {
+        let mut pilote = Pilote::branche();
+        let dehors = 0xFFFF_FFFF_0000;
+        let mut octets = vec![0u8; OCTETS_D_EN_TETE];
+        octets.extend(trame());
+        pilote.ecrire(&octets, 0x40000);
+        pilote.poser_chaine(
+            FILE_D_EMISSION,
+            &[(0x40000, octets.len() as u32, false), (dehors, 0, false)],
+        );
+        pilote.notifier(1);
+        assert_eq!(
+            pilote.carte.sortir(),
+            Some(trame()),
+            "le vide hors de la RAM"
+        );
+        assert_eq!((pilote.carte.emises(), pilote.carte.perdues()), (1, 0));
+        // Une trame de 1 600 octets, puis un tampon hors de la RAM : la trame
+        // est pleine avant lui, rien n'y est lu.
+        let grande = trame_de(1600, 6);
+        let mut octets = vec![0u8; OCTETS_D_EN_TETE];
+        octets.extend(&grande);
+        pilote.ecrire(&octets, 0x41000);
+        pilote.poser_chaine(
+            FILE_D_EMISSION,
+            &[(0x41000, octets.len() as u32, false), (dehors, 100, false)],
+        );
+        pilote.notifier(1);
+        assert_eq!(
+            pilote.carte.sortir(),
+            Some(grande[..PLUS_GRANDE_TRAME].to_vec()),
+            "après une trame pleine"
+        );
+        assert_eq!((pilote.carte.emises(), pilote.carte.perdues()), (2, 0));
+        // Hors de la RAM et à lire : perdue.
+        pilote.poser_chaine(
+            FILE_D_EMISSION,
+            &[
+                (0x40000, OCTETS_D_EN_TETE as u32, false),
+                (dehors, 60, false),
+            ],
+        );
+        pilote.notifier(1);
+        assert_eq!((pilote.carte.emises(), pilote.carte.perdues()), (2, 1));
+        assert_eq!(pilote.servie(FILE_D_EMISSION, 2).2, 3, "toutes rendues");
+        // Recevoir : un tampon vide hors de la RAM, puis un vrai.
+        pilote.poser_chaine(
+            FILE_DE_RECEPTION,
+            &[(dehors, 0, true), (0x50000, 2048, true)],
+        );
+        pilote.carte.entrer(trame_de(60, 7));
+        pilote.carte.livrer(&mut pilote.ram);
+        assert_eq!(pilote.octets(0x5000A, 60), trame_de(60, 7));
+        assert_eq!(pilote.servie(FILE_DE_RECEPTION, 0), (0, 70, 1));
+        assert_eq!((pilote.carte.livrees(), pilote.carte.perdues()), (1, 1));
+    }
+
     /// **Le câble en boucle** rend à l'invité ce qu'il a envoyé.
     #[test]
     fn a_loop_cable_brings_back_what_was_sent() {
@@ -1551,5 +1725,93 @@ pub(crate) mod tests {
             Some([0x02, 9, 9, 9, 9, 9])
         );
         assert_eq!(carte.reseau().map(VirtioNet::livrees), Some(0));
+    }
+
+    /// **Une écriture de configuration ailleurs ne touche pas la carte** : le
+    /// pont, un emplacement vide (00:06.0, le second disque absent en
+    /// 00:04.0, l'écran et la tablette absents), le disque, une autre
+    /// fonction ou un autre bus de l'emplacement cinq, une adresse sans son
+    /// bit d'activation. La commande, la fenêtre, la mesure et la ligne de
+    /// la carte restent celles que le noyau lui a écrites.
+    #[test]
+    fn a_configuration_write_elsewhere_leaves_the_card_alone() {
+        let mut carte = Carte::nouvelle();
+        carte.brancher_disque(1);
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        ouvrir(&mut carte, 5, 0xC040);
+        ouvrir(&mut carte, 3, 0xC000);
+        let ailleurs = [
+            adresse(0, 0),
+            adresse(3, 0),
+            adresse(6, 0),
+            adresse(4, 0),
+            adresse(2, 0),
+            adresse(7, 0),
+            adresse(31, 0),
+            adresse(5, 0) | (1 << 8),
+            adresse(5, 0) | (1 << 16),
+            adresse(5, 0) & !0x8000_0000,
+        ];
+        for base in ailleurs {
+            for (registre, largeur, valeur) in [
+                (0x04, 2, 0),
+                (0x10, 4, 0xFFFF_FFFF),
+                (0x10, 4, 0xD000),
+                (0x3C, 1, 11),
+            ] {
+                carte.port_ecrire(0xCF8, 4, base | registre, &mut SansRam);
+                carte.port_ecrire(0xCFC, largeur, valeur, &mut SansRam);
+            }
+            assert_eq!(
+                carte.port_lire(0xC054, 4, &mut SansRam),
+                Some(0x7369_7702),
+                "{base:#x} : la fenêtre répond encore"
+            );
+            assert_eq!(config(&mut carte, 5, 0x04), 5, "{base:#x}");
+            assert_eq!(config(&mut carte, 5, 0x10), 0xC041, "{base:#x}");
+            assert_eq!(carte.pci.reseau.ligne, LIGNE_DU_RESEAU, "{base:#x}");
+        }
+        // Le disque, lui, a reçu ce qui était pour lui.
+        assert_eq!(config(&mut carte, 3, 0x04), 0);
+        assert_eq!(config(&mut carte, 3, 0x3C) & 0xFF, 11);
+    }
+
+    /// **Une carte rebranchée a un emplacement neuf**
+    /// (`bus.network = X86PCIHost(network: nic)` dans
+    /// `X86Machine.attach(network:)`) : fenêtre fermée, commande nulle, pas
+    /// en mesure, ligne 3 — rien de ce que le noyau avait réglé pour
+    /// l'ancienne. Rouverte par le noyau, elle répond de sa nouvelle adresse.
+    /// Les disques gardent le leur.
+    #[test]
+    fn a_replugged_card_gets_a_new_slot() {
+        let mut carte = Carte::nouvelle();
+        carte.brancher_disque(1);
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        ouvrir(&mut carte, 3, 0xC000);
+        ouvrir(&mut carte, 5, 0xC040);
+        regler(&mut carte, 5, 0x3C, 1, 9);
+        regler(&mut carte, 5, 0x10, 4, 0xFFFF_FFFF);
+        assert_eq!(config(&mut carte, 5, 0x10), 0xFFFF_FFC1, "en mesure");
+        assert_eq!(carte.port_lire(0xC054, 4, &mut SansRam), Some(0x7369_7702));
+        carte.brancher_reseau([0x02, 9, 9, 9, 9, 9]);
+        assert_eq!(
+            carte.port_lire(0xC054, 4, &mut SansRam),
+            None,
+            "la fenêtre de l'ancienne"
+        );
+        assert_eq!(config(&mut carte, 5, 0x04), 0, "la commande");
+        assert_eq!(config(&mut carte, 5, 0x10), 1, "ni fenêtre ni mesure");
+        assert_eq!(carte.pci.reseau.ligne, LIGNE_DU_RESEAU);
+        assert_eq!(
+            config(&mut carte, 5, 0x3C),
+            0x100 | u32::from(LIGNE_DU_RESEAU)
+        );
+        assert_ne!(carte.tenues() & (1 << 3), 0, "la ligne 3 tenue");
+        assert_eq!(carte.tenues() & (1 << 9), 0, "la neuf rendue");
+        // Le disque n'a pas bougé.
+        assert_eq!(config(&mut carte, 3, 0x04), 5);
+        assert_eq!(carte.port_lire(0xC014, 4, &mut SansRam), Some(1));
+        ouvrir(&mut carte, 5, 0xC040);
+        assert_eq!(carte.port_lire(0xC054, 4, &mut SansRam), Some(0x0909_0902));
     }
 }

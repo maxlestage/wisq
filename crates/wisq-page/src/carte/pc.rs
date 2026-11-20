@@ -254,6 +254,15 @@ impl CartePc {
     /// dernier [`CartePc::battre`] ([`Tablette::livrer`]). Ses événements ne
     /// sont pas des requêtes : ils ne comptent pas dans ce qui est rendu.
     ///
+    /// **Et la carte réseau** : si son pilote a notifié la file d'émission,
+    /// les trames posées sont lues ([`VirtioNet::emettre`]) ; ce qui attend
+    /// de partir est donné au câble, dans le même appel — le `backend.send`
+    /// que le cœur Swift fait pendant l'`out` ; puis, si la file de
+    /// réception a été notifiée, ce qui attendait un tampon est livré
+    /// ([`VirtioNet::livrer`]). Les trames ne comptent pas non plus dans ce
+    /// qui est rendu. Questionner le câble pour ce qui arrive n'est pas ici :
+    /// c'est [`CartePc::sonder_reseau`], une fois par passage.
+    ///
     /// Sans rien à faire, elle ne lit que quelques booléens : la boucle peut
     /// l'appeler après chaque `out`, et l'appelle une fois par tour.
     pub fn servir(&mut self, ram: &mut dyn Ram) -> usize {
@@ -339,7 +348,9 @@ impl CartePc {
     /// **Brancher la carte réseau** en 00:05.0, ligne 3, d'adresse `mac`
     /// ([`MAC_PAR_DEFAUT`] : celle du cœur Swift). Le câble branché reste
     /// branché ; sans câble, ce que l'invité envoie est perdu. Une carte déjà
-    /// branchée est remplacée — à faire avant le démarrage.
+    /// branchée est remplacée, son emplacement neuf — fenêtre fermée, ligne 3
+    /// ([`Carte::brancher_reseau`]) — et ses notifications oubliées : à faire
+    /// avant le démarrage.
     pub fn brancher_reseau(&mut self, mac: [u8; 6]) {
         self.carte.brancher_reseau(mac);
         self.reseau_notifie = [false; 2];
@@ -565,7 +576,8 @@ impl CartePc {
         self.a_servir() || self.carte.reveil()
     }
 
-    /// Une notification d'un disque, ou une sonnette de la tablette, attend
+    /// Une notification d'un disque, une sonnette de la tablette, ou une
+    /// notification d'une file de la carte réseau, attend
     /// [`CartePc::servir`].
     pub fn a_servir(&self) -> bool {
         self.notifies.contains(&true)
@@ -2149,6 +2161,11 @@ pub(crate) mod tests {
         carte.brancher_reseau(MAC_PAR_DEFAUT);
         assert!(!carte.a_servir(), "la notification était pour l'ancienne");
         assert_eq!(carte.reseau().map(VirtioNet::cable_branche), Some(true));
+        assert_eq!(
+            carte.port_lire(RESEAU + 0x14, 4),
+            None,
+            "un emplacement neuf : la fenêtre de l'ancienne est fermée"
+        );
         let mut pilote = Pilote::nouveau(VirtioNet::default());
         ouvrir_le_reseau(&mut carte);
         poser_une_emission(&mut pilote, &trame(), 0x40000);
