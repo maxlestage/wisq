@@ -16,12 +16,13 @@
 //! - puis chaque garde des blocs, une par une : le code qui se réécrit (dans
 //!   le bloc, du dehors, pendant une coupure), ce qu'un bloc compare, le
 //!   budget et le service du matériel à l'instruction près, `hlt`, une table
-//!   de pages rechargée, l'instruction à cheval sur deux pages.
+//!   de pages rechargée, l'instruction à cheval sur deux pages, le code au
+//!   bout de la RAM, une adresse `%fs:`.
 
 use wisq_vm::pc::systeme::Table;
 use wisq_vm::pc::Machine;
 use wisq_vm::x86::rapide::{executer_une, specialisee, Suite, Uop};
-use wisq_vm::x86::{decode, Cpu, GuestMemory, Width};
+use wisq_vm::x86::{decode, Cpu, GuestMemory, Op, Width};
 
 // ---- Le hasard, reproductible ----
 
@@ -345,6 +346,7 @@ fn every_fast_form_does_what_execute_does() {
     let mut specialisees = 0usize;
     let mut fautes = 0usize;
     let mut anneau_trois = 0usize;
+    let mut par_un_segment = 0usize;
     let bases = [0u8, 1, 2, 3, 6, 7, 5];
     for tirage in 0..20_000 {
         let mut cpu = processeur(&mut h);
@@ -384,6 +386,25 @@ fn every_fast_form_does_what_execute_does() {
         if h.un_sur(3) {
             cpu.segments[1] = 0x33;
             anneau_trois += 1;
+        }
+        // Les bases de FS et de GS : nulles, ou une page ou trois plus loin,
+        // ou deux plus près — l'adresse `%fs:` d'un programme (le canari en
+        // `%fs:0x28`, le pointeur de fil de musl en `%fs:0`) tombe encore
+        // dans les données, mais n'est plus celle qu'on lirait sans la base.
+        let bases_de_segment = [0u64, 0x1000, 0x3000, 0u64.wrapping_sub(0x2000)];
+        cpu.fs_base = h.parmi(&bases_de_segment);
+        cpu.gs_base = h.parmi(&bases_de_segment);
+        if let Some(adresse) = instruction.memory {
+            let base = if adresse.fs {
+                cpu.fs_base
+            } else if adresse.gs {
+                cpu.gs_base
+            } else {
+                0
+            };
+            if base != 0 && instruction.op != Op::Lea && specialisee(&instruction) {
+                par_un_segment += 1;
+            }
         }
         let mut juge = cpu.clone();
         juge.jumped = false;
@@ -428,6 +449,10 @@ fn every_fast_form_does_what_execute_does() {
     assert!(specialisees > 10_000, "{specialisees} formes spécialisées");
     assert!(fautes > 1_000, "{fautes} fautes");
     assert!(anneau_trois > 4_000, "{anneau_trois} en anneau trois");
+    assert!(
+        par_un_segment > 100,
+        "{par_un_segment} formes par FS ou GS, la base non nulle"
+    );
 }
 
 // ---- Des programmes entiers, avec et sans blocs ----
@@ -724,6 +749,85 @@ fn a_block_that_rewrites_itself_runs_the_new_bytes() {
             "{nom} : l'immédiat réécrit a été lu"
         );
     }
+}
+
+/// **Un `push` qui réécrit son bloc exécute les octets neufs** : `push %rax`
+/// n'a pas d'opérande mémoire, sa pile est implicite. RSP juste derrière
+/// l'immédiat de `mov $0,%ecx` qui le suit : les huit octets empilés
+/// deviennent cet immédiat (0x11223344), puis le `hlt` d'après. Un bloc qui
+/// ne compterait pas `push` parmi les écritures exécuterait l'immédiat qu'il
+/// a rangé : zéro.
+#[test]
+fn a_push_that_rewrites_its_block_runs_the_new_bytes() {
+    // 0x1000 : push %rax ; 0x1001 : mov $0,%ecx ; 0x1006 : hlt.
+    let code = [0x50, 0xB9, 0x00, 0x00, 0x00, 0x00, 0xF4];
+    let rapide = les_deux(&code, 10, |m| {
+        m.cpu.regs[4] = 0x100A;
+        m.cpu.regs[0] = 0x9090_90F4_1122_3344;
+    });
+    assert!(rapide.blocs.construits > 0, "un bloc a servi");
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[1], 0x1122_3344, "l'immédiat empilé");
+}
+
+/// **Un `movs` qui réécrit son bloc exécute les octets neufs** : `movsb` n'a
+/// pas d'opérande mémoire non plus, ses deux adresses sont RSI et RDI. RDI
+/// sur l'immédiat de `mov $0,%cl` qui le suit, RSI sur l'octet 0x5A : CL
+/// doit valoir 0x5A, pas l'immédiat que le bloc avait rangé.
+#[test]
+fn a_movs_that_rewrites_its_block_runs_the_new_bytes() {
+    // 0x1000 : movsb ; 0x1001 : mov $0,%cl ; 0x1003 : hlt.
+    let code = [0xA4, 0xB1, 0x00, 0xF4];
+    let rapide = les_deux(&code, 10, |m| {
+        m.cpu.regs[6] = ZONE;
+        m.cpu.regs[7] = 0x1002;
+        m.cpu.memory.bytes[ZONE as usize] = 0x5A;
+    });
+    assert!(rapide.blocs.construits > 0, "un bloc a servi");
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[1] & 0xFF, 0x5A, "l'octet copié");
+}
+
+/// **Du code dans les derniers octets de la RAM prend le pas à pas** : un
+/// bloc se compare sur soixante-quatre octets lus d'un coup, qu'il n'y a
+/// pas au bout de la RAM. Sans pagination, `mov $7,%al ; hlt` dans les
+/// trois derniers octets : les deux machines s'arrêtent sur le `hlt`, AL à
+/// sept, et aucun bloc n'est construit — l'hôte ne lit rien au-delà.
+#[test]
+fn code_at_the_end_of_ram_takes_the_step_by_step_path() {
+    let rapide = les_deux(&[0xF4], 5, |m| {
+        let taille = m.cpu.memory.bytes.len();
+        m.cpu.control[0] = 1;
+        m.cpu.rip = (taille - 3) as u64;
+        m.cpu.memory.bytes[taille - 3..].copy_from_slice(&[0xB0, 0x07, 0xF4]);
+    });
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[0] & 0xFF, 7);
+    assert_eq!(rapide.cpu.rip, rapide.cpu.memory.bytes.len() as u64);
+    assert_eq!(rapide.blocs.construits, 0);
+}
+
+/// **Une adresse `%fs:` dans un bloc ajoute la base de FS**, par ses deux
+/// formes : sans base ni index (`%fs:0x10`, comme le canari `%fs:0x28`) et
+/// par une base (`%fs:(%rbx)`). FS à 0xA000 : RAX lit 0xA010, RCX 0xA020 —
+/// et non 0x10 ni 0x20, ce qu'on lirait sans la base.
+#[test]
+fn an_fs_address_in_a_block_adds_the_fs_base() {
+    // mov %fs:0x10,%rax ; mov %fs:(%rbx),%rcx ; hlt.
+    let code = [
+        0x64, 0x48, 0x8B, 0x04, 0x25, 0x10, 0x00, 0x00, 0x00, 0x64, 0x48, 0x8B, 0x0B, 0xF4,
+    ];
+    let rapide = les_deux(&code, 10, |m| {
+        m.cpu.fs_base = ZONE;
+        m.cpu.regs[3] = 0x20;
+        ecrire(m, ZONE + 0x10, 0x1111);
+        ecrire(m, ZONE + 0x20, 0x2222);
+        ecrire(m, 0x10, 0xDEAD);
+        ecrire(m, 0x20, 0xBEEF);
+    });
+    assert!(rapide.blocs.construits > 0, "un bloc a servi");
+    assert_eq!(rapide.cpu.regs[0], 0x1111, "%fs:0x10");
+    assert_eq!(rapide.cpu.regs[1], 0x2222, "%fs:(%rbx)");
 }
 
 /// **Un code réécrit du dehors ne retrouve pas son bloc**, où que tombe
