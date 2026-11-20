@@ -1767,6 +1767,18 @@ pub(crate) mod tests {
         assert_eq!(tablette.lire(0x30, 8), 0x0000_0001_0000_2000);
         assert_eq!(tablette.lire(0x30, 4), 0x0000_2000);
         assert_eq!(tablette.lire(0x34, 4), 1);
+        // **Une lecture étroite d'un champ large n'en rend que les octets
+        // bas** (`value & ((1 << (8 * width)) - 1)` du Swift) : deux octets,
+        // puis un, de chaque adresse et de `msix_config`. La tablette le
+        // tient elle-même : `Tablette::lire` est appelée sans la carte, qui
+        // ramènerait aussi la valeur à la largeur.
+        assert_eq!(tablette.lire(0x20, 2), 0x7788, "deux octets de 0x20");
+        assert_eq!(tablette.lire(0x20, 1), 0x88, "un octet de 0x20");
+        assert_eq!(tablette.lire(0x24, 2), 0x3344);
+        assert_eq!(tablette.lire(0x28, 2), 0xBBBB, "deux octets de 0x28");
+        assert_eq!(tablette.lire(0x2C, 1), 0xDD);
+        assert_eq!(tablette.lire(0x30, 1), 0x00, "l'octet bas de 0x2000");
+        assert_eq!(tablette.lire(0x10, 1), 0xFF, "un octet de 0xFFFF");
         // `queue_enable` ne lit que son bit 0 (`value & 1 != 0` du Swift) :
         // 2 ne l'active pas, 3 si.
         assert_eq!(tablette.lire(0x1C, 2), 0);
