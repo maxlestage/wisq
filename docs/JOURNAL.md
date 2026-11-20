@@ -8,6 +8,196 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Émetteur : la carte raccordée à `host.js`, Alpine monte son ISO, le flottant de SSE2, et le mur suivant est le x87
+
+**Ce qui n'allait pas.** La carte des périphériques (`web/carte.js` : i8042,
+horloge CMOS, bus PCI, disque virtio avec son arrière asynchrone) n'était
+branchée sur rien : sous l'émetteur, un noyau ne trouvait ni clavier, ni
+horloge murale, ni disque, et ne pouvait démarrer que depuis un initramfs.
+Le raccord était décrit (entrée « Le disque de la page : pont PCI et
+virtio-blk… », 14 novembre) et pas fait, avec ses deux pièges nommés : un
+`hlt` qui attend le disque ne cédait jamais le fil, donc la promesse de
+l'arrière ne se serait jamais résolue ; et un octet écrit par le disque dans
+la RAM ne faisait oublier aucune traduction (l'entrée de #708 le demandait).
+Une fois le raccord fait, Alpine démarré depuis son ISO a monté son média,
+puis s'est arrêté sur `f2 0f 2a 43 cc` — `cvtsi2sd -0x34(%rbx),%xmm0` — : le
+flottant de SSE, que l'émetteur ne lisait pas.
+
+**Ce qui est fait.**
+
+- **Le raccord** (`web/host.js`). `machine({ carte })` prend une fabrique,
+  `(ram) => carte(module, { ram, disque })`, appelée une fois la RAM créée :
+  `host.js` est embarqué tel quel dans la page et ne peut pas importer
+  `carte.js`. La vue `ram` qu'il lui donne lit et écrit la RAM par adresse
+  physique, une plage entière ou rien, et **chaque écriture passe par
+  `ecrit`** : le DMA du disque fait oublier les régions traduites des lignes
+  qu'il touche. Les ports vont à la carte **après** les puces de l'hôte (8259,
+  8254, 16550, portillon `0x61`) : rien de `host.js` n'était remplacé par la
+  carte, leurs ports ne se recouvrent pas, et l'ordre le garantit quand même.
+  Ses lignes sont recopiées à niveau dans les deux 8259 à chaque tour (levées
+  posées, tenues et retombées effacées), après `battre` (les frappes au
+  rythme d'une main, en tics du 8254). L'attente d'un `hlt` compte
+  `reveil()` et recopie les lignes à chaque pas. **Un `hlt` qui attend le
+  disque cède le fil** : `await carte.disque.attendre()` (neuf dans
+  `carte.js`, résolu à la réponse rendue, ou tout de suite sans rien en
+  vol), **sans avancer l'horloge** — vu de l'invité, le disque répond
+  sur-le-champ. L'impulsion de remise à zéro de l'i8042 (`0xFE` sur `0x64`)
+  arrête la course sur « redémarrage demandé (impulsion du 8042) », le nom du
+  banc Swift. `vm.carte` expose la carte.
+- **`kernel-entry`** : `WISQ_DISQUE=<fichier>` branche la carte et sert le
+  fichier par plages (`readSync`) à l'arrière asynchrone, en virtio-blk sur
+  00:03.0 ; ce que l'invité écrit va dans une couche en mémoire, secteur par
+  secteur, et le fichier n'est jamais écrit. Le relevé dit les lectures et
+  les écritures. `WISQ_INVITE` accepte plusieurs invites séparées par `;;`
+  (`login: ;;# `). Pas de second disque : `carte.js` n'en branche qu'un, et
+  l'ISO n'en demande pas.
+- **Le flottant de SSE et SSE2** (`Vector::Float` dans `x86_vector.rs`,
+  `x86_wasm_float.rs`, neuf) : l'arithmétique scalaire et empaquetée (`add`,
+  `sub`, `mul`, `div`, `min`, `max`, `sqrt`), `cmpss`… `cmppd` en masque,
+  `ucomis*`/`comis*` en drapeaux (ZF, PF, CF ; OF, SF, AF effacés), et les
+  conversions (`cvtss2sd`, `cvtsd2ss`, `cvtps2pd`, `cvtpd2ps`, `cvtsi2ss/sd`,
+  `cvt(t)ss/sd2si`, `cvtdq2pd/ps`, `cvt(t)pd/ps2dq`). Les règles de x86 sont
+  écrites sur les bits, portées de `X86Float.swift` : le NaN de la
+  destination puis celui de la source, rendus silencieux, l'indéfini réel
+  (le NaN **négatif**) pour une opération invalide, `min`/`max` qui rendent
+  la source quand la comparaison échoue, l'entier indéfini pour une
+  conversion qui ne tient pas — sans jamais laisser au moteur le NaN qu'il
+  choisirait (un JavaScriptCore sur ARM ne rend pas celui d'un x86). Les
+  bits d'exception, le mode d'arrondi et DAZ/FTZ de MXCSR ne sont pas
+  modélisés (tout arrondit au plus proche), et c'est écrit en tête du
+  fichier. Les formes de SSE3, que CPUID n'annonce pas, restent illisibles.
+- **`mov %sreg, m16` se produit** (seize bits, quel que soit le préfixe). Il
+  était refusé, « une forme que rien n'exerce » ; mais un refus emporte la
+  région entière, et depuis que le flottant se lit, les fenêtres du corpus
+  de `crates/wisq-page/tests/page.rs` allaient au-delà de leur forme
+  flottante jusqu'à lui : 589 traduites sur 1 845, sous le tiers que le test
+  exige (918 refus « CannotTranslate », comptés un à un : 574 sur des
+  sélecteurs rangés en mémoire). Produit, le corpus rend 958 traduites, 151
+  coupées, 736 refusées (888, 163 et 794 le 14 novembre). Le seuil du test
+  n'a pas bougé.
+- Trois tests existants disaient le contraire de ce qui est fait, et
+  changent de cas sans rien perdre : les deux tests du décodeur qui
+  prenaient `addss`/`addsd` pour illisibles prennent `haddps` (SSE3) et
+  vérifient en plus que les deux premiers se lisent ; la liste des familles
+  refusées perd `mov %ds,(%rax)`.
+
+**Comment c'est vérifié.**
+
+- **Huit tests neufs.** Dans `host_loop` (sous Bun, la carte du module de
+  la page branchée par `machine({ carte })`, le traducteur de la page sur les
+  octets de la RAM) :
+  `a_disk_read_answered_later_wakes_the_halted_guest` (le pilote virtio joué
+  par l'invité : énumération, BAR, poignée de main, notification, `sti ; hlt` ;
+  l'arrière répond trente millisecondes plus tard par un `setTimeout` ; la
+  ligne 5 réveille l'invité une fois, l'ISR vaut 1, le tampon porte
+  `vda:3584`, le statut 0, et l'horloge n'a pas sauté),
+  `a_disk_read_over_translated_code_forgets_its_translation` (une fonction
+  appelée, puis réécrite par le disque, rappelée : elle rend 2, pas le 1 de
+  sa traduction d'avant),
+  `the_card_answers_behind_the_hosts_chips_and_its_lines_reach_both_8259s`
+  (le masque relu au 8259 de l'hôte, l'heure CMOS en BCD, `0x80` à
+  personne, la touche sur la ligne 1 une fois, l'IRQ 9 par l'esclave et la
+  cascade une fois, puis la remise à zéro),
+  `typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand` (`taperTexte("ab")`
+  réveille un invité sans horloge, quatre octets dans l'ordre, quatre-vingts
+  millisecondes de temps invité au moins),
+  `a_card_line_that_falls_before_delivery_is_not_delivered`,
+  `storing_a_segment_selector_to_memory_writes_sixteen_bits`. Dans
+  `x86_wasm` : `the_emitter_matches_the_silicon_on_the_float_corpus` (les
+  119 formes de `x86-float-oracle.tsv` hors les huit de SSE3, chaque cas
+  jugé, drapeaux d'après compris, MXCSR intact) et
+  `the_float_forms_the_corpus_lacks_follow_the_same_rules` (les formes
+  mémoire des conversions, dont celle du mur, et les bornes `2⁶³`, juste
+  dessous, `-2⁶³`, et 2,5 arrondi au pair). Le balayage
+  `every_vector_form_the_decoder_reads_is_one_the_emitter_translates` couvre
+  les formes neuves sans changement.
+- **Trente-quatre sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` vide ensuite), tous tombent :
+  - raccord (15) : le `hlt` qui ne cède plus le fil ; l'attente qui avance
+    l'horloge ; le DMA sans `ecrit` ; les lignes jamais effacées du maître
+    (**survivait d'abord** : une ligne délivrée sort du registre de requête
+    de toute façon ; `a_card_line_that_falls_before_delivery_is_not_delivered`
+    l'a fait tomber) ; l'esclave non recopié ; le `in` de la carte ignoré ;
+    son `out` jamais appelé ; la remise non notée ; non arrêtée ; `reveil`
+    hors de l'attente ; les lignes non recopiées dans l'attente ; `battre`
+    jamais appelé ; la recopie absente du tour ; `attendre` qui n'attend
+    jamais ; la RAM de la carte qui refuse tout ;
+  - flottant (16) : l'indéfini positif ; le NaN de la destination non rendu
+    silencieux ; `max` qui compare comme `min` ; PF et ZF mal placés ; la
+    borne haute d'une conversion incluse (**survivait d'abord** : le corpus
+    ne porte pas `2⁶³` ; le test des formes hors corpus l'a fait tomber) ;
+    toujours tronqué ; la charge d'un NaN élargi de vingt-huit ; le NaN
+    rétréci non silencieux ; le haut d'un élément simple perdu ; `REX.W`
+    ignoré par `cvtsi2sd` ; `ord` rendu comme `unord` ; un entier de
+    trente-deux bits lu sur soixante-quatre ; les éléments empaquetés mal
+    rangés ; la racine qui lit la destination ; l'immédiat de `cmpss` non lu ;
+  - sélecteur (3) : la forme mémoire refusée de nouveau (tombe dans son test,
+    et dans le corpus de la page) ; trente-deux bits écrits.
+- `cargo test --release` : 860 réussis, 0 échec ; `lib`, `x86_wasm` et
+  `host_loop` de `wisq-vm` pareil avec les assertions et les débordements
+  armés. `cargo fmt --check`, les deux `clippy` (dont `wisq-page` en
+  `wasm32-unknown-unknown`), `check-whitespace`, `check-project-sources`,
+  SwiftLint `--strict` : propres. Le Swift n'est pas touché.
+- Compte publié : 3 916 → 3 924 (Swift 3 065 + Rust 859) ; site reconstruit,
+  `bun test` du site : 476 réussis.
+- Le module de la page passe de 586 559 à 625 106 octets (115 595 à 123 742
+  en gzip -9), sur `target/page`.
+
+**Mesures**, l'ISO `alpine-virt-3.24.4-x86_64.iso` (somme vérifiée), son
+`vmlinuz-virt` et son `initramfs-virt`, 512 Mio, ligne `console=ttyS0
+modules=loop,squashfs,sd-mod,usb-storage`, une course à la fois, la RSS
+relevée chaque seconde :
+
+| | jusqu'où | temps | régions | pic résident |
+| --- | --- | --- | --- | --- |
+| émetteur (`kernel-entry`, `WISQ_DISQUE`) | « Mounting boot media: ok » | 181 et 204 s | 143 635 et 142 609 traduites | 907 et 903 Mio |
+| émetteur | le mur x87 | 205, 209 et 218 s (la dernière pendant une série de sabotages) | 154 655 à 156 935 | 906 à 910 Mio |
+| cœur Swift (`X86BootAttemptTests`, `WISQ_PC_DISK_FILE`) | `login: root`, `uname -a`, `ls /` | 89,4 s | 4,41 milliards d'instructions, 49 MIPS | 219 Mio |
+
+Sous l'émetteur, la traduction elle-même coûte 20 à 21 s (0,14 ms par
+région) ; le cache de code tourne à sa borne (16 384 régions, 64 Mio) et
+évince 46 899 à 51 672 régions, dont 33 659 à 37 818 sont retraduites. Le
+reste est la compilation des modules par JavaScriptCore et l'exécution. Le
+disque sert 254 à 368 lectures (2,0 à 3,7 Mo) ; le cœur Swift en sert 1 081
+jusqu'à l'invite. **Le cœur Swift va deux fois plus vite que l'émetteur sur
+ce démarrage**, qui est surtout de l'espace utilisateur neuf
+(`nlplug-findfs`, `modprobe`, `apk`) : chaque programme se traduit, et le
+gain de l'émetteur sur le code qui tourne longtemps ne s'y voit pas.
+
+**Le mur suivant : le x87.** Entre « Mounting boot media: ok » et
+« Installing packages to root filesystem », la course s'arrête sur `db 44
+24 20` — `fild 0x20(%rsp)` —, suivi de `fildll (%rsp)` et `fmulp` : le
+`long double` de musl, dans `lib/ld-musl-x86_64.so.1` au décalage
+`0x15434` du fichier (trouvé en cherchant ces octets dans les paquets de
+l'ISO). Le cœur Swift l'a passé avec `X86X87.swift` et ses voisins : 121
+formes jugées par `x86-x87-oracle.tsv`, un flottant de quatre-vingts bits en
+logiciel. Ce n'est pas une instruction de plus : il faut une pile de huit
+registres de quatre-vingts bits **dans les globales** (sinon `fxsave` ne les
+sauve pas d'un processus à l'autre — donc `GLOBAL_COUNT`, `host.js`,
+`WebKitBench.swift` et chaque module changent), et une arithmétique de
+quatre-vingts bits que WebAssembly n'a pas. C'est une tranche à elle.
+
+**Ce qui reste.**
+
+- **Le x87 sous l'émetteur**, pour atteindre l'invite de connexion de l'ISO.
+  Le flux « cœur » en aura besoin aussi pour la machine native
+  (`x86_extended.rs`) : un flottant de quatre-vingts bits en Rust, écrit une
+  fois et jugé par `x86-x87-oracle.tsv`, servirait les deux — l'interprète
+  directement, l'émetteur par un appel hors de la région ou des fonctions
+  dans le module.
+- **La fusion avec le flux « cœur »** : `Vector::Float` est une variante de
+  plus de `Vector`, et `Cpu::execute_vector` de la branche
+  `claude/pc-rust-coeur` la refusera d'un bras à ajouter (`x86_vector.rs`
+  est touché aux deux bouts : l'énumération et le décodage d'ici, l'exécution
+  là-bas).
+- La carte dans la page de l'application (`desktop.rs` ne la branche pas
+  encore), le magasin du disque côté Swift (`wisq://disque`), le second
+  disque, l'écran, la tablette et le réseau par `carte.js`, et l'instantané
+  de la carte.
+- Les bits d'exception et le mode d'arrondi de MXCSR sous l'émetteur.
+- Le coût de la traduction de l'espace utilisateur neuf : le cache à sa
+  borne retraduit un tiers de ce qu'il évince.
+
 ## 2026-11-21 — Carte réseau : l'émission ne part qu'à son `out`
 
 Le dernier contrôle du flux « périphériques » a trouvé une garde de
