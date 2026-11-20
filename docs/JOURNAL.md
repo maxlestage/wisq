@@ -8,6 +8,137 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust : les sauts non canoniques, `#SS`, la RAM que l'hôte refuse, et trois gardes sans test
+
+**Ce qui n'allait pas.** Le second contrôle adverse de la tranche a relu les
+deux commits de la reprise (e06969f9, 51dbdcdc) et trouvé :
+
+- *Trois gardes de `systeme.rs` sans test*, prouvées non équivalentes par
+  des tests temporaires : les témoins de faute effacés par
+  `faute_du_dernier_acces` (sans le `take()`, une division par zéro après
+  une faute de page devenait une seconde faute de page, puisque
+  `faute_d_execution` regarde `unmapped` d'abord) ; le cadre d'`iretq` et de
+  `lretq` lu avec les droits de l'anneau courant (lu en anneau zéro, un
+  programme lisait un cadre posé sur une page du noyau) ; le RPL retiré du
+  code d'erreur d'un retour refusé (le test empilait 0x10, dont le RPL vaut
+  zéro, et le masque n'y changeait rien).
+- *`--ram` sans test exact, et un plafond mal justifié* : `1 << 19` au lieu
+  de `1 << 20` et `>=` au lieu de `>` survivaient. Et le plafond de 64 Gio
+  ne promettait rien : `--ram 32768` sur ce conteneur de 15 Gio finissait en
+  SIGABRT (« memory allocation of 35433480192 bytes failed », code 134), au
+  lieu d'un refus.
+- *Un écart au silicium enregistré par un test* : `jmp *%rbx` vers
+  0x8000_0000_0000_1000 était retiré, et la `#GP` tombait sur la lecture de
+  l'instruction d'après, avec RIP = la cible. Le silicium la lève sur le
+  saut lui-même (SDM, JMP : `#GP(0)` si la cible n'est pas canonique).
+- *Une doc fausse* : `Unmapped::NonCanonical` disait « le silicium lève
+  `#GP(0)` » sans exception ; pour une référence par la pile, c'est `#SS(0)`,
+  vecteur 12 (Linux envoie SIGBUS, pas SIGSEGV), et la machine livrait 13.
+
+**Ce qui est fait.**
+
+- *Les sauts jugent leur cible.* `jmp`, `call`, `ret`, `jcc`, `loop`,
+  `jrcxz` (relatifs et indirects) dans `Cpu`, `iretq` et `lretq` dans
+  `Systeme` : une cible qui n'est pas canonique fait fauter l'instruction
+  elle-même, rien de retiré, rien de changé (RSP, la pile sous RSP, RCX d'un
+  `loop`). `call` juge sa cible avant d'empiler, l'ordre du SDM. La faute
+  se dit `Unmapped::NonCanonicalTarget`, distincte d'un accès : la cible
+  d'un `ret` vient de la pile, mais ce n'est pas une référence par la pile,
+  et le silicium lève `#GP(0)`. `sysretq` est laissé tel quel : sous un
+  CPUID `AuthenticAMD`, c'est en anneau trois que la faute tombe, comme ici.
+- *`#SS(0)` pour la pile* (`Exception::SegmentDePile`, vecteur 12, avec son
+  code). La machine distingue au moment de livrer (`faute_d_operande`, hors
+  de la boucle chaude) : si l'adresse refusée tombe dans l'opérande mémoire,
+  c'est le segment de l'opérande — SS pour une base RSP ou RBP sans préfixe
+  FS ni GS ; sinon la référence implicite — `push`, `pop`, `call`, `ret`,
+  `leave`, `pushf`, `popf`. `iretq` et `lretq` dépilent par SS. Le chemin
+  commun, le vectoriel, le x87 et `fxsave` passent tous par là.
+- *`leave` qui faute laisse RSP en place.* Il le laissait égal à RBP — une
+  pile que l'instruction n'avait jamais eue ; le test des références par la
+  pile l'a montré.
+- *La RAM que l'hôte refuse est un refus.* `memoire::bloc_nul` demande les
+  pages nulles par `alloc_zeroed` et rend `None` au lieu d'arrêter le
+  processus ; `Machine::essayer` rend `None`, `wisq-pc` sort en code 2
+  (« l'hôte ne peut pas donner cette mémoire »), et le commentaire du
+  plafond dit ce qu'il est : une garde contre la faute de frappe, pas une
+  promesse d'allocation. Un nombre qui ne tient pas dans un `usize` (wasm32)
+  est un refus, pas une troncature. `wisq-pc` dit la RAM reçue
+  (« ram : 512 Mio »).
+- *Les trois gardes ont leur test*, ceux du contrôle portés.
+- *Un test d'`x86_replay` changé, sans rien affaiblir* :
+  `nothing_moves_when_a_write_is_refused` prenait RAX =
+  0x8000_0000_0000_0001 pour cible de `call *%rax` ; le `call` faute
+  maintenant sur la cible avant d'empiler, et la pile en lecture seule
+  n'était plus jugée. RAX vaut 0xFFFF_8000_0000_0001 (bit haut posé, mais
+  canonique) ; toutes les assertions restent.
+
+**Tests** : 9 de plus (3 913 → 3 922). `pc_interruptions` +5 (chaque saut
+vers une cible non canonique, depuis le bord de la moitié basse pour les
+relatifs ; les références par la pile, dix-sept cas, dont `fs:(%rbp)` et la
+cible d'un `ret` en `#GP` ; la division après une faute de page ; le cadre
+lu avec les droits du programme, pour `iretq` et `lretq` ; le RPL retiré),
+`x86_replay` +1 (l'interpréteur nu refuse la cible, paginé ou non),
+`pc_chargeur` +1 (2^62 octets refusés sans arrêt), `pc_demarrage` +1 (la RAM
+reçue au mébioctet près, 65 536 Mio non refusés par le plafond), `wisq-pc`
++1 (le compte en mébioctets, le plafond compris). Le test
+`a_non_canonical_address_is_a_general_protection_fault` faisait
+`tourner(2)`, « le saut, puis la faute » : il fait `tourner(1)`, et vérifie
+maintenant le RIP du cadre (0x1000) et qu'aucune instruction n'est retirée.
+
+**Sabotages**, d'une ligne, en profil de mise au point : **34, tous
+tombent**, `git diff`
+identique après chacun (somme comparée). Les trois gardes du contrôle (`take`
+retiré, `read_memory_as_machine`, `& 0xFFFF` pour `lretq` et pour `iretq`),
+`--ram` (`1 << 19`, `>=`, `vec!` à la place de `alloc_zeroed`, `essayer` qui
+arrête au lieu de refuser, le refus en code 1), chaque contrôle de cible
+(`jcc`, la suite non prise jugée aussi, `call` relatif, `call` indirect,
+`ret`, `ret` sans défaire son `pop`, `jrcxz`, `loop`, `loop` qui décrémente
+avant de juger, `jmp` indirect, `iretq`, `lretq`, la cible dite accès), et
+`#SS` (le choix inversé, RBP oublié, FS ignoré, l'opérande jamais reconnu,
+`push` et `pushf` non implicites, `iretq` hors pile, le x87, le vectoriel et
+`fxsave` sans leur opérande, le vecteur 13 au lieu de 12), `leave`.
+Script `<bloc-notes>/pc3/sabotages.py`, journal `<bloc-notes>/pc3/sabotages.log`.
+
+**Mesures.** Le banc de l'entrée précédente (Alpine jusqu'à l'invite après
+`echo wisq-parle`, 512 Mio), en courses alternées contre le binaire de
+51dbdcdc. La machine était bruyante : le même binaire a couru de 40,9 à
+46,3 s dans la journée. Les comptes d'instructions ne bougent pas
+(1 907 à 1 911 millions).
+
+- *Le contrôle de `jcc` écrit `taken && !canonique(cible)`* : plus lent que
+  l'ancien dans les six séries où il a couru, de 1,5 à 4,6 % en moyenne
+  (par exemple 43,30 · 44,14 · 44,94 s contre 42,28 · 42,17 · 42,61 s). Sur
+  les 1,2 premier milliard d'instructions seulement, aucun écart (médianes
+  22,82 s contre 22,94 s, cinq paires).
+- *Sans aucun contrôle de `jcc`*, pour situer : 40,71 · 40,47 · 42,07 ·
+  40,26 s, contre 42,70 · 42,58 · 40,93 · 40,85 s pour l'ancien.
+- *La forme gardée* juge l'adresse retenue (choisie comme avant) et ne
+  relit la condition que sur le chemin froid : 40,61 · 43,91 · 42,29 s
+  contre 44,29 · 42,44 · 43,08 s (−2,3 %), puis, le code définitif, 45,42 ·
+  45,07 · 41,80 · 43,24 s contre 45,14 · 43,41 · 41,81 · 42,41 s (+1,6 %).
+  Une comparaison directe des deux formes n'a pas su les départager (43,34 ·
+  42,76 · 45,42 s contre 42,49 · 42,46 · 45,94 s) : l'écart est de l'ordre
+  du bruit du jour, et des effets de placement que l'entrée précédente a
+  déjà vus.
+
+Relevés : `<bloc-notes>/pc3/mesure*.txt`.
+
+**Vérifications.** `cargo fmt --all --check`, clippy `--all-targets
+--all-features -D warnings`, `cargo test --release` sur tout l'espace de
+travail (36 binaires, 0 échec), wasm32 de `wisq-page` et de `wisq-vm
+--lib`, `check-whitespace` et `check-project-sources`, le recompte puis
+`bun run build` et `bun test` (476). Démarrage réel avec le binaire final et
+`--input 'uname -a;;ps'` : le shell est atteint, `Linux (none)
+6.18.60-0-virt … x86_64 Linux`, `ps` répond, aucun refus dans un programme,
+1 913 229 566 instructions, 43,3 s.
+
+**Ce qui reste.** Une suite non prise qui sortirait de la moitié basse est
+retirée, et c'est la lecture d'après qui faute : le manuel ne tranche pas,
+et le test le dit comme un choix de ce cœur. La livraison vers une porte dont
+la cible n'est pas canonique n'est pas jugée. La vitesse (pas de blocs
+d'instructions), l'ABI C, la `Carte` de `wisq-page`, les SSE/SSE2 flottants
+et le calcul x87, la double faute, l'instantané : inchangés.
+
 ## 2026-11-20 — Machine PC en Rust : l'ombre de `sti`, `lretq`, et les gardes que rien ne jugeait
 
 **Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente a
