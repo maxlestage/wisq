@@ -118,20 +118,38 @@ pub struct RequeteDisque {
     pub octets: Vec<u8>,
 }
 
-/// Un descripteur de la file : seize octets dans la RAM de l'invité.
+/// Un descripteur de la file : seize octets dans la RAM de l'invité. La
+/// carte réseau lit les siens de la même façon ([`super::virtio_net`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Descripteur {
-    adresse: u64,
-    longueur: u32,
-    drapeaux: u16,
-    suivant: u16,
+pub(crate) struct Descripteur {
+    pub(crate) adresse: u64,
+    pub(crate) longueur: u32,
+    pub(crate) drapeaux: u16,
+    pub(crate) suivant: u16,
 }
 
 impl Descripteur {
-    fn chaine(&self) -> bool {
+    /// **Le descripteur `index` de la table posée à `table`**, ou rien si ses
+    /// seize octets ne sont pas dans la RAM.
+    pub(crate) fn lire(table: u64, index: u16, ram: &dyn Ram) -> Option<Self> {
+        let a = table.wrapping_add(u64::from(index).wrapping_mul(16));
+        let mut seize = [0u8; 16];
+        if !ram.lire(a, &mut seize) {
+            return None;
+        }
+        let [a0, a1, a2, a3, a4, a5, a6, a7, l0, l1, l2, l3, d0, d1, s0, s1] = seize;
+        Some(Self {
+            adresse: u64::from_le_bytes([a0, a1, a2, a3, a4, a5, a6, a7]),
+            longueur: u32::from_le_bytes([l0, l1, l2, l3]),
+            drapeaux: u16::from_le_bytes([d0, d1]),
+            suivant: u16::from_le_bytes([s0, s1]),
+        })
+    }
+
+    pub(crate) fn chaine(&self) -> bool {
         self.drapeaux & 1 != 0
     }
-    fn inscriptible(&self) -> bool {
+    pub(crate) fn inscriptible(&self) -> bool {
         self.drapeaux & 2 != 0
     }
 }
@@ -416,18 +434,7 @@ impl VirtioBlk {
     // ----------------------------------------------------------------- file
 
     fn descripteur(&self, index: u16, ram: &dyn Ram) -> Option<Descripteur> {
-        let a = self.table.wrapping_add(u64::from(index).wrapping_mul(16));
-        let mut seize = [0u8; 16];
-        if !ram.lire(a, &mut seize) {
-            return None;
-        }
-        let [a0, a1, a2, a3, a4, a5, a6, a7, l0, l1, l2, l3, d0, d1, s0, s1] = seize;
-        Some(Descripteur {
-            adresse: u64::from_le_bytes([a0, a1, a2, a3, a4, a5, a6, a7]),
-            longueur: u32::from_le_bytes([l0, l1, l2, l3]),
-            drapeaux: u16::from_le_bytes([d0, d1]),
-            suivant: u16::from_le_bytes([s0, s1]),
-        })
+        Descripteur::lire(self.table, index, ram)
     }
 
     /// **Recevoir tout ce que le pilote a rendu disponible.** L'index des
@@ -824,7 +831,7 @@ pub fn au_dela_du_disque(secteur: u64, etendue: u64, secteurs: u64) -> bool {
     fin > capacite
 }
 
-fn lire_u16(ram: &dyn Ram, a: u64) -> Option<u16> {
+pub(crate) fn lire_u16(ram: &dyn Ram, a: u64) -> Option<u16> {
     let mut o = [0; 2];
     ram.lire(a, &mut o).then(|| u16::from_le_bytes(o))
 }

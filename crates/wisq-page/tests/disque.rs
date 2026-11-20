@@ -300,8 +300,14 @@ fn the_ten_lines_of_the_journal_compile_and_run() -> Result<(), Refus> {
     assert!(!reveil);
     // Les deux disques sont là, avec la capacité de leur fichier.
     let bus = &carte.carte().pci;
-    assert_eq!(bus.premier.disque.as_ref().map(|d| d.secteurs()), Some(8));
-    assert_eq!(bus.second.disque.as_ref().map(|d| d.secteurs()), Some(16));
+    assert_eq!(
+        bus.premier.peripherique.as_ref().map(|d| d.secteurs()),
+        Some(8)
+    );
+    assert_eq!(
+        bus.second.peripherique.as_ref().map(|d| d.secteurs()),
+        Some(16)
+    );
     Ok(())
 }
 

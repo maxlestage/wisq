@@ -32,6 +32,7 @@
 //! | `0xCF8`, `0xCFC` à `0xCFF` | pont PCI ([`pci`]) : 440FX en 00:00.0 | — |
 //! | la BAR0 du disque, `0x40` ports | virtio-blk de forme ancienne en 00:03.0 ([`virtio_blk`]) | 5, ou celle que le noyau écrit |
 //! | la BAR0 du second disque, `0x40` ports | le même, en 00:04.0 | 6, ou celle que le noyau écrit |
+//! | la BAR0 de la carte réseau, `0x40` ports | virtio-net de forme ancienne en 00:05.0 ([`virtio_net`]), quand elle est branchée | 3, ou celle que le noyau écrit |
 //! | `0x1CE`, `0x1CF`, et en mémoire : 16 Mio à `0xE000_0000`, 4 Kio à `0xE100_0000` | l'écran Bochs en 00:02.0 ([`ecran`]), quand il est branché | aucune |
 //! | en mémoire : 16 Kio à `0xE101_0000` | la tablette virtio en 00:07.0 ([`tablette`]), avec l'écran | 10, ou celle que le noyau écrit |
 //!
@@ -71,6 +72,7 @@ pub mod pc;
 pub mod pci;
 pub mod tablette;
 pub mod virtio_blk;
+pub mod virtio_net;
 
 use cmos::Cmos;
 use ecran::Ecran;
@@ -78,6 +80,7 @@ use i8042::{CodeTouche, I8042, LIGNE_CLAVIER, LIGNE_SOURIS, PORT_COMMANDE, PORT_
 use pci::{masque, Disque, Pci, PORT_ADRESSE, PORT_DONNEE};
 use tablette::Tablette;
 use virtio_blk::{RequeteDisque, VirtioBlk};
+use virtio_net::VirtioNet;
 
 /// **La RAM de l'invité, vue d'un périphérique**, par adresse physique.
 ///
@@ -224,9 +227,14 @@ impl Carte {
                 return Some((u64::from(registre) & masque(largeur)) as u32);
             }
             _ => {
-                let (quel, decalage) = self.fenetre_au_port(port)?;
-                let disque = self.pci.emplacement_mut(quel).disque.as_mut()?;
-                let valeur = disque.lire_port(decalage, largeur);
+                let valeur = if let Some((quel, decalage)) = self.fenetre_au_port(port) {
+                    let disque = self.pci.emplacement_mut(quel).peripherique.as_mut()?;
+                    disque.lire_port(decalage, largeur)
+                } else {
+                    let decalage = self.reseau_au_port(port)?;
+                    let reseau = self.pci.reseau.peripherique.as_mut()?;
+                    reseau.lire_port(decalage, largeur)
+                };
                 return Some((u64::from(valeur) & masque(largeur)) as u32);
             }
         };
@@ -264,13 +272,20 @@ impl Carte {
                 }
             }
             _ => {
-                let Some((quel, decalage)) = self.fenetre_au_port(port) else {
-                    return false;
-                };
-                let Some(disque) = self.pci.emplacement_mut(quel).disque.as_mut() else {
-                    return false;
-                };
-                disque.ecrire_port(decalage, valeur, ram);
+                if let Some((quel, decalage)) = self.fenetre_au_port(port) {
+                    let Some(disque) = self.pci.emplacement_mut(quel).peripherique.as_mut() else {
+                        return false;
+                    };
+                    disque.ecrire_port(decalage, valeur, ram);
+                } else {
+                    let Some(decalage) = self.reseau_au_port(port) else {
+                        return false;
+                    };
+                    let Some(reseau) = self.pci.reseau.peripherique.as_mut() else {
+                        return false;
+                    };
+                    reseau.ecrire_port(decalage, valeur, ram);
+                }
             }
         }
         true
@@ -284,6 +299,16 @@ impl Carte {
             return None;
         }
         self.pci.au_port(port)
+    }
+
+    /// **Le décalage d'un port dans la fenêtre de la carte réseau** — jamais
+    /// pour un port fixe, ni pour un port qu'un disque a déjà : la fenêtre
+    /// d'un disque passe devant ([`Pci::reseau_au_port`]).
+    pub fn reseau_au_port(&self, port: u16) -> Option<u16> {
+        if self.est_fixe(port) {
+            return None;
+        }
+        self.pci.reseau_au_port(port)
     }
 
     /// **Un port fixe de cette carte** : ceux de toute carte ([`port_fixe`]),
@@ -518,22 +543,54 @@ impl Carte {
     pub fn brancher(&mut self, quel: Disque, secteurs: u64) {
         let place = self.pci.emplacement_mut(quel);
         let mut neuf = VirtioBlk::nouveau(secteurs);
-        if let Some(ancien) = &place.disque {
+        if let Some(ancien) = &place.peripherique {
             neuf.succeder_a(ancien);
         }
-        place.disque = Some(neuf);
+        place.peripherique = Some(neuf);
+    }
+
+    // ---------------------------------------------------------- la carte réseau
+
+    /// **Brancher la carte réseau** en 00:05.0 (`X86Machine.attach(network:)`),
+    /// d'adresse `mac`, ligne 3, **câble débranché** : ce que l'invité envoie
+    /// est perdu jusqu'à [`VirtioNet::brancher_cable`]. Une carte déjà
+    /// branchée est remplacée, ce qui l'attendait perdu — à faire avant le
+    /// démarrage.
+    pub fn brancher_reseau(&mut self, mac: [u8; 6]) {
+        self.pci.reseau.peripherique = Some(VirtioNet::nouvelle(mac));
+    }
+
+    /// La carte réseau, si elle est branchée.
+    pub fn reseau(&self) -> Option<&VirtioNet> {
+        self.pci.reseau.peripherique.as_ref()
+    }
+
+    /// La même, pour la conduire : lui donner ce qui arrive
+    /// ([`VirtioNet::entrer`], [`VirtioNet::livrer`], [`VirtioNet::sonder`]),
+    /// prendre ce qui part ([`VirtioNet::sortir`]).
+    pub fn reseau_mut(&mut self) -> Option<&mut VirtioNet> {
+        self.pci.reseau.peripherique.as_mut()
+    }
+
+    /// La ligne de la carte réseau, en bit : celle que le noyau a écrite,
+    /// trois au départ. Zéro sans carte, ou pour une ligne de l'hôte.
+    fn bit_du_reseau(&self) -> u16 {
+        if self.pci.reseau.peripherique.is_none() {
+            return 0;
+        }
+        bit_du_dehors(self.pci.reseau.ligne).unwrap_or(0)
     }
 
     /// L'un des deux disques, s'il est branché.
     pub fn disque(&self, quel: Disque) -> Option<&VirtioBlk> {
-        self.pci.emplacement(quel).disque.as_ref()
+        self.pci.emplacement(quel).peripherique.as_ref()
     }
 
     /// Le même, pour le conduire : prendre ses requêtes, lui rendre ses
     /// réponses ([`VirtioBlk::prendre_requete`], [`VirtioBlk::lu`],
     /// [`VirtioBlk::fini`]).
     pub fn disque_mut(&mut self, quel: Disque) -> Option<&mut VirtioBlk> {
-        self.pci.emplacement_mut(quel).disque.as_mut()
+        self.pci.emplacement_mut(quel).peripherique.as_mut()
     }
 
     /// **Notifier un disque sans passer par son port** : relire sa file dans
@@ -551,7 +608,7 @@ impl Carte {
     /// confie à l'arrière, et rend la réponse quand elle arrive. Celles du
     /// second se prennent par [`Carte::disque_mut`].
     pub fn requete_disque(&mut self) -> Option<RequeteDisque> {
-        self.pci.premier.disque.as_mut()?.prendre_requete()
+        self.pci.premier.peripherique.as_mut()?.prendre_requete()
     }
 
     /// **Les octets d'une lecture sont arrivés** : voir [`VirtioBlk::lu`].
@@ -559,7 +616,7 @@ impl Carte {
     pub fn disque_lu(&mut self, id: u32, octets: &[u8], ram: &mut dyn Ram) -> bool {
         self.pci
             .premier
-            .disque
+            .peripherique
             .as_mut()
             .is_some_and(|disque| disque.lu(id, octets, ram))
     }
@@ -568,7 +625,7 @@ impl Carte {
     pub fn disque_fini(&mut self, id: u32, reussi: bool, ram: &mut dyn Ram) -> bool {
         self.pci
             .premier
-            .disque
+            .peripherique
             .as_mut()
             .is_some_and(|disque| disque.fini(id, reussi, ram))
     }
@@ -580,7 +637,7 @@ impl Carte {
     /// d'effacer ce que les puces de la boucle hôte y posent.
     fn bit_du_disque(&self, quel: Disque) -> u16 {
         let place = self.pci.emplacement(quel);
-        if place.disque.is_none() {
+        if place.peripherique.is_none() {
             return 0;
         }
         bit_du_dehors(place.ligne).unwrap_or(0)
@@ -610,6 +667,10 @@ impl Carte {
         if self.pci.tablette.as_ref().is_some_and(Tablette::interrompt) {
             lignes |= self.bit_de_la_tablette();
         }
+        // La carte réseau, de même, sur la ligne 3 du maître.
+        if self.reseau().is_some_and(VirtioNet::interrompt) {
+            lignes |= self.bit_du_reseau();
+        }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la
         // quatrième de l'esclave. À niveau, comme le port série.
         if self.ps2.clavier_interrompt() {
@@ -627,6 +688,7 @@ impl Carte {
         LIGNES_DES_PERIPHERIQUES
             | self.bits_des_disques()
             | self.bit_de_la_tablette()
+            | self.bit_du_reseau()
             | self.nommees_du_dehors
     }
 
@@ -732,6 +794,13 @@ impl Carte {
     /// La tablette compte quand sa ligne est levée ou qu'un geste attend son
     /// heure ([`Tablette::reveil`]). Le cœur Swift, lui, tient la machine
     /// éveillée dès qu'une tablette existe.
+    ///
+    /// **La carte réseau compte dès que son câble est branché** : une trame
+    /// peut arriver à tout moment, et c'est ce que `devicesArmed` dit du côté
+    /// Swift dès qu'une carte existe (là-bas, une carte n'est jamais branchée
+    /// sans réseau : `GuestMachine` ne l'attache qu'avec lui). Câble
+    /// débranché, elle compte encore tant que sa ligne est levée ou qu'une
+    /// trame attend un tampon.
     pub fn reveil(&self) -> bool {
         !self.ps2.frappes.is_empty()
             || Disque::TOUS.into_iter().any(|quel| {
@@ -739,6 +808,9 @@ impl Carte {
                     .is_some_and(|d| d.en_attente() || d.interrompt())
             })
             || self.pci.tablette.as_ref().is_some_and(Tablette::reveil)
+            || self.reseau().is_some_and(|reseau| {
+                reseau.cable_branche() || reseau.interrompt() || reseau.en_attente() > 0
+            })
     }
 }
 

@@ -43,7 +43,7 @@
 //! **Le mode d'emploi**, pour la boucle d'une machine :
 //!
 //! ```
-//! use wisq_carte::pc::{ArriereMemoire, CartePc, Disque};
+//! use wisq_carte::pc::{ArriereMemoire, CableEnBoucle, CartePc, Disque, MAC_PAR_DEFAUT};
 //! use wisq_carte::RamPlate;
 //!
 //! let mut ram = RamPlate(vec![0; 1 << 20]); // la RAM de l'invité, par le trait `Ram`
@@ -51,6 +51,8 @@
 //! carte.regler_heure(1_793_379_909_000); // ou `carte.horloge(horloge_du_systeme)`
 //! carte.brancher(Disque::Premier, ArriereMemoire(vec![0; 8 * 512])); // vda, 00:03.0, ligne 5
 //! carte.brancher_ecran(1024, 768); // l'écran en 00:02.0, sa tablette en 00:07.0, ligne 10
+//! carte.brancher_reseau(MAC_PAR_DEFAUT); // la carte réseau en 00:05.0, ligne 3
+//! carte.brancher_cable(CableEnBoucle::default()); // son autre bout : ici une boucle, un jour le C ABI
 //! // Dans la boucle, pour un `in` et un `out` que les puces du cœur ne prennent pas :
 //! let lu = carte.port_lire(0x64, 1); // `None` : personne, le bus flotte (0xFF)
 //! let pris = carte.port_ecrire(0x70, 1, 0x09); // `false` : personne non plus
@@ -58,10 +60,11 @@
 //! let peint = carte.mem_ecrire(0xE000_0000, 4, 0x00FF_FFFF); // `false` : la faute « hors mémoire »
 //! let id = carte.mem_lire(0xE100_0500, 2); // `None` : la faute aussi
 //! carte.battre(1_193); // le temps, en tics du 8254 : les frappes et les touchers à leur heure
-//! carte.servir(&mut ram); // à chaque tour, et après un `out` pris : disques, tablette, lignes
+//! carte.servir(&mut ram); // à chaque tour, et après un `out` pris : disques, tablette, réseau
+//! carte.sonder_reseau(&mut ram, true); // à chaque tour aussi ; `true` : le processeur n'est pas en `hlt`
 //! let (levees, tenues) = (carte.lignes(), carte.tenues()); // → les requêtes des deux 8259
-//! let peut_dormir = !carte.reveil(); // un `hlt` n'attend pas ce que personne ne lèvera
-//! assert_eq!((lu, pris, levees, tenues & 0x420, peut_dormir), (Some(0x14), true, 0, 0x420, true));
+//! let armee = carte.reveil(); // `false` : un `hlt` n'attend rien, personne ne lèvera de ligne
+//! assert_eq!((lu, pris, levees, tenues & 0x428, armee), (Some(0x14), true, 0, 0x428, true)); // câble branché : une trame peut venir
 //! // Pour la vue : l'image n'est recopiée que si elle a changé.
 //! let cadre = &carte.ecran().expect("branché").cadre;
 //! let (revision, mode) = (cadre.revision(), cadre.mode());
@@ -70,11 +73,14 @@
 
 use super::ecran::Ecran;
 use super::i8042::CodeTouche;
+use super::pci::masque;
 use super::tablette::Tablette;
 use super::virtio_blk::{Sens, REGISTRE_DE_NOTIFICATION};
+use super::virtio_net::{VirtioNet, FILE_DE_RECEPTION, FILE_D_EMISSION};
 use super::{largeur_valide, Carte, Ram, Region, SansRam};
 
 pub use super::pci::Disque;
+pub use super::virtio_net::{Cable, CableEnBoucle, MAC_PAR_DEFAUT};
 
 /// **Là où vivent les octets d'un disque**, pour une machine qui peut les
 /// lire tout de suite : `DiskStore` du cœur Swift, en octets et pas en
@@ -177,6 +183,11 @@ pub struct CartePc {
     /// Le pilote de la tablette a sonné cette file (celle des événements,
     /// puis celle de l'état), et elle n'a pas encore été relue.
     sonnettes: [bool; 2],
+    /// Le pilote de la carte réseau a notifié cette file (la réception, puis
+    /// l'émission), et elle n'a pas encore été relue.
+    reseau_notifie: [bool; 2],
+    /// L'autre bout du câble de la carte réseau, s'il est branché.
+    cable: Option<Box<dyn Cable>>,
     /// L'heure du dernier [`CartePc::battre`], en tics du 8254 : celle des
     /// touchers rendus par [`CartePc::servir`].
     tics: u64,
@@ -200,6 +211,8 @@ impl CartePc {
             arrieres: [None, None],
             notifies: [false; 2],
             sonnettes: [false; 2],
+            reseau_notifie: [false; 2],
+            cable: None,
             tics: 0,
             horloge: None,
             tampon: Vec::new(),
@@ -305,7 +318,79 @@ impl CartePc {
                 tablette.livrer(ram, Some(self.tics));
             }
         }
+        let notifiees = std::mem::take(&mut self.reseau_notifie);
+        if let Some(reseau) = self.carte.reseau_mut() {
+            // L'émission d'abord, et ce qu'elle a rangé au câble tout de
+            // suite : c'est le `backend.send` que le cœur Swift fait pendant
+            // l'`out`.
+            if notifiees[FILE_D_EMISSION] {
+                reseau.emettre(ram);
+            }
+            donner_au_cable(reseau, self.cable.as_deref_mut());
+            if notifiees[FILE_DE_RECEPTION] {
+                reseau.livrer(ram);
+            }
+        }
         passees
+    }
+
+    // ---------------------------------------------------------- la carte réseau
+
+    /// **Brancher la carte réseau** en 00:05.0, ligne 3, d'adresse `mac`
+    /// ([`MAC_PAR_DEFAUT`] : celle du cœur Swift). Le câble branché reste
+    /// branché ; sans câble, ce que l'invité envoie est perdu. Une carte déjà
+    /// branchée est remplacée — à faire avant le démarrage.
+    pub fn brancher_reseau(&mut self, mac: [u8; 6]) {
+        self.carte.brancher_reseau(mac);
+        self.reseau_notifie = [false; 2];
+        let branche = self.cable.is_some();
+        if let Some(reseau) = self.carte.reseau_mut() {
+            reseau.brancher_cable(branche);
+        }
+    }
+
+    /// **Brancher le câble** : l'autre bout de la carte réseau — le réseau en
+    /// mode utilisateur de l'application, par le C ABI, ou
+    /// [`CableEnBoucle`]. Un câble déjà branché est remplacé. Se fait à tout
+    /// moment, carte branchée ou pas : c'est le câble qu'on rebranche quand
+    /// l'application rend le réseau à une machine (`MachineNetwork`).
+    pub fn brancher_cable(&mut self, cable: impl Cable + 'static) {
+        self.cable = Some(Box::new(cable));
+        if let Some(reseau) = self.carte.reseau_mut() {
+            reseau.brancher_cable(true);
+        }
+    }
+
+    /// **Débrancher le câble**, et le rendre. La carte reste, et l'invité ne
+    /// voit rien (aucun statut du lien n'est annoncé) : ce qu'il envoie se
+    /// perd, rien n'arrive.
+    pub fn debrancher_cable(&mut self) -> Option<Box<dyn Cable>> {
+        if let Some(reseau) = self.carte.reseau_mut() {
+            reseau.brancher_cable(false);
+        }
+        self.cable.take()
+    }
+
+    /// La carte réseau, si elle est branchée : ses compteurs
+    /// ([`VirtioNet::emises`], [`VirtioNet::livrees`], [`VirtioNet::perdues`]).
+    pub fn reseau(&self) -> Option<&VirtioNet> {
+        self.carte.reseau()
+    }
+
+    /// **Prendre ce que le câble a pour l'invité**, et le poser dans ses
+    /// tampons : à chaque tour, avant de relire les lignes, comme `poll` à
+    /// chaque passage de `serviceInterrupts` du côté Swift. `occupe` dit que
+    /// le processeur travaille (il n'est pas en `hlt`) : le câble n'est alors
+    /// questionné qu'un tour sur quatre ([`VirtioNet::sonder`]). Sans carte,
+    /// rien.
+    pub fn sonder_reseau(&mut self, ram: &mut dyn Ram, occupe: bool) {
+        if let Some(reseau) = self.carte.reseau_mut() {
+            let cable: Option<&mut dyn Cable> = match self.cable.as_mut() {
+                Some(cable) => Some(cable.as_mut()),
+                None => None,
+            };
+            reseau.sonder(cable, ram, occupe);
+        }
     }
 
     /// **Pousser les écritures des disques jusqu'au stockage durable** : ce
@@ -438,6 +523,17 @@ impl CartePc {
             self.notifies[quel.rang()] = true;
             return true;
         }
+        // La notification de la carte réseau : la file un émet, la zéro
+        // reçoit ; une autre ne sert rien, mais le port est pris.
+        if let Some(REGISTRE_DE_NOTIFICATION) = self.carte.reseau_au_port(port) {
+            if self.carte.reseau().is_some() {
+                let file = u64::from(valeur) & masque(largeur);
+                if let Some(notifiee) = self.reseau_notifie.get_mut(file as usize) {
+                    *notifiee = true;
+                }
+                return true;
+            }
+        }
         self.carte.port_ecrire(port, largeur, valeur, &mut SansRam)
     }
 
@@ -473,7 +569,9 @@ impl CartePc {
     /// Une notification d'un disque, ou une sonnette de la tablette, attend
     /// [`CartePc::servir`].
     pub fn a_servir(&self) -> bool {
-        self.notifies.contains(&true) || self.sonnettes.contains(&true)
+        self.notifies.contains(&true)
+            || self.sonnettes.contains(&true)
+            || self.reseau_notifie.contains(&true)
     }
 
     // ------------------------------------------------------------------ l'heure
@@ -535,6 +633,17 @@ impl CartePc {
     /// [`Carte::remise_demandee`].
     pub fn remise_demandee(&self) -> bool {
         self.carte.remise_demandee()
+    }
+}
+
+/// **Ce que l'invité a émis, au câble**, dans l'ordre ; sans câble, la carte
+/// n'a rien rangé (elle sait qu'elle est débranchée).
+fn donner_au_cable(reseau: &mut VirtioNet, cable: Option<&mut (dyn Cable + 'static)>) {
+    let Some(cable) = cable else {
+        return;
+    };
+    while let Some(trame) = reseau.sortir() {
+        cable.envoyer(&trame);
     }
 }
 
@@ -916,8 +1025,14 @@ pub(crate) mod tests {
         assert_eq!(carte.tenues() & 0x60, 0x40, "la ligne 6 seule");
         carte.brancher(Disque::Premier, ArriereMemoire(image(8, 0)));
         let bus = &carte.carte().pci;
-        assert_eq!(bus.second.disque.as_ref().map(|d| d.secteurs()), Some(16));
-        assert_eq!(bus.premier.disque.as_ref().map(|d| d.secteurs()), Some(8));
+        assert_eq!(
+            bus.second.peripherique.as_ref().map(|d| d.secteurs()),
+            Some(16)
+        );
+        assert_eq!(
+            bus.premier.peripherique.as_ref().map(|d| d.secteurs()),
+            Some(8)
+        );
         // Et sans second disque, l'emplacement quatre est vide.
         let mut seul = CartePc::nouvelle();
         seul.brancher(Disque::Premier, ArriereMemoire(image(8, 0)));
@@ -1799,5 +1914,284 @@ pub(crate) mod tests {
         carte.horloge(horloge_du_systeme);
         carte.port_ecrire(0x70, 1, 0x32);
         assert_eq!(carte.port_lire(0x71, 1), Some(0x20), "le siècle");
+    }
+
+    // ---------------------------------------------------------- la carte réseau
+
+    use super::super::virtio_net::tests::{trame, Pilote, PAGES};
+    use super::super::virtio_net::{FONCTION_MAC, OCTETS_D_EN_TETE, PASSAGES_AU_TRAVAIL};
+    use std::sync::Mutex;
+
+    /// **Un câble que le test garde en main** : ce qu'il reçoit de la
+    /// carte, ce qu'il a pour elle, et combien de fois elle l'a questionné.
+    #[derive(Clone, Default)]
+    struct Temoin(Arc<Mutex<Bouts>>);
+
+    #[derive(Default)]
+    struct Bouts {
+        recues: Vec<Vec<u8>>,
+        pour_l_invite: Vec<Vec<u8>>,
+        questions: usize,
+    }
+
+    impl Temoin {
+        fn bouts(&self) -> std::sync::MutexGuard<'_, Bouts> {
+            self.0.lock().expect("le câble du test")
+        }
+    }
+
+    impl Cable for Temoin {
+        fn envoyer(&mut self, trame: &[u8]) {
+            self.bouts().recues.push(trame.to_vec());
+        }
+        fn recevoir(&mut self) -> Vec<Vec<u8>> {
+            let mut bouts = self.bouts();
+            bouts.questions += 1;
+            std::mem::take(&mut bouts.pour_l_invite)
+        }
+    }
+
+    /// La fenêtre de la carte réseau, et ses registres.
+    const RESEAU: u16 = 0xC080;
+
+    /// **Ce que fait le noyau pour trouver et ouvrir la carte** : 00:05.0
+    /// mesurée, placée à [`RESEAU`], ouverte, la poignée de main de
+    /// `virtio_pci_legacy`, et les deux files posées aux pages du pilote des
+    /// tests de la carte.
+    fn ouvrir_le_reseau(carte: &mut CartePc) {
+        let cfg = |carte: &mut CartePc, registre: u32, largeur: u8, valeur: u32| {
+            assert!(carte.port_ecrire(0xCF8, 4, adresse(5, registre)));
+            assert!(carte.port_ecrire(0xCFC, largeur, valeur));
+        };
+        carte.port_ecrire(0xCF8, 4, adresse(5, 0));
+        assert_eq!(
+            carte.port_lire(0xCFC, 4),
+            Some(0x1000_1AF4),
+            "une carte réseau"
+        );
+        cfg(carte, 0x10, 4, 0xFFFF_FFFF);
+        assert_eq!(carte.port_lire(0xCFC, 4), Some(0xFFFF_FFC1));
+        cfg(carte, 0x10, 4, u32::from(RESEAU));
+        cfg(carte, 0x04, 2, 0x0005);
+        for statut in [0, 1, 3] {
+            assert!(carte.port_ecrire(RESEAU + 0x12, 1, statut));
+        }
+        assert_eq!(carte.port_lire(RESEAU, 4), Some(FONCTION_MAC));
+        carte.port_ecrire(RESEAU + 0x04, 4, FONCTION_MAC);
+        for (file, page) in PAGES.into_iter().enumerate() {
+            carte.port_ecrire(RESEAU + 0x0E, 2, file as u32);
+            assert_eq!(carte.port_lire(RESEAU + 0x0C, 2), Some(256));
+            carte.port_ecrire(RESEAU + 0x08, 4, page);
+        }
+        carte.port_ecrire(RESEAU + 0x12, 1, 7);
+        assert_eq!(
+            carte.port_lire(RESEAU + 0x14, 4),
+            Some(0x7369_7702),
+            "l'adresse"
+        );
+    }
+
+    /// Une carte réseau branchée et ouverte, son câble témoin, et un pilote
+    /// pour poser les tampons dans la RAM.
+    fn reseau_ouvert() -> (CartePc, Temoin, Pilote) {
+        let mut carte = CartePc::nouvelle();
+        let temoin = Temoin::default();
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        carte.brancher_cable(temoin.clone());
+        ouvrir_le_reseau(&mut carte);
+        (carte, temoin, Pilote::nouveau(VirtioNet::default()))
+    }
+
+    /// Une trame posée pour l'émission à `adresse`, avec son en-tête nul.
+    fn poser_une_emission(pilote: &mut Pilote, corps: &[u8], adresse: u64) {
+        let mut octets = vec![0u8; OCTETS_D_EN_TETE];
+        octets.extend_from_slice(corps);
+        pilote.ecrire(&octets, adresse);
+        pilote.poser(1, adresse, octets.len() as u32, false);
+    }
+
+    /// **Une trame émise par l'invité arrive au câble dans le même
+    /// `servir`** : la notification est notée pendant l'`out` (la façade n'a
+    /// pas la RAM), le réveil le dit, et `servir` émet, donne la trame au
+    /// câble, rend la requête et lève la ligne 3. Une trame du câble arrive
+    /// par `sonder_reseau`, dans le tampon posé.
+    #[test]
+    fn a_frame_crosses_the_facade_both_ways() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        poser_une_emission(&mut pilote, &trame(), 0x40000);
+        assert!(!carte.a_servir());
+        // `outw` de 0x1_0001 : deux octets, la file un.
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 0x1_0001));
+        assert!(carte.a_servir(), "notée");
+        assert!(temoin.bouts().recues.is_empty(), "pas encore servie");
+        assert_eq!(
+            carte.servir(&mut pilote.ram),
+            0,
+            "pas une requête de disque"
+        );
+        assert!(!carte.a_servir());
+        assert_eq!(temoin.bouts().recues, vec![trame()]);
+        assert_eq!(pilote.servie(1, 0).2, 1, "rendue");
+        assert_eq!(carte.lignes(), 1 << 3);
+        assert_eq!(carte.port_lire(RESEAU + 0x13, 1), Some(1));
+        assert_eq!(carte.lignes(), 0);
+        // Et dans l'autre sens.
+        pilote.poser(0, 0x50000, 2048, true);
+        temoin.bouts().pour_l_invite.push(trame());
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(pilote.octets(0x5000A, trame().len()), trame());
+        assert_eq!(
+            pilote.servie(0, 0).1 as usize,
+            OCTETS_D_EN_TETE + trame().len()
+        );
+        assert_eq!(carte.lignes(), 1 << 3);
+        let reseau = carte.reseau().expect("branchée");
+        assert_eq!(
+            (reseau.emises(), reseau.livrees(), reseau.perdues()),
+            (1, 1, 0)
+        );
+    }
+
+    /// **La réception notifiée** par le port est servie par `servir` : la
+    /// trame qui attendait un tampon y part, sans questionner le câble.
+    #[test]
+    fn a_receive_notification_is_served_by_serve() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        temoin.bouts().pour_l_invite.push(trame());
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(carte.reseau().map(VirtioNet::en_attente), Some(1));
+        pilote.poser(0, 0x50000, 2048, true);
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 0));
+        assert!(carte.reveil());
+        assert_eq!(carte.reseau().map(VirtioNet::en_attente), Some(1), "notée");
+        carte.servir(&mut pilote.ram);
+        assert_eq!(carte.reseau().map(VirtioNet::en_attente), Some(0));
+        assert_eq!(pilote.octets(0x5000A, trame().len()), trame());
+        assert_eq!(
+            temoin.bouts().questions,
+            1,
+            "une seule question, à la sonde"
+        );
+        // Une autre file : le port est pris, rien n'est noté.
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 2));
+        assert!(!carte.a_servir());
+        // Une écriture d'octet de 0x101 notifie la file un.
+        poser_une_emission(&mut pilote, &trame(), 0x40000);
+        assert!(carte.port_ecrire(RESEAU + 0x10, 1, 0x101));
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().recues.len(), 1);
+    }
+
+    /// **Le câble n'est questionné qu'un tour sur quatre au travail**, et à
+    /// chaque tour au repos, par la façade comme par la carte.
+    #[test]
+    fn the_facade_asks_the_cable_at_the_cards_pace() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        for _ in 0..PASSAGES_AU_TRAVAIL - 1 {
+            carte.sonder_reseau(&mut pilote.ram, true);
+        }
+        assert_eq!(temoin.bouts().questions, 0);
+        carte.sonder_reseau(&mut pilote.ram, true);
+        assert_eq!(temoin.bouts().questions, 1);
+        carte.sonder_reseau(&mut pilote.ram, false);
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(temoin.bouts().questions, 3);
+        // `servir` ne questionne jamais le câble : il ne sert que ce qui est
+        // noté.
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().questions, 3);
+    }
+
+    /// **Débranché**, ce que l'invité envoie est perdu et rien n'arrive ;
+    /// rebranché, la suivante part. Le câble rendu est celui qu'on avait
+    /// branché.
+    #[test]
+    fn an_unplugged_cable_loses_frames_and_a_replugged_one_carries_them() {
+        let (mut carte, temoin, mut pilote) = reseau_ouvert();
+        assert!(carte.reveil(), "branché : une trame peut venir");
+        let mut rendu = carte.debrancher_cable().expect("le câble branché");
+        assert!(!carte.reveil(), "débranché : rien ne viendra");
+        poser_une_emission(&mut pilote, &trame(), 0x40000);
+        carte.port_ecrire(RESEAU + 0x10, 2, 1);
+        carte.servir(&mut pilote.ram);
+        assert!(temoin.bouts().recues.is_empty());
+        assert_eq!(carte.reseau().map(VirtioNet::perdues), Some(1));
+        assert_eq!(pilote.servie(1, 0).2, 1, "rendue quand même");
+        temoin.bouts().pour_l_invite.push(trame());
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(temoin.bouts().questions, 0, "personne à questionner");
+        // Le câble rendu est le témoin : ce qu'on y envoie s'y voit.
+        rendu.envoyer(&[1, 2, 3]);
+        assert_eq!(temoin.bouts().recues, vec![vec![1, 2, 3]]);
+        carte.brancher_cable(temoin.clone());
+        poser_une_emission(&mut pilote, &[9; 60], 0x41000);
+        carte.port_ecrire(RESEAU + 0x10, 2, 1);
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().recues.last(), Some(&vec![9; 60]));
+        assert_eq!(carte.reseau().map(VirtioNet::emises), Some(1));
+    }
+
+    /// **Le câble branché avant la carte** la trouve branchée ; une carte
+    /// rebranchée oublie la notification notée pour l'ancienne et garde le
+    /// câble. Sans carte, sa fenêtre n'est à personne.
+    #[test]
+    fn plugging_order_and_a_new_card() {
+        let mut carte = CartePc::nouvelle();
+        let temoin = Temoin::default();
+        carte.brancher_cable(temoin.clone());
+        assert!(!carte.reveil(), "un câble sans carte");
+        carte.port_ecrire(0xCF8, 4, adresse(5, 0));
+        assert_eq!(carte.port_lire(0xCFC, 4), Some(0xFFFF_FFFF), "pas de carte");
+        carte.brancher_reseau([0x02, 1, 2, 3, 4, 5]);
+        assert_eq!(carte.reseau().map(VirtioNet::cable_branche), Some(true));
+        ouvrir_le_reseau_d_adresse(&mut carte, 0x0302_0102);
+        assert!(carte.port_ecrire(RESEAU + 0x10, 2, 1));
+        assert!(carte.a_servir());
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        assert!(!carte.a_servir(), "la notification était pour l'ancienne");
+        assert_eq!(carte.reseau().map(VirtioNet::cable_branche), Some(true));
+        let mut pilote = Pilote::nouveau(VirtioNet::default());
+        ouvrir_le_reseau(&mut carte);
+        poser_une_emission(&mut pilote, &trame(), 0x40000);
+        carte.port_ecrire(RESEAU + 0x10, 2, 1);
+        carte.servir(&mut pilote.ram);
+        assert_eq!(temoin.bouts().recues, vec![trame()]);
+        // Une carte sans câble, branchée la première, est débranchée.
+        let mut seule = CartePc::nouvelle();
+        seule.brancher_reseau(MAC_PAR_DEFAUT);
+        assert_eq!(seule.reseau().map(VirtioNet::cable_branche), Some(false));
+        assert!(seule.debrancher_cable().is_none());
+    }
+
+    /// La poignée de main d'une carte d'une autre adresse.
+    fn ouvrir_le_reseau_d_adresse(carte: &mut CartePc, mac_bas: u32) {
+        carte.port_ecrire(0xCF8, 4, adresse(5, 0x10));
+        carte.port_ecrire(0xCFC, 4, u32::from(RESEAU));
+        carte.port_ecrire(0xCF8, 4, adresse(5, 0x04));
+        carte.port_ecrire(0xCFC, 2, 5);
+        assert_eq!(carte.port_lire(RESEAU + 0x14, 4), Some(mac_bas));
+    }
+
+    /// **Le câble en boucle, par la façade** : l'invité reçoit ce qu'il a
+    /// envoyé, au tour suivant.
+    #[test]
+    fn a_loop_cable_through_the_facade() {
+        let mut carte = CartePc::nouvelle();
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        carte.brancher_cable(CableEnBoucle::default());
+        ouvrir_le_reseau(&mut carte);
+        let mut pilote = Pilote::nouveau(VirtioNet::default());
+        poser_une_emission(&mut pilote, &trame(), 0x40000);
+        pilote.poser(0, 0x50000, 2048, true);
+        carte.port_ecrire(RESEAU + 0x10, 2, 1);
+        carte.servir(&mut pilote.ram);
+        assert_eq!(
+            pilote.octets(0x5000A, trame().len()),
+            vec![0; trame().len()]
+        );
+        carte.sonder_reseau(&mut pilote.ram, false);
+        assert_eq!(pilote.octets(0x5000A, trame().len()), trame());
+        let reseau = carte.reseau().expect("branchée");
+        assert_eq!((reseau.emises(), reseau.livrees()), (1, 1));
     }
 }

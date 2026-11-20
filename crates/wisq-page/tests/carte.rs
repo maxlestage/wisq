@@ -990,3 +990,98 @@ console.log("droit " + vue.getUint16(0x3002, true) + " " + [14, 15, 16].map(even
         "le droit et le milieu (bits 1 et 2) passent l'export, le gauche relâché"
     );
 }
+
+/// **La carte réseau par le module wasm32**, sous Bun : branchée à son
+/// adresse (un `u64` en `BigInt`, l'octet bas d'abord), trouvée en 00:05.0
+/// par le bus, l'adresse relue dans sa fenêtre ; une trame émise par la
+/// notification de la file un, dont la sonnette lit la file dans la RAM de
+/// la page pendant l'appel, prise par `carte_reseau_sortie` et lue dans la
+/// mémoire du module, la ligne 3 levée puis baissée par l'ISR ; une trame
+/// copiée à la place, entrée, livrée dans le tampon posé ; une trame trop
+/// grande perdue, et le câble débranché qui perd ce qui part.
+#[test]
+fn the_network_card_answers_through_the_page_module() {
+    let module = page_module();
+    let script = format!(
+        r#"import {{ readFileSync }} from "fs";
+const module = new WebAssembly.Module(readFileSync({module:?}));
+const ram = new Uint8Array(0x60000);
+let m;
+const ici = () => new Uint8Array(m.memory.buffer);
+const dedans = (a, n) => a >= 0n && a + BigInt(n) <= BigInt(ram.length);
+const instance = new WebAssembly.Instance(module, {{ carte: {{
+  ram_lire: (a, vers, n) => {{ if (!dedans(a, n)) return 0; ici().set(ram.subarray(Number(a), Number(a) + n), vers); return 1; }},
+  ram_ecrire: (a, depuis, n) => {{ if (!dedans(a, n)) return 0; ram.set(ici().subarray(depuis, depuis + n), Number(a)); return 1; }},
+}} }});
+m = instance.exports;
+const hex = (v) => "0x" + BigInt.asUintN(64, BigInt(v)).toString(16);
+const vue = new DataView(ram.buffer);
+const decrire = (table, a, n, drapeaux) => {{ vue.setBigUint64(table, BigInt(a), true); vue.setUint32(table + 8, n, true); vue.setUint16(table + 12, drapeaux, true); }};
+console.log("sans " + m.carte_reseau_sortie() + " " + m.carte_reseau_cable(1) + " " + m.carte_reseau_compte(0));
+m.carte_reseau(0x017173697702n, 1);
+m.carte_ecrire(0xcf8, 4, 0x80002800);
+console.log("bus " + hex(m.carte_lire(0xcfc, 4) & 0xffffffffn));
+m.carte_ecrire(0xcf8, 4, 0x8000283c);
+console.log("ligne " + (m.carte_lire(0xcfc, 1)));
+m.carte_ecrire(0xcf8, 4, 0x80002810);
+m.carte_ecrire(0xcfc, 4, 0xc040);
+m.carte_ecrire(0xcf8, 4, 0x80002804);
+m.carte_ecrire(0xcfc, 2, 1);
+console.log("mac " + hex(m.carte_lire(0xc054, 4)) + " " + hex(m.carte_lire(0xc058, 2)) + " " + m.carte_lire(0xc04c, 2));
+for (const [f, p] of [[0, 0x10], [1, 0x20]]) {{ m.carte_ecrire(0xc04e, 2, f); m.carte_ecrire(0xc048, 4, p); }}
+const trame = Array.from({{ length: 60 }}, (_, i) => (i * 3) & 0xff);
+ram.set(trame, 0x4000a);
+decrire(0x20000, 0x40000, 70, 0);
+vue.setUint16(0x21002, 1, true);
+console.log("emise " + m.carte_ecrire(0xc050, 2, 1) + " " + m.carte_lignes());
+const n = m.carte_reseau_sortie();
+const p = m.carte_reseau_sortie_octets();
+console.log("sortie " + n + " " + typeof p + " " + (Array.from(ici().subarray(p, p + n)).join(",") === trame.join(",")) + " " + m.carte_reseau_sortie() + " " + vue.getUint16(0x22002, true));
+console.log("isr " + m.carte_lire(0xc053, 1) + " " + m.carte_lignes());
+const place = m.carte_reseau_place(60);
+ici().set(trame, place);
+console.log("entree " + m.carte_reseau_entrer(61) + " " + m.carte_reseau_entrer(60) + " " + m.carte_reseau_compte(3));
+decrire(0x10000, 0x50000, 2048, 2);
+vue.setUint16(0x11002, 1, true);
+m.carte_reseau_livrer();
+console.log("livree " + m.carte_reseau_compte(1) + " " + vue.getUint32(0x12008, true) + " " + (Array.from(ram.subarray(0x5000a, 0x5000a + 60)).join(",") === trame.join(",")) + " " + Array.from(ram.subarray(0x50000, 0x5000a)).join("") + " " + m.carte_lignes());
+m.carte_reseau_place(1515);
+console.log("grande " + m.carte_reseau_entrer(1515) + " " + m.carte_reseau_compte(2));
+m.carte_reseau_cable(0);
+decrire(0x20010, 0x40000, 70, 0);
+vue.setUint16(0x21006, 1, true);
+vue.setUint16(0x21002, 2, true);
+m.carte_ecrire(0xc050, 2, 1);
+console.log("debranche " + m.carte_reseau_sortie() + " " + m.carte_reseau_compte(0) + " " + m.carte_reseau_compte(2) + " " + vue.getUint16(0x22002, true));
+"#,
+        module = module.to_string_lossy(),
+    );
+    let text = run_driver("reseau", &script);
+    assert_eq!(said(&text, "sans "), "0 0 0", "pas de carte");
+    assert_eq!(
+        said(&text, "bus "),
+        "0x10001af4",
+        "virtio-net, forme ancienne"
+    );
+    assert_eq!(said(&text, "ligne "), "3");
+    assert_eq!(said(&text, "mac "), "0x73697702 0x171 256");
+    assert_eq!(said(&text, "emise "), "1 8", "la ligne 3");
+    assert_eq!(
+        said(&text, "sortie "),
+        "60 number true 0 1",
+        "la trame, lue dans la mémoire du module, et la requête rendue"
+    );
+    assert_eq!(said(&text, "isr "), "1 0", "l'ISR lu baisse la ligne");
+    assert_eq!(said(&text, "entree "), "0 1 1");
+    assert_eq!(
+        said(&text, "livree "),
+        "1 70 true 0000000000 8",
+        "derrière un en-tête nul, la longueur servie, la ligne"
+    );
+    assert_eq!(said(&text, "grande "), "0 1", "1 515 octets : perdue");
+    assert_eq!(
+        said(&text, "debranche "),
+        "0 1 2 2",
+        "débranché : perdue, et rendue"
+    );
+}
