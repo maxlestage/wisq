@@ -8,6 +8,80 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Cœur x86 : les drapeaux à la demande ne rapportent rien ; les conditions sans aiguillage, 3 à 6 %
+
+**La demande.** Le second chantier de « Fais tout » : calculer les drapeaux
+de l'arithmétique seulement quand une instruction les lit.
+
+**Ce qui a été essayé, et mesuré.** Chaque variante contre la branche des
+blocs (#710), courses alternées, Alpine 6.18.60 jusqu'à son shell.
+
+1. *Les drapeaux à la demande, tels qu'on les décrit partout.* `add`,
+   `subtract` et `logic` notent leurs opérandes, leur résultat et leur
+   largeur ; `flags`, lu, calcule les six drapeaux depuis la note ; une
+   condition lue juste après une comparaison se tire de la note par deux
+   aiguillages (la nature de l'opération, puis la condition). Les 642 tests
+   x86 passaient, corpus matériels compris. **Plus lent : 32,0 s → 35,8 s**
+   (quatre courses : 32,0 · 32,3 · 32,2 · 31,6 contre 36,6 · 35,2 · 35,7 ·
+   36,0).
+2. *Les mêmes, avec une condition sans branche* : les huit conditions de
+   base rangées dans un mot, depuis la note ou depuis RFLAGS, et un décalage
+   pour prendre la sienne. **32,3 s → 31,2 s.**
+3. *La condition sans branche seule, les drapeaux calculés comme avant.*
+   **32,7 s → 31,6 s** sur trois courses : le même gain que la variante 2.
+
+Tout le gain vient donc de la condition, et rien des drapeaux à la demande.
+Sur un processeur qui exécute quatre ou cinq instructions par cycle, calculer
+six drapeaux dont personne ne veut coûte peu — des opérations simples, en
+parallèle, hors du chemin critique ; ce qui coûte, c'est un branchement que
+l'hôte devine mal, et un aiguillage par condition en est un par saut
+conditionnel de l'invité, c'est-à-dire une instruction sur sept.
+
+**Ce qui est gardé.** `condition` sans aiguillage (`conditionBits`), et rien
+d'autre : les drapeaux à la demande sont retirés, avec leur note et leur
+propriété calculée. Ils ajoutaient un second chemin pour les drapeaux — la
+première source de fautes d'un émulateur — sans rien rendre.
+
+**Mesure du code gardé**, cinq courses alternées, machine bruyante :
+
+| | courses (s) | médiane |
+|---|---|---|
+| blocs (#710) | 33,3 · 33,5 · 35,2 · 38,1 · 34,4 | 34,4 s |
+| conditions sans aiguillage | 31,6 · 32,3 · 34,0 · 33,7 · 31,1 | 32,3 s |
+
+Entre 3,5 % (la série de trois) et 6 % (celle-ci) de temps en moins.
+
+**Tests.** `X86ConditionTests` : les seize conditions devant les
+soixante-quatre états de CF, PF, AF, ZF, SF et OF, sous cinq opcodes, contre
+la définition du manuel écrite une seconde fois dans le test — 5 120 cas. Les
+corpus matériels (sauts, `SETcc`, `CMOVcc`) passent par la même fonction.
+
+**Sabotages**, d'une ligne : neuf, tous tombent — le débordement lu au
+mauvais bit, zéro et signe échangés, la parité lue dans la retenue
+auxiliaire, « plus petit » par un ou au lieu d'un ou exclusif, signe et
+parité échangés dans le mot, BE par un et, LE sans le zéro, le bit
+d'inversion ignoré, les bits hauts du code non masqués.
+
+**Vérifications.** Suite Swift entière : 2 982 tests, 0 échec. SwiftLint
+`--strict`, `check-whitespace.sh` : propres.
+
+**Les trois PR du cœur ensemble** (#709, #710 et celle-ci), mesurées d'un
+coup : cinq courses alternées entre `master` d'avant les formes courtes
+(58635682) et cette branche.
+
+| | courses (s) | médiane | débit |
+|---|---|---|---|
+| avant les trois | 40,9 · 40,2 · 40,7 · 41,7 · 39,8 | 40,7 s | 47,1 MIPS |
+| après | 30,2 · 30,7 · 30,8 · 29,9 · 31,7 | 30,7 s | 62,5 MIPS |
+
+**Un quart de temps en moins** (−24,7 %), un tiers de débit en plus, sur le
+démarrage d'Alpine jusqu'à son shell.
+
+**Ce qui reste.** Aucune de ces mesures n'est prise sur une puce Apple. Le
+prochain pas utile est de mesurer sur un Mac de la CI, où les caches
+ressemblent à ceux d'un iPhone, avant de continuer à régler une boucle sur
+un Xeon.
+
 ## 2026-11-20 — Cœur x86 : des blocs d'instructions, un dixième de temps en moins de plus
 
 **La demande.** « Fais tout » : les deux chantiers de vitesse laissés par
