@@ -585,6 +585,30 @@ fn above_three_gibibytes_the_map_has_a_hole() {
     assert_eq!(cpu.read_memory(1 << 32, Width::Qword), Ok(7));
 }
 
+/// **Une RAM que l'hôte ne peut pas donner est un refus, pas un arrêt du
+/// processus.** `vec![0; n]` faisait SIGABRT sur « memory allocation of …
+/// failed » ; 2^62 octets ne s'allouent sur aucun hôte, pas même avec la
+/// surréservation permise, puisque l'espace d'adresses d'un x86-64 en compte
+/// 2^47. Le processeur reste tel qu'il était, et la machine ne se construit
+/// pas.
+#[test]
+fn a_ram_the_host_cannot_give_is_refused_not_aborted() {
+    assert!(memoire::bloc_nul(1 << 62).is_none());
+    assert!(memoire::bloc_nul(u64::MAX).is_none(), "plus qu'un isize");
+    let bloc = memoire::bloc_nul(1 << 20).expect("un mébioctet");
+    assert_eq!(bloc.len(), 1 << 20);
+    assert!(bloc.iter().all(|&octet| octet == 0), "des pages nulles");
+    assert_eq!(memoire::bloc_nul(0), Some(Vec::new()));
+
+    let mut cpu = wisq_vm::x86::Cpu::default();
+    assert!(!memoire::essayer_de_brancher(&mut cpu, 1 << 62));
+    assert!(cpu.memory.bytes.is_empty(), "rien de branché");
+    assert_eq!(cpu.memory_hole, (0, 0));
+    assert!(wisq_vm::pc::Machine::essayer(1 << 62).is_none());
+    let machine = wisq_vm::pc::Machine::essayer(256 << 20).expect("256 Mio");
+    assert_eq!(machine.cpu.memory.bytes.len(), 256 << 20);
+}
+
 /// Le vrai noyau, quand on en désigne un : `WISQ_PC_KERNEL`.
 #[test]
 fn a_real_kernel_is_placed_where_it_asks() {

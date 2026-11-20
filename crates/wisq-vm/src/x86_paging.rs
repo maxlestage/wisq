@@ -66,11 +66,21 @@ pub enum Unmapped {
     /// **L'adresse n'est pas canonique** : ses bits 63 à 47 ne sont pas tous
     /// égaux. Les tables n'en traduisent que quarante-huit, et la marcher
     /// quand même la confondrait avec son alias — une lecture à
-    /// 0x8000_0000_0000_6000 rendrait le contenu de 0x6000. Le silicium lève
-    /// `#GP(0)`, pas une faute de page. Seule la traduction de la machine PC
-    /// (`translate_cached`, avec son tampon) la rend ; `translate`, le juge de
-    /// l'émetteur, marche les tables comme il l'a toujours fait.
+    /// 0x8000_0000_0000_6000 rendrait le contenu de 0x6000. Le silicium ne
+    /// lève pas de faute de page : `#GP(0)` pour une référence par DS, ES, FS
+    /// ou GS, et **`#SS(0)` pour une référence par la pile** (`push`, `pop`,
+    /// `call`, `ret`, ou une adresse bâtie sur RSP ou RBP). La machine PC fait
+    /// la différence au moment de livrer (`pc::machine`). Seule la traduction
+    /// de la machine PC (`translate_cached`, avec son tampon) la rend ;
+    /// `translate`, le juge de l'émetteur, marche les tables comme il l'a
+    /// toujours fait.
     NonCanonical { address: u64 },
+    /// **Une cible de saut qui n'est pas canonique** : `Cpu` refuse de charger
+    /// RIP avec elle (`jmp`, `call`, `ret`, `jcc`, `loop`, `jrcxz`), et la
+    /// faute tombe sur le saut, pas sur l'instruction d'après. Ce n'est pas un
+    /// accès : le silicium lève toujours `#GP(0)`, même pour la cible d'un
+    /// `ret`, qui vient de la pile.
+    NonCanonicalTarget { address: u64 },
 }
 
 impl Unmapped {
@@ -82,9 +92,17 @@ impl Unmapped {
             | Self::TableOutside { address, .. }
             | Self::Outside { address }
             | Self::Forbidden { address }
-            | Self::NonCanonical { address } => *address,
+            | Self::NonCanonical { address }
+            | Self::NonCanonicalTarget { address } => *address,
         }
     }
+}
+
+/// **Une adresse canonique** est l'extension de signe de ses quarante-huit
+/// bits bas : ses bits 63 à 47 sont tous égaux.
+#[inline(always)]
+pub fn is_canonical(address: u64) -> bool {
+    ((address as i64) << 16) >> 16 == address as i64
 }
 
 /// Le bit utilisateur d'une entrée : sans lui à chaque niveau, l'anneau trois
@@ -369,10 +387,9 @@ impl Cpu {
     /// Le chemin lent de `translate_cached` : marcher, juger, marquer, garder.
     #[inline(never)]
     fn fill(&mut self, virtual_address: u64, access: Access) -> Result<u64, Unmapped> {
-        // Une adresse canonique est l'extension de signe de ses quarante-huit
-        // bits bas. Le contrôle est ici, sur le chemin lent : une adresse qui
-        // ne l'est pas n'entre jamais au tampon, donc n'y est jamais trouvée.
-        if ((virtual_address as i64) << 16) >> 16 != virtual_address as i64 {
+        // Le contrôle est ici, sur le chemin lent : une adresse qui n'est pas
+        // canonique n'entre jamais au tampon, donc n'y est jamais trouvée.
+        if !is_canonical(virtual_address) {
             return Err(Unmapped::NonCanonical {
                 address: virtual_address,
             });

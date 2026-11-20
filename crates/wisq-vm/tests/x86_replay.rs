@@ -566,9 +566,14 @@ fn nothing_moves_when_a_write_is_refused() {
         .chain(onto_the_stack.iter().map(|form| (form, true)));
     for ((name, code), stack_is_read_only) in cases {
         for cached in [false, true] {
+            // **Une valeur au bit haut posé, mais canonique** : RAX est aussi
+            // la cible de `call *%rax`, et une cible qui ne l'est pas fait
+            // fauter le `call` sur elle (`#GP(0)`) avant qu'il n'empile —
+            // l'ordre du silicium —, si bien que la pile en lecture seule ne
+            // serait jamais jugée.
             let mut cpu = paged(&[CODE_PAGE, READ_ONLY, writable_stack], cached);
             cpu.memory
-                .write(0x20000, Width::Qword, 0x8000_0000_0000_0001)
+                .write(0x20000, Width::Qword, 0xFFFF_8000_0000_0001)
                 .unwrap();
             cpu.memory.write(0x20008, Width::Qword, 0x1111).unwrap();
             cpu.memory.write(0x30800, Width::Qword, 0x10100).unwrap();
@@ -576,7 +581,7 @@ fn nothing_moves_when_a_write_is_refused() {
             // lecture seule ; RDX:RAX vaut ce que `cmpxchg16b` compare, pour
             // qu'il aille jusqu'à écrire.
             cpu.regs = [0; 16];
-            cpu.regs[0] = 0x8000_0000_0000_0001;
+            cpu.regs[0] = 0xFFFF_8000_0000_0001;
             cpu.regs[1] = 3;
             cpu.regs[2] = 0x1111;
             cpu.regs[3] = DATA;
@@ -604,7 +609,7 @@ fn nothing_moves_when_a_write_is_refused() {
             assert_eq!(cpu.rip, 0x10000, "{name} : RIP");
             assert_eq!(
                 cpu.memory.read(0x20000, Width::Qword),
-                Some(0x8000_0000_0000_0001),
+                Some(0xFFFF_8000_0000_0001),
                 "{name} : la mémoire"
             );
             assert_eq!(cpu.memory.read(0x20008, Width::Qword), Some(0x1111));
@@ -741,4 +746,52 @@ fn the_machines_translation_refuses_non_canonical_addresses() {
     let mut plain = paged(&[(DATA, 0x20000, PRESENT | WRITABLE)], false);
     plain.memory.write(0x20000, Width::Qword, 0xAAAA).unwrap();
     assert_eq!(plain.read_memory(alias, Width::Qword), Ok(0xAAAA));
+}
+
+/// **L'interpréteur refuse de charger RIP avec une cible qui n'est pas
+/// canonique**, pagination ou non : la faute est nommée
+/// (`NonCanonicalTarget`), RIP reste sur le saut, et rien ne bouge — ni RSP,
+/// ni la pile sous lui, ni RCX pour un `loop`.
+#[test]
+fn a_non_canonical_jump_target_leaves_everything_in_place() {
+    let target = 0x8000_0000_0000_0001u64;
+    let forms: [(&str, &[u8]); 5] = [
+        ("jmp *%rax", &[0xff, 0xe0]),
+        ("call *%rax", &[0xff, 0xd0]),
+        ("call *(%rsi)", &[0xff, 0x16]),
+        ("ret", &[0xc3]),
+        ("ret $16", &[0xc2, 0x10, 0x00]),
+    ];
+    for (name, code) in forms {
+        for cached in [false, true] {
+            let mut cpu = paged(&[CODE_PAGE, (DATA, 0x20000, PRESENT | WRITABLE)], cached);
+            cpu.regs[0] = target;
+            cpu.regs[6] = DATA;
+            cpu.regs[4] = DATA + 0x800;
+            cpu.memory.write(0x20000, Width::Qword, target).unwrap();
+            cpu.memory.write(0x20800, Width::Qword, target).unwrap();
+            cpu.memory.write(0x207f8, Width::Qword, 0x5A5A).unwrap();
+            let registers = cpu.regs;
+            run(&mut cpu, code);
+            assert!(cpu.faulted, "{name}");
+            assert_eq!(
+                cpu.unmapped,
+                Some(Unmapped::NonCanonicalTarget { address: target }),
+                "{name}"
+            );
+            assert_eq!(cpu.rip, 0x10000, "{name} : RIP sur le saut");
+            assert_eq!(cpu.regs, registers, "{name} : les registres");
+            assert_eq!(
+                cpu.memory.read(0x207f8, Width::Qword),
+                Some(0x5A5A),
+                "{name} : rien empilé"
+            );
+        }
+    }
+    // Une cible canonique au bit haut posé passe.
+    let mut cpu = paged(&[CODE_PAGE], false);
+    cpu.regs[0] = 0xFFFF_8000_0000_0000;
+    run(&mut cpu, &[0xff, 0xe0]);
+    assert!(!cpu.faulted);
+    assert_eq!(cpu.rip, 0xFFFF_8000_0000_0000);
 }

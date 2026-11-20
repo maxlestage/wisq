@@ -67,6 +67,7 @@ pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector, VectorFault, MXCSR_
 
 #[path = "x86_extended.rs"]
 mod extended;
+use crate::x86_paging::is_canonical;
 pub use extended::{decode_extended, Extended, ExtendedFault, Extra, FpuWord, FXSAVE_WRITTEN};
 
 /// La largeur d'une opération, en octets.
@@ -1756,11 +1757,16 @@ impl Cpu {
                 self.regs[instruction.dst as usize] = value;
             }
             Op::Call => {
+                let target = after.wrapping_add(instruction.imm);
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.push(after, Width::Qword);
                 if self.faulted {
                     return;
                 }
-                self.rip = after.wrapping_add(instruction.imm);
+                self.rip = target;
                 self.jumped = true;
             }
             Op::CallIndirect => {
@@ -1772,6 +1778,12 @@ impl Cpu {
                     self.faulted = true;
                     return;
                 };
+                // La cible se juge avant d'empiler : le silicium lève `#GP(0)`
+                // sans rien avoir écrit sous RSP.
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.push(after, Width::Qword);
                 if self.faulted {
                     return;
@@ -1781,6 +1793,13 @@ impl Cpu {
             }
             Op::Return => {
                 let Some(value) = self.pop() else { return };
+                if !is_canonical(value) {
+                    // Le `pop` n'a changé que RSP : le défaire suffit à
+                    // laisser la machine telle qu'elle était.
+                    self.regs[4] = self.regs[4].wrapping_sub(8);
+                    self.refuse_target(value);
+                    return;
+                }
                 // **L'ordre du silicium** : dépiler l'adresse, *puis* jeter les
                 // arguments. `imm` vaut zéro pour un `ret` nu.
                 self.regs[4] = self.regs[4].wrapping_add(instruction.imm & 0xffff);
@@ -1788,9 +1807,16 @@ impl Cpu {
                 self.jumped = true;
             }
             _ => {
-                // `leave` : RSP reprend RBP, puis RBP se dépile.
+                // `leave` : RSP reprend RBP, puis RBP se dépile. **Une faute
+                // rend RSP d'avant** : sans quoi elle laissait RSP = RBP, et
+                // le gestionnaire voyait une pile que l'instruction n'avait
+                // jamais eue.
+                let before = self.regs[4];
                 self.regs[4] = self.regs[5];
-                let Some(value) = self.pop() else { return };
+                let Some(value) = self.pop() else {
+                    self.regs[4] = before;
+                    return;
+                };
                 self.regs[5] = value;
             }
         }
@@ -2778,11 +2804,13 @@ impl Cpu {
             Op::JumpIfCountZero => {
                 // RCX n'est **pas** touché : c'est toute la différence avec les
                 // trois `loop` juste en dessous.
-                self.rip = if self.regs[1] == 0 {
-                    after.wrapping_add(instruction.imm)
-                } else {
-                    after
-                };
+                let target = after.wrapping_add(instruction.imm);
+                let taken = self.regs[1] == 0;
+                if taken && !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
+                self.rip = if taken { target } else { after };
                 self.jumped = true;
                 return;
             }
@@ -2791,14 +2819,17 @@ impl Cpu {
                 // et aucune ne pose de drapeau : confondre `loop` avec `dec`
                 // puis `jnz` écraserait cinq drapeaux que le processeur préserve.
                 let count = self.regs[1].wrapping_sub(1);
-                self.regs[1] = count;
                 let zf = self.flags.read() & ZF != 0;
                 let again = count != 0 && zero.is_none_or(|want| want == zf);
-                self.rip = if again {
-                    after.wrapping_add(instruction.imm)
-                } else {
-                    after
-                };
+                let target = after.wrapping_add(instruction.imm);
+                // Une faute ne laisse aucune trace : RCX ne change qu'une fois
+                // la cible jugée.
+                if again && !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
+                self.regs[1] = count;
+                self.rip = if again { target } else { after };
                 self.jumped = true;
                 return;
             }
@@ -2811,6 +2842,10 @@ impl Cpu {
                     self.faulted = true;
                     return;
                 };
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.rip = target;
                 self.jumped = true;
                 return;
@@ -2901,15 +2936,46 @@ impl Cpu {
     /// **Un saut relatif, conditionnel ou non.** Le déplacement porte sur
     /// l'instruction **suivante**, donc la cible est `rip + longueur +
     /// déplacement`. Aucun drapeau n'est touché.
+    ///
+    /// Un saut pris vers une adresse qui n'est pas canonique faute sur
+    /// lui-même (`refuse_target`). **Le contrôle porte sur l'adresse retenue**,
+    /// choisie comme avant sans rien demander de plus à la condition ; la
+    /// condition ne se relit que sur le chemin froid, quand cette adresse
+    /// n'est pas canonique — une suite non prise qui sort de la moitié basse
+    /// avance alors, et c'est la lecture de l'instruction d'après qui faute.
+    /// La forme `taken && !canonique(cible)` faisait le même travail ; elle
+    /// sortait de 1,5 à 4,6 % plus lente que la tranche précédente sur six
+    /// séries de courses alternées (le démarrage d'Alpine), celle-ci de
+    /// −2,3 à +1,6 % sur deux. Le journal du 20 novembre a les chiffres, et
+    /// dit combien le bruit du jour y pèse.
     #[inline(always)]
     fn jump(&mut self, instruction: &Decoded, condition: Option<Condition>) {
         let after = self.rip.wrapping_add(instruction.length as u64);
         let taken = condition.is_none_or(|c| c.holds(self.flags.read()));
-        self.rip = if taken {
+        let next = if taken {
             after.wrapping_add(instruction.imm)
         } else {
             after
         };
+        if !is_canonical(next) && taken {
+            self.refuse_target(next);
+            return;
+        }
+        self.rip = next;
+        self.jumped = true;
+    }
+
+    /// **Une cible que RIP ne peut pas prendre** : ses bits 63 à 47 ne sont pas
+    /// tous égaux. Le silicium lève `#GP(0)` **sur le saut lui-même** — RIP
+    /// reste dessus, rien n'est retiré, rien n'est empilé —, et non sur
+    /// l'instruction d'après, qui n'a jamais d'adresse. La faute se dit comme
+    /// une faute d'accès (`Unmapped::NonCanonicalTarget`), que la machine PC
+    /// livre en `#GP(0)`.
+    #[cold]
+    #[inline(never)]
+    fn refuse_target(&mut self, target: u64) {
+        self.unmapped = Some(crate::x86_paging::Unmapped::NonCanonicalTarget { address: target });
+        self.faulted = true;
         self.jumped = true;
     }
 

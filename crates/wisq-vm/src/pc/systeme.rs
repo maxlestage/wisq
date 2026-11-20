@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use crate::x86::{Cpu, Width, IF, WRITABLE_FLAGS};
-use crate::x86_paging::Unmapped;
+use crate::x86_paging::{is_canonical, Unmapped};
 
 /// `IA32_EFER` et ses bits.
 pub const MSR_EFER: u32 = 0xC000_0080;
@@ -56,6 +56,9 @@ pub enum Exception {
     Division,
     /// `#UD`, vecteur 6 : `ud2`, ou une instruction que ce processeur n'a pas.
     Indefinie,
+    /// `#SS`, vecteur 12, avec son code d'erreur : en mode long, une
+    /// référence par la pile à une adresse qui n'est pas canonique (code 0).
+    SegmentDePile(u64),
     /// `#GP`, vecteur 13, avec son code d'erreur.
     ProtectionGenerale(u64),
     /// `#PF`, vecteur 14 : l'adresse va dans CR2, le code dit pourquoi.
@@ -67,6 +70,7 @@ impl Exception {
         match self {
             Self::Division => 0,
             Self::Indefinie => 6,
+            Self::SegmentDePile(_) => 12,
             Self::ProtectionGenerale(_) => 13,
             Self::FauteDePage { .. } => 14,
         }
@@ -84,7 +88,9 @@ impl Exception {
     /// pas une.
     pub fn code(&self) -> Option<u64> {
         match self {
-            Self::ProtectionGenerale(code) | Self::FauteDePage { code, .. } => Some(*code),
+            Self::SegmentDePile(code)
+            | Self::ProtectionGenerale(code)
+            | Self::FauteDePage { code, .. } => Some(*code),
             Self::Division | Self::Indefinie => None,
         }
     }
@@ -236,7 +242,7 @@ impl Systeme {
             let adresse = entree.wrapping_add(8 * rang as u64);
             *mot = cpu
                 .read_memory_as_machine(adresse, Width::Qword)
-                .map_err(|_| faute_du_dernier_acces(cpu))?;
+                .map_err(|_| faute_du_dernier_acces(cpu, false))?;
         }
         let [bas, haut] = mots;
         self.base_de_tache =
@@ -386,6 +392,10 @@ impl Systeme {
         if ((cs & 3) as u8) < anneau {
             return Err(Exception::ProtectionGenerale(cs & 0xFFFC));
         }
+        // Une cible qui n'est pas canonique faute sur l'`iretq`, pas après.
+        if !is_canonical(rip) {
+            return Err(Exception::ProtectionGenerale(0));
+        }
         cpu.rip = rip;
         cpu.segments[1] = cs as u16;
         cpu.flags
@@ -412,6 +422,9 @@ impl Systeme {
         let demande = (cs & 3) as u8;
         if demande < anneau {
             return Err(Exception::ProtectionGenerale(cs & 0xFFFC));
+        }
+        if !is_canonical(rip) {
+            return Err(Exception::ProtectionGenerale(0));
         }
         if demande > anneau {
             let pile = depiler(cpu, sommet, 2)?;
@@ -508,18 +521,30 @@ fn lire(cpu: &mut Cpu, adresse: u64) -> Result<u64, Livraison> {
 fn depiler(cpu: &mut Cpu, sommet: u64, rang: u64) -> Result<u64, Exception> {
     match cpu.read_memory(sommet.wrapping_add(8 * rang), Width::Qword) {
         Ok(valeur) => Ok(valeur),
-        Err(_) => Err(faute_du_dernier_acces(cpu)),
+        Err(_) => Err(faute_du_dernier_acces(cpu, true)),
     }
 }
 
 /// **La faute que le dernier accès refusé de `cpu` demande**, témoins
 /// effacés : une faute de page, ou — pour une adresse qui n'est pas
-/// canonique, que les tables ne savent pas nommer — une `#GP(0)`.
-pub fn faute_du_dernier_acces(cpu: &mut Cpu) -> Exception {
+/// canonique, que les tables ne savent pas nommer — `#SS(0)` quand l'accès
+/// passait `par_la_pile`, `#GP(0)` sinon. Une cible de saut refusée rend
+/// toujours `#GP(0)`.
+///
+/// **Les témoins effacés ne sont pas un détail** : `faute_d_execution`
+/// regarde `unmapped` avant tout le reste, et un témoin resté là ferait
+/// d'une division par zéro, plus tard, une faute de page.
+pub fn faute_du_dernier_acces(cpu: &mut Cpu, par_la_pile: bool) -> Exception {
     let pourquoi = cpu.unmapped.take();
     cpu.faulted = false;
-    if let Some(Unmapped::NonCanonical { .. }) = pourquoi {
-        return Exception::ProtectionGenerale(0);
+    match pourquoi {
+        Some(Unmapped::NonCanonical { .. }) if par_la_pile => {
+            return Exception::SegmentDePile(0);
+        }
+        Some(Unmapped::NonCanonical { .. } | Unmapped::NonCanonicalTarget { .. }) => {
+            return Exception::ProtectionGenerale(0);
+        }
+        _ => {}
     }
     Exception::FauteDePage {
         adresse: pourquoi.map_or(0, |pourquoi| pourquoi.address()),
