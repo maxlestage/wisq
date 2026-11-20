@@ -724,6 +724,15 @@ mod tests {
         // plus quatre fois la largeur.
         assert_eq!(carte_mem_ecrire(0xE100_050C, 2, 1024), 1);
         assert_eq!(mode(), [800, 600, 4096, 0]);
+        // **Le premier pixel montré** : un bureau à double tampon montre
+        // l'autre page en déplaçant le début (les décalages X et Y), et c'est
+        // le quatrième mot qui le dit à la vue de la page.
+        assert_eq!(carte_mem_ecrire(0xE100_0510, 2, 8), 1);
+        assert_eq!(carte_mem_ecrire(0xE100_0512, 2, 600), 1);
+        assert_eq!(mode(), [800, 600, 4096, (600 * 1024 + 8) * 4]);
+        assert_eq!(carte_mem_ecrire(0xE100_0510, 2, 0), 1);
+        assert_eq!(carte_mem_ecrire(0xE100_0512, 2, 0), 1);
+        assert_eq!(mode(), [800, 600, 4096, 0], "la première page");
         let revision = carte_ecran_revision();
         assert!(revision >= 1, "l'effacement et le mode");
         // Un pixel, au deuxième rang de la mémoire vidéo.
@@ -814,7 +823,8 @@ mod tests {
         assert_eq!(carte_mem_ecrire(base + 0x3000, 2, 0), 1, "la sonnette");
         assert_eq!(mot(0x3002, 2), 6, "un paquet de six");
         let evenement = |k: u64| {
-            let a = 0x4000 + u64::from(mot(0x3004 + k * 8, 4)) * 8;
+            // L'anneau des servies a huit places.
+            let a = 0x4000 + u64::from(mot(0x3004 + (k % 8) * 8, 4)) * 8;
             [mot(a, 2), mot(a + 2, 2), mot(a + 4, 4)]
         };
         assert_eq!(evenement(0), [3, 0, 8192]);
@@ -824,16 +834,20 @@ mod tests {
         assert_eq!(carte_lignes(), 1 << 10);
         assert_eq!(mem(base + 0x1000, 1), Some(1), "l'ISR, lu…");
         assert_eq!(carte_lignes(), 0, "…baisse la ligne");
-        // Deux crans vers le bas : le premier paquet suit un appui, il
-        // attend trente millisecondes depuis la lecture.
+        // Trois crans vers le bas, un paquet chacun : le premier suit un
+        // appui, il attend trente millisecondes depuis la lecture. Le pilote
+        // a rendu ses huit tampons : seize offerts en tout.
         assert_eq!(carte_defiler(0), 0);
-        assert_eq!(carte_defiler(-1), 1);
+        assert_eq!(carte_defiler(-3), 1);
+        poser(0x2002, &16u16.to_le_bytes());
         carte_livrer(2_000);
         carte_livrer(2_000 + 35_795 - 1);
         assert_eq!(mot(0x3002, 2), 6, "un tic avant l'heure");
         carte_livrer(2_000 + 35_795);
-        assert_eq!(mot(0x3002, 2), 8);
-        assert_eq!(evenement(6), [2, 8, u32::MAX]);
-        assert_eq!(evenement(7), [0, 0, 0]);
+        assert_eq!(mot(0x3002, 2), 12, "les trois crans, tous");
+        for k in [6, 8, 10] {
+            assert_eq!(evenement(k), [2, 8, u32::MAX], "le cran {k}");
+            assert_eq!(evenement(k + 1), [0, 0, 0]);
+        }
     }
 }

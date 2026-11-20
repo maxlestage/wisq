@@ -501,21 +501,24 @@ impl Tablette {
 
     /// La remise à zéro du pilote : les files, l'état, et ce qui attendait —
     /// un pilote qui recommence ne reçoit pas les gestes d'avant.
+    ///
+    /// **La tablette de la mise sous tension, moins ce qui n'est pas au
+    /// pilote** : l'espace de configuration PCI (la BAR, la commande, la
+    /// mesure, la ligne), que le noyau a posé et ne repose pas ; les deux
+    /// sélecteurs de fonctions, que `reset` du Swift garde aussi ; et
+    /// l'heure de la machine, qui ne recommence pas avec le pilote. Tout le
+    /// reste repart de [`Tablette::nouvelle`] : un champ ajouté plus tard —
+    /// comme `a_court`, que le Swift n'a pas — ne peut pas être oublié ici.
     fn remettre_a_zero(&mut self) {
-        self.files = [File::neuve(), File::neuve()];
-        self.choix_de_file = 0;
-        self.acceptees = 0;
-        self.statut = 0;
-        self.etat_d_interruption = 0;
-        self.choix = 0;
-        self.sous_choix = 0;
-        self.en_attente.clear();
-        self.boutons_rendus = 0;
-        self.dernier_changeait = false;
-        self.acquitte = true;
-        self.retenu_depuis = None;
-        self.reste_du_paquet = 0;
-        self.a_court = false;
+        *self = Self {
+            base: self.base,
+            commande: self.commande,
+            mesure: self.mesure,
+            choix_des_offertes: self.choix_des_offertes,
+            choix_des_acceptees: self.choix_des_acceptees,
+            horloge: self.horloge,
+            ..Self::nouvelle(self.ligne)
+        };
     }
 
     // ------------------------------------- la configuration du périphérique
@@ -964,6 +967,19 @@ pub(crate) mod tests {
         (0..rendus(ram)).map(|k| evenement(ram, k)).collect()
     }
 
+    /// **Rien n'est écrit au-delà de l'anneau des servies** d'une file de
+    /// huit places : `flags`, `idx`, huit entrées de huit octets, puis
+    /// `avail_event`. [`evenement`] relit la place `k % 8`, comme le
+    /// pilote : une entrée écrite hors de l'anneau ne s'y verrait pas, mais
+    /// tomberait ici, dans la mémoire du noyau.
+    fn rien_apres_l_anneau(ram: &RamPlate) {
+        let fin = (SERVIES + 4 + 8 * 8 + 2) as usize;
+        assert!(
+            ram.0[fin..TAMPONS as usize].iter().all(|&octet| octet == 0),
+            "une entrée servie écrite hors de l'anneau"
+        );
+    }
+
     // --------------------------------------------------- ce que voit `virtio_pci`
 
     /// **L'identité et la liste des capacités**
@@ -1038,6 +1054,14 @@ pub(crate) mod tests {
     fn the_bar_is_sized_placed_and_gated() {
         let mut tablette = Tablette::nouvelle(10);
         assert_eq!(tablette.decalage(0, 1), None, "sans BAR, nulle part");
+        // **Sans BAR, nulle part, même la mémoire allumée** : une base nulle
+        // prendrait les seize premiers kibioctets, ceux de la RAM
+        // (`registerOffset`, `guard base != 0`).
+        tablette.ecrire_configuration(0x04, 0x0002);
+        for adresse in [0, 0x14, 0x3FFC] {
+            assert_eq!(tablette.decalage(adresse, 4), None, "{adresse:#x}");
+        }
+        tablette.ecrire_configuration(0x04, 0x0000);
         tablette.ecrire_configuration(0x10, 0xFFFF_FFFF);
         assert_eq!(tablette.configuration(0x10), 0xFFFF_C000);
         tablette.ecrire_configuration(0x10, 0xFE00_1234);
@@ -1142,6 +1166,18 @@ pub(crate) mod tests {
         assert_eq!(tablette.lire(0x2009, 8), 0);
         assert_eq!(tablette.lire(0x2086, 4), 0);
         assert_eq!(tablette.lire(0x2088, 1), 0);
+        // **Un choix écrit sur un octet garde le sous-choix** (`width > 1`
+        // du Swift) : seul un mot de deux octets porte les deux.
+        tablette.ecrire(0x2001, 1, 0x03, &mut ram);
+        tablette.ecrire(0x2000, 1, 0x11, &mut ram);
+        assert_eq!(tablette.lire(0x2000, 2), 0x0311, "le sous-choix reste");
+        // Huit octets d'un coup : les huit premiers du nom.
+        tablette.ecrire(0x2000, 2, 0x0001, &mut ram);
+        assert_eq!(
+            tablette.lire(0x2008, 8).to_le_bytes(),
+            *b"wisq tab",
+            "lus d'un coup, sur huit octets"
+        );
     }
 
     // ---------------------------------------------------------- les événements
@@ -1278,6 +1314,9 @@ pub(crate) mod tests {
             tablette.livrer(&mut ram, None);
         }
         assert_eq!(rendus(&ram), 24 + 18 + 12);
+        // Cinquante-quatre entrées servies, dans un anneau de huit : chacune
+        // à sa place `k % 8`, aucune au-delà.
+        rien_apres_l_anneau(&ram);
     }
 
     /// **La sonnette ne passe pas outre**
@@ -1448,6 +1487,206 @@ pub(crate) mod tests {
 
     // --------------------------------------- au-delà des cas du cœur Swift
 
+    /// **La remise à zéro rend la tablette de la mise sous tension** — moins
+    /// la configuration PCI, les deux sélecteurs de fonctions et l'heure de
+    /// la machine —, champ par champ : un pilote qui recommence ne reçoit
+    /// pas les gestes d'avant, ni le rythme qu'ils imposaient.
+    #[test]
+    fn a_reset_brings_back_the_tablet_of_power_on() {
+        // Ce qu'une tablette neuve devient sous la même poignée de main, une
+        // fois remise : la BAR, la commande, les sélecteurs, l'heure.
+        let attendue = |horloge: Option<u64>| {
+            let mut neuve = posee();
+            neuve.ecrire(0x00, 4, 1, &mut SansRam);
+            neuve.ecrire(0x08, 4, 1, &mut SansRam);
+            neuve.horloge = horloge;
+            neuve
+        };
+        // Un seul tampon : l'appui en est à son premier événement, la
+        // tablette à court, les boutons rendus, la ligne levée ; puis un
+        // sous-choix de configuration et la file un choisie.
+        let mut ram = ram();
+        let mut tablette = demarree(&mut ram, 1);
+        assert!(tablette.pointer(0.1, 0.1, 1));
+        tablette.livrer(&mut ram, Some(1_000));
+        assert_eq!(rendus(&ram), 1);
+        assert!(tablette.a_court && tablette.reste_du_paquet == 5);
+        assert!(tablette.dernier_changeait && !tablette.acquitte);
+        assert_eq!(tablette.boutons_rendus, 1);
+        tablette.ecrire(0x2000, 2, 0x0311, &mut ram);
+        tablette.ecrire(0x16, 2, 1, &mut ram);
+        assert_eq!(
+            (tablette.lire(0x2000, 2), tablette.lire(0x16, 2)),
+            (0x0311, 1)
+        );
+        tablette.ecrire(0x14, 1, 0, &mut ram);
+        assert_eq!(tablette, attendue(Some(1_000)));
+        // Ce que le pilote relit aussitôt : ni choix, ni file choisie.
+        assert_eq!((tablette.lire(0x2000, 2), tablette.lire(0x16, 2)), (0, 0));
+
+        // **Ce que le pilote qui recommence voit**, ses anneaux refaits :
+        // un appui, puis sa relâche, comme sur une tablette neuve.
+        ram.0.fill(0);
+        tablette.ecrire(0x14, 1, 1 | 2, &mut ram);
+        tablette.ecrire(0x08, 4, 1, &mut ram);
+        tablette.ecrire(0x0C, 4, 1, &mut ram);
+        tablette.ecrire(0x14, 1, 1 | 2 | 8, &mut ram);
+        tablette.ecrire(0x16, 2, 0, &mut ram);
+        tablette.ecrire(0x18, 2, 8, &mut ram);
+        tablette.ecrire(0x20, 8, DESCRIPTEURS, &mut ram);
+        tablette.ecrire(0x28, 8, DISPONIBLES, &mut ram);
+        tablette.ecrire(0x30, 8, SERVIES, &mut ram);
+        tablette.ecrire(0x1C, 2, 1, &mut ram);
+        tablette.ecrire(0x14, 1, 15, &mut ram);
+        garnir(&mut ram, 8);
+        poser(&mut ram, DISPONIBLES + 2, &16u16.to_le_bytes());
+        assert!(tablette.pointer(0.2, 0.2, 1));
+        // Plus « à court » : l'appui partira sans sonnette.
+        assert!(tablette.reveil(), "un geste peut partir");
+        assert!(tablette.pointer(0.2, 0.2, 0));
+        tablette.livrer(&mut ram, Some(2_000));
+        // L'appui part entier et tout de suite — ni retenu comme s'il
+        // suivait l'appui d'avant, ni jugé « sans changement » d'après les
+        // boutons d'avant, ni coupé par le reste du paquet d'avant — et la
+        // relâche, elle, attend la lecture puis ses trente millisecondes.
+        assert_eq!(
+            evenements(&ram),
+            [
+                [3, 0, 6553],
+                [3, 1, 6553],
+                [1, 0x110, 1],
+                [1, 0x111, 0],
+                [1, 0x112, 0],
+                [0, 0, 0]
+            ]
+        );
+        assert_eq!(tablette.lire(0x1000, 1), 1);
+        tablette.livrer(&mut ram, Some(3_000));
+        tablette.livrer(&mut ram, Some(3_000 + TICS_DES_BOUTONS - 1));
+        assert_eq!(rendus(&ram), 6, "la relâche est retenue");
+        tablette.livrer(&mut ram, Some(3_000 + TICS_DES_BOUTONS));
+        assert_eq!(rendus(&ram), 12);
+        assert_eq!(evenement(&ram, 8), [1, 0x110, 0]);
+
+        // Une relâche retenue, l'attente commencée : remise, elle n'attend
+        // plus rien.
+        let mut ram = self::ram();
+        let mut tablette = demarree(&mut ram, 8);
+        tablette.pointer(0.5, 0.5, 1);
+        tablette.livrer(&mut ram, Some(1_000));
+        tablette.lire(0x1000, 1);
+        tablette.pointer(0.5, 0.5, 0);
+        tablette.livrer(&mut ram, Some(2_000));
+        assert_eq!(tablette.retenu_depuis, Some(2_000));
+        tablette.ecrire(0x14, 1, 0, &mut ram);
+        assert_eq!(tablette, attendue(Some(2_000)));
+    }
+
+    /// **Une tête de chaîne hors de la file y est ramenée** (`% queue.size`
+    /// du Swift) : un pilote qui offre la tête 11 dans une file de huit
+    /// désigne le descripteur 3, pas le seizième octet après la table.
+    #[test]
+    fn a_head_beyond_the_queue_is_brought_back_into_it() {
+        let mut ram = ram();
+        let mut tablette = demarree(&mut ram, 0);
+        for (place, tete) in [8u16 + 3, 16 + 5].into_iter().enumerate() {
+            poser(
+                &mut ram,
+                DISPONIBLES + 4 + place as u64 * 2,
+                &tete.to_le_bytes(),
+            );
+        }
+        poser(&mut ram, DISPONIBLES + 2, &2u16.to_le_bytes());
+        assert!(tablette.pointer(1.0, 0.0, 0));
+        tablette.livrer(&mut ram, None);
+        assert_eq!(rendus(&ram), 2);
+        let rendues: Vec<_> = (0..2)
+            .map(|k| {
+                (
+                    u32_a(&ram, SERVIES + 4 + k * 8),
+                    u32_a(&ram, SERVIES + 8 + k * 8),
+                )
+            })
+            .collect();
+        assert_eq!(rendues, [(3, 8), (5, 8)], "les têtes 3 et 5, pleines");
+        assert_eq!(u32_a(&ram, TAMPONS + 3 * 8 + 4), 32767, "ABS_X au bord");
+        assert_eq!(u16_a(&ram, TAMPONS + 5 * 8 + 2), 1, "puis ABS_Y");
+    }
+
+    /// **Une RAM au-dessus de 4 Gio** : les 64 Kio d'une [`RamPlate`], vus à
+    /// partir de [`HAUT`], et rien en dessous.
+    struct RamHaute(RamPlate);
+    const HAUT: u64 = 1 << 32;
+
+    impl Ram for RamHaute {
+        fn lire(&self, adresse: u64, vers: &mut [u8]) -> bool {
+            adresse
+                .checked_sub(HAUT)
+                .is_some_and(|a| self.0.lire(a, vers))
+        }
+
+        fn ecrire(&mut self, adresse: u64, depuis: &[u8]) -> bool {
+            adresse
+                .checked_sub(HAUT)
+                .is_some_and(|a| self.0.ecrire(a, depuis))
+        }
+    }
+
+    /// **Des files au-dessus de 4 Gio**, posées en deux mots de 32 bits
+    /// chacune (`vp_iowrite64_twopart`, le bas puis le haut) : la moitié
+    /// haute de chaque adresse compte, et le toucher y arrive.
+    #[test]
+    fn queues_above_four_gibibytes_are_served() {
+        let mut haute = RamHaute(ram());
+        let mut tablette = posee();
+        for (decalage, largeur, valeur) in [
+            (0x14, 1, 0),
+            (0x14, 1, 3),
+            (0x08, 4, 1),
+            (0x0C, 4, 1),
+            (0x14, 1, 11),
+            (0x16, 2, 0),
+            (0x18, 2, 8),
+            (0x20, 4, DESCRIPTEURS),
+            (0x24, 4, HAUT >> 32),
+            (0x28, 4, DISPONIBLES),
+            (0x2C, 4, HAUT >> 32),
+            (0x30, 4, SERVIES),
+            (0x34, 4, HAUT >> 32),
+            (0x1C, 2, 1),
+            (0x14, 1, 15),
+        ] {
+            tablette.ecrire(decalage, largeur, valeur, &mut haute);
+        }
+        let file = tablette.files()[FILE_DES_EVENEMENTS];
+        assert_eq!(
+            (file.descripteurs, file.disponibles, file.servies),
+            (HAUT + DESCRIPTEURS, HAUT + DISPONIBLES, HAUT + SERVIES)
+        );
+        garnir(&mut haute.0, 8);
+        for rang in 0..8u64 {
+            poser(
+                &mut haute.0,
+                DESCRIPTEURS + rang * 16,
+                &(HAUT + TAMPONS + rang * 8).to_le_bytes(),
+            );
+        }
+        assert!(tablette.pointer(0.5, 0.5, 1));
+        tablette.livrer(&mut haute, None);
+        assert_eq!(
+            evenements(&haute.0),
+            [
+                [3, 0, 16384],
+                [3, 1, 16384],
+                [1, 0x110, 1],
+                [1, 0x111, 0],
+                [1, 0x112, 0],
+                [0, 0, 0]
+            ]
+        );
+        rien_apres_l_anneau(&haute.0);
+    }
+
     /// **Les registres communs se relisent comme le pilote les a écrits**,
     /// file par file, à la largeur de l'accès ; une file qui n'existe pas ne
     /// se laisse ni lire ni poser.
@@ -1461,7 +1700,11 @@ pub(crate) mod tests {
         tablette.ecrire(0x16, 2, 1, &mut ram);
         assert_eq!(tablette.lire(0x16, 2), 1);
         assert_eq!(tablette.lire(0x1E, 2), 1, "la sonnette de la file un");
-        tablette.ecrire(0x20, 8, 0x1122_3344_5566_7788, &mut ram);
+        // Les descripteurs en deux mots de 32 bits, le bas puis le haut,
+        // comme `vp_iowrite64_twopart` : c'est ainsi que Linux pose une
+        // table au-dessus de 4 Gio.
+        tablette.ecrire(0x20, 4, 0x5566_7788, &mut ram);
+        tablette.ecrire(0x24, 4, 0x1122_3344, &mut ram);
         tablette.ecrire(0x28, 4, 0xAAAA_BBBB, &mut ram);
         tablette.ecrire(0x2C, 4, 0xCCCC_DDDD, &mut ram);
         tablette.ecrire(0x34, 4, 0x0000_0001, &mut ram);
@@ -1509,11 +1752,25 @@ pub(crate) mod tests {
             ),
             (0, 0, 0)
         );
+        // Chaque registre d'une file, écrit à zéro puis à un : la file un est
+        // active et a ses descripteurs, la file zéro ni l'un ni l'autre, et
+        // l'une comme l'autre verrait une écriture qui s'égarerait.
         let avant = *tablette.files();
-        for (decalage, largeur) in [(0x18, 2), (0x1C, 2), (0x20, 8), (0x28, 4), (0x34, 4)] {
-            tablette.ecrire(decalage, largeur, 1, &mut ram);
+        for (decalage, largeur) in [
+            (0x18, 2),
+            (0x1C, 2),
+            (0x20, 8),
+            (0x24, 4),
+            (0x28, 4),
+            (0x2C, 4),
+            (0x30, 4),
+            (0x34, 4),
+        ] {
+            for valeur in [0, 1] {
+                tablette.ecrire(decalage, largeur, valeur, &mut ram);
+                assert_eq!(*tablette.files(), avant, "{decalage:#x} à {valeur}");
+            }
         }
-        assert_eq!(*tablette.files(), avant);
         // Hors des registres, rien.
         assert_eq!(tablette.lire(0x38, 4), 0);
         assert_eq!(tablette.lire(0x1004, 4), 0);
@@ -1602,6 +1859,7 @@ pub(crate) mod tests {
         tablette.livrer(&mut ram, Some(2_000 + TICS_DES_BOUTONS));
         assert_eq!(rendus(&ram), 12, "et part à son heure");
         assert_eq!(evenement(&ram, 8), [1, 0x110, 0]);
+        rien_apres_l_anneau(&ram);
     }
 
     /// **La carte de la page rend le toucher à l'heure qu'on lui donne**
