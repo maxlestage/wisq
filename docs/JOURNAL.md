@@ -8,6 +8,19 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Carte réseau : l'émission ne part qu'à son `out`
+
+Le dernier contrôle du flux « périphériques » a trouvé une garde de
+`CartePc::servir` qu'aucun test ne tenait : `if notifiees[FILE_D_EMISSION]`.
+Remplacée par `if true`, les 219 tests restaient verts, alors qu'une trame
+posée mais pas encore notifiée partait au premier `servir` venu — une trame
+que le pilote n'a peut-être pas fini d'écrire.
+
+Nouveau test : `a_transmit_posted_but_not_notified_does_not_leave`. Une
+émission posée, la réception notifiée, `servir` : rien ne part, rien n'est
+rendu ; la file un notifiée, `servir` : la trame part et est rendue. Le
+sabotage du contrôle le fait tomber, et lui seul (218 réussis, 1 échec).
+
 ## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise de la carte réseau, deux gardes tenues
 
 **Ce qui n'allait pas.** Le contrôle de la reprise a relevé quatre points.
