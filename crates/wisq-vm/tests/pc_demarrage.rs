@@ -251,6 +251,38 @@ fn the_tool_boots_the_tiny_kernel_and_says_how_it_ended() {
         !erreurs.contains("--ram"),
         "512 Mio : rien à dire : {erreurs}"
     );
+    assert!(erreurs.contains("\nram : 512 Mio\n"), "{erreurs}");
+}
+
+/// **Ce que `--ram` demande est ce que la machine reçoit**, au mébioctet près,
+/// jusqu'au plafond compris : 65 536 Mio ne sont pas refusés par le plafond.
+/// Sur un hôte qui n'a pas la place, c'est l'hôte qui refuse, en code 2 et
+/// avec son propre message — jamais un SIGABRT.
+#[test]
+fn the_tool_gives_the_ram_it_was_asked_for() {
+    let noyau = fichier("outil-ram-donnee.bin", &image());
+    for demande in ["200", "1000"] {
+        let (code, sortie, erreurs) = wisq_pc(&["--kernel", &noyau, "--ram", demande]);
+        assert_eq!(code, Some(0), "--ram {demande} : {erreurs}");
+        assert!(sortie.contains("FIN"), "{sortie:?}");
+        assert!(
+            erreurs.contains(&format!("\nram : {demande} Mio\n")),
+            "{erreurs}"
+        );
+    }
+    let (code, _, erreurs) = wisq_pc(&["--kernel", &noyau, "--ram", "65536", "--budget", "1000"]);
+    assert!(
+        !erreurs.contains("au plus"),
+        "le plafond est compris : {erreurs}"
+    );
+    match code {
+        Some(0) => assert!(erreurs.contains("\nram : 65536 Mio\n"), "{erreurs}"),
+        Some(2) => assert!(
+            erreurs.contains("--ram 65536 : l'hôte ne peut pas donner cette mémoire"),
+            "{erreurs}"
+        ),
+        autre => panic!("--ram 65536 : {autre:?}, ni démarré ni refusé : {erreurs}"),
+    }
 }
 
 /// **Un noyau coupé est nommé comme tel**, et l'outil sort avec le code 1 sans

@@ -1823,13 +1823,317 @@ fn a_non_canonical_address_is_a_general_protection_fault() {
     haute.tourner(1).expect("livrée");
     assert_eq!(haute.cpu.rip, GESTIONNAIRE + 0x10, "une faute de page");
     assert_eq!(haute.cpu.control[2], 0xFFFF_8000_0000_6000);
-    // Et un saut vers une adresse qui ne l'est pas.
+    // Et un saut vers une adresse qui ne l'est pas : la faute tombe sur le
+    // saut lui-même (SDM, JMP : `#GP(0)` si la cible n'est pas canonique).
     let mut saut = nouvelle(&[0xFF, 0xE3]); // jmp *%rbx
     porte(&mut saut, 13, GESTIONNAIRE, 0x8E);
     saut.cpu.regs[3] = 0x8000_0000_0000_1000;
-    saut.tourner(2).expect("le saut, puis la faute livrée");
+    saut.tourner(1).expect("la faute livrée");
     assert_eq!(saut.cpu.rip, GESTIONNAIRE);
     assert_eq!(lire(&saut, saut.cpu.regs[4]), 0);
+    assert_eq!(lire(&saut, saut.cpu.regs[4] + 8), 0x1000, "sur le jmp");
+    assert_eq!(saut.retirees, 0, "rien de retiré");
+}
+
+/// Le dernier octet de la moitié basse canonique, et l'adresse où poser du
+/// code pour qu'un saut relatif en sorte.
+const BORD: u64 = 0x7FFF_FFFF_FFF0;
+
+/// **Une machine dont le code est au bord de la moitié basse** : la page
+/// virtuelle 0x7FFF_FFFF_F000 (dernière entrée de chaque niveau) va à la page
+/// physique 0x1000, et le code est posé à 0x1FF0, soit RIP = `BORD`. Un saut
+/// relatif d'à peine 0x80 octets en sort.
+fn au_bord(code: &[u8]) -> Machine {
+    let mut machine = nouvelle(&[]);
+    let ouverte = 0x7;
+    ecrire(&mut machine, 0x2000 + 255 * 8, 0x3000 | ouverte);
+    ecrire(&mut machine, 0x3000 + 511 * 8, 0x4000 | ouverte);
+    ecrire(&mut machine, 0x4000 + 511 * 8, 0x5000 | ouverte);
+    ecrire(&mut machine, 0x5000 + 511 * 8, 0x1000 | ouverte);
+    poser(&mut machine, 0x1FF0, code);
+    machine.cpu.rip = BORD;
+    porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+    machine
+}
+
+/// La `#GP(0)` d'un saut refusé : livrée, sur le saut lui-même, rien de
+/// retiré.
+fn refuse_sur(machine: &mut Machine, ici: u64, nom: &str) {
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #GP");
+    let cadre = machine.cpu.regs[4];
+    assert_eq!(lire(machine, cadre), 0, "{nom} : code 0");
+    assert_eq!(lire(machine, cadre + 8), ici, "{nom} : sur le saut");
+    assert_eq!(machine.retirees, 0, "{nom} : rien de retiré");
+    assert_eq!(machine.cpu.control[2], 0, "{nom} : pas une faute de page");
+}
+
+/// **Chaque instruction qui charge RIP juge sa cible**, et une cible qui
+/// n'est pas canonique fait fauter l'instruction elle-même, sans rien
+/// changer : ni RSP, ni la pile sous RSP, ni RCX. Pris ou non, un saut
+/// conditionnel ne faute que s'il est pris. Les sauts tournent en anneau
+/// trois : la livraison prend alors la pile du TSS, et la pile du programme,
+/// sous RSP, reste lisible telle que le saut l'a laissée.
+#[test]
+fn every_jump_to_a_non_canonical_target_faults_on_itself() {
+    // Les sauts relatifs, depuis le bord : la cible est 0x8000_0000_00xx.
+    let relatifs: [(&str, &[u8]); 5] = [
+        ("jmp rel32", &[0xE9, 0x00, 0x01, 0x00, 0x00]),
+        ("je rel32, pris", &[0x0F, 0x84, 0x00, 0x01, 0x00, 0x00]),
+        ("call rel32", &[0xE8, 0x00, 0x01, 0x00, 0x00]),
+        ("loop rel8, pris", &[0xE2, 0x7F]),
+        ("jrcxz rel8, pris", &[0xE3, 0x7F]),
+    ];
+    let pile = 0x6800;
+    for (nom, code) in relatifs {
+        let mut machine = au_bord(code);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        machine.cpu.flags.write(machine.cpu.flags.read() | (1 << 6)); // ZF
+        machine.cpu.regs[1] = if nom.starts_with("jrcxz") { 0 } else { 5 };
+        let rcx = machine.cpu.regs[1];
+        machine.cpu.regs[4] = pile;
+        ecrire(&mut machine, pile - 8, 0x5A5A);
+        refuse_sur(&mut machine, BORD, nom);
+        assert_eq!(machine.cpu.regs[1], rcx, "{nom} : RCX intact");
+        assert_eq!(lire(&machine, pile - 8), 0x5A5A, "{nom} : rien empilé");
+        assert_eq!(
+            lire(&machine, machine.cpu.regs[4] + 32),
+            pile,
+            "{nom} : RSP intact"
+        );
+    }
+    // Non pris, les mêmes avancent : la cible ne se juge que si elle est
+    // prise.
+    let non_pris: [(&str, &[u8], u64); 3] = [
+        (
+            "je rel32, non pris",
+            &[0x0F, 0x84, 0x00, 0x01, 0x00, 0x00],
+            6,
+        ),
+        ("loop rel8, non pris", &[0xE2, 0x7F], 2),
+        ("jrcxz rel8, non pris", &[0xE3, 0x7F], 2),
+    ];
+    for (nom, code, longueur) in non_pris {
+        let mut machine = au_bord(code);
+        machine.cpu.regs[1] = 1;
+        machine.tourner(1).expect("sans faute");
+        assert_eq!(machine.cpu.rip, BORD + longueur, "{nom}");
+        assert_eq!(machine.retirees, 1, "{nom}");
+    }
+
+    // Une suite non prise qui sort de la moitié basse : le manuel ne dit pas
+    // où tombe la faute ; ce cœur retire le saut, et c'est la lecture de
+    // l'instruction d'après, à 0x8000_0000_0000, qui faute.
+    let mut suite = au_bord(&[]);
+    poser(&mut suite, 0x1FFA, &[0x0F, 0x84, 0x00, 0x01, 0x00, 0x00]); // je, non pris
+    suite.cpu.rip = BORD + 0xA;
+    suite.tourner(2).expect("le saut, puis la faute livrée");
+    assert_eq!(suite.cpu.rip, GESTIONNAIRE);
+    assert_eq!(suite.retirees, 1, "le je est retiré");
+    assert_eq!(lire(&suite, suite.cpu.regs[4] + 8), 0x8000_0000_0000);
+
+    // Les sauts indirects, depuis 0x1000.
+    let indirects: [(&str, &[u8]); 5] = [
+        ("jmp *%rbx", &[0xFF, 0xE3]),
+        ("call *%rbx", &[0xFF, 0xD3]),
+        ("call *(%rax)", &[0xFF, 0x10]),
+        ("ret", &[0xC3]),
+        ("ret $8", &[0xC2, 0x08, 0x00]),
+    ];
+    for (nom, code) in indirects {
+        let mut machine = nouvelle(code);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        let cible = 0x8000_0000_0000_1000u64;
+        machine.cpu.regs[3] = cible;
+        machine.cpu.regs[0] = 0x6900;
+        ecrire(&mut machine, 0x6900, cible);
+        machine.cpu.regs[4] = pile;
+        ecrire(&mut machine, pile, cible);
+        ecrire(&mut machine, pile - 8, 0x5A5A);
+        refuse_sur(&mut machine, 0x1000, nom);
+        assert_eq!(lire(&machine, pile - 8), 0x5A5A, "{nom} : rien empilé");
+        assert_eq!(
+            lire(&machine, machine.cpu.regs[4] + 32),
+            pile,
+            "{nom} : RSP intact"
+        );
+    }
+
+    // `iretq` et `lretq` vers une cible qui n'est pas canonique.
+    for (nom, code) in [("iretq", [0x48, 0xCF]), ("lretq", [0x48, 0xCB])] {
+        let mut machine = nouvelle(&code);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.segments[1] = 0x10;
+        let pile = 0x6800;
+        for (rang, valeur) in [0x8000_0000_0000_1000u64, 0x10, 2, 0x6900, 0x18]
+            .into_iter()
+            .enumerate()
+        {
+            ecrire(&mut machine, pile + 8 * rang as u64, valeur);
+        }
+        machine.cpu.regs[4] = pile;
+        refuse_sur(&mut machine, 0x1000, nom);
+        assert_eq!(lire(&machine, machine.cpu.regs[4] + 32), pile, "{nom}");
+    }
+}
+
+/// Un cas de `a_non_canonical_stack_reference_is_a_stack_fault` : le nom,
+/// le code, RSP, RBP, RAX, et le vecteur attendu.
+type Reference = (&'static str, &'static [u8], u64, u64, u64, u64);
+
+/// **Une référence par la pile à une adresse qui n'est pas canonique est
+/// `#SS(0)`, vecteur douze** ; une autre est `#GP(0)`. Linux en fait SIGBUS
+/// dans un cas, SIGSEGV dans l'autre. Implicite (`push`, `pop`, `call`,
+/// `ret`, `leave`, `pushf`, `popf`, `iretq`) ou par un opérande bâti sur RSP
+/// ou RBP — sauf derrière un préfixe FS ou GS, qui change de segment. Et la
+/// cible d'un `ret`, qui n'est pas un accès, reste `#GP(0)`.
+#[test]
+fn a_non_canonical_stack_reference_is_a_stack_fault() {
+    const DEHORS: u64 = 0x8000_0000_0000_6000;
+    // (nom, code, RSP, RBP, RAX, vecteur attendu)
+    let cas: [Reference; 17] = [
+        ("push %rax", &[0x50], DEHORS, 0, 0, 12),
+        ("pop %rax", &[0x58], DEHORS, 0, 0, 12),
+        ("pushfq", &[0x9C], DEHORS, 0, 0, 12),
+        ("popfq", &[0x9D], DEHORS, 0, 0, 12),
+        ("ret", &[0xC3], DEHORS, 0, 0, 12),
+        ("call *%rax", &[0xFF, 0xD0], DEHORS, 0, 0x1000, 12),
+        ("leave", &[0xC9], 0xA800, DEHORS, 0, 12),
+        ("iretq", &[0x48, 0xCF], DEHORS, 0, 0, 12),
+        (
+            "mov (%rsp),%rax",
+            &[0x48, 0x8B, 0x04, 0x24],
+            DEHORS,
+            0,
+            0,
+            12,
+        ),
+        (
+            "mov 8(%rbp),%rax",
+            &[0x48, 0x8B, 0x45, 0x08],
+            0xA800,
+            DEHORS,
+            0,
+            12,
+        ),
+        ("fxsave (%rsp)", &[0x0F, 0xAE, 0x04, 0x24], DEHORS, 0, 0, 12),
+        ("fildl (%rsp)", &[0xDB, 0x04, 0x24], DEHORS, 0, 0, 12),
+        (
+            "movaps (%rsp),%xmm0",
+            &[0x0F, 0x28, 0x04, 0x24],
+            DEHORS,
+            0,
+            0,
+            12,
+        ),
+        (
+            "mov %fs:(%rbp),%rax",
+            &[0x64, 0x48, 0x8B, 0x45, 0x00],
+            0xA800,
+            DEHORS,
+            0,
+            13,
+        ),
+        (
+            "mov (%rax),%rcx",
+            &[0x48, 0x8B, 0x08],
+            0xA800,
+            0,
+            DEHORS,
+            13,
+        ),
+        ("push (%rax)", &[0xFF, 0x30], 0xA800, 0, DEHORS, 13),
+        ("ret vers dehors", &[0xC3], 0xA800, 0, 0, 13),
+    ];
+    for (nom, code, rsp, rbp, rax, vecteur) in cas {
+        let mut machine = nouvelle(code);
+        porte(&mut machine, 12, GESTIONNAIRE + 0x20, 0x8E);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        ecrire(&mut machine, 0xA800, DEHORS);
+        machine.cpu.regs[4] = rsp;
+        machine.cpu.regs[5] = rbp;
+        machine.cpu.regs[0] = rax;
+        machine.tourner(1).expect("livrée");
+        let attendu = if vecteur == 12 {
+            GESTIONNAIRE + 0x20
+        } else {
+            GESTIONNAIRE
+        };
+        assert_eq!(machine.cpu.rip, attendu, "{nom} : vecteur {vecteur}");
+        let cadre = machine.cpu.regs[4];
+        assert_eq!(lire(&machine, cadre), 0, "{nom} : code 0");
+        assert_eq!(lire(&machine, cadre + 8), 0x1000, "{nom} : sur lui-même");
+        assert_eq!(lire(&machine, cadre + 32), rsp, "{nom} : RSP intact");
+        assert_eq!(machine.cpu.regs[5], rbp, "{nom} : RBP intact");
+        assert_eq!(machine.retirees, 0, "{nom}");
+    }
+}
+
+/// **Les témoins d'une faute s'effacent en la livrant.** `faute_d_execution`
+/// regarde `unmapped` avant tout le reste : un témoin resté là après une
+/// faute de page faisait d'une division par zéro, plus tard, une seconde
+/// faute de page.
+#[test]
+fn a_division_after_a_page_fault_is_still_a_division() {
+    let mut machine = preparee(&[0x8A, 0x03, 0xF6, 0xF1]); // mov (%rbx),%al ; div %cl
+    porte(&mut machine, 0, GESTIONNAIRE + 0x30, 0x8E);
+    machine.cpu.regs[3] = ABSENTE;
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE, "la faute de page");
+    assert_eq!(machine.cpu.unmapped, None, "le témoin effacé");
+    assert!(!machine.cpu.faulted);
+    machine.cpu.rip = 0x1002;
+    machine.cpu.regs[1] = 0;
+    machine.tourner(1).expect("livrée");
+    assert_eq!(machine.cpu.rip, GESTIONNAIRE + 0x30, "#DE, porte zéro");
+}
+
+/// **`iretq` et `lretq` lisent leur cadre avec les droits de l'anneau
+/// courant.** Un programme qui pointe RSP sur une page du noyau reçoit une
+/// faute de page — présente, en lecture, depuis l'anneau trois : code 5 —, et
+/// ne lit pas un cadre qu'il n'a pas le droit de lire.
+#[test]
+fn a_return_from_a_program_reads_its_frame_with_the_programs_rights() {
+    for (nom, code) in [("iretq", [0x48, 0xCF]), ("lretq", [0x48, 0xCB])] {
+        let mut machine = preparee(&code);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        // La page 0xA000, réservée au noyau.
+        ecrire(&mut machine, 0x5000 + 0xA * 8, 0xA003);
+        for (rang, valeur) in [0x1234u64, 0x33, 2, 0xA900, 0x2B].into_iter().enumerate() {
+            ecrire(&mut machine, 0xA800 + 8 * rang as u64, valeur);
+        }
+        machine.cpu.regs[4] = 0xA800;
+        machine.tourner(1).expect("livrée");
+        assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #PF");
+        assert_eq!(machine.cpu.control[2], 0xA800, "{nom} : CR2");
+        assert_eq!(lire(&machine, machine.cpu.regs[4]), 5, "{nom} : code 5");
+        assert_eq!(lire(&machine, machine.cpu.regs[4] + 8), 0x1000, "{nom}");
+    }
+}
+
+/// **Le code d'erreur d'un retour refusé est le sélecteur sans son RPL** :
+/// `lretq` depuis l'anneau trois vers CS = 0x11 rend `#GP(0x10)`.
+#[test]
+fn a_refused_far_return_names_the_selector_without_its_rpl() {
+    for (nom, code) in [("lretq", [0x48, 0xCB]), ("iretq", [0x48, 0xCF])] {
+        let mut machine = nouvelle(&code);
+        porte(&mut machine, 13, GESTIONNAIRE, 0x8E);
+        machine.cpu.segments[1] = 0x33;
+        charger_la_tache(&mut machine, SOMMET);
+        for (rang, valeur) in [0xA000u64, 0x11, 2, 0xA900, 0x2B].into_iter().enumerate() {
+            ecrire(&mut machine, 0xA800 + 8 * rang as u64, valeur);
+        }
+        machine.cpu.regs[4] = 0xA800;
+        machine.tourner(1).expect("livrée");
+        assert_eq!(machine.cpu.rip, GESTIONNAIRE, "{nom} : #GP");
+        assert_eq!(lire(&machine, machine.cpu.regs[4]), 0x10, "{nom}");
+    }
 }
 
 // ---- Le contrat avec les autres périphériques ----

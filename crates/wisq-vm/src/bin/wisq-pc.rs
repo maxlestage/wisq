@@ -23,8 +23,10 @@ use wisq_vm::pc::memoire::RAM_MINIMALE;
 use wisq_vm::pc::Machine;
 
 /// Ce que `--ram` accepte au plus, en mébioctets : soixante-quatre gibioctets.
-/// Au-delà, c'est une faute de frappe plus sûrement qu'une machine — et le
-/// bloc de l'hôte ne s'allouerait pas.
+/// Au-delà, c'est une faute de frappe plus sûrement qu'une machine. **Ce
+/// plafond ne promet pas que le bloc s'alloue** : sous lui, c'est l'hôte qui
+/// dit s'il a la place (`Machine::essayer`), et un refus sort en code 2
+/// comme celui-ci, plutôt qu'en SIGABRT.
 const RAM_MAXIMALE_EN_MEBIOCTETS: u64 = 64 << 10;
 
 /// **Les octets que `--ram` demande**, ou rien quand le nombre dépasse le
@@ -129,7 +131,13 @@ fn main() {
             RAM_MINIMALE >> 20
         );
     }
-    let mut machine = Machine::nouvelle(ram);
+    let Some(mut machine) = Machine::essayer(ram) else {
+        eprintln!(
+            "wisq-pc : --ram {} : l'hôte ne peut pas donner cette mémoire",
+            options.ram
+        );
+        std::process::exit(2);
+    };
     if let Some(battement) = options.battement {
         machine.instructions_par_battement = battement.max(1);
     }
@@ -233,6 +241,7 @@ fn main() {
         eprintln!("ports sans réponse : {}", ports.join(" "));
     }
     eprintln!("fin : {fin}");
+    eprintln!("ram : {} Mio", machine.ram >> 20);
     eprintln!(
         "instructions retirées : {retirees} ; attente : {} ; temps de l'invité : {:.1} s",
         machine.attente,
@@ -244,5 +253,21 @@ fn main() {
     );
     if fin.starts_with("faute") {
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Un mébioctet fait 2^20 octets, et le plafond est compris** : 65 536
+    /// Mio s'acceptent, 65 537 non.
+    #[test]
+    fn la_ram_se_compte_en_mebioctets_jusqu_au_plafond_compris() {
+        assert_eq!(ram_en_octets(512), Some(512 << 20));
+        assert_eq!(ram_en_octets(1), Some(1 << 20));
+        assert_eq!(ram_en_octets(65_536), Some(64 << 30));
+        assert_eq!(ram_en_octets(65_537), None);
+        assert_eq!(ram_en_octets(u64::MAX), None);
     }
 }

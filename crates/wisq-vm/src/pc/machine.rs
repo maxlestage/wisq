@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use crate::x86::{
-    decode, decode_extended, Cpu, Decoded, Extended, ExtendedFault, Op, Segment, VectorFault,
-    Width, ARITHMETIC, CF, IF,
+    decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Op, Segment,
+    VectorFault, Width, ARITHMETIC, CF, IF,
 };
 use crate::x86_paging::{Access, Unmapped};
 
@@ -24,6 +24,22 @@ use super::systeme::{
     self, cpuid, drapeaux_permis, faute_du_dernier_acces, Exception, Livraison, Systeme, EFER_LME,
     IOPL,
 };
+
+/// **Les instructions qui touchent la pile sans opérande pour le dire** :
+/// leurs références implicites passent par SS.
+fn pile_implicite(op: Op) -> bool {
+    matches!(
+        op,
+        Op::Push
+            | Op::Pop
+            | Op::Call
+            | Op::CallIndirect
+            | Op::Return
+            | Op::Leave
+            | Op::PushFlags
+            | Op::PopFlags
+    )
+}
 
 /// **D'autres périphériques, derrière les ports que la carte héritée ne sert
 /// pas** : c'est par là que la `Carte` de `wisq-page` (clavier, PCI, disque,
@@ -228,12 +244,21 @@ pub struct Machine {
 impl Machine {
     /// Une machine de `ram` octets (au moins le plancher), éteinte.
     pub fn nouvelle(ram: u64) -> Self {
+        Self::essayer(ram)
+            .unwrap_or_else(|| panic!("l'hôte ne peut pas donner {ram} octets de RAM"))
+    }
+
+    /// **`nouvelle`, ou rien quand l'hôte ne peut pas donner la RAM** :
+    /// c'est le système qui dit combien il en a, pas un plafond écrit ici.
+    pub fn essayer(ram: u64) -> Option<Self> {
         let ram = ram.max(memoire::RAM_MINIMALE);
         let mut cpu = Cpu::default().with_translation_cache();
-        memoire::brancher(&mut cpu, ram);
+        if !memoire::essayer_de_brancher(&mut cpu, ram) {
+            return None;
+        }
         cpu.mxcsr = 0x1F80;
         cpu.fpu_control = 0x037F;
-        Self {
+        Some(Self {
             cpu,
             systeme: Systeme::default(),
             herites: Herites::default(),
@@ -262,7 +287,7 @@ impl Machine {
             page_physique: 0,
             page_generation: 0,
             placement: None,
-        }
+        })
     }
 
     /// **Charger un noyau**, et éventuellement un initramfs, puis mettre le
@@ -553,8 +578,55 @@ impl Machine {
                     self.cpu.rip
                 ))
             }
-            _ => Evenement::Exception(faute_du_dernier_acces(&mut self.cpu)),
+            _ => Evenement::Exception(faute_du_dernier_acces(&mut self.cpu, false)),
         }
+    }
+
+    /// **La faute d'un accès refusé à une instruction**, quand l'instruction
+    /// est connue : comme `faute_d_acces`, sauf pour une adresse qui n'est
+    /// pas canonique, où le silicium distingue le segment. Par la pile — une
+    /// référence implicite (`push`, `pop`, `call`, `ret`, `leave`, `pushf`,
+    /// `popf`), ou un opérande bâti sur RSP ou RBP sans préfixe FS ni GS —,
+    /// c'est `#SS(0)`, vecteur douze ; sinon `#GP(0)`. Linux en fait SIGBUS
+    /// dans un cas, SIGSEGV dans l'autre.
+    ///
+    /// L'adresse refusée dit laquelle des deux références a fauté : celle de
+    /// l'opérande si elle tombe dans ses octets (au plus 512, ceux de
+    /// `fxsave`), l'implicite sinon. Une faute ne laisse aucune trace, donc les
+    /// registres sont encore ceux de l'adresse calculée.
+    #[cold]
+    #[inline(never)]
+    fn faute_d_operande(
+        &mut self,
+        operande: Option<Address>,
+        longueur: usize,
+        pile_implicite: bool,
+    ) -> Evenement {
+        if let Some(Unmapped::NonCanonical { address }) = self.cpu.unmapped {
+            let apres = self.cpu.rip.wrapping_add(longueur as u64);
+            let par_la_pile = match operande {
+                Some(operande)
+                    if address.wrapping_sub(self.cpu.effective_address(&operande, apres)) < 512 =>
+                {
+                    !operande.fs
+                        && !operande.gs
+                        && !operande.relative
+                        && matches!(operande.base, Some(4 | 5))
+                }
+                _ => pile_implicite,
+            };
+            return Evenement::Exception(faute_du_dernier_acces(&mut self.cpu, par_la_pile));
+        }
+        self.faute_d_acces()
+    }
+
+    /// `faute_d_operande` pour une instruction commune.
+    fn faute_de(&mut self, instruction: &Decoded) -> Evenement {
+        self.faute_d_operande(
+            instruction.memory,
+            instruction.length,
+            pile_implicite(instruction.op),
+        )
     }
 
     /// **Trouver l'instruction à RIP** : sa case du cache, vérifiée contre les
@@ -681,7 +753,9 @@ impl Machine {
                         self.retirees = self.retirees.wrapping_add(1);
                         Ok(())
                     }
-                    Err(ExtendedFault::Memory) => Err(self.faute_d_acces()),
+                    Err(ExtendedFault::Memory) => {
+                        Err(self.faute_d_operande(instruction.memory, instruction.length, false))
+                    }
                     Err(ExtendedFault::ReservedControl) => {
                         Err(Exception::ProtectionGenerale(0).into())
                     }
@@ -742,7 +816,10 @@ impl Machine {
             }
             Op::Vector(_) => match self.cpu.execute_vector(instruction) {
                 Ok(()) => {}
-                Err(VectorFault::Memory) => return Err(self.faute_d_acces()),
+                Err(VectorFault::Memory) => {
+                    let instruction = *instruction;
+                    return Err(self.faute_de(&instruction));
+                }
                 Err(VectorFault::ReservedControl) => {
                     return Err(Exception::ProtectionGenerale(0).into())
                 }
@@ -767,7 +844,7 @@ impl Machine {
     #[inline(never)]
     fn faute_d_execution(&mut self, instruction: &Decoded) -> Evenement {
         if self.cpu.unmapped.is_some() {
-            return self.faute_d_acces();
+            return self.faute_de(instruction);
         }
         self.cpu.faulted = false;
         match instruction.op {
@@ -785,19 +862,30 @@ impl Machine {
             .effective_address(&adresse, self.cpu.after(instruction))
     }
 
-    /// Lire en mémoire pour une instruction de système, la faute de page
-    /// prête à livrer.
-    fn lire(&mut self, adresse: u64, largeur: Width) -> Result<u64, Evenement> {
+    /// Lire en mémoire pour une instruction de système, la faute prête à
+    /// livrer.
+    fn lire(
+        &mut self,
+        instruction: &Decoded,
+        adresse: u64,
+        largeur: Width,
+    ) -> Result<u64, Evenement> {
         match self.cpu.read_memory(adresse, largeur) {
             Ok(valeur) => Ok(valeur),
-            Err(_) => Err(self.faute_d_acces()),
+            Err(_) => Err(self.faute_de(instruction)),
         }
     }
 
-    fn ecrire(&mut self, adresse: u64, largeur: Width, valeur: u64) -> Result<(), Evenement> {
+    fn ecrire(
+        &mut self,
+        instruction: &Decoded,
+        adresse: u64,
+        largeur: Width,
+        valeur: u64,
+    ) -> Result<(), Evenement> {
         match self.cpu.write_memory(adresse, largeur, valeur) {
             Ok(()) => Ok(()),
-            Err(_) => Err(self.faute_d_acces()),
+            Err(_) => Err(self.faute_de(instruction)),
         }
     }
 
@@ -943,8 +1031,8 @@ impl Machine {
             Op::LoadDescriptorTable { interrupts } => {
                 self.exiger_le_noyau()?;
                 let adresse = self.adresse(instruction);
-                let limite = self.lire(adresse, Width::Word)?;
-                let base = self.lire(adresse.wrapping_add(2), Width::Qword)?;
+                let limite = self.lire(instruction, adresse, Width::Word)?;
+                let base = self.lire(instruction, adresse.wrapping_add(2), Width::Qword)?;
                 let table = systeme::Table { base, limite };
                 if interrupts {
                     self.systeme.idt = table;
@@ -965,10 +1053,15 @@ impl Machine {
                     .probe_memory(adresse.wrapping_add(9), Access::Write)
                     .is_err()
                 {
-                    return Err(self.faute_d_acces());
+                    return Err(self.faute_de(instruction));
                 }
-                self.ecrire(adresse, Width::Word, table.limite)?;
-                self.ecrire(adresse.wrapping_add(2), Width::Qword, table.base)?;
+                self.ecrire(instruction, adresse, Width::Word, table.limite)?;
+                self.ecrire(
+                    instruction,
+                    adresse.wrapping_add(2),
+                    Width::Qword,
+                    table.base,
+                )?;
             }
             Op::SwapGs => {
                 self.exiger_le_noyau()?;
@@ -1002,7 +1095,7 @@ impl Machine {
             }
             Op::LoadSegment { segment } => {
                 let selecteur = match instruction.memory {
-                    Some(_) => self.lire(self.adresse(instruction), Width::Word)?,
+                    Some(_) => self.lire(instruction, self.adresse(instruction), Width::Word)?,
                     None => self.cpu.regs[instruction.dst as usize],
                 } as u16;
                 self.cpu.segments[segment as usize] = selecteur;
@@ -1031,7 +1124,12 @@ impl Machine {
                 let selecteur = u64::from(self.cpu.segments[segment as usize]);
                 match instruction.memory {
                     // En mémoire, toujours seize bits.
-                    Some(_) => self.ecrire(self.adresse(instruction), Width::Word, selecteur)?,
+                    Some(_) => self.ecrire(
+                        instruction,
+                        self.adresse(instruction),
+                        Width::Word,
+                        selecteur,
+                    )?,
                     None => self.cpu.set(instruction.dst, largeur, false, selecteur),
                 }
             }
@@ -1069,7 +1167,7 @@ impl Machine {
                 };
                 match rendu {
                     Ok(()) => {}
-                    Err(ExtendedFault::Memory) => return Err(self.faute_d_acces()),
+                    Err(ExtendedFault::Memory) => return Err(self.faute_de(instruction)),
                     Err(ExtendedFault::ReservedControl) => {
                         return Err(Exception::ProtectionGenerale(0).into())
                     }
@@ -1079,12 +1177,12 @@ impl Machine {
                 // VM et RF ne s'empilent pas.
                 let valeur = self.cpu.flags.read() & !((1 << 16) | (1 << 17));
                 let sommet = self.cpu.regs[4].wrapping_sub(largeur as u64);
-                self.ecrire(sommet, largeur, valeur)?;
+                self.ecrire(instruction, sommet, largeur, valeur)?;
                 self.cpu.regs[4] = sommet;
             }
             Op::PopFlags => {
                 let sommet = self.cpu.regs[4];
-                let depiles = self.lire(sommet, largeur)?;
+                let depiles = self.lire(instruction, sommet, largeur)?;
                 let avant = self.cpu.flags.read();
                 // En seize bits, la moitié haute de RFLAGS ne bouge pas.
                 let demandes = if largeur == Width::Word {
