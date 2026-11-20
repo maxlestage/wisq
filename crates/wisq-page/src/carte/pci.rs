@@ -1,6 +1,7 @@
 //! **Le pont PCI** : la configuration par les ports `0xCF8` et `0xCFC`, un
-//! pont hôte 440FX en 00:00.0 et deux disques virtio de forme ancienne, en
-//! 00:03.0 et 00:04.0. Porté depuis `X86PCIHost` du cœur Swift
+//! pont hôte 440FX en 00:00.0, la carte graphique en 00:02.0, deux disques
+//! virtio de forme ancienne en 00:03.0 et 00:04.0, et la tablette virtio en
+//! 00:07.0. Porté depuis `X86PCIHost` du cœur Swift
 //! (`Sources/WisqVM/X86PCI.swift`), registre pour registre.
 //!
 //! **Pourquoi un bus.** Le noyau d'Alpine refuse le transport MMIO de virtio
@@ -19,9 +20,12 @@
 //! **La même carte que le cœur Swift** : mêmes identifiants (`1AF4:1001`,
 //! sous-système `1AF4:0002`, pont `8086:1237`), même fenêtre de `0x40` ports,
 //! même ligne 5 tant que le noyau n'en écrit pas une autre ; le second disque
-//! en 00:04.0, ligne 6 (`X86PCIHost.secondSlot`, `secondInterruptLine`). La
-//! carte réseau (00:05.0), l'écran (00:02.0) et la tablette viendront chacun
-//! à leur tranche ; leurs emplacements rendent aujourd'hui tous les uns,
+//! en 00:04.0, ligne 6 (`X86PCIHost.secondSlot`, `secondInterruptLine`).
+//! L'écran (00:02.0, [`ecran`](super::ecran)) et la tablette (00:07.0,
+//! [`tablette`](super::tablette)) tiennent chacun leur espace de
+//! configuration, et le bus le leur passe dans l'ordre du cœur Swift : le
+//! pont, l'écran, la tablette, puis les disques. La carte réseau (00:05.0)
+//! viendra à sa tranche ; son emplacement rend aujourd'hui tous les uns,
 //! « personne ».
 //!
 //! **Pourquoi un second disque.** Une image d'installation *est* le disque de
@@ -34,6 +38,8 @@
 //! Swift a deux hôtes du même type : chacun a sa commande, sa fenêtre et sa
 //! ligne, et l'adresse est celle du bus.
 
+use super::ecran::{Ecran, EMPLACEMENT_DE_L_ECRAN};
+use super::tablette::{Tablette, EMPLACEMENT_DE_LA_TABLETTE};
 use super::virtio_blk::VirtioBlk;
 
 pub const PORT_ADRESSE: u16 = 0xCF8;
@@ -188,7 +194,8 @@ impl Emplacement {
     }
 }
 
-/// **Le bus** : l'adresse choisie, et les deux emplacements de disque.
+/// **Le bus** : l'adresse choisie, les deux emplacements de disque, l'écran
+/// et sa tablette.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pci {
     /// Ce que le noyau a écrit dans le port d'adresse.
@@ -197,6 +204,11 @@ pub struct Pci {
     pub premier: Emplacement,
     /// Le second disque, en 00:04.0.
     pub second: Emplacement,
+    /// La carte graphique, en 00:02.0, ou rien : une machine en console
+    /// série n'a pas d'écran, et l'emplacement est vide.
+    pub ecran: Option<Ecran>,
+    /// La tablette, en 00:07.0, ou rien. Un écran vient avec la sienne.
+    pub tablette: Option<Tablette>,
 }
 
 impl Default for Pci {
@@ -221,6 +233,8 @@ impl Pci {
             adresse: 0,
             premier: Emplacement::nouveau(Disque::Premier.ligne()),
             second: Emplacement::nouveau(Disque::Second.ligne()),
+            ecran: None,
+            tablette: None,
         }
     }
 
@@ -292,6 +306,14 @@ impl Pci {
                 _ => 0,              // en-tête de type zéro, et le reste
             };
         }
+        // L'écran, puis la tablette, avant les disques : l'ordre du cœur
+        // Swift (`X86PCIHost.configuration`).
+        if let (Some(ecran), true) = (&self.ecran, self.vise(EMPLACEMENT_DE_L_ECRAN)) {
+            return ecran.configuration(registre);
+        }
+        if let (Some(tablette), true) = (&self.tablette, self.vise(EMPLACEMENT_DE_LA_TABLETTE)) {
+            return tablette.configuration(registre);
+        }
         match self.disque_vise() {
             Some(quel) => self.emplacement(quel).configuration(registre),
             None => 0xFFFF_FFFF,
@@ -301,11 +323,27 @@ impl Pci {
     /// **Écrire le registre choisi**, déjà recomposé sur trente-deux bits.
     /// `largeur` et `octet` disent ce que l'invité a vraiment écrit : la ligne
     /// d'interruption ne change que si son octet est visé.
+    ///
+    /// L'écran et la tablette reçoivent le mot entier, sans la largeur : une
+    /// écriture partielle a déjà relu le registre et remplacé ses octets
+    /// ([`Pci::ecrire_donnee`]), comme du côté Swift.
     pub fn ecrire_configuration(&mut self, valeur: u32, largeur: u8, octet: u32) {
+        let registre = self.choix().registre;
+        if self.vise(EMPLACEMENT_DE_L_ECRAN) {
+            if let Some(ecran) = self.ecran.as_mut() {
+                ecran.ecrire_configuration(registre, valeur);
+                return;
+            }
+        }
+        if self.vise(EMPLACEMENT_DE_LA_TABLETTE) {
+            if let Some(tablette) = self.tablette.as_mut() {
+                tablette.ecrire_configuration(registre, valeur);
+                return;
+            }
+        }
         let Some(quel) = self.disque_vise() else {
             return;
         };
-        let registre = self.choix().registre;
         self.emplacement_mut(quel)
             .ecrire_configuration(registre, valeur, largeur, octet);
     }

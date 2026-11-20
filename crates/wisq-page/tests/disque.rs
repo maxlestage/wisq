@@ -304,3 +304,41 @@ fn the_ten_lines_of_the_journal_compile_and_run() -> Result<(), Refus> {
     assert_eq!(bus.second.disque.as_ref().map(|d| d.secteurs()), Some(16));
     Ok(())
 }
+
+/// **Les cinq lignes de l'écran du JOURNAL, telles quelles** : ce que le
+/// flux « cœur » ajoute aux dix lignes pour brancher l'écran et sa tablette,
+/// et diriger vers la carte les accès de l'invité qui tombent hors de sa
+/// RAM. Autour, un invité réduit à un pixel écrit, et une application qui
+/// touche l'écran avant que le pilote n'ait pris la tablette.
+#[test]
+fn the_five_screen_lines_of_the_journal_compile_and_run() {
+    let mut carte = CartePc::nouvelle();
+    let (adresse, largeur, valeur) = (0xE000_0000u64, 4u8, 0x00AB_CDEFu64);
+    let (x, y, boutons, crans) = (0.5f64, 0.5f64, 1u8, 1i32);
+
+    // ---- les cinq lignes de l'écran ----
+    carte.brancher_ecran(1024, 768); // avant le démarrage : l'écran en 00:02.0, sa tablette en 00:07.0, ligne 10
+    let pris = carte.mem_ecrire(adresse, largeur, valeur); // un accès hors RAM ; false : la faute « hors mémoire »
+    let lu: Option<u64> = carte.mem_lire(adresse + 4, largeur); // None : la faute aussi
+    let touche = carte.toucher(x, y, boutons) || carte.defiler(crans); // false : pas encore prise, la souris PS/2
+    let cadre = &carte.ecran().expect("branché").cadre; // la vue : revision(), mode(), octets(), image_dans(…)
+
+    // ---- fin ----
+
+    assert!(pris, "le premier pixel est à la carte");
+    assert_eq!(lu, Some(0), "le deuxième aussi, encore noir");
+    assert!(!touche, "aucun pilote n'a pris la tablette");
+    assert_eq!(cadre.base(), 0xE000_0000);
+    assert_eq!(cadre.taille(), 16 << 20);
+    assert_eq!(cadre.revision(), 1, "une écriture, une révision");
+    assert_eq!(
+        (
+            cadre.mode().largeur,
+            cadre.mode().hauteur,
+            cadre.mode().octets_par_ligne
+        ),
+        (1024, 768, 4096)
+    );
+    assert_eq!(cadre.octets()[..4], [0xEF, 0xCD, 0xAB, 0]);
+    assert_eq!(carte.tenues() & (1 << 10), 1 << 10, "la ligne 10 est tenue");
+}

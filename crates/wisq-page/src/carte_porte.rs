@@ -30,6 +30,15 @@
 //! accesseurs la décrivent ; `carte_disque_lu` et `carte_disque_fini`
 //! rendent la réponse quand l'arrière l'a. Voir `web/carte.js`, `servir`.
 //!
+//! **L'écran et la tablette, côté page** : `carte_ecran` les branche ; un
+//! accès de l'invité hors de sa RAM passe à `carte_mem_lire` (puis
+//! `carte_mem_valeur`) et `carte_mem_ecrire` ; la vue lit les pixels dans la
+//! mémoire de ce module (`carte_ecran_pixels`, `carte_ecran_mode`,
+//! `carte_ecran_revision`) ; `carte_toucher`, `carte_defiler` et
+//! `carte_livrer` conduisent la tablette. `web/carte.js` ne les sert pas
+//! encore à `host.js`, qui ne dirige aucun accès mémoire vers la carte :
+//! `tests/carte.rs` les juge sur le module nu.
+//!
 //! **Pourquoi ces fonctions ne sont pas `pub`** : pour la même raison que
 //! celles de l'émetteur (`lib.rs`). Ce sont les exports d'un module
 //! WebAssembly, `#[no_mangle]` suffit ; elles ne font pas partie du C ABI de
@@ -50,6 +59,10 @@ static TEXTE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static PRISE: Mutex<Option<RequeteDisque>> = Mutex::new(None);
 /// La place où la page copie les octets d'une lecture revenue.
 static LUS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// La valeur du dernier `carte_mem_lire` pris.
+static LUE: Mutex<u64> = Mutex::new(0);
+/// Le mode montré, tel que `carte_ecran_mode` le rend.
+static MODE: Mutex<[u32; 4]> = Mutex::new([0; 4]);
 
 /// **La RAM de l'invité, par les deux imports de la page.** Une adresse
 /// au-delà de 2⁶⁴ n'existe pas ; une longueur au-delà de 4 Gio non plus dans
@@ -344,6 +357,120 @@ extern "C" fn carte_disque_fini(id: u32, reussi: u32) -> u32 {
     avec_la_ram(|ram| u32::from(carte().disque_fini(id, reussi != 0, ram)))
 }
 
+// --------------------------------------------------- l'écran et la tablette
+
+/// **Brancher l'écran**, et sa tablette : un cadre de `largeur` × `hauteur`
+/// au démarrage. 1, ou 0 si le cadre ne tient pas dans seize mébioctets
+/// (rien ne change alors). Voir `Carte::brancher_ecran`.
+#[no_mangle]
+extern "C" fn carte_ecran(largeur: u32, hauteur: u32) -> u32 {
+    u32::from(carte().brancher_ecran(largeur, hauteur))
+}
+
+/// **Lire la mémoire d'un périphérique**, à une adresse physique hors de la
+/// RAM, de `largeur` octets (1 à 8) : 1 si l'adresse est à la carte, et la
+/// valeur se lit alors par `carte_mem_valeur` ; 0 sinon — la faute « hors
+/// mémoire » de la machine. En deux temps parce qu'un mot de huit octets
+/// prend toutes les valeurs d'un `i64` : aucune ne peut dire « personne ».
+#[no_mangle]
+extern "C" fn carte_mem_lire(adresse: u64, largeur: u32) -> u32 {
+    let Ok(largeur) = u8::try_from(largeur) else {
+        return 0;
+    };
+    let lue = carte().mem_lire(adresse, largeur);
+    *LUE.lock().unwrap_or_else(|poison| poison.into_inner()) = lue.unwrap_or(0);
+    u32::from(lue.is_some())
+}
+
+/// La valeur du dernier `carte_mem_lire` qui a rendu 1 (zéro sinon).
+#[no_mangle]
+extern "C" fn carte_mem_valeur() -> u64 {
+    *LUE.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// **Écrire la mémoire d'un périphérique** : 1 si l'adresse est à la carte,
+/// 0 sinon. La sonnette de la tablette lit sa file dans la RAM, par les deux
+/// imports, pendant l'appel.
+#[no_mangle]
+extern "C" fn carte_mem_ecrire(adresse: u64, largeur: u32, valeur: u64) -> u32 {
+    let Ok(largeur) = u8::try_from(largeur) else {
+        return 0;
+    };
+    avec_la_ram(|ram| u32::from(carte().mem_ecrire(adresse, largeur, valeur, ram)))
+}
+
+/// **Où sont les pixels**, dans la mémoire de ce module : la mémoire vidéo
+/// entière (`carte_ecran_taille` octets), nul sans écran. L'adresse tient
+/// jusqu'au prochain `carte_ecran` ; la vue de la page, elle, se refait à
+/// chaque image, puisque la mémoire du module peut grandir et détacher
+/// l'ancienne.
+#[no_mangle]
+extern "C" fn carte_ecran_pixels() -> *const u8 {
+    carte()
+        .ecran()
+        .map_or(std::ptr::null(), |ecran| ecran.cadre.octets().as_ptr())
+}
+
+/// La taille de la mémoire vidéo, en octets ; zéro sans écran.
+#[no_mangle]
+extern "C" fn carte_ecran_taille() -> u32 {
+    carte()
+        .ecran()
+        .map_or(0, |ecran| ecran.cadre.taille() as u32)
+}
+
+/// **Où l'invité voit la mémoire vidéo** (la BAR0) : ce que le chargeur
+/// annonce au noyau (`screen_info`). Zéro sans écran.
+#[no_mangle]
+extern "C" fn carte_ecran_base() -> u64 {
+    carte().ecran().map_or(0, |ecran| ecran.cadre.base())
+}
+
+/// **Combien de fois l'image a changé** : égal à celui de la dernière image
+/// peinte, il n'y a rien à repeindre. Zéro sans écran.
+#[no_mangle]
+extern "C" fn carte_ecran_revision() -> u64 {
+    carte().ecran().map_or(0, |ecran| ecran.cadre.revision())
+}
+
+/// **Le mode montré**, en quatre mots de 32 bits à l'adresse rendue : la
+/// largeur, la hauteur, la longueur d'une ligne en octets, et le premier
+/// pixel montré, en octets depuis le début de la mémoire vidéo. Quatre zéros
+/// sans écran. Valables jusqu'au prochain appel.
+#[no_mangle]
+extern "C" fn carte_ecran_mode() -> *const u32 {
+    let mode = carte().ecran().map(|ecran| ecran.cadre.mode());
+    let mut mots = MODE.lock().unwrap_or_else(|poison| poison.into_inner());
+    // Le début tient dans seize mébioctets : le cadre a refusé tout mode
+    // qui en sortirait.
+    *mots = mode.map_or([0; 4], |m| {
+        [m.largeur, m.hauteur, m.octets_par_ligne, m.debut as u32]
+    });
+    mots.as_ptr()
+}
+
+/// **Un toucher**, par la tablette : la position de 0 à 1 sur chaque axe,
+/// les boutons (bit 0 gauche, 1 droit, 2 milieu). 1 s'il part, 0 quand
+/// l'invité n'a pas pris la tablette — la page garde alors la souris PS/2.
+#[no_mangle]
+extern "C" fn carte_toucher(x: f64, y: f64, boutons: u32) -> u32 {
+    u32::from(carte().toucher(x, y, boutons as u8))
+}
+
+/// **La molette** : des crans, positifs vers le haut. 1 s'ils partent.
+#[no_mangle]
+extern "C" fn carte_defiler(crans: i32) -> u32 {
+    u32::from(carte().defiler(crans))
+}
+
+/// **Rendre à l'invité ce que le doigt a fait**, à l'heure `tics` (du
+/// 8254), dans les tampons de son pilote : à chaque tour de la boucle, avant
+/// de relire les lignes. Sans rien en attente, la RAM n'est pas touchée.
+#[no_mangle]
+extern "C" fn carte_livrer(tics: u64) {
+    avec_la_ram(|ram| carte().livrer(tics, ram));
+}
+
 #[cfg(test)]
 mod tests {
     //! Les exports appelés en natif, comme la page les appelle. Ce qui est
@@ -533,5 +660,180 @@ mod tests {
         unsafe { std::ptr::copy_nonoverlapping([0xC3u8, 0x28].as_ptr(), place, 2) };
         assert_eq!(carte_texte(2), -1, "pas de l'UTF-8");
         assert_eq!(carte().ps2.frappes.len(), 6, "un refus ne tape rien");
+    }
+
+    /// Poser des octets dans la RAM d'essai.
+    fn poser(adresse: u64, octets: &[u8]) {
+        let mut ram = RAM_D_ESSAI.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(ram.ecrire(adresse, octets), "{adresse:#x}");
+    }
+
+    /// Un mot de seize ou de trente-deux bits de la RAM d'essai.
+    fn mot(adresse: u64, largeur: usize) -> u32 {
+        let ram = RAM_D_ESSAI.lock().unwrap_or_else(|p| p.into_inner());
+        let mut quatre = [0u8; 4];
+        assert!(ram.lire(adresse, &mut quatre[..largeur]));
+        u32::from_le_bytes(quatre)
+    }
+
+    /// Lire la mémoire d'un périphérique par les deux exports.
+    fn mem(adresse: u64, largeur: u32) -> Option<u64> {
+        (carte_mem_lire(adresse, largeur) == 1).then(|| carte_mem_valeur())
+    }
+
+    /// **L'écran par les exports** : rien sans lui ; branché, la carte sur le
+    /// bus, son identifiant par les ports et par la BAR2, un mode posé par
+    /// la BAR2 et lu par `carte_ecran_mode`, un pixel écrit par l'invité et
+    /// relu à l'adresse des pixels, la révision qui avance d'une écriture, et
+    /// un mot de huit octets qui garde ses 64 bits dans les deux sens.
+    #[test]
+    fn the_screen_goes_through_the_exports() {
+        let _tour = tour();
+        assert!(carte_ecran_pixels().is_null());
+        assert_eq!((carte_ecran_taille(), carte_ecran_base()), (0, 0));
+        // SAFETY : l'adresse rendue porte quatre mots.
+        let mode = || unsafe { *carte_ecran_mode().cast::<[u32; 4]>() };
+        assert_eq!(mode(), [0; 4], "sans écran");
+        assert_eq!(mem(0xE000_0000, 4), None);
+        assert_eq!(carte_mem_ecrire(0xE000_0000, 4, 1), 0);
+        assert_eq!(carte_lire(0x1CF, 2), PERSONNE, "sans écran, pas de DISPI");
+        assert_eq!(carte_ecran(4096, 4096), 0, "64 Mio ne tiennent pas");
+        assert!(carte_ecran_pixels().is_null());
+
+        assert_eq!(carte_ecran(1024, 768), 1);
+        assert_eq!(carte_ecran_base(), 0xE000_0000);
+        assert_eq!(carte_ecran_taille(), 16 << 20);
+        assert_eq!(mode(), [1024, 768, 4096, 0]);
+        assert_eq!(carte_ecran_revision(), 0);
+        // 00:02.0 : Bochs / QEMU std VGA.
+        assert_eq!(carte_ecrire(0xCF8, 4, 0x8000_1000), 1);
+        assert_eq!(carte_lire(0xCFC, 4), 0x1111_1234);
+        // L'identifiant, par les ports puis par la BAR2.
+        assert_eq!(carte_ecrire(0x1CE, 2, 0), 1);
+        assert_eq!(carte_lire(0x1CF, 2), 0xB0C5);
+        assert_eq!(mem(0xE100_0500, 2), Some(0xB0C5));
+        // Un mode, comme `bochs-drm` le pose : éteinte, la taille, la
+        // profondeur, puis allumée en cadre linéaire.
+        for (decalage, valeur) in [(0x508, 0), (0x502, 800), (0x504, 600), (0x506, 32)] {
+            assert_eq!(carte_mem_ecrire(0xE100_0000 + decalage, 2, valeur), 1);
+        }
+        assert_eq!(mode(), [1024, 768, 4096, 0], "pas avant l'allumage");
+        assert_eq!(carte_mem_ecrire(0xE100_0508, 2, 0x41), 1);
+        assert_eq!(mode(), [800, 600, 3200, 0]);
+        // Une ligne virtuelle de 1 024 pixels : la longueur d'une ligne n'est
+        // plus quatre fois la largeur.
+        assert_eq!(carte_mem_ecrire(0xE100_050C, 2, 1024), 1);
+        assert_eq!(mode(), [800, 600, 4096, 0]);
+        let revision = carte_ecran_revision();
+        assert!(revision >= 1, "l'effacement et le mode");
+        // Un pixel, au deuxième rang de la mémoire vidéo.
+        assert_eq!(carte_mem_ecrire(0xE000_0004, 4, 0x0011_2233), 1);
+        assert_eq!(
+            carte_ecran_revision(),
+            revision + 1,
+            "une écriture, une révision"
+        );
+        // SAFETY : la mémoire vidéo a `carte_ecran_taille` octets.
+        let pixels = unsafe {
+            std::slice::from_raw_parts(carte_ecran_pixels(), carte_ecran_taille() as usize)
+        };
+        assert_eq!(pixels[4..8], [0x33, 0x22, 0x11, 0]);
+        assert_eq!(mem(0xE000_0004, 4), Some(0x0011_2233));
+        assert_eq!(carte_ecran_revision(), revision + 1, "lire ne change rien");
+        // Huit octets, au-delà de 2⁵³ : aucun bit ne se perd.
+        let large = 0xFEDC_BA98_7654_3211u64;
+        assert_eq!(carte_mem_ecrire(0xE0FF_FFF8, 8, large), 1, "le dernier mot");
+        assert_eq!(mem(0xE0FF_FFF8, 8), Some(large));
+        // Hors des fenêtres, ou d'une largeur impossible : pas à la carte.
+        assert_eq!(mem(0xDFFF_FFFF, 1), None);
+        assert_eq!(mem(0xE0FF_FFF9, 8), None, "à cheval sur la fin");
+        assert_eq!(mem(0xE000_0000, 9), None);
+        assert_eq!(mem(0xE000_0000, 0x101), None, "au-delà d'un octet");
+        assert_eq!(carte_mem_ecrire(0xE000_0000, 0x104, 1), 0);
+        assert_eq!(
+            carte_mem_valeur(),
+            0,
+            "un refus ne laisse pas l'ancienne valeur"
+        );
+    }
+
+    /// **La tablette par les exports** : un toucher refusé tant que le
+    /// pilote ne l'a pas prise ; la poignée de main de `virtio_input` par
+    /// `carte_mem_ecrire`, la sonnette qui lit la file dans la RAM pendant
+    /// l'appel, puis le toucher et la molette rendus par `carte_livrer`, au
+    /// rythme d'un doigt, sur la ligne 10.
+    #[test]
+    fn the_tablet_goes_through_the_exports() {
+        let _tour = tour();
+        RAM_D_ESSAI.lock().unwrap_or_else(|p| p.into_inner()).0 = vec![0; 0x10000];
+        assert_eq!(carte_toucher(0.5, 0.5, 1), 0, "pas d'écran");
+        assert_eq!(carte_ecran(1024, 768), 1);
+        assert_eq!(carte_toucher(0.5, 0.5, 1), 0, "pas de pilote");
+        assert_eq!(carte_defiler(1), 0);
+        // 00:07.0 : la mémoire du périphérique allumée.
+        carte_ecrire(0xCF8, 4, 0x8000_3800);
+        assert_eq!(carte_lire(0xCFC, 4), 0x1052_1AF4);
+        carte_ecrire(0xCF8, 4, 0x8000_3804);
+        carte_ecrire(0xCFC, 2, 6);
+        let base = 0xE101_0000u64;
+        assert_eq!(mem(base + 0x12, 2), Some(2), "deux files");
+        for (decalage, largeur, valeur) in [
+            (0x14, 1, 0),
+            (0x14, 1, 1 | 2),
+            (0x08, 4, 1),
+            (0x0C, 4, 1),
+            (0x14, 1, 1 | 2 | 8),
+            (0x16, 2, 0),
+            (0x18, 2, 8),
+            (0x20, 8, 0x1000),
+            (0x28, 8, 0x2000),
+            (0x30, 8, 0x3000),
+            (0x1C, 2, 1),
+            (0x14, 1, 1 | 2 | 8 | 4),
+        ] {
+            assert_eq!(carte_mem_ecrire(base + decalage, largeur, valeur), 1);
+        }
+        assert_eq!(mem(base + 0x14, 1), Some(15), "DRIVER_OK");
+        // Huit tampons de huit octets, inscriptibles, aucun encore offert.
+        for rang in 0..8u64 {
+            poser(0x1000 + rang * 16, &(0x4000 + rang * 8).to_le_bytes());
+            poser(0x1000 + rang * 16 + 8, &8u32.to_le_bytes());
+            poser(0x1000 + rang * 16 + 12, &2u16.to_le_bytes());
+            poser(0x2004 + rang * 2, &(rang as u16).to_le_bytes());
+        }
+        // Un appui au quart de la largeur, aux trois quarts de la hauteur :
+        // en attente, faute de tampons.
+        assert_eq!(carte_toucher(0.25, 0.75, 1), 1);
+        assert_eq!(carte_reveil(), 1);
+        carte_livrer(1_000);
+        assert_eq!(mot(0x3002, 2), 0, "rien à rendre");
+        assert_eq!(carte_lignes() & (1 << 10), 0);
+        // Le pilote les offre et sonne : la sonnette lit la file dans la RAM
+        // de la page pendant l'appel, et l'appui part.
+        poser(0x2002, &8u16.to_le_bytes());
+        assert_eq!(carte_mem_ecrire(base + 0x3000, 2, 0), 1, "la sonnette");
+        assert_eq!(mot(0x3002, 2), 6, "un paquet de six");
+        let evenement = |k: u64| {
+            let a = 0x4000 + u64::from(mot(0x3004 + k * 8, 4)) * 8;
+            [mot(a, 2), mot(a + 2, 2), mot(a + 4, 4)]
+        };
+        assert_eq!(evenement(0), [3, 0, 8192]);
+        assert_eq!(evenement(1), [3, 1, 24575]);
+        assert_eq!(evenement(2), [1, 0x110, 1]);
+        assert_eq!(evenement(5), [0, 0, 0]);
+        assert_eq!(carte_lignes(), 1 << 10);
+        assert_eq!(mem(base + 0x1000, 1), Some(1), "l'ISR, lu…");
+        assert_eq!(carte_lignes(), 0, "…baisse la ligne");
+        // Deux crans vers le bas : le premier paquet suit un appui, il
+        // attend trente millisecondes depuis la lecture.
+        assert_eq!(carte_defiler(0), 0);
+        assert_eq!(carte_defiler(-1), 1);
+        carte_livrer(2_000);
+        carte_livrer(2_000 + 35_795 - 1);
+        assert_eq!(mot(0x3002, 2), 6, "un tic avant l'heure");
+        carte_livrer(2_000 + 35_795);
+        assert_eq!(mot(0x3002, 2), 8);
+        assert_eq!(evenement(6), [2, 8, u32::MAX]);
+        assert_eq!(evenement(7), [0, 0, 0]);
     }
 }
