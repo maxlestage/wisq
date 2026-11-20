@@ -506,6 +506,17 @@ mod tests {
         assert!(!disque.ecrire(4 * 512 - 1, &[1, 1]), "ni à cheval");
         assert_eq!(lu(&mut disque, u64::MAX, 1), None, "sans faire le tour");
         assert_eq!(lu(&mut disque, 4 * 512 - 1, 1).unwrap(), [4], "le dernier");
+        // **Le bord exact**, comme `FileDiskStore.inRange` et le disque en
+        // mémoire : rien du tout, posé à la fin, est dans le disque ; rien du
+        // tout, posé un octet plus loin, n'y est pas — une longueur nulle
+        // n'ouvre pas le disque au-delà de sa fin.
+        assert_eq!(lu(&mut disque, 4 * 512, 0), Some(vec![]), "rien, à la fin");
+        assert!(disque.ecrire(4 * 512, &[]));
+        assert_eq!(lu(&mut disque, 4 * 512 + 1, 0), None, "rien, au-delà");
+        assert!(!disque.ecrire(4 * 512 + 1, &[]));
+        assert_eq!(lu(&mut disque, u64::MAX, 0), None);
+        assert!(!disque.ecrire(u64::MAX, &[]));
+        assert_eq!(disque.lectures(), 1, "le dernier octet, et lui seul");
         assert_eq!(disque.octets_ecrits(), 0, "un refus n'écrit rien");
         assert_eq!(std::fs::metadata(dossier.couche()).unwrap().len(), 0);
         // Une base dont la taille n'est pas un multiple de 512 : la queue
@@ -515,6 +526,10 @@ mod tests {
         let mut disque = DisqueFichier::ouvrir(&boiteuse, &dossier.0.join("b.writes")).unwrap();
         assert_eq!(disque.secteurs(), 2);
         assert_eq!(lu(&mut disque, 1023, 2), None);
+        // Même pour rien : la queue est dans le fichier, pas dans le disque.
+        assert_eq!(lu(&mut disque, 1024, 0), Some(vec![]));
+        assert_eq!(lu(&mut disque, 1025, 0), None);
+        assert!(disque.ecrire(1024, &[]) && !disque.ecrire(1025, &[]));
     }
 
     /// **La couche est tassée** : 512 octets par secteur touché, sur la

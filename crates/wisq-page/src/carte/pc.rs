@@ -280,6 +280,11 @@ impl CartePc {
     /// ici, et le cœur rend ce qu'il rend pour un port vide. Voir
     /// [`Carte::port_lire`].
     pub fn port_lire(&mut self, port: u16, largeur: u8) -> Option<u32> {
+        // Comme à l'écriture : une largeur impossible n'est un accès à
+        // personne, et l'horloge n'est pas consultée pour elle.
+        if !largeur_valide(largeur) {
+            return None;
+        }
         self.mettre_a_l_heure(port);
         // Aucune lecture de port ne touche à la RAM.
         self.carte.port_lire(port, largeur, &mut SansRam)
@@ -423,7 +428,7 @@ pub(crate) mod tests {
     use super::super::cmos::tests::MOMENT_MS;
     use super::super::i8042::LIMITE_DE_FRAPPE;
     use super::super::pci::tests::adresse;
-    use super::super::virtio_blk::{LIMITE_DE_FILE, PLUS_TENU};
+    use super::super::virtio_blk::{LIMITE_DE_FILE, PLUS_GRANDE_REQUETE, PLUS_TENU};
     use super::super::RamPlate;
     use super::*;
     use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -585,6 +590,21 @@ pub(crate) mod tests {
         assert!(!disque.lire(u64::MAX, &mut quatre), "sans faire le tour");
         assert_eq!(quatre, [1, 1, 9, 9], "un refus ne touche à rien");
         assert_eq!(disque.0[1023..1025], [1, 1]);
+        // **Le bord exact** : jusqu'au dernier octet du disque, oui ; rien du
+        // tout, posé à la fin, oui encore (`MemoryDiskStore.range` admet
+        // `offset == count`) ; rien du tout, posé dans la queue ou au-delà,
+        // non — la queue n'est pas du disque, même pour zéro octet.
+        assert!(disque.lire(1020, &mut quatre) && disque.ecrire(1020, &[1; 4]));
+        assert_eq!(quatre, [1; 4], "les quatre derniers");
+        assert!(disque.lire(1024, &mut []) && disque.ecrire(1024, &[]));
+        assert!(!disque.lire(1025, &mut []) && !disque.ecrire(1025, &[]));
+        assert!(!disque.lire(1124, &mut []) && !disque.ecrire(1124, &[]));
+        assert!(!disque.lire(u64::MAX, &mut []) && !disque.ecrire(u64::MAX, &[]));
+        assert_eq!(disque.0, {
+            let mut attendu = vec![1; 1024 + 100];
+            attendu[512..514].fill(9);
+            attendu
+        });
         assert!(disque.vider(), "rien à pousser");
     }
 
@@ -677,7 +697,12 @@ pub(crate) mod tests {
         assert_eq!(carte.port_lire(0xC080, 4), None, "et personne après");
 
         // Une lecture sur le second seul : sa ligne, ses octets, et le
-        // premier n'a rien vu.
+        // premier n'a rien vu. **Le premier a pourtant de quoi faire** : une
+        // requête publiée dans sa file, que son pilote n'a pas encore
+        // notifiée. Un disque n'est servi que sur sa propre notification
+        // (`VirtioBlock.serve`, appelé par l'`out` de sa fenêtre à lui) ;
+        // sans cette requête-là, rien ne montrerait qu'il a été servi à tort.
+        PREMIER.requete(&mut ram, 0, 0, 3, (0x20_0000, 512));
         SECOND.requete(&mut ram, 0, 0, 3, (0x10_0000, 512));
         assert!(!carte.a_servir() && !carte.reveil(), "rien n'attend encore");
         SECOND.notifier(&mut carte);
@@ -694,10 +719,23 @@ pub(crate) mod tests {
         assert_eq!(carte.tenues() & 0x60, 0x60, "la carte tient les deux");
         assert_eq!(carte.port_lire(0xC013, 1), Some(0), "le premier se tait");
         assert_eq!(carte.lignes(), 1 << 6, "et n'acquitte pas pour l'autre");
+        // La requête du premier attend toujours sa notification : ni
+        // réponse, ni octet, ni compte.
+        assert_eq!(PREMIER.statut(&ram, 0), 0xFF, "pas servie pour l'autre");
+        assert_eq!(PREMIER.rendues(&ram), 0);
+        assert_eq!(ram.0[0x20_0000..0x20_0200], [0; 512]);
+        let premier = carte.carte().disque(Disque::Premier).unwrap();
+        assert_eq!((premier.servies, premier.refusees), (0, 0));
+        assert_eq!(
+            carte.servir(&mut ram),
+            0,
+            "et un tour de plus n'y change rien"
+        );
+        assert_eq!(PREMIER.statut(&ram, 0), 0xFF);
 
         // Les deux notifiés avant un seul `servir` : chacun est servi par
-        // son arrière, et les deux lignes sont levées.
-        PREMIER.requete(&mut ram, 0, 0, 3, (0x20_0000, 512));
+        // son arrière, et les deux lignes sont levées. La requête du premier
+        // est celle qui attendait.
         SECOND.requete(&mut ram, 1, 1, 15, (0x10_0000, 512));
         PREMIER.notifier(&mut carte);
         SECOND.notifier(&mut carte);
@@ -710,9 +748,17 @@ pub(crate) mod tests {
         // dernier secteur se relit, et le quinzième du premier n'existe pas.
         SECOND.requete(&mut ram, 2, 0, 15, (0x30_0000, 512));
         PREMIER.requete(&mut ram, 1, 0, 15, (0x30_0200, 512));
+        // Dans l'autre sens aussi : le premier notifié seul, la requête
+        // publiée du second attend la sienne.
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 0, "le disque la juge seul");
+        assert_eq!(PREMIER.statut(&ram, 1), 1);
+        assert_eq!(SECOND.statut(&ram, 2), 0xFF, "pas servie pour l'autre");
+        assert_eq!(SECOND.rendues(&ram), 2);
+        assert_eq!(ram.0[0x30_0000..0x30_0200], [0; 512]);
         SECOND.notifier(&mut carte);
         PREMIER.notifier(&mut carte);
-        carte.servir(&mut ram);
+        assert_eq!(carte.servir(&mut ram), 1, "celle du second, et elle seule");
         assert_eq!(ram.0[0x30_0000..0x30_0200], [0x83; 512]);
         assert_eq!(SECOND.statut(&ram, 2), 0);
         assert_eq!(PREMIER.statut(&ram, 1), 1, "au-delà du premier disque");
@@ -813,22 +859,53 @@ pub(crate) mod tests {
         assert_eq!(vidages.load(Ordering::Relaxed), 1);
     }
 
-    /// **Vider pousse chaque disque**, une fois chacun.
+    /// **Vider pousse chaque disque**, une fois chacun — **que l'autre
+    /// accepte ou refuse** —, et le refus d'un seul se sait, qu'il soit le
+    /// premier ou le second. `GuestMachine.flushDisk` pousse les deux sans
+    /// condition ; ici le refus remonte en plus, et il ne doit ni cacher le
+    /// second disque (l'ISO refuse, le disque vierge n'est jamais poussé),
+    /// ni être caché par lui (une perte annoncée comme réussie).
     #[test]
     fn flushing_reaches_every_backend() {
-        let vidages = Arc::new(AtomicUsize::new(0));
-        let neuf = || Capricieux {
+        let neuf = |casse: bool, vidages: &Arc<AtomicUsize>| Capricieux {
             image: ArriereMemoire(image(8, 1)),
-            casse: false,
+            casse,
             lectures: Arc::new(AtomicUsize::new(0)),
             vidages: vidages.clone(),
         };
+        let vidages = Arc::new(AtomicUsize::new(0));
         let mut carte = CartePc::nouvelle();
         assert!(carte.vider(), "sans disque, rien à pousser");
-        carte.brancher(Disque::Premier, neuf());
-        carte.brancher(Disque::Second, neuf());
+        carte.brancher(Disque::Premier, neuf(false, &vidages));
+        carte.brancher(Disque::Second, neuf(false, &vidages));
         assert!(carte.vider());
         assert_eq!(vidages.load(Ordering::Relaxed), 2);
+
+        // Qui refuse : le premier seul, le second seul, les deux. Chacun son
+        // compte, pour voir lequel a été poussé.
+        for (premier_casse, second_casse) in [(true, false), (false, true), (true, true)] {
+            let quoi = format!("premier cassé : {premier_casse}, second : {second_casse}");
+            let (du_premier, du_second) =
+                (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+            let mut carte = CartePc::nouvelle();
+            carte.brancher(Disque::Premier, neuf(premier_casse, &du_premier));
+            carte.brancher(Disque::Second, neuf(second_casse, &du_second));
+            assert!(!carte.vider(), "un refus se sait ({quoi})");
+            assert_eq!(
+                (
+                    du_premier.load(Ordering::Relaxed),
+                    du_second.load(Ordering::Relaxed)
+                ),
+                (1, 1),
+                "les deux poussés, une fois chacun ({quoi})"
+            );
+        }
+        // Un seul disque, le second, et il refuse : rien ne le cache.
+        let du_second = Arc::new(AtomicUsize::new(0));
+        let mut carte = CartePc::nouvelle();
+        carte.brancher(Disque::Second, neuf(true, &du_second));
+        assert!(!carte.vider());
+        assert_eq!(du_second.load(Ordering::Relaxed), 1);
     }
 
     /// **Ce qui se juge sans les octets n'appelle pas l'arrière** : un
@@ -923,6 +1000,213 @@ pub(crate) mod tests {
         assert!(carte.tampon.capacity() <= TAMPON_GARDE);
     }
 
+    /// Le mot de huit octets du rang `rang` d'un disque sans période
+    /// (l'étape finale de splitmix64) : deux endroits du disque ne se
+    /// ressemblent pas, et un octet venu d'ailleurs — d'une autre requête,
+    /// d'un tampon réemployé — se voit.
+    fn mot_du_disque(rang: u64) -> [u8; 8] {
+        let mut z = rang.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)).to_le_bytes()
+    }
+
+    fn disque_sans_periode(secteurs: u64) -> Vec<u8> {
+        (0..secteurs * 64).flat_map(mot_du_disque).collect()
+    }
+
+    /// Où `rendus` s'écarte de ce que le disque sans période porte à partir
+    /// du secteur `secteur` : `None` si chaque octet est le bon.
+    fn premier_ecart(rendus: &[u8], secteur: u64) -> Option<usize> {
+        assert_eq!(rendus.len() % 8, 0);
+        rendus
+            .chunks_exact(8)
+            .zip(secteur * 64..)
+            .position(|(huit, rang)| huit != mot_du_disque(rang))
+            .map(|mot| mot * 8)
+    }
+
+    /// **Chaque octet d'une lecture vient de l'arrière, quelle que soit sa
+    /// taille** : 1 280 Kio (la plus grande requête d'un noyau, par défaut),
+    /// la même taille ailleurs sur le disque par le tampon réemployé, une
+    /// courte derrière une longue, puis la plus grande que le disque accepte
+    /// (64 Mio) — comparées **octet pour octet** à ce que le disque porte.
+    /// Un tampon réemployé ne rend rien de la requête d'avant, et ne déborde
+    /// pas dans la RAM au-delà de ce que la requête demande.
+    #[test]
+    fn every_byte_of_a_read_comes_from_the_backend_whatever_its_size() {
+        const ORDINAIRE: u32 = 1280 << 10;
+        const TAMPON: usize = 0x10_0000;
+        // La requête géante, et un mébioctet de disque devant elle.
+        let secteurs = PLUS_GRANDE_REQUETE / 512 + 2048;
+        let mut carte = CartePc::nouvelle();
+        carte.brancher(
+            Disque::Premier,
+            ArriereMemoire(disque_sans_periode(secteurs)),
+        );
+        PREMIER.ouvrir(&mut carte);
+        let mut ram = RamPlate(vec![0; (PLUS_GRANDE_REQUETE + 0x20_0000) as usize]);
+        let lire =
+            |carte: &mut CartePc, ram: &mut RamPlate, n: u16, secteur: u64, longueur: u32| {
+                PREMIER.requete(ram, n, 0, secteur, (TAMPON as u64, longueur));
+                PREMIER.notifier(carte);
+                assert_eq!(carte.servir(ram), 1, "la requête {n}");
+                assert_eq!(PREMIER.statut(ram, u64::from(n)), 0, "la requête {n}");
+                assert_eq!(
+                    premier_ecart(&ram.0[TAMPON..][..longueur as usize], secteur),
+                    None,
+                    "la requête {n} : {longueur} octets au secteur {secteur}"
+                );
+            };
+
+        // La première : le tampon de la façade est neuf, et plein de zéros.
+        lire(&mut carte, &mut ram, 0, 0, ORDINAIRE);
+        assert_eq!(ram.0[TAMPON + ORDINAIRE as usize..][..512], [0; 512]);
+        let garde = (carte.tampon.as_ptr(), carte.tampon.capacity());
+        // La même taille, ailleurs : le tampon porte encore la précédente.
+        lire(&mut carte, &mut ram, 1, 2047, ORDINAIRE);
+        assert_eq!(
+            (carte.tampon.as_ptr(), carte.tampon.capacity()),
+            garde,
+            "le tampon est réemployé, sans rien allouer"
+        );
+        // Une courte derrière une longue : ses trois secteurs, et pas un
+        // octet de plus — la suite de la RAM est encore la lecture d'avant.
+        lire(&mut carte, &mut ram, 2, 5, 1536);
+        assert_eq!(
+            premier_ecart(&ram.0[TAMPON + 1536..][..ORDINAIRE as usize - 1536], 2050),
+            None,
+            "au-delà de la requête, la RAM n'a pas bougé"
+        );
+        // La plus grande que le disque accepte, jusqu'au dernier secteur.
+        lire(&mut carte, &mut ram, 3, 2048, PLUS_GRANDE_REQUETE as u32);
+        assert!(
+            carte.tampon.capacity() <= TAMPON_GARDE,
+            "et rien n'en reste"
+        );
+        // Puis une ordinaire, par un tampon neuf.
+        lire(&mut carte, &mut ram, 4, 1, ORDINAIRE);
+        assert_eq!(PREMIER.rendues(&ram), 5);
+        let disque = carte.carte().disque(Disque::Premier).unwrap();
+        assert_eq!((disque.servies, disque.refusees), (5, 0));
+    }
+
+    /// **Chaque octet d'une écriture arrive à l'arrière, là où elle est
+    /// posée** : 1 280 Kio d'un trait, relus avec le secteur d'avant et celui
+    /// d'après, que l'écriture n'a pas touchés. La grande lecture par l'autre
+    /// bout — une écriture tronquée et dite réussie serait une perte muette.
+    #[test]
+    fn every_byte_of_a_large_write_reaches_the_backend() {
+        const ORDINAIRE: usize = 1280 << 10;
+        const ECRIT: usize = 0x10_0000;
+        const RELU: usize = 0x40_0000;
+        let mut carte = CartePc::nouvelle();
+        carte.brancher(Disque::Premier, ArriereMemoire(image(4096, 1)));
+        PREMIER.ouvrir(&mut carte);
+        let mut ram = RamPlate(vec![0; 0x80_0000]);
+        // Ce que l'invité écrit : les octets du disque sans période, pris à
+        // son secteur 7.
+        let ecrits = &disque_sans_periode(7 + ORDINAIRE as u64 / 512)[7 * 512..];
+        ram.0[ECRIT..][..ORDINAIRE].copy_from_slice(ecrits);
+        PREMIER.requete(&mut ram, 0, 1, 301, (ECRIT as u64, ORDINAIRE as u32));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 1);
+        assert_eq!(PREMIER.statut(&ram, 0), 0);
+        // Relue avec ses deux voisins.
+        PREMIER.requete(&mut ram, 1, 0, 300, (RELU as u64, ORDINAIRE as u32 + 1024));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 1);
+        assert_eq!(PREMIER.statut(&ram, 1), 0);
+        assert_eq!(ram.0[RELU..][..512], [45; 512], "le secteur 300, intact");
+        assert_eq!(
+            premier_ecart(&ram.0[RELU + 512..][..ORDINAIRE], 7),
+            None,
+            "chaque octet écrit, à sa place"
+        );
+        let apres = (301 + ORDINAIRE / 512 + 1) as u8;
+        assert_eq!(
+            ram.0[RELU + 512 + ORDINAIRE..][..512],
+            [apres; 512],
+            "le secteur d'après, intact"
+        );
+        // Et rien n'est allé ailleurs : le début et la fin du disque.
+        PREMIER.requete(&mut ram, 2, 0, 0, (RELU as u64, 512));
+        PREMIER.requete(&mut ram, 3, 0, 4095, (RELU as u64 + 512, 512));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 2);
+        assert_eq!(ram.0[RELU..][..512], [1; 512]);
+        assert_eq!(
+            ram.0[RELU + 512..][..512],
+            [0; 512],
+            "4095 + 1, sur un octet"
+        );
+    }
+
+    /// **Un disque rebranché est servi par son nouvel arrière** : la
+    /// capacité, les octets et le compte des octets changés sont ceux du
+    /// neuf, et rien de l'ancien ne revient — ni ses secteurs, ni ce que
+    /// l'invité y avait écrit. L'autre disque garde le sien.
+    #[test]
+    fn a_disk_plugged_again_is_served_by_its_new_backend() {
+        let mut carte = CartePc::nouvelle();
+        carte.brancher(Disque::Premier, ArriereMemoire(image(8, 1)));
+        carte.brancher(Disque::Second, ArriereMemoire(image(4, 0x40)));
+        PREMIER.ouvrir(&mut carte);
+        let mut ram = ram();
+        // L'ancien : huit secteurs, et l'invité écrit le deuxième.
+        ram.0[0x10_0000..0x10_0200].fill(0xAB);
+        PREMIER.requete(&mut ram, 0, 1, 2, (0x10_0000, 512));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 1);
+        assert_eq!(PREMIER.statut(&ram, 0), 0);
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 8 * 512);
+
+        // Le neuf, au même emplacement : seize secteurs, d'autres octets.
+        carte.brancher(Disque::Premier, ArriereMemoire(image(16, 0x80)));
+        PREMIER.ouvrir(&mut carte);
+        SECOND.ouvrir(&mut carte);
+        // Le pilote repart de zéro : une file neuve dans une RAM neuve.
+        ram.0.fill(0);
+        assert_eq!(carte.port_lire(0xC014, 4), Some(16), "la capacité du neuf");
+        assert_eq!(carte.octets_ecrits(Disque::Premier), 16 * 512);
+        assert_eq!(
+            carte.octets_ecrits(Disque::Second),
+            4 * 512,
+            "l'autre reste"
+        );
+        // Le secteur écrit sur l'ancien, un secteur que l'ancien avait, et un
+        // qu'il n'avait pas : tous du neuf.
+        PREMIER.requete(&mut ram, 0, 0, 2, (0x10_0000, 512));
+        PREMIER.requete(&mut ram, 1, 0, 5, (0x10_0200, 512));
+        PREMIER.requete(&mut ram, 2, 0, 12, (0x10_0400, 1024));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 3);
+        for n in 0..3 {
+            assert_eq!(PREMIER.statut(&ram, n), 0, "la requête {n}");
+        }
+        assert_eq!(ram.0[0x10_0000..0x10_0200], [0x82; 512], "ni 0xAB, ni 3");
+        assert_eq!(ram.0[0x10_0200..0x10_0400], [0x85; 512]);
+        assert_eq!(
+            ram.0[0x10_0400..0x10_0600],
+            [0x8C; 512],
+            "au-delà de l'ancien"
+        );
+        assert_eq!(ram.0[0x10_0600..0x10_0800], [0x8D; 512]);
+        // Une écriture va au neuf, et s'y relit.
+        ram.0[0x20_0000..0x20_0200].fill(0xCD);
+        PREMIER.requete(&mut ram, 3, 1, 15, (0x20_0000, 512));
+        PREMIER.requete(&mut ram, 4, 0, 15, (0x20_0200, 512));
+        PREMIER.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 2);
+        assert_eq!((PREMIER.statut(&ram, 3), PREMIER.statut(&ram, 4)), (0, 0));
+        assert_eq!(ram.0[0x20_0200..0x20_0400], [0xCD; 512]);
+        // Et le second disque est toujours servi par le sien.
+        SECOND.requete(&mut ram, 0, 0, 3, (0x30_0000, 512));
+        SECOND.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 1);
+        assert_eq!(ram.0[0x30_0000..0x30_0200], [0x43; 512]);
+    }
+
     /// **Un disque sans arrière répond une erreur**, pas un silence : la
     /// carte de la page branchée à la main, sans personne derrière.
     #[test]
@@ -995,6 +1279,25 @@ pub(crate) mod tests {
         carte.touche(CodeTouche::ESPACE, true);
         assert_eq!(carte.lignes(), 1 << 1);
         assert_eq!(carte.port_lire(0x60, 1), Some(0x39));
+        // **La touche nommée, dans le sens nommé** : relâchée, une autre
+        // touche, une touche étendue avec son préfixe. Une façade qui ne
+        // relâcherait jamais, ou qui poserait toujours la même, laisserait
+        // l'invité avec une touche enfoncée que Xorg répète sans fin.
+        let a = CodeTouche::simple(0x1E);
+        for (code, enfoncee, lus) in [
+            (CodeTouche::ESPACE, false, &[0xB9][..]),
+            (a, true, &[0x1E]),
+            (a, false, &[0x9E]),
+            (CodeTouche::HAUT, true, &[0xE0, 0x48]),
+            (CodeTouche::HAUT, false, &[0xE0, 0xC8]),
+        ] {
+            carte.touche(code, enfoncee);
+            assert_eq!(carte.lignes(), 1 << 1);
+            for &lu in lus {
+                assert_eq!(carte.port_lire(0x60, 1), Some(lu), "{code:?} {enfoncee}");
+            }
+            assert_eq!(carte.lignes(), 0, "et rien d'autre");
+        }
         // Un texte, à son rythme : rien avant le battement.
         assert_eq!(carte.taper_texte("a"), 2);
         assert!(carte.reveil());
@@ -1018,13 +1321,39 @@ pub(crate) mod tests {
         assert_eq!(carte.lignes(), 1 << 1);
         assert_eq!(carte.port_lire(0x60, 1), Some(0x39));
         assert!(!carte.reveil());
+        // Par la file aussi, la touche nommée dans le sens nommé : chaque
+        // frappe est lue par l'invité à son battement.
+        for (code, enfoncee, lus) in [
+            (CodeTouche::ESPACE, false, &[0xB9][..]),
+            (a, true, &[0x1E]),
+            (a, false, &[0x9E]),
+            (CodeTouche::HAUT, true, &[0xE0, 0x48]),
+            (CodeTouche::HAUT, false, &[0xE0, 0xC8]),
+        ] {
+            assert!(carte.taper(code, enfoncee), "{code:?} {enfoncee}");
+            assert_eq!(carte.lignes(), 0, "pas avant le battement");
+            tics += SECONDE;
+            carte.battre(tics);
+            for &lu in lus {
+                assert_eq!(carte.port_lire(0x60, 1), Some(lu), "{code:?} {enfoncee}");
+            }
+            assert_eq!(carte.lignes(), 0, "et rien d'autre");
+            assert!(!carte.reveil());
+        }
         // La file pleine refuse un enfoncement, et la façade le dit.
         let mut prises = 0;
-        while carte.taper(CodeTouche::simple(0x1E), true) {
+        while carte.taper(a, true) {
             prises += 1;
             assert!(prises <= LIMITE_DE_FRAPPE, "la file n'a pas de fond");
         }
         assert_eq!(prises, LIMITE_DE_FRAPPE);
+        // Pleine, elle prend encore le relâchement de la touche qu'elle
+        // laisse enfoncée — une fois —, et rien d'autre : ni le relâchement
+        // d'une touche déjà relevée, ni un enfoncement.
+        assert!(!carte.taper(CodeTouche::ESPACE, false), "déjà relevée");
+        assert!(!carte.taper(CodeTouche::ESPACE, true));
+        assert!(carte.taper(a, false), "celle que la file tient enfoncée");
+        assert!(!carte.taper(a, false), "une fois");
 
         // La souris, allumée par l'invité (`A8`, puis `F4` par `D4`) : un
         // mouvement lève la ligne 12 et se lit en un paquet de trois octets.
@@ -1055,6 +1384,14 @@ pub(crate) mod tests {
         assert!(carte.baisser(9));
         assert_eq!(carte.lignes(), 0, "baissée : la ligne 9 est retombée");
         assert_eq!(carte.tenues() & (1 << 9), 1 << 9);
+        // La ligne nommée, et pas une autre : la 10 levée ne relève pas la 9.
+        assert!(carte.lever(10));
+        assert_eq!(carte.lignes(), 1 << 10);
+        assert!(carte.lever(9));
+        assert!(carte.baisser(10));
+        assert_eq!(carte.lignes(), 1 << 9, "la 9 reste, la 10 retombe");
+        assert!(carte.baisser(9));
+        assert_eq!(carte.lignes(), 0);
         // Les lignes des puces du cœur ne sont pas à la carte.
         for ligne in [0, 2, 4, 16] {
             assert!(!carte.lever(ligne) && !carte.baisser(ligne), "{ligne}");
@@ -1090,6 +1427,21 @@ pub(crate) mod tests {
         assert_eq!(annee(&mut carte), Some(0x70), "sans heure : 1970");
         carte.regler_heure(MOMENT_MS);
         assert_eq!(annee(&mut carte), Some(0x26));
+        // À la seconde près, pas au jour : 17 h 05 min 09 s, le 30 octobre.
+        for (registre, valeur) in [
+            (0x00, 0x09),
+            (0x02, 0x05),
+            (0x04, 0x17),
+            (0x07, 0x30),
+            (0x08, 0x10),
+        ] {
+            carte.port_ecrire(0x70, 1, registre);
+            assert_eq!(
+                carte.port_lire(0x71, 1),
+                Some(valeur),
+                "registre {registre:#04x}"
+            );
+        }
 
         let heure = Arc::new(AtomicI64::new(MOMENT_MS));
         let lectures = Arc::new(AtomicUsize::new(0));
@@ -1109,9 +1461,14 @@ pub(crate) mod tests {
         // Un an plus tard à l'horloge : la CMOS le dit au prochain accès.
         heure.store(MOMENT_MS + 366 * 86_400_000, Ordering::Relaxed);
         assert_eq!(annee(&mut carte), Some(0x27));
-        // Les autres ports ne la consultent pas.
+        // Les autres ports ne la consultent pas — ni le voisin `0x72`, ni
+        // une largeur impossible, qui n'est un accès à personne.
         carte.port_lire(0x64, 1);
         carte.port_ecrire(0xCF8, 4, 0);
+        assert_eq!(carte.port_lire(0x72, 1), None);
+        assert!(!carte.port_ecrire(0x72, 1, 0));
+        assert!(!carte.port_ecrire(0x70, 3, 0x09));
+        assert_eq!(carte.port_lire(0x71, 3), None);
         assert_eq!(lectures.load(Ordering::Relaxed), 4);
     }
 
