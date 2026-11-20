@@ -8,6 +8,78 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-20 — Machine PC en Rust : les quatre gardes des blocs que rien ne testait
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « vitesse » a trouvé
+quatre gardes dont la perte ne faisait tomber aucun test, alors que l'entrée
+d'avant disait chaque garde sabotée. Aucune n'était fausse dans le code ;
+c'est leur test qui manquait, et chaque mutant était réel :
+
+- *`push` parmi les écritures* (`pourrait_ecrire`) : `push %rax` n'a pas
+  d'opérande mémoire, sa pile est implicite. Sans lui, `push %rax ; mov
+  $0,%ecx ; hlt`, RSP juste derrière l'immédiat du `mov`, exécutait
+  l'immédiat rangé dans le bloc (zéro) au lieu de celui qu'on venait
+  d'empiler. Le seul test du code qui se réécrit passait par `mov`, `xchg`,
+  `stosb` et `add`.
+- *`movs` parmi les écritures* : le décodeur ne donne pas d'opérande mémoire
+  à `a4` ni à `48 a5`, c'est ce bras seul qui dit l'écriture. Même défaut,
+  par `movsb ; mov $0,%cl ; hlt`.
+- *La borne de la fin de la RAM* dans `un_bloc` : un bloc se compare sur
+  soixante-quatre octets lus d'un coup. Sans elle, du code dans les trois
+  derniers octets de la RAM (sans pagination) faisait paniquer l'hôte en
+  construisant le bloc.
+- *FS dans les formes* : la forme générale qui oublie `fs_base`, ou une
+  adresse `%fs:` qui prend la forme BASE ou RELATIVE (sans base de
+  segment). `pc_rapide` ne posait jamais `fs_base`, et les corpus matériels
+  ne jugent pas FS : la perte ne se serait vue que sur un vrai noyau — c'est
+  `%fs:0x28`, le canari de pile, et `%fs:0`, le pointeur de fil de musl, dans
+  tout programme.
+
+**Ce qui est fait.** Quatre tests dans `pc_rapide`, chacun sur sa garde, qui
+comparent la machine à blocs au pas à pas et disent la valeur attendue :
+`a_push_that_rewrites_its_block_runs_the_new_bytes` (ECX = 0x11223344),
+`a_movs_that_rewrites_its_block_runs_the_new_bytes` (CL = 0x5A),
+`code_at_the_end_of_ram_takes_the_step_by_step_path` (AL = 7, `hlt`, aucun
+bloc construit), `an_fs_address_in_a_block_adds_the_fs_base` (`%fs:0x10` et
+`%fs:(%rbx)`, FS à 0xA000 : 0x1111 et 0x2222, pas ce qui est rangé à 0x10 et
+0x20). Et la racine du trou de FS : le tirage de
+`every_fast_form_does_what_execute_does` pose maintenant des bases de FS et
+de GS non nulles (une ou trois pages plus loin, deux plus près), et vérifie
+qu'il a bien exercé plus de cent formes par un segment de base non nulle
+(167 sur ce tirage) — les deux sabotages de GS tombent désormais aussi par
+lui, sans dépendre du corpus.
+
+**Sabotages**, d'une ligne, en profil de publication, `git diff` des
+sources vide après chacun (script et journal :
+`<bloc-notes>/gardes/sab.py` et `sab.out`) — tous tombent :
+
+| sabotage | tombe par |
+|---|---|
+| `Op::Push` retiré de `pourrait_ecrire` | `a_push_that_rewrites_its_block…` |
+| `Op::StringMove` retiré | `a_movs_that_rewrites_its_block…` |
+| la borne de la fin de la RAM à `false` | `code_at_the_end_of_ram…` (panique de l'hôte) |
+| la forme générale sans `fs_base` | `an_fs_address…`, `every_fast_form…` |
+| une adresse FS en forme BASE ou RELATIVE | `an_fs_address…`, `every_fast_form…` |
+| la forme générale sans `gs_base` | `every_fast_form…` |
+| une adresse GS en forme BASE ou RELATIVE | `every_fast_form…` |
+
+**Mutants équivalents, dits au lieu d'être testés** : retirer `call` ou
+`call *` de `pourrait_ecrire` ne change rien (les deux survivent) : ce sont
+des instructions terminales, toujours les dernières de leur bloc, qui
+rendent un saut ou une faute ; or le bit d'écriture n'est lu qu'après une
+instruction qui rend « suivante » (`parcourir`), et le bloc d'arrivée se
+compare à son entrée. Ils restent, par prudence, comme `lods`, `cmps` et
+`scas`, qui n'écrivent rien et ne coûtent qu'une comparaison. S'ajoutent ceux
+que le contrôle a jugés équivalents : `cmpxchg16b` (son opérande mémoire
+suffit), `lea` compté pour une écriture, le test de pagination de
+`fast_place`, la case d'une paire.
+
+**Tests** : 4 de plus (3 942 → 3 946).
+
+**Ce qui reste** : inchangé depuis l'entrée d'avant — 125 MIPS non atteints
+(113,6 en médiane), le chemin général pour SSE, x87, les chaînes et le
+système, l'ABI C, la `Carte` de wisq-page, l'instantané.
+
 ## 2026-11-20 — Machine PC en Rust : des blocs d'instructions et leurs formes, de 46 à 114 MIPS sur le démarrage d'Alpine
 
 **Ce qui n'allait pas.**
