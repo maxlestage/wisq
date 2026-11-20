@@ -852,7 +852,8 @@ console.log("en_vol_a_chaque_reponse " + enVolALaReponse.join(","));
 /// `carte_mem_ecrire`, un toucher qui attend faute de tampons, la sonnette
 /// qui en apporte et le rend en lisant la file dans la RAM de la page
 /// pendant l'appel, la ligne 10, que la lecture de l'ISR baisse, puis trois
-/// crans de molette rendus par `carte_livrer` au rythme d'un doigt.
+/// crans de molette rendus par `carte_livrer` au rythme d'un doigt, et un
+/// toucher du droit et du milieu, chacun sur son bouton.
 #[test]
 fn the_screen_and_the_tablet_answer_through_the_page_module() {
     let module = page_module();
@@ -924,6 +925,10 @@ m.carte_livrer(2000n + 35794n);
 const tot = vue.getUint16(0x3002, true);
 m.carte_livrer(2000n + 35795n);
 console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + [6, 7, 8, 9, 10, 11].map(evenement).join(" "));
+console.log("boutons " + m.carte_toucher(0.25, 0.75, 6));
+vue.setUint16(0x2002, 24, true);
+m.carte_livrer(2000n + 35795n);
+console.log("droit " + vue.getUint16(0x3002, true) + " " + [14, 15, 16].map(evenement).join(" "));
 "#,
         module = module.to_string_lossy(),
     );
@@ -977,5 +982,11 @@ console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + [6, 7, 8, 
         said(&text, "cran "),
         "6 12 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0",
         "trois crans, trente millisecondes après la lecture, pas une de moins"
+    );
+    assert_eq!(said(&text, "boutons "), "1");
+    assert_eq!(
+        said(&text, "droit "),
+        "18 1,272,0 1,273,1 1,274,1",
+        "le droit et le milieu (bits 1 et 2) passent l'export, le gauche relâché"
     );
 }

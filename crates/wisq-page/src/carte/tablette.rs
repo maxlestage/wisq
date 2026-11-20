@@ -1580,6 +1580,54 @@ pub(crate) mod tests {
         assert_eq!(tablette.retenu_depuis, Some(2_000));
         tablette.ecrire(0x14, 1, 0, &mut ram);
         assert_eq!(tablette, attendue(Some(2_000)));
+
+        // **La configuration PCI que le noyau a posée reste** : la ligne 11
+        // qu'il a écrite en 0x3C, et la BAR qu'il est en train de mesurer
+        // (0xFFFF_FFFF écrit en 0x10). Toutes les tablettes d'avant étaient
+        // sur la ligne 10, celle de `nouvelle` : elles ne pouvaient pas voir
+        // une remise qui la reprendrait de là.
+        let mut ram = self::ram();
+        let mut tablette = demarree(&mut ram, 8);
+        tablette.ecrire_configuration(0x3C, 11);
+        tablette.ecrire_configuration(0x10, 0xFFFF_FFFF);
+        tablette.pointer(0.5, 0.5, 1);
+        tablette.livrer(&mut ram, Some(1_000));
+        tablette.ecrire(0x14, 1, 0, &mut ram);
+        let mut la_meme = attendue(Some(1_000));
+        la_meme.ecrire_configuration(0x3C, 11);
+        la_meme.ecrire_configuration(0x10, 0xFFFF_FFFF);
+        assert_eq!(tablette, la_meme);
+        assert_eq!(tablette.configuration(0x3C), 11 | (1 << 8), "la ligne 11");
+        assert_eq!(
+            tablette.configuration(0x10),
+            !((TAILLE_DE_LA_FENETRE - 1) as u32),
+            "la BAR toujours en mesure"
+        );
+    }
+
+    /// **Seul un statut nul remet la tablette à zéro** (`if status == 0 {
+    /// reset() }` du Swift) : `FAILED` (0x80) seul, sans `ACKNOWLEDGE`, est
+    /// gardé tel quel, et la tablette ne livre plus faute de `DRIVER_OK` ;
+    /// mais ses files, ses fonctions acceptées et ce qui attend restent.
+    #[test]
+    fn a_failed_status_alone_is_not_a_reset() {
+        let mut ram = ram();
+        let mut tablette = demarree(&mut ram, 8);
+        assert!(tablette.pointer(0.5, 0.5, 1));
+        let files = *tablette.files();
+        tablette.ecrire(0x14, 1, 0x80, &mut ram);
+        assert_eq!(tablette.lire(0x14, 1), 0x80);
+        assert!(!tablette.prete());
+        assert_eq!(*tablette.files(), files);
+        assert_eq!(tablette.acceptees(), 1 << 32);
+        assert!(tablette.en_attente(), "le geste attend toujours");
+        tablette.livrer(&mut ram, None);
+        assert_eq!(rendus(&ram), 0, "rien ne part sans DRIVER_OK");
+        // `DRIVER_OK` de retour : le geste d'avant part, rien n'a été oublié.
+        tablette.ecrire(0x14, 1, 15, &mut ram);
+        tablette.livrer(&mut ram, None);
+        assert_eq!(rendus(&ram), 6);
+        assert_eq!(evenement(&ram, 2), [1, 0x110, 1]);
     }
 
     /// **Une tête de chaîne hors de la file y est ramenée** (`% queue.size`
@@ -1713,9 +1761,21 @@ pub(crate) mod tests {
         assert_eq!(tablette.lire(0x20, 4), 0x5566_7788);
         assert_eq!(tablette.lire(0x24, 4), 0x1122_3344);
         assert_eq!(tablette.lire(0x28, 8), 0xCCCC_DDDD_AAAA_BBBB);
+        // Chaque moitié se relit seule aussi, comme `vp_ioread32`.
+        assert_eq!(tablette.lire(0x28, 4), 0xAAAA_BBBB);
+        assert_eq!(tablette.lire(0x2C, 4), 0xCCCC_DDDD);
         assert_eq!(tablette.lire(0x30, 8), 0x0000_0001_0000_2000);
+        assert_eq!(tablette.lire(0x30, 4), 0x0000_2000);
         assert_eq!(tablette.lire(0x34, 4), 1);
+        // `queue_enable` ne lit que son bit 0 (`value & 1 != 0` du Swift) :
+        // 2 ne l'active pas, 3 si.
         assert_eq!(tablette.lire(0x1C, 2), 0);
+        tablette.ecrire(0x1C, 2, 2, &mut ram);
+        assert_eq!(tablette.lire(0x1C, 2), 0, "2 n'active pas la file");
+        tablette.ecrire(0x1C, 2, 3, &mut ram);
+        assert_eq!(tablette.lire(0x1C, 2), 1, "3 l'active");
+        tablette.ecrire(0x1C, 2, 2, &mut ram);
+        assert_eq!(tablette.lire(0x1C, 2), 0, "2 la désactive");
         tablette.ecrire(0x1C, 2, 1, &mut ram);
         assert_eq!(tablette.lire(0x1C, 2), 1);
         // La file zéro n'a rien reçu de tout cela.
@@ -2097,6 +2157,14 @@ pub(crate) mod tests {
         assert!(carte.brancher_ecran(1024, 768));
         assert!(carte.port_ecrire(0xCF8, 4, adresse(7, 0x04)));
         assert!(carte.port_ecrire(0xCFC, 2, 0x0006));
+        prendre(&mut carte);
+        garnir(ram, 8);
+        carte
+    }
+
+    /// La poignée de main du pilote par la mémoire, de la remise à zéro à
+    /// `DRIVER_OK`, la file des événements posée.
+    fn prendre(carte: &mut CartePc) {
         let base = BASE_DE_LA_TABLETTE;
         for (decalage, largeur, valeur) in [
             (0x14, 1, 0),
@@ -2117,8 +2185,6 @@ pub(crate) mod tests {
                 "{decalage:#x}"
             );
         }
-        garnir(ram, 8);
-        carte
     }
 
     /// **Un toucher ne passe par la tablette que si l'invité l'a prise**
@@ -2275,6 +2341,23 @@ pub(crate) mod tests {
         assert_eq!(carte.tenues(), (1 << 1) | (1 << 12));
         assert!(carte.port_ecrire(0xCFC, 1, 10));
         assert_eq!(carte.lignes(), 1 << 10);
+
+        // **La remise du pilote garde la ligne que le noyau a posée** : le
+        // noyau écrit 11, puis le pilote remet le statut à zéro et
+        // recommence ; son geste suivant arrive sur la ligne 11, pas sur la
+        // 10 d'une tablette neuve.
+        assert_eq!(carte.mem_lire(isr, 1), Some(1));
+        assert!(carte.port_ecrire(0xCFC, 1, 11));
+        assert!(carte.mem_ecrire(BASE_DE_LA_TABLETTE + 0x14, 1, 0));
+        assert_eq!(carte.tablette().unwrap().statut(), 0, "remise");
+        assert_eq!(carte.tenues(), (1 << 1) | (1 << 11) | (1 << 12));
+        ram.0.fill(0);
+        prendre(&mut carte);
+        garnir(&mut ram, 8);
+        assert!(carte.toucher(0.5, 0.5, 0));
+        carte.servir(&mut ram);
+        assert_eq!(rendus(&ram), 6);
+        assert_eq!(carte.lignes(), 1 << 11, "la ligne 11, après la remise");
     }
 
     /// **Une sonnette de la file d'état passe la façade aussi**, et une
