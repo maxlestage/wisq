@@ -24101,6 +24101,12 @@ mod disque_montage {
 /// `0x20`. La file et la requête sont posées par le pilote JavaScript
 /// (`requete_du_disque`) : ce que l'invité fait ensuite, c'est notifier.
 fn brancher_le_disque(program: &mut Vec<u8>) {
+    brancher_le_disque_sous(program, 0xdf);
+}
+
+/// Le même montage, le masque du maître donné : `0xdd` laisse passer aussi la
+/// ligne 1, celle du clavier.
+fn brancher_le_disque_sous(program: &mut Vec<u8>, masque: u8) {
     use disque_montage::*;
     program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
     program.extend_from_slice(&IDT_POINTER.to_le_bytes());
@@ -24113,7 +24119,7 @@ fn brancher_le_disque(program: &mut Vec<u8>) {
         (0x21, 0x30),
         (0x21, 0x04),
         (0x21, 0x01),
-        (0x21, 0xdf),
+        (0x21, masque),
     ] {
         out_al(program, port, valeur);
     }
@@ -24220,6 +24226,14 @@ import {{ machine }} from {host:?};
 import {{ carte }} from {carte_js:?};
 import {{ emetteur }} from {emetteur_js:?};
 import {{ readFileSync }} from "fs";
+// **Une garde, pas une attente** : un pilote qui pend — une promesse du
+// disque jamais tenue, un `hlt` qui attend pour toujours — tombe en une
+// minute et dit pourquoi, au lieu de tenir la suite entière. Sous Bun, une
+// boucle hôte suspendue sur une promesse orpheline ne rend pas la main.
+const garde = setTimeout(() => {{
+  console.error("le pilote pend depuis une minute : une attente qui ne finit pas");
+  process.exit(1);
+}}, 60000);
 const module = new WebAssembly.Module(readFileSync({module:?}));
 const traduire = emetteur(module).traducteur({PAGES});
 {arriere}
@@ -24258,6 +24272,7 @@ for (const [nom, at] of [["rbx", 3], ["r8", 8], ["r9", 9], ["r10", 10], ["r11", 
 console.log("tsc " + lire({tsc}));
 console.log("duree " + (fin - debut).toFixed(1));
 {apres}
+clearTimeout(garde);
 "#,
             host = workspace_root().join("web/host.js").to_string_lossy(),
             carte_js = workspace_root().join("web/carte.js").to_string_lossy(),
@@ -24304,7 +24319,15 @@ fn a_disk_read_answered_later_wakes_the_halted_guest() {
     let mut program = Vec::new();
     brancher_le_disque(&mut program);
     notifier(&mut program);
+    horodater(&mut program, 0xc2); // → r10
     program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    horodater(&mut program, 0xc3); // → r11
+
+    // L'ISR relu : le gestionnaire l'a déjà lu, il vaut zéro — un zéro de la
+    // carte, qui n'est pas le « personne » d'un port où rien ne répond.
+    dx(&mut program, FENETRE + 0x13);
+    program.push(0xec); // in (%dx),%al
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0xe8]); // movzx %al,%r13
     rax(&mut program, TAMPON);
     program.extend_from_slice(&[0x48, 0x8b, 0x18]); // mov (%rax),%rbx
     rax(&mut program, STATUT);
@@ -24380,6 +24403,31 @@ console.log("delivrees " + vm.materiel.delivrees);
         tsc < 64 << 20,
         "l'horloge de l'invité n'a pas sauté pendant l'attente du disque : {tsc}\n{text}"
     );
+    // **Et la borne serrée** : du `rdtsc` d'avant le `hlt` à celui d'après le
+    // gestionnaire, l'horloge n'a compté que les blocs exécutés — une poignée.
+    // Un seul pas de l'attente (le budget entier, un mébi-bloc) avant la
+    // délivrance la ferait sauter d'au moins `1 << 20`.
+    let avant: u64 = line_of(&text, "r10 ").parse().expect("r10");
+    let apres: u64 = line_of(&text, "r11 ").parse().expect("r11");
+    assert!(
+        avant > 0 && apres > avant && apres - avant < 1 << 12,
+        "l'horloge n'a pas avancé d'un pas d'attente entre le hlt et la délivrance : \
+         {avant} → {apres}\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "r13 "),
+        "0",
+        "l'ISR relu vaut zéro, et zéro n'est pas « personne » (0xff) : {text}"
+    );
+}
+
+/// `rdtsc`, ses deux moitiés recomposées dans RAX, puis `mov %rax,%r…` —
+/// `vers` est l'octet ModRM (`0xc2` pour R10, `0xc3` pour R11).
+fn horodater(program: &mut Vec<u8>, vers: u8) {
+    program.extend_from_slice(&[0x0f, 0x31]); // rdtsc
+    program.extend_from_slice(&[0x48, 0xc1, 0xe2, 0x20]); // shl $32,%rdx
+    program.extend_from_slice(&[0x48, 0x09, 0xd0]); // or %rdx,%rax
+    program.extend_from_slice(&[0x49, 0x89, vers]); // mov %rax,%r10 ou %r11
 }
 
 /// **Le disque qui réécrit une page de code par DMA fait oublier ses
@@ -24741,6 +24789,402 @@ console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
     assert_eq!(
         (line_of(&text, "arret2 ").as_str(), line_of(&text, "rip2 ")),
         ("arrêtée sur hlt", second.to_string()),
+        "{text}"
+    );
+}
+
+/// **Un tampon du disque à cheval sur la fin de la RAM est refusé entier, et
+/// rien n'est écrit au-delà.**
+///
+/// La vue de la RAM que `host.js` donne à la carte (`dansLaRam`) est la seule
+/// garde : `carte.js` ne borne rien de son côté, et au-dessus de la RAM de
+/// l'invité, dans la même `WebAssembly.Memory`, vivent la correspondance et la
+/// carte du code de l'hôte. Une borne prise sur la taille de la mémoire au
+/// lieu de celle de la RAM laisserait l'invité y faire écrire le disque.
+///
+/// Deux requêtes, posées d'avance par le pilote JavaScript ; l'invité publie
+/// la seconde après la réponse à la première :
+///
+/// - la première lit le secteur 0 dans les 512 derniers octets de la RAM
+///   (`0x3FE00`, qui finit **pile** à `0x40000`) : réussie, la garde n'est
+///   pas trop stricte d'un octet ;
+/// - la seconde lit le secteur 1 à `0x3FF00`, à cheval sur la fin : statut
+///   d'erreur, l'arrière jamais appelé, les 256 octets du dedans laissés tels
+///   que la première les a remplis, et ceux du dessus intacts.
+#[test]
+fn a_disk_buffer_that_straddles_the_end_of_ram_is_refused_whole() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FIN_DE_RAM: u64 = PAGES as u64 * 0x1_0000;
+    const STATUT2: u64 = STATUT + 0x10;
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, STATUT);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+
+    // La seconde requête publiée : l'index des disponibles passe à 2.
+    rax(&mut program, FILE + 0x802);
+    program.extend_from_slice(&[0x66, 0xc7, 0x00, 0x02, 0x00]); // movw $2,(%rax)
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, STATUT2);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x10]); // movzx (%rax),%r10
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "hors-ram",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        r#"
+const lectures = [];
+// Un motif qui dépend du secteur : ce qui a été écrit, et par quelle lecture.
+const motif = (secteur, i) => (i * 7 + 3 + secteur * 101) & 0xff;
+const arriere = {
+  octets: 1 << 20,
+  lire: async (decalage, longueur) => {
+    lectures.push(decalage + "+" + longueur);
+    const vers = new Uint8Array(longueur);
+    for (let i = 0; i < longueur; i++) vers[i] = motif(decalage / 512, i);
+    return vers;
+  },
+};
+"#,
+        &format!(
+            r#"
+{{
+  const v = new DataView(vm.memory.buffer);
+  const dire = (i, a, n, drapeaux, suivant) => {{
+    v.setBigUint64({FILE} + i * 16, BigInt(a), true);
+    v.setUint32({FILE} + 8 + i * 16, n, true);
+    v.setUint16({FILE} + 12 + i * 16, drapeaux, true);
+    v.setUint16({FILE} + 14 + i * 16, suivant, true);
+  }};
+  for (const [tete, entete, secteur, tampon, statut] of [
+    [0, {ENTETE}, 0, {FIN_DE_RAM} - 512, {STATUT}],
+    [3, {ENTETE} + 0x100, 1, {FIN_DE_RAM} - 256, {STATUT2}],
+  ]) {{
+    v.setUint32(entete, 0, true);
+    v.setBigUint64(entete + 8, BigInt(secteur), true);
+    dire(tete, entete, 16, 1, tete + 1);
+    dire(tete + 1, tampon, 512, 3, tete + 2);
+    dire(tete + 2, statut, 1, 2, 0);
+    v.setUint8(statut, 0xff);
+  }}
+  v.setUint16({FILE} + 0x804, 0, true);
+  v.setUint16({FILE} + 0x806, 3, true);
+  v.setUint16({FILE} + 0x802, 1, true);
+}}
+// Ce que l'hôte garde au-dessus de la RAM, avant la course.
+var dessusAvant = new Uint8Array(vm.memory.buffer, {FIN_DE_RAM}, 4096).slice();
+"#
+        ),
+        &format!(
+            r#"
+console.log("lectures " + lectures.join(","));
+const ram = new Uint8Array(vm.memory.buffer);
+let dedans = true;
+for (let i = 0; i < 512; i++) if (ram[{FIN_DE_RAM} - 512 + i] !== motif(0, i)) dedans = false;
+console.log("dedans " + dedans);
+const dessus = new Uint8Array(vm.memory.buffer, {FIN_DE_RAM}, 4096);
+console.log("dessus " + dessus.every((o, i) => o === dessusAvant[i]));
+"#
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "r9 "),
+        "0",
+        "un tampon qui finit pile à la fin de la RAM est lu : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r10 "),
+        "1",
+        "un tampon à cheval sur la fin de la RAM rend une erreur d'entrée-sortie : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "lectures "),
+        "0+512",
+        "l'arrière n'a été appelé que pour la première : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "dedans "),
+        "true",
+        "les octets du dedans sont ceux de la première lecture, rien de la seconde : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "dessus "),
+        "true",
+        "rien n'est écrit au-dessus de la RAM, dans la mémoire de l'hôte : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "2",
+        "les deux requêtes sont rendues, chacune par sa ligne : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
+/// **Une ligne de l'esclave qui retombe avant d'être délivrée n'est pas
+/// délivrée.**
+///
+/// Le pendant, pour le 8259 esclave, de
+/// `a_card_line_that_falls_before_delivery_is_not_delivered` : la recopie
+/// efface aussi les lignes que la carte tient chez l'esclave et ne lève plus.
+/// La ligne est l'IRQ 12, celle de la souris. Interruptions éteintes,
+/// l'invité allume le port de la souris (`A8`) et lui demande de rapporter
+/// (`D4`, `F4`) : la souris accuse réception (`FA`), ce qui lève l'IRQ 12 —
+/// la course s'arrête sur `cli ; hlt`, la ligne 4 de l'esclave en requête.
+/// Puis il lit l'accusé lui-même sur `0x60`, comme le fait le pilote `psmouse`
+/// pendant sa poignée de main, rallume les interruptions et s'arrête.
+/// Personne ne doit l'interrompre.
+#[test]
+fn a_slave_line_that_falls_before_delivery_is_not_delivered() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+    program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+    program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+    program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+    program.extend_from_slice(&(STACK as u32).to_le_bytes());
+    program.extend_from_slice(&[0x4d, 0x31, 0xff]); // xor %r15,%r15
+    for (port, valeur) in [
+        (0x20, 0x11),
+        (0x21, 0x30),
+        (0x21, 0x04),
+        (0x21, 0x01),
+        (0x21, 0xfb), // la cascade seule
+        (0xa0, 0x11),
+        (0xa1, 0x38),
+        (0xa1, 0x02),
+        (0xa1, 0x01),
+        (0xa1, 0xef), // la ligne 4 de l'esclave : l'IRQ 12
+        (0x64, 0xa8), // le port de la souris allumé
+        (0x64, 0xd4), // l'octet suivant à la souris…
+        (0x60, 0xf4), // … « rapporte » : elle répond FA
+    ] {
+        out_al(&mut program, port, valeur);
+    }
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt — l'IRQ 12 monte
+    let premier = BASE + program.len() as u64;
+    program.extend_from_slice(&[0xe4, 0x60, 0x4c, 0x0f, 0xb6, 0xe0]); // in $0x60 ; movzx → r12
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    let second = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let mut souris = Vec::new();
+    out_al(&mut souris, 0xa0, 0x20);
+    out_al(&mut souris, 0x20, 0x20);
+    souris.extend_from_slice(&[0x49, 0x83, 0xc7, 0x01, 0x48, 0xcf]); // add $1,%r15 ; iretq
+    let text = avec_la_carte(
+        &bun,
+        "retombee-esclave",
+        &[(BASE, &program), (HANDLER, &souris)],
+        &[(0x3c, HANDLER)],
+        "const arriere = null;",
+        "",
+        &format!(
+            r#"
+console.log("requete_avant " + (vm.pics.slave.request & 0x10));
+const encore = await vm.run({{ budget: 1n << 20n, rounds: 64 }});
+console.log("arret2 " + encore.stopped);
+console.log("rip2 " + BigInt.asUintN(64, vm.globals[{RIP_SLOT}].value));
+console.log("r12_2 " + BigInt.asUintN(64, vm.globals[12].value));
+console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
+console.log("requete_apres " + (vm.pics.slave.request & 0x10));
+"#
+        ),
+    );
+    assert_eq!(
+        (line_of(&text, "rip "), line_of(&text, "requete_avant ")),
+        (premier.to_string(), "16".to_string()),
+        "la première course s'arrête interruptions éteintes, l'IRQ 12 en requête chez l'esclave : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12_2 "),
+        0xfa.to_string(),
+        "l'invité a lu l'accusé de la souris : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r15_2 "), line_of(&text, "requete_apres ")),
+        ("0".to_string(), "0".to_string()),
+        "la ligne retombée est effacée de l'esclave, et n'est pas délivrée : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret2 ").as_str(), line_of(&text, "rip2 ")),
+        ("arrêtée sur hlt", second.to_string()),
+        "{text}"
+    );
+}
+
+/// **Une interruption déjà prête passe avant la réponse du disque, et un
+/// `hlt` ouvert après la réponse n'attend plus rien.**
+///
+/// Le `hlt` qui attend le disque cède le fil ; mais « ce qui est déjà prêt
+/// passe d'abord, sans attendre » (le commentaire de `host.js`). Ici une
+/// touche est enfoncée avant la course, la ligne 1 démasquée, et l'invité
+/// notifie une lecture que l'arrière sert trente millisecondes plus tard, puis
+/// `sti ; hlt`. Le gestionnaire du clavier lit l'octet de statut du disque :
+/// il doit valoir encore `0xff` — la touche est passée **avant** la réponse.
+/// L'invité se rendort (`hlt`), le disque répond, la ligne 5 le réveille.
+///
+/// Puis un dernier `sti ; hlt`, rien en vol et personne pour réveiller : la
+/// course s'arrête là. Un compte des requêtes en vol qui ne redescendrait
+/// pas (`enVol`, dans `carte.js`) ferait attendre ce `hlt` une réponse qui ne
+/// viendra jamais : la promesse jamais tenue, le pilote finit sans rien dire.
+#[test]
+fn an_interrupt_ready_while_a_read_is_in_flight_passes_before_the_answer() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const CLAVIER: u64 = 0x1_1800;
+    let mut program = Vec::new();
+    brancher_le_disque_sous(&mut program, 0xdd);
+    program.extend_from_slice(&[0x4d, 0x31, 0xed]); // xor %r13,%r13
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt — la touche
+    program.push(0xf4); // hlt — le disque
+    rax(&mut program, STATUT);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt — plus rien
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let mut clavier = Vec::new();
+    rax(&mut clavier, STATUT);
+    clavier.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x30]); // movzx (%rax),%r14
+    clavier.extend_from_slice(&[0xe4, 0x60]); // in $0x60,%al
+    out_al(&mut clavier, 0x20, 0x20);
+    clavier.extend_from_slice(&[0x49, 0x83, 0xc5, 0x01, 0x48, 0xcf]); // add $1,%r13 ; iretq
+    let text = avec_la_carte(
+        &bun,
+        "prete-avant",
+        &[(BASE, &program), (HANDLER, &handler), (CLAVIER, &clavier)],
+        &[(VECTEUR, HANDLER), (0x31, CLAVIER)],
+        r#"
+const lectures = [];
+const arriere = {
+  octets: 1 << 20,
+  lire: (decalage, longueur) => new Promise((rendre) => {
+    lectures.push(decalage + "+" + longueur);
+    setTimeout(() => rendre(new Uint8Array(longueur)), 30);
+  }),
+};
+"#,
+        &format!(
+            "{}\nvm.carte.touche(0x1e, false, true);",
+            requete_du_disque(2, TAMPON, 512)
+        ),
+        r#"
+console.log("lectures " + lectures.join(","));
+console.log("en_vol " + vm.carte.disque.enVol());
+"#,
+    );
+    assert_eq!(
+        (line_of(&text, "r13 "), line_of(&text, "r14 ")),
+        ("1".to_string(), 0xff.to_string()),
+        "la touche est délivrée une fois, le disque n'ayant pas encore répondu : {text}"
+    );
+    assert_eq!(
+        (
+            line_of(&text, "r15 "),
+            line_of(&text, "r12 "),
+            line_of(&text, "r9 ")
+        ),
+        ("1".to_string(), "1".to_string(), "0".to_string()),
+        "puis la réponse réveille l'invité par la ligne 5, statut réussi : {text}"
+    );
+    assert_eq!(line_of(&text, "lectures "), "1024+512", "{text}");
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "le dernier hlt, rien en vol, arrête la course au lieu d'attendre : {text}"
+    );
+    assert_eq!(line_of(&text, "en_vol "), "0", "{text}");
+}
+
+/// **Un `hlt` interruptions éteintes n'attend pas le disque.**
+///
+/// La réponse d'une lecture ne peut réveiller qu'un invité qui accepte d'être
+/// interrompu. Un `cli ; hlt` pendant qu'une lecture est en vol arrête la
+/// course tout de suite, comme tout `cli ; hlt` : attendre la réponse avant de
+/// rendre la main ferait passer le temps du disque à qui conduit la machine,
+/// pour rien — la ligne levée ne serait pas délivrée. La course suivante,
+/// `sti ; hlt`, l'attend et la reçoit.
+#[test]
+fn a_halt_with_interrupts_closed_does_not_wait_for_the_disk() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let premier = BASE + program.len() as u64;
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, STATUT);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "ferme",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        r#"
+const arriere = {
+  octets: 1 << 20,
+  lire: (decalage, longueur) => new Promise((rendre) => {
+    setTimeout(() => rendre(new Uint8Array(longueur)), 30);
+  }),
+};
+"#,
+        &requete_du_disque(3, TAMPON, 512),
+        &format!(
+            r#"
+console.log("statut_premier " + new DataView(vm.memory.buffer).getUint8({STATUT}));
+console.log("en_vol_premier " + vm.carte.disque.enVol());
+const encore = await vm.run({{ budget: 1n << 20n, rounds: 64 }});
+console.log("arret2 " + encore.stopped);
+console.log("rip2 " + BigInt.asUintN(64, vm.globals[{RIP_SLOT}].value));
+console.log("r9_2 " + BigInt.asUintN(64, vm.globals[9].value));
+console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
+"#
+        ),
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", premier.to_string()),
+        "{text}"
+    );
+    assert_eq!(
+        (
+            line_of(&text, "statut_premier "),
+            line_of(&text, "en_vol_premier ")
+        ),
+        (0xff.to_string(), "1".to_string()),
+        "la course s'est arrêtée sans attendre : la lecture est encore en vol : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r15_2 "), line_of(&text, "r9_2 ")),
+        ("1".to_string(), "0".to_string()),
+        "la course suivante, interruptions ouvertes, reçoit la réponse : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret2 ").as_str(), line_of(&text, "rip2 ")),
+        ("arrêtée sur hlt", fin.to_string()),
         "{text}"
     );
 }

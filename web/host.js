@@ -806,7 +806,7 @@ export function machine({
     },
   };
   const peripheriques = brancherLaCarte === null ? null : brancherLaCarte(ramDeLaCarte);
-  const blocks =new WebAssembly.Table({ element: "anyfunc", initial: regions });
+  const blocks = new WebAssembly.Table({ element: "anyfunc", initial: regions });
   const globals = [];
   const env = { mem: memory, blocks };
   for (let slot = 0; slot < SLOTS.globalCount; slot++) {
