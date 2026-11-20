@@ -25189,6 +25189,124 @@ console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
     );
 }
 
+/// **Un flottant simple rangé dans les quatre derniers octets d'une page, la
+/// suivante absente, se lit sans faute** — par chaque forme scalaire qui lit
+/// quatre octets : `cvtss2sd`, `ucomiss`, `comiss`, `addss`, `cmpss`,
+/// `cvtss2si` et `cvtsi2ss` (un entier de 32 bits).
+///
+/// Le silicium ne lit que l'élément : un `float` en fin de tableau, au bord
+/// d'une page que rien ne suit, est le cas de tout programme. Une forme dont
+/// la largeur lue serait de huit octets ferait fauter ces lectures sur la page
+/// d'après — une faute de page à tort, un `SIGSEGV` dans le programme. Le
+/// corpus matériel ne le voit pas : ses fenêtres sont au milieu d'une page, et
+/// le calcul ne regarde que les 32 bits bas.
+///
+/// La pagination identité couvre la RAM par pages de 4 Kio, sauf
+/// `0x25000`, absente ; le flottant (2,5) est à `0x24FFC`. Aucune IDT : une
+/// faute arrêterait la course sur son nom, au lieu du `ud2` final.
+#[test]
+fn a_single_float_at_the_end_of_a_page_reads_four_bytes_and_no_more() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const PML4: u64 = 0x3_0000;
+    const PDPT: u64 = 0x3_1000;
+    const PD: u64 = 0x3_2000;
+    const PT: u64 = 0x3_3000;
+    const ABSENTE: u64 = 0x2_5000;
+    const FLOTTANT: u64 = ABSENTE - 4;
+    let present = |a: u64| (a | 0x3).to_le_bytes();
+    let mut tables = Vec::new();
+    for (table, suivante) in [(PML4, PDPT), (PDPT, PD), (PD, PT)] {
+        tables.push((table, present(suivante).to_vec()));
+    }
+    let mut feuilles = Vec::new();
+    for page in 0..u64::from(PAGES) * 16 {
+        let a = page << 12;
+        feuilles.extend_from_slice(&if a == ABSENTE { [0; 8] } else { present(a) });
+    }
+    tables.push((PT, feuilles));
+    let mut program = Vec::new();
+    rax(&mut program, PML4);
+    program.extend_from_slice(&[0x0f, 0x22, 0xd8]); // mov %rax,%cr3
+    rax(&mut program, 1 << 31);
+    program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 — la pagination
+    program.extend_from_slice(&[0x48, 0xbe]); // movabs $FLOTTANT,%rsi
+    program.extend_from_slice(&FLOTTANT.to_le_bytes());
+    for instruction in [
+        &[0xf3, 0x0f, 0x5a, 0x06][..],   // cvtss2sd (%rsi),%xmm0
+        &[0x66, 0x48, 0x0f, 0x7e, 0xc3], // movq %xmm0,%rbx
+        &[0x66, 0x0f, 0x6e, 0x0e],       // movd (%rsi),%xmm1
+        &[0x0f, 0x2e, 0x0e],             // ucomiss (%rsi),%xmm1
+        &[0x0f, 0x94, 0xc0],             // sete %al
+        &[0x4c, 0x0f, 0xb6, 0xc0],       // movzx %al,%r8
+        &[0x0f, 0x2f, 0x0e],             // comiss (%rsi),%xmm1
+        &[0x0f, 0x94, 0xc0],             // sete %al
+        &[0x4c, 0x0f, 0xb6, 0xc8],       // movzx %al,%r9
+        &[0xf3, 0x0f, 0x58, 0x0e],       // addss (%rsi),%xmm1
+        &[0x66, 0x41, 0x0f, 0x7e, 0xca], // movd %xmm1,%r10d
+        &[0xf3, 0x44, 0x0f, 0x2d, 0x1e], // cvtss2si (%rsi),%r11d
+        &[0xf3, 0x0f, 0x2a, 0x16],       // cvtsi2ss (%rsi),%xmm2
+        &[0x66, 0x41, 0x0f, 0x7e, 0xd4], // movd %xmm2,%r12d
+        &[0xf3, 0x0f, 0xc2, 0x0e, 0x04], // cmpss $4,(%rsi),%xmm1 — différent ?
+        &[0x66, 0x41, 0x0f, 0x7e, 0xcd], // movd %xmm1,%r13d
+    ] {
+        program.extend_from_slice(instruction);
+    }
+    let ud2 = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x0f, 0x0b]); // ud2
+    let deux_et_demi = 2.5f32.to_bits().to_le_bytes();
+    let mut pieces: Vec<(u64, &[u8])> = vec![(BASE, &program), (FLOTTANT, &deux_et_demi)];
+    for (at, octets) in &tables {
+        pieces.push((*at, octets));
+    }
+    let text = avec_la_carte(
+        &bun,
+        "flottant-bord",
+        &pieces,
+        &[],
+        "const arriere = null;",
+        "",
+        "",
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        (UD2_SANS_PORTE, ud2.to_string()),
+        "aucune lecture n'a touché la page absente : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        2.5f64.to_bits().to_string(),
+        "cvtss2sd : 2,5 en double : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r8 "), line_of(&text, "r9 ")),
+        ("1".to_string(), "1".to_string()),
+        "ucomiss et comiss : égaux : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r10 "),
+        u64::from(5.0f32.to_bits()).to_string(),
+        "addss : 5 : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r11 "),
+        "2",
+        "cvtss2si : 2,5 arrondi au pair : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12 "),
+        u64::from((2.5f32.to_bits() as i32 as f32).to_bits()).to_string(),
+        "cvtsi2ss : les bits de 2,5 lus comme un entier de 32 bits : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r13 "),
+        0xffff_ffffu64.to_string(),
+        "cmpss : 5 et 2,5 diffèrent : {text}"
+    );
+}
+
 /// **`mov %sreg, m16` écrit seize bits, et seize seulement**, quel que soit le
 /// préfixe : sans préfixe, avec `66`, avec `REX.W` — le silicium n'en écrit
 /// jamais plus (le manuel d'Intel le dit de la forme mémoire, au contraire de
