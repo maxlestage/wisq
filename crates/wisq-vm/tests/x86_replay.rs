@@ -788,6 +788,20 @@ fn a_non_canonical_jump_target_leaves_everything_in_place() {
             );
         }
     }
+    // **Par `step` aussi**, l'interpréteur nu qui avance RIP lui-même : sans
+    // le témoin de saut posé par le refus, RIP passerait par-dessus le saut.
+    for (name, code) in forms {
+        let mut cpu = paged(&[CODE_PAGE, (DATA, 0x20000, PRESENT | WRITABLE)], true);
+        cpu.regs[0] = target;
+        cpu.regs[6] = DATA;
+        cpu.regs[4] = DATA + 0x800;
+        cpu.memory.write(0x20000, Width::Qword, target).unwrap();
+        cpu.memory.write(0x20800, Width::Qword, target).unwrap();
+        cpu.rip = 0x10000;
+        cpu.step(code);
+        assert!(cpu.faulted, "{name} par step");
+        assert_eq!(cpu.rip, 0x10000, "{name} par step : RIP sur le saut");
+    }
     // Une cible canonique au bit haut posé passe.
     let mut cpu = paged(&[CODE_PAGE], false);
     cpu.regs[0] = 0xFFFF_8000_0000_0000;
