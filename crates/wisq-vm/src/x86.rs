@@ -1283,15 +1283,15 @@ pub struct Decoded {
 }
 
 impl Decoded {
-    /// Le squelette d'une instruction qui ne porte ni opérande ni mémoire —
-    /// un saut, essentiellement. Écrit une fois plutôt que quinze, pour que
-    /// l'ajout d'un champ ne se rate pas à la quinzième.
     /// Une case vide, pour qui range des instructions décodées dans un
     /// tableau : elle ne désigne aucune instruction, et sa longueur est nulle.
     pub fn empty() -> Self {
         Self::nothing(Width::Qword)
     }
 
+    /// Le squelette d'une instruction qui ne porte ni opérande ni mémoire —
+    /// un saut, essentiellement. Écrit une fois plutôt que quinze, pour que
+    /// l'ajout d'un champ ne se rate pas à la quinzième.
     fn nothing(width: Width) -> Self {
         Decoded {
             op: Op::Not,
@@ -2431,25 +2431,28 @@ impl Cpu {
 
         let mut flags = self.flags.read() & !CF;
         flags |= carry * CF;
-        self.flags.write(flags);
 
-        if action == BitAction::Test {
-            return;
-        }
-        let mask = 1u64 << number;
-        let changed = match action {
-            BitAction::Set => value | mask,
-            BitAction::Reset => value & !mask,
-            _ => value ^ mask,
-        };
-        match place {
-            Some(at) => {
-                self.faulted |= self.write_memory(at, width, changed).is_err();
+        // **L'écriture d'abord, la retenue ensuite** : un `bts` sur une page
+        // en lecture seule faute, et le cadre que reçoit le gestionnaire doit
+        // porter les drapeaux d'avant l'instruction, pas la retenue d'un bit
+        // qui n'a pas été changé.
+        if action != BitAction::Test {
+            let mask = 1u64 << number;
+            let changed = match action {
+                BitAction::Set => value | mask,
+                BitAction::Reset => value & !mask,
+                _ => value ^ mask,
+            };
+            let written = match place {
+                Some(at) => self.write_memory(at, width, changed).is_ok(),
+                None => self.write_destination(instruction, changed).is_some(),
+            };
+            if !written {
+                self.faulted = true;
+                return;
             }
-            None => {
-                self.faulted |= self.write_destination(instruction, changed).is_none();
-            }
         }
+        self.flags.write(flags);
     }
 
     /// **Chercher le premier bit à un, par le bas ou par le haut.**

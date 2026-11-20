@@ -261,9 +261,11 @@ pub fn charger(
     initramfs: Option<&[u8]>,
     ecran: Option<Ecran>,
 ) -> Result<Placement, Refus> {
-    // Un fichier qui annonce plus qu'il ne pèse n'est pas un noyau : la
-    // lecture de l'en-tête le refuse déjà.
-    let en_tete = Protocole::lire(noyau, Some(noyau.len())).ok_or(Refus::PasUnNoyau)?;
+    // L'en-tête se lit sans juger la taille du fichier : un noyau coupé —
+    // un téléchargement interrompu — est bien un noyau, et le dire « pas un
+    // noyau » enverrait chercher le mauvais fichier. Il est refusé plus bas,
+    // par son nom.
+    let en_tete = Protocole::lire(noyau, None).ok_or(Refus::PasUnNoyau)?;
     if en_tete.version < PLUS_ANCIEN_PROTOCOLE {
         return Err(Refus::ProtocoleTropAncien(en_tete.version));
     }

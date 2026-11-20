@@ -72,20 +72,22 @@ impl Exception {
         }
     }
 
-    /// Le code d'erreur, pour les vecteurs qui en empilent un.
-    pub fn code(&self) -> u64 {
+    /// **Le code d'erreur que cette faute empile, ou `None` quand elle n'en
+    /// empile pas.** Le gestionnaire compte dessus pour retrouver son cadre :
+    /// en oublier un, ou en ajouter un, décale toute la pile.
+    ///
+    /// C'est la **faute** qui porte un code, pas le numéro du vecteur : une
+    /// interruption de matériel ou un `int n` qui arrivent sur le vecteur
+    /// treize n'en empilent pas. Un 8259 laissé à sa base d'origine livre
+    /// l'horloge au vecteur huit, celui de la double faute ; lui prêter un
+    /// code d'erreur ferait repartir son `iretq` sur une adresse qui n'en est
+    /// pas une.
+    pub fn code(&self) -> Option<u64> {
         match self {
-            Self::ProtectionGenerale(code) | Self::FauteDePage { code, .. } => *code,
-            _ => 0,
+            Self::ProtectionGenerale(code) | Self::FauteDePage { code, .. } => Some(*code),
+            Self::Division | Self::Indefinie => None,
         }
     }
-}
-
-/// Les vecteurs qui portent un code d'erreur empilé par le processeur. Le
-/// gestionnaire compte dessus pour retrouver son cadre : en oublier un décale
-/// toute la pile.
-pub fn porte_un_code(vecteur: u8) -> bool {
-    matches!(vecteur, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
 }
 
 /// Pourquoi une livraison n'a pas eu lieu.
@@ -227,9 +229,16 @@ impl Systeme {
             return Err(Exception::ProtectionGenerale(u64::from(selecteur & !3)));
         }
         let entree = self.gdt.base.wrapping_add(position);
-        let (Ok(bas), Ok(haut)) = (lire(cpu, entree), lire(cpu, entree.wrapping_add(8))) else {
-            return Err(faute_de_page(cpu));
-        };
+        // Un descripteur dans une page absente : la faute de page nomme
+        // l'adresse du mot qui manque, pas zéro.
+        let mut mots = [0u64; 2];
+        for (rang, mot) in mots.iter_mut().enumerate() {
+            let adresse = entree.wrapping_add(8 * rang as u64);
+            *mot = cpu
+                .read_memory_as_machine(adresse, Width::Qword)
+                .map_err(|_| faute_du_dernier_acces(cpu))?;
+        }
+        let [bas, haut] = mots;
         self.base_de_tache =
             ((bas >> 16) & 0xFF_FFFF) | (((bas >> 56) & 0xFF) << 24) | ((haut & 0xFFFF_FFFF) << 32);
         let mut limite = (bas & 0xFFFF) | (((bas >> 48) & 0x0F) << 16);
@@ -267,9 +276,10 @@ impl Systeme {
         if porte.pile_d_interruption == 0 && cible >= cpu.privilege() {
             return Ok(None);
         }
-        // Le registre de tâche doit être chargé, et le segment assez long pour
-        // porter ce qu'on va y lire.
-        if self.tache == 0 || self.limite_de_tache < DERNIER_OCTET_DU_TSS {
+        // Le segment doit être assez long pour porter ce qu'on va y lire. Un
+        // registre de tâche jamais chargé a une limite nulle (`ltr` refuse le
+        // sélecteur nul) : la même comparaison le refuse.
+        if self.limite_de_tache < DERNIER_OCTET_DU_TSS {
             return Err(Livraison::SansTss);
         }
         let ou = if porte.pile_d_interruption != 0 {
@@ -282,8 +292,9 @@ impl Systeme {
 
     /// **Entrer dans le gestionnaire d'un vecteur.** C'est le même chemin pour
     /// une faute, une interruption de matériel et un `int n` (`logicielle`) ;
-    /// seuls le vecteur, le code d'erreur et le contrôle du privilège de la
-    /// porte changent.
+    /// seuls le vecteur, le code d'erreur — `Some` pour une faute qui en
+    /// empile un, `None` pour tout le reste — et le contrôle du privilège de
+    /// la porte changent.
     ///
     /// **RIP doit déjà valoir l'adresse à empiler** : celle de l'instruction
     /// fautive pour une faute, celle de la suivante pour un `int n` et pour
@@ -295,7 +306,7 @@ impl Systeme {
         &self,
         cpu: &mut Cpu,
         vecteur: u8,
-        code: u64,
+        code: Option<u64>,
         logicielle: bool,
     ) -> Result<(), Livraison> {
         let porte = self.porte(cpu, vecteur)?;
@@ -321,8 +332,15 @@ impl Systeme {
         // processeur y écrit parce qu'il est déjà passé en anneau zéro.
         cpu.segments[1] = porte.selecteur;
         let mut pointeur = cpu.regs[4] & !0xF;
-        let mut cadre = [u64::from(ss), pile, drapeaux, u64::from(cs), cpu.rip, code];
-        let mots = if porte_un_code(vecteur) { 6 } else { 5 };
+        let mut cadre = [
+            u64::from(ss),
+            pile,
+            drapeaux,
+            u64::from(cs),
+            cpu.rip,
+            code.unwrap_or(0),
+        ];
+        let mots = if code.is_some() { 6 } else { 5 };
         for mot in &mut cadre[..mots] {
             pointeur = pointeur.wrapping_sub(8);
             if let Err(pourquoi) = cpu.write_memory(pointeur, Width::Qword, *mot) {
@@ -359,10 +377,7 @@ impl Systeme {
         let sommet = cpu.regs[4];
         let mut cadre = [0u64; 5];
         for (rang, mot) in cadre.iter_mut().enumerate() {
-            match cpu.read_memory(sommet.wrapping_add(8 * rang as u64), Width::Qword) {
-                Ok(valeur) => *mot = valeur,
-                Err(_) => return Err(faute_de_page(cpu)),
-            }
+            *mot = depiler(cpu, sommet, rang as u64)?;
         }
         let [rip, cs, drapeaux, pile, ss] = cadre;
         // **Un retour ne monte jamais en privilège.** Un programme qui
@@ -377,6 +392,37 @@ impl Systeme {
             .write(drapeaux_permis(cpu.flags.read(), drapeaux, anneau));
         cpu.regs[4] = pile;
         cpu.segments[2] = ss as u16;
+        cpu.jumped = true;
+        Ok(())
+    }
+
+    /// **`lretq`** : dépiler RIP puis CS, et — quand le retour descend vers un
+    /// anneau moins privilégié — RSP et SS, qui suivent sur la pile. Tout est
+    /// lu avant que rien ne change.
+    ///
+    /// **Un retour ne monte jamais en privilège**, pas plus que par `iretq` :
+    /// sans cette garde, un programme empilait un sélecteur de l'anneau zéro
+    /// et s'y retrouvait. Linux ne s'en sert qu'à anneau égal, pour changer
+    /// de CS au démarrage.
+    pub fn retour_lointain(&self, cpu: &mut Cpu) -> Result<(), Exception> {
+        let sommet = cpu.regs[4];
+        let rip = depiler(cpu, sommet, 0)?;
+        let cs = depiler(cpu, sommet, 1)?;
+        let anneau = cpu.privilege();
+        let demande = (cs & 3) as u8;
+        if demande < anneau {
+            return Err(Exception::ProtectionGenerale(cs & 0xFFFC));
+        }
+        if demande > anneau {
+            let pile = depiler(cpu, sommet, 2)?;
+            let ss = depiler(cpu, sommet, 3)?;
+            cpu.regs[4] = pile;
+            cpu.segments[2] = ss as u16;
+        } else {
+            cpu.regs[4] = sommet.wrapping_add(16);
+        }
+        cpu.segments[1] = cs as u16;
+        cpu.rip = rip;
         cpu.jumped = true;
         Ok(())
     }
@@ -457,14 +503,26 @@ fn lire(cpu: &mut Cpu, adresse: u64) -> Result<u64, Livraison> {
     })
 }
 
-/// La faute de page que le dernier accès refusé de `cpu` demande, témoins
-/// effacés.
-pub fn faute_de_page(cpu: &mut Cpu) -> Exception {
-    let adresse = cpu.unmapped.map_or(0, |pourquoi| pourquoi.address());
+/// Le mot de rang `rang` d'un cadre posé à `sommet`, lu avec les droits de
+/// l'anneau courant — ce que `iretq` et `lretq` dépilent.
+fn depiler(cpu: &mut Cpu, sommet: u64, rang: u64) -> Result<u64, Exception> {
+    match cpu.read_memory(sommet.wrapping_add(8 * rang), Width::Qword) {
+        Ok(valeur) => Ok(valeur),
+        Err(_) => Err(faute_du_dernier_acces(cpu)),
+    }
+}
+
+/// **La faute que le dernier accès refusé de `cpu` demande**, témoins
+/// effacés : une faute de page, ou — pour une adresse qui n'est pas
+/// canonique, que les tables ne savent pas nommer — une `#GP(0)`.
+pub fn faute_du_dernier_acces(cpu: &mut Cpu) -> Exception {
+    let pourquoi = cpu.unmapped.take();
     cpu.faulted = false;
-    cpu.unmapped = None;
+    if let Some(Unmapped::NonCanonical { .. }) = pourquoi {
+        return Exception::ProtectionGenerale(0);
+    }
     Exception::FauteDePage {
-        adresse,
+        adresse: pourquoi.map_or(0, |pourquoi| pourquoi.address()),
         code: cpu.fault_code,
     }
 }

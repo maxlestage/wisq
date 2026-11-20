@@ -19,7 +19,23 @@ use std::io::Write;
 use std::time::Instant;
 
 use wisq_vm::pc::herites::HERTZ_DU_8253;
+use wisq_vm::pc::memoire::RAM_MINIMALE;
 use wisq_vm::pc::Machine;
+
+/// Ce que `--ram` accepte au plus, en mébioctets : soixante-quatre gibioctets.
+/// Au-delà, c'est une faute de frappe plus sûrement qu'une machine — et le
+/// bloc de l'hôte ne s'allouerait pas.
+const RAM_MAXIMALE_EN_MEBIOCTETS: u64 = 64 << 10;
+
+/// **Les octets que `--ram` demande**, ou rien quand le nombre dépasse le
+/// plafond. Un décalage nu débordait en silence : 2^44 mébioctets valaient
+/// zéro octet, et la machine démarrait sur son plancher sans rien dire.
+fn ram_en_octets(mebioctets: u64) -> Option<u64> {
+    if mebioctets > RAM_MAXIMALE_EN_MEBIOCTETS {
+        return None;
+    }
+    mebioctets.checked_mul(1 << 20)
+}
 
 struct Options {
     noyau: String,
@@ -99,7 +115,21 @@ fn main() {
     let noyau = lire(&options.noyau);
     let initramfs = options.initramfs.as_deref().map(lire);
 
-    let mut machine = Machine::nouvelle(options.ram << 20);
+    let Some(ram) = ram_en_octets(options.ram) else {
+        eprintln!(
+            "wisq-pc : --ram {} : au plus {RAM_MAXIMALE_EN_MEBIOCTETS} Mio",
+            options.ram
+        );
+        std::process::exit(2);
+    };
+    if ram < RAM_MINIMALE {
+        eprintln!(
+            "wisq-pc : --ram {} : sous le plancher, la machine prend {} Mio",
+            options.ram,
+            RAM_MINIMALE >> 20
+        );
+    }
+    let mut machine = Machine::nouvelle(ram);
     if let Some(battement) = options.battement {
         machine.instructions_par_battement = battement.max(1);
     }

@@ -75,7 +75,16 @@ const READ_ONLY: (u64, u64, u64) = (DATA, 0x20000, PRESENT);
 /// noyau de la rejouer une fois la page copiée.
 #[test]
 fn a_write_that_faults_leaves_flags_and_registers_as_they_were() {
-    let forms: [(&str, &[u8]); 12] = [
+    let forms: [(&str, &[u8]); 17] = [
+        // `rcr` rend CF seul là où `rcl` rend CF et OF : parti de CF et OF,
+        // c'est lui qui montre des drapeaux posés malgré la faute.
+        ("rcr $1,(%rbx)", &[0x48, 0xd1, 0x1b]),
+        // Les tests de bit : la retenue qu'ils posent est celle du bit lu, et
+        // elle ne doit pas l'être quand l'écriture est refusée.
+        ("bts $0x21,(%rbx)", &[0x48, 0x0f, 0xba, 0x2b, 0x21]),
+        ("btr $0x21,(%rbx)", &[0x48, 0x0f, 0xba, 0x33, 0x21]),
+        ("btc $1,(%rbx)", &[0x48, 0x0f, 0xba, 0x3b, 0x01]),
+        ("lock bts $1,(%rbx)", &[0xf0, 0x48, 0x0f, 0xba, 0x2b, 0x01]),
         ("adc %rax,(%rbx)", &[0x48, 0x11, 0x03]),
         ("sbb %rax,(%rbx)", &[0x48, 0x19, 0x03]),
         ("add %rax,(%rbx)", &[0x48, 0x01, 0x03]),
@@ -511,4 +520,225 @@ fn a_backward_copy_still_goes_one_element_at_a_time() {
     let wanted: Vec<u8> = (0x20u8..0x40).collect();
     assert_eq!(got, wanted);
     assert_eq!(cpu.flags.read() & ZF, 0, "aucun drapeau n'a bougé");
+}
+
+/// **Le même invariant, sur le reste des instructions qui écrivent** : la
+/// logique, les décalages, les chaînes, `pop` vers la mémoire, `setcc`,
+/// `cmpxchg16b`, et tout ce qui empile quand c'est la pile qui est en lecture
+/// seule. Rien ne bouge : ni un drapeau, ni un registre — RSP, RSI, RDI et
+/// RCX compris —, ni RIP, ni la mémoire.
+#[test]
+fn nothing_moves_when_a_write_is_refused() {
+    let onto_data: [(&str, &[u8]); 19] = [
+        ("and %rax,(%rbx)", &[0x48, 0x21, 0x03]),
+        ("or %rax,(%rbx)", &[0x48, 0x09, 0x03]),
+        ("xor %rax,(%rbx)", &[0x48, 0x31, 0x03]),
+        ("sub %rax,(%rbx)", &[0x48, 0x29, 0x03]),
+        ("add $1,(%rbx), un octet", &[0x80, 0x03, 0x01]),
+        ("dec (%rbx)", &[0x48, 0xff, 0x0b]),
+        ("lock inc (%rbx)", &[0xf0, 0x48, 0xff, 0x03]),
+        ("not (%rbx)", &[0x48, 0xf7, 0x13]),
+        ("shr $3,(%rbx)", &[0x48, 0xc1, 0x2b, 0x03]),
+        ("sar $3,(%rbx)", &[0x48, 0xc1, 0x3b, 0x03]),
+        ("ror $5,(%rbx)", &[0x48, 0xc1, 0x0b, 0x05]),
+        ("shrd $4,%rax,(%rbx)", &[0x48, 0x0f, 0xac, 0x03, 0x04]),
+        ("bts %rcx,(%rbx)", &[0x48, 0x0f, 0xab, 0x0b]),
+        ("sete (%rbx)", &[0x0f, 0x94, 0x03]),
+        ("xchg %al,(%rbx)", &[0x86, 0x03]),
+        ("lock cmpxchg16b (%rbx)", &[0xf0, 0x48, 0x0f, 0xc7, 0x0b]),
+        ("movsq", &[0x48, 0xa5]),
+        ("stosq", &[0x48, 0xab]),
+        ("rep stosb", &[0xf3, 0xaa]),
+    ];
+    let onto_the_stack: [(&str, &[u8]); 6] = [
+        ("push %rax", &[0x50]),
+        ("push $1", &[0x6a, 0x01]),
+        ("push (%rsi)", &[0xff, 0x36]),
+        ("call +0", &[0xe8, 0, 0, 0, 0]),
+        ("call *%rax", &[0xff, 0xd0]),
+        ("call *(%rsi)", &[0xff, 0x16]),
+    ];
+    const STACK: u64 = 0x30000;
+    let writable_stack = (STACK, 0x30000, PRESENT | WRITABLE);
+    let cases = onto_data
+        .iter()
+        .map(|form| (form, false))
+        .chain(onto_the_stack.iter().map(|form| (form, true)));
+    for ((name, code), stack_is_read_only) in cases {
+        for cached in [false, true] {
+            let mut cpu = paged(&[CODE_PAGE, READ_ONLY, writable_stack], cached);
+            cpu.memory
+                .write(0x20000, Width::Qword, 0x8000_0000_0000_0001)
+                .unwrap();
+            cpu.memory.write(0x20008, Width::Qword, 0x1111).unwrap();
+            cpu.memory.write(0x30800, Width::Qword, 0x10100).unwrap();
+            // RSI lit la pile inscriptible, RDI et RBX visent la page en
+            // lecture seule ; RDX:RAX vaut ce que `cmpxchg16b` compare, pour
+            // qu'il aille jusqu'à écrire.
+            cpu.regs = [0; 16];
+            cpu.regs[0] = 0x8000_0000_0000_0001;
+            cpu.regs[1] = 3;
+            cpu.regs[2] = 0x1111;
+            cpu.regs[3] = DATA;
+            cpu.regs[4] = if stack_is_read_only {
+                DATA + 0x800
+            } else {
+                STACK + 0x800
+            };
+            cpu.regs[5] = 0x55;
+            cpu.regs[6] = STACK + 0x800;
+            cpu.regs[7] = DATA;
+            let registers = cpu.regs;
+            let flags = CF | OF | ZF | 2;
+            cpu.flags.write(flags);
+            assert!(decode(code).is_some(), "{name} : le décodeur la lit");
+            run(&mut cpu, code);
+            assert!(cpu.faulted, "{name} : la page est en lecture seule");
+            assert!(
+                matches!(cpu.unmapped, Some(Unmapped::ReadOnly { .. })),
+                "{name} : {:?}",
+                cpu.unmapped
+            );
+            assert_eq!(cpu.flags.read(), flags, "{name} : les drapeaux");
+            assert_eq!(cpu.regs, registers, "{name} : les registres");
+            assert_eq!(cpu.rip, 0x10000, "{name} : RIP");
+            assert_eq!(
+                cpu.memory.read(0x20000, Width::Qword),
+                Some(0x8000_0000_0000_0001),
+                "{name} : la mémoire"
+            );
+            assert_eq!(cpu.memory.read(0x20008, Width::Qword), Some(0x1111));
+            assert_eq!(cpu.memory.read(0x207f8, Width::Qword), Some(0), "{name}");
+        }
+    }
+}
+
+/// **Un `rep` par pages ne prend pas le trou des périphériques pour de la
+/// RAM, ni ce qui dépasse la mémoire.** Le bloc de l'hôte couvre le trou, donc
+/// la copie d'un coup y écrirait sans rien dire ; elle laisse la main au
+/// chemin élément par élément, qui refuse l'accès en le nommant.
+#[test]
+fn a_bulk_string_refuses_the_hole_and_what_lies_outside_the_memory() {
+    const HOLE: u64 = 0x30000;
+    const BEYOND: u64 = 0x31000;
+    for cached in [false, true] {
+        let ready = || {
+            let mut cpu = paged(
+                &[
+                    (DATA, 0x20000, PRESENT | WRITABLE),
+                    (HOLE, 0x30000, PRESENT | WRITABLE),
+                    // Une page dont la table dit qu'elle est à 0x80000 : la
+                    // mémoire attachée s'arrête à 0x40000.
+                    (BEYOND, 0x80000, PRESENT | WRITABLE),
+                ],
+                cached,
+            );
+            cpu.memory_hole = (0x30000, 0x1000);
+            cpu.memory.bytes[0x20000..0x20040].fill(0x11);
+            cpu.regs[0] = 0x5A;
+            cpu.regs[1] = 16;
+            cpu
+        };
+        // rep stosb vers le trou.
+        let mut cpu = ready();
+        cpu.regs[7] = HOLE;
+        run(&mut cpu, &[0xf3, 0xaa]);
+        assert!(cpu.faulted, "le trou n'est pas de la RAM");
+        assert_eq!(cpu.unmapped, Some(Unmapped::Outside { address: HOLE }));
+        assert_eq!((cpu.regs[1], cpu.regs[7]), (16, HOLE), "rien n'est fait");
+        assert!(cpu.memory.bytes[0x30000..0x30010].iter().all(|b| *b == 0));
+
+        // rep movsb : la source dans le trou, puis hors de la mémoire.
+        for (name, source) in [("le trou", HOLE), ("hors mémoire", BEYOND)] {
+            let mut cpu = ready();
+            cpu.regs[6] = source;
+            cpu.regs[7] = DATA;
+            run(&mut cpu, &[0xf3, 0xa4]);
+            assert!(cpu.faulted, "{name}");
+            assert_eq!(
+                cpu.unmapped,
+                Some(Unmapped::Outside { address: source }),
+                "{name}"
+            );
+            assert_eq!(cpu.regs[1], 16, "{name}");
+            assert!(
+                cpu.memory.bytes[0x20000..0x20010]
+                    .iter()
+                    .all(|b| *b == 0x11),
+                "{name} : la destination n'a pas bougé"
+            );
+        }
+        // Et vers la RAM, le même `rep` passe d'un coup.
+        let mut cpu = ready();
+        cpu.regs[7] = DATA;
+        run(&mut cpu, &[0xf3, 0xaa]);
+        assert!(!cpu.faulted);
+        assert!(cpu.memory.bytes[0x20000..0x20010]
+            .iter()
+            .all(|b| *b == 0x5A));
+    }
+}
+
+/// **Le code d'erreur ne dit « programme » que pour les accès du programme.**
+/// Une lecture que le processeur fait pour lui-même — un descripteur, une
+/// porte — pendant qu'un programme tourne est un accès du superviseur : le bit
+/// utilisateur du code d'erreur reste à zéro, et le noyau n'y voit pas une
+/// faute de son programme.
+#[test]
+fn a_read_the_processor_makes_for_itself_is_never_a_user_fault() {
+    let mut cpu = paged(&[CODE_PAGE], true);
+    cpu.segments[1] = 0x33;
+    assert!(cpu.read_memory(DATA, Width::Qword).is_err());
+    assert_eq!(
+        cpu.fault_code,
+        1 << 2,
+        "le programme : absente, utilisateur"
+    );
+    assert!(cpu.read_memory_as_machine(DATA, Width::Qword).is_err());
+    assert_eq!(cpu.fault_code, 0, "le processeur : absente, superviseur");
+}
+
+/// **Une adresse qui n'est pas canonique n'est pas traduite comme son
+/// alias**, par la traduction de la machine ; `translate`, le juge de
+/// l'émetteur, marche les tables comme il l'a toujours fait.
+#[test]
+fn the_machines_translation_refuses_non_canonical_addresses() {
+    let alias = 0x8000_0000_0000_0000 | DATA;
+    let mut cpu = paged(&[(DATA, 0x20000, PRESENT | WRITABLE)], true);
+    cpu.memory.write(0x20000, Width::Qword, 0xAAAA).unwrap();
+    assert_eq!(cpu.read_memory(DATA, Width::Qword), Ok(0xAAAA));
+    for access in [Access::Read, Access::Write, Access::Fetch, Access::Machine] {
+        assert_eq!(
+            cpu.translate_cached(alias, access),
+            Err(Unmapped::NonCanonical { address: alias }),
+            "{access:?}"
+        );
+    }
+    assert_eq!(
+        cpu.read_memory(alias, Width::Qword),
+        Err(Unmapped::NonCanonical { address: alias })
+    );
+    assert_eq!(
+        cpu.write_memory(alias, Width::Qword, 1),
+        Err(Unmapped::NonCanonical { address: alias })
+    );
+    assert_eq!(cpu.memory.read(0x20000, Width::Qword), Some(0xAAAA));
+    // Les deux bornes : le dernier octet de la moitié basse et le premier de
+    // la moitié haute sont canoniques, leurs voisins non.
+    for (address, canonical) in [
+        (0x0000_7FFF_FFFF_F000u64, true),
+        (0x0000_8000_0000_0000, false),
+        (0xFFFF_7FFF_FFFF_F000, false),
+        (0xFFFF_8000_0000_0000, true),
+    ] {
+        let refused = matches!(
+            cpu.translate_cached(address, Access::Read),
+            Err(Unmapped::NonCanonical { .. })
+        );
+        assert_eq!(refused, !canonical, "{address:#x}");
+    }
+    // Sans tampon, l'interpréteur nu ne change pas.
+    let mut plain = paged(&[(DATA, 0x20000, PRESENT | WRITABLE)], false);
+    plain.memory.write(0x20000, Width::Qword, 0xAAAA).unwrap();
+    assert_eq!(plain.read_memory(alias, Width::Qword), Ok(0xAAAA));
 }

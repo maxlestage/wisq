@@ -42,7 +42,7 @@ pub enum Extra {
     /// à ce que le silicium y laisse (`dd 7c 24 0e`, `d9 7c 24 0c`, à 512 529
     /// instructions du démarrage d'Alpine 6.18) —, et la bibliothèque C sauve
     /// et rétablit le mot de contrôle autour de ses arrondis. Aucune ne touche
-    /// à la pile du x87, que ce cœur n'a pas.
+    /// à la pile du x87 : ni au sommet, ni aux registres, ni aux étiquettes.
     FpuWord(FpuWord),
     /// **`emms` (`0F 77`)** : toutes les étiquettes du x87 passent à « vide ».
     /// Rien d'autre ne bouge — ni le sommet, ni les registres.

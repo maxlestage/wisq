@@ -263,6 +263,11 @@ fn the_zero_page_carries_the_setup_header_and_what_only_the_loader_knows() {
         lu32(&ram, placement.page_zero + 0x228),
         placement.ligne_de_commande
     );
+    assert_eq!(
+        lu32(&ram, placement.page_zero + 0x214),
+        ADRESSE_PREFEREE,
+        "code32_start : où le noyau a été mis"
+    );
     assert_eq!(&page[0x218..0x220], &[0u8; 8], "pas d'initramfs annoncé");
     assert_eq!(placement.adresse_de_l_initramfs, 0);
     // Aucun écran : `orig_video_isVGA` et la géométrie restent nuls.
@@ -272,13 +277,21 @@ fn the_zero_page_carries_the_setup_header_and_what_only_the_loader_knows() {
 
 #[test]
 fn the_command_line_is_written_terminated_and_cut_at_the_kernels_limit() {
-    let mut ram = memoire(RAM);
+    // La mémoire n'est pas neuve : le zéro final doit être écrit, pas
+    // seulement trouvé là.
+    let sale = || {
+        let mut ram = memoire(RAM);
+        ram.bytes[0x2_0000..0x2_2000].fill(0xFF);
+        ram
+    };
+    let mut ram = sale();
     let placement = charger(&noyau(), &mut ram, RAM, "console=ttyS0", None, None).expect("chargé");
     let ou = placement.ligne_de_commande as usize;
+    assert_eq!(ou, 0x2_0000);
     assert_eq!(&ram.bytes[ou..ou + 14], b"console=ttyS0\0");
 
     let longue = "a".repeat(5000);
-    let mut ram = memoire(RAM);
+    let mut ram = sale();
     let placement = charger(&noyau(), &mut ram, RAM, &longue, None, None).expect("chargé");
     let ou = placement.ligne_de_commande as usize;
     let limite = LIMITE_DE_LIGNE as usize;
@@ -315,17 +328,99 @@ fn the_refusals_are_named() {
         charger(&ancien, &mut memoire(RAM), RAM, "", None, None),
         Err(Refus::ProtocoleTropAncien(0x0205))
     );
-    // Un fichier coupé annonce plus qu'il ne pèse : ce n'est pas un noyau.
-    let coupe = &noyau()[..OCTETS_DE_SETUP + 16];
-    assert_eq!(
-        charger(coupe, &mut memoire(RAM), RAM, "", None, None),
-        Err(Refus::PasUnNoyau)
-    );
     let petite = 1 << 20;
     assert!(matches!(
         charger(&noyau(), &mut memoire(petite), petite, "", None, None),
         Err(Refus::MemoireInsuffisante { .. })
     ));
+}
+
+/// **Un noyau coupé est refusé par son nom**, pas comme « pas un noyau » : un
+/// téléchargement interrompu a le bon en-tête, et c'est le même fichier qu'il
+/// faut reprendre, pas un autre qu'il faut chercher.
+#[test]
+fn a_kernel_cut_short_is_refused_as_truncated() {
+    let entier = noyau();
+    let coupe = &entier[..OCTETS_DE_SETUP + 16];
+    assert_eq!(
+        charger(coupe, &mut memoire(RAM), RAM, "", None, None),
+        Err(Refus::Tronque)
+    );
+    assert_eq!(
+        Refus::Tronque.to_string(),
+        "le fichier est plus court que son en-tête ne l'annonce"
+    );
+    // À un octet près : il manque le dernier.
+    assert_eq!(
+        charger(
+            &entier[..entier.len() - 1],
+            &mut memoire(RAM),
+            RAM,
+            "",
+            None,
+            None
+        ),
+        Err(Refus::Tronque)
+    );
+    assert!(charger(&entier, &mut memoire(RAM), RAM, "", None, None).is_ok());
+    // Et rien n'a été posé en mémoire avant le refus.
+    let mut ram = memoire(RAM);
+    assert!(charger(coupe, &mut ram, RAM, "", None, None).is_err());
+    assert!(ram.bytes.iter().all(|octet| *octet == 0));
+}
+
+/// **La réserve du noyau doit tenir, pas seulement ses octets** : il se
+/// décompresse chez lui, bien au-delà de ce qu'il pèse. Trente-deux
+/// mébioctets portent les seize kibioctets du noyau synthétique à seize
+/// mébioctets, mais pas les trente-six mébioctets qu'il réserve.
+#[test]
+fn the_room_a_kernel_reserves_must_fit_not_only_its_bytes() {
+    let ram = 32 << 20;
+    let mut memoire = memoire(ram);
+    assert_eq!(
+        charger(&noyau(), &mut memoire, ram, "", None, None),
+        Err(Refus::MemoireInsuffisante {
+            besoin: ADRESSE_PREFEREE as usize + TAILLE_RESERVEE as usize,
+            disponible: ram as usize,
+        })
+    );
+    assert!(
+        memoire.bytes.iter().all(|octet| *octet == 0),
+        "et rien n'a été posé"
+    );
+}
+
+/// Poser un bloc ne sort pas de la mémoire : un bloc qui dépasse est refusé
+/// en entier.
+#[test]
+fn a_block_that_does_not_fit_is_not_placed_at_all() {
+    let mut ram = memoire(0x1000);
+    assert!(
+        memoire::poser(&mut ram, 0xFFC, &[1, 2, 3, 4]),
+        "pile au bord"
+    );
+    assert_eq!(&ram.bytes[0xFFC..], &[1, 2, 3, 4]);
+    assert!(!memoire::poser(&mut ram, 0xFFD, &[9, 9, 9, 9]));
+    assert_eq!(&ram.bytes[0xFFC..], &[1, 2, 3, 4], "rien n'a été écrit");
+    assert!(!memoire::poser(&mut ram, u64::MAX, &[9]));
+    assert!(!memoire::poser(&mut ram, 0x1000, &[9]));
+}
+
+/// **Sans initramfs, ses deux champs sont nuls, quoi que le fichier y ait
+/// laissé** : l'en-tête est recopié tel quel dans la page zéro, et un noyau
+/// qui y lirait une adresse irait décompresser n'importe quoi.
+#[test]
+fn without_a_ramdisk_its_fields_are_cleared_whatever_the_file_says() {
+    let mut noyau = noyau();
+    noyau[0x218..0x21C].copy_from_slice(&0x0123_4000u32.to_le_bytes());
+    noyau[0x21C..0x220].copy_from_slice(&0x5678u32.to_le_bytes());
+    for initramfs in [None, Some(&[][..])] {
+        let mut ram = memoire(RAM);
+        let placement = charger(&noyau, &mut ram, RAM, "", initramfs, None).expect("chargé");
+        let page = page_zero(&ram, placement.page_zero);
+        assert_eq!(&page[0x218..0x220], &[0u8; 8]);
+        assert_eq!(placement.octets_de_l_initramfs, 0);
+    }
 }
 
 #[test]
