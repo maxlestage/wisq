@@ -1,0 +1,25 @@
+[package]
+name = "wisq-carte"
+version = "0.4.0"
+edition = "2021"
+authors = ["Maxime Nathan Lestage"]
+rust-version = "1.82"
+description = "La carte de la machine PC : i8042, horloge CMOS, pont PCI, disques virtio, écran Bochs, tablette et carte réseau virtio, écrits une fois pour la machine native et pour la page"
+repository = "https://github.com/maxlestage/wisq"
+publish = false
+
+# **Un crate à lui, et aucune dépendance.** Ces périphériques servent deux
+# machines : la page WebKit (`crates/wisq-page`, en wasm32) et la machine PC
+# native de `crates/wisq-vm`. Or `wisq-page` dépend de `wisq-vm` (l'émetteur) :
+# tant que la carte vivait dans `wisq-page`, `wisq-vm` ne pouvait pas la nommer
+# sans boucle. Elle est donc une feuille, que les deux prennent. Elle ne dépend
+# de rien — ni de `wisq-vm`, ni d'un crate du dehors — pour la raison que
+# `wisq-vm` donne : elle part dans la bibliothèque statique de l'application.
+#
+# **Le dossier n'a pas bougé** : `crates/wisq-page/src/carte/` est ce crate,
+# et `mod.rs` sa racine. Les exports de la page (`carte_*`) restent dans
+# `wisq-page` (`src/carte_porte.rs`) : la machine native ne les lie pas.
+[dependencies]
+
+[lib]
+path = "mod.rs"

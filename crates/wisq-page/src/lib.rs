@@ -51,9 +51,15 @@
 //! **Et la carte de la machine PC.** Le même module porte les périphériques
 //! que la boucle hôte ne modélise pas — l'i8042 et l'horloge CMOS d'abord —,
 //! derrière une seconde famille d'exports, préfixés `carte_` : voir
-//! [`carte`]. `web/carte.js` les sert à `host.js`.
+//! [`carte`]. `web/carte.js` les sert à `host.js`. Les périphériques sont le
+//! crate `wisq-carte` (`src/carte/`), que la machine native prend aussi ; les
+//! exports, qui ne valent que pour la page, sont ici (`carte_porte`).
 
-pub mod carte;
+/// **La carte de la machine PC** : le crate `wisq-carte`, sous le nom qu'il
+/// avait quand il était un module d'ici.
+pub use wisq_carte as carte;
+
+mod carte_porte;
 
 use std::sync::Mutex;
 
