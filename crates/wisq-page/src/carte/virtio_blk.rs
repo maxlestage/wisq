@@ -42,6 +42,11 @@ use std::collections::VecDeque;
 
 use super::Ram;
 
+/// **Le registre de notification** de la fenêtre : le pilote y écrit le
+/// numéro de la file qu'il vient de garnir, et c'est le seul registre dont
+/// l'écriture lit la RAM de l'invité.
+pub const REGISTRE_DE_NOTIFICATION: u16 = 0x10;
+
 /// La taille de la file, que le pilote ne peut pas changer en forme
 /// ancienne : il la lit au registre `0x0C`, et c'est sur elle qu'il calcule
 /// ses anneaux (`vring_init`).
@@ -364,7 +369,7 @@ impl VirtioBlk {
                 self.oublier_les_requetes();
             }
             0x0E => self.file_choisie = valeur as u16,
-            0x10 => {
+            REGISTRE_DE_NOTIFICATION => {
                 if self.prete {
                     self.servir(ram);
                 }
@@ -1271,7 +1276,7 @@ mod tests {
         carte.brancher_disque(4);
         ouvrir(&mut carte, 0x40);
         assert_eq!(
-            carte.pci.dans_la_fenetre(0x60),
+            carte.pci.premier.dans_la_fenetre(0x60),
             Some(0x20),
             "dans la fenêtre"
         );

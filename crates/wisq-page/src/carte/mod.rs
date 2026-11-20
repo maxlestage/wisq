@@ -1,6 +1,14 @@
-//! **La carte de la machine PC, dans la page** : ce qui répond aux ports
-//! d'E/S que ni les deux 8259, ni le 8254, ni le 16550 de `web/host.js` ne
-//! prennent, et les lignes d'interruption que ces périphériques tiennent.
+//! **La carte de la machine PC** : ce qui répond aux ports d'E/S que ni les
+//! deux 8259, ni le 8254, ni le 16550 de la boucle hôte ne prennent, et les
+//! lignes d'interruption que ces périphériques tiennent.
+//!
+//! **Écrite une fois, pour deux machines.** La page WebKit la charge en
+//! wasm32, derrière les exports `carte_*` de `crates/wisq-page`
+//! (`src/carte_porte.rs`) et `web/carte.js` ; la machine PC native la prend
+//! par [`pc::CartePc`], qui tient en plus les disques sur fichier
+//! ([`fichier`]). C'est pour elle que ce dossier est un crate à lui,
+//! `wisq-carte`, sans dépendance : `wisq-page` dépend de `wisq-vm`, et
+//! `wisq-vm` ne pouvait donc pas nommer un module de `wisq-page`.
 //!
 //! **Pourquoi en Rust, et pourquoi ici.** Un port est un appel synchrone :
 //! `env.in` est appelé depuis le module d'une région et doit rendre sa valeur
@@ -23,6 +31,7 @@
 //! | `0x70`, `0x71` | CMOS, horloge ([`cmos`]) | aucune |
 //! | `0xCF8`, `0xCFC` à `0xCFF` | pont PCI ([`pci`]) : 440FX en 00:00.0 | — |
 //! | la BAR0 du disque, `0x40` ports | virtio-blk de forme ancienne en 00:03.0 ([`virtio_blk`]) | 5, ou celle que le noyau écrit |
+//! | la BAR0 du second disque, `0x40` ports | le même, en 00:04.0 | 6, ou celle que le noyau écrit |
 //!
 //! **Les lignes sont à niveau.** [`Carte::lignes`] dit, à l'instant, quelles
 //! lignes ses périphériques tiennent levées, et [`Carte::tenues`] lesquelles
@@ -44,14 +53,16 @@
 //! ligne. Voir [`virtio_blk`].
 
 pub mod cmos;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fichier;
 pub mod i8042;
+pub mod pc;
 pub mod pci;
-mod porte;
 pub mod virtio_blk;
 
 use cmos::Cmos;
 use i8042::{CodeTouche, I8042, LIGNE_CLAVIER, LIGNE_SOURIS, PORT_COMMANDE, PORT_DONNEES};
-use pci::{masque, Pci, PORT_ADRESSE, PORT_DONNEE};
+use pci::{masque, Disque, Pci, PORT_ADRESSE, PORT_DONNEE};
 use virtio_blk::{RequeteDisque, VirtioBlk};
 
 /// **La RAM de l'invité, vue d'un périphérique**, par adresse physique.
@@ -179,8 +190,8 @@ impl Carte {
                 return Some(self.pci.lire_donnee(u32::from(port - PORT_DONNEE), largeur))
             }
             _ => {
-                let decalage = self.pci.dans_la_fenetre(port)?;
-                let disque = self.pci.disque.as_mut()?;
+                let (quel, decalage) = self.fenetre_au_port(port)?;
+                let disque = self.pci.emplacement_mut(quel).disque.as_mut()?;
                 let valeur = disque.lire_port(decalage, largeur);
                 return Some((u64::from(valeur) & masque(largeur)) as u32);
             }
@@ -212,16 +223,26 @@ impl Carte {
                     .ecrire_donnee(u32::from(port - PORT_DONNEE), largeur, valeur)
             }
             _ => {
-                let Some(decalage) = self.pci.dans_la_fenetre(port) else {
+                let Some((quel, decalage)) = self.fenetre_au_port(port) else {
                     return false;
                 };
-                let Some(disque) = self.pci.disque.as_mut() else {
+                let Some(disque) = self.pci.emplacement_mut(quel).disque.as_mut() else {
                     return false;
                 };
                 disque.ecrire_port(decalage, valeur, ram);
             }
         }
         true
+    }
+
+    /// **Le disque qui répond à ce port, et le décalage dans sa fenêtre** —
+    /// jamais pour un port fixe de la carte : une BAR posée par-dessus
+    /// l'i8042 ne lui vole rien.
+    pub fn fenetre_au_port(&self, port: u16) -> Option<(Disque, u16)> {
+        if port_fixe(port) {
+            return None;
+        }
+        self.pci.au_port(port)
     }
 
     /// **Brancher le disque** en 00:03.0 : `secteurs` secteurs de 512
@@ -240,24 +261,57 @@ impl Carte {
     /// ([`virtio_blk::PLUS_TENU`]) jusqu'à sa réponse : l'arrière le sert
     /// encore, quel que soit le disque branché.
     pub fn brancher_disque(&mut self, secteurs: u64) {
-        let mut neuf = VirtioBlk::nouveau(secteurs);
-        if let Some(ancien) = &self.pci.disque {
-            neuf.succeder_a(ancien);
-        }
-        self.pci.disque = Some(neuf);
+        self.brancher(Disque::Premier, secteurs);
     }
 
-    /// **La prochaine requête du disque pour l'arrière**, ou rien. La boucle
-    /// hôte la prend après chaque `out` qui a pu notifier, la confie à
-    /// l'arrière, et rend la réponse quand elle arrive.
+    /// **Brancher l'un des deux disques** : le premier en 00:03.0 (ligne 5,
+    /// `vda`), le second en 00:04.0 (ligne 6, `vdb`). Les mêmes règles que
+    /// [`Carte::brancher_disque`], emplacement par emplacement : chacun a ses
+    /// noms et ses requêtes, et l'ordre de branchement est libre.
+    pub fn brancher(&mut self, quel: Disque, secteurs: u64) {
+        let place = self.pci.emplacement_mut(quel);
+        let mut neuf = VirtioBlk::nouveau(secteurs);
+        if let Some(ancien) = &place.disque {
+            neuf.succeder_a(ancien);
+        }
+        place.disque = Some(neuf);
+    }
+
+    /// L'un des deux disques, s'il est branché.
+    pub fn disque(&self, quel: Disque) -> Option<&VirtioBlk> {
+        self.pci.emplacement(quel).disque.as_ref()
+    }
+
+    /// Le même, pour le conduire : prendre ses requêtes, lui rendre ses
+    /// réponses ([`VirtioBlk::prendre_requete`], [`VirtioBlk::lu`],
+    /// [`VirtioBlk::fini`]).
+    pub fn disque_mut(&mut self, quel: Disque) -> Option<&mut VirtioBlk> {
+        self.pci.emplacement_mut(quel).disque.as_mut()
+    }
+
+    /// **Notifier un disque sans passer par son port** : relire sa file dans
+    /// `ram`, comme l'écriture de son registre `0x10`. Ce que fait une
+    /// machine qui a noté la notification pendant l'`out` et ne prête sa RAM
+    /// qu'après ([`pc::CartePc::servir`]).
+    pub fn notifier(&mut self, quel: Disque, ram: &mut dyn Ram) {
+        if let Some(disque) = self.disque_mut(quel) {
+            disque.ecrire_port(virtio_blk::REGISTRE_DE_NOTIFICATION, 0, ram);
+        }
+    }
+
+    /// **La prochaine requête du premier disque pour l'arrière**, ou rien.
+    /// La boucle hôte la prend après chaque `out` qui a pu notifier, la
+    /// confie à l'arrière, et rend la réponse quand elle arrive. Celles du
+    /// second se prennent par [`Carte::disque_mut`].
     pub fn requete_disque(&mut self) -> Option<RequeteDisque> {
-        self.pci.disque.as_mut()?.prendre_requete()
+        self.pci.premier.disque.as_mut()?.prendre_requete()
     }
 
     /// **Les octets d'une lecture sont arrivés** : voir [`VirtioBlk::lu`].
     /// `false` quand `id` ne nomme aucune requête partie.
     pub fn disque_lu(&mut self, id: u32, octets: &[u8], ram: &mut dyn Ram) -> bool {
         self.pci
+            .premier
             .disque
             .as_mut()
             .is_some_and(|disque| disque.lu(id, octets, ram))
@@ -266,21 +320,30 @@ impl Carte {
     /// **Une requête est finie sans octets** : voir [`VirtioBlk::fini`].
     pub fn disque_fini(&mut self, id: u32, reussi: bool, ram: &mut dyn Ram) -> bool {
         self.pci
+            .premier
             .disque
             .as_mut()
             .is_some_and(|disque| disque.fini(id, reussi, ram))
     }
 
-    /// **La ligne du disque, en bit**, si elle est une ligne que la carte
+    /// **La ligne d'un disque, en bit**, si elle est une ligne que la carte
     /// peut tenir : celle que le noyau a écrite dans la configuration, cinq
-    /// au départ. Une ligne de l'hôte ou au-delà de 15 n'est jamais tenue — le
-    /// disque s'y tairait plutôt que d'effacer ce que les puces de `host.js`
-    /// y posent.
-    fn bit_du_disque(&self) -> u16 {
-        if self.pci.disque.is_none() {
+    /// au départ pour le premier, six pour le second. Une ligne de l'hôte ou
+    /// au-delà de 15 n'est jamais tenue — le disque s'y tairait plutôt que
+    /// d'effacer ce que les puces de la boucle hôte y posent.
+    fn bit_du_disque(&self, quel: Disque) -> u16 {
+        let place = self.pci.emplacement(quel);
+        if place.disque.is_none() {
             return 0;
         }
-        bit_du_dehors(self.pci.ligne).unwrap_or(0)
+        bit_du_dehors(place.ligne).unwrap_or(0)
+    }
+
+    /// Les lignes des disques branchés, levées ou non.
+    fn bits_des_disques(&self) -> u16 {
+        Disque::TOUS
+            .into_iter()
+            .fold(0, |bits, quel| bits | self.bit_du_disque(quel))
     }
 
     /// **Les seize lignes, à niveau** : le bit `n` est la ligne `n` (0 à 7 au
@@ -288,9 +351,13 @@ impl Carte {
     /// peuvent y paraître.
     pub fn lignes(&self) -> u16 {
         let mut lignes = self.levees_du_dehors;
-        // Le disque, tant que son état d'interruption n'est pas acquitté.
-        if self.pci.disque.as_ref().is_some_and(VirtioBlk::interrompt) {
-            lignes |= self.bit_du_disque();
+        // Chaque disque, tant que son état d'interruption n'est pas
+        // acquitté. Deux disques que le noyau aurait mis sur la même ligne la
+        // partagent : elle reste levée tant que l'un des deux la tient.
+        for quel in Disque::TOUS {
+            if self.disque(quel).is_some_and(VirtioBlk::interrompt) {
+                lignes |= self.bit_du_disque(quel);
+            }
         }
         // Le clavier sur la ligne 1, la souris sur la ligne 12 — la
         // quatrième de l'esclave. À niveau, comme le port série.
@@ -306,7 +373,7 @@ impl Carte {
     /// **Les lignes que la carte tient**, levées ou non : celles que la
     /// boucle hôte doit effacer quand [`Carte::lignes`] ne les lève pas.
     pub fn tenues(&self) -> u16 {
-        LIGNES_DES_PERIPHERIQUES | self.bit_du_disque() | self.nommees_du_dehors
+        LIGNES_DES_PERIPHERIQUES | self.bits_des_disques() | self.nommees_du_dehors
     }
 
     /// **Lever une ligne du dehors**, jusqu'à [`Carte::baisser`]. Refusé
@@ -398,16 +465,24 @@ impl Carte {
     /// compte `storage.interrupting`).
     pub fn reveil(&self) -> bool {
         !self.ps2.frappes.is_empty()
-            || self
-                .pci
-                .disque
-                .as_ref()
-                .is_some_and(|d| d.en_attente() || d.interrompt())
+            || Disque::TOUS.into_iter().any(|quel| {
+                self.disque(quel)
+                    .is_some_and(|d| d.en_attente() || d.interrompt())
+            })
     }
 }
 
-fn largeur_valide(largeur: u8) -> bool {
+pub(crate) fn largeur_valide(largeur: u8) -> bool {
     matches!(largeur, 1 | 2 | 4)
+}
+
+/// **Les ports fixes de la carte** : l'i8042, l'horloge et le bus. Ils
+/// passent avant toute fenêtre de disque.
+const fn port_fixe(port: u16) -> bool {
+    matches!(
+        port,
+        PORT_DONNEES | PORT_COMMANDE | 0x70 | 0x71 | PORT_ADRESSE | PORT_DONNEE..=0xCFF
+    )
 }
 
 fn bit_du_dehors(ligne: u8) -> Option<u16> {
@@ -621,6 +696,139 @@ mod tests {
             assert!(!carte.baisser(ligne), "ligne {ligne}");
         }
         assert_eq!(carte.tenues() & LIGNES_DE_L_HOTE, 0);
+    }
+
+    /// **Les ports fixes sont exactement ceux qu'une carte sans disque
+    /// prend** : la liste qui les fait passer avant les fenêtres
+    /// ([`port_fixe`]) et l'aiguillage des ports ne peuvent pas se
+    /// désaccorder sans que ce test le voie, sur les 65 536 ports.
+    #[test]
+    fn the_fixed_ports_are_the_ones_a_card_without_a_disk_takes() {
+        let mut pris = Vec::new();
+        for port in 0..=u16::MAX {
+            let mut carte = Carte::nouvelle();
+            let lu = lire(&mut carte, port).is_some();
+            let ecrit = ecrire(&mut Carte::nouvelle(), port, 0);
+            assert_eq!(lu, ecrit, "{port:#x}");
+            assert_eq!(lu, port_fixe(port), "{port:#x}");
+            if lu {
+                pris.push(port);
+            }
+        }
+        assert_eq!(
+            pris,
+            [0x60, 0x64, 0x70, 0x71, 0xCF8, 0xCFC, 0xCFD, 0xCFE, 0xCFF]
+        );
+    }
+
+    /// Placer et ouvrir la fenêtre d'un disque par les ports du bus.
+    fn ouvrir(carte: &mut Carte, emplacement: u32, fenetre: u32) {
+        let adresse = |registre: u32| 0x8000_0000 | (emplacement << 11) | registre;
+        carte.port_ecrire(0xCF8, 4, adresse(0x10), &mut SansRam);
+        carte.port_ecrire(0xCFC, 4, fenetre, &mut SansRam);
+        carte.port_ecrire(0xCF8, 4, adresse(0x04), &mut SansRam);
+        carte.port_ecrire(0xCFC, 2, 1, &mut SansRam);
+    }
+
+    /// **Une fenêtre posée par-dessus un port fixe ne lui vole rien**, quel
+    /// que soit le disque : à `0x40`, la fenêtre du second couvre `0x60`,
+    /// `0x64`, `0x70` et `0x71` ; à `0xCC0`, les ports du bus.
+    #[test]
+    fn a_window_over_a_fixed_port_steals_nothing() {
+        for emplacement in [3, 4] {
+            let quel = Disque::TOUS[emplacement as usize - 3];
+            let mut carte = Carte::nouvelle();
+            carte.brancher(quel, 0x0102_0304);
+            ouvrir(&mut carte, emplacement, 0x40);
+            assert_eq!(carte.fenetre_au_port(0x54), Some((quel, 0x14)));
+            assert_eq!(lire(&mut carte, 0x54), Some(0x04), "la capacité");
+            assert_eq!(carte.fenetre_au_port(0x64), None);
+            assert_eq!(lire(&mut carte, 0x64), Some(0x14), "l'état du 8042");
+            carte.regler_heure(MOMENT_MS);
+            assert!(ecrire(&mut carte, 0x70, 0x09), "l'index de l'horloge");
+            assert_eq!(lire(&mut carte, 0x71), Some(0x26));
+            // Le statut du disque (0x12 de sa fenêtre, le port 0x52) n'a pas
+            // bougé : l'écriture à 0x70 n'est pas allée au disque.
+            assert_eq!(lire(&mut carte, 0x52), Some(0));
+            ouvrir(&mut carte, emplacement, 0xCC0);
+            assert_eq!(carte.fenetre_au_port(0xCD4), Some((quel, 0x14)));
+            assert_eq!(carte.fenetre_au_port(0xCF8), None);
+            assert_eq!(carte.fenetre_au_port(0xCFC), None);
+            assert_eq!(
+                carte.fenetre_au_port(0xCF9),
+                Some((quel, 0x39)),
+                "0xCF9 n'est pas à la carte : la fenêtre le prend"
+            );
+        }
+    }
+
+    /// **Le second disque frappe sur la ligne six**, le premier sur la cinq,
+    /// et chacun ne tient que la sienne ; deux disques que le noyau met sur
+    /// la même ligne la partagent, levée tant que l'un des deux la tient.
+    #[test]
+    fn each_disk_holds_its_own_line() {
+        let mut carte = Carte::nouvelle();
+        assert_eq!(carte.tenues() & 0x60, 0, "sans disque, ni l'une ni l'autre");
+        carte.brancher(Disque::Second, 16);
+        assert_eq!(carte.tenues() & 0x60, 0x40);
+        carte.brancher_disque(8);
+        assert_eq!(carte.tenues() & 0x60, 0x60);
+        ouvrir(&mut carte, 3, 0xC000);
+        ouvrir(&mut carte, 4, 0xC040);
+        // Une requête sur chacun : une lecture d'un secteur, la file du
+        // premier à la page 1, celle du second à la page 0x10.
+        let mut ram = RamPlate(vec![0; 0x40000]);
+        let demander = |carte: &mut Carte, ram: &mut RamPlate, base: u16, page: u32| {
+            let table = u64::from(page) * 4096;
+            carte.port_ecrire(base + 0x08, 4, page, ram);
+            let decrire =
+                |ram: &mut RamPlate, i: u64, a: u64, n: u32, drapeaux: u16, suivant: u16| {
+                    let at = table + i * 16;
+                    ram.ecrire(at, &a.to_le_bytes());
+                    ram.ecrire(at + 8, &n.to_le_bytes());
+                    ram.ecrire(at + 12, &drapeaux.to_le_bytes());
+                    ram.ecrire(at + 14, &suivant.to_le_bytes());
+                };
+            decrire(ram, 0, table + 0x3000, 16, 1, 1);
+            decrire(ram, 1, table + 0x4000, 512, 3, 2);
+            decrire(ram, 2, table + 0x3800, 1, 2, 0);
+            ram.ecrire(table + 0x802, &1u16.to_le_bytes());
+            assert!(carte.port_ecrire(base + 0x10, 2, 0, ram));
+        };
+        demander(&mut carte, &mut ram, 0xC040, 0x10);
+        assert!(carte.reveil(), "une requête du second attend sa réponse");
+        assert_eq!(carte.lignes(), 0);
+        assert_eq!(carte.requete_disque(), None, "pas sur le premier");
+        let second = carte.disque_mut(Disque::Second).unwrap();
+        let requete = second.prendre_requete().expect("sur le second");
+        assert!(second.lu(requete.id, &[0x5A; 512], &mut ram));
+        assert_eq!(carte.lignes(), 1 << 6, "la ligne six, et elle seule");
+        assert_eq!(ram.0[0x14000..0x14200], [0x5A; 512]);
+
+        demander(&mut carte, &mut ram, 0xC000, 1);
+        let requete = carte.requete_disque().expect("sur le premier");
+        assert!(carte.disque_lu(requete.id, &[0xA5; 512], &mut ram));
+        assert_eq!(carte.lignes(), (1 << 5) | (1 << 6));
+        assert_eq!(carte.port_lire(0xC013, 1, &mut SansRam), Some(1));
+        assert_eq!(carte.lignes(), 1 << 6, "le premier acquitté, pas le second");
+        assert!(carte.reveil(), "le second tient encore sa ligne");
+
+        // Le noyau met le premier sur la ligne six aussi, puis une requête de
+        // plus sur lui : la ligne est partagée.
+        carte.port_ecrire(0xCF8, 4, 0x8000_183C, &mut SansRam);
+        carte.port_ecrire(0xCFC, 1, 6, &mut SansRam);
+        assert_eq!(carte.tenues() & 0x60, 0x40, "plus personne sur la cinq");
+        ram.ecrire(0x1804 + 2, &0u16.to_le_bytes());
+        ram.ecrire(0x1802, &2u16.to_le_bytes());
+        carte.port_ecrire(0xC010, 2, 0, &mut ram);
+        let requete = carte.requete_disque().expect("la seconde du premier");
+        assert!(carte.disque_fini(requete.id, false, &mut ram));
+        assert_eq!(carte.lignes(), 1 << 6);
+        assert_eq!(carte.port_lire(0xC053, 1, &mut SansRam), Some(1));
+        assert_eq!(carte.lignes(), 1 << 6, "le premier la tient encore");
+        assert_eq!(carte.port_lire(0xC013, 1, &mut SansRam), Some(1));
+        assert_eq!(carte.lignes(), 0);
+        assert!(!carte.reveil());
     }
 
     /// **La RAM vue d'un périphérique** : une plage entière ou rien.
