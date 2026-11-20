@@ -9,12 +9,21 @@
 #                      WebAssembly
 #   crates/wisq-page   l'émetteur x86-64 → WebAssembly compilé en wasm32, pour
 #                      que la page WebKit traduise elle-même ses régions
+#   crates/wisq-page/src/carte
+#                      wisq-carte : les périphériques de la machine PC, pris
+#                      par la page (wasm32) et par la machine native
 #
 # The Swift package keeps what is genuinely Apple-shaped: the UI, and the remote
 # desktop client built on Network.framework.
 [workspace]
 resolver = "2"
-members = ["crates/wisq-vm", "crates/wisq-agent", "crates/wisq-site", "crates/wisq-page"]
+members = [
+    "crates/wisq-vm",
+    "crates/wisq-agent",
+    "crates/wisq-site",
+    "crates/wisq-page",
+    "crates/wisq-page/src/carte",
+]
 
 [profile.release]
 opt-level = 3
