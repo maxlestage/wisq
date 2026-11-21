@@ -11,8 +11,13 @@ publish = false
 # **Aucune dépendance de plus que le cœur**, pour la même raison que lui : ce
 # module part dans la page de l'application, et chaque crate ajouté serait une
 # chose de plus à auditer et à compiler pour wasm32.
+#
+# `wisq-carte` est du même dépôt et n'en a aucune non plus : ce sont les
+# périphériques de la machine PC (`src/carte/`), sortis dans leur crate pour
+# que la machine native de `wisq-vm` les prenne aussi.
 [dependencies]
 wisq-vm = { path = "../wisq-vm" }
+wisq-carte = { path = "src/carte" }
 
 [lib]
 # **`cdylib` pour la page, `rlib` pour les tests natifs.** Le module que la page
