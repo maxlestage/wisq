@@ -65,7 +65,7 @@ use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
     usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, GS_SLOT, RIP_SLOT, SEGMENT_SLOT,
-    STOP_SLOT, TASK_SLOT,
+    STOP_SLOT, TASK_SLOT, TSC_SLOT,
 };
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
@@ -1432,6 +1432,7 @@ const entree = {entree:?};
 const invites = {invite:?}.split(";;");
 const fin = {fin:?};
 let depuis = 0;
+let dernierBattement = performance.now();
 for (let tour = 0; tour < {turns}; tour++) {{
   why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
   tours = tour + 1;
@@ -1460,7 +1461,14 @@ for (let tour = 0; tour < {turns}; tour++) {{
   // question même que #229 a appris à poser. La période vient de
   // `Progress::beat`, côté Rust, pour que le pilote et le test qui la tient
   // ne puissent pas en prendre deux différentes.
-  if ((tour + 1) % {beat} === 0) {{
+  // **Et toutes les trente secondes de mur** : quand l'invité tourne dans du
+  // code déjà traduit, chaque tour épuise son budget, et dix mille tours
+  // peuvent prendre des heures.
+  const auMur = performance.now() - dernierBattement >= 30000;
+  if ((tour + 1) % {beat} === 0 || auMur) {{
+    dernierBattement = performance.now();
+    console.log("horloge-en-cours " + (tour + 1) + " " + lire({tsc}) + " "
+      + vm.materiel.delivrees + " " + Math.round((performance.now() - departDuMur) / 1000));
     console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
       + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);{guet}
     // **Ce que le cache tient pendant la course**, et ce que le moteur pèse :
@@ -1685,6 +1693,7 @@ console.log("controle " + controle
                 capture = capture,
                 capture_toutes = capture_toutes,
                 base_ecran = BASE_DE_L_ECRAN,
+                tsc = TSC_SLOT,
                 entree = entree,
                 invite = invite,
                 fin = fin,
@@ -1794,6 +1803,12 @@ console.log("controle " + controle
                 }
                 // **Le cache, dit au fil de l'eau** : tour, régions tenues,
                 // octets tenus, traduites, évincées, mémoire résidente.
+                ["horloge-en-cours", turn, tsc, delivrees, mur] => {
+                    println!(
+                        "horloge au tour {turn} : TSC {tsc}, {delivrees} interruptions \
+                         délivrées, {mur} s de mur"
+                    );
+                }
                 ["disque-en-cours", turn, lectures, lus, ecritures] => {
                     println!(
                         "disque au tour {turn} : {lectures} lectures, {lus} octets lus, \
