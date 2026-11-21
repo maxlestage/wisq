@@ -8,6 +8,122 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Émetteur : un accès à cheval hors de la RAM coupé en deux, les gardes de la seconde marche tenues, et `kernel-entry` qui ne laisse rien derrière lui
+
+**Ce qui n'allait pas.** Le contrôle de la reprise d'en dessous a trouvé
+quatre gardes sans test, un faux du rapport et une doc trop large.
+
+- **La seconde marche d'un accès qui part d'un périphérique**, dans
+  `far_first_page`, est une marche de la sorte de l'accès (`kind`). Le
+  sabotage qui en fait une marche de lecture survivait : aucun cas ne posait
+  une page d'après **en lecture seule**. Une écriture y serait passée chez le
+  périphérique, sans faute de page.
+- **L'adresse gardée avant la seconde marche, côté lecture.** La prendre
+  après (dans `TRANSLATE_CELL`, que la seconde marche remplace) survivait
+  aussi : le test du cheval ne lisait qu'en direction de la RAM, et aucune
+  lecture n'était à cheval sur deux pages de la mémoire vidéo. Elle aurait
+  lu `0x1000` plus loin.
+- **`kernel-entry`** : `WISQ_CAPTURE_TOUTES=inf` écrivait
+  `const captureToutes = inf;` dans le pilote, qui mourait sur une
+  `ReferenceError` — le défaut même que l'entrée d'en dessous corrigeait pour
+  `WISQ_GESTES` —, et rien ne tenait ni ce refus ni celui des valeurs
+  négatives, ni celui des secondes négatives d'un geste ; le test des refus
+  ne posait que `souvent`, `inf` et `NaN`.
+- **Le pilote mort rendait zéro.** L'exemple écrivait « le pilote s'est
+  arrêté sur… » et sortait par zéro : un script qui enchaîne les courses y
+  voyait un succès.
+- **Chaque refus laissait son dossier** `/tmp/wisq-kernel-<pid>` (la ligne
+  de commande, la page zéro, les segments) : `std::process::exit` ne lance
+  aucun destructeur, et seule la fin normale l'effaçait. Le test neuf en
+  laissait six à chaque passage. Le rapport de la reprise d'en dessous
+  disait ces dossiers effacés : c'était faux.
+- **« Dans le même périphérique »** : la doc de `far_first_page` promettait
+  ce que le code ne jugeait pas. Il ne jugeait que la contiguïté physique ;
+  or la dernière page de la mémoire vidéo (`0xE0FF_F000`) est suivie, en
+  physique, des registres de l'écran (`0xE100_0000`). Huit octets à
+  `0xE0FF_FFFC` partaient entiers, `Carte::region` les refusait (ils ne
+  tiennent dans aucune région), l'écriture se perdait et la lecture rendait
+  tous les bits à un, sans qu'aucun arrêt ne le dise.
+
+**Ce qui est fait.**
+
+- **Un accès à cheval sur deux trames hors de la RAM part en deux
+  moitiés** (`far_first_page`, `x86_wasm.rs`) : la fin de la première page à
+  l'adresse gardée, puis le reste au début de la seconde trame, dont
+  l'adresse attend sur la pile de WebAssembly pendant le premier appel — un
+  appel à l'hôte ne peut pas la changer. La lecture monte la moitié haute
+  au-dessus de la basse. C'est ce que fait le silicium d'un accès non aligné
+  à la mémoire non cachée, et c'est ce que la carte attendait déjà (« les
+  largeurs impaires sont les moitiés d'un accès à cheval »). Chaque moitié
+  tient dans sa page, donc dans une région ou chez personne : que les trames
+  se suivent ou non, qu'elles soient au même périphérique ou non, chaque
+  octet arrive où il va. Le jugement de la contiguïté disparaît ; ne reste
+  que la RAM, qui arrête, sous un nom juste : « un accès à cheval entre la
+  mémoire d'un périphérique et la RAM ». La doc de `FAULT_DEVICE_STRADDLE`,
+  de `host.js` et l'entrée d'en dessous (corrigée en place, marquée) le
+  disent.
+- **`kernel-entry`** : tout refus qui suit la création du dossier de travail
+  passe par `sortir`, qui l'efface puis sort (seize sorties) ; un pilote
+  mort fait sortir par un, après le relevé et l'effacement.
+- `WebKitBench.swift` régénéré : l'accès lent a changé.
+
+**Comment c'est vérifié.**
+
+- **Le test du cheval depuis un périphérique, refait**
+  (`an_access_from_device_memory_is_cut_in_two_or_stops_when_it_reaches_ram`,
+  huit cas, CR0.WP allumé, chaque écriture relue dans R10, la faute avec son
+  code d'erreur) : vers la RAM, en écriture et en lecture (arrêt) ; vers la
+  suite, **relu à cheval** sur deux pages de la mémoire vidéo ; vers la
+  première trame elle-même, depuis `0x48FFC` (quatre et quatre) et
+  `0x48FFE` (deux et six) ; de la fin de la mémoire vidéo vers les registres
+  de l'écran (la moitié basse relue, la haute à zéro, l'EDID absent) ; vers
+  la suite **en lecture seule** (faute, code 3, CR2 sur `0x49000`, rien chez
+  l'écran) ; vers une page absente (code 2).
+- **`kernel_entry`** : trois refus de plus (`-1:capture`,
+  `WISQ_CAPTURE_TOUTES` à `inf` et à `-1`) ; `lancer` vérifie, après chaque
+  course ou refus, que `/tmp/wisq-kernel-<pid>` de l'enfant n'existe plus ;
+  un test neuf, `a_driver_that_dies_makes_the_run_fail` : la capture
+  demandée dans un dossier absent, le pilote meurt sur `ENOENT`, la sortie
+  rend un.
+- **Quatorze sabotages d'une ligne** (le script réécrit le contenu
+  d'origine, et vérifie son empreinte). **Treize tombent** :
+  - les deux survivants du contrôle : la seconde marche en lecture (A) et
+    l'adresse de la moitié basse lue après la seconde marche (G) ;
+  - l'adresse de la moitié basse écrite après elle (E), la coupe retirée —
+    l'accès entier, l'ancien comportement — (S), la RAM servie au lieu
+    d'arrêter (S2), le décalage de la moitié haute fixé à 32 bits (S3), sa
+    largeur fixée à quatre (S4), la valeur écrite décalée du mauvais côté
+    (S5) : chacun dans le test du cheval depuis un périphérique ;
+  - `kernel-entry` : les secondes négatives d'un geste (B),
+    `WISQ_CAPTURE_TOUTES` infini (C) ou négatif (D) acceptés, `sortir` qui
+    n'efface plus (L, deux tests), et le pilote mort qui rend zéro (M) ;
+  - M rejoué une fois la garde des dossiers du test posée (`Dossier`, effacé
+    par son destructeur, panique comprise) : le test tombe, et plus aucun
+    `/tmp/wisq-kernel-*` ne reste — sous les premiers sabotages, le test qui
+    tombait laissait le sien ;
+  - **Un survit, et doit survivre** : l'adresse prise dans `TRANSLATE_CELL`
+    dans le chemin de l'accès **entier** (G0, le G du contrôle à sa place
+    d'avant). Ce chemin n'est pris que si l'accès tient dans sa page, donc
+    sans seconde marche : la cellule y porte encore la première trame, et
+    les deux formes calculent la même adresse. La garde de G a déménagé
+    dans la coupe, où G tombe.
+- `cargo test --release --no-fail-fast` (tout) : 886 réussis, 0 échec
+  (885 avant : un test neuf, et celui du cheval renommé). `cargo fmt
+  --check`, `clippy --all-targets --all-features -D warnings`,
+  `check-whitespace`, `check-project-sources`, SwiftLint `--strict` :
+  propres. `WebKitBench.swift` régénéré, seules ses lignes en base 64
+  changent ; `swift build --build-tests` et les treize `WebKitBenchTests`
+  passent. Compte publié : 3 949 → 3 950 (Swift 3 065 + Rust 885) ; le site
+  reconstruit, `bun test` : 476 réussis. Plus aucun `/tmp/wisq-kernel-*` ni
+  `/tmp/wisq-carte-*` après la suite.
+
+**Ce qui reste.** Le chemin RAM → périphérique s'arrête toujours
+(`far_second_page`) : le couper en deux demanderait d'écrire la moitié basse
+dans la RAM, puis d'envoyer la haute à l'hôte, ce que rien ne demande encore.
+Le reste de l'entrée d'en dessous tient : la boucle du planificateur de Void,
+le bureau, la vitesse, le chargeur de l'application et la fusion avec
+`claude/pc-rust-coeur`. Aucune course longue n'a été lancée.
+
 ## 2026-11-21 — Émetteur : reprise après contrôle, un accès à cheval d'un périphérique vers la RAM, et les gardes que rien ne tenait
 
 **Ce qui n'allait pas.**
@@ -65,7 +181,12 @@ L'ordre est antéchronologique : le plus récent en haut.
   l'accès part en un morceau ; sinon — la RAM, ou une autre trame —, le
   témoin dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête sur « un accès à
   cheval entre la mémoire d'un périphérique et une page qui n'en est pas la
-  suite ». L'adresse physique est gardée dans une locale `i64` avant la
+  suite ». *Correction du 21 novembre, entrée d'au-dessus : la suite
+  physique n'est pas le même périphérique — la dernière page de la mémoire
+  vidéo est suivie des registres de l'écran —, et l'accès entier y était
+  refusé par la carte sans un mot. Un accès à cheval sur deux trames hors de
+  la RAM part maintenant en deux moitiés ; seule la RAM arrête, sous le nom
+  « un accès à cheval entre la mémoire d'un périphérique et la RAM ».* L'adresse physique est gardée dans une locale `i64` avant la
   seconde marche, qui remplace `TRANSLATE_CELL`. Le test sur `DEVICE_FRAME`
   de la seconde trame a été retiré : la contiguïté écarte déjà la RAM (une
   trame de la RAM n'est jamais au-delà d'une trame de périphérique), et ce
