@@ -81,7 +81,7 @@ public enum EmitterMachine {
         public var kernel: URL
         public var initrd: URL?
         public var disk: URL?
-        /// La ligne de l'image, ajoutée à celle du montage.
+        /// La ligne de l'image, ajoutée telle quelle à celle du montage.
         public var commandLine: String?
         public var ramBytes: Int
         public var screen: Screen?
@@ -105,12 +105,13 @@ public enum EmitterMachine {
         /// **Ce qu'`IsoBoot` a décidé**, monté sur l'émetteur. La RAM est au
         /// moins celle que l'image demande (un système vivant en veut un
         /// gibioctet), et un gibioctet par défaut : c'est la taille des
-        /// courses de Void sous `kernel-entry`.
+        /// courses de Void sous `kernel-entry`. La ligne est celle de l'image,
+        /// avec la console de l'émetteur au bout (`emitterLine`).
         public init(boot: IsoBoot.Boot, ramBytes: Int = 1 << 30, screen: Screen? = .standard) {
             self.init(
                 kernel: boot.kernel, initrd: boot.initrd, disk: boot.disk,
-                commandLine: boot.commandLine, ramBytes: max(ramBytes, boot.minimumRAM),
-                screen: screen)
+                commandLine: EmitterMachine.emitterLine(boot.commandLine),
+                ramBytes: max(ramBytes, boot.minimumRAM), screen: screen)
         }
     }
 
@@ -132,8 +133,11 @@ public enum EmitterMachine {
         /// Le repli de l'émetteur amène le texte virtuel ailleurs que sur
         /// lui-même : sous 4 Gio seulement.
         case foldMisses(folded: UInt64)
-        /// La ligne de commande ne tient pas dans la page zéro, ou porte un nul.
-        case commandLine
+        /// La ligne de commande est plus longue que la place que la page zéro
+        /// lui laisse.
+        case commandLineTooLong
+        /// La ligne de commande porte un octet nul, où le noyau la couperait.
+        case commandLineCarriesNul
         /// L'écran ne peut pas être décrit au noyau.
         case screen
         /// L'archive ne tient pas entre le noyau et le bout de la RAM.
@@ -226,6 +230,42 @@ public enum EmitterMachine {
         while ram > room { ram >>= 1 }
         guard ram >= UInt64(floor) else { return nil }
         return Int(ram)
+    }
+
+    /// **La console de la machine de l'émetteur**, au bout de la ligne de
+    /// l'image : celle que Linux retient pour `/dev/console`, le dernier
+    /// `console=` l'emportant.
+    public static let console = "console=ttyS0,115200"
+
+    /// **La place de la ligne entière** — celle du montage, puis celle de
+    /// l'image —, terminée par un zéro dans la page zéro : 2 047 octets, la
+    /// limite du noyau lui-même (`MONTAGE_COMMAND_LINE_ROOM`, côté Rust).
+    public static let commandLineRoom = 2047
+
+    /// **La ligne d'`IsoBoot`, pour l'émetteur** : la part de l'image telle
+    /// quelle, et la console de l'émetteur à la place de celle du cœur Swift.
+    ///
+    /// `IsoBoot.commandLine` finit par `X86BootLoader.defaultCommandLine`, qui
+    /// est écrite pour le cœur Swift : sa machine n'a pas de console précoce
+    /// à elle, et `earlyprintk=serial,…,keep` lui en donne une, **gardée pour
+    /// toujours** (`keep`). Celle de l'émetteur en a déjà une, `earlycon`, que
+    /// le montage pose et que le noyau rend quand `ttyS0` arrive. Les deux
+    /// ensemble font trois consoles sur le même port : sous `kernel-entry`,
+    /// Void jusqu'à `pid_max` rend **205 lignes dont 100 doublées** avec la
+    /// ligne d'`IsoBoot`, **96 dont 2** avec celle-ci — les deux de la
+    /// passation, que le noyau écrit sur les deux consoles (JOURNAL, 21
+    /// novembre). Alpine n'a pas `earlyprintk` (« Unknown kernel command
+    /// line parameters ») et ne doublait que par `keep_bootcon` (121 lignes
+    /// dont 19, contre 104 dont 2).
+    ///
+    /// Une ligne qui ne finit pas par celle du cœur — celle d'une image de
+    /// cloud, d'un système installé — passe telle quelle.
+    public static func emitterLine(_ isoLine: String?) -> String? {
+        guard let isoLine else { return nil }
+        let core = X86BootLoader.defaultCommandLine
+        if isoLine == core { return console }
+        guard isoLine.hasSuffix(" " + core) else { return isoLine }
+        return String(isoLine.dropLast(core.count)) + console
     }
 
     /// **Ouvrir une image comme l'application l'ouvre** : `IsoBoot` décide (le
@@ -358,7 +398,10 @@ public enum EmitterMachine {
         case .ramIsNotAPowerOfTwo, .foldMisses:
             return "Cette taille de mémoire ne convient pas à l'émetteur : une puissance de deux, deux gibioctets au plus."
         case .ramTooSmall(let needed): return "Le noyau demande \(mio(needed)), plus que la mémoire choisie."
-        case .commandLine: return "La ligne de commande de l'image ne tient pas dans la page zéro."
+        case .commandLineTooLong:
+            return "La ligne de commande de l'image dépasse les \(commandLineRoom) octets que le noyau lit."
+        case .commandLineCarriesNul:
+            return "La ligne de commande de l'image porte un caractère nul, où le noyau la couperait."
         case .screen: return "L'écran demandé ne peut pas être décrit au noyau."
         case .archiveDoesNotFit(let bytes):
             return "L'archive de démarrage (\(mio(bytes))) ne tient pas dans la mémoire, au-dessus du noyau."
@@ -384,7 +427,7 @@ public enum EmitterMachine {
         // **Un nul dans la ligne est refusé ici** : `withCString` la couperait
         // à cet octet, et le Rust recevrait une ligne plus courte sans rien
         // pouvoir en dire.
-        if let commandLine, commandLine.utf8.contains(0) { throw Refusal.commandLine }
+        if let commandLine, commandLine.utf8.contains(0) { throw Refusal.commandLineCarriesNul }
         if let commandLine {
             code = commandLine.withCString { line in
                 wisq_emitter_boot_page(
@@ -400,7 +443,7 @@ public enum EmitterMachine {
             defer { wisq_x86_free_module(out, length) }
             return Data(UnsafeBufferPointer(start: out, count: length))
         case 1: throw Refusal.ramIsNotAPowerOfTwo(Int(pages) * 65536)
-        case 2: throw Refusal.commandLine
+        case 2: throw Refusal.commandLineTooLong
         case 3: throw Refusal.screen
         case 4: throw Refusal.archiveDoesNotFit(bytes: initrdBytes)
         default: throw Refusal.unknown(code)

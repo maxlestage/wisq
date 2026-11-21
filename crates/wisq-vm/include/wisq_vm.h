@@ -333,7 +333,10 @@ int wisq_emitter_asset(const char *name, const uint8_t **out_bytes, size_t *out_
 
 /*
  * The emitter machine's zero page: the montage's command line followed by
- * `extra` (null: nothing more), the card's screen (`width == 0 && height == 0`:
+ * `extra` (null: nothing more), as it is — a leading `-` is a word of the
+ * image's line, not a removal; `keep_bootcon` leaves the montage's part when
+ * `extra` names `console=ttyS0`, since both together print every line
+ * twice —, the card's screen (`width == 0 && height == 0`:
  * none), the archive (`initramfs_bytes == 0`: none) placed above `floor`.
  * Returns 0 and four kibibytes (freed with `wisq_x86_free_module`), or a named
  * refusal: 1 the RAM, 2 the line, 3 the screen, 4 the archive, -1 unreadable

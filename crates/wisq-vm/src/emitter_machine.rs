@@ -16,8 +16,9 @@
 //! Le reste — lire le noyau, le décompresser, servir l'ISO par plages — est
 //! côté Swift (`EmitterMachine`, `EmitterStore`), où vivent les fichiers.
 use crate::kernel_image::{
-    declare_ramdisk, montage_command_line, zero_page, zero_page_with_device_screen,
-    CommandLineRefusal, Ramdisk, RamdiskRefusal, ScreenRefusal, COMMAND_LINE_AT, ZERO_PAGE_AT,
+    declare_ramdisk, zero_page, zero_page_with_device_screen, CommandLineRefusal, Ramdisk,
+    RamdiskRefusal, ScreenRefusal, COMMAND_LINE_AT, MONTAGE_COMMAND_LINE,
+    MONTAGE_COMMAND_LINE_ROOM, ZERO_PAGE_AT,
 };
 
 /// La carte des périphériques, dans la page.
@@ -80,6 +81,54 @@ pub fn usable(pages: u32, entry: u64, top: u64) -> Result<(), crate::x86_wasm::R
     crate::x86_wasm::usable_ram(pages, entry.wrapping_add(KERNEL_MAP), entry, top)
 }
 
+/// **La ligne que le noyau lit dans la machine de l'application** : celle du
+/// montage, puis celle de l'image **telle quelle**.
+///
+/// **Pas par `montage_command_line`.** Celle-là est l'instrument de
+/// `kernel-entry` : un mot qui commence par `-` y est un retrait, et un
+/// retrait qui n'enlève rien est refusé. C'est juste pour `WISQ_CMDLINE`, que
+/// quelqu'un tape ; c'est faux pour la ligne d'une image, qui n'a jamais
+/// entendu parler de cette syntaxe. `---` est le séparateur des recettes
+/// Ubuntu et Debian (« boot=casper quiet splash --- »), `--` celui des
+/// arguments d'init : la ligne de l'image passait par la syntaxe de retrait,
+/// et une ISO qui les portait ne s'ouvrait pas, sous un refus qui parlait de
+/// la page zéro.
+///
+/// **`keep_bootcon` part quand l'image nomme `console=ttyS0`.** Les deux
+/// ensemble font écrire la console précoce et la vraie sur le même port, et
+/// chaque ligne arrive deux fois — #306 l'a mesuré (367 lignes contre 222), et
+/// la course d'Alpine de la tranche précédente en portait les doubles. Sans
+/// console nommée sur le série, `keep_bootcon` reste : c'est lui qui garde la
+/// console précoce une fois la vraie (`tty0`, qui n'écrit nulle part) en
+/// place, et sans lui le noyau se tairait au milieu de son démarrage.
+///
+/// Refusée seulement quand elle ne peut pas être posée : un octet nul, ou plus
+/// long que la place que la page zéro lui laisse.
+pub fn command_line(image: Option<&str>) -> Result<String, CommandLineRefusal> {
+    let image = image.unwrap_or_default().trim();
+    if image.as_bytes().contains(&0) {
+        return Err(CommandLineRefusal::EmbeddedNul);
+    }
+    let serial = image
+        .split_whitespace()
+        .any(|word| word.starts_with("console=ttyS0"));
+    let mut line: Vec<&str> = MONTAGE_COMMAND_LINE
+        .split_whitespace()
+        .filter(|&word| !(serial && word == "keep_bootcon"))
+        .collect();
+    if !image.is_empty() {
+        line.push(image);
+    }
+    let line = line.join(" ");
+    if line.len() > MONTAGE_COMMAND_LINE_ROOM {
+        return Err(CommandLineRefusal::TooLong {
+            bytes: line.len(),
+            room: MONTAGE_COMMAND_LINE_ROOM,
+        });
+    }
+    Ok(line)
+}
+
 /// Pourquoi la page zéro ne peut pas être écrite.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -97,9 +146,8 @@ pub enum Refusal {
 /// **La page zéro de la machine de l'émetteur**, ligne de commande comprise :
 /// quatre kibioctets à poser à [`ZERO_PAGE_AT`].
 ///
-/// - la ligne est celle du montage (`montage_command_line`) suivie de
-///   `extra` — la ligne de l'image, pour l'application, comme la course
-///   « m1 » du JOURNAL l'a mesurée —, posée à [`COMMAND_LINE_AT`], dans la
+/// - la ligne est celle du montage suivie de `extra`, la ligne de l'image,
+///   telle quelle ([`command_line`]), posée à [`COMMAND_LINE_AT`], dans la
 ///   page ;
 /// - `screen`, quand il est donné, décrit la mémoire vidéo de la carte, hors
 ///   de la RAM (`zero_page_with_device_screen`) ;
@@ -116,7 +164,7 @@ pub fn boot_page(
         return Err(Refusal::RamIsNotAPowerOfTwo(pages));
     }
     let ram = u64::from(pages) * 65536;
-    let line = montage_command_line(extra).map_err(Refusal::CommandLine)?;
+    let line = command_line(extra).map_err(Refusal::CommandLine)?;
     let mut page = match screen {
         None => zero_page(ram, COMMAND_LINE_AT as u32),
         Some((width, height)) => zero_page_with_device_screen(
@@ -130,8 +178,8 @@ pub fn boot_page(
         )
         .map_err(Refusal::Screen)?,
     };
-    // La ligne, dans la page, terminée par un zéro : `montage_command_line`
-    // l'a déjà bornée à la place qu'elle a.
+    // La ligne, dans la page, terminée par un zéro : `command_line` l'a déjà
+    // bornée à la place qu'elle a.
     let at = (COMMAND_LINE_AT - ZERO_PAGE_AT) as usize;
     page[at..at + line.len()].copy_from_slice(line.as_bytes());
     page[at + line.len()] = 0;
@@ -165,7 +213,8 @@ mod tests {
         .expect("la page");
         assert_eq!(page.len(), 4096);
         let at = (COMMAND_LINE_AT - ZERO_PAGE_AT) as usize;
-        let line = b"earlycon=uart8250,io,0x3f8 keep_bootcon console=ttyS0 quiet\0";
+        // `keep_bootcon` est parti : l'image nomme `console=ttyS0`.
+        let line = b"earlycon=uart8250,io,0x3f8 console=ttyS0 quiet\0";
         assert_eq!(
             &page[at..at + line.len()],
             line,
@@ -185,6 +234,83 @@ mod tests {
         assert_eq!(
             u64::from_le_bytes(page[0x2d0 + 28..0x2d0 + 36].try_into().expect("huit")),
             (16384u64 << 16) - 0x10_0000
+        );
+    }
+
+    /// **La ligne d'une image passe telle quelle**, ses `---` et ses `--`
+    /// compris : ce sont les séparateurs des recettes Ubuntu et Debian, et
+    /// celui des arguments d'init, pas des retraits.
+    #[test]
+    fn the_image_line_passes_as_it_is_dashes_included() {
+        for image in [
+            "boot=casper quiet splash ---",
+            "vga=788 --- quiet",
+            "init=/bin/sh -- -x",
+            "-keep_bootcon",
+        ] {
+            assert_eq!(
+                command_line(Some(image)),
+                Ok(format!("{MONTAGE_COMMAND_LINE} {image}")),
+                "« {image} »"
+            );
+            let page = boot_page(16384, Some(image), None, None, 0).expect("la page");
+            let at = (COMMAND_LINE_AT - ZERO_PAGE_AT) as usize;
+            let line = format!("{MONTAGE_COMMAND_LINE} {image}\0");
+            assert_eq!(&page[at..at + line.len()], line.as_bytes(), "« {image} »");
+        }
+        // Rien, ou des blancs : la ligne du montage seule.
+        assert_eq!(command_line(None), Ok(MONTAGE_COMMAND_LINE.to_string()));
+        assert_eq!(
+            command_line(Some("  ")),
+            Ok(MONTAGE_COMMAND_LINE.to_string())
+        );
+    }
+
+    /// **`keep_bootcon` part quand l'image nomme le série**, sous toutes ses
+    /// formes, et reste sinon : avec, chaque ligne arrive deux fois ; sans
+    /// console nommée sur le série, il garde la seule qui écrit quelque part.
+    #[test]
+    fn keep_bootcon_leaves_when_the_image_names_the_serial_console() {
+        for image in [
+            "console=ttyS0",
+            "console=ttyS0,115200",
+            "root=/dev/vda console=tty0 console=ttyS0,115200n8 rw",
+        ] {
+            assert_eq!(
+                command_line(Some(image)),
+                Ok(format!("earlycon=uart8250,io,0x3f8 {image}")),
+                "« {image} »"
+            );
+        }
+        for image in ["root=/dev/vda", "console=tty0", "xconsole=ttyS0"] {
+            assert_eq!(
+                command_line(Some(image)),
+                Ok(format!("earlycon=uart8250,io,0x3f8 keep_bootcon {image}")),
+                "« {image} »"
+            );
+        }
+    }
+
+    /// La place de la ligne, à l'octet près : le montage et l'image ensemble.
+    #[test]
+    fn the_line_fills_its_room_and_not_one_byte_more() {
+        let prefix = MONTAGE_COMMAND_LINE.len() + 1;
+        let fits = "a".repeat(MONTAGE_COMMAND_LINE_ROOM - prefix);
+        assert_eq!(
+            command_line(Some(&fits)).map(|line| line.len()),
+            Ok(MONTAGE_COMMAND_LINE_ROOM)
+        );
+        let over = "a".repeat(MONTAGE_COMMAND_LINE_ROOM - prefix + 1);
+        assert_eq!(
+            command_line(Some(&over)),
+            Err(CommandLineRefusal::TooLong {
+                bytes: MONTAGE_COMMAND_LINE_ROOM + 1,
+                room: MONTAGE_COMMAND_LINE_ROOM
+            })
+        );
+        assert_eq!(
+            command_line(Some("a\0b")),
+            Err(CommandLineRefusal::EmbeddedNul)
         );
     }
 
