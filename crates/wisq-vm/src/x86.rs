@@ -3119,7 +3119,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     if prefixes.repeat_not && !matches!(opcode, 0x0f | 0xa6 | 0xa7 | 0xae | 0xaf) {
         return None;
     }
-    if prefixes.address_size && !matches!(opcode, 0xe8 | 0xe9) {
+    // **Et devant `lea` sans REX.W**, où il ne change rien non plus :
+    // l'adresse calculée sur trente-deux bits puis rangée sur trente-deux
+    // (ou seize) bits est celle calculée sur soixante-quatre puis tronquée.
+    // `67 8d 51 ff` (`lea -1(%ecx),%edx`) est dans les routines de chaîne de
+    // la glibc de Void. Avec REX.W l'adresse serait étendue de trente-deux à
+    // soixante-quatre bits, ce qui n'est pas porté : refus.
+    let lea_etroit = opcode == 0x8d && !prefixes.rex.is_some_and(|rex| rex & 0b1000 != 0);
+    if prefixes.address_size && !matches!(opcode, 0xe8 | 0xe9) && !lea_etroit {
         return None;
     }
 
@@ -6440,6 +6447,28 @@ mod tests {
             cpu.memory.bytes[0x38..0x40],
             0x3000_0006u64.to_le_bytes(),
             "l'adresse de retour est après le préfixe et les cinq octets"
+        );
+
+        // **Devant `lea` sans REX.W, il se lit, et ne change rien** : les
+        // trente-deux bits bas de l'adresse sont les mêmes quelle que soit
+        // sa largeur de calcul.
+        let narrow = decode(&[0x67, 0x8d, 0x51, 0xff]).expect("lea -1(%ecx),%edx");
+        let plain = decode(&[0x8d, 0x51, 0xff]).expect("lea -1(%rcx),%edx");
+        assert_eq!(narrow.length, 4, "le préfixe compte dans la longueur");
+        assert_eq!(
+            Decoded {
+                length: 3,
+                ..narrow
+            },
+            plain,
+            "la même instruction, un octet plus longue"
+        );
+        let mut cpu = Cpu::default();
+        cpu.regs[1] = 0xdead_beef_0000_0000;
+        cpu.execute(&narrow);
+        assert_eq!(
+            cpu.regs[2], 0xffff_ffff,
+            "EDX = ECX − 1, sur trente-deux bits"
         );
 
         for (bytes, what) in [
