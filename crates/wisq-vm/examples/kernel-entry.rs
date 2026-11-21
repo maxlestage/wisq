@@ -254,6 +254,129 @@ fn declared_screen(ram: u64, floor: u64) -> Result<Option<Screen>, String> {
     }))
 }
 
+/// **Où l'invité voit la mémoire vidéo de la carte de Bochs** : sa BAR0, telle
+/// que la carte la pose au départ (`BASE_DE_LA_MEMOIRE_VIDEO` dans
+/// `crates/wisq-page/src/carte/ecran.rs`, `X86Machine.displayBase` du cœur
+/// Swift). Répétée ici parce que ce crate ne dépend pas de la carte ; le
+/// pilote JavaScript la relit dans la carte (`ecran.base()`) et refuse de
+/// partir si les deux diffèrent.
+const BASE_DE_L_ECRAN: u64 = 0xE000_0000;
+
+/// **L'écran de la carte que `WISQ_ECRAN` demande, ou aucun** : la carte
+/// graphique de Bochs en 00:02.0, seize mébioctets de mémoire vidéo **hors de
+/// la RAM** à [`BASE_DE_L_ECRAN`], et la tablette virtio en 00:07.0 — la
+/// machine de l'application (`X86Machine.attachDisplay`). `1280x800` comme
+/// l'application. À ne pas confondre avec `WISQ_SCREEN`, le cadre d'avant,
+/// posé dans la RAM, sans carte : les deux ensemble sont refusés.
+fn declared_ecran() -> Result<Option<(u32, u32)>, String> {
+    let Ok(value) = std::env::var("WISQ_ECRAN") else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if std::env::var("WISQ_SCREEN").is_ok_and(|other| !other.trim().is_empty()) {
+        return Err(
+            "WISQ_ECRAN et WISQ_SCREEN décrivent deux écrans : l'un sur la carte,              l'autre dans la RAM ; il n'en faut qu'un"
+                .to_string(),
+        );
+    }
+    let parsed = value
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)));
+    match parsed {
+        // Ce que `screen_info` sait porter, et ce que la mémoire vidéo tient
+        // (seize mébioctets) : la carte refuse le reste, le dire avant.
+        Some((w, h))
+            if w > 0
+                && h > 0
+                && w <= u32::from(u16::MAX)
+                && h <= u32::from(u16::MAX)
+                && u64::from(w) * u64::from(h) * 4 <= 16 << 20 =>
+        {
+            Ok(Some((w, h)))
+        }
+        _ => Err(format!(
+            "WISQ_ECRAN={value} ne se lit pas : il faut « largeur x hauteur », par exemple              1280x800, et seize mébioctets au plus"
+        )),
+    }
+}
+
+/// **`screen_info` pour la mémoire vidéo de la carte**, dans une page zéro
+/// déjà faite : les champs et les valeurs de `X86BootLoader` (et de
+/// `zero_page_with_screen`), la base hors de la RAM. Aucune entrée e820 :
+/// ce n'est pas de la RAM, le noyau la trouve par le bus PCI, et l'e820 ne
+/// décrit que la mémoire.
+fn declarer_l_ecran(page: &mut [u8], largeur: u32, hauteur: u32) {
+    let octets = u64::from(largeur) * u64::from(hauteur) * 4;
+    page[0x0f] = 0x23; // VIDEO_TYPE_VLFB
+    page[0x12..0x14].copy_from_slice(&(largeur as u16).to_le_bytes());
+    page[0x14..0x16].copy_from_slice(&(hauteur as u16).to_le_bytes());
+    page[0x16..0x18].copy_from_slice(&32u16.to_le_bytes()); // lfb_depth
+    page[0x18..0x1c].copy_from_slice(&(BASE_DE_L_ECRAN as u32).to_le_bytes());
+    // En unités de 64 Kio, arrondi vers le haut — le couple de `VLFB`.
+    page[0x1c..0x20].copy_from_slice(&(octets.div_ceil(0x1_0000) as u32).to_le_bytes());
+    page[0x24..0x26].copy_from_slice(&((largeur * 4) as u16).to_le_bytes());
+    // XRGB8888 : le bleu en bas, puis le vert, le rouge, l'octet inutilisé.
+    page[0x26..0x2e].copy_from_slice(&[8, 16, 8, 8, 8, 0, 8, 24]);
+}
+
+/// **Les gestes que `WISQ_GESTES` demande**, en JavaScript : une liste de
+/// `[secondes, quoi, argument]`. La forme : des gestes séparés par `;;`,
+/// chacun `secondes:quoi:argument`, les secondes comptées au mur depuis le
+/// départ de la machine :
+///
+/// - `texte:root\n` : taper, au rythme d'une main (`\n` est Entrée) ;
+/// - `toucher:0.5,0.5,1` : toucher l'écran, la position de 0 à 1, les
+///   boutons en bits ; `toucher:0.5,0.5,0` le relâche ;
+/// - `capture` : une capture de l'écran (voir `WISQ_CAPTURE`).
+///
+/// Refusée plutôt que devinée, comme les autres variables.
+fn declared_gestes() -> Result<String, String> {
+    let Ok(value) = std::env::var("WISQ_GESTES") else {
+        return Ok("[]".to_string());
+    };
+    let mut gestes = Vec::new();
+    for geste in value.split(";;").map(str::trim).filter(|g| !g.is_empty()) {
+        let mut champs = geste.splitn(3, ':');
+        let (Some(secondes), Some(quoi)) = (champs.next(), champs.next()) else {
+            return Err(format!(
+                "WISQ_GESTES : « {geste} » ne se lit pas (secondes:quoi:argument)"
+            ));
+        };
+        let Ok(secondes) = secondes.trim().parse::<f64>() else {
+            return Err(format!(
+                "WISQ_GESTES : « {secondes} » n'est pas un nombre de secondes"
+            ));
+        };
+        let argument = champs.next().unwrap_or("");
+        match quoi {
+            "texte" => {}
+            "toucher" => {
+                let nombres: Vec<Option<f64>> =
+                    argument.split(',').map(|n| n.trim().parse().ok()).collect();
+                if nombres.len() != 3 || nombres.iter().any(Option::is_none) {
+                    return Err(format!(
+                        "WISQ_GESTES : « toucher:{argument} » — il faut x,y,boutons, par                          exemple 0.5,0.5,1"
+                    ));
+                }
+            }
+            "capture" => {}
+            autre => {
+                return Err(format!(
+                    "WISQ_GESTES : « {autre} » n'est pas un geste (texte, toucher, capture)"
+                ))
+            }
+        }
+        gestes.push(format!(
+            "[{secondes}, {quoi:?}, {:?}]",
+            argument.replace("\\n", "\n")
+        ));
+    }
+    Ok(format!("[{}]", gestes.join(", ")))
+}
+
 /// Ce que Linux ajoute à une adresse physique de texte pour en faire une
 /// adresse virtuelle. `__START_KERNEL_map`, dans ses propres termes.
 const KERNEL_MAP: u64 = 0xffff_ffff_8000_0000;
@@ -654,8 +777,24 @@ fn main() {
     // `WISQ_SCREEN=1024x768` en pose un en haut de la RAM, aligné sur une page.
     // Le refus est **nommé** plutôt qu'arrondi : un montage qui corrigerait en
     // douce la demande mesurerait autre chose que ce qu'on lui a demandé.
+    let ecran = match declared_ecran() {
+        Ok(ecran) => ecran,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+    };
     let page = match declared_screen(ram, top) {
-        Ok(None) => zero_page(ram, COMMAND_LINE_AT as u32),
+        Ok(None) => {
+            let mut page = zero_page(ram, COMMAND_LINE_AT as u32);
+            if let Some((largeur, hauteur)) = ecran {
+                declarer_l_ecran(&mut page, largeur, hauteur);
+                println!(
+                    "écran de la carte : {largeur}x{hauteur} en XRGB8888, sa mémoire vidéo                      à 0x{BASE_DE_L_ECRAN:x}, hors de la RAM"
+                );
+            }
+            page
+        }
         Ok(Some(screen)) => match zero_page_with_screen(ram, COMMAND_LINE_AT as u32, screen, top) {
             Ok(page) => {
                 println!(
@@ -860,9 +999,50 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let (prelude_carte, option_carte, releve_carte) = match &disk {
-        None => (String::new(), String::new(), String::new()),
-        Some((path, bytes)) => {
+    let gestes = match declared_gestes() {
+        Ok(gestes) => gestes,
+        Err(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+    };
+    // **`WISQ_CAPTURE=<fichier.ppm>` : l'écran de la carte, en image.** À la
+    // fin de la course, au geste `capture`, et toutes les
+    // `WISQ_CAPTURE_TOUTES` secondes si l'image a changé — chaque capture
+    // datée a son fichier, `<fichier>-<secondes>.ppm`, et la dernière écrase
+    // `<fichier>`.
+    let capture = std::env::var("WISQ_CAPTURE").unwrap_or_default();
+    let capture_toutes: f64 = std::env::var("WISQ_CAPTURE_TOUTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0);
+    if (!capture.is_empty() || gestes != "[]") && ecran.is_none() {
+        eprintln!("WISQ_CAPTURE et WISQ_GESTES demandent un écran : WISQ_ECRAN=1280x800");
+        std::process::exit(2);
+    }
+    let ecran_js = match ecran {
+        Some((largeur, hauteur)) => format!("{{ largeur: {largeur}, hauteur: {hauteur} }}"),
+        None => "null".to_string(),
+    };
+    let (prelude_carte, option_carte, releve_carte) = match (&disk, ecran) {
+        (None, None) => (String::new(), String::new(), String::new()),
+        (None, Some(_)) => {
+            let module = page_module(&root);
+            (
+                format!(
+                    r#"import {{ carte }} from {carte_js:?};
+const moduleDeLaCarte = new WebAssembly.Module(readFileSync({module:?}));
+const compteDuDisque = null;
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, ecran: {ecran_js} }});
+"#,
+                    carte_js = root.join("web/carte.js").to_string_lossy(),
+                    module = module.to_string_lossy(),
+                ),
+                "carte: brancherLaCarte,".to_string(),
+                String::new(),
+            )
+        }
+        (Some((path, bytes)), _) => {
             let module = page_module(&root);
             println!(
                 "disque : {path}, {bytes} octets, en virtio-blk sur 00:03.0 (la carte de la page)"
@@ -917,7 +1097,7 @@ const arriere = {{
     return true;
   }},
 }};
-const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere }});
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere, ecran: {ecran_js} }});
 "#,
                     carte_js = root.join("web/carte.js").to_string_lossy(),
                     module = module.to_string_lossy(),
@@ -1055,7 +1235,7 @@ const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere 
             format!(
                 r#"
 import {{ machine }} from {host:?};
-import {{ readFileSync, appendFileSync }} from "fs";
+import {{ readFileSync, appendFileSync, writeFileSync }} from "fs";
 {prelude}
 {prelude_carte}
 let manquante = null;
@@ -1157,6 +1337,63 @@ vm.globals[{rip}].value = {entry}n;
 // `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
 vm.globals[6].value = {zero_page}n;
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+// **L'écran de la carte, ses captures et les gestes scriptés.** La base de la
+// mémoire vidéo que le chargeur a annoncée au noyau (`screen_info`) doit être
+// celle de la carte : sinon le noyau peindrait ailleurs que là où la page lit.
+if (vm.carte !== null && vm.carte.ecran.mode() !== null
+    && vm.carte.ecran.base() !== {base_ecran}n) {{
+  throw new Error("la carte pose sa mémoire vidéo à 0x" + vm.carte.ecran.base().toString(16)
+    + ", le chargeur l'a annoncée à 0x{base_ecran:x}");
+}}
+const gestes = {gestes}.sort((a, b) => a[0] - b[0]);
+const fichierCapture = {capture:?};
+const captureToutes = {capture_toutes};
+const departDuMur = performance.now();
+let derniereCapture = 0;
+let revisionCapturee = null;
+// **Une capture en PPM** (P6) : rouge, vert, bleu, depuis le XRGB8888 de la
+// carte, où le bleu est l'octet bas. Le format le plus simple qui se
+// convertit partout.
+const capturer = (chemin) => {{
+  const e = vm.ecran();
+  if (e === null) return false;
+  const rgb = new Uint8Array(e.largeur * e.hauteur * 3);
+  for (let i = 0, j = 0; i < e.image.length; i += 4, j += 3) {{
+    rgb[j] = e.image[i + 2];
+    rgb[j + 1] = e.image[i + 1];
+    rgb[j + 2] = e.image[i];
+  }}
+  writeFileSync(chemin, Buffer.concat([Buffer.from("P6\n" + e.largeur + " " + e.hauteur + "\n255\n"), rgb]));
+  revisionCapturee = e.revision;
+  console.log("capture " + chemin + " " + e.largeur + "x" + e.hauteur + " revision " + e.revision
+    + " au mur " + ((performance.now() - departDuMur) / 1000).toFixed(0) + " s");
+  return true;
+}};
+const dateeA = (secondes) => fichierCapture.replace(/\.ppm$/, "") + "-" + Math.round(secondes) + ".ppm";
+const gesteAuMur = () => {{
+  const mur = (performance.now() - departDuMur) / 1000;
+  while (gestes.length > 0 && gestes[0][0] <= mur) {{
+    const [, quoi, argument] = gestes.shift();
+    if (quoi === "texte") {{
+      console.log("geste texte " + JSON.stringify(argument) + " : " + vm.taper(argument)
+        + " frappes, au mur " + mur.toFixed(0) + " s");
+    }} else if (quoi === "toucher") {{
+      const [x, y, boutons] = argument.split(",").map(Number);
+      console.log("geste toucher " + argument + " : " + (vm.toucher(x, y, boutons) ? "pris" : "refusé")
+        + ", au mur " + mur.toFixed(0) + " s");
+    }} else if (fichierCapture !== "") {{
+      capturer(dateeA(mur));
+    }}
+  }}
+  if (fichierCapture !== "" && captureToutes > 0 && mur - derniereCapture >= captureToutes) {{
+    derniereCapture = mur;
+    const e = vm.ecran(revisionCapturee);
+    if (e !== null && e.image !== null) {{
+      capturer(dateeA(mur));
+      capturer(fichierCapture);
+    }}
+  }}
+}};
 // **Un tour à la fois, et l'adresse de chaque retour de main comptée.**
 // « Tours épuisés » disait combien de fois la machine avait rendu la main,
 // pas d'où : quarante et un mille sites modifiés par `text_poke_early` et
@@ -1195,6 +1432,7 @@ let depuis = 0;
 for (let tour = 0; tour < {turns}; tour++) {{
   why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
   tours = tour + 1;
+  if (vm.carte !== null) gesteAuMur();
   if (fin !== "" && serie.includes(fin)) {{
     why = {{ stopped: "le port série a dit " + JSON.stringify(fin), at: lire({rip}) }};
     break;
@@ -1231,6 +1469,15 @@ for (let tour = 0; tour < {turns}; tour++) {{
   }}
 }}
 console.log("arret " + why.stopped);
+if (fichierCapture !== "") capturer(fichierCapture);
+{{
+  const e = vm.ecran();
+  if (e !== null) {{
+    const m = vm.carte.ecran.mode();
+    console.log("ecran " + e.largeur + "x" + e.hauteur + " lignes de " + m.octetsParLigne
+      + " octets, debut " + m.debut + ", revision " + e.revision);
+  }}
+}}
 console.log("traducteur " + demandesDeTraduction + " " + tempsDeTraduction.toFixed(1));
 console.log("marche " + tours + " " + (neuf === null ? "aucun" : neuf)
   + " " + retours.size + " " + queue.size);
@@ -1419,6 +1666,10 @@ console.log("controle " + controle
                 ramasser = ramasser,
                 vider = vider,
                 serie_file = serie,
+                gestes = gestes,
+                capture = capture,
+                capture_toutes = capture_toutes,
+                base_ecran = BASE_DE_L_ECRAN,
                 entree = entree,
                 invite = invite,
                 fin = fin,
