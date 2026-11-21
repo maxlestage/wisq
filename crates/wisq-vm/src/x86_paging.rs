@@ -126,7 +126,8 @@ pub trait DeviceMemory: Send {
 /// référence et le juge de l'émetteur n'en ont pas, et ne voient aucune
 /// différence. Seul le chemin lent les consulte : le tampon de traduction ne
 /// garde jamais une page hors de la RAM, donc une adresse ordinaire ne les
-/// rencontre pas.
+/// rencontre pas. Un `Cpu` cloné partage les mêmes périphériques : ils sont
+/// à la machine, pas au processeur.
 #[derive(Clone, Default)]
 pub struct Devices(pub Option<std::sync::Arc<std::sync::Mutex<dyn DeviceMemory>>>);
 
