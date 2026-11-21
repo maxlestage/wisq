@@ -8,11 +8,12 @@
  * no type at all — bytes in, bytes out, and four numbers.
  *
  * This header is hand-written rather than generated, and that is a
- * liability unless something checks it. Four C programs under `tests/abi/`
+ * liability unless something checks it. Five C programs under `tests/abi/`
  * compile against this header and link the real static library: main.c boots
  * a kernel, x86.c translates a region, disk.c attaches a disk and queues
- * keystrokes, iso.c reads a disc image. A signature that drifts from
- * src/ffi.rs fails one of them rather than crashing on a phone.
+ * keystrokes, iso.c reads a disc image, pc.c drives the native PC machine.
+ * A signature that drifts from src/ffi.rs fails one of them rather than
+ * crashing on a phone.
  *
  * "Something checks it" was true of twenty of these declarations and false of
  * eleven — the disk family, the load that takes a tree, the keystroke queue —
@@ -549,6 +550,290 @@ int wisq_iso_recipe(const char *path, uint8_t **out_bytes, size_t *out_len);
  */
 int wisq_iso_extract(const char *path, const char *inside, const char *into,
                      uint64_t ceiling);
+
+/* ------------------------------------------------------------------------
+ * La machine PC native (x86-64), en Rust : `pc::Poste`.
+ *
+ * La même carte que le cœur Swift (X86Machine) : deux 8259, le 8253, le
+ * 16550 sur 0x3F8 (ligne 4), l'horloge CMOS, et la carte des périphériques
+ * toujours branchée (l'i8042, le pont PCI 440FX, les disques virtio en
+ * 00:03.0 et 00:04.0, l'écran de Bochs en 00:02.0 et sa tablette en 00:07.0).
+ *
+ * LES FILS. wisq_pc_run bloque. Les fonctions marquées « course arrêtée »
+ * touchent la machine elle-même : un seul fil à la fois, et jamais pendant
+ * un wisq_pc_run. Les fonctions marquées « tout fil » peuvent être appelées
+ * de n'importe quel fil, pendant la course comme hors d'elle : elles ne
+ * passent que par une moitié partagée, sous verrou ou atomique.
+ *
+ * LES PANIQUES. Aucune ne traverse cette frontière : chaque fonction vérifie
+ * ses arguments et rend un code. Dans une construction qui déroule, une
+ * panique imprévue est rattrapée et rend WISQ_PC_PANIC ; la bibliothèque de
+ * l'application est construite avec panic = "abort", et une panique y arrête
+ * le processus sans dérouler dans l'appelant.
+ *
+ * Les codes négatifs sont des refus ; -1 est toujours un argument nul.
+ * ------------------------------------------------------------------------ */
+
+/* Opaque : la machine, et la moitié que les autres fils atteignent. */
+typedef struct WisqPC WisqPC;
+
+/* Les issues de wisq_pc_run. */
+#define WISQ_PC_BUDGET     0 /* le budget est épuisé ; la machine tourne ou dort encore */
+#define WISQ_PC_STOPPED    1 /* wisq_pc_stop l'a demandé */
+#define WISQ_PC_POWER_OFF  2 /* l'attente est épuisée : un hlt que rien ne réveillera */
+#define WISQ_PC_REBOOT     3 /* l'invité a tiré la ligne de remise à zéro (i8042) */
+#define WISQ_PC_FAULT      4 /* le cœur a refusé quelque chose : wisq_pc_fault le nomme */
+#define WISQ_PC_NOT_READY -2 /* ni noyau chargé, ni machine reprise */
+#define WISQ_PC_PANIC    -99 /* une panique rattrapée (construction qui déroule) */
+
+/*
+ * Une machine de `ram_bytes` octets de RAM (au moins 128 Mio : en dessous,
+ * le plancher), sa carte branchée, l'horloge CMOS sur celle de l'hôte, le
+ * générateur de rdrand sur la graine du cœur Swift. NULL quand l'hôte ne
+ * peut pas donner la mémoire. Au-delà de 3 Gio, la RAM continue au-dessus
+ * de 4 Gio (le trou des périphériques). Course arrêtée.
+ *
+ * `on_output` reçoit, après chaque tranche, ce que l'invité a écrit sur son
+ * port série ; il peut être NULL (la console est jetée). Les octets sont
+ * prêtés le temps de l'appel. `context` lui est rendu tel quel, et
+ * l'appelant le garde en vie jusqu'à wisq_pc_free.
+ */
+WisqPC *wisq_pc_new(uint64_t ram_bytes, wisq_vm_output_callback on_output, void *context);
+
+/*
+ * Fige l'heure de l'horloge CMOS, en secondes depuis 1970 : deux courses du
+ * même noyau retirent alors les mêmes instructions. L'heure est bornée là où
+ * l'invité la lit (la CMOS de la carte) : une heure d'avant 1970 s'y lit le
+ * 1er janvier 1970 à 00:00:00, une heure d'après l'an 9999 le 31 décembre
+ * 9999 à 23:59:59. Course arrêtée. 0.
+ */
+int wisq_pc_set_time(WisqPC *pc, int64_t unix_seconds);
+
+/* La graine de rdrand et rdseed : la même graine, les mêmes nombres. Une
+ * application qui démarre des copies d'un même bureau en donne une neuve.
+ * Course arrêtée. 0. */
+int wisq_pc_seed(WisqPC *pc, uint64_t seed);
+
+/*
+ * Branche l'écran (la carte de Bochs, seize mébioctets de mémoire vidéo à
+ * 0xE0000000) et sa tablette, annoncés au noyau par la page zéro ; la ligne
+ * de commande reçoit alors `console=tty0` devant elle. Avant wisq_pc_load,
+ * une seule fois : la mémoire vidéo ne bouge plus ensuite, et son adresse
+ * (wisq_pc_display) reste valable jusqu'à wisq_pc_free. Course arrêtée.
+ *
+ * 0 ; -2 déjà chargée ; -3 un écran est déjà branché ; -4 une dimension
+ * nulle, ou un cadre qui ne tient pas dans la mémoire vidéo.
+ */
+int wisq_pc_attach_display(WisqPC *pc, uint32_t width, uint32_t height);
+
+/*
+ * Un disque en mémoire, en premier disque (vda, 00:03.0, ligne 5) ; l'image
+ * est copiée. Avant wisq_pc_load. Course arrêtée.
+ * 0 ; -2 déjà chargée ; -3 moins d'un secteur.
+ */
+int wisq_pc_attach_disk(WisqPC *pc, const uint8_t *image, size_t len);
+
+/*
+ * Un disque lu sur place, en premier disque (vda) ou en second (vdb,
+ * 00:04.0, ligne 6). `base` n'est jamais écrit ; `writes` et `writes.map`
+ * sont créés s'ils manquent et portent chaque secteur que l'invité écrit —
+ * le format de FileDiskStore. Avant wisq_pc_load. Course arrêtée.
+ *
+ * 0 ; -2 la base ne s'ouvre pas ; -3 moins d'un secteur ; -4 la couche ne
+ * s'ouvre pas ; -5 la couche est celle d'un autre disque ; -6 la couche est
+ * tronquée ; -7 déjà chargée (rien n'est alors ouvert ni créé).
+ */
+int wisq_pc_attach_disk_file(WisqPC *pc, const char *base, const char *writes);
+int wisq_pc_attach_second_disk_file(WisqPC *pc, const char *base, const char *writes);
+
+/*
+ * Charge un bzImage x86-64 (protocole 2.06 au moins, entrée 64 bits) et met
+ * le processeur dans l'état du protocole de démarrage 64 bits. `command_line`
+ * peut être NULL (la ligne par défaut, la console sur ttyS0) ; `initrd` peut
+ * être NULL. Une fois. Course arrêtée.
+ *
+ * 0 ; -2 la ligne n'est pas de l'UTF-8 ; -3 pas un noyau pour PC ; -4 pas
+ * d'entrée 64 bits ; -5 protocole trop ancien ; -6 la RAM ne suffit pas ;
+ * -7 le fichier est plus court que son en-tête ; -8 déjà chargée.
+ */
+int wisq_pc_load(WisqPC *pc, const uint8_t *kernel, size_t len, const char *command_line,
+                 const uint8_t *initrd, size_t initrd_len);
+
+/*
+ * Fait tourner l'invité jusqu'à `budget` instructions de son temps (ce qu'il
+ * retire et ce qu'il dort sur hlt ; le temps rattrapé par wisq_pc_elapse ne
+ * compte pas), par tranches de deux cent mille au plus, entre lesquelles il
+ * regarde wisq_pc_stop, wisq_pc_send et les frappes. Un wisq_pc_stop demandé
+ * avant la course la fait rendre tout de suite. Un fil à la fois.
+ *
+ * Une des issues WISQ_PC_BUDGET, _STOPPED, _POWER_OFF, _REBOOT, _FAULT, ou
+ * WISQ_PC_NOT_READY, -1.
+ */
+int wisq_pc_run(WisqPC *pc, uint64_t budget);
+
+/*
+ * Le nom de la dernière faute (WISQ_PC_FAULT), terminé par NUL et coupé à
+ * `capacity` ; rend sa longueur entière, sans le NUL (0 : aucune faute).
+ * `buffer` peut être NULL pour demander la longueur. Course arrêtée.
+ */
+size_t wisq_pc_fault(const WisqPC *pc, char *buffer, size_t capacity);
+
+/* Des octets tapés au port série de l'invité. Tout fil. */
+void wisq_pc_send(WisqPC *pc, const uint8_t *bytes, size_t len);
+
+/*
+ * Des frappes au clavier PS/2, en codes du jeu 1 : un octet par touche,
+ * | 0x80 pour le relâchement, E0 devant une touche étendue (E0 48 enfonce
+ * la flèche du haut, E0 C8 la relâche). Admises toutes ou aucune, et jouées
+ * au rythme d'une main ; la file en tient 8192. Au-delà, un groupe qui ne
+ * fait que relâcher entre quand même pour les touches que la file laisse
+ * enfoncées. Tout fil.
+ *
+ * 1 admises ; 0 la file est pleine ; -2 un E0 seul, E1 (Pause), ou un code
+ * nul.
+ */
+int wisq_pc_keys(WisqPC *pc, const uint8_t *codes, size_t len);
+
+/* Les frappes que l'invité n'a pas encore reçues. Tout fil. */
+size_t wisq_pc_keys_pending(const WisqPC *pc);
+
+/*
+ * Annule la frappe en cours : ce qui attend est jeté, les touches que la
+ * file laissait enfoncées sont relâchées, et ce qu'on tape ensuite part
+ * derrière au plus trente-deux frappes déjà remises à l'i8042. Tout fil.
+ */
+void wisq_pc_keys_abandon(WisqPC *pc);
+
+/* Un mouvement de la souris PS/2, en pixels, Y vers le bas ; boutons :
+ * 1 gauche, 2 droit, 4 milieu. Tout fil. */
+void wisq_pc_mouse(WisqPC *pc, int32_t dx, int32_t dy, uint8_t buttons);
+
+/*
+ * Un toucher de la tablette : la position rapportée à l'écran (0 à 1), et
+ * les boutons. 1 parti ; 0 l'invité n'a pas pris la tablette (ou pas
+ * d'écran, ou une coordonnée qui n'est pas un nombre). Tout fil.
+ */
+int wisq_pc_touch(WisqPC *pc, double x, double y, uint8_t buttons);
+
+/* La molette, en crans, positifs vers le haut. 1 parti ; 0 non (la tablette
+ * n'est pas prise, ou zéro cran). Tout fil. */
+int wisq_pc_scroll(WisqPC *pc, int32_t notches);
+
+/*
+ * L'écran. `memory` est la mémoire vidéo entière (`memory_size` octets,
+ * XRGB8888 petit-boutien) ; le rectangle montré commence à `start` octets
+ * et fait `height` lignes de `width` pixels, `bytes_per_row` octets de l'une
+ * à l'autre. `revision` change à chaque écriture de l'invité et à chaque
+ * changement de mode : égale à celle de la dernière image, rien à repeindre.
+ * Lire `memory` pendant la course, c'est lire ce que l'invité écrit en même
+ * temps : wisq_pc_display_copy copie sous le verrou de la carte.
+ */
+typedef struct {
+    const uint8_t *memory;
+    size_t memory_size;
+    uint32_t width;
+    uint32_t height;
+    uint32_t bytes_per_row;
+    uint32_t reserved;
+    uint64_t start;
+    uint64_t revision;
+} WisqPCDisplay;
+
+/* L'écran dans `out`. 0 ; -2 aucun écran branché. Tout fil. */
+int wisq_pc_display(const WisqPC *pc, WisqPCDisplay *out);
+
+/*
+ * L'image montrée, copiée dans `pixels` ligne à ligne sans remplissage
+ * (width × height × 4 octets), sous le verrou de la carte : le mode, les
+ * pixels et la révision rendus dans `out` (qui peut être NULL) vont ensemble.
+ * 0 ; -2 aucun écran ; -3 `capacity` trop court — rien n'est copié, et `out`
+ * dit la taille qu'il faut. Tout fil.
+ */
+int wisq_pc_display_copy(const WisqPC *pc, uint8_t *pixels, size_t capacity,
+                         WisqPCDisplay *out);
+
+/* Demande à wisq_pc_run de rendre la main, à la fin de sa tranche. Tout fil. */
+void wisq_pc_stop(WisqPC *pc);
+
+/* Les instructions que l'invité a retirées (pas le temps passé sur hlt).
+ * Course arrêtée. */
+uint64_t wisq_pc_retired(const WisqPC *pc);
+
+/*
+ * Où en est la course, publié à la fin de chaque tranche : les instructions
+ * retirées et RIP. En retard, jamais faux. 1 ; 0 rien n'a encore tourné.
+ * Tout fil.
+ */
+int wisq_pc_progress(const WisqPC *pc, uint64_t *retired, uint64_t *rip);
+
+/*
+ * Le temps de l'invité, en instructions (retirées et dormies, sans le temps
+ * rattrapé), et combien d'instructions valent une de ses secondes : de quoi
+ * caler un invité qui dort sur l'horloge murale. Course arrêtée.
+ */
+uint64_t wisq_pc_guest_time(const WisqPC *pc);
+uint64_t wisq_pc_guest_hertz(const WisqPC *pc);
+
+/* Non nul quand le processeur est arrêté sur hlt. Course arrêtée. */
+int wisq_pc_halted(const WisqPC *pc);
+
+/*
+ * Le temps passé hors de la machine, en secondes : il est payé ensuite, par
+ * pas de dix secondes au plus, pendant que l'invité dort sur hlt. Un écart
+ * négatif, nul ou qui n'est pas un nombre ne fait rien ; au-delà de dix ans,
+ * il est borné. Course arrêtée.
+ */
+void wisq_pc_elapse(WisqPC *pc, double seconds);
+
+/*
+ * L'instantané de la machine, dans un tampon alloué ici, libéré par
+ * wisq_pc_free_snapshot. Course arrêtée.
+ *
+ * Le format est à cette machine, versionné (« WISQPC\r\n », version 1). Il
+ * porte : la RAM (les pages non nulles), le processeur entier (registres,
+ * drapeaux, contrôle, EFER, XMM et MXCSR, x87), le système (GDT, IDT, tâche,
+ * MSR), les 8259, le 8253, le 16550 et l'horloge CMOS de la machine, ses
+ * compteurs, l'ombre de `sti`, l'état du générateur à graine (wisq_pc_seed),
+ * l'écran annoncé, le temps encore à rattraper et le temps déjà rattrapé
+ * (qui entre dans wisq_pc_guest_time). Il ne porte PAS la carte des
+ * périphériques (i8042, PCI, disques virtio, écran de Bochs et sa mémoire
+ * vidéo, tablette) : un invité qui s'en est servi ne se reprend pas
+ * fidèlement.
+ *
+ * 0 ; -2 ni noyau chargé ni machine reprise.
+ */
+int wisq_pc_snapshot(const WisqPC *pc, uint8_t **out_bytes, size_t *out_len);
+void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
+
+/*
+ * Reprend un instantané : tout est lu et vérifié avant que rien ne soit
+ * reposé. Une machine qui a déjà tourné le reprend aussi : sa RAM est
+ * effacée avant que les pages de l'instantané y soient posées, et les
+ * traductions qu'elle gardait de ses propres tables sont oubliées, comme ses
+ * témoins de faute. Le bit LMA d'EFER est recalculé de LME et de la
+ * pagination, comme sur le silicium. Course arrêtée.
+ * 0 ; -2 pas un instantané de cette machine ; -3 une version que ce code ne
+ * lit pas ; -4 tronqué ou abîmé ; -5 une autre RAM ; -6 un autre écran (ou
+ * un écran d'un côté seulement).
+ */
+int wisq_pc_restore(WisqPC *pc, const uint8_t *bytes, size_t len);
+
+/* Pousse les écritures des disques jusqu'au stockage durable. 0 ; -2 un
+ * disque l'a refusé. Tout fil. */
+int wisq_pc_flush_disks(WisqPC *pc);
+
+/* Les octets que l'invité a changés, sur les deux disques. Tout fil. */
+uint64_t wisq_pc_disk_bytes_written(const WisqPC *pc);
+
+/*
+ * Ce que le premier disque a vu : les requêtes servies et refusées. 1 ; 0
+ * aucun disque. Zéro et zéro dit un noyau sans pilote bloc. Tout fil.
+ */
+int wisq_pc_disk_activity(const WisqPC *pc, uint64_t *served, uint64_t *refused);
+
+/* Libère la machine. Aucune course en cours ; plus rien ne l'emploie après. */
+void wisq_pc_free(WisqPC *pc);
+
 
 #ifdef __cplusplus
 }
