@@ -31,7 +31,22 @@
 // - `reveil()` et `remise()` : une ligne peut encore monter sans l'invité (ce
 //   que `wakeable` doit compter) ; l'invité a demandé un redémarrage.
 // - et ce que l'application envoie : `touche`, `taper`, `taperTexte`,
-//   `souris`.
+//   `souris`, et, avec un écran, `toucher` et `defiler` (la tablette).
+// - `memoire.lire(adresse, largeur)` et `memoire.ecrire(adresse, valeur,
+//   largeur)` : un accès de l'invité **hors de sa RAM**, à une adresse
+//   physique — la mémoire vidéo de l'écran, ses registres, ceux de la
+//   tablette. `lire` rend un `BigInt`, ou `null` quand l'adresse n'est à
+//   personne ; `ecrire` rend `true` quand la carte l'a pris.
+// - `livrer(tics)` : ce que le doigt a fait, posé dans les tampons du pilote
+//   de la tablette, à chaque tour avant `lignes()`.
+//
+// **L'écran** (`ecran: { largeur, hauteur }` à la fabrication) : la carte
+// graphique de Bochs en 00:02.0, sa mémoire vidéo de seize mébioctets à
+// `0xE000_0000`, et la tablette virtio en 00:07.0. La mémoire vidéo vit dans
+// la mémoire de **ce** module, pas dans la RAM de l'invité : `ecran.image()`
+// la lit d'un bloc, le rectangle montré, et `ecran.revision()` dit si elle a
+// bougé depuis la dernière image — une vue qui repeint trente fois par
+// seconde une image identique se paie en batterie.
 //
 // **La RAM de l'invité**, que la file du disque lit et écrit, est donnée par
 // `ram` : `{ lire(adresse, vers), ecrire(adresse, depuis) }`, adresses
@@ -131,7 +146,10 @@ export function arriereParUrl(url, octets, { fetch: chercher = (...a) => globalT
 /// sans lequel aucun disque n'est branché. `surReponse` : appelée après
 /// chaque réponse du disque rendue, quand la ligne vient de monter — de quoi
 /// réveiller une boucle qui dort.
-export function carte(source, { heure = Date.now, ram = null, disque = null, surReponse = null } = {}) {
+export function carte(
+  source,
+  { heure = Date.now, ram = null, disque = null, surReponse = null, ecran = null } = {},
+) {
   const module = source instanceof WebAssembly.Module ? source : new WebAssembly.Module(source);
   // Les deux imports de la RAM. Une adresse est un `BigInt` (un `u64` du
   // côté Rust) ; au-delà de 2⁵³ elle n'est dans aucune RAM. Les pointeurs
@@ -156,6 +174,12 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
   const porte = new WebAssembly.Instance(module, imports).exports;
   const texte = new TextEncoder();
   if (disque !== null) porte.carte_disque(BigInt(Math.floor(disque.octets / SECTEUR)));
+  // **L'écran, avant le démarrage** : c'est le chargeur qui annonce son cadre
+  // au noyau. Un cadre qui ne tient pas dans la mémoire vidéo est refusé ici,
+  // plutôt qu'une machine sans écran qui démarrerait quand même.
+  if (ecran !== null && porte.carte_ecran(ecran.largeur >>> 0, ecran.hauteur >>> 0) !== 1) {
+    throw new Error(`un écran de ${ecran.largeur}×${ecran.hauteur} ne tient pas dans la mémoire vidéo`);
+  }
 
   const horloge = (port) => {
     if (port === HORLOGE_INDEX || port === HORLOGE_DONNEE) porte.carte_heure(heure());
@@ -301,11 +325,81 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
     return rendu;
   }
 
+  /// **La mémoire des périphériques**, hors de la RAM. L'adresse est un
+  /// `BigInt` (un `u64`) ; la largeur, de un à huit octets.
+  const memoire = {
+    lire(adresse, largeur) {
+      if (porte.carte_mem_lire(BigInt.asUintN(64, BigInt(adresse)), Number(largeur)) !== 1) return null;
+      return BigInt.asUintN(64, porte.carte_mem_valeur());
+    },
+    /// La sonnette de la tablette lit sa file dans la RAM pendant l'appel,
+    /// par les deux imports.
+    ecrire(adresse, valeur, largeur) {
+      return (
+        porte.carte_mem_ecrire(
+          BigInt.asUintN(64, BigInt(adresse)),
+          Number(largeur),
+          BigInt.asUintN(64, BigInt(valeur)),
+        ) === 1
+      );
+    },
+  };
+
+  /// **L'écran, vu de la page.** La vue de la mémoire vidéo se refait à
+  /// chaque appel : la mémoire du module a pu grandir et détacher l'ancienne.
+  const vueDeLEcran = {
+    /// Le mode montré : `{ largeur, hauteur, octetsParLigne, debut }` (le
+    /// premier pixel, en octets depuis le début de la mémoire vidéo), ou
+    /// `null` sans écran.
+    mode() {
+      const mots = new Uint32Array(porte.memory.buffer, porte.carte_ecran_mode() >>> 0, 4);
+      if (mots[0] === 0) return null;
+      return { largeur: mots[0], hauteur: mots[1], octetsParLigne: mots[2], debut: mots[3] };
+    },
+    /// Combien de fois l'image a changé, en `BigInt` ; zéro sans écran.
+    revision: () => BigInt.asUintN(64, porte.carte_ecran_revision()),
+    /// Où l'invité voit la mémoire vidéo (sa BAR0), en `BigInt`.
+    base: () => BigInt.asUintN(64, porte.carte_ecran_base()),
+    /// La mémoire vidéo entière, en vue (pas en copie) : seize mébioctets.
+    pixels() {
+      const taille = porte.carte_ecran_taille() >>> 0;
+      return new Uint8Array(porte.memory.buffer, porte.carte_ecran_pixels() >>> 0, taille);
+    },
+    /// **L'image montrée, d'un bloc** : `largeur × hauteur × 4` octets en
+    /// XRGB8888, le bleu en bas, sans le remplissage des lignes. Une copie ;
+    /// `null` sans écran.
+    image() {
+      const mode = vueDeLEcran.mode();
+      if (mode === null) return null;
+      const tout = vueDeLEcran.pixels();
+      const ligne = mode.largeur * 4;
+      if (mode.octetsParLigne === ligne) {
+        return tout.slice(mode.debut, mode.debut + ligne * mode.hauteur);
+      }
+      const rendu = new Uint8Array(ligne * mode.hauteur);
+      for (let y = 0; y < mode.hauteur; y++) {
+        const de = mode.debut + y * mode.octetsParLigne;
+        rendu.set(tout.subarray(de, de + ligne), y * ligne);
+      }
+      return rendu;
+    },
+  };
+
   return {
     ports,
     lignes,
     battre,
     taperTexte,
+    memoire,
+    ecran: vueDeLEcran,
+    /// **Un toucher**, par la tablette : la position de 0 à 1 sur chaque axe,
+    /// les boutons en bits (gauche, droit, milieu). `false` quand l'invité n'a
+    /// pas pris la tablette : la souris PS/2 reste alors la seule.
+    toucher: (x, y, boutons) => porte.carte_toucher(Number(x), Number(y), boutons >>> 0) === 1,
+    /// La molette, en crans, positifs vers le haut.
+    defiler: (crans) => porte.carte_defiler(crans | 0) === 1,
+    /// Ce que le doigt a fait, rendu au pilote à l'heure `tics` (du 8254).
+    livrer: (tics) => porte.carte_livrer(BigInt.asUintN(64, BigInt(tics))),
     /// Une touche posée tout de suite : son code du jeu 1, `E0` ou non.
     touche: (jeu1, etendue, enfoncee) => porte.carte_touche(jeu1, etendue ? 1 : 0, enfoncee ? 1 : 0),
     /// Une frappe posée à son tour : `false` si la file pleine la refuse (le
