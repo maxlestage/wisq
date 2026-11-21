@@ -8,6 +8,212 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : la carte derrière la mémoire, l'écran et la tablette ; Void Xfce démarre son ISO jusqu'au bureau dessiné
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de l'entrée suivante*, chaque point rejoué sur l'hôte (un
+  Xeon) avant d'être corrigé :
+  - `67 9b` (`fwait` sous le préfixe de taille d'adresse) ne livrait pas
+    `#MF`, contrairement à ce que disait le commentaire. `attente`
+    demandait la longueur à `decode`, que l'émetteur partage et qui refuse
+    `67` devant tout sauf `call` et `jmp` ; la machine retombait sur
+    `sans_taille_d_adresse`, qui en faisait un `nop` sans regarder
+    l'exception en attente.
+  - `f2 9b`, `f3 f2 9b` et `48 66 9b`, que l'hôte admet (SIGFPE), étaient
+    illisibles : un arrêt de la machine en anneau 0, `#UD` en anneau 3.
+  - La liste des préfixes de `attente` n'était tenue par aucun test : réduite
+    à `40..4f`, `66`, `f0`, `f3`, toute la suite passait.
+  - `ffreep` qui fait tomber C1 n'avait pas de test : le test de l'état entier
+    ne jouait que `ffree`.
+- *La carte n'était branchée que par ses ports.* La mémoire des périphériques
+  (la mémoire vidéo et les registres de l'écran de Bochs, la BAR0 de la
+  tablette), hors de la RAM, rendait « un accès hors de la mémoire » ; la
+  tablette n'était jamais servie hors d'un `out` ; l'horloge CMOS minimale
+  des puces de la machine passait devant celle, complète, de la carte.
+  `wisq-pc` ne savait ni démarrer une image par sa recette, ni montrer un
+  écran.
+- *Void Xfce, sur la machine native*, s'arrêtait trois fois en route (voir
+  plus bas).
+
+**Ce qui est fait.**
+
+- *`fwait`* : `attente` ne demande plus rien à `decode` ; la longueur vaut
+  les préfixes plus un (le pas à pas ne lit jamais que quinze octets), et un
+  `f0` n'importe où devant reste refusé. *`ffreep`* rejoint `ffree` dans
+  l'état entier comparé à l'hôte.
+- *La mémoire des périphériques* (`x86_paging::Devices`, un champ neuf de
+  `Cpu`, vide par défaut : l'interpréteur de référence et le juge de
+  l'émetteur ne voient rien de changé). Quand la RAM ne couvre pas une
+  adresse physique — au-delà de sa fin, ou dans le trou sous quatre
+  gibioctets —, la lecture, l'écriture, chaque moitié d'un accès à cheval et
+  la sonde d'avant écriture (seize octets de SSE, `fxsave`) demandent à la
+  carte. C'est le `readSlowly` et le `writeSlowly` de `X86Memory.swift`. Le
+  tampon de traduction ne garde toujours que la RAM : le chemin chaud ne
+  rencontre jamais un périphérique.
+- *La carte tenue des deux côtés* (`pc::carte::brancher`,
+  `CartePartagee`) : par la machine (ses ports, ses lignes recopiées dans
+  les 8259, son réveil dans l'attente de `hlt`, déjà là) et par le
+  processeur (sa mémoire), sous un verrou que personne ne dispute. Le tour du
+  matériel (`Peripheriques::servir_tour`) sert la tablette toutes les deux
+  cent cinquante-six instructions au plus : sa sonnette, et ce que le doigt
+  a fait. L'horloge CMOS de la carte prend les ports `0x70` et `0x71`
+  (`Herites::cmos_ailleurs`).
+- *`wisq-pc`* : `--iso` (la recette lue par `iso9660::Recipe`, le noyau et
+  les initramfs sortis de l'image, mis bout à bout sur quatre octets comme
+  `IsoBoot.extractInitrds`, la ligne de l'application —
+  `chargeur::ligne_d_une_image`, le port de `IsoBoot.commandLine(from:)` et
+  de `X86Machine.commandLine(_:withScreen:)` —, l'image branchée en disque),
+  `--disk`, `--display 1280x800` (l'écran et la tablette sur la carte, le
+  cadre annoncé par la page zéro), `--screen-dump image.ppm` et
+  `--screen-every N` (l'image de la carte en PPM, datée en instructions),
+  `--keys 'secondes:texte'` (le clavier PS/2 de la carte), `--status N` (où
+  en est la course, et les RIP les plus relevés) et `--input-file` (taper au
+  port série ce qu'on ajoute à un fichier pendant la course). L'image change :
+  c'est un signe de vie, comme le port série.
+- *Les murs de Void, chacun levé* :
+  1. `67 8d 51 ff` (`lea -1(%ecx),%edx`) dans `ld-linux-x86-64.so.2` : tout
+     programme mourait d'un « Illegal instruction ». `lea` sous `67` vers un
+     registre de trente-deux ou seize bits se lit : l'adresse coupée à la
+     taille du registre est la même (EDX à 4 pour RCX = 0x1_0000_0005, DX à
+     4 sous `66`, relevé sur l'hôte) ; vers un registre de soixante-quatre
+     bits, elle ne l'est pas (`67 48 8d` rend 4 là où sans `67` on lirait
+     0x1_0000_0004), et reste refusé.
+  2. `66 0f e7 14 33` (`movntdq`) dans un module du noyau chargé au
+     démarrage (le banc du RAID) : la machine s'arrêtait. `movntps`,
+     `movntpd`, `movntdq` et `movnti` rangent comme `movaps`, `movdqa` et
+     `mov`, en mémoire seulement (`non_temporel`, une copie de l'octet
+     d'opcode lue par `decode`, sans toucher au décodeur partagé) ; leurs
+     formes registre, sous `f3`, sous `f2`, et `movnti` sous `66` restent
+     refusées (SIGILL sur l'hôte).
+  3. `67 67 66 0f 6f d1` (deux `67` devant `movdqa` entre registres) dans un
+     programme du bureau : `sans_taille_d_adresse` ôte maintenant tous les
+     `67`, et essaie aussi le second décodeur (le MMX et le flottant de SSE
+     entre registres) ; `maskmovq`, qui adresse `[RDI]` sans opérande pour le
+     dire, reste refusé.
+
+**Les tests.** `pc_ecran.rs`, six : l'invité peint l'écran par sa mémoire
+vidéo (quatre octets, huit à cheval sur deux pages, seize d'un `movdqu`, tout
+dans le cadre de la carte, la révision qui avance), les registres DISPI par
+la BAR2 et par les ports, personne ailleurs hors de la RAM, la sonnette de la
+tablette notée par l'écriture et servie au tour suivant, un toucher qui
+arrive sans sonnette (X, Y, trois boutons, `SYN_REPORT`, la ligne 10),
+l'horloge CMOS de la carte. `pc_flottant` gagne
+`every_prefix_the_host_accepts_before_fwait_waits` (les vingt-six préfixes
+seuls et cinq mélanges, chacun `#MF` et une instruction, `f0` refusé partout
+— sonde `r6/c/mf4`) et `non_temporal_stores_store_like_the_others` ;
+`an_address_size_prefix_without_address_is_ignored` juge `lea`, les deux `67`
+et le second décodeur (sondes `r6/c/lea67` et `r6/c/nt`). Deux tests du
+chargeur (la ligne de l'application, les initramfs bout à bout), cinq de
+`wisq-pc` (l'écran, le PPM, les frappes, le fichier d'entrée, les RIP
+relevés). `x86_float_host` joue `ffreep`.
+
+**Les sabotages** (une ligne chacun, le test lancé, la source rendue et
+`git diff` vide après chacun ; `r6/sab/lot1.out` à `lot5.out`) : 44, tous
+tombés au bout du compte.
+
+| où | sabotages | tombent dans |
+|---|---|---|
+| `fwait` | longueur demandée à `decode`, liste réduite, `67` ou `f2` retiré, `f0` admis | `every_prefix_the_host_accepts_before_fwait_waits`, `fwait_is_counted_as_one_instruction` |
+| `ffreep` | C1 gardé | l'état entier, les démasquées |
+| mémoire des périphériques | lecture, écriture, chaque moitié à cheval, `claims` ignoré ou faux, `Devices` non posé (M1 à M5, M8, M12) | `the_guest_paints_the_screen_through_its_video_memory`, `the_dispi_registers_answer_through_the_bar2` |
+| tablette | `servir_tour` non appelé, servie sur sonnette seulement (M6, M7) | `the_tablet_doorbell_is_served_at_the_next_turn`, `a_touch_reaches_the_guest_without_a_doorbell` |
+| horloge CMOS | `cmos_ailleurs` non posé, gardes de `0x70` et `0x71` retirées (M9 à M11) | `the_cards_cmos_clock_takes_the_ports` |
+| ligne, initramfs | `quiet` gardé, `console=tty0` toujours, patience toujours, clé sans `=`, sans alignement (L1 à L5) | les deux tests du chargeur |
+| `wisq-pc` | PPM en BGR, frappes non triées, écran nul admis, `\n` non traduit, fichier relu, vide rendu, tri, troncature (W1 à W8) | ses tests |
+| `lea`, `67` | `lea` large admis, `lea` refusé, un seul `67` ôté, sans le second décodeur, mémoire admise, `maskmovq` admis, longueur d'un seul `67` (A1, A2, P1 à P5) | `an_address_size_prefix_without_address_is_ignored` |
+| non temporels | forme registre admise, longueur de `movnti`, `f3` admis, `movnti` sous `66`, `non_temporel` absent (N1 à N5) | `non_temporal_stores_store_like_the_others` |
+
+N3 (`f3` admis) a d'abord survécu : `f3 0f e7` restait refusé par la garde
+`0xE7 if operande`. Le test refuse maintenant aussi `f3 0f 2b`, `f3 0f c3`,
+`f2 0f c3` et `66 0f c3`, et N3 tombe (N3b). *Un défaut du script de
+sabotage lui-même*, trouvé en route : la source rendue gardait l'heure de la
+copie, antérieure au binaire saboté, et cargo ne rebâtissait pas — un
+`cargo test` lancé juste après un lot jugeait le dernier sabotage. Chaque
+sabotage, lui, écrit sa source et rebâtit : les résultats tiennent. Le
+script remet maintenant l'heure, et la suite entière a été relancée sur une
+source fraîche.
+
+**Où cela va** (une course à la fois, `ulimit -v`) :
+
+- *L'ISO `alpine-virt-3.24.4-x86_64.iso`* par `--iso` (512 Mio) : la recette
+  de `/boot/syslinux/syslinux.cfg`, la ligne de l'application, l'invite,
+  `root`, `uname -a` (`Linux localhost 6.18.60-0-virt`) : 5,02 milliards
+  d'instructions, 52,6 s, 95,5 MIPS. Avec `--display 1280x800` : `bochs-drm`
+  prend la carte (« Framebuffer size 16384 kB @ 0xe0000000, mmio @
+  0xe1000000 »), `fb0` et `/dev/dri/card0` existent, la tablette se lie
+  (« input: wisq tablet »), la console du noyau et l'invite paraissent à
+  l'écran (capture regardée) ; 5,78 milliards, 59,8 s. Le clavier : `--keys`
+  tape `root` puis `uname -a` dans le getty de la console, qui les affiche
+  (la connexion par la console demande un mot de passe, et la machine
+  n'en tape pas).
+- *L'ISO `void-live-x86_64-20250202-xfce.iso`* (somme vérifiée), 1 Gio, la
+  ligne de l'application (`console=tty0`, la recette de
+  `/boot/isolinux/isolinux.cfg` sans `quiet`, la patience de systemd, la
+  console série), l'écran à 1280 × 800 : le noyau 6.12 déballe son
+  initramfs de 147 Mio en xz (un tiers du chemin, ~30 milliards
+  d'instructions, l'essentiel dans le décodeur xz d'après les RIP relevés par
+  `--status` ; la racine en squashfs, xz aussi, en reprend une bonne part
+  ensuite), dracut monte la racine, runit,
+  udev, `void-live login:` sur le port série, lightdm ouvre la session
+  d'`anon` : Xorg (`modesetting` sur `bochs-drm`, à 1024 × 768),
+  `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, `Thunar`,
+  `nm-applet`, `pipewire` (relevé par `ps` dans la machine, par
+  `--input-file`). **Le bureau est dessiné** : le panneau, les icônes
+  (Home, File System, Trash), le dock, l'horloge, puis le fond d'écran à la
+  souris d'Xfce (captures regardées). Cinq minutes de l'invité plus tard,
+  l'économiseur d'écran l'éteint, comme il le fait.
+
+| | jusqu'où | instructions | temps | débit |
+|---|---|---|---|---|
+| machine PC en Rust (m1, une image toutes les 5 s, un autre flux en concurrence les quatre premières minutes) | le panneau et les icônes | 95,4 milliards | 915 s | 104 MIPS |
+| machine PC en Rust (m1) | le fond d'écran | 96,2 milliards | ≤ 930 s | 103 MIPS |
+| machine PC en Rust (m2, une image toutes les 10 s) | le panneau et les icônes | 95,4 milliards | 860 s | 111 MIPS |
+| machine PC en Rust (m2) | le fond d'écran | 96,7 milliards | ≤ 880 s | 110 MIPS |
+| cœur Swift (journal du 14 novembre, la fabrication du bureau prêt) | le panneau ; la fin de la fabrication | ~88 milliards ; 97,7 milliards | 2 527 s pour la fabrication entière | 39 à 46 MIPS |
+
+**Environ 2,8 fois le cœur Swift en temps jusqu'au bureau** : 880 s contre
+~2 500 s (96,7 milliards d'instructions au débit moyen de la fabrication du
+14 novembre, 97,7 milliards en 2 527 s, soit 38,7 MIPS), sur des comptes
+d'instructions voisins — les deux machines ne retirent pas tout à fait les
+mêmes (le panneau vient vers 88 milliards côté Swift, 93,8 ici). C'est une
+comparaison entre deux journaux, pas des courses alternées ; le conteneur
+était partagé avec un autre flux (un `bun` et des `rustc` pendant m1, des
+`rustc` au début de m2).
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (961 passés, 0 échec), `-p wisq-page -p wisq-site` (43),
+`cargo build --release -p wisq-page --target wasm32-unknown-unknown`,
+`check-whitespace.sh`, `check-project-sources.sh` : tout passe. Le compte
+publié passe de 4 142 à 4 157 (Rust 1 092) ; le site rebâti, `bun test` :
+476 passés. `origin/master` (#712, la carte, identique à
+`claude/pc-rust-peripheriques` pour `crates/wisq-page`) était déjà fusionné :
+rien de neuf à prendre.
+
+**Ce qui reste.**
+
+- *L'ABI C* (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`) : la machine PC
+  native n'y est pas exposée ; l'application démarre toujours le cœur Swift.
+- *L'écran que Xorg choisit* : 1024 × 768, pas les 1280 × 800 demandés —
+  la carte n'offre pas d'EDID, et `modesetting` prend son mode par défaut
+  (l'application branche aussi un écran de 1024 × 768). Le noyau avertit
+  que la BAR0 déborde l'entrée réservée de la page zéro (« resource sanity
+  check »), sans conséquence.
+- *La mémoire des périphériques passe par le chemin lent* : une marche des
+  tables et un verrou par accès. Le bureau s'en contente ; un bureau qui
+  peint beaucoup le paiera. Non mesuré à part.
+- *Toujours refusés* : `67` devant un opérande mémoire (l'adressage de
+  trente-deux bits n'est pas porté), `maskmovdqu`, `maskmovq` sous `67` ;
+  quinze préfixes devant `9b` sont un `#GP` sur l'hôte et une instruction
+  illisible ici. Aucun n'a été rencontré en route.
+- *La carte réseau* n'est pas branchée par `wisq-pc`. Le port `0x80` (le
+  délai d'entrée-sortie) est compté parmi les ports muets : 2,4 millions
+  d'écritures sur la course m1.
+- *Seule la CI juge* le cœur Swift et les constructions iOS et macOS (aucun
+  Swift n'a été touché), et un autre processeur pour les tests contre le
+  silicium de l'hôte.
+
 ## 2026-11-21 — Machine PC en Rust : C1 d'une instruction arrêtée, `fxrstor`, ce qui attend et ce qui n'attend pas
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante, chaque point
