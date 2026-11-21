@@ -8,6 +8,122 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : C1 d'une instruction arrêtée, `fxrstor`, ce qui attend et ce qui n'attend pas
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante, chaque point
+rejoué contre le silicium de l'hôte, un Xeon, avant d'être corrigé) :
+
+- *C1 d'une instruction arrêtée* : il restait ce qu'il était. Le silicium
+  le fait tomber, sauf sur un débordement de la pile : `fsqrt` (C1 levé)
+  puis `fdiv` par zéro arrêté rend 0xb0a4, la machine rendait 0xb2a4 ;
+  `fcom` arrêté par un NaN, 0xf5a1 contre 0xf7a1 ; un `fsts` arrêté par le
+  dépassement, 0xb8a8. L'entrée suivante disait « sinon ils restent ce
+  qu'ils étaient » : c'est faux pour C1, juste pour C3, C2 et C0.
+- *Le test ne pouvait pas le voir* : sa mise en place (des chargements)
+  laissait toujours C1 à zéro avant l'instruction jugée. En le levant, il a
+  montré deux autres écarts que personne n'avait relevés : `fcomi`,
+  `fucomi`, `fcomip` et `fucomip` **gardent** C1 (le manuel le dit mis à
+  zéro ; arrêtés, ils le gardent aussi), et `ffree`, `ffreep` le font
+  **tomber**. 1 386, 1 386 et 1 980 cas sur 4 000.
+- *`fxrstor`* gardait les bits 7 et 13 à 15 du mot de contrôle : le
+  silicium rend 0x1f7f d'une aire qui dit 0xffff, 0x0040 de 0x0080.
+  L'entrée suivante ne nommait que `fldcw`, `fldenv` et `frstor`.
+- *`#MF`* n'était pas livré par `cvtpi2ps`, `cvtpi2pd` (depuis un registre),
+  `cvt(t)ps2pi` et `cvt(t)pd2pi` : la garde ne voyait que `emms` et le MMX
+  lui-même. Ni par `fwait` préfixé (`48 9b`, `66 9b`), lu comme un `nop`.
+  À l'inverse, `fneni`, `fndisi` et `fnsetpm` (`db e0`, `e1`, `e4`)
+  attendaient, et le silicium non.
+- *La pile pleine dont ST(0) est vide* : `fxtract`, `fptan` et `fsincos`
+  levaient C1 (0x3a41) ; le silicium rend 0x3841.
+- *Sans test* : `fnstsw`, `fnstcw`, `fnstenv` et `fnsave` en mémoire sous
+  une exception en attente, `fninit` et `emms` sous elle, `fldcw` qui
+  démasque une exception déjà levée, et le compte des instructions de
+  `fwait` (qui règle le 8253).
+
+**Ce qui est fait.**
+
+- *C1 d'un arrêt* tombe (`execute_x87`, `x87_store_stops`), sauf sur une
+  faute de pile, où il dit son sens, et pour `fcomi` et les siens, qui ne
+  l'écrivent pas (`set_comparison_flags` ne le touche plus). `ffree` et
+  `ffreep` le font tomber.
+- *`fxrstor`* passe par `control_word`, comme `fldcw`, `fldenv` et
+  `frstor`.
+- *Ce qui touche un registre MMX* est dit par `Extended::touches_mmx` :
+  `emms`, le MMX, `cvt(t)ps2pi`, `cvt(t)pd2pi`, et `cvtpi2ps`, `cvtpi2pd`
+  depuis un registre seulement — depuis la mémoire, le manuel les dit sans
+  passage au MMX, et l'hôte ne livre rien. Une exception du x87 en attente
+  les arrête toutes (`#MF`).
+- *`fwait` préfixé* : `attente` saute les préfixes, et `Lue::Attente` porte
+  la longueur ; `lock fwait` reste illisible (SIGILL sur l'hôte), alors que
+  `decode`, que l'émetteur partage, en fait un `nop`.
+- *N'attendent pas* : `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv`,
+  `fnsave`, et `fneni`, `fndisi`, `fnsetpm`, qui ne font rien.
+- *Un ST(0) vide* sur une pile pleine : `empty_into_two` range les deux
+  indéfinis, C1 à zéro.
+
+**Les tests.** `x86_float_host.rs` lève C1 avant l'instruction (par
+`fnstenv`, le bit posé, `fldenv`) un bloc de soixante tirages sur deux —
+soixante, le plus petit commun multiple des modes, des précisions et des
+piles — et joue une cinquième pile, pleine mais ST(0) libéré, une fois sur
+dix (à la place d'une des six piles normales). Les trois tests de l'état
+entier, des transcendantes et des démasquées passent sur leurs 280 000,
+72 000 et 276 000 tirages. `x86_extended_oracle` gagne
+`fxrstor_keeps_the_control_word_like_the_silicon`,
+`a_stopped_instruction_drops_c1` et
+`a_full_stack_with_an_empty_top_keeps_c1_down`, aux valeurs relevées sur
+l'hôte ; `pc_flottant`, `what_does_not_wait_runs_under_a_pending_exception`
+(`fnstsw`, `fnstcw`, `fnstenv` en mémoire, `fneni`, `fndisi`, `fnsetpm`,
+`cvtpi2ps` et `cvtpi2pd` depuis la mémoire : passent, et le `fwait` suivant
+livre `#MF`, sauf après `fnstenv`, qui masque tout),
+`fldcw_unmasking_a_raised_exception_makes_it_pending` et
+`fwait_is_counted_as_one_instruction` (avec `lock fwait` refusé) ; le test
+de `#MF` y ajoute `fwait` préfixé, `emms`, `movq2dq` et les cinq
+conversions, et `fninit` et `fnsave` à côté de `fnclex`. Chaque valeur
+attendue vient d'une sonde en C jouée sur l'hôte (`r5/c` dans le
+bloc-notes).
+
+**Les sabotages** (un changement d'une ligne chacun, le test lancé, la
+source rendue et `git diff` vide après chacun ; `r5/sab/lot.out`) :
+
+24 sabotages en 28 courses, tous tombés au bout du compte (`r5/sab/lot.out` et `lot2.out` dans le
+bloc-notes) :
+
+| où | sabotage | tombe dans |
+|---|---|---|
+| C1 d'un arrêt | `0` → `before.2 & C1` (S10), le rangement arrêté qui le garde (S10s) | `a_stopped_instruction_drops_c1`, les démasquées |
+| `fcomi` | C1 remis à zéro (S10f), `keeps_c1` retiré de l'arrêt (S10k) | l'état entier, les démasquées |
+| `ffree` | C1 gardé (S_ffree) | l'état entier, les démasquées |
+| `fxrstor` | `half(0) \| 0x40` (S_fxrstor) | `fxrstor_keeps_the_control_word_like_the_silicon` |
+| MMX | `emms` (S13), `cvt*2pi` (S_tommx), `cvtpi2p*` d'un registre (S_frommmx), puis de la mémoire (S_frommem) | `an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction`, `what_does_not_wait_runs_under_a_pending_exception` |
+| `fwait` | préfixes ignorés (S_fwait_prefixe), `lock` admis (S_lock), le compte retiré (S14) | le test de `#MF`, `fwait_is_counted_as_one_instruction` |
+| ce qui n'attend pas | `fneni` (S_fneni, deux fois), `fninit` (S3b), `fnclex` (S3c), `fnstsw m16` (S1, deux fois), `fnstenv` (S1b), `fnstcw` (S1c), `fnsave` (S1d, deux fois) | `what_does_not_wait_runs_under_a_pending_exception`, `the_no_wait_forms_run_under_a_pending_exception`, le test de `#MF` |
+| `fldcw` | le résumé après une forme de contrôle retiré (S30) | `fldcw_unmasking_a_raised_exception_makes_it_pending` |
+| ST(0) vide | `!self.st_empty(0) &&` retiré de `fxtract` (S17) et du sinus (S17b), C1 non remis à zéro (S17c) | `a_full_stack_with_an_empty_top_keeps_c1_down` |
+
+S3b a d'abord survécu, comme au contrôle : dans la machine, `fninit` passe
+par `decode` (`Op::FpuInit`, que l'émetteur partage) et n'atteint jamais
+`execute_x87`. La garde ne sert qu'à qui appelle `execute_extended`
+lui-même ; `the_no_wait_forms_run_under_a_pending_exception` la juge à ce
+niveau, et S3b tombe.
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (946 passés, 0 échec), `cargo build --release -p wisq-page
+--target wasm32-unknown-unknown`, `check-whitespace.sh`,
+`check-project-sources.sh` : tout passe. Le compte publié passe de 4 135 à
+4 142 (Rust 1 077) ; le site rebâti, `bun test` : 476 passés. L'initramfs
+6.18.60 (`rdinit=/bin/sh`) rend les mêmes `awk`, `printf '%.20Lf'` et
+`seq` qu'avant, 2,01 milliards d'instructions en 13,96 s, 144,2 MIPS.
+
+**Ce qui reste.** Ce que l'entrée suivante disait non modélisé l'est
+toujours : le dépassement démasqué vers un registre (le biais de 24 576),
+CR0.NE et le mode FERR#, FIP, FDP et FOP. `decode`, que l'émetteur partage,
+lit encore `lock` devant `fwait` (et sans doute devant d'autres
+instructions qui ne se verrouillent pas) : la machine native le refuse
+pour `fwait` seulement. Les seuils des transcendantes et ce que `fcomi`
+fait de C1 ne sont relevés que sur ce Xeon ; un processeur AMD peut
+différer. Le cœur Swift garde ses écarts.
+
 ## 2026-11-21 — Machine PC en Rust : le contrôle du flottant, l'état entier du x87 contre l'hôte, les exceptions démasquées et `#MF`
 
 **Ce qui n'allait pas** (le contrôle de la tranche précédente, chaque point
