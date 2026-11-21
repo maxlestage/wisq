@@ -8,6 +8,233 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : le x87, le MMX et le flottant de SSE et SSE2, la carte branchée, et Alpine démarre son ISO jusqu'à l'invite
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de la tranche « vitesse »* a trouvé une garde sans test : le
+  plafond de soixante-quatre octets d'un bloc (`.min(PORTEE - position)` dans
+  `Blocs::construire`). Sabotée à `PORTEE + 8`, toute la suite passait, alors
+  que seize `mov $imm32,%eax` en ligne droite faisaient paniquer l'hôte
+  (« index out of bounds », un bloc de 70 octets, neuf mots pour huit).
+  Aussi : les seize octets qu'un bloc vide compare n'étaient pas jugés, le
+  journal disait « n = 17 » là où le test tombe à n = 16, et le commentaire
+  du test le disait aussi.
+- *Le flottant* : la machine native ne lisait du x87 que ses mots d'état et
+  `fild`, rien du MMX, rien du calcul flottant de SSE. Le premier programme
+  qui calculait mourait : `busybox awk 'BEGIN{print 1/3}'` d'un « Illegal
+  instruction », et `printf '%.20Lf\n' 0.1` (le `long double` de musl, dans
+  le shell lui-même) d'un noyau qui panique, « Attempted to kill init ».
+- *La carte des périphériques* (`wisq-carte`, #712) existait, et rien ne la
+  branchait derrière les ports de la machine native : pas de PCI, pas de
+  disque, pas de clavier, donc pas d'ISO.
+
+**Ce qui est fait.**
+
+- *Les défauts du contrôle* : deux tests dans `pc_rapide`.
+  `a_straight_block_stops_at_sixty_four_bytes` construit le bloc de seize
+  `mov $imm32` par `Blocs::construire` (douze instructions, huit mots) puis
+  le fait tourner par les deux chemins ;
+  `an_empty_block_compares_its_first_sixteen_bytes` : un bloc vide (`in
+  (%dx),%al`) perd sa case quand l'octet 0, 7, 8, 12 ou 15 change, pas le
+  vingtième. La table de l'entrée du 20 novembre est corrigée (n = 16, n = 8,
+  par l'assertion du pas à pas).
+- *Le flottant de quatre-vingts bits* (`x86_f80.rs`, le port de
+  `X86Extended*.swift`) : tout sur des entiers, arrondi une fois, le même sur
+  tout hôte. En plus du Swift : la précision du mot de contrôle (24, 53 ou 64
+  bits), et les fonctions transcendantes (`fsin`, `fcos`, `fsincos`, `fptan`,
+  `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`), calculées par des séries en
+  quatre-vingts bits avec π/2 et ln 2 sur cent vingt-huit bits.
+- *Le x87* (`x86_x87.rs`, le port de `X86X87*.swift`) : toute la page `D8` à
+  `DF` du manuel, ses alias non documentés refusés. Là où le cœur Swift se
+  taisait, le manuel : lire un registre vide est un débordement par le bas
+  pour toute instruction ; C1 tombe sur un chargement ; `fucomp` dépile ; un
+  réel lu en mémoire signale son dénormal et son NaN signalant ; `fnsave`,
+  `frstor`, `fnstenv` à quatorze octets sous `66`, `fbld`, `fbstp`,
+  `fdecstp`, `fincstp`, `fnop`. Un rangement sonde ses deux pages avant
+  d'écrire : une faute ne laisse rien derrière elle.
+- *Le MMX* (`x86_mmx.rs`, le port de `X86MMX.swift`) : les calculs à deux
+  opérandes, les déplacements, les décalages, `pshufw`, `pinsrw`, `pextrw`,
+  `pmovmskb`, `maskmovq`, `movntq`, `movdq2q`, `movq2dq`.
+- *Le flottant de SSE et SSE2* (`x86_sse.rs`) : scalaire et empaqueté, les
+  comparaisons en masque et en drapeaux, toutes les conversions de base
+  (y compris avec le MMX), `rcp` et `rsqrt` (rendus justes, dans la borne de
+  1,5 · 2⁻¹² du manuel). **Rien n'est laissé à l'hôte**, à l'inverse du cœur
+  Swift : les quatre modes d'arrondi de MXCSR, ses six drapeaux, FTZ et DAZ,
+  la petitesse jugée après l'arrondi comme sur x86. Une exception démasquée
+  ne range rien et est livrée en `#XM` (vecteur 19) sous CR4.OSXMMEXCPT, en
+  `#UD` sinon.
+- *Où ces formes sont lues* : `decode_extended`, le second décodeur que seule
+  la machine native consulte ; `decode`, que l'émetteur partage, n'a pas
+  changé.
+- *La carte branchée* (`pc/carte.rs`) : `CartePc` est un `Peripheriques` de
+  la machine, derrière ses propres puces. Une notification de disque est
+  servie pendant l'`out`, avec la RAM de la machine ; l'impulsion de remise à
+  zéro de l'i8042 arrête la course. `wisq-vm` dépend de `wisq-carte`, une
+  feuille du même dépôt sans dépendance. `wisq-pc` gagne `--disque` et
+  `--couche` (le fichier lu sur place, les écritures dans une couche),
+  `--sans-carte`, et plusieurs invites (`--prompt 'login: ;;:~# '`).
+- *Le préfixe `67` devant une instruction qui n'adresse rien* :
+  `67 49 f7 e6`, un `mul %r14` qu'OpenSSL aligne ainsi dans `libcrypto.so.3`,
+  arrêtait `apk` en installant les paquets de l'ISO. La machine le lit sans le
+  `67` quand l'instruction n'a ni opérande mémoire ni adresse implicite
+  (chaînes, `loop`, `jrcxz`) ; sinon il reste refusé.
+- *La fusion de master* (#712), pour la carte.
+
+**Les corpus, en entier** (`x86_float_oracle.rs`, neuf, et
+`x86_extended_oracle.rs`, étendu) :
+
+| corpus | formes jugées | cas jugés | laissés, et pourquoi |
+|---|---|---|---|
+| `x86-x87-oracle.tsv` | 121 sur 121 (9 avant) | 7 260 (540 avant) | — |
+| `x86-x87-rounding-oracle.tsv` | 16 sur 16, quatre modes | 896 | — |
+| `x86-float-oracle.tsv` | 119 sur 127 | 12 852 | 8 formes de SSE3 (`haddps`, `hsubps`, `haddpd`, `hsubpd`), 864 cas : CPUID ne les annonce pas, elles restent illisibles |
+| `x86-mmx-oracle.tsv` | 237 sur 285 | 9 243 | 48 formes de SSSE3 (`pshufb`, `phadd*`, `phsub*`, `pmaddubsw`, `psign*`, `pmulhrsw`, `pabs*`, `palignr`), 1 872 cas : pas annoncées non plus |
+| `x86-fxsave-oracle.tsv` | — | 280 | — |
+| `x86-xmm-oracle.tsv`, `x86-simd-oracle.tsv` | toutes | 976 et le tout | déjà jugés, inchangés |
+
+Le corpus d'arrondi a montré une chose que le cœur Swift faisait faux sans le
+voir (son test ne compare pas le mot d'état) : quand un mode refuse l'infini
+et rend le plus grand fini, **C1 tombe**.
+
+**Le silicium de l'hôte, là où les corpus se taisent** (`x86_float_host.rs`,
+neuf, sur un hôte x86-64 seulement : un Xeon ici) : la même instruction
+exécutée par le processeur qui fait tourner le test, sur des valeurs tirées
+aux bords, et comparée au bit près.
+
+| | formes | cas | ce qui est comparé |
+|---|---|---|---|
+| SSE et SSE2 | 45 | 270 000 | XMM0, RAX, MXCSR entier, ZF PF CF ; quatre modes, FTZ, DAZ |
+| x87, calcul | 10 | 40 000 | ST(0), les six drapeaux, C0 à C3 ; quatre modes, trois précisions |
+| x87, rangements | 9 | 54 000 | les octets rangés et le mot d'état ; `fst`, `fist`, `fisttp`, `fbstp`, `frndint` |
+| x87, transcendantes | 8 | 24 000 | à 2⁻⁵⁸ près en relatif (2⁻⁶² en absolu), sur le domaine où le silicium est juste |
+
+Il a trouvé cinq écarts, tous corrigés : `x + 0` arrondi à la précision
+réduite, le dénormal d'un opérande à côté d'un NaN (non signalé), celui de
+`x/∞` et `∞/x` (signalé), le débordement d'un `fst` dans les modes qui
+refusent l'infini (le plus grand fini, C1 à zéro), et, sous DAZ, `min`/`max`
+qui rendent la source dénormale comme un zéro.
+
+**Où cela va** (`wisq-pc`, 512 Mio, une course à la fois, `ulimit -v`) :
+
+- *L'initramfs, `rdinit=/bin/sh`* : avant, `awk` meurt et `printf %Lf` fait
+  paniquer le noyau ; après, `busybox awk` rend `0.333333 1.41421`, `e`,
+  `ln 10`, `sin 1`, π à quinze chiffres, la somme harmonique de 100 000
+  termes (12,0901), `inf`, `-inf`, `-nan` pour `log(-1)` (l'indéfini négatif
+  de x86) ; `printf '%.20Lf' 0.1` rend `0.10000000000000000555` ; `busybox
+  dc` rend √2 à vingt chiffres ; `seq 0.5 0.25 1.5`.
+- *L'ISO `alpine-virt-3.24.4-x86_64.iso`* (somme vérifiée), son
+  `vmlinuz-virt` et son `initramfs-virt`, ligne `console=ttyS0
+  modules=loop,squashfs,sd-mod,usb-storage` : le média monté, les paquets
+  installés, OpenRC, **`localhost login:`**, puis `root`, `uname -a`, `ls /`,
+  `awk` (`0.333333333333333 1.4142135623731 3.14159265358979`), `printf
+  %.20Lf`, `df`, `apk info` (28 paquets).
+
+| | jusqu'où | instructions | temps | débit |
+|---|---|---|---|---|
+| machine PC en Rust | `login:` | 5,01 milliards | 52,05 s | 96,3 MIPS |
+| machine PC en Rust | les huit commandes | 5,06 milliards | 52,11 s | 97,2 MIPS |
+| cœur Swift (`X86BootAttemptTests`, `WISQ_PC_DISK_FILE`) | les mêmes commandes | 4,44 milliards | 88,85 s | 50 MIPS |
+
+**1,71 fois** le cœur Swift sur l'ISO, l'espace utilisateur compris.
+
+**Le banc commun** (6.18.60, initramfs, jusqu'au shell de secours, `echo
+wisq-parle`), en courses alternées contre 5e45734f, le code d'avant cette
+tranche : avant 16,54 · 16,35 · 17,99 · 16,88 · 16,77 · 16,72 · 17,69 ·
+18,21 · 16,66 · 17,03 · 18,00 · 17,08 s (médiane 17,0 s) ; après, la carte
+branchée, 17,29 · 17,22 · 17,48 · 16,81 · 17,36 · 18,18 · 16,61 · 17,52 ·
+17,25 s (médiane 17,29 s) ; après, `--sans-carte`, 16,94 · 17,43 · 16,22 s.
+Le conteneur était bruyant : l'écart (1,5 % au plus) est sous le bruit.
+Le service de la carte toutes les 256 instructions ne coûte que deux
+questions quand rien n'attend.
+
+**Sabotages** (une ligne chacun, en profil de publication, les tests nommés ;
+script et journal : `<bloc-notes>/t3/sab/sab.py` et `sab.out`, `git diff`
+des sources vide après) :
+
+| sabotage | tombe par |
+|---|---|
+| plafond d'un bloc `PORTEE + 8 - position` (blocs.rs) | `a_straight_block_stops_at_sixty_four_bytes` (panique de l'hôte) |
+| bloc vide : 8 octets comparés au lieu de 16 | `an_empty_block_compares_its_first_sixteen_bytes` |
+| C1 levé quand un mode refuse l'infini (`assemble_to`) | `the_x87_rounds_like_the_silicon_in_every_mode` |
+| `DC`/`DE` sans l'échange de `fsub` et `fsubr` | `the_x87_forms_the_machine_reads_match_the_silicon` |
+| un registre vide lu sans débordement | `reading_an_empty_register…`, et le corpus x87 (`fxch %st(2)`) |
+| `fucomp` ne dépile pas | `fucomp_pops_and_fucom_does_not` |
+| la précision de 53 bits prise pour 64 | `the_precision_control_rounds_the_sum` |
+| le dénormal signalé à côté d'un NaN | `the_x87_matches_the_host_silicon…` |
+| le dénormal de `x/∞` tu | le corpus x87 |
+| C1 levé au débordement de `fst` dans un mode qui refuse l'infini | `x87_stores_match_the_host_silicon…` |
+| la seconde page d'un rangement du x87 non sondée | `an_x87_store_across_a_missing_page…` (après correction du test, voir plus bas) |
+| `fnsave` sans remettre les étiquettes à vide | `fnsave_then_frstor_gives_back_the_state` |
+| `fbstp` accepte 10¹⁸ | `fbld_and_fbstp_go_through_eighteen_digits` |
+| le dénormal d'un réel lu en mémoire tu | `a_real_read_from_memory_reports_what_it_is` |
+| `x + 0` rendu sans arrondi à la précision réduite | `the_x87_matches_the_host_silicon…` |
+| la petitesse de SSE jugée avant l'arrondi | `tininess_is_judged_after_rounding_like_the_host` (après ajout, voir plus bas) |
+| FTZ sans effet | `sse_matches_the_host_silicon_in_every_mode` |
+| DAZ ne zéro pas la source que rend `min`/`max` | `sse_matches_the_host_silicon…` |
+| `cmp nlt`/`nle` muets devant un NaN silencieux | `sse_matches_the_host_silicon…` |
+| `ucomis` non ordonné sans CF | `sse_floats_match_the_silicon` |
+| PE tu dans une conversion vers l'entier | `sse_matches_the_host_silicon…` |
+| une exception démasquée range quand même | `an_unmasked_sse_exception_is_delivered…` |
+| `#XM` même sans CR4.OSXMMEXCPT | `an_unmasked_sse_exception_is_delivered…` |
+| `cvtsd2ss` efface le haut de l'élément bas | `sse_floats_match_the_silicon` |
+| `rcp` de −0 rend +∞ | `rcp_and_rsqrt_stay_within_the_bound` |
+| entrer dans le MMX sans marquer les registres occupés | `maskmovq_writes_only_the_chosen_bytes` |
+| `packsswb` non signé | `mmx_matches_the_silicon` |
+| `d9 /1` en mémoire lu | `the_extended_decoder_reads_exactly_its_forms` |
+| `rcpss` (`f3`) non lu | `rcp_and_rsqrt_stay_within_the_bound` |
+| `maskmovq` range l'octet bas partout | `maskmovq_writes_only_the_chosen_bytes` |
+| l'exposant de `sqrt` décalé d'un rang | `sse_floats_match_the_silicon` |
+| la série du sinus sans son signe alterné | `x87_transcendentals_agree_with_the_host_silicon` |
+| la réduction d'un grand argument sans la partie basse de π/2 | `the_transcendental_functions_give_the_known_values` |
+| `67` accepté devant `movs` | `an_address_size_prefix_without_address_is_ignored` |
+| `67` accepté devant un opérande mémoire | `an_address_size_prefix_without_address_is_ignored` |
+| la notification du disque non servie pendant l'`out` | `a_disk_notification_is_served_with_the_machine_ram` |
+| l'impulsion de remise à zéro ignorée | `the_reset_pulse_stops_the_run` |
+| la carte muette sur `0xCFC` | `the_pci_bridge_answers_behind_the_machine_ports` |
+
+**Trois sabotages ont d'abord survécu**, et chacun disait un trou du test,
+pas du code : *la seconde page non sondée* (le test posait les dix octets à
+0xAFFA : le premier mot de huit octets tombait déjà à cheval, et son
+écriture fautait d'elle-même ; le test les pose maintenant à 0xAFF8, huit
+dans la première page) ; *la petitesse avant l'arrondi* (270 000 tirages ne
+tombent pas sur le seul cas où elle change quelque chose : un résultat qui
+s'arrondit au plus petit normal ; il a son test contre l'hôte) ; *un bit bas
+de la partie basse de π/2 changé* (sous la résolution de tout résultat :
+équivalent, remplacé par le retrait de la partie basse, qui tombe depuis que
+le sinus de 10⁶, de 10¹⁰ et de 123 456,789 est jugé).
+
+**Tests** : 28 de plus dans cette tranche (Rust 1 032 → 1 060 avec ceux
+de la carte, fusionnée avec #712) ; le compte publié passe de 3 947 à 4 125
+(Swift 3 065 + Rust 1 060). `cargo test --release -p wisq-vm -p wisq-carte` :
+929 réussis ; la cible wasm32 de `wisq-page` se construit.
+
+**Ce qui reste.**
+
+- *L'émetteur* : ses formes flottantes de SSE sont sur sa branche
+  (`Vector::Float` dans `decode`, branche `claude/emetteur-bureau`). Quand
+  elle rejoindra master, `decode` lira ces formes avant `decode_extended`, et
+  `execute_vector` devra les confier au calcul de `x86_sse.rs` : la fusion
+  aura ce raccord à faire. Le x87 sous l'émetteur reste à faire de son côté.
+- *Pas modélisé* : `#MF` (une exception du x87 démasquée pose son drapeau,
+  ES et B la résument, et rien d'autre), les pointeurs FIP/FDP/FOP (rangés à
+  zéro), XSAVE (CPUID ne l'annonce pas), SSE3 et au-delà.
+- *Les transcendantes* sont justes à 2⁻⁵⁸ près, pas au bit près du silicium :
+  aucun corpus ne les fixe, et Intel et AMD ne s'accordent pas entre eux.
+  Hors du domaine où le silicium est juste (|x| ≥ 3 pour le sinus, près des
+  pôles de la tangente), ce cœur est plus juste que lui, et donc autre.
+- *La carte* : ni l'écran ni la tablette (leur mémoire hors de la RAM n'est
+  pas branchée), ni la carte réseau ; ni le service à chaque tour qu'elles
+  demandent. Le second disque n'est pas offert par `wisq-pc`.
+- *Le préfixe `67` devant un opérande mémoire* (l'adressage de trente-deux
+  bits) reste refusé : rien ne l'a demandé.
+- *Ce que seule la CI juge* : les tests contre le silicium de l'hôte ne
+  compilent que sur x86-64 ; sur un hôte ARM, les corpus seuls jugent. La
+  vitesse sur l'iPhone. L'ABI C (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`)
+  n'expose toujours pas la machine PC. Aucun Swift n'est touché.
+- *La vitesse* : 125 MIPS toujours pas atteints sur le banc commun (17 s,
+  112 MIPS environ).
+
 ## 2026-11-20 — Machine PC en Rust : la borne de la fin de la RAM jugée à l'octet
 
 **Ce qui n'allait pas.** L'entrée d'en dessous donnait la borne de la fin de
