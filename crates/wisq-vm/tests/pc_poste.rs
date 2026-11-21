@@ -12,11 +12,14 @@ use wisq_carte::tablette::BASE_DE_LA_TABLETTE;
 use wisq_vm::pc::instantane::{self, RefusDInstantane, MAGIE, VERSION};
 use wisq_vm::pc::machine::Alea;
 use wisq_vm::pc::poste::{
-    frappes_du_jeu_1, RefusDeBranchement, RefusDeTouches, FRAPPES_REMISES,
+    frappes_du_jeu_1, RefusDeBranchement, RefusDeTouches, DERNIERE_SECONDE, FRAPPES_REMISES,
     PAS_DE_RATTRAPAGE_EN_SECONDES,
 };
 use wisq_vm::pc::{Fin, Poste};
-use wisq_vm::x86_paging::Access;
+use wisq_vm::x86_paging::{Access, Unmapped};
+
+/// Le bit LMA d'EFER : le mode long actif.
+const EFER_LMA: u64 = 1 << 10;
 
 mod noyau_factice;
 use noyau_factice::{image, image_de, BOUCLE, FAUTE, REMISE};
@@ -874,18 +877,197 @@ fn a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations() {
     assert_eq!(usee.machine.retirees, entiere.machine.retirees);
 }
 
-/// **Une heure d'avant 1970** ne va pas à l'horloge CMOS de la machine comme
-/// un nombre immense : elle s'arrête à 1970.
+/// **Une page nulle dans l'instantané, écrite dans la machine usée**, est
+/// nulle après la reprise : l'instantané ne porte pas les pages nulles, et la
+/// reprise efface donc toute la RAM avant de poser les siennes. Le test
+/// précédent ne le voit pas : sa machine usée a tourné le même noyau jusqu'au
+/// même point, et ses pages ont déjà le contenu de l'instantané.
 #[test]
-fn an_hour_before_1970_stops_at_1970() {
-    let mut poste = Poste::essayer(RAM).expect("la RAM");
-    for avant in [-5, i64::MIN] {
-        poste.regler_l_heure(avant);
+fn a_page_that_is_zero_in_the_snapshot_is_zero_in_a_used_machine() {
+    let mut coupee = poste_charge(&image(), Some("x=y"));
+    courir(&mut coupee, 1_000_000);
+    let sauve = instantane::sauver(&coupee);
+    let ram = coupee.machine.cpu.memory.bytes.len();
+    let ecrites = [0x500_0000, 0x500_0FFF, ram - 1];
+    for adresse in ecrites {
+        assert_eq!(coupee.machine.cpu.memory.bytes[adresse], 0, "{adresse:#x}");
+    }
+
+    let mut usee = poste_charge(&image(), Some("x=y"));
+    courir(&mut usee, 1_000_000);
+    for adresse in ecrites {
+        usee.machine.cpu.memory.bytes[adresse] = 0xCD;
+    }
+    instantane::reprendre(&mut usee, &sauve).expect("la reprise");
+    for adresse in ecrites {
         assert_eq!(
-            poste.machine.herites.cmos.secondes_depuis_1970, 0,
-            "{avant}"
+            usee.machine.cpu.memory.bytes[adresse], 0,
+            "la page nulle de l'instantané, à {adresse:#x}"
         );
     }
+    assert!(usee.machine.cpu.memory.bytes == coupee.machine.cpu.memory.bytes);
+}
+
+/// **Le temps rattrapé passe l'instantané** : il entre dans le temps de
+/// l'invité (`Poste::temps`, `wisq_pc_guest_time`). `cli ; hlt` avec une
+/// seconde à rattraper : la machine s'éteint après avoir rattrapé, et ce
+/// qu'elle a rattrapé n'est pas nul.
+#[test]
+fn the_time_caught_up_crosses_a_snapshot() {
+    let mut original = poste_charge(&image_de(&[0xFA, 0xF4]), None);
+    original.rattraper(1.0);
+    let (fin, _) = courir(&mut original, 1000);
+    assert_eq!(fin, Fin::Eteinte);
+    // Ce qui est rattrapé : l'attente comptée que le temps de l'invité ôte.
+    let rattrape = |poste: &Poste| {
+        let m = &poste.machine;
+        m.retirees
+            .wrapping_add(m.attente)
+            .wrapping_sub(poste.temps())
+    };
+    let du = original.temps_du();
+    assert!(rattrape(&original) > 0, "le temps rattrapé, {du} encore dû");
+    let sauve = instantane::sauver(&original);
+
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    assert_eq!(reprise.temps_du(), du);
+    assert_eq!(rattrape(&reprise), rattrape(&original));
+    assert_eq!(reprise.temps(), original.temps(), "le temps de l'invité");
+}
+
+/// `bswap %eax ; xor %ecx, %ecx ; div %ecx` : une instruction du chemin
+/// général (qui lit `faulted` après `execute`), puis une division par zéro
+/// (dont la faute regarde `unmapped` d'abord).
+const GENERALE_PUIS_DIVISION: [u8; 6] = [0x0F, 0xC8, 0x31, 0xC9, 0xF7, 0xF1];
+
+/// La course entière d'une machine reprise : sa fin, sa console, ses
+/// instructions retirées et son RIP.
+fn apres_la_reprise(poste: &mut Poste, sauve: &[u8]) -> (Fin, Vec<u8>, u64, u64) {
+    instantane::reprendre(poste, sauve).expect("la reprise");
+    let (fin, console) = courir(poste, 1_000_000);
+    (fin, console, poste.machine.retirees, poste.machine.cpu.rip)
+}
+
+/// **Les témoins de faute d'une machine usée ne passent pas la reprise.**
+/// `faulted` et `unmapped` ne sont pas dans l'instantané : ils ne valent que
+/// pendant une instruction. Une machine usée arrêtée avec l'un d'eux levé —
+/// quoi qu'elle ait fait avant — ne doit pas le donner à la machine reprise :
+/// `faulted` resté vrai ferait de sa première instruction du chemin général
+/// un refus ; `unmapped` resté là ferait de sa division par zéro une faute
+/// d'accès hors de la mémoire.
+#[test]
+fn a_resumed_machine_drops_the_fault_witnesses_of_the_used_one() {
+    let bswap = wisq_vm::x86::decode(&GENERALE_PUIS_DIVISION).expect("bswap");
+    assert!(
+        !wisq_vm::x86::rapide::specialisee(&bswap),
+        "bswap passe par le chemin général"
+    );
+    let chargee = poste_charge(&image_de(&GENERALE_PUIS_DIVISION), None);
+    let sauve = instantane::sauver(&chargee);
+    let mut neuve = Poste::essayer(RAM).expect("la RAM");
+    let attendue = apres_la_reprise(&mut neuve, &sauve);
+    // bswap et xor retirées ; la division faute, et rien ne la livre.
+    assert_eq!(attendue.2, 2, "{attendue:?}");
+    assert!(
+        matches!(&attendue.0, Fin::Faute(faute) if faute.starts_with("Division")),
+        "{attendue:?}"
+    );
+
+    let usee = || {
+        let mut usee = poste_charge(&image(), Some("x=y"));
+        courir(&mut usee, 1_000_000);
+        usee
+    };
+    let mut leve = usee();
+    leve.machine.cpu.faulted = true;
+    assert_eq!(apres_la_reprise(&mut leve, &sauve), attendue, "faulted");
+
+    let mut hors = usee();
+    hors.machine.cpu.unmapped = Some(Unmapped::Outside {
+        address: 0x1234_5678,
+    });
+    assert_eq!(apres_la_reprise(&mut hors, &sauve), attendue, "unmapped");
+}
+
+/// **LMA ne se lit pas dans l'instantané** : sur le silicium, ce bit d'EFER
+/// est en lecture seule, le processeur le tire de LME et de la pagination. La
+/// reprise le recalcule donc, et un instantané où il est faux (ici effacé,
+/// processeur en mode long) reprend en mode long, et finit sa course comme
+/// une machine qui n'a pas été coupée.
+#[test]
+fn the_long_mode_bit_is_recomputed_on_resume() {
+    let mut entiere = poste_charge(&image(), Some("x=y"));
+    let (_, toute) = courir(&mut entiere, 50_000_000);
+    let mut coupee = poste_charge(&image(), Some("x=y"));
+    let (_, debut) = courir(&mut coupee, 1_000_000);
+    let efer = coupee.machine.cpu.efer;
+    assert_ne!(efer & EFER_LMA, 0, "en mode long");
+    let mut sauve = instantane::sauver(&coupee);
+
+    // EFER suit les compteurs de la machine (144 octets avec l'en-tête), les
+    // seize registres, RIP, les drapeaux, GS, FS, les neuf registres de
+    // contrôle, les seize XMM, MXCSR, le contrôle et l'état du x87, ses huit
+    // registres, ses étiquettes et les six sélecteurs.
+    const EFER: usize = 144 + 16 * 8 + 4 * 8 + 9 * 8 + 16 * 16 + 4 + 2 + 2 + 8 * 10 + 1 + 6 * 2;
+    assert_eq!(
+        u64::from_le_bytes(sauve[EFER..EFER + 8].try_into().unwrap()),
+        efer,
+        "EFER à sa place"
+    );
+    sauve[EFER..EFER + 8].copy_from_slice(&(efer & !EFER_LMA).to_le_bytes());
+
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    assert_eq!(reprise.machine.cpu.efer, efer, "LMA recalculé");
+    let (fin, suite) = courir(&mut reprise, 50_000_000);
+    assert_eq!(fin, Fin::Eteinte);
+    assert_eq!([debut, suite].concat(), toute);
+    assert_eq!(reprise.machine.retirees, entiere.machine.retirees);
+}
+
+/// **Une heure d'avant 1970, ou d'après l'an 9999**, s'arrête à la borne,
+/// **là où l'invité la lit** : la carte est toujours branchée
+/// (`cmos_ailleurs`), donc les ports 0x70 et 0x71 vont à la CMOS de la carte,
+/// et c'est elle que ce test lit. Sans la borne, -5 s'y lisait le 31 décembre
+/// 1969 à 23:59:55, et `i64::MIN` donnait un siècle 0xFF. L'horloge des puces
+/// de la machine, celle que porte l'instantané, reçoit la même heure.
+#[test]
+fn an_hour_before_1970_stops_at_1970() {
+    // Seconde, minute, heure, jour, mois, année, siècle : en BCD.
+    const REGISTRES: [u32; 7] = [0x00, 0x02, 0x04, 0x07, 0x08, 0x09, 0x32];
+    let lire_la_date = |poste: &Poste| {
+        let carte = poste.commandes().carte().clone();
+        let mut carte = carte.tenir();
+        REGISTRES.map(|registre| {
+            assert!(carte.port_ecrire(0x70, 1, registre));
+            carte.port_lire(0x71, 1).expect("l'horloge répond")
+        })
+    };
+    let premiere = [0x00, 0x00, 0x00, 0x01, 0x01, 0x70, 0x19];
+    let derniere = [0x59, 0x59, 0x23, 0x31, 0x12, 0x99, 0x99];
+    let mut poste = Poste::essayer(RAM).expect("la RAM");
+    for (heure, attendue, secondes) in [
+        (-5, premiere, 0),
+        (-1, premiere, 0),
+        (i64::MIN, premiere, 0),
+        (0, premiere, 0),
+        (DERNIERE_SECONDE, derniere, DERNIERE_SECONDE as u64),
+        (DERNIERE_SECONDE + 1, derniere, DERNIERE_SECONDE as u64),
+        (i64::MAX, derniere, DERNIERE_SECONDE as u64),
+    ] {
+        poste.regler_l_heure(heure);
+        assert_eq!(lire_la_date(&poste), attendue, "{heure}, lue par l'invité");
+        assert_eq!(
+            poste.machine.herites.cmos.secondes_depuis_1970, secondes,
+            "{heure}, dans les puces de la machine"
+        );
+    }
+    assert_eq!(
+        poste.machine.herites.cmos.date(),
+        [9999, 12, 31, 23, 59, 59, 6],
+        "le 31 décembre 9999 est un vendredi"
+    );
 }
 
 /// **L'heure figée remplace l'horloge donnée** : sans cela, l'horloge de
