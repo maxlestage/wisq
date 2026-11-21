@@ -1179,6 +1179,9 @@ dependencies = [
 [[package]]
 name = "wisq-vm"
 version = "0.4.0"
+dependencies = [
+ "wisq-carte",
+]
 
 [[package]]
 name = "yasna"

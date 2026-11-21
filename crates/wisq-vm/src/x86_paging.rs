@@ -59,6 +59,28 @@ pub enum Unmapped {
     TableOutside { address: u64, table: u64 },
     /// L'adresse traduit, mais l'accès sort de la fenêtre attachée.
     Outside { address: u64 },
+    /// **La page est là, et l'anneau n'y a pas droit** : le bit utilisateur
+    /// manque à un niveau pour un accès de l'anneau trois, ou le bit 63
+    /// interdit d'exécuter (EFER.NXE allumé).
+    Forbidden { address: u64 },
+    /// **L'adresse n'est pas canonique** : ses bits 63 à 47 ne sont pas tous
+    /// égaux. Les tables n'en traduisent que quarante-huit, et la marcher
+    /// quand même la confondrait avec son alias — une lecture à
+    /// 0x8000_0000_0000_6000 rendrait le contenu de 0x6000. Le silicium ne
+    /// lève pas de faute de page : `#GP(0)` pour une référence par DS, ES, FS
+    /// ou GS, et **`#SS(0)` pour une référence par la pile** (`push`, `pop`,
+    /// `call`, `ret`, ou une adresse bâtie sur RSP ou RBP). La machine PC fait
+    /// la différence au moment de livrer (`pc::machine`). Seule la traduction
+    /// de la machine PC (`translate_cached`, avec son tampon) la rend ;
+    /// `translate`, le juge de l'émetteur, marche les tables comme il l'a
+    /// toujours fait.
+    NonCanonical { address: u64 },
+    /// **Une cible de saut qui n'est pas canonique** : `Cpu` refuse de charger
+    /// RIP avec elle (`jmp`, `call`, `ret`, `jcc`, `loop`, `jrcxz`), et la
+    /// faute tombe sur le saut, pas sur l'instruction d'après. Ce n'est pas un
+    /// accès : le silicium lève toujours `#GP(0)`, même pour la cible d'un
+    /// `ret`, qui vient de la pile.
+    NonCanonicalTarget { address: u64 },
 }
 
 impl Unmapped {
@@ -68,18 +90,185 @@ impl Unmapped {
             Self::Absent { address, .. }
             | Self::ReadOnly { address }
             | Self::TableOutside { address, .. }
-            | Self::Outside { address } => *address,
+            | Self::Outside { address }
+            | Self::Forbidden { address }
+            | Self::NonCanonical { address }
+            | Self::NonCanonicalTarget { address } => *address,
         }
     }
 }
 
-/// Ce que l'accès venait faire. Seul l'écriture change quelque chose ici : il
-/// n'y a pas d'anneau trois dans cet interpréteur, donc pas de bit
-/// utilisateur à consulter.
+/// **Une adresse canonique** est l'extension de signe de ses quarante-huit
+/// bits bas : ses bits 63 à 47 sont tous égaux.
+#[inline(always)]
+pub fn is_canonical(address: u64) -> bool {
+    ((address as i64) << 16) >> 16 == address as i64
+}
+
+/// **La mémoire d'un périphérique** : ce qui répond à une adresse physique
+/// que la RAM ne couvre pas — au-delà de sa fin, ou dans le trou sous quatre
+/// gibioctets. L'écran de Bochs (sa mémoire vidéo et ses registres) et la
+/// tablette y vivent, derrière les BAR que le pont PCI annonce ; c'est le
+/// `readSlowly` et le `writeSlowly` de `X86Memory.swift`.
+///
+/// `largeur` va de 1 à 8 octets. `None` (ou `false`) : personne ne répond, et
+/// l'accès reste refusé comme avant (`Unmapped::Outside`).
+pub trait DeviceMemory: Send {
+    fn read(&mut self, place: u64, width: u8) -> Option<u64>;
+    fn write(&mut self, place: u64, width: u8, value: u64) -> bool;
+    /// Quelqu'un répond-il à ces `width` octets ? Sans rien lire ni écrire :
+    /// ce qu'un accès à cheval demande avant de poser son premier octet.
+    fn claims(&self, place: u64, width: u8) -> bool;
+}
+
+/// **Les périphériques derrière la mémoire**, partagés : la machine PC les
+/// tient aussi par leurs ports. Rien par défaut — l'interpréteur de
+/// référence et le juge de l'émetteur n'en ont pas, et ne voient aucune
+/// différence. Seul le chemin lent les consulte : le tampon de traduction ne
+/// garde jamais une page hors de la RAM, donc une adresse ordinaire ne les
+/// rencontre pas. Un `Cpu` cloné partage les mêmes périphériques : ils sont
+/// à la machine, pas au processeur.
+#[derive(Clone, Default)]
+pub struct Devices(pub Option<std::sync::Arc<std::sync::Mutex<dyn DeviceMemory>>>);
+
+impl std::fmt::Debug for Devices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Devices(branchés)"
+        } else {
+            "Devices(aucun)"
+        })
+    }
+}
+
+impl Devices {
+    /// Lire `width` octets d'un périphérique, à cette adresse physique.
+    #[cold]
+    #[inline(never)]
+    pub fn read(&self, place: u64, width: usize) -> Option<u64> {
+        let bus = self.0.as_ref()?;
+        let mut bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.read(place, u8::try_from(width).ok()?)
+    }
+
+    /// Écrire `width` octets dans un périphérique ; `false` sans personne.
+    #[cold]
+    #[inline(never)]
+    pub fn write(&self, place: u64, width: usize, value: u64) -> bool {
+        let Some(bus) = self.0.as_ref() else {
+            return false;
+        };
+        let Ok(width) = u8::try_from(width) else {
+            return false;
+        };
+        let mut bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.write(place, width, value)
+    }
+
+    /// Un périphérique répond-il à ces octets ? Voir `DeviceMemory::claims`.
+    #[cold]
+    #[inline(never)]
+    pub fn claims(&self, place: u64, width: usize) -> bool {
+        let Some(bus) = self.0.as_ref() else {
+            return false;
+        };
+        let Ok(width) = u8::try_from(width) else {
+            return false;
+        };
+        let bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.claims(place, width)
+    }
+}
+
+/// Le bit utilisateur d'une entrée : sans lui à chaque niveau, l'anneau trois
+/// n'a aucun droit sur la page.
+pub const USER: u64 = 1 << 2;
+
+/// « Accédée » : le processeur le pose en traversant l'entrée.
+pub const ACCESSED: u64 = 1 << 5;
+
+/// « Salie » : le processeur le pose sur la feuille à la première écriture.
+pub const DIRTY: u64 = 1 << 6;
+
+/// Le bit 63 d'une entrée : la page ne s'exécute pas, quand EFER.NXE le permet.
+pub const NO_EXECUTE: u64 = 1 << 63;
+
+/// EFER.NXE : sans lui, le bit 63 d'une entrée n'interdit rien.
+pub const NO_EXECUTE_ENABLE: u64 = 1 << 11;
+
+/// Ce que l'accès venait faire.
+///
+/// `Fetch` est la lecture d'une instruction, que le bit 63 peut interdire.
+/// `Machine` est une lecture que le processeur fait pour son compte — une porte
+/// de l'IDT, un descripteur, une pile du TSS — : elle a les droits de l'anneau
+/// zéro quel que soit l'anneau du programme interrompu.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Access {
     Read,
     Write,
+    Fetch,
+    Machine,
+}
+
+/// Ce qu'une marche des tables a trouvé : la page physique, ses droits, et les
+/// entrées traversées (leur adresse physique et leur valeur), pour que le
+/// tampon de traduction puisse y poser les bits « accédée » et « salie ».
+#[derive(Clone, Copy, Debug)]
+struct Walked {
+    /// L'adresse physique de l'octet visé.
+    place: u64,
+    /// Le ET des bits d'écriture et d'utilisateur des niveaux traversés, et le
+    /// OU de leurs bits « pas d'exécution ».
+    writable: bool,
+    user: bool,
+    no_execute: bool,
+    entries: [(u64, u64); 4],
+    depth: usize,
+}
+
+/// **Le tampon de traduction de la machine PC** : mille vingt-quatre cases à
+/// accès direct, comme celui du cœur Swift.
+///
+/// Une case garde la page physique et les droits **bruts** de la page ; le
+/// droit de l'accès se décide à chaque passage, contre l'anneau et CR0.WP du
+/// moment. Un changement d'anneau ne vide donc rien. Ce qui vide : écrire CR3,
+/// CR4, le bit de pagination ou de protection de CR0 (`write_control_register`),
+/// EFER et `invlpg` (la machine appelle `flush_translations`).
+///
+/// **Une case ne sert à l'écriture que si la feuille est déjà « salie ».** La
+/// première écriture repasse par les tables et y pose le bit, comme le
+/// silicium ; les suivantes ne paient rien.
+#[derive(Clone, Debug)]
+pub struct Tlb {
+    /// Les cases, dans la boîte même : une lecture du chemin rapide va du
+    /// processeur à la case sans passer par un second pointeur.
+    entries: [TlbEntry; TLB_SLOTS],
+    /// Le nombre de vidages. Qui garde une traduction hors du tampon — la
+    /// page d'instructions de la boucle d'exécution — la compare à ce compte.
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TlbEntry {
+    /// L'adresse de la page virtuelle, plus un : zéro veut dire « vide ».
+    tag: u64,
+    frame: u64,
+    flags: u8,
+}
+
+const TLB_SLOTS: usize = 1024;
+const TLB_WRITABLE: u8 = 1;
+const TLB_USER: u8 = 2;
+const TLB_NO_EXECUTE: u8 = 4;
+const TLB_DIRTY: u8 = 8;
+
+impl Default for Tlb {
+    fn default() -> Self {
+        Self {
+            entries: [TlbEntry::default(); TLB_SLOTS],
+            generation: 0,
+        }
+    }
 }
 
 impl Cpu {
@@ -88,85 +277,278 @@ impl Cpu {
         self.control[0] & PAGING != 0
     }
 
+    /// L'anneau courant : les deux bits bas de CS.
+    pub fn privilege(&self) -> u8 {
+        (self.segments[1] & 3) as u8
+    }
+
+    /// **Donner un tampon de traduction à ce processeur.** C'est ce qui fait
+    /// de lui celui d'une machine : les accès passent par le tampon, et les
+    /// bits « accédée » et « salie » sont posés dans les tables.
+    pub fn with_translation_cache(mut self) -> Self {
+        self.tlb = Some(Box::default());
+        self
+    }
+
+    /// Oublier toutes les traductions gardées. Sans tampon, rien à faire.
+    pub fn flush_translations(&mut self) {
+        if let Some(tlb) = self.tlb.as_mut() {
+            for entry in tlb.entries.iter_mut() {
+                entry.tag = 0;
+            }
+            tlb.generation = tlb.generation.wrapping_add(1);
+        }
+    }
+
     /// **L'adresse physique correspondant à une adresse virtuelle.**
     ///
     /// Sans pagination les deux sont la même chose — et c'est le cas au
     /// démarrage, avant que le noyau n'ait posé ses tables. Avec, il faut
     /// parcourir quatre niveaux de neuf bits, pris du haut vers le bas.
     ///
-    /// **Aucun cache ici, à la différence du cœur Swift**, qui en tient un de
-    /// mille vingt-quatre entrées. L'interpréteur Rust est le juge du test
-    /// différentiel, pas le chemin chaud : un cache lui ajouterait un état
-    /// invisible à vider au bon moment — trois vidages, dont le troisième a
-    /// déjà coûté une chasse entière côté Swift — pour une vitesse dont
-    /// personne ne dépend ici. C'est aussi pourquoi `write_control_register`
-    /// n'a rien à faire de spécial sur CR3 ou CR4.
+    /// **Aucun cache ici** : cette fonction marche les tables à chaque appel
+    /// et ne les modifie pas. C'est le juge du test différentiel, et un cache
+    /// lui ajouterait un état invisible à vider au bon moment. La machine PC,
+    /// elle, passe par `translate_cached`, qui garde les traductions dans
+    /// `Tlb` et pose les bits « accédée » et « salie ».
     ///
-    /// **Ce que la marche ne modélise pas**, et il faut le dire : il n'y a pas
-    /// d'anneau trois dans cet interpréteur, donc le bit utilisateur d'une
-    /// entrée n'est jamais consulté, et les bits « accédée » et « salie » ne
-    /// sont jamais posés. Un noyau qui s'en sert pour choisir sa page à
-    /// évincer verrait toutes les pages également froides.
+    /// **Les droits sont ceux du cœur Swift** : en anneau trois il faut le bit
+    /// utilisateur à chaque niveau, et le bit d'écriture pour écrire ; en
+    /// anneau zéro, seule l'écriture sur une page en lecture seule est
+    /// refusée, et seulement si CR0.WP est allumé. L'anneau est zéro tant que
+    /// personne n'a chargé CS — ce que cet interpréteur a toujours été.
     pub fn translate(&self, virtual_address: u64, access: Access) -> Result<u64, Unmapped> {
         if !self.paging() {
             return Ok(virtual_address);
         }
+        let walked = self.walk(virtual_address)?;
+        self.permits(&walked, access, virtual_address)?;
+        Ok(walked.place)
+    }
+
+    /// La marche elle-même, sans jugement des droits.
+    fn walk(&self, virtual_address: u64) -> Result<Walked, Unmapped> {
         let mut table = self.control[3] & FRAME;
         // **Les permissions sont le ET des quatre niveaux.** Une table qui
         // n'est pas inscriptible interdit d'écrire dans tout ce qu'elle
         // couvre, même si la feuille au bout dit le contraire ; c'est ainsi
         // qu'un noyau ferme un espace entier d'un seul bit.
-        let mut writable = true;
+        let mut walked = Walked {
+            place: 0,
+            writable: true,
+            user: true,
+            no_execute: false,
+            entries: [(0, 0); 4],
+            depth: 0,
+        };
         for level in [39u32, 30, 21, 12] {
             let index = (virtual_address >> level) & 0x1FF;
             // **Lue physiquement.** Une entrée de table porte une adresse
             // physique ; la faire passer par `translate` serait une récursion
             // sans fond, et un test le tient.
-            let entry = self.memory.read(table + index * 8, Width::Qword).ok_or(
-                Unmapped::TableOutside {
+            let at = table + index * 8;
+            let entry = self
+                .memory
+                .read(at, Width::Qword)
+                .ok_or(Unmapped::TableOutside {
                     address: virtual_address,
                     table,
-                },
-            )?;
+                })?;
             if entry & PRESENT == 0 {
                 return Err(Unmapped::Absent {
                     address: virtual_address,
                     level,
                 });
             }
-            writable &= entry & WRITABLE != 0;
+            walked.entries[walked.depth] = (at, entry);
+            walked.depth += 1;
+            walked.writable &= entry & WRITABLE != 0;
+            walked.user &= entry & USER != 0;
+            walked.no_execute |= entry & NO_EXECUTE != 0;
             if level > 12 && entry & HUGE != 0 {
                 // Une grande page : le reste de l'adresse sert de décalage
                 // dedans, et le parcours s'arrête.
                 let size = 1u64 << level;
-                self.permits(writable, access, virtual_address)?;
-                return Ok((entry & FRAME & !(size - 1)) | (virtual_address & (size - 1)));
+                walked.place = (entry & FRAME & !(size - 1)) | (virtual_address & (size - 1));
+                return Ok(walked);
             }
             table = entry & FRAME;
         }
-        self.permits(writable, access, virtual_address)?;
-        Ok(table | (virtual_address & 0xFFF))
+        walked.place = table | (virtual_address & 0xFFF);
+        Ok(walked)
     }
 
     /// Cet accès a-t-il le droit ?
-    ///
-    /// **Une seule question, faute d'anneau trois** : CR0.WP est-il allumé sur
-    /// une page en lecture seule. Le cœur Swift en pose deux de plus, qui
-    /// n'ont pas d'objet ici.
-    fn permits(&self, writable: bool, access: Access, address: u64) -> Result<(), Unmapped> {
-        if access == Access::Write && !writable && self.control[0] & WRITE_PROTECT != 0 {
-            return Err(Unmapped::ReadOnly { address });
+    fn permits(&self, walked: &Walked, access: Access, address: u64) -> Result<(), Unmapped> {
+        let flags = (if walked.writable { TLB_WRITABLE } else { 0 })
+            | (if walked.user { TLB_USER } else { 0 })
+            | (if walked.no_execute && self.efer & NO_EXECUTE_ENABLE != 0 {
+                TLB_NO_EXECUTE
+            } else {
+                0
+            })
+            | TLB_DIRTY;
+        if self.allowed(flags, access) {
+            return Ok(());
         }
-        Ok(())
+        Err(self.refusal(flags, access, address))
     }
 
-    /// **Écrire un registre de contrôle.** Rien de plus que poser la valeur :
-    /// sans cache de traduction, il n'y a rien à vider — voir `translate`.
+    /// Le refus qui correspond à des droits insuffisants : lecture seule quand
+    /// c'est l'écriture qui manque, interdite sinon (le bit utilisateur, ou le
+    /// bit 63 devant une lecture d'instruction).
+    fn refusal(&self, flags: u8, access: Access, address: u64) -> Unmapped {
+        let user_ok = self.privilege() < 3 || flags & TLB_USER != 0;
+        if access == Access::Write && user_ok {
+            Unmapped::ReadOnly { address }
+        } else {
+            Unmapped::Forbidden { address }
+        }
+    }
+
+    /// Les droits bruts d'une page suffisent-ils à cet accès, maintenant ?
+    #[inline(always)]
+    fn allowed(&self, flags: u8, access: Access) -> bool {
+        let user = self.segments[1] & 3 == 3;
+        match access {
+            Access::Machine => true,
+            Access::Read => !user || flags & TLB_USER != 0,
+            Access::Fetch => (!user || flags & TLB_USER != 0) && flags & TLB_NO_EXECUTE == 0,
+            Access::Write => {
+                if flags & TLB_DIRTY == 0 {
+                    return false;
+                }
+                if user {
+                    flags & (TLB_USER | TLB_WRITABLE) == TLB_USER | TLB_WRITABLE
+                } else {
+                    flags & TLB_WRITABLE != 0 || self.control[0] & WRITE_PROTECT == 0
+                }
+            }
+        }
+    }
+
+    /// Le code d'erreur qu'une faute de page empile pour cet accès.
+    fn page_fault_code(&self, present: bool, access: Access) -> u64 {
+        u64::from(present)
+            | (u64::from(access == Access::Write) << 1)
+            | (u64::from(self.privilege() == 3 && access != Access::Machine) << 2)
+            | (u64::from(access == Access::Fetch) << 4)
+    }
+
+    /// **La traduction de la machine PC** : par le tampon, et sinon par les
+    /// tables — en y posant « accédée » sur chaque entrée traversée et
+    /// « salie » sur la feuille quand l'accès écrit, comme le silicium.
+    ///
+    /// Sans tampon posé (`tlb` à `None`), c'est `translate`.
+    #[inline(always)]
+    pub fn translate_cached(
+        &mut self,
+        virtual_address: u64,
+        access: Access,
+    ) -> Result<u64, Unmapped> {
+        if self.control[0] & PAGING == 0 {
+            return Ok(virtual_address);
+        }
+        let Some(tlb) = self.tlb.as_ref() else {
+            return self.translate(virtual_address, access);
+        };
+        let page = virtual_address & !0xFFF;
+        let slot = (page >> 12) as usize & (TLB_SLOTS - 1);
+        let entry = tlb.entries[slot];
+        if entry.tag == page.wrapping_add(1) && self.allowed(entry.flags, access) {
+            return Ok(entry.frame | (virtual_address & 0xFFF));
+        }
+        self.fill(virtual_address, access)
+    }
+
+    /// Le chemin lent de `translate_cached` : marcher, juger, marquer, garder.
+    #[inline(never)]
+    fn fill(&mut self, virtual_address: u64, access: Access) -> Result<u64, Unmapped> {
+        // Le contrôle est ici, sur le chemin lent : une adresse qui n'est pas
+        // canonique n'entre jamais au tampon, donc n'y est jamais trouvée.
+        if !is_canonical(virtual_address) {
+            return Err(Unmapped::NonCanonical {
+                address: virtual_address,
+            });
+        }
+        let walked = match self.walk(virtual_address) {
+            Ok(walked) => walked,
+            Err(why) => {
+                self.fault_code = self.page_fault_code(false, access);
+                return Err(why);
+            }
+        };
+        let nx = walked.no_execute && self.efer & NO_EXECUTE_ENABLE != 0;
+        let rights = (if walked.writable { TLB_WRITABLE } else { 0 })
+            | (if walked.user { TLB_USER } else { 0 })
+            | (if nx { TLB_NO_EXECUTE } else { 0 });
+        // Le droit se juge comme si la page était déjà salie : c'est la
+        // marche qui la salit, juste après.
+        if !self.allowed(rights | TLB_DIRTY, access) {
+            self.fault_code = self.page_fault_code(true, access);
+            return Err(self.refusal(rights | TLB_DIRTY, access, virtual_address));
+        }
+        // **Les bits que le processeur pose lui-même.** « Accédée » à chaque
+        // niveau, « salie » sur la feuille d'une écriture. Un noyau lit le
+        // second pour savoir quelles pages réécrire sur le disque.
+        let writes = access == Access::Write;
+        let last = walked.depth - 1;
+        let mut dirty = false;
+        for (rank, &(at, entry)) in walked.entries[..walked.depth].iter().enumerate() {
+            let mut marked = entry | ACCESSED;
+            if rank == last {
+                if writes {
+                    marked |= DIRTY;
+                }
+                dirty = marked & DIRTY != 0;
+            }
+            if marked != entry {
+                let _ = self.memory.write(at, Width::Qword, marked);
+            }
+        }
+        let page = virtual_address & !0xFFF;
+        let frame = walked.place & !0xFFF;
+        // **Seule la RAM se garde.** Une page hors de la mémoire attachée, ou
+        // dans le trou sous quatre gibioctets, n'entre pas au tampon : l'accès
+        // la refusera à chaque fois, par le chemin lent.
+        if self.memory.holds(frame, 0x1000) && !self.in_hole(frame) {
+            if let Some(tlb) = self.tlb.as_mut() {
+                let slot = (page >> 12) as usize & (TLB_SLOTS - 1);
+                tlb.entries[slot] = TlbEntry {
+                    tag: page.wrapping_add(1),
+                    frame,
+                    flags: rights | if dirty { TLB_DIRTY } else { 0 },
+                };
+            }
+        }
+        Ok(walked.place)
+    }
+
+    /// L'adresse physique est-elle dans le trou de la carte mémoire d'un PC ?
+    /// Voir `Cpu::memory_hole`.
+    #[inline(always)]
+    fn in_hole(&self, place: u64) -> bool {
+        place.wrapping_sub(self.memory_hole.0) < self.memory_hole.1
+    }
+
+    /// **Écrire un registre de contrôle.** Poser la valeur, et vider le tampon
+    /// de traduction quand elle change ce qu'il garde : CR3 (une autre table),
+    /// CR4, et les bits de pagination et de protection en écriture de CR0. Les
+    /// trois vidages sont ceux du cœur Swift, dont le troisième a coûté une
+    /// chasse entière.
     pub fn write_control_register(&mut self, which: u8, value: u64) {
+        let previous = self.control[which as usize];
         self.control[which as usize] = value;
+        if which == 3
+            || which == 4
+            || (which == 0 && (previous ^ value) & (PAGING | WRITE_PROTECT) != 0)
+        {
+            self.flush_translations();
+        }
     }
 
     /// Vrai quand l'accès dépasse la fin de sa page.
+    #[inline(always)]
     fn crosses(at: u64, width: Width) -> bool {
         (at & 0xFFF) + width as u64 > 0x1000
     }
@@ -179,39 +561,109 @@ impl Cpu {
     /// l'espace des modules elles ne le sont pas. Le cœur Swift a porté ce
     /// défaut — voir `Sources/WisqVM/X86PageStraddle.swift` — et le poser
     /// d'emblée ici évite de le refaire.
+    #[inline]
     pub fn read_memory(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
-        let outcome = self.load(at, width);
+        let outcome = self.load(at, width, Access::Read);
         self.note(outcome)
     }
 
-    fn load(&self, at: u64, width: Width) -> Result<u64, Unmapped> {
+    /// La même lecture, avec les droits que le processeur prend pour lui-même
+    /// (`Access::Machine`) : une porte de l'IDT, un descripteur, une pile du
+    /// TSS se lisent en anneau zéro même quand un programme est interrompu.
+    pub fn read_memory_as_machine(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        let outcome = self.load(at, width, Access::Machine);
+        self.note(outcome)
+    }
+
+    /// Lire un octet d'instruction : les droits sont ceux d'une exécution.
+    pub fn fetch_memory(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        let outcome = self.load(at, width, Access::Fetch);
+        self.note(outcome)
+    }
+
+    #[inline(always)]
+    fn load(&mut self, at: u64, width: Width, access: Access) -> Result<u64, Unmapped> {
         let outside = || Unmapped::Outside { address: at };
         if !Self::crosses(at, width) {
-            let place = self.translate(at, Access::Read)?;
-            return self.memory.read(place, width).ok_or_else(outside);
+            let place = self.translate_cached(at, access)?;
+            if !self.in_hole(place) {
+                if let Some(value) = self.memory.read(place, width) {
+                    return Ok(value);
+                }
+            }
+            // Hors de la RAM : un périphérique, ou rien.
+            return self.devices.read(place, width as usize).ok_or_else(outside);
         }
         let head = (0x1000 - (at & 0xFFF)) as usize;
-        let low = self.translate(at, Access::Read)?;
-        let high = self.translate(at + head as u64, Access::Read)?;
-        let low = self.memory.read_bytes(low, head).ok_or_else(outside)?;
+        let low = self.translate_cached(at, access)?;
+        let high = self.translate_cached(at.wrapping_add(head as u64), access)?;
+        let low = self.read_place(low, head).ok_or_else(outside)?;
         let high = self
-            .memory
-            .read_bytes(high, width as usize - head)
+            .read_place(high, width as usize - head)
             .ok_or_else(outside)?;
         Ok(low | (high << (8 * head)))
     }
 
+    /// `size` octets à une adresse physique (une moitié d'accès à cheval) :
+    /// de la RAM, ou d'un périphérique quand la RAM ne les couvre pas.
+    fn read_place(&mut self, place: u64, size: usize) -> Option<u64> {
+        if !self.in_hole(place) {
+            if let Some(value) = self.memory.read_bytes(place, size) {
+                return Some(value);
+            }
+        }
+        self.devices.read(place, size)
+    }
+
+    /// Ces `size` octets à une adresse physique acceptent-ils une écriture ?
+    fn holds_place(&self, place: u64, size: usize) -> bool {
+        (!self.in_hole(place) && self.memory.holds(place, size)) || self.devices.claims(place, size)
+    }
+
+    /// `size` octets écrits à une adresse physique, en RAM ou dans un
+    /// périphérique.
+    fn write_place(&mut self, place: u64, size: usize, value: u64) -> Option<()> {
+        if !self.in_hole(place) && self.memory.holds(place, size) {
+            return self.memory.write_bytes(place, size, value);
+        }
+        self.devices.write(place, size, value).then_some(())
+    }
+
+    /// **Cet octet est-il accessible ?** — sans le lire ni l'écrire. Ce qu'une
+    /// instruction demande avant de poser le premier octet d'une aire qui
+    /// peut fauter plus loin : `fxsave` exige ses 512 octets, un rangement de
+    /// seize octets ses deux moitiés. Un refus lève `faulted`, comme un accès.
+    pub fn probe_memory(&mut self, at: u64, access: Access) -> Result<(), Unmapped> {
+        let outcome = self.translate_cached(at, access).and_then(|place| {
+            if !self.holds_place(place, 1) {
+                return Err(Unmapped::Outside { address: at });
+            }
+            Ok(())
+        });
+        self.note(outcome)
+    }
+
     /// **Écrire `width` octets à une adresse virtuelle**, frontière comprise.
+    #[inline]
     pub fn write_memory(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
         let outcome = self.store(at, width, value);
         self.note(outcome)
     }
 
+    #[inline(always)]
     fn store(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
         let outside = || Unmapped::Outside { address: at };
         if !Self::crosses(at, width) {
-            let place = self.translate(at, Access::Write)?;
-            return self.memory.write(place, width, value).ok_or_else(outside);
+            let place = self.translate_cached(at, Access::Write)?;
+            if !self.in_hole(place) && self.memory.write(place, width, value).is_some() {
+                return Ok(());
+            }
+            // Hors de la RAM : un périphérique, ou rien.
+            return self
+                .devices
+                .write(place, width as usize, value)
+                .then_some(())
+                .ok_or_else(outside);
         }
         // **Tout vérifié avant qu'un seul octet ne soit posé.** Une
         // instruction qui faute ne laisse aucune trace, sans quoi le noyau
@@ -220,22 +672,91 @@ impl Cpu {
         // l'une des deux places.
         let head = (0x1000 - (at & 0xFFF)) as usize;
         let tail = width as usize - head;
-        let low = self.translate(at, Access::Write)?;
-        let high = self.translate(at + head as u64, Access::Write)?;
-        if !self.memory.holds(low, head) || !self.memory.holds(high, tail) {
+        let low = self.translate_cached(at, Access::Write)?;
+        let high = self.translate_cached(at.wrapping_add(head as u64), Access::Write)?;
+        if !self.holds_place(low, head) || !self.holds_place(high, tail) {
             return Err(outside());
         }
-        self.memory
-            .write_bytes(low, head, value)
-            .ok_or_else(outside)?;
-        self.memory
-            .write_bytes(high, tail, value >> (8 * head))
+        self.write_place(low, head, value).ok_or_else(outside)?;
+        self.write_place(high, tail, value >> (8 * head))
             .ok_or_else(outside)
     }
 
+    /// **La lecture du chemin rapide** (`x86::rapide`) : ce que `read_memory`
+    /// rend, par le plus court quand la page est au tampon avec le droit de
+    /// lire pour l'anneau courant et que l'accès ne sort pas de sa page. Une
+    /// case du tampon ne tient jamais une page hors de la RAM ni dans le trou
+    /// (`fill`), donc la place se lit sans autre question. Tout le reste —
+    /// pas de pagination, pas de tampon, une page à cheval, une case absente
+    /// ou sans le droit — passe par `read_memory`, hors de la ligne.
+    #[inline(always)]
+    pub fn read_memory_fast(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        if let Some(place) = self.fast_place(at, width, 0, TLB_USER) {
+            if let Some(value) = self.memory.read(place, width) {
+                return Ok(value);
+            }
+        }
+        self.read_memory_slow(at, width)
+    }
+
+    /// **L'écriture du chemin rapide** : ce que `write_memory` fait, par le
+    /// plus court quand la page est au tampon déjà salie et inscriptible (et
+    /// à l'utilisateur pour l'anneau trois). Une page en lecture seule que
+    /// le noyau écrit sans CR0.WP, ou pas encore salie, passe par
+    /// `write_memory`, qui en décide comme toujours.
+    #[inline(always)]
+    pub fn write_memory_fast(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
+        if let Some(place) = self.fast_place(
+            at,
+            width,
+            TLB_WRITABLE | TLB_DIRTY,
+            TLB_USER | TLB_WRITABLE | TLB_DIRTY,
+        ) {
+            if self.memory.write(place, width, value).is_some() {
+                return Ok(());
+            }
+        }
+        self.write_memory_slow(at, width, value)
+    }
+
+    /// La place physique d'un accès qui tient dans sa page et dont la case
+    /// du tampon porte les droits demandés : `kernel` en anneau zéro à deux,
+    /// `user` en anneau trois.
+    #[inline(always)]
+    fn fast_place(&self, at: u64, width: Width, kernel: u8, user: u8) -> Option<u64> {
+        let tlb = self.tlb.as_deref()?;
+        if self.control[0] & PAGING == 0 || (at & 0xFFF) > 0x1000 - width as u64 {
+            return None;
+        }
+        let page = at & !0xFFF;
+        let entry = &tlb.entries[(page >> 12) as usize & (TLB_SLOTS - 1)];
+        let needed = if self.segments[1] & 3 == 3 {
+            user
+        } else {
+            kernel
+        };
+        if entry.tag == page.wrapping_add(1) && entry.flags & needed == needed {
+            return Some(entry.frame | (at & 0xFFF));
+        }
+        None
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn read_memory_slow(&mut self, at: u64, width: Width) -> Result<u64, Unmapped> {
+        self.read_memory(at, width)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn write_memory_slow(&mut self, at: u64, width: Width, value: u64) -> Result<(), Unmapped> {
+        self.write_memory(at, width, value)
+    }
+
     /// Ranger le refus là où le reste du cœur peut le lire, et lever
-    /// `faulted`. Un vrai processeur délivrerait `#PF` ; ici la machine
-    /// s'arrête en nommant l'adresse, et les interruptions sont le mur suivant.
+    /// `faulted`. La machine PC en fait une `#PF` délivrée ; l'interpréteur nu
+    /// s'arrête en nommant l'adresse.
+    #[inline(always)]
     fn note<T>(&mut self, outcome: Result<T, Unmapped>) -> Result<T, Unmapped> {
         if let Err(why) = outcome {
             self.unmapped = Some(why);
