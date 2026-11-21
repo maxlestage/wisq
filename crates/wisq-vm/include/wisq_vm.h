@@ -340,7 +340,9 @@ int wisq_emitter_asset(const char *name, const uint8_t **out_bytes, size_t *out_
  * none), the archive (`initramfs_bytes == 0`: none) placed above `floor`.
  * Returns 0 and four kibibytes (freed with `wisq_x86_free_module`), or a named
  * refusal: 1 the RAM, 2 the line, 3 the screen, 4 the archive, -1 unreadable
- * arguments.
+ * arguments. On refusal 2, `out_len` receives the length of the whole line,
+ * the montage's part included: that is what the 2047-byte bound judges, and
+ * the caller cannot know it, since the montage's part depends on `extra`.
  */
 int wisq_emitter_boot_page(uint32_t pages, const char *extra,
                            uint32_t screen_width, uint32_t screen_height,

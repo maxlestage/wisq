@@ -649,8 +649,13 @@ int main(int argc, char **argv) {
     char longue[2100];
     memset(longue, 'a', sizeof longue - 1);
     longue[sizeof longue - 1] = 0;
+    page_emetteur_len = 0;
     check(wisq_emitter_boot_page(16384, longue, 0, 0, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 2,
           "la ligne trop longue");
+    /* Et sa longueur entière : le montage (« earlycon=… keep_bootcon », une
+     * espace) et les 2 099 octets de l'image. */
+    check(page_emetteur_len == strlen("earlycon=uart8250,io,0x3f8 keep_bootcon ") + sizeof longue - 1,
+          "le refus 2 dit la longueur de la ligne entière");
     check(wisq_emitter_boot_page(3, NULL, 0, 0, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 1, "la RAM");
     check(wisq_emitter_boot_page(16384, NULL, 70000, 1, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 3,
           "l'écran");

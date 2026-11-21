@@ -141,9 +141,17 @@ final class EmitterMachineTests: XCTestCase {
             (.init(kernel: kernel, ramBytes: 16 << 20), .ramTooSmall(needed: EmitterFixtures.physical + UInt64(EmitterFixtures.kernel().count))),
             (.init(kernel: kernel, ramBytes: 1000), .ramIsNotAPowerOfTwo(1000)),
             (.init(kernel: kernel, commandLine: "a\u{0}b", ramBytes: 64 << 20), .commandLineCarriesNul),
-            // Le refus 2 du Rust : la ligne entière dépasse sa place d'un octet.
+            // Le refus 2 du Rust : la ligne entière dépasse sa place d'un
+            // octet, et le refus dit sa longueur entière.
             (.init(kernel: kernel, commandLine: String(repeating: "a", count: roomForTheImage + 1),
-                   ramBytes: 64 << 20), .commandLineTooLong),
+                   ramBytes: 64 << 20), .commandLineTooLong(bytes: EmitterMachine.commandLineRoom + 1)),
+            // Sans `keep_bootcon` (l'image nomme `console=ttyS0`), le montage
+            // prend treize octets de moins : la longueur dite le suit.
+            (.init(kernel: kernel,
+                   commandLine: "console=ttyS0 " + String(repeating: "a", count: EmitterMachine.commandLineRoom),
+                   ramBytes: 64 << 20),
+             .commandLineTooLong(bytes: "earlycon=uart8250,io,0x3f8 console=ttyS0 ".utf8.count
+                                    + EmitterMachine.commandLineRoom)),
             (.init(kernel: kernel, commandLine: String(repeating: "a", count: roomForTheImage),
                    ramBytes: 64 << 20), nil),
             (.init(kernel: kernel, ramBytes: 64 << 20, screen: .init(width: 70000, height: 1)), .screen),
@@ -295,8 +303,11 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(EmitterMachine.explanation(.notEnoughRoom(ceiling: 512 << 20, minimum: 1 << 30)),
                        "L'appareil laisse 512 Mio à la machine, et l'image en demande au moins 1024 Mio.")
         XCTAssertEqual(EmitterMachine.explanation(.image("phrase")), "phrase")
-        XCTAssertEqual(EmitterMachine.explanation(.commandLineTooLong),
-                       "La ligne de commande de l'image dépasse les 2047 octets que le noyau lit.")
+        // La phrase dit la ligne entière : une ligne d'image de 2 008 octets,
+        // refusée, ne dépasse pas seule les 2 047.
+        XCTAssertEqual(EmitterMachine.explanation(.commandLineTooLong(bytes: 2048)),
+                       "La ligne de commande, celle de l'émetteur comprise, fait 2048 octets : "
+                           + "plus que les 2047 que le noyau lit.")
         XCTAssertEqual(EmitterMachine.explanation(.commandLineCarriesNul),
                        "La ligne de commande de l'image porte un caractère nul, où le noyau la couperait.")
     }

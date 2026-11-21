@@ -133,9 +133,10 @@ public enum EmitterMachine {
         /// Le repli de l'émetteur amène le texte virtuel ailleurs que sur
         /// lui-même : sous 4 Gio seulement.
         case foldMisses(folded: UInt64)
-        /// La ligne de commande est plus longue que la place que la page zéro
-        /// lui laisse.
-        case commandLineTooLong
+        /// La ligne de commande **entière** — celle du montage, puis celle
+        /// de l'image — est plus longue que la place que la page zéro lui
+        /// laisse ; `bytes` est sa longueur, que le Rust a comptée.
+        case commandLineTooLong(bytes: Int)
         /// La ligne de commande porte un octet nul, où le noyau la couperait.
         case commandLineCarriesNul
         /// L'écran ne peut pas être décrit au noyau.
@@ -413,8 +414,12 @@ public enum EmitterMachine {
         case .ramIsNotAPowerOfTwo, .foldMisses:
             return "Cette taille de mémoire ne convient pas à l'émetteur : une puissance de deux, deux gibioctets au plus."
         case .ramTooSmall(let needed): return "Le noyau demande \(mio(needed)), plus que la mémoire choisie."
-        case .commandLineTooLong:
-            return "La ligne de commande de l'image dépasse les \(commandLineRoom) octets que le noyau lit."
+        // **La ligne entière**, pas celle de l'image : la borne juge les deux
+        // ensemble, et une ligne d'image de 2 008 octets est refusée bien
+        // qu'elle ne dépasse pas, seule, les 2 047.
+        case .commandLineTooLong(let bytes):
+            return "La ligne de commande, celle de l'émetteur comprise, fait \(bytes) octets : "
+                + "plus que les \(commandLineRoom) que le noyau lit."
         case .commandLineCarriesNul:
             return "La ligne de commande de l'image porte un caractère nul, où le noyau la couperait."
         case .screen: return "L'écran demandé ne peut pas être décrit au noyau."
@@ -458,7 +463,8 @@ public enum EmitterMachine {
             defer { wisq_x86_free_module(out, length) }
             return Data(UnsafeBufferPointer(start: out, count: length))
         case 1: throw Refusal.ramIsNotAPowerOfTwo(Int(pages) * 65536)
-        case 2: throw Refusal.commandLineTooLong
+        // Au refus 2, `length` porte la longueur de la ligne entière.
+        case 2: throw Refusal.commandLineTooLong(bytes: length)
         case 3: throw Refusal.screen
         case 4: throw Refusal.archiveDoesNotFit(bytes: initrdBytes)
         default: throw Refusal.unknown(code)

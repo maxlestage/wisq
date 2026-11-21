@@ -94,13 +94,17 @@ pub fn usable(pages: u32, entry: u64, top: u64) -> Result<(), crate::x86_wasm::R
 /// et une ISO qui les portait ne s'ouvrait pas, sous un refus qui parlait de
 /// la page zéro.
 ///
-/// **`keep_bootcon` part quand l'image nomme `console=ttyS0`.** Les deux
+/// **`keep_bootcon` part quand l'image nomme `console=ttyS0`** — le port
+/// 0x3f8, celui de `earlycon` ([`names_the_early_console_port`]). Les deux
 /// ensemble font écrire la console précoce et la vraie sur le même port, et
 /// chaque ligne arrive deux fois — #306 l'a mesuré (367 lignes contre 222), et
 /// la course d'Alpine de la tranche précédente en portait les doubles. Sans
 /// console nommée sur le série, `keep_bootcon` reste : c'est lui qui garde la
 /// console précoce une fois la vraie (`tty0`, qui n'écrit nulle part) en
-/// place, et sans lui le noyau se tairait au milieu de son démarrage.
+/// place, et sans lui le noyau se tairait au milieu de son démarrage. Il reste
+/// aussi quand l'image nomme **un autre** port série (`console=ttyS1`) : la
+/// console précoce, sur 0x3f8, serait rendue à l'arrivée de `ttyS1`, et la
+/// sortie de 0x3f8 se tairait.
 ///
 /// Refusée seulement quand elle ne peut pas être posée : un octet nul, ou plus
 /// long que la place que la page zéro lui laisse.
@@ -109,9 +113,7 @@ pub fn command_line(image: Option<&str>) -> Result<String, CommandLineRefusal> {
     if image.as_bytes().contains(&0) {
         return Err(CommandLineRefusal::EmbeddedNul);
     }
-    let serial = image
-        .split_whitespace()
-        .any(|word| word.starts_with("console=ttyS0"));
+    let serial = image.split_whitespace().any(names_the_early_console_port);
     let mut line: Vec<&str> = MONTAGE_COMMAND_LINE
         .split_whitespace()
         .filter(|&word| !(serial && word == "keep_bootcon"))
@@ -127,6 +129,40 @@ pub fn command_line(image: Option<&str>) -> Result<String, CommandLineRefusal> {
         });
     }
     Ok(line)
+}
+
+/// **Ce mot nomme-t-il `ttyS0` comme console**, comme le noyau le lit ?
+///
+/// Le découpage de `console_setup` (`kernel/printk/printk.c`) : un nom qui
+/// commence par un chiffre est un `ttyS` (`console=0` est `ttyS0`) ; le nom
+/// s'arrête au premier chiffre ou à la première virgule, et l'index est le
+/// nombre qui suit, zéro s'il n'y en a pas. `ttyS0`, `ttyS0,115200n8`,
+/// `ttyS00` sont donc le port 0 ; `ttyS01` et `ttyS10` ne le sont pas — un
+/// simple préfixe `console=ttyS0` les y aurait mis. Une console nommée par
+/// son périphérique (`console=00:01.0`, un deux-points) n'a pas d'index :
+/// ce n'est pas `ttyS0` par son nom.
+fn names_the_early_console_port(word: &str) -> bool {
+    let Some(value) = word.strip_prefix("console=") else {
+        return false;
+    };
+    if value.contains(':') {
+        return false;
+    }
+    let name = if value.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("ttyS{value}")
+    } else {
+        value.to_string()
+    };
+    let cut = name
+        .find(|c: char| c.is_ascii_digit() || c == ',')
+        .unwrap_or(name.len());
+    let (device, rest) = name.split_at(cut);
+    // L'index : les chiffres qui suivent le nom, tous des zéros (ou aucun).
+    let index_is_zero = rest
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .all(|digit| digit == b'0');
+    device == "ttyS" && index_is_zero
 }
 
 /// Pourquoi la page zéro ne peut pas être écrite.
@@ -275,6 +311,10 @@ mod tests {
             "console=ttyS0",
             "console=ttyS0,115200",
             "root=/dev/vda console=tty0 console=ttyS0,115200n8 rw",
+            // Comme le noyau les lit : l'index 00 est 0, et un nom qui
+            // commence par un chiffre est un `ttyS`.
+            "console=ttyS00",
+            "console=0,115200",
         ] {
             assert_eq!(
                 command_line(Some(image)),
@@ -282,7 +322,20 @@ mod tests {
                 "« {image} »"
             );
         }
-        for image in ["root=/dev/vda", "console=tty0", "xconsole=ttyS0"] {
+        // Un autre port série que celui de `earlycon` garde `keep_bootcon` :
+        // sans lui, 0x3f8 se tairait à l'arrivée de `ttyS1`. `ttyS01` est le
+        // port 1, pas le 0 suivi d'un 1.
+        for image in [
+            "root=/dev/vda",
+            "console=tty0",
+            "xconsole=ttyS0",
+            "console=ttyS1",
+            "console=ttyS1,115200 console=tty0",
+            "console=ttyS10,115200",
+            "console=ttyS01",
+            "console=ttyUSB0",
+            "console=00:01.0,115200",
+        ] {
             assert_eq!(
                 command_line(Some(image)),
                 Ok(format!("earlycon=uart8250,io,0x3f8 keep_bootcon {image}")),
