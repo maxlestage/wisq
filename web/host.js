@@ -70,6 +70,35 @@ const STOP_MXCSR = 9n;
 /// instruction finie, pour que l'hôte oublie ce qui a été écrit ;
 /// `voirEcritures` l'efface avant de regarder quoi que ce soit d'autre.
 const STOP_WRITTEN = 10n;
+/// **Un accès à cheval entre la RAM et la mémoire d'un périphérique** :
+/// `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès lent pose dans le témoin de
+/// faute au lieu d'un code (un code plus un tient dans cinq bits). Aucun
+/// pilote ne le fait ; la boucle s'arrête en le nommant, plutôt que d'écrire
+/// la moitié haute dans la RAM repliée.
+const FAULT_DEVICE_STRADDLE = 1n << 40n;
+/// **Le bit zéro d'une trame rendue par la marche : la page est la mémoire
+/// d'un périphérique** (`DEVICE_FRAME` côté Rust). Le processeur ne range
+/// jamais ses propres structures là — IDT, GDT, segment de tâche, cadre
+/// d'une délivrance — et l'hôte ne traduit pas de code qui y vivrait.
+const DEVICE_FRAME = 1;
+/// **La plus haute adresse qui soit un port.** Au-delà, ce qu'`in` et `out`
+/// reçoivent est une adresse physique hors de la RAM : l'accès lent du
+/// module y envoie ce qui touche la mémoire d'un périphérique, à sa largeur.
+/// La RAM fait au moins 64 Kio, donc une telle adresse ne se confond jamais
+/// avec un port.
+const DERNIER_PORT = 0xffff;
+/// **L'hôte a voulu prendre la mémoire d'un périphérique pour de la RAM** :
+/// une IDT, une GDT, un segment de tâche, une pile de délivrance ou du code à
+/// traduire posés là. Levée par `physical`, rattrapée par `run`, qui
+/// s'arrête sur son message.
+class PageDePeripherique extends Error {
+  constructor(adresse) {
+    super(
+      `l'hôte veut lire ou écrire 0x${BigInt.asUintN(64, adresse).toString(16)} comme de la RAM, ` +
+        "et c'est la mémoire d'un périphérique",
+    );
+  }
+}
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -1248,14 +1277,30 @@ export function machine({
   /// qu'une réponse du disque arrive.
   const recopierLignes = () => {
     if (peripheriques === null) return;
-    peripheriques.battre((now() * PIT_HZ) / TSC_HZ);
+    const tics = (now() * PIT_HZ) / TSC_HZ;
+    peripheriques.battre(tics);
+    // **Ce que le doigt a fait**, posé dans les tampons de la tablette avant
+    // de relire les lignes : la livraison lève la sienne. Sans rien en
+    // attente, la carte ne touche pas à la RAM.
+    peripheriques.livrer(tics);
     const l = peripheriques.lignes();
     pics.master.request = (pics.master.request & ~(l.tenuesMaitre & ~l.maitre)) | l.maitre;
     pics.slave.request = (pics.slave.request & ~(l.tenuesEsclave & ~l.esclave)) | l.esclave;
   };
 
+  /// **Tous les bits à un sur `largeur` octets** : ce que rend une adresse
+  /// où il n'y a personne, le bus qui flotte, à la largeur de l'accès.
+  const flottant = (largeur) => (1n << (8n * BigInt(largeur))) - 1n;
   env.out = (port, value, width) => {
     const at = Number(port);
+    // **La mémoire d'un périphérique**, envoyée ici par l'accès lent : une
+    // adresse physique, pas un port. Sans carte, ou si l'adresse n'est à
+    // personne, l'écriture tombe dans le vide, comme sur un bus sans
+    // répondant.
+    if (at > DERNIER_PORT) {
+      if (peripheriques !== null) peripheriques.memoire.ecrire(port, value, width);
+      return;
+    }
     if (at >= SERIAL && at <= SERIAL_LAST) {
       serialWrite(at - SERIAL, Number(value & 0xffn));
       return;
@@ -1397,8 +1442,13 @@ export function machine({
     }
   };
   env.in = (port, width) => {
-    void width;
     const at = Number(port);
+    // La mémoire d'un périphérique, comme pour `out` : tous les bits à un
+    // quand personne n'y répond.
+    if (at > DERNIER_PORT) {
+      const valeur = peripheriques === null ? null : peripheriques.memoire.lire(port, width);
+      return valeur === null ? flottant(width) : valeur;
+    }
     if (at >= SERIAL && at <= SERIAL_LAST) return BigInt(serialRead(at - SERIAL));
     if (at === PIT_GATE) {
       return BigInt(gatePort | (outTwo() ? PIT_OUT_TWO : 0));
@@ -1973,6 +2023,10 @@ export function machine({
     const frame = walk(BigInt.asIntN(64, address), kind);
     if (globals[SLOTS.fault].value !== 0n) return null;
     const page = Number(BigInt.asUintN(32, BigInt(frame)));
+    // **La mémoire d'un périphérique n'est pas de la RAM** : la marche rend
+    // la trame repliée, le bit zéro levé. La relire ici prendrait les octets
+    // d'une autre page de la RAM ; l'hôte s'arrête plutôt, en le nommant.
+    if ((page & DEVICE_FRAME) !== 0) throw new PageDePeripherique(address);
     return (page + Number(address & 0xfffn)) & (base - 1);
   }
 
@@ -2824,6 +2878,33 @@ export function machine({
     /// `null`. C'est par elle que l'application tape, et que le relevé dit
     /// ce que le disque a servi.
     carte: peripheriques,
+    /// **Taper**, au rythme d'une main, sur le clavier de la carte (un
+    /// clavier américain) : rend le nombre de frappes mises en file. Sans
+    /// carte, rien n'est tapé et la fonction lève.
+    taper(texte) {
+      if (peripheriques === null) throw new Error("aucune carte : pas de clavier où taper");
+      return peripheriques.taperTexte(texte);
+    },
+    /// **Toucher l'écran**, par la tablette : la position de 0 à 1 sur chaque
+    /// axe, les boutons en bits (gauche, droit, milieu). `false` tant que
+    /// l'invité n'a pas pris la tablette. Le toucher part au prochain tour.
+    toucher(x, y, boutons) {
+      if (peripheriques === null) throw new Error("aucune carte : pas d'écran à toucher");
+      return peripheriques.toucher(x, y, boutons);
+    },
+    /// **L'écran de la carte**, lu d'un bloc : `{ largeur, hauteur,
+    /// revision, image }`, l'image en XRGB8888 sans remplissage (voir
+    /// `carte.ecran.image`), ou `null` sans écran. `depuis` : la révision de
+    /// la dernière image prise ; égale à celle de l'écran, l'image n'a pas
+    /// bougé, et elle n'est pas recopiée (`image` vaut `null`).
+    ecran(depuis = null) {
+      if (peripheriques === null) return null;
+      const mode = peripheriques.ecran.mode();
+      if (mode === null) return null;
+      const revision = peripheriques.ecran.revision();
+      const image = depuis !== null && BigInt(depuis) === revision ? null : peripheriques.ecran.image();
+      return { largeur: mode.largeur, hauteur: mode.hauteur, revision, image };
+    },
     /// **Les régions dont les octets ont bougé sous elles.**
     ///
     /// Une région traduite reste dans la table aussi longtemps que la machine
@@ -2903,7 +2984,17 @@ export function machine({
       }
       return { changees, illisibles, ailleurs };
     },
-    async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
+    async run(reglages = {}) {
+      try {
+        return await courir(reglages);
+      } catch (pourquoi) {
+        if (pourquoi instanceof PageDePeripherique) return { stopped: pourquoi.message, at: rip() };
+        throw pourquoi;
+      }
+    },
+  };
+
+  async function courir({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
       let dernier = performance.now();
       // **Combien de chargements d'instruction ont fauté d'affilée**, sans
       // qu'une seule région s'installe entre les deux. Un noyau qui
@@ -3107,6 +3198,12 @@ export function machine({
         // délivrance ne peut pas avoir lieu, le témoin est remis pour que le
         // relevé montre la faute qui l'a arrêtée.
         const fault = globals[SLOTS.fault].value;
+        if (fault === FAULT_DEVICE_STRADDLE) {
+          return {
+            stopped: "un accès à cheval entre la RAM et la mémoire d'un périphérique",
+            at: rip(),
+          };
+        }
         if (fault !== 0n) {
           globals[SLOTS.fault].value = 0n;
           const why = deliver(
@@ -3307,6 +3404,5 @@ export function machine({
         }
       }
       return { stopped: "tours épuisés", at: rip() };
-    },
-  };
+  }
 }
