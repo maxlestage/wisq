@@ -2,8 +2,9 @@
 //! instruction seule sur un processeur nu, ne peuvent pas dire — la faute
 //! d'une exception de SSE démasquée (`#XM`, ou `#UD` sans CR4.OSXMMEXCPT),
 //! un rangement du x87 (`fstpt`, `fnsave`, `fnstenv`) qui faute à cheval sur
-//! deux pages sans rien laisser derrière lui, et le préfixe `67` devant une
-//! instruction qui n'adresse rien.
+//! deux pages sans rien laisser derrière lui, le préfixe `67` devant une
+//! instruction qui n'adresse rien, et `lock` devant ce qui ne peut pas le
+//! porter.
 
 use wisq_vm::pc::systeme::Table;
 use wisq_vm::pc::Machine;
@@ -444,8 +445,8 @@ fn an_address_size_prefix_without_address_is_ignored() {
         assert_eq!(machine.cpu.regs[2], attendu, "{code:02x?}");
     }
     // Deux `67` devant `movdqa %xmm1,%xmm2`, un devant `paddd` et devant
-    // `addps` (le second décodeur) : ignorés, comme sur l'hôte (sonde
-    // `r6/c/nt`).
+    // `addps` (le second décodeur) : ignorés, comme sur l'hôte (sondes
+    // `r6/c/nt` pour les deux premiers, `r7/c/sonde` pour `addps`).
     let mut machine = nouvelle(&[
         0x67, 0x67, 0x66, 0x0F, 0x6F, 0xD1, // movdqa %xmm1,%xmm2
         0x67, 0x66, 0x0F, 0xFE, 0xD1, // paddd %xmm1,%xmm2
@@ -464,7 +465,53 @@ fn an_address_size_prefix_without_address_is_ignored() {
         machine.cpu.xmm[3],
         [0x0000_0002_0000_0001, 0x3F80_0000_3F80_0000]
     );
+    // **`67` après `f3` ou `f2`** : `addss` et `addsd` entre registres, le
+    // préfixe de taille d'adresse pris entre le préfixe de répétition et
+    // l'opcode. Ignoré sur l'hôte, qui rend la même somme qu'en son absence
+    // (sonde `r7/c/sonde`) : 1 + 2 = 3 dans le flottant bas, le reste de XMM3
+    // gardé ; en double, 2,000 000 47… + 2,000 000 47… (2,000 000 473 111 868
+    // dans XMM1, 2,000 000 476 837 158 dans XMM3 ; la somme vaut
+    // 4,000 000 949 949 026).
+    for (code, attendu) in [
+        (
+            &[0xF3, 0x67, 0x0F, 0x58, 0xD9, 0xF4][..],
+            [0x4000_0000_4040_0000, 0x3FF0_0000_0000_0000],
+        ),
+        (
+            &[0xF2, 0x67, 0x0F, 0x58, 0xD9, 0xF4],
+            [0x4010_0000_3FC0_0000, 0x3FF0_0000_0000_0000],
+        ),
+    ] {
+        let mut machine = nouvelle(code);
+        machine.cpu.xmm[1] = [0x4000_0000_3F80_0000, 0x4010_0000_0000_0000];
+        machine.cpu.xmm[3] = [0x4000_0000_4000_0000, 0x3FF0_0000_0000_0000];
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{code:02x?}");
+        assert_eq!(
+            machine.cpu.rip, 0x1006,
+            "{code:02x?} : cinq octets, puis hlt"
+        );
+        assert_eq!(machine.cpu.xmm[3], attendu, "{code:02x?}");
+    }
+    // **Un préfixe de segment devant `67`** : les six, pris dans la liste des
+    // préfixes que `sans_taille_d_adresse` ôte puis remet. Sur l'hôte, chacun
+    // devant `67 49 f7 e6` s'exécute comme `mul %r14`, en cinq octets (sonde
+    // `ctrl-r7/c/p` du bloc-notes).
+    for segment in [0x2E, 0x36, 0x3E, 0x26, 0x64, 0x65] {
+        let mut machine = nouvelle(&[segment, 0x67, 0x49, 0xF7, 0xE6, 0xF4]);
+        machine.cpu.regs[0] = 0x1_0000_0001;
+        machine.cpu.regs[14] = 0x1_0000_0000;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{segment:02x} 67 : jusqu'au hlt");
+        assert_eq!(machine.cpu.rip, 0x1006, "{segment:02x} 67 : cinq octets");
+        assert_eq!(machine.cpu.regs[0], 0x1_0000_0000, "{segment:02x} 67 : RAX");
+        assert_eq!(machine.cpu.regs[2], 0x1, "{segment:02x} 67 : RDX");
+    }
     for (nom, code) in [
+        // `lock` devant `67 mul %r14`, d'un côté ou de l'autre : SIGILL sur
+        // l'hôte (sondes `ctrl-r7/c/p` et `r8/c/verrou`).
+        ("lock addr32 mul %r14", &[0xF0, 0x67, 0x49, 0xF7, 0xE6][..]),
+        ("addr32 lock mul %r14", &[0x67, 0xF0, 0x49, 0xF7, 0xE6]),
         ("lea -1(%ecx),%rdx", &[0x67, 0x48, 0x8D, 0x51, 0xFF][..]),
         ("movdqa (%ebx),%xmm0", &[0x67, 0x67, 0x66, 0x0F, 0x6F, 0x03]),
         ("addps (%ebx),%xmm0", &[0x67, 0x0F, 0x58, 0x03]),
@@ -487,6 +534,199 @@ fn an_address_size_prefix_without_address_is_ignored() {
                 .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
             "{nom} : {issue:?}"
         );
+    }
+}
+
+/// **`lock` n'est admis que devant ce qui peut le porter** : une
+/// lecture-modification-écriture dont la destination est en mémoire. Chaque
+/// forme admise ici s'exécute sur l'hôte, chaque forme refusée y lève SIGILL
+/// (`#UD`) : la sonde `r8/c/verrou` du bloc-notes les a jouées une à une.
+/// Une forme admise va jusqu'au `hlt`, sa longueur juste ; `lock incl` et
+/// `lock cmpxchg` écrivent ce qu'ils doivent. Une forme refusée n'est pas lue.
+/// **Un préfixe devant `lock` ne le cache pas.** Sur l'hôte (sonde
+/// `ctrl-r8/c/p.c` du bloc-notes), un préfixe de segment, `66` ou `f3` posé
+/// avant le `f0` laisse la forme `#UD` (SIGILL) comme sans lui ; `f2` aussi,
+/// devant le vectoriel. Chaque forme est jouée deux fois : sans `lock`, elle
+/// s'exécute jusqu'au `hlt` (le préfixe est donc lu par un décodeur de la
+/// machine) ; avec, elle est refusée. Ôter un préfixe de la liste de
+/// `verrou_admis` ferait admettre les formes qui le portent.
+#[test]
+fn a_prefix_before_lock_does_not_hide_it() {
+    let formes: [(&str, u8, &[u8]); 14] = [
+        ("cs lock add %rax,%rbx", 0x2E, &[0x48, 0x01, 0xC3]),
+        ("ds lock add (%rbx),%rax", 0x3E, &[0x48, 0x03, 0x03]),
+        ("es lock nop", 0x26, &[0x90]),
+        ("ss lock inc %eax", 0x36, &[0xFF, 0xC0]),
+        ("fs lock add %rax,%rbx", 0x64, &[0x48, 0x01, 0xC3]),
+        ("gs lock cmp %rax,(%rbx)", 0x65, &[0x48, 0x39, 0x03]),
+        ("66 lock add %ax,%bx", 0x66, &[0x01, 0xC3]),
+        ("66 lock cmp %ax,(%rbx)", 0x66, &[0x39, 0x03]),
+        ("f3 lock add %rax,%rbx", 0xF3, &[0x48, 0x01, 0xC3]),
+        ("f3 lock mov %rax,(%rbx)", 0xF3, &[0x48, 0x89, 0x03]),
+        ("f2 lock addsd %xmm1,%xmm0", 0xF2, &[0x0F, 0x58, 0xC1]),
+        ("f2 lock movsd (%rbx),%xmm0", 0xF2, &[0x0F, 0x10, 0x03]),
+        ("f3 lock addss %xmm1,%xmm0", 0xF3, &[0x0F, 0x58, 0xC1]),
+        ("66 lock paddd %xmm1,%xmm0", 0x66, &[0x0F, 0xFE, 0xC1]),
+    ];
+    for (nom, prefixe, corps) in formes {
+        let mut sans = vec![prefixe];
+        sans.extend_from_slice(corps);
+        sans.push(0xF4);
+        let mut machine = nouvelle(&sans);
+        machine.cpu.regs[3] = 0x6000;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{nom}, sans lock : jusqu'au hlt");
+        assert_eq!(
+            machine.cpu.rip,
+            0x1000 + sans.len() as u64,
+            "{nom}, sans lock"
+        );
+
+        for devant in [&[][..], &[0x90, 0x90]] {
+            let mut code = devant.to_vec();
+            code.extend_from_slice(&[prefixe, 0xF0]);
+            code.extend_from_slice(corps);
+            code.push(0xF4);
+            let mut machine = nouvelle(&code);
+            machine.cpu.regs[3] = 0x6000;
+            let issue = machine.tourner(10);
+            assert!(
+                issue
+                    .as_ref()
+                    .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+                "{devant:02x?} {nom} : {issue:?}"
+            );
+            assert_eq!(
+                machine.cpu.rip,
+                0x1000 + devant.len() as u64,
+                "{devant:02x?} {nom} : arrêtée sur elle"
+            );
+        }
+    }
+}
+
+#[test]
+fn lock_is_taken_only_before_what_can_carry_it() {
+    let admises: [(&str, &[u8]); 30] = [
+        ("lock cmpxchg %rcx,(%rbx)", &[0xF0, 0x48, 0x0F, 0xB1, 0x0B]),
+        ("lock cmpxchgb %cl,(%rbx)", &[0xF0, 0x0F, 0xB0, 0x0B]),
+        ("lock xadd %eax,(%rbx)", &[0xF0, 0x0F, 0xC1, 0x03]),
+        ("lock xaddb %al,(%rbx)", &[0xF0, 0x0F, 0xC0, 0x03]),
+        ("lock incl (%rbx)", &[0xF0, 0xFF, 0x03]),
+        ("lock decl (%rbx)", &[0xF0, 0xFF, 0x0B]),
+        ("lock incw (%rbx)", &[0xF0, 0x66, 0xFF, 0x03]),
+        ("lock incw (%rbx), 66 d'abord", &[0x66, 0xF0, 0xFF, 0x03]),
+        ("lock incb (%rbx)", &[0xF0, 0xFE, 0x03]),
+        ("lock orl $0,(%rbx)", &[0xF0, 0x83, 0x0B, 0x00]),
+        ("lock add %rax,(%rbx)", &[0xF0, 0x48, 0x01, 0x03]),
+        (
+            "lock addl $1,(%rbx)",
+            &[0xF0, 0x81, 0x03, 0x01, 0x00, 0x00, 0x00],
+        ),
+        ("lock andb $0xf,(%rbx)", &[0xF0, 0x80, 0x23, 0x0F]),
+        ("lock sub %rax,(%rbx)", &[0xF0, 0x48, 0x29, 0x03]),
+        ("lock xor %rax,(%rbx)", &[0xF0, 0x48, 0x31, 0x03]),
+        ("lock adc %rax,(%rbx)", &[0xF0, 0x48, 0x11, 0x03]),
+        ("lock sbb %rax,(%rbx)", &[0xF0, 0x48, 0x19, 0x03]),
+        ("lock or %eax,(%rbx)", &[0xF0, 0x09, 0x03]),
+        ("lock and %eax,(%rbx)", &[0xF0, 0x21, 0x03]),
+        ("lock negl (%rbx)", &[0xF0, 0xF7, 0x1B]),
+        ("lock notl (%rbx)", &[0xF0, 0xF7, 0x13]),
+        ("lock bts %eax,(%rbx)", &[0xF0, 0x0F, 0xAB, 0x03]),
+        ("lock btr %eax,(%rbx)", &[0xF0, 0x0F, 0xB3, 0x03]),
+        ("lock btc %eax,(%rbx)", &[0xF0, 0x0F, 0xBB, 0x03]),
+        ("lock btsl $1,(%rbx)", &[0xF0, 0x0F, 0xBA, 0x2B, 0x01]),
+        ("lock btrl $1,(%rbx)", &[0xF0, 0x0F, 0xBA, 0x33, 0x01]),
+        ("lock btcl $1,(%rbx)", &[0xF0, 0x0F, 0xBA, 0x3B, 0x01]),
+        ("lock xchg %rax,(%rbx)", &[0xF0, 0x48, 0x87, 0x03]),
+        ("lock xchgb %al,(%rbx)", &[0xF0, 0x86, 0x03]),
+        ("lock cmpxchg16b (%rbx)", &[0xF0, 0x48, 0x0F, 0xC7, 0x0B]),
+    ];
+    for (nom, forme) in admises {
+        for prefixe in [&[][..], &[0x2E], &[0xF0]] {
+            let mut code = prefixe.to_vec();
+            code.extend_from_slice(forme);
+            code.push(0xF4);
+            let mut machine = nouvelle(&code);
+            machine.cpu.regs[0] = 1;
+            machine.cpu.regs[1] = 2;
+            machine.cpu.regs[3] = 0x6000;
+            machine.tourner(10).expect("sans faute");
+            assert!(machine.arretee, "{prefixe:02x?} {nom} : jusqu'au hlt");
+            assert_eq!(
+                machine.cpu.rip,
+                0x1000 + code.len() as u64,
+                "{prefixe:02x?} {nom} : sa longueur"
+            );
+        }
+    }
+    // Ce qu'elles écrivent : `lock incl` compte, `lock cmpxchg` (RAX à 0,
+    // comme la mémoire) range RCX.
+    let mut machine = nouvelle(&[0xF0, 0xFF, 0x03, 0xF0, 0xFF, 0x03, 0xF4]);
+    machine.cpu.regs[3] = 0x6000;
+    machine.tourner(10).expect("sans faute");
+    assert_eq!(machine.cpu.memory.read(0x6000, Width::Dword), Some(2));
+    let mut machine = nouvelle(&[0xF0, 0x48, 0x0F, 0xB1, 0x0B, 0xF4]);
+    machine.cpu.regs[1] = 0x1234_5678_9ABC;
+    machine.cpu.regs[3] = 0x6000;
+    machine.tourner(10).expect("sans faute");
+    assert_eq!(
+        machine.cpu.memory.read(0x6000, Width::Qword),
+        Some(0x1234_5678_9ABC)
+    );
+    let refusees: [(&str, &[u8]); 26] = [
+        ("lock mul %r14", &[0xF0, 0x49, 0xF7, 0xE6]),
+        ("lock add %rax,%rbx", &[0xF0, 0x48, 0x01, 0xC3]),
+        ("lock add (%rbx),%rax", &[0xF0, 0x48, 0x03, 0x03]),
+        ("lock cmp %rax,(%rbx)", &[0xF0, 0x48, 0x39, 0x03]),
+        ("lock cmpl $0,(%rbx)", &[0xF0, 0x83, 0x3B, 0x00]),
+        ("lock test %rax,(%rbx)", &[0xF0, 0x48, 0x85, 0x03]),
+        (
+            "lock testl $1,(%rbx)",
+            &[0xF0, 0xF7, 0x03, 0x01, 0x00, 0x00, 0x00],
+        ),
+        ("lock mov %rax,(%rbx)", &[0xF0, 0x48, 0x89, 0x03]),
+        ("lock bt %eax,(%rbx)", &[0xF0, 0x0F, 0xA3, 0x03]),
+        ("lock btl $1,(%rbx)", &[0xF0, 0x0F, 0xBA, 0x23, 0x01]),
+        ("lock nop", &[0xF0, 0x90]),
+        ("lock lea (%rbx),%rax", &[0xF0, 0x48, 0x8D, 0x03]),
+        ("lock cmpxchg %rcx,%rbx", &[0xF0, 0x48, 0x0F, 0xB1, 0xCB]),
+        ("lock xchg %rax,%rbx", &[0xF0, 0x48, 0x87, 0xC3]),
+        ("lock incl %eax", &[0xF0, 0xFF, 0xC0]),
+        ("lock shll (%rbx)", &[0xF0, 0xD1, 0x23]),
+        ("lock addps %xmm1,%xmm3", &[0xF0, 0x0F, 0x58, 0xD9]),
+        ("lock movdqa %xmm0,(%rbx)", &[0xF0, 0x66, 0x0F, 0x7F, 0x03]),
+        ("lock xadd %eax,%ebx", &[0xF0, 0x0F, 0xC1, 0xC3]),
+        ("lock bts %eax,%ebx", &[0xF0, 0x0F, 0xAB, 0xC3]),
+        ("lock negl %eax", &[0xF0, 0xF7, 0xD8]),
+        ("lock pushq (%rbx)", &[0xF0, 0xFF, 0x33]),
+        ("lock movzbl (%rbx),%eax", &[0xF0, 0x0F, 0xB6, 0x03]),
+        ("lock imul (%rbx),%eax", &[0xF0, 0x0F, 0xAF, 0x03]),
+        ("lock setz (%rbx)", &[0xF0, 0x0F, 0x94, 0x03]),
+        ("lock rcll (%rbx)", &[0xF0, 0xD1, 0x13]),
+    ];
+    for (nom, forme) in refusees {
+        // Seule, puis derrière une instruction ordinaire (`nop`), pour que
+        // le bloc qui commence avant elle la lise aussi.
+        for devant in [&[][..], &[0x90, 0x90]] {
+            let mut code = devant.to_vec();
+            code.extend_from_slice(forme);
+            code.push(0xF4);
+            let mut machine = nouvelle(&code);
+            machine.cpu.regs[3] = 0x6000;
+            let issue = machine.tourner(10);
+            assert!(
+                issue
+                    .as_ref()
+                    .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+                "{devant:02x?} {nom} : {issue:?}"
+            );
+            assert_eq!(
+                machine.cpu.rip,
+                0x1000 + devant.len() as u64,
+                "{devant:02x?} {nom} : arrêtée sur elle"
+            );
+        }
     }
 }
 
@@ -523,6 +763,36 @@ fn non_temporal_stores_store_like_the_others() {
         0x1122_3344_5566_7788,
         "movnti, soixante-quatre"
     );
+    // **Sous chaque préfixe de segment**, `movnti` range aussi : `es`, `cs`,
+    // `ss` et `ds` n'ont pas de base en mode long, `fs` et `gs` ajoutent la
+    // leur. Sur l'hôte, `26`, `2e`, `36`, `3e`, `64` et `65` devant
+    // `0f c3 03` rangent tous (sonde `r7/c/sonde`).
+    for (prefixe, base) in [
+        (0x26, 0),
+        (0x2E, 0),
+        (0x36, 0),
+        (0x3E, 0),
+        (0x64, 0x100),
+        (0x65, 0x200),
+    ] {
+        let code = [prefixe, 0x0F, 0xC3, 0x03, 0xF4]; // movnti %eax,%seg:(%rbx)
+        let mut machine = nouvelle(&code);
+        machine.cpu.regs[3] = 0x6000;
+        machine.cpu.regs[0] = 0x1122_3344;
+        machine.cpu.fs_base = 0x100;
+        machine.cpu.gs_base = 0x200;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{prefixe:02x}");
+        assert_eq!(
+            machine.cpu.rip, 0x1005,
+            "{prefixe:02x} : quatre octets, puis hlt"
+        );
+        assert_eq!(
+            machine.cpu.memory.read(0x6000 + base, Width::Dword),
+            Some(0x1122_3344),
+            "{prefixe:02x}"
+        );
+    }
     for refuse in [
         &[0x66, 0x0F, 0xE7, 0xD2][..], // movntdq %xmm2,%xmm2
         &[0x0F, 0x2B, 0xCA],           // movntps, registre

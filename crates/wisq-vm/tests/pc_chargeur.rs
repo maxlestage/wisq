@@ -3,7 +3,7 @@
 //! `LinuxBootProtocolTests.swift` et `X86BootLoaderTests.swift`.
 
 use wisq_vm::pc::chargeur::{
-    charger, Ecran, Protocole, Refus, COMPTE_E820, E820_UTILISABLE, LIGNE_PAR_DEFAUT,
+    charger, ligne_posee, Ecran, Protocole, Refus, COMPTE_E820, E820_UTILISABLE, LIGNE_PAR_DEFAUT,
     OCTETS_D_EN_TETE, TABLE_E820, TAILLE_DE_LA_PAGE_ZERO,
 };
 use wisq_vm::pc::memoire;
@@ -310,6 +310,54 @@ fn the_default_command_line_asks_for_early_output() {
     assert!(LIGNE_PAR_DEFAUT.contains("console=ttyS0"));
 }
 
+/// **Sous un écran, la machine met `console=tty0` devant toute ligne** —
+/// celle qu'on donne comme celle par défaut —, comme `X86Machine.load` du
+/// cœur Swift ; sans écran, la ligne passe telle quelle, et une ligne qui a
+/// déjà `console=tty0` ne le reçoit pas deux fois.
+#[test]
+fn the_machine_puts_tty0_in_front_of_any_line_under_a_screen() {
+    let ecran = Ecran {
+        base: 0xE000_0000,
+        largeur: 1024,
+        hauteur: 768,
+    };
+    let ligne_posee = |ligne: Option<&str>, ecran: Option<Ecran>| {
+        let mut machine = wisq_vm::pc::Machine::nouvelle(RAM);
+        let placement = machine
+            .charger(&noyau(), ligne, None, ecran)
+            .expect("chargé");
+        // `ligne_posee`, ce que `wisq-pc` affiche, rend ce qui est en
+        // mémoire, octet pour octet.
+        let ou = placement.ligne_de_commande as usize;
+        let octets = &machine.cpu.memory.bytes[ou..];
+        let fin = octets
+            .iter()
+            .position(|octet| *octet == 0)
+            .expect("terminée");
+        let lue = String::from_utf8(octets[..fin].to_vec()).expect("du texte");
+        assert_eq!(
+            ligne_posee(&machine.cpu.memory.bytes, &placement).as_deref(),
+            Some(lue.as_str()),
+            "ligne_posee"
+        );
+        lue
+    };
+    assert_eq!(ligne_posee(Some("console=ttyS0"), None), "console=ttyS0");
+    assert_eq!(
+        ligne_posee(Some("console=ttyS0"), Some(ecran)),
+        "console=tty0 console=ttyS0"
+    );
+    assert_eq!(
+        ligne_posee(None, Some(ecran)),
+        format!("console=tty0 {LIGNE_PAR_DEFAUT}")
+    );
+    assert_eq!(ligne_posee(None, None), LIGNE_PAR_DEFAUT);
+    assert_eq!(
+        ligne_posee(Some("ro console=tty0"), Some(ecran)),
+        "ro console=tty0"
+    );
+}
+
 #[test]
 fn the_refusals_are_named() {
     assert_eq!(
@@ -583,6 +631,27 @@ fn above_three_gibibytes_the_map_has_a_hole() {
     assert!(cpu.read_memory(0xBFFF_FFF8, Width::Qword).is_ok());
     assert!(cpu.write_memory(1 << 32, Width::Qword, 7).is_ok());
     assert_eq!(cpu.read_memory(1 << 32, Width::Qword), Ok(7));
+    // **À cheval sur le bord du trou**, chaque moitié est jugée : quatre
+    // octets de RAM puis quatre dans le trou. La RAM de l'hôte qui couvre le
+    // trou porte un motif : ni la lecture ne le rend, ni l'écriture ne le
+    // touche, ni la moitié basse n'est posée avant le refus.
+    let bord = 0xC000_0000usize;
+    cpu.memory.bytes[bord..bord + 4].copy_from_slice(&[0xA1, 0xA2, 0xA3, 0xA4]);
+    cpu.memory.bytes[bord - 4..bord].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+    cpu.faulted = false;
+    assert!(
+        cpu.read_memory(bord as u64 - 4, Width::Qword).is_err(),
+        "la moitié haute est dans le trou"
+    );
+    cpu.faulted = false;
+    assert!(cpu
+        .write_memory(bord as u64 - 4, Width::Qword, 0x5555_5555_6666_6666)
+        .is_err());
+    assert_eq!(
+        &cpu.memory.bytes[bord - 4..bord + 4],
+        &[0x11, 0x22, 0x33, 0x44, 0xA1, 0xA2, 0xA3, 0xA4],
+        "rien de posé, d'aucun côté"
+    );
 }
 
 /// **Une RAM que l'hôte ne peut pas donner est un refus, pas un arrêt du
