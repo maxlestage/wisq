@@ -1568,5 +1568,21 @@ mod tests {
         assert_eq!(back(two_to_the_minus_one(value(1.0)).0), 1.0);
         // Au-delà de 2⁶³ : C2, l'opérande intact.
         assert!(sine_cosine(value(1e19)).is_none());
+        // **Un grand argument** : la réduction par π/2 retire k · π/2 sur cent
+        // vingt-huit bits. La partie basse de π/2 y compte : sans elle, sin
+        // 10⁶ se tromperait de 3 · 10⁻¹⁴, sin 10¹⁰ de 10⁻¹⁰.
+        for (x, sine, cosine) in [
+            (1e6, -0.349_993_502_171_292_94, 0.936_752_127_533_144_7),
+            (1e10, -0.487_506_025_087_510_7, 0.873_119_622_676_856),
+            (
+                123_456.789,
+                -0.998_664_082_343_224_6,
+                0.051_672_532_718_701_38,
+            ),
+        ] {
+            let (s, c, _) = sine_cosine(value(x)).unwrap();
+            assert!(close(back(s), sine), "sin {x} : {}", back(s));
+            assert!(close(back(c), cosine), "cos {x} : {}", back(c));
+        }
     }
 }

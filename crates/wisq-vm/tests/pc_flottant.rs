@@ -102,22 +102,24 @@ fn an_unmasked_sse_exception_is_delivered_and_writes_nothing() {
     assert_eq!(machine.cpu.xmm[0], [f64::INFINITY.to_bits(), 7]);
 }
 
-/// **`fstpt` à cheval sur une page absente** : dix octets à 0xAFFA, dont les
-/// quatre derniers tombent dans 0xB000, qui n'est pas cartographiée. La
-/// faute de page nomme 0xB000, et rien n'a bougé : ni les six octets de la
-/// première page, ni la pile du x87.
+/// **`fstpt` à cheval sur une page absente** : dix octets à 0xAFF8, dont les
+/// deux derniers tombent dans 0xB000, qui n'est pas cartographiée. Les huit
+/// premiers tiennent dans la première page : un rangement qui ne sonderait
+/// pas la seconde avant d'écrire les y laisserait. La faute de page nomme
+/// 0xB000, et rien n'a bougé : ni les huit octets de la première page, ni la
+/// pile du x87.
 #[test]
 fn an_x87_store_across_a_missing_page_leaves_nothing_behind() {
     // fld1 ; fstpt (%rbx) ; hlt.
     let mut machine = nouvelle(&[0xD9, 0xE8, 0xDB, 0x3B, 0xF4]);
-    machine.cpu.regs[3] = 0xAFFA;
+    machine.cpu.regs[3] = 0xAFF8;
     machine.cpu.fpu_control = 0x037F;
-    machine.cpu.memory.bytes[0xAFFA..0xB000].fill(0xAB);
+    machine.cpu.memory.bytes[0xAFF8..0xB000].fill(0xAB);
     machine.tourner(10).expect("livrée");
     assert_eq!(vecteur_recu(&machine), 14);
     assert_eq!(machine.cpu.control[2], 0xB000, "CR2");
     assert!(
-        machine.cpu.memory.bytes[0xAFFA..0xB000]
+        machine.cpu.memory.bytes[0xAFF8..0xB000]
             .iter()
             .all(|octet| *octet == 0xAB),
         "rien d'écrit dans la première page"

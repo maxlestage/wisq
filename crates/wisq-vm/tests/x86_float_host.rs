@@ -292,6 +292,37 @@ fn sse_matches_the_host_silicon_in_every_mode() {
     );
 }
 
+/// **La petitesse se juge après l'arrondi**, comme sur x86 : `1,5 · 2⁻¹⁰²²
+/// × (2/3 − ε)` vaut exactement `(1 − 2⁻⁵⁵) · 2⁻¹⁰²²`, sous le plus petit
+/// normal ; arrondi à cinquante-trois bits, exposant non borné, il **monte**
+/// au plus petit normal. Le silicium ne lève donc pas UE (PE seul), et FTZ
+/// ne l'efface pas. Un cœur qui jugerait avant l'arrondi lèverait UE, et
+/// rendrait zéro sous FTZ. Les tirages au hasard ne tombent pas sur ce cas.
+#[test]
+fn tininess_is_judged_after_rounding_like_the_host() {
+    let mulsd = host!("mulsd xmm0, xmm1");
+    let (a, b) = (0x0018_0000_0000_0000u64, 0x3FE5_5555_5555_5555u64);
+    for rounding in 0..4u32 {
+        for ftz in [0, 1 << 15] {
+            let mxcsr = 0x1f80 | (rounding << 13) | ftz;
+            let wanted = mulsd([a, 0], [b, 0], 0, mxcsr);
+            let mut cpu = processor(&[0xf2, 0x0f, 0x59, 0xc1]);
+            cpu.xmm[0] = [a, 0];
+            cpu.xmm[1] = [b, 0];
+            cpu.mxcsr = mxcsr;
+            run(&mut cpu, 4);
+            assert_eq!(
+                (cpu.xmm[0], cpu.mxcsr),
+                (wanted.0, wanted.2),
+                "mxcsr {mxcsr:x}"
+            );
+        }
+    }
+    // Au plus proche, le silicium rend le plus petit normal, PE seul.
+    let wanted = mulsd([a, 0], [b, 0], 0, 0x1f80);
+    assert_eq!((wanted.0[0], wanted.2), (0x0010_0000_0000_0000, 0x1fa0));
+}
+
 // ---- Le x87, contre l'hôte ----
 
 /// Un registre du x87 tiré aux bords : un double élargi, ou une mantisse de
