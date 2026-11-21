@@ -18,18 +18,28 @@
 //! Swift. Un octet que le disque écrit dans du code se voit : les blocs et le
 //! cache de décodage comparent leurs octets à l'entrée.
 //!
-//! **Ce qui n'est pas branché** : la mémoire des périphériques hors de la RAM
-//! (l'écran Bochs et la tablette, `CartePc::mem_lire`), que la traduction
-//! d'adresses de ce cœur rend en faute « hors de la mémoire », et le service
-//! à chaque tour que la tablette et la carte réseau demandent
-//! (`CartePc::servir` hors d'un `out`, `CartePc::sonder_reseau`) : `wisq-pc`
-//! ne branche ni l'une ni l'autre. Les disques et le clavier n'en ont pas
-//! besoin.
+//! **La mémoire des périphériques** (la mémoire vidéo et les registres de
+//! l'écran de Bochs, la BAR0 de la tablette) répond hors de la RAM : la carte
+//! est aussi un [`DeviceMemory`], que la traduction d'adresses consulte quand
+//! la RAM ne couvre pas une adresse physique (`Cpu::devices`). Pour la tenir
+//! des deux côtés, elle est partagée ([`CartePartagee`], [`brancher`]) : la
+//! machine par ses ports, le processeur par sa mémoire.
+//!
+//! **Le service à chaque tour** : une sonnette de la tablette (une écriture
+//! dans sa BAR0) est notée, et la file relue au tour suivant du matériel, avec
+//! ce que le doigt a fait ([`Peripheriques::servir_tour`]), au plus deux cent
+//! cinquante-six instructions plus tard.
+//!
+//! **Ce qui n'est pas branché** : la carte réseau (`CartePc::sonder_reseau`),
+//! que `wisq-pc` ne branche pas.
+
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use wisq_carte::pc::CartePc;
 use wisq_carte::Ram;
 
-use super::machine::Peripheriques;
+use super::machine::{Machine, Peripheriques};
+use crate::x86_paging::{DeviceMemory, Devices};
 
 /// La RAM de la machine, vue par la carte : par adresse physique, une plage
 /// entière ou rien.
@@ -88,7 +98,87 @@ impl Peripheriques for CartePc {
         CartePc::battre(self, tics);
     }
 
+    /// Une sonnette de la tablette, et ce que le doigt a fait : relus à
+    /// chaque tour.
+    fn servir_tour(&mut self, ram: &mut [u8]) {
+        if self.a_servir() || self.tablette().is_some() {
+            CartePc::servir(self, &mut Tranche(ram));
+        }
+    }
+
     fn remise_demandee(&self) -> bool {
         CartePc::remise_demandee(self)
+    }
+}
+
+/// **La carte, vue par la mémoire** : ce que [`wisq_carte::Carte::region`]
+/// dit à elle. Une sonnette de la tablette est notée (`CartePc::mem_ecrire`),
+/// et servie au tour suivant.
+impl DeviceMemory for CartePc {
+    fn read(&mut self, place: u64, width: u8) -> Option<u64> {
+        self.mem_lire(place, width)
+    }
+
+    fn write(&mut self, place: u64, width: u8, value: u64) -> bool {
+        self.mem_ecrire(place, width, value)
+    }
+
+    fn claims(&self, place: u64, width: u8) -> bool {
+        self.carte().region(place, usize::from(width)).is_some()
+    }
+}
+
+/// **La carte, tenue des deux côtés** : par la machine (ses ports, ses
+/// lignes, son service) et par le processeur (sa mémoire). Un verrou que
+/// personne ne dispute : un seul fil fait tourner la machine, et l'hôte ne
+/// le prend qu'entre deux tranches (une image, une frappe).
+#[derive(Clone)]
+pub struct CartePartagee(pub Arc<Mutex<CartePc>>);
+
+impl CartePartagee {
+    /// La carte, pour lire son écran ou lui donner une frappe.
+    pub fn tenir(&self) -> MutexGuard<'_, CartePc> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner())
+    }
+}
+
+/// **Brancher une carte** derrière les ports et la mémoire d'une machine, et
+/// rendre de quoi la tenir. Son horloge CMOS, complète, prend les ports 0x70
+/// et 0x71 à celle des puces de la machine.
+pub fn brancher(machine: &mut Machine, carte: CartePc) -> CartePartagee {
+    let partagee = CartePartagee(Arc::new(Mutex::new(carte)));
+    machine.cpu.devices = Devices(Some(partagee.0.clone()));
+    machine.herites.cmos_ailleurs = true;
+    machine.peripheriques = Some(Box::new(partagee.clone()));
+    partagee
+}
+
+impl Peripheriques for CartePartagee {
+    fn port_lire(&mut self, port: u16, largeur: u8, ram: &mut [u8]) -> Option<u32> {
+        Peripheriques::port_lire(&mut *self.tenir(), port, largeur, ram)
+    }
+
+    fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut [u8]) -> bool {
+        Peripheriques::port_ecrire(&mut *self.tenir(), port, largeur, valeur, ram)
+    }
+
+    fn lignes(&self) -> u16 {
+        self.tenir().lignes()
+    }
+
+    fn reveil(&self) -> bool {
+        self.tenir().reveil()
+    }
+
+    fn battre(&mut self, tics: u64) {
+        self.tenir().battre(tics);
+    }
+
+    fn servir_tour(&mut self, ram: &mut [u8]) {
+        Peripheriques::servir_tour(&mut *self.tenir(), ram);
+    }
+
+    fn remise_demandee(&self) -> bool {
+        self.tenir().remise_demandee()
     }
 }

@@ -469,6 +469,10 @@ pub struct Herites {
     pub minuterie: Minuterie,
     pub serie: Serie,
     pub cmos: HorlogeCmos,
+    /// **Une autre horloge CMOS répond aux ports 0x70 et 0x71** : celle de
+    /// la carte (`pc::carte::brancher`), complète — le réglage de la date par
+    /// l'invité, l'heure qui avance. Celle-ci se tait alors.
+    pub cmos_ailleurs: bool,
 }
 
 impl Herites {
@@ -495,7 +499,7 @@ impl Herites {
                 }
             }
             0xA1 => self.second.masque,
-            0x71 => self.cmos.lire(),
+            0x71 if !self.cmos_ailleurs => self.cmos.lire(),
             0x61 => {
                 // Le bit 5 : « le canal deux est arrivé à zéro ». Le bit 4
                 // change à chaque rafraîchissement mémoire sur un vrai PC ; le
@@ -547,8 +551,8 @@ impl Herites {
             0x21 => self.maitre.donnee(octet),
             0xA0 => self.second.commande(octet),
             0xA1 => self.second.donnee(octet),
-            0x70 => self.cmos.choisir(octet),
-            0x71 => self.cmos.ecrire(octet),
+            0x70 if !self.cmos_ailleurs => self.cmos.choisir(octet),
+            0x71 if !self.cmos_ailleurs => self.cmos.ecrire(octet),
             0x61 => {
                 // Le port B : le bit 0 ouvre la porte du canal deux. C'est par
                 // là que Linux étalonne son compteur de cycles — il lance le

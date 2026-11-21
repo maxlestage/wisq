@@ -419,3 +419,99 @@ pub fn charger(
         entree: adresse_du_noyau + 0x200,
     })
 }
+
+/// **Les délais de systemd, allongés à dix minutes** : ceux que
+/// `IsoBoot.patience` ajoute à la ligne d'une image. Un système qui n'a pas
+/// systemd les ignore ; une image qui fixe déjà les siens les garde.
+pub const PATIENCE: [&str; 2] = [
+    "systemd.default_device_timeout_sec=600",
+    "systemd.default_timeout_start_sec=600",
+];
+
+/// **La ligne de commande d'une image démarrée par sa recette** — celle de
+/// l'application, pour que les deux machines démarrent la même chose :
+/// `IsoBoot.commandLine(from:)` (la recette sans `quiet`, la patience de
+/// systemd, puis [`LIGNE_PAR_DEFAUT`] en dernier, parce que Linux retient le
+/// dernier `console=`), puis `X86Machine.commandLine(_:withScreen:)` :
+/// `console=tty0` devant quand un écran est branché, pour que la console du
+/// noyau y paraisse aussi.
+pub fn ligne_d_une_image(recette: &str, ecran: bool) -> String {
+    let mots: Vec<&str> = recette
+        .split(' ')
+        .filter(|mot| !mot.is_empty() && *mot != "quiet")
+        .collect();
+    let mut ligne: Vec<&str> = mots.clone();
+    for reglage in PATIENCE {
+        let cle = reglage.split('=').next().unwrap_or(reglage);
+        if !mots.iter().any(|mot| {
+            mot.strip_prefix(cle)
+                .is_some_and(|reste| reste.starts_with('='))
+        }) {
+            ligne.push(reglage);
+        }
+    }
+    ligne.push(LIGNE_PAR_DEFAUT);
+    let ligne = ligne.join(" ");
+    if ecran && !ligne.split(' ').any(|mot| mot == "console=tty0") {
+        format!("console=tty0 {ligne}")
+    } else {
+        ligne
+    }
+}
+
+/// **Des initramfs mis bout à bout**, comme un chargeur les pose en
+/// mémoire : chacun commence sur un multiple de quatre octets, des zéros
+/// devant pour l'aligner (`IsoBoot.extractInitrds`). Le noyau lit la suite
+/// comme une seule archive.
+pub fn initramfs_bout_a_bout(parties: &[Vec<u8>]) -> Vec<u8> {
+    let mut tout = Vec::with_capacity(parties.iter().map(|partie| partie.len() + 3).sum());
+    for partie in parties {
+        tout.resize(tout.len().div_ceil(4) * 4, 0);
+        tout.extend_from_slice(partie);
+    }
+    tout
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **La ligne de Void Xfce, comme l'application la fait** : `quiet`
+    /// parti, la patience ajoutée, la console série en dernier, `console=tty0`
+    /// devant sous un écran — et une image qui fixe déjà un délai le garde.
+    #[test]
+    fn the_line_of_an_image_is_the_apps() {
+        let recette = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro quiet rd.luks=0";
+        assert_eq!(
+            ligne_d_une_image(recette, false),
+            "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro rd.luks=0 \
+             systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 \
+             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
+        );
+        assert_eq!(
+            ligne_d_une_image(recette, true),
+            format!("console=tty0 {}", ligne_d_une_image(recette, false))
+        );
+        let deja = "ro systemd.default_timeout_start_sec=90 console=tty0";
+        assert_eq!(
+            ligne_d_une_image(deja, true),
+            "ro systemd.default_timeout_start_sec=90 console=tty0 \
+             systemd.default_device_timeout_sec=600 \
+             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
+        );
+        // Un mot qui commence comme la clé sans en être une ne compte pas.
+        assert!(
+            ligne_d_une_image("systemd.default_timeout_start_secx=1", false)
+                .contains("systemd.default_timeout_start_sec=600")
+        );
+    }
+
+    /// **Chaque initramfs commence sur quatre octets** : 5 octets, puis 3,
+    /// puis 1, rangés à 0, 8 et 12 ; un seul passe tel quel.
+    #[test]
+    fn initramfs_are_laid_end_to_end_on_four_bytes() {
+        let tout = initramfs_bout_a_bout(&[vec![1; 5], vec![2; 3], vec![3]]);
+        assert_eq!(tout, [1, 1, 1, 1, 1, 0, 0, 0, 2, 2, 2, 0, 3]);
+        assert_eq!(initramfs_bout_a_bout(&[vec![7; 6]]), vec![7; 6]);
+    }
+}
