@@ -70,12 +70,13 @@ const STOP_MXCSR = 9n;
 /// instruction finie, pour que l'hôte oublie ce qui a été écrit ;
 /// `voirEcritures` l'efface avant de regarder quoi que ce soit d'autre.
 const STOP_WRITTEN = 10n;
-/// **Un accès à cheval entre la mémoire d'un périphérique et une page qui
-/// n'en est pas la suite physique** — la RAM, dans un sens ou dans l'autre,
-/// ou une autre trame : `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès lent
-/// pose dans le témoin de faute au lieu d'un code (un code plus un tient
-/// dans cinq bits). Aucun pilote ne le fait ; la boucle s'arrête en le
-/// nommant, plutôt que d'envoyer l'accès entier d'un seul côté.
+/// **Un accès à cheval entre la mémoire d'un périphérique et la RAM**, dans
+/// un sens ou dans l'autre : `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès
+/// lent pose dans le témoin de faute au lieu d'un code (un code plus un
+/// tient dans cinq bits). Aucun pilote ne le fait ; la boucle s'arrête en le
+/// nommant, plutôt que d'envoyer l'accès entier d'un seul côté. Un accès à
+/// cheval sur deux trames hors de la RAM arrive ici en deux moitiés, par
+/// `out` ou `in`, chacune dans sa page.
 const FAULT_DEVICE_STRADDLE = 1n << 40n;
 /// **Le bit zéro d'une trame rendue par la marche : la page est la mémoire
 /// d'un périphérique** (`DEVICE_FRAME` côté Rust). Le processeur ne range
@@ -3204,7 +3205,7 @@ export function machine({
         const fault = globals[SLOTS.fault].value;
         if (fault === FAULT_DEVICE_STRADDLE) {
           return {
-            stopped: "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite",
+            stopped: "un accès à cheval entre la mémoire d'un périphérique et la RAM",
             at: rip(),
           };
         }

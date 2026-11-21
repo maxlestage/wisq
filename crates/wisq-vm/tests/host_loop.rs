@@ -26082,7 +26082,7 @@ console.log("ecran " + vm.ecran().image.subarray(0, 4).join(","));
     assert_eq!(
         (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
         (
-            "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite",
+            "un accès à cheval entre la mémoire d'un périphérique et la RAM",
             fautive.to_string()
         ),
         "l'arrêt se nomme, RIP sur l'instruction : {text}"
@@ -26094,97 +26094,202 @@ console.log("ecran " + vm.ecran().image.subarray(0, 4).join(","));
     );
 }
 
-/// **Dans l'autre sens aussi : un accès qui part de la mémoire d'un
-/// périphérique et déborde sur une page qui n'en est pas la suite physique
-/// s'arrête sur son nom**, sans rien écrire nulle part.
+/// **Dans l'autre sens aussi : un accès à cheval qui part de la mémoire d'un
+/// périphérique marche la page d'après, par une marche de sa sorte ; il
+/// s'arrête sur son nom si elle est la RAM, et part en deux moitiés sinon.**
 ///
 /// La page virtuelle `0x48000` est posée sur la mémoire vidéo
-/// (`0xE000_0000`) ; la page d'après, `0x49000`, sur ce que le cas choisit.
-/// L'invité écrit huit octets à `0x48FFC` (ou les lit, dans RCX) :
+/// (`0xE000_0000`, ou sa dernière page, `0xE0FF_F000`) ; la page d'après,
+/// `0x49000`, sur ce que le cas choisit. CR0.WP est allumé. L'invité écrit
+/// huit octets à `0x48FFC` (ou `0x48FFE`) puis les relit dans R10 (ou les lit
+/// seulement, dans RCX) :
 ///
-/// - la page d'après est la RAM (`0x3F000`) : arrêt. Avant, l'accès partait
-///   entier chez l'écran — les huit octets dans `0xE000_0FFC..0xE000_1003`,
-///   et rien dans la RAM —, « arrêtée sur hlt », sans qu'aucun arrêt ne le
-///   nomme ;
-/// - la page d'après est la mémoire vidéo, mais pas la suite (`0xE000_5000`) :
-///   arrêt aussi ;
-/// - la page d'après est la suite (`0xE000_1000`) : l'accès passe, en un
-///   morceau, et les huit octets sont dans l'image ;
-/// - la page d'après manque : la faute de page est délivrée, CR2 sur
-///   `0x49000`, et rien n'est parti chez l'écran.
+/// - la page d'après est la RAM (`0x3F000`) : arrêt, en écriture comme en
+///   lecture, et rien nulle part ;
+/// - la page d'après est la suite (`0xE000_1000`) : les huit octets sont dans
+///   l'image, et la relecture les rend — **une lecture à cheval sur deux
+///   pages de la mémoire vidéo qui se suivent**, dont la moitié basse est lue
+///   à l'adresse gardée avant la seconde marche, et non `0x1000` plus loin ;
+/// - la page d'après est une autre trame de la mémoire vidéo, la première
+///   elle-même : les quatre octets bas à la fin de la page, les quatre hauts
+///   au début de l'image ; et depuis `0x48FFE`, deux octets bas et six
+///   hauts, ce qui juge les deux largeurs et le décalage. Avant, arrêt ;
+/// - la première page est la dernière de la mémoire vidéo, la page d'après
+///   les registres de l'écran (`0xE100_0000`, la suite physique, mais un
+///   autre périphérique) : la moitié basse va dans la mémoire vidéo, la
+///   haute dans l'EDID absent, qui se lit à zéro et ne s'écrit pas. Avant,
+///   l'accès partait entier, `Carte::region` le refusait, l'écriture se
+///   perdait et la relecture rendait tous les bits à un, sans un mot ;
+/// - la page d'après est la suite, mais **en lecture seule** : la faute de
+///   page, code 3 (présente, écriture), CR2 sur `0x49000`, et rien n'est
+///   parti chez l'écran. Une seconde marche de lecture la laisserait passer ;
+/// - la page d'après manque : la faute, code 2, CR2 sur `0x49000`.
 #[test]
-fn an_access_from_device_memory_into_what_does_not_follow_it_stops() {
+fn an_access_from_device_memory_is_cut_in_two_or_stops_when_it_reaches_ram() {
     use disque_montage::*;
+    use peripheriques_montage::PT;
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
     const DEPART: u64 = 0x4_8000;
     const VALEUR: u64 = 0x1122_3344_5566_7788;
-    let arret = "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite";
+    let arret = "un accès à cheval entre la mémoire d'un périphérique et la RAM";
+    let fini = "arrêtée sur hlt";
     let valeur = VALEUR.to_le_bytes().map(|o| o.to_string()).join(",");
-    for (nom, suite, lire, attendu, ecran) in [
-        (
-            "vers la RAM",
-            Some(0x3_F000u64),
-            false,
+    let rien = "0,0,0,0,0,0,0,0";
+    /// Un cas : la trame de la première page, l'entrée de la seconde (avec
+    /// ses bits), une lecture seule ou une écriture relue, l'arrêt, la fin de
+    /// la première page et le début de l'image, R10 relu, et la faute (CR2 et
+    /// code d'erreur).
+    struct Cas<'a> {
+        nom: &'a str,
+        premiere: u64,
+        ecart: u64,
+        suite: Option<u64>,
+        lire: bool,
+        arret: &'a str,
+        ecran: &'a str,
+        debut: &'a str,
+        relu: u64,
+        faute: Option<u64>,
+    }
+    for cas in [
+        Cas {
+            nom: "vers la RAM",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: Some(0x3_F000 | 3),
+            lire: false,
             arret,
-            "0,0,0,0,0,0,0,0",
-        ),
-        (
-            "vers la RAM, en lecture",
-            Some(0x3_F000),
-            true,
+            ecran: rien,
+            debut: "0,0,0,0",
+            relu: 0,
+            faute: None,
+        },
+        Cas {
+            nom: "vers la RAM, en lecture",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: Some(0x3_F000 | 3),
+            lire: true,
             arret,
-            "0,0,0,0,0,0,0,0",
-        ),
-        (
-            "vers une autre trame",
-            Some(0xE000_5000),
-            false,
-            arret,
-            "0,0,0,0,0,0,0,0",
-        ),
-        (
-            "vers la suite",
-            Some(0xE000_1000),
-            false,
-            "arrêtée sur hlt",
-            valeur.as_str(),
-        ),
-        (
-            "vers une page absente",
-            None,
-            false,
-            "arrêtée sur hlt",
-            "0,0,0,0,0,0,0,0",
-        ),
+            ecran: rien,
+            debut: "0,0,0,0",
+            relu: 0,
+            faute: None,
+        },
+        Cas {
+            nom: "vers la suite",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: Some(0xE000_1000 | 3),
+            lire: false,
+            arret: fini,
+            ecran: valeur.as_str(),
+            debut: "0,0,0,0",
+            relu: VALEUR,
+            faute: None,
+        },
+        Cas {
+            nom: "vers une autre trame",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: Some(0xE000_0000 | 3),
+            lire: false,
+            arret: fini,
+            ecran: "136,119,102,85,0,0,0,0",
+            debut: "68,51,34,17",
+            relu: VALEUR,
+            faute: None,
+        },
+        Cas {
+            nom: "vers une autre trame, deux octets avant la fin",
+            premiere: 0xE000_0000,
+            ecart: 0xFFE,
+            suite: Some(0xE000_0000 | 3),
+            lire: false,
+            arret: fini,
+            ecran: "0,0,136,119,0,0,0,0",
+            debut: "102,85,68,51",
+            relu: VALEUR,
+            faute: None,
+        },
+        Cas {
+            nom: "de la fin de la mémoire vidéo vers les registres de l'écran",
+            premiere: 0xE0FF_F000,
+            ecart: 0xFFC,
+            suite: Some(0xE100_0000 | 3),
+            lire: false,
+            arret: fini,
+            ecran: rien,
+            debut: "0,0,0,0",
+            relu: VALEUR & 0xFFFF_FFFF,
+            faute: None,
+        },
+        Cas {
+            nom: "vers la suite en lecture seule",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: Some(0xE000_1000 | 1),
+            lire: false,
+            arret: fini,
+            ecran: rien,
+            debut: "0,0,0,0",
+            relu: 0,
+            faute: Some(3),
+        },
+        Cas {
+            nom: "vers une page absente",
+            premiere: 0xE000_0000,
+            ecart: 0xFFC,
+            suite: None,
+            lire: false,
+            arret: fini,
+            ecran: rien,
+            debut: "0,0,0,0",
+            relu: 0,
+            faute: Some(2),
+        },
     ] {
-        let mut ailleurs = vec![(DEPART, 0xE000_0000u64)];
-        if let Some(trame) = suite {
-            ailleurs.push((DEPART + 0x1000, trame));
-        }
-        let tables = tables_avec(&ailleurs);
+        let nom = cas.nom;
+        let mut tables = tables_avec(&[(DEPART, cas.premiere)]);
+        // La seconde entrée posée telle quelle, ses bits compris : la lecture
+        // seule est une entrée sans le bit d'écriture.
+        let (_, feuilles) = tables
+            .iter_mut()
+            .find(|(at, _)| *at == PT)
+            .expect("la table des feuilles");
+        let at = ((DEPART + 0x1000) >> 12) as usize * 8;
+        feuilles[at..at + 8].copy_from_slice(&cas.suite.unwrap_or(0).to_le_bytes());
         let mut program = Vec::new();
         paginer(&mut program);
+        rax(&mut program, (1 << 31) | (1 << 16));
+        program.extend_from_slice(&[0x0f, 0x22, 0xc0]); // mov %rax,%cr0 : PG et WP
         program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
         program.extend_from_slice(&IDT_POINTER.to_le_bytes());
         program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
         program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
         program.extend_from_slice(&(STACK as u32).to_le_bytes());
         program.extend_from_slice(&[0x31, 0xdb]); // xor %ebx,%ebx
-        rax(&mut program, DEPART + 0xFFC);
+        rax(&mut program, DEPART + cas.ecart);
         program.extend_from_slice(&[0x48, 0xb9]); // movabs $…,%rcx
         program.extend_from_slice(&VALEUR.to_le_bytes());
         let fautive = BASE + program.len() as u64;
-        if lire {
+        if cas.lire {
             program.extend_from_slice(&[0x48, 0x8b, 0x08]); // mov (%rax),%rcx
         } else {
             program.extend_from_slice(&[0x48, 0x89, 0x08]); // mov %rcx,(%rax)
+            program.extend_from_slice(&[0x4c, 0x8b, 0x10]); // mov (%rax),%r10 : relu
         }
         program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
         let fin = BASE + program.len() as u64;
-        // La faute de page : CR2 dans RBX, puis l'arrêt.
-        let handler: &[u8] = &[0x0f, 0x20, 0xd3, 0xfa, 0xf4]; // mov %cr2,%rbx ; cli ; hlt
+        // La faute de page : CR2 dans RBX, le code d'erreur dans R11, puis
+        // l'arrêt.
+        let handler: &[u8] = &[
+            0x0f, 0x20, 0xd3, // mov %cr2,%rbx
+            0x4c, 0x8b, 0x1c, 0x24, // mov (%rsp),%r11
+            0xfa, 0xf4, // cli ; hlt
+        ];
         let mut pieces: Vec<(u64, &[u8])> = vec![(BASE, &program), (HANDLER, handler)];
         for (at, octets) in &tables {
             pieces.push((*at, octets));
@@ -26202,28 +26307,42 @@ globalThis.optionsDeLaCarte = { ecran: { largeur: 32, hauteur: 40 } };
             r#"
 console.log("ram " + Array.from(new Uint8Array(vm.memory.buffer, 0x3f000, 4)).join(","));
 console.log("ecran " + Array.from(vm.ecran().image.subarray(0xffc, 0x1004)).join(","));
+console.log("debut " + Array.from(vm.ecran().image.subarray(0, 4)).join(","));
 console.log("rcx " + BigInt.asUintN(64, vm.globals[1].value));
 "#,
         );
-        let (rip, rbx) = match (attendu == arret, suite) {
-            (true, _) => (fautive, 0),
-            (false, Some(_)) => (fin, 0),
-            (false, None) => (HANDLER + handler.len() as u64, DEPART + 0x1000),
+        let (rip, cr2, code) = match (cas.arret == arret, cas.faute) {
+            (true, _) => (fautive, 0, 0),
+            (false, None) => (fin, 0, 0),
+            (false, Some(code)) => (HANDLER + handler.len() as u64, DEPART + 0x1000, code),
         };
         assert_eq!(
             (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
-            (attendu, rip.to_string()),
+            (cas.arret, rip.to_string()),
             "{nom} : {text}"
         );
         assert_eq!(
-            line_of(&text, "rbx "),
-            rbx.to_string(),
-            "{nom} : CR2 sur la page d'après, s'il y a eu faute : {text}"
+            (line_of(&text, "rbx "), line_of(&text, "r11 ")),
+            (cr2.to_string(), code.to_string()),
+            "{nom} : CR2 sur la page d'après, et le code d'erreur, s'il y a eu faute : {text}"
         );
         assert_eq!(
-            (line_of(&text, "ram "), line_of(&text, "ecran ")),
-            ("0,0,0,0".to_string(), ecran.to_string()),
-            "{nom} : la RAM n'a rien reçu ; l'écran, l'accès entier ou rien : {text}"
+            (
+                line_of(&text, "ram "),
+                line_of(&text, "ecran "),
+                line_of(&text, "debut ")
+            ),
+            (
+                "0,0,0,0".to_string(),
+                cas.ecran.to_string(),
+                cas.debut.to_string()
+            ),
+            "{nom} : la RAM n'a rien reçu ; l'écran, chaque moitié à sa place ou rien : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "r10 "),
+            cas.relu.to_string(),
+            "{nom} : la relecture, à cheval elle aussi : {text}"
         );
         assert_eq!(
             line_of(&text, "rcx "),
