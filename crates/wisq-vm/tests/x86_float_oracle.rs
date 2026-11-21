@@ -313,8 +313,8 @@ fn replay_vectors(name: &str, flags_column: bool) -> Verdict {
                         differences.push(format!("a écrit dans le registre {index}"));
                     }
                 }
-                for index in 2..16 {
-                    if cpu.xmm[index] != witness_xmm(index) {
+                for (index, &xmm) in cpu.xmm.iter().enumerate().take(16).skip(2) {
+                    if xmm != witness_xmm(index) {
                         differences.push(format!("a écrit dans xmm{index}"));
                     }
                 }
