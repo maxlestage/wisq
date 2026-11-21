@@ -1469,6 +1469,13 @@ for (let tour = 0; tour < {turns}; tour++) {{
     dernierBattement = performance.now();
     console.log("horloge-en-cours " + (tour + 1) + " " + lire({tsc}) + " "
       + vm.materiel.delivrees + " " + Math.round((performance.now() - departDuMur) / 1000));
+    // **Ce qui décide qu'une interruption peut venir** : IF, les deux 8259
+    // (masque, requête, service), le canal zéro du 8254 (mode, chargé, tiré).
+    const p = vm.pics, c0 = vm.pits[0];
+    console.log("interruptions-en-cours " + (tour + 1) + " if=" + ((lire(16) >> 9n) & 1n)
+      + " maitre=" + [p.master.mask, p.master.request, p.master.service].map((v) => v.toString(16)).join("/")
+      + " esclave=" + [p.slave.mask, p.slave.request, p.slave.service].map((v) => v.toString(16)).join("/")
+      + " pit=" + c0.mode + "/" + c0.loaded + "/" + c0.raised + "/" + c0.reload);
     console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
       + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);{guet}
     // **Ce que le cache tient pendant la course**, et ce que le moteur pèse :
@@ -1808,6 +1815,9 @@ console.log("controle " + controle
                         "horloge au tour {turn} : TSC {tsc}, {delivrees} interruptions \
                          délivrées, {mur} s de mur"
                     );
+                }
+                ["interruptions-en-cours", turn, etat @ ..] => {
+                    println!("interruptions au tour {turn} : {}", etat.join(" "));
                 }
                 ["disque-en-cours", turn, lectures, lus, ecritures] => {
                     println!(
