@@ -24509,6 +24509,76 @@ const arriere = {
     );
 }
 
+/// **Le DMA fait oublier le code de toutes les lignes qu'il écrit, pas
+/// seulement de la première.**
+///
+/// Le même montage que le test d'avant, la fonction posée dans la **dernière**
+/// ligne de soixante-quatre octets du tampon (`0x181F8`, le tampon de 512
+/// octets à `0x18000`) : le disque y pose `mov $2,%ebx ; ret` à `+0x1F8`.
+/// `ecrit` doit couvrir toute la longueur que la carte écrit. Avec la
+/// fonction au premier octet du tampon, une écriture dite d'un seul octet
+/// (`ecrit(adresse, 1)`) passait encore : seule la première ligne était
+/// tenue.
+#[test]
+fn a_disk_read_forgets_translated_code_in_the_last_line_of_its_buffer() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const TAMPON_DMA: u64 = 0x1_8000;
+    const DECALAGE: u64 = 0x1f8;
+    const FONCTION: u64 = TAMPON_DMA + DECALAGE;
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    rax(&mut program, FONCTION);
+    program.extend_from_slice(&[0xff, 0xd0]); // call *%rax — rend 1
+    program.extend_from_slice(&[0x49, 0x89, 0xde]); // mov %rbx,%r14
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, FONCTION);
+    program.extend_from_slice(&[0xff, 0xd0]); // call *%rax — rend 2 ?
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let un: &[u8] = &[0xbb, 0x01, 0x00, 0x00, 0x00, 0xc3]; // mov $1,%ebx ; ret
+    let text = avec_la_carte(
+        &bun,
+        "dma-derniere-ligne",
+        &[(BASE, &program), (HANDLER, &handler), (FONCTION, un)],
+        &[(VECTEUR, HANDLER)],
+        &format!(
+            r#"
+const arriere = {{
+  octets: 1 << 20,
+  // Des zéros, et `mov $2,%ebx ; ret` dans la dernière ligne.
+  lire: async (decalage, longueur) => {{
+    const vers = new Uint8Array(longueur);
+    vers.set([0xbb, 0x02, 0x00, 0x00, 0x00, 0xc3], {DECALAGE});
+    return vers;
+  }},
+}};
+"#
+        ),
+        &requete_du_disque(0, TAMPON_DMA, 512),
+        r#"console.log("invalidees " + vm.cache.invalidees);"#,
+    );
+    assert_eq!(
+        (line_of(&text, "r14 "), line_of(&text, "r15 ")),
+        ("1".to_string(), "1".to_string()),
+        "le premier appel rend 1, et la lecture a réveillé l'invité : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "2",
+        "la dernière ligne du tampon écrite par le disque fait oublier sa traduction : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
 /// **Les ports de la carte après ceux de l'hôte, ses lignes dans les deux
 /// 8259, et l'impulsion de remise à zéro.**
 ///
@@ -25212,6 +25282,63 @@ console.log("dessus " + dessus.every((o, i) => o === dessusAvant[i]));
         line_of(&text, "dessus "),
         "true",
         "ni l'index ni l'entrée des servis ne sont écrits au-dessus de la RAM : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
+/// **L'adresse physique zéro est dans la RAM**, et la carte y écrit.
+///
+/// La garde de `host.js` dit « de zéro à la fin de la RAM » ; les tests
+/// d'avant en tiennent la fin, celui-ci le début. Une lecture dont l'octet de
+/// statut est à l'adresse physique 0 : le pilote l'a mis à `0xff`, la carte y
+/// pose 0 (« réussi »), et l'invité le relit. Linux ne prend pas la page 0
+/// pour le DMA ; une garde qui la refuserait ne se verrait pas sur Alpine,
+/// mais elle mentirait sur ce qu'elle annonce.
+#[test]
+fn a_status_at_physical_address_zero_is_written() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, 0);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "statut-a-zero",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        ARRIERE_A_MOTIF,
+        &requetes_posees(FILE, &[(0, 0, 0, TAMPON, 512, 0)]),
+        r#"
+console.log("lectures " + lectures.join(","));
+console.log("zero " + new Uint8Array(vm.memory.buffer)[0]);
+"#,
+    );
+    assert_eq!(
+        line_of(&text, "lectures "),
+        "0+512",
+        "la lecture va à l'arrière : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r9 "), line_of(&text, "zero ")),
+        ("0".to_string(), "0".to_string()),
+        "le statut posé à l'adresse physique 0 est écrit (le pilote y avait mis 0xff) : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "1",
+        "la ligne est levée une fois : {text}"
     );
     assert_eq!(
         (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
