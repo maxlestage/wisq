@@ -497,9 +497,10 @@ pub fn initramfs_bout_a_bout(parties: &[Vec<u8>]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// **La ligne de Void Xfce, comme l'application la fait** : `quiet`
-    /// parti, la patience ajoutée, la console série en dernier — et une image
-    /// qui fixe déjà un délai le garde.
+    /// **La ligne posée, lue jusqu'à son zéro** : `ligne_posee` rend ce que
+    /// `charger` a écrit dans la RAM de l'invité, et rien quand l'adresse sort
+    /// de la RAM, quand aucun zéro ne la termine ou quand ce n'est pas de
+    /// l'UTF-8.
     #[test]
     fn the_posed_line_is_read_up_to_its_zero() {
         let placement = |ou: u64| Placement {
@@ -528,6 +529,9 @@ mod tests {
         assert_eq!(ligne_posee(&ram, &placement(40)), None);
     }
 
+    /// **La ligne de Void Xfce, comme l'application la fait** : `quiet`
+    /// parti, la patience ajoutée, la console série en dernier — et une image
+    /// qui fixe déjà un délai le garde.
     #[test]
     fn the_line_of_an_image_is_the_apps() {
         let recette = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro quiet rd.luks=0";

@@ -47,8 +47,9 @@ relu dans le code, chaque sabotage du contrôle rejoué) :
 - *Une sonde neuve sur l'hôte*, `r8/c/verrou.c` (bloc-notes, sortie
   `verrou.out`), joue 63 formes préfixées de `f0`, une à une :
   - 33 s'exécutent, dont `f0 f0` et `f0 2e` devant `incl` ;
-  - deux sont admises mais fautent sur leur adresse (SIGSEGV) : `f0 64` et
-    `f0 67` devant `incl` ;
+  - deux sont admises mais fautent sur leur adresse : `64 f0` et `f0 67`
+    devant `incl` (la sonde dit « autre signal » : elle ne distingue pas
+    SIGSEGV de SIGBUS ; corrigé après contrôle, voir l'entrée du dessus) ;
   - 28 lèvent SIGILL : formes entre registres, mémoire lue seulement, `cmp`,
     `test`, `bt`, `mov`, `lea`, `nop`, `mul`, `shl`, `rcl`, `push`, `movzx`,
     `imul`, `setcc`, `addps`, `movdqa`.
