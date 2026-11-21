@@ -468,6 +468,18 @@ pub fn ligne_sous_ecran(ligne: &str, ecran: bool) -> String {
     }
 }
 
+/// **La ligne que le noyau lira** : celle que [`charger`] a posée dans la
+/// mémoire de l'invité, à `placement.ligne_de_commande`, jusqu'à son zéro.
+/// C'est ce que `wisq-pc` affiche : la lire là, plutôt que la recalculer à
+/// côté, ne laisse pas l'affichage dire autre chose que ce que la machine a
+/// posé. `None` quand elle n'y est pas — hors de la RAM, sans zéro, ou pas
+/// en UTF-8.
+pub fn ligne_posee(ram: &[u8], placement: &Placement) -> Option<String> {
+    let octets = ram.get(usize::try_from(placement.ligne_de_commande).ok()?..)?;
+    let fin = octets.iter().position(|octet| *octet == 0)?;
+    String::from_utf8(octets[..fin].to_vec()).ok()
+}
+
 /// **Des initramfs mis bout à bout**, comme un chargeur les pose en
 /// mémoire : chacun commence sur un multiple de quatre octets, des zéros
 /// devant pour l'aligner (`IsoBoot.extractInitrds`). Le noyau lit la suite
@@ -488,6 +500,34 @@ mod tests {
     /// **La ligne de Void Xfce, comme l'application la fait** : `quiet`
     /// parti, la patience ajoutée, la console série en dernier — et une image
     /// qui fixe déjà un délai le garde.
+    #[test]
+    fn the_posed_line_is_read_up_to_its_zero() {
+        let placement = |ou: u64| Placement {
+            adresse_du_noyau: 0,
+            octets_reserves: 0,
+            page_zero: 0,
+            ligne_de_commande: ou,
+            adresse_de_l_initramfs: 0,
+            octets_de_l_initramfs: 0,
+            entree: 0,
+        };
+        let mut ram = vec![0xAAu8; 64];
+        ram[8..30].copy_from_slice(b"console=tty0 ttyS0\0xyz");
+        assert_eq!(
+            ligne_posee(&ram, &placement(8)).as_deref(),
+            Some("console=tty0 ttyS0")
+        );
+        assert_eq!(ligne_posee(&ram, &placement(26)).as_deref(), Some(""));
+        // Hors de la RAM, ou sans zéro jusqu'au bout : rien.
+        assert_eq!(ligne_posee(&ram, &placement(64)), None);
+        assert_eq!(ligne_posee(&ram, &placement(1 << 40)), None);
+        assert_eq!(ligne_posee(&ram, &placement(30)), None);
+        // Pas de l'UTF-8 : rien.
+        ram[40] = 0xFF;
+        ram[41] = 0;
+        assert_eq!(ligne_posee(&ram, &placement(40)), None);
+    }
+
     #[test]
     fn the_line_of_an_image_is_the_apps() {
         let recette = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro quiet rd.luks=0";

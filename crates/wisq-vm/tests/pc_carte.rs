@@ -3,13 +3,16 @@
 //! la carte, une notification de disque est servie avec la RAM de la machine
 //! avant l'instruction suivante, la ligne du disque est levée, et
 //! l'impulsion de remise à zéro de l'i8042 arrête la course, et une frappe de
-//! l'hôte arrive au clavier PS/2 au rythme du temps de la machine. Chaque
+//! l'hôte arrive au clavier PS/2 au rythme du temps de la machine, son
+//! relâchement une tenue plus tard. Chaque
 //! test passe par `pc::carte::brancher` (la carte partagée, celle que
 //! `wisq-pc` branche) ; la remise à zéro et la frappe sont aussi jouées sur la
 //! carte nue.
 
+use wisq_carte::i8042::TENUE_TICS;
 use wisq_carte::pc::{ArriereMemoire, CartePc, Disque};
 use wisq_vm::pc::carte::brancher;
+use wisq_vm::pc::herites::INSTRUCTIONS_PAR_BATTEMENT;
 use wisq_vm::pc::Machine;
 use wisq_vm::x86::Width;
 
@@ -234,27 +237,58 @@ fn the_reset_pulse_stops_the_run() {
 /// posée dans la file de la carte (`taper_texte`, ce que fait `--keys`), elle
 /// n'entre dans le tampon de sortie de l'i8042 que lorsque la machine donne
 /// son temps à la carte (`Peripheriques::battre`, au service du matériel).
-/// L'invité attend le bit « sortie pleine » du port 0x64, puis lit le code
-/// du jeu 1 de « a » (0x1E) au port 0x60 — par la carte partagée comme par
-/// la carte nue.
+/// L'invité attend le bit « sortie pleine » du port 0x64, lit le code du jeu
+/// 1 de « a » enfoncée (0x1E) au port 0x60, puis attend de même son
+/// relâchement (0x9E). Le premier vient au premier battement ; le second,
+/// que l'i8042 tient `TENUE_TICS` tics du 8254 après le premier, ne vient
+/// qu'une fois ce temps passé dans la machine — compté en instructions
+/// retirées, `INSTRUCTIONS_PAR_BATTEMENT` par tic. La machine s'arrête donc
+/// entre `TENUE_TICS` et `TENUE_TICS + 1` tics : un temps faux donné à la
+/// carte (trop tôt, trop tard, figé) la fait sortir de cette fenêtre, ou
+/// attendre jusqu'au bout du budget. Par la carte partagée comme par la carte
+/// nue.
 #[test]
 fn a_host_keystroke_reaches_the_ps2_keyboard_in_time() {
-    // 1000: in $0x64,%al ; test $1,%al ; jz 1000 ; in $0x60,%al ; hlt.
-    let code = [0xE4, 0x64, 0xA8, 0x01, 0x74, 0xFA, 0xE4, 0x60, 0xF4];
+    // 1000: in $0x64,%al ; test $1,%al ; jz 1000 ; in $0x60,%al ;
+    // mov %al,%bl ; 100a: in $0x64,%al ; test $1,%al ; jz 100a ;
+    // in $0x60,%al ; hlt.
+    let code = [
+        0xE4, 0x64, 0xA8, 0x01, 0x74, 0xFA, 0xE4, 0x60, 0x88, 0xC3, 0xE4, 0x64, 0xA8, 0x01, 0x74,
+        0xFA, 0xE4, 0x60, 0xF4,
+    ];
+    // Assez pour la tenue et bien au-delà : un relâchement en retard se voit
+    // à la fenêtre, pas au budget.
+    let budget = 2 * TENUE_TICS * INSTRUCTIONS_PAR_BATTEMENT;
+    let juger = |machine: &Machine, comment: &str| {
+        assert!(machine.arretee, "{comment} : les deux codes sont arrivés");
+        assert_eq!(
+            machine.cpu.regs[3] & 0xFF,
+            0x1E,
+            "{comment} : « a » enfoncée"
+        );
+        assert_eq!(
+            machine.cpu.regs[0] & 0xFF,
+            0x9E,
+            "{comment} : « a » relâchée"
+        );
+        let tics = machine.tics();
+        assert!(
+            (TENUE_TICS..=TENUE_TICS + 1).contains(&tics),
+            "{comment} : relâchée à {tics} tics, la tenue en vaut {TENUE_TICS}"
+        );
+    };
     // Branchée, la carte se tient par ce qu'en rend `brancher`.
     let (mut machine, carte) = machine_et_carte(&code);
     let partagee = brancher(&mut machine, carte);
     assert_eq!(partagee.tenir().taper_texte("a"), 2, "enfoncée, relâchée");
-    machine.tourner(10_000).expect("sans faute");
-    assert!(machine.arretee, "partagée : la frappe est arrivée");
-    assert_eq!(machine.cpu.regs[0] & 0xFF, 0x1E, "partagée : « a »");
+    machine.tourner(budget).expect("sans faute");
+    juger(&machine, "partagée");
     // Nue, elle se tient avant d'être donnée à la machine.
     let (mut machine, mut carte) = machine_et_carte(&code);
     assert_eq!(carte.taper_texte("a"), 2);
     machine.peripheriques = Some(Box::new(carte));
-    machine.tourner(10_000).expect("sans faute");
-    assert!(machine.arretee, "nue : la frappe est arrivée");
-    assert_eq!(machine.cpu.regs[0] & 0xFF, 0x1E, "nue : « a »");
+    machine.tourner(budget).expect("sans faute");
+    juger(&machine, "nue");
     // Sans frappe, l'invité attend jusqu'au bout du budget.
     let mut sans = avec_carte(&code);
     assert_eq!(sans.tourner(10_000), Ok(10_000));
