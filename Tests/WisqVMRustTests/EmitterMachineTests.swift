@@ -102,7 +102,8 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(prepared.initrdAt, (top + 0xFFF) & ~0xFFF)
         XCTAssertEqual(prepared.pieces.map(\.name), ["noyau-0", "initramfs", "page-zero"])
         XCTAssertEqual(prepared.pieces[1].source, .file(initrd, offset: 0, length: 5000))
-        XCTAssertEqual(prepared.commandLine, "earlycon=uart8250,io,0x3f8 keep_bootcon console=ttyS0 quiet")
+        XCTAssertEqual(prepared.commandLine, "earlycon=uart8250,io,0x3f8 console=ttyS0 quiet",
+                       "keep_bootcon part : l'image nomme console=ttyS0")
         guard case .bytes(let page) = prepared.pieces[2].source else { return XCTFail("la page zéro") }
         func le32(_ at: Int) -> UInt32 { page[at..<(at + 4)].enumerated().reduce(0) { $0 | UInt32($1.1) << (8 * $1.0) } }
         XCTAssertEqual(UInt64(le32(0x218)), prepared.initrdAt, "ramdisk_image")
@@ -128,6 +129,9 @@ final class EmitterMachineTests: XCTestCase {
         let handle = try FileHandle(forWritingTo: huge)
         try handle.truncate(atOffset: 17 << 20)
         try handle.close()
+        // Ce que la ligne du montage (« earlycon=… keep_bootcon », et une
+        // espace) laisse à celle de l'image.
+        let roomForTheImage = EmitterMachine.commandLineRoom - "earlycon=uart8250,io,0x3f8 keep_bootcon ".utf8.count
         // `nil` : celui-là passe — la borne d'à côté.
         let cases: [(EmitterMachine.Setup, EmitterMachine.Refusal?)] = [
             (.init(kernel: work.appendingPathComponent("absent")), .unreadable("absent")),
@@ -136,7 +140,12 @@ final class EmitterMachineTests: XCTestCase {
             (.init(kernel: kernel, ramBytes: 48 << 20), .ramIsNotAPowerOfTwo(48 << 20)),
             (.init(kernel: kernel, ramBytes: 16 << 20), .ramTooSmall(needed: EmitterFixtures.physical + UInt64(EmitterFixtures.kernel().count))),
             (.init(kernel: kernel, ramBytes: 1000), .ramIsNotAPowerOfTwo(1000)),
-            (.init(kernel: kernel, commandLine: "a\u{0}b", ramBytes: 64 << 20), .commandLine),
+            (.init(kernel: kernel, commandLine: "a\u{0}b", ramBytes: 64 << 20), .commandLineCarriesNul),
+            // Le refus 2 du Rust : la ligne entière dépasse sa place d'un octet.
+            (.init(kernel: kernel, commandLine: String(repeating: "a", count: roomForTheImage + 1),
+                   ramBytes: 64 << 20), .commandLineTooLong),
+            (.init(kernel: kernel, commandLine: String(repeating: "a", count: roomForTheImage),
+                   ramBytes: 64 << 20), nil),
             (.init(kernel: kernel, ramBytes: 64 << 20, screen: .init(width: 70000, height: 1)), .screen),
             (.init(kernel: kernel, initrd: big, ramBytes: 32 << 20, screen: nil), nil),
             (.init(kernel: kernel, initrd: huge, ramBytes: 32 << 20), .archiveDoesNotFit(bytes: 17 << 20)),
@@ -171,6 +180,43 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(setup.screen, .standard)
     }
 
+    /// **La ligne d'une image passe telle quelle**, ses `---` et ses `--`
+    /// compris. Elle passait par la syntaxe de retrait de `kernel-entry`, où un
+    /// mot qui commence par `-` enlève un mot du montage, et une ISO d'Ubuntu
+    /// ou de Debian ne s'ouvrait pas.
+    func testAnImageLineWithDashesPassesAsItIs() throws {
+        let work = try folder("tirets")
+        let kernel = try write(EmitterFixtures.elf(EmitterFixtures.kernel()), "vmlinux", in: work)
+        for image in ["boot=casper quiet splash ---", "vga=788 --- quiet", "init=/bin/sh -- -x"] {
+            let prepared = try EmitterMachine.prepare(
+                .init(kernel: kernel, commandLine: image, ramBytes: 64 << 20), scratch: work)
+            XCTAssertEqual(prepared.commandLine, "earlycon=uart8250,io,0x3f8 keep_bootcon \(image)")
+        }
+        // Le chemin de l'application : la ligne d'`IsoBoot`, la console de
+        // l'émetteur au bout.
+        let iso = IsoBoot.commandLine(from: "boot=casper quiet splash ---")
+        let prepared = try EmitterMachine.prepare(
+            .init(kernel: kernel, commandLine: EmitterMachine.emitterLine(iso), ramBytes: 64 << 20), scratch: work)
+        XCTAssertTrue(prepared.commandLine.hasPrefix("earlycon=uart8250,io,0x3f8 boot=casper splash --- "),
+                      prepared.commandLine)
+        XCTAssertTrue(prepared.commandLine.hasSuffix(" console=ttyS0,115200"), prepared.commandLine)
+    }
+
+    /// **La console du cœur Swift cède la place à celle de l'émetteur**, et
+    /// seulement elle : le reste de la ligne passe mot pour mot, et une ligne
+    /// qui ne finit pas par elle passe entière.
+    func testTheCoresConsoleGivesWayToTheEmitters() {
+        let core = X86BootLoader.defaultCommandLine
+        XCTAssertEqual(EmitterMachine.emitterLine("root=live:X  rw \(core)"), "root=live:X  rw console=ttyS0,115200")
+        XCTAssertEqual(EmitterMachine.emitterLine(core), "console=ttyS0,115200")
+        XCTAssertEqual(EmitterMachine.emitterLine("root=/dev/vda1 rw"), "root=/dev/vda1 rw", "un système installé")
+        XCTAssertEqual(EmitterMachine.emitterLine("x\(core)"), "x\(core)", "collée, ce n'est pas la sienne")
+        XCTAssertNil(EmitterMachine.emitterLine(nil))
+        let boot = IsoBoot.Boot(kind: .unknown, kernel: URL(fileURLWithPath: "/k"), disk: nil,
+                                commandLine: "a \(core)", initrd: nil)
+        XCTAssertEqual(EmitterMachine.Setup(boot: boot).commandLine, "a console=ttyS0,115200")
+    }
+
     /// **La RAM choisie pour l'appareil** : une puissance de deux, un
     /// gibioctet si l'on peut, deux au plus, jamais moins que ce que l'image
     /// demande.
@@ -203,10 +249,15 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(prepared.diskBytes, UInt64(try Data(contentsOf: image).count))
         XCTAssertEqual(prepared.pieces.map(\.name), ["noyau-0", "initramfs", "page-zero"])
         XCTAssertEqual(prepared.pieces[1].source.length, UInt64(IsoGravure.initramfs.count))
-        XCTAssertTrue(prepared.commandLine.hasPrefix("earlycon=uart8250,io,0x3f8 keep_bootcon modules=loop,squashfs "),
+        // **Une console, une seule fois chaque ligne** : la console précoce du
+        // montage, rendue quand `ttyS0` arrive (pas de `keep_bootcon`), et
+        // pas l'`earlyprintk` gardé du cœur Swift.
+        XCTAssertTrue(prepared.commandLine.hasPrefix("earlycon=uart8250,io,0x3f8 modules=loop,squashfs "),
                       prepared.commandLine)
         XCTAssertFalse(prepared.commandLine.contains("quiet"), prepared.commandLine)
-        XCTAssertTrue(prepared.commandLine.hasSuffix(X86BootLoader.defaultCommandLine), prepared.commandLine)
+        XCTAssertFalse(prepared.commandLine.contains("keep_bootcon"), prepared.commandLine)
+        XCTAssertFalse(prepared.commandLine.contains("earlyprintk"), prepared.commandLine)
+        XCTAssertTrue(prepared.commandLine.hasSuffix(" console=ttyS0,115200"), prepared.commandLine)
 
         XCTAssertThrowsError(try EmitterMachine.open(image, unpackingInto: work, ceiling: 32 << 20)) {
             XCTAssertEqual($0 as? EmitterMachine.Refusal, .notEnoughRoom(ceiling: 32 << 20, minimum: 0))
@@ -227,6 +278,10 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(EmitterMachine.explanation(.notEnoughRoom(ceiling: 512 << 20, minimum: 1 << 30)),
                        "L'appareil laisse 512 Mio à la machine, et l'image en demande au moins 1024 Mio.")
         XCTAssertEqual(EmitterMachine.explanation(.image("phrase")), "phrase")
+        XCTAssertEqual(EmitterMachine.explanation(.commandLineTooLong),
+                       "La ligne de commande de l'image dépasse les 2047 octets que le noyau lit.")
+        XCTAssertEqual(EmitterMachine.explanation(.commandLineCarriesNul),
+                       "La ligne de commande de l'image porte un caractère nul, où le noyau la couperait.")
     }
 
     // MARK: - Le magasin

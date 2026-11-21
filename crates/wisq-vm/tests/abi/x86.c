@@ -635,6 +635,22 @@ int main(int argc, char **argv) {
         check(page_emetteur[0x218] == 0x00 && page_emetteur[0x21b] == 0x03, "et l'archive y est dite");
         wisq_x86_free_module(page_emetteur, page_emetteur_len);
     }
+    /* La ligne d'une image passe telle quelle, son « --- » compris. */
+    check(wisq_emitter_boot_page(16384, "boot=casper splash ---", 0, 0, 0, 0, 0,
+                                 &page_emetteur, &page_emetteur_len) == 0,
+          "« --- » est un mot de l'image, pas un retrait");
+    if (page_emetteur != NULL) {
+        const char *ligne = "earlycon=uart8250,io,0x3f8 keep_bootcon boot=casper splash ---";
+        check(memcmp(page_emetteur + 0x800, ligne, strlen(ligne) + 1) == 0, "et il est dans la page");
+        wisq_x86_free_module(page_emetteur, page_emetteur_len);
+        page_emetteur = NULL;
+    }
+    /* Une ligne plus longue que sa place : le refus 2. */
+    char longue[2100];
+    memset(longue, 'a', sizeof longue - 1);
+    longue[sizeof longue - 1] = 0;
+    check(wisq_emitter_boot_page(16384, longue, 0, 0, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 2,
+          "la ligne trop longue");
     check(wisq_emitter_boot_page(3, NULL, 0, 0, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 1, "la RAM");
     check(wisq_emitter_boot_page(16384, NULL, 70000, 1, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 3,
           "l'écran");

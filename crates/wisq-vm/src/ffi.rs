@@ -678,7 +678,8 @@ pub unsafe extern "C" fn wisq_emitter_asset(
 }
 
 /// **La page zéro de la machine de l'émetteur** : la ligne du montage suivie
-/// de `extra` (nul : rien de plus), l'écran de la carte (`width == 0 &&
+/// de `extra` (nul : rien de plus) telle quelle — voir
+/// `emitter_machine::command_line` —, l'écran de la carte (`width == 0 &&
 /// height == 0` : aucun), l'archive (`initramfs_bytes == 0` : aucune) posée
 /// au-dessus de `floor`. Rend 0 et quatre kibioctets (à libérer par
 /// `wisq_x86_free_module`), ou un refus nommé : 1 la RAM, 2 la ligne, 3
