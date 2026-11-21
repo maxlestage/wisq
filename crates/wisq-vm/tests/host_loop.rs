@@ -4241,11 +4241,11 @@ console.log("jamais " + lire(6));
 /// avancer** : la promesse serait tenue à moitié, et la moitié manquante
 /// pendrait la machine au lieu de la faire échouer.
 ///
-/// **Le fournisseur est volontairement inconnu.** Se faire passer pour Intel ou
-/// AMD ferait prendre au noyau les contournements d'errata de leurs puces —
-/// du code écrit pour des défauts que cette machine n'a pas. Un nom qu'il ne
-/// reconnaît pas le renvoie sur son chemin générique, qui est exactement ce
-/// qu'on veut.
+/// **Le fournisseur était volontairement inconnu, et ne l'est plus.** Un nom
+/// que personne ne reconnaît renvoyait le noyau sur son chemin générique ;
+/// mais la glibc, pour un tel nom, ne lit jamais la feuille un, et refuse
+/// alors tout programme. Le processeur dit donc ce que dit le `qemu64` de
+/// QEMU, comme le cœur Swift : `AuthenticAMD`, famille 15, modèle 107.
 #[test]
 fn cpuid_declares_only_what_the_emitter_actually_does() {
     let Some(bun) = bun() else {
@@ -4351,20 +4351,23 @@ console.log("ebx " + lire(3));
         1,
         "la feuille zéro annonce combien il y en a"
     );
+    // **« AuthenticAMD », et plus « wisq wasm vm ».** Un fournisseur
+    // inconnu faisait sauter la feuille un à la glibc, et tout le socle
+    // x86-64 avec elle (voir `CPUID_VENDOR_EBX`).
     assert_eq!(
         line("nom "),
-        0x7173_6977,
-        "« wisq » : un fournisseur qu'aucun noyau ne reconnaît, donc aucun contournement d'errata"
+        0x6874_7541,
+        "« Auth » : le fournisseur du qemu64 de QEMU, que la glibc connaît"
     );
     assert_eq!(
         line("nom2 "),
-        0x7361_7720,
-        "« was », la suite du nom, sortie par EDX"
+        0x6974_6e65,
+        "« enti », la suite du nom, sortie par EDX"
     );
     assert_eq!(
         line("nom3 "),
-        0x6d76_206d,
-        "« m vm », la fin du nom, sortie par ECX"
+        0x444d_4163,
+        "« cAMD », la fin du nom, sortie par ECX"
     );
     // **Une feuille qu'on ne sert pas ne rend rien.** Un vrai processeur rend
     // dans ce cas la plus haute feuille qu'il connaît ; nous rendons zéro, et
@@ -4377,8 +4380,8 @@ console.log("ebx " + lire(3));
     );
     assert_eq!(
         line("signature "),
-        0x0000_0600,
-        "une famille 6 nue, sans modèle ni pas"
+        0x0006_0fb1,
+        "famille 15, modèle 107, pas 1 : la signature du qemu64 de QEMU"
     );
     // **L'ensemble exact, et rien d'autre.** Une capacité déclarée est une
     // promesse : ce test tient l'ensemble exact, pas seulement « le TSC est
@@ -26451,4 +26454,163 @@ fn a_region_stops_before_what_it_cannot_produce() {
             "RAX = {rax:#x} : ce qui précède l'instruction a tourné : {text}"
         );
     }
+}
+
+/// **Un sélecteur non nul dans FS ou GS prend sa base dans la GDT.**
+///
+/// Le noyau 6.12 de Void, sur un AMD (ce que dit `cpuid`), charge `__USER_DS`
+/// (`0x2b`) dans FS avant le nul à chaque changement de processus
+/// (`load_seg_legacy`, `X86_BUG_NULL_SEG`) ; la machine s'y arrêtait,
+/// « sans table de descripteurs ». L'invité pose une GDT de sept entrées
+/// (`lgdt`), dont une donnée à la base `0x0102_1000` en `0x28` et une absente en
+/// `0x30`, charge `0x2b` dans FS puis dans GS, et lit `%fs:0x10` et
+/// `%gs:0x18` : les deux témoins posés à `0x2_1010` et `0x2_1018`. Puis il
+/// charge RCX dans FS, que le pilote choisit :
+///
+/// - `0x30`, absent ; `0x2f`, dans la LDT (TI) ; `0x38`, présent mais
+///   au-delà de la limite : chacun s'arrête sur son nom, RIP sur l'instruction, FS gardant
+///   le sélecteur et la base d'avant ;
+/// - `0`, le nul : la base est effacée, et la course va jusqu'au `hlt`.
+#[test]
+fn a_real_selector_in_fs_or_gs_takes_its_base_from_the_gdt() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const GDT: u64 = 0x1_4000;
+    const POINTEUR: u64 = 0x1_4800;
+    // **La base porte ses quatre octets**, le haut dans l'octet 7 du
+    // descripteur : `0x0102_1000`, que le repli sur 256 Kio ramène à
+    // `0x2_1000`, où sont les témoins.
+    const SOCLE: u64 = 0x0102_1000;
+    const TEMOINS: u64 = 0x2_1000;
+    let descripteur = |base: u64, present: bool| -> u64 {
+        // Une donnée inscriptible (type 0x13), le bit de présence (47) à part.
+        0xffff
+            | (base & 0xff_ffff) << 16
+            | 0x13 << 40
+            | u64::from(present) << 47
+            | 0xcf << 48
+            | (base >> 24) << 56
+    };
+    // Huit entrées posées, sept dans la limite : la huitième (`0x38`) est un
+    // descripteur présent, au-delà de ce que `lgdt` déclare.
+    let mut gdt = vec![0u8; 8 * 8];
+    gdt[0x28..0x30].copy_from_slice(&descripteur(SOCLE, true).to_le_bytes());
+    gdt[0x30..0x38].copy_from_slice(&descripteur(SOCLE, false).to_le_bytes());
+    gdt[0x38..0x40].copy_from_slice(&descripteur(0x2_2000, true).to_le_bytes());
+    let mut pointeur = (7u16 * 8 - 1).to_le_bytes().to_vec();
+    pointeur.extend_from_slice(&GDT.to_le_bytes());
+    let mut temoins = vec![0u8; 0x20];
+    temoins[0x10..0x18].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
+    temoins[0x18..0x20].copy_from_slice(&0x5555_6666_7777_8888u64.to_le_bytes());
+    let mut program = Vec::new();
+    rax(&mut program, POINTEUR);
+    program.extend_from_slice(&[0x0f, 0x01, 0x10]); // lgdt (%rax)
+    program.extend_from_slice(&[0xba, 0x2b, 0x00, 0x00, 0x00]); // mov $0x2b,%edx
+    let premier = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x8e, 0xe2]); // mov %edx,%fs
+    program.extend_from_slice(&[0x64, 0x48, 0x8b, 0x1c, 0x25, 0x10, 0, 0, 0]); // mov %fs:0x10,%rbx
+    program.extend_from_slice(&[0x8e, 0xea]); // mov %edx,%gs
+    program.extend_from_slice(&[0x65, 0x4c, 0x8b, 0x04, 0x25, 0x18, 0, 0, 0]); // mov %gs:0x18,%r8
+    let charge = BASE + program.len() as u64;
+    program.extend_from_slice(&[0x8e, 0xe1]); // mov %ecx,%fs
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    for (rcx, arret, rip, fs) in [
+        (
+            0x30u64,
+            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
+            charge,
+            SOCLE,
+        ),
+        (
+            0x2f,
+            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
+            charge,
+            SOCLE,
+        ),
+        (
+            0x38,
+            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
+            charge,
+            SOCLE,
+        ),
+        (0, "arrêtée sur hlt", fin, 0),
+    ] {
+        let text = avec_la_carte(
+            &bun,
+            "selecteur-gdt",
+            &[
+                (BASE, &program),
+                (GDT, &gdt),
+                (POINTEUR, &pointeur),
+                (TEMOINS, &temoins),
+            ],
+            &[],
+            "const arriere = null;",
+            &format!("vm.globals[1].value = {rcx}n;"),
+            &format!(
+                r#"
+console.log("fs " + BigInt.asUintN(64, vm.globals[{fs_sel}].value) + " " + BigInt.asUintN(64, vm.globals[{fs_base}].value));
+console.log("gs " + BigInt.asUintN(64, vm.globals[{gs_sel}].value) + " " + BigInt.asUintN(64, vm.globals[{gs_base}].value));
+"#,
+                fs_sel = wisq_vm::x86_wasm::SEGMENT_SLOT + 4,
+                gs_sel = wisq_vm::x86_wasm::SEGMENT_SLOT + 5,
+                fs_base = FS_BASE_SLOT,
+                gs_base = GS_SLOT,
+            ),
+        );
+        assert_eq!(
+            (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+            (arret, rip.to_string()),
+            "RCX = {rcx:#x} : {text}"
+        );
+        assert_eq!(
+            (line_of(&text, "rbx "), line_of(&text, "r8 ")),
+            (
+                0x1111_2222_3333_4444u64.to_string(),
+                0x5555_6666_7777_8888u64.to_string()
+            ),
+            "FS et GS lisent à la base du descripteur 0x28 : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "gs "),
+            format!("43 {SOCLE}"),
+            "GS porte 0x2b et sa base : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "fs "),
+            format!("{} {fs}", if rcx == 0 { 0 } else { 0x2b }),
+            "RCX = {rcx:#x} : FS garde ce qu'il avait, ou le nul l'efface : {text}"
+        );
+    }
+    // **En anneau trois, l'arrêt reste**, au premier chargement : rien ne
+    // l'exerce, et la lecture de la GDT, une page du noyau, fauterait à tort
+    // chez un programme. CS à `0x33` suffit ici, sans pagination.
+    let text = avec_la_carte(
+        &bun,
+        "selecteur-anneau-trois",
+        &[
+            (BASE, &program),
+            (GDT, &gdt),
+            (POINTEUR, &pointeur),
+            (TEMOINS, &temoins),
+        ],
+        &[],
+        "const arriere = null;",
+        &format!(
+            "vm.globals[{}].value = 0x33n;",
+            wisq_vm::x86_wasm::SEGMENT_SLOT + 1
+        ),
+        "",
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        (
+            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
+            premier.to_string()
+        ),
+        "en anneau trois, le premier chargement s'arrête : {text}"
+    );
 }

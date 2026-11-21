@@ -120,10 +120,9 @@ pub const SEGMENT_COUNT: usize = 6;
 /// quand une région pose le témoin de faute, `web/host.js` va chercher la
 /// porte du vecteur 14 à la base rangée ici, dans la limite rangée ici, et
 /// pose le cadre du mode long sur la pile de l'invité — c'est la délivrance,
-/// et `iretq` la défait. La GDT, elle, n'est toujours lue par rien : charger
-/// FS ou GS avec un sélecteur non nul reste un arrêt nommé, et aucune
-/// interruption de matériel n'est délivrée. Un `lgdt` produit dit toujours
-/// « ce registre se relit », pas « les descripteurs marchent ».
+/// et `iretq` la défait. La GDT, elle, n'est lue que par un sélecteur non nul
+/// chargé dans FS ou GS, en anneau zéro, pour sa base (voir
+/// `load_far_segment`) ; la délivrance de l'hôte y lit le segment de tâche.
 ///
 /// L'ordre : limite de la GDT, base de la GDT, limite de l'IDT, base de l'IDT.
 pub const TABLE_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
@@ -200,18 +199,26 @@ pub const SCRATCH_SLOT: usize = CONTROL_SLOT + CONTROL_COUNT;
 /// dire « on ne l'a pas », et c'est exact ; un bit de plus serait un mensonge
 /// qu'on paierait ailleurs.
 ///
-/// Le nom du fournisseur est volontairement **inconnu**. Se faire passer pour
-/// Intel ou AMD ferait prendre au noyau les contournements d'errata de leurs
-/// puces — du code écrit pour des défauts que cette machine n'a pas. Un nom
-/// qu'il ne reconnaît pas le renvoie sur son chemin générique.
-/// « wisq wasm vm », douze octets, dans l'ordre EBX, EDX, ECX.
-pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"wisq");
-pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b" was");
-pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"m vm");
+/// **Le nom du fournisseur est celui que la glibc connaît** : `AuthenticAMD`,
+/// famille 15, modèle 107, pas 1 — l'identité du processeur `qemu64` de QEMU,
+/// celle du cœur Swift (`X86CPUID.vendor`). Il était volontairement inconnu,
+/// « wisq wasm vm », pour que le noyau ne prenne les contournements d'errata
+/// de personne. Mais la glibc, pour un fournisseur qu'elle ne reconnaît pas,
+/// ne lit **jamais** la feuille un (`get_common_indices` est appelé sans
+/// famille) : le socle x86-64 lui paraît absent quels que soient les bits, et
+/// chaque programme de l'initramfs de Void meurt sur « CPU ISA level is lower
+/// than required ». Le prix est celui que le cœur Swift paie depuis Debian 13 :
+/// le noyau prend le chemin d'AMD, et lit quelques MSR de la maison, que
+/// l'hôte rend en `#GP(0)` et que le noyau rattrape.
+/// « AuthenticAMD », douze octets, dans l'ordre EBX, EDX, ECX.
+pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"Auth");
+pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b"enti");
+pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"cAMD");
 /// La feuille la plus haute qu'on sache servir. Une seule au-delà de zéro.
 pub const CPUID_MAX_LEAF: u32 = 1;
-/// Famille 6, modèle 0, pas 0 — une signature plausible et sans prétention.
-pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
+/// Famille 15 (0xF), modèle 107 (0xB dans le champ de base, 6 dans
+/// l'étendu), pas 1 : ce que répond le `qemu64` de QEMU, et le cœur Swift.
+pub const CPUID_SIGNATURE: u32 = 0x0006_0FB1;
 /// **Ce qui se déclare dans EDX, parce que l'émetteur le fait vraiment** : le
 /// coprocesseur (bit 0), le compteur d'horodatage (bit 4), et `clflush`
 /// (bit 19), produit depuis #211.
@@ -337,10 +344,12 @@ pub const STOP_SLOT: usize = FAULT_SLOT + 1;
 /// La machine a exécuté un `hlt`, et rien ne peut la réveiller.
 pub const STOP_HALTED: u64 = 1;
 
-/// Un sélecteur **non nul** est arrivé dans FS ou GS. Le nul ne lit aucun
-/// descripteur et se produit ; celui-ci en demanderait un, et la table
-/// n'existe pas. S'arrêter en le nommant vaut mieux que ranger le sélecteur
-/// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
+/// Un sélecteur **non nul** est arrivé dans FS ou GS, et son descripteur ne
+/// se lit pas : la LDT, au-delà de la limite de la GDT (nulle sans `lgdt`),
+/// absent, ou en anneau trois. Le nul ne lit aucun descripteur et se produit ;
+/// un descripteur présent de la GDT, en anneau zéro, donne sa base. S'arrêter
+/// en le nommant vaut mieux que ranger le sélecteur sans base : le noyau
+/// lirait alors à une adresse fausse, loin de la cause.
 pub const STOP_SELECTOR: u64 = 2;
 
 /// **`lkgs` a été atteinte.** Elle charge la base GS du noyau depuis un
@@ -1248,6 +1257,7 @@ mod code {
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
     pub const I64_GE_U: u8 = 0x5a;
+    pub const I64_LE_U: u8 = 0x58;
     pub const I64_ADD: u8 = 0x7c;
     pub const I64_SUB: u8 = 0x7d;
     pub const I64_AND: u8 = 0x83;
@@ -1262,7 +1272,6 @@ mod code {
     pub const I64_SHR_S: u8 = 0x87;
     pub const DROP: u8 = 0x1a;
     pub const I64_NE: u8 = 0x52;
-    pub const I64_LE_U: u8 = 0x58;
     pub const I64_GE_S: u8 = 0x59;
     /// Le reste d'une division non signée. C'est ce qui ramène un compte de
     /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
@@ -4560,16 +4569,85 @@ impl Module {
             b.constant(0);
         });
         body.op(0x05); // else
-                       // Non nul : rien n'est écrit, et la machine dit ce qui lui manque.
-        body.store(RIP_SLOT, |b| {
-            b.constant(address);
+        let arreter = |b: &mut Body| {
+            b.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            b.store(STOP_SLOT, |b| {
+                b.constant(STOP_SELECTOR);
+            });
+            b.bytes.push(code::I32_CONST);
+            signed(-1, &mut b.bytes);
+            b.op(code::RETURN);
+        };
+        let selecteur = |b: &mut Body| {
+            b.load(Self::slot(step.dst))
+                .constant(0xffff)
+                .op(code::I64_AND);
+        };
+        let (limite, table) = Self::table_slots(false);
+        // **Non nul : le descripteur est lu dans la GDT**, quand il y est.
+        // Le noyau 6.12 de Void en charge un à chaque changement de
+        // processus : sur un AMD (ce que dit `cpuid`), un sélecteur nul ne
+        // remet pas la base à zéro, et `load_seg_legacy` charge d'abord
+        // `__USER_DS` (`0x2b`) pour l'y mettre. Ce qui est lu : le bit de
+        // présence et les trente-deux bits de la base, ceux que le mode long
+        // garde pour FS et GS. Ce qui reste un arrêt nommé, RIP **sur**
+        // l'instruction qui n'a rien fait : un sélecteur de la LDT (TI), un
+        // descripteur au-delà de la limite de la GDT — sans `lgdt`, la limite
+        // est nulle, et c'est « sans table de descripteurs » —, un
+        // descripteur absent, et l'anneau trois, que rien n'exerce et où la
+        // lecture de la GDT, page du noyau, fauterait à tort.
+        selecteur(body);
+        body.constant(4).op(code::I64_AND).op(code::I64_EQZ);
+        selecteur(body);
+        body.constant(7)
+            .op(code::I64_OR)
+            .load(limite)
+            .op(code::I64_LE_U)
+            .op(code::I32_AND);
+        body.load(Self::segment_slot(Segment::Cs))
+            .constant(3)
+            .op(code::I64_AND)
+            .constant(3)
+            .op(code::I64_NE)
+            .op(code::I32_AND);
+        body.op(code::IF).op(code::VOID);
+        body.load(table);
+        selecteur(body);
+        body.constant(!7 & 0xffff)
+            .op(code::I64_AND)
+            .op(code::I64_ADD);
+        body.peek(Width::Qword);
+        body.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_VALUE as u64, &mut body.bytes);
+        body.load(TRANSLATE_VALUE)
+            .constant(1 << 47)
+            .op(code::I64_AND)
+            .op(code::I64_EQZ);
+        body.op(code::IF).op(code::VOID);
+        arreter(body);
+        body.op(code::END);
+        body.store(Self::segment_slot(segment), |b| {
+            selecteur(b);
         });
-        body.store(STOP_SLOT, |b| {
-            b.constant(STOP_SELECTOR);
+        // La base : les octets 2 à 4 du descripteur, puis l'octet 7.
+        body.store(base, |b| {
+            b.load(TRANSLATE_VALUE)
+                .constant(16)
+                .op(code::I64_SHR_U)
+                .constant(0xff_ffff)
+                .op(code::I64_AND)
+                .load(TRANSLATE_VALUE)
+                .constant(56)
+                .op(code::I64_SHR_U)
+                .constant(24)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
         });
-        body.bytes.push(code::I32_CONST);
-        signed(-1, &mut body.bytes);
-        body.op(code::RETURN);
+        body.op(0x05); // else
+        arreter(body);
+        body.op(code::END);
         body.op(code::END);
         Some(())
     }
