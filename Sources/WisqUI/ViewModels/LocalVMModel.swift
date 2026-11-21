@@ -64,7 +64,7 @@ public final class LocalVMModel {
 
     /// **L'écran de la machine PC**, ou nil pour une machine sans écran (le
     /// RISC-V). La vue relit ses pixels quand sa révision change.
-    public private(set) var screen: X86Framebuffer?
+    public private(set) var screen: (any GuestScreen)?
 
     // La taille de l'écran d'une machine PC vit dans `WisqVM` :
     // `GuestMachineFactory.screenSize`, que la fabrique du bureau prêt lit
@@ -432,8 +432,19 @@ public final class LocalVMModel {
         // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
         // n'existe qu'après cette fermeture — d'où la boîte.
         let answers = ConsoleAnswers()
+        // **Le cœur Rust, si son réglage le demande** : une machine PC neuve
+        // seulement — ni session sauvée (un instantané du cœur Swift), ni
+        // machine installée. Voir `RustPCSetting`.
+        #if WISQ_RUST_CORE
+        let rustPC = RustPCSetting.runs(
+            core, enabled: UserDefaults.standard.bool(forKey: RustPCSetting.key),
+            hasSession: saved != nil, installed: installed != nil)
+        #else
+        let rustPC = false
+        #endif
         let machine = makeLocalMachine(
-            for: core, ramSizeBytes: machineRAM, settingsKey: keys.settings, storage: storage
+            for: core, ramSizeBytes: machineRAM, settingsKey: keys.settings, storage: storage,
+            rustPC: rustPC
         ) { [sink] chunk in
             let (refresh, replies) = sink.append(chunk)
             // Compté à part des phrases de wisq : seul l'invité met fin à
@@ -455,12 +466,18 @@ public final class LocalVMModel {
         // **L'écran avant le chargement et avant la reprise** : le chargeur
         // l'annonce au noyau dans la page zéro, et une machine reprise
         // repeint dans le cadre qu'elle avait.
+        screen = nil
         if let pc = machine as? X86Machine {
             try? GuestMachineFactory.attachScreen(to: pc)
             screen = pc.display
-        } else {
-            screen = nil
         }
+        #if WISQ_RUST_CORE
+        if let pc = machine as? RustPCMachine {
+            try? pc.attachDisplay(
+                width: GuestMachineFactory.screenSize.width, height: GuestMachineFactory.screenSize.height)
+            screen = pc.display
+        }
+        #endif
         // **Le bureau** : le port 5900 de l'invité, relayé sur la boucle
         // locale. Il écoute dès maintenant ; il ne répondra que quand un
         // serveur VNC tournera dans l'invité. Voir `LocalDesktop`.
@@ -556,9 +573,13 @@ public final class LocalVMModel {
         // l'instantané décompressé — 842 Mio pour le bureau Xfce — y restait
         // toute la session. La reprise vide la boîte. Voir `PendingSession`.
         let pending = PendingSession(saved)
-        let checkpointed = CheckpointedRun(machine: machine, write: { packed in
+        // Une machine qui ne sauve pas de session (`savesSessions`) ne prend
+        // jamais d'instantané : l'intervalle ne passe pas.
+        let checkpointed = CheckpointedRun(
+            machine: machine, interval: savesSessions(machine) ? 300 : .infinity
+        ) { packed in
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
-        })
+        }
         self.checkpointed = checkpointed
         // Écrit par le fil **avant** qu'il ne signale `finished` : `suspend`,
         // qui attend ce signal, le lit donc sans course.
@@ -743,14 +764,14 @@ public final class LocalVMModel {
     /// suite sans rien dire. Ce qui ne tient pas attend dans `typist`, dans
     /// l'ordre, et le battement le reprend (`beat`).
     public func typeOnScreen(_ text: String) {
-        guard let pc = machine as? X86Machine else { return }
+        guard let pc = machine as? any PCInput else { return }
         typist.type(text, on: pc)
     }
 
     /// Une touche de la barre, sur le clavier PS/2 : ses frappes ensemble,
     /// derrière ce qui reste à taper.
     public func pressOnScreen(_ key: TerminalKey) {
-        guard let pc = machine as? X86Machine else { return }
+        guard let pc = machine as? any PCInput else { return }
         typist.press(X86Keystrokes.key(key), on: pc)
     }
 
@@ -765,26 +786,26 @@ public final class LocalVMModel {
     /// plus le clavier de la machine des heures, et ce qu'on tape ensuite —
     /// Ctrl-C d'abord — part aussitôt. Voir `ScreenTypist.cancel`.
     public func cancelTyping() {
-        guard let pc = machine as? X86Machine else { return }
+        guard let pc = machine as? any PCInput else { return }
         typist.cancel(on: pc)
     }
 
     /// Un toucher à un endroit de l'écran, par la tablette ; faux quand
     /// l'invité ne l'a pas prise. Voir `X86Machine.touch`.
     public func touch(x: Double, y: Double, buttons: UInt8) -> Bool {
-        (machine as? X86Machine)?.touch(x: x, y: y, buttons: buttons) ?? false
+        (machine as? any PCInput)?.touch(x: x, y: y, buttons: buttons) ?? false
     }
 
     /// La molette de l'écran : des crans, positifs vers le haut.
     @discardableResult
     public func scroll(notches: Int) -> Bool {
-        (machine as? X86Machine)?.scroll(notches: notches) ?? false
+        (machine as? any PCInput)?.scroll(notches: notches) ?? false
     }
 
     /// Un mouvement de la souris PS/2, en pixels de l'écran de l'invité, Y
     /// vers le bas ; `buttons` : 1 gauche, 2 droit.
     public func pointer(dx: Int, dy: Int, buttons: UInt8) {
-        (machine as? X86Machine)?.mouse(dx: dx, dy: dy, buttons: buttons)
+        (machine as? any PCInput)?.mouse(dx: dx, dy: dy, buttons: buttons)
     }
 
     public func sendLine(_ line: String) {
@@ -893,6 +914,11 @@ public final class LocalVMModel {
         // Le disque d'abord : ses écritures sont déjà sur le stockage, ceci
         // les y scelle avant que l'instantané ne prétende les connaître.
         machine.flushDisk()
+        // La machine PC en Rust ne sauve rien : la revoir la redémarre.
+        guard savesSessions(machine) else {
+            letMachineGo()
+            return
+        }
         do {
             try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
         } catch {
@@ -953,7 +979,7 @@ public final class LocalVMModel {
                 // La file du clavier s'est vidée d'une seconde de frappe : ce
                 // qui attendait y reprend sa place, et l'avis « en cours »
                 // s'éteint quand la machine a tout joué.
-                if let pc = machine as? X86Machine, self.typist.inProgress {
+                if let pc = machine as? any PCInput, self.typist.inProgress {
                     self.typist.resume(on: pc)
                 }
                 // Avant la garde qui suit : un cœur qui ne publie pas son

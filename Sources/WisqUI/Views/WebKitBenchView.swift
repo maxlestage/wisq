@@ -25,6 +25,8 @@ struct WebKitBenchView: View {
     @State private var running = false
     /// Le réglage de la machine de l'émetteur : voir `EmitterSetting`.
     @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
+    /// Le réglage de la machine PC en Rust : voir `RustPCSetting`.
+    @AppStorage("wisq.machine.pc-rust") private var rustPCEnabled = false
     private let host = BenchHost()
 
     var body: some View {
@@ -76,6 +78,17 @@ struct WebKitBenchView: View {
                             + "WebAssembly plutôt que dans le cœur Swift : sans session sauvée, "
                             + "sans reprise. Les machines installées restent au cœur Swift."
                         : "Cette construction de wisq ne porte pas la machine de l'émetteur.")
+            }
+            // **À côté, le cœur Rust de la machine PC**, éteint par défaut lui
+            // aussi : l'application ne bascule pas.
+            Section {
+                Toggle("Faire tourner les machines PC sur le cœur Rust", isOn: $rustPCEnabled)
+            } footer: {
+                Text(
+                    "Expérimental. Une machine PC neuve démarre sur le cœur x86-64 écrit en Rust "
+                        + "plutôt que sur le cœur Swift : sans session sauvée (la quitter l'arrête), "
+                        + "sans réseau. Les sessions sauvées et les machines installées restent au "
+                        + "cœur Swift.")
             }
             #endif
 

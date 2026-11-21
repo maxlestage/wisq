@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod noyau_factice;
+
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is crates/wisq-vm.
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -489,6 +491,84 @@ fn the_c_header_matches_the_disk_and_the_keyboard() {
     let stdout = String::from_utf8_lossy(&ran.stdout);
     assert!(
         stdout.contains("ABI conforme"),
+        "sortie inattendue :\n{stdout}"
+    );
+}
+
+/// **La machine PC native, par le même en-tête.**
+///
+/// Ni image de noyau ni réseau : les quatre petits noyaux que le programme
+/// démarre sont gravés ici (`noyau_factice`), et son disque est posé dans un
+/// dossier à lui. Le programme appelle chacune des fonctions `wisq_pc_*`,
+/// arrête une course d'un autre fil, et reprend un instantané pris à
+/// mi-course dans une autre machine.
+#[test]
+fn the_c_header_matches_the_pc_machine() {
+    let root = workspace_root();
+    let compiler = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    if Command::new(&compiler).arg("--version").output().is_err() {
+        eprintln!("aucun compilateur C ({compiler}) : conformité de la machine PC ignorée");
+        return;
+    }
+    let Some(library) = static_library(&root) else {
+        eprintln!("libwisq_vm.a introuvable : conformité de la machine PC ignorée");
+        return;
+    };
+
+    let dossier = std::env::temp_dir().join(format!("wisq-abi-pc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dossier);
+    std::fs::create_dir_all(&dossier).expect("le dossier du programme d'ABI");
+    let out = dossier.join("pc");
+    let compiled = Command::new(&compiler)
+        .args(["-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg("-I")
+        .arg(root.join("crates/wisq-vm/include"))
+        .arg(root.join("crates/wisq-vm/tests/abi/pc.c"))
+        .arg("-L")
+        .arg(library.parent().expect("dossier de la bibliothèque"))
+        .args(["-lwisq_vm", "-lpthread", "-ldl", "-lm", "-o"])
+        .arg(&out)
+        .output()
+        .expect("compilation du programme d'ABI de la machine PC");
+    assert!(
+        compiled.status.success(),
+        "l'en-tête ne décrit pas la machine PC qu'il déclare :\n{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+
+    let noyaux = [
+        ("factice.bin", noyau_factice::image()),
+        (
+            "boucle.bin",
+            noyau_factice::image_de(&noyau_factice::BOUCLE),
+        ),
+        ("faute.bin", noyau_factice::image_de(&noyau_factice::FAUTE)),
+        (
+            "remise.bin",
+            noyau_factice::image_de(&noyau_factice::REMISE),
+        ),
+    ];
+    let mut arguments = Vec::new();
+    for (nom, octets) in &noyaux {
+        let chemin = dossier.join(nom);
+        std::fs::write(&chemin, octets).expect("un noyau du programme d'ABI");
+        arguments.push(chemin);
+    }
+    let ran = Command::new(&out)
+        .args(&arguments)
+        .arg(&dossier)
+        .output()
+        .expect("exécution");
+    let _ = std::fs::remove_dir_all(&dossier);
+    assert!(
+        ran.status.success(),
+        "la machine PC ne se comporte pas comme l'en-tête le promet :\n{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&ran.stdout);
+    assert!(
+        stdout.contains("ABI conforme : la machine PC"),
         "sortie inattendue :\n{stdout}"
     );
 }
