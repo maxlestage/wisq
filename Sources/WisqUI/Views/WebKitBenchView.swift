@@ -2,6 +2,9 @@
 import SwiftUI
 import WebKit
 import WisqCore
+#if WISQ_RUST_CORE
+import WisqVMRust
+#endif
 
 /// **La question du bureau local, posée à ton téléphone.**
 ///
@@ -20,6 +23,8 @@ import WisqCore
 struct WebKitBenchView: View {
     @State private var verdict: WebKitBench.Verdict?
     @State private var running = false
+    /// Le réglage de la machine de l'émetteur : voir `EmitterSetting`.
+    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
     private let host = BenchHost()
 
     var body: some View {
@@ -56,6 +61,23 @@ struct WebKitBenchView: View {
                     "Rien n'est envoyé nulle part : la mesure tourne sur le téléphone et "
                     + "s'affiche ici.")
             }
+
+            #if WISQ_RUST_CORE
+            // **Le réglage vit ici**, à côté de la mesure qui dit s'il a un
+            // sens sur cet appareil. Éteint par défaut : l'application ne
+            // bascule pas.
+            Section {
+                Toggle("Ouvrir les machines PC dans l'émetteur", isOn: $emitterEnabled)
+                    .disabled(!EmitterMachine.isInThisBuild)
+            } footer: {
+                Text(
+                    EmitterMachine.isInThisBuild
+                        ? "Expérimental. Une image de PC s'ouvre alors dans l'émetteur x86-64 → "
+                            + "WebAssembly plutôt que dans le cœur Swift : sans session sauvée, "
+                            + "sans reprise. Les machines installées restent au cœur Swift."
+                        : "Cette construction de wisq ne porte pas la machine de l'émetteur.")
+            }
+            #endif
 
             if case .compiles(let reading) = verdict {
                 Section("Ce qui a été relevé") {
