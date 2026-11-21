@@ -1469,6 +1469,18 @@ for (let tour = 0; tour < {turns}; tour++) {{
     console.log("cache-en-cours " + (tour + 1) + " " + vm.cache.tenu.regions
       + " " + vm.cache.tenu.octets + " " + vm.cache.traduites + " " + vm.cache.evincees
       + " " + Math.round(process.memoryUsage().rss / 1048576));
+    // **Le disque et l'écran, au même battement** : ce que l'invité lit, et
+    // si son image bouge — une course longue dit ainsi où elle en est, même
+    // quand le port série se tait (`loglevel=4`).
+    if (typeof compteDuDisque !== "undefined" && compteDuDisque !== null) {{
+      console.log("disque-en-cours " + (tour + 1) + " " + compteDuDisque.lectures
+        + " " + compteDuDisque.lus + " " + compteDuDisque.ecritures);
+    }}
+    if (vm.carte !== null && vm.carte.ecran.mode() !== null) {{
+      const m = vm.carte.ecran.mode();
+      console.log("ecran-en-cours " + (tour + 1) + " " + m.largeur + "x" + m.hauteur
+        + " " + vm.carte.ecran.revision());
+    }}
   }}
 }}
 console.log("arret " + why.stopped);
@@ -1782,6 +1794,15 @@ console.log("controle " + controle
                 }
                 // **Le cache, dit au fil de l'eau** : tour, régions tenues,
                 // octets tenus, traduites, évincées, mémoire résidente.
+                ["disque-en-cours", turn, lectures, lus, ecritures] => {
+                    println!(
+                        "disque au tour {turn} : {lectures} lectures, {lus} octets lus, \
+                         {ecritures} écritures"
+                    );
+                }
+                ["ecran-en-cours", turn, mode, revision] => {
+                    println!("écran au tour {turn} : {mode}, révision {revision}");
+                }
                 ["cache-en-cours", turn, regions, octets, traduites, evincees, rss] => {
                     println!(
                         "cache au tour {turn} : {regions} régions, {octets} octets, \
