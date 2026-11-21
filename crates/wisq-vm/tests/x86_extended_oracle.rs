@@ -313,7 +313,8 @@ fn a_bad_area_changes_nothing() {
 /// **Le second décodeur ne lit que ce qu'il nomme.** Chaque instruction du
 /// x87 a sa longueur et sa forme ; les octets que le manuel ne nomme pas —
 /// les alias non documentés, les champs mémoire réservés — restent
-/// illisibles, comme `f2`/`f3` devant le x87 et les formes de SSE3 et SSSE3.
+/// illisibles, comme `f2`/`f3` devant le x87 et les formes de SSE3 (`fisttp`
+/// compris) et de SSSE3.
 #[test]
 fn the_extended_decoder_reads_exactly_its_forms() {
     let read =
@@ -373,6 +374,9 @@ fn the_extended_decoder_reads_exactly_its_forms() {
         ("emms précédé de f3", &[0xf3, 0x0f, 0x77]),
         ("femms", &[0x0f, 0x0e]),
         ("fnstcw à adresse de 32 bits", &[0x67, 0xd9, 0x38]),
+        ("fisttpl, du SSE3", &[0xdb, 0x0e]),
+        ("fisttpll, du SSE3", &[0xdd, 0x0e]),
+        ("fisttps, du SSE3", &[0xdf, 0x0e]),
         ("fnstcw coupé", &[0xd9, 0x7c, 0x24]),
         ("haddps, du SSE3", &[0xf2, 0x0f, 0x7c, 0xc1]),
         ("pshufb, du SSSE3", &[0x0f, 0x38, 0x00, 0xc1]),
@@ -668,6 +672,56 @@ fn fbld_and_fbstp_go_through_eighteen_digits() {
         &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff]
     );
     assert_eq!(cpu.fpu_status & 1, 1);
+}
+
+/// **Le zéro décimal garde son signe** : `fbld` de dix octets nuls, le bit
+/// de signe levé, empile −0 — et `fbstp` le range tel quel.
+#[test]
+fn fbld_keeps_the_sign_of_a_decimal_zero() {
+    let mut cpu = x87_start(ONE, ONE);
+    let mut negative_zero = [0u8; 10];
+    negative_zero[9] = 0x80;
+    cpu.memory.bytes[0x1000..0x100a].copy_from_slice(&negative_zero);
+    run_extended(&mut cpu, &[0xdf, 0x26]);
+    assert_eq!(cpu.x87[5], (0, 0x8000), "−0");
+    run_extended(&mut cpu, &[0xdf, 0x76, 0x20]);
+    assert_eq!(&cpu.memory.bytes[0x1020..0x102a], &negative_zero);
+}
+
+/// **C2 dit « hors du domaine », et seulement le temps d'une instruction** :
+/// `fsin` de 2⁶³ lève C2, fait tomber C1 et laisse l'opérande ; le `fsin`
+/// suivant, d'un argument dans le domaine, fait tomber C2. La `libm` réduit
+/// l'argument dans une boucle `fsin ; fnstsw %ax ; test $0x400,%ax`, qui ne
+/// sortirait pas d'un C2 resté levé.
+#[test]
+fn the_sine_raises_c2_out_of_its_domain_and_drops_it_inside() {
+    let huge = (1u64 << 63, 0x403e);
+    let mut cpu = x87_start(huge, ONE);
+    cpu.fpu_status |= 0x0200;
+    run_extended(&mut cpu, &[0xd9, 0xfe]);
+    assert_eq!(cpu.x87[6], huge, "l'opérande intact");
+    assert_eq!(cpu.fpu_status & 0x0600, 0x0400, "C2 levé, C1 tombé");
+    run_extended(&mut cpu, &[0xd9, 0xc9]);
+    run_extended(&mut cpu, &[0xd9, 0xfe]);
+    assert_eq!(cpu.fpu_status & 0x0400, 0, "C2 tombé");
+    assert_eq!(
+        cpu.x87[6],
+        (0xD76A_A478_4867_7021, 0x3ffe),
+        "sin 1, au plus proche"
+    );
+}
+
+/// **C1 tombe sur un chargement** : levé par une racine arrondie vers le
+/// haut, il retombe avec `fld1`, comme sur le silicium de l'hôte.
+#[test]
+fn a_load_drops_c1() {
+    // √5 au plus proche monte : C1 levé.
+    let mut cpu = x87_start((0xA000_0000_0000_0000, 0x4001), ONE);
+    run_extended(&mut cpu, &[0xd9, 0xfa]);
+    assert_eq!(cpu.x87[6], (0x8F1B_BCDC_BFA5_3E0B, 0x4000), "√5");
+    assert_eq!(cpu.fpu_status & 0x0200, 0x0200, "√5 arrondi vers le haut");
+    run_extended(&mut cpu, &[0xd9, 0xe8]);
+    assert_eq!(cpu.fpu_status & 0x0200, 0, "C1 tombé");
 }
 
 /// **Un réel lu en mémoire signale son NaN signalant et son dénormal** :

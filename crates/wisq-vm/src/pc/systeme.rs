@@ -63,6 +63,10 @@ pub enum Exception {
     ProtectionGenerale(u64),
     /// `#PF`, vecteur 14 : l'adresse va dans CR2, le code dit pourquoi.
     FauteDePage { adresse: u64, code: u64 },
+    /// `#MF`, vecteur 16 : une exception du x87 que le mot de contrôle ne
+    /// masque pas, en attente, livrée à l'instruction du x87 (ou du MMX, ou
+    /// `fwait`) qui suit. Sans code d'erreur.
+    Flottant,
     /// `#XM`, vecteur 19 : une exception flottante de SSE que MXCSR ne
     /// masque pas, sous CR4.OSXMMEXCPT. Sans code d'erreur.
     FlottantSimd,
@@ -76,6 +80,7 @@ impl Exception {
             Self::SegmentDePile(_) => 12,
             Self::ProtectionGenerale(_) => 13,
             Self::FauteDePage { .. } => 14,
+            Self::Flottant => 16,
             Self::FlottantSimd => 19,
         }
     }
@@ -95,7 +100,7 @@ impl Exception {
             Self::SegmentDePile(code)
             | Self::ProtectionGenerale(code)
             | Self::FauteDePage { code, .. } => Some(*code),
-            Self::Division | Self::Indefinie | Self::FlottantSimd => None,
+            Self::Division | Self::Indefinie | Self::Flottant | Self::FlottantSimd => None,
         }
     }
 }

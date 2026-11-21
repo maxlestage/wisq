@@ -14,12 +14,15 @@
 //! résultat ne tient pas), rejoués par `tests/x86_float_oracle.rs`.
 //!
 //! **Ce qui n'est pas du cœur Swift**, et le dit : la précision réduite du mot
-//! de contrôle (les bits 8 et 9, `assemble_to`), et les fonctions
-//! transcendantes (`sine`, `arctangent`, `two_to_the_minus_one`…), que le cœur
-//! Swift refuse. Elles sont calculées ici en quatre-vingts bits par des séries,
-//! avec les seules opérations exactes de ce fichier : le résultat est le même
-//! sur tout hôte, à quelques unités du dernier rang du vrai — et non au bit
-//! près du silicium, qu'aucun corpus ne fixe.
+//! de contrôle (les bits 8 et 9, `assemble_to`) ; les valeurs que le
+//! processeur refuse (non normalisées, pseudo-NaN, pseudo-infinis : invalides,
+//! l'indéfini) et celles qu'il renormalise (un pseudo-dénormal revient à
+//! l'exposant 1, `canonical`) ; et les fonctions transcendantes (`sine_cosine`,
+//! `arctangent`, `two_to_the_minus_one`…), que le cœur Swift refuse. Elles
+//! sont calculées ici sur cent vingt-huit bits (`Big`), par des séries, puis
+//! arrondies une fois selon le mode : le résultat est le même sur tout hôte,
+//! et à l'unité du dernier rang du silicium — que `tests/x86_float_host.rs`
+//! compare, drapeaux compris, sur toutes les classes de l'étendu.
 
 /// **Un registre du x87** : la mantisse, bit entier compris en tête, puis le
 /// signe (bit 15) et l'exposant biaisé de 16 383.
@@ -222,6 +225,18 @@ impl F80 {
         self.biased() != 0 && self.significand & INTEGER == 0
     }
 
+    /// **La forme que le processeur rend d'un pseudo-dénormal** (exposant nul,
+    /// bit entier levé) : la même valeur, à l'exposant 1. Le silicium ne le
+    /// rend jamais tel quel — un pseudo-dénormal ajouté à zéro revient
+    /// renormalisé, et étiqueté « valide ».
+    pub fn canonical(self) -> Self {
+        if self.biased() == 0 && self.significand & INTEGER != 0 {
+            Self::new(self.significand, self.sign_exponent | 1)
+        } else {
+            self
+        }
+    }
+
     /// Un opérande dénormal se signale, même quand le résultat est exact.
     pub fn is_denormal_operand(self) -> bool {
         !self.is_zero()
@@ -343,6 +358,13 @@ impl F80 {
         if self.is_zero() {
             return (sign_bit, report);
         }
+        if self.is_unsupported() {
+            // L'indéfini du format : négatif, silencieux, sans charge.
+            let indefinite = (1u64 << (fraction_bits + exponent_bits))
+                | (all_ones << fraction_bits)
+                | (1u64 << (fraction_bits - 1));
+            return (indefinite, Report::of(INVALID));
+        }
         if self.is_special() {
             if self.is_infinite() {
                 return (sign_bit | (all_ones << fraction_bits), report);
@@ -416,7 +438,7 @@ impl F80 {
         if self.is_zero() {
             return Some(0);
         }
-        if self.is_special() {
+        if self.is_special() || self.is_unsupported() {
             return None;
         }
         let exponent = self.biased() - BIAS;
@@ -679,7 +701,18 @@ fn opening_of(left: F80, right: F80) -> Report {
     }
 }
 
+/// **Un opérande que le processeur refuse** — non normalisé, pseudo-NaN,
+/// pseudo-infini : l'opération est invalide et rend l'indéfini, avant tout
+/// NaN de l'autre côté.
+fn refused(left: F80, right: F80) -> Option<(F80, Report)> {
+    (left.is_unsupported() || right.is_unsupported())
+        .then_some((F80::INDEFINITE, Report::of(INVALID)))
+}
+
 pub fn add(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80, Report) {
+    if let Some(answer) = refused(left, right) {
+        return answer;
+    }
     let mut opening = opening_of(left, right);
     if let Some(answer) = nan(left, right) {
         return (answer, opening);
@@ -706,8 +739,8 @@ pub fn add(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80, R
     // de contrôle** quand elle est réduite : le silicium de l'hôte le fait.
     if left.is_zero() || right.is_zero() {
         let other = if left.is_zero() { right } else { left };
-        if precision == 64 || other.is_unsupported() {
-            return (other, opening);
+        if precision == 64 {
+            return (other.canonical(), opening);
         }
         let (significand, exponent) = other.normalized();
         return merged(
@@ -758,6 +791,9 @@ pub fn add(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80, R
 }
 
 pub fn subtract(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80, Report) {
+    if let Some(answer) = refused(left, right) {
+        return answer;
+    }
     if let Some(answer) = nan(left, right) {
         let flags = if left.is_signaling_nan() || right.is_signaling_nan() {
             INVALID
@@ -770,6 +806,9 @@ pub fn subtract(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F
 }
 
 pub fn multiply(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80, Report) {
+    if let Some(answer) = refused(left, right) {
+        return answer;
+    }
     let mut opening = opening_of(left, right);
     if let Some(answer) = nan(left, right) {
         return (answer, opening);
@@ -805,6 +844,9 @@ pub fn divide(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80
     // division par zéro, qui abandonnent l'opération, puis le dénormal —
     // **même quand l'autre opérande est infini** : le silicium de l'hôte
     // signale le dénormal de `x/∞` et de `∞/x`, ce que le cœur Swift taisait.
+    if let Some(answer) = refused(left, right) {
+        return answer;
+    }
     let mut opening = Report::default();
     if left.is_signaling_nan() || right.is_signaling_nan() {
         opening.note(INVALID);
@@ -871,14 +913,16 @@ pub fn divide(left: F80, right: F80, rounding: Rounding, precision: u32) -> (F80
     )
 }
 
-/// La comparaison ; un NaN rend « non ordonné ».
+/// La comparaison ; un NaN, ou un opérande refusé, rend « non ordonné ».
 pub fn compare(left: F80, right: F80) -> Order {
-    if left.is_nan() || right.is_nan() {
+    if left.is_nan() || right.is_nan() || left.is_unsupported() || right.is_unsupported() {
         return Order::Unordered;
     }
     if left.is_zero() && right.is_zero() {
         return Order::Equal;
     }
+    // Un pseudo-dénormal vaut le normal d'exposant 1 de même mantisse.
+    let (left, right) = (left.canonical(), right.canonical());
     if left.negative() != right.negative() {
         return if left.negative() {
             Order::Less
@@ -1017,7 +1061,7 @@ pub fn partial_remainder(dividend: F80, divisor: F80, nearest: bool) -> Remainde
         opening.note(DENORMAL);
     }
     if dividend.is_zero() || divisor.is_infinite() {
-        return done(dividend, opening);
+        return done(dividend.canonical(), opening);
     }
     let (top, top_exponent) = dividend.normalized();
     let (bottom, bottom_exponent) = divisor.normalized();
@@ -1036,7 +1080,7 @@ pub fn partial_remainder(dividend: F80, divisor: F80, nearest: bool) -> Remainde
     if difference < 0 {
         if !(nearest && difference == -1 && top > bottom) {
             return Remainder {
-                value: dividend,
+                value: dividend.canonical(),
                 quotient: 0,
                 complete,
                 report: opening,
@@ -1195,198 +1239,420 @@ pub fn constant(modrm: u8, rounding: Rounding) -> Option<(F80, Report)> {
 //
 // Le cœur Swift ne les a pas ; la `libm` de musl les appelle pour ses
 // `long double` (`expl`, `logl`, `atan2l`, `log1pl`…). Elles sont calculées
-// ici **en quatre-vingts bits**, par des séries, avec les opérations exactes
-// de plus haut : le résultat ne dépend pas de l'hôte. Il est juste à quelques
-// unités du soixante-quatrième bit, pas au bit près du silicium.
+// ici **sur cent vingt-huit bits** (`Big`), par des séries, sur des entiers :
+// le résultat ne dépend pas de l'hôte. Il est arrondi **une fois**, selon le
+// mode du mot de contrôle, ce qui donne le dépassement par le bas, l'inexact
+// et C1 comme le reste du x87. Juste à 2⁻¹²⁰ près avant l'arrondi, il ne
+// s'écarte du résultat correctement arrondi qu'au voisinage d'une demie —
+// et le silicium, lui, ne promet que l'unité du dernier rang.
+//
+// **Là où le silicium ne calcule pas, il est suivi tel qu'on le voit sur
+// l'hôte** : `fsin`, `fcos` et `fptan` d'un argument sous 2⁻⁶⁸ rendent
+// l'argument (ou 1) sans l'arrondir ; `fpatan` d'un quotient sous 2⁻⁴⁰ rend
+// le quotient arrondi ; `f2xm1` hors de [−1, 1] et `fyl2xp1` sous −1 rendent
+// leur argument. Un résultat non nul lève toujours l'inexact, même exact
+// (`fyl2x` de 8 et 1 rend 3, inexact).
 
-/// Une opération au plus proche, sans compte rendu : le calcul interne des
-/// séries.
-fn plus(a: F80, b: F80) -> F80 {
-    add(a, b, Rounding::NearestEven, 64).0
+/// **Un nombre de travail** : cent vingt-huit bits de mantisse, bit de tête
+/// posé (ou zéro), un exposant sans borne et un signe. Sa valeur est
+/// `m · 2^(e − 127)`. Chaque opération tronque à cent vingt-huit bits ; un
+/// dénormal de l'étendu y est un nombre comme un autre.
+#[derive(Clone, Copy, Debug)]
+struct Big {
+    m: u128,
+    e: i32,
+    negative: bool,
 }
 
-fn minus(a: F80, b: F80) -> F80 {
-    subtract(a, b, Rounding::NearestEven, 64).0
-}
-
-fn times(a: F80, b: F80) -> F80 {
-    multiply(a, b, Rounding::NearestEven, 64).0
-}
-
-fn over(a: F80, b: F80) -> F80 {
-    divide(a, b, Rounding::NearestEven, 64).0
-}
-
-/// ln 2, π/2 et π/4 sur cent vingt-huit bits : une partie haute de
-/// soixante-quatre bits, et ce qui reste.
-const LN2_HIGH: F80 = F80 {
-    significand: 0xB172_17F7_D1CF_79AB,
-    sign_exponent: 0x3FFE,
+/// ln 2 et π/2 sur cent vingt-huit bits, et les soixante-quatre suivants de
+/// π/2 pour réduire un grand argument.
+const LN2: Big = Big {
+    m: 0xB172_17F7_D1CF_79AB_C9E3_B398_03F2_F6AF,
+    e: -1,
+    negative: false,
 };
-const LN2_LOW: F80 = F80 {
-    significand: 0xC9E3_B398_03F2_F6AF,
-    sign_exponent: 0x3FBE,
+const HALF_PI: Big = Big {
+    m: 0xC90F_DAA2_2168_C234_C4C6_628B_80DC_1CD1,
+    e: 0,
+    negative: false,
 };
+/// Ce que π/2 a sous ses soixante-quatre premiers bits, sur cent vingt-huit.
+const HALF_PI_TAIL: Big = Big {
+    m: 0xC4C6_628B_80DC_1CD1_2902_4E08_8A67_CC74,
+    e: -64,
+    negative: false,
+};
+/// La partie haute de π/2 en étendu : `fprem1` en retire un multiple exact.
 const HALF_PI_HIGH: F80 = F80 {
     significand: 0xC90F_DAA2_2168_C234,
     sign_exponent: 0x3FFF,
 };
-const HALF_PI_LOW: F80 = F80 {
-    significand: 0xC4C6_628B_80DC_1CD1,
-    sign_exponent: 0x3FBF,
-};
 
-/// `Σ termes` jusqu'à ce qu'un terme ne change plus rien.
-fn series(mut term: F80, step: impl Fn(F80, u32) -> F80) -> F80 {
-    let mut sum = term;
-    for index in 1..80 {
-        term = step(term, index);
-        let next = plus(sum, term);
-        if next == sum {
+impl Big {
+    const ZERO: Self = Self {
+        m: 0,
+        e: 0,
+        negative: false,
+    };
+
+    fn new(m: u128, e: i32, negative: bool) -> Self {
+        if m == 0 {
+            return Self::ZERO;
+        }
+        let lead = m.leading_zeros() as i32;
+        Self {
+            m: m << lead,
+            e: e - lead,
+            negative,
+        }
+    }
+
+    /// Un étendu fini, exact : un dénormal y est normalisé.
+    fn of(x: F80) -> Self {
+        if x.is_zero() {
+            return Self::ZERO;
+        }
+        let (significand, real) = x.normalized();
+        Self::new(u128::from(significand) << 64, real - BIAS, x.negative())
+    }
+
+    fn integer(value: i64) -> Self {
+        Self::new(u128::from(value.unsigned_abs()), 127, value < 0)
+    }
+
+    fn negated(self) -> Self {
+        Self {
+            negative: !self.negative,
+            ..self
+        }
+    }
+
+    fn absolute(self) -> Self {
+        Self {
+            negative: false,
+            ..self
+        }
+    }
+
+    fn half(self) -> Self {
+        Self {
+            e: self.e - 1,
+            ..self
+        }
+    }
+
+    fn twice(self) -> Self {
+        Self {
+            e: self.e + 1,
+            ..self
+        }
+    }
+
+    /// La grandeur dépasse-t-elle celle de `other` ?
+    fn exceeds(self, other: Self) -> bool {
+        if self.m == 0 || other.m == 0 {
+            return self.m != 0;
+        }
+        (self.e, self.m) > (other.e, other.m)
+    }
+
+    fn times(self, other: Self) -> Self {
+        if self.m == 0 || other.m == 0 {
+            return Self::ZERO;
+        }
+        let (a1, a0) = ((self.m >> 64) as u64, self.m as u64);
+        let (b1, b0) = ((other.m >> 64) as u64, other.m as u64);
+        let wide = |a: u64, b: u64| u128::from(a) * u128::from(b);
+        let (middle, first) = wide(a1, b0).overflowing_add(wide(a0, b1));
+        let (middle, second) = middle.overflowing_add(wide(a0, b0) >> 64);
+        let carries = (u128::from(first) + u128::from(second)) << 64;
+        let high = wide(a1, b1) + (middle >> 64) + carries;
+        Self::new(high, self.e + other.e + 1, self.negative != other.negative)
+    }
+
+    fn plus(self, other: Self) -> Self {
+        if self.m == 0 {
+            return other;
+        }
+        if other.m == 0 {
+            return self;
+        }
+        let (big, small) = if other.exceeds(self) {
+            (other, self)
+        } else {
+            (self, other)
+        };
+        let shift = big.e - small.e;
+        let aligned = if shift >= 128 { 0 } else { small.m >> shift };
+        if big.negative == small.negative {
+            let (sum, carry) = big.m.overflowing_add(aligned);
+            if carry {
+                return Self::new((sum >> 1) | (1 << 127), big.e + 1, big.negative);
+            }
+            return Self::new(sum, big.e, big.negative);
+        }
+        Self::new(big.m - aligned, big.e, big.negative)
+    }
+
+    fn minus(self, other: Self) -> Self {
+        self.plus(other.negated())
+    }
+
+    /// La division, bit à bit : cent vingt-huit bits de quotient.
+    fn over(self, other: Self) -> Self {
+        if self.m == 0 {
+            return Self::ZERO;
+        }
+        let divisor = other.m;
+        let (mut rest, mut quotient, mut carry) = (self.m, 0u128, false);
+        for _ in 0..128 {
+            quotient <<= 1;
+            if carry || rest >= divisor {
+                rest = rest.wrapping_sub(divisor);
+                quotient |= 1;
+            }
+            carry = rest >> 127 != 0;
+            rest <<= 1;
+        }
+        Self::new(quotient, self.e - other.e, self.negative != other.negative)
+    }
+
+    /// La racine d'un nombre positif proche de un : celle de l'étendu, puis
+    /// deux pas de Newton.
+    fn square_root(self) -> Self {
+        let (seed, _) = square_root(
+            self.rounded(Rounding::NearestEven, Side::Exact).0,
+            Rounding::NearestEven,
+            64,
+        );
+        let mut root = Self::of(seed);
+        for _ in 0..2 {
+            root = root.plus(self.over(root)).half();
+        }
+        root
+    }
+
+    /// **L'arrondi, une fois**, selon le mode. La valeur vraie n'est pas la
+    /// troncature : `m` porte un bit collant. Quand les soixante-quatre bits
+    /// bas sont nuls, le calcul est tombé sur un étendu — juste, ou parce que
+    /// la correction est passée sous les cent vingt-huit bits (le sinus d'un
+    /// argument sous 2⁻⁶², x − x³/6) : `side` dit alors de quel côté est la
+    /// valeur vraie.
+    fn rounded(self, rounding: Rounding, side: Side) -> (F80, Report) {
+        if self.m == 0 {
+            return (F80::signed_zero(self.negative), Report::default());
+        }
+        let m = match side {
+            _ if self.m as u64 != 0 => self.m | 1,
+            Side::Exact => self.m,
+            Side::Below => self.m - 1,
+            Side::Above => self.m | 1,
+        };
+        assemble(Wide(m), self.e + BIAS, self.negative, rounding)
+    }
+}
+
+/// De quel côté d'un résultat tombé juste est la valeur vraie, en grandeur.
+#[derive(Clone, Copy)]
+enum Side {
+    Exact,
+    Below,
+    Above,
+}
+
+/// Un résultat non nul des fonctions transcendantes : arrondi selon le mode,
+/// inexact toujours, et les drapeaux de l'ouverture.
+fn transcendental(value: Big, rounding: Rounding, opening: Report) -> (F80, Report) {
+    toward(value, rounding, opening, Side::Exact)
+}
+
+/// La même chose, la valeur vraie d'un résultat tombé juste étant du côté
+/// `side`.
+fn toward(value: Big, rounding: Rounding, opening: Report, side: Side) -> (F80, Report) {
+    let (result, report) = value.rounded(rounding, side);
+    inexact(result, report, opening)
+}
+
+/// **Inexact, donc un dénormal est un dépassement par le bas** — même tombé
+/// juste : le silicium lève UE avec PE.
+fn inexact(result: F80, mut report: Report, opening: Report) -> (F80, Report) {
+    report.flags |= opening.flags | INEXACT;
+    if result.biased() == 0 && result.significand != 0 {
+        report.flags |= UNDERFLOW;
+    }
+    (result, report)
+}
+
+/// Le dénormal d'un opérande, ou de l'un des deux.
+fn denormal_of(values: &[F80]) -> Report {
+    Report::of(if values.iter().any(|value| value.is_denormal_operand()) {
+        DENORMAL
+    } else {
+        0
+    })
+}
+
+/// Ce qu'une fonction rend d'un NaN : le plus grand des deux, silencieux,
+/// invalide s'il signalait.
+fn nan_answer(left: F80, right: F80) -> Option<(F80, Report)> {
+    let answer = nan(left, right)?;
+    let flags = if left.is_signaling_nan() || right.is_signaling_nan() {
+        INVALID
+    } else {
+        0
+    };
+    Some((answer, Report::of(flags)))
+}
+
+fn indefinite() -> (F80, Report) {
+    (F80::INDEFINITE, Report::of(INVALID))
+}
+
+/// `atanh(s) · 2 = ln((1 + s) / (1 − s))`, |s| petit.
+fn twice_atanh(s: Big) -> Big {
+    let square = s.times(s);
+    // s + s³/3 + s⁵/5… : le terme k est s^(2k+1) / (2k+1).
+    let mut power = s;
+    let mut sum = s;
+    for index in 1..400 {
+        power = power.times(square);
+        let term = power.over(Big::integer(2 * index + 1));
+        if term.m == 0 || term.e < sum.e - 130 {
             break;
         }
-        sum = next;
+        sum = sum.plus(term);
+    }
+    sum.twice()
+}
+
+/// log₂ d'un nombre positif : l'exposant, plus log₂ de la mantisse ramenée
+/// entre √½ et √2, où s = (m − 1)/(m + 1) reste sous 0,172. **Exact pour une
+/// puissance de deux.**
+fn log2(value: Big) -> Big {
+    let mut exponent = value.e;
+    let mut mantissa = Big { e: 0, ..value }.absolute();
+    if value.m > 0xB504_F333_F9DE_6484_597D_89B3_754A_BE9F {
+        mantissa = mantissa.half();
+        exponent += 1;
+    }
+    let one = Big::integer(1);
+    let s = mantissa.minus(one).over(mantissa.plus(one));
+    Big::integer(i64::from(exponent)).plus(twice_atanh(s).over(LN2))
+}
+
+/// log₂(1 + x) : sous 0,29 en grandeur, `2 atanh(x / (2 + x)) / ln 2`, sans
+/// perdre x ; au-delà, log₂ de la somme.
+fn log2_one_plus(x: F80) -> Big {
+    let x = Big::of(x);
+    if x.e < -2 {
+        let s = x.over(Big::integer(2).plus(x));
+        return twice_atanh(s).over(LN2);
+    }
+    log2(Big::integer(1).plus(x))
+}
+
+/// e^t − 1, |t| sous un : la série de Taylor, sans le un.
+fn exp_minus_one(t: Big) -> Big {
+    let mut term = t;
+    let mut sum = t;
+    for index in 2..200 {
+        term = term.times(t).over(Big::integer(index));
+        if term.m == 0 || term.e < sum.e - 130 {
+            break;
+        }
+        sum = sum.plus(term);
     }
     sum
 }
 
-/// `atanh(s) · 2 = ln((1 + s) / (1 − s))`, |s| petit.
-fn twice_atanh(s: F80) -> F80 {
-    let square = times(s, s);
-    // s + s³/3 + s⁵/5… : le terme k est s^(2k+1) / (2k+1).
-    let mut power = s;
-    let mut sum = s;
-    for index in 1..80u32 {
-        power = times(power, square);
-        let term = over(power, F80::from_integer(i64::from(2 * index + 1)));
-        let next = plus(sum, term);
-        if next == sum {
-            break;
-        }
-        sum = next;
-    }
-    plus(sum, sum)
-}
-
-/// ln(x), x fini et positif.
-fn natural_log(x: F80) -> F80 {
-    let (significand, real) = x.normalized();
-    let mut exponent = real - BIAS;
-    // La mantisse entre √½ et √2 : s = (m − 1)/(m + 1) reste sous 0,172.
-    let mut m = F80::new(significand, BIAS as u16);
-    if significand > 0xB504_F333_F9DE_6484 {
-        m = F80::new(significand, (BIAS - 1) as u16);
-        exponent += 1;
-    }
-    let s = over(minus(m, F80::ONE), plus(m, F80::ONE));
-    let e = F80::from_integer(i64::from(exponent));
-    plus(plus(times(e, LN2_HIGH), times(e, LN2_LOW)), twice_atanh(s))
-}
-
-/// ln(1 + x), |x| sous 1 − √2/2 : `2 atanh(x / (2 + x))`, sans perdre x.
-fn natural_log_one_plus(x: F80) -> F80 {
-    let two = F80::from_integer(2);
-    twice_atanh(over(x, plus(two, x)))
-}
-
-/// e^t − 1, |t| sous un : la série de Taylor, sans le un.
-fn exp_minus_one(t: F80) -> F80 {
-    series(t, |term, index| {
-        times(term, over(t, F80::from_integer(i64::from(index + 1))))
-    })
-}
-
 /// atan(z), |z| ≤ 1 : deux réductions `atan z = 2 atan(z / (1 + √(1 + z²)))`,
-/// puis la série.
-fn arctangent_small(z: F80) -> F80 {
+/// puis la série alternée.
+fn arctangent_small(z: Big) -> Big {
+    let one = Big::integer(1);
     let mut z = z;
     for _ in 0..2 {
-        let root = square_root(plus(F80::ONE, times(z, z)), Rounding::NearestEven, 64).0;
-        z = over(z, plus(F80::ONE, root));
+        let root = one.plus(z.times(z)).square_root();
+        z = z.over(one.plus(root));
     }
-    // z − z³/3 + z⁵/5… : le signe alterne.
-    let square = times(z, z);
+    let square = z.times(z);
     let mut power = z;
     let mut sum = z;
-    for index in 1..80u32 {
-        power = times(power, square);
-        let term = over(power, F80::from_integer(i64::from(2 * index + 1)));
-        let term = if index % 2 == 1 { term.negated() } else { term };
-        let next = plus(sum, term);
-        if next == sum {
+    for index in 1..400 {
+        power = power.times(square);
+        let term = power.over(Big::integer(2 * index + 1));
+        if term.m == 0 || term.e < sum.e - 130 {
             break;
         }
-        sum = next;
+        sum = if index % 2 == 1 {
+            sum.minus(term)
+        } else {
+            sum.plus(term)
+        };
     }
     // Deux réductions : quatre fois l'angle réduit.
-    let twice = plus(sum, sum);
-    plus(twice, twice)
+    sum.twice().twice()
 }
 
-fn pi() -> F80 {
-    plus(
-        plus(HALF_PI_HIGH, HALF_PI_LOW),
-        plus(HALF_PI_HIGH, HALF_PI_LOW),
-    )
-}
-
-/// **`fpatan`** : atan2(y, x), le quadrant compris.
-pub fn arctangent(y: F80, x: F80) -> (F80, Report) {
-    if let Some(answer) = nan(y, x) {
-        let flags = if y.is_signaling_nan() || x.is_signaling_nan() {
-            INVALID
+/// **`fpatan`** : atan2(y, x), le quadrant compris. `ST(1)` est y, `ST(0)`
+/// est x.
+pub fn arctangent(y: F80, x: F80, rounding: Rounding) -> (F80, Report) {
+    if let Some(answer) = refused(y, x) {
+        return answer;
+    }
+    if let Some(answer) = nan_answer(y, x) {
+        return answer;
+    }
+    let opening = denormal_of(&[y, x]);
+    let pi = HALF_PI.twice();
+    let signed = |value: Big| if y.negative() { value.negated() } else { value };
+    // Les angles exacts : ±0 devant un x positif (ou +0, ou +∞).
+    let exact_zero =
+        (y.is_zero() && !x.negative()) || (!y.is_infinite() && x.is_infinite() && !x.negative());
+    if exact_zero {
+        return (F80::signed_zero(y.negative()), opening);
+    }
+    let angle = if y.is_zero() || (!y.is_infinite() && x.is_infinite()) {
+        // ±π : y nul devant un x négatif, ou y fini devant −∞.
+        pi
+    } else if y.is_infinite() && x.is_infinite() {
+        let quarter = HALF_PI.half();
+        if x.negative() {
+            quarter.times(Big::integer(3))
         } else {
-            0
-        };
-        return (answer, Report::of(flags));
-    }
-    let report = Report::of(INEXACT);
-    let half_pi = plus(HALF_PI_HIGH, HALF_PI_LOW);
-    let quarter_pi = times(half_pi, F80::new(INTEGER, (BIAS - 1) as u16));
-    let signed = |value: F80| if y.negative() { value.negated() } else { value };
-    if y.is_zero() {
-        // atan2(±0, x) : ±0 pour x positif (ou +0), ±π pour x négatif.
-        return if x.negative() {
-            (signed(pi()), report)
+            quarter
+        }
+    } else if y.is_infinite() || x.is_zero() {
+        HALF_PI
+    } else {
+        let (ay, ax) = (Big::of(y).absolute(), Big::of(x).absolute());
+        let quotient = ay.over(ax);
+        if !x.negative() && quotient.e < -40 {
+            // Le silicium rend le quotient, arrondi, sans le corriger.
+            let (result, report) = divide(y, x, rounding, 64);
+            return inexact(result, report, Report::default());
+        }
+        let angle = if ax.exceeds(ay) || (ax.e, ax.m) == (ay.e, ay.m) {
+            arctangent_small(quotient)
         } else {
-            (y, Report::default())
+            HALF_PI.minus(arctangent_small(ax.over(ay)))
         };
-    }
-    if x.is_infinite() || y.is_infinite() {
-        let angle = match (x.is_infinite(), y.is_infinite()) {
-            (true, true) if x.negative() => times(quarter_pi, F80::from_integer(3)),
-            (true, true) => quarter_pi,
-            (true, false) if x.negative() => pi(),
-            (true, false) => F80::ZERO,
-            _ => half_pi,
-        };
-        return (signed(angle), report);
-    }
-    if x.is_zero() {
-        return (signed(half_pi), report);
-    }
-    let (ay, ax) = (y.absolute(), x.absolute());
-    let angle = if compare(ay, ax) != Order::Greater {
-        arctangent_small(over(ay, ax))
-    } else {
-        minus(half_pi, arctangent_small(over(ax, ay)))
+        if x.negative() {
+            pi.minus(angle)
+        } else {
+            angle
+        }
     };
-    let angle = if x.negative() {
-        minus(pi(), angle)
-    } else {
-        angle
-    };
-    (signed(angle), report)
+    transcendental(signed(angle), rounding, opening)
 }
 
 /// **`f2xm1`** : 2^x − 1, pour |x| ≤ 1. Hors de ce domaine, le manuel ne
-/// promet rien ; la même formule s'applique.
-pub fn two_to_the_minus_one(x: F80) -> (F80, Report) {
-    if x.is_nan() {
-        return (
-            x.quieted(),
-            Report::of(if x.is_signaling_nan() { INVALID } else { 0 }),
-        );
+/// promet rien, et le silicium de l'hôte rend x, inexact.
+pub fn two_to_the_minus_one(x: F80, rounding: Rounding) -> (F80, Report) {
+    if x.is_unsupported() {
+        return indefinite();
+    }
+    if let Some(answer) = nan_answer(x, x) {
+        return answer;
     }
     if x.is_infinite() {
         return (
@@ -1397,105 +1663,191 @@ pub fn two_to_the_minus_one(x: F80) -> (F80, Report) {
     if x.is_zero() {
         return (x, Report::default());
     }
-    let t = plus(times(x, LN2_HIGH), times(x, LN2_LOW));
-    (exp_minus_one(t), Report::of(INEXACT))
+    match compare(x.absolute(), F80::ONE) {
+        Order::Greater => return (x, Report::of(INEXACT)),
+        // 2¹ − 1 = 1 et 2⁻¹ − 1 = −½, exacts, et pourtant inexacts.
+        Order::Equal if x.negative() => return (F80::new(INTEGER, 0xBFFE), Report::of(INEXACT)),
+        Order::Equal => return (F80::ONE, Report::of(INEXACT)),
+        _ => {}
+    }
+    let t = Big::of(x).times(LN2);
+    transcendental(exp_minus_one(t), rounding, denormal_of(&[x]))
 }
 
-/// **`fyl2x`** : y · log₂ x. `log1p` dit `fyl2xp1` : y · log₂(1 + x).
-pub fn y_log2_x(y: F80, x: F80, one_plus: bool) -> (F80, Report) {
-    if let Some(answer) = nan(y, x) {
-        let flags = if y.is_signaling_nan() || x.is_signaling_nan() {
-            INVALID
-        } else {
-            0
-        };
-        return (answer, Report::of(flags));
+/// **`fyl2x`** : y · log₂ x. `ST(1)` est y, `ST(0)` est x.
+pub fn y_log2_x(y: F80, x: F80, rounding: Rounding) -> (F80, Report) {
+    if let Some(answer) = refused(y, x) {
+        return answer;
     }
-    let argument = if one_plus { plus(x, F80::ONE) } else { x };
-    if argument.negative() && !argument.is_zero() {
-        return (F80::INDEFINITE, Report::of(INVALID));
+    if let Some(answer) = nan_answer(y, x) {
+        return answer;
     }
-    if argument.is_zero() {
-        // log₂ 0 = −∞ : y · −∞, invalide si y est nul.
+    if x.negative() && !x.is_zero() {
+        return indefinite();
+    }
+    if x.is_zero() {
+        // log₂ 0 = −∞ : y · −∞, invalide si y est nul. La division par zéro
+        // prime sur le dénormal de y.
         if y.is_zero() {
-            return (F80::INDEFINITE, Report::of(INVALID));
+            return indefinite();
         }
-        return (F80::infinity(!y.negative()), Report::of(ZERO_DIVIDE));
+        let flags = if y.is_infinite() { 0 } else { ZERO_DIVIDE };
+        return (F80::infinity(!y.negative()), Report::of(flags));
     }
-    if argument.is_infinite() {
+    let opening = denormal_of(&[y, x]);
+    if x.is_infinite() {
         if y.is_zero() {
-            return (F80::INDEFINITE, Report::of(INVALID));
+            return indefinite();
         }
-        return (F80::infinity(y.negative()), Report::default());
+        return (F80::infinity(y.negative()), opening);
     }
-    let logarithm = if one_plus {
-        natural_log_one_plus(x)
-    } else {
-        natural_log(x)
-    };
-    let log2 = over(logarithm, plus(LN2_HIGH, LN2_LOW));
+    let logarithm = log2(Big::of(x));
     if y.is_infinite() {
-        if log2.is_zero() {
-            return (F80::INDEFINITE, Report::of(INVALID));
+        if logarithm.m == 0 {
+            return indefinite();
         }
-        return (
-            F80::infinity(y.negative() != log2.negative()),
-            Report::default(),
-        );
+        return (F80::infinity(y.negative() != logarithm.negative), opening);
     }
-    (times(y, log2), Report::of(INEXACT))
+    if y.is_zero() || logarithm.m == 0 {
+        let negative = y.negative() != (logarithm.negative && logarithm.m != 0);
+        return (F80::signed_zero(negative), opening);
+    }
+    transcendental(Big::of(y).times(logarithm), rounding, opening)
 }
 
-/// **L'argument réduit modulo π/2** : `x − k·π/2` et `k mod 4`. π/2 sur cent
-/// vingt-huit bits, la partie haute retirée exactement (`partial_remainder`
-/// fait le même calcul), la basse ensuite.
-fn reduced(x: F80) -> (F80, u64) {
-    let quarter_pi = F80::new(HALF_PI_HIGH.significand, (BIAS - 1) as u16);
-    if compare(x.absolute(), quarter_pi) != Order::Greater {
-        return (x, 0);
+/// **`fyl2xp1`** : y · log₂(1 + x), pour |x| sous 1 − √2/2. Au-delà, le
+/// silicium calcule encore, sauf à −1 et en dessous, où il rend x tel quel
+/// (et l'indéfini pour −∞).
+pub fn y_log2_one_plus_x(y: F80, x: F80, rounding: Rounding) -> (F80, Report) {
+    if let Some(answer) = refused(y, x) {
+        return answer;
     }
-    // Le reste exact par la partie haute, au plus proche : |r| ≤ π/4.
-    let remainder = partial_remainder(x, HALF_PI_HIGH, true);
-    let r = remainder.value;
+    if let Some(answer) = nan_answer(y, x) {
+        return answer;
+    }
+    if x.is_infinite() && x.negative() {
+        return indefinite();
+    }
+    let opening = denormal_of(&[y, x]);
+    if x.is_infinite() {
+        if y.is_zero() {
+            return indefinite();
+        }
+        return (F80::infinity(y.negative()), opening);
+    }
+    if y.is_infinite() {
+        if x.is_zero() {
+            return indefinite();
+        }
+        return (F80::infinity(y.negative() != x.negative()), opening);
+    }
+    if y.is_zero() || x.is_zero() {
+        return (F80::signed_zero(y.negative() != x.negative()), opening);
+    }
+    if x.negative() && compare(x, F80::ONE.negated()) != Order::Greater {
+        return (x, Report::of(opening.flags | INEXACT));
+    }
+    transcendental(Big::of(y).times(log2_one_plus(x)), rounding, opening)
+}
+
+/// **L'argument réduit modulo π/2** : `x − k·π/2` et `k mod 4`. La partie
+/// haute de π/2 est retirée exactement (`partial_remainder` fait le calcul
+/// de `fprem1`), puis k fois les cent vingt-huit bits suivants.
+fn reduced(x: F80) -> (Big, u64) {
+    if !Big::of(x).absolute().exceeds(HALF_PI.half()) {
+        return (Big::of(x), 0);
+    }
+    let remainder = partial_remainder(x, HALF_PI_HIGH, true).value;
     // Le quotient entier, signé comme x : (x − r) / (π/2), juste à la demie
     // près, s'arrondit à lui.
-    let k = over(minus(x, r), HALF_PI_HIGH)
-        .integral(Rounding::NearestEven)
-        .0;
-    let quarter = k.as_integer(64, Rounding::NearestEven).unwrap_or(0) as u64 & 3;
-    (minus(r, times(k, HALF_PI_LOW)), quarter)
+    let (difference, _) = subtract(x, remainder, Rounding::NearestEven, 64);
+    let (quotient, _) = divide(difference, HALF_PI_HIGH, Rounding::NearestEven, 64);
+    let k = quotient.as_integer(64, Rounding::NearestEven).unwrap_or(0);
+    let r = Big::of(remainder).minus(Big::integer(k).times(HALF_PI_TAIL));
+    (r, k as u64 & 3)
 }
 
 /// sin et cos d'un argument réduit, |r| ≤ π/4.
-fn sine_and_cosine_small(r: F80) -> (F80, F80) {
-    let square = times(r, r);
-    let sine = series(r, |term, index| {
-        let divisor = F80::from_integer(i64::from((2 * index) * (2 * index + 1)));
-        over(times(term, square), divisor).negated()
-    });
-    let cosine = series(F80::ONE, |term, index| {
-        let divisor = F80::from_integer(i64::from((2 * index - 1) * (2 * index)));
-        over(times(term, square), divisor).negated()
-    });
+fn sine_and_cosine_small(r: Big) -> (Big, Big) {
+    let square = r.times(r);
+    let mut sine = r;
+    let mut cosine = Big::integer(1);
+    let mut term = r;
+    for index in 1..200 {
+        term = term
+            .times(square)
+            .over(Big::integer(i64::from((2 * index) * (2 * index + 1))));
+        if term.m == 0 || term.e < sine.e - 130 {
+            break;
+        }
+        sine = if index % 2 == 1 {
+            sine.minus(term)
+        } else {
+            sine.plus(term)
+        };
+    }
+    let mut term = Big::integer(1);
+    for index in 1..200 {
+        term = term
+            .times(square)
+            .over(Big::integer(i64::from((2 * index - 1) * (2 * index))));
+        if term.m == 0 || term.e < -130 {
+            break;
+        }
+        cosine = if index % 2 == 1 {
+            cosine.minus(term)
+        } else {
+            cosine.plus(term)
+        };
+    }
     (sine, cosine)
 }
 
+/// Ce que rendent `fsin`, `fcos`, `fsincos` et `fptan` : chaque valeur avec
+/// son compte rendu.
+pub struct Trigonometric {
+    pub sine: (F80, Report),
+    pub cosine: (F80, Report),
+    pub tangent: (F80, Report),
+}
+
 /// **`fsin`, `fcos`, `fsincos`, `fptan`** : `None` quand |x| ≥ 2⁶³ — le
-/// processeur lève C2 et laisse l'opérande tel quel. Sinon sin x et cos x.
-pub fn sine_cosine(x: F80) -> Option<(F80, F80, Report)> {
-    if x.is_nan() {
-        let quiet = x.quieted();
-        let flags = if x.is_signaling_nan() { INVALID } else { 0 };
-        return Some((quiet, quiet, Report::of(flags)));
+/// processeur lève C2 et laisse l'opérande tel quel.
+pub fn sine_cosine(x: F80, rounding: Rounding) -> Option<Trigonometric> {
+    let all = |value: (F80, Report)| Trigonometric {
+        sine: value,
+        cosine: value,
+        tangent: value,
+    };
+    if x.is_unsupported() || x.is_infinite() {
+        return Some(all(indefinite()));
     }
-    if x.is_infinite() {
-        return Some((F80::INDEFINITE, F80::INDEFINITE, Report::of(INVALID)));
+    if let Some(answer) = nan_answer(x, x) {
+        return Some(all(answer));
     }
     if x.biased() - BIAS >= 63 {
         return None;
     }
     if x.is_zero() {
-        return Some((x, F80::ONE, Report::default()));
+        return Some(Trigonometric {
+            sine: (x, Report::default()),
+            cosine: (F80::ONE, Report::default()),
+            tangent: (x, Report::default()),
+        });
+    }
+    let opening = denormal_of(&[x]);
+    let x = x.canonical();
+    if x.biased() <= 0x3FBA {
+        // **Sous 2⁻⁶⁸, le silicium rend l'argument**, et 1 pour le cosinus,
+        // inexacts mais non arrondis : C1 reste à zéro, et le mode n'y fait
+        // rien. Un dénormal rendu tel quel est un dépassement par le bas.
+        let tiny = if x.biased() == 0 { UNDERFLOW } else { 0 };
+        let flags = opening.flags | INEXACT;
+        return Some(Trigonometric {
+            sine: (x, Report::of(flags | tiny)),
+            cosine: (F80::ONE, Report::of(flags)),
+            tangent: (x, Report::of(flags | tiny)),
+        });
     }
     let (r, quarter) = reduced(x);
     let (s, c) = sine_and_cosine_small(r);
@@ -1505,17 +1857,13 @@ pub fn sine_cosine(x: F80) -> Option<(F80, F80, Report)> {
         2 => (s.negated(), c.negated()),
         _ => (c.negated(), s),
     };
-    let flags = if x.is_denormal_operand() {
-        DENORMAL | INEXACT
-    } else {
-        INEXACT
-    };
-    Some((sine, cosine, Report::of(flags)))
-}
-
-/// tan = sin / cos, pour `fptan`.
-pub fn tangent(sine: F80, cosine: F80) -> F80 {
-    over(sine, cosine)
+    // Tombés juste, |sin x| est sous |x|, cos x sous 1, |tan x| au-dessus
+    // de |x| : la correction est passée sous les cent vingt-huit bits.
+    Some(Trigonometric {
+        sine: toward(sine, rounding, opening, Side::Below),
+        cosine: toward(cosine, rounding, opening, Side::Below),
+        tangent: toward(sine.over(cosine), rounding, opening, Side::Above),
+    })
 }
 
 #[cfg(test)]
@@ -1524,6 +1872,11 @@ mod tests {
 
     fn value(x: f64) -> F80 {
         F80::from_f64_bits(x.to_bits())
+    }
+
+    fn sine_and_cosine(x: F80) -> (F80, F80) {
+        let outcome = sine_cosine(x, Rounding::NearestEven).expect("dans le domaine");
+        (outcome.sine.0, outcome.cosine.0)
     }
 
     fn back(x: F80) -> f64 {
@@ -1535,39 +1888,45 @@ mod tests {
     #[test]
     fn the_transcendental_functions_give_the_known_values() {
         let close = |got: f64, want: f64| (got - want).abs() <= want.abs() * 4e-16 + 1e-300;
-        let (s, c, _) = sine_cosine(value(1.0)).unwrap();
+        let (s, c) = sine_and_cosine(value(1.0));
         assert!(close(back(s), 0.841_470_984_807_896_5), "{}", back(s));
         assert!(close(back(c), 0.540_302_305_868_139_8), "{}", back(c));
-        let (s, c, _) = sine_cosine(value(10.0)).unwrap();
+        let (s, c) = sine_and_cosine(value(10.0));
         assert!(close(back(s), -0.544_021_110_889_369_8), "{}", back(s));
         assert!(close(back(c), -0.839_071_529_076_452_4), "{}", back(c));
-        let (a, _) = arctangent(value(1.0), value(1.0));
+        let (a, _) = arctangent(value(1.0), value(1.0), Rounding::NearestEven);
         assert!(close(back(a), std::f64::consts::FRAC_PI_4));
-        let (a, _) = arctangent(value(1.0), value(-1.0));
+        let (a, _) = arctangent(value(1.0), value(-1.0), Rounding::NearestEven);
         assert!(close(back(a), 3.0 * std::f64::consts::FRAC_PI_4));
-        let (a, _) = arctangent(value(-2.0), value(0.5));
+        let (a, _) = arctangent(value(-2.0), value(0.5), Rounding::NearestEven);
         assert!(close(back(a), (-2.0f64).atan2(0.5)), "{}", back(a));
-        let (e, _) = two_to_the_minus_one(value(0.5));
+        let (e, _) = two_to_the_minus_one(value(0.5), Rounding::NearestEven);
         assert!(
             close(back(e), std::f64::consts::SQRT_2 - 1.0),
             "{}",
             back(e)
         );
-        let (e, _) = two_to_the_minus_one(value(-1.0));
+        let (e, _) = two_to_the_minus_one(value(-1.0), Rounding::NearestEven);
         assert!(close(back(e), -0.5));
-        let (l, _) = y_log2_x(value(3.0), value(10.0), false);
+        let (l, _) = y_log2_x(value(3.0), value(10.0), Rounding::NearestEven);
         assert!(
             close(back(l), 3.0 * std::f64::consts::LOG2_10),
             "{}",
             back(l)
         );
-        let (l, _) = y_log2_x(value(1.0), value(0.25), true);
+        let (l, _) = y_log2_one_plus_x(value(1.0), value(0.25), Rounding::NearestEven);
         assert!(close(back(l), 1.25f64.log2()), "{}", back(l));
         // Exact là où il doit l'être : log₂ 8 = 3, 2^1 − 1 = 1.
-        assert_eq!(back(y_log2_x(value(1.0), value(8.0), false).0), 3.0);
-        assert_eq!(back(two_to_the_minus_one(value(1.0)).0), 1.0);
+        assert_eq!(
+            back(y_log2_x(value(1.0), value(8.0), Rounding::NearestEven).0),
+            3.0
+        );
+        assert_eq!(
+            back(two_to_the_minus_one(value(1.0), Rounding::NearestEven).0),
+            1.0
+        );
         // Au-delà de 2⁶³ : C2, l'opérande intact.
-        assert!(sine_cosine(value(1e19)).is_none());
+        assert!(sine_cosine(value(1e19), Rounding::NearestEven).is_none());
         // **Un grand argument** : la réduction par π/2 retire k · π/2 sur cent
         // vingt-huit bits. La partie basse de π/2 y compte : sans elle, sin
         // 10⁶ se tromperait de 3 · 10⁻¹⁴, sin 10¹⁰ de 10⁻¹⁰.
@@ -1580,7 +1939,7 @@ mod tests {
                 0.051_672_532_718_701_38,
             ),
         ] {
-            let (s, c, _) = sine_cosine(value(x)).unwrap();
+            let (s, c) = sine_and_cosine(value(x));
             assert!(close(back(s), sine), "sin {x} : {}", back(s));
             assert!(close(back(c), cosine), "cos {x} : {}", back(c));
         }
