@@ -685,6 +685,13 @@ pub unsafe extern "C" fn wisq_emitter_asset(
 /// `wisq_x86_free_module`), ou un refus nommé : 1 la RAM, 2 la ligne, 3
 /// l'écran, 4 l'archive, -1 des arguments illisibles.
 ///
+/// **Au refus 2, `out_len` reçoit la longueur de la ligne entière**, celle
+/// du montage comprise : c'est elle que la borne de 2 047 octets juge, et
+/// l'appelant ne la connaît pas — la part du montage dépend de la ligne de
+/// l'image (`keep_bootcon` peut en partir). Sans ce nombre, la phrase de
+/// l'écran ne pouvait parler que de la ligne de l'image, et mentait pour
+/// toute ligne d'image de 2 008 à 2 047 octets.
+///
 /// # Safety
 /// `extra`, when non-null, must be a NUL-terminated C string, and `out_bytes`
 /// and `out_len` must be valid for writing.
@@ -728,7 +735,13 @@ pub unsafe extern "C" fn wisq_emitter_boot_page(
             0
         }
         Err(Refusal::RamIsNotAPowerOfTwo(_)) => 1,
-        Err(Refusal::CommandLine(_)) => 2,
+        Err(Refusal::CommandLine(why)) => {
+            *out_len = match why {
+                crate::kernel_image::CommandLineRefusal::TooLong { bytes, .. } => bytes,
+                _ => 0,
+            };
+            2
+        }
         Err(Refusal::Screen(_)) => 3,
         Err(Refusal::Ramdisk(_)) => 4,
     }
