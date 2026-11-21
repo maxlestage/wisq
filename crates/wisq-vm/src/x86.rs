@@ -63,7 +63,9 @@
 
 #[path = "x86_vector.rs"]
 mod vector;
-pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector, VectorFault, MXCSR_MASK};
+pub use vector::{
+    Float, FloatOp, Lanes, Logic, Mask, Shift, Shuffle, Vector, VectorFault, MXCSR_MASK,
+};
 
 #[path = "x86_extended.rs"]
 mod extended;
@@ -71,8 +73,11 @@ mod extended;
 #[path = "x86_rapide.rs"]
 pub mod rapide;
 use crate::x86_paging::is_canonical;
+// Le `FloatOp` du second décodeur (`x86_sse.rs`) garde son nom chez lui ; ici,
+// `FloatOp` est celui de `decode` (`Vector::Float`), que l'émetteur traduit.
 pub use extended::{
-    decode_extended, f80, Extended, ExtendedFault, Extra, FloatOp, Mmx, Sse, FXSAVE_WRITTEN,
+    decode_extended, f80, Extended, ExtendedFault, Extra, FloatOp as SseFloatOp, Mmx, Sse,
+    FXSAVE_WRITTEN,
 };
 
 /// La largeur d'une opération, en octets.
@@ -3479,7 +3484,14 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     if prefixes.repeat_not && !matches!(opcode, 0x0f | 0xa6 | 0xa7 | 0xae | 0xaf) {
         return None;
     }
-    if prefixes.address_size && !matches!(opcode, 0xe8 | 0xe9) {
+    // **Et devant `lea` sans REX.W**, où il ne change rien non plus :
+    // l'adresse calculée sur trente-deux bits puis rangée sur trente-deux
+    // (ou seize) bits est celle calculée sur soixante-quatre puis tronquée.
+    // `67 8d 51 ff` (`lea -1(%ecx),%edx`) est dans les routines de chaîne de
+    // la glibc de Void. Avec REX.W l'adresse serait étendue de trente-deux à
+    // soixante-quatre bits, ce qui n'est pas porté : refus.
+    let lea_etroit = opcode == 0x8d && !prefixes.rex.is_some_and(|rex| rex & 0b1000 != 0);
+    if prefixes.address_size && !matches!(opcode, 0xe8 | 0xe9) && !lea_etroit {
         return None;
     }
 
@@ -5710,7 +5722,9 @@ mod tests {
                 &[0x66, 0xf3, 0x0f, 0x6f, 0xc1][..],
                 "deux préfixes obligatoires",
             ),
-            (&[0xf3, 0x0f, 0x58, 0xc1][..], "addss calcule en flottant"),
+            // `addss` se lit depuis le calcul flottant (`Vector::Float`) ; les
+            // formes de SSE3, que CPUID n'annonce pas, restent illisibles.
+            (&[0xf2, 0x0f, 0x7c, 0xc1][..], "haddps est du SSE3"),
             (
                 &[0x66, 0x0f, 0x12, 0xc1][..],
                 "movlpd n'a pas de forme à registre",
@@ -5727,6 +5741,14 @@ mod tests {
         ] {
             assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
+        assert_eq!(
+            decode(&[0xf3, 0x0f, 0x58, 0xc1]).map(|step| step.op),
+            Some(Op::Vector(Vector::Float(Float::Scalar {
+                operation: FloatOp::Add,
+                double: false,
+            }))),
+            "addss se lit en calcul flottant, en simple"
+        );
         // L'interprète Rust n'a pas de XMM : il faute, RIP sur l'instruction.
         let mut cpu = Cpu {
             rip: 0x3000_0000,
@@ -5751,8 +5773,10 @@ mod tests {
     /// instruction plausible et fausse. Depuis le socle SSE, il est lu **comme
     /// octet d'opcode** de la page vectorielle ; et depuis les chaînes qui
     /// comparent, comme `repne` devant `cmps` et `scas`, où il a un sens
-    /// défini. `movsd` se décode en `movsd`, et `repne movs`, `addsd` ou le
-    /// reste de la page `0f 01` restent refusés.
+    /// défini. `movsd` se décode en `movsd`, `addsd` en calcul flottant
+    /// (`Vector::Float`, depuis que l'émetteur le traduit), et `repne movs`,
+    /// `haddps` (SSE3, que CPUID n'annonce pas) ou le reste de la page `0f 01`
+    /// restent refusés.
     #[test]
     fn lkgs_is_read_and_the_rest_of_the_f2_page_stays_refused() {
         let step = decode(&[0xf2, 0x0f, 0x00, 0xf7]).expect("lkgs %edi se décode");
@@ -5780,10 +5804,7 @@ mod tests {
                 &[0xf2, 0x0f, 0x01, 0xf8][..],
                 "f2 n'ouvre pas le reste de la page",
             ),
-            (
-                &[0xf2, 0x0f, 0x58, 0xc1][..],
-                "addsd calcule en flottant : refusé",
-            ),
+            (&[0xf2, 0x0f, 0x7c, 0xc1][..], "haddps est du SSE3 : refusé"),
             (&[0xf2, 0x48, 0xa5][..], "repne movs n'est pas lu"),
             (&[0xf2, 0x90][..], "f2 devant une instruction ordinaire"),
             (
@@ -5793,6 +5814,15 @@ mod tests {
         ] {
             assert!(decode(bytes).is_none(), "{why} : {bytes:02x?}");
         }
+        // `addsd` se lit depuis le calcul flottant, en scalaire double.
+        let addsd = decode(&[0xf2, 0x0f, 0x58, 0xc1]).expect("addsd se décode");
+        assert_eq!(
+            addsd.op,
+            Op::Vector(Vector::Float(Float::Scalar {
+                operation: FloatOp::Add,
+                double: true,
+            }))
+        );
         // `movsd %xmm1,%xmm0` : huit octets, pas les seize de `movups`.
         let movsd = decode(&[0xf2, 0x0f, 0x10, 0xc1]).expect("movsd se décode");
         assert_eq!(
@@ -6736,8 +6766,38 @@ mod tests {
         }
     }
 
-    /// **`addr32 call` est un `call`, et la taille d'adresse est refusée
-    /// partout ailleurs.**
+    /// **Les écritures non temporelles se lisent comme leurs sœurs
+    /// alignées**, en mémoire seule. `66 0f e7 14 33` (`movntdq
+    /// %xmm2,(%rbx,%rsi)`) arrêtait le démarrage de Void dans un module du
+    /// noyau ; `movntps` et `movntpd` sont la même écriture. La forme
+    /// registre n'existe pas.
+    #[test]
+    fn the_non_temporal_stores_read_like_the_aligned_ones() {
+        for (forme, soeur) in [
+            (
+                &[0x66, 0x0f, 0xe7, 0x14, 0x33][..],
+                &[0x66, 0x0f, 0x7f, 0x14, 0x33][..],
+            ),
+            (&[0x0f, 0x2b, 0x14, 0x33], &[0x0f, 0x29, 0x14, 0x33]),
+            (
+                &[0x66, 0x0f, 0x2b, 0x14, 0x33],
+                &[0x66, 0x0f, 0x29, 0x14, 0x33],
+            ),
+        ] {
+            assert_eq!(decode(forme), decode(soeur), "{forme:02x?}");
+            assert!(decode(forme).is_some(), "{forme:02x?} se lit");
+        }
+        for registre in [&[0x66, 0x0f, 0xe7, 0xc1][..], &[0x0f, 0x2b, 0xc1]] {
+            assert_eq!(
+                decode(registre),
+                None,
+                "{registre:02x?} : pas de forme registre"
+            );
+        }
+    }
+
+    /// **`addr32 call` est un `call`, `addr32 lea` sans REX.W un `lea`, et la
+    /// taille d'adresse est refusée partout ailleurs.**
     ///
     /// `67 e8 18 25 01 00` est le mur de `libcrypto.so.3` d'Alpine, juste après
     /// celui du préfixe FS : l'éditeur de liens remplace un appel par la GOT
@@ -6747,8 +6807,12 @@ mod tests {
     /// **compte dans la longueur**, et l'adresse de retour est donc six octets
     /// après le début, pas cinq.
     ///
-    /// Ailleurs il change l'adresse (trente-deux bits) ou les registres d'une
-    /// chaîne (ECX, ESI, EDI), et rien de cela n'est porté : refus.
+    /// Devant `lea` sans REX.W (`67 8d`, dans la glibc de Void), il change la
+    /// largeur du calcul, mais pas les trente-deux bits bas que la
+    /// destination garde : il se lit, et ne change rien. Ailleurs il change
+    /// l'adresse d'un accès (trente-deux bits) ou les registres d'une chaîne
+    /// (ECX, ESI, EDI), et rien de cela n'est porté : refus — `lea` sous
+    /// REX.W compris, dont la destination garde les soixante-quatre bits.
     #[test]
     fn an_address_size_prefix_is_read_before_a_relative_call_and_refused_elsewhere() {
         let call = decode(&[0x67, 0xe8, 0x18, 0x25, 0x01, 0x00]).expect("addr32 call");
@@ -6782,6 +6846,28 @@ mod tests {
             cpu.memory.bytes[0x38..0x40],
             0x3000_0006u64.to_le_bytes(),
             "l'adresse de retour est après le préfixe et les cinq octets"
+        );
+
+        // **Devant `lea` sans REX.W, il se lit, et ne change rien** : les
+        // trente-deux bits bas de l'adresse sont les mêmes quelle que soit
+        // sa largeur de calcul.
+        let narrow = decode(&[0x67, 0x8d, 0x51, 0xff]).expect("lea -1(%ecx),%edx");
+        let plain = decode(&[0x8d, 0x51, 0xff]).expect("lea -1(%rcx),%edx");
+        assert_eq!(narrow.length, 4, "le préfixe compte dans la longueur");
+        assert_eq!(
+            Decoded {
+                length: 3,
+                ..narrow
+            },
+            plain,
+            "la même instruction, un octet plus longue"
+        );
+        let mut cpu = Cpu::default();
+        cpu.regs[1] = 0xdead_beef_0000_0000;
+        cpu.execute(&narrow);
+        assert_eq!(
+            cpu.regs[2], 0xffff_ffff,
+            "EDX = ECX − 1, sur trente-deux bits"
         );
 
         for (bytes, what) in [

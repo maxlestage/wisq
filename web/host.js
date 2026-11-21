@@ -18,10 +18,10 @@
 // destiné à être évalué tel quel dans un `WKWebView`, et il se teste ici sous
 // Bun, qui embarque le même JavaScriptCore.
 
-/// Les emplacements des globales, tels que l'émetteur les numérote. Ils sont
-/// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
-/// frontière entre Rust et cette vue à part des octets. Le test les compare aux
-/// constantes de la bibliothèque, sinon la répétition finirait par mentir.
+/// **L'arrêt qu'un pilote a demandé** (`run({ arreter })`), sous un nom que
+/// le pilote reconnaît sans le recopier.
+export const ARRET_DEMANDE = "arrêt demandé";
+
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
 /// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre
@@ -43,6 +43,9 @@ const STOPS = {
 /// la boucle en décide — un `hlt` qu'une interruption peut encore réveiller
 /// attend — et pas seulement parce qu'elle le raconte.
 const STOP_HALTED = 1n;
+/// **L'arrêt d'une machine qui a demandé à redémarrer**, par l'impulsion de
+/// l'i8042 de la carte — le nom que le banc du cœur Swift lui donne.
+const ARRET_REMISE = "redémarrage demandé (impulsion du 8042)";
 /// **`STOP_INTERRUPT | vecteur`** : une interruption logicielle, que l'hôte
 /// délivre au lieu de s'arrêter. RIP est déjà après l'instruction.
 const STOP_INTERRUPT = 0x100n;
@@ -67,6 +70,40 @@ const STOP_MXCSR = 9n;
 /// instruction finie, pour que l'hôte oublie ce qui a été écrit ;
 /// `voirEcritures` l'efface avant de regarder quoi que ce soit d'autre.
 const STOP_WRITTEN = 10n;
+/// **Un accès à cheval entre la mémoire d'un périphérique et la RAM**, dans
+/// un sens ou dans l'autre : `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès
+/// lent pose dans le témoin de faute au lieu d'un code (un code plus un
+/// tient dans cinq bits). Aucun pilote ne le fait ; la boucle s'arrête en le
+/// nommant, plutôt que d'envoyer l'accès entier d'un seul côté. Un accès à
+/// cheval sur deux trames hors de la RAM arrive ici en deux moitiés, par
+/// `out` ou `in`, chacune dans sa page.
+const FAULT_DEVICE_STRADDLE = 1n << 40n;
+/// **Le bit zéro d'une trame rendue par la marche : la page est la mémoire
+/// d'un périphérique** (`DEVICE_FRAME` côté Rust). Le processeur ne range
+/// jamais ses propres structures là — IDT, GDT, segment de tâche, cadre
+/// d'une délivrance — et l'hôte ne traduit pas de code qui y vivrait.
+const DEVICE_FRAME = 1;
+/// **La plus haute adresse qui soit un port.** Au-delà, ce qu'`in` et `out`
+/// reçoivent est une adresse physique hors de la RAM : l'accès lent du
+/// module y envoie ce qui touche la mémoire d'un périphérique, à sa largeur.
+/// La RAM fait au moins 64 Kio, donc une telle adresse ne se confond jamais
+/// avec un port.
+const DERNIER_PORT = 0xffff;
+/// **L'hôte a voulu prendre la mémoire d'un périphérique pour de la RAM** :
+/// une IDT, une GDT, un segment de tâche, une pile de délivrance ou du code à
+/// traduire posés là. Levée par `physical`, rattrapée par `run`, qui
+/// s'arrête sur son message. **Sous pagination seulement** : pagination
+/// éteinte, `physical` replie toute adresse dans la RAM, comme l'émetteur
+/// (`Body::peek`), et une adresse hors de la RAM n'y est pas reconnue. Le
+/// mode long pagine toujours, et Linux 64 bits avec lui.
+class PageDePeripherique extends Error {
+  constructor(adresse) {
+    super(
+      `l'hôte veut lire ou écrire 0x${BigInt.asUintN(64, adresse).toString(16)} comme de la RAM, ` +
+        "et c'est la mémoire d'un périphérique",
+    );
+  }
+}
 
 /// **La délivrance d'une faute, et ce qu'elle suppose.**
 ///
@@ -121,6 +158,10 @@ const NESTED_FLAG = 0x4000n;
 const RESUME_FLAG = 0x10000n;
 const PAGING_BIT = 1n << 31n;
 
+/// Les emplacements des globales, tels que l'émetteur les numérote. Ils sont
+/// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
+/// frontière entre Rust et cette vue à part des octets. Le test les compare aux
+/// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 export const SLOTS = {
   /// La case de RFLAGS. Elle ne servait à rien ici tant que personne ne lisait
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.
@@ -762,11 +803,52 @@ export function machine({
   // ne voit : ce qu'on écrit dans la mémoire **du dehors**, sans passer par
   // `ecrit`. Éteint, la mesure dit ce que la carte tient seule.
   vider = true,
+  // **La carte des périphériques** (`web/carte.js`) : l'i8042, l'horloge
+  // CMOS, le bus PCI et le disque virtio, tout ce que les puces d'ici ne
+  // modélisent pas. Une fonction, `(ram) => carte`, appelée une fois la RAM
+  // de l'invité créée : la carte ne peut pas être fabriquée avant, et ce
+  // fichier ne peut pas l'importer (la page l'embarque tel quel dans un
+  // script, sans le fichier d'à côté). `ram` est la vue de la RAM que la
+  // carte doit prendre — `{ lire, ecrire }` par adresse physique —, et ses
+  // écritures passent par `ecrit` : ce que le disque dépose par DMA dans une
+  // page où du code a été traduit oublie ces traductions. Aucune par défaut :
+  // la machine d'avant, ses quatre puces et rien d'autre.
+  carte: brancherLaCarte = null,
 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
   }
   const memory = new WebAssembly.Memory({ initial: hostPages(pages) });
+  // **La carte, branchée sur la RAM de l'invité et rien d'autre.** Les
+  // adresses physiques sont les adresses linéaires de `memory`, de zéro à la
+  // fin de la RAM : la correspondance et la carte du code, au-dessus, ne sont
+  // pas à elle. Une plage qui déborde est refusée entière, sans rien toucher.
+  //
+  // **Les deux moitiés comptent.** La carte sonde par `lire` les tampons de
+  // données avant de faire partir une requête ; mais le statut, les servis et
+  // le nom du disque, elle les pose par `ecrire` sans rien sonder, aux
+  // adresses que l'invité a choisies : là, la garde d'`ecrire` est la seule.
+  //
+  // **L'écriture se dit à `ecrit`**, déclarée plus bas : la carte n'écrit
+  // qu'en servant un port ou une réponse du disque, jamais en se fabriquant,
+  // donc toujours après que tout ce fichier a été lu.
+  const octetsDeRam = pages * 65536;
+  const dansLaRam = (adresse, longueur) =>
+    Number.isInteger(adresse) && adresse >= 0 && adresse + longueur <= octetsDeRam;
+  const ramDeLaCarte = {
+    lire(adresse, vers) {
+      if (!dansLaRam(adresse, vers.length)) return false;
+      vers.set(new Uint8Array(memory.buffer, adresse, vers.length));
+      return true;
+    },
+    ecrire(adresse, depuis) {
+      if (!dansLaRam(adresse, depuis.length)) return false;
+      new Uint8Array(memory.buffer, adresse, depuis.length).set(depuis);
+      ecrit(adresse, depuis.length);
+      return true;
+    },
+  };
+  const peripheriques = brancherLaCarte === null ? null : brancherLaCarte(ramDeLaCarte);
   const blocks = new WebAssembly.Table({ element: "anyfunc", initial: regions });
   const globals = [];
   const env = { mem: memory, blocks };
@@ -1188,8 +1270,46 @@ export function machine({
     }
   };
 
+  /// **L'invité a tiré la ligne de remise à zéro**, par l'i8042 de la carte.
+  let remiseDemandee = false;
+  /// **Les lignes de la carte, recopiées dans les deux 8259.** À niveau,
+  /// comme le port série : une ligne que la carte lève entre dans le registre
+  /// de requête, une ligne qu'elle tient et ne lève plus en sort. Les lignes
+  /// qu'elle ne tient pas — la zéro du 8254, la deux de la cascade, la quatre
+  /// du 16550 — ne sont jamais touchées, et la carte refuse de les tenir.
+  ///
+  /// **Le temps d'abord** : `battre` pose les frappes au rythme d'une main, en
+  /// tics du 8254 depuis le départ, donc contre la même horloge que lui.
+  ///
+  /// Appelée à chaque tour avant de regarder ce qui est prêt, et dans
+  /// l'attente d'un `hlt` — c'est là que le temps passe sans l'invité, et
+  /// qu'une réponse du disque arrive.
+  const recopierLignes = () => {
+    if (peripheriques === null) return;
+    const tics = (now() * PIT_HZ) / TSC_HZ;
+    peripheriques.battre(tics);
+    // **Ce que le doigt a fait**, posé dans les tampons de la tablette avant
+    // de relire les lignes : la livraison lève la sienne. Sans rien en
+    // attente, la carte ne touche pas à la RAM.
+    peripheriques.livrer(tics);
+    const l = peripheriques.lignes();
+    pics.master.request = (pics.master.request & ~(l.tenuesMaitre & ~l.maitre)) | l.maitre;
+    pics.slave.request = (pics.slave.request & ~(l.tenuesEsclave & ~l.esclave)) | l.esclave;
+  };
+
+  /// **Tous les bits à un sur `largeur` octets** : ce que rend une adresse
+  /// où il n'y a personne, le bus qui flotte, à la largeur de l'accès.
+  const flottant = (largeur) => (1n << (8n * BigInt(largeur))) - 1n;
   env.out = (port, value, width) => {
     const at = Number(port);
+    // **La mémoire d'un périphérique**, envoyée ici par l'accès lent : une
+    // adresse physique, pas un port. Sans carte, ou si l'adresse n'est à
+    // personne, l'écriture tombe dans le vide, comme sur un bus sans
+    // répondant.
+    if (at > DERNIER_PORT) {
+      if (peripheriques !== null) peripheriques.memoire.ecrire(port, value, width);
+      return;
+    }
     if (at >= SERIAL && at <= SERIAL_LAST) {
       serialWrite(at - SERIAL, Number(value & 0xffn));
       return;
@@ -1312,14 +1432,36 @@ export function machine({
           return;
       }
     }
-    // Tout le reste tombe dans le vide, comme sur une carte mère sans la
-    // carte : une écriture vers un port absent ne fait rien et ne fait pas
-    // planter la machine.
-    void width;
+    // **Le reste va à la carte, en dernier** : l'i8042, l'horloge, le bus et
+    // les fenêtres des disques. Ses ports et ceux des puces d'ici ne se
+    // recouvrent pas (la carte refuse les leurs), et l'ordre le garantit
+    // quand même : une BAR que le noyau poserait sur `0x40` ne volerait pas
+    // le 8254. Un `out` qui notifie le disque fait partir sa requête vers
+    // l'arrière, et rend tout de suite.
+    //
+    // **L'impulsion de remise à zéro** (`0xFE` sur `0x64`) se note ici, au
+    // seul endroit où elle peut naître : la boucle s'arrête dessus à la fin
+    // de la région, comme le cœur Swift finit sa course sur `X86Core.Reset`.
+    //
+    // Sans carte, tout le reste tombe dans le vide, comme sur une carte mère
+    // sans périphériques : une écriture vers un port absent ne fait rien et
+    // ne fait pas planter la machine.
+    if (peripheriques !== null && peripheriques.ports.out(port, value, width)) {
+      if ((at === 0x64 || at === 0x60) && peripheriques.remise()) remiseDemandee = true;
+    }
   };
+  /// **Combien de lectures de port l'invité a faites** : ce qui distingue un
+  /// bloc qui attend un périphérique d'un bloc bloqué (« sur place »).
+  let lecturesDePort = 0;
   env.in = (port, width) => {
-    void width;
+    lecturesDePort += 1;
     const at = Number(port);
+    // La mémoire d'un périphérique, comme pour `out` : tous les bits à un
+    // quand personne n'y répond.
+    if (at > DERNIER_PORT) {
+      const valeur = peripheriques === null ? null : peripheriques.memoire.lire(port, width);
+      return valeur === null ? flottant(width) : valeur;
+    }
     if (at >= SERIAL && at <= SERIAL_LAST) return BigInt(serialRead(at - SERIAL));
     if (at === PIT_GATE) {
       return BigInt(gatePort | (outTwo() ? PIT_OUT_TWO : 0));
@@ -1353,6 +1495,11 @@ export function machine({
       pendingIrq();
       return BigInt(
         chosen.chip.reads === "service" ? chosen.chip.service : chosen.chip.request);
+    }
+    // La carte, en dernier ; `null` quand le port n'est pas à elle non plus.
+    if (peripheriques !== null) {
+      const valeur = peripheriques.ports.in(port, width);
+      if (valeur !== null) return valeur;
     }
     return BigInt(NOBODY_THERE);
   };
@@ -1889,6 +2036,10 @@ export function machine({
     const frame = walk(BigInt.asIntN(64, address), kind);
     if (globals[SLOTS.fault].value !== 0n) return null;
     const page = Number(BigInt.asUintN(32, BigInt(frame)));
+    // **La mémoire d'un périphérique n'est pas de la RAM** : la marche rend
+    // la trame repliée, le bit zéro levé. La relire ici prendrait les octets
+    // d'une autre page de la RAM ; l'hôte s'arrête plutôt, en le nommant.
+    if ((page & DEVICE_FRAME) !== 0) throw new PageDePeripherique(address);
     return (page + Number(address & 0xfffn)) & (base - 1);
   }
 
@@ -2736,6 +2887,37 @@ export function machine({
     surveillees,
     vidages,
     uart,
+    /// **La carte des périphériques**, telle que `carte` l'a rendue, ou
+    /// `null`. C'est par elle que l'application tape, et que le relevé dit
+    /// ce que le disque a servi.
+    carte: peripheriques,
+    /// **Taper**, au rythme d'une main, sur le clavier de la carte (un
+    /// clavier américain) : rend le nombre de frappes mises en file. Sans
+    /// carte, rien n'est tapé et la fonction lève.
+    taper(texte) {
+      if (peripheriques === null) throw new Error("aucune carte : pas de clavier où taper");
+      return peripheriques.taperTexte(texte);
+    },
+    /// **Toucher l'écran**, par la tablette : la position de 0 à 1 sur chaque
+    /// axe, les boutons en bits (gauche, droit, milieu). `false` tant que
+    /// l'invité n'a pas pris la tablette. Le toucher part au prochain tour.
+    toucher(x, y, boutons) {
+      if (peripheriques === null) throw new Error("aucune carte : pas d'écran à toucher");
+      return peripheriques.toucher(x, y, boutons);
+    },
+    /// **L'écran de la carte**, lu d'un bloc : `{ largeur, hauteur,
+    /// revision, image }`, l'image en XRGB8888 sans remplissage (voir
+    /// `carte.ecran.image`), ou `null` sans écran. `depuis` : la révision de
+    /// la dernière image prise ; égale à celle de l'écran, l'image n'a pas
+    /// bougé, et elle n'est pas recopiée (`image` vaut `null`).
+    ecran(depuis = null) {
+      if (peripheriques === null) return null;
+      const mode = peripheriques.ecran.mode();
+      if (mode === null) return null;
+      const revision = peripheriques.ecran.revision();
+      const image = depuis !== null && BigInt(depuis) === revision ? null : peripheriques.ecran.image();
+      return { largeur: mode.largeur, hauteur: mode.hauteur, revision, image };
+    },
     /// **Les régions dont les octets ont bougé sous elles.**
     ///
     /// Une région traduite reste dans la table aussi longtemps que la machine
@@ -2815,7 +2997,23 @@ export function machine({
       }
       return { changees, illisibles, ailleurs };
     },
-    async run({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
+    async run(reglages = {}) {
+      try {
+        return await courir(reglages);
+      } catch (pourquoi) {
+        if (pourquoi instanceof PageDePeripherique) return { stopped: pourquoi.message, at: rip() };
+        throw pourquoi;
+      }
+    },
+  };
+
+  /// `arreter`, quand il est donné, est demandé à chaque respiration : s'il
+  /// rend vrai, la boucle rend `{ stopped: ARRET_DEMANDE }` sans attendre la
+  /// fin de ses tours. **Les tours ne sont pas une borne de temps** : un
+  /// invité qui attend une touche en lisant le clavier, ou qui calcule sans
+  /// sortir, use chaque tour jusqu'au bout de son budget, et la page qui
+  /// demandait l'arrêt entre deux appels l'attendait des minutes.
+  async function courir({ budget = 1n << 20n, rounds = 1 << 16, breath = 8, arreter = null } = {}) {
       let dernier = performance.now();
       // **Combien de chargements d'instruction ont fauté d'affilée**, sans
       // qu'une seule région s'installe entre les deux. Un noyau qui
@@ -2827,6 +3025,7 @@ export function machine({
         if (performance.now() - dernier >= breath) {
           await souffler();
           dernier = performance.now();
+          if (arreter !== null && arreter()) return { stopped: ARRET_DEMANDE, at: rip() };
         }
         const here = rip();
         // Une machine posée en anneau trois avant le premier tour (une reprise,
@@ -3005,6 +3204,11 @@ export function machine({
         // horloge, et le 8254 compte contre elle.
         globals[SLOTS.tsc].value = BigInt.asIntN(
           64, globals[SLOTS.tsc].value + (budget - left));
+        // **Un redémarrage demandé finit la course**, à la fin de la région
+        // qui a tiré la ligne : la machine ne se relance pas d'elle-même, et
+        // c'est à qui la conduit d'en refaire une. L'arrêt reste : un `run`
+        // de plus le redit.
+        if (remiseDemandee) return { stopped: ARRET_REMISE, at: rip() };
         // **Une faute de page est délivrée à l'invité, ici.** La région a posé
         // le témoin, CR2, et rendu la main avec RIP sur l'instruction fautive
         // — qui n'a rien fait, donc qui se rejoue. Le témoin porte le code
@@ -3014,6 +3218,12 @@ export function machine({
         // délivrance ne peut pas avoir lieu, le témoin est remis pour que le
         // relevé montre la faute qui l'a arrêtée.
         const fault = globals[SLOTS.fault].value;
+        if (fault === FAULT_DEVICE_STRADDLE) {
+          return {
+            stopped: "un accès à cheval entre la mémoire d'un périphérique et la RAM",
+            at: rip(),
+          };
+        }
         if (fault !== 0n) {
           globals[SLOTS.fault].value = 0n;
           const why = deliver(
@@ -3120,8 +3330,25 @@ export function machine({
         // délivrer d'abord, prendre ensuite.
         raise8254();
         raiseSerial();
+        recopierLignes();
         const open =
           (BigInt.asUintN(64, globals[SLOTS.rflags].value) & INTERRUPT_FLAG) !== 0n;
+        // **Un `hlt` qui attend le disque cède le fil.** La réponse de
+        // l'arrière est une promesse, et une promesse ne se résout que quand
+        // la boucle rend la main au moteur : l'attente plus bas, qui avance
+        // l'horloge sans céder, aurait sauté de tic en tic sans jamais
+        // laisser le disque répondre — et le noyau aurait vu ses lectures
+        // expirer. La boucle attend donc la réponse ici, **sans avancer
+        // l'horloge** : vu de l'invité, le disque répond sur-le-champ. Ce qui
+        // est déjà prêt passe d'abord, sans attendre.
+        if (
+          stop === STOP_HALTED && open && peripheriques !== null
+          && pendingIrq() === null && peripheriques.disque.enVol() > 0
+        ) {
+          await peripheriques.disque.attendre();
+          recopierLignes();
+          dernier = performance.now();
+        }
         // **Un `hlt` que le matériel peut encore réveiller attend.**
         //
         // Sans ça, le réveil dépendrait du **budget** et non du temps : avec
@@ -3134,13 +3361,20 @@ export function machine({
         // **Bornée, et c'est une borne et non une estimation.** `pendingIrq`
         // ne peut rendre `null` indéfiniment que si `wakeable` a menti ;
         // l'attente s'arrête quand même, et le `hlt` se nomme comme avant.
-        if (stop === STOP_HALTED && open && wakeable()) {
+        //
+        // **La carte réveille aussi** (`reveil`) : des frappes qui attendent
+        // leur tour, une ligne qu'elle tient. Ses lignes sont alors recopiées
+        // à chaque pas, le temps passé d'abord ; sinon, pas un appel de plus
+        // dans la boucle la plus serrée de la machine.
+        const parLaCarte = peripheriques !== null && peripheriques.reveil();
+        if (stop === STOP_HALTED && open && (wakeable() || parLaCarte)) {
           const step = budget === 0n ? 1n : budget;
           let patience = 1 << 20;
           while (pendingIrq() === null && patience-- > 0) {
             globals[SLOTS.tsc].value = BigInt.asIntN(
               64, globals[SLOTS.tsc].value + step);
             raise8254();
+            if (parLaCarte) recopierLignes();
           }
         }
         const waiting = pendingIrq();
@@ -3181,15 +3415,22 @@ export function machine({
         // est du vrai travail dans le cas bénin, et il n'est payé que quand
         // RIP retombe sur son point de départ. Une région que le vidage vient
         // d'oublier ne tourne plus : le tour suivant la retraduira.
+        //
+        // **Et un bloc qui lit un port n'est pas bloqué non plus** : il
+        // attend un périphérique — `in $0x64 ; test $1 ; jz` jusqu'à ce que
+        // le clavier ait une touche —, et ce qu'il lit change avec le temps
+        // de l'hôte, une frappe de l'application, une réponse du disque. Le
+        // déclarer « sur place » arrêtait pour de bon un invité qui attendait
+        // une touche qu'on allait lui taper.
         if (region !== null && rip() === here) {
+          const lectures = lecturesDePort;
           region.run(1n);
           voirEcritures();
-          if (rip() === here) {
+          if (rip() === here && lecturesDePort === lectures) {
             return { stopped: "sur place", at: here };
           }
         }
       }
       return { stopped: "tours épuisés", at: rip() };
-    },
-  };
+  }
 }

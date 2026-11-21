@@ -255,6 +255,1318 @@ l'arbre.
 sous `wisq-pc`, l'EDID). S'y ajoute une mesure à charge égale contre le
 cœur Swift.
 
+## 2026-11-21 — Les deux machines sur une même branche : le flottant de SSE, lu deux fois
+
+**Ce qui n'allait pas.** La machine PC en Rust (#713) lit ses instructions
+par `decode` d'abord, puis par `decode_extended`, qui rend le flottant de
+SSE (`x86_sse.rs`). La branche de l'émetteur apprend à `decode` ce même
+flottant (`Vector::Float`), que l'émetteur traduit en WebAssembly et que
+`execute_vector` n'exécute pas. Fusionnées telles quelles, `addss` ou
+`cvtsi2sd` seraient passés par `decode` dans la machine native et n'y
+auraient trouvé personne. Mesuré : sans garde, `pc_flottant` tombe
+(`an_unmasked_sse_exception_is_delivered_and_writes_nothing`,
+`an_address_size_prefix_without_address_is_ignored`), et trois tests de
+`x86_float_host` et `x86_float_oracle` aussi.
+
+**Ce qui est fait.** `pc::machine::decode` enveloppe le `decode` partagé et
+écarte `Vector::Float` : chaque lecture de la machine native passe au
+second décodeur, comme avant la fusion. Les deux bancs du flottant lisent
+de la même façon. `execute_vector` dit, par un bras explicite, que ce
+flottant ne lui arrive pas. Les deux `FloatOp` se distinguent : celui de
+`decode` garde le nom, celui de `x86_sse.rs` sort en `SseFloatOp`.
+Sabotage : le filtre retiré de `pc::machine::decode`, `pc_flottant` tombe
+sur deux tests.
+
+## 2026-11-21 — La console nommée sans index, ou par son port
+
+**Ce qui n'allait pas** (le dernier contrôle de la machine de l'émetteur).
+Deux règles annoncées par `names_the_early_console_port` n'étaient tenues
+par aucun test : le nom coupé à la virgule (`console=ttyS,115200`) et
+l'index absent qui vaut zéro (`console=ttyS`). Les deux sabotages d'une
+ligne survivaient. Et la forme `console=uart8250,io,0x3f8`, qui nomme la
+console par son port (`univ8250_console_match`), n'était pas reconnue :
+`keep_bootcon` restait, et chaque ligne serait sortie deux fois.
+
+**Ce qui est fait.** Les deux cas entrent dans la liste qui retire
+`keep_bootcon`. La forme `uart8250,io,<adresse>` et `uart,io,<adresse>`
+est lue : à 0x3f8, c'est la console de `earlycon` ; à 0x2f8, à 0x3f80, ou
+en `mmio`, non. Quatre sabotages d'une ligne tombent : la virgule retirée
+de la coupe, un index exigé, l'adresse ignorée, la forme `uart` sans
+`8250` oubliée.
+
+**Une correction.** Le message du commit 858b21e2 dit que `keep_bootcon`
+« ne part plus pour console=ttyS1, ttyS10 ou ttyS01 ». L'ancien code ne le
+retirait déjà ni pour `ttyS1` ni pour `ttyS10` ; seul `ttyS0N` (dont
+`ttyS01`) a changé.
+
+## 2026-11-21 — Le contrôle du contrôle : le doigt annulé, `ttyS0` lu comme le noyau le lit, et la phrase de la ligne trop longue
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous : trois trous
+de test, une phrase fausse et un commentaire déplacé ; tous vérifiés dans le
+code, aucun n'était faux ; les 32 sabotages annoncés tombaient bien).
+
+- **Le doigt annulé n'était jugé par rien.** `doigt` traitait
+  `pointercancel` comme un relevé, et `machine.html` l'écoutait, mais le test
+  de la page entière n'envoyait jamais d'annulation : la condition réduite à
+  `pointerup`, ou l'écouteur retiré, passaient. C'est pourtant le cas de
+  l'iPhone, qui annule le geste quand le système le reprend. **Et à le
+  juger, le comportement lui-même était douteux** : l'annulation relâchait
+  à *sa* position, ramenée au bord, et rien ne promet qu'un navigateur
+  remplisse les coordonnées d'un `pointercancel` — à (0, 0), le glisser se
+  serait posé au coin de l'écran.
+- **Le relâchement « à la dernière position dite, si l'image a disparu »**
+  n'était tenu par aucun cas, ni la garde `Number.isFinite` de
+  `positionSurLEcran`. Elle n'est pas redondante avec la garde des tailles :
+  des coordonnées absentes (`NaN`) ou une image infinie passent celle-là, et
+  sans elle la fonction rendait `{ x: NaN, … }` comme une fraction.
+- **`keep_bootcon` partait pour tout mot qui commence par `console=ttyS0`**,
+  et seul ce préfixe était jugé : `console=ttyS` l'aurait fait partir pour
+  `ttyS1`, et le préfixe exact le faisait déjà partir pour `ttyS01`, que le
+  noyau lit comme le port 1. Avec la console précoce sur 0x3f8, la sortie se
+  serait tue à l'arrivée de l'autre port.
+- **La phrase de `commandLineTooLong` accusait la ligne de l'image** (« dépasse
+  les 2047 octets ») alors que la borne juge la ligne entière, montage
+  compris : une ligne d'image de 2 008 à 2 047 octets était refusée sous une
+  phrase fausse — et le test figeait cette phrase.
+- Dans `host.js`, `ARRET_DEMANDE` avait été glissé sous la doc des
+  emplacements des globales, qui décrivait désormais la mauvaise constante.
+
+**Ce qui est fait.**
+
+- **Annulé, le doigt relâche à la dernière position dite**, sans bouger, et
+  ne parle plus ensuite. Relevé, il relâche au bord — ou à la dernière
+  position dite quand la boîte ou l'image ont disparu.
+- **`ttyS0` est lu comme `console_setup` le lit** (`names_the_early_console_port`) :
+  le nom s'arrête au premier chiffre ou à la première virgule, l'index est le
+  nombre qui suit (zéro s'il n'y en a pas), un nom qui commence par un
+  chiffre est un `ttyS`, et une console nommée par son périphérique (un
+  deux-points) n'a pas d'index. `ttyS0`, `ttyS0,115200n8`, `ttyS00` et
+  `console=0` font partir `keep_bootcon` ; `ttyS1`, `ttyS10`, `ttyS01`,
+  `ttyUSB0` et `00:01.0` le gardent.
+- **Le refus 2 dit la longueur de la ligne entière** : `wisq_emitter_boot_page`
+  la rend dans `out_len` (l'appelant ne peut pas la calculer, la part du
+  montage dépend de l'image), `Refusal.commandLineTooLong(bytes:)` la porte,
+  et la phrase est « La ligne de commande, celle de l'émetteur comprise, fait
+  2048 octets : plus que les 2047 que le noyau lit. »
+- La doc des emplacements est remise au-dessus de `SLOTS`.
+
+**Comment c'est jugé.**
+
+- **La page entière sous Bun** : une pose, un glisser, une annulation à
+  (0, 0) relâchée en `[0.75, 0.75, 0]`, puis un glisser et un relevé qui ne
+  disent plus rien ; une pose et un relevé sur une boîte vide, relâché en
+  `[0.75, 0.25, 0]` ; quatre poses capturées, quatorze gestes gardés. Le
+  banc rend `false` pour un genre que la page n'écoute pas, au lieu de lever.
+- **`positionSurLEcran`** : `NaN`, `undefined` et une image infinie rendent
+  `null`, bornés ou non.
+- **Rust** : les formes de `ttyS0` et les autres ports ; **C ABI** : la
+  longueur du refus 2 (40 + 2 099 octets). **Swift** : la longueur dite avec
+  et sans `keep_bootcon`, et la phrase.
+
+**Sabotages** (14, tous tombent, sur un vrai échec de test ; script
+`w7/sab/sab.py` et `liste.json`, `git diff` vide ensuite) :
+l'annulation ignorée (A1), relâchée à sa position comme avant (A1b), le
+doigt annulé resté posé (A1c), `pointercancel` non écouté (A2), le
+relâchement au centre sur une boîte vide (A3), la garde `isFinite` retirée
+(A4) ; l'index de `ttyS` ignoré (B2), le préfixe `console=ttyS0` d'avant
+(B2b), `console=0` non lu (B2c), le deux-points non vu (B2d) ; la place au
+lieu de la longueur dans le C (C1, jugé par le C et par Swift), dans Swift
+(C2), l'ancienne phrase (C3).
+
+**Ce qui reste.** Rien de neuf : les points ouverts de l'entrée d'en dessous
+tiennent (la console du cœur Swift sous Void, la mémoire de l'iPhone, les
+instantanés, la fusion avec `claude/pc-rust-coeur`). Le comportement de
+`pointercancel` dans un vrai Safari d'iPhone n'est vu que par ce banc.
+
+## 2026-11-21 — Le contrôle de la machine de l'application : la ligne de l'image telle quelle, une console sans doubles, le doigt relâché, l'arrêt qui arrête, et les gardes jugées
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, sept points,
+tous vérifiés dans le code ; aucun n'était faux).
+
+- **Une ISO dont la ligne porte `---` ou `--` ne s'ouvrait pas.** La ligne
+  de l'image passait par `montage_command_line`, l'instrument de
+  `kernel-entry`, où un mot qui commence par `-` enlève un mot du montage —
+  et un retrait qui n'enlève rien est refusé. `---` est le séparateur des
+  recettes Ubuntu et Debian, `--` celui des arguments d'init. L'écran
+  disait « ne tient pas dans la page zéro », ce qui était faux.
+- **La console série doublait chaque ligne.** Le montage pose
+  `keep_bootcon`, et `IsoBoot` finit par la console du cœur Swift
+  (`console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep`) :
+  `keep_bootcon` avec `console=ttyS0`, c'est #306, 367 lignes contre 222.
+  **Et la mesure en a trouvé un second** : `earlyprintk=…,keep` garde pour
+  toujours une troisième console sur le même port, `earlyser0`. Alpine ne
+  l'a pas compilée (« Unknown kernel command line parameters »), Void si.
+- **Le doigt relâché hors de l'image restait enfoncé** : la page ne
+  disait le relâchement que dans l'image, et l'invité voyait un glisser
+  sans fin.
+- **Les gardes de `machine.js` et neuf gardes Swift n'étaient tenues par
+  rien** (huit et onze sabotages qui survivaient). **Et l'une d'elles
+  cachait un défaut** : le test neuf d'`arreter()` ne s'arrêtait pas en
+  quinze secondes. `courir` ne regardait la demande qu'entre deux appels
+  à `vm.run`, et un invité qui attend une touche use chacun de ses
+  4 096 tours jusqu'au bout du budget : un appel durait des minutes, et le
+  bouton Fermer avec lui.
+- **Le chemin d'envoi de l'application n'était jugé nulle part** :
+  `EmitterDesktop.send` passait par `evaluateJavaScript`, dont la forme
+  `async` rend un `Any` non optionnel, avec des scripts qui rendent
+  `undefined` ; le test hébergé passait, lui, par `evaluate`.
+- **Deux inexactitudes** : « ~60 Mio pour Void » pour le `vmlinux` tenu en
+  mémoire, et « 18 cas dans `LocalDesktopTests` » pour un fichier qui loge
+  aussi `EmitterDesktopTests`.
+
+**Ce qui est fait.**
+
+- **La ligne de l'image passe telle quelle** (`emitter_machine::command_line`) :
+  celle du montage, puis celle de l'image, refusée seulement pour un nul ou
+  au-delà de 2 047 octets. **`keep_bootcon` part quand l'image nomme
+  `console=ttyS0`**, sous toutes ses formes, et reste sinon — c'est lui qui
+  garde la console précoce quand la vraie est `tty0`. `kernel-entry` garde
+  sa syntaxe de retrait : elle est faite pour `WISQ_CMDLINE`, que quelqu'un
+  tape.
+- **La console du cœur cède la place à celle de l'émetteur**
+  (`EmitterMachine.emitterLine`) : la fin `X86BootLoader.defaultCommandLine`
+  d'une ligne d'`IsoBoot` devient `console=ttyS0,115200`, et la console
+  précoce est `earlycon`, que le noyau rend quand `ttyS0` arrive. Une ligne
+  qui ne finit pas par elle (cloud, système installé) passe entière.
+- **Le refus de la ligne a deux noms** : `commandLineTooLong`, le code 2 du
+  Rust, enfin jugé (un octet de trop, et la ligne qui tient juste), et
+  `commandLineCarriesNul`, chacun avec sa phrase.
+- **Le doigt** (`doigt`, dans `machine.js`) : posé dans l'image il enfonce
+  le bouton, posé dans une bande il ne fait rien ; glissé ou relevé hors de
+  l'image, il est ramené au bord (`positionSurLEcran(…, { borne: true })`)
+  et **relâche toujours**. La page capture le pointeur à la pose, pour
+  qu'une souris qui sort de la toile rende aussi son relâchement.
+- **L'arrêt** : `host.js` prend `arreter`, demandé à chaque respiration,
+  et rend `ARRET_DEMANDE` ; `machine.js` le lui passe.
+- **La console tamponnée** sort de `demarrer` (`consoleTamponnee`) pour être
+  jugée seule.
+- **L'envoi** passe par `evaluate` (`callAsyncJavaScript`, `Any?`), dans
+  l'ordre ; `stop` envoie `EmitterBridge.stop`.
+- **`prepare` libère chaque tampon dès qu'il ne sert plus** : le fichier lu
+  avant la copie de l'ELF, l'ELF une fois recopié dans la seule `Data` que
+  l'écriture et la lecture des segments partagent.
+- La phrase des 60 Mio est corrigée en place, et la feuille de route compte
+  le fichier : 20 cas (17 + 3), 25 tests hébergés.
+
+**Comment c'est jugé.**
+
+- **La page entière sous Bun** (`EmitterPageTests`, banc `pageHarness`) :
+  le script de `machine.html`, tel que la bibliothèque le porte, dans une
+  fausse page dont la toile n'a que ce que la page lui demande et dont le
+  pont poste vers le test ; le doigt y est envoyé comme WebKit l'enverrait,
+  et ce que la tablette reçoit est relevé. Posé dans une bande, glissé hors
+  de l'image, relevé hors d'elle : `[[0.25, 0.25, 1], [0.95, 1, 1],
+  [0.95, 1, 0]]`.
+- **Les refus du plan**, par un banc qui sait changer une réponse du
+  magasin : une RAM absente, un écran annoncé ailleurs que là où la carte
+  le pose, un morceau hors de la RAM, un morceau d'un octet trop court —
+  chacun arrête la page sous son nom, avant « prête ».
+- **Une course à la fois, et l'arrêt** par le script même que
+  l'application envoie, sur le petit noyau qui attend sa touche ; une
+  machine arrêtée ne repart pas.
+- **Swift** : un ELF sans segment chargeable, un point d'entrée hors de son
+  segment, une archive vide, une écriture de 64 Mio et un octet sur un
+  disque assez grand, un fichier plus court que promis (500 pour le disque
+  et pour un morceau, jamais moins d'octets), un noyau RISC-V qui reste à
+  son cœur, la molette bornée vers le haut, Maj, Ctrl et Alt droites.
+- **Rust et C ABI** : les tirets, `keep_bootcon` sous ses formes, la place à
+  l'octet ; `« --- »` passe et le refus 2 tombe, depuis le C.
+- **Dans un vrai WebKit** (job « App iOS » seulement) : deux cas neufs dans
+  `EmitterDesktopTests`, le chemin d'envoi (`touch`, `scroll`, `type`
+  jusqu'au `hlt`, la touche lue) et `stop` sur le noyau qui attend. Typés
+  ici contre le WebKit de carton, comme avant.
+
+**Mesures.**
+
+- **La console, sous `kernel-entry`** (ligne de commande comprise ; on
+  compte les lignes identiques qui se suivent) :
+
+  | noyau, jusqu'à | ligne | lignes | doublées |
+  | --- | --- | --- | --- |
+  | Alpine 6.18.60, « SMP disabled » | celle de l'application, avant | 121 | 19 |
+  | | sans `keep_bootcon`, `earlyprintk` gardé | 104 | 2 |
+  | | sans `keep_bootcon`, sans `earlyprintk` | 103 | 2 |
+  | Void 6.12.11, « pid_max » | celle de l'application, avant | 205 | 100 |
+  | | sans `keep_bootcon`, `earlyprintk` gardé | 193 | 89 |
+  | | celle d'aujourd'hui | 96 | 2 |
+
+  Les deux qui restent sont la passation, que le noyau écrit sur les deux
+  consoles : « console [ttyS0] enabled » et « bootconsole [uart8250]
+  disabled ». Chaque course : 7 à 10 s, Alpine sous 512 Mio de RAM, Void
+  sous 1 Gio, sans archive pour Void.
+- **Le pic de `prepare` sur Void** (`bzImage` de 13,2 Mio, `vmlinux` de
+  55 Mio, construction de débogage, `VmHWM`) : +151 Mio avant, +137 Mio
+  après — deux fois et demie le `vmlinux`. La décompression elle-même
+  (`KernelPayload` recopie la charge utile et le flux deflate) en est le
+  gros ; elle n'est pas touchée.
+- `EmitterPageTests` : 9 tests en 8,4 s, dont 5 neufs.
+- `cargo test --release` : 893 → 896 réussis ; la suite Swift : 3 008 → 3 017
+  exécutés, 69 sautés, 0 échec (399 s) ; 11 cas Swift neufs, dont 2 hébergés.
+  Le compte publié : 3 984 → 3 998 (Swift 3 103 + Rust 895).
+
+**Sabotages** (`<bloc-notes>/w6/sab/`, un script, chaque fichier remis tel
+quel et la bibliothèque reconstruite ; `git diff` vide après). **Les 32
+tombent** :
+
+- Rust : la ligne par la syntaxe de retrait (jugée par Rust et par Swift),
+  `keep_bootcon` toujours gardé, un octet de trop, la place doublée (jugée
+  par le programme C) ;
+- Swift : la console du cœur gardée, le code 2 en inconnu, le point
+  d'entrée hors segment (W1), l'ELF sans segment, l'archive vide (W2),
+  l'écriture de plus de 64 Mio (W3), un noyau RISC-V dans l'émetteur (W4),
+  la molette non bornée (W5), la Maj droite perdue (W6), le 500 du disque
+  en 200 vide (W10), un fichier court rendu plus court (W11), `stop` qui
+  n'arrête rien ;
+- `machine.js` : `Math.max` (K1), `perdus += 0` (K2), la base de l'écran
+  (K3), un morceau hors de la RAM (K4), de la mauvaise longueur (K5), un
+  plan sans RAM (K6), `courir` deux fois (K7), `arreter` vide (K8),
+  `arreter` non passé à la boucle ; `host.js` qui ne le demande pas ; le
+  relâchement perdu hors de l'image, `borne` sans effet ;
+- `machine.html` : le doigt non branché, la capture du pointeur retirée ;
+- le témoin, CS non posé.
+
+Un premier essai du sabotage « ELF sans segment » ne compilait pas : il a
+été réécrit, et c'est la seconde forme qui tombe.
+
+**Ce qui reste.**
+
+- **Le cœur Swift double probablement aussi sa console sous Void** : il
+  pose la même `earlyprintk=serial,…,keep`, et la ligne « sans
+  `keep_bootcon`, `earlyprintk` gardé » ci-dessus — 89 doublées sur 193 —
+  est la sienne à `earlycon` près. Mesuré sous l'émetteur seulement ;
+  `X86BootLoader` n'est pas de ce flux, et ses bureaux prêts en dépendent.
+- Le reste de l'entrée d'en dessous tient : la mémoire sur iPhone, les
+  instantanés, les bureaux prêts à refabriquer, la boucle de
+  l'ordonnanceur de Void, le mur x87 d'Alpine, et ce que seul le job « App
+  iOS » juge — dont, maintenant, le chemin d'envoi.
+
+## 2026-11-21 — La machine de l'émetteur dans l'application, derrière un réglage éteint ; jugée de bout en bout sous Linux, son magasin Swift derrière le `fetch` d'un Bun
+
+**Ce qui n'allait pas.**
+
+- **Deux défauts du dernier contrôle.** Treize des seize sorties de
+  `kernel-entry` qui passent par `sortir` n'étaient traversées par aucun
+  test : remettre `std::process::exit` sous `WISQ_CACHE`, `WISQ_HEURE`,
+  `WISQ_DISQUE` ou `WISQ_CMDLINE` survivait, le dossier de travail restant
+  derrière. Et l'entrée d'en dessous disait encore « le test sur
+  `DEVICE_FRAME` de la seconde trame a été retiré » juste après la
+  correction qui le rétablit, la correction collée sans être repliée.
+- **L'application n'avait pas la machine de l'émetteur.** Sa seule page
+  WebKit était le bureau d'avant (`LocalDesktop`) : la boucle hôte seule,
+  l'émetteur appelé par le pont, un cadre dans la RAM, ni carte, ni disque,
+  ni clavier. `carte.js`, `page-emitter.js` et le module de la page
+  n'étaient pas dans la bibliothèque, et rien ne savait poser un noyau de
+  distribution — l'émetteur entre dans un `vmlinux`, l'ISO porte un
+  `bzImage`.
+- **Un invité qui attend une touche était arrêté « sur place ».** La page
+  l'a trouvé à son premier passage : un bloc `in $0x64 ; test $1 ; jz` qui
+  ne fait pas bouger RIP était pris pour une machine bloquée, avant la
+  touche que l'application allait taper.
+
+**Ce qui est fait.**
+
+- **Les refus de `kernel-entry`** : quatorze cas neufs dans
+  `every_refusal_after_the_scratch_is_made_leaves_nothing_behind`, un par
+  sortie atteignable — l'écran (`WISQ_SCREEN` illisible ou trop large),
+  l'archive (absente, vide, trop grande pour 32 Mio), `WISQ_CMDLINE`, une
+  région d'entrée coupée (un préfixe REX seul), `WISQ_TRADUCTEUR`, le
+  disque (absent, moins d'un secteur), la capture sans écran,
+  `WISQ_HEURE`, `WISQ_WATCH`, `WISQ_CACHE` —, chacun refusé sous son nom,
+  et `lancer` vérifie l'absence du dossier. La seizième sortie (un écran de
+  la carte sur la RAM) est inatteignable : il faudrait 3,5 Gio de RAM, et
+  le repli refuse 4 Gio avant que le dossier existe. La phrase du JOURNAL
+  est corrigée en place, et repliée.
+- **La page de la machine** (`web/machine.js`, `web/machine.html`). Le
+  conducteur assemble la boucle hôte, la carte et l'émetteur de la page, et
+  va chercher tout ce qu'il lui faut par `fetch` : le plan (`plan.json`), le
+  module, les segments du noyau, l'archive, la page zéro, et le disque par
+  plages sur le contrat d'`arriereParUrl`. Il pose les registres d'un
+  chargeur (RIP, RSI sur la page zéro, CS à `__BOOT_CS`, les données à
+  `__BOOT_DS`), vérifie que la carte pose sa mémoire vidéo là où le plan
+  l'annonce, et poste la console par paquets, l'écran quand son mode
+  change, l'arrêt et les pannes. **Rien n'y suppose une page** : la toile
+  est un peintre qu'on lui donne, les messages une fonction. L'écran se
+  repeint et la console part **par une minuterie**, pendant que la boucle
+  respire, et pas au retour d'une tranche : un invité qui attend une touche
+  fait durer ses tranches, et rien n'était peint. La page HTML n'est qu'un
+  raccord : la toile, le doigt sur la tablette (la position dans l'image
+  montrée, sans les bandes), le pont.
+- **La bibliothèque** (`emitter_machine.rs`, `build.rs`) porte ces fichiers
+  et, quand `WISQ_PAGE_WASM` le désigne, le module de la page — jamais
+  pour wasm32, où il s'embarquerait lui-même. Quatre fonctions du C ABI :
+  `wisq_emitter_asset`, `wisq_emitter_boot_page` (la page zéro de
+  `kernel-entry` : la ligne du montage puis celle de l'image, l'écran de la
+  carte, l'archive), `wisq_emitter_usable_ram` (le jugement du repli) et
+  `wisq_emitter_screen_base`, exercées par le programme d'ABI.
+- **Le noyau d'une distribution** (`KernelPayload`, `WisqVM`) : la charge
+  utile du `bzImage`, là où l'en-tête la situe, décompressée en gzip (somme
+  et taille vérifiées) ou en zstd (la taille que le noyau ajoute retirée),
+  le reste refusé sous son nom.
+- **La machine montée** (`EmitterMachine`, `WisqVMRust`) comme
+  l'application l'ouvre : `IsoBoot` décide, la RAM est choisie pour
+  l'appareil (une puissance de deux, un gibioctet si l'on peut, deux au
+  plus — au-delà, le repli rate —, jamais moins que l'image ne demande), le
+  `vmlinux` est écrit une fois dans le dossier de travail et servi de là,
+  l'archive posée au-dessus du noyau, le plan écrit. **Le magasin**
+  (`EmitterStore`) sert la page et ses morceaux, lus dans leurs fichiers à
+  la demande, et le disque par plages, les écritures dans une couche en
+  mémoire, le fichier jamais écrit ; ses refus sont nommés (404, 400, 416,
+  405, 500). **Le pont** (`EmitterBridge`) lit ce que la page poste et écrit
+  ce qu'on lui envoie : les touches du jeu 1 (`X86Keystrokes`, et les
+  keysyms du clavier matériel), le texte en littéral JSON, un toucher fou
+  ramené au bord. Un nul dans la ligne de commande est refusé avant le
+  Rust : `withCString` l'aurait coupée en silence — le test l'a trouvé.
+  **La vue** (`EmitterDesktop`) branche le tout sur un `WKWebView`, par un
+  gestionnaire du schéma `wisq-machine://` qui sert hors du fil principal.
+- **L'application** : `EmitterMachineView` (l'écran de la page, le clavier
+  et la barre des touches vers la carte, la console série dans une
+  feuille), ouverte par la liste des machines **seulement** si le réglage
+  `wisq.machine.emetteur` est allumé, dans l'écran « Le bureau est-il
+  possible ? » ; une machine installée reste au cœur Swift. Éteint par
+  défaut : l'application ne bascule pas. `scripts/build-xcframework.sh`
+  construit et embarque le module ; le job « Cœur (Linux) » le construit
+  aussi et pose Bun.
+- **La boucle hôte** : le bloc de plus du « sur place » compte les
+  lectures de port ; un bloc qui en a fait une attend un périphérique, et
+  la machine continue. Un `jmp .` reste « sur place ».
+
+**Comment c'est jugé.**
+
+- **De bout en bout sous Linux** (`EmitterPageTests`) : la page tourne sous
+  Bun, et **chaque `fetch` revient au test**, qui répond par le même
+  `EmitterStore` que l'application ; les messages sont lus par le même
+  `EmitterBridge`, et ce qu'on envoie est le JavaScript qu'`EmitterBridge`
+  écrit pour WebKit, évalué tel quel. Le petit noyau de `kernel_entry`
+  (plus un « W » sur le port série et la sonde PCI de 00:03.0) va jusqu'à
+  son `hlt` : la RAM posée par le magasin, CS, DS et RSI d'un chargeur,
+  l'horloge CMOS figée par le plan, le disque en virtio-blk, la touche
+  tapée par le pont, le rouge et le bleu peints en RGBA, la console
+  arrivée ; puis le client du disque de `carte.js` lit, écrit dans la
+  couche et relit, contre le magasin. Le chemin de l'application, d'une
+  ISO gravée (`IsoGravure`, le petit noyau dedans) jusqu'au `hlt`, son
+  descripteur de volume lu par le disque. Une pièce disparue arrête la
+  page sous son nom.
+- **Dans un vrai WebKit** (`EmitterDesktopTests`, dans
+  `LocalDesktopTests.swift`, hébergé par l'application) : le même petit
+  noyau, par le schéma, le module embarqué. **Seul le job « App iOS » le
+  juge** ; ici, les deux fichiers qui importent WebKit ont été typés contre
+  un WebKit de carton aux protocoles `@MainActor` (le bloc-notes), et le
+  SwiftUI seulement analysé (`swiftc -frontend -parse`).
+- **Les sabotages d'une ligne**, chacun restauré par son script (le fichier
+  réécrit tel qu'il était, `git diff` vide) : les douze lignes de
+  `kernel-entry` que les quatorze cas traversent (deux d'entre elles relancées
+  après la mise en forme du test) ; le compteur de lectures de port de
+  `host.js` ; côté Swift, la couche ignorée en lecture, une plage hors du
+  disque acceptée, l'archive non alignée, le nul de la ligne accepté, la somme
+  gzip ignorée, la taille zstd gardée, le toucher non borné, une machine
+  installée ouverte dans l'émetteur, le plafond de 2 Gio retiré, le plan
+  absent du magasin, l'adresse d'arrêt lue en nombre, F1 décalé ; dans
+  `machine.js`, CS non posé, RSI non posé, le rouge et le bleu non échangés,
+  la minuterie qui ne peint pas, l'heure du mur malgré le plan, la console qui
+  jette, le disque sans arrière. **Tous tombent** ; le dernier survivait
+  d'abord (le petit noyau ne touchait pas au disque) et tombe depuis que le
+  noyau lit l'identifiant PCI de 00:03.0. Le gardien de `build.rs` contre
+  wasm32 n'a pas de test : il ne se voit qu'à une reconstruction sans fin.
+- `cargo test --release` : 893 réussis, 0 échec. La suite Swift entière :
+  3 008 tests exécutés, 69 sautés, 0 échec. `cargo fmt --check`, `clippy
+  -D warnings`, SwiftLint `--strict`, `check-whitespace`,
+  `check-project-sources` : propres. Compte publié : 3 950 → 3 984 (Swift
+  3 092 + Rust 892). `WebKitBench.swift` n'a pas bougé : l'émetteur n'a pas
+  changé.
+
+**Mesures.**
+
+- **Alpine depuis son ISO, par le chemin de l'application**
+  (`testAlpineBootsFromItsISOThroughTheStore`, une course, après que la
+  course du flux « cœur » a fini) : `alpine-virt-3.24.4-x86_64.iso` (somme
+  vérifiée), `IsoBoot` en tire `vmlinuz-virt` et `initramfs-virt`,
+  `EmitterMachine` monte le tout en 8,1 s (décompression du noyau comprise,
+  binaire de test sans optimisation), 512 Mio, la ligne des courses du 20
+  novembre (`console=ttyS0 modules=loop,squashfs,sd-mod,usb-storage`
+  derrière celle du montage), l'écran 1280 × 800. La page tourne sous Bun,
+  chaque `fetch` servi par le magasin Swift à travers un tube, en base64 :
+  « Mounting boot media: ok » à **243,6 s** du départ (181 et 204 s sous
+  `kernel-entry`), **341 lectures de l'ISO, 3,65 Mo** (254 à 368 sous
+  `kernel-entry`), 26 110 octets de console. Puis l'arrêt « refusée » à
+  `0x7f95a6acb434`, `CannotDecode` dans l'espace utilisateur : l'endroit du
+  mur x87 du 20 novembre (`ld-musl`), sans que les octets soient relevés
+  ici. **Le pic résident de Bun : 2 631 Mio**, contre 907 sous
+  `kernel-entry` — qui force une collecte pleine (`Bun.gc`) quand le cache
+  évince ; une page ne le peut pas, et c'est WebKit qui décidera sur un
+  appareil. Les vingt secondes de plus sont le tube et le base64 du banc,
+  ou l'absence de ces collectes : une seule course, rien ne les sépare.
+
+- `KernelPayload` sur le `vmlinuz-virt` d'Alpine 6.18.60 : 12 649 472 →
+  39 301 160 octets, identiques à la charge que Python décompresse, en
+  7,2 s dans un binaire de test sans optimisation (le chemin d'un iPhone
+  est optimisé, et n'est pas mesuré).
+- Le module de la page : 642 619 octets, embarqué dans la bibliothèque de
+  l'application.
+
+**Ce qui reste.**
+
+- **Ce que seule la CI juge** : que WebKit charge les modules ES et fasse
+  ses `fetch` (un `PUT` avec son corps compris) sur `wisq-machine://`,
+  compile le module, et garde le JIT — le test hébergé, au job « App iOS » ;
+  que `build-xcframework.sh` construise le module sur le runner ; que
+  `setup-bun` marche dans le conteneur Swift du job « Cœur (Linux) ». Le
+  SwiftUI n'est qu'analysé ici.
+- **Pour en faire le chemin par défaut** : la mémoire sur iPhone (la RAM
+  de l'invité, un gibioctet, est une `WebAssembly.Memory` du processus de
+  contenu, plus le cache de code — 1,3 à 3,4 Gio de pic sous Bun pour Void,
+  2,6 Gio pour Alpine par cette page, qui ne peut pas forcer de collecte —
+  et le `vmlinux` décompressé en mémoire le temps de l'écrire — ~60 Mio pour
+  Void, écrivais-je, et c'est faux : le pic est de deux fois et demie à près
+  de trois fois le `vmlinux`, 151 Mio mesurés, voir l'entrée du 21 novembre
+  « Le contrôle de la machine de l'application ») ; **les instantanés** (rien ne sauve ni ne reprend cette machine :
+  la RAM vit dans la page, et la couche du disque est perdue à la
+  fermeture) ; **les bureaux prêts** à refabriquer pour cette machine (ceux
+  du cœur Swift sont des instantanés de son état, pas de celui-ci) ; et le
+  mur de Void sous l'émetteur, la boucle du planificateur, avant tout
+  bureau. La couche d'écriture est en mémoire et sans borne.
+- **Les risques** : une origine de schéma à soi que WebKit lirait opaque
+  ferait refuser les modules (les réponses portent
+  `Access-Control-Allow-Origin`) ; un invité en attente active brûle la
+  batterie (le `hlt` attend, un `in` en boucle non) ; la page ne cède la main
+  que toutes les huit millisecondes, un toucher peut attendre autant.
+- La fusion avec `claude/pc-rust-coeur`, le x87 sous l'émetteur, la boucle
+  du planificateur de Void : comme avant.
+
+## 2026-11-21 — Émetteur : un accès à cheval hors de la RAM coupé en deux, les gardes de la seconde marche tenues, et `kernel-entry` qui ne laisse rien derrière lui
+
+**Ce qui n'allait pas.** Le contrôle de la reprise d'en dessous a trouvé
+quatre gardes sans test, un faux du rapport et une doc trop large.
+
+- **La seconde marche d'un accès qui part d'un périphérique**, dans
+  `far_first_page`, est une marche de la sorte de l'accès (`kind`). Le
+  sabotage qui en fait une marche de lecture survivait : aucun cas ne posait
+  une page d'après **en lecture seule**. Une écriture y serait passée chez le
+  périphérique, sans faute de page.
+- **L'adresse gardée avant la seconde marche, côté lecture.** La prendre
+  après (dans `TRANSLATE_CELL`, que la seconde marche remplace) survivait
+  aussi : le test du cheval ne lisait qu'en direction de la RAM, et aucune
+  lecture n'était à cheval sur deux pages de la mémoire vidéo. Elle aurait
+  lu `0x1000` plus loin.
+- **`kernel-entry`** : `WISQ_CAPTURE_TOUTES=inf` écrivait
+  `const captureToutes = inf;` dans le pilote, qui mourait sur une
+  `ReferenceError` — le défaut même que l'entrée d'en dessous corrigeait pour
+  `WISQ_GESTES` —, et rien ne tenait ni ce refus ni celui des valeurs
+  négatives, ni celui des secondes négatives d'un geste ; le test des refus
+  ne posait que `souvent`, `inf` et `NaN`.
+- **Le pilote mort rendait zéro.** L'exemple écrivait « le pilote s'est
+  arrêté sur… » et sortait par zéro : un script qui enchaîne les courses y
+  voyait un succès.
+- **Chaque refus laissait son dossier** `/tmp/wisq-kernel-<pid>` (la ligne
+  de commande, la page zéro, les segments) : `std::process::exit` ne lance
+  aucun destructeur, et seule la fin normale l'effaçait. Le test neuf en
+  laissait six à chaque passage. Le rapport de la reprise d'en dessous
+  disait ces dossiers effacés : c'était faux.
+- **« Dans le même périphérique »** : la doc de `far_first_page` promettait
+  ce que le code ne jugeait pas. Il ne jugeait que la contiguïté physique ;
+  or la dernière page de la mémoire vidéo (`0xE0FF_F000`) est suivie, en
+  physique, des registres de l'écran (`0xE100_0000`). Huit octets à
+  `0xE0FF_FFFC` partaient entiers, `Carte::region` les refusait (ils ne
+  tiennent dans aucune région), l'écriture se perdait et la lecture rendait
+  tous les bits à un, sans qu'aucun arrêt ne le dise.
+
+**Ce qui est fait.**
+
+- **Un accès à cheval sur deux trames hors de la RAM part en deux
+  moitiés** (`far_first_page`, `x86_wasm.rs`) : la fin de la première page à
+  l'adresse gardée, puis le reste au début de la seconde trame, dont
+  l'adresse attend sur la pile de WebAssembly pendant le premier appel — un
+  appel à l'hôte ne peut pas la changer. La lecture monte la moitié haute
+  au-dessus de la basse. C'est ce que fait le silicium d'un accès non aligné
+  à la mémoire non cachée, et c'est ce que la carte attendait déjà (« les
+  largeurs impaires sont les moitiés d'un accès à cheval »). Chaque moitié
+  tient dans sa page, donc dans une région ou chez personne : que les trames
+  se suivent ou non, qu'elles soient au même périphérique ou non, chaque
+  octet arrive où il va. Le jugement de la contiguïté disparaît ; ne reste
+  que la RAM, qui arrête, sous un nom juste : « un accès à cheval entre la
+  mémoire d'un périphérique et la RAM ». La doc de `FAULT_DEVICE_STRADDLE`,
+  de `host.js` et l'entrée d'en dessous (corrigée en place, marquée) le
+  disent.
+- **`kernel-entry`** : tout refus qui suit la création du dossier de travail
+  passe par `sortir`, qui l'efface puis sort (seize sorties) ; un pilote
+  mort fait sortir par un, après le relevé et l'effacement.
+- `WebKitBench.swift` régénéré : l'accès lent a changé.
+
+**Comment c'est vérifié.**
+
+- **Le test du cheval depuis un périphérique, refait**
+  (`an_access_from_device_memory_is_cut_in_two_or_stops_when_it_reaches_ram`,
+  huit cas, CR0.WP allumé, chaque écriture relue dans R10, la faute avec son
+  code d'erreur) : vers la RAM, en écriture et en lecture (arrêt) ; vers la
+  suite, **relu à cheval** sur deux pages de la mémoire vidéo ; vers la
+  première trame elle-même, depuis `0x48FFC` (quatre et quatre) et
+  `0x48FFE` (deux et six) ; de la fin de la mémoire vidéo vers les registres
+  de l'écran (la moitié basse relue, la haute à zéro, l'EDID absent) ; vers
+  la suite **en lecture seule** (faute, code 3, CR2 sur `0x49000`, rien chez
+  l'écran) ; vers une page absente (code 2).
+- **`kernel_entry`** : trois refus de plus (`-1:capture`,
+  `WISQ_CAPTURE_TOUTES` à `inf` et à `-1`) ; `lancer` vérifie, après chaque
+  course ou refus, que `/tmp/wisq-kernel-<pid>` de l'enfant n'existe plus ;
+  un test neuf, `a_driver_that_dies_makes_the_run_fail` : la capture
+  demandée dans un dossier absent, le pilote meurt sur `ENOENT`, la sortie
+  rend un.
+- **Quatorze sabotages d'une ligne** (le script réécrit le contenu
+  d'origine, et vérifie son empreinte). **Treize tombent** :
+  - les deux survivants du contrôle : la seconde marche en lecture (A) et
+    l'adresse de la moitié basse lue après la seconde marche (G) ;
+  - l'adresse de la moitié basse écrite après elle (E), la coupe retirée —
+    l'accès entier, l'ancien comportement — (S), la RAM servie au lieu
+    d'arrêter (S2), le décalage de la moitié haute fixé à 32 bits (S3), sa
+    largeur fixée à quatre (S4), la valeur écrite décalée du mauvais côté
+    (S5) : chacun dans le test du cheval depuis un périphérique ;
+  - `kernel-entry` : les secondes négatives d'un geste (B),
+    `WISQ_CAPTURE_TOUTES` infini (C) ou négatif (D) acceptés, `sortir` qui
+    n'efface plus (L, deux tests), et le pilote mort qui rend zéro (M) ;
+  - M rejoué une fois la garde des dossiers du test posée (`Dossier`, effacé
+    par son destructeur, panique comprise) : le test tombe, et plus aucun
+    `/tmp/wisq-kernel-*` ne reste — sous les premiers sabotages, le test qui
+    tombait laissait le sien ;
+  - **Un survit, et doit survivre** : l'adresse prise dans `TRANSLATE_CELL`
+    dans le chemin de l'accès **entier** (G0, le G du contrôle à sa place
+    d'avant). Ce chemin n'est pris que si l'accès tient dans sa page, donc
+    sans seconde marche : la cellule y porte encore la première trame, et
+    les deux formes calculent la même adresse. La garde de G a déménagé
+    dans la coupe, où G tombe.
+- `cargo test --release --no-fail-fast` (tout) : 886 réussis, 0 échec
+  (885 avant : un test neuf, et celui du cheval renommé). `cargo fmt
+  --check`, `clippy --all-targets --all-features -D warnings`,
+  `check-whitespace`, `check-project-sources`, SwiftLint `--strict` :
+  propres. `WebKitBench.swift` régénéré, seules ses lignes en base 64
+  changent ; `swift build --build-tests` et les treize `WebKitBenchTests`
+  passent. Compte publié : 3 949 → 3 950 (Swift 3 065 + Rust 885) ; le site
+  reconstruit, `bun test` : 476 réussis. Plus aucun `/tmp/wisq-kernel-*` ni
+  `/tmp/wisq-carte-*` après la suite.
+
+**Ce qui reste.** Le chemin RAM → périphérique s'arrête toujours
+(`far_second_page`) : le couper en deux demanderait d'écrire la moitié basse
+dans la RAM, puis d'envoyer la haute à l'hôte, ce que rien ne demande encore.
+Le reste de l'entrée d'en dessous tient : la boucle du planificateur de Void,
+le bureau, la vitesse, le chargeur de l'application et la fusion avec
+`claude/pc-rust-coeur`. Aucune course longue n'a été lancée.
+
+## 2026-11-21 — Émetteur : reprise après contrôle, un accès à cheval d'un périphérique vers la RAM, et les gardes que rien ne tenait
+
+**Ce qui n'allait pas.**
+
+- **Un défaut réel : seul le sens RAM → périphérique d'un accès à cheval
+  s'arrêtait.** Dans l'accès lent (`far_first_page`), une première page
+  posée sur la mémoire d'un périphérique envoyait l'accès **entier** à
+  l'hôte, sans marcher la page d'après. Huit octets écrits à `0x48FFC`, la
+  page `0x48000` sur la mémoire vidéo et `0x49000` sur la RAM à `0x3F000` :
+  « arrêtée sur hlt », les huit octets dans `0xE000_0FFC..0xE000_1003`, et
+  rien dans la RAM — une écriture mal dirigée qu'aucun arrêt ne nommait. Et
+  une seconde page absente ne fautait qu'**après** que l'écriture était
+  partie chez le périphérique. L'entrée d'en dessous, ses commentaires et
+  `host.js` affirmaient les deux sens.
+- **Six gardes sans test** (sabotages du contrôle, tous survivants) : la
+  trame d'avant le repli dans la marche par **grande page** (une page de
+  2 Mio ou 1 Gio sur la mémoire vidéo retombait dans la RAM, le défaut même
+  que la tranche disait corrigé) ; le `| 7` de la limite de la GDT (le test
+  ne posait qu'une limite de forme 8k − 1) ; `claimed` dans le chemin d'un
+  périphérique (une réservation de seize octets partait en `out`, et seule la
+  carte, qui refuse au-delà de huit, la rendait sans effet) ; le refus d'un
+  écran trop grand dans `carte.js` ; les refus `Empty` et `TooLarge` de
+  `zero_page_with_device_screen` ; et la reprise d'une traduction ratée
+  (`body.wrote = false`, jumelle de `body.bytes.truncate`, déjà connue).
+- **`kernel-entry` n'était lancé par aucun test** : CS à `0x10` et les
+  données à `0x18` à l'entrée (la levée du mur n° 3), `WISQ_ECRAN`,
+  `WISQ_GESTES`, `WISQ_HEURE`, `WISQ_CAPTURE` et l'ordre de ses couleurs —
+  `0x10n` remis à `0x0n` ne faisait rien tomber. `machine().taper` n'était
+  appelé par aucun test. Trois messages d'erreur portaient quatorze à
+  vingt-six espaces (une ligne coupée sans `\`) ; `WISQ_GESTES` lisait
+  `inf:texte:x`, d'où `[inf, …]` dans le pilote et une `ReferenceError` ;
+  `WISQ_CAPTURE_TOUTES` illisible devenait zéro sans le dire.
+- **Des faux dans l'entrée d'en dessous** : « six courses sur sept » (il y
+  en a sept sur huit dans la boucle) et « la sixième (i1) » ; « six à quinze
+  secondes » sans mesure derrière ; « 40 à 45 millions d'instructions par
+  seconde », tiré de 8,8 M blocs/s (un plafond, le TSC avançant aussi pendant
+  les `hlt`) fois un facteur de quatre ou cinq jamais mesuré — donc 35 à 44
+  au plus — et la « vitesse du cœur Swift » donnée comme un fait. Le rapport
+  disait deux commits amendés ; le reflog en montre trois (`8875b8cd`,
+  `a412a29f`, `8691b437`), tous avant le premier push de la tranche.
+- **Une annonce trop large** : le repli d'une trame hors de la RAM, et la
+  garde de l'hôte qui refuse de lire un périphérique comme de la RAM, ne
+  valent que **sous pagination** ; sans elle, l'émetteur et `physical`
+  replient toujours. Le mode long pagine toujours.
+- Dans `x86.rs`, la doc du test `addr32` avait été coupée en deux par
+  l'insertion du test des écritures non temporelles, et disait encore la
+  taille d'adresse « refusée partout ailleurs », faux depuis `lea`.
+
+**Ce qui est fait.**
+
+- **L'accès lent d'un périphérique marche d'abord la page d'après**
+  (`far_first_page`, `x86_wasm.rs`) quand l'accès ne tient pas dans sa page.
+  Une page qui manque, ou qui refuse l'écriture, faute avant que rien parte
+  vers l'hôte. Si la seconde trame est la suite physique de la première,
+  l'accès part en un morceau ; sinon — la RAM, ou une autre trame —, le
+  témoin dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête sur « un accès à
+  cheval entre la mémoire d'un périphérique et une page qui n'en est pas la
+  suite ». L'adresse physique est gardée dans une locale `i64` avant la
+  seconde marche, qui remplace `TRANSLATE_CELL`. Le test sur `DEVICE_FRAME`
+  de la seconde trame a été retiré : la contiguïté écarte déjà la RAM (une
+  trame de la RAM n'est jamais au-delà d'une trame de périphérique), et ce
+  second test n'aurait jugé aucun cas de plus — une garde sans cas.
+  *Correction du 21 novembre, entrée d'au-dessus : la suite physique n'est
+  pas le même périphérique — la dernière page de la mémoire vidéo est suivie
+  des registres de l'écran —, et l'accès entier y était refusé par la carte
+  sans un mot. Le jugement de contiguïté a disparu : un accès à cheval sur
+  deux trames hors de la RAM part maintenant en deux moitiés, et le test sur
+  `DEVICE_FRAME` de la seconde trame est revenu — c'est lui qui arrête, seul,
+  sur la RAM, sous le nom « un accès à cheval entre la mémoire d'un
+  périphérique et la RAM ». La phrase d'avant sur ce test retiré ne vaut
+  plus.*
+- **`Body::attempt`** : la tentative de traduction qui, ratée, rend ses
+  octets et la marque `wrote` à ce qu'ils étaient. Les deux reprises
+  vivaient en ligne dans `build`, sans cas possible ; elles sont tenues
+  maintenant sur une traduction posée pour rater.
+- **`kernel-entry`** : les trois messages recollés, les secondes d'un geste
+  et les nombres d'un toucher finis (et les secondes positives),
+  `WISQ_CAPTURE_TOUTES` refusé s'il ne se lit pas.
+- Les docs ramenées à « sous pagination » (`DEVICE_FRAME`,
+  `PageDePeripherique`), celle d'`addr32` recollée et juste, l'entrée d'en
+  dessous corrigée en place, chaque correction marquée.
+- `WebKitBench.swift` régénéré (`--example bench-module`) : l'accès lent a
+  changé.
+
+**Comment c'est vérifié.**
+
+- **Sept tests neufs** :
+  - dans `host_loop`, un accès d'un périphérique vers ce qui ne le suit pas
+    (cinq cas : vers la RAM en écriture et en lecture, vers une autre trame,
+    vers la suite, vers une page absente avec CR2), une grande page de 2 Mio
+    et une de 1 Gio sur la mémoire vidéo, une réservation jamais envoyée à
+    un périphérique (ce que la carte reçoit est compté), et un écran trop
+    grand refusé par `carte.js` ;
+  - dans la bibliothèque, `a_failed_translation_leaves_nothing_behind` ;
+  - un fichier neuf, `tests/kernel_entry.rs`, qui lance l'exemple sur un
+    « noyau » ELF de quelques dizaines d'instructions : CS et DS à l'entrée, l'horloge figée
+    (`0x56` secondes, `0x34` minutes en BCD), `a` tapé par `WISQ_GESTES`
+    (le scancode `0x1e` lu à l'i8042), la mémoire vidéo peinte par une page
+    de 1 Gio, et le PPM de la capture, rouge puis bleu ; et six refus, au
+    texte exact.
+- **Trois tests élargis** : le sélecteur sous une limite de `0x3b` (le
+  descripteur `0x38` à cheval sur elle, refusé) ; la page zéro de la carte,
+  ses refus `Empty` et `TooLarge` ; et le texte tapé passe par `vm.taper`.
+  Le test du cheval RAM → périphérique attend le nouveau nom de l'arrêt.
+- **Vingt sabotages d'une ligne**, chacun restauré par le script (le
+  contenu d'origine réécrit, `git diff` revenu tel quel). **Tous tombent** :
+  - l'accès lent : le cheval ignoré (W1, l'ancien comportement), la suite
+    physique mal comptée (W2), la seconde marche retirée (W3) — chacun dans
+    le test du cheval depuis un périphérique ;
+  - les six survivants du contrôle : la trame de la grande page (S1), le
+    `| 7` de la limite (S2), `wrote` et `truncate` de la traduction ratée
+    (S3, S3b), `claimed` du périphérique (S4), le refus de `carte.js` (S5),
+    `Empty` et `TooLarge` (S11a, S11b) ;
+  - `vm.taper` qui ne tape rien (T1) ;
+  - `kernel-entry` : CS à zéro (K1), DS à zéro (K2), le rouge et le bleu
+    échangés dans le PPM (K3), l'heure du mur malgré `WISQ_HEURE` (K4),
+    `inf` accepté (K5), `WISQ_CAPTURE_TOUTES` illisible pris pour zéro (K6),
+    un message recoupé sans `\` (K7), `inf` accepté dans un toucher (K8).
+- `cargo test --release` (tout, `--no-fail-fast`) : 885 réussis, 0 échec
+  (878 avant). `cargo fmt --check`, `clippy -D warnings`,
+  `check-whitespace`, `check-project-sources`, SwiftLint `--strict` :
+  propres. `WebKitBench.swift` régénéré, sa sortie incluse mot pour mot ;
+  `swift build --build-tests` et les treize `WebKitBenchTests` passent.
+  Compte publié : 3 942 → 3 949 (Swift 3 065 + Rust 884) ; le site
+  reconstruit, `bun test` : 476 réussis.
+
+**Ce qui reste.** Rien de neuf sur le mur : la boucle du planificateur de
+l'entrée d'en dessous reste à trouver, par une course rejouée (l'heure figée)
+comparée pas à pas avec l'interprète ; puis le bureau, la vitesse, le
+chargeur de l'application (CS à `__BOOT_CS`, l'écran et la tablette dans
+`desktop.rs`) et la fusion avec `claude/pc-rust-coeur`. Aucune course longue
+n'a été lancée dans cette reprise.
+
+## 2026-11-21 — Émetteur : l'écran, le clavier et la tablette de la carte raccordés ; Void Xfce jusqu'à l'espace utilisateur de son initramfs, et une boucle du planificateur
+
+**Ce qui n'allait pas.**
+
+- **Deux défauts du dernier contrôle.** `ecrit(adresse, 1)` dans
+  `ramDeLaCarte.ecrire` survivait à `host_loop` : le seul test du DMA sur du
+  code traduit posait la fonction au premier octet du tampon. Et `adresse > 0`
+  à la place de `adresse >= 0` dans `dansLaRam` survivait aussi : rien ne
+  tenait l'extrémité zéro.
+- **L'émetteur repliait toute trame hors de la RAM dans la RAM**, sous
+  pagination (sans elle, il replie toujours, et le mode long pagine). Sous 1 Gio,
+  la mémoire vidéo de la carte de Bochs, à `0xE000_0000`, tombait sur
+  `0x2000_0000` : un bureau qui peint son écran écrivait dans la RAM d'un
+  processus, et l'écran restait noir. Rien n'envoyait un accès de l'invité à
+  la carte, et `carte.js` ne servait ni l'écran ni la tablette.
+- **Void Xfce sous l'émetteur ne passait pas sa quatrième région**, puis,
+  une fois celle-ci levée, chaque mur suivant (voir plus bas).
+
+**Ce qui est fait.**
+
+- **La mémoire des périphériques** (`x86_wasm.rs`). La marche garde la trame
+  d'avant le repli ; hors de la RAM, elle vide la case du tampon (le chemin
+  rapide n'y passe jamais), lève le bit zéro de la trame rendue
+  (`DEVICE_FRAME`) et laisse la trame dans `TRANSLATE_CELL`. L'accès lent
+  envoie alors l'accès entier à l'hôte par `in` ou `out`, à son adresse
+  physique — toujours au-delà de `0xFFFF`, donc jamais un port. Un accès à
+  cheval de la RAM vers un périphérique s'arrête sur son nom
+  (`FAULT_DEVICE_STRADDLE`). *Correction du 21 novembre, entrée d'au-dessus :
+  l'autre sens, d'un périphérique vers la RAM, ne s'arrêtait pas — l'accès
+  partait entier chez le périphérique.* Pas d'import neuf : les hôtes qui n'ont pas de
+  carte rendent le bus qui flotte.
+- **Le raccord** (`host.js`, `carte.js`). Au-delà de `0xFFFF`, `env.in` et
+  `env.out` vont à `carte.memoire` (tous les bits à un quand personne ne
+  répond, à la largeur de l'accès) ; la tablette est livrée à chaque tour
+  avant la recopie des lignes ; sous pagination, un hôte qui prendrait un
+  périphérique pour de la RAM (une IDT posée là) s'arrête en nommant
+  l'adresse. `machine()`
+  expose `taper(texte)`, `toucher(x, y, boutons)` et `ecran(depuis)` : le
+  rectangle montré d'un bloc, sans le remplissage des lignes, et rien de
+  recopié quand la révision n'a pas bougé. `carte(…, { ecran })` branche la
+  carte de Bochs et la tablette.
+- **Un arrêt nommé plutôt qu'un refus** : une instruction lue que
+  l'émetteur ne sait pas produire arrête son bloc, RIP sur elle, au lieu de
+  faire refuser la région entière (sauf à son entrée). Chez Void 6.12, un
+  `call panic` est suivi du `lret` trente-deux bits de l'entrée PVH, que rien
+  n'exécute en mode long.
+- **`kernel-entry`** : `WISQ_ECRAN=1280x800` (la page zéro décrit la mémoire
+  vidéo de la carte hors de la RAM, sans entrée e820 :
+  `zero_page_with_device_screen`), `WISQ_CAPTURE=<fichier.ppm>` (à la fin,
+  au geste `capture`, et toutes les `WISQ_CAPTURE_TOUTES` secondes si
+  l'image a bougé), `WISQ_GESTES` (`secondes:texte:…`, `secondes:toucher:x,y,b`),
+  `WISQ_HEURE` (l'horloge CMOS figée), CS à `__BOOT_CS` et les données à
+  `__BOOT_DS` en entrant, et un battement toutes les trente secondes de mur
+  (l'horloge de l'invité, les interruptions, IF, les 8259 et le 8254, le
+  disque, l'écran).
+- **Les murs de Void, chacun levé** :
+  1. le `lret` de l'entrée PVH, derrière `call panic` : l'arrêt nommé ;
+  2. « /usr/lib/libc.so.6: CPU ISA level is lower than required », puis
+     « Attempted to kill init! » : `cpuid` annonce le socle x86-64 de la
+     glibc (CX8, CMOV, MMX, FXSR, SSE, SSE2 ; `cmpxchg8b` et MMX promis sans
+     être produits, comme le cœur Swift avant `X86MMX.swift`), et un
+     fournisseur que la glibc connaît — `AuthenticAMD`, famille 15, modèle
+     107, le `qemu64` du cœur Swift : pour un nom inconnu, la glibc ne lit
+     jamais la feuille un ;
+  3. sous AMD, une `#GP` précoce (le `rdmsr_safe` de `0x8b`) dont le cadre
+     portait CS à zéro : `early_fixup_exception` la refusait, et le noyau se
+     garait. `kernel-entry` entre maintenant comme le protocole le veut ;
+  4. `mov %edx,%fs` avec `0x2b` dans `__switch_to` (`X86_BUG_NULL_SEG`) :
+     un sélecteur non nul dans FS ou GS lit maintenant son descripteur dans
+     la GDT, en anneau zéro (la LDT, la limite, l'absence et l'anneau trois
+     restent des arrêts nommés) ;
+  5. `fnclex ; emms ; fild` avant chaque `fxrstor`
+     (`X86_BUG_FXSAVE_LEAK`) : `cpuid` sert `0x8000_0000` et
+     `0x8000_0008`, qui annonce `XSAVEERPTR` (aucun calcul x87 ne
+     s'exécute ici, les pointeurs d'erreur sont toujours nuls) et les tailles
+     d'adresse du qemu64 ;
+  6. `67 8d 51 ff` (`lea -1(%ecx),%edx`) dans la glibc : le préfixe de
+     taille d'adresse se lit devant `lea` sans REX.W, où il ne change rien ;
+  7. `66 0f e7` (`movntdq`) dans un module du noyau (le banc du RAID) :
+     `movntps`, `movntpd` et `movntdq` se lisent comme les écritures
+     alignées.
+- **Un aller-retour sur le nom du fournisseur**, défait. `GenuineIntel` a
+  été essayé contre la boucle d'en dessous : une course l'a passée, la
+  suivante, au même réglage, y est retombée. `cpuid` redit `AuthenticAMD`.
+
+**Comment c'est vérifié.**
+
+- **Onze tests neufs** : dans `host_loop`, le DMA sur la dernière ligne
+  d'un tampon, un statut à l'adresse physique zéro, l'invité qui peint
+  l'écran par sa mémoire vidéo (deux pages, huit octets d'un coup, un
+  registre DISPI par la BAR2, la RAM repliée intacte), un mode à lignes
+  rembourrées puis décalé, un accès à cheval RAM/périphérique et le bus qui
+  flotte, un toucher qui arrive au pilote de la tablette par sa BAR0 et la
+  ligne 10, l'hôte qui ne prend pas un périphérique pour de la RAM, une
+  région qui s'arrête devant ce qu'elle ne sait pas produire, un sélecteur
+  qui prend sa base dans la GDT (et ses quatre arrêts) ; dans la
+  bibliothèque, la page zéro d'un écran sur la carte, les écritures non
+  temporelles ; et trois tests élargis (le préfixe `67` devant `lea`, `cpuid`
+  au complet, `iretd` refusé à son adresse). Deux tests adaptés, sans rien
+  perdre : la trame au-dessus de la RAM rend le bus qui flotte au lieu de la
+  RAM repliée, et `iretd` au milieu d'une région arrête son bloc.
+- **Trente-neuf sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` revenu tel quel). Trente-huit tombent ; un survit :
+  - la garde du DMA (2), la marche (le tampon rempli, le bit absent,
+    l'adresse repliée, la largeur ignorée, le cheval ignoré), l'hôte (le bus
+    d'un octet, la livraison absente, l'écriture perdue, la révision
+    ignorée, le cheval délivré, le repli de l'hôte, l'erreur non
+    rattrapée), `carte.js` (la valeur sur 32 bits, le remplissage, le début
+    ignoré, le toucher sans bouton), l'arrêt nommé (le refus entier, `lret`
+    refusé), la page zéro (base dans la RAM, trop haute, sans champs), le
+    sélecteur (LDT, limite, présence, octet haut de la base, anneau trois,
+    sélecteur non rangé), `cpuid` (sans SSE2, sans `XSAVEERPTR`, sans
+    feuille étendue, Intel, l'ancienne signature), le décodeur (`lea` refusé, `lea`
+    large accepté, sans `movnt`, `movnt` en registre) : tous tombent ;
+  - **survit** la reprise des octets d'une traduction ratée
+    (`body.bytes.truncate`) : aucune forme connue n'écrit avant de refuser
+    (28 160 formes balayées, aucune) — une garde sans cas ;
+  - trois survivaient d'abord — la largeur de l'accès lent, le début ignoré
+    d'une image sans remplissage, la limite de la GDT — et sont tombés quand
+    leur test a été renforcé (huit octets relus d'un coup, un mode décalé
+    sans remplissage, un descripteur présent au-delà de la limite) ; ils sont
+    comptés dans les trente-huit.
+- `cargo test --release` : 878 réussis, 0 échec. `cargo fmt --check`,
+  `clippy -D warnings`, `check-whitespace`, `check-project-sources`,
+  SwiftLint `--strict` : propres. `WebKitBench.swift` régénéré
+  (`--example bench-module`) : la marche a changé ; `swift build
+  --build-tests`, les treize `WebKitBenchTests` et la suite Swift entière
+  passent. Compte publié : 3 931 → 3 942 (Swift 3 065 + Rust 877).
+
+**Mesures**, l'ISO `void-live-x86_64-20250202-xfce.iso` (somme vérifiée),
+son `vmlinuz` (charge gzip à l'octet 21 196) et son `initrd` (148 480 octets
+de microcode, puis 147 Mio en xz), 1 Gio, la ligne de l'application
+(`IsoBoot.commandLine`), l'écran 1280 × 800, une course à la fois :
+
+| course | réglage | jusqu'où | mur | régions | pic résident |
+| --- | --- | --- | --- | --- | --- |
+| a1 | avant | le `lret` PVH, 4ᵉ région | 11 s | 3 | 362 Mio |
+| a3 | arrêt nommé | « CPU ISA level is lower than required », à 5,9 s de l'invité | ~12 min | ~17 800 | — |
+| a7 | AMD, CS posé, GDT | `fnclex` avant `fxrstor` | 473 s | 12 228 | 1 248 Mio |
+| a8 | `XSAVEERPTR` | la glibc de l'initramfs (`67 8d`) | 601 s | 70 668 | 1 325 Mio |
+| a9 | initramfs déballé | `movntdq` d'un module | 420 s | 72 796 | 1 470 Mio |
+| a10–a13, v1, i2 | initramfs déballé ou non, AMD ou Intel | la boucle du planificateur | 12 à 20 min | ~166 000 | 1,3 à 1,4 Gio |
+| m1 | la course de l'application (AMD, initramfs de l'ISO, `loglevel=4`), l'heure figée | la boucle, à 8,4 s de l'invité | 849 s | 163 552 | 1 283 Mio |
+| i1 | Intel, initramfs déballé | 846 lectures de l'ISO (4,6 Mo), 9,6 s de l'invité, tours épuisés | 1 087 s | 565 614 | 3 425 Mio |
+
+**Jusqu'où le démarrage va.** Le noyau 6.12.11 de Void s'initialise, déballe
+son initramfs, et l'espace utilisateur de dracut tourne (programmes de la
+glibc, modules chargés). Puis, dans sept courses sur huit (a10 à a13, v1,
+i2, m1), le noyau tourne sans fin, **interruptions éteintes**,
+entre `pick_next_task_fair` et `sched_balance_newidle` — l'IRQ 0 en
+attente, le disque jamais lu (sa ligne 5 encore masquée : `virtio_blk` ne
+s'est pas lié). Son dernier message est à 2,6 s de son temps (a10 à a13, i2)
+ou à 5,9 s (v1, m1) ; les courses arrêtées à la main l'ont laissé tourner
+jusqu'à 8,4 à 27,8 s de son horloge (a10 et a11, d'avant le battement, n'en
+disent rien). *Corrigé le 21 novembre : cette entrée disait « six courses sur
+sept » et « six à quinze secondes ».* La huitième (i1) passe ce point, lit
+l'ISO, et s'arrête sur la borne de ses tours ; sa jumelle (i2, même réglage)
+est retombée dans la boucle. **Le bureau n'est pas atteint** : aucune image n'a
+été peinte (révision zéro dans toutes les courses), donc aucune capture à
+regarder.
+
+**L'émetteur contre le cœur Swift, sur ce qui est comparable.** Le cœur
+Swift démarre ce bureau en ~2 527 s (~97 milliards d'instructions, 39 à 46
+MIPS). L'émetteur ne compte pas les instructions, mais ses blocs (le TSC de
+l'invité avance d'un par bloc, plus les attentes d'un `hlt`) : i1 en compte
+9,6 milliards en 1 087 s, **au plus 8,8 millions de blocs par seconde** — un
+plafond, puisque les attentes en font partie. À quatre ou cinq instructions
+par bloc, un facteur **jamais mesuré** ici, ce serait au plus 35 à 44
+millions d'instructions par seconde : rien ne dit l'émetteur plus rapide que
+le cœur Swift, et la comparaison elle-même n'est pas mesurée. *Corrigé le 21
+novembre : l'entrée disait « 40 à 45 millions », et « pas plus vite que le
+cœur Swift » comme un fait.* Le temps va à
+l'espace utilisateur neuf : 565 614 traductions (0,14 ms chacune, 81 s en
+tout) et leur compilation par JavaScriptCore ; le cache, à sa borne de
+64 Mio, évince et retraduit un tiers de ce qu'il traduit, et les régions de
+Void pèsent 23 Kio de wasm en moyenne (le double d'Alpine). Le pic de 3,4 Gio
+d'i1 est celui du moteur, au-delà de la borne du cache.
+
+**Ce qui reste.**
+
+- **La boucle du planificateur**, le mur. Elle n'est pas reproductible d'une
+  course à l'autre (l'horloge CMOS donnait l'heure du mur, dont le noyau tire
+  une part de son aléa ; `WISQ_HEURE` la fige maintenant), et elle ne dépend
+  pas du nom du fournisseur. Ce qu'elle suppose : `cfs.h_nr_running` non nul
+  et rien à choisir — une incohérence des compteurs du planificateur, donc
+  très probablement une instruction mal rendue quelque part (une opération
+  verrouillée, un drapeau, un `mul` sur 128 bits), pas une absence nommée.
+  La trouver demande une course rejouée et une comparaison pas à pas avec
+  l'interprète.
+- **Le bureau** : `bochs-drm`, Xorg, lightdm et Xfce derrière la boucle ;
+  les gestes et les captures sont prêts et n'ont rien eu à montrer.
+- **La vitesse** : au plus ~8,8 M blocs/s, compilé à la mesure de ce que JavaScriptCore
+  traduit ; « plusieurs centaines de MIPS » demande de traduire moins (un
+  cache qui garde plus, des régions plus petites) avant de traduire mieux.
+- Le chargeur de l'application doit poser CS à `__BOOT_CS` comme
+  `kernel-entry` ; `desktop.rs` ne branche ni l'écran ni la tablette.
+- La fusion avec `claude/pc-rust-coeur` (voir l'entrée d'en dessous) ;
+  `cpuid` du cœur Rust et de l'émetteur devront dire la même chose.
+
+## 2026-11-21 — Émetteur : la moitié `ecrire` de la garde de `host.js`, que rien ne tenait
+
+**Ce qui n'allait pas.** L'entrée d'en dessous disait la garde de
+confinement (`dansLaRam`) tenue, et le test du tampon à cheval
+(`a_disk_buffer_that_straddles_the_end_of_ram_is_refused_whole`) disait
+« rien n'est écrit au-dessus de la RAM ». Le contrôle a retiré la ligne
+`if (!dansLaRam(adresse, depuis.length)) return false;` d'`ecrire` (son
+sabotage S10) : `host_loop` restait vert, 237 sur 237. Seule la moitié
+`lire` était tenue. La carte sonde chaque tampon de données par `ram.lire`
+avant de faire partir une requête (`dans_la_ram`, `virtio_blk.rs`), et c'est
+ce refus-là qui rendait l'erreur du test. Mais elle pose le **statut**, les
+entrées et l'index des **servis**, et le **nom** du disque (le type 8) par
+`ram.ecrire`, sans rien sonder, aux adresses que l'invité a choisies. Pour
+ces écritures, la garde d'`ecrire` est la seule chose entre l'invité et la
+correspondance de l'hôte, au-dessus de la RAM, et aucun test ne la tenait.
+
+Un détail du contrôle ne se reproduisait pas tel quel. Avec un statut
+« réussi » posé à `0x40000`, S10 survivait encore au premier test que j'ai
+écrit : l'octet de l'hôte à cet endroit (le début de la correspondance)
+valait déjà zéro, et y écrire zéro ne changeait rien. Le
+test ne compare que l'avant et l'après, donc l'octet écrit hors de la RAM
+doit être un octet qui se voit.
+
+**Ce qui est fait.**
+
+- **Deux tests neufs dans `host_loop`**, sans changement du code (il était
+  juste) :
+  - `what_the_card_writes_unprobed_past_the_end_of_ram_is_not_written` :
+    l'invité publie trois requêtes, une à une.
+    - Une lecture dont le statut est au dernier octet de la RAM
+      (`0x3FFFF`) : il est écrit (zéro), donc la garde n'est pas trop
+      stricte d'un octet.
+    - Une lecture au-delà du disque, son statut à `0x40000` : la requête
+      est rendue en erreur et la ligne est levée, mais le `1` n'est écrit
+      nulle part.
+    - Une demande du nom, son tampon de vingt octets à cheval sur la fin
+      (`0x3FFF8`) : refusée entière, les sept octets du dedans gardent leur
+      `0xaa`.
+    - Les servis portent les têtes 0, 3 et 6, et les 4 Kio au-dessus de la
+      RAM sont identiques à ce qu'ils étaient avant la course.
+  - `a_used_ring_past_the_end_of_ram_is_not_written` : la file posée à la
+    dernière page de la RAM (`0x3F000`), donc ses servis à `0x40000`. La
+    lecture est faite, son statut (dans la RAM) posé, la ligne levée une
+    fois, l'ISR lu à 1, et ni l'index ni l'entrée des servis ne sont écrits
+    au-dessus.
+- Pour ces deux tests, `host_loop` gagne `brancher_le_disque_avec_la_file`
+  (la file ailleurs qu'à la page `0x20`), `requetes_posees` (des requêtes
+  de type, tampon et longueur quelconques ; un statut hors de la RAM n'y est
+  pas touché par le pilote) et `publier`.
+- Le commentaire du test du tampon à cheval dit maintenant quelle moitié il
+  tient. Celui de `ramDeLaCarte`, dans `host.js`, dit pourquoi les deux
+  moitiés comptent.
+- **Sept sabotages d'une ligne de la garde d'`ecrire`**, chacun restauré
+  par le script (`git diff` vide ensuite). Tous tombent :
+  - S10, la garde retirée, et S10d, la garde bornée à
+    `memory.buffer.byteLength` : tombent dans les deux tests neufs ;
+  - S10b, la longueur prise pour zéro : tombe dans le test des écritures
+    sans sonde (le nom à cheval) ;
+  - S10c, la longueur plus un (trop stricte d'un octet) : tombe dans ce
+    même test (statut à `0x3FFFF`) et dans celui du tampon à cheval ;
+  - S10e, seules les écritures d'un octet sans garde (le statut) : tombe
+    sur « ni le statut ni le nom ne sont écrits au-dessus de la RAM » ;
+  - S10f, seules celles de vingt octets (le nom) : tombe dans le test des
+    écritures sans sonde ;
+  - S10g, seules celles de deux et quatre octets (les servis) : tombe dans
+    le test des servis.
+- `cargo test --release` : 867 réussis, 0 échec, en 2 min 58 s.
+  `cargo fmt --check`, `clippy`, `check-whitespace` et
+  `check-project-sources` sont propres. Le Swift n'est pas touché, et les
+  octets émis ne changent pas.
+- Compte publié : 3 929 → 3 931 (Swift 3 065 + Rust 866). Le site est
+  reconstruit, et son `bun test` donne 476 réussis.
+
+**Ce qui reste.** Tout ce que dit l'entrée d'en dessous. S11
+(`Number.isInteger && >= 0` retiré de `dansLaRam`) survit toujours. C'est
+un mutant équivalent : l'adresse vient de `plage` dans `carte.js`, qui rend
+toujours un entier positif ou nul, au plus `MAX_SAFE_INTEGER`.
+
+## 2026-11-20 — Émetteur : reprise du raccord après contrôle, six gardes de `host.js` et deux largeurs du flottant que rien ne tenait
+
+**Ce qui n'allait pas.** Le contrôle de l'entrée d'en dessous a fait
+survivre six sabotages d'une ligne de `web/host.js` à toutes les suites
+(`host_loop`, `x86_wasm`, `kernel_elf`, `page`, `carte`), et deux du
+décodeur flottant à `--lib` et `x86_wasm`. Le code de `host.js` était juste
+— le contrôle l'a reproduit hors de l'arbre —, mais rien ne le tenait :
+
+- J1, **la garde de confinement du DMA** (`dansLaRam`) bornée à la taille
+  de la `WebAssembly.Memory` au lieu de celle de la RAM : la carte aurait
+  écrit le disque au-dessus de la RAM de l'invité, dans la correspondance et
+  la carte du code de l'hôte. `carte.js` ne borne rien de son côté : c'est
+  la seule garde ;
+- J2, **les lignes retombées de l'esclave** jamais effacées : seul le
+  maître était jugé ;
+- J8, **un 0 rendu par un port de la carte** pris pour « personne »
+  (`if (valeur)`) : l'ISR virtio lu à zéro, un statut de l'i8042, la
+  seconde CMOS à :00 seraient devenus `0xff` ;
+- J5, J6, J7, **l'attente du disque sur un `hlt`** : attendre même quand
+  une interruption est déjà prête, délivrer après un pas d'horloge sans
+  recopier les lignes (la borne `tsc < 64 << 20` était trop lâche pour le
+  voir), attendre même interruptions éteintes ;
+- J9, `enVol` jamais décrémenté dans `carte.js`, n'était attrapé que par un
+  blocage de `carte.rs` (plus de trente minutes, la limite de la tâche) ;
+- Ra, Rb, **la largeur décodée de `cvtss2sd` et de `ucomiss`/`comiss`**
+  passée à huit octets : rien ne tombait. Le contrôle en concluait que ces
+  formes fauteraient à tort au bord d'une page. **Ce n'était pas le cas, et
+  c'était pire** : la largeur décodée des formes scalaires n'était lue par
+  personne. `x86_wasm_float.rs` recalculait la sienne d'après le type de
+  l'élément, si bien qu'une largeur fausse dans le décodeur ne changeait rien
+  ici — vérifié : Ra survivait aussi au nouveau test du bord de page tant que
+  l'émetteur gardait son propre calcul. Deux sources pour une même largeur,
+  dont une sans effet.
+
+**Ce qui est fait.**
+
+- **Le flottant lit la largeur du décodeur** : `float_low_source` reçoit
+  `step.width` pour toutes les formes qui lisent un élément (scalaires,
+  comparaisons scalaires, `ucomis`/`comis`, `cvtss2sd`, `cvtsd2ss`,
+  `cvtps2pd`, `cvtdq2pd`). Seule `cvt(t)s*2si` garde la largeur de
+  l'élément : sa largeur décodée est celle de l'entier rendu (`REX.W`),
+  comme le dit l'énumération `Float`. Les octets émis ne changent pas
+  (`bench_module_matches_the_probe` passe, `WebKitBench.swift` n'a pas été
+  régénéré).
+- **Six tests neufs ou renforcés dans `host_loop`** :
+  - `a_disk_buffer_that_straddles_the_end_of_ram_is_refused_whole` : deux
+    requêtes, la première dans les 512 derniers octets de la RAM (finit pile
+    à la fin : lue, la garde n'est pas trop stricte d'un octet), la seconde
+    à cheval : statut d'erreur, l'arrière jamais appelé, le dedans laissé
+    tel que la première l'a rempli, et 4 Kio au-dessus de la RAM identiques
+    à ce qu'ils étaient avant la course ;
+  - `a_slave_line_that_falls_before_delivery_is_not_delivered` : l'invité
+    allume la souris (`A8`, `D4 F4`), son accusé `FA` lève l'IRQ 12, la
+    course s'arrête sur `cli ; hlt` la ligne 4 de l'esclave en requête, puis
+    l'invité lit l'accusé par interrogation et `sti ; hlt` : rien n'est
+    délivré, la requête est effacée ;
+  - `an_interrupt_ready_while_a_read_is_in_flight_passes_before_the_answer` :
+    une touche enfoncée et une lecture servie trente millisecondes plus tard ;
+    le gestionnaire du clavier lit l'octet de statut du disque, encore
+    `0xff` ; puis la ligne 5 réveille un second `hlt`, et un dernier
+    `sti ; hlt`, rien en vol, arrête la course au lieu d'attendre ;
+  - `a_halt_with_interrupts_closed_does_not_wait_for_the_disk` : `cli ; hlt`
+    rend la main la lecture encore en vol (statut `0xff`, `enVol` 1) ; la
+    course suivante, `sti ; hlt`, reçoit la réponse ;
+  - `a_disk_read_answered_later_wakes_the_halted_guest` renforcé : `rdtsc`
+    avant le `hlt` et après le gestionnaire, l'écart borné à 4 096 (un pas
+    d'attente en vaut 2²⁰), et l'ISR relu après le gestionnaire vaut 0 ;
+  - `a_single_float_at_the_end_of_a_page_reads_four_bytes_and_no_more` : la
+    pagination identité par pages de 4 Kio, `0x25000` absente, 2,5 à
+    `0x24FFC`, lu par `cvtss2sd`, `ucomiss`, `comiss`, `addss`, `cvtss2si`,
+    `cvtsi2ss` et `cmpss` ; la course finit sur le `ud2`, chaque résultat
+    juste.
+- **Un pilote qui pend tombe** : `avec_la_carte` arme une garde d'une
+  minute (sous Bun, une boucle hôte suspendue sur une promesse jamais tenue
+  ne rend pas la main : J9 pendait aussi `host_loop`), et l'attente du test
+  du disque par plages de `carte.rs` lève au bout de deux secondes au lieu
+  de boucler sans fin (celle de `PILOTE_DU_DISQUE` avait déjà sa borne).
+- L'espace manquante de `const blocks = new WebAssembly.Table`, et la date
+  de l'entrée d'en dessous : ses commits sont du 20 novembre (UTC), pas du
+  21. L'entrée « Carte réseau : l'émission ne part qu'à son `out` », venue
+  de `master`, porte la même erreur ; elle n'est pas corrigée ici, pour ne
+  pas créer de conflit avec `master`.
+- **Quinze sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` vide ensuite), tous tombent :
+  - `host.js` : J1 (`memory.buffer.byteLength`) et J1b (`<` au lieu de
+    `<=`) dans le test du tampon à cheval ; J2 dans celui de l'esclave ; J5
+    dans celui de l'interruption prête ; J6 et J8 dans le test du disque
+    renforcé ; J7 dans celui du `cli ; hlt` ;
+  - `carte.js`, J9 : dans le test de l'interruption prête, en 70 s (la
+    garde), et dans trois tests de `carte.rs` en 16 s (avant les gardes, le
+    premier pendait sept minutes avant d'être tué à la main) ;
+  - décodeur : Ra (`cvtss2sd` sur huit octets), Rb (`ucomiss`/`comiss`), Rc
+    (`addss`…), Rd (`cmpss`), Rf (`cvtsi2ss` lu sur huit octets) dans le
+    test du bord de page ; Re (`cvtss2si` rendu sur 64 bits) dans le corpus
+    flottant ;
+  - émetteur, Fw : `cvtss2sd` qui relit huit octets en dur, dans le test du
+    bord de page.
+- `cargo test --release` : 865 réussis, 0 échec ; `x86_wasm` aussi sous le
+  profil de développement. `cargo fmt --check`, les deux `clippy` (dont
+  `wisq-page` en `wasm32-unknown-unknown`), `check-whitespace`,
+  `check-project-sources` : propres. Le Swift n'est pas touché.
+- Compte publié : 3 924 → 3 929 (Swift 3 065 + Rust 864) ; site reconstruit,
+  `bun test` du site : 476 réussis.
+
+**Ce qui reste.** Tout ce que dit l'entrée d'en dessous, et :
+
+- **La fusion avec `claude/pc-rust-coeur` ne se fera pas d'elle-même.**
+  `git merge-tree` la dit en conflit dans `x86.rs` (la ligne
+  `pub use vector::{…}`), les deux README, `content.rs`, `claims.test.ts` et
+  ce journal ; `x86_vector.rs` se fond sans conflit, mais le `match vector`
+  de `Cpu::execute_vector` du cœur n'a pas de bras `Vector::Float` et ne
+  compilera pas sans lui. Ce fichier n'est au partage d'aucun des deux flux,
+  et l'ajout du flottant y fait 171 lignes : plus qu'un petit ajout au
+  décodeur partagé. C'est à décider à la fusion, avec le flux « cœur ».
+- La largeur décodée de `cvt(t)sd2si` est celle de l'entier, pas celle du
+  double lu : un consommateur qui prendrait `width` pour la largeur de
+  l'accès (l'interprète du cœur, demain) lirait quatre octets au lieu de
+  huit. L'émetteur ne s'en sert pas pour l'accès ; l'énumération le dit.
+
+## 2026-11-20 — Émetteur : la carte raccordée à `host.js`, Alpine monte son ISO, le flottant de SSE2, et le mur suivant est le x87
+
+**Ce qui n'allait pas.** La carte des périphériques (`web/carte.js` : i8042,
+horloge CMOS, bus PCI, disque virtio avec son arrière asynchrone) n'était
+branchée sur rien : sous l'émetteur, un noyau ne trouvait ni clavier, ni
+horloge murale, ni disque, et ne pouvait démarrer que depuis un initramfs.
+Le raccord était décrit (entrée « Le disque de la page : pont PCI et
+virtio-blk… », 14 novembre) et pas fait, avec ses deux pièges nommés : un
+`hlt` qui attend le disque ne cédait jamais le fil, donc la promesse de
+l'arrière ne se serait jamais résolue ; et un octet écrit par le disque dans
+la RAM ne faisait oublier aucune traduction (l'entrée de #708 le demandait).
+Une fois le raccord fait, Alpine démarré depuis son ISO a monté son média,
+puis s'est arrêté sur `f2 0f 2a 43 cc` — `cvtsi2sd -0x34(%rbx),%xmm0` — : le
+flottant de SSE, que l'émetteur ne lisait pas.
+
+**Ce qui est fait.**
+
+- **Le raccord** (`web/host.js`). `machine({ carte })` prend une fabrique,
+  `(ram) => carte(module, { ram, disque })`, appelée une fois la RAM créée :
+  `host.js` est embarqué tel quel dans la page et ne peut pas importer
+  `carte.js`. La vue `ram` qu'il lui donne lit et écrit la RAM par adresse
+  physique, une plage entière ou rien, et **chaque écriture passe par
+  `ecrit`** : le DMA du disque fait oublier les régions traduites des lignes
+  qu'il touche. Les ports vont à la carte **après** les puces de l'hôte (8259,
+  8254, 16550, portillon `0x61`) : rien de `host.js` n'était remplacé par la
+  carte, leurs ports ne se recouvrent pas, et l'ordre le garantit quand même.
+  Ses lignes sont recopiées à niveau dans les deux 8259 à chaque tour (levées
+  posées, tenues et retombées effacées), après `battre` (les frappes au
+  rythme d'une main, en tics du 8254). L'attente d'un `hlt` compte
+  `reveil()` et recopie les lignes à chaque pas. **Un `hlt` qui attend le
+  disque cède le fil** : `await carte.disque.attendre()` (neuf dans
+  `carte.js`, résolu à la réponse rendue, ou tout de suite sans rien en
+  vol), **sans avancer l'horloge** — vu de l'invité, le disque répond
+  sur-le-champ. L'impulsion de remise à zéro de l'i8042 (`0xFE` sur `0x64`)
+  arrête la course sur « redémarrage demandé (impulsion du 8042) », le nom du
+  banc Swift. `vm.carte` expose la carte.
+- **`kernel-entry`** : `WISQ_DISQUE=<fichier>` branche la carte et sert le
+  fichier par plages (`readSync`) à l'arrière asynchrone, en virtio-blk sur
+  00:03.0 ; ce que l'invité écrit va dans une couche en mémoire, secteur par
+  secteur, et le fichier n'est jamais écrit. Le relevé dit les lectures et
+  les écritures. `WISQ_INVITE` accepte plusieurs invites séparées par `;;`
+  (`login: ;;# `). Pas de second disque : `carte.js` n'en branche qu'un, et
+  l'ISO n'en demande pas.
+- **Le flottant de SSE et SSE2** (`Vector::Float` dans `x86_vector.rs`,
+  `x86_wasm_float.rs`, neuf) : l'arithmétique scalaire et empaquetée (`add`,
+  `sub`, `mul`, `div`, `min`, `max`, `sqrt`), `cmpss`… `cmppd` en masque,
+  `ucomis*`/`comis*` en drapeaux (ZF, PF, CF ; OF, SF, AF effacés), et les
+  conversions (`cvtss2sd`, `cvtsd2ss`, `cvtps2pd`, `cvtpd2ps`, `cvtsi2ss/sd`,
+  `cvt(t)ss/sd2si`, `cvtdq2pd/ps`, `cvt(t)pd/ps2dq`). Les règles de x86 sont
+  écrites sur les bits, portées de `X86Float.swift` : le NaN de la
+  destination puis celui de la source, rendus silencieux, l'indéfini réel
+  (le NaN **négatif**) pour une opération invalide, `min`/`max` qui rendent
+  la source quand la comparaison échoue, l'entier indéfini pour une
+  conversion qui ne tient pas — sans jamais laisser au moteur le NaN qu'il
+  choisirait (un JavaScriptCore sur ARM ne rend pas celui d'un x86). Les
+  bits d'exception, le mode d'arrondi et DAZ/FTZ de MXCSR ne sont pas
+  modélisés (tout arrondit au plus proche), et c'est écrit en tête du
+  fichier. Les formes de SSE3, que CPUID n'annonce pas, restent illisibles.
+- **`mov %sreg, m16` se produit** (seize bits, quel que soit le préfixe). Il
+  était refusé, « une forme que rien n'exerce » ; mais un refus emporte la
+  région entière, et depuis que le flottant se lit, les fenêtres du corpus
+  de `crates/wisq-page/tests/page.rs` allaient au-delà de leur forme
+  flottante jusqu'à lui : 589 traduites sur 1 845, sous le tiers que le test
+  exige (918 refus « CannotTranslate », comptés un à un : 574 sur des
+  sélecteurs rangés en mémoire). Produit, le corpus rend 958 traduites, 151
+  coupées, 736 refusées (888, 163 et 794 le 14 novembre). Le seuil du test
+  n'a pas bougé.
+- Trois tests existants disaient le contraire de ce qui est fait, et
+  changent de cas sans rien perdre : les deux tests du décodeur qui
+  prenaient `addss`/`addsd` pour illisibles prennent `haddps` (SSE3) et
+  vérifient en plus que les deux premiers se lisent ; la liste des familles
+  refusées perd `mov %ds,(%rax)`.
+
+**Comment c'est vérifié.**
+
+- **Huit tests neufs.** Dans `host_loop` (sous Bun, la carte du module de
+  la page branchée par `machine({ carte })`, le traducteur de la page sur les
+  octets de la RAM) :
+  `a_disk_read_answered_later_wakes_the_halted_guest` (le pilote virtio joué
+  par l'invité : énumération, BAR, poignée de main, notification, `sti ; hlt` ;
+  l'arrière répond trente millisecondes plus tard par un `setTimeout` ; la
+  ligne 5 réveille l'invité une fois, l'ISR vaut 1, le tampon porte
+  `vda:3584`, le statut 0, et l'horloge n'a pas sauté),
+  `a_disk_read_over_translated_code_forgets_its_translation` (une fonction
+  appelée, puis réécrite par le disque, rappelée : elle rend 2, pas le 1 de
+  sa traduction d'avant),
+  `the_card_answers_behind_the_hosts_chips_and_its_lines_reach_both_8259s`
+  (le masque relu au 8259 de l'hôte, l'heure CMOS en BCD, `0x80` à
+  personne, la touche sur la ligne 1 une fois, l'IRQ 9 par l'esclave et la
+  cascade une fois, puis la remise à zéro),
+  `typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand` (`taperTexte("ab")`
+  réveille un invité sans horloge, quatre octets dans l'ordre, quatre-vingts
+  millisecondes de temps invité au moins),
+  `a_card_line_that_falls_before_delivery_is_not_delivered`,
+  `storing_a_segment_selector_to_memory_writes_sixteen_bits`. Dans
+  `x86_wasm` : `the_emitter_matches_the_silicon_on_the_float_corpus` (les
+  119 formes de `x86-float-oracle.tsv` hors les huit de SSE3, chaque cas
+  jugé, drapeaux d'après compris, MXCSR intact) et
+  `the_float_forms_the_corpus_lacks_follow_the_same_rules` (les formes
+  mémoire des conversions, dont celle du mur, et les bornes `2⁶³`, juste
+  dessous, `-2⁶³`, et 2,5 arrondi au pair). Le balayage
+  `every_vector_form_the_decoder_reads_is_one_the_emitter_translates` couvre
+  les formes neuves sans changement.
+- **Trente-quatre sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` vide ensuite), tous tombent :
+  - raccord (15) : le `hlt` qui ne cède plus le fil ; l'attente qui avance
+    l'horloge ; le DMA sans `ecrit` ; les lignes jamais effacées du maître
+    (**survivait d'abord** : une ligne délivrée sort du registre de requête
+    de toute façon ; `a_card_line_that_falls_before_delivery_is_not_delivered`
+    l'a fait tomber) ; l'esclave non recopié ; le `in` de la carte ignoré ;
+    son `out` jamais appelé ; la remise non notée ; non arrêtée ; `reveil`
+    hors de l'attente ; les lignes non recopiées dans l'attente ; `battre`
+    jamais appelé ; la recopie absente du tour ; `attendre` qui n'attend
+    jamais ; la RAM de la carte qui refuse tout ;
+  - flottant (16) : l'indéfini positif ; le NaN de la destination non rendu
+    silencieux ; `max` qui compare comme `min` ; PF et ZF mal placés ; la
+    borne haute d'une conversion incluse (**survivait d'abord** : le corpus
+    ne porte pas `2⁶³` ; le test des formes hors corpus l'a fait tomber) ;
+    toujours tronqué ; la charge d'un NaN élargi de vingt-huit ; le NaN
+    rétréci non silencieux ; le haut d'un élément simple perdu ; `REX.W`
+    ignoré par `cvtsi2sd` ; `ord` rendu comme `unord` ; un entier de
+    trente-deux bits lu sur soixante-quatre ; les éléments empaquetés mal
+    rangés ; la racine qui lit la destination ; l'immédiat de `cmpss` non lu ;
+  - sélecteur (3) : la forme mémoire refusée de nouveau (tombe dans son test,
+    et dans le corpus de la page) ; trente-deux bits écrits.
+- `cargo test --release` : 860 réussis, 0 échec ; `lib`, `x86_wasm` et
+  `host_loop` de `wisq-vm` pareil avec les assertions et les débordements
+  armés. `cargo fmt --check`, les deux `clippy` (dont `wisq-page` en
+  `wasm32-unknown-unknown`), `check-whitespace`, `check-project-sources`,
+  SwiftLint `--strict` : propres. Le Swift n'est pas touché.
+- Compte publié : 3 916 → 3 924 (Swift 3 065 + Rust 859) ; site reconstruit,
+  `bun test` du site : 476 réussis.
+- Le module de la page passe de 586 559 à 625 106 octets (115 595 à 123 742
+  en gzip -9), sur `target/page`.
+
+**Mesures**, l'ISO `alpine-virt-3.24.4-x86_64.iso` (somme vérifiée), son
+`vmlinuz-virt` et son `initramfs-virt`, 512 Mio, ligne `console=ttyS0
+modules=loop,squashfs,sd-mod,usb-storage`, une course à la fois, la RSS
+relevée chaque seconde :
+
+| | jusqu'où | temps | régions | pic résident |
+| --- | --- | --- | --- | --- |
+| émetteur (`kernel-entry`, `WISQ_DISQUE`) | « Mounting boot media: ok » | 181 et 204 s | 143 635 et 142 609 traduites | 907 et 903 Mio |
+| émetteur | le mur x87 | 205, 209 et 218 s (la dernière pendant une série de sabotages) | 154 655 à 156 935 | 906 à 910 Mio |
+| cœur Swift (`X86BootAttemptTests`, `WISQ_PC_DISK_FILE`) | `login: root`, `uname -a`, `ls /` | 89,4 s | 4,41 milliards d'instructions, 49 MIPS | 219 Mio |
+
+Sous l'émetteur, la traduction elle-même coûte 20 à 21 s (0,14 ms par
+région) ; le cache de code tourne à sa borne (16 384 régions, 64 Mio) et
+évince 46 899 à 51 672 régions, dont 33 659 à 37 818 sont retraduites. Le
+reste est la compilation des modules par JavaScriptCore et l'exécution. Le
+disque sert 254 à 368 lectures (2,0 à 3,7 Mo) ; le cœur Swift en sert 1 081
+jusqu'à l'invite. **Le cœur Swift va deux fois plus vite que l'émetteur sur
+ce démarrage**, qui est surtout de l'espace utilisateur neuf
+(`nlplug-findfs`, `modprobe`, `apk`) : chaque programme se traduit, et le
+gain de l'émetteur sur le code qui tourne longtemps ne s'y voit pas.
+
+**Le mur suivant : le x87.** Entre « Mounting boot media: ok » et
+« Installing packages to root filesystem », la course s'arrête sur `db 44
+24 20` — `fild 0x20(%rsp)` —, suivi de `fildll (%rsp)` et `fmulp` : le
+`long double` de musl, dans `lib/ld-musl-x86_64.so.1` au décalage
+`0x15434` du fichier (trouvé en cherchant ces octets dans les paquets de
+l'ISO). Le cœur Swift l'a passé avec `X86X87.swift` et ses voisins : 121
+formes jugées par `x86-x87-oracle.tsv`, un flottant de quatre-vingts bits en
+logiciel. Ce n'est pas une instruction de plus : il faut une pile de huit
+registres de quatre-vingts bits **dans les globales** (sinon `fxsave` ne les
+sauve pas d'un processus à l'autre — donc `GLOBAL_COUNT`, `host.js`,
+`WebKitBench.swift` et chaque module changent), et une arithmétique de
+quatre-vingts bits que WebAssembly n'a pas. C'est une tranche à elle.
+
+**Ce qui reste.**
+
+- **Le x87 sous l'émetteur**, pour atteindre l'invite de connexion de l'ISO.
+  Le flux « cœur » en aura besoin aussi pour la machine native
+  (`x86_extended.rs`) : un flottant de quatre-vingts bits en Rust, écrit une
+  fois et jugé par `x86-x87-oracle.tsv`, servirait les deux — l'interprète
+  directement, l'émetteur par un appel hors de la région ou des fonctions
+  dans le module.
+- **La fusion avec le flux « cœur »** : `Vector::Float` est une variante de
+  plus de `Vector`, et `Cpu::execute_vector` de la branche
+  `claude/pc-rust-coeur` la refusera d'un bras à ajouter (`x86_vector.rs`
+  est touché aux deux bouts : l'énumération et le décodage d'ici, l'exécution
+  là-bas).
+- La carte dans la page de l'application (`desktop.rs` ne la branche pas
+  encore), le magasin du disque côté Swift (`wisq://disque`), le second
+  disque, l'écran, la tablette et le réseau par `carte.js`, et l'instantané
+  de la carte.
+- Les bits d'exception et le mode d'arrondi de MXCSR sous l'émetteur.
+- Le coût de la traduction de l'espace utilisateur neuf : le cache à sa
+  borne retraduit un tiers de ce qu'il évince.
+
 ## 2026-11-21 — Machine PC en Rust : la carte derrière la mémoire, l'écran et la tablette ; Void Xfce démarre son ISO jusqu'au bureau dessiné
 
 **Ce qui n'allait pas.**
