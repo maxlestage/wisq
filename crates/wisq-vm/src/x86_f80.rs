@@ -1627,9 +1627,17 @@ pub fn arctangent(y: F80, x: F80, rounding: Rounding) -> (F80, Report) {
         let (ay, ax) = (Big::of(y).absolute(), Big::of(x).absolute());
         let quotient = ay.over(ax);
         if !x.negative() && quotient.e < -40 {
-            // Le silicium rend le quotient, arrondi, sans le corriger.
-            let (result, report) = divide(y, x, rounding, 64);
-            return inexact(result, report, Report::default());
+            // Le silicium rend le quotient, arrondi selon le mode, sans le
+            // corriger — et tel qu'il le calcule : sur soixante-sept bits,
+            // tronqué. Un reste sous le huitième du dernier rang ne compte
+            // pas (y/x à `…6b39,117` rend `…6b39` vers +∞ aussi).
+            let kept = Big {
+                m: quotient.m & !((1u128 << 61) - 1),
+                negative: y.negative(),
+                ..quotient
+            };
+            let (result, report) = assemble(Wide(kept.m), kept.e + BIAS, kept.negative, rounding);
+            return inexact(result, report, opening);
         }
         let angle = if ax.exceeds(ay) || (ax.e, ax.m) == (ay.e, ay.m) {
             arctangent_small(quotient)

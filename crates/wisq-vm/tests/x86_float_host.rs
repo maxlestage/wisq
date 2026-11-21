@@ -1226,13 +1226,18 @@ fn transcendental_argument(h: &mut Hasard, name: &str) -> [u8; 10] {
     }
 }
 
-/// **C1 se juge là où le résultat ne dépend pas de la façon de calculer** :
+/// **C1 se juge, et la valeur au bit près, là où le résultat ne dépend pas
+/// de la façon de calculer** :
 /// une pile vide ou pleine, un opérande particulier (NaN, infini, zéro,
 /// refusé), un argument que le silicium rend tel quel (le sinus sous 2⁻⁶⁸
 /// ou au-delà de 2⁶³, `f2xm1` hors de ]−1, 1[). Ailleurs, le silicium et la
 /// machine arrondissent chacun leur propre approximation, et une valeur
 /// voisine d'une demie peut monter chez l'un et descendre chez l'autre.
 fn judges_rounding(area: &Area, name: &str, variant: usize) -> bool {
+    // Deux sinus : le second calcule sur ST(1), quel que soit le premier.
+    if name.contains(';') {
+        return false;
+    }
     let class = |register: &[u8]| {
         let significand = u64::from_le_bytes(register[..8].try_into().unwrap());
         let exponent = u16::from_le_bytes([register[8], register[9]]) & 0x7fff;
@@ -1242,7 +1247,8 @@ fn judges_rounding(area: &Area, name: &str, variant: usize) -> bool {
         (special, exponent, significand)
     };
     let (x_special, x_exponent, x_significand) = class(&area[..10]);
-    let (y_special, _, _) = class(&area[0x10..0x1a]);
+    let (y_special, y_exponent, _) = class(&area[0x10..0x1a]);
+    let x_positive = area[9] & 0x80 == 0;
     let two = matches!(name, "fpatan" | "fyl2x" | "fyl2xp1");
     let pushes = matches!(name, "fsincos" | "fptan");
     let stack = variant == 2 || (two && variant == 1) || (pushes && variant == 3);
@@ -1252,6 +1258,8 @@ fn judges_rounding(area: &Area, name: &str, variant: usize) -> bool {
     match name {
         "fsin" | "fcos" | "fsincos" | "fptan" => !(0x3fbb..0x403e).contains(&x_exponent),
         "f2xm1" => x_exponent > 0x3fff || (x_exponent == 0x3fff && x_significand == 1 << 63),
+        // Un quotient sous 2⁻⁴¹ : le silicium rend y/x arrondi.
+        "fpatan" => x_positive && y_exponent + 42 <= x_exponent,
         _ => false,
     }
 }
@@ -1322,6 +1330,7 @@ fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
             got[0xF0..0xF8].fill(0);
             comparable(&mut wanted, None);
             comparable(&mut got, None);
+            let exact = judges_rounding(&area, name, variant);
             let mut same_values = true;
             let mut close = true;
             for index in 0..8 {
@@ -1329,14 +1338,14 @@ fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
                 if wanted[at..at + 10] != got[at..at + 10] {
                     same_values = false;
                     match ulps_apart(&wanted[at..at + 10], &got[at..at + 10]) {
-                        Some(apart) if apart <= ULPS => {
+                        Some(apart) if apart <= ULPS && !exact => {
                             got[at..at + 10].copy_from_slice(&wanted[at..at + 10]);
                         }
                         _ => close = false,
                     }
                 }
             }
-            if !same_values || !judges_rounding(&area, name, variant) {
+            if !same_values || !exact {
                 // C1 : le côté de l'arrondi, que des valeurs voisines ne
                 // partagent pas — ni deux calculs différents d'une même
                 // valeur, au voisinage d'une demie.
