@@ -1330,6 +1330,15 @@ vm.globals[{rip}].value = {entry}n;
 // **RSI désigne la page zéro**, comme un chargeur le fait en entrant dans
 // `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
 vm.globals[6].value = {zero_page}n;
+// **CS à `__BOOT_CS`, les données à `__BOOT_DS`**, comme le protocole de
+// démarrage 64 bits l'exige d'un chargeur (`Documentation/arch/x86/boot.rst`).
+// Ils partaient à zéro, « aucun chargeur n'est passé ici » ; un noyau 6.12 ne
+// recharge jamais CS, et sa première exception précoce — la `#GP(0)` d'un
+// `rdmsr_safe` que la table d'exceptions rattrape — trouvait CS à zéro dans
+// son cadre : `early_fixup_exception` refuse un CS qui n'est pas
+// `__KERNEL_CS`, et le noyau de Void se garait dans sa boucle d'arrêt.
+vm.globals[{segment} + 1].value = 0x10n;
+for (const s of [0, 2, 3]) vm.globals[{segment} + s].value = 0x18n;
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
 // **L'écran de la carte, ses captures et les gestes scriptés.** La base de la
 // mémoire vidéo que le chargeur a annoncée au noyau (`screen_info`) doit être
