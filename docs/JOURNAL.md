@@ -8,6 +8,96 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : l'heure bornée là où l'invité la lit, la reprise d'une machine usée tenue jusqu'au bout
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point relu
+dans le code, chaque sabotage rejoué) :
+
+- *L'heure d'avant 1970 n'était pas arrêtée à 1970 pour l'invité*, malgré
+  l'en-tête (`wisq_pc_set_time`) et l'entrée suivante. Le poste a toujours sa
+  carte branchée (`cmos_ailleurs`), donc l'invité lit les ports 0x70 et 0x71
+  sur la CMOS **de la carte**, qui recevait `secondes × 1000` sans borne. Seule
+  l'horloge des puces de la machine, que l'invité ne lit jamais, était bornée,
+  et c'est elle seule que le test regardait : -5 se lisait le 31 décembre
+  1969 à 23:59:55, `i64::MIN` donnait un siècle `0xFF`.
+- *« Une machine qui a déjà tourné se reprend comme une neuve »* n'était pas
+  tenu sur la RAM : ôter `fill(0)` dans `instantane::reprendre` survivait,
+  parce que la seule machine usée des tests avait tourné le même noyau
+  jusqu'au même point. Une page nulle dans l'instantané, mais écrite dans la
+  machine usée, gardait ses octets.
+- *Le temps rattrapé*, annoncé porté, n'était jugé qu'à zéro : le reposer à
+  zéro survivait, alors qu'il entre dans `wisq_pc_guest_time`.
+- *Quatre lignes de la reprise sans test ni raison* : les remises à zéro de
+  `faulted`, `unmapped` et `jumped` dans `Machine::apres_reprise`, et le
+  recalcul de LMA dans `reprendre`. L'entrée suivante avait ôté trois lignes
+  « qui ne changent rien » et gardé celles-ci sans le dire.
+- *Un commentaire appuyé sur une garde redondante* : `apres_reprise` disait que
+  le bloc coupé se recompare par son étiquette ; or la reprise est prise en
+  tête de `un_bloc`, avant toute construction, et sa case n'a pas pu être
+  reconstruite entre-temps. Ce qui la tient, c'est l'adresse physique et les
+  octets.
+
+**Ce qui est fait.**
+
+- **L'heure est bornée avant d'aller aux deux horloges** (`Poste::regler_l_heure`) :
+  au 1ᵉʳ janvier 1970 en bas, au 31 décembre 9999 à 23:59:59 en haut
+  (`DERNIERE_SECONDE` : deux chiffres BCD de siècle, deux d'année). Le test lit
+  maintenant la date **par les ports de la carte**, comme l'invité, pour -5,
+  -1, `i64::MIN`, 0, la dernière seconde, la suivante et `i64::MAX`, et
+  vérifie que les puces de la machine reçoivent la même heure. L'en-tête le
+  dit.
+- `pc_poste.rs` passe de vingt-quatre à vingt-huit tests :
+  - **une page nulle de l'instantané est nulle dans la machine usée** : trois
+    octets écrits à `0xCD` (dont le dernier de la RAM) dans une machine qui a
+    tourné, et après la reprise toute la RAM est celle de la machine sauvée ;
+  - **le temps rattrapé passe l'instantané** : `cli ; hlt` avec une seconde à
+    rattraper, éteinte, un rattrapé non nul, repris à l'identique dans un
+    poste neuf, et le même temps de l'invité ;
+  - **les témoins de faute d'une machine usée ne passent pas la reprise** :
+    `bswap ; xor ; div` (le test vérifie que `bswap` passe par le chemin
+    général). Un `faulted` laissé levé faisait de `bswap` un refus ; un
+    `unmapped` laissé là faisait de la division par zéro un accès hors de la
+    mémoire. Repris, l'un et l'autre finissent comme la machine neuve : deux
+    instructions retirées, et la faute de division ;
+  - **LMA est recalculé à la reprise** : sur le silicium, ce bit d'EFER est
+    en lecture seule. Un instantané où il est effacé (le test vérifie d'abord
+    qu'EFER est bien à sa place) reprend en mode long et finit la course
+    entière, la même console et le même compte d'instructions.
+- **`jumped` n'est plus remis à zéro** dans `apres_reprise` : il est baissé
+  avant chaque instruction qui le lit (`pas`, `rapide::general`), la ligne
+  était morte. Le commentaire le dit, et dit ce qui tient le bloc coupé.
+- L'en-tête dit aussi, de `wisq_pc_snapshot`, le temps rattrapé, et de
+  `wisq_pc_restore`, la RAM effacée, les témoins oubliés et LMA recalculé.
+- Le compte publié passe de 4 290 à 4 294.
+
+**Les sabotages** (un banc qui lance chaque commande sous `bash -c` avec
+`pipefail`, remplace une occurrence unique et rend la source par
+`git checkout`) :
+
+- ôter la borne, n'en garder que le bas, n'en garder que le haut : **les trois
+  tombent** dans `an_hour_before_1970_stops_at_1970` ;
+- ôter `fill(0)` : **tombe** dans
+  `a_page_that_is_zero_in_the_snapshot_is_zero_in_a_used_machine` ;
+- reposer le rattrapé à zéro : **tombe** dans
+  `the_time_caught_up_crosses_a_snapshot` ;
+- ôter `faulted = false`, ôter `unmapped = None` : **les deux tombent** dans
+  `a_resumed_machine_drops_the_fault_witnesses_of_the_used_one` ;
+- ôter `rafraichir_le_mode_long` : **tombe** dans
+  `the_long_mode_bit_is_recomputed_on_resume`.
+
+**Les vérifications** : `cargo fmt --check`, `clippy -D warnings` propres ;
+`cargo test --release` sur l'espace de travail, 1 176 passés ; `pc_poste` (28)
+et `abi` (6) aussi sous `-C debug-assertions=yes -C overflow-checks=yes` ; la
+cible `wasm32` de `wisq-page` se construit. Rien côté Swift n'a changé (l'en-tête
+ne change que par ses commentaires) : `RustPCMachineTests`, 16 sur 16, après
+avoir forcé la réédition des liens ; SwiftLint `--strict`, `check-whitespace`,
+`check-project-sources` propres ; le site rebâti, `bun test` 476 passés.
+
+**Ce qui reste**, inchangé : l'instantané de la carte (la CMOS de la carte,
+que l'invité lit, n'y est pas : après une reprise, elle garde l'heure qu'on
+lui a donnée), le réseau, les formats d'image de disque, les refus dits dans
+la console, une mesure sur un iPhone.
+
 ## 2026-11-21 — Machine PC en Rust : les gardes du poste et de l'instantané tenues, une machine usée qui reprend, l'image coupée à son mode
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point relu
