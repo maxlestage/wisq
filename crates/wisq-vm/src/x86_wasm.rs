@@ -1408,10 +1408,11 @@ const FAR_STORE: u32 = 4;
 const DEVICE_FRAME: u32 = 1;
 
 /// **Le témoin d'un accès à cheval entre la mémoire d'un périphérique et
-/// une page qui n'en est pas la suite** — la RAM, dans un sens ou dans
-/// l'autre, ou une autre trame —, que l'accès lent pose au lieu d'un code de
-/// faute (un code plus un tient dans cinq bits) : l'hôte s'arrête en le
-/// nommant. Voir `Module::far_first_page` et `Module::far_second_page`.
+/// la RAM**, dans un sens ou dans l'autre, que l'accès lent pose au lieu
+/// d'un code de faute (un code plus un tient dans cinq bits) : l'hôte
+/// s'arrête en le nommant. Un accès à cheval sur deux trames hors de la RAM,
+/// lui, part en deux moitiés. Voir `Module::far_first_page` et
+/// `Module::far_second_page`.
 pub const FAULT_DEVICE_STRADDLE: u64 = 1 << 40;
 
 /// Les locales qu'un accès lent prête à `Module::far_first_page` : la
@@ -4216,6 +4217,21 @@ impl Module {
                 b.local_get(WIDTH).op(code::I64_EXTEND_I32_U);
                 b.call(HOST_IN).op(code::RETURN);
             },
+            // À cheval sur deux trames hors de la RAM : deux `in`, la moitié
+            // basse d'abord. L'adresse de la seconde trame reste sur la pile
+            // pendant le premier appel ; la moitié haute monte au-dessus de
+            // la basse.
+            |b| {
+                b.load(TRANSLATE_CELL);
+                b.local_get(DEVICE);
+                Self::far_low_width(b, OFFSET);
+                b.call(HOST_IN).local_set(VALUE);
+                Self::far_high_width(b, OFFSET, WIDTH);
+                b.call(HOST_IN);
+                Self::far_low_bits(b, OFFSET);
+                b.op(code::I64_SHL);
+                b.local_get(VALUE).op(code::I64_OR).op(code::RETURN);
+            },
         );
         // L'accès tient dans sa page : une lecture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
@@ -4327,6 +4343,21 @@ impl Module {
                 b.local_get(VALUE)
                     .local_get(WIDTH)
                     .op(code::I64_EXTEND_I32_U);
+                b.call(HOST_OUT).op(code::RETURN);
+            },
+            // À cheval sur deux trames hors de la RAM : deux `out`, les
+            // octets bas à la fin de la première page, le reste au début de
+            // la seconde trame — dont l'adresse attend sur la pile.
+            |b| {
+                claimed(b);
+                b.load(TRANSLATE_CELL);
+                b.local_get(DEVICE).local_get(VALUE);
+                Self::far_low_width(b, OFFSET);
+                b.call(HOST_OUT);
+                b.local_get(VALUE);
+                Self::far_low_bits(b, OFFSET);
+                b.op(code::I64_SHR_U);
+                Self::far_high_width(b, OFFSET, WIDTH);
                 b.call(HOST_OUT).op(code::RETURN);
             },
         );
@@ -4483,20 +4514,27 @@ impl Module {
     /// périphérique** (la trame porte `DEVICE_FRAME`) : `device` fait l'accès
     /// entier par `in` ou `out`, à l'adresse que `locals.device` porte, et
     /// rend. **Un accès à cheval marche d'abord la page d'après**, comme le
-    /// chemin de la RAM :
+    /// chemin de la RAM, et par une marche de la même sorte :
     ///
     /// - si elle manque, ou refuse l'écriture, c'est sa faute, et rien n'est
     ///   parti vers l'hôte — une écriture n'a pas laissé sa première moitié
     ///   chez le périphérique ;
-    /// - si elle est la suite physique de la première, dans le même
-    ///   périphérique, l'accès part en un seul morceau, à l'adresse de son
-    ///   premier octet : un pilote cartographie une BAR d'un bloc, ses pages
-    ///   se suivent en physique comme en virtuel ;
-    /// - sinon — la RAM, ou une trame qui n'est pas la suivante —, le témoin
-    ///   dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête en le nommant. Avant,
-    ///   l'accès partait entier chez le périphérique, et sa moitié haute
-    ///   n'arrivait jamais dans la RAM : seul le sens RAM → périphérique
-    ///   s'arrêtait (`far_second_page`).
+    /// - si elle est hors de la RAM elle aussi, `split` fait **deux accès** :
+    ///   la fin de la première page à l'adresse de son premier octet, puis le
+    ///   reste au début de la seconde trame, celle que la seconde marche a
+    ///   laissée dans `TRANSLATE_CELL`. Chaque moitié tient dans sa page,
+    ///   donc dans la région de la carte qui la contient, ou chez personne.
+    ///   C'est ce que fait le silicium d'un accès non aligné à la mémoire non
+    ///   cachée : il le coupe. Que les deux trames se suivent ou non, que la
+    ///   seconde soit au même périphérique ou au suivant — la dernière page
+    ///   de la mémoire vidéo est suivie des registres de l'écran —, chaque
+    ///   moitié arrive où elle va. Avant, l'accès partait entier quand les
+    ///   trames se suivaient : `Carte::region` le refusait s'il débordait
+    ///   d'une région, et le bus flottait sans qu'aucun arrêt ne le dise ;
+    /// - si elle est dans la RAM, le témoin dit `FAULT_DEVICE_STRADDLE`, et
+    ///   l'hôte s'arrête en le nommant : la servir couperait l'accès entre la
+    ///   RAM et l'hôte, et aucun pilote ne le fait. Le sens RAM →
+    ///   périphérique s'arrête de même (`far_second_page`).
     fn far_first_page(
         b: &mut Body,
         walk: u32,
@@ -4504,6 +4542,7 @@ impl Module {
         locals: FarLocals,
         nothing: impl Fn(&mut Body),
         device: impl FnOnce(&mut Body),
+        split: impl FnOnce(&mut Body),
     ) {
         let FarLocals {
             width,
@@ -4529,28 +4568,42 @@ impl Module {
         Self::far_fits(b, offset, width);
         b.op(code::I32_EQZ).op(code::IF).op(code::VOID);
         Self::far_second_walk(b, walk, kind, high, &nothing);
-        // La seconde trame est-elle la suite physique de la première ?
-        // `TRANSLATE_CELL` porte la seconde, d'avant le repli. **C'est aussi
-        // ce qui écarte la RAM** : la première trame est au-delà de la RAM,
-        // sa suivante aussi, et une trame de la RAM n'est jamais là — un
-        // second test, sur `DEVICE_FRAME`, ne jugerait aucun cas de plus.
-        b.load(TRANSLATE_CELL);
-        b.local_get(address)
-            .constant(!0xFFF)
-            .op(code::I64_AND)
-            .constant(0x1000)
-            .op(code::I64_ADD)
-            .op(code::I64_NE);
-        b.op(code::IF).op(code::VOID);
+        // La seconde trame dans la RAM : l'arrêt nommé. Hors de la RAM : les
+        // deux moitiés, chacune chez qui la porte.
+        b.local_get(high).constant32(DEVICE_FRAME).op(code::I32_AND);
+        b.op(code::I32_EQZ).op(code::IF).op(code::VOID);
         b.store(FAULT_SLOT, |b| {
             b.constant(FAULT_DEVICE_STRADDLE);
         });
         nothing(b);
         b.op(code::RETURN);
         b.op(code::END);
+        split(b);
         b.op(code::END);
         device(b);
         b.op(code::END);
+    }
+
+    /// **La largeur de la moitié basse d'un accès à cheval** — ce qui reste
+    /// de la première page depuis le décalage —, en `i64`.
+    fn far_low_width(b: &mut Body, offset: u32) {
+        b.constant32(0x1000).local_get(offset).op(code::I32_SUB);
+        b.op(code::I64_EXTEND_I32_U);
+    }
+
+    /// **La largeur de la moitié haute**, en `i64` : la largeur, moins la
+    /// moitié basse.
+    fn far_high_width(b: &mut Body, offset: u32, width: u32) {
+        b.local_get(width).local_get(offset).op(code::I32_ADD);
+        b.constant32(0x1000).op(code::I32_SUB);
+        b.op(code::I64_EXTEND_I32_U);
+    }
+
+    /// **De combien de bits la moitié haute est décalée dans la valeur**,
+    /// en `i64` : huit par octet de la moitié basse.
+    fn far_low_bits(b: &mut Body, offset: u32) {
+        Self::far_low_width(b, offset);
+        b.constant(3).op(code::I64_SHL);
     }
 
     /// **L'adresse physique d'un accès à un périphérique**, en `i64` : la
