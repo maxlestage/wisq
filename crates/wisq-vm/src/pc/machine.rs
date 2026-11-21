@@ -199,6 +199,20 @@ fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> 
 /// l'émetteur partage, avale `f0` partout ; c'est ici, sur ce que l'un ou
 /// l'autre décodeur a rendu, que la machine refuse. `instruction` vaut `None`
 /// pour ce que lit le second décodeur : rien n'y porte `lock`.
+///
+/// Le balayage traverse tous les préfixes, dans n'importe quel ordre : un
+/// `f0` derrière un préfixe de segment, `66`, `67`, `f2`, `f3` ou un REX
+/// reste un `lock` (`2e f0 48 01 c3`, `66 f0 39 03`, `f2 f0 0f 58 c1` sont
+/// `#UD` sur l'hôte comme sans leur préfixe).
+///
+/// **L'inverse n'est pas tenu** : ce cœur refuse des formes que l'hôte
+/// exécute, parce que `decode` ne les lit pas, `lock` ou non — `xacquire`
+/// devant une lecture-modification-écriture (`f2 f0 ff 03`, `f0 f2 ff 03`,
+/// `f2 f0 0f c1 03` ; sans `lock`, `f2 ff 03` est refusé aussi) et un REX
+/// suivi d'un autre préfixe (`48 f0 ff 03`, `48 66 ff 03`), que le silicium
+/// ignore. Pour la même raison, l'entrée des REX de la liste ne change rien
+/// aujourd'hui dans la machine : seul le test unitaire de cette fonction la
+/// tient.
 fn verrou_admis(octets: &[u8], instruction: Option<&Decoded>) -> bool {
     let verrouillee = octets
         .iter()
@@ -222,10 +236,18 @@ fn verrou_admis(octets: &[u8], instruction: Option<&Decoded>) -> bool {
         Op::Add | Op::Or | Op::Adc | Op::Sbb | Op::And | Op::Sub | Op::Xor => {
             !instruction.memory_is_source && !instruction.discards
         }
-        Op::Not | Op::Neg | Op::Inc | Op::Dec => true,
+        // `xchg`, `xadd` et `cmpxchg` n'ont pas de forme où la mémoire n'est
+        // que lue : `decode` ne leur pose jamais `memory_is_source`, et leur
+        // mémoire est toujours écrite.
+        Op::Not
+        | Op::Neg
+        | Op::Inc
+        | Op::Dec
+        | Op::Exchange
+        | Op::ExchangeAndAdd
+        | Op::CompareAndExchange
+        | Op::CompareAndExchangeSixteen => true,
         Op::Bit(action) => action != BitAction::Test,
-        Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => !instruction.memory_is_source,
-        Op::CompareAndExchangeSixteen => true,
         _ => false,
     }
 }
@@ -302,9 +324,11 @@ fn lire(octets: &[u8]) -> Option<Lue> {
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
         .or_else(|| sans_taille_d_adresse(octets))
         .or_else(|| non_temporel(octets))?;
+    // `Lue::Attente` ne sort que d'`attente`, qui a rendu la main plus haut :
+    // ici, seules `Commune` et `Etendue` arrivent.
     let admise = match &lue {
         Lue::Commune(instruction) => verrou_admis(octets, Some(instruction)),
-        Lue::Etendue(_) | Lue::Attente(_) => verrou_admis(octets, None),
+        _ => verrou_admis(octets, None),
     };
     admise.then_some(lue)
 }
@@ -1765,5 +1789,49 @@ impl Machine {
             autre => unreachable!("{autre:?} n'est pas une instruction de système"),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Chaque préfixe de la liste de `verrou_admis` est traversé.** Devant
+    /// `lock add %rax,%rbx` (`f0 48 01 c3`, entre registres, `#UD`), chacun
+    /// des préfixes que le balayage connaît, posé avant le `f0`, ne le cache
+    /// pas. La machine ne peut pas juger tous ces préfixes — aucun décodeur ne
+    /// lit un REX suivi d'un autre préfixe — ; la fonction, si.
+    #[test]
+    fn every_prefix_of_the_list_is_crossed_to_find_lock() {
+        let instruction = decode(&[0xF0, 0x48, 0x01, 0xC3]).expect("lisible");
+        let admise = decode(&[0xF0, 0xFF, 0x03]).expect("lisible");
+        let mut prefixes = vec![0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF2, 0xF3];
+        prefixes.extend(0x40..=0x4F);
+        for prefixe in prefixes {
+            assert!(
+                !verrou_admis(&[prefixe, 0xF0, 0x48, 0x01, 0xC3], Some(&instruction)),
+                "{prefixe:02x} f0 48 01 c3"
+            );
+            assert!(
+                !verrou_admis(
+                    &[prefixe, prefixe, 0xF0, 0x48, 0x01, 0xC3],
+                    Some(&instruction)
+                ),
+                "{prefixe:02x} {prefixe:02x} f0 48 01 c3"
+            );
+            // Sans `f0`, le préfixe seul n'est pas un `lock`.
+            assert!(
+                verrou_admis(&[prefixe, 0x48, 0x01, 0xC3], Some(&instruction)),
+                "{prefixe:02x} 48 01 c3"
+            );
+            // Et devant ce qui porte `lock`, il ne l'empêche pas.
+            assert!(
+                verrou_admis(&[prefixe, 0xF0, 0xFF, 0x03], Some(&admise)),
+                "{prefixe:02x} f0 ff 03"
+            );
+        }
+        // Le balayage s'arrête au premier octet qui n'est pas un préfixe : un
+        // `f0` au-delà appartient à autre chose (ici un déplacement).
+        assert!(verrou_admis(&[0x48, 0x01, 0xC3, 0xF0], Some(&instruction)));
     }
 }

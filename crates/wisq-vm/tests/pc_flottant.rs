@@ -543,6 +543,68 @@ fn an_address_size_prefix_without_address_is_ignored() {
 /// (`#UD`) : la sonde `r8/c/verrou` du bloc-notes les a jouées une à une.
 /// Une forme admise va jusqu'au `hlt`, sa longueur juste ; `lock incl` et
 /// `lock cmpxchg` écrivent ce qu'ils doivent. Une forme refusée n'est pas lue.
+/// **Un préfixe devant `lock` ne le cache pas.** Sur l'hôte (sonde
+/// `ctrl-r8/c/p.c` du bloc-notes), un préfixe de segment, `66` ou `f3` posé
+/// avant le `f0` laisse la forme `#UD` (SIGILL) comme sans lui ; `f2` aussi,
+/// devant le vectoriel. Chaque forme est jouée deux fois : sans `lock`, elle
+/// s'exécute jusqu'au `hlt` (le préfixe est donc lu par un décodeur de la
+/// machine) ; avec, elle est refusée. Ôter un préfixe de la liste de
+/// `verrou_admis` ferait admettre les formes qui le portent.
+#[test]
+fn a_prefix_before_lock_does_not_hide_it() {
+    let formes: [(&str, u8, &[u8]); 14] = [
+        ("cs lock add %rax,%rbx", 0x2E, &[0x48, 0x01, 0xC3]),
+        ("ds lock add (%rbx),%rax", 0x3E, &[0x48, 0x03, 0x03]),
+        ("es lock nop", 0x26, &[0x90]),
+        ("ss lock inc %eax", 0x36, &[0xFF, 0xC0]),
+        ("fs lock add %rax,%rbx", 0x64, &[0x48, 0x01, 0xC3]),
+        ("gs lock cmp %rax,(%rbx)", 0x65, &[0x48, 0x39, 0x03]),
+        ("66 lock add %ax,%bx", 0x66, &[0x01, 0xC3]),
+        ("66 lock cmp %ax,(%rbx)", 0x66, &[0x39, 0x03]),
+        ("f3 lock add %rax,%rbx", 0xF3, &[0x48, 0x01, 0xC3]),
+        ("f3 lock mov %rax,(%rbx)", 0xF3, &[0x48, 0x89, 0x03]),
+        ("f2 lock addsd %xmm1,%xmm0", 0xF2, &[0x0F, 0x58, 0xC1]),
+        ("f2 lock movsd (%rbx),%xmm0", 0xF2, &[0x0F, 0x10, 0x03]),
+        ("f3 lock addss %xmm1,%xmm0", 0xF3, &[0x0F, 0x58, 0xC1]),
+        ("66 lock paddd %xmm1,%xmm0", 0x66, &[0x0F, 0xFE, 0xC1]),
+    ];
+    for (nom, prefixe, corps) in formes {
+        let mut sans = vec![prefixe];
+        sans.extend_from_slice(corps);
+        sans.push(0xF4);
+        let mut machine = nouvelle(&sans);
+        machine.cpu.regs[3] = 0x6000;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{nom}, sans lock : jusqu'au hlt");
+        assert_eq!(
+            machine.cpu.rip,
+            0x1000 + sans.len() as u64,
+            "{nom}, sans lock"
+        );
+
+        for devant in [&[][..], &[0x90, 0x90]] {
+            let mut code = devant.to_vec();
+            code.extend_from_slice(&[prefixe, 0xF0]);
+            code.extend_from_slice(corps);
+            code.push(0xF4);
+            let mut machine = nouvelle(&code);
+            machine.cpu.regs[3] = 0x6000;
+            let issue = machine.tourner(10);
+            assert!(
+                issue
+                    .as_ref()
+                    .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+                "{devant:02x?} {nom} : {issue:?}"
+            );
+            assert_eq!(
+                machine.cpu.rip,
+                0x1000 + devant.len() as u64,
+                "{devant:02x?} {nom} : arrêtée sur elle"
+            );
+        }
+    }
+}
+
 #[test]
 fn lock_is_taken_only_before_what_can_carry_it() {
     let admises: [(&str, &[u8]); 30] = [
