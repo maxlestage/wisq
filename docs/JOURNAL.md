@@ -8,6 +8,164 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : le contrôle du flottant, l'état entier du x87 contre l'hôte, les exceptions démasquées et `#MF`
+
+**Ce qui n'allait pas** (le contrôle de la tranche précédente, chaque point
+rejoué contre le silicium de l'hôte, un Xeon, avant d'être corrigé) :
+
+- *La garde du préfixe `67`* : retirer `lods`, `cmps` ou `scas` de la liste
+  des chaînes ne faisait tomber aucun test ; `67 ac`, `67 a6` et `67 ae`
+  auraient adressé RSI et RDI entiers sans que rien ne le voie. La garde
+  `instruction.length + 1 > 15` était morte (le reste n'a que quatorze
+  octets).
+- *Le mot de contrôle* : `fldcw`, `fldenv` et `frstor` le gardaient tel quel.
+  Le silicium lève le bit 6 et efface les bits 7 et 13 à 15 : `fldcw 0x0000`
+  rend 0x0040, `fldcw 0xe97a` rend 0x097a. 1 956 mots tirés sur 2 000
+  divergeaient.
+- *Le dénormal à côté d'un NaN* n'était tu qu'entre registres : `fadds`,
+  `fcoms`, `fucom` le signalaient encore, et `fcoms` ou `flds` aussi sur une
+  faute de pile.
+- *Les valeurs que le processeur refuse* (non normalisées, pseudo-NaN,
+  pseudo-infinis) étaient calculées par l'addition, la multiplication, la
+  division et la comparaison, rangées par `fst` et `fist` ; un
+  pseudo-dénormal revenait brut là où le silicium le renormalise à
+  l'exposant 1.
+- *La pile pleine et les registres vides* : `fxtract`, `fptan` (et
+  `fsincos`) gardaient une valeur calculée dans ST(1) ; `fptan` d'un NaN ou
+  d'un infini empilait 1,0 ; `fcmov` ne lisait pas ses registres quand la
+  condition ne tenait pas.
+- *Les fonctions transcendantes* taisaient UE et DE, levaient l'inexact sur
+  des résultats exacts (atan2(y, +∞) = ±0), et arrondissaient au plus proche
+  quel que soit le mode : `fpatan` d'un quotient minuscule rendait −0 là où
+  le silicium rend le plus petit dénormal vers −∞.
+- *Les exceptions démasquées* : la réponse masquée était écrite quand même,
+  et rien ne livrait `#MF`. Le journal du 21 au matin le disait mal.
+- *`fisttp`*, du SSE3 que CPUID n'annonce pas, était lu.
+- *Sans test* : les sondes de `fnsave` et de `fnstenv` à cheval sur une page
+  absente, C1 qui tombe sur un chargement, C2 qui tombe au sinus suivant,
+  `fbld` du zéro décimal négatif, un transfert de disque qui finit au
+  dernier octet de la RAM ; et `fbstp` n'était comparé que sur huit octets
+  de dix.
+
+**Ce qui est fait.**
+
+- *Le préfixe `67`* : `an_address_size_prefix_without_address_is_ignored`
+  refuse aussi `lods`, `cmps` et `scas` ; la garde morte est retirée.
+- *Le mot de contrôle* passe par `control_word` (`fldcw`, `fldenv`, `frstor`).
+- *Le dénormal* d'un opérande en mémoire suit les règles entre registres :
+  tu devant un NaN, une opération invalide, une division par zéro, une
+  faute de pile.
+- *Les valeurs refusées* sont invalides partout (`refused`, la
+  comparaison, `narrowed`, `as_integer`) ; `canonical` renormalise un
+  pseudo-dénormal rendu tel quel (zéro ajouté, `fprem`, la comparaison).
+- *La pile* : le débordement se juge avant l'opérande (`push_overflows`) ;
+  `fxtract`, `fptan` et `fsincos` sur une pile pleine rangent l'indéfini
+  deux fois ; `fcmov` lit ses deux registres ; `fptan` d'un NaN le range
+  deux fois.
+- *Les fonctions transcendantes* sont récrites sur un nombre de travail de
+  cent vingt-huit bits (`Big` : mantisse, exposant sans borne), par les
+  mêmes séries, puis arrondies une fois selon le mode : UE, PE et C1 en
+  sortent comme du reste du x87, et π/2 a cent quatre-vingt-douze bits pour
+  réduire un grand argument. Là où le silicium ne calcule pas, il est suivi
+  tel qu'on le voit : le sinus, le cosinus et la tangente d'un argument sous
+  2⁻⁶⁸ rendent l'argument (ou 1) sans arrondi ; `fpatan` d'un quotient sous
+  2⁻⁴⁰ rend le quotient arrondi ; `f2xm1` hors de [−1, 1] et `fyl2xp1` à −1
+  et en dessous rendent leur argument ; un résultat non nul est toujours
+  inexact (`fyl2x` de 8 et 1 rend 3, inexact), et un dénormal rendu est un
+  dépassement par le bas.
+- *Les exceptions démasquées*, comme sur l'hôte : invalide (faute de pile
+  comprise), dénormal ou division par zéro arrêtent l'instruction avant
+  qu'elle ne range — pile, registres et mémoire intacts, seul son drapeau
+  levé, et une comparaison pose quand même C3, C2 et C0 ; un chargement d'un
+  dénormal se fait pourtant. Un rangement en mémoire qui déborde, par le
+  haut ou par le bas, s'arrête aussi, sans l'inexact. Puis **la prochaine
+  instruction qui attend livre `#MF`** (vecteur 16) : toute instruction du
+  x87 sauf `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv` et `fnsave`,
+  toute instruction du MMX, et `fwait` (`Lue::Attente`, que les blocs
+  laissent au pas à pas).
+- *`fisttp`* (`DB /1`, `DD /1`, `DF /1`) reste illisible ; le test des
+  rangements juge `fist` sans dépilement à sa place.
+
+**Les tests contre l'hôte** (`x86_float_host.rs`, sur un hôte x86-64) :
+
+| test | formes | cas | ce qui est comparé |
+|---|---|---|---|
+| l'état entier, toutes classes, quatre piles | 70 | 280 000 | les 108 octets de `fnsave` (pointeurs exceptés), l'opérande en mémoire, RFLAGS pour `fcomi` |
+| les transcendantes, toutes classes, quatre piles | 9 | 72 000 | la valeur à l'unité du dernier rang, le reste au bit près ; C1 là où il ne dépend pas de l'approximation |
+| les exceptions démasquées | 69 | 276 000 (dont 1,5 % écartés) | l'état entier, le mot de contrôle à 0x40 |
+| les rangements | 9 | 54 000 | les seize octets de l'aire, `fbstp` sur ses dix |
+
+Les classes tirées comprennent celles qu'`extended` ne tirait pas : non
+normalisés, pseudo-NaN, pseudo-infinis, pseudo-dénormaux, et en mémoire
+les simples et doubles dénormaux, les NaN signalants, le zéro décimal
+signé. Avant les corrections, la sonde du contrôle comptait 15 287 écarts
+sur 140 000 cas exacts ; après, aucun. Ailleurs : `pc_flottant` gagne
+`fnsave_and_fnstenv_across_a_missing_page_leave_nothing_behind` et
+`an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction`,
+`pc_carte` `a_transfer_ending_at_the_last_byte_of_ram_is_served`,
+`x86_extended_oracle` trois tests manuels (C1, C2, le zéro décimal).
+
+**Les sabotages** (un retrait ou un changement d'une ligne chacun, le test
+lancé, la source rendue et `git diff` vide après chacun) :
+
+52 sabotages, tous tombés au bout du compte (`r4/sab/lot1.out`, `lot2.out`,
+`lot3.out` dans le bloc-notes) :
+
+| où | sabotage | tombe dans |
+|---|---|---|
+| `67` | `lods`, `cmps`, `scas` retirés de la liste (A1 à A3) | `an_address_size_prefix_without_address_is_ignored` |
+| carte | `fin <= len` → `<` (C10) | `a_transfer_ending_at_the_last_byte_of_ram_is_served` |
+| sondes | celle de `fnsave`, celle de `fnstenv` (B5, B7) | `fnsave_and_fnstenv_across_a_missing_page_leave_nothing_behind` |
+| mot de contrôle | bit 6 non levé, bits hauts gardés, `fldenv` sans `control_word` (B2, B2b, D12) | l'état entier, les démasquées |
+| dénormal | celui d'une comparaison en mémoire (B1, B1b), tu à côté d'un NaN (D1), en mémoire (D2), devant une division par zéro (D2b) | l'état entier |
+| refusés | dans le calcul (D3), la comparaison (D5), `fst` (D6), `fist` (D7) | l'état entier |
+| pseudo-dénormaux | non renormalisés : zéro ajouté (D4), comparaison (D13), `fprem` (D14) | l'état entier |
+| pile | `fcmov` (D8), `fxtract` pleine (D9), `fld` pleine (D11), `fptan` d'un NaN (D10) | l'état entier, les transcendantes |
+| C1, C2 | C1 sur un chargement (C1), C1 hors du domaine (C3), C2 qui reste (C4), C1 de `fptan` après l'empilement (E7) | les tests manuels |
+| `fbld`, `fbstp` | −0 rendu +0 (C7), le signe de `fbstp` (G1) | `fbld_keeps_the_sign_of_a_decimal_zero`, les rangements |
+| transcendantes | seuil du sinus (E1), de `fpatan` à 2⁻⁶⁰ et 2⁻³⁰ (E2, E2b), UE d'un dénormal (E3), `Side::Below` (E4), `f2xm1` hors domaine (E5) et à 1 (E11), DE de `fyl2xp1` (E6), la queue de π/2 (E8), PE d'un zéro exact (E9), DE de `fyl2x` sur zéro (E10), les 67 bits (E12) | les transcendantes, le test de la bibliothèque |
+| démasquées | l'arrêt (F2), `#MF` (F3), le rangement qui déborde (F4), les codes d'un arrêt (F5), `fwait` (F6), le MMX (F7), le dénormal chargé (F8), `fwait` dans un bloc (F9) | les démasquées, `an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction` |
+| décodeur | `fisttp` lu (F1) | `the_extended_decoder_reads_exactly_its_forms` |
+
+Deux ont d'abord survécu, deux trous du test : E2 (le seuil de `fpatan`
+déplacé à 2⁻⁶⁰ ne changeait la valeur que d'une unité, que le test
+tolérait) et E7 (C1 de `fptan` n'était jugé que là où il vaut zéro). Le test
+des transcendantes juge désormais la valeur au bit près là où elle ne
+dépend pas de l'approximation, et `fptan_reports_the_rounding_of_the_tangent`
+tient C1 ; ce test-là a montré ce que le silicium fait d'un quotient
+minuscule — soixante-sept bits tronqués —, ce que la machine fait aussi.
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (939 passés, 0 échec), `cargo build --release -p wisq-page
+--target wasm32-unknown-unknown`, `check-whitespace.sh`,
+`check-project-sources.sh` : tout passe. Le compte publié passe de 4 125 à
+4 135 (Rust 1 070) ; le site rebâti, `bun test` : 476 passés. Les tests de
+l'hôte tiennent sur six graines différentes. L'initramfs 6.18.60
+(`rdinit=/bin/sh`) rend les mêmes `awk`, `printf '%.20Lf'` et `seq`
+qu'avant, à 143,8 MIPS ; le banc commun, en courses alternées contre
+9acd97c8 : avant 16,35 · 16,28 · 16,73 s, après 16,67 · 16,80 · 16,14 s,
+sous le bruit.
+
+**Ce qui reste.**
+
+- *Un dépassement démasqué vers un registre* : le silicium range le
+  résultat au biais ajusté de 24 576 ; ici, la réponse masquée. Le test les
+  écarte, et les compte (1,5 % des tirages démasqués).
+- *Les transcendantes* ne sont jugées qu'à l'unité du dernier rang hors des
+  cas où le résultat ne dépend pas de l'approximation : le silicium n'est
+  pas correctement arrondi (sa tangente entre 2⁻⁶⁸ et 2⁻³² dit « monté »
+  là où la valeur vraie dit le contraire). Le sinus, le cosinus et la
+  tangente ne sont comparés que sous 1,375 en grandeur ; au-delà, le π de
+  soixante-six bits du silicium s'écarte du vrai, et l'ancien test le juge à
+  2⁻⁵⁸ près jusqu'à 3.
+- *CR0.NE* n'est pas consulté : `#MF` est livré même sans lui (le mode de
+  FERR# et de l'IRQ 13 n'est pas modélisé). FIP, FDP et FOP restent à zéro.
+- *Le cœur Swift* lit encore `fisttp` et garde les écarts corrigés ici ;
+  ce flux n'y touche pas.
+- *Sur un hôte ARM*, ces tests ne compilent pas : les corpus restent le
+  seul juge.
+
 ## 2026-11-21 — Machine PC en Rust : le x87, le MMX et le flottant de SSE et SSE2, la carte branchée, et Alpine démarre son ISO jusqu'à l'invite
 
 **Ce qui n'allait pas.**
