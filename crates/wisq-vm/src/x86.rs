@@ -6404,6 +6404,36 @@ mod tests {
     /// **`addr32 call` est un `call`, et la taille d'adresse est refusée
     /// partout ailleurs.**
     ///
+    /// **Les écritures non temporelles se lisent comme leurs sœurs
+    /// alignées**, en mémoire seule. `66 0f e7 14 33` (`movntdq
+    /// %xmm2,(%rbx,%rsi)`) arrêtait le démarrage de Void dans un module du
+    /// noyau ; `movntps` et `movntpd` sont la même écriture. La forme
+    /// registre n'existe pas.
+    #[test]
+    fn the_non_temporal_stores_read_like_the_aligned_ones() {
+        for (forme, soeur) in [
+            (
+                &[0x66, 0x0f, 0xe7, 0x14, 0x33][..],
+                &[0x66, 0x0f, 0x7f, 0x14, 0x33][..],
+            ),
+            (&[0x0f, 0x2b, 0x14, 0x33], &[0x0f, 0x29, 0x14, 0x33]),
+            (
+                &[0x66, 0x0f, 0x2b, 0x14, 0x33],
+                &[0x66, 0x0f, 0x29, 0x14, 0x33],
+            ),
+        ] {
+            assert_eq!(decode(forme), decode(soeur), "{forme:02x?}");
+            assert!(decode(forme).is_some(), "{forme:02x?} se lit");
+        }
+        for registre in [&[0x66, 0x0f, 0xe7, 0xc1][..], &[0x0f, 0x2b, 0xc1]] {
+            assert_eq!(
+                decode(registre),
+                None,
+                "{registre:02x?} : pas de forme registre"
+            );
+        }
+    }
+
     /// `67 e8 18 25 01 00` est le mur de `libcrypto.so.3` d'Alpine, juste après
     /// celui du préfixe FS : l'éditeur de liens remplace un appel par la GOT
     /// (`ff 15`, six octets) par un appel direct de même longueur, et comble
