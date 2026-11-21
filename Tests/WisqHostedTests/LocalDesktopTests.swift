@@ -864,5 +864,57 @@ final class EmitterDesktopTests: XCTestCase {
         XCTAssertEqual(desktop.unreadable, 0)
         XCTAssertNil(desktop.failure)
     }
+
+    /// Le petit noyau monté dans un dossier neuf, et sa vue démarrée.
+    private func startedDesktop(in work: URL) async throws -> EmitterDesktop {
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        let kernel = work.appendingPathComponent("vmlinux")
+        try Self.kernel().write(to: kernel)
+        let prepared = try EmitterMachine.prepare(
+            .init(kernel: kernel, ramBytes: 64 << 20, screen: .init(width: 8, height: 4),
+                  clock: 1_795_178_096_000),
+            scratch: work)
+        let desktop = try EmitterDesktop(prepared: prepared)
+        desktop.start()
+        try await desktop.waitUntilReady()
+        return desktop
+    }
+
+    /// **Le chemin d'envoi de l'application** — `type`, `press`, `touch`,
+    /// `scroll`, `stop` passent par lui, sans attendre de valeur — et non
+    /// celui d'`evaluate`, que le test d'avant emploie. Un `toucher` que
+    /// l'invité ne prend pas rend `undefined`, et rien n'arrête la machine en
+    /// chemin : la touche arrive, le noyau va jusqu'à son `hlt`.
+    func testTheApplicationsSendPathReachesTheGuest() async throws {
+        guard EmitterMachine.isInThisBuild else { return }
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-emetteur-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let desktop = try await startedDesktop(in: work)
+        desktop.touch(x: 0.5, y: 0.5, buttons: 1)
+        desktop.touch(x: 0.5, y: 0.5, buttons: 0)
+        desktop.scroll(notches: 1)
+        desktop.type("a")
+        let stopped = await desktop.waitUntilStopped(patience: 60)
+        XCTAssertEqual(stopped?.why, "arrêtée sur hlt", "panne : \(String(describing: desktop.failure))")
+        let r15 = try await desktop.evaluate("window.wisq.registre(15)")
+        XCTAssertEqual(r15 as? String, "30", "la touche envoyée sans attendre, lue à l'i8042")
+        XCTAssertNil(desktop.failure)
+    }
+
+    /// **`stop`, et le bouton Fermer qui en dépend** : le noyau attend sa
+    /// touche, et la machine s'arrête quand même, sous le nom de l'arrêt
+    /// demandé.
+    func testStopHaltsAMachineThatWaitsForAKey() async throws {
+        guard EmitterMachine.isInThisBuild else { return }
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-emetteur-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: work) }
+        let desktop = try await startedDesktop(in: work)
+        desktop.stop()
+        let stopped = await desktop.waitUntilStopped(patience: 30)
+        XCTAssertEqual(stopped?.why, "arrêtée par l'application", "panne : \(String(describing: desktop.failure))")
+        XCTAssertNil(desktop.failure)
+    }
 }
 #endif

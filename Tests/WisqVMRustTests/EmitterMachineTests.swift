@@ -153,7 +153,24 @@ final class EmitterMachineTests: XCTestCase {
             (.init(kernel: kernel, disk: work.appendingPathComponent("absent.iso"), ramBytes: 64 << 20),
              .unreadable("absent.iso")),
         ]
-        for (setup, expected) in cases {
+        // Un ELF sans segment chargeable (son seul en-tête est PT_DYNAMIC), et
+        // un ELF dont le point d'entrée tombe hors de son segment.
+        var dynamic = EmitterFixtures.elf(EmitterFixtures.kernel())
+        dynamic[64] = 2
+        let unloadable = try write(dynamic, "dynamique", in: work)
+        var astray = EmitterFixtures.elf(EmitterFixtures.kernel())
+        astray.replaceSubrange(24..<32, with: EmitterFixtures.le64(EmitterFixtures.physical + 0x10_0000))
+        let elsewhere = try write(astray, "ailleurs", in: work)
+        let empty = try write([], "vide.cpio", in: work)
+        let refused: [(EmitterMachine.Setup, EmitterMachine.Refusal)] = [
+            (.init(kernel: unloadable, ramBytes: 64 << 20), .noLoadableSegment),
+            (.init(kernel: elsewhere, ramBytes: 64 << 20),
+             .noSegmentCarriesTheEntry(EmitterFixtures.physical + 0x10_0000)),
+            // Une archive vide n'est pas une archive : le noyau la déclarerait
+            // de zéro octet, et chercherait sa racine ailleurs sans le dire.
+            (.init(kernel: kernel, initrd: empty, ramBytes: 64 << 20), .unreadable("vide.cpio")),
+        ]
+        for (setup, expected) in cases + refused.map({ ($0.0, Optional($0.1)) }) {
             guard let expected else {
                 XCTAssertNoThrow(try EmitterMachine.prepare(setup, scratch: work), "\(setup)")
                 continue
@@ -361,6 +378,46 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(store.layeredSectors, 2, "aucun refus n'a rien écrit")
     }
 
+    /// **Une écriture de plus de 64 Mio est refusée**, même sur un disque
+    /// assez grand pour la prendre : c'est une page qui a divergé, et la
+    /// couche, en mémoire, la garderait entière.
+    func testAWriteBeyondTheLargestRangeIsRefusedEvenOnABigDisk() throws {
+        let work = try folder("grande")
+        let disk = work.appendingPathComponent("grand.img")
+        _ = FileManager.default.createFile(atPath: disk.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: disk)
+        try handle.truncate(atOffset: EmitterStore.largestRange + (1 << 20))
+        try handle.close()
+        let store = EmitterStore(files: [:], disk: (url: disk, bytes: EmitterStore.largestRange + (1 << 20)))
+        let url = URL(string: "wisq-machine://machine/disque?a=0")!
+        let response = store.respond(method: "PUT", url: url, body: Data(count: Int(EmitterStore.largestRange) + 1))
+        XCTAssertEqual(response.status, 416)
+        XCTAssertEqual(store.layeredSectors, 0)
+        XCTAssertEqual(store.writes, 0)
+    }
+
+    /// **Un fichier qui ne rend pas ce qu'il promet est un 500**, pour le
+    /// disque comme pour un morceau : il ne rend jamais moins, ni un corps vide
+    /// sous un 200, que la page poserait comme s'il était juste.
+    func testAFileShorterThanPromisedIsRefusedNotShortened() throws {
+        let work = try folder("court")
+        let short = try write([UInt8](repeating: 7, count: 1000), "court.img", in: work)
+        let store = EmitterStore(
+            files: ["noyau-0": .file(short, offset: 512, length: 1024)],
+            disk: (url: short, bytes: 4096))
+        let read = store.respond(method: "GET", url: URL(string: "wisq-machine://machine/disque?a=900&n=200")!)
+        XCTAssertEqual(read.status, 500, "le disque rend 100 octets pour 200")
+        XCTAssertTrue(String(decoding: read.body, as: UTF8.self).contains("100 octets à 900 pour 200"),
+                      String(decoding: read.body, as: UTF8.self))
+        XCTAssertEqual(store.reads, 0)
+        let gone = store.respond(method: "GET", url: URL(string: "wisq-machine://machine/disque?a=2000&n=8")!)
+        XCTAssertEqual(gone.status, 500, "au-delà de la fin du fichier")
+        let piece = store.respond(method: "GET", url: URL(string: "wisq-machine://machine/noyau-0")!)
+        XCTAssertEqual(piece.status, 500, "le morceau rend 488 octets pour 1024")
+        XCTAssertThrowsError(try EmitterStore.read(short, at: 0, count: 1001))
+        XCTAssertEqual(try EmitterStore.read(short, at: 0, count: 1000).count, 1000)
+    }
+
     func testTheSectorsOfARangeAreCutAtTheirEdges() {
         let cut = EmitterStore.sectors(at: 510, count: 516)
         XCTAssertEqual(cut.map(\.0), [0, 1, 2])
@@ -414,6 +471,9 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(EmitterBridge.touch(x: 0.25, y: 2, buttons: 1), "window.wisq.toucher(0.25,1.0,1)")
         XCTAssertEqual(EmitterBridge.touch(x: .nan, y: -.infinity, buttons: 0), "window.wisq.toucher(0.5,0.5,0)")
         XCTAssertEqual(EmitterBridge.scroll(notches: -1000), "window.wisq.defiler(-127)")
+        XCTAssertEqual(EmitterBridge.scroll(notches: 1000), "window.wisq.defiler(127)")
+        XCTAssertEqual(EmitterBridge.scroll(notches: 3), "window.wisq.defiler(3)")
+        XCTAssertEqual(EmitterBridge.stop, "window.wisq && window.wisq.arreter()")
     }
 
     func testHardwareKeysAreTheirSetOneCodes() {
@@ -426,6 +486,9 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertEqual(codes(0xFFBE), [0x3B], "F1")
         XCTAssertEqual(codes(0xFFC9), [0x58], "F12")
         XCTAssertEqual(codes(0xFFE1), [0x2A], "Maj")
+        XCTAssertEqual(codes(0xFFE2), [0x2A], "Maj droite : la même touche pour l'invité")
+        XCTAssertEqual(codes(0xFFE4), [0x1D], "Ctrl droite")
+        XCTAssertEqual(codes(0xFFEA), [0x38], "Alt droite")
         let up = EmitterBridge.events(forKeysym: 0xFF52, down: false)
         XCTAssertEqual(up.map(\.code), [.up])
         XCTAssertEqual(up.map(\.down), [false])
@@ -449,6 +512,11 @@ final class EmitterMachineTests: XCTestCase {
         XCTAssertFalse(EmitterSetting.opens(iso, enabled: true, installed: false, moduleEmbedded: false),
                        "une construction sans module")
         XCTAssertFalse(EmitterSetting.opens(.unknown, enabled: true, installed: false, moduleEmbedded: true))
+        // **Un noyau RISC-V a son cœur**, et l'émetteur ne traduit que du
+        // x86-64 : il part dans le sien, pas dans celui-ci.
+        let riscv = KernelImageKind.executable(GuestArchitecture(.riscv, bits: 32))
+        XCTAssertEqual(riscv.core, .riscv32)
+        XCTAssertFalse(EmitterSetting.opens(riscv, enabled: true, installed: false, moduleEmbedded: true))
         XCTAssertFalse(EmitterSetting.opens(nil, enabled: true, installed: false, moduleEmbedded: true))
     }
 

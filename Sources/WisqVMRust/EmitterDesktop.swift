@@ -110,7 +110,7 @@ public final class EmitterDesktop {
     }
     public func scroll(notches: Int) { send(EmitterBridge.scroll(notches: notches)) }
     /// Arrêter la machine à la fin de sa tranche.
-    public func stop() { send("window.wisq && window.wisq.arreter()") }
+    public func stop() { send(EmitterBridge.stop) }
 
     /// **Évaluer une expression dans la page** et rendre sa valeur : ce que
     /// font les gestes ci-dessus, et ce qu'un test lit.
@@ -124,10 +124,21 @@ public final class EmitterDesktop {
         }
     }
 
+    /// **Envoyer sans attendre**, par le même chemin qu'`evaluate` : celui
+    /// que le test hébergé juge.
+    ///
+    /// C'était `evaluateJavaScript`, dont la forme `async` rend un `Any` non
+    /// optionnel. Plusieurs de ces scripts rendent `undefined` — `arreter()`,
+    /// `toucher()` quand l'invité n'a pas pris la tablette —, et ce pont
+    /// supporte mal un résultat nul selon les versions du SDK. Rien ne jugeait
+    /// ce chemin, pas même le test hébergé, qui passait par `evaluate`.
+    /// `callAsyncJavaScript` rend un `Any?` : un `undefined` y est `nil`. Les
+    /// envois partent dans l'ordre, chaque tâche du fil principal appelant
+    /// WebKit avant de rendre la main.
     private func send(_ script: String) {
         guard isReady else { return }
-        Task { @MainActor [view] in
-            _ = try? await view.evaluateJavaScript(script)
+        Task { @MainActor [weak self] in
+            _ = try? await self?.evaluate(script)
         }
     }
 

@@ -291,14 +291,23 @@ public enum EmitterMachine {
 
     /// **Monter la machine.** `scratch` reçoit le `vmlinux` décompressé d'un
     /// `bzImage` — servi de là plutôt que gardé en mémoire.
+    ///
+    /// **Le pic de mémoire n'est pas la taille du `vmlinux`** : le fichier
+    /// lu, la charge utile et le flux deflate que `KernelPayload` recopie,
+    /// l'ELF décompressé, puis la `Data` que l'écriture et la lecture des
+    /// segments partagent. Mesuré sur Void (un `bzImage` de 13,2 Mio, un
+    /// `vmlinux` de 55 Mio, construction de débogage), le pic résident monte
+    /// de **151 Mio** quand le fichier lu vivait jusqu'au bout, et de
+    /// **137 Mio** depuis que chaque tampon part dès qu'il ne sert plus :
+    /// deux fois et demie le `vmlinux` (JOURNAL, 21 novembre).
     public static func prepare(_ setup: Setup, scratch: URL) throws -> Prepared {
-        let original: [UInt8]
+        var original: [UInt8]
         do {
             original = [UInt8](try Data(contentsOf: setup.kernel))
         } catch {
             throw Refusal.unreadable(setup.kernel.lastPathComponent)
         }
-        let elf: [UInt8]
+        var elf: [UInt8]
         do {
             elf = try KernelPayload.elf(from: original)
         } catch let refusal as KernelPayload.Refusal {
@@ -306,21 +315,27 @@ public enum EmitterMachine {
         } catch {
             throw Refusal.kernel(.notAKernel)
         }
+        let inflated = !(elf.count == original.count && elf == original)
+        // Chaque tampon part dès qu'il ne sert plus : le fichier lu, puis
+        // l'ELF une fois recopié dans la seule `Data` qui reste.
+        original = []
+        let image = Data(elf)
+        elf = []
         // **Le noyau servi depuis un fichier** : l'original s'il est déjà un
         // ELF, sinon celui qu'on vient de décompresser.
         let kernelFile: URL
-        if elf.count == original.count, elf == original {
+        if !inflated {
             kernelFile = setup.kernel
         } else {
             try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
             kernelFile = scratch.appendingPathComponent("vmlinux")
             do {
-                try Data(elf).write(to: kernelFile, options: .atomic)
+                try image.write(to: kernelFile, options: .atomic)
             } catch {
                 throw Refusal.unreadable(kernelFile.lastPathComponent)
             }
         }
-        guard let loadable = RustKernelImage.loads(Data(elf)) else { throw Refusal.noLoadableSegment }
+        guard let loadable = RustKernelImage.loads(image) else { throw Refusal.noLoadableSegment }
         let entry = loadable.entry
         guard loadable.segments.contains(where: {
             $0.physicalAddress <= entry && entry < $0.physicalAddress &+ $0.memorySize
