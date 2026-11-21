@@ -8,6 +8,193 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Émetteur : l'écran, le clavier et la tablette de la carte raccordés ; Void Xfce jusqu'à l'espace utilisateur de son initramfs, et une boucle du planificateur
+
+**Ce qui n'allait pas.**
+
+- **Deux défauts du dernier contrôle.** `ecrit(adresse, 1)` dans
+  `ramDeLaCarte.ecrire` survivait à `host_loop` : le seul test du DMA sur du
+  code traduit posait la fonction au premier octet du tampon. Et `adresse > 0`
+  à la place de `adresse >= 0` dans `dansLaRam` survivait aussi : rien ne
+  tenait l'extrémité zéro.
+- **L'émetteur repliait toute trame hors de la RAM dans la RAM.** Sous 1 Gio,
+  la mémoire vidéo de la carte de Bochs, à `0xE000_0000`, tombait sur
+  `0x2000_0000` : un bureau qui peint son écran écrivait dans la RAM d'un
+  processus, et l'écran restait noir. Rien n'envoyait un accès de l'invité à
+  la carte, et `carte.js` ne servait ni l'écran ni la tablette.
+- **Void Xfce sous l'émetteur ne passait pas sa quatrième région**, puis,
+  une fois celle-ci levée, chaque mur suivant (voir plus bas).
+
+**Ce qui est fait.**
+
+- **La mémoire des périphériques** (`x86_wasm.rs`). La marche garde la trame
+  d'avant le repli ; hors de la RAM, elle vide la case du tampon (le chemin
+  rapide n'y passe jamais), lève le bit zéro de la trame rendue
+  (`DEVICE_FRAME`) et laisse la trame dans `TRANSLATE_CELL`. L'accès lent
+  envoie alors l'accès entier à l'hôte par `in` ou `out`, à son adresse
+  physique — toujours au-delà de `0xFFFF`, donc jamais un port. Un accès à
+  cheval entre la RAM et un périphérique s'arrête sur son nom
+  (`FAULT_DEVICE_STRADDLE`). Pas d'import neuf : les hôtes qui n'ont pas de
+  carte rendent le bus qui flotte.
+- **Le raccord** (`host.js`, `carte.js`). Au-delà de `0xFFFF`, `env.in` et
+  `env.out` vont à `carte.memoire` (tous les bits à un quand personne ne
+  répond, à la largeur de l'accès) ; la tablette est livrée à chaque tour
+  avant la recopie des lignes ; un hôte qui prendrait un périphérique pour de
+  la RAM (une IDT posée là) s'arrête en nommant l'adresse. `machine()`
+  expose `taper(texte)`, `toucher(x, y, boutons)` et `ecran(depuis)` : le
+  rectangle montré d'un bloc, sans le remplissage des lignes, et rien de
+  recopié quand la révision n'a pas bougé. `carte(…, { ecran })` branche la
+  carte de Bochs et la tablette.
+- **Un arrêt nommé plutôt qu'un refus** : une instruction lue que
+  l'émetteur ne sait pas produire arrête son bloc, RIP sur elle, au lieu de
+  faire refuser la région entière (sauf à son entrée). Chez Void 6.12, un
+  `call panic` est suivi du `lret` trente-deux bits de l'entrée PVH, que rien
+  n'exécute en mode long.
+- **`kernel-entry`** : `WISQ_ECRAN=1280x800` (la page zéro décrit la mémoire
+  vidéo de la carte hors de la RAM, sans entrée e820 :
+  `zero_page_with_device_screen`), `WISQ_CAPTURE=<fichier.ppm>` (à la fin,
+  au geste `capture`, et toutes les `WISQ_CAPTURE_TOUTES` secondes si
+  l'image a bougé), `WISQ_GESTES` (`secondes:texte:…`, `secondes:toucher:x,y,b`),
+  `WISQ_HEURE` (l'horloge CMOS figée), CS à `__BOOT_CS` et les données à
+  `__BOOT_DS` en entrant, et un battement toutes les trente secondes de mur
+  (l'horloge de l'invité, les interruptions, IF, les 8259 et le 8254, le
+  disque, l'écran).
+- **Les murs de Void, chacun levé** :
+  1. le `lret` de l'entrée PVH, derrière `call panic` : l'arrêt nommé ;
+  2. « /usr/lib/libc.so.6: CPU ISA level is lower than required », puis
+     « Attempted to kill init! » : `cpuid` annonce le socle x86-64 de la
+     glibc (CX8, CMOV, MMX, FXSR, SSE, SSE2 ; `cmpxchg8b` et MMX promis sans
+     être produits, comme le cœur Swift avant `X86MMX.swift`), et un
+     fournisseur que la glibc connaît — `AuthenticAMD`, famille 15, modèle
+     107, le `qemu64` du cœur Swift : pour un nom inconnu, la glibc ne lit
+     jamais la feuille un ;
+  3. sous AMD, une `#GP` précoce (le `rdmsr_safe` de `0x8b`) dont le cadre
+     portait CS à zéro : `early_fixup_exception` la refusait, et le noyau se
+     garait. `kernel-entry` entre maintenant comme le protocole le veut ;
+  4. `mov %edx,%fs` avec `0x2b` dans `__switch_to` (`X86_BUG_NULL_SEG`) :
+     un sélecteur non nul dans FS ou GS lit maintenant son descripteur dans
+     la GDT, en anneau zéro (la LDT, la limite, l'absence et l'anneau trois
+     restent des arrêts nommés) ;
+  5. `fnclex ; emms ; fild` avant chaque `fxrstor`
+     (`X86_BUG_FXSAVE_LEAK`) : `cpuid` sert `0x8000_0000` et
+     `0x8000_0008`, qui annonce `XSAVEERPTR` (aucun calcul x87 ne
+     s'exécute ici, les pointeurs d'erreur sont toujours nuls) et les tailles
+     d'adresse du qemu64 ;
+  6. `67 8d 51 ff` (`lea -1(%ecx),%edx`) dans la glibc : le préfixe de
+     taille d'adresse se lit devant `lea` sans REX.W, où il ne change rien ;
+  7. `66 0f e7` (`movntdq`) dans un module du noyau (le banc du RAID) :
+     `movntps`, `movntpd` et `movntdq` se lisent comme les écritures
+     alignées.
+- **Un aller-retour sur le nom du fournisseur**, défait. `GenuineIntel` a
+  été essayé contre la boucle d'en dessous : une course l'a passée, la
+  suivante, au même réglage, y est retombée. `cpuid` redit `AuthenticAMD`.
+
+**Comment c'est vérifié.**
+
+- **Onze tests neufs** : dans `host_loop`, le DMA sur la dernière ligne
+  d'un tampon, un statut à l'adresse physique zéro, l'invité qui peint
+  l'écran par sa mémoire vidéo (deux pages, huit octets d'un coup, un
+  registre DISPI par la BAR2, la RAM repliée intacte), un mode à lignes
+  rembourrées puis décalé, un accès à cheval RAM/périphérique et le bus qui
+  flotte, un toucher qui arrive au pilote de la tablette par sa BAR0 et la
+  ligne 10, l'hôte qui ne prend pas un périphérique pour de la RAM, une
+  région qui s'arrête devant ce qu'elle ne sait pas produire, un sélecteur
+  qui prend sa base dans la GDT (et ses quatre arrêts) ; dans la
+  bibliothèque, la page zéro d'un écran sur la carte, les écritures non
+  temporelles ; et trois tests élargis (le préfixe `67` devant `lea`, `cpuid`
+  au complet, `iretd` refusé à son adresse). Deux tests adaptés, sans rien
+  perdre : la trame au-dessus de la RAM rend le bus qui flotte au lieu de la
+  RAM repliée, et `iretd` au milieu d'une région arrête son bloc.
+- **Trente-neuf sabotages d'une ligne**, chacun restauré par le script
+  (`git diff` revenu tel quel). Trente-huit tombent ; un survit :
+  - la garde du DMA (2), la marche (le tampon rempli, le bit absent,
+    l'adresse repliée, la largeur ignorée, le cheval ignoré), l'hôte (le bus
+    d'un octet, la livraison absente, l'écriture perdue, la révision
+    ignorée, le cheval délivré, le repli de l'hôte, l'erreur non
+    rattrapée), `carte.js` (la valeur sur 32 bits, le remplissage, le début
+    ignoré, le toucher sans bouton), l'arrêt nommé (le refus entier, `lret`
+    refusé), la page zéro (base dans la RAM, trop haute, sans champs), le
+    sélecteur (LDT, limite, présence, octet haut de la base, anneau trois,
+    sélecteur non rangé), `cpuid` (sans SSE2, sans `XSAVEERPTR`, sans
+    feuille étendue, Intel, l'ancienne signature), le décodeur (`lea` refusé, `lea`
+    large accepté, sans `movnt`, `movnt` en registre) : tous tombent ;
+  - **survit** la reprise des octets d'une traduction ratée
+    (`body.bytes.truncate`) : aucune forme connue n'écrit avant de refuser
+    (28 160 formes balayées, aucune) — une garde sans cas ;
+  - trois survivaient d'abord — la largeur de l'accès lent, le début ignoré
+    d'une image sans remplissage, la limite de la GDT — et sont tombés quand
+    leur test a été renforcé (huit octets relus d'un coup, un mode décalé
+    sans remplissage, un descripteur présent au-delà de la limite) ; ils sont
+    comptés dans les trente-huit.
+- `cargo test --release` : 878 réussis, 0 échec. `cargo fmt --check`,
+  `clippy -D warnings`, `check-whitespace`, `check-project-sources`,
+  SwiftLint `--strict` : propres. `WebKitBench.swift` régénéré
+  (`--example bench-module`) : la marche a changé ; `swift build
+  --build-tests`, les treize `WebKitBenchTests` et la suite Swift entière
+  passent. Compte publié : 3 931 → 3 942 (Swift 3 065 + Rust 877).
+
+**Mesures**, l'ISO `void-live-x86_64-20250202-xfce.iso` (somme vérifiée),
+son `vmlinuz` (charge gzip à l'octet 21 196) et son `initrd` (148 480 octets
+de microcode, puis 147 Mio en xz), 1 Gio, la ligne de l'application
+(`IsoBoot.commandLine`), l'écran 1280 × 800, une course à la fois :
+
+| course | réglage | jusqu'où | mur | régions | pic résident |
+| --- | --- | --- | --- | --- | --- |
+| a1 | avant | le `lret` PVH, 4ᵉ région | 11 s | 3 | 362 Mio |
+| a3 | arrêt nommé | « CPU ISA level is lower than required », à 5,9 s de l'invité | ~12 min | ~17 800 | — |
+| a7 | AMD, CS posé, GDT | `fnclex` avant `fxrstor` | 473 s | 12 228 | 1 248 Mio |
+| a8 | `XSAVEERPTR` | la glibc de l'initramfs (`67 8d`) | 601 s | 70 668 | 1 325 Mio |
+| a9 | initramfs déballé | `movntdq` d'un module | 420 s | 72 796 | 1 470 Mio |
+| a10–a13, v1, i2 | initramfs déballé ou non, AMD ou Intel | la boucle du planificateur | 12 à 20 min | ~166 000 | 1,3 à 1,4 Gio |
+| m1 | la course de l'application (AMD, initramfs de l'ISO, `loglevel=4`), l'heure figée | la boucle, à 8,4 s de l'invité | 849 s | 163 552 | 1 283 Mio |
+| i1 | Intel, initramfs déballé | 846 lectures de l'ISO (4,6 Mo), 9,6 s de l'invité, tours épuisés | 1 087 s | 565 614 | 3 425 Mio |
+
+**Jusqu'où le démarrage va.** Le noyau 6.12.11 de Void s'initialise, déballe
+son initramfs, et l'espace utilisateur de dracut tourne (programmes de la
+glibc, modules chargés). Puis, dans six courses sur sept, à six à quinze
+secondes de son temps, le noyau tourne sans fin, **interruptions éteintes**,
+entre `pick_next_task_fair` et `sched_balance_newidle` — l'IRQ 0 en
+attente, le disque jamais lu (sa ligne 5 encore masquée : `virtio_blk` ne
+s'est pas lié). La sixième (i1) passe ce point, lit l'ISO, et s'arrête sur
+la borne de ses tours ; sa jumelle (i2, même réglage) est retombée dans la
+boucle. **Le bureau n'est pas atteint** : aucune image n'a
+été peinte (révision zéro dans toutes les courses), donc aucune capture à
+regarder.
+
+**L'émetteur contre le cœur Swift, sur ce qui est comparable.** Le cœur
+Swift démarre ce bureau en ~2 527 s (~97 milliards d'instructions, 39 à 46
+MIPS). L'émetteur ne compte pas les instructions, mais ses blocs (le TSC de
+l'invité avance d'un par bloc, plus les attentes d'un `hlt`) : i1 en fait
+9,6 milliards en 1 087 s, **environ neuf millions de blocs par seconde**,
+soit 40 à 45 millions d'instructions par seconde à quatre ou cinq
+instructions par bloc — pas plus vite que le cœur Swift. Le temps va à
+l'espace utilisateur neuf : 565 614 traductions (0,14 ms chacune, 81 s en
+tout) et leur compilation par JavaScriptCore ; le cache, à sa borne de
+64 Mio, évince et retraduit un tiers de ce qu'il traduit, et les régions de
+Void pèsent 23 Kio de wasm en moyenne (le double d'Alpine). Le pic de 3,4 Gio
+d'i1 est celui du moteur, au-delà de la borne du cache.
+
+**Ce qui reste.**
+
+- **La boucle du planificateur**, le mur. Elle n'est pas reproductible d'une
+  course à l'autre (l'horloge CMOS donnait l'heure du mur, dont le noyau tire
+  une part de son aléa ; `WISQ_HEURE` la fige maintenant), et elle ne dépend
+  pas du nom du fournisseur. Ce qu'elle suppose : `cfs.h_nr_running` non nul
+  et rien à choisir — une incohérence des compteurs du planificateur, donc
+  très probablement une instruction mal rendue quelque part (une opération
+  verrouillée, un drapeau, un `mul` sur 128 bits), pas une absence nommée.
+  La trouver demande une course rejouée et une comparaison pas à pas avec
+  l'interprète.
+- **Le bureau** : `bochs-drm`, Xorg, lightdm et Xfce derrière la boucle ;
+  les gestes et les captures sont prêts et n'ont rien eu à montrer.
+- **La vitesse** : ~9 M blocs/s, compilé à la mesure de ce que JavaScriptCore
+  traduit ; « plusieurs centaines de MIPS » demande de traduire moins (un
+  cache qui garde plus, des régions plus petites) avant de traduire mieux.
+- Le chargeur de l'application doit poser CS à `__BOOT_CS` comme
+  `kernel-entry` ; `desktop.rs` ne branche ni l'écran ni la tablette.
+- La fusion avec `claude/pc-rust-coeur` (voir l'entrée d'en dessous) ;
+  `cpuid` du cœur Rust et de l'émetteur devront dire la même chose.
+
 ## 2026-11-21 — Émetteur : la moitié `ecrire` de la garde de `host.js`, que rien ne tenait
 
 **Ce qui n'allait pas.** L'entrée d'en dessous disait la garde de
