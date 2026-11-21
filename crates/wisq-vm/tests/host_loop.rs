@@ -24768,7 +24768,8 @@ console.log("remise " + vm.carte.remise());
 
 /// **Un texte tapé réveille un invité arrêté, au rythme d'une main.**
 ///
-/// `taperTexte` pose ses frappes en file, et la carte ne les rend qu'à leur
+/// `vm.taper` — ce que la page appelle, et qui passe à `taperTexte` de la
+/// carte — pose ses frappes en file, et la carte ne les rend qu'à leur
 /// heure — trente millisecondes tenues, vingt d'écart, en tics du 8254 —, par
 /// `battre`. Un invité qui attend une touche dort sur un `hlt`, et ici aucune
 /// horloge n'est programmée : rien d'autre que la carte ne peut le réveiller.
@@ -24820,7 +24821,7 @@ fn typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand() {
         &[(BASE, &program), (HANDLER, &clavier)],
         &[(0x31, HANDLER)],
         "const arriere = null;",
-        r#"console.log("en_file " + vm.carte.taperTexte("ab"));"#,
+        r#"console.log("en_file " + vm.taper("ab"));"#,
         "",
     );
     assert_eq!(
@@ -26081,7 +26082,7 @@ console.log("ecran " + vm.ecran().image.subarray(0, 4).join(","));
     assert_eq!(
         (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
         (
-            "un accès à cheval entre la RAM et la mémoire d'un périphérique",
+            "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite",
             fautive.to_string()
         ),
         "l'arrêt se nomme, RIP sur l'instruction : {text}"
@@ -26091,6 +26092,346 @@ console.log("ecran " + vm.ecran().image.subarray(0, 4).join(","));
         ("0,0,0,0".to_string(), "0,0,0,0".to_string()),
         "ni la RAM ni l'écran n'ont reçu la moitié de l'écriture : {text}"
     );
+}
+
+/// **Dans l'autre sens aussi : un accès qui part de la mémoire d'un
+/// périphérique et déborde sur une page qui n'en est pas la suite physique
+/// s'arrête sur son nom**, sans rien écrire nulle part.
+///
+/// La page virtuelle `0x48000` est posée sur la mémoire vidéo
+/// (`0xE000_0000`) ; la page d'après, `0x49000`, sur ce que le cas choisit.
+/// L'invité écrit huit octets à `0x48FFC` (ou les lit, dans RCX) :
+///
+/// - la page d'après est la RAM (`0x3F000`) : arrêt. Avant, l'accès partait
+///   entier chez l'écran — les huit octets dans `0xE000_0FFC..0xE000_1003`,
+///   et rien dans la RAM —, « arrêtée sur hlt », sans qu'aucun arrêt ne le
+///   nomme ;
+/// - la page d'après est la mémoire vidéo, mais pas la suite (`0xE000_5000`) :
+///   arrêt aussi ;
+/// - la page d'après est la suite (`0xE000_1000`) : l'accès passe, en un
+///   morceau, et les huit octets sont dans l'image ;
+/// - la page d'après manque : la faute de page est délivrée, CR2 sur
+///   `0x49000`, et rien n'est parti chez l'écran.
+#[test]
+fn an_access_from_device_memory_into_what_does_not_follow_it_stops() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const DEPART: u64 = 0x4_8000;
+    const VALEUR: u64 = 0x1122_3344_5566_7788;
+    let arret = "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite";
+    let valeur = VALEUR.to_le_bytes().map(|o| o.to_string()).join(",");
+    for (nom, suite, lire, attendu, ecran) in [
+        (
+            "vers la RAM",
+            Some(0x3_F000u64),
+            false,
+            arret,
+            "0,0,0,0,0,0,0,0",
+        ),
+        (
+            "vers la RAM, en lecture",
+            Some(0x3_F000),
+            true,
+            arret,
+            "0,0,0,0,0,0,0,0",
+        ),
+        (
+            "vers une autre trame",
+            Some(0xE000_5000),
+            false,
+            arret,
+            "0,0,0,0,0,0,0,0",
+        ),
+        (
+            "vers la suite",
+            Some(0xE000_1000),
+            false,
+            "arrêtée sur hlt",
+            valeur.as_str(),
+        ),
+        (
+            "vers une page absente",
+            None,
+            false,
+            "arrêtée sur hlt",
+            "0,0,0,0,0,0,0,0",
+        ),
+    ] {
+        let mut ailleurs = vec![(DEPART, 0xE000_0000u64)];
+        if let Some(trame) = suite {
+            ailleurs.push((DEPART + 0x1000, trame));
+        }
+        let tables = tables_avec(&ailleurs);
+        let mut program = Vec::new();
+        paginer(&mut program);
+        program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
+        program.extend_from_slice(&IDT_POINTER.to_le_bytes());
+        program.extend_from_slice(&[0x0f, 0x01, 0x1b]); // lidt (%rbx)
+        program.extend_from_slice(&[0x48, 0xc7, 0xc4]); // mov $STACK,%rsp
+        program.extend_from_slice(&(STACK as u32).to_le_bytes());
+        program.extend_from_slice(&[0x31, 0xdb]); // xor %ebx,%ebx
+        rax(&mut program, DEPART + 0xFFC);
+        program.extend_from_slice(&[0x48, 0xb9]); // movabs $…,%rcx
+        program.extend_from_slice(&VALEUR.to_le_bytes());
+        let fautive = BASE + program.len() as u64;
+        if lire {
+            program.extend_from_slice(&[0x48, 0x8b, 0x08]); // mov (%rax),%rcx
+        } else {
+            program.extend_from_slice(&[0x48, 0x89, 0x08]); // mov %rcx,(%rax)
+        }
+        program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+        let fin = BASE + program.len() as u64;
+        // La faute de page : CR2 dans RBX, puis l'arrêt.
+        let handler: &[u8] = &[0x0f, 0x20, 0xd3, 0xfa, 0xf4]; // mov %cr2,%rbx ; cli ; hlt
+        let mut pieces: Vec<(u64, &[u8])> = vec![(BASE, &program), (HANDLER, handler)];
+        for (at, octets) in &tables {
+            pieces.push((*at, octets));
+        }
+        let text = avec_la_carte(
+            &bun,
+            "cheval-depuis-peripherique",
+            &pieces,
+            &[(14, HANDLER)],
+            r#"
+const arriere = null;
+globalThis.optionsDeLaCarte = { ecran: { largeur: 32, hauteur: 40 } };
+"#,
+            "",
+            r#"
+console.log("ram " + Array.from(new Uint8Array(vm.memory.buffer, 0x3f000, 4)).join(","));
+console.log("ecran " + Array.from(vm.ecran().image.subarray(0xffc, 0x1004)).join(","));
+console.log("rcx " + BigInt.asUintN(64, vm.globals[1].value));
+"#,
+        );
+        let (rip, rbx) = match (attendu == arret, suite) {
+            (true, _) => (fautive, 0),
+            (false, Some(_)) => (fin, 0),
+            (false, None) => (HANDLER + handler.len() as u64, DEPART + 0x1000),
+        };
+        assert_eq!(
+            (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+            (attendu, rip.to_string()),
+            "{nom} : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "rbx "),
+            rbx.to_string(),
+            "{nom} : CR2 sur la page d'après, s'il y a eu faute : {text}"
+        );
+        assert_eq!(
+            (line_of(&text, "ram "), line_of(&text, "ecran ")),
+            ("0,0,0,0".to_string(), ecran.to_string()),
+            "{nom} : la RAM n'a rien reçu ; l'écran, l'accès entier ou rien : {text}"
+        );
+        assert_eq!(
+            line_of(&text, "rcx "),
+            VALEUR.to_string(),
+            "{nom} : une lecture arrêtée ne pose rien dans RCX : {text}"
+        );
+    }
+}
+
+/// **Une grande page posée sur la mémoire vidéo y mène, et non dans la
+/// RAM.**
+///
+/// Linux cartographie souvent une BAR par grandes pages. L'invité pose, en
+/// plus de la pagination de la RAM par pages de 4 Kio, une page de 2 Mio à
+/// `0x20_0000` sur `0xE000_0000` (le bit PS au niveau du répertoire), et une
+/// page de 1 Gio à `0x4000_0000` sur `0xC000_0000` (au niveau d'au-dessus) :
+/// `0x6000_0000` y est `0xE000_0000`. Il écrit un pixel par chacune. Ce qui
+/// doit être vrai : les deux pixels sont dans l'image, et la RAM où ces
+/// adresses tomberaient repliées (`0xE000_0000 & 0x3FFFF`, zéro) n'a pas
+/// bougé. La marche par grande page doit garder la trame d'avant le repli,
+/// comme la feuille : sans elle, la trame se juge sur une valeur périmée, et
+/// la page tombe dans la RAM.
+#[test]
+fn a_huge_page_on_device_memory_reaches_the_device() {
+    use disque_montage::*;
+    use peripheriques_montage::{PD, PDPT};
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let tables = tables_avec(&[]);
+    let deux_mio = (0xE000_0000u64 | 0x83).to_le_bytes();
+    let un_gio = (0xC000_0000u64 | 0x83).to_le_bytes();
+    let mut program = Vec::new();
+    paginer(&mut program);
+    poser(&mut program, 0x20_0000, 4, 0x00ff_0000); // rouge, par 2 Mio
+    poser(&mut program, 0x6000_0000 + 4, 4, 0x0000_ff00); // vert, par 1 Gio
+    rax(&mut program, 0x20_0000 + 4);
+    program.extend_from_slice(&[0x8b, 0x18]); // mov (%rax),%ebx : relu par 2 Mio
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let canari = vec![0xaa_u8; 0x2000];
+    let mut pieces: Vec<(u64, &[u8])> = vec![(0, &canari), (BASE, &program)];
+    for (at, octets) in &tables {
+        pieces.push((*at, octets));
+    }
+    pieces.push((PD + 8, &deux_mio));
+    pieces.push((PDPT + 8, &un_gio));
+    let text = avec_la_carte(
+        &bun,
+        "grande-page",
+        &pieces,
+        &[],
+        r#"
+const arriere = null;
+globalThis.optionsDeLaCarte = { ecran: { largeur: 32, hauteur: 40 } };
+"#,
+        "",
+        r#"
+const e = vm.ecran();
+const pixel = (x) => new DataView(e.image.buffer).getUint32(x * 4, true).toString(16);
+console.log("pixels " + [pixel(0), pixel(1)].join(","));
+console.log("canari " + new Uint8Array(vm.memory.buffer, 0, 0x2000).every((o) => o === 0xaa));
+"#,
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+    assert_eq!(
+        line_of(&text, "pixels "),
+        "ff0000,ff00",
+        "un pixel par la page de 2 Mio, un par celle de 1 Gio : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "rbx "),
+        0xff00u32.to_string(),
+        "relu par la grande page : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "canari "),
+        "true",
+        "rien dans la RAM où ces adresses tomberaient repliées : {text}"
+    );
+}
+
+/// **Une réservation ne part jamais chez un périphérique.** Les écritures de
+/// seize octets (`movdqu`, ici) jugent d'abord l'accès entier
+/// (`Body::claim`), sans rien écrire, puis écrivent deux fois huit octets.
+/// Dans l'accès lent, le chemin d'un périphérique doit rendre la main sur une
+/// réservation avant `out` : sinon la carte reçoit une écriture de plus, de
+/// seize octets. Le pilote JavaScript compte ce que la carte reçoit, par sa
+/// mémoire : pour un `movdqu` dans une page, puis pour un autre à cheval sur
+/// deux pages de la mémoire vidéo qui se suivent, deux écritures de huit
+/// octets chacun, et rien d'autre. Les seize octets sont dans l'image.
+#[test]
+fn a_claim_is_never_sent_to_a_device() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const VIDEO: u64 = 0x4_0000;
+    const SOURCE: u64 = 0x1_4000;
+    let tables = tables_avec(&[(VIDEO, 0xE000_0000), (VIDEO + 0x1000, 0xE000_1000)]);
+    let mut source = Vec::new();
+    for o in 1..=16u8 {
+        source.push(o);
+    }
+    let mut program = Vec::new();
+    paginer(&mut program);
+    program.extend_from_slice(&[0x48, 0xbb]); // movabs $SOURCE,%rbx
+    program.extend_from_slice(&SOURCE.to_le_bytes());
+    program.extend_from_slice(&[0xf3, 0x0f, 0x6f, 0x03]); // movdqu (%rbx),%xmm0
+    rax(&mut program, VIDEO + 0x40);
+    program.extend_from_slice(&[0xf3, 0x0f, 0x7f, 0x00]); // movdqu %xmm0,(%rax)
+    rax(&mut program, VIDEO + 0xFF8);
+    program.extend_from_slice(&[0xf3, 0x0f, 0x7f, 0x00]); // movdqu %xmm0,(%rax) — à cheval
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let mut pieces: Vec<(u64, &[u8])> = vec![(BASE, &program), (SOURCE, &source)];
+    for (at, octets) in &tables {
+        pieces.push((*at, octets));
+    }
+    let text = avec_la_carte(
+        &bun,
+        "reservation",
+        &pieces,
+        &[],
+        r#"
+const arriere = null;
+globalThis.optionsDeLaCarte = { ecran: { largeur: 32, hauteur: 40 } };
+"#,
+        r#"
+const recues = [];
+{
+  const memoire = vm.carte.memoire;
+  const ecrire = memoire.ecrire;
+  memoire.ecrire = (adresse, valeur, largeur) => {
+    recues.push((BigInt(adresse) - 0xe0000000n).toString(16) + ":" + Number(largeur));
+    return ecrire.call(memoire, adresse, valeur, largeur);
+  };
+}
+"#,
+        r#"
+console.log("recues " + recues.join(","));
+const image = vm.ecran().image;
+console.log("droit " + Array.from(image.subarray(0x40, 0x50)).join(","));
+console.log("cheval " + Array.from(image.subarray(0xff8, 0x1008)).join(","));
+"#,
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+    assert_eq!(
+        line_of(&text, "recues "),
+        "40:8,48:8,ff8:8,1000:8",
+        "deux écritures de huit octets par movdqu, aucune réservation : {text}"
+    );
+    let seize = (1..=16)
+        .map(|o: u8| o.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        (line_of(&text, "droit "), line_of(&text, "cheval ")),
+        (seize.clone(), seize),
+        "les seize octets sont dans l'image : {text}"
+    );
+}
+
+/// **`carte.js` refuse un écran qui ne tient pas dans la mémoire vidéo**, à
+/// la fabrication, en le disant — plutôt qu'une carte sans écran que la page
+/// prendrait pour une carte avec. Le pilote fabrique une carte de 4096 sur
+/// 4096 (64 Mio en trente-deux bits, plus que la mémoire vidéo) et attrape
+/// l'erreur ; une carte de 32 sur 40 se fabrique, elle, et dit son mode.
+#[test]
+fn the_page_refuses_a_screen_too_large_for_the_video_memory() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let program: &[u8] = &[0xfa, 0xf4]; // cli ; hlt
+    let text = avec_la_carte(
+        &bun,
+        "ecran-trop-grand",
+        &[(BASE, program)],
+        &[],
+        "const arriere = null;",
+        "",
+        r#"
+for (const [largeur, hauteur] of [[4096, 4096], [32, 40]]) {
+  try {
+    const c = carte(module, { ecran: { largeur, hauteur } });
+    const m = c.ecran.mode();
+    console.log(`ecran ${largeur}x${hauteur} pris ${m.largeur}x${m.hauteur}`);
+  } catch (e) {
+    console.log(`ecran ${largeur}x${hauteur} refus ${e.message}`);
+  }
+}
+"#,
+    );
+    assert_eq!(
+        line_of(&text, "ecran 4096x4096 "),
+        "refus un écran de 4096×4096 ne tient pas dans la mémoire vidéo",
+        "{text}"
+    );
+    assert_eq!(line_of(&text, "ecran 32x40 "), "pris 32x40", "{text}");
 }
 
 /// Où le montage de la tablette range sa file d'événements, dans la RAM.
@@ -26507,6 +26848,11 @@ fn a_region_stops_before_what_it_cannot_produce() {
 /// - `0x30`, absent ; `0x2f`, dans la LDT (TI) ; `0x38`, présent mais
 ///   au-delà de la limite : chacun s'arrête sur son nom, RIP sur l'instruction, FS gardant
 ///   le sélecteur et la base d'avant ;
+/// - `0x38` encore, la limite à `0x3b` : le descripteur **commence** sous la
+///   limite mais finit au-delà. Le silicium le refuse — tout le descripteur,
+///   `sélecteur | 7`, doit tenir sous la limite —, l'émetteur aussi. Une
+///   limite de la forme `8k − 1` ne le montre pas : le sélecteur et son
+///   dernier octet y tombent du même côté ;
 /// - `0`, le nul : la base est effacée, et la course va jusqu'au `hlt`.
 #[test]
 fn a_real_selector_in_fs_or_gs_takes_its_base_from_the_gdt() {
@@ -26536,8 +26882,12 @@ fn a_real_selector_in_fs_or_gs_takes_its_base_from_the_gdt() {
     gdt[0x28..0x30].copy_from_slice(&descripteur(SOCLE, true).to_le_bytes());
     gdt[0x30..0x38].copy_from_slice(&descripteur(SOCLE, false).to_le_bytes());
     gdt[0x38..0x40].copy_from_slice(&descripteur(0x2_2000, true).to_le_bytes());
-    let mut pointeur = (7u16 * 8 - 1).to_le_bytes().to_vec();
-    pointeur.extend_from_slice(&GDT.to_le_bytes());
+    let pointeur_sous = |limite: u16| {
+        let mut pointeur = limite.to_le_bytes().to_vec();
+        pointeur.extend_from_slice(&GDT.to_le_bytes());
+        pointeur
+    };
+    let pointeur = pointeur_sous(7 * 8 - 1);
     let mut temoins = vec![0u8; 0x20];
     temoins[0x10..0x18].copy_from_slice(&0x1111_2222_3333_4444u64.to_le_bytes());
     temoins[0x18..0x20].copy_from_slice(&0x5555_6666_7777_8888u64.to_le_bytes());
@@ -26554,27 +26904,15 @@ fn a_real_selector_in_fs_or_gs_takes_its_base_from_the_gdt() {
     program.extend_from_slice(&[0x8e, 0xe1]); // mov %ecx,%fs
     program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
     let fin = BASE + program.len() as u64;
-    for (rcx, arret, rip, fs) in [
-        (
-            0x30u64,
-            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
-            charge,
-            SOCLE,
-        ),
-        (
-            0x2f,
-            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
-            charge,
-            SOCLE,
-        ),
-        (
-            0x38,
-            "un sélecteur non nul dans FS ou GS, sans table de descripteurs",
-            charge,
-            SOCLE,
-        ),
-        (0, "arrêtée sur hlt", fin, 0),
+    let refus = "un sélecteur non nul dans FS ou GS, sans table de descripteurs";
+    for (rcx, limite, arret, rip, fs) in [
+        (0x30u64, 7u16 * 8 - 1, refus, charge, SOCLE),
+        (0x2f, 7 * 8 - 1, refus, charge, SOCLE),
+        (0x38, 7 * 8 - 1, refus, charge, SOCLE),
+        (0x38, 0x3b, refus, charge, SOCLE),
+        (0, 7 * 8 - 1, "arrêtée sur hlt", fin, 0),
     ] {
+        let pointeur = pointeur_sous(limite);
         let text = avec_la_carte(
             &bun,
             "selecteur-gdt",
@@ -26601,7 +26939,7 @@ console.log("gs " + BigInt.asUintN(64, vm.globals[{gs_sel}].value) + " " + BigIn
         assert_eq!(
             (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
             (arret, rip.to_string()),
-            "RCX = {rcx:#x} : {text}"
+            "RCX = {rcx:#x}, limite {limite:#x} : {text}"
         );
         assert_eq!(
             (line_of(&text, "rbx "), line_of(&text, "r8 ")),

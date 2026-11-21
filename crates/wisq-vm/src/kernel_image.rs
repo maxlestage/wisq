@@ -659,6 +659,43 @@ mod tests {
             Err(ScreenRefusal::BaseTooHigh { base: 0xFFFF_0000 }),
             "le cadre doit tenir sous quatre gibioctets, que lfb_base porte"
         );
+        // **Un cadre vide, ou plus large que ce que `lfb_width` porte** : tous
+        // deux tiennent sous quatre gibioctets et hors de la RAM, donc seul
+        // leur propre refus les arrête. Tronqué, 65 536 deviendrait zéro.
+        for (largeur, hauteur, refus) in [
+            (0, 800, ScreenRefusal::Empty),
+            (1280, 0, ScreenRefusal::Empty),
+            (
+                65_536,
+                1,
+                ScreenRefusal::TooLarge {
+                    width: 65_536,
+                    height: 1,
+                },
+            ),
+            (
+                1,
+                65_536,
+                ScreenRefusal::TooLarge {
+                    width: 1,
+                    height: 65_536,
+                },
+            ),
+        ] {
+            assert_eq!(
+                zero_page_with_device_screen(
+                    RAM,
+                    0x9800,
+                    Screen {
+                        width: largeur,
+                        height: hauteur,
+                        ..carte
+                    }
+                ),
+                Err(refus),
+                "{largeur}x{hauteur}"
+            );
+        }
     }
 
     fn bz_image(payload_at: usize, magic: &[u8]) -> Vec<u8> {
