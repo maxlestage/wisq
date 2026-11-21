@@ -4,6 +4,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WisqCore
 import WisqVM
+#if WISQ_RUST_CORE
+import WisqVMRust
+#endif
 
 /// **L'écran d'accueil** : les machines Linux du téléphone. Choisir une
 /// image, la démarrer, avoir un shell.
@@ -79,6 +82,10 @@ struct LocalVMListView: View {
     @State private var note: Note?
     /// Ce que Linux local occupe. Relu après chaque geste qui peut le changer.
     @State private var storage = LocalStorage.Report.empty
+    /// **Le réglage de la machine de l'émetteur**, éteint par défaut : voir
+    /// `EmitterSetting`. Allumé, une image de PC s'ouvre dans l'émetteur
+    /// plutôt que dans le cœur Swift.
+    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
 
     var body: some View {
         List {
@@ -335,7 +342,18 @@ struct LocalVMListView: View {
         }
         .fullScreenCover(item: $booting) { target in
             NavigationStack {
+                #if WISQ_RUST_CORE
+                if EmitterSetting.opens(
+                    kinds[target.url], enabled: emitterEnabled, installed: target.machine != nil,
+                    moduleEmbedded: EmitterMachine.isInThisBuild
+                ) {
+                    EmitterMachineView(image: target.url)
+                } else {
+                    LocalVMTerminalView(kernelURL: target.url, installed: target.machine)
+                }
+                #else
                 LocalVMTerminalView(kernelURL: target.url, installed: target.machine)
+                #endif
             }
         }
         // Un lien d'appairage arrive : tout ce que cet écran a ouvert se
