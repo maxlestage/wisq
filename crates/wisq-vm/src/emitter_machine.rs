@@ -141,10 +141,25 @@ pub fn command_line(image: Option<&str>) -> Result<String, CommandLineRefusal> {
 /// simple préfixe `console=ttyS0` les y aurait mis. Une console nommée par
 /// son périphérique (`console=00:01.0`, un deux-points) n'a pas d'index :
 /// ce n'est pas `ttyS0` par son nom.
+///
+/// La forme `uart8250,io,0x3f8[,options]` (ou `uart,io,…`) nomme la console
+/// par son port : `univ8250_console_match` la rattache au `ttyS` de cette
+/// adresse, ici 0x3f8, celui de `earlycon`. Les formes `mmio` et `mmio32`
+/// visent une adresse en mémoire, qui n'est pas ce port.
 fn names_the_early_console_port(word: &str) -> bool {
     let Some(value) = word.strip_prefix("console=") else {
         return false;
     };
+    if let Some(port) = value
+        .strip_prefix("uart8250,io,")
+        .or_else(|| value.strip_prefix("uart,io,"))
+    {
+        let address = port.split(',').next().unwrap_or("");
+        let hexadecimal = address
+            .strip_prefix("0x")
+            .or_else(|| address.strip_prefix("0X"));
+        return hexadecimal.and_then(|digits| u64::from_str_radix(digits, 16).ok()) == Some(0x3f8);
+    }
     if value.contains(':') {
         return false;
     }
@@ -315,6 +330,13 @@ mod tests {
             // commence par un chiffre est un `ttyS`.
             "console=ttyS00",
             "console=0,115200",
+            // Un nom sans index est l'index zéro (`simple_strtoul` sur une
+            // virgule ou sur rien rend 0).
+            "console=ttyS,115200",
+            "console=ttyS",
+            // La console nommée par son port, celui de `earlycon`.
+            "console=uart8250,io,0x3f8,115200",
+            "console=uart,io,0x3F8",
         ] {
             assert_eq!(
                 command_line(Some(image)),
@@ -335,6 +357,10 @@ mod tests {
             "console=ttyS01",
             "console=ttyUSB0",
             "console=00:01.0,115200",
+            // Un autre port, ou une adresse en mémoire : pas 0x3f8.
+            "console=uart8250,io,0x2f8,115200",
+            "console=uart8250,mmio,0x3f8",
+            "console=uart8250,io,0x3f80",
         ] {
             assert_eq!(
                 command_line(Some(image)),

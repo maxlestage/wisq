@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — La console nommée sans index, ou par son port
+
+**Ce qui n'allait pas** (le dernier contrôle de la machine de l'émetteur).
+Deux règles annoncées par `names_the_early_console_port` n'étaient tenues
+par aucun test : le nom coupé à la virgule (`console=ttyS,115200`) et
+l'index absent qui vaut zéro (`console=ttyS`). Les deux sabotages d'une
+ligne survivaient. Et la forme `console=uart8250,io,0x3f8`, qui nomme la
+console par son port (`univ8250_console_match`), n'était pas reconnue :
+`keep_bootcon` restait, et chaque ligne serait sortie deux fois.
+
+**Ce qui est fait.** Les deux cas entrent dans la liste qui retire
+`keep_bootcon`. La forme `uart8250,io,<adresse>` et `uart,io,<adresse>`
+est lue : à 0x3f8, c'est la console de `earlycon` ; à 0x2f8, à 0x3f80, ou
+en `mmio`, non. Quatre sabotages d'une ligne tombent : la virgule retirée
+de la coupe, un index exigé, l'adresse ignorée, la forme `uart` sans
+`8250` oubliée.
+
+**Une correction.** Le message du commit 858b21e2 dit que `keep_bootcon`
+« ne part plus pour console=ttyS1, ttyS10 ou ttyS01 ». L'ancien code ne le
+retirait déjà ni pour `ttyS1` ni pour `ttyS10` ; seul `ttyS0N` (dont
+`ttyS01`) a changé.
+
 ## 2026-11-21 — Le contrôle du contrôle : le doigt annulé, `ttyS0` lu comme le noyau le lit, et la phrase de la ligne trop longue
 
 **Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous : trois trous
