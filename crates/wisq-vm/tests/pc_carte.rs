@@ -52,9 +52,10 @@ fn entrer(machine: &mut Machine, port: u16, largeur: u8) -> Option<u32> {
 }
 
 /// **Ce que fait le noyau pour ouvrir le disque**, puis une lecture du
-/// secteur 1 posée dans la file : la BAR0 placée à `FENETRE`, les ports
-/// activés, la poignée de main de `virtio_pci_legacy`, la file à sa page.
-fn ouvrir_et_poser_une_lecture(machine: &mut Machine) {
+/// secteur 1 posée dans la file, vers `tampon` : la BAR0 placée à `FENETRE`,
+/// les ports activés, la poignée de main de `virtio_pci_legacy`, la file à sa
+/// page.
+fn ouvrir_et_poser_une_lecture(machine: &mut Machine, tampon: u64) {
     let configuration = |registre: u32| 0x8000_1800 | registre;
     sortir(machine, 0xCF8, 4, configuration(0x10));
     sortir(machine, 0xCFC, 4, u32::from(FENETRE));
@@ -81,7 +82,7 @@ fn ouvrir_et_poser_une_lecture(machine: &mut Machine) {
         ecrire(machine, ici + 14, Width::Word, suivant);
     };
     decrire(0, ENTETE, 16, 1, 1);
-    decrire(1, TAMPON, 512, 2 | 1, 2);
+    decrire(1, tampon, 512, 2 | 1, 2);
     decrire(2, STATUT, 1, 2, 0);
     ecrire(machine, DISPONIBLES + 4, Width::Word, 0);
     ecrire(machine, DISPONIBLES + 2, Width::Word, 1);
@@ -124,7 +125,7 @@ fn a_disk_notification_is_served_with_the_machine_ram() {
         0xF4,
     ];
     let mut machine = avec_carte(&code);
-    ouvrir_et_poser_une_lecture(&mut machine);
+    ouvrir_et_poser_une_lecture(&mut machine, TAMPON);
     machine.tourner(10).expect("sans faute");
     assert!(machine.arretee);
     let attendu: Vec<u8> = (512..1024).map(|i| (i * 7) as u8).collect();
@@ -149,6 +150,38 @@ fn a_disk_notification_is_served_with_the_machine_ram() {
     );
     let lignes = machine.peripheriques.as_ref().expect("la carte").lignes();
     assert_ne!(lignes & (1 << 5), 0, "la ligne du disque");
+}
+
+/// **Un transfert qui finit au dernier octet de la RAM est servi** ; un
+/// octet plus loin, il ne l'est pas : le secteur n'est pas rangé, et le
+/// statut le dit.
+#[test]
+fn a_transfer_ending_at_the_last_byte_of_ram_is_served() {
+    // mov $0xc010,%dx ; xor %eax,%eax ; out %ax,(%dx) ; hlt.
+    let code = [0x66, 0xBA, 0x10, 0xC0, 0x31, 0xC0, 0x66, 0xEF, 0xF4];
+    let attendu: Vec<u8> = (512..1024).map(|i| (i * 7) as u8).collect();
+    for (decalage, servi) in [(512, true), (511, false)] {
+        let mut machine = avec_carte(&code);
+        let taille = machine.cpu.memory.bytes.len();
+        let tampon = taille - decalage;
+        machine.cpu.memory.bytes[tampon..].fill(0x5A);
+        ouvrir_et_poser_une_lecture(&mut machine, tampon as u64);
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee);
+        let statut = machine.cpu.memory.bytes[STATUT as usize];
+        if servi {
+            assert_eq!(&machine.cpu.memory.bytes[tampon..], &attendu[..]);
+            assert_eq!(statut, 0, "le statut : réussi");
+        } else {
+            assert!(
+                machine.cpu.memory.bytes[tampon..]
+                    .iter()
+                    .all(|octet| *octet == 0x5A),
+                "rien de rangé au-delà de la RAM"
+            );
+            assert_ne!(statut, 0, "le statut : en échec");
+        }
+    }
 }
 
 /// **L'impulsion de remise à zéro** (`0xFE` sur le port 0x64 de l'i8042)

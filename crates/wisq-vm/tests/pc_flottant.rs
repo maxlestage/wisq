@@ -1,8 +1,9 @@
 //! **Le flottant dans la machine PC** : ce que les corpus, qui jugent une
 //! instruction seule sur un processeur nu, ne peuvent pas dire — la faute
 //! d'une exception de SSE démasquée (`#XM`, ou `#UD` sans CR4.OSXMMEXCPT),
-//! un rangement du x87 qui faute à cheval sur deux pages sans rien laisser
-//! derrière lui, et le préfixe `67` devant une instruction qui n'adresse rien.
+//! un rangement du x87 (`fstpt`, `fnsave`, `fnstenv`) qui faute à cheval sur
+//! deux pages sans rien laisser derrière lui, et le préfixe `67` devant une
+//! instruction qui n'adresse rien.
 
 use wisq_vm::pc::systeme::Table;
 use wisq_vm::pc::Machine;
@@ -132,6 +133,96 @@ fn an_x87_store_across_a_missing_page_leaves_nothing_behind() {
     assert_eq!(machine.cpu.fpu_tags, 1 << 7);
 }
 
+/// **Une exception du x87 démasquée attend la prochaine instruction qui
+/// attend** : `fdivr` de 1 par 0, la division par zéro démasquée, ne range
+/// rien (ST(0) reste 0, la pile ne bouge pas) et lève ZE, ES et B ;
+/// `fnstsw %ax`, qui n'attend pas, passe et le lit ; puis `fwait`, `fld1` ou
+/// une instruction du MMX livrent `#MF` (vecteur 16), le cadre sur
+/// elles-mêmes. Après `fnclex`, plus rien n'attend.
+#[test]
+fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
+    // fld1 ; fldz ; fdivr %st(1),%st ; fnstsw %ax ; puis l'instruction qui
+    // attend, à 0x1008 ; hlt.
+    let debut = [0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xDF, 0xE0];
+    for (nom, suite) in [
+        ("fwait", &[0x9B][..]),
+        ("fld1", &[0xD9, 0xE8]),
+        ("movq %mm0,%mm1", &[0x0F, 0x6F, 0xC8]),
+    ] {
+        let mut code = debut.to_vec();
+        code.extend_from_slice(suite);
+        code.push(0xF4);
+        let mut machine = nouvelle(&code);
+        machine.cpu.fpu_control = 0x037B;
+        machine.tourner(20).expect("livrée");
+        assert_eq!(vecteur_recu(&machine), 16, "{nom} : #MF");
+        let cadre = machine.cpu.memory.read(SOMMET - 40, Width::Qword);
+        assert_eq!(
+            cadre,
+            Some(0x1008),
+            "{nom} : le cadre sur l'instruction qui attend"
+        );
+        assert_eq!(
+            machine.cpu.regs[0] & 0x80BF,
+            0x8084,
+            "{nom} : fnstsw a lu ZE, ES et B"
+        );
+        assert_eq!(machine.cpu.x87_top(), 6, "{nom} : la pile n'a pas bougé");
+        assert_eq!(machine.cpu.x87[6], (0, 0), "{nom} : ST(0) est resté zéro");
+    }
+    // fnclex avant fwait : rien n'attend plus.
+    let mut code = debut.to_vec();
+    code.extend_from_slice(&[0xDB, 0xE2, 0x9B, 0xF4]);
+    let mut machine = nouvelle(&code);
+    machine.cpu.fpu_control = 0x037B;
+    machine.tourner(20).expect("sans faute");
+    assert!(machine.arretee);
+    assert_eq!(machine.cpu.rip, 0x100C, "jusqu'au hlt");
+    // Masquée, la même division rend l'infini et continue.
+    let mut code = debut.to_vec();
+    code.extend_from_slice(&[0x9B, 0xF4]);
+    let mut machine = nouvelle(&code);
+    machine.tourner(20).expect("sans faute");
+    assert_eq!(machine.cpu.rip, 0x100A);
+    assert_eq!(machine.cpu.x87[6], (1 << 63, 0x7FFF), "+∞");
+}
+
+/// **`fnsave` et `fnstenv` à cheval sur une page absente** : `fnsave` range
+/// 108 octets à 0xAFC0, dont l'environnement et les trois premiers
+/// registres tiennent dans la première page ; `fnstenv` en range 28 à
+/// 0xAFF0, dont les seize premiers y tiennent. L'aire entière est sondée
+/// avant le premier octet : la faute de page nomme 0xB000, rien n'est écrit,
+/// et le x87 n'a pas bougé — ni remis à zéro par `fnsave`, ni masqué par
+/// `fnstenv`.
+#[test]
+fn fnsave_and_fnstenv_across_a_missing_page_leave_nothing_behind() {
+    // fld1 ; fnsave (%rbx) ; hlt — puis fld1 ; fnstenv (%rbx) ; hlt.
+    for (nom, code, adresse) in [
+        ("fnsave", [0xD9, 0xE8, 0xDD, 0x33, 0xF4], 0xAFC0usize),
+        ("fnstenv", [0xD9, 0xE8, 0xD9, 0x33, 0xF4], 0xAFF0),
+    ] {
+        let mut machine = nouvelle(&code);
+        machine.cpu.regs[3] = adresse as u64;
+        machine.cpu.fpu_control = 0x027F;
+        machine.cpu.memory.bytes[adresse..0xB000].fill(0xAB);
+        machine.tourner(10).expect("livrée");
+        assert_eq!(vecteur_recu(&machine), 14, "{nom}");
+        assert_eq!(machine.cpu.control[2], 0xB000, "{nom} : CR2");
+        assert!(
+            machine.cpu.memory.bytes[adresse..0xB000]
+                .iter()
+                .all(|octet| *octet == 0xAB),
+            "{nom} : rien d'écrit dans la première page"
+        );
+        assert_eq!(
+            machine.cpu.fpu_control, 0x027F,
+            "{nom} : le mot de contrôle"
+        );
+        assert_eq!(machine.cpu.x87_top(), 7, "{nom} : le sommet");
+        assert_eq!(machine.cpu.fpu_tags, 1 << 7, "{nom} : les étiquettes");
+    }
+}
+
 /// **`67` devant une instruction qui n'adresse rien** : `67 49 f7 e6`, le
 /// `mul %r14` qu'OpenSSL aligne ainsi, s'exécute comme `mul %r14`, en quatre
 /// octets. Devant une instruction qui adresse — un opérande mémoire, ou les
@@ -151,6 +242,9 @@ fn an_address_size_prefix_without_address_is_ignored() {
         ("mov (%ebx),%rax", &[0x67, 0x48, 0x8B, 0x03][..]),
         ("movsb", &[0x67, 0xA4]),
         ("rep stosb", &[0xF3, 0x67, 0xAA]),
+        ("lodsb", &[0x67, 0xAC]),
+        ("cmpsb", &[0x67, 0xA6]),
+        ("scasb", &[0x67, 0xAE]),
         ("loop", &[0x67, 0xE2, 0xFE]),
         ("jecxz", &[0x67, 0xE3, 0x00]),
     ] {

@@ -164,7 +164,12 @@ fn physique_du_rang(bloc: &super::blocs::Bloc, rang: usize) -> usize {
 /// L'instruction qui commence à l'octet `debut` de la RAM, si elle tient
 /// dans `disponibles` octets.
 fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> {
-    decode(ram.get(debut..debut + disponibles)?)
+    let octets = ram.get(debut..debut + disponibles)?;
+    // `fwait` peut livrer `#MF` : il passe par le pas à pas (`Lue::Attente`).
+    if octets.first() == Some(&0x9B) {
+        return None;
+    }
+    decode(octets)
 }
 
 /// Ce qu'un passage par un bloc a donné.
@@ -183,6 +188,10 @@ enum Passage {
 enum Lue {
     Commune(Decoded),
     Etendue(Extended),
+    /// **`fwait`** (`9b`) : `decode` le lit comme un `nop`, et c'est ce qu'il
+    /// est — sauf quand une exception du x87 démasquée attend, qu'il livre
+    /// (`#MF`).
+    Attente,
 }
 
 impl Lue {
@@ -190,12 +199,16 @@ impl Lue {
         match self {
             Self::Commune(instruction) => instruction.length,
             Self::Etendue(instruction) => instruction.length,
+            Self::Attente => 1,
         }
     }
 }
 
 /// Lire une instruction, par l'un ou l'autre décodeur.
 fn lire(octets: &[u8]) -> Option<Lue> {
+    if octets.first() == Some(&0x9B) {
+        return Some(Lue::Attente);
+    }
     decode(octets)
         .map(Lue::Commune)
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
@@ -238,7 +251,9 @@ fn sans_taille_d_adresse(octets: &[u8]) -> Option<Lue> {
             | Op::LoopWhile { .. }
             | Op::JumpIfCountZero
     );
-    if instruction.memory.is_some() || adresse_implicite || instruction.length + 1 > 15 {
+    // `reste` n'a que quatorze octets : l'instruction lue sans le `67` en a
+    // quatorze au plus, et quinze avec lui.
+    if instruction.memory.is_some() || adresse_implicite {
         return None;
     }
     instruction.length += 1;
@@ -1083,7 +1098,21 @@ impl Machine {
                         }
                         .into())
                     }
+                    // **Une exception du x87 démasquée attendait** : `#MF`,
+                    // le cadre sur l'instruction qui ne s'est pas faite.
+                    // CR0.NE n'est pas consulté : le mode « MS-DOS » de FERR#
+                    // et de l'IRQ 13, qu'un noyau de 64 bits n'utilise pas,
+                    // n'est pas modélisé.
+                    Err(ExtendedFault::FloatingPoint) => Err(Exception::Flottant.into()),
                 };
+            }
+            Lue::Attente => {
+                if self.cpu.x87_pending() {
+                    return Err(Exception::Flottant.into());
+                }
+                self.cpu.rip = self.cpu.rip.wrapping_add(1);
+                self.retirees = self.retirees.wrapping_add(1);
+                return Ok(());
             }
         };
         self.cpu.jumped = false;
@@ -1507,7 +1536,7 @@ impl Machine {
                     Err(ExtendedFault::ReservedControl) => {
                         return Err(Exception::ProtectionGenerale(0).into())
                     }
-                    Err(ExtendedFault::SimdException) => {
+                    Err(ExtendedFault::SimdException | ExtendedFault::FloatingPoint) => {
                         unreachable!("fxsave et fxrstor ne calculent pas")
                     }
                 }

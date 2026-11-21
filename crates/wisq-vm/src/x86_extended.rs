@@ -82,6 +82,10 @@ pub enum ExtendedFault {
     /// Une exception flottante de SSE que MXCSR ne masque pas : le drapeau
     /// est posé, rien n'est rangé, et la machine livre `#XM`.
     SimdException,
+    /// **Une exception du x87 démasquée, en attente** (ES levé dans le mot
+    /// d'état) au moment d'une instruction du x87 qui attend, ou du MMX :
+    /// l'instruction ne s'exécute pas, et la machine livre `#MF`.
+    FloatingPoint,
     /// `fxrstor` avec un MXCSR aux bits réservés levés : `#GP(0)`, rien de
     /// changé.
     ReservedControl,
@@ -228,6 +232,9 @@ impl Cpu {
         });
         match instruction.op {
             Extra::X87 { .. } => self.execute_x87(instruction, at),
+            // Le MMX partage l'état du x87 : une exception du x87 en attente
+            // l'arrête aussi.
+            Extra::Emms | Extra::Mmx(_) if self.x87_pending() => Err(ExtendedFault::FloatingPoint),
             Extra::Emms => {
                 self.fpu_tags = 0;
                 Ok(())

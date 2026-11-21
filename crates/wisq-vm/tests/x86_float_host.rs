@@ -458,10 +458,10 @@ fn the_x87_matches_the_host_silicon_in_every_mode_and_precision() {
 
 macro_rules! host_store {
     ($instruction:literal) => {
-        |a: [u8; 10], control: u16| -> (u64, u16) {
+        |a: [u8; 10], control: u16| -> ([u8; 16], u16) {
             let mut stored = [0u8; 16];
             let status: u16;
-            // SAFETY: comme `host_x87` ; le rangement écrit au plus huit
+            // SAFETY: comme `host_x87` ; le rangement écrit au plus dix
             // octets dans un tampon de seize.
             unsafe {
                 asm!(
@@ -479,18 +479,20 @@ macro_rules! host_store {
                     out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _,
                 );
             }
-            (u64::from_le_bytes(stored[..8].try_into().unwrap()), status)
+            (stored, status)
         }
     };
 }
 
 /// **Les rangements du x87 en mémoire, dans les quatre modes** : `fst` en
 /// simple et en double (l'arrondi, le débordement, le sous-débordement, le NaN
-/// rendu silencieux), `fist` et `fisttp` aux trois largeurs (l'entier
-/// indéfini), `fbstp`. Les octets rangés et le mot d'état, au bit près.
+/// rendu silencieux), `fist` et `fistp` aux trois largeurs (l'entier
+/// indéfini), `fbstp` sur ses dix octets, signe compris. Les octets rangés et
+/// le mot d'état, au bit près. (`fisttp`, du SSE3, n'est pas de ce
+/// processeur.)
 #[test]
 fn x87_stores_match_the_host_silicon_in_every_mode() {
-    type Host = fn([u8; 10], u16) -> (u64, u16);
+    type Host = fn([u8; 10], u16) -> ([u8; 16], u16);
     let forms: [(&str, &[u8], Host, usize); 9] = [
         (
             "fstps",
@@ -523,22 +525,22 @@ fn x87_stores_match_the_host_silicon_in_every_mode() {
             8,
         ),
         (
-            "fisttpll",
-            &[0xdd, 0x4e, 0x20],
-            host_store!("fisttp qword ptr [{out}]"),
-            8,
+            "fists",
+            &[0xdf, 0x56, 0x20, 0xdd, 0xd8],
+            host_store!("fist word ptr [{out}]\nfstp st(0)"),
+            2,
         ),
         (
-            "fisttps",
-            &[0xdf, 0x4e, 0x20],
-            host_store!("fisttp word ptr [{out}]"),
-            2,
+            "fistl",
+            &[0xdb, 0x56, 0x20, 0xdd, 0xd8],
+            host_store!("fist dword ptr [{out}]\nfstp st(0)"),
+            4,
         ),
         (
             "fbstp",
             &[0xdf, 0x76, 0x20],
             host_store!("fbstp tbyte ptr [{out}]"),
-            8,
+            10,
         ),
         (
             "frndint",
@@ -572,23 +574,19 @@ fn x87_stores_match_the_host_silicon_in_every_mode() {
                 u64::from_le_bytes(a[..8].try_into().unwrap()),
                 u16::from_le_bytes([a[8], a[9]]),
             );
-            let before = cpu.memory.bytes[0x1020..0x1028].to_vec();
             run(&mut cpu, code.len());
-            let mut stored = [0u8; 8];
-            stored.copy_from_slice(&cpu.memory.bytes[0x1020..0x1028]);
-            let got = u64::from_le_bytes(stored) & mask_of(size);
-            // L'hôte range dans un tampon nul : ce qui suit l'entier est zéro.
-            let _ = before;
+            // Les `size` octets rangés, et rien après : l'hôte range dans un
+            // tampon nul, la machine dans une RAM nulle.
+            let got = &cpu.memory.bytes[0x1020..0x1030];
             let mask = 0x47FFu16 & !0x0080;
             let got_status = cpu.fpu_status & mask;
-            if (got, got_status) != (wanted & mask_of(size), wanted_status & mask)
-                && wrong.len() < 40
-            {
+            if (got, got_status) != (&wanted[..], wanted_status & mask) && wrong.len() < 40 {
                 wrong.push(format!(
-                    "{name} cw {control:x} : {a:02x?}\n    attendu {:x} {:x}\n    obtenu  {got:x} \
-                     {got_status:x}",
-                    wanted & mask_of(size),
-                    wanted_status & mask
+                    "{name} cw {control:x} : {a:02x?}\n    attendu {:02x?} {:x}\n    \
+                     obtenu  {:02x?} {got_status:x}",
+                    &wanted[..size],
+                    wanted_status & mask,
+                    &got[..size],
                 ));
             }
         }
@@ -599,14 +597,6 @@ fn x87_stores_match_the_host_silicon_in_every_mode() {
         wrong.len(),
         wrong.join("\n")
     );
-}
-
-fn mask_of(size: usize) -> u64 {
-    if size == 8 {
-        u64::MAX
-    } else {
-        (1u64 << (8 * size)) - 1
-    }
 }
 
 /// **Les fonctions transcendantes, à une tolérance près.** Aucun processeur
@@ -707,4 +697,685 @@ fn x87_transcendentals_agree_with_the_host_silicon() {
         wrong.join("\n")
     );
     assert!(worst < 2f64.powi(-58), "le pire écart relatif : {worst:e}");
+}
+
+// ---- L'état entier du x87, sur toutes les classes et toutes les piles ----
+
+/// **Un registre tiré parmi toutes les classes de l'étendu**, celles que le
+/// processeur refuse comprises : zéros, dénormaux, **pseudo-dénormaux**
+/// (exposant nul, bit entier levé), **non normalisés** (exposant non nul, bit
+/// entier nul), pseudo-infinis et pseudo-NaN, infinis, NaN silencieux et
+/// signalants, entiers, valeurs aux bords des exposants. `extended` plus haut
+/// pose toujours le bit entier ; celui-ci non.
+fn any_extended(h: &mut Hasard) -> [u8; 10] {
+    let sign = (h.next() as u16) & 0x8000;
+    let random = h.next();
+    let (significand, exponent): (u64, u16) = match h.next() % 22 {
+        0 => (0, 0),
+        1 => (1 << 63, 0x7fff),
+        2 => (0xC000_0000_0000_0000 | (random >> 2), 0x7fff),
+        3 => (
+            (0x8000_0000_0000_0000 | (random >> 2)).max(0x8000_0000_0000_0001),
+            0x7fff,
+        ),
+        4 => (random >> 1, 0),
+        5 => (random | 1 << 63, 0),
+        6 => (random >> 1, 0x3fff + (h.next() % 64) as u16),
+        7 => (random >> 1, 0x7fff),
+        8 => (1 << 63, 0x3fff),
+        9 => (random | 1 << 63, 0x403e),
+        10 => (random | 1 << 63, 0x403e + (h.next() % 4) as u16),
+        11 => (random | 1 << 63, 0x3fff - (h.next() % 70) as u16),
+        12 => (random | 1 << 63, 0x3fff + (h.next() % 70) as u16),
+        13 => (random | 1 << 63, 1 + (h.next() % 3) as u16),
+        14 => (random | 1 << 63, 0x7ffe - (h.next() % 3) as u16),
+        15 => {
+            let whole = wisq_vm::x86::f80::F80::from_integer((h.next() % 2000) as i64 - 1000);
+            (whole.significand, whole.sign_exponent)
+        }
+        16 => ((random | 1 << 63) & !0x7ff, 0x3fff + (h.next() % 64) as u16),
+        17 => (
+            0xC90F_DAA2_2168_C234 ^ (h.next() & 0xff),
+            0x3fff + (h.next() % 3) as u16,
+        ),
+        18 => (random | 1 << 63, 0x3fff + (h.next() % 200) as u16),
+        19 => (random | 1 << 63, 0x3fff - (h.next() % 200) as u16),
+        _ => (random | 1 << 63, (h.next() as u16) & 0x7fff),
+    };
+    let mut out = [0u8; 10];
+    out[..8].copy_from_slice(&significand.to_le_bytes());
+    out[8..].copy_from_slice(&(exponent | sign).to_le_bytes());
+    out
+}
+
+/// **L'opérande en mémoire** : seize octets quelconques, ou un étendu, un
+/// double, l'infini simple, un simple ou un double dénormal, un NaN
+/// signalant simple ou double, un petit entier, un décimal valide (de signe
+/// quelconque, zéro compris).
+fn memory_operand(h: &mut Hasard) -> [u8; 16] {
+    let mut memory = [0u8; 16];
+    for chunk in memory.chunks_mut(8) {
+        chunk.copy_from_slice(&h.next().to_le_bytes());
+    }
+    let sign32 = (h.next() as u32) & 0x8000_0000;
+    let sign64 = h.next() & (1 << 63);
+    match h.next() % 12 {
+        0 => memory[..10].copy_from_slice(&any_extended(h)),
+        1 => memory[..8].copy_from_slice(&h.double().to_le_bytes()),
+        2 => memory[..4].copy_from_slice(&0x7f80_0000u32.to_le_bytes()),
+        3 => memory[..4].copy_from_slice(&(h.next() as u32 & 0x007f_ffff | sign32).to_le_bytes()),
+        4 => {
+            memory[..8].copy_from_slice(&(h.next() & 0x000f_ffff_ffff_ffff | sign64).to_le_bytes())
+        }
+        5 => memory[..4].copy_from_slice(
+            &((0x7f80_0001 | h.next() as u32 & 0x003f_ffff) | sign32).to_le_bytes(),
+        ),
+        6 => memory[..8].copy_from_slice(
+            &((0x7ff0_0000_0000_0001 | h.next() & 0x0007_ffff_ffff_ffff) | sign64).to_le_bytes(),
+        ),
+        7 => memory[..8].copy_from_slice(&((h.next() % 200) as i64 - 100).to_le_bytes()),
+        8 | 9 => {
+            // Dix-huit chiffres décimaux, ou aucun : le zéro décimal signé.
+            let zero = h.next() % 3 == 0;
+            for byte in memory.iter_mut().take(9) {
+                let x = h.next();
+                *byte = if zero {
+                    0
+                } else {
+                    ((x % 10) as u8) | (((x >> 8) % 10) as u8) << 4
+                };
+            }
+            memory[9] = (h.next() as u8) & 0x80;
+        }
+        _ => {}
+    }
+    memory
+}
+
+/// L'aire du test : `a` (ST(0)) à 0x00, `b` (ST(1)) à 0x10, l'opérande en
+/// mémoire à 0x20, le mot de contrôle à 0x30, l'image de `fnsave` à 0x40,
+/// RFLAGS à 0xF0.
+type Area = [u8; 0x100];
+type StateHost = fn(&mut Area, usize);
+
+/// **Les huit registres physiques à zéro, puis `fninit`** : ce que `fninit`
+/// laisse dans un registre libéré est ce qu'il contenait avant, et `fldenv`
+/// peut le déclarer occupé. La machine part de zéros ; l'hôte aussi.
+macro_rules! zeroed {
+    () => {
+        "fninit\nfldz\nfldz\nfldz\nfldz\nfldz\nfldz\nfldz\nfldz\nfninit"
+    };
+}
+
+/// **La même suite sur l'hôte** : `fninit`, le mot de contrôle, `b` puis `a`
+/// empilés, la pile mise en forme (`variant` : 0 telle quelle, 1 ST(1)
+/// libéré, 2 les deux libérés, 3 pleine), l'instruction, puis `fnsave`.
+macro_rules! host_state {
+    ($instruction:literal) => {
+        |area: &mut Area, variant: usize| {
+            let p = area.as_mut_ptr();
+            // SAFETY: la pile du x87 est vide à l'entrée et rendue vide par
+            // `fninit` ; `p` désigne une aire vivante de 256 octets, où
+            // l'instruction lit et écrit à 0x20 et `fnsave` écrit 108 octets
+            // à 0x40 ; RAX est déclaré écrit.
+            unsafe {
+                match variant {
+                    0 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
+                        "fld tbyte ptr [{p}]", $instruction, "fnsave [{p}+0x40]", "fninit",
+                        p = in(reg) p, out("rax") _,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
+                    1 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
+                        "fld tbyte ptr [{p}]", "ffree st(1)", $instruction, "fnsave [{p}+0x40]",
+                        "fninit", p = in(reg) p, out("rax") _,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
+                    2 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
+                        "fld tbyte ptr [{p}]", "ffree st(0)", "ffree st(1)", $instruction,
+                        "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
+                    _ => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
+                        "fld tbyte ptr [{p}]", "fld st(1)", "fld st(1)", "fld st(1)",
+                        "fld st(1)", "fld st(1)", "fld st(1)", $instruction,
+                        "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
+                }
+            }
+        }
+    };
+}
+
+/// **La même suite sur la machine**, à l'adresse de l'aire dans RSI.
+fn emulate_state(area: &mut Area, variant: usize, instruction: &[u8]) -> Result<(), String> {
+    // fldcw 0x30(%rsi) ; fldt 0x10(%rsi) ; fldt (%rsi).
+    let mut code = vec![0xd9, 0x6e, 0x30, 0xdb, 0x6e, 0x10, 0xdb, 0x2e];
+    match variant {
+        0 => {}
+        1 => code.extend([0xdd, 0xc1]),
+        2 => code.extend([0xdd, 0xc0, 0xdd, 0xc1]),
+        _ => (0..6).for_each(|_| code.extend([0xd9, 0xc1])),
+    }
+    code.extend_from_slice(instruction);
+    // fnsave 0x40(%rsi).
+    code.extend([0xdd, 0x76, 0x40]);
+    let mut cpu = processor(&code);
+    cpu.memory.bytes[0x1000..0x1100].copy_from_slice(area);
+    cpu.regs[4] = CODE + 0x3000;
+    let length = code.len() as u64;
+    while cpu.rip < CODE + length {
+        let at = (cpu.rip - CODE) as usize;
+        let window = cpu.memory.bytes[at..at + 15].to_vec();
+        if let Some(decoded) = decode(&window) {
+            match decoded.op {
+                Op::Vector(_) => cpu
+                    .execute_vector(&decoded)
+                    .map_err(|fault| format!("{fault:?}"))?,
+                _ => cpu.execute(&decoded),
+            }
+            if cpu.faulted {
+                return Err(format!("faute sur {window:02x?}"));
+            }
+            cpu.rip += decoded.length as u64;
+        } else if let Some(extended) = decode_extended(&window) {
+            cpu.execute_extended(&extended)
+                .map_err(|fault| format!("{fault:?} sur {window:02x?}"))?;
+            cpu.rip += extended.length as u64;
+        } else {
+            return Err(format!("illisible : {:02x?}", &window[..4]));
+        }
+    }
+    area.copy_from_slice(&cpu.memory.bytes[0x1000..0x1100]);
+    let flags = cpu.flags.read() & 0x8d5;
+    area[0xF0..0xF8].copy_from_slice(&flags.to_le_bytes());
+    Ok(())
+}
+
+/// Ce que la comparaison ne juge pas : les pointeurs de la dernière
+/// instruction (FIP, FDP, FOP, que ce cœur range à zéro), et ce que contient
+/// un registre vide.
+fn comparable(area: &mut Area, environment_at: Option<usize>) {
+    area[0x4c..0x5c].fill(0);
+    if let Some(at) = environment_at {
+        area[at + 0x0c..at + 0x1c].fill(0);
+    }
+    let tags = u16::from_le_bytes([area[0x48], area[0x49]]);
+    let top = ((u16::from_le_bytes([area[0x44], area[0x45]]) >> 11) & 7) as usize;
+    for index in 0..8 {
+        if (tags >> (2 * ((top + index) & 7))) & 3 == 3 {
+            let at = 0x40 + 28 + 10 * index;
+            area[at..at + 10].fill(0);
+        }
+    }
+}
+
+/// **L'écart entre deux registres, en unités du dernier rang** : la clé
+/// `exposant · 2⁶³ + fraction` croît avec la grandeur, dénormaux compris ;
+/// `None` quand les signes diffèrent ou qu'un des deux n'est pas fini.
+fn ulps_apart(left: &[u8], right: &[u8]) -> Option<u64> {
+    let key = |register: &[u8]| {
+        let significand = u64::from_le_bytes(register[..8].try_into().unwrap());
+        let sign_exponent = u16::from_le_bytes([register[8], register[9]]);
+        let exponent = u128::from(sign_exponent & 0x7fff);
+        if exponent == 0x7fff || (exponent != 0 && significand >> 63 == 0) {
+            return None;
+        }
+        let fraction = u128::from(significand & !(1 << 63));
+        Some((sign_exponent >> 15, (exponent << 63) + fraction))
+    };
+    let ((left_sign, left), (right_sign, right)) = (key(left)?, key(right)?);
+    let apart = left.abs_diff(right);
+    (left_sign == right_sign || left | right == 0).then(|| u64::try_from(apart).unwrap_or(u64::MAX))
+}
+
+/// Une forme de l'état entier : son nom, ses octets, l'hôte, et ce qu'on
+/// compare en plus (RFLAGS, l'environnement rangé à 0x20).
+struct StateForm {
+    name: &'static str,
+    code: &'static [u8],
+    host: StateHost,
+    flags: bool,
+    environment: bool,
+    /// L'instruction range en mémoire (à 0x20).
+    host_stores: bool,
+}
+
+fn state_forms() -> Vec<StateForm> {
+    macro_rules! form {
+        ($name:literal, $code:expr, $host:literal) => {
+            StateForm {
+                name: $name,
+                code: &$code,
+                host: host_state!($host),
+                flags: false,
+                environment: false,
+                host_stores: matches!(
+                    $name,
+                    "fstps" | "fstl" | "fstpt" | "fists" | "fistpl" | "fistpll" | "fbstp"
+                ),
+            }
+        };
+        ($name:literal, $code:expr, $host:literal, flags) => {
+            StateForm {
+                flags: true,
+                ..form!($name, $code, $host)
+            }
+        };
+        ($name:literal, $code:expr, $host:literal, environment) => {
+            StateForm {
+                environment: true,
+                ..form!($name, $code, $host)
+            }
+        };
+    }
+    vec![
+        form!("fxtract", [0xd9, 0xf4], "fxtract"),
+        form!("ftst", [0xd9, 0xe4], "ftst"),
+        form!("fxam", [0xd9, 0xe5], "fxam"),
+        form!("fchs", [0xd9, 0xe0], "fchs"),
+        form!("fabs", [0xd9, 0xe1], "fabs"),
+        form!("fld1", [0xd9, 0xe8], "fld1"),
+        form!("fldz", [0xd9, 0xee], "fldz"),
+        form!("fldpi", [0xd9, 0xeb], "fldpi"),
+        form!("fldl2e", [0xd9, 0xea], "fldl2e"),
+        form!("fldl2t", [0xd9, 0xe9], "fldl2t"),
+        form!("fldlg2", [0xd9, 0xec], "fldlg2"),
+        form!("fldln2", [0xd9, 0xed], "fldln2"),
+        form!("fld %st(1)", [0xd9, 0xc1], "fld st(1)"),
+        form!("fcom", [0xd8, 0xd1], "fcom st(1)"),
+        form!("fcomp", [0xd8, 0xd9], "fcomp st(1)"),
+        form!("fucom", [0xdd, 0xe1], "fucom st(1)"),
+        form!("fucomp", [0xdd, 0xe9], "fucomp st(1)"),
+        form!("fucompp", [0xda, 0xe9], "fucompp"),
+        form!("fcompp", [0xde, 0xd9], "fcompp"),
+        form!(
+            "fcomi",
+            [0xdb, 0xf1],
+            "fcomi st, st(1)\npushfq\npop rax\nmov [{p}+0xF0], rax",
+            flags
+        ),
+        form!(
+            "fucomip",
+            [0xdf, 0xe9],
+            "fucomip st, st(1)\npushfq\npop rax\nmov [{p}+0xF0], rax",
+            flags
+        ),
+        form!("fadd", [0xd8, 0xc1], "fadd st, st(1)"),
+        form!("faddp", [0xde, 0xc1], "faddp st(1), st"),
+        form!("fsub", [0xd8, 0xe1], "fsub st, st(1)"),
+        form!("fsubr %st,%st(1)", [0xdc, 0xe1], "fsubr st(1), st"),
+        form!("fdivr", [0xd8, 0xf9], "fdivr st, st(1)"),
+        form!("fdivp", [0xde, 0xf9], "fdivp st(1), st"),
+        form!("fmul", [0xd8, 0xc9], "fmul st, st(1)"),
+        form!("fsqrt", [0xd9, 0xfa], "fsqrt"),
+        form!("frndint", [0xd9, 0xfc], "frndint"),
+        form!("fscale", [0xd9, 0xfd], "fscale"),
+        form!("fprem", [0xd9, 0xf8], "fprem"),
+        form!("fprem1", [0xd9, 0xf5], "fprem1"),
+        form!("fxch", [0xd9, 0xc9], "fxch st(1)"),
+        form!("fst %st(1)", [0xdd, 0xd1], "fst st(1)"),
+        form!("fstp %st(1)", [0xdd, 0xd9], "fstp st(1)"),
+        form!("fcmovb", [0xda, 0xc1], "fcmovb st, st(1)"),
+        form!("fcmovnb", [0xdb, 0xc1], "fcmovnb st, st(1)"),
+        form!("fdecstp", [0xd9, 0xf6], "fdecstp"),
+        form!("fincstp", [0xd9, 0xf7], "fincstp"),
+        form!("ffree", [0xdd, 0xc1], "ffree st(1)"),
+        form!("fnclex", [0xdb, 0xe2], "fnclex"),
+        form!("fnop", [0xd9, 0xd0], "fnop"),
+        form!("fstps", [0xd9, 0x5e, 0x20], "fstp dword ptr [{p}+0x20]"),
+        form!("fstl", [0xdd, 0x56, 0x20], "fst qword ptr [{p}+0x20]"),
+        form!("fstpt", [0xdb, 0x7e, 0x20], "fstp tbyte ptr [{p}+0x20]"),
+        form!("fists", [0xdf, 0x56, 0x20], "fist word ptr [{p}+0x20]"),
+        form!("fistpl", [0xdb, 0x5e, 0x20], "fistp dword ptr [{p}+0x20]"),
+        form!("fistpll", [0xdf, 0x7e, 0x20], "fistp qword ptr [{p}+0x20]"),
+        form!("fbstp", [0xdf, 0x76, 0x20], "fbstp tbyte ptr [{p}+0x20]"),
+        form!("fbld", [0xdf, 0x66, 0x20], "fbld tbyte ptr [{p}+0x20]"),
+        form!("flds", [0xd9, 0x46, 0x20], "fld dword ptr [{p}+0x20]"),
+        form!("fldl", [0xdd, 0x46, 0x20], "fld qword ptr [{p}+0x20]"),
+        form!("fldt", [0xdb, 0x6e, 0x20], "fld tbyte ptr [{p}+0x20]"),
+        form!("filds", [0xdf, 0x46, 0x20], "fild word ptr [{p}+0x20]"),
+        form!("fildll", [0xdf, 0x6e, 0x20], "fild qword ptr [{p}+0x20]"),
+        form!("fadds", [0xd8, 0x46, 0x20], "fadd dword ptr [{p}+0x20]"),
+        form!("fsubrs", [0xd8, 0x6e, 0x20], "fsubr dword ptr [{p}+0x20]"),
+        form!("fmull", [0xdc, 0x4e, 0x20], "fmul qword ptr [{p}+0x20]"),
+        form!("fdivs", [0xd8, 0x76, 0x20], "fdiv dword ptr [{p}+0x20]"),
+        form!("fdivrl", [0xdc, 0x7e, 0x20], "fdivr qword ptr [{p}+0x20]"),
+        form!("fcoms", [0xd8, 0x56, 0x20], "fcom dword ptr [{p}+0x20]"),
+        form!("fcompl", [0xdc, 0x5e, 0x20], "fcomp qword ptr [{p}+0x20]"),
+        form!("ficoml", [0xda, 0x56, 0x20], "ficom dword ptr [{p}+0x20]"),
+        form!("fidivs", [0xde, 0x76, 0x20], "fidiv word ptr [{p}+0x20]"),
+        form!("fimull", [0xda, 0x4e, 0x20], "fimul dword ptr [{p}+0x20]"),
+        form!(
+            "fnstenv",
+            [0xd9, 0x76, 0x20],
+            "fnstenv [{p}+0x20]",
+            environment
+        ),
+        form!("fldcw", [0xd9, 0x6e, 0x20], "fldcw word ptr [{p}+0x20]"),
+        form!("fldenv", [0xd9, 0x66, 0x20], "fldenv [{p}+0x20]"),
+        form!("fsqrt ; fld1", [0xd9, 0xfa, 0xd9, 0xe8], "fsqrt\nfld1"),
+    ]
+}
+
+/// **Toute la pile, contre l'hôte, sur toutes les classes de l'étendu** : les
+/// huit registres, les trois mots, l'opérande en mémoire et RFLAGS, tels que
+/// `fnsave` les range — sur une pile normale, à un registre, vide ou pleine,
+/// dans les quatre modes et les trois précisions. Les tests plus haut tirent
+/// des valeurs bien formées sur une pile de deux ; celui-ci tire aussi ce que
+/// le processeur refuse (non normalisés, pseudo-NaN, pseudo-infinis) et ce
+/// qu'il renormalise (pseudo-dénormaux), et le débordement de la pile dans
+/// les deux sens.
+#[test]
+fn the_x87_state_matches_the_host_silicon_on_every_class_and_stack() {
+    judge_states(state_forms(), 0x7f, Hasard(0x5EED_57A7), |_, _| false);
+}
+
+/// **Les exceptions démasquées, contre l'hôte** : les mêmes formes, toutes
+/// les exceptions démasquées (le mot de contrôle à 0x40 et plus). Une
+/// instruction invalide, dénormale ou qui divise par zéro ne range rien et
+/// ne bouge pas la pile ; un rangement en mémoire qui déborde non plus ;
+/// l'inexact laisse le résultat. Seules les suites de deux instructions
+/// restent dehors : la seconde livrerait `#MF` sur l'hôte. Et un dépassement
+/// démasqué vers un registre, où le silicium range le résultat au biais
+/// ajusté de 24 576, que ce cœur ne fait pas : ces cas-là sont écartés, et
+/// comptés.
+#[test]
+fn the_x87_unmasked_exceptions_match_the_host_silicon() {
+    let forms = state_forms()
+        .into_iter()
+        .filter(|form| !form.name.contains(';'))
+        .collect();
+    let skipped = judge_states(forms, 0x40, Hasard(0x5EED_D35A), |form, wanted| {
+        let status = u16::from_le_bytes([wanted[0x44], wanted[0x45]]);
+        let in_memory = form.code.len() > 2 && form.host_stores;
+        status & 0x18 != 0 && !in_memory
+    });
+    // Près de 1,5 % des 276 000 tirages.
+    assert!(skipped < 6000, "{skipped} cas écartés");
+}
+
+/// Rejouer `forms` contre l'hôte, 4 000 tirages chacune, le mot de contrôle
+/// à `masks` plus l'arrondi et la précision du tirage. `skip` écarte un cas
+/// d'après ce que l'hôte a rendu ; le nombre d'écartés revient.
+fn judge_states(
+    forms: Vec<StateForm>,
+    masks: u16,
+    mut h: Hasard,
+    skip: impl Fn(&StateForm, &Area) -> bool,
+) -> usize {
+    let mut wrong = Vec::new();
+    let mut tally = Vec::new();
+    let mut cases = 0;
+    let mut skipped = 0;
+    for form in forms {
+        let mut shown = 0;
+        let mut missed = 0;
+        for draw in 0..4000u32 {
+            let mut area: Area = [0; 0x100];
+            area[..10].copy_from_slice(&any_extended(&mut h));
+            area[0x10..0x1a].copy_from_slice(&any_extended(&mut h));
+            area[0x20..0x30].copy_from_slice(&memory_operand(&mut h));
+            let rounding = ((draw % 4) as u16) << 10;
+            let precision = [0x300u16, 0x200, 0x000][(draw / 4 % 3) as usize];
+            area[0x30..0x32].copy_from_slice(&(masks | rounding | precision).to_le_bytes());
+            let variant = match draw % 10 {
+                7 => 1,
+                8 => 2,
+                9 => 3,
+                _ => 0,
+            };
+            let mut wanted = area;
+            (form.host)(&mut wanted, variant);
+            if skip(&form, &wanted) {
+                skipped += 1;
+                continue;
+            }
+            let mut got = area;
+            cases += 1;
+            if let Err(why) = emulate_state(&mut got, variant, form.code) {
+                missed += 1;
+                if shown < 3 {
+                    shown += 1;
+                    wrong.push(format!("{} (pile {variant}) : {why}", form.name));
+                }
+                continue;
+            }
+            if !form.flags {
+                wanted[0xF0..0xF8].fill(0);
+                got[0xF0..0xF8].fill(0);
+            } else {
+                let flags = u64::from_le_bytes(wanted[0xF0..0xF8].try_into().unwrap()) & 0x8d5;
+                wanted[0xF0..0xF8].copy_from_slice(&flags.to_le_bytes());
+            }
+            let environment = form.environment.then_some(0x20);
+            comparable(&mut wanted, environment);
+            comparable(&mut got, environment);
+            if wanted != got {
+                missed += 1;
+            }
+            if wanted != got && shown < 3 {
+                shown += 1;
+                let word = |area: &Area, at: usize| u16::from_le_bytes([area[at], area[at + 1]]);
+                wrong.push(format!(
+                    "{} (pile {variant}, cw {:x}) : a {:02x?} b {:02x?} m {:02x?}\n    \
+                     attendu sw {:04x} tw {:04x} st0 {:02x?} st1 {:02x?} m {:02x?}\n    \
+                     obtenu  sw {:04x} tw {:04x} st0 {:02x?} st1 {:02x?} m {:02x?}",
+                    form.name,
+                    word(&area, 0x30),
+                    &area[..10],
+                    &area[0x10..0x1a],
+                    &area[0x20..0x2a],
+                    word(&wanted, 0x44),
+                    word(&wanted, 0x48),
+                    &wanted[0x5c..0x66],
+                    &wanted[0x66..0x70],
+                    &wanted[0x20..0x2a],
+                    word(&got, 0x44),
+                    word(&got, 0x48),
+                    &got[0x5c..0x66],
+                    &got[0x66..0x70],
+                    &got[0x20..0x2a],
+                ));
+            }
+        }
+        if missed > 0 {
+            tally.push(format!("{} : {missed}", form.name));
+        }
+    }
+    assert!(
+        tally.is_empty(),
+        "des écarts sur {cases} cas — {}\n{}",
+        tally.join(", "),
+        wrong.join("\n")
+    );
+    skipped
+}
+
+/// Ce que le silicium rend d'une fonction transcendante, et ce que le test
+/// en juge : la valeur à `ULPS` unités près — le silicium ne promet que
+/// l'unité du dernier rang, la machine arrondit une fois une valeur juste à
+/// 2⁻¹²⁰ près —, et tout le reste au bit près : les drapeaux, C2, C3, C0, les
+/// étiquettes, le sommet. C1 dit de quel côté l'arrondi est allé : il n'est
+/// jugé que là où les deux valeurs sont les mêmes.
+const ULPS: u64 = 1;
+
+/// **Un argument dans le domaine où le silicium est juste à l'unité près**,
+/// ou une classe particulière. Le silicium réduit le sinus, le cosinus et la
+/// tangente par un π de soixante-six bits : son erreur absolue, près de
+/// 2⁻⁶⁸, n'est sous l'unité du dernier rang que là où la fonction n'est pas
+/// petite — sous 1,375 en grandeur (cos 1,375 ≈ 0,19). `x87_transcendentals_
+/// agree_with_the_host_silicon` juge le reste du domaine, jusqu'à 3, à une
+/// tolérance près. À 2⁶³ et au-delà, le silicium lève C2 sans calculer, ce
+/// que la machine fait aussi : ces arguments restent.
+fn transcendental_argument(h: &mut Hasard, name: &str) -> [u8; 10] {
+    loop {
+        let candidate = any_extended(h);
+        let exponent = u16::from_le_bytes([candidate[8], candidate[9]]) & 0x7fff;
+        let significand = u64::from_le_bytes(candidate[..8].try_into().unwrap());
+        let finite = exponent != 0x7fff && exponent != 0 && significand >> 63 != 0;
+        if !matches!(name, "fsin" | "fcos" | "fsincos" | "fptan") || !finite {
+            return candidate;
+        }
+        if !(0x3fff..0x403e).contains(&exponent) {
+            return candidate;
+        }
+        if exponent == 0x3fff && significand < 0xB000_0000_0000_0000 {
+            return candidate;
+        }
+    }
+}
+
+/// **C1 se juge là où le résultat ne dépend pas de la façon de calculer** :
+/// une pile vide ou pleine, un opérande particulier (NaN, infini, zéro,
+/// refusé), un argument que le silicium rend tel quel (le sinus sous 2⁻⁶⁸
+/// ou au-delà de 2⁶³, `f2xm1` hors de ]−1, 1[). Ailleurs, le silicium et la
+/// machine arrondissent chacun leur propre approximation, et une valeur
+/// voisine d'une demie peut monter chez l'un et descendre chez l'autre.
+fn judges_rounding(area: &Area, name: &str, variant: usize) -> bool {
+    let class = |register: &[u8]| {
+        let significand = u64::from_le_bytes(register[..8].try_into().unwrap());
+        let exponent = u16::from_le_bytes([register[8], register[9]]) & 0x7fff;
+        let special = exponent == 0x7fff
+            || (exponent == 0 && significand == 0)
+            || (exponent != 0 && significand >> 63 == 0);
+        (special, exponent, significand)
+    };
+    let (x_special, x_exponent, x_significand) = class(&area[..10]);
+    let (y_special, _, _) = class(&area[0x10..0x1a]);
+    let two = matches!(name, "fpatan" | "fyl2x" | "fyl2xp1");
+    let pushes = matches!(name, "fsincos" | "fptan");
+    let stack = variant == 2 || (two && variant == 1) || (pushes && variant == 3);
+    if stack || x_special || (two && y_special) {
+        return true;
+    }
+    match name {
+        "fsin" | "fcos" | "fsincos" | "fptan" => !(0x3fbb..0x403e).contains(&x_exponent),
+        "f2xm1" => x_exponent > 0x3fff || (x_exponent == 0x3fff && x_significand == 1 << 63),
+        _ => false,
+    }
+}
+
+/// **Les fonctions transcendantes, sur toutes les classes et toutes les
+/// piles** : NaN, infinis, zéros, dénormaux, pseudo-dénormaux, valeurs
+/// refusées, arguments minuscules (que le silicium rend sans les arrondir
+/// sous 2⁻⁶⁸, ou sous 2⁻⁴⁰ pour `fpatan`), hors du domaine (`f2xm1` au-delà
+/// de un, `fyl2xp1` sous −1, le sinus à 2⁶³), sur une pile normale, à un
+/// registre, vide ou pleine, dans les quatre modes et les trois précisions.
+#[test]
+fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
+    let forms: Vec<(&str, &[u8], StateHost)> = vec![
+        ("fsin", &[0xd9, 0xfe], host_state!("fsin")),
+        ("fcos", &[0xd9, 0xff], host_state!("fcos")),
+        ("fsincos", &[0xd9, 0xfb], host_state!("fsincos")),
+        ("fptan", &[0xd9, 0xf2], host_state!("fptan")),
+        ("fpatan", &[0xd9, 0xf3], host_state!("fpatan")),
+        ("f2xm1", &[0xd9, 0xf0], host_state!("f2xm1")),
+        ("fyl2x", &[0xd9, 0xf1], host_state!("fyl2x")),
+        ("fyl2xp1", &[0xd9, 0xf9], host_state!("fyl2xp1")),
+        // C2 levé par le premier sinus, hors du domaine, et tombé au second.
+        (
+            "fsin ; fxch ; fsin",
+            &[0xd9, 0xfe, 0xd9, 0xc9, 0xd9, 0xfe],
+            host_state!("fsin\nfxch st(1)\nfsin"),
+        ),
+    ];
+    let mut h = Hasard(0x5EED_7A46);
+    let mut wrong = Vec::new();
+    let mut tally = Vec::new();
+    let mut cases = 0;
+    for (name, code, host) in forms {
+        let (mut shown, mut missed) = (0, 0);
+        for draw in 0..8000u32 {
+            let mut area: Area = [0; 0x100];
+            let twice = name.starts_with("fsin ;");
+            let first = transcendental_argument(&mut h, if twice { "fsin" } else { name });
+            area[..10].copy_from_slice(&first);
+            let second = if twice {
+                transcendental_argument(&mut h, "fsin")
+            } else {
+                any_extended(&mut h)
+            };
+            area[0x10..0x1a].copy_from_slice(&second);
+            let rounding = ((draw % 4) as u16) << 10;
+            let precision = [0x300u16, 0x200, 0x000][(draw / 4 % 3) as usize];
+            area[0x30..0x32].copy_from_slice(&(0x7f | rounding | precision).to_le_bytes());
+            let variant = match draw % 10 {
+                7 => 1,
+                8 => 2,
+                9 => 3,
+                _ => 0,
+            };
+            let mut wanted = area;
+            host(&mut wanted, variant);
+            let mut got = area;
+            cases += 1;
+            if let Err(why) = emulate_state(&mut got, variant, code) {
+                missed += 1;
+                if shown < 3 {
+                    shown += 1;
+                    wrong.push(format!("{name} (pile {variant}) : {why}"));
+                }
+                continue;
+            }
+            wanted[0xF0..0xF8].fill(0);
+            got[0xF0..0xF8].fill(0);
+            comparable(&mut wanted, None);
+            comparable(&mut got, None);
+            let mut same_values = true;
+            let mut close = true;
+            for index in 0..8 {
+                let at = 0x40 + 28 + 10 * index;
+                if wanted[at..at + 10] != got[at..at + 10] {
+                    same_values = false;
+                    match ulps_apart(&wanted[at..at + 10], &got[at..at + 10]) {
+                        Some(apart) if apart <= ULPS => {
+                            got[at..at + 10].copy_from_slice(&wanted[at..at + 10]);
+                        }
+                        _ => close = false,
+                    }
+                }
+            }
+            if !same_values || !judges_rounding(&area, name, variant) {
+                // C1 : le côté de l'arrondi, que des valeurs voisines ne
+                // partagent pas — ni deux calculs différents d'une même
+                // valeur, au voisinage d'une demie.
+                wanted[0x45] &= !0x02;
+                got[0x45] &= !0x02;
+            }
+            let differ = !close || wanted != got;
+            if differ {
+                missed += 1;
+            }
+            if differ && shown < 8 {
+                shown += 1;
+                let word = |area: &Area, at: usize| u16::from_le_bytes([area[at], area[at + 1]]);
+                wrong.push(format!(
+                    "{name} (pile {variant}, cw {:x}) : a {:02x?} b {:02x?}\n    \
+                     attendu sw {:04x} tw {:04x} st0 {:02x?} st1 {:02x?}\n    \
+                     obtenu  sw {:04x} tw {:04x} st0 {:02x?} st1 {:02x?}",
+                    word(&area, 0x30),
+                    &area[..10],
+                    &area[0x10..0x1a],
+                    word(&wanted, 0x44),
+                    word(&wanted, 0x48),
+                    &wanted[0x5c..0x66],
+                    &wanted[0x66..0x70],
+                    word(&got, 0x44),
+                    word(&got, 0x48),
+                    &got[0x5c..0x66],
+                    &got[0x66..0x70],
+                ));
+            }
+        }
+        if missed > 0 {
+            tally.push(format!("{name} : {missed}"));
+        }
+    }
+    assert!(
+        tally.is_empty(),
+        "des écarts sur {cases} cas — {}\n{}",
+        tally.join(", "),
+        wrong.join("\n")
+    );
 }
