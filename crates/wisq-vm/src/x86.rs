@@ -71,7 +71,9 @@ mod extended;
 #[path = "x86_rapide.rs"]
 pub mod rapide;
 use crate::x86_paging::is_canonical;
-pub use extended::{decode_extended, Extended, ExtendedFault, Extra, FpuWord, FXSAVE_WRITTEN};
+pub use extended::{
+    decode_extended, f80, Extended, ExtendedFault, Extra, FloatOp, Mmx, Sse, FXSAVE_WRITTEN,
+};
 
 /// La largeur d'une opération, en octets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

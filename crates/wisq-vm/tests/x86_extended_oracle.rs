@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use wisq_vm::x86::{
-    decode, decode_extended, Cpu, ExtendedFault, Extra, FpuWord, GuestMemory, Width, FXSAVE_WRITTEN,
+    decode, decode_extended, Cpu, ExtendedFault, Extra, GuestMemory, Width, FXSAVE_WRITTEN,
 };
 
 const DATA: u64 = 0x3000_1000;
@@ -168,25 +168,11 @@ fn the_x87_forms_the_machine_reads_match_the_silicon() {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    // Neuf formes — `fild` aux trois largeurs et à deux adresses, `fnstsw
-    // %ax`, `fnstcw`, `fldcw` —, soixante états chacune.
-    let mut forms: Vec<_> = judged.keys().copied().collect();
-    forms.sort_unstable();
-    assert_eq!(
-        forms,
-        [
-            "fildl 0x0(%rsi)",
-            "fildl 0x8(%rsi)",
-            "fildll 0x0(%rsi)",
-            "fildll 0x8(%rsi)",
-            "filds 0x0(%rsi)",
-            "filds 0x8(%rsi)",
-            "fldcw 0x20(%rsi)",
-            "fnstcw 0x20(%rsi)",
-            "fnstsw %ax",
-        ]
-    );
-    assert_eq!(judged.values().sum::<usize>(), 540);
+    // **Les 121 formes du corpus, et ses 7 260 cas** : depuis que le x87
+    // calcule, aucune n'est laissée de côté. Il n'en jugeait que neuf (`fild`
+    // aux trois largeurs et à deux adresses, `fnstsw %ax`, `fnstcw`, `fldcw`).
+    assert_eq!(judged.len(), 121, "toutes les formes du corpus");
+    assert_eq!(judged.values().sum::<usize>(), 7260);
 }
 
 /// **`fxrstor` puis `fxsave`, contre ce que le silicium a rendu** : 280 aires.
@@ -324,44 +310,31 @@ fn a_bad_area_changes_nothing() {
     );
 }
 
-/// **Le second décodeur ne lit que ce qu'il nomme.** Ses voisins restent
-/// illisibles : `d9 /0` est `fld`, un vrai calcul.
+/// **Le second décodeur ne lit que ce qu'il nomme.** Chaque instruction du
+/// x87 a sa longueur et sa forme ; les octets que le manuel ne nomme pas —
+/// les alias non documentés, les champs mémoire réservés — restent
+/// illisibles, comme `f2`/`f3` devant le x87 et les formes de SSE3 et SSSE3.
 #[test]
 fn the_extended_decoder_reads_exactly_its_forms() {
     let read =
         |code: &[u8]| decode_extended(code).map(|instruction| (instruction.op, instruction.length));
+    let x87 = |opcode: u8, modrm: u8| Extra::X87 { opcode, modrm };
     assert_eq!(
         read(&[0xd9, 0x7c, 0x24, 0x0c]),
-        Some((Extra::FpuWord(FpuWord::StoreControl), 4)),
+        Some((x87(0xd9, 0x7c), 4)),
         "fnstcw 0xc(%rsp), le premier mur du décompresseur"
     );
-    assert_eq!(
-        read(&[0xdd, 0x7c, 0x24, 0x0e]),
-        Some((Extra::FpuWord(FpuWord::StoreStatus), 4))
-    );
-    assert_eq!(
-        read(&[0xd9, 0x2e]),
-        Some((Extra::FpuWord(FpuWord::LoadControl), 2))
-    );
-    assert_eq!(
-        read(&[0xdf, 0xe0]),
-        Some((Extra::FpuWord(FpuWord::StatusToAccumulator), 2))
-    );
-    assert_eq!(
-        read(&[0xdb, 0xe2]),
-        Some((Extra::FpuWord(FpuWord::ClearExceptions), 2))
-    );
+    assert_eq!(read(&[0xdd, 0x7c, 0x24, 0x0e]), Some((x87(0xdd, 0x7c), 4)));
+    assert_eq!(read(&[0xd9, 0x2e]), Some((x87(0xd9, 0x2e), 2)));
+    assert_eq!(read(&[0xdf, 0xe0]), Some((x87(0xdf, 0xe0), 2)));
+    assert_eq!(read(&[0xdb, 0xe2]), Some((x87(0xdb, 0xe2), 2)));
     assert_eq!(read(&[0x0f, 0x77]), Some((Extra::Emms, 2)));
     assert_eq!(
         read(&[0xdb, 0x07]),
-        Some((Extra::FpuLoadInteger, 2)),
+        Some((x87(0xdb, 0x07), 2)),
         "fildl (%rdi)"
     );
-    assert_eq!(
-        decode_extended(&[0xdf, 0x2e]).map(|instruction| instruction.width),
-        Some(Width::Qword),
-        "fildll"
-    );
+    // Les calculs que ce décodeur refusait jusqu'ici.
     for (name, code) in [
         ("fld m32", &[0xd9, 0x06][..]),
         ("fstp m32", &[0xd9, 0x1e]),
@@ -371,17 +344,49 @@ fn the_extended_decoder_reads_exactly_its_forms() {
         ("fbld", &[0xdf, 0x26]),
         ("fistpll", &[0xdf, 0x3e]),
         ("fld1", &[0xd9, 0xe8]),
+        ("fsin", &[0xd9, 0xfe]),
+        ("fnsave", &[0xdd, 0x36]),
         ("fnstsw %ax précédé de 66", &[0x66, 0xdf, 0xe0]),
+        ("fld avec REX.B", &[0x41, 0xd9, 0x00]),
+    ] {
+        let decoded = decode_extended(code).unwrap_or_else(|| panic!("{name} se lit"));
+        assert_eq!(decoded.length, code.len(), "{name} : la longueur");
+    }
+    // `66` devant le x87 : les environnements de quatorze octets.
+    assert_eq!(
+        decode_extended(&[0x66, 0xd9, 0x36]).map(|instruction| instruction.width),
+        Some(Width::Word)
+    );
+    for (name, code) in [
+        ("d9 /1 en mémoire", &[0xd9, 0x0e][..]),
+        ("db /4 en mémoire", &[0xdb, 0x26]),
+        ("db /6 en mémoire", &[0xdb, 0x36]),
+        ("dd /5 en mémoire", &[0xdd, 0x2e]),
+        ("d9 d1, un alias", &[0xd9, 0xd1]),
+        ("d9 e2", &[0xd9, 0xe2]),
+        ("dc d0, l'alias de fcom", &[0xdc, 0xd0]),
+        ("de d1, l'alias de fcomp", &[0xde, 0xd1]),
+        ("df c8, l'alias de fxch", &[0xdf, 0xc8]),
+        ("dd c8, l'alias de fxch", &[0xdd, 0xc8]),
+        ("da c0 n'est pas da e8", &[0xda, 0xe8]),
+        ("f3 devant le x87", &[0xf3, 0xd9, 0xe8]),
         ("emms précédé de f3", &[0xf3, 0x0f, 0x77]),
         ("femms", &[0x0f, 0x0e]),
         ("fnstcw à adresse de 32 bits", &[0x67, 0xd9, 0x38]),
         ("fnstcw coupé", &[0xd9, 0x7c, 0x24]),
+        ("haddps, du SSE3", &[0xf2, 0x0f, 0x7c, 0xc1]),
+        ("pshufb, du SSSE3", &[0x0f, 0x38, 0x00, 0xc1]),
+        (
+            "deux préfixes obligatoires",
+            &[0x66, 0xf3, 0x0f, 0x58, 0xc1],
+        ),
+        ("movntq vers un registre", &[0x0f, 0xe7, 0xc1]),
     ] {
         assert_eq!(decode_extended(code), None, "{name} doit rester illisible");
     }
-    // Et ce que `decode` lit déjà n'est pas à lui : `fninit` reste au premier.
+    // Et ce que `decode` lit déjà n'est pas à lui : `fninit` reste au premier,
+    // même si le second sait aussi le faire.
     assert!(decode(&[0xdb, 0xe3]).is_some());
-    assert_eq!(decode_extended(&[0xdb, 0xe3]), None);
 }
 
 /// `fnclex` efface les exceptions en attente et garde le sommet ; `emms` vide
@@ -461,7 +466,15 @@ fn fild_extends_the_sign_of_what_it_reads() {
     ];
     for (code, width, raw, wanted) in cases {
         let decoded = decode_extended(code).expect("fild (%rsi)");
-        assert_eq!(decoded.width, width);
+        // La largeur est dans l'opcode et le champ `reg` : c'est la valeur
+        // empilée, plus bas, qui dit combien d'octets ont été lus.
+        assert_eq!(
+            decoded.op,
+            Extra::X87 {
+                opcode: code[0],
+                modrm: code[1]
+            }
+        );
         let mut cpu = x87_start((0, 0), (0, 0));
         // Les octets au-delà de la largeur sont à un : ils ne doivent pas
         // être lus.
