@@ -183,8 +183,10 @@ L'ordre est antéchronologique : le plus récent en haut.
   de l'invité, un gibioctet, est une `WebAssembly.Memory` du processus de
   contenu, plus le cache de code — 1,3 à 3,4 Gio de pic sous Bun pour Void,
   2,6 Gio pour Alpine par cette page, qui ne peut pas forcer de collecte —
-  et le `vmlinux` décompressé en mémoire le temps de l'écrire, ~60 Mio pour
-  Void) ; **les instantanés** (rien ne sauve ni ne reprend cette machine :
+  et le `vmlinux` décompressé en mémoire le temps de l'écrire — ~60 Mio pour
+  Void, écrivais-je, et c'est faux : le pic est de deux fois et demie à près
+  de trois fois le `vmlinux`, 151 Mio mesurés, voir l'entrée du 21 novembre
+  « Le contrôle de la machine de l'application ») ; **les instantanés** (rien ne sauve ni ne reprend cette machine :
   la RAM vit dans la page, et la couche du disque est perdue à la
   fermeture) ; **les bureaux prêts** à refabriquer pour cette machine (ceux
   du cœur Swift sont des instantanés de son état, pas de celui-ci) ; et le
