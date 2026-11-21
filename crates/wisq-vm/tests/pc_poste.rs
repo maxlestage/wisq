@@ -8,12 +8,15 @@ use std::sync::Arc;
 
 use wisq_carte::ecran::{BASE_DE_LA_MEMOIRE_VIDEO, PORT_DONNEE, PORT_INDEX};
 use wisq_carte::i8042::{CodeTouche, LIMITE_DE_FRAPPE};
+use wisq_carte::tablette::BASE_DE_LA_TABLETTE;
 use wisq_vm::pc::instantane::{self, RefusDInstantane, MAGIE, VERSION};
+use wisq_vm::pc::machine::Alea;
 use wisq_vm::pc::poste::{
     frappes_du_jeu_1, RefusDeBranchement, RefusDeTouches, FRAPPES_REMISES,
     PAS_DE_RATTRAPAGE_EN_SECONDES,
 };
 use wisq_vm::pc::{Fin, Poste};
+use wisq_vm::x86_paging::Access;
 
 mod noyau_factice;
 use noyau_factice::{image, image_de, BOUCLE, FAUTE, REMISE};
@@ -196,6 +199,65 @@ fn keystrokes_are_taken_whole_or_not_at_all_up_to_the_bound() {
     );
 }
 
+/// **La borne compte aussi ce que la carte tient encore** : trente-deux
+/// frappes remises à l'i8042 d'un invité qui ne lit pas son clavier y
+/// restent, et une frappe de plus que la borne ne passe pas, même si ce qui
+/// attend dans le poste seul la laisserait passer.
+#[test]
+fn the_bound_counts_what_the_card_still_holds() {
+    let mut poste = poste_charge(&image_de(&BOUCLE), None);
+    let commandes = Arc::clone(poste.commandes());
+    let (a, b) = (CodeTouche::simple(0x1E), CodeTouche::simple(0x30));
+    let paires: Vec<_> = (0..FRAPPES_REMISES)
+        .flat_map(|_| [(a, true), (a, false)])
+        .collect();
+    assert!(commandes.frapper(&paires));
+    courir(&mut poste, 1000);
+    // La première est posée au port de l'i8042 ; les trente et une suivantes
+    // attendent dans sa file, les trente-deux autres ici.
+    let dans_la_carte = commandes.carte().tenir().carte().ps2.frappes.len();
+    assert_eq!(dans_la_carte, FRAPPES_REMISES - 1);
+    let en_attente = commandes.frappes_en_attente();
+    assert_eq!(en_attente, 2 * FRAPPES_REMISES - 1);
+    let jusqu_a_la_borne: Vec<_> = (0..LIMITE_DE_FRAPPE - en_attente)
+        .map(|rang| (a, rang % 2 == 0))
+        .collect();
+    assert!(commandes.frapper(&jusqu_a_la_borne));
+    assert_eq!(commandes.frappes_en_attente(), LIMITE_DE_FRAPPE);
+    assert!(
+        !commandes.frapper(&[(b, true)]),
+        "la borne est atteinte avec la file de la carte, pas sans elle"
+    );
+    assert_eq!(commandes.frappes_en_attente(), LIMITE_DE_FRAPPE);
+}
+
+/// **Une annulation oublie aussi ce que la frappe jetée laissait enfoncé** :
+/// une touche enfoncée puis jetée avant d'être remise n'est plus à relâcher,
+/// et un relâchement seul au-delà de la borne n'ajoute rien pour elle.
+#[test]
+fn abandoning_forgets_what_the_dropped_keystrokes_left_down() {
+    let poste = Poste::essayer(RAM).expect("la RAM");
+    let commandes = poste.commandes();
+    let (a, b) = (CodeTouche::simple(0x1E), CodeTouche::simple(0x30));
+    assert!(commandes.frapper(&[(a, true)]));
+    commandes.abandonner_la_frappe();
+    assert_eq!(commandes.frappes_en_attente(), 0, "jetée, rien à relâcher");
+    let paires: Vec<_> = (0..LIMITE_DE_FRAPPE / 2)
+        .flat_map(|_| [(b, true), (b, false)])
+        .collect();
+    assert!(commandes.frapper(&paires));
+    assert_eq!(commandes.frappes_en_attente(), LIMITE_DE_FRAPPE);
+    assert!(
+        commandes.frapper(&[(a, false)]),
+        "un relâchement seul passe…"
+    );
+    assert_eq!(
+        commandes.frappes_en_attente(),
+        LIMITE_DE_FRAPPE,
+        "…sans rien ajouter : A n'est plus enfoncée"
+    );
+}
+
 /// **Un noyau qui lit son clavier** et renvoie chaque octet de l'i8042 sur le
 /// port série : `in $0x64 ; test $1 ; jz ; in $0x60 ; out` vers 0x3F8.
 const ECHO_DU_CLAVIER: [u8; 15] = [
@@ -262,6 +324,35 @@ fn abandoning_drops_what_waits_and_releases_what_was_handed_over() {
     assert!(commandes.frapper(&[(b, true), (b, false)]));
     let (_, console) = courir(&mut poste, 1_000_000);
     assert_eq!(console, [0x30, 0xB0]);
+}
+
+/// **Une touche étendue remise à l'i8042 se relâche étendue** : Ctrl droit
+/// (`E0 1D`), AltGr (`E0 38`) et la flèche du haut (`E0 48`) tenus quand la
+/// frappe est annulée reçoivent `E0 9D`, `E0 B8` et `E0 C8` — pas le
+/// relâchement de Ctrl gauche, d'Alt gauche ou du 8 du pavé.
+#[test]
+fn abandoning_releases_an_extended_key_as_an_extended_key() {
+    let mut poste = poste_qui_renvoie_son_clavier();
+    let commandes = Arc::clone(poste.commandes());
+    let tenues = frappes_du_jeu_1(&[0xE0, 0x1D, 0xE0, 0x38, 0xE0, 0x48]).expect("jeu 1");
+    assert!(commandes.frapper(&tenues));
+    let b = CodeTouche::simple(0x30);
+    for _ in 0..20 {
+        assert!(commandes.frapper(&[(b, true), (b, false)]));
+    }
+    // Les trois touches étendues et vingt-neuf frappes de B sont remises.
+    courir(&mut poste, 1);
+    commandes.abandonner_la_frappe();
+    let (_, console) = courir(&mut poste, 10_000_000);
+    let mut attendu = vec![0xE0, 0x1D, 0xE0, 0x38, 0xE0, 0x48];
+    for _ in 0..14 {
+        attendu.extend([0x30, 0xB0]);
+    }
+    attendu.push(0x30);
+    // Relâchées dans l'ordre de leur rang : B, puis les trois étendues.
+    attendu.extend([0xB0, 0xE0, 0x9D, 0xE0, 0xB8, 0xE0, 0xC8]);
+    assert_eq!(console, attendu);
+    assert_eq!(commandes.frappes_en_attente(), 0);
 }
 
 #[test]
@@ -414,6 +505,31 @@ fn the_tablet_and_the_wheel_wait_for_the_guest() {
     assert!(!poste.commandes().toucher(f64::NAN, 0.5, 1));
     assert!(!poste.commandes().defiler(1));
     poste.commandes().souris(5, -5, 1);
+
+    // **La tablette prise**, comme son pilote la prend : la commande PCI de
+    // l'emplacement 7, puis la file des événements et `DRIVER_OK` par sa
+    // BAR0.
+    {
+        let carte = poste.commandes().carte().clone();
+        let mut carte = carte.tenir();
+        assert!(carte.port_ecrire(0xCF8, 4, 0x8000_0000 | (7 << 11) | 0x04));
+        assert!(carte.port_ecrire(0xCFC, 2, 0x0006));
+        for (decalage, largeur, valeur) in [(0x16, 2, 0), (0x1C, 2, 1), (0x14, 1, 15)] {
+            assert!(carte.mem_ecrire(BASE_DE_LA_TABLETTE + decalage, largeur, valeur));
+        }
+    }
+    let commandes = poste.commandes();
+    assert!(commandes.toucher(0.5, 0.5, 1), "prise, elle répond");
+    // Une coordonnée qui n'est pas un nombre ne part pas : la carte la
+    // rabattrait sur un bord (`NaN as u32` vaut zéro, l'infini le maximum).
+    assert!(!commandes.toucher(f64::NAN, 0.5, 1));
+    assert!(!commandes.toucher(0.5, f64::NAN, 1));
+    assert!(!commandes.toucher(f64::INFINITY, 0.5, 1));
+    assert!(!commandes.toucher(0.5, f64::NEG_INFINITY, 1));
+    // Zéro cran ne part pas non plus, tablette prise : la règle est celle de
+    // la carte, et l'enveloppe Swift n'a pas à la redire.
+    assert!(!commandes.defiler(0));
+    assert!(commandes.defiler(1));
 }
 
 /// Un poste dont chaque champ que l'instantané porte a une valeur à lui,
@@ -573,6 +689,57 @@ fn a_snapshot_is_refused_before_anything_is_put_back() {
     let mut booleen = sauve.clone();
     booleen[12 + 8 + 8 + 24] = 2;
     assert_eq!(refus(&mut poste, &booleen), Err(RefusDInstantane::Abime));
+
+    // **Un battement de zéro instruction** : repris, il ferait diviser par
+    // zéro le premier calcul du temps de l'invité (`Machine::tics`).
+    const BATTEMENT: usize = 12 + 8 + 8;
+    assert_eq!(
+        u64::from_le_bytes(sauve[BATTEMENT..BATTEMENT + 8].try_into().unwrap()),
+        289,
+        "le battement du poste bariolé"
+    );
+    let mut sans_battement = sauve.clone();
+    sans_battement[BATTEMENT..BATTEMENT + 8].fill(0);
+    assert_eq!(
+        refus(&mut poste, &sans_battement),
+        Err(RefusDInstantane::Abime),
+        "un battement nul"
+    );
+
+    // **Une étiquette d'aléa inconnue** : ni la graine (0), ni l'hôte (1).
+    // Elle suit les compteurs, l'arrêt, l'ombre (neuf octets) et la page zéro
+    // (cinquante-sept).
+    const ALEA: usize = BATTEMENT + 24 + 1 + 9 + 57;
+    assert_eq!(sauve[ALEA], 0, "le poste bariolé a sa graine");
+    assert_eq!(
+        u64::from_le_bytes(sauve[ALEA + 1..ALEA + 9].try_into().unwrap()),
+        0xDEAD_BEEF
+    );
+    let mut alea = sauve.clone();
+    alea[ALEA] = 2;
+    assert_eq!(
+        refus(&mut poste, &alea),
+        Err(RefusDInstantane::Abime),
+        "une étiquette d'aléa inconnue"
+    );
+
+    // **Deux fois le même MSR** : le second numéro des « autres » (0x1B,
+    // puis 0xC000_0103) récrit en 0x1B.
+    let mut motif = 0x1Bu32.to_le_bytes().to_vec();
+    motif.extend_from_slice(&0xFEE0_0900u64.to_le_bytes());
+    let msr = sauve
+        .windows(motif.len())
+        .position(|fenetre| fenetre == motif)
+        .expect("le MSR 0x1B du poste bariolé")
+        + motif.len();
+    assert_eq!(&sauve[msr..msr + 4], &0xC000_0103u32.to_le_bytes());
+    let mut double = sauve.clone();
+    double[msr..msr + 4].copy_from_slice(&0x1Bu32.to_le_bytes());
+    assert_eq!(
+        refus(&mut poste, &double),
+        Err(RefusDInstantane::Abime),
+        "deux fois le même MSR"
+    );
     assert_eq!(instantane::sauver(&poste), avant, "rien n'a été reposé");
 
     let mut autre = Poste::essayer(RAM * 2).expect("la RAM");
@@ -586,6 +753,139 @@ fn a_snapshot_is_refused_before_anything_is_put_back() {
     let mut ecran = Poste::essayer(RAM).expect("la RAM");
     ecran.brancher_ecran(640, 480).expect("l'écran");
     assert_eq!(refus(&mut ecran, &sauve), Err(RefusDInstantane::AutreEcran));
+}
+
+/// **Une RAM qui n'est pas un multiple de trente-deux kibioctets** : sa
+/// dernière page est partielle, le dernier octet de la carte des pages n'est
+/// pas plein, et un bit posé au-delà de la dernière page est refusé.
+#[test]
+fn a_page_map_with_bits_past_the_last_page_is_refused() {
+    let ram = RAM + 100;
+    let mut poste = Poste::essayer(ram).expect("la RAM");
+    poste.charger(&image(), None, None).expect("chargé");
+    poste.machine.cpu.memory.bytes[ram as usize - 1] = 0xCD;
+    let sauve = instantane::sauver(&poste);
+
+    let mut reprise = Poste::essayer(ram).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("sauvée et reprise, telle quelle");
+    assert_eq!(reprise.machine.cpu.memory.bytes[ram as usize - 1], 0xCD);
+
+    // La carte est juste devant les pages non nulles.
+    let octets = &poste.machine.cpu.memory.bytes;
+    assert_eq!(octets.len() as u64, ram);
+    let pages = octets.len().div_ceil(instantane::PAGE);
+    assert_eq!(pages % 8, 1, "une page seule dans le dernier octet");
+    let pleines: usize = octets
+        .chunks(instantane::PAGE)
+        .filter(|page| page.iter().any(|&octet| octet != 0))
+        .map(<[u8]>::len)
+        .sum();
+    let carte = sauve.len() - pleines - pages.div_ceil(8);
+    assert_eq!(&sauve[carte - 8..carte], &ram.to_le_bytes());
+    let dernier = carte + pages / 8;
+    assert_eq!(sauve[dernier], 1, "la dernière page, partielle, est pleine");
+    for bit in 1..8 {
+        let mut au_dela = sauve.clone();
+        au_dela[dernier] |= 1 << bit;
+        assert_eq!(
+            instantane::reprendre(&mut reprise, &au_dela),
+            Err(RefusDInstantane::Abime),
+            "le bit {bit}, au-delà de la dernière page"
+        );
+    }
+}
+
+/// **L'ombre de `sti` passe l'instantané**, et la source de l'hôte n'y
+/// passe pas : une machine reprise garde son propre générateur.
+#[test]
+fn the_sti_shadow_crosses_a_snapshot_and_a_host_generator_does_not() {
+    // `sti ; jmp .` arrêtée après `sti` : l'ombre couvre encore le saut.
+    let mut poste = poste_charge(&image_de(&[0xFB, 0xEB, 0xFE]), None);
+    assert_eq!(courir(&mut poste, 1).0, Fin::Budget);
+    assert_eq!(poste.machine.ombre(), Some(1));
+    let sauve = instantane::sauver(&poste);
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    assert_eq!(reprise.machine.ombre(), Some(1), "l'ombre est reprise");
+
+    // Un générateur de l'hôte ne se sauve pas : la machine reprise garde le
+    // sien, à graine…
+    poste.machine.alea = Alea::Hote(Box::new(|| 42));
+    let sauve = instantane::sauver(&poste);
+    let mut a_graine = Poste::essayer(RAM).expect("la RAM");
+    a_graine.semer(7);
+    instantane::reprendre(&mut a_graine, &sauve).expect("la reprise");
+    assert!(
+        matches!(a_graine.machine.alea, Alea::Fixe(7)),
+        "la graine de la machine reprise, pas une graine lue dans l'instantané"
+    );
+    // …ou de l'hôte.
+    let mut de_l_hote = Poste::essayer(RAM).expect("la RAM");
+    de_l_hote.machine.alea = Alea::Hote(Box::new(|| 1234));
+    instantane::reprendre(&mut de_l_hote, &sauve).expect("la reprise");
+    assert_eq!(de_l_hote.machine.alea.suivant(), 1234);
+}
+
+/// **Reprendre dans une machine qui a déjà tourné** : ce que son tampon de
+/// traduction gardait ne vaut plus. La machine usée a tourné le même noyau
+/// jusqu'au même endroit (son bloc coupé est donc celui de l'instantané),
+/// puis ses tables ont envoyé la page de deux mébioctets de RIP sur une
+/// région vide, et sa traduction est restée dans le tampon. Reprise, elle
+/// finit la course comme une machine neuve.
+#[test]
+fn a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations() {
+    let mut entiere = poste_charge(&image(), Some("x=y"));
+    let (_, toute) = courir(&mut entiere, 50_000_000);
+
+    let mut coupee = poste_charge(&image(), Some("x=y"));
+    let (fin, debut) = courir(&mut coupee, 1_000_000);
+    assert_eq!(fin, Fin::Budget);
+    let sauve = instantane::sauver(&coupee);
+    let rip = coupee.machine.cpu.rip;
+
+    let mut usee = poste_charge(&image(), Some("x=y"));
+    courir(&mut usee, 1_000_000);
+    const REPERTOIRE: u64 = 0x700_0000;
+    const VIDE: u64 = 0x600_0000;
+    let cpu = &mut usee.machine.cpu;
+    let mot = |octets: &[u8], adresse: u64| {
+        u64::from_le_bytes(octets[adresse as usize..][..8].try_into().unwrap())
+    };
+    let racine = cpu.control[3] & !0xFFF;
+    let tables = mot(&cpu.memory.bytes, racine) & 0x000F_FFFF_FFFF_F000;
+    for rang in 0..512u64 {
+        let cible = if rang == rip >> 21 { VIDE } else { rang << 21 };
+        let entree = (REPERTOIRE + rang * 8) as usize;
+        cpu.memory.bytes[entree..entree + 8].copy_from_slice(&(cible | 0x83).to_le_bytes());
+    }
+    cpu.memory.bytes[tables as usize..tables as usize + 8]
+        .copy_from_slice(&(REPERTOIRE | 0x3).to_le_bytes());
+    cpu.flush_translations();
+    assert_eq!(
+        cpu.translate_cached(rip, Access::Fetch),
+        Ok(VIDE | (rip & 0x1F_FFFF)),
+        "la traduction de l'ancienne table est gardée"
+    );
+
+    instantane::reprendre(&mut usee, &sauve).expect("la reprise");
+    let (fin, suite) = courir(&mut usee, 50_000_000);
+    assert_eq!(fin, Fin::Eteinte);
+    assert_eq!([debut, suite].concat(), toute);
+    assert_eq!(usee.machine.retirees, entiere.machine.retirees);
+}
+
+/// **Une heure d'avant 1970** ne va pas à l'horloge CMOS de la machine comme
+/// un nombre immense : elle s'arrête à 1970.
+#[test]
+fn an_hour_before_1970_stops_at_1970() {
+    let mut poste = Poste::essayer(RAM).expect("la RAM");
+    for avant in [-5, i64::MIN] {
+        poste.regler_l_heure(avant);
+        assert_eq!(
+            poste.machine.herites.cmos.secondes_depuis_1970, 0,
+            "{avant}"
+        );
+    }
 }
 
 /// **L'heure figée remplace l'horloge donnée** : sans cela, l'horloge de

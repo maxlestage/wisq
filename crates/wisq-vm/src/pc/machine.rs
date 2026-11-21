@@ -687,17 +687,25 @@ impl Machine {
         self.ombre
     }
 
-    /// **Reprendre une machine sauvée** (`pc::instantane`) : son ombre et sa
-    /// page zéro reposées, et ce qui ne valait que pour l'état d'avant
-    /// oublié — le bloc coupé à reprendre, la page d'instructions courante, le
-    /// tampon de traduction. Les blocs et le cache de décodage comparent
-    /// leurs octets à l'entrée : une RAM remplacée ne les trompe pas.
+    /// **Reprendre une machine sauvée** (`pc::instantane`), neuve ou qui a
+    /// déjà tourné : son ombre et sa page zéro reposées, les drapeaux de
+    /// l'instruction en cours baissés, et le tampon de traduction vidé — il
+    /// traduisait par les tables d'avant
+    /// (`a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations`).
+    ///
+    /// Le reste n'a rien à oublier, et rien ici ne le remet à zéro :
+    /// - la page d'instructions courante se compare au compte de vidages du
+    ///   tampon (`physique_de_rip`), que le vidage change ;
+    /// - le bloc coupé à reprendre se recompare à l'entrée : l'adresse
+    ///   physique de RIP, l'étiquette du bloc et ses octets dans la RAM
+    ///   reprise (`reprendre`) — s'ils sont les mêmes, les instructions aussi ;
+    /// - le dernier bloc n'est qu'une indication à l'hôte
+    ///   (`Blocs::enchainer`), qui ne coûte jamais une instruction ;
+    /// - les blocs et le cache de décodage comparent leurs octets à l'entrée :
+    ///   une RAM remplacée ne les trompe pas.
     pub fn apres_reprise(&mut self, ombre: Option<u64>, placement: Option<Placement>) {
         self.ombre = ombre;
         self.placement = placement;
-        self.reprise = None;
-        self.dernier_bloc = usize::MAX;
-        self.page_cle = 0;
         self.cpu.faulted = false;
         self.cpu.unmapped = None;
         self.cpu.jumped = false;

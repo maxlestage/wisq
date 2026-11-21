@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <math.h>
 
 static int failures = 0;
@@ -234,6 +235,14 @@ int main(int argc, char **argv) {
     check(wisq_pc_attach_display(pc, 1024, 768) == -2, "plus d'écran une fois chargée");
     check(wisq_pc_attach_disk(pc, sector, sizeof sector) == -2, "plus de disque une fois chargée");
     check(wisq_pc_attach_disk_file(pc, base, writes) == -7, "ni sur fichier");
+    /* Refusé avant d'ouvrir quoi que ce soit : la couche d'un branchement
+     * refusé n'est pas créée sur le disque. */
+    char refused[4096], refused_map[4096];
+    snprintf(refused, sizeof refused, "%s/tard.couche", argv[5]);
+    snprintf(refused_map, sizeof refused_map, "%s/tard.couche.map", argv[5]);
+    check(wisq_pc_attach_second_disk_file(pc, second, refused) == -7, "ni en second disque");
+    check(access(refused, F_OK) != 0 && access(refused_map, F_OK) != 0,
+          "et la couche d'un branchement refusé n'est pas créée");
 
     /* Les frappes : leurs refus, leur file, leur annulation. */
     const uint8_t alone[] = {0xE0};
