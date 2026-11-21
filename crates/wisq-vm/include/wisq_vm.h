@@ -602,8 +602,10 @@ WisqPC *wisq_pc_new(uint64_t ram_bytes, wisq_vm_output_callback on_output, void 
 
 /*
  * Fige l'heure de l'horloge CMOS, en secondes depuis 1970 : deux courses du
- * même noyau retirent alors les mêmes instructions. Une heure d'avant 1970
- * s'arrête à 1970. Course arrêtée. 0.
+ * même noyau retirent alors les mêmes instructions. L'heure est bornée là où
+ * l'invité la lit (la CMOS de la carte) : une heure d'avant 1970 s'y lit le
+ * 1er janvier 1970 à 00:00:00, une heure d'après l'an 9999 le 31 décembre
+ * 9999 à 23:59:59. Course arrêtée. 0.
  */
 int wisq_pc_set_time(WisqPC *pc, int64_t unix_seconds);
 
@@ -792,7 +794,8 @@ void wisq_pc_elapse(WisqPC *pc, double seconds);
  * drapeaux, contrôle, EFER, XMM et MXCSR, x87), le système (GDT, IDT, tâche,
  * MSR), les 8259, le 8253, le 16550 et l'horloge CMOS de la machine, ses
  * compteurs, l'ombre de `sti`, l'état du générateur à graine (wisq_pc_seed),
- * l'écran annoncé et le temps à rattraper. Il ne porte PAS la carte des
+ * l'écran annoncé, le temps encore à rattraper et le temps déjà rattrapé
+ * (qui entre dans wisq_pc_guest_time). Il ne porte PAS la carte des
  * périphériques (i8042, PCI, disques virtio, écran de Bochs et sa mémoire
  * vidéo, tablette) : un invité qui s'en est servi ne se reprend pas
  * fidèlement.
@@ -804,8 +807,11 @@ void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
 
 /*
  * Reprend un instantané : tout est lu et vérifié avant que rien ne soit
- * reposé. Une machine qui a déjà tourné le reprend aussi : les traductions
- * qu'elle gardait de ses propres tables sont oubliées. Course arrêtée.
+ * reposé. Une machine qui a déjà tourné le reprend aussi : sa RAM est
+ * effacée avant que les pages de l'instantané y soient posées, et les
+ * traductions qu'elle gardait de ses propres tables sont oubliées, comme ses
+ * témoins de faute. Le bit LMA d'EFER est recalculé de LME et de la
+ * pagination, comme sur le silicium. Course arrêtée.
  * 0 ; -2 pas un instantané de cette machine ; -3 une version que ce code ne
  * lit pas ; -4 tronqué ou abîmé ; -5 une autre RAM ; -6 un autre écran (ou
  * un écran d'un côté seulement).

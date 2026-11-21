@@ -38,9 +38,12 @@
 //! d'aléa inconnue, deux fois le même MSR, et un bit de la carte des pages
 //! au-delà de la dernière.
 //!
-//! **Une machine qui a déjà tourné se reprend comme une neuve** : ce qu'elle
-//! gardait de son état d'avant est oublié ou se recompare
-//! (`Machine::apres_reprise`).
+//! **Une machine qui a déjà tourné se reprend comme une neuve** : sa RAM est
+//! effacée avant que les pages de l'instantané y soient posées (une page nulle
+//! de l'instantané l'est donc aussi après la reprise), et ce qu'elle gardait
+//! de son état d'avant est oublié ou se recompare (`Machine::apres_reprise`).
+//! **Le bit LMA d'EFER ne se lit pas** : il est recalculé de LME et de la
+//! pagination, comme le silicium, qui ne le laisse pas écrire.
 
 use super::chargeur::Placement;
 use super::herites::{Controleur, Herites, HorlogeCmos, Minuterie, Serie};
@@ -646,6 +649,9 @@ pub fn reprendre(poste: &mut Poste, octets: &[u8]) -> Result<(), RefusDInstantan
     }
     machine.systeme = lu.systeme;
     machine.herites = lu.herites;
+    // LMA est en lecture seule sur le silicium : le processeur le tire de
+    // LME et de la pagination. Un instantané où il est faux reprend donc
+    // comme le processeur l'aurait (`the_long_mode_bit_is_recomputed_on_resume`).
     super::systeme::rafraichir_le_mode_long(&mut machine.cpu);
     machine.apres_reprise(lu.ombre, lu.placement);
     poste.reposer(lu.du, lu.rattrape);

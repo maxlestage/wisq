@@ -391,6 +391,10 @@ pub enum RefusDeBranchement {
     EcranTropGrand,
 }
 
+/// La dernière seconde que l'horloge CMOS sait dire : le 31 décembre 9999 à
+/// 23:59:59 UTC (deux chiffres BCD pour le siècle, deux pour l'année).
+pub const DERNIERE_SECONDE: i64 = 253_402_300_799;
+
 /// **La machine, menée par un hôte.**
 pub struct Poste {
     pub machine: Machine,
@@ -449,15 +453,23 @@ impl Poste {
     /// courses du même noyau retirent alors les mêmes instructions. Sans
     /// elle, la carte lit l'horloge qu'on lui donne ([`Poste::horloge`]), ou
     /// 1970.
+    ///
+    /// **L'heure est bornée** au 1ᵉʳ janvier 1970 en bas et au 31 décembre
+    /// 9999, 23:59:59, en haut : l'invité lit la CMOS de la carte (la carte
+    /// est toujours branchée, `cmos_ailleurs`), qui écrirait sinon le
+    /// 31 décembre 1969 pour une heure négative, et un siècle qui ne tient
+    /// pas en deux chiffres BCD pour une heure immense. Les deux horloges, la
+    /// carte et les puces de la machine, reçoivent la même heure bornée.
     pub fn regler_l_heure(&mut self, secondes: i64) {
-        let millisecondes = secondes.saturating_mul(1000);
+        let secondes = secondes.clamp(0, DERNIERE_SECONDE);
+        let millisecondes = secondes * 1000;
         let mut carte = self.commandes.carte.tenir();
         // Une horloge déjà donnée serait relue au premier accès aux ports
         // 0x70 et 0x71, par-dessus l'heure posée : elle est remplacée par
         // une horloge arrêtée.
         carte.horloge(move || millisecondes);
         carte.regler_heure(millisecondes);
-        self.machine.herites.cmos.regler(secondes.max(0) as u64);
+        self.machine.herites.cmos.regler(secondes as u64);
     }
 
     /// Donner une horloge à la carte : l'heure UTC, en millisecondes.

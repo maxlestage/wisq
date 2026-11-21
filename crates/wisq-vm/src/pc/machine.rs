@@ -688,17 +688,29 @@ impl Machine {
     }
 
     /// **Reprendre une machine sauvée** (`pc::instantane`), neuve ou qui a
-    /// déjà tourné : son ombre et sa page zéro reposées, les drapeaux de
-    /// l'instruction en cours baissés, et le tampon de traduction vidé — il
-    /// traduisait par les tables d'avant
+    /// déjà tourné : son ombre et sa page zéro reposées, les témoins de faute
+    /// baissés, et le tampon de traduction vidé — il traduisait par les
+    /// tables d'avant
     /// (`a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations`).
     ///
+    /// **Les témoins de faute** (`faulted`, `unmapped`) ne valent que pendant
+    /// une instruction, et l'instantané ne les porte pas. Une machine usée
+    /// arrêtée avec l'un d'eux levé ne le donne pas à la reprise : `faulted`
+    /// n'est pas baissé par `execute`, et ferait de la première instruction du
+    /// chemin général un refus ; `unmapped` ferait d'une division par zéro
+    /// une faute d'accès
+    /// (`a_resumed_machine_drops_the_fault_witnesses_of_the_used_one`).
+    ///
     /// Le reste n'a rien à oublier, et rien ici ne le remet à zéro :
+    /// - `jumped` est baissé avant chaque instruction qui le lit (`pas`,
+    ///   `rapide::general`) ;
     /// - la page d'instructions courante se compare au compte de vidages du
     ///   tampon (`physique_de_rip`), que le vidage change ;
-    /// - le bloc coupé à reprendre se recompare à l'entrée : l'adresse
-    ///   physique de RIP, l'étiquette du bloc et ses octets dans la RAM
-    ///   reprise (`reprendre`) — s'ils sont les mêmes, les instructions aussi ;
+    /// - le bloc coupé à reprendre tient par l'adresse physique de RIP et par
+    ///   les octets du bloc dans la RAM reprise (`reprendre`) : s'ils sont les
+    ///   mêmes, les instructions aussi. (Son étiquette se recompare aussi,
+    ///   mais la reprise est prise en tête de `un_bloc`, avant toute
+    ///   construction : sa case n'a pas pu être reconstruite entre-temps.)
     /// - le dernier bloc n'est qu'une indication à l'hôte
     ///   (`Blocs::enchainer`), qui ne coûte jamais une instruction ;
     /// - les blocs et le cache de décodage comparent leurs octets à l'entrée :
@@ -708,7 +720,6 @@ impl Machine {
         self.placement = placement;
         self.cpu.faulted = false;
         self.cpu.unmapped = None;
-        self.cpu.jumped = false;
         self.cpu.flush_translations();
     }
 
