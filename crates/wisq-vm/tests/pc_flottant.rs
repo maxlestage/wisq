@@ -444,8 +444,8 @@ fn an_address_size_prefix_without_address_is_ignored() {
         assert_eq!(machine.cpu.regs[2], attendu, "{code:02x?}");
     }
     // Deux `67` devant `movdqa %xmm1,%xmm2`, un devant `paddd` et devant
-    // `addps` (le second décodeur) : ignorés, comme sur l'hôte (sonde
-    // `r6/c/nt`).
+    // `addps` (le second décodeur) : ignorés, comme sur l'hôte (sondes
+    // `r6/c/nt` pour les deux premiers, `r7/c/sonde` pour `addps`).
     let mut machine = nouvelle(&[
         0x67, 0x67, 0x66, 0x0F, 0x6F, 0xD1, // movdqa %xmm1,%xmm2
         0x67, 0x66, 0x0F, 0xFE, 0xD1, // paddd %xmm1,%xmm2
@@ -464,6 +464,32 @@ fn an_address_size_prefix_without_address_is_ignored() {
         machine.cpu.xmm[3],
         [0x0000_0002_0000_0001, 0x3F80_0000_3F80_0000]
     );
+    // **`67` après `f3` ou `f2`** : `addss` et `addsd` entre registres, le
+    // préfixe de taille d'adresse pris entre le préfixe de répétition et
+    // l'opcode. Ignoré sur l'hôte, qui rend la même somme qu'en son absence
+    // (sonde `r7/c/sonde`) : 1 + 2 = 3 dans le flottant bas, le reste de XMM3
+    // gardé ; en double, 2,000 000 47… + 2,000 000 48….
+    for (code, attendu) in [
+        (
+            &[0xF3, 0x67, 0x0F, 0x58, 0xD9, 0xF4][..],
+            [0x4000_0000_4040_0000, 0x3FF0_0000_0000_0000],
+        ),
+        (
+            &[0xF2, 0x67, 0x0F, 0x58, 0xD9, 0xF4],
+            [0x4010_0000_3FC0_0000, 0x3FF0_0000_0000_0000],
+        ),
+    ] {
+        let mut machine = nouvelle(code);
+        machine.cpu.xmm[1] = [0x4000_0000_3F80_0000, 0x4010_0000_0000_0000];
+        machine.cpu.xmm[3] = [0x4000_0000_4000_0000, 0x3FF0_0000_0000_0000];
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{code:02x?}");
+        assert_eq!(
+            machine.cpu.rip, 0x1006,
+            "{code:02x?} : cinq octets, puis hlt"
+        );
+        assert_eq!(machine.cpu.xmm[3], attendu, "{code:02x?}");
+    }
     for (nom, code) in [
         ("lea -1(%ecx),%rdx", &[0x67, 0x48, 0x8D, 0x51, 0xFF][..]),
         ("movdqa (%ebx),%xmm0", &[0x67, 0x67, 0x66, 0x0F, 0x6F, 0x03]),
@@ -523,6 +549,36 @@ fn non_temporal_stores_store_like_the_others() {
         0x1122_3344_5566_7788,
         "movnti, soixante-quatre"
     );
+    // **Sous chaque préfixe de segment**, `movnti` range aussi : `es`, `cs`,
+    // `ss` et `ds` n'ont pas de base en mode long, `fs` et `gs` ajoutent la
+    // leur. Sur l'hôte, `26`, `2e`, `36`, `3e`, `64` et `65` devant
+    // `0f c3 03` rangent tous (sonde `r7/c/sonde`).
+    for (prefixe, base) in [
+        (0x26, 0),
+        (0x2E, 0),
+        (0x36, 0),
+        (0x3E, 0),
+        (0x64, 0x100),
+        (0x65, 0x200),
+    ] {
+        let code = [prefixe, 0x0F, 0xC3, 0x03, 0xF4]; // movnti %eax,%seg:(%rbx)
+        let mut machine = nouvelle(&code);
+        machine.cpu.regs[3] = 0x6000;
+        machine.cpu.regs[0] = 0x1122_3344;
+        machine.cpu.fs_base = 0x100;
+        machine.cpu.gs_base = 0x200;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee, "{prefixe:02x}");
+        assert_eq!(
+            machine.cpu.rip, 0x1005,
+            "{prefixe:02x} : quatre octets, puis hlt"
+        );
+        assert_eq!(
+            machine.cpu.memory.read(0x6000 + base, Width::Dword),
+            Some(0x1122_3344),
+            "{prefixe:02x}"
+        );
+    }
     for refuse in [
         &[0x66, 0x0F, 0xE7, 0xD2][..], // movntdq %xmm2,%xmm2
         &[0x0F, 0x2B, 0xCA],           // movntps, registre

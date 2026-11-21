@@ -32,7 +32,9 @@
 //! **L'écran** : `--display 1280x800` branche la carte de Bochs (00:02.0,
 //! seize mébioctets de mémoire vidéo à `0xE000_0000`) et la tablette
 //! (00:07.0, ligne 10), annonce le cadre au noyau par la page zéro, et met
-//! `console=tty0` devant la ligne. `--screen-dump image.ppm` y range l'image
+//! `console=tty0` devant la ligne, quelle qu'elle soit (`--cmdline`, celle
+//! d'une image, ou celle par défaut) : `Machine::charger` le fait sous un
+//! écran, comme `X86Machine.load`. `--screen-dump image.ppm` y range l'image
 //! à la fin ; `--screen-every N` aussi toutes les N secondes de l'hôte quand
 //! elle a changé, numérotée à côté (`image-0001.ppm`…).
 //!
@@ -61,7 +63,9 @@ use wisq_carte::fichier::DisqueFichier;
 use wisq_carte::pc::{horloge_du_systeme, CartePc, Disque};
 use wisq_vm::iso9660::{Iso, OnDisk, Recipe};
 use wisq_vm::pc::carte::{self as raccord, CartePartagee};
-use wisq_vm::pc::chargeur::{initramfs_bout_a_bout, ligne_d_une_image};
+use wisq_vm::pc::chargeur::{
+    initramfs_bout_a_bout, ligne_d_une_image, ligne_sous_ecran, LIGNE_PAR_DEFAUT,
+};
 use wisq_vm::pc::herites::HERTZ_DU_8253;
 use wisq_vm::pc::memoire::RAM_MINIMALE;
 use wisq_vm::pc::{Ecran, Machine};
@@ -184,10 +188,15 @@ fn capturer(carte: &CartePartagee) -> Option<(u64, Vec<u8>)> {
 }
 
 /// Le nom de la `rang`-ième image : `image.ppm` donne `image-0001.ppm`.
+/// L'extension se cherche dans le nom du fichier seul, après le dernier `/` ;
+/// un nom qui commence par son seul point (`.ppm`, un fichier caché) n'en a
+/// pas, et le rang va au bout.
 fn nom_numerote(chemin: &str, rang: u32) -> String {
-    match chemin.rsplit_once('.') {
-        Some((tete, extension)) if !tete.is_empty() && !extension.contains('/') => {
-            format!("{tete}-{rang:04}.{extension}")
+    let debut_du_nom = chemin.rfind('/').map_or(0, |ici| ici + 1);
+    let (dossier, nom) = chemin.split_at(debut_du_nom);
+    match nom.rsplit_once('.') {
+        Some((tete, extension)) if !tete.is_empty() => {
+            format!("{dossier}{tete}-{rang:04}.{extension}")
         }
         _ => format!("{chemin}-{rang:04}"),
     }
@@ -378,7 +387,7 @@ fn main() {
             });
             eprintln!("recette : {depuis} : {recette}");
             if ligne.is_none() {
-                ligne = Some(ligne_d_une_image(&recette, options.ecran.is_some()));
+                ligne = Some(ligne_d_une_image(&recette));
             }
             options.disque.get_or_insert(image);
             let noyau = if options.noyau.is_empty() {
@@ -391,9 +400,15 @@ fn main() {
         }
         None => (lire(&options.noyau), options.initramfs.as_deref().map(lire)),
     };
-    if let Some(ligne) = &ligne {
-        eprintln!("ligne : {ligne}");
-    }
+    // La ligne que le noyau recevra : `Machine::charger` met `console=tty0`
+    // devant sous un écran, quelle qu'elle soit.
+    eprintln!(
+        "ligne : {}",
+        ligne_sous_ecran(
+            ligne.as_deref().unwrap_or(LIGNE_PAR_DEFAUT),
+            options.ecran.is_some()
+        )
+    );
 
     let Some(ram) = ram_en_octets(options.ram) else {
         eprintln!(
@@ -747,6 +762,8 @@ mod tests {
     fn the_display_size_is_two_numbers() {
         assert_eq!(taille_d_ecran("1280x800"), Some((1280, 800)));
         assert_eq!(taille_d_ecran("1280x0"), None);
+        assert_eq!(taille_d_ecran("0x800"), None, "une largeur nulle");
+        assert_eq!(taille_d_ecran("0x0"), None);
         assert_eq!(taille_d_ecran("1280"), None);
         assert_eq!(taille_d_ecran("ax800"), None);
     }
@@ -766,6 +783,11 @@ mod tests {
         assert_eq!(frappes("x:root"), None);
         assert_eq!(frappes("-1:root"), None);
         assert_eq!(frappes("root"), None);
+        // Un `;;` de trop, en queue ou doublé, ne refuse pas le reste.
+        assert_eq!(
+            frappes("30:root;;;;45:ls;;"),
+            Some(vec![(30.0, "root".to_string()), (45.0, "ls".to_string())])
+        );
     }
 
     /// **Les RIP les plus relevés d'abord**, à égalité le plus bas d'abord,
@@ -808,6 +830,12 @@ mod tests {
         assert_eq!(image, b"P6\n2 1\n255\n\x33\x22\x11\x03\x02\x01");
         assert_eq!(nom_numerote("/a/b.ppm", 7), "/a/b-0007.ppm");
         assert_eq!(nom_numerote("/a.d/b", 7), "/a.d/b-0007");
+        assert_eq!(nom_numerote("b.ppm", 1), "b-0001.ppm");
+        // Un nom fait de son seul point n'a pas d'extension, dans un dossier
+        // ou non : le rang va au bout, pas devant le point.
+        assert_eq!(nom_numerote(".ppm", 1), ".ppm-0001");
+        assert_eq!(nom_numerote("/a/.ppm", 1), "/a/.ppm-0001");
+        assert_eq!(nom_numerote("/a.d/.b.ppm", 2), "/a.d/.b-0002.ppm");
     }
 
     /// **Un mébioctet fait 2^20 octets, et le plafond est compris** : 65 536

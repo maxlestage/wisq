@@ -128,6 +128,88 @@ fn nobody_else_answers_beyond_the_ram() {
     assert!(machine.arretee);
 }
 
+/// **Branchée, la carte ne prend pas ce qu'elle ne sert pas** : un rangement
+/// à cheval sur la fin de la RAM (sa moitié haute hors de la RAM, là où la
+/// carte n'a rien) faute sans poser un octet de sa moitié basse — huit octets
+/// d'un `mov`, seize d'un `movdqu`, que la sonde d'avant écriture juge. C'est
+/// `DeviceMemory::claims` de la carte qui le dit : un « oui » à tout
+/// laisserait passer la sonde, et la moitié basse serait posée avant le refus.
+#[test]
+fn a_store_past_the_end_of_ram_leaves_nothing_with_the_card_branched() {
+    let code = [
+        0x48, 0x89, 0x03, // mov %rax,(%rbx)
+        0xF4,
+    ];
+    let sse = [
+        0xF3, 0x0F, 0x7F, 0x03, // movdqu %xmm0,(%rbx)
+        0xF4,
+    ];
+    for (nom, code, recul) in [("mov", &code[..], 4usize), ("movdqu", &sse[..], 8)] {
+        let (mut machine, _carte) = avec_ecran(code);
+        let fin = machine.cpu.memory.bytes.len();
+        machine.cpu.regs[3] = (fin - recul) as u64;
+        machine.cpu.regs[0] = 0x1111_1111_1111_1111;
+        machine.cpu.xmm[0] = [0x2222_2222_2222_2222, 0x3333_3333_3333_3333];
+        machine.cpu.memory.bytes[fin - recul..].fill(0x5A);
+        let issue = machine.tourner(5);
+        assert!(
+            issue
+                .as_ref()
+                .is_err_and(|pourquoi| pourquoi.contains("hors de la mémoire")),
+            "{nom} : {issue:?}"
+        );
+        assert!(
+            machine.cpu.memory.bytes[fin - recul..]
+                .iter()
+                .all(|octet| *octet == 0x5A),
+            "{nom} : rien de posé dans la RAM"
+        );
+    }
+}
+
+/// **Au-delà de trois gibioctets, la mémoire vidéo est dans le trou**, et la
+/// RAM de l'hôte qui couvre le trou ne la remplace pas : une écriture et une
+/// lecture de huit octets à cheval sur une page de la mémoire vidéo
+/// (`0xE000_0FFC`) vont à la carte, moitié par moitié, et la RAM sous le trou,
+/// qui porte un motif, reste intacte.
+#[test]
+fn above_three_gibibytes_the_video_memory_is_the_cards_not_the_holes() {
+    let code = [
+        0xBB, 0xFC, 0x0F, 0x00, 0xE0, // mov $0xe0000ffc,%ebx
+        0x48, 0xB8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // movabs $…,%rax
+        0x48, 0x89, 0x03, // mov %rax,(%rbx)
+        0x48, 0x8B, 0x13, // mov (%rbx),%rdx
+        0xF4,
+    ];
+    let mut machine = Machine::nouvelle(4 << 30);
+    assert_eq!(machine.cpu.memory_hole, (0xC000_0000, 1 << 30));
+    machine.cpu.control[0] = 1;
+    machine.cpu.rip = 0x1000;
+    machine.cpu.memory.bytes[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+    let mut carte = CartePc::nouvelle();
+    assert!(carte.brancher_ecran(1280, 800));
+    let carte = brancher(&mut machine, carte);
+    let ici = 0xE000_0FFCusize;
+    machine.cpu.memory.bytes[ici..ici + 8].fill(0xA5);
+    machine.tourner(10).expect("sans faute");
+    assert!(machine.arretee, "jusqu'au hlt");
+    assert_eq!(
+        machine.cpu.regs[2], 0x8877_6655_4433_2211,
+        "relu de la carte, pas du motif"
+    );
+    assert_eq!(
+        &carte.tenir().ecran().expect("l'écran").cadre.octets()[0xFFC..0x1004],
+        &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88],
+        "les deux moitiés dans le cadre"
+    );
+    assert!(
+        machine.cpu.memory.bytes[ici..ici + 8]
+            .iter()
+            .all(|octet| *octet == 0xA5),
+        "la RAM sous le trou, intacte"
+    );
+}
+
 // ------------------------------------------------------------- la tablette
 
 const DESCRIPTEURS: u64 = 0x20_000;

@@ -529,6 +529,10 @@ impl Machine {
     /// **Charger un noyau**, et éventuellement un initramfs, puis mettre le
     /// processeur dans l'état que le protocole de démarrage 64 bits exige : le
     /// mode long actif, la pagination en place, RSI sur la page zéro.
+    ///
+    /// Avec un écran, `console=tty0` passe devant la ligne, quelle qu'elle
+    /// soit (celle par défaut comprise) : ce que fait `X86Machine.load` du
+    /// cœur Swift (`chargeur::ligne_sous_ecran`).
     pub fn charger(
         &mut self,
         noyau: &[u8],
@@ -536,11 +540,15 @@ impl Machine {
         initramfs: Option<&[u8]>,
         ecran: Option<Ecran>,
     ) -> Result<Placement, Refus> {
+        let ligne = chargeur::ligne_sous_ecran(
+            ligne.unwrap_or(chargeur::LIGNE_PAR_DEFAUT),
+            ecran.is_some(),
+        );
         let placement = chargeur::charger(
             noyau,
             &mut self.cpu.memory,
             self.ram,
-            ligne.unwrap_or(chargeur::LIGNE_PAR_DEFAUT),
+            &ligne,
             initramfs,
             ecran,
         )?;
