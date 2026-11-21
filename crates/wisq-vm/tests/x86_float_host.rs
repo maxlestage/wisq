@@ -794,6 +794,7 @@ fn memory_operand(h: &mut Hasard) -> [u8; 16] {
 
 /// L'aire du test : `a` (ST(0)) à 0x00, `b` (ST(1)) à 0x10, l'opérande en
 /// mémoire à 0x20, le mot de contrôle à 0x30, l'image de `fnsave` à 0x40,
+/// l'environnement de passage qui lève C1 à 0xB0, son interrupteur à 0xD0,
 /// RFLAGS à 0xF0.
 type Area = [u8; 0x100];
 type StateHost = fn(&mut Area, usize);
@@ -807,9 +808,22 @@ macro_rules! zeroed {
     };
 }
 
+/// **C1 levé juste avant l'instruction**, quand l'octet 0xD0 de l'aire le
+/// demande : `fnstenv`, le bit 9 du mot d'état posé, `fldenv` — la pile, les
+/// registres et le mot de contrôle restent ce qu'ils étaient. Sans lui, la
+/// mise en place (des chargements) laisse toujours C1 à zéro, et une
+/// instruction qui le garderait à tort passerait.
+macro_rules! lift_c1 {
+    () => {
+        "cmp byte ptr [{p}+0xD0], 0\nje 2f\nfnstenv [{p}+0xB0]\n\
+         or byte ptr [{p}+0xB5], 2\nfldenv [{p}+0xB0]\n2:"
+    };
+}
+
 /// **La même suite sur l'hôte** : `fninit`, le mot de contrôle, `b` puis `a`
 /// empilés, la pile mise en forme (`variant` : 0 telle quelle, 1 ST(1)
-/// libéré, 2 les deux libérés, 3 pleine), l'instruction, puis `fnsave`.
+/// libéré, 2 les deux libérés, 3 pleine, 4 pleine mais ST(0) libéré), C1
+/// levé ou non (`lift_c1`), l'instruction, puis `fnsave`.
 macro_rules! host_state {
     ($instruction:literal) => {
         |area: &mut Area, variant: usize| {
@@ -821,24 +835,32 @@ macro_rules! host_state {
             unsafe {
                 match variant {
                     0 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
-                        "fld tbyte ptr [{p}]", $instruction, "fnsave [{p}+0x40]", "fninit",
+                        "fld tbyte ptr [{p}]", lift_c1!(), $instruction, "fnsave [{p}+0x40]",
+                        "fninit",
                         p = in(reg) p, out("rax") _,
                         out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
                         out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
                     1 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
-                        "fld tbyte ptr [{p}]", "ffree st(1)", $instruction, "fnsave [{p}+0x40]",
-                        "fninit", p = in(reg) p, out("rax") _,
+                        "fld tbyte ptr [{p}]", "ffree st(1)", lift_c1!(), $instruction,
+                        "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
                         out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
                         out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
                     2 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
-                        "fld tbyte ptr [{p}]", "ffree st(0)", "ffree st(1)", $instruction,
+                        "fld tbyte ptr [{p}]", "ffree st(0)", "ffree st(1)", lift_c1!(),
+                        $instruction, "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
+                        out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
+                        out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
+                    3 => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
+                        "fld tbyte ptr [{p}]", "fld st(1)", "fld st(1)", "fld st(1)",
+                        "fld st(1)", "fld st(1)", "fld st(1)", lift_c1!(), $instruction,
                         "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
                         out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
                         out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
                     _ => asm!(zeroed!(), "fldcw [{p}+0x30]", "fld tbyte ptr [{p}+0x10]",
                         "fld tbyte ptr [{p}]", "fld st(1)", "fld st(1)", "fld st(1)",
-                        "fld st(1)", "fld st(1)", "fld st(1)", $instruction,
-                        "fnsave [{p}+0x40]", "fninit", p = in(reg) p, out("rax") _,
+                        "fld st(1)", "fld st(1)", "fld st(1)", "ffree st(0)", lift_c1!(),
+                        $instruction, "fnsave [{p}+0x40]", "fninit", p = in(reg) p,
+                        out("rax") _,
                         out("st(0)") _, out("st(1)") _, out("st(2)") _, out("st(3)") _,
                         out("st(4)") _, out("st(5)") _, out("st(6)") _, out("st(7)") _),
                 }
@@ -855,7 +877,17 @@ fn emulate_state(area: &mut Area, variant: usize, instruction: &[u8]) -> Result<
         0 => {}
         1 => code.extend([0xdd, 0xc1]),
         2 => code.extend([0xdd, 0xc0, 0xdd, 0xc1]),
-        _ => (0..6).for_each(|_| code.extend([0xd9, 0xc1])),
+        3 => (0..6).for_each(|_| code.extend([0xd9, 0xc1])),
+        _ => {
+            (0..6).for_each(|_| code.extend([0xd9, 0xc1]));
+            code.extend([0xdd, 0xc0]);
+        }
+    }
+    if area[0xD0] != 0 {
+        // fnstenv 0xb0(%rsi) ; orb $2,0xb5(%rsi) ; fldenv 0xb0(%rsi).
+        code.extend([0xd9, 0xb6, 0xb0, 0, 0, 0]);
+        code.extend([0x80, 0x8e, 0xb5, 0, 0, 0, 0x02]);
+        code.extend([0xd9, 0xa6, 0xb0, 0, 0, 0]);
     }
     code.extend_from_slice(instruction);
     // fnsave 0x40(%rsi).
@@ -893,10 +925,11 @@ fn emulate_state(area: &mut Area, variant: usize, instruction: &[u8]) -> Result<
 }
 
 /// Ce que la comparaison ne juge pas : les pointeurs de la dernière
-/// instruction (FIP, FDP, FOP, que ce cœur range à zéro), et ce que contient
-/// un registre vide.
+/// instruction (FIP, FDP, FOP, que ce cœur range à zéro), l'environnement de
+/// passage de `lift_c1`, et ce que contient un registre vide.
 fn comparable(area: &mut Area, environment_at: Option<usize>) {
     area[0x4c..0x5c].fill(0);
+    area[0xB0..0xCC].fill(0);
     if let Some(at) = environment_at {
         area[at + 0x0c..at + 0x1c].fill(0);
     }
@@ -1095,6 +1128,23 @@ fn the_x87_unmasked_exceptions_match_the_host_silicon() {
     assert!(skipped < 6000, "{skipped} cas écartés");
 }
 
+/// **La forme de la pile et C1, d'après le rang du tirage** : la pile (une
+/// fois sur dix chacune : à un registre, vide, pleine, pleine mais ST(0)
+/// libéré ; normale sinon) et, un bloc de soixante tirages sur deux, C1 levé
+/// avant l'instruction. Soixante est le plus petit commun multiple des quatre
+/// modes, des trois précisions et des dix piles : chaque combinaison est
+/// jouée avec et sans C1.
+fn shape(area: &mut Area, draw: u32) -> usize {
+    area[0xD0] = u8::from(draw / 60 % 2 == 1);
+    match draw % 10 {
+        6 => 4,
+        7 => 1,
+        8 => 2,
+        9 => 3,
+        _ => 0,
+    }
+}
+
 /// Rejouer `forms` contre l'hôte, 4 000 tirages chacune, le mot de contrôle
 /// à `masks` plus l'arrondi et la précision du tirage. `skip` écarte un cas
 /// d'après ce que l'hôte a rendu ; le nombre d'écartés revient.
@@ -1119,12 +1169,7 @@ fn judge_states(
             let rounding = ((draw % 4) as u16) << 10;
             let precision = [0x300u16, 0x200, 0x000][(draw / 4 % 3) as usize];
             area[0x30..0x32].copy_from_slice(&(masks | rounding | precision).to_le_bytes());
-            let variant = match draw % 10 {
-                7 => 1,
-                8 => 2,
-                9 => 3,
-                _ => 0,
-            };
+            let variant = shape(&mut area, draw);
             let mut wanted = area;
             (form.host)(&mut wanted, variant);
             if skip(&form, &wanted) {
@@ -1251,7 +1296,8 @@ fn judges_rounding(area: &Area, name: &str, variant: usize) -> bool {
     let x_positive = area[9] & 0x80 == 0;
     let two = matches!(name, "fpatan" | "fyl2x" | "fyl2xp1");
     let pushes = matches!(name, "fsincos" | "fptan");
-    let stack = variant == 2 || (two && variant == 1) || (pushes && variant == 3);
+    // Sur la pile pleine dont ST(0) est vide (4), tout lit un registre vide.
+    let stack = variant == 2 || variant == 4 || (two && variant == 1) || (pushes && variant == 3);
     if stack || x_special || (two && y_special) {
         return true;
     }
@@ -1308,12 +1354,7 @@ fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
             let rounding = ((draw % 4) as u16) << 10;
             let precision = [0x300u16, 0x200, 0x000][(draw / 4 % 3) as usize];
             area[0x30..0x32].copy_from_slice(&(0x7f | rounding | precision).to_le_bytes());
-            let variant = match draw % 10 {
-                7 => 1,
-                8 => 2,
-                9 => 3,
-                _ => 0,
-            };
+            let variant = shape(&mut area, draw);
             let mut wanted = area;
             host(&mut wanted, variant);
             let mut got = area;

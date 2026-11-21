@@ -21,9 +21,11 @@
 //!   cœur Swift ne le faisait que pour `fxch` et quelques fonctions.
 //! - *Empiler sur un registre occupé* déborde par le haut (`x87_push`), jugé
 //!   avant l'opérande : ni son dénormal ni son NaN signalant ne se disent.
-//!   `fxtract` et `fptan` sur une pile pleine rangent l'indéfini deux fois.
+//!   `fxtract` et `fptan` sur une pile pleine rangent l'indéfini deux fois ;
+//!   sur une pile pleine dont ST(0) est vide, aussi, mais C1 reste à zéro.
 //! - *C1 tombe* sur tout chargement, `fchs`, `fabs`, `fxch`, `fst` entre
-//!   registres ; il ne dit « monté » qu'après un arrondi.
+//!   registres, `ffree` ; il ne dit « monté » qu'après un arrondi. `fcomi` et
+//!   les siens, qui n'écrivent que RFLAGS, ne le touchent pas.
 //! - *`fucomp` dépile*, ce que le cœur Swift oubliait.
 //! - *`fcmov` lit ses deux registres* que la condition tienne ou non.
 //! - *Un réel lu en mémoire* (`fld m32`, `fadd m64`…) signale son dénormal et
@@ -34,13 +36,13 @@
 //!   pseudo-infini) est invalide pour tout calcul, toute comparaison, tout
 //!   rangement converti ; un pseudo-dénormal revient renormalisé.
 //! - *La précision du mot de contrôle* (bits 8 et 9) arrondit `fadd`, `fsub`,
-//!   `fmul`, `fdiv` et `fsqrt` à 24 ou 53 bits ; `fldcw`, `fldenv` et
-//!   `frstor` gardent le mot comme le silicium (`control_word`).
+//!   `fmul`, `fdiv` et `fsqrt` à 24 ou 53 bits ; `fldcw`, `fldenv`,
+//!   `frstor` et `fxrstor` gardent le mot comme le silicium (`control_word`).
 //! - *`fnsave`, `frstor`, `fbld`, `fbstp`, `fdecstp`, `fincstp`, `fnop`* et les
 //!   fonctions transcendantes, que le cœur Swift n'a pas.
 //! - *Une exception démasquée* : celles qui précèdent le calcul (invalide,
-//!   dénormal, division par zéro) arrêtent l'instruction sans rien ranger, et
-//!   la suivante qui attend livre `#MF` (`execute_x87`).
+//!   dénormal, division par zéro) arrêtent l'instruction sans rien ranger, C1
+//!   tombé, et la suivante qui attend livre `#MF` (`execute_x87`).
 //!
 //! **Ce qui n'est pas modélisé** : un dépassement démasqué vers un registre,
 //! où le silicium range le résultat au biais ajusté de 24 576 (ici, la
@@ -264,8 +266,9 @@ impl Cpu {
     }
 
     /// La même comparaison dans ZF, PF et CF (`fcomi`) ; OF, SF et AF tombent.
+    /// Le mot d'état n'est pas touché : C1 reste ce qu'il était, comme sur
+    /// le silicium de l'hôte (le manuel le dit mis à zéro).
     fn set_comparison_flags(&mut self, order: Order) {
-        self.fpu_status &= !C1;
         let set = match order {
             Order::Greater => 0,
             Order::Less => CF,
@@ -463,13 +466,15 @@ impl Cpu {
     /// réponse, comme sur le silicium de l'hôte :
     ///
     /// - *en attente* (ES levé), elle arrête toute instruction qui attend —
-    ///   toutes sauf `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv` et
-    ///   `fnsave` : rien ne s'exécute, et la machine livre `#MF` ;
+    ///   toutes sauf `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv`,
+    ///   `fnsave`, et `fneni`, `fndisi`, `fnsetpm`, qui ne font rien : rien ne
+    ///   s'exécute, et la machine livre `#MF` ;
     /// - *invalide (faute de pile comprise), dénormal ou division par zéro*,
     ///   elle arrête l'instruction avant qu'elle ne range : la pile, ses
     ///   registres et la mémoire restent ce qu'ils étaient, seuls son drapeau
     ///   (sans l'inexact d'un calcul qui n'a pas eu lieu), ES et B se lèvent,
-    ///   et une comparaison pose quand même C3, C2 et C0. Un chargement
+    ///   C1 tombe (sauf sur un débordement de la pile par le haut), et une
+    ///   comparaison pose quand même C3, C2 et C0. Un chargement
     ///   (`fld m32`, `fld m64`) d'un dénormal se fait pourtant ;
     /// - *dépassement par le haut ou par le bas d'un rangement en mémoire*,
     ///   elle l'arrête aussi, son seul drapeau levé (`x87_store_stops`).
@@ -482,9 +487,16 @@ impl Cpu {
             unreachable!("execute_x87 ne reçoit que le x87")
         };
         let field = (modrm >> 3) & 7;
+        // `fcomi` et les siens n'écrivent que RFLAGS : C1 reste ce qu'il était,
+        // arrêtés ou non (sur l'hôte, C1 levé par `fsqrt` passe `fcomi`,
+        // `fucomip`, et `fucomip` arrêté par un NaN signalant).
+        let keeps_c1 = at.is_none() && matches!((opcode, modrm), (0xDB | 0xDF, 0xE8..=0xF7));
         let (waits, control, load, compares) = match at {
             None => {
-                let control = matches!((opcode, modrm), (0xDB, 0xE2 | 0xE3) | (0xDF, 0xE0));
+                // `fneni`, `fndisi` et `fnsetpm` (`db e0`, `e1`, `e4`), des
+                // restes du 8087 et du 80287 qui ne font plus rien, n'attendent
+                // pas non plus : l'hôte les passe sous une exception en attente.
+                let control = matches!((opcode, modrm), (0xDB, 0xE0..=0xE4) | (0xDF, 0xE0));
                 let compares = matches!(
                     (opcode, modrm),
                     (0xD8, 0xD0..=0xDF)
@@ -541,13 +553,16 @@ impl Cpu {
         };
         if own & !self.fpu_control & stopping != 0 {
             (self.x87, self.fpu_tags) = (before.0, before.1);
-            // C1 dit la faute de pile ; C3, C2 et C0, ce qu'une comparaison
-            // a trouvé. Sinon, ils restent ce qu'ils étaient — `fprem` arrêté
-            // ne dit rien de son quotient.
-            let c1 = if own & STACK_FAULT != 0 {
+            // **C1 tombe**, sauf sur une faute de pile, où il dit son sens
+            // (débordement par le haut), et pour `fcomi`, qui ne le touche
+            // pas. C3, C2 et C0 disent ce qu'une comparaison a trouvé ;
+            // sinon ils restent ce qu'ils étaient — `fprem` arrêté ne dit
+            // rien de son quotient. Sur l'hôte, C1 levé par l'arrondi de
+            // `fsqrt`, puis `fdiv` par zéro arrêté : 0xb0a4, C1 tombé.
+            let c1 = if own & STACK_FAULT != 0 || keeps_c1 {
                 self.fpu_status & C1
             } else {
-                before.2 & C1
+                0
             };
             let found = if compares { self.fpu_status } else { before.2 };
             let codes = (found & (C0 | C2 | C3)) | c1;
@@ -565,20 +580,22 @@ impl Cpu {
     /// plus de ce que l'instruction a déjà levé (le débordement par le bas
     /// d'une pile vide). Un dépassement démasqué, par le haut ou par le bas,
     /// ne lève que lui — le silicium de l'hôte ne dit pas l'inexact d'un
-    /// résultat qu'il n'a pas rangé.
+    /// résultat qu'il n'a pas rangé. **C1 tombe**, comme sur toute instruction
+    /// arrêtée (sur l'hôte, `fsts` d'un 2·10¹⁵⁰ au dépassement démasqué, C1
+    /// levé juste avant : 0xb8a8).
     fn x87_store_stops(&mut self, flags: u16) -> bool {
         let unmasked = ((self.fpu_status & EXCEPTIONS) | flags) & !self.fpu_control;
         let before = INVALID | f80::DENORMAL | f80::ZERO_DIVIDE;
         let after = f80::OVERFLOW | f80::UNDERFLOW;
-        if unmasked & before != 0 {
-            self.fpu_status |= flags & before;
-            return true;
-        }
-        if unmasked & after != 0 {
-            self.fpu_status |= flags & after;
-            return true;
-        }
-        false
+        let raised = if unmasked & before != 0 {
+            flags & before
+        } else if unmasked & after != 0 {
+            flags & after
+        } else {
+            return false;
+        };
+        self.fpu_status = (self.fpu_status | raised) & !C1;
+        true
     }
 
     /// La forme registre : l'octet entier nomme l'instruction.
@@ -658,16 +675,15 @@ impl Cpu {
             }
             (0xD9, 0xF4) => {
                 // fxtract : l'exposant reste, la mantisse s'empile.
-                let (exponent, significand) = match self.operand(0) {
+                match self.operand(0) {
                     Some(value) => {
                         let (exponent, significand, report) = f80::extracted(value);
                         self.x87_note(report);
-                        (exponent, significand)
+                        self.set_st(0, exponent);
+                        self.x87_push(significand.pair());
                     }
-                    None => (F80::INDEFINITE, F80::INDEFINITE),
-                };
-                self.set_st(0, exponent);
-                self.x87_push(significand.pair());
+                    None => self.empty_into_two(),
+                }
             }
             (0xD9, 0xF5) | (0xD9, 0xF8) => {
                 // fprem1, fprem : C2 dit « pas fini » ; C0, C3 et C1 portent
@@ -767,13 +783,17 @@ impl Cpu {
                     self.x87_pop();
                 }
             }
+            // ffree, ffreep : **C1 tombe** — le manuel dit les codes non
+            // définis ; sur l'hôte, C1 levé par `fsqrt` retombe.
             (0xDD, 0xC0..=0xC7) => {
                 let physical = (self.x87_top() + index) & 7;
                 self.fpu_tags &= !(1 << physical);
+                self.fpu_status &= !C1;
             }
             (0xDF, 0xC0..=0xC7) => {
                 let physical = (self.x87_top() + index) & 7;
                 self.fpu_tags &= !(1 << physical);
+                self.fpu_status &= !C1;
                 self.x87_pop();
             }
             (0xDD, 0xD0..=0xDF) => {
@@ -814,6 +834,18 @@ impl Cpu {
         self.x87_push(F80::INDEFINITE.pair());
     }
 
+    /// **`fxtract`, `fptan` et `fsincos` d'un ST(0) vide** : le débordement
+    /// par le bas est déjà signalé, ST(0) et le registre empilé prennent
+    /// l'indéfini, et **C1 reste à zéro** — même quand l'empilement trouve
+    /// le registre d'en dessous occupé (la pile pleine dont ST(0) est vide :
+    /// sur l'hôte, `fninit ; fld1 ×7 ; fldpi ; ffree %st(0) ; fxtract` rend
+    /// sw 0x3841, C1 tombé, et deux indéfinis).
+    fn empty_into_two(&mut self) {
+        self.set_st(0, F80::INDEFINITE);
+        self.x87_push(F80::INDEFINITE.pair());
+        self.fpu_status &= !C1;
+    }
+
     /// `fsin`, `fcos`, `fsincos`, `fptan`. Au-delà de 2⁶³, C2 levé et
     /// l'opérande laissé tel quel. **C2 tombe dès que l'argument est dans le
     /// domaine** : la boucle de réduction de la `libm` (`fsin ; fnstsw ;
@@ -825,9 +857,10 @@ impl Cpu {
             return;
         }
         let Some(x) = self.operand(0) else {
-            self.set_st(0, F80::INDEFINITE);
             if pushes {
-                self.x87_push(F80::INDEFINITE.pair());
+                self.empty_into_two();
+            } else {
+                self.set_st(0, F80::INDEFINITE);
             }
             return;
         };
@@ -1182,10 +1215,11 @@ impl Cpu {
 }
 
 /// **Le mot de contrôle tel que le silicium le garde** (`fldcw`, `fldenv`,
-/// `frstor`) : le bit 6 toujours levé, les bits 7 et 13 à 15 toujours nuls.
-/// Relu par `fnstcw` ou `fnsave` sur l'hôte, `fldcw 0x0000` rend 0x0040 et
-/// `fldcw 0xe97a` rend 0x097a.
-fn control_word(word: u16) -> u16 {
+/// `frstor`, `fxrstor`) : le bit 6 toujours levé, les bits 7 et 13 à 15
+/// toujours nuls. Relu par `fnstcw` ou `fnsave` sur l'hôte, `fldcw 0x0000`
+/// rend 0x0040 et `fldcw 0xe97a` rend 0x097a ; `fxrstor` d'une aire qui dit
+/// 0xffff rend 0x1f7f, et 0x0080 rend 0x0040.
+pub(super) fn control_word(word: u16) -> u16 {
     (word & 0x1F7F) | 0x40
 }
 

@@ -850,3 +850,108 @@ fn rcp_and_rsqrt_stay_within_the_bound() {
         assert_eq!(cpu.xmm[0][0] as u32, wanted, "{code:02x} de {x:#x}");
     }
 }
+
+/// **`fxrstor` garde le mot de contrôle comme `fldcw`** : le bit 6 levé, les
+/// bits 7 et 13 à 15 effacés. Relu par `fnstcw` après `fxrstor` sur le
+/// silicium de l'hôte (un Xeon) : 0x0000 rend 0x0040, 0xe97a rend 0x097a,
+/// 0xffff rend 0x1f7f et 0x0080 rend 0x0040.
+#[test]
+fn fxrstor_keeps_the_control_word_like_the_silicon() {
+    for (written, kept) in [
+        (0x0000u16, 0x0040u16),
+        (0xe97a, 0x097a),
+        (0xffff, 0x1f7f),
+        (0x0080, 0x0040),
+    ] {
+        let mut cpu = Cpu {
+            memory: GuestMemory {
+                base: DATA,
+                bytes: vec![0u8; 0x1000],
+            },
+            ..Default::default()
+        };
+        cpu.memory.bytes[..2].copy_from_slice(&written.to_le_bytes());
+        cpu.memory.bytes[0x18..0x1c].copy_from_slice(&0x1f80u32.to_le_bytes());
+        assert_eq!(cpu.restore_floating_point_state(DATA), Ok(()));
+        assert_eq!(cpu.fpu_control, kept, "fxrstor de {written:#06x}");
+    }
+}
+
+/// Un double, en registre du x87 (normal, exact).
+fn extended_of(value: f64) -> Register {
+    let bits = value.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as u16 - 1023 + 16383;
+    (1 << 63 | (bits & ((1 << 52) - 1)) << 11, exponent)
+}
+
+/// **Une instruction qu'une exception démasquée arrête fait tomber C1** —
+/// hors d'un débordement de la pile par le haut. C1 est d'abord levé par une
+/// racine arrondie vers le haut, puis l'instruction jugée s'arrête. Sur le
+/// silicium de l'hôte, au sommet 6 :
+///
+/// - `fdiv %st(1),%st` par zéro, ZE démasquée : 0xb0a4 ;
+/// - `fcom %st(1)` d'un NaN silencieux, IE démasquée : 0xf5a1 (C3, C2 et C0
+///   posés, C1 tombé) ;
+/// - `fsts` d'une valeur qui dépasse le simple, OE démasquée : 0xb0a8, rien
+///   d'écrit.
+#[test]
+fn a_stopped_instruction_drops_c1() {
+    const QUIET: Register = (0xC000_0000_0000_0000, 0x7fff);
+    let five = extended_of(5.0);
+    for (name, st1, control, code, status) in [
+        ("fdiv", (0, 0), 0x037b, &[0xd8, 0xf1][..], 0xb0a4),
+        ("fcom", QUIET, 0x037e, &[0xd8, 0xd1], 0xf5a1),
+    ] {
+        let mut cpu = x87_start(five, st1);
+        cpu.fpu_control = 0x0b7f;
+        run_extended(&mut cpu, &[0xd9, 0xfa]);
+        assert_eq!(cpu.fpu_status & 0x0200, 0x0200, "{name} : C1 levé avant");
+        let root = cpu.x87[6];
+        cpu.fpu_control = control;
+        run_extended(&mut cpu, code);
+        assert_eq!(cpu.fpu_status, status, "{name} : le mot d'état");
+        assert_eq!(cpu.x87[6], root, "{name} : rien de rangé");
+    }
+    let mut cpu = x87_start(extended_of(2e300), ONE);
+    cpu.fpu_control = 0x0b7f;
+    run_extended(&mut cpu, &[0xd9, 0xfa]);
+    assert_eq!(cpu.fpu_status & 0x0200, 0x0200, "fsts : C1 levé avant");
+    cpu.fpu_control = 0x0377;
+    run_extended(&mut cpu, &[0xd9, 0x16]);
+    assert_eq!(cpu.fpu_status, 0xb0a8, "fsts : le mot d'état");
+    assert_eq!(
+        &cpu.memory.bytes[0x1000..0x1004],
+        &[0x10, 0x11, 0x12, 0x13],
+        "fsts : rien d'écrit"
+    );
+}
+
+/// **La pile pleine dont ST(0) est vide** : `fxtract`, `fsincos` et `fptan`
+/// lisent un registre vide (débordement par le bas, C1 à zéro), puis
+/// empilent sur un registre occupé. Sur le silicium de l'hôte, après
+/// `fninit ; fld1 ×7 ; fldpi ; ffree %st(0)` : sw 0x3841 — C1 reste à zéro —,
+/// étiquettes 0x8002, l'indéfini dans les deux registres.
+#[test]
+fn a_full_stack_with_an_empty_top_keeps_c1_down() {
+    for (name, code) in [
+        ("fxtract", [0xd9, 0xf4]),
+        ("fsincos", [0xd9, 0xfb]),
+        ("fptan", [0xd9, 0xf2]),
+    ] {
+        let mut cpu = x87_start(ONE, ONE);
+        (cpu.fpu_status, cpu.fpu_tags) = (0, 0);
+        for _ in 0..7 {
+            run_extended(&mut cpu, &[0xd9, 0xe8]);
+        }
+        run_extended(&mut cpu, &[0xd9, 0xeb]);
+        run_extended(&mut cpu, &[0xdd, 0xc0]);
+        run_extended(&mut cpu, &code);
+        assert_eq!(cpu.fpu_status, 0x3841, "{name} : le mot d'état");
+        assert_eq!(cpu.x87_tag_word(), 0x8002, "{name} : les étiquettes");
+        assert_eq!(
+            (cpu.x87[7], cpu.x87[0]),
+            (INDEFINITE, INDEFINITE),
+            "{name} : deux indéfinis"
+        );
+    }
+}
