@@ -337,10 +337,10 @@ public final class RustPCMachine: @unchecked Sendable {
         return taken
     }
 
-    /// La molette, en crans positifs vers le haut ; faux sans tablette prise.
+    /// La molette, en crans positifs vers le haut ; faux sans tablette prise,
+    /// ou pour zéro cran — la carte le refuse elle-même (`Carte::defiler`).
     @discardableResult
     public func scroll(notches: Int) -> Bool {
-        guard notches != 0 else { return false }
         let taken = wisq_pc_scroll(pc, Int32(clamping: notches)) == 1
         if taken { nudge.signal() }
         return taken
@@ -513,17 +513,30 @@ public final class RustPCScreen: @unchecked Sendable {
 
     /// **Le mode et son image, pris ensemble**, sans remplissage.
     public func frame() -> (mode: X86Framebuffer.Mode, data: Data) {
+        let copied = Self.frame { pixels, display in
+            wisq_pc_display_copy(
+                pc, pixels?.bindMemory(to: UInt8.self).baseAddress, pixels?.count ?? 0, &display)
+        }
+        return copied ?? (mode, Data())
+    }
+
+    /// **La boucle de `frame()`**, la copie donnée (`wisq_pc_display_copy`,
+    /// ou celle d'un test) : rien quand la copie échoue quatre fois.
+    ///
+    /// Le mode peut changer entre la mesure et la copie, puisque l'invité
+    /// tourne pendant qu'on lit. Plus grand, la copie refuse le tampon et dit
+    /// la taille qu'il faut : on recommence à celle-là. Plus petit, elle copie
+    /// le nouveau mode dans le tampon de l'ancien : l'image est coupée à la
+    /// taille du mode qu'elle rend, sinon la vue lirait des octets de trop
+    /// sous un mode qui ne les a pas.
+    static func frame(
+        copying copy: (UnsafeMutableRawBufferPointer?, inout WisqPCDisplay) -> Int32
+    ) -> (mode: X86Framebuffer.Mode, data: Data)? {
         var display = WisqPCDisplay()
-        _ = wisq_pc_display_copy(pc, nil, 0, &display)
-        // Le mode peut changer entre la mesure et la copie : la copie le dit,
-        // et l'on recommence à la taille qu'elle rend.
+        _ = copy(nil, &display)
         for _ in 0..<4 {
-            let count = Int(display.width) * Int(display.height) * 4
-            var data = Data(count: count)
-            let code = data.withUnsafeMutableBytes { raw in
-                wisq_pc_display_copy(
-                    pc, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &display)
-            }
+            var data = Data(count: Int(display.width) * Int(display.height) * 4)
+            let code = data.withUnsafeMutableBytes { copy($0, &display) }
             if code == 0 {
                 data.count = Int(display.width) * Int(display.height) * 4
                 return (X86Framebuffer.Mode(
@@ -531,7 +544,7 @@ public final class RustPCScreen: @unchecked Sendable {
                     bytesPerRow: Int(display.bytes_per_row), start: Int(display.start)), data)
             }
         }
-        return (mode, Data())
+        return nil
     }
 
     public func pixelData() -> Data { frame().data }

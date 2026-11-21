@@ -1,3 +1,4 @@
+import CWisqVM
 import Foundation
 import WisqVM
 @testable import WisqVMRust
@@ -111,6 +112,58 @@ final class RustPCMachineTests: XCTestCase {
         }
     }
 
+    /// **Une image coupée au mode sous lequel elle a été copiée** : l'invité
+    /// tourne pendant qu'on lit, et le mode peut changer entre la mesure et
+    /// la copie. La copie est jouée ici à la main.
+    func testAFrameFollowsAModeThatChangesDuringTheCopy() {
+        func setMode(_ display: inout WisqPCDisplay, _ width: UInt32, _ height: UInt32) {
+            display.width = width
+            display.height = height
+            display.bytes_per_row = width * 4
+        }
+        // Plus petit : mesuré en 4 × 2, copié en 2 × 2 dans le tampon de
+        // l'ancien mode.
+        var calls = 0
+        let shrunk = RustPCScreen.frame { pixels, display in
+            calls += 1
+            guard calls > 1, let pixels else {
+                setMode(&display, 4, 2)
+                return -3
+            }
+            XCTAssertEqual(pixels.count, 4 * 2 * 4)
+            setMode(&display, 2, 2)
+            for index in 0..<16 { pixels[index] = UInt8(index + 1) }
+            return 0
+        }
+        XCTAssertEqual(shrunk?.mode, X86Framebuffer.Mode(width: 2, height: 2, bytesPerRow: 8, start: 0))
+        XCTAssertEqual(shrunk?.data, Data((1...16).map { UInt8($0) }), "coupée au nouveau mode")
+
+        // Plus grand : la copie refuse le tampon, et l'on recommence à la
+        // taille qu'elle dit.
+        var sizes: [Int] = []
+        let grown = RustPCScreen.frame { pixels, display in
+            sizes.append(pixels?.count ?? 0)
+            switch sizes.count {
+            case 1, 2:
+                setMode(&display, UInt32(2 * sizes.count), 1)
+                return -3
+            default: return 0
+            }
+        }
+        XCTAssertEqual(sizes, [0, 8, 16])
+        XCTAssertEqual(grown?.mode.width, 4)
+        XCTAssertEqual(grown?.data.count, 16)
+
+        // Quatre refus de suite : rien.
+        var refusals = 0
+        XCTAssertNil(RustPCScreen.frame { _, display in
+            refusals += 1
+            setMode(&display, UInt32(refusals), 1)
+            return -3
+        })
+        XCTAssertEqual(refusals, 5, "la mesure, puis quatre essais")
+    }
+
     // MARK: - Les refus
 
     func testWhatCannotBeDoneIsRefusedByName() throws {
@@ -189,6 +242,63 @@ final class RustPCMachineTests: XCTestCase {
         XCTAssertThrowsError(try machine.attachDisk(
             fileAt: base, writes: folder.appendingPathComponent("disque.couche"))) {
             XCTAssertEqual($0 as? RustPCMachine.Refusal, .alreadyStarted)
+        }
+    }
+
+    /// **Chaque refus d'un disque sur fichier a son nom** — ceux que la
+    /// bibliothèque rend par -3, -4, -5 et -6, sur l'un et l'autre disque.
+    func testEachRefusalOfADiskFileHasItsName() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-rust-pc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func file(_ name: String) -> URL { folder.appendingPathComponent(name) }
+        let base = file("disque.img")
+        try Data(count: 4096).write(to: base)
+        try Data([1, 2, 3]).write(to: file("petit.img"))
+        // Une carte qui n'en est pas une : celle d'un autre programme.
+        try Data("pas une carte du tout".utf8).write(to: file("etrangere.couche.map"))
+        // La bonne marque, les huit secteurs de la base, et un secteur nommé
+        // que le fichier des écritures, vide, n'a pas.
+        var named = Data("wisqdisk".utf8)
+        named.append(contentsOf: [8, 0, 0, 0, 0, 0, 0, 0])
+        named.append(Data(count: 8))
+        try named.write(to: file("tronquee.couche.map"))
+        try Data().write(to: file("tronquee.couche"))
+
+        let machine = try rust(Console())
+        let cases: [(URL, URL, FileDiskStore.Failure)] = [
+            (file("petit.img"), file("petit.couche"), .notADisk),
+            (base, file("absent/disque.couche"), .cannotOpenOverlay),
+            (base, file("etrangere.couche"), .overlayBelongsToAnotherDisk),
+            (base, file("tronquee.couche"), .overlayIsTruncated),
+        ]
+        for (base, writes, failure) in cases {
+            XCTAssertThrowsError(try machine.attachDisk(fileAt: base, writes: writes)) {
+                XCTAssertEqual($0 as? FileDiskStore.Failure, failure, "premier disque")
+            }
+            XCTAssertThrowsError(try machine.attachSecondDisk(fileAt: base, writes: writes)) {
+                XCTAssertEqual($0 as? FileDiskStore.Failure, failure, "second disque")
+            }
+        }
+        XCTAssertNil(machine.diskActivity, "aucun refus n'a branché de disque")
+        try machine.attachDisk(fileAt: base, writes: file("disque.couche"))
+        XCTAssertNotNil(machine.diskActivity)
+    }
+
+    /// **Une mémoire sous le plancher est portée au plancher**, et celui que
+    /// l'enveloppe annonce est bien celui que la bibliothèque a pris : la RAM
+    /// que l'en-tête de l'instantané porte, après la magie et la version.
+    func testAMemoryBelowTheFloorIsRaisedToTheOneTheLibraryTakes() throws {
+        for asked in [0, 1 << 20, RustPCMachine.minimumRAMSize - 1] {
+            let machine = try rust(Console(), ram: asked)
+            XCTAssertEqual(machine.ramSize, RustPCMachine.minimumRAMSize, "\(asked)")
+            XCTAssertEqual(machine.ramSizeBytes, RustPCMachine.minimumRAMSize)
+            try machine.load(kernelImage: try Self.tinyKernel(), commandLine: nil, initialRamdisk: nil)
+            let header = Array(machine.snapshot().prefix(20))
+            XCTAssertEqual(header.count, 20)
+            let ram = header[12..<20].reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            XCTAssertEqual(ram, UInt64(machine.ramSize))
         }
     }
 
