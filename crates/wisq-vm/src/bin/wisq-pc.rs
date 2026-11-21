@@ -47,6 +47,9 @@
 //! passe ses secondes ; `\n` y est la touche Entrée. `--status N` dit sur la
 //! sortie d'erreur, toutes les N secondes de l'hôte, où en est la course :
 //! pour une course longue dont le noyau ne dit rien sur la console.
+//! `--input-file f` tape au port série ce qu'on ajoute au fichier `f` pendant
+//! la course (`echo 'ps' >> f`) : parler à un invité qu'on n'a pas fini de
+//! comprendre sans le redémarrer.
 
 use std::io::Write;
 use std::time::Instant;
@@ -134,6 +137,7 @@ struct Options {
     iso: Option<String>,
     touches: Vec<(f64, String)>,
     etat_toutes: Option<f64>,
+    fichier_d_entree: Option<String>,
 }
 
 /// **`--keys`** : des `secondes:texte` séparés par `;;`, rangés par heure ;
@@ -189,6 +193,26 @@ fn nom_numerote(chemin: &str, rang: u32) -> String {
     }
 }
 
+/// **Ce qui a été ajouté au fichier depuis la dernière fois** (`--input-file`) :
+/// les octets au-delà de `lu`, qui avance jusqu'à la fin. Rien quand le
+/// fichier n'a pas grandi, ou qu'il ne se lit pas (pas encore créé).
+fn ajoute_depuis(chemin: &Path, lu: &mut usize) -> Option<Vec<u8>> {
+    let contenu = std::fs::read(chemin).ok()?;
+    let neuf = contenu.get(*lu..).filter(|neuf| !neuf.is_empty())?.to_vec();
+    *lu = contenu.len();
+    Some(neuf)
+}
+
+/// **Les `combien` RIP les plus relevés**, les plus fréquents d'abord, à
+/// égalité le plus bas d'abord (pour que deux courses pareilles disent la
+/// même chose).
+fn plus_frequents(releves: impl Iterator<Item = (u64, u64)>, combien: usize) -> Vec<(u64, u64)> {
+    let mut tries: Vec<(u64, u64)> = releves.collect();
+    tries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    tries.truncate(combien);
+    tries
+}
+
 /// Ce qu'une image donne : le noyau, les initramfs, la ligne, la recette.
 struct DeLImage {
     noyau: Vec<u8>,
@@ -234,7 +258,7 @@ fn usage() -> ! {
          [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
          [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte] \
          [--iso <image>] [--display <L>x<H>] [--screen-dump <image.ppm>] [--screen-every <secondes>] \
-         [--keys 'secondes:texte;;…'] [--status <secondes>]"
+         [--keys 'secondes:texte;;…'] [--status <secondes>] [--input-file <fichier>]"
     );
     std::process::exit(2);
 }
@@ -263,6 +287,7 @@ fn options() -> Options {
         iso: None,
         touches: Vec::new(),
         etat_toutes: None,
+        fichier_d_entree: None,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(nom) = arguments.next() {
@@ -290,6 +315,7 @@ fn options() -> Options {
             "--disque" | "--disk" => options.disque = Some(valeur()),
             "--iso" => options.iso = Some(valeur()),
             "--keys" => options.touches = frappes(&valeur()).unwrap_or_else(|| usage()),
+            "--input-file" => options.fichier_d_entree = Some(valeur()),
             "--status" => {
                 options.etat_toutes = Some(
                     valeur()
@@ -470,6 +496,8 @@ fn main() {
     // Les refus déjà dits en route : chacun une fois, dès qu'il arrive.
     let mut refus_dits = std::collections::BTreeSet::new();
     let mut refus_vus = 0usize;
+    // Ce qui a déjà été lu du fichier d'entrée.
+    let mut entree_lue = 0usize;
     loop {
         let rendu = machine.tourner(200_000);
         let octets = machine.sortie();
@@ -554,9 +582,7 @@ fn main() {
                     machine.cpu.privilege(),
                     u8::from(machine.cpu.flags.interrupts_enabled()),
                 );
-                let mut tries: Vec<(u64, u64)> = releves.drain().collect();
-                tries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-                for (rip, fois) in tries.into_iter().take(4) {
+                for (rip, fois) in plus_frequents(releves.drain(), 4) {
                     let octets: Vec<String> = (0..12u64)
                         .map_while(|rang| {
                             let octet = machine
@@ -578,6 +604,14 @@ fn main() {
             }
         }
         refus_vus = machine.refus.len();
+        if let Some(neuf) = options
+            .fichier_d_entree
+            .as_deref()
+            .and_then(|chemin| ajoute_depuis(Path::new(chemin), &mut entree_lue))
+        {
+            machine.taper(&neuf);
+            attente_au_dernier_signe = machine.attente;
+        }
         // Les frappes dont l'heure de l'invité est passée.
         if let Some(carte) = &carte {
             let maintenant = (machine.retirees + machine.attente) as f64 / hertz as f64;
@@ -606,8 +640,15 @@ fn main() {
                     if revision != revision_rangee {
                         revision_rangee = revision;
                         images += 1;
-                        let _ = std::fs::write(nom_numerote(chemin, images), &octets);
+                        let nom = nom_numerote(chemin, images);
+                        let _ = std::fs::write(&nom, &octets);
                         let _ = std::fs::write(chemin, &octets);
+                        eprintln!(
+                            "image : {nom} ; {} instructions ; {:.1} s ; invité {:.1} s",
+                            machine.retirees,
+                            debut.elapsed().as_secs_f64(),
+                            (machine.retirees + machine.attente) as f64 / hertz as f64,
+                        );
                     }
                 }
             }
@@ -725,6 +766,38 @@ mod tests {
         assert_eq!(frappes("x:root"), None);
         assert_eq!(frappes("-1:root"), None);
         assert_eq!(frappes("root"), None);
+    }
+
+    /// **Les RIP les plus relevés d'abord**, à égalité le plus bas d'abord,
+    /// pas plus que demandé.
+    #[test]
+    fn the_most_frequent_rips_come_first() {
+        let releves = [(0x30, 2), (0x10, 5), (0x20, 2), (0x40, 1)];
+        assert_eq!(
+            plus_frequents(releves.into_iter(), 3),
+            vec![(0x10, 5), (0x20, 2), (0x30, 2)]
+        );
+        assert_eq!(plus_frequents(releves.into_iter(), 9).len(), 4);
+    }
+
+    /// **`--input-file`** : seul ce qui a été ajouté depuis la dernière
+    /// lecture est rendu, une fois ; rien quand le fichier n'a pas grandi ou
+    /// n'existe pas.
+    #[test]
+    fn only_what_was_appended_is_typed() {
+        let dossier = std::env::temp_dir().join(format!("wisq-pc-entree-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dossier);
+        let chemin = dossier.join("entree.txt");
+        let _ = std::fs::remove_file(&chemin);
+        let mut lu = 0;
+        assert_eq!(ajoute_depuis(&chemin, &mut lu), None, "pas de fichier");
+        std::fs::write(&chemin, b"ps\n").unwrap();
+        assert_eq!(ajoute_depuis(&chemin, &mut lu), Some(b"ps\n".to_vec()));
+        assert_eq!(ajoute_depuis(&chemin, &mut lu), None, "rien de neuf");
+        std::fs::write(&chemin, b"ps\nls /\n").unwrap();
+        assert_eq!(ajoute_depuis(&chemin, &mut lu), Some(b"ls /\n".to_vec()));
+        assert_eq!(lu, 8);
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     /// **Le PPM** : l'en-tête, puis rouge, vert, bleu — l'XRGB de la carte a
