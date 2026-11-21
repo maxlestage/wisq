@@ -874,6 +874,1371 @@ neufs sous le profil de mise au point aussi (débordements vérifiés),
   une faute pendant une livraison arrête la machine en la nommant.
 - *Ce que la mesure ne dit pas.* Tout est mesuré sur un Xeon, pas sur une
   puce Apple ; et jusqu'au shell de secours d'Alpine, pas sur un bureau.
+## 2026-11-21 — Carte réseau : l'émission ne part qu'à son `out`
+
+Le dernier contrôle du flux « périphériques » a trouvé une garde de
+`CartePc::servir` qu'aucun test ne tenait : `if notifiees[FILE_D_EMISSION]`.
+Remplacée par `if true`, les 219 tests restaient verts, alors qu'une trame
+posée mais pas encore notifiée partait au premier `servir` venu — une trame
+que le pilote n'a peut-être pas fini d'écrire.
+
+Nouveau test : `a_transmit_posted_but_not_notified_does_not_leave`. Une
+émission posée, la réception notifiée, `servir` : rien ne part, rien n'est
+rendu ; la file un notifiée, `servir` : la trame part et est rendue. Le
+sabotage du contrôle le fait tomber, et lui seul (218 réussis, 1 échec).
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise de la carte réseau, deux gardes tenues
+
+**Ce qui n'allait pas.** Le contrôle de la reprise a relevé quatre points.
+Chacun a été vérifié dans le code. Les quatre sont réels : deux gardes justes
+qu'aucun test ne jugeait, deux phrases fausses dans l'entrée qui suit.
+- *Le `break` de `VirtioNet::livrer` sur une écriture refusée* survivait à
+  `continue`. Le seul cas, `a_buffer_outside_the_ram_loses_the_frame`,
+  n'avait qu'un tampon, où les deux font la même chose. Avec `continue`,
+  une chaîne `[hors de la RAM, 0x50000]` rendait la trame posée dans le
+  second tampon, avec une longueur de 70 : le pilote aurait lu d'abord le
+  premier, jamais écrit. L'entrée précédente annonçait « un tampon hors de
+  la RAM d'où il faut lire perd toujours la trame » sans le tenir.
+- *La garde `notifiees[FILE_DE_RECEPTION]` de `CartePc::servir`* survivait
+  à `true`. Le `transmit` du Swift (`VirtioNet.swift`, `notify`) ne fait pas
+  de `deliver` : une émission notifiée ne doit rien livrer, même avec un
+  tampon de réception posé. Aucun cas ne posait un tampon de réception sans
+  le notifier avant un `servir`.
+- *L'entrée précédente* disait « neuf adresses voisines » pour
+  `a_configuration_write_elsewhere_leaves_the_card_alone`. Le tableau en a
+  dix : 0:0, 3, 6, 4, 2, 7, 31, la fonction 1, le bus 1, l'adresse sans bit
+  d'activation.
+- *Elle disait aussi* « il n'y a plus de mutant équivalent à cet endroit ».
+  C'est faux : la garde `n == 0` de `livrer` écrite `tampon.longueur == 0`
+  survit, et elle est équivalente. Un tampon non vide après une trame posée
+  en entier donne `n = 0`, `ram.ecrire(adresse, &[])` réussit ou fait
+  sortir de la boucle, et `posees` vaut déjà la longueur de la trame.
+
+**Ce qui est fait.** Le code de production ne change pas : les deux gardes
+étaient justes. Un commentaire dit pourquoi le `break` coupe la chaîne.
+- `a_buffer_outside_the_ram_in_a_receive_chain_cuts_it` (neuf,
+  `virtio_net.rs`) : une chaîne `[hors de la RAM, 0x50000]`, puis
+  `[0x51000 de 30 octets, hors de la RAM, 0x52000]`. Les deux trames sont
+  perdues, rendues vides (`(0, 0, 1)` puis `(2, 0, 2)`), et les tampons qui
+  suivent restent à zéro. Une troisième trame passe ensuite, en `(5, 70, 3)`.
+- `a_transmit_notification_leaves_the_waiting_frame_to_the_probe` (neuf,
+  `pc.rs`) : une trame attend, un tampon de réception est posé sans
+  notification, une émission est notifiée, puis `servir`. La trame émise
+  part au câble, celle qui attend reste (`en_attente` à 1), rien n'est
+  rendu en réception, le tampon reste vide. La sonde suivante la livre.
+- Les deux phrases fausses de l'entrée qui suit sont corrigées sur place,
+  et la correction y est dite.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 586 559 octets avant
+  et après. gzip -9 passe de 115 596 à 115 595. Le sha passe de
+  3470e2cb66f31cc9 à 624776476e8f07f5. Les tests ne sont pas dans le module.
+  Le commentaire décale les numéros de ligne des messages de panique :
+  sans lui, le module rebâti redonne 3470e2cb66f31cc9.
+- Tests : wisq-carte passe de 216 à 218 cas, Rust de 848 à 850. Le total
+  publié passe de 3 913 à 3 915 (`recompte.sh`).
+
+**Sabotages** : cinq sabotages d'une ligne, rejoués par le script qui
+restaure chaque fichier (`git diff` sans eux après la série).
+- `break` remplacé par `continue` dans `livrer` : tombe dans
+  `a_buffer_outside_the_ram_in_a_receive_chain_cuts_it`.
+- `break` retiré, l'écriture refusée comptée comme posée : tombe dans ce
+  cas et dans `a_buffer_outside_the_ram_loses_the_frame`.
+- `notifiees[FILE_DE_RECEPTION]` remplacé par `true` dans `servir` : tombe
+  dans `a_transmit_notification_leaves_the_waiting_frame_to_the_probe`.
+- La même garde élargie à la notification d'émission : tombe dans le même
+  cas.
+- La garde `n == 0` de `livrer` écrite `tampon.longueur == 0` : survit,
+  comme attendu. C'est un mutant équivalent, et il le reste.
+
+**Ce qui reste.** Rien de neuf. Le reste de l'entrée qui suit vaut toujours.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : reprise de la carte réseau après contrôle
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente a
+relevé six points. Chacun a été vérifié dans le code et contre le Swift
+(`VirtioNet.swift`, `X86PCI.swift`, `X86Machine.attach(network:)`). Les six
+sont réels : trois gardes justes qu'aucun test ne jugeait, un écart au
+Swift, un cas limite, une doc périmée.
+- *Le modulo de la chaîne* (`VirtioNet::chaine`,
+  `index % queueLimit` du Swift) n'était tenu par rien. Le pilote des tests
+  réduit toujours la tête et le suivant modulo 256, et aucun cas ne publiait
+  une tête de 256 ou plus. Les « deux modulos » de l'entrée précédente
+  étaient ceux des anneaux.
+- *La garde `File::prete`* (`queue.ready`) survivait à `true`. Le cas de la
+  remise notifiait bien les deux files, mais l'index publié lu à l'adresse 2
+  valait zéro, et rien ne partait, garde ou pas.
+- *L'écriture de configuration vers un emplacement vide* : remplacer
+  `reseau_vise()` par « une carte est branchée » laissait passer toute
+  écriture vers 00:06.0, le pont, ou 00:04.0 sans second disque, jusqu'à la
+  commande, la fenêtre et la ligne de la carte. Seule la lecture d'un
+  emplacement vide était jugée.
+- *Le rebranchement gardait l'emplacement* : `brancher_reseau` ne
+  remplaçait que le périphérique. Le Swift fait
+  `bus.network = X86PCIHost(network: nic)` : un hôte neuf, fenêtre fermée,
+  commande nulle, ligne 3. Ici, la carte neuve répondait aussitôt dans la
+  fenêtre de l'ancienne, sur la ligne que le noyau avait écrite pour elle.
+  La doc disait « repart neuve ».
+- *Un tampon dont on ne lit rien perdait la trame.* `ram.lire(adresse, &mut [])`
+  rend faux hors de la RAM. Deux cas : un descripteur vide hors de la RAM, ou
+  un tampon hors de la RAM après une trame déjà pleine. Le Swift les envoie
+  (`copyOut` de zéro octet), et l'écart voulu (« pas de zéros que l'invité
+  n'a pas écrits ») ne s'applique pas, puisque rien n'est lu là. Même forme
+  dans `livrer` : un tampon inscriptible vide hors de la RAM coupait la
+  chaîne et perdait la trame. Linux ne pose pas de tels descripteurs, donc
+  l'effet pratique était faible.
+- *La doc de `CartePc::servir` et de `a_servir`* ne parlait pas de la carte
+  réseau, que les deux servent pourtant.
+
+**Ce qui est fait.**
+- `Pci::brancher_reseau` (neuf) pose la carte sur un emplacement neuf :
+  `Emplacement::nouveau(LIGNE_DU_RESEAU)`, sans mesure en cours.
+  `Carte::brancher_reseau` passe par lui, et `CartePc::brancher_reseau` par
+  elle. Les disques gardent leur emplacement, comme le Swift garde
+  `memory.bus`.
+- `VirtioNet::emettre` saute un tampon dont il n'y a rien à lire (`n == 0`),
+  où qu'il pointe. Un tampon hors de la RAM d'où il faut lire perd toujours
+  la trame. `livrer` saute de même un tampon vide au lieu de couper la
+  chaîne. Son `break` sur une trame déjà posée était équivalent : sans lui,
+  chaque tampon qui suit est vide, et sauté. Il est retiré. *(Corrigé à la
+  reprise suivante : il reste un mutant équivalent à cet endroit, la garde
+  `n == 0` écrite `tampon.longueur == 0`.)*
+- Les docs de `servir`, `a_servir` et des deux `brancher_reseau` disent ce
+  que ces fonctions font.
+- Cinq cas neufs dans `virtio_net.rs` :
+  - `a_head_or_a_next_past_the_table_wraps_into_it` publie la tête 256 et
+    le suivant 257, puis la tête 0x0300 côté réception. La tête rendue est
+    celle que le pilote a publiée, telle quelle, comme `complete(head)`.
+  - `a_queue_without_a_page_reads_nothing` habille la RAM basse en anneau :
+    un index publié en 2, et un descripteur qui pointe une trame entière.
+    Il notifie avant la poignée de main, après une page retirée et après une
+    remise. Rien ne part, rien n'est perdu, la RAM reste intacte.
+  - `a_buffer_with_nothing_to_read_never_loses_the_frame` couvre les deux
+    cas du contrôle, le contre-cas (hors de la RAM et à lire : perdue) et
+    la réception.
+  - `a_configuration_write_elsewhere_leaves_the_card_alone` part d'une
+    carte ouverte en 0xC040. Il écrit la commande, la mesure, la fenêtre et
+    la ligne vers dix adresses voisines (*neuf*, écrit d'abord, était
+    faux) : le pont, le disque, les cinq emplacements vides, une autre
+    fonction et un autre bus de l'emplacement cinq, une adresse sans son
+    bit d'activation. La fenêtre répond encore,
+    et la carte garde sa commande, sa fenêtre et sa ligne 3.
+  - `a_replugged_card_gets_a_new_slot` rebranche une carte ouverte, en
+    mesure, sur la ligne 9. La fenêtre de l'ancienne est fermée, la commande
+    nulle, la BAR rend 1, et la ligne 3 est tenue. Le disque n'a pas bougé,
+    et la carte rouverte répond de sa nouvelle adresse.
+- `plugging_order_and_a_new_card` (façade) vérifie de plus que la fenêtre
+  est fermée après le rebranchement.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 586 469 octets
+  avant, 586 559 après (+90). gzip -9 passe de 115 565 à 115 596 (+31). Le
+  sha commence par 3470e2cb66f31cc9.
+- Tests : wisq-carte passe de 211 à 216 cas (0,33 s en release), et Rust de
+  843 à 848. Le total publié passe de 3 908 à 3 913 (`recompte.sh`).
+
+**Sabotages** : dix sabotages d'une ligne, rejoués par un script qui
+restaure chaque fichier (`git diff` vide après la série).
+- *Les trois du contrôle*, qui survivaient : le modulo de la chaîne retiré,
+  `prete` toujours vraie, l'écriture de configuration sans test
+  d'emplacement. Ils tombent maintenant, chacun dans son cas neuf.
+- *Le rebranchement* :
+  - l'emplacement gardé (`self.reseau.clone()`) tombe dans
+    `a_replugged_card_gets_a_new_slot` et `plugging_order_and_a_new_card` ;
+  - l'ancien code de `Carte::brancher_reseau` aussi ;
+  - un emplacement neuf sur la ligne 9 tombe dans quatre cas.
+- *Le tampon vide* : la garde retirée dans `emettre`, la garde retirée dans
+  `livrer` (c'est l'ancien code), et `continue` remplacé par `break` dans
+  `livrer`. Les trois tombent dans `a_buffer_with_nothing_to_read_never_loses_the_frame`.
+- *Le `break` de `livrer`*, retiré avant la correction : il survit, comme
+  au contrôle. Il était équivalent, et il est supprimé.
+
+**Ce qui reste.** Rien de neuf. Le reste de l'entrée précédente vaut
+toujours : le C ABI du câble, le passage de `sonder_reseau` dans la boucle
+du flux « cœur », `web/carte.js`, et les instantanés. Le disque se rebranche
+toujours en gardant son emplacement (`Carte::brancher`), alors que le Swift
+lui donne aussi un hôte neuf (`attach(device:)`). Ce n'est pas l'objet de
+cette reprise, et le changer toucherait la règle des noms qui continuent
+d'un disque à l'autre. C'est noté pour la bascule.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : la carte réseau virtio, et l'état des lieux de la bascule
+
+**La demande.** Porter `VirtioNet` du cœur Swift comme périphérique de la
+carte, avec un arrière abstrait (une trame sort, une trame entre), sans pile
+réseau ni sockets ; un câble débranché et un câble en boucle pour les tests ;
+décrire l'interface qu'il faudra au réseau en mode utilisateur du Swift
+(`UserNetwork`, `HostDatagrams`) pour se brancher par le C ABI. Porter
+`VirtioNetTests`, en natif et en wasm32, avec des sabotages. Finir par un état
+des lieux de chaque périphérique de `X86Machine`. Avant tout, le défaut
+laissé par le contrôle de la tablette.
+
+**Le défaut du contrôle, d'abord.** Il est réel. Le masque par largeur de
+`Tablette::lire_commun`, porté de `VirtioTablet.swift:267`, n'était jugé
+qu'à quatre octets : `valeur & 0xFFFF_FFFF` à sa place passait tout.
+`the_common_registers_read_back_per_queue` relit maintenant 0x20, 0x24,
+0x28, 0x2C, 0x30 et `msix_config` sur deux octets et sur un (0x7788, 0x88,
+0x3344, 0xBBBB, 0xDD, 0x00, 0xFF). Le cas appelle `Tablette::lire` sans la
+carte, qui ramène elle aussi la valeur à la largeur : c'est le seul chemin
+où le masque de la tablette se voit. Aucun code de production ne change.
+
+**Ce qui est fait.**
+
+- *`src/carte/virtio_net.rs`* (neuf) : la carte de forme ancienne, registre
+  pour registre avec le Swift. `1AF4:1000`, contrôleur Ethernet, sous-système
+  `1AF4:0001`, en 00:05.0, ligne 3. La seule fonction offerte est
+  `VIRTIO_NET_F_MAC`, l'adresse par défaut `02:77:69:73:71:01`. Deux files
+  de 256, l'en-tête de dix octets, 512 trames en attente au plus, 1 514
+  octets par trame. Au travail, le câble n'est questionné qu'un passage sur
+  quatre ; au repos, à chaque passage.
+- *Le câble* : le trait `Cable` (`envoyer`, `recevoir`), le `NetworkBackend`
+  du Swift. Il n'est pas dans la carte, qui se clone, se compare et vit dans
+  une `static` de la page. L'écriture d'un port n'a donc pas le câble sous la
+  main. Une trame émise est rangée dans la carte (`VirtioNet::sortir`), et
+  c'est la machine qui la donne au câble. Les compteurs restent ceux du Swift :
+  une trame rangée compte comme émise, une trame sans câble comme perdue.
+  `CableEnBoucle` sert aux tests. « Débranché », c'est l'absence de câble,
+  comme le Swift sans `backend`.
+- *Le bus* : l'emplacement devient générique (`Emplacement<P: Fonction>`). Le
+  disque et la carte réseau ont la même commande, la même fenêtre de
+  `0x40` ports, la même mesure et la même ligne. Ils ne diffèrent que par
+  trois registres (0x00, 0x08, 0x2C). Le champ `disque` d'un emplacement
+  s'appelle désormais `peripherique`. Un port que la fenêtre d'un disque et
+  celle de la carte couvrent toutes deux va au disque, comme dans `portWrite`
+  et `portRead` du Swift.
+- *La carte* : `brancher_reseau`, `reseau`, `reseau_mut`, `reseau_au_port`.
+  La ligne est levée à niveau et tenue. La carte compte dans le réveil tant
+  que son câble est branché, puisqu'une trame peut arriver à tout moment. Le
+  Swift dit de même avec `devicesArmed` dès qu'une carte existe : il ne
+  l'attache jamais sans réseau. Câble débranché, la carte ne compte que si sa
+  ligne est levée ou qu'une trame attend un tampon.
+- *La façade `CartePc`* : `brancher_reseau`, `brancher_cable`,
+  `debrancher_cable` (qui rend le câble), `reseau` et `sonder_reseau(ram,
+  occupe)`. La notification d'une file est notée pendant l'`out` et servie
+  par `servir`. L'émission y donne la trame au câble tout de suite : c'est
+  le `backend.send` que le Swift fait pendant l'`out`. `servir` ne
+  questionne jamais le câble ; c'est `sonder_reseau` qui le fait, à chaque
+  tour, comme `poll` dans `serviceInterrupts`. Le mode d'emploi gagne trois
+  lignes.
+- *La page* : les exports `carte_reseau` (l'adresse dans un `u64`, l'octet
+  bas d'abord), `carte_reseau_cable`, `carte_reseau_place`,
+  `carte_reseau_entrer`, `carte_reseau_livrer`, `carte_reseau_sortie`,
+  `carte_reseau_sortie_octets` et `carte_reseau_compte`. Comme pour la
+  tablette, `web/carte.js` ne les sert pas encore à `host.js`.
+
+**Deux écarts au Swift, voulus.**
+- *Un tampon hors de la RAM perd la trame.* À l'émission, le Swift lirait
+  des zéros (`copyOut`) et les enverrait. À la réception, il poserait ce qui
+  tient (`copyIn`) et dirait la trame livrée. Ici, la trame est perdue et
+  comptée comme telle, et la requête est rendue. C'est la règle du disque de
+  la carte : jamais des zéros à la place de ce qui manque.
+- *L'attente des trames émises est bornée* (512) : une page qui ne les
+  prendrait pas ne fait pas grandir la mémoire du module. Le Swift n'en a pas
+  besoin, il envoie pendant l'`out`.
+
+**Pas de statut du lien**, comme le Swift : `VIRTIO_NET_F_STATUS` n'est pas
+offert, et le pilote tient alors le lien pour établi. Le statut du lien que
+demandait la tranche est donc celui-là : « toujours établi » pour l'invité.
+Le câble débranché ne se voit qu'aux trames perdues. L'annoncer ferait une
+carte différente de la référence. Le cas `the_address_and_the_feature_are_announced`
+vérifie que 0x1A, où ce champ serait, rend zéro.
+
+**L'interface qu'il faudra au réseau en mode utilisateur**, par le C ABI
+(`ffi.rs`, au flux « cœur ») : un `Cable` dont les deux méthodes appellent
+deux fonctions de l'application, sur le fil de la machine, comme
+aujourd'hui `VirtioNet` appelle `UserNetwork.send` et `receive`.
+
+```c
+/* Une trame Ethernet que l'invité envoie, sans l'en-tête virtio. */
+typedef void (*wisq_pc_cable_envoyer)(void *contexte, const uint8_t *trame, size_t longueur);
+/* La prochaine trame pour l'invité, copiée dans `vers` (1 514 octets) :
+   sa longueur, ou 0 quand il n'y en a plus. */
+typedef size_t (*wisq_pc_cable_recevoir)(void *contexte, uint8_t *vers, size_t place);
+void wisq_pc_brancher_reseau(WisqPc *pc, const uint8_t mac[6]);
+void wisq_pc_brancher_cable(WisqPc *pc, void *contexte, wisq_pc_cable_envoyer, wisq_pc_cable_recevoir);
+void wisq_pc_debrancher_cable(WisqPc *pc);
+```
+
+Côté Swift, un `UserNetwork` derrière ces deux fonctions ne change pas.
+`MachineNetwork.backend(forKernel:)` le choisit, coupé ou par l'hôte, et
+`HostStreams.forward` reste à lui. La cadence ne change pas non plus : la
+boucle appelle `sonder_reseau(ram, !hlt)` à chaque passage, et les quatre
+verrous de `UserNetwork` ne sont pris qu'un passage sur quatre au travail.
+Le contexte doit vivre aussi longtemps que la machine, et les deux fonctions
+ne doivent pas rappeler la machine. **À savoir pour le flux « cœur »** : le
+trait `Peripheriques` de `pc/machine.rs` n'a pas de quoi appeler
+`sonder_reseau` avec la RAM, puisque `battre` ne la reçoit pas. Il faudra lui
+ajouter ce passage, ou sonder depuis le sien.
+
+**État des lieux pour la bascule** : chaque périphérique de `X86Machine`
+(`X86Machine.swift`, `X86PCI.swift`, et les ports de `X86CoreDispatch.swift`
+et la mémoire lente de `X86Memory.swift`, où ils répondent).
+
+| Périphérique (Swift) | Où il répond | En Rust (« ici » : `crates/wisq-page/src/carte`) |
+| --- | --- | --- |
+| 16550, port série (0x3F8–0x3FF, ligne 4) — `X86SerialPort` | ports | flux « cœur », `pc/herites.rs` |
+| Deux 8259 (0x20, 0x21, 0xA0, 0xA1) — `X86LegacyDevices` | ports | flux « cœur », `pc/herites.rs` |
+| 8253 canal 0 (0x40, 0x43, ligne 0) | ports | flux « cœur », `pc/herites.rs` |
+| 8253 canal 2 et haut-parleur (0x42, 0x61) | ports | flux « cœur », `pc/herites.rs` |
+| i8042, clavier et souris (0x60, 0x64, lignes 1 et 12), la frappe au rythme d'une main — `X86PS2`, `X86Typing` | ports | ici, `i8042.rs` |
+| Horloge CMOS (0x70, 0x71) — `X86CMOSClock` | ports | **les deux** : ici, `cmos.rs` (date entière, écriture, heure injectée ou figée), et une horloge minimale au flux « cœur », `HorlogeCmos` de `pc/herites.rs`, qui le dit provisoire. À la bascule, une seule doit répondre : celle d'ici. |
+| Pont PCI 440FX en 00:00.0 (0xCF8, 0xCFC à 0xCFF) — `X86PCIHost` | ports | ici, `pci.rs` |
+| Carte graphique Bochs en 00:02.0 : DISPI (0x1CE, 0x1CF), 16 Mio à 0xE000_0000, registres à 0xE100_0000 — `X86BochsDisplay`, `X86Framebuffer` | ports, mémoire | ici, `ecran.rs` |
+| Premier disque virtio-blk en 00:03.0, ligne 5, par ports — `VirtioBlock` | ports | ici, `virtio_blk.rs`, `pc.rs` |
+| Le même disque, transport MMIO à 0xD000_0000 (0x200 octets, ligne 5) | mémoire | **manquant**, exprès : le noyau d'Alpine ne le trouve pas, faute de `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES`, et ceux de Void non plus. Rien ne l'emploie. |
+| Second disque en 00:04.0, ligne 6 | ports | ici |
+| Disque sur fichier et sa couche d'écriture — `FileDiskStore`, `LocalDisk` | — | ici, `fichier.rs` |
+| Formats d'image à tables (`VirtualDiskImage`, `VmdkDescriptorDisk`), disque vierge (`BlankDisk`) | — | **manquant** |
+| Carte réseau virtio-net en 00:05.0, ligne 3 — `VirtioNet` | ports | ici, `virtio_net.rs` (cette tranche) |
+| Réseau en mode utilisateur, sa coupure, les relais (`UserNetwork`, `HostDatagrams`, `HostStreams`, `HostEchoes`, `MachineNetwork`) | — | **restent en Swift**, derrière le C ABI décrit plus haut, qui est **manquant** (`ffi.rs`, flux « cœur ») |
+| Tablette virtio moderne en 00:07.0, BAR à 0xE101_0000, ligne 10 — `VirtioTablet` | mémoire | ici, `tablette.rs` |
+| `rdrand` et `rdseed` — `X86Entropy` | processeur | flux « cœur », `pc/machine.rs` |
+| Registres spécifiques au modèle — `X86ModelSpecific` | processeur | flux « cœur », `pc/systeme.rs` |
+| Chargeur : page zéro, e820, `screen_info`, ligne de commande — `X86BootLoader` | — | flux « cœur », `pc/chargeur.rs`. Le cadre annoncé vient d'ici (`Cadre::mode_de_depart`, `Cadre::base`). |
+| Le sommeil au rythme de l'horloge murale (`pacesIdleToWallClock`), l'heure figée de l'hôte (`frozenHostTime`) | boucle | la boucle au flux « cœur » ; l'heure figée, ici (`CartePc::regler_heure`, ou une horloge injectée) |
+| L'instantané de chaque périphérique (`save`, `restore`, sections du disque, du second disque, de la carte réseau, de l'écran, de la tablette) | — | **manquant** des deux côtés pour les périphériques. Il faudra le même format que le Swift, pour qu'un instantané passe d'un cœur à l'autre. |
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 578 503 octets
+  avant, 586 469 après (+7 966, +1,4 %), gzip -9 de 113 096 à 115 565
+  (+2 469). sha baf746d646960706.
+- Tests : wisq-carte passe de 180 à 211 cas (0,31 s en release),
+  wisq-page lib de 9 à 10, `tests/carte.rs` de 7 à 8 sous Bun. Rust passe
+  de 810 à 843, et le total publié de 3 875 à 3 908 (`recompte.sh`).
+
+**Sabotages** : soixante-quatorze sabotages d'une ligne, chacun restauré depuis
+une copie. `git status` est vide après chaque série.
+- *Le masque de la tablette* : `valeur & 0xFFFF_FFFF`, puis `largeur >= 2`
+  à la place de `largeur >= 8`. Les deux tombent.
+- *Soixante-dix sur la carte réseau* (`virtio_net.rs` 37, `mod.rs` 7,
+  `pci.rs` 8, `pc.rs` 12, `carte_porte.rs` 6). Les constantes : la fonction
+  offerte, la plage de l'adresse, la taille des files, l'en-tête, les deux
+  bornes, la cadence, l'emplacement, la ligne et les trois identifiants. Les
+  registres : les fonctions acceptées non masquées, la file choisie bornée
+  autrement, 0x0E relu à zéro, l'ISR qui ne s'efface pas, l'émission prise
+  pour la réception, un statut non nul pris pour une remise. La remise qui
+  garde l'attente ou la file choisie. Les files : la chaîne bornée au double,
+  les tampons inscriptibles émis, une lecture ratée ignorée, un en-tête seul
+  émis, l'émission sans câble ou au-delà de la borne, la longueur rendue,
+  une trame plus grande, les tampons en lecture seule remplis, une trame
+  livrée tronquée, la longueur sans l'en-tête, une écriture ratée ignorée,
+  un en-tête non nul, l'interruption oubliée, l'index des servies non écrit,
+  les deux modulos, l'index des disponibles décalé. La cadence : `<=`, la
+  livraison au travail retirée, le compte jamais remis. La carte : la ligne
+  jamais levée, jamais tenue, figée à 3 ; chacun des trois termes du réveil ;
+  le port fixe donné à la carte. Le bus : la fenêtre du disque qui ne passe
+  plus devant, l'emplacement vide qui répond, l'écriture de configuration
+  perdue. La façade : la file notifiée inversée, le câble jamais servi, la
+  réception jamais servie, la largeur non masquée, la note jamais posée, le
+  réveil sans la note, la note gardée d'une carte à l'autre, le câble
+  oublié au branchement, au rebranchement, au débranchement, et à la sonde.
+  Les exports : le câble au branchement, la place ignorée, les compteurs
+  confondus, l'adresse permutée, le câble de `carte_reseau_cable` et
+  l'attente.
+  **Soixante-cinq tombaient au premier passage. Les cinq survivants** : les
+  bornes de 512 et 1 514, que les tests ne jugeaient que par leurs
+  constantes (ils les écrivent maintenant en clair) ; le modulo de l'anneau
+  des servies, puisque la place 2 récrite sans modulo gardait la même tête
+  (chaque trame a maintenant sa longueur, et la place dit laquelle l'a
+  écrite) ; le câble débranché de `carte_reseau`, jamais essayé (le test
+  natif le branche d'abord débranché, puis lit le réveil). Le cinquième
+  était équivalent : `CartePc::port_ecrire` vérifiait une carte que la
+  fenêtre ouverte suppose déjà, et la vérification est retirée. Rejoués,
+  les quatre tombent.
+- *Sous Bun*, sur le module wasm32 : l'adresse permutée dans `carte_reseau`
+  et le pointeur de `carte_reseau_sortie_octets` décalé d'un octet. Les
+  deux tombent dans `the_network_card_answers_through_the_page_module`.
+
+**Ce qui reste.**
+- Le C ABI du câble, avec l'interface plus haut, et le passage de
+  `sonder_reseau` dans la boucle du flux « cœur » : aucun vrai noyau n'a
+  encore vu cette carte, ni `virtio_net` chargé sur elle.
+- `web/carte.js` ne sert pas encore les exports du réseau à `host.js`.
+- L'instantané de la carte, les formats d'image à tables, et le transport
+  MMIO du disque (non nécessaire) ; voir l'état des lieux.
+- Le flux « cœur » ne branche toujours pas la carte.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : la tablette, deuxième reprise après contrôle
+
+**La demande.** Le contrôle de la reprise précédente (39cc5aae) a trouvé six
+gardes que rien ne jugeait, et une phrase inexacte dans ce journal. Les
+vérifier dans le code, corriger celles qui sont réelles, avec test et
+sabotage.
+
+**Ce qui n'allait pas.** Les sept points sont réels, tous dans les tests : le
+code faisait déjà ce qu'il promettait, mais rien ne le tenait.
+
+1. *La remise garde la ligne PCI* (`..Self::nouvelle(self.ligne)`) : toutes
+   les tablettes des tests étaient sur la ligne 10, celle de `nouvelle`. Une
+   remise qui reprendrait la ligne de `nouvelle` passait. L'effet n'est pas
+   nul : `Carte::lignes` et `Carte::tenues` lèvent `tablette.ligne`. Si le
+   noyau avait écrit 11 en 0x3C et que le pilote remettait le statut à zéro,
+   l'interruption repartait sur la ligne 10.
+2. *La remise garde la mesure de la BAR* (`mesure: self.mesure`) : aucun cas
+   ne partait d'une tablette en cours de mesure.
+3. *La moitié haute des disponibles* (0x2C) : relue seulement dans le mot
+   de huit octets, jamais seule.
+4. *`queue_enable` ne lit que son bit 0* (`value & 1 != 0` du Swift) :
+   aucun cas n'écrivait 2.
+5. *Seul un statut nul est une remise* (`status == 0` du Swift) : aucun cas
+   n'écrivait un statut non nul sans `ACKNOWLEDGE`.
+6. *Les boutons droit et milieu par l'export `carte_toucher`* : les exports
+   ne passaient que le gauche, en natif comme sous Bun.
+7. *Mineur, ce journal* : l'entrée précédente disait que « chacune de ses
+   neuf affectations » pouvait sauter. L'ancienne `remettre_a_zero`
+   (f5ad6cf4) en avait quatorze. Rejoué sur f5ad6cf4, un mutant par
+   affectation : dix survivaient. Neuf étaient de vrais défauts. La dixième,
+   `statut = 0`, est un mutant équivalent, puisque le statut vient d'être
+   écrit à zéro. La phrase est corrigée en « neuf de ses quatorze ».
+
+**Ce qui est fait.** Le code ne change pas : le module de la page est le
+même, octet pour octet. Les tests :
+
+- `a_reset_brings_back_the_tablet_of_power_on` a un troisième départ : une
+  tablette dont le noyau a mis la ligne à 11 et la BAR en mesure. Le cas
+  compare l'état entier, champ par champ, et relit 0x3C et 0x10.
+- `the_facade_delivers_touches_at_the_machines_time` finit par ce que voit
+  l'invité. Le noyau écrit 11, le pilote remet le statut à zéro : la ligne
+  tenue est la 11. Puis le pilote recommence sa poignée de main, et le geste
+  suivant lève la ligne 11. Une aide `prendre`, la poignée de main par la
+  mémoire, sert à `carte_prete` et à cette reprise.
+- `a_failed_status_alone_is_not_a_reset` (neuf) : 0x80 seul est gardé tel
+  quel, et la tablette ne livre plus. Ses files, ses fonctions acceptées et
+  le geste en attente restent. Avec `DRIVER_OK` de retour, le geste part.
+- `the_common_registers_read_back_per_queue` relit 0x28, 0x2C et 0x30 sur
+  quatre octets. Il écrit 2, 3, puis 2 à `queue_enable`.
+- Les exports, en natif (`the_tablet_goes_through_the_exports`) et sous Bun
+  sur le module wasm32 : un toucher du droit et du milieu, le gauche
+  relâché, rend `BTN_LEFT` 0, `BTN_RIGHT` 1 et `BTN_MIDDLE` 1.
+
+**Mesures.**
+- Module de la page (`scripts/build-page-emitter.sh`) : 578 503 octets avant
+  comme après, sha c6069974a6c3970c, gzip -9 113 096.
+- Tests : wisq-carte passe de 179 à 180 cas, en 0,32 s en release. Rust
+  passe de 809 à 810, et le total publié de 3 874 à 3 875.
+
+**Sabotages** (onze, d'une ligne, tous tombent ; `git diff` identique avant
+et après) :
+- Remise : la ligne reprise de `nouvelle` tombe dans le cas de la remise et
+  dans celui de la façade. La mesure oubliée tombe dans le cas de la remise.
+- Lectures : 0x2C relu à zéro, et la moitié haute de 0x28 ou de 0x30 seule.
+- `queue_enable` écrit avec `valeur != 0`.
+- Le statut jugé avec `statut & 1 == 0`.
+- `carte_toucher` réduit à `boutons & 1`, puis à `boutons & 3` : chacun
+  tombe en natif et, lancé à part, sous Bun.
+
+**Ce qui reste.** Inchangé :
+- le flux « cœur » ne branche pas encore la Carte ;
+- la carte réseau (00:05.0, ligne 3) est la tranche suivante ;
+- les instantanés ne sont pas portés ;
+- à la fusion avec la branche du cœur, le compte publié se refait par
+  `recompte.sh`.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran et la tablette, reprise après contrôle
+
+**La demande.** Le contrôle de la tranche « l'écran Bochs et sa mémoire, la
+tablette virtio » (f5ad6cf4) a trouvé neuf groupes de gardes qu'aucun test
+ne tenait : 21 mutants d'une ligne survivaient sur 53. Les vérifier dans le
+code, corriger ceux qui sont réels, avec test et sabotage.
+
+**Ce qui n'allait pas.** Les neuf défauts sont réels. Aucun ne change ce que
+voit un Linux d'aujourd'hui, mais chacun est une garde portée du Swift, ou
+une promesse d'un commentaire, que rien ne jugeait :
+
+1. *La remise à zéro de la tablette* (`remettre_a_zero`) : neuf de ses
+   quatorze affectations pouvaient sauter sans qu'un test tombe (une
+   dixième, `statut = 0`, survivait aussi, mais sans effet : le statut
+   vient d'être écrit à zéro). Trois des effets
+   se voient : `boutons_rendus` gardé, l'appui d'un pilote qui recommence
+   était jugé « sans changement » et sa relâche passait sans ses 30 ms ;
+   `reste_du_paquet` gardé, le premier paquet passait sans le jugement de
+   rythme ; `a_court` gardé, `reveil` disait faux alors qu'un geste pouvait
+   partir. Deux ne se voient pas du dehors (`acquitte`, `retenu_depuis` : la
+   première livraison les réécrit avant toute lecture), et sont donc jugées
+   sur l'état.
+2. *La moitié haute de l'adresse des descripteurs* (registre `0x24`) : jamais
+   écrite par un test. C'est elle qui place une table au-dessus de 4 Gio, en
+   deux mots de 32 bits (`vp_iowrite64_twopart`).
+3. *Le repli de l'anneau des servies* (`prochaine_servie % taille`) : l'aide
+   des tests relisait la place `k % 8`, donc une entrée écrite hors de
+   l'anneau, dans la mémoire du noyau, ne se voyait pas.
+4. *Une tête de chaîne hors de la file* (`entree % taille`) : aucun test n'en
+   offrait.
+5. *« Sans BAR, nulle part »* : le cas avait aussi la mémoire éteinte, et
+   c'était cette moitié de la condition qui répondait. Sans `base == 0`, une
+   tablette allumée sans BAR prenait les seize premiers kibioctets.
+6. *Rien ne se pose sur la file inexistante* : la valeur écrite à `0x1C` (1)
+   était déjà celle de la file un.
+7. *Le premier pixel montré* de `carte_ecran_mode` : lu seulement avec un
+   début nul, en natif comme sous Bun.
+8. *Le nombre de crans* de `carte_defiler` : seulement −1 et 0 essayés.
+9. *Mineur* : un choix écrit sur un octet garde le sous-choix (`width > 1`),
+   et une lecture de huit octets de la configuration rend huit octets.
+
+**Ce qui est fait.**
+
+- `remettre_a_zero` repart maintenant de `Tablette::nouvelle`, en gardant
+  ce qui n'est pas au pilote : l'espace de configuration PCI (BAR, commande,
+  mesure, ligne), les deux sélecteurs de fonctions (le `reset` du Swift les
+  garde aussi) et l'heure de la machine. Un champ ajouté plus tard ne peut
+  plus être oublié. Rien ne change pour l'invité : c'est la même liste de
+  champs remis.
+- Trois cas neufs pour la tablette :
+  - `a_reset_brings_back_the_tablet_of_power_on` compare la tablette remise,
+    champ par champ, à une tablette neuve passée par la même poignée de
+    main, depuis deux états : une moitié d'appui rendue faute de tampons
+    (« à court »), puis une relâche dont l'attente a commencé. Le pilote qui
+    recommence relit un choix et une file choisie nuls. Son premier appui
+    part entier et tout de suite ; sa relâche attend la lecture, puis
+    30 ms.
+  - `a_head_beyond_the_queue_is_brought_back_into_it` offre les têtes 11 et
+    21 dans une file de huit, et attend les descripteurs 3 et 5.
+  - `queues_above_four_gibibytes_are_served` sert une RAM vue à partir de
+    4 Gio : les trois adresses sont posées en deux moitiés, et le toucher y
+    arrive.
+- Cas complétés pour la tablette :
+  - les registres communs : les descripteurs en deux moitiés, et chaque
+    registre de la file inexistante écrit à 0 puis à 1 ;
+  - `rien_apres_l_anneau` après les 54 et les 12 événements rendus dans une
+    file de huit ;
+  - « sans BAR » avec la mémoire allumée ;
+  - le sous-choix gardé par un octet, et le nom lu sur huit octets.
+- Les exports, en natif et sous Bun sur le module wasm32 : un bureau à
+  double tampon (X 8, Y 600, ligne virtuelle de 1 024) rend un début de
+  2 457 632 octets, puis 0 à la première page. Trois crans de molette
+  rendent trois paquets. Le commentaire « deux crans » du cas natif, qui
+  n'en envoyait qu'un, est corrigé.
+
+**Mesures.** Le module de la page (`scripts/build-page-emitter.sh`) :
+578 472 octets avant (`7143fcf8…`, 113 094 en gzip -9), **578 503 après**
+(+31, `c6069974…`, 113 096 en gzip -9). C'est la remise à zéro écrite comme
+une construction. `wisq-carte` : 176 → 179 cas, 0,20 s en `release`.
+
+**Tests.** Rust 806 → 809, total publié **3 874** (Swift 3 065 + Rust 809).
+Le site reconstruit, puis `bun test` : 476 réussis.
+
+**Sabotages : 31, tous tombent**, et le `git diff` est identique après
+chacun. Le script réécrit le fichier d'origine au lieu de `git checkout`,
+puisque rien n'est commité pendant qu'il tourne. Ce sont :
+
+- *la remise à zéro (20)* : chacun des treize champs du pilote gardé
+  (`choix`, `sous_choix`, `boutons_rendus`, `dernier_changeait`, `acquitte`,
+  `retenu_depuis`, `reste_du_paquet`, `a_court`, `choix_de_file`,
+  `en_attente`, `files`, `etat_d_interruption`, `acceptees`). Puis, pour
+  montrer que le comportement suffit sans l'égalité d'état, sept doubles
+  sabotages : le champ gardé et l'égalité retirée, pour `boutons_rendus`,
+  `dernier_changeait`, `reste_du_paquet`, `a_court`, `choix`, `sous_choix`
+  et `choix_de_file`. Chacun tombe sur ce que le pilote voit.
+- *la tablette (7)* : `0x24` ignoré (tombe à deux endroits : les registres,
+  et la RAM au-dessus de 4 Gio) ; l'anneau des servies sans modulo ; la tête
+  sans modulo ; la garde `base == 0` retirée ; `0x1C` posé sur la file un
+  quand la file choisie n'existe pas ; `largeur >= 1` ; `largeur.min(4)`.
+- *les exports (4)* : le début du mode à zéro, et la molette à
+  `crans.signum()`, chacun tombant en natif et, séparément, sous Bun.
+
+Les mutants du contrôle sur l'ancienne remise (une affectation retirée)
+n'ont plus d'objet : il n'y a plus d'affectations. Leur équivalent, un champ
+gardé, est dans la liste ci-dessus.
+
+**Ce qui reste.** Inchangé depuis l'entrée précédente : le flux « cœur » ne
+branche pas encore la Carte, et aucun vrai noyau n'a vu cet écran ni cette
+tablette. La page ne dirige pas encore ses accès mémoire vers la carte. La
+carte réseau est la tranche suivante. Les instantanés ne sont pas portés.
+Le compte publié (3 874) entrera en conflit avec celui de la branche du
+cœur : à la fusion, relancer le recompte.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : l'écran Bochs et sa mémoire, la tablette virtio ; troisième reprise après contrôle
+
+**La demande.** Deux choses, dans cet ordre. D'abord le troisième contrôle
+de la tranche « la carte en natif » : cinq gardes annoncées que rien ne
+tenait. Puis la tranche suivante du flux : porter dans la Carte l'écran
+Bochs (QEMU « std VGA ») et sa mémoire vidéo, et la tablette virtio, depuis
+le cœur Swift (`X86BochsDisplay.swift`, `X86Framebuffer.swift`,
+`VirtioTablet.swift`), avec leurs tests, un aller-retour par le module
+wasm32 de la page, et le mode d'emploi du flux « cœur » mis à jour.
+
+### La reprise après contrôle (commit fd927249)
+
+Les cinq défauts sont réels : le contrôle avait vu ses dix-huit mutants
+passer sur le code poussé (e8d35194), et chacun visait une garde annoncée
+sans test. Ce qui est fait, sans changer aucun comportement pour l'invité :
+
+1. *Le tampon gardé.* Une garde de `TAMPON_GARDE` entre 64 Kio et 4 Mio ne
+   faisait rien tomber : avec une garde à 1 Mio, le tampon était rendu après
+   chaque lecture de 1 280 Kio, et l'égalité « même adresse, même capacité »
+   comparait deux vecteurs vides. Le tampon grandit maintenant à la taille
+   demandée (`reserve_exact`), pas au double : un tampon de 1 100 Kio doublé
+   pour une requête de 1 280 passait la garde, et était rendu à chaque fois.
+   Un cas neuf tient la borne en toutes lettres (deux mébioctets tout juste
+   gardés, un secteur de plus rendu), et le cas des lectures affirme que la
+   capacité gardée est entre la requête ordinaire et la garde.
+2. *L'heure d'une horloge, à la seconde.* Le cas lisait seulement l'année par
+   `carte.horloge(…)`. L'horloge donne maintenant un jour, une heure, une
+   minute et une seconde plus tard, lus champ par champ, puis la minute
+   suivante ; `regler_heure` est reposée plus tard, puis un an plus tôt.
+3. *Les arguments de la façade.* `taper_texte`, `souris`, `regler_heure` et la
+   largeur de `port_ecrire` passent avec plusieurs valeurs, chacune jugée par
+   ce que l'invité lit.
+4. *Une écriture sur un disque sans arrière* est une erreur d'entrée-sortie,
+   jugée cette fois par une écriture (une lecture rendait déjà une erreur).
+5. *Les bords du disque sur fichier* : une base d'un secteur tout juste est un
+   disque ; une écriture partielle sur un secteur que la base a perdu est une
+   erreur ; une couche où l'on ne peut pas écrire (`/dev/full`, Linux
+   seulement) aussi, sans rien nommer dans la carte ; rebrancher un disque
+   garde la notification notée de l'autre.
+
+Les dix-huit mutants tombent maintenant (liste plus bas).
+
+### L'écran et la tablette
+
+**Ce qui est porté**, registre pour registre, avec la carte du cœur Swift :
+
+- `carte/ecran.rs` — la carte graphique en **00:02.0**, `1234:1111`, classe
+  `0300`, révision 2, sous-système `1AF4:1100`, sans ligne d'interruption.
+  BAR0 : la mémoire vidéo, **16 Mio** préchargeables à **`0xE000_0000`** ;
+  BAR2 : **4 Kio** de registres à **`0xE100_0000`** — l'EDID absent (des
+  zéros : `bochs-drm` prend alors ses modes par défaut, 1024 × 768 en tête,
+  comme du côté Swift, qui n'en sert pas), les registres DISPI à `0x500`
+  (seize bits chacun, un accès de quatre octets en prend deux), les deux
+  registres étendus de QEMU à `0x600`. Les mêmes registres DISPI par les
+  ports **`0x1CE`/`0x1CF`**, qui deviennent des ports fixes de la carte quand
+  un écran est branché, et passent alors avant toute fenêtre de disque. La
+  résolution négociée : `ENABLE` avec `LFB` et 32 bits montre le rectangle
+  (largeur, hauteur, largeur virtuelle, décalages) ; l'allumage remet la
+  largeur virtuelle et les décalages et efface, sauf `NOCLEARMEM` ;
+  `GETCAPS` rend 2560 × 1600 × 32 ; un mode qui ne tient pas est refusé à
+  l'octet près. Le cadre (`Cadre`, de `X86Framebuffer`) porte les pixels, le
+  mode montré et **le compte des changements** (`revision`) : une écriture,
+  un bloc, un effacement ou un autre mode l'avancent, une lecture non.
+- `carte/tablette.rs` — la tablette en **00:07.0**, `1AF4:1052`, révision 1,
+  classe `0980`, **ligne 10** tant que le noyau n'en écrit pas une autre,
+  transport virtio 1.0 « moderne » : quatre capacités chaînées depuis `0x34`,
+  BAR0 de **16 Kio** en mémoire à **`0xE101_0000`**, `VIRTIO_F_VERSION_1`
+  seul offert, pas de MSI-X (`0xFFFF`), deux files de 64. Les mêmes
+  événements evdev : `ABS_X`/`ABS_Y` de 0 à 32 767, `BTN_LEFT`, `BTN_RIGHT`,
+  `BTN_MIDDLE`, `REL_WHEEL` un paquet par cran (32 au plus), `SYN_REPORT`,
+  le nom « wisq tablet », les identifiants de QEMU ; 1 024 événements en
+  attente au plus, un paquet entier ou rien ; le rythme d'un doigt (un
+  paquet qui suit un changement de boutons attend 35 795 tics du 8254,
+  30 ms, comptés depuis la lecture de l'ISR, et la sonnette ne commence pas
+  l'attente).
+- `carte/mod.rs`, `carte/pci.rs` — le bus passe la configuration au pont,
+  à l'écran, à la tablette, puis aux disques, l'ordre de `X86PCIHost`.
+  `Carte::brancher_ecran(largeur, hauteur)` branche l'écran **et** sa
+  tablette (`X86Machine.attachDisplay`). `Carte::mem_lire`,
+  `Carte::mem_ecrire`, `mem_lire_bloc`, `mem_ecrire_bloc` et `region`
+  disent à qui est une adresse hors de la RAM, dans l'ordre de
+  `X86Memory.readSlowly` : la mémoire vidéo, les registres, la tablette.
+  `toucher(x, y, boutons)` et `defiler(crans)` rendent `false` tant que
+  l'invité n'a pas pris la tablette (`DRIVER_OK` et la file des événements
+  active) : l'application garde alors la souris PS/2. `lignes`, `tenues` et
+  `reveil` comptent la ligne de la tablette ; une ligne de l'hôte (0, 2, 4)
+  écrite par le noyau la fait taire plutôt qu'effacer ce que le 16550 y pose.
+- `carte/pc.rs` — la façade : `brancher_ecran`, `ecran`, `tablette`,
+  `mem_lire`, `mem_ecrire` (la sonnette de la tablette, seul accès mémoire
+  qui lise la RAM, y est **notée** comme la notification d'un disque),
+  `mem_lire_bloc`, `mem_ecrire_bloc`, `toucher`, `defiler` ; `servir` sonne
+  puis rend les gestes à l'heure du dernier `battre`.
+- `src/carte_porte.rs` — les exports de la page : `carte_ecran`,
+  `carte_mem_lire` puis `carte_mem_valeur` (en deux temps : un mot de huit
+  octets prend toutes les valeurs d'un `i64`), `carte_mem_ecrire` (la
+  sonnette lit la file par les deux imports, pendant l'appel),
+  `carte_ecran_pixels`, `_taille`, `_base`, `_revision`, `_mode` (quatre
+  mots), `carte_toucher`, `carte_defiler`, `carte_livrer`. Toujours deux
+  imports et rien d'autre.
+
+**Ce qui change par rapport au Swift.** Pas de verrou (la carte a un seul
+propriétaire). `Tablette::reveil` dit si un geste peut encore partir sans
+le pilote ; le Swift tient la machine éveillée dès qu'une tablette existe.
+Un cadre de démarrage plus grand que 16 Mio est **refusé**
+(`brancher_ecran` rend `false`) : le Swift agrandissait sa mémoire vidéo
+alors que sa BAR0 en annonce seize. La sonnette, dans la façade, est servie
+au `servir` qui suit, pas pendant l'écriture.
+
+**Pas porté** : l'instantané (`State`, `save`, `restore`, et
+`testTheCardComesBackWithTheMachine`, `testTheTabletComesBackWithTheMachine`),
+qui viendra avec celui de la machine ; `testTheFingerIsPlacedOnTheGuestScreen`,
+qui juge `ScreenTouch.fraction`, de l'interface. `web/carte.js` ne sert pas
+encore l'écran ni la tablette à `host.js`, qui ne dirige aucun accès mémoire
+vers la carte (fichiers hors de ce flux).
+
+**Le mode d'emploi, pour le flux « cœur » : cinq lignes de plus** après les
+dix de l'entrée « la carte en natif » ci-dessous. Elles sont compilées et
+exécutées telles quelles par `crates/wisq-page/tests/disque.rs`
+(`the_five_screen_lines_of_the_journal_compile_and_run`) :
+
+```rust
+carte.brancher_ecran(1024, 768); // avant le démarrage : l'écran en 00:02.0, sa tablette en 00:07.0, ligne 10
+let pris = carte.mem_ecrire(adresse, largeur, valeur); // un accès hors RAM ; false : la faute « hors mémoire »
+let lu: Option<u64> = carte.mem_lire(adresse + 4, largeur); // None : la faute aussi
+let touche = carte.toucher(x, y, boutons) || carte.defiler(crans); // false : pas encore prise, la souris PS/2
+let cadre = &carte.ecran().expect("branché").cadre; // la vue : revision(), mode(), octets(), image_dans(…)
+```
+
+Ce qu'il faut savoir autour :
+
+- **Les adresses.** La mémoire vidéo : 16 Mio à `0xE000_0000` ; les
+  registres : 4 Kio à `0xE100_0000` ; la tablette : 16 Kio à `0xE101_0000`
+  — tant que le noyau ne déplace pas les BAR, et la carte suit s'il le fait
+  (`ecran().cadre.base()`, `ecran().base_des_registres()`,
+  `tablette().base()`). **La RAM de l'invité ne doit pas couvrir
+  `0xE000_0000` à `0xE101_4000`** : comme `X86Machine.attachDisplay`, la
+  machine coupe sa RAM autour du trou sous 4 Gio, ou refuse l'écran. La
+  carte ne connaît pas la RAM.
+- **Diriger les accès.** Toute lecture ou écriture de l'invité qui tombe
+  hors de la RAM va à `mem_lire(adresse, largeur)` /
+  `mem_ecrire(adresse, largeur, valeur)`, largeur de 1 à 8 (les largeurs
+  impaires sont les moitiés d'un accès à cheval sur une page) ; `None` ou
+  `false` : la faute « hors mémoire ». L'accès doit tenir entier dans une
+  fenêtre. Une copie d'un bloc (`rep movs`) peut passer par
+  `mem_lire_bloc`/`mem_ecrire_bloc`, qui n'avancent la révision qu'une fois.
+  `mem_lire` prend `&mut` : lire l'ISR de la tablette l'efface.
+- **Le chargeur** annonce le cadre au noyau (`screen_info`, comme
+  `X86BootLoader.Framebuffer`) : `cadre.base()`, `cadre.mode_de_depart()`
+  (largeur, hauteur, `octets_par_ligne` = largeur × 4) et `cadre.taille()`
+  (`lfb_size` : 256 unités de 64 Kio).
+- **La vue** compare `cadre.revision()` à celle de sa dernière image : égale,
+  rien à repeindre. `cadre.image_dans(&mut tampon)` copie le rectangle
+  montré sans le remplissage, et rend le mode pris avec l'image ;
+  `cadre.octets()` est la mémoire vidéo entière, sans copie.
+- **À chaque tour** : `carte.battre(tics)` puis `carte.servir(&mut ram)` —
+  il sonne les files que le pilote a notifiées et rend les gestes à l'heure
+  du dernier `battre`. `carte.reveil()` compte la tablette.
+
+**Mesures.**
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+**565 144 octets avant** (e8d35194, reconstruit, SHA-256 `cd5e23a3…c6ffd861`,
+107 707 en gzip -9), **578 472 après** (+13 328, +2,4 %, `7143fcf8…47558f14`,
+113 094 en gzip -9). L'écran et la tablette branchés dans la carte, sans les
+exports, en faisaient déjà 567 396 : ce sont les exports qui rendent leur
+code atteignable.
+
+*Le prix des tests* : la suite de `wisq-carte` passe de 127 à 176 cas, en
+2,0 s en construction de mise au point et 0,26 s en `release` (2,1 s et
+0,24 s avant : la lecture de 64 Mio domine toujours). Le cas Bun neuf :
+1,5 s, la construction du module comprise.
+
+**Tests.** Côté Rust, 751 → 806 au compte publié (les deux de la reprise,
+puis 53) : `wisq-carte` 125 → 176, dont 27 pour l'écran (les douze de
+`X86BochsDisplayTests` sans l'instantané, les neuf de `X86FramebufferTests`
+en huit cas, et sept de plus : un cadre jamais plus petit que son mode de
+départ, un mode qui tient à l'octet près, l'image recopiée dans le même
+tampon, un cadre qui n'imprime pas ses pixels, la largeur des accès aux
+registres, les ports fixes seulement avec un écran, un bloc compté une fois)
+et 22 pour la tablette (les treize de `VirtioTabletTests` sans l'instantané
+ni `ScreenTouch`, et neuf de plus : les registres communs par file, un
+tampon trop court rendu vide, une file que la RAM ne porte pas, la file
+d'état, l'attente bornée, deux pour la façade, la sonnette qui rend le
+réveil, la carte de la page à l'heure qu'on lui donne) ; deux
+cas d'exports en natif (`carte_porte`), un cas Bun sur le module wasm32
+(`the_screen_and_the_tablet_answer_through_the_page_module`), les cinq
+lignes du mode d'emploi. Le compte publié passe à **3 871** (Swift 3 065 +
+Rust 806). Le cas `the_system_clock_is_a_date_of_this_century` est marqué
+natif seulement : `cargo clippy -p wisq-carte --target wasm32-unknown-unknown
+--all-targets` passe maintenant, les tests compris.
+
+**Sabotages**, d'une ligne chacun, 82, tous tombent, l'arbre rendu identique
+après chacun (un script les applique, lance les tests, rend le fichier) :
+
+- *ceux du contrôle (18)* : la garde du tampon à 1 Mio, à 64 Kio, à
+  4 Mio − 1, la garde comparée à sa moitié ; l'heure d'une horloge ramenée
+  au jour ; `taper_texte` qui tape toujours « a », le premier caractère
+  seul, un compte borné à 2 ; la souris à (5, 3, 1), `dy` figé, les boutons
+  figés ; l'heure figée ; `port_ecrire` toujours de quatre octets ; un
+  disque sans arrière qui réussit ; une base d'un secteur refusée ; la
+  lecture de la base ignorée dans une écriture partielle ; une écriture
+  ratée dite réussie ; le rebranchement qui efface la notification de
+  l'autre.
+- *l'écran (23)* : l'identifiant, la BAR0 mesurée non préchargeable, la
+  largeur maximale, l'effacement à l'envers, la ligne sans la largeur
+  virtuelle, le début compté en lignes montrées, la fenêtre trop courte d'un
+  octet, un mode refusé à l'octet près, une écriture sans révision, une
+  révision pour un mode inchangé, les registres écrits puis lus sur seize
+  bits seulement par la BAR2, les ports DISPI sans la largeur, les ports
+  DISPI pas fixes, la BAR0 déplacée ignorée, un bloc sans révision, l'image
+  avec son remplissage, un cadre de 16 Mio tout juste refusé, la mémoire
+  annoncée à moitié, l'écran en 00:01.0, `mem_lire` sans masque, la
+  configuration de l'écran perdue, la BAR2 mesurée deux fois trop grande.
+- *la tablette (19)* : l'identité, les sonnettes en seize octets, la fenêtre
+  sans le bit de mémoire, l'ISR lu non effacé, des fonctions non offertes
+  acceptées, l'axe tronqué au lieu d'arrondi, un tic de moins, sans attendre
+  l'ISR, la sonnette qui lance l'attente, 33 crans, la file pleine à 1 023,
+  le réveil malgré une file à court, la sonnette qui ne lève pas « à court »,
+  tout tampon inscriptible, la remise qui garde les gestes, la ligne PCI
+  figée, la molette annoncée comme `ABS_X`, une taille de file non puissance
+  de deux, `queue_notify_off` nul.
+- *la carte et la façade (12)* : la ligne 10 jamais levée, pas tenue, le
+  réveil sans la tablette, un toucher sans pilote, zéro cran accepté,
+  `Carte::livrer` sans heure, une ligne de l'hôte prise par la tablette ;
+  `battre` qui oublie l'heure, toute sonnette à la file zéro, les sonnettes
+  gardées au rebranchement de l'écran, `a_servir` sans les sonnettes,
+  `servir` qui livre sans heure.
+- *les exports (5 en natif, 5 sous Bun)* : `carte_mem_lire` toujours prise,
+  la ligne du mode égale à la largeur, `carte_livrer` à l'heure zéro,
+  `carte_toucher` sans boutons, la valeur tronquée à 32 bits ; et sous Bun,
+  sur le module wasm32 : la valeur tronquée, l'heure zéro, les pixels
+  décalés de quatre octets, `carte_mem_ecrire` sans la RAM de la page, la
+  ligne du mode égale à la largeur.
+
+Six de ces sabotages passaient au premier essai : le début compté en lignes
+montrées, un cadre de 16 Mio tout juste, « à court » jamais levé par la
+sonnette, `Carte::livrer` sans heure, la ligne du mode par l'export (en
+natif et sous Bun), `carte_mem_ecrire` sans la RAM. Un cas a été complété
+ou écrit pour chacun ; aucun n'est écarté.
+
+**Ce qui reste.**
+
+1. Le flux « cœur » ne branche pas encore la Carte : aucun noyau n'a vu cet
+   écran ni cette tablette par `CartePc`. Rien n'a été démarré : le premier
+   juge sera `bochs-drm` et `virtio_input` d'un vrai noyau.
+2. La page : `web/carte.js` et `host.js` ne dirigent pas les accès mémoire
+   vers la carte, ni n'affichent ses pixels.
+3. La carte réseau (00:05.0, ligne 3) est pour la tranche suivante.
+4. Les instantanés de l'écran et de la tablette, avec celui de la machine ;
+   les formats de disque à tables.
+5. Ce que seule la CI juge : la construction sur macOS et iOS, le job Rust
+   complet. Le cas `/dev/full` ne tourne que sous Linux.
+
+**Risques.** Le compte publié (3 871) entrera en conflit avec celui de la
+branche du cœur à la fusion : relancer le recompte plutôt que de choisir.
+La mémoire vidéo est un `Vec` de 16 Mio alloué au branchement, dans la page
+aussi (sa mémoire grandit d'autant) ; une vue de la page doit refaire sa
+`Uint8Array` à chaque image, la mémoire du module pouvant grandir.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : seconde reprise après contrôle, six gardes de la façade que rien ne tenait
+
+**La demande.** Le second contrôle adverse de la tranche « la carte en
+natif ». Verdict : toujours aucun défaut de comportement, les 33 sabotages
+de la reprise ci-dessous tombent bien, mais treize mutants d'une ligne de
+plus passent sans qu'un test tombe, et font six gardes annoncées — par une
+doc, un titre de cas ou ce journal — que rien ne tient. Les treize ont été
+rejoués tels quels sur le code poussé (fd2f5e30) avant toute correction :
+les treize passent. Les six points sont réels, aucun n'est jugé faux.
+Aucun comportement de la carte ne change pour l'invité : ce qui change est
+ce que les tests tiennent, et une ligne de la façade (plus bas).
+
+**Ce qui n'allait pas, et ce qui est fait.**
+
+1. *Le vidage des deux disques.* `CartePc::vider` annonce « `false` si un
+   arrière l'a refusé », et le cas s'intitule « vider pousse chaque disque,
+   une fois chacun » ; aucun cas n'avait deux disques dont un seul refuse.
+   « Le dernier l'emporte » (l'ISO refuse, le disque vierge accepte : une
+   perte annoncée comme réussie) et « arrêt au premier refus » (le second
+   disque jamais poussé) passaient tous deux. Le cas branche maintenant
+   deux arrières qui comptent chacun leurs vidages, et rejoue les trois
+   refus possibles — le premier seul, le second seul, les deux : `vider`
+   rend `false`, et **chacun** a été poussé une fois. Un second disque seul
+   qui refuse se sait aussi.
+2. *Les arguments de `touche` et de `taper`.* Le cas de la façade ne les
+   appelait qu'avec la barre d'espace enfoncée : une façade qui ne
+   relâcherait jamais une touche, ou qui poserait toujours la même, n'était
+   vue par personne (quatre mutants). Cinq frappes passent maintenant par
+   chacune des deux, jugées par ce que l'invité lit au port `0x60` : espace
+   relâchée (`B9`), une autre touche enfoncée puis relâchée (`1E`, `9E`),
+   une touche étendue dans les deux sens, avec son préfixe (`E0 48`,
+   `E0 C8`) — tout de suite pour `touche`, au battement pour `taper`. Et la
+   file pleine : elle refuse l'enfoncement et le relâchement d'une touche
+   déjà relevée, prend **une fois** le relâchement de celle qu'elle laisse
+   enfoncée — la règle de l'i8042, vue par la façade.
+3. *Le contenu d'une lecture au-delà de 2 048 octets.* La plus grande
+   lecture comparée octet pour octet par la façade faisait 1 536 octets ;
+   celles de 64 Kio, 2 Mio et 4 Mio ne regardaient que le statut, et deux
+   octets au plus, sur une image qui se répète tous les 128 Kio. `TAMPON_GARDE`
+   annonce pourtant un tampon réemployé d'une requête à l'autre. Un cas neuf
+   lit un disque **sans période** (un mot de splitmix64 par rang de huit
+   octets : deux endroits ne se ressemblent pas) et compare chaque octet
+   rendu : 1 280 Kio ; 1 280 Kio ailleurs, par le même tampon (même adresse,
+   même capacité : rien n'est alloué) ; trois secteurs derrière une longue,
+   la suite de la RAM encore celle d'avant ; **64 Mio**, la plus grande
+   requête que le disque accepte, jusqu'au dernier secteur ; puis une
+   ordinaire par un tampon neuf.
+4. *Le remplacement de l'arrière au rebranchement* (« un disque déjà
+   branché là est remplacé »). Le seul cas qui rebranchait remettait la même
+   image et ne servait rien ensuite : garder l'ancien arrière passait, et le
+   disque rebranché annonçait la capacité du neuf en servant les octets de
+   l'ancien. Un cas neuf branche huit secteurs, y fait écrire l'invité,
+   rebranche seize secteurs d'autres octets au même emplacement, et lit : la
+   capacité, les octets changés, le secteur écrit sur l'ancien, un secteur
+   que l'ancien avait, deux qu'il n'avait pas — tous du neuf ; une écriture
+   s'y relit ; l'autre disque est toujours servi par le sien.
+5. *« Le premier n'a rien vu ».* Quand le second était notifié seul, le
+   premier n'avait aucune requête publiée : rien ne pouvait montrer qu'il
+   avait été servi à tort, alors que le cœur Swift ne sert un disque que sur
+   sa propre notification. Le cas publie maintenant une requête dans la
+   file du premier **sans la notifier** avant de notifier le second : elle
+   garde son `0xFF`, l'anneau des servies ne bouge pas, ses compteurs
+   restent à zéro, un `servir` de plus n'y change rien — et c'est elle que
+   la notification suivante du premier sert. Dans l'autre sens aussi : le
+   premier notifié seul, la requête publiée du second attend la sienne.
+6. *Le bord exact du disque.* Rien du tout, posé exactement à la fin, est
+   dans le disque (`FileDiskStore.inRange`, `MemoryDiskStore.range`) ; rien
+   du tout, posé un octet plus loin, n'y est pas. Aucun cas n'essayait une
+   longueur nulle, et le tirage de 6 000 opérations ne tombe pas sur ce
+   bord. `beyond_the_end_is_refused` le fait maintenant pour `lire` et
+   `ecrire`, sur la base entière et sur la base à queue boiteuse (la queue
+   est dans le fichier, pas dans le disque, même pour zéro octet), et le
+   cas du disque en mémoire tient les mêmes bords.
+
+**Au-delà de la liste**, ce que les mutants écartés ou non comptés du
+contrôle montraient quand même :
+
+- *L'écriture, par le même bout que la grande lecture.* Aucune écriture de
+  plus de 512 octets ne passait par la façade : tronquer une écriture à
+  2 048 octets en la disant réussie — une perte muette — ne faisait rien
+  tomber (rejoué sans le cas neuf : passe). Un cas neuf écrit 1 280 Kio
+  d'un trait et les relit avec le secteur d'avant et celui d'après, puis le
+  premier et le dernier du disque.
+- *`lever`* nommait toujours la ligne 9 : la 10 levée ne relève pas la 9,
+  et chacune retombe seule.
+- *`regler_heure`* n'était lue qu'à l'année : secondes, minutes, heures,
+  jour et mois le sont aussi.
+- *L'horloge consultée « pour `0x70` et `0x71`, et alors seulement »* : le
+  port voisin `0x72` et une largeur impossible ne la consultent pas. **Seul
+  changement de code de cette reprise** : `CartePc::port_lire` refuse une
+  largeur impossible avant de consulter l'horloge, comme `port_ecrire` le
+  faisait déjà — elle la lisait pour rien, puis rendait `None`. Sans effet
+  pour l'invité : un processeur ne fait pas d'`in` de trois octets.
+
+**Mesures.**
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+565 144 octets avant (fd2f5e30, reconstruit), **565 144** après, même
+SHA-256 (`cd5e23a3…c6ffd861`). La façade n'est pas dans la page.
+
+*Le prix des cas neufs* : la suite de `wisq-carte` passe de 0,69 s à 2,1 s
+en construction de mise au point, de 0,17 s à 0,24 s en `release`. Presque
+tout est la lecture de 64 Mio (1,9 s et 0,16 s seule) : un disque de
+65 Mio, une RAM de 66 Mio — celle que `virtio_blk` emploie déjà pour sa
+plus grande requête — et le tampon de 64 Mio que la façade rend aussitôt.
+
+**Tests.** Trois de plus, 748 → 751 côté Rust (`wisq-carte` : 122 → 125) :
+la lecture octet pour octet, la grande écriture, le disque rebranché. Six
+cas complétés, sans qu'aucune affirmation ne soit retirée : le vidage, la
+façade (clavier, lignes), le second disque, l'heure injectée, le disque en
+mémoire, la fin du disque sur fichier. Dans le cas du second disque, la
+requête du premier est publiée plus tôt qu'avant, et le dernier `servir`,
+dont le compte n'était pas lu, est maintenant affirmé.
+
+**Sabotages**, d'une ligne chacun, 37, tous tombent, l'arbre rendu identique
+après chacun :
+
+- *ceux du contrôle qui passaient (13)* : `vider`, le dernier l'emporte ;
+  `vider`, arrêt au premier refus ; `touche` et `taper` toujours enfoncées ;
+  `touche` et `taper` toujours la barre d'espace ; seuls les 2 048 premiers
+  octets d'une lecture viennent de l'arrière, ou seul le premier
+  mébioctet ; l'ancien arrière gardé au rebranchement ; une notification du
+  second sert aussi le premier, et sa variante `1 - rang` ; rien, posé à la
+  fin exacte, est refusé ; une écriture vide au-delà de la fin est
+  acceptée.
+- *les mêmes gardes, par l'autre bout (17)* : `vider` oublie le refus du
+  second ; rend vrai dès qu'un disque réussit ; ne pousse jamais le
+  second ; `touche` et `taper` toujours relâchées ; `touche` et `taper`
+  perdent le préfixe `E0` ; le dernier octet d'une lecture ne vient pas de
+  l'arrière ; le tampon ne grandit pas au-delà de 8 Mio ; l'arrière lit
+  toujours dans les 64 premiers Kio ; l'arrière branché à l'autre
+  emplacement ; la capacité annoncée reste celle de l'ancien ; une
+  notification du premier note aussi le second ; rien, posé au-delà, est
+  accepté par `dans_le_disque`, puis par `lire` ; le disque en mémoire
+  refuse rien-à-la-fin, puis accepte rien-dans-la-queue.
+- *ce que le contrôle avait écarté ou non compté, tenu maintenant (5)* :
+  `lever` lève aussi la ligne 9 ; `regler_heure` ramenée au jour ;
+  l'horloge lue au port `0x72` ; l'horloge lue avant le refus de largeur, à
+  l'écriture, puis à la lecture.
+- *l'écriture (2)* : seuls les 2 048 premiers octets vont à l'arrière ;
+  l'écriture retombe dans les 64 premiers Kio.
+
+**Ce que rien ne tient, toujours.** `fsync` dans `vider` de `DisqueFichier`
+et l'ordre des deux écritures, comme avant : aucun test ne peut faire
+échouer un `fsync`. Trois mutants du contrôle restent sans test parce
+qu'ils ne changent rien : une borne à 64 requêtes par `servir` (une file de
+128 descripteurs en porte 42 de trois), `secteur == u64::MAX` (aucun disque
+n'a ce secteur), et `taper_texte(…) & !1` (un caractère fait deux ou quatre
+frappes : le compte est toujours pair).
+
+**Ce qui reste.** La liste de la première entrée de la tranche, inchangée,
+et le compte publié passe à 3 816. Pour le flux « cœur » : rien ne change
+dans le trait `Arriere` ni dans les dix lignes du mode d'emploi.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : reprise après contrôle, les gardes annoncées que rien ne tenait
+
+**La demande.** Le contrôle adverse de la tranche ci-dessous. Verdict :
+aucun défaut de comportement, mais dix de ses vingt-huit sabotages d'une
+ligne passaient sans qu'un test tombe, un commentaire contredisait le code,
+et une fonction publique n'avait aucun appelant. Chaque point a été rejoué
+sur le code poussé avant d'être corrigé : huit sabotages relancés tels
+quels, huit passent (`a_servir` sur le premier disque seul, la marque
+étrangère acceptée, la souris non passée, `taper` rendu faux, `baisser` qui
+ne baisse pas, `Disque::ligne()` faux, une phrase de refus changée, un
+`pread` par secteur). Tous étaient réels.
+
+**Ce qui n'allait pas, et ce qui est fait.**
+
+1. *La notification en attente du second disque n'était regardée par aucun
+   test.* Le journal disait que `reveil()` la compte pour les deux disques ;
+   le seul cas du second appelait `servir` aussitôt après la notification.
+   Le cas regarde maintenant entre les deux : le second seul notifié,
+   `a_servir()` et `reveil()` sont vrais, aucune ligne n'est levée et la RAM
+   n'a pas bougé.
+2. *Une carte de couche à la marque étrangère n'était refusée par aucun
+   test* : le seul fichier « pas une carte du tout » avait aussi un mauvais
+   compte de secteurs, et tombait sur la vérification suivante. Trois
+   marques fausses (`wisqdisq`, `WISQDISK`, huit zéros) suivies du **bon**
+   compte sont refusées, et la bonne marque avec ce même compte est prise —
+   c'est donc la marque seule qui est jugée.
+3. *Trois passages de la façade n'étaient pas tenus* : `souris`, `taper`, et
+   l'effet de `baisser` (seule sa valeur rendue était lue). Un cas neuf juge
+   chaque passage par ce que l'invité en lit : la frappe prise, en file,
+   posée au battement, la file pleine qui refuse à 8 192 ; la souris éteinte
+   qui se tait, puis allumée par l'invité (`A8`, `D4 F4`), la ligne 12 et le
+   paquet de trois octets ; la ligne 9 levée, tenue, puis **retombée** et
+   toujours tenue ; les lignes 0, 2, 4 et 16 refusées dans les deux sens.
+4. *`Disque::ligne()` était publique, sans appelant, et pouvait mentir* :
+   `Pci::nouveau` employait les constantes. Il emploie maintenant
+   `Disque::Premier.ligne()` et `Disque::Second.ligne()` : la fonction est
+   la source des deux lignes annoncées, et les tests du bus la tiennent.
+5. *Une seule des cinq phrases de `Refus` était comparée.* Les cinq le
+   sont, mot pour mot avec `FileDiskStore.Failure.errorDescription`, par
+   `Display` et par le trait d'erreur.
+6. *Le commentaire de `CartePc::servir` contredisait le code* (« le nombre
+   de requêtes passées par un arrière », alors qu'un disque sans arrière en
+   compte une). Le code est gardé, le commentaire dit ce qu'il compte : les
+   requêtes **prises au disque**, celles qui demandent des octets, servies,
+   refusées ou sans personne derrière ; ce que le disque juge seul (un
+   secteur au-delà de la fin, son nom) n'y est pas. Les trois cas — 1 sans
+   arrière, 2 avec un arrière qui échoue, 0 quand le disque juge seul —
+   étaient déjà affirmés ; la variante « seulement ce qui a un arrière »
+   fait tomber le premier.
+7. *La lecture par morceaux, le gain mis en avant, n'était tenue par rien* :
+   un retour au `pread` par secteur rend les mêmes octets. `DisqueFichier`
+   compte ses lectures de fichier (`lectures()`), et un cas tient le compte :
+   un mébioctet d'une base jamais écrite, **une** lecture ; trois secteurs
+   écrits à la file au milieu, trois (base, couche, base) ; deux secteurs
+   écrits à l'envers, chacun la sienne ; un secteur écrit en entier, aucune
+   relecture ; une écriture partielle, une par secteur touché ; un refus,
+   aucune.
+8. *Le raccourci « couche vide » de `lire` est retiré.* Le contrôle l'avait
+   noté comme un mutant sans effet, et le compte ci-dessus le confirme : la
+   boucle générale lit déjà une base jamais écrite d'un seul `pread`. Il ne
+   restait qu'à savoir s'il rendait du débit — mesure plus bas : non.
+9. *Les octets changés ne se relisaient pas une fois le disque branché* (le
+   contrôle le donnait « à savoir », pas comme un défaut) : l'arrière est
+   rangé dans un `Box<dyn Arriere>` privé, et `GuestMachine.diskBytesWritten`
+   n'aurait pas eu d'équivalent. `Arriere::octets_ecrits` entre dans le
+   trait, comme `DiskStore.bytesWritten` dans le protocole Swift (un disque
+   en mémoire répond la taille de son image), et
+   `CartePc::octets_ecrits(Disque)` le rend pour chaque disque, zéro sans
+   arrière. **Qui porte `Arriere` doit maintenant l'écrire** : une méthode de
+   plus, sans valeur par défaut.
+10. *Le journal* disait la lecture par morceaux comparée « à tous les
+    décalages » : c'était neuf décalages et dix longueurs choisis. La phrase
+    est corrigée, et un cas neuf fait ce qu'elle laissait croire — 6 000
+    lectures et écritures tirées d'un générateur, à n'importe quel décalage
+    et jusqu'à sept secteurs, contre une image tenue en mémoire, sur une base
+    à queue boiteuse, avec douze fermetures et réouvertures ; un refus ne
+    touche à rien. La ligne vide manquante avant l'entrée suivante est
+    remise.
+
+**Mesures.**
+
+*Le raccourci « couche vide »*, avec et sans, cinq courses alternées de
+l'exemple `debit-disque` sur l'ISO Void Xfce (1 379,8 Mio, cache chaud),
+médiane des cinq médianes, en Mio/s par la carte et `DisqueFichier` :
+
+| requête | avec le raccourci | sans (ce qui est poussé) | écart | le même écart sur le `pread` nu |
+|---|---|---|---|---|
+| 4 Kio | 4 555 | 4 624 | −1,5 % | +1,1 % |
+| 64 Kio | 6 130 | 6 001 | +2,1 % | +4,5 % |
+| 128 Kio | 6 118 | 5 951 | +2,8 % | −0,2 % |
+| 512 Kio | 6 536 | 6 182 | +5,7 % | +5,3 % |
+| 1 024 Kio | 5 179 | 4 982 | +4,0 % | +1,4 % |
+| 1 280 Kio | 4 727 | 4 707 | +0,4 % | −1,5 % |
+
+La dernière colonne est le bruit : le `pread` sans la carte est le même code
+dans les deux binaires, et il s'écarte autant d'une série à l'autre. Les
+étendues se recouvrent à chaque taille (à 512 Kio : 6 098 à 6 699 avec,
+5 417 à 6 406 sans). Rien qui sorte du bruit : le raccourci est retiré, et
+`lire` n'a plus qu'un chemin, celui que les tests tiennent. Le `pread` par
+secteur (`wisq_vm::store`) reste à 1 300 à 1 700 Mio/s dans les mêmes
+courses : la lecture par morceaux rend toujours 2,7 à 3,9 fois son débit.
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`) :
+565 144 octets avant, **565 144** après — le même fichier, octet pour octet
+(même SHA-256). La façade et le disque sur fichier ne sont pas dans la
+page, et `Pci::nouveau` s'y compile au même code.
+
+**Tests.** Cinq de plus, 743 → 748 côté Rust (`wisq-carte` : 117 → 122),
+et des cas existants complétés sans qu'aucune affirmation ne soit retirée :
+le second disque notifié seul, les marques étrangères, les octets changés
+lus par la façade dans les deux cas « à travers le périphérique ». Les
+affirmations sur le clavier et les lignes du dehors qui vivaient dans
+`the_facade_keeps_the_cards_ports_and_widths` sont passées, toutes, dans le
+cas neuf de la façade.
+
+**Sabotages**, d'une ligne chacun, 33, tous tombent, l'arbre rendu identique
+après chacun :
+
+- *ceux du contrôle qui passaient (8)* : `a_servir` ne regarde que le
+  premier disque ; une marque étrangère est acceptée ; la souris ne passe
+  pas la façade ; `taper` rend toujours faux ; `baisser` ne baisse pas ;
+  `Disque::ligne()` ment pour le second ; la phrase de `BaseIllisible`
+  change ; un `pread` par secteur.
+- *les mêmes gardes, par l'autre bout (9)* : `taper` rend vrai sans rien
+  poser ; `baisser` rend vrai sans rien faire ; `Disque::ligne()` ment pour
+  le premier ; les quatre autres phrases, une à une ; `reveil` oublie la
+  notification en attente ; `reveil` oublie celui de la carte.
+- *le compte des lectures (3)* : un morceau s'étend sans regarder sa
+  source ; un secteur entier est relu avant d'être écrit ; une lecture n'est
+  pas comptée.
+- *les octets changés (4)* : la façade lit toujours le premier disque ;
+  sans arrière elle ne rend pas zéro ; le fichier compte en emplacements ;
+  la mémoire oublie sa queue.
+- *ce que `servir` rend (2)* : il ne compte pas ce qu'il prend ; il ne
+  compte que ce qui a un arrière (l'ancien commentaire).
+- *le reste de la façade (7)* : `touche`, `taper_texte`, `battre`,
+  `regler_heure` ne passent pas ; `lever` ne lève pas ; `tenues` rend les
+  lignes levées ; `remise_demandee` toujours fausse.
+
+**Ce que rien ne tient, toujours.** `fsync` dans `vider` de `DisqueFichier`
+(le contrôle l'a rejoué : le retirer ne fait tomber aucun test, et aucun
+test ne peut voir ce qu'un disque a vraiment reçu), et l'ordre des deux
+écritures. Un troisième mutant du contrôle est sans effet par construction :
+passer aussi la notification à la carte sans RAM ne lit rien, la file y est
+illisible.
+
+**Ce qui reste.** La liste de l'entrée ci-dessous, inchangée, et le compte
+publié passe à 3 813. Pour le flux « cœur » : rien ne change dans les dix
+lignes du mode d'emploi ; `carte.octets_ecrits(Disque::Premier)` est ce que
+l'enveloppe Swift lira pour le rapport de stockage.
+
+## 2026-11-20 — Machine PC en Rust, les périphériques : la carte en natif, un second disque, les disques sur fichier
+
+**La demande.** « Je veux faire tourner un desktop, tu peux utiliser l'ABI C
+et tout faire en Rust. » Deux flux : le « cœur » écrit le processeur, la
+mémoire et la boucle dans `crates/wisq-vm/src/pc/` ; celui-ci rend la carte
+de la page (#704 : i8042, CMOS, pont PCI, virtio-blk) utilisable par cette
+machine native. Première tranche : un disque sur fichier, un second disque,
+et une façade pour une machine qui n'a pas de boucle d'événements.
+
+**Ce qui n'allait pas.**
+
+1. *La machine native ne pouvait pas nommer la carte.* Elle vivait dans
+   `wisq-page`, qui dépend de `wisq-vm` (l'émetteur) : `wisq-vm` ne peut pas
+   dépendre de `wisq-page` sans boucle.
+2. *La carte ne savait répondre que plus tard.* Une requête de disque part,
+   un arrière joignable par message répond quand il peut : c'est ce qu'il
+   faut à la page, et c'est trois temps de trop pour une machine qui a le
+   fichier sous la main.
+3. *Un seul disque.* Le cœur Swift en a deux (`X86PCIHost.secondSlot`) :
+   l'ISO qu'on démarre, et le disque vierge sur lequel on installe.
+4. *Aucun arrière sur fichier* du côté de la carte.
+
+**Ce qui est fait.**
+
+- **Un crate à elle : `wisq-carte`**, sans dépendance. Le dossier n'a pas
+  bougé — `crates/wisq-page/src/carte/` est le crate, `mod.rs` sa racine, et
+  l'espace de travail le compte comme membre. `wisq-page` le reprend sous son
+  ancien nom (`wisq_page::carte`) et garde ses exports `carte_*`
+  (`src/carte_porte.rs`, l'ancien `carte/porte.rs`) : la machine native ne
+  lie pas les symboles de la page. Le dossier est resté où il était parce
+  que le cœur Swift, ses tests et `web/carte.js` le nomment par ce chemin.
+  Une seule ligne hors du crate suit : le commentaire de `web/carte.js` qui
+  donnait la commande des tests natifs (`cargo test -p wisq-carte`).
+- **Un second disque** en 00:04.0, ligne 6, comme le cœur Swift
+  (`secondSlot`, `secondInterruptLine`) : `pci.rs` a deux `Emplacement` du
+  même modèle — commande, fenêtre, ligne, mesure —, le pont est annoncé une
+  seule fois, deux fenêtres superposées vont au premier disque
+  (`device(atPort:)`). La carte tient les deux lignes, et deux disques que le
+  noyau mettrait sur la même la partagent. La page n'en branche toujours
+  qu'un : aucun export ne touche au second.
+- **`pc::CartePc`, la façade.** Les ports ne demandent pas la RAM
+  (`port_lire(port, largeur) -> Option<u32>`, `port_ecrire(port, largeur,
+  valeur) -> bool`) : au milieu d'un `in` ou d'un `out`, la mémoire du cœur
+  est déjà empruntée. La seule écriture qui lit la RAM — la notification
+  d'un disque — est **notée**, et `servir(&mut ram)` fait tout le trajet d'un
+  coup : relire la file, lire ou écrire l'arrière, copier dans la RAM, poser
+  le statut, lever la ligne, avant de rendre la main. Tant qu'une
+  notification attend, `reveil()` le dit. L'heure est injectée :
+  `regler_heure(ms)`, ou `horloge(f)` que la façade lit avant chaque accès à
+  `0x70`/`0x71` et alors seulement.
+- **`pc::Arriere`**, là où vivent les octets (`DiskStore` du Swift, en
+  octets) : `secteurs`, `lire` (tout le tampon ou `false`), `ecrire`,
+  `vider`. `ArriereMemoire` pour les tests et les petits disques.
+- **`fichier::DisqueFichier`**, l'arrière sur fichier (natif seulement,
+  derrière `#[cfg(not(target_arch = "wasm32"))]`) : `FileDiskStore`, mêmes
+  garanties — la base ouverte en lecture seule et jamais touchée, la couche
+  tassée `couche` + `couche.map`, le contenu avant le nom, `fsync` par
+  `vider`, les cinq mêmes refus — et **le même format octet pour octet**.
+  Les couches déjà écrites par l'application se relisent donc telles
+  quelles. Une chose change : la lecture se fait par morceaux (les secteurs
+  qui se suivent dans le même fichier, d'un seul `pread`) au lieu d'un
+  `pread` par secteur.
+
+**Ce qui n'est pas porté, et pourquoi.** Les formats à tables (qcow2, VMDK,
+VDI, VHD, VHDX, OVA). `LocalVMModel` attache au bureau une ISO brute par
+`attach(diskFileAt:)` et, à côté, un disque vierge brut (`BlankDisk`, un
+fichier agrandi par `ftruncate`) : les deux sont lus octet pour octet. Le
+qcow2 ne sert qu'aux images de cloud. `DisqueFichier` lit sa base telle
+quelle ; c'est à l'enveloppe Swift de refuser une image à tables, comme
+`RustLinuxMachine.attach(diskFileAt:)` le fait déjà pour la machine RISC-V.
+Pas d'instantané de la carte non plus : il viendra avec celui de la machine.
+
+**Le mode d'emploi, pour le flux « cœur ».** Dans
+`crates/wisq-vm/Cargo.toml` : `wisq-carte = { path = "../wisq-page/src/carte" }`.
+Puis, avec `use wisq_carte::{fichier::DisqueFichier, pc::{horloge_du_systeme,
+CartePc, Disque}};` — ces dix lignes sont compilées et exécutées telles
+quelles par `crates/wisq-page/tests/disque.rs` :
+
+```rust
+let mut carte = CartePc::nouvelle();
+carte.horloge(horloge_du_systeme); // l'heure, lue avant chaque accès à la CMOS
+carte.brancher(Disque::Premier, DisqueFichier::ouvrir(&iso, &couche)?); // vda, 00:03.0, ligne 5
+carte.brancher(Disque::Second, DisqueFichier::ouvrir(&vierge, &couche2)?); // vdb, 00:04.0, ligne 6
+let pris = carte.port_ecrire(port, largeur, valeur); // `out` ; false : pas à la carte
+carte.servir(&mut ram); // après un `out` pris : le disque avance, sa ligne se lève
+let lu: Option<u32> = carte.port_lire(port + 1, largeur); // `in` ; None : pas à la carte
+carte.battre(tics); // à chaque tour : les frappes à leur heure (tics du 8254)
+let (levees, tenues, reveil) = (carte.lignes(), carte.tenues(), carte.reveil());
+carte.vider(); // au passage en arrière-plan : fsync des couches
+```
+
+Ce qu'il faut savoir autour :
+
+- `ram` est n'importe quoi qui porte `wisq_carte::Ram` : `lire(adresse,
+  &mut [u8]) -> bool` et `ecrire(adresse, &[u8]) -> bool`, par adresse
+  physique de l'invité, `false` sans rien toucher quand la plage ne tient
+  pas entière. `RamPlate(Vec<u8>)` le fait pour une RAM d'un bloc.
+- Les puces du cœur passent d'abord (8259, 8254, port `0x61`, 16550), puis
+  la carte ; `None` ou `false` : le port n'est à personne (lire `0xFF…`).
+  Les ports de la carte : `0x60`, `0x64`, `0x70`, `0x71`, `0xCF8`, `0xCFC` à
+  `0xCFF`, et les `0x40` ports de la fenêtre de chaque disque, là où le noyau
+  la place.
+- `lignes()` et `tenues()` sont à niveau, bit `n` = ligne `n` (0 à 7 au
+  maître, 8 à 15 à l'esclave). À chaque tour : `irr = (irr & !tenues) |
+  levees`, ce que `serviceInterrupts` fait du côté Swift. La carte ne lève
+  jamais les lignes 0, 2 et 4, qui sont celles des puces du cœur.
+- Un `hlt` peut dormir quand ni les minuteries du cœur ni `carte.reveil()`
+  n'ont plus rien à lever. `carte.remise_demandee()` : l'invité a demandé le
+  redémarrage (`0xFE` sur `0x64`).
+- Le clavier et la souris : `touche`, `taper`, `taper_texte`, `souris`.
+  `CartePc` est `Send`.
+
+**Mesures**, sur ce conteneur (4 cœurs, noyau 6.18).
+
+*Le débit de lecture de l'ISO Void Xfce* (`void-live-x86_64-20250202-xfce.iso`,
+1 446 789 120 octets, 1 379,8 Mio), lue entière par la carte comme le pilote
+`virtio_blk` la lirait — une requête à la fois dans la file, la
+notification, `servir`, l'acquittement —, après qu'une course a comparé
+chaque octet rendu à celui du fichier. `cargo run --release -p wisq-page
+--example debit-disque -- <iso> <dossier>`, trois courses par case, médiane,
+en Mio/s :
+
+| requête | la carte, `DisqueFichier` | la carte, un `pread` par secteur (`wisq_vm::store`) | `pread` sans la carte |
+|---|---|---|---|
+| 4 Kio | 4 066 | 1 646 | 5 661 |
+| 64 Kio | 5 673 | 1 551 | 7 899 |
+| 128 Kio | 5 611 | 1 473 | 7 558 |
+| 512 Kio | 6 321 | 1 597 | 8 123 |
+| 1 024 Kio | 4 363 | 1 242 | 7 632 |
+| 1 280 Kio | 5 177 | 1 334 | 7 117 |
+
+Cache de l'hôte chaud : **4,0 à 6,3 Gio/s** selon la taille de requête (la
+même mesure, vingt minutes plus tôt : 4,0 à 5,9). La carte coûte 22 à 43 %
+sur le `pread` nu — une copie de plus, du tampon vers la RAM de l'invité — et
+la lecture par morceaux rend deux fois et demie à quatre fois le débit du
+`pread` par secteur. **À froid** (`echo 3 >
+/proc/sys/vm/drop_caches` juste avant), la première lecture par 128 Kio :
+**552 Mio/s**, 2,50 s pour l'ISO — c'est le stockage du conteneur qui borne.
+Dans les deux cas le disque n'est pas ce qui retient un invité à 62 MIPS.
+
+*La taille du module de la page* (`scripts/build-page-emitter.sh`,
+`wisq_page.wasm`) : 564 245 octets avant ; 564 635 après la sortie du
+crate ; **565 144** après le second emplacement de disque — 899 octets de
+plus, 0,16 %. La façade et le disque sur fichier n'y sont pas : aucun export
+ne les atteint.
+
+**Tests.** 42 de plus, 701 → 743 côté Rust : 38 dans `wisq-carte` (qui en
+a 117, et un exemple de documentation compilé et exécuté), 4 dans
+`crates/wisq-page/tests/disque.rs`.
+
+- `fichier.rs` : les onze cas du magasin de `FileDiskStoreTests` portés un
+  pour un (couche d'écriture, relecture après fermeture, base jamais touchée,
+  lecture et écriture au-delà de la fin refusées, couche tassée, emplacement
+  orphelin, couche d'un autre disque, base trop petite, couche tronquée, base
+  absente), son cas « à travers le périphérique » — par les ports, puis la
+  machine rallumée sur les mêmes fichiers —, deux disques sur fichier dont
+  les écritures ne se mélangent pas, la lecture par morceaux contre une image
+  témoin à neuf décalages et dix longueurs choisis, une base raccourcie sous
+  le disque ouvert.
+- `pci.rs` et `mod.rs` : les quatre cas de bus de `X86SecondDiskTests`
+  (l'emplacement quatre, le pont une seule fois, chacun sa fenêtre, l'ordre
+  de branchement), les deux lignes, la ligne partagée, et les ports fixes
+  comparés à l'aiguillage sur les 65 536 ports.
+- `pc.rs` : la façade conduite par les ports seuls — lecture, écriture,
+  second disque, arrière qui échoue, disque sans arrière, quarante lectures
+  de 2 Mio servies d'un seul `servir` au-delà des 64 Mio que le disque tient
+  dehors, notification suivie d'une remise à zéro, l'heure injectée.
+- `tests/disque.rs` : `DisqueFichier` et `wisq_vm::store::FileStore`
+  reçoivent 407 écritures tirées d'un générateur et rendent **les deux mêmes
+  fichiers** ; chacun rouvre la couche de l'autre et y écrit encore ; les
+  mêmes refus sur les mêmes fichiers. Le cœur Swift et `wisq_vm::store` sont
+  déjà comparés par `DifferentialDiskTests`.
+
+Les cas d'instantané de `FileDiskStoreTests` et de `X86SecondDiskTests` ne
+sont pas portés (pas d'instantané), ni les dix-sept de `VirtioBlockTests`,
+qui le sont depuis #704.
+
+**Sabotages**, d'une ligne chacun, 38, tous tombent, `git diff` vide après
+chaque restauration :
+
+- *la façade (14)* : `servir` ne relit pas la file ; la notification n'est
+  pas notée ; `reveil` ne compte pas la notification en attente ; une lecture
+  ratée de l'arrière passe pour réussie ; une écriture ratée aussi ; le
+  tampon géant est gardé ; l'horloge lue n'est pas posée ; l'horloge est lue
+  à chaque port ; rebrancher garde la notification de l'ancien disque ;
+  `vider` tait le refus d'un arrière ; une largeur de trois octets est
+  prise ; l'arrière du second disque va à la place du premier ; le disque en
+  mémoire compte sa queue ; un disque sans arrière ne répond rien.
+- *le bus et les lignes (10)* : la ligne du second vaut cinq ; le second est
+  à l'emplacement cinq ; un emplacement vide répond ; deux fenêtres
+  superposées vont au second ; la configuration du second s'écrit dans le
+  premier ; le second lève la ligne du premier ; la carte ne tient pas la
+  ligne du second ; `reveil` ne compte pas le second ; `0x71` n'est plus un
+  port fixe ; une fenêtre passe devant les ports fixes.
+- *le disque sur fichier (11)* : le nom de l'emplacement n'est pas écrit ;
+  une écriture partielle ne recopie pas le secteur ; un morceau s'étend sans
+  regarder sa source ; la borne de fin ne regarde que le décalage ; la couche
+  d'un autre disque est acceptée ; une couche tronquée est acceptée ; une
+  base de trois octets est un disque ; l'emplacement orphelin est compté ; la
+  lecture ignore la couche ; la carte range ses noms sans l'en-tête ; la
+  couche est lisible de tous (`0o644`).
+- *le format, par le différentiel (3)* : la marque change d'une lettre ; un
+  emplacement fait 513 octets ; les noms sont relus gros-boutistes.
+
+**Ce que rien ne tient.** L'ordre des deux écritures (le contenu avant le
+nom) n'est tenu que par relecture du code : aucun test ne tue le processus
+entre les deux. `fsync` non plus — un test ne voit pas ce qu'un disque a
+vraiment reçu.
+
+**Ce qui reste.**
+
+1. *Le cœur ne branche pas encore la carte* : la dépendance dans
+   `crates/wisq-vm/Cargo.toml` et le raccord derrière ses ports sont à lui.
+   Tant que ce n'est pas fait, aucun noyau n'a lu un disque par `CartePc` :
+   la file est conduite ici par des tests qui imitent `virtio_pci_legacy`,
+   et par la page sous Bun pour le premier disque (#704).
+2. *L'écran, la tablette et la carte réseau* du cœur Swift (00:02.0, la
+   tablette, 00:05.0 ligne 3) : les tranches suivantes de ce flux.
+3. *L'écriture se fait secteur par secteur* (deux `pwrite` par secteur
+   neuf), comme les deux autres mises en œuvre. Non mesurée : une
+   installation écrit des gigaoctets, et il faudra le chiffre avant de
+   décider d'un regroupement.
+4. *Trois mises en œuvre du même format* (Swift, `wisq_vm::store`,
+   `DisqueFichier`). Le différentiel les tient ensemble ; le jour où la
+   machine RISC-V prend aussi `wisq-carte`, `wisq_vm::store` peut céder la
+   place.
+5. *Le compte de tests publié* (3 808 : README, site) changera aussi sur la
+   branche du cœur : à la fusion des deux, relancer le recompte plutôt que
+   de choisir l'un des deux nombres.
 
 ## 2026-11-20 — Cœur x86 : les drapeaux à la demande ne rapportent rien ; les conditions sans aiguillage, 3 à 6 %
 

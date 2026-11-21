@@ -837,3 +837,251 @@ console.log("en_vol_a_chaque_reponse " + enVolALaReponse.join(","));
         "jamais zéro tant qu'une requête reste à servir"
     );
 }
+
+/// **L'écran et la tablette, par les exports du module wasm32**, instancié
+/// nu, sans `web/carte.js` (qui ne les sert pas encore à `host.js`) : une
+/// RAM de 64 Kio en JavaScript derrière les deux imports.
+///
+/// L'écran : branché, sa carte en 00:02.0, l'identifiant DISPI par les ports
+/// et par la BAR2, un mode posé par la BAR2 et lu par `carte_ecran_mode`, un
+/// pixel écrit par l'invité et relu **dans la mémoire du module** à
+/// l'adresse que `carte_ecran_pixels` rend (un pointeur de 32 bits), la
+/// révision, et un mot de huit octets au-delà de 2⁵³ dans les deux sens.
+///
+/// La tablette : 00:07.0, la poignée de main de `virtio_input` par
+/// `carte_mem_ecrire`, un toucher qui attend faute de tampons, la sonnette
+/// qui en apporte et le rend en lisant la file dans la RAM de la page
+/// pendant l'appel, la ligne 10, que la lecture de l'ISR baisse, puis trois
+/// crans de molette rendus par `carte_livrer` au rythme d'un doigt, et un
+/// toucher du droit et du milieu, chacun sur son bouton.
+#[test]
+fn the_screen_and_the_tablet_answer_through_the_page_module() {
+    let module = page_module();
+    let script = format!(
+        r#"import {{ readFileSync }} from "fs";
+const module = new WebAssembly.Module(readFileSync({module:?}));
+const ram = new Uint8Array(0x10000);
+let m;
+const ici = () => new Uint8Array(m.memory.buffer);
+const dedans = (a, n) => a >= 0n && a + BigInt(n) <= BigInt(ram.length);
+const instance = new WebAssembly.Instance(module, {{ carte: {{
+  ram_lire: (a, vers, n) => {{ if (!dedans(a, n)) return 0; ici().set(ram.subarray(Number(a), Number(a) + n), vers); return 1; }},
+  ram_ecrire: (a, depuis, n) => {{ if (!dedans(a, n)) return 0; ram.set(ici().subarray(depuis, depuis + n), Number(a)); return 1; }},
+}} }});
+m = instance.exports;
+const hex = (v) => "0x" + BigInt.asUintN(64, BigInt(v)).toString(16);
+const mem = (a, n) => m.carte_mem_lire(BigInt(a), n) === 1 ? hex(m.carte_mem_valeur()) : "personne";
+const ecrire = (a, n, v) => m.carte_mem_ecrire(BigInt(a), n, BigInt(v));
+const mode = () => Array.from(new Uint32Array(m.memory.buffer, m.carte_ecran_mode(), 4)).join(" ");
+console.log("sans " + m.carte_ecran_pixels() + " " + mode() + " " + mem(0xe0000000, 4));
+console.log("trop " + m.carte_ecran(4096, 4096));
+console.log("branche " + m.carte_ecran(1024, 768) + " " + hex(m.carte_ecran_base()) + " " + m.carte_ecran_taille() + " " + mode());
+m.carte_ecrire(0xcf8, 4, 0x80001000);
+console.log("bus " + hex(m.carte_lire(0xcfc, 4) & 0xffffffffn));
+m.carte_ecrire(0x1ce, 2, 0);
+console.log("dispi " + hex(m.carte_lire(0x1cf, 2)) + " " + mem(0xe1000500, 2));
+for (const [d, v] of [[0x508, 0], [0x502, 800], [0x504, 600], [0x506, 32], [0x508, 0x41]]) ecrire(0xe1000000 + d, 2, v);
+console.log("mode " + mode());
+ecrire(0xe100050c, 2, 1024);
+console.log("virtuelle " + mode());
+ecrire(0xe1000510, 2, 8);
+ecrire(0xe1000512, 2, 600);
+const decale = mode();
+ecrire(0xe1000510, 2, 0);
+ecrire(0xe1000512, 2, 0);
+console.log("debut " + decale + " / " + mode());
+const avant = m.carte_ecran_revision();
+console.log("pixel " + ecrire(0xe0000004, 4, 0x00112233) + " " + (m.carte_ecran_revision() - avant));
+const p = m.carte_ecran_pixels();
+console.log("pixels " + typeof p + " " + Array.from(ici().subarray(p + 4, p + 8)).join(" ") + " " + mem(0xe0000004, 4));
+console.log("large " + ecrire(0xe0fffff8, 8, 0xfedcba9876543211n) + " " + mem(0xe0fffff8, 8) + " " + mem(0xe0fffff9, 8));
+// La tablette : la mémoire du périphérique allumée, puis virtio_input.
+m.carte_ecrire(0xcf8, 4, 0x80003800);
+console.log("tablette " + hex(m.carte_lire(0xcfc, 4) & 0xffffffffn) + " " + m.carte_toucher(0.5, 0.5, 1));
+m.carte_ecrire(0xcf8, 4, 0x80003804);
+m.carte_ecrire(0xcfc, 2, 6);
+const t = 0xe1010000;
+for (const [d, n, v] of [[0x14, 1, 0], [0x14, 1, 3], [0x08, 4, 1], [0x0c, 4, 1], [0x14, 1, 11], [0x16, 2, 0], [0x18, 2, 8],
+  [0x20, 8, 0x1000], [0x28, 8, 0x2000], [0x30, 8, 0x3000], [0x1c, 2, 1], [0x14, 1, 15]]) ecrire(t + d, n, v);
+const vue = new DataView(ram.buffer);
+for (let r = 0; r < 8; r++) {{
+  vue.setBigUint64(0x1000 + r * 16, BigInt(0x4000 + r * 8), true);
+  vue.setUint32(0x1000 + r * 16 + 8, 8, true);
+  vue.setUint16(0x1000 + r * 16 + 12, 2, true);
+  vue.setUint16(0x2004 + r * 2, r, true);
+}}
+console.log("toucher " + m.carte_toucher(0.25, 0.75, 1) + " " + m.carte_reveil() + " " + m.carte_lignes());
+m.carte_livrer(1000n);
+console.log("a_court " + vue.getUint16(0x3002, true) + " " + m.carte_lignes());
+vue.setUint16(0x2002, 8, true);
+console.log("sonnette " + ecrire(t + 0x3000, 2, 0) + " " + vue.getUint16(0x3002, true));
+const evenement = (k) => {{ const a = 0x4000 + vue.getUint32(0x3004 + (k % 8) * 8, true) * 8; return vue.getUint16(a, true) + "," + vue.getUint16(a + 2, true) + "," + vue.getUint32(a + 4, true); }};
+console.log("rendus " + vue.getUint16(0x3002, true) + " " + [0, 1, 2, 3, 4, 5].map(evenement).join(" ") + " " + m.carte_lignes());
+console.log("isr " + mem(t + 0x1000, 1) + " " + m.carte_lignes());
+console.log("molette " + m.carte_defiler(-3));
+vue.setUint16(0x2002, 16, true);
+m.carte_livrer(2000n);
+m.carte_livrer(2000n + 35794n);
+const tot = vue.getUint16(0x3002, true);
+m.carte_livrer(2000n + 35795n);
+console.log("cran " + tot + " " + vue.getUint16(0x3002, true) + " " + [6, 7, 8, 9, 10, 11].map(evenement).join(" "));
+console.log("boutons " + m.carte_toucher(0.25, 0.75, 6));
+vue.setUint16(0x2002, 24, true);
+m.carte_livrer(2000n + 35795n);
+console.log("droit " + vue.getUint16(0x3002, true) + " " + [14, 15, 16].map(evenement).join(" "));
+"#,
+        module = module.to_string_lossy(),
+    );
+    let text = run_driver("ecran", &script);
+    assert_eq!(said(&text, "sans "), "0 0 0 0 0 personne", "sans écran");
+    assert_eq!(said(&text, "trop "), "0", "64 Mio ne tiennent pas");
+    assert_eq!(
+        said(&text, "branche "),
+        "1 0xe0000000 16777216 1024 768 4096 0"
+    );
+    assert_eq!(said(&text, "bus "), "0x11111234", "Bochs / QEMU std VGA");
+    assert_eq!(said(&text, "dispi "), "0xb0c5 0xb0c5");
+    assert_eq!(said(&text, "mode "), "800 600 3200 0");
+    assert_eq!(
+        said(&text, "virtuelle "),
+        "800 600 4096 0",
+        "la ligne virtuelle"
+    );
+    assert_eq!(
+        said(&text, "debut "),
+        "800 600 4096 2457632 / 800 600 4096 0",
+        "le premier pixel montré : (600 × 1 024 + 8) × 4, puis la première page"
+    );
+    assert_eq!(said(&text, "pixel "), "1 1", "une écriture, une révision");
+    assert_eq!(
+        said(&text, "pixels "),
+        "number 51 34 17 0 0x112233",
+        "les pixels, dans la mémoire du module"
+    );
+    assert_eq!(
+        said(&text, "large "),
+        "1 0xfedcba9876543211 personne",
+        "64 bits dans les deux sens, et la fin exacte"
+    );
+    assert_eq!(said(&text, "tablette "), "0x10521af4 0");
+    assert_eq!(said(&text, "toucher "), "1 1 0", "en attente");
+    assert_eq!(said(&text, "a_court "), "0 0", "aucun tampon offert");
+    assert_eq!(
+        said(&text, "sonnette "),
+        "1 6",
+        "la sonnette lit la file dans la RAM de la page, pendant l'appel"
+    );
+    assert_eq!(
+        said(&text, "rendus "),
+        "6 3,0,8192 3,1,24575 1,272,1 1,273,0 1,274,0 0,0,0 1024",
+        "un paquet, la ligne 10"
+    );
+    assert_eq!(said(&text, "isr "), "0x1 0", "l'ISR lu baisse la ligne");
+    assert_eq!(said(&text, "molette "), "1");
+    assert_eq!(
+        said(&text, "cran "),
+        "6 12 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0 2,8,4294967295 0,0,0",
+        "trois crans, trente millisecondes après la lecture, pas une de moins"
+    );
+    assert_eq!(said(&text, "boutons "), "1");
+    assert_eq!(
+        said(&text, "droit "),
+        "18 1,272,0 1,273,1 1,274,1",
+        "le droit et le milieu (bits 1 et 2) passent l'export, le gauche relâché"
+    );
+}
+
+/// **La carte réseau par le module wasm32**, sous Bun : branchée à son
+/// adresse (un `u64` en `BigInt`, l'octet bas d'abord), trouvée en 00:05.0
+/// par le bus, l'adresse relue dans sa fenêtre ; une trame émise par la
+/// notification de la file un, dont la sonnette lit la file dans la RAM de
+/// la page pendant l'appel, prise par `carte_reseau_sortie` et lue dans la
+/// mémoire du module, la ligne 3 levée puis baissée par l'ISR ; une trame
+/// copiée à la place, entrée, livrée dans le tampon posé ; une trame trop
+/// grande perdue, et le câble débranché qui perd ce qui part.
+#[test]
+fn the_network_card_answers_through_the_page_module() {
+    let module = page_module();
+    let script = format!(
+        r#"import {{ readFileSync }} from "fs";
+const module = new WebAssembly.Module(readFileSync({module:?}));
+const ram = new Uint8Array(0x60000);
+let m;
+const ici = () => new Uint8Array(m.memory.buffer);
+const dedans = (a, n) => a >= 0n && a + BigInt(n) <= BigInt(ram.length);
+const instance = new WebAssembly.Instance(module, {{ carte: {{
+  ram_lire: (a, vers, n) => {{ if (!dedans(a, n)) return 0; ici().set(ram.subarray(Number(a), Number(a) + n), vers); return 1; }},
+  ram_ecrire: (a, depuis, n) => {{ if (!dedans(a, n)) return 0; ram.set(ici().subarray(depuis, depuis + n), Number(a)); return 1; }},
+}} }});
+m = instance.exports;
+const hex = (v) => "0x" + BigInt.asUintN(64, BigInt(v)).toString(16);
+const vue = new DataView(ram.buffer);
+const decrire = (table, a, n, drapeaux) => {{ vue.setBigUint64(table, BigInt(a), true); vue.setUint32(table + 8, n, true); vue.setUint16(table + 12, drapeaux, true); }};
+console.log("sans " + m.carte_reseau_sortie() + " " + m.carte_reseau_cable(1) + " " + m.carte_reseau_compte(0));
+m.carte_reseau(0x017173697702n, 1);
+m.carte_ecrire(0xcf8, 4, 0x80002800);
+console.log("bus " + hex(m.carte_lire(0xcfc, 4) & 0xffffffffn));
+m.carte_ecrire(0xcf8, 4, 0x8000283c);
+console.log("ligne " + (m.carte_lire(0xcfc, 1)));
+m.carte_ecrire(0xcf8, 4, 0x80002810);
+m.carte_ecrire(0xcfc, 4, 0xc040);
+m.carte_ecrire(0xcf8, 4, 0x80002804);
+m.carte_ecrire(0xcfc, 2, 1);
+console.log("mac " + hex(m.carte_lire(0xc054, 4)) + " " + hex(m.carte_lire(0xc058, 2)) + " " + m.carte_lire(0xc04c, 2));
+for (const [f, p] of [[0, 0x10], [1, 0x20]]) {{ m.carte_ecrire(0xc04e, 2, f); m.carte_ecrire(0xc048, 4, p); }}
+const trame = Array.from({{ length: 60 }}, (_, i) => (i * 3) & 0xff);
+ram.set(trame, 0x4000a);
+decrire(0x20000, 0x40000, 70, 0);
+vue.setUint16(0x21002, 1, true);
+console.log("emise " + m.carte_ecrire(0xc050, 2, 1) + " " + m.carte_lignes());
+const n = m.carte_reseau_sortie();
+const p = m.carte_reseau_sortie_octets();
+console.log("sortie " + n + " " + typeof p + " " + (Array.from(ici().subarray(p, p + n)).join(",") === trame.join(",")) + " " + m.carte_reseau_sortie() + " " + vue.getUint16(0x22002, true));
+console.log("isr " + m.carte_lire(0xc053, 1) + " " + m.carte_lignes());
+const place = m.carte_reseau_place(60);
+ici().set(trame, place);
+console.log("entree " + m.carte_reseau_entrer(61) + " " + m.carte_reseau_entrer(60) + " " + m.carte_reseau_compte(3));
+decrire(0x10000, 0x50000, 2048, 2);
+vue.setUint16(0x11002, 1, true);
+m.carte_reseau_livrer();
+console.log("livree " + m.carte_reseau_compte(1) + " " + vue.getUint32(0x12008, true) + " " + (Array.from(ram.subarray(0x5000a, 0x5000a + 60)).join(",") === trame.join(",")) + " " + Array.from(ram.subarray(0x50000, 0x5000a)).join("") + " " + m.carte_lignes());
+m.carte_reseau_place(1515);
+console.log("grande " + m.carte_reseau_entrer(1515) + " " + m.carte_reseau_compte(2));
+m.carte_reseau_cable(0);
+decrire(0x20010, 0x40000, 70, 0);
+vue.setUint16(0x21006, 1, true);
+vue.setUint16(0x21002, 2, true);
+m.carte_ecrire(0xc050, 2, 1);
+console.log("debranche " + m.carte_reseau_sortie() + " " + m.carte_reseau_compte(0) + " " + m.carte_reseau_compte(2) + " " + vue.getUint16(0x22002, true));
+"#,
+        module = module.to_string_lossy(),
+    );
+    let text = run_driver("reseau", &script);
+    assert_eq!(said(&text, "sans "), "0 0 0", "pas de carte");
+    assert_eq!(
+        said(&text, "bus "),
+        "0x10001af4",
+        "virtio-net, forme ancienne"
+    );
+    assert_eq!(said(&text, "ligne "), "3");
+    assert_eq!(said(&text, "mac "), "0x73697702 0x171 256");
+    assert_eq!(said(&text, "emise "), "1 8", "la ligne 3");
+    assert_eq!(
+        said(&text, "sortie "),
+        "60 number true 0 1",
+        "la trame, lue dans la mémoire du module, et la requête rendue"
+    );
+    assert_eq!(said(&text, "isr "), "1 0", "l'ISR lu baisse la ligne");
+    assert_eq!(said(&text, "entree "), "0 1 1");
+    assert_eq!(
+        said(&text, "livree "),
+        "1 70 true 0000000000 8",
+        "derrière un en-tête nul, la longueur servie, la ligne"
+    );
+    assert_eq!(said(&text, "grande "), "0 1", "1 515 octets : perdue");
+    assert_eq!(
+        said(&text, "debranche "),
+        "0 1 2 2",
+        "débranché : perdue, et rendue"
+    );
+}

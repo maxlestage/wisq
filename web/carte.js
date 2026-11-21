@@ -59,7 +59,7 @@
 // moment). L'heure n'est pas un import : le module ne la lit jamais lui-même.
 //
 // **Ce qui est jugé, et où** : les périphériques en natif, cas par cas
-// (`cargo test -p wisq-page --lib`) ; ce fichier et le module wasm32 sous Bun
+// (`cargo test -p wisq-carte`) ; ce fichier et le module wasm32 sous Bun
 // (`crates/wisq-page/tests/carte.rs`), dont un disque lu par plages dans un
 // fichier creux de 1,4 Gio servi par `Bun.serve`.
 
