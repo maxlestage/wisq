@@ -4244,8 +4244,8 @@ console.log("jamais " + lire(6));
 /// **Le fournisseur était volontairement inconnu, et ne l'est plus.** Un nom
 /// que personne ne reconnaît renvoyait le noyau sur son chemin générique ;
 /// mais la glibc, pour un tel nom, ne lit jamais la feuille un, et refuse
-/// alors tout programme. Le processeur dit donc ce que dit le `qemu64` de
-/// QEMU, comme le cœur Swift : `AuthenticAMD`, famille 15, modèle 107.
+/// alors tout programme. Le processeur dit donc `GenuineIntel`, famille 6,
+/// modèle 6 — `AuthenticAMD`, celui du cœur Swift, a été essayé et quitté.
 #[test]
 fn cpuid_declares_only_what_the_emitter_actually_does() {
     let Some(bun) = bun() else {
@@ -4373,23 +4373,24 @@ console.log("ebx " + lire(3));
         1,
         "la feuille zéro annonce combien il y en a"
     );
-    // **« AuthenticAMD », et plus « wisq wasm vm ».** Un fournisseur
+    // **« GenuineIntel », et plus « wisq wasm vm ».** Un fournisseur
     // inconnu faisait sauter la feuille un à la glibc, et tout le socle
-    // x86-64 avec elle (voir `CPUID_VENDOR_EBX`).
+    // x86-64 avec elle ; « AuthenticAMD » menait le noyau de Void dans une
+    // boucle sans fin (voir `CPUID_VENDOR_EBX`).
     assert_eq!(
         line("nom "),
-        0x6874_7541,
-        "« Auth » : le fournisseur du qemu64 de QEMU, que la glibc connaît"
+        0x756e_6547,
+        "« Genu » : un fournisseur que la glibc connaît"
     );
     assert_eq!(
         line("nom2 "),
-        0x6974_6e65,
-        "« enti », la suite du nom, sortie par EDX"
+        0x4965_6e69,
+        "« ineI », la suite du nom, sortie par EDX"
     );
     assert_eq!(
         line("nom3 "),
-        0x444d_4163,
-        "« cAMD », la fin du nom, sortie par ECX"
+        0x6c65_746e,
+        "« ntel », la fin du nom, sortie par ECX"
     );
     // **Une feuille qu'on ne sert pas ne rend rien.** Un vrai processeur rend
     // dans ce cas la plus haute feuille qu'il connaît ; nous rendons zéro, et
@@ -4417,8 +4418,8 @@ console.log("ebx " + lire(3));
     );
     assert_eq!(
         line("signature "),
-        0x0006_0fb1,
-        "famille 15, modèle 107, pas 1 : la signature du qemu64 de QEMU"
+        0x0000_0663,
+        "famille 6, modèle 6, pas 3 : un vieux P6, sans errata qui demande un MSR"
     );
     // **L'ensemble exact, et rien d'autre.** Une capacité déclarée est une
     // promesse : ce test tient l'ensemble exact, pas seulement « le TSC est
