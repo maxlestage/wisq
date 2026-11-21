@@ -8,6 +8,85 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Le contrôle du contrôle : le doigt annulé, `ttyS0` lu comme le noyau le lit, et la phrase de la ligne trop longue
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous : trois trous
+de test, une phrase fausse et un commentaire déplacé ; tous vérifiés dans le
+code, aucun n'était faux ; les 32 sabotages annoncés tombaient bien).
+
+- **Le doigt annulé n'était jugé par rien.** `doigt` traitait
+  `pointercancel` comme un relevé, et `machine.html` l'écoutait, mais le test
+  de la page entière n'envoyait jamais d'annulation : la condition réduite à
+  `pointerup`, ou l'écouteur retiré, passaient. C'est pourtant le cas de
+  l'iPhone, qui annule le geste quand le système le reprend. **Et à le
+  juger, le comportement lui-même était douteux** : l'annulation relâchait
+  à *sa* position, ramenée au bord, et rien ne promet qu'un navigateur
+  remplisse les coordonnées d'un `pointercancel` — à (0, 0), le glisser se
+  serait posé au coin de l'écran.
+- **Le relâchement « à la dernière position dite, si l'image a disparu »**
+  n'était tenu par aucun cas, ni la garde `Number.isFinite` de
+  `positionSurLEcran`. Elle n'est pas redondante avec la garde des tailles :
+  des coordonnées absentes (`NaN`) ou une image infinie passent celle-là, et
+  sans elle la fonction rendait `{ x: NaN, … }` comme une fraction.
+- **`keep_bootcon` partait pour tout mot qui commence par `console=ttyS0`**,
+  et seul ce préfixe était jugé : `console=ttyS` l'aurait fait partir pour
+  `ttyS1`, et le préfixe exact le faisait déjà partir pour `ttyS01`, que le
+  noyau lit comme le port 1. Avec la console précoce sur 0x3f8, la sortie se
+  serait tue à l'arrivée de l'autre port.
+- **La phrase de `commandLineTooLong` accusait la ligne de l'image** (« dépasse
+  les 2047 octets ») alors que la borne juge la ligne entière, montage
+  compris : une ligne d'image de 2 008 à 2 047 octets était refusée sous une
+  phrase fausse — et le test figeait cette phrase.
+- Dans `host.js`, `ARRET_DEMANDE` avait été glissé sous la doc des
+  emplacements des globales, qui décrivait désormais la mauvaise constante.
+
+**Ce qui est fait.**
+
+- **Annulé, le doigt relâche à la dernière position dite**, sans bouger, et
+  ne parle plus ensuite. Relevé, il relâche au bord — ou à la dernière
+  position dite quand la boîte ou l'image ont disparu.
+- **`ttyS0` est lu comme `console_setup` le lit** (`names_the_early_console_port`) :
+  le nom s'arrête au premier chiffre ou à la première virgule, l'index est le
+  nombre qui suit (zéro s'il n'y en a pas), un nom qui commence par un
+  chiffre est un `ttyS`, et une console nommée par son périphérique (un
+  deux-points) n'a pas d'index. `ttyS0`, `ttyS0,115200n8`, `ttyS00` et
+  `console=0` font partir `keep_bootcon` ; `ttyS1`, `ttyS10`, `ttyS01`,
+  `ttyUSB0` et `00:01.0` le gardent.
+- **Le refus 2 dit la longueur de la ligne entière** : `wisq_emitter_boot_page`
+  la rend dans `out_len` (l'appelant ne peut pas la calculer, la part du
+  montage dépend de l'image), `Refusal.commandLineTooLong(bytes:)` la porte,
+  et la phrase est « La ligne de commande, celle de l'émetteur comprise, fait
+  2048 octets : plus que les 2047 que le noyau lit. »
+- La doc des emplacements est remise au-dessus de `SLOTS`.
+
+**Comment c'est jugé.**
+
+- **La page entière sous Bun** : une pose, un glisser, une annulation à
+  (0, 0) relâchée en `[0.75, 0.75, 0]`, puis un glisser et un relevé qui ne
+  disent plus rien ; une pose et un relevé sur une boîte vide, relâché en
+  `[0.75, 0.25, 0]` ; quatre poses capturées, quatorze gestes gardés. Le
+  banc rend `false` pour un genre que la page n'écoute pas, au lieu de lever.
+- **`positionSurLEcran`** : `NaN`, `undefined` et une image infinie rendent
+  `null`, bornés ou non.
+- **Rust** : les formes de `ttyS0` et les autres ports ; **C ABI** : la
+  longueur du refus 2 (40 + 2 099 octets). **Swift** : la longueur dite avec
+  et sans `keep_bootcon`, et la phrase.
+
+**Sabotages** (14, tous tombent, sur un vrai échec de test ; script
+`w7/sab/sab.py` et `liste.json`, `git diff` vide ensuite) :
+l'annulation ignorée (A1), relâchée à sa position comme avant (A1b), le
+doigt annulé resté posé (A1c), `pointercancel` non écouté (A2), le
+relâchement au centre sur une boîte vide (A3), la garde `isFinite` retirée
+(A4) ; l'index de `ttyS` ignoré (B2), le préfixe `console=ttyS0` d'avant
+(B2b), `console=0` non lu (B2c), le deux-points non vu (B2d) ; la place au
+lieu de la longueur dans le C (C1, jugé par le C et par Swift), dans Swift
+(C2), l'ancienne phrase (C3).
+
+**Ce qui reste.** Rien de neuf : les points ouverts de l'entrée d'en dessous
+tiennent (la console du cœur Swift sous Void, la mémoire de l'iPhone, les
+instantanés, la fusion avec `claude/pc-rust-coeur`). Le comportement de
+`pointercancel` dans un vrai Safari d'iPhone n'est vu que par ce banc.
+
 ## 2026-11-21 — Le contrôle de la machine de l'application : la ligne de l'image telle quelle, une console sans doubles, le doigt relâché, l'arrêt qui arrête, et les gardes jugées
 
 **Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, sept points,
