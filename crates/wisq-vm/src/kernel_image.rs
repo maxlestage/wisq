@@ -478,7 +478,65 @@ pub fn zero_page_with_screen(
     // que rien ne le lise de travers — l'entrée e820 est en 64 bits.
 
     let mut page = zero_page(ram, command_line);
+    write_screen_info(&mut page, screen);
 
+    // **L'écran, réservé.** L'allocateur ne consulte que cette carte ; sans
+    // l'entrée, deux écritures se disputeraient les mêmes pages, et le bureau se
+    // corromprait sous des causes sans rapport.
+    let entries = page[0x1e8];
+    let at = 0x2d0 + entries as usize * 20;
+    page[at..at + 8].copy_from_slice(&screen.base.to_le_bytes());
+    page[at + 8..at + 16].copy_from_slice(&bytes.to_le_bytes());
+    page[at + 16..at + 20].copy_from_slice(&2u32.to_le_bytes());
+    page[0x1e8] = entries + 1;
+
+    Ok(page)
+}
+
+/// **La page zéro d'une machine dont l'écran est sur la carte** : la mémoire
+/// vidéo de la carte de Bochs, **hors de la RAM** (`0xE000_0000` au départ),
+/// décrite dans `screen_info` exactement comme `zero_page_with_screen` décrit
+/// un cadre posé dans la RAM — les mêmes champs, les mêmes valeurs, la même
+/// unité de taille. **Aucune entrée e820** : ce n'est pas de la RAM, le noyau
+/// la trouve sur le bus PCI, et l'e820 ne décrit que la mémoire. C'est ce
+/// qu'écrit `X86BootLoader` quand l'écran de Bochs est branché.
+///
+/// Refusé si la base est dans la RAM (l'e820 la donnerait au noyau comme de
+/// la mémoire), au-delà de ce que `lfb_base` porte, ou pour un cadre vide ou
+/// trop grand pour `lfb_width` et `lfb_height`.
+pub fn zero_page_with_device_screen(
+    ram: u64,
+    command_line: u32,
+    screen: crate::desktop::Screen,
+) -> Result<Vec<u8>, ScreenRefusal> {
+    if screen.width == 0 || screen.height == 0 {
+        return Err(ScreenRefusal::Empty);
+    }
+    if screen.width > u32::from(u16::MAX) || screen.height > u32::from(u16::MAX) {
+        return Err(ScreenRefusal::TooLarge {
+            width: screen.width,
+            height: screen.height,
+        });
+    }
+    let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
+    if screen.base.saturating_add(bytes) > u64::from(u32::MAX) + 1 {
+        return Err(ScreenRefusal::BaseTooHigh { base: screen.base });
+    }
+    if screen.base < ram {
+        return Err(ScreenRefusal::WouldOverwrite {
+            base: screen.base,
+            floor: ram,
+        });
+    }
+    let mut page = zero_page(ram, command_line);
+    write_screen_info(&mut page, screen);
+    Ok(page)
+}
+
+/// **Les champs de `screen_info`**, communs aux deux pages zéro qui décrivent
+/// un écran. Les bornes de `u16` et `u32` sont tenues par l'appelant.
+fn write_screen_info(page: &mut [u8], screen: crate::desktop::Screen) {
+    let bytes = u64::from(screen.width) * u64::from(screen.height) * 4;
     // `VIDEO_TYPE_VLFB`. **Ce champ et `lfb_size`, quelques lignes plus bas,
     // sont un seul couple** : `sysfb_create_simplefb` décale la taille de seize
     // bits pour ce seul type — `if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
@@ -520,23 +578,125 @@ pub fn zero_page_with_screen(
     // Se tromper d'ordre rend un bureau aux couleurs inversées, ce qu'aucune
     // vérification de géométrie n'attrape.
     page[0x26..0x2e].copy_from_slice(&[8, 16, 8, 8, 8, 0, 8, 24]);
-
-    // **L'écran, réservé.** L'allocateur ne consulte que cette carte ; sans
-    // l'entrée, deux écritures se disputeraient les mêmes pages, et le bureau se
-    // corromprait sous des causes sans rapport.
-    let entries = page[0x1e8];
-    let at = 0x2d0 + entries as usize * 20;
-    page[at..at + 8].copy_from_slice(&screen.base.to_le_bytes());
-    page[at + 8..at + 16].copy_from_slice(&bytes.to_le_bytes());
-    page[at + 16..at + 20].copy_from_slice(&2u32.to_le_bytes());
-    page[0x1e8] = entries + 1;
-
-    Ok(page)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **L'écran de la carte est décrit comme le cadre dans la RAM, sans
+    /// entrée e820.** Les deux pages zéro, pour un même cadre de 1280 × 800,
+    /// portent les mêmes octets de `screen_info` hors de la base (VLFB, la
+    /// géométrie, 32 bits, `lfb_size` en unités de 64 Kio, la ligne, l'ordre
+    /// XRGB8888) ; celle de la carte a la base hors de la RAM et l'e820 de la
+    /// RAM seule, octet pour octet. Une base dans la RAM est refusée.
+    #[test]
+    fn the_cards_screen_is_described_like_the_frame_in_ram_without_an_e820_entry() {
+        use crate::desktop::Screen;
+        const RAM: u64 = 1 << 30;
+        let dans = Screen {
+            base: RAM - (8 << 20),
+            width: 1280,
+            height: 800,
+        };
+        let carte = Screen {
+            base: 0xE000_0000,
+            ..dans
+        };
+        let a = zero_page_with_screen(RAM, 0x9800, dans, 1 << 26).expect("le cadre dans la RAM");
+        let b = zero_page_with_device_screen(RAM, 0x9800, carte).expect("l'écran de la carte");
+        let nue = zero_page(RAM, 0x9800);
+        let sans_base = |page: &[u8]| {
+            let mut champs = page[0x0f..0x2e].to_vec();
+            champs[0x18 - 0x0f..0x1c - 0x0f].fill(0);
+            champs
+        };
+        assert_eq!(
+            sans_base(&a),
+            sans_base(&b),
+            "les mêmes champs, hors de la base"
+        );
+        assert_eq!(b[0x0f], 0x23, "VIDEO_TYPE_VLFB");
+        assert_eq!(
+            &b[0x18..0x1c],
+            &0xE000_0000u32.to_le_bytes(),
+            "la base de la carte"
+        );
+        assert_eq!(
+            &b[0x1c..0x20],
+            &((1280u32 * 800 * 4).div_ceil(0x1_0000)).to_le_bytes(),
+            "lfb_size en unités de 64 Kio"
+        );
+        assert_eq!(
+            (&b[0x1e8..0x1e9], &b[0x2d0..0x2d0 + 20 * 4]),
+            (&nue[0x1e8..0x1e9], &nue[0x2d0..0x2d0 + 20 * 4]),
+            "l'e820 de la RAM seule : la mémoire vidéo n'est pas de la mémoire"
+        );
+        assert_eq!(
+            zero_page_with_device_screen(
+                RAM,
+                0x9800,
+                Screen {
+                    base: RAM - 0x1000,
+                    ..carte
+                }
+            ),
+            Err(ScreenRefusal::WouldOverwrite {
+                base: RAM - 0x1000,
+                floor: RAM
+            }),
+            "une base dans la RAM serait donnée au noyau comme de la mémoire"
+        );
+        assert_eq!(
+            zero_page_with_device_screen(
+                RAM,
+                0x9800,
+                Screen {
+                    base: 0xFFFF_0000,
+                    ..carte
+                }
+            ),
+            Err(ScreenRefusal::BaseTooHigh { base: 0xFFFF_0000 }),
+            "le cadre doit tenir sous quatre gibioctets, que lfb_base porte"
+        );
+        // **Un cadre vide, ou plus large que ce que `lfb_width` porte** : tous
+        // deux tiennent sous quatre gibioctets et hors de la RAM, donc seul
+        // leur propre refus les arrête. Tronqué, 65 536 deviendrait zéro.
+        for (largeur, hauteur, refus) in [
+            (0, 800, ScreenRefusal::Empty),
+            (1280, 0, ScreenRefusal::Empty),
+            (
+                65_536,
+                1,
+                ScreenRefusal::TooLarge {
+                    width: 65_536,
+                    height: 1,
+                },
+            ),
+            (
+                1,
+                65_536,
+                ScreenRefusal::TooLarge {
+                    width: 1,
+                    height: 65_536,
+                },
+            ),
+        ] {
+            assert_eq!(
+                zero_page_with_device_screen(
+                    RAM,
+                    0x9800,
+                    Screen {
+                        width: largeur,
+                        height: hauteur,
+                        ..carte
+                    }
+                ),
+                Err(refus),
+                "{largeur}x{hauteur}"
+            );
+        }
+    }
 
     fn bz_image(payload_at: usize, magic: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0x90u8; payload_at.max(SETUP_MAGIC_AT + 4)];

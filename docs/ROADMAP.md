@@ -13839,7 +13839,7 @@ pas d'une affirmation pour qui lit.
 | `WisqUI` dépend déjà de `WisqVMRust` | `Package.swift`, et `LocalVMModel.swift` l'importe déjà |
 | l'application n'embarque aucun noyau | aucun `*.bin` sous `App/` ni `Sources/` ; `LocalVMModel` lit l'image que l'utilisateur importe |
 | héberger un `WKWebView` dans l'app est déjà fait | `WebKitBenchView` + `BenchHost` |
-| le bureau est jugé dans un vrai WebKit | **17** cas dans `LocalDesktopTests`, dont **3** démarrent avec `bootsAKernel: true` — sur **22** tests hébergés en tout |
+| le bureau est jugé dans un vrai WebKit | **20** cas dans `LocalDesktopTests`, dont **3** démarrent avec `bootsAKernel: true` — sur **25** tests hébergés en tout. Le fichier `LocalDesktopTests.swift` loge deux classes : `LocalDesktopTests` (17 cas) et `EmitterDesktopTests` (3 cas, la machine de l'émetteur), et le compte est celui du fichier |
 | ce qui n'a jamais eu lieu | un **vrai noyau Linux** démarré par `LocalDesktop` sous WebKit, nulle part |
 
 **Ce qui fait de ça une décision et pas un branchement.** Les deux cœurs n'ont
@@ -13886,7 +13886,7 @@ peut donc **pas typer une seule ligne** de ce branchement, et `verify.sh` y
 passerait sans rien en dire. Le seul verdict est le job « App iOS », environ
 quinze minutes par tour, qui est aussi le seul à lancer les tests hébergés.
 
-C'est faisable — les vingt-deux tests hébergés ont été écrits dans cette même
+C'est faisable — les vingt-cinq tests hébergés ont été écrits dans cette même
 condition — mais ça impose la forme : un diff petit, calqué sur ce qui existe,
 dans le moins de fichiers possible. C'est ce qui range la **forme 2** devant la
 **1** si la décision est de commencer tout de suite, et la **1** devant la **2**

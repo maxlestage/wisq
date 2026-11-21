@@ -544,6 +544,7 @@ impl Module {
                         .op(code::I64_OR);
                 });
             }
+            Vector::Float(float) => return Self::float(float, step, body),
             Vector::LoadControl => {
                 let address = step.memory.as_ref()?;
                 body.store(SOURCE.0, |b| {

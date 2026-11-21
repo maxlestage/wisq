@@ -22,6 +22,7 @@ pub mod census;
 pub mod core;
 pub mod desktop;
 pub mod dtb;
+pub mod emitter_machine;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod iso9660;
