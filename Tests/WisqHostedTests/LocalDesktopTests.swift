@@ -780,4 +780,89 @@ final class LocalDesktopTests: XCTestCase {
         try await desktop.place(Data(count: 16), at: base + 0xB000)
     }
 }
+
+/// **La machine de l'émetteur dans un vrai `WKWebView`**, par son schéma.
+///
+/// Sous Linux, `EmitterPageTests` fait tourner la même page sous Bun, ses
+/// `fetch` servis par le même magasin. Ce qui ne s'y juge pas est ici : que
+/// WebKit charge `machine.html` et ses modules ES depuis `wisq-machine://`,
+/// envoie ses `fetch` au gestionnaire du schéma, compile le module de la page
+/// embarqué dans la bibliothèque (`scripts/build-xcframework.sh`), et poste ses
+/// messages à l'application. Le petit noyau est celui de
+/// `EmitterFixtures` (`Tests/WisqVMRustTests`), sans le « W » du port série
+/// ni la sonde PCI, recopié ici parce que cette cible n'en dépend pas : il peint un pixel rouge et un bleu sur l'écran de la
+/// carte, attend une touche à l'i8042, et s'arrête sur `hlt`.
+@MainActor
+final class EmitterDesktopTests: XCTestCase {
+    private static func le(_ value: UInt64, _ count: Int) -> [UInt8] {
+        (0..<count).map { UInt8((value >> (8 * UInt64($0))) & 0xFF) }
+    }
+
+    private static func kernel() -> Data {
+        var code: [UInt8] = [
+            0x8C, 0xCB, 0x41, 0x8C, 0xD8, 0xB0, 0x00, 0xE6, 0x70, 0xE4, 0x71, 0x44, 0x0F, 0xB6, 0xE8,
+            0xB0, 0x02, 0xE6, 0x70, 0xE4, 0x71, 0x44, 0x0F, 0xB6, 0xF0,
+        ]
+        func put(_ address: UInt64, _ value: UInt64) {
+            code += [0x48, 0xB8] + le(value, 8) + [0x48, 0xBF] + le(address, 8) + [0x48, 0x89, 0x07]
+        }
+        put(0x10_0000, 0x10_1000 | 3)
+        put(0x10_1000, 0x83)
+        put(0x10_1000 + 24, 0xC000_0000 | 0x83)
+        code += [0x48, 0xB8] + le(0x10_0000, 8) + [0x0F, 0x22, 0xD8]
+        code += [0x48, 0xB8] + le(1 << 31, 8) + [0x0F, 0x22, 0xC0]
+        code += [0x48, 0xB8] + le(0xE000_0000, 8)
+        code += [0xC7, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xC7, 0x40, 0x04, 0xFF, 0x00, 0x00, 0x00]
+        code += [0xE4, 0x64, 0xA8, 0x01, 0x74, 0xFA, 0xE4, 0x60, 0x44, 0x0F, 0xB6, 0xF8, 0xFA, 0xF4]
+        let physical: UInt64 = 0x0100_0000
+        var elf = [UInt8](repeating: 0, count: 64)
+        elf.replaceSubrange(0..<8, with: [0x7F, 0x45, 0x4C, 0x46, 2, 1, 0, 0])
+        elf.replaceSubrange(16..<20, with: [2, 0, 62, 0])
+        elf.replaceSubrange(24..<32, with: le(physical, 8))
+        elf.replaceSubrange(32..<40, with: le(64, 8))
+        elf.replaceSubrange(52..<58, with: [64, 0, 56, 0, 1, 0])
+        var header = [UInt8](repeating: 0, count: 56)
+        header.replaceSubrange(0..<4, with: [1, 0, 0, 0])
+        header.replaceSubrange(8..<16, with: le(0x1000, 8))
+        header.replaceSubrange(16..<24, with: le(physical &+ 0xFFFF_FFFF_8000_0000, 8))
+        header.replaceSubrange(24..<32, with: le(physical, 8))
+        header.replaceSubrange(32..<40, with: le(UInt64(code.count), 8))
+        header.replaceSubrange(40..<48, with: le(UInt64(code.count), 8))
+        elf += header
+        elf += [UInt8](repeating: 0, count: 0x1000 - elf.count)
+        return Data(elf + code)
+    }
+
+    func testTheEmitterMachineBootsThroughItsSchemeInARealWebView() async throws {
+        XCTAssertTrue(
+            EmitterMachine.isInThisBuild,
+            "la bibliothèque de l'application embarque le module de la page (WISQ_PAGE_WASM)")
+        guard EmitterMachine.isInThisBuild else { return }
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-emetteur-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let kernel = work.appendingPathComponent("vmlinux")
+        try Self.kernel().write(to: kernel)
+        let prepared = try EmitterMachine.prepare(
+            .init(kernel: kernel, ramBytes: 64 << 20, screen: .init(width: 8, height: 4),
+                  clock: 1_795_178_096_000),
+            scratch: work)
+        let desktop = try EmitterDesktop(prepared: prepared)
+        desktop.start()
+        try await desktop.waitUntilReady()
+
+        let typed = try await desktop.evaluate(EmitterBridge.typing("a"))
+        XCTAssertEqual((typed as? NSNumber)?.intValue, 2, "« a » enfoncé puis relâché")
+        let stopped = await desktop.waitUntilStopped(patience: 60)
+        XCTAssertEqual(stopped?.why, "arrêtée sur hlt", "panne : \(String(describing: desktop.failure))")
+        let r15 = try await desktop.evaluate("window.wisq.registre(15)")
+        XCTAssertEqual(r15 as? String, "30", "la touche lue à l'i8042")
+        let r13 = try await desktop.evaluate("window.wisq.registre(13)")
+        XCTAssertEqual(r13 as? String, "86", "l'horloge CMOS figée par le plan")
+        XCTAssertEqual(desktop.screenSize?.width, 8)
+        XCTAssertEqual(desktop.unreadable, 0)
+        XCTAssertNil(desktop.failure)
+    }
+}
 #endif
