@@ -8,6 +8,130 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Émetteur : reprise après contrôle, un accès à cheval d'un périphérique vers la RAM, et les gardes que rien ne tenait
+
+**Ce qui n'allait pas.**
+
+- **Un défaut réel : seul le sens RAM → périphérique d'un accès à cheval
+  s'arrêtait.** Dans l'accès lent (`far_first_page`), une première page
+  posée sur la mémoire d'un périphérique envoyait l'accès **entier** à
+  l'hôte, sans marcher la page d'après. Huit octets écrits à `0x48FFC`, la
+  page `0x48000` sur la mémoire vidéo et `0x49000` sur la RAM à `0x3F000` :
+  « arrêtée sur hlt », les huit octets dans `0xE000_0FFC..0xE000_1003`, et
+  rien dans la RAM — une écriture mal dirigée qu'aucun arrêt ne nommait. Et
+  une seconde page absente ne fautait qu'**après** que l'écriture était
+  partie chez le périphérique. L'entrée d'en dessous, ses commentaires et
+  `host.js` affirmaient les deux sens.
+- **Six gardes sans test** (sabotages du contrôle, tous survivants) : la
+  trame d'avant le repli dans la marche par **grande page** (une page de
+  2 Mio ou 1 Gio sur la mémoire vidéo retombait dans la RAM, le défaut même
+  que la tranche disait corrigé) ; le `| 7` de la limite de la GDT (le test
+  ne posait qu'une limite de forme 8k − 1) ; `claimed` dans le chemin d'un
+  périphérique (une réservation de seize octets partait en `out`, et seule la
+  carte, qui refuse au-delà de huit, la rendait sans effet) ; le refus d'un
+  écran trop grand dans `carte.js` ; les refus `Empty` et `TooLarge` de
+  `zero_page_with_device_screen` ; et la reprise d'une traduction ratée
+  (`body.wrote = false`, jumelle de `body.bytes.truncate`, déjà connue).
+- **`kernel-entry` n'était lancé par aucun test** : CS à `0x10` et les
+  données à `0x18` à l'entrée (la levée du mur n° 3), `WISQ_ECRAN`,
+  `WISQ_GESTES`, `WISQ_HEURE`, `WISQ_CAPTURE` et l'ordre de ses couleurs —
+  `0x10n` remis à `0x0n` ne faisait rien tomber. `machine().taper` n'était
+  appelé par aucun test. Trois messages d'erreur portaient quatorze à
+  vingt-six espaces (une ligne coupée sans `\`) ; `WISQ_GESTES` lisait
+  `inf:texte:x`, d'où `[inf, …]` dans le pilote et une `ReferenceError` ;
+  `WISQ_CAPTURE_TOUTES` illisible devenait zéro sans le dire.
+- **Des faux dans l'entrée d'en dessous** : « six courses sur sept » (il y
+  en a sept sur huit dans la boucle) et « la sixième (i1) » ; « six à quinze
+  secondes » sans mesure derrière ; « 40 à 45 millions d'instructions par
+  seconde », tiré de 8,8 M blocs/s (un plafond, le TSC avançant aussi pendant
+  les `hlt`) fois un facteur de quatre ou cinq jamais mesuré — donc 35 à 44
+  au plus — et la « vitesse du cœur Swift » donnée comme un fait. Le rapport
+  disait deux commits amendés ; le reflog en montre trois (`8875b8cd`,
+  `a412a29f`, `8691b437`), tous avant le premier push de la tranche.
+- **Une annonce trop large** : le repli d'une trame hors de la RAM, et la
+  garde de l'hôte qui refuse de lire un périphérique comme de la RAM, ne
+  valent que **sous pagination** ; sans elle, l'émetteur et `physical`
+  replient toujours. Le mode long pagine toujours.
+- Dans `x86.rs`, la doc du test `addr32` avait été coupée en deux par
+  l'insertion du test des écritures non temporelles, et disait encore la
+  taille d'adresse « refusée partout ailleurs », faux depuis `lea`.
+
+**Ce qui est fait.**
+
+- **L'accès lent d'un périphérique marche d'abord la page d'après**
+  (`far_first_page`, `x86_wasm.rs`) quand l'accès ne tient pas dans sa page.
+  Une page qui manque, ou qui refuse l'écriture, faute avant que rien parte
+  vers l'hôte. Si la seconde trame est la suite physique de la première,
+  l'accès part en un morceau ; sinon — la RAM, ou une autre trame —, le
+  témoin dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête sur « un accès à
+  cheval entre la mémoire d'un périphérique et une page qui n'en est pas la
+  suite ». L'adresse physique est gardée dans une locale `i64` avant la
+  seconde marche, qui remplace `TRANSLATE_CELL`. Le test sur `DEVICE_FRAME`
+  de la seconde trame a été retiré : la contiguïté écarte déjà la RAM (une
+  trame de la RAM n'est jamais au-delà d'une trame de périphérique), et ce
+  second test n'aurait jugé aucun cas de plus — une garde sans cas.
+- **`Body::attempt`** : la tentative de traduction qui, ratée, rend ses
+  octets et la marque `wrote` à ce qu'ils étaient. Les deux reprises
+  vivaient en ligne dans `build`, sans cas possible ; elles sont tenues
+  maintenant sur une traduction posée pour rater.
+- **`kernel-entry`** : les trois messages recollés, les secondes d'un geste
+  et les nombres d'un toucher finis (et les secondes positives),
+  `WISQ_CAPTURE_TOUTES` refusé s'il ne se lit pas.
+- Les docs ramenées à « sous pagination » (`DEVICE_FRAME`,
+  `PageDePeripherique`), celle d'`addr32` recollée et juste, l'entrée d'en
+  dessous corrigée en place, chaque correction marquée.
+- `WebKitBench.swift` régénéré (`--example bench-module`) : l'accès lent a
+  changé.
+
+**Comment c'est vérifié.**
+
+- **Sept tests neufs** :
+  - dans `host_loop`, un accès d'un périphérique vers ce qui ne le suit pas
+    (cinq cas : vers la RAM en écriture et en lecture, vers une autre trame,
+    vers la suite, vers une page absente avec CR2), une grande page de 2 Mio
+    et une de 1 Gio sur la mémoire vidéo, une réservation jamais envoyée à
+    un périphérique (ce que la carte reçoit est compté), et un écran trop
+    grand refusé par `carte.js` ;
+  - dans la bibliothèque, `a_failed_translation_leaves_nothing_behind` ;
+  - un fichier neuf, `tests/kernel_entry.rs`, qui lance l'exemple sur un
+    « noyau » ELF de quelques dizaines d'instructions : CS et DS à l'entrée, l'horloge figée
+    (`0x56` secondes, `0x34` minutes en BCD), `a` tapé par `WISQ_GESTES`
+    (le scancode `0x1e` lu à l'i8042), la mémoire vidéo peinte par une page
+    de 1 Gio, et le PPM de la capture, rouge puis bleu ; et six refus, au
+    texte exact.
+- **Trois tests élargis** : le sélecteur sous une limite de `0x3b` (le
+  descripteur `0x38` à cheval sur elle, refusé) ; la page zéro de la carte,
+  ses refus `Empty` et `TooLarge` ; et le texte tapé passe par `vm.taper`.
+  Le test du cheval RAM → périphérique attend le nouveau nom de l'arrêt.
+- **Vingt sabotages d'une ligne**, chacun restauré par le script (le
+  contenu d'origine réécrit, `git diff` revenu tel quel). **Tous tombent** :
+  - l'accès lent : le cheval ignoré (W1, l'ancien comportement), la suite
+    physique mal comptée (W2), la seconde marche retirée (W3) — chacun dans
+    le test du cheval depuis un périphérique ;
+  - les six survivants du contrôle : la trame de la grande page (S1), le
+    `| 7` de la limite (S2), `wrote` et `truncate` de la traduction ratée
+    (S3, S3b), `claimed` du périphérique (S4), le refus de `carte.js` (S5),
+    `Empty` et `TooLarge` (S11a, S11b) ;
+  - `vm.taper` qui ne tape rien (T1) ;
+  - `kernel-entry` : CS à zéro (K1), DS à zéro (K2), le rouge et le bleu
+    échangés dans le PPM (K3), l'heure du mur malgré `WISQ_HEURE` (K4),
+    `inf` accepté (K5), `WISQ_CAPTURE_TOUTES` illisible pris pour zéro (K6),
+    un message recoupé sans `\` (K7), `inf` accepté dans un toucher (K8).
+- `cargo test --release` (tout, `--no-fail-fast`) : 885 réussis, 0 échec
+  (878 avant). `cargo fmt --check`, `clippy -D warnings`,
+  `check-whitespace`, `check-project-sources`, SwiftLint `--strict` :
+  propres. `WebKitBench.swift` régénéré, sa sortie incluse mot pour mot ;
+  `swift build --build-tests` et les treize `WebKitBenchTests` passent.
+  Compte publié : 3 942 → 3 949 (Swift 3 065 + Rust 884) ; le site
+  reconstruit, `bun test` : 476 réussis.
+
+**Ce qui reste.** Rien de neuf sur le mur : la boucle du planificateur de
+l'entrée d'en dessous reste à trouver, par une course rejouée (l'heure figée)
+comparée pas à pas avec l'interprète ; puis le bureau, la vitesse, le
+chargeur de l'application (CS à `__BOOT_CS`, l'écran et la tablette dans
+`desktop.rs`) et la fusion avec `claude/pc-rust-coeur`. Aucune course longue
+n'a été lancée dans cette reprise.
+
 ## 2026-11-21 — Émetteur : l'écran, le clavier et la tablette de la carte raccordés ; Void Xfce jusqu'à l'espace utilisateur de son initramfs, et une boucle du planificateur
 
 **Ce qui n'allait pas.**
@@ -17,7 +141,8 @@ L'ordre est antéchronologique : le plus récent en haut.
   code traduit posait la fonction au premier octet du tampon. Et `adresse > 0`
   à la place de `adresse >= 0` dans `dansLaRam` survivait aussi : rien ne
   tenait l'extrémité zéro.
-- **L'émetteur repliait toute trame hors de la RAM dans la RAM.** Sous 1 Gio,
+- **L'émetteur repliait toute trame hors de la RAM dans la RAM**, sous
+  pagination (sans elle, il replie toujours, et le mode long pagine). Sous 1 Gio,
   la mémoire vidéo de la carte de Bochs, à `0xE000_0000`, tombait sur
   `0x2000_0000` : un bureau qui peint son écran écrivait dans la RAM d'un
   processus, et l'écran restait noir. Rien n'envoyait un accès de l'invité à
@@ -33,14 +158,17 @@ L'ordre est antéchronologique : le plus récent en haut.
   (`DEVICE_FRAME`) et laisse la trame dans `TRANSLATE_CELL`. L'accès lent
   envoie alors l'accès entier à l'hôte par `in` ou `out`, à son adresse
   physique — toujours au-delà de `0xFFFF`, donc jamais un port. Un accès à
-  cheval entre la RAM et un périphérique s'arrête sur son nom
-  (`FAULT_DEVICE_STRADDLE`). Pas d'import neuf : les hôtes qui n'ont pas de
+  cheval de la RAM vers un périphérique s'arrête sur son nom
+  (`FAULT_DEVICE_STRADDLE`). *Correction du 21 novembre, entrée d'au-dessus :
+  l'autre sens, d'un périphérique vers la RAM, ne s'arrêtait pas — l'accès
+  partait entier chez le périphérique.* Pas d'import neuf : les hôtes qui n'ont pas de
   carte rendent le bus qui flotte.
 - **Le raccord** (`host.js`, `carte.js`). Au-delà de `0xFFFF`, `env.in` et
   `env.out` vont à `carte.memoire` (tous les bits à un quand personne ne
   répond, à la largeur de l'accès) ; la tablette est livrée à chaque tour
-  avant la recopie des lignes ; un hôte qui prendrait un périphérique pour de
-  la RAM (une IDT posée là) s'arrête en nommant l'adresse. `machine()`
+  avant la recopie des lignes ; sous pagination, un hôte qui prendrait un
+  périphérique pour de la RAM (une IDT posée là) s'arrête en nommant
+  l'adresse. `machine()`
   expose `taper(texte)`, `toucher(x, y, boutons)` et `ecran(depuis)` : le
   rectangle montré d'un bloc, sans le remplissage des lignes, et rien de
   recopié quand la révision n'a pas bougé. `carte(…, { ecran })` branche la
@@ -151,23 +279,31 @@ de microcode, puis 147 Mio en xz), 1 Gio, la ligne de l'application
 
 **Jusqu'où le démarrage va.** Le noyau 6.12.11 de Void s'initialise, déballe
 son initramfs, et l'espace utilisateur de dracut tourne (programmes de la
-glibc, modules chargés). Puis, dans six courses sur sept, à six à quinze
-secondes de son temps, le noyau tourne sans fin, **interruptions éteintes**,
+glibc, modules chargés). Puis, dans sept courses sur huit (a10 à a13, v1,
+i2, m1), le noyau tourne sans fin, **interruptions éteintes**,
 entre `pick_next_task_fair` et `sched_balance_newidle` — l'IRQ 0 en
 attente, le disque jamais lu (sa ligne 5 encore masquée : `virtio_blk` ne
-s'est pas lié). La sixième (i1) passe ce point, lit l'ISO, et s'arrête sur
-la borne de ses tours ; sa jumelle (i2, même réglage) est retombée dans la
-boucle. **Le bureau n'est pas atteint** : aucune image n'a
+s'est pas lié). Son dernier message est à 2,6 s de son temps (a10 à a13, i2)
+ou à 5,9 s (v1, m1) ; les courses arrêtées à la main l'ont laissé tourner
+jusqu'à 8,4 à 27,8 s de son horloge (a10 et a11, d'avant le battement, n'en
+disent rien). *Corrigé le 21 novembre : cette entrée disait « six courses sur
+sept » et « six à quinze secondes ».* La huitième (i1) passe ce point, lit
+l'ISO, et s'arrête sur la borne de ses tours ; sa jumelle (i2, même réglage)
+est retombée dans la boucle. **Le bureau n'est pas atteint** : aucune image n'a
 été peinte (révision zéro dans toutes les courses), donc aucune capture à
 regarder.
 
 **L'émetteur contre le cœur Swift, sur ce qui est comparable.** Le cœur
 Swift démarre ce bureau en ~2 527 s (~97 milliards d'instructions, 39 à 46
 MIPS). L'émetteur ne compte pas les instructions, mais ses blocs (le TSC de
-l'invité avance d'un par bloc, plus les attentes d'un `hlt`) : i1 en fait
-9,6 milliards en 1 087 s, **environ neuf millions de blocs par seconde**,
-soit 40 à 45 millions d'instructions par seconde à quatre ou cinq
-instructions par bloc — pas plus vite que le cœur Swift. Le temps va à
+l'invité avance d'un par bloc, plus les attentes d'un `hlt`) : i1 en compte
+9,6 milliards en 1 087 s, **au plus 8,8 millions de blocs par seconde** — un
+plafond, puisque les attentes en font partie. À quatre ou cinq instructions
+par bloc, un facteur **jamais mesuré** ici, ce serait au plus 35 à 44
+millions d'instructions par seconde : rien ne dit l'émetteur plus rapide que
+le cœur Swift, et la comparaison elle-même n'est pas mesurée. *Corrigé le 21
+novembre : l'entrée disait « 40 à 45 millions », et « pas plus vite que le
+cœur Swift » comme un fait.* Le temps va à
 l'espace utilisateur neuf : 565 614 traductions (0,14 ms chacune, 81 s en
 tout) et leur compilation par JavaScriptCore ; le cache, à sa borne de
 64 Mio, évince et retraduit un tiers de ce qu'il traduit, et les régions de
@@ -187,7 +323,7 @@ d'i1 est celui du moteur, au-delà de la borne du cache.
   l'interprète.
 - **Le bureau** : `bochs-drm`, Xorg, lightdm et Xfce derrière la boucle ;
   les gestes et les captures sont prêts et n'ont rien eu à montrer.
-- **La vitesse** : ~9 M blocs/s, compilé à la mesure de ce que JavaScriptCore
+- **La vitesse** : au plus ~8,8 M blocs/s, compilé à la mesure de ce que JavaScriptCore
   traduit ; « plusieurs centaines de MIPS » demande de traduire moins (un
   cache qui garde plus, des régions plus petites) avant de traduire mieux.
 - Le chargeur de l'application doit poser CS à `__BOOT_CS` comme
