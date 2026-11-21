@@ -143,6 +143,10 @@ fn lancer(noyau: &Path, variables: &[(&str, &str)]) -> (Option<i32>, String, Str
         "WISQ_DISQUE",
         "WISQ_INITRAMFS",
         "WISQ_RAM",
+        "WISQ_CMDLINE",
+        "WISQ_TRADUCTEUR",
+        "WISQ_WATCH",
+        "WISQ_CACHE",
     ] {
         commande.env_remove(nom);
     }
@@ -392,4 +396,170 @@ fn a_driver_that_dies_makes_the_run_fail() {
         Some(1),
         "et la sortie la dit aussi :\n{releve}\n{erreurs}"
     );
+}
+
+/// Un refus attendu : le noyau lancé, les variables, le code de sortie, le
+/// début de la ligne qui le dit, et si elle est sur la sortie plutôt que sur
+/// l'erreur.
+struct Refus<'a> {
+    noyau: &'a Path,
+    variables: Vec<(&'a str, &'a str)>,
+    code: i32,
+    attendu: &'a str,
+    sur_la_sortie: bool,
+}
+
+/// **Chaque refus qui suit la création du dossier de travail l'efface.**
+/// Seize sorties passent par `sortir` ; le test d'avant n'en traversait que
+/// trois (l'écran de la carte, les gestes, `WISQ_CAPTURE_TOUTES`), et remettre
+/// `std::process::exit` à la place de `sortir` sous `WISQ_CACHE`,
+/// `WISQ_HEURE`, `WISQ_DISQUE` ou `WISQ_CMDLINE` ne faisait rien tomber. Ici,
+/// une course par sortie, chacune refusée sous son nom, et `lancer` vérifie
+/// que `/tmp/wisq-kernel-<pid>` n'est plus là.
+///
+/// Une seule sortie n'a pas de cas : l'écran de la carte qui recouvrirait la
+/// RAM (`zero_page_with_device_screen` refusé). Sa mémoire vidéo est à
+/// `0xE000_0000`, et la RAM la plus grande que le repli accepte, 2 Gio, s'arrête
+/// avant : 4 Gio sont refusés plus tôt, avant que le dossier existe.
+#[test]
+fn every_refusal_after_the_scratch_is_made_leaves_nothing_behind() {
+    let travail = Dossier::neuf("sorties");
+    let dossier = &travail.0;
+    let noyau = dossier.join("vmlinux");
+    std::fs::write(&noyau, elf(0x0100_0000, &petit_noyau())).expect("le noyau");
+    // Un seul octet, un préfixe REX que rien ne suit : la région d'entrée
+    // est peut-être coupée, et le montage refuse de partir.
+    let coupe = dossier.join("coupe");
+    std::fs::write(&coupe, elf(0x0100_0000, &[0x48])).expect("le noyau coupé");
+    std::fs::write(dossier.join("vide.cpio"), b"").expect("l'archive vide");
+    // Dix-sept mébioctets de zéros, creux sur le disque : plus que ce qui
+    // reste au-dessus du noyau dans 32 Mio de RAM.
+    std::fs::File::create(dossier.join("gros.cpio"))
+        .and_then(|f| f.set_len(17 << 20))
+        .expect("la grosse archive");
+    std::fs::write(dossier.join("petit.img"), [0u8; 100]).expect("le petit disque");
+    let cas: [Refus; 14] = [
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_SCREEN", "70000x1")],
+            code: 1,
+            attendu: "cet écran ne peut pas être décrit au noyau : TooLarge",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_SCREEN", "grand")],
+            code: 1,
+            attendu: "WISQ_SCREEN=grand ne se lit pas : il faut « largeur x hauteur »",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_RAM", "32"), ("WISQ_INITRAMFS", "gros.cpio")],
+            code: 1,
+            attendu: "cette archive ne peut pas être décrite au noyau : PastCeiling",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_INITRAMFS", "absent.cpio")],
+            code: 1,
+            attendu: "absent.cpio ne se lit pas : ",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_INITRAMFS", "vide.cpio")],
+            code: 1,
+            attendu: "vide.cpio est vide : ce n'est pas une archive",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_CMDLINE", "-absent")],
+            code: 1,
+            attendu: "WISQ_CMDLINE refusé : NothingToRemove",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &coupe,
+            variables: vec![],
+            code: 1,
+            attendu: "la région d'entrée ne se traduit pas : MayBeCut",
+            sur_la_sortie: true,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_TRADUCTEUR", "autre")],
+            code: 2,
+            attendu: "WISQ_TRADUCTEUR=autre ne se lit pas",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_DISQUE", "absent.img")],
+            code: 2,
+            attendu: "WISQ_DISQUE=absent.img ne se lit pas : ",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_DISQUE", "petit.img")],
+            code: 2,
+            attendu: "WISQ_DISQUE=petit.img fait 100 octets : moins d'un secteur",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_CAPTURE", "c.ppm")],
+            code: 2,
+            attendu: "WISQ_CAPTURE et WISQ_GESTES demandent un écran",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_HEURE", "midi")],
+            code: 2,
+            attendu: "WISQ_HEURE=midi ne se lit pas",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_WATCH", "fs:10")],
+            code: 2,
+            attendu: "WISQ_WATCH=fs:10 ne se lit pas",
+            sur_la_sortie: false,
+        },
+        Refus {
+            noyau: &noyau,
+            variables: vec![("WISQ_CACHE", "beaucoup")],
+            code: 2,
+            attendu: "WISQ_CACHE=beaucoup ne se lit pas",
+            sur_la_sortie: false,
+        },
+    ];
+    for Refus {
+        noyau: quel,
+        variables,
+        code: attendu_code,
+        attendu,
+        sur_la_sortie,
+    } in cas
+    {
+        let (code, releve, erreurs) = lancer(quel, &variables);
+        assert_eq!(
+            code,
+            Some(attendu_code),
+            "{variables:?} :\n{releve}\n{erreurs}"
+        );
+        let texte = if sur_la_sortie { &releve } else { &erreurs };
+        assert!(
+            texte.lines().any(|l| l.starts_with(attendu)),
+            "{variables:?} : « {attendu}… » attendu, et :\n{releve}\n{erreurs}"
+        );
+        assert!(
+            !dossier.join("c.ppm").exists(),
+            "{variables:?} : aucune course n'est partie"
+        );
+    }
 }
