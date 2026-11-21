@@ -148,6 +148,10 @@ public enum EmitterBridge {
         return [(code, down)]
     }
 
+    /// **Arrêter la machine** à la fin de sa tranche ; rien quand la page n'a
+    /// pas encore de conducteur.
+    public static let stop = "window.wisq && window.wisq.arreter()"
+
     /// La molette, en crans, positifs vers le haut.
     public static func scroll(notches: Int) -> String {
         "window.wisq.defiler(\(max(min(notches, 127), -127)))"

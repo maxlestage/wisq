@@ -17,7 +17,7 @@
 </style>
 <canvas id="ecran" width="1" height="1"></canvas>
 <script type="module">
-import { demarrer, positionSurLEcran } from "./machine.js";
+import { demarrer, doigt } from "./machine.js";
 
 const pont = window.webkit.messageHandlers.wisq;
 const poster = (message) => pont.postMessage(message);
@@ -46,19 +46,24 @@ try {
     poster,
     peintre,
   });
-  // **Le doigt, sur la tablette de la carte** : la position dans l'image
-  // montrée, sans les bandes autour ; un doigt posé est le bouton gauche.
-  const doigt = (evenement, boutons) => {
+  // **Le doigt, sur la tablette de la carte** (`doigt`, dans `machine.js`) :
+  // posé dans l'image, glissé, relevé — même hors de l'image.
+  const suivre = doigt(conducteur.toucher);
+  const pointeur = (evenement) => {
     evenement.preventDefault();
-    const p = positionSurLEcran(
-      evenement.clientX, evenement.clientY, toile.getBoundingClientRect(), toile.width, toile.height,
+    // Le relâchement doit revenir à la toile même hors d'elle : un doigt
+    // l'est déjà (capture implicite), une souris pas.
+    if (evenement.type === "pointerdown") {
+      try { toile.setPointerCapture(evenement.pointerId); } catch {}
+    }
+    suivre(
+      evenement.type, evenement.clientX, evenement.clientY,
+      toile.getBoundingClientRect(), toile.width, toile.height,
     );
-    if (p !== null) conducteur.toucher(p.x, p.y, boutons);
   };
-  toile.addEventListener("pointerdown", (e) => doigt(e, 1));
-  toile.addEventListener("pointermove", (e) => { if (e.buttons !== 0) doigt(e, 1); });
-  toile.addEventListener("pointerup", (e) => doigt(e, 0));
-  toile.addEventListener("pointercancel", (e) => doigt(e, 0));
+  for (const genre of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
+    toile.addEventListener(genre, pointeur);
+  }
   // Ce que l'application appelle : `window.wisq.touches(…)`, `.taper(…)`.
   window.wisq = conducteur;
   conducteur.courir().catch((raison) => poster({ kind: "panne", pourquoi: String(raison?.message ?? raison) }));
