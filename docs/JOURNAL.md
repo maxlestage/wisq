@@ -8,6 +8,196 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — La machine de l'émetteur dans l'application, derrière un réglage éteint ; jugée de bout en bout sous Linux, son magasin Swift derrière le `fetch` d'un Bun
+
+**Ce qui n'allait pas.**
+
+- **Deux défauts du dernier contrôle.** Treize des seize sorties de
+  `kernel-entry` qui passent par `sortir` n'étaient traversées par aucun
+  test : remettre `std::process::exit` sous `WISQ_CACHE`, `WISQ_HEURE`,
+  `WISQ_DISQUE` ou `WISQ_CMDLINE` survivait, le dossier de travail restant
+  derrière. Et l'entrée d'en dessous disait encore « le test sur
+  `DEVICE_FRAME` de la seconde trame a été retiré » juste après la
+  correction qui le rétablit, la correction collée sans être repliée.
+- **L'application n'avait pas la machine de l'émetteur.** Sa seule page
+  WebKit était le bureau d'avant (`LocalDesktop`) : la boucle hôte seule,
+  l'émetteur appelé par le pont, un cadre dans la RAM, ni carte, ni disque,
+  ni clavier. `carte.js`, `page-emitter.js` et le module de la page
+  n'étaient pas dans la bibliothèque, et rien ne savait poser un noyau de
+  distribution — l'émetteur entre dans un `vmlinux`, l'ISO porte un
+  `bzImage`.
+- **Un invité qui attend une touche était arrêté « sur place ».** La page
+  l'a trouvé à son premier passage : un bloc `in $0x64 ; test $1 ; jz` qui
+  ne fait pas bouger RIP était pris pour une machine bloquée, avant la
+  touche que l'application allait taper.
+
+**Ce qui est fait.**
+
+- **Les refus de `kernel-entry`** : quatorze cas neufs dans
+  `every_refusal_after_the_scratch_is_made_leaves_nothing_behind`, un par
+  sortie atteignable — l'écran (`WISQ_SCREEN` illisible ou trop large),
+  l'archive (absente, vide, trop grande pour 32 Mio), `WISQ_CMDLINE`, une
+  région d'entrée coupée (un préfixe REX seul), `WISQ_TRADUCTEUR`, le
+  disque (absent, moins d'un secteur), la capture sans écran,
+  `WISQ_HEURE`, `WISQ_WATCH`, `WISQ_CACHE` —, chacun refusé sous son nom,
+  et `lancer` vérifie l'absence du dossier. La seizième sortie (un écran de
+  la carte sur la RAM) est inatteignable : il faudrait 3,5 Gio de RAM, et
+  le repli refuse 4 Gio avant que le dossier existe. La phrase du JOURNAL
+  est corrigée en place, et repliée.
+- **La page de la machine** (`web/machine.js`, `web/machine.html`). Le
+  conducteur assemble la boucle hôte, la carte et l'émetteur de la page, et
+  va chercher tout ce qu'il lui faut par `fetch` : le plan (`plan.json`), le
+  module, les segments du noyau, l'archive, la page zéro, et le disque par
+  plages sur le contrat d'`arriereParUrl`. Il pose les registres d'un
+  chargeur (RIP, RSI sur la page zéro, CS à `__BOOT_CS`, les données à
+  `__BOOT_DS`), vérifie que la carte pose sa mémoire vidéo là où le plan
+  l'annonce, et poste la console par paquets, l'écran quand son mode
+  change, l'arrêt et les pannes. **Rien n'y suppose une page** : la toile
+  est un peintre qu'on lui donne, les messages une fonction. L'écran se
+  repeint et la console part **par une minuterie**, pendant que la boucle
+  respire, et pas au retour d'une tranche : un invité qui attend une touche
+  fait durer ses tranches, et rien n'était peint. La page HTML n'est qu'un
+  raccord : la toile, le doigt sur la tablette (la position dans l'image
+  montrée, sans les bandes), le pont.
+- **La bibliothèque** (`emitter_machine.rs`, `build.rs`) porte ces fichiers
+  et, quand `WISQ_PAGE_WASM` le désigne, le module de la page — jamais
+  pour wasm32, où il s'embarquerait lui-même. Quatre fonctions du C ABI :
+  `wisq_emitter_asset`, `wisq_emitter_boot_page` (la page zéro de
+  `kernel-entry` : la ligne du montage puis celle de l'image, l'écran de la
+  carte, l'archive), `wisq_emitter_usable_ram` (le jugement du repli) et
+  `wisq_emitter_screen_base`, exercées par le programme d'ABI.
+- **Le noyau d'une distribution** (`KernelPayload`, `WisqVM`) : la charge
+  utile du `bzImage`, là où l'en-tête la situe, décompressée en gzip (somme
+  et taille vérifiées) ou en zstd (la taille que le noyau ajoute retirée),
+  le reste refusé sous son nom.
+- **La machine montée** (`EmitterMachine`, `WisqVMRust`) comme
+  l'application l'ouvre : `IsoBoot` décide, la RAM est choisie pour
+  l'appareil (une puissance de deux, un gibioctet si l'on peut, deux au
+  plus — au-delà, le repli rate —, jamais moins que l'image ne demande), le
+  `vmlinux` est écrit une fois dans le dossier de travail et servi de là,
+  l'archive posée au-dessus du noyau, le plan écrit. **Le magasin**
+  (`EmitterStore`) sert la page et ses morceaux, lus dans leurs fichiers à
+  la demande, et le disque par plages, les écritures dans une couche en
+  mémoire, le fichier jamais écrit ; ses refus sont nommés (404, 400, 416,
+  405, 500). **Le pont** (`EmitterBridge`) lit ce que la page poste et écrit
+  ce qu'on lui envoie : les touches du jeu 1 (`X86Keystrokes`, et les
+  keysyms du clavier matériel), le texte en littéral JSON, un toucher fou
+  ramené au bord. Un nul dans la ligne de commande est refusé avant le
+  Rust : `withCString` l'aurait coupée en silence — le test l'a trouvé.
+  **La vue** (`EmitterDesktop`) branche le tout sur un `WKWebView`, par un
+  gestionnaire du schéma `wisq-machine://` qui sert hors du fil principal.
+- **L'application** : `EmitterMachineView` (l'écran de la page, le clavier
+  et la barre des touches vers la carte, la console série dans une
+  feuille), ouverte par la liste des machines **seulement** si le réglage
+  `wisq.machine.emetteur` est allumé, dans l'écran « Le bureau est-il
+  possible ? » ; une machine installée reste au cœur Swift. Éteint par
+  défaut : l'application ne bascule pas. `scripts/build-xcframework.sh`
+  construit et embarque le module ; le job « Cœur (Linux) » le construit
+  aussi et pose Bun.
+- **La boucle hôte** : le bloc de plus du « sur place » compte les
+  lectures de port ; un bloc qui en a fait une attend un périphérique, et
+  la machine continue. Un `jmp .` reste « sur place ».
+
+**Comment c'est jugé.**
+
+- **De bout en bout sous Linux** (`EmitterPageTests`) : la page tourne sous
+  Bun, et **chaque `fetch` revient au test**, qui répond par le même
+  `EmitterStore` que l'application ; les messages sont lus par le même
+  `EmitterBridge`, et ce qu'on envoie est le JavaScript qu'`EmitterBridge`
+  écrit pour WebKit, évalué tel quel. Le petit noyau de `kernel_entry`
+  (plus un « W » sur le port série et la sonde PCI de 00:03.0) va jusqu'à
+  son `hlt` : la RAM posée par le magasin, CS, DS et RSI d'un chargeur,
+  l'horloge CMOS figée par le plan, le disque en virtio-blk, la touche
+  tapée par le pont, le rouge et le bleu peints en RGBA, la console
+  arrivée ; puis le client du disque de `carte.js` lit, écrit dans la
+  couche et relit, contre le magasin. Le chemin de l'application, d'une
+  ISO gravée (`IsoGravure`, le petit noyau dedans) jusqu'au `hlt`, son
+  descripteur de volume lu par le disque. Une pièce disparue arrête la
+  page sous son nom.
+- **Dans un vrai WebKit** (`EmitterDesktopTests`, dans
+  `LocalDesktopTests.swift`, hébergé par l'application) : le même petit
+  noyau, par le schéma, le module embarqué. **Seul le job « App iOS » le
+  juge** ; ici, les deux fichiers qui importent WebKit ont été typés contre
+  un WebKit de carton aux protocoles `@MainActor` (le bloc-notes), et le
+  SwiftUI seulement analysé (`swiftc -frontend -parse`).
+- **Les sabotages d'une ligne**, chacun restauré par son script (le fichier
+  réécrit tel qu'il était, `git diff` vide) : les douze lignes de
+  `kernel-entry` que les quatorze cas traversent (deux d'entre elles relancées
+  après la mise en forme du test) ; le compteur de lectures de port de
+  `host.js` ; côté Swift, la couche ignorée en lecture, une plage hors du
+  disque acceptée, l'archive non alignée, le nul de la ligne accepté, la somme
+  gzip ignorée, la taille zstd gardée, le toucher non borné, une machine
+  installée ouverte dans l'émetteur, le plafond de 2 Gio retiré, le plan
+  absent du magasin, l'adresse d'arrêt lue en nombre, F1 décalé ; dans
+  `machine.js`, CS non posé, RSI non posé, le rouge et le bleu non échangés,
+  la minuterie qui ne peint pas, l'heure du mur malgré le plan, la console qui
+  jette, le disque sans arrière. **Tous tombent** ; le dernier survivait
+  d'abord (le petit noyau ne touchait pas au disque) et tombe depuis que le
+  noyau lit l'identifiant PCI de 00:03.0. Le gardien de `build.rs` contre
+  wasm32 n'a pas de test : il ne se voit qu'à une reconstruction sans fin.
+- `cargo test --release` : 893 réussis, 0 échec. La suite Swift entière :
+  3 008 tests exécutés, 69 sautés, 0 échec. `cargo fmt --check`, `clippy
+  -D warnings`, SwiftLint `--strict`, `check-whitespace`,
+  `check-project-sources` : propres. Compte publié : 3 950 → 3 984 (Swift
+  3 092 + Rust 892). `WebKitBench.swift` n'a pas bougé : l'émetteur n'a pas
+  changé.
+
+**Mesures.**
+
+- **Alpine depuis son ISO, par le chemin de l'application**
+  (`testAlpineBootsFromItsISOThroughTheStore`, une course, après que la
+  course du flux « cœur » a fini) : `alpine-virt-3.24.4-x86_64.iso` (somme
+  vérifiée), `IsoBoot` en tire `vmlinuz-virt` et `initramfs-virt`,
+  `EmitterMachine` monte le tout en 8,1 s (décompression du noyau comprise,
+  binaire de test sans optimisation), 512 Mio, la ligne des courses du 20
+  novembre (`console=ttyS0 modules=loop,squashfs,sd-mod,usb-storage`
+  derrière celle du montage), l'écran 1280 × 800. La page tourne sous Bun,
+  chaque `fetch` servi par le magasin Swift à travers un tube, en base64 :
+  « Mounting boot media: ok » à **243,6 s** du départ (181 et 204 s sous
+  `kernel-entry`), **341 lectures de l'ISO, 3,65 Mo** (254 à 368 sous
+  `kernel-entry`), 26 110 octets de console. Puis l'arrêt « refusée » à
+  `0x7f95a6acb434`, `CannotDecode` dans l'espace utilisateur : l'endroit du
+  mur x87 du 20 novembre (`ld-musl`), sans que les octets soient relevés
+  ici. **Le pic résident de Bun : 2 631 Mio**, contre 907 sous
+  `kernel-entry` — qui force une collecte pleine (`Bun.gc`) quand le cache
+  évince ; une page ne le peut pas, et c'est WebKit qui décidera sur un
+  appareil. Les vingt secondes de plus sont le tube et le base64 du banc,
+  ou l'absence de ces collectes : une seule course, rien ne les sépare.
+
+- `KernelPayload` sur le `vmlinuz-virt` d'Alpine 6.18.60 : 12 649 472 →
+  39 301 160 octets, identiques à la charge que Python décompresse, en
+  7,2 s dans un binaire de test sans optimisation (le chemin d'un iPhone
+  est optimisé, et n'est pas mesuré).
+- Le module de la page : 642 619 octets, embarqué dans la bibliothèque de
+  l'application.
+
+**Ce qui reste.**
+
+- **Ce que seule la CI juge** : que WebKit charge les modules ES et fasse
+  ses `fetch` (un `PUT` avec son corps compris) sur `wisq-machine://`,
+  compile le module, et garde le JIT — le test hébergé, au job « App iOS » ;
+  que `build-xcframework.sh` construise le module sur le runner ; que
+  `setup-bun` marche dans le conteneur Swift du job « Cœur (Linux) ». Le
+  SwiftUI n'est qu'analysé ici.
+- **Pour en faire le chemin par défaut** : la mémoire sur iPhone (la RAM
+  de l'invité, un gibioctet, est une `WebAssembly.Memory` du processus de
+  contenu, plus le cache de code — 1,3 à 3,4 Gio de pic sous Bun pour Void,
+  2,6 Gio pour Alpine par cette page, qui ne peut pas forcer de collecte —
+  et le `vmlinux` décompressé en mémoire le temps de l'écrire, ~60 Mio pour
+  Void) ; **les instantanés** (rien ne sauve ni ne reprend cette machine :
+  la RAM vit dans la page, et la couche du disque est perdue à la
+  fermeture) ; **les bureaux prêts** à refabriquer pour cette machine (ceux
+  du cœur Swift sont des instantanés de son état, pas de celui-ci) ; et le
+  mur de Void sous l'émetteur, la boucle du planificateur, avant tout
+  bureau. La couche d'écriture est en mémoire et sans borne.
+- **Les risques** : une origine de schéma à soi que WebKit lirait opaque
+  ferait refuser les modules (les réponses portent
+  `Access-Control-Allow-Origin`) ; un invité en attente active brûle la
+  batterie (le `hlt` attend, un `in` en boucle non) ; la page ne cède la main
+  que toutes les huit millisecondes, un toucher peut attendre autant.
+- La fusion avec `claude/pc-rust-coeur`, le x87 sous l'émetteur, la boucle
+  du planificateur de Void : comme avant.
+
 ## 2026-11-21 — Émetteur : un accès à cheval hors de la RAM coupé en deux, les gardes de la seconde marche tenues, et `kernel-entry` qui ne laisse rien derrière lui
 
 **Ce qui n'allait pas.** Le contrôle de la reprise d'en dessous a trouvé
