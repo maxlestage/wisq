@@ -221,6 +221,23 @@ pub fn decode_extended(bytes: &[u8]) -> Option<Extended> {
     }
 }
 
+impl Extended {
+    /// **L'instruction passe-t-elle le x87 au MMX ?** `emms`, toute forme du
+    /// MMX, et les conversions de SSE qui lisent ou écrivent un registre MMX :
+    /// `cvt(t)ps2pi` et `cvt(t)pd2pi` toujours, `cvtpi2ps` et `cvtpi2pd`
+    /// depuis un registre seulement. Ce sont elles qu'une exception du x87 en
+    /// attente arrête (`#MF`). Sur l'hôte, ES levé : `0f 2a c0`, `0f 2d c0`,
+    /// `66 0f 2a c0`, `66 0f 2d c0` livrent `#MF` ; `cvtpi2ps` et `cvtpi2pd`
+    /// depuis la mémoire, que le manuel dit sans passage au MMX, non.
+    pub fn touches_mmx(&self) -> bool {
+        match self.op {
+            Extra::Emms | Extra::Mmx(_) | Extra::Sse(Sse::ToMmx { .. }) => true,
+            Extra::Sse(Sse::FromMmx { .. }) => self.memory.is_none(),
+            Extra::X87 { .. } | Extra::Sse(_) => false,
+        }
+    }
+}
+
 impl Cpu {
     /// **Exécuter une instruction du second décodeur.** RIP n'est pas avancé :
     /// c'est l'appelant qui le fait, comme pour `execute`. Une instruction qui
@@ -233,8 +250,10 @@ impl Cpu {
         match instruction.op {
             Extra::X87 { .. } => self.execute_x87(instruction, at),
             // Le MMX partage l'état du x87 : une exception du x87 en attente
-            // l'arrête aussi.
-            Extra::Emms | Extra::Mmx(_) if self.x87_pending() => Err(ExtendedFault::FloatingPoint),
+            // l'arrête aussi (`touches_mmx`).
+            _ if instruction.touches_mmx() && self.x87_pending() => {
+                Err(ExtendedFault::FloatingPoint)
+            }
             Extra::Emms => {
                 self.fpu_tags = 0;
                 Ok(())
@@ -289,9 +308,11 @@ impl Cpu {
     /// MXCSR aux bits réservés levés est une `#GP(0)` qui ne change rien.
     ///
     /// **Ce que le silicium corrige en relisant**, mesuré par
-    /// `x86-fxsave-oracle.tsv` : le bit 6 du mot de contrôle se relit toujours
-    /// à un, et les bits « résumé d'erreur » et « occupé » du mot d'état sont
-    /// recalculés des exceptions en attente — ce que l'aire en dit est ignoré.
+    /// `x86-fxsave-oracle.tsv` : le mot de contrôle passe par
+    /// `x87::control_word`, comme pour `fldcw` (le bit 6 relu à un, les bits 7
+    /// et 13 à 15 à zéro), et les bits « résumé d'erreur » et « occupé » du mot
+    /// d'état sont recalculés des exceptions en attente — ce que l'aire en dit
+    /// est ignoré.
     pub fn restore_floating_point_state(&mut self, at: u64) -> Result<(), ExtendedFault> {
         use crate::x86_paging::Access;
         for edge in [at, at.wrapping_add(511)] {
@@ -310,7 +331,7 @@ impl Cpu {
         if mxcsr & !super::MXCSR_MASK != 0 {
             return Err(ExtendedFault::ReservedControl);
         }
-        self.fpu_control = half(0) | 0x40;
+        self.fpu_control = x87::control_word(half(0));
         self.fpu_status = half(2);
         self.x87_summarise();
         self.fpu_tags = area[4];

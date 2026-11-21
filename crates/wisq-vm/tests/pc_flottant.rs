@@ -136,9 +136,10 @@ fn an_x87_store_across_a_missing_page_leaves_nothing_behind() {
 /// **Une exception du x87 démasquée attend la prochaine instruction qui
 /// attend** : `fdivr` de 1 par 0, la division par zéro démasquée, ne range
 /// rien (ST(0) reste 0, la pile ne bouge pas) et lève ZE, ES et B ;
-/// `fnstsw %ax`, qui n'attend pas, passe et le lit ; puis `fwait`, `fld1` ou
-/// une instruction du MMX livrent `#MF` (vecteur 16), le cadre sur
-/// elles-mêmes. Après `fnclex`, plus rien n'attend.
+/// `fnstsw %ax`, qui n'attend pas, passe et le lit ; puis `fwait` (préfixé
+/// ou non), `fld1`, `emms`, une instruction du MMX ou une conversion de SSE
+/// qui touche un registre MMX livrent `#MF` (vecteur 16), le cadre sur
+/// elles-mêmes — chacune livre `SIGFPE` sur le silicium de l'hôte.
 #[test]
 fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
     // fld1 ; fldz ; fdivr %st(1),%st ; fnstsw %ax ; puis l'instruction qui
@@ -146,14 +147,26 @@ fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
     let debut = [0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xDF, 0xE0];
     for (nom, suite) in [
         ("fwait", &[0x9B][..]),
+        ("rex.w fwait", &[0x48, 0x9B]),
+        ("66 fwait", &[0x66, 0x9B]),
+        ("f3 fwait", &[0xF3, 0x9B]),
         ("fld1", &[0xD9, 0xE8]),
+        ("emms", &[0x0F, 0x77]),
         ("movq %mm0,%mm1", &[0x0F, 0x6F, 0xC8]),
+        ("movq2dq", &[0xF3, 0x0F, 0xD6, 0xC0]),
+        ("cvtpi2ps %mm0,%xmm0", &[0x0F, 0x2A, 0xC0]),
+        ("cvtpi2pd %mm0,%xmm0", &[0x66, 0x0F, 0x2A, 0xC0]),
+        ("cvtps2pi %xmm0,%mm0", &[0x0F, 0x2D, 0xC0]),
+        ("cvttps2pi %xmm0,%mm0", &[0x0F, 0x2C, 0xC0]),
+        ("cvtpd2pi %xmm0,%mm0", &[0x66, 0x0F, 0x2D, 0xC0]),
+        ("cvtps2pi (%rbx),%mm0", &[0x0F, 0x2D, 0x03]),
     ] {
         let mut code = debut.to_vec();
         code.extend_from_slice(suite);
         code.push(0xF4);
         let mut machine = nouvelle(&code);
         machine.cpu.fpu_control = 0x037B;
+        machine.cpu.regs[3] = 0x6000;
         machine.tourner(20).expect("livrée");
         assert_eq!(vecteur_recu(&machine), 16, "{nom} : #MF");
         let cadre = machine.cpu.memory.read(SOMMET - 40, Width::Qword);
@@ -170,14 +183,26 @@ fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
         assert_eq!(machine.cpu.x87_top(), 6, "{nom} : la pile n'a pas bougé");
         assert_eq!(machine.cpu.x87[6], (0, 0), "{nom} : ST(0) est resté zéro");
     }
-    // fnclex avant fwait : rien n'attend plus.
-    let mut code = debut.to_vec();
-    code.extend_from_slice(&[0xDB, 0xE2, 0x9B, 0xF4]);
-    let mut machine = nouvelle(&code);
-    machine.cpu.fpu_control = 0x037B;
-    machine.tourner(20).expect("sans faute");
-    assert!(machine.arretee);
-    assert_eq!(machine.cpu.rip, 0x100C, "jusqu'au hlt");
+    // fnclex, fninit ou fnsave avant fwait : rien n'attend plus.
+    for (nom, efface) in [
+        ("fnclex", &[0xDB, 0xE2][..]),
+        ("fninit", &[0xDB, 0xE3]),
+        ("fnsave (%rbx)", &[0xDD, 0x33]),
+    ] {
+        let mut code = debut.to_vec();
+        code.extend_from_slice(efface);
+        code.extend_from_slice(&[0x9B, 0xF4]);
+        let mut machine = nouvelle(&code);
+        machine.cpu.fpu_control = 0x037B;
+        machine.cpu.regs[3] = 0x6000;
+        machine.tourner(20).expect("sans faute");
+        assert!(machine.arretee, "{nom}");
+        assert_eq!(
+            machine.cpu.rip,
+            0x1008 + efface.len() as u64 + 2,
+            "{nom} : jusqu'au hlt"
+        );
+    }
     // Masquée, la même division rend l'infini et continue.
     let mut code = debut.to_vec();
     code.extend_from_slice(&[0x9B, 0xF4]);
@@ -185,6 +210,106 @@ fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
     machine.tourner(20).expect("sans faute");
     assert_eq!(machine.cpu.rip, 0x100A);
     assert_eq!(machine.cpu.x87[6], (1 << 63, 0x7FFF), "+∞");
+}
+
+/// **Ce qui n'attend pas passe sous une exception en attente** : les formes
+/// `fn…` qui rangent un mot ou l'environnement en mémoire, `fneni`, `fndisi`
+/// et `fnsetpm` (des restes du 8087 et du 80287), et `cvtpi2ps` ou
+/// `cvtpi2pd` depuis la mémoire, que le manuel dit sans passage au MMX. Sur le
+/// silicium de l'hôte, aucune ne livre `SIGFPE`. ES reste levé — sauf après
+/// `fnstenv`, qui masque tout une fois l'environnement rangé : le `fwait` qui
+/// suit livre `#MF`, le cadre sur lui, ou passe après `fnstenv` (l'hôte fait
+/// de même). `fnstsw` et `fnstcw` ont rangé leur mot ; `fnstenv`,
+/// l'environnement, ES compris.
+#[test]
+fn what_does_not_wait_runs_under_a_pending_exception() {
+    // fld1 ; fldz ; fdivr %st(1),%st ; fnstsw %ax ; l'instruction à 0x1008 ;
+    // fwait ; hlt.
+    let debut = [0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xDF, 0xE0];
+    for (nom, suite, ecrit) in [
+        ("fnstsw (%rbx)", &[0xDD, 0x3B][..], Some(0xB084u16)),
+        ("fnstcw (%rbx)", &[0xD9, 0x3B], Some(0x037B)),
+        ("fnstenv (%rbx)", &[0xD9, 0x33], Some(0x037B)),
+        ("fneni", &[0xDB, 0xE0], None),
+        ("fndisi", &[0xDB, 0xE1], None),
+        ("fnsetpm", &[0xDB, 0xE4], None),
+        ("cvtpi2ps (%rbx),%xmm0", &[0x0F, 0x2A, 0x03], None),
+        ("cvtpi2pd (%rbx),%xmm0", &[0x66, 0x0F, 0x2A, 0x03], None),
+    ] {
+        let mut code = debut.to_vec();
+        code.extend_from_slice(suite);
+        code.extend_from_slice(&[0x9B, 0xF4]);
+        let mut machine = nouvelle(&code);
+        machine.cpu.fpu_control = 0x037B;
+        machine.cpu.regs[3] = 0x6000;
+        machine.tourner(20).expect("sans arrêt nommé");
+        let fwait = 0x1008 + suite.len() as u64;
+        if nom.starts_with("fnstenv") {
+            assert!(machine.arretee);
+            assert_eq!(machine.cpu.rip, fwait + 2, "fnstenv : jusqu'au hlt");
+        } else {
+            assert_eq!(vecteur_recu(&machine), 16, "{nom} : #MF au fwait");
+            let cadre = machine.cpu.memory.read(SOMMET - 40, Width::Qword);
+            assert_eq!(cadre, Some(fwait), "{nom} : le cadre sur fwait");
+        }
+        if let Some(mot) = ecrit {
+            let lu = machine.cpu.memory.read(0x6000, Width::Word);
+            assert_eq!(lu, Some(u64::from(mot)), "{nom} : le mot rangé");
+        }
+        if nom.starts_with("fnstenv") {
+            let etat = machine.cpu.memory.read(0x6004, Width::Word);
+            assert_eq!(etat, Some(0xB084), "fnstenv : le mot d'état, ES compris");
+        }
+    }
+}
+
+/// **`fldcw` qui démasque une exception déjà levée la met en attente** :
+/// `fdivr` de 1 par 0, masquée, lève ZE sans ES ; `fldcw` d'un mot qui
+/// démasque ZE lève ES et B, et le `fwait` suivant livre `#MF`.
+#[test]
+fn fldcw_unmasking_a_raised_exception_makes_it_pending() {
+    // fld1 ; fldz ; fdivr %st(1),%st ; fnstsw %ax ; fldcw (%rbx) ; fwait ;
+    // hlt.
+    let code = [
+        0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xDF, 0xE0, 0xD9, 0x2B, 0x9B, 0xF4,
+    ];
+    let mut machine = nouvelle(&code);
+    machine.cpu.regs[3] = 0x6000;
+    ecrire(&mut machine, 0x6000, 0x037B);
+    machine.tourner(20).expect("livrée");
+    assert_eq!(machine.cpu.regs[0] & 0x80BF, 0x0004, "ZE seul, sans ES");
+    assert_eq!(vecteur_recu(&machine), 16, "#MF au fwait");
+    let cadre = machine.cpu.memory.read(SOMMET - 40, Width::Qword);
+    assert_eq!(cadre, Some(0x100A), "le cadre sur fwait");
+    assert_eq!(machine.cpu.fpu_status & 0x8080, 0x8080, "ES et B");
+}
+
+/// **`fwait` compte pour une instruction**, préfixé ou non, comme le `nop`
+/// qu'il est sans exception en attente : le 8253 avance sur le compte des
+/// instructions retirées.
+#[test]
+fn fwait_is_counted_as_one_instruction() {
+    let compte = |code: &[u8]| {
+        let mut machine = nouvelle(code);
+        machine.tourner(20).expect("sans faute");
+        assert!(machine.arretee);
+        (machine.retirees, machine.cpu.rip)
+    };
+    // fwait ; rex.w fwait ; 66 fwait ; hlt — puis la même suite en nop.
+    let attentes = compte(&[0x9B, 0x48, 0x9B, 0x66, 0x9B, 0xF4]);
+    let nops = compte(&[0x90, 0x48, 0x90, 0x66, 0x90, 0xF4]);
+    assert_eq!(attentes, nops);
+    assert_eq!(attentes.1, 0x1006, "jusqu'au hlt");
+    // `lock fwait` n'est pas une attente : `#UD` sur l'hôte (SIGILL), un
+    // arrêt nommé ici.
+    let mut machine = nouvelle(&[0xF0, 0x9B, 0xF4]);
+    let issue = machine.tourner(10);
+    assert!(
+        issue
+            .as_ref()
+            .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+        "lock fwait : {issue:?}"
+    );
 }
 
 /// **`fnsave` et `fnstenv` à cheval sur une page absente** : `fnsave` range

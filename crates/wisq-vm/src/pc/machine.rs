@@ -166,10 +166,36 @@ fn physique_du_rang(bloc: &super::blocs::Bloc, rang: usize) -> usize {
 fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> {
     let octets = ram.get(debut..debut + disponibles)?;
     // `fwait` peut livrer `#MF` : il passe par le pas à pas (`Lue::Attente`).
-    if octets.first() == Some(&0x9B) {
+    if attente(octets).is_some() {
         return None;
     }
     decode(octets)
+}
+
+/// **`fwait`, préfixes compris** : `Some(Some(longueur))` quand `octets` en
+/// commence un, `Some(None)` pour `lock fwait`, illisible. Un préfixe devant
+/// `9b` ne change rien à l'attente — sur l'hôte, `48 9b`, `66 9b`, `f3 9b`,
+/// `2e 9b` et `67 9b` livrent `#MF` comme `9b` seul ; `f0 9b` est `#UD`
+/// (SIGILL), que `decode`, que l'émetteur partage, lit pourtant comme un
+/// `nop`. La longueur est celle que `decode` lit.
+fn attente(octets: &[u8]) -> Option<Option<usize>> {
+    let prefixes = octets
+        .iter()
+        .take_while(|octet| {
+            matches!(
+                octet,
+                0x26 | 0x2E | 0x36 | 0x3E | 0x40..=0x4F | 0x64..=0x67 | 0xF0 | 0xF2 | 0xF3
+            )
+        })
+        .count();
+    if octets.get(prefixes) != Some(&0x9B) {
+        return None;
+    }
+    if octets[..prefixes].contains(&0xF0) {
+        return Some(None);
+    }
+    let lue = decode(octets)?;
+    (lue.op == Op::Nop && lue.length == prefixes + 1).then_some(Some(lue.length))
 }
 
 /// Ce qu'un passage par un bloc a donné.
@@ -188,10 +214,10 @@ enum Passage {
 enum Lue {
     Commune(Decoded),
     Etendue(Extended),
-    /// **`fwait`** (`9b`) : `decode` le lit comme un `nop`, et c'est ce qu'il
-    /// est — sauf quand une exception du x87 démasquée attend, qu'il livre
-    /// (`#MF`).
-    Attente,
+    /// **`fwait`** (`9b`, et ses préfixes) : `decode` le lit comme un `nop`,
+    /// et c'est ce qu'il est — sauf quand une exception du x87 démasquée
+    /// attend, qu'il livre (`#MF`). La longueur, préfixes compris.
+    Attente(usize),
 }
 
 impl Lue {
@@ -199,15 +225,15 @@ impl Lue {
         match self {
             Self::Commune(instruction) => instruction.length,
             Self::Etendue(instruction) => instruction.length,
-            Self::Attente => 1,
+            Self::Attente(longueur) => *longueur,
         }
     }
 }
 
 /// Lire une instruction, par l'un ou l'autre décodeur.
 fn lire(octets: &[u8]) -> Option<Lue> {
-    if octets.first() == Some(&0x9B) {
-        return Some(Lue::Attente);
+    if let Some(longueur) = attente(octets) {
+        return longueur.map(Lue::Attente);
     }
     decode(octets)
         .map(Lue::Commune)
@@ -1106,11 +1132,11 @@ impl Machine {
                     Err(ExtendedFault::FloatingPoint) => Err(Exception::Flottant.into()),
                 };
             }
-            Lue::Attente => {
+            Lue::Attente(longueur) => {
                 if self.cpu.x87_pending() {
                     return Err(Exception::Flottant.into());
                 }
-                self.cpu.rip = self.cpu.rip.wrapping_add(1);
+                self.cpu.rip = self.cpu.rip.wrapping_add(*longueur as u64);
                 self.retirees = self.retirees.wrapping_add(1);
                 return Ok(());
             }
