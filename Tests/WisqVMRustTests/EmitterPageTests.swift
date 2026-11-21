@@ -126,6 +126,204 @@ final class EmitterPageTests: XCTestCase {
         XCTAssertTrue(why.contains("noyau-0 répond 500"), why)
     }
 
+    /// Le petit noyau, sans disque, écran de 8 × 4, horloge figée : il attend
+    /// une touche avant son `hlt`, et la machine tourne tant qu'il attend.
+    private func tinyKernel(in page: BunPage) throws -> EmitterMachine.Prepared {
+        let kernel = page.folder.appendingPathComponent("vmlinux")
+        try Data(EmitterFixtures.elf(EmitterFixtures.kernel())).write(to: kernel)
+        return try EmitterMachine.prepare(
+            .init(kernel: kernel, ramBytes: 64 << 20, screen: .init(width: 8, height: 4), clock: 1_795_178_096_000),
+            scratch: page.folder)
+    }
+
+    /// **Une machine ne tourne qu'une fois à la fois, et s'arrête quand on le
+    /// lui demande** — par le script même qu'`EmitterDesktop.stop` envoie, et
+    /// dont dépend le bouton Fermer.
+    func testTheMachineRunsOnceAtATimeAndStopsWhenAsked() throws {
+        let page = try BunPage.open(name: "arret")
+        defer { page.close() }
+        try page.start(try tinyKernel(in: page))
+        try page.wait(for: "prête") { if case .ready = $0 { return true }; return false }
+        XCTAssertEqual(
+            try page.evaluate("window.wisq.courir().then(() => 'partie deux fois', (e) => e.message)") as? String,
+            "la machine tourne déjà")
+        XCTAssertEqual(try page.evaluate("window.wisq.etat().enMarche") as? Bool, true, "elle attend sa touche")
+        _ = try page.evaluate(EmitterBridge.stop)
+        let stopped = try page.wait(for: "l'arrêt", patience: 15) { if case .stopped = $0 { return true }; return false }
+        guard case .stopped(let why, _, _) = stopped else { return XCTFail("\(stopped)") }
+        XCTAssertEqual(why, "arrêtée par l'application")
+        XCTAssertEqual(try page.evaluate("window.wisq.etat().enMarche") as? Bool, false)
+        // Une machine arrêtée ne repart pas : `courir` rend l'arrêt d'avant.
+        XCTAssertEqual(try page.evaluate("window.wisq.courir().then((a) => a.stopped)") as? String,
+                       "arrêtée par l'application")
+    }
+
+    /// **Un plan que la page ne peut pas honorer l'arrête sous son nom**, avant
+    /// la première instruction : une RAM absente, un écran que la carte ne
+    /// pose pas là où la page zéro l'annonce, un morceau hors de la RAM, un
+    /// morceau qui n'a pas la longueur promise.
+    func testAPlanThePageCannotHonourStopsItByName() throws {
+        func plan(_ change: @escaping (inout [String: Any]) -> Void) -> (String, EmitterStore.Response) -> EmitterStore.Response {
+            { name, response in
+                guard name == "plan.json",
+                      var plan = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+                else { return response }
+                change(&plan)
+                let body = (try? JSONSerialization.data(withJSONObject: plan)) ?? Data()
+                return EmitterStore.Response(status: 200, contentType: response.contentType, body: body)
+            }
+        }
+        let kernelBytes = EmitterFixtures.kernel().count
+        let cases: [(String, (String, EmitterStore.Response) -> EmitterStore.Response, String)] = [
+            ("ram", plan { $0["pages"] = 0 }, "le plan ne dit pas la RAM : 0"),
+            ("ecran", plan { plan in
+                var screen = plan["ecran"] as? [String: Any] ?? [:]
+                screen["base"] = String(0xD000_0000)
+                plan["ecran"] = screen
+            }, "la carte pose sa mémoire vidéo à 0xe0000000, le plan l'annonce à 3489660928"),
+            ("hors", plan { plan in
+                var pieces = plan["segments"] as? [[String: Any]] ?? []
+                pieces[0]["a"] = (64 << 20) - 16
+                plan["segments"] = pieces
+            }, "noyau-0 ne tient pas dans la RAM à \((64 << 20) - 16)"),
+            ("court", { name, response in
+                guard name == "noyau-0" else { return response }
+                return EmitterStore.Response(
+                    status: 200, contentType: response.contentType, body: response.body.prefix(kernelBytes - 1))
+            }, "noyau-0 rend \(kernelBytes - 1) octets pour \(kernelBytes)"),
+        ]
+        for (name, rewrite, expected) in cases {
+            let page = try BunPage.open(name: "plan-\(name)")
+            defer { page.close() }
+            page.rewrite = rewrite
+            try page.start(try tinyKernel(in: page))
+            let failure = try page.wait(for: "la panne") { message in
+                if case .ready = message { throw BunPage.Failure(description: "\(name) : la page est partie") }
+                if case .failure = message { return true }
+                return false
+            }
+            guard case .failure(let why) = failure else { return XCTFail("\(failure)") }
+            XCTAssertTrue(why.contains(expected), "\(name) : \(why)")
+        }
+    }
+
+    /// **La console compte ce qu'elle jette**, et le dit dans le paquet
+    /// suivant : ce qui reste est la fin de ce que l'invité a dit, et le
+    /// compte plus ce qui reste fait tout ce qu'il a dit.
+    func testTheConsoleCountsWhatItDrops() throws {
+        let page = try BunPage.open(name: "console")
+        defer { page.close() }
+        try page.start(try tinyKernel(in: page))
+        try page.wait(for: "prête") { if case .ready = $0 { return true }; return false }
+        let script = #"""
+            (async () => {
+              const { consoleTamponnee } = await import("./machine.js");
+              const postes = [];
+              let t = 0;
+              const c = consoleTamponnee({ poster: (p) => postes.push(p), maintenant: () => t, garde: 8, paquet: 1000, periode: 100 });
+              for (let i = 0; i < 20; i++) c.octet(65 + i);
+              c.vider(false);
+              const avant = postes.length;
+              t = 100;
+              c.vider(false);
+              c.vider(true);
+              return JSON.stringify({ avant, postes });
+            })()
+            """#
+        let said = try XCTUnwrap(try page.evaluate(script) as? String)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(said.utf8)) as? [String: Any])
+        XCTAssertEqual(object["avant"] as? Int, 0, "ni plein ni à l'heure : rien ne part")
+        let posted = try XCTUnwrap(object["postes"] as? [[String: Any]])
+        XCTAssertEqual(posted.count, 1, "un paquet, et rien après lui")
+        let message = try EmitterBridge.message(from: posted[0])
+        guard case .console(let bytes, let lost) = message else { return XCTFail("\(message)") }
+        XCTAssertGreaterThan(lost, 0, "elle a débordé")
+        XCTAssertLessThanOrEqual(bytes.count, 8)
+        XCTAssertEqual(bytes.count + lost, 20, "ce qui reste et ce qui est compté font tout")
+        XCTAssertEqual([UInt8](bytes), Array((65..<85).map(UInt8.init).suffix(bytes.count)), "la fin")
+    }
+
+    /// **Où un doigt touche l'image** : les bandes noires n'en font pas
+    /// partie, et `borne` ramène au bord ce qui en sort.
+    func testThePositionOnTheScreenLeavesTheBandsOut() throws {
+        let page = try BunPage.open(name: "position")
+        defer { page.close() }
+        try page.start(try tinyKernel(in: page))
+        try page.wait(for: "prête") { if case .ready = $0 { return true }; return false }
+        let script = #"""
+            (async () => {
+              const { positionSurLEcran: p } = await import("./machine.js");
+              const boite = { left: 0, top: 0, width: 400, height: 400 };
+              const decale = { left: 10, top: 20, width: 400, height: 400 };
+              return JSON.stringify([
+                p(200, 200, boite, 1280, 800),
+                p(100, 137.5, boite, 1280, 800),
+                p(200, 10, boite, 1280, 800),
+                p(200, 10, boite, 1280, 800, { borne: true }),
+                p(500, 500, boite, 1280, 800, { borne: true }),
+                p(110, 157.5, decale, 1280, 800),
+                p(100, 100, boite, 0, 800),
+                p(100, 100, { left: 0, top: 0, width: 0, height: 400 }, 1280, 800, { borne: true }),
+              ]);
+            })()
+            """#
+        let said = try XCTUnwrap(try page.evaluate(script) as? String)
+        let points = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(said.utf8)) as? [Any])
+        func point(_ index: Int) -> [Double]? {
+            (points[index] as? [String: Double]).map { [$0["x"] ?? -1, $0["y"] ?? -1] }
+        }
+        XCTAssertEqual(point(0), [0.5, 0.5], "le centre")
+        XCTAssertEqual(point(1), [0.25, 0.25], "l'image fait 400 × 250, sous une bande de 75")
+        XCTAssertNil(point(2), "dans la bande du haut")
+        XCTAssertEqual(point(3), [0.5, 0], "ramené au bord du haut")
+        XCTAssertEqual(point(4), [1, 1], "ramené au coin")
+        XCTAssertEqual(point(5), [0.25, 0.25], "la boîte décalée")
+        XCTAssertNil(point(6), "une image vide")
+        XCTAssertNil(point(7), "une boîte vide, même bornée")
+    }
+
+    /// **Le doigt sur la page entière** (`machine.html` dans une fausse page) :
+    /// posé dans l'image, il enfonce le bouton ; glissé hors d'elle, il suit
+    /// le bord ; **relevé hors d'elle, il relâche** — la page ne le disait
+    /// qu'à l'intérieur, et l'invité gardait le bouton tenu, un glisser sans
+    /// fin. Posé dans une bande, il ne fait rien.
+    func testTheFingerIsLiftedEvenOutsideTheImage() throws {
+        let page = try BunPage.open(name: "doigt", harness: .page)
+        defer { page.close() }
+        try page.start(try tinyKernel(in: page))
+        try page.wait(for: "prête") { if case .ready = $0 { return true }; return false }
+        let script = #"""
+            (async () => {
+              for (let i = 0; i < 500 && toile.width !== 8; i++) await new Promise((r) => setTimeout(r, 10));
+              const vus = [];
+              window.wisq.vm.toucher = (x, y, boutons) => { vus.push([x, y, boutons]); return false; };
+              // 8 × 4 dans 400 × 400 : l'image fait 400 × 200, de 100 à 300.
+              const empeches = [
+                pointeur("pointerdown", 200, 10),
+                pointeur("pointermove", 200, 20),
+                pointeur("pointerup", 200, 10),
+                pointeur("pointerdown", 100, 150),
+                pointeur("pointermove", 380, 390),
+                pointeur("pointerup", 380, 390),
+                pointeur("pointermove", 100, 150),
+              ];
+              return JSON.stringify({ largeur: toile.width, peintes, vus, empeches, captures });
+            })()
+            """#
+        let said = try XCTUnwrap(try page.evaluate(script) as? String)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(said.utf8)) as? [String: Any])
+        XCTAssertEqual(object["largeur"] as? Int, 8, "la toile a pris le mode de l'écran")
+        XCTAssertGreaterThan(object["peintes"] as? Int ?? 0, 0, "et l'image y est peinte")
+        let seen = try XCTUnwrap(object["vus"] as? [[Double]])
+        XCTAssertEqual(seen, [[0.25, 0.25, 1], [0.95, 1, 1], [0.95, 1, 0]],
+                       "posé dans l'image, glissé hors d'elle, relevé hors d'elle : relâché au bord")
+        XCTAssertEqual(object["empeches"] as? [Bool], Array(repeating: true, count: 7),
+                       "la page garde chaque geste pour elle")
+        XCTAssertEqual(object["captures"] as? [Int], [7, 7], "le pointeur capturé à chaque pose")
+        XCTAssertEqual(page.unreadable, 0)
+        XCTAssertEqual(page.notFound, [])
+    }
+
     /// **Alpine depuis son ISO, par le magasin**, quand on en donne une
     /// (`WISQ_EMITTER_ALPINE_ISO`) : `IsoBoot` tire le noyau et l'archive de
     /// l'image, `EmitterMachine` les monte, la page les pose et lit l'ISO par
@@ -211,6 +409,16 @@ final class BunPage: @unchecked Sendable {
     private var results: [Int: Result<Any?, Error>] = [:]
     private(set) var unreadable = 0
     private(set) var notFound: [String] = []
+    /// **Ce que le test change à une réponse du magasin**, par nom : un plan
+    /// que la page ne peut pas honorer, un morceau tronqué.
+    var rewrite: ((String, EmitterStore.Response) -> EmitterStore.Response)?
+
+    /// Ce que Bun fait tourner : `machine.js` seul, ou `machine.html` dans une
+    /// fausse page — sa toile, ses doigts, son pont vers l'application.
+    enum Harness {
+        case machine
+        case page
+    }
 
     struct Failure: Error, CustomStringConvertible {
         let description: String
@@ -221,7 +429,7 @@ final class BunPage: @unchecked Sendable {
     }
 
     /// **Bun et le module, ou un saut qui dit lequel manque.**
-    static func open(name: String) throws -> BunPage {
+    static func open(name: String, harness: Harness = .machine) throws -> BunPage {
         let environment = ProcessInfo.processInfo.environment
         let path = (environment["PATH"] ?? "").split(separator: ":").map { "\($0)/bun" }
         let candidates = [environment["WISQ_BUN"], "/root/.bun/bin/bun"]
@@ -237,10 +445,11 @@ final class BunPage: @unchecked Sendable {
         page.module = module
         // **Les fichiers de la page, tels que la bibliothèque les porte** :
         // ceux que le magasin servirait, et pas ceux du dépôt.
-        for file in EmitterMachine.pageFiles where file.hasSuffix(".js") {
+        for file in EmitterMachine.pageFiles {
             try XCTUnwrap(EmitterMachine.asset(file)).write(to: page.folder.appendingPathComponent(file))
         }
-        try Data(harness.utf8).write(to: page.folder.appendingPathComponent("banc.mjs"))
+        let script = harness == .machine ? Self.harness : Self.pageHarness
+        try Data(script.utf8).write(to: page.folder.appendingPathComponent("banc.mjs"))
         page.bun = bun
         return page
     }
@@ -335,8 +544,13 @@ final class BunPage: @unchecked Sendable {
         if let id = object["id"] as? Int, let url = (object["url"] as? String).flatMap(URL.init(string:)) {
             let body = (object["corps"] as? String).flatMap { Data(base64Encoded: $0) }
             let method = object["methode"] as? String ?? "GET"
-            let response = store?.respond(method: method, url: url, body: body)
+            var response = store?.respond(method: method, url: url, body: body)
                 ?? EmitterStore.Response(status: 503, contentType: "text/plain", body: Data())
+            if let rewrite {
+                var name = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
+                while name.hasPrefix("/") { name.removeFirst() }
+                response = rewrite(name, response)
+            }
             if response.status == 404 { notFound.append(url.absoluteString) }
             try write(["id": id, "statut": response.status, "corps": response.body.base64EncodedString()])
         } else if let message = object["message"] as? [String: Any] {
@@ -455,6 +669,78 @@ final class BunPage: @unchecked Sendable {
       conducteur.courir().catch((raison) => ecrire({ message: { kind: "panne", pourquoi: String(raison?.message ?? raison) } }));
     } catch (raison) {
       ecrire({ message: { kind: "panne", pourquoi: String(raison?.message ?? raison) } });
+    }
+    """#
+
+    /// **Le banc de la page entière** : le script de `machine.html`, tel que
+    /// la bibliothèque le porte, dans une fausse page — `document` n'a que la
+    /// toile, la toile n'a que ce que la page lui demande, et
+    /// `window.webkit.messageHandlers.wisq` poste vers ce test. `pointeur(genre,
+    /// x, y)` y envoie un évènement de doigt comme WebKit le ferait.
+    static let pageHarness = #"""
+    import { readFileSync, writeFileSync } from "fs";
+    import { createInterface } from "readline";
+
+    const BASE = "wisq-machine://machine/";
+    const ecrire = (objet) => process.stdout.write(JSON.stringify(objet) + "\n");
+    let ticket = 0;
+    const attente = new Map();
+    const chercher = (url, options = {}) => new Promise((resoudre) => {
+      const id = ++ticket;
+      attente.set(id, resoudre);
+      const corps = options.body ? Buffer.from(options.body).toString("base64") : null;
+      ecrire({ id, methode: options.method ?? "GET", url: String(url), corps });
+    });
+    const ecouteurs = {};
+    globalThis.boite = { left: 0, top: 0, width: 400, height: 400 };
+    globalThis.captures = [];
+    globalThis.peintes = 0;
+    const toile = {
+      width: 1,
+      height: 1,
+      addEventListener(genre, faire) { ecouteurs[genre] = faire; },
+      setPointerCapture(id) { globalThis.captures.push(id); },
+      getBoundingClientRect: () => globalThis.boite,
+      getContext: () => ({
+        createImageData: (largeur, hauteur) => ({ width: largeur, height: hauteur, data: new Uint8ClampedArray(largeur * hauteur * 4) }),
+        putImageData() { globalThis.peintes += 1; },
+      }),
+    };
+    globalThis.toile = toile;
+    globalThis.window = globalThis;
+    globalThis.webkit = { messageHandlers: { wisq: { postMessage: (message) => ecrire({ message }) } } };
+    globalThis.document = { getElementById: (id) => (id === "ecran" ? toile : null) };
+    globalThis.location = { href: BASE + "machine.html" };
+    globalThis.fetch = chercher;
+    globalThis.pointeur = (type, x, y) => {
+      let empeche = false;
+      ecouteurs[type]({ type, clientX: x, clientY: y, pointerId: 7, preventDefault() { empeche = true; } });
+      return empeche;
+    };
+    createInterface({ input: process.stdin }).on("line", async (ligne) => {
+      const m = JSON.parse(ligne);
+      if (m.id !== undefined) {
+        const resoudre = attente.get(m.id);
+        attente.delete(m.id);
+        resoudre(new Response(Buffer.from(m.corps, "base64"), { status: m.statut }));
+      } else if (m.js !== undefined) {
+        try {
+          const rendu = await (0, eval)(m.js);
+          ecrire({ n: m.n, rendu: rendu === undefined ? null : rendu });
+        } catch (raison) {
+          ecrire({ n: m.n, erreur: String(raison?.message ?? raison) });
+        }
+      } else if (m.serie !== undefined && globalThis.wisq !== undefined) {
+        globalThis.wisq.vm.send(Buffer.from(m.serie, "base64"));
+      }
+    });
+    const html = readFileSync("./machine.html", "utf8");
+    const script = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+    if (script === null) {
+      ecrire({ message: { kind: "panne", pourquoi: "machine.html n'a pas de script de module" } });
+    } else {
+      writeFileSync("./page.mjs", script[1]);
+      await import("./page.mjs");
     }
     """#
 }

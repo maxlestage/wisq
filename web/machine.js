@@ -28,7 +28,7 @@
 // C'est ce qui le fait juger sous Bun, de bout en bout, par le même magasin
 // Swift que l'application (`EmitterMachineTests`), et la page
 // (`machine.html`) n'est qu'un raccord de quelques lignes.
-import { machine, SLOTS } from "./host.js";
+import { machine, SLOTS, ARRET_DEMANDE } from "./host.js";
 import { carte, arriereParUrl } from "./carte.js";
 import { emetteur } from "./page-emitter.js";
 
@@ -52,7 +52,11 @@ export function versRgba(source, cible) {
 /// l'image y est posée entière, centrée, à son rapport (`object-fit:
 /// contain`) : les bandes noires autour n'en font pas partie. `null` hors de
 /// l'image, ou pour une image ou une boîte vides.
-export function positionSurLEcran(x, y, rect, largeur, hauteur) {
+///
+/// `{ borne: true }` ramène au bord ce qui tombe hors de l'image au lieu de
+/// rendre `null` : un doigt qui glisse hors de l'image, ou qui s'y relève,
+/// doit encore être dit à l'invité (voir `doigt`).
+export function positionSurLEcran(x, y, rect, largeur, hauteur, { borne = false } = {}) {
   if (!(largeur > 0 && hauteur > 0 && rect.width > 0 && rect.height > 0)) return null;
   const echelle = Math.min(rect.width / largeur, rect.height / hauteur);
   const montree = { largeur: largeur * echelle, hauteur: hauteur * echelle };
@@ -60,8 +64,52 @@ export function positionSurLEcran(x, y, rect, largeur, hauteur) {
   const haut = rect.top + (rect.height - montree.hauteur) / 2;
   const fx = (x - gauche) / montree.largeur;
   const fy = (y - haut) / montree.hauteur;
+  if (!(Number.isFinite(fx) && Number.isFinite(fy))) return null;
+  if (borne) return { x: Math.min(Math.max(fx, 0), 1), y: Math.min(Math.max(fy, 0), 1) };
   if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return null;
   return { x: fx, y: fy };
+}
+
+/// **Le doigt sur la tablette de la carte**, d'un évènement de pointeur à
+/// l'autre. `toucher(x, y, boutons)` est celui du conducteur ; le doigt rend
+/// `(genre, x, y, rect, largeur, hauteur)`, où `genre` est le `type` de
+/// l'évènement, et dit s'il a parlé à l'invité.
+///
+/// - **posé** dans l'image : le bouton gauche, enfoncé ; dans les bandes
+///   noires, rien — on n'appuie pas à côté de l'écran ;
+/// - **glissé**, doigt posé : la position, **ramenée au bord** quand le doigt
+///   sort de l'image, le bouton toujours tenu ;
+/// - **relevé** ou **annulé**, doigt posé : le bouton relâché, toujours, à la
+///   position ramenée au bord — ou à la dernière dite, si l'image a disparu.
+///   Un relâchement perdu laisse le bouton tenu dans l'invité, qui voit un
+///   glisser sans fin : c'est ce que faisait la page tant qu'elle ne
+///   l'envoyait que dans l'image.
+export function doigt(toucher) {
+  let pose = false;
+  let dernier = { x: 0.5, y: 0.5 };
+  return (genre, x, y, rect, largeur, hauteur) => {
+    if (genre === "pointerdown") {
+      const p = positionSurLEcran(x, y, rect, largeur, hauteur);
+      if (p === null) return false;
+      pose = true;
+      dernier = p;
+      toucher(p.x, p.y, 1);
+      return true;
+    }
+    if (!pose) return false;
+    const p = positionSurLEcran(x, y, rect, largeur, hauteur, { borne: true }) ?? dernier;
+    dernier = p;
+    if (genre === "pointermove") {
+      toucher(p.x, p.y, 1);
+      return true;
+    }
+    if (genre === "pointerup" || genre === "pointercancel") {
+      pose = false;
+      toucher(p.x, p.y, 0);
+      return true;
+    }
+    return false;
+  };
 }
 
 /// Des octets en base64, par tranches : passer des dizaines de kibioctets à
@@ -83,6 +131,42 @@ const CONSOLE_GARDE = 1 << 16;
 /// dizaines de milliers de sérialisations pour un démarrage.
 const CONSOLE_PERIODE = 100;
 const CONSOLE_PAQUET = 4096;
+
+/// **La console de la page** : les octets du port série, tamponnés et postés
+/// par paquets (`{ kind: "console", octets, perdus }`). Quand elle déborde
+/// (`garde` octets), la plus vieille moitié part et **est comptée** dans
+/// `perdus`, que le paquet suivant porte. `vider(false)` n'envoie que si le
+/// paquet est plein ou la période passée ; `vider(true)`, tout de suite.
+export function consoleTamponnee({
+  poster,
+  maintenant,
+  garde = CONSOLE_GARDE,
+  paquet = CONSOLE_PAQUET,
+  periode = CONSOLE_PERIODE,
+}) {
+  let tampon = [];
+  let perdus = 0;
+  let dernierEnvoi = maintenant();
+  return {
+    octet(octet) {
+      if (tampon.length >= garde) {
+        const jetes = tampon.length >> 1;
+        tampon = tampon.slice(jetes);
+        perdus += jetes;
+      }
+      tampon.push(octet);
+    },
+    vider(toutDeSuite) {
+      if (tampon.length === 0 && perdus === 0) return;
+      if (!toutDeSuite && tampon.length < paquet && maintenant() - dernierEnvoi < periode) return;
+      poster({ kind: "console", octets: enBase64(Uint8Array.from(tampon)), perdus });
+      tampon = [];
+      perdus = 0;
+      dernierEnvoi = maintenant();
+    },
+  };
+}
+
 /// Une image au plus toutes les trente-trois millisecondes : trente par
 /// seconde, et rien quand la révision n'a pas bougé.
 const ECRAN_PERIODE = 33;
@@ -151,25 +235,9 @@ export async function demarrer({
   };
 
   // La console : tamponnée, envoyée par paquets.
-  let console_ = [];
-  let perdus = 0;
-  let dernierEnvoi = maintenant();
-  const serial = (octet) => {
-    if (console_.length >= CONSOLE_GARDE) {
-      const jetes = console_.length >> 1;
-      console_ = console_.slice(jetes);
-      perdus += jetes;
-    }
-    console_.push(octet);
-  };
-  const viderLaConsole = (toutDeSuite) => {
-    if (console_.length === 0 && perdus === 0) return;
-    if (!toutDeSuite && console_.length < CONSOLE_PAQUET && maintenant() - dernierEnvoi < CONSOLE_PERIODE) return;
-    poster({ kind: "console", octets: enBase64(Uint8Array.from(console_)), perdus });
-    console_ = [];
-    perdus = 0;
-    dernierEnvoi = maintenant();
-  };
+  const consoleSerie = consoleTamponnee({ poster, maintenant });
+  const serial = consoleSerie.octet;
+  const viderLaConsole = consoleSerie.vider;
 
   const heure = plan.heure === null || plan.heure === undefined ? Date.now : () => plan.heure;
   const ecran = plan.ecran ?? null;
@@ -257,8 +325,12 @@ export async function demarrer({
     });
     try {
       for (;;) {
-        const why = await vm.run({ budget: BigInt(budget), rounds: tours });
-        if (why.stopped !== "tours épuisés") {
+        // **L'arrêt est demandé à chaque respiration** (`arreter`), pas
+        // seulement entre deux appels : un invité qui attend une touche use
+        // chacun de ses tours jusqu'au bout du budget, et l'appel durait des
+        // minutes.
+        const why = await vm.run({ budget: BigInt(budget), rounds: tours, arreter: () => !enMarche });
+        if (why.stopped !== "tours épuisés" && why.stopped !== ARRET_DEMANDE) {
           arret = { stopped: why.stopped, at: BigInt.asUintN(64, BigInt(why.at)) };
           break;
         }

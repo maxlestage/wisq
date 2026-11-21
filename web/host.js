@@ -22,6 +22,10 @@
 /// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
 /// frontière entre Rust et cette vue à part des octets. Le test les compare aux
 /// constantes de la bibliothèque, sinon la répétition finirait par mentir.
+/// **L'arrêt qu'un pilote a demandé** (`run({ arreter })`), sous un nom que
+/// le pilote reconnaît sans le recopier.
+export const ARRET_DEMANDE = "arrêt demandé";
+
 /// **Pourquoi la machine s'est arrêtée.** Les nombres viennent de
 /// `x86_wasm.rs` — `STOP_HALTED`, `STOP_SELECTOR`, `STOP_KERNEL_GS`,
 /// `STOP_HYPERVISOR`, `STOP_PCID`, `STOP_LDT`, `STOP_DEBUG` — et un nombre
@@ -3003,7 +3007,13 @@ export function machine({
     },
   };
 
-  async function courir({ budget = 1n << 20n, rounds = 1 << 16, breath = 8 } = {}) {
+  /// `arreter`, quand il est donné, est demandé à chaque respiration : s'il
+  /// rend vrai, la boucle rend `{ stopped: ARRET_DEMANDE }` sans attendre la
+  /// fin de ses tours. **Les tours ne sont pas une borne de temps** : un
+  /// invité qui attend une touche en lisant le clavier, ou qui calcule sans
+  /// sortir, use chaque tour jusqu'au bout de son budget, et la page qui
+  /// demandait l'arrêt entre deux appels l'attendait des minutes.
+  async function courir({ budget = 1n << 20n, rounds = 1 << 16, breath = 8, arreter = null } = {}) {
       let dernier = performance.now();
       // **Combien de chargements d'instruction ont fauté d'affilée**, sans
       // qu'une seule région s'installe entre les deux. Un noyau qui
@@ -3015,6 +3025,7 @@ export function machine({
         if (performance.now() - dernier >= breath) {
           await souffler();
           dernier = performance.now();
+          if (arreter !== null && arreter()) return { stopped: ARRET_DEMANDE, at: rip() };
         }
         const here = rip();
         // Une machine posée en anneau trois avant le premier tour (une reprise,
