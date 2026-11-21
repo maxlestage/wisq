@@ -20,7 +20,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use wisq_vm::x86::{decode, decode_extended, Cpu, GuestMemory, Op};
+use wisq_vm::x86::{
+    decode as decode_partage, decode_extended, Cpu, Decoded, GuestMemory, Op, Vector,
+};
+
+/// `decode` sans le flottant de SSE, comme la machine native le lit
+/// (`pc::machine::decode`) : l'émetteur le lit en `Vector::Float`, ce test
+/// juge celui de `decode_extended`.
+fn decode(bytes: &[u8]) -> Option<Decoded> {
+    decode_partage(bytes).filter(|lue| !matches!(lue.op, Op::Vector(Vector::Float(_))))
+}
 
 const CODE: u64 = 0x3000_0000;
 const DATA: u64 = 0x3000_1000;

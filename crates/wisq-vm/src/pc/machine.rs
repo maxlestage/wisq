@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use crate::x86::rapide::Suite;
 use crate::x86::{
-    decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Extra, Mmx, Op,
-    Segment, VectorFault, Width, ARITHMETIC, CF, IF,
+    decode as decode_partage, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault,
+    Extra, Mmx, Op, Segment, Vector, VectorFault, Width, ARITHMETIC, CF, IF,
 };
 use crate::x86_paging::{Access, Unmapped};
 
@@ -163,6 +163,17 @@ fn physique_du_rang(bloc: &super::blocs::Bloc, rang: usize) -> usize {
         .iter()
         .map(|uop| uop.longueur as usize)
         .sum()
+}
+
+/// **`decode`, sans le flottant de SSE.** Le décodeur que l'émetteur partage
+/// lit `addss`, `cvtsi2sd` et leurs voisines en `Vector::Float`, que
+/// l'émetteur traduit en WebAssembly ; `execute_vector` ne les exécute pas.
+/// Cette machine les tient de `decode_extended` (`x86_sse.rs`, jugé par les
+/// corpus et par le silicium de l'hôte) : ici, `decode` les rend absents,
+/// et chaque lecture passe au second décodeur comme avant que l'émetteur
+/// ne les lise.
+fn decode(octets: &[u8]) -> Option<Decoded> {
+    decode_partage(octets).filter(|lue| !matches!(lue.op, Op::Vector(Vector::Float(_))))
 }
 
 /// L'instruction qui commence à l'octet `debut` de la RAM, si elle tient

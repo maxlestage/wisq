@@ -1,9 +1,14 @@
 // La carte de la machine PC, dans la page.
 //
 // **Ce qu'elle apporte.** La boucle hôte (`web/host.js`) modélise deux 8259,
-// un 8254 et un 16550 ; tout autre port y rend `0xff`, personne. Un noyau n'y
-// trouve donc ni clavier, ni souris, ni horloge murale : « i8042: Can't read
-// CTR », et une date de 1970. Les périphériques qui manquent sont écrits en
+// un 8254 et un 16550 ; sans la carte, tout autre port y rend `0xff`,
+// personne. Un noyau n'y trouve alors ni clavier, ni souris, ni horloge
+// murale, ni disque : « i8042: Can't read CTR », et une date de 1970.
+// `machine({ carte: (ram) => carte(module, { ram, disque }) })` la branche :
+// ses ports après ceux des puces, ses lignes recopiées dans les deux 8259 à
+// chaque tour, `reveil()` compté dans l'attente d'un `hlt`, et un `hlt` qui
+// attend le disque cède le fil (`disque.attendre()`) le temps que l'arrière
+// réponde. Les périphériques qui manquent sont écrits en
 // Rust (`crates/wisq-page/src/carte/`), portés depuis le cœur Swift avec sa
 // carte exacte — l'i8042 aux ports `0x60`/`0x64` sur les lignes 1 et 12,
 // l'horloge CMOS aux ports `0x70`/`0x71`, le pont PCI aux ports
@@ -26,13 +31,30 @@
 // - `reveil()` et `remise()` : une ligne peut encore monter sans l'invité (ce
 //   que `wakeable` doit compter) ; l'invité a demandé un redémarrage.
 // - et ce que l'application envoie : `touche`, `taper`, `taperTexte`,
-//   `souris`.
+//   `souris`, et, avec un écran, `toucher` et `defiler` (la tablette).
+// - `memoire.lire(adresse, largeur)` et `memoire.ecrire(adresse, valeur,
+//   largeur)` : un accès de l'invité **hors de sa RAM**, à une adresse
+//   physique — la mémoire vidéo de l'écran, ses registres, ceux de la
+//   tablette. `lire` rend un `BigInt`, ou `null` quand l'adresse n'est à
+//   personne ; `ecrire` rend `true` quand la carte l'a pris.
+// - `livrer(tics)` : ce que le doigt a fait, posé dans les tampons du pilote
+//   de la tablette, à chaque tour avant `lignes()`.
+//
+// **L'écran** (`ecran: { largeur, hauteur }` à la fabrication) : la carte
+// graphique de Bochs en 00:02.0, sa mémoire vidéo de seize mébioctets à
+// `0xE000_0000`, et la tablette virtio en 00:07.0. La mémoire vidéo vit dans
+// la mémoire de **ce** module, pas dans la RAM de l'invité : `ecran.image()`
+// la lit d'un bloc, le rectangle montré, et `ecran.revision()` dit si elle a
+// bougé depuis la dernière image — une vue qui repeint trente fois par
+// seconde une image identique se paie en batterie.
 //
 // **La RAM de l'invité**, que la file du disque lit et écrit, est donnée par
 // `ram` : `{ lire(adresse, vers), ecrire(adresse, depuis) }`, adresses
-// physiques, une plage entière ou `false`. `ramDeMemoire` en fait une de la
-// `WebAssembly.Memory` de `host.js`, où l'adresse physique est l'adresse
-// linéaire. Le module la demande par deux imports, `carte.ram_lire` et
+// physiques, une plage entière ou `false`. `host.js` en donne une à la
+// fabrique de sa carte, dont les écritures se disent à `ecrit` (le code
+// traduit d'une page que le disque réécrit est oublié). `ramDeMemoire` en
+// fait une nue d'une `WebAssembly.Memory`, pour qui conduit la carte sans
+// boucle hôte. Le module la demande par deux imports, `carte.ram_lire` et
 // `carte.ram_ecrire`, que ce fichier remplit.
 //
 // **Le disque est servi plus tard.** Ses octets ne sont pas dans la page (une
@@ -124,7 +146,10 @@ export function arriereParUrl(url, octets, { fetch: chercher = (...a) => globalT
 /// sans lequel aucun disque n'est branché. `surReponse` : appelée après
 /// chaque réponse du disque rendue, quand la ligne vient de monter — de quoi
 /// réveiller une boucle qui dort.
-export function carte(source, { heure = Date.now, ram = null, disque = null, surReponse = null } = {}) {
+export function carte(
+  source,
+  { heure = Date.now, ram = null, disque = null, surReponse = null, ecran = null } = {},
+) {
   const module = source instanceof WebAssembly.Module ? source : new WebAssembly.Module(source);
   // Les deux imports de la RAM. Une adresse est un `BigInt` (un `u64` du
   // côté Rust) ; au-delà de 2⁵³ elle n'est dans aucune RAM. Les pointeurs
@@ -149,6 +174,12 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
   const porte = new WebAssembly.Instance(module, imports).exports;
   const texte = new TextEncoder();
   if (disque !== null) porte.carte_disque(BigInt(Math.floor(disque.octets / SECTEUR)));
+  // **L'écran, avant le démarrage** : c'est le chargeur qui annonce son cadre
+  // au noyau. Un cadre qui ne tient pas dans la mémoire vidéo est refusé ici,
+  // plutôt qu'une machine sans écran qui démarrerait quand même.
+  if (ecran !== null && porte.carte_ecran(ecran.largeur >>> 0, ecran.hauteur >>> 0) !== 1) {
+    throw new Error(`un écran de ${ecran.largeur}×${ecran.hauteur} ne tient pas dans la mémoire vidéo`);
+  }
 
   const horloge = (port) => {
     if (port === HORLOGE_INDEX || port === HORLOGE_DONNEE) porte.carte_heure(heure());
@@ -210,6 +241,18 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
   }
 
   let enVol = 0;
+  /// Ceux qui attendent la prochaine réponse rendue (`attendre`).
+  let attentes = [];
+  /// **Attendre la prochaine réponse du disque** : une promesse résolue quand
+  /// une réponse a été rendue — octets copiés, ligne levée —, ou tout de suite
+  /// s'il n'y a rien en vol. C'est ce que la boucle hôte attend sur un `hlt`
+  /// : sans céder le fil, la réponse ne viendrait jamais. Résolue aussi quand
+  /// la carte trappe en rendant la réponse : la boucle doit reprendre, et la
+  /// trappe se signale à part.
+  function attendre() {
+    if (enVol === 0) return Promise.resolve();
+    return new Promise((resoudre) => attentes.push(resoudre));
+  }
   /// **Confier à l'arrière tout ce qui est parti.** Rend le nombre de
   /// requêtes confiées. Un échec de l'arrière (une promesse rejetée, une
   /// écriture qu'il ne sait pas faire ou qu'il dit ratée) est rendu au pilote
@@ -241,6 +284,9 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
         })
         .finally(() => {
           enVol -= 1;
+          const reveilles = attentes;
+          attentes = [];
+          for (const resoudre of reveilles) resoudre();
         })
         .then(() => surReponse?.());
       confiees += 1;
@@ -279,11 +325,81 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
     return rendu;
   }
 
+  /// **La mémoire des périphériques**, hors de la RAM. L'adresse est un
+  /// `BigInt` (un `u64`) ; la largeur, de un à huit octets.
+  const memoire = {
+    lire(adresse, largeur) {
+      if (porte.carte_mem_lire(BigInt.asUintN(64, BigInt(adresse)), Number(largeur)) !== 1) return null;
+      return BigInt.asUintN(64, porte.carte_mem_valeur());
+    },
+    /// La sonnette de la tablette lit sa file dans la RAM pendant l'appel,
+    /// par les deux imports.
+    ecrire(adresse, valeur, largeur) {
+      return (
+        porte.carte_mem_ecrire(
+          BigInt.asUintN(64, BigInt(adresse)),
+          Number(largeur),
+          BigInt.asUintN(64, BigInt(valeur)),
+        ) === 1
+      );
+    },
+  };
+
+  /// **L'écran, vu de la page.** La vue de la mémoire vidéo se refait à
+  /// chaque appel : la mémoire du module a pu grandir et détacher l'ancienne.
+  const vueDeLEcran = {
+    /// Le mode montré : `{ largeur, hauteur, octetsParLigne, debut }` (le
+    /// premier pixel, en octets depuis le début de la mémoire vidéo), ou
+    /// `null` sans écran.
+    mode() {
+      const mots = new Uint32Array(porte.memory.buffer, porte.carte_ecran_mode() >>> 0, 4);
+      if (mots[0] === 0) return null;
+      return { largeur: mots[0], hauteur: mots[1], octetsParLigne: mots[2], debut: mots[3] };
+    },
+    /// Combien de fois l'image a changé, en `BigInt` ; zéro sans écran.
+    revision: () => BigInt.asUintN(64, porte.carte_ecran_revision()),
+    /// Où l'invité voit la mémoire vidéo (sa BAR0), en `BigInt`.
+    base: () => BigInt.asUintN(64, porte.carte_ecran_base()),
+    /// La mémoire vidéo entière, en vue (pas en copie) : seize mébioctets.
+    pixels() {
+      const taille = porte.carte_ecran_taille() >>> 0;
+      return new Uint8Array(porte.memory.buffer, porte.carte_ecran_pixels() >>> 0, taille);
+    },
+    /// **L'image montrée, d'un bloc** : `largeur × hauteur × 4` octets en
+    /// XRGB8888, le bleu en bas, sans le remplissage des lignes. Une copie ;
+    /// `null` sans écran.
+    image() {
+      const mode = vueDeLEcran.mode();
+      if (mode === null) return null;
+      const tout = vueDeLEcran.pixels();
+      const ligne = mode.largeur * 4;
+      if (mode.octetsParLigne === ligne) {
+        return tout.slice(mode.debut, mode.debut + ligne * mode.hauteur);
+      }
+      const rendu = new Uint8Array(ligne * mode.hauteur);
+      for (let y = 0; y < mode.hauteur; y++) {
+        const de = mode.debut + y * mode.octetsParLigne;
+        rendu.set(tout.subarray(de, de + ligne), y * ligne);
+      }
+      return rendu;
+    },
+  };
+
   return {
     ports,
     lignes,
     battre,
     taperTexte,
+    memoire,
+    ecran: vueDeLEcran,
+    /// **Un toucher**, par la tablette : la position de 0 à 1 sur chaque axe,
+    /// les boutons en bits (gauche, droit, milieu). `false` quand l'invité n'a
+    /// pas pris la tablette : la souris PS/2 reste alors la seule.
+    toucher: (x, y, boutons) => porte.carte_toucher(Number(x), Number(y), boutons >>> 0) === 1,
+    /// La molette, en crans, positifs vers le haut.
+    defiler: (crans) => porte.carte_defiler(crans | 0) === 1,
+    /// Ce que le doigt a fait, rendu au pilote à l'heure `tics` (du 8254).
+    livrer: (tics) => porte.carte_livrer(BigInt.asUintN(64, BigInt(tics))),
     /// Une touche posée tout de suite : son code du jeu 1, `E0` ou non.
     touche: (jeu1, etendue, enfoncee) => porte.carte_touche(jeu1, etendue ? 1 : 0, enfoncee ? 1 : 0),
     /// Une frappe posée à son tour : `false` si la file pleine la refuse (le
@@ -304,6 +420,7 @@ export function carte(source, { heure = Date.now, ram = null, disque = null, sur
       lu: disqueLu,
       fini: disqueFini,
       servir,
+      attendre,
       enVol: () => enVol,
     },
   };

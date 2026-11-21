@@ -120,10 +120,9 @@ pub const SEGMENT_COUNT: usize = 6;
 /// quand une région pose le témoin de faute, `web/host.js` va chercher la
 /// porte du vecteur 14 à la base rangée ici, dans la limite rangée ici, et
 /// pose le cadre du mode long sur la pile de l'invité — c'est la délivrance,
-/// et `iretq` la défait. La GDT, elle, n'est toujours lue par rien : charger
-/// FS ou GS avec un sélecteur non nul reste un arrêt nommé, et aucune
-/// interruption de matériel n'est délivrée. Un `lgdt` produit dit toujours
-/// « ce registre se relit », pas « les descripteurs marchent ».
+/// et `iretq` la défait. La GDT, elle, n'est lue que par un sélecteur non nul
+/// chargé dans FS ou GS, en anneau zéro, pour sa base (voir
+/// `load_far_segment`) ; la délivrance de l'hôte y lit le segment de tâche.
 ///
 /// L'ordre : limite de la GDT, base de la GDT, limite de l'IDT, base de l'IDT.
 pub const TABLE_SLOT: usize = SEGMENT_SLOT + SEGMENT_COUNT;
@@ -200,18 +199,26 @@ pub const SCRATCH_SLOT: usize = CONTROL_SLOT + CONTROL_COUNT;
 /// dire « on ne l'a pas », et c'est exact ; un bit de plus serait un mensonge
 /// qu'on paierait ailleurs.
 ///
-/// Le nom du fournisseur est volontairement **inconnu**. Se faire passer pour
-/// Intel ou AMD ferait prendre au noyau les contournements d'errata de leurs
-/// puces — du code écrit pour des défauts que cette machine n'a pas. Un nom
-/// qu'il ne reconnaît pas le renvoie sur son chemin générique.
-/// « wisq wasm vm », douze octets, dans l'ordre EBX, EDX, ECX.
-pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"wisq");
-pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b" was");
-pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"m vm");
+/// **Le nom du fournisseur est celui que la glibc connaît** : `AuthenticAMD`,
+/// famille 15, modèle 107, pas 1 — l'identité du processeur `qemu64` de QEMU,
+/// celle du cœur Swift (`X86CPUID.vendor`). Il était volontairement inconnu,
+/// « wisq wasm vm », pour que le noyau ne prenne les contournements d'errata
+/// de personne. Mais la glibc, pour un fournisseur qu'elle ne reconnaît pas,
+/// ne lit **jamais** la feuille un (`get_common_indices` est appelé sans
+/// famille) : le socle x86-64 lui paraît absent quels que soient les bits, et
+/// chaque programme de l'initramfs de Void meurt sur « CPU ISA level is lower
+/// than required ». Le prix est celui que le cœur Swift paie depuis Debian 13 :
+/// le noyau prend le chemin d'AMD, et lit quelques MSR de la maison, que
+/// l'hôte rend en `#GP(0)` et que le noyau rattrape.
+/// « AuthenticAMD », douze octets, dans l'ordre EBX, EDX, ECX.
+pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"Auth");
+pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b"enti");
+pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"cAMD");
 /// La feuille la plus haute qu'on sache servir. Une seule au-delà de zéro.
 pub const CPUID_MAX_LEAF: u32 = 1;
-/// Famille 6, modèle 0, pas 0 — une signature plausible et sans prétention.
-pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
+/// Famille 15 (0xF), modèle 107 (0xB dans le champ de base, 6 dans
+/// l'étendu), pas 1 : ce que répond le `qemu64` de QEMU, et le cœur Swift.
+pub const CPUID_SIGNATURE: u32 = 0x0006_0FB1;
 /// **Ce qui se déclare dans EDX, parce que l'émetteur le fait vraiment** : le
 /// coprocesseur (bit 0), le compteur d'horodatage (bit 4), et `clflush`
 /// (bit 19), produit depuis #211.
@@ -230,7 +237,22 @@ pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
 /// Le compteur se déclare parce qu'un noyau qui ne le voit pas cherche une
 /// autre horloge que cette machine n'a pas non plus ; `clflush` parce que le
 /// noyau, sans lui, vide ses caches par des chemins plus longs.
-pub const CPUID_FEATURES_EDX: u32 = 1 | (1 << 4) | (1 << 19);
+///
+/// **Et le socle x86-64 que la glibc exige** : CX8 (8), CMOV (15), MMX (23),
+/// FXSR (24), SSE (25) et SSE2 (26). La glibc de Void lit ces bits avant de
+/// charger quoi que ce soit, et sans eux tout programme meurt sur
+/// « /usr/lib/libc.so.6: CPU ISA level is lower than required » — le `init`
+/// de l'initramfs le premier, puis « Attempted to kill init! ». C'est le mur
+/// que le cœur Swift a passé avec l'image de cloud de Debian 13
+/// (`X86SystemState.features`), et la même liste. `cmov`, `fxsave` et
+/// `fxrstor`, SSE et SSE2 (entiers et flottants) sont produits, et jugés par
+/// leurs corpus. **Deux de ces bits promettent plus que l'émetteur ne
+/// tient** : `cmpxchg8b` et les registres MMX ne se lisent pas. Comme pour
+/// le cœur Swift avant `X86MMX.swift`, c'est ce que la glibc lit et non ce
+/// qu'elle exécute : une instruction MMX arrête son bloc, et la machine qui
+/// y arrive s'arrête sur une région refusée qui la nomme.
+pub const CPUID_FEATURES_EDX: u32 =
+    1 | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 19) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26);
 
 /// **Ce qui se déclare dans ECX** : `cmpxchg16b` (bit 13), produit depuis #210.
 /// C'est ce bit que `system_has_cmpxchg128()` regarde, et sans lui SLUB
@@ -242,6 +264,28 @@ pub const CPUID_FEATURES_EDX: u32 = 1 | (1 << 4) | (1 << 19);
 /// noyau sa boucle de dix essais pour rien avant qu'il ne se rabatte. Décoder
 /// n'est pas exécuter, et seul ce qu'on exécute se déclare.
 pub const CPUID_FEATURES_ECX: u32 = 1 << 13;
+
+/// **La plus haute feuille étendue servie** : `0x8000_0008`, celle des
+/// tailles d'adresse et de `XSAVEERPTR`. Les feuilles de `0x8000_0001` à
+/// `0x8000_0007` rendent des zéros : aucun bit étendu, ni LM, ni NX (la
+/// marche ne lit pas le bit XD), ni marque, ni cache, ni gestion d'énergie.
+pub const CPUID_MAX_EXTENDED_LEAF: u32 = 0x8000_0008;
+
+/// **EAX de `0x8000_0008` : 48 bits virtuels, 40 physiques**, ce que rend le
+/// `qemu64` de QEMU. Le noyau y lit `x86_phys_bits` et `x86_virt_bits` dès que
+/// la feuille existe ; à zéro, il croirait n'avoir aucun bit d'adresse.
+pub const CPUID_ADDRESS_SIZES: u32 = 0x3028;
+
+/// **EBX de `0x8000_0008` : `XSAVEERPTR` (bit 2)**, « `fxsave` range toujours
+/// les pointeurs d'erreur du x87 ». C'est la seule raison de servir les
+/// feuilles étendues : sur un AMD qui ne l'annonce pas, le noyau pose
+/// `X86_BUG_FXSAVE_LEAK`, et avant chaque `fxrstor` exécute `fnclex ; emms ;
+/// fild` pour effacer des pointeurs qu'un autre processus aurait laissés —
+/// trois instructions du x87 que l'émetteur ne produit pas ; Void s'y
+/// arrêtait au premier changement de processus. **La promesse est tenue** :
+/// aucun calcul x87 ne s'exécute ici, les pointeurs d'erreur ne sont jamais
+/// écrits et `fxsave` les range à zéro ; il n'y a rien qui puisse fuir.
+pub const CPUID_EXTENDED_EIGHT_EBX: u32 = 1 << 2;
 
 /// **EBX de la feuille un, et la moitié qu'on ne peut pas oublier.** Ses bits
 /// 15:8 portent la taille de ligne de `clflush`, comptée en quantums de huit
@@ -322,10 +366,12 @@ pub const STOP_SLOT: usize = FAULT_SLOT + 1;
 /// La machine a exécuté un `hlt`, et rien ne peut la réveiller.
 pub const STOP_HALTED: u64 = 1;
 
-/// Un sélecteur **non nul** est arrivé dans FS ou GS. Le nul ne lit aucun
-/// descripteur et se produit ; celui-ci en demanderait un, et la table
-/// n'existe pas. S'arrêter en le nommant vaut mieux que ranger le sélecteur
-/// sans base : le noyau lirait alors à une adresse fausse, loin de la cause.
+/// Un sélecteur **non nul** est arrivé dans FS ou GS, et son descripteur ne
+/// se lit pas : la LDT, au-delà de la limite de la GDT (nulle sans `lgdt`),
+/// absent, ou en anneau trois. Le nul ne lit aucun descripteur et se produit ;
+/// un descripteur présent de la GDT, en anneau zéro, donne sa base. S'arrêter
+/// en le nommant vaut mieux que ranger le sélecteur sans base : le noyau
+/// lirait alors à une adresse fausse, loin de la cause.
 pub const STOP_SELECTOR: u64 = 2;
 
 /// **`lkgs` a été atteinte.** Elle charge la base GS du noyau depuis un
@@ -1232,6 +1278,8 @@ mod code {
     pub const I64_CONST: u8 = 0x42;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_LT_U: u8 = 0x54;
+    pub const I64_GE_U: u8 = 0x5a;
+    pub const I64_LE_U: u8 = 0x58;
     pub const I64_ADD: u8 = 0x7c;
     pub const I64_SUB: u8 = 0x7d;
     pub const I64_AND: u8 = 0x83;
@@ -1246,7 +1294,6 @@ mod code {
     pub const I64_SHR_S: u8 = 0x87;
     pub const DROP: u8 = 0x1a;
     pub const I64_NE: u8 = 0x52;
-    pub const I64_LE_U: u8 = 0x58;
     pub const I64_GE_S: u8 = 0x59;
     /// Le reste d'une division non signée. C'est ce qui ramène un compte de
     /// rotation à l'intérieur de la largeur — tourner un octet de neuf crans
@@ -1341,6 +1388,45 @@ const HOST_IMPORTS: u32 = 2;
 /// l'indice de personne. Voir `Module::far_load_body`.
 const FAR_LOAD: u32 = 3;
 const FAR_STORE: u32 = 4;
+/// **Le bit zéro de la trame que rend la marche : la page est la mémoire
+/// d'un périphérique**, hors de la RAM — la mémoire vidéo de l'écran, les
+/// registres de la tablette. Une trame est alignée sur une page, ses douze
+/// bits bas sont libres. La marche rend alors la trame repliée (que rien
+/// n'emploie pour un accès), le bit levé, et laisse la trame d'avant le
+/// repli dans `TRANSLATE_CELL` ; l'accès lent l'envoie à l'hôte par `in` ou
+/// `out`, à l'adresse physique (voir `Module::device_address`). La case du
+/// tampon est vidée : le chemin rapide n'y passe jamais.
+///
+/// **Ce que l'émetteur faisait avant** : replier la trame dans la RAM. Sous
+/// 1 Gio, la mémoire vidéo à `0xE000_0000` tombait sur `0x2000_0000`, et un
+/// bureau qui peignait son écran écrivait dans la RAM d'un processus.
+///
+/// **Sous pagination seulement.** Pagination éteinte, il n'y a pas de marche :
+/// `Body::peek` et `Body::poke` replient toujours l'adresse par le masque de
+/// la RAM, et la mémoire d'un périphérique n'est pas atteinte. Le mode long
+/// pagine toujours, et Linux 64 bits avec lui.
+const DEVICE_FRAME: u32 = 1;
+
+/// **Le témoin d'un accès à cheval entre la mémoire d'un périphérique et
+/// la RAM**, dans un sens ou dans l'autre, que l'accès lent pose au lieu
+/// d'un code de faute (un code plus un tient dans cinq bits) : l'hôte
+/// s'arrête en le nommant. Un accès à cheval sur deux trames hors de la RAM,
+/// lui, part en deux moitiés. Voir `Module::far_first_page` et
+/// `Module::far_second_page`.
+pub const FAULT_DEVICE_STRADDLE: u64 = 1 << 40;
+
+/// Les locales qu'un accès lent prête à `Module::far_first_page` : la
+/// largeur, le décalage dans la page, les deux trames (`i32`), et l'adresse
+/// physique d'un accès à un périphérique (`i64`).
+#[derive(Clone, Copy)]
+struct FarLocals {
+    width: u32,
+    offset: u32,
+    low: u32,
+    high: u32,
+    device: u32,
+}
+
 /// **Et deux de plus, encore en queue** : l'inscription d'une écriture dans
 /// une page de code (`Module::note_body`), et l'étendue des octets que la
 /// région a traduits, que l'hôte lit pour savoir quelles trames marquer.
@@ -1395,6 +1481,25 @@ struct Body {
 }
 
 impl Body {
+    /// **Une traduction tentée qui, ratée, ne laisse rien** : ni ses octets,
+    /// ni la marque `wrote` qu'une écriture émise aurait posée. Le bloc finit
+    /// alors devant l'instruction ; garder ses octets laisserait un morceau
+    /// d'instruction dans le bloc, et garder `wrote` ferait regarder le
+    /// journal des pages de code après l'instruction **d'avant**, qui n'en a
+    /// peut-être rien écrit. Aucune forme connue n'écrit avant de refuser (28
+    /// 160 balayées) : la garde est tenue ici, sur une traduction posée pour
+    /// rater (`port_tests::a_failed_translation_leaves_nothing_behind`).
+    fn attempt(&mut self, translate: impl FnOnce(&mut Body) -> Option<()>) -> bool {
+        let bytes = self.bytes.len();
+        let wrote = self.wrote;
+        if translate(self).is_some() {
+            return true;
+        }
+        self.bytes.truncate(bytes);
+        self.wrote = wrote;
+        false
+    }
+
     /// **Lire la mémoire invitée : l'adresse est sur la pile, en `i64`, et la
     /// valeur la remplace, étendue par zéro.**
     ///
@@ -1963,6 +2068,8 @@ impl Body {
 /// Le module émis pour un bloc.
 pub struct Module;
 
+#[path = "x86_wasm_float.rs"]
+mod float;
 #[path = "x86_wasm_vector.rs"]
 mod vector;
 
@@ -2254,6 +2361,9 @@ impl Module {
                 ..Body::default()
             };
             let mut at = *start;
+            // **Où le bloc s'arrête devant une instruction qu'il ne sait pas
+            // produire**, s'il s'y arrête : voir plus bas.
+            let mut arret = None;
             for step in steps {
                 // **L'adresse de l'instruction elle-même**, pas celle de la
                 // suivante : une division qui refuse doit y renvoyer l'hôte.
@@ -2275,12 +2385,27 @@ impl Module {
                 // CS sur quatre octets chacun ; l'émettre en `lretq`, ce que
                 // faisait l'émetteur tant que le décodeur ne disait pas la
                 // largeur, dépilait seize octets au lieu de huit.
+                // **Un arrêt nommé, et non plus un refus, sauf au point
+                // d'entrée.** Une instruction lue que l'émetteur ne sait pas
+                // produire refusait la région entière, alors que la découverte
+                // est spéculative : elle suit la suite de chaque `call`, et un
+                // `call panic` est suivi de ce que l'éditeur de liens range
+                // après — chez Void 6.12, le code trente-deux bits de l'entrée
+                // PVH, dont un `lret` sans REX.W, que rien n'exécute en mode
+                // long. Le bloc finit devant elle, RIP posé sur elle, et rend
+                // la main ; si l'exécution y arrive vraiment, l'hôte demande
+                // une région qui commence là, et *elle* est refusée, à son
+                // adresse. C'est la même correction que pour un octet
+                // illisible (`discover`).
+                let devant = at - step.length;
                 if matches!(step.op, Op::InterruptReturn | Op::FarReturn)
                     && step.width != Width::Qword
                 {
-                    return Err(Refused::CannotTranslate {
-                        at: at - step.length,
-                    });
+                    if devant == entry {
+                        return Err(Refused::CannotTranslate { at: devant });
+                    }
+                    arret = Some(devant);
+                    break;
                 }
                 // **Le saut final n'est pas traduit comme les autres.** Il ne
                 // change pas l'état de la machine mais le bloc courant, et
@@ -2303,10 +2428,15 @@ impl Module {
                 ) {
                     continue;
                 }
-                if Self::translate(&Self::pin(step, here), here, &mut body).is_none() {
-                    return Err(Refused::CannotTranslate {
-                        at: at - step.length,
-                    });
+                // Ce qu'une traduction ratée a déjà écrit est repris
+                // (`Body::attempt`) : le bloc finit devant elle, comme s'il
+                // s'y arrêtait.
+                if !body.attempt(|body| Self::translate(&Self::pin(step, here), here, body)) {
+                    if devant == entry {
+                        return Err(Refused::CannotTranslate { at: devant });
+                    }
+                    arret = Some(devant);
+                    break;
                 }
                 // **Une instruction qui écrit finit, puis regarde le
                 // journal** : si elle a écrit dans une page de code — la
@@ -2316,8 +2446,19 @@ impl Module {
                     b.constant(next);
                 });
             }
-            extent = extent.max(at);
-            Self::terminate(steps.last(), base, at, &index, &starts, &mut body, shape);
+            match arret {
+                // **Devant l'instruction, la main rendue**, RIP sur elle. Pas
+                // de saut vers un bloc qui commencerait là : il porterait la
+                // même instruction.
+                Some(devant) => {
+                    extent = extent.max(devant);
+                    Self::terminate(None, base, devant, &|_| None, &starts, &mut body, shape);
+                }
+                None => {
+                    extent = extent.max(at);
+                    Self::terminate(steps.last(), base, at, &index, &starts, &mut body, shape);
+                }
+            }
             body.op(code::END);
             bodies.push(body.bytes);
         }
@@ -2712,7 +2853,12 @@ impl Module {
             place(body, after as i64);
             return;
         };
-        let target = after as i64 + step.imm as i64;
+        // Un saut relatif ajoute un déplacement signé de 32 bits ; mais la
+        // dernière instruction d'une région n'est pas toujours un saut (un
+        // arrêt nommé finit la région sur n'importe quelle instruction), et
+        // son immédiat peut alors valoir jusqu'à 2⁶³. La cible n'est lue que
+        // par les sauts : l'addition enroule, comme en release.
+        let target = (after as i64).wrapping_add(step.imm as i64);
         // **L'opérande d'une forme indirecte, poussé sur la pile WebAssembly.**
         // Un registre, ou huit octets de mémoire — et cette mémoire peut être
         // relative au pointeur d'instruction, ce dont un noyau est fait : une
@@ -3767,12 +3913,13 @@ impl Module {
         // courante, la trame trouvée, la case du tampon, et le ET des bits des
         // niveaux déjà lus.
         let mut body = vec![
-            0x05, // cinq groupes
+            0x06, // six groupes
             0x01, 0x7e, // 2 : i64, l'entrée
             0x01, 0x7f, // 3 : i32, la table
             0x01, 0x7e, // 4 : i64, la trame
             0x01, 0x7f, // 5 : i32, la case
             0x01, 0x7e, // 6 : i64, les droits
+            0x01, 0x7e, // 7 : i64, la trame avant le repli
         ];
         const KIND: u32 = 1;
         const ENTRY: u32 = 2;
@@ -3780,6 +3927,8 @@ impl Module {
         const FRAME: u32 = 4;
         const CELL: u32 = 5;
         const RIGHTS: u32 = 6;
+        const RAW: u32 = 7;
+        let ram = u64::from(mask) + 1;
         let tlb = tlb_base((mask + 1) / 65536);
         let map = code_map_base((mask + 1) / 65536);
         let mut b = Body::default();
@@ -3864,6 +4013,15 @@ impl Module {
                 .constant(TLB_USER)
                 .op(code::I64_AND)
                 .op(code::I64_OR);
+            // **La mémoire d'un périphérique n'entre jamais dans le tampon** :
+            // sa case est vidée, et chaque accès à la page repasse par l'accès
+            // lent, qui l'envoie à l'hôte. Sans branchement : l'étiquette si
+            // la trame est dans la RAM, zéro sinon.
+            b.constant(0)
+                .local_get(RAW)
+                .constant(ram)
+                .op(code::I64_LT_U)
+                .op(code::SELECT);
             b.access(code::I64_STORE, 0);
             b.local_get(CELL).local_get(FRAME);
             b.access(code::I64_STORE32, 8);
@@ -3907,7 +4065,19 @@ impl Module {
             b.op(code::IF).op(code::VOID);
             fault(b, true);
             b.op(code::END);
-            b.local_get(FRAME).op(code::I32_WRAP_I64).op(code::RETURN);
+            // La trame d'avant le repli, pour l'accès lent qui l'enverra à
+            // l'hôte ; et la trame repliée, son bit zéro levé si elle est hors
+            // de la RAM (voir `DEVICE_FRAME`).
+            b.store(TRANSLATE_CELL, |b| {
+                b.local_get(RAW);
+            });
+            b.local_get(FRAME)
+                .op(code::I32_WRAP_I64)
+                .local_get(RAW)
+                .constant(ram)
+                .op(code::I64_GE_U)
+                .op(code::I32_OR)
+                .op(code::RETURN);
         };
 
         // La racine : CR3, ses bits d'adresse, repliée. Les droits partent de
@@ -3960,7 +4130,8 @@ impl Module {
                     .local_get(0)
                     .constant((size - 1) & !0xFFF)
                     .op(code::I64_AND)
-                    .op(code::I64_OR);
+                    .op(code::I64_OR)
+                    .local_tee(RAW);
                 fold(&mut b);
                 b.op(code::I64_EXTEND_I32_U).local_set(FRAME);
                 install(&mut b);
@@ -3968,6 +4139,9 @@ impl Module {
             }
 
             b.local_get(ENTRY).constant(ENTRY_FRAME).op(code::I64_AND);
+            if level == 12 {
+                b.local_tee(RAW);
+            }
             fold(&mut b);
             b.local_set(TABLE);
         }
@@ -4013,22 +4187,57 @@ impl Module {
     /// consulter le tampon — non mesuré, et rare par construction.
     fn far_load_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la largeur. Locales : le décalage
-        // dans la page et les deux trames, puis la valeur.
+        // dans la page et les deux trames, puis la valeur et l'adresse
+        // physique d'un accès à un périphérique.
         let mut body = vec![
             0x02, // deux groupes
             0x03, 0x7f, // 2, 3, 4 : i32
-            0x01, 0x7e, // 5 : i64
+            0x02, 0x7e, // 5, 6 : i64
         ];
         const WIDTH: u32 = 1;
         const OFFSET: u32 = 2;
         const LOW: u32 = 3;
         const HIGH: u32 = 4;
         const VALUE: u32 = 5;
+        const DEVICE: u32 = 6;
         let mut b = Body::default();
 
-        Self::far_first_page(&mut b, walk, WALK_READ, OFFSET, LOW, |b| {
-            b.constant(0);
-        });
+        Self::far_first_page(
+            &mut b,
+            walk,
+            WALK_READ,
+            FarLocals {
+                width: WIDTH,
+                offset: OFFSET,
+                low: LOW,
+                high: HIGH,
+                device: DEVICE,
+            },
+            |b| {
+                b.constant(0);
+            },
+            // La mémoire d'un périphérique : `in`, à l'adresse physique.
+            |b| {
+                b.local_get(DEVICE);
+                b.local_get(WIDTH).op(code::I64_EXTEND_I32_U);
+                b.call(HOST_IN).op(code::RETURN);
+            },
+            // À cheval sur deux trames hors de la RAM : deux `in`, la moitié
+            // basse d'abord. L'adresse de la seconde trame reste sur la pile
+            // pendant le premier appel ; la moitié haute monte au-dessus de
+            // la basse.
+            |b| {
+                b.load(TRANSLATE_CELL);
+                b.local_get(DEVICE);
+                Self::far_low_width(b, OFFSET);
+                b.call(HOST_IN).local_set(VALUE);
+                Self::far_high_width(b, OFFSET, WIDTH);
+                b.call(HOST_IN);
+                Self::far_low_bits(b, OFFSET);
+                b.op(code::I64_SHL);
+                b.local_get(VALUE).op(code::I64_OR).op(code::RETURN);
+            },
+        );
         // L'accès tient dans sa page : une lecture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
         b.op(code::IF).op(code::VOID);
@@ -4083,11 +4292,13 @@ impl Module {
     /// comme une seconde page absente, avant le premier octet.
     fn far_store_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la valeur ; 2, la largeur. Locales :
-        // le décalage dans la page, les deux trames, le rang de l'octet, et
-        // le bit `CLAIM` ôté de la largeur.
+        // le décalage dans la page, les deux trames, le rang de l'octet, le
+        // bit `CLAIM` ôté de la largeur, et l'adresse physique d'un accès à
+        // un périphérique.
         let mut body = vec![
-            0x01, // un groupe
+            0x02, // deux groupes
             0x05, 0x7f, // 3, 4, 5, 6, 7 : i32
+            0x01, 0x7e, // 8 : i64
         ];
         const VALUE: u32 = 1;
         const WIDTH: u32 = 2;
@@ -4096,6 +4307,7 @@ impl Module {
         const HIGH: u32 = 5;
         const RANK: u32 = 6;
         const CLAIMING: u32 = 7;
+        const DEVICE: u32 = 8;
         let mut b = Body::default();
         // Une réservation : le bit mis à part, la largeur rendue à elle-même.
         b.local_get(WIDTH).constant32(CLAIM).op(code::I32_AND);
@@ -4116,7 +4328,44 @@ impl Module {
         let noted = |b: &mut Body| {
             b.call(walk + NOTE);
         };
-        Self::far_first_page(&mut b, walk, WALK_WRITE, OFFSET, LOW, |_| {});
+        Self::far_first_page(
+            &mut b,
+            walk,
+            WALK_WRITE,
+            FarLocals {
+                width: WIDTH,
+                offset: OFFSET,
+                low: LOW,
+                high: HIGH,
+                device: DEVICE,
+            },
+            |_| {},
+            // La mémoire d'un périphérique : une réservation n'écrit rien ;
+            // sinon `out`, à l'adresse physique.
+            |b| {
+                claimed(b);
+                b.local_get(DEVICE);
+                b.local_get(VALUE)
+                    .local_get(WIDTH)
+                    .op(code::I64_EXTEND_I32_U);
+                b.call(HOST_OUT).op(code::RETURN);
+            },
+            // À cheval sur deux trames hors de la RAM : deux `out`, les
+            // octets bas à la fin de la première page, le reste au début de
+            // la seconde trame — dont l'adresse attend sur la pile.
+            |b| {
+                claimed(b);
+                b.load(TRANSLATE_CELL);
+                b.local_get(DEVICE).local_get(VALUE);
+                Self::far_low_width(b, OFFSET);
+                b.call(HOST_OUT);
+                b.local_get(VALUE);
+                Self::far_low_bits(b, OFFSET);
+                b.op(code::I64_SHR_U);
+                Self::far_high_width(b, OFFSET, WIDTH);
+                b.call(HOST_OUT).op(code::RETURN);
+            },
+        );
         // L'accès tient dans sa page : une écriture, à sa largeur.
         Self::far_fits(&mut b, OFFSET, WIDTH);
         b.op(code::IF).op(code::VOID);
@@ -4265,14 +4514,48 @@ impl Module {
     /// Le début commun des deux accès lents : le décalage dans la page, la
     /// trame de la page du premier octet, et la sortie si elle manque —
     /// `nothing` pousse ce que la fonction rend alors.
+    ///
+    /// **Et la sortie vers l'hôte, si la page est la mémoire d'un
+    /// périphérique** (la trame porte `DEVICE_FRAME`) : `device` fait l'accès
+    /// entier par `in` ou `out`, à l'adresse que `locals.device` porte, et
+    /// rend. **Un accès à cheval marche d'abord la page d'après**, comme le
+    /// chemin de la RAM, et par une marche de la même sorte :
+    ///
+    /// - si elle manque, ou refuse l'écriture, c'est sa faute, et rien n'est
+    ///   parti vers l'hôte — une écriture n'a pas laissé sa première moitié
+    ///   chez le périphérique ;
+    /// - si elle est hors de la RAM elle aussi, `split` fait **deux accès** :
+    ///   la fin de la première page à l'adresse de son premier octet, puis le
+    ///   reste au début de la seconde trame, celle que la seconde marche a
+    ///   laissée dans `TRANSLATE_CELL`. Chaque moitié tient dans sa page,
+    ///   donc dans la région de la carte qui la contient, ou chez personne.
+    ///   C'est ce que fait le silicium d'un accès non aligné à la mémoire non
+    ///   cachée : il le coupe. Que les deux trames se suivent ou non, que la
+    ///   seconde soit au même périphérique ou au suivant — la dernière page
+    ///   de la mémoire vidéo est suivie des registres de l'écran —, chaque
+    ///   moitié arrive où elle va. Avant, l'accès partait entier quand les
+    ///   trames se suivaient : `Carte::region` le refusait s'il débordait
+    ///   d'une région, et le bus flottait sans qu'aucun arrêt ne le dise ;
+    /// - si elle est dans la RAM, le témoin dit `FAULT_DEVICE_STRADDLE`, et
+    ///   l'hôte s'arrête en le nommant : la servir couperait l'accès entre la
+    ///   RAM et l'hôte, et aucun pilote ne le fait. Le sens RAM →
+    ///   périphérique s'arrête de même (`far_second_page`).
     fn far_first_page(
         b: &mut Body,
         walk: u32,
         kind: u32,
-        offset: u32,
-        low: u32,
-        nothing: impl FnOnce(&mut Body),
+        locals: FarLocals,
+        nothing: impl Fn(&mut Body),
+        device: impl FnOnce(&mut Body),
+        split: impl FnOnce(&mut Body),
     ) {
+        let FarLocals {
+            width,
+            offset,
+            low,
+            high,
+            device: address,
+        } = locals;
         b.local_get(0).op(code::I32_WRAP_I64).constant32(0xFFF);
         b.op(code::I32_AND).local_set(offset);
         b.local_get(0).constant32(kind).call(walk).local_set(low);
@@ -4281,6 +4564,63 @@ impl Module {
         nothing(b);
         b.op(code::RETURN);
         b.op(code::END);
+        b.local_get(low).constant32(DEVICE_FRAME).op(code::I32_AND);
+        b.op(code::IF).op(code::VOID);
+        // L'adresse physique, prise avant que la seconde marche ne remplace
+        // `TRANSLATE_CELL`.
+        Self::device_address(b, offset);
+        b.local_set(address);
+        Self::far_fits(b, offset, width);
+        b.op(code::I32_EQZ).op(code::IF).op(code::VOID);
+        Self::far_second_walk(b, walk, kind, high, &nothing);
+        // La seconde trame dans la RAM : l'arrêt nommé. Hors de la RAM : les
+        // deux moitiés, chacune chez qui la porte.
+        b.local_get(high).constant32(DEVICE_FRAME).op(code::I32_AND);
+        b.op(code::I32_EQZ).op(code::IF).op(code::VOID);
+        b.store(FAULT_SLOT, |b| {
+            b.constant(FAULT_DEVICE_STRADDLE);
+        });
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+        split(b);
+        b.op(code::END);
+        device(b);
+        b.op(code::END);
+    }
+
+    /// **La largeur de la moitié basse d'un accès à cheval** — ce qui reste
+    /// de la première page depuis le décalage —, en `i64`.
+    fn far_low_width(b: &mut Body, offset: u32) {
+        b.constant32(0x1000).local_get(offset).op(code::I32_SUB);
+        b.op(code::I64_EXTEND_I32_U);
+    }
+
+    /// **La largeur de la moitié haute**, en `i64` : la largeur, moins la
+    /// moitié basse.
+    fn far_high_width(b: &mut Body, offset: u32, width: u32) {
+        b.local_get(width).local_get(offset).op(code::I32_ADD);
+        b.constant32(0x1000).op(code::I32_SUB);
+        b.op(code::I64_EXTEND_I32_U);
+    }
+
+    /// **De combien de bits la moitié haute est décalée dans la valeur**,
+    /// en `i64` : huit par octet de la moitié basse.
+    fn far_low_bits(b: &mut Body, offset: u32) {
+        Self::far_low_width(b, offset);
+        b.constant(3).op(code::I64_SHL);
+    }
+
+    /// **L'adresse physique d'un accès à un périphérique**, en `i64` : la
+    /// trame d'avant le repli, que la marche a laissée dans `TRANSLATE_CELL`,
+    /// et le décalage dans la page. Elle est toujours au-delà de `0xFFFF` —
+    /// au-delà de la RAM, qui en fait au moins 64 Kio —, et c'est ce qui la
+    /// distingue d'un port pour `in` et `out`.
+    fn device_address(b: &mut Body, offset: u32) {
+        b.load(TRANSLATE_CELL)
+            .local_get(offset)
+            .op(code::I64_EXTEND_I32_U)
+            .op(code::I64_OR);
     }
 
     /// Vrai quand l'accès tient dans la page de son premier octet.
@@ -4291,12 +4631,31 @@ impl Module {
 
     /// **La page d'après, marchée à son tour** — son premier octet est
     /// l'adresse que CR2 portera si elle manque — et la sortie dans ce cas.
-    fn far_second_page(
+    fn far_second_page(b: &mut Body, walk: u32, kind: u32, high: u32, nothing: impl Fn(&mut Body)) {
+        Self::far_second_walk(b, walk, kind, high, &nothing);
+        // **De la RAM à la mémoire d'un périphérique, à cheval** : aucun
+        // pilote ne le fait, et le servir demanderait de couper l'accès entre
+        // la RAM et l'hôte. Le témoin dit `FAULT_DEVICE_STRADDLE`, que l'hôte
+        // nomme et sur lequel il s'arrête, plutôt que d'écrire la moitié haute
+        // dans la RAM repliée.
+        b.local_get(high).constant32(DEVICE_FRAME).op(code::I32_AND);
+        b.op(code::IF).op(code::VOID);
+        b.store(FAULT_SLOT, |b| {
+            b.constant(FAULT_DEVICE_STRADDLE);
+        });
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+    }
+
+    /// La marche de la page d'après, la trame dans `high`, et la sortie si
+    /// elle manque.
+    fn far_second_walk(
         b: &mut Body,
         walk: u32,
         kind: u32,
         high: u32,
-        nothing: impl FnOnce(&mut Body),
+        nothing: &impl Fn(&mut Body),
     ) {
         b.local_get(0)
             .constant(0xFFF)
@@ -4397,16 +4756,85 @@ impl Module {
             b.constant(0);
         });
         body.op(0x05); // else
-                       // Non nul : rien n'est écrit, et la machine dit ce qui lui manque.
-        body.store(RIP_SLOT, |b| {
-            b.constant(address);
+        let arreter = |b: &mut Body| {
+            b.store(RIP_SLOT, |b| {
+                b.constant(address);
+            });
+            b.store(STOP_SLOT, |b| {
+                b.constant(STOP_SELECTOR);
+            });
+            b.bytes.push(code::I32_CONST);
+            signed(-1, &mut b.bytes);
+            b.op(code::RETURN);
+        };
+        let selecteur = |b: &mut Body| {
+            b.load(Self::slot(step.dst))
+                .constant(0xffff)
+                .op(code::I64_AND);
+        };
+        let (limite, table) = Self::table_slots(false);
+        // **Non nul : le descripteur est lu dans la GDT**, quand il y est.
+        // Le noyau 6.12 de Void en charge un à chaque changement de
+        // processus : sur un AMD (ce que dit `cpuid`), un sélecteur nul ne
+        // remet pas la base à zéro, et `load_seg_legacy` charge d'abord
+        // `__USER_DS` (`0x2b`) pour l'y mettre. Ce qui est lu : le bit de
+        // présence et les trente-deux bits de la base, ceux que le mode long
+        // garde pour FS et GS. Ce qui reste un arrêt nommé, RIP **sur**
+        // l'instruction qui n'a rien fait : un sélecteur de la LDT (TI), un
+        // descripteur au-delà de la limite de la GDT — sans `lgdt`, la limite
+        // est nulle, et c'est « sans table de descripteurs » —, un
+        // descripteur absent, et l'anneau trois, que rien n'exerce et où la
+        // lecture de la GDT, page du noyau, fauterait à tort.
+        selecteur(body);
+        body.constant(4).op(code::I64_AND).op(code::I64_EQZ);
+        selecteur(body);
+        body.constant(7)
+            .op(code::I64_OR)
+            .load(limite)
+            .op(code::I64_LE_U)
+            .op(code::I32_AND);
+        body.load(Self::segment_slot(Segment::Cs))
+            .constant(3)
+            .op(code::I64_AND)
+            .constant(3)
+            .op(code::I64_NE)
+            .op(code::I32_AND);
+        body.op(code::IF).op(code::VOID);
+        body.load(table);
+        selecteur(body);
+        body.constant(!7 & 0xffff)
+            .op(code::I64_AND)
+            .op(code::I64_ADD);
+        body.peek(Width::Qword);
+        body.bytes.push(code::GLOBAL_SET);
+        unsigned(TRANSLATE_VALUE as u64, &mut body.bytes);
+        body.load(TRANSLATE_VALUE)
+            .constant(1 << 47)
+            .op(code::I64_AND)
+            .op(code::I64_EQZ);
+        body.op(code::IF).op(code::VOID);
+        arreter(body);
+        body.op(code::END);
+        body.store(Self::segment_slot(segment), |b| {
+            selecteur(b);
         });
-        body.store(STOP_SLOT, |b| {
-            b.constant(STOP_SELECTOR);
+        // La base : les octets 2 à 4 du descripteur, puis l'octet 7.
+        body.store(base, |b| {
+            b.load(TRANSLATE_VALUE)
+                .constant(16)
+                .op(code::I64_SHR_U)
+                .constant(0xff_ffff)
+                .op(code::I64_AND)
+                .load(TRANSLATE_VALUE)
+                .constant(56)
+                .op(code::I64_SHR_U)
+                .constant(24)
+                .op(code::I64_SHL)
+                .op(code::I64_OR);
         });
-        body.bytes.push(code::I32_CONST);
-        signed(-1, &mut body.bytes);
-        body.op(code::RETURN);
+        body.op(0x05); // else
+        arreter(body);
+        body.op(code::END);
         body.op(code::END);
         Some(())
     }
@@ -4567,31 +4995,59 @@ impl Module {
             let leaf_is = |b: &mut Body, which: u64| {
                 b.load(Body::scratch(0)).constant(which).op(code::I64_EQ);
             };
-            let choose = |body: &mut Body, slot: usize, zero: u32, one: u32| {
-                body.store(Self::slot(slot as u8), |b| {
+            // **Les feuilles servies**, chacune ses quatre registres dans
+            // l'ordre du jeu d'instructions — EAX, EBX, ECX, EDX.
+            let feuilles: [(u64, [u32; 4]); 4] = [
+                (
+                    0,
+                    [
+                        CPUID_MAX_LEAF,
+                        CPUID_VENDOR_EBX,
+                        CPUID_VENDOR_ECX,
+                        CPUID_VENDOR_EDX,
+                    ],
+                ),
+                (
+                    1,
+                    [
+                        CPUID_SIGNATURE,
+                        CPUID_LEAF_ONE_EBX,
+                        CPUID_FEATURES_ECX,
+                        CPUID_FEATURES_EDX,
+                    ],
+                ),
+                (0x8000_0000, [CPUID_MAX_EXTENDED_LEAF, 0, 0, 0]),
+                (
+                    0x8000_0008,
+                    [CPUID_ADDRESS_SIZES, CPUID_EXTENDED_EIGHT_EBX, 0, 0],
+                ),
+            ];
+            // Les quatre registres que `cpuid` écrit, EAX, EBX, ECX, EDX — soit
+            // les emplacements 0, 3, 1 et 2.
+            for (rang, slot) in [0u8, 3, 1, 2].into_iter().enumerate() {
+                body.store(Self::slot(slot), |b| {
                     // **`select` dépile la condition, puis deux valeurs**, et
                     // rend la **première** quand la condition n'est pas nulle.
                     // Le premier jet en empilait une de moins et le module ne
                     // se compilait pas — « can't pop empty stack », ce qui est
                     // au moins un refus franc.
-                    b.constant(u64::from(zero)); // si la feuille est zéro
-                    b.constant(u64::from(one)); // si c'est la feuille un
-                    b.constant(0); // et sinon, rien
-                    leaf_is(b, 1);
-                    b.op(code::SELECT);
-                    leaf_is(b, 0);
-                    b.op(code::SELECT);
+                    //
+                    // Hors des feuilles connues, tout est nul : c'est ce que
+                    // rend un processeur pour une feuille qu'il ne sert pas,
+                    // et c'est aussi ce qu'il faut dire quand on ne sait rien.
+                    // Toutes les valeurs d'abord, puis le zéro ; les
+                    // `select` se replient ensuite de la dernière feuille à
+                    // la première.
+                    for (_, registres) in feuilles {
+                        b.constant(u64::from(registres[rang]));
+                    }
+                    b.constant(0);
+                    for (feuille, _) in feuilles.iter().rev() {
+                        leaf_is(b, *feuille);
+                        b.op(code::SELECT);
+                    }
                 });
-            };
-            // Hors des deux feuilles connues, tout est nul : c'est ce que rend
-            // un processeur pour une feuille qu'il ne sert pas, et c'est aussi
-            // ce qu'il faut dire quand on ne sait rien.
-            // Les quatre registres que `cpuid` écrit, dans l'ordre du jeu
-            // d'instructions : EAX, EBX, ECX, EDX — soit 0, 3, 1 et 2.
-            choose(body, 0, CPUID_MAX_LEAF, CPUID_SIGNATURE);
-            choose(body, 3, CPUID_VENDOR_EBX, CPUID_LEAF_ONE_EBX);
-            choose(body, 1, CPUID_VENDOR_ECX, CPUID_FEATURES_ECX);
-            choose(body, 2, CPUID_VENDOR_EDX, CPUID_FEATURES_EDX);
+            }
             return Some(());
         }
         // **Les instructions privilégiées : décodées, pas traduisibles.**
@@ -4885,11 +5341,21 @@ impl Module {
         // les seize bits bas changent. Les deux formes ont été mesurées sur un
         // vrai processeur avant d'être écrites ici.
         if let Op::StoreSegment { segment } = step.op {
-            // **La forme mémoire est refusée, et c'est une mesure, pas un
-            // oubli** : sur les treize occurrences du noyau Alpine, treize sont
-            // la forme registre. La produire demanderait un accès mémoire de
-            // seize bits pour un cas que rien n'exerce.
-            step.memory.is_none().then_some(())?;
+            // **La forme mémoire écrit seize bits, quelle que soit la largeur
+            // de l'opérande** (`mov %sreg, m16`). Elle était refusée — sur les
+            // treize occurrences du noyau Alpine, treize sont la forme
+            // registre —, et un refus refuse la région entière, même quand
+            // l'instruction est sur une branche que rien n'exécute : depuis
+            // que le flottant de SSE2 se lit, les fenêtres du corpus de
+            // `crates/wisq-page/tests/page.rs` allaient au-delà de leur forme
+            // flottante jusqu'à elle, et la moitié de leurs refus étaient
+            // celui-ci.
+            if let Some(address) = &step.memory {
+                body.store_memory(address, Width::Word, |b| {
+                    b.load(Self::segment_slot(segment));
+                });
+                return Some(());
+            }
             Self::put(step.dst, step.width, body, |b| {
                 b.load(Self::segment_slot(segment));
             });
@@ -8153,6 +8619,32 @@ pub fn usable_ram(
 mod port_tests {
     use super::*;
 
+    /// **Une traduction ratée ne laisse rien derrière elle** : ses octets
+    /// sont repris, et `wrote` revient à ce qu'il était. La traduction posée
+    /// ici émet une écriture (ce qui lève `wrote`), puis refuse ; une autre,
+    /// qui réussit, garde ses octets et sa marque.
+    #[test]
+    fn a_failed_translation_leaves_nothing_behind() {
+        let mut body = Body::default();
+        body.bytes.extend_from_slice(&[1, 2, 3]);
+        let rate = body.attempt(|b| {
+            b.bytes.extend_from_slice(&[4, 5, 6, 7]);
+            b.wrote = true;
+            None
+        });
+        assert!(!rate, "ratée");
+        assert_eq!(body.bytes, [1, 2, 3], "ses octets repris");
+        assert!(!body.wrote, "sa marque d'écriture reprise");
+        let reussie = body.attempt(|b| {
+            b.bytes.push(4);
+            b.wrote = true;
+            Some(())
+        });
+        assert!(reussie, "réussie");
+        assert_eq!(body.bytes, [1, 2, 3, 4], "ses octets gardés");
+        assert!(body.wrote, "sa marque gardée");
+    }
+
     /// **Deux formes que rien ne distinguait doivent produire deux modules.**
     ///
     /// Ce test remplace celui qui tenait le refus de traduire : sa prémisse —
@@ -8430,20 +8922,36 @@ mod port_tests {
         );
     }
 
-    /// **`iretd` est refusé en étant nommé.** `cf` sans REX.W se décode — le
-    /// décodeur ne fait pas passer un opcode connu pour un octet inconnu — mais
-    /// c'est un retour de trente-deux bits, et cette machine n'en pose jamais
-    /// le cadre. Le refus est à l'adresse de l'instruction, pas au début de la
-    /// région, pour qu'un relevé désigne la bonne ligne.
+    /// **`iretd` est refusé en étant nommé, là où il est.** `cf` sans REX.W
+    /// se décode — le décodeur ne fait pas passer un opcode connu pour un
+    /// octet inconnu — mais c'est un retour de trente-deux bits, et cette
+    /// machine n'en pose jamais le cadre.
+    ///
+    /// **Le refus a changé d'heure, pas de cible.** Au milieu d'une région,
+    /// il la faisait refuser entière ; il arrête maintenant son bloc, RIP
+    /// posé sur lui (`a_region_stops_before_what_it_cannot_produce`, dans
+    /// `tests/host_loop.rs`). La
+    /// région qui **commence** par lui est refusée, à son adresse : c'est elle
+    /// que l'hôte demande si l'exécution y arrive, et un relevé désigne la
+    /// bonne ligne.
     #[test]
     fn a_thirty_two_bit_interrupt_return_is_refused_by_name() {
         let narrow: &[u8] = &[
             0x48, 0x89, 0xc3, // mov %rax,%rbx
             0xcf, // iretd
         ];
-        match Module::region_or_why(narrow, 0x1000, 0) {
-            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 3, "à l'iretd, pas avant"),
+        assert!(
+            Module::region_or_why(narrow, 0x1000, 0).is_ok(),
+            "le mov se traduit, le bloc s'arrête devant l'iretd"
+        );
+        match Module::region_or_why(narrow, 0x1000, 3) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 3, "à l'iretd"),
             other => panic!("iretd doit être refusé en étant nommé, pas {other:?}"),
+        }
+        // Et le `lret` sans REX.W pareil.
+        match Module::region_or_why(&[0xcb], 0x1000, 0) {
+            Err(Refused::CannotTranslate { at }) => assert_eq!(at, 0, "au lret"),
+            other => panic!("lret doit être refusé en étant nommé, pas {other:?}"),
         }
     }
 
@@ -8598,8 +9106,12 @@ mod port_tests {
             // Ce qui reste refusé à la traduction est la forme dont la source
             // est en **mémoire** : le sélecteur ne se connaît alors qu'après
             // une lecture, et rien n'exerce cette forme.
+            //
+            // **`mov %ds,(%rax)` a quitté cette liste** : ranger un sélecteur
+            // en mémoire écrit seize bits, et se produit depuis que le
+            // flottant de SSE2 se lit (voir `StoreSegment` plus haut, et
+            // `storing_a_segment_selector_to_memory_writes_sixteen_bits`).
             ("mov (%rax),%fs", &[0x8e, 0x20][..]),
-            ("mov %ds,(%rax)", &[0x8c, 0x18][..]),
             // Lire est produit depuis cette tranche ; écrire CR4 aussi. Ce qui
             // reste est ce qui allumerait la pagination.
             ("mov %rax,%cr3", &[0x0f, 0x22, 0xd8][..]),
@@ -8625,9 +9137,9 @@ mod port_tests {
             // porte le masque du cœur Swift, et un test compare les deux
             // littéraux pour qu'ils ne divergent pas.
             //
-            // **Cette liste n'est plus qu'à deux entrées**, et les deux sont
-            // des formes que rien n'exerce : un sélecteur venu de la mémoire,
-            // et un segment rangé en mémoire.
+            // **Cette liste n'est plus qu'à deux entrées** : un sélecteur
+            // venu de la mémoire, forme que rien n'exerce, et les registres
+            // de contrôle qui allumeraient la pagination.
         ] {
             // Première moitié : le décodeur la lit, entière.
             let step =

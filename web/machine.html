@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>wisq</title>
+<!--
+  La page de la machine de l'émetteur, telle que l'application la charge
+  (`EmitterDesktop`, côté Swift) : un raccord, rien de plus. Tout le travail
+  est dans `machine.js`, jugé sous Bun ; ici, la toile, le doigt et le pont
+  vers l'application.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas {
+    display: block; width: 100%; height: 100%;
+    object-fit: contain; touch-action: none;
+  }
+</style>
+<canvas id="ecran" width="1" height="1"></canvas>
+<script type="module">
+import { demarrer, doigt } from "./machine.js";
+
+const pont = window.webkit.messageHandlers.wisq;
+const poster = (message) => pont.postMessage(message);
+const toile = document.getElementById("ecran");
+const pinceau = toile.getContext("2d");
+let image = null;
+// **Le peintre** : une seule `ImageData` par mode, réutilisée à chaque image.
+const peintre = {
+  image(largeur, hauteur) {
+    if (image === null || image.width !== largeur || image.height !== hauteur) {
+      toile.width = largeur;
+      toile.height = hauteur;
+      image = pinceau.createImageData(largeur, hauteur);
+    }
+    return image;
+  },
+  montrer() {
+    pinceau.putImageData(image, 0, 0);
+  },
+};
+
+try {
+  const conducteur = await demarrer({
+    base: new URL(".", location.href).href,
+    chercher: (url, options) => fetch(url, options),
+    poster,
+    peintre,
+  });
+  // **Le doigt, sur la tablette de la carte** (`doigt`, dans `machine.js`) :
+  // posé dans l'image, glissé, relevé — même hors de l'image —, ou annulé
+  // quand le système reprend le geste : chacun de ces genres est écouté, sinon
+  // le bouton resterait tenu dans l'invité.
+  const suivre = doigt(conducteur.toucher);
+  const pointeur = (evenement) => {
+    evenement.preventDefault();
+    // Le relâchement doit revenir à la toile même hors d'elle : un doigt
+    // l'est déjà (capture implicite), une souris pas.
+    if (evenement.type === "pointerdown") {
+      try { toile.setPointerCapture(evenement.pointerId); } catch {}
+    }
+    suivre(
+      evenement.type, evenement.clientX, evenement.clientY,
+      toile.getBoundingClientRect(), toile.width, toile.height,
+    );
+  };
+  for (const genre of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
+    toile.addEventListener(genre, pointeur);
+  }
+  // Ce que l'application appelle : `window.wisq.touches(…)`, `.taper(…)`.
+  window.wisq = conducteur;
+  conducteur.courir().catch((raison) => poster({ kind: "panne", pourquoi: String(raison?.message ?? raison) }));
+} catch (raison) {
+  poster({ kind: "panne", pourquoi: String(raison?.message ?? raison) });
+}
+</script>

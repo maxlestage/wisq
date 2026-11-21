@@ -39,6 +39,18 @@ for target in "${all[@]}"; do
   rustup target add "$target" > /dev/null
 done
 
+# **Le module de la page, embarqué dans la bibliothèque** : c'est lui qui
+# fait de la machine de l'émetteur une machine que l'application peut ouvrir
+# (`EmitterMachine.embeddedModule`). Il se construit pour wasm32, une autre
+# cible, par le script du dépôt ; `build.rs` le recopie quand
+# `WISQ_PAGE_WASM` le désigne. Le réglage qui ouvre cette machine est éteint
+# par défaut : l'embarquer ne change rien à ce que l'application fait.
+echo "==> Le module de la page (wasm32), embarqué"
+rustup target add wasm32-unknown-unknown > /dev/null
+WISQ_PAGE_WASM="$("$root/scripts/build-page-emitter.sh" "$root")"
+export WISQ_PAGE_WASM
+echo "    $WISQ_PAGE_WASM, $(wc -c < "$WISQ_PAGE_WASM" | tr -d ' ') octets"
+
 echo "==> Compilation du cœur pour ${#all[@]} cibles"
 for target in "${all[@]}"; do
   cargo build --release --target "$target" -p wisq-vm

@@ -126,13 +126,22 @@ jobs:
         # installed here rather than relied on from the kernel-fetch step above,
         # which is deliberately best-effort — an absent image must skip a test,
         # but an absent curl must not silently become "no toolchain".
+        #
+        # **Et le module de la page**, pour wasm32 : `EmitterPageTests` fait
+        # tourner la page de la machine de l'émetteur sous Bun, ses `fetch`
+        # servis par le magasin Swift, et il lui faut ce module. Son chemin
+        # passe aux étapes suivantes par `WISQ_PAGE_MODULE` ; `unzip` est
+        # celui de `setup-bun`, juste après.
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates
+          apt-get install -y --no-install-recommends gcc libc6-dev curl ca-certificates unzip
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable
           . "$HOME/.cargo/env"
           cargo build --release -p wisq-vm
+          rustup target add wasm32-unknown-unknown
+          echo "WISQ_PAGE_MODULE=$(scripts/build-page-emitter.sh)" >> "$GITHUB_ENV"
+      - uses: oven-sh/setup-bun@v2
       - name: Build (mode langage Swift 6)
         run: swift build
       - name: Test
