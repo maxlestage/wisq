@@ -1446,7 +1446,11 @@ export function machine({
       if ((at === 0x64 || at === 0x60) && peripheriques.remise()) remiseDemandee = true;
     }
   };
+  /// **Combien de lectures de port l'invité a faites** : ce qui distingue un
+  /// bloc qui attend un périphérique d'un bloc bloqué (« sur place »).
+  let lecturesDePort = 0;
   env.in = (port, width) => {
+    lecturesDePort += 1;
     const at = Number(port);
     // La mémoire d'un périphérique, comme pour `out` : tous les bits à un
     // quand personne n'y répond.
@@ -3400,10 +3404,18 @@ export function machine({
         // est du vrai travail dans le cas bénin, et il n'est payé que quand
         // RIP retombe sur son point de départ. Une région que le vidage vient
         // d'oublier ne tourne plus : le tour suivant la retraduira.
+        //
+        // **Et un bloc qui lit un port n'est pas bloqué non plus** : il
+        // attend un périphérique — `in $0x64 ; test $1 ; jz` jusqu'à ce que
+        // le clavier ait une touche —, et ce qu'il lit change avec le temps
+        // de l'hôte, une frappe de l'application, une réponse du disque. Le
+        // déclarer « sur place » arrêtait pour de bon un invité qui attendait
+        // une touche qu'on allait lui taper.
         if (region !== null && rip() === here) {
+          const lectures = lecturesDePort;
           region.run(1n);
           voirEcritures();
-          if (rip() === here) {
+          if (rip() === here && lecturesDePort === lectures) {
             return { stopped: "sur place", at: here };
           }
         }
