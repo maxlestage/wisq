@@ -50,6 +50,9 @@ fois plus tôt.
   les bornes de `Int64`, 2^63 tout juste `Int64.max`. Sabotage : `>` au lieu
   de `>=` sur la borne haute fait planter le cas 2^63.
 
+**Le compte publié** passe de 4 294 à 4 297 (Swift 3 121, Rust 1 176), master
+(#715) fusionné dedans.
+
 **Vérifié.** `cargo fmt --check`, les deux jeux de Clippy, pc_poste (29
 tests), `swift build --build-tests` et RustPCMachineTests (18 tests),
 SwiftLint strict, l'analyse de la vue SwiftUI touchée.
