@@ -955,3 +955,54 @@ fn a_full_stack_with_an_empty_top_keeps_c1_down() {
         );
     }
 }
+
+/// **Ce qui n'attend pas, par le second décodeur lui-même** : sous une
+/// division par zéro démasquée en attente (ES levé), `fninit`, `fnclex`,
+/// `fnstsw`, `fnstcw`, `fnstenv`, `fnsave`, `fneni`, `fndisi` et `fnsetpm`
+/// s'exécutent ; `fld1`, `fnop`, `fldcw` et `emms` rendent
+/// `FloatingPoint` sans rien changer. Dans la machine, `fninit` passe par
+/// `decode` (`Op::FpuInit`) ; `execute_extended` doit le traiter de même pour
+/// qui l'appelle directement.
+#[test]
+fn the_no_wait_forms_run_under_a_pending_exception() {
+    let pending = |cpu: &mut Cpu| {
+        cpu.fpu_control = 0x037b;
+        cpu.fpu_status = (6 << 11) | 0x8084;
+    };
+    for code in [
+        &[0xdb, 0xe3][..],
+        &[0xdb, 0xe2],
+        &[0xdf, 0xe0],
+        &[0xdd, 0x3e],
+        &[0xd9, 0x3e],
+        &[0xd9, 0x36],
+        &[0xdd, 0x36],
+        &[0xdb, 0xe0],
+        &[0xdb, 0xe1],
+        &[0xdb, 0xe4],
+    ] {
+        let mut cpu = x87_start(ONE, ONE);
+        pending(&mut cpu);
+        run_extended(&mut cpu, code);
+    }
+    for code in [
+        &[0xd9, 0xe8][..],
+        &[0xd9, 0xd0],
+        &[0xd9, 0x2e],
+        &[0x0f, 0x77],
+    ] {
+        let mut cpu = x87_start(ONE, ONE);
+        pending(&mut cpu);
+        let decoded = decode_extended(code).expect("se lit");
+        assert_eq!(
+            cpu.execute_extended(&decoded),
+            Err(ExtendedFault::FloatingPoint),
+            "{code:02x?}"
+        );
+        assert_eq!(
+            (cpu.fpu_status, cpu.fpu_tags, cpu.x87[5]),
+            ((6 << 11) | 0x8084, 0b1100_0000, (0, 0)),
+            "{code:02x?} : rien de changé"
+        );
+    }
+}
