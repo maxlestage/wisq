@@ -16,7 +16,27 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use wisq_vm::x86::rapide::{executer_une, Suite};
 use wisq_vm::x86::{decode, Cpu, Flags, GuestMemory, Op, Step};
+
+/// **Un pas, par l'un des deux chemins** : `Cpu::step` (le juge), ou la
+/// forme que la machine PC choisit au décodage (`x86::rapide::preparer`),
+/// exécutée comme la boucle d'un bloc l'exécute — RIP avancé de la longueur
+/// quand l'instruction ne l'a pas posé. Chaque corpus juge les deux.
+fn pas(cpu: &mut Cpu, octets: &[u8], rapide: bool) -> Step {
+    if !rapide {
+        return cpu.step(octets);
+    }
+    let Some(instruction) = decode(octets) else {
+        return Step::Unknown;
+    };
+    if executer_une(cpu, &instruction) == Suite::Suivante {
+        cpu.rip = cpu.rip.wrapping_add(instruction.length as u64);
+    }
+    Step::Ran {
+        length: instruction.length,
+    }
+}
 
 fn oracle_path() -> PathBuf {
     // CARGO_MANIFEST_DIR est crates/wisq-vm.
@@ -308,6 +328,16 @@ const CODE: u64 = 0x3000_0000;
 /// instruction **acceptée** rende exactement ce que le silicium a rendu.
 #[test]
 fn every_accepted_instruction_matches_the_silicon() {
+    every_accepted_instruction_matches_the_silicon_by(false);
+}
+
+/// Le même corpus, par les formes du chemin rapide de la machine PC.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_fast_path() {
+    every_accepted_instruction_matches_the_silicon_by(true);
+}
+
+fn every_accepted_instruction_matches_the_silicon_by(rapide: bool) {
     let Oracle {
         states,
         instructions,
@@ -360,7 +390,7 @@ fn every_accepted_instruction_matches_the_silicon() {
             }
             steps += 1;
             let at = cpu.rip.wrapping_sub(CODE) as usize;
-            if cpu.step(&instruction.bytes[at..]) == Step::Unknown {
+            if pas(&mut cpu, &instruction.bytes[at..], rapide) == Step::Unknown {
                 ran_out = true;
                 break;
             }
@@ -633,6 +663,16 @@ const STACK_CASES_FLOOR: usize = 600;
 /// sur l'autre corpus, et le troisième cœur enfin tenu sur la pile.
 #[test]
 fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus() {
+    every_accepted_instruction_matches_the_silicon_on_the_stack_corpus_by(false);
+}
+
+/// Le même corpus, par les formes du chemin rapide de la machine PC.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus_on_the_fast_path() {
+    every_accepted_instruction_matches_the_silicon_on_the_stack_corpus_by(true);
+}
+
+fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus_by(rapide: bool) {
     let oracle = read_stack_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<String> = Vec::new();
@@ -668,7 +708,7 @@ fn every_accepted_instruction_matches_the_silicon_on_the_stack_corpus() {
             }
             steps += 1;
             let at = cpu.rip.wrapping_sub(CODE) as usize;
-            if cpu.step(&program[at..]) == Step::Unknown {
+            if pas(&mut cpu, &program[at..], rapide) == Step::Unknown {
                 ran_out = true;
                 break;
             }
@@ -888,6 +928,16 @@ const STRING_CASES_FLOOR: usize = 416;
 /// nommé** plutôt qu'ignoré.
 #[test]
 fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus() {
+    every_accepted_instruction_matches_the_silicon_on_the_string_corpus_by(false);
+}
+
+/// Le même corpus, par les formes du chemin rapide de la machine PC.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus_on_the_fast_path() {
+    every_accepted_instruction_matches_the_silicon_on_the_string_corpus_by(true);
+}
+
+fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus_by(rapide: bool) {
     let oracle = read_string_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<String> = Vec::new();
@@ -951,7 +1001,7 @@ fn every_accepted_instruction_matches_the_silicon_on_the_string_corpus() {
             }
             steps += 1;
             let at = cpu.rip.wrapping_sub(CODE) as usize;
-            if cpu.step(&program[at..]) == Step::Unknown {
+            if pas(&mut cpu, &program[at..], rapide) == Step::Unknown {
                 ran_out = true;
                 break;
             }
@@ -1130,6 +1180,16 @@ fn read_branch_oracle() -> BranchOracle {
 /// couvre les trois. Seize kibioctets depuis `CODE`, comme le test Swift.
 #[test]
 fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus() {
+    every_accepted_instruction_matches_the_silicon_on_the_branch_corpus_by(false);
+}
+
+/// Le même corpus, par les formes du chemin rapide de la machine PC.
+#[test]
+fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus_on_the_fast_path() {
+    every_accepted_instruction_matches_the_silicon_on_the_branch_corpus_by(true);
+}
+
+fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus_by(rapide: bool) {
     let oracle = read_branch_oracle();
     let mut checked = 0usize;
     let mut refused: Vec<String> = Vec::new();
@@ -1180,7 +1240,7 @@ fn every_accepted_instruction_matches_the_silicon_on_the_branch_corpus() {
             }
             steps += 1;
             let at = cpu.rip.wrapping_sub(CODE) as usize;
-            if cpu.step(&program[at..]) == Step::Unknown {
+            if pas(&mut cpu, &program[at..], rapide) == Step::Unknown {
                 ran_out = true;
                 break;
             }

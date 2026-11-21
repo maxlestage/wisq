@@ -29,6 +29,7 @@ pub mod iso9660;
 pub mod kernel_image;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod machine;
+pub mod pc;
 pub mod progress;
 pub mod rate;
 pub mod snapshot;

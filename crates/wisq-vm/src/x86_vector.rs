@@ -669,3 +669,439 @@ fn saturate(add: bool, lane: Width, signed: bool) -> Vector {
 fn shift_by(lane: Width, kind: Shift) -> Vector {
     Vector::ShiftBy { lane, kind }
 }
+
+/// Pourquoi une instruction vectorielle n'est pas allée au bout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VectorFault {
+    /// Un opérande en mémoire n'est pas accessible. `Cpu::unmapped` dit
+    /// lequel ; la machine en fait une faute de page.
+    Memory,
+    /// `ldmxcsr` avec un bit réservé levé : le silicium lève `#GP(0)`, rien
+    /// de changé.
+    ReservedControl,
+}
+
+/// Les bits de MXCSR qu'un programme a le droit de poser : les seize du bas.
+pub const MXCSR_MASK: u32 = 0xffff;
+
+fn join(value: [u64; 2]) -> u128 {
+    u128::from(value[0]) | (u128::from(value[1]) << 64)
+}
+
+fn split(value: u128) -> [u64; 2] {
+    [value as u64, (value >> 64) as u64]
+}
+
+/// Appliquer `f` voie par voie : `lane` octets par voie, les deux opérandes
+/// découpés pareil. `f` reçoit et rend des voies déjà masquées.
+fn zip_lanes(left: u128, right: u128, lane: Width, f: impl Fn(u64, u64) -> u64) -> u128 {
+    let bits = lane.bits() as u32;
+    let mask = u128::from(lane.mask());
+    let mut out = 0u128;
+    for index in 0..(128 / bits) {
+        let shift = index * bits;
+        let a = ((left >> shift) & mask) as u64;
+        let b = ((right >> shift) & mask) as u64;
+        out |= (u128::from(f(a, b)) & mask) << shift;
+    }
+    out
+}
+
+fn lane(value: u128, width: Width, index: u32) -> u64 {
+    ((value >> (index * width.bits() as u32)) & u128::from(width.mask())) as u64
+}
+
+/// Une voie lue comme un entier signé.
+fn signed(value: u64, width: Width) -> i64 {
+    let shift = 64 - width.bits() as u32;
+    ((value << shift) as i64) >> shift
+}
+
+/// Borner un entier signé à la plage d'une voie, signée ou non.
+fn saturate_to(value: i64, width: Width, as_signed: bool) -> u64 {
+    let bits = width.bits() as u32;
+    let (low, high) = if as_signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0, (1i64 << bits) - 1)
+    };
+    value.clamp(low, high) as u64 & width.mask()
+}
+
+impl super::Cpu {
+    /// **Exécuter une instruction vectorielle** — ce que `execute` refuse.
+    ///
+    /// Les règles sont celles que les corpus `x86-xmm-oracle.tsv` et
+    /// `x86-simd-oracle.tsv` ont relevées sur le silicium, et
+    /// `tests/x86_vector_oracle.rs` les rejoue contre cette fonction : aucun
+    /// drapeau ne bouge, aucun autre registre XMM n'est touché, et une
+    /// instruction qui faute n'a rien écrit dans un registre.
+    ///
+    /// RIP n'est pas avancé : c'est l'appelant qui le fait, comme pour
+    /// `execute`.
+    pub fn execute_vector(&mut self, instruction: &Decoded) -> Result<(), VectorFault> {
+        let Op::Vector(vector) = instruction.op else {
+            unreachable!("execute_vector ne reçoit que des instructions vectorielles")
+        };
+        let d = instruction.dst as usize;
+        let s = instruction.src as usize;
+        let width = instruction.width;
+        // L'adresse de l'opérande mémoire, quand il y en a un.
+        let at = instruction.memory.map(|address| {
+            let after = self.after(instruction);
+            self.effective_address(&address, after)
+        });
+        match vector {
+            // `decode` lit le flottant de SSE pour l'émetteur, qui le traduit ;
+            // la machine native le tient de `decode_extended` (`x86_sse.rs`) et
+            // l'écarte de `decode` à la lecture (`pc::machine::decode`).
+            Vector::Float(_) => {
+                unreachable!("le flottant de SSE passe par decode_extended, pas par execute_vector")
+            }
+            Vector::MoveIn => {
+                let value = match at {
+                    Some(at) => self.vector_read(at, width)?,
+                    None => self.get(instruction.src, width, false),
+                };
+                self.xmm[d] = [value, 0];
+            }
+            Vector::MoveOut => {
+                let value = self.xmm[d][0] & width.mask();
+                match at {
+                    Some(at) => self.vector_write(at, width, value)?,
+                    None => self.set(instruction.src, width, false, value),
+                }
+            }
+            Vector::LoadQuad => {
+                let value = match at {
+                    Some(at) => self.vector_read(at, Width::Qword)?,
+                    None => self.xmm[s][0],
+                };
+                self.xmm[d] = [value, 0];
+            }
+            Vector::StoreQuad => match at {
+                Some(at) => self.vector_write(at, Width::Qword, self.xmm[d][0])?,
+                None => self.xmm[s] = [self.xmm[d][0], 0],
+            },
+            Vector::Load => {
+                self.xmm[d] = self.vector_source(at, s)?;
+            }
+            Vector::Store => match at {
+                Some(at) => self.vector_write_whole(at, self.xmm[d])?,
+                None => self.xmm[s] = self.xmm[d],
+            },
+            Vector::LoadScalar => match at {
+                // Depuis la mémoire, le reste du registre est mis à zéro.
+                Some(at) => self.xmm[d] = [self.vector_read(at, width)?, 0],
+                // Depuis un registre, il est laissé tel quel.
+                None => {
+                    let mask = width.mask();
+                    self.xmm[d][0] = (self.xmm[d][0] & !mask) | (self.xmm[s][0] & mask);
+                }
+            },
+            Vector::StoreScalar => match at {
+                Some(at) => self.vector_write(at, width, self.xmm[d][0] & width.mask())?,
+                None => {
+                    let mask = width.mask();
+                    self.xmm[s][0] = (self.xmm[s][0] & !mask) | (self.xmm[d][0] & mask);
+                }
+            },
+            Vector::LoadHalf { high } => {
+                let at = at.expect("movlps et movhps lisent la mémoire");
+                self.xmm[d][usize::from(high)] = self.vector_read(at, Width::Qword)?;
+            }
+            Vector::StoreHalf { high } => {
+                let at = at.expect("movlps et movhps écrivent la mémoire");
+                self.vector_write(at, Width::Qword, self.xmm[d][usize::from(high)])?;
+            }
+            Vector::HighToLow => self.xmm[d][0] = self.xmm[s][1],
+            Vector::LowToHigh => self.xmm[d][1] = self.xmm[s][0],
+            Vector::Logic(logic) => {
+                let source = self.vector_source(at, s)?;
+                let target = self.xmm[d];
+                let apply = |a: u64, b: u64| match logic {
+                    Logic::And => a & b,
+                    Logic::AndNot => !a & b,
+                    Logic::Or => a | b,
+                    Logic::Xor => a ^ b,
+                };
+                self.xmm[d] = [apply(target[0], source[0]), apply(target[1], source[1])];
+            }
+            Vector::Unpack { lane: unit, high } => {
+                let source = join(self.vector_source(at, s)?);
+                let target = join(self.xmm[d]);
+                let bits = unit.bits() as u32;
+                let count = 64 / bits;
+                let first = if high { count } else { 0 };
+                let mut out = 0u128;
+                for index in 0..count {
+                    let a = u128::from(lane(target, unit, first + index));
+                    let b = u128::from(lane(source, unit, first + index));
+                    out |= a << (2 * index * bits);
+                    out |= b << ((2 * index + 1) * bits);
+                }
+                self.xmm[d] = split(out);
+            }
+            Vector::Lanes(lanes) => {
+                let source = join(self.vector_source(at, s)?);
+                let target = join(self.xmm[d]);
+                self.xmm[d] = split(Self::lanes(lanes, target, source));
+            }
+            Vector::ShiftImmediate { lane: unit, kind } => {
+                let value = join(self.xmm[d]);
+                self.xmm[d] = split(Self::shift_lanes(value, unit, kind, instruction.imm));
+            }
+            Vector::ShiftBy { lane: unit, kind } => {
+                let count = self.vector_source(at, s)?[0];
+                let value = join(self.xmm[d]);
+                self.xmm[d] = split(Self::shift_lanes(value, unit, kind, count));
+            }
+            Vector::ShiftBytes { left } => {
+                let value = join(self.xmm[d]);
+                let count = instruction.imm & 0xff;
+                let shifted = if count > 15 {
+                    0
+                } else if left {
+                    value << (8 * count)
+                } else {
+                    value >> (8 * count)
+                };
+                self.xmm[d] = split(shifted);
+            }
+            Vector::Shuffle(shuffle) => {
+                let source = join(self.vector_source(at, s)?);
+                let target = join(self.xmm[d]);
+                let pick = |index: u32| (instruction.imm >> (2 * index)) as u32 & 3;
+                let out = match shuffle {
+                    Shuffle::Dwords => (0..4).fold(0u128, |out, index| {
+                        out | u128::from(lane(source, Width::Dword, pick(index))) << (32 * index)
+                    }),
+                    Shuffle::LowWords => {
+                        (0..4).fold(source & !u128::from(u64::MAX), |out, index| {
+                            out | u128::from(lane(source, Width::Word, pick(index))) << (16 * index)
+                        })
+                    }
+                    Shuffle::HighWords => {
+                        (0..4).fold(source & u128::from(u64::MAX), |out, index| {
+                            out | u128::from(lane(source, Width::Word, 4 + pick(index)))
+                                << (64 + 16 * index)
+                        })
+                    }
+                    Shuffle::Singles => (0..4).fold(0u128, |out, index| {
+                        let from = if index < 2 { target } else { source };
+                        out | u128::from(lane(from, Width::Dword, pick(index))) << (32 * index)
+                    }),
+                    Shuffle::Doubles => {
+                        let low = lane(target, Width::Qword, instruction.imm as u32 & 1);
+                        let high = lane(source, Width::Qword, (instruction.imm >> 1) as u32 & 1);
+                        u128::from(low) | (u128::from(high) << 64)
+                    }
+                };
+                self.xmm[d] = split(out);
+            }
+            Vector::MoveMask(mask) => {
+                let source = join(self.xmm[s]);
+                let unit = match mask {
+                    Mask::Bytes => Width::Byte,
+                    Mask::Singles => Width::Dword,
+                    Mask::Doubles => Width::Qword,
+                };
+                let count = 128 / unit.bits() as u32;
+                let bits = (0..count).fold(0u64, |bits, index| {
+                    bits | u64::from(lane(source, unit, index) & unit.sign() != 0) << index
+                });
+                // Trente-deux bits écrits : le haut du registre s'efface.
+                self.set(instruction.dst, Width::Dword, false, bits);
+            }
+            Vector::ExtractWord => {
+                let word = lane(join(self.xmm[s]), Width::Word, instruction.imm as u32 & 7);
+                self.set(instruction.dst, Width::Dword, false, word);
+            }
+            Vector::InsertWord => {
+                let word = match at {
+                    Some(at) => self.vector_read(at, Width::Word)?,
+                    None => self.get(instruction.src, Width::Word, false),
+                };
+                let shift = 16 * (instruction.imm as u32 & 7);
+                let value = join(self.xmm[d]);
+                self.xmm[d] =
+                    split((value & !(0xffffu128 << shift)) | (u128::from(word & 0xffff) << shift));
+            }
+            Vector::LoadControl => {
+                let at = at.expect("ldmxcsr lit la mémoire");
+                let value = self.vector_read(at, Width::Dword)? as u32;
+                if value & !MXCSR_MASK != 0 {
+                    return Err(VectorFault::ReservedControl);
+                }
+                self.mxcsr = value;
+            }
+            Vector::StoreControl => {
+                let at = at.expect("stmxcsr écrit la mémoire");
+                self.vector_write(at, Width::Dword, u64::from(self.mxcsr))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn vector_read(&mut self, at: u64, width: Width) -> Result<u64, VectorFault> {
+        self.read_memory(at, width).map_err(|_| VectorFault::Memory)
+    }
+
+    fn vector_write(&mut self, at: u64, width: Width, value: u64) -> Result<(), VectorFault> {
+        self.write_memory(at, width, value)
+            .map_err(|_| VectorFault::Memory)
+    }
+
+    /// Les seize octets de la source : la mémoire à `at`, ou le registre.
+    fn vector_source(&mut self, at: Option<u64>, register: usize) -> Result<[u64; 2], VectorFault> {
+        match at {
+            Some(at) => Ok([
+                self.vector_read(at, Width::Qword)?,
+                self.vector_read(at.wrapping_add(8), Width::Qword)?,
+            ]),
+            None => Ok(self.xmm[register]),
+        }
+    }
+
+    /// Seize octets en mémoire. La seconde moitié se traduit **avant** que la
+    /// première ne soit posée : une écriture à cheval sur une page absente ne
+    /// laisse rien derrière elle.
+    fn vector_write_whole(&mut self, at: u64, value: [u64; 2]) -> Result<(), VectorFault> {
+        let high = at.wrapping_add(8);
+        self.probe_memory(high.wrapping_add(7), crate::x86_paging::Access::Write)
+            .map_err(|_| VectorFault::Memory)?;
+        self.vector_write(at, Width::Qword, value[0])?;
+        self.vector_write(high, Width::Qword, value[1])
+    }
+
+    /// L'arithmétique entière, voie par voie : `f(destination, source)`.
+    fn lanes(lanes: Lanes, target: u128, source: u128) -> u128 {
+        match lanes {
+            Lanes::Add(unit) => zip_lanes(target, source, unit, |a, b| a.wrapping_add(b)),
+            Lanes::Sub(unit) => zip_lanes(target, source, unit, |a, b| a.wrapping_sub(b)),
+            Lanes::AddSaturate {
+                lane: unit,
+                signed: as_signed,
+            } => zip_lanes(target, source, unit, |a, b| {
+                let sum = if as_signed {
+                    signed(a, unit) + signed(b, unit)
+                } else {
+                    (a + b) as i64
+                };
+                saturate_to(sum, unit, as_signed)
+            }),
+            Lanes::SubSaturate {
+                lane: unit,
+                signed: as_signed,
+            } => zip_lanes(target, source, unit, |a, b| {
+                let difference = if as_signed {
+                    signed(a, unit) - signed(b, unit)
+                } else {
+                    a as i64 - b as i64
+                };
+                saturate_to(difference, unit, as_signed)
+            }),
+            Lanes::Equal(unit) => {
+                zip_lanes(
+                    target,
+                    source,
+                    unit,
+                    |a, b| if a == b { u64::MAX } else { 0 },
+                )
+            }
+            Lanes::Greater(unit) => zip_lanes(target, source, unit, |a, b| {
+                if signed(a, unit) > signed(b, unit) {
+                    u64::MAX
+                } else {
+                    0
+                }
+            }),
+            Lanes::Minimum {
+                lane: unit,
+                signed: as_signed,
+            } => zip_lanes(target, source, unit, |a, b| {
+                let smaller = if as_signed {
+                    signed(a, unit) < signed(b, unit)
+                } else {
+                    a < b
+                };
+                if smaller {
+                    a
+                } else {
+                    b
+                }
+            }),
+            Lanes::Maximum {
+                lane: unit,
+                signed: as_signed,
+            } => zip_lanes(target, source, unit, |a, b| {
+                let larger = if as_signed {
+                    signed(a, unit) > signed(b, unit)
+                } else {
+                    a > b
+                };
+                if larger {
+                    a
+                } else {
+                    b
+                }
+            }),
+            Lanes::Average(unit) => zip_lanes(target, source, unit, |a, b| (a + b + 1) >> 1),
+            Lanes::MultiplyLow => zip_lanes(target, source, Width::Word, |a, b| a.wrapping_mul(b)),
+            Lanes::MultiplyHigh { signed: as_signed } => {
+                zip_lanes(target, source, Width::Word, |a, b| {
+                    if as_signed {
+                        ((signed(a, Width::Word) * signed(b, Width::Word)) >> 16) as u64
+                    } else {
+                        (a * b) >> 16
+                    }
+                })
+            }
+            Lanes::MultiplyUnsignedDwords => zip_lanes(target, source, Width::Qword, |a, b| {
+                (a & 0xffff_ffff).wrapping_mul(b & 0xffff_ffff)
+            }),
+            Lanes::MultiplyAdd => zip_lanes(target, source, Width::Dword, |a, b| {
+                let low = signed(a & 0xffff, Width::Word) * signed(b & 0xffff, Width::Word);
+                let high = signed(a >> 16, Width::Word) * signed(b >> 16, Width::Word);
+                low.wrapping_add(high) as u64
+            }),
+            Lanes::SumOfDifferences => zip_lanes(target, source, Width::Qword, |a, b| {
+                (0..8).fold(0u64, |sum, index| {
+                    let left = (a >> (8 * index)) & 0xff;
+                    let right = (b >> (8 * index)) & 0xff;
+                    sum + left.abs_diff(right)
+                })
+            }),
+            Lanes::PackUnsignedBytes | Lanes::PackSignedBytes | Lanes::PackSignedWords => {
+                let (from, to, as_signed) = match lanes {
+                    Lanes::PackUnsignedBytes => (Width::Word, Width::Byte, false),
+                    Lanes::PackSignedBytes => (Width::Word, Width::Byte, true),
+                    _ => (Width::Dword, Width::Word, true),
+                };
+                let count = 128 / from.bits() as u32;
+                let narrow = to.bits() as u32;
+                let mut out = 0u128;
+                for index in 0..count {
+                    let a = saturate_to(signed(lane(target, from, index), from), to, as_signed);
+                    let b = saturate_to(signed(lane(source, from, index), from), to, as_signed);
+                    out |= u128::from(a) << (index * narrow);
+                    out |= u128::from(b) << ((count + index) * narrow);
+                }
+                out
+            }
+        }
+    }
+
+    /// Décaler chaque voie du même compte. Un compte qui dépasse la voie rend
+    /// zéro — ou le signe partout, pour le décalage arithmétique.
+    fn shift_lanes(value: u128, unit: Width, kind: Shift, count: u64) -> u128 {
+        let bits = unit.bits();
+        zip_lanes(value, 0, unit, |a, _| match kind {
+            Shift::Left if count >= bits => 0,
+            Shift::Left => a << count,
+            Shift::Right if count >= bits => 0,
+            Shift::Right => a >> count,
+            Shift::RightArithmetic => (signed(a, unit) >> count.min(bits - 1)) as u64,
+        })
+    }
+}
