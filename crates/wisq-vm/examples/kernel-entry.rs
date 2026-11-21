@@ -1014,6 +1014,20 @@ fn main() {
         eprintln!("WISQ_CAPTURE et WISQ_GESTES demandent un écran : WISQ_ECRAN=1280x800");
         std::process::exit(2);
     }
+    // **`WISQ_HEURE=<millisecondes>` : l'horloge CMOS figée.** Par défaut
+    // elle donne l'heure du mur, et le noyau en tire une part de son aléa
+    // (`random_init` mêle l'heure réelle) : deux courses du même réglage se
+    // séparent alors. Figée, elle rend une course rejouable.
+    let heure = match std::env::var("WISQ_HEURE") {
+        Err(_) => "Date.now".to_string(),
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(ms) => format!("() => {ms}"),
+            Err(_) => {
+                eprintln!("WISQ_HEURE={value} ne se lit pas : des millisecondes depuis 1970");
+                std::process::exit(2);
+            }
+        },
+    };
     let ecran_js = match ecran {
         Some((largeur, hauteur)) => format!("{{ largeur: {largeur}, hauteur: {hauteur} }}"),
         None => "null".to_string(),
@@ -1027,7 +1041,7 @@ fn main() {
                     r#"import {{ carte }} from {carte_js:?};
 const moduleDeLaCarte = new WebAssembly.Module(readFileSync({module:?}));
 const compteDuDisque = null;
-const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, ecran: {ecran_js} }});
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, ecran: {ecran_js}, heure: {heure} }});
 "#,
                     carte_js = root.join("web/carte.js").to_string_lossy(),
                     module = module.to_string_lossy(),
@@ -1091,7 +1105,7 @@ const arriere = {{
     return true;
   }},
 }};
-const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere, ecran: {ecran_js} }});
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere, ecran: {ecran_js}, heure: {heure} }});
 "#,
                     carte_js = root.join("web/carte.js").to_string_lossy(),
                     module = module.to_string_lossy(),
