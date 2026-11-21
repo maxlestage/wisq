@@ -212,6 +212,72 @@ fn an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction() {
     assert_eq!(machine.cpu.x87[6], (1 << 63, 0x7FFF), "+∞");
 }
 
+/// **Chaque préfixe que l'hôte admet devant `fwait`** : les six préfixes de
+/// segment, `66`, `67`, `f2`, `f3` et les seize REX, seuls, puis mêlés
+/// (`f3 f2`, `48 66`, `66 48`, `67 66 48 f2`, quatorze `66`). Sous une
+/// exception en attente, chacun livre `#MF`, le cadre sur son premier
+/// préfixe ; sans elle, chacun est un `nop` de sa longueur, compté pour une
+/// instruction. Toutes ces suites livrent `SIGFPE` sur le silicium de l'hôte
+/// (sonde `r6/c/mf4` du bloc-notes) ; `decode`, que l'émetteur partage, ne lit
+/// ni `67 9b`, ni `f2 9b`, ni `48 66 9b`. Un `f0` n'importe où devant reste
+/// refusé, comme SIGILL sur l'hôte.
+#[test]
+fn every_prefix_the_host_accepts_before_fwait_waits() {
+    let mut suites: Vec<Vec<u8>> = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF2, 0xF3]
+        .iter()
+        .chain(&[0x40u8, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47])
+        .chain(&[0x48u8, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F])
+        .map(|prefixe| vec![*prefixe])
+        .collect();
+    suites.extend([
+        vec![0xF3, 0xF2],
+        vec![0x48, 0x66],
+        vec![0x66, 0x48],
+        vec![0x67, 0x66, 0x48, 0xF2],
+        vec![0x66; 14],
+    ]);
+    // fld1 ; fldz ; fdivr %st(1),%st ; fnstsw %ax ; le fwait préfixé, à
+    // 0x1008 ; hlt.
+    let debut = [0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xDF, 0xE0];
+    for prefixes in &suites {
+        let mut code = debut.to_vec();
+        code.extend_from_slice(prefixes);
+        code.extend_from_slice(&[0x9B, 0xF4]);
+        let mut machine = nouvelle(&code);
+        machine.cpu.fpu_control = 0x037B;
+        machine.tourner(20).expect("livrée");
+        assert_eq!(vecteur_recu(&machine), 16, "{prefixes:02x?} 9b : #MF");
+        let cadre = machine.cpu.memory.read(SOMMET - 40, Width::Qword);
+        assert_eq!(cadre, Some(0x1008), "{prefixes:02x?} 9b : le cadre");
+        // Masquée : un nop de sa longueur, une instruction.
+        let mut machine = nouvelle(&code);
+        machine.tourner(20).expect("sans faute");
+        assert!(machine.arretee, "{prefixes:02x?} 9b : jusqu'au hlt");
+        assert_eq!(
+            machine.cpu.rip,
+            0x1008 + prefixes.len() as u64 + 2,
+            "{prefixes:02x?} 9b : sa longueur"
+        );
+        assert_eq!(machine.retirees, 6, "{prefixes:02x?} 9b : une instruction");
+    }
+    for refuse in [
+        &[0xF0, 0x66, 0x9B][..],
+        &[0x66, 0xF0, 0x9B],
+        &[0x48, 0xF0, 0x9B],
+    ] {
+        let mut code = refuse.to_vec();
+        code.push(0xF4);
+        let mut machine = nouvelle(&code);
+        let issue = machine.tourner(10);
+        assert!(
+            issue
+                .as_ref()
+                .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+            "{refuse:02x?} : {issue:?}"
+        );
+    }
+}
+
 /// **Ce qui n'attend pas passe sous une exception en attente** : les formes
 /// `fn…` qui rangent un mot ou l'environnement en mémoire, `fneni`, `fndisi`
 /// et `fnsetpm` (des restes du 8087 et du 80287), et `cvtpi2ps` ou
