@@ -289,6 +289,13 @@ pub(super) fn decode(
         (P66, 0xd6) => (Vector::StoreQuad, None, Width::Qword),
         (Bare | P66, 0x28 | 0x10) | (P66 | PF3, 0x6f) => (Vector::Load, None, Width::Qword),
         (Bare | P66, 0x29 | 0x11) | (P66 | PF3, 0x7f) => (Vector::Store, None, Width::Qword),
+        // **Les écritures non temporelles** — `movntps`, `movntpd`, `movntdq` —
+        // sont des écritures alignées : le conseil de ne pas garder la ligne
+        // en cache ne change rien à ce qui est écrit, et cette machine n'a pas
+        // de cache à épargner. En mémoire seule : la forme registre n'existe
+        // pas. C'est `xor_sse` et le banc du RAID de Linux, dans un module que
+        // Void charge au démarrage.
+        (Bare | P66, 0x2b) | (P66, 0xe7) => (Vector::Store, Some(true), Width::Qword),
         (PF3, 0x10) => (Vector::LoadScalar, None, Width::Dword),
         (PF2, 0x10) => (Vector::LoadScalar, None, Width::Qword),
         (PF3, 0x11) => (Vector::StoreScalar, None, Width::Dword),
