@@ -500,7 +500,15 @@ function requete(genre, secteur, longueur, inscriptible) {{
 }}
 const statut = () => "0x" + vue().getUint8(0x4800).toString(16);
 const servies = () => vue().getUint16(0x2002, true);
-const attendre = async () => {{ while (c.disque.enVol() > 0) await new Promise((r) => setTimeout(r, 1)); }};
+// Deux secondes au plus, puis le pilote tombe en le disant : un compte des
+// requêtes en vol qui ne redescend pas ne doit pas pendre la suite.
+const attendre = async () => {{
+  const fin = performance.now() + 2000;
+  while (c.disque.enVol() > 0) {{
+    if (performance.now() > fin) throw new Error("le disque a encore " + c.disque.enVol() + " requête(s) en vol après deux secondes");
+    await new Promise((r) => setTimeout(r, 1));
+  }}
+}};
 
 console.log("notifie " + requete(0, (TAILLE - 4096) / 512, 4096, true));
 console.log("tout_de_suite " + recopier() + " " + statut() + " " + c.reveil() + " " + c.disque.enVol() + " " + lectures.length);

@@ -648,6 +648,142 @@ pub extern "C" fn wisq_desktop_boot_page_at() -> u64 {
     crate::kernel_image::ZERO_PAGE_AT
 }
 
+/// **Un fichier de la page de la machine de l'émetteur, par son nom** :
+/// `host.js`, `carte.js`, `page-emitter.js`, `machine.js`, `machine.html`, et
+/// `wisq_page.wasm` quand la construction l'a embarqué. Rend 0 et des octets
+/// **statiques** — ils vivent autant que la bibliothèque, et ne se libèrent
+/// pas —, ou -1 pour un nom inconnu ou un module absent.
+///
+/// # Safety
+/// `name` must be a NUL-terminated C string, and `out_bytes` and `out_len`
+/// must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_emitter_asset(
+    name: *const c_char,
+    out_bytes: *mut *const u8,
+    out_len: *mut usize,
+) -> c_int {
+    if name.is_null() || out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let Ok(name) = std::ffi::CStr::from_ptr(name).to_str() else {
+        return -1;
+    };
+    let Some(bytes) = crate::emitter_machine::asset(name) else {
+        return -1;
+    };
+    *out_bytes = bytes.as_ptr();
+    *out_len = bytes.len();
+    0
+}
+
+/// **La page zéro de la machine de l'émetteur** : la ligne du montage suivie
+/// de `extra` (nul : rien de plus) telle quelle — voir
+/// `emitter_machine::command_line` —, l'écran de la carte (`width == 0 &&
+/// height == 0` : aucun), l'archive (`initramfs_bytes == 0` : aucune) posée
+/// au-dessus de `floor`. Rend 0 et quatre kibioctets (à libérer par
+/// `wisq_x86_free_module`), ou un refus nommé : 1 la RAM, 2 la ligne, 3
+/// l'écran, 4 l'archive, -1 des arguments illisibles.
+///
+/// **Au refus 2, `out_len` reçoit la longueur de la ligne entière**, celle
+/// du montage comprise : c'est elle que la borne de 2 047 octets juge, et
+/// l'appelant ne la connaît pas — la part du montage dépend de la ligne de
+/// l'image (`keep_bootcon` peut en partir). Sans ce nombre, la phrase de
+/// l'écran ne pouvait parler que de la ligne de l'image, et mentait pour
+/// toute ligne d'image de 2 008 à 2 047 octets.
+///
+/// # Safety
+/// `extra`, when non-null, must be a NUL-terminated C string, and `out_bytes`
+/// and `out_len` must be valid for writing.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn wisq_emitter_boot_page(
+    pages: u32,
+    extra: *const c_char,
+    screen_width: u32,
+    screen_height: u32,
+    initramfs_at: u64,
+    initramfs_bytes: u64,
+    floor: u64,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    use crate::emitter_machine::{boot_page, Refusal};
+    if out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    let extra = if extra.is_null() {
+        None
+    } else {
+        match std::ffi::CStr::from_ptr(extra).to_str() {
+            Ok(text) => Some(text),
+            Err(_) => return -1,
+        }
+    };
+    let screen = if screen_width == 0 && screen_height == 0 {
+        None
+    } else {
+        Some((screen_width, screen_height))
+    };
+    let initramfs = (initramfs_bytes != 0).then_some(crate::kernel_image::Ramdisk {
+        at: initramfs_at,
+        bytes: initramfs_bytes,
+    });
+    match boot_page(pages, extra, screen, initramfs, floor) {
+        Ok(page) => {
+            hand_back(page, out_bytes, out_len);
+            0
+        }
+        Err(Refusal::RamIsNotAPowerOfTwo(_)) => 1,
+        Err(Refusal::CommandLine(why)) => {
+            *out_len = match why {
+                crate::kernel_image::CommandLineRefusal::TooLong { bytes, .. } => bytes,
+                _ => 0,
+            };
+            2
+        }
+        Err(Refusal::Screen(_)) => 3,
+        Err(Refusal::Ramdisk(_)) => 4,
+    }
+}
+
+/// **Cette RAM peut-elle porter ce noyau, sous l'émetteur ?** `entry` est le
+/// point d'entrée physique de l'ELF, `top` le sommet de ses segments, BSS
+/// compris. Rend 0, ou 1 aucune RAM, 2 pas une puissance de deux, 3 trop
+/// petite, 4 le repli amène le texte virtuel ailleurs que sur lui-même —
+/// `out_folded`, quand il n'est pas nul, reçoit alors où.
+///
+/// # Safety
+/// `out_folded`, when non-null, must be valid for writing.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_emitter_usable_ram(
+    pages: u32,
+    entry: u64,
+    top: u64,
+    out_folded: *mut u64,
+) -> c_int {
+    use crate::x86_wasm::RamRefusal;
+    match crate::emitter_machine::usable(pages, entry, top) {
+        Ok(()) => 0,
+        Err(RamRefusal::Empty) => 1,
+        Err(RamRefusal::NotAPowerOfTwo) => 2,
+        Err(RamRefusal::TooSmall { .. }) => 3,
+        Err(RamRefusal::FoldMisses { folded }) => {
+            if !out_folded.is_null() {
+                *out_folded = folded;
+            }
+            4
+        }
+    }
+}
+
+/// Où l'invité voit la mémoire vidéo de la carte, telle que la page zéro de
+/// la machine de l'émetteur l'annonce.
+#[no_mangle]
+pub extern "C" fn wisq_emitter_screen_base() -> u64 {
+    crate::emitter_machine::SCREEN_BASE
+}
+
 /// **Ce que l'application n'a pas le droit d'écrire dans la RAM de l'invité.**
 ///
 /// Elle pose ses images par un seul chemin ; celui-ci dit, avant la première

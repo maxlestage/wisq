@@ -58,14 +58,14 @@ use std::path::Path;
 
 use wisq_vm::desktop::Screen;
 use wisq_vm::kernel_image::{
-    declare_ramdisk, loads, montage_command_line, zero_page, zero_page_with_screen, Ramdisk,
-    COMMAND_LINE_AT, ZERO_PAGE_AT,
+    declare_ramdisk, loads, montage_command_line, zero_page, zero_page_with_device_screen,
+    zero_page_with_screen, Ramdisk, COMMAND_LINE_AT, ZERO_PAGE_AT,
 };
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
 use wisq_vm::x86_wasm::{
     usable_ram, Module, RamRefusal, CONTROL_SLOT, FAULT_SLOT, GS_SLOT, RIP_SLOT, SEGMENT_SLOT,
-    STOP_SLOT, TASK_SLOT,
+    STOP_SLOT, TASK_SLOT, TSC_SLOT,
 };
 
 /// La RAM déclarée, en pages de 64 Kio. **Une puissance de deux**, que le
@@ -95,6 +95,34 @@ fn declared_pages() -> Result<u32, String> {
         .map_err(|_| format!("WISQ_RAM={value} ne se lit pas comme un nombre de mébioctets"))?;
     u32::try_from(mib * 1024 * 1024 / 65536)
         .map_err(|_| format!("WISQ_RAM={mib} est trop grand pour être compté en pages"))
+}
+
+/// **Le disque que `WISQ_DISQUE` demande, ou aucun** : un fichier, servi par
+/// plages à l'arrière asynchrone de la carte (`web/carte.js`), en virtio-blk
+/// sur 00:03.0 — `/dev/vda` pour le noyau. Le fichier n'est jamais écrit : ce
+/// que l'invité écrit va dans une couche en mémoire, perdue à la fin de la
+/// course, comme le fichier de base du cœur Swift reste intact sous sa couche.
+///
+/// **Refusé plutôt que deviné**, comme `WISQ_SCREEN` : un chemin qui ne se lit
+/// pas donnerait une machine sans disque, et une course qui finit sur « boot
+/// media: failed » se lirait comme un défaut du noyau.
+fn declared_disk() -> Result<Option<(String, u64)>, String> {
+    let Ok(path) = std::env::var("WISQ_DISQUE") else {
+        return Ok(None);
+    };
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let bytes = std::fs::metadata(&path)
+        .map_err(|why| format!("WISQ_DISQUE={path} ne se lit pas : {why}"))?
+        .len();
+    if bytes < 512 {
+        return Err(format!(
+            "WISQ_DISQUE={path} fait {bytes} octets : moins d'un secteur"
+        ));
+    }
+    Ok(Some((path, bytes)))
 }
 
 /// **L'archive que `WISQ_INITRAMFS` demande, ou aucune.**
@@ -224,6 +252,123 @@ fn declared_screen(ram: u64, floor: u64) -> Result<Option<Screen>, String> {
         width,
         height,
     }))
+}
+
+/// **Où l'invité voit la mémoire vidéo de la carte de Bochs** : sa BAR0, telle
+/// que la carte la pose au départ (`BASE_DE_LA_MEMOIRE_VIDEO` dans
+/// `crates/wisq-page/src/carte/ecran.rs`, `X86Machine.displayBase` du cœur
+/// Swift). Répétée ici parce que ce crate ne dépend pas de la carte ; le
+/// pilote JavaScript la relit dans la carte (`ecran.base()`) et refuse de
+/// partir si les deux diffèrent.
+const BASE_DE_L_ECRAN: u64 = 0xE000_0000;
+
+/// **L'écran de la carte que `WISQ_ECRAN` demande, ou aucun** : la carte
+/// graphique de Bochs en 00:02.0, seize mébioctets de mémoire vidéo **hors de
+/// la RAM** à [`BASE_DE_L_ECRAN`], et la tablette virtio en 00:07.0 — la
+/// machine de l'application (`X86Machine.attachDisplay`). `1280x800` comme
+/// l'application. À ne pas confondre avec `WISQ_SCREEN`, le cadre d'avant,
+/// posé dans la RAM, sans carte : les deux ensemble sont refusés.
+fn declared_ecran() -> Result<Option<(u32, u32)>, String> {
+    let Ok(value) = std::env::var("WISQ_ECRAN") else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if std::env::var("WISQ_SCREEN").is_ok_and(|other| !other.trim().is_empty()) {
+        return Err(
+            "WISQ_ECRAN et WISQ_SCREEN décrivent deux écrans : l'un sur la carte, \
+             l'autre dans la RAM ; il n'en faut qu'un"
+                .to_string(),
+        );
+    }
+    let parsed = value
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)));
+    match parsed {
+        // Ce que `screen_info` sait porter, et ce que la mémoire vidéo tient
+        // (seize mébioctets) : la carte refuse le reste, le dire avant.
+        Some((w, h))
+            if w > 0
+                && h > 0
+                && w <= u32::from(u16::MAX)
+                && h <= u32::from(u16::MAX)
+                && u64::from(w) * u64::from(h) * 4 <= 16 << 20 =>
+        {
+            Ok(Some((w, h)))
+        }
+        _ => Err(format!(
+            "WISQ_ECRAN={value} ne se lit pas : il faut « largeur x hauteur », par exemple \
+             1280x800, et seize mébioctets au plus"
+        )),
+    }
+}
+
+/// **Les gestes que `WISQ_GESTES` demande**, en JavaScript : une liste de
+/// `[secondes, quoi, argument]`. La forme : des gestes séparés par `;;`,
+/// chacun `secondes:quoi:argument`, les secondes comptées au mur depuis le
+/// départ de la machine :
+///
+/// - `texte:root\n` : taper, au rythme d'une main (`\n` est Entrée) ;
+/// - `toucher:0.5,0.5,1` : toucher l'écran, la position de 0 à 1, les
+///   boutons en bits ; `toucher:0.5,0.5,0` le relâche ;
+/// - `capture` : une capture de l'écran (voir `WISQ_CAPTURE`).
+///
+/// Refusée plutôt que devinée, comme les autres variables.
+fn declared_gestes() -> Result<String, String> {
+    let Ok(value) = std::env::var("WISQ_GESTES") else {
+        return Ok("[]".to_string());
+    };
+    let mut gestes = Vec::new();
+    for geste in value.split(";;").map(str::trim).filter(|g| !g.is_empty()) {
+        let mut champs = geste.splitn(3, ':');
+        let (Some(secondes), Some(quoi)) = (champs.next(), champs.next()) else {
+            return Err(format!(
+                "WISQ_GESTES : « {geste} » ne se lit pas (secondes:quoi:argument)"
+            ));
+        };
+        // **Un nombre fini, et pas négatif** : `f64` lit aussi « inf » et
+        // « NaN », que le pilote recevrait tels quels — `[inf, …]` est une
+        // `ReferenceError` en JavaScript, et le pilote mourrait au départ.
+        let Some(secondes) = secondes
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|s| s.is_finite() && *s >= 0.0)
+        else {
+            return Err(format!(
+                "WISQ_GESTES : « {secondes} » n'est pas un nombre de secondes"
+            ));
+        };
+        let argument = champs.next().unwrap_or("");
+        match quoi {
+            "texte" => {}
+            "toucher" => {
+                let nombres: Vec<Option<f64>> = argument
+                    .split(',')
+                    .map(|n| n.trim().parse::<f64>().ok().filter(|n| n.is_finite()))
+                    .collect();
+                if nombres.len() != 3 || nombres.iter().any(Option::is_none) {
+                    return Err(format!(
+                        "WISQ_GESTES : « toucher:{argument} » — il faut x,y,boutons, par \
+                         exemple 0.5,0.5,1"
+                    ));
+                }
+            }
+            "capture" => {}
+            autre => {
+                return Err(format!(
+                    "WISQ_GESTES : « {autre} » n'est pas un geste (texte, toucher, capture)"
+                ))
+            }
+        }
+        gestes.push(format!(
+            "[{secondes}, {quoi:?}, {:?}]",
+            argument.replace("\\n", "\n")
+        ));
+    }
+    Ok(format!("[{}]", gestes.join(", ")))
 }
 
 /// Ce que Linux ajoute à une adresse physique de texte pour en faire une
@@ -626,8 +771,37 @@ fn main() {
     // `WISQ_SCREEN=1024x768` en pose un en haut de la RAM, aligné sur une page.
     // Le refus est **nommé** plutôt qu'arrondi : un montage qui corrigerait en
     // douce la demande mesurerait autre chose que ce qu'on lui a demandé.
+    let ecran = match declared_ecran() {
+        Ok(ecran) => ecran,
+        Err(why) => {
+            eprintln!("{why}");
+            sortir(&scratch, 2);
+        }
+    };
     let page = match declared_screen(ram, top) {
-        Ok(None) => zero_page(ram, COMMAND_LINE_AT as u32),
+        Ok(None) => match ecran {
+            None => zero_page(ram, COMMAND_LINE_AT as u32),
+            Some((width, height)) => {
+                let screen = Screen {
+                    base: BASE_DE_L_ECRAN,
+                    width,
+                    height,
+                };
+                match zero_page_with_device_screen(ram, COMMAND_LINE_AT as u32, screen) {
+                    Ok(page) => {
+                        println!(
+                            "écran de la carte : {width}x{height} en XRGB8888, sa mémoire \
+                             vidéo à 0x{BASE_DE_L_ECRAN:x}, hors de la RAM"
+                        );
+                        page
+                    }
+                    Err(why) => {
+                        eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
+                        sortir(&scratch, 1);
+                    }
+                }
+            }
+        },
         Ok(Some(screen)) => match zero_page_with_screen(ram, COMMAND_LINE_AT as u32, screen, top) {
             Ok(page) => {
                 println!(
@@ -641,12 +815,12 @@ fn main() {
             }
             Err(why) => {
                 eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
-                std::process::exit(1);
+                sortir(&scratch, 1);
             }
         },
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     };
     // **L'archive, si on en demande une.** Le plafond est le cadre quand il y
@@ -662,7 +836,7 @@ fn main() {
                 .map_or(ram, |screen| screen.base);
             if let Err(why) = declare_ramdisk(&mut page, archive, top, ceiling) {
                 eprintln!("cette archive ne peut pas être décrite au noyau : {why:?}");
-                std::process::exit(1);
+                sortir(&scratch, 1);
             }
             let at = scratch.join("initramfs.bin");
             std::fs::write(&at, &bytes).expect("l'archive");
@@ -675,7 +849,7 @@ fn main() {
         }
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     }
     let page_path = scratch.join("zero-page.bin");
@@ -692,7 +866,7 @@ fn main() {
         Ok(line) => line,
         Err(why) => {
             eprintln!("WISQ_CMDLINE refusé : {why:?}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     };
     let mut line = command_line.as_bytes().to_vec();
@@ -736,7 +910,7 @@ fn main() {
         Ok(_) => {}
         Err(why) => {
             println!("la région d'entrée ne se traduit pas : {why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     }
 
@@ -760,7 +934,7 @@ fn main() {
         Ok(traducteur) => traducteur,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let (prelude, emission) = match traducteur {
@@ -817,6 +991,154 @@ fn main() {
             )
         }
     };
+    // **Le disque, quand `WISQ_DISQUE` en demande un.** La carte des
+    // périphériques est alors branchée sur la boucle hôte : l'i8042, l'horloge
+    // CMOS, le bus PCI et le disque virtio, instanciés à part de l'émetteur
+    // sur le même module de la page (`web/carte.js`). L'arrière lit le fichier
+    // par plages, sur demande — l'ISO n'est jamais chargée entière —, et ce
+    // que l'invité écrit reste dans une couche en mémoire, secteur par
+    // secteur. Sans `WISQ_DISQUE`, pas de carte : la machine des relevés
+    // d'avant, au port près.
+    let disk = match declared_disk() {
+        Ok(disk) => disk,
+        Err(why) => {
+            eprintln!("{why}");
+            sortir(&scratch, 2);
+        }
+    };
+    let gestes = match declared_gestes() {
+        Ok(gestes) => gestes,
+        Err(why) => {
+            eprintln!("{why}");
+            sortir(&scratch, 2);
+        }
+    };
+    // **`WISQ_CAPTURE=<fichier.ppm>` : l'écran de la carte, en image.** À la
+    // fin de la course, au geste `capture`, et toutes les
+    // `WISQ_CAPTURE_TOUTES` secondes si l'image a changé — chaque capture
+    // datée a son fichier, `<fichier>-<secondes>.ppm`, et la dernière écrase
+    // `<fichier>`.
+    let capture = std::env::var("WISQ_CAPTURE").unwrap_or_default();
+    // Refusée plutôt que devinée : un nombre qui ne se lit pas ne devient pas
+    // « jamais » sans le dire.
+    let capture_toutes: f64 = match std::env::var("WISQ_CAPTURE_TOUTES") {
+        Err(_) => 0.0,
+        Ok(value) => match value.trim().parse::<f64>() {
+            Ok(secondes) if secondes.is_finite() && secondes >= 0.0 => secondes,
+            _ => {
+                eprintln!("WISQ_CAPTURE_TOUTES={value} ne se lit pas : un nombre de secondes");
+                sortir(&scratch, 2);
+            }
+        },
+    };
+    if (!capture.is_empty() || gestes != "[]") && ecran.is_none() {
+        eprintln!("WISQ_CAPTURE et WISQ_GESTES demandent un écran : WISQ_ECRAN=1280x800");
+        sortir(&scratch, 2);
+    }
+    // **`WISQ_HEURE=<millisecondes>` : l'horloge CMOS figée.** Par défaut
+    // elle donne l'heure du mur, et le noyau en tire une part de son aléa
+    // (`random_init` mêle l'heure réelle) : deux courses du même réglage se
+    // séparent alors. Figée, elle rend une course rejouable.
+    let heure = match std::env::var("WISQ_HEURE") {
+        Err(_) => "Date.now".to_string(),
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(ms) => format!("() => {ms}"),
+            Err(_) => {
+                eprintln!("WISQ_HEURE={value} ne se lit pas : des millisecondes depuis 1970");
+                sortir(&scratch, 2);
+            }
+        },
+    };
+    let ecran_js = match ecran {
+        Some((largeur, hauteur)) => format!("{{ largeur: {largeur}, hauteur: {hauteur} }}"),
+        None => "null".to_string(),
+    };
+    let (prelude_carte, option_carte, releve_carte) = match (&disk, ecran) {
+        (None, None) => (String::new(), String::new(), String::new()),
+        (None, Some(_)) => {
+            let module = page_module(&root);
+            (
+                format!(
+                    r#"import {{ carte }} from {carte_js:?};
+const moduleDeLaCarte = new WebAssembly.Module(readFileSync({module:?}));
+const compteDuDisque = null;
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, ecran: {ecran_js}, heure: {heure} }});
+"#,
+                    carte_js = root.join("web/carte.js").to_string_lossy(),
+                    module = module.to_string_lossy(),
+                ),
+                "carte: brancherLaCarte,".to_string(),
+                String::new(),
+            )
+        }
+        (Some((path, bytes)), _) => {
+            let module = page_module(&root);
+            println!(
+                "disque : {path}, {bytes} octets, en virtio-blk sur 00:03.0 (la carte de la page)"
+            );
+            (
+                format!(
+                    r#"import {{ carte }} from {carte_js:?};
+import {{ openSync, readSync }} from "fs";
+const moduleDeLaCarte = new WebAssembly.Module(readFileSync({module:?}));
+const fdDuDisque = openSync({path:?}, "r");
+const SECTEUR = 512;
+// **La couche d'écriture**, un secteur par entrée : le fichier n'est jamais
+// écrit, et une lecture voit ce que l'invité a écrit par-dessus.
+const couche = new Map();
+const compteDuDisque = {{ lectures: 0, lus: 0, ecritures: 0, ecrits: 0 }};
+const secteursDe = (decalage, longueur) => {{
+  const rendus = [];
+  for (let s = Math.floor(decalage / SECTEUR); s * SECTEUR < decalage + longueur; s++) {{
+    const debut = Math.max(decalage, s * SECTEUR);
+    const fin = Math.min(decalage + longueur, (s + 1) * SECTEUR);
+    rendus.push([s, debut, fin]);
+  }}
+  return rendus;
+}};
+const arriere = {{
+  octets: {bytes},
+  async lire(decalage, longueur) {{
+    const vers = new Uint8Array(longueur);
+    readSync(fdDuDisque, vers, 0, longueur, decalage);
+    if (couche.size > 0) {{
+      for (const [s, debut, fin] of secteursDe(decalage, longueur)) {{
+        const ecrit = couche.get(s);
+        if (ecrit !== undefined) vers.set(ecrit.subarray(debut - s * SECTEUR, fin - s * SECTEUR), debut - decalage);
+      }}
+    }}
+    compteDuDisque.lectures += 1;
+    compteDuDisque.lus += longueur;
+    return vers;
+  }},
+  async ecrire(decalage, depuis) {{
+    for (const [s, debut, fin] of secteursDe(decalage, depuis.length)) {{
+      let secteur = couche.get(s);
+      if (secteur === undefined) {{
+        secteur = new Uint8Array(SECTEUR);
+        readSync(fdDuDisque, secteur, 0, SECTEUR, s * SECTEUR);
+        couche.set(s, secteur);
+      }}
+      secteur.set(depuis.subarray(debut - decalage, fin - decalage), debut - s * SECTEUR);
+    }}
+    compteDuDisque.ecritures += 1;
+    compteDuDisque.ecrits += depuis.length;
+    return true;
+  }},
+}};
+const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere, ecran: {ecran_js}, heure: {heure} }});
+"#,
+                    carte_js = root.join("web/carte.js").to_string_lossy(),
+                    module = module.to_string_lossy(),
+                ),
+                "carte: brancherLaCarte,".to_string(),
+                r#"console.log("disque " + compteDuDisque.lectures + " lectures, "
+  + compteDuDisque.lus + " octets lus, " + compteDuDisque.ecritures + " écritures, "
+  + compteDuDisque.ecrits + " octets écrits, " + couche.size + " secteurs dans la couche");"#
+                    .to_string(),
+            )
+        }
+    };
     println!();
 
     // **Le nombre de tours se règle**, parce qu'il a cessé d'être le mur.
@@ -828,7 +1150,7 @@ fn main() {
         Ok(watch) => watch,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let rounds: usize = std::env::var("WISQ_ROUNDS")
@@ -856,6 +1178,8 @@ fn main() {
     // série après la dernière ligne tapée — un shell qui attend la suivante —,
     // celle-ci part, suivie d'un retour chariot. Attendre un `hlt` définitif ne
     // marche pas : l'horloge du noyau réveille toujours la machine.
+    // `WISQ_INVITE` peut en nommer plusieurs, séparées par `;;` : sur une ISO
+    // qui démarre jusqu'au bout, `login: ` d'abord, le shell de `root` ensuite.
     let entree: Vec<String> = std::env::var("WISQ_ENTREE")
         .map(|text| text.split(";;").map(str::to_string).collect())
         .unwrap_or_default();
@@ -890,7 +1214,7 @@ fn main() {
                         "WISQ_CACHE={value} ne se lit pas : il faut « régions,octets », \
                          par exemple 16384,100663296"
                     );
-                    std::process::exit(2);
+                    sortir(&scratch, 2);
                 }
             }
         }
@@ -940,9 +1264,9 @@ fn main() {
             format!(
                 r#"
 import {{ machine }} from {host:?};
-import {{ readFileSync, appendFileSync }} from "fs";
+import {{ readFileSync, appendFileSync, writeFileSync }} from "fs";
 {prelude}
-
+{prelude_carte}
 let manquante = null;
 // **Ce que les traductions ont coûté**, mesuré autour de l'appel seul : la
 // compilation du module rendu par WebKit — ici JavaScriptCore — n'y est pas,
@@ -1031,6 +1355,7 @@ const vm = machine({{
       + " octets " + rendu.module.length);
     return rendu.module;
   }},
+  {option_carte}
   pages: {pages},
 }});
 for (const [path, at] of {placements}) {{
@@ -1040,7 +1365,73 @@ vm.globals[{rip}].value = {entry}n;
 // **RSI désigne la page zéro**, comme un chargeur le fait en entrant dans
 // `startup_64` : c'est de là que le noyau recopie ses `boot_params`.
 vm.globals[6].value = {zero_page}n;
+// **CS à `__BOOT_CS`, les données à `__BOOT_DS`**, comme le protocole de
+// démarrage 64 bits l'exige d'un chargeur (`Documentation/arch/x86/boot.rst`).
+// Ils partaient à zéro, « aucun chargeur n'est passé ici » ; un noyau 6.12 ne
+// recharge jamais CS, et sa première exception précoce — la `#GP(0)` d'un
+// `rdmsr_safe` que la table d'exceptions rattrape — trouvait CS à zéro dans
+// son cadre : `early_fixup_exception` refuse un CS qui n'est pas
+// `__KERNEL_CS`, et le noyau de Void se garait dans sa boucle d'arrêt.
+vm.globals[{segment} + 1].value = 0x10n;
+for (const s of [0, 2, 3]) vm.globals[{segment} + s].value = 0x18n;
 const lire = (at) => BigInt.asUintN(64, vm.globals[at].value);
+// **L'écran de la carte, ses captures et les gestes scriptés.** La base de la
+// mémoire vidéo que le chargeur a annoncée au noyau (`screen_info`) doit être
+// celle de la carte : sinon le noyau peindrait ailleurs que là où la page lit.
+if (vm.carte !== null && vm.carte.ecran.mode() !== null
+    && vm.carte.ecran.base() !== {base_ecran}n) {{
+  throw new Error("la carte pose sa mémoire vidéo à 0x" + vm.carte.ecran.base().toString(16)
+    + ", le chargeur l'a annoncée à 0x{base_ecran:x}");
+}}
+const gestes = {gestes}.sort((a, b) => a[0] - b[0]);
+const fichierCapture = {capture:?};
+const captureToutes = {capture_toutes};
+const departDuMur = performance.now();
+let derniereCapture = 0;
+let revisionCapturee = null;
+// **Une capture en PPM** (P6) : rouge, vert, bleu, depuis le XRGB8888 de la
+// carte, où le bleu est l'octet bas. Le format le plus simple qui se
+// convertit partout.
+const capturer = (chemin) => {{
+  const e = vm.ecran();
+  if (e === null) return false;
+  const rgb = new Uint8Array(e.largeur * e.hauteur * 3);
+  for (let i = 0, j = 0; i < e.image.length; i += 4, j += 3) {{
+    rgb[j] = e.image[i + 2];
+    rgb[j + 1] = e.image[i + 1];
+    rgb[j + 2] = e.image[i];
+  }}
+  writeFileSync(chemin, Buffer.concat([Buffer.from("P6\n" + e.largeur + " " + e.hauteur + "\n255\n"), rgb]));
+  revisionCapturee = e.revision;
+  console.log("capture " + chemin + " " + e.largeur + "x" + e.hauteur + " revision " + e.revision
+    + " au mur " + ((performance.now() - departDuMur) / 1000).toFixed(0) + " s");
+  return true;
+}};
+const dateeA = (secondes) => fichierCapture.replace(/\.ppm$/, "") + "-" + Math.round(secondes) + ".ppm";
+const gesteAuMur = () => {{
+  const mur = (performance.now() - departDuMur) / 1000;
+  while (gestes.length > 0 && gestes[0][0] <= mur) {{
+    const [, quoi, argument] = gestes.shift();
+    if (quoi === "texte") {{
+      console.log("geste texte " + JSON.stringify(argument) + " : " + vm.taper(argument)
+        + " frappes, au mur " + mur.toFixed(0) + " s");
+    }} else if (quoi === "toucher") {{
+      const [x, y, boutons] = argument.split(",").map(Number);
+      console.log("geste toucher " + argument + " : " + (vm.toucher(x, y, boutons) ? "pris" : "refusé")
+        + ", au mur " + mur.toFixed(0) + " s");
+    }} else if (fichierCapture !== "") {{
+      capturer(dateeA(mur));
+    }}
+  }}
+  if (fichierCapture !== "" && captureToutes > 0 && mur - derniereCapture >= captureToutes) {{
+    derniereCapture = mur;
+    const e = vm.ecran(revisionCapturee);
+    if (e !== null && e.image !== null) {{
+      capturer(dateeA(mur));
+      capturer(fichierCapture);
+    }}
+  }}
+}};
 // **Un tour à la fois, et l'adresse de chaque retour de main comptée.**
 // « Tours épuisés » disait combien de fois la machine avait rendu la main,
 // pas d'où : quarante et un mille sites modifiés par `text_poke_early` et
@@ -1071,17 +1462,21 @@ const debutDeLaQueue = {turns} - Math.floor({turns} / 10);
 let tours = 0;
 let why = {{ stopped: "tours épuisés", at: lire({rip}) }};
 const entree = {entree:?};
-const invite = {invite:?};
+// **Plusieurs invites possibles**, séparées par `;;` : `login: ` puis le
+// shell de `root` sur un système démarré depuis son ISO.
+const invites = {invite:?}.split(";;");
 const fin = {fin:?};
 let depuis = 0;
+let dernierBattement = performance.now();
 for (let tour = 0; tour < {turns}; tour++) {{
   why = await vm.run({{ budget: 1n << 24n, rounds: 1 }});
   tours = tour + 1;
+  if (vm.carte !== null) gesteAuMur();
   if (fin !== "" && serie.includes(fin)) {{
     why = {{ stopped: "le port série a dit " + JSON.stringify(fin), at: lire({rip}) }};
     break;
   }}
-  if (entree.length > 0 && serie.indexOf(invite, depuis) >= 0) {{
+  if (entree.length > 0 && invites.some((i) => serie.indexOf(i, depuis) >= 0)) {{
     const ligne = entree.shift();
     console.log("tape " + JSON.stringify(ligne) + " au tour " + tours);
     vm.send(new TextEncoder().encode(ligne + "\r"));
@@ -1101,7 +1496,21 @@ for (let tour = 0; tour < {turns}; tour++) {{
   // question même que #229 a appris à poser. La période vient de
   // `Progress::beat`, côté Rust, pour que le pilote et le test qui la tient
   // ne puissent pas en prendre deux différentes.
-  if ((tour + 1) % {beat} === 0) {{
+  // **Et toutes les trente secondes de mur** : quand l'invité tourne dans du
+  // code déjà traduit, chaque tour épuise son budget, et dix mille tours
+  // peuvent prendre des heures.
+  const auMur = performance.now() - dernierBattement >= 30000;
+  if ((tour + 1) % {beat} === 0 || auMur) {{
+    dernierBattement = performance.now();
+    console.log("horloge-en-cours " + (tour + 1) + " " + lire({tsc}) + " "
+      + vm.materiel.delivrees + " " + Math.round((performance.now() - departDuMur) / 1000));
+    // **Ce qui décide qu'une interruption peut venir** : IF, les deux 8259
+    // (masque, requête, service), le canal zéro du 8254 (mode, chargé, tiré).
+    const p = vm.pics, c0 = vm.pits[0];
+    console.log("interruptions-en-cours " + (tour + 1) + " if=" + ((lire(16) >> 9n) & 1n)
+      + " maitre=" + [p.master.mask, p.master.request, p.master.service].map((v) => v.toString(16)).join("/")
+      + " esclave=" + [p.slave.mask, p.slave.request, p.slave.service].map((v) => v.toString(16)).join("/")
+      + " pit=" + c0.mode + "/" + c0.loaded + "/" + c0.raised + "/" + c0.reload);
     console.log("marche-en-cours " + (tour + 1) + " 0x" + at.toString(16)
       + " " + (neuf === null ? "aucun" : neuf) + " " + retours.size);{guet}
     // **Ce que le cache tient pendant la course**, et ce que le moteur pèse :
@@ -1110,9 +1519,30 @@ for (let tour = 0; tour < {turns}; tour++) {{
     console.log("cache-en-cours " + (tour + 1) + " " + vm.cache.tenu.regions
       + " " + vm.cache.tenu.octets + " " + vm.cache.traduites + " " + vm.cache.evincees
       + " " + Math.round(process.memoryUsage().rss / 1048576));
+    // **Le disque et l'écran, au même battement** : ce que l'invité lit, et
+    // si son image bouge — une course longue dit ainsi où elle en est, même
+    // quand le port série se tait (`loglevel=4`).
+    if (typeof compteDuDisque !== "undefined" && compteDuDisque !== null) {{
+      console.log("disque-en-cours " + (tour + 1) + " " + compteDuDisque.lectures
+        + " " + compteDuDisque.lus + " " + compteDuDisque.ecritures);
+    }}
+    if (vm.carte !== null && vm.carte.ecran.mode() !== null) {{
+      const m = vm.carte.ecran.mode();
+      console.log("ecran-en-cours " + (tour + 1) + " " + m.largeur + "x" + m.hauteur
+        + " " + vm.carte.ecran.revision());
+    }}
   }}
 }}
 console.log("arret " + why.stopped);
+if (fichierCapture !== "") capturer(fichierCapture);
+{{
+  const e = vm.ecran();
+  if (e !== null) {{
+    const m = vm.carte.ecran.mode();
+    console.log("ecran " + e.largeur + "x" + e.hauteur + " lignes de " + m.octetsParLigne
+      + " octets, debut " + m.debut + ", revision " + e.revision);
+  }}
+}}
 console.log("traducteur " + demandesDeTraduction + " " + tempsDeTraduction.toFixed(1));
 console.log("marche " + tours + " " + (neuf === null ? "aucun" : neuf)
   + " " + retours.size + " " + queue.size);
@@ -1145,6 +1575,7 @@ console.log("vidages " + vm.vidages.fois + " fois, " + vm.vidages.regions + " re
   console.log("carte ecritures " + c.ecritures + " invalidees " + c.invalidees
     + " debordements " + c.debordements + " ; pic " + c.pic.trames + " trames");
 }}
+{releve_carte}
 console.log("materiel " + vm.materiel.delivrees + " delivree(s)"
   + (vm.materiel.premiere === null
       ? ", aucune" : ", la premiere a 0x" + vm.materiel.premiere.toString(16)));
@@ -1300,10 +1731,18 @@ console.log("controle " + controle
                 ramasser = ramasser,
                 vider = vider,
                 serie_file = serie,
+                gestes = gestes,
+                capture = capture,
+                capture_toutes = capture_toutes,
+                base_ecran = BASE_DE_L_ECRAN,
+                tsc = TSC_SLOT,
                 entree = entree,
                 invite = invite,
                 fin = fin,
                 prelude = prelude,
+                prelude_carte = prelude_carte,
+                option_carte = option_carte,
+                releve_carte = releve_carte,
                 emission = emission,
                 pages = pages,
                 rip = RIP_SLOT,
@@ -1406,6 +1845,24 @@ console.log("controle " + controle
                 }
                 // **Le cache, dit au fil de l'eau** : tour, régions tenues,
                 // octets tenus, traduites, évincées, mémoire résidente.
+                ["horloge-en-cours", turn, tsc, delivrees, mur] => {
+                    println!(
+                        "horloge au tour {turn} : TSC {tsc}, {delivrees} interruptions \
+                         délivrées, {mur} s de mur"
+                    );
+                }
+                ["interruptions-en-cours", turn, etat @ ..] => {
+                    println!("interruptions au tour {turn} : {}", etat.join(" "));
+                }
+                ["disque-en-cours", turn, lectures, lus, ecritures] => {
+                    println!(
+                        "disque au tour {turn} : {lectures} lectures, {lus} octets lus, \
+                         {ecritures} écritures"
+                    );
+                }
+                ["ecran-en-cours", turn, mode, revision] => {
+                    println!("écran au tour {turn} : {mode}, révision {revision}");
+                }
                 ["cache-en-cours", turn, regions, octets, traduites, evincees, rss] => {
                     println!(
                         "cache au tour {turn} : {regions} régions, {octets} octets, \
@@ -1425,7 +1882,12 @@ console.log("controle " + controle
         println!("le pilote a écrit en erreur");
         print!("{errors}");
     }
-    if !status.success() {
+    // **Un pilote mort n'est pas une course finie** : le relevé ci-dessous
+    // est fait quand même — ce qu'il a eu le temps de dire —, puis la sortie
+    // le dit par son code. Elle rendait zéro, et un script qui enchaîne les
+    // courses prenait une `ReferenceError` pour un succès.
+    let pilote_mort = !status.success();
+    if pilote_mort {
         println!("le pilote s'est arrêté sur {status}");
     }
     {
@@ -1572,5 +2034,18 @@ console.log("controle " + controle
         }
     }
 
+    if pilote_mort {
+        sortir(&scratch, 1);
+    }
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Sortir en effaçant le dossier de travail** : `std::process::exit` ne
+/// lance aucun destructeur, et chaque refus laissait derrière lui un
+/// `/tmp/wisq-kernel-<pid>` (la ligne de commande, la page zéro, les
+/// segments du noyau). Tout refus qui suit la création du dossier passe par
+/// ici.
+fn sortir(scratch: &std::path::Path, code: i32) -> ! {
+    let _ = std::fs::remove_dir_all(scratch);
+    std::process::exit(code)
 }

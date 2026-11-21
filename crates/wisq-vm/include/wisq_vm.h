@@ -323,6 +323,45 @@ int wisq_desktop_boot_page(uint32_t pages, const char *command_line,
 uint64_t wisq_desktop_boot_page_at(void);
 
 /*
+ * A file of the emitter machine's page, by name: `host.js`, `carte.js`,
+ * `page-emitter.js`, `machine.js`, `machine.html`, and `wisq_page.wasm` when
+ * the build embedded it (`WISQ_PAGE_WASM`). Returns 0 and **static** bytes —
+ * they live as long as the library and are never freed — or -1 for an unknown
+ * name or an absent module.
+ */
+int wisq_emitter_asset(const char *name, const uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * The emitter machine's zero page: the montage's command line followed by
+ * `extra` (null: nothing more), as it is — a leading `-` is a word of the
+ * image's line, not a removal; `keep_bootcon` leaves the montage's part when
+ * `extra` names `console=ttyS0`, since both together print every line
+ * twice —, the card's screen (`width == 0 && height == 0`:
+ * none), the archive (`initramfs_bytes == 0`: none) placed above `floor`.
+ * Returns 0 and four kibibytes (freed with `wisq_x86_free_module`), or a named
+ * refusal: 1 the RAM, 2 the line, 3 the screen, 4 the archive, -1 unreadable
+ * arguments. On refusal 2, `out_len` receives the length of the whole line,
+ * the montage's part included: that is what the 2047-byte bound judges, and
+ * the caller cannot know it, since the montage's part depends on `extra`.
+ */
+int wisq_emitter_boot_page(uint32_t pages, const char *extra,
+                           uint32_t screen_width, uint32_t screen_height,
+                           uint64_t initramfs_at, uint64_t initramfs_bytes,
+                           uint64_t floor, uint8_t **out_bytes, size_t *out_len);
+
+/*
+ * Whether this RAM can carry this kernel under the emitter. `entry` is the
+ * ELF's physical entry point, `top` the top of its segments, BSS included.
+ * Returns 0, or 1 no RAM, 2 not a power of two, 3 too small, 4 the fold takes
+ * the virtual text somewhere other than onto itself — `out_folded`, when not
+ * null, then receives where.
+ */
+int wisq_emitter_usable_ram(uint32_t pages, uint64_t entry, uint64_t top, uint64_t *out_folded);
+
+/* Where the guest sees the card's video memory, as that zero page says. */
+uint64_t wisq_emitter_screen_base(void);
+
+/*
  * What the application may not write into the guest's RAM.
  *
  * It places its images through a single path; this says, before the first

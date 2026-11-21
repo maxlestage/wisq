@@ -14,8 +14,10 @@
 //! changerait donc un arrêt de bloc en refus de région — c'est la règle qui
 //! fixe la liste : **les déplacements, la logique, les entrelacements et
 //! l'arithmétique entière**, jugés par les oracles matériels
-//! `x86-xmm-oracle.tsv` et `x86-simd-oracle.tsv`. Le calcul flottant
-//! (`addss`, `mulsd`, `cvtsi2sd`…) reste illisible : c'est une autre tranche.
+//! `x86-xmm-oracle.tsv` et `x86-simd-oracle.tsv`, **et le calcul flottant**
+//! de SSE et SSE2 (`Vector::Float`, traduit par `x86_wasm_float.rs`, jugé par
+//! `x86-float-oracle.tsv`). Les formes de SSE3, que CPUID n'annonce pas,
+//! restent illisibles, comme les conversions vers et depuis MMX.
 //!
 //! **Le préfixe obligatoire fait partie de l'opcode.** `0f 6f` est `movq` MMX,
 //! `66 0f 6f` est `movdqa`, `f3 0f 6f` est `movdqu` : trois instructions. Ce
@@ -96,6 +98,60 @@ pub enum Vector {
     LoadControl,
     /// `stmxcsr m32` (`0f ae /3`).
     StoreControl,
+    /// Le calcul flottant : voir [`Float`].
+    Float(Float),
+}
+
+/// **Le calcul flottant de SSE et SSE2.** `double` : des doubles (`f2` en
+/// scalaire, `66` en empaqueté), sinon des simples (`f3`, sans préfixe).
+/// `width` dit, pour les formes scalaires, la largeur de l'élément lu en
+/// mémoire ; pour les conversions avec un registre général, celle de
+/// l'entier (`REX.W`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Float {
+    /// `addss`… `sqrtsd` (`f3`/`f2 0f 51 58 59 5c 5d 5e 5f`) : l'élément bas,
+    /// le reste de la destination laissé.
+    Scalar { operation: FloatOp, double: bool },
+    /// Leurs formes empaquetées (sans préfixe, ou `66`).
+    Packed { operation: FloatOp, double: bool },
+    /// `cmpss`/`cmpsd` (`f3`/`f2 0f c2 ib`) : un masque dans l'élément bas.
+    CompareScalar { double: bool },
+    /// `cmpps`/`cmppd` (`[66] 0f c2 ib`).
+    ComparePacked { double: bool },
+    /// `ucomiss`, `comiss`, `ucomisd`, `comisd` (`[66] 0f 2e`/`2f`) : ZF, PF
+    /// et CF. Sans exceptions modélisées, les deux formes ne diffèrent pas.
+    Order { double: bool },
+    /// `cvtss2sd` (`f3 0f 5a`).
+    Widen,
+    /// `cvtsd2ss` (`f2 0f 5a`).
+    Narrow,
+    /// `cvtps2pd` (`0f 5a`).
+    PackedWiden,
+    /// `cvtpd2ps` (`66 0f 5a`).
+    PackedNarrow,
+    /// `cvtsi2ss`/`cvtsi2sd` (`f3`/`f2 [REX.W] 0f 2a`) : depuis un registre
+    /// général ou la mémoire.
+    FromInteger { double: bool },
+    /// `cvt(t)ss2si`/`cvt(t)sd2si` (`f3`/`f2 [REX.W] 0f 2c`/`2d`) : vers le
+    /// registre général `dst`.
+    ToInteger { double: bool, truncate: bool },
+    /// `cvtdq2pd` (`f3 0f e6`) et `cvtdq2ps` (`0f 5b`).
+    FromIntegers { double: bool },
+    /// `cvttpd2dq` (`66 0f e6`), `cvtpd2dq` (`f2 0f e6`), `cvtps2dq`
+    /// (`66 0f 5b`) et `cvttps2dq` (`f3 0f 5b`).
+    ToIntegers { double: bool, truncate: bool },
+}
+
+/// L'opération d'un élément.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FloatOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Min,
+    Max,
+    Sqrt,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -233,6 +289,13 @@ pub(super) fn decode(
         (P66, 0xd6) => (Vector::StoreQuad, None, Width::Qword),
         (Bare | P66, 0x28 | 0x10) | (P66 | PF3, 0x6f) => (Vector::Load, None, Width::Qword),
         (Bare | P66, 0x29 | 0x11) | (P66 | PF3, 0x7f) => (Vector::Store, None, Width::Qword),
+        // **Les écritures non temporelles** — `movntps`, `movntpd`, `movntdq` —
+        // sont des écritures alignées : le conseil de ne pas garder la ligne
+        // en cache ne change rien à ce qui est écrit, et cette machine n'a pas
+        // de cache à épargner. En mémoire seule : la forme registre n'existe
+        // pas. C'est `xor_sse` et le banc du RAID de Linux, dans un module que
+        // Void charge au démarrage.
+        (Bare | P66, 0x2b) | (P66, 0xe7) => (Vector::Store, Some(true), Width::Qword),
         (PF3, 0x10) => (Vector::LoadScalar, None, Width::Dword),
         (PF2, 0x10) => (Vector::LoadScalar, None, Width::Qword),
         (PF3, 0x11) => (Vector::StoreScalar, None, Width::Dword),
@@ -420,6 +483,89 @@ pub(super) fn decode(
         (P66, 0x50) => (Vector::MoveMask(Mask::Doubles), Some(false), Width::Qword),
         (P66, 0xc5) => (Vector::ExtractWord, Some(false), Width::Qword),
         (P66, 0xc4) => (Vector::InsertWord, None, Width::Word),
+        // **Le calcul flottant** (`x86_wasm_float.rs`).
+        (PF3 | PF2, 0x51 | 0x58 | 0x59 | 0x5c..=0x5f) => (
+            Vector::Float(Float::Scalar {
+                operation: float_op(second),
+                double: mandatory == PF2,
+            }),
+            None,
+            scalar(mandatory == PF2),
+        ),
+        (Bare | P66, 0x51 | 0x58 | 0x59 | 0x5c..=0x5f) => (
+            Vector::Float(Float::Packed {
+                operation: float_op(second),
+                double: mandatory == P66,
+            }),
+            None,
+            Width::Qword,
+        ),
+        (PF3 | PF2, 0xc2) => (
+            Vector::Float(Float::CompareScalar {
+                double: mandatory == PF2,
+            }),
+            None,
+            scalar(mandatory == PF2),
+        ),
+        (Bare | P66, 0xc2) => (
+            Vector::Float(Float::ComparePacked {
+                double: mandatory == P66,
+            }),
+            None,
+            Width::Qword,
+        ),
+        (Bare | P66, 0x2e | 0x2f) => (
+            Vector::Float(Float::Order {
+                double: mandatory == P66,
+            }),
+            None,
+            scalar(mandatory == P66),
+        ),
+        (PF3, 0x5a) => (Vector::Float(Float::Widen), None, Width::Dword),
+        (PF2, 0x5a) => (Vector::Float(Float::Narrow), None, Width::Qword),
+        (Bare, 0x5a) => (Vector::Float(Float::PackedWiden), None, Width::Qword),
+        (P66, 0x5a) => (Vector::Float(Float::PackedNarrow), None, Width::Qword),
+        (PF3 | PF2, 0x2a) => (
+            Vector::Float(Float::FromInteger {
+                double: mandatory == PF2,
+            }),
+            None,
+            scalar(wide),
+        ),
+        (PF3 | PF2, 0x2c | 0x2d) => (
+            Vector::Float(Float::ToInteger {
+                double: mandatory == PF2,
+                truncate: second == 0x2c,
+            }),
+            None,
+            scalar(wide),
+        ),
+        (PF3, 0xe6) => (
+            Vector::Float(Float::FromIntegers { double: true }),
+            None,
+            Width::Qword,
+        ),
+        (P66 | PF2, 0xe6) => (
+            Vector::Float(Float::ToIntegers {
+                double: true,
+                truncate: mandatory == P66,
+            }),
+            None,
+            Width::Qword,
+        ),
+        (Bare, 0x5b) => (
+            Vector::Float(Float::FromIntegers { double: false }),
+            None,
+            Width::Qword,
+        ),
+        (P66 | PF3, 0x5b) => (
+            Vector::Float(Float::ToIntegers {
+                double: false,
+                truncate: mandatory == PF3,
+            }),
+            None,
+            Width::Qword,
+        ),
         _ => return None,
     };
     let field = read_modrm(bytes, &mut at, prefixes)?;
@@ -433,7 +579,10 @@ pub(super) fn decode(
     // depuis la fin de l'instruction.
     let immediate = matches!(
         vector,
-        Vector::Shuffle(_) | Vector::ExtractWord | Vector::InsertWord
+        Vector::Shuffle(_)
+            | Vector::ExtractWord
+            | Vector::InsertWord
+            | Vector::Float(Float::CompareScalar { .. } | Float::ComparePacked { .. })
     );
     let imm = if immediate {
         let value = u64::from(*bytes.get(at)?);
@@ -475,6 +624,29 @@ pub(super) fn control(reg: u8, memory: bool, prefixes: Prefixes) -> Option<Vecto
         2 => Some(Vector::LoadControl),
         3 => Some(Vector::StoreControl),
         _ => None,
+    }
+}
+
+/// La largeur d'un élément scalaire : huit octets pour un double (ou un
+/// entier en `REX.W`), quatre sinon.
+fn scalar(eight: bool) -> Width {
+    if eight {
+        Width::Qword
+    } else {
+        Width::Dword
+    }
+}
+
+/// L'opération d'un octet `51`, `58`, `59`, `5c`… `5f`.
+fn float_op(second: u8) -> FloatOp {
+    match second {
+        0x51 => FloatOp::Sqrt,
+        0x58 => FloatOp::Add,
+        0x59 => FloatOp::Mul,
+        0x5c => FloatOp::Sub,
+        0x5d => FloatOp::Min,
+        0x5e => FloatOp::Div,
+        _ => FloatOp::Max,
     }
 }
 
@@ -580,6 +752,12 @@ impl super::Cpu {
             self.effective_address(&address, after)
         });
         match vector {
+            // `decode` lit le flottant de SSE pour l'émetteur, qui le traduit ;
+            // la machine native le tient de `decode_extended` (`x86_sse.rs`) et
+            // l'écarte de `decode` à la lecture (`pc::machine::decode`).
+            Vector::Float(_) => {
+                unreachable!("le flottant de SSE passe par decode_extended, pas par execute_vector")
+            }
             Vector::MoveIn => {
                 let value = match at {
                     Some(at) => self.vector_read(at, width)?,
