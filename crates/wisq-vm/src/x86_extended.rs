@@ -16,6 +16,18 @@
 
 use super::{read_modrm, Address, Cpu, Prefixes, Width};
 
+#[path = "x86_f80.rs"]
+pub mod f80;
+#[path = "x86_mmx.rs"]
+mod mmx;
+#[path = "x86_sse.rs"]
+mod sse;
+#[path = "x86_x87.rs"]
+mod x87;
+
+pub use mmx::Mmx;
+pub use sse::{FloatOp, Sse};
+
 /// Une instruction de ce second décodeur.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Extended {
@@ -36,14 +48,17 @@ pub struct Extended {
 /// Ce que l'instruction fait.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Extra {
-    /// **Les mots du coprocesseur x87 qui se lisent et s'écrivent sans
-    /// calculer.** Le décompresseur du noyau les exécute pour savoir s'il a
-    /// un coprocesseur — `fninit`, puis il relit les deux mots et les compare
-    /// à ce que le silicium y laisse (`dd 7c 24 0e`, `d9 7c 24 0c`, à 512 529
-    /// instructions du démarrage d'Alpine 6.18) —, et la bibliothèque C sauve
-    /// et rétablit le mot de contrôle autour de ses arrondis. Aucune ne touche
-    /// à la pile du x87 : ni au sommet, ni aux registres, ni aux étiquettes.
-    FpuWord(FpuWord),
+    /// **Une instruction du x87** (`D8` à `DF`) : l'opcode et le ModRM, que
+    /// `x86_x87.rs` lit comme le silicium — l'octet entier en forme registre,
+    /// le champ `reg` et l'opcode en forme mémoire. `width` vaut `Word` sous
+    /// le préfixe `66` (les environnements de quatorze octets), `Dword` sinon.
+    ///
+    /// Le décompresseur du noyau en exécute les premiers pour savoir s'il a
+    /// un coprocesseur — `fninit`, puis `fnstsw` et `fnstcw` (`dd 7c 24 0e`,
+    /// `d9 7c 24 0c`, à 512 529 instructions du démarrage d'Alpine 6.18) ; le
+    /// noyau un `fildl` (`X86_BUG_FXSAVE_LEAK`) ; et l'espace utilisateur le
+    /// reste : le `long double` de `printf`, la `libm`.
+    X87 { opcode: u8, modrm: u8 },
     /// **`emms` (`0F 77`)** : toutes les étiquettes du x87 passent à « vide ».
     /// Rien d'autre ne bouge — ni le sommet, ni les registres.
     ///
@@ -52,26 +67,10 @@ pub enum Extra {
     /// `X86_BUG_FXSAVE_LEAK` (`0f 77 db 07`, à 1,48 milliard d'instructions du
     /// démarrage d'Alpine 6.18).
     Emms,
-    /// **`fild`** : empiler un entier signé lu en mémoire — seize bits
-    /// (`DF /0`), trente-deux (`DB /0`) ou soixante-quatre (`DF /5`). La
-    /// conversion est exacte : un entier de soixante-quatre bits tient dans
-    /// la mantisse d'un registre du x87.
-    FpuLoadInteger,
-}
-
-/// Lequel des mots d'état du x87 une instruction lit ou écrit.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FpuWord {
-    /// `fnstcw m16` (`D9 /7`) : le mot de contrôle, vers la mémoire.
-    StoreControl,
-    /// `fldcw m16` (`D9 /5`) : le mot de contrôle, depuis la mémoire.
-    LoadControl,
-    /// `fnstsw m16` (`DD /7`) : le mot d'état, vers la mémoire.
-    StoreStatus,
-    /// `fnstsw %ax` (`DF E0`) : le mot d'état, dans AX.
-    StatusToAccumulator,
-    /// `fnclex` (`DB E2`) : effacer les exceptions en attente du mot d'état.
-    ClearExceptions,
+    /// **Une instruction MMX** : voir `x86_mmx.rs`.
+    Mmx(Mmx),
+    /// **Le calcul flottant de SSE et SSE2** : voir `x86_sse.rs`.
+    Sse(Sse),
 }
 
 /// Pourquoi une instruction de ce décodeur n'est pas allée au bout.
@@ -80,6 +79,9 @@ pub enum ExtendedFault {
     /// Un opérande en mémoire n'est pas accessible : `Cpu::unmapped` dit
     /// lequel, et la machine en fait une faute de page.
     Memory,
+    /// Une exception flottante de SSE que MXCSR ne masque pas : le drapeau
+    /// est posé, rien n'est rangé, et la machine livre `#XM`.
+    SimdException,
     /// `fxrstor` avec un MXCSR aux bits réservés levés : `#GP(0)`, rien de
     /// changé.
     ReservedControl,
@@ -90,13 +92,6 @@ pub enum ExtendedFault {
 /// sont laissés tels quels — mesuré sur le silicium, voir
 /// `x86-fxsave-oracle.tsv`.
 pub const FXSAVE_WRITTEN: usize = 416;
-
-/// Les bits du mot d'état du x87.
-const INVALID: u16 = 1 << 0;
-const STACK_FAULT: u16 = 1 << 6;
-const ERROR_SUMMARY: u16 = 1 << 7;
-const C1: u16 = 1 << 9;
-const BUSY: u16 = 1 << 15;
 
 /// **Lire les préfixes**, comme `decode` les lit : 0x66, 0xF3, 0xF2, les
 /// segments, `lock`, puis REX — qui doit toucher l'opcode, un préfixe hérité
@@ -153,46 +148,70 @@ pub fn decode_extended(bytes: &[u8]) -> Option<Extended> {
         length,
     };
     match opcode {
-        // **Le x87, par ses seuls mots d'état.** Le sens n'est pas dans
-        // l'opcode mais dans le ModRM : en mémoire, le champ `reg` choisit
-        // l'instruction ; en registre, c'est l'octet entier.
-        0xd9 | 0xdd if plain => {
+        // **Le x87.** Le sens n'est pas dans l'opcode mais dans le ModRM : en
+        // mémoire, le champ `reg` choisit l'instruction ; en registre, c'est
+        // l'octet entier. `66` ne change que la taille des environnements ;
+        // `f2` et `f3` ne désignent rien et sont refusés.
+        0xd8..=0xdf if !prefixes.repeat && !prefixes.repeat_not => {
+            let modrm = *bytes.get(at)?;
+            if !x87::valid(opcode, modrm) {
+                return None;
+            }
             let field = read_modrm(bytes, &mut at, prefixes)?;
-            let memory = field.memory?;
-            let word = match (opcode, field.reg & 0b111) {
-                (0xd9, 5) => FpuWord::LoadControl,
-                (0xd9, 7) => FpuWord::StoreControl,
-                (0xdd, 7) => FpuWord::StoreStatus,
-                _ => return None,
-            };
             Some(Extended {
-                memory: Some(memory),
-                ..nothing(Extra::FpuWord(word), at)
-            })
-        }
-        // **`fild`, aux trois largeurs.** `DB /0` charge trente-deux bits,
-        // `DF /0` seize, `DF /5` soixante-quatre.
-        0xdb | 0xdf if plain && bytes.get(at).is_some_and(|modrm| modrm >> 6 != 0b11) => {
-            let field = read_modrm(bytes, &mut at, prefixes)?;
-            let width = match (opcode, field.reg & 0b111) {
-                (0xdb, 0) => Width::Dword,
-                (0xdf, 0) => Width::Word,
-                (0xdf, 5) => Width::Qword,
-                _ => return None,
-            };
-            Some(Extended {
-                width,
+                width: if prefixes.operand_size {
+                    Width::Word
+                } else {
+                    Width::Dword
+                },
                 memory: field.memory,
-                ..nothing(Extra::FpuLoadInteger, at)
+                ..nothing(Extra::X87 { opcode, modrm }, at)
             })
         }
         0x0f if plain && bytes.get(at) == Some(&0x77) => Some(nothing(Extra::Emms, at + 1)),
-        0xdf if plain && bytes.get(at) == Some(&0xe0) => Some(nothing(
-            Extra::FpuWord(FpuWord::StatusToAccumulator),
-            at + 1,
-        )),
-        0xdb if plain && bytes.get(at) == Some(&0xe2) => {
-            Some(nothing(Extra::FpuWord(FpuWord::ClearExceptions), at + 1))
+        // **La page `0f`** : le MMX et le flottant de SSE. Le préfixe
+        // obligatoire fait partie de l'opcode ; deux à la fois ne désignent
+        // rien de sûr.
+        0x0f => {
+            let mandatory = match (prefixes.operand_size, prefixes.repeat, prefixes.repeat_not) {
+                (false, false, false) => 0,
+                (true, false, false) => 0x66,
+                (false, true, false) => 0xf3,
+                (false, false, true) => 0xf2,
+                _ => return None,
+            };
+            let second = *bytes.get(at)?;
+            at += 1;
+            let modrm = *bytes.get(at)?;
+            let (op, immediate) =
+                if let Some((form, immediate)) = mmx::decode(mandatory, second, modrm) {
+                    (Extra::Mmx(form), immediate)
+                } else if let Some((form, immediate)) = sse::decode(mandatory, second) {
+                    (Extra::Sse(form), immediate)
+                } else {
+                    return None;
+                };
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            let imm = if immediate {
+                let value = u64::from(*bytes.get(at)?);
+                at += 1;
+                value
+            } else {
+                0
+            };
+            // `movd`/`movq` et les conversions avec un registre général :
+            // huit octets sous `REX.W`, quatre sinon. `pinsrw` lit seize bits.
+            let wide = prefixes.rex.is_some_and(|rex| rex & 0b1000 != 0);
+            let width = if wide { Width::Qword } else { Width::Dword };
+            Some(Extended {
+                op,
+                width,
+                reg: field.reg,
+                rm: field.register,
+                memory: field.memory,
+                imm,
+                length: at,
+            })
         }
         _ => None,
     }
@@ -208,106 +227,14 @@ impl Cpu {
             self.effective_address(&address, after)
         });
         match instruction.op {
-            Extra::FpuWord(word) => match word {
-                FpuWord::StoreControl => {
-                    let at = at.expect("fnstcw écrit la mémoire");
-                    self.extended_write(at, Width::Word, u64::from(self.fpu_control))?;
-                }
-                FpuWord::LoadControl => {
-                    let at = at.expect("fldcw lit la mémoire");
-                    self.fpu_control = self.extended_read(at, Width::Word)? as u16;
-                }
-                FpuWord::StoreStatus => {
-                    let at = at.expect("fnstsw écrit la mémoire");
-                    self.extended_write(at, Width::Word, u64::from(self.fpu_status))?;
-                }
-                FpuWord::StatusToAccumulator => {
-                    self.set(0, Width::Word, false, u64::from(self.fpu_status));
-                }
-                // Les sept bits d'exception, et « occupé » : les autres — la
-                // pile, les codes de condition — restent.
-                FpuWord::ClearExceptions => self.fpu_status &= 0x7f00,
-            },
-            Extra::Emms => self.fpu_tags = 0,
-            Extra::FpuLoadInteger => {
-                let at = at.expect("fild lit la mémoire");
-                let raw = self.extended_read(at, instruction.width)?;
-                let shift = 64 - instruction.width.bits() as u32;
-                let value = ((raw << shift) as i64) >> shift;
-                self.x87_push(Self::x87_from_integer(value));
+            Extra::X87 { .. } => self.execute_x87(instruction, at),
+            Extra::Emms => {
+                self.fpu_tags = 0;
+                Ok(())
             }
+            Extra::Mmx(_) => self.execute_mmx(instruction, at),
+            Extra::Sse(_) => self.execute_sse(instruction, at),
         }
-        Ok(())
-    }
-
-    /// Le sommet de la pile du x87 : les bits 11 à 13 du mot d'état.
-    pub fn x87_top(&self) -> usize {
-        usize::from((self.fpu_status >> 11) & 7)
-    }
-
-    /// Un entier signé, en registre du x87. Exact : la mantisse a
-    /// soixante-quatre bits, son bit de tête explicite.
-    pub fn x87_from_integer(value: i64) -> (u64, u16) {
-        if value == 0 {
-            return (0, 0);
-        }
-        let magnitude = value.unsigned_abs();
-        let lead = magnitude.leading_zeros();
-        let exponent = 16383 + 63 - lead as u16;
-        (
-            magnitude << lead,
-            exponent | if value < 0 { 0x8000 } else { 0 },
-        )
-    }
-
-    /// **Empiler une valeur.** Le sommet descend d'un cran ; si le registre
-    /// qu'il désigne alors est occupé, c'est un débordement de pile : le mot
-    /// d'état le dit (invalide, faute de pile, C1), et — l'exception masquée,
-    /// ce qu'elle est après `fninit` — la valeur empilée est le NaN indéfini.
-    pub fn x87_push(&mut self, value: (u64, u16)) {
-        let top = (self.x87_top() + 7) & 7;
-        self.fpu_status = (self.fpu_status & !(7 << 11)) | ((top as u16) << 11);
-        if self.fpu_tags & (1 << top) != 0 {
-            self.fpu_status |= INVALID | STACK_FAULT | C1;
-            self.x87[top] = (0xC000_0000_0000_0000, 0xFFFF);
-            self.x87_summarise();
-            return;
-        }
-        self.fpu_status &= !C1;
-        self.x87[top] = value;
-        self.fpu_tags |= 1 << top;
-    }
-
-    /// Les bits « résumé d'erreur » et « occupé » suivent les exceptions en
-    /// attente que le mot de contrôle ne masque pas — ce que le silicium
-    /// recalcule lui-même, y compris en relisant une aire de `fxrstor`.
-    fn x87_summarise(&mut self) {
-        if self.fpu_status & !self.fpu_control & 0x3f != 0 {
-            self.fpu_status |= ERROR_SUMMARY | BUSY;
-        } else {
-            self.fpu_status &= !(ERROR_SUMMARY | BUSY);
-        }
-    }
-
-    /// **Le mot d'étiquettes complet**, deux bits par registre physique, tel
-    /// que `fnstenv` et `fnsave` le rendent : 00 valide, 01 zéro, 10 spécial
-    /// (NaN, infini, dénormalisé), 11 vide. Il se recalcule des registres :
-    /// le processeur ne garde que « occupé ou non ».
-    pub fn x87_tag_word(&self) -> u16 {
-        (0..8).fold(0u16, |word, index| {
-            let (significand, sign_exponent) = self.x87[index];
-            let exponent = sign_exponent & 0x7fff;
-            let tag = if self.fpu_tags & (1 << index) == 0 {
-                0b11
-            } else if exponent == 0 && significand == 0 {
-                0b01
-            } else if exponent == 0 || exponent == 0x7fff || significand >> 63 == 0 {
-                0b10
-            } else {
-                0b00
-            };
-            word | tag << (2 * index)
-        })
     }
 
     /// **`fxsave`** : écrire l'aire de 512 octets — dont 416 seulement sont

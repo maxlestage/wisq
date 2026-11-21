@@ -1023,6 +1023,17 @@ impl Machine {
                     Err(ExtendedFault::ReservedControl) => {
                         Err(Exception::ProtectionGenerale(0).into())
                     }
+                    // **Une exception de SSE démasquée** : `#XM` quand le
+                    // noyau a dit savoir la traiter (CR4.OSXMMEXCPT), `#UD`
+                    // sinon — ce que fait le silicium.
+                    Err(ExtendedFault::SimdException) => {
+                        Err(if self.cpu.control[4] & (1 << 10) != 0 {
+                            Exception::FlottantSimd
+                        } else {
+                            Exception::Indefinie
+                        }
+                        .into())
+                    }
                 };
             }
         };
@@ -1434,6 +1445,9 @@ impl Machine {
                     Err(ExtendedFault::Memory) => return Err(self.faute_de(instruction)),
                     Err(ExtendedFault::ReservedControl) => {
                         return Err(Exception::ProtectionGenerale(0).into())
+                    }
+                    Err(ExtendedFault::SimdException) => {
+                        unreachable!("fxsave et fxrstor ne calculent pas")
                     }
                 }
             }
