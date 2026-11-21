@@ -430,12 +430,13 @@ pub const PATIENCE: [&str; 2] = [
 
 /// **La ligne de commande d'une image démarrée par sa recette** — celle de
 /// l'application, pour que les deux machines démarrent la même chose :
-/// `IsoBoot.commandLine(from:)` (la recette sans `quiet`, la patience de
-/// systemd, puis [`LIGNE_PAR_DEFAUT`] en dernier, parce que Linux retient le
-/// dernier `console=`), puis `X86Machine.commandLine(_:withScreen:)` :
-/// `console=tty0` devant quand un écran est branché, pour que la console du
-/// noyau y paraisse aussi.
-pub fn ligne_d_une_image(recette: &str, ecran: bool) -> String {
+/// `IsoBoot.commandLine(from:)`. Les mots de la recette, sans les vides
+/// (`omittingEmptySubsequences`, pour qu'une recette à espaces doublés donne
+/// la même ligne) et sans `quiet` ; la patience de systemd ; puis
+/// [`LIGNE_PAR_DEFAUT`] en dernier, parce que Linux retient le dernier
+/// `console=`. `console=tty0` vient après, de [`ligne_sous_ecran`], comme
+/// devant toute autre ligne.
+pub fn ligne_d_une_image(recette: &str) -> String {
     let mots: Vec<&str> = recette
         .split(' ')
         .filter(|mot| !mot.is_empty() && *mot != "quiet")
@@ -451,11 +452,19 @@ pub fn ligne_d_une_image(recette: &str, ecran: bool) -> String {
         }
     }
     ligne.push(LIGNE_PAR_DEFAUT);
-    let ligne = ligne.join(" ");
+    ligne.join(" ")
+}
+
+/// **`console=tty0` devant la ligne quand un écran est branché**, pour que la
+/// console du noyau y paraisse aussi : `X86Machine.commandLine(_:withScreen:)`,
+/// que `X86Machine.load` applique à **toute** ligne, celle par défaut comprise
+/// — et que [`Machine::charger`](super::Machine::charger) applique de même.
+/// Une ligne qui a déjà `console=tty0` passe telle quelle.
+pub fn ligne_sous_ecran(ligne: &str, ecran: bool) -> String {
     if ecran && !ligne.split(' ').any(|mot| mot == "console=tty0") {
         format!("console=tty0 {ligne}")
     } else {
-        ligne
+        ligne.to_string()
     }
 }
 
@@ -477,32 +486,48 @@ mod tests {
     use super::*;
 
     /// **La ligne de Void Xfce, comme l'application la fait** : `quiet`
-    /// parti, la patience ajoutée, la console série en dernier, `console=tty0`
-    /// devant sous un écran — et une image qui fixe déjà un délai le garde.
+    /// parti, la patience ajoutée, la console série en dernier — et une image
+    /// qui fixe déjà un délai le garde.
     #[test]
     fn the_line_of_an_image_is_the_apps() {
         let recette = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro quiet rd.luks=0";
-        assert_eq!(
-            ligne_d_une_image(recette, false),
-            "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro rd.luks=0 \
+        let attendue = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro rd.luks=0 \
              systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 \
-             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
-        );
-        assert_eq!(
-            ligne_d_une_image(recette, true),
-            format!("console=tty0 {}", ligne_d_une_image(recette, false))
-        );
+             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep";
+        assert_eq!(ligne_d_une_image(recette), attendue);
+        // Des espaces doublés, en tête et en queue : les mots vides partent,
+        // comme sous `omittingEmptySubsequences`, et la ligne est la même.
+        let espacee = "  root=live:CDLABEL=VOID_LIVE  init=/sbin/init ro   quiet rd.luks=0 ";
+        assert_eq!(ligne_d_une_image(espacee), attendue);
         let deja = "ro systemd.default_timeout_start_sec=90 console=tty0";
         assert_eq!(
-            ligne_d_une_image(deja, true),
+            ligne_d_une_image(deja),
             "ro systemd.default_timeout_start_sec=90 console=tty0 \
              systemd.default_device_timeout_sec=600 \
              console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
         );
         // Un mot qui commence comme la clé sans en être une ne compte pas.
-        assert!(
-            ligne_d_une_image("systemd.default_timeout_start_secx=1", false)
-                .contains("systemd.default_timeout_start_sec=600")
+        assert!(ligne_d_une_image("systemd.default_timeout_start_secx=1")
+            .contains("systemd.default_timeout_start_sec=600"));
+    }
+
+    /// **`console=tty0` devant, sous un écran seulement**, et une fois : une
+    /// ligne qui l'a déjà, même ailleurs que devant, passe telle quelle ; un
+    /// mot qui ne fait que le contenir ne compte pas.
+    #[test]
+    fn a_screen_puts_tty0_in_front_of_any_line() {
+        assert_eq!(ligne_sous_ecran("console=ttyS0", false), "console=ttyS0");
+        assert_eq!(
+            ligne_sous_ecran("console=ttyS0", true),
+            "console=tty0 console=ttyS0"
+        );
+        assert_eq!(
+            ligne_sous_ecran("ro console=tty0 console=ttyS0", true),
+            "ro console=tty0 console=ttyS0"
+        );
+        assert_eq!(
+            ligne_sous_ecran("xconsole=tty0", true),
+            "console=tty0 xconsole=tty0"
         );
     }
 

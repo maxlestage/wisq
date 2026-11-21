@@ -2,9 +2,14 @@
 //! (`pc::carte`) : un `out` que les puces de la machine ne prennent pas va à
 //! la carte, une notification de disque est servie avec la RAM de la machine
 //! avant l'instruction suivante, la ligne du disque est levée, et
-//! l'impulsion de remise à zéro de l'i8042 arrête la course.
+//! l'impulsion de remise à zéro de l'i8042 arrête la course, et une frappe de
+//! l'hôte arrive au clavier PS/2 au rythme du temps de la machine. Chaque
+//! test passe par `pc::carte::brancher` (la carte partagée, celle que
+//! `wisq-pc` branche) ; la remise à zéro et la frappe sont aussi jouées sur la
+//! carte nue.
 
 use wisq_carte::pc::{ArriereMemoire, CartePc, Disque};
+use wisq_vm::pc::carte::brancher;
 use wisq_vm::pc::Machine;
 use wisq_vm::x86::Width;
 
@@ -18,9 +23,10 @@ const ENTETE: u64 = DESCRIPTEURS + 0x3000;
 const STATUT: u64 = ENTETE + 0x10;
 const TAMPON: u64 = DESCRIPTEURS + 0x4000;
 
-/// Une machine sans pagination, le code à 0x1000, la carte branchée avec un
-/// disque de huit secteurs dont l'octet `i` vaut `i * 7`.
-fn avec_carte(code: &[u8]) -> Machine {
+/// Une machine sans pagination, le code à 0x1000, et une carte avec un
+/// disque de huit secteurs dont l'octet `i` vaut `i * 7`, pas encore
+/// branchée.
+fn machine_et_carte(code: &[u8]) -> (Machine, CartePc) {
     let mut machine = Machine::nouvelle(0);
     machine.cpu.control[0] = 1;
     machine.cpu.rip = 0x1000;
@@ -28,6 +34,20 @@ fn avec_carte(code: &[u8]) -> Machine {
     let mut carte = CartePc::nouvelle();
     let image: Vec<u8> = (0..8 * 512).map(|i| (i * 7) as u8).collect();
     carte.brancher(Disque::Premier, ArriereMemoire(image));
+    (machine, carte)
+}
+
+/// La carte branchée comme `wisq-pc` la branche : partagée entre les ports
+/// et la mémoire (`pc::carte::brancher`).
+fn avec_carte(code: &[u8]) -> Machine {
+    let (mut machine, carte) = machine_et_carte(code);
+    brancher(&mut machine, carte);
+    machine
+}
+
+/// La carte nue derrière les ports, sans partage.
+fn avec_carte_nue(code: &[u8]) -> Machine {
+    let (mut machine, carte) = machine_et_carte(code);
     machine.peripheriques = Some(Box::new(carte));
     machine
 }
@@ -185,20 +205,58 @@ fn a_transfer_ending_at_the_last_byte_of_ram_is_served() {
 }
 
 /// **L'impulsion de remise à zéro** (`0xFE` sur le port 0x64 de l'i8042)
-/// arrête la course au service suivant, en le disant.
+/// arrête la course sur l'`out` qui l'a tirée, en le disant — par la carte
+/// partagée (le `reboot` d'un invité sous `wisq-pc`) comme par la carte nue.
 #[test]
 fn the_reset_pulse_stops_the_run() {
     // mov $0xfe,%al ; out %al,$0x64 ; jmp . (une boucle).
     let code = [0xB0, 0xFE, 0xE6, 0x64, 0xEB, 0xFE];
-    let mut machine = avec_carte(&code);
-    let issue = machine.tourner(10_000);
-    assert!(
-        issue
-            .as_ref()
-            .is_err_and(|pourquoi| pourquoi.contains("8042")),
-        "{issue:?}"
-    );
-    // Sans l'impulsion, la même boucle tourne jusqu'au bout du budget.
-    let mut boucle = avec_carte(&[0xEB, 0xFE]);
-    assert_eq!(boucle.tourner(10_000), Ok(10_000));
+    for (comment, construire) in [
+        ("partagée", avec_carte as fn(&[u8]) -> Machine),
+        ("nue", avec_carte_nue),
+    ] {
+        let mut machine = construire(&code);
+        let issue = machine.tourner(10_000);
+        assert!(
+            issue
+                .as_ref()
+                .is_err_and(|pourquoi| pourquoi.contains("8042")),
+            "{comment} : {issue:?}"
+        );
+        assert_eq!(machine.cpu.rip, 0x1002, "{comment} : RIP sur l'out");
+        // Sans l'impulsion, la même boucle tourne jusqu'au bout du budget.
+        let mut boucle = construire(&[0xEB, 0xFE]);
+        assert_eq!(boucle.tourner(10_000), Ok(10_000), "{comment}");
+    }
+}
+
+/// **Une frappe de l'hôte arrive au clavier PS/2 au rythme de la machine** :
+/// posée dans la file de la carte (`taper_texte`, ce que fait `--keys`), elle
+/// n'entre dans le tampon de sortie de l'i8042 que lorsque la machine donne
+/// son temps à la carte (`Peripheriques::battre`, au service du matériel).
+/// L'invité attend le bit « sortie pleine » du port 0x64, puis lit le code
+/// du jeu 1 de « a » (0x1E) au port 0x60 — par la carte partagée comme par
+/// la carte nue.
+#[test]
+fn a_host_keystroke_reaches_the_ps2_keyboard_in_time() {
+    // 1000: in $0x64,%al ; test $1,%al ; jz 1000 ; in $0x60,%al ; hlt.
+    let code = [0xE4, 0x64, 0xA8, 0x01, 0x74, 0xFA, 0xE4, 0x60, 0xF4];
+    // Branchée, la carte se tient par ce qu'en rend `brancher`.
+    let (mut machine, carte) = machine_et_carte(&code);
+    let partagee = brancher(&mut machine, carte);
+    assert_eq!(partagee.tenir().taper_texte("a"), 2, "enfoncée, relâchée");
+    machine.tourner(10_000).expect("sans faute");
+    assert!(machine.arretee, "partagée : la frappe est arrivée");
+    assert_eq!(machine.cpu.regs[0] & 0xFF, 0x1E, "partagée : « a »");
+    // Nue, elle se tient avant d'être donnée à la machine.
+    let (mut machine, mut carte) = machine_et_carte(&code);
+    assert_eq!(carte.taper_texte("a"), 2);
+    machine.peripheriques = Some(Box::new(carte));
+    machine.tourner(10_000).expect("sans faute");
+    assert!(machine.arretee, "nue : la frappe est arrivée");
+    assert_eq!(machine.cpu.regs[0] & 0xFF, 0x1E, "nue : « a »");
+    // Sans frappe, l'invité attend jusqu'au bout du budget.
+    let mut sans = avec_carte(&code);
+    assert_eq!(sans.tourner(10_000), Ok(10_000));
+    assert!(!sans.arretee);
 }
