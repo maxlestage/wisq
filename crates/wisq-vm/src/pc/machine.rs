@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use crate::x86::rapide::Suite;
 use crate::x86::{
-    decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Op, Segment,
-    VectorFault, Width, ARITHMETIC, CF, IF,
+    decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Extra, Mmx, Op,
+    Segment, VectorFault, Width, ARITHMETIC, CF, IF,
 };
 use crate::x86_paging::{Access, Unmapped};
 
@@ -69,6 +69,10 @@ pub trait Peripheriques {
     }
     /// Le temps passe : `tics` battements du 8253 depuis le démarrage.
     fn battre(&mut self, _tics: u64) {}
+    /// **Le tour du matériel**, toutes les deux cent cinquante-six
+    /// instructions au plus, avec la RAM : ce qu'un périphérique fait sans
+    /// `out` (la tablette relit ses files et y rend ce que le doigt a fait).
+    fn servir_tour(&mut self, _ram: &mut [u8]) {}
     /// L'invité a demandé la remise à zéro de la machine (l'impulsion de
     /// l'i8042) : la course s'arrête sur l'`out` qui l'a tirée.
     fn remise_demandee(&self) -> bool {
@@ -243,6 +247,57 @@ fn lire(octets: &[u8]) -> Option<Lue> {
         .map(Lue::Commune)
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
         .or_else(|| sans_taille_d_adresse(octets))
+        .or_else(|| non_temporel(octets))
+}
+
+/// **Les rangements « non temporels » de SSE et SSE2** : `movntps` et
+/// `movntpd` (`0f 2b`), `movntdq` (`66 0f e7`), `movnti` (`0f c3`). Ils
+/// disent au processeur de ne pas garder la ligne dans ses caches ; ce cœur
+/// n'en a pas, et ils rangent exactement ce que rangent `movaps` (`0f 29`),
+/// `movdqa` (`66 0f 7f`) et `mov` (`89`). Le noyau de Void s'en sert pour ses
+/// bancs du RAID (`66 0f e7 14 33`, dans un module chargé au démarrage), et
+/// s'arrêtait là. En mémoire seulement : la forme registre est `#UD` sur le
+/// silicium. `decode`, que l'émetteur partage, n'est pas touché : l'octet
+/// d'opcode est remplacé dans une copie, lue par lui.
+fn non_temporel(octets: &[u8]) -> Option<Lue> {
+    let mut ici = 0;
+    let (mut operande, mut repete) = (false, false);
+    while let Some(&octet) = octets.get(ici) {
+        match octet {
+            0x66 => operande = true,
+            0xF2 | 0xF3 => repete = true,
+            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x40..=0x4F => {}
+            _ => break,
+        }
+        ici += 1;
+    }
+    if repete || octets.get(ici) != Some(&0x0F) {
+        return None;
+    }
+    let mut copie = [0u8; 15];
+    let longueur = octets.len().min(15);
+    copie[..longueur].copy_from_slice(&octets[..longueur]);
+    let (copie, longueur, en_plus) = match *octets.get(ici + 1)? {
+        0x2B => {
+            copie[ici + 1] = 0x29;
+            (copie, longueur, 0)
+        }
+        0xE7 if operande => {
+            copie[ici + 1] = 0x7F;
+            (copie, longueur, 0)
+        }
+        // `0f c3` devient `89` : un octet de moins, rendu à la longueur.
+        0xC3 if !operande => {
+            copie.copy_within(ici + 1..longueur, ici);
+            copie[ici] = 0x89;
+            (copie, longueur - 1, 1)
+        }
+        _ => return None,
+    };
+    let mut instruction = decode(&copie[..longueur])?;
+    instruction.memory?;
+    instruction.length += en_plus;
+    Some(Lue::Commune(instruction))
 }
 
 /// **Le préfixe `67` devant une instruction qui n'adresse rien.** En mode
@@ -250,44 +305,71 @@ fn lire(octets: &[u8]) -> Option<Lue> {
 /// ne change rien, et le silicium l'ignore. OpenSSL en sème pour aligner son
 /// code (`67 49 f7 e6`, dans `libcrypto.so.3` d'Alpine 3.24, que `apk` charge
 /// en installant les paquets de l'ISO). `decode`, que l'émetteur partage, ne
-/// le lit que devant `call` et `jmp` ; ici, l'instruction sans lui est lue, et
-/// acceptée seulement si elle n'a ni opérande mémoire ni adresse implicite
-/// (les chaînes, que `67` ferait compter sur RSI, RDI et ECX ; `loop` et
-/// `jrcxz`, sur ECX).
+/// le lit que devant `call` et `jmp` ; ici, l'instruction sans lui est lue
+/// (sans tous ses `67`, par l'un ou l'autre décodeur), et acceptée seulement
+/// si elle n'a ni opérande mémoire ni adresse implicite (les chaînes, que
+/// `67` ferait compter sur RSI, RDI et ECX ; `loop` et `jrcxz`, sur ECX ;
+/// `maskmovq`, sur EDI).
+///
+/// **Et `lea` vers un registre de trente-deux ou seize bits** : l'adresse
+/// calculée sur trente-deux bits puis coupée à la taille du registre est
+/// exactement celle calculée sur soixante-quatre puis coupée. La glibc de Void
+/// en sème (`67 8d 51 ff`, `lea -1(%ecx),%edx`, dans `ld-linux-x86-64.so.2`),
+/// et tout programme mourait d'un « Illegal instruction ». Vers un registre de
+/// soixante-quatre bits, l'adresse serait coupée à trente-deux : il reste
+/// refusé.
 fn sans_taille_d_adresse(octets: &[u8]) -> Option<Lue> {
+    // Les préfixes, sans leurs `67` : il peut y en avoir plusieurs
+    // (`67 67 66 0f 6f d1`, un `movdqa` aligné ainsi dans un programme de
+    // Void), et le silicium les ignore tous.
+    let mut reste = [0u8; 15];
+    let mut ecrits = 0;
+    let mut otes = 0;
     let mut ici = 0;
     while let Some(&octet) = octets.get(ici) {
         match octet {
-            0x67 => break,
-            0x66 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0xF0 => ici += 1,
-            _ => return None,
+            0x67 => otes += 1,
+            0x66 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0xF0 => {
+                reste[ecrits] = octet;
+                ecrits += 1;
+            }
+            _ => break,
         }
+        ici += 1;
     }
-    if octets.get(ici) != Some(&0x67) {
+    if otes == 0 {
         return None;
     }
-    let mut reste = [0u8; 15];
     let longueur = octets.len().min(15);
-    reste[..ici].copy_from_slice(&octets[..ici]);
-    reste[ici..longueur - 1].copy_from_slice(&octets[ici + 1..longueur]);
-    let mut instruction = decode(&reste[..longueur - 1])?;
-    let adresse_implicite = matches!(
-        instruction.op,
-        Op::StringMove { .. }
-            | Op::StringStore { .. }
-            | Op::StringLoad { .. }
-            | Op::StringCompare { .. }
-            | Op::StringScan { .. }
-            | Op::LoopWhile { .. }
-            | Op::JumpIfCountZero
-    );
-    // `reste` n'a que quatorze octets : l'instruction lue sans le `67` en a
-    // quatorze au plus, et quinze avec lui.
-    if instruction.memory.is_some() || adresse_implicite {
+    let suite = longueur.saturating_sub(ici);
+    reste[ecrits..ecrits + suite].copy_from_slice(&octets[ici..ici + suite]);
+    let sans = &reste[..ecrits + suite];
+    if let Some(mut instruction) = decode(sans) {
+        let adresse_implicite = matches!(
+            instruction.op,
+            Op::StringMove { .. }
+                | Op::StringStore { .. }
+                | Op::StringLoad { .. }
+                | Op::StringCompare { .. }
+                | Op::StringScan { .. }
+                | Op::LoopWhile { .. }
+                | Op::JumpIfCountZero
+        );
+        let lea_etroit = instruction.op == Op::Lea && instruction.width != Width::Qword;
+        if (instruction.memory.is_some() && !lea_etroit) || adresse_implicite {
+            return None;
+        }
+        instruction.length += otes;
+        return Some(Lue::Commune(instruction));
+    }
+    // Le second décodeur : le MMX et le flottant de SSE entre registres.
+    // `maskmovq` adresse `[RDI]` sans opérande pour le dire : refusé.
+    let mut instruction = decode_extended(sans)?;
+    if instruction.memory.is_some() || matches!(instruction.op, Extra::Mmx(Mmx::MaskedStore)) {
         return None;
     }
-    instruction.length += 1;
-    Some(Lue::Commune(instruction))
+    instruction.length += otes;
+    Some(Lue::Etendue(instruction))
 }
 
 /// **Le décodage a-t-il échoué faute d'octets ?** La question de
@@ -542,6 +624,7 @@ impl Machine {
         let lignes = match self.peripheriques.as_mut() {
             Some(autres) => {
                 autres.battre(tics);
+                autres.servir_tour(&mut self.cpu.memory.bytes);
                 autres.lignes()
             }
             None => 0,

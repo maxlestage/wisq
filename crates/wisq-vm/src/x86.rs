@@ -399,6 +399,9 @@ pub struct Cpu {
     /// n'est pas de la RAM même si `memory` couvre ces adresses. Longueur
     /// nulle par défaut : pas de trou.
     pub memory_hole: (u64, u64),
+    /// **Ce qui répond hors de la RAM** : la mémoire vidéo, les registres
+    /// de l'écran, la tablette (voir `x86_paging::Devices`). Rien par défaut.
+    pub devices: crate::x86_paging::Devices,
 }
 
 /// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre

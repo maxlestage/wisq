@@ -28,17 +28,40 @@
 //! lieu de celle de l'hôte : deux courses du même noyau retirent alors les
 //! mêmes instructions. `--sans-blocs` éteint le chemin rapide (`pc::blocs`) :
 //! chaque instruction passe par le pas à pas, le terme de comparaison.
+//!
+//! **L'écran** : `--display 1280x800` branche la carte de Bochs (00:02.0,
+//! seize mébioctets de mémoire vidéo à `0xE000_0000`) et la tablette
+//! (00:07.0, ligne 10), annonce le cadre au noyau par la page zéro, et met
+//! `console=tty0` devant la ligne. `--screen-dump image.ppm` y range l'image
+//! à la fin ; `--screen-every N` aussi toutes les N secondes de l'hôte quand
+//! elle a changé, numérotée à côté (`image-0001.ppm`…).
+//!
+//! **Une image d'installation** : `--iso fichier.iso` lit sa recette (le
+//! `grub.cfg` ou l'`isolinux.cfg` qu'elle porte), en sort le noyau et les
+//! initramfs, fait la ligne de commande de l'application
+//! (`chargeur::ligne_d_une_image`) et branche l'image en disque — ce que fait
+//! `IsoBoot` côté Swift. `--disk` est `--disque`.
+//!
+//! **Le clavier** : `--keys '30:root\n;;45:uname -a\n'` tape chaque texte au
+//! clavier PS/2 de la carte (l'i8042, ligne 1) quand le temps de l'invité
+//! passe ses secondes ; `\n` y est la touche Entrée. `--status N` dit sur la
+//! sortie d'erreur, toutes les N secondes de l'hôte, où en est la course :
+//! pour une course longue dont le noyau ne dit rien sur la console.
 
 use std::io::Write;
 use std::time::Instant;
 
 use std::path::Path;
 
+use wisq_carte::ecran::BASE_DE_LA_MEMOIRE_VIDEO;
 use wisq_carte::fichier::DisqueFichier;
-use wisq_carte::pc::{CartePc, Disque};
+use wisq_carte::pc::{horloge_du_systeme, CartePc, Disque};
+use wisq_vm::iso9660::{Iso, OnDisk, Recipe};
+use wisq_vm::pc::carte::{self as raccord, CartePartagee};
+use wisq_vm::pc::chargeur::{initramfs_bout_a_bout, ligne_d_une_image};
 use wisq_vm::pc::herites::HERTZ_DU_8253;
 use wisq_vm::pc::memoire::RAM_MINIMALE;
-use wisq_vm::pc::Machine;
+use wisq_vm::pc::{Ecran, Machine};
 
 /// Ce que `--ram` accepte au plus, en mébioctets : soixante-quatre gibioctets.
 /// Au-delà, c'est une faute de frappe plus sûrement qu'une machine. **Ce
@@ -105,6 +128,103 @@ struct Options {
     disque: Option<String>,
     couche: Option<String>,
     sans_carte: bool,
+    ecran: Option<(u32, u32)>,
+    image: Option<String>,
+    image_toutes: Option<f64>,
+    iso: Option<String>,
+    touches: Vec<(f64, String)>,
+    etat_toutes: Option<f64>,
+}
+
+/// **`--keys`** : des `secondes:texte` séparés par `;;`, rangés par heure ;
+/// `\n` dans le texte est la touche Entrée.
+fn frappes(texte: &str) -> Option<Vec<(f64, String)>> {
+    let mut frappes = texte
+        .split(";;")
+        .filter(|morceau| !morceau.is_empty())
+        .map(|morceau| {
+            let (quand, quoi) = morceau.split_once(':')?;
+            let quand: f64 = quand.parse().ok().filter(|quand: &f64| *quand >= 0.0)?;
+            Some((quand, quoi.replace("\\n", "\n")))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    frappes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Some(frappes)
+}
+
+/// **`--display LxH`** : deux nombres non nuls, séparés par un `x`.
+fn taille_d_ecran(texte: &str) -> Option<(u32, u32)> {
+    let (largeur, hauteur) = texte.split_once('x')?;
+    let largeur: u32 = largeur.parse().ok()?;
+    let hauteur: u32 = hauteur.parse().ok()?;
+    (largeur > 0 && hauteur > 0).then_some((largeur, hauteur))
+}
+
+/// **Une image au format PPM** (P6) : l'en-tête, puis rouge, vert, bleu par
+/// pixel, pris de l'XRGB8888 de la carte (le bleu dans l'octet bas).
+fn ppm(largeur: u32, hauteur: u32, xrgb: &[u8]) -> Vec<u8> {
+    let mut sortie = format!("P6\n{largeur} {hauteur}\n255\n").into_bytes();
+    sortie.reserve(xrgb.len() / 4 * 3);
+    for pixel in xrgb.chunks_exact(4) {
+        sortie.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+    }
+    sortie
+}
+
+/// L'image de l'écran de la carte, en PPM, et sa révision ; rien sans écran.
+fn capturer(carte: &CartePartagee) -> Option<(u64, Vec<u8>)> {
+    let carte = carte.tenir();
+    let cadre = &carte.ecran()?.cadre;
+    let (mode, octets) = cadre.image();
+    Some((cadre.revision(), ppm(mode.largeur, mode.hauteur, &octets)))
+}
+
+/// Le nom de la `rang`-ième image : `image.ppm` donne `image-0001.ppm`.
+fn nom_numerote(chemin: &str, rang: u32) -> String {
+    match chemin.rsplit_once('.') {
+        Some((tete, extension)) if !tete.is_empty() && !extension.contains('/') => {
+            format!("{tete}-{rang:04}.{extension}")
+        }
+        _ => format!("{chemin}-{rang:04}"),
+    }
+}
+
+/// Ce qu'une image donne : le noyau, les initramfs, la ligne, la recette.
+struct DeLImage {
+    noyau: Vec<u8>,
+    initramfs: Option<Vec<u8>>,
+    ligne: String,
+    recette: String,
+}
+
+/// **Ce qu'une image d'installation donne pour démarrer** : le noyau, les
+/// initramfs mis bout à bout, la ligne de sa recette et le fichier d'où elle
+/// vient. Chaque membre est borné à un gibioctet.
+fn sortir_de_l_image(chemin: &str) -> Result<DeLImage, String> {
+    const PLAFOND: usize = 1 << 30;
+    let source = OnDisk::open(Path::new(chemin)).ok_or("illisible")?;
+    let iso = Iso::open(source).ok_or("pas une image ISO 9660")?;
+    let recette = Recipe::of(&iso).ok_or("aucune recette de démarrage")?;
+    let lire = |dedans: &str| {
+        iso.find(dedans)
+            .filter(|entree| !entree.directory)
+            .and_then(|entree| iso.read(&entree, PLAFOND))
+            .ok_or_else(|| format!("{dedans} : introuvable dans l'image"))
+    };
+    let noyau = lire(&recette.kernel)?;
+    let initramfs = match &recette.initrd {
+        Some(liste) => {
+            let parties = liste.split(' ').map(lire).collect::<Result<Vec<_>, _>>()?;
+            Some(initramfs_bout_a_bout(&parties))
+        }
+        None => None,
+    };
+    Ok(DeLImage {
+        noyau,
+        initramfs,
+        ligne: recette.command_line,
+        recette: recette.from,
+    })
 }
 
 fn usage() -> ! {
@@ -112,7 +232,9 @@ fn usage() -> ! {
         "usage : wisq-pc --kernel <bzImage> [--initrd <fichier>] [--cmdline <texte>] \
          [--ram <Mio>] [--budget <instructions>] [--input 'cmd;;cmd'] [--until <texte>] \
          [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
-         [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte]"
+         [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte] \
+         [--iso <image>] [--display <L>x<H>] [--screen-dump <image.ppm>] [--screen-every <secondes>] \
+         [--keys 'secondes:texte;;…'] [--status <secondes>]"
     );
     std::process::exit(2);
 }
@@ -135,6 +257,12 @@ fn options() -> Options {
         disque: None,
         couche: None,
         sans_carte: false,
+        ecran: None,
+        image: None,
+        image_toutes: None,
+        iso: None,
+        touches: Vec::new(),
+        etat_toutes: None,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(nom) = arguments.next() {
@@ -159,28 +287,87 @@ fn options() -> Options {
             "--quiet" => options.muet = true,
             "--horloge" => options.horloge = Some(valeur().parse().unwrap_or_else(|_| usage())),
             "--sans-blocs" => options.sans_blocs = true,
-            "--disque" => options.disque = Some(valeur()),
+            "--disque" | "--disk" => options.disque = Some(valeur()),
+            "--iso" => options.iso = Some(valeur()),
+            "--keys" => options.touches = frappes(&valeur()).unwrap_or_else(|| usage()),
+            "--status" => {
+                options.etat_toutes = Some(
+                    valeur()
+                        .parse()
+                        .ok()
+                        .filter(|secondes: &f64| *secondes > 0.0)
+                        .unwrap_or_else(|| usage()),
+                );
+            }
+            "--display" => {
+                options.ecran = Some(taille_d_ecran(&valeur()).unwrap_or_else(|| usage()));
+            }
+            "--screen-dump" => options.image = Some(valeur()),
+            "--screen-every" => {
+                options.image_toutes = Some(
+                    valeur()
+                        .parse()
+                        .ok()
+                        .filter(|secondes: &f64| *secondes > 0.0)
+                        .unwrap_or_else(|| usage()),
+                );
+            }
             "--couche" => options.couche = Some(valeur()),
             "--sans-carte" => options.sans_carte = true,
             _ => usage(),
         }
     }
-    if options.noyau.is_empty() {
+    if options.noyau.is_empty() && options.iso.is_none() {
+        usage();
+    }
+    if options.sans_carte
+        && (options.ecran.is_some() || options.iso.is_some() || !options.touches.is_empty())
+    {
         usage();
     }
     options
 }
 
 fn main() {
-    let options = options();
+    let mut options = options();
     let lire = |chemin: &str| {
         std::fs::read(chemin).unwrap_or_else(|erreur| {
             eprintln!("wisq-pc : {chemin} : {erreur}");
             std::process::exit(1);
         })
     };
-    let noyau = lire(&options.noyau);
-    let initramfs = options.initramfs.as_deref().map(lire);
+    // **Une image d'installation** : son noyau et ses initramfs, sauf ceux
+    // qu'on nomme, sa ligne sauf celle qu'on donne, et l'image en disque.
+    let mut ligne = options.ligne.clone();
+    let (noyau, initramfs) = match options.iso.clone() {
+        Some(image) => {
+            let DeLImage {
+                noyau,
+                initramfs,
+                ligne: recette,
+                recette: depuis,
+            } = sortir_de_l_image(&image).unwrap_or_else(|refus| {
+                eprintln!("wisq-pc : --iso {image} : {refus}");
+                std::process::exit(1);
+            });
+            eprintln!("recette : {depuis} : {recette}");
+            if ligne.is_none() {
+                ligne = Some(ligne_d_une_image(&recette, options.ecran.is_some()));
+            }
+            options.disque.get_or_insert(image);
+            let noyau = if options.noyau.is_empty() {
+                noyau
+            } else {
+                lire(&options.noyau)
+            };
+            let initramfs = options.initramfs.as_deref().map(lire).or(initramfs);
+            (noyau, initramfs)
+        }
+        None => (lire(&options.noyau), options.initramfs.as_deref().map(lire)),
+    };
+    if let Some(ligne) = &ligne {
+        eprintln!("ligne : {ligne}");
+    }
 
     let Some(ram) = ram_en_octets(options.ram) else {
         eprintln!(
@@ -211,7 +398,12 @@ fn main() {
     machine.herites.cmos.regler(heure(options.horloge));
     machine.blocs_actifs = !options.sans_blocs;
     let mut carte = CartePc::nouvelle();
-    carte.regler_heure((heure(options.horloge) as i64).saturating_mul(1000));
+    // L'horloge CMOS de la carte, qui répond aux ports 0x70 et 0x71 : l'heure
+    // figée par `--horloge`, celle de l'hôte sinon.
+    match options.horloge {
+        Some(secondes) => carte.regler_heure((secondes as i64).saturating_mul(1000)),
+        None => carte.horloge(horloge_du_systeme),
+    }
     if let Some(disque) = options.disque.as_deref() {
         let couche = options
             .couche
@@ -225,12 +417,21 @@ fn main() {
             }
         }
     }
-    if !options.sans_carte {
-        machine.peripheriques = Some(Box::new(carte));
-    }
-    if let Err(refus) =
-        machine.charger(&noyau, options.ligne.as_deref(), initramfs.as_deref(), None)
-    {
+    // **L'écran et la tablette**, derrière la mémoire : la carte est tenue
+    // des deux côtés (`pc::carte::brancher`), et le noyau reçoit le cadre.
+    let ecran = options.ecran.map(|(largeur, hauteur)| {
+        if !carte.brancher_ecran(largeur, hauteur) {
+            eprintln!("wisq-pc : --display {largeur}x{hauteur} : plus que seize mébioctets");
+            std::process::exit(2);
+        }
+        Ecran {
+            base: BASE_DE_LA_MEMOIRE_VIDEO,
+            largeur: largeur as usize,
+            hauteur: hauteur as usize,
+        }
+    });
+    let carte = (!options.sans_carte).then(|| raccord::brancher(&mut machine, carte));
+    if let Err(refus) = machine.charger(&noyau, ligne.as_deref(), initramfs.as_deref(), ecran) {
         eprintln!("wisq-pc : {refus}");
         std::process::exit(1);
     }
@@ -254,6 +455,21 @@ fn main() {
     let sortie = std::io::stdout();
     let debut = Instant::now();
     let fin: String;
+    // Les images prises en route : la dernière révision rangée, son rang, et
+    // l'instant de la prochaine.
+    let mut revision_rangee = 0u64;
+    let mut images = 0u32;
+    let mut prochaine_image = options.image_toutes;
+    let mut revision_au_dernier_signe = 0u64;
+    let mut touches = options.touches.clone().into_iter().peekable();
+    let mut prochain_etat = options.etat_toutes;
+    // Où était RIP à chaque tranche, depuis le dernier état : ce que dit
+    // `--status`, les plus fréquents d'abord, pour savoir où la course passe
+    // son temps quand la console se tait.
+    let mut releves: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    // Les refus déjà dits en route : chacun une fois, dès qu'il arrive.
+    let mut refus_dits = std::collections::BTreeSet::new();
+    let mut refus_vus = 0usize;
     loop {
         let rendu = machine.tourner(200_000);
         let octets = machine.sortie();
@@ -318,6 +534,84 @@ fn main() {
                 None => {}
             }
         }
+        if options.etat_toutes.is_some() {
+            *releves.entry(machine.cpu.rip).or_default() += 1;
+        }
+        if let Some(quand) = prochain_etat {
+            let ecoule = debut.elapsed().as_secs_f64();
+            if ecoule >= quand {
+                prochain_etat = options.etat_toutes.map(|toutes| quand + toutes);
+                let revision = carte
+                    .as_ref()
+                    .and_then(|carte| carte.tenir().ecran().map(|ecran| ecran.cadre.revision()));
+                eprintln!(
+                    "état : {ecoule:.0} s ; {} instructions ({:.1} MIPS) ; invité {:.1} s ; \
+                     rip {:#x} anneau {} IF {} ; écran {revision:?}",
+                    machine.retirees,
+                    machine.retirees as f64 / ecoule / 1e6,
+                    (machine.retirees + machine.attente) as f64 / hertz as f64,
+                    machine.cpu.rip,
+                    machine.cpu.privilege(),
+                    u8::from(machine.cpu.flags.interrupts_enabled()),
+                );
+                let mut tries: Vec<(u64, u64)> = releves.drain().collect();
+                tries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                for (rip, fois) in tries.into_iter().take(4) {
+                    let octets: Vec<String> = (0..12u64)
+                        .map_while(|rang| {
+                            let octet = machine
+                                .cpu
+                                .fetch_memory(rip.wrapping_add(rang), wisq_vm::x86::Width::Byte)
+                                .ok();
+                            machine.cpu.faulted = false;
+                            machine.cpu.unmapped = None;
+                            octet.map(|octet| format!("{octet:02x}"))
+                        })
+                        .collect();
+                    eprintln!("    rip {rip:#x} ×{fois} : {}", octets.join(" "));
+                }
+            }
+        }
+        for refus in &machine.refus[refus_vus..] {
+            if refus_dits.len() < 64 && refus_dits.insert(refus.clone()) {
+                eprintln!("refus dans un programme (en route) : {refus}");
+            }
+        }
+        refus_vus = machine.refus.len();
+        // Les frappes dont l'heure de l'invité est passée.
+        if let Some(carte) = &carte {
+            let maintenant = (machine.retirees + machine.attente) as f64 / hertz as f64;
+            while let Some((_, texte)) = touches.next_if(|(quand, _)| *quand <= maintenant) {
+                carte.tenir().taper_texte(&texte);
+                attente_au_dernier_signe = machine.attente;
+            }
+        }
+        // **Une image qui change est un signe de vie**, comme le port série :
+        // un bureau ne dit plus rien sur la console.
+        if let Some(carte) = &carte {
+            let revision = carte
+                .tenir()
+                .ecran()
+                .map_or(0, |ecran| ecran.cadre.revision());
+            if revision != revision_au_dernier_signe {
+                revision_au_dernier_signe = revision;
+                attente_au_dernier_signe = machine.attente;
+            }
+        }
+        if let (Some(chemin), Some(quand), Some(carte)) = (&options.image, prochaine_image, &carte)
+        {
+            if debut.elapsed().as_secs_f64() >= quand {
+                prochaine_image = options.image_toutes.map(|toutes| quand + toutes);
+                if let Some((revision, octets)) = capturer(carte) {
+                    if revision != revision_rangee {
+                        revision_rangee = revision;
+                        images += 1;
+                        let _ = std::fs::write(nom_numerote(chemin, images), &octets);
+                        let _ = std::fs::write(chemin, &octets);
+                    }
+                }
+            }
+        }
         if machine.retirees >= options.budget {
             fin = "budget épuisé".to_string();
             break;
@@ -347,6 +641,17 @@ fn main() {
         eprintln!("ports sans réponse : {}", ports.join(" "));
     }
     eprintln!("fin : {fin}");
+    if let (Some(chemin), Some(carte)) = (&options.image, &carte) {
+        match capturer(carte) {
+            Some((revision, octets)) => match std::fs::write(chemin, &octets) {
+                Ok(()) => {
+                    eprintln!("écran : {chemin} (révision {revision}, {images} images en route)")
+                }
+                Err(erreur) => eprintln!("écran : {chemin} : {erreur}"),
+            },
+            None => eprintln!("écran : aucun (--display manque)"),
+        }
+    }
     eprintln!("ram : {} Mio", machine.ram >> 20);
     eprintln!(
         "instructions retirées : {retirees} ; attente : {} ; temps de l'invité : {:.1} s",
@@ -394,6 +699,42 @@ mod tests {
         assert_eq!(trouver(&texte, "m", 2), Some(3));
         assert_eq!(trouver(&texte, "x", 99), None);
         assert_eq!(deja_examine("ab", "abcdef"), 0);
+    }
+
+    /// **`--display`** : deux nombres non nuls, séparés par un `x`.
+    #[test]
+    fn the_display_size_is_two_numbers() {
+        assert_eq!(taille_d_ecran("1280x800"), Some((1280, 800)));
+        assert_eq!(taille_d_ecran("1280x0"), None);
+        assert_eq!(taille_d_ecran("1280"), None);
+        assert_eq!(taille_d_ecran("ax800"), None);
+    }
+
+    /// **`--keys`** : rangées par heure, `\n` pour Entrée, un deux-points
+    /// après le premier gardé dans le texte ; une heure illisible refuse tout.
+    #[test]
+    fn keys_are_sorted_by_guest_time() {
+        assert_eq!(
+            frappes("45:uname -a\\n;;30:root\\n;;50:a:b"),
+            Some(vec![
+                (30.0, "root\n".to_string()),
+                (45.0, "uname -a\n".to_string()),
+                (50.0, "a:b".to_string()),
+            ])
+        );
+        assert_eq!(frappes("x:root"), None);
+        assert_eq!(frappes("-1:root"), None);
+        assert_eq!(frappes("root"), None);
+    }
+
+    /// **Le PPM** : l'en-tête, puis rouge, vert, bleu — l'XRGB de la carte a
+    /// le bleu dans l'octet bas.
+    #[test]
+    fn a_screen_is_written_as_ppm() {
+        let image = ppm(2, 1, &[0x11, 0x22, 0x33, 0xFF, 1, 2, 3, 0]);
+        assert_eq!(image, b"P6\n2 1\n255\n\x33\x22\x11\x03\x02\x01");
+        assert_eq!(nom_numerote("/a/b.ppm", 7), "/a/b-0007.ppm");
+        assert_eq!(nom_numerote("/a.d/b", 7), "/a.d/b-0007");
     }
 
     /// **Un mébioctet fait 2^20 octets, et le plafond est compris** : 65 536

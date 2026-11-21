@@ -105,6 +105,80 @@ pub fn is_canonical(address: u64) -> bool {
     ((address as i64) << 16) >> 16 == address as i64
 }
 
+/// **La mémoire d'un périphérique** : ce qui répond à une adresse physique
+/// que la RAM ne couvre pas — au-delà de sa fin, ou dans le trou sous quatre
+/// gibioctets. L'écran de Bochs (sa mémoire vidéo et ses registres) et la
+/// tablette y vivent, derrière les BAR que le pont PCI annonce ; c'est le
+/// `readSlowly` et le `writeSlowly` de `X86Memory.swift`.
+///
+/// `largeur` va de 1 à 8 octets. `None` (ou `false`) : personne ne répond, et
+/// l'accès reste refusé comme avant (`Unmapped::Outside`).
+pub trait DeviceMemory: Send {
+    fn read(&mut self, place: u64, width: u8) -> Option<u64>;
+    fn write(&mut self, place: u64, width: u8, value: u64) -> bool;
+    /// Quelqu'un répond-il à ces `width` octets ? Sans rien lire ni écrire :
+    /// ce qu'un accès à cheval demande avant de poser son premier octet.
+    fn claims(&self, place: u64, width: u8) -> bool;
+}
+
+/// **Les périphériques derrière la mémoire**, partagés : la machine PC les
+/// tient aussi par leurs ports. Rien par défaut — l'interpréteur de
+/// référence et le juge de l'émetteur n'en ont pas, et ne voient aucune
+/// différence. Seul le chemin lent les consulte : le tampon de traduction ne
+/// garde jamais une page hors de la RAM, donc une adresse ordinaire ne les
+/// rencontre pas.
+#[derive(Clone, Default)]
+pub struct Devices(pub Option<std::sync::Arc<std::sync::Mutex<dyn DeviceMemory>>>);
+
+impl std::fmt::Debug for Devices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Devices(branchés)"
+        } else {
+            "Devices(aucun)"
+        })
+    }
+}
+
+impl Devices {
+    /// Lire `width` octets d'un périphérique, à cette adresse physique.
+    #[cold]
+    #[inline(never)]
+    pub fn read(&self, place: u64, width: usize) -> Option<u64> {
+        let bus = self.0.as_ref()?;
+        let mut bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.read(place, u8::try_from(width).ok()?)
+    }
+
+    /// Écrire `width` octets dans un périphérique ; `false` sans personne.
+    #[cold]
+    #[inline(never)]
+    pub fn write(&self, place: u64, width: usize, value: u64) -> bool {
+        let Some(bus) = self.0.as_ref() else {
+            return false;
+        };
+        let Ok(width) = u8::try_from(width) else {
+            return false;
+        };
+        let mut bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.write(place, width, value)
+    }
+
+    /// Un périphérique répond-il à ces octets ? Voir `DeviceMemory::claims`.
+    #[cold]
+    #[inline(never)]
+    pub fn claims(&self, place: u64, width: usize) -> bool {
+        let Some(bus) = self.0.as_ref() else {
+            return false;
+        };
+        let Ok(width) = u8::try_from(width) else {
+            return false;
+        };
+        let bus = bus.lock().unwrap_or_else(|poison| poison.into_inner());
+        bus.claims(place, width)
+    }
+}
+
 /// Le bit utilisateur d'une entrée : sans lui à chaque niveau, l'anneau trois
 /// n'a aucun droit sur la page.
 pub const USER: u64 = 1 << 2;
@@ -511,23 +585,47 @@ impl Cpu {
         let outside = || Unmapped::Outside { address: at };
         if !Self::crosses(at, width) {
             let place = self.translate_cached(at, access)?;
-            if self.in_hole(place) {
-                return Err(outside());
+            if !self.in_hole(place) {
+                if let Some(value) = self.memory.read(place, width) {
+                    return Ok(value);
+                }
             }
-            return self.memory.read(place, width).ok_or_else(outside);
+            // Hors de la RAM : un périphérique, ou rien.
+            return self.devices.read(place, width as usize).ok_or_else(outside);
         }
         let head = (0x1000 - (at & 0xFFF)) as usize;
         let low = self.translate_cached(at, access)?;
         let high = self.translate_cached(at.wrapping_add(head as u64), access)?;
-        if self.in_hole(low) || self.in_hole(high) {
-            return Err(outside());
-        }
-        let low = self.memory.read_bytes(low, head).ok_or_else(outside)?;
+        let low = self.read_place(low, head).ok_or_else(outside)?;
         let high = self
-            .memory
-            .read_bytes(high, width as usize - head)
+            .read_place(high, width as usize - head)
             .ok_or_else(outside)?;
         Ok(low | (high << (8 * head)))
+    }
+
+    /// `size` octets à une adresse physique (une moitié d'accès à cheval) :
+    /// de la RAM, ou d'un périphérique quand la RAM ne les couvre pas.
+    fn read_place(&mut self, place: u64, size: usize) -> Option<u64> {
+        if !self.in_hole(place) {
+            if let Some(value) = self.memory.read_bytes(place, size) {
+                return Some(value);
+            }
+        }
+        self.devices.read(place, size)
+    }
+
+    /// Ces `size` octets à une adresse physique acceptent-ils une écriture ?
+    fn holds_place(&self, place: u64, size: usize) -> bool {
+        (!self.in_hole(place) && self.memory.holds(place, size)) || self.devices.claims(place, size)
+    }
+
+    /// `size` octets écrits à une adresse physique, en RAM ou dans un
+    /// périphérique.
+    fn write_place(&mut self, place: u64, size: usize, value: u64) -> Option<()> {
+        if !self.in_hole(place) && self.memory.holds(place, size) {
+            return self.memory.write_bytes(place, size, value);
+        }
+        self.devices.write(place, size, value).then_some(())
     }
 
     /// **Cet octet est-il accessible ?** — sans le lire ni l'écrire. Ce qu'une
@@ -536,7 +634,7 @@ impl Cpu {
     /// seize octets ses deux moitiés. Un refus lève `faulted`, comme un accès.
     pub fn probe_memory(&mut self, at: u64, access: Access) -> Result<(), Unmapped> {
         let outcome = self.translate_cached(at, access).and_then(|place| {
-            if self.in_hole(place) || !self.memory.holds(place, 1) {
+            if !self.holds_place(place, 1) {
                 return Err(Unmapped::Outside { address: at });
             }
             Ok(())
@@ -556,10 +654,15 @@ impl Cpu {
         let outside = || Unmapped::Outside { address: at };
         if !Self::crosses(at, width) {
             let place = self.translate_cached(at, Access::Write)?;
-            if self.in_hole(place) {
-                return Err(outside());
+            if !self.in_hole(place) && self.memory.write(place, width, value).is_some() {
+                return Ok(());
             }
-            return self.memory.write(place, width, value).ok_or_else(outside);
+            // Hors de la RAM : un périphérique, ou rien.
+            return self
+                .devices
+                .write(place, width as usize, value)
+                .then_some(())
+                .ok_or_else(outside);
         }
         // **Tout vérifié avant qu'un seul octet ne soit posé.** Une
         // instruction qui faute ne laisse aucune trace, sans quoi le noyau
@@ -570,18 +673,11 @@ impl Cpu {
         let tail = width as usize - head;
         let low = self.translate_cached(at, Access::Write)?;
         let high = self.translate_cached(at.wrapping_add(head as u64), Access::Write)?;
-        if !self.memory.holds(low, head)
-            || !self.memory.holds(high, tail)
-            || self.in_hole(low)
-            || self.in_hole(high)
-        {
+        if !self.holds_place(low, head) || !self.holds_place(high, tail) {
             return Err(outside());
         }
-        self.memory
-            .write_bytes(low, head, value)
-            .ok_or_else(outside)?;
-        self.memory
-            .write_bytes(high, tail, value >> (8 * head))
+        self.write_place(low, head, value).ok_or_else(outside)?;
+        self.write_place(high, tail, value >> (8 * head))
             .ok_or_else(outside)
     }
 

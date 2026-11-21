@@ -429,7 +429,46 @@ fn an_address_size_prefix_without_address_is_ignored() {
     assert_eq!(machine.cpu.rip, 0x1005, "quatre octets, puis hlt");
     assert_eq!(machine.cpu.regs[0], 0x1_0000_0000);
     assert_eq!(machine.cpu.regs[2], 0x1);
+    // lea -1(%ecx),%edx et lea -1(%ecx),%dx (67-préfixés) : l'adresse coupée
+    // à la taille du registre, comme sur l'hôte — EDX à 0x4, RDX sans ses
+    // bits hauts ; DX à 0x0004, le reste de RDX gardé (sonde `r6/c/lea67`).
+    for (code, attendu) in [
+        (&[0x67, 0x8D, 0x51, 0xFF, 0xF4][..], 0x4),
+        (&[0x66, 0x67, 0x8D, 0x51, 0xFF, 0xF4], 0x5555_5555_5555_0004),
+    ] {
+        let mut machine = nouvelle(code);
+        machine.cpu.regs[1] = 0x1_0000_0005;
+        machine.cpu.regs[2] = 0x5555_5555_5555_5555;
+        machine.tourner(10).expect("sans faute");
+        assert!(machine.arretee);
+        assert_eq!(machine.cpu.regs[2], attendu, "{code:02x?}");
+    }
+    // Deux `67` devant `movdqa %xmm1,%xmm2`, un devant `paddd` et devant
+    // `addps` (le second décodeur) : ignorés, comme sur l'hôte (sonde
+    // `r6/c/nt`).
+    let mut machine = nouvelle(&[
+        0x67, 0x67, 0x66, 0x0F, 0x6F, 0xD1, // movdqa %xmm1,%xmm2
+        0x67, 0x66, 0x0F, 0xFE, 0xD1, // paddd %xmm1,%xmm2
+        0x67, 0x0F, 0x58, 0xD9, // addps %xmm1,%xmm3
+        0xF4,
+    ]);
+    machine.cpu.xmm[1] = [0x0000_0002_0000_0001, 0x3F80_0000_3F80_0000];
+    machine.tourner(10).expect("sans faute");
+    assert!(machine.arretee);
+    assert_eq!(machine.cpu.rip, 0x1010, "quinze octets, puis hlt");
+    assert_eq!(
+        machine.cpu.xmm[2],
+        [0x0000_0004_0000_0002, 0x7F00_0000_7F00_0000]
+    );
+    assert_eq!(
+        machine.cpu.xmm[3],
+        [0x0000_0002_0000_0001, 0x3F80_0000_3F80_0000]
+    );
     for (nom, code) in [
+        ("lea -1(%ecx),%rdx", &[0x67, 0x48, 0x8D, 0x51, 0xFF][..]),
+        ("movdqa (%ebx),%xmm0", &[0x67, 0x67, 0x66, 0x0F, 0x6F, 0x03]),
+        ("addps (%ebx),%xmm0", &[0x67, 0x0F, 0x58, 0x03]),
+        ("maskmovq", &[0x67, 0x0F, 0xF7, 0xC1]),
         ("mov (%ebx),%rax", &[0x67, 0x48, 0x8B, 0x03][..]),
         ("movsb", &[0x67, 0xA4]),
         ("rep stosb", &[0xF3, 0x67, 0xAA]),
@@ -447,6 +486,63 @@ fn an_address_size_prefix_without_address_is_ignored() {
                 .as_ref()
                 .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
             "{nom} : {issue:?}"
+        );
+    }
+}
+
+/// **Les rangements non temporels rangent comme les autres** : `movntdq`,
+/// `movntps`, `movntpd`, `movnti` sur trente-deux et soixante-quatre bits,
+/// chacun à sa place, la longueur juste (le `hlt` est atteint). Leur forme
+/// registre reste refusée, et leurs formes sous `f3`, `f2` ou (pour `movnti`)
+/// `66` : SIGILL sur l'hôte (sonde `r6/c/nt`).
+#[test]
+fn non_temporal_stores_store_like_the_others() {
+    let code = [
+        0x66, 0x0F, 0xE7, 0x13, // movntdq %xmm2,(%rbx)
+        0x0F, 0x2B, 0x4B, 0x10, // movntps %xmm1,0x10(%rbx)
+        0x66, 0x0F, 0x2B, 0x53, 0x20, // movntpd %xmm2,0x20(%rbx)
+        0x0F, 0xC3, 0x43, 0x30, // movnti %eax,0x30(%rbx)
+        0x48, 0x0F, 0xC3, 0x43, 0x38, // movnti %rax,0x38(%rbx)
+        0xF4,
+    ];
+    let mut machine = nouvelle(&code);
+    machine.cpu.regs[3] = 0x6000;
+    machine.cpu.regs[0] = 0x1122_3344_5566_7788;
+    machine.cpu.xmm[1] = [0x0101_0101_0101_0101, 0x0202_0202_0202_0202];
+    machine.cpu.xmm[2] = [0x0303_0303_0303_0303, 0x0404_0404_0404_0404];
+    machine.tourner(20).expect("sans faute");
+    assert!(machine.arretee);
+    assert_eq!(machine.cpu.rip, 0x1000 + code.len() as u64, "jusqu'au hlt");
+    let lire = |adresse: u64| machine.cpu.memory.read(adresse, Width::Qword).unwrap();
+    assert_eq!([lire(0x6000), lire(0x6008)], machine.cpu.xmm[2], "movntdq");
+    assert_eq!([lire(0x6010), lire(0x6018)], machine.cpu.xmm[1], "movntps");
+    assert_eq!([lire(0x6020), lire(0x6028)], machine.cpu.xmm[2], "movntpd");
+    assert_eq!(lire(0x6030), 0x5566_7788, "movnti, trente-deux bits");
+    assert_eq!(
+        lire(0x6038),
+        0x1122_3344_5566_7788,
+        "movnti, soixante-quatre"
+    );
+    for refuse in [
+        &[0x66, 0x0F, 0xE7, 0xD2][..], // movntdq %xmm2,%xmm2
+        &[0x0F, 0x2B, 0xCA],           // movntps, registre
+        &[0x0F, 0xC3, 0xC0],           // movnti, registre
+        &[0xF3, 0x0F, 0xE7, 0x13],     // f3 : rien
+        &[0xF3, 0x0F, 0x2B, 0x13],
+        &[0xF3, 0x0F, 0xC3, 0x03],
+        &[0xF2, 0x0F, 0xC3, 0x03],
+        &[0x66, 0x0F, 0xC3, 0x03], // movnti n'a pas de forme 66
+    ] {
+        let mut code = refuse.to_vec();
+        code.push(0xF4);
+        let mut machine = nouvelle(&code);
+        machine.cpu.regs[3] = 0x6000;
+        let issue = machine.tourner(10);
+        assert!(
+            issue
+                .as_ref()
+                .is_err_and(|pourquoi| pourquoi.contains("ne lit pas")),
+            "{refuse:02x?} : {issue:?}"
         );
     }
 }
