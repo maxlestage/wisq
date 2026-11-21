@@ -8,6 +8,168 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Le contrôle de la machine de l'application : la ligne de l'image telle quelle, une console sans doubles, le doigt relâché, l'arrêt qui arrête, et les gardes jugées
+
+**Ce qui n'allait pas** (le contrôle de l'entrée d'en dessous, sept points,
+tous vérifiés dans le code ; aucun n'était faux).
+
+- **Une ISO dont la ligne porte `---` ou `--` ne s'ouvrait pas.** La ligne
+  de l'image passait par `montage_command_line`, l'instrument de
+  `kernel-entry`, où un mot qui commence par `-` enlève un mot du montage —
+  et un retrait qui n'enlève rien est refusé. `---` est le séparateur des
+  recettes Ubuntu et Debian, `--` celui des arguments d'init. L'écran
+  disait « ne tient pas dans la page zéro », ce qui était faux.
+- **La console série doublait chaque ligne.** Le montage pose
+  `keep_bootcon`, et `IsoBoot` finit par la console du cœur Swift
+  (`console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep`) :
+  `keep_bootcon` avec `console=ttyS0`, c'est #306, 367 lignes contre 222.
+  **Et la mesure en a trouvé un second** : `earlyprintk=…,keep` garde pour
+  toujours une troisième console sur le même port, `earlyser0`. Alpine ne
+  l'a pas compilée (« Unknown kernel command line parameters »), Void si.
+- **Le doigt relâché hors de l'image restait enfoncé** : la page ne
+  disait le relâchement que dans l'image, et l'invité voyait un glisser
+  sans fin.
+- **Les gardes de `machine.js` et neuf gardes Swift n'étaient tenues par
+  rien** (huit et onze sabotages qui survivaient). **Et l'une d'elles
+  cachait un défaut** : le test neuf d'`arreter()` ne s'arrêtait pas en
+  quinze secondes. `courir` ne regardait la demande qu'entre deux appels
+  à `vm.run`, et un invité qui attend une touche use chacun de ses
+  4 096 tours jusqu'au bout du budget : un appel durait des minutes, et le
+  bouton Fermer avec lui.
+- **Le chemin d'envoi de l'application n'était jugé nulle part** :
+  `EmitterDesktop.send` passait par `evaluateJavaScript`, dont la forme
+  `async` rend un `Any` non optionnel, avec des scripts qui rendent
+  `undefined` ; le test hébergé passait, lui, par `evaluate`.
+- **Deux inexactitudes** : « ~60 Mio pour Void » pour le `vmlinux` tenu en
+  mémoire, et « 18 cas dans `LocalDesktopTests` » pour un fichier qui loge
+  aussi `EmitterDesktopTests`.
+
+**Ce qui est fait.**
+
+- **La ligne de l'image passe telle quelle** (`emitter_machine::command_line`) :
+  celle du montage, puis celle de l'image, refusée seulement pour un nul ou
+  au-delà de 2 047 octets. **`keep_bootcon` part quand l'image nomme
+  `console=ttyS0`**, sous toutes ses formes, et reste sinon — c'est lui qui
+  garde la console précoce quand la vraie est `tty0`. `kernel-entry` garde
+  sa syntaxe de retrait : elle est faite pour `WISQ_CMDLINE`, que quelqu'un
+  tape.
+- **La console du cœur cède la place à celle de l'émetteur**
+  (`EmitterMachine.emitterLine`) : la fin `X86BootLoader.defaultCommandLine`
+  d'une ligne d'`IsoBoot` devient `console=ttyS0,115200`, et la console
+  précoce est `earlycon`, que le noyau rend quand `ttyS0` arrive. Une ligne
+  qui ne finit pas par elle (cloud, système installé) passe entière.
+- **Le refus de la ligne a deux noms** : `commandLineTooLong`, le code 2 du
+  Rust, enfin jugé (un octet de trop, et la ligne qui tient juste), et
+  `commandLineCarriesNul`, chacun avec sa phrase.
+- **Le doigt** (`doigt`, dans `machine.js`) : posé dans l'image il enfonce
+  le bouton, posé dans une bande il ne fait rien ; glissé ou relevé hors de
+  l'image, il est ramené au bord (`positionSurLEcran(…, { borne: true })`)
+  et **relâche toujours**. La page capture le pointeur à la pose, pour
+  qu'une souris qui sort de la toile rende aussi son relâchement.
+- **L'arrêt** : `host.js` prend `arreter`, demandé à chaque respiration,
+  et rend `ARRET_DEMANDE` ; `machine.js` le lui passe.
+- **La console tamponnée** sort de `demarrer` (`consoleTamponnee`) pour être
+  jugée seule.
+- **L'envoi** passe par `evaluate` (`callAsyncJavaScript`, `Any?`), dans
+  l'ordre ; `stop` envoie `EmitterBridge.stop`.
+- **`prepare` libère chaque tampon dès qu'il ne sert plus** : le fichier lu
+  avant la copie de l'ELF, l'ELF une fois recopié dans la seule `Data` que
+  l'écriture et la lecture des segments partagent.
+- La phrase des 60 Mio est corrigée en place, et la feuille de route compte
+  le fichier : 20 cas (17 + 3), 25 tests hébergés.
+
+**Comment c'est jugé.**
+
+- **La page entière sous Bun** (`EmitterPageTests`, banc `pageHarness`) :
+  le script de `machine.html`, tel que la bibliothèque le porte, dans une
+  fausse page dont la toile n'a que ce que la page lui demande et dont le
+  pont poste vers le test ; le doigt y est envoyé comme WebKit l'enverrait,
+  et ce que la tablette reçoit est relevé. Posé dans une bande, glissé hors
+  de l'image, relevé hors d'elle : `[[0.25, 0.25, 1], [0.95, 1, 1],
+  [0.95, 1, 0]]`.
+- **Les refus du plan**, par un banc qui sait changer une réponse du
+  magasin : une RAM absente, un écran annoncé ailleurs que là où la carte
+  le pose, un morceau hors de la RAM, un morceau d'un octet trop court —
+  chacun arrête la page sous son nom, avant « prête ».
+- **Une course à la fois, et l'arrêt** par le script même que
+  l'application envoie, sur le petit noyau qui attend sa touche ; une
+  machine arrêtée ne repart pas.
+- **Swift** : un ELF sans segment chargeable, un point d'entrée hors de son
+  segment, une archive vide, une écriture de 64 Mio et un octet sur un
+  disque assez grand, un fichier plus court que promis (500 pour le disque
+  et pour un morceau, jamais moins d'octets), un noyau RISC-V qui reste à
+  son cœur, la molette bornée vers le haut, Maj, Ctrl et Alt droites.
+- **Rust et C ABI** : les tirets, `keep_bootcon` sous ses formes, la place à
+  l'octet ; `« --- »` passe et le refus 2 tombe, depuis le C.
+- **Dans un vrai WebKit** (job « App iOS » seulement) : deux cas neufs dans
+  `EmitterDesktopTests`, le chemin d'envoi (`touch`, `scroll`, `type`
+  jusqu'au `hlt`, la touche lue) et `stop` sur le noyau qui attend. Typés
+  ici contre le WebKit de carton, comme avant.
+
+**Mesures.**
+
+- **La console, sous `kernel-entry`** (ligne de commande comprise ; on
+  compte les lignes identiques qui se suivent) :
+
+  | noyau, jusqu'à | ligne | lignes | doublées |
+  | --- | --- | --- | --- |
+  | Alpine 6.18.60, « SMP disabled » | celle de l'application, avant | 121 | 19 |
+  | | sans `keep_bootcon`, `earlyprintk` gardé | 104 | 2 |
+  | | sans `keep_bootcon`, sans `earlyprintk` | 103 | 2 |
+  | Void 6.12.11, « pid_max » | celle de l'application, avant | 205 | 100 |
+  | | sans `keep_bootcon`, `earlyprintk` gardé | 193 | 89 |
+  | | celle d'aujourd'hui | 96 | 2 |
+
+  Les deux qui restent sont la passation, que le noyau écrit sur les deux
+  consoles : « console [ttyS0] enabled » et « bootconsole [uart8250]
+  disabled ». Chaque course : 7 à 10 s, Alpine sous 512 Mio de RAM, Void
+  sous 1 Gio, sans archive pour Void.
+- **Le pic de `prepare` sur Void** (`bzImage` de 13,2 Mio, `vmlinux` de
+  55 Mio, construction de débogage, `VmHWM`) : +151 Mio avant, +137 Mio
+  après — deux fois et demie le `vmlinux`. La décompression elle-même
+  (`KernelPayload` recopie la charge utile et le flux deflate) en est le
+  gros ; elle n'est pas touchée.
+- `EmitterPageTests` : 9 tests en 8,4 s, dont 5 neufs.
+- `cargo test --release` : 893 → 896 réussis ; la suite Swift : 3 008 → 3 017
+  exécutés, 69 sautés, 0 échec (399 s) ; 11 cas Swift neufs, dont 2 hébergés.
+  Le compte publié : 3 984 → 3 998 (Swift 3 103 + Rust 895).
+
+**Sabotages** (`<bloc-notes>/w6/sab/`, un script, chaque fichier remis tel
+quel et la bibliothèque reconstruite ; `git diff` vide après). **Les 32
+tombent** :
+
+- Rust : la ligne par la syntaxe de retrait (jugée par Rust et par Swift),
+  `keep_bootcon` toujours gardé, un octet de trop, la place doublée (jugée
+  par le programme C) ;
+- Swift : la console du cœur gardée, le code 2 en inconnu, le point
+  d'entrée hors segment (W1), l'ELF sans segment, l'archive vide (W2),
+  l'écriture de plus de 64 Mio (W3), un noyau RISC-V dans l'émetteur (W4),
+  la molette non bornée (W5), la Maj droite perdue (W6), le 500 du disque
+  en 200 vide (W10), un fichier court rendu plus court (W11), `stop` qui
+  n'arrête rien ;
+- `machine.js` : `Math.max` (K1), `perdus += 0` (K2), la base de l'écran
+  (K3), un morceau hors de la RAM (K4), de la mauvaise longueur (K5), un
+  plan sans RAM (K6), `courir` deux fois (K7), `arreter` vide (K8),
+  `arreter` non passé à la boucle ; `host.js` qui ne le demande pas ; le
+  relâchement perdu hors de l'image, `borne` sans effet ;
+- `machine.html` : le doigt non branché, la capture du pointeur retirée ;
+- le témoin, CS non posé.
+
+Un premier essai du sabotage « ELF sans segment » ne compilait pas : il a
+été réécrit, et c'est la seconde forme qui tombe.
+
+**Ce qui reste.**
+
+- **Le cœur Swift double probablement aussi sa console sous Void** : il
+  pose la même `earlyprintk=serial,…,keep`, et la ligne « sans
+  `keep_bootcon`, `earlyprintk` gardé » ci-dessus — 89 doublées sur 193 —
+  est la sienne à `earlycon` près. Mesuré sous l'émetteur seulement ;
+  `X86BootLoader` n'est pas de ce flux, et ses bureaux prêts en dépendent.
+- Le reste de l'entrée d'en dessous tient : la mémoire sur iPhone, les
+  instantanés, les bureaux prêts à refabriquer, la boucle de
+  l'ordonnanceur de Void, le mur x87 d'Alpine, et ce que seul le job « App
+  iOS » juge — dont, maintenant, le chemin d'envoi.
+
 ## 2026-11-21 — La machine de l'émetteur dans l'application, derrière un réglage éteint ; jugée de bout en bout sous Linux, son magasin Swift derrière le `fetch` d'un Bun
 
 **Ce qui n'allait pas.**
