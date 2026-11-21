@@ -265,6 +265,28 @@ pub const CPUID_FEATURES_EDX: u32 =
 /// n'est pas exécuter, et seul ce qu'on exécute se déclare.
 pub const CPUID_FEATURES_ECX: u32 = 1 << 13;
 
+/// **La plus haute feuille étendue servie** : `0x8000_0008`, celle des
+/// tailles d'adresse et de `XSAVEERPTR`. Les feuilles de `0x8000_0001` à
+/// `0x8000_0007` rendent des zéros : aucun bit étendu, ni LM, ni NX (la
+/// marche ne lit pas le bit XD), ni marque, ni cache, ni gestion d'énergie.
+pub const CPUID_MAX_EXTENDED_LEAF: u32 = 0x8000_0008;
+
+/// **EAX de `0x8000_0008` : 48 bits virtuels, 40 physiques**, ce que rend le
+/// `qemu64` de QEMU. Le noyau y lit `x86_phys_bits` et `x86_virt_bits` dès que
+/// la feuille existe ; à zéro, il croirait n'avoir aucun bit d'adresse.
+pub const CPUID_ADDRESS_SIZES: u32 = 0x3028;
+
+/// **EBX de `0x8000_0008` : `XSAVEERPTR` (bit 2)**, « `fxsave` range toujours
+/// les pointeurs d'erreur du x87 ». C'est la seule raison de servir les
+/// feuilles étendues : sur un AMD qui ne l'annonce pas, le noyau pose
+/// `X86_BUG_FXSAVE_LEAK`, et avant chaque `fxrstor` exécute `fnclex ; emms ;
+/// fild` pour effacer des pointeurs qu'un autre processus aurait laissés —
+/// trois instructions du x87 que l'émetteur ne produit pas ; Void s'y
+/// arrêtait au premier changement de processus. **La promesse est tenue** :
+/// aucun calcul x87 ne s'exécute ici, les pointeurs d'erreur ne sont jamais
+/// écrits et `fxsave` les range à zéro ; il n'y a rien qui puisse fuir.
+pub const CPUID_EXTENDED_EIGHT_EBX: u32 = 1 << 2;
+
 /// **EBX de la feuille un, et la moitié qu'on ne peut pas oublier.** Ses bits
 /// 15:8 portent la taille de ligne de `clflush`, comptée en quantums de huit
 /// octets : huit, donc, pour des lignes de soixante-quatre.
@@ -4808,31 +4830,59 @@ impl Module {
             let leaf_is = |b: &mut Body, which: u64| {
                 b.load(Body::scratch(0)).constant(which).op(code::I64_EQ);
             };
-            let choose = |body: &mut Body, slot: usize, zero: u32, one: u32| {
-                body.store(Self::slot(slot as u8), |b| {
+            // **Les feuilles servies**, chacune ses quatre registres dans
+            // l'ordre du jeu d'instructions — EAX, EBX, ECX, EDX.
+            let feuilles: [(u64, [u32; 4]); 4] = [
+                (
+                    0,
+                    [
+                        CPUID_MAX_LEAF,
+                        CPUID_VENDOR_EBX,
+                        CPUID_VENDOR_ECX,
+                        CPUID_VENDOR_EDX,
+                    ],
+                ),
+                (
+                    1,
+                    [
+                        CPUID_SIGNATURE,
+                        CPUID_LEAF_ONE_EBX,
+                        CPUID_FEATURES_ECX,
+                        CPUID_FEATURES_EDX,
+                    ],
+                ),
+                (0x8000_0000, [CPUID_MAX_EXTENDED_LEAF, 0, 0, 0]),
+                (
+                    0x8000_0008,
+                    [CPUID_ADDRESS_SIZES, CPUID_EXTENDED_EIGHT_EBX, 0, 0],
+                ),
+            ];
+            // Les quatre registres que `cpuid` écrit, EAX, EBX, ECX, EDX — soit
+            // les emplacements 0, 3, 1 et 2.
+            for (rang, slot) in [0u8, 3, 1, 2].into_iter().enumerate() {
+                body.store(Self::slot(slot), |b| {
                     // **`select` dépile la condition, puis deux valeurs**, et
                     // rend la **première** quand la condition n'est pas nulle.
                     // Le premier jet en empilait une de moins et le module ne
                     // se compilait pas — « can't pop empty stack », ce qui est
                     // au moins un refus franc.
-                    b.constant(u64::from(zero)); // si la feuille est zéro
-                    b.constant(u64::from(one)); // si c'est la feuille un
-                    b.constant(0); // et sinon, rien
-                    leaf_is(b, 1);
-                    b.op(code::SELECT);
-                    leaf_is(b, 0);
-                    b.op(code::SELECT);
+                    //
+                    // Hors des feuilles connues, tout est nul : c'est ce que
+                    // rend un processeur pour une feuille qu'il ne sert pas,
+                    // et c'est aussi ce qu'il faut dire quand on ne sait rien.
+                    // Toutes les valeurs d'abord, puis le zéro ; les
+                    // `select` se replient ensuite de la dernière feuille à
+                    // la première.
+                    for (_, registres) in feuilles {
+                        b.constant(u64::from(registres[rang]));
+                    }
+                    b.constant(0);
+                    for (feuille, _) in feuilles.iter().rev() {
+                        leaf_is(b, *feuille);
+                        b.op(code::SELECT);
+                    }
                 });
-            };
-            // Hors des deux feuilles connues, tout est nul : c'est ce que rend
-            // un processeur pour une feuille qu'il ne sert pas, et c'est aussi
-            // ce qu'il faut dire quand on ne sait rien.
-            // Les quatre registres que `cpuid` écrit, dans l'ordre du jeu
-            // d'instructions : EAX, EBX, ECX, EDX — soit 0, 3, 1 et 2.
-            choose(body, 0, CPUID_MAX_LEAF, CPUID_SIGNATURE);
-            choose(body, 3, CPUID_VENDOR_EBX, CPUID_LEAF_ONE_EBX);
-            choose(body, 1, CPUID_VENDOR_ECX, CPUID_FEATURES_ECX);
-            choose(body, 2, CPUID_VENDOR_EDX, CPUID_FEATURES_EDX);
+            }
             return Some(());
         }
         // **Les instructions privilégiées : décodées, pas traduisibles.**

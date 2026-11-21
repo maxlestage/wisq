@@ -4263,16 +4263,33 @@ fn cpuid_declares_only_what_the_emitter_actually_does() {
         0x48, 0x89, 0xdf, // mov %rbx,%rdi — le premier quart du nom
         0x48, 0x89, 0xd5, // mov %rdx,%rbp — le deuxième
         0x49, 0x89, 0xc8, // mov %rcx,%r8  — le troisième
-        // Une feuille qu'on ne sert pas : celle du sommet des feuilles
-        // étendues, la première que Linux demande après les deux basses. Les
-        // quatre registres sont réunis par des `or` pour qu'un seul nombre
-        // suffise à dire « rien n'en est sorti ».
-        0xb8, 0x00, 0x00, 0x00, 0x80, // mov $0x80000000,%eax
+        // Une feuille qu'on ne sert pas : la sept, celle des extensions que
+        // la glibc lit quand la feuille zéro l'annonce. Les quatre registres
+        // sont réunis par des `or` pour qu'un seul nombre suffise à dire
+        // « rien n'en est sorti ».
+        0xb8, 0x07, 0x00, 0x00, 0x00, // mov $7,%eax
         0x0f, 0xa2, // cpuid
         0x48, 0x09, 0xd8, // or %rbx,%rax
         0x48, 0x09, 0xc8, // or %rcx,%rax
         0x48, 0x09, 0xd0, // or %rdx,%rax
         0x49, 0x89, 0xc1, // mov %rax,%r9
+        // Le sommet des feuilles étendues, puis la `0x8000_0008`.
+        0xb8, 0x00, 0x00, 0x00, 0x80, // mov $0x80000000,%eax
+        0x0f, 0xa2, // cpuid
+        0x49, 0x89, 0xc2, // mov %rax,%r10
+        0xb8, 0x08, 0x00, 0x00, 0x80, // mov $0x80000008,%eax
+        0x0f, 0xa2, // cpuid
+        0x49, 0x89, 0xc3, // mov %rax,%r11
+        0x49, 0x89, 0xdc, // mov %rbx,%r12
+        0x48, 0x09, 0xd1, // or %rdx,%rcx
+        0x49, 0x89, 0xcd, // mov %rcx,%r13
+        // Une étendue qu'on ne sert pas : la marque.
+        0xb8, 0x02, 0x00, 0x00, 0x80, // mov $0x80000002,%eax
+        0x0f, 0xa2, // cpuid
+        0x48, 0x09, 0xd8, // or %rbx,%rax
+        0x48, 0x09, 0xc8, // or %rcx,%rax
+        0x48, 0x09, 0xd0, // or %rdx,%rax
+        0x49, 0x89, 0xc6, // mov %rax,%r14
         0xb8, 0x01, 0x00, 0x00, 0x00, // mov $1,%eax
         0x0f, 0xa2, // cpuid
         0x0f, 0x0b, // ud2
@@ -4304,6 +4321,11 @@ console.log("nom " + lire(7));
 console.log("nom2 " + lire(5));
 console.log("nom3 " + lire(8));
 console.log("inconnue " + lire(9));
+console.log("etendues " + lire(10));
+console.log("adresses " + lire(11));
+console.log("huit-ebx " + lire(12));
+console.log("huit-reste " + lire(13));
+console.log("marque " + lire(14));
 console.log("signature " + lire(0));
 console.log("edx " + lire(2));
 console.log("ecx " + lire(1));
@@ -4374,9 +4396,24 @@ console.log("ebx " + lire(3));
     // c'est la réponse honnête : zéro à la feuille 0x8000_0000 dit « aucune
     // feuille étendue », ce qui est exactement vrai ici.
     assert_eq!(
-        line("inconnue "),
-        0,
-        "hors des deux feuilles connues, les quatre registres sont nuls"
+        (line("inconnue "), line("marque ")),
+        (0, 0),
+        "hors des feuilles servies, les quatre registres sont nuls"
+    );
+    // **Deux feuilles étendues, et une seule raison** : `XSAVEERPTR` (le bit
+    // 2 d'EBX de `0x8000_0008`), sans lequel un noyau qui croit tourner sur
+    // un AMD exécute `fnclex ; emms ; fild` avant chaque `fxrstor`. Les
+    // tailles d'adresse viennent avec la feuille, 48 bits virtuels et 40
+    // physiques ; à zéro, le noyau croirait n'en avoir aucun.
+    assert_eq!(
+        line("etendues "),
+        0x8000_0008,
+        "la plus haute feuille étendue servie"
+    );
+    assert_eq!(
+        (line("adresses "), line("huit-ebx "), line("huit-reste ")),
+        (0x3028, 0b100, 0),
+        "48 bits virtuels, 40 physiques ; XSAVEERPTR seul ; rien d'autre"
     );
     assert_eq!(
         line("signature "),
