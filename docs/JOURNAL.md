@@ -8,6 +8,84 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Émetteur : la moitié `ecrire` de la garde de `host.js`, que rien ne tenait
+
+**Ce qui n'allait pas.** L'entrée d'en dessous disait la garde de
+confinement (`dansLaRam`) tenue, et le test du tampon à cheval
+(`a_disk_buffer_that_straddles_the_end_of_ram_is_refused_whole`) disait
+« rien n'est écrit au-dessus de la RAM ». Le contrôle a retiré la ligne
+`if (!dansLaRam(adresse, depuis.length)) return false;` d'`ecrire` (son
+sabotage S10) : `host_loop` restait vert, 237 sur 237. Seule la moitié
+`lire` était tenue. La carte sonde chaque tampon de données par `ram.lire`
+avant de faire partir une requête (`dans_la_ram`, `virtio_blk.rs`), et c'est
+ce refus-là qui rendait l'erreur du test. Mais elle pose le **statut**, les
+entrées et l'index des **servis**, et le **nom** du disque (le type 8) par
+`ram.ecrire`, sans rien sonder, aux adresses que l'invité a choisies. Pour
+ces écritures, la garde d'`ecrire` est la seule chose entre l'invité et la
+correspondance de l'hôte, au-dessus de la RAM, et aucun test ne la tenait.
+
+Un détail du contrôle ne se reproduisait pas tel quel. Avec un statut
+« réussi » posé à `0x40000`, S10 survivait encore au premier test que j'ai
+écrit : l'octet de l'hôte à cet endroit (le début de la correspondance)
+valait déjà zéro, et y écrire zéro ne changeait rien. Le
+test ne compare que l'avant et l'après, donc l'octet écrit hors de la RAM
+doit être un octet qui se voit.
+
+**Ce qui est fait.**
+
+- **Deux tests neufs dans `host_loop`**, sans changement du code (il était
+  juste) :
+  - `what_the_card_writes_unprobed_past_the_end_of_ram_is_not_written` :
+    l'invité publie trois requêtes, une à une.
+    - Une lecture dont le statut est au dernier octet de la RAM
+      (`0x3FFFF`) : il est écrit (zéro), donc la garde n'est pas trop
+      stricte d'un octet.
+    - Une lecture au-delà du disque, son statut à `0x40000` : la requête
+      est rendue en erreur et la ligne est levée, mais le `1` n'est écrit
+      nulle part.
+    - Une demande du nom, son tampon de vingt octets à cheval sur la fin
+      (`0x3FFF8`) : refusée entière, les sept octets du dedans gardent leur
+      `0xaa`.
+    - Les servis portent les têtes 0, 3 et 6, et les 4 Kio au-dessus de la
+      RAM sont identiques à ce qu'ils étaient avant la course.
+  - `a_used_ring_past_the_end_of_ram_is_not_written` : la file posée à la
+    dernière page de la RAM (`0x3F000`), donc ses servis à `0x40000`. La
+    lecture est faite, son statut (dans la RAM) posé, la ligne levée une
+    fois, l'ISR lu à 1, et ni l'index ni l'entrée des servis ne sont écrits
+    au-dessus.
+- Pour ces deux tests, `host_loop` gagne `brancher_le_disque_avec_la_file`
+  (la file ailleurs qu'à la page `0x20`), `requetes_posees` (des requêtes
+  de type, tampon et longueur quelconques ; un statut hors de la RAM n'y est
+  pas touché par le pilote) et `publier`.
+- Le commentaire du test du tampon à cheval dit maintenant quelle moitié il
+  tient. Celui de `ramDeLaCarte`, dans `host.js`, dit pourquoi les deux
+  moitiés comptent.
+- **Sept sabotages d'une ligne de la garde d'`ecrire`**, chacun restauré
+  par le script (`git diff` vide ensuite). Tous tombent :
+  - S10, la garde retirée, et S10d, la garde bornée à
+    `memory.buffer.byteLength` : tombent dans les deux tests neufs ;
+  - S10b, la longueur prise pour zéro : tombe dans le test des écritures
+    sans sonde (le nom à cheval) ;
+  - S10c, la longueur plus un (trop stricte d'un octet) : tombe dans ce
+    même test (statut à `0x3FFFF`) et dans celui du tampon à cheval ;
+  - S10e, seules les écritures d'un octet sans garde (le statut) : tombe
+    sur « ni le statut ni le nom ne sont écrits au-dessus de la RAM » ;
+  - S10f, seules celles de vingt octets (le nom) : tombe dans le test des
+    écritures sans sonde ;
+  - S10g, seules celles de deux et quatre octets (les servis) : tombe dans
+    le test des servis.
+- `cargo test --release` : 867 réussis, 0 échec, en 2 min 58 s.
+  `cargo fmt --check`, `clippy`, `check-whitespace` et
+  `check-project-sources` sont propres. Le Swift n'est pas touché, et les
+  octets émis ne changent pas.
+- Compte publié : 3 929 → 3 931 (Swift 3 065 + Rust 866). Le site est
+  reconstruit, et son `bun test` donne 476 réussis.
+
+**Ce qui reste.** Tout ce que dit l'entrée d'en dessous. S11
+(`Number.isInteger && >= 0` retiré de `dansLaRam`) survit toujours. C'est
+un mutant équivalent : l'adresse vient de `plage` dans `carte.js`, qui rend
+toujours un entier positif ou nul, au plus `MAX_SAFE_INTEGER`.
+
 ## 2026-11-20 — Émetteur : reprise du raccord après contrôle, six gardes de `host.js` et deux largeurs du flottant que rien ne tenait
 
 **Ce qui n'allait pas.** Le contrôle de l'entrée d'en dessous a fait
