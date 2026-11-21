@@ -711,6 +711,25 @@ fn the_sine_raises_c2_out_of_its_domain_and_drops_it_inside() {
     );
 }
 
+/// **`fptan` dit l'arrondi de la tangente**, même après avoir empilé 1 : tan
+/// 0,5 vaut `8bda7adf9a3a5218,737…` en unités du dernier rang. Au plus proche
+/// elle monte, C1 levé ; vers −∞ elle descend, C1 à zéro — ce que le
+/// silicium de l'hôte rend aussi.
+#[test]
+fn fptan_reports_the_rounding_of_the_tangent() {
+    for (control, tangent, c1) in [
+        (0x037f, 0x8BDA_7ADF_9A3A_5219, 0x0200),
+        (0x077f, 0x8BDA_7ADF_9A3A_5218, 0),
+    ] {
+        let mut cpu = x87_start((1 << 63, 0x3ffe), ONE);
+        cpu.fpu_control = control;
+        run_extended(&mut cpu, &[0xd9, 0xf2]);
+        assert_eq!(cpu.x87[6], (tangent, 0x3ffe), "cw {control:x} : tan 0,5");
+        assert_eq!(cpu.x87[5], ONE, "cw {control:x} : 1 empilé");
+        assert_eq!(cpu.fpu_status & 0x0200, c1, "cw {control:x} : C1");
+    }
+}
+
 /// **C1 tombe sur un chargement** : levé par une racine arrondie vers le
 /// haut, il retombe avec `fld1`, comme sur le silicium de l'hôte.
 #[test]
