@@ -35,8 +35,9 @@
 //! et vérifié : sont refusés un instantané tronqué ou suivi d'octets de
 //! trop, un booléen qui ne vaut ni zéro ni un, un battement de zéro
 //! instruction (le temps de l'invité se divise par lui), une étiquette
-//! d'aléa inconnue, deux fois le même MSR, et un bit de la carte des pages
-//! au-delà de la dernière.
+//! d'aléa inconnue, deux fois le même MSR, un bit de la carte des pages
+//! au-delà de la dernière, une carte dite absente (le poste la branche
+//! toujours) et une heure des puces au-delà de l'an 9999.
 //!
 //! **Une machine qui a déjà tourné se reprend comme une neuve** : sa RAM est
 //! effacée avant que les pages de l'instantané y soient posées (une page nulle
@@ -48,7 +49,7 @@
 use super::chargeur::Placement;
 use super::herites::{Controleur, Herites, HorlogeCmos, Minuterie, Serie};
 use super::machine::Alea;
-use super::poste::Poste;
+use super::poste::{Poste, DERNIERE_SECONDE};
 use super::systeme::{Systeme, Table};
 
 /// Les huit premiers octets : un nom, et `\r\n` pour qu'une conversion de
@@ -541,6 +542,15 @@ fn lire_le_reste(l: &mut Lecteur) -> Option<Lu> {
     let secondes_depuis_1970 = l.u64()?;
     let memoire: [u8; 128] = l.prendre(128)?.try_into().ok()?;
     let cmos_ailleurs = l.oui()?;
+    // Le poste branche toujours sa carte (`Poste::essayer`), et `sauver` ne
+    // porte que l'heure bornée de `Poste::regler_l_heure` : un instantané qui
+    // dit la carte absente, ou une heure au-delà de l'an 9999, n'a pas été
+    // écrit par `sauver`. Repris, il rendrait les ports 0x70 et 0x71 aux puces
+    // de la machine, devant la carte encore branchée, avec une date hors de
+    // toute borne.
+    if !cmos_ailleurs || secondes_depuis_1970 > DERNIERE_SECONDE as u64 {
+        return None;
+    }
     Some(Lu {
         instructions_par_battement,
         retirees,

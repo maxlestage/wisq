@@ -8,6 +8,52 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — La machine PC en Rust par défaut dans l'application ; un instantané sans carte refusé
+
+**Sur quelle autorisation.** « Je prends le plus rapide » : la personne a
+choisi le cœur le plus rapide pour l'application. Le cœur Rust tient 110 à
+114 MIPS contre 62 pour le cœur Swift, et Void Xfce y atteint son bureau 2,8
+fois plus tôt.
+
+**Ce qui change.**
+
+- *`RustPCSetting.defaultValue` passe à vrai.* Une machine PC x86-64 neuve
+  démarre sur le cœur Rust ; le réglage (banc WebKit) l'éteint et rend le
+  cœur Swift. Les sessions sauvées (des instantanés du cœur Swift) et les
+  machines installées restent au cœur Swift, comme avant.
+- *Le défaut s'applique vraiment.* `LocalVMModel` lisait
+  `UserDefaults.bool(forKey:)`, qui rend faux pour un réglage jamais touché :
+  le défaut ne serait allé à personne. `RustPCSetting.isEnabled(in:)` lit la
+  valeur posée, ou le défaut. Test : un réglage jamais touché est allumé,
+  éteint à la main il le reste, rallumé il l'est. Sabotage : revenir à
+  `bool(forKey:)` fait échouer le premier cas.
+- *Ce que le cœur Rust n'a pas encore*, dit sous l'interrupteur : ni session
+  sauvée (la quitter l'arrête, la revoir la redémarre), ni réseau. Éteindre
+  le réglage les rend.
+
+**Les deux défauts du dernier contrôle.**
+
+- *Un instantané qui dit la carte absente était accepté*, alors que le poste
+  la branche toujours et que l'en-tête de `wisq_pc_restore` promet que tout
+  est vérifié. Repris, il rendait les ports 0x70 et 0x71 aux puces de la
+  machine, devant la carte encore branchée, avec des secondes hors de toute
+  borne (siècle 0x32, année 0x23 pour `u64::MAX`). `lire_le_reste` refuse
+  désormais `cmos_ailleurs` faux et des secondes au-delà de
+  `DERNIERE_SECONDE` (`Abime`). Test
+  `a_snapshot_without_the_card_or_past_9999_is_refused` : l'instantané tel
+  que sauvé se reprend ; la carte dite absente, la seconde d'après l'an 9999
+  et `u64::MAX` sont refusés. Sabotages : ôter l'une ou l'autre moitié de la
+  garde fait échouer le test.
+- *`freezeHostTime(at:)` plantait sur une date hors de `Int64`*
+  (`Int64(Double)` hors domaine), avant la borne du cœur.
+  `RustPCMachine.seconds(since1970:)` sature : NaN donne 1970, ±∞ et ±1e19
+  les bornes de `Int64`, 2^63 tout juste `Int64.max`. Sabotage : `>` au lieu
+  de `>=` sur la borne haute fait planter le cas 2^63.
+
+**Vérifié.** `cargo fmt --check`, les deux jeux de Clippy, pc_poste (29
+tests), `swift build --build-tests` et RustPCMachineTests (18 tests),
+SwiftLint strict, l'analyse de la vue SwiftUI touchée.
+
 ## 2026-11-21 — Machine PC en Rust : l'heure bornée là où l'invité la lit, la reprise d'une machine usée tenue jusqu'au bout
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point relu

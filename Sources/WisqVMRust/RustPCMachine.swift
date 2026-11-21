@@ -14,9 +14,9 @@ import WisqVM
 /// (`touch`, `scroll`), la souris PS/2 (`mouse`), et le pas de l'horloge
 /// murale quand l'invité dort (`pacesIdleToWallClock`).
 ///
-/// **Derrière un réglage éteint par défaut** (`RustPCSetting`) : l'application
-/// garde le cœur Swift. Ce qui manque encore pour basculer est dit dans
-/// `RustPCSetting`.
+/// **Derrière un réglage allumé par défaut** (`RustPCSetting`) : une machine
+/// PC neuve démarre ici, sur le cœur le plus rapide ; l'éteindre rend le cœur
+/// Swift. Ce qui manque encore par rapport à lui est dit dans `RustPCSetting`.
 ///
 /// `@unchecked Sendable` pour la raison de `X86Machine` : `runGuest` tient un
 /// fil à lui, et `send`, `stop`, les frappes, les touchers et l'écran sont
@@ -140,9 +140,23 @@ public final class RustPCMachine: @unchecked Sendable {
     // MARK: - Avant le démarrage
 
     /// Fige l'heure de l'horloge CMOS : deux courses du même noyau retirent
-    /// alors les mêmes instructions (`X86Machine.frozenHostTime`).
+    /// alors les mêmes instructions (`X86Machine.frozenHostTime`). Le cœur la
+    /// borne du 1er janvier 1970 au 31 décembre 9999 (`wisq_pc_set_time`) ;
+    /// une date hors de `Int64` (ou un NaN) est d'abord bornée ici, où
+    /// `Int64(_:)` planterait.
     public func freezeHostTime(at date: Date) {
-        _ = wisq_pc_set_time(pc, Int64(date.timeIntervalSince1970.rounded(.down)))
+        _ = wisq_pc_set_time(pc, Self.seconds(since1970: date.timeIntervalSince1970))
+    }
+
+    /// Les secondes entières d'une date, saturées à `Int64` (NaN : 1970).
+    static func seconds(since1970 interval: TimeInterval) -> Int64 {
+        guard !interval.isNaN else { return 0 }
+        let down = interval.rounded(.down)
+        // `Double(Int64.max)` vaut 2^63, déjà hors de `Int64` : la borne
+        // haute est donc stricte.
+        if down >= Double(Int64.max) { return .max }
+        if down <= Double(Int64.min) { return .min }
+        return Int64(down)
     }
 
     /// La graine de `RDRAND` et `RDSEED`. L'application en donne une neuve :
@@ -550,9 +564,9 @@ public final class RustPCScreen: @unchecked Sendable {
     public func pixelData() -> Data { frame().data }
 }
 
-/// **Le réglage qui fait tourner une machine PC sur le cœur Rust**, éteint
-/// par défaut — à côté de celui de l'émetteur (`EmitterSetting`), sur le
-/// modèle de celui-ci.
+/// **Le réglage qui fait tourner une machine PC sur le cœur Rust**, allumé
+/// par défaut : c'est le cœur le plus rapide. À côté de celui de l'émetteur
+/// (`EmitterSetting`), qui reste éteint, sur le modèle de celui-ci.
 ///
 /// La clé est celle de `UserDefaults`, que la vue lit par `@AppStorage`. Le
 /// verdict est ici, jugé sous Linux : le réglage allumé, un noyau de PC, **ni
@@ -565,7 +579,7 @@ public final class RustPCScreen: @unchecked Sendable {
 /// rendrait à l'invité des pilotes devant des files oubliées. Quitter
 /// l'écran l'arrête ; la revoir la redémarre.
 ///
-/// **Ce qui manque pour basculer** : l'instantané de la carte (`wisq-carte`
+/// **Ce qui lui manque encore par rapport au cœur Swift** : l'instantané de la carte (`wisq-carte`
 /// n'a ni sauvegarde ni reprise), puis les bureaux prêts refabriqués à son
 /// format ; le réseau (la carte virtio-net de `wisq-carte` n'est pas branchée
 /// par le poste) et le relais du port 5900 (`X86Machine.forward`) ; les
@@ -573,10 +587,18 @@ public final class RustPCScreen: @unchecked Sendable {
 /// refus des programmes, que `X86Machine` dit dans la console.
 public enum RustPCSetting {
     public static let key = "wisq.machine.pc-rust"
-    /// Éteint : l'application ne bascule pas.
-    public static let defaultValue = false
+    /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift
+    /// (110 MIPS contre 62, Void Xfce jusqu'au bureau 2,8 fois plus tôt).
+    public static let defaultValue = true
     /// La machine du cœur Rust ne sauve pas de session.
     public static let savesSessions = false
+
+    /// **Le réglage tel qu'il est** : sa valeur si quelqu'un l'a touché,
+    /// `defaultValue` sinon. `UserDefaults.bool(forKey:)` rendrait faux pour
+    /// un réglage jamais touché, et le défaut ne s'appliquerait à personne.
+    public static func isEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? defaultValue
+    }
 
     /// Le cœur Rust prend-il cette machine ?
     public static func runs(
