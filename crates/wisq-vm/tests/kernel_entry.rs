@@ -127,7 +127,9 @@ fn petit_noyau() -> Vec<u8> {
 }
 
 /// Le releve d'une course, ou son refus : le code de sortie, la sortie et
-/// l'erreur.
+/// l'erreur. **Et le dossier de travail de l'exemple effacé**, quelle que
+/// soit la sortie : `/tmp/wisq-kernel-<pid>`, que chaque refus laissait
+/// derrière lui, `std::process::exit` ne lançant aucun destructeur.
 fn lancer(noyau: &Path, variables: &[(&str, &str)]) -> (Option<i32>, String, String) {
     let mut commande = Command::new(kernel_entry());
     commande.arg(noyau).env("WISQ_TURNS", "256");
@@ -153,12 +155,28 @@ fn lancer(noyau: &Path, variables: &[(&str, &str)]) -> (Option<i32>, String, Str
     if let Some(dossier) = noyau.parent() {
         commande.current_dir(dossier);
     }
-    let sortie = commande.output().expect("kernel-entry");
-    (
+    let enfant = commande
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("kernel-entry");
+    let travail = std::env::temp_dir().join(format!("wisq-kernel-{}", enfant.id()));
+    let sortie = enfant.wait_with_output().expect("kernel-entry");
+    let releve = (
         sortie.status.code(),
         String::from_utf8_lossy(&sortie.stdout).into_owned(),
         String::from_utf8_lossy(&sortie.stderr).into_owned(),
-    )
+    );
+    let reste = travail.exists();
+    let _ = std::fs::remove_dir_all(&travail);
+    assert!(
+        !reste,
+        "{variables:?} : {} est resté après la sortie :\n{}\n{}",
+        travail.display(),
+        releve.1,
+        releve.2
+    );
+    releve
 }
 
 /// La valeur d'un registre dans la ligne `registres` du releve.
@@ -172,6 +190,26 @@ fn registre(releve: &str, nom: &str) -> String {
         .find_map(|champ| champ.strip_prefix(&format!("{nom}=")))
         .unwrap_or_else(|| panic!("{nom} absent de « {ligne} »"))
         .to_string()
+}
+
+/// **Le dossier d'un test, effacé quoi qu'il arrive** : à la fin du test, et
+/// aussi quand une assertion tombe, puisque le déroulement de la panique
+/// lance les destructeurs.
+struct Dossier(PathBuf);
+
+impl Dossier {
+    fn neuf(nom: &str) -> Self {
+        let chemin = std::env::temp_dir().join(format!("wisq-kernel-{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&chemin);
+        std::fs::create_dir_all(&chemin).expect("dossier");
+        Dossier(chemin)
+    }
+}
+
+impl Drop for Dossier {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn bun_present() -> bool {
@@ -196,9 +234,8 @@ fn the_montage_enters_like_a_loader_and_its_variables_do_what_they_say() {
         bun_present(),
         "Bun est absent : ce test ne serait vérifié par rien."
     );
-    let dossier = std::env::temp_dir().join(format!("wisq-kernel-entry-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dossier);
-    std::fs::create_dir_all(&dossier).expect("dossier");
+    let travail = Dossier::neuf("entry");
+    let dossier = &travail.0;
     let noyau = dossier.join("vmlinux");
     std::fs::write(&noyau, elf(0x0100_0000, &petit_noyau())).expect("le noyau");
     let capture = dossier.join("c.ppm");
@@ -244,20 +281,20 @@ fn the_montage_enters_like_a_loader_and_its_variables_do_what_they_say() {
         &[0xff, 0, 0, 0, 0, 0xff, 0, 0, 0],
         "rouge, puis bleu, puis rien : l'ordre des couleurs du PPM"
     );
-    let _ = std::fs::remove_dir_all(&dossier);
 }
 
 /// **Ce qui ne se lit pas est refusé, avec un message lisible**, avant que
-/// la machine parte : `inf` et `NaN` comme secondes d'un geste (le pilote
-/// recevait `[inf, …]`, une `ReferenceError`), un `WISQ_CAPTURE_TOUTES` qui
-/// n'est pas un nombre (il devenait « jamais » sans le dire), et les messages
-/// qui portaient une ligne coupée sans `\` : quatorze à vingt-six espaces au
-/// milieu du texte.
+/// la machine parte : `inf`, `NaN` et les secondes négatives d'un geste (le
+/// pilote recevait `[inf, …]`, une `ReferenceError`), un `WISQ_CAPTURE_TOUTES`
+/// qui n'est pas un nombre (il devenait « jamais » sans le dire), infini
+/// (`const captureToutes = inf;`, la même `ReferenceError`) ou négatif, et les
+/// messages qui portaient une ligne coupée sans `\` : quatorze à vingt-six
+/// espaces au milieu du texte. Aucun refus ne laisse son dossier de travail
+/// (`lancer`).
 #[test]
 fn what_does_not_read_is_refused_in_plain_words() {
-    let dossier = std::env::temp_dir().join(format!("wisq-kernel-refus-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dossier);
-    std::fs::create_dir_all(&dossier).expect("dossier");
+    let travail = Dossier::neuf("refus");
+    let dossier = &travail.0;
     let noyau = dossier.join("vmlinux");
     std::fs::write(&noyau, elf(0x0100_0000, &petit_noyau())).expect("le noyau");
     for (variables, attendu) in [
@@ -270,6 +307,10 @@ fn what_does_not_read_is_refused_in_plain_words() {
             "WISQ_GESTES : « NaN » n'est pas un nombre de secondes",
         ),
         (
+            vec![("WISQ_ECRAN", "8x4"), ("WISQ_GESTES", "-1:capture")],
+            "WISQ_GESTES : « -1 » n'est pas un nombre de secondes",
+        ),
+        (
             vec![("WISQ_ECRAN", "8x4"), ("WISQ_GESTES", "1:toucher:inf,0,1")],
             "WISQ_GESTES : « toucher:inf,0,1 » — il faut x,y,boutons, par exemple 0.5,0.5,1",
         ),
@@ -280,6 +321,22 @@ fn what_does_not_read_is_refused_in_plain_words() {
                 ("WISQ_CAPTURE_TOUTES", "souvent"),
             ],
             "WISQ_CAPTURE_TOUTES=souvent ne se lit pas : un nombre de secondes",
+        ),
+        (
+            vec![
+                ("WISQ_ECRAN", "8x4"),
+                ("WISQ_CAPTURE", "c.ppm"),
+                ("WISQ_CAPTURE_TOUTES", "inf"),
+            ],
+            "WISQ_CAPTURE_TOUTES=inf ne se lit pas : un nombre de secondes",
+        ),
+        (
+            vec![
+                ("WISQ_ECRAN", "8x4"),
+                ("WISQ_CAPTURE", "c.ppm"),
+                ("WISQ_CAPTURE_TOUTES", "-1"),
+            ],
+            "WISQ_CAPTURE_TOUTES=-1 ne se lit pas : un nombre de secondes",
         ),
         (
             vec![("WISQ_ECRAN", "8x4"), ("WISQ_SCREEN", "8x4")],
@@ -297,5 +354,42 @@ fn what_does_not_read_is_refused_in_plain_words() {
             "{variables:?} : « {attendu} » attendu, et :\n{erreurs}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dossier);
+}
+
+/// **Un pilote qui meurt fait échouer la course.** La capture demandée dans
+/// un dossier qui n'existe pas : le pilote Bun lève `ENOENT` en l'écrivant, à
+/// la fin, et meurt. L'exemple le disait (« le pilote s'est arrêté sur… »)
+/// mais rendait zéro, et un script qui enchaîne les courses — ou attend
+/// l'image — y voyait un succès. Il rend un, et n'en efface pas moins son
+/// dossier de travail.
+#[test]
+fn a_driver_that_dies_makes_the_run_fail() {
+    assert!(
+        bun_present(),
+        "Bun est absent : ce test ne serait vérifié par rien."
+    );
+    let travail = Dossier::neuf("mort");
+    let dossier = &travail.0;
+    let noyau = dossier.join("vmlinux");
+    std::fs::write(&noyau, elf(0x0100_0000, &petit_noyau())).expect("le noyau");
+    let capture = dossier.join("absent").join("c.ppm");
+    let (code, releve, erreurs) = lancer(
+        &noyau,
+        &[
+            ("WISQ_ECRAN", "8x4"),
+            ("WISQ_GESTES", "0:texte:a"),
+            ("WISQ_CAPTURE", capture.to_str().expect("chemin")),
+        ],
+    );
+    assert!(
+        releve
+            .lines()
+            .any(|l| l.starts_with("le pilote s'est arrêté sur ")),
+        "la mort du pilote est dite :\n{releve}\n{erreurs}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "et la sortie la dit aussi :\n{releve}\n{erreurs}"
+    );
 }

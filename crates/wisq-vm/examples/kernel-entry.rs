@@ -775,7 +775,7 @@ fn main() {
         Ok(ecran) => ecran,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let page = match declared_screen(ram, top) {
@@ -797,7 +797,7 @@ fn main() {
                     }
                     Err(why) => {
                         eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
-                        std::process::exit(1);
+                        sortir(&scratch, 1);
                     }
                 }
             }
@@ -815,12 +815,12 @@ fn main() {
             }
             Err(why) => {
                 eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
-                std::process::exit(1);
+                sortir(&scratch, 1);
             }
         },
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     };
     // **L'archive, si on en demande une.** Le plafond est le cadre quand il y
@@ -836,7 +836,7 @@ fn main() {
                 .map_or(ram, |screen| screen.base);
             if let Err(why) = declare_ramdisk(&mut page, archive, top, ceiling) {
                 eprintln!("cette archive ne peut pas être décrite au noyau : {why:?}");
-                std::process::exit(1);
+                sortir(&scratch, 1);
             }
             let at = scratch.join("initramfs.bin");
             std::fs::write(&at, &bytes).expect("l'archive");
@@ -849,7 +849,7 @@ fn main() {
         }
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     }
     let page_path = scratch.join("zero-page.bin");
@@ -866,7 +866,7 @@ fn main() {
         Ok(line) => line,
         Err(why) => {
             eprintln!("WISQ_CMDLINE refusé : {why:?}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     };
     let mut line = command_line.as_bytes().to_vec();
@@ -910,7 +910,7 @@ fn main() {
         Ok(_) => {}
         Err(why) => {
             println!("la région d'entrée ne se traduit pas : {why}");
-            std::process::exit(1);
+            sortir(&scratch, 1);
         }
     }
 
@@ -934,7 +934,7 @@ fn main() {
         Ok(traducteur) => traducteur,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let (prelude, emission) = match traducteur {
@@ -1003,14 +1003,14 @@ fn main() {
         Ok(disk) => disk,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let gestes = match declared_gestes() {
         Ok(gestes) => gestes,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     // **`WISQ_CAPTURE=<fichier.ppm>` : l'écran de la carte, en image.** À la
@@ -1027,13 +1027,13 @@ fn main() {
             Ok(secondes) if secondes.is_finite() && secondes >= 0.0 => secondes,
             _ => {
                 eprintln!("WISQ_CAPTURE_TOUTES={value} ne se lit pas : un nombre de secondes");
-                std::process::exit(2);
+                sortir(&scratch, 2);
             }
         },
     };
     if (!capture.is_empty() || gestes != "[]") && ecran.is_none() {
         eprintln!("WISQ_CAPTURE et WISQ_GESTES demandent un écran : WISQ_ECRAN=1280x800");
-        std::process::exit(2);
+        sortir(&scratch, 2);
     }
     // **`WISQ_HEURE=<millisecondes>` : l'horloge CMOS figée.** Par défaut
     // elle donne l'heure du mur, et le noyau en tire une part de son aléa
@@ -1045,7 +1045,7 @@ fn main() {
             Ok(ms) => format!("() => {ms}"),
             Err(_) => {
                 eprintln!("WISQ_HEURE={value} ne se lit pas : des millisecondes depuis 1970");
-                std::process::exit(2);
+                sortir(&scratch, 2);
             }
         },
     };
@@ -1150,7 +1150,7 @@ const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere,
         Ok(watch) => watch,
         Err(why) => {
             eprintln!("{why}");
-            std::process::exit(2);
+            sortir(&scratch, 2);
         }
     };
     let rounds: usize = std::env::var("WISQ_ROUNDS")
@@ -1214,7 +1214,7 @@ const brancherLaCarte = (ram) => carte(moduleDeLaCarte, {{ ram, disque: arriere,
                         "WISQ_CACHE={value} ne se lit pas : il faut « régions,octets », \
                          par exemple 16384,100663296"
                     );
-                    std::process::exit(2);
+                    sortir(&scratch, 2);
                 }
             }
         }
@@ -1882,7 +1882,12 @@ console.log("controle " + controle
         println!("le pilote a écrit en erreur");
         print!("{errors}");
     }
-    if !status.success() {
+    // **Un pilote mort n'est pas une course finie** : le relevé ci-dessous
+    // est fait quand même — ce qu'il a eu le temps de dire —, puis la sortie
+    // le dit par son code. Elle rendait zéro, et un script qui enchaîne les
+    // courses prenait une `ReferenceError` pour un succès.
+    let pilote_mort = !status.success();
+    if pilote_mort {
         println!("le pilote s'est arrêté sur {status}");
     }
     {
@@ -2029,5 +2034,18 @@ console.log("controle " + controle
         }
     }
 
+    if pilote_mort {
+        sortir(&scratch, 1);
+    }
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **Sortir en effaçant le dossier de travail** : `std::process::exit` ne
+/// lance aucun destructeur, et chaque refus laissait derrière lui un
+/// `/tmp/wisq-kernel-<pid>` (la ligne de commande, la page zéro, les
+/// segments du noyau). Tout refus qui suit la création du dossier passe par
+/// ici.
+fn sortir(scratch: &std::path::Path, code: i32) -> ! {
+    let _ = std::fs::remove_dir_all(scratch);
+    std::process::exit(code)
 }
