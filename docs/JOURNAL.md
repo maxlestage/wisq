@@ -8,6 +8,1579 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : la carte derrière la mémoire, l'écran et la tablette ; Void Xfce démarre son ISO jusqu'au bureau dessiné
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de l'entrée suivante*, chaque point rejoué sur l'hôte (un
+  Xeon) avant d'être corrigé :
+  - `67 9b` (`fwait` sous le préfixe de taille d'adresse) ne livrait pas
+    `#MF`, contrairement à ce que disait le commentaire. `attente`
+    demandait la longueur à `decode`, que l'émetteur partage et qui refuse
+    `67` devant tout sauf `call` et `jmp` ; la machine retombait sur
+    `sans_taille_d_adresse`, qui en faisait un `nop` sans regarder
+    l'exception en attente.
+  - `f2 9b`, `f3 f2 9b` et `48 66 9b`, que l'hôte admet (SIGFPE), étaient
+    illisibles : un arrêt de la machine en anneau 0, `#UD` en anneau 3.
+  - La liste des préfixes de `attente` n'était tenue par aucun test : réduite
+    à `40..4f`, `66`, `f0`, `f3`, toute la suite passait.
+  - `ffreep` qui fait tomber C1 n'avait pas de test : le test de l'état entier
+    ne jouait que `ffree`.
+- *La carte n'était branchée que par ses ports.* La mémoire des périphériques
+  (la mémoire vidéo et les registres de l'écran de Bochs, la BAR0 de la
+  tablette), hors de la RAM, rendait « un accès hors de la mémoire » ; la
+  tablette n'était jamais servie hors d'un `out` ; l'horloge CMOS minimale
+  des puces de la machine passait devant celle, complète, de la carte.
+  `wisq-pc` ne savait ni démarrer une image par sa recette, ni montrer un
+  écran.
+- *Void Xfce, sur la machine native*, s'arrêtait trois fois en route (voir
+  plus bas).
+
+**Ce qui est fait.**
+
+- *`fwait`* : `attente` ne demande plus rien à `decode` ; la longueur vaut
+  les préfixes plus un (le pas à pas ne lit jamais que quinze octets), et un
+  `f0` n'importe où devant reste refusé. *`ffreep`* rejoint `ffree` dans
+  l'état entier comparé à l'hôte.
+- *La mémoire des périphériques* (`x86_paging::Devices`, un champ neuf de
+  `Cpu`, vide par défaut : l'interpréteur de référence et le juge de
+  l'émetteur ne voient rien de changé). Quand la RAM ne couvre pas une
+  adresse physique — au-delà de sa fin, ou dans le trou sous quatre
+  gibioctets —, la lecture, l'écriture, chaque moitié d'un accès à cheval et
+  la sonde d'avant écriture (seize octets de SSE, `fxsave`) demandent à la
+  carte. C'est le `readSlowly` et le `writeSlowly` de `X86Memory.swift`. Le
+  tampon de traduction ne garde toujours que la RAM : le chemin chaud ne
+  rencontre jamais un périphérique.
+- *La carte tenue des deux côtés* (`pc::carte::brancher`,
+  `CartePartagee`) : par la machine (ses ports, ses lignes recopiées dans
+  les 8259, son réveil dans l'attente de `hlt`, déjà là) et par le
+  processeur (sa mémoire), sous un verrou que personne ne dispute. Le tour du
+  matériel (`Peripheriques::servir_tour`) sert la tablette toutes les deux
+  cent cinquante-six instructions au plus : sa sonnette, et ce que le doigt
+  a fait. L'horloge CMOS de la carte prend les ports `0x70` et `0x71`
+  (`Herites::cmos_ailleurs`).
+- *`wisq-pc`* : `--iso` (la recette lue par `iso9660::Recipe`, le noyau et
+  les initramfs sortis de l'image, mis bout à bout sur quatre octets comme
+  `IsoBoot.extractInitrds`, la ligne de l'application —
+  `chargeur::ligne_d_une_image`, le port de `IsoBoot.commandLine(from:)` et
+  de `X86Machine.commandLine(_:withScreen:)` —, l'image branchée en disque),
+  `--disk`, `--display 1280x800` (l'écran et la tablette sur la carte, le
+  cadre annoncé par la page zéro), `--screen-dump image.ppm` et
+  `--screen-every N` (l'image de la carte en PPM, datée en instructions),
+  `--keys 'secondes:texte'` (le clavier PS/2 de la carte), `--status N` (où
+  en est la course, et les RIP les plus relevés) et `--input-file` (taper au
+  port série ce qu'on ajoute à un fichier pendant la course). L'image change :
+  c'est un signe de vie, comme le port série.
+- *Les murs de Void, chacun levé* :
+  1. `67 8d 51 ff` (`lea -1(%ecx),%edx`) dans `ld-linux-x86-64.so.2` : tout
+     programme mourait d'un « Illegal instruction ». `lea` sous `67` vers un
+     registre de trente-deux ou seize bits se lit : l'adresse coupée à la
+     taille du registre est la même (EDX à 4 pour RCX = 0x1_0000_0005, DX à
+     4 sous `66`, relevé sur l'hôte) ; vers un registre de soixante-quatre
+     bits, elle ne l'est pas (`67 48 8d` rend 4 là où sans `67` on lirait
+     0x1_0000_0004), et reste refusé.
+  2. `66 0f e7 14 33` (`movntdq`) dans un module du noyau chargé au
+     démarrage (le banc du RAID) : la machine s'arrêtait. `movntps`,
+     `movntpd`, `movntdq` et `movnti` rangent comme `movaps`, `movdqa` et
+     `mov`, en mémoire seulement (`non_temporel`, une copie de l'octet
+     d'opcode lue par `decode`, sans toucher au décodeur partagé) ; leurs
+     formes registre, sous `f3`, sous `f2`, et `movnti` sous `66` restent
+     refusées (SIGILL sur l'hôte).
+  3. `67 67 66 0f 6f d1` (deux `67` devant `movdqa` entre registres) dans un
+     programme du bureau : `sans_taille_d_adresse` ôte maintenant tous les
+     `67`, et essaie aussi le second décodeur (le MMX et le flottant de SSE
+     entre registres) ; `maskmovq`, qui adresse `[RDI]` sans opérande pour le
+     dire, reste refusé.
+
+**Les tests.** `pc_ecran.rs`, six : l'invité peint l'écran par sa mémoire
+vidéo (quatre octets, huit à cheval sur deux pages, seize d'un `movdqu`, tout
+dans le cadre de la carte, la révision qui avance), les registres DISPI par
+la BAR2 et par les ports, personne ailleurs hors de la RAM, la sonnette de la
+tablette notée par l'écriture et servie au tour suivant, un toucher qui
+arrive sans sonnette (X, Y, trois boutons, `SYN_REPORT`, la ligne 10),
+l'horloge CMOS de la carte. `pc_flottant` gagne
+`every_prefix_the_host_accepts_before_fwait_waits` (les vingt-six préfixes
+seuls et cinq mélanges, chacun `#MF` et une instruction, `f0` refusé partout
+— sonde `r6/c/mf4`) et `non_temporal_stores_store_like_the_others` ;
+`an_address_size_prefix_without_address_is_ignored` juge `lea`, les deux `67`
+et le second décodeur (sondes `r6/c/lea67` et `r6/c/nt`). Deux tests du
+chargeur (la ligne de l'application, les initramfs bout à bout), cinq de
+`wisq-pc` (l'écran, le PPM, les frappes, le fichier d'entrée, les RIP
+relevés). `x86_float_host` joue `ffreep`.
+
+**Les sabotages** (une ligne chacun, le test lancé, la source rendue et
+`git diff` vide après chacun ; `r6/sab/lot1.out` à `lot5.out`) : 44, tous
+tombés au bout du compte.
+
+| où | sabotages | tombent dans |
+|---|---|---|
+| `fwait` | longueur demandée à `decode`, liste réduite, `67` ou `f2` retiré, `f0` admis | `every_prefix_the_host_accepts_before_fwait_waits`, `fwait_is_counted_as_one_instruction` |
+| `ffreep` | C1 gardé | l'état entier, les démasquées |
+| mémoire des périphériques | lecture, écriture, chaque moitié à cheval, `claims` ignoré ou faux, `Devices` non posé (M1 à M5, M8, M12) | `the_guest_paints_the_screen_through_its_video_memory`, `the_dispi_registers_answer_through_the_bar2` |
+| tablette | `servir_tour` non appelé, servie sur sonnette seulement (M6, M7) | `the_tablet_doorbell_is_served_at_the_next_turn`, `a_touch_reaches_the_guest_without_a_doorbell` |
+| horloge CMOS | `cmos_ailleurs` non posé, gardes de `0x70` et `0x71` retirées (M9 à M11) | `the_cards_cmos_clock_takes_the_ports` |
+| ligne, initramfs | `quiet` gardé, `console=tty0` toujours, patience toujours, clé sans `=`, sans alignement (L1 à L5) | les deux tests du chargeur |
+| `wisq-pc` | PPM en BGR, frappes non triées, écran nul admis, `\n` non traduit, fichier relu, vide rendu, tri, troncature (W1 à W8) | ses tests |
+| `lea`, `67` | `lea` large admis, `lea` refusé, un seul `67` ôté, sans le second décodeur, mémoire admise, `maskmovq` admis, longueur d'un seul `67` (A1, A2, P1 à P5) | `an_address_size_prefix_without_address_is_ignored` |
+| non temporels | forme registre admise, longueur de `movnti`, `f3` admis, `movnti` sous `66`, `non_temporel` absent (N1 à N5) | `non_temporal_stores_store_like_the_others` |
+
+N3 (`f3` admis) a d'abord survécu : `f3 0f e7` restait refusé par la garde
+`0xE7 if operande`. Le test refuse maintenant aussi `f3 0f 2b`, `f3 0f c3`,
+`f2 0f c3` et `66 0f c3`, et N3 tombe (N3b). *Un défaut du script de
+sabotage lui-même*, trouvé en route : la source rendue gardait l'heure de la
+copie, antérieure au binaire saboté, et cargo ne rebâtissait pas — un
+`cargo test` lancé juste après un lot jugeait le dernier sabotage. Chaque
+sabotage, lui, écrit sa source et rebâtit : les résultats tiennent. Le
+script remet maintenant l'heure, et la suite entière a été relancée sur une
+source fraîche.
+
+**Où cela va** (une course à la fois, `ulimit -v`) :
+
+- *L'ISO `alpine-virt-3.24.4-x86_64.iso`* par `--iso` (512 Mio) : la recette
+  de `/boot/syslinux/syslinux.cfg`, la ligne de l'application, l'invite,
+  `root`, `uname -a` (`Linux localhost 6.18.60-0-virt`) : 5,02 milliards
+  d'instructions, 52,6 s, 95,5 MIPS. Avec `--display 1280x800` : `bochs-drm`
+  prend la carte (« Framebuffer size 16384 kB @ 0xe0000000, mmio @
+  0xe1000000 »), `fb0` et `/dev/dri/card0` existent, la tablette se lie
+  (« input: wisq tablet »), la console du noyau et l'invite paraissent à
+  l'écran (capture regardée) ; 5,78 milliards, 59,8 s. Le clavier : `--keys`
+  tape `root` puis `uname -a` dans le getty de la console, qui les affiche
+  (la connexion par la console demande un mot de passe, et la machine
+  n'en tape pas).
+- *L'ISO `void-live-x86_64-20250202-xfce.iso`* (somme vérifiée), 1 Gio, la
+  ligne de l'application (`console=tty0`, la recette de
+  `/boot/isolinux/isolinux.cfg` sans `quiet`, la patience de systemd, la
+  console série), l'écran à 1280 × 800 : le noyau 6.12 déballe son
+  initramfs de 147 Mio en xz (un tiers du chemin, ~30 milliards
+  d'instructions, l'essentiel dans le décodeur xz d'après les RIP relevés par
+  `--status` ; la racine en squashfs, xz aussi, en reprend une bonne part
+  ensuite), dracut monte la racine, runit,
+  udev, `void-live login:` sur le port série, lightdm ouvre la session
+  d'`anon` : Xorg (`modesetting` sur `bochs-drm`, à 1024 × 768),
+  `xfce4-session`, `xfwm4`, `xfce4-panel`, `xfdesktop`, `Thunar`,
+  `nm-applet`, `pipewire` (relevé par `ps` dans la machine, par
+  `--input-file`). **Le bureau est dessiné** : le panneau, les icônes
+  (Home, File System, Trash), le dock, l'horloge, puis le fond d'écran à la
+  souris d'Xfce (captures regardées). Cinq minutes de l'invité plus tard,
+  l'économiseur d'écran l'éteint, comme il le fait.
+
+| | jusqu'où | instructions | temps | débit |
+|---|---|---|---|---|
+| machine PC en Rust (m1, une image toutes les 5 s, un autre flux en concurrence les quatre premières minutes) | le panneau et les icônes | 95,4 milliards | 915 s | 104 MIPS |
+| machine PC en Rust (m1) | le fond d'écran | 96,2 milliards | ≤ 930 s | 103 MIPS |
+| machine PC en Rust (m2, une image toutes les 10 s) | le panneau et les icônes | 95,4 milliards | 860 s | 111 MIPS |
+| machine PC en Rust (m2) | le fond d'écran | 96,7 milliards | ≤ 880 s | 110 MIPS |
+| cœur Swift (journal du 14 novembre, la fabrication du bureau prêt) | le panneau ; la fin de la fabrication | ~88 milliards ; 97,7 milliards | 2 527 s pour la fabrication entière | 39 à 46 MIPS |
+
+**Environ 2,8 fois le cœur Swift en temps jusqu'au bureau** : 880 s contre
+~2 500 s (96,7 milliards d'instructions au débit moyen de la fabrication du
+14 novembre, 97,7 milliards en 2 527 s, soit 38,7 MIPS), sur des comptes
+d'instructions voisins — les deux machines ne retirent pas tout à fait les
+mêmes (le panneau vient vers 88 milliards côté Swift, 93,8 ici). C'est une
+comparaison entre deux journaux, pas des courses alternées ; le conteneur
+était partagé avec un autre flux (un `bun` et des `rustc` pendant m1, des
+`rustc` au début de m2).
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (961 passés, 0 échec), `-p wisq-page -p wisq-site` (43),
+`cargo build --release -p wisq-page --target wasm32-unknown-unknown`,
+`check-whitespace.sh`, `check-project-sources.sh` : tout passe. Le compte
+publié passe de 4 142 à 4 157 (Rust 1 092) ; le site rebâti, `bun test` :
+476 passés. `origin/master` (#712, la carte, identique à
+`claude/pc-rust-peripheriques` pour `crates/wisq-page`) était déjà fusionné :
+rien de neuf à prendre.
+
+**Ce qui reste.**
+
+- *L'ABI C* (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`) : la machine PC
+  native n'y est pas exposée ; l'application démarre toujours le cœur Swift.
+- *L'écran que Xorg choisit* : 1024 × 768, pas les 1280 × 800 demandés —
+  la carte n'offre pas d'EDID, et `modesetting` prend son mode par défaut
+  (l'application branche aussi un écran de 1024 × 768). Le noyau avertit
+  que la BAR0 déborde l'entrée réservée de la page zéro (« resource sanity
+  check »), sans conséquence.
+- *La mémoire des périphériques passe par le chemin lent* : une marche des
+  tables et un verrou par accès. Le bureau s'en contente ; un bureau qui
+  peint beaucoup le paiera. Non mesuré à part.
+- *Toujours refusés* : `67` devant un opérande mémoire (l'adressage de
+  trente-deux bits n'est pas porté), `maskmovdqu`, `maskmovq` sous `67` ;
+  quinze préfixes devant `9b` sont un `#GP` sur l'hôte et une instruction
+  illisible ici. Aucun n'a été rencontré en route.
+- *La carte réseau* n'est pas branchée par `wisq-pc`. Le port `0x80` (le
+  délai d'entrée-sortie) est compté parmi les ports muets : 2,4 millions
+  d'écritures sur la course m1.
+- *Seule la CI juge* le cœur Swift et les constructions iOS et macOS (aucun
+  Swift n'a été touché), et un autre processeur pour les tests contre le
+  silicium de l'hôte.
+
+## 2026-11-21 — Machine PC en Rust : C1 d'une instruction arrêtée, `fxrstor`, ce qui attend et ce qui n'attend pas
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante, chaque point
+rejoué contre le silicium de l'hôte, un Xeon, avant d'être corrigé) :
+
+- *C1 d'une instruction arrêtée* : il restait ce qu'il était. Le silicium
+  le fait tomber, sauf sur un débordement de la pile : `fsqrt` (C1 levé)
+  puis `fdiv` par zéro arrêté rend 0xb0a4, la machine rendait 0xb2a4 ;
+  `fcom` arrêté par un NaN, 0xf5a1 contre 0xf7a1 ; un `fsts` arrêté par le
+  dépassement, 0xb8a8. L'entrée suivante disait « sinon ils restent ce
+  qu'ils étaient » : c'est faux pour C1, juste pour C3, C2 et C0.
+- *Le test ne pouvait pas le voir* : sa mise en place (des chargements)
+  laissait toujours C1 à zéro avant l'instruction jugée. En le levant, il a
+  montré deux autres écarts que personne n'avait relevés : `fcomi`,
+  `fucomi`, `fcomip` et `fucomip` **gardent** C1 (le manuel le dit mis à
+  zéro ; arrêtés, ils le gardent aussi), et `ffree`, `ffreep` le font
+  **tomber**. 1 386, 1 386 et 1 980 cas sur 4 000.
+- *`fxrstor`* gardait les bits 7 et 13 à 15 du mot de contrôle : le
+  silicium rend 0x1f7f d'une aire qui dit 0xffff, 0x0040 de 0x0080.
+  L'entrée suivante ne nommait que `fldcw`, `fldenv` et `frstor`.
+- *`#MF`* n'était pas livré par `cvtpi2ps`, `cvtpi2pd` (depuis un registre),
+  `cvt(t)ps2pi` et `cvt(t)pd2pi` : la garde ne voyait que `emms` et le MMX
+  lui-même. Ni par `fwait` préfixé (`48 9b`, `66 9b`), lu comme un `nop`.
+  À l'inverse, `fneni`, `fndisi` et `fnsetpm` (`db e0`, `e1`, `e4`)
+  attendaient, et le silicium non.
+- *La pile pleine dont ST(0) est vide* : `fxtract`, `fptan` et `fsincos`
+  levaient C1 (0x3a41) ; le silicium rend 0x3841.
+- *Sans test* : `fnstsw`, `fnstcw`, `fnstenv` et `fnsave` en mémoire sous
+  une exception en attente, `fninit` et `emms` sous elle, `fldcw` qui
+  démasque une exception déjà levée, et le compte des instructions de
+  `fwait` (qui règle le 8253).
+
+**Ce qui est fait.**
+
+- *C1 d'un arrêt* tombe (`execute_x87`, `x87_store_stops`), sauf sur une
+  faute de pile, où il dit son sens, et pour `fcomi` et les siens, qui ne
+  l'écrivent pas (`set_comparison_flags` ne le touche plus). `ffree` et
+  `ffreep` le font tomber.
+- *`fxrstor`* passe par `control_word`, comme `fldcw`, `fldenv` et
+  `frstor`.
+- *Ce qui touche un registre MMX* est dit par `Extended::touches_mmx` :
+  `emms`, le MMX, `cvt(t)ps2pi`, `cvt(t)pd2pi`, et `cvtpi2ps`, `cvtpi2pd`
+  depuis un registre seulement — depuis la mémoire, le manuel les dit sans
+  passage au MMX, et l'hôte ne livre rien. Une exception du x87 en attente
+  les arrête toutes (`#MF`).
+- *`fwait` préfixé* : `attente` saute les préfixes, et `Lue::Attente` porte
+  la longueur ; `lock fwait` reste illisible (SIGILL sur l'hôte), alors que
+  `decode`, que l'émetteur partage, en fait un `nop`.
+- *N'attendent pas* : `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv`,
+  `fnsave`, et `fneni`, `fndisi`, `fnsetpm`, qui ne font rien.
+- *Un ST(0) vide* sur une pile pleine : `empty_into_two` range les deux
+  indéfinis, C1 à zéro.
+
+**Les tests.** `x86_float_host.rs` lève C1 avant l'instruction (par
+`fnstenv`, le bit posé, `fldenv`) un bloc de soixante tirages sur deux —
+soixante, le plus petit commun multiple des modes, des précisions et des
+piles — et joue une cinquième pile, pleine mais ST(0) libéré, une fois sur
+dix (à la place d'une des six piles normales). Les trois tests de l'état
+entier, des transcendantes et des démasquées passent sur leurs 280 000,
+72 000 et 276 000 tirages. `x86_extended_oracle` gagne
+`fxrstor_keeps_the_control_word_like_the_silicon`,
+`a_stopped_instruction_drops_c1` et
+`a_full_stack_with_an_empty_top_keeps_c1_down`, aux valeurs relevées sur
+l'hôte ; `pc_flottant`, `what_does_not_wait_runs_under_a_pending_exception`
+(`fnstsw`, `fnstcw`, `fnstenv` en mémoire, `fneni`, `fndisi`, `fnsetpm`,
+`cvtpi2ps` et `cvtpi2pd` depuis la mémoire : passent, et le `fwait` suivant
+livre `#MF`, sauf après `fnstenv`, qui masque tout),
+`fldcw_unmasking_a_raised_exception_makes_it_pending` et
+`fwait_is_counted_as_one_instruction` (avec `lock fwait` refusé) ; le test
+de `#MF` y ajoute `fwait` préfixé, `emms`, `movq2dq` et les cinq
+conversions, et `fninit` et `fnsave` à côté de `fnclex`. Chaque valeur
+attendue vient d'une sonde en C jouée sur l'hôte (`r5/c` dans le
+bloc-notes).
+
+**Les sabotages** (un changement d'une ligne chacun, le test lancé, la
+source rendue et `git diff` vide après chacun ; `r5/sab/lot.out`) :
+
+24 sabotages en 28 courses, tous tombés au bout du compte (`r5/sab/lot.out` et `lot2.out` dans le
+bloc-notes) :
+
+| où | sabotage | tombe dans |
+|---|---|---|
+| C1 d'un arrêt | `0` → `before.2 & C1` (S10), le rangement arrêté qui le garde (S10s) | `a_stopped_instruction_drops_c1`, les démasquées |
+| `fcomi` | C1 remis à zéro (S10f), `keeps_c1` retiré de l'arrêt (S10k) | l'état entier, les démasquées |
+| `ffree` | C1 gardé (S_ffree) | l'état entier, les démasquées |
+| `fxrstor` | `half(0) \| 0x40` (S_fxrstor) | `fxrstor_keeps_the_control_word_like_the_silicon` |
+| MMX | `emms` (S13), `cvt*2pi` (S_tommx), `cvtpi2p*` d'un registre (S_frommmx), puis de la mémoire (S_frommem) | `an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction`, `what_does_not_wait_runs_under_a_pending_exception` |
+| `fwait` | préfixes ignorés (S_fwait_prefixe), `lock` admis (S_lock), le compte retiré (S14) | le test de `#MF`, `fwait_is_counted_as_one_instruction` |
+| ce qui n'attend pas | `fneni` (S_fneni, deux fois), `fninit` (S3b), `fnclex` (S3c), `fnstsw m16` (S1, deux fois), `fnstenv` (S1b), `fnstcw` (S1c), `fnsave` (S1d, deux fois) | `what_does_not_wait_runs_under_a_pending_exception`, `the_no_wait_forms_run_under_a_pending_exception`, le test de `#MF` |
+| `fldcw` | le résumé après une forme de contrôle retiré (S30) | `fldcw_unmasking_a_raised_exception_makes_it_pending` |
+| ST(0) vide | `!self.st_empty(0) &&` retiré de `fxtract` (S17) et du sinus (S17b), C1 non remis à zéro (S17c) | `a_full_stack_with_an_empty_top_keeps_c1_down` |
+
+S3b a d'abord survécu, comme au contrôle : dans la machine, `fninit` passe
+par `decode` (`Op::FpuInit`, que l'émetteur partage) et n'atteint jamais
+`execute_x87`. La garde ne sert qu'à qui appelle `execute_extended`
+lui-même ; `the_no_wait_forms_run_under_a_pending_exception` la juge à ce
+niveau, et S3b tombe.
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (946 passés, 0 échec), `cargo build --release -p wisq-page
+--target wasm32-unknown-unknown`, `check-whitespace.sh`,
+`check-project-sources.sh` : tout passe. Le compte publié passe de 4 135 à
+4 142 (Rust 1 077) ; le site rebâti, `bun test` : 476 passés. L'initramfs
+6.18.60 (`rdinit=/bin/sh`) rend les mêmes `awk`, `printf '%.20Lf'` et
+`seq` qu'avant, 2,01 milliards d'instructions en 13,96 s, 144,2 MIPS.
+
+**Ce qui reste.** Ce que l'entrée suivante disait non modélisé l'est
+toujours : le dépassement démasqué vers un registre (le biais de 24 576),
+CR0.NE et le mode FERR#, FIP, FDP et FOP. `decode`, que l'émetteur partage,
+lit encore `lock` devant `fwait` (et sans doute devant d'autres
+instructions qui ne se verrouillent pas) : la machine native le refuse
+pour `fwait` seulement. Les seuils des transcendantes et ce que `fcomi`
+fait de C1 ne sont relevés que sur ce Xeon ; un processeur AMD peut
+différer. Le cœur Swift garde ses écarts.
+
+## 2026-11-21 — Machine PC en Rust : le contrôle du flottant, l'état entier du x87 contre l'hôte, les exceptions démasquées et `#MF`
+
+**Ce qui n'allait pas** (le contrôle de la tranche précédente, chaque point
+rejoué contre le silicium de l'hôte, un Xeon, avant d'être corrigé) :
+
+- *La garde du préfixe `67`* : retirer `lods`, `cmps` ou `scas` de la liste
+  des chaînes ne faisait tomber aucun test ; `67 ac`, `67 a6` et `67 ae`
+  auraient adressé RSI et RDI entiers sans que rien ne le voie. La garde
+  `instruction.length + 1 > 15` était morte (le reste n'a que quatorze
+  octets).
+- *Le mot de contrôle* : `fldcw`, `fldenv` et `frstor` le gardaient tel quel.
+  Le silicium lève le bit 6 et efface les bits 7 et 13 à 15 : `fldcw 0x0000`
+  rend 0x0040, `fldcw 0xe97a` rend 0x097a. 1 956 mots tirés sur 2 000
+  divergeaient.
+- *Le dénormal à côté d'un NaN* n'était tu qu'entre registres : `fadds`,
+  `fcoms`, `fucom` le signalaient encore, et `fcoms` ou `flds` aussi sur une
+  faute de pile.
+- *Les valeurs que le processeur refuse* (non normalisées, pseudo-NaN,
+  pseudo-infinis) étaient calculées par l'addition, la multiplication, la
+  division et la comparaison, rangées par `fst` et `fist` ; un
+  pseudo-dénormal revenait brut là où le silicium le renormalise à
+  l'exposant 1.
+- *La pile pleine et les registres vides* : `fxtract`, `fptan` (et
+  `fsincos`) gardaient une valeur calculée dans ST(1) ; `fptan` d'un NaN ou
+  d'un infini empilait 1,0 ; `fcmov` ne lisait pas ses registres quand la
+  condition ne tenait pas.
+- *Les fonctions transcendantes* taisaient UE et DE, levaient l'inexact sur
+  des résultats exacts (atan2(y, +∞) = ±0), et arrondissaient au plus proche
+  quel que soit le mode : `fpatan` d'un quotient minuscule rendait −0 là où
+  le silicium rend le plus petit dénormal vers −∞.
+- *Les exceptions démasquées* : la réponse masquée était écrite quand même,
+  et rien ne livrait `#MF`. Le journal du 21 au matin le disait mal.
+- *`fisttp`*, du SSE3 que CPUID n'annonce pas, était lu.
+- *Sans test* : les sondes de `fnsave` et de `fnstenv` à cheval sur une page
+  absente, C1 qui tombe sur un chargement, C2 qui tombe au sinus suivant,
+  `fbld` du zéro décimal négatif, un transfert de disque qui finit au
+  dernier octet de la RAM ; et `fbstp` n'était comparé que sur huit octets
+  de dix.
+
+**Ce qui est fait.**
+
+- *Le préfixe `67`* : `an_address_size_prefix_without_address_is_ignored`
+  refuse aussi `lods`, `cmps` et `scas` ; la garde morte est retirée.
+- *Le mot de contrôle* passe par `control_word` (`fldcw`, `fldenv`, `frstor`).
+- *Le dénormal* d'un opérande en mémoire suit les règles entre registres :
+  tu devant un NaN, une opération invalide, une division par zéro, une
+  faute de pile.
+- *Les valeurs refusées* sont invalides partout (`refused`, la
+  comparaison, `narrowed`, `as_integer`) ; `canonical` renormalise un
+  pseudo-dénormal rendu tel quel (zéro ajouté, `fprem`, la comparaison).
+- *La pile* : le débordement se juge avant l'opérande (`push_overflows`) ;
+  `fxtract`, `fptan` et `fsincos` sur une pile pleine rangent l'indéfini
+  deux fois ; `fcmov` lit ses deux registres ; `fptan` d'un NaN le range
+  deux fois.
+- *Les fonctions transcendantes* sont récrites sur un nombre de travail de
+  cent vingt-huit bits (`Big` : mantisse, exposant sans borne), par les
+  mêmes séries, puis arrondies une fois selon le mode : UE, PE et C1 en
+  sortent comme du reste du x87, et π/2 a cent quatre-vingt-douze bits pour
+  réduire un grand argument. Là où le silicium ne calcule pas, il est suivi
+  tel qu'on le voit : le sinus, le cosinus et la tangente d'un argument sous
+  2⁻⁶⁸ rendent l'argument (ou 1) sans arrondi ; `fpatan` d'un quotient sous
+  2⁻⁴⁰ rend le quotient arrondi ; `f2xm1` hors de [−1, 1] et `fyl2xp1` à −1
+  et en dessous rendent leur argument ; un résultat non nul est toujours
+  inexact (`fyl2x` de 8 et 1 rend 3, inexact), et un dénormal rendu est un
+  dépassement par le bas.
+- *Les exceptions démasquées*, comme sur l'hôte : invalide (faute de pile
+  comprise), dénormal ou division par zéro arrêtent l'instruction avant
+  qu'elle ne range — pile, registres et mémoire intacts, seul son drapeau
+  levé, et une comparaison pose quand même C3, C2 et C0 ; un chargement d'un
+  dénormal se fait pourtant. Un rangement en mémoire qui déborde, par le
+  haut ou par le bas, s'arrête aussi, sans l'inexact. Puis **la prochaine
+  instruction qui attend livre `#MF`** (vecteur 16) : toute instruction du
+  x87 sauf `fninit`, `fnclex`, `fnstsw`, `fnstcw`, `fnstenv` et `fnsave`,
+  toute instruction du MMX, et `fwait` (`Lue::Attente`, que les blocs
+  laissent au pas à pas).
+- *`fisttp`* (`DB /1`, `DD /1`, `DF /1`) reste illisible ; le test des
+  rangements juge `fist` sans dépilement à sa place.
+
+**Les tests contre l'hôte** (`x86_float_host.rs`, sur un hôte x86-64) :
+
+| test | formes | cas | ce qui est comparé |
+|---|---|---|---|
+| l'état entier, toutes classes, quatre piles | 70 | 280 000 | les 108 octets de `fnsave` (pointeurs exceptés), l'opérande en mémoire, RFLAGS pour `fcomi` |
+| les transcendantes, toutes classes, quatre piles | 9 | 72 000 | la valeur à l'unité du dernier rang, le reste au bit près ; C1 là où il ne dépend pas de l'approximation |
+| les exceptions démasquées | 69 | 276 000 (dont 1,5 % écartés) | l'état entier, le mot de contrôle à 0x40 |
+| les rangements | 9 | 54 000 | les seize octets de l'aire, `fbstp` sur ses dix |
+
+Les classes tirées comprennent celles qu'`extended` ne tirait pas : non
+normalisés, pseudo-NaN, pseudo-infinis, pseudo-dénormaux, et en mémoire
+les simples et doubles dénormaux, les NaN signalants, le zéro décimal
+signé. Avant les corrections, la sonde du contrôle comptait 15 287 écarts
+sur 140 000 cas exacts ; après, aucun. Ailleurs : `pc_flottant` gagne
+`fnsave_and_fnstenv_across_a_missing_page_leave_nothing_behind` et
+`an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction`,
+`pc_carte` `a_transfer_ending_at_the_last_byte_of_ram_is_served`,
+`x86_extended_oracle` trois tests manuels (C1, C2, le zéro décimal).
+
+**Les sabotages** (un retrait ou un changement d'une ligne chacun, le test
+lancé, la source rendue et `git diff` vide après chacun) :
+
+52 sabotages, tous tombés au bout du compte (`r4/sab/lot1.out`, `lot2.out`,
+`lot3.out` dans le bloc-notes) :
+
+| où | sabotage | tombe dans |
+|---|---|---|
+| `67` | `lods`, `cmps`, `scas` retirés de la liste (A1 à A3) | `an_address_size_prefix_without_address_is_ignored` |
+| carte | `fin <= len` → `<` (C10) | `a_transfer_ending_at_the_last_byte_of_ram_is_served` |
+| sondes | celle de `fnsave`, celle de `fnstenv` (B5, B7) | `fnsave_and_fnstenv_across_a_missing_page_leave_nothing_behind` |
+| mot de contrôle | bit 6 non levé, bits hauts gardés, `fldenv` sans `control_word` (B2, B2b, D12) | l'état entier, les démasquées |
+| dénormal | celui d'une comparaison en mémoire (B1, B1b), tu à côté d'un NaN (D1), en mémoire (D2), devant une division par zéro (D2b) | l'état entier |
+| refusés | dans le calcul (D3), la comparaison (D5), `fst` (D6), `fist` (D7) | l'état entier |
+| pseudo-dénormaux | non renormalisés : zéro ajouté (D4), comparaison (D13), `fprem` (D14) | l'état entier |
+| pile | `fcmov` (D8), `fxtract` pleine (D9), `fld` pleine (D11), `fptan` d'un NaN (D10) | l'état entier, les transcendantes |
+| C1, C2 | C1 sur un chargement (C1), C1 hors du domaine (C3), C2 qui reste (C4), C1 de `fptan` après l'empilement (E7) | les tests manuels |
+| `fbld`, `fbstp` | −0 rendu +0 (C7), le signe de `fbstp` (G1) | `fbld_keeps_the_sign_of_a_decimal_zero`, les rangements |
+| transcendantes | seuil du sinus (E1), de `fpatan` à 2⁻⁶⁰ et 2⁻³⁰ (E2, E2b), UE d'un dénormal (E3), `Side::Below` (E4), `f2xm1` hors domaine (E5) et à 1 (E11), DE de `fyl2xp1` (E6), la queue de π/2 (E8), PE d'un zéro exact (E9), DE de `fyl2x` sur zéro (E10), les 67 bits (E12) | les transcendantes, le test de la bibliothèque |
+| démasquées | l'arrêt (F2), `#MF` (F3), le rangement qui déborde (F4), les codes d'un arrêt (F5), `fwait` (F6), le MMX (F7), le dénormal chargé (F8), `fwait` dans un bloc (F9) | les démasquées, `an_unmasked_x87_exception_is_delivered_by_the_next_waiting_instruction` |
+| décodeur | `fisttp` lu (F1) | `the_extended_decoder_reads_exactly_its_forms` |
+
+Deux ont d'abord survécu, deux trous du test : E2 (le seuil de `fpatan`
+déplacé à 2⁻⁶⁰ ne changeait la valeur que d'une unité, que le test
+tolérait) et E7 (C1 de `fptan` n'était jugé que là où il vaut zéro). Le test
+des transcendantes juge désormais la valeur au bit près là où elle ne
+dépend pas de l'approximation, et `fptan_reports_the_rounding_of_the_tangent`
+tient C1 ; ce test-là a montré ce que le silicium fait d'un quotient
+minuscule — soixante-sept bits tronqués —, ce que la machine fait aussi.
+
+**Les vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release -p wisq-vm -p
+wisq-carte` (939 passés, 0 échec), `cargo build --release -p wisq-page
+--target wasm32-unknown-unknown`, `check-whitespace.sh`,
+`check-project-sources.sh` : tout passe. Le compte publié passe de 4 125 à
+4 135 (Rust 1 070) ; le site rebâti, `bun test` : 476 passés. Les tests de
+l'hôte tiennent sur six graines différentes. L'initramfs 6.18.60
+(`rdinit=/bin/sh`) rend les mêmes `awk`, `printf '%.20Lf'` et `seq`
+qu'avant, à 143,8 MIPS ; le banc commun, en courses alternées contre
+9acd97c8 : avant 16,35 · 16,28 · 16,73 s, après 16,67 · 16,80 · 16,14 s,
+sous le bruit.
+
+**Ce qui reste.**
+
+- *Un dépassement démasqué vers un registre* : le silicium range le
+  résultat au biais ajusté de 24 576 ; ici, la réponse masquée. Le test les
+  écarte, et les compte (1,5 % des tirages démasqués).
+- *Les transcendantes* ne sont jugées qu'à l'unité du dernier rang hors des
+  cas où le résultat ne dépend pas de l'approximation : le silicium n'est
+  pas correctement arrondi (sa tangente entre 2⁻⁶⁸ et 2⁻³² dit « monté »
+  là où la valeur vraie dit le contraire). Le sinus, le cosinus et la
+  tangente ne sont comparés que sous 1,375 en grandeur ; au-delà, le π de
+  soixante-six bits du silicium s'écarte du vrai, et l'ancien test le juge à
+  2⁻⁵⁸ près jusqu'à 3.
+- *CR0.NE* n'est pas consulté : `#MF` est livré même sans lui (le mode de
+  FERR# et de l'IRQ 13 n'est pas modélisé). FIP, FDP et FOP restent à zéro.
+- *Le cœur Swift* lit encore `fisttp` et garde les écarts corrigés ici ;
+  ce flux n'y touche pas.
+- *Sur un hôte ARM*, ces tests ne compilent pas : les corpus restent le
+  seul juge.
+
+## 2026-11-21 — Machine PC en Rust : le x87, le MMX et le flottant de SSE et SSE2, la carte branchée, et Alpine démarre son ISO jusqu'à l'invite
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de la tranche « vitesse »* a trouvé une garde sans test : le
+  plafond de soixante-quatre octets d'un bloc (`.min(PORTEE - position)` dans
+  `Blocs::construire`). Sabotée à `PORTEE + 8`, toute la suite passait, alors
+  que seize `mov $imm32,%eax` en ligne droite faisaient paniquer l'hôte
+  (« index out of bounds », un bloc de 70 octets, neuf mots pour huit).
+  Aussi : les seize octets qu'un bloc vide compare n'étaient pas jugés, le
+  journal disait « n = 17 » là où le test tombe à n = 16, et le commentaire
+  du test le disait aussi.
+- *Le flottant* : la machine native ne lisait du x87 que ses mots d'état et
+  `fild`, rien du MMX, rien du calcul flottant de SSE. Le premier programme
+  qui calculait mourait : `busybox awk 'BEGIN{print 1/3}'` d'un « Illegal
+  instruction », et `printf '%.20Lf\n' 0.1` (le `long double` de musl, dans
+  le shell lui-même) d'un noyau qui panique, « Attempted to kill init ».
+- *La carte des périphériques* (`wisq-carte`, #712) existait, et rien ne la
+  branchait derrière les ports de la machine native : pas de PCI, pas de
+  disque, pas de clavier, donc pas d'ISO.
+
+**Ce qui est fait.**
+
+- *Les défauts du contrôle* : deux tests dans `pc_rapide`.
+  `a_straight_block_stops_at_sixty_four_bytes` construit le bloc de seize
+  `mov $imm32` par `Blocs::construire` (douze instructions, huit mots) puis
+  le fait tourner par les deux chemins ;
+  `an_empty_block_compares_its_first_sixteen_bytes` : un bloc vide (`in
+  (%dx),%al`) perd sa case quand l'octet 0, 7, 8, 12 ou 15 change, pas le
+  vingtième. La table de l'entrée du 20 novembre est corrigée (n = 16, n = 8,
+  par l'assertion du pas à pas).
+- *Le flottant de quatre-vingts bits* (`x86_f80.rs`, le port de
+  `X86Extended*.swift`) : tout sur des entiers, arrondi une fois, le même sur
+  tout hôte. En plus du Swift : la précision du mot de contrôle (24, 53 ou 64
+  bits), et les fonctions transcendantes (`fsin`, `fcos`, `fsincos`, `fptan`,
+  `fpatan`, `f2xm1`, `fyl2x`, `fyl2xp1`), calculées par des séries en
+  quatre-vingts bits avec π/2 et ln 2 sur cent vingt-huit bits.
+- *Le x87* (`x86_x87.rs`, le port de `X86X87*.swift`) : toute la page `D8` à
+  `DF` du manuel, ses alias non documentés refusés. Là où le cœur Swift se
+  taisait, le manuel : lire un registre vide est un débordement par le bas
+  pour toute instruction ; C1 tombe sur un chargement ; `fucomp` dépile ; un
+  réel lu en mémoire signale son dénormal et son NaN signalant ; `fnsave`,
+  `frstor`, `fnstenv` à quatorze octets sous `66`, `fbld`, `fbstp`,
+  `fdecstp`, `fincstp`, `fnop`. Un rangement sonde ses deux pages avant
+  d'écrire : une faute ne laisse rien derrière elle.
+- *Le MMX* (`x86_mmx.rs`, le port de `X86MMX.swift`) : les calculs à deux
+  opérandes, les déplacements, les décalages, `pshufw`, `pinsrw`, `pextrw`,
+  `pmovmskb`, `maskmovq`, `movntq`, `movdq2q`, `movq2dq`.
+- *Le flottant de SSE et SSE2* (`x86_sse.rs`) : scalaire et empaqueté, les
+  comparaisons en masque et en drapeaux, toutes les conversions de base
+  (y compris avec le MMX), `rcp` et `rsqrt` (rendus justes, dans la borne de
+  1,5 · 2⁻¹² du manuel). **Rien n'est laissé à l'hôte**, à l'inverse du cœur
+  Swift : les quatre modes d'arrondi de MXCSR, ses six drapeaux, FTZ et DAZ,
+  la petitesse jugée après l'arrondi comme sur x86. Une exception démasquée
+  ne range rien et est livrée en `#XM` (vecteur 19) sous CR4.OSXMMEXCPT, en
+  `#UD` sinon.
+- *Où ces formes sont lues* : `decode_extended`, le second décodeur que seule
+  la machine native consulte ; `decode`, que l'émetteur partage, n'a pas
+  changé.
+- *La carte branchée* (`pc/carte.rs`) : `CartePc` est un `Peripheriques` de
+  la machine, derrière ses propres puces. Une notification de disque est
+  servie pendant l'`out`, avec la RAM de la machine ; l'impulsion de remise à
+  zéro de l'i8042 arrête la course. `wisq-vm` dépend de `wisq-carte`, une
+  feuille du même dépôt sans dépendance. `wisq-pc` gagne `--disque` et
+  `--couche` (le fichier lu sur place, les écritures dans une couche),
+  `--sans-carte`, et plusieurs invites (`--prompt 'login: ;;:~# '`).
+- *Le préfixe `67` devant une instruction qui n'adresse rien* :
+  `67 49 f7 e6`, un `mul %r14` qu'OpenSSL aligne ainsi dans `libcrypto.so.3`,
+  arrêtait `apk` en installant les paquets de l'ISO. La machine le lit sans le
+  `67` quand l'instruction n'a ni opérande mémoire ni adresse implicite
+  (chaînes, `loop`, `jrcxz`) ; sinon il reste refusé.
+- *La fusion de master* (#712), pour la carte.
+
+**Les corpus, en entier** (`x86_float_oracle.rs`, neuf, et
+`x86_extended_oracle.rs`, étendu) :
+
+| corpus | formes jugées | cas jugés | laissés, et pourquoi |
+|---|---|---|---|
+| `x86-x87-oracle.tsv` | 121 sur 121 (9 avant) | 7 260 (540 avant) | — |
+| `x86-x87-rounding-oracle.tsv` | 16 sur 16, quatre modes | 896 | — |
+| `x86-float-oracle.tsv` | 119 sur 127 | 12 852 | 8 formes de SSE3 (`haddps`, `hsubps`, `haddpd`, `hsubpd`), 864 cas : CPUID ne les annonce pas, elles restent illisibles |
+| `x86-mmx-oracle.tsv` | 237 sur 285 | 9 243 | 48 formes de SSSE3 (`pshufb`, `phadd*`, `phsub*`, `pmaddubsw`, `psign*`, `pmulhrsw`, `pabs*`, `palignr`), 1 872 cas : pas annoncées non plus |
+| `x86-fxsave-oracle.tsv` | — | 280 | — |
+| `x86-xmm-oracle.tsv`, `x86-simd-oracle.tsv` | toutes | 976 et le tout | déjà jugés, inchangés |
+
+Le corpus d'arrondi a montré une chose que le cœur Swift faisait faux sans le
+voir (son test ne compare pas le mot d'état) : quand un mode refuse l'infini
+et rend le plus grand fini, **C1 tombe**.
+
+**Le silicium de l'hôte, là où les corpus se taisent** (`x86_float_host.rs`,
+neuf, sur un hôte x86-64 seulement : un Xeon ici) : la même instruction
+exécutée par le processeur qui fait tourner le test, sur des valeurs tirées
+aux bords, et comparée au bit près.
+
+| | formes | cas | ce qui est comparé |
+|---|---|---|---|
+| SSE et SSE2 | 45 | 270 000 | XMM0, RAX, MXCSR entier, ZF PF CF ; quatre modes, FTZ, DAZ |
+| x87, calcul | 10 | 40 000 | ST(0), les six drapeaux, C0 à C3 ; quatre modes, trois précisions |
+| x87, rangements | 9 | 54 000 | les octets rangés et le mot d'état ; `fst`, `fist`, `fisttp`, `fbstp`, `frndint` |
+| x87, transcendantes | 8 | 24 000 | à 2⁻⁵⁸ près en relatif (2⁻⁶² en absolu), sur le domaine où le silicium est juste |
+
+Il a trouvé cinq écarts, tous corrigés : `x + 0` arrondi à la précision
+réduite, le dénormal d'un opérande à côté d'un NaN (non signalé), celui de
+`x/∞` et `∞/x` (signalé), le débordement d'un `fst` dans les modes qui
+refusent l'infini (le plus grand fini, C1 à zéro), et, sous DAZ, `min`/`max`
+qui rendent la source dénormale comme un zéro.
+
+**Où cela va** (`wisq-pc`, 512 Mio, une course à la fois, `ulimit -v`) :
+
+- *L'initramfs, `rdinit=/bin/sh`* : avant, `awk` meurt et `printf %Lf` fait
+  paniquer le noyau ; après, `busybox awk` rend `0.333333 1.41421`, `e`,
+  `ln 10`, `sin 1`, π à quinze chiffres, la somme harmonique de 100 000
+  termes (12,0901), `inf`, `-inf`, `-nan` pour `log(-1)` (l'indéfini négatif
+  de x86) ; `printf '%.20Lf' 0.1` rend `0.10000000000000000555` ; `busybox
+  dc` rend √2 à vingt chiffres ; `seq 0.5 0.25 1.5`.
+- *L'ISO `alpine-virt-3.24.4-x86_64.iso`* (somme vérifiée), son
+  `vmlinuz-virt` et son `initramfs-virt`, ligne `console=ttyS0
+  modules=loop,squashfs,sd-mod,usb-storage` : le média monté, les paquets
+  installés, OpenRC, **`localhost login:`**, puis `root`, `uname -a`, `ls /`,
+  `awk` (`0.333333333333333 1.4142135623731 3.14159265358979`), `printf
+  %.20Lf`, `df`, `apk info` (28 paquets).
+
+| | jusqu'où | instructions | temps | débit |
+|---|---|---|---|---|
+| machine PC en Rust | `login:` | 5,01 milliards | 52,05 s | 96,3 MIPS |
+| machine PC en Rust | les huit commandes | 5,06 milliards | 52,11 s | 97,2 MIPS |
+| cœur Swift (`X86BootAttemptTests`, `WISQ_PC_DISK_FILE`) | les mêmes commandes | 4,44 milliards | 88,85 s | 50 MIPS |
+
+**1,71 fois** le cœur Swift sur l'ISO, l'espace utilisateur compris.
+
+**Le banc commun** (6.18.60, initramfs, jusqu'au shell de secours, `echo
+wisq-parle`), en courses alternées contre 5e45734f, le code d'avant cette
+tranche : avant 16,54 · 16,35 · 17,99 · 16,88 · 16,77 · 16,72 · 17,69 ·
+18,21 · 16,66 · 17,03 · 18,00 · 17,08 s (médiane 17,0 s) ; après, la carte
+branchée, 17,29 · 17,22 · 17,48 · 16,81 · 17,36 · 18,18 · 16,61 · 17,52 ·
+17,25 s (médiane 17,29 s) ; après, `--sans-carte`, 16,94 · 17,43 · 16,22 s.
+Le conteneur était bruyant : l'écart (1,5 % au plus) est sous le bruit.
+Le service de la carte toutes les 256 instructions ne coûte que deux
+questions quand rien n'attend.
+
+**Sabotages** (une ligne chacun, en profil de publication, les tests nommés ;
+script et journal : `<bloc-notes>/t3/sab/sab.py` et `sab.out`, `git diff`
+des sources vide après) :
+
+| sabotage | tombe par |
+|---|---|
+| plafond d'un bloc `PORTEE + 8 - position` (blocs.rs) | `a_straight_block_stops_at_sixty_four_bytes` (panique de l'hôte) |
+| bloc vide : 8 octets comparés au lieu de 16 | `an_empty_block_compares_its_first_sixteen_bytes` |
+| C1 levé quand un mode refuse l'infini (`assemble_to`) | `the_x87_rounds_like_the_silicon_in_every_mode` |
+| `DC`/`DE` sans l'échange de `fsub` et `fsubr` | `the_x87_forms_the_machine_reads_match_the_silicon` |
+| un registre vide lu sans débordement | `reading_an_empty_register…`, et le corpus x87 (`fxch %st(2)`) |
+| `fucomp` ne dépile pas | `fucomp_pops_and_fucom_does_not` |
+| la précision de 53 bits prise pour 64 | `the_precision_control_rounds_the_sum` |
+| le dénormal signalé à côté d'un NaN | `the_x87_matches_the_host_silicon…` |
+| le dénormal de `x/∞` tu | le corpus x87 |
+| C1 levé au débordement de `fst` dans un mode qui refuse l'infini | `x87_stores_match_the_host_silicon…` |
+| la seconde page d'un rangement du x87 non sondée | `an_x87_store_across_a_missing_page…` (après correction du test, voir plus bas) |
+| `fnsave` sans remettre les étiquettes à vide | `fnsave_then_frstor_gives_back_the_state` |
+| `fbstp` accepte 10¹⁸ | `fbld_and_fbstp_go_through_eighteen_digits` |
+| le dénormal d'un réel lu en mémoire tu | `a_real_read_from_memory_reports_what_it_is` |
+| `x + 0` rendu sans arrondi à la précision réduite | `the_x87_matches_the_host_silicon…` |
+| la petitesse de SSE jugée avant l'arrondi | `tininess_is_judged_after_rounding_like_the_host` (après ajout, voir plus bas) |
+| FTZ sans effet | `sse_matches_the_host_silicon_in_every_mode` |
+| DAZ ne zéro pas la source que rend `min`/`max` | `sse_matches_the_host_silicon…` |
+| `cmp nlt`/`nle` muets devant un NaN silencieux | `sse_matches_the_host_silicon…` |
+| `ucomis` non ordonné sans CF | `sse_floats_match_the_silicon` |
+| PE tu dans une conversion vers l'entier | `sse_matches_the_host_silicon…` |
+| une exception démasquée range quand même | `an_unmasked_sse_exception_is_delivered…` |
+| `#XM` même sans CR4.OSXMMEXCPT | `an_unmasked_sse_exception_is_delivered…` |
+| `cvtsd2ss` efface le haut de l'élément bas | `sse_floats_match_the_silicon` |
+| `rcp` de −0 rend +∞ | `rcp_and_rsqrt_stay_within_the_bound` |
+| entrer dans le MMX sans marquer les registres occupés | `maskmovq_writes_only_the_chosen_bytes` |
+| `packsswb` non signé | `mmx_matches_the_silicon` |
+| `d9 /1` en mémoire lu | `the_extended_decoder_reads_exactly_its_forms` |
+| `rcpss` (`f3`) non lu | `rcp_and_rsqrt_stay_within_the_bound` |
+| `maskmovq` range l'octet bas partout | `maskmovq_writes_only_the_chosen_bytes` |
+| l'exposant de `sqrt` décalé d'un rang | `sse_floats_match_the_silicon` |
+| la série du sinus sans son signe alterné | `x87_transcendentals_agree_with_the_host_silicon` |
+| la réduction d'un grand argument sans la partie basse de π/2 | `the_transcendental_functions_give_the_known_values` |
+| `67` accepté devant `movs` | `an_address_size_prefix_without_address_is_ignored` |
+| `67` accepté devant un opérande mémoire | `an_address_size_prefix_without_address_is_ignored` |
+| la notification du disque non servie pendant l'`out` | `a_disk_notification_is_served_with_the_machine_ram` |
+| l'impulsion de remise à zéro ignorée | `the_reset_pulse_stops_the_run` |
+| la carte muette sur `0xCFC` | `the_pci_bridge_answers_behind_the_machine_ports` |
+
+**Trois sabotages ont d'abord survécu**, et chacun disait un trou du test,
+pas du code : *la seconde page non sondée* (le test posait les dix octets à
+0xAFFA : le premier mot de huit octets tombait déjà à cheval, et son
+écriture fautait d'elle-même ; le test les pose maintenant à 0xAFF8, huit
+dans la première page) ; *la petitesse avant l'arrondi* (270 000 tirages ne
+tombent pas sur le seul cas où elle change quelque chose : un résultat qui
+s'arrondit au plus petit normal ; il a son test contre l'hôte) ; *un bit bas
+de la partie basse de π/2 changé* (sous la résolution de tout résultat :
+équivalent, remplacé par le retrait de la partie basse, qui tombe depuis que
+le sinus de 10⁶, de 10¹⁰ et de 123 456,789 est jugé).
+
+**Tests** : 28 de plus dans cette tranche (Rust 1 032 → 1 060 avec ceux
+de la carte, fusionnée avec #712) ; le compte publié passe de 3 947 à 4 125
+(Swift 3 065 + Rust 1 060). `cargo test --release -p wisq-vm -p wisq-carte` :
+929 réussis ; la cible wasm32 de `wisq-page` se construit.
+
+**Ce qui reste.**
+
+- *L'émetteur* : ses formes flottantes de SSE sont sur sa branche
+  (`Vector::Float` dans `decode`, branche `claude/emetteur-bureau`). Quand
+  elle rejoindra master, `decode` lira ces formes avant `decode_extended`, et
+  `execute_vector` devra les confier au calcul de `x86_sse.rs` : la fusion
+  aura ce raccord à faire. Le x87 sous l'émetteur reste à faire de son côté.
+- *Pas modélisé* : `#MF` (une exception du x87 démasquée pose son drapeau,
+  ES et B la résument, et rien d'autre), les pointeurs FIP/FDP/FOP (rangés à
+  zéro), XSAVE (CPUID ne l'annonce pas), SSE3 et au-delà.
+- *Les transcendantes* sont justes à 2⁻⁵⁸ près, pas au bit près du silicium :
+  aucun corpus ne les fixe, et Intel et AMD ne s'accordent pas entre eux.
+  Hors du domaine où le silicium est juste (|x| ≥ 3 pour le sinus, près des
+  pôles de la tangente), ce cœur est plus juste que lui, et donc autre.
+- *La carte* : ni l'écran ni la tablette (leur mémoire hors de la RAM n'est
+  pas branchée), ni la carte réseau ; ni le service à chaque tour qu'elles
+  demandent. Le second disque n'est pas offert par `wisq-pc`.
+- *Le préfixe `67` devant un opérande mémoire* (l'adressage de trente-deux
+  bits) reste refusé : rien ne l'a demandé.
+- *Ce que seule la CI juge* : les tests contre le silicium de l'hôte ne
+  compilent que sur x86-64 ; sur un hôte ARM, les corpus seuls jugent. La
+  vitesse sur l'iPhone. L'ABI C (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`)
+  n'expose toujours pas la machine PC. Aucun Swift n'est touché.
+- *La vitesse* : 125 MIPS toujours pas atteints sur le banc commun (17 s,
+  112 MIPS environ).
+
+## 2026-11-20 — Machine PC en Rust : la borne de la fin de la RAM jugée à l'octet
+
+**Ce qui n'allait pas.** L'entrée d'en dessous donnait la borne de la fin de
+la RAM (`un_bloc`, `debut + PORTEE > len`) pour testée et sabotée. Elle ne
+l'était qu'en un point : son test met le code dans les trois derniers octets
+de la RAM, et toute borne d'au moins quatre octets le laissait passer. Le
+contrôle l'a montré : `PORTEE` remplacé par `16` passait toute la suite de
+`wisq-vm`, et par `8` passait `pc_rapide`. Le défaut est réel. Avec la borne
+à 16, vingt octets de code au bout de la RAM font construire un bloc qui
+couvre 20 octets et en compare 24. L'hôte lit alors 4 octets au-delà de la
+RAM et panique dans `Blocs::construire`. Le sabotage S3 de l'entrée d'en
+dessous (la condition mise à `false`) ne jugeait que la présence de la garde,
+pas sa constante.
+
+**Le code est juste**, il n'a pas changé. Un bloc couvre au plus `PORTEE`
+octets : `disponibles` est borné par `PORTEE - position`. Il en compare le
+multiple de huit d'au-dessus, soit au plus 64 octets ; un bloc vide en compare
+16. `debut + 64 <= len` suffit donc toujours. Comme la RAM se termine sur une
+fin de page, une instruction n'en sort jamais au décodage. Seule la
+comparaison par mots dépasse, et seulement quand la longueur couverte n'est
+pas un multiple de huit : c'est pour cela qu'un seul point ne jugeait rien.
+
+**Ce qui est fait.** Un test, `every_start_in_the_last_64_bytes_of_ram_is_bounded_exactly`
+(`pc_rapide`), balaie toutes les longueurs `n` de 1 à 64. Il remplit les `n`
+derniers octets de la RAM, sans pagination, avec du code qui s'arrête pile
+au bout : des `inc %ecx`, un `nop` pour la parité et un `jmp` qui revient au
+début, ou un `hlt` seul pour n = 1. Il fait tourner les deux machines
+(300 instructions) et vérifie qu'elles sont d'accord. Pour n < 64, il attend
+le pas à pas, sans aucun bloc construit. Pour n = 64, il attend un bloc : les
+64 octets tiennent, et la borne n'est pas plus large que nécessaire. Le test
+d'avant, sur trois octets, reste.
+
+**Sabotages** (une ligne de `machine.rs`, `pc_rapide` en release ; script
+`<bloc-notes>/borne/sab.sh`, `git diff` des sources vide après) :
+
+| sabotage | tombe par |
+|---|---|
+| `PORTEE` → `16` | `every_start…` (n = 16 : un bloc construit là où le pas à pas est attendu) |
+| `PORTEE` → `8` | `every_start…` (n = 8, de même) |
+| `PORTEE` → `PORTEE - 1` | `every_start…` (n = 63) |
+| `PORTEE` → `PORTEE + 1` | `every_start…` (n = 64 : plus de bloc) |
+| `>` → `>=` | `every_start…` (n = 64) |
+| la condition à `false` | `every_start…` et `code_at_the_end…` (panique de l'hôte) |
+
+**Ce qui reste.** Rien de neuf dans cette tranche : 113,6 MIPS en médiane,
+pour 125 visés. Le chemin général garde SSE, x87, les chaînes et le système.
+Restent aussi l'ABI C, la `Carte` de wisq-page et l'instantané. Aucune course
+de banc n'a été refaite, puisque le code de la machine n'a pas changé.
+
+## 2026-11-20 — Machine PC en Rust : les quatre gardes des blocs que rien ne testait
+
+**Ce qui n'allait pas.** Le contrôle de la tranche « vitesse » a trouvé
+quatre gardes dont la perte ne faisait tomber aucun test, alors que l'entrée
+d'avant disait chaque garde sabotée. Aucune n'était fausse dans le code ;
+c'est leur test qui manquait, et chaque mutant était réel :
+
+- *`push` parmi les écritures* (`pourrait_ecrire`) : `push %rax` n'a pas
+  d'opérande mémoire, sa pile est implicite. Sans lui, `push %rax ; mov
+  $0,%ecx ; hlt`, RSP juste derrière l'immédiat du `mov`, exécutait
+  l'immédiat rangé dans le bloc (zéro) au lieu de celui qu'on venait
+  d'empiler. Le seul test du code qui se réécrit passait par `mov`, `xchg`,
+  `stosb` et `add`.
+- *`movs` parmi les écritures* : le décodeur ne donne pas d'opérande mémoire
+  à `a4` ni à `48 a5`, c'est ce bras seul qui dit l'écriture. Même défaut,
+  par `movsb ; mov $0,%cl ; hlt`.
+- *La borne de la fin de la RAM* dans `un_bloc` : un bloc se compare sur
+  soixante-quatre octets lus d'un coup. Sans elle, du code dans les trois
+  derniers octets de la RAM (sans pagination) faisait paniquer l'hôte en
+  construisant le bloc.
+- *FS dans les formes* : la forme générale qui oublie `fs_base`, ou une
+  adresse `%fs:` qui prend la forme BASE ou RELATIVE (sans base de
+  segment). `pc_rapide` ne posait jamais `fs_base`, et les corpus matériels
+  ne jugent pas FS : la perte ne se serait vue que sur un vrai noyau — c'est
+  `%fs:0x28`, le canari de pile, et `%fs:0`, le pointeur de fil de musl, dans
+  tout programme.
+
+**Ce qui est fait.** Quatre tests dans `pc_rapide`, chacun sur sa garde, qui
+comparent la machine à blocs au pas à pas et disent la valeur attendue :
+`a_push_that_rewrites_its_block_runs_the_new_bytes` (ECX = 0x11223344),
+`a_movs_that_rewrites_its_block_runs_the_new_bytes` (CL = 0x5A),
+`code_at_the_end_of_ram_takes_the_step_by_step_path` (AL = 7, `hlt`, aucun
+bloc construit), `an_fs_address_in_a_block_adds_the_fs_base` (`%fs:0x10` et
+`%fs:(%rbx)`, FS à 0xA000 : 0x1111 et 0x2222, pas ce qui est rangé à 0x10 et
+0x20). Et la racine du trou de FS : le tirage de
+`every_fast_form_does_what_execute_does` pose maintenant des bases de FS et
+de GS non nulles (une ou trois pages plus loin, deux plus près), et vérifie
+qu'il a bien exercé plus de cent formes par un segment de base non nulle
+(167 sur ce tirage) — les deux sabotages de GS tombent désormais aussi par
+lui, sans dépendre du corpus.
+
+**Sabotages**, d'une ligne, en profil de publication, `git diff` des
+sources vide après chacun (script et journal :
+`<bloc-notes>/gardes/sab.py` et `sab.out`) — tous tombent :
+
+| sabotage | tombe par |
+|---|---|
+| `Op::Push` retiré de `pourrait_ecrire` | `a_push_that_rewrites_its_block…` |
+| `Op::StringMove` retiré | `a_movs_that_rewrites_its_block…` |
+| la borne de la fin de la RAM à `false` | `code_at_the_end_of_ram…` (panique de l'hôte) |
+| la forme générale sans `fs_base` | `an_fs_address…`, `every_fast_form…` |
+| une adresse FS en forme BASE ou RELATIVE | `an_fs_address…`, `every_fast_form…` |
+| la forme générale sans `gs_base` | `every_fast_form…` |
+| une adresse GS en forme BASE ou RELATIVE | `every_fast_form…` |
+
+**Mutants équivalents, dits au lieu d'être testés** : retirer `call` ou
+`call *` de `pourrait_ecrire` ne change rien (les deux survivent) : ce sont
+des instructions terminales, toujours les dernières de leur bloc, qui
+rendent un saut ou une faute ; or le bit d'écriture n'est lu qu'après une
+instruction qui rend « suivante » (`parcourir`), et le bloc d'arrivée se
+compare à son entrée. Ils restent, par prudence, comme `lods`, `cmps` et
+`scas`, qui n'écrivent rien et ne coûtent qu'une comparaison. S'ajoutent ceux
+que le contrôle a jugés équivalents : `cmpxchg16b` (son opérande mémoire
+suffit), `lea` compté pour une écriture, le test de pagination de
+`fast_place`, la case d'une paire.
+
+**Tests** : 4 de plus (3 942 → 3 946).
+
+**Ce qui reste** : inchangé depuis l'entrée d'avant — 125 MIPS non atteints
+(113,6 en médiane), le chemin général pour SSE, x87, les chaînes et le
+système, l'ABI C, la `Carte` de wisq-page, l'instantané.
+
+## 2026-11-20 — Machine PC en Rust : des blocs d'instructions et leurs formes, de 46 à 114 MIPS sur le démarrage d'Alpine
+
+**Ce qui n'allait pas.**
+
+- *Le contrôle de la reprise* a trouvé un défaut et six gardes sans test.
+  Le défaut : `push (%rax)` dont l'empilement faute juste derrière
+  l'opérande (RAX lisible à 0x7FFF_FFFF_FF00, RSP à 0x8000_0000_0008) était
+  livré en `#GP` au lieu de `#SS` : la fenêtre de 512 octets de
+  `faute_d_operande` prenait la pile pour l'opérande. Les gardes : `call`
+  relatif parmi les références implicites, la fenêtre elle-même (l'accès à
+  cheval sur le bord, `fxsave` qui sort par sa fin), `%gs:(%rbp)`, `sgdt` et
+  `mov` vers un segment par `faute_de`, et le témoin de saut d'un refus de
+  cible, que seul `Cpu::step` voit. Et une condition morte (`relative`).
+- *La vitesse* : 46 MIPS sur le banc commun, contre 62,5 pour le cœur
+  Swift. La tranche en demandait le double de celui-ci : 125.
+
+**Où passait le temps**, mesuré avant de rien toucher (a8abc88e, Alpine
+6.18.60 jusqu'à l'invite après `echo wisq-parle`, 512 Mio) : `perf` mettait
+45 % des échantillons dans la boucle (`tourner`, `pas`, `chercher`), dont un
+cinquième sur une seule instruction — la lecture de la case du cache de
+décodage, une table de six mébioctets lue au hasard, une ligne attendue par
+instruction ; 24 % dans `execute`, 14,5 % dans `compute`, 3 % dans
+`Flags::read`, 5 % à décoder. callgrind, sur les 150 premiers millions
+d'instructions : 217 instructions de l'hôte par instruction de l'invité. Et
+1 % dans l'outil lui-même : `wisq-pc` cherchait l'invite dans toute la
+sortie du port série à chaque tranche de 200 000 instructions.
+
+**Ce qui est fait.**
+
+- *`faute_d_operande`* : une instruction sans référence implicite n'a que
+  son opérande, quelle que soit l'adresse refusée ; une qui a les deux
+  (`push`, `pop`, `call *` vers la mémoire) le reconnaît à ses octets — sa
+  largeur, pas 512. La condition morte est retirée, le commentaire dit
+  pourquoi.
+- *`pc/blocs.rs`* — le port de `X86BlockCache.swift` : des blocs d'au plus
+  seize instructions sur soixante-quatre octets, dans une page, vérifiés par
+  comparaison d'octets à l'entrée et, après chaque instruction qui peut
+  écrire, sur ce qui reste à exécuter. Aucune instruction de système n'y
+  entre (`hlt`, `sti`, `mov cr`, `wrmsr`, `iretq`, `invlpg`, les ports…), ni
+  vectorielle, ni x87, ni `rdrand` : elles passent par le pas à pas, qui reste
+  tel quel. La boucle ne donne à un bloc que ce qui reste jusqu'au prochain
+  service du matériel (les multiples de 256) et jusqu'à la fin du budget ; un
+  bloc coupé là reprend à l'instruction d'après si l'adresse physique de RIP
+  est la sienne et ses octets intacts. Deux cases par adresse, la
+  construction sur place, et le préchargement des deux blocs qui ont suivi
+  celui qu'on exécute.
+- *`x86_rapide.rs`* — les formes : pour chaque instruction, la fonction qui
+  l'exécute, choisie une fois au décodage parmi des instances génériques sur
+  l'opération, la largeur, la forme des opérandes (registre, immédiat, la
+  mémoire en source ou en destination) et celle de l'adresse (base, base et
+  index, relative à RIP, générale) : `add`, `or`, `and`, `sub`, `xor`,
+  `cmp`, `test`, `inc`, `dec`, `not`, `neg`, les décalages par un immédiat ou
+  par CL, `mov`, `movzx`, `movsx`, `lea`, `jcc` (une instance par condition,
+  sans aiguillage), `jmp`, `call`, `ret`, `push`, `pop`, `nop`. Les drapeaux
+  sont calculés tout de suite (PF par une table). Une instruction prête tient
+  sur trente-deux octets ; ce que rien ne spécialise garde son `Decoded` au
+  bout du bloc (quatre au plus) et passe par `execute`.
+- *`x86_paging.rs`* — `read_memory_fast` et `write_memory_fast` : la place
+  physique tirée de la case du tampon de traduction (dans la boîte même, sans
+  second pointeur), le droit jugé sur ses bits pour l'anneau courant, la page
+  salie et inscriptible pour écrire ; tout le reste — page à cheval, case
+  absente, page propre, lecture seule sans CR0.WP — par `read_memory` et
+  `write_memory`, hors de la ligne. La case ne tient jamais une page hors de
+  la RAM ni dans le trou : la place est l'indice de l'octet dans la RAM de
+  l'hôte, lu sans autre question qu'une borne. Pas de pointeur brut : la RAM
+  est un `Vec` que rien n'empêche un appelant de remplacer, et le gain d'un
+  pointeur ne valait pas un `unsafe` de plus.
+- *`wisq-pc`* : `--horloge <secondes>` fixe l'horloge CMOS (deux courses
+  retirent alors les mêmes instructions), `--sans-blocs` éteint le chemin
+  rapide, la fin dit les blocs construits, et la recherche de l'invite et de
+  `--until` reprend où elle s'était arrêtée.
+
+**Le chemin pour y arriver, mesuré à chaque pas** (courses alternées,
+secondes du banc ; la machine était bruyante : le même binaire a couru de
+15,8 à 18,1 s dans la même heure) :
+
+| pas | secondes | blocs construits |
+|---|---|---|
+| a8abc88e, le pas à pas | 41,3 · 41,9 | — |
+| blocs, tout par `execute` | 43,5 (sans blocs : 41,4) | |
+| les formes spécialisées (8 192 cases) | 26,4 | 8 942 665 |
+| 32 768 cases | 23,4 | 3 172 879 |
+| la reprise après une coupure | 20,6 | 2 110 532 |
+| l'étiquette en tête du bloc (`repr(C)`) | 19,4 | |
+| lecture et écriture rapides, le lent hors de la ligne | 20,7 · 20,3 contre 22,5 · 22,2 | |
+| le préchargement du suivant | 19,87 contre 20,39 (médianes, 4 paires) | |
+| la construction sur place | 17,83 contre 19,44 (3 paires) | |
+| deux cases par adresse | 19,09 contre 19,20 (3 paires) | 476 379 |
+| de bloc en bloc sans repasser par `tourner` | 18,11 contre 18,57 (4 paires) | |
+| deux suivants préchargés, six lignes | 17,85 contre 18,25 (4 paires) | |
+| les formes d'adresse | 17,41 contre 18,21 (4 paires) | |
+| des instructions prêtes de 32 octets | 17,39 contre 17,76 (4 paires) | 478 671 |
+
+Sans préchargement, le code d'alors prenait 18,49 s contre 17,52 (4 paires,
+toutes dans le même sens) : c'est le pas le plus net après les formes
+elles-mêmes. Deux cases par adresse ne changent pas le temps du banc, mais
+divisent par quatre les constructions : gardées, parce qu'un bureau a bien
+plus de code chaud qu'un démarrage. PF par une table et la recomparaison de
+la seule suite après une écriture ne se voient pas dans le bruit ; gardés,
+ils retirent des instructions de l'hôte.
+
+**Les drapeaux à la demande, mesurés sur le vrai noyau** comme la tranche le
+demandait : l'opération notée à la place des six bits, relus par
+`Flags::read` au saut, +7,6 % (20,17 · 20,43 · 19,60 s contre 18,75 · 19,24
+· 18,58) ; relus sans `compute`, la note lue en place pour `sub`, `add` et la
+logique, une égalité (médianes de cinq paires : 18,38 contre 18,39 s). Gardés
+calculés, comme dans le cœur Swift : un second état des drapeaux sans rien
+rendre.
+
+**Ce qui a été essayé et abandonné** : le cache de décodage réutilisé pour
+construire (+6 %), huit instructions par bloc au lieu de seize (+5 à 8 %), une
+table de 131 072 cases (quatre fois moins de constructions, même temps),
+`cmp`/`test` et le `jcc` qui suit en une forme (+9 % : la boucle teste une
+paire coupée à chaque instruction, et la suite d'une forme passe de trois à
+six cas).
+
+**Mesures finales.** Cinq courses alternées entre a8abc88e et le code
+final, puis trois entre le cœur Swift (e70e123b, `X86BootAttemptTests`) et
+le code final :
+
+| | courses (s) | médiane | débit |
+|---|---|---|---|
+| a8abc88e | 40,82 · 41,57 · 41,05 · 40,19 · 40,81 | 40,82 s | 46,7 MIPS |
+| les blocs | 17,46 · 16,79 · 17,03 · 16,70 · 16,71 | 16,79 s | **113,6 MIPS** |
+| cœur Swift | 31,81 · 31,45 · 32,55 | 31,81 s | 60,2 MIPS |
+| les blocs, alternés avec lui | 16,56 · 17,00 · 17,74 | 17,00 s | 112,2 MIPS |
+
+**2,43 fois** la machine d'avant, **1,87 fois** le cœur Swift (dont le temps
+compte le cas de test entier, chargement compris : l'écart réel est un peu
+moindre). **L'objectif de la tranche, 125 MIPS, n'est pas atteint** : les
+meilleures courses de la journée passent 15,8 s (120 MIPS), la médiane non.
+callgrind, sur les 150 premiers millions d'instructions : 83 instructions de
+l'hôte par instruction de l'invité, contre 217.
+
+**Ce qui borne le pas suivant**, d'après `perf` sur l'avant-dernier pas : la
+boucle des blocs pèse encore 44 % des échantillons, dont plus d'un quart en
+attentes de mémoire sur les blocs eux-mêmes (l'étiquette et les octets comparés d'un
+bloc qu'aucun préchargement n'a annoncé : la table fait vingt-cinq
+mébioctets, le cache de second niveau de l'hôte deux), un cinquième sur
+l'appel indirect de chaque instruction, et le reste sur la comparaison des
+octets et la tenue du compte. Les formes elles-mêmes coûtent surtout leurs
+lectures de la mémoire de l'invité. Ce qui reste à essayer : enchaîner les
+blocs d'une même page sans repasser par la table, un bloc qui suit un saut
+sans condition, un tampon de traduction plus grand (les marches des tables
+font 1 % du temps), et surtout mesurer sur une puce Apple, dont les caches
+n'ont rien de ceux de ce Xeon.
+
+**Le compte d'instructions ne change pas d'un chemin à l'autre** : avec
+`--horloge 1800000000`, 1 907 638 318 instructions retirées jusqu'à l'invite,
+avec et sans blocs, à chaque course de cette tranche. Sans `--horloge`, le
+compte varie d'une course à l'autre (de 1 907,4 à 1 909,1 millions sur la
+journée) : l'horloge CMOS part de l'heure de l'hôte, le noyau l'écrit dans
+ses messages, et la course s'arrête à la tranche de 200 000 instructions où
+l'invite paraît. L'écart avec le cœur Swift (1,92 milliard) vient des deux
+cœurs, pas du chemin.
+
+**Tests** : 20 de plus (3 922 → 3 942). `pc_rapide` (douze) : chaque forme contre `execute` sur
+vingt mille instructions tirées (deux anneaux, seize pages de droits tirés —
+absentes, lecture seule, noyau seul, propres, salies puis protégées —, des
+trames à l'envers pour les accès à cheval, le tampon rempli d'avance par le
+noyau, les drapeaux en clair ou à la demande), cent programmes tirés avec et
+sans blocs sous l'horloge qui interrompt et des budgets hachés, puis une
+garde par test — le bloc qui se réécrit (par une forme, par `xchg`, `stosb`,
+`add`), le code réécrit du dehors jusqu'au dernier octet couvert, le budget
+au milieu d'un bloc, la reprise qui ne reprend que si rien n'a changé,
+l'horloge à la même instruction, `hlt`, `mov %rax,%cr3`, l'instruction à
+cheval sur deux pages, la faute au milieu d'un bloc nommée par sa propre
+instruction, le déplacement de plus de trente-deux bits. Les quatre corpus
+matériels de `x86_oracle` jugent aussi les formes (`_on_the_fast_path`), et
+tous les tests de la machine tournent avec les blocs, qui sont le défaut.
+`pc_interruptions` +1 (le bord de la moitié basse : accès à cheval, `fxsave`,
+`push (%rax)` des deux côtés), quatre cas de plus dans sa table (`call`
+relatif, `sgdt`, `mov` vers DS, `%gs:(%rbp)`), `x86_replay` (le refus par
+`Cpu::step`), `pc_demarrage` +1 (`--sans-blocs` retire les mêmes
+instructions), `wisq-pc` +2 (l'horloge, la recherche reprise).
+
+**Sabotages**, d'une ligne, en profil de publication : **48**, tous tombent, l'arbre
+identique après chacun (somme du `git diff` comparée). Les défauts du
+contrôle (neuf) : `call` relatif retiré des références implicites, GS
+ignoré, `sgdt` et `mov` vers un segment par `faute_d_acces`, le témoin de
+saut d'un refus retiré, la fenêtre à 512 octets (le défaut d'avant), à un
+octet, la fenêtre jugée sans référence implicite, RBP oublié. Les blocs :
+le service du matériel ignoré, le budget ignoré, pas de recomparaison après
+une écriture, `stos` puis `mov` vers la mémoire comptés pour des lectures,
+les octets non comparés à l'entrée, le dernier mot d'un octet trop court
+(partiel et plein), un mot de moins, la reprise sans comparer, sans
+l'adresse, `hlt` et `mov cr` admis dans un bloc, une instruction lue
+au-delà de la page, un saut pris non compté (`pc_interruptions` ne finit
+plus : arrêté à la main après 28 minutes, compté comme tombé), une faute
+comptée retirée, les générales sans borne, toutes au rang zéro, une faute
+relue au début du bloc, la recomparaison qui saute le mot de l'instruction
+suivante. Les formes : la condition sans sa négation, AF oublié, trente-deux
+bits sans effacer la moitié haute, un décalage nul qui n'écrit pas, `lea`
+avec le segment, la base sans déplacement, l'index sans échelle, le relatif
+sans la longueur, le segment ignoré dans le choix de la forme d'adresse, la
+forme générale sans le relatif, sans GS, un déplacement tronqué. Le tampon :
+la lecture rapide sans le bit utilisateur, l'écriture rapide sans le droit
+d'écrire, sur une page propre, un accès à cheval pris pour un accès simple.
+L'outil : `--sans-blocs` ignoré, `--horloge` ignoré, la recherche reprise
+depuis la fin. **Deux mutants équivalents sont dits plutôt que testés** :
+le choix de la case dans une paire (n'importe laquelle donne un bloc juste,
+la seconde n'est qu'une économie), et le préchargement (une indication à
+l'hôte, sans effet sur ce qui s'exécute). Script
+`<bloc-notes>/vit/sabotages.py`, journaux `<bloc-notes>/vit/sabotages*.log`
+et `sabotages-final.out`.
+
+**Vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release` sur tout l'espace de
+travail, `cargo build --release -p wisq-page --target wasm32-unknown-unknown`
+et `-p wisq-vm --lib` en wasm32, `wisq-vm` en `aarch64-apple-ios`
+(l'indication de préchargement y est un `prfm`), `check-whitespace` et
+`check-project-sources`, le recompte puis `bun run build` et `bun test`.
+Démarrage réel avec le binaire final : l'invite revient après `echo
+wisq-parle`, aucun refus dans un programme. Aucun fichier Swift, ni de
+`crates/wisq-page`, ni de l'émetteur n'est touché.
+
+**Ce qui reste.**
+
+- *125 MIPS* : non atteints (113,6 en médiane). Voir plus haut ce qui borne
+  le pas suivant.
+- *Le chemin général* garde les instructions vectorielles, le x87, les
+  chaînes, `adc`/`sbb`, `cmov`, `setcc`, les multiplications et divisions,
+  les rotations, les formes à octet haut et toute instruction de système :
+  rares au démarrage d'Alpine, sans doute moins dans un bureau (la glibc
+  copie la mémoire en SSE2) — à mesurer sur Void Xfce.
+- *La mémoire* : la table des blocs prend vingt-cinq mébioctets par machine,
+  écrits à la construction.
+- *Rien n'est mesuré sur un iPhone ni sur un Mac* ; seule la compilation
+  pour `aarch64-apple-ios` est vérifiée ici. Ce que seule la CI juge : la
+  construction iOS et macOS entière, et les suites Swift (aucun Swift n'est
+  touché).
+- *Inchangés* : l'ABI C (`ffi.rs`, `wisq_vm.h`, `Sources/WisqVMRust`), la
+  `Carte` de `wisq-page`, les SSE flottants et le calcul x87, la double
+  faute, l'instantané.
+
+## 2026-11-20 — Machine PC en Rust : les sauts non canoniques, `#SS`, la RAM que l'hôte refuse, et trois gardes sans test
+
+**Ce qui n'allait pas.** Le second contrôle adverse de la tranche a relu les
+deux commits de la reprise (e06969f9, 51dbdcdc) et trouvé :
+
+- *Trois gardes de `systeme.rs` sans test*, prouvées non équivalentes par
+  des tests temporaires : les témoins de faute effacés par
+  `faute_du_dernier_acces` (sans le `take()`, une division par zéro après
+  une faute de page devenait une seconde faute de page, puisque
+  `faute_d_execution` regarde `unmapped` d'abord) ; le cadre d'`iretq` et de
+  `lretq` lu avec les droits de l'anneau courant (lu en anneau zéro, un
+  programme lisait un cadre posé sur une page du noyau) ; le RPL retiré du
+  code d'erreur d'un retour refusé (le test empilait 0x10, dont le RPL vaut
+  zéro, et le masque n'y changeait rien).
+- *`--ram` sans test exact, et un plafond mal justifié* : `1 << 19` au lieu
+  de `1 << 20` et `>=` au lieu de `>` survivaient. Et le plafond de 64 Gio
+  ne promettait rien : `--ram 32768` sur ce conteneur de 15 Gio finissait en
+  SIGABRT (« memory allocation of 35433480192 bytes failed », code 134), au
+  lieu d'un refus.
+- *Un écart au silicium enregistré par un test* : `jmp *%rbx` vers
+  0x8000_0000_0000_1000 était retiré, et la `#GP` tombait sur la lecture de
+  l'instruction d'après, avec RIP = la cible. Le silicium la lève sur le
+  saut lui-même (SDM, JMP : `#GP(0)` si la cible n'est pas canonique).
+- *Une doc fausse* : `Unmapped::NonCanonical` disait « le silicium lève
+  `#GP(0)` » sans exception ; pour une référence par la pile, c'est `#SS(0)`,
+  vecteur 12 (Linux envoie SIGBUS, pas SIGSEGV), et la machine livrait 13.
+
+**Ce qui est fait.**
+
+- *Les sauts jugent leur cible.* `jmp`, `call`, `ret`, `jcc`, `loop`,
+  `jrcxz` (relatifs et indirects) dans `Cpu`, `iretq` et `lretq` dans
+  `Systeme` : une cible qui n'est pas canonique fait fauter l'instruction
+  elle-même, rien de retiré, rien de changé (RSP, la pile sous RSP, RCX d'un
+  `loop`). `call` juge sa cible avant d'empiler, l'ordre du SDM. La faute
+  se dit `Unmapped::NonCanonicalTarget`, distincte d'un accès : la cible
+  d'un `ret` vient de la pile, mais ce n'est pas une référence par la pile,
+  et le silicium lève `#GP(0)`. `sysretq` est laissé tel quel : sous un
+  CPUID `AuthenticAMD`, c'est en anneau trois que la faute tombe, comme ici.
+- *`#SS(0)` pour la pile* (`Exception::SegmentDePile`, vecteur 12, avec son
+  code). La machine distingue au moment de livrer (`faute_d_operande`, hors
+  de la boucle chaude) : si l'adresse refusée tombe dans l'opérande mémoire,
+  c'est le segment de l'opérande — SS pour une base RSP ou RBP sans préfixe
+  FS ni GS ; sinon la référence implicite — `push`, `pop`, `call`, `ret`,
+  `leave`, `pushf`, `popf`. `iretq` et `lretq` dépilent par SS. Le chemin
+  commun, le vectoriel, le x87 et `fxsave` passent tous par là.
+- *`leave` qui faute laisse RSP en place.* Il le laissait égal à RBP — une
+  pile que l'instruction n'avait jamais eue ; le test des références par la
+  pile l'a montré.
+- *La RAM que l'hôte refuse est un refus.* `memoire::bloc_nul` demande les
+  pages nulles par `alloc_zeroed` et rend `None` au lieu d'arrêter le
+  processus ; `Machine::essayer` rend `None`, `wisq-pc` sort en code 2
+  (« l'hôte ne peut pas donner cette mémoire »), et le commentaire du
+  plafond dit ce qu'il est : une garde contre la faute de frappe, pas une
+  promesse d'allocation. Un nombre qui ne tient pas dans un `usize` (wasm32)
+  est un refus, pas une troncature. `wisq-pc` dit la RAM reçue
+  (« ram : 512 Mio »).
+- *Les trois gardes ont leur test*, ceux du contrôle portés.
+- *Un test d'`x86_replay` changé, sans rien affaiblir* :
+  `nothing_moves_when_a_write_is_refused` prenait RAX =
+  0x8000_0000_0000_0001 pour cible de `call *%rax` ; le `call` faute
+  maintenant sur la cible avant d'empiler, et la pile en lecture seule
+  n'était plus jugée. RAX vaut 0xFFFF_8000_0000_0001 (bit haut posé, mais
+  canonique) ; toutes les assertions restent.
+
+**Tests** : 9 de plus (3 913 → 3 922). `pc_interruptions` +5 (chaque saut
+vers une cible non canonique, depuis le bord de la moitié basse pour les
+relatifs ; les références par la pile, dix-sept cas, dont `fs:(%rbp)` et la
+cible d'un `ret` en `#GP` ; la division après une faute de page ; le cadre
+lu avec les droits du programme, pour `iretq` et `lretq` ; le RPL retiré),
+`x86_replay` +1 (l'interpréteur nu refuse la cible, paginé ou non),
+`pc_chargeur` +1 (2^62 octets refusés sans arrêt), `pc_demarrage` +1 (la RAM
+reçue au mébioctet près, 65 536 Mio non refusés par le plafond), `wisq-pc`
++1 (le compte en mébioctets, le plafond compris). Le test
+`a_non_canonical_address_is_a_general_protection_fault` faisait
+`tourner(2)`, « le saut, puis la faute » : il fait `tourner(1)`, et vérifie
+maintenant le RIP du cadre (0x1000) et qu'aucune instruction n'est retirée.
+
+**Sabotages**, d'une ligne, en profil de mise au point : **34, tous
+tombent**, `git diff`
+identique après chacun (somme comparée). Les trois gardes du contrôle (`take`
+retiré, `read_memory_as_machine`, `& 0xFFFF` pour `lretq` et pour `iretq`),
+`--ram` (`1 << 19`, `>=`, `vec!` à la place de `alloc_zeroed`, `essayer` qui
+arrête au lieu de refuser, le refus en code 1), chaque contrôle de cible
+(`jcc`, la suite non prise jugée aussi, `call` relatif, `call` indirect,
+`ret`, `ret` sans défaire son `pop`, `jrcxz`, `loop`, `loop` qui décrémente
+avant de juger, `jmp` indirect, `iretq`, `lretq`, la cible dite accès), et
+`#SS` (le choix inversé, RBP oublié, FS ignoré, l'opérande jamais reconnu,
+`push` et `pushf` non implicites, `iretq` hors pile, le x87, le vectoriel et
+`fxsave` sans leur opérande, le vecteur 13 au lieu de 12), `leave`.
+Script `<bloc-notes>/pc3/sabotages.py`, journal `<bloc-notes>/pc3/sabotages.log`.
+
+**Mesures.** Le banc de l'entrée précédente (Alpine jusqu'à l'invite après
+`echo wisq-parle`, 512 Mio), en courses alternées contre le binaire de
+51dbdcdc. La machine était bruyante : le même binaire a couru de 40,9 à
+46,3 s dans la journée. Les comptes d'instructions ne bougent pas
+(1 907 à 1 911 millions).
+
+- *Le contrôle de `jcc` écrit `taken && !canonique(cible)`* : plus lent que
+  l'ancien dans les six séries où il a couru, de 1,5 à 4,6 % en moyenne
+  (par exemple 43,30 · 44,14 · 44,94 s contre 42,28 · 42,17 · 42,61 s). Sur
+  les 1,2 premier milliard d'instructions seulement, aucun écart (médianes
+  22,82 s contre 22,94 s, cinq paires).
+- *Sans aucun contrôle de `jcc`*, pour situer : 40,71 · 40,47 · 42,07 ·
+  40,26 s, contre 42,70 · 42,58 · 40,93 · 40,85 s pour l'ancien.
+- *La forme gardée* juge l'adresse retenue (choisie comme avant) et ne
+  relit la condition que sur le chemin froid : 40,61 · 43,91 · 42,29 s
+  contre 44,29 · 42,44 · 43,08 s (−2,3 %), puis, le code définitif, 45,42 ·
+  45,07 · 41,80 · 43,24 s contre 45,14 · 43,41 · 41,81 · 42,41 s (+1,6 %).
+  Une comparaison directe des deux formes n'a pas su les départager (43,34 ·
+  42,76 · 45,42 s contre 42,49 · 42,46 · 45,94 s) : l'écart est de l'ordre
+  du bruit du jour, et des effets de placement que l'entrée précédente a
+  déjà vus.
+
+Relevés : `<bloc-notes>/pc3/mesure*.txt`.
+
+**Vérifications.** `cargo fmt --all --check`, clippy `--all-targets
+--all-features -D warnings`, `cargo test --release` sur tout l'espace de
+travail (36 binaires, 0 échec), wasm32 de `wisq-page` et de `wisq-vm
+--lib`, `check-whitespace` et `check-project-sources`, le recompte puis
+`bun run build` et `bun test` (476). Démarrage réel avec le binaire final et
+`--input 'uname -a;;ps'` : le shell est atteint, `Linux (none)
+6.18.60-0-virt … x86_64 Linux`, `ps` répond, aucun refus dans un programme,
+1 913 229 566 instructions, 43,3 s.
+
+**Ce qui reste.** Une suite non prise qui sortirait de la moitié basse est
+retirée, et c'est la lecture d'après qui faute : le manuel ne tranche pas,
+et le test le dit comme un choix de ce cœur. La livraison vers une porte dont
+la cible n'est pas canonique n'est pas jugée. La vitesse (pas de blocs
+d'instructions), l'ABI C, la `Carte` de `wisq-page`, les SSE/SSE2 flottants
+et le calcul x87, la double faute, l'instantané : inchangés.
+
+## 2026-11-20 — Machine PC en Rust : l'ombre de `sti`, `lretq`, et les gardes que rien ne jugeait
+
+**Ce qui n'allait pas.** Le contrôle adverse de la tranche précédente a
+trouvé deux défauts de comportement, et 64 sabotages d'une ligne (sur 171)
+qui ne faisaient tomber aucun test.
+
+- *L'ombre de `sti` pouvait ne jamais se lever.* Elle était tenue par une
+  adresse : celle de l'instruction d'après `sti`, et levée seulement quand
+  le matériel était regardé ailleurs. Mais une boucle d'attente revient sur
+  cette adresse (`sti ; jmp .`), et le matériel est regardé toutes les 256
+  instructions, donc toujours au même point d'une boucle de une, deux ou
+  quatre instructions : 10 000 000 d'instructions sans livrer une IRQ0 en
+  demande, selon la parité du compte. C'est maintenant un compte
+  d'instructions retirées : l'ombre couvre l'instruction qui suit, et passe
+  dès qu'elle est retirée — ou qu'elle faute (l'ombre ne suit pas une faute
+  dans son gestionnaire). Elle n'est posée que quand `sti` lève le drapeau.
+- *`lretq` donnait l'anneau zéro à qui le demandait.* CS était pris sur la
+  pile sans contrôle. `Systeme::retour_lointain` a la garde d'`iretq` (un
+  retour ne monte jamais en privilège : `#GP(sélecteur)`), dépile RSP et SS
+  quand le retour descend vers un anneau moins privilégié, et lit tout avant
+  de rien changer.
+- *L'invariant « une instruction qui écrit en mémoire et faute n'a rien
+  changé » était faux pour `bts`/`btc`/`btr`* (et `lock bts`) : la retenue
+  était écrite avant l'écriture refusée, et le cadre du gestionnaire portait
+  un CF faux. L'écriture passe d'abord, comme pour le reste.
+- *Une adresse non canonique était traduite comme son alias* :
+  `mov (%rbx),%al` à 0x8000_0000_0000_6000 lisait la page 0x6000. La
+  traduction de la machine (`translate_cached`) la refuse
+  (`Unmapped::NonCanonical`), et la machine livre `#GP(0)`, pas une faute de
+  page. `translate`, le juge de l'émetteur, est inchangé.
+- *Le code d'erreur suivait le numéro du vecteur, pas la faute.* Une
+  interruption de matériel ou un `int n` arrivant sur le vecteur 8 ou 13
+  empilaient un code qu'aucune faute n'avait donné (un 8259 laissé à sa base
+  d'origine livre l'horloge au vecteur 8). `Exception::code()` rend
+  maintenant `Option`, et `porte_un_code` est retiré.
+- *`Refus::Tronque` n'était jamais produit* : la lecture de l'en-tête
+  refusait déjà le fichier coupé en « pas un noyau ». L'en-tête se lit sans
+  juger la taille, et un noyau coupé est nommé comme tel (`wisq-pc` le dit).
+- *`--ram` débordait en silence* : 2^44 Mio faisaient zéro octet après le
+  décalage, et la machine démarrait sur son plancher. Au-delà de 64 Gio,
+  c'est un refus (code 2) ; sous le plancher de 128 Mio, la machine démarre
+  et le dit.
+- *Trois commentaires faux* : la doc de `Extra::FpuWord` (« la pile du x87,
+  que ce cœur n'a pas »), celle de `Decoded::nothing` restée au-dessus
+  d'`empty()`, et, dans l'entrée précédente, le nom de fournisseur de CPUID
+  écrit comme un fait mesuré, alors qu'il est tiré des sources de Linux.
+
+**Les gardes sans test, et leurs tests.** 51 tests de plus (3 862 →
+3 913) : `pc_interruptions` +30 (l'ombre, `lretq`, le code d'erreur, la
+cible d'une porte au-dessus de 4 Gio, TF/NT/RF effacés à l'entrée, le TSS
+trop court, une livraison ratée qui défait pile et sélecteurs, `ltr`,
+`sysretq`, les formes que CPUID n'annonce pas, `pushf`/`popf`, `sgdt`,
+`rdtscp`, CR0 et LMA, `fninit`, MXCSR réservé, le trou des périphériques,
+les bases de FS/GS, EFER qui vide le tampon, la page d'instructions oubliée
+au vidage et gardée pour un seul anneau, l'adresse non canonique, et le
+contrat du trait `Peripheriques` : ports, réveil, battements ; le test des
+instructions du noyau refusées aux programmes passe de neuf à dix-sept
+formes — `sti`, `lgdt`, `lidt`, `invlpg`, `ltr`, `lldt`, `mov dr` dans les
+deux sens — et vérifie que rien n'a bougé) ; `pc_herites` +9 (OCW3,
+ICW2, les bits du 16550, l'interruption d'émission, le rechargement du 8253,
+le verrou, la commande au canal un, le port 0x61, l'index CMOS — un invité
+qui écrivait 0x8F sur 0x70 faisait paniquer l'hôte) ; `pc_chargeur` +4 ;
+`pc_demarrage` +3 (l'outil `wisq-pc` lancé pour de bon : le noyau factice,
+un noyau coupé, `--ram`) ; `x86_replay` +4 (le même invariant sur le reste
+des instructions qui écrivent, `rep` par pages devant le trou et hors de la
+mémoire, le bit utilisateur du code d'erreur pour un accès de la machine,
+l'adresse non canonique) ; `x86_extended_oracle` +1 (`fild` d'entiers
+négatifs, que le corpus ne charge jamais).
+
+Les tests du contrôle, rejoués sur cet arbre : quatorze sur quinze passent.
+Le quinzième (`lretq` depuis l'anneau trois) affirme qu'après le `lretq`
+l'anneau n'est pas zéro — or la `#GP` est livrée à un gestionnaire de
+l'anneau zéro (RIP = 0x8000, le gestionnaire) : c'est l'assertion qui ne
+tient plus, pas le défaut. Le test d'ici regarde le cadre (sélecteur refusé,
+RIP du `lretq`, CS 0x33, pile inchangée).
+
+**Sabotages**, d'une ligne : **94, 93 tombent**, l'arbre propre après
+chacun (`git diff` identique, somme comparée). Ils reprennent chaque garde
+que le contrôle a trouvée sans test et chaque correction : l'ombre (ne se
+lève jamais, deux instructions, aucune, `mov ss`, l'ombre qui suit une
+faute), `lretq` (monte en privilège, `#GP` sans le sélecteur, pile non
+dépilée vers l'anneau trois, huit octets, SS non rendu), la page
+d'instructions gardée (clef sans l'anneau, survie au vidage), sept
+instructions du noyau permises aux programmes, les trois méthodes du trait
+`Peripheriques`, la cible d'une porte sans ses 32 bits hauts, le TSS trop
+court (à l'octet près, dans les deux sens), TF/NT/RF gardés, la défaite d'une
+livraison ratée (CS, RSP, SS), `ltr`, `sysretq` (anneau trois, SCE, RF/NT,
+CS et SS sans `| 3`), EFER sans vidage, la LDT prise pour la GDT, le code
+d'erreur des interruptions et d'`int n`, `bts`/`btc`, `rcl`/`rcr`, `rep` par
+pages (trou, source hors de la RAM), `fild` sans signe, l'adresse non
+canonique (ignorée, ou sur 49 bits), le bit utilisateur pour un accès de la
+machine, quatorze gardes des périphériques hérités, sept du chargeur et de
+la mémoire, trois de `--ram`. **Le seul qui ne tombait pas** retirait le masque de largeur d'une
+lecture de port servie par les autres périphériques : un mutant équivalent,
+puisque `in` range la valeur par `Cpu::set` à la largeur de l'instruction.
+Le masque est retiré, et le commentaire dit pourquoi.
+
+**Mesures.** Le démarrage d'Alpine jusqu'au shell (le banc de l'entrée
+précédente) a d'abord pris **6 à 9 % de plus** après ces corrections, en
+courses alternées contre la tranche précédente : 41,7 · 42,9 · 41,9 s contre
+39,1 · 40,6 · 38,8 s, puis, sur une machine plus bruyante, une médiane de
+47,4 s contre 43,4 s sur cinq courses. Ni `bts` ni le contrôle canonique de
+la traduction n'y étaient pour rien (variantes sans eux : aussi lentes) ;
+`machine.rs` et `systeme.rs` d'avant rendaient la vitesse. Sous `perf`, le
+code chaud est le même, à des décalages près : `faute_d_acces`, appelée de
+`pas`, y était recopiée et a grossi. **Sortie de la boucle** (`#[cold]`,
+`#[inline(never)]`), la médiane est revenue à 44,3 s contre 43,4 s — un écart
+dans le bruit de ce jour-là. Les comptes d'instructions ne bougent pas
+(1 907 533 885 à 1 909 585 631 sur douze courses, avant et après mêlés).
+`uname -a`, `ps`, `cat /proc/cpuinfo` répondent, sans refus dans un
+programme.
+
+La comparaison des temps de l'entrée précédente n'était pas tout à fait
+symétrique : le temps du cœur Swift est celui du cas de test entier, celui
+de `wisq-pc` la seule boucle, chargement des fichiers exclu. L'écart réel
+est donc au moins les 29 % annoncés.
+
+**Vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release` sur tout l'espace de
+travail (l'émetteur compris), les tests neufs sous le profil de mise au
+point, `cargo build --release -p wisq-page --target wasm32-unknown-unknown`,
+`check-whitespace.sh`, `check-project-sources.sh`, le recompte (3 913) puis
+le site (`bun run build`, `bun test` : 476). Aucun fichier Swift, ni de
+`crates/wisq-page`, ni de l'émetteur n'est touché.
+
+**Ce qui reste.** Celui de l'entrée précédente, inchangé : la vitesse (les
+blocs), l'ABI C, la `Carte` de `wisq-page`, les SSE flottants et le calcul
+x87, la double faute, l'instantané. Les interruptions restent regardées
+toutes les 256 instructions, comme chez Swift — l'ombre ne dépend plus de
+ce rythme.
+
+## 2026-11-20 — Machine PC native en Rust : Alpine 6.18 démarre jusqu'à son shell
+
+**La demande.** « Je veux faire tourner un desktop, tu peux utiliser l'ABI C
+et tout faire en Rust. » La machine PC de l'application est le cœur Swift
+(`Sources/WisqVM/X86*.swift`) ; on la refait en Rust, dans `crates/wisq-vm`.
+Première tranche du flux « cœur » : une machine PC native, sans JIT ni
+WebView, qui démarre un vrai Linux jusqu'à un shell et se mesure contre le
+cœur Swift sur le banc commun.
+
+**Ce qu'il y avait.** `x86.rs` : un décodeur et un interpréteur jugés par les
+corpus matériels, mais faits pour être le juge de l'émetteur — une fenêtre de
+mémoire plate, une marche des tables à chaque accès, et un refus nommé devant
+tout ce qui demande une machine (ports, MSR, `iretq`, `hlt`, les XMM). Aucun
+périphérique natif hors `crates/wisq-page`.
+
+**Ce qui est fait.** `crates/wisq-vm/src/pc/`, porté du cœur Swift fichier par
+fichier :
+
+- `memoire.rs` — la carte de `X86Memory.pc` : la RAM d'un tenant jusqu'à trois
+  gibioctets, le trou sous quatre au-delà, que le processeur refuse de prendre
+  pour de la RAM (`Cpu::memory_hole`).
+- `chargeur.rs` — `LinuxBootProtocol` et `X86BootLoader` : l'en-tête du
+  `bzImage`, le noyau à son adresse préférée, la page zéro, la ligne de
+  commande, l'initramfs en haut de la mémoire, la carte e820, l'écran annoncé.
+- `herites.rs` — deux 8259 (initialisation, masque, les deux fins
+  d'interruption, la cascade), le 8253 (modes périodiques et coup unique,
+  l'horloge sans tic et son plancher de quatre millisecondes, le canal deux et
+  le port 0x61), le 16550 tel que le pilote 8250 le sonde, et une horloge CMOS
+  minimale, réglée par l'hôte.
+- `systeme.rs` — les tables de descripteurs, le registre de tâche, les MSR,
+  `CPUID`, la livraison des fautes et des interruptions en mode long (portes,
+  piles du TSS, piles d'interruption), `iretq`, `syscall`, `sysretq`.
+- `machine.rs` — la machine : un cache de décodage vérifié par comparaison
+  d'octets, la page d'instructions gardée, les instructions de système, et la
+  boucle de `X86Core.run` à l'instruction près (le temps de l'invité est le
+  compteur d'instructions, 288 par battement du 8253, le matériel regardé
+  toutes les 256 instructions, le saut d'attente sur `hlt`).
+- `src/bin/wisq-pc.rs` — `wisq-pc --kernel … --initrd … --cmdline … --ram 512
+  [--budget N] [--input 'cmd;;cmd'] [--until TEXTE]` : la série sur la sortie
+  standard, et à la fin les instructions retirées, les secondes, les MIPS.
+
+Le processeur reste `Cpu`. `execute` refuse toujours ce qu'il refusait — les
+tests de l'émetteur y tiennent — et la machine exécute elle-même ce qui
+demande une machine. `Cpu` gagne : les XMM et `execute_vector` (les formes SSE
+et SSE2 entières que le décodeur lisait déjà pour l'émetteur) ; un tampon de
+traduction que seule la machine allume (`with_translation_cache`), avec
+l'anneau trois, le bit 63 sous EFER.NXE, et les bits « accédée » et « salie »
+posés dans les tables ; et **un second décodeur, à côté** (`x86_extended.rs`).
+`Op` est jugé cas par cas dans `x86_wasm.rs`, et une forme lue sans être
+traduite refuse sa région entière : ce que la machine native exécute et que
+l'émetteur ne traduit pas ne peut donc pas entrer dans `decode`. Le second
+décodeur n'est consulté que par la machine, quand le premier a refusé.
+
+**Les murs, trouvés par l'arrêt.** La machine s'arrête en nommant les octets
+qu'elle ne lit pas. Il y en a eu deux :
+
+1. `dd 7c 24 0e` / `d9 7c 24 0c`, à 512 529 instructions : `fnstsw` et
+   `fnstcw`, par lesquels le décompresseur cherche un coprocesseur. Ajoutés
+   avec `fldcw`, `fnstsw %ax` et `fnclex`.
+2. `0f 77 db 07`, à 1,48 milliard : `emms` puis `fildl (%rdi)`, la parade du
+   noyau à `X86_BUG_FXSAVE_LEAK` sur tout processeur AMD
+   (`restore_fpregs_from_fpstate`). D'où une vraie pile x87 — huit registres,
+   les étiquettes, le sommet dans le mot d'état —, `fild` aux trois largeurs,
+   et `fxsave`/`fxrstor` qui la portent.
+
+Après quoi Alpine 6.18.60 va jusqu'à son shell de secours, et `uname -a`, `ps`,
+`cat /proc/cpuinfo`, `ls /`, `dmesg` y répondent, sans qu'aucun programme
+reçoive d'instruction refusée.
+
+**Trois défauts de l'interpréteur, que le démarrage ou les tests portés ont
+montrés.**
+
+- *Une instruction qui écrit en mémoire et faute avait déjà changé quelque
+  chose.* `adc`, `sbb`, les décalages et les rotations posaient leurs drapeaux
+  avant d'écrire ; `xchg` et `xadd` échangeaient le registre même quand
+  l'écriture était refusée. Sur une page en copie sur écriture, le noyau
+  rejoue l'instruction : `adc` relisait une retenue qu'il avait lui-même
+  changée, `xchg` rendait deux fois la valeur de la mémoire. L'écriture passe
+  maintenant avant tout le reste.
+- *Un `mov` vers la mémoire lisait sa destination.* Sur une page absente, la
+  faute disait « lecture » pour une écriture — le test porté de
+  `X86InterruptTests` l'a montré, code d'erreur 0 au lieu de 2 — et chaque
+  rangement payait un chargement.
+- *`rep movs` et `rep stos` traduisaient chaque élément.* Ils vont par pages
+  entières, comme `bulkString` du cœur Swift, avec la même garde : une
+  destination qui commence dans la source répète un motif, et reste élément
+  par élément.
+
+**CPUID.** Le nom et la signature du cœur Swift (`AuthenticAMD`, famille 15,
+modèle 107), pour que le noyau prenne les mêmes chemins — d'après les sources
+de Linux, et sans l'avoir mesuré ici, un nom inconnu lui ferait isoler ses
+tables de pages à chaque entrée. Les capacités d'un x86-64
+de base : FPU, PSE, TSC, MSR, PAE, CX8, PGE, CMOV, MMX, FXSR, SSE, SSE2,
+CX16, le mode long ; ni SSE3, ni SSSE3, ni SSE4, ni AVX, ni BMI, ni AES, ni
+XSAVE. Les chaînes rapides (ERMS, FSRM, FSRS), comme le cœur Swift. Et
+`rdrand`/`rdseed`, avec une source (`Alea`, la suite SplitMix64 du cœur
+Swift, même graine) : voir l'écart ci-dessous.
+
+**Mesures.** Le banc commun : Alpine 6.18.60, `vmlinuz-virt` et
+`initramfs-virt` du netboot, 512 Mio, la ligne de commande du banc Swift
+(`console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep console=ttyS0`),
+jusqu'au shell de secours, `echo wisq-parle` tapé, arrêt au retour de
+l'invite. Cinq courses alternées, cœur Swift (`X86BootAttemptTests`, release)
+puis `wisq-pc`, sur le même conteneur, bruyant ce jour-là :
+
+| | instructions retirées | courses (s) | médiane | débit |
+|---|---|---|---|---|
+| cœur Swift | 1 916 457 192 à 1 916 576 992 | 34,7 · 33,0 · 33,5 · 32,3 · 31,7 | 33,0 s | 58,1 MIPS |
+| machine PC en Rust | 1 908 017 128 à 1 909 283 278 | 44,3 · 42,5 · 43,3 · 39,6 · 40,9 | 42,5 s | 44,9 MIPS |
+
+**La machine en Rust est plus lente que le cœur Swift : 29 % de temps en
+plus.** Elle n'est pas lente partout pareil : le premier 1,4 milliard
+d'instructions (la décompression, puis le noyau jusqu'au déballage de
+l'initramfs) passe à 58 MIPS, autant que le cœur Swift ; la suite — `/init`,
+les modules, les programmes qui se lancent — tombe entre 23 et 37 MIPS. Là,
+`perf` donne dix fois plus de décodages (11 % des échantillons, contre 1,2 %
+avant), et le reste ralenti d'un bloc.
+
+**Ce qui a rendu, mesuré en courses alternées** sur le premier 1,2 milliard
+d'instructions :
+
+| | courses (s) | débit |
+|---|---|---|
+| avant | 37,5 · 34,4 | 32 à 35 MIPS |
+| un aiguillage en tête d'`execute`, les comparaisons d'`Op` par `matches!` | 25,6 · 24,8 | 47 à 48 MIPS |
+| l'instruction lue dans sa case du cache, sans recopie | 20,2 · 19,7 | 59 à 61 MIPS |
+
+Le premier : `execute` posait une vingtaine de questions l'une après l'autre
+avant d'arriver à un `mov`, et chaque `instruction.op == Op::X` appelait le
+`PartialEq` dérivé — 12 % du temps à lui seul sous `perf`. Le second : chaque
+pas recopiait les 56 octets de l'instruction hors du cache. Avant eux, ne plus
+lire la destination d'un `mov` avait rendu 14 % sur la course entière (77,6 s
+→ 67,0 s, une course de chaque).
+
+**Ce qui n'a rien rendu, et qui est retiré** : lire d'avance la case de
+l'instruction suivante (20,2 · 20,6 s contre 20,6 · 19,4 s) ; un cache de
+décodage de 16 384 cases au lieu de 65 536 (20,2 · 20,2 contre 20,3 · 20,1),
+ou de 262 144 et d'un million (40,8 · 40,4 et 41,9 · 41,0 s contre 40,9 ·
+40,5 s sur 1,9 milliard). La ligne la plus chère de la boucle reste la
+comparaison de l'étiquette d'une case — une case fait 96 octets, une par
+adresse d'octet, et deux instructions qui se suivent sont dans deux lignes de
+cache. C'est ce que les blocs du cœur Swift (#710) évitent, et que cette
+machine n'a pas.
+
+**Le compte d'instructions, et l'écart cherché.** Le premier démarrage complet
+retirait **2 033 190 146** instructions, 6 % de plus que le cœur Swift. Les
+deux consoles, comparées ligne à ligne et par leurs horodatages, s'écartaient
+d'un coup de 126 ms de temps de l'invité (43 millions d'instructions) entre
+« mem auto-init » et « SLUB » : sans `rdrand`, le générateur du noyau n'est
+pas prêt, et chaque nombre demandé par le tirage des listes libres de SLUB
+réextrait son réservoir. Avec `rdrand` et `rdseed` annoncés et servis par la
+même suite que le cœur Swift : **1 919 047 271**, puis **1 908 300 554** une
+fois le `mov` corrigé — 0,4 % sous le cœur Swift. Ce qui reste d'écart a ses
+causes dans la console : `x87 FPU will use FXSAVE` au lieu de XSAVE (CPUID),
+`i8042: No controller found` (le clavier est à la carte de `wisq-page`, pas
+encore branchée), et les fautes de page en moins.
+
+**Tests.** 96 de plus (3 766 → 3 862), tous sans noyau ni moteur JavaScript :
+
+- `pc_chargeur` (18) — portés de `LinuxBootProtocolTests` et
+  `X86BootLoaderTests`, plus la carte au-delà de trois gibioctets.
+- `pc_herites` (27) — portés de `X86LegacyDevicesTests`, plus la sonde du
+  pilote 8250, la cascade, l'horloge CMOS, les ports muets.
+- `pc_interruptions` (28) — portés de `X86InterruptTests`, plus ce que ce cœur
+  ajoute : les instructions du noyau refusées aux programmes (`#GP`), le
+  privilège des portes devant `int n`, un `iretq` qui ne monte pas en
+  privilège, `popf` en anneau trois, l'ombre de `sti`, `syscall`/`sysretq`,
+  les MSR, `ltr`, CPUID, `rdrand`, le code réécrit sur place, l'instruction à
+  cheval sur deux pages.
+- `pc_demarrage` (5) — **un noyau factice** de 229 octets dans un vrai
+  `bzImage` : il lit la page zéro, écrit sur le port série, pose son IDT,
+  initialise le 8259, arme le 8253, dort sur `hlt`, se fait réveiller cinq
+  fois et s'éteint. Et le vrai noyau quand on le désigne (`WISQ_PC_KERNEL`,
+  `WISQ_PC_INITRD`, `WISQ_PC_ATTENDU`) : avec la sonde de
+  `scripts/build-userspace-probe.py`, `WISQ-USERSPACE-OK` en 33 s.
+- `x86_vector_oracle` (4) — `execute_vector` devant `x86-xmm-oracle.tsv`
+  (976 cas) et `x86-simd-oracle.tsv` (9 204 cas), sans Bun.
+- `x86_extended_oracle` (6) — le second décodeur devant `x86-x87-oracle.tsv`
+  (neuf formes, 540 cas) et `fxrstor` puis `fxsave` devant
+  `x86-fxsave-oracle.tsv` (280 aires). Ce dernier a dit ce que le silicium
+  corrige en relisant : le bit 6 du mot de contrôle toujours à un, les bits
+  « résumé d'erreur » et « occupé » recalculés.
+- `x86_replay` (8) — une instruction qui faute n'a rien changé (douze formes,
+  avec et sans tampon, puis rejouées), le `mov` qui ne lit pas sa destination,
+  les bits « accédée » et « salie », les vidages du tampon, l'anneau trois, le
+  bit 63, et `rep` par pages contre `rep` élément par élément.
+
+**Sabotages**, d'une ligne : **59, tous tombent**, l'arbre propre après chacun
+(`git diff` vide). Quatre ne tombaient pas au premier passage, et ont fait
+durcir trois tests : `xchg` (le registre du test valait la mémoire, l'échange
+ne se voyait pas), les mots d'initialisation du 8259 (le masque final cachait
+les masques intermédiaires), et « la page suivante chargée sans débordement »
+(aucun test ne posait une forme inconnue au bout d'une page) ; le quatrième
+était un motif de sabotage mal écrit. La liste : `pandn` nié du mauvais côté,
+`pavg` sans arrondi, `ldmxcsr` sans contrôle, le `mov` qui lit sa
+destination, les drapeaux posés malgré la faute, `xchg` malgré la faute, `rep`
+sans garde de recouvrement, CR3 sans vidage, une case qui écrit sans être
+salie, l'anneau trois sans bit utilisateur, le bit 63 ignoré, le code d'erreur
+sans l'écriture, le trou pris pour de la RAM (deux), `fild` (exposant, sommet),
+`fxrstor` (bit 6, bits de résumé), `fxsave` (512 octets, la fin de l'aire non
+vérifiée), `fld` lu pour `fnstcw`, `type_of_loader`, l'alignement de
+l'initramfs, le trou du premier mégaoctet, `lfb_size` en octets, un fichier
+tronqué accepté, les fins d'interruption, les mots d'initialisation, une
+ligne en service, le mode du 8253, le plancher du coup unique, le verrou,
+l'identification du 16550, la boucle du modem, la cascade, le BCD de
+l'horloge, la pile non alignée, la porte de trappe, le code d'erreur de la
+faute de page, la pile en quittant l'anneau trois, le privilège de la porte,
+`iretq`, `popf`, R11 de `syscall`, la base de `ltr`, SSE3 annoncé, LMA perdu,
+le privilège du noyau, l'ombre de `sti`, la retenue de `rdrand`, `swapgs`, le
+cache de décodage sans comparaison, l'instruction à cheval gardée au cache, la
+page suivante chargée d'office, le port muet à zéro, le `hlt` sans réveil,
+RSI, le réveil du `hlt`, la demande retirée sans livraison.
+
+**Vérifications.** `cargo fmt --all --check`, `cargo clippy --all-targets
+--all-features -- -D warnings`, `cargo test --release` sur tout l'espace de
+travail (l'émetteur compris : `host_loop` 226, `x86_wasm` 40), les tests
+neufs sous le profil de mise au point aussi (débordements vérifiés),
+`scripts/build-page-emitter.sh` (la cible wasm32 construit `pc/`),
+`check-whitespace.sh`, `check-project-sources.sh`, le site (`bun run build`,
+`bun test`). Aucun fichier Swift n'est touché.
+
+**Ce qui reste.**
+
+- *La vitesse.* 29 % derrière le cœur Swift. Les blocs d'instructions (#710)
+  sont le premier chantier ; le tampon de traduction ne garde pas de pointeur
+  vers la page de l'hôte, `invlpg` vide tout, et la phase des programmes
+  (23 à 37 MIPS) n'est pas expliquée au-delà des décodages.
+- *L'ABI C.* Ni `ffi.rs`, ni `wisq_vm.h`, ni `Sources/WisqVMRust` : la machine
+  n'est pas encore dans l'application. `Machine` n'est pas `Send` (`Alea::Hote`
+  et `Peripheriques` sont des boîtes sans borne).
+- *Les périphériques.* La `Carte` de `wisq-page` n'est pas branchée ; le
+  trait `Peripheriques` l'attend (ports, lignes à niveau, réveil,
+  battements), mais passe la RAM en tranche d'octets et non par son trait
+  `Ram`, et il n'y a pas encore de porte pour les adresses hors de la RAM
+  (écran, BAR) : un accès au trou arrête la machine en le nommant.
+- *Le jeu d'instructions.* Aucun calcul en x87, pas de MMX, pas de SSE ni de
+  SSE2 flottants (`addsd`, `cvtsi2sd`, `ucomisd`…), alors que CPUID les
+  annonce — ils font partie de x86-64, et un programme qui en exécute reçoit
+  « Illegal instruction », la machine continue et le nomme (`Machine::refus`).
+  Aucun n'a été rencontré jusqu'au shell d'Alpine. Pas de mode compatibilité
+  32 bits, pas de préfixe 0x67.
+- *Ce qui n'est pas porté du cœur Swift.* L'instantané et la reprise, le
+  rythme d'attente à l'horloge murale, le temps dû (`elapse`), le
+  redémarrage demandé par l'invité, l'écriture de la date CMOS, LAR, LSL,
+  STR, la longueur exacte d'une instruction refusée. Pas de double faute :
+  une faute pendant une livraison arrête la machine en la nommant.
+- *Ce que la mesure ne dit pas.* Tout est mesuré sur un Xeon, pas sur une
+  puce Apple ; et jusqu'au shell de secours d'Alpine, pas sur un bureau.
 ## 2026-11-21 — Carte réseau : l'émission ne part qu'à son `out`
 
 Le dernier contrôle du flux « périphériques » a trouvé une garde de

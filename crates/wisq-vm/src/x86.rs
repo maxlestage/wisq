@@ -63,7 +63,17 @@
 
 #[path = "x86_vector.rs"]
 mod vector;
-pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector};
+pub use vector::{Lanes, Logic, Mask, Shift, Shuffle, Vector, VectorFault, MXCSR_MASK};
+
+#[path = "x86_extended.rs"]
+mod extended;
+
+#[path = "x86_rapide.rs"]
+pub mod rapide;
+use crate::x86_paging::is_canonical;
+pub use extended::{
+    decode_extended, f80, Extended, ExtendedFault, Extra, FloatOp, Mmx, Sse, FXSAVE_WRITTEN,
+};
 
 /// La largeur d'une opération, en octets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -206,6 +216,14 @@ impl Flags {
         self.other = value & !ARITHMETIC & !ALWAYS_ONE;
     }
 
+    /// Le drapeau d'interruption est-il posé ? Il vit hors de l'arithmétique,
+    /// donc il se lit sans rien calculer — la boucle d'une machine le demande
+    /// à chaque fois qu'elle regarde son matériel.
+    #[inline(always)]
+    pub fn interrupts_enabled(&self) -> bool {
+        self.other & IF != 0
+    }
+
     /// La retenue seule, dont `adc` et `sbb` ont besoin avant de calculer.
     pub fn carry(&self) -> u64 {
         u64::from(self.read() & CF != 0)
@@ -334,6 +352,56 @@ pub struct Cpu {
     /// elle s'est arrêtée. `faulted` dit qu'il y a eu faute ; celui-ci dit
     /// laquelle et pourquoi, ce qu'aucun booléen ne peut porter.
     pub unmapped: Option<crate::x86_paging::Unmapped>,
+    /// **Les seize registres XMM**, deux mots de soixante-quatre bits chacun,
+    /// le bas d'abord. L'exécution vectorielle (`execute_vector`, dans
+    /// `x86_vector.rs`) s'en sert ; `execute` les ignore, et faute toujours
+    /// devant une instruction vectorielle : c'est la machine PC qui choisit.
+    pub xmm: [[u64; 2]; 16],
+    /// MXCSR. Zéro par défaut, parce que `Cpu` dérive `Default` ; la machine
+    /// PC pose `0x1f80`, la valeur d'allumage du silicium.
+    pub mxcsr: u32,
+    /// Le mot de contrôle et le mot d'état du x87. Le sommet de la pile vit
+    /// dans les bits 11 à 13 du mot d'état, comme sur le silicium.
+    pub fpu_control: u16,
+    pub fpu_status: u16,
+    /// **Les huit registres du x87**, par leur numéro **physique** : la
+    /// mantisse de soixante-quatre bits, puis le signe et l'exposant sur
+    /// seize. `ST(i)` est le registre `(sommet + i) mod 8`. Ce cœur y charge
+    /// des entiers (`fild`), les sauve et les rend (`fxsave`, `fxrstor`) ; il
+    /// ne calcule pas encore dessus — voir `x86_extended.rs`.
+    pub x87: [(u64, u16); 8],
+    /// Les étiquettes abrégées, telles que `fxsave` les écrit : un bit par
+    /// registre physique, à un quand il est occupé.
+    pub fpu_tags: u8,
+    /// **Les six sélecteurs de segment**, dans l'ordre de `Segment` : ES, CS,
+    /// SS, DS, FS, GS. Les deux bits bas de CS sont l'anneau courant, que la
+    /// traduction d'adresses consulte (`privilege`). Zéro par défaut : anneau
+    /// zéro, ce que cet interpréteur a toujours été.
+    pub segments: [u16; 6],
+    /// `IA32_EFER`. Le bit 11 (NXE) est lu par la traduction d'adresses, le
+    /// bit 0 (SCE) par `syscall`. Zéro par défaut.
+    pub efer: u64,
+    /// **Le code d'erreur de la dernière faute de page**, tel que le silicium
+    /// l'empile : présence (bit 0), écriture (1), anneau trois (2), lecture
+    /// d'instruction (4). `unmapped` dit l'adresse et la raison ; celui-ci dit
+    /// ce que le gestionnaire du noyau lira.
+    pub fault_code: u64,
+    /// **Le tampon de traduction, quand la machine en veut un.** `None` par
+    /// défaut : l'interpréteur de référence marche les tables à chaque accès,
+    /// comme il l'a toujours fait, et rien de ce qu'il rend ne change. La
+    /// machine PC en pose un (`Cpu::with_translation_cache`) et se charge des
+    /// vidages — voir `x86_paging.rs`.
+    pub tlb: Option<Box<crate::x86_paging::Tlb>>,
+    /// **Le trou de la carte mémoire d'un PC** : son début et sa longueur, en
+    /// adresses physiques. La RAM d'une machine de plus de trois gibioctets
+    /// s'arrête à `0xC000_0000` et reprend à quatre gibioctets ; ce qui est
+    /// entre les deux appartient aux périphériques, et un accès qui y tombe
+    /// n'est pas de la RAM même si `memory` couvre ces adresses. Longueur
+    /// nulle par défaut : pas de trou.
+    pub memory_hole: (u64, u64),
+    /// **Ce qui répond hors de la RAM** : la mémoire vidéo, les registres
+    /// de l'écran, la tablette (voir `x86_paging::Devices`). Rien par défaut.
+    pub devices: crate::x86_paging::Devices,
 }
 
 /// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre
@@ -365,8 +433,26 @@ impl GuestMemory {
         self.window(address, size).is_some()
     }
 
+    /// **Un chargement, pas une boucle** : les quatre largeurs d'opérande se
+    /// lisent d'un coup, petit-boutistes. La boucle d'octets reste à
+    /// `read_bytes`, pour les moitiés d'un accès à cheval sur deux pages.
+    #[inline(always)]
     pub fn read(&self, address: u64, width: Width) -> Option<u64> {
-        self.read_bytes(address, width as usize)
+        let start = address.wrapping_sub(self.base);
+        let size = width as u64;
+        let length = self.bytes.len() as u64;
+        if start >= length || length - start < size {
+            return None;
+        }
+        let at = &self.bytes[start as usize..];
+        Some(match width {
+            Width::Byte => u64::from(at[0]),
+            Width::Word => u64::from(u16::from_le_bytes([at[0], at[1]])),
+            Width::Dword => u64::from(u32::from_le_bytes([at[0], at[1], at[2], at[3]])),
+            Width::Qword => {
+                u64::from_le_bytes([at[0], at[1], at[2], at[3], at[4], at[5], at[6], at[7]])
+            }
+        })
     }
 
     /// **Lire un nombre d'octets qui n'est pas forcément une largeur
@@ -389,8 +475,22 @@ impl GuestMemory {
         Some(value)
     }
 
+    #[inline(always)]
     pub fn write(&mut self, address: u64, width: Width, value: u64) -> Option<()> {
-        self.write_bytes(address, width as usize, value)
+        let start = address.wrapping_sub(self.base);
+        let size = width as u64;
+        let length = self.bytes.len() as u64;
+        if start >= length || length - start < size {
+            return None;
+        }
+        let at = &mut self.bytes[start as usize..];
+        match width {
+            Width::Byte => at[0] = value as u8,
+            Width::Word => at[..2].copy_from_slice(&(value as u16).to_le_bytes()),
+            Width::Dword => at[..4].copy_from_slice(&(value as u32).to_le_bytes()),
+            Width::Qword => at[..8].copy_from_slice(&value.to_le_bytes()),
+        }
+        Some(())
     }
 
     /// L'écriture correspondante. Voir `read_bytes`.
@@ -1192,6 +1292,12 @@ pub struct Decoded {
 }
 
 impl Decoded {
+    /// Une case vide, pour qui range des instructions décodées dans un
+    /// tableau : elle ne désigne aucune instruction, et sa longueur est nulle.
+    pub fn empty() -> Self {
+        Self::nothing(Width::Qword)
+    }
+
     /// Le squelette d'une instruction qui ne porte ni opérande ni mémoire —
     /// un saut, essentiellement. Écrit une fois plutôt que quinze, pour que
     /// l'ajout d'un champ ne se rate pas à la quinzième.
@@ -1217,7 +1323,8 @@ impl Decoded {
 
 impl Cpu {
     /// Lire un opérande de la largeur voulue.
-    fn get(&self, reg: u8, width: Width, high: bool) -> u64 {
+    #[inline(always)]
+    pub(crate) fn get(&self, reg: u8, width: Width, high: bool) -> u64 {
         let whole = self.regs[reg as usize];
         if high {
             return (whole >> 8) & 0xff;
@@ -1228,7 +1335,8 @@ impl Cpu {
     /// Écrire un opérande, avec la règle x86-64 que tout le monde oublie :
     /// **une écriture 32 bits efface les 32 bits de poids fort**, alors qu'une
     /// écriture 8 ou 16 bits préserve le reste du registre.
-    fn set(&mut self, reg: u8, width: Width, high: bool, value: u64) {
+    #[inline(always)]
+    pub(crate) fn set(&mut self, reg: u8, width: Width, high: bool, value: u64) {
         let slot = &mut self.regs[reg as usize];
         if high {
             *slot = (*slot & !0xff00) | ((value & 0xff) << 8);
@@ -1339,11 +1447,15 @@ impl Cpu {
         // La demi-retenue est **indéfinie** après un décalage. On la laisse à
         // zéro et l'oracle ne la compare pas ; prétendre une valeur serait
         // inventer une règle que le processeur n'a pas.
-        self.flags.write(flags);
-
-        if !instruction.discards {
-            self.faulted |= self.write_destination(instruction, result).is_none();
+        // **L'écriture d'abord, les drapeaux ensuite.** Une destination en
+        // mémoire peut fauter — une page en copie sur écriture —, et
+        // l'instruction est alors rejouée : elle ne doit avoir rien changé,
+        // drapeaux compris.
+        if !instruction.discards && self.write_destination(instruction, result).is_none() {
+            self.faulted = true;
+            return;
         }
+        self.flags.write(flags);
     }
 
     /// **Exécuter une instruction déjà décodée.** C'est ici que les drapeaux
@@ -1353,7 +1465,8 @@ impl Cpu {
     ///
     /// C'est le `rm` du ModRM dans le cas mémoire, et le codage garantit qu'il
     /// n'y en a qu'un : jamais deux accès dans la même instruction.
-    fn read_destination(&mut self, instruction: &Decoded) -> Option<u64> {
+    #[inline(always)]
+    pub(crate) fn read_destination(&mut self, instruction: &Decoded) -> Option<u64> {
         match instruction.memory {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
@@ -1364,7 +1477,8 @@ impl Cpu {
         }
     }
 
-    fn read_source(&mut self, instruction: &Decoded, width: Width) -> Option<u64> {
+    #[inline(always)]
+    pub(crate) fn read_source(&mut self, instruction: &Decoded, width: Width) -> Option<u64> {
         match instruction.memory {
             Some(address) if instruction.memory_is_source => {
                 let at = self.after(instruction);
@@ -1376,7 +1490,8 @@ impl Cpu {
     }
 
     /// Écrire le résultat là où l'opérande de destination se trouvait.
-    fn write_destination(&mut self, instruction: &Decoded, value: u64) -> Option<()> {
+    #[inline(always)]
+    pub(crate) fn write_destination(&mut self, instruction: &Decoded, value: u64) -> Option<()> {
         match instruction.memory {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
@@ -1400,11 +1515,12 @@ impl Cpu {
     /// codent les index négatifs.
     /// L'adresse de l'octet qui **suit** l'instruction — celle depuis laquelle
     /// un déplacement relatif au pointeur d'instruction se compte.
-    fn after(&self, instruction: &Decoded) -> u64 {
+    pub(crate) fn after(&self, instruction: &Decoded) -> u64 {
         self.rip.wrapping_add(instruction.length as u64)
     }
 
-    fn effective_address(&self, address: &Address, after: u64) -> u64 {
+    #[inline(always)]
+    pub(crate) fn effective_address(&self, address: &Address, after: u64) -> u64 {
         let mut value = address.displacement as u64;
         // **La base du segment s'ajoute au tout, pas à la base du ModRM.** Elle
         // vient avant le calcul plutôt qu'après pour la même raison que
@@ -1498,10 +1614,13 @@ impl Cpu {
             let mut flags = self.flags.read() & !(CF | OF);
             flags |= carry * CF;
             flags |= overflow * OF;
-            self.flags.write(flags);
-            if !instruction.discards {
-                self.faulted |= self.write_destination(instruction, result).is_none();
+            // L'écriture d'abord : rejouée après une faute, la rotation doit
+            // retrouver la retenue qu'elle avait lue.
+            if !instruction.discards && self.write_destination(instruction, result).is_none() {
+                self.faulted = true;
+                return;
             }
+            self.flags.write(flags);
             return;
         }
 
@@ -1515,7 +1634,7 @@ impl Cpu {
         };
 
         let top = u64::from(result & width.sign() != 0);
-        let (carry, overflow) = if instruction.op == Op::Rol {
+        let (carry, overflow) = if matches!(instruction.op, Op::Rol) {
             // À gauche, le bit sorti par le haut est rentré par le bas.
             let carry = result & 1;
             (carry, top ^ carry)
@@ -1529,11 +1648,11 @@ impl Cpu {
         let mut flags = self.flags.read() & !(CF | OF);
         flags |= carry * CF;
         flags |= overflow * OF;
-        self.flags.write(flags);
-
-        if !instruction.discards {
-            self.faulted |= self.write_destination(instruction, result).is_none();
+        if !instruction.discards && self.write_destination(instruction, result).is_none() {
+            self.faulted = true;
+            return;
         }
+        self.flags.write(flags);
     }
 
     /// **Le décalage double.** Ce qui le distingue d'un décalage ordinaire :
@@ -1592,6 +1711,11 @@ impl Cpu {
         // changement de signe.
         let sign = width.sign();
         let overflow = u64::from((value ^ result) & sign != 0);
+        // L'écriture d'abord, pour la même raison que les autres décalages.
+        if self.write_destination(instruction, result).is_none() {
+            self.faulted = true;
+            return;
+        }
         self.flags = Flags {
             op: FlagOp::Known,
             left: 0,
@@ -1606,7 +1730,6 @@ impl Cpu {
                 | (u64::from((result as u8).count_ones() % 2 == 0) * PF),
             other: self.flags.other,
         };
-        self.faulted |= self.write_destination(instruction, result).is_none();
     }
 
     /// **La pile, et le seul registre qui la porte.**
@@ -1642,11 +1765,16 @@ impl Cpu {
                 self.regs[instruction.dst as usize] = value;
             }
             Op::Call => {
+                let target = after.wrapping_add(instruction.imm);
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.push(after, Width::Qword);
                 if self.faulted {
                     return;
                 }
-                self.rip = after.wrapping_add(instruction.imm);
+                self.rip = target;
                 self.jumped = true;
             }
             Op::CallIndirect => {
@@ -1658,6 +1786,12 @@ impl Cpu {
                     self.faulted = true;
                     return;
                 };
+                // La cible se juge avant d'empiler : le silicium lève `#GP(0)`
+                // sans rien avoir écrit sous RSP.
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.push(after, Width::Qword);
                 if self.faulted {
                     return;
@@ -1667,6 +1801,13 @@ impl Cpu {
             }
             Op::Return => {
                 let Some(value) = self.pop() else { return };
+                if !is_canonical(value) {
+                    // Le `pop` n'a changé que RSP : le défaire suffit à
+                    // laisser la machine telle qu'elle était.
+                    self.regs[4] = self.regs[4].wrapping_sub(8);
+                    self.refuse_target(value);
+                    return;
+                }
                 // **L'ordre du silicium** : dépiler l'adresse, *puis* jeter les
                 // arguments. `imm` vaut zéro pour un `ret` nu.
                 self.regs[4] = self.regs[4].wrapping_add(instruction.imm & 0xffff);
@@ -1674,9 +1815,16 @@ impl Cpu {
                 self.jumped = true;
             }
             _ => {
-                // `leave` : RSP reprend RBP, puis RBP se dépile.
+                // `leave` : RSP reprend RBP, puis RBP se dépile. **Une faute
+                // rend RSP d'avant** : sans quoi elle laissait RSP = RBP, et
+                // le gestionnaire voyait une pile que l'instruction n'avait
+                // jamais eue.
+                let before = self.regs[4];
                 self.regs[4] = self.regs[5];
-                let Some(value) = self.pop() else { return };
+                let Some(value) = self.pop() else {
+                    self.regs[4] = before;
+                    return;
+                };
                 self.regs[5] = value;
             }
         }
@@ -1686,7 +1834,7 @@ impl Cpu {
     /// endroits, et l'ordre compte. Lire la destination après avoir écrit la
     /// source rendrait la valeur qu'on vient d'y mettre.
     fn exchange(&mut self, instruction: &Decoded) {
-        if instruction.op == Op::CompareAndExchangeSixteen {
+        if matches!(instruction.op, Op::CompareAndExchangeSixteen) {
             self.compare_and_exchange_sixteen(instruction);
             return;
         }
@@ -1702,12 +1850,23 @@ impl Cpu {
             Op::Exchange => {
                 // Aucun drapeau. C'est la seule des trois dans ce cas, et
                 // l'oublier écraserait ce que le processeur préserve.
-                self.faulted |= self.write_destination(instruction, source).is_none();
+                //
+                // **Et la source n'est écrite que si la destination l'a été.**
+                // Une destination en mémoire peut fauter ; rejouée avec un
+                // registre déjà échangé, l'instruction rendrait deux fois la
+                // valeur de la mémoire et perdrait celle du registre.
+                if self.write_destination(instruction, source).is_none() {
+                    self.faulted = true;
+                    return;
+                }
                 self.set(instruction.src, width, instruction.src_high, destination);
             }
             Op::ExchangeAndAdd => {
                 let sum = destination.wrapping_add(source);
-                self.faulted |= self.write_destination(instruction, sum).is_none();
+                if self.write_destination(instruction, sum).is_none() {
+                    self.faulted = true;
+                    return;
+                }
                 self.set(instruction.src, width, instruction.src_high, destination);
                 self.flags = Flags {
                     op: FlagOp::Add,
@@ -1734,7 +1893,10 @@ impl Cpu {
                 // de la même valeur — en effacerait la moitié haute. Sept cas
                 // sur les vingt-quatre, tous sur ce seul bit de conduite.
                 if equal {
-                    self.faulted |= self.write_destination(instruction, source).is_none();
+                    if self.write_destination(instruction, source).is_none() {
+                        self.faulted = true;
+                        return;
+                    }
                 } else {
                     self.set(0, width, false, destination);
                 }
@@ -1978,7 +2140,7 @@ impl Cpu {
     /// silicium le dit dans le corpus de pile — RSP à `0x30002ffe`, pas
     /// `0x30002ff8`. Seize cas sur 648, deux formes, et aucun oracle que ce
     /// cœur-ci lisait ne pouvait le voir avant qu'on l'y branche.
-    fn push(&mut self, value: u64, width: Width) {
+    pub(crate) fn push(&mut self, value: u64, width: Width) {
         let top = self.regs[4].wrapping_sub(width as u64);
         if self.write_memory(top, width, value).is_err() {
             self.faulted = true;
@@ -1999,7 +2161,7 @@ impl Cpu {
     ///
     /// L'ordre, lui, compte déjà : il lit **avant** de remonter, et c'est ce
     /// qui fait que `pop %rsp` rend la valeur dépilée et non elle plus huit.
-    fn pop(&mut self) -> Option<u64> {
+    pub(crate) fn pop(&mut self) -> Option<u64> {
         let Ok(value) = self.read_memory(self.regs[4], Width::Qword) else {
             self.faulted = true;
             return None;
@@ -2043,6 +2205,10 @@ impl Cpu {
             if repeat && self.regs[1] == 0 {
                 return;
             }
+            // **Une page à la fois quand c'est possible** : voir `bulk_string`.
+            if repeat && self.regs[1] > 1 && step == size && self.bulk_string(moves, width) {
+                continue;
+            }
             let value = if moves {
                 match self.read_memory(self.regs[6], width).ok() {
                     Some(value) => value,
@@ -2067,6 +2233,80 @@ impl Cpu {
             }
             self.regs[1] = self.regs[1].wrapping_sub(1);
         }
+    }
+
+    /// **`rep movs` et `rep stos` par pages entières**, au lieu d'un élément à
+    /// la fois — le pendant de `bulkString` du cœur Swift.
+    ///
+    /// Le `memcpy` d'un noyau est un `rep movs`, et il efface ses pages par
+    /// `rep stos` : élément par élément, chacun retraduisait ses deux adresses.
+    /// Ici, le morceau qui tient dans la page de la source **et** dans celle de
+    /// la destination est traduit une fois, dans l'ordre des accès d'un
+    /// élément — la lecture, puis l'écriture —, puis copié ou rempli d'un coup.
+    ///
+    /// **Ce que l'invité voit ne change pas.** Une faute ne tombe qu'à une
+    /// frontière de page, donc RSI, RDI et RCX disent exactement ce qui a été
+    /// fait, comme après le même nombre d'éléments un par un. Rend `false`, et
+    /// laisse l'ancien chemin faire (et fauter s'il le faut) : une traduction
+    /// refusée, un morceau hors de la RAM, un élément à cheval sur deux pages,
+    /// et une copie dont la destination commence **dans** la source, plus
+    /// haut — l'élément un par un y répète un motif, ce qu'une copie de bloc
+    /// ne ferait pas. Le sens arrière ne vient pas ici : l'appelant l'écarte.
+    fn bulk_string(&mut self, moves: bool, width: Width) -> bool {
+        use crate::x86_paging::Access;
+        let size = width as u64;
+        let (source, destination) = (self.regs[6], self.regs[7]);
+        let mut room = 0x1000 - (destination & 0xFFF);
+        if moves {
+            room = room.min(0x1000 - (source & 0xFFF));
+        }
+        let elements = self.regs[1].min(room / size);
+        if elements <= 1 {
+            return false;
+        }
+        let length = elements * size;
+        let from = if moves {
+            match self.translate_cached(source, Access::Read) {
+                Ok(place) => Some(place),
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        let Ok(to) = self.translate_cached(destination, Access::Write) else {
+            return false;
+        };
+        let inside = |cpu: &Cpu, place: u64| {
+            cpu.memory.holds(place, length as usize)
+                && place.wrapping_sub(cpu.memory_hole.0) >= cpu.memory_hole.1
+        };
+        if !inside(self, to) {
+            return false;
+        }
+        let base = self.memory.base;
+        let target = (to - base) as usize;
+        let span = length as usize;
+        if let Some(from) = from {
+            if !inside(self, from) || (to > from && to < from + length) {
+                return false;
+            }
+            let origin = (from - base) as usize;
+            self.memory.bytes.copy_within(origin..origin + span, target);
+            self.regs[6] = source.wrapping_add(length);
+        } else {
+            let pattern = self.regs[0].to_le_bytes();
+            let area = &mut self.memory.bytes[target..target + span];
+            if width == Width::Byte {
+                area.fill(pattern[0]);
+            } else {
+                for element in area.chunks_exact_mut(size as usize) {
+                    element.copy_from_slice(&pattern[..size as usize]);
+                }
+            }
+        }
+        self.regs[7] = destination.wrapping_add(length);
+        self.regs[1] -= elements;
+        true
     }
 
     /// **Les trois chaînes qui lisent sans écrire : `lods`, `cmps`, `scas`.**
@@ -2225,25 +2465,28 @@ impl Cpu {
 
         let mut flags = self.flags.read() & !CF;
         flags |= carry * CF;
-        self.flags.write(flags);
 
-        if action == BitAction::Test {
-            return;
-        }
-        let mask = 1u64 << number;
-        let changed = match action {
-            BitAction::Set => value | mask,
-            BitAction::Reset => value & !mask,
-            _ => value ^ mask,
-        };
-        match place {
-            Some(at) => {
-                self.faulted |= self.write_memory(at, width, changed).is_err();
+        // **L'écriture d'abord, la retenue ensuite** : un `bts` sur une page
+        // en lecture seule faute, et le cadre que reçoit le gestionnaire doit
+        // porter les drapeaux d'avant l'instruction, pas la retenue d'un bit
+        // qui n'a pas été changé.
+        if action != BitAction::Test {
+            let mask = 1u64 << number;
+            let changed = match action {
+                BitAction::Set => value | mask,
+                BitAction::Reset => value & !mask,
+                _ => value ^ mask,
+            };
+            let written = match place {
+                Some(at) => self.write_memory(at, width, changed).is_ok(),
+                None => self.write_destination(instruction, changed).is_some(),
+            };
+            if !written {
+                self.faulted = true;
+                return;
             }
-            None => {
-                self.faulted |= self.write_destination(instruction, changed).is_none();
-            }
         }
+        self.flags.write(flags);
     }
 
     /// **Chercher le premier bit à un, par le bas ou par le haut.**
@@ -2283,6 +2526,7 @@ impl Cpu {
     /// c'est l'écart entre les deux qui fait tout le travail de `movzx` et
     /// `movsx`. La règle d'écriture ne change pas — une destination de 32 bits
     /// efface toujours la moitié haute du registre.
+    #[inline(always)]
     fn transfer(&mut self, instruction: &Decoded) {
         // **La source peut être un immédiat**, et ce n'était pas vrai jusqu'à
         // ce que `mov $1, %rdx` arrive : toutes les formes précédentes lisaient
@@ -2308,7 +2552,49 @@ impl Cpu {
         self.faulted |= self.write_destination(instruction, value).is_none();
     }
 
+    /// **Exécuter une instruction déjà décodée.**
+    ///
+    /// **Un aiguillage d'abord, pour ce qui fait presque tout le travail** —
+    /// les transferts, l'arithmétique, les sauts, la pile, `lea` — : un seul
+    /// saut par la table de l'énumération, au lieu de la vingtaine de
+    /// questions que le chemin général pose l'une après l'autre avant d'y
+    /// arriver. Chaque bras appelle exactement ce que le chemin général aurait
+    /// appelé ; tout le reste y va tel quel.
+    #[inline]
     pub fn execute(&mut self, instruction: &Decoded) {
+        match instruction.op {
+            Op::Mov | Op::Movsx => self.transfer(instruction),
+            Op::Add
+            | Op::Or
+            | Op::Adc
+            | Op::Sbb
+            | Op::And
+            | Op::Sub
+            | Op::Xor
+            | Op::Cmp
+            | Op::Test
+            | Op::Not
+            | Op::Neg
+            | Op::Inc
+            | Op::Dec
+            | Op::Shl
+            | Op::Shr
+            | Op::Sar
+            | Op::Rol
+            | Op::Ror
+            | Op::RotateThroughCarry { .. }
+            | Op::DoubleShift { .. } => self.compute(instruction),
+            Op::Jump(condition) => self.jump(instruction, condition),
+            Op::Lea => self.lea(instruction),
+            Op::Push | Op::Pop | Op::Call | Op::CallIndirect | Op::Return | Op::Leave => {
+                self.stack(instruction)
+            }
+            _ => self.execute_general(instruction),
+        }
+    }
+
+    /// Le chemin général : chaque famille d'instructions, l'une après l'autre.
+    fn execute_general(&mut self, instruction: &Decoded) {
         let width = instruction.width;
 
         // **`lea` calcule et n'accède à rien**, et elle sort donc avant même la
@@ -2341,7 +2627,7 @@ impl Cpu {
         // **L'instruction indéfinie, avant tout le reste.** Elle ne calcule
         // rien, n'écrit rien, et n'avance pas : le processeur lève une
         // exception, et ce cœur pose une faute que l'hôte lira.
-        if instruction.op == Op::Undefined {
+        if matches!(instruction.op, Op::Undefined) {
             self.faulted = true;
             self.jumped = true;
             return;
@@ -2358,7 +2644,7 @@ impl Cpu {
         // sur un opérande illisible, contrairement à `clflush` — un opérande
         // hors de la fenêtre faute donc ici, et c'est le seul comportement
         // observable de l'instruction sur ce cœur.
-        if instruction.op == Op::VerifySegmentWrite {
+        if matches!(instruction.op, Op::VerifySegmentWrite) {
             if self.read_destination(instruction).is_none() {
                 // **RIP reste sur l'instruction**, comme toute faute d'accès
                 // de ce cœur : c'est ce qui permet de la rejouer une fois la
@@ -2442,23 +2728,8 @@ impl Cpu {
             self.jumped = true;
             return;
         }
-        if instruction.op == Op::Lea {
-            if let Some(address) = instruction.memory {
-                let after = self.after(instruction);
-                // **`lea` ignore le préfixe de segment.** L'instruction ne
-                // touche pas la mémoire, donc elle ne traverse pas l'unité de
-                // segmentation : `leaq %gs:0x10, %rax` rend 0x10, pas
-                // `gs_base + 0x10`. L'assembleur le dit à sa façon — il
-                // avertit que le préfixe est « ineffectual » — et le corpus le
-                // vérifie sur le silicium.
-                let address = Address {
-                    gs: false,
-                    fs: false,
-                    ..address
-                };
-                let value = self.effective_address(&address, after);
-                self.set(instruction.dst, width, false, value);
-            }
+        if matches!(instruction.op, Op::Lea) {
+            self.lea(instruction);
             return;
         }
 
@@ -2535,23 +2806,19 @@ impl Cpu {
         let after = self.rip.wrapping_add(instruction.length as u64);
         match instruction.op {
             Op::Jump(condition) => {
-                let taken = condition.is_none_or(|c| c.holds(self.flags.read()));
-                self.rip = if taken {
-                    after.wrapping_add(instruction.imm)
-                } else {
-                    after
-                };
-                self.jumped = true;
+                self.jump(instruction, condition);
                 return;
             }
             Op::JumpIfCountZero => {
                 // RCX n'est **pas** touché : c'est toute la différence avec les
                 // trois `loop` juste en dessous.
-                self.rip = if self.regs[1] == 0 {
-                    after.wrapping_add(instruction.imm)
-                } else {
-                    after
-                };
+                let target = after.wrapping_add(instruction.imm);
+                let taken = self.regs[1] == 0;
+                if taken && !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
+                self.rip = if taken { target } else { after };
                 self.jumped = true;
                 return;
             }
@@ -2560,14 +2827,17 @@ impl Cpu {
                 // et aucune ne pose de drapeau : confondre `loop` avec `dec`
                 // puis `jnz` écraserait cinq drapeaux que le processeur préserve.
                 let count = self.regs[1].wrapping_sub(1);
-                self.regs[1] = count;
                 let zf = self.flags.read() & ZF != 0;
                 let again = count != 0 && zero.is_none_or(|want| want == zf);
-                self.rip = if again {
-                    after.wrapping_add(instruction.imm)
-                } else {
-                    after
-                };
+                let target = after.wrapping_add(instruction.imm);
+                // Une faute ne laisse aucune trace : RCX ne change qu'une fois
+                // la cible jugée.
+                if again && !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
+                self.regs[1] = count;
+                self.rip = if again { target } else { after };
                 self.jumped = true;
                 return;
             }
@@ -2580,6 +2850,10 @@ impl Cpu {
                     self.faulted = true;
                     return;
                 };
+                if !is_canonical(target) {
+                    self.refuse_target(target);
+                    return;
+                }
                 self.rip = target;
                 self.jumped = true;
                 return;
@@ -2598,7 +2872,7 @@ impl Cpu {
             self.scan(instruction, from_the_top);
             return;
         }
-        if instruction.op == Op::Popcount {
+        if matches!(instruction.op, Op::Popcount) {
             let Some(source) = self.read_source(instruction, width) else {
                 self.faulted = true;
                 return;
@@ -2620,13 +2894,103 @@ impl Cpu {
             self.faulted |= self.write_destination(instruction, count).is_none();
             return;
         }
-        if instruction.op == Op::ByteSwap {
+        if matches!(instruction.op, Op::ByteSwap) {
             let value = self.get(instruction.dst, width, false);
             let swapped = value.swap_bytes() >> (64 - width.bits());
             self.set(instruction.dst, width, false, swapped);
             return;
         }
 
+        // **Un transfert ne touche à aucun drapeau**, et il lit sa source à
+        // une largeur qui n'est pas forcément celle de l'écriture. Les deux
+        // raisons suffisent à le sortir du moule : la machinerie ci-dessous
+        // pose des drapeaux à chaque passage, et lit ses deux opérandes à la
+        // largeur de l'instruction.
+        //
+        // **Et il sort avant la lecture des opérandes, parce qu'il ne lit pas
+        // sa destination.** Passer par elle lisait la case qu'un `mov` allait
+        // écraser : sur une page absente, la faute disait « lecture » pour une
+        // écriture — le code d'erreur que le noyau reçoit —, et chaque
+        // rangement payait un chargement.
+        if matches!(instruction.op, Op::Mov | Op::Movsx) {
+            self.transfer(instruction);
+            return;
+        }
+
+        self.compute(instruction);
+    }
+
+    /// **`lea` calcule et n'accède à rien** : elle porte une adresse mémoire que
+    /// personne ne doit déréférencer.
+    fn lea(&mut self, instruction: &Decoded) {
+        if let Some(address) = instruction.memory {
+            let after = self.after(instruction);
+            // **`lea` ignore le préfixe de segment.** L'instruction ne
+            // touche pas la mémoire, donc elle ne traverse pas l'unité de
+            // segmentation : `leaq %gs:0x10, %rax` rend 0x10, pas
+            // `gs_base + 0x10`. L'assembleur le dit à sa façon — il
+            // avertit que le préfixe est « ineffectual » — et le corpus le
+            // vérifie sur le silicium.
+            let address = Address {
+                gs: false,
+                fs: false,
+                ..address
+            };
+            let value = self.effective_address(&address, after);
+            self.set(instruction.dst, instruction.width, false, value);
+        }
+    }
+
+    /// **Un saut relatif, conditionnel ou non.** Le déplacement porte sur
+    /// l'instruction **suivante**, donc la cible est `rip + longueur +
+    /// déplacement`. Aucun drapeau n'est touché.
+    ///
+    /// Un saut pris vers une adresse qui n'est pas canonique faute sur
+    /// lui-même (`refuse_target`). **Le contrôle porte sur l'adresse retenue**,
+    /// choisie comme avant sans rien demander de plus à la condition ; la
+    /// condition ne se relit que sur le chemin froid, quand cette adresse
+    /// n'est pas canonique — une suite non prise qui sort de la moitié basse
+    /// avance alors, et c'est la lecture de l'instruction d'après qui faute.
+    /// La forme `taken && !canonique(cible)` faisait le même travail ; elle
+    /// sortait de 1,5 à 4,6 % plus lente que la tranche précédente sur six
+    /// séries de courses alternées (le démarrage d'Alpine), celle-ci de
+    /// −2,3 à +1,6 % sur deux. Le journal du 20 novembre a les chiffres, et
+    /// dit combien le bruit du jour y pèse.
+    #[inline(always)]
+    fn jump(&mut self, instruction: &Decoded, condition: Option<Condition>) {
+        let after = self.rip.wrapping_add(instruction.length as u64);
+        let taken = condition.is_none_or(|c| c.holds(self.flags.read()));
+        let next = if taken {
+            after.wrapping_add(instruction.imm)
+        } else {
+            after
+        };
+        if !is_canonical(next) && taken {
+            self.refuse_target(next);
+            return;
+        }
+        self.rip = next;
+        self.jumped = true;
+    }
+
+    /// **Une cible que RIP ne peut pas prendre** : ses bits 63 à 47 ne sont pas
+    /// tous égaux. Le silicium lève `#GP(0)` **sur le saut lui-même** — RIP
+    /// reste dessus, rien n'est retiré, rien n'est empilé —, et non sur
+    /// l'instruction d'après, qui n'a jamais d'adresse. La faute se dit comme
+    /// une faute d'accès (`Unmapped::NonCanonicalTarget`), que la machine PC
+    /// livre en `#GP(0)`.
+    #[cold]
+    #[inline(never)]
+    fn refuse_target(&mut self, target: u64) {
+        self.unmapped = Some(crate::x86_paging::Unmapped::NonCanonicalTarget { address: target });
+        self.faulted = true;
+        self.jumped = true;
+    }
+
+    /// **Les opérations à deux opérandes, les décalages et les rotations** :
+    /// lire, calculer, écrire, et alors seulement poser les drapeaux.
+    fn compute(&mut self, instruction: &Decoded) {
+        let width = instruction.width;
         // **Lire les deux opérandes avant de rien changer.** Un accès qui
         // échoue doit laisser la machine intacte : une instruction à moitié
         // exécutée rend un état que rien ne distingue d'un état juste.
@@ -2649,16 +3013,6 @@ impl Cpu {
         // des opérations à deux opérandes donnerait quatre règles fausses.
         if matches!(instruction.op, Op::Shl | Op::Shr | Op::Sar) {
             self.shift(instruction, left);
-            return;
-        }
-
-        // **Un transfert ne touche à aucun drapeau**, et il lit sa source à
-        // une largeur qui n'est pas forcément celle de l'écriture. Les deux
-        // raisons suffisent à le sortir du moule : la machinerie ci-dessous
-        // pose des drapeaux à chaque passage, et lit ses deux opérandes à la
-        // largeur de l'instruction.
-        if matches!(instruction.op, Op::Mov | Op::Movsx) {
-            self.transfer(instruction);
             return;
         }
 
@@ -2790,13 +3144,17 @@ impl Cpu {
             Op::Not => (!left, FlagOp::Known),
         };
 
-        match instruction.op {
-            Op::Not => {}
+        // **Les drapeaux sont préparés, l'écriture a lieu, et alors seulement
+        // ils sont posés.** Une destination en mémoire peut fauter — c'est la
+        // copie sur écriture —, et le noyau rejoue l'instruction : `adc` et
+        // `sbb` doivent y retrouver la retenue qu'ils avaient lue.
+        let flags = match instruction.op {
+            Op::Not => None,
             Op::Inc | Op::Dec => {
                 // La retenue préservée doit être lue **avant** d'écraser
                 // l'état, sinon `inc` la perdrait.
                 let carry = self.flags.read() & CF;
-                self.flags = Flags {
+                Some(Flags {
                     op,
                     left,
                     right: 1,
@@ -2805,26 +3163,24 @@ impl Cpu {
                     carry_in: 0,
                     arithmetic: carry,
                     other: self.flags.other,
-                };
+                })
             }
-            Op::Neg => {
-                self.flags = Flags {
-                    op,
-                    left: 0,
-                    right: left,
-                    result,
-                    width,
-                    carry_in: 0,
-                    arithmetic: 0,
-                    other: self.flags.other,
-                };
-            }
+            Op::Neg => Some(Flags {
+                op,
+                left: 0,
+                right: left,
+                result,
+                width,
+                carry_in: 0,
+                arithmetic: 0,
+                other: self.flags.other,
+            }),
             _ => {
                 let carry_in = match instruction.op {
                     Op::Adc | Op::Sbb => self.flags.carry(),
                     _ => 0,
                 };
-                self.flags = Flags {
+                Some(Flags {
                     op,
                     left,
                     right,
@@ -2833,12 +3189,16 @@ impl Cpu {
                     carry_in,
                     arithmetic: 0,
                     other: self.flags.other,
-                };
+                })
             }
-        }
+        };
 
-        if !instruction.discards {
-            self.faulted |= self.write_destination(instruction, result).is_none();
+        if !instruction.discards && self.write_destination(instruction, result).is_none() {
+            self.faulted = true;
+            return;
+        }
+        if let Some(flags) = flags {
+            self.flags = flags;
         }
     }
 }
