@@ -594,6 +594,55 @@ int main(int argc, char **argv) {
     check(wisq_desktop_table_pages() > 0,
           "la correspondance occupe des pages, et l'hôte doit les prévoir");
 
+    /* **La machine de l'émetteur.** Ses fichiers sont statiques et ne se
+     * libèrent pas ; un nom inconnu, ou le module d'une construction qui ne
+     * l'embarque pas, est une absence qui ne touche pas aux sorties. */
+    const uint8_t *fichier = NULL;
+    size_t fichier_len = 0;
+    check(wisq_emitter_asset("host.js", &fichier, &fichier_len) == 0
+              && fichier != NULL && fichier_len > 1000,
+          "la boucle hôte est dans la bibliothèque");
+    check(wisq_emitter_asset("machine.html", &fichier, &fichier_len) == 0
+              && fichier_len > 0 && memcmp(fichier, "<!doctype html>", 15) == 0,
+          "la page aussi, et c'est du HTML");
+    const uint8_t *intact = (const uint8_t *)"intact";
+    size_t intact_len = 6;
+    check(wisq_emitter_asset("../host.js", &intact, &intact_len) == -1
+              && intact_len == 6 && memcmp(intact, "intact", 6) == 0,
+          "un chemin n'est pas un nom, et le refus ne touche pas aux sorties");
+    check(wisq_emitter_asset(NULL, &fichier, &fichier_len) == -1, "un nom nul est refusé");
+
+    /* La RAM : un gibioctet ramène le texte virtuel sur lui-même, quatre non. */
+    uint64_t replie = 0;
+    check(wisq_emitter_usable_ram(16384, 0x1000000, 0x3000000, &replie) == 0,
+          "un gibioctet porte un noyau à seize mébioctets");
+    check(wisq_emitter_usable_ram(65536, 0x1000000, 0x3000000, &replie) == 4
+              && replie == 0x81000000,
+          "quatre gibioctets : le repli rate, et dit où");
+    check(wisq_emitter_usable_ram(3000, 0x1000000, 0, NULL) == 2, "pas une puissance de deux");
+    check(wisq_emitter_usable_ram(256, 0x1000000, 0x3000000, NULL) == 3, "trop petite");
+
+    /* La page zéro : la ligne du montage, puis celle qu'on ajoute. */
+    uint8_t *page_emetteur = NULL;
+    size_t page_emetteur_len = 0;
+    check(wisq_emitter_boot_page(16384, "quiet", 1280, 800, 0x3000000, 4096, 0x2000000,
+                                 &page_emetteur, &page_emetteur_len) == 0 && page_emetteur_len == 4096,
+          "une page zéro de quatre kibioctets");
+    if (page_emetteur != NULL) {
+        const char *ligne = "earlycon=uart8250,io,0x3f8 keep_bootcon quiet";
+        check(memcmp(page_emetteur + 0x800, ligne, strlen(ligne) + 1) == 0,
+              "la ligne est dans la page, terminée par un zéro");
+        check(page_emetteur[0x218] == 0x00 && page_emetteur[0x21b] == 0x03, "et l'archive y est dite");
+        wisq_x86_free_module(page_emetteur, page_emetteur_len);
+    }
+    check(wisq_emitter_boot_page(3, NULL, 0, 0, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 1, "la RAM");
+    check(wisq_emitter_boot_page(16384, NULL, 70000, 1, 0, 0, 0, &page_emetteur, &page_emetteur_len) == 3,
+          "l'écran");
+    check(wisq_emitter_boot_page(1024, NULL, 0, 0, 0x3000000, 0x2000000, 0x2000000,
+                                 &page_emetteur, &page_emetteur_len) == 4,
+          "l'archive au-delà de la RAM");
+    check(wisq_emitter_screen_base() == 0xE0000000ULL, "la BAR0 de la carte de Bochs");
+
     if (failures == 0) {
         printf("traducteur x86 : l'en-tête décrit la bibliothèque qu'il déclare\n");
         return 0;
