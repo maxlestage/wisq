@@ -181,16 +181,20 @@ le bureau, la vitesse, le chargeur de l'application et la fusion avec
   l'accès part en un morceau ; sinon — la RAM, ou une autre trame —, le
   témoin dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête sur « un accès à
   cheval entre la mémoire d'un périphérique et une page qui n'en est pas la
-  suite ». *Correction du 21 novembre, entrée d'au-dessus : la suite
-  physique n'est pas le même périphérique — la dernière page de la mémoire
-  vidéo est suivie des registres de l'écran —, et l'accès entier y était
-  refusé par la carte sans un mot. Un accès à cheval sur deux trames hors de
-  la RAM part maintenant en deux moitiés ; seule la RAM arrête, sous le nom
-  « un accès à cheval entre la mémoire d'un périphérique et la RAM ».* L'adresse physique est gardée dans une locale `i64` avant la
+  suite ». L'adresse physique est gardée dans une locale `i64` avant la
   seconde marche, qui remplace `TRANSLATE_CELL`. Le test sur `DEVICE_FRAME`
   de la seconde trame a été retiré : la contiguïté écarte déjà la RAM (une
   trame de la RAM n'est jamais au-delà d'une trame de périphérique), et ce
   second test n'aurait jugé aucun cas de plus — une garde sans cas.
+  *Correction du 21 novembre, entrée d'au-dessus : la suite physique n'est
+  pas le même périphérique — la dernière page de la mémoire vidéo est suivie
+  des registres de l'écran —, et l'accès entier y était refusé par la carte
+  sans un mot. Le jugement de contiguïté a disparu : un accès à cheval sur
+  deux trames hors de la RAM part maintenant en deux moitiés, et le test sur
+  `DEVICE_FRAME` de la seconde trame est revenu — c'est lui qui arrête, seul,
+  sur la RAM, sous le nom « un accès à cheval entre la mémoire d'un
+  périphérique et la RAM ». La phrase d'avant sur ce test retiré ne vaut
+  plus.*
 - **`Body::attempt`** : la tentative de traduction qui, ratée, rend ses
   octets et la marque `wrote` à ce qu'ils étaient. Les deux reprises
   vivaient en ligne dans `build`, sans cas possible ; elles sont tenues
