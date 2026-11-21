@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use crate::x86::rapide::Suite;
 use crate::x86::{
-    decode, decode_extended, Address, Cpu, Decoded, Extended, ExtendedFault, Extra, Mmx, Op,
-    Segment, VectorFault, Width, ARITHMETIC, CF, IF,
+    decode, decode_extended, Address, BitAction, Cpu, Decoded, Extended, ExtendedFault, Extra, Mmx,
+    Op, Segment, VectorFault, Width, ARITHMETIC, CF, IF,
 };
 use crate::x86_paging::{Access, Unmapped};
 
@@ -173,7 +173,50 @@ fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> 
     if attente(octets).is_some() {
         return None;
     }
-    decode(octets)
+    decode(octets).filter(|instruction| verrou_admis(octets, Some(instruction)))
+}
+
+/// **Le préfixe `lock` (`f0`) n'est admis que devant ce qui peut le porter.**
+/// Sur le silicium, il ne se met que devant une lecture-modification-écriture
+/// dont la destination est en mémoire : `add`, `or`, `adc`, `sbb`, `and`,
+/// `sub`, `xor`, `not`, `neg`, `inc`, `dec`, `bts`, `btr`, `btc`, `xchg`,
+/// `xadd`, `cmpxchg` et `cmpxchg16b`. Partout ailleurs — une forme entre
+/// registres, une mémoire lue seulement (`add (%rbx),%rax`, `cmp`, `test`,
+/// `bt`, `mov`), une instruction qui n'en a pas (`mul %r14`, `nop`, `lea`), le
+/// flottant et le vectoriel — il est `#UD`. La sonde `r8/c/verrou` du
+/// bloc-notes l'a vérifié sur l'hôte, forme par forme. `decode`, que
+/// l'émetteur partage, avale `f0` partout ; c'est ici, sur ce que l'un ou
+/// l'autre décodeur a rendu, que la machine refuse. `instruction` vaut `None`
+/// pour ce que lit le second décodeur : rien n'y porte `lock`.
+fn verrou_admis(octets: &[u8], instruction: Option<&Decoded>) -> bool {
+    let verrouillee = octets
+        .iter()
+        .take_while(|octet| {
+            matches!(
+                octet,
+                0x26 | 0x2E | 0x36 | 0x3E | 0x40..=0x4F | 0x64..=0x67 | 0xF0 | 0xF2 | 0xF3
+            )
+        })
+        .any(|&octet| octet == 0xF0);
+    if !verrouillee {
+        return true;
+    }
+    let Some(instruction) = instruction else {
+        return false;
+    };
+    if instruction.memory.is_none() {
+        return false;
+    }
+    match instruction.op {
+        Op::Add | Op::Or | Op::Adc | Op::Sbb | Op::And | Op::Sub | Op::Xor => {
+            !instruction.memory_is_source && !instruction.discards
+        }
+        Op::Not | Op::Neg | Op::Inc | Op::Dec => true,
+        Op::Bit(action) => action != BitAction::Test,
+        Op::Exchange | Op::ExchangeAndAdd | Op::CompareAndExchange => !instruction.memory_is_source,
+        Op::CompareAndExchangeSixteen => true,
+        _ => false,
+    }
 }
 
 /// **`fwait`, préfixes compris** : `Some(Some(longueur))` quand `octets` en
@@ -243,11 +286,16 @@ fn lire(octets: &[u8]) -> Option<Lue> {
     if let Some(longueur) = attente(octets) {
         return longueur.map(Lue::Attente);
     }
-    decode(octets)
+    let lue = decode(octets)
         .map(Lue::Commune)
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
         .or_else(|| sans_taille_d_adresse(octets))
-        .or_else(|| non_temporel(octets))
+        .or_else(|| non_temporel(octets))?;
+    let admise = match &lue {
+        Lue::Commune(instruction) => verrou_admis(octets, Some(instruction)),
+        Lue::Etendue(_) | Lue::Attente(_) => verrou_admis(octets, None),
+    };
+    admise.then_some(lue)
 }
 
 /// **Les rangements « non temporels » de SSE et SSE2** : `movntps` et
@@ -329,7 +377,10 @@ fn sans_taille_d_adresse(octets: &[u8]) -> Option<Lue> {
     while let Some(&octet) = octets.get(ici) {
         match octet {
             0x67 => otes += 1,
-            0x66 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0xF0 => {
+            // Pas `f0` : `lock` n'est jamais admis devant ce que cette
+            // fonction accepte (rien qui écrive en mémoire), et `lire` le
+            // refuse sur l'instruction rendue (`verrou_admis`).
+            0x66 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => {
                 reste[ecrits] = octet;
                 ecrits += 1;
             }

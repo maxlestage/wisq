@@ -3,7 +3,7 @@
 //! `LinuxBootProtocolTests.swift` et `X86BootLoaderTests.swift`.
 
 use wisq_vm::pc::chargeur::{
-    charger, Ecran, Protocole, Refus, COMPTE_E820, E820_UTILISABLE, LIGNE_PAR_DEFAUT,
+    charger, ligne_posee, Ecran, Protocole, Refus, COMPTE_E820, E820_UTILISABLE, LIGNE_PAR_DEFAUT,
     OCTETS_D_EN_TETE, TABLE_E820, TAILLE_DE_LA_PAGE_ZERO,
 };
 use wisq_vm::pc::memoire;
@@ -326,13 +326,21 @@ fn the_machine_puts_tty0_in_front_of_any_line_under_a_screen() {
         let placement = machine
             .charger(&noyau(), ligne, None, ecran)
             .expect("chargé");
+        // `ligne_posee`, ce que `wisq-pc` affiche, rend ce qui est en
+        // mémoire, octet pour octet.
         let ou = placement.ligne_de_commande as usize;
         let octets = &machine.cpu.memory.bytes[ou..];
         let fin = octets
             .iter()
             .position(|octet| *octet == 0)
             .expect("terminée");
-        String::from_utf8(octets[..fin].to_vec()).expect("du texte")
+        let lue = String::from_utf8(octets[..fin].to_vec()).expect("du texte");
+        assert_eq!(
+            ligne_posee(&machine.cpu.memory.bytes, &placement).as_deref(),
+            Some(lue.as_str()),
+            "ligne_posee"
+        );
+        lue
     };
     assert_eq!(ligne_posee(Some("console=ttyS0"), None), "console=ttyS0");
     assert_eq!(

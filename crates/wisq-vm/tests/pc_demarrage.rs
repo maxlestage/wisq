@@ -13,6 +13,7 @@
 //! (et `WISQ_PC_INITRD`, `WISQ_PC_ATTENDU`) — voir le dernier test, qui se
 //! tait bruyamment quand il n'a rien à démarrer.
 
+use wisq_vm::pc::chargeur::LIGNE_PAR_DEFAUT;
 use wisq_vm::pc::herites::{HERTZ_DU_8253, INSTRUCTIONS_PAR_BATTEMENT};
 use wisq_vm::pc::{Issue, Machine};
 
@@ -252,6 +253,44 @@ fn the_tool_boots_the_tiny_kernel_and_says_how_it_ended() {
         "512 Mio : rien à dire : {erreurs}"
     );
     assert!(erreurs.contains("\nram : 512 Mio\n"), "{erreurs}");
+}
+
+/// **La ligne que l'outil affiche est celle que le noyau reçoit** : le noyau
+/// factice renvoie la sienne sur le port série, et `ligne : …` la dit
+/// octet pour octet — `console=tty0` devant sous un écran, rien devant sans
+/// lui, la ligne par défaut quand aucune n'est donnée.
+#[test]
+fn the_tool_shows_the_line_the_kernel_receives() {
+    let noyau = fichier("outil-ligne.bin", &image());
+    for (arguments, attendue) in [
+        (
+            &["--cmdline", "console=ttyS0 a=b", "--display", "640x480"][..],
+            "console=tty0 console=ttyS0 a=b".to_string(),
+        ),
+        (
+            &["--cmdline", "console=ttyS0 a=b"],
+            "console=ttyS0 a=b".to_string(),
+        ),
+        (
+            &["--display", "640x480"],
+            format!("console=tty0 {LIGNE_PAR_DEFAUT}"),
+        ),
+        (&[], LIGNE_PAR_DEFAUT.to_string()),
+    ] {
+        let mut tous = vec!["--kernel", noyau.as_str()];
+        tous.extend_from_slice(arguments);
+        let (code, sortie, erreurs) = wisq_pc(&tous);
+        assert_eq!(code, Some(0), "{arguments:?} : {erreurs}");
+        assert!(
+            sortie.starts_with(&format!("wisq-noyau-factice\n{attendue}\n")),
+            "{arguments:?} : le noyau a reçu {sortie:?}"
+        );
+        assert!(
+            erreurs.contains(&format!("\nligne : {attendue}\n"))
+                || erreurs.starts_with(&format!("ligne : {attendue}\n")),
+            "{arguments:?} : l'outil a dit {erreurs:?}"
+        );
+    }
 }
 
 /// **Avec ou sans blocs, l'outil retire les mêmes instructions** : le

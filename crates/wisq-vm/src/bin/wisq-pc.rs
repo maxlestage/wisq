@@ -63,9 +63,7 @@ use wisq_carte::fichier::DisqueFichier;
 use wisq_carte::pc::{horloge_du_systeme, CartePc, Disque};
 use wisq_vm::iso9660::{Iso, OnDisk, Recipe};
 use wisq_vm::pc::carte::{self as raccord, CartePartagee};
-use wisq_vm::pc::chargeur::{
-    initramfs_bout_a_bout, ligne_d_une_image, ligne_sous_ecran, LIGNE_PAR_DEFAUT,
-};
+use wisq_vm::pc::chargeur::{initramfs_bout_a_bout, ligne_d_une_image, ligne_posee};
 use wisq_vm::pc::herites::HERTZ_DU_8253;
 use wisq_vm::pc::memoire::RAM_MINIMALE;
 use wisq_vm::pc::{Ecran, Machine};
@@ -400,15 +398,6 @@ fn main() {
         }
         None => (lire(&options.noyau), options.initramfs.as_deref().map(lire)),
     };
-    // La ligne que le noyau recevra : `Machine::charger` met `console=tty0`
-    // devant sous un écran, quelle qu'elle soit.
-    eprintln!(
-        "ligne : {}",
-        ligne_sous_ecran(
-            ligne.as_deref().unwrap_or(LIGNE_PAR_DEFAUT),
-            options.ecran.is_some()
-        )
-    );
 
     let Some(ram) = ram_en_octets(options.ram) else {
         eprintln!(
@@ -472,10 +461,18 @@ fn main() {
         }
     });
     let carte = (!options.sans_carte).then(|| raccord::brancher(&mut machine, carte));
-    if let Err(refus) = machine.charger(&noyau, ligne.as_deref(), initramfs.as_deref(), ecran) {
-        eprintln!("wisq-pc : {refus}");
-        std::process::exit(1);
-    }
+    let placement = machine
+        .charger(&noyau, ligne.as_deref(), initramfs.as_deref(), ecran)
+        .unwrap_or_else(|refus| {
+            eprintln!("wisq-pc : {refus}");
+            std::process::exit(1);
+        });
+    // La ligne que le noyau recevra, lue là où `Machine::charger` l'a posée
+    // (`console=tty0` devant sous un écran) : rien n'est recalculé ici.
+    eprintln!(
+        "ligne : {}",
+        ligne_posee(&machine.cpu.memory.bytes, &placement).unwrap_or_default()
+    );
 
     let hertz = machine.instructions_par_battement * HERTZ_DU_8253;
     let patience = options.patience.saturating_mul(hertz);
