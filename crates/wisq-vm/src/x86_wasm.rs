@@ -2853,7 +2853,12 @@ impl Module {
             place(body, after as i64);
             return;
         };
-        let target = after as i64 + step.imm as i64;
+        // Un saut relatif ajoute un déplacement signé de 32 bits ; mais la
+        // dernière instruction d'une région n'est pas toujours un saut (un
+        // arrêt nommé finit la région sur n'importe quelle instruction), et
+        // son immédiat peut alors valoir jusqu'à 2⁶³. La cible n'est lue que
+        // par les sauts : l'addition enroule, comme en release.
+        let target = (after as i64).wrapping_add(step.imm as i64);
         // **L'opérande d'une forme indirecte, poussé sur la pile WebAssembly.**
         // Un registre, ou huit octets de mémoire — et cette mémoire peut être
         // relative au pointeur d'instruction, ce dont un noyau est fait : une
