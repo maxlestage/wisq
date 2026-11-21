@@ -533,3 +533,247 @@ fn silicon_fild(window: &[u8; 8], width: Width) -> Register {
         u16::from_le_bytes([stored[8], stored[9]]),
     )
 }
+
+// ---- Le x87, le MMX et le flottant de SSE, là où le corpus se tait ----
+
+/// Exécuter des octets sur un processeur, par le second décodeur.
+fn run_extended(cpu: &mut Cpu, code: &[u8]) {
+    let decoded = decode_extended(code).unwrap_or_else(|| panic!("{code:02x?} se lit"));
+    assert_eq!(decoded.length, code.len(), "{code:02x?} : la longueur");
+    cpu.execute_extended(&decoded).expect("sans faute");
+}
+
+const ONE: Register = (1 << 63, 0x3fff);
+const INDEFINITE: Register = (0xC000_0000_0000_0000, 0xFFFF);
+
+/// **Lire un registre vide est un débordement par le bas**, quelle que soit
+/// l'instruction (le manuel ; le cœur Swift ne le faisait que pour `fxch`) :
+/// invalide et faute de pile, C1 à zéro, et l'indéfini à la place de la
+/// valeur — ou « non ordonné » pour une comparaison.
+#[test]
+fn reading_an_empty_register_is_a_stack_underflow() {
+    // fadd %st(2),%st : ST(2) est vide.
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.fpu_status |= 0x0200;
+    run_extended(&mut cpu, &[0xd8, 0xc2]);
+    assert_eq!(cpu.x87[6], INDEFINITE);
+    assert_eq!(cpu.fpu_status & 0x47ff, 0x41, "IE et SF, C1 à zéro");
+    // fcom %st(3) : C3, C2 et C0.
+    let mut cpu = x87_start(ONE, ONE);
+    run_extended(&mut cpu, &[0xd8, 0xd3]);
+    assert_eq!(cpu.fpu_status & 0x47ff, 0x4541);
+    // fistps 0x20(%rsi) d'une pile vide : l'entier indéfini.
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.fpu_tags = 0;
+    run_extended(&mut cpu, &[0xdf, 0x5e, 0x20]);
+    assert_eq!(&cpu.memory.bytes[0x1020..0x1022], &[0x00, 0x80]);
+    assert_eq!(cpu.fpu_status & 0x41, 0x41);
+    // Et un registre occupé se lit sans rien signaler.
+    let mut cpu = x87_start(ONE, ONE);
+    run_extended(&mut cpu, &[0xd8, 0xc1]);
+    assert_eq!(cpu.x87[6], (1 << 63, 0x4000), "1 + 1 = 2");
+    assert_eq!(cpu.fpu_status & 0x41, 0);
+}
+
+/// **`fucomp` dépile** (`dd e9`), ce que le cœur Swift oubliait ; `fucom`
+/// non (`dd e1`).
+#[test]
+fn fucomp_pops_and_fucom_does_not() {
+    let mut cpu = x87_start(ONE, ONE);
+    run_extended(&mut cpu, &[0xdd, 0xe1]);
+    assert_eq!(cpu.x87_top(), 6);
+    run_extended(&mut cpu, &[0xdd, 0xe9]);
+    assert_eq!(cpu.x87_top(), 7, "dépilé");
+    assert_eq!(cpu.fpu_tags, 0b1000_0000);
+    assert_eq!(cpu.fpu_status & 0x4500, 0x4000, "égaux : C3");
+}
+
+/// **`fnsave` range l'environnement et les huit registres, puis remet le
+/// x87 à zéro ; `frstor` rend tout** — 108 octets, les registres dans l'ordre
+/// de la pile.
+#[test]
+fn fnsave_then_frstor_gives_back_the_state() {
+    let mut ram = vec![0u8; 0x2000];
+    ram[0x1000..0x1100].fill(0xEE);
+    let mut cpu = x87_start((0xC000_0000_0000_0000, 0xC000), ONE);
+    cpu.memory.bytes = ram;
+    cpu.fpu_control = 0x0b7f;
+    cpu.fpu_status |= 0x0021;
+    let before = (cpu.x87, cpu.fpu_control, cpu.fpu_status, cpu.fpu_tags);
+    // fnsave 0x10(%rsi)
+    run_extended(&mut cpu, &[0xdd, 0x76, 0x10]);
+    assert_eq!(
+        (cpu.fpu_control, cpu.fpu_status, cpu.fpu_tags),
+        (0x037f, 0, 0)
+    );
+    let area = &cpu.memory.bytes[0x1010..0x1010 + 108];
+    assert_eq!(&area[0..4], &[0x7f, 0x0b, 0xff, 0xff], "le mot de contrôle");
+    assert_eq!(
+        &area[28..38],
+        &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0x00, 0xc0],
+        "ST(0)"
+    );
+    assert_eq!(
+        &area[38..48],
+        &[0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f],
+        "ST(1)"
+    );
+    assert_eq!(cpu.memory.bytes[0x1010 + 108], 0xEE, "cent huit octets");
+    // frstor 0x10(%rsi)
+    run_extended(&mut cpu, &[0xdd, 0x66, 0x10]);
+    assert_eq!(
+        (cpu.x87, cpu.fpu_control, cpu.fpu_status, cpu.fpu_tags),
+        before
+    );
+}
+
+/// **`fnstenv` sous `66` range quatorze octets** : les trois mots sur seize
+/// bits, puis les pointeurs à zéro ; et toutes les exceptions sont masquées
+/// ensuite.
+#[test]
+fn fnstenv_under_66_is_fourteen_bytes() {
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.fpu_control = 0x0360;
+    cpu.memory.bytes[0x1000..0x1020].fill(0xEE);
+    run_extended(&mut cpu, &[0x66, 0xd9, 0x36]);
+    let tags = cpu.x87_tag_word().to_le_bytes();
+    assert_eq!(
+        &cpu.memory.bytes[0x1000..0x1010],
+        &[0x60, 0x03, 0x00, 0x30, tags[0], tags[1], 0, 0, 0, 0, 0, 0, 0, 0, 0xEE, 0xEE]
+    );
+    assert_eq!(cpu.fpu_control, 0x037f);
+}
+
+/// **`fbld` et `fbstp`, dix-huit chiffres décimaux** : un aller-retour rend
+/// les mêmes octets ; 10¹⁸ ne tient pas, et `fbstp` range l'indéfini décimal
+/// en signalant une opération invalide.
+#[test]
+fn fbld_and_fbstp_go_through_eighteen_digits() {
+    let bcd: [u8; 10] = [0x78, 0x56, 0x34, 0x12, 0x90, 0x78, 0x56, 0x34, 0x12, 0x80];
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.memory.bytes[0x1000..0x100a].copy_from_slice(&bcd);
+    run_extended(&mut cpu, &[0xdf, 0x26]);
+    assert_eq!(
+        cpu.x87[5],
+        Cpu::x87_from_integer(-123_456_789_012_345_678),
+        "fbld"
+    );
+    run_extended(&mut cpu, &[0xdf, 0x76, 0x20]);
+    assert_eq!(&cpu.memory.bytes[0x1020..0x102a], &bcd, "fbstp");
+    assert_eq!(cpu.x87_top(), 6);
+    let mut cpu = x87_start(Cpu::x87_from_integer(1_000_000_000_000_000_000), ONE);
+    run_extended(&mut cpu, &[0xdf, 0x76, 0x20]);
+    assert_eq!(
+        &cpu.memory.bytes[0x1020..0x102a],
+        &[0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff]
+    );
+    assert_eq!(cpu.fpu_status & 1, 1);
+}
+
+/// **Un réel lu en mémoire signale son NaN signalant et son dénormal** :
+/// `flds` d'un NaN signalant le range silencieux, invalide levé ; `fldl` du
+/// plus petit dénormal le range normalisé, dénormal levé.
+#[test]
+fn a_real_read_from_memory_reports_what_it_is() {
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.memory.bytes[0x1000..0x1004].copy_from_slice(&0x7F80_0001u32.to_le_bytes());
+    run_extended(&mut cpu, &[0xd9, 0x06]);
+    assert_eq!(cpu.x87[5], (0xC000_0100_0000_0000, 0x7fff));
+    assert_eq!(cpu.fpu_status & 0x3f, 1);
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.memory.bytes[0x1000..0x1008].copy_from_slice(&1u64.to_le_bytes());
+    run_extended(&mut cpu, &[0xdd, 0x06]);
+    assert_eq!(cpu.x87[5], (1 << 63, (16383 - 1074) as u16));
+    assert_eq!(cpu.fpu_status & 0x3f, 2);
+}
+
+/// **`fdecstp` et `fincstp` tournent le sommet, et rien d'autre.**
+#[test]
+fn fdecstp_and_fincstp_turn_the_top_only() {
+    let mut cpu = x87_start(ONE, ONE);
+    let registers = cpu.x87;
+    run_extended(&mut cpu, &[0xd9, 0xf6]);
+    assert_eq!(cpu.x87_top(), 5);
+    run_extended(&mut cpu, &[0xd9, 0xf7]);
+    run_extended(&mut cpu, &[0xd9, 0xf7]);
+    assert_eq!(cpu.x87_top(), 7);
+    assert_eq!((cpu.x87, cpu.fpu_tags), (registers, 0b1100_0000));
+}
+
+/// **La précision du mot de contrôle** (bits 8 et 9) arrondit l'addition :
+/// 1 + 2⁻⁵³ en 53 bits tombe pile sur la demie, et l'arrondi au pair rend 1,
+/// inexact ; en 64 bits, la somme est exacte.
+#[test]
+fn the_precision_control_rounds_the_sum() {
+    let tiny: Register = (1 << 63, (16383 - 53) as u16);
+    let mut cpu = x87_start(ONE, tiny);
+    cpu.fpu_control = 0x027f;
+    run_extended(&mut cpu, &[0xd8, 0xc1]);
+    assert_eq!(cpu.x87[6], ONE);
+    assert_eq!(cpu.fpu_status & 0x20, 0x20, "inexact");
+    let mut cpu = x87_start(ONE, tiny);
+    run_extended(&mut cpu, &[0xd8, 0xc1]);
+    assert_eq!(cpu.x87[6], ((1 << 63) | (1 << 10), 0x3fff));
+    assert_eq!(cpu.fpu_status & 0x20, 0, "exacte");
+}
+
+/// **`maskmovq` ne range que les octets que le masque choisit**, à `[RDI]`.
+#[test]
+fn maskmovq_writes_only_the_chosen_bytes() {
+    let mut cpu = x87_start(ONE, ONE);
+    cpu.x87[0] = (0x8877_6655_4433_2211, 0xffff);
+    cpu.x87[1] = (0x80_00_80_7F_FF_00_01_80, 0xffff);
+    cpu.regs[7] = DATA;
+    cpu.memory.bytes[0x1000..0x1008].fill(0xEE);
+    run_extended(&mut cpu, &[0x0f, 0xf7, 0xc1]);
+    assert_eq!(
+        &cpu.memory.bytes[0x1000..0x1008],
+        &[0x11, 0xEE, 0xEE, 0x44, 0xEE, 0x66, 0xEE, 0x88]
+    );
+    assert_eq!(
+        (cpu.x87_top(), cpu.fpu_tags),
+        (0, 0xff),
+        "entré dans le MMX"
+    );
+}
+
+/// **`rcpps` et `rsqrtps` restent dans la borne du manuel** (1,5 · 2⁻¹² en
+/// relatif) sur des valeurs tirées, et rendent ce que le manuel dit des
+/// valeurs particulières.
+#[test]
+fn rcp_and_rsqrt_stay_within_the_bound() {
+    let mut cpu = x87_start(ONE, ONE);
+    let mut seed = 0x5EED_u64;
+    for _ in 0..2000 {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let x = f32::from_bits(((seed >> 33) as u32 & 0x3FFF_FFFF) | 0x1000_0000);
+        cpu.xmm[1] = [u64::from(x.to_bits()), 0];
+        run_extended(&mut cpu, &[0x0f, 0x53, 0xc1]);
+        let reciprocal = f32::from_bits(cpu.xmm[0][0] as u32);
+        assert!(
+            ((reciprocal * x) as f64 - 1.0).abs() <= 1.5 / 4096.0,
+            "rcp {x}"
+        );
+        run_extended(&mut cpu, &[0x0f, 0x52, 0xc1]);
+        let root = f32::from_bits(cpu.xmm[0][0] as u32) as f64;
+        assert!(
+            (root * root * x as f64 - 1.0).abs() <= 3.0 / 4096.0,
+            "rsqrt {x}"
+        );
+    }
+    for (code, x, wanted) in [
+        (0x53u8, 0u32, 0x7F80_0000u32),
+        (0x53, 0x8000_0000, 0xFF80_0000),
+        (0x53, 0x7F80_0000, 0),
+        (0x53, 1, 0x7F80_0000),
+        (0x52, 0xBF80_0000, 0xFFC0_0000),
+        (0x52, 0, 0x7F80_0000),
+        (0x52, 0x8000_0000, 0xFF80_0000),
+    ] {
+        cpu.xmm[1] = [u64::from(x), 0];
+        run_extended(&mut cpu, &[0xf3, 0x0f, code, 0xc1]);
+        assert_eq!(cpu.xmm[0][0] as u32, wanted, "{code:02x} de {x:#x}");
+    }
+}

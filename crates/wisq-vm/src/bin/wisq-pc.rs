@@ -9,11 +9,20 @@
 //! chiffre que le banc commun compare à celui du cœur Swift.
 //!
 //! `--input` tape des lignes au shell, séparées par `;;` : chacune part quand
-//! l'invite (`--prompt`, `# ` par défaut) paraît sur le port série. `--until`
+//! l'invite (`--prompt`, `# ` par défaut ; plusieurs, séparées par `;;`, comme
+//! `login: ;;# `) paraît sur le port série. `--until`
 //! arrête la course dès que le port série a dit ce texte ; sans lui, elle
 //! s'arrête quand l'invite revient après la dernière ligne tapée. `--budget`
 //! borne les instructions retirées, et `--patience` les secondes de l'invité
 //! passées à dormir sans rien dire.
+//!
+//! `--disque` branche un fichier en disque virtio (`vda`, 00:03.0, ligne 5)
+//! par la carte des périphériques (`wisq-carte`) : le fichier est lu sur
+//! place et jamais écrit ; ce que l'invité écrit va dans une couche
+//! (`--couche`, `<disque>.couche` par défaut, et sa carte `.map`), reprise à
+//! la course suivante. Sans `--disque`, la carte est branchée quand même : le
+//! clavier, le pont PCI ; `--sans-carte` la débranche (les seuls 8259,
+//! 8253, 16550 et CMOS de la machine, ce qu'était `wisq-pc` avant elle).
 //!
 //! `--horloge` pose l'heure de l'horloge CMOS (des secondes depuis 1970) au
 //! lieu de celle de l'hôte : deux courses du même noyau retirent alors les
@@ -23,6 +32,10 @@
 use std::io::Write;
 use std::time::Instant;
 
+use std::path::Path;
+
+use wisq_carte::fichier::DisqueFichier;
+use wisq_carte::pc::{CartePc, Disque};
 use wisq_vm::pc::herites::HERTZ_DU_8253;
 use wisq_vm::pc::memoire::RAM_MINIMALE;
 use wisq_vm::pc::Machine;
@@ -89,6 +102,9 @@ struct Options {
     battement: Option<u64>,
     horloge: Option<u64>,
     sans_blocs: bool,
+    disque: Option<String>,
+    couche: Option<String>,
+    sans_carte: bool,
 }
 
 fn usage() -> ! {
@@ -96,7 +112,7 @@ fn usage() -> ! {
         "usage : wisq-pc --kernel <bzImage> [--initrd <fichier>] [--cmdline <texte>] \
          [--ram <Mio>] [--budget <instructions>] [--input 'cmd;;cmd'] [--until <texte>] \
          [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
-         [--horloge <secondes>] [--sans-blocs]"
+         [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte]"
     );
     std::process::exit(2);
 }
@@ -116,6 +132,9 @@ fn options() -> Options {
         battement: None,
         horloge: None,
         sans_blocs: false,
+        disque: None,
+        couche: None,
+        sans_carte: false,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(nom) = arguments.next() {
@@ -140,6 +159,9 @@ fn options() -> Options {
             "--quiet" => options.muet = true,
             "--horloge" => options.horloge = Some(valeur().parse().unwrap_or_else(|_| usage())),
             "--sans-blocs" => options.sans_blocs = true,
+            "--disque" => options.disque = Some(valeur()),
+            "--couche" => options.couche = Some(valeur()),
+            "--sans-carte" => options.sans_carte = true,
             _ => usage(),
         }
     }
@@ -188,6 +210,24 @@ fn main() {
     // sauf quand `--horloge` en donne une.
     machine.herites.cmos.regler(heure(options.horloge));
     machine.blocs_actifs = !options.sans_blocs;
+    let mut carte = CartePc::nouvelle();
+    carte.regler_heure((heure(options.horloge) as i64).saturating_mul(1000));
+    if let Some(disque) = options.disque.as_deref() {
+        let couche = options
+            .couche
+            .clone()
+            .unwrap_or_else(|| format!("{disque}.couche"));
+        match DisqueFichier::ouvrir(Path::new(disque), Path::new(&couche)) {
+            Ok(fichier) => carte.brancher(Disque::Premier, fichier),
+            Err(refus) => {
+                eprintln!("wisq-pc : --disque {disque} : {refus}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if !options.sans_carte {
+        machine.peripheriques = Some(Box::new(carte));
+    }
     if let Err(refus) =
         machine.charger(&noyau, options.ligne.as_deref(), initramfs.as_deref(), None)
     {
@@ -244,17 +284,30 @@ fn main() {
             }
             examine_jusqu_a = deja_examine(&serie, texte);
         }
-        let trouvee = trouver(&serie, &options.invite, depuis.max(examine_invite));
+        // La première des invites qui paraît, et sa longueur.
+        let trouvee = options
+            .invite
+            .split(";;")
+            .filter_map(|invite| {
+                trouver(&serie, invite, depuis.max(examine_invite)).map(|ici| (ici, invite.len()))
+            })
+            .min();
         if trouvee.is_none() {
-            examine_invite = deja_examine(&serie, &options.invite);
+            examine_invite = options
+                .invite
+                .split(";;")
+                .map(|invite| deja_examine(&serie, invite))
+                .min()
+                .unwrap_or(0);
         }
-        if let Some(position) = trouvee.map(|ici| ici - depuis) {
+        if let Some((position, longueur)) = trouvee.map(|(ici, longueur)| (ici - depuis, longueur))
+        {
             match prochaine.take() {
                 Some(ligne) => {
                     machine.taper(ligne.as_bytes());
                     machine.taper(b"\n");
                     tapees += 1;
-                    depuis += position + options.invite.len();
+                    depuis += position + longueur;
                     prochaine = a_taper.next();
                     attente_au_dernier_signe = machine.attente;
                 }

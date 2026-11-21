@@ -69,6 +69,11 @@ pub trait Peripheriques {
     }
     /// Le temps passe : `tics` battements du 8253 depuis le démarrage.
     fn battre(&mut self, _tics: u64) {}
+    /// L'invité a demandé la remise à zéro de la machine (l'impulsion de
+    /// l'i8042) : la course s'arrête sur l'`out` qui l'a tirée.
+    fn remise_demandee(&self) -> bool {
+        false
+    }
 }
 
 /// **D'où `rdrand` et `rdseed` tirent leurs nombres** — le port de
@@ -194,6 +199,50 @@ fn lire(octets: &[u8]) -> Option<Lue> {
     decode(octets)
         .map(Lue::Commune)
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
+        .or_else(|| sans_taille_d_adresse(octets))
+}
+
+/// **Le préfixe `67` devant une instruction qui n'adresse rien.** En mode
+/// 64 bits, il ne change que la taille des adresses : devant `mul %r14`, il
+/// ne change rien, et le silicium l'ignore. OpenSSL en sème pour aligner son
+/// code (`67 49 f7 e6`, dans `libcrypto.so.3` d'Alpine 3.24, que `apk` charge
+/// en installant les paquets de l'ISO). `decode`, que l'émetteur partage, ne
+/// le lit que devant `call` et `jmp` ; ici, l'instruction sans lui est lue, et
+/// acceptée seulement si elle n'a ni opérande mémoire ni adresse implicite
+/// (les chaînes, que `67` ferait compter sur RSI, RDI et ECX ; `loop` et
+/// `jrcxz`, sur ECX).
+fn sans_taille_d_adresse(octets: &[u8]) -> Option<Lue> {
+    let mut ici = 0;
+    while let Some(&octet) = octets.get(ici) {
+        match octet {
+            0x67 => break,
+            0x66 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 | 0xF0 => ici += 1,
+            _ => return None,
+        }
+    }
+    if octets.get(ici) != Some(&0x67) {
+        return None;
+    }
+    let mut reste = [0u8; 15];
+    let longueur = octets.len().min(15);
+    reste[..ici].copy_from_slice(&octets[..ici]);
+    reste[ici..longueur - 1].copy_from_slice(&octets[ici + 1..longueur]);
+    let mut instruction = decode(&reste[..longueur - 1])?;
+    let adresse_implicite = matches!(
+        instruction.op,
+        Op::StringMove { .. }
+            | Op::StringStore { .. }
+            | Op::StringLoad { .. }
+            | Op::StringCompare { .. }
+            | Op::StringScan { .. }
+            | Op::LoopWhile { .. }
+            | Op::JumpIfCountZero
+    );
+    if instruction.memory.is_some() || adresse_implicite || instruction.length + 1 > 15 {
+        return None;
+    }
+    instruction.length += 1;
+    Some(Lue::Commune(instruction))
 }
 
 /// **Le décodage a-t-il échoué faute d'octets ?** La question de
@@ -1237,6 +1286,18 @@ impl Machine {
                 } else {
                     let valeur = self.cpu.get(0, largeur, false);
                     self.port_ecrire(port, largeur, valeur);
+                    // **L'impulsion de remise à zéro** : la course s'arrête
+                    // sur l'`out` qui l'a tirée, en le disant — le nom du banc
+                    // Swift.
+                    if self
+                        .peripheriques
+                        .as_ref()
+                        .is_some_and(|autres| autres.remise_demandee())
+                    {
+                        return Err(Evenement::Arret(
+                            "redémarrage demandé (impulsion du 8042)".into(),
+                        ));
+                    }
                 }
             }
             Op::ReadTimestamp | Op::ReadTimestampAndProcessor => {

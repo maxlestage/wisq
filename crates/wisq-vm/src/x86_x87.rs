@@ -366,11 +366,16 @@ impl Cpu {
             .map_err(|_| ExtendedFault::Memory)
     }
 
-    /// Une aire de `size` octets doit s'écrire **en entier** : ses deux bouts
-    /// sont traduits avant qu'un octet ne soit posé.
+    /// Une aire de `size` octets doit s'écrire **en entier** : son premier
+    /// octet, et le premier de la page suivante quand elle déborde, sont
+    /// traduits avant qu'un octet ne soit posé. C'est ce dernier qu'une faute
+    /// nomme (CR2), comme pour un accès ordinaire à cheval.
     fn x87_probe(&mut self, at: u64, size: u64, access: Access) -> Result<(), ExtendedFault> {
-        for edge in [at, at.wrapping_add(size - 1)] {
-            self.probe_memory(edge, access)
+        let last = at.wrapping_add(size - 1);
+        self.probe_memory(at, access)
+            .map_err(|_| ExtendedFault::Memory)?;
+        if last >> 12 != at >> 12 {
+            self.probe_memory(last & !0xFFF, access)
                 .map_err(|_| ExtendedFault::Memory)?;
         }
         Ok(())
@@ -698,10 +703,7 @@ impl Cpu {
             (0xD9, 2 | 3) | (0xDD, 2 | 3) => {
                 let double = opcode == 0xDD;
                 let width = if double { Width::Qword } else { Width::Dword };
-                self.probe_memory(at, Access::Write)
-                    .map_err(|_| ExtendedFault::Memory)?;
-                self.probe_memory(at.wrapping_add(width as u64 - 1), Access::Write)
-                    .map_err(|_| ExtendedFault::Memory)?;
+                self.x87_probe(at, width as u64, Access::Write)?;
                 let bits = match self.operand(0) {
                     Some(value) => {
                         let (bits, report) = if double {
@@ -735,10 +737,7 @@ impl Cpu {
                     _ => 16,
                 };
                 let width = width_of(bits);
-                self.probe_memory(at, Access::Write)
-                    .map_err(|_| ExtendedFault::Memory)?;
-                self.probe_memory(at.wrapping_add(width as u64 - 1), Access::Write)
-                    .map_err(|_| ExtendedFault::Memory)?;
+                self.x87_probe(at, width as u64, Access::Write)?;
                 let mode = if field == 1 {
                     Rounding::TowardZero
                 } else {
