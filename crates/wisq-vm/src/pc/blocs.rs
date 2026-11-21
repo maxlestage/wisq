@@ -139,8 +139,9 @@ impl Bloc {
         // Un bloc compare toujours au moins un mot.
         let dernier = mots.saturating_sub(1);
         let mut ecart = (mot(dernier) & self.dernier) ^ self.octets[dernier];
-        for rang in (octet / 8).min(dernier)..dernier {
-            ecart |= mot(rang) ^ self.octets[rang];
+        let premier = (octet / 8).min(dernier);
+        for (rang, &attendu) in self.octets[..dernier].iter().enumerate().skip(premier) {
+            ecart |= mot(rang) ^ attendu;
         }
         ecart == 0
     }

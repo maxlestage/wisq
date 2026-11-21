@@ -357,8 +357,8 @@ fn every_fast_form_does_what_execute_does() {
         if !wisq_vm::pc::blocs::blocable(instruction.op) {
             continue;
         }
-        for registre in 0..16 {
-            cpu.regs[registre] = match h.sous(5) {
+        for registre in cpu.regs.iter_mut().take(16) {
+            *registre = match h.sous(5) {
                 0 => h.suivant(),
                 1 => h.sous(0x40),
                 // Au bout d'une page : les accès à cheval.
