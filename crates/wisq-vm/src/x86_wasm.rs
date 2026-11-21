@@ -244,15 +244,8 @@ pub const CPUID_SIGNATURE: u32 = 0x0000_0600;
 /// le cœur Swift avant `X86MMX.swift`, c'est ce que la glibc lit et non ce
 /// qu'elle exécute : une instruction MMX arrête son bloc, et la machine qui
 /// y arrive s'arrête sur une région refusée qui la nomme.
-pub const CPUID_FEATURES_EDX: u32 = 1
-    | (1 << 4)
-    | (1 << 8)
-    | (1 << 15)
-    | (1 << 19)
-    | (1 << 23)
-    | (1 << 24)
-    | (1 << 25)
-    | (1 << 26);
+pub const CPUID_FEATURES_EDX: u32 =
+    1 | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 19) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26);
 
 /// **Ce qui se déclare dans ECX** : `cmpxchg16b` (bit 13), produit depuis #210.
 /// C'est ce bit que `system_has_cmpxchg128()` regarde, et sans lui SLUB
