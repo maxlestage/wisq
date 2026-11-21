@@ -24107,6 +24107,12 @@ fn brancher_le_disque(program: &mut Vec<u8>) {
 /// Le même montage, le masque du maître donné : `0xdd` laisse passer aussi la
 /// ligne 1, celle du clavier.
 fn brancher_le_disque_sous(program: &mut Vec<u8>, masque: u8) {
+    brancher_le_disque_avec_la_file(program, masque, disque_montage::FILE);
+}
+
+/// Le même montage, la file posée à `file` (alignée sur une page) au lieu de
+/// la page `0x20` : les servis suivent, une page plus haut.
+fn brancher_le_disque_avec_la_file(program: &mut Vec<u8>, masque: u8, file: u64) {
     use disque_montage::*;
     program.extend_from_slice(&[0x48, 0xbb]); // movabs $IDT_POINTER,%rbx
     program.extend_from_slice(&IDT_POINTER.to_le_bytes());
@@ -24132,7 +24138,7 @@ fn brancher_le_disque_sous(program: &mut Vec<u8>, masque: u8) {
     dx(program, FENETRE + 0x0e);
     program.extend_from_slice(&[0x31, 0xc0, 0x66, 0xef]); // la file zéro
     dx(program, FENETRE + 0x08);
-    eax(program, (FILE >> 12) as u32);
+    eax(program, (file >> 12) as u32);
     program.push(0xef); // son numéro de page
     dx(program, FENETRE + 0x12);
     program.extend_from_slice(&[0xb0, 15, 0xee]); // DRIVER_OK
@@ -24802,6 +24808,11 @@ console.log("r15_2 " + BigInt.asUintN(64, vm.globals[15].value));
 /// carte du code de l'hôte. Une borne prise sur la taille de la mémoire au
 /// lieu de celle de la RAM laisserait l'invité y faire écrire le disque.
 ///
+/// Ce test tient la moitié `lire` de la garde : c'est la sonde de la carte
+/// (`ram.lire` sur le premier et le dernier octet du tampon) qui refuse la
+/// requête. La moitié `ecrire`, que rien ne sonde, est tenue par les deux
+/// tests suivants (le statut et le nom, puis les servis, au-dessus de la RAM).
+///
 /// Deux requêtes, posées d'avance par le pilote JavaScript ; l'invité publie
 /// la seconde après la réponse à la première :
 ///
@@ -24925,6 +24936,282 @@ console.log("dessus " + dessus.every((o, i) => o === dessusAvant[i]));
         line_of(&text, "r15 "),
         "2",
         "les deux requêtes sont rendues, chacune par sa ligne : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
+/// **Des requêtes posées d'avance dans la file à `file`** : pour chacune, sa
+/// tête, son type, son secteur, son tampon et sa longueur, et son statut —
+/// l'en-tête à `ENTETE + 0x40 × tête`, le statut mis à `0xff` s'il est dans
+/// la RAM, et sinon laissé tel quel : ce qui est
+/// au-dessus de la RAM est à l'hôte, et le pilote n'y touche pas. Seule la
+/// première est publiée ; l'invité publie les suivantes. Définit aussi
+/// `dessusAvant`, les 4 Kio au-dessus de la RAM avant la course.
+fn requetes_posees(file: u64, requetes: &[(u16, u32, u64, u64, u32, u64)]) -> String {
+    use disque_montage::*;
+    let fin_de_ram = u64::from(PAGES) * 0x1_0000;
+    let lignes: Vec<String> = requetes
+        .iter()
+        .map(|(tete, genre, secteur, tampon, longueur, statut)| {
+            format!("[{tete}, {genre}, {secteur}, {tampon}, {longueur}, {statut}]")
+        })
+        .collect();
+    let mut disponibles = String::new();
+    for (rang, (tete, ..)) in requetes.iter().enumerate() {
+        disponibles.push_str(&format!(
+            "  v.setUint16({file} + 0x804 + {rang} * 2, {tete}, true);\n"
+        ));
+    }
+    format!(
+        r#"
+{{
+  const v = new DataView(vm.memory.buffer);
+  const dire = (i, a, n, drapeaux, suivant) => {{
+    v.setBigUint64({file} + i * 16, BigInt(a), true);
+    v.setUint32({file} + 8 + i * 16, n, true);
+    v.setUint16({file} + 12 + i * 16, drapeaux, true);
+    v.setUint16({file} + 14 + i * 16, suivant, true);
+  }};
+  for (const [tete, genre, secteur, tampon, longueur, statut] of [{lignes}]) {{
+    const entete = {ENTETE} + tete * 0x40;
+    v.setUint32(entete, genre, true);
+    v.setUint32(entete + 4, 0, true);
+    v.setBigUint64(entete + 8, BigInt(secteur), true);
+    dire(tete, entete, 16, 1, tete + 1);
+    dire(tete + 1, tampon, longueur, 3, tete + 2);
+    dire(tete + 2, statut, 1, 2, 0);
+    if (statut < {fin_de_ram}) v.setUint8(statut, 0xff);
+  }}
+{disponibles}  v.setUint16({file} + 0x802, 1, true);
+}}
+var dessusAvant = new Uint8Array(vm.memory.buffer, {fin_de_ram}, 4096).slice();
+"#,
+        lignes = lignes.join(", "),
+    )
+}
+
+/// `movw $n,FILE+0x802` : l'invité publie ses `n` premières requêtes.
+fn publier(program: &mut Vec<u8>, n: u16) {
+    rax(program, disque_montage::FILE + 0x802);
+    program.extend_from_slice(&[0x66, 0xc7, 0x00]); // movw $n,(%rax)
+    program.extend_from_slice(&n.to_le_bytes());
+}
+
+/// L'arrière des deux tests qui suivent : un motif qui dépend du secteur, et
+/// chaque lecture notée.
+const ARRIERE_A_MOTIF: &str = r#"
+const lectures = [];
+const motif = (secteur, i) => (i * 7 + 3 + secteur * 101) & 0xff;
+const arriere = {
+  octets: 1 << 20,
+  lire: async (decalage, longueur) => {
+    lectures.push(decalage + "+" + longueur);
+    const vers = new Uint8Array(longueur);
+    for (let i = 0; i < longueur; i++) vers[i] = motif(decalage / 512, i);
+    return vers;
+  },
+};
+"#;
+
+/// **Ce que la carte écrit sans le sonder, posé à la fin de la RAM ou
+/// au-delà : le dernier octet de la RAM est écrit, rien au-dessus.**
+///
+/// L'autre moitié de la garde de `host.js`. Le test d'avant tient celle de
+/// `lire` : la carte sonde chaque tampon d'une lecture ou d'une écriture par
+/// `ram.lire` avant de la faire partir, et c'est ce refus qui rend l'erreur.
+/// Mais la carte pose le **statut**, les entrées des **servis** et le **nom**
+/// du disque par `ram.ecrire`, sans rien sonder, aux adresses que l'invité a
+/// choisies : là, `dansLaRam` dans `ecrire` est la seule chose entre l'invité
+/// et la mémoire de l'hôte, au-dessus de la RAM.
+///
+/// Trois requêtes, publiées une à une par l'invité :
+///
+/// - une lecture du secteur 0, son statut au dernier octet de la RAM
+///   (`0x3FFFF`) : il est écrit (zéro, « réussi ») — la garde n'est pas trop
+///   stricte d'un octet ;
+/// - une lecture au-delà du disque, son statut au premier octet au-dessus
+///   (`0x40000`) : la requête est rendue en erreur et la ligne levée, mais
+///   l'erreur (un `1`) n'est écrite nulle part — un statut « réussi » aurait
+///   pu tomber sur un zéro de l'hôte et ne rien prouver ;
+/// - une demande du nom (le type 8), son tampon de vingt octets à cheval sur
+///   la fin (`0x3FFF8`) : refusé **entier**, les sept octets du dedans qui ne
+///   sont pas le statut de la première gardent ce que le pilote y avait mis,
+///   et la fin de « wisq-disk » n'est pas écrite au-dessus.
+#[test]
+fn what_the_card_writes_unprobed_past_the_end_of_ram_is_not_written() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FIN_DE_RAM: u64 = PAGES as u64 * 0x1_0000;
+    const STATUT3: u64 = STATUT + 0x20;
+    let mut program = Vec::new();
+    brancher_le_disque(&mut program);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, FIN_DE_RAM - 1);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    publier(&mut program, 2);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    publier(&mut program, 3);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, STATUT3);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x10]); // movzx (%rax),%r10
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "ecrit-hors-ram",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        ARRIERE_A_MOTIF,
+        &format!(
+            "{}\nnew Uint8Array(vm.memory.buffer, {} - 8, 7).fill(0xaa);\n",
+            requetes_posees(
+                FILE,
+                &[
+                    (0, 0, 0, TAMPON, 512, FIN_DE_RAM - 1),
+                    (3, 0, 4096, TAMPON + 0x200, 512, FIN_DE_RAM),
+                    (6, 8, 0, FIN_DE_RAM - 8, 20, STATUT3),
+                ],
+            ),
+            FIN_DE_RAM,
+        ),
+        &format!(
+            r#"
+console.log("lectures " + lectures.join(","));
+const ram = new Uint8Array(vm.memory.buffer);
+let tampon = true;
+for (let i = 0; i < 512; i++) if (ram[{TAMPON} + i] !== motif(0, i)) tampon = false;
+console.log("tampon " + tampon);
+console.log("dedans " + Array.from(ram.subarray({FIN_DE_RAM} - 8, {FIN_DE_RAM} - 1)).join(","));
+const v = new DataView(vm.memory.buffer);
+const servis = {FILE} + 0x1000;
+const tetes = [0, 1, 2].map((k) => v.getUint32(servis + 4 + k * 8, true));
+console.log("servis " + v.getUint16(servis + 2, true) + " " + tetes.join(","));
+const dessus = new Uint8Array(vm.memory.buffer, {FIN_DE_RAM}, 4096);
+console.log("dessus " + dessus.every((o, i) => o === dessusAvant[i]));
+"#
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "r9 "),
+        "0",
+        "le statut posé au dernier octet de la RAM est écrit : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "lectures "), line_of(&text, "tampon ")),
+        ("0+512".to_string(), "true".to_string()),
+        "seule la première lecture va à l'arrière, et remplit son tampon : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "dedans "),
+        "170,170,170,170,170,170,170",
+        "le nom à cheval sur la fin est refusé entier, le dedans n'est pas touché : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r10 "),
+        "0",
+        "la demande du nom est rendue, son statut posé dans la RAM : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "servis "),
+        "3 0,3,6",
+        "les trois requêtes sont rangées dans les servis, dans l'ordre : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "dessus "),
+        "true",
+        "ni le statut ni le nom ne sont écrits au-dessus de la RAM : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r15 "),
+        "3",
+        "les trois requêtes sont rendues, chacune par sa ligne : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "{text}"
+    );
+}
+
+/// **Une file dont les servis tombent au-dessus de la RAM : la requête est
+/// servie, rien n'est écrit au-delà.**
+///
+/// L'autre écriture que la carte fait sans sonder : l'entrée des servis et
+/// leur index. La file est posée à la dernière page de la RAM (`0x3F000`) :
+/// sa table et ses disponibles y tiennent, ses servis, une page plus haut,
+/// commencent à `0x40000`. La lecture est faite, son statut (dans la RAM)
+/// posé, la ligne levée ; l'index et l'entrée des servis ne sont écrits nulle
+/// part.
+#[test]
+fn a_used_ring_past_the_end_of_ram_is_not_written() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const FIN_DE_RAM: u64 = PAGES as u64 * 0x1_0000;
+    const DERNIERE_PAGE: u64 = FIN_DE_RAM - 0x1000;
+    let mut program = Vec::new();
+    brancher_le_disque_avec_la_file(&mut program, 0xdf, DERNIERE_PAGE);
+    notifier(&mut program);
+    program.extend_from_slice(&[0xfb, 0xf4]); // sti ; hlt
+    rax(&mut program, STATUT);
+    program.extend_from_slice(&[0x4c, 0x0f, 0xb6, 0x08]); // movzx (%rax),%r9
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let handler = gestionnaire_du_disque();
+    let text = avec_la_carte(
+        &bun,
+        "servis-hors-ram",
+        &[(BASE, &program), (HANDLER, &handler)],
+        &[(VECTEUR, HANDLER)],
+        ARRIERE_A_MOTIF,
+        &requetes_posees(DERNIERE_PAGE, &[(0, 0, 2, TAMPON, 512, STATUT)]),
+        &format!(
+            r#"
+console.log("lectures " + lectures.join(","));
+const ram = new Uint8Array(vm.memory.buffer);
+let tampon = true;
+for (let i = 0; i < 512; i++) if (ram[{TAMPON} + i] !== motif(2, i)) tampon = false;
+console.log("tampon " + tampon);
+const dessus = new Uint8Array(vm.memory.buffer, {FIN_DE_RAM}, 4096);
+console.log("dessus " + dessus.every((o, i) => o === dessusAvant[i]));
+"#
+        ),
+    );
+    assert_eq!(
+        line_of(&text, "lectures "),
+        "1024+512",
+        "la lecture du secteur 2 est faite : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "tampon "),
+        "true",
+        "et son tampon rempli : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r9 "),
+        "0",
+        "le statut, dans la RAM, dit « réussi » : {text}"
+    );
+    assert_eq!(
+        (line_of(&text, "r15 "), line_of(&text, "r12 ")),
+        ("1".to_string(), "1".to_string()),
+        "la ligne est levée une fois, l'ISR dit « la file » : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "dessus "),
+        "true",
+        "ni l'index ni l'entrée des servis ne sont écrits au-dessus de la RAM : {text}"
     );
     assert_eq!(
         (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),

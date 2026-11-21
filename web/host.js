@@ -786,6 +786,11 @@ export function machine({
   // fin de la RAM : la correspondance et la carte du code, au-dessus, ne sont
   // pas à elle. Une plage qui déborde est refusée entière, sans rien toucher.
   //
+  // **Les deux moitiés comptent.** La carte sonde par `lire` les tampons de
+  // données avant de faire partir une requête ; mais le statut, les servis et
+  // le nom du disque, elle les pose par `ecrire` sans rien sonder, aux
+  // adresses que l'invité a choisies : là, la garde d'`ecrire` est la seule.
+  //
   // **L'écriture se dit à `ecrit`**, déclarée plus bas : la carte n'écrit
   // qu'en servant un port ou une réponse du disque, jamais en se fabriquant,
   // donc toujours après que tout ce fichier a été lu.
