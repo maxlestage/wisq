@@ -24854,6 +24854,54 @@ fn typed_text_wakes_a_halted_guest_at_the_pace_of_a_hand() {
     );
 }
 
+/// **Un invité qui attend une touche en lisant le clavier n'est pas « sur
+/// place ».** `in $0x64 ; test $1 ; jz` revient au même bloc tant que rien
+/// n'est tapé, et l'hôte, voyant un bloc qui ne fait pas bouger RIP,
+/// arrêtait la machine pour de bon — avant la touche que l'application
+/// allait taper : la page de la machine de l'émetteur l'a trouvé, son petit
+/// noyau arrêté « sur place » devant l'i8042. Un bloc qui lit un port attend
+/// un périphérique, et ce qu'il lit change avec le temps.
+///
+/// La touche arrive ici trente millisecondes après le départ, pendant que la
+/// machine tourne (la boucle respire toutes les huit) ; l'invité la lit et
+/// s'arrête sur son `hlt`. Un `jmp .`, qui ne lit rien, reste « sur place »
+/// (`a_machine_that_returns_to_the_same_address_is_named_in_place`).
+#[test]
+fn a_guest_polling_the_keyboard_waits_for_the_key_instead_of_stopping_in_place() {
+    use disque_montage::*;
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut program = vec![
+        0xe4, 0x64, // attendre : in $0x64,%al
+        0xa8, 0x01, // test $1,%al
+        0x74, 0xfa, // jz attendre
+        0xe4, 0x60, // in $0x60,%al
+        0x4c, 0x0f, 0xb6, 0xe0, // movzx %al,%r12
+    ];
+    program.extend_from_slice(&[0xfa, 0xf4]); // cli ; hlt
+    let fin = BASE + program.len() as u64;
+    let text = avec_la_carte(
+        &bun,
+        "attente",
+        &[(BASE, &program)],
+        &[],
+        "const arriere = null;",
+        "setTimeout(() => vm.carte.touche(0x1e, false, true), 30);",
+        "",
+    );
+    assert_eq!(
+        (line_of(&text, "arret ").as_str(), line_of(&text, "rip ")),
+        ("arrêtée sur hlt", fin.to_string()),
+        "l'invité a attendu sa touche : {text}"
+    );
+    assert_eq!(
+        line_of(&text, "r12 "),
+        0x1e.to_string(),
+        "et l'a lue : {text}"
+    );
+}
+
 /// **Une ligne qui retombe avant d'être délivrée n'est pas délivrée.**
 ///
 /// Les lignes de la carte sont à niveau : la recopie doit aussi **effacer**
