@@ -10,9 +10,12 @@
 //! module lui ajoute ce qu'un interpréteur nu refuse — les instructions de
 //! système, la livraison des interruptions et des fautes, les ports — et la
 //! boucle qui sert le matériel. Rien ici ne demande de fichier ni de système :
-//! la cible `wasm32` le compile aussi.
+//! la cible `wasm32` le compile aussi. La carte des autres périphériques
+//! (clavier, PCI, disques) est celle du crate `wisq-carte`, branchée par
+//! `carte.rs`.
 
 pub mod blocs;
+pub mod carte;
 pub mod chargeur;
 pub mod herites;
 pub mod machine;
