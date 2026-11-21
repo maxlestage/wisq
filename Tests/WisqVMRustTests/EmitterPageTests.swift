@@ -264,6 +264,14 @@ final class EmitterPageTests: XCTestCase {
                 p(110, 157.5, decale, 1280, 800),
                 p(100, 100, boite, 0, 800),
                 p(100, 100, { left: 0, top: 0, width: 0, height: 400 }, 1280, 800, { borne: true }),
+                // Ce qui ne donne pas de nombre ne donne pas de position, même
+                // bornée : un évènement sans coordonnées, une image infinie.
+                [
+                  p(NaN, 100, boite, 1280, 800),
+                  p(NaN, 100, boite, 1280, 800, { borne: true }),
+                  p(100, undefined, boite, 1280, 800, { borne: true }),
+                  p(100, 100, boite, Infinity, 800, { borne: true }),
+                ].map((v) => v === null),
               ]);
             })()
             """#
@@ -280,13 +288,19 @@ final class EmitterPageTests: XCTestCase {
         XCTAssertEqual(point(5), [0.25, 0.25], "la boîte décalée")
         XCTAssertNil(point(6), "une image vide")
         XCTAssertNil(point(7), "une boîte vide, même bornée")
+        XCTAssertEqual(points[8] as? [Bool], [true, true, true, true],
+                       "pas de nombre, pas de position : jamais un NaN rendu comme une fraction")
     }
 
     /// **Le doigt sur la page entière** (`machine.html` dans une fausse page) :
     /// posé dans l'image, il enfonce le bouton ; glissé hors d'elle, il suit
     /// le bord ; **relevé hors d'elle, il relâche** — la page ne le disait
     /// qu'à l'intérieur, et l'invité gardait le bouton tenu, un glisser sans
-    /// fin. Posé dans une bande, il ne fait rien.
+    /// fin. Posé dans une bande, il ne fait rien. **Annulé** — le système
+    /// reprend le geste, ce que fait l'iPhone —, il relâche là où il a été
+    /// dit pour la dernière fois, pas là où l'annulation prétend être ; et
+    /// **relevé quand la boîte a disparu**, il relâche à cette même dernière
+    /// position.
     func testTheFingerIsLiftedEvenOutsideTheImage() throws {
         let page = try BunPage.open(name: "doigt", harness: .page)
         defer { page.close() }
@@ -306,7 +320,20 @@ final class EmitterPageTests: XCTestCase {
                 pointeur("pointermove", 380, 390),
                 pointeur("pointerup", 380, 390),
                 pointeur("pointermove", 100, 150),
+                // Annulé : relâché à la dernière position dite, pas au coin
+                // (0, 0) que l'annulation porte ; puis le doigt n'est plus là.
+                pointeur("pointerdown", 100, 150),
+                pointeur("pointermove", 300, 250),
+                pointeur("pointercancel", 0, 0),
+                pointeur("pointermove", 100, 150),
+                pointeur("pointerup", 100, 150),
               ];
+              // Relevé quand la boîte de la toile est vide : la dernière
+              // position dite, faute d'une autre.
+              empeches.push(pointeur("pointerdown", 300, 150));
+              globalThis.boite = { left: 0, top: 0, width: 0, height: 0 };
+              empeches.push(pointeur("pointerup", 200, 200));
+              globalThis.boite = { left: 0, top: 0, width: 400, height: 400 };
               return JSON.stringify({ largeur: toile.width, peintes, vus, empeches, captures });
             })()
             """#
@@ -315,11 +342,15 @@ final class EmitterPageTests: XCTestCase {
         XCTAssertEqual(object["largeur"] as? Int, 8, "la toile a pris le mode de l'écran")
         XCTAssertGreaterThan(object["peintes"] as? Int ?? 0, 0, "et l'image y est peinte")
         let seen = try XCTUnwrap(object["vus"] as? [[Double]])
-        XCTAssertEqual(seen, [[0.25, 0.25, 1], [0.95, 1, 1], [0.95, 1, 0]],
+        XCTAssertEqual(Array(seen.prefix(3)), [[0.25, 0.25, 1], [0.95, 1, 1], [0.95, 1, 0]],
                        "posé dans l'image, glissé hors d'elle, relevé hors d'elle : relâché au bord")
-        XCTAssertEqual(object["empeches"] as? [Bool], Array(repeating: true, count: 7),
-                       "la page garde chaque geste pour elle")
-        XCTAssertEqual(object["captures"] as? [Int], [7, 7], "le pointeur capturé à chaque pose")
+        XCTAssertEqual(Array(seen.dropFirst(3).prefix(3)), [[0.25, 0.25, 1], [0.75, 0.75, 1], [0.75, 0.75, 0]],
+                       "annulé : relâché à la dernière position dite, et plus rien ensuite")
+        XCTAssertEqual(Array(seen.dropFirst(6)), [[0.75, 0.25, 1], [0.75, 0.25, 0]],
+                       "relevé quand la boîte a disparu : à la dernière position dite")
+        XCTAssertEqual(object["empeches"] as? [Bool], Array(repeating: true, count: 14),
+                       "la page garde chaque geste pour elle, l'annulation comprise")
+        XCTAssertEqual(object["captures"] as? [Int], [7, 7, 7, 7], "le pointeur capturé à chaque pose")
         XCTAssertEqual(page.unreadable, 0)
         XCTAssertEqual(page.notFound, [])
     }
@@ -712,9 +743,11 @@ final class BunPage: @unchecked Sendable {
     globalThis.document = { getElementById: (id) => (id === "ecran" ? toile : null) };
     globalThis.location = { href: BASE + "machine.html" };
     globalThis.fetch = chercher;
+    // Un genre que la page n'écoute pas n'est pas gardé : `false`, comme un
+    // geste que la page laisserait au système.
     globalThis.pointeur = (type, x, y) => {
       let empeche = false;
-      ecouteurs[type]({ type, clientX: x, clientY: y, pointerId: 7, preventDefault() { empeche = true; } });
+      ecouteurs[type]?.({ type, clientX: x, clientY: y, pointerId: 7, preventDefault() { empeche = true; } });
       return empeche;
     };
     createInterface({ input: process.stdin }).on("line", async (ligne) => {
