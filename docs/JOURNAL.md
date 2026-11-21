@@ -8,6 +8,126 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : `lock` refusé là où le silicium le refuse, la frappe jugée à son relâchement, la ligne affichée lue dans la RAM
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point
+relu dans le code, chaque sabotage du contrôle rejoué) :
+
+- *La liste des préfixes de `sans_taille_d_adresse` n'était tenue qu'à
+  moitié.* L'entrée suivante la disait tenue ; seuls `f2` et `f3` l'étaient.
+  Les six préfixes de segment devant `67` pouvaient disparaître de la liste
+  sans qu'un test tombe. Et `f0` y faisait passer `f0 67 49 f7 e6`, que la
+  machine exécutait comme `mul %r14` alors que l'hôte lève SIGILL (`#UD`).
+  Plus largement, `decode` (que l'émetteur partage) avale `f0` partout :
+  `f0 49 f7 e6`, `lock add %rax,%rbx`, `lock cmp`, `lock mov`, `lock addps`
+  passaient tous.
+- *`a_host_keystroke_reaches_the_ps2_keyboard_in_time` ne tenait pas le
+  temps qu'il annonce.* Il ne jugeait que l'enfoncement (0x1E), que l'i8042
+  livre au premier battement quel que soit le temps donné. Un temps faux
+  (`battre(u64::MAX / 4)`) restait vert : le test prouvait que `battre` est
+  appelé, pas que la carte reçoit le bon temps.
+- *La ligne affichée par `wisq-pc` était recalculée à côté* (`ligne_sous_ecran`
+  appelée une seconde fois), sans test. Elle pouvait dire autre chose que ce
+  que `Machine::charger` pose.
+- *Un commentaire de `pc_flottant`* écrivait « 2,000 000 48… » pour un terme
+  qui vaut 2,000 000 476 8….
+
+**Ce qui est fait.**
+
+- *`verrou_admis`, dans `pc/machine.rs`* : `lock` n'est admis que devant une
+  lecture-modification-écriture dont la destination est en mémoire (`add`,
+  `or`, `adc`, `sbb`, `and`, `sub`, `xor`, `not`, `neg`, `inc`, `dec`,
+  `bts`, `btr`, `btc`, `xchg`, `xadd`, `cmpxchg`, `cmpxchg16b`). Partout
+  ailleurs, l'instruction n'est pas lue : un arrêt nommé en anneau 0, `#UD`
+  en anneau 3, comme toute instruction illisible. Le contrôle porte sur ce
+  que l'un ou l'autre décodeur a rendu, dans les deux chemins : le pas à pas
+  (`lire`) et la construction des blocs (`lire_en_ram`). `decode` n'est pas
+  touché. `f0` sort de la liste de `sans_taille_d_adresse` : rien de ce
+  qu'elle accepte ne peut porter `lock`.
+- *Une sonde neuve sur l'hôte*, `r8/c/verrou.c` (bloc-notes, sortie
+  `verrou.out`), joue 63 formes préfixées de `f0`, une à une :
+  - 33 s'exécutent, dont `f0 f0` et `f0 2e` devant `incl` ;
+  - deux sont admises mais fautent sur leur adresse (SIGSEGV) : `f0 64` et
+    `f0 67` devant `incl` ;
+  - 28 lèvent SIGILL : formes entre registres, mémoire lue seulement, `cmp`,
+    `test`, `bt`, `mov`, `lea`, `nop`, `mul`, `shl`, `rcl`, `push`, `movzx`,
+    `imul`, `setcc`, `addps`, `movdqa`.
+
+  Le test neuf `lock_is_taken_only_before_what_can_carry_it` les rejoue :
+  - 30 admises, seules, sous `2e` et sous un second `f0`, chacune jusqu'au
+    `hlt`, sa longueur juste ; `lock incl` et `lock cmpxchg` écrivent ce
+    qu'ils doivent ;
+  - 26 refusées, seules et derrière deux `nop` (le bloc qui commence avant
+    elles les lit aussi) ; les deux dernières des 28, `lock` devant
+    `67 mul %r14`, sont dans le test du `67`.
+- *`an_address_size_prefix_without_address_is_ignored`* joue les six préfixes
+  de segment devant `67 49 f7 e6` (cinq octets, le produit de `mul %r14`,
+  comme sur l'hôte : sonde `ctrl-r7/c/p` du contrôle). Il refuse aussi
+  `f0 67 49 f7 e6` et `67 f0 49 f7 e6`.
+- *`a_host_keystroke_reaches_the_ps2_keyboard_in_time`* juge le relâchement.
+  L'invité lit 0x1E, puis attend 0x9E. L'i8042 tient ce second code
+  `TENUE_TICS` tics après le premier. La machine doit donc s'arrêter entre
+  `TENUE_TICS` et `TENUE_TICS + 1` tics (10,3 millions d'instructions),
+  par la carte partagée comme par la nue. Un temps figé, double, moitié, ou
+  en retard de deux tics fait tomber le test.
+- *`chargeur::ligne_posee`* lit la ligne là où `charger` l'a posée, dans la
+  RAM de l'invité, jusqu'à son zéro. `wisq-pc` l'affiche après le
+  chargement, et ne recalcule plus rien. Deux tests neufs :
+  - `the_posed_line_is_read_up_to_its_zero` : hors de la RAM, sans zéro ou
+    pas en UTF-8, rien ;
+  - `the_tool_shows_the_line_the_kernel_receives` : `wisq-pc` est lancé pour
+    de bon sur le noyau factice, qui renvoie sa ligne sur le port série. La
+    ligne affichée doit être celle que le noyau a reçue, avec ou sans
+    écran, donnée ou par défaut.
+
+  `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` vérifie en
+  plus que `ligne_posee` rend ce qui est en mémoire.
+- *Le commentaire de `pc_flottant`* donne les deux termes et la somme, à
+  quinze chiffres : 2,000 000 473 111 868, 2,000 000 476 837 158 et
+  4,000 000 949 949 026.
+
+**Mesuré.** Pour vérifier qu'il n'y a pas de régression (aucune
+optimisation dans cette tranche) :
+
+| course | instructions | temps | MIPS | refus |
+|---|---|---|---|---|
+| banc commun (6.18.60, initramfs, `console=ttyS0`, 512 Mio, jusqu'au shell de secours, `echo wisq-parle`) | 1 920 170 552 | 20,8 s | 92,5 | aucun |
+| Alpine 3.24.4 par `--iso` (512 Mio, `--horloge 1795230600`, `root` puis `uname -a` : `Linux localhost 6.18.60-0-virt`) | 5 020 171 839, le même compte qu'avant | 57,1 s | 87,9 | aucun |
+
+**Les sabotages** (`r8/sab/sab.py`, journaux `r8/sab/lot.out` et
+`lot2.out`) : 21 d'une ligne. Chacun est appliqué, la cible est lancée, puis
+la source est rendue, sa date avancée. Le `git diff` est identique avant et
+après. **20 tombent**, et le vingt et unième devait rester vert (voir la
+fin du tableau).
+
+| sabotage | tombe dans |
+|---|---|
+| V1 filtre ôté de `lire_en_ram` ; V3 l'arithmétique admise mémoire lue ; V4 `bt` admis ; V5 une forme sans mémoire admise ; V6 le second décodeur admis ; V8 `cmpxchg16b` refusé ; V9 `xchg`, `xadd`, `cmpxchg` refusés | `lock_is_taken_only_before_what_can_carry_it` |
+| V2 `lire` admet tout ; V7 `f0` jamais vu | ce test et `an_address_size_prefix_without_address_is_ignored` |
+| V10 la suite de préfixes réduite à `26 f0` (le `f0` de `67 f0` n'est plus vu) | `an_address_size_prefix_without_address_is_ignored` |
+| A_seg67 la liste réduite à `66 f2 f3` (celui du contrôle) ; A_seg64 `64` seul ôté | `an_address_size_prefix_without_address_is_ignored` |
+| B `battre(u64::MAX / 4)` (celui du contrôle) ; B2 `tics * 2` ; B3 `tics / 2` ; B4 `tics - 2` | `a_host_keystroke_reaches_the_ps2_keyboard_in_time` |
+| E l'affichage vide (au lieu du `options.ecran.is_some()` du contrôle, qui n'existe plus) ; E2 `Machine::charger` sans écran pour la ligne | `the_tool_shows_the_line_the_kernel_receives` |
+| L1 `ligne_posee` coupée à l'espace | `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` |
+| L2 `ligne_posee` sans garde UTF-8 | `the_posed_line_is_read_up_to_its_zero` |
+| `f0` remis dans la liste de `sans_taille_d_adresse` : **reste vert, attendu** | `verrou_admis` décide seul de `lock`, après tout décodeur ; l'entrée était morte |
+
+**Les vérifications.**
+- `cargo fmt --all --check` et `cargo clippy --all-targets --all-features --
+  -D warnings` : OK.
+- `cargo test --release -p wisq-vm` : 749 passés, 0 échec.
+- `cargo build --release -p wisq-page --target wasm32-unknown-unknown` : OK.
+- `check-whitespace.sh` et `check-project-sources.sh` : OK.
+- Le compte publié passe de 4 162 à 4 165 (Rust 1 100).
+- Le site rebâti, `bun test` : 476 passés.
+
+**Ce qui reste** : ce que disent les entrées suivantes (l'ABI C, la carte
+réseau sous `wisq-pc`, l'EDID, une mesure à charge égale contre le cœur
+Swift). `lock` reste avalé partout par `decode`, donc par l'émetteur.
+`cmpxchg8b`, que `decode` ne lit pas, reste illisible avec ou sans `lock`.
+`67` devant un accès mémoire reste refusé, `lock` ou pas (`f0 67 ff 03`,
+que l'hôte admet) : ce cœur ne coupe pas les adresses à trente-deux bits.
+
 ## 2026-11-21 — Machine PC en Rust : la carte partagée tenue par ses tests, `console=tty0` devant toute ligne sous un écran
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point
