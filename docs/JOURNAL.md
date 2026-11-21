@@ -8,6 +8,28 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Les deux machines sur une même branche : le flottant de SSE, lu deux fois
+
+**Ce qui n'allait pas.** La machine PC en Rust (#713) lit ses instructions
+par `decode` d'abord, puis par `decode_extended`, qui rend le flottant de
+SSE (`x86_sse.rs`). La branche de l'émetteur apprend à `decode` ce même
+flottant (`Vector::Float`), que l'émetteur traduit en WebAssembly et que
+`execute_vector` n'exécute pas. Fusionnées telles quelles, `addss` ou
+`cvtsi2sd` seraient passés par `decode` dans la machine native et n'y
+auraient trouvé personne. Mesuré : sans garde, `pc_flottant` tombe
+(`an_unmasked_sse_exception_is_delivered_and_writes_nothing`,
+`an_address_size_prefix_without_address_is_ignored`), et trois tests de
+`x86_float_host` et `x86_float_oracle` aussi.
+
+**Ce qui est fait.** `pc::machine::decode` enveloppe le `decode` partagé et
+écarte `Vector::Float` : chaque lecture de la machine native passe au
+second décodeur, comme avant la fusion. Les deux bancs du flottant lisent
+de la même façon. `execute_vector` dit, par un bras explicite, que ce
+flottant ne lui arrive pas. Les deux `FloatOp` se distinguent : celui de
+`decode` garde le nom, celui de `x86_sse.rs` sort en `SseFloatOp`.
+Sabotage : le filtre retiré de `pc::machine::decode`, `pc_flottant` tombe
+sur deux tests.
+
 ## 2026-11-21 — La console nommée sans index, ou par son port
 
 **Ce qui n'allait pas** (le dernier contrôle de la machine de l'émetteur).
