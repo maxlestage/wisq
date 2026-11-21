@@ -8,6 +8,488 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — La machine PC en Rust par défaut dans l'application ; un instantané sans carte refusé
+
+**Sur quelle autorisation.** « Je prends le plus rapide » : la personne a
+choisi le cœur le plus rapide pour l'application. Le cœur Rust tient 110 à
+114 MIPS contre 62 pour le cœur Swift, et Void Xfce y atteint son bureau 2,8
+fois plus tôt.
+
+**Ce qui change.**
+
+- *`RustPCSetting.defaultValue` passe à vrai.* Une machine PC x86-64 neuve
+  démarre sur le cœur Rust ; le réglage (banc WebKit) l'éteint et rend le
+  cœur Swift. Les sessions sauvées (des instantanés du cœur Swift) et les
+  machines installées restent au cœur Swift, comme avant.
+- *Le défaut s'applique vraiment.* `LocalVMModel` lisait
+  `UserDefaults.bool(forKey:)`, qui rend faux pour un réglage jamais touché :
+  le défaut ne serait allé à personne. `RustPCSetting.isEnabled(in:)` lit la
+  valeur posée, ou le défaut. Test : un réglage jamais touché est allumé,
+  éteint à la main il le reste, rallumé il l'est. Sabotage : revenir à
+  `bool(forKey:)` fait échouer le premier cas.
+- *Ce que le cœur Rust n'a pas encore*, dit sous l'interrupteur : ni session
+  sauvée (la quitter l'arrête, la revoir la redémarre), ni réseau. Éteindre
+  le réglage les rend.
+
+**Les deux défauts du dernier contrôle.**
+
+- *Un instantané qui dit la carte absente était accepté*, alors que le poste
+  la branche toujours et que l'en-tête de `wisq_pc_restore` promet que tout
+  est vérifié. Repris, il rendait les ports 0x70 et 0x71 aux puces de la
+  machine, devant la carte encore branchée, avec des secondes hors de toute
+  borne (siècle 0x32, année 0x23 pour `u64::MAX`). `lire_le_reste` refuse
+  désormais `cmos_ailleurs` faux et des secondes au-delà de
+  `DERNIERE_SECONDE` (`Abime`). Test
+  `a_snapshot_without_the_card_or_past_9999_is_refused` : l'instantané tel
+  que sauvé se reprend ; la carte dite absente, la seconde d'après l'an 9999
+  et `u64::MAX` sont refusés. Sabotages : ôter l'une ou l'autre moitié de la
+  garde fait échouer le test.
+- *`freezeHostTime(at:)` plantait sur une date hors de `Int64`*
+  (`Int64(Double)` hors domaine), avant la borne du cœur.
+  `RustPCMachine.seconds(since1970:)` sature : NaN donne 1970, ±∞ et ±1e19
+  les bornes de `Int64`, 2^63 tout juste `Int64.max`. Sabotage : `>` au lieu
+  de `>=` sur la borne haute fait planter le cas 2^63.
+
+**Le compte publié** passe de 4 294 à 4 297 (Swift 3 121, Rust 1 176), master
+(#715) fusionné dedans.
+
+**Vérifié.** `cargo fmt --check`, les deux jeux de Clippy, pc_poste (29
+tests), `swift build --build-tests` et RustPCMachineTests (18 tests),
+SwiftLint strict, l'analyse de la vue SwiftUI touchée.
+
+## 2026-11-21 — Machine PC en Rust : l'heure bornée là où l'invité la lit, la reprise d'une machine usée tenue jusqu'au bout
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point relu
+dans le code, chaque sabotage rejoué) :
+
+- *L'heure d'avant 1970 n'était pas arrêtée à 1970 pour l'invité*, malgré
+  l'en-tête (`wisq_pc_set_time`) et l'entrée suivante. Le poste a toujours sa
+  carte branchée (`cmos_ailleurs`), donc l'invité lit les ports 0x70 et 0x71
+  sur la CMOS **de la carte**, qui recevait `secondes × 1000` sans borne. Seule
+  l'horloge des puces de la machine, que l'invité ne lit jamais, était bornée,
+  et c'est elle seule que le test regardait : -5 se lisait le 31 décembre
+  1969 à 23:59:55, `i64::MIN` donnait un siècle `0xFF`.
+- *« Une machine qui a déjà tourné se reprend comme une neuve »* n'était pas
+  tenu sur la RAM : ôter `fill(0)` dans `instantane::reprendre` survivait,
+  parce que la seule machine usée des tests avait tourné le même noyau
+  jusqu'au même point. Une page nulle dans l'instantané, mais écrite dans la
+  machine usée, gardait ses octets.
+- *Le temps rattrapé*, annoncé porté, n'était jugé qu'à zéro : le reposer à
+  zéro survivait, alors qu'il entre dans `wisq_pc_guest_time`.
+- *Quatre lignes de la reprise sans test ni raison* : les remises à zéro de
+  `faulted`, `unmapped` et `jumped` dans `Machine::apres_reprise`, et le
+  recalcul de LMA dans `reprendre`. L'entrée suivante avait ôté trois lignes
+  « qui ne changent rien » et gardé celles-ci sans le dire.
+- *Un commentaire appuyé sur une garde redondante* : `apres_reprise` disait que
+  le bloc coupé se recompare par son étiquette ; or la reprise est prise en
+  tête de `un_bloc`, avant toute construction, et sa case n'a pas pu être
+  reconstruite entre-temps. Ce qui la tient, c'est l'adresse physique et les
+  octets.
+
+**Ce qui est fait.**
+
+- **L'heure est bornée avant d'aller aux deux horloges** (`Poste::regler_l_heure`) :
+  au 1ᵉʳ janvier 1970 en bas, au 31 décembre 9999 à 23:59:59 en haut
+  (`DERNIERE_SECONDE` : deux chiffres BCD de siècle, deux d'année). Le test lit
+  maintenant la date **par les ports de la carte**, comme l'invité, pour -5,
+  -1, `i64::MIN`, 0, la dernière seconde, la suivante et `i64::MAX`, et
+  vérifie que les puces de la machine reçoivent la même heure. L'en-tête le
+  dit.
+- `pc_poste.rs` passe de vingt-quatre à vingt-huit tests :
+  - **une page nulle de l'instantané est nulle dans la machine usée** : trois
+    octets écrits à `0xCD` (dont le dernier de la RAM) dans une machine qui a
+    tourné, et après la reprise toute la RAM est celle de la machine sauvée ;
+  - **le temps rattrapé passe l'instantané** : `cli ; hlt` avec une seconde à
+    rattraper, éteinte, un rattrapé non nul, repris à l'identique dans un
+    poste neuf, et le même temps de l'invité ;
+  - **les témoins de faute d'une machine usée ne passent pas la reprise** :
+    `bswap ; xor ; div` (le test vérifie que `bswap` passe par le chemin
+    général). Un `faulted` laissé levé faisait de `bswap` un refus ; un
+    `unmapped` laissé là faisait de la division par zéro un accès hors de la
+    mémoire. Repris, l'un et l'autre finissent comme la machine neuve : deux
+    instructions retirées, et la faute de division ;
+  - **LMA est recalculé à la reprise** : sur le silicium, ce bit d'EFER est
+    en lecture seule. Un instantané où il est effacé (le test vérifie d'abord
+    qu'EFER est bien à sa place) reprend en mode long et finit la course
+    entière, la même console et le même compte d'instructions.
+- **`jumped` n'est plus remis à zéro** dans `apres_reprise` : il est baissé
+  avant chaque instruction qui le lit (`pas`, `rapide::general`), la ligne
+  était morte. Le commentaire le dit, et dit ce qui tient le bloc coupé.
+- L'en-tête dit aussi, de `wisq_pc_snapshot`, le temps rattrapé, et de
+  `wisq_pc_restore`, la RAM effacée, les témoins oubliés et LMA recalculé.
+- Le compte publié passe de 4 290 à 4 294.
+
+**Les sabotages** (un banc qui lance chaque commande sous `bash -c` avec
+`pipefail`, remplace une occurrence unique et rend la source par
+`git checkout`) :
+
+- ôter la borne, n'en garder que le bas, n'en garder que le haut : **les trois
+  tombent** dans `an_hour_before_1970_stops_at_1970` ;
+- ôter `fill(0)` : **tombe** dans
+  `a_page_that_is_zero_in_the_snapshot_is_zero_in_a_used_machine` ;
+- reposer le rattrapé à zéro : **tombe** dans
+  `the_time_caught_up_crosses_a_snapshot` ;
+- ôter `faulted = false`, ôter `unmapped = None` : **les deux tombent** dans
+  `a_resumed_machine_drops_the_fault_witnesses_of_the_used_one` ;
+- ôter `rafraichir_le_mode_long` : **tombe** dans
+  `the_long_mode_bit_is_recomputed_on_resume`.
+
+**Les vérifications** : `cargo fmt --check`, `clippy -D warnings` propres ;
+`cargo test --release` sur l'espace de travail, 1 176 passés ; `pc_poste` (28)
+et `abi` (6) aussi sous `-C debug-assertions=yes -C overflow-checks=yes` ; la
+cible `wasm32` de `wisq-page` se construit. Rien côté Swift n'a changé (l'en-tête
+ne change que par ses commentaires) : `RustPCMachineTests`, 16 sur 16, après
+avoir forcé la réédition des liens ; SwiftLint `--strict`, `check-whitespace`,
+`check-project-sources` propres ; le site rebâti, `bun test` 476 passés.
+
+**Ce qui reste**, inchangé : l'instantané de la carte (la CMOS de la carte,
+que l'invité lit, n'y est pas : après une reprise, elle garde l'heure qu'on
+lui a donnée), le réseau, les formats d'image de disque, les refus dits dans
+la console, une mesure sur un iPhone.
+
+## 2026-11-21 — Machine PC en Rust : les gardes du poste et de l'instantané tenues, une machine usée qui reprend, l'image coupée à son mode
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point relu
+dans le code, chaque sabotage du contrôle rejoué contre les tests d'ici) :
+
+- *Des gardes sans test*, dont dix-neuf sabotages d'une ligne survivaient :
+  - dans le poste (`pc/poste.rs`), le relâchement étendu de l'annulation
+    (`CodeTouche::etendue` changé en `simple`, et Ctrl droit restait enfoncé
+    sous un relâchement de Ctrl gauche) ; la file de la carte dans la borne
+    des frappes (jusqu'à trente-deux frappes de trop au-delà de 8 192) ;
+    `toucher` qui refuse ce qui n'est pas un nombre (le seul toucher NaN avait
+    lieu tablette non prise) ; l'état « au bout » remis à zéro par
+    l'annulation ; une heure d'avant 1970 arrêtée à 1970 ;
+  - dans la lecture de l'instantané (`pc/instantane.rs`), quatre refus : un
+    battement de zéro instruction (repris, il faisait diviser par zéro
+    `Machine::tics`, et l'application est construite en `panic = "abort"`),
+    deux fois le même MSR, un bit de la carte des pages au-delà de la
+    dernière (dès que la RAM n'est pas un multiple de 32 Kio), une étiquette
+    d'aléa inconnue ;
+  - l'ombre de `sti`, annoncée portée, que le poste « bariolé » laissait à
+    rien ; ce que devient une source de l'hôte (`Alea::Hote`), que ni le
+    module ni l'en-tête ne disaient ;
+  - dans l'ABI (`ffi.rs`), le refus d'un disque sur fichier machine chargée
+    avant toute ouverture : sans lui, le code rendu restait -7 mais la couche
+    était créée sur le disque ;
+  - dans `Machine::apres_reprise` (`pc/machine.rs`), le vidage du tampon de
+    traduction, le bloc coupé et le dernier bloc oubliés : tous les tests
+    reprenaient un instantané dans une machine neuve, jamais dans une machine
+    qui avait tourné, et l'en-tête n'interdit pas l'autre ;
+  - côté Swift (`RustPCMachine.swift`), le plancher de la RAM annoncé, les
+    refus -3 à -6 d'un disque sur fichier, la garde de zéro cran de la
+    molette, et l'image coupée quand le mode rétrécit pendant la copie.
+- *L'entrée suivante comptait trente-quatre fonctions `wisq_pc_*`* : il y en
+  a trente-trois (dans `ffi.rs`, dans l'en-tête, et dans sa propre liste).
+  Corrigé. Son rapport disait aussi quatorze tests Swift pour treize ; le
+  JOURNAL, lui, disait bien treize.
+
+**Ce qui est fait.**
+
+- `pc_poste.rs` passe de dix-sept à vingt-quatre tests :
+  - **la borne compte la carte** : un invité qui ne lit pas son clavier,
+    trente et une frappes dans la file de l'i8042, la file du poste remplie
+    jusqu'à la borne, et une frappe de plus refusée ;
+  - **l'annulation relâche une touche étendue étendue** : Ctrl droit, AltGr
+    et la flèche du haut remis à l'i8042 reçoivent `E0 9D`, `E0 B8`,
+    `E0 C8`, lus par l'invité dans l'ordre ;
+  - **l'annulation oublie ce que la frappe jetée laissait enfoncé** ;
+  - **la tablette prise** par les écritures de son pilote (commande PCI,
+    file des événements, `DRIVER_OK`) : un toucher part, un NaN ou un infini
+    sur l'un ou l'autre axe non ; zéro cran non plus, un cran si ;
+  - **une RAM de 128 Mio + 100 octets** se sauve et se reprend, et chacun des
+    sept bits au-delà de sa dernière page est refusé ;
+  - les refus du battement nul, de l'étiquette d'aléa 2 et du MSR en double
+    sont ajoutés à ceux de l'instantané, à des places que le test vérifie
+    d'abord (le battement 289 du poste bariolé, sa graine `0xDEADBEEF`, le
+    MSR `0x1B` suivi de `0xC000_0103`) — et rien n'est reposé ;
+  - **l'ombre de `sti` traverse l'instantané** (`sti ; jmp .` arrêtée après
+    `sti`), et **une source de l'hôte n'y passe pas** : la machine qui
+    reprend garde la sienne, à graine ou de l'hôte. Le module le dit
+    maintenant, avec la liste de ses refus ;
+  - **une machine usée reprend comme une neuve** : elle a tourné le même
+    noyau jusqu'au même endroit, puis ses tables ont envoyé la page de deux
+    mébioctets de RIP sur une région vide, et cette traduction est restée
+    dans son tampon. Reprise, elle finit la course de l'instantané, la même
+    console et le même compte d'instructions. L'en-tête le dit de
+    `wisq_pc_restore` ;
+  - **une heure d'avant 1970** (-5, `i64::MIN`) s'arrête à 1970 sur la CMOS
+    de la machine ; l'en-tête le dit de `wisq_pc_set_time`.
+- **Ce qui ne faisait rien est ôté, et dit.** Dans `apres_reprise`, oublier le
+  bloc coupé, le dernier bloc et la page d'instructions courante ne changeait
+  rien qu'un test puisse voir, et pour cause : le bloc coupé se recompare à
+  l'entrée (l'adresse physique de RIP, l'étiquette du bloc, ses octets dans
+  la RAM reprise — les mêmes octets, les mêmes instructions), le dernier bloc
+  n'est qu'une indication à l'hôte (`Blocs::enchainer`, qui ne coûte jamais
+  une instruction), et la page courante se compare au compte de vidages du
+  tampon, que le vidage change. Les trois lignes sont ôtées, le commentaire
+  dit pourquoi. De même, côté Swift, `guard notches != 0` dans `scroll` :
+  la carte refuse elle-même zéro cran (`Carte::defiler`), et le test Rust de
+  la tablette prise le juge.
+- **Le programme C** (`tests/abi/pc.c`) branche un second disque sur fichier
+  machine chargée, vers une couche neuve : -7, et ni la couche ni sa carte ne
+  sont créées.
+- **Côté Swift**, `RustPCMachineTests` passe de treize à seize tests : une
+  RAM sous le plancher (0, 1 Mio, le plancher moins un) portée au plancher,
+  et celui qu'annonce `ramSize` est bien la RAM que porte l'en-tête de
+  l'instantané de la bibliothèque ; les quatre refus d'un disque sur fichier
+  (-3 moins d'un secteur, -4 la couche dans un dossier absent, -5 une carte
+  d'un autre programme, -6 une carte qui nomme un secteur que la couche n'a
+  pas), sur l'un et l'autre disque, sans rien brancher ; et la boucle de
+  `frame()`, sortie en `RustPCScreen.frame(copying:)` pour être jouée à la
+  main — un mode qui rétrécit pendant la copie rend l'image coupée au nouveau
+  mode, un mode qui grandit fait recommencer à la taille que la copie dit,
+  quatre refus de suite ne rendent rien.
+- Le compte publié passe de 4 280 à 4 290 (Swift 3 119, Rust 1 171).
+
+**Les sabotages** (rejoués par le banc du contrôle, sources rendues à
+l'identique, sommes md5 comparées) :
+
+- Les quinze du contrôle côté Rust : **R1, R2, R3, R4, R5, R6, R7, R9, R10,
+  R14, R19, R21 et R36 tombent** (chacun dans le test neuf qui le vise ; R9
+  dans le programme C). **R29 et R30 survivaient, et survivraient à tout
+  test** : leurs lignes sont ôtées (ci-dessus). Un seizième, P1 (ôter la
+  remise à zéro de la page d'instructions courante), survivait pour la même
+  raison ; ôtée aussi.
+- Côté Swift, sept : SW3 (le plancher ôté), SW4 (-6 rendu comme -5), et
+  trois de plus sur les codes (-5 rendu comme -4, -3 comme -2, le défaut, qui
+  porte -4, rendu comme -2), SW12 (l'image non coupée), et SW13 (recommencer
+  sans relire la taille) : **les sept tombent**, chacun dans le test qui le
+  vise. SW1 n'a plus de ligne à saboter.
+
+**La mesure** : un vrai noyau repris dans une machine usée, par un test
+jetable qui n'est pas resté dans l'arbre. Alpine 6.18.60 et son initramfs,
+`console=ttyS0`, 512 Mio, l'heure figée : la course entière jusqu'à « ~ # »,
+puis une coupée à 1,2 milliard d'instructions, sauvée, et reprise dans une
+machine qui avait tourné le même noyau 700 millions d'instructions (ses
+propres tables posées) : la même console, octet pour octet, et le même compte
+d'instructions retirées, 1 911 409 456.
+
+**Les vérifications** : `cargo fmt --check`, `clippy -D warnings` propres ;
+`cargo test --release` sur l'espace de travail, 1 172 passés ; `pc_poste` aussi
+sous `-C debug-assertions=yes -C overflow-checks=yes` ; la cible `wasm32` de
+`wisq-page` se construit ; la suite Swift entière, 3 033 tests, 69 sautés,
+aucun échec ; SwiftLint `--strict`, `check-whitespace`, `check-project-sources`
+propres ; le site rebâti, `bun test` 476 passés.
+
+**Ce qui reste**, inchangé : l'instantané de la carte, le réseau, les
+formats d'image de disque, les refus dits dans la console, une mesure sur un
+iPhone (voir l'entrée suivante).
+
+## 2026-11-21 — Machine PC en Rust : l'ABI C et l'enveloppe Swift, la machine derrière `GuestMachine` et un réglage éteint
+
+**Ce qui n'allait pas.** La machine PC native (`crates/wisq-vm/src/pc/`)
+démarrait Alpine et Void Xfce sous `wisq-pc`, et l'application ne pouvait pas
+s'en servir : aucune fonction de l'ABI C ne la nommait, rien côté Swift ne
+l'enveloppait, et `LocalVMModel` ne connaissait que `X86Machine` pour l'écran,
+le clavier et le pointeur (`machine as? X86Machine` à neuf endroits). Ce qui
+l'entoure dans le cœur Swift — un arrêt d'un autre fil, des frappes qui
+s'annulent, le temps passé dehors, l'avancement lisible pendant la course, le
+pas de l'horloge murale, l'instantané — n'existait pas en Rust.
+
+**Ce qui est fait.**
+
+- **Le poste** (`pc/poste.rs`) : la machine menée par un hôte, le port de ce
+  que `X86Machine.swift` met autour de `X86Core`. Deux moitiés, et la
+  frontière est celle des fils : le `Poste` (charger, brancher, courir,
+  sauver) n'est touché que par le fil de la course ; les `Commandes`, en
+  `Arc`, le sont de partout (arrêter, taper au port série, frapper, toucher,
+  lire l'écran et l'avancement). La course rend une `Fin` : budget épuisé,
+  arrêtée, éteinte (l'attente est épuisée : un `hlt` que rien ne réveille),
+  remise à zéro (l'impulsion de l'i8042), faute nommée. La carte est toujours
+  branchée, comme sous `wisq-pc`.
+  - *Les frappes* : en codes du jeu 1 (`E0` devant une touche étendue,
+    `| 0x80` au relâchement), admises toutes ou aucune sous la borne de
+    l'i8042 (8 192) ; au-delà, un relâchement passe pour une touche que la
+    file laisse enfoncée. Elles attendent dans le poste, qui n'en remet que
+    trente-deux à la fois à l'i8042 : la file de la carte ne se vide pas de
+    l'extérieur (`wisq-carte` n'en offre pas le moyen), celle du poste si.
+    L'annulation jette ce qui attend et relâche ce que les frappes remises
+    laissent enfoncé — le port de `X86TypingHandoff` et d'`abandonTyping`.
+  - *Le temps passé dehors* (`rattraper`) : borné à dix ans, payé par pas de
+    dix secondes pendant que l'invité dort, hors du budget et hors du temps
+    de l'invité (`temps`), comme `X86Machine.elapse`.
+  - *L'heure figée* remplace l'horloge donnée à la carte : sans cela, celle de
+    l'hôte, relue au premier accès aux ports 0x70 et 0x71, passait
+    par-dessus.
+  - *L'écran* : branché une fois, avant le noyau — la mémoire vidéo ne bouge
+    plus, et son adresse se tend à une vue ; l'image se copie sous le verrou
+    de la carte, ligne à ligne au pas de la ligne virtuelle.
+- **L'instantané** (`pc/instantane.rs`), un format à cette machine,
+  versionné : `WISQPC\r\n`, version 1. **Il porte** l'en-tête (la RAM,
+  l'écran annoncé), les compteurs de la machine, l'arrêt sur `hlt`, l'ombre de
+  `sti`, la page zéro, l'état d'un générateur à graine, le temps à rattraper ;
+  le processeur entier (registres, RIP, drapeaux, FS, GS, contrôle, EFER, XMM,
+  MXCSR, le x87) ; le système (GDT, IDT, tâche, LDT, MSR, débogage) ; les
+  deux 8259, le 8253, le 16550 et l'horloge CMOS de la machine ; la RAM, une
+  carte d'un bit par page de quatre kibioctets puis les seules pages non
+  nulles. **Il ne porte pas la carte des périphériques** (i8042, PCI, disques
+  virtio, écran de Bochs et sa mémoire vidéo, tablette) : ses états sont
+  privés à `wisq-carte`, que ce flux ne modifie pas. Un invité qui s'en est
+  servi ne se reprend donc pas fidèlement. Tout est lu et vérifié avant que
+  rien ne soit reposé ; une autre RAM, un autre écran, une autre version, un
+  instantané tronqué ou suivi d'un octet de trop sont refusés sous leur nom.
+- **L'ABI C** (`ffi.rs`, `include/wisq_vm.h`) : trente-trois fonctions
+  `wisq_pc_*` à côté de celles de la machine RISC-V et de l'émetteur, que
+  rien ne touche — `new` (la RAM, la console), `set_time`, `seed`,
+  `attach_display`, `attach_disk` (en mémoire), `attach_disk_file` et
+  `attach_second_disk_file` (sur fichier, la couche de `FileDiskStore`),
+  `load` (noyau, ligne, initramfs), `run` et `fault`, `send`, `keys`,
+  `keys_pending`, `keys_abandon`, `mouse`, `touch`, `scroll`, `display`
+  (l'adresse et la taille de la mémoire vidéo, le mode, le compteur de
+  changements), `display_copy`, `stop`, `retired`, `progress`, `guest_time`,
+  `guest_hertz`, `halted`, `elapse`, `snapshot`, `free_snapshot`,
+  `restore`, `flush_disks`, `disk_bytes_written`, `disk_activity`, `free`.
+  Chaque contrat est écrit dans l'en-tête, avec son fil (« course arrêtée »
+  ou « tout fil ») et ses codes. Les fonctions « tout fil » n'atteignent que
+  le champ des commandes, par `addr_of!` : elles ne forment jamais de
+  référence sur le poste qu'un autre fil tient. **Aucune panique ne
+  traverse** : chaque argument est vérifié, ce qui reste passe par un
+  `catch_unwind` qui rend `WISQ_PC_PANIC` là où l'on déroule ; la
+  bibliothèque de l'application est en `panic = "abort"`, qui arrête le
+  processus sans dérouler dans l'appelant.
+- **`RustPCMachine`** (`Sources/WisqVMRust`) : conforme à `GuestMachine` et à
+  `ScreenKeyboard`, avec la surface que `LocalVMModel` emploie sur
+  `X86Machine` — `display` (une `RustPCScreen` qui rend `revision`, `mode`,
+  `frame()`), `touch`, `scroll`, `mouse`, `type`, `press`,
+  `pendingKeystrokes`, `abandonTyping`, `pacesIdleToWallClock`,
+  `liveProgress`. L'arrêt est collant, comme celui du cœur Swift ; un budget
+  épuisé rend `.stopped`, ce que `CheckpointedRun` attend. Un qcow2 (ou un
+  autre format d'image) est refusé sous son nom : seul le cœur Swift les lit.
+  Un nul dans la ligne de commande est refusé avant le C.
+- **Le réglage** (`RustPCSetting`, `wisq.machine.pc-rust`), éteint par
+  défaut, à côté de celui de l'émetteur dans l'écran « Le bureau est-il
+  possible ? ». Allumé, une machine PC **neuve** démarre sur le cœur Rust :
+  ni session sauvée (un instantané du cœur Swift), ni machine installée. Elle
+  ne sauve rien (`savesSessions`) : la quitter l'arrête, la revoir la
+  redémarre. **L'application ne bascule pas.** Dans `WisqUI`, le seul choix
+  du cœur : `makeLocalMachine` la fabrique ; l'écran, le clavier et le
+  pointeur passent par deux protocoles (`GuestScreen`, `PCInput`) que
+  `X86Framebuffer` et `X86Machine` rendent tels quels ; la sauvegarde
+  continue et la suspension ne sauvent pas une machine qui ne le doit pas.
+
+**Comment c'est jugé.**
+
+- `tests/abi/pc.c`, compilé contre l'en-tête et la bibliothèque statique
+  (`the_c_header_matches_the_pc_machine`) : chaque fonction `wisq_pc_*`
+  appelée, d'abord sur un pointeur nul ; quatre petits noyaux gravés par le
+  test (le noyau factice, une boucle sans fin, `ud2` sans IDT, l'impulsion de
+  l'i8042) ; une course arrêtée d'un autre fil (`pthread`), l'avancement lu
+  pendant ; un instantané pris à mi-course et repris dans une autre machine,
+  qui finit la console et le compte d'instructions de la course entière ;
+  les refus de l'écran, des disques, du chargement, des frappes, de la
+  reprise. `every_declared_function_is_exercised_from_c` tient le périmètre.
+- `tests/pc_poste.rs`, dix-sept tests : les issues, l'arrêt consommé, l'arrêt
+  d'un autre fil, les frappes jusqu'à la borne, un noyau qui renvoie son
+  clavier sur le port série (un battement par instruction, pour qu'une
+  frappe se joue en quelques dizaines de milliers d'instructions) et
+  l'annulation qui relâche ce qui a été remis, le rattrapage et son pas,
+  l'écran copié au pas d'une ligne virtuelle, l'instantané d'une machine
+  « bariolée » (chaque champ porté à une valeur à lui, reprise puis sauvée à
+  nouveau : octet pour octet le même), ses refus sans rien reposer, l'heure
+  figée lue en BCD aux ports de la carte. Le noyau factice est sorti de
+  `pc_demarrage.rs` dans `tests/noyau_factice/`, et gravé dans
+  `Tests/Fixtures/pc-noyau-factice.bin` (2 304 octets), dont un test vérifie
+  qu'il est bien celui d'ici.
+- `RustPCMachineTests` (Swift, sous Linux), treize tests : **le noyau factice
+  sur les deux cœurs**, `X86Machine` et `RustPCMachine` derrière
+  `GuestMachine` — la même console, et **le même compte d'instructions
+  retirées** ; sous un écran, `console=tty0` devant la ligne des deux, le même
+  mode et la même image ; les refus nommés ; les disques et le qcow2 ;
+  le jeu 1 et la frappe qui s'arrête au premier caractère qui ne tient
+  plus ; l'arrêt d'un autre fil qui reste demandé ; le budget ; le pas de
+  l'horloge murale (un noyau factice qui attend cent battements dure au moins
+  90 ms) ; le temps passé dehors ; l'instantané à mi-course ; le réglage.
+- Le SwiftUI touché (`GuestScreenView`, `WebKitBenchView`) n'est
+  qu'analysé (`swiftc -frontend -parse`). `LocalVMModel.swift` et
+  `LocalMachine.swift` ont été **typés sous Linux**, avec et sans
+  `WISQ_RUST_CORE`, contre les modules construits, `import SwiftUI` ôté et
+  deux cales (`ScenePhase`, l'accès aux ressources protégées d'une URL) :
+  aucune erreur.
+
+**Mesuré** (le banc commun : Alpine 6.18.60 et son initramfs,
+`console=ttyS0`, 512 Mio, l'horloge figée, jusqu'au « ~ # » du shell de
+secours ; courses alternées, une à la fois) :
+
+| course | instructions | temps | MIPS |
+|---|---|---|---|
+| `wisq-pc`, première | 1 911 294 953 | 21,7 s | 88,0 |
+| `RustPCMachine` (test Swift, `testARealKernelBootsThroughTheWrapper`), première | 1 911 668 578 | 21,6 s | 88,6 |
+| `wisq-pc`, seconde | 1 911 294 953 | 21,1 s | 90,5 |
+| `RustPCMachine`, seconde | 1 911 668 578 | 23,1 s | 82,7 |
+
+L'enveloppe ne coûte rien qui se distingue du bruit de cette machine. Les
+373 625 instructions de plus sont celles que l'invité fait après l'invite :
+le test ne regarde la console qu'entre deux tranches de cinquante millions
+d'instructions de son temps, `wisq-pc` toutes les deux cent mille.
+
+**Les sabotages** (`r10/sab/sab.py`, journal `r10/sab/lot.out`) :
+trente-deux d'une ligne. Chacun est appliqué, la cible lancée, puis la
+source rendue telle qu'elle était, sa date avancée ; les sommes des sources
+sont les mêmes avant et après le lot, et `git diff` aussi. **Les trente-deux
+tombent.**
+
+| sabotage | tombe dans |
+|---|---|
+| S1 l'arrêt lu sans être consommé | `a_stop_asked_before_the_run_is_taken_once` |
+| S2 la borne des frappes à `<` ; S3 tout relâchement admis au-delà | `keystrokes_are_taken_whole_or_not_at_all_up_to_the_bound` |
+| S4 l'annulation ne relâche rien ; S5 toutes les frappes remises d'un coup ; S6 les touches remises non notées | `abandoning_drops_what_waits_and_releases_what_was_handed_over` |
+| S7 le rattrapage sans borne ; S9 le rattrapage compté dans le temps de l'invité | `time_spent_outside_is_paid_while_the_guest_sleeps_and_kept_out_of_its_time` |
+| S8 tout le dû payé d'un pas | `a_step_of_catching_up_is_ten_seconds_at_most` |
+| S10 l'image copiée au pas de sa largeur ; S16 un second écran admis | `the_screen_is_attached_once_before_the_kernel_and_copied_with_its_stride` |
+| S11 FS non repris ; S12 le dû non repris ; S18 la première page de RAM non reprise | `a_snapshot_carries_every_field_it_names` |
+| S13 un octet de trop admis ; S14 l'écran non comparé | `a_snapshot_is_refused_before_anything_is_put_back` |
+| S15 la remise à zéro rendue en faute | `a_run_ends_the_way_the_guest_does` |
+| S17 l'horloge donnée laissée sous l'heure figée | `a_frozen_hour_replaces_the_clock_it_was_given` |
+| A1 un second chargement admis ; A2 une copie trop courte rendue 0 ; A3 l'extinction rendue en budget ; A4 la faute copiée sans place pour son NUL ; A5 l'autre écran rendu en autre RAM | `the_c_header_matches_the_pc_machine` (le programme C) |
+| W1 l'arrêt Swift non collant | `testAStopFromAnotherThreadReturnsAndStays` — d'abord **en pendant** (la seconde course, sans borne, tournait sans fin : tuée après dix-sept minutes) ; le test borne maintenant sa seconde course et vérifie que rien n'a tourné, et le sabotage rejoué tombe en six secondes |
+| W2 le relâchement sans `0x80` ; W3 la frappe qui continue après un refus | `testKeystrokesAreSetOneCodesAndTypingStopsAtTheFirstThatDoesNotFit` |
+| W4 le sommeil du pas ôté | `testAnIdleGuestIsPacedToTheWallClock` (2,5 ms au lieu de 90) |
+| W5 le nul de la ligne admis | `testWhatCannotBeDoneIsRefusedByName` |
+| W6 la session sauvée oubliée par le réglage | `testTheSettingIsOffByDefaultAndTakesOnlyAFreshPC` |
+| W7 la tranche entière malgré le budget | `testASpentBudgetReturnsStopped` |
+| W8 le qcow2 admis | `testDisksAreAttachedAndImageFormatsRefused` |
+| W9 la copie de l'écran jamais prise | `testUnderAScreenBothPutTty0FirstAndShowTheSameMode` |
+
+**Les vérifications.**
+
+- `cargo fmt --all --check` et `cargo clippy --all-targets --all-features --
+  -D warnings` : propres.
+- `cargo test --release` (l'espace de travail) : 1 165 passés, 0 échec ; et
+  de même sous `RUSTFLAGS="-C debug-assertions=yes -C overflow-checks=yes"`,
+  comme la CI : 1 165 passés, 0 échec.
+- `cargo build --release -p wisq-page --target wasm32-unknown-unknown` : OK
+  (le poste et l'instantané ne demandent ni fichier ni horloge ; l'ABI n'est
+  pas compilée pour wasm32).
+- `swift build --build-tests`, puis la suite Swift entière : 3 030 tests
+  exécutés, 69 sautés, 0 échec (474 s). SwiftLint `--strict` : 0 violation
+  sur 659 fichiers. `check-whitespace` et `check-project-sources` : propres.
+- Le compte publié passe de 4 247 à 4 280 (Swift 3 116 + Rust 1 164). La page
+  d'architecture annonce une ABI C de 75 fonctions (42 avant), et sa
+  provenance le dit. Le site rebâti, `bun test` : 476 passés.
+
+**Ce qui reste.**
+
+- **Pour basculer** : l'instantané de la carte (une sauvegarde et une
+  reprise dans `wisq-carte`, que l'autre flux possède : i8042, PCI, virtio-blk
+  et ses files, Bochs et sa mémoire vidéo, tablette) ; puis **les bureaux
+  prêts refabriqués** à ce format (ceux d'aujourd'hui sont des instantanés du
+  cœur Swift) et la reprise des sessions dans `LocalVMModel` (`SavedSession`
+  juge les instantanés au format Swift) ; **le réseau** (la carte virtio-net
+  de `wisq-carte` n'est pas branchée par le poste, ni un `UserNetwork`
+  derrière) et le relais du port 5900 (`X86Machine.forward`) ; les formats
+  d'image de disque (qcow2, VMDK, VDI, VHD, VHDX, OVA), que seul le cœur
+  Swift lit ; les refus des programmes (« Illegal instruction »), que
+  `X86Machine` dit dans la console et que le poste garde sans les dire ; une
+  mesure sur un iPhone.
+- **Ce que seule la CI juge** : le SwiftUI et `LocalVMModel` compilés pour
+  iOS (ici, analysés et typés contre des cales) ; l'ABI dans le simulateur
+  (`scripts/test-ios.sh` ne lance pas `pc.c`).
+- **Les risques** : lire `display.memory` pendant la course, c'est lire ce
+  que l'invité écrit (la vue passe par la copie sous verrou) ; une frappe
+  remise à l'i8042 ne s'annule plus (trente-deux au plus) ; l'écran se copie
+  entier à chaque révision (3 Mio pour 1024 × 768), sans zone sale.
+
 ## 2026-11-21 — Machine PC en Rust : `lock` refusé là où le silicium le refuse, la frappe jugée à son relâchement, la ligne affichée lue dans la RAM
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point
