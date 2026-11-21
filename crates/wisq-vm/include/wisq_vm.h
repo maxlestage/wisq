@@ -602,7 +602,8 @@ WisqPC *wisq_pc_new(uint64_t ram_bytes, wisq_vm_output_callback on_output, void 
 
 /*
  * Fige l'heure de l'horloge CMOS, en secondes depuis 1970 : deux courses du
- * même noyau retirent alors les mêmes instructions. Course arrêtée. 0.
+ * même noyau retirent alors les mêmes instructions. Une heure d'avant 1970
+ * s'arrête à 1970. Course arrêtée. 0.
  */
 int wisq_pc_set_time(WisqPC *pc, int64_t unix_seconds);
 
@@ -638,7 +639,7 @@ int wisq_pc_attach_disk(WisqPC *pc, const uint8_t *image, size_t len);
  *
  * 0 ; -2 la base ne s'ouvre pas ; -3 moins d'un secteur ; -4 la couche ne
  * s'ouvre pas ; -5 la couche est celle d'un autre disque ; -6 la couche est
- * tronquée ; -7 déjà chargée.
+ * tronquée ; -7 déjà chargée (rien n'est alors ouvert ni créé).
  */
 int wisq_pc_attach_disk_file(WisqPC *pc, const char *base, const char *writes);
 int wisq_pc_attach_second_disk_file(WisqPC *pc, const char *base, const char *writes);
@@ -712,7 +713,8 @@ void wisq_pc_mouse(WisqPC *pc, int32_t dx, int32_t dy, uint8_t buttons);
  */
 int wisq_pc_touch(WisqPC *pc, double x, double y, uint8_t buttons);
 
-/* La molette, en crans, positifs vers le haut. 1 parti ; 0 non. Tout fil. */
+/* La molette, en crans, positifs vers le haut. 1 parti ; 0 non (la tablette
+ * n'est pas prise, ou zéro cran). Tout fil. */
 int wisq_pc_scroll(WisqPC *pc, int32_t notches);
 
 /*
@@ -789,10 +791,11 @@ void wisq_pc_elapse(WisqPC *pc, double seconds);
  * porte : la RAM (les pages non nulles), le processeur entier (registres,
  * drapeaux, contrôle, EFER, XMM et MXCSR, x87), le système (GDT, IDT, tâche,
  * MSR), les 8259, le 8253, le 16550 et l'horloge CMOS de la machine, ses
- * compteurs, l'état d'un générateur à graine, l'écran annoncé et le temps à
- * rattraper. Il ne porte PAS la carte des périphériques (i8042, PCI, disques
- * virtio, écran de Bochs et sa mémoire vidéo, tablette) : un invité qui s'en
- * est servi ne se reprend pas fidèlement.
+ * compteurs, l'ombre de `sti`, l'état du générateur à graine (wisq_pc_seed),
+ * l'écran annoncé et le temps à rattraper. Il ne porte PAS la carte des
+ * périphériques (i8042, PCI, disques virtio, écran de Bochs et sa mémoire
+ * vidéo, tablette) : un invité qui s'en est servi ne se reprend pas
+ * fidèlement.
  *
  * 0 ; -2 ni noyau chargé ni machine reprise.
  */
@@ -801,9 +804,11 @@ void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
 
 /*
  * Reprend un instantané : tout est lu et vérifié avant que rien ne soit
- * reposé. Course arrêtée. 0 ; -2 pas un instantané de cette machine ; -3 une
- * version que ce code ne lit pas ; -4 tronqué ou abîmé ; -5 une autre RAM ;
- * -6 un autre écran (ou un écran d'un côté seulement).
+ * reposé. Une machine qui a déjà tourné le reprend aussi : les traductions
+ * qu'elle gardait de ses propres tables sont oubliées. Course arrêtée.
+ * 0 ; -2 pas un instantané de cette machine ; -3 une version que ce code ne
+ * lit pas ; -4 tronqué ou abîmé ; -5 une autre RAM ; -6 un autre écran (ou
+ * un écran d'un côté seulement).
  */
 int wisq_pc_restore(WisqPC *pc, const uint8_t *bytes, size_t len);
 

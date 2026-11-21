@@ -8,7 +8,9 @@
 //! - la machine : ses compteurs (retirées, attente, battement), l'arrêt sur
 //!   `hlt`, l'ombre de `sti`, la page zéro posée, l'état du générateur de
 //!   `rdrand` quand il est fixé, le temps encore à rattraper et le temps
-//!   rattrapé ;
+//!   rattrapé. **Un générateur de l'hôte (`Alea::Hote`) ne se sauve pas** :
+//!   une étiquette dit seulement qu'il était là, et la machine qui reprend
+//!   garde le sien, à graine ou de l'hôte ;
 //! - le processeur : les seize registres, RIP, les drapeaux, FS et GS, les
 //!   registres de contrôle, EFER, les seize XMM et MXCSR, l'état entier du
 //!   x87 (contrôle, état, étiquettes, les huit registres), les sélecteurs, le
@@ -29,8 +31,16 @@
 //! que la carte a oubliées. Ni les frappes en attente, ni ce qui a été tapé
 //! au port série et pas encore donné (les commandes du poste).
 //!
-//! Tout est petit-boutiste. Un instantané tronqué, ou suivi d'octets de trop,
-//! est refusé : rien n'est reposé tant que tout n'a pas été lu.
+//! Tout est petit-boutiste. Rien n'est reposé tant que tout n'a pas été lu
+//! et vérifié : sont refusés un instantané tronqué ou suivi d'octets de
+//! trop, un booléen qui ne vaut ni zéro ni un, un battement de zéro
+//! instruction (le temps de l'invité se divise par lui), une étiquette
+//! d'aléa inconnue, deux fois le même MSR, et un bit de la carte des pages
+//! au-delà de la dernière.
+//!
+//! **Une machine qui a déjà tourné se reprend comme une neuve** : ce qu'elle
+//! gardait de son état d'avant est oublié ou se recompare
+//! (`Machine::apres_reprise`).
 
 use super::chargeur::Placement;
 use super::herites::{Controleur, Herites, HorlogeCmos, Minuterie, Serie};
@@ -291,7 +301,8 @@ pub fn sauver(poste: &Poste) -> Vec<u8> {
             e.u8(0);
             e.u64(etat);
         }
-        // La source de l'hôte ne se sauve pas : la reprise garde la sienne.
+        // La source de l'hôte ne se sauve pas : la machine qui reprend garde
+        // son générateur.
         Alea::Hote(_) => {
             e.u8(1);
             e.u64(0);
