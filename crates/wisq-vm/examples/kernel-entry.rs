@@ -278,7 +278,8 @@ fn declared_ecran() -> Result<Option<(u32, u32)>, String> {
     }
     if std::env::var("WISQ_SCREEN").is_ok_and(|other| !other.trim().is_empty()) {
         return Err(
-            "WISQ_ECRAN et WISQ_SCREEN décrivent deux écrans : l'un sur la carte,              l'autre dans la RAM ; il n'en faut qu'un"
+            "WISQ_ECRAN et WISQ_SCREEN décrivent deux écrans : l'un sur la carte, \
+             l'autre dans la RAM ; il n'en faut qu'un"
                 .to_string(),
         );
     }
@@ -298,7 +299,8 @@ fn declared_ecran() -> Result<Option<(u32, u32)>, String> {
             Ok(Some((w, h)))
         }
         _ => Err(format!(
-            "WISQ_ECRAN={value} ne se lit pas : il faut « largeur x hauteur », par exemple              1280x800, et seize mébioctets au plus"
+            "WISQ_ECRAN={value} ne se lit pas : il faut « largeur x hauteur », par exemple \
+             1280x800, et seize mébioctets au plus"
         )),
     }
 }
@@ -326,7 +328,15 @@ fn declared_gestes() -> Result<String, String> {
                 "WISQ_GESTES : « {geste} » ne se lit pas (secondes:quoi:argument)"
             ));
         };
-        let Ok(secondes) = secondes.trim().parse::<f64>() else {
+        // **Un nombre fini, et pas négatif** : `f64` lit aussi « inf » et
+        // « NaN », que le pilote recevrait tels quels — `[inf, …]` est une
+        // `ReferenceError` en JavaScript, et le pilote mourrait au départ.
+        let Some(secondes) = secondes
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|s| s.is_finite() && *s >= 0.0)
+        else {
             return Err(format!(
                 "WISQ_GESTES : « {secondes} » n'est pas un nombre de secondes"
             ));
@@ -335,11 +345,14 @@ fn declared_gestes() -> Result<String, String> {
         match quoi {
             "texte" => {}
             "toucher" => {
-                let nombres: Vec<Option<f64>> =
-                    argument.split(',').map(|n| n.trim().parse().ok()).collect();
+                let nombres: Vec<Option<f64>> = argument
+                    .split(',')
+                    .map(|n| n.trim().parse::<f64>().ok().filter(|n| n.is_finite()))
+                    .collect();
                 if nombres.len() != 3 || nombres.iter().any(Option::is_none) {
                     return Err(format!(
-                        "WISQ_GESTES : « toucher:{argument} » — il faut x,y,boutons, par                          exemple 0.5,0.5,1"
+                        "WISQ_GESTES : « toucher:{argument} » — il faut x,y,boutons, par \
+                         exemple 0.5,0.5,1"
                     ));
                 }
             }
@@ -1006,10 +1019,18 @@ fn main() {
     // datée a son fichier, `<fichier>-<secondes>.ppm`, et la dernière écrase
     // `<fichier>`.
     let capture = std::env::var("WISQ_CAPTURE").unwrap_or_default();
-    let capture_toutes: f64 = std::env::var("WISQ_CAPTURE_TOUTES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0.0);
+    // Refusée plutôt que devinée : un nombre qui ne se lit pas ne devient pas
+    // « jamais » sans le dire.
+    let capture_toutes: f64 = match std::env::var("WISQ_CAPTURE_TOUTES") {
+        Err(_) => 0.0,
+        Ok(value) => match value.trim().parse::<f64>() {
+            Ok(secondes) if secondes.is_finite() && secondes >= 0.0 => secondes,
+            _ => {
+                eprintln!("WISQ_CAPTURE_TOUTES={value} ne se lit pas : un nombre de secondes");
+                std::process::exit(2);
+            }
+        },
+    };
     if (!capture.is_empty() || gestes != "[]") && ecran.is_none() {
         eprintln!("WISQ_CAPTURE et WISQ_GESTES demandent un écran : WISQ_ECRAN=1280x800");
         std::process::exit(2);
