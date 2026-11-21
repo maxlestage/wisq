@@ -18,10 +18,6 @@
 // destiné à être évalué tel quel dans un `WKWebView`, et il se teste ici sous
 // Bun, qui embarque le même JavaScriptCore.
 
-/// Les emplacements des globales, tels que l'émetteur les numérote. Ils sont
-/// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
-/// frontière entre Rust et cette vue à part des octets. Le test les compare aux
-/// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 /// **L'arrêt qu'un pilote a demandé** (`run({ arreter })`), sous un nom que
 /// le pilote reconnaît sans le recopier.
 export const ARRET_DEMANDE = "arrêt demandé";
@@ -162,6 +158,10 @@ const NESTED_FLAG = 0x4000n;
 const RESUME_FLAG = 0x10000n;
 const PAGING_BIT = 1n << 31n;
 
+/// Les emplacements des globales, tels que l'émetteur les numérote. Ils sont
+/// **répétés ici** au lieu d'être importés, parce que rien ne traverse la
+/// frontière entre Rust et cette vue à part des octets. Le test les compare aux
+/// constantes de la bibliothèque, sinon la répétition finirait par mentir.
 export const SLOTS = {
   /// La case de RFLAGS. Elle ne servait à rien ici tant que personne ne lisait
   /// les drapeaux comme une **valeur** ; `pushf` les empile, donc elle sert.

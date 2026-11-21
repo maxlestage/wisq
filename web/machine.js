@@ -79,11 +79,18 @@ export function positionSurLEcran(x, y, rect, largeur, hauteur, { borne = false 
 ///   noires, rien — on n'appuie pas à côté de l'écran ;
 /// - **glissé**, doigt posé : la position, **ramenée au bord** quand le doigt
 ///   sort de l'image, le bouton toujours tenu ;
-/// - **relevé** ou **annulé**, doigt posé : le bouton relâché, toujours, à la
-///   position ramenée au bord — ou à la dernière dite, si l'image a disparu.
-///   Un relâchement perdu laisse le bouton tenu dans l'invité, qui voit un
-///   glisser sans fin : c'est ce que faisait la page tant qu'elle ne
-///   l'envoyait que dans l'image.
+/// - **relevé**, doigt posé : le bouton relâché, toujours, à la position
+///   ramenée au bord — ou à la dernière dite, si l'image ou la boîte ont
+///   disparu ;
+/// - **annulé**, doigt posé : le bouton relâché **à la dernière position
+///   dite**, sans bouger. Le système a repris le geste (un défilement, un
+///   geste de l'iPhone) : la position de l'annulation n'est pas un endroit
+///   que le doigt a voulu, et rien ne promet qu'un navigateur la remplisse
+///   — la relâcher là poserait le glisser à un coin.
+///
+/// Un relâchement perdu laisse le bouton tenu dans l'invité, qui voit un
+/// glisser sans fin : c'est ce que faisait la page tant qu'elle ne
+/// l'envoyait que dans l'image.
 export function doigt(toucher) {
   let pose = false;
   let dernier = { x: 0.5, y: 0.5 };
@@ -97,13 +104,18 @@ export function doigt(toucher) {
       return true;
     }
     if (!pose) return false;
+    if (genre === "pointercancel") {
+      pose = false;
+      toucher(dernier.x, dernier.y, 0);
+      return true;
+    }
     const p = positionSurLEcran(x, y, rect, largeur, hauteur, { borne: true }) ?? dernier;
     dernier = p;
     if (genre === "pointermove") {
       toucher(p.x, p.y, 1);
       return true;
     }
-    if (genre === "pointerup" || genre === "pointercancel") {
+    if (genre === "pointerup") {
       pose = false;
       toucher(p.x, p.y, 0);
       return true;
