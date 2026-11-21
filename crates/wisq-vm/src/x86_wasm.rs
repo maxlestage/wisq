@@ -199,41 +199,26 @@ pub const SCRATCH_SLOT: usize = CONTROL_SLOT + CONTROL_COUNT;
 /// dire « on ne l'a pas », et c'est exact ; un bit de plus serait un mensonge
 /// qu'on paierait ailleurs.
 ///
-/// **Le nom du fournisseur est un nom que la glibc connaît** :
-/// `GenuineIntel`, famille 6, modèle 6, pas 3. Il était volontairement
-/// inconnu, « wisq wasm vm », pour que le noyau ne prenne les contournements
-/// d'errata de personne. Mais la glibc, pour un fournisseur qu'elle ne
-/// reconnaît pas, ne lit **jamais** la feuille un (`get_common_indices` est
-/// appelé sans famille) : le socle x86-64 lui paraît absent quels que soient
-/// les bits, et chaque programme de l'initramfs de Void meurt sur « CPU ISA
-/// level is lower than required ».
-///
-/// **Pourquoi pas `AuthenticAMD`, celui du cœur Swift** (`X86CPUID.vendor`,
-/// le `qemu64` de QEMU). Il a été essayé, mesuré, et quitté : sur un AMD, le
-/// noyau 6.12 de Void prend trois chemins de plus — `__USER_DS` chargé dans
-/// FS avant chaque sélecteur nul (`X86_BUG_NULL_SEG`, que la lecture de la
-/// GDT sert maintenant), `fnclex ; emms ; fild` avant chaque `fxrstor`
-/// (`X86_BUG_FXSAVE_LEAK`, que `XSAVEERPTR` éteint) —, et le troisième n'a
-/// pas de fin : à 6,6 s de son temps, dans l'initramfs, il tourne sans
-/// interruption entre `pick_next_task_fair` et `sched_balance_newidle`, le
-/// disque jamais lu. Sous `GenuineIntel`, la même image lit l'ISO (846
-/// lectures en dix-huit minutes de mur). La cause de la boucle n'est pas
-/// trouvée ; c'est écrit au JOURNAL.
-///
-/// **Le prix d'Intel** : le noyau croit le modèle vulnérable à tout ce que
-/// la spéculation a fait découvrir, et arme ses parades — `verw` à chaque
-/// retour vers un programme (produit), les retours par des bacs. Il lit aussi
-/// quelques MSR de la maison, que l'hôte rend en `#GP(0)` et que le noyau
-/// rattrape en le disant.
-/// « GenuineIntel », douze octets, dans l'ordre EBX, EDX, ECX.
-pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"Genu");
-pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b"ineI");
-pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"ntel");
+/// **Le nom du fournisseur est celui que la glibc connaît** : `AuthenticAMD`,
+/// famille 15, modèle 107, pas 1 — l'identité du processeur `qemu64` de QEMU,
+/// celle du cœur Swift (`X86CPUID.vendor`). Il était volontairement inconnu,
+/// « wisq wasm vm », pour que le noyau ne prenne les contournements d'errata
+/// de personne. Mais la glibc, pour un fournisseur qu'elle ne reconnaît pas,
+/// ne lit **jamais** la feuille un (`get_common_indices` est appelé sans
+/// famille) : le socle x86-64 lui paraît absent quels que soient les bits, et
+/// chaque programme de l'initramfs de Void meurt sur « CPU ISA level is lower
+/// than required ». Le prix est celui que le cœur Swift paie depuis Debian 13 :
+/// le noyau prend le chemin d'AMD, et lit quelques MSR de la maison, que
+/// l'hôte rend en `#GP(0)` et que le noyau rattrape.
+/// « AuthenticAMD », douze octets, dans l'ordre EBX, EDX, ECX.
+pub const CPUID_VENDOR_EBX: u32 = u32::from_le_bytes(*b"Auth");
+pub const CPUID_VENDOR_EDX: u32 = u32::from_le_bytes(*b"enti");
+pub const CPUID_VENDOR_ECX: u32 = u32::from_le_bytes(*b"cAMD");
 /// La feuille la plus haute qu'on sache servir. Une seule au-delà de zéro.
 pub const CPUID_MAX_LEAF: u32 = 1;
-/// Famille 6, modèle 6, pas 3 : un vieux P6, que Linux ne range dans aucune
-/// liste d'errata qui demande un MSR de plus.
-pub const CPUID_SIGNATURE: u32 = 0x0000_0663;
+/// Famille 15 (0xF), modèle 107 (0xB dans le champ de base, 6 dans
+/// l'étendu), pas 1 : ce que répond le `qemu64` de QEMU, et le cœur Swift.
+pub const CPUID_SIGNATURE: u32 = 0x0006_0FB1;
 /// **Ce qui se déclare dans EDX, parce que l'émetteur le fait vraiment** : le
 /// coprocesseur (bit 0), le compteur d'horodatage (bit 4), et `clflush`
 /// (bit 19), produit depuis #211.
@@ -292,9 +277,8 @@ pub const CPUID_MAX_EXTENDED_LEAF: u32 = 0x8000_0008;
 pub const CPUID_ADDRESS_SIZES: u32 = 0x3028;
 
 /// **EBX de `0x8000_0008` : `XSAVEERPTR` (bit 2)**, « `fxsave` range toujours
-/// les pointeurs d'erreur du x87 ». C'est ce qui a fait servir les feuilles
-/// étendues, quand `cpuid` disait AMD : sur un AMD qui ne l'annonce pas, le
-/// noyau pose
+/// les pointeurs d'erreur du x87 ». C'est la seule raison de servir les
+/// feuilles étendues : sur un AMD qui ne l'annonce pas, le noyau pose
 /// `X86_BUG_FXSAVE_LEAK`, et avant chaque `fxrstor` exécute `fnclex ; emms ;
 /// fild` pour effacer des pointeurs qu'un autre processus aurait laissés —
 /// trois instructions du x87 que l'émetteur ne produit pas ; Void s'y
