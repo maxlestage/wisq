@@ -58,8 +58,8 @@ use std::path::Path;
 
 use wisq_vm::desktop::Screen;
 use wisq_vm::kernel_image::{
-    declare_ramdisk, loads, montage_command_line, zero_page, zero_page_with_screen, Ramdisk,
-    COMMAND_LINE_AT, ZERO_PAGE_AT,
+    declare_ramdisk, loads, montage_command_line, zero_page, zero_page_with_device_screen,
+    zero_page_with_screen, Ramdisk, COMMAND_LINE_AT, ZERO_PAGE_AT,
 };
 use wisq_vm::progress::Progress;
 use wisq_vm::symbols::Symbols;
@@ -301,25 +301,6 @@ fn declared_ecran() -> Result<Option<(u32, u32)>, String> {
             "WISQ_ECRAN={value} ne se lit pas : il faut « largeur x hauteur », par exemple              1280x800, et seize mébioctets au plus"
         )),
     }
-}
-
-/// **`screen_info` pour la mémoire vidéo de la carte**, dans une page zéro
-/// déjà faite : les champs et les valeurs de `X86BootLoader` (et de
-/// `zero_page_with_screen`), la base hors de la RAM. Aucune entrée e820 :
-/// ce n'est pas de la RAM, le noyau la trouve par le bus PCI, et l'e820 ne
-/// décrit que la mémoire.
-fn declarer_l_ecran(page: &mut [u8], largeur: u32, hauteur: u32) {
-    let octets = u64::from(largeur) * u64::from(hauteur) * 4;
-    page[0x0f] = 0x23; // VIDEO_TYPE_VLFB
-    page[0x12..0x14].copy_from_slice(&(largeur as u16).to_le_bytes());
-    page[0x14..0x16].copy_from_slice(&(hauteur as u16).to_le_bytes());
-    page[0x16..0x18].copy_from_slice(&32u16.to_le_bytes()); // lfb_depth
-    page[0x18..0x1c].copy_from_slice(&(BASE_DE_L_ECRAN as u32).to_le_bytes());
-    // En unités de 64 Kio, arrondi vers le haut — le couple de `VLFB`.
-    page[0x1c..0x20].copy_from_slice(&(octets.div_ceil(0x1_0000) as u32).to_le_bytes());
-    page[0x24..0x26].copy_from_slice(&((largeur * 4) as u16).to_le_bytes());
-    // XRGB8888 : le bleu en bas, puis le vert, le rouge, l'octet inutilisé.
-    page[0x26..0x2e].copy_from_slice(&[8, 16, 8, 8, 8, 0, 8, 24]);
 }
 
 /// **Les gestes que `WISQ_GESTES` demande**, en JavaScript : une liste de
@@ -785,16 +766,29 @@ fn main() {
         }
     };
     let page = match declared_screen(ram, top) {
-        Ok(None) => {
-            let mut page = zero_page(ram, COMMAND_LINE_AT as u32);
-            if let Some((largeur, hauteur)) = ecran {
-                declarer_l_ecran(&mut page, largeur, hauteur);
-                println!(
-                    "écran de la carte : {largeur}x{hauteur} en XRGB8888, sa mémoire vidéo                      à 0x{BASE_DE_L_ECRAN:x}, hors de la RAM"
-                );
+        Ok(None) => match ecran {
+            None => zero_page(ram, COMMAND_LINE_AT as u32),
+            Some((width, height)) => {
+                let screen = Screen {
+                    base: BASE_DE_L_ECRAN,
+                    width,
+                    height,
+                };
+                match zero_page_with_device_screen(ram, COMMAND_LINE_AT as u32, screen) {
+                    Ok(page) => {
+                        println!(
+                            "écran de la carte : {width}x{height} en XRGB8888, sa mémoire \
+                             vidéo à 0x{BASE_DE_L_ECRAN:x}, hors de la RAM"
+                        );
+                        page
+                    }
+                    Err(why) => {
+                        eprintln!("cet écran ne peut pas être décrit au noyau : {why:?}");
+                        std::process::exit(1);
+                    }
+                }
             }
-            page
-        }
+        },
         Ok(Some(screen)) => match zero_page_with_screen(ram, COMMAND_LINE_AT as u32, screen, top) {
             Ok(page) => {
                 println!(
