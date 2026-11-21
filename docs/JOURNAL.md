@@ -8,6 +8,254 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-21 — Machine PC en Rust : `lock` refusé là où le silicium le refuse, la frappe jugée à son relâchement, la ligne affichée lue dans la RAM
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point
+relu dans le code, chaque sabotage du contrôle rejoué) :
+
+- *La liste des préfixes de `sans_taille_d_adresse` n'était tenue qu'à
+  moitié.* L'entrée suivante la disait tenue ; seuls `f2` et `f3` l'étaient.
+  Les six préfixes de segment devant `67` pouvaient disparaître de la liste
+  sans qu'un test tombe. Et `f0` y faisait passer `f0 67 49 f7 e6`, que la
+  machine exécutait comme `mul %r14` alors que l'hôte lève SIGILL (`#UD`).
+  Plus largement, `decode` (que l'émetteur partage) avale `f0` partout :
+  `f0 49 f7 e6`, `lock add %rax,%rbx`, `lock cmp`, `lock mov`, `lock addps`
+  passaient tous.
+- *`a_host_keystroke_reaches_the_ps2_keyboard_in_time` ne tenait pas le
+  temps qu'il annonce.* Il ne jugeait que l'enfoncement (0x1E), que l'i8042
+  livre au premier battement quel que soit le temps donné. Un temps faux
+  (`battre(u64::MAX / 4)`) restait vert : le test prouvait que `battre` est
+  appelé, pas que la carte reçoit le bon temps.
+- *La ligne affichée par `wisq-pc` était recalculée à côté* (`ligne_sous_ecran`
+  appelée une seconde fois), sans test. Elle pouvait dire autre chose que ce
+  que `Machine::charger` pose.
+- *Un commentaire de `pc_flottant`* écrivait « 2,000 000 48… » pour un terme
+  qui vaut 2,000 000 476 8….
+
+**Ce qui est fait.**
+
+- *`verrou_admis`, dans `pc/machine.rs`* : `lock` n'est admis que devant une
+  lecture-modification-écriture dont la destination est en mémoire (`add`,
+  `or`, `adc`, `sbb`, `and`, `sub`, `xor`, `not`, `neg`, `inc`, `dec`,
+  `bts`, `btr`, `btc`, `xchg`, `xadd`, `cmpxchg`, `cmpxchg16b`). Partout
+  ailleurs, l'instruction n'est pas lue : un arrêt nommé en anneau 0, `#UD`
+  en anneau 3, comme toute instruction illisible. Le contrôle porte sur ce
+  que l'un ou l'autre décodeur a rendu, dans les deux chemins : le pas à pas
+  (`lire`) et la construction des blocs (`lire_en_ram`). `decode` n'est pas
+  touché. `f0` sort de la liste de `sans_taille_d_adresse` : rien de ce
+  qu'elle accepte ne peut porter `lock`.
+- *Une sonde neuve sur l'hôte*, `r8/c/verrou.c` (bloc-notes, sortie
+  `verrou.out`), joue 63 formes préfixées de `f0`, une à une :
+  - 33 s'exécutent, dont `f0 f0` et `f0 2e` devant `incl` ;
+  - deux sont admises mais fautent sur leur adresse : `64 f0` et `f0 67`
+    devant `incl` (la sonde dit « autre signal » : elle ne distingue pas
+    SIGSEGV de SIGBUS ; corrigé après contrôle, voir l'entrée du dessus) ;
+  - 28 lèvent SIGILL : formes entre registres, mémoire lue seulement, `cmp`,
+    `test`, `bt`, `mov`, `lea`, `nop`, `mul`, `shl`, `rcl`, `push`, `movzx`,
+    `imul`, `setcc`, `addps`, `movdqa`.
+
+  Le test neuf `lock_is_taken_only_before_what_can_carry_it` les rejoue :
+  - 30 admises, seules, sous `2e` et sous un second `f0`, chacune jusqu'au
+    `hlt`, sa longueur juste ; `lock incl` et `lock cmpxchg` écrivent ce
+    qu'ils doivent ;
+  - 26 refusées, seules et derrière deux `nop` (le bloc qui commence avant
+    elles les lit aussi) ; les deux dernières des 28, `lock` devant
+    `67 mul %r14`, sont dans le test du `67`.
+- *`an_address_size_prefix_without_address_is_ignored`* joue les six préfixes
+  de segment devant `67 49 f7 e6` (cinq octets, le produit de `mul %r14`,
+  comme sur l'hôte : sonde `ctrl-r7/c/p` du contrôle). Il refuse aussi
+  `f0 67 49 f7 e6` et `67 f0 49 f7 e6`.
+- *`a_host_keystroke_reaches_the_ps2_keyboard_in_time`* juge le relâchement.
+  L'invité lit 0x1E, puis attend 0x9E. L'i8042 tient ce second code
+  `TENUE_TICS` tics après le premier. La machine doit donc s'arrêter entre
+  `TENUE_TICS` et `TENUE_TICS + 1` tics (10,3 millions d'instructions),
+  par la carte partagée comme par la nue. Un temps figé, double, moitié, ou
+  en retard de deux tics fait tomber le test.
+- *`chargeur::ligne_posee`* lit la ligne là où `charger` l'a posée, dans la
+  RAM de l'invité, jusqu'à son zéro. `wisq-pc` l'affiche après le
+  chargement, et ne recalcule plus rien. Deux tests neufs :
+  - `the_posed_line_is_read_up_to_its_zero` : hors de la RAM, sans zéro ou
+    pas en UTF-8, rien ;
+  - `the_tool_shows_the_line_the_kernel_receives` : `wisq-pc` est lancé pour
+    de bon sur le noyau factice, qui renvoie sa ligne sur le port série. La
+    ligne affichée doit être celle que le noyau a reçue, avec ou sans
+    écran, donnée ou par défaut.
+
+  `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` vérifie en
+  plus que `ligne_posee` rend ce qui est en mémoire.
+- *Le commentaire de `pc_flottant`* donne les deux termes et la somme, à
+  quinze chiffres : 2,000 000 473 111 868, 2,000 000 476 837 158 et
+  4,000 000 949 949 026.
+
+**Mesuré.** Pour vérifier qu'il n'y a pas de régression (aucune
+optimisation dans cette tranche) :
+
+| course | instructions | temps | MIPS | refus |
+|---|---|---|---|---|
+| banc commun (6.18.60, initramfs, `console=ttyS0`, 512 Mio, jusqu'au shell de secours, `echo wisq-parle`) | 1 920 170 552 | 20,8 s | 92,5 | aucun |
+| Alpine 3.24.4 par `--iso` (512 Mio, `--horloge 1795230600`, `root` puis `uname -a` : `Linux localhost 6.18.60-0-virt`) | 5 020 171 839, le même compte qu'avant | 57,1 s | 87,9 | aucun |
+
+**Les sabotages** (`r8/sab/sab.py`, journaux `r8/sab/lot.out` et
+`lot2.out`) : 21 d'une ligne. Chacun est appliqué, la cible est lancée, puis
+la source est rendue, sa date avancée. Le `git diff` est identique avant et
+après. **20 tombent**, et le vingt et unième devait rester vert (voir la
+fin du tableau).
+
+| sabotage | tombe dans |
+|---|---|
+| V1 filtre ôté de `lire_en_ram` ; V3 l'arithmétique admise mémoire lue ; V4 `bt` admis ; V5 une forme sans mémoire admise ; V6 le second décodeur admis ; V8 `cmpxchg16b` refusé ; V9 `xchg`, `xadd`, `cmpxchg` refusés | `lock_is_taken_only_before_what_can_carry_it` |
+| V2 `lire` admet tout ; V7 `f0` jamais vu | ce test et `an_address_size_prefix_without_address_is_ignored` |
+| V10 la suite de préfixes réduite à `26 f0` (le `f0` de `67 f0` n'est plus vu) | `an_address_size_prefix_without_address_is_ignored` |
+| A_seg67 la liste réduite à `66 f2 f3` (celui du contrôle) ; A_seg64 `64` seul ôté | `an_address_size_prefix_without_address_is_ignored` |
+| B `battre(u64::MAX / 4)` (celui du contrôle) ; B2 `tics * 2` ; B3 `tics / 2` ; B4 `tics - 2` | `a_host_keystroke_reaches_the_ps2_keyboard_in_time` |
+| E l'affichage vide (au lieu du `options.ecran.is_some()` du contrôle, qui n'existe plus) ; E2 `Machine::charger` sans écran pour la ligne | `the_tool_shows_the_line_the_kernel_receives` |
+| L1 `ligne_posee` coupée à l'espace | `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` |
+| L2 `ligne_posee` sans garde UTF-8 | `the_posed_line_is_read_up_to_its_zero` |
+| `f0` remis dans la liste de `sans_taille_d_adresse` : **reste vert, attendu** | `verrou_admis` décide seul de `lock`, après tout décodeur ; l'entrée était morte |
+
+**Les vérifications.**
+- `cargo fmt --all --check` et `cargo clippy --all-targets --all-features --
+  -D warnings` : OK.
+- `cargo test --release -p wisq-vm` : 749 passés, 0 échec.
+- `cargo build --release -p wisq-page --target wasm32-unknown-unknown` : OK.
+- `check-whitespace.sh` et `check-project-sources.sh` : OK.
+- Le compte publié passe de 4 162 à 4 165 (Rust 1 100).
+- Le site rebâti, `bun test` : 476 passés.
+
+**Ce qui reste** : ce que disent les entrées suivantes (l'ABI C, la carte
+réseau sous `wisq-pc`, l'EDID, une mesure à charge égale contre le cœur
+Swift). `lock` reste avalé partout par `decode`, donc par l'émetteur.
+`cmpxchg8b`, que `decode` ne lit pas, reste illisible avec ou sans `lock`.
+`67` devant un accès mémoire reste refusé, `lock` ou pas (`f0 67 ff 03`,
+que l'hôte admet) : ce cœur ne coupe pas les adresses à trente-deux bits.
+
+## 2026-11-21 — Machine PC en Rust : la carte partagée tenue par ses tests, `console=tty0` devant toute ligne sous un écran
+
+**Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point
+relu dans le code, et chaque sabotage du contrôle rejoué) :
+
+- *La carte partagée n'était jugée par aucun test.* `wisq-pc` branche
+  toujours la carte par `pc::carte::brancher` (`CartePartagee`), mais
+  `pc_carte.rs` montait une `CartePc` nue. Le temps donné à la carte
+  (`CartePartagee::battre`, seul appel qui rythme les frappes PS/2 de
+  `--keys`) et la remise à zéro (`CartePartagee::remise_demandee`, le
+  `reboot` d'un invité) pouvaient disparaître sans qu'un test tombe.
+- *`DeviceMemory::claims` de la carte n'était jugé que dans un sens* : rendu
+  toujours vrai, la sonde d'avant écriture aurait admis une adresse hors de
+  la RAM que personne ne sert, et un rangement à cheval sur la fin de la RAM
+  aurait posé sa moitié basse avant d'échouer.
+- *Les gardes du trou sous 4 Gio du code des accès à cheval* (`read_place`,
+  `write_place`, `holds_place`) n'avaient pas de test : au-delà de 3 Gio de
+  RAM, une lecture ou une écriture à cheval dans le trou aurait lu ou écrit
+  la RAM de l'hôte qui le couvre, la mémoire vidéo (dans le trou) comprise.
+- *Les listes de préfixes* de `non_temporel` (les six préfixes de segment)
+  et de `sans_taille_d_adresse` (`f2`, `f3`) n'étaient pas tenues.
+- *Le filtre des mots vides de `ligne_d_une_image`* (le
+  `omittingEmptySubsequences` du Swift) n'était pas tenu.
+- *Trois gardes de `wisq-pc`* : une largeur nulle sous `--display`
+  (`0x800`), un nom d'image fait de son seul point (`.ppm` donnait
+  `-0001.ppm`), un `;;` de trop sous `--keys`.
+- *Le commentaire d'en-tête de `wisq-pc` était faux* : `console=tty0` ne
+  venait devant la ligne que sous `--iso` sans `--cmdline`. Avec `--kernel …
+  --display`, ou `--cmdline` sous `--iso`, la ligne passait telle quelle,
+  alors que `X86Machine.load` met `console=tty0` devant **toute** ligne quand
+  un écran est branché, celle par défaut comprise.
+- *Un commentaire* attribuait `67 0f 58 d9` (`addps`) à la sonde `r6/c/nt`,
+  qui ne le joue pas.
+
+**Ce qui est fait.**
+
+- *`pc_carte.rs` passe par `brancher`*, le chemin de `wisq-pc`, pour chaque
+  test. La remise à zéro est jouée sur la carte partagée et sur la carte
+  nue (la course s'arrête, RIP sur l'`out`). Un test neuf,
+  `a_host_keystroke_reaches_the_ps2_keyboard_in_time` : « a » posé dans la
+  file de la carte (`taper_texte`, ce que fait `--keys`) n'arrive au port
+  0x60 (0x1E, le jeu 1) que lorsque la machine donne son temps à la carte,
+  par la carte partagée comme par la nue ; sans frappe, l'invité attend
+  jusqu'au bout du budget.
+- *`pc_ecran.rs`, deux tests neufs* :
+  `a_store_past_the_end_of_ram_leaves_nothing_with_the_card_branched` (un
+  `mov` de huit octets et un `movdqu` de seize à cheval sur la fin de la RAM
+  fautent sans poser un octet) et
+  `above_three_gibibytes_the_video_memory_is_the_cards_not_the_holes` (une
+  machine de 4 Gio, la mémoire vidéo à `0xE000_0FFC` écrite et relue à
+  cheval : les deux moitiés dans le cadre de la carte, la RAM sous le trou,
+  qui porte un motif, intacte).
+- *`above_three_gibibytes_the_map_has_a_hole`* juge aussi le bord du trou :
+  huit octets à `0xBFFF_FFFC`, en lecture et en écriture, fautent ; rien
+  n'est posé ni d'un côté ni de l'autre.
+- *`pc_flottant`* : `movnti` sous `26`, `2e`, `36`, `3e`, `64` et `65`
+  (`fs` et `gs` avec leur base) ; `addss` sous `f3 67` et `addsd` sous
+  `f2 67`, entre registres. Chaque valeur a été relevée sur l'hôte par une
+  sonde neuve (`r7/c/sonde.c`, jouée sur ce Xeon) : `67 0f 58 d9`,
+  `f3 67 0f 58 d9` et `f2 67 0f 58 d9` rendent la même somme qu'en l'absence
+  de `67`, et les six `movnti` rangent. Le commentaire d'`addps` cite
+  maintenant cette sonde.
+- *`chargeur::ligne_sous_ecran`*, le port de
+  `X86Machine.commandLine(_:withScreen:)`, est appliquée par
+  `Machine::charger` à toute ligne sous un écran, comme `X86Machine.load`.
+  `ligne_d_une_image` ne fait plus que `IsoBoot.commandLine(from:)`, et son
+  test joue une recette à espaces doublés. Test neuf :
+  `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` (la ligne lue
+  dans la RAM de la machine, donnée ou par défaut, avec ou sans écran, et
+  jamais deux fois). `wisq-pc` affiche la ligne que le noyau recevra, et son
+  en-tête dit vrai. Vérifié par une course : `--kernel vmlinuz-virt
+  --cmdline console=ttyS0 --display 1280x800`, le noyau dit « Command line:
+  console=tty0 console=ttyS0 ».
+- *`wisq-pc`* : l'extension d'une image se cherche dans le nom du fichier
+  seul, et un nom fait de son seul point n'en a pas (`.ppm` et `/a/.ppm`
+  gardent leur nom, le rang au bout). Les tests jugent `0x800`, `0x0`,
+  `30:root;;;;45:ls;;`, `.ppm`, `/a/.ppm` et `/a.d/.b.ppm`.
+
+**Une réserve sur la comparaison au cœur Swift** de l'entrée suivante
+(« 2,8 fois ») : la fabrication du 14 novembre n'est pas la même charge. Elle
+avait `init_on_free=1`, la carte réseau, l'écran de 1024 × 768 et des
+frappes, et elle allait au-delà du bureau (le cache vidé avant de sauver).
+Elle tournait aussi sur un cœur Swift d'avant les PR #709 à #711, qui ont
+porté le banc commun de 51,9 à 62,5 MIPS. Mesuré à charge égale, l'écart
+serait donc plus petit : à 20 % de mieux pour le Swift d'aujourd'hui,
+environ 2,3 fois. C'est une estimation, pas une mesure. Une mesure demande
+des courses alternées des deux machines sur la même image, la même ligne et
+le même écran ; elle n'est pas faite.
+
+**Les sabotages** (`r7/sab/sab.py`, journal `r7/sab/lot1.out`) : 17 d'une
+ligne. Chacun est appliqué, la cible est lancée, puis la source est rendue,
+sa date avancée. Le `git diff` est identique avant et après le lot. **Les 17
+tombent.**
+
+| sabotage | tombe dans |
+|---|---|
+| S1 `CartePartagee::battre` vide (le K2 du contrôle) ; S1b `battre` de la carte nue vide | `a_host_keystroke_reaches_the_ps2_keyboard_in_time` |
+| S2 `false && …remise_demandee()` (K3) | `the_reset_pulse_stops_the_run` |
+| S3 `claims` toujours vrai (K4) | `a_store_past_the_end_of_ram_leaves_nothing_with_the_card_branched` |
+| S4 garde du trou ôtée de `read_place` (K7) ; S6 de `holds_place` (K9) | `above_three_gibibytes_the_map_has_a_hole` |
+| S5 garde du trou ôtée de `write_place` (K8) | `above_three_gibibytes_the_video_memory_is_the_cards_not_the_holes` |
+| S7 préfixes de `non_temporel` réduits aux REX (K11) ; S7b `64` seul ôté | `non_temporal_stores_store_like_the_others` |
+| S8 `f2` et `f3` ôtés de `sans_taille_d_adresse` (K13) | `an_address_size_prefix_without_address_is_ignored` |
+| S9 mots vides gardés (K14) | `the_line_of_an_image_is_the_apps` |
+| S10 largeur nulle admise (K15) | `the_display_size_is_two_numbers` |
+| S11 tête vide admise (K16) ; S11b extension cherchée dans tout le chemin | `a_screen_is_written_as_ppm` |
+| S12 `;;` vides gardés (K17) | `keys_are_sorted_by_guest_time` |
+| S13 `Machine::charger` sans écran pour la ligne ; S14 `console=tty0` mis deux fois | `the_machine_puts_tty0_in_front_of_any_line_under_a_screen` |
+
+**Mesuré.** Pour vérifier qu'il n'y a pas de régression, Alpine 3.24.4 est
+rejouée par `--iso` (512 Mio, `--horloge 1795230600`, `root` puis
+`uname -a`) : `Linux localhost 6.18.60-0-virt`. Elle retire les mêmes
+5 020 171 839 instructions qu'avant, en 53,8 s (93,3 MIPS).
+
+**Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
+--all-targets --all-features -- -D warnings` ; `cargo test --release -p
+wisq-vm` (746 passés, 0 échec) ; `cargo build --release -p wisq-page
+--target wasm32-unknown-unknown` ; `check-whitespace.sh` ;
+`check-project-sources.sh`. Le compte publié passe de 4 157 à 4 162
+(Rust 1 097). `origin/master` (#713, l'écrasement de cette branche
+jusqu'à l'entrée suivante) est fusionné ; il n'apporte aucun changement à
+l'arbre.
+
+**Ce qui reste** : ce que dit l'entrée suivante (l'ABI C, la carte réseau
+sous `wisq-pc`, l'EDID). S'y ajoute une mesure à charge égale contre le
+cœur Swift.
+
 ## 2026-11-21 — Les deux machines sur une même branche : le flottant de SSE, lu deux fois
 
 **Ce qui n'allait pas.** La machine PC en Rust (#713) lit ses instructions
