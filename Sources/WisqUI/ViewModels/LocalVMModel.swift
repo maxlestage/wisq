@@ -432,12 +432,12 @@ public final class LocalVMModel {
         // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
         // n'existe qu'après cette fermeture — d'où la boîte.
         let answers = ConsoleAnswers()
-        // **Le cœur Rust, si son réglage le demande** : une machine PC neuve
+        // **Le cœur Rust, allumé par défaut** : une machine PC neuve
         // seulement — ni session sauvée (un instantané du cœur Swift), ni
         // machine installée. Voir `RustPCSetting`.
         #if WISQ_RUST_CORE
         let rustPC = RustPCSetting.runs(
-            core, enabled: UserDefaults.standard.bool(forKey: RustPCSetting.key),
+            core, enabled: RustPCSetting.isEnabled(in: .standard),
             hasSession: saved != nil, installed: installed != nil)
         #else
         let rustPC = false

@@ -487,10 +487,11 @@ final class RustPCMachineTests: XCTestCase {
 
     // MARK: - Le réglage
 
-    /// **Éteint par défaut**, à côté de celui de l'émetteur ; allumé, il ne
-    /// prend qu'une machine PC neuve.
-    func testTheSettingIsOffByDefaultAndTakesOnlyAFreshPC() {
-        XCTAssertFalse(RustPCSetting.defaultValue)
+    /// **Allumé par défaut**, à côté de celui de l'émetteur (éteint) ;
+    /// allumé, il ne prend qu'une machine PC neuve.
+    func testTheSettingIsOnByDefaultAndTakesOnlyAFreshPC() {
+        XCTAssertTrue(RustPCSetting.defaultValue)
+        XCTAssertFalse(EmitterSetting.defaultValue, "l'émetteur reste éteint")
         XCTAssertEqual(RustPCSetting.key, "wisq.machine.pc-rust")
         XCTAssertNotEqual(RustPCSetting.key, EmitterSetting.key)
         XCTAssertFalse(RustPCSetting.savesSessions)
@@ -503,5 +504,33 @@ final class RustPCMachineTests: XCTestCase {
                        "une session du cœur Swift se reprend sur lui")
         XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: true, hasSession: false, installed: true),
                        "une machine installée reste au cœur Swift")
+    }
+    /// **Le défaut s'applique à un réglage jamais touché**, et un réglage
+    /// éteint à la main le reste. `UserDefaults.bool(forKey:)` rendait faux
+    /// dans le premier cas : personne n'aurait eu le cœur Rust.
+    func testAnUntouchedSettingTakesTheDefaultAndATouchedOneIsKept() throws {
+        let suite = "wisq.tests.reglage-pc-rust.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(RustPCSetting.isEnabled(in: defaults), "jamais touché : le défaut")
+        defaults.set(false, forKey: RustPCSetting.key)
+        XCTAssertFalse(RustPCSetting.isEnabled(in: defaults), "éteint à la main")
+        defaults.set(true, forKey: RustPCSetting.key)
+        XCTAssertTrue(RustPCSetting.isEnabled(in: defaults), "rallumé")
+    }
+
+    /// **Une date hors de `Int64` est bornée avant le cœur** : `Int64(_:)`
+    /// planterait. Le cœur borne ensuite de 1970 à l'an 9999.
+    func testADateOutsideInt64IsClampedBeforeTheCore() {
+        XCTAssertEqual(RustPCMachine.seconds(since1970: 1e19), .max)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: Double(Int64.max)), .max, "2^63 tout juste")
+        XCTAssertEqual(RustPCMachine.seconds(since1970: -1e19), .min)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: .infinity), .max)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: -.infinity), .min)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: .nan), 0)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: 1_700_000_000.9), 1_700_000_000)
+        XCTAssertEqual(RustPCMachine.seconds(since1970: -0.5), -1)
+        let machine = RustPCMachine(ramSize: 64 << 20) { _ in }
+        machine?.freezeHostTime(at: Date(timeIntervalSince1970: 1e19))
     }
 }

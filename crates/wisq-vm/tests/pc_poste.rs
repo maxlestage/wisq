@@ -1026,6 +1026,59 @@ fn the_long_mode_bit_is_recomputed_on_resume() {
     assert_eq!(reprise.machine.retirees, entiere.machine.retirees);
 }
 
+/// **Un instantané qui dit la carte absente, ou une heure des puces au-delà
+/// de l'an 9999, est refusé** : `sauver` ne les écrit jamais (le poste
+/// branche toujours sa carte, et l'heure est bornée), et repris, ils
+/// rendraient les ports 0x70 et 0x71 aux puces de la machine, devant la
+/// carte encore branchée, avec une date hors de toute borne.
+#[test]
+fn a_snapshot_without_the_card_or_past_9999_is_refused() {
+    let mut poste = Poste::essayer(RAM).expect("la RAM");
+    poste.regler_l_heure(DERNIERE_SECONDE);
+    let sauve = instantane::sauver(&poste);
+    // `cmos_ailleurs` est le dernier octet des puces, juste avant la longueur
+    // de la RAM ; les secondes des puces le précèdent, avant les 128 octets de
+    // la mémoire de l'horloge.
+    let mut motif = vec![1u8];
+    motif.extend_from_slice(&RAM.to_le_bytes());
+    let ailleurs = (144..sauve.len() - motif.len())
+        .find(|&rang| sauve[rang..rang + motif.len()] == motif[..])
+        .expect("la carte dite branchée, avant la RAM");
+    let secondes = ailleurs - 128 - 8;
+    assert_eq!(
+        u64::from_le_bytes(sauve[secondes..secondes + 8].try_into().unwrap()),
+        DERNIERE_SECONDE as u64,
+        "les secondes des puces à leur place"
+    );
+
+    let mut neuf = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut neuf, &sauve).expect("l'instantané tel que sauvé");
+
+    let mut sans_carte = sauve.clone();
+    sans_carte[ailleurs] = 0;
+    let mut neuf = Poste::essayer(RAM).expect("la RAM");
+    assert_eq!(
+        instantane::reprendre(&mut neuf, &sans_carte),
+        Err(RefusDInstantane::Abime)
+    );
+
+    let mut trop_tard = sauve.clone();
+    trop_tard[secondes..secondes + 8].copy_from_slice(&(DERNIERE_SECONDE as u64 + 1).to_le_bytes());
+    let mut neuf = Poste::essayer(RAM).expect("la RAM");
+    assert_eq!(
+        instantane::reprendre(&mut neuf, &trop_tard),
+        Err(RefusDInstantane::Abime)
+    );
+
+    let mut au_bout = sauve.clone();
+    au_bout[secondes..secondes + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut neuf = Poste::essayer(RAM).expect("la RAM");
+    assert_eq!(
+        instantane::reprendre(&mut neuf, &au_bout),
+        Err(RefusDInstantane::Abime)
+    );
+}
+
 /// **Une heure d'avant 1970, ou d'après l'an 9999**, s'arrête à la borne,
 /// **là où l'invité la lit** : la carte est toujours branchée
 /// (`cmos_ailleurs`), donc les ports 0x70 et 0x71 vont à la CMOS de la carte,
