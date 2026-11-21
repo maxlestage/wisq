@@ -1272,6 +1272,24 @@ fn transcendental_argument(h: &mut Hasard, name: &str) -> [u8; 10] {
     }
 }
 
+/// **Le silicium de l'hôte est un Intel** : la machine suit les
+/// transcendantes d'Intel au bit près là où `judges_rounding` le demande.
+/// Un AMD (les machines de la CI en sont souvent) calcule les mêmes
+/// fonctions autrement : cos 2⁻²⁰⁰ y vaut 1 − 2⁻⁶⁴, sin x d'un x minuscule
+/// y perd une unité, et C1 y monte là où Intel le laisse. Hors d'Intel, le
+/// test juge donc chaque valeur à `ULPS` près et laisse C1 ; tout le reste
+/// (C0, C2, C3, les étiquettes, le sommet) reste jugé au bit près.
+fn intel_silicon() -> bool {
+    // SAFETY: CPUID existe sur tout x86-64.
+    #[allow(unused_unsafe)]
+    let leaf = unsafe { std::arch::x86_64::__cpuid(0) };
+    let mut vendor = [0u8; 12];
+    vendor[..4].copy_from_slice(&leaf.ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&leaf.edx.to_le_bytes());
+    vendor[8..].copy_from_slice(&leaf.ecx.to_le_bytes());
+    &vendor == b"GenuineIntel"
+}
+
 /// **C1 se juge, et la valeur au bit près, là où le résultat ne dépend pas
 /// de la façon de calculer** :
 /// une pile vide ou pleine, un opérande particulier (NaN, infini, zéro,
@@ -1339,6 +1357,7 @@ fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
     let mut wrong = Vec::new();
     let mut tally = Vec::new();
     let mut cases = 0;
+    let intel = intel_silicon();
     for (name, code, host) in forms {
         let (mut shown, mut missed) = (0, 0);
         for draw in 0..8000u32 {
@@ -1372,7 +1391,7 @@ fn the_x87_transcendentals_match_the_host_silicon_on_every_class_and_stack() {
             got[0xF0..0xF8].fill(0);
             comparable(&mut wanted, None);
             comparable(&mut got, None);
-            let exact = judges_rounding(&area, name, variant);
+            let exact = intel && judges_rounding(&area, name, variant);
             let mut same_values = true;
             let mut close = true;
             for index in 0..8 {
