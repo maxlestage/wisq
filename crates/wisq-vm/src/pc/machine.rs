@@ -174,10 +174,15 @@ fn lire_en_ram(ram: &[u8], debut: usize, disponibles: usize) -> Option<Decoded> 
 
 /// **`fwait`, préfixes compris** : `Some(Some(longueur))` quand `octets` en
 /// commence un, `Some(None)` pour `lock fwait`, illisible. Un préfixe devant
-/// `9b` ne change rien à l'attente — sur l'hôte, `48 9b`, `66 9b`, `f3 9b`,
-/// `2e 9b` et `67 9b` livrent `#MF` comme `9b` seul ; `f0 9b` est `#UD`
-/// (SIGILL), que `decode`, que l'émetteur partage, lit pourtant comme un
-/// `nop`. La longueur est celle que `decode` lit.
+/// `9b` ne change rien à l'attente : sur l'hôte, chacun des préfixes de
+/// segment (`26`, `2e`, `36`, `3e`, `64`, `65`), `66`, `67`, `f2`, `f3` et
+/// chaque REX, seuls ou mêlés (`f3 f2 9b`, `48 66 9b`), livrent `#MF` comme
+/// `9b` seul ; un `f0` n'importe où devant est `#UD` (SIGILL). La longueur ne
+/// se demande donc pas à `decode`, que l'émetteur partage : il ne lit ni
+/// `67 9b`, ni `f2 9b`, ni `48 66 9b`, et lit `f0 9b` comme un `nop`. Elle
+/// vaut les préfixes plus un ; le pas à pas ne lit jamais que quinze octets,
+/// donc quatorze préfixes au plus (quinze `66` puis `9b` est un `#GP` sur
+/// l'hôte, une instruction illisible ici).
 fn attente(octets: &[u8]) -> Option<Option<usize>> {
     let prefixes = octets
         .iter()
@@ -194,8 +199,7 @@ fn attente(octets: &[u8]) -> Option<Option<usize>> {
     if octets[..prefixes].contains(&0xF0) {
         return Some(None);
     }
-    let lue = decode(octets)?;
-    (lue.op == Op::Nop && lue.length == prefixes + 1).then_some(Some(lue.length))
+    Some(Some(prefixes + 1))
 }
 
 /// Ce qu'un passage par un bloc a donné.

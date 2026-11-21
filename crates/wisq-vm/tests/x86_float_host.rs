@@ -1054,6 +1054,7 @@ fn state_forms() -> Vec<StateForm> {
         form!("fdecstp", [0xd9, 0xf6], "fdecstp"),
         form!("fincstp", [0xd9, 0xf7], "fincstp"),
         form!("ffree", [0xdd, 0xc1], "ffree st(1)"),
+        form!("ffreep", [0xdf, 0xc1], "ffreep st(1)"),
         form!("fnclex", [0xdb, 0xe2], "fnclex"),
         form!("fnop", [0xd9, 0xd0], "fnop"),
         form!("fstps", [0xd9, 0x5e, 0x20], "fstp dword ptr [{p}+0x20]"),
