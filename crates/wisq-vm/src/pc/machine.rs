@@ -681,6 +681,29 @@ impl Machine {
         self.placement
     }
 
+    /// **L'ombre de `sti` en cours**, pour un instantané : le compte
+    /// d'instructions retirées auquel elle se lève, ou rien.
+    pub fn ombre(&self) -> Option<u64> {
+        self.ombre
+    }
+
+    /// **Reprendre une machine sauvée** (`pc::instantane`) : son ombre et sa
+    /// page zéro reposées, et ce qui ne valait que pour l'état d'avant
+    /// oublié — le bloc coupé à reprendre, la page d'instructions courante, le
+    /// tampon de traduction. Les blocs et le cache de décodage comparent
+    /// leurs octets à l'entrée : une RAM remplacée ne les trompe pas.
+    pub fn apres_reprise(&mut self, ombre: Option<u64>, placement: Option<Placement>) {
+        self.ombre = ombre;
+        self.placement = placement;
+        self.reprise = None;
+        self.dernier_bloc = usize::MAX;
+        self.page_cle = 0;
+        self.cpu.faulted = false;
+        self.cpu.unmapped = None;
+        self.cpu.jumped = false;
+        self.cpu.flush_translations();
+    }
+
     /// Le temps de l'invité, en battements du 8253.
     pub fn tics(&self) -> u64 {
         (self.retirees.wrapping_add(self.attente)) / self.instructions_par_battement
