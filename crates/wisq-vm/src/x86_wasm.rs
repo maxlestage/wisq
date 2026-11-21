@@ -1400,12 +1400,31 @@ const FAR_STORE: u32 = 4;
 /// **Ce que l'émetteur faisait avant** : replier la trame dans la RAM. Sous
 /// 1 Gio, la mémoire vidéo à `0xE000_0000` tombait sur `0x2000_0000`, et un
 /// bureau qui peignait son écran écrivait dans la RAM d'un processus.
+///
+/// **Sous pagination seulement.** Pagination éteinte, il n'y a pas de marche :
+/// `Body::peek` et `Body::poke` replient toujours l'adresse par le masque de
+/// la RAM, et la mémoire d'un périphérique n'est pas atteinte. Le mode long
+/// pagine toujours, et Linux 64 bits avec lui.
 const DEVICE_FRAME: u32 = 1;
 
-/// **Le témoin d'un accès à cheval entre la RAM et la mémoire d'un
-/// périphérique**, que l'accès lent pose au lieu d'un code de faute (un code
-/// plus un tient dans cinq bits) : l'hôte s'arrête en le nommant.
+/// **Le témoin d'un accès à cheval entre la mémoire d'un périphérique et
+/// une page qui n'en est pas la suite** — la RAM, dans un sens ou dans
+/// l'autre, ou une autre trame —, que l'accès lent pose au lieu d'un code de
+/// faute (un code plus un tient dans cinq bits) : l'hôte s'arrête en le
+/// nommant. Voir `Module::far_first_page` et `Module::far_second_page`.
 pub const FAULT_DEVICE_STRADDLE: u64 = 1 << 40;
+
+/// Les locales qu'un accès lent prête à `Module::far_first_page` : la
+/// largeur, le décalage dans la page, les deux trames (`i32`), et l'adresse
+/// physique d'un accès à un périphérique (`i64`).
+#[derive(Clone, Copy)]
+struct FarLocals {
+    width: u32,
+    offset: u32,
+    low: u32,
+    high: u32,
+    device: u32,
+}
 
 /// **Et deux de plus, encore en queue** : l'inscription d'une écriture dans
 /// une page de code (`Module::note_body`), et l'étendue des octets que la
@@ -1461,6 +1480,25 @@ struct Body {
 }
 
 impl Body {
+    /// **Une traduction tentée qui, ratée, ne laisse rien** : ni ses octets,
+    /// ni la marque `wrote` qu'une écriture émise aurait posée. Le bloc finit
+    /// alors devant l'instruction ; garder ses octets laisserait un morceau
+    /// d'instruction dans le bloc, et garder `wrote` ferait regarder le
+    /// journal des pages de code après l'instruction **d'avant**, qui n'en a
+    /// peut-être rien écrit. Aucune forme connue n'écrit avant de refuser (28
+    /// 160 balayées) : la garde est tenue ici, sur une traduction posée pour
+    /// rater (`port_tests::a_failed_translation_leaves_nothing_behind`).
+    fn attempt(&mut self, translate: impl FnOnce(&mut Body) -> Option<()>) -> bool {
+        let bytes = self.bytes.len();
+        let wrote = self.wrote;
+        if translate(self).is_some() {
+            return true;
+        }
+        self.bytes.truncate(bytes);
+        self.wrote = wrote;
+        false
+    }
+
     /// **Lire la mémoire invitée : l'adresse est sur la pile, en `i64`, et la
     /// valeur la remplace, étendue par zéro.**
     ///
@@ -2389,15 +2427,13 @@ impl Module {
                 ) {
                     continue;
                 }
-                // Ce qu'une traduction ratée a déjà écrit est repris : le bloc
-                // finit devant elle, comme s'il s'y arrêtait.
-                let ecrit = body.bytes.len();
-                if Self::translate(&Self::pin(step, here), here, &mut body).is_none() {
+                // Ce qu'une traduction ratée a déjà écrit est repris
+                // (`Body::attempt`) : le bloc finit devant elle, comme s'il
+                // s'y arrêtait.
+                if !body.attempt(|body| Self::translate(&Self::pin(step, here), here, body)) {
                     if devant == entry {
                         return Err(Refused::CannotTranslate { at: devant });
                     }
-                    body.bytes.truncate(ecrit);
-                    body.wrote = false;
                     arret = Some(devant);
                     break;
                 }
@@ -4145,31 +4181,38 @@ impl Module {
     /// consulter le tampon — non mesuré, et rare par construction.
     fn far_load_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la largeur. Locales : le décalage
-        // dans la page et les deux trames, puis la valeur.
+        // dans la page et les deux trames, puis la valeur et l'adresse
+        // physique d'un accès à un périphérique.
         let mut body = vec![
             0x02, // deux groupes
             0x03, 0x7f, // 2, 3, 4 : i32
-            0x01, 0x7e, // 5 : i64
+            0x02, 0x7e, // 5, 6 : i64
         ];
         const WIDTH: u32 = 1;
         const OFFSET: u32 = 2;
         const LOW: u32 = 3;
         const HIGH: u32 = 4;
         const VALUE: u32 = 5;
+        const DEVICE: u32 = 6;
         let mut b = Body::default();
 
         Self::far_first_page(
             &mut b,
             walk,
             WALK_READ,
-            OFFSET,
-            LOW,
+            FarLocals {
+                width: WIDTH,
+                offset: OFFSET,
+                low: LOW,
+                high: HIGH,
+                device: DEVICE,
+            },
             |b| {
                 b.constant(0);
             },
             // La mémoire d'un périphérique : `in`, à l'adresse physique.
             |b| {
-                Self::device_address(b, OFFSET);
+                b.local_get(DEVICE);
                 b.local_get(WIDTH).op(code::I64_EXTEND_I32_U);
                 b.call(HOST_IN).op(code::RETURN);
             },
@@ -4228,11 +4271,13 @@ impl Module {
     /// comme une seconde page absente, avant le premier octet.
     fn far_store_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la valeur ; 2, la largeur. Locales :
-        // le décalage dans la page, les deux trames, le rang de l'octet, et
-        // le bit `CLAIM` ôté de la largeur.
+        // le décalage dans la page, les deux trames, le rang de l'octet, le
+        // bit `CLAIM` ôté de la largeur, et l'adresse physique d'un accès à
+        // un périphérique.
         let mut body = vec![
-            0x01, // un groupe
+            0x02, // deux groupes
             0x05, 0x7f, // 3, 4, 5, 6, 7 : i32
+            0x01, 0x7e, // 8 : i64
         ];
         const VALUE: u32 = 1;
         const WIDTH: u32 = 2;
@@ -4241,6 +4286,7 @@ impl Module {
         const HIGH: u32 = 5;
         const RANK: u32 = 6;
         const CLAIMING: u32 = 7;
+        const DEVICE: u32 = 8;
         let mut b = Body::default();
         // Une réservation : le bit mis à part, la largeur rendue à elle-même.
         b.local_get(WIDTH).constant32(CLAIM).op(code::I32_AND);
@@ -4265,14 +4311,19 @@ impl Module {
             &mut b,
             walk,
             WALK_WRITE,
-            OFFSET,
-            LOW,
+            FarLocals {
+                width: WIDTH,
+                offset: OFFSET,
+                low: LOW,
+                high: HIGH,
+                device: DEVICE,
+            },
             |_| {},
             // La mémoire d'un périphérique : une réservation n'écrit rien ;
             // sinon `out`, à l'adresse physique.
             |b| {
                 claimed(b);
-                Self::device_address(b, OFFSET);
+                b.local_get(DEVICE);
                 b.local_get(VALUE)
                     .local_get(WIDTH)
                     .op(code::I64_EXTEND_I32_U);
@@ -4430,20 +4481,37 @@ impl Module {
     ///
     /// **Et la sortie vers l'hôte, si la page est la mémoire d'un
     /// périphérique** (la trame porte `DEVICE_FRAME`) : `device` fait l'accès
-    /// entier par `in` ou `out` et rend. Un accès à cheval sur deux pages d'un
-    /// périphérique part en un seul morceau, à l'adresse physique de son
-    /// premier octet : un pilote cartographie une BAR d'un bloc, ses pages se
-    /// suivent en physique comme en virtuel.
-    #[allow(clippy::too_many_arguments)]
+    /// entier par `in` ou `out`, à l'adresse que `locals.device` porte, et
+    /// rend. **Un accès à cheval marche d'abord la page d'après**, comme le
+    /// chemin de la RAM :
+    ///
+    /// - si elle manque, ou refuse l'écriture, c'est sa faute, et rien n'est
+    ///   parti vers l'hôte — une écriture n'a pas laissé sa première moitié
+    ///   chez le périphérique ;
+    /// - si elle est la suite physique de la première, dans le même
+    ///   périphérique, l'accès part en un seul morceau, à l'adresse de son
+    ///   premier octet : un pilote cartographie une BAR d'un bloc, ses pages
+    ///   se suivent en physique comme en virtuel ;
+    /// - sinon — la RAM, ou une trame qui n'est pas la suivante —, le témoin
+    ///   dit `FAULT_DEVICE_STRADDLE`, et l'hôte s'arrête en le nommant. Avant,
+    ///   l'accès partait entier chez le périphérique, et sa moitié haute
+    ///   n'arrivait jamais dans la RAM : seul le sens RAM → périphérique
+    ///   s'arrêtait (`far_second_page`).
     fn far_first_page(
         b: &mut Body,
         walk: u32,
         kind: u32,
-        offset: u32,
-        low: u32,
-        nothing: impl FnOnce(&mut Body),
+        locals: FarLocals,
+        nothing: impl Fn(&mut Body),
         device: impl FnOnce(&mut Body),
     ) {
+        let FarLocals {
+            width,
+            offset,
+            low,
+            high,
+            device: address,
+        } = locals;
         b.local_get(0).op(code::I32_WRAP_I64).constant32(0xFFF);
         b.op(code::I32_AND).local_set(offset);
         b.local_get(0).constant32(kind).call(walk).local_set(low);
@@ -4454,6 +4522,33 @@ impl Module {
         b.op(code::END);
         b.local_get(low).constant32(DEVICE_FRAME).op(code::I32_AND);
         b.op(code::IF).op(code::VOID);
+        // L'adresse physique, prise avant que la seconde marche ne remplace
+        // `TRANSLATE_CELL`.
+        Self::device_address(b, offset);
+        b.local_set(address);
+        Self::far_fits(b, offset, width);
+        b.op(code::I32_EQZ).op(code::IF).op(code::VOID);
+        Self::far_second_walk(b, walk, kind, high, &nothing);
+        // La seconde trame est-elle la suite physique de la première ?
+        // `TRANSLATE_CELL` porte la seconde, d'avant le repli. **C'est aussi
+        // ce qui écarte la RAM** : la première trame est au-delà de la RAM,
+        // sa suivante aussi, et une trame de la RAM n'est jamais là — un
+        // second test, sur `DEVICE_FRAME`, ne jugerait aucun cas de plus.
+        b.load(TRANSLATE_CELL);
+        b.local_get(address)
+            .constant(!0xFFF)
+            .op(code::I64_AND)
+            .constant(0x1000)
+            .op(code::I64_ADD)
+            .op(code::I64_NE);
+        b.op(code::IF).op(code::VOID);
+        b.store(FAULT_SLOT, |b| {
+            b.constant(FAULT_DEVICE_STRADDLE);
+        });
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+        b.op(code::END);
         device(b);
         b.op(code::END);
     }
@@ -4479,17 +4574,7 @@ impl Module {
     /// **La page d'après, marchée à son tour** — son premier octet est
     /// l'adresse que CR2 portera si elle manque — et la sortie dans ce cas.
     fn far_second_page(b: &mut Body, walk: u32, kind: u32, high: u32, nothing: impl Fn(&mut Body)) {
-        b.local_get(0)
-            .constant(0xFFF)
-            .op(code::I64_OR)
-            .constant(1)
-            .op(code::I64_ADD);
-        b.constant32(kind).call(walk).local_set(high);
-        b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
-        b.op(code::IF).op(code::VOID);
-        nothing(b);
-        b.op(code::RETURN);
-        b.op(code::END);
+        Self::far_second_walk(b, walk, kind, high, &nothing);
         // **De la RAM à la mémoire d'un périphérique, à cheval** : aucun
         // pilote ne le fait, et le servir demanderait de couper l'accès entre
         // la RAM et l'hôte. Le témoin dit `FAULT_DEVICE_STRADDLE`, que l'hôte
@@ -4500,6 +4585,28 @@ impl Module {
         b.store(FAULT_SLOT, |b| {
             b.constant(FAULT_DEVICE_STRADDLE);
         });
+        nothing(b);
+        b.op(code::RETURN);
+        b.op(code::END);
+    }
+
+    /// La marche de la page d'après, la trame dans `high`, et la sortie si
+    /// elle manque.
+    fn far_second_walk(
+        b: &mut Body,
+        walk: u32,
+        kind: u32,
+        high: u32,
+        nothing: &impl Fn(&mut Body),
+    ) {
+        b.local_get(0)
+            .constant(0xFFF)
+            .op(code::I64_OR)
+            .constant(1)
+            .op(code::I64_ADD);
+        b.constant32(kind).call(walk).local_set(high);
+        b.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
+        b.op(code::IF).op(code::VOID);
         nothing(b);
         b.op(code::RETURN);
         b.op(code::END);
@@ -8453,6 +8560,32 @@ pub fn usable_ram(
 #[cfg(test)]
 mod port_tests {
     use super::*;
+
+    /// **Une traduction ratée ne laisse rien derrière elle** : ses octets
+    /// sont repris, et `wrote` revient à ce qu'il était. La traduction posée
+    /// ici émet une écriture (ce qui lève `wrote`), puis refuse ; une autre,
+    /// qui réussit, garde ses octets et sa marque.
+    #[test]
+    fn a_failed_translation_leaves_nothing_behind() {
+        let mut body = Body::default();
+        body.bytes.extend_from_slice(&[1, 2, 3]);
+        let rate = body.attempt(|b| {
+            b.bytes.extend_from_slice(&[4, 5, 6, 7]);
+            b.wrote = true;
+            None
+        });
+        assert!(!rate, "ratée");
+        assert_eq!(body.bytes, [1, 2, 3], "ses octets repris");
+        assert!(!body.wrote, "sa marque d'écriture reprise");
+        let reussie = body.attempt(|b| {
+            b.bytes.push(4);
+            b.wrote = true;
+            Some(())
+        });
+        assert!(reussie, "réussie");
+        assert_eq!(body.bytes, [1, 2, 3, 4], "ses octets gardés");
+        assert!(body.wrote, "sa marque gardée");
+    }
 
     /// **Deux formes que rien ne distinguait doivent produire deux modules.**
     ///

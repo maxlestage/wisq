@@ -6401,9 +6401,6 @@ mod tests {
         }
     }
 
-    /// **`addr32 call` est un `call`, et la taille d'adresse est refusée
-    /// partout ailleurs.**
-    ///
     /// **Les écritures non temporelles se lisent comme leurs sœurs
     /// alignées**, en mémoire seule. `66 0f e7 14 33` (`movntdq
     /// %xmm2,(%rbx,%rsi)`) arrêtait le démarrage de Void dans un module du
@@ -6434,6 +6431,9 @@ mod tests {
         }
     }
 
+    /// **`addr32 call` est un `call`, `addr32 lea` sans REX.W un `lea`, et la
+    /// taille d'adresse est refusée partout ailleurs.**
+    ///
     /// `67 e8 18 25 01 00` est le mur de `libcrypto.so.3` d'Alpine, juste après
     /// celui du préfixe FS : l'éditeur de liens remplace un appel par la GOT
     /// (`ff 15`, six octets) par un appel direct de même longueur, et comble
@@ -6442,8 +6442,12 @@ mod tests {
     /// **compte dans la longueur**, et l'adresse de retour est donc six octets
     /// après le début, pas cinq.
     ///
-    /// Ailleurs il change l'adresse (trente-deux bits) ou les registres d'une
-    /// chaîne (ECX, ESI, EDI), et rien de cela n'est porté : refus.
+    /// Devant `lea` sans REX.W (`67 8d`, dans la glibc de Void), il change la
+    /// largeur du calcul, mais pas les trente-deux bits bas que la
+    /// destination garde : il se lit, et ne change rien. Ailleurs il change
+    /// l'adresse d'un accès (trente-deux bits) ou les registres d'une chaîne
+    /// (ECX, ESI, EDI), et rien de cela n'est porté : refus — `lea` sous
+    /// REX.W compris, dont la destination garde les soixante-quatre bits.
     #[test]
     fn an_address_size_prefix_is_read_before_a_relative_call_and_refused_elsewhere() {
         let call = decode(&[0x67, 0xe8, 0x18, 0x25, 0x01, 0x00]).expect("addr32 call");

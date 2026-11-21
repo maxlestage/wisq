@@ -70,11 +70,12 @@ const STOP_MXCSR = 9n;
 /// instruction finie, pour que l'hôte oublie ce qui a été écrit ;
 /// `voirEcritures` l'efface avant de regarder quoi que ce soit d'autre.
 const STOP_WRITTEN = 10n;
-/// **Un accès à cheval entre la RAM et la mémoire d'un périphérique** :
-/// `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès lent pose dans le témoin de
-/// faute au lieu d'un code (un code plus un tient dans cinq bits). Aucun
-/// pilote ne le fait ; la boucle s'arrête en le nommant, plutôt que d'écrire
-/// la moitié haute dans la RAM repliée.
+/// **Un accès à cheval entre la mémoire d'un périphérique et une page qui
+/// n'en est pas la suite physique** — la RAM, dans un sens ou dans l'autre,
+/// ou une autre trame : `FAULT_DEVICE_STRADDLE` côté Rust, que l'accès lent
+/// pose dans le témoin de faute au lieu d'un code (un code plus un tient
+/// dans cinq bits). Aucun pilote ne le fait ; la boucle s'arrête en le
+/// nommant, plutôt que d'envoyer l'accès entier d'un seul côté.
 const FAULT_DEVICE_STRADDLE = 1n << 40n;
 /// **Le bit zéro d'une trame rendue par la marche : la page est la mémoire
 /// d'un périphérique** (`DEVICE_FRAME` côté Rust). Le processeur ne range
@@ -90,7 +91,10 @@ const DERNIER_PORT = 0xffff;
 /// **L'hôte a voulu prendre la mémoire d'un périphérique pour de la RAM** :
 /// une IDT, une GDT, un segment de tâche, une pile de délivrance ou du code à
 /// traduire posés là. Levée par `physical`, rattrapée par `run`, qui
-/// s'arrête sur son message.
+/// s'arrête sur son message. **Sous pagination seulement** : pagination
+/// éteinte, `physical` replie toute adresse dans la RAM, comme l'émetteur
+/// (`Body::peek`), et une adresse hors de la RAM n'y est pas reconnue. Le
+/// mode long pagine toujours, et Linux 64 bits avec lui.
 class PageDePeripherique extends Error {
   constructor(adresse) {
     super(
@@ -3200,7 +3204,7 @@ export function machine({
         const fault = globals[SLOTS.fault].value;
         if (fault === FAULT_DEVICE_STRADDLE) {
           return {
-            stopped: "un accès à cheval entre la RAM et la mémoire d'un périphérique",
+            stopped: "un accès à cheval entre la mémoire d'un périphérique et une page qui n'en est pas la suite",
             at: rip(),
           };
         }
