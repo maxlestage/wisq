@@ -171,7 +171,7 @@ public struct MachineEditorView: View {
                     .onChange(of: draft.password) { passwordTouched = true }
                 if draft.machine.security == .none {
                     Label(
-                        "Sans chiffrement, le mot de passe VNC et l'image de l'écran circulent en clair. À réserver à un réseau de confiance ou à un tunnel déjà établi.",
+                        "Sans chiffrement, le mot de passe \(draft.machine.proto.displayName) et l'image de l'écran circulent en clair. À réserver à un réseau de confiance ou à un tunnel déjà établi.",
                         systemImage: "exclamationmark.shield"
                     )
                     .font(.footnote)

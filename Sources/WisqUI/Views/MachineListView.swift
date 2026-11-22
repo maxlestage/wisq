@@ -243,7 +243,7 @@ struct MachineRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(machine.name)
                     .font(.body.weight(.semibold))
-                Text("\(machine.host):\(machine.port)")
+                Text(verbatim: machine.displayAddress)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

@@ -95,12 +95,18 @@ struct StatePill: View {
 
     var body: some View {
         let color = Design.color(state)
-        Label(state.word, systemImage: state.symbol)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, Design.Space.s)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(color.opacity(0.14)))
+        // Une pile serrée plutôt qu'un `Label`, dont l'écart entre l'icône et
+        // le mot est celui d'une rangée de liste — trop large pour une pastille.
+        HStack(spacing: Design.Space.xs) {
+            Image(systemName: state.symbol)
+            Text(state.word)
+                .lineLimit(1)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(color)
+        .padding(.horizontal, Design.Space.s)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(color.opacity(0.14)))
     }
 }
 
@@ -111,10 +117,9 @@ struct ChipLabel: View {
     var color: Color = .primary
 
     var body: some View {
-        Label {
-            Text(text).lineLimit(1).truncationMode(.middle)
-        } icon: {
+        HStack(spacing: 6) {
             Image(systemName: symbol)
+            Text(text).lineLimit(1).truncationMode(.middle)
         }
         .font(.footnote.weight(.medium))
         .foregroundStyle(color)

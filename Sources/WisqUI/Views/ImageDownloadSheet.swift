@@ -203,6 +203,7 @@ struct ImageDownloadSheet: View {
                     Text(desktop.madePhrase)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             FlowLayout(spacing: Design.Space.s) {
