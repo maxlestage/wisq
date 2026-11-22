@@ -993,6 +993,63 @@ fn a_cut_block_resumes_only_where_and_as_it_was() {
     assert_eq!(tout(&lent), tout(&rapide), "RIP posé ailleurs");
 }
 
+/// **Un bloc coupé reprend sans qu'un autre se construise** : la boucle de
+/// douze `add` et d'un `jmp`, par tranches de cinq instructions (`tourner`,
+/// dont l'époque neuve fait recomparer le bloc à chaque reprise). Chaque
+/// tranche s'arrête au milieu du bloc, la suivante y reprend : un seul bloc
+/// construit en tout. Sans la reprise, chaque tranche commencerait un bloc
+/// neuf à l'adresse de la coupure — treize débuts possibles, cinq et treize
+/// étant premiers entre eux.
+#[test]
+fn a_cut_block_resumes_without_building_another() {
+    let mut code = Vec::new();
+    for rang in 0..12u8 {
+        code.extend([0x48, 0x83, 0xC0, rang + 1]); // add $n,%rax
+    }
+    code.extend([0xEB, (-(code.len() as i64 + 2)) as u8]);
+    let mut lent = machine(&code, false);
+    let mut rapide = machine(&code, true);
+    for _ in 0..60 {
+        assert_eq!(lent.tourner(5), Ok(5));
+        assert_eq!(rapide.tourner(5), Ok(5));
+    }
+    assert_eq!(tout(&lent), tout(&rapide));
+    assert_eq!(
+        rapide.blocs.construits, 1,
+        "la coupure reprend le même bloc"
+    );
+}
+
+/// **Une écriture dans son propre bloc, après une reprise, est vue** : le
+/// bloc (`add $1,%rax` deux fois, `movb $5` sur l'immédiat de l'`add
+/// $1,%rbx` qui suit, cet `add`) est coupé après sa première instruction,
+/// puis repris à la deuxième. Le `movb` est la troisième du bloc et la
+/// deuxième de la reprise : c'est après lui, à son rang dans le bloc, que la
+/// génération se relit et que la suite se recompare — et l'`add` exécute
+/// l'immédiat neuf, dans un bloc refait à son adresse.
+#[test]
+fn a_write_into_its_own_block_after_a_resume_is_seen() {
+    let mut code = vec![0x48, 0x83, 0xC0, 0x01, 0x48, 0x83, 0xC0, 0x01];
+    // movb $5,3(%rip) : l'immédiat de l'instruction suivante.
+    code.extend([0xC6, 0x05, 0x03, 0x00, 0x00, 0x00, 0x05]);
+    code.extend([0x48, 0x83, 0xC3, 0x01, 0xF4]); // add $1,%rbx ; hlt
+    let mut lent = machine(&code, false);
+    let mut rapide = machine(&code, true);
+    for m in [&mut lent, &mut rapide] {
+        assert_eq!(m.tourner(1), Ok(1));
+        m.tourner(10).expect("la suite");
+    }
+    assert_eq!(tout(&lent), tout(&rapide));
+    assert_eq!(rapide.cpu.regs[3], 5, "l'immédiat réécrit");
+    // Le premier bloc, celui de l'`add` réécrit, et la case vide de `hlt` :
+    // la reprise a bien servi (sans elle, un bloc de plus à la deuxième
+    // instruction), et c'est elle qui a vu l'écriture.
+    assert_eq!(
+        rapide.blocs.construits, 3,
+        "la reprise, puis la suite relue"
+    );
+}
+
 /// **L'horloge interrompt à la même instruction**, avec ou sans blocs : le
 /// service du matériel tombe toutes les deux cent cinquante-six
 /// instructions, au milieu des blocs, et le compteur du gestionnaire comme
