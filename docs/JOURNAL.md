@@ -8,6 +8,220 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : les blocs tamponnés par la génération de leur page, d'autres formes, et Void Xfce jusqu'au bureau en 812 s au lieu de 988
+
+**Ce qui n'allait pas.** Le bureau de Void Xfce demandait 880 s au mieux
+(110 MIPS, m2 du 21 novembre), et le but est un iPhone. `perf` sur la course
+entière (a0daf6b8, `cpu-clock`, 199 Hz, symboles par
+`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` sans rien changer au profil
+publié) : 41 % dans la boucle des blocs elle-même, dont un bon tiers à
+l'entrée d'un bloc — la case de la table, la comparaison de ses soixante-
+quatre octets à ceux de la mémoire (la ligne de l'invité, qu'aucune autre
+lecture ne fait venir, et celle du bloc) — et le reste à l'appel de chaque
+instruction ; 9 % au chemin général (`execute`, `compute`), 3 % au service du
+matériel (trois prises du verrou de la carte toutes les deux cent
+cinquante-six instructions), 1,4 % au vectoriel, qu'aucun bloc ne prenait.
+Sur le décodeur xz du noyau (le premier tiers du chemin), `cmove` passait par
+`execute` à chaque octet copié. Callgrind sur les 300 premiers millions
+d'instructions d'Alpine : 25,1 milliards d'instructions de l'hôte, 84 par
+instruction de l'invité.
+
+**Ce qui est fait**, chaque pas mesuré (courses alternées ; le conteneur est
+partagé avec un autre flux qui compile, d'où les écarts d'un jour à l'autre :
+les comparaisons ne valent qu'entre courses voisines). « Void 12 G » : les
+douze premiers milliards d'instructions de l'ISO Void (le noyau, le
+décodeur xz) ; « ISO Alpine » : `alpine-virt-3.24.4` par `--iso` jusqu'à
+`login:` (5 008 962 487 instructions, l'espace utilisateur d'OpenRC) ; Ir :
+callgrind, 300 M d'instructions d'Alpine.
+
+| pas | mesure avant → après |
+|---|---|
+| 1. formes `cmov`, `setcc`, `adc`, `sbb`, `imul` (deux et trois opérandes) ; le vectoriel entier dans les blocs (`x86::rapide::vectorielle`, `ldmxcsr` excepté) | Void 12 G : 106,9 · 106,7 → 99,0 · 100,9 s |
+| 2. le tour du matériel sous un verrou (`Peripheriques::tour`) | Ir −2,4 % (avec un essai de suivi des écritures remplacé au pas 3) |
+| 3. **le tampon des blocs** (`PagesDeCode`, voir plus bas) | Ir 24,5 → 22,7 G ; Void 12 G : 100,5 · 102,1 → 92,5 · 90,4 s ; ISO Alpine : 62,9 · 63,1 → 56,6 · 57,6 s |
+| 4. les octets après les instructions, le bloc sur une ligne, quatre lignes préchargées | neutre ici (Void 12 G 87,6 · 90,8 → 87,7 · 86,5 ; ISO Alpine 56,6 · 57,6 → 56,1 · 55,8) : gardé, la ligne d'entrée sert désormais toute |
+| 5. `Machine::poursuivre` : `wisq-pc` ne refait pas l'époque à chaque tranche | ISO Alpine 55,6 · 57,9 → 54,9 · 54,4 s (33,9 millions de comparaisons d'octets évitées) |
+| 6. formes `rol`, `ror`, `bswap`, `xchg` entre registres, `cbtw`/`cwtl`/`cltq`, `inc`/`dec`/`not`/`neg` en mémoire, `call *` et `jmp *` | ISO Alpine 53,2 · 54,1 → 50,1 · 51,6 s |
+| 7. un seul test par instruction dans la boucle (le masque des arrêts) | Ir −0,7 % |
+| 8. `invlpg` n'oublie que sa page (et la grande page d'où elle vient) | ISO Alpine 50,4 · 51,3 → 50,6 · 49,4 s ; 105 583 vidages entiers évités |
+| 9. le chemin rapide de la mémoire pour les opérandes du vectoriel, du x87 et du MMX (et, un temps, ceux d'`execute` : voir les reprises) ; les voies vectorielles par moitiés de 64 bits, `pcmpeqb` et `pmovmskb` sans boucle ; les lignes de la carte recopiées d'un coup | ISO Alpine dans le bruit (54,1 · 55,4 → 54,9 · 52,3) : visé au bureau, où `execute_vector` pesait 4,4 % |
+
+**Le tampon des blocs** (`x86_paging::PagesDeCode`, `pc::blocs::Trouve`).
+Chaque page physique de la RAM a une génération ; un bloc retient celle de sa
+page, et une époque, quand ses octets ont été lus ou comparés. À l'entrée,
+le même tampon dit que ses octets sont ceux de la mémoire, sans rien
+comparer ; un autre fait comparer, comme avant, et retamponner. Ce qui le
+garde exact :
+
+- une page qui porte un bloc est **marquée**, et une case du tampon de
+  traduction qui y mène perd `TLB_LIBRE` (au marquage, toutes les cases de
+  la trame ; au remplissage, si la page l'est déjà) : l'écriture rapide, la
+  seule qui ne note rien, n'y écrit jamais ;
+- **toute autre écriture du processeur est notée** : `store`, `write_place`,
+  les bits « accédée » et « salie » de la marche, `rep movs`/`rep stos` par
+  pages ; la génération avance, la marque tombe ;
+- **la carte note les siennes** : toutes passent par `Ram::ecrire`
+  (`Tranche`), qui les dit au `Suivi` que la machine lui tend
+  (`Peripheriques::port_ecrire_suivi`, `tour_suivi`) ; un périphérique qui
+  ne dit rien (le défaut) fait avancer l'**époque**, et tout se recompare ;
+- **l'hôte** : `tourner` avance l'époque à chaque appel (un test, un
+  chargeur a pu écrire la RAM), `poursuivre` non — c'est ce que `wisq-pc`
+  appelle entre deux tranches, où il ne fait que lire l'écran et taper ;
+- après une instruction qui peut écrire, la génération se relit ; si elle a
+  bougé, la suite du bloc se recompare, comme avant ;
+- une génération qui fait le tour de ses 32 bits avance l'époque.
+
+**Ce qui a été essayé et abandonné** : un bloc qui boucle sur lui-même repris
+sans le chercher (Void 12 G : 84,6 · 83,9 → 83,6 · 85,4, rien) ; les chemins
+lents des formes en appel de queue (+0,35 % d'Ir) ; le décalage dans le bloc
+recalculé au lieu de tenu (+8 % d'Ir) ; une table de 65 536 cases (54 Mio :
+deux tiers de constructions en moins, 1 % de temps) ou de 131 072 (109 Mio :
+−6 %, trop de mémoire pour un iPhone) ; huit instructions par bloc sur
+65 536 cases (+7 %) ; deux lignes préchargées ou aucune.
+
+**Mesures finales**, le binaire de a0daf6b8 (`wisq-pc-avant` au bloc-notes)
+contre celui de ce commit (`wisq-pc-final2`) et contre l'avant-dernier
+(`wisq-pc-final`, où les opérandes d'`execute` passaient encore par le
+chemin rapide : voir les sabotages), sur le même conteneur, courses voisines
+(`vit2/finales.out`, `finales2.out`, `final2b.out`) :
+
+| course | avant | ce commit | rapport |
+|---|---|---|---|
+| ISO Void Xfce jusqu'au bureau (96 720 148 955 instructions, `--horloge 1795230600`, 1 Gio, écran 1280 × 800) | 988 s (97,9 MIPS) ; 1 078 s au début de la journée | **812 s (119 MIPS)** ; 834 s | **1,22** (1,33 contre 1 078) |
+| la même, l'avant-dernier binaire | | 768 s (126 MIPS) | 1,29 |
+| ISO Alpine jusqu'à `login:` (5 008 962 487 instructions) | 62,1 · 61,2 s (et 63,6 · 63,1 · 65,0 contre l'avant-dernier) | 49,4 · 49,2 s (l'avant-dernier : 51,1 · 52,4 · 52,7) | 1,25 |
+| le banc commun (Alpine 6.18.60 + initramfs, `echo wisq-parle`, 1 911 611 717 instructions) | 20,0 · 19,7 s (et 22,4 · 20,8 · 20,3) | 16,5 · 17,6 s (l'avant-dernier : 16,8 · 17,1 · 18,3) | 1,16 à 1,22 |
+| Void 12 G (le noyau, le décodeur xz) | 106,9 · 106,7 s | 85,2 · 87,9 s (l'avant-dernier, alterné : 83,9 · 89,8) | 1,23 |
+| Ir, 300 M d'Alpine | 25,14 G | 22,73 G | −9,6 % |
+
+Entre l'avant-dernier binaire et celui-ci, Void 12 G et l'ISO Alpine ne
+disent aucune différence ; la course jusqu'au bureau, si (768 s contre 812
+et 834) — le bureau passe peut-être plus par les opérandes d'`execute`
+(`cmpxchg`, `xadd`, les piles du chemin général) que le démarrage d'Alpine,
+ou c'est le bruit du conteneur partagé (le même binaire d'avant y a pris
+988 s et 1 078 s). Non tranché ; les rendre au chemin rapide demande un juge
+qui ne le partage pas (voir ce qui reste).
+
+**Le comportement est le même** : chaque course retire les mêmes
+instructions, au même temps de l'invité (550,1 s pour Void), et la sortie
+série de Void comme son image finale (le bureau : le panneau, les icônes, le
+fond à la souris) sont identiques octet pour octet à celles du binaire
+d'avant (`cmp`). Les blocs construits baissent (18,3 → 15,1 millions sur
+Void) : le vectoriel et les formes neuves font des blocs plus longs.
+
+**L'objectif ambitieux (× 1,5) n'est pas atteint** : × 1,22 à 1,29 jusqu'au
+bureau, × 1,25 sur l'espace utilisateur d'Alpine. Ce qui borne la suite, d'après le
+dernier `perf` (la dernière tranche de 40 % de la course de Void) : la
+boucle des blocs pèse encore 37 %, l'essentiel en attentes de mémoire sur la
+table des blocs (27 Mio, le cache de second niveau de l'hôte en a deux : la
+case d'un bloc qu'aucun préchargement n'a annoncé coûte un défaut de cache,
+souvent deux quand le bloc est dans la seconde case de la paire), et l'appel
+indirect de chaque instruction. Une table plus dense — des en-têtes compacts
+et les instructions dans un anneau, à la longueur de chaque bloc — est le
+pas suivant ; il ne se mesure bien que sur une puce Apple, dont les caches
+n'ont rien de ceux de ce Xeon.
+
+**Les tests** : treize de plus (4 249 → 4 262 au compte publié, Rust 1 159).
+
+- `pc_rapide` : `integer_vector_instructions_run_the_same_inside_blocks`
+  (soixante programmes, une instruction sur deux vectorielle — `movdqu`,
+  `movdqa`, `movq`, `movd`, la logique, l'addition, `pcmpeq*`, `pmovmskb`,
+  `pshufd`, `psrldq`, `stmxcsr`, `ldmxcsr` —, avec et sans blocs, l'horloge
+  armée, les seize XMM et MXCSR comparés ; un bloc prend des vectorielles,
+  pas `ldmxcsr`) ; `a_page_written_fast_before_it_held_code_loses_its_fast_writes`
+  (le marquage ôte l'écriture rapide à une case déjà salie) ;
+  `slow_writes_and_page_strings_into_cached_code_are_seen` (`xchg` par le
+  chemin lent, `rep stosb` et `rep movsb` par pages, dans un bloc tamponné) ;
+  `a_device_that_does_not_say_what_it_wrote_makes_every_block_compare` ;
+  `code_rewritten_between_two_runs_is_read_again` (par `executer`) ;
+  `invlpg_on_the_running_page_reads_the_next_instruction_from_the_new_frame`.
+  Le tirage de `every_fast_form_does_what_execute_does` gagne `imul` à trois
+  opérandes, `bswap`, `xchg` avec l'accumulateur, `call *` et `jmp *` ; il
+  avait déjà `cmov`, `setcc`, `adc`, `sbb`, les rotations, `inc`/`dec` en
+  mémoire, qui y sont maintenant jugés comme formes.
+- `pc_carte` : `a_disk_read_into_decoded_code_is_executed` — le secteur que
+  le disque range par-dessus un bloc tamponné est exécuté, par la carte
+  partagée et par la carte nue, avec et sans blocs.
+- `x86_paging` : `a_page_generation_that_wraps_moves_the_epoch`,
+  `marking_a_page_takes_fast_writes_from_every_entry_to_it` (deux vues
+  d'une même trame, et une case remplie après),
+  `the_bits_a_walk_sets_advance_the_tables_generation`,
+  `invlpg_forgets_the_page_and_the_whole_large_page_it_came_from`.
+- `x86_vector` : `lanes_by_halves_and_without_loops_match_lane_by_lane`
+  (cent mille paires, contre la boucle voie à voie d'avant).
+- `pc_ecran` : `what_the_tablet_writes_over_decoded_code_is_read_again`
+  (voir les sabotages).
+
+Ce que la consigne demandait aussi et qui était déjà tenu : le changement de
+CR3 (`a_reloaded_page_table_is_followed`, `writing_cr3_changes_the_whole_map`),
+la lecture à cheval sur deux pages (`an_access_across_a_page_boundary_uses_both_translations`,
+les tirages à cheval de `every_fast_form_does_what_execute_does`) — deux
+sabotages de plus ci-dessous les rejouent.
+
+**Les sabotages** : 46, d'une ligne chacun, en profil de publication sans
+LTO (`CARGO_PROFILE_RELEASE_LTO=false`), `pc_rapide`, `pc_carte`, `pc_ecran`
+et les tests de la bibliothèque ; la source rendue après chacun (et son
+heure remise à maintenant, pour que cargo la rebâtisse), `git diff`
+identique avant et après (somme comparée). Script
+`<bloc-notes>/vit2/sab/sabotages.py`, journal `sabotages.log`. **Tous
+tombent** — deux après une reprise :
+
+| où | sabotages | tombent dans |
+|---|---|---|
+| le tampon | la carte qui écrit sans noter (G1), le marquage sans ôter `TLB_LIBRE` (G2), `store` sans noter (G3), `rep stos` et `rep movs` par pages sans noter (G4, G4b), le périphérique muet sans époque (G5), `tourner` et `executer` sans époque (G6, G18), `trouver` sans l'époque ou sans la génération (G7, G8), « toujours tamponné » après une écriture (G9), l'écriture rapide sans `TLB_LIBRE` (G10), le remplissage qui la pose sur une page marquée (G11), `noter` sans démarquer (G12), les bits « accédée »/« salie » non notés (G13), le tour de la génération sans époque (G14), la reprise sans le tampon (G15), « à comparer » pris pour « juste » (G16), tamponner sans marquer (G17), la carte partagée qui ne dit rien de son tour (G19) ou de ses `out` (G20) | les tests du tampon ci-dessus, `a_block_that_rewrites_itself_runs_the_new_bytes`, `a_cut_block_resumes_only_where_and_as_it_was`, `code_rewritten_from_outside_is_read_again`, `random_programs_run_the_same_with_and_without_blocks` |
+| les formes | `adc` sans la retenue entrante, `sbb` sans l'égalité empruntée, `cmov` qui n'écrit qu'à condition tenue, `setcc` inversé, `imul` aux drapeaux inverses ou sans l'immédiat, `ror` à la retenue du bit bas, une rotation nulle qui n'écrit pas, `inc` en mémoire sans la retenue, `bswap` mal décalé, `xchg` sans sa seconde écriture, `cltq` sans le signe, `call *` qui empile avant de juger, `jmp *` sur quatre octets, `neg` en mémoire comme `not` (N1 à N15) | `every_fast_form_does_what_execute_does`, et souvent les deux suites de programmes |
+| le vectoriel | une faute oubliée, `ldmxcsr` admis dans un bloc (V1, V2) | `integer_vector_instructions_run_the_same_inside_blocks` |
+| `invlpg` | sans la case visée, sans les grandes pages, sans le compte de vidages, à la mauvaise adresse (I1 à I4) | les deux tests d'`invlpg` |
+| déjà là | CR3 écrit sans vider le tampon (C1), la lecture rapide qui ne voit plus le bord de page (C2) | `a_reloaded_page_table_is_followed`, `every_fast_form_does_what_execute_does` |
+| la boucle | le masque des arrêts sans les écritures, sans la fin (L1, L2) | les tests du bloc qui se réécrit ; L2 fait tourner `pc_rapide` sans fin (arrêté à la main après dix-huit minutes, compté comme tombé) et tomber six tests de `pc_carte` |
+
+*Les deux reprises.* G19 survivait : aucun test n'écrivait par le tour de
+la carte dans une page de code. `what_the_tablet_writes_over_decoded_code_is_read_again`
+(`pc_ecran`) le fait — un toucher rangé par la tablette par-dessus un bloc
+tamponné, dans un `poursuivre` — et G19 tombe. C2 survivait pour une raison
+plus sérieuse : les opérandes d'`execute` étaient passés eux aussi par le
+chemin rapide de la mémoire, et `execute` est le juge des formes ; juge et
+jugé partageaient le même défaut. Ces opérandes sont revenus à
+`read_memory` (le vectoriel, le x87 et le MMX gardent le chemin rapide, que
+les formes et leur juge ne partagent pas), et C2 tombe. L'avant-dernier
+binaire mesuré plus haut avait encore ce raccourci.
+
+**Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
+--all-targets --all-features -- -D warnings` et `cargo clippy --all-targets
+-- -D warnings` ; `cargo test --release` sur tout l'espace de travail (1 160
+passés, 0 échec, 46 suites) ; la même chose sous `RUSTFLAGS="-C
+debug-assertions=yes -C overflow-checks=yes"` (1 160, 0) ; le recompte, puis
+`bun run build` et `bun test` dans `site/` (476 passés, 0 échec) ;
+`check-whitespace`, `check-project-sources`. Aucun fichier Swift, ni de
+`crates/wisq-page`, n'est touché ; l'ABI C non plus.
+
+**Ce qui reste.**
+
+- *× 1,5* : non atteint (voir plus haut ce qui borne le pas suivant : la
+  densité de la table des blocs, puis l'appel par instruction).
+- *Les opérandes d'`execute` par le chemin rapide* : peut-être 5 % du
+  bureau (768 s contre 812). Il y faut d'abord un test qui juge
+  `read_memory_fast` et `write_memory_fast` eux-mêmes contre `read_memory`
+  et `write_memory` (adresses au bord des pages, droits, anneaux, bits
+  « accédée » et « salie »), pour que le juge des formes puisse partager
+  leur chemin sans perdre ce qu'il voit.
+- *Le contrat de `poursuivre`* : un hôte qui écrirait la RAM entre deux
+  tranches sans passer par `tourner` exécuterait du code périmé. `wisq-pc`
+  est le seul à l'appeler ; l'application, le jour où elle prendra cette
+  machine, devra le tenir aussi (ou appeler `tourner`, au prix mesuré de
+  3 %).
+- *Les autres périphériques* : un `Peripheriques` qui ne redéfinit pas les
+  méthodes `_suivi` reste exact (tout est supposé réécrit après chacun de
+  ses appels), mais ses appels coûtent une recomparaison de chaque bloc
+  vivant.
+- *`invlpg`* garde désormais le reste du tampon, comme le silicium : un
+  noyau qui changerait une entrée sans l'invalider verrait l'ancienne
+  traduction un peu plus longtemps qu'avant. Linux invalide ce qu'il
+  change ; les comptes d'instructions de Void et d'Alpine sont identiques.
+- *Rien n'est mesuré sur un iPhone ni sur un Mac* ; les gains d'instructions
+  de l'hôte (−9,6 % d'Ir au début d'Alpine) s'y retrouveront, les gains de
+  cache peut-être pas, dans un sens ou dans l'autre.
+
 ## 2026-11-21 — Machine PC en Rust : `lock` refusé là où le silicium le refuse, la frappe jugée à son relâchement, la ligne affichée lue dans la RAM
 
 **Ce qui n'allait pas** (le contrôle de l'entrée suivante ; chaque point

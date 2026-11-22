@@ -294,3 +294,55 @@ fn a_host_keystroke_reaches_the_ps2_keyboard_in_time() {
     assert_eq!(sans.tourner(10_000), Ok(10_000));
     assert!(!sans.arretee);
 }
+
+/// **Un secteur lu par le disque dans une page de code déjà décodée est
+/// exécuté** : la page du tampon porte `mov $0x11111111,%eax ; ret`, qu'un
+/// premier appel décode en bloc (tamponné, la page marquée) ; la
+/// notification range le secteur 1, `mov $0x22222222,%eax ; ret`, par-dessus
+/// ; le second appel, dans le même appel de `tourner`, doit exécuter les
+/// octets neufs. Les écritures de la carte passent par `Ram::ecrire`, qui
+/// les note (`pc::machine::Suivi`) : sans quoi le bloc garderait son tampon.
+/// Par la carte partagée et par la carte nue, avec et sans blocs.
+#[test]
+fn a_disk_read_into_decoded_code_is_executed() {
+    // mov $0x8000,%esp ; mov $TAMPON,%ebx ; call *%rbx ; mov %eax,%esi ;
+    // mov $0xc010,%dx ; xor %eax,%eax ; out %ax,(%dx) ; call *%rbx ; hlt.
+    let mut code = vec![0xBC, 0x00, 0x80, 0x00, 0x00, 0xBB];
+    code.extend((TAMPON as u32).to_le_bytes());
+    code.extend([0xFF, 0xD3, 0x89, 0xC6]);
+    code.extend([0x66, 0xBA, 0x10, 0xC0, 0x31, 0xC0, 0x66, 0xEF]);
+    code.extend([0xFF, 0xD3, 0xF4]);
+    for partagee in [true, false] {
+        for blocs in [true, false] {
+            let mut machine = Machine::nouvelle(0);
+            machine.blocs_actifs = blocs;
+            machine.cpu.control[0] = 1;
+            machine.cpu.rip = 0x1000;
+            machine.cpu.memory.bytes[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+            let mut image = vec![0u8; 8 * 512];
+            image[512..518].copy_from_slice(&[0xB8, 0x22, 0x22, 0x22, 0x22, 0xC3]);
+            let mut carte = CartePc::nouvelle();
+            carte.brancher(Disque::Premier, ArriereMemoire(image));
+            if partagee {
+                brancher(&mut machine, carte);
+            } else {
+                machine.peripheriques = Some(Box::new(carte));
+            }
+            ouvrir_et_poser_une_lecture(&mut machine, TAMPON);
+            let tampon = TAMPON as usize;
+            machine.cpu.memory.bytes[tampon..tampon + 6]
+                .copy_from_slice(&[0xB8, 0x11, 0x11, 0x11, 0x11, 0xC3]);
+            machine.tourner(100).expect("sans faute");
+            assert!(machine.arretee, "partagée {partagee}, blocs {blocs}");
+            assert_eq!(machine.cpu.regs[6], 0x1111_1111, "le premier appel");
+            assert_eq!(
+                machine.cpu.regs[0] & 0xFFFF_FFFF,
+                0x2222_2222,
+                "partagée {partagee}, blocs {blocs} : le code que le disque a rangé"
+            );
+            if blocs {
+                assert!(machine.blocs.construits >= 3, "des blocs ont servi");
+            }
+        }
+    }
+}

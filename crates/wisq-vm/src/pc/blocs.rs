@@ -1,6 +1,6 @@
-//! **Des blocs d'instructions décodées côte à côte**, vérifiés par
-//! comparaison d'octets — le port de `X86BlockCache.swift`, sur le chemin
-//! rapide de `x86::rapide`.
+//! **Des blocs d'instructions décodées côte à côte**, vérifiés par les
+//! générations de leurs pages, et à défaut par comparaison d'octets — le
+//! port de `X86BlockCache.swift`, sur le chemin rapide de `x86::rapide`.
 //!
 //! Le cache de décodage (`Machine::chercher`) range une instruction par case,
 //! à l'adresse où elle commence : deux instructions qui se suivent sont à
@@ -8,16 +8,23 @@
 //! sa ligne de cache. Un bloc range à la suite les instructions qui se
 //! suivent dans une page — seize au plus, sur soixante-quatre octets au
 //! plus —, chacune avec la fonction qui l'exécute (`x86::rapide::preparer`).
-//! La boucle le trouve une fois, compare une fois ses octets à ceux de la
-//! mémoire, et exécute ses instructions l'une après l'autre.
+//! La boucle le trouve une fois, s'assure une fois que ses octets sont ceux
+//! de la mémoire, et exécute ses instructions l'une après l'autre.
 //!
 //! **Ce qui garde la machine exacte**, et où c'est tenu :
 //!
-//! - *Les octets sont comparés à l'entrée* (`Bloc::intact`) : un code réécrit
-//!   — par l'invité, par un périphérique, par le chargeur — ne retrouve pas
-//!   son bloc, qui est refait. Rien n'est à vider.
+//! - *Un bloc porte un tampon* (`Bloc::epoque`, `Bloc::generation`) : la
+//!   génération de sa page quand ses octets ont été lus ou comparés, et
+//!   l'époque d'alors (`x86_paging::PagesDeCode`, qui dit ce qui fait
+//!   avancer l'une et l'autre). Le même tampon aujourd'hui : rien n'a écrit
+//!   sa page, ses octets sont ceux de la mémoire (`Trouve::Juste`). Un autre
+//!   : ses octets se comparent (`Bloc::intact`) — un code réécrit par
+//!   l'invité, par un périphérique, par le chargeur ne retrouve pas son
+//!   bloc, qui est refait ; un code intact est tamponné de nouveau. Rien
+//!   n'est à vider.
 //! - *Après une instruction qui peut écrire en mémoire* (`pourrait_ecrire`),
-//!   les octets sont recomparés avant la suivante : un bloc qui se réécrit
+//!   la génération de la page se relit, et, si elle a bougé, les octets qui
+//!   restent se recomparent avant la suivante : un bloc qui se réécrit
 //!   s'arrête là, et la suite se relit (`Machine::bloc`).
 //! - *Le budget et le service du matériel à cadence fixe* : la boucle ne
 //!   donne à un bloc que ce qui reste jusqu'au prochain multiple de 256
@@ -35,7 +42,7 @@
 //!   saut conditionnel non pris continue.
 //! - *Une coupure ne reprend que si rien n'a changé* (`Machine::reprendre`) :
 //!   l'adresse physique de RIP doit être celle de l'instruction d'après, et
-//!   les octets du bloc intacts.
+//!   le bloc tamponné, ou ses octets intacts.
 //!
 //! Le code machine x86-64 a un seul mode ici (la machine ne connaît que le
 //! mode long), donc les octets suffisent à dire ce qu'un bloc exécute.
@@ -48,10 +55,13 @@
 //! du bloc, la reprise après une coupure, et le préchargement des deux blocs
 //! qui ont suivi celui-ci (`enchainer`) — une table de vingt-cinq mébioctets
 //! ne tient pas dans le cache de l'hôte, et l'entrée dans un bloc attendait
-//! sa ligne.
+//! sa ligne. Puis (le journal du 22 novembre) : le tampon au lieu de la
+//! comparaison à chaque entrée — ni les octets du bloc ni ceux de l'invité
+//! ne se lisent plus —, les octets rangés après les instructions, et le bloc
+//! sur une ligne de cache.
 
 use crate::x86::rapide::{preparer, Uop, AUCUNE};
-use crate::x86::{Decoded, Op};
+use crate::x86::{Decoded, Op, Vector};
 
 /// Les instructions d'un bloc, au plus.
 pub const CAPACITE: usize = 16;
@@ -60,35 +70,43 @@ pub const PORTEE: usize = 64;
 /// Le nombre de cases de la table.
 pub const LOGEMENTS: usize = 1 << 15;
 
-/// Un bloc : où il commence, ce qu'il compare, ce qu'il exécute. **Dans
-/// cet ordre** (`repr(C)`) : l'étiquette, les octets comparés et la première
-/// instruction partagent les premières lignes de cache, celles qu'une entrée
-/// dans le bloc fait venir de toute façon.
+/// Un bloc : où il commence, ce qu'il exécute, ce qu'il compare. **Dans
+/// cet ordre** (`repr(C)`, sur une ligne de cache) : l'étiquette, le tampon
+/// et les deux premières instructions tiennent dans la première ligne, celle
+/// qu'une entrée fait venir de toute façon ; les octets comparés, qu'on ne lit
+/// plus que quand le tampon ne suffit pas, viennent après les instructions.
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(64))]
 pub struct Bloc {
     /// L'adresse physique du premier octet, plus un : zéro veut dire
     /// « vide ».
     pub etiquette: u64,
+    /// **L'époque et la génération de sa page** (`x86_paging::PagesDeCode`)
+    /// quand ses octets ont été lus ou comparés pour la dernière fois : les
+    /// mêmes aujourd'hui, ses octets n'ont pas changé.
+    pub epoque: u64,
+    pub generation: u32,
     /// Les instructions du bloc. Zéro : la première ne va dans aucun bloc,
     /// et la boucle passe par le pas à pas — la case s'en souvient, pour ne
     /// pas redécoder à chaque passage.
     pub nombre: u8,
     /// Les mots de huit octets comparés à l'entrée.
     pub mots: u8,
-    /// Bit `i` : l'instruction `i` peut écrire en mémoire, et les octets du
-    /// bloc se recomparent après elle.
+    /// Bit `i` : l'instruction `i` peut écrire en mémoire, et la génération
+    /// de la page du bloc se relit après elle.
     pub ecrit: u16,
     /// Le bloc qui a suivi celui-ci la dernière fois : sa case, que l'entrée
     /// dans celui-ci fait venir au cache pendant qu'il s'exécute.
     pub suivant: u32,
     /// Celui qui le suivait avant : un saut conditionnel a deux suites.
     pub autre_suivant: u32,
+    pub uops: [Uop; CAPACITE],
     /// Les bits du dernier mot qui comptent.
     pub dernier: u64,
     /// Les octets d'origine, petit-boutistes, ceux d'au-delà du bloc à zéro.
+    /// Après les instructions : ils ne se lisent que quand le tampon ne
+    /// suffit pas.
     pub octets: [u64; PORTEE / 8],
-    pub uops: [Uop; CAPACITE],
     /// **Les instructions que rien ne spécialise**, entières : le chemin
     /// général les lit ici (`Uop::generale`). Au bout du bloc, loin des
     /// lignes qu'une entrée fait venir : elles sont rares. Un bloc s'arrête
@@ -103,6 +121,8 @@ impl Bloc {
     fn vide() -> Self {
         Self {
             etiquette: 0,
+            epoque: 0,
+            generation: 0,
             nombre: 0,
             mots: 0,
             ecrit: 0,
@@ -190,8 +210,11 @@ pub fn case(physique: u64) -> usize {
 }
 
 /// **Ce qui peut entrer dans un bloc** : ce que `Machine::pas` confie à
-/// `Cpu::execute`. Les instructions de système, `rdrand`, les vectorielles et
-/// l'instruction indéfinie ont chacune leur chemin dans la machine.
+/// `Cpu::execute`, et les vectorielles entières, que `Machine::pas` confie à
+/// `Cpu::execute_vector` (`x86::rapide::vectorielle`) — sauf `ldmxcsr`, dont
+/// le refus est une `#GP(0)` et non une faute d'accès. Les instructions de
+/// système, `rdrand` et l'instruction indéfinie ont chacune leur chemin dans
+/// la machine.
 pub fn blocable(op: Op) -> bool {
     !matches!(
         op,
@@ -231,7 +254,7 @@ pub fn blocable(op: Op) -> bool {
             | Op::ReadControlRegister { .. }
             | Op::WriteControlRegister { .. }
             | Op::ReadRandom { .. }
-            | Op::Vector(_)
+            | Op::Vector(Vector::LoadControl)
     )
 }
 
@@ -283,6 +306,8 @@ pub fn pourrait_ecrire(instruction: &Decoded) -> bool {
             | Op::Xor
             | Op::Cmp
             | Op::Test
+            | Op::CondMove(_)
+            | Op::Multiply
     );
     if lecteur && instruction.memory_is_source {
         return false;
@@ -291,19 +316,63 @@ pub fn pourrait_ecrire(instruction: &Decoded) -> bool {
     !(matches!(op, Op::Cmp | Op::Test) && instruction.discards)
 }
 
+/// Ce que la table a pour une adresse.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Trouve {
+    /// Un bloc, et sa page n'a pas été écrite depuis qu'il l'a lue : ses
+    /// octets sont ceux de la mémoire.
+    Juste(usize),
+    /// Un bloc, et sa page a pu être écrite depuis (une autre génération,
+    /// une autre époque) : il faut comparer ses octets, et le tamponner
+    /// s'ils n'ont pas changé.
+    AComparer(usize),
+    /// Rien à cette adresse.
+    Rien,
+}
+
 impl Blocs {
-    /// Le bloc rangé à cette adresse, si ses octets sont ceux de la mémoire.
+    /// **Le bloc rangé à cette adresse**, et s'il faut comparer ses octets :
+    /// une génération (`generation`, celle de sa page aujourd'hui, rien hors
+    /// de la RAM suivie) et une époque (`epoque`) qui sont celles de son
+    /// tampon disent que rien n'a écrit sa page depuis.
     #[inline(always)]
-    pub fn trouver(&self, ram: &[u8], physique: u64) -> Option<usize> {
+    pub fn trouver(&self, physique: u64, epoque: u64, generation: Option<u32>) -> Trouve {
         let paire = case(physique) & !1;
         let etiquette = physique.wrapping_add(1);
         for place in [paire, paire + 1] {
             let bloc = &self.cases[place];
             if bloc.etiquette == etiquette {
-                return bloc.intact(ram, physique as usize).then_some(place);
+                return if bloc.epoque == epoque && Some(bloc.generation) == generation {
+                    Trouve::Juste(place)
+                } else {
+                    Trouve::AComparer(place)
+                };
             }
         }
-        None
+        Trouve::Rien
+    }
+
+    /// Le bloc rangé à cette adresse, si ses octets sont ceux de la mémoire,
+    /// sans regarder son tampon : ce que l'entrée fait quand il faut
+    /// comparer.
+    pub fn trouver_par_les_octets(&self, ram: &[u8], physique: u64) -> Option<usize> {
+        match self.trouver(physique, 0, None) {
+            Trouve::Juste(place) | Trouve::AComparer(place) => self.cases[place]
+                .intact(ram, physique as usize)
+                .then_some(place),
+            Trouve::Rien => None,
+        }
+    }
+
+    /// **Le bloc de `place` a été comparé à la mémoire, ou vient d'être
+    /// lu** : retenir l'époque et la génération de sa page. C'est à
+    /// l'appelant de marquer la page (`Cpu::marquer_code`), pour qu'aucune
+    /// écriture rapide n'y tombe sans être notée.
+    #[inline(always)]
+    pub fn tamponner(&mut self, place: usize, epoque: u64, generation: u32) {
+        let bloc = &mut self.cases[place];
+        bloc.epoque = epoque;
+        bloc.generation = generation;
     }
 
     pub fn bloc(&self, place: usize) -> &Bloc {
@@ -330,7 +399,7 @@ impl Blocs {
         for suivant in [courant.suivant, courant.autre_suivant] {
             if let Some(bloc) = self.cases.get(suivant as usize) {
                 let debut = (bloc as *const Bloc).cast::<u8>();
-                for ligne in 0..6 {
+                for ligne in 0..4 {
                     precharger(debut.wrapping_add(64 * ligne));
                 }
             }

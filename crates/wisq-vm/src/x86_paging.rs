@@ -224,6 +224,8 @@ struct Walked {
     no_execute: bool,
     entries: [(u64, u64); 4],
     depth: usize,
+    /// La taille de la page trouvée, en bits de décalage (12, 21 ou 30).
+    size: u8,
 }
 
 /// **Le tampon de traduction de la machine PC** : mille vingt-quatre cases à
@@ -254,6 +256,11 @@ struct TlbEntry {
     tag: u64,
     frame: u64,
     flags: u8,
+    /// La taille de la page des tables d'où la case vient, en bits de
+    /// décalage : 12, 21 (deux mébioctets) ou 30 (un gibioctet). Une case
+    /// garde toujours quatre kibioctets ; `invlpg` dans une grande page doit
+    /// les oublier toutes.
+    taille: u8,
 }
 
 const TLB_SLOTS: usize = 1024;
@@ -261,6 +268,106 @@ const TLB_WRITABLE: u8 = 1;
 const TLB_USER: u8 = 2;
 const TLB_NO_EXECUTE: u8 = 4;
 const TLB_DIRTY: u8 = 8;
+/// **L'écriture rapide est permise** : la trame ne porte aucun code décodé
+/// (`PagesDeCode`). Sans ce bit, une écriture passe par le chemin lent, qui
+/// fait avancer la génération de la page.
+const TLB_LIBRE: u8 = 16;
+
+/// **Les pages physiques qui portent du code décodé, et leurs générations.**
+///
+/// La machine PC garde des blocs d'instructions décodées (`pc::blocs`). Un
+/// bloc est juste tant que les octets qu'il a lus n'ont pas changé ; les
+/// comparer à chaque entrée coûtait un dixième des instructions de l'hôte.
+/// Ici, chaque page de quatre kibioctets de la RAM a une **génération**, que
+/// chaque écriture observée fait avancer, et un bloc retient celle de sa
+/// page au moment où ses octets ont été lus ou comparés. Même génération,
+/// même époque : ses octets sont les mêmes.
+///
+/// **Ce qui le tient exact** :
+///
+/// - *Une page qui porte un bloc est marquée* (`Cpu::marquer_code`), et une
+///   page marquée n'a jamais le bit `TLB_LIBRE` dans le tampon de
+///   traduction : le marquage l'ôte des cases qui y mènent, le remplissage ne
+///   le pose pas. L'écriture rapide (`Cpu::write_memory_fast`), seule à ne
+///   rien noter, n'y écrit donc jamais.
+/// - *Toute autre écriture du processeur dans la RAM est notée*
+///   (`Cpu::noter_ecriture`) : `store` et `write_place` (toutes les
+///   écritures virtuelles du chemin lent, dont `fxsave`, les cadres
+///   d'interruption, `xchg`), les bits « accédée » et « salie » que la marche
+///   des tables pose, les chaînes par pages entières (`bulk_string`). La
+///   génération avance et la marque tombe.
+/// - *Ce que rien ne note fait avancer l'époque* (`tout_suppose`), et un
+///   bloc d'une autre époque se recompare octet par octet : la machine le
+///   fait à chaque entrée dans sa boucle (l'hôte a pu écrire la RAM entre
+///   deux appels) et après chaque périphérique qui ne dit pas ce qu'il a
+///   écrit (`pc::machine::Peripheriques`, le défaut). La carte le dit : ses
+///   écritures passent toutes par `Ram::ecrire`, qui les note.
+/// - *Une génération qui fait le tour de ses trente-deux bits* fait avancer
+///   l'époque : une génération revenue à sa valeur ne passe pas pour la même.
+#[derive(Clone, Debug)]
+pub struct PagesDeCode {
+    generations: Vec<u32>,
+    marquees: Vec<bool>,
+    /// Le nombre de fois que tout a dû être supposé réécrit.
+    pub epoque: u64,
+}
+
+impl PagesDeCode {
+    /// Le suivi des pages d'une RAM de `octets` octets.
+    pub fn pour(octets: usize) -> Self {
+        let pages = octets.div_ceil(0x1000);
+        Self {
+            generations: vec![0; pages],
+            marquees: vec![false; pages],
+            epoque: 0,
+        }
+    }
+
+    /// La génération de la page de cette adresse physique, ou rien hors de
+    /// la RAM suivie.
+    #[inline(always)]
+    pub fn generation(&self, place: u64) -> Option<u32> {
+        self.generations.get((place >> 12) as usize).copied()
+    }
+
+    /// La page de cette adresse est-elle marquée ?
+    #[inline(always)]
+    pub fn marquee(&self, place: u64) -> bool {
+        self.marquees
+            .get((place >> 12) as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// **`longueur` octets ont été écrits à `place`** : chaque page touchée
+    /// avance d'une génération et perd sa marque. Hors de la RAM suivie,
+    /// tout est supposé.
+    pub fn noter(&mut self, place: u64, longueur: usize) {
+        if longueur == 0 {
+            return;
+        }
+        let premiere = (place >> 12) as usize;
+        let derniere = (place.saturating_add(longueur as u64 - 1) >> 12) as usize;
+        if derniere >= self.generations.len() {
+            self.tout_suppose();
+            return;
+        }
+        for page in premiere..=derniere {
+            let generation = self.generations[page].wrapping_add(1);
+            self.generations[page] = generation;
+            self.marquees[page] = false;
+            if generation == 0 {
+                self.tout_suppose();
+            }
+        }
+    }
+
+    /// **Tout a pu être réécrit** : l'époque avance, et chaque bloc se
+    /// recompare à sa prochaine entrée.
+    pub fn tout_suppose(&mut self) {
+        self.epoque = self.epoque.wrapping_add(1);
+    }
+}
 
 impl Default for Tlb {
     fn default() -> Self {
@@ -290,6 +397,49 @@ impl Cpu {
         self
     }
 
+    /// **Suivre les pages de code de la RAM attachée** (`PagesDeCode`) : ce
+    /// que fait la machine PC, qui garde des blocs décodés. À poser une fois
+    /// la RAM attachée, avant tout remplissage du tampon.
+    pub fn with_code_tracking(mut self) -> Self {
+        self.code = Some(Box::new(PagesDeCode::pour(self.memory.bytes.len())));
+        self
+    }
+
+    /// **La page de cette adresse physique porte du code décodé** : la
+    /// marquer, et ôter l'écriture rapide aux cases du tampon qui y mènent —
+    /// une écriture y passera par le chemin lent, qui la note. Rien quand
+    /// elle l'est déjà, ou quand rien n'est suivi.
+    pub fn marquer_code(&mut self, place: u64) {
+        let Some(code) = self.code.as_mut() else {
+            return;
+        };
+        let page = (place >> 12) as usize;
+        let Some(marque) = code.marquees.get_mut(page) else {
+            return;
+        };
+        if *marque {
+            return;
+        }
+        *marque = true;
+        if let Some(tlb) = self.tlb.as_mut() {
+            let trame = place & !0xFFF;
+            for entry in tlb.entries.iter_mut() {
+                if entry.frame == trame {
+                    entry.flags &= !TLB_LIBRE;
+                }
+            }
+        }
+    }
+
+    /// Une écriture du processeur dans la RAM, à noter pour les pages de
+    /// code (`PagesDeCode::noter`).
+    #[inline(always)]
+    pub(crate) fn noter_ecriture(&mut self, place: u64, longueur: usize) {
+        if let Some(code) = self.code.as_mut() {
+            code.noter(place, longueur);
+        }
+    }
+
     /// Oublier toutes les traductions gardées. Sans tampon, rien à faire.
     pub fn flush_translations(&mut self) {
         if let Some(tlb) = self.tlb.as_mut() {
@@ -298,6 +448,35 @@ impl Cpu {
             }
             tlb.generation = tlb.generation.wrapping_add(1);
         }
+    }
+
+    /// **`invlpg`** : oublier la traduction de la page qui porte `address`
+    /// — sa case, et, quand elle vient d'une grande page, toutes les cases
+    /// tirées de cette grande page (la case garde quatre kibioctets, le
+    /// silicium la grande page entière). Le reste du tampon reste : c'est ce
+    /// que l'instruction promet, et un noyau qui change une entrée l'invalide
+    /// page par page — vider tout, comme avant, faisait remarcher les tables
+    /// de chaque page vivante à chacun des cent mille `invlpg` du démarrage
+    /// de l'ISO d'Alpine. Le compte de vidages avance quand même : la page
+    /// d'instructions que la machine garde hors du tampon se retraduit.
+    pub fn invalidate_page(&mut self, address: u64) {
+        let Some(tlb) = self.tlb.as_mut() else {
+            return;
+        };
+        let page = address & !0xFFF;
+        let slot = (page >> 12) as usize & (TLB_SLOTS - 1);
+        if tlb.entries[slot].tag == page.wrapping_add(1) {
+            tlb.entries[slot].tag = 0;
+        }
+        for entry in tlb.entries.iter_mut() {
+            if entry.tag != 0 && entry.taille > 12 {
+                let region = !((1u64 << entry.taille) - 1);
+                if (entry.tag.wrapping_sub(1) ^ address) & region == 0 {
+                    entry.tag = 0;
+                }
+            }
+        }
+        tlb.generation = tlb.generation.wrapping_add(1);
     }
 
     /// **L'adresse physique correspondant à une adresse virtuelle.**
@@ -340,6 +519,7 @@ impl Cpu {
             no_execute: false,
             entries: [(0, 0); 4],
             depth: 0,
+            size: 12,
         };
         for level in [39u32, 30, 21, 12] {
             let index = (virtual_address >> level) & 0x1FF;
@@ -370,6 +550,7 @@ impl Cpu {
                 // dedans, et le parcours s'arrête.
                 let size = 1u64 << level;
                 walked.place = (entry & FRAME & !(size - 1)) | (virtual_address & (size - 1));
+                walked.size = level as u8;
                 return Ok(walked);
             }
             table = entry & FRAME;
@@ -502,8 +683,8 @@ impl Cpu {
                 }
                 dirty = marked & DIRTY != 0;
             }
-            if marked != entry {
-                let _ = self.memory.write(at, Width::Qword, marked);
+            if marked != entry && self.memory.write(at, Width::Qword, marked).is_some() {
+                self.noter_ecriture(at, 8);
             }
         }
         let page = virtual_address & !0xFFF;
@@ -512,12 +693,16 @@ impl Cpu {
         // dans le trou sous quatre gibioctets, n'entre pas au tampon : l'accès
         // la refusera à chaque fois, par le chemin lent.
         if self.memory.holds(frame, 0x1000) && !self.in_hole(frame) {
+            let libre = self.code.as_ref().is_none_or(|code| !code.marquee(frame));
             if let Some(tlb) = self.tlb.as_mut() {
                 let slot = (page >> 12) as usize & (TLB_SLOTS - 1);
                 tlb.entries[slot] = TlbEntry {
                     tag: page.wrapping_add(1),
+                    taille: walked.size,
                     frame,
-                    flags: rights | if dirty { TLB_DIRTY } else { 0 },
+                    flags: rights
+                        | if dirty { TLB_DIRTY } else { 0 }
+                        | if libre { TLB_LIBRE } else { 0 },
                 };
             }
         }
@@ -624,6 +809,7 @@ impl Cpu {
     /// périphérique.
     fn write_place(&mut self, place: u64, size: usize, value: u64) -> Option<()> {
         if !self.in_hole(place) && self.memory.holds(place, size) {
+            self.noter_ecriture(place, size);
             return self.memory.write_bytes(place, size, value);
         }
         self.devices.write(place, size, value).then_some(())
@@ -656,6 +842,7 @@ impl Cpu {
         if !Self::crosses(at, width) {
             let place = self.translate_cached(at, Access::Write)?;
             if !self.in_hole(place) && self.memory.write(place, width, value).is_some() {
+                self.noter_ecriture(place, width as usize);
                 return Ok(());
             }
             // Hors de la RAM : un périphérique, ou rien.
@@ -682,9 +869,14 @@ impl Cpu {
             .ok_or_else(outside)
     }
 
-    /// **La lecture du chemin rapide** (`x86::rapide`) : ce que `read_memory`
-    /// rend, par le plus court quand la page est au tampon avec le droit de
-    /// lire pour l'anneau courant et que l'accès ne sort pas de sa page. Une
+    /// **La lecture du chemin rapide** (`x86::rapide`, et les opérandes du
+    /// vectoriel, du x87 et du MMX) : ce que `read_memory` rend, par le plus
+    /// court quand la page est au tampon avec le droit de lire pour l'anneau
+    /// courant et que l'accès ne sort pas de sa page. Les opérandes de
+    /// `execute` gardent `read_memory` : `execute` est le juge des formes
+    /// (`tests/pc_rapide.rs`), et un juge qui passerait par le même chemin
+    /// rapide qu'elles n'en verrait pas les défauts — un sabotage du bord de
+    /// page l'a montré. Une
     /// case du tampon ne tient jamais une page hors de la RAM ni dans le trou
     /// (`fill`), donc la place se lit sans autre question. Tout le reste —
     /// pas de pagination, pas de tampon, une page à cheval, une case absente
@@ -701,7 +893,8 @@ impl Cpu {
 
     /// **L'écriture du chemin rapide** : ce que `write_memory` fait, par le
     /// plus court quand la page est au tampon déjà salie et inscriptible (et
-    /// à l'utilisateur pour l'anneau trois). Une page en lecture seule que
+    /// à l'utilisateur pour l'anneau trois), et que sa trame ne porte aucun
+    /// code décodé (`TLB_LIBRE`) : elle ne note rien. Une page en lecture seule que
     /// le noyau écrit sans CR0.WP, ou pas encore salie, passe par
     /// `write_memory`, qui en décide comme toujours.
     #[inline(always)]
@@ -709,8 +902,8 @@ impl Cpu {
         if let Some(place) = self.fast_place(
             at,
             width,
-            TLB_WRITABLE | TLB_DIRTY,
-            TLB_USER | TLB_WRITABLE | TLB_DIRTY,
+            TLB_WRITABLE | TLB_DIRTY | TLB_LIBRE,
+            TLB_USER | TLB_WRITABLE | TLB_DIRTY | TLB_LIBRE,
         ) {
             if self.memory.write(place, width, value).is_some() {
                 return Ok(());
@@ -770,6 +963,162 @@ impl Cpu {
 mod tests {
     use super::*;
     use crate::x86::{decode, GuestMemory};
+
+    /// **Une génération qui fait le tour de ses trente-deux bits n'est pas
+    /// la même** : l'époque avance, et un bloc tamponné avant ne passe plus
+    /// pour juste. Une écriture à cheval avance les deux pages ; hors de la
+    /// RAM suivie, tout est supposé.
+    #[test]
+    fn a_page_generation_that_wraps_moves_the_epoch() {
+        let mut pages = PagesDeCode::pour(0x3000);
+        pages.generations[1] = u32::MAX - 1;
+        let epoque = pages.epoque;
+        pages.noter(0x1000, 1);
+        assert_eq!(pages.epoque, epoque, "pas encore le tour");
+        assert_eq!(pages.generation(0x1FFF), Some(u32::MAX));
+        pages.noter(0x1FFF, 1);
+        assert_eq!(pages.generation(0x1000), Some(0), "le tour complet");
+        assert_ne!(pages.epoque, epoque, "l'époque a avancé");
+        let (g0, g1, g2) = (
+            pages.generation(0),
+            pages.generation(0x1000),
+            pages.generation(0x2000),
+        );
+        pages.marquees[2] = true;
+        pages.noter(0x1FFE, 4);
+        assert_eq!(pages.generation(0), g0, "la page d'avant ne bouge pas");
+        assert_ne!(pages.generation(0x1000), g1);
+        assert_ne!(pages.generation(0x2000), g2);
+        assert!(!pages.marquee(0x2000), "la marque tombe");
+        let epoque = pages.epoque;
+        pages.noter(0x2FFF, 2);
+        assert_ne!(pages.epoque, epoque, "au-delà de la RAM suivie");
+        assert_eq!(pages.generation(0x3000), None);
+    }
+
+    /// **`invlpg` oublie la page visée, et toute la grande page d'où elle
+    /// vient** : deux cases tirées d'une page de deux mébioctets (deux
+    /// emplacements du tampon), l'entrée du répertoire déplacée vers une
+    /// autre trame, `invlpg` sur une seule adresse — les deux se retraduisent.
+    /// Une page de quatre kibioctets aussi ; le compte de vidages avance.
+    #[test]
+    fn invlpg_forgets_the_page_and_the_whole_large_page_it_came_from() {
+        let mut cpu = Cpu {
+            memory: GuestMemory {
+                base: 0,
+                bytes: vec![0; 0x60_0000],
+            },
+            ..Cpu::default()
+        }
+        .with_translation_cache();
+        cpu.write_control_register(3, PML4);
+        cpu.write_control_register(0, PAGING);
+        let grande = 0x80_0000u64;
+        put(&mut cpu, PML4, 0, PDPT | PRESENT | WRITABLE);
+        put(&mut cpu, PDPT, 0, PD | PRESENT | WRITABLE);
+        put(
+            &mut cpu,
+            PD,
+            grande >> 21,
+            0x40_0000 | PRESENT | WRITABLE | HUGE,
+        );
+        map(&mut cpu, 0x30_0000, DATA, PRESENT | WRITABLE);
+        let lire = |cpu: &mut Cpu, adresse: u64| cpu.translate_cached(adresse, Access::Read);
+        assert_eq!(lire(&mut cpu, grande + 0x1234), Ok(0x40_1234));
+        assert_eq!(lire(&mut cpu, grande + 0x5_6000), Ok(0x45_6000));
+        assert_eq!(lire(&mut cpu, 0x30_0010), Ok(DATA + 0x10));
+        // Les entrées changent ; le tampon garde les anciennes traductions.
+        put(
+            &mut cpu,
+            PD,
+            grande >> 21,
+            0x20_0000 | PRESENT | WRITABLE | HUGE,
+        );
+        map(&mut cpu, 0x30_0000, DATA + 0x1000, PRESENT | WRITABLE);
+        assert_eq!(
+            lire(&mut cpu, grande + 0x5_6000),
+            Ok(0x45_6000),
+            "encore gardée"
+        );
+        let generation = cpu.tlb.as_ref().unwrap().generation;
+        cpu.invalidate_page(grande + 0x1FFF);
+        assert_eq!(
+            lire(&mut cpu, grande + 0x1234),
+            Ok(0x20_1234),
+            "la case visée"
+        );
+        assert_eq!(
+            lire(&mut cpu, grande + 0x5_6000),
+            Ok(0x25_6000),
+            "l'autre case de la même grande page"
+        );
+        assert_eq!(
+            lire(&mut cpu, 0x30_0010),
+            Ok(DATA + 0x10),
+            "une autre page reste"
+        );
+        cpu.invalidate_page(0x30_0FFF);
+        assert_eq!(
+            lire(&mut cpu, 0x30_0010),
+            Ok(DATA + 0x1010),
+            "la petite page"
+        );
+        assert_ne!(cpu.tlb.as_ref().unwrap().generation, generation);
+    }
+
+    /// **Les bits que la marche des tables pose sont des écritures** : la
+    /// page de la table où « accédée » est posée avance d'une génération, et
+    /// celle où « salie » l'est aussi — une table de pages peut partager sa
+    /// trame avec du code. Une marche qui ne change rien n'avance rien.
+    #[test]
+    fn the_bits_a_walk_sets_advance_the_tables_generation() {
+        let mut cpu = machine().with_translation_cache().with_code_tracking();
+        map(&mut cpu, 0x40_0000, DATA, PRESENT | WRITABLE);
+        let generation = |cpu: &Cpu| cpu.code.as_ref().unwrap().generation(PT);
+        let avant = generation(&cpu);
+        cpu.read_memory(0x40_0000, Width::Byte).unwrap();
+        let lue = generation(&cpu);
+        assert_ne!(lue, avant, "« accédée » posée");
+        cpu.flush_translations();
+        cpu.read_memory(0x40_0000, Width::Byte).unwrap();
+        assert_eq!(generation(&cpu), lue, "rien de neuf à poser");
+        cpu.write_memory(0x40_0000, Width::Byte, 1).unwrap();
+        assert_ne!(generation(&cpu), lue, "« salie » posée");
+    }
+
+    /// **Marquer une page ôte l'écriture rapide aux cases qui y mènent**,
+    /// toutes — deux pages virtuelles sur la même trame —, et à elles seules
+    /// ; une case remplie ensuite ne la reçoit pas. Une écriture du chemin
+    /// lent la démarque.
+    #[test]
+    fn marking_a_page_takes_fast_writes_from_every_entry_to_it() {
+        let mut cpu = machine().with_translation_cache().with_code_tracking();
+        let ouverte = PRESENT | WRITABLE | USER;
+        map(&mut cpu, 0x40_0000, DATA, ouverte);
+        map(&mut cpu, 0x40_1000, DATA, ouverte);
+        map(&mut cpu, 0x40_2000, DATA + 0x1000, ouverte);
+        map(&mut cpu, 0x40_3000, DATA, ouverte);
+        for page in [0x40_0000u64, 0x40_1000, 0x40_2000] {
+            cpu.write_memory(page, Width::Byte, 1).unwrap();
+        }
+        let libre = |cpu: &Cpu, page: u64| {
+            let tlb = cpu.tlb.as_ref().unwrap();
+            let entry = &tlb.entries[(page >> 12) as usize & (TLB_SLOTS - 1)];
+            assert_eq!(entry.tag, page + 1, "la case de {page:#x}");
+            entry.flags & TLB_LIBRE != 0
+        };
+        assert!(libre(&cpu, 0x40_0000) && libre(&cpu, 0x40_1000) && libre(&cpu, 0x40_2000));
+        cpu.marquer_code(DATA + 0x10);
+        assert!(!libre(&cpu, 0x40_0000), "la première vue");
+        assert!(!libre(&cpu, 0x40_1000), "la seconde vue de la même trame");
+        assert!(libre(&cpu, 0x40_2000), "une autre trame");
+        cpu.write_memory(0x40_3000, Width::Byte, 1).unwrap();
+        assert!(!libre(&cpu, 0x40_3000), "remplie après le marquage");
+        let generation = cpu.code.as_ref().unwrap().generation(DATA);
+        cpu.write_memory(0x40_0004, Width::Byte, 2).unwrap();
+        assert_ne!(cpu.code.as_ref().unwrap().generation(DATA), generation);
+        assert!(!cpu.code.as_ref().unwrap().marquee(DATA), "démarquée");
+    }
 
     /// Les quatre tables du montage, à des adresses physiques fixes. La RAM
     /// commence à zéro pour qu'une adresse physique soit un décalage : une base

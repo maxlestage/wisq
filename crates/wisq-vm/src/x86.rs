@@ -407,6 +407,13 @@ pub struct Cpu {
     /// **Ce qui répond hors de la RAM** : la mémoire vidéo, les registres
     /// de l'écran, la tablette (voir `x86_paging::Devices`). Rien par défaut.
     pub devices: crate::x86_paging::Devices,
+    /// **Les pages physiques qui portent du code décodé**, quand la machine
+    /// en tient (`Cpu::with_code_tracking`) : leur génération, que chaque
+    /// écriture observée fait avancer, et la marque qui ferme à une page de
+    /// code le chemin rapide de l'écriture. `None` par défaut : rien n'est
+    /// suivi, et rien de ce que rend l'interpréteur ne change. Voir
+    /// `x86_paging::PagesDeCode`.
+    pub code: Option<Box<crate::x86_paging::PagesDeCode>>,
 }
 
 /// **La mémoire de l'invité, telle que cette tranche la connaît** : une fenêtre
@@ -2297,6 +2304,7 @@ impl Cpu {
             }
             let origin = (from - base) as usize;
             self.memory.bytes.copy_within(origin..origin + span, target);
+            self.noter_ecriture(to, span);
             self.regs[6] = source.wrapping_add(length);
         } else {
             let pattern = self.regs[0].to_le_bytes();
@@ -2308,6 +2316,7 @@ impl Cpu {
                     element.copy_from_slice(&pattern[..size as usize]);
                 }
             }
+            self.noter_ecriture(to, span);
         }
         self.regs[7] = destination.wrapping_add(length);
         self.regs[1] -= elements;

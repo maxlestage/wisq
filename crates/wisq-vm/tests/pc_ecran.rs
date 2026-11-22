@@ -363,3 +363,60 @@ fn the_cards_cmos_clock_takes_the_ports() {
     seule.tourner(10).expect("sans faute");
     assert_eq!(seule.cpu.regs[0] & 0xFF, 0x26, "l'année des puces");
 }
+
+/// **Ce que la tablette range par-dessus du code déjà décodé est relu.** La
+/// page des tampons de la tablette porte d'abord `mov $0x11111111,%eax ;
+/// ret`, qu'un premier appel décode en bloc (tamponné, la page marquée) ;
+/// puis un toucher, que le tour du matériel range dans ces tampons — ses
+/// écritures passent par `Ram::ecrire`, que la carte partagée dit à la
+/// machine (`Peripheriques::tour_suivi`) ; le second appel, dans un
+/// `poursuivre` (aucune époque neuve : l'hôte n'a touché qu'à la carte),
+/// exécute ce qui est maintenant en mémoire. Avec et sans blocs, les deux
+/// machines rendent la même chose ; le bloc périmé rendrait encore
+/// 0x11111111.
+#[test]
+fn what_the_tablet_writes_over_decoded_code_is_read_again() {
+    // mov $0x8000,%esp ; mov $TAMPONS,%ebx ; call *%rbx ; mov %eax,%esi ;
+    // hlt ; puis, à la reprise, mov $600,%ecx ; loop . ; call *%rbx ; hlt.
+    let mut code = vec![0xBC, 0x00, 0x80, 0x00, 0x00, 0xBB];
+    code.extend((TAMPONS as u32).to_le_bytes());
+    code.extend([0xFF, 0xD3, 0x89, 0xC6, 0xF4]);
+    code.extend([0xB9, 0x58, 0x02, 0x00, 0x00, 0xE2, 0xFE]);
+    code.extend([0xFF, 0xD3, 0xF4]);
+    let mut issues = Vec::new();
+    for blocs in [false, true] {
+        let (mut machine, carte) = avec_ecran(&code);
+        machine.blocs_actifs = blocs;
+        ouvrir_la_tablette(&mut machine, &carte);
+        let tampons = TAMPONS as usize;
+        machine.cpu.memory.bytes[tampons..tampons + 6]
+            .copy_from_slice(&[0xB8, 0x11, 0x11, 0x11, 0x11, 0xC3]);
+        machine.tourner(100).expect("sans faute");
+        assert!(machine.arretee, "le premier appel fait");
+        assert_eq!(machine.cpu.regs[6], 0x1111_1111, "le premier appel");
+        assert!(carte.tenir().toucher(0.5, 0.25, 1), "la tablette est prête");
+        machine.arretee = false;
+        let rendu = machine.poursuivre(3_000);
+        assert_eq!(
+            machine.cpu.memory.read(SERVIES + 2, Width::Word),
+            Some(6),
+            "le toucher est rangé"
+        );
+        assert_ne!(
+            machine.cpu.memory.bytes[tampons..tampons + 6],
+            [0xB8, 0x11, 0x11, 0x11, 0x11, 0xC3],
+            "par-dessus l'ancien code"
+        );
+        if blocs {
+            assert!(machine.blocs.construits >= 3, "des blocs ont servi");
+        }
+        issues.push((
+            rendu,
+            machine.cpu.regs,
+            machine.cpu.rip,
+            machine.retirees,
+            machine.arretee,
+        ));
+    }
+    assert_eq!(issues[0], issues[1], "avec et sans blocs");
+}
