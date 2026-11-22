@@ -111,8 +111,8 @@ public struct ImageDownloader: Sendable {
     /// **Un index qui ne répond pas ne propose rien, et ne le dit pas** : tant
     /// que la release des bureaux n'existe pas, GitHub répond 404, et ce n'est
     /// pas une panne à montrer. La section ne se montre simplement pas.
-    public func readyDesktops(index: URL = ReadyDesktop.index) async -> [ReadyDesktop] {
-        await readyCatalog(index: index).desktops
+    public func readyDesktops(index: URL = ReadyDesktop.index, rustCore: Bool = false) async -> [ReadyDesktop] {
+        await readyCatalog(index: index, rustCore: rustCore).desktops
     }
 
     /// **Les bureaux prêts, et pourquoi il n'y en a pas** quand l'index ne
@@ -121,7 +121,13 @@ public struct ImageDownloader: Sendable {
     /// panne, réponse démesurée : la release `bureaux-1` est publiée, et une
     /// section qui disparaissait sans un mot, sur un téléphone hors ligne, se
     /// lisait « il n'y a pas de bureau prêt », sans rien pour réessayer.
-    public func readyCatalog(index: URL = ReadyDesktop.index) async -> (desktops: [ReadyDesktop], failure: String?) {
+    ///
+    /// **`rustCore`** : cette application fait tourner la machine PC en Rust,
+    /// et son réglage est allumé. Le bureau du cœur Rust est alors proposé
+    /// avant celui du cœur Swift (`ReadyDesktop.parse`, `rustLevel`).
+    public func readyCatalog(
+        index: URL = ReadyDesktop.index, rustCore: Bool = false
+    ) async -> (desktops: [ReadyDesktop], failure: String?) {
         do {
             let response = try await fetcher.fetch(index, range: nil)
             if response.status == 404 { return ([], nil) }
@@ -137,7 +143,8 @@ public struct ImageDownloader: Sendable {
                 return ([], Self.readyFailure("la réponse n'est pas l'index des bureaux ; un réseau qui demande "
                     + "de se connecter d'abord, comme un Wi-Fi d'hôtel ou de gare ?"))
             }
-            return (ReadyDesktop.parse(text, index: index), nil)
+            return (ReadyDesktop.parse(text, index: index,
+                                       rustLevel: rustCore ? UInt64(RustPCSnapshot.version) : nil), nil)
         } catch {
             return ([], Self.readyFailure(error.localizedDescription))
         }
@@ -166,8 +173,8 @@ public struct ImageDownloader: Sendable {
     /// **Tout, en même temps** : l'index des bureaux et ceux des
     /// distributions. L'un qui ne répond pas ne cache pas l'autre — la règle
     /// de `bootableReleases`, étendue aux bureaux.
-    public func catalog(readyIndex: URL = ReadyDesktop.index) async -> Catalog {
-        async let ready = readyCatalog(index: readyIndex)
+    public func catalog(readyIndex: URL = ReadyDesktop.index, rustCore: Bool = false) async -> Catalog {
+        async let ready = readyCatalog(index: readyIndex, rustCore: rustCore)
         async let releases = attempt { try await bootableReleases() }
         let desktops = await ready
         switch await releases {

@@ -324,6 +324,51 @@ final class ReadyDesktopBuildTests: XCTestCase {
         }
     }
 
+    /// **Le cœur de la fabrication**, jugé avant la demi-heure de
+    /// démarrage : le cœur Swift sans l'option, comme avant elle ; `rust` ;
+    /// rien d'autre.
+    func testTheCoreIsJudgedBeforeTheBoot() {
+        XCTAssertEqual(try ReadyDesktopBuild.core(nil), .swift)
+        XCTAssertEqual(try ReadyDesktopBuild.core("swift"), .swift)
+        XCTAssertEqual(try ReadyDesktopBuild.core("rust"), .rust)
+        for text in ["Rust", "", "emetteur", "rust "] {
+            XCTAssertThrowsError(try ReadyDesktopBuild.core(text), text) {
+                XCTAssertEqual($0 as? ReadyDesktopBuild.Refusal, .unreadableOption("--coeur", value: text))
+            }
+        }
+    }
+
+    /// **L'assemblage lit la mémoire du cœur qui a écrit l'instantané** :
+    /// l'en-tête `WISQPC\r\n` du cœur Rust, que `X86Machine` ne lit pas. La
+    /// mémoire réglée de la machine importée est celle de l'en-tête, et la
+    /// session se retrouve sous l'empreinte du noyau, lisible.
+    func testARustSnapshotIsAssembledAtItsOwnMemory() throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("wisq-pret-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: root) }
+        let work = root.appendingPathComponent("atelier")
+        let fresh = root.appendingPathComponent("telephone")
+        for folder in [work, fresh] { try files.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let ram = 1 << 30
+        var header = Array("WISQPC\r\n".utf8)
+        header += withUnsafeBytes(of: RustPCSnapshot.version.littleEndian, Array.init)
+        header += withUnsafeBytes(of: UInt64(ram).littleEndian, Array.init)
+        let snapshot = Data(header + (0..<4096).map { UInt8(truncatingIfNeeded: $0) })
+        XCTAssertNil(X86Machine.savedRAMSize(in: snapshot), "le cœur Swift ne lit pas cet en-tête")
+        let (installed, _) = try ReadyDesktopBuild.install(image: "void.iso", name: "Void Xfce (prêt)", in: work)
+        let archive = root.appendingPathComponent("bureau.wisqmachine")
+        let kernel = Data([4, 5, 6])
+        try ReadyDesktopBuild.assemble(installed, snapshot: snapshot, kernel: kernel, in: work, to: archive)
+        let imported = try MachineArchive.import(
+            from: archive, library: ["void.iso"], in: fresh,
+            createOwnDisk: { _, _ in throw MachineArchive.Refusal.damaged })
+        XCTAssertEqual(KernelMemory.size(forKernel: imported.key, in: fresh, ceiling: .max), UInt64(ram))
+        let found = SavedSession.find(
+            kernel: SuspendedMachine.identity(of: kernel, named: imported.keys.settings), in: fresh, core: .x86_64)
+        guard case .readable(let session) = found else { return XCTFail("session : \(found)") }
+        XCTAssertEqual(session, snapshot)
+    }
+
     // MARK: - L'assemblage
 
     /// **Exporter, puis importer dans un dossier neuf** : la machine revient
