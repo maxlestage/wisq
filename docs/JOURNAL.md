@@ -90,8 +90,10 @@ d'un iPhone simulé sous iOS 26, en clair, sombre et grand texte) l'a montré
   aussi ; le titre revient (« Void Xfce », « alpine-virt-3.22.2… »). Les
   matières des barres restaient grises en mode clair : elles se lisaient sur
   le fond clair de la fenêtre.
-- *Tour 4* : un fond noir derrière l'écran de la machine (numéro du run dans
-  le rapport de la tranche).
+- *Tour 4* : un fond noir derrière l'écran de la machine ; en très grand
+  texte, le badge du bureau prêt passe au-dessus de son titre, qui se coupait
+  (« Void Xfce… ») à côté d'une phrase de trois mots de large (numéro du run
+  dans le rapport de la tranche).
 
 **Les tests** : deux de plus (4 397 → 4 399 au compte publié ; Swift
 3 169, Rust 1 230), `MachineDisplayAddressTests`. Les vues ne se testent pas
