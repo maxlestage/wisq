@@ -473,8 +473,7 @@ public final class LocalVMModel {
         }
         #if WISQ_RUST_CORE
         if let pc = machine as? RustPCMachine {
-            try? pc.attachDisplay(
-                width: GuestMachineFactory.screenSize.width, height: GuestMachineFactory.screenSize.height)
+            try? pc.attachApplicationScreen()
             screen = pc.display
         }
         #endif

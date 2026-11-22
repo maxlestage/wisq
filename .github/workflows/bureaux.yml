@@ -7,6 +7,12 @@ name: Bureaux prêts
 # `.wisqmachine` avec sa fiche. L'application télécharge l'ISO chez Void et
 # l'archive ici, et le bureau s'ouvre en moins d'une minute.
 #
+# **Deux cœurs** (`inputs.coeurs`) : le bureau de la machine PC en Rust
+# (`--coeur rust`, l'instantané `WISQPC\r\n` que ce cœur reprend), celui du
+# cœur Swift, ou les deux, l'un après l'autre dans le même job. Une session
+# reprend sur le cœur qui l'a écrite : l'application au cœur Rust prend le
+# bureau Rust, les autres celui du cœur Swift (`ReadyDesktop.parse`).
+#
 # **À la main seulement** (`workflow_dispatch`) : publier une release est un
 # geste que tout le monde voit, et ce workflow n'a rien à juger dans une PR.
 # Il ne se déclenche pas sur `pull_request`, et n'entre donc pas dans le
@@ -17,14 +23,21 @@ name: Bureaux prêts
 # bureaux qui deviendrait la dernière le casserait. Leur étiquette ne commence
 # pas par `v`, sans quoi `release.yml` partirait.
 #   - l'archive, la fiche et la capture vont dans `inputs.release`
-#     (`bureaux-N`), sous un nom qui porte l'ISO **et le niveau de machine**
-#     (`…-xfce-pret-niveau1.wisqmachine`, `ReadyDesktopBuild.outputStem`) ;
+#     (`bureaux-N`), sous un nom qui porte l'ISO, **le cœur et le niveau de
+#     machine** (`…-xfce-pret-niveau1.wisqmachine` pour le cœur Swift,
+#     `…-xfce-pret-rust-niveau2.wisqmachine` pour le cœur Rust,
+#     `ReadyDesktopBuild.outputStem`) ;
 #   - l'index `bureaux.json` va toujours dans `bureaux-1` : c'est l'adresse
 #     que l'application lit (`ReadyDesktop.index`). L'index neuf garde les
-#     entrées de l'ancien d'un autre niveau de machine (`Index.merged`) : une
-#     application d'avant y retrouve le bureau qu'elle sait reprendre, parce
-#     que l'archive de son niveau n'a pas été remplacée — un autre niveau,
-#     un autre nom. L'ancien index qui ne se laisse pas lire (autre chose
+#     entrées de l'ancien d'un autre cœur ou d'un autre niveau de machine
+#     (`Index.merged`) : une application d'avant y retrouve le bureau
+#     qu'elle sait reprendre, parce que l'archive de son niveau n'a pas été
+#     remplacée — un autre niveau, un autre nom ; et l'entrée Rust, de niveau
+#     2, lui reste invisible (`ReadyDesktop.Core.firstRustLevel`). Fabriquer
+#     le seul bureau Rust garde donc le bureau Swift publié. **Ce workflow se
+#     lance depuis un commit qui connaît le champ `core`** : la fabrique
+#     d'avant relirait l'ancien index sans lui, et réécrirait l'entrée Rust
+#     comme une entrée du cœur Swift. L'ancien index qui ne se laisse pas lire (autre chose
 #     qu'un 404) arrête le job (`scripts/bureaux-ancien-index.sh`) : rien
 #     n'est publié. Et si deux fichiers différents se retrouvaient à la même
 #     adresse, `wisq-fabrique index` refuse d'écrire l'index
@@ -36,6 +49,14 @@ on:
         description: "La release où attacher l'archive (bureaux-N)"
         default: bureaux-1
         type: string
+      coeurs:
+        description: "Les bureaux à fabriquer : celui du cœur Rust, celui du cœur Swift, ou les deux"
+        default: les-deux
+        type: choice
+        options:
+          - les-deux
+          - rust
+          - swift
       iso:
         description: "L'ISO de Void (void-live-x86_64-AAAAMMJJ-xfce.iso)"
         default: void-live-x86_64-20250202-xfce.iso
@@ -63,9 +84,12 @@ jobs:
     container: swift:6.3
     # Le budget de chaque attente est de deux mille milliards d'instructions :
     # sans cette laisse, un bureau qui ne vient jamais tiendrait le coureur
-    # six heures. Mesuré ici : 1 934 s pour 95 milliards (49 MIPS).
-    timeout-minutes: 240
+    # six heures. Mesuré ici : 1 934 s pour 95 milliards (49 MIPS) sur le
+    # cœur Swift ; le cœur Rust va deux fois plus vite. Les deux bureaux
+    # tiennent dans la même laisse.
+    timeout-minutes: 300
     env:
+      COEURS: ${{ inputs.coeurs }}
       RELEASE: ${{ inputs.release }}
       ISO: ${{ inputs.iso }}
       DOSSIER: ${{ inputs.dossier }}
@@ -78,6 +102,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$COEURS" =~ ^(les-deux|rust|swift)$ ]] || { echo "::error::coeurs : $COEURS"; exit 1; }
           [[ "$RELEASE" =~ ^bureaux-[0-9]+$ ]] || { echo "::error::release : $RELEASE"; exit 1; }
           [[ "$ISO" =~ ^void-live-x86_64-[0-9]{8}-xfce\.iso$ ]] || { echo "::error::iso : $ISO"; exit 1; }
           [[ "$DOSSIER" =~ ^[0-9]{8}$ ]] || { echo "::error::dossier : $DOSSIER"; exit 1; }
@@ -113,22 +138,31 @@ jobs:
           echo "$attendu  bureau-iso/$ISO" | sha256sum -c -
       - name: wisq-fabrique, en release
         run: swift build -c release --product wisq-fabrique
-      - name: Jusqu'au bureau, puis l'archive et sa fiche
+      - name: Jusqu'au bureau, puis l'archive et sa fiche, pour chaque cœur
         shell: bash
         run: |
           set -euo pipefail
-          .build/release/wisq-fabrique "bureau-iso/$ISO" bureau \
-            --nom "$ISO" --heure "$HEURE" --commit "$GITHUB_SHA" 2>&1 | tee bureau/fabrique.log
-      - name: La capture de l'écran, et l'index
+          case "$COEURS" in
+            les-deux) coeurs=(rust swift) ;;
+            *) coeurs=("$COEURS") ;;
+          esac
+          for coeur in "${coeurs[@]}"; do
+            .build/release/wisq-fabrique "bureau-iso/$ISO" bureau --coeur "$coeur" \
+              --nom "$ISO" --heure "$HEURE" --commit "$GITHUB_SHA" 2>&1 | tee "bureau/fabrique-$coeur.log"
+          done
+      - name: Les captures de l'écran, et l'index
         shell: bash
         run: |
           set -euo pipefail
-          # La fiche de la fabrication : une seule, nommée par l'ISO et le
-          # niveau de machine (`ReadyDesktopBuild.outputStem`).
-          fiches=(bureau/*-pret-niveau*.json)
-          [ "${#fiches[@]}" -eq 1 ] && [ -f "${fiches[0]}" ] || { echo "::error::une fiche attendue : ${fiches[*]}"; exit 1; }
-          nom=$(basename "${fiches[0]}" .json)
-          pnmtopng "bureau/$nom.ppm" > "bureau/$nom.png"
+          # Les fiches de la fabrication : une par cœur, nommée par l'ISO, le
+          # cœur et le niveau de machine (`ReadyDesktopBuild.outputStem`).
+          attendues=$([ "$COEURS" = les-deux ] && echo 2 || echo 1)
+          fiches=(bureau/*-pret-*.json)
+          [ "${#fiches[@]}" -eq "$attendues" ] && [ -f "${fiches[0]}" ] || { echo "::error::$attendues fiche(s) attendue(s) : ${fiches[*]}"; exit 1; }
+          for fiche in "${fiches[@]}"; do
+            nom=$(basename "$fiche" .json)
+            pnmtopng "bureau/$nom.ppm" > "bureau/$nom.png"
+          done
           # L'index publié, s'il existe déjà : ses entrées d'un autre niveau
           # sont gardées. Seul un 404 constaté veut dire « absent » (on part
           # de rien) ; toute autre panne fait tomber ce job, plutôt que de
@@ -139,7 +173,7 @@ jobs:
           if [ -f bureau/ancien.json ]; then
             garder=(--garder bureau/ancien.json)
           fi
-          .build/release/wisq-fabrique index bureau/bureaux.json "bureau/$nom.json" \
+          .build/release/wisq-fabrique index bureau/bureaux.json "${fiches[@]}" \
             --images "https://repo-default.voidlinux.org/live/$DOSSIER" \
             --archives "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE" \
             "${garder[@]}"
@@ -148,12 +182,12 @@ jobs:
         with:
           name: bureau
           path: |
-            bureau/*-pret-niveau*.wisqmachine
-            bureau/*-pret-niveau*.json
-            bureau/*-pret-niveau*.png
-            bureau/*-pret-niveau*.console
+            bureau/*-pret-*.wisqmachine
+            bureau/*-pret-*.json
+            bureau/*-pret-*.png
+            bureau/*-pret-*.console
             bureau/bureaux.json
-            bureau/fabrique.log
+            bureau/fabrique-*.log
 
   publier:
     name: Attacher aux releases de données
@@ -178,5 +212,5 @@ jobs:
               gh release create "$tag" --prerelease --latest=false \
                 --title "Bureaux prêts ($tag)" --notes "$notes"
           done
-          gh release upload "$RELEASE" ./*-pret-niveau*.wisqmachine ./*-pret-niveau*.json ./*-pret-niveau*.png --clobber
+          gh release upload "$RELEASE" ./*-pret-*.wisqmachine ./*-pret-*.json ./*-pret-*.png --clobber
           gh release upload bureaux-1 bureaux.json --clobber

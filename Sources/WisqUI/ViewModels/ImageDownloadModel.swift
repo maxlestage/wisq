@@ -117,7 +117,16 @@ final class ImageDownloadModel {
         // répond pas ne cache pas l'autre (`ImageDownloader.catalog`). Tant
         // que la release des bureaux n'existe pas, leur section ne se montre
         // pas, sans un mot.
-        let catalog = await downloader.catalog()
+        // **Le bureau du cœur qui tournera** : celui de la machine PC en Rust
+        // quand elle est là et son réglage allumé, celui du cœur Swift sinon
+        // (`ReadyDesktop.parse`). Une session reprend sur le cœur qui l'a
+        // écrite : un bureau du cœur Swift tournerait sur le plus lent.
+        #if WISQ_RUST_CORE
+        let rustCore = RustPCSetting.isEnabled(in: .standard)
+        #else
+        let rustCore = false
+        #endif
+        let catalog = await downloader.catalog(rustCore: rustCore)
         desktops = catalog.desktops
         releases = catalog.releases
         desktopsFailure = catalog.desktopsFailure

@@ -236,13 +236,21 @@ public final class PendingSession: @unchecked Sendable {
     /// froid — et de ne lire qu'alors ce qu'un démarrage à froid demande,
     /// l'initramfs en tête. Une reprise refusée lève `SavedSession.Unreadable`
     /// et ne touche pas au fichier : c'est à l'appelant de le dire.
-    public func resume(into machine: GuestMachine) throws -> Bool {
+    ///
+    /// **Reprise, la machine prend l'aléa de cet appareil** (`seed`, le
+    /// générateur du système par défaut ; voir `GuestMachine.reseed`) : un
+    /// bureau prêt du cœur Rust porte l'état du générateur de la fabrique, le
+    /// même dans toutes les copies.
+    public func resume(
+        into machine: GuestMachine, seed: () -> UInt64 = { UInt64.random(in: .min ... .max) }
+    ) throws -> Bool {
         guard let snapshot = take() else { return false }
         do {
             try machine.restore(snapshot)
         } catch {
             throw SavedSession.unreadable(after: error)
         }
+        machine.reseed(seed())
         return true
     }
 
