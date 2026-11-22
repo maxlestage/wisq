@@ -49,26 +49,23 @@ struct KeyBarView: View {
                         showFunctionKeys.toggle()
                     } label: {
                         Text("Fn")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .frame(minWidth: 40, minHeight: 34)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(showFunctionKeys ? .indigo : .secondary)
+                    .buttonStyle(KeyCapStyle(held: showFunctionKeys))
+                    .accessibilityLabel("Touches de fonction")
+                    .accessibilityValue(showFunctionKeys ? "affichées" : "cachées")
                 }
                 .padding(.horizontal, 10)
             }
         }
-        .padding(.vertical, 6)
-        .background(.ultraThinMaterial)
+        .padding(.vertical, Design.Space.s)
+        .background(.bar)
     }
 
     private func key(_ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
-                .frame(minWidth: 40, minHeight: 34)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(KeyCapStyle())
     }
 
     private func modifier(_ label: String, keysym: UInt32, sticky: Bool) -> some View {
@@ -80,11 +77,9 @@ struct KeyBarView: View {
             }
         } label: {
             Text(label)
-                .font(.system(size: 14, weight: .medium, design: .rounded))
-                .frame(minWidth: 44, minHeight: 34)
         }
-        .buttonStyle(.bordered)
-        .tint(sticky && model.isModifierHeld(keysym) ? .indigo : .secondary)
+        .buttonStyle(KeyCapStyle(held: sticky && model.isModifierHeld(keysym)))
+        .accessibilityAddTraits(sticky && model.isModifierHeld(keysym) ? .isSelected : [])
     }
 }
 #endif
