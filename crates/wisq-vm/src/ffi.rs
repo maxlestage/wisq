@@ -1399,6 +1399,7 @@ fn code_de_branchement(refus: RefusDeBranchement) -> c_int {
         RefusDeBranchement::DejaDemarree => -2,
         RefusDeBranchement::EcranDejaLa => -3,
         RefusDeBranchement::EcranTropGrand => -4,
+        RefusDeBranchement::ReseauDejaLa => -3,
     }
 }
 
@@ -1898,6 +1899,102 @@ pub unsafe extern "C" fn wisq_pc_disk_activity(
         Some((servies, refusees)) => {
             *served = servies;
             *refused = refusees;
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Les compteurs du réseau, tels que C les lit (`WisqPCNetwork`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WisqPCNetwork {
+    pub transmitted: u64,
+    pub delivered: u64,
+    pub dropped: u64,
+    pub refused: u64,
+    pub lost: u64,
+    pub incoming: u64,
+    pub outgoing: u64,
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `mac` est nul ou désigne six
+/// octets.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_network(pc: *mut WisqPC, mac: *const u8) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    let mut adresse = wisq_carte::pc::MAC_PAR_DEFAUT;
+    if !mac.is_null() {
+        adresse.copy_from_slice(std::slice::from_raw_parts(mac, 6));
+    }
+    garder(WISQ_PC_PANIC, || match poste.brancher_reseau(adresse) {
+        Ok(()) => 0,
+        Err(refus) => code_de_branchement(refus),
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `frame` est nul ou désigne `capacity` octets
+/// inscriptibles. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_net_take(
+    pc: *mut WisqPC,
+    frame: *mut u8,
+    capacity: usize,
+) -> usize {
+    let Some(commandes) = commandes(pc) else {
+        return 0;
+    };
+    let vers: &mut [u8] = if frame.is_null() {
+        &mut []
+    } else {
+        std::slice::from_raw_parts_mut(frame, capacity)
+    };
+    garder(0, || commandes.prendre_trame(vers).unwrap_or(0))
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `frame` désigne `len` octets. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_net_give(pc: *mut WisqPC, frame: *const u8, len: usize) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if frame.is_null() {
+        return -1;
+    }
+    let trame = std::slice::from_raw_parts(frame, len);
+    use crate::pc::reseau::Remise;
+    garder(WISQ_PC_PANIC, || match commandes.remettre_trame(trame) {
+        Some(Remise::Prise) => 1,
+        Some(Remise::Pleine) => 0,
+        Some(Remise::PasUneTrame) => -2,
+        None => -3,
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `out` est inscriptible. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_net_stats(pc: *const WisqPC, out: *mut WisqPCNetwork) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if out.is_null() {
+        return -1;
+    }
+    match garder(None, || commandes.compteurs_du_reseau()) {
+        Some(((emises, livrees, perdues), files)) => {
+            *out = WisqPCNetwork {
+                transmitted: emises,
+                delivered: livrees,
+                dropped: perdues,
+                refused: files.refusees,
+                lost: files.perdues,
+                incoming: files.entrantes as u64,
+                outgoing: files.sortantes as u64,
+            };
             1
         }
         None => 0,

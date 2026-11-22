@@ -727,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "4310",
+        "4353",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -1460,7 +1460,7 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "75",
+        "79",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
@@ -1481,7 +1481,10 @@ const accounted = new Map<string, Map<string, string>>([
           "Quarante-deux : les quatre de la machine de l'émetteur — ses " +
           "fichiers, sa page zéro, le jugement de sa RAM et la base de son " +
           "écran. Soixante-quinze : les trente-trois de la machine PC native " +
-          "(`wisq_pc_*`), que `crates/wisq-vm/tests/abi/pc.c` appelle toutes.",
+          "(`wisq_pc_*`), que `crates/wisq-vm/tests/abi/pc.c` appelle toutes. " +
+          "Soixante-dix-neuf : les quatre de sa carte réseau — la brancher, " +
+          "vider la file de ce que l'invité émet, remettre ce qui arrive pour " +
+          "lui, et les compteurs —, que le même programme appelle aussi.",
       ],
       [
         "8",

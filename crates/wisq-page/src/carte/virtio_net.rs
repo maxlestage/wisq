@@ -561,11 +561,15 @@ impl File {
 
 impl VirtioNet {
     /// **L'état de la carte réseau**, pour l'instantané de la machine native
-    /// ([`super::etat`]) : son adresse, ses deux files, la file choisie, les
-    /// fonctions acceptées, le statut, l'ISR, **les trames qui attendent un
-    /// tampon de l'invité et celles qui attendent le câble**, le passage du
-    /// sondage et les compteurs. Pas le câble : il est autour de la machine,
-    /// pas dedans, et la carte reprise prend celui de la machine qui reprend.
+    /// ([`super::etat`]) : son adresse, ses deux files (leurs pages, leurs
+    /// anneaux, leurs deux index), la file choisie, les fonctions acceptées,
+    /// le statut, l'ISR, le passage du sondage et les compteurs.
+    ///
+    /// **Ni les trames en file, ni le câble** — la règle de `VirtioNet.save`
+    /// du cœur Swift : une trame qui attendait un tampon de l'invité, ou le
+    /// câble, est perdue à la reprise, comme sur un réseau (TCP la renvoie) ;
+    /// le câble est autour de la machine, pas dedans, et la carte reprise
+    /// prend celui de la machine qui reprend.
     pub(crate) fn sauver(&self, e: &mut Ecrivain) {
         e.0.extend_from_slice(&self.mac);
         for file in &self.files {
@@ -575,23 +579,17 @@ impl VirtioNet {
         e.u32(self.fonctions_du_pilote);
         e.u8(self.statut);
         e.u8(self.isr);
-        for trames in [&self.attente, &self.sortantes] {
-            e.compte(trames.len());
-            for trame in trames {
-                e.octets(trame);
-            }
-        }
         e.u32(self.passages);
         e.u64(self.emises);
         e.u64(self.livrees);
         e.u64(self.perdues);
     }
 
-    /// Relue, câble débranché, ou rien. Sont refusés : une file choisie
-    /// au-delà des deux (elle indexe les files), une fonction acceptée qui
-    /// n'est pas offerte, un ISR qui n'est pas un bit de file, plus de
-    /// [`PLUS_EN_ATTENTE`] trames d'un côté ou une trame plus longue que
-    /// [`PLUS_GRANDE_TRAME`].
+    /// Relue, câble débranché et files de trames vides, ou rien. Sont
+    /// refusés : une file choisie au-delà des deux (elle indexe les files),
+    /// une fonction acceptée qui n'est pas offerte, un ISR qui n'est pas un
+    /// bit de file, et une file dont les anneaux ou les index ne tiennent pas
+    /// ensemble ([`File::relire`]).
     pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
         let mac: [u8; 6] = l.prendre(6)?.try_into().ok()?;
         let mut carte = Self::nouvelle(mac);
@@ -602,12 +600,6 @@ impl VirtioNet {
         carte.fonctions_du_pilote = l.u32()?;
         carte.statut = l.u8()?;
         carte.isr = l.u8()?;
-        for trames in [&mut carte.attente, &mut carte.sortantes] {
-            let combien = l.compte(PLUS_EN_ATTENTE)?;
-            for _ in 0..combien {
-                trames.push_back(l.octets(PLUS_GRANDE_TRAME)?.to_vec());
-            }
-        }
         carte.passages = l.u32()?;
         carte.emises = l.u64()?;
         carte.livrees = l.u64()?;
@@ -1967,7 +1959,8 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod tests_de_l_etat {
     //! **La carte réseau sauvée et relue** ([`VirtioNet::sauver`]) : ses
-    //! files, ses trames en attente des deux côtés ; le câble reste dehors.
+    //! files et leurs index ; les trames en file et le câble restent dehors,
+    //! comme chez le cœur Swift.
     use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
     use super::tests::Pilote;
     use super::*;
@@ -1996,9 +1989,18 @@ mod tests_de_l_etat {
             !relue.cable_branche(),
             "le câble n'est pas dans l'instantané"
         );
+        assert_eq!(
+            (relue.en_attente(), relue.sortantes.len()),
+            (0, 0),
+            "ni les trames en file"
+        );
         let mut rebranchee = relue.clone();
         rebranchee.brancher_cable(true);
-        assert_eq!(rebranchee, carte);
+        let mut sans_trames = carte.clone();
+        sans_trames.attente.clear();
+        sans_trames.sortantes.clear();
+        assert_eq!(rebranchee, sans_trames, "tout le reste");
+        assert_eq!(relue.emises(), 1);
         chaque_coupure_refusee(&octets, VirtioNet::relire);
         let neuve = VirtioNet::nouvelle(MAC_PAR_DEFAUT);
         assert_eq!(
@@ -2038,21 +2040,6 @@ mod tests_de_l_etat {
                 ..File::vide()
             }),
             "une file retirée qui garde ses index"
-        );
-        assert!(
-            !relit(|c| c.attente[0] = vec![0; PLUS_GRANDE_TRAME + 1]),
-            "une trame plus longue qu'une trame"
-        );
-        assert!(
-            relit(|c| c.attente[0] = vec![0; PLUS_GRANDE_TRAME]),
-            "la plus longue passe"
-        );
-        let trop = |c: &mut VirtioNet| {
-            c.sortantes = std::iter::repeat_n(vec![1], PLUS_EN_ATTENTE + 1).collect()
-        };
-        assert!(
-            !se_relit(&carte, trop, VirtioNet::sauver, VirtioNet::relire),
-            "trop de trames qui attendent le câble"
         );
     }
 }

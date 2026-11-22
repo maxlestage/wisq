@@ -29,7 +29,8 @@
 //!   pilote a écrit, sa file et ses deux index), la carte de Bochs (ses
 //!   registres, son mode, sa mémoire vidéo page par page), la tablette (ses
 //!   files et ses événements en attente), la carte réseau si elle est là (ses
-//!   files, ses trames en attente), les notifications notées et pas encore
+//!   files et leurs index ; pas les trames en file, que le cœur Swift ne
+//!   sauve pas non plus), les notifications notées et pas encore
 //!   servies ; pour chaque disque, **où vivent ses octets** : « ailleurs »
 //!   pour un disque sur fichier (son fichier et sa couche, scellés par
 //!   `wisq_pc_flush_disks` avant l'instantané, comme `flushDisk` du cœur
@@ -38,8 +39,14 @@
 //!   kibioctets, puis les seules pages qui ne sont pas nulles.
 //!
 //! **Ce qu'il ne porte pas** : ce qui est autour de la machine et pas
-//! dedans — les octets d'un disque sur fichier, le câble de la carte réseau,
-//! l'horloge de l'hôte, la graine de l'hôte. La machine qui reprend branche
+//! dedans — les octets d'un disque sur fichier, le câble de la carte réseau
+//! et ses deux files de trames (`pc::reseau`), l'horloge de l'hôte, la graine
+//! de l'hôte. La carte réseau se branche avant la reprise, comme l'écran
+//! (`Poste::brancher_reseau`) : reprise, elle garde ce câble-là. Une carte
+//! que l'instantané porte et que la machine n'a pas branchée revient sans
+//! câble — rien n'entre ni ne sort, comme le cœur Swift sans réseau ; une
+//! carte branchée que l'instantané ne porte pas disparaît du bus, et ses
+//! files sont fermées. La machine qui reprend branche
 //! ses disques sur fichier **avant** la reprise, de la même capacité, aux
 //! mêmes emplacements, et pas d'autres ; sinon la reprise est refusée
 //! (`AutresDisques`).
@@ -775,6 +782,7 @@ pub fn reprendre(poste: &mut Poste, octets: &[u8]) -> Result<(), RefusDInstantan
     super::systeme::rafraichir_le_mode_long(&mut machine.cpu);
     machine.apres_reprise(lu.ombre, lu.placement);
     poste.commandes().carte().tenir().reposer(carte);
+    poste.reseau_apres_reprise();
     poste.reposer_les_entrees(entrees);
     poste.reposer(lu.du, lu.rattrape);
     Ok(())
