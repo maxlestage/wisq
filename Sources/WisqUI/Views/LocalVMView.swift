@@ -1543,9 +1543,13 @@ struct LocalVMTerminalView: View {
         }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
-        // Un fond à la barre : sans lui, en mode clair, le titre noir se posait
-        // sur la console noire et disparaissait (premier tour de captures).
-        .toolbarBackground(.visible, for: .navigationBar)
+        // **L'écran d'une machine est sombre, en mode clair aussi**, comme un
+        // lecteur de photos : l'écran de l'invité et la console sont noirs, et
+        // le titre noir de la barre s'y effaçait (deux tours de captures, un
+        // fond de barre n'y changeait rien sous iOS 26). Barre, touches et
+        // champ suivent la console.
+        .environment(\.colorScheme, .dark)
+        .toolbarColorScheme(.dark, for: .navigationBar)
         // Une seule visibilité pour la barre : deux modificateurs se
         // disputeraient, et le bureau comme le plein écran la veulent cachée.
         .toolbar(showingDesktop || fullScreen ? .hidden : .visible, for: .navigationBar)
