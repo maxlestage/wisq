@@ -196,13 +196,44 @@ final class RustPCNetworkTests: XCTestCase {
         XCTAssertEqual(counts.incoming, 1, "il attend que la carte le prenne")
     }
 
-    /// **Alpine obtient son bail DHCP sur le cœur Rust**, par `UserNetwork` :
-    /// `WISQ_PC_KERNEL` et `WISQ_PC_INITRD` (le noyau et l'initramfs du
-    /// netboot d'Alpine 6.18.60, ceux du banc commun), `ip=dhcp` sur la ligne
-    /// de commande — l'initramfs charge `virtio_net`, lève `eth0` et lance
-    /// `udhcpc`. La passerelle isolée suffit : le bail est servi par wisq.
-    /// Se tait bruyamment sans noyau.
-    func testAlpineGetsItsLeaseThroughTheUserNetwork() throws {
+    /// **Un serveur de l'hôte, une seule réponse** : sur la boucle locale, un
+    /// port libre ; il accepte une connexion, lit la requête, répond `body`
+    /// en HTTP/1.0 et ferme. Rend le port.
+    private static func serveOnce(_ body: String) throws -> UInt16 {
+        let listener = socket(AF_INET, HostStreams.streamType, 0)
+        guard listener >= 0 else { throw POSIXError(.EMFILE) }
+        var address = HostDatagrams.socketAddress([127, 0, 0, 1], port: 0)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Int32 in
+                guard bind(listener, pointer, length) == 0, listen(listener, 1) == 0 else { return -1 }
+                return getsockname(listener, pointer, &length)
+            }
+        }
+        guard bound == 0 else { throw POSIXError(.EADDRINUSE) }
+        let response = Array("HTTP/1.0 200 OK\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".utf8)
+        Thread.detachNewThread {
+            defer { _ = closeSocket(listener) }
+            let client = accept(listener, nil, nil)
+            guard client >= 0 else { return }
+            defer { _ = closeSocket(client) }
+            var request = [UInt8](repeating: 0, count: 4096)
+            _ = recv(client, &request, request.count, 0)
+            _ = response.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
+        }
+        return UInt16(bigEndian: address.sin_port)
+    }
+
+    /// **Alpine obtient son bail DHCP sur le cœur Rust, puis parle TCP à
+    /// l'hôte**, par `UserNetwork` : `WISQ_PC_KERNEL` et `WISQ_PC_INITRD` (le
+    /// noyau et l'initramfs du netboot d'Alpine 6.18.60, ceux du banc
+    /// commun), `ip=dhcp` sur la ligne de commande — l'initramfs charge
+    /// `virtio_net`, lève `eth0` et lance `udhcpc`. Le bail est servi par la
+    /// passerelle de wisq. Puis, au shell de secours, `wget` vers `10.0.2.2`,
+    /// c'est-à-dire la boucle locale de l'hôte, où un serveur de ce test
+    /// répond : la réponse doit revenir sur la console. Se tait bruyamment
+    /// sans noyau.
+    func testAlpineGetsItsLeaseAndTalksTCPToTheHost() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["WISQ_PC_KERNEL"], let initrd = environment["WISQ_PC_INITRD"] else {
             print("noyau PC absent : définir WISQ_PC_KERNEL et WISQ_PC_INITRD pour ce test")
@@ -211,27 +242,43 @@ final class RustPCNetworkTests: XCTestCase {
         let console = Console()
         let machine = try XCTUnwrap(RustPCMachine(ramSize: 512 << 20, onOutput: { console.append($0) }))
         machine.freezeHostTime(at: Date(timeIntervalSince1970: 1_795_230_600))
-        let network = UserNetwork.isolated()
+        // Le TCP de l'invité vers l'hôte, et rien d'autre : ni UDP, ni ping.
+        let network = UserNetwork(streams: HostStreams())
         defer { network.streams?.close() }
         try machine.attachNetwork(network)
         try machine.load(kernelImage: Data(contentsOf: URL(fileURLWithPath: path)),
                          commandLine: "console=ttyS0 ip=dhcp",
                          initialRamdisk: Data(contentsOf: URL(fileURLWithPath: initrd)))
-        let expected = "lease of 10.0.2.15 obtained"
         let start = Date()
         var outcome = RustPCMachine.Outcome.stopped
-        while outcome == .stopped, !console.text.contains(expected), machine.retiredInstructions < 8_000_000_000 {
-            outcome = machine.run(instructionBudget: 50_000_000)
+        func run(until text: String, within limit: UInt64) {
+            while outcome == .stopped, !console.text.contains(text), machine.retiredInstructions < limit {
+                outcome = machine.run(instructionBudget: 20_000_000)
+            }
         }
-        let seconds = Date().timeIntervalSince(start)
-        let counts = machine.networkCounts
-        print("bail : \(console.text.contains(expected)) ; \(machine.retiredInstructions) instructions ; "
-              + "\(String(format: "%.1f", seconds)) s ; trames émises \(counts?.transmitted ?? 0), "
-              + "livrées \(counts?.delivered ?? 0), perdues \(counts?.dropped ?? 0)")
+        let lease = "lease of 10.0.2.15 obtained"
+        run(until: lease, within: 8_000_000_000)
+        let leased = (machine.retiredInstructions, Date().timeIntervalSince(start))
+        XCTAssertTrue(console.text.contains(lease), "« \(lease) » jamais vu ; fin : \(outcome)\n"
+                      + String(console.text.suffix(3000)))
         for line in console.text.split(separator: "\n") where line.contains("DHCP") || line.contains("udhcpc") {
             print(line)
         }
-        XCTAssertTrue(console.text.contains(expected), "« \(expected) » jamais vu ; fin : \(outcome)\n"
+        run(until: "~ # ", within: leased.0 + 4_000_000_000)
+        let body = "wisq-hote : bonjour l'invite"
+        let port = try Self.serveOnce(body + "\n")
+        machine.send(Data("wget -q -O - http://10.0.2.2:\(port)/\n".utf8))
+        let asked = (machine.retiredInstructions, Date().timeIntervalSince(start))
+        // La réponse, et pas l'écho de la commande : elle seule a son texte.
+        run(until: body, within: asked.0 + 4_000_000_000)
+        let answered = (machine.retiredInstructions, Date().timeIntervalSince(start))
+        let counts = machine.networkCounts
+        print("bail : \(leased.0) instructions, \(String(format: "%.1f", leased.1)) s ; "
+              + "wget demandé à \(asked.0), \(String(format: "%.1f", asked.1)) s ; "
+              + "réponse à \(answered.0), \(String(format: "%.1f", answered.1)) s ; "
+              + "trames émises \(counts?.transmitted ?? 0), livrées \(counts?.delivered ?? 0), "
+              + "perdues \(counts?.dropped ?? 0)")
+        XCTAssertTrue(console.text.contains(body), "la réponse de l'hôte jamais vue ; fin : \(outcome)\n"
                       + String(console.text.suffix(3000)))
     }
 }

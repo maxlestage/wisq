@@ -8,6 +8,181 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : le réseau — la carte virtio-net branchée sur le poste, deux files de trames par l'ABI C, `UserNetwork` derrière `RustPCMachine`, Alpine obtient son bail
+
+**Ce qui n'allait pas.** La machine PC en Rust démarre par défaut dans
+l'application (#716), mais sans réseau : la carte `virtio_net` de
+`wisq-carte` existait, et le poste ne la branchait pas. Une machine PC neuve
+n'avait donc ni bail DHCP, ni DNS, ni TCP vers l'hôte, ni le relais du port
+5900 qui sert le VNC d'un bureau — tout ce que le cœur Swift a.
+
+**Ce qui est fait.**
+
+- *La carte branchée sur le poste* (`Poste::brancher_reseau`, machine
+  éteinte, une fois) : 00:05.0, ligne 3, `VIRTIO_NET_F_MAC`, la carte de
+  `wisq-carte` telle quelle — **rien n'est changé dans `virtio_net.rs`** ni
+  ailleurs dans `wisq-carte`. Une émission est servie pendant l'`out` qui la
+  notifie, comme le disque. Ce qui arrive est interrogé au tour du matériel :
+  `Peripheriques::tour_suivi` reçoit `occupe` (le processeur n'est pas sur
+  `hlt`), et la carte n'interroge son câble qu'un tour sur quatre au travail
+  (toutes les 1 024 instructions), à chaque tour au repos — le rythme de
+  `VirtioNet.poll(busy:)` du cœur Swift. La trame est rangée dans les tampons
+  de l'invité par `Ram::ecrire` sur la `Tranche` qui note chaque écriture au
+  `Suivi` : une trame reçue par-dessus du code décodé le fait relire (le
+  tampon des blocs de l'entrée précédente).
+- *Deux files, pas de rappel* (`pc::reseau`). Le cœur Swift appelle
+  `backend.send` pendant l'`out` et `backend.receive` à chaque passage ; ici
+  l'autre bout est du Swift derrière une frontière C. Un rappel viendrait du
+  fil de la course, au milieu d'une instruction, le verrou de la carte tenu :
+  un rappel qui toucherait la machine (une frappe, l'écran) s'y bloquerait.
+  Avec deux files, rien du Swift ne s'exécute sous un verrou de la machine ;
+  l'application vide et remplit quand elle veut, de n'importe quel fil. Les
+  deux files tiennent 512 trames (la borne de l'attente de la carte). Pleine,
+  l'entrante **refuse** la trame remise (0, compté) ; pleine, la sortante
+  **perd** la trame émise (comptée) — l'invité, lui, ne peut pas attendre.
+  La carte ne prend le verrou des files que si un drapeau atomique dit qu'une
+  trame est arrivée.
+- *L'ABI C*, quatre fonctions de plus (75 → 79) :
+  `wisq_pc_attach_network(pc, mac)` (NULL : l'adresse du cœur Swift ; 0, -2
+  démarrée, -3 déjà là), `wisq_pc_net_take(pc, frame, capacity)` (la longueur
+  de la prochaine trame émise, copiée et retirée si elle tient, sinon laissée ;
+  `WISQ_PC_FRAME_MAX` = 1 514 suffit toujours ; 0 rien),
+  `wisq_pc_net_give(pc, frame, len)` (1 prise, 0 file pleine, -2 pas une
+  trame, -3 pas de carte), `wisq_pc_net_stats(pc, &WisqPCNetwork)` (émises,
+  livrées, perdues par la carte, refusées, perdues à la sortie, ce qui
+  attend). Take, give et stats sont « tout fil ».
+- *Côté Swift*, `RustPCMachine.attachNetwork(_:mac:)` prend un
+  `NetworkBackend` — le protocole du cœur Swift — et
+  `attachNetwork(forKernel:in:)` celui de `MachineNetwork.backend`, réglage
+  compris : coupé, `UserNetwork.isolated()`. `UserNetwork` est réutilisé tel
+  quel. `run` pompe avant chaque tranche (`pumpNetwork` : vider ce qui sort
+  vers `send`, remettre ce que `receive` rend), et la tranche passe, avec une
+  carte, de un million d'instructions à deux cent mille, celle de
+  `X86Machine` : une trame attend au plus une tranche de chaque côté (deux
+  millisecondes à 100 MIPS). Au repos, comme `X86Machine`, le fil dort
+  l'avance de l'invité par pas d'un dixième de seconde au plus.
+  `makeLocalMachine` branche le réseau de la machine ; `forward` est celui
+  de `X86Machine`, au mot près (le relais vit dans `UserNetwork`), et
+  `LocalVMModel` relaie le port 5900 des deux cœurs. La doc de
+  `RustPCSetting` et le texte sous l'interrupteur ne disent plus « sans
+  réseau ».
+
+**La preuve, de bout en bout.**
+
+Sur ce conteneur (partagé, d'où le bruit), par `RustPCMachineTests` et
+`RustPCNetworkTests`, l'enveloppe Swift comme l'application la mène :
+
+- *Alpine 6.18.60 du netboot* (le noyau et l'initramfs du banc commun),
+  512 Mio, `console=ttyS0 ip=dhcp`, `UserNetwork` : l'initramfs charge
+  `virtio_net`, lève `eth0`, et
+  `udhcpc: lease of 10.0.2.15 obtained from 10.0.2.2, lease time 86400`
+  arrive à **1 986 312 281 instructions, en 17,1 à 18,9 s** (cinq courses ;
+  le même compte d'instructions à chaque fois). Puis le shell de secours, et
+  `wget -q -O - http://10.0.2.2:<port>/` : `10.0.2.2` est la boucle locale de
+  l'hôte, où le test fait répondre un petit serveur HTTP ; sa réponse est
+  sur la console **0,1 s plus tard** (2 089 738 492 instructions, 18,5 s en
+  tout). Onze trames émises, huit livrées, aucune perdue. Le DHCP, l'ARP et
+  le TCP dans les deux sens, par la même pile que le cœur Swift.
+- *Ce que la carte coûte* : le banc commun (`echo` jusqu'à `~ # `), sans
+  carte puis avec, en courses alternées : 15,6 · 16,1 · 16,8 s contre
+  16,1 · 16,2 · 17,9 s. L'invité muni d'une carte charge son pilote
+  (1 950 671 842 instructions au lieu de 1 911 668 578, +2 %) ; par
+  instruction, 122 · 119 · 114 MIPS contre 121 · 120 · 109 : dans le bruit.
+- *L'ISO Alpine jusqu'à `login:`* n'a pas été rejouée avec la carte : le
+  système de l'ISO ne lance pas de client DHCP sans `setup-alpine`, et le
+  netboot dit la même chose plus vite, avec le même noyau.
+
+**Les tests** : quatorze de plus (4 310 → 4 324 au compte publié ; Swift 3 127,
+Rust 1 197).
+
+- `pc::reseau` (trois) : la file entrante pleine refuse et compte, puis
+  reprend ; une trame vide ou de 1 515 octets n'est pas une trame (1 514
+  l'est) ; la file sortante pleine perd et compte, l'hôte prend dans l'ordre,
+  un tampon trop court laisse la trame, un tampon tout juste assez grand la
+  prend.
+- `pc_reseau` (cinq), sur un **pilote minimal** écrit à la main
+  (`noyau_factice::RESEAU`, sa source dans le commentaire, et sa copie
+  `Tests/Fixtures/pc-noyau-reseau.bin` vérifiée octet pour octet) : il ouvre
+  la carte, lit son adresse dans l'espace de configuration, émet une trame,
+  pose un tampon de réception **dix octets avant un code qu'il vient
+  d'appeler** (son bloc est décodé et tamponné), attend que la carte publie
+  le tampon servi et rappelle le code. Une trame reçue qui commence par
+  `mov $'R', %eax ; ret` lui fait dire « oR ».
+  `a_frame_received_over_decoded_code_is_executed_and_the_sent_one_leaves`
+  (avec et sans blocs : la trame rangée au tour, dans la même tranche, est
+  exécutée ; la trame émise sort par la file, octet pour octet ; les
+  compteurs), `a_frame_given_while_the_guest_waits_reaches_it` (l'aller et
+  le retour comme l'application les fait, entre deux courses),
+  `a_full_incoming_queue_refuses_until_the_card_takes` (512 prises, la 513ᵉ
+  refusée, la carte prend tout, la file reprend ; pas de carte, rien
+  n'entre ; une seule carte, machine éteinte),
+  `the_card_asks_the_cable_every_fourth_pass_at_work_and_every_pass_asleep`
+  (cent questions pour 102 400 instructions au travail, une par pas
+  d'attente au repos), et la copie de la fixture.
+- `abi/pc.c` appelle les quatre fonctions neuves : nulles, sans carte, la
+  carte deux fois, après le chargement, une trame vide ou trop longue, la
+  trame émise (sa longueur sans la prendre, un tampon trop court, puis
+  elle, sa source à l'adresse **donnée à la carte**, pas celle par défaut),
+  la file remplie jusqu'au refus compté, la trame reçue exécutée (« R »).
+- `RustPCNetworkTests` (six) : les trames dans les deux sens par un pair
+  qui ne répond qu'après avoir reçu (et `attachNetwork` refusé deux fois,
+  ou machine chargée) ; le pair interrogé toutes les deux cent mille
+  instructions (cinq fois pour un million) ; sans carte, rien ; le réglage
+  coupé donne la passerelle isolée, l'autre l'hôte ; le port du bureau
+  écoute, et une connexion de l'hôte devient un SYN remis à la machine ;
+  Alpine, son bail et son `wget` (sans noyau, il se tait en le disant).
+
+**Les sabotages** : trente-deux, d'une ligne chacun, la source rendue par
+`git checkout` après chacun et `git diff` identique avant et après (somme
+comparée) ; script `<bloc-notes>/net/sab/sabotages.py`, journal
+`sabotages.log`. **Tous tombent**, aucun après reprise :
+
+| où | sabotages | tombent dans |
+|---|---|---|
+| la carte et le tour | la trame rangée sans être notée (`Suivi(None)`), le tour sans la carte réseau, `occupe` toujours vrai, toujours faux, perdu par la carte partagée (R1 à R5) | R1 : `a_frame_received_over_decoded_code_is_executed…` (« oo » au lieu de « oR », blocs actifs) ; les autres : le test du rythme, et ceux des trames |
+| les files | une trame de trop, le refus non compté, la trame vide admise, celle de 1 514 refusée, l'arrivée non signalée, la sortie sans borne, la perte non comptée, les questions non comptées, le tampon tout juste assez grand refusé (R6 à R14) | les tests de `pc::reseau`, de `pc_reseau` et `abi/pc.c` |
+| le poste | la carte branchée machine démarrée, deux fois, sans son câble, une trame admise sans carte (R15 à R18) | `a_full_incoming_queue_refuses_until_the_card_takes`, `abi/pc.c` |
+| l'ABI | l'adresse donnée ignorée, la file pleine dite prise, « pas une trame » et « pas de carte » dits pleins, les refus rendus comme pertes, une trame trop longue pour le tampon dite absente (F1 à F6) | `abi/pc.c` |
+| Swift | `run` qui ne pompe pas, la pompe qui ne remet rien, qui ne vide rien, le réglage ignoré, pas de relais, la tranche d'un million, le backend oublié (S1 à S7) | `RustPCNetworkTests` |
+
+**Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
+--all-targets --all-features -- -D warnings` et `cargo clippy --all-targets
+-- -D warnings` ; `cargo test --release` sur tout l'espace de travail (1 198
+passés, 0 échec, 48 suites) ; `cargo build --release -p wisq-vm`, `swift
+build --build-tests`, puis la suite Swift entière (`swift test --skip-build
+--parallel`, 3 041 cas, 0 échec, 3 min 27 s) ; SwiftLint `--strict` ;
+`swiftc -frontend -parse` sur `LocalMachine.swift`, `LocalVMModel.swift` et
+`WebKitBenchView.swift` ; `check-whitespace`, `check-project-sources` ; le
+recompte, puis `bun run build` et `bun test` dans `site/` (476 passés). Le
+passage sous `-C overflow-checks=yes` n'est pas fait : il restait 6,4 Go sur
+le disque partagé, et un second dossier de construction l'aurait fait passer
+sous la borne de 6. Rien n'est changé dans `wisq-carte` : ses tests natifs,
+la page (wasm32) et `web/host.js` ne voient rien de neuf.
+
+**Ce qui reste.**
+
+- *Le rythme n'est pas tout à fait celui du cœur Swift.* La carte
+  interroge sa file au rythme de `poll(busy:)` (1 024 instructions au
+  travail), mais la file n'est remplie par `UserNetwork` qu'entre deux
+  tranches de `run` (deux cent mille instructions, celle de `X86Machine`),
+  et ce que l'invité émet n'atteint `send` qu'au début de la tranche
+  suivante. Une réponse de la passerelle attend donc jusqu'à une tranche
+  (deux millisecondes), là où le cœur Swift répond pendant l'`out`. Rien de
+  ce qui a été mesuré ne le voit (le `wget` répond en 0,1 s). Au repos, les deux cœurs dorment l'avance de l'invité par pas
+  d'un dixième de seconde, et une trame qui arrive de l'hôte pendant ce
+  sommeil attend son réveil, des deux côtés.
+- *L'instantané* : la carte réseau n'y est pas, comme le reste de la carte
+  (l'autre flux s'en charge). La carte se branche avant `wisq_pc_load` et
+  est refusée après ; une reprise qui doit la retrouver la branchera avant
+  `wisq_pc_restore`, comme l'écran. Les trames des deux files ne sont pas à
+  sauver (la règle de `VirtioNet.save`).
+- *L'application* : `makeLocalMachine`, `LocalVMModel` (le relais du port
+  5900) et le texte sous l'interrupteur ne se compilent pas sous Linux ; ils
+  sont seulement analysés (`swiftc -parse`). Rien n'est mesuré sur un
+  iPhone.
+- *Le site* dit encore, dans sa FAQ, qu'aucune machine n'a de carte réseau :
+  c'était déjà faux du cœur Swift ; non touché ici.
+
 ## 2026-11-22 — Machine PC en Rust : les blocs tamponnés par la génération de leur page, d'autres formes, et Void Xfce jusqu'au bureau en 812 s au lieu de 988
 
 **Ce qui n'allait pas.** Le bureau de Void Xfce demandait 880 s au mieux
