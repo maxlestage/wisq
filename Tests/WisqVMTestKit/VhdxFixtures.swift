@@ -12,9 +12,9 @@ import Foundation
 // puis chaque fichier en deflate brut (zlib, wbits −15, niveau 9) et base64.
 // Blocs de 1 Mio, secteurs logiques de 512 octets : le bloc 1, tout à zéro,
 // est inscrit « zéro » dans la table (état 2) et n'occupe rien dans le fichier.
-enum VhdxFixtures {
+public enum VhdxFixtures {
     /// `dyn.vhdx` — 10485760 octets.
-    static let dynamic = [
+    public static let dynamic = [
         "7NpdaNVlHAfwZ4ftsDFrZwUVlHRiXs4cW1TQ1dZeZGMXC5beuHHsnL3kcjTH1oWKLzdjQiwkh1tSGWUlGJjaGKGyLEmYgnYh",
         "0YURKL1AEWagbLRz9s+c1kUQ1NbnA8/z4/d8Of+L5+78f/+BrvRLHd09mZZQF5pDa0iGgfBkeDRU5hYAAAAAAAAAAAAAAAAA",
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/F12ZVPrc8vsGtyxrb832w03n8ysn",
@@ -170,7 +170,7 @@ enum VhdxFixtures {
     ].joined()
 
     /// `fixed.vhdx` — 13631488 octets.
-    static let fixed = [
+    public static let fixed = [
         "7NpfaJVlHAfw5xzc4XjlWZdFdmx6p7YmpBJYrTM3HQtWLelijlPn7A+as7U2m97UboZetBhJbAllhqUXigMZXixZiDXYMAjZ",
         "nV1k/8OIUBLUzjl7M6d1EQS19fnA8/z4PV/Oe/Hcnff39rTndrV2bM83hprQEJpCOvSEdWF1qCotAAAAAAAAAAAAAAAAAAAA",
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/i/a89lc81P3HZlaMT1Z7PuGendfrMqM",

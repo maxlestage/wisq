@@ -13,9 +13,9 @@ import Foundation
 // puis chaque fichier en deflate brut (zlib, wbits −15, niveau 9) et base64.
 // Blocs de 1 Mio : le dynamique n'alloue que les blocs 0 et 2 — le bloc 1 est
 // tout à zéro, sa table dit `0xFFFFFFFF` —, le fixe les trois.
-enum VdiFixtures {
+public enum VdiFixtures {
     /// `dyn.vdi` — 2098176 octets.
-    static let dynamic = [
+    public static let dynamic = [
         "7dE/SgNREAfgXf80VumshCdiL9bLoiYWFisqGNAuhYRFJWgUsdIbiIKNJ0hroWUukBvkAlY5gDbJsqQUq2hhvg9mHrxpht8k",
         "SRL2t7PDUM9CPb+8um6chVrePg07543mSUjTdCH6yV2l342jOLqPo6JTmilq7pu/0tr4rZR9djxa+vrsrLSONp56vcXuw+r7",
         "a2e+//YSqs8fuwePg73b31x3WHC76XSTty+WxQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -50,7 +50,7 @@ enum VdiFixtures {
     ].joined()
 
     /// `fixe.vdi` — 3146752 octets.
-    static let fixed = [
+    public static let fixed = [
         "7dGxLkNhFAfw72Iy9Q18NqOYb26oGkRutEM7dOsgdYMIJWysDCZi0QeweQLxDBJJY/cE7MRNR2kiUQO/X3LOSc508j9pmsbG",
         "St6MrTy2iv2Dw852rBW9rbi60+luxCzLpsMoJ5Xn+yQk4TQJYSJQ+gxi6otdaX44K2WfHNbZ9czxe3tz8erh7e5p7fG1Ojfo",
         "ntcv1vu3g/rlTf9lnOcmwe/+q6OitzcrBgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",

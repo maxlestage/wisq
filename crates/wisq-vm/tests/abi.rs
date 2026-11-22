@@ -548,6 +548,7 @@ fn the_c_header_matches_the_pc_machine() {
             noyau_factice::image_de(&noyau_factice::REMISE),
         ),
         ("reseau.bin", noyau_factice::image_reseau()),
+        ("disque.bin", noyau_factice::image_disque(7)),
     ];
     let mut arguments = Vec::new();
     for (nom, octets) in &noyaux {

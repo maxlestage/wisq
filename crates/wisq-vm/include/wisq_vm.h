@@ -648,6 +648,44 @@ int wisq_pc_attach_disk_file(WisqPC *pc, const char *base, const char *writes);
 int wisq_pc_attach_second_disk_file(WisqPC *pc, const char *base, const char *writes);
 
 /*
+ * Le lecteur d'une base que la bibliothèque ne lit pas elle-même — un qcow2,
+ * un VMDK, un VDI, un VHD, un VHDX : leurs octets ne sont pas ceux du disque,
+ * et c'est l'appelant qui les traduit (côté Swift, VirtualDiskImages).
+ *
+ * read(context, offset, buffer, length) remplit les `length` octets de
+ * `buffer` avec ceux du disque à partir de `offset`, et rend 1 ; 0 s'il ne
+ * le peut pas (le fichier ne rend pas ce que ses tables promettent) :
+ * l'invité reçoit une erreur d'entrée-sortie, jamais des zéros. Il n'est
+ * appelé que dans le disque (offset + length <= size), du fil qui fait
+ * tourner la machine (wisq_pc_run), jamais deux fois à la fois, et
+ * seulement pour les secteurs que l'invité n'a pas écrits — par suites : une
+ * lecture d'un mébioctet que la couche ne touche pas est un seul appel. Le
+ * verrou de la carte est tenu pendant l'appel : read ne doit appeler aucune
+ * fonction wisq_pc_*.
+ *
+ * release(context), s'il n'est pas nul, est appelé une fois et une seule :
+ * tout de suite quand wisq_pc_attach_disk_reader refuse, quel que soit le
+ * refus ; sinon quand le disque s'en va (wisq_pc_free).
+ */
+typedef int (*WisqPCDiskRead)(void *context, uint64_t offset, uint8_t *buffer, size_t length);
+typedef void (*WisqPCDiskRelease)(void *context);
+
+/*
+ * Un disque dont la base est lue par `read`, de `size` octets (ceux que
+ * l'invité voit, pas ceux du fichier), en premier disque (`which` 0, vda) ou
+ * en second (1, vdb). Les écritures vont dans `writes` et `writes.map`,
+ * comme pour wisq_pc_attach_disk_file : la même couche, au même format. Un
+ * instantané le dit « ailleurs », comme un disque sur fichier. Avant
+ * wisq_pc_load. Course arrêtée.
+ *
+ * 0 ; -1 un argument nul ou `which` inconnu ; -3 moins d'un secteur ; -4 la
+ * couche ne s'ouvre pas ; -5 la couche est celle d'un autre disque ; -6 la
+ * couche est tronquée ; -7 déjà chargée (rien n'est alors ouvert ni créé).
+ */
+int wisq_pc_attach_disk_reader(WisqPC *pc, uint32_t which, uint64_t size, WisqPCDiskRead read,
+                               WisqPCDiskRelease release, void *context, const char *writes);
+
+/*
  * Charge un bzImage x86-64 (protocole 2.06 au moins, entrée 64 bits) et met
  * le processeur dans l'état du protocole de démarrage 64 bits. `command_line`
  * peut être NULL (la ligne par défaut, la console sur ttyS0) ; `initrd` peut

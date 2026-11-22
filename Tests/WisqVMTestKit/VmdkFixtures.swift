@@ -27,9 +27,9 @@ import Foundation
 // Le test ne compare donc pas ce code à lui-même.
 //
 // puis chaque fichier en deflate brut (zlib, wbits −15, niveau 9) et base64.
-enum VmdkFixtures {
+public enum VmdkFixtures {
     /// `a-sparse.vmdk` — 262144 octets.
-    static let a = [
+    public static let a = [
         "7dd5lI31HwfwO5ZwIy1IJNdMorKOsVWTbWxJYUQpcs1cDGNmmrkGUfYsUYqKVKRoD22ULYrs7SpFUdkVUrbQWP74/frzd379",
         "zunX63XO83yf8/18v8/zfX/Pee55bquk1h1iAoFA/rwjUDhw2pAzTSDmbFvibBvIFwiUPHtZJvDvYwPBULFggL+buFBSWk7v",
         "UFIkJyU7LSuamd0sLT0SzI1k56RlZiTWDDZpmZTYvXuN+t271YsPZoWzIxnRM11nBFOyI+FopP2ArEhibJ/MjMz0tGjPtJTk",
@@ -56,7 +56,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `b-stream.vmdk` — 132096 octets.
-    static let b = [
+    public static let b = [
         "7dZ9VJPXHcDxKHZ2UViHlZ5WKxGs1LqCCCKgYGtBsAxfqTheF5IAKQmhSXgrKorWng2Zs6joaGH2RScqqEytYIniSj1otdRC",
         "EFCsgIAozALyJsnCS09d/2zX7fTs+3lOcp/c33Of3NzfvTePn5f/GjOBQGBmOgSPC4ZtHCkEY0bLJ0dLwViBYPLo6TOCf79W",
         "IBSZC79tgJ8NW5GXXBMj8pJpJGp5nFalXiJXyIQJMrVGror1cBS+stTLQypxdo2UzIkQxonVsljtUFXkKKFELRNrZQHJcTIP",
@@ -84,7 +84,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `c-zg.vmdk` — 262144 octets.
-    static let c = [
+    public static let c = [
         "7dd5lM11H8Dxi0RXVPYI14yIbLNYiiGMfUnWosWYucNkzEwz1y5LimihHZUKZSmiskULZd9aaKFCGxWl7CqesZznPE//Pec8",
         "T+f09Hqdc+/vnt/n+7v39/6dc+/53baJ7bvlDQQCBXIfgYKBs0ad2wTynN8WP78N5C4scf5lmcC/rw0EQ4WDAf5qokOJaTn9",
         "QonhnOTstKxIZnaLtPRwcGA4OyctMyMhJtisdWJCXExqap24uHAwKyk7nBE5syv1vGBydjgpEu4yJCucENU/MyMzPS3SNy25",
@@ -111,7 +111,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `d-2g.vmdk` — 393216 octets.
-    static let d = [
+    public static let d = [
         "7dp/iORzHMfx784VNUL5cYpimi2KLLs79vxo/bjbOz8uP7q97oqiuZ3v3o3d29lmxnIUG0VRFEVRFEW5oijqFEVRFEVRFEVR",
         "FEVRFF47O3/o/nZ/XD0e9Zzv9HnPd+Y7n2/z32yfuX7XSFEUG4o1Vw4eV4t1I8PjKcNjUSmKU4dPNw6Hq5XhQrV2fLXgaDNa",
         "m2n3FmozZW+u217ud7rb2otldaXs9tqdpenx6pZrZ6bnpybm5y9qTlaXm91yqT9YGqrOdctmv9x5YLmcru/vLHUW2/197bnZ",
@@ -130,7 +130,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `e-split-s001.vmdk` — 262144 octets.
-    static let e = [
+    public static let e = [
         "7ddV9BdlHsDh358GAaWlu1PpRrqlWynp7u6Q7m7p7galQwnp7u7u3OJmb/ese47r85wz852LmYvPe/Ged0oULFUpKBAIBP/7",
         "FQgT+Kee/xqBoE8z6qcZCBYIRPv0GCvw7+8GwiWIEC4AAAAAAAAAAAAAwB8tuiX4S+v5j1vQf/htkPUDgD+j2JbA+c/5DwAA",
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4HwoK83n0uElSf509X5HSFWvUbdyqY4/+",
@@ -152,7 +152,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `f-fin.vmdk` — 72192 octets.
-    static let f = [
+    public static let f = [
         "7dhrUJNXHsfxALbQtNiqLc5alQhWlrWCVFSsC1obhTXDegHBBdFFEjCFJJpAAC9EKdbZ9baWKqtuoa5bWlBBi8ULlihd0ZVS",
         "FAsIwaJbFBEBXUQIt2zQtLIz+6qXF47fT2aeM8mc8+SZ8/uf8zyJROwfZCMQCGzML4Gd4KH1jxqBlaV92dIKrAU/MFl831cg",
         "FNkLrQR4wjiLxHJNtEgs00So5StjVeo58hiZUCtTa+QqpbeH8O3fib093pjkOXnKVC/hynC1TBnb/1GkhTBCLQuPlQUmrpR5",
@@ -178,7 +178,7 @@ enum VmdkFixtures {
     ].joined()
 
     /// `g-odd.vmdk` — 132608 octets.
-    static let g = [
+    public static let g = [
         "7dZ7VFNHHsDxKFrdKNTFiquiRLBaawvlIQgIWouCtfiuuICykUSIJIQmkUdRUbR6WqTWoqLFwlofrCDgY9UqShRX6qLVogIK",
         "KFZBQF61oghI0vDoqds/2+329Oz3k3MzN/PL3Myd38zkzvDwXmAkEAiMDK++fQWdVncVgh7d5UvdpaCnQDCo+3So4D+/KxCK",
         "jIU/NsAfhpXIQ6YOEXlI1YEqWZhGqZomk0uF4VKVWqYMdbMVvjXdwy3QTuJsv1RiJwwTq6Shmo6qpd2EgSqpWCOdHxUmdbNU",

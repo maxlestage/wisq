@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Lire un VMDK sur place : contre de vrais fichiers de `qemu-img`, et un
 /// fichier écrit selon la spécification que `qemu-img` relit à l'identique.

@@ -35,9 +35,9 @@ import Foundation
 // `h` attrape.
 //
 // puis chaque fichier en deflate brut (zlib, wbits −15, niveau 9) et base64.
-enum OvaFixtures {
+public enum OvaFixtures {
     /// `a-ustar.ova` — 81920 octets.
-    static let a = [
+    public static let a = [
         "7dgLUBN3HgfwALbQtNiqLc5ZlTVYOc6SB4SHSoK1QagMp/L0QPRisoEUkmA2BPABSrHO1ddZqpx6hVpbWlBBi8UHliitaKUU",
         "xQJCsOgVRURADxHCK7cJodKbzt1MW52xfj+ZyT+7+/v/drO///+/AXFCQrxcrJSQbJVWxng4uDRPPt/c0v675fLpYzwPN08P",
         "Ltfdi8tjcHlu9AaD4DIegURKI1bTl6JWqTT/K+7/HX9M+fgmK+IJLamm5CqlgMVjc1kEqZSopHJljIAVFjrf1ZvlK2T6+Cm1",
@@ -67,7 +67,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `b-pax.ova` — 143360 octets.
-    static let b = [
+    public static let b = [
         "7dYJeMxnHsDxcXR1h9gupU9LGUOp2jkzOWWSVkOi1n3EimMnM/8kU3OZmVwN4qo+u1irQVhtsnqw4mZRRxPHVj0oTTVCgqgz",
         "zqw6IiGZ/c8kHurZ1a2WXU+/nzyT/8x7zTv/3/99359S1c+QGi0YTILTpTI4HBazwWYUlPbkeMlPRi0K1Ol8V9H9V7XGXyvR",
         "BGgDA9Rq/yC1RqLWaIN0aoksVfIYJLncBqc4FcnPk79aZnWbrYJeExSi1QarAzT+Sq0uSCO+AjVSsdbwwFrjf66V4AnwiJb8",
@@ -102,7 +102,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `c-gnu.ova` — 143360 octets.
-    static let c = [
+    public static let c = [
         "7dZ5VFNXHsDxuHTsRHE6Wu1ptRqj1VonGzsIwVoUrfuKIy4TkgekZDMJW7HiVntm1HEsKjq2MHbREXcdtS4Flyn1oNVSiyio",
         "WFdwY6wLgpLMS8DR+kd7Tjvq8fT74ZD3cpffu7m/d9+7OpvNZNRZ9ILSmhwneTTUokB/f+9R9PBRHRAUKNEE+AYGqNV+QWqN",
         "RK3x9fXzk8jUkscgyeHU2WUyid1qdf5Yu5+qf0qFRaSaTbJkwe4wWi3hco1SLZcJFr3VYLTEh8tHjeyrCJZHaKVhfSzJgslq",
@@ -136,7 +136,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `d-gz.ova` — 10240 octets.
-    static let d = [
+    public static let d = [
         "7dRpVFNXAgfwKHaKgMxUNgWBGCsKGBKWBMQkWEQs4tTKIiAMGJMAgZDQbCyyKAyypJAhgKxCAUFZJCr7KmgBAQVkCfu+CbJv",
         "UcLSiJ1zevph+smemTPv9+Xed9+9/3vvue8+rLs7iYgl4wgaFKYj6POACyF1dHZLod+XcB0tXZAmQguJgMO1deGaILimlhYS",
         "CQLDQX8CBo2OpQqXQqVQ6P+p3x+9/x+FMvB0I4GZBCqNSCGjIZoacAiYQMZR8ESyExpiaWEM1YMYYMRQ58lMAoniTgALu5Np",
@@ -167,14 +167,14 @@ enum OvaFixtures {
     ].joined()
 
     /// `e-sans-disque.ova` — 10240 octets.
-    static let e = [
+    public static let e = [
         "7dKxTsMwEAZgz32KyHvjs9umFUrShfIAFB4gSi9tRGJHton6+FgIlg4gBpCQ/m85nfzr7gY30zT0jW05d3MnfgclxXr9XpPb",
         "Soa2Qm9MsSFabUkL0sYURmQk/sBriI1Pp3jn4le5797/qXJ/HYdsZh96Zyupc5IZ29adenuu5PPTw3In9/WiPNiZBzdxluI2",
         "VPIS43SnVGgvPDYhP42xy50/q/SLFH9klZZ1+cgd+zSRg6rL+z68HLmNaVfq1OfQeiEAAAAAAAAAAAAAAAAAAAAAAADgZ94A",
     ].joined()
 
     /// `f-plain.tar` — 81920 octets.
-    static let f = [
+    public static let f = [
         "7dgLUFNXAsbxALbQtNiqLc5aHxGsLGsFIgGxLmgtCivD+gDBBdGNEDAFEkzCywcoxTqtr7VUWXULdd3SggpaLD6wROmKrpSi",
         "WEAeFt2iiAjoIkJ4ZQPiSmd2dmda2xnH/y8z99zce87NnfOdc24SaWRkuFyqCJJNDparw8S20RHBYYLHzN7ASSLpLw1+WE4R",
         "O/btix2nOBl2HKbaiwX2YgeJRCwQ2Qt+AVFqjVRluBWVUqn5X/X+3/knlKebl6+JoTQxvARmD46tGzhnNFC+/LCy8aN2+gEP",
@@ -201,7 +201,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `g-pax-taille.ova` — 81920 octets.
-    static let g = [
+    public static let g = [
         "7dh7VBNXHgfwALbQtNiqLZ61KmOwsqwlIRheSoK1IFQOq/J0QXRjMoEU8jATAvgApVjP1tdaqqy6hbpuaUEFLRYfWKJ0RVdK",
         "USwgBItuUUQEdBEhvLKTEArb9a+2uKfl++GcXDJz72+S+d3f3AtCpTJeKpSLSLZCI2GMDReaO49namk/bF14I+eGjnNdeFwP",
         "BuHCeAoSKLVQRV+eMT55+yTJ4gkNqaKkCjmfxWW7sAhSLlKIpfIYPissdLGzJ8tHwPT2k2vIeIWSJOjucorPilWrlfM5HEoU",
@@ -232,7 +232,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `h-gnu-dates.ova` — 143360 octets.
-    static let h = [
+    public static let h = [
         "7dZ5VFTXHcDxcUlNR7GpRnISjY6D0Rg7GwyLyGIMCsZ9xQpKh5kHTJjNmWELKm4xp1VrDSpaE6hZtOKuVaMYcGmMR42GGERB",
         "xbjiSo0LgsL0zYDV+kdyTlJjPfl+OMx7c5ff3Hd/7753dTabyaiz6AWlNTVB8nioRQFarecoevSo9g8MkGj8fQP81Wq/QLVG",
         "otZo/bQBEpla8jNIcTh1dplMYrdand/X7ofqH6Xx16j93JckXuiDc43k/0xIeLrZJEsV7A6j1RIq1yjVcplg0VsNRktiqHzU",
@@ -266,7 +266,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `i-deux-disques.ova` — 471040 octets.
-    static let i = [
+    public static let i = [
         "7dsNmFRloQfwBSptCistfa6ZjkvJNWNnZ1kWRHYVWBXkksoqdMWPO+ychYmdmXVmdgG/ILN8ytJblFz1hpk3Eyw/orDEpOSm",
         "Xc0oTVHR0PL7AypTBJW97+zOIvAoqUk9PP1+PP85M+e87znvxzln5vBAqqOjPZPKtUY1+a62qh2jNmior+9ZBtsuh9UNHVqV",
         "HFbXMKy2dujw2mRVbbKurqGhKl5b9XfQWSylCqEphXy+tL1yf237TmrUobOz7fGuqFDM5HON1cma2upDm2Kj9h8yJL7iC62F",
@@ -322,7 +322,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `j-disque-absent.ova` — 81920 octets.
-    static let j = [
+    public static let j = [
         "7dgLUFNXGgfwALbQtNiqLc5alWuwUmrJA8JDJcFaECrDqjwtiDYkN5BCEswNAXyAUqyz62stVVbdQl23tKCCFosPLFG6oiul",
         "KBYQgo1uUUQEdBEhvLI3IVS6s7M701ZnHP8/ZnJubs757s35zncuIEpKSpSJFGKSrdRIGY8Gl+bJ55tb2n+2XL67O4Pn4ebp",
         "weW6e3F5DC7Pzc3TnUFwGY9BMqUWqehbUSmV6v/V7/99/oTy8U2VJxIaUkXJlAoBi8fmsghSIVZKZIo4ASs8bKGrN8tXyPTx",
@@ -352,7 +352,7 @@ enum OvaFixtures {
     ].joined()
 
     /// `k-point.ova` — 81920 octets.
-    static let k = [
+    public static let k = [
         "7dgLUFNXGgfwALbQtNiqLc5alWuwsqwlDwgPlQRrQagMq/J0QXRjcgMpeWBuCOADlGKd1tdaqqy6hbpuaUEFLRYfWKK0opVS",
         "FAsIwaJbFBEBXUQIr+xNCJXudLYzbXXG+v9lJie59zvfvbnfOecmYXNECQlymUgpJtkqrZTxMHBpnny+uaX9b8vl0/t4Hm6e",
         "HlyuuxeXx+Dy3PhubgyCy3gEEimNSE2filql0vy/uJ/b/5jy8U1WyAktqaZkKqWAxWNzWQSpFKskMmWsgBUeNt/Vm+UrZPr4",
