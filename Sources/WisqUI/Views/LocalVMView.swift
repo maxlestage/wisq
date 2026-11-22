@@ -88,7 +88,6 @@ struct LocalVMListView: View {
     /// `EmitterSetting`. Allumé, une image de PC s'ouvre dans l'émetteur
     /// plutôt que dans le cœur Swift.
     @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         List {
@@ -522,35 +521,36 @@ struct LocalVMListView: View {
             Button {
                 showDownload = true
             } label: {
-                Label("Télécharger un bureau ou une image", systemImage: "arrow.down.circle.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                // Un texte qui passe à la ligne plutôt qu'un `Label` coupé :
+                // « Télécharger un bureau o… » au premier tour de captures.
+                HStack(spacing: Design.Space.s) {
+                    Image(systemName: "arrow.down.circle.fill")
+                    Text("Télécharger un bureau ou une image")
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.capsule)
             .controlSize(.large)
-            // Côte à côte, ou l'un sous l'autre en très grand texte.
-            let doors = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: Design.Space.m))
-                : AnyLayout(HStackLayout(spacing: Design.Space.m))
-            doors {
+            // Les deux autres portes, l'une sous l'autre et nommées en entier :
+            // côte à côte, leurs mots se coupaient (« Impor-ter »).
+            VStack(spacing: Design.Space.s) {
                 Button { showImporter = true } label: {
-                    Label("Importer", systemImage: "folder")
+                    Label("Importer une image", systemImage: "folder")
                         .frame(maxWidth: .infinity)
                 }
                 Button(action: onRemote) {
-                    Label("À distance", systemImage: "network")
+                    Label("Connexions à distance", systemImage: "network")
                         .frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
             .controlSize(.large)
-            .accessibilityElement(children: .contain)
-            Text("« Importer » prend une image dans Fichiers ; « À distance » ouvre une machine qui tourne ailleurs, en VNC, SPICE ou RDP.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .card(padding: Design.Space.xl)
@@ -915,7 +915,7 @@ private struct InstalledMachineRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            HStack(spacing: Design.Space.s) {
+            FlowLayout(spacing: Design.Space.s) {
                 StatePill(state: state)
                 if let entry, entry.savedMachineBytes > 0 {
                     Text(LocalStorage.describe(bytes: entry.savedMachineBytes))
@@ -1129,10 +1129,17 @@ private struct KernelMemoryMenu: View {
                 size = steps[clamped]
             })
 
-        let label = Label("Mémoire", systemImage: "memorychip")
-            .font(.footnote.weight(.medium))
-            .foregroundStyle(.secondary)
-            .fixedSize()
+        // Une pile plutôt qu'un `Label` figé à sa taille idéale : dans une
+        // rangée de liste, celui-ci perdait son mot et prenait une hauteur
+        // démesurée (premier tour de captures).
+        let label = HStack(spacing: 6) {
+            Image(systemName: "memorychip")
+            Text("Mémoire")
+                .lineLimit(1)
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(.secondary)
+        .layoutPriority(1)
         let value = Text(KernelMemory.describe(size))
             .font(.footnote.monospacedDigit().weight(.semibold))
         // Une rangée de la carte : le nom du réglage, le curseur, la valeur.
@@ -1536,6 +1543,9 @@ struct LocalVMTerminalView: View {
         }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        // Un fond à la barre : sans lui, en mode clair, le titre noir se posait
+        // sur la console noire et disparaissait (premier tour de captures).
+        .toolbarBackground(.visible, for: .navigationBar)
         // Une seule visibilité pour la barre : deux modificateurs se
         // disputeraient, et le bureau comme le plein écran la veulent cachée.
         .toolbar(showingDesktop || fullScreen ? .hidden : .visible, for: .navigationBar)
