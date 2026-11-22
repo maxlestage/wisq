@@ -116,8 +116,17 @@ pub trait Peripheriques {
         suivi.tout();
         self.port_ecrire(port, largeur, valeur, ram)
     }
-    /// `tour`, en disant ce qui a été écrit dans la RAM.
-    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
+    /// `tour`, en disant ce qui a été écrit dans la RAM. `occupe` dit que le
+    /// processeur travaille (il n'est pas arrêté sur `hlt`) : la carte réseau
+    /// n'interroge alors son câble qu'un tour sur quatre, comme `poll(busy:)`
+    /// du cœur Swift.
+    fn tour_suivi(
+        &mut self,
+        tics: u64,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+        _occupe: bool,
+    ) -> u16 {
         suivi.tout();
         self.tour(tics, ram)
     }
@@ -831,6 +840,7 @@ impl Machine {
                 tics,
                 &mut self.cpu.memory.bytes,
                 &mut Suivi(self.cpu.code.as_deref_mut()),
+                !self.arretee,
             ),
             None => 0,
         };

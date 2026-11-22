@@ -17,8 +17,10 @@
 //! de référence sur la machine qu'un autre fil fait tourner.
 //!
 //! **La carte est toujours branchée** (`pc::carte::brancher`), comme sous
-//! `wisq-pc` : l'i8042, l'horloge CMOS, le pont PCI, puis les disques et
-//! l'écran qu'on lui donne avant le chargement.
+//! `wisq-pc` : l'i8042, l'horloge CMOS, le pont PCI, puis les disques,
+//! l'écran et la carte réseau qu'on lui donne avant le chargement. Les
+//! trames passent par deux files (`pc::reseau`), que l'hôte vide et remplit
+//! de n'importe quel fil.
 //!
 //! Rien ici ne demande de fichier ni d'horloge de l'hôte : la cible `wasm32`
 //! le compile. Le disque sur fichier et l'heure du système sont donnés par
@@ -36,6 +38,7 @@ use super::carte::{brancher, CartePartagee};
 use super::chargeur::{Ecran, Placement, Refus};
 use super::herites::HERTZ_DU_8253;
 use super::machine::{Alea, Machine};
+use super::reseau::{CableDuPoste, Compteurs, Remise, Reseau};
 
 /// Ce qu'une course fait au plus d'un coup, entre deux regards sur les
 /// commandes : un arrêt demandé, des octets tapés et une frappe passent dans
@@ -176,6 +179,10 @@ pub struct Commandes {
     serie: Mutex<Vec<u8>>,
     touches: Mutex<Touches>,
     carte: CartePartagee,
+    /// Les deux files de la carte réseau (`pc::reseau`), et si elle est
+    /// branchée : sans carte, rien n'entre.
+    reseau: Arc<Reseau>,
+    reseau_branche: AtomicBool,
     /// L'avancement publié à chaque tranche : en retard, jamais faux.
     retirees: AtomicU64,
     rip: AtomicU64,
@@ -366,6 +373,41 @@ impl Commandes {
         self.carte.tenir().vider()
     }
 
+    /// **Remettre une trame à l'invité**, de n'importe quel fil : elle attend
+    /// dans la file entrante (`pc::reseau`) que la carte l'interroge, puis un
+    /// tampon de l'invité. `None` sans carte réseau.
+    pub fn remettre_trame(&self, trame: &[u8]) -> Option<Remise> {
+        self.reseau_branche
+            .load(Ordering::Acquire)
+            .then(|| self.reseau.remettre(trame))
+    }
+
+    /// **Prendre la prochaine trame que l'invité a émise**, si elle tient
+    /// dans `vers` : voir `Reseau::prendre_dans`. Rien quand aucune n'attend,
+    /// ou sans carte.
+    pub fn prendre_trame(&self, vers: &mut [u8]) -> Option<usize> {
+        self.reseau.prendre_dans(vers)
+    }
+
+    /// **Les compteurs du réseau** : ceux de la carte (émises, livrées,
+    /// perdues), puis ceux des files. Rien sans carte.
+    pub fn compteurs_du_reseau(&self) -> Option<((u64, u64, u64), Compteurs)> {
+        if !self.reseau_branche.load(Ordering::Acquire) {
+            return None;
+        }
+        let carte = self
+            .carte
+            .tenir()
+            .reseau()
+            .map(|reseau| (reseau.emises(), reseau.livrees(), reseau.perdues()))?;
+        Some((carte, self.reseau.compteurs()))
+    }
+
+    /// Les deux files, pour un test qui juge le rythme de la carte.
+    pub fn reseau(&self) -> &Arc<Reseau> {
+        &self.reseau
+    }
+
     /// **Où en est la course**, publié à la fin de chaque tranche : les
     /// instructions retirées et RIP. Rien avant la première tranche.
     pub fn avancement(&self) -> Option<(u64, u64)> {
@@ -389,6 +431,8 @@ pub enum RefusDeBranchement {
     /// Le cadre ne tient pas dans les seize mébioctets de la mémoire vidéo,
     /// ou une dimension est nulle.
     EcranTropGrand,
+    /// La carte réseau est déjà branchée.
+    ReseauDejaLa,
 }
 
 /// La dernière seconde que l'horloge CMOS sait dire : le 31 décembre 9999 à
@@ -423,6 +467,8 @@ impl Poste {
                 serie: Mutex::new(Vec::new()),
                 touches: Mutex::new(Touches::default()),
                 carte,
+                reseau: Arc::new(Reseau::default()),
+                reseau_branche: AtomicBool::new(false),
                 retirees: AtomicU64::new(0),
                 rip: AtomicU64::new(0),
                 publie: AtomicBool::new(false),
@@ -522,6 +568,24 @@ impl Poste {
             largeur: largeur as usize,
             hauteur: hauteur as usize,
         });
+        Ok(())
+    }
+
+    /// **Brancher la carte réseau** (virtio, 00:05.0, ligne 3), machine
+    /// éteinte et une seule fois, d'adresse `mac` (`MAC_PAR_DEFAUT` : celle du
+    /// cœur Swift), et son câble : les deux files que l'hôte vide et remplit
+    /// par [`Commandes::prendre_trame`] et [`Commandes::remettre_trame`].
+    pub fn brancher_reseau(&mut self, mac: [u8; 6]) -> Result<(), RefusDeBranchement> {
+        if self.pret {
+            return Err(RefusDeBranchement::DejaDemarree);
+        }
+        if self.commandes.reseau_branche.load(Ordering::Acquire) {
+            return Err(RefusDeBranchement::ReseauDejaLa);
+        }
+        let mut carte = self.commandes.carte.tenir();
+        carte.brancher_reseau(mac);
+        carte.brancher_cable(CableDuPoste(self.commandes.reseau.clone()));
+        self.commandes.reseau_branche.store(true, Ordering::Release);
         Ok(())
     }
 

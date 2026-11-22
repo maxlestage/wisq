@@ -31,8 +31,13 @@
 //! ce que le doigt a fait ([`Peripheriques::servir_tour`]), au plus deux cent
 //! cinquante-six instructions plus tard.
 //!
-//! **Ce qui n'est pas branché** : la carte réseau (`CartePc::sonder_reseau`),
-//! que `wisq-pc` ne branche pas.
+//! **La carte réseau**, quand le poste la branche (`Poste::brancher_reseau`,
+//! `pc::reseau`) : une émission est servie sur-le-champ, comme le disque ; ce
+//! que le câble remet est interrogé au tour du matériel
+//! (`CartePc::sonder_reseau`) — un tour sur quatre quand le processeur
+//! travaille, à chaque tour quand il dort —, et rangé dans les tampons de
+//! l'invité par `Ram::ecrire`, chaque écriture notée : une trame reçue
+//! par-dessus du code décodé le fait relire. `wisq-pc` ne la branche pas.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -115,11 +120,22 @@ impl Peripheriques for CartePc {
         pris
     }
 
-    /// Le tour : le temps, la tablette (chaque écriture notée), les lignes.
-    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
+    /// Le tour : le temps, la tablette, la carte réseau — ce que le câble a
+    /// remis, rangé dans les tampons de l'invité —, chaque écriture notée ;
+    /// puis les lignes.
+    fn tour_suivi(
+        &mut self,
+        tics: u64,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+        occupe: bool,
+    ) -> u16 {
         CartePc::battre(self, tics);
         if self.a_servir() || self.tablette().is_some() {
             CartePc::servir(self, &mut Tranche { ram, suivi });
+        }
+        if self.reseau().is_some() {
+            self.sonder_reseau(&mut Tranche { ram, suivi }, occupe);
         }
         CartePc::lignes(self)
     }
@@ -248,8 +264,14 @@ impl Peripheriques for CartePartagee {
         Peripheriques::port_ecrire_suivi(&mut *self.tenir(), port, largeur, valeur, ram, suivi)
     }
 
-    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
-        Peripheriques::tour_suivi(&mut *self.tenir(), tics, ram, suivi)
+    fn tour_suivi(
+        &mut self,
+        tics: u64,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+        occupe: bool,
+    ) -> u16 {
+        Peripheriques::tour_suivi(&mut *self.tenir(), tics, ram, suivi, occupe)
     }
 
     fn remise_demandee(&self) -> bool {
