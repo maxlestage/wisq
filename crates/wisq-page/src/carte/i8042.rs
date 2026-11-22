@@ -24,6 +24,8 @@
 
 use std::collections::VecDeque;
 
+use super::etat::{Ecrivain, Lecteur};
+
 pub const PORT_DONNEES: u16 = 0x60;
 pub const PORT_COMMANDE: u16 = 0x64;
 pub const LIGNE_CLAVIER: u8 = 1;
@@ -569,6 +571,109 @@ pub fn frappes_du_texte(texte: &str) -> Vec<Frappe> {
     texte.chars().flat_map(frappes_du_caractere).collect()
 }
 
+// ------------------------------------------------- l'état, pour l'instantané
+
+/// Ce que la file des frappes peut tenir au plus : la borne, et un
+/// relâchement par touche au-delà ([`LIMITE_DE_FRAPPE`]).
+pub const PLUS_DE_FRAPPES: usize = LIMITE_DE_FRAPPE + TOUCHES;
+
+impl I8042 {
+    /// **L'état du contrôleur**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : le CTR, ce qui attend au port 0x60, les commandes
+    /// qui attendent leur octet, les deux appareils, la ligne de remise à
+    /// zéro, et **les frappes de l'hôte pas encore posées**, avec leur heure
+    /// et les touches que la file laisse enfoncées.
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u8(self.configuration);
+        e.compte(self.sortie.len());
+        for sortie in &self.sortie {
+            e.u8(sortie.octet);
+            e.oui(sortie.de_la_souris);
+        }
+        e.peut_etre_u8(self.commande_en_attente);
+        e.peut_etre_u8(self.parametre_du_clavier);
+        e.peut_etre_u8(self.parametre_de_la_souris);
+        e.oui(self.derniere_ecriture_commande);
+        e.u32(self.perdues_sans_balayage);
+        e.u32(self.perdues_port_coupe);
+        e.oui(self.souris_rapporte);
+        e.oui(self.clavier_balaye);
+        e.oui(self.remise_demandee);
+        e.compte(self.frappes.len());
+        for frappe in &self.frappes {
+            e.u8(frappe.code.jeu1);
+            e.oui(frappe.code.etendue);
+            e.oui(frappe.enfoncee);
+        }
+        e.u64(self.frappe_reprend_a);
+        for mot in self.enfoncees_en_file {
+            e.u64(mot);
+        }
+    }
+
+    /// Relu, ou rien : une commande en attente que le contrôleur ne met
+    /// jamais en attente (seules `60`, `D1` à `D4` attendent leur octet), un
+    /// paramètre que ni le clavier (`ED`, `F3`, `F0`) ni la souris (`F3`,
+    /// `E8`) n'attendent, plus de frappes que la file n'en admet.
+    pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
+        let configuration = l.u8()?;
+        let combien = l.compte(usize::MAX)?;
+        let mut sortie = VecDeque::new();
+        for _ in 0..combien {
+            sortie.push_back(Sortie {
+                octet: l.u8()?,
+                de_la_souris: l.oui()?,
+            });
+        }
+        let commande_en_attente = l.peut_etre_u8()?;
+        let parametre_du_clavier = l.peut_etre_u8()?;
+        let parametre_de_la_souris = l.peut_etre_u8()?;
+        if !commande_en_attente.is_none_or(|c| matches!(c, 0x60 | 0xD1..=0xD4))
+            || !parametre_du_clavier.is_none_or(|c| matches!(c, 0xED | 0xF3 | 0xF0))
+            || !parametre_de_la_souris.is_none_or(|c| matches!(c, 0xF3 | 0xE8))
+        {
+            return None;
+        }
+        let derniere_ecriture_commande = l.oui()?;
+        let perdues_sans_balayage = l.u32()?;
+        let perdues_port_coupe = l.u32()?;
+        let souris_rapporte = l.oui()?;
+        let clavier_balaye = l.oui()?;
+        let remise_demandee = l.oui()?;
+        let combien = l.compte(PLUS_DE_FRAPPES)?;
+        let mut frappes = VecDeque::with_capacity(combien.min(LIMITE_DE_FRAPPE));
+        for _ in 0..combien {
+            let jeu1 = l.u8()?;
+            let etendue = l.oui()?;
+            frappes.push_back(Frappe {
+                code: CodeTouche { jeu1, etendue },
+                enfoncee: l.oui()?,
+            });
+        }
+        let frappe_reprend_a = l.u64()?;
+        let mut enfoncees_en_file = [0u64; TOUCHES / 64];
+        for mot in &mut enfoncees_en_file {
+            *mot = l.u64()?;
+        }
+        Some(Self {
+            configuration,
+            sortie,
+            commande_en_attente,
+            parametre_du_clavier,
+            parametre_de_la_souris,
+            derniere_ecriture_commande,
+            perdues_sans_balayage,
+            perdues_port_coupe,
+            souris_rapporte,
+            clavier_balaye,
+            remise_demandee,
+            frappes,
+            frappe_reprend_a,
+            enfoncees_en_file,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! **Le clavier et la souris PS/2**, tels que Linux les sonde : les cas
@@ -1056,5 +1161,89 @@ mod tests {
         remise.ecrire_commande(0xD1);
         remise.ecrire_donnee(0xDE);
         assert!(remise.remise_demandee);
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **Le contrôleur sauvé et relu** ([`I8042::sauver`]) : ce qui attend au
+    //! port 0x60, les commandes en attente et les frappes passent ; ce que le
+    //! contrôleur ne met jamais en attente est refusé.
+    use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
+    use super::*;
+
+    fn occupe() -> I8042 {
+        let mut ps2 = I8042::nouveau();
+        ps2.ecrire_commande(0xA8); // la souris allumée
+        ps2.ecrire_commande(0xD4);
+        ps2.ecrire_donnee(0xF4); // elle rapporte
+        ps2.souris(3, -2, 1);
+        ps2.ecrire_donnee(0xED); // le clavier attend son paramètre
+        ps2.ecrire_commande(0x60); // le contrôleur attend son octet
+        for frappe in frappes_du_caractere('A') {
+            assert!(ps2.taper(frappe.code, frappe.enfoncee));
+        }
+        ps2.rythmer(10);
+        ps2
+    }
+
+    #[test]
+    fn a_busy_controller_reads_back_with_its_waiting_keystrokes() {
+        let ps2 = occupe();
+        assert!(!ps2.sortie.is_empty() && !ps2.frappes.is_empty());
+        assert_eq!(ps2.commande_en_attente, Some(0x60));
+        assert_eq!(ps2.parametre_du_clavier, Some(0xED));
+        let octets = octets_de(&ps2, I8042::sauver);
+        let relu = relu(&octets, I8042::relire).expect("relu");
+        assert_eq!(relu, ps2);
+        chaque_coupure_refusee(&octets, I8042::relire);
+        // Les frappes repartent à leur heure, des deux côtés pareil.
+        let (mut a, mut b) = (ps2, relu);
+        for tics in [10, TENUE_TICS + 10, TENUE_TICS + ECART_TICS + 10] {
+            a.sortie.clear();
+            b.sortie.clear();
+            a.rythmer(tics);
+            b.rythmer(tics);
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn what_the_controller_never_waits_for_is_refused() {
+        let ps2 = occupe();
+        let relit = |abimer: fn(&mut I8042)| se_relit(&ps2, abimer, I8042::sauver, I8042::relire);
+        assert!(relit(|_| {}), "tel quel");
+        assert!(
+            relit(|p| p.parametre_de_la_souris = Some(0xE8)),
+            "un paramètre de souris"
+        );
+        assert!(
+            !relit(|p| p.commande_en_attente = Some(0x20)),
+            "0x20 répond tout de suite"
+        );
+        assert!(
+            !relit(|p| p.parametre_du_clavier = Some(0xF4)),
+            "F4 n'a pas de paramètre"
+        );
+        assert!(
+            !relit(|p| p.parametre_de_la_souris = Some(0xF4)),
+            "ni pour la souris"
+        );
+        let pleine = |p: &mut I8042| {
+            let frappe = p.frappes[0];
+            p.frappes = std::iter::repeat_n(frappe, PLUS_DE_FRAPPES + 1).collect();
+        };
+        assert!(
+            !se_relit(&ps2, pleine, I8042::sauver, I8042::relire),
+            "plus de frappes que la file n'en admet"
+        );
+        let juste = |p: &mut I8042| {
+            let frappe = p.frappes[0];
+            p.frappes = std::iter::repeat_n(frappe, PLUS_DE_FRAPPES).collect();
+        };
+        assert!(
+            se_relit(&ps2, juste, I8042::sauver, I8042::relire),
+            "la borne est comprise"
+        );
     }
 }

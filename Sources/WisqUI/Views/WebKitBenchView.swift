@@ -86,10 +86,10 @@ struct WebKitBenchView: View {
             } footer: {
                 Text(
                     "Par défaut. Une machine PC neuve démarre sur le cœur x86-64 écrit en Rust, "
-                        + "deux fois plus rapide que le cœur Swift, mais sans session sauvée (la "
-                        + "quitter l'arrête) et sans réseau. Éteins-le pour retrouver le réseau et "
-                        + "les sessions. Les sessions sauvées et les machines installées restent au "
-                        + "cœur Swift.")
+                        + "deux fois plus rapide que le cœur Swift, et sauve sa session comme lui, "
+                        + "mais sans réseau. Éteins-le pour retrouver le réseau. Une session sauvée "
+                        + "se reprend toujours sur le cœur qui l'a écrite, quel que soit ce réglage ; "
+                        + "les machines installées restent au cœur Swift.")
             }
             #endif
 

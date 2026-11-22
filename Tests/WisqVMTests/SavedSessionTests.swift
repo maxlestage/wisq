@@ -37,6 +37,57 @@ final class SavedSessionTests: XCTestCase {
         return Data(bytes)
     }
 
+    /// Un en-tête de la machine PC en Rust : la marque, la version, la
+    /// mémoire, petit-boutistes, puis de quoi faire un instantané.
+    private static func rustHeader(version: UInt32, ram: UInt64) -> Data {
+        var bytes = Array("WISQPC\r\n".utf8)
+        bytes += withUnsafeBytes(of: version.littleEndian, Array.init)
+        bytes += withUnsafeBytes(of: ram.littleEndian, Array.init)
+        bytes += [0x2A, 0x2A]
+        return Data(bytes)
+    }
+
+    /// **Une session de la machine PC en Rust se juge par son en-tête** :
+    /// sa version et sa mémoire, sans passer par le lecteur du cœur Swift
+    /// (qui la dirait abîmée). Une version plus récente est dite par son
+    /// nom ; la version 1, sans la carte, et un en-tête tronqué, abîmés.
+    func testARustPCSessionIsJudgedByItsHeader() throws {
+        let ram: UInt64 = 1 << 30
+        let session = Self.rustHeader(version: RustPCSnapshot.version, ram: ram)
+        XCTAssertTrue(RustPCSnapshot.recognizes(session))
+        XCTAssertEqual(RustPCSnapshot.header(of: session)?.version, 2)
+        XCTAssertEqual(RustPCSnapshot.header(of: session)?.ramSize, 1 << 30)
+        XCTAssertEqual(SavedSession.judge(session, core: .x86_64).snapshot, session)
+        XCTAssertEqual(SessionMemory.savedRAMSize(session, core: .x86_64), 1 << 30)
+        // Une tranche de `Data` ne commence pas à zéro : l'en-tête se lit
+        // quand même.
+        let sliced = (Data([9, 9]) + session).dropFirst(2)
+        XCTAssertEqual(RustPCSnapshot.header(of: sliced)?.ramSize, 1 << 30)
+
+        guard case .unreadable(let newer) = SavedSession.judge(
+            Self.rustHeader(version: 3, ram: ram), core: .x86_64) else {
+            return XCTFail("une version plus récente est illisible")
+        }
+        XCTAssertEqual(newer, .newerMachine(saved: 3, supported: 2))
+        guard case .unreadable(.damaged) = SavedSession.judge(
+            Self.rustHeader(version: 1, ram: ram), core: .x86_64) else {
+            return XCTFail("la version 1, sans la carte, ne se reprend pas")
+        }
+        let cut = session.prefix(19)
+        XCTAssertTrue(RustPCSnapshot.recognizes(cut))
+        XCTAssertNil(RustPCSnapshot.header(of: cut), "un en-tête tronqué")
+        guard case .unreadable(.damaged) = SavedSession.judge(cut, core: .x86_64) else {
+            return XCTFail("un en-tête tronqué est abîmé")
+        }
+        XCTAssertNil(SessionMemory.savedRAMSize(cut, core: .x86_64))
+        XCTAssertNil(RustPCSnapshot.header(of: Self.rustHeader(version: 2, ram: .max)), "hors d'un Int")
+        // Une session du cœur Swift n'est pas reconnue, et se juge comme avant.
+        let swift = try Self.pcSnapshot()
+        XCTAssertFalse(RustPCSnapshot.recognizes(swift))
+        XCTAssertNotNil(SavedSession.judge(swift, core: .x86_64).snapshot)
+        XCTAssertFalse(RustPCSnapshot.recognizes(Data("WISQPC".utf8)), "la marque entière")
+    }
+
     func testNoFileIsNoSession() {
         guard case .none = SavedSession.find(kernel: "noyau-1", in: folder, core: .x86_64) else {
             return XCTFail("aucun fichier : pas de session")

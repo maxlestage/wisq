@@ -65,6 +65,7 @@
 
 pub mod cmos;
 pub mod ecran;
+mod etat;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod fichier;
 pub mod i8042;
@@ -835,6 +836,59 @@ fn bit_du_dehors(ligne: u8) -> Option<u16> {
     (ligne < 16 && bit & LIGNES_DE_L_HOTE == 0).then_some(bit)
 }
 
+// ------------------------------------------------- l'état, pour l'instantané
+
+/// **La carte relue**, pas encore posée ([`Carte::poser`]).
+pub(crate) struct CarteLu<'a> {
+    cmos: Cmos,
+    ps2: I8042,
+    pub(crate) pci: pci::PciLu<'a>,
+    levees_du_dehors: u16,
+    nommees_du_dehors: u16,
+}
+
+impl Carte {
+    /// **La carte**, pour l'instantané de la machine native ([`etat`]) :
+    /// l'horloge, l'i8042, le bus et ses périphériques, les lignes levées du
+    /// dehors.
+    pub(crate) fn sauver(&self, e: &mut etat::Ecrivain) {
+        self.cmos.sauver(e);
+        self.ps2.sauver(e);
+        self.pci.sauver(e);
+        e.u16(self.levees_du_dehors);
+        e.u16(self.nommees_du_dehors);
+    }
+
+    /// **Relue contre cette carte** (l'écran doit être le sien), ou rien.
+    /// Une ligne levée du dehors est nommée, et aucune n'est de celles que
+    /// l'hôte tient ([`LIGNES_DE_L_HOTE`]) : [`Carte::lever`] les refuse.
+    pub(crate) fn relire<'a>(&self, l: &mut etat::Lecteur<'a>) -> Option<CarteLu<'a>> {
+        let cmos = Cmos::relire(l)?;
+        let ps2 = I8042::relire(l)?;
+        let pci = self.pci.relire(l)?;
+        let levees_du_dehors = l.u16()?;
+        let nommees_du_dehors = l.u16()?;
+        let valide =
+            levees_du_dehors & !nommees_du_dehors == 0 && nommees_du_dehors & LIGNES_DE_L_HOTE == 0;
+        valide.then_some(CarteLu {
+            cmos,
+            ps2,
+            pci,
+            levees_du_dehors,
+            nommees_du_dehors,
+        })
+    }
+
+    /// **Poser la carte relue**, d'un coup : rien ne peut plus échouer.
+    pub(crate) fn poser(&mut self, lu: CarteLu<'_>) {
+        self.cmos = lu.cmos;
+        self.ps2 = lu.ps2;
+        self.pci.poser(lu.pci);
+        self.levees_du_dehors = lu.levees_du_dehors;
+        self.nommees_du_dehors = lu.nommees_du_dehors;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! La carte par ses ports et ses lignes, comme la boucle hôte la voit :
@@ -1192,5 +1246,118 @@ mod tests {
         assert_eq!(ram.0[12..], [1, 2, 3, 4], "un refus ne touche à rien");
         assert!(!SansRam.lire(0, &mut lu));
         assert!(!SansRam.ecrire(0, &lu));
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **La carte sauvée et relue contre une carte** ([`Carte::sauver`]) :
+    //! les lignes levées du dehors, les fenêtres du bus, l'écran et sa
+    //! tablette qui vont ensemble.
+    use super::etat::{essais::octets_de, Lecteur};
+    use super::*;
+
+    fn relue_contre(ici: &Carte, octets: &[u8]) -> Option<Carte> {
+        let mut l = Lecteur::nouveau(octets);
+        let lu = ici.relire(&mut l)?;
+        if !l.au_bout() {
+            return None;
+        }
+        let mut posee = ici.clone();
+        posee.poser(lu);
+        Some(posee)
+    }
+
+    fn levee() -> Carte {
+        let mut carte = Carte::nouvelle();
+        carte.brancher_disque(8);
+        carte.pci.premier.fenetre = 0xC040;
+        carte.pci.premier.commande = 1;
+        assert!(carte.lever(9));
+        assert!(carte.baisser(11));
+        carte
+    }
+
+    #[test]
+    fn a_card_reads_back_against_one_like_it() {
+        let carte = levee();
+        let octets = octets_de(&carte, Carte::sauver);
+        assert_eq!(
+            relue_contre(&Carte::nouvelle(), &octets),
+            Some(carte.clone())
+        );
+        for longueur in 0..octets.len() {
+            assert!(
+                relue_contre(&carte, &octets[..longueur]).is_none(),
+                "coupée à {longueur}"
+            );
+        }
+        let mut longue = octets.clone();
+        longue.push(0);
+        assert!(relue_contre(&carte, &longue).is_none(), "un octet de trop");
+    }
+
+    #[test]
+    fn lines_windows_and_screens_that_do_not_fit_are_refused() {
+        let carte = levee();
+        let relit = |abimer: fn(&mut Carte)| {
+            let mut abimee = carte.clone();
+            abimer(&mut abimee);
+            relue_contre(&Carte::nouvelle(), &octets_de(&abimee, Carte::sauver)).is_some()
+        };
+        assert!(relit(|_| {}), "telle quelle");
+        assert!(
+            !relit(|c| c.levees_du_dehors |= 1 << 7),
+            "une ligne levée sans avoir été nommée"
+        );
+        assert!(
+            !relit(|c| {
+                c.levees_du_dehors |= 1 << 4;
+                c.nommees_du_dehors |= 1 << 4;
+            }),
+            "une ligne que l'hôte tient"
+        );
+        assert!(
+            !relit(|c| c.pci.premier.fenetre = 0xC044),
+            "une fenêtre de travers"
+        );
+        assert!(
+            !relit(|c| c.pci.reseau.fenetre = 0xC081),
+            "celle de la carte réseau aussi"
+        );
+
+        // L'écran et sa tablette vont ensemble, et l'écran est celui d'ici.
+        let mut avec_ecran = Carte::nouvelle();
+        assert!(avec_ecran.brancher_ecran(640, 480));
+        let octets = octets_de(&avec_ecran, Carte::sauver);
+        assert!(
+            relue_contre(&avec_ecran, &octets).is_some(),
+            "le même écran"
+        );
+        assert!(
+            relue_contre(&Carte::nouvelle(), &octets).is_none(),
+            "un écran que la carte n'a pas"
+        );
+        let sans = octets_de(&Carte::nouvelle(), Carte::sauver);
+        assert!(
+            relue_contre(&avec_ecran, &sans).is_none(),
+            "pas d'écran là où la carte en a un"
+        );
+        let mut seule = avec_ecran.clone();
+        seule.pci.tablette = None;
+        assert!(
+            relue_contre(&avec_ecran, &octets_de(&seule, Carte::sauver)).is_none(),
+            "un écran sans tablette"
+        );
+        let mut tablette_seule = Carte::nouvelle();
+        tablette_seule.pci.tablette = avec_ecran.pci.tablette.clone();
+        assert!(
+            relue_contre(
+                &Carte::nouvelle(),
+                &octets_de(&tablette_seule, Carte::sauver)
+            )
+            .is_none(),
+            "une tablette sans écran"
+        );
     }
 }

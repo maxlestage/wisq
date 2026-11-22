@@ -48,6 +48,8 @@ public final class RustPCMachine: @unchecked Sendable {
         case damagedSnapshot
         case snapshotOfOtherMemory
         case snapshotOfOtherScreen
+        case olderSnapshot
+        case snapshotOfOtherDisks
         case unknown(Int32)
 
         public var errorDescription: String? {
@@ -69,6 +71,12 @@ public final class RustPCMachine: @unchecked Sendable {
             case .damagedSnapshot: return "Cet instantané est abîmé ou tronqué."
             case .snapshotOfOtherMemory: return "Cet instantané vient d'une machine d'une autre taille de mémoire."
             case .snapshotOfOtherScreen: return "Cet instantané vient d'une machine d'un autre écran."
+            case .olderSnapshot:
+                return "Cet instantané vient d'une version de wisq dont la machine PC en Rust ne sauvait pas "
+                    + "encore ses périphériques : il ne se reprend pas."
+            case .snapshotOfOtherDisks:
+                return "Cet instantané a été pris avec d'autres disques que ceux de cette machine : il se "
+                    + "reprend sur les mêmes fichiers, aux mêmes places."
             case .unknown(let code): return "La machine PC en Rust a refusé (code \(code))."
             }
         }
@@ -370,9 +378,13 @@ public final class RustPCMachine: @unchecked Sendable {
     // MARK: - Sauver et reprendre
 
     /// **L'instantané, au format de cette machine** (`WISQPC\r\n`, version
-    /// 1) : la RAM, le processeur, le système, les puces de la machine. **Pas
-    /// la carte des périphériques** : voir `wisq_pc_snapshot`. Vide quand rien
-    /// n'est encore démarré.
+    /// 2, `RustPCSnapshot`) : la RAM, le processeur, le système, les puces de
+    /// la machine, les entrées pas encore données à l'invité, et **la carte
+    /// des périphériques entière** (l'i8042, l'horloge de la carte, le PCI,
+    /// les disques et leurs files, l'écran et sa mémoire vidéo, la tablette) :
+    /// voir `wisq_pc_snapshot`. Les octets d'un disque sur fichier n'y sont
+    /// pas : `flushDisk()` d'abord, comme l'application le fait avant chaque
+    /// instantané. Vide quand rien n'est encore démarré.
     public func snapshot() -> Data {
         var bytes: UnsafeMutablePointer<UInt8>?
         var length = 0
@@ -381,7 +393,10 @@ public final class RustPCMachine: @unchecked Sendable {
         return Data(UnsafeBufferPointer(start: bytes, count: length))
     }
 
-    /// Reprend un instantané ; refusé, rien n'a changé.
+    /// **Reprend un instantané** ; refusé, rien n'a changé. L'écran se
+    /// branche avant (`attachDisplay`), et les disques sur fichier aussi, les
+    /// mêmes aux mêmes places (`attachDisk(fileAt:writes:)`) : l'instantané
+    /// les dit « ailleurs », et la reprise refuse d'autres disques.
     public func restore(_ data: Data) throws {
         let code: Int32 = data.withUnsafeBytes { raw in
             wisq_pc_restore(pc, raw.bindMemory(to: UInt8.self).baseAddress, raw.count)
@@ -393,6 +408,8 @@ public final class RustPCMachine: @unchecked Sendable {
         case -4: throw Refusal.damagedSnapshot
         case -5: throw Refusal.snapshotOfOtherMemory
         case -6: throw Refusal.snapshotOfOtherScreen
+        case -7: throw Refusal.olderSnapshot
+        case -8: throw Refusal.snapshotOfOtherDisks
         case let code: throw Refusal.unknown(code)
         }
     }
@@ -569,20 +586,26 @@ public final class RustPCScreen: @unchecked Sendable {
 /// (`EmitterSetting`), qui reste éteint, sur le modèle de celui-ci.
 ///
 /// La clé est celle de `UserDefaults`, que la vue lit par `@AppStorage`. Le
-/// verdict est ici, jugé sous Linux : le réglage allumé, un noyau de PC, **ni
-/// session sauvée ni machine installée**. Une session sauvée est un
-/// instantané du cœur Swift, que cette machine ne relit pas ; une machine
-/// installée garde son disque et sa session. Les deux restent au cœur Swift.
+/// verdict est ici, jugé sous Linux (`runs`). **C'est le format d'une session
+/// sauvée qui décide, pas le réglage** : une session de la machine PC en Rust
+/// (`WISQPC\r\n`, `RustPCSnapshot`) se reprend sur le cœur Rust, réglage
+/// éteint compris ; une session du cœur Swift, sur le cœur Swift, réglage
+/// allumé compris. Sinon, toucher l'interrupteur rendrait une session
+/// illisible. **Sans session**, le réglage décide pour une machine PC neuve ;
+/// une machine installée reste au cœur Swift, qui garde son disque et sa
+/// session.
 ///
-/// **Et la machine du cœur Rust ne sauve rien** (`savesSessions`) : son
-/// instantané ne porte pas encore la carte des périphériques, et une reprise
-/// rendrait à l'invité des pilotes devant des files oubliées. Quitter
-/// l'écran l'arrête ; la revoir la redémarre.
+/// **La machine du cœur Rust sauve ses sessions** (`savesSessions`), comme
+/// le cœur Swift : au départ de l'écran et toutes les cinq minutes
+/// (`CheckpointedRun`), le disque scellé avant l'instantané (`flushDisk`). La
+/// revoir la reprend, et le temps passé dehors se rattrape
+/// (`GuestMachine.elapse(since:)`).
 ///
-/// **Ce qui lui manque encore par rapport au cœur Swift** : l'instantané de la carte (`wisq-carte`
-/// n'a ni sauvegarde ni reprise), puis les bureaux prêts refabriqués à son
-/// format ; le réseau (la carte virtio-net de `wisq-carte` n'est pas branchée
-/// par le poste) et le relais du port 5900 (`X86Machine.forward`) ; les
+/// **Ce qui lui manque encore par rapport au cœur Swift** : les bureaux prêts
+/// refabriqués à son format (ceux qu'on télécharge sont des instantanés du
+/// cœur Swift, et s'y reprennent) ; le réseau (la carte virtio-net de
+/// `wisq-carte` n'est pas branchée par le poste — son état passe déjà dans
+/// l'instantané) et le relais du port 5900 (`X86Machine.forward`) ; les
 /// formats d'image de disque (qcow2, VMDK…), que seul le cœur Swift lit ; les
 /// refus des programmes, que `X86Machine` dit dans la console.
 public enum RustPCSetting {
@@ -590,8 +613,8 @@ public enum RustPCSetting {
     /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift
     /// (110 MIPS contre 62, Void Xfce jusqu'au bureau 2,8 fois plus tôt).
     public static let defaultValue = true
-    /// La machine du cœur Rust ne sauve pas de session.
-    public static let savesSessions = false
+    /// La machine du cœur Rust sauve ses sessions.
+    public static let savesSessions = true
 
     /// **Le réglage tel qu'il est** : sa valeur si quelqu'un l'a touché,
     /// `defaultValue` sinon. `UserDefaults.bool(forKey:)` rendrait faux pour
@@ -600,10 +623,13 @@ public enum RustPCSetting {
         defaults.object(forKey: key) as? Bool ?? defaultValue
     }
 
-    /// Le cœur Rust prend-il cette machine ?
+    /// **Le cœur Rust prend-il cette machine ?** `session` est la session
+    /// sauvée, décompressée, s'il y en a une : son format décide.
     public static func runs(
-        _ core: GuestArchitecture.Core, enabled: Bool, hasSession: Bool, installed: Bool
+        _ core: GuestArchitecture.Core, enabled: Bool, session: Data?, installed: Bool
     ) -> Bool {
-        enabled && core == .x86_64 && !hasSession && !installed
+        guard core == .x86_64 else { return false }
+        if let session { return RustPCSnapshot.recognizes(session) }
+        return enabled && !installed
     }
 }

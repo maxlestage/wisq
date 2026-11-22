@@ -443,6 +443,16 @@ final class RustPCMachineTests: XCTestCase {
         XCTAssertThrowsError(try bigger.restore(saved)) {
             XCTAssertEqual($0 as? RustPCMachine.Refusal, .snapshotOfOtherMemory)
         }
+        var older = saved
+        older[8] = 1
+        XCTAssertThrowsError(try resumed.restore(older)) {
+            XCTAssertEqual($0 as? RustPCMachine.Refusal, .olderSnapshot, "la version 1, sans la carte")
+        }
+        let disked = try rust(Console())
+        try disked.attachDisk(Data(count: 4096))
+        XCTAssertThrowsError(try disked.restore(saved)) {
+            XCTAssertEqual($0 as? RustPCMachine.Refusal, .snapshotOfOtherDisks, "un disque de trop")
+        }
         try resumed.restore(saved)
         XCTAssertEqual(resumed.runGuest(instructionBudget: 50_000_000), .powerOff)
         XCTAssertFalse(first.text.isEmpty)
@@ -488,23 +498,65 @@ final class RustPCMachineTests: XCTestCase {
     // MARK: - Le réglage
 
     /// **Allumé par défaut**, à côté de celui de l'émetteur (éteint) ;
-    /// allumé, il ne prend qu'une machine PC neuve.
+    /// sans session, il ne prend qu'une machine PC neuve et non installée.
     func testTheSettingIsOnByDefaultAndTakesOnlyAFreshPC() {
         XCTAssertTrue(RustPCSetting.defaultValue)
         XCTAssertFalse(EmitterSetting.defaultValue, "l'émetteur reste éteint")
         XCTAssertEqual(RustPCSetting.key, "wisq.machine.pc-rust")
         XCTAssertNotEqual(RustPCSetting.key, EmitterSetting.key)
-        XCTAssertFalse(RustPCSetting.savesSessions)
-        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: true, hasSession: false, installed: false))
-        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: false, hasSession: false, installed: false),
+        XCTAssertTrue(RustPCSetting.savesSessions, "la machine du cœur Rust sauve ses sessions")
+        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: true, session: nil, installed: false))
+        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: false, session: nil, installed: false),
                        "éteint")
-        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, hasSession: false, installed: false),
+        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: nil, installed: false),
                        "une machine RISC-V reste à son cœur")
-        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: true, hasSession: true, installed: false),
-                       "une session du cœur Swift se reprend sur lui")
-        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: true, hasSession: false, installed: true),
+        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: true, session: nil, installed: true),
                        "une machine installée reste au cœur Swift")
     }
+
+    /// **C'est le format de la session qui décide du cœur, pas le réglage** :
+    /// une vraie session du cœur Swift se reprend sur lui, réglage allumé ;
+    /// une vraie session du cœur Rust sur le cœur Rust, réglage éteint, et
+    /// même sur une machine installée. Sinon, toucher l'interrupteur rendrait
+    /// une session illisible. Les deux se jugent lisibles, à leur mémoire.
+    func testASessionGoesBackToTheCoreThatWroteIt() throws {
+        let kernel = try Self.tinyKernel()
+        let swiftCore = swift(Console())
+        try swiftCore.load(kernelImage: kernel, commandLine: "x=y", initialRamdisk: nil)
+        _ = swiftCore.runGuest(instructionBudget: 1_000_000)
+        let swiftSession = swiftCore.snapshot()
+        let rustCore = try rust(Console())
+        try rustCore.load(kernelImage: kernel, commandLine: "x=y", initialRamdisk: nil)
+        _ = rustCore.runGuest(instructionBudget: 1_000_000)
+        let rustSession = rustCore.snapshot()
+
+        for enabled in [true, false] {
+            for installed in [true, false] {
+                XCTAssertFalse(
+                    RustPCSetting.runs(.x86_64, enabled: enabled, session: swiftSession, installed: installed),
+                    "une session du cœur Swift, réglage \(enabled), installée \(installed)")
+                XCTAssertTrue(
+                    RustPCSetting.runs(.x86_64, enabled: enabled, session: rustSession, installed: installed),
+                    "une session du cœur Rust, réglage \(enabled), installée \(installed)")
+            }
+        }
+        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: rustSession, installed: false))
+
+        // L'en-tête lu côté Swift est celui que la bibliothèque écrit.
+        let header = try XCTUnwrap(RustPCSnapshot.header(of: rustSession))
+        XCTAssertEqual(header.version, RustPCSnapshot.version, "la version de la bibliothèque")
+        XCTAssertEqual(header.ramSize, rustCore.ramSize)
+        XCTAssertNotNil(SavedSession.judge(rustSession, core: .x86_64).snapshot)
+        XCTAssertNotNil(SavedSession.judge(swiftSession, core: .x86_64).snapshot)
+        XCTAssertEqual(SessionMemory.savedRAMSize(rustSession, core: .x86_64), rustCore.ramSize)
+        XCTAssertEqual(SessionMemory.savedRAMSize(swiftSession, core: .x86_64), Self.ram)
+        // Et une session du cœur Rust se reprend dans la machine que
+        // l'application construirait à sa mémoire.
+        let resumed = try rust(Console(), ram: try XCTUnwrap(SessionMemory.savedRAMSize(rustSession, core: .x86_64)))
+        try resumed.restore(rustSession)
+        XCTAssertEqual(resumed.retiredInstructions, rustCore.retiredInstructions)
+    }
+
     /// **Le défaut s'applique à un réglage jamais touché**, et un réglage
     /// éteint à la main le reste. `UserDefaults.bool(forKey:)` rendait faux
     /// dans le premier cas : personne n'aurait eu le cœur Rust.

@@ -789,18 +789,27 @@ void wisq_pc_elapse(WisqPC *pc, double seconds);
  * L'instantané de la machine, dans un tampon alloué ici, libéré par
  * wisq_pc_free_snapshot. Course arrêtée.
  *
- * Le format est à cette machine, versionné (« WISQPC\r\n », version 1). Il
+ * Le format est à cette machine, versionné (« WISQPC\r\n », version 2). Il
  * porte : la RAM (les pages non nulles), le processeur entier (registres,
  * drapeaux, contrôle, EFER, XMM et MXCSR, x87), le système (GDT, IDT, tâche,
  * MSR), les 8259, le 8253, le 16550 et l'horloge CMOS de la machine, ses
  * compteurs, l'ombre de `sti`, l'état du générateur à graine (wisq_pc_seed),
  * l'écran annoncé, le temps encore à rattraper et le temps déjà rattrapé
- * (qui entre dans wisq_pc_guest_time). Il ne porte PAS la carte des
- * périphériques (i8042, PCI, disques virtio, écran de Bochs et sa mémoire
- * vidéo, tablette) : un invité qui s'en est servi ne se reprend pas
- * fidèlement.
+ * (qui entre dans wisq_pc_guest_time), les octets tapés (wisq_pc_send) et
+ * les frappes (wisq_pc_keys) pas encore données à l'invité, et **la carte
+ * des périphériques entière** : l'horloge CMOS de la carte, l'i8042 et ses
+ * frappes en attente, le pont PCI (BAR, commandes, lignes), chaque disque
+ * virtio et sa file, l'écran de Bochs et sa mémoire vidéo, la tablette, la
+ * carte réseau si elle est là, les notifications pas encore servies.
  *
- * 0 ; -2 ni noyau chargé ni machine reprise.
+ * Les octets d'un disque sur fichier n'y sont pas : ils vivent dans son
+ * fichier et sa couche. Appeler wisq_pc_flush_disks avant, pour que la
+ * couche tienne ce que la RAM de l'instantané croit écrit. Une image en
+ * mémoire (wisq_pc_attach_disk) y est embarquée.
+ *
+ * 0 ; -2 ni noyau chargé ni machine reprise ; -3 un disque a des requêtes
+ * en vol (la machine n'en laisse jamais entre deux tranches : ce code ne
+ * devrait pas se voir).
  */
 int wisq_pc_snapshot(const WisqPC *pc, uint8_t **out_bytes, size_t *out_len);
 void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
@@ -812,9 +821,17 @@ void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
  * traductions qu'elle gardait de ses propres tables sont oubliées, comme ses
  * témoins de faute. Le bit LMA d'EFER est recalculé de LME et de la
  * pagination, comme sur le silicium. Course arrêtée.
- * 0 ; -2 pas un instantané de cette machine ; -3 une version que ce code ne
- * lit pas ; -4 tronqué ou abîmé ; -5 une autre RAM ; -6 un autre écran (ou
- * un écran d'un côté seulement).
+ * Les disques sur fichier se branchent AVANT la reprise, les mêmes fichiers
+ * aux mêmes emplacements (wisq_pc_attach_disk_file,
+ * wisq_pc_attach_second_disk_file) ; une image embarquée revient d'elle-même.
+ * La carte réseau reprise prend le câble de cette machine-ci.
+ * 0 ; -2 pas un instantané de cette machine ; -3 une version plus récente
+ * que ce code ; -4 tronqué, abîmé ou incohérent (un index de file hors de sa
+ * taille, une fenêtre de travers…) ; -5 une autre RAM ; -6 un autre écran (ou
+ * un écran d'un côté seulement) ; -7 une version plus ancienne, sans la carte
+ * des périphériques (la version 1) ; -8 d'autres disques que ceux de
+ * l'instantané (un fichier manquant ou d'une autre capacité, un disque de
+ * trop, un fichier là où l'image était en mémoire).
  */
 int wisq_pc_restore(WisqPC *pc, const uint8_t *bytes, size_t len);
 
