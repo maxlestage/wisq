@@ -219,3 +219,45 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq"
         BUNDLE_LOADER: "$(TEST_HOST)"
+
+  # **Les aperçus de l'interface** : chaque écran clé photographié, en clair,
+  # en sombre et en grand texte, avec des données de démonstration que les
+  # tests posent eux-mêmes dans le bac à sable du simulateur. Hébergés par
+  # l'application pour la même raison que `WisqHostedTests` : une fenêtre
+  # demande une scène, et un `xctest` nu n'en a pas. **Hors de la scheme
+  # `Wisq`** : la CI ne les lance jamais ; seul le workflow « Aperçus »
+  # (`.github/workflows/apercus.yml`) le fait, par la scheme `Apercus`
+  # ci-dessous. Rien de ce paquet n'entre dans l'application.
+  WisqApercus:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/WisqApercus
+    dependencies:
+      - target: Wisq
+      - package: Wisq
+        product: WisqUI
+      - package: Wisq
+        product: WisqVM
+      - package: Wisq
+        product: WisqCore
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+# La scheme des aperçus, à part de celle de l'application : sa liste de tests
+# n'est pas celle que `scripts/report-app-suites.sh` confronte au relevé.
+schemes:
+  Apercus:
+    build:
+      targets:
+        Wisq: all
+        WisqApercus: [test]
+    test:
+      config: Debug
+      targets:
+        - WisqApercus

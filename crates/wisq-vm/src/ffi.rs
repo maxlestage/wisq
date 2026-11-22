@@ -1869,6 +1869,27 @@ pub unsafe extern "C" fn wisq_pc_progress(
 }
 
 /// # Safety
+/// `pc` vient de `wisq_pc_new` ; `slices` et `same_page` sont inscriptibles.
+/// Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_progress_pages(
+    pc: *const WisqPC,
+    slices: *mut u64,
+    same_page: *mut u64,
+) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if slices.is_null() || same_page.is_null() {
+        return -1;
+    }
+    let (publiees, restees) = commandes.sejour();
+    *slices = publiees;
+    *same_page = restees;
+    c_int::from(publiees > 0)
+}
+
+/// # Safety
 /// `pc` vient de `wisq_pc_new`, course arrêtée.
 #[no_mangle]
 pub unsafe extern "C" fn wisq_pc_guest_time(pc: *const WisqPC) -> u64 {

@@ -70,6 +70,8 @@ struct LocalVMListView: View {
     @State private var showImporter = false
     /// La feuille qui télécharge une image depuis l'index d'une distribution.
     @State private var showDownload = false
+    /// La feuille des explications : voir `MachinesAboutView`.
+    @State private var showAbout = false
     @State private var importError: String?
     @State private var booting: BootTarget?
     /// L'image de cloud dont on demande le mot de passe de `root`, avant
@@ -89,25 +91,38 @@ struct LocalVMListView: View {
 
     var body: some View {
         List {
+            // **La liste vide, c'est l'accueil, et il est seul à l'écran.**
+            // Il était posé par-dessus la liste (`.overlay`), et la liste
+            // gardait sous lui le pied de sa section — quatre paragraphes
+            // d'explications : les deux textes se chevauchaient (capture d'un
+            // iPhone, le 22 novembre). L'accueil est maintenant une rangée de
+            // la liste, et les explications sont dans « À propos ».
+            if kernels.isEmpty {
+                Section {
+                    welcome
+                        .cardRow()
+                }
+            }
             if !installed.isEmpty {
                 installedSection
             }
-            Section {
-                ForEach(kernels, id: \.self) { kernel in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
+            if !kernels.isEmpty {
+                Section {
+                    ForEach(kernels, id: \.self) { kernel in
+                        let kind = kinds[kernel] ?? .unknown
+                        VStack(alignment: .leading, spacing: Design.Space.m) {
                             Button {
                                 start(BootTarget(url: kernel))
                             } label: {
                                 LibraryRow(
                                     kernel: kernel,
-                                    role: LibraryEntry.role(of: kinds[kernel] ?? .unknown,
-                                                           cloudImage: cloudImages.contains(kernel)),
+                                    role: LibraryEntry.role(of: kind, cloudImage: cloudImages.contains(kernel)),
                                     storageLine: Self.storageLine(
-                                        storage.entry(forKernel: kernel.lastPathComponent)))
+                                        storage.entry(forKernel: kernel.lastPathComponent)),
+                                    bootable: kind.couldBootHere || InstalledMachines.canInstall(kind)
+                                        || cloudImages.contains(kernel))
                             }
                             .buttonStyle(.plain)
-                            Spacer(minLength: 12)
                             KernelMemoryMenu(
                                 kernel: kernel, core: kinds[kernel]?.core
                             ) { forgotten in
@@ -115,72 +130,70 @@ struct LocalVMListView: View {
                                     .map { Note(text: $0, symbol: "memorychip") }
                                 storage = KernelLibrary.storageReport()
                             }
-                        }
-                        // Le disque se propose à tout ce qui démarre ici.
-                        // Il n'était offert qu'aux noyaux de PC, parce que la
-                        // machine RISC-V refusait le sien ; elle ne le refuse
-                        // plus. Ce qu'elle ne peut toujours pas, c'est mettre
-                        // le pilote bloc dans le noyau de quelqu'un — et ça,
-                        // seul un démarrage peut le dire, pas cette liste.
-                        if kinds[kernel]?.couldBootHere == true {
-                            KernelDiskMenu(
-                                kernel: kernel, library: kernels,
-                                chosen: disks[kernel.lastPathComponent]
-                            ) { chosen in
-                                attach(chosen, key: kernel.lastPathComponent)
+                            SettingsChips {
+                                // Le disque se propose à tout ce qui démarre ici.
+                                // Il n'était offert qu'aux noyaux de PC, parce que la
+                                // machine RISC-V refusait le sien ; elle ne le refuse
+                                // plus. Ce qu'elle ne peut toujours pas, c'est mettre
+                                // le pilote bloc dans le noyau de quelqu'un — et ça,
+                                // seul un démarrage peut le dire, pas cette liste.
+                                if kind.couldBootHere {
+                                    KernelDiskMenu(
+                                        kernel: kernel, library: kernels,
+                                        chosen: disks[kernel.lastPathComponent]
+                                    ) { chosen in
+                                        attach(chosen, key: kernel.lastPathComponent)
+                                    }
+                                }
+                                // Le réseau ne concerne que la machine PC : la
+                                // carte RISC-V n'en a pas.
+                                if kind.couldBootHere, kind.core != .riscv32 {
+                                    MachineNetworkToggle(key: kernel.lastPathComponent)
+                                }
+                                // **Une machine de plus sur ce fichier**, avec son nom,
+                                // sa mémoire, son disque et sa session à elle. Un
+                                // bouton visible plutôt qu'un appui long : c'est le
+                                // geste qui fait exister la section du dessus, et un
+                                // geste caché ne se découvre pas.
+                                if InstalledMachines.canInstall(kind) || cloudImages.contains(kernel) {
+                                    Button {
+                                        machineName = InstalledMachines.suggestedName(
+                                            forImage: kernel.lastPathComponent)
+                                        installing = kernel
+                                    } label: {
+                                        ChipLabel(text: "Installer une machine", symbol: "plus.square.on.square",
+                                                  color: Design.accent)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         }
-                        // Le réseau ne concerne que la machine PC : la
-                        // carte RISC-V n'en a pas.
-                        if kinds[kernel]?.couldBootHere == true, kinds[kernel]?.core != .riscv32 {
-                            MachineNetworkToggle(key: kernel.lastPathComponent)
-                        }
-                        // **Une machine de plus sur ce fichier**, avec son nom,
-                        // sa mémoire, son disque et sa session à elle. Un
-                        // bouton visible plutôt qu'un appui long : c'est le
-                        // geste qui fait exister la section du dessus, et un
-                        // geste caché ne se découvre pas.
-                        if InstalledMachines.canInstall(kinds[kernel] ?? .unknown)
-                            || cloudImages.contains(kernel) {
-                            Button {
-                                machineName = InstalledMachines.suggestedName(
-                                    forImage: kernel.lastPathComponent)
-                                installing = kernel
-                            } label: {
-                                Label("Installer une machine", systemImage: "plus.square.on.square")
-                                    .font(.footnote)
-                            }
-                            .buttonStyle(.borderless)
-                        }
+                        .card()
+                        .cardRow()
                     }
-                }
-                // **La suppression était là, et elle ne se trouvait pas.**
-                // C'était un `.swipeActions` sur la ligne ; or la ligne finit
-                // par le curseur de mémoire, qui prend cent trente points à
-                // droite — là même où un balayage vers la gauche commence — et
-                // qui avale les glissements horizontaux. Un `.onDelete` garde
-                // le balayage et ajoute le bouton « Modifier » de la barre :
-                // un chemin visible, qui ne dispute rien au curseur.
-                .onDelete { positions in
-                    var removed: [String] = []
-                    for kernel in positions.map({ kernels[$0] }) {
-                        removed += KernelLibrary.delete(kernel)
+                    // **La suppression était là, et elle ne se trouvait pas.**
+                    // C'était un `.swipeActions` sur la ligne ; or la ligne finit
+                    // par le curseur de mémoire, qui prend cent trente points à
+                    // droite — là même où un balayage vers la gauche commence — et
+                    // qui avale les glissements horizontaux. Un `.onDelete` garde
+                    // le balayage et ajoute le bouton « Modifier » de la barre :
+                    // un chemin visible, qui ne dispute rien au curseur.
+                    .onDelete { positions in
+                        var removed: [String] = []
+                        for kernel in positions.map({ kernels[$0] }) {
+                            removed += KernelLibrary.delete(kernel)
+                        }
+                        reloadLibrary()
+                        note = Self.removedMachinesNote(removed)
+                            .map { Note(text: $0, symbol: "trash") }
+                        storage = KernelLibrary.storageReport()
                     }
-                    reloadLibrary()
-                    note = Self.removedMachinesNote(removed)
-                        .map { Note(text: $0, symbol: "trash") }
-                    storage = KernelLibrary.storageReport()
-                }
-            } footer: {
-                VStack(alignment: .leading, spacing: 8) {
-                    // **Ce que wisq ne lance pas, dit d'abord** : Windows et
-                    // macOS, par choix. Une image de l'un ou de l'autre
-                    // importée ici ne démarrera jamais ; autant le savoir
-                    // avant de la télécharger. Ils s'ouvrent à distance.
-                    Text("**Windows et macOS ne se lancent pas sur wisq**, et c'est un choix délibéré. Pour l'un ou l'autre, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
-                    Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
-                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système —, et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
-                    Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
+                } header: {
+                    Text("Bibliothèque")
+                } footer: {
+                    // Les explications (mémoire, disque, ce que wisq ne lance
+                    // pas) sont dans « À propos » : `MachinesAboutView`.
+                    Text("Touchez une machine pour la démarrer. Le bouton « i » dit ce que wisq lance, et comment régler la mémoire et le disque.")
                 }
             }
 
@@ -237,8 +250,6 @@ struct LocalVMListView: View {
                     }
                 } header: {
                     Text("Stockage")
-                } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 8 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension. Une image d'installation laisse en plus son noyau et son initramfs déballés à côté : ils repartent avec elle quand vous la supprimez, et le démarrage suivant les ressort de toute façon.")
                 }
             }
 
@@ -250,21 +261,14 @@ struct LocalVMListView: View {
             }
         }
         .navigationTitle("Machines")
-        .overlay {
-            if kernels.isEmpty {
-                ContentUnavailableView {
-                    Label("Aucun noyau", systemImage: "terminal")
-                } description: {
-                    Text("Importez une image depuis Fichiers, ou téléchargez Alpine directement : elle démarre sur ce téléphone. Une machine qui tourne ailleurs s'atteint par les connexions à distance.")
-                } actions: {
-                    Button("Télécharger Alpine") { showDownload = true }
-                        .buttonStyle(.borderedProminent)
-                    Button("Importer une image") { showImporter = true }
-                    Button("Connexions à distance", action: onRemote)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showAbout = true
+                } label: {
+                    Label("À propos des machines", systemImage: "info.circle")
                 }
             }
-        }
-        .toolbar {
             // Le chemin visible vers la suppression. Il ne s'affiche que
             // lorsqu'il y a quelque chose à supprimer : un « Modifier » sur
             // une liste vide n'ouvre que du vide.
@@ -286,7 +290,7 @@ struct LocalVMListView: View {
                     Button {
                         showDownload = true
                     } label: {
-                        Label("Télécharger Alpine", systemImage: "arrow.down.circle")
+                        Label("Télécharger un bureau ou une image", systemImage: "arrow.down.circle")
                     }
                     Divider()
                     Button(action: onRemote) {
@@ -375,6 +379,9 @@ struct LocalVMListView: View {
             Button("Annuler", role: .cancel) { installing = nil }
         } message: {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .sheet(isPresented: $showAbout) {
+            NavigationStack { MachinesAboutView() }
         }
         .sheet(isPresented: $showDownload) {
             ImageDownloadSheet(onDownloaded: { url in
@@ -487,6 +494,97 @@ struct LocalVMListView: View {
         booting = target
     }
 
+    /// **L'accueil d'une bibliothèque vide** : une seule chose à faire en
+    /// premier — aller chercher une machine —, et les deux autres portes.
+    private var welcome: some View {
+        VStack(spacing: Design.Space.l) {
+            // Trois badges qui se chevauchent : ce que la bibliothèque
+            // contiendra. Décoratifs, comme tous les badges.
+            HStack(spacing: -14) {
+                DistributionBadge(distribution: .alpine, size: 56)
+                    .rotationEffect(.degrees(-8))
+                DistributionBadge(distribution: .void, desktop: true, size: 68)
+                    .zIndex(1)
+                    .shadow(color: .black.opacity(0.18), radius: 8, y: 4)
+                DistributionBadge(distribution: .debian, size: 56)
+                    .rotationEffect(.degrees(8))
+            }
+            .padding(.top, Design.Space.s)
+            VStack(spacing: Design.Space.s) {
+                Text("Aucune machine")
+                    .font(.title2.weight(.bold))
+                Text("Téléchargez un bureau prêt ou une image Linux : elle démarre sur ce téléphone, sans serveur.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button {
+                showDownload = true
+            } label: {
+                // Un texte qui passe à la ligne plutôt qu'un `Label` coupé :
+                // « Télécharger un bureau o… » au premier tour de captures.
+                HStack(spacing: Design.Space.s) {
+                    Image(systemName: "arrow.down.circle.fill")
+                    Text("Télécharger un bureau ou une image")
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+            // Les deux autres portes, l'une sous l'autre et nommées en entier :
+            // côte à côte, leurs mots se coupaient (« Impor-ter »).
+            VStack(spacing: Design.Space.s) {
+                Button { showImporter = true } label: {
+                    Label("Importer une image", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                }
+                Button(action: onRemote) {
+                    Label("Connexions à distance", systemImage: "network")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.large)
+        }
+        .frame(maxWidth: .infinity)
+        .card(padding: Design.Space.xl)
+    }
+
+    /// Ce qu'on fait d'une machine installée, hors la démarrer : le même menu
+    /// sous « Plus » et sous l'appui long.
+    @ViewBuilder
+    private func machineActions(_ machine: InstalledMachine, image: URL) -> some View {
+        Button("Renommer", systemImage: "pencil") {
+            machineName = machine.name
+            renaming = machine
+        }
+        // L'emporter sur un autre téléphone : réglages, écritures et
+        // session, sans l'image — l'autre bibliothèque doit l'avoir.
+        Button("Exporter", systemImage: "square.and.arrow.up") {
+            export(machine)
+        }
+        // Repartir d'où cette machine est — installée, configurée,
+        // session comprise — sans toucher à l'original.
+        Button("Dupliquer", systemImage: "plus.square.on.square") {
+            duplicate(machine)
+        }
+        // Une machine dont le disque porte un système démarre ce
+        // disque ; celle-ci revient à son image pour un démarrage —
+        // réparer, réinstaller —, et le suivant revient au disque.
+        if Self.isInstallationImage(kinds[image]) {
+            Button("Démarrer l'image d'installation", systemImage: "opticaldisc") {
+                ImageBootRequest.request(forKernel: machine.key)
+                start(BootTarget(url: image, machine: machine))
+            }
+        }
+    }
+
     /// Les machines installées : chacune démarre son image sous ses propres
     /// clés, et dit si elle reprendra sa session.
     @ViewBuilder
@@ -494,67 +592,54 @@ struct LocalVMListView: View {
         Section {
             ForEach(installed) { machine in
                 let image = imageURL(of: machine)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Button {
-                            start(BootTarget(url: image, machine: machine))
+                VStack(alignment: .leading, spacing: Design.Space.m) {
+                    Button {
+                        start(BootTarget(url: image, machine: machine))
+                    } label: {
+                        InstalledMachineRow(
+                            machine: machine,
+                            role: LibraryEntry.role(of: kinds[image] ?? .unknown,
+                                                   cloudImage: cloudImages.contains(image)),
+                            entry: storage.entry(forKernel: machine.key))
+                    }
+                    .buttonStyle(.plain)
+                    KernelMemoryMenu(
+                        kernel: image, key: machine.key, core: kinds[image]?.core
+                    ) { forgotten in
+                        note = Self.note(forgotten: forgotten)
+                            .map { Note(text: $0, symbol: "memorychip") }
+                        storage = KernelLibrary.storageReport()
+                    }
+                    SettingsChips {
+                        // Une image d'installation est déjà `/dev/vda` : le disque
+                        // choisi pour une machine qui la démarre arrive en second,
+                        // et le menu le dit.
+                        if InstalledMachines.canInstall(kinds[image] ?? .unknown)
+                            || cloudImages.contains(image) {
+                            KernelDiskMenu(
+                                kernel: image, library: kernels, chosen: disks[machine.key],
+                                title: Self.isInstallationImage(kinds[image]) || cloudImages.contains(image)
+                                    ? "Disque d'installation (vdb)" : "Disque",
+                                createBlank: { size in createBlankDisk(for: machine, bytes: size) }
+                            ) { chosen in
+                                attach(chosen, key: machine.key)
+                            }
+                        }
+                        MachineNetworkToggle(key: machine.key)
+                        // **Les gestes de l'appui long, visibles** : un menu
+                        // caché derrière un appui ne se découvre pas.
+                        Menu {
+                            machineActions(machine, image: image)
                         } label: {
-                            InstalledMachineRow(
-                                machine: machine,
-                                role: LibraryEntry.role(of: kinds[image] ?? .unknown,
-                                                       cloudImage: cloudImages.contains(image)),
-                                entry: storage.entry(forKernel: machine.key))
+                            ChipLabel(text: "Plus", symbol: "ellipsis")
                         }
-                        .buttonStyle(.plain)
-                        Spacer(minLength: 12)
-                        KernelMemoryMenu(
-                            kernel: image, key: machine.key, core: kinds[image]?.core
-                        ) { forgotten in
-                            note = Self.note(forgotten: forgotten)
-                                .map { Note(text: $0, symbol: "memorychip") }
-                            storage = KernelLibrary.storageReport()
-                        }
+                        .accessibilityLabel("Plus d'actions pour \(machine.name)")
                     }
-                    // Une image d'installation est déjà `/dev/vda` : le disque
-                    // choisi pour une machine qui la démarre arrive en second,
-                    // et le menu le dit.
-                    if InstalledMachines.canInstall(kinds[image] ?? .unknown)
-                        || cloudImages.contains(image) {
-                        KernelDiskMenu(
-                            kernel: image, library: kernels, chosen: disks[machine.key],
-                            title: Self.isInstallationImage(kinds[image]) || cloudImages.contains(image)
-                                ? "Disque d'installation (vdb)" : "Disque",
-                            createBlank: { size in createBlankDisk(for: machine, bytes: size) }
-                        ) { chosen in
-                            attach(chosen, key: machine.key)
-                        }
-                    }
-                    MachineNetworkToggle(key: machine.key)
                 }
+                .card()
+                .cardRow()
                 .contextMenu {
-                    Button("Renommer", systemImage: "pencil") {
-                        machineName = machine.name
-                        renaming = machine
-                    }
-                    // L'emporter sur un autre téléphone : réglages, écritures et
-                    // session, sans l'image — l'autre bibliothèque doit l'avoir.
-                    Button("Exporter", systemImage: "square.and.arrow.up") {
-                        export(machine)
-                    }
-                    // Repartir d'où cette machine est — installée, configurée,
-                    // session comprise — sans toucher à l'original.
-                    Button("Dupliquer", systemImage: "plus.square.on.square") {
-                        duplicate(machine)
-                    }
-                    // Une machine dont le disque porte un système démarre ce
-                    // disque ; celle-ci revient à son image pour un démarrage —
-                    // réparer, réinstaller —, et le suivant revient au disque.
-                    if Self.isInstallationImage(kinds[image]) {
-                        Button("Démarrer l'image d'installation", systemImage: "opticaldisc") {
-                            ImageBootRequest.request(forKernel: machine.key)
-                            start(BootTarget(url: image, machine: machine))
-                        }
-                    }
+                    machineActions(machine, image: image)
                 }
             }
             .onDelete { positions in
@@ -566,9 +651,9 @@ struct LocalVMListView: View {
                 storage = KernelLibrary.storageReport()
             }
         } header: {
-            Text("Machines installées")
+            Text("Mes machines")
         } footer: {
-            Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager. Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Une fois le système installé sur son disque, la machine démarre ce disque, et non plus l'image ; l'appui long propose de redémarrer l'image d'installation une fois, pour réparer ou réinstaller. Appui long aussi pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image ; la supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
+            Text("Touchez une machine pour la reprendre ou la démarrer. « Plus », ou un appui long : renommer, dupliquer, exporter.")
         }
     }
 
@@ -684,6 +769,48 @@ struct LocalVMListView: View {
     }
 }
 
+/// **Ce que la liste des machines expliquait sous elle**, rangé dans une
+/// feuille. Ces paragraphes étaient le pied de la liste : quatre blocs de
+/// texte sous les machines, et, liste vide, sous l'accueil — qu'ils
+/// traversaient (capture d'un iPhone, le 22 novembre).
+struct MachinesAboutView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section("Ce que wisq lance") {
+                Text("Une image Linux de PC (x86-64) — Alpine, Void, Debian… — démarre sur ce téléphone, sans serveur, avec le réseau. Un noyau RISC-V 32 bits démarre en une à deux secondes.")
+                Text("**Windows et macOS ne se lancent pas sur wisq**, et c'est un choix délibéré. Pour l'un ou l'autre, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
+            }
+            Section("Machines installées") {
+                Text("Chaque machine garde sa mémoire, son disque et ce qu'elle y a écrit, et reprend sa session là où vous l'avez laissée. Plusieurs machines peuvent démarrer la même image sans rien partager.")
+                Text("Un **disque vierge** se crée depuis le menu du disque : l'invité le voit vide sur `/dev/vda`, à formater (`mkfs.ext4 /dev/vda`) ; il ne coûte que ce que la machine y écrit. Une fois le système installé sur son disque, la machine démarre ce disque, et non plus l'image ; « Plus » propose de redémarrer l'image d'installation une fois, pour réparer ou réinstaller.")
+                Text("« Plus », ou un appui long, pour renommer, dupliquer — la copie reprend la session de l'original — ou exporter : une machine exportée s'importe par le bouton « Importer », sur un téléphone qui a son image. La supprimer efface sa session, ses écritures et son disque vierge, pas l'image.")
+            }
+            Section("Mémoire") {
+                Text("Le curseur « Mémoire » de chaque machine règle sa mémoire. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système.")
+                Text("Le plafond dépend de l'architecture : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V, dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits.")
+                Text("Changer ce réglage repart du noyau : une session prise à une autre taille ne peut pas être reprise.")
+            }
+            Section("Disque") {
+                Text("Chaque noyau peut recevoir un **disque** : une image importée ici, que l'invité voit sur `/dev/vda`. Le disque est lu sur place, quelle que soit sa taille.")
+                Text("Ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre ; le fichier importé ne change jamais. wisq ne monte rien tout seul, et ne peut pas ajouter le pilote bloc à un noyau qui ne l'a pas.")
+            }
+            Section("Stockage") {
+                Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné, et un disque **en plus** : l'instantané emporte ce que l'invité y a écrit.")
+                Text("Une image d'installation laisse son noyau et son initramfs déballés à côté ; ils repartent avec elle quand vous la supprimez.")
+            }
+        }
+        .navigationTitle("À propos")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Fermer") { dismiss() }
+            }
+        }
+    }
+}
+
 /// Une ligne de la bibliothèque : son nom, ce qu'elle **est**, et ce qu'elle
 /// occupe.
 ///
@@ -699,44 +826,102 @@ private struct LibraryRow: View {
     let kernel: URL
     let role: LibraryEntry.Role
     let storageLine: String?
+    /// Ce fichier démarre-t-il quand on le touche ? Il ne porte le bouton de
+    /// lecture que dans ce cas ; les autres se touchent quand même, et leur
+    /// refus explique quoi faire.
+    let bootable: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label(kernel.lastPathComponent, systemImage: LibraryEntry.symbol(role))
-            Text(LibraryEntry.word(role))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if let storageLine {
-                Text(storageLine)
-                    .font(.caption2)
+        let name = kernel.lastPathComponent
+        HStack(spacing: Design.Space.m) {
+            DistributionBadge(distribution: MachineBadge.distribution(of: [name]),
+                              desktop: MachineBadge.isDesktop([name]), size: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                Label(LibraryEntry.word(role), systemImage: LibraryEntry.symbol(role))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                if let storageLine {
+                    Text(storageLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            if bootable {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 30))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Design.accent)
             }
         }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(bootable ? "Démarre cette image" : "")
     }
 }
 
-/// Une machine installée : son nom, ce qu'elle démarre, et si elle reprendra
-/// sa session.
-///
-/// « Reprend sa session » est ce que la ligne a de plus utile à dire : c'est la
-/// différence entre retrouver son travail et redémarrer, et rien d'autre à
-/// l'écran ne la montre avant de toucher.
+/// Une machine installée : son badge, son nom, ce qu'elle démarre, et son
+/// état (`MachineState`) — dont « Session sauvée », ce que la carte a de plus
+/// utile à dire : c'est la différence entre retrouver son travail et
+/// redémarrer, et rien d'autre à l'écran ne la montre avant de toucher.
 private struct InstalledMachineRow: View {
     let machine: InstalledMachine
     let role: LibraryEntry.Role
     let entry: LocalStorage.Entry?
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Label(machine.name, systemImage: "desktopcomputer")
+        let names = [machine.name, machine.image]
+        let state = MachineState.of(savedSessions: entry?.savedMachineCount ?? 0,
+                                    lastStartedAt: machine.lastStartedAt)
+        let badge = DistributionBadge(distribution: MachineBadge.distribution(of: names),
+                                      desktop: MachineBadge.isDesktop(names), size: 52)
+        Group {
+            // En très grand texte, le badge et le bouton passent au-dessus :
+            // côte à côte, le nom n'aurait plus que quelques lettres de large.
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: Design.Space.m) {
+                    HStack {
+                        badge
+                        Spacer()
+                        playButton(state)
+                    }
+                    details(state)
+                }
+            } else {
+                HStack(spacing: Design.Space.m) {
+                    badge
+                    details(state)
+                    Spacer(minLength: 0)
+                    playButton(state)
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(state.action)
+    }
+
+    private func details(_ state: MachineState) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(machine.name)
+                .font(.headline)
             Text("\(machine.image) · \(LibraryEntry.word(role))")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            if let entry, entry.savedMachineCount > 0 {
-                Label("Reprend sa session · \(LocalStorage.describe(bytes: entry.savedMachineBytes))",
-                      systemImage: "play.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.green)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            FlowLayout(spacing: Design.Space.s) {
+                StatePill(state: state)
+                if let entry, entry.savedMachineBytes > 0 {
+                    Text(LocalStorage.describe(bytes: entry.savedMachineBytes))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
             if let entry, entry.diskWritesBytes > 0 {
                 Text("\(LocalStorage.describe(bytes: entry.diskWritesBytes)) écrits sur son disque")
@@ -744,6 +929,26 @@ private struct InstalledMachineRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func playButton(_ state: MachineState) -> some View {
+        Image(systemName: state == .sessionSaved ? "play.fill" : "power")
+            .font(.system(size: 18, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 46, height: 46)
+            .background(Circle().fill(Design.accent))
+            .accessibilityHidden(true)
+    }
+}
+
+/// **Les réglages d'une carte, en puces**, qui passent à la ligne quand la
+/// place manque (`FlowLayout`) : ni défilement qui disputerait le balayage
+/// de la rangée, ni puce coupée.
+private struct SettingsChips<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        FlowLayout(spacing: Design.Space.s) { content }
     }
 }
 
@@ -762,11 +967,18 @@ private struct MachineNetworkToggle: View {
     }
 
     var body: some View {
-        Toggle(isOn: Binding(get: { !cut }, set: { cut = !$0 })) {
-            Label(cut ? "Réseau coupé" : "Réseau", systemImage: cut ? "network.slash" : "network")
-                .font(.footnote)
+        // Une puce qui dit l'état et le change d'un toucher ; VoiceOver la
+        // lit comme un interrupteur.
+        Button {
+            cut.toggle()
+        } label: {
+            ChipLabel(text: cut ? "Réseau coupé" : "Réseau", symbol: cut ? "network.slash" : "network",
+                      color: cut ? .secondary : .green)
         }
-        .toggleStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Réseau")
+        .accessibilityValue(cut ? "coupé" : "branché")
+        .accessibilityAddTraits(.isToggle)
         .accessibilityHint("Pris au prochain démarrage ou à la prochaine reprise")
         .onChange(of: cut) { _, now in
             MachineNetwork.setCut(now, forKernel: key)
@@ -814,14 +1026,13 @@ private struct KernelDiskMenu: View {
                 Button(disk.lastPathComponent) { choose(disk.lastPathComponent) }
             }
         } label: {
-            Label("\(title) : \(chosen ?? "aucun")", systemImage: "externaldrive")
-                .font(.footnote)
+            // Un fichier choisi puis disparu autrement que par la corbeille de
+            // cette liste — remplacé, sorti du dossier — laisse un nom qui ne
+            // désigne plus rien. Le dire est plus utile que de l'effacer en
+            // silence : le démarrage, lui, se fera sans disque.
+            ChipLabel(text: "\(title) : \(chosen ?? "aucun")", symbol: "externaldrive",
+                      color: missing(candidates) ? .red : .primary)
         }
-        // Un fichier choisi puis disparu autrement que par la corbeille de
-        // cette liste — remplacé, sorti du dossier — laisse un nom qui ne
-        // désigne plus rien. Le dire est plus utile que de l'effacer en
-        // silence : le démarrage, lui, se fera sans disque.
-        .foregroundStyle(missing(candidates) ? Color.red : Color.secondary)
         .accessibilityLabel("Disque de \(kernel.lastPathComponent)")
         .accessibilityValue(chosen ?? "aucun")
     }
@@ -874,6 +1085,22 @@ private struct KernelMemoryMenu: View {
     let onChange: (Int) -> Void
 
     @State private var size: UInt64
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// Le curseur, ou rien quand un seul palier est offert.
+    @ViewBuilder
+    private func slider(_ index: Binding<Double>, steps: [UInt64]) -> some View {
+        if steps.count > 1 {
+            Slider(value: index, in: 0...Double(steps.count - 1), step: 1)
+                .tint(Design.accent)
+                // Le curseur nomme ses deux bouts : sans ça, un glissement
+                // à mi-course ne dit pas sur quelle échelle il porte.
+                .accessibilityLabel("Mémoire de \(kernel.lastPathComponent)")
+                .accessibilityValue(KernelMemory.describe(size))
+        } else {
+            Spacer(minLength: 0)
+        }
+    }
 
     init(kernel: URL, key: String? = nil, core: GuestArchitecture.Core?,
          onChange: @escaping (Int) -> Void) {
@@ -902,17 +1129,37 @@ private struct KernelMemoryMenu: View {
                 size = steps[clamped]
             })
 
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(KernelMemory.describe(size))
-                .font(.footnote.monospacedDigit())
-                .foregroundStyle(.secondary)
-            if steps.count > 1 {
-                Slider(value: index, in: 0...Double(steps.count - 1), step: 1)
-                    .frame(width: 130)
-                    // Le curseur nomme ses deux bouts : sans ça, un glissement
-                    // à mi-course ne dit pas sur quelle échelle il porte.
-                    .accessibilityLabel("Mémoire de \(kernel.lastPathComponent)")
-                    .accessibilityValue(KernelMemory.describe(size))
+        // Une pile plutôt qu'un `Label` figé à sa taille idéale : dans une
+        // rangée de liste, celui-ci perdait son mot et prenait une hauteur
+        // démesurée (premier tour de captures).
+        let label = HStack(spacing: 6) {
+            Image(systemName: "memorychip")
+            Text("Mémoire")
+                .lineLimit(1)
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(.secondary)
+        .layoutPriority(1)
+        let value = Text(KernelMemory.describe(size))
+            .font(.footnote.monospacedDigit().weight(.semibold))
+        // Une rangée de la carte : le nom du réglage, le curseur, la valeur.
+        // En très grand texte, le curseur passe dessous, sur toute la largeur.
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    HStack {
+                        label
+                        Spacer()
+                        value
+                    }
+                    slider(index, steps: steps)
+                }
+            } else {
+                HStack(spacing: Design.Space.m) {
+                    label
+                    slider(index, steps: steps)
+                    value.frame(minWidth: 56, alignment: .trailing)
+                }
             }
         }
         .onChange(of: size) { previous, chosen in
@@ -1034,6 +1281,9 @@ struct LocalVMTerminalView: View {
     var installed: InstalledMachine?
 
     @State private var model = LocalVMModel()
+    /// Démarrer la machine en arrivant : toujours, sauf pour un modèle déjà
+    /// posé (`init(kernelURL:installed:posed:)`).
+    private var bootsOnAppear = true
     @State private var commandLine = ""
     /// Le bureau de l'invité, posé par-dessus la console : voir `LocalDesktop`.
     @State private var showingDesktop = false
@@ -1071,8 +1321,9 @@ struct LocalVMTerminalView: View {
                     Text("Console").tag(true)
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, Design.Space.m)
+                .padding(.vertical, Design.Space.s)
+                .background(.bar)
             }
             if let screen = model.screen, !showsConsole {
                 GuestScreenView(screen: screen, onTouch: { x, y, buttons in
@@ -1130,11 +1381,22 @@ struct LocalVMTerminalView: View {
                     .accessibilityLabel(resumeWait)
             }
             if !fullScreen, let heartbeat = model.heartbeat {
-                Text(heartbeat)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Avancement de la machine : \(heartbeat)")
+                // Un point vert quand la machine tourne, et la phrase.
+                HStack(spacing: Design.Space.s) {
+                    Circle()
+                        .fill(model.status.isRunning ? Color.green : Color.secondary)
+                        .frame(width: 7, height: 7)
+                    Text(heartbeat)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Design.Space.m)
+                .padding(.vertical, Design.Space.xs)
+                .background(.bar)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Avancement de la machine : \(heartbeat)")
             }
 
             // **Ce que la frappe sur l'écran a à dire** : un collage long qui
@@ -1167,7 +1429,7 @@ struct LocalVMTerminalView: View {
             // elles on lance des commandes, on ne travaille pas. Ce que chaque
             // touche envoie vient de `TerminalKey`, tenu par des tests.
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: Design.Space.s) {
                     // **Le clavier se range** : sorti, il couvre la moitié
                     // du téléphone, et on regarde l'écran de la machine bien
                     // plus souvent qu'on n'y tape. Ce bouton le rentre ou le
@@ -1190,10 +1452,8 @@ struct LocalVMTerminalView: View {
                         }
                     } label: {
                         Image(systemName: keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(minWidth: 40, minHeight: 32)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(KeyCapStyle(held: keyboardShown))
                     .accessibilityLabel(keyboardShown ? "Ranger le clavier" : "Sortir le clavier")
                     // **Coller**, en tête de la barre : le champ de saisie
                     // n'a qu'une ligne, et un script copié depuis une page y
@@ -1209,11 +1469,9 @@ struct LocalVMTerminalView: View {
                             commandLine = ""
                         }
                     } label: {
-                        Label("coller", systemImage: "doc.on.clipboard")
-                            .font(.system(size: 14, weight: .medium))
-                            .frame(minHeight: 32)
+                        Image(systemName: "doc.on.clipboard")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(KeyCapStyle())
                     .accessibilityLabel("Coller le presse-papiers dans la console")
                     ForEach(TerminalKey.bar, id: \.self) { key in
                         Button {
@@ -1227,21 +1485,23 @@ struct LocalVMTerminalView: View {
                         } label: {
                             Text(key.label)
                                 .font(.system(size: 14, weight: .medium, design: .monospaced))
-                                .frame(minWidth: 40, minHeight: 32)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(KeyCapStyle())
                         .accessibilityLabel(key.spokenName)
                     }
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, Design.Space.m)
+                .padding(.vertical, 2)
             }
-            .padding(.top, 6)
-            .background(.ultraThinMaterial)
+            .padding(.top, Design.Space.s)
+            .background(.bar)
 
-            HStack(spacing: 8) {
+            HStack(spacing: Design.Space.s) {
                 TextField("commande", text: $commandLine)
-                    .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
+                    .padding(.horizontal, Design.Space.m)
+                    .padding(.vertical, Design.Space.s)
+                    .background(Capsule().fill(Design.chipFill))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($inputFocused)
@@ -1253,11 +1513,19 @@ struct LocalVMTerminalView: View {
                     }
                 // Le bouton, lui, ne touche pas au clavier : rangé, il le
                 // reste.
-                Button("Entrée", action: submit)
-                    .buttonStyle(.borderedProminent)
+                Button(action: submit) {
+                    Image(systemName: "return")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(Design.accent))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Entrée")
             }
-            .padding(10)
-            .background(.ultraThinMaterial)
+            .padding(.horizontal, Design.Space.m)
+            .padding(.vertical, Design.Space.s)
+            .background(.bar)
         }
         // **Le bureau se pose par-dessus, il ne se présente pas.** Une
         // feuille ou une `fullScreenCover` ferait disparaître cet écran, et
@@ -1275,6 +1543,16 @@ struct LocalVMTerminalView: View {
         }
         .navigationTitle(installed?.name ?? kernelURL.lastPathComponent)
         .navigationBarTitleDisplayMode(.inline)
+        // **L'écran d'une machine est sombre, en mode clair aussi**, comme un
+        // lecteur de photos : l'écran de l'invité et la console sont noirs, et
+        // le titre noir de la barre s'y effaçait (deux tours de captures, un
+        // fond de barre n'y changeait rien sous iOS 26). Barre, touches et
+        // champ suivent la console.
+        .environment(\.colorScheme, .dark)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        // Un fond noir derrière les barres : leur matière se lit sur lui, et non
+        // sur le fond clair de la fenêtre, qui la rendait grise (troisième tour).
+        .background(Color.black.ignoresSafeArea())
         // Une seule visibilité pour la barre : deux modificateurs se
         // disputeraient, et le bureau comme le plein écran la veulent cachée.
         .toolbar(showingDesktop || fullScreen ? .hidden : .visible, for: .navigationBar)
@@ -1304,39 +1582,6 @@ struct LocalVMTerminalView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Fermer") { dismiss() }
             }
-            ToolbarItem(placement: .destructiveAction) {
-                Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
-                    model.stop()
-                    dismiss()
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button("Plein écran", systemImage: "arrow.up.left.and.arrow.down.right") {
-                    withAnimation { fullScreen = true }
-                }
-            }
-            // **Copier toute la console** : chaque ligne se sélectionne à part
-            // depuis qu'elles sont mises en page une par une (voir
-            // `ConsoleLinesView`) ; le tout part d'ici.
-            ToolbarItem(placement: .primaryAction) {
-                Button("Copier la console", systemImage: "doc.on.doc") {
-                    UIPasteboard.general.string = model.consoleText
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Menu("Taille du texte", systemImage: "textformat.size") {
-                    Button("Plus grand", systemImage: "plus.magnifyingglass") {
-                        textSize = ConsoleTextSize.larger(than: textSize)
-                    }
-                    .disabled(!ConsoleTextSize.canGrow(textSize))
-                    Button("Plus petit", systemImage: "minus.magnifyingglass") {
-                        textSize = ConsoleTextSize.smaller(than: textSize)
-                    }
-                    .disabled(!ConsoleTextSize.canShrink(textSize))
-                    Button("Taille normale") { textSize = ConsoleTextSize.standard }
-                        .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
-                }
-            }
             // Le bureau, quand la machine a le réseau. Il ne répond qu'une fois
             // un serveur VNC lancé dans l'invité ; d'ici là, la session dit
             // qu'elle ne joint personne, et `LocalDesktop.hint` dit quoi lancer.
@@ -1349,15 +1594,49 @@ struct LocalVMTerminalView: View {
                     .accessibilityHint(LocalDesktop.hint)
                 }
             }
-            // Offered only when there is something to forget. "Arrêter" also
-            // clears the saved machine, but only by ending the session; this is
-            // for the user whose guest is wedged and who wants to walk away now
-            // and come back to a clean boot.
-            if model.hasSavedMachine {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Oublier", systemImage: "trash") {
-                        model.forgetSavedMachine()
+            ToolbarItem(placement: .primaryAction) {
+                Button("Plein écran", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    withAnimation { fullScreen = true }
+                }
+            }
+            // **Le reste dans un menu** : cinq boutons côte à côte serraient le
+            // titre de la machine jusqu'à l'effacer.
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    // **Copier toute la console** : chaque ligne se sélectionne à
+                    // part depuis qu'elles sont mises en page une par une (voir
+                    // `ConsoleLinesView`) ; le tout part d'ici.
+                    Button("Copier la console", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = model.consoleText
                     }
+                    Menu("Taille du texte", systemImage: "textformat.size") {
+                        Button("Plus grand", systemImage: "plus.magnifyingglass") {
+                            textSize = ConsoleTextSize.larger(than: textSize)
+                        }
+                        .disabled(!ConsoleTextSize.canGrow(textSize))
+                        Button("Plus petit", systemImage: "minus.magnifyingglass") {
+                            textSize = ConsoleTextSize.smaller(than: textSize)
+                        }
+                        .disabled(!ConsoleTextSize.canShrink(textSize))
+                        Button("Taille normale") { textSize = ConsoleTextSize.standard }
+                            .disabled(ConsoleTextSize.nearest(textSize) == ConsoleTextSize.standard)
+                    }
+                    // Offered only when there is something to forget. "Arrêter"
+                    // also clears the saved machine, but only by ending the
+                    // session; this is for the user whose guest is wedged and who
+                    // wants to walk away now and come back to a clean boot.
+                    if model.hasSavedMachine {
+                        Button("Oublier", systemImage: "trash") {
+                            model.forgetSavedMachine()
+                        }
+                    }
+                    Divider()
+                    Button("Arrêter", systemImage: "stop.fill", role: .destructive) {
+                        model.stop()
+                        dismiss()
+                    }
+                } label: {
+                    Label("Plus", systemImage: "ellipsis.circle")
                 }
             }
         }
@@ -1376,7 +1655,7 @@ struct LocalVMTerminalView: View {
         // son bouton. Ouvert à chaque machine, il cachait la moitié de
         // l'écran à qui ne venait que regarder.
         .onAppear {
-            model.boot(kernelURL: kernelURL, installed: installed)
+            if bootsOnAppear { model.boot(kernelURL: kernelURL, installed: installed) }
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
@@ -1395,6 +1674,20 @@ struct LocalVMTerminalView: View {
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(to: phase, kernelURL: kernelURL)
         }
+    }
+
+    init(kernelURL: URL, installed: InstalledMachine? = nil) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+    }
+
+    /// **L'écran d'un modèle déjà posé** (`LocalVMModel.pose`), qu'il ne
+    /// démarre pas : ce que les aperçus de l'interface photographient.
+    init(kernelURL: URL, installed: InstalledMachine? = nil, posed: LocalVMModel) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+        _model = State(initialValue: posed)
+        bootsOnAppear = false
     }
 
     private func submit() {

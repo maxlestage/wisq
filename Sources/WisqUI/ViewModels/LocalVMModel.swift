@@ -103,6 +103,19 @@ public final class LocalVMModel {
     /// cannot see — or outlive — another one's saved machine.
     private let storage: URL?
 
+    /// **Un état posé, sans machine** : ce que les aperçus de l'interface
+    /// (`Tests/WisqApercus`) montrent d'une machine en marche, sans démarrer
+    /// de noyau. Interne au module : rien dans l'application ne l'appelle, et
+    /// un modèle ainsi posé n'a pas de machine à suspendre ni à arrêter.
+    func pose(status: Status, consoleLines: [String], screen: (any GuestScreen)?,
+              heartbeat: String?, desktopPort: UInt16? = nil) {
+        self.status = status
+        self.consoleLines = consoleLines
+        self.screen = screen
+        self.heartbeat = heartbeat
+        self.desktopPort = desktopPort
+    }
+
     public init(storageDirectory: URL? = nil) {
         storage = storageDirectory
     }

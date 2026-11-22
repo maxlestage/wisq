@@ -205,7 +205,7 @@ source rendue après chacun et `git diff` comparé (script
   tourner `pc_carte` sans fin (arrêté à la main après vingt-cinq minutes,
   compté comme tombé ; `pc_rapide` et `pc_ecran` étaient déjà tombés).
 
-**Les tests** : trois de plus (4 388 → 4 391 au compte publié ; Rust 1 230 →
+**Les tests** : trois de plus (4 388 → 4 391 au compte publié, 4 408 une fois master fusionné ; Rust 1 230 →
 1 233).
 
 **Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
@@ -239,6 +239,427 @@ non plus.
   file à tenir, et un bloc déplacé dans sa paire reste juste.
 - *Le contrat de `poursuivre`*, les autres périphériques, `invlpg` : comme le
   tour précédent les a laissés.
+## 2026-11-22 — Machine PC en Rust : « Arch bloque » n'était pas un blocage — la ligne d'état ne dit plus « en rond » d'un invité qui calcule, et la console ne double plus les lignes du noyau
+
+**Ce qui n'allait pas, vu sur l'iPhone (build TestFlight 135, `94dba588`).**
+Une machine Arch Linux sur le cœur Rust : `Memory KASLR using RDRAND
+RDTSC...`, `Poking KASLR…`, puis trois lignes du noyau, chacune deux fois
+(l'erreur ACPI sans RSDP, TDX, `mce: Unable to init MCE device`), puis plus
+rien, et la ligne d'état :
+« 6,7 milliards d'instructions · 402,3 MIPS · en rond autour de
+0xffffffff9c990e5d ». Lu comme un blocage.
+
+**Ce que la course a montré : ce n'était pas l'image de cloud, et ce
+n'était pas un blocage.**
+
+- *L'image de cloud démarre.* `Arch-Linux-x86_64-cloudimg-20261115.625457`
+  (noyau 7.3.4-arch1-2), par le chemin de l'application (`IsoBoot.decide`,
+  le lecteur qcow2 du cœur Swift à travers l'ABI, l'écran, la carte réseau
+  sur `UserNetwork`, les réponses de la grille au terminal, le rythme du
+  mur, l'empreinte du mot de passe de `root`, 512 Mio) : le shell de
+  `root` à **34,5 milliards d'instructions, 519 s** ici. Par `wisq-pc`
+  aussi (1 Gio : 34,4 milliards, 447 s). Jusqu'à « Booting initrd » (sous
+  la ligne par défaut, celle de la capture) : vingt graines de `rdrand`, de
+  512 Mio à 12 Gio, l'horloge CMOS figée, une reprise d'instantané en plein
+  démarrage, les réponses de la grille au terminal — jamais rien de bloqué.
+  Le cœur Swift (`X86BootAttemptTests`) passe aussi dans la vraie racine.
+- *Sa console ne ressemble pas à la capture.* La ligne d'une image de cloud
+  (`CloudBoot`) n'a pas d'`earlyprintk` : ni « Memory KASLR » ni « Poking
+  KASLR », que le noyau n'écrit que sur la console précoce, ni lignes
+  doublées. Ces deux-là ne viennent que de `X86BootLoader.defaultCommandLine`
+  (`earlyprintk=serial,ttyS0,115200,keep`), que reçoit la ligne d'une
+  **image d'installation** (`IsoBoot.commandLine(from:)`).
+- *L'adresse nomme le noyau.* KASLR déplace le noyau par pas de 2 Mio : seul
+  `0x190e5d`, le reste modulo 2 Mio, compte. Dans le noyau de l'image de
+  cloud (symboles tirés de son `kallsyms` par `vmlinux-to-elf`), aucune
+  instruction de code ne tombe à ce reste ailleurs que dans du remplissage
+  `int3` ou dans `jbd2_journal_init_revoke`. Dans celui de l'**image
+  d'installation d'Arch du 1er novembre** (`archlinux-2026.11.01-x86_64.iso`,
+  noyau 7.2.11-arch1-1), c'est `lzma_main+0x74d`, une instruction du
+  décodeur de plage de xz.
+- *La capture, reproduite* : `wisq-pc --iso` sur cette image rend mot pour
+  mot les huit lignes de la capture, puis se tait **9,26 milliards
+  d'instructions**, jusqu'à `:: running early hook [udev]`. L'initramfs
+  (86 Mio) porte 64 Mio de modules non compressés puis 19 Mio de xz, qui en
+  font 68 : le noyau les décode (`lzma_main`) et en vérifie la somme
+  (`crc32_le`, octet par octet : ce processeur n'annonce pas `pclmulqdq`),
+  et le noyau d'Arch n'écrit que ses erreurs. À 402 MIPS, 23 s de silence ;
+  la capture est prise à 6,7 milliards, aux trois quarts. Ensuite l'image
+  va jusqu'à `archiso login:` (ci-dessous).
+
+**La cause, donc, en deux défauts de l'application.**
+
+1. *La ligne d'état a dit « en rond » d'un invité qui avançait.*
+   `GuestHeartbeat` le disait dès que deux relevés de RIP, pris à une
+   seconde d'écart, tombaient dans la même page. Un décodeur qui passe ses
+   secondes dans une fonction de quelques kibioctets fait exactement ça.
+2. *La console doublait chaque ligne du noyau.* `earlyprintk=…,keep` garde
+   la console précoce à côté de `ttyS0`, sur le même port. Le JOURNAL du
+   21 novembre l'avait mesuré sous l'émetteur (Void : 89 lignes doublées
+   sur 193) et laissé au cœur Swift, dont c'est la ligne.
+
+**Ce qui est fait.**
+
+- *Le poste compte ses tranches* (`Commandes::sejour`) : à chaque
+  publication (toutes les deux cent mille instructions), le nombre publié,
+  et combien ont trouvé RIP dans la page de la précédente. L'ABI le tend
+  par `wisq_pc_progress_pages` (80 → 81 fonctions ; la page
+  d'architecture le dit). Le cœur Swift compte de même à chaque vidage
+  (`X86Machine`), et `GuestProgress` porte les deux nombres.
+- *« En rond » se mérite* : la ligne ne le dit plus que si, entre les deux
+  relevés, **neuf publications sur dix** sont restées dans la page
+  (`GuestHeartbeat.loopShare`). Mesuré sous `wisq-pc`, tranche par tranche :
+  69 à 80 % pendant le déballage du xz (le décodeur appelle `crc32_le`,
+  puis l'écriture des fichiers), 98 % dans la boucle d'attente d'un noyau
+  en panique (`delay_tsc`), toutes dans un `jmp .`. Avec moins de vingt
+  publications entre les deux relevés, ou un cœur qui ne compte pas, les
+  deux relevés décident seuls, comme avant.
+- *La ligne par défaut perd `keep`*, sur les deux cœurs
+  (`X86BootLoader.defaultCommandLine`, `chargeur::LIGNE_PAR_DEFAUT`) : le
+  noyau éteint la console précoce quand `ttyS0` s'ouvre, et `ttyS0` ne
+  redit pas ce qu'elle a dit. Jusqu'au `/init` de l'image d'Arch : **cinq
+  lignes, chacune une fois**, au lieu de huit (ses trois messages deux
+  fois) ; jusqu'à « Welcome to Arch Linux » : 28 lignes, aucune répétée.
+
+**La preuve.**
+
+| image, par l'enveloppe Swift (écran, réseau, rythme du mur) | jusqu'à | instructions | ici | à 402 MIPS |
+| --- | --- | --- | --- | --- |
+| Arch, image d'installation du 1er novembre, 2 Gio | `:: running early hook` (`wisq-pc`) | 9,26 milliards | 79 s | 23 s |
+| | `archiso login:` | 87,2 milliards | 878 s | ~3 min 37 |
+| Arch, image de cloud du 15 novembre, 512 Mio, mot de passe | le shell de `root` | 34,5 milliards | 519 s | ~1 min 26 |
+| Alpine 3.24.4 (ISO), `wisq-pc`, horloge figée | `login:` | 5,765 → 5,756 milliards | 62 → 60 s | |
+
+Ce conteneur fait 77 à 117 MIPS sous la charge des autres sessions ; la
+dernière colonne est une division. Alpine change de 0,17 % : sa ligne perd
+cinq octets, que son noyau ne connaît pas (« Unknown kernel command line
+parameters »), et sa console est la même à l'ordre de deux lignes près
+(l'horloge figée, la même graine).
+
+**Les tests** : six de plus (4 388 → 4 394 au compte publié, 4 405 une fois master fusionné ; Swift 3 162,
+Rust 1 232).
+
+- Rust : `the_slices_say_whether_the_guest_stays_on_one_page` (`pc_poste`) —
+  un `jmp .` publie 40 tranches dont 39 restent ; un invité écrit à la main
+  qui boucle dans une page et appelle une routine posée 4 Kio plus loin, la
+  forme du décodeur, en garde 317 sur 400 ;
+  `the_default_command_line_does_not_keep_the_early_console`
+  (`pc_chargeur`) ; `abi/pc.c` : `wisq_pc_progress_pages` refuse un
+  pointeur nul, ne publie rien avant la première course, puis publie.
+- Swift : `GuestHeartbeatTests` (trois : la capture d'Arch n'est plus « en
+  rond », un noyau en panique l'est toujours, trop peu de tranches laissent
+  les deux relevés décider) ; `RustPCMachineTests` (un : les deux cœurs
+  comptent les tranches d'un `jmp .`) ; `X86BootLoaderTests` : la ligne par
+  défaut sans `keep`.
+
+**Les sabotages** : douze, d'une ligne, la source rendue après chacun,
+`git diff` identique avant et après. **Les douze tombent.**
+
+| où | sabotage | tombe dans |
+| --- | --- | --- |
+| le poste | la tranche restée jamais comptée ; toutes comptées restées ; la page lue à 16 Mio | `the_slices_say…` |
+| l'ABI | 1 rendu avant la première course | `abi/pc.c` |
+| le chargeur | `,keep` remis | `the_default_command_line_does_not_keep…` |
+| Swift | « en rond » sans la part ; la part à 70 % ; à 99 % ; sans le plancher de vingt tranches ; le cœur Swift qui ne compte pas les restées ; l'enveloppe Rust qui ne lit pas les tranches ; `,keep` remis | `GuestHeartbeatTests`, `RustPCMachineTests`, `X86BootLoaderTests` |
+
+**Ce qui reste.**
+
+- *Le déballage reste silencieux et long* : 9,3 milliards d'instructions
+  sans une ligne. Le noyau d'Arch n'écrit que ses erreurs, et le xz se
+  décode au rythme du cœur ; seul un cœur plus rapide le raccourcit
+  (`crc32_le`, neuf instructions par octet, n'en ferait qu'un quinzième
+  d'après sa boucle). La ligne d'état donne maintenant l'adresse sans
+  conclure ; elle ne dit pas « il déballe ».
+- *L'image que la personne a démarrée* : la feuille de téléchargement ne
+  propose que l'image de cloud, et c'est l'image d'installation qui rend la
+  capture. Une image d'installation importée à la main, ou gardée d'avant,
+  sous le même nom « Arch » dans la bibliothèque — à confirmer avec elle.
+- *Fedora et Ubuntu* : la feuille propose leurs images de cloud, dont la
+  ligne n'a pas d'`earlyprintk` (pas de doublement) et dont les noyaux
+  écrivent tout leur journal ; leurs initramfs sont en zstd. Non téléchargées
+  ni mesurées ici. La fausse boucle, elle, touchait tout invité qui calcule
+  longtemps dans une fonction (un déballage, un `mkfs`, une somme) : c'est
+  la ligne d'état qui est corrigée, pour toutes.
+- *Les bureaux prêts* gardent leur ligne de fabrication dans leur manifeste ;
+  ceux qui existent ne changent pas, une refabrication aura la nouvelle.
+## 2026-11-22 — Interface : la série « avant », un petit système de design, les machines en cartes, et quatre tours de captures
+
+**Ce qui n'allait pas.** L'utilisateur juge l'interface « pas belle ». Le
+premier run du workflow des aperçus sur master (**run 45033031541**, 24 PNG
+d'un iPhone simulé sous iOS 26, en clair, sombre et grand texte) l'a montré
+écran par écran :
+- *machines* : des rangées serrées, la même icône d'ordinateur pour toutes ;
+  le curseur de mémoire collé au nom ; un paragraphe de douze lignes sous les
+  machines installées ; en grand texte, le nom coupé en deux et le nom de
+  fichier sur cinq lignes ;
+- *accueil vide* : le bouton principal en pavé de quatre lignes au bas de
+  l'écran, loin de l'invitation ;
+- *écran d'une machine* : cinq boutons dans la barre, sans titre ; des
+  touches et un « Entrée » au style par défaut ;
+- *téléchargement* : un bureau prêt en texte serré, son action réduite à une
+  icône, des images aux noms de fichier pour titre ;
+- *connexions* : la même icône teintée partout, et le port écrit
+  « 3,389 » ;
+- *éditeur* : « le mot de passe VNC » pour une machine SPICE.
+
+**Ce qui est fait.**
+
+- *Le système de design* (`Sources/WisqUI/Views/Design.swift`) : l'accent,
+  les rayons, les espacements, les fonds du système (qui suivent le mode
+  sombre), le badge d'une distribution (`DistributionBadge`, d'après
+  `MachineBadge`), la pastille d'un état (`StatePill`), les puces
+  (`ChipLabel`), les cartes (`card()`, `cardRow()`), les touches
+  (`KeyCapStyle`), et une disposition qui passe à la ligne (`FlowLayout`).
+- *Machines* : chaque machine installée est une carte — badge, nom, fichier,
+  pastille « Session sauvée », « Éteinte » ou « Jamais lancée », bouton
+  rond « Reprendre » ou « Démarrer » ; la mémoire sur sa rangée, nommée ; le
+  disque, le réseau et « Plus » en puces. « Plus » montre les gestes de
+  l'appui long (renommer, exporter, dupliquer, démarrer l'image
+  d'installation), qui restent aussi sous l'appui long. Les images de la
+  bibliothèque ont la même carte, avec le bouton de lecture seulement pour ce
+  qui démarre. Le paragraphe des machines installées passe dans « À
+  propos ». La suppression garde son balayage et « Modifier ».
+- *Accueil vide* (#723 en a fait une rangée de la liste ; elle le reste) :
+  une carte à trois badges, « Aucune machine », une action principale
+  « Télécharger un bureau ou une image », puis « Importer une image » et
+  « Connexions à distance », l'une sous l'autre. Une seule chose à l'écran,
+  rien qui se chevauche.
+- *Écran d'une machine* : la barre ne garde que « Fermer », « Bureau »
+  (quand il existe), « Plein écran » et un menu (copier la console, taille
+  du texte, « Oublier », « Arrêter ») ; le titre revient. La ligne d'état
+  porte un point vert ; les touches sont des capsules nettes, le champ une
+  capsule, « Entrée » un bouton rond (dit « Entrée » à VoiceOver). L'écran
+  est sombre en mode clair aussi, comme un lecteur de photos.
+- *Téléchargement* : le bureau prêt en carte — badge, phrase, puces de taille
+  et de mémoire, un seul bouton « Installer », puis pendant le téléchargement
+  l'étape, un pourcentage et « Annuler » ; les images avec leur badge, leur
+  distribution et leur version pour titre, « Obtenir », et un anneau pendant
+  le téléchargement.
+- *Connexions et éditeur* : un badge par système (`RemoteBadge`), le
+  protocole en puce, le cadenas vert ; l'éditeur s'ouvre sur la machine telle
+  que la liste la montrera. La barre de touches des sessions distantes prend
+  les mêmes touches, l'accent pour un modificateur tenu.
+- *Deux défauts corrigés au passage* : le port d'une connexion s'écrit en
+  chiffres nus (`Machine.displayAddress`, une IPv6 entre crochets) — `Text`
+  mettait le nombre en forme selon la langue ; l'avertissement « sans
+  chiffrement » nomme le protocole de la machine.
+- *VoiceOver* : les badges sont décoratifs (la ligne dit la distribution) ;
+  une carte se lit d'un bloc avec son action pour indice ; la puce du réseau
+  se lit comme un interrupteur (« branché », « coupé ») ; les modificateurs
+  tenus sont « sélectionnés ». Les libellés d'avant (« Télécharger … »,
+  « Installer … », « Annuler le téléchargement de … », « Mémoire de … »,
+  « Disque de … ») sont gardés.
+
+**Quatre tours de captures.**
+- *Tour 1* (**run 45034669701**) : tout se construit et s'affiche du
+  premier coup. Défauts vus : la rangée de la mémoire perdait son mot et
+  prenait 80 points de haut (un `Label` figé à sa taille idéale) ; l'écart
+  icône–mot des puces était celui d'une rangée de liste ; « Session sauvée »
+  passait à la ligne ; le bouton de l'accueil se coupait et ses voisins se
+  césuraient ; le titre de la console, noir sur noir ; la phrase du bureau
+  prêt tronquée.
+- *Tour 2* (**run 45036077355**) : ces défauts corrigés. Le port s'écrit
+  « 3389 ». Restait le titre de la console, toujours invisible en clair.
+- *Tour 3* (**run 45037737145**) : l'écran de la machine sombre en clair
+  aussi ; le titre revient (« Void Xfce », « alpine-virt-3.22.2… »). Les
+  matières des barres restaient grises en mode clair : elles se lisaient sur
+  le fond clair de la fenêtre.
+- *Tour 4* : un fond noir derrière l'écran de la machine ; en très grand
+  texte, le badge du bureau prêt passe au-dessus de son titre, qui se coupait
+  (« Void Xfce… ») à côté d'une phrase de trois mots de large (**run
+  45039312423** ; un run 45039266581 lancé juste avant ce dernier
+  changement a été annulé). Les barres de l'écran de la machine sont
+  sombres en clair comme en sombre, et le bureau prêt se lit en grand texte.
+
+**Les tests** : deux de plus (4 397 → 4 399 au compte publié ; Swift
+3 169, Rust 1 230), `MachineDisplayAddressTests`. Les vues ne se testent pas
+sous Linux ; ce qu'elles décident d'autre vient de `MachineBadge` (neuf tests
+du 22 novembre) et des types déjà jugés.
+
+**Les sabotages**, chacun d'une ligne, rouge puis restauré :
+- l'IPv6 sans crochets → `testIPv6GoesBetweenBrackets` (« fe80::1:5900 ») ;
+- les crochets ajoutés à une adresse qui les a déjà → le même test
+  (« [[fe80::1]]:5900 ») ;
+- le port mis en forme (`port.formatted()`) → `testThePortIsPlainDigits`
+  (« atelier.local:3,389 »), le défaut même de la capture.
+
+**Les vérifications.** La suite Swift entière (3 083 tests, 0 échec) ;
+`swiftlint lint --strict` ; `swiftc -frontend -parse` sur chaque vue ;
+`check-whitespace`, `check-project-sources` ; le site construit puis testé
+(477) ; `cargo fmt --check` et les tests de `wisq-site` ; et surtout le
+workflow des aperçus, qui construit l'application comme « App iOS » à
+chaque tour.
+
+**Ce qui reste.** La dernière image de l'écran sur la carte d'une machine
+(il faudrait l'écrire à la suspension, à côté de la session) ; le banc et la
+session distante n'ont pas été redessinés ; « 212,0 Mio » passe sous la
+pastille sur une carte étroite ; un disque vierge de la bibliothèque porte
+encore le badge et le bouton de lecture de sa machine (il est de « type
+inconnu », que wisq laisse démarrer par principe).
+
+## 2026-11-22 — Les tests de l'émetteur dans une fenêtre visible : la cause de leurs rouges intermittents
+
+**Ce qui tombait.** `EmitterDesktopTests` a fait tomber « App iOS » trois fois
+le même jour : sur master après #720, et deux fois sur #722, que rien ne
+relie à l'émetteur. Les tests en cause changeaient d'une fois à l'autre
+(`testStopHaltsAMachineThatWaitsForAKey`,
+`testTheEmitterMachineBootsThroughItsSchemeInARealWebView`,
+`testTheApplicationsSendPathReachesTheGuest`), mais le tableau restait le
+même : la page se charge et prend la touche, puis la machine se fige. La
+touche n'est jamais lue (registre 15 à 0), `hlt` n'est jamais atteint, et
+aucune panne n'est dite.
+
+**La cause.** Le journal de ces jobs montre « WebProcess NearSuspended
+Assertion » et un processus de contenu « unresponsive » : iOS suspendait le
+processus de WebKit. Il le fait pour une `WKWebView` qui n'est dans aucune
+fenêtre visible, et ces tests n'en donnaient pas à la leur. Dans
+l'application, la vue est toujours à l'écran. `WebKitJITProbeTests` le dit et
+le fait depuis longtemps : « Une vue hors de toute fenêtre n'est pas sûre de
+démarrer ».
+
+**La correction.** `EmitterDesktopTests` pose chaque vue dans une `UIWindow`
+visible, gardée par l'instance, avant `start()`, comme le fait
+`WebKitJITProbeTests`. Rien n'est retiré ni affaibli : mêmes assertions, même
+patience.
+
+**Ce qui n'est pas prouvé ici.** Ces tests ne tournent que dans l'iPhone
+simulé de « App iOS ». Un passage vert ne prouve pas la fin de
+l'intermittence ; plusieurs passages verts de suite le diront. Le relevé des
+occurrences est dans `docs/ROADMAP.md`.
+
+## 2026-11-22 — Interface : une chaîne d'aperçus pour voir l'application, et ce que la carte d'une machine dira (le redessin attend la première série)
+
+**Ce qui n'allait pas.** L'utilisateur juge l'interface pas assez jolie, et
+personne ne peut la regarder : le SwiftUI (`Sources/WisqUI`, `App`) ne se
+construit que sur un Mac, et seule la CI le fait, sans rien montrer. Redessiner
+à l'aveugle, c'était deviner.
+
+**Ce qui est fait.**
+
+- *La chaîne d'aperçus.* Un paquet de tests `WisqApercus`
+  (`Tests/WisqApercus`), **hébergé par l'application** et **hors de la scheme
+  `Wisq`** : la CI ne le lance jamais. Il pose ses données de démonstration
+  dans le bac à sable du simulateur, par les fonctions mêmes de l'application
+  (`InstalledMachines.install`, `KernelLibrary.createBlankDisk`) — trois ISO
+  creux qui ne portent que la signature `CD001` (Alpine, Void Xfce, Debian),
+  un bureau Void Xfce installé avec sa session sauvée, une Debian installée sur
+  un disque vierge de 8 Gio, quatre connexions à distance — puis ouvre huit
+  écrans (accueil vide, machines, écran d'une machine en marche avec un bureau
+  Xfce dessiné, console d'Alpine, téléchargement d'un bureau prêt en cours,
+  connexions, éditeur rempli, banc) et les photographie en clair, en sombre et
+  en grand texte (`accessibility3`), par `drawHierarchy` dans une fenêtre posée
+  au-dessus de celle de l'application. Le workflow
+  `.github/workflows/apercus.yml`, à la main seulement (`workflow_dispatch`),
+  construit comme « App iOS » (XCFramework Rust, XcodeGen épinglé, projet
+  comparé au dépôt), choisit le plus récent des iPhone « Pro » installés, lance
+  la scheme `Apercus` et dépose les PNG en artefact.
+- *Pourquoi cette voie.* `ImageRenderer` ne rend pas ce que UIKit porte (une
+  `List`, une barre de navigation, un champ) : il aurait photographié des
+  écrans qui n'existent pas. Des tests UI (XCUITest) demandaient un mode de
+  démonstration **dans l'application**, lu dans ses arguments de lancement ;
+  ici, rien de la démonstration n'est dans l'application, et rien ne peut donc
+  s'y allumer chez quelqu'un. L'application n'y gagne que deux points d'entrée
+  internes que rien n'appelle chez elle : un modèle de machine posé sans noyau
+  (`LocalVMModel.pose`, `LocalVMTerminalView(kernelURL:installed:posed:)`) et
+  une feuille de téléchargement posée sans réseau
+  (`ImageDownloadModel(posing:...)`, `ImageDownloadSheet(posed:)`).
+- *Le relevé des suites suit la scheme.* La garde « tout ce qui lance
+  `xcodebuild test` lance aussi le relevé » (`site/tests/app-suites.test.ts`)
+  a refusé le nouveau workflow, à juste titre. `scripts/report-app-suites.sh`
+  prend maintenant la scheme en troisième argument et confronte alors au
+  relevé les suites de **cette** scheme (`schemes: Apercus: test: targets:`) ;
+  sans argument, rien ne change pour « App iOS ».
+- *Ce que la carte d'une machine dira*, dans `WisqVM` pour se tenir par des
+  tests sous Linux (`MachineBadge.swift`) : la distribution reconnue à un nom
+  — le nom donné par la personne d'abord, puis le fichier, **par mots
+  entiers** (« archive.img » n'est pas Arch, « avoid.iso » n'est pas Void) —,
+  son symbole (SF Symbols, aucun logo copié) et sa teinte ; si c'est un
+  bureau ; l'état (« Session sauvée » l'emporte sur « Éteinte » et « Jamais
+  lancée », et le bouton dit « Reprendre ») ; la ligne des caractéristiques
+  sans séparateur pendu ; le pourcentage d'un téléchargement, arrondi vers le
+  bas en double largeur (un flottant rend 28 pour 29 sur 100, et `* 100`
+  déborde).
+
+**Ce qui bloque : le workflow ne peut pas encore être lancé.** GitHub ne
+connaît un workflow à la main que s'il est sur la branche par défaut :
+`POST .../actions/workflows/apercus.yml/dispatches` répond 404, et
+`GET .../actions/workflows/apercus.yml` aussi. Le déclencher par un `push`
+provisoire sur `claude/interface` a été refusé (ce n'était pas le seul
+`workflow_dispatch` demandé). **Il faut donc que `apercus.yml` arrive sur
+`master`** (le fichier seul suffit ; sans `Tests/WisqApercus` ni la scheme il
+échouerait sur master, mais il se lance alors avec `ref: claude/interface`),
+ou qu'un déclenchement provisoire soit permis. Aucune série « avant » n'a
+donc été prise, et **le redessin n'est pas commencé** : il devait partir de
+ces images.
+
+**Les tests** : neuf de plus (4 388 → 4 397 au compte publié ; Swift 3 167,
+Rust 1 230). Les huit aperçus ne sont pas comptés : ce sont des photographies,
+et leurs noms (`test01AccueilVide`…) ne sont pas ceux que le compte lit.
+Plus un test du site (le relevé d'une autre scheme).
+
+**Les sabotages**, chacun d'une ligne, chacun rouge puis restauré :
+
+- les mots par sous-chaînes → `testWholeWordsOnly` (Arch, Void, Debian
+  trouvés dans « archive », « avoid », « debianish ») ;
+- les noms lus à l'envers → `testTheGivenNameComesFirst` (Alpine au lieu de
+  « Debian de test ») ;
+- la session sauvée à partir de deux → `testTheStateFollowsTheSession` ;
+- le pourcentage en flottant → `testPercentIsFlooredAndBounded` (28 au lieu
+  de 29) ;
+- le filtre des morceaux vides retiré → `testSpecsSkipWhatIsMissing`
+  (« 1 Gio · ») ;
+- le bureau par sous-chaînes → `testDesktopsAreToldApart` (« xfcelike ») ;
+- la teinte d'Arch égale à celle de Fedora → `testNoTwoDistributionsLookAlike` ;
+- la scheme ignorée par le relevé → « la scheme des aperçus est confrontée à
+  ses propres suites ».
+
+**Les vérifications.** `swift build --build-tests` et la suite Swift entière ;
+`swiftlint lint --strict` ; `swiftc -frontend -parse` sur les fichiers
+SwiftUI touchés et les trois du paquet d'aperçus ; `check-whitespace`,
+`check-project-sources` (16 fichiers), `check-generated-project` (4
+workflows) ; le projet engendré par XcodeGen 2.46.0 **construit sous Linux**
+depuis ses sources, et lancé depuis une copie nommée `wisq` (le nom du dossier
+entre dans le projet) : il rend à l'octet le projet du dépôt avant la
+tranche ; le site construit puis testé (477) ; `cargo fmt --check`.
+
+**Ce qui reste.** La première série « avant » dès que le workflow peut être
+lancé ; puis le redessin — un petit système de design, les machines en cartes
+avec leur badge (`MachineBadge`), leur état et leur dernière image d'écran,
+des états vides accueillants, la feuille « Télécharger » à l'action évidente,
+l'écran de la machine aux contrôles plus nets — et deux tours de captures
+au moins. Le paquet d'aperçus n'a jamais été compilé : sa première course
+dira ce qu'il faut y corriger. Le déclenchement provisoire, s'il est permis,
+partira avant la fusion.
+## 2026-11-22 — L'accueil des machines : la liste vide n'est plus traversée par ses explications
+
+**Ce que l'utilisateur a vu**, sur une capture de son iPhone : sur l'écran
+« Machines » vide, l'accueil « Aucun noyau » était posé par-dessus quatre
+paragraphes d'explications, et les deux textes se chevauchaient, illisibles.
+L'accueil était un `.overlay` de la liste. Or la section des noyaux, même
+vide, gardait son pied : ce qui est lancé ou non, la mémoire, le disque. Le
+pied du stockage s'ajoutait au même endroit. Le texte était aussi périmé : il
+présentait encore le noyau rv32 « nommu » comme la machine du téléphone, et
+le bouton disait « Télécharger Alpine » alors que la feuille propose les
+bureaux prêts.
+
+**Ce qui change** (`LocalVMView.swift`) :
+- liste vide, l'accueil est **une rangée de la liste**, et non plus un calque.
+  Il dit « Aucune machine », avec une action principale « Télécharger un
+  bureau ou une image », puis « Importer une image » et « Connexions à
+  distance » ;
+- la section des noyaux n'existe que s'il y a des noyaux ; son pied tient en
+  une phrase ;
+- les explications (ce que wisq lance, la mémoire, le disque, le stockage)
+  passent dans une feuille « À propos » (`MachinesAboutView`), ouverte par un
+  bouton « i » en haut à gauche, réécrites et mises à jour (PC x86-64 avec le
+  réseau d'abord, RISC-V ensuite) ;
+- le menu « + » dit « Télécharger un bureau ou une image ».
+
+**Ce qui n'est pas testé** : c'est une vue SwiftUI, qui ne compile pas sous
+Linux. Elle est vérifiée par `swiftc -frontend -parse` et SwiftLint, et le job
+« App iOS » de la CI la construit. Aucune logique hors des vues ne change :
+pas de test neuf, compte publié inchangé. La chaîne de captures (#722) la
+photographiera.
 
 ## 2026-11-22 — Machine PC en Rust : les disques qcow2, VMDK, VDI, VHD, VHDX et OVA par les lecteurs du cœur Swift, les machines installées sur le cœur Rust, une reprise sur d'autres disques dite comme telle, les refus des programmes à la console
 

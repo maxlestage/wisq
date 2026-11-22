@@ -234,8 +234,14 @@ pub const PAGE_ZERO: u64 = 0x1_0000;
 pub const LIGNE_DE_COMMANDE: u64 = 0x2_0000;
 /// Ce qu'on dit au noyau, par défaut : la console sur le port série, et
 /// `earlyprintk` pour qu'un démarrage qui échoue à mi-chemin dise où il en
-/// était.
-pub const LIGNE_PAR_DEFAUT: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep";
+/// était — celle de `X86BootLoader.defaultCommandLine`, mot pour mot.
+///
+/// **Sans `keep`** : avec lui, la console précoce restait à côté de
+/// `ttyS0`, sur le même port, et chaque ligne du noyau sortait deux fois
+/// (l'image d'installation d'Arch, et la console de l'application avec
+/// elle). Sans lui, le noyau l'éteint quand `ttyS0` s'ouvre, sans rien
+/// redire ni rien perdre.
+pub const LIGNE_PAR_DEFAUT: &str = "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200";
 /// Le protocole 2.06 est le premier où `cmdline_size` existe.
 pub const PLUS_ANCIEN_PROTOCOLE: u16 = 0x0206;
 
@@ -537,7 +543,7 @@ mod tests {
         let recette = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro quiet rd.luks=0";
         let attendue = "root=live:CDLABEL=VOID_LIVE init=/sbin/init ro rd.luks=0 \
              systemd.default_device_timeout_sec=600 systemd.default_timeout_start_sec=600 \
-             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep";
+             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200";
         assert_eq!(ligne_d_une_image(recette), attendue);
         // Des espaces doublés, en tête et en queue : les mots vides partent,
         // comme sous `omittingEmptySubsequences`, et la ligne est la même.
@@ -548,7 +554,7 @@ mod tests {
             ligne_d_une_image(deja),
             "ro systemd.default_timeout_start_sec=90 console=tty0 \
              systemd.default_device_timeout_sec=600 \
-             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
+             console=ttyS0,115200 earlyprintk=serial,ttyS0,115200"
         );
         // Un mot qui commence comme la clé sans en être une ne compte pas.
         assert!(ligne_d_une_image("systemd.default_timeout_start_secx=1")

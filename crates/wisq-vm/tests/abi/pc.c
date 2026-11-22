@@ -195,6 +195,7 @@ int main(int argc, char **argv) {
     wisq_pc_stop(NULL);
     check(wisq_pc_retired(NULL) == 0, "retired(NULL)");
     check(wisq_pc_progress(NULL, &a64, &b64) == -1, "progress(NULL)");
+    check(wisq_pc_progress_pages(NULL, &a64, &b64) == -1, "progress_pages(NULL)");
     check(wisq_pc_guest_time(NULL) == 0, "guest_time(NULL)");
     check(wisq_pc_guest_hertz(NULL) == 0, "guest_hertz(NULL)");
     check(wisq_pc_halted(NULL) == 0, "halted(NULL)");
@@ -223,6 +224,9 @@ int main(int argc, char **argv) {
     check(wisq_pc_run(pc, 1000) == WISQ_PC_NOT_READY, "une course sans noyau est refusée");
     check(wisq_pc_snapshot(pc, &snapshot, &snapshot_len) == -2, "un instantané sans noyau est refusé");
     check(wisq_pc_progress(pc, &a64, &b64) == 0, "rien de publié avant la première course");
+    check(wisq_pc_progress_pages(pc, &a64, &b64) == 0 && a64 == 0 && b64 == 0,
+          "aucune tranche publiée avant la première course");
+    check(wisq_pc_progress_pages(pc, NULL, &b64) == -1, "progress_pages sans compteur");
     check(wisq_pc_display(pc, &display) == -2, "pas d'écran avant d'en brancher un");
     check(wisq_pc_touch(pc, 0.5, 0.5, 1) == 0, "pas de toucher sans écran");
     check(wisq_pc_disk_activity(pc, &a64, &b64) == 0, "pas d'activité sans disque");
@@ -320,6 +324,8 @@ int main(int argc, char **argv) {
     uint64_t retired = wisq_pc_retired(pc);
     check(retired > 100 && retired < 100000, "des instructions retirées");
     check(wisq_pc_progress(pc, &a64, &b64) == 1 && a64 == retired, "l'avancement publié est celui de la fin");
+    check(wisq_pc_progress_pages(pc, &a64, &b64) == 1 && a64 >= 1 && b64 < a64,
+          "les tranches publiées, et la première n'a pas de précédente");
     check(wisq_pc_guest_time(pc) > retired, "l'invité a dormi : son temps dépasse ses instructions");
     check(wisq_pc_halted(pc) == 1, "éteint sur hlt");
     check(wisq_pc_fault(pc, NULL, 0) == 0, "aucune faute");
