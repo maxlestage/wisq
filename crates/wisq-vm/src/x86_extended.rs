@@ -349,12 +349,12 @@ impl Cpu {
     }
 
     fn extended_read(&mut self, at: u64, width: Width) -> Result<u64, ExtendedFault> {
-        self.read_memory(at, width)
+        self.read_memory_fast(at, width)
             .map_err(|_| ExtendedFault::Memory)
     }
 
     fn extended_write(&mut self, at: u64, width: Width, value: u64) -> Result<(), ExtendedFault> {
-        self.write_memory(at, width, value)
+        self.write_memory_fast(at, width, value)
             .map_err(|_| ExtendedFault::Memory)
     }
 }

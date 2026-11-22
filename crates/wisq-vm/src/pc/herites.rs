@@ -630,17 +630,14 @@ impl Herites {
             self.maitre.demande |= 1 << LIGNE_HORLOGE;
         }
         self.maitre.pose(LIGNE_SERIE, self.serie.interrompt());
-        for ligne in 0..16u8 {
-            if matches!(ligne, LIGNE_HORLOGE | LIGNE_CASCADE | LIGNE_SERIE) {
-                continue;
-            }
-            let levee = lignes & (1 << ligne) != 0;
-            if ligne < 8 {
-                self.maitre.pose(ligne, levee);
-            } else {
-                self.second.pose(ligne - 8, levee);
-            }
-        }
+        // Les autres lignes recopiées à niveau, d'un coup : toutes celles du
+        // second, et celles du maître sauf l'horloge, la cascade et le port
+        // série, qui sont à cette carte. (Une ligne après l'autre, la boucle
+        // pesait le tiers de ce service, fait toutes les deux cent
+        // cinquante-six instructions.)
+        const A_LA_CARTE: u8 = (1 << LIGNE_HORLOGE) | (1 << LIGNE_CASCADE) | (1 << LIGNE_SERIE);
+        self.maitre.demande = (self.maitre.demande & A_LA_CARTE) | (lignes as u8 & !A_LA_CARTE);
+        self.second.demande = (lignes >> 8) as u8;
         // **La cascade** : le second demande par la ligne 2 du maître, quand
         // une de ses lignes est démasquée et passe devant ce qu'il sert déjà.
         self.maitre

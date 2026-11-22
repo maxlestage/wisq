@@ -510,8 +510,17 @@ fn main() {
     let mut refus_vus = 0usize;
     // Ce qui a déjà été lu du fichier d'entrée.
     let mut entree_lue = 0usize;
+    let mut premiere = true;
     loop {
-        let rendu = machine.tourner(200_000);
+        // Entre deux tranches, cette boucle lit la RAM (l'écran) et tape au
+        // port série ou au clavier, sans jamais écrire la RAM : après la
+        // première, `poursuivre` garde les blocs décodés d'une tranche à
+        // l'autre.
+        let rendu = if std::mem::take(&mut premiere) {
+            machine.tourner(200_000)
+        } else {
+            machine.poursuivre(200_000)
+        };
         let octets = machine.sortie();
         if !octets.is_empty() {
             if !options.muet {

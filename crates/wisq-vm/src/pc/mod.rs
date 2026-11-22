@@ -24,5 +24,5 @@ pub mod systeme;
 
 pub use chargeur::{Ecran, Placement, Refus};
 pub use herites::Herites;
-pub use machine::{Issue, Machine, Peripheriques};
+pub use machine::{Issue, Machine, Peripheriques, Suivi};
 pub use systeme::{Exception, Systeme};

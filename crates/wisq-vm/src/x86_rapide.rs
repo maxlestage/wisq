@@ -26,7 +26,9 @@
 //! sans blocs. Ce que rien ne spécialise passe par `general`, qui est
 //! `execute`.
 
-use super::{Condition, Cpu, Decoded, FlagOp, Op, Width, AF, ARITHMETIC, CF, OF, PF, SF, ZF};
+use super::{
+    Condition, Cpu, Decoded, FlagOp, Op, VectorFault, Width, AF, ARITHMETIC, CF, OF, PF, SF, ZF,
+};
 use crate::x86_paging::is_canonical;
 
 /// Ce qu'une instruction exécutée laisse à faire à la boucle.
@@ -135,7 +137,11 @@ pub fn preparer(instruction: &Decoded, generale: u8) -> Uop {
             uop.deplacement = deplacement as i32;
         }
         None => {
-            uop.executer = general;
+            uop.executer = if matches!(instruction.op, Op::Vector(_)) {
+                vectorielle
+            } else {
+                general
+            };
             uop.generale = generale;
         }
     }
@@ -170,6 +176,32 @@ pub fn general(cpu: &mut Cpu, uop: &Uop, generales: &[Decoded]) -> Suite {
         Suite::Saut
     } else {
         Suite::Suivante
+    }
+}
+
+/// **Une instruction vectorielle entière** (`Op::Vector`) : `execute_vector`,
+/// que la machine appelle au pas à pas. Une faute d'accès y lève `faulted` et
+/// pose `unmapped`, comme partout ; la boucle la nomme par l'instruction
+/// (`Machine::faute_d_execution`), comme `Machine::pas` le fait. `ldmxcsr`,
+/// seul à pouvoir rendre `ReservedControl` (un `#GP(0)`, pas une faute
+/// d'accès), n'entre dans aucun bloc (`pc::blocs::blocable`) : s'il arrivait
+/// ici, la faute serait un arrêt nommé plutôt qu'une `#GP` fausse.
+pub fn vectorielle(cpu: &mut Cpu, uop: &Uop, generales: &[Decoded]) -> Suite {
+    let Some(instruction) = generales.get(uop.generale as usize) else {
+        cpu.faulted = true;
+        return Suite::Faute;
+    };
+    match cpu.execute_vector(instruction) {
+        Ok(()) => Suite::Suivante,
+        Err(VectorFault::Memory) => {
+            cpu.faulted = true;
+            Suite::Faute
+        }
+        Err(VectorFault::ReservedControl) => {
+            cpu.faulted = true;
+            cpu.unmapped = None;
+            Suite::Faute
+        }
     }
 }
 
@@ -400,16 +432,20 @@ fn tient<const C: u8>(bits: u64) -> bool {
 
 const ADD: u8 = 0;
 const OR: u8 = 1;
+const ADC: u8 = 2;
+const SBB: u8 = 3;
 const AND: u8 = 4;
 const SUB: u8 = 5;
 const XOR: u8 = 6;
 const CMP: u8 = 7;
 const TEST: u8 = 8;
 
-/// **`add`, `or`, `and`, `sub`, `xor`, `cmp`, `test`**, dans l'ordre de
-/// `Cpu::compute` : lire la destination puis la source, calculer, écrire
-/// (sauf `cmp` et `test`), et alors seulement poser les drapeaux — une
-/// écriture qui faute ne laisse rien.
+/// **`add`, `or`, `adc`, `sbb`, `and`, `sub`, `xor`, `cmp`, `test`**, dans
+/// l'ordre de `Cpu::compute` : lire la destination puis la source, calculer,
+/// écrire (sauf `cmp` et `test`), et alors seulement poser les drapeaux — une
+/// écriture qui faute ne laisse rien. `adc` et `sbb` lisent la retenue
+/// d'avant, et la comptent dans la leur comme `Flags::compute` : une retenue
+/// entrante rend une égalité débordante (`0xff + 0 + 1`).
 fn alu<const OP: u8, const W: u8, const F: u8, const A: u8>(
     cpu: &mut Cpu,
     instruction: &Uop,
@@ -453,6 +489,36 @@ fn alu<const OP: u8, const W: u8, const F: u8, const A: u8>(
             (
                 resultat,
                 drapeaux_soustraction::<W>(gauche, droite, resultat),
+            )
+        }
+        ADC => {
+            let entrante = arithmetiques(cpu) & CF;
+            let resultat = gauche.wrapping_add(droite).wrapping_add(entrante);
+            let masque_du_resultat = resultat & masque(W);
+            let retenue =
+                masque_du_resultat < gauche || (entrante == 1 && masque_du_resultat == gauche);
+            (
+                resultat,
+                communs::<W>(gauche, droite, resultat)
+                    | (u64::from(retenue) * CF)
+                    | (u64::from(
+                        (gauche ^ masque_du_resultat) & (droite ^ masque_du_resultat) & signe(W)
+                            != 0,
+                    ) * OF),
+            )
+        }
+        SBB => {
+            let entrante = arithmetiques(cpu) & CF;
+            let resultat = gauche.wrapping_sub(droite).wrapping_sub(entrante);
+            let masque_du_resultat = resultat & masque(W);
+            let retenue = gauche < droite || (entrante == 1 && gauche == droite);
+            (
+                resultat,
+                communs::<W>(gauche, droite, resultat)
+                    | (u64::from(retenue) * CF)
+                    | (u64::from(
+                        (gauche ^ droite) & (gauche ^ masque_du_resultat) & signe(W) != 0,
+                    ) * OF),
             )
         }
         _ => {
@@ -588,6 +654,136 @@ fn decalage<const OP: u8, const W: u8, const CL: bool>(
     Suite::Suivante
 }
 
+/// **`rol` et `ror` sur un registre**, par un immédiat ou par CL — les
+/// règles de `Cpu::rotate`, pour une largeur connue : le compte masqué, un
+/// compte nul qui écrit la destination sans toucher un drapeau, un tour
+/// complet qui rend la valeur mais pose quand même CF et OF, et seuls ces
+/// deux drapeaux qui bougent.
+fn rotation<const GAUCHE: bool, const W: u8, const CL: bool>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let bits = W as u64 * 8;
+    let brut = if CL { cpu.regs[1] } else { instruction.imm };
+    let compte = brut & if W == 8 { 63 } else { 31 };
+    let valeur = lire::<W>(cpu, instruction.dst);
+    if compte == 0 {
+        ecrire::<W>(cpu, instruction.dst, valeur);
+        return Suite::Suivante;
+    }
+    let tour = compte % bits;
+    let resultat = if tour == 0 {
+        valeur
+    } else if GAUCHE {
+        ((valeur << tour) | (valeur >> (bits - tour))) & masque(W)
+    } else {
+        ((valeur >> tour) | (valeur << (bits - tour))) & masque(W)
+    };
+    let haut = u64::from(resultat & signe(W) != 0);
+    let (retenue, debordement) = if GAUCHE {
+        let retenue = resultat & 1;
+        (retenue, haut ^ retenue)
+    } else {
+        (haut, haut ^ ((resultat >> (bits - 2)) & 1))
+    };
+    ecrire::<W>(cpu, instruction.dst, resultat);
+    poser(
+        cpu,
+        (arithmetiques(cpu) & !(CF | OF)) | (retenue * CF) | (debordement * OF),
+    );
+    Suite::Suivante
+}
+
+/// **`inc`, `dec`, `not`, `neg` sur la mémoire** (un `lock` devant n'y
+/// change rien ici) : lire, calculer, écrire, puis poser les drapeaux —
+/// ceux de la forme registre, une écriture qui faute ne laissant rien.
+fn unaire_memoire<const OP: u8, const W: u8, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let ici = adresse::<A>(cpu, instruction);
+    let valeur = match cpu.read_memory_fast(ici, largeur(W)) {
+        Ok(valeur) => valeur,
+        Err(_) => {
+            cpu.faulted = true;
+            return Suite::Faute;
+        }
+    };
+    let (resultat, bits) = match OP {
+        INC | DEC => {
+            let retenue = arithmetiques(cpu) & CF;
+            let resultat = if OP == INC {
+                valeur.wrapping_add(1)
+            } else {
+                valeur.wrapping_sub(1)
+            };
+            let masque_du_resultat = resultat & masque(W);
+            let debordement = if OP == INC {
+                (valeur ^ masque_du_resultat) & (1 ^ masque_du_resultat) & signe(W) != 0
+            } else {
+                (valeur ^ 1) & (valeur ^ masque_du_resultat) & signe(W) != 0
+            };
+            (
+                resultat,
+                Some(communs::<W>(valeur, 1, resultat) | (u64::from(debordement) * OF) | retenue),
+            )
+        }
+        NOT => (!valeur, None),
+        _ => {
+            let resultat = 0u64.wrapping_sub(valeur);
+            (
+                resultat,
+                Some(drapeaux_soustraction::<W>(0, valeur, resultat)),
+            )
+        }
+    };
+    if cpu.write_memory_fast(ici, largeur(W), resultat).is_err() {
+        cpu.faulted = true;
+        return Suite::Faute;
+    }
+    if let Some(bits) = bits {
+        poser(cpu, bits);
+    }
+    Suite::Suivante
+}
+
+/// **`bswap`** : les octets du registre à rebours, à sa largeur, comme
+/// `execute_general`.
+fn renverser<const W: u8>(cpu: &mut Cpu, instruction: &Uop, _: &[Decoded]) -> Suite {
+    let valeur = lire::<W>(cpu, instruction.dst);
+    ecrire::<W>(
+        cpu,
+        instruction.dst,
+        valeur.swap_bytes() >> (64 - W as u32 * 8),
+    );
+    Suite::Suivante
+}
+
+/// **`xchg` entre deux registres** : la destination reçoit la source, puis
+/// la source l'ancienne destination. Aucun drapeau.
+fn echange_registres<const W: u8>(cpu: &mut Cpu, instruction: &Uop, _: &[Decoded]) -> Suite {
+    let destination = lire::<W>(cpu, instruction.dst);
+    let source = lire::<W>(cpu, instruction.src);
+    ecrire::<W>(cpu, instruction.dst, source);
+    ecrire::<W>(cpu, instruction.src, destination);
+    Suite::Suivante
+}
+
+/// **`cbtw`, `cwtl`, `cltq`** : la moitié basse de l'accumulateur, de
+/// largeur `S`, étendue en signe dans lui-même à la largeur `W`.
+fn elargir<const W: u8, const S: u8>(cpu: &mut Cpu, _: &Uop, _: &[Decoded]) -> Suite {
+    let source = lire::<S>(cpu, 0);
+    let valeur = if source & signe(S) != 0 {
+        source | !masque(S)
+    } else {
+        source
+    };
+    ecrire::<W>(cpu, 0, valeur);
+    Suite::Suivante
+}
+
 // ---- Les transferts ----
 
 /// **`mov` et `movzx` entre registres**, ou d'un immédiat : la source lue à
@@ -675,6 +871,97 @@ fn lea<const W: u8, const A: u8>(cpu: &mut Cpu, instruction: &Uop, _: &[Decoded]
     Suite::Suivante
 }
 
+/// **`cmovcc`**, la condition `C` choisie au décodage, comme
+/// `execute_general` : la source lue d'abord (la mémoire faute même quand la
+/// condition ne tient pas), puis la destination **écrite dans les deux cas**
+/// — trente-deux bits effacent la moitié haute même sans copie. Aucun
+/// drapeau.
+fn cmov<const C: u8, const W: u8, const F: u8, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let source = if F == RM {
+        let ici = adresse::<A>(cpu, instruction);
+        match cpu.read_memory_fast(ici, largeur(W)) {
+            Ok(valeur) => valeur,
+            Err(_) => {
+                cpu.faulted = true;
+                return Suite::Faute;
+            }
+        }
+    } else {
+        lire::<W>(cpu, instruction.src)
+    };
+    let valeur = if tient::<C>(arithmetiques(cpu)) {
+        source
+    } else {
+        lire::<W>(cpu, instruction.dst)
+    };
+    ecrire::<W>(cpu, instruction.dst, valeur);
+    Suite::Suivante
+}
+
+/// **`setcc`** : un octet, zéro ou un, vers un registre (jamais un octet
+/// haut : ceux-là vont au chemin général) ou vers la mémoire. Aucun drapeau.
+fn setcc<const C: u8, const MEMOIRE: bool, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let valeur = u64::from(tient::<C>(arithmetiques(cpu)));
+    if MEMOIRE {
+        let ici = adresse::<A>(cpu, instruction);
+        if cpu.write_memory_fast(ici, Width::Byte, valeur).is_err() {
+            cpu.faulted = true;
+            return Suite::Faute;
+        }
+    } else {
+        ecrire::<1>(cpu, instruction.dst, valeur);
+    }
+    Suite::Suivante
+}
+
+/// **`imul` à deux et trois opérandes** (`Op::Multiply`) : le produit signé
+/// tronqué à la largeur, rangé dans `reg` ; CF et OF levés quand il ne tient
+/// pas, les quatre autres bits laissés tels quels, comme
+/// `arithmetic_in_two_registers`. À trois opérandes, les facteurs sont `rm`
+/// et l'immédiat ; à deux, la destination et `rm`.
+fn imul<const W: u8, const F: u8, const IMMEDIAT: bool, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let source = if F == RM {
+        let ici = adresse::<A>(cpu, instruction);
+        match cpu.read_memory_fast(ici, largeur(W)) {
+            Ok(valeur) => valeur,
+            Err(_) => {
+                cpu.faulted = true;
+                return Suite::Faute;
+            }
+        }
+    } else {
+        lire::<W>(cpu, instruction.src)
+    };
+    let (gauche, droite) = if IMMEDIAT {
+        (source, instruction.imm)
+    } else {
+        (lire::<W>(cpu, instruction.dst), source)
+    };
+    let etendre = |valeur: u64| -> i128 {
+        let decalage = 64 - W as u32 * 8;
+        i128::from(((valeur << decalage) as i64) >> decalage)
+    };
+    let produit = etendre(gauche) * etendre(droite);
+    let bas = produit as u64 & masque(W);
+    let tient = etendre(bas) == produit;
+    ecrire::<W>(cpu, instruction.dst, bas);
+    let leves = if tient { 0 } else { CF | OF };
+    poser(cpu, (arithmetiques(cpu) & !(CF | OF)) | leves);
+    Suite::Suivante
+}
+
 fn nop(_: &mut Cpu, _: &Uop, _: &[Decoded]) -> Suite {
     Suite::Suivante
 }
@@ -723,6 +1010,69 @@ fn call(cpu: &mut Cpu, instruction: &Uop, _: &[Decoded]) -> Suite {
         cpu.refuse_target(cible);
         return Suite::Faute;
     }
+    let sommet = cpu.regs[4].wrapping_sub(8);
+    if cpu.write_memory_fast(sommet, Width::Qword, apres).is_err() {
+        cpu.faulted = true;
+        return Suite::Faute;
+    }
+    cpu.regs[4] = sommet;
+    cpu.rip = cible;
+    Suite::Saut
+}
+
+/// La cible d'un saut ou d'un appel indirect : un registre, ou huit octets
+/// de mémoire.
+#[inline(always)]
+fn cible_indirecte<const MEMOIRE: bool, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+) -> Option<u64> {
+    if MEMOIRE {
+        let ici = adresse::<A>(cpu, instruction);
+        match cpu.read_memory_fast(ici, Width::Qword) {
+            Ok(cible) => Some(cible),
+            Err(_) => {
+                cpu.faulted = true;
+                None
+            }
+        }
+    } else {
+        Some(cpu.regs[(instruction.dst & 15) as usize])
+    }
+}
+
+/// `jmp *` vers un registre ou la mémoire : la cible lue, jugée, prise.
+fn saut_indirect<const MEMOIRE: bool, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let Some(cible) = cible_indirecte::<MEMOIRE, A>(cpu, instruction) else {
+        return Suite::Faute;
+    };
+    if !is_canonical(cible) {
+        cpu.refuse_target(cible);
+        return Suite::Faute;
+    }
+    cpu.rip = cible;
+    Suite::Saut
+}
+
+/// `call *` vers un registre ou la mémoire : la cible lue **avant** que la
+/// pile ne bouge, jugée avant d'empiler, l'empilement avant de sauter.
+fn appel_indirect<const MEMOIRE: bool, const A: u8>(
+    cpu: &mut Cpu,
+    instruction: &Uop,
+    _: &[Decoded],
+) -> Suite {
+    let Some(cible) = cible_indirecte::<MEMOIRE, A>(cpu, instruction) else {
+        return Suite::Faute;
+    };
+    if !is_canonical(cible) {
+        cpu.refuse_target(cible);
+        return Suite::Faute;
+    }
+    let apres = cpu.rip.wrapping_add(u64::from(instruction.longueur));
     let sommet = cpu.regs[4].wrapping_sub(8);
     if cpu.write_memory_fast(sommet, Width::Qword, apres).is_err() {
         cpu.faulted = true;
@@ -822,6 +1172,90 @@ macro_rules! par_deux_largeurs {
     };
 }
 
+/// `cmovcc` pour une largeur, une forme et une forme d'adresse.
+fn choisir_cmov<const C: u8>(largeur: Width, forme: u8, adresse: u8) -> Option<Executer> {
+    Some(match (forme, adresse) {
+        (RR, _) => match largeur {
+            Width::Word => cmov::<C, 2, RR, GENERALE>,
+            Width::Dword => cmov::<C, 4, RR, GENERALE>,
+            Width::Qword => cmov::<C, 8, RR, GENERALE>,
+            Width::Byte => return None,
+        },
+        (RM, BASE) => choisir_cmov_memoire::<C, BASE>(largeur)?,
+        (RM, INDEXEE) => choisir_cmov_memoire::<C, INDEXEE>(largeur)?,
+        (RM, RELATIVE) => choisir_cmov_memoire::<C, RELATIVE>(largeur)?,
+        (RM, _) => choisir_cmov_memoire::<C, GENERALE>(largeur)?,
+        _ => return None,
+    })
+}
+
+fn choisir_cmov_memoire<const C: u8, const A: u8>(largeur: Width) -> Option<Executer> {
+    Some(match largeur {
+        Width::Word => cmov::<C, 2, RM, A>,
+        Width::Dword => cmov::<C, 4, RM, A>,
+        Width::Qword => cmov::<C, 8, RM, A>,
+        Width::Byte => return None,
+    })
+}
+
+/// `setcc` vers un registre ou vers la mémoire, par sa forme d'adresse.
+fn choisir_setcc<const C: u8>(forme: u8, adresse: u8) -> Option<Executer> {
+    Some(match (forme, adresse) {
+        (RR, _) => setcc::<C, false, GENERALE>,
+        (MR, BASE) => setcc::<C, true, BASE>,
+        (MR, INDEXEE) => setcc::<C, true, INDEXEE>,
+        (MR, RELATIVE) => setcc::<C, true, RELATIVE>,
+        (MR, _) => setcc::<C, true, GENERALE>,
+        _ => return None,
+    })
+}
+
+/// `imul` à deux ou trois opérandes, par largeur, forme et forme d'adresse.
+fn choisir_imul(instruction: &Decoded, adresse: u8) -> Option<Executer> {
+    macro_rules! largeurs {
+        ($f:expr, $i:expr, $a:expr) => {
+            match instruction.width {
+                Width::Word => imul::<2, $f, $i, $a> as Executer,
+                Width::Dword => imul::<4, $f, $i, $a> as Executer,
+                Width::Qword => imul::<8, $f, $i, $a> as Executer,
+                Width::Byte => return None,
+            }
+        };
+    }
+    let memoire = instruction.memory.is_some();
+    Some(match (memoire, instruction.immediate, adresse) {
+        (false, false, _) => largeurs!(RR, false, GENERALE),
+        (false, true, _) => largeurs!(RR, true, GENERALE),
+        (true, false, BASE) => largeurs!(RM, false, BASE),
+        (true, false, INDEXEE) => largeurs!(RM, false, INDEXEE),
+        (true, false, RELATIVE) => largeurs!(RM, false, RELATIVE),
+        (true, false, _) => largeurs!(RM, false, GENERALE),
+        (true, true, BASE) => largeurs!(RM, true, BASE),
+        (true, true, INDEXEE) => largeurs!(RM, true, INDEXEE),
+        (true, true, RELATIVE) => largeurs!(RM, true, RELATIVE),
+        (true, true, _) => largeurs!(RM, true, GENERALE),
+    })
+}
+
+/// `inc`, `dec`, `not`, `neg` sur la mémoire, par sa forme d'adresse.
+fn choisir_unaire_memoire(op: Op, largeur: Width, adresse: u8) -> Executer {
+    match adresse {
+        BASE => choisir_unaire_memoire_a::<BASE>(op, largeur),
+        INDEXEE => choisir_unaire_memoire_a::<INDEXEE>(op, largeur),
+        RELATIVE => choisir_unaire_memoire_a::<RELATIVE>(op, largeur),
+        _ => choisir_unaire_memoire_a::<GENERALE>(op, largeur),
+    }
+}
+
+fn choisir_unaire_memoire_a<const A: u8>(op: Op, largeur: Width) -> Executer {
+    match op {
+        Op::Inc => par_largeur!(largeur, unaire_memoire, [INC], [A]),
+        Op::Dec => par_largeur!(largeur, unaire_memoire, [DEC], [A]),
+        Op::Not => par_largeur!(largeur, unaire_memoire, [NOT], [A]),
+        _ => par_largeur!(largeur, unaire_memoire, [NEG], [A]),
+    }
+}
+
 /// `alu` pour une opération, une largeur, une forme et une forme
 /// d'adresse.
 fn choisir_alu<const OP: u8>(largeur: Width, forme: u8, adresse: u8) -> Executer {
@@ -908,12 +1342,69 @@ fn choisir(instruction: &Decoded) -> Option<Executer> {
     }
     let largeur = instruction.width;
     let source = instruction.src_width;
-    let forme = forme(instruction)?;
-    let ecrit = !instruction.discards;
     let adresse = instruction.memory.map_or(GENERALE, |adresse| {
         forme_d_adresse(&adresse, instruction.op == Op::Lea)
     });
+    // `imul` à trois opérandes porte un immédiat et lit la mémoire : aucune
+    // des cinq formes, il se choisit avant.
+    if instruction.op == Op::Multiply {
+        return choisir_imul(instruction, adresse);
+    }
+    let forme = forme(instruction)?;
+    let ecrit = !instruction.discards;
     Some(match instruction.op {
+        Op::Adc if ecrit => choisir_alu::<ADC>(largeur, forme, adresse),
+        Op::Sbb if ecrit => choisir_alu::<SBB>(largeur, forme, adresse),
+        Op::CondMove(condition) if largeur == source => {
+            macro_rules! cmov_par {
+                ($c:literal) => {
+                    choisir_cmov::<$c>(largeur, forme, adresse)
+                };
+            }
+            match condition.0 & 15 {
+                0 => cmov_par!(0),
+                1 => cmov_par!(1),
+                2 => cmov_par!(2),
+                3 => cmov_par!(3),
+                4 => cmov_par!(4),
+                5 => cmov_par!(5),
+                6 => cmov_par!(6),
+                7 => cmov_par!(7),
+                8 => cmov_par!(8),
+                9 => cmov_par!(9),
+                10 => cmov_par!(10),
+                11 => cmov_par!(11),
+                12 => cmov_par!(12),
+                13 => cmov_par!(13),
+                14 => cmov_par!(14),
+                _ => cmov_par!(15),
+            }?
+        }
+        Op::Set(condition) if largeur == Width::Byte => {
+            macro_rules! set_par {
+                ($c:literal) => {
+                    choisir_setcc::<$c>(forme, adresse)
+                };
+            }
+            match condition.0 & 15 {
+                0 => set_par!(0),
+                1 => set_par!(1),
+                2 => set_par!(2),
+                3 => set_par!(3),
+                4 => set_par!(4),
+                5 => set_par!(5),
+                6 => set_par!(6),
+                7 => set_par!(7),
+                8 => set_par!(8),
+                9 => set_par!(9),
+                10 => set_par!(10),
+                11 => set_par!(11),
+                12 => set_par!(12),
+                13 => set_par!(13),
+                14 => set_par!(14),
+                _ => set_par!(15),
+            }?
+        }
         Op::Add if ecrit => choisir_alu::<ADD>(largeur, forme, adresse),
         Op::Or if ecrit => choisir_alu::<OR>(largeur, forme, adresse),
         Op::And if ecrit => choisir_alu::<AND>(largeur, forme, adresse),
@@ -931,6 +1422,46 @@ fn choisir(instruction: &Decoded) -> Option<Executer> {
                 _ => par_largeur!(largeur, unaire, [NEG], []),
             }
         }
+        Op::Inc | Op::Dec | Op::Not | Op::Neg if forme == MR && !instruction.immediate && ecrit => {
+            choisir_unaire_memoire(instruction.op, largeur, adresse)
+        }
+        Op::Rol | Op::Ror if instruction.memory.is_none() && ecrit => {
+            match (instruction.op, instruction.count_is_cl) {
+                (Op::Rol, false) => par_largeur!(largeur, rotation, [true], [false]),
+                (Op::Rol, true) => par_largeur!(largeur, rotation, [true], [true]),
+                (_, false) => par_largeur!(largeur, rotation, [false], [false]),
+                (_, true) => par_largeur!(largeur, rotation, [false], [true]),
+            }
+        }
+        Op::ByteSwap if forme == RR => match largeur {
+            Width::Word => renverser::<2>,
+            Width::Dword => renverser::<4>,
+            Width::Qword => renverser::<8>,
+            Width::Byte => return None,
+        },
+        Op::Exchange if forme == RR => par_largeur!(largeur, echange_registres, [], []),
+        Op::WidenAccumulator => match (largeur, source) {
+            (Width::Word, Width::Byte) => elargir::<2, 1>,
+            (Width::Dword, Width::Word) => elargir::<4, 2>,
+            (Width::Qword, Width::Dword) => elargir::<8, 4>,
+            _ => return None,
+        },
+        Op::JumpIndirect if largeur == Width::Qword => match (forme, adresse) {
+            (RR, _) => saut_indirect::<false, GENERALE>,
+            (MR, BASE) => saut_indirect::<true, BASE>,
+            (MR, INDEXEE) => saut_indirect::<true, INDEXEE>,
+            (MR, RELATIVE) => saut_indirect::<true, RELATIVE>,
+            (MR, _) => saut_indirect::<true, GENERALE>,
+            _ => return None,
+        },
+        Op::CallIndirect if largeur == Width::Qword => match (forme, adresse) {
+            (RR, _) => appel_indirect::<false, GENERALE>,
+            (MR, BASE) => appel_indirect::<true, BASE>,
+            (MR, INDEXEE) => appel_indirect::<true, INDEXEE>,
+            (MR, RELATIVE) => appel_indirect::<true, RELATIVE>,
+            (MR, _) => appel_indirect::<true, GENERALE>,
+            _ => return None,
+        },
         Op::Shl | Op::Shr | Op::Sar if instruction.memory.is_none() && ecrit => {
             match (instruction.op, instruction.count_is_cl) {
                 (Op::Shl, false) => par_largeur!(largeur, decalage, [SHL], [false]),
