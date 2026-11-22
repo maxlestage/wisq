@@ -1095,6 +1095,9 @@ struct LocalVMTerminalView: View {
     var installed: InstalledMachine?
 
     @State private var model = LocalVMModel()
+    /// Démarrer la machine en arrivant : toujours, sauf pour un modèle déjà
+    /// posé (`init(kernelURL:installed:posed:)`).
+    private var bootsOnAppear = true
     @State private var commandLine = ""
     /// Le bureau de l'invité, posé par-dessus la console : voir `LocalDesktop`.
     @State private var showingDesktop = false
@@ -1437,7 +1440,7 @@ struct LocalVMTerminalView: View {
         // son bouton. Ouvert à chaque machine, il cachait la moitié de
         // l'écran à qui ne venait que regarder.
         .onAppear {
-            model.boot(kernelURL: kernelURL, installed: installed)
+            if bootsOnAppear { model.boot(kernelURL: kernelURL, installed: installed) }
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
@@ -1456,6 +1459,20 @@ struct LocalVMTerminalView: View {
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(to: phase, kernelURL: kernelURL)
         }
+    }
+
+    init(kernelURL: URL, installed: InstalledMachine? = nil) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+    }
+
+    /// **L'écran d'un modèle déjà posé** (`LocalVMModel.pose`), qu'il ne
+    /// démarre pas : ce que les aperçus de l'interface photographient.
+    init(kernelURL: URL, installed: InstalledMachine? = nil, posed: LocalVMModel) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+        _model = State(initialValue: posed)
+        bootsOnAppear = false
     }
 
     private func submit() {
