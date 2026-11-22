@@ -8,6 +8,51 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Omarchy 4.5 lu jusqu'à son noyau, la plateforme annoncée avant tout démarrage, le démarrage animé et ses crédits
+
+**La demande.** Une capture d'iPhone : `omarchy-4.5.0-x86.iso` touchée, et
+la console qui s'ouvre sur « annonce son noyau à
+/boot/syslinux/::/arch/boot/x86_64/vmlinuz-linux-omarchy, et wisq n'a pas pu
+l'en sortir ». Maxime : régler tous les problèmes, Maxime Nathan Lestage en
+crédit, un démarrage animé de l'application, que ça marche avec ARM aussi, et
+être informé de la plateforme avant de démarrer quoi que ce soit.
+
+**Le refus d'Omarchy.** Chez syslinux, `::` devant un chemin veut dire « depuis
+la racine du volume ». Archiso l'écrit dans ses entrées, Omarchy en descend ;
+`absolute` le prenait pour un chemin relatif au dossier de la recette. Il est
+retiré, le chemin part de la racine — noyau, initramfs (microcodes séparés par
+des virgules compris) et `INCLUDE`. Un test Rust de plus.
+
+**L'annonce.** `BootAnnouncement` (WisqVM) décide ce que la feuille dit ;
+`HostPlatform` dit le processeur pour lequel le binaire est compilé, le système
+et le modèle. Pour une image ISO, la plateforme est celle du noyau qu'elle
+porte : `IsoBoot.announcedKernel` le sort seul, le lit, l'efface — le même
+chemin que `kernelDigest`, mis en commun. Faute de noyau lisible, un mot du
+chemin du noyau ou du nom (`x86_64`, `aarch64`, `amd64`…) donne un indice, et
+la feuille le présente comme tel. Un refus fondé sur un en-tête ne propose pas
+de démarrer ; un refus fondé sur un nom propose « Essayer quand même ».
+« Démarrer l'image d'installation » n'est plus demandé au menu mais au
+démarrage effectif : une annonce refermée ne laisse rien en suspens.
+
+**ARM.** Reconnu et nommé (Image ARM64, zImage, ELF, uImage, cloud `arm64`),
+et le refus dit maintenant, avant la console, pourquoi : le téléphone est
+ARM64, mais iOS ne laisse pas exécuter directement le code d'un autre
+système, et wisq n'a pas de cœur ARM local. **Ce cœur n'est pas écrit** : un
+interprète AArch64 qui démarre Linux (jeu A64, MMU, exceptions, GIC, minuterie
+générique, PL011, arbre de périphériques) est un chantier de la taille du cœur
+x86-64, pas une tranche. C'est dit dans la feuille et dans « À propos ».
+
+**Le démarrage animé et les crédits.** `LaunchAnimationView` monte la marque
+aux coordonnées de `logo.rs`, écrit un journal de quatre lignes (cœurs, hôte),
+puis signe « Conçu et développé par Maxime Nathan Lestage » ; un toucher passe.
+`AppCredits` (WisqCore) porte l'auteur et les emprunts de `NOTICE`, confrontés
+à `NOTICE` et au manifeste par un test. Deux aperçus de plus (`09-demarrage`,
+`10-annonce`).
+
+**Vérifié ici.** Rust (`iso9660`), Swift (`BootAnnouncementTests`,
+`IsoAnnouncementTests`, `AppCreditsTests`, `IsoBootTests`), SwiftLint strict.
+Les vues de `WisqUI` ne se compilent que sur la CI d'Apple.
+
 ## 2026-11-22 — Machine PC en Rust : les opérandes d'`execute` par le chemin rapide, ce chemin jugé seul ; la boucle des blocs plus courte ; ce que la table des blocs coûte vraiment ; le bureau de Void en 765 s au lieu de 818
 
 **Ce qui n'allait pas.** Le bureau de Void Xfce demandait 739 à 812 s (119 à

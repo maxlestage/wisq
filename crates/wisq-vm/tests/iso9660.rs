@@ -1172,3 +1172,43 @@ fn antix_is_given_its_volume_label() {
         recipe.command_line
     );
 }
+
+/// **`::` devant un chemin syslinux part de la racine du volume.** C'est
+/// l'entrée d'archiso telle qu'Omarchy 4.5 la grave dans
+/// `/boot/syslinux/archiso_sys-linux.cfg` : lue comme un chemin relatif, elle
+/// donnait `/boot/syslinux/::/arch/boot/x86_64/vmlinuz-linux-omarchy`, et
+/// l'image était refusée.
+#[test]
+fn a_double_colon_syslinux_path_starts_at_the_volume_root() {
+    let text = "\
+LABEL arch64
+MENU LABEL Omarchy
+LINUX ::/arch/boot/x86_64/vmlinuz-linux-omarchy
+INITRD ::/arch/boot/x86_64/initramfs-linux-omarchy.img
+APPEND archisobasedir=arch archisosearchuuid=2025-01-01-00-00-00-00
+";
+    let recipe = Recipe::read(text, "/boot/syslinux/syslinux.cfg").expect("la recette");
+    assert_eq!(recipe.kernel, "/arch/boot/x86_64/vmlinuz-linux-omarchy");
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/arch/boot/x86_64/initramfs-linux-omarchy.img")
+    );
+
+    // Les microcodes séparés par des virgules, chacun derrière son `::`.
+    let several = "LABEL a\nLINUX ::/k\nINITRD ::/intel-ucode.img,::/arch/i.img\n";
+    let recipe = Recipe::read(several, "/boot/syslinux/syslinux.cfg").expect("plusieurs");
+    assert_eq!(recipe.initrd.as_deref(), Some("/intel-ucode.img /arch/i.img"));
+
+    // Un `INCLUDE ::/…` est suivi depuis la racine aussi.
+    let included = "LABEL a\nLINUX ::/arch/k\n";
+    let file = |path: &str| (path == "/boot/syslinux/entries.cfg").then(|| included.to_string());
+    let recipe = Recipe::read_in(
+        "INCLUDE ::/boot/syslinux/entries.cfg\n",
+        "/boot/syslinux/syslinux.cfg",
+        "OMARCHY",
+        &file,
+        &|_| Vec::new(),
+    )
+    .expect("incluse");
+    assert_eq!(recipe.kernel, "/arch/k");
+}
