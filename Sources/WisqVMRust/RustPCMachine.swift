@@ -363,7 +363,12 @@ public final class RustPCMachine: @unchecked Sendable {
         var retired: UInt64 = 0
         var rip: UInt64 = 0
         guard wisq_pc_progress(pc, &retired, &rip) == 1 else { return nil }
-        return GuestProgress(retired: retired, rip: rip)
+        var slices: UInt64 = 0
+        var samePage: UInt64 = 0
+        guard wisq_pc_progress_pages(pc, &slices, &samePage) == 1 else {
+            return GuestProgress(retired: retired, rip: rip)
+        }
+        return GuestProgress(retired: retired, rip: rip, slices: slices, slicesOnSamePage: samePage)
     }
 
     /// **Faire tourner l'invité** jusqu'à ce qu'il s'arrête, qu'on le lui

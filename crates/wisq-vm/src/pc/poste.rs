@@ -187,6 +187,10 @@ pub struct Commandes {
     retirees: AtomicU64,
     rip: AtomicU64,
     publie: AtomicBool,
+    /// Les tranches publiées, et combien ont fini dans la page de code de
+    /// la précédente : voir [`Commandes::sejour`].
+    publications: AtomicU64,
+    restees: AtomicU64,
 }
 
 fn tenir<T>(verrou: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -418,6 +422,27 @@ impl Commandes {
             )
         })
     }
+
+    /// **Où les tranches finissent** : combien ont été publiées depuis le
+    /// départ, et combien ont fini dans la même page de code (quatre
+    /// kibioctets de RIP) que la précédente.
+    ///
+    /// **Deux relevés de RIP ne disent pas si l'invité tourne en rond.**
+    /// L'image d'installation d'Arch déballe son initramfs (dix-neuf
+    /// mégaoctets de xz) pendant neuf milliards d'instructions sans rien
+    /// écrire, presque toujours dans `lzma_main` : deux relevés pris à une
+    /// seconde d'écart tombent dans la même page, et l'application disait
+    /// « en rond autour de… » d'un invité qui avançait. Compter **chaque**
+    /// tranche (une toutes les deux cent mille instructions) le tranche :
+    /// 69 à 80 % y restent pendant ce déballage, où le décodeur appelle
+    /// `crc32_le` et l'écriture des fichiers ; 98 % dans la boucle d'attente
+    /// d'un noyau en panique (`delay_tsc`), et toutes dans un `jmp .`.
+    pub fn sejour(&self) -> (u64, u64) {
+        (
+            self.publications.load(Ordering::Relaxed),
+            self.restees.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// Pourquoi un branchement est refusé.
@@ -476,6 +501,8 @@ impl Poste {
                 retirees: AtomicU64::new(0),
                 rip: AtomicU64::new(0),
                 publie: AtomicBool::new(false),
+                publications: AtomicU64::new(0),
+                restees: AtomicU64::new(0),
             }),
             ecran: None,
             pret: false,
@@ -663,15 +690,27 @@ impl Poste {
         }
     }
 
-    /// L'avancement, publié pour les autres fils.
+    /// L'avancement, publié pour les autres fils. Seul ce fil écrit ces
+    /// valeurs : les compter par une lecture puis une écriture suffit.
     fn publier(&self) {
-        self.commandes
+        let commandes = &self.commandes;
+        let rip = self.machine.cpu.rip;
+        // Avant la première publication, RIP publié vaut zéro : la page zéro,
+        // où aucun noyau ne commence.
+        let avant = commandes.rip.load(Ordering::Relaxed);
+        if avant >> 12 == rip >> 12 {
+            let restees = commandes.restees.load(Ordering::Relaxed);
+            commandes.restees.store(restees + 1, Ordering::Relaxed);
+        }
+        let publications = commandes.publications.load(Ordering::Relaxed);
+        commandes
+            .publications
+            .store(publications + 1, Ordering::Relaxed);
+        commandes
             .retirees
             .store(self.machine.retirees, Ordering::Relaxed);
-        self.commandes
-            .rip
-            .store(self.machine.cpu.rip, Ordering::Relaxed);
-        self.commandes.publie.store(true, Ordering::Release);
+        commandes.rip.store(rip, Ordering::Relaxed);
+        commandes.publie.store(true, Ordering::Release);
     }
 
     /// **Faire tourner l'invité** jusqu'à `budget` instructions de son temps
