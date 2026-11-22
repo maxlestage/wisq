@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// **Le VMDK à descripteur à part** : un fichier de texte qui nomme ceux où
 /// sont les octets. Les formes d'ESXi (`vmfs`), de `qemu-img`

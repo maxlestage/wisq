@@ -203,9 +203,11 @@ final class RustPCMachineTests: XCTestCase {
         XCTAssertNotNil(RustPCMachine.Refusal.notAKernel.errorDescription)
     }
 
-    /// Un disque sur fichier se branche, ses compteurs se lisent ; un format
-    /// d'image que seul le cœur Swift lit est refusé en le disant.
-    func testDisksAreAttachedAndImageFormatsRefused() throws {
+    /// Un disque sur fichier se branche, ses compteurs se lisent ; une image
+    /// qcow2 mal formée (des clusters d'un octet) est refusée sous la phrase
+    /// de son lecteur. Les images bien formées se lisent :
+    /// `RustPCDiskImageTests`.
+    func testDisksAreAttachedAndAMalformedImageIsRefused() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisq-rust-pc-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -228,9 +230,10 @@ final class RustPCMachineTests: XCTestCase {
         }
         XCTAssertThrowsError(try machine.attachDisk(
             fileAt: image, writes: folder.appendingPathComponent("qcow.couche"))) {
-            guard case .unreadableImage? = $0 as? FileDiskStore.Failure else {
+            guard case .unreadableImage(let why)? = $0 as? FileDiskStore.Failure else {
                 return XCTFail("un qcow2 refusé sous son nom, pas \($0)")
             }
+            XCTAssertTrue(why.hasPrefix("l'image qcow2 est mal formée"), why)
         }
         try machine.attachDisk(fileAt: base, writes: folder.appendingPathComponent("disque.couche"))
         try machine.attachSecondDisk(fileAt: second, writes: folder.appendingPathComponent("second.couche"))
@@ -243,6 +246,63 @@ final class RustPCMachineTests: XCTestCase {
             fileAt: base, writes: folder.appendingPathComponent("disque.couche"))) {
             XCTAssertEqual($0 as? RustPCMachine.Refusal, .alreadyStarted)
         }
+    }
+
+    /// **Une session reprise sur d'autres disques est refusée sans être dite
+    /// abîmée** : la machine refuse (`snapshotOfOtherDisks`, code -8), la
+    /// boîte de la session la rend comme `otherDisks` — que la console dit
+    /// « rebranchez le disque » —, et la même session, rebranchée sur son
+    /// disque, se reprend. Un disque d'une autre taille, un disque de moins,
+    /// une image en mémoire à la place du fichier : tous trois.
+    func testASessionOnOtherDisksIsKeptAndSaysToReplugTheDisk() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-rust-pc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let disk = folder.appendingPathComponent("disque.img")
+        try Data(count: 8192).write(to: disk)
+        let writes = folder.appendingPathComponent("disque.couche")
+        let other = folder.appendingPathComponent("autre.img")
+        try Data(count: 4096).write(to: other)
+
+        let original = try rust(Console())
+        try original.attachDisk(fileAt: disk, writes: writes)
+        try original.load(kernelImage: try Self.tinyKernel(), commandLine: "x=y", initialRamdisk: nil)
+        _ = original.runGuest(instructionBudget: 1_000_000)
+        original.flushDisk()
+        let session = original.snapshot()
+        XCTAssertNotNil(SavedSession.judge(session, core: .x86_64).snapshot, "une session lisible")
+
+        let elsewhere: [(String, (RustPCMachine) throws -> Void)] = [
+            ("un disque d'une autre taille", {
+                try $0.attachDisk(fileAt: other, writes: folder.appendingPathComponent("autre.couche"))
+            }),
+            ("pas de disque", { _ in }),
+            ("une image en mémoire", { try $0.attachDisk(Data(count: 8192)) }),
+        ]
+        for (what, attach) in elsewhere {
+            let machine = try rust(Console())
+            try attach(machine)
+            XCTAssertThrowsError(try machine.restore(session), what) {
+                XCTAssertEqual($0 as? RustPCMachine.Refusal, .snapshotOfOtherDisks, what)
+            }
+            let pending = PendingSession(session)
+            let again = try rust(Console())
+            try attach(again)
+            XCTAssertThrowsError(try pending.resume(into: again), what) {
+                XCTAssertEqual($0 as? SavedSession.Unreadable, .otherDisks, "\(what) : pas « abîmée »")
+            }
+            XCTAssertTrue(pending.awaited, "la console promet la session gardée")
+        }
+        XCTAssertEqual(RustPCMachine.Refusal.snapshotOfOtherDisks.unreadableSession, .otherDisks)
+        XCTAssertEqual(RustPCMachine.Refusal.damagedSnapshot.unreadableSession, .damaged)
+        XCTAssertEqual(SavedSession.unreadable(after: RustPCMachine.Refusal.olderSnapshot), .damaged)
+
+        // Rebranchée sur son disque, la même session se reprend.
+        let replugged = try rust(Console())
+        try replugged.attachDisk(fileAt: disk, writes: writes)
+        XCTAssertTrue(try PendingSession(session).resume(into: replugged))
+        XCTAssertEqual(replugged.retiredInstructions, original.retiredInstructions)
     }
 
     /// **Chaque refus d'un disque sur fichier a son nom** — ceux que la
@@ -498,27 +558,28 @@ final class RustPCMachineTests: XCTestCase {
     // MARK: - Le réglage
 
     /// **Allumé par défaut**, à côté de celui de l'émetteur (éteint) ;
-    /// sans session, il ne prend qu'une machine PC neuve et non installée.
-    func testTheSettingIsOnByDefaultAndTakesOnlyAFreshPC() {
+    /// sans session, il décide seul — pour une machine neuve comme pour une
+    /// machine installée, qui ne passe plus d'office au cœur Swift.
+    func testTheSettingIsOnByDefaultAndTakesAnyPCWithoutASession() {
         XCTAssertTrue(RustPCSetting.defaultValue)
         XCTAssertFalse(EmitterSetting.defaultValue, "l'émetteur reste éteint")
         XCTAssertEqual(RustPCSetting.key, "wisq.machine.pc-rust")
         XCTAssertNotEqual(RustPCSetting.key, EmitterSetting.key)
         XCTAssertTrue(RustPCSetting.savesSessions, "la machine du cœur Rust sauve ses sessions")
-        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: true, session: nil, installed: false))
-        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: false, session: nil, installed: false),
-                       "éteint")
-        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: nil, installed: false),
+        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: true, session: nil),
+                      "sans session, réglage allumé : le cœur Rust, installée ou non")
+        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: false, session: nil), "éteint")
+        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: nil),
                        "une machine RISC-V reste à son cœur")
-        XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: true, session: nil, installed: true),
-                       "une machine installée reste au cœur Swift")
     }
 
     /// **C'est le format de la session qui décide du cœur, pas le réglage** :
     /// une vraie session du cœur Swift se reprend sur lui, réglage allumé ;
-    /// une vraie session du cœur Rust sur le cœur Rust, réglage éteint, et
-    /// même sur une machine installée. Sinon, toucher l'interrupteur rendrait
-    /// une session illisible. Les deux se jugent lisibles, à leur mémoire.
+    /// une vraie session du cœur Rust sur le cœur Rust, réglage éteint.
+    /// Sinon, toucher l'interrupteur rendrait une session illisible. **Et
+    /// une session jetée rend la machine au réglage** : la machine installée
+    /// dont la session du cœur Swift est oubliée démarre sur le cœur Rust.
+    /// Les deux se jugent lisibles, à leur mémoire.
     func testASessionGoesBackToTheCoreThatWroteIt() throws {
         let kernel = try Self.tinyKernel()
         let swiftCore = swift(Console())
@@ -531,16 +592,14 @@ final class RustPCMachineTests: XCTestCase {
         let rustSession = rustCore.snapshot()
 
         for enabled in [true, false] {
-            for installed in [true, false] {
-                XCTAssertFalse(
-                    RustPCSetting.runs(.x86_64, enabled: enabled, session: swiftSession, installed: installed),
-                    "une session du cœur Swift, réglage \(enabled), installée \(installed)")
-                XCTAssertTrue(
-                    RustPCSetting.runs(.x86_64, enabled: enabled, session: rustSession, installed: installed),
-                    "une session du cœur Rust, réglage \(enabled), installée \(installed)")
-            }
+            XCTAssertFalse(RustPCSetting.runs(.x86_64, enabled: enabled, session: swiftSession),
+                           "une session du cœur Swift, réglage \(enabled)")
+            XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: enabled, session: rustSession),
+                          "une session du cœur Rust, réglage \(enabled)")
+            XCTAssertEqual(RustPCSetting.runs(.x86_64, enabled: enabled, session: nil), enabled,
+                           "la session jetée : le réglage décide")
         }
-        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: rustSession, installed: false))
+        XCTAssertFalse(RustPCSetting.runs(.riscv32, enabled: true, session: rustSession))
 
         // L'en-tête lu côté Swift est celui que la bibliothèque écrit.
         let header = try XCTUnwrap(RustPCSnapshot.header(of: rustSession))

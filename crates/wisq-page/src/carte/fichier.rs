@@ -43,12 +43,14 @@
 //! les tests tiennent : un retour au `pread` par secteur rendrait les mêmes
 //! octets, deux à quatre fois moins vite, sans qu'un test d'octets le voie.
 //!
-//! **Ce qui n'est pas porté** : les formats à tables (qcow2, VMDK, VDI, VHD,
-//! VHDX, OVA), que `FileDiskStore` lit à travers `VirtualDiskImages`. Le
-//! bureau n'en a pas besoin — l'application lui attache une ISO brute, et un
-//! disque vierge brut à côté (`BlankDisk`). La base est lue ici octet pour
-//! octet : c'est à l'appelant de refuser une image à tables, comme
-//! `RustLinuxMachine.attach(diskFileAt:)` le fait pour la machine RISC-V.
+//! **Les formats à tables** (qcow2, VMDK, VDI, VHD, VHDX, OVA) ne sont pas
+//! lus ici : leurs octets ne sont pas ceux du disque, et ce crate lit sa base
+//! octet pour octet. Un disque dans un de ces formats s'ouvre par
+//! [`DisqueFichier::ouvrir_sur`], sur un [`Lecteur`] que l'appelant fournit —
+//! dans l'application, le lecteur du cœur Swift (`VirtualDiskImages`),
+//! atteint par l'ABI C (`wisq_pc_attach_disk_reader`). **La couche ne change
+//! pas** : elle range des secteurs du disque, d'où qu'ils viennent, et c'est
+//! la même que celle de `FileDiskStore` sur la même image.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -102,6 +104,33 @@ impl fmt::Display for Refus {
 
 impl std::error::Error for Refus {}
 
+/// **Une base lue par un autre** : un disque dont les octets ne sont pas
+/// ceux du fichier (un qcow2, un VMDK…), traduits par qui sait les lire.
+/// [`DisqueFichier`] range les écritures de l'invité dans sa couche, comme
+/// pour un fichier brut, et ne demande au lecteur que les secteurs que
+/// personne n'a écrits — par suites, comme il lit un fichier : une lecture
+/// d'un mébioctet que la couche ne touche pas est un seul appel.
+///
+/// **Lecture seule**, et c'est le contrat de `VirtualDiskImage` côté Swift :
+/// rien n'est jamais écrit dans la base.
+pub trait Lecteur: Send {
+    /// La taille du disque que voit l'invité, en octets — pas celle du
+    /// fichier. Lue une fois, à l'ouverture.
+    fn taille(&self) -> u64;
+
+    /// **Remplir `vers` en entier** depuis `decalage`, en octets. Toujours
+    /// dans le disque (`decalage + vers.len()` au plus [`Lecteur::taille`]) ;
+    /// `false` si le fichier ne rend pas ce que ses tables promettent — le
+    /// disque répond alors une erreur d'entrée-sortie, jamais des zéros.
+    fn lire(&mut self, decalage: u64, vers: &mut [u8]) -> bool;
+}
+
+/// La base : le fichier lui-même, ou un lecteur qui le traduit.
+enum Base {
+    Fichier(File),
+    Lecteur(Box<dyn Lecteur>),
+}
+
 /// D'où vient un secteur.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -111,7 +140,7 @@ enum Source {
 
 /// **Le disque** : la base, sa couche, et la carte des emplacements.
 pub struct DisqueFichier {
-    base: File,
+    base: Base,
     couche: File,
     carte: File,
     secteurs: u64,
@@ -132,6 +161,19 @@ impl DisqueFichier {
     pub fn ouvrir(base: &Path, couche: &Path) -> Result<Self, Refus> {
         let base = File::open(base).map_err(|_| Refus::BaseIllisible)?;
         let taille = base.metadata().map_err(|_| Refus::BaseIllisible)?.len();
+        Self::ouvrir_base(Base::Fichier(base), taille, couche)
+    }
+
+    /// **Ouvrir un disque dont la base est lue par `lecteur`** : un qcow2, un
+    /// VMDK, que l'appelant sait traduire. La taille est celle que le lecteur
+    /// annonce ; la couche, ses refus et son format sont ceux de
+    /// [`DisqueFichier::ouvrir`]. Le lecteur est rendu (lâché) avec le refus.
+    pub fn ouvrir_sur(lecteur: Box<dyn Lecteur>, couche: &Path) -> Result<Self, Refus> {
+        let taille = lecteur.taille();
+        Self::ouvrir_base(Base::Lecteur(lecteur), taille, couche)
+    }
+
+    fn ouvrir_base(base: Base, taille: u64, couche: &Path) -> Result<Self, Refus> {
         if taille < SECTEUR {
             return Err(Refus::PasUnDisque);
         }
@@ -241,19 +283,16 @@ impl DisqueFichier {
         }
     }
 
-    fn fichier(&self, source: Source) -> &File {
-        match source {
-            Source::Base => &self.base,
-            Source::Couche => &self.couche,
-        }
-    }
-
     /// **Une lecture de fichier, comptée** : remplir `vers` en entier depuis
-    /// `depuis`, dans le fichier de `source`. `false` si le fichier ne les a
-    /// pas tous.
+    /// `depuis`, dans le fichier de `source` — ou par le lecteur de la base,
+    /// qui compte de même. `false` si le fichier ne les a pas tous.
     fn lire_dans(&mut self, source: Source, vers: &mut [u8], depuis: u64) -> bool {
         self.lectures += 1;
-        self.fichier(source).read_exact_at(vers, depuis).is_ok()
+        match (source, &mut self.base) {
+            (Source::Couche, _) => self.couche.read_exact_at(vers, depuis).is_ok(),
+            (Source::Base, Base::Fichier(fichier)) => fichier.read_exact_at(vers, depuis).is_ok(),
+            (Source::Base, Base::Lecteur(lecteur)) => lecteur.lire(depuis, vers),
+        }
     }
 }
 
@@ -1167,5 +1206,244 @@ mod tests {
         let mut rouvert = DisqueFichier::ouvrir(&vierge, &couche_vierge).unwrap();
         assert_eq!(lu(&mut rouvert, 9 * 512, 512).unwrap(), [4; 512]);
         assert_eq!(lu(&mut rouvert, 8 * 512, 512).unwrap(), [0; 512]);
+    }
+
+    // ------------------------------------------------ une base lue par un autre
+
+    /// **Un lecteur de test** : un disque tenu en mémoire, qui note chaque
+    /// appel et refuse de servir quoi que ce soit hors de lui — le contrat de
+    /// [`Lecteur::lire`] est que le disque ne lui demande jamais rien
+    /// au-delà de sa taille. `panne` : la plage où il rend `false`, comme un
+    /// qcow2 dont une table ment.
+    struct Image {
+        octets: Vec<u8>,
+        appels: std::sync::Arc<std::sync::Mutex<Vec<(u64, usize)>>>,
+        panne: Option<std::ops::Range<u64>>,
+        lache: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Image {
+        fn nouvelle(octets: Vec<u8>) -> Self {
+            Self {
+                octets,
+                appels: Default::default(),
+                panne: None,
+                lache: Default::default(),
+            }
+        }
+    }
+
+    impl Lecteur for Image {
+        fn taille(&self) -> u64 {
+            self.octets.len() as u64
+        }
+
+        fn lire(&mut self, decalage: u64, vers: &mut [u8]) -> bool {
+            self.appels.lock().unwrap().push((decalage, vers.len()));
+            let fin = decalage + vers.len() as u64;
+            assert!(fin <= self.taille(), "{} octets à {decalage}", vers.len());
+            if let Some(panne) = &self.panne {
+                if decalage < panne.end && panne.start < fin {
+                    return false;
+                }
+            }
+            vers.copy_from_slice(&self.octets[decalage as usize..fin as usize]);
+            true
+        }
+    }
+
+    impl Drop for Image {
+        fn drop(&mut self) {
+            self.lache.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// **La base vient du lecteur, les écritures vont dans la couche** : la
+    /// taille est celle qu'il annonce (sa queue n'est pas du disque), chaque
+    /// suite de secteurs que personne n'a écrits est un seul appel, un
+    /// secteur écrit ne lui est plus jamais demandé, et une écriture
+    /// partielle lui demande le secteur qu'elle recopie, une fois.
+    #[test]
+    fn a_base_read_by_a_reader_is_asked_by_runs_and_never_for_written_sectors() {
+        let dossier = Dossier::nouveau();
+        let mut octets = image(2048, 1);
+        octets.extend_from_slice(&[0xEE; 300]);
+        let lecteur = Image::nouvelle(octets);
+        let appels = lecteur.appels.clone();
+        let mut disque = DisqueFichier::ouvrir_sur(Box::new(lecteur), &dossier.couche()).unwrap();
+        assert_eq!(disque.secteurs(), 2048, "la queue n'est pas du disque");
+        assert!(appels.lock().unwrap().is_empty(), "ouvrir ne lit rien");
+
+        assert_eq!(lu(&mut disque, 0, 2048 * 512).unwrap(), image(2048, 1));
+        assert_eq!(
+            *appels.lock().unwrap(),
+            [(0, 2048 * 512)],
+            "un mébioctet, un appel"
+        );
+        assert_eq!(lu(&mut disque, 2048 * 512 - 1, 2), None, "au-delà");
+        assert_eq!(appels.lock().unwrap().len(), 1, "un refus ne demande rien");
+
+        appels.lock().unwrap().clear();
+        assert!(
+            disque.ecrire(100 * 512, &[0xC0; 1024]),
+            "deux secteurs entiers"
+        );
+        assert!(appels.lock().unwrap().is_empty(), "rien à recopier");
+        assert!(disque.ecrire(7 * 512 + 3, &[9, 9, 9]));
+        assert_eq!(
+            *appels.lock().unwrap(),
+            [(7 * 512, 512)],
+            "le secteur recopié"
+        );
+
+        appels.lock().unwrap().clear();
+        let lu_ = lu(&mut disque, 99 * 512, 4 * 512).unwrap();
+        assert_eq!(lu_[..512], [100; 512], "le 99, du lecteur");
+        assert_eq!(
+            lu_[512..1536],
+            [0xC0; 1024],
+            "le 100 et le 101, de la couche"
+        );
+        assert_eq!(lu_[1536..], [103; 512], "le 102, du lecteur");
+        assert_eq!(
+            *appels.lock().unwrap(),
+            [(99 * 512, 512), (102 * 512, 512)],
+            "les secteurs écrits ne sont plus demandés"
+        );
+        let septieme = lu(&mut disque, 7 * 512, 512).unwrap();
+        assert_eq!(septieme[..3], [8, 8, 8]);
+        assert_eq!(septieme[3..6], [9, 9, 9]);
+        assert_eq!(septieme[6..], [8; 506]);
+        assert_eq!(appels.lock().unwrap().len(), 2, "le 7 vient de la couche");
+        assert_eq!(disque.octets_ecrits(), 3 * 512);
+        assert!(disque.vider());
+
+        // Rouvert sur un lecteur neuf, la couche reprend.
+        drop(disque);
+        let mut rouvert =
+            DisqueFichier::ouvrir_sur(Box::new(Image::nouvelle(image(2048, 1))), &dossier.couche())
+                .unwrap();
+        assert_eq!(lu(&mut rouvert, 100 * 512, 2).unwrap(), [0xC0; 2]);
+        assert_eq!(rouvert.octets_ecrits(), 3 * 512);
+    }
+
+    /// **Le même disque, lu par un lecteur ou dans un fichier brut, fait la
+    /// même couche, octet pour octet** : les mêmes écritures tirées au
+    /// hasard, de part et d'autre, rendent les mêmes deux fichiers ; chacun
+    /// rouvre ensuite la couche de l'autre. C'est ce qui laisse une machine
+    /// changer de cœur sans que sa couche change de sens.
+    #[test]
+    fn a_reader_and_a_raw_file_with_the_same_bytes_make_the_same_overlay() {
+        let dossier = Dossier::nouveau();
+        let base = dossier.base(64, "base.img");
+        let brut_couche = dossier.0.join("brut.writes");
+        let lu_couche = dossier.0.join("lu.writes");
+        let mut brut = DisqueFichier::ouvrir(&base, &brut_couche).unwrap();
+        let mut lecteur =
+            DisqueFichier::ouvrir_sur(Box::new(Image::nouvelle(image(64, 1))), &lu_couche).unwrap();
+        let mut etat = 0x2545_F491_4F6C_DD1Du64;
+        let mut hasard = move |borne: u64| {
+            etat ^= etat << 13;
+            etat ^= etat >> 7;
+            etat ^= etat << 17;
+            etat % borne
+        };
+        for tour in 0..800u64 {
+            let decalage = hasard(64 * 512 + 100);
+            let longueur = hasard(3 * 512) as usize;
+            if hasard(2) == 0 {
+                let octets: Vec<u8> = (0..longueur).map(|i| (tour as usize + i) as u8).collect();
+                assert_eq!(
+                    brut.ecrire(decalage, &octets),
+                    lecteur.ecrire(decalage, &octets),
+                    "tour {tour}"
+                );
+            } else {
+                assert_eq!(
+                    lu(&mut brut, decalage, longueur),
+                    lu(&mut lecteur, decalage, longueur),
+                    "tour {tour}"
+                );
+            }
+        }
+        assert!(brut.vider() && lecteur.vider());
+        assert!(brut.octets_ecrits() > 20 * 512);
+        assert_eq!(brut.octets_ecrits(), lecteur.octets_ecrits());
+        let tout = lu(&mut brut, 0, 64 * 512).unwrap();
+        assert_eq!(lu(&mut lecteur, 0, 64 * 512).unwrap(), tout);
+        drop((brut, lecteur));
+        assert_eq!(
+            std::fs::read(&brut_couche).unwrap(),
+            std::fs::read(&lu_couche).unwrap()
+        );
+        let carte = |c: &PathBuf| std::fs::read(format!("{}.map", c.display())).unwrap();
+        assert_eq!(carte(&brut_couche), carte(&lu_couche));
+        // Chacun relit la couche de l'autre.
+        let mut croise =
+            DisqueFichier::ouvrir_sur(Box::new(Image::nouvelle(image(64, 1))), &brut_couche)
+                .unwrap();
+        assert_eq!(lu(&mut croise, 0, 64 * 512).unwrap(), tout);
+        let mut croise = DisqueFichier::ouvrir(&base, &lu_couche).unwrap();
+        assert_eq!(lu(&mut croise, 0, 64 * 512).unwrap(), tout);
+    }
+
+    /// **Ce qu'un lecteur ne sait pas rendre est une erreur, pas des
+    /// zéros** ; moins d'un secteur n'est pas un disque, et n'a pas de
+    /// couche ; une couche d'un autre disque est refusée comme pour un
+    /// fichier ; et le lecteur d'un disque refusé est lâché avec le refus.
+    #[test]
+    fn a_reader_that_fails_is_an_error_and_a_refused_reader_is_dropped() {
+        let dossier = Dossier::nouveau();
+        let mut lecteur = Image::nouvelle(image(16, 1));
+        lecteur.panne = Some(5 * 512 + 10..5 * 512 + 11);
+        let mut disque = DisqueFichier::ouvrir_sur(Box::new(lecteur), &dossier.couche()).unwrap();
+        assert_eq!(lu(&mut disque, 4 * 512, 512).unwrap(), [5; 512]);
+        assert_eq!(
+            lu(&mut disque, 4 * 512, 1024),
+            None,
+            "la suite touche la panne"
+        );
+        assert_eq!(lu(&mut disque, 5 * 512 + 9, 2), None);
+        assert_eq!(
+            lu(&mut disque, 5 * 512 + 11, 2).unwrap(),
+            [6, 6],
+            "juste après"
+        );
+        assert!(
+            !disque.ecrire(5 * 512, &[1; 20]),
+            "rien à recopier : une erreur"
+        );
+        assert_eq!(disque.octets_ecrits(), 0, "et rien n'est rangé");
+        assert!(disque.ecrire(5 * 512, &[1; 512]), "un secteur entier passe");
+        assert_eq!(lu(&mut disque, 4 * 512, 1024).unwrap()[512..], [1; 512]);
+        drop(disque);
+
+        for taille in [0usize, 511] {
+            let dossier = Dossier::nouveau();
+            let lecteur = Image::nouvelle(vec![7; taille]);
+            let lache = lecteur.lache.clone();
+            assert_eq!(
+                DisqueFichier::ouvrir_sur(Box::new(lecteur), &dossier.couche()).err(),
+                Some(Refus::PasUnDisque),
+                "{taille} octets"
+            );
+            assert!(lache.load(std::sync::atomic::Ordering::SeqCst), "lâché");
+            assert!(!dossier.couche().exists() && !dossier.carte().exists());
+        }
+        // Une couche faite pour seize secteurs, sous un lecteur de dix-sept.
+        let lecteur = Image::nouvelle(image(17, 1));
+        let lache = lecteur.lache.clone();
+        assert_eq!(
+            DisqueFichier::ouvrir_sur(Box::new(lecteur), &dossier.couche()).err(),
+            Some(Refus::CoucheDUnAutreDisque)
+        );
+        assert!(lache.load(std::sync::atomic::Ordering::SeqCst));
+        // Et un disque ouvert lâche son lecteur quand il s'en va.
+        let lecteur = Image::nouvelle(image(16, 1));
+        let lache = lecteur.lache.clone();
+        let disque = DisqueFichier::ouvrir_sur(Box::new(lecteur), &dossier.couche()).unwrap();
+        assert!(!lache.load(std::sync::atomic::Ordering::SeqCst));
+        drop(disque);
+        assert!(lache.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

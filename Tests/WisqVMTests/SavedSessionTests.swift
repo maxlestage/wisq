@@ -189,6 +189,40 @@ final class SavedSessionTests: XCTestCase {
         XCTAssertTrue(newer.contains("niveau 4") && newer.contains("niveau 1"), newer)
     }
 
+    /// **D'autres disques, ce n'est pas une session abîmée** : la phrase dit
+    /// qu'elle est gardée, qu'elle n'est pas abîmée, de rebrancher le disque
+    /// qu'elle avait — et seulement ensuite le geste qui repart de zéro.
+    func testOtherDisksSayReplugTheDiskNotDamaged() {
+        let text = SavedSession.explanation(.otherDisks, name: "alpine.iso")
+        XCTAssertTrue(text.contains("alpine.iso"), text)
+        XCTAssertTrue(text.contains("d'autres disques"), text)
+        XCTAssertTrue(text.contains("n'est pas abîmée"), text)
+        XCTAssertTrue(text.contains("gardée"), text)
+        XCTAssertTrue(text.contains("rebranchez le disque"), text)
+        XCTAssertTrue(text.contains("« Démarrer l'image d'installation »"), text)
+        XCTAssertTrue(text.contains("« Oublier »"), text)
+        if let replug = text.range(of: "rebranchez")?.lowerBound,
+           let forget = text.range(of: "« Oublier »")?.lowerBound {
+            XCTAssertLessThan(replug, forget, "rebrancher d'abord, oublier ensuite")
+        }
+        XCTAssertNotEqual(text, SavedSession.explanation(.damaged, name: "alpine.iso"))
+        XCTAssertEqual(BootRefusal.session(.otherDisks).explanation(name: "alpine.iso"), text,
+                       "c'est la phrase que la console montre")
+    }
+
+    /// **Un refus qui sait ce qu'il dit de la session** (celui de la machine
+    /// PC en Rust, d'un autre module) est lu tel quel ; un autre reste
+    /// « abîmée ».
+    func testARefusalOfResumeNamesWhatItMeans() {
+        struct OtherDisks: SavedSession.RefusalOfResume {
+            var unreadableSession: SavedSession.Unreadable { .otherDisks }
+        }
+        struct Broken: Error {}
+        XCTAssertEqual(SavedSession.unreadable(after: OtherDisks()), .otherDisks)
+        XCTAssertEqual(SavedSession.unreadable(after: Broken()), .damaged)
+        XCTAssertEqual(SavedSession.unreadable(after: SavedSession.Unreadable.otherDisks), .otherDisks)
+    }
+
     /// Une reprise refusée par la machine elle-même — une section abîmée que
     /// `judge` n'a pas lue — devient « illisible » ; une machine plus récente
     /// le reste avec ses deux niveaux.

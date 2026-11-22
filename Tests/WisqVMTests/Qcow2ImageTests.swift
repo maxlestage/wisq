@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Lire un qcow2 sur place : contre de vrais fichiers de `qemu-img`, pas contre
 /// ce que ce code croit savoir du format.

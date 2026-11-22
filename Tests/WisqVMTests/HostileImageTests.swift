@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// **Un en-tête hostile est refusé, il ne fait pas tomber l'application.**
 ///

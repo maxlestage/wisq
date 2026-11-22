@@ -13,9 +13,9 @@ import Foundation
 // Blocs de 2 Mio, deux blocs alloués. Sans `force_size`, `qemu-img` arrondit
 // la taille à une géométrie CHS : 3 168 256 octets au lieu de 3 145 728, et
 // c'est cette taille-là que le pied annonce.
-enum VhdFixtures {
+public enum VhdFixtures {
     /// `dyn.vhd` — 4197888 octets.
-    static let exact = [
+    public static let exact = [
         "7NU9SgNBFADg58aIZW6g3kC2tEu0TS3YybLFGswmrmLOkWNYW3iBHMBKEDyBrYXdGOMeQFAEk+9rZnjTvb8p6nFZXFeziMhi",
         "K1pZ5KPH+bS8zKMbndMqH63Ch+3z8kypl5a3Tkqv/bv356OX+WDvfvdi8bAYPgX/RjFrJudXTZlaX9GdaHshi/3PWr/dyBSs",
         "pe2IXjcBG+e2aqYHdiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -80,7 +80,7 @@ enum VhdFixtures {
     ].joined()
 
     /// `dyn-chs.vhd` — 4197888 octets.
-    static let geometry = [
+    public static let geometry = [
         "7NW/LkNxFADg47Y1lydQTyD3DdDBYiZMcnOHm0arrkbjMTwAu9FDSIzCarXZ7D9SN2YJkWi/bzknZzw5f4rRsCzOqmlEZLEU",
         "jSzywcPluDyeRCdae1U+mJU39uMrHrZXPrJWSq93j1cvt/dP/eeb9Z3e6vVFN/g3iml9cnRal6nxWV2OZhayWItI6W2iUzCX",
         "2hHdTgIWznlVj3tuIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
