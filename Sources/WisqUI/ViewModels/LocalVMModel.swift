@@ -483,6 +483,11 @@ public final class LocalVMModel {
         // locale. Il écoute dès maintenant ; il ne répondra que quand un
         // serveur VNC tournera dans l'invité. Voir `LocalDesktop`.
         desktopPort = try? (machine as? X86Machine)?.forward(toGuestPort: LocalDesktop.guestPort)
+        #if WISQ_RUST_CORE
+        if let pc = machine as? RustPCMachine {
+            desktopPort = try? pc.forward(toGuestPort: LocalDesktop.guestPort)
+        }
+        #endif
         beat(machine)
 
         // The emulator owns a whole thread for its lifetime: it is a CPU, not a

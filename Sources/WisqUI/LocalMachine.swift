@@ -164,6 +164,8 @@ func makeLocalMachine(
         // L'aléa neuf, comme `GuestMachineFactory.make` pour le cœur Swift.
         machine.seed(UInt64.random(in: .min ... .max))
         machine.pacesIdleToWallClock = true
+        // Le réseau du cœur Swift, réglage compris : voir plus bas.
+        try? machine.attachNetwork(forKernel: settingsKey, in: storage)
         return machine
     }
     #endif

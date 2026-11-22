@@ -57,11 +57,6 @@ impl Ecrivain {
     pub(crate) fn compte(&mut self, combien: usize) {
         self.u64(combien as u64);
     }
-    /// Des octets, précédés de leur longueur.
-    pub(crate) fn octets(&mut self, octets: &[u8]) {
-        self.compte(octets.len());
-        self.0.extend_from_slice(octets);
-    }
     /// **Un grand bloc page par page** (la mémoire vidéo, l'image d'un disque
     /// en mémoire) : sa longueur, une carte d'un bit par page de quatre
     /// kibioctets, puis les seules pages qui ne sont pas nulles — l'encodage
@@ -155,11 +150,6 @@ impl<'a> Lecteur<'a> {
     pub(crate) fn compte(&mut self, plus: usize) -> Option<usize> {
         let combien = usize::try_from(self.u64()?).ok()?;
         (combien <= plus).then_some(combien)
-    }
-    /// Des octets précédés de leur longueur, au plus `plus`.
-    pub(crate) fn octets(&mut self, plus: usize) -> Option<&'a [u8]> {
-        let longueur = self.compte(plus)?;
-        self.prendre(longueur)
     }
     /// **Un bloc écrit par [`Ecrivain::pages`]**, de `longueur` octets tout
     /// juste : rend, pour chaque page non nulle, son rang et ses octets. Un
@@ -305,14 +295,12 @@ mod tests {
         e.peut_etre_u64(Some(9));
         e.peut_etre_u64(None);
         e.compte(4);
-        e.octets(b"abc");
         let mut l = Lecteur::nouveau(&e.0);
         assert_eq!(l.peut_etre_u8(), Some(Some(3)));
         assert_eq!(l.peut_etre_u8(), Some(None));
         assert_eq!(l.peut_etre_u64(), Some(Some(9)));
         assert_eq!(l.peut_etre_u64(), Some(None));
         assert_eq!(l.compte(4), Some(4));
-        assert_eq!(l.octets(3), Some(&b"abc"[..]));
         assert!(l.au_bout());
 
         assert_eq!(Lecteur::nouveau(&[2]).oui(), None, "ni zéro ni un");
