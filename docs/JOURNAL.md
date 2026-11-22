@@ -8,6 +8,238 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : les opérandes d'`execute` par le chemin rapide, ce chemin jugé seul ; la boucle des blocs plus courte ; ce que la table des blocs coûte vraiment ; le bureau de Void en 765 s au lieu de 818
+
+**Ce qui n'allait pas.** Le bureau de Void Xfce demandait 739 à 812 s (119 à
+140 MIPS selon le bruit), et le but est un iPhone. Le tour précédent laissait
+deux pistes : une table des blocs plus dense, parce que `perf` mettait
+l'essentiel de la boucle sur des attentes de mémoire ; et les opérandes
+d'`execute` rendus au chemin rapide de la mémoire (peut-être 5 % du bureau),
+à condition qu'un test juge d'abord `read_memory_fast` et `write_memory_fast`
+eux-mêmes — `execute` est le juge des formes, et un juge qui partage le
+chemin qu'il juge n'en voit pas les défauts (le sabotage C2, la lecture
+rapide qui ne voit plus le bord de page, survivait).
+
+**Les courses de mesure.** Celles du tour précédent (`vit2/`, recopiées dans
+`vit3/`) : « Void 12 G », l'ISO Alpine jusqu'à `login:`, le banc commun, le
+bureau de Void entier ; et une de plus, **« Void 60 → 80 G »** : l'instantané
+de l'ISO Void à 60 milliards d'instructions (`--sauver`, pris une fois par le
+binaire d'avant), repris (`--reprendre`) et poussé jusqu'à 80 milliards. Ce
+sont les vingt milliards du bureau qui se dessine — le panneau, les
+icônes, 4 016 019 blocs construits, le quart de ceux de la course entière —
+en 150 s au lieu de 800. **Le conteneur a été chargé presque tout le
+temps** (l'autre agent compilait du Swift, puis du Rust : une charge de 2 à 6
+sur quatre cœurs) : le même binaire y a pris de 148 à 186 s. Les décisions
+se sont donc prises sur trois choses : des courses alternées nombreuses,
+leur médiane et leur minimum ; les instructions de l'hôte (callgrind, qui
+ne dépend pas de la charge) ; et `perf`.
+
+**Ce que la table des blocs coûte vraiment.** Avant de la rendre plus dense,
+il fallait savoir ce qu'elle coûtait. Trois mesures, sur Void 60 → 80 G :
+
+- *Un binaire compté* (des compteurs posés le temps d'une course, jamais
+  commités) : 2 352 millions d'entrées dans un bloc pour 19 992 millions
+  d'instructions, **8,5 instructions par entrée** ; le bloc suivant est l'un
+  des deux que l'entrée d'avant a retenus (`enchainer`) **92 fois sur cent**
+  (75,5 % le premier, 16,8 % le second), une reprise après une coupure 2,9
+  fois, la table elle-même 5,3 fois ; le tampon suffit à chaque fois, aucun
+  octet ne se compare ; 4 016 019 constructions (une toutes les 5 000
+  instructions), de 7,0 instructions en moyenne, dont 12 % au plafond de
+  seize et 7,8 % avec une instruction générale ; 4,0 mots comparés en
+  moyenne.
+- *La capacité* : la même table à 65 536 cases (52 Mio) et à 131 072 (104
+  Mio). Les constructions tombent de 4,02 millions à 1,67 et à 0,73 — 82 % de
+  moins —, et le temps ne bouge presque pas : 168,4 · 167,1 s ; 172,3 ·
+  163,3 ; 168,3 · 162,0 (courses alternées). **Construire n'est pas ce qui
+  coûte**, et une table plus dense ne peut rendre, à mémoire égale, que ce
+  que rend une table plus grande : 0 à 3 % ici.
+- *callgrind* sur les 200 millions d'instructions qui suivent la reprise
+  (le binaire d'avant) : 15,5 milliards d'instructions de l'hôte, **77,5 par
+  instruction de l'invité** ; 0,05 lecture manquée au premier niveau du cache
+  (simulé) par instruction de l'invité, presque rien au dernier. À 7,5 ns par
+  instruction de l'invité sur ce Xeon, l'hôte en exécute plus de trois par
+  cycle : **il calcule bien plus qu'il n'attend.** Sur ces 77,5 : une
+  vingtaine dans la boucle des blocs elle-même (l'appel, l'index borné,
+  RIP, les arrêts), 47 dans un `alu` (dont 25 pour les drapeaux), 54 dans une
+  lecture en mémoire.
+
+Ce qui reste de vrai dans le diagnostic d'avant : `perf` met encore un
+huitième de la boucle, à l'ISO d'Alpine, sur les **préchargements eux-mêmes**
+— une ligne demandée dans une page que le tampon de traduction de l'hôte ne
+tient pas fait d'abord marcher ses tables (la table fait 6 656 pages de
+quatre kibioctets). Un essai de diagnostic, les grandes pages de Linux
+(`madvise(MADV_HUGEPAGE)`) sur la table et sur la RAM de l'invité, n'a rien
+dit de net dans le bruit (sans : 160,4 puis 179,4 · 173,5 s ; la table :
+153,3 puis 164,6 · 180,7 ; la RAM : 145,9 puis 148,4 · 186,6), et iOS ne
+l'offre pas : abandonné. Sur un iPhone (pages de seize kibioctets, un cache
+de second niveau de seize mébioctets), la table pèse encore moins.
+
+**Ce qui est fait**, chaque pas mesuré :
+
+| pas | mesure avant → après |
+|---|---|
+| 1. **le chemin rapide de la mémoire jugé seul** (`the_fast_memory_paths_do_what_the_slow_ones_do`, voir plus bas) | treize sabotages du chemin rapide tombent, dont C2 |
+| 2. **les opérandes et la pile d'`execute` par le chemin rapide** (`read_destination`, `read_source`, `write_destination`, `push`, `pop`) | Void 12 G : 80,1 · 77,9 → 75,7 · 72,4 s (−6 %), mais 82,6 · 87,3 → 80,1 · 87,0 aux mesures finales, tout compris ; Void 60 → 80 G : 148,9 · 148,6 → 144,0 · 153,1 (rien de net) ; Ir : −0,01 %. Gardé parce que la consigne le demandait, que rien ne le dit plus lent, et que le test neuf rend le partage sûr |
+| 3. **le bloc suivant cherché d'abord parmi ceux que l'entrée d'avant a retenus** (`Blocs::trouver_apres`) | banc commun, huit courses alternées, conteneur chargé : médiane 18,3 → 17,0 s ; Ir +0,05 % |
+| 4. **la boucle des blocs plus courte** : les instructions à faire comme une suite (plus d'index à borner à chaque tour), les arrêts décalés d'un bit par instruction faite, l'octet dans le bloc recalculé depuis RIP là où il sert | Ir −4,2 % (16,735 → 16,091 milliards sur les 200 millions d'après la reprise) ; banc : médiane 17,0 → 17,6 s, minimum 15,5 → 15,1 (le bruit) |
+| 5. **quatre lignes préchargées du bloc suivant, une seule de l'autre** (au lieu de quatre et quatre) | banc : médiane 17,6 → 16,5 s, minimum 15,1 → 14,6 |
+
+**Les deux tests neufs du chemin de la mémoire et des reprises.**
+
+- `the_fast_memory_paths_do_what_the_slow_ones_do` (`pc_rapide`) : trente
+  mille accès tirés, chacun fait par `read_memory_fast` ou
+  `write_memory_fast` et par `read_memory` ou `write_memory` depuis le même
+  état — le processeur des tirages de `every_fast_form_does_what_execute_does`
+  (seize pages de données aux droits tirés, des trames qui ne se suivent
+  pas), le suivi des pages de code posé, des trames marquées de code avant
+  le remplissage du tampon et d'autres après, le tampon rempli page par page
+  par une lecture ou une écriture du noyau, une lecture du programme ou
+  rien, l'anneau zéro ou trois, CR0.WP tiré, et parfois la pagination
+  éteinte le tampon encore plein. Les adresses : au bout d'une page (à
+  cheval sur deux trames éloignées), dans les données, sur une page absente,
+  sur une page absente qui partage la case du tampon d'une page présente,
+  hors de l'espace canonique. Tout est comparé : la valeur ou le refus,
+  `faulted`, `unmapped`, le code de faute, la mémoire (les bits « accédée »
+  et « salie » compris), la marque de chaque page et la génération de
+  celles qui restent marquées. *La génération d'une page non marquée ne se
+  compare pas*, et c'est voulu : aucun bloc ne porte son tampon (la marque
+  tombe quand elle avance, se repose quand un bloc la retient), et c'est
+  pourquoi l'écriture rapide, qui n'écrit que là, n'a rien à noter — le
+  premier jet du test le comparait, et une écriture rapide légitime le
+  faisait tomber.
+- `a_cut_block_resumes_without_building_another` et
+  `a_write_into_its_own_block_after_a_resume_is_seen` (`pc_rapide`) : la
+  nouvelle boucle a rendu deux sabotages inoffensifs pour les tests d'avant
+  (L2 et L8, plus bas) — sans le bit de la dernière permise, la boucle sort
+  quand même au bout de sa suite, mais n'enregistre plus la reprise ; sans
+  le décalage du rang de départ, une reprise relit la génération après la
+  mauvaise instruction. Le premier test coupe la boucle de douze `add` par
+  tranches de cinq et exige un seul bloc construit ; le second coupe un bloc
+  avant le `movb` qui réécrit l'`add` suivant, le reprend, et exige
+  l'immédiat neuf et trois constructions (le bloc, celui de l'`add` relu,
+  la case vide de `hlt`).
+
+**Ce qui a été essayé et abandonné** : un site d'appel par rang (seize
+copies de l'appel, pour que l'hôte devine chaque cible d'après son site) —
+Void 60 → 80 G 151,7 · 154,2 → 167,0 · 158,5 s, ISO Alpine 43,5 · 44,6 → 48,8
+· 49,3 (de 5 à 10 % plus lent : le code de la boucle ne tient plus) ; la
+table à 65 536 ou 131 072 cases (ci-dessus : rien qui vaille 26 ou 78 Mio
+de plus) ; les grandes pages de Linux ; **la table dense elle-même**, que les
+mesures ont jugée avant qu'elle soit écrite : à mémoire égale, elle ne peut
+rendre que ce que rend la capacité (0 à 3 %), au prix de trois anneaux
+(instructions, octets comparés, générales) et d'une vérification de plus à
+chaque entrée. Elle reste notée plus bas, pour le jour où une puce Apple
+dira que la mémoire compte.
+
+**L'empreinte mémoire de la table ne change pas** : 32 768 cases de 832
+octets, **26 Mio** (27 262 976 octets), à côté du cache de décodage (65 536
+cases, six mébioctets) et de la RAM de l'invité. Rien n'a été ajouté.
+
+**Mesures finales**, le binaire de 94dba588 (`vit3/wisq-pc-avant`) contre
+celui de ce tour (`vit3/wisq-pc-final`), en courses alternées
+(`vit3/finales.out`) :
+
+| course | 94dba588 | ce tour | rapport |
+|---|---|---|---|
+| **ISO Void Xfce jusqu'au bureau** (96 720 148 955 instructions, `--horloge 1795230600`, 1 Gio, écran 1280 × 800), trois paires | 847,6 · 817,6 · 770,1 s | 819,1 · 765,1 · **725,3 s** | **1,07** (médianes 817,6 → 765,1 s ; 118 → 126 MIPS, au mieux 125,6 → 133,4) |
+| Void 60 → 80 G (le bureau qui se dessine) | 163,5 · 168,6 s | 158,8 · 156,5 s | 1,05 |
+| ISO Alpine jusqu'à `login:` (5 008 962 487 instructions) | 51,2 · 52,2 · 50,9 s | 47,7 · 49,3 · 45,7 s | 1,07 |
+| le banc commun (Alpine 6.18.60 + initramfs, 1 911 611 717 instructions) | 17,47 · 17,34 · 17,20 · 17,87 s | 15,35 · 15,50 · 15,61 · 15,35 s | **1,12** |
+| Void 12 G (le noyau, le décodeur xz) | 82,6 · 87,3 s | 80,1 · 87,0 s | 1,02 (rien de net) |
+| Ir, 200 M d'instructions après l'instantané de Void à 60 G (la reprise déduite) | 15,51 G | 14,87 G (mesuré au pas 4) | −4,1 % |
+
+Ces courses ont été faites conteneur calme (une charge de 1, la mienne),
+sauf la première paire du bureau (la course d'avant à 847,6 s a eu de la
+compagnie). Le gain est petit et il est réel : chaque paire voisine le
+donne, de 3 à 12 %.
+
+**Le comportement est le même** : chaque course retire les mêmes
+instructions au même temps de l'invité (550,1 s pour Void, 14,8 s pour
+l'ISO Alpine, 233,2 s à 80 G), et `cmp` dit identiques la sortie série et
+l'image finale du bureau de Void (3 433 et 2 359 312 octets ; la même série
+que les deux binaires du tour précédent, `4fdb9bb2…`), la sortie série
+d'Alpine jusqu'à `login:` (24 345 octets), l'image de Void à 80 G. Les
+blocs construits sont les mêmes (15 053 881 sur Void).
+
+**L'instantané et les bureaux prêts.** Rien du format de l'instantané (version
+2) ne change : la table des blocs n'y est pas, et la machine reprise refait
+ses blocs. Le bureau prêt publié (`void-live-x86_64-20250202-xfce-pret-rust-niveau2.wisqmachine`)
+se reprend par le chemin de l'application avec ce cœur
+(`testARealRustDesktopComesBackThroughTheApplicationsPath`, armé par
+`WISQ_BUREAU_RUST_FICHE` et `WISQ_BUREAU_ISO`, Swift en debug) : reprise en
+0,67 s, l'écran allumé à 99 %, la console répond 0,8 s plus tard, l'heure
+de l'invité à 1 s de l'hôte et son horloge CMOS à 0 s, la tablette, la carte
+réseau, les clés SSH refaites et servies 45 s après la reprise ; les huit
+tests de `RustReadyDesktopTests` passent. L'instantané de Void à 60 G du
+binaire d'avant se reprend aussi dans le binaire d'après (toutes les
+courses Void 60 → 80 G).
+
+**Les sabotages** : d'une ligne chacun, en profil de publication sans LTO,
+sur `pc_rapide`, `pc_carte`, `pc_ecran` et les tests de la bibliothèque, la
+source rendue après chacun et `git diff` comparé (script
+`<bloc-notes>/vit3/sab/sab.py`, listes `rapide.lst`, `tout.lst`,
+`reprises.lst`, journal `sabotages.log`).
+
+- *Le test du chemin rapide seul, avant le changement d'`execute`* : treize
+  sabotages, tous tombés dans `the_fast_memory_paths_do_what_the_slow_ones_do`
+  — le bord de page (F1, c'est C2), la pagination éteinte (F2), les droits du
+  noyau en anneau trois (F3), la lecture du programme sans `TLB_USER` (F4),
+  l'écriture du noyau sans `TLB_LIBRE`, sans `TLB_DIRTY`, sans
+  `TLB_WRITABLE` (F5 à F7), la case du tampon sans son étiquette (F8), la
+  place lue à l'adresse virtuelle (F9), le décalage tronqué (F10), l'écriture
+  du programme sans `TLB_USER` (F11), le marquage sans ôter l'écriture rapide
+  (G2), le remplissage libre sur une page marquée (G11).
+- *Sur l'arbre final, 67 sabotages distincts, tous tombés* : les quarante-six
+  du tour précédent (G1 à G20, N1 à N15, V1, V2, I1 à I4, C1, C2, L1, L2),
+  rejoués sur le code d'aujourd'hui — G7 et G8 aussi dans `trouver_apres`
+  (G7b, G8b), G9, L1 et L2 sur la boucle neuve, G19 sur la carte d'après
+  #721 — ; la boucle neuve (L3 l'octet sans celui du départ, L4 le rang
+  suivant décalé, L5 un saut compté de moins, L6 une faute comptée faite, L7
+  les arrêts sans décalage, L8 les arrêts sans le rang de départ) ;
+  l'enchaînement (K1 `trouver_apres` sans l'étiquette, K2 qui prend tout
+  pour juste) ; F1 à F11 de nouveau, maintenant qu'`execute` partage leur
+  chemin — **C2 tombe**, dans le test neuf ; et R1, la reprise oubliée.
+  *Deux après une reprise* : L2 et L8 survivaient (voir les tests neufs), et
+  tombent avec `a_cut_block_resumes_without_building_another` et
+  `a_write_into_its_own_block_after_a_resume_is_seen`, comme R1. L5 fait
+  tourner `pc_carte` sans fin (arrêté à la main après vingt-cinq minutes,
+  compté comme tombé ; `pc_rapide` et `pc_ecran` étaient déjà tombés).
+
+**Les tests** : trois de plus (4 388 → 4 391 au compte publié ; Rust 1 230 →
+1 233).
+
+**Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
+--all-targets --all-features -- -D warnings` et `cargo clippy --all-targets
+-- -D warnings` ; `cargo test --release` sur tout l'espace de travail (1 234
+passés, 0 échec, 49 suites) ; la même chose sous `RUSTFLAGS="-C
+debug-assertions=yes -C overflow-checks=yes"` (1 232 passés avant les deux
+tests des reprises, puis `-p wisq-vm` après eux : 857, 0) ; le recompte,
+puis `bun run build` et `bun test` dans `site/` (476 passés, 0 échec) ;
+`check-whitespace`, `check-project-sources` ; `RustReadyDesktopTests` (huit
+tests, le bureau prêt réel armé). Aucun fichier Swift, ni de
+`crates/wisq-page`, ni de l'ABI C n'est touché ; le format de l'instantané
+non plus.
+
+**Ce qui reste.**
+
+- *Mesurer sur une puce Apple* : c'est elle qui dira si la mémoire compte.
+  Ici l'hôte calcule plus qu'il n'attend ; les gains d'instructions de
+  l'hôte (−4,2 % sur le bureau) s'y retrouveront, les autres peut-être pas.
+- *Moins d'instructions de l'hôte par instruction de l'invité* : il en reste
+  77 environ. Les leviers vus : fondre `cmp`/`test` et le `jcc` qui suit
+  en une forme (un appel de moins sur sept instructions environ, mais la
+  coupure et le compte doivent rester à l'instruction près), les drapeaux
+  calculés pour rien (le tour du 20 novembre les avait mesurés paresseux sans
+  gain de temps : ils se calculent en parallèle du reste).
+- *La table dense*, si une puce Apple la demande : des en-têtes de soixante-
+  quatre octets dans la table (étiquette, tampon, suivants, et la position
+  de leurs instructions), les instructions dans un anneau à la longueur de
+  chaque bloc, positions absolues : un bloc est vivant tant que la tête de
+  l'anneau n'a pas avancé de plus que sa taille depuis sa position — aucune
+  file à tenir, et un bloc déplacé dans sa paire reste juste.
+- *Le contrat de `poursuivre`*, les autres périphériques, `invlpg` : comme le
+  tour précédent les a laissés.
+
 ## 2026-11-22 — Machine PC en Rust : les disques qcow2, VMDK, VDI, VHD, VHDX et OVA par les lecteurs du cœur Swift, les machines installées sur le cœur Rust, une reprise sur d'autres disques dite comme telle, les refus des programmes à la console
 
 **Ce qui n'allait pas.** Trois choses gardaient des machines PC au cœur
