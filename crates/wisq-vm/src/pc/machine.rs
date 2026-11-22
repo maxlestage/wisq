@@ -1239,7 +1239,10 @@ impl Machine {
         // **Juste sans rien comparer** quand sa page n'a pas été écrite
         // depuis son tampon ; sinon ses octets se comparent, et un bloc
         // intact est tamponné de nouveau.
-        let place = match self.blocs.trouver(physique, epoque, generation) {
+        let place = match self
+            .blocs
+            .trouver_apres(self.dernier_bloc, physique, epoque, generation)
+        {
             Trouve::Juste(place) => place,
             Trouve::AComparer(place)
                 if self.blocs.bloc(place).intact(&self.cpu.memory.bytes, debut) =>
@@ -1330,22 +1333,38 @@ impl Machine {
         let debut = bloc.etiquette.wrapping_sub(1) as usize;
         let cpu = &mut self.cpu;
         let fin = premier + nombre as usize;
-        let mut rang = premier;
-        let mut octet = physique_du_rang(bloc, premier);
+        // **Ce que la boucle tient par instruction, au plus court** : les
+        // instructions à faire comme une suite (sans index à borner à chaque
+        // tour), et les arrêts décalés d'un bit par instruction faite. Le
+        // rang et l'octet de l'instruction courante ne se calculent que là où
+        // ils servent — après une écriture, à la coupure, à la faute : RIP
+        // avance de la longueur de chaque instruction faite, comme l'octet
+        // dans le bloc, donc l'octet est celui du départ plus le chemin de RIP.
+        let a_faire = &bloc.uops[premier..fin];
+        let mut suite = a_faire.iter();
+        let rip_depart = cpu.rip;
+        let octet_depart = physique_du_rang(bloc, premier);
+        let octet =
+            |cpu: &crate::x86::Cpu| octet_depart + cpu.rip.wrapping_sub(rip_depart) as usize;
         // **Où s'arrêter pour regarder** : un bit par instruction qui peut
-        // écrire, et celui de la dernière permise. Le chemin de chaque
-        // instruction ne teste que lui.
-        let arrets = u32::from(bloc.ecrit) | (1 << (fin - 1));
+        // écrire, et celui de la dernière permise ; le bit zéro est celui de
+        // l'instruction courante. Le chemin de chaque instruction ne teste
+        // que lui.
+        let mut arrets = (u32::from(bloc.ecrit) | (1 << (fin - 1))) >> premier;
         let faites = loop {
-            let uop = &bloc.uops[rang];
+            let Some(uop) = suite.next() else {
+                break nombre;
+            };
             match (uop.executer)(cpu, uop, &bloc.generales) {
                 Suite::Suivante => {
                     cpu.rip = cpu.rip.wrapping_add(u64::from(uop.longueur));
-                    octet += uop.longueur as usize;
-                    rang += 1;
-                    if arrets & (1 << (rang - 1)) == 0 {
+                    let arret = arrets & 1;
+                    arrets >>= 1;
+                    if arret == 0 {
                         continue;
                     }
+                    // Le rang de l'instruction suivante.
+                    let rang = fin - suite.len();
                     if rang == fin {
                         // Coupé avant sa fin par le budget ou le service du
                         // matériel : la suite reprendra ici.
@@ -1354,7 +1373,7 @@ impl Machine {
                                 place,
                                 debut: debut as u64,
                                 rang,
-                                physique: (debut + octet) as u64,
+                                physique: (debut + octet(cpu)) as u64,
                             });
                         }
                         break nombre;
@@ -1369,27 +1388,28 @@ impl Machine {
                         Some(pages) if pages.epoque == bloc.epoque
                             && pages.generation(debut as u64) == Some(bloc.generation)
                     );
-                    if !tamponne && !bloc.intact_depuis(&cpu.memory.bytes, debut, octet) {
+                    if !tamponne && !bloc.intact_depuis(&cpu.memory.bytes, debut, octet(cpu)) {
                         break (rang - premier) as u64;
                     }
                 }
-                Suite::Saut => break (rang - premier) as u64 + 1,
+                Suite::Saut => break (fin - suite.len() - premier) as u64,
                 Suite::Faute => {
                     // L'instruction entière, pour nommer la faute : la sienne
                     // si elle est générale, sinon relue à son adresse — les
                     // octets du bloc sont intacts (comparés à l'entrée et après
                     // chaque écriture), et une instruction qui faute n'a rien
                     // écrit.
+                    let faites = (fin - suite.len() - 1 - premier) as u64;
                     let instruction = match bloc.generales.get(uop.generale as usize) {
                         Some(instruction) => *instruction,
                         None => {
-                            let ici = debut + octet;
+                            let ici = debut + octet(cpu);
                             let disponibles = 15.min(0x1000 - (ici & 0xFFF));
                             match lire_en_ram(&cpu.memory.bytes, ici, disponibles) {
                                 Some(instruction) => instruction,
                                 None => {
                                     return Passage::Faute(
-                                        (rang - premier) as u64,
+                                        faites,
                                         Evenement::Arret(format!(
                                         "une instruction d'un bloc ne se relit plus à rip {:#x}",
                                         cpu.rip
@@ -1399,7 +1419,6 @@ impl Machine {
                             }
                         }
                     };
-                    let faites = (rang - premier) as u64;
                     self.retirees = self.retirees.wrapping_add(faites);
                     let evenement = self.faute_d_execution(&instruction);
                     return Passage::Faute(faites, evenement);

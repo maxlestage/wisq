@@ -1532,3 +1532,160 @@ fn invlpg_on_the_running_page_reads_the_next_instruction_from_the_new_frame() {
     assert!(rapide.arretee);
     assert_eq!(rapide.cpu.regs[0], 2, "la suite vient de la trame neuve");
 }
+
+// ---- Le chemin rapide de la mémoire, jugé par le chemin lent ----
+
+/// Ce que deux processeurs doivent avoir d'égal après un même accès : la
+/// faute et son code, la mémoire entière (les bits « accédée » et « salie »
+/// des tables compris), et, pour chaque page, sa marque de code
+/// (`PagesDeCode`) et, si elle est marquée, sa génération. Celle d'une page
+/// non marquée ne dit rien : aucun bloc ne porte son tampon (la marque tombe
+/// quand elle avance, et se repose quand un bloc la retient), et c'est
+/// pourquoi l'écriture rapide, qui n'y va que là, n'a rien à noter.
+fn apres_l_acces(cpu: &Cpu) -> (bool, String, u64, Vec<Option<Option<u32>>>) {
+    let pages = cpu.code.as_deref().expect("le suivi des pages de code");
+    (
+        cpu.faulted,
+        format!("{:?}", cpu.unmapped),
+        cpu.fault_code,
+        (0..cpu.memory.bytes.len() as u64 / 0x1000)
+            .map(|page| {
+                pages
+                    .marquee(page << 12)
+                    .then(|| pages.generation(page << 12))
+            })
+            .collect(),
+    )
+}
+
+/// **`read_memory_fast` et `write_memory_fast` rendent ce que `read_memory`
+/// et `write_memory` rendent**, jugés seuls et non par une instruction : les
+/// formes du chemin rapide et `execute` peuvent partager ces deux chemins
+/// sans qu'un défaut de l'un se cache derrière l'autre. Trente mille accès
+/// tirés sur le processeur de `processeur` (seize pages de données aux
+/// droits tirés, des trames qui ne se suivent pas), le suivi des pages de
+/// code posé : certaines trames sont marquées de code avant le remplissage
+/// du tampon, d'autres après ; le tampon est rempli page par page par une
+/// lecture ou une écriture du noyau, une lecture du programme, ou rien ;
+/// l'anneau zéro ou trois, CR0.WP tiré, et parfois la pagination éteinte le
+/// tampon encore plein. Les adresses : au bout d'une page (à cheval sur
+/// deux trames éloignées), n'importe où dans les données, sur une page
+/// absente (dont une qui partage la case du tampon d'une page présente),
+/// hors de l'espace canonique. Chaque accès, lecture ou écriture d'une à
+/// huit octets, est fait par les deux chemins depuis le même état, et tout
+/// est comparé : la valeur ou le refus, `faulted`, `unmapped`, le code de
+/// faute, la mémoire, la marque de chaque page et la génération de celles
+/// qui restent marquées.
+#[test]
+fn the_fast_memory_paths_do_what_the_slow_ones_do() {
+    let mut h = Hasard(0x5EED_0042, &[0]);
+    let largeurs = [Width::Byte, Width::Word, Width::Dword, Width::Qword];
+    let (mut a_cheval, mut fautes, mut sur_du_code, mut anneau_trois) = (0, 0, 0, 0);
+    let mut sans_pagination = 0;
+    for tirage in 0..30_000 {
+        let mut cpu = processeur(&mut h).with_code_tracking();
+        let trame = |rang: u64| 0x40000 + (15 - rang) * 0x1000;
+        let mut marquees = Vec::new();
+        for rang in 0..16u64 {
+            if h.un_sur(4) {
+                cpu.marquer_code(trame(rang));
+                marquees.push(trame(rang));
+            }
+        }
+        // Le tampon rempli page par page, puis d'autres trames marquées.
+        for rang in 0..16u64 {
+            let ici = DONNEES + rang * 0x1000 + h.sous(0x1000);
+            match h.sous(4) {
+                0 => {}
+                1 => {
+                    let _ = cpu.read_memory(ici, Width::Byte);
+                }
+                2 => {
+                    let valeur = cpu.read_memory(ici, Width::Byte).unwrap_or(0);
+                    let _ = cpu.write_memory(ici, Width::Byte, valeur);
+                }
+                _ => {
+                    cpu.segments[1] = 0x33;
+                    let _ = cpu.read_memory(ici, Width::Byte);
+                    cpu.segments[1] = 0;
+                }
+            }
+        }
+        for rang in 0..16u64 {
+            if h.un_sur(6) {
+                cpu.marquer_code(trame(rang));
+                marquees.push(trame(rang));
+            }
+        }
+        cpu.faulted = false;
+        cpu.unmapped = None;
+        cpu.fault_code = 0;
+        if h.un_sur(3) {
+            cpu.segments[1] = 0x33;
+            anneau_trois += 1;
+        }
+        if h.un_sur(16) {
+            // Sans `write_control_register` : le tampon reste plein, et rien
+            // ne doit plus le lire.
+            cpu.control[0] &= !(1 << 31);
+            sans_pagination += 1;
+        }
+        let largeur = h.parmi(&largeurs);
+        let adresse = match h.sous(9) {
+            0..=2 => DONNEES + h.sous(16) * 0x1000 + 0x1000 - h.sous(8) - 1,
+            3..=5 => DONNEES + h.sous(0x10000),
+            6 => DONNEES + 0x10000 + h.sous(0x4000),
+            // Quatre mébioctets plus loin : une page absente, dans la même
+            // case du tampon qu'une page de données présente.
+            7 => DONNEES + (1 << 22) + h.sous(0x10000),
+            _ => 0x8000_0000_0000_0000 | h.sous(0x1_0000_0000),
+        };
+        if (adresse & 0xFFF) + largeur as u64 > 0x1000 {
+            a_cheval += 1;
+        }
+        let ecrit = h.un_sur(2);
+        let valeur = h.suivant();
+        let mut lent = cpu.clone();
+        let rendu_rapide;
+        let rendu_lent;
+        if ecrit {
+            rendu_rapide = format!("{:?}", cpu.write_memory_fast(adresse, largeur, valeur));
+            rendu_lent = format!("{:?}", lent.write_memory(adresse, largeur, valeur));
+            let visee = if lent.control[0] & (1 << 31) == 0 {
+                Some(adresse & !0xFFF)
+            } else {
+                adresse
+                    .checked_sub(DONNEES)
+                    .filter(|&ecart| ecart < 0x10000)
+                    .map(|ecart| trame(ecart >> 12))
+            };
+            if visee.is_some_and(|visee| marquees.contains(&visee)) {
+                sur_du_code += 1;
+            }
+        } else {
+            rendu_rapide = format!("{:?}", cpu.read_memory_fast(adresse, largeur));
+            rendu_lent = format!("{:?}", lent.read_memory(adresse, largeur));
+        }
+        if lent.faulted {
+            fautes += 1;
+        }
+        let quoi = format!(
+            "tirage {tirage} : {} de {largeur:?} à {adresse:#x}, anneau {}, CR0 {:#x}",
+            if ecrit { "écriture" } else { "lecture" },
+            lent.segments[1] & 3,
+            lent.control[0]
+        );
+        assert_eq!(rendu_rapide, rendu_lent, "{quoi} : ce qui est rendu");
+        assert_eq!(apres_l_acces(&cpu), apres_l_acces(&lent), "{quoi} : l'état");
+        assert!(cpu.memory.bytes == lent.memory.bytes, "{quoi} : la mémoire");
+    }
+    // Les tirages ont exercé ce qu'ils disent.
+    assert!(a_cheval > 3_000, "{a_cheval} accès à cheval");
+    assert!(fautes > 3_000, "{fautes} fautes");
+    assert!(
+        sur_du_code > 1_000,
+        "{sur_du_code} écritures sur une trame de code"
+    );
+    assert!(anneau_trois > 8_000, "{anneau_trois} en anneau trois");
+    assert!(sans_pagination > 1_000, "{sans_pagination} sans pagination");
+}
