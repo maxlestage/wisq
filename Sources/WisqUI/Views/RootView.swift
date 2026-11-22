@@ -21,6 +21,8 @@ public struct RootView: View {
     @State private var pairingPrefill: AgentPairing.Payload?
     @State private var choosingConnectionFile = false
     @State private var importFailure: String?
+    /// Le démarrage animé, une fois par lancement : voir `LaunchAnimationView`.
+    @State private var launching = true
 
     public init() {}
 
@@ -98,6 +100,16 @@ public struct RootView: View {
         }
         .fullScreenCover(item: $connecting) { machine in
             SessionView(machine: machine, library: library)
+        }
+        // **Par-dessus tout, puis plus rien** : la liste est déjà là, prête,
+        // dessous, et l'animation s'efface sur elle.
+        .overlay {
+            if launching {
+                LaunchAnimationView {
+                    withAnimation(.easeOut(duration: 0.35)) { launching = false }
+                }
+                .transition(.opacity)
+            }
         }
     }
 

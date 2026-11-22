@@ -34,6 +34,18 @@ break APIs.
 
   Personne ne **montre** encore ce cadre : il est déclaré, routé, rempli par
   l'invité et lisible par l'hôte, et la vue reste à écrire.
+- **La plateforme, dite avant tout démarrage.** Toucher une machine ouvre
+  d'abord une feuille : la plateforme de l'image (x86-64, ARM64, RISC-V) et
+  d'où wisq le sait — l'en-tête du noyau, le noyau sorti de l'image ISO
+  (`IsoBoot.announcedKernel`), ou seulement un mot de son nom —, celle du
+  téléphone (`HostPlatform`), et ce qui va se passer : la machine qui la
+  prend, interprétée sans JIT, ou pourquoi aucune. Rien ne démarre avant
+  « Démarrer ». Décidé par `BootAnnouncement`, tenu par la CI Linux.
+- **Le démarrage animé de l'application, et ses crédits.** La marque se
+  monte pièce par pièce, un journal de quatre lignes dit les cœurs et
+  l'hôte, puis la signature : « Conçu et développé par Maxime Nathan
+  Lestage ». « À propos » porte la même signature et les emprunts de
+  `NOTICE` (`AppCredits`). « Réduire les animations » est respecté.
 
 ### Changed
 - **Le site est en Yew et en WebAssembly, de la première page à la dernière,
@@ -205,6 +217,11 @@ break APIs.
   va jusqu'à son bureau Xfce, panneau, horloge et icônes compris. Et le banc
   de démarrage écrit l'écran toutes les dix milliards d'instructions : c'est
   ce qui a montré le noir, MX ne disant plus rien sur la console série.
+- **Omarchy 4.5 (et archiso) : `::` devant un chemin syslinux.** La recette
+  écrit `LINUX ::/arch/boot/x86_64/vmlinuz-linux-omarchy` ; `::` veut dire
+  « depuis la racine du volume ». Lu comme un chemin relatif, il devenait
+  `/boot/syslinux/::/arch/…`, et l'image était refusée (« wisq n'a pas pu
+  l'en sortir »).
 
 ## [0.4.0] — 2026-09-05
 

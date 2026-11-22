@@ -971,12 +971,22 @@ fn logical_lines(text: &str) -> Vec<String> {
 /// `/isolinux/x86_64/vmlinuz` ; lu depuis la racine, il était introuvable et
 /// l'image refusée. Grub et systemd-boot, eux, partent de la racine
 /// (`base` vide).
+///
+/// **`::` devant un chemin, chez syslinux, veut dire « depuis la racine du
+/// volume »**, quel que soit le dossier de la recette. Archiso l'écrit
+/// depuis 2023 — `LINUX ::/arch/boot/x86_64/vmlinuz-linux` — et Omarchy,
+/// qui en descend, aussi. Lu comme un chemin relatif, il devenait
+/// `/boot/syslinux/::/arch/…`, introuvable, et l'image était refusée.
 fn absolute(path: &str, base: &str) -> String {
     let path = path.trim();
     let path = match path.strip_prefix('(').and_then(|rest| rest.split_once(')')) {
         Some((_, inside)) => inside,
         None => path,
     };
+    if let Some(rest) = path.strip_prefix("::") {
+        let rest = rest.trim_start_matches('/');
+        return format!("/{rest}");
+    }
     if path.starts_with('/') {
         path.to_string()
     } else {
