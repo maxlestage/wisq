@@ -17,11 +17,22 @@ import Foundation
 /// récente que celle de cette version (`X86Machine.snapshotLevel`), n'est pas
 /// proposée. **Un index absent n'est pas une panne** : tant que la release
 /// n'existe pas, la section ne se montre pas, et rien d'autre ne change.
+///
+/// **Deux cœurs, deux entrées.** Un bureau fabriqué sur la machine PC en Rust
+/// (`Core.rust`) est un instantané `WISQPC\r\n` que seul ce cœur reprend ; un
+/// bureau du cœur Swift, un instantané d'`X86Machine`. L'index porte les deux
+/// sous le même titre, chacune avec son cœur, et l'application prend celle
+/// que son cœur sait reprendre (`parse`, `rustLevel`).
 public struct ReadyDesktop: Equatable, Sendable {
     /// « Void Xfce (prêt) » : ce que la liste écrit.
     public let title: String
+    /// Le cœur qui reprend l'instantané : une session choisit son cœur par
+    /// son format (`RustPCSetting.runs`), et c'est ce cœur-là qu'il faut.
+    public let core: Core
     /// Le niveau de machine de la fabrication : une application plus ancienne
-    /// ne saurait pas reprendre l'instantané (`SavedSession`).
+    /// ne saurait pas reprendre l'instantané (`SavedSession`). Pour le cœur
+    /// Swift, `X86Machine.snapshotLevel` ; pour le cœur Rust, la version de
+    /// son instantané (`RustPCSnapshot.version`).
     public let level: UInt64
     /// La mémoire de la session : refusée avant de télécharger quand le
     /// téléphone ne peut pas la donner.
@@ -57,6 +68,30 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// l'application dès l'ouverture de la feuille.
     public static let largestFile = 64 << 30
 
+    // MARK: - Le cœur
+
+    /// **Le cœur qui reprend l'instantané d'une entrée.** Écrit dans l'index
+    /// (`"core"`) ; une entrée qui ne le dit pas vient d'avant, et c'est un
+    /// instantané du cœur Swift. Un cœur que cette version ne connaît pas
+    /// n'est pas décodé : l'entrée est écartée seule (`parse`).
+    public enum Core: String, Codable, Equatable, Sendable {
+        case swift
+        case rust
+
+        /// **Le plus haut niveau que lisent les applications d'avant ce
+        /// champ** : elles ignorent `core`, et ne jugent une entrée que par
+        /// son niveau, de 1 à `X86Machine.snapshotLevel` — 1 pour toutes
+        /// celles qui sont publiées. Une entrée Rust de ce niveau leur serait
+        /// proposée, téléchargée, puis reprise par le cœur Swift, qui ne lit
+        /// pas un instantané `WISQPC\r\n` : une session abîmée.
+        public static let levelSeenByOlderApps: UInt64 = 1
+
+        /// Le plus petit niveau d'une entrée Rust : au-dessus de ce que les
+        /// applications d'avant acceptent. C'est aussi la première version de
+        /// l'instantané du cœur Rust qui se reprend (la 1 est refusée).
+        public static let firstRustLevel: UInt64 = levelSeenByOlderApps + 1
+    }
+
     // MARK: - L'index
 
     /// **Le format de `bureaux.json`**, écrit par `wisq-fabrique index` et
@@ -72,6 +107,9 @@ public struct ReadyDesktop: Equatable, Sendable {
 
         public struct Entry: Codable, Equatable, Sendable {
             public var title: String
+            /// Le cœur que l'instantané demande ; absent des entrées d'avant,
+            /// qui sont du cœur Swift (`machineCore`).
+            public var core: Core?
             public var level: UInt64
             public var ramBytes: UInt64
             public var kernelDigest: String
@@ -80,8 +118,9 @@ public struct ReadyDesktop: Equatable, Sendable {
             public var archive: Link
 
             public init(title: String, level: UInt64, ramBytes: UInt64, kernelDigest: String,
-                        madeAt: Date, image: Link, archive: Link) {
+                        madeAt: Date, image: Link, archive: Link, core: Core? = nil) {
                 self.title = title
+                self.core = core
                 self.level = level
                 self.ramBytes = ramBytes
                 self.kernelDigest = kernelDigest
@@ -95,8 +134,12 @@ public struct ReadyDesktop: Equatable, Sendable {
             public init(sheet: ReadyDesktopBuild.Sheet, image: URL, archive: URL) {
                 self.init(title: sheet.title, level: sheet.level, ramBytes: sheet.ramBytes,
                           kernelDigest: sheet.kernelDigest, madeAt: sheet.madeAt,
-                          image: Link(sheet.image, url: image), archive: Link(sheet.archive, url: archive))
+                          image: Link(sheet.image, url: image), archive: Link(sheet.archive, url: archive),
+                          core: sheet.core)
             }
+
+            /// Le cœur de l'entrée : celui qu'elle dit, le cœur Swift sinon.
+            public var machineCore: Core { core ?? .swift }
         }
 
         /// Un fichier publié : son nom, sa taille, sa somme, son adresse.
@@ -122,13 +165,17 @@ public struct ReadyDesktop: Equatable, Sendable {
         }
 
         /// **Le nouvel index, et ce qu'il garde de l'ancien** : une entrée
-        /// neuve remplace celle du même titre et du même niveau ; les autres
-        /// restent. Un bureau d'un niveau neuf ne retire donc pas celui que les
-        /// applications d'avant savent encore reprendre — à condition qu'il
-        /// ne prenne pas son adresse (`clashes`).
+        /// neuve remplace celle du même titre, du même cœur et du même
+        /// niveau ; les autres restent. Un bureau d'un niveau neuf ne retire
+        /// donc pas celui que les applications d'avant savent encore reprendre
+        /// — à condition qu'il ne prenne pas son adresse (`clashes`) —, et le
+        /// bureau du cœur Rust ne retire pas celui du cœur Swift.
         public func merged(keeping old: Index) -> Index {
             let kept = old.desktops.filter { previous in
-                !desktops.contains { $0.title == previous.title && $0.level == previous.level }
+                !desktops.contains {
+                    $0.title == previous.title && $0.machineCore == previous.machineCore
+                        && $0.level == previous.level
+                }
             }
             return Index(format: format, desktops: desktops + kept)
         }
@@ -187,12 +234,11 @@ public struct ReadyDesktop: Equatable, Sendable {
 
         /// **Les entrées que l'application écarterait** (`parse`), chacune
         /// jugée à son propre niveau : de quoi refuser d'écrire un index dont
-        /// une entrée ne serait jamais proposée.
+        /// une entrée ne serait jamais proposée. **Une entrée Rust d'un niveau
+        /// que lisent les applications d'avant** (`Core.levelSeenByOlderApps`)
+        /// en est une : elles la prendraient pour un bureau du cœur Swift.
         public var refused: [Entry] {
-            desktops.filter { entry in
-                ReadyDesktop.desktop(from: entry, index: ReadyDesktop.index,
-                                     supportedLevel: max(entry.level, 1)) == nil
-            }
+            desktops.filter { !ReadyDesktop.isValidAtItsOwnLevel($0) }
         }
 
         /// En JSON lisible, clés triées, dates ISO 8601.
@@ -216,15 +262,23 @@ public struct ReadyDesktop: Equatable, Sendable {
     /// l'index. Une entrée fautive est écartée seule, pas tout l'index ; un
     /// index illisible, ou d'un autre format, ne propose rien.
     ///
-    /// **Un par titre** : le plus haut niveau que cette version sait
-    /// reprendre, puis le plus récent. Un index peut porter le bureau d'un
-    /// niveau neuf à côté de celui d'avant (`Index.merged`).
+    /// **Un par titre** : celui du cœur Rust quand cette application le fait
+    /// tourner (`rustLevel`, la version d'instantané qu'il reprend, ou `nil`
+    /// sans cœur Rust ou réglage éteint), sinon celui du cœur Swift ; puis le
+    /// plus haut niveau que cette version sait reprendre, puis le plus
+    /// récent. Un index peut porter le bureau d'un niveau neuf à côté de
+    /// celui d'avant (`Index.merged`), et celui d'un cœur à côté de celui de
+    /// l'autre. **Il retombe proprement** : un index qui n'a que l'entrée
+    /// Swift la propose au cœur Rust aussi (la session du cœur Swift s'y
+    /// reprend, sur le cœur Swift) ; un index qui n'a que l'entrée Rust ne
+    /// propose rien sans cœur Rust.
     ///
     /// **Une adresse où deux entrées valables annoncent deux fichiers**
     /// (`Index.clashes`) n'en propose aucun : l'un des deux est forcément
     /// faux, et c'est celui qu'on téléchargerait en boucle.
     public static func parse(_ json: String, index: URL = ReadyDesktop.index,
-                             supportedLevel: UInt64 = X86Machine.snapshotLevel) -> [ReadyDesktop] {
+                             supportedLevel: UInt64 = X86Machine.snapshotLevel,
+                             rustLevel: UInt64? = nil) -> [ReadyDesktop] {
         guard let root = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
               (root["format"] as? NSNumber)?.intValue == 1,
               let list = root["desktops"] as? [Any]
@@ -238,23 +292,35 @@ public struct ReadyDesktop: Equatable, Sendable {
         // Les adresses en conflit, entre entrées valables seulement — chacune
         // jugée à son propre niveau, comme `Index.refused` : une entrée
         // fautive ne se télécharge jamais, et n'emporte pas la propre d'à côté.
-        let valid = entries.filter {
-            desktop(from: $0, index: index, supportedLevel: max($0.level, 1)) != nil
-        }
+        let valid = entries.filter { isValidAtItsOwnLevel($0, index: index) }
         let clashing = Set(Index(desktops: valid).clashes)
         var chosen: [ReadyDesktop] = []
         for entry in entries {
             guard !clashing.contains(entry.image.url), !clashing.contains(entry.archive.url),
-                  let desktop = desktop(from: entry, index: index, supportedLevel: supportedLevel)
+                  let desktop = desktop(from: entry, index: index, supportedLevel: supportedLevel,
+                                        rustLevel: rustLevel)
             else { continue }
             if let same = chosen.firstIndex(where: { $0.title == desktop.title }) {
-                let other = chosen[same]
-                if (desktop.level, desktop.madeAt) > (other.level, other.madeAt) { chosen[same] = desktop }
+                if desktop.rank > chosen[same].rank { chosen[same] = desktop }
             } else {
                 chosen.append(desktop)
             }
         }
         return chosen
+    }
+
+    /// L'ordre entre deux bureaux du même titre : le cœur Rust d'abord (une
+    /// entrée Rust n'est valable que pour une application qui le fait
+    /// tourner), puis le niveau, puis la date.
+    var rank: (Int, UInt64, Date) { (core == .rust ? 1 : 0, level, madeAt) }
+
+    /// **Une entrée jugée à son propre niveau**, comme si l'application
+    /// savait le reprendre, et faisait tourner le cœur Rust : ce qui reste à
+    /// juger, c'est la forme. Une entrée Rust d'un niveau que lisent les
+    /// applications d'avant reste refusée (`Core.firstRustLevel`).
+    static func isValidAtItsOwnLevel(_ entry: Index.Entry, index: URL = ReadyDesktop.index) -> Bool {
+        desktop(from: entry, index: index, supportedLevel: max(entry.level, 1),
+                rustLevel: max(entry.level, Core.firstRustLevel)) != nil
     }
 
     /// **Ce texte est-il un index des bureaux**, d'un format ou d'un autre ?
@@ -268,12 +334,22 @@ public struct ReadyDesktop: Equatable, Sendable {
         return root["format"] is NSNumber
     }
 
-    /// Une entrée, jugée.
-    static func desktop(from entry: Index.Entry, index: URL, supportedLevel: UInt64) -> ReadyDesktop? {
+    /// Une entrée, jugée. Son niveau l'est contre le cœur qu'elle demande :
+    /// de 1 à `supportedLevel` pour le cœur Swift ; de `Core.firstRustLevel`
+    /// à `rustLevel` pour le cœur Rust, et jamais sans lui (`rustLevel` nil).
+    static func desktop(from entry: Index.Entry, index: URL, supportedLevel: UInt64,
+                        rustLevel: UInt64? = nil) -> ReadyDesktop? {
         let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let digest = entry.kernelDigest.lowercased()
+        let levelReadable: Bool
+        switch entry.machineCore {
+        case .swift: levelReadable = entry.level >= 1 && entry.level <= supportedLevel
+        case .rust:
+            guard let rustLevel else { return nil }
+            levelReadable = entry.level >= Core.firstRustLevel && entry.level <= rustLevel
+        }
         guard !title.isEmpty, title.count <= 80, !title.contains(where: \.isNewline),
-              (1...supportedLevel).contains(entry.level),
+              levelReadable,
               ReadyDesktopBuild.isRecordable(Int(clamping: entry.ramBytes)),
               (1...16).contains(digest.count), digest.allSatisfy(ImageDownload.isASCIIHexDigit),
               // L'archive est une machine, l'image n'en est pas une : la
@@ -285,7 +361,8 @@ public struct ReadyDesktop: Equatable, Sendable {
         else { return nil }
         let day = dayStamp(entry.madeAt)
         return ReadyDesktop(
-            title: title, level: entry.level, ramBytes: entry.ramBytes, kernelDigest: digest,
+            title: title, core: entry.machineCore, level: entry.level, ramBytes: entry.ramBytes,
+            kernelDigest: digest,
             madeAt: entry.madeAt,
             image: ImageDownload.Release(
                 distribution: title, flavor: "ready-image", title: "image", version: day, arch: "x86_64",

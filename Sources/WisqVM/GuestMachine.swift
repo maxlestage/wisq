@@ -140,6 +140,14 @@ public protocol GuestMachine: AnyObject, Sendable {
     /// entre la reprise et le premier tour ; le temps dû se paie ensuite par
     /// pas, pendant que l'invité dort. Voir `GuestClock`.
     func elapse(seconds: TimeInterval)
+    /// **L'aléa de cet appareil, après une reprise** : la graine de `RDRAND`
+    /// et de `RDSEED`. Un cœur dont l'instantané porte l'état de son
+    /// générateur (la machine PC en Rust) le reprend avec la session, et une
+    /// session venue d'ailleurs — un bureau prêt, fabriqué une fois pour tous
+    /// — tirerait alors la même suite sur chaque téléphone. `PendingSession`
+    /// l'appelle après chaque reprise. Les autres n'ont rien à faire
+    /// (l'extension par défaut) : `X86Machine` ne sauve pas son générateur.
+    func reseed(_ seed: UInt64)
 }
 
 /// Ce que les machines partagent pour rattraper le temps passé dehors.
@@ -189,6 +197,9 @@ public enum GuestClock {
 /// forme « The operation couldn't be completed », qui est le contraire de ce
 /// que ces cas existent pour dire.
 extension GuestMachine {
+    /// Rien à reprendre ni à remplacer : voir `GuestMachine.reseed`.
+    public func reseed(_ seed: UInt64) {}
+
     /// Le temps écoulé depuis `savedAt`, l'heure de l'instantané repris
     /// (`SuspendedMachine.savedAt`). Sans heure, rien : mieux vaut une heure
     /// en retard qu'un écart inventé.

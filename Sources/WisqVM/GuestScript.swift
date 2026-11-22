@@ -250,8 +250,13 @@ public final class GuestScript {
     /// L'écran en PPM : une image que tout outil ouvre, pour voir ce qui a
     /// été sauvé.
     public static func ppm(_ display: X86Framebuffer) -> Data {
-        let pixels = display.snapshot()
-        var ppm = Data("P6\n\(display.width) \(display.height)\n255\n".utf8)
+        ppm(pixels: display.snapshot(), width: display.width, height: display.height)
+    }
+
+    /// La même image, depuis des pixels de quatre octets (le bleu d'abord) :
+    /// l'écran de la machine PC en Rust les rend ainsi (`RustPCScreen`).
+    public static func ppm(pixels: [UInt8], width: Int, height: Int) -> Data {
+        var ppm = Data("P6\n\(width) \(height)\n255\n".utf8)
         ppm.reserveCapacity(ppm.count + pixels.count / 4 * 3)
         for index in stride(from: 0, to: pixels.count - 3, by: 4) {
             ppm += [pixels[index + 2], pixels[index + 1], pixels[index]]

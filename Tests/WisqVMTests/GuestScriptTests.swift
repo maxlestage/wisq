@@ -154,6 +154,14 @@ final class GuestScriptTests: XCTestCase {
         XCTAssertEqual(GuestScript.litFraction([]), 0)
     }
 
+    /// **L'image en PPM depuis des pixels** (ceux de l'écran du cœur Rust) :
+    /// l'en-tête à la taille donnée, puis rouge, vert, bleu — les pixels
+    /// arrivent le bleu d'abord, et leur quatrième octet ne part pas.
+    func testAPPMIsWrittenFromPixels() {
+        let ppm = GuestScript.ppm(pixels: [1, 2, 3, 0xFF, 4, 5, 6, 0], width: 2, height: 1)
+        XCTAssertEqual(ppm, Data("P6\n2 1\n255\n".utf8) + Data([3, 2, 1, 6, 5, 4]))
+    }
+
     /// **La règle des marques**, tenue sur le déroulé du bureau : aucune
     /// frappe ne contient la marque qu'on attend après elle. Sinon la console,
     /// qui répète la ligne tapée, la montrerait tout de suite.

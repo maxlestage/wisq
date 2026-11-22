@@ -260,6 +260,18 @@ public enum ReadyDesktopBuild {
 
     public static let defaultBudget: UInt64 = 2_000_000_000_000
 
+    /// **Le cœur de la fabrication** (`--coeur`) : `swift` sans l'option,
+    /// comme avant elle ; `rust` pour la machine PC en Rust
+    /// (`RustReadyDesktopBuild`). Toute autre valeur est refusée en le
+    /// disant, avant le démarrage.
+    public static func core(_ text: String?) throws -> ReadyDesktop.Core {
+        guard let text else { return .swift }
+        guard let core = ReadyDesktop.Core(rawValue: text) else {
+            throw Refusal.unreadableOption("--coeur", value: text)
+        }
+        return core
+    }
+
     /// **Une taille que l'application sait régler**, ou rien : `setSize`
     /// ignore sans rien dire une taille hors de ses choix, et l'archive
     /// annoncerait alors la mémoire par défaut à côté d'une session qui en
@@ -303,7 +315,10 @@ public enum ReadyDesktopBuild {
     public static func assemble(
         _ machine: InstalledMachine, snapshot: Data, kernel: Data, in work: URL, to archive: URL
     ) throws -> String {
-        guard let ram = X86Machine.savedRAMSize(in: snapshot) else {
+        // Lue par le cœur qui a écrit l'instantané, comme l'application la
+        // lira (`SessionMemory`) : l'en-tête `WISQPC\r\n` pour le cœur Rust,
+        // la section de la mémoire pour `X86Machine`.
+        guard let ram = SessionMemory.savedRAMSize(snapshot, core: .x86_64) else {
             throw Refusal.unreadable("la taille de la mémoire ne se lit pas")
         }
         // Jugée au départ aussi (`memory`), mais c'est la mémoire de
@@ -323,9 +338,17 @@ public enum ReadyDesktopBuild {
     /// remplaçait celle du niveau d'avant sous le même nom, et l'entrée gardée
     /// pour les applications d'avant (`Index.merged`) promettait une somme que
     /// l'asset n'avait plus.
-    public static func outputStem(image: String, level: UInt64) -> String {
+    ///
+    /// **Le cœur Rust y met son nom** : `…-xfce-pret-rust-niveau2`. Son
+    /// archive et celle du cœur Swift vivent dans la même release ; sous le
+    /// même nom, l'une remplacerait l'autre, et les applications qui ne
+    /// reprennent que le cœur Swift perdraient la leur.
+    public static func outputStem(image: String, level: UInt64, core: ReadyDesktop.Core = .swift) -> String {
         let base = image.hasSuffix(".iso") ? String(image.dropLast(4)) : image
-        return "\(base)-pret-niveau\(level)"
+        switch core {
+        case .swift: return "\(base)-pret-niveau\(level)"
+        case .rust: return "\(base)-pret-rust-niveau\(level)"
+        }
     }
 
     /// L'empreinte d'un noyau, telle qu'elle nomme sa session.
@@ -358,7 +381,11 @@ public enum ReadyDesktopBuild {
         }
 
         public var title: String
-        /// `X86Machine.snapshotLevel` de la machine qui a fabriqué.
+        /// Le cœur qui a fabriqué, et qui reprendra ; absent des fiches
+        /// d'avant, qui sont du cœur Swift.
+        public var core: ReadyDesktop.Core?
+        /// `X86Machine.snapshotLevel` de la machine qui a fabriqué, ou la
+        /// version de l'instantané du cœur Rust (`RustPCSnapshot.version`).
         public var level: UInt64
         /// L'image, sous le nom que l'archive lui donne.
         public var image: File
@@ -385,8 +412,10 @@ public enum ReadyDesktopBuild {
         public init(title: String, level: UInt64, image: File, archive: File, kernelDigest: String,
                     ramBytes: UInt64, screen: [Int], commandLine: String, madeAt: Date,
                     guestClock: Date?, instructions: UInt64, snapshotBytes: UInt64,
-                    packedBytes: UInt64, snapshotSHA256: String? = nil, commit: String?) {
+                    packedBytes: UInt64, snapshotSHA256: String? = nil, commit: String?,
+                    core: ReadyDesktop.Core? = nil) {
             self.title = title
+            self.core = core
             self.level = level
             self.image = image
             self.archive = archive
