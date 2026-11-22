@@ -111,6 +111,36 @@ l'écran de la machine aux contrôles plus nets — et deux tours de captures
 au moins. Le paquet d'aperçus n'a jamais été compilé : sa première course
 dira ce qu'il faut y corriger. Le déclenchement provisoire, s'il est permis,
 partira avant la fusion.
+## 2026-11-22 — L'accueil des machines : la liste vide n'est plus traversée par ses explications
+
+**Ce que l'utilisateur a vu**, sur une capture de son iPhone : sur l'écran
+« Machines » vide, l'accueil « Aucun noyau » était posé par-dessus quatre
+paragraphes d'explications, et les deux textes se chevauchaient, illisibles.
+L'accueil était un `.overlay` de la liste. Or la section des noyaux, même
+vide, gardait son pied : ce qui est lancé ou non, la mémoire, le disque. Le
+pied du stockage s'ajoutait au même endroit. Le texte était aussi périmé : il
+présentait encore le noyau rv32 « nommu » comme la machine du téléphone, et
+le bouton disait « Télécharger Alpine » alors que la feuille propose les
+bureaux prêts.
+
+**Ce qui change** (`LocalVMView.swift`) :
+- liste vide, l'accueil est **une rangée de la liste**, et non plus un calque.
+  Il dit « Aucune machine », avec une action principale « Télécharger un
+  bureau ou une image », puis « Importer une image » et « Connexions à
+  distance » ;
+- la section des noyaux n'existe que s'il y a des noyaux ; son pied tient en
+  une phrase ;
+- les explications (ce que wisq lance, la mémoire, le disque, le stockage)
+  passent dans une feuille « À propos » (`MachinesAboutView`), ouverte par un
+  bouton « i » en haut à gauche, réécrites et mises à jour (PC x86-64 avec le
+  réseau d'abord, RISC-V ensuite) ;
+- le menu « + » dit « Télécharger un bureau ou une image ».
+
+**Ce qui n'est pas testé** : c'est une vue SwiftUI, qui ne compile pas sous
+Linux. Elle est vérifiée par `swiftc -frontend -parse` et SwiftLint, et le job
+« App iOS » de la CI la construit. Aucune logique hors des vues ne change :
+pas de test neuf, compte publié inchangé. La chaîne de captures (#722) la
+photographiera.
 
 ## 2026-11-22 — Machine PC en Rust : les disques qcow2, VMDK, VDI, VHD, VHDX et OVA par les lecteurs du cœur Swift, les machines installées sur le cœur Rust, une reprise sur d'autres disques dite comme telle, les refus des programmes à la console
 
