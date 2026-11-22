@@ -216,7 +216,8 @@ fn tirer(h: &mut Hasard, bases: &[u8], relatif: bool, sauts: bool) -> Vec<u8> {
                 octets.push(h.parmi(&[0u8, 1, 2, 7, 31, 32, 33, 63, 64, 200]));
             }
         }
-        // `adc`, `sbb`, `cmov`, `setcc`, `xchg`, `xadd`, `imul` : le chemin
+        // `cmov`, `setcc` et `imul` (des formes, comme `adc` et `sbb` de la
+        // grille), puis `xchg`, `xadd`, `bt`, `bts`, `bsf` : le chemin
         // général, au milieu des formes.
         17 => {
             octets.extend([0x0F, 0x40 | h.sous(16) as u8]);
@@ -230,12 +231,31 @@ fn tirer(h: &mut Hasard, bases: &[u8], relatif: bool, sauts: bool) -> Vec<u8> {
             octets.push(h.parmi(&[0x87u8, 0x86]));
             octets.extend(modrm(h, reg, memoire, bases, relatif));
         }
+        // `imul` à trois opérandes, un immédiat d'un octet ou de quatre.
+        20 if h.un_sur(3) => {
+            let opcode = h.parmi(&[0x69u8, 0x6B]);
+            octets.push(opcode);
+            octets.extend(modrm(h, reg, memoire, bases, relatif));
+            let taille = if opcode == 0x6B {
+                1
+            } else if octets.contains(&0x66) {
+                2
+            } else {
+                4
+            };
+            octets.extend(&h.suivant().to_le_bytes()[..taille]);
+        }
         20 => {
             octets.extend([0x0F, h.parmi(&[0xAFu8, 0xC1, 0xA3, 0xAB, 0xBC])]);
             octets.extend(modrm(h, reg, memoire, bases, relatif));
         }
+        // `bswap`, puis `nop`, `cltq`, `cqto`, `clc`, `stc`, `cmc`, `xchg`
+        // avec l'accumulateur.
+        21 if h.un_sur(4) => {
+            octets.extend([0x0F, 0xC8 | bases_et_registres(h).1]);
+        }
         21 => {
-            octets.push(h.parmi(&[0x90u8, 0x98, 0x99, 0xF8, 0xF9, 0xF5]));
+            octets.push(h.parmi(&[0x90u8, 0x98, 0x99, 0xF8, 0xF9, 0xF5, 0x91, 0x92]));
         }
         // Les sauts : relatifs, conditionnels, appels et retours (le
         // programme les rend inoffensifs, voir `programme`).
@@ -248,6 +268,12 @@ fn tirer(h: &mut Hasard, bases: &[u8], relatif: bool, sauts: bool) -> Vec<u8> {
             octets.extend((h.suivant() as u32).to_le_bytes());
         }
         24 => octets.push(h.parmi(&[0x50u8, 0x51, 0x52, 0x58, 0x59, 0x5A])),
+        // `call *` et `jmp *`, vers un registre ou la mémoire.
+        25 if h.un_sur(2) => {
+            octets.push(0xFF);
+            let extension = h.parmi(&[2u8, 4]);
+            octets.extend(modrm(h, extension, memoire, bases, relatif));
+        }
         _ => {
             octets.push(0x6A);
             octets.push(h.suivant() as u8);
@@ -1142,17 +1168,367 @@ fn an_empty_block_compares_its_first_sixteen_bytes() {
     let place = blocs.construire(&ram, 0x1000, 0x1000, &mut lire);
     assert_eq!(blocs.bloc(place).nombre, 0, "un bloc vide");
     assert_eq!(blocs.bloc(place).mots, 2, "seize octets comparés");
-    assert_eq!(blocs.trouver(&ram, 0x1000), Some(place));
+    assert_eq!(blocs.trouver_par_les_octets(&ram, 0x1000), Some(place));
     let mut loin = ram.clone();
     loin[0x1000 + 20] = 0xCC;
     assert_eq!(
-        blocs.trouver(&loin, 0x1000),
+        blocs.trouver_par_les_octets(&loin, 0x1000),
         Some(place),
         "au-delà des seize"
     );
     for rang in [0usize, 7, 8, 12, 15] {
         let mut change = ram.clone();
         change[0x1000 + rang] = 0xCC;
-        assert_eq!(blocs.trouver(&change, 0x1000), None, "octet {rang} réécrit");
+        assert_eq!(
+            blocs.trouver_par_les_octets(&change, 0x1000),
+            None,
+            "octet {rang} réécrit"
+        );
     }
+}
+
+// ---- Le vectoriel entier dans les blocs ----
+
+/// **Une instruction vectorielle entière tirée au hasard** : `movdqu`,
+/// `movdqa`, `movq`, `movd` dans les deux sens, la logique, l'addition, la
+/// comparaison, `pmovmskb` (vers RAX, RCX ou RDX), `pshufd`, un décalage
+/// d'octets, `stmxcsr` et `ldmxcsr` (ce dernier n'entre dans aucun bloc : sa
+/// `#GP(0)` d'un bit réservé n'est pas une faute d'accès). Les adresses
+/// tombent dans `ZONE`, par les mêmes bases que `programme`.
+fn tirer_vectorielle(h: &mut Hasard) -> Vec<u8> {
+    let memoire = h.un_sur(2);
+    let reg = bases_et_registres(h).0;
+    let rex = if h.un_sur(3) { Some(0x44u8) } else { None };
+    let (prefixe, opcode, sans_memoire, avec_immediat): (Option<u8>, u8, bool, bool) =
+        match h.sous(16) {
+            0 => (Some(0xF3), 0x6F, false, false),
+            1 => (Some(0xF3), 0x7F, false, false),
+            2 => (Some(0x66), 0x6F, false, false),
+            3 => (Some(0x66), 0x7F, false, false),
+            4 => (Some(0xF3), 0x7E, false, false),
+            5 => (Some(0x66), 0xD6, false, false),
+            6 => (Some(0x66), 0x6E, false, false),
+            7 => (Some(0x66), 0x7E, false, false),
+            8 => (Some(0x66), h.parmi(&[0xEFu8, 0xEB, 0xDB]), false, false),
+            9 => (Some(0x66), h.parmi(&[0xFEu8, 0xF8, 0xD4]), false, false),
+            10 => (
+                Some(0x66),
+                h.parmi(&[0x74u8, 0x75, 0x76, 0xDA]),
+                false,
+                false,
+            ),
+            11 => (Some(0x66), 0xD7, true, false),
+            12 => (Some(0x66), 0x70, false, true),
+            13 => (Some(0x66), 0x60, false, false),
+            14 => (Some(0x66), 0x73, true, true),
+            _ => (None, 0xAE, false, false),
+        };
+    let mut octets = Vec::new();
+    octets.extend(prefixe);
+    octets.extend(rex);
+    octets.extend([0x0F, opcode]);
+    match (opcode, prefixe) {
+        // `stmxcsr` et `ldmxcsr` : la mémoire seulement.
+        (0xAE, None) => {
+            let extension = h.parmi(&[2u8, 3, 3]);
+            octets.extend(modrm(h, extension, true, &[3, 6, 7, 5], false));
+        }
+        // `psrldq` : le champ `reg` est l'extension 3, `rm` le registre.
+        (0x73, _) => {
+            octets.extend(modrm(h, 3, false, &[3, 6, 7, 5], false));
+        }
+        _ => {
+            octets.extend(modrm(
+                h,
+                reg,
+                memoire && !sans_memoire,
+                &[3, 6, 7, 5],
+                false,
+            ));
+        }
+    }
+    if avec_immediat {
+        octets.push(h.suivant() as u8);
+    }
+    octets
+}
+
+/// L'état de `tout`.
+type Tout = (Vec<u64>, u64, u64, u64, u64, bool, Vec<u8>);
+
+/// L'état complet d'une machine, les seize registres XMM et MXCSR compris.
+fn tout_et_xmm(machine: &Machine) -> (Tout, Vec<u64>, u32) {
+    let xmm = machine.cpu.xmm.iter().flatten().copied().collect();
+    (tout(machine), xmm, machine.cpu.mxcsr)
+}
+
+/// **Le vectoriel entier s'exécute pareil dans un bloc et au pas à pas** :
+/// soixante programmes où une instruction sur deux est vectorielle (dont des
+/// accès à cheval sur la fin de `ZONE`, des pages absentes derrière, et des
+/// `ldmxcsr` dont la valeur lue lève parfois `#GP(0)`), l'horloge armée, des
+/// budgets hachés. À chaque arrêt : les registres, la mémoire, les seize XMM
+/// et MXCSR. Et les blocs ont bien pris des vectorielles : seize `pxor`
+/// entre registres en remplissent un jusqu'à ses générales.
+#[test]
+fn integer_vector_instructions_run_the_same_inside_blocks() {
+    let mut h = Hasard(0x5EED_0003, &[0, 1, 2]);
+    let mut construits = 0u64;
+    for tirage in 0..60 {
+        let mut code = prologue(200 + h.sous(3000) as u16);
+        let mut corps = Vec::new();
+        for _ in 0..(20 + h.sous(40)) {
+            if h.un_sur(2) {
+                corps.extend(tirer_vectorielle(&mut h));
+            } else {
+                loop {
+                    let octets = tirer(&mut h, &[3, 6, 7, 5], false, false);
+                    if decode(&octets)
+                        .is_some_and(|instruction| wisq_vm::pc::blocs::blocable(instruction.op))
+                    {
+                        corps.extend(octets);
+                        break;
+                    }
+                }
+            }
+        }
+        let retour = -(corps.len() as i64 + 5);
+        corps.push(0xE9);
+        corps.extend((retour as i32).to_le_bytes());
+        code.extend(corps);
+        let mut lent = machine(&code, false);
+        let mut rapide = machine(&code, true);
+        for m in [&mut lent, &mut rapide] {
+            for (registre, valeur) in [
+                (3usize, ZONE + 0x400),
+                (6, ZONE + 0x800),
+                (7, ZONE + 0xC00),
+                (5, ZONE + 0x1FF8),
+            ] {
+                m.cpu.regs[registre] = valeur;
+            }
+            for (rang, mot) in m.cpu.xmm.iter_mut().enumerate() {
+                *mot = [0x0123_4567_89AB_CDEF ^ rang as u64, rang as u64 * 0x1111];
+            }
+        }
+        let mut total = 0u64;
+        while total < 40_000 {
+            let tranche = h.parmi(&[1u64, 3, 255, 256, 1000, 5000]);
+            let a = lent.tourner(tranche);
+            let b = rapide.tourner(tranche);
+            assert_eq!(a, b, "tirage {tirage}, après {total} : le rendu");
+            assert_eq!(
+                tout_et_xmm(&lent),
+                tout_et_xmm(&rapide),
+                "tirage {tirage}, après {total} instructions, tranche {tranche}"
+            );
+            if a.is_err() || a == Ok(0) {
+                break;
+            }
+            total += tranche;
+        }
+        construits += rapide.blocs.construits;
+    }
+    assert!(construits > 500, "{construits} blocs construits");
+    // Seize `pxor %xmm1,%xmm0` : un bloc en prend autant que ses générales.
+    let mut code = Vec::new();
+    for _ in 0..16 {
+        code.extend([0x66, 0x0F, 0xEF, 0xC1]);
+    }
+    let mut ram = vec![0u8; 0x2000];
+    ram[0x1000..0x1000 + code.len()].copy_from_slice(&code);
+    let mut blocs = wisq_vm::pc::blocs::Blocs::default();
+    let copie = ram.clone();
+    let mut lire = |debut: usize, disponibles: usize| decode(&copie[debut..debut + disponibles]);
+    let place = blocs.construire(&ram, 0x1000, 0x1000, &mut lire);
+    assert_eq!(
+        blocs.bloc(place).nombre as usize,
+        wisq_vm::pc::blocs::GENERALES,
+        "des vectorielles dans un bloc"
+    );
+    // `ldmxcsr (%rbx)` n'y entre pas.
+    ram[0x1000..0x1003].copy_from_slice(&[0x0F, 0xAE, 0x13]);
+    let copie = ram.clone();
+    let mut lire = |debut: usize, disponibles: usize| decode(&copie[debut..debut + disponibles]);
+    let place = blocs.construire(&ram, 0x1000, 0x1000, &mut lire);
+    assert_eq!(blocs.bloc(place).nombre, 0, "ldmxcsr reste au pas à pas");
+}
+
+// ---- Les générations des pages de code ----
+
+/// **Une page écrite par le chemin rapide avant de porter du code le perd
+/// dès qu'elle en porte.** Le programme écrit `mov $0x11111111,%eax ; ret`
+/// dans la page 0xB000 — la seconde écriture par le chemin rapide, la case
+/// du tampon déjà salie —, l'appelle (un bloc s'y construit, la page est
+/// marquée), puis y écrit `mov $0x22222222,%eax ; ret` par les mêmes
+/// instructions et l'appelle de nouveau, dans le même appel de `tourner`
+/// (aucune époque neuve entre les deux). Si le marquage laissait à la case
+/// du tampon son écriture rapide, la seconde écriture ne serait pas notée,
+/// le bloc garderait son tampon, et l'appel rendrait l'ancienne valeur.
+#[test]
+fn a_page_written_fast_before_it_held_code_loses_its_fast_writes() {
+    let mut code = Vec::new();
+    for valeur in [0x11u8, 0x22] {
+        // movl $0x..b8,(%rbx) ; movw $0xc3..,4(%rbx) ; call *%rbx
+        code.extend([0xC7, 0x03, 0xB8, valeur, valeur, valeur]);
+        code.extend([0x66, 0xC7, 0x43, 0x04, valeur, 0xC3]);
+        code.extend([0xFF, 0xD3]);
+        // mov %eax,%esi (la première fois), mov %eax,%edi (la seconde).
+        code.extend(if valeur == 0x11 {
+            [0x89, 0xC6]
+        } else {
+            [0x89, 0xC7]
+        });
+    }
+    code.push(0xF4);
+    let rapide = les_deux(&code, 100, |m| {
+        m.cpu.regs[3] = 0xB000;
+    });
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[6], 0x1111_1111, "le premier appel");
+    assert_eq!(
+        rapide.cpu.regs[7], 0x2222_2222,
+        "le second appel exécute les octets neufs"
+    );
+    assert!(rapide.blocs.construits >= 3, "des blocs ont servi");
+}
+
+/// **Une page de code écrite par un autre chemin que l'écriture rapide est
+/// relue** : par une écriture virtuelle du chemin lent (un `xchg`, qui
+/// passe par `execute`), et par une chaîne par pages entières (`rep
+/// stosb`, `bulk_string`). Chaque fois la page 0xB000 porte un bloc (`mov
+/// $imm32,%eax ; ret`) tamponné, et l'écriture remplace l'immédiat.
+#[test]
+fn slow_writes_and_page_strings_into_cached_code_are_seen() {
+    let mut code = Vec::new();
+    // Le code de départ : mov $0x11111111,%eax ; ret, posé par le test ;
+    // un premier appel tamponne son bloc.
+    code.extend([0xFF, 0xD3, 0x41, 0x89, 0xC2]); // call *%rbx ; mov %eax,%r10d
+                                                 // xchg %cl,1(%rbx) : CL vaut 0x33.
+    code.extend([0x86, 0x4B, 0x01]);
+    code.extend([0xFF, 0xD3, 0x41, 0x89, 0xC0]); // call *%rbx ; mov %eax,%r8d
+                                                 // rdi = rbx + 2 ; rcx = 2 ; al = 0x44 ; rep stosb
+    code.extend([0x48, 0x8D, 0x7B, 0x02]);
+    code.extend([0xB9, 0x02, 0x00, 0x00, 0x00]);
+    code.extend([0xB0, 0x44]);
+    code.extend([0xF3, 0xAA]);
+    code.extend([0xFF, 0xD3, 0x41, 0x89, 0xC1]); // call *%rbx ; mov %eax,%r9d
+                                                 // rdi = rbx + 3 ; rcx = 2 ; rep movsb depuis ZONE (0x66, 0x77)
+    code.extend([0x48, 0x8D, 0x7B, 0x03]);
+    code.extend([0xB9, 0x02, 0x00, 0x00, 0x00]);
+    code.extend([0xF3, 0xA4]);
+    code.extend([0xFF, 0xD3]); // call *%rbx
+    code.push(0xF4);
+    let rapide = les_deux(&code, 100, |m| {
+        m.cpu.regs[3] = 0xB000;
+        m.cpu.regs[6] = ZONE;
+        m.cpu.memory.bytes[ZONE as usize..ZONE as usize + 2].copy_from_slice(&[0x66, 0x77]);
+        m.cpu.regs[1] = 0x33;
+        m.cpu.memory.bytes[0xB000..0xB006].copy_from_slice(&[0xB8, 0x11, 0x11, 0x11, 0x11, 0xC3]);
+    });
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[10], 0x1111_1111, "avant toute écriture");
+    assert_eq!(rapide.cpu.regs[8], 0x1111_1133, "après le xchg");
+    assert_eq!(
+        rapide.cpu.regs[9], 0x1144_4433,
+        "après la chaîne qui remplit"
+    );
+    assert_eq!(
+        rapide.cpu.regs[0] & 0xFFFF_FFFF,
+        0x7766_4433,
+        "après la chaîne qui copie"
+    );
+}
+
+/// **Du code réécrit entre deux appels d'`executer` est relu**, comme entre
+/// deux `tourner` : l'hôte a pu écrire la RAM, et la première tranche fait
+/// tout recomparer. Une boucle de `add $1,%rcx`, puis l'immédiat d'une des
+/// instructions changé à 0x10.
+#[test]
+fn code_rewritten_between_two_runs_is_read_again() {
+    let mut code = Vec::new();
+    for _ in 0..8 {
+        code.extend([0x48, 0x83, 0xC1, 0x01]);
+    }
+    code.extend([0xEB, (-(code.len() as i64 + 2)) as u8]);
+    let mut lent = machine(&code, false);
+    let mut rapide = machine(&code, true);
+    for m in [&mut lent, &mut rapide] {
+        m.executer(1000);
+        m.cpu.memory.bytes[0x1000 + 3 * 4 + 3] = 0x10;
+        m.cpu.rip = 0x1000;
+        m.cpu.regs[1] = 0;
+        m.executer(9);
+    }
+    assert_eq!(tout(&lent), tout(&rapide));
+    assert_eq!(rapide.cpu.regs[1], 7 + 0x10, "l'immédiat neuf");
+}
+
+/// **Un périphérique qui ne dit pas ce qu'il écrit fait tout recomparer.**
+/// Un `out` sur un port de ce périphérique de test réécrit l'immédiat d'un
+/// `mov` de la page 0xB000, déjà tamponné par un premier appel, sans rien
+/// noter : le défaut de `Peripheriques::port_ecrire_suivi` suppose tout
+/// réécrit, et le second appel exécute les octets neufs.
+#[test]
+fn a_device_that_does_not_say_what_it_wrote_makes_every_block_compare() {
+    struct Ecrivain;
+    impl wisq_vm::pc::Peripheriques for Ecrivain {
+        fn port_lire(&mut self, _: u16, _: u8, _: &mut [u8]) -> Option<u32> {
+            None
+        }
+        fn port_ecrire(&mut self, port: u16, _: u8, valeur: u32, ram: &mut [u8]) -> bool {
+            if port != 0x2F0 {
+                return false;
+            }
+            ram[0xB001] = valeur as u8;
+            true
+        }
+        fn lignes(&self) -> u16 {
+            0
+        }
+    }
+    let mut code = Vec::new();
+    code.extend([0xFF, 0xD3, 0x89, 0xC6]); // call *%rbx ; mov %eax,%esi
+                                           // mov $0x2f0,%dx ; mov $0x55,%al ; out %al,(%dx)
+    code.extend([0x66, 0xBA, 0xF0, 0x02, 0xB0, 0x55, 0xEE]);
+    code.extend([0xFF, 0xD3]); // call *%rbx
+    code.push(0xF4);
+    let rapide = les_deux(&code, 100, |m| {
+        m.cpu.regs[3] = 0xB000;
+        m.cpu.memory.bytes[0xB000..0xB006].copy_from_slice(&[0xB8, 0x11, 0x11, 0x11, 0x11, 0xC3]);
+        m.peripheriques = Some(Box::new(Ecrivain));
+    });
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[6], 0x1111_1111);
+    assert_eq!(rapide.cpu.regs[0] & 0xFFFF_FFFF, 0x1111_1155);
+}
+
+/// **`invlpg` sur la page même qu'on exécute la fait relire dans sa trame
+/// neuve.** Le programme range dans la table l'entrée de sa propre page
+/// (0x1000 vers la trame 0xC000, la table vue à 0x6000), puis `invlpg
+/// 0x1000` : l'instruction d'après, à la même adresse virtuelle, vient de la
+/// trame neuve — `mov $2,%eax` au lieu de `mov $1,%eax`. La page
+/// d'instructions que la machine garde hors du tampon (`physique_de_rip`)
+/// doit se retraduire : `invlpg` fait avancer le compte de vidages, même
+/// sans vider tout le tampon.
+#[test]
+fn invlpg_on_the_running_page_reads_the_next_instruction_from_the_new_frame() {
+    // movq $0xc007,0x6008 ; invlpg 0x1000 ; mov $1,%eax ; hlt
+    let mut code = vec![
+        0x48, 0xC7, 0x04, 0x25, 0x08, 0x60, 0x00, 0x00, 0x07, 0xC0, 0x00, 0x00,
+    ];
+    code.extend([0x0F, 0x01, 0x3C, 0x25, 0x00, 0x10, 0x00, 0x00]);
+    let suite = code.len();
+    code.extend([0xB8, 0x01, 0x00, 0x00, 0x00, 0xF4]);
+    let rapide = les_deux(&code, 10, |m| {
+        // La table des pages vue à 0x6000, pour que le programme l'écrive.
+        m.cpu
+            .memory
+            .write(TABLES + 0x3000 + 6 * 8, Width::Qword, (TABLES + 0x3000) | 7)
+            .unwrap();
+        // La trame neuve : la même suite, `mov $2,%eax`.
+        let neuve = 0xC000 + suite;
+        m.cpu.memory.bytes[neuve..neuve + 6].copy_from_slice(&[0xB8, 0x02, 0x00, 0x00, 0x00, 0xF4]);
+    });
+    assert!(rapide.arretee);
+    assert_eq!(rapide.cpu.regs[0], 2, "la suite vient de la trame neuve");
 }
