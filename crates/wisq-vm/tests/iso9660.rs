@@ -1197,7 +1197,10 @@ APPEND archisobasedir=arch archisosearchuuid=2025-01-01-00-00-00-00
     // Les microcodes séparés par des virgules, chacun derrière son `::`.
     let several = "LABEL a\nLINUX ::/k\nINITRD ::/intel-ucode.img,::/arch/i.img\n";
     let recipe = Recipe::read(several, "/boot/syslinux/syslinux.cfg").expect("plusieurs");
-    assert_eq!(recipe.initrd.as_deref(), Some("/intel-ucode.img /arch/i.img"));
+    assert_eq!(
+        recipe.initrd.as_deref(),
+        Some("/intel-ucode.img /arch/i.img")
+    );
 
     // Un `INCLUDE ::/…` est suivi depuis la racine aussi.
     let included = "LABEL a\nLINUX ::/arch/k\n";
