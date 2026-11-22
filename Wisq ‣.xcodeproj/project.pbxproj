@@ -10,7 +10,10 @@
 		0A8767B9EBFB97AEA5BA7DCD /* ConnectionFileImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DE4B6976CAF93776267242 /* ConnectionFileImportTests.swift */; };
 		142074F0AD5CC01F06A49AC5 /* WisqVM in Frameworks */ = {isa = PBXBuildFile; productRef = 3638DC196A5028BA7A88BA23 /* WisqVM */; };
 		18BAE2504A83051914E1980C /* WisqCore in Frameworks */ = {isa = PBXBuildFile; productRef = 9D0CD5B726BC81663B454403 /* WisqCore */; };
+		25831084C3468677F23B2F06 /* ApercusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34B601A691C2A10B70A6B83E /* ApercusTests.swift */; };
 		2879B858B6E8FA35CF22C36A /* PartialLibraryBannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0042DDFCDE014423B35BBD94 /* PartialLibraryBannerTests.swift */; };
+		2D128AA9AC186D5C4982C89A /* Apercu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC5B05E1CDC8017632B4C6B /* Apercu.swift */; };
+		38CFDD5476AF36BFEA79334A /* WisqCore in Frameworks */ = {isa = PBXBuildFile; productRef = 41345E4AC0EEF40D47BFE2EE /* WisqCore */; };
 		446846957BEE4C49DB916AA8 /* LocalVMModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43A9385C55B394D504E15599 /* LocalVMModelTests.swift */; };
 		49F0ED75A866C945DC1E8FB4 /* WisqVMRust in Frameworks */ = {isa = PBXBuildFile; productRef = CB5EBB8064624BB82BA0F958 /* WisqVMRust */; };
 		4E77A7543A4B9AE39B4FB836 /* WisqUI in Frameworks */ = {isa = PBXBuildFile; productRef = 892DCE2A44B141742024D452 /* WisqUI */; };
@@ -24,11 +27,21 @@
 		9DB887DDACE5332549B52503 /* WisqUI in Frameworks */ = {isa = PBXBuildFile; productRef = CAC16BE730F23A5F71967E4B /* WisqUI */; };
 		A13A59632DAFC6EB6FF56471 /* WebKitJITProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936C3369437325C05E218C3C /* WebKitJITProbeTests.swift */; };
 		B4BD48B406268B2C4B699E91 /* MachineLibrarySecretsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FB3E0172B02D225DF6C964B /* MachineLibrarySecretsTests.swift */; };
+		B6F8EB15E14FC865A4507911 /* WisqVM in Frameworks */ = {isa = PBXBuildFile; productRef = 2C43C44B48ADD5B17B9F7732 /* WisqVM */; };
+		B9E7FECE658A4C810992AEE3 /* Demonstration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11391E66B32B699AA6E129F1 /* Demonstration.swift */; };
 		C42DEE3056D6BA24E60E9EF1 /* MetalCompilerProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E109EC37E01C1BD86A0B39E5 /* MetalCompilerProbeTests.swift */; };
 		CCDEA4DE1B94A128A110DC05 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A51D800BD6A5BEA06CD1B83 /* Assets.xcassets */; };
+		ED290BFC019BEE111B27C9DD /* WisqUI in Frameworks */ = {isa = PBXBuildFile; productRef = 09DA2D9060151FCC706A683A /* WisqUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		0EF4FB8CE15DC2D24438BE52 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = DB8C71733692067CF77878CA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9F18464F045F1B9C6AD05E34;
+			remoteInfo = Wisq;
+		};
 		979A7BE6ECB80EEDD5FD33E4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = DB8C71733692067CF77878CA /* Project object */;
@@ -43,9 +56,11 @@
 		0A0B1B0812E38C7B87F0D8DC /* WisqHostedTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqHostedTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0CE051C07D18179C53D67E6D /* LocalDesktopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalDesktopTests.swift; sourceTree = "<group>"; };
 		0FB3E0172B02D225DF6C964B /* MachineLibrarySecretsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MachineLibrarySecretsTests.swift; sourceTree = "<group>"; };
+		11391E66B32B699AA6E129F1 /* Demonstration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Demonstration.swift; sourceTree = "<group>"; };
 		2864F50817369FF2BFE80A2E /* DiskLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskLibraryTests.swift; sourceTree = "<group>"; };
 		2929322DC88D18589AC82A48 /* Wisq.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Wisq.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2DBC52CE587875729F2C106B /* KernelMemoryNoteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KernelMemoryNoteTests.swift; sourceTree = "<group>"; };
+		34B601A691C2A10B70A6B83E /* ApercusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApercusTests.swift; sourceTree = "<group>"; };
 		3F04062F94A16D172B251A44 /* wisq */ = {isa = PBXFileReference; lastKnownFileType = folder; name = wisq; path = .; sourceTree = SOURCE_ROOT; };
 		4179608503509F803348637E /* Wisq.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Wisq.entitlements; sourceTree = "<group>"; };
 		43A9385C55B394D504E15599 /* LocalVMModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVMModelTests.swift; sourceTree = "<group>"; };
@@ -54,7 +69,9 @@
 		6C88FF95EBCE3D633BE2B978 /* WisqUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		75DE4B6976CAF93776267242 /* ConnectionFileImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFileImportTests.swift; sourceTree = "<group>"; };
 		8103E833D91F33A15E08D072 /* IsoDeletionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IsoDeletionTests.swift; sourceTree = "<group>"; };
+		8EC5B05E1CDC8017632B4C6B /* Apercu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Apercu.swift; sourceTree = "<group>"; };
 		936C3369437325C05E218C3C /* WebKitJITProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebKitJITProbeTests.swift; sourceTree = "<group>"; };
+		C8FCA9B69A03F5F0B82B416F /* WisqApercus.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WisqApercus.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA6A1EBDD6861A1CB10497D1 /* WisqApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WisqApp.swift; sourceTree = "<group>"; };
 		DAC4761BC4521ABE2586FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		E109EC37E01C1BD86A0B39E5 /* MetalCompilerProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalCompilerProbeTests.swift; sourceTree = "<group>"; };
@@ -69,6 +86,16 @@
 				9DB887DDACE5332549B52503 /* WisqUI in Frameworks */,
 				142074F0AD5CC01F06A49AC5 /* WisqVM in Frameworks */,
 				18BAE2504A83051914E1980C /* WisqCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		60C9D4AF57CFF779F342AF9D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ED290BFC019BEE111B27C9DD /* WisqUI in Frameworks */,
+				B6F8EB15E14FC865A4507911 /* WisqVM in Frameworks */,
+				38CFDD5476AF36BFEA79334A /* WisqCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -101,9 +128,20 @@
 			path = WisqHostedTests;
 			sourceTree = "<group>";
 		};
+		1CC3FC620CC3C0819CB209B2 /* WisqApercus */ = {
+			isa = PBXGroup;
+			children = (
+				8EC5B05E1CDC8017632B4C6B /* Apercu.swift */,
+				34B601A691C2A10B70A6B83E /* ApercusTests.swift */,
+				11391E66B32B699AA6E129F1 /* Demonstration.swift */,
+			);
+			path = WisqApercus;
+			sourceTree = "<group>";
+		};
 		3ACBFADF284BA79E68ACDC17 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				1CC3FC620CC3C0819CB209B2 /* WisqApercus */,
 				0B06904DCAA43FD5DEB50661 /* WisqHostedTests */,
 				F873FE47CA5AB998BF8509CE /* WisqUITests */,
 			);
@@ -122,6 +160,7 @@
 			isa = PBXGroup;
 			children = (
 				2929322DC88D18589AC82A48 /* Wisq.app */,
+				C8FCA9B69A03F5F0B82B416F /* WisqApercus.xctest */,
 				0A0B1B0812E38C7B87F0D8DC /* WisqHostedTests.xctest */,
 				6C88FF95EBCE3D633BE2B978 /* WisqUITests.xctest */,
 			);
@@ -209,6 +248,28 @@
 			productReference = 6C88FF95EBCE3D633BE2B978 /* WisqUITests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		9D34D3D64C95FC5A9B48EF0B /* WisqApercus */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 376E076DE4AF40BA8200EA0D /* Build configuration list for PBXNativeTarget "WisqApercus" */;
+			buildPhases = (
+				7F7E45ED775819FF60E652A2 /* Sources */,
+				60C9D4AF57CFF779F342AF9D /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				46F2E66A1034A1F07539383A /* PBXTargetDependency */,
+			);
+			name = WisqApercus;
+			packageProductDependencies = (
+				09DA2D9060151FCC706A683A /* WisqUI */,
+				2C43C44B48ADD5B17B9F7732 /* WisqVM */,
+				41345E4AC0EEF40D47BFE2EE /* WisqCore */,
+			);
+			productName = WisqApercus;
+			productReference = C8FCA9B69A03F5F0B82B416F /* WisqApercus.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		9F18464F045F1B9C6AD05E34 /* Wisq */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 5587D64784DA02F5D5CC1996 /* Build configuration list for PBXNativeTarget "Wisq" */;
@@ -260,6 +321,7 @@
 				9F18464F045F1B9C6AD05E34 /* Wisq */,
 				5A47B313960215C03B6DD03C /* WisqUITests */,
 				39280E3854E9695959E3E375 /* WisqHostedTests */,
+				9D34D3D64C95FC5A9B48EF0B /* WisqApercus */,
 			);
 		};
 /* End PBXProject section */
@@ -302,6 +364,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7F7E45ED775819FF60E652A2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D128AA9AC186D5C4982C89A /* Apercu.swift in Sources */,
+				25831084C3468677F23B2F06 /* ApercusTests.swift in Sources */,
+				B9E7FECE658A4C810992AEE3 /* Demonstration.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		AB24BAEE3C6AA202FD770D75 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -313,6 +385,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		46F2E66A1034A1F07539383A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9F18464F045F1B9C6AD05E34 /* Wisq */;
+			targetProxy = 0EF4FB8CE15DC2D24438BE52 /* PBXContainerItemProxy */;
+		};
 		FBAB7F4599119D4AF9A418B0 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 9F18464F045F1B9C6AD05E34 /* Wisq */;
@@ -380,6 +457,25 @@
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3DE7C7DD09B61BFF636D467D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqApercus;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq";
 			};
 			name = Debug;
 		};
@@ -477,6 +573,25 @@
 			};
 			name = Release;
 		};
+		C29C23B95415686ECFAD029E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.wisq.WisqApercus;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Wisq.app/Wisq";
+			};
+			name = Release;
+		};
 		C674059C8E4AC4B985B623F4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -561,6 +676,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		376E076DE4AF40BA8200EA0D /* Build configuration list for PBXNativeTarget "WisqApercus" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3DE7C7DD09B61BFF636D467D /* Debug */,
+				C29C23B95415686ECFAD029E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		5587D64784DA02F5D5CC1996 /* Build configuration list for PBXNativeTarget "Wisq" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -607,9 +731,21 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		09DA2D9060151FCC706A683A /* WisqUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqUI;
+		};
+		2C43C44B48ADD5B17B9F7732 /* WisqVM */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqVM;
+		};
 		3638DC196A5028BA7A88BA23 /* WisqVM */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WisqVM;
+		};
+		41345E4AC0EEF40D47BFE2EE /* WisqCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WisqCore;
 		};
 		892DCE2A44B141742024D452 /* WisqUI */ = {
 			isa = XCSwiftPackageProductDependency;
