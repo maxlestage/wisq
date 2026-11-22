@@ -18,6 +18,7 @@
 //! `store`. En natif, rien ne change : ni la liste, ni l'ordre, ni le
 //! comportement.
 
+pub mod arm64;
 pub mod census;
 pub mod core;
 pub mod desktop;
