@@ -1550,6 +1550,9 @@ struct LocalVMTerminalView: View {
         // champ suivent la console.
         .environment(\.colorScheme, .dark)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        // Un fond noir derrière les barres : leur matière se lit sur lui, et non
+        // sur le fond clair de la fenêtre, qui la rendait grise (troisième tour).
+        .background(Color.black.ignoresSafeArea())
         // Une seule visibilité pour la barre : deux modificateurs se
         // disputeraient, et le bureau comme le plein écran la veulent cachée.
         .toolbar(showingDesktop || fullScreen ? .hidden : .visible, for: .navigationBar)
