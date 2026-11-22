@@ -25,6 +25,7 @@ struct ImageDownloadSheet: View {
     /// Le bureau qu'on s'apprête à réinstaller à côté d'une machine qui
     /// démarre déjà son image : la feuille demande d'abord.
     @State private var confirming: ReadyDesktop?
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     init(onDownloaded: @escaping (URL) -> Void, onInstalled: @escaping (InstalledMachine) -> Void) {
         self.onDownloaded = onDownloaded
@@ -194,12 +195,18 @@ struct ImageDownloadSheet: View {
         let shortfall = fetching || installingNow ? nil : model.spaceShortfall(desktop)
         let installed = model.alreadyInstalled(desktop)
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            HStack(alignment: .top, spacing: Design.Space.m) {
+            // Le badge au-dessus du titre en très grand texte : à côté, le titre
+            // se coupait et la phrase n'avait plus que trois mots de large.
+            let head = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: Design.Space.m))
+                : AnyLayout(HStackLayout(alignment: .top, spacing: Design.Space.m))
+            head {
                 DistributionBadge(distribution: MachineBadge.distribution(of: [desktop.title, desktop.image.file]),
                                   desktop: true, size: 56)
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
                     Text(desktop.title)
                         .font(.title3.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(desktop.madePhrase)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
