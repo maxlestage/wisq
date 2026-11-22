@@ -59,7 +59,7 @@ cas, la console identique à l'octet.
 `tests/pc_rapide.rs` tournent sur trois machines — pas à pas, blocs
 interprétés, blocs traduits dès leur première entrée — comparées à chaque
 arrêt ; un test de plus pour les adresses relatives à RIP (compte publié
-4 422). Le JIT ne prend un bloc que s'il tient entier dans le budget et que sa
+4 426 après la fusion du cœur ARM64). Le JIT ne prend un bloc que s'il tient entier dans le budget et que sa
 page est suivie ; une écriture rendue à une forme relit le bloc comme
 `parcourir` le fait.
 
@@ -76,6 +76,42 @@ prêts (`bureaux.yml`) que le téléphone télécharge.
 TestFlight automatique au merge (il est lancé à la main après chaque merge) a
 été tenté et refusé par le garde-fou de la session : c'est une publication,
 au-delà de ce qui était demandé. Laissé à la décision de Maxime.
+## 2026-11-22 — Un cœur ARM64, première tranche : le jeu A64 entier en EL0, contre qemu ; TestFlight n° 139
+
+**La demande.** « Continue et lance TestFlight. » TestFlight n° 139 est parti
+de `master` après la fusion de #727 et a réussi en sept minutes. « Continue »
+reprend ce qui restait de la demande précédente : que ça marche avec ARM.
+
+**Ce qui est fait, et ce qui ne l'est pas.** Un cœur A64 interprété
+(`crates/wisq-vm/src/arm64.rs`) qui exécute le jeu entier d'un processeur
+d'application en EL0 — traitement de données immédiat et registre, champs de
+bits (`DecodeBitMasks` du manuel), multiplications longues et hautes,
+divisions (un diviseur nul rend zéro, comme le silicium), sauts, chargements
+et rangements de toutes les formes d'adressage, paires, accès exclusifs (un
+moniteur à une adresse : un seul processeur, aucun autre observateur), `SVC`,
+`BRK`, quatre registres système d'EL0. **Pas de flottant ni de NEON**, pas de
+niveaux d'exception, de MMU, de GIC, de minuterie ni d'UART : démarrer Linux
+les demande tous, ce sont les tranches suivantes. Rien n'est branché dans
+l'application ; la feuille d'avant le démarrage dit toujours qu'il n'y a pas
+de cœur ARM, et c'est toujours vrai.
+
+**Le témoin.** `qemu-aarch64`, installé ici avec `binutils-aarch64-linux-gnu`.
+`scripts/arm64-oracle.py` tire huit programmes (graine fixe) de douze blocs de
+soixante-quatre instructions dans toutes les familles, en gardant x26 à x28
+hors du hasard pour que chaque accès reste dans la zone ; après chaque bloc,
+le programme écrit la zone, x0 à x27 et NZCV. Les binaires et ce que qemu en
+écrit sont des fixtures (`tests/arm64/`) : la CI n'a pas besoin de qemu.
+
+**Le témoin a d'abord été trop indulgent, et un sabotage l'a dit.** Tout
+passait du premier coup ; sur vingt défauts posés exprès, deux survivaient :
+V toujours faux, et un `STXR` toujours réussi. Le second parce que chaque
+`STXR` suivait son `LDXR` — les cas d'échec (`CLREX` entre les deux, une autre
+adresse, pas de `LDXR`) sont maintenant tirés. Le premier parce que V n'était
+posé que quatorze fois sur six mille instructions, et jamais de façon
+visible : les valeurs aléatoires dérivent vers ce qui ne déborde pas (une
+écriture W remet le haut à zéro). Les opérations qui posent les drapeaux
+reçoivent maintenant des opérandes aux bornes, et NZCV est lu et rangé
+aussitôt. Les vingt sabotages tombent.
 
 ## 2026-11-22 — Omarchy 4.5 lu jusqu'à son noyau, la plateforme annoncée avant tout démarrage, le démarrage animé et ses crédits
 
