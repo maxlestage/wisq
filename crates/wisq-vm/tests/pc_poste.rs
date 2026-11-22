@@ -936,10 +936,10 @@ fn the_time_caught_up_crosses_a_snapshot() {
     assert_eq!(reprise.temps(), original.temps(), "le temps de l'invité");
 }
 
-/// `bswap %eax ; xor %ecx, %ecx ; div %ecx` : une instruction du chemin
+/// `cmc ; xor %ecx, %ecx ; div %ecx` : une instruction du chemin
 /// général (qui lit `faulted` après `execute`), puis une division par zéro
 /// (dont la faute regarde `unmapped` d'abord).
-const GENERALE_PUIS_DIVISION: [u8; 6] = [0x0F, 0xC8, 0x31, 0xC9, 0xF7, 0xF1];
+const GENERALE_PUIS_DIVISION: [u8; 5] = [0xF5, 0x31, 0xC9, 0xF7, 0xF1];
 
 /// La course entière d'une machine reprise : sa fin, sa console, ses
 /// instructions retirées et son RIP.
@@ -958,16 +958,19 @@ fn apres_la_reprise(poste: &mut Poste, sauve: &[u8]) -> (Fin, Vec<u8>, u64, u64)
 /// d'accès hors de la mémoire.
 #[test]
 fn a_resumed_machine_drops_the_fault_witnesses_of_the_used_one() {
-    let bswap = wisq_vm::x86::decode(&GENERALE_PUIS_DIVISION).expect("bswap");
+    // `bswap`, d'abord pris ici, est devenu une forme spécialisée : la garde
+    // ci-dessous est ce qui l'a dit. (`cpuid` ne convient pas : il passe par
+    // `systeme`, qui ne lit pas `faulted`.)
+    let cmc = wisq_vm::x86::decode(&GENERALE_PUIS_DIVISION).expect("cmc");
     assert!(
-        !wisq_vm::x86::rapide::specialisee(&bswap),
-        "bswap passe par le chemin général"
+        !wisq_vm::x86::rapide::specialisee(&cmc),
+        "cmc passe par le chemin général"
     );
     let chargee = poste_charge(&image_de(&GENERALE_PUIS_DIVISION), None);
     let sauve = instantane::sauver(&chargee);
     let mut neuve = Poste::essayer(RAM).expect("la RAM");
     let attendue = apres_la_reprise(&mut neuve, &sauve);
-    // bswap et xor retirées ; la division faute, et rien ne la livre.
+    // cmc et xor retirées ; la division faute, et rien ne la livre.
     assert_eq!(attendue.2, 2, "{attendue:?}");
     assert!(
         matches!(&attendue.0, Fin::Faute(faute) if faute.starts_with("Division")),

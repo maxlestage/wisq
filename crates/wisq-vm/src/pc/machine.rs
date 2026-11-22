@@ -25,9 +25,9 @@ use crate::x86::{
     decode as decode_partage, decode_extended, Address, BitAction, Cpu, Decoded, Extended,
     ExtendedFault, Extra, Mmx, Op, Segment, Vector, VectorFault, Width, ARITHMETIC, CF, IF,
 };
-use crate::x86_paging::{Access, Unmapped};
+use crate::x86_paging::{Access, PagesDeCode, Unmapped};
 
-use super::blocs::{Blocs, PORTEE};
+use super::blocs::{Blocs, Trouve, PORTEE};
 use super::chargeur::{self, Ecran, Placement, Refus};
 use super::herites::{Herites, INSTRUCTIONS_PAR_BATTEMENT};
 use super::memoire;
@@ -73,10 +73,76 @@ pub trait Peripheriques {
     /// instructions au plus, avec la RAM : ce qu'un périphérique fait sans
     /// `out` (la tablette relit ses files et y rend ce que le doigt a fait).
     fn servir_tour(&mut self, _ram: &mut [u8]) {}
+    /// **Le tour entier** : le temps qui passe (`battre`), le service sans
+    /// `out` (`servir_tour`), puis les lignes levées — ce que `Machine::servir`
+    /// demande toutes les deux cent cinquante-six instructions. Par défaut
+    /// les trois appels, dans cet ordre ; une carte partagée les fait sous un
+    /// seul verrou au lieu de trois (`perf` mettait les trois prises du verrou
+    /// à 3 % du démarrage de Void).
+    fn tour(&mut self, tics: u64, ram: &mut [u8]) -> u16 {
+        self.battre(tics);
+        self.servir_tour(ram);
+        self.lignes()
+    }
     /// L'invité a demandé la remise à zéro de la machine (l'impulsion de
     /// l'i8042) : la course s'arrête sur l'`out` qui l'a tirée.
     fn remise_demandee(&self) -> bool {
         false
+    }
+    /// **`port_lire`, en disant ce qui a été écrit dans la RAM** (`Suivi`) :
+    /// c'est ce que la machine appelle. Par défaut, rien n'est dit — tout
+    /// est supposé réécrit, et chaque bloc décodé se recompare à sa
+    /// prochaine entrée. Un périphérique qui note chacune de ses écritures
+    /// s'en épargne le prix.
+    fn port_lire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+    ) -> Option<u32> {
+        suivi.tout();
+        self.port_lire(port, largeur, ram)
+    }
+    /// `port_ecrire`, en disant ce qui a été écrit dans la RAM.
+    fn port_ecrire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        valeur: u32,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+    ) -> bool {
+        suivi.tout();
+        self.port_ecrire(port, largeur, valeur, ram)
+    }
+    /// `tour`, en disant ce qui a été écrit dans la RAM.
+    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
+        suivi.tout();
+        self.tour(tics, ram)
+    }
+}
+
+/// **Ce qu'un périphérique dit avoir écrit dans la RAM** : chaque plage
+/// (`noter`), ou « je ne sais pas » (`tout`). Les blocs décodés de la machine
+/// (`pc::blocs`) ne recomparent leurs octets que si leur page a été écrite
+/// (`x86_paging::PagesDeCode`) : une écriture qu'on tairait ici laisserait
+/// s'exécuter un code qui n'est plus en mémoire.
+pub struct Suivi<'a>(pub Option<&'a mut PagesDeCode>);
+
+impl Suivi<'_> {
+    /// `longueur` octets écrits à l'adresse physique `adresse`.
+    pub fn noter(&mut self, adresse: u64, longueur: usize) {
+        if let Some(pages) = self.0.as_deref_mut() {
+            pages.noter(adresse, longueur);
+        }
+    }
+
+    /// Tout a pu être écrit.
+    pub fn tout(&mut self) {
+        if let Some(pages) = self.0.as_deref_mut() {
+            pages.tout_suppose();
+        }
     }
 }
 
@@ -574,6 +640,7 @@ impl Machine {
         if !memoire::essayer_de_brancher(&mut cpu, ram) {
             return None;
         }
+        let mut cpu = cpu.with_code_tracking();
         cpu.mxcsr = 0x1F80;
         cpu.fpu_control = 0x037F;
         Some(Self {
@@ -713,8 +780,10 @@ impl Machine {
     ///   construction : sa case n'a pas pu être reconstruite entre-temps.)
     /// - le dernier bloc n'est qu'une indication à l'hôte
     ///   (`Blocs::enchainer`), qui ne coûte jamais une instruction ;
-    /// - les blocs et le cache de décodage comparent leurs octets à l'entrée :
-    ///   une RAM remplacée ne les trompe pas.
+    /// - une RAM remplacée ne trompe pas les blocs décodés : le poste reprend
+    ///   par `tourner`, dont l'époque neuve fait recomparer chaque bloc à sa
+    ///   prochaine entrée (`x86_paging::PagesDeCode`). Un hôte qui reprendrait
+    ///   par `poursuivre` exécuterait l'ancien code.
     pub fn apres_reprise(&mut self, ombre: Option<u64>, placement: Option<Placement>) {
         self.ombre = ombre;
         self.placement = placement;
@@ -758,11 +827,11 @@ impl Machine {
     pub fn servir(&mut self) -> Result<(), String> {
         let tics = self.tics();
         let lignes = match self.peripheriques.as_mut() {
-            Some(autres) => {
-                autres.battre(tics);
-                autres.servir_tour(&mut self.cpu.memory.bytes);
-                autres.lignes()
-            }
+            Some(autres) => autres.tour_suivi(
+                tics,
+                &mut self.cpu.memory.bytes,
+                &mut Suivi(self.cpu.code.as_deref_mut()),
+            ),
             None => 0,
         };
         self.herites.lever(tics, lignes);
@@ -817,7 +886,29 @@ impl Machine {
     /// **Exécuter jusqu'à `budget` instructions**, le temps d'attente compris,
     /// et rendre combien l'ont été. S'arrête plus tôt quand le processeur est
     /// arrêté sur un `hlt` que rien ne peut réveiller.
+    ///
+    /// L'hôte a pu écrire la RAM depuis le dernier appel (un chargeur, un
+    /// test, un débogueur), et rien de ce qu'il y a fait n'est noté : tout
+    /// est supposé réécrit, et chaque bloc décodé se recompare à sa
+    /// prochaine entrée (`x86_paging::PagesDeCode`). Un hôte qui n'écrit pas
+    /// la RAM entre deux tranches appelle `poursuivre`.
     pub fn tourner(&mut self, budget: u64) -> Result<u64, String> {
+        if let Some(pages) = self.cpu.code.as_mut() {
+            pages.tout_suppose();
+        }
+        self.poursuivre(budget)
+    }
+
+    /// **`tourner`, quand l'hôte n'a rien écrit dans la RAM depuis le
+    /// dernier appel** — ni par `cpu.memory`, ni par un périphérique hors de
+    /// la machine. Les blocs décodés gardent leur tampon d'une tranche à
+    /// l'autre : `wisq-pc` tourne par tranches de deux cent mille
+    /// instructions, et l'époque neuve de `tourner` faisait recomparer
+    /// chaque bloc vivant à chaque tranche (un million et demi de blocs par
+    /// milliard d'instructions sur l'ISO d'Alpine, 3 % du temps). Une
+    /// écriture de l'hôte que ce contrat tairait laisserait s'exécuter un
+    /// code qui n'est plus en mémoire : dans le doute, `tourner`.
+    pub fn poursuivre(&mut self, budget: u64) -> Result<u64, String> {
         let mut faites = 0u64;
         while faites < budget {
             if faites & 0xFF == 0 && self.armes() {
@@ -875,8 +966,13 @@ impl Machine {
     pub fn executer(&mut self, budget: u64) -> Issue {
         const TRANCHE: u64 = 200_000;
         let mut reste = budget;
+        // Entre deux tranches, personne n'écrit la RAM : l'époque neuve une
+        // fois, au premier appel.
+        if let Some(pages) = self.cpu.code.as_mut() {
+            pages.tout_suppose();
+        }
         while reste > 0 {
-            match self.tourner(TRANCHE.min(reste)) {
+            match self.poursuivre(TRANCHE.min(reste)) {
                 // **Une tranche qui n'exécute rien veut dire que plus rien ne
                 // peut arriver** : un `hlt` sans horloge armée, ou avec les
                 // interruptions masquées.
@@ -1123,18 +1219,34 @@ impl Machine {
         {
             return Passage::Aucun;
         }
-        if let Some(passage) = self.reprendre(physique, permis) {
+        let (epoque, generation) = match self.cpu.code.as_deref() {
+            Some(pages) => (pages.epoque, pages.generation(physique)),
+            None => (0, None),
+        };
+        if let Some(passage) = self.reprendre(physique, permis, epoque, generation) {
             return passage;
         }
-        let place = match self.blocs.trouver(&self.cpu.memory.bytes, physique) {
-            Some(place) => place,
-            None => {
+        // **Juste sans rien comparer** quand sa page n'a pas été écrite
+        // depuis son tampon ; sinon ses octets se comparent, et un bloc
+        // intact est tamponné de nouveau.
+        let place = match self.blocs.trouver(physique, epoque, generation) {
+            Trouve::Juste(place) => place,
+            Trouve::AComparer(place)
+                if self.blocs.bloc(place).intact(&self.cpu.memory.bytes, debut) =>
+            {
+                self.tamponner(place, physique, epoque, generation);
+                place
+            }
+            _ => {
                 let reste = 0x1000 - (debut & 0xFFF);
                 let memoire = &self.cpu.memory.bytes;
-                self.blocs
-                    .construire(memoire, physique, reste, &mut |ici, disponibles| {
-                        lire_en_ram(memoire, ici, disponibles)
-                    })
+                let place =
+                    self.blocs
+                        .construire(memoire, physique, reste, &mut |ici, disponibles| {
+                            lire_en_ram(memoire, ici, disponibles)
+                        });
+                self.tamponner(place, physique, epoque, generation);
+                place
             }
         };
         let bloc = self.blocs.bloc(place);
@@ -1154,21 +1266,49 @@ impl Machine {
     /// octets du bloc les siens — décoder à cette adresse rendrait alors la
     /// même instruction.
     #[inline(always)]
-    fn reprendre(&mut self, physique: u64, permis: u64) -> Option<Passage> {
+    fn reprendre(
+        &mut self,
+        physique: u64,
+        permis: u64,
+        epoque: u64,
+        generation: Option<u32>,
+    ) -> Option<Passage> {
         let reprise = self.reprise.take()?;
         if reprise.physique != physique {
             return None;
         }
         let bloc = self.blocs.bloc(reprise.place);
         let debut = bloc.etiquette.wrapping_sub(1);
-        if debut != reprise.debut || !bloc.intact(&self.cpu.memory.bytes, debut as usize) {
+        if debut != reprise.debut {
             return None;
         }
+        // Le bloc et l'instruction de la reprise sont dans la même page : sa
+        // génération est celle de RIP.
+        let tamponne = bloc.epoque == epoque && Some(bloc.generation) == generation;
+        if !tamponne {
+            if !bloc.intact(&self.cpu.memory.bytes, debut as usize) {
+                return None;
+            }
+            self.tamponner(reprise.place, debut, epoque, generation);
+        }
+        let bloc = self.blocs.bloc(reprise.place);
         let nombre = (u64::from(bloc.nombre) - reprise.rang as u64).min(permis);
         if nombre == 0 {
             return None;
         }
         Some(self.parcourir(reprise.place, reprise.rang, nombre))
+    }
+
+    /// **Retenir que le bloc de `place` a les octets de la mémoire** : son
+    /// tampon (l'époque, la génération de sa page), et la page marquée pour
+    /// qu'aucune écriture rapide n'y tombe sans avancer la génération. Hors
+    /// de la RAM suivie, rien : le bloc se comparera à chaque entrée.
+    #[inline(always)]
+    fn tamponner(&mut self, place: usize, physique: u64, epoque: u64, generation: Option<u32>) {
+        if let Some(generation) = generation {
+            self.blocs.tamponner(place, epoque, generation);
+            self.cpu.marquer_code(physique);
+        }
     }
 
     /// Exécuter `nombre` instructions du bloc de `place`, depuis `premier`.
@@ -1182,6 +1322,10 @@ impl Machine {
         let fin = premier + nombre as usize;
         let mut rang = premier;
         let mut octet = physique_du_rang(bloc, premier);
+        // **Où s'arrêter pour regarder** : un bit par instruction qui peut
+        // écrire, et celui de la dernière permise. Le chemin de chaque
+        // instruction ne teste que lui.
+        let arrets = u32::from(bloc.ecrit) | (1 << (fin - 1));
         let faites = loop {
             let uop = &bloc.uops[rang];
             match (uop.executer)(cpu, uop, &bloc.generales) {
@@ -1189,6 +1333,9 @@ impl Machine {
                     cpu.rip = cpu.rip.wrapping_add(u64::from(uop.longueur));
                     octet += uop.longueur as usize;
                     rang += 1;
+                    if arrets & (1 << (rang - 1)) == 0 {
+                        continue;
+                    }
                     if rang == fin {
                         // Coupé avant sa fin par le budget ou le service du
                         // matériel : la suite reprendra ici.
@@ -1202,11 +1349,17 @@ impl Machine {
                         }
                         break nombre;
                     }
-                    // Une écriture a pu tomber dans le bloc même : ce qui reste
-                    // à exécuter se recompare avant l'instruction suivante.
-                    if bloc.ecrit & (1 << (rang - 1)) != 0
-                        && !bloc.intact_depuis(&cpu.memory.bytes, debut, octet)
-                    {
+                    // Une écriture a pu tomber dans le bloc même. Sa page
+                    // est marquée : une écriture rapide n'y tombe jamais, et
+                    // toute autre avance sa génération. La même génération,
+                    // rien n'a changé ; une autre, ce qui reste à exécuter se
+                    // recompare avant l'instruction suivante.
+                    let tamponne = matches!(
+                        cpu.code.as_deref(),
+                        Some(pages) if pages.epoque == bloc.epoque
+                            && pages.generation(debut as u64) == Some(bloc.generation)
+                    );
+                    if !tamponne && !bloc.intact_depuis(&cpu.memory.bytes, debut, octet) {
                         break (rang - premier) as u64;
                     }
                 }
@@ -1514,8 +1667,12 @@ impl Machine {
             return u64::from(valeur);
         }
         if let Some(autres) = self.peripheriques.as_mut() {
-            if let Some(valeur) = autres.port_lire(port, largeur as u8, &mut self.cpu.memory.bytes)
-            {
+            if let Some(valeur) = autres.port_lire_suivi(
+                port,
+                largeur as u8,
+                &mut self.cpu.memory.bytes,
+                &mut Suivi(self.cpu.code.as_deref_mut()),
+            ) {
                 // Pas de masque ici : `in` range la valeur par `Cpu::set`, à
                 // la largeur de l'instruction, et les bits en trop d'un
                 // périphérique n'atteignent jamais le registre.
@@ -1533,11 +1690,12 @@ impl Machine {
             return;
         }
         if let Some(autres) = self.peripheriques.as_mut() {
-            if autres.port_ecrire(
+            if autres.port_ecrire_suivi(
                 port,
                 largeur as u8,
                 valeur as u32,
                 &mut self.cpu.memory.bytes,
+                &mut Suivi(self.cpu.code.as_deref_mut()),
             ) {
                 return;
             }
@@ -1815,7 +1973,8 @@ impl Machine {
             Op::Undefined => return Err(Exception::Indefinie.into()),
             Op::InvalidatePage => {
                 self.exiger_le_noyau()?;
-                self.cpu.flush_translations();
+                let adresse = self.adresse(instruction);
+                self.cpu.invalidate_page(adresse);
             }
             Op::ReadControlRegister { .. } => {
                 self.exiger_le_noyau()?;

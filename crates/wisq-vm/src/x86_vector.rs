@@ -694,17 +694,48 @@ fn split(value: u128) -> [u64; 2] {
 
 /// Appliquer `f` voie par voie : `lane` octets par voie, les deux opérandes
 /// découpés pareil. `f` reçoit et rend des voies déjà masquées.
+///
+/// **Par moitiés de soixante-quatre bits** : aucune voie ne chevauche les
+/// deux, et les décalages d'un `u128` coûtaient chacun plusieurs
+/// instructions de l'hôte, à chaque voie — `perf` mettait le vectoriel à
+/// 5 % du bureau de Void, l'essentiel dans cette boucle.
+#[inline(always)]
 fn zip_lanes(left: u128, right: u128, lane: Width, f: impl Fn(u64, u64) -> u64) -> u128 {
     let bits = lane.bits() as u32;
-    let mask = u128::from(lane.mask());
-    let mut out = 0u128;
-    for index in 0..(128 / bits) {
-        let shift = index * bits;
-        let a = ((left >> shift) & mask) as u64;
-        let b = ((right >> shift) & mask) as u64;
-        out |= (u128::from(f(a, b)) & mask) << shift;
-    }
-    out
+    let mask = lane.mask();
+    let half = |left: u64, right: u64| {
+        if bits == 64 {
+            return f(left, right);
+        }
+        let mut out = 0u64;
+        let mut shift = 0;
+        while shift < 64 {
+            out |= (f((left >> shift) & mask, (right >> shift) & mask) & mask) << shift;
+            shift += bits;
+        }
+        out
+    };
+    let [left_low, left_high] = split(left);
+    let [right_low, right_high] = split(right);
+    join([half(left_low, right_low), half(left_high, right_high)])
+}
+
+/// **`pcmpeqb` sur une moitié, sans boucle** : chaque octet à `0xff` quand
+/// les deux sont égaux, à zéro sinon. Le bit haut de chaque octet nul de
+/// `a ^ b` se lève par l'addition de `0x7f` sur les sept bits bas (qui ne
+/// déborde jamais d'un octet sur l'autre), puis s'étale sur son octet.
+fn equal_bytes(left: u64, right: u64) -> u64 {
+    const BAS: u64 = 0x7F7F_7F7F_7F7F_7F7F;
+    let difference = left ^ right;
+    let nuls = !(((difference & BAS) + BAS) | difference | BAS);
+    (nuls >> 7) * 0xFF
+}
+
+/// **Les bits de signe des huit octets d'une moitié**, l'octet `k` au bit
+/// `k` (`pmovmskb`) : chaque bit haut, multiplié, tombe à sa place dans
+/// l'octet de tête sans qu'aucune retenue ne l'y rejoigne.
+fn byte_signs(value: u64) -> u64 {
+    ((value & 0x8080_8080_8080_8080).wrapping_mul(0x0002_0408_1020_4081)) >> 56
 }
 
 fn lane(value: u128, width: Width, index: u32) -> u64 {
@@ -906,10 +937,15 @@ impl super::Cpu {
                     Mask::Singles => Width::Dword,
                     Mask::Doubles => Width::Qword,
                 };
-                let count = 128 / unit.bits() as u32;
-                let bits = (0..count).fold(0u64, |bits, index| {
-                    bits | u64::from(lane(source, unit, index) & unit.sign() != 0) << index
-                });
+                let bits = if unit == Width::Byte {
+                    let [low, high] = split(source);
+                    byte_signs(low) | (byte_signs(high) << 8)
+                } else {
+                    let count = 128 / unit.bits() as u32;
+                    (0..count).fold(0u64, |bits, index| {
+                        bits | u64::from(lane(source, unit, index) & unit.sign() != 0) << index
+                    })
+                };
                 // Trente-deux bits écrits : le haut du registre s'efface.
                 self.set(instruction.dst, Width::Dword, false, bits);
             }
@@ -944,11 +980,12 @@ impl super::Cpu {
     }
 
     fn vector_read(&mut self, at: u64, width: Width) -> Result<u64, VectorFault> {
-        self.read_memory(at, width).map_err(|_| VectorFault::Memory)
+        self.read_memory_fast(at, width)
+            .map_err(|_| VectorFault::Memory)
     }
 
     fn vector_write(&mut self, at: u64, width: Width, value: u64) -> Result<(), VectorFault> {
-        self.write_memory(at, width, value)
+        self.write_memory_fast(at, width, value)
             .map_err(|_| VectorFault::Memory)
     }
 
@@ -1001,6 +1038,14 @@ impl super::Cpu {
                 };
                 saturate_to(difference, unit, as_signed)
             }),
+            Lanes::Equal(Width::Byte) => {
+                let ([target_low, target_high], [source_low, source_high]) =
+                    (split(target), split(source));
+                join([
+                    equal_bytes(target_low, source_low),
+                    equal_bytes(target_high, source_high),
+                ])
+            }
             Lanes::Equal(unit) => {
                 zip_lanes(
                     target,
@@ -1103,5 +1148,75 @@ impl super::Cpu {
             Shift::Right => a >> count,
             Shift::RightArithmetic => (signed(a, unit) >> count.min(bits - 1)) as u64,
         })
+    }
+}
+
+#[cfg(test)]
+mod voies {
+    use super::*;
+
+    /// La voie à voie d'avant, octet par octet sur un `u128` : le juge.
+    fn une_a_une(left: u128, right: u128, lane: Width, f: impl Fn(u64, u64) -> u64) -> u128 {
+        let bits = lane.bits() as u32;
+        let mask = u128::from(lane.mask());
+        let mut out = 0u128;
+        for index in 0..(128 / bits) {
+            let shift = index * bits;
+            let a = ((left >> shift) & mask) as u64;
+            let b = ((right >> shift) & mask) as u64;
+            out |= (u128::from(f(a, b)) & mask) << shift;
+        }
+        out
+    }
+
+    /// **Les voies par moitiés, `pcmpeqb` et `pmovmskb` sans boucle rendent
+    /// ce que rend la boucle voie à voie** : cent mille paires tirées, dont
+    /// beaucoup d'octets égaux ou voisins (`0x7f` contre `0x80`, zéro contre
+    /// `0xff`), aux quatre largeurs.
+    #[test]
+    fn lanes_by_halves_and_without_loops_match_lane_by_lane() {
+        let mut graine = 0x5EED_0004u64;
+        let mut tirer = || {
+            graine = graine.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = graine;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        let voisins = [0x00u8, 0x01, 0x7F, 0x80, 0x81, 0xFE, 0xFF];
+        for _ in 0..100_000 {
+            let mut left = (u128::from(tirer()) << 64) | u128::from(tirer());
+            let mut right = left;
+            for octet in 0..16 {
+                let choix = tirer();
+                let place = 8 * octet;
+                if choix % 3 == 0 {
+                    right ^= u128::from(tirer() as u8) << place;
+                }
+                if choix % 5 == 0 {
+                    let v = u128::from(voisins[(choix >> 8) as usize % voisins.len()]);
+                    left = (left & !(0xFF << place)) | (v << place);
+                }
+            }
+            for lane in [Width::Byte, Width::Word, Width::Dword, Width::Qword] {
+                let somme = |a: u64, b: u64| a.wrapping_add(b);
+                assert_eq!(
+                    zip_lanes(left, right, lane, somme),
+                    une_a_une(left, right, lane, somme)
+                );
+            }
+            let egal = |a: u64, b: u64| if a == b { u64::MAX } else { 0 };
+            let [ll, lh] = split(left);
+            let [rl, rh] = split(right);
+            assert_eq!(
+                join([equal_bytes(ll, rl), equal_bytes(lh, rh)]),
+                une_a_une(left, right, Width::Byte, egal),
+                "{left:#x} {right:#x}"
+            );
+            let signes = (0..16u32).fold(0u64, |bits, index| {
+                bits | u64::from(lane(left, Width::Byte, index) & 0x80 != 0) << index
+            });
+            assert_eq!(byte_signs(ll) | (byte_signs(lh) << 8), signes, "{left:#x}");
+        }
     }
 }

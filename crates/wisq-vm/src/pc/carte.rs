@@ -15,8 +15,9 @@
 //! juste après l'`out` qu'elle a pris : la requête est
 //! lue, le fichier lu, la réponse rendue et la ligne levée avant que
 //! l'instruction suivante ne s'exécute — comme `VirtioBlock.serve` du cœur
-//! Swift. Un octet que le disque écrit dans du code se voit : les blocs et le
-//! cache de décodage comparent leurs octets à l'entrée.
+//! Swift. Un octet que le disque écrit dans du code se voit : il passe par
+//! `Ram::ecrire`, qui avance la génération de sa page, et les blocs décodés
+//! de cette page se recomparent à leur prochaine entrée.
 //!
 //! **La mémoire des périphériques** (la mémoire vidéo et les registres de
 //! l'écran de Bochs, la BAR0 de la tablette) répond hors de la RAM : la carte
@@ -38,27 +39,32 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use wisq_carte::pc::CartePc;
 use wisq_carte::Ram;
 
-use super::machine::{Machine, Peripheriques};
+use super::machine::{Machine, Peripheriques, Suivi};
 use crate::x86_paging::{DeviceMemory, Devices};
 
 /// La RAM de la machine, vue par la carte : par adresse physique, une plage
-/// entière ou rien.
-struct Tranche<'a>(&'a mut [u8]);
+/// entière ou rien. **Chaque écriture est notée** (`Suivi`) : le disque qui
+/// lit un fichier dans une page de code, une file de la tablette, tout
+/// passe par `ecrire`, et les blocs décodés de cette page le verront.
+struct Tranche<'a, 'b> {
+    ram: &'a mut [u8],
+    suivi: &'a mut Suivi<'b>,
+}
 
-impl Tranche<'_> {
+impl Tranche<'_, '_> {
     fn plage(&self, adresse: u64, longueur: usize) -> Option<std::ops::Range<usize>> {
         let debut = usize::try_from(adresse).ok()?;
         let fin = debut.checked_add(longueur)?;
-        (fin <= self.0.len()).then_some(debut..fin)
+        (fin <= self.ram.len()).then_some(debut..fin)
     }
 }
 
-impl Ram for Tranche<'_> {
+impl Ram for Tranche<'_, '_> {
     fn lire(&self, adresse: u64, vers: &mut [u8]) -> bool {
         let Some(plage) = self.plage(adresse, vers.len()) else {
             return false;
         };
-        vers.copy_from_slice(&self.0[plage]);
+        vers.copy_from_slice(&self.ram[plage]);
         true
     }
 
@@ -66,24 +72,56 @@ impl Ram for Tranche<'_> {
         let Some(plage) = self.plage(adresse, depuis.len()) else {
             return false;
         };
-        self.0[plage].copy_from_slice(depuis);
+        self.ram[plage].copy_from_slice(depuis);
+        self.suivi.noter(adresse, depuis.len());
         true
     }
 }
 
 impl Peripheriques for CartePc {
-    fn port_lire(&mut self, port: u16, largeur: u8, _ram: &mut [u8]) -> Option<u32> {
+    fn port_lire(&mut self, port: u16, largeur: u8, ram: &mut [u8]) -> Option<u32> {
+        self.port_lire_suivi(port, largeur, ram, &mut Suivi(None))
+    }
+
+    fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut [u8]) -> bool {
+        self.port_ecrire_suivi(port, largeur, valeur, ram, &mut Suivi(None))
+    }
+
+    /// Lire un port de la carte ne touche pas à la RAM : rien à dire.
+    fn port_lire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        _ram: &mut [u8],
+        _suivi: &mut Suivi<'_>,
+    ) -> Option<u32> {
         CartePc::port_lire(self, port, largeur)
     }
 
     /// Un `out` que la carte prend : s'il a noté une notification, elle est
-    /// servie tout de suite, la RAM en main.
-    fn port_ecrire(&mut self, port: u16, largeur: u8, valeur: u32, ram: &mut [u8]) -> bool {
+    /// servie tout de suite, la RAM en main — chaque écriture notée.
+    fn port_ecrire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        valeur: u32,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+    ) -> bool {
         let pris = CartePc::port_ecrire(self, port, largeur, valeur);
         if pris && self.a_servir() {
-            CartePc::servir(self, &mut Tranche(ram));
+            CartePc::servir(self, &mut Tranche { ram, suivi });
         }
         pris
+    }
+
+    /// Le tour : le temps, la tablette (chaque écriture notée), les lignes.
+    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
+        CartePc::battre(self, tics);
+        if self.a_servir() || self.tablette().is_some() {
+            CartePc::servir(self, &mut Tranche { ram, suivi });
+        }
+        CartePc::lignes(self)
     }
 
     fn lignes(&self) -> u16 {
@@ -102,7 +140,13 @@ impl Peripheriques for CartePc {
     /// chaque tour.
     fn servir_tour(&mut self, ram: &mut [u8]) {
         if self.a_servir() || self.tablette().is_some() {
-            CartePc::servir(self, &mut Tranche(ram));
+            CartePc::servir(
+                self,
+                &mut Tranche {
+                    ram,
+                    suivi: &mut Suivi(None),
+                },
+            );
         }
     }
 
@@ -176,6 +220,36 @@ impl Peripheriques for CartePartagee {
 
     fn servir_tour(&mut self, ram: &mut [u8]) {
         Peripheriques::servir_tour(&mut *self.tenir(), ram);
+    }
+
+    /// Les trois temps du tour sous un seul verrou.
+    fn tour(&mut self, tics: u64, ram: &mut [u8]) -> u16 {
+        Peripheriques::tour(&mut *self.tenir(), tics, ram)
+    }
+
+    fn port_lire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+    ) -> Option<u32> {
+        Peripheriques::port_lire_suivi(&mut *self.tenir(), port, largeur, ram, suivi)
+    }
+
+    fn port_ecrire_suivi(
+        &mut self,
+        port: u16,
+        largeur: u8,
+        valeur: u32,
+        ram: &mut [u8],
+        suivi: &mut Suivi<'_>,
+    ) -> bool {
+        Peripheriques::port_ecrire_suivi(&mut *self.tenir(), port, largeur, valeur, ram, suivi)
+    }
+
+    fn tour_suivi(&mut self, tics: u64, ram: &mut [u8], suivi: &mut Suivi<'_>) -> u16 {
+        Peripheriques::tour_suivi(&mut *self.tenir(), tics, ram, suivi)
     }
 
     fn remise_demandee(&self) -> bool {

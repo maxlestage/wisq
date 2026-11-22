@@ -1121,7 +1121,7 @@ impl Cpu {
     }
 
     fn sse_read(&mut self, at: u64, width: Width) -> Result<u64, ExtendedFault> {
-        self.read_memory(at, width)
+        self.read_memory_fast(at, width)
             .map_err(|_| ExtendedFault::Memory)
     }
 }
