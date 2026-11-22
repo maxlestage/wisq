@@ -8,6 +8,31 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — « Ça fonctionne toujours pas » : la ligne d'état dit le silence d'abord ; #728 fusionnée, TestFlight relancé ; le JIT en Rust décidé
+
+**La capture.** L'image d'installation d'Arch, sur le cœur Rust : quatre
+lignes, puis rien, et « 4,7 milliards d'instructions · 405,6… ». C'est le
+silence que #725 a mesuré : le noyau décode son initramfs xz pendant 9,26
+milliards d'instructions sans écrire, et `archiso login:` arrive à 87,2
+milliards — environ 3 min 40 à 400 MIPS. La machine avançait ; la ligne,
+coupée par la largeur du téléphone, ne le disait pas.
+
+**Ce qui est fait.** `GuestHeartbeat.line` prend le temps depuis le dernier
+octet écrit par l'invité (`LocalVMModel`, qui compte déjà `guestBytes`).
+Après dix secondes de console muette, tant que les instructions avancent hors
+d'une boucle, la ligne commence par « silencieuse depuis 25 s, elle calcule ».
+Un blocage et une boucle gardent leur phrase. Deux tests.
+
+**Le JIT.** Maxime veut « un JIT écrit en Rust, et du Rust et du WebAssembly
+plutôt que du JS ». Le JIT existe — l'émetteur x86-64 → WebAssembly, en Rust,
+que JavaScriptCore compile —, mais sa boucle hôte est `web/host.js` (3 436
+lignes) et il tient 250 à 290 MIPS contre 405 pour l'interpréteur sur
+l'iPhone. Choix de Maxime : porter la boucle en Rust compilé en wasm (il
+restera environ 150 lignes de JS : Rust ne sait ni compiler du wasm, ni lire
+une seconde mémoire, ni importer une globale mutable d'une autre instance),
+puis rendre l'émetteur plus rapide que l'interpréteur avant de l'activer.
+Référence prise ici : `host_loop`, 253 tests verts en 28 s.
+
 ## 2026-11-22 — Un cœur ARM64, première tranche : le jeu A64 entier en EL0, contre qemu ; TestFlight n° 139
 
 **La demande.** « Continue et lance TestFlight. » TestFlight n° 139 est parti

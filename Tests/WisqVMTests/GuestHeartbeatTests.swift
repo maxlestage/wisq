@@ -187,4 +187,43 @@ final class GuestHeartbeatTests: XCTestCase {
         XCTAssertFalse(line.contains("0,0 MIPS"), line)
         XCTAssertTrue(line.contains("300 mille instructions par seconde"), line)
     }
+
+    /// **Une console muette pendant que l'invité avance, dite en premier.**
+    ///
+    /// La capture d'Arch : « 4,7 milliards d'instructions · 405,6… », coupée
+    /// là par la largeur du téléphone, pendant que le noyau décodait son
+    /// initramfs sans rien écrire. Le silence passe maintenant devant, là où
+    /// un écran étroit le montre.
+    func testAQuietGuestThatComputesSaysSoFirst() {
+        let now = GuestProgress(retired: 4_700_000_000, rip: 0xffff_ffff_9c99_0e5d,
+                                slices: 23_500, slicesOnSamePage: 17_000)
+        let since = GuestProgress(retired: 4_294_400_000, rip: 0xffff_ffff_9c99_08aa,
+                                  slices: 21_472, slicesOnSamePage: 15_500)
+        let quiet = GuestHeartbeat.line(now: now, since: since, seconds: 1, silentFor: 25)
+        XCTAssertTrue(quiet.hasPrefix("silencieuse depuis 25 s, elle calcule · 405,6 MIPS"), quiet)
+        XCTAssertTrue(quiet.contains("0xffffffff9c990e5d"), quiet)
+
+        let long = GuestHeartbeat.line(now: now, since: since, seconds: 1, silentFor: 185)
+        XCTAssertTrue(long.hasPrefix("silencieuse depuis 3 min 05 s"), long)
+
+        // Sous le seuil, la ligne d'avant.
+        let talking = GuestHeartbeat.line(now: now, since: since, seconds: 1, silentFor: 9)
+        XCTAssertFalse(talking.contains("silencieuse"), talking)
+        XCTAssertTrue(talking.hasPrefix("4,7 milliards"), talking)
+    }
+
+    /// Le silence ne couvre ni un blocage ni une boucle : ceux-là ont leur
+    /// phrase, et elle est plus utile.
+    func testSilenceDoesNotHideAStallOrALoop() {
+        let stalled = GuestHeartbeat.line(now: at(5_000), since: at(5_000), seconds: 3, silentFor: 60)
+        XCTAssertTrue(stalled.contains("figée"), stalled)
+        XCTAssertFalse(stalled.contains("silencieuse"), stalled)
+
+        let loop = GuestHeartbeat.line(
+            now: GuestProgress(retired: 2_000_000_000, rip: 0x1010, slices: 200, slicesOnSamePage: 196),
+            since: GuestProgress(retired: 1_000_000_000, rip: 0x1000, slices: 100, slicesOnSamePage: 98),
+            seconds: 1, silentFor: 60)
+        XCTAssertTrue(loop.contains("en rond"), loop)
+        XCTAssertFalse(loop.contains("silencieuse"), loop)
+    }
 }
