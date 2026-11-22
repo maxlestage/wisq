@@ -93,6 +93,9 @@ jobs:
             [ -n "$data" ] && cp -R "$data/tmp/apercus/." "$RUNNER_TEMP/apercus/" 2>/dev/null || true
           fi
           ls -l "$RUNNER_TEMP/apercus"
+          # Les suites de la scheme `Apercus`, nommées et confrontées à ce que
+          # `project.yml` déclare, comme dans « App iOS ».
+          scripts/report-app-suites.sh "$RUNNER_TEMP/apercus.log" "$issue" Apercus
           exit "$issue"
       - uses: actions/upload-artifact@v7
         if: always()

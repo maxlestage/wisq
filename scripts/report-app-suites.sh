@@ -35,8 +35,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-journal="${1:?usage: report-app-suites.sh <journal> [code de sortie de xcodebuild]}"
+journal="${1:?usage: report-app-suites.sh <journal> [code de sortie de xcodebuild] [scheme]}"
 issue="${2:-0}"
+# **La scheme lancée**, quand ce n'est pas celle de l'application : les aperçus
+# (`.github/workflows/apercus.yml`) lancent la scheme `Apercus`, déclarée à
+# part sous `schemes:`, et ce sont ses suites qu'il faut confronter au relevé
+# — celles de `Wisq` n'y sont pas, et elles n'ont pas à y être.
+scheme="${3:-}"
 
 # **Le motif, et ce qu'il accepte maintenant.** `tests?` pour le singulier ;
 # `[A-Za-z_][A-Za-z0-9_]*` pour les noms de classe qui portent un chiffre
@@ -81,16 +86,26 @@ fi
 # `#if canImport(WebKit)` et `#if canImport(Metal)`, vraies toutes les trois
 # sur un simulateur. Une classe posée derrière une garde fausse serait accusée
 # à tort, et il faudrait alors apprendre les gardes à ce script.
-attendues=$(python3 - <<'PY'
+attendues=$(WISQ_SCHEME="$scheme" python3 - <<'PY'
+import os
 import pathlib
 import re
 import sys
 
 spec = pathlib.Path("project.yml").read_text(encoding="utf-8")
 
-bloc = re.search(r"^      testTargets:\n((?:^        - .+\n)+)", spec, re.M)
-if bloc is None:
-    sys.exit("project.yml : aucune liste « testTargets » sous la scheme")
+scheme = os.environ.get("WISQ_SCHEME", "")
+if scheme:
+    # Une scheme de `schemes:` : ses cibles de test sont sous `test: targets:`.
+    bloc = re.search(
+        r"^  %s:\n(?:    .*\n)*?    test:\n(?:      .*\n)*?      targets:\n((?:^        - .+\n)+)"
+        % re.escape(scheme), spec, re.M)
+    if bloc is None:
+        sys.exit(f"project.yml : aucune scheme « {scheme} » avec des cibles de test")
+else:
+    bloc = re.search(r"^      testTargets:\n((?:^        - .+\n)+)", spec, re.M)
+    if bloc is None:
+        sys.exit("project.yml : aucune liste « testTargets » sous la scheme")
 cibles = [ligne.strip().lstrip("-").strip() for ligne in bloc.group(1).splitlines()]
 
 chemins: list[str] = []
