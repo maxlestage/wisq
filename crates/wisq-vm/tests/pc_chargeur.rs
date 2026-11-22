@@ -310,6 +310,22 @@ fn the_default_command_line_asks_for_early_output() {
     assert!(LIGNE_PAR_DEFAUT.contains("console=ttyS0"));
 }
 
+/// **La console précoce ne reste pas après `ttyS0`.** `earlyprintk=…,keep`
+/// la gardait à côté de lui, sur le même port, et chaque ligne du noyau
+/// sortait deux fois — l'image d'installation d'Arch, et la console de
+/// l'application avec elle. Sans `keep`, le noyau l'éteint quand `ttyS0`
+/// s'ouvre ; ni `keep` ni `keep_bootcon` ne doivent revenir par la ligne
+/// par défaut.
+#[test]
+fn the_default_command_line_does_not_keep_the_early_console() {
+    for mot in LIGNE_PAR_DEFAUT.split(' ') {
+        assert!(
+            !mot.split(',').any(|morceau| morceau == "keep") && mot != "keep_bootcon",
+            "« {mot} » garde la console précoce : chaque ligne sortirait deux fois"
+        );
+    }
+}
+
 /// **Sous un écran, la machine met `console=tty0` devant toute ligne** —
 /// celle qu'on donne comme celle par défaut —, comme `X86Machine.load` du
 /// cœur Swift ; sans écran, la ligne passe telle quelle, et une ligne qui a

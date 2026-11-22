@@ -1,5 +1,6 @@
 #if canImport(WebKit)
 import Foundation
+import UIKit
 import WisqVMRust
 import XCTest
 
@@ -794,6 +795,26 @@ final class LocalDesktopTests: XCTestCase {
 /// carte, attend une touche à l'i8042, et s'arrête sur `hlt`.
 @MainActor
 final class EmitterDesktopTests: XCTestCase {
+    /// **Les fenêtres qui portent les vues de ces tests.** Une vue hors de
+    /// toute fenêtre n'est pas sûre de tourner : WebKit rend dans un processus
+    /// séparé, et iOS le suspend quand sa vue n'est dans aucune fenêtre
+    /// visible — le journal de la CI le montrait (« WebProcess NearSuspended
+    /// Assertion », puis la machine figée : la touche jamais lue, `hlt` jamais
+    /// atteint, sur #720 poussée dans master comme sur #722). Dans
+    /// l'application, la vue est toujours à l'écran. `WebKitJITProbeTests`
+    /// pose la sienne ainsi depuis longtemps. Gardées par l'instance, que
+    /// XCTest libère après le test : pas de `tearDown`, qui serait un conflit
+    /// d'isolation avec `@MainActor` en Swift 6.
+    private var windows: [UIWindow] = []
+
+    /// La vue de l'émetteur dans une fenêtre visible, comme dans l'application.
+    private func show(_ desktop: EmitterDesktop) {
+        let window = UIWindow(frame: desktop.view.frame)
+        window.addSubview(desktop.view)
+        window.isHidden = false
+        windows.append(window)
+    }
+
     private static func le(_ value: UInt64, _ count: Int) -> [UInt8] {
         (0..<count).map { UInt8((value >> (8 * UInt64($0))) & 0xFF) }
     }
@@ -849,6 +870,7 @@ final class EmitterDesktopTests: XCTestCase {
                   clock: 1_795_178_096_000),
             scratch: work)
         let desktop = try EmitterDesktop(prepared: prepared)
+        show(desktop)
         desktop.start()
         try await desktop.waitUntilReady()
 
@@ -875,6 +897,7 @@ final class EmitterDesktopTests: XCTestCase {
                   clock: 1_795_178_096_000),
             scratch: work)
         let desktop = try EmitterDesktop(prepared: prepared)
+        show(desktop)
         desktop.start()
         try await desktop.waitUntilReady()
         return desktop

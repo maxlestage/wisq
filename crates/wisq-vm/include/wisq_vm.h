@@ -806,6 +806,17 @@ uint64_t wisq_pc_retired(const WisqPC *pc);
 int wisq_pc_progress(const WisqPC *pc, uint64_t *retired, uint64_t *rip);
 
 /*
+ * Où les tranches finissent : combien ont été publiées depuis le départ
+ * (slices), et combien ont fini dans la même page de quatre kibioctets de RIP
+ * que la précédente (same_page). Deux relevés de RIP ne disent pas si
+ * l'invité tourne en rond : un décodeur qui avance reste des secondes dans la
+ * même fonction, mais une tranche sur quatre en sort ; un noyau qui attend en
+ * boucle n'en sort presque jamais. 1 ; 0 rien n'a encore tourné ; -1 un
+ * pointeur nul. Tout fil.
+ */
+int wisq_pc_progress_pages(const WisqPC *pc, uint64_t *slices, uint64_t *same_page);
+
+/*
  * Le temps de l'invité, en instructions (retirées et dormies, sans le temps
  * rattrapé), et combien d'instructions valent une de ses secondes : de quoi
  * caler un invité qui dort sur l'horloge murale. Course arrêtée.

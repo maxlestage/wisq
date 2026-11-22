@@ -62,6 +62,17 @@ public struct Machine: Codable, Identifiable, Hashable, Sendable {
         self.certificateFingerprint = certificateFingerprint
     }
 
+    /// **« hôte:port », tel que la liste des connexions l'écrit.** Le port en
+    /// chiffres nus : passé à `Text` comme un nombre, il était mis en forme
+    /// selon la langue, et « atelier.local:3389 » s'affichait
+    /// « atelier.local:3,389 » (capture du 22 novembre). Une adresse IPv6 va
+    /// entre crochets, pour que son dernier « : » ne se lise pas comme celui
+    /// du port.
+    public var displayAddress: String {
+        let shown = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return "\(shown):\(port)"
+    }
+
     /// Stable key for the credential store, derived from the machine id.
     public var defaultCredentialRef: String { "machine.\(id.uuidString)" }
 

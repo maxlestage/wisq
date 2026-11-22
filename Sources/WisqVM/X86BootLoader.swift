@@ -170,8 +170,18 @@ public struct X86BootLoader {
     /// pilote. Sans elle, un démarrage qui échoue à mi-chemin ne dit rien du
     /// tout ; avec elle, il dit où il en était. C'est la différence entre
     /// « ça ne marche pas » et une bannière suivie d'un message d'erreur.
+    ///
+    /// **Sans `keep`.** Avec lui, la console précoce restait après l'arrivée
+    /// de `ttyS0`, sur le même port : chaque ligne du noyau sortait deux fois
+    /// (l'image d'installation d'Arch jusqu'à son `/init` : ses trois messages
+    /// deux fois chacun, huit lignes au lieu de cinq ; Void, 89 sur 193 sous
+    /// l'émetteur). Sans lui, le noyau éteint la console précoce quand `ttyS0`
+    /// s'ouvre, et `ttyS0` ne réécrit pas ce qu'elle a déjà dit : rien ne
+    /// manque, rien n'est dit deux fois. Ce que `keep` gardait — une sortie
+    /// si le pilote série ne venait jamais — ne sert pas : sans `ttyS0`, la
+    /// console précoce reste, puisque rien ne vient la remplacer.
     public static let defaultCommandLine =
-        "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200,keep"
+        "console=ttyS0,115200 earlyprintk=serial,ttyS0,115200"
     /// Le protocole 2.06 est le premier où `cmdline_size` existe ; en dessous,
     /// ce chargeur ne saurait pas quelle longueur de ligne de commande est
     /// permise.
