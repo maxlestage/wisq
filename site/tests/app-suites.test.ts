@@ -35,14 +35,14 @@ setDefaultTimeout(20_000);
 const repoRoot = join(import.meta.dir, "..", "..");
 const releve = join(repoRoot, "scripts", "report-app-suites.sh");
 
-function run(journal: string, code = 0): { out: string; summary: string; exit: number } {
+function run(journal: string, code = 0, scheme?: string): { out: string; summary: string; exit: number } {
   const root = mkdtempSync(join(tmpdir(), "wisq-app-suites-"));
   const journalFile = join(root, "xcodebuild.log");
   const summaryFile = join(root, "summary.md");
   writeFileSync(journalFile, journal);
   writeFileSync(summaryFile, "");
   const done = Bun.spawnSync({
-    cmd: [releve, journalFile, String(code)],
+    cmd: [releve, journalFile, String(code), ...(scheme ? [scheme] : [])],
     env: { ...process.env, GITHUB_STEP_SUMMARY: summaryFile, RUNNER_TEMP: root },
   });
   return {
@@ -240,6 +240,26 @@ describe("le relevé de l'iPhone simulé", () => {
     expect(exit).toBe(0);
     expect(out).not.toContain("::error::");
     expect(out).toContain("partiel");
+  });
+
+  /// **Les aperçus lancent une autre scheme**, `Apercus`, déclarée à part sous
+  /// `schemes:` : le relevé confronte alors ses suites à elle, pas celles de
+  /// l'application — qui n'y sont pas et n'ont pas à y être.
+  test("la scheme des aperçus est confrontée à ses propres suites", () => {
+    const apercus = "Test Suite 'ApercusTests' passed at 2026-11-22 10:00:00.000.\n"
+      + "\t Executed 8 tests, with 0 failures (0 unexpected) in 40.1 (40.2) seconds\n";
+    const vert = run(apercus, 0, "Apercus");
+    expect(vert.exit).toBe(0);
+    expect(vert.out).toContain("Suites déclarées (1) : ApercusTests");
+    expect(vert.out).not.toContain("::error::");
+
+    const muet = run("Executed 0 tests, with 0 failures\n", 0, "Apercus");
+    expect(muet.exit).not.toBe(0);
+    expect(muet.out).toContain("::error::ApercusTests n'a rendu aucun verdict.");
+
+    const inconnue = run(apercus, 0, "PasUneScheme");
+    expect(inconnue.exit).not.toBe(0);
+    expect(inconnue.out).toContain("aucune scheme « PasUneScheme »");
   });
 
   /// **La leçon de #279, prise d'avance.** Le relevé des tests sautés avait été

@@ -70,6 +70,8 @@ struct LocalVMListView: View {
     @State private var showImporter = false
     /// La feuille qui télécharge une image depuis l'index d'une distribution.
     @State private var showDownload = false
+    /// La feuille des explications : voir `MachinesAboutView`.
+    @State private var showAbout = false
     @State private var importError: String?
     @State private var booting: BootTarget?
     /// L'image de cloud dont on demande le mot de passe de `root`, avant
@@ -89,98 +91,105 @@ struct LocalVMListView: View {
 
     var body: some View {
         List {
+            // **La liste vide, c'est l'accueil, et il est seul à l'écran.**
+            // Il était posé par-dessus la liste (`.overlay`), et la liste
+            // gardait sous lui le pied de sa section — quatre paragraphes
+            // d'explications : les deux textes se chevauchaient (capture d'un
+            // iPhone, le 22 novembre). L'accueil est maintenant une rangée de
+            // la liste, et les explications sont dans « À propos ».
+            if kernels.isEmpty {
+                Section {
+                    welcome
+                }
+                .listRowBackground(Color.clear)
+            }
             if !installed.isEmpty {
                 installedSection
             }
-            Section {
-                ForEach(kernels, id: \.self) { kernel in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Button {
-                                start(BootTarget(url: kernel))
-                            } label: {
-                                LibraryRow(
-                                    kernel: kernel,
-                                    role: LibraryEntry.role(of: kinds[kernel] ?? .unknown,
-                                                           cloudImage: cloudImages.contains(kernel)),
-                                    storageLine: Self.storageLine(
-                                        storage.entry(forKernel: kernel.lastPathComponent)))
+            if !kernels.isEmpty {
+                Section {
+                    ForEach(kernels, id: \.self) { kernel in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Button {
+                                    start(BootTarget(url: kernel))
+                                } label: {
+                                    LibraryRow(
+                                        kernel: kernel,
+                                        role: LibraryEntry.role(of: kinds[kernel] ?? .unknown,
+                                                               cloudImage: cloudImages.contains(kernel)),
+                                        storageLine: Self.storageLine(
+                                            storage.entry(forKernel: kernel.lastPathComponent)))
+                                }
+                                .buttonStyle(.plain)
+                                Spacer(minLength: 12)
+                                KernelMemoryMenu(
+                                    kernel: kernel, core: kinds[kernel]?.core
+                                ) { forgotten in
+                                    note = Self.note(forgotten: forgotten)
+                                        .map { Note(text: $0, symbol: "memorychip") }
+                                    storage = KernelLibrary.storageReport()
+                                }
                             }
-                            .buttonStyle(.plain)
-                            Spacer(minLength: 12)
-                            KernelMemoryMenu(
-                                kernel: kernel, core: kinds[kernel]?.core
-                            ) { forgotten in
-                                note = Self.note(forgotten: forgotten)
-                                    .map { Note(text: $0, symbol: "memorychip") }
-                                storage = KernelLibrary.storageReport()
+                            // Le disque se propose à tout ce qui démarre ici.
+                            // Il n'était offert qu'aux noyaux de PC, parce que la
+                            // machine RISC-V refusait le sien ; elle ne le refuse
+                            // plus. Ce qu'elle ne peut toujours pas, c'est mettre
+                            // le pilote bloc dans le noyau de quelqu'un — et ça,
+                            // seul un démarrage peut le dire, pas cette liste.
+                            if kinds[kernel]?.couldBootHere == true {
+                                KernelDiskMenu(
+                                    kernel: kernel, library: kernels,
+                                    chosen: disks[kernel.lastPathComponent]
+                                ) { chosen in
+                                    attach(chosen, key: kernel.lastPathComponent)
+                                }
                             }
-                        }
-                        // Le disque se propose à tout ce qui démarre ici.
-                        // Il n'était offert qu'aux noyaux de PC, parce que la
-                        // machine RISC-V refusait le sien ; elle ne le refuse
-                        // plus. Ce qu'elle ne peut toujours pas, c'est mettre
-                        // le pilote bloc dans le noyau de quelqu'un — et ça,
-                        // seul un démarrage peut le dire, pas cette liste.
-                        if kinds[kernel]?.couldBootHere == true {
-                            KernelDiskMenu(
-                                kernel: kernel, library: kernels,
-                                chosen: disks[kernel.lastPathComponent]
-                            ) { chosen in
-                                attach(chosen, key: kernel.lastPathComponent)
+                            // Le réseau ne concerne que la machine PC : la
+                            // carte RISC-V n'en a pas.
+                            if kinds[kernel]?.couldBootHere == true, kinds[kernel]?.core != .riscv32 {
+                                MachineNetworkToggle(key: kernel.lastPathComponent)
                             }
-                        }
-                        // Le réseau ne concerne que la machine PC : la
-                        // carte RISC-V n'en a pas.
-                        if kinds[kernel]?.couldBootHere == true, kinds[kernel]?.core != .riscv32 {
-                            MachineNetworkToggle(key: kernel.lastPathComponent)
-                        }
-                        // **Une machine de plus sur ce fichier**, avec son nom,
-                        // sa mémoire, son disque et sa session à elle. Un
-                        // bouton visible plutôt qu'un appui long : c'est le
-                        // geste qui fait exister la section du dessus, et un
-                        // geste caché ne se découvre pas.
-                        if InstalledMachines.canInstall(kinds[kernel] ?? .unknown)
-                            || cloudImages.contains(kernel) {
-                            Button {
-                                machineName = InstalledMachines.suggestedName(
-                                    forImage: kernel.lastPathComponent)
-                                installing = kernel
-                            } label: {
-                                Label("Installer une machine", systemImage: "plus.square.on.square")
-                                    .font(.footnote)
+                            // **Une machine de plus sur ce fichier**, avec son nom,
+                            // sa mémoire, son disque et sa session à elle. Un
+                            // bouton visible plutôt qu'un appui long : c'est le
+                            // geste qui fait exister la section du dessus, et un
+                            // geste caché ne se découvre pas.
+                            if InstalledMachines.canInstall(kinds[kernel] ?? .unknown)
+                                || cloudImages.contains(kernel) {
+                                Button {
+                                    machineName = InstalledMachines.suggestedName(
+                                        forImage: kernel.lastPathComponent)
+                                    installing = kernel
+                                } label: {
+                                    Label("Installer une machine", systemImage: "plus.square.on.square")
+                                        .font(.footnote)
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            .buttonStyle(.borderless)
                         }
                     }
-                }
-                // **La suppression était là, et elle ne se trouvait pas.**
-                // C'était un `.swipeActions` sur la ligne ; or la ligne finit
-                // par le curseur de mémoire, qui prend cent trente points à
-                // droite — là même où un balayage vers la gauche commence — et
-                // qui avale les glissements horizontaux. Un `.onDelete` garde
-                // le balayage et ajoute le bouton « Modifier » de la barre :
-                // un chemin visible, qui ne dispute rien au curseur.
-                .onDelete { positions in
-                    var removed: [String] = []
-                    for kernel in positions.map({ kernels[$0] }) {
-                        removed += KernelLibrary.delete(kernel)
+                    // **La suppression était là, et elle ne se trouvait pas.**
+                    // C'était un `.swipeActions` sur la ligne ; or la ligne finit
+                    // par le curseur de mémoire, qui prend cent trente points à
+                    // droite — là même où un balayage vers la gauche commence — et
+                    // qui avale les glissements horizontaux. Un `.onDelete` garde
+                    // le balayage et ajoute le bouton « Modifier » de la barre :
+                    // un chemin visible, qui ne dispute rien au curseur.
+                    .onDelete { positions in
+                        var removed: [String] = []
+                        for kernel in positions.map({ kernels[$0] }) {
+                            removed += KernelLibrary.delete(kernel)
+                        }
+                        reloadLibrary()
+                        note = Self.removedMachinesNote(removed)
+                            .map { Note(text: $0, symbol: "trash") }
+                        storage = KernelLibrary.storageReport()
                     }
-                    reloadLibrary()
-                    note = Self.removedMachinesNote(removed)
-                        .map { Note(text: $0, symbol: "trash") }
-                    storage = KernelLibrary.storageReport()
-                }
-            } footer: {
-                VStack(alignment: .leading, spacing: 8) {
-                    // **Ce que wisq ne lance pas, dit d'abord** : Windows et
-                    // macOS, par choix. Une image de l'un ou de l'autre
-                    // importée ici ne démarrera jamais ; autant le savoir
-                    // avant de la télécharger. Ils s'ouvrent à distance.
-                    Text("**Windows et macOS ne se lancent pas sur wisq**, et c'est un choix délibéré. Pour l'un ou l'autre, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
-                    Text("Un noyau Linux rv32ima « nommu » démarre en une à deux secondes, entièrement sur l'iPhone — sans réseau, sans serveur. Des images prêtes à l'emploi existent dans le projet mini-rv32ima.")
-                    Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système —, et le plafond dépend de l'architecture du noyau : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V — dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits, ce qui fait de ce nombre-là son dernier octet possible. Changer ce réglage repart du noyau : un instantané pris à une autre taille ne peut pas être repris.")
-                    Text("Chaque noyau peut recevoir un **disque** : une image de système de fichiers importée ici, que l'invité voit sur `/dev/vda`. Les deux machines en ont un — la RISC-V le refusait, faute de pouvoir déclarer le périphérique ; elle sait maintenant. wisq ne monte rien tout seul, et il ne peut pas ajouter le pilote bloc à votre noyau : s'il n'en a pas, le disque restera là sans que personne ne vienne, et wisq vous le dira à la fin. Le disque est lu sur place, quelle que soit sa taille ; ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre, et le fichier importé ne change jamais.")
+                } footer: {
+                    // Les explications (mémoire, disque, ce que wisq ne lance
+                    // pas) sont dans « À propos » : `MachinesAboutView`.
+                    Text("Touchez une machine pour la démarrer. Le bouton « i » dit ce que wisq lance, et comment régler la mémoire et le disque.")
                 }
             }
 
@@ -237,8 +246,6 @@ struct LocalVMListView: View {
                     }
                 } header: {
                     Text("Stockage")
-                } footer: {
-                    Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné : mesuré sur un vrai noyau arrivé à l'invite de connexion, environ 8 Mio — et quadrupler la mémoire de la machine n'y ajoute que deux mégaoctets. Une machine à qui on a donné un disque pèse ce disque **en plus**, quelle que soit son architecture, parce que l'instantané emporte les octets que l'invité y a écrits — c'est ce qui les fait survivre à une suspension. Une image d'installation laisse en plus son noyau et son initramfs déballés à côté : ils repartent avec elle quand vous la supprimez, et le démarrage suivant les ressort de toute façon.")
                 }
             }
 
@@ -250,21 +257,14 @@ struct LocalVMListView: View {
             }
         }
         .navigationTitle("Machines")
-        .overlay {
-            if kernels.isEmpty {
-                ContentUnavailableView {
-                    Label("Aucun noyau", systemImage: "terminal")
-                } description: {
-                    Text("Importez une image depuis Fichiers, ou téléchargez Alpine directement : elle démarre sur ce téléphone. Une machine qui tourne ailleurs s'atteint par les connexions à distance.")
-                } actions: {
-                    Button("Télécharger Alpine") { showDownload = true }
-                        .buttonStyle(.borderedProminent)
-                    Button("Importer une image") { showImporter = true }
-                    Button("Connexions à distance", action: onRemote)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showAbout = true
+                } label: {
+                    Label("À propos des machines", systemImage: "info.circle")
                 }
             }
-        }
-        .toolbar {
             // Le chemin visible vers la suppression. Il ne s'affiche que
             // lorsqu'il y a quelque chose à supprimer : un « Modifier » sur
             // une liste vide n'ouvre que du vide.
@@ -286,7 +286,7 @@ struct LocalVMListView: View {
                     Button {
                         showDownload = true
                     } label: {
-                        Label("Télécharger Alpine", systemImage: "arrow.down.circle")
+                        Label("Télécharger un bureau ou une image", systemImage: "arrow.down.circle")
                     }
                     Divider()
                     Button(action: onRemote) {
@@ -375,6 +375,9 @@ struct LocalVMListView: View {
             Button("Annuler", role: .cancel) { installing = nil }
         } message: {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .sheet(isPresented: $showAbout) {
+            NavigationStack { MachinesAboutView() }
         }
         .sheet(isPresented: $showDownload) {
             ImageDownloadSheet(onDownloaded: { url in
@@ -485,6 +488,27 @@ struct LocalVMListView: View {
         rootPassword = ""
         askingPassword = nil
         booting = target
+    }
+
+    /// **L'accueil d'une bibliothèque vide** : une seule chose à faire en
+    /// premier — aller chercher une machine —, et les deux autres portes.
+    private var welcome: some View {
+        ContentUnavailableView {
+            Label("Aucune machine", systemImage: "desktopcomputer")
+        } description: {
+            Text("Téléchargez un bureau prêt ou une image Linux : elle démarre sur ce téléphone. Une machine qui tourne ailleurs s'ouvre par les connexions à distance.")
+        } actions: {
+            Button {
+                showDownload = true
+            } label: {
+                Label("Télécharger un bureau ou une image", systemImage: "arrow.down.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            Button("Importer une image") { showImporter = true }
+            Button("Connexions à distance", action: onRemote)
+        }
+        .padding(.vertical, 24)
     }
 
     /// Les machines installées : chacune démarre son image sous ses propres
@@ -681,6 +705,43 @@ struct LocalVMListView: View {
     private static func read(_ files: [URL]) -> [URL: KernelImageKind] {
         Dictionary(files.map { ($0, KernelImageKind.identify(fileAt: $0)) },
                    uniquingKeysWith: { first, _ in first })
+    }
+}
+
+/// **Ce que la liste des machines expliquait sous elle**, rangé dans une
+/// feuille. Ces paragraphes étaient le pied de la liste : quatre blocs de
+/// texte sous les machines, et, liste vide, sous l'accueil — qu'ils
+/// traversaient (capture d'un iPhone, le 22 novembre).
+struct MachinesAboutView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section("Ce que wisq lance") {
+                Text("Une image Linux de PC (x86-64) — Alpine, Void, Debian… — démarre sur ce téléphone, sans serveur, avec le réseau. Un noyau RISC-V 32 bits démarre en une à deux secondes.")
+                Text("**Windows et macOS ne se lancent pas sur wisq**, et c'est un choix délibéré. Pour l'un ou l'autre, ouvrez une connexion à distance vers l'ordinateur qui le fait tourner.")
+            }
+            Section("Mémoire") {
+                Text("Le curseur à droite de chaque noyau règle la mémoire de sa machine. La machine de référence en a \(KernelMemory.describe(KernelMemory.defaultSize)) ; ce téléphone en autorise jusqu'à \(KernelMemory.describe(KernelMemory.ceiling)) — sa propre mémoire moins 2 Gio, laissés au système.")
+                Text("Le plafond dépend de l'architecture : \(KernelMemory.describe(GuestArchitecture.Core.x86_64.maximumRAMSize)) pour un noyau de PC, \(KernelMemory.describe(GuestArchitecture.Core.riscv32.maximumRAMSize)) pour un noyau RISC-V, dont la mémoire commence à 0x80000000 et dont le processeur adresse en 32 bits.")
+                Text("Changer ce réglage repart du noyau : une session prise à une autre taille ne peut pas être reprise.")
+            }
+            Section("Disque") {
+                Text("Chaque noyau peut recevoir un **disque** : une image importée ici, que l'invité voit sur `/dev/vda`. Le disque est lu sur place, quelle que soit sa taille.")
+                Text("Ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre ; le fichier importé ne change jamais. wisq ne monte rien tout seul, et ne peut pas ajouter le pilote bloc à un noyau qui ne l'a pas.")
+            }
+            Section("Stockage") {
+                Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné, et un disque **en plus** : l'instantané emporte ce que l'invité y a écrit.")
+                Text("Une image d'installation laisse son noyau et son initramfs déballés à côté ; ils repartent avec elle quand vous la supprimez.")
+            }
+        }
+        .navigationTitle("À propos")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Fermer") { dismiss() }
+            }
+        }
     }
 }
 
@@ -1034,6 +1095,9 @@ struct LocalVMTerminalView: View {
     var installed: InstalledMachine?
 
     @State private var model = LocalVMModel()
+    /// Démarrer la machine en arrivant : toujours, sauf pour un modèle déjà
+    /// posé (`init(kernelURL:installed:posed:)`).
+    private var bootsOnAppear = true
     @State private var commandLine = ""
     /// Le bureau de l'invité, posé par-dessus la console : voir `LocalDesktop`.
     @State private var showingDesktop = false
@@ -1376,7 +1440,7 @@ struct LocalVMTerminalView: View {
         // son bouton. Ouvert à chaque machine, il cachait la moitié de
         // l'écran à qui ne venait que regarder.
         .onAppear {
-            model.boot(kernelURL: kernelURL, installed: installed)
+            if bootsOnAppear { model.boot(kernelURL: kernelURL, installed: installed) }
             UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
@@ -1395,6 +1459,20 @@ struct LocalVMTerminalView: View {
         .onChange(of: scenePhase) { _, phase in
             model.scenePhaseChanged(to: phase, kernelURL: kernelURL)
         }
+    }
+
+    init(kernelURL: URL, installed: InstalledMachine? = nil) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+    }
+
+    /// **L'écran d'un modèle déjà posé** (`LocalVMModel.pose`), qu'il ne
+    /// démarre pas : ce que les aperçus de l'interface photographient.
+    init(kernelURL: URL, installed: InstalledMachine? = nil, posed: LocalVMModel) {
+        self.kernelURL = kernelURL
+        self.installed = installed
+        _model = State(initialValue: posed)
+        bootsOnAppear = false
     }
 
     private func submit() {

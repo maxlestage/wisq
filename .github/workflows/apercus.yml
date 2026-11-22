@@ -1,0 +1,110 @@
+name: Aperçus
+
+# **Voir l'application sans iPhone.** Le SwiftUI ne se construit que sur un
+# Mac ; ce workflow le construit comme le job « App iOS » de la CI (le cœur
+# Rust en XCFramework, le projet engendré par la version épinglée de
+# XcodeGen), puis lance le paquet `WisqApercus` dans un iPhone simulé : chaque
+# écran clé, posé avec des données de démonstration, photographié en clair,
+# en sombre et en grand texte. Les PNG partent en artefact du run.
+#
+# **À la main seulement** (`workflow_dispatch`) : ce n'est pas une porte. Un
+# écran qui change n'est pas un défaut, et la CI ne doit pas rougir sur une
+# image. Ce qui juge le comportement reste « App iOS ».
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apercus:
+    name: Aperçus de l'interface
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      # Le module de la page (wasm32) est embarqué par l'XCFramework, et
+      # l'icône de l'application est dessinée par Bun, comme dans « App iOS ».
+      - uses: oven-sh/setup-bun@v2
+      - name: Install XcodeGen
+        run: scripts/install-xcodegen.sh
+      - name: Package the VM core as an XCFramework
+        run: scripts/build-xcframework.sh
+      - name: Generate project
+        run: |
+          scripts/build-app-icon.sh
+          xcodegen generate
+          # Ce qui vient d'être engendré doit être ce que le dépôt porte, comme
+          # dans « App iOS » : des aperçus d'un autre projet que celui de la
+          # branche ne montreraient rien d'elle.
+          if ! git diff --exit-code -- "Wisq ‣.xcodeproj/project.pbxproj" App/Info.plist App/Wisq.entitlements; then
+            echo "::error::les fichiers engendrés par xcodegen ne sont pas ceux du dépôt."
+            exit 1
+          fi
+      - name: Choix d'un iPhone récent
+        # Le plus récent des iPhone « Pro » installés (la taille d'écran d'un
+        # téléphone d'aujourd'hui), sinon le plus récent des iPhone : nommer
+        # un modèle casserait au prochain changement d'image du coureur.
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, re, sys
+          devices = json.load(sys.stdin)["devices"]
+          found = []
+          for runtime, items in devices.items():
+              if "iOS" not in runtime:
+                  continue
+              version = [int(n) for n in re.findall(r"\d+", runtime.rsplit(".", 1)[-1])]
+              for device in items:
+                  name = device["name"]
+                  if not device.get("isAvailable") or not name.startswith("iPhone"):
+                      continue
+                  pro = 1 if re.fullmatch(r"iPhone \d+ Pro", name) else 0
+                  number = [int(n) for n in re.findall(r"\d+", name)] or [0]
+                  found.append(((pro, version, number), device["udid"], name, runtime))
+          if not found:
+              raise SystemExit("aucun iPhone simulé disponible")
+          best = max(found)
+          print(best[1], best[2], best[3], file=sys.stderr)
+          print(best[1])
+          ')
+          echo "WISQ_SIMULATEUR=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+      - name: Photographier les écrans
+        # `TEST_RUNNER_` : xcodebuild passe ces variables au processus des
+        # tests, sans le préfixe. Les tests écrivent leurs PNG là.
+        run: |
+          mkdir -p "$RUNNER_TEMP/apercus"
+          set +e
+          TEST_RUNNER_WISQ_APERCUS="$RUNNER_TEMP/apercus" xcodebuild test \
+            -project "Wisq ‣.xcodeproj" \
+            -scheme Apercus \
+            -destination "id=$WISQ_SIMULATEUR" \
+            -resultBundlePath "$RUNNER_TEMP/apercus.xcresult" \
+            CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/apercus.log" 2>&1
+          issue=$?
+          set -e
+          grep -E "error:|aperçus :|Test Case .* (passed|failed)|Executed [0-9]+ tests?" "$RUNNER_TEMP/apercus.log" | tail -80
+          tail -40 "$RUNNER_TEMP/apercus.log"
+          # Si le chemin n'est pas parvenu aux tests, les PNG sont dans le
+          # dossier temporaire de l'application : on les y reprend.
+          if [ -z "$(ls -A "$RUNNER_TEMP/apercus")" ]; then
+            data=$(xcrun simctl get_app_container "$WISQ_SIMULATEUR" app.wisq.ios data 2>/dev/null || true)
+            [ -n "$data" ] && cp -R "$data/tmp/apercus/." "$RUNNER_TEMP/apercus/" 2>/dev/null || true
+          fi
+          ls -l "$RUNNER_TEMP/apercus"
+          # Les suites de la scheme `Apercus`, nommées et confrontées à ce que
+          # `project.yml` déclare, comme dans « App iOS ».
+          scripts/report-app-suites.sh "$RUNNER_TEMP/apercus.log" "$issue" Apercus
+          exit "$issue"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: apercus
+          path: ${{ runner.temp }}/apercus
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: apercus-journal
+          path: ${{ runner.temp }}/apercus.log
