@@ -61,6 +61,19 @@ break APIs.
   l'hôte, puis la signature : « Conçu et développé par Maxime Nathan
   Lestage ». « À propos » porte la même signature et les emprunts de
   `NOTICE` (`AppCredits`). « Réduire les animations » est respecté.
+- **Un cœur ARM64, première tranche : le jeu A64 entier en mode utilisateur.**
+  `crates/wisq-vm/src/arm64.rs` exécute l'arithmétique et la logique (immédiat,
+  registre décalé ou étendu), les champs de bits, `EXTR`, les multiplications
+  et divisions, `CLZ`/`CLS`/`RBIT`/`REV`, les sauts (`B`, `BL`, `B.cond`,
+  `CBZ`, `TBZ`, `BR`, `BLR`, `RET`), tous les chargements et rangements
+  entiers, paires et accès exclusifs compris, `SVC`, `BRK`, et `MRS`/`MSR` de
+  NZCV, FPCR, FPSR et TPIDR_EL0. **Le témoin est `qemu-aarch64`** :
+  `scripts/arm64-oracle.py` tire des programmes au hasard dans toutes ces
+  familles, les fait tourner sous qemu, et `tests/arm64.rs` exige du cœur la
+  même sortie, octet pour octet ; vingt sabotages de sémantique sont tous
+  attrapés. Pas encore de flottant ni de NEON, de MMU, d'exceptions, de GIC ni
+  de minuterie : rien n'est branché dans l'application, qui annonce toujours
+  qu'elle n'a pas de cœur ARM.
 
 ### Changed
 - **Le site est en Yew et en WebAssembly, de la première page à la dernière,
