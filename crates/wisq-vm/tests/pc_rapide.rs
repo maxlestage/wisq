@@ -18,6 +18,11 @@
 //!   budget et le service du matériel à l'instruction près, `hlt`, une table
 //!   de pages rechargée, l'instruction à cheval sur deux pages, le code au
 //!   bout de la RAM, une adresse `%fs:`.
+//!
+//! **Et le JIT** (`x86::jit`) : chaque programme et chaque garde tourne sur
+//! trois machines — le pas à pas, les blocs interprétés, et les blocs
+//! traduits dès leur première entrée —, qui doivent rester dans le même
+//! état à chaque arrêt.
 
 use wisq_vm::pc::systeme::Table;
 use wisq_vm::pc::Machine;
@@ -520,6 +525,8 @@ fn porte(machine: &mut Machine, vecteur: u64, cible: u64) {
 fn machine(code: &[u8], blocs: bool) -> Machine {
     let mut machine = Machine::nouvelle(0);
     machine.blocs_actifs = blocs;
+    // Les blocs interprétés : le JIT a sa machine à lui (`traduite`).
+    machine.jit = None;
     // Un battement du 8253 pour quatre instructions : l'horloge interrompt
     // toutes les quelques centaines d'instructions.
     machine.instructions_par_battement = 4;
@@ -581,6 +588,28 @@ fn machine(code: &[u8], blocs: bool) -> Machine {
     machine
 }
 
+/// **La machine du JIT** : les blocs traduits dès leur première entrée.
+/// Sur un hôte que le JIT ne sait pas traduire, elle interprète, et les
+/// tests le disent (`jit_attendu`).
+fn traduite(code: &[u8]) -> Machine {
+    let mut machine = machine(code, true);
+    machine.jit = wisq_vm::x86::jit::Jit::nouveau().map(Box::new);
+    if let Some(jit) = machine.jit.as_deref_mut() {
+        jit.seuil = 1;
+    }
+    machine
+}
+
+/// Le JIT existe-t-il sur cet hôte ? Là où il existe, il doit avoir servi.
+fn jit_attendu() -> bool {
+    cfg!(all(target_arch = "x86_64", unix))
+}
+
+/// Les passages par du code traduit d'une machine.
+fn passages(machine: &Machine) -> u64 {
+    machine.jit.as_deref().map_or(0, |jit| jit.passages)
+}
+
 /// Le prologue qui arme l'horloge : le 8259 à la base 0x20, seule l'horloge
 /// démasquée, le 8253 en mode 2 sur un compte court, puis `sti`.
 fn prologue(compte: u16) -> Vec<u8> {
@@ -607,10 +636,16 @@ fn prologue(compte: u16) -> Vec<u8> {
 /// par paires), et des sauts conditionnels vers le début d'une instruction
 /// voisine, devant ou derrière.
 fn programme(h: &mut Hasard) -> Vec<u8> {
+    programme_avec(h, false)
+}
+
+/// `programme`, et des adresses relatives à RIP quand `relatif` le dit.
+fn programme_avec(h: &mut Hasard, relatif: bool) -> Vec<u8> {
     let mut instructions: Vec<Vec<u8>> = Vec::new();
     let nombre = 20 + h.sous(60) as usize;
     while instructions.len() < nombre {
-        let octets = tirer(h, &[3, 6, 7, 5], false, false);
+        let relative = relatif && h.un_sur(3);
+        let octets = tirer(h, &[3, 6, 7, 5], relative, false);
         let Some(instruction) = decode(&octets) else {
             continue;
         };
@@ -684,6 +719,7 @@ fn random_programs_run_the_same_with_and_without_blocks() {
     // R8 à R10 sous REX.R) : les bases et la pile ne s'écrivent pas.
     let mut h = Hasard(0x5EED_0002, &[0, 1, 2]);
     let mut construits = 0u64;
+    let mut traduits = 0u64;
     let mut interrompus = 0;
     let mut retirees = 0;
     for tirage in 0..100 {
@@ -691,7 +727,8 @@ fn random_programs_run_the_same_with_and_without_blocks() {
         code.extend(programme(&mut h));
         let mut lent = machine(&code, false);
         let mut rapide = machine(&code, true);
-        for m in [&mut lent, &mut rapide] {
+        let mut jit = traduite(&code);
+        for m in [&mut lent, &mut rapide, &mut jit] {
             for (registre, valeur) in [
                 (3usize, ZONE + 0x400),
                 (6, ZONE + 0x800),
@@ -706,11 +743,18 @@ fn random_programs_run_the_same_with_and_without_blocks() {
             let tranche = h.parmi(&[1u64, 2, 7, 255, 256, 257, 1000, 5000]);
             let a = lent.tourner(tranche);
             let b = rapide.tourner(tranche);
+            let c = jit.tourner(tranche);
             assert_eq!(a, b, "tirage {tirage}, après {total} : le rendu");
+            assert_eq!(a, c, "tirage {tirage}, après {total} : le rendu du JIT");
             assert_eq!(
                 tout(&lent),
                 tout(&rapide),
                 "tirage {tirage}, après {total} instructions, tranche {tranche}"
+            );
+            assert_eq!(
+                tout(&lent),
+                tout(&jit),
+                "tirage {tirage}, après {total} instructions, tranche {tranche} : le JIT"
             );
             if a.is_err() || a == Ok(0) {
                 break;
@@ -722,12 +766,62 @@ fn random_programs_run_the_same_with_and_without_blocks() {
         }
         retirees += lent.retirees;
         construits += rapide.blocs.construits;
+        traduits += passages(&jit);
+    }
+    if jit_attendu() {
+        assert!(
+            traduits > 100_000,
+            "{traduits} passages par du code traduit"
+        );
     }
     // Les tirages ont exercé ce qu'ils prétendent : l'horloge a interrompu
     // la plupart des programmes, et les blocs ont servi.
     assert!(interrompus > 50, "{interrompus} programmes interrompus");
     assert!(retirees > 2_000_000, "{retirees} instructions retirées");
     assert!(construits > 1000, "{construits} blocs construits");
+}
+
+/// **Le JIT, sur des adresses relatives à RIP** : la forme d'adresse que le
+/// code traduit calcule depuis un RIP en retard (`x86_jit_x64.rs`). Les
+/// déplacements tirés au hasard tombent où ils tombent — dans une page
+/// présente, ou en faute que le gestionnaire saute — et les trois machines
+/// doivent en faire la même chose.
+#[test]
+fn rip_relative_programs_run_the_same_through_the_jit() {
+    let mut h = Hasard(0x5EED_0009, &[0, 1, 2]);
+    let mut traduits = 0u64;
+    for tirage in 0..40 {
+        let mut code = prologue(200 + h.sous(3000) as u16);
+        code.extend(programme_avec(&mut h, true));
+        let mut lent = machine(&code, false);
+        let mut jit = traduite(&code);
+        for m in [&mut lent, &mut jit] {
+            for (registre, valeur) in [
+                (3usize, ZONE + 0x400),
+                (6, ZONE + 0x800),
+                (7, ZONE + 0xC00),
+                (5, ZONE + 0x1000),
+            ] {
+                m.cpu.regs[registre] = valeur;
+            }
+        }
+        let mut total = 0u64;
+        while total < 30_000 {
+            let tranche = h.parmi(&[1u64, 7, 256, 1000, 5000]);
+            let a = lent.tourner(tranche);
+            let b = jit.tourner(tranche);
+            assert_eq!(a, b, "tirage {tirage}, après {total} : le rendu");
+            assert_eq!(tout(&lent), tout(&jit), "tirage {tirage}, après {total}");
+            if a.is_err() || a == Ok(0) {
+                break;
+            }
+            total += tranche;
+        }
+        traduits += passages(&jit);
+    }
+    if jit_attendu() {
+        assert!(traduits > 10_000, "{traduits} passages par du code traduit");
+    }
 }
 
 // ---- Chaque garde, une par une ----
@@ -737,12 +831,17 @@ fn random_programs_run_the_same_with_and_without_blocks() {
 fn les_deux(code: &[u8], budget: u64, preparer_les: impl Fn(&mut Machine)) -> Machine {
     let mut lent = machine(code, false);
     let mut rapide = machine(code, true);
+    let mut jit = traduite(code);
     preparer_les(&mut lent);
     preparer_les(&mut rapide);
+    preparer_les(&mut jit);
     let a = lent.tourner(budget);
     let b = rapide.tourner(budget);
+    let c = jit.tourner(budget);
     assert_eq!(a, b);
+    assert_eq!(a, c, "le JIT");
     assert_eq!(tout(&lent), tout(&rapide));
+    assert_eq!(tout(&lent), tout(&jit), "le JIT");
     rapide
 }
 

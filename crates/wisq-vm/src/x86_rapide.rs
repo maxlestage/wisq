@@ -208,15 +208,15 @@ pub fn vectorielle(cpu: &mut Cpu, uop: &Uop, generales: &[Decoded]) -> Suite {
 // ---- Les formes des opérandes ----
 
 /// Registre et registre.
-const RR: u8 = 0;
+pub(crate) const RR: u8 = 0;
 /// Registre et immédiat.
-const RI: u8 = 1;
+pub(crate) const RI: u8 = 1;
 /// Registre, et la mémoire pour source.
-const RM: u8 = 2;
+pub(crate) const RM: u8 = 2;
 /// La mémoire pour destination, un registre pour source.
-const MR: u8 = 3;
+pub(crate) const MR: u8 = 3;
 /// La mémoire pour destination, un immédiat pour source.
-const MI: u8 = 4;
+pub(crate) const MI: u8 = 4;
 
 /// La forme d'une instruction à deux opérandes, ou rien si elle n'en a
 /// aucune des cinq — un immédiat avec la mémoire pour source, par exemple.
@@ -274,13 +274,13 @@ fn ecrire<const W: u8>(cpu: &mut Cpu, registre: u8, valeur: u64) {
 // ---- Les formes d'adresse ----
 
 /// Une base et un déplacement, sans index ni segment : `8(%rbx)`.
-const BASE: u8 = 0;
+pub(crate) const BASE: u8 = 0;
 /// Une base, un index mis à l'échelle et un déplacement, sans segment.
-const INDEXEE: u8 = 1;
+pub(crate) const INDEXEE: u8 = 1;
 /// Relative à RIP, sans segment : les variables globales du noyau.
-const RELATIVE: u8 = 2;
+pub(crate) const RELATIVE: u8 = 2;
 /// Tout le reste — FS, GS, un index sans base — par `effective_address`.
-const GENERALE: u8 = 3;
+pub(crate) const GENERALE: u8 = 3;
 
 /// La forme d'une adresse, ou celle de `lea`, qui ignore le segment.
 fn forme_d_adresse(adresse: &super::Address, sans_segment: bool) -> u8 {
@@ -430,15 +430,15 @@ fn tient<const C: u8>(bits: u64) -> bool {
 
 // ---- Les opérations à deux opérandes ----
 
-const ADD: u8 = 0;
-const OR: u8 = 1;
-const ADC: u8 = 2;
-const SBB: u8 = 3;
-const AND: u8 = 4;
-const SUB: u8 = 5;
-const XOR: u8 = 6;
-const CMP: u8 = 7;
-const TEST: u8 = 8;
+pub(crate) const ADD: u8 = 0;
+pub(crate) const OR: u8 = 1;
+pub(crate) const ADC: u8 = 2;
+pub(crate) const SBB: u8 = 3;
+pub(crate) const AND: u8 = 4;
+pub(crate) const SUB: u8 = 5;
+pub(crate) const XOR: u8 = 6;
+pub(crate) const CMP: u8 = 7;
+pub(crate) const TEST: u8 = 8;
 
 /// **`add`, `or`, `adc`, `sbb`, `and`, `sub`, `xor`, `cmp`, `test`**, dans
 /// l'ordre de `Cpu::compute` : lire la destination puis la source, calculer,
@@ -544,10 +544,10 @@ fn alu<const OP: u8, const W: u8, const F: u8, const A: u8>(
     Suite::Suivante
 }
 
-const INC: u8 = 0;
-const DEC: u8 = 1;
-const NOT: u8 = 2;
-const NEG: u8 = 3;
+pub(crate) const INC: u8 = 0;
+pub(crate) const DEC: u8 = 1;
+pub(crate) const NOT: u8 = 2;
+pub(crate) const NEG: u8 = 3;
 
 /// **`inc`, `dec`, `not`, `neg`** sur un registre. `inc` et `dec`
 /// préservent la retenue ; `not` ne touche à aucun drapeau ; `neg` est
@@ -591,9 +591,9 @@ fn unaire<const OP: u8, const W: u8>(cpu: &mut Cpu, instruction: &Uop, _: &[Deco
     Suite::Suivante
 }
 
-const SHL: u8 = 0;
-const SHR: u8 = 1;
-const SAR: u8 = 2;
+pub(crate) const SHL: u8 = 0;
+pub(crate) const SHR: u8 = 1;
+pub(crate) const SAR: u8 = 2;
 
 /// **`shl`, `shr`, `sar` sur un registre**, par un immédiat ou par CL — les
 /// règles de `Cpu::shift`, recopiées pour une largeur connue : le compte
@@ -1329,6 +1329,179 @@ fn choisir_jcc(condition: Condition) -> Executer {
         13 => jcc::<13>,
         14 => jcc::<14>,
         _ => jcc::<15>,
+    }
+}
+
+/// **Ce que le JIT sait traduire** (`x86::jit`) : une forme spécialisée,
+/// décrite plutôt que choisie. Chaque gabarit nomme la fonction de ce module
+/// que le code natif refait — `alu`, `unaire`, `transfert_registre`,
+/// `extension_registre`, `chargement`, `rangement`, `lea`, `decalage`, `jcc`, `jmp`,
+/// `call`, `ret`, `push_registre`, `pop_registre`, `nop` —, avec les mêmes
+/// paramètres que son instance. Le code natif fait ce que la fonction fait,
+/// et rien d'autre : jugé par `tests/pc_jit.rs`, contre le pas à pas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gabarit {
+    /// `alu::<op, w, forme, adresse>`.
+    Alu {
+        op: u8,
+        w: u8,
+        forme: u8,
+        adresse: u8,
+    },
+    /// `unaire::<op, w>`.
+    Unaire {
+        op: u8,
+        w: u8,
+    },
+    /// `transfert_registre::<w, s, imm>`.
+    Transfert {
+        w: u8,
+        s: u8,
+        imm: bool,
+    },
+    /// `extension_registre::<w, s>`.
+    Extension {
+        w: u8,
+        s: u8,
+    },
+    /// `chargement::<w, s, signe, adresse>`.
+    Chargement {
+        w: u8,
+        s: u8,
+        signe: bool,
+        adresse: u8,
+    },
+    /// `rangement::<w, w, imm, adresse>`.
+    Rangement {
+        w: u8,
+        imm: bool,
+        adresse: u8,
+    },
+    /// `lea::<w, adresse>`.
+    Lea {
+        w: u8,
+        adresse: u8,
+    },
+    /// `decalage::<op, w, cl>`.
+    Decalage {
+        op: u8,
+        w: u8,
+        cl: bool,
+    },
+    /// `jcc::<c>`.
+    Jcc(u8),
+    Jmp,
+    Call,
+    Ret,
+    PushRegistre,
+    PopRegistre,
+    Nop,
+}
+
+/// **Le gabarit d'une instruction**, sous les conditions exactes où
+/// `choisir` lui donne la forme que le gabarit nomme : les mêmes bras, dans
+/// le même ordre. Rien pour ce que le JIT ne traduit pas — il appelle alors
+/// la forme elle-même.
+pub fn decrire(instruction: &Decoded) -> Option<Gabarit> {
+    if instruction.dst_high || instruction.src_high {
+        return None;
+    }
+    let w = instruction.width as u8;
+    let s = instruction.src_width as u8;
+    let adresse = instruction.memory.map_or(GENERALE, |adresse| {
+        forme_d_adresse(&adresse, instruction.op == Op::Lea)
+    });
+    if instruction.op == Op::Multiply {
+        return None;
+    }
+    let forme = forme(instruction)?;
+    let ecrit = !instruction.discards;
+    // Les couples de largeurs de `par_deux_largeurs` : la source jamais plus
+    // large que la destination.
+    let deux = w >= s;
+    let alu = |op| {
+        Some(Gabarit::Alu {
+            op,
+            w,
+            forme,
+            adresse,
+        })
+    };
+    match instruction.op {
+        // `adc`, `sbb`, `cmov`, `set` : des formes, que le JIT appelle.
+        Op::Adc | Op::Sbb | Op::CondMove(_) | Op::Set(_) => None,
+        Op::Add if ecrit => alu(ADD),
+        Op::Or if ecrit => alu(OR),
+        Op::And if ecrit => alu(AND),
+        Op::Sub if ecrit => alu(SUB),
+        Op::Xor if ecrit => alu(XOR),
+        Op::Cmp if !ecrit => alu(CMP),
+        Op::Test if !ecrit => alu(TEST),
+        Op::Inc | Op::Dec | Op::Not | Op::Neg
+            if instruction.memory.is_none() && !instruction.immediate && ecrit =>
+        {
+            let op = match instruction.op {
+                Op::Inc => INC,
+                Op::Dec => DEC,
+                Op::Not => NOT,
+                _ => NEG,
+            };
+            Some(Gabarit::Unaire { op, w })
+        }
+        Op::Mov => match forme {
+            RR if deux => Some(Gabarit::Transfert { w, s, imm: false }),
+            RI if deux => Some(Gabarit::Transfert { w, s, imm: true }),
+            RM if deux => Some(Gabarit::Chargement {
+                w,
+                s,
+                signe: false,
+                adresse,
+            }),
+            MR if w == s => Some(Gabarit::Rangement {
+                w,
+                imm: false,
+                adresse,
+            }),
+            MI if w == s => Some(Gabarit::Rangement {
+                w,
+                imm: true,
+                adresse,
+            }),
+            _ => None,
+        },
+        Op::Movsx => match forme {
+            RR if deux => Some(Gabarit::Extension { w, s }),
+            RM if deux => Some(Gabarit::Chargement {
+                w,
+                s,
+                signe: true,
+                adresse,
+            }),
+            _ => None,
+        },
+        Op::Lea if w != 1 => Some(Gabarit::Lea { w, adresse }),
+        Op::Shl | Op::Shr | Op::Sar if instruction.memory.is_none() && ecrit => {
+            let op = match instruction.op {
+                Op::Shl => SHL,
+                Op::Shr => SHR,
+                _ => SAR,
+            };
+            Some(Gabarit::Decalage {
+                op,
+                w,
+                cl: instruction.count_is_cl,
+            })
+        }
+        Op::Nop => Some(Gabarit::Nop),
+        Op::Jump(Some(condition)) => Some(Gabarit::Jcc(condition.0 & 15)),
+        Op::Jump(None) => Some(Gabarit::Jmp),
+        Op::Call => Some(Gabarit::Call),
+        Op::Return => Some(Gabarit::Ret),
+        Op::Push if instruction.memory.is_none() && !instruction.immediate && w == 8 => {
+            Some(Gabarit::PushRegistre)
+        }
+        Op::Pop if instruction.memory.is_none() => Some(Gabarit::PopRegistre),
+        _ => None,
     }
 }
 
