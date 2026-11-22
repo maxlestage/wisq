@@ -99,6 +99,51 @@ final class RustPCNetworkTests: XCTestCase {
         XCTAssertEqual(counts.refused, 0)
     }
 
+    /// **Un pair qui se tait**, puis **un pair qui répond tout de suite** :
+    /// le premier garde ce qu'on lui envoie, le second rend la réponse à sa
+    /// première question.
+    private final class Silent: NetworkBackend {
+        private(set) var sent: [[UInt8]] = []
+        func send(_ frame: [UInt8]) { sent.append(frame) }
+        func receive() -> [[UInt8]] { [] }
+    }
+
+    private final class Answering: NetworkBackend {
+        private var answered = false
+        func send(_ frame: [UInt8]) {}
+        func receive() -> [[UInt8]] {
+            guard !answered else { return [] }
+            answered = true
+            return [Responder.reply]
+        }
+    }
+
+    /// **Une session reprise garde son réseau** : l'invité a émis sa trame
+    /// et attend la sienne, ses tampons posés ; sauvé, repris dans une
+    /// machine dont la carte est branchée avant la reprise (comme dans
+    /// l'application), il reçoit la réponse du pair de cette machine-là dans
+    /// le tampon qu'il avait posé, l'exécute et s'éteint.
+    func testASessionResumedKeepsItsNetwork() throws {
+        let first = Console()
+        let saved = try machine(first)
+        let silent = Silent()
+        try saved.attachNetwork(silent)
+        try saved.load(kernelImage: Self.networkGuest(), commandLine: nil, initialRamdisk: nil)
+        XCTAssertEqual(saved.run(instructionBudget: 2_000_000), .stopped, "il attend sa trame")
+        XCTAssertEqual(first.text, "o")
+        XCTAssertEqual(silent.sent, [Self.guestFrame])
+        let session = saved.snapshot()
+
+        let second = Console()
+        let resumed = try machine(second)
+        try resumed.attachNetwork(Answering())
+        try resumed.restore(session)
+        XCTAssertEqual(resumed.networkCounts?.transmitted, 1, "les compteurs de la carte sauvée")
+        XCTAssertEqual(resumed.run(instructionBudget: 20_000_000), .powerOff)
+        XCTAssertEqual(second.text, "R", "la réponse du pair de la machine reprise, exécutée")
+        XCTAssertEqual(resumed.networkCounts?.delivered, 1)
+    }
+
     /// **Un pair qui compte ses questions** (`Counting` des tests du cœur
     /// Swift).
     private final class Counting: NetworkBackend {

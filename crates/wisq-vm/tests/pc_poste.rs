@@ -595,7 +595,7 @@ fn poste_bariole() -> Poste {
 #[test]
 fn a_snapshot_carries_every_field_it_names() {
     let original = poste_bariole();
-    let sauve = instantane::sauver(&original);
+    let sauve = instantane::sauver(&original).expect("au repos");
     assert_eq!(&sauve[..8], &MAGIE);
     assert_eq!(
         u32::from_le_bytes(sauve[8..12].try_into().unwrap()),
@@ -610,7 +610,7 @@ fn a_snapshot_carries_every_field_it_names() {
     let mut reprise = Poste::essayer(RAM).expect("la RAM");
     instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
     assert_eq!(
-        instantane::sauver(&reprise),
+        instantane::sauver(&reprise).expect("au repos"),
         sauve,
         "sauvée à nouveau, la machine reprise est octet pour octet celle d'avant"
     );
@@ -639,7 +639,7 @@ fn a_snapshot_taken_mid_run_finishes_the_run_elsewhere() {
     let mut coupee = poste_charge(&image(), Some("x=y"));
     let (fin, debut) = courir(&mut coupee, 1_000_000);
     assert_eq!(fin, Fin::Budget);
-    let sauve = instantane::sauver(&coupee);
+    let sauve = instantane::sauver(&coupee).expect("au repos");
     let mut reprise = Poste::essayer(RAM).expect("la RAM");
     instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
     let (fin, suite) = courir(&mut reprise, 50_000_000);
@@ -653,14 +653,14 @@ fn a_snapshot_taken_mid_run_finishes_the_run_elsewhere() {
 #[test]
 fn a_snapshot_is_refused_before_anything_is_put_back() {
     let original = poste_bariole();
-    let sauve = instantane::sauver(&original);
+    let sauve = instantane::sauver(&original).expect("au repos");
     let temoin = || {
         let mut poste = poste_charge(&image_de(&BOUCLE), None);
         courir(&mut poste, 1000);
         poste
     };
     let mut poste = temoin();
-    let avant = instantane::sauver(&poste);
+    let avant = instantane::sauver(&poste).expect("au repos");
     let refus = |poste: &mut Poste, octets: &[u8]| instantane::reprendre(poste, octets);
 
     assert_eq!(
@@ -668,11 +668,20 @@ fn a_snapshot_is_refused_before_anything_is_put_back() {
         Err(RefusDInstantane::PasUnInstantane)
     );
     let mut version = sauve.clone();
-    version[8] = 2;
+    version[8] = 3;
     assert_eq!(
         refus(&mut poste, &version),
-        Err(RefusDInstantane::VersionInconnue(2))
+        Err(RefusDInstantane::VersionInconnue(3))
     );
+    // **La version 1, sans la carte, est refusée** : reprise à moitié, elle
+    // laisserait les pilotes de l'invité devant une carte neuve.
+    for perimee in [1, 0] {
+        version[8] = perimee;
+        assert_eq!(
+            refus(&mut poste, &version),
+            Err(RefusDInstantane::Perime(u32::from(perimee)))
+        );
+    }
     for coupe in [12, 30, 200, sauve.len() / 2, sauve.len() - 1] {
         assert_eq!(
             refus(&mut poste, &sauve[..coupe]),
@@ -743,7 +752,11 @@ fn a_snapshot_is_refused_before_anything_is_put_back() {
         Err(RefusDInstantane::Abime),
         "deux fois le même MSR"
     );
-    assert_eq!(instantane::sauver(&poste), avant, "rien n'a été reposé");
+    assert_eq!(
+        instantane::sauver(&poste).expect("au repos"),
+        avant,
+        "rien n'a été reposé"
+    );
 
     let mut autre = Poste::essayer(RAM * 2).expect("la RAM");
     assert_eq!(
@@ -767,7 +780,7 @@ fn a_page_map_with_bits_past_the_last_page_is_refused() {
     let mut poste = Poste::essayer(ram).expect("la RAM");
     poste.charger(&image(), None, None).expect("chargé");
     poste.machine.cpu.memory.bytes[ram as usize - 1] = 0xCD;
-    let sauve = instantane::sauver(&poste);
+    let sauve = instantane::sauver(&poste).expect("au repos");
 
     let mut reprise = Poste::essayer(ram).expect("la RAM");
     instantane::reprendre(&mut reprise, &sauve).expect("sauvée et reprise, telle quelle");
@@ -806,7 +819,7 @@ fn the_sti_shadow_crosses_a_snapshot_and_a_host_generator_does_not() {
     let mut poste = poste_charge(&image_de(&[0xFB, 0xEB, 0xFE]), None);
     assert_eq!(courir(&mut poste, 1).0, Fin::Budget);
     assert_eq!(poste.machine.ombre(), Some(1));
-    let sauve = instantane::sauver(&poste);
+    let sauve = instantane::sauver(&poste).expect("au repos");
     let mut reprise = Poste::essayer(RAM).expect("la RAM");
     instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
     assert_eq!(reprise.machine.ombre(), Some(1), "l'ombre est reprise");
@@ -814,7 +827,7 @@ fn the_sti_shadow_crosses_a_snapshot_and_a_host_generator_does_not() {
     // Un générateur de l'hôte ne se sauve pas : la machine reprise garde le
     // sien, à graine…
     poste.machine.alea = Alea::Hote(Box::new(|| 42));
-    let sauve = instantane::sauver(&poste);
+    let sauve = instantane::sauver(&poste).expect("au repos");
     let mut a_graine = Poste::essayer(RAM).expect("la RAM");
     a_graine.semer(7);
     instantane::reprendre(&mut a_graine, &sauve).expect("la reprise");
@@ -843,7 +856,7 @@ fn a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations() {
     let mut coupee = poste_charge(&image(), Some("x=y"));
     let (fin, debut) = courir(&mut coupee, 1_000_000);
     assert_eq!(fin, Fin::Budget);
-    let sauve = instantane::sauver(&coupee);
+    let sauve = instantane::sauver(&coupee).expect("au repos");
     let rip = coupee.machine.cpu.rip;
 
     let mut usee = poste_charge(&image(), Some("x=y"));
@@ -886,7 +899,7 @@ fn a_snapshot_resumed_in_a_machine_that_already_ran_forgets_its_translations() {
 fn a_page_that_is_zero_in_the_snapshot_is_zero_in_a_used_machine() {
     let mut coupee = poste_charge(&image(), Some("x=y"));
     courir(&mut coupee, 1_000_000);
-    let sauve = instantane::sauver(&coupee);
+    let sauve = instantane::sauver(&coupee).expect("au repos");
     let ram = coupee.machine.cpu.memory.bytes.len();
     let ecrites = [0x500_0000, 0x500_0FFF, ram - 1];
     for adresse in ecrites {
@@ -927,7 +940,7 @@ fn the_time_caught_up_crosses_a_snapshot() {
     };
     let du = original.temps_du();
     assert!(rattrape(&original) > 0, "le temps rattrapé, {du} encore dû");
-    let sauve = instantane::sauver(&original);
+    let sauve = instantane::sauver(&original).expect("au repos");
 
     let mut reprise = Poste::essayer(RAM).expect("la RAM");
     instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
@@ -967,7 +980,7 @@ fn a_resumed_machine_drops_the_fault_witnesses_of_the_used_one() {
         "cmc passe par le chemin général"
     );
     let chargee = poste_charge(&image_de(&GENERALE_PUIS_DIVISION), None);
-    let sauve = instantane::sauver(&chargee);
+    let sauve = instantane::sauver(&chargee).expect("au repos");
     let mut neuve = Poste::essayer(RAM).expect("la RAM");
     let attendue = apres_la_reprise(&mut neuve, &sauve);
     // cmc et xor retirées ; la division faute, et rien ne la livre.
@@ -1006,7 +1019,7 @@ fn the_long_mode_bit_is_recomputed_on_resume() {
     let (_, debut) = courir(&mut coupee, 1_000_000);
     let efer = coupee.machine.cpu.efer;
     assert_ne!(efer & EFER_LMA, 0, "en mode long");
-    let mut sauve = instantane::sauver(&coupee);
+    let mut sauve = instantane::sauver(&coupee).expect("au repos");
 
     // EFER suit les compteurs de la machine (144 octets avec l'en-tête), les
     // seize registres, RIP, les drapeaux, GS, FS, les neuf registres de
@@ -1038,15 +1051,24 @@ fn the_long_mode_bit_is_recomputed_on_resume() {
 fn a_snapshot_without_the_card_or_past_9999_is_refused() {
     let mut poste = Poste::essayer(RAM).expect("la RAM");
     poste.regler_l_heure(DERNIERE_SECONDE);
-    let sauve = instantane::sauver(&poste);
-    // `cmos_ailleurs` est le dernier octet des puces, juste avant la longueur
-    // de la RAM ; les secondes des puces le précèdent, avant les 128 octets de
-    // la mémoire de l'horloge.
-    let mut motif = vec![1u8];
-    motif.extend_from_slice(&RAM.to_le_bytes());
-    let ailleurs = (144..sauve.len() - motif.len())
-        .find(|&rang| sauve[rang..rang + motif.len()] == motif[..])
-        .expect("la carte dite branchée, avant la RAM");
+    let sauve = instantane::sauver(&poste).expect("au repos");
+    // `cmos_ailleurs` est le dernier octet des puces. Le suivent les entrées
+    // en attente (aucune : deux longueurs nulles, puis les deux états du
+    // clavier, cent vingt-huit octets nuls), la longueur de l'état de la
+    // carte, cet état, puis la longueur de la RAM. Les secondes des puces le
+    // précèdent, avant les 128 octets de la mémoire de l'horloge.
+    let entrees = 8 + 8 + 128;
+    let ailleurs = (144..sauve.len() - 1 - entrees - 8)
+        .find(|&rang| {
+            let apres = rang + 1 + entrees;
+            if sauve[rang] != 1 || sauve[rang + 1..apres].iter().any(|&octet| octet != 0) {
+                return false;
+            }
+            let carte = u64::from_le_bytes(sauve[apres..apres + 8].try_into().unwrap()) as usize;
+            let ram = apres.saturating_add(8).saturating_add(carte);
+            sauve.get(ram..ram + 8) == Some(&RAM.to_le_bytes()[..])
+        })
+        .expect("la carte dite branchée, avant les entrées, la carte et la RAM");
     let secondes = ailleurs - 128 - 8;
     assert_eq!(
         u64::from_le_bytes(sauve[secondes..secondes + 8].try_into().unwrap()),
@@ -1148,5 +1170,207 @@ fn a_frozen_hour_replaces_the_clock_it_was_given() {
     assert_eq!(
         poste.machine.herites.cmos.secondes_depuis_1970,
         1_795_230_600
+    );
+}
+
+/// **Les entrées qui attendent passent l'instantané** : des frappes encore
+/// dans les commandes du poste et dans la file de l'i8042, des octets tapés
+/// au port série pas encore remis. La machine reprise renvoie le reste du
+/// clavier exactement comme l'originale continuée, et reçoit les octets.
+#[test]
+fn keystrokes_and_serial_bytes_waiting_cross_a_snapshot() {
+    let mut original = poste_qui_renvoie_son_clavier();
+    let (a, b) = (CodeTouche::simple(0x1E), CodeTouche::simple(0x30));
+    assert!(original.commandes().frapper(&[(a, true)]));
+    for _ in 0..20 {
+        assert!(original.commandes().frapper(&[(b, true), (b, false)]));
+    }
+    let (_, debut) = courir(&mut original, 60_000);
+    let attente = original.commandes().frappes_en_attente();
+    assert!(
+        !debut.is_empty() && attente > FRAPPES_REMISES,
+        "des frappes jouées, et plus qu'une remise qui attendent : {} jouées, {attente} en attente",
+        debut.len()
+    );
+    original.commandes().envoyer(b"xyz");
+    let sauve = instantane::sauver(&original).expect("au repos");
+
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    assert_eq!(reprise.commandes().frappes_en_attente(), attente);
+    assert_eq!(
+        instantane::sauver(&reprise).expect("au repos"),
+        sauve,
+        "sauvée à nouveau, la machine reprise est celle d'avant, entrées et carte comprises"
+    );
+    let (_, suite_originale) = courir(&mut original, 4_000_000);
+    let (_, suite_reprise) = courir(&mut reprise, 4_000_000);
+    assert_eq!(suite_reprise, suite_originale);
+    assert_eq!(
+        debut.len() + suite_reprise.len(),
+        41,
+        "toutes les frappes, une fois chacune"
+    );
+    assert_eq!(reprise.commandes().frappes_en_attente(), 0);
+    let entree: Vec<u8> = reprise
+        .machine
+        .herites
+        .serie
+        .entree
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(entree, b"xyz", "les octets tapés sont arrivés au 16550");
+}
+
+/// Un dossier à soi, effacé à la fin du test.
+struct Dossier(std::path::PathBuf);
+
+impl Dossier {
+    fn nouveau(nom: &str) -> Self {
+        let chemin =
+            std::env::temp_dir().join(format!("wisq-pc-poste-{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&chemin);
+        std::fs::create_dir_all(&chemin).expect("le dossier");
+        Self(chemin)
+    }
+
+    fn disque(&self, nom: &str, secteurs: usize) -> wisq_carte::fichier::DisqueFichier {
+        let base = self.0.join(format!("{nom}.img"));
+        if !base.exists() {
+            std::fs::write(&base, vec![0u8; secteurs * 512]).expect("la base");
+        }
+        wisq_carte::fichier::DisqueFichier::ouvrir(&base, &self.0.join(format!("{nom}.couche")))
+            .expect("le disque")
+    }
+}
+
+impl Drop for Dossier {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// **Une reprise ne se fait que sur les disques de l'instantané** : un
+/// disque sur fichier rebranché, de la même capacité, au même emplacement ;
+/// un emplacement vide l'est aussi ici ; une image en mémoire est embarquée
+/// et revient d'elle-même. Un refus ne change rien.
+#[test]
+fn a_snapshot_resumes_only_on_the_disks_it_was_taken_with() {
+    use wisq_carte::pc::{ArriereMemoire, Disque};
+    let dossier = Dossier::nouveau("disques");
+    let mut original = Poste::essayer(RAM).expect("la RAM");
+    original
+        .brancher_disque(Disque::Premier, dossier.disque("vda", 64))
+        .expect("le fichier");
+    original
+        .brancher_disque(Disque::Second, ArriereMemoire(vec![0x5A; 16 * 512]))
+        .expect("l'image");
+    original.regler_l_heure(1_795_230_600);
+    original.charger(&image(), None, None).expect("le noyau");
+    courir(&mut original, 1_000_000);
+    let sauve = instantane::sauver(&original).expect("au repos");
+    assert!(
+        sauve
+            .windows(16 * 512)
+            .any(|fenetre| fenetre.iter().all(|&o| o == 0x5A)),
+        "l'image en mémoire est embarquée"
+    );
+
+    let refus = |poste: &mut Poste| instantane::reprendre(poste, &sauve);
+    let mut sans = Poste::essayer(RAM).expect("la RAM");
+    assert_eq!(
+        refus(&mut sans),
+        Err(RefusDInstantane::AutresDisques),
+        "le fichier manque"
+    );
+    assert!(!sans.pret(), "et rien n'a été reposé");
+    let mut plus_petit = Poste::essayer(RAM).expect("la RAM");
+    plus_petit
+        .brancher_disque(Disque::Premier, dossier.disque("autre", 63))
+        .expect("un autre fichier");
+    assert_eq!(
+        refus(&mut plus_petit),
+        Err(RefusDInstantane::AutresDisques),
+        "une autre capacité"
+    );
+    let mut fichier_en_second = Poste::essayer(RAM).expect("la RAM");
+    fichier_en_second
+        .brancher_disque(Disque::Premier, dossier.disque("vda", 64))
+        .expect("le fichier");
+    fichier_en_second
+        .brancher_disque(Disque::Second, dossier.disque("vdb", 16))
+        .expect("un fichier en second");
+    assert_eq!(
+        refus(&mut fichier_en_second),
+        Err(RefusDInstantane::AutresDisques),
+        "un fichier là où l'image était en mémoire"
+    );
+
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    reprise
+        .brancher_disque(Disque::Premier, dossier.disque("vda", 64))
+        .expect("le fichier");
+    refus(&mut reprise).expect("le même fichier, et l'image qui revient d'elle-même");
+    assert_eq!(
+        reprise.commandes().octets_ecrits(),
+        original.commandes().octets_ecrits(),
+        "l'image embarquée est l'arrière du second disque"
+    );
+    assert_eq!(instantane::sauver(&reprise).expect("au repos"), sauve);
+}
+
+/// **Une frappe en attente qui n'est pas une touche, ou plus de frappes que
+/// l'i8042 n'en admet, est refusée** : `sauver` n'écrit que des codes du jeu
+/// 1 (de 1 à 0x7F, ce que `frappes_du_jeu_1` admet), et jamais plus de
+/// frappes que la borne.
+#[test]
+fn waiting_keystrokes_that_are_not_keys_or_too_many_are_refused() {
+    use wisq_carte::i8042::PLUS_DE_FRAPPES;
+    let poste = poste_charge(&image(), None);
+    assert!(poste
+        .commandes()
+        .frapper(&[(CodeTouche::simple(0x1E), true)]));
+    let sauve = instantane::sauver(&poste).expect("au repos");
+    // La carte dite branchée, aucun octet tapé, une frappe : A enfoncée.
+    let mut motif = vec![1u8];
+    motif.extend_from_slice(&0u64.to_le_bytes());
+    motif.extend_from_slice(&1u64.to_le_bytes());
+    motif.extend_from_slice(&[0x1E, 0, 1]);
+    let compte = sauve
+        .windows(motif.len())
+        .position(|fenetre| fenetre == motif)
+        .expect("la frappe en attente")
+        + 9;
+    let reprendre = |octets: &[u8]| {
+        let mut neuf = Poste::essayer(RAM).expect("la RAM");
+        instantane::reprendre(&mut neuf, octets)
+    };
+    reprendre(&sauve).expect("telle que sauvée");
+    for (code, admis) in [
+        (0x7F, true),
+        (0x01, true),
+        (0x00, false),
+        (0x80, false),
+        (0xFF, false),
+    ] {
+        let mut abime = sauve.clone();
+        abime[compte + 8] = code;
+        assert_eq!(reprendre(&abime).is_ok(), admis, "le code {code:#x}");
+    }
+    let frappes = |combien: usize| {
+        let mut octets = sauve[..compte].to_vec();
+        octets.extend_from_slice(&(combien as u64).to_le_bytes());
+        for _ in 0..combien {
+            octets.extend_from_slice(&[0x1E, 0, 1]);
+        }
+        octets.extend_from_slice(&sauve[compte + 8 + 3..]);
+        reprendre(&octets)
+    };
+    assert!(frappes(PLUS_DE_FRAPPES).is_ok(), "la borne est comprise");
+    assert_eq!(
+        frappes(PLUS_DE_FRAPPES + 1),
+        Err(RefusDInstantane::Abime),
+        "plus de frappes que l'i8042 n'en admet"
     );
 }

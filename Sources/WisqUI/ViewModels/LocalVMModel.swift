@@ -432,13 +432,14 @@ public final class LocalVMModel {
         // `TerminalGrid.replies`) ; la réponse repart par la machine, qui
         // n'existe qu'après cette fermeture — d'où la boîte.
         let answers = ConsoleAnswers()
-        // **Le cœur Rust, allumé par défaut** : une machine PC neuve
-        // seulement — ni session sauvée (un instantané du cœur Swift), ni
-        // machine installée. Voir `RustPCSetting`.
+        // **Le cœur Rust, allumé par défaut**, pour une machine PC neuve et
+        // non installée. **Une session sauvée choisit son cœur par son
+        // format** : celle du cœur Rust s'y reprend, réglage éteint compris ;
+        // celle du cœur Swift, sur lui. Voir `RustPCSetting`.
         #if WISQ_RUST_CORE
         let rustPC = RustPCSetting.runs(
             core, enabled: RustPCSetting.isEnabled(in: .standard),
-            hasSession: saved != nil, installed: installed != nil)
+            session: saved, installed: installed != nil)
         #else
         let rustPC = false
         #endif
@@ -919,7 +920,7 @@ public final class LocalVMModel {
         // Le disque d'abord : ses écritures sont déjà sur le stockage, ceci
         // les y scelle avant que l'instantané ne prétende les connaître.
         machine.flushDisk()
-        // La machine PC en Rust ne sauve rien : la revoir la redémarre.
+        // Une machine qui ne sauve pas de session : la revoir la redémarre.
         guard savesSessions(machine) else {
             letMachineGo()
             return

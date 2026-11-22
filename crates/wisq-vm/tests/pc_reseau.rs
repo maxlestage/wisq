@@ -209,3 +209,84 @@ fn the_card_asks_the_cable_every_fourth_pass_at_work_and_every_pass_asleep() {
         "un tour par pas d'attente : {questions}"
     );
 }
+
+/// **La carte réseau passe l'instantané** (`pc::instantane`, version 2) :
+/// l'invité a émis sa trame et attend la sienne, ses tampons posés. Reprise
+/// dans un poste qui branche sa carte avant (comme l'écran), elle garde ses
+/// files, ses index et ses compteurs, et prend le câble de ce poste : la trame
+/// remise à la machine reprise arrive dans le tampon que l'invité avait posé
+/// avant l'instantané, et il s'éteint en disant « R », comme l'original.
+/// Reprise dans un poste sans carte, elle revient sans câble : rien n'entre.
+/// Un instantané sans carte, repris dans un poste qui en a une, la retire du
+/// bus et ferme ses files.
+#[test]
+fn the_card_crosses_a_snapshot_and_takes_the_cable_of_the_machine_that_resumes() {
+    use wisq_vm::pc::instantane;
+    let mut original = poste_en_reseau(&image_reseau());
+    let (fin, console) = courir(&mut original, 1_000_000);
+    assert_eq!(
+        (fin, console),
+        (Fin::Budget, b"o".to_vec()),
+        "il attend sa trame"
+    );
+    let mut tampon = [0u8; 1514];
+    assert!(original.commandes().prendre_trame(&mut tampon).is_some());
+    let sauve = instantane::sauver(&original).expect("au repos");
+
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    reprise
+        .brancher_reseau(MAC_PAR_DEFAUT)
+        .expect("la carte, avant la reprise");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    let ((emises, livrees, perdues), _) = reprise
+        .commandes()
+        .compteurs_du_reseau()
+        .expect("la carte est là");
+    assert_eq!(
+        (emises, livrees, perdues),
+        (1, 0, 0),
+        "les compteurs de l'original"
+    );
+    assert_eq!(
+        instantane::sauver(&reprise).expect("au repos"),
+        sauve,
+        "sauvée à nouveau, la même"
+    );
+    for poste in [&mut original, &mut reprise] {
+        assert_eq!(
+            poste.commandes().remettre_trame(&trame_de_code()),
+            Some(Remise::Prise)
+        );
+        let (fin, console) = courir(poste, 1_000_000);
+        assert_eq!((fin, console), (Fin::Eteinte, b"R".to_vec()));
+    }
+    assert_eq!(reprise.machine.retirees, original.machine.retirees);
+
+    let mut sans_carte = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut sans_carte, &sauve).expect("la reprise");
+    assert_eq!(
+        sans_carte.commandes().remettre_trame(&trame_de_code()),
+        None,
+        "rien n'entre"
+    );
+    let (fin, _) = courir(&mut sans_carte, 1_000_000);
+    assert_eq!(fin, Fin::Budget, "il attend toujours sa trame");
+
+    let mut nu = Poste::essayer(RAM).expect("la RAM");
+    nu.regler_l_heure(1_795_230_600);
+    nu.charger(&image_de(&[0xF4, 0xEB, 0xFD]), None, None)
+        .expect("le noyau");
+    let sans_reseau = instantane::sauver(&nu).expect("au repos");
+    let mut branche = Poste::essayer(RAM).expect("la RAM");
+    branche.brancher_reseau(MAC_PAR_DEFAUT).expect("la carte");
+    instantane::reprendre(&mut branche, &sans_reseau).expect("la reprise");
+    assert!(
+        branche.commandes().compteurs_du_reseau().is_none(),
+        "la carte a quitté le bus"
+    );
+    assert_eq!(
+        branche.commandes().remettre_trame(&trame_de_code()),
+        None,
+        "ses files sont fermées"
+    );
+}

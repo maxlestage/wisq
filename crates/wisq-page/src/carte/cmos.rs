@@ -25,8 +25,12 @@
 //! en UTC fait du côté Swift.
 //!
 //! **Ce qu'elle ne fait pas**, comme le modèle Swift : ni alarme ni
-//! interruption périodique (la ligne huit reste muette), et l'écart réglé par
-//! l'invité ne passe pas dans un instantané.
+//! interruption périodique (la ligne huit reste muette). **L'écart réglé par
+//! l'invité**, que l'instantané du cœur Swift ne garde pas, passe dans celui
+//! de la machine native ([`Cmos::sauver`]) : l'invité qui reprend lit l'heure
+//! qu'il avait réglée, avancée du temps passé dehors.
+
+use super::etat::{Ecrivain, Lecteur};
 
 /// Les registres, aux mêmes numéros que le modèle Swift.
 pub const SECONDES: u8 = 0x00;
@@ -340,6 +344,51 @@ fn civil_depuis_jours(jours: i64) -> (i64, i64, i64) {
     (annee, mois, jour)
 }
 
+// ------------------------------------------------- l'état, pour l'instantané
+
+impl Cmos {
+    /// **L'état de l'horloge**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : l'index, l'écart réglé par l'invité, le
+    /// registre B, un réglage en cours, la mémoire, et l'heure de l'hôte
+    /// (que l'horloge de la machine qui reprend remplacera au premier accès).
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u8(self.index);
+        e.i64(self.ecart_ms);
+        e.u8(self.etat_b);
+        e.oui(self.reglage.is_some());
+        e.0.extend_from_slice(&self.reglage.unwrap_or([0; 8]));
+        e.0.extend_from_slice(&self.memoire);
+        e.i64(self.hote_ms);
+    }
+
+    /// Relue, ou rien : un index au-delà de 0x7F (le bit 7 n'en est pas,
+    /// [`Cmos::choisir`]), ou un réglage en cours sans le bit SET du registre
+    /// B — ou le bit sans réglage —, n'ont pas été écrits par [`Cmos::sauver`].
+    pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
+        let index = l.u8()?;
+        let ecart_ms = l.i64()?;
+        let etat_b = l.u8()?;
+        let en_reglage = l.oui()?;
+        let registres: [u8; 8] = l.prendre(8)?.try_into().ok()?;
+        let memoire: [u8; 128] = l.prendre(128)?.try_into().ok()?;
+        let hote_ms = l.i64()?;
+        if index > 0x7F || en_reglage != (etat_b & REGLAGE != 0) {
+            return None;
+        }
+        if !en_reglage && registres != [0; 8] {
+            return None;
+        }
+        Some(Self {
+            index,
+            ecart_ms,
+            etat_b,
+            reglage: en_reglage.then_some(registres),
+            memoire,
+            hote_ms,
+        })
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     //! Les cinq cas de `Tests/WisqVMTests/X86CMOSClockTests.swift`, portés un
@@ -538,5 +587,67 @@ pub(crate) mod tests {
         h.choisir(0x0D);
         h.ecrire(0);
         assert_eq!(lire(&mut h, 0x0D), 0x80, "le registre D ne s'écrit pas");
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **L'horloge sauvée et relue** ([`Cmos::sauver`]) : un réglage en
+    //! cours passe, et ce que `sauver` n'écrit jamais est refusé.
+    use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
+    use super::*;
+
+    fn reglee() -> Cmos {
+        let mut cmos = Cmos::nouvelle();
+        cmos.regler_heure_hote(1_793_379_909_000);
+        cmos.choisir(0x0B);
+        cmos.ecrire(VINGT_QUATRE_HEURES | REGLAGE);
+        cmos.choisir(ANNEE);
+        cmos.ecrire(0x31);
+        cmos.choisir(0x40);
+        cmos.ecrire(0x5A);
+        cmos
+    }
+
+    #[test]
+    fn a_clock_in_the_middle_of_a_setting_reads_back() {
+        let cmos = reglee();
+        assert!(cmos.reglage.is_some(), "un réglage en cours");
+        let octets = octets_de(&cmos, Cmos::sauver);
+        assert_eq!(relu(&octets, Cmos::relire), Some(cmos.clone()));
+        chaque_coupure_refusee(&octets, Cmos::relire);
+        // Fini, le réglage pose son écart ; il passe l'instantané aussi.
+        let mut finie = cmos;
+        finie.choisir(0x0B);
+        finie.ecrire(VINGT_QUATRE_HEURES);
+        assert_ne!(finie.ecart_ms, 0);
+        let octets = octets_de(&finie, Cmos::sauver);
+        assert_eq!(relu(&octets, Cmos::relire), Some(finie));
+    }
+
+    #[test]
+    fn what_the_clock_never_holds_is_refused() {
+        let cmos = reglee();
+        let relit = |abimer: fn(&mut Cmos)| se_relit(&cmos, abimer, Cmos::sauver, Cmos::relire);
+        assert!(relit(|_| {}), "tel quel");
+        assert!(!relit(|c| c.index = 0x80), "un index avec le bit 7");
+        assert!(
+            !relit(|c| c.etat_b &= !REGLAGE),
+            "un réglage sans le bit SET"
+        );
+        let neuve = Cmos::nouvelle();
+        assert!(
+            !se_relit(&neuve, |c| c.etat_b |= REGLAGE, Cmos::sauver, Cmos::relire),
+            "le bit SET sans réglage"
+        );
+        // Sans réglage, les huit octets écrits à sa place sont nuls.
+        let mut octets = octets_de(&neuve, Cmos::sauver);
+        assert_eq!(octets[10], 0, "aucun réglage");
+        octets[11] = 1;
+        assert_eq!(
+            relu(&octets, Cmos::relire),
+            None,
+            "des registres de réglage sans réglage"
+        );
     }
 }
