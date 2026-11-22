@@ -1242,3 +1242,670 @@ unsafe fn borrowed_str(text: *const c_char) -> Option<String> {
 unsafe fn borrowed_path(text: *const c_char) -> Option<std::path::PathBuf> {
     borrowed_str(text).map(std::path::PathBuf::from)
 }
+
+// ---------------------------------------------------------------------------
+// La machine PC native (`pc::Poste`).
+//
+// **Le même contrat de fils que la machine RISC-V**, écrit fonction par
+// fonction dans l'en-tête : `wisq_pc_run` bloque, et ce qui touche la machine
+// elle-même (charger, brancher, courir, sauver, reprendre, lire le compteur)
+// se fait d'un seul fil à la fois, course arrêtée. Arrêter, taper, toucher,
+// lire l'écran et l'avancement se font de n'importe quel fil, pendant la
+// course : ces fonctions-là ne passent que par `commandes`, un champ à part,
+// atteint par `addr_of!` — elles ne forment jamais de référence sur le poste
+// qu'un autre fil tient en `&mut`.
+//
+// **Aucune panique ne traverse la frontière.** Chaque fonction vérifie ses
+// arguments et rend un code ; ce qui reste d'imprévu passe par `garder`, qui
+// rend le code `WISQ_PC_PANIC` dans une construction qui déroule (les tests).
+// La bibliothèque de l'application est construite avec `panic = "abort"` :
+// une panique y arrête le processus, sans jamais dérouler dans l'appelant C.
+
+use crate::pc::instantane::{self, RefusDInstantane};
+use crate::pc::poste::{frappes_du_jeu_1, Commandes, Fin, Poste, RefusDeBranchement, VueDeLEcran};
+use std::sync::Arc;
+use wisq_carte::fichier::{DisqueFichier, Refus as RefusDuDisque};
+use wisq_carte::pc::{horloge_du_systeme, ArriereMemoire, Disque};
+
+/// Opaque à C : le poste, et ses commandes pour les autres fils.
+pub struct WisqPC {
+    /// Touché par le seul fil de la course.
+    poste: Poste,
+    /// Touché de n'importe quel fil.
+    commandes: Arc<Commandes>,
+    sortie: Option<OutputCallback>,
+    contexte: usize,
+    /// Le nom de la dernière faute de `wisq_pc_run`.
+    faute: String,
+}
+
+/// L'écran, tel que C le lit (`WisqPCDisplay`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WisqPCDisplay {
+    pub memory: *const u8,
+    pub memory_size: usize,
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_row: u32,
+    pub reserved: u32,
+    pub start: u64,
+    pub revision: u64,
+}
+
+impl From<VueDeLEcran> for WisqPCDisplay {
+    fn from(vue: VueDeLEcran) -> Self {
+        Self {
+            memory: vue.memoire,
+            memory_size: vue.taille,
+            width: vue.largeur,
+            height: vue.hauteur,
+            bytes_per_row: vue.octets_par_ligne,
+            reserved: 0,
+            start: vue.debut,
+            revision: vue.revision,
+        }
+    }
+}
+
+/// Ce que rend une fonction quand une panique a été rattrapée.
+const WISQ_PC_PANIC: c_int = -99;
+
+/// Le filet : une panique devient `defaut` là où elle se rattrape.
+fn garder<R>(defaut: R, travail: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(travail)).unwrap_or(defaut)
+}
+
+/// Le poste, pour le fil de la course.
+unsafe fn poste<'a>(pc: *mut WisqPC) -> Option<&'a mut Poste> {
+    if pc.is_null() {
+        return None;
+    }
+    Some(&mut *std::ptr::addr_of_mut!((*pc).poste))
+}
+
+/// Le poste en lecture, pour le fil de la course.
+unsafe fn poste_lu<'a>(pc: *const WisqPC) -> Option<&'a Poste> {
+    if pc.is_null() {
+        return None;
+    }
+    Some(&*std::ptr::addr_of!((*pc).poste))
+}
+
+/// Les commandes, pour n'importe quel fil.
+unsafe fn commandes<'a>(pc: *const WisqPC) -> Option<&'a Commandes> {
+    if pc.is_null() {
+        return None;
+    }
+    Some(&**std::ptr::addr_of!((*pc).commandes))
+}
+
+/// Un chemin C, en chemin.
+unsafe fn chemin<'a>(texte: *const c_char) -> &'a std::path::Path {
+    std::path::Path::new(std::ffi::OsStr::from_bytes(
+        std::ffi::CStr::from_ptr(texte).to_bytes(),
+    ))
+}
+
+/// # Safety
+/// `context` est rendu tel quel à `on_output` (qui peut être nul : la console
+/// est alors jetée) ; l'appelant le garde en vie jusqu'à `wisq_pc_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_new(
+    ram_bytes: u64,
+    on_output: Option<OutputCallback>,
+    context: *mut c_void,
+) -> *mut WisqPC {
+    garder(std::ptr::null_mut(), || {
+        let Some(mut poste) = Poste::essayer(ram_bytes) else {
+            return std::ptr::null_mut();
+        };
+        poste.horloge(horloge_du_systeme);
+        let maintenant = horloge_du_systeme().max(0) as u64 / 1000;
+        poste.machine.herites.cmos.regler(maintenant);
+        let commandes = poste.commandes().clone();
+        Box::into_raw(Box::new(WisqPC {
+            poste,
+            commandes,
+            sortie: on_output,
+            contexte: context as usize,
+            faute: String::new(),
+        }))
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_set_time(pc: *mut WisqPC, unix_seconds: i64) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    garder(WISQ_PC_PANIC, || {
+        poste.regler_l_heure(unix_seconds);
+        0
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_seed(pc: *mut WisqPC, seed: u64) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    poste.semer(seed);
+    0
+}
+
+fn code_de_branchement(refus: RefusDeBranchement) -> c_int {
+    match refus {
+        RefusDeBranchement::DejaDemarree => -2,
+        RefusDeBranchement::EcranDejaLa => -3,
+        RefusDeBranchement::EcranTropGrand => -4,
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_display(pc: *mut WisqPC, width: u32, height: u32) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    garder(WISQ_PC_PANIC, || {
+        match poste.brancher_ecran(width, height) {
+            Ok(()) => 0,
+            Err(refus) => code_de_branchement(refus),
+        }
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `image` désigne `len`
+/// octets lisibles.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_disk(
+    pc: *mut WisqPC,
+    image: *const u8,
+    len: usize,
+) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    if image.is_null() {
+        return -1;
+    }
+    let octets = std::slice::from_raw_parts(image, len).to_vec();
+    garder(WISQ_PC_PANIC, || {
+        if octets.len() < 512 {
+            return -3;
+        }
+        match poste.brancher_disque(Disque::Premier, ArriereMemoire(octets)) {
+            Ok(()) => 0,
+            Err(refus) => code_de_branchement(refus),
+        }
+    })
+}
+
+unsafe fn brancher_un_fichier(
+    pc: *mut WisqPC,
+    quel: Disque,
+    base: *const c_char,
+    writes: *const c_char,
+) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    if base.is_null() || writes.is_null() {
+        return -1;
+    }
+    let (base, writes) = (chemin(base), chemin(writes));
+    garder(WISQ_PC_PANIC, || {
+        if poste.pret() {
+            return -7;
+        }
+        match DisqueFichier::ouvrir(base, writes) {
+            Ok(fichier) => match poste.brancher_disque(quel, fichier) {
+                Ok(()) => 0,
+                Err(_) => -7,
+            },
+            Err(RefusDuDisque::BaseIllisible) => -2,
+            Err(RefusDuDisque::PasUnDisque) => -3,
+            Err(RefusDuDisque::CoucheIllisible) => -4,
+            Err(RefusDuDisque::CoucheDUnAutreDisque) => -5,
+            Err(RefusDuDisque::CoucheTronquee) => -6,
+        }
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; deux chemins terminés par NUL.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_disk_file(
+    pc: *mut WisqPC,
+    base: *const c_char,
+    writes: *const c_char,
+) -> c_int {
+    brancher_un_fichier(pc, Disque::Premier, base, writes)
+}
+
+/// # Safety
+/// Comme `wisq_pc_attach_disk_file`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_second_disk_file(
+    pc: *mut WisqPC,
+    base: *const c_char,
+    writes: *const c_char,
+) -> c_int {
+    brancher_un_fichier(pc, Disque::Second, base, writes)
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `kernel` désigne `len`
+/// octets ; `command_line` est nul ou une chaîne terminée par NUL ;
+/// `initrd` est nul ou désigne `initrd_len` octets.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_load(
+    pc: *mut WisqPC,
+    kernel: *const u8,
+    len: usize,
+    command_line: *const c_char,
+    initrd: *const u8,
+    initrd_len: usize,
+) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    if kernel.is_null() {
+        return -1;
+    }
+    let noyau = std::slice::from_raw_parts(kernel, len);
+    let ligne = if command_line.is_null() {
+        None
+    } else {
+        match std::ffi::CStr::from_ptr(command_line).to_str() {
+            Ok(texte) => Some(texte),
+            Err(_) => return -2,
+        }
+    };
+    let initramfs = (!initrd.is_null()).then(|| std::slice::from_raw_parts(initrd, initrd_len));
+    garder(WISQ_PC_PANIC, || {
+        if poste.pret() {
+            return -8;
+        }
+        use crate::pc::Refus;
+        match poste.charger(noyau, ligne, initramfs) {
+            Ok(_) => 0,
+            Err(Refus::PasUnNoyau) => -3,
+            Err(Refus::PasDEntree64Bits) => -4,
+            Err(Refus::ProtocoleTropAncien(_)) => -5,
+            Err(Refus::MemoireInsuffisante { .. }) => -6,
+            Err(Refus::Tronque) => -7,
+        }
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; un seul fil à la fois.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_run(pc: *mut WisqPC, budget: u64) -> c_int {
+    if pc.is_null() {
+        return -1;
+    }
+    let sortie = (*pc).sortie;
+    let contexte = (*pc).contexte;
+    let Some(poste) = poste(pc) else { return -1 };
+    if !poste.pret() {
+        return -2;
+    }
+    let fin = garder(Fin::Faute("une panique dans la machine".into()), || {
+        poste.courir(budget, &mut |octets: &[u8]| {
+            if let Some(sortie) = sortie {
+                sortie(contexte as *mut c_void, octets.as_ptr(), octets.len());
+            }
+        })
+    });
+    match fin {
+        Fin::Budget => 0,
+        Fin::Arretee => 1,
+        Fin::Eteinte => 2,
+        Fin::Remise => 3,
+        Fin::Faute(pourquoi) => {
+            *std::ptr::addr_of_mut!((*pc).faute) = pourquoi;
+            4
+        }
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `buffer` est nul ou désigne
+/// `capacity` octets inscriptibles.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_fault(
+    pc: *const WisqPC,
+    buffer: *mut c_char,
+    capacity: usize,
+) -> usize {
+    if pc.is_null() {
+        return 0;
+    }
+    let faute = &*std::ptr::addr_of!((*pc).faute);
+    let octets = faute.as_bytes();
+    if !buffer.is_null() && capacity > 0 {
+        let copies = octets.len().min(capacity - 1);
+        std::ptr::copy_nonoverlapping(octets.as_ptr(), buffer.cast::<u8>(), copies);
+        *buffer.add(copies) = 0;
+    }
+    octets.len()
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `bytes` désigne `len` octets. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_send(pc: *mut WisqPC, bytes: *const u8, len: usize) {
+    let Some(commandes) = commandes(pc) else {
+        return;
+    };
+    if bytes.is_null() || len == 0 {
+        return;
+    }
+    let octets = std::slice::from_raw_parts(bytes, len);
+    garder((), || commandes.envoyer(octets));
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `codes` désigne `len` octets. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_keys(pc: *mut WisqPC, codes: *const u8, len: usize) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if codes.is_null() && len > 0 {
+        return -1;
+    }
+    let octets = if len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(codes, len)
+    };
+    garder(WISQ_PC_PANIC, || match frappes_du_jeu_1(octets) {
+        Ok(frappes) => c_int::from(commandes.frapper(&frappes)),
+        Err(_) => -2,
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_keys_pending(pc: *const WisqPC) -> usize {
+    commandes(pc).map_or(0, |commandes| garder(0, || commandes.frappes_en_attente()))
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_keys_abandon(pc: *mut WisqPC) {
+    if let Some(commandes) = commandes(pc) {
+        garder((), || commandes.abandonner_la_frappe());
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_mouse(pc: *mut WisqPC, dx: i32, dy: i32, buttons: u8) {
+    if let Some(commandes) = commandes(pc) {
+        garder((), || commandes.souris(dx, dy, buttons));
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_touch(pc: *mut WisqPC, x: f64, y: f64, buttons: u8) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    garder(WISQ_PC_PANIC, || {
+        c_int::from(commandes.toucher(x, y, buttons))
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_scroll(pc: *mut WisqPC, notches: i32) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    garder(WISQ_PC_PANIC, || c_int::from(commandes.defiler(notches)))
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `out` est inscriptible. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_display(pc: *const WisqPC, out: *mut WisqPCDisplay) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if out.is_null() {
+        return -1;
+    }
+    match garder(None, || commandes.ecran()) {
+        Some(vue) => {
+            *out = vue.into();
+            0
+        }
+        None => -2,
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `pixels` désigne `capacity` octets
+/// inscriptibles ; `out` est nul ou inscriptible. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_display_copy(
+    pc: *const WisqPC,
+    pixels: *mut u8,
+    capacity: usize,
+    out: *mut WisqPCDisplay,
+) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if pixels.is_null() && capacity > 0 {
+        return -1;
+    }
+    let vers = if capacity == 0 {
+        &mut [][..]
+    } else {
+        std::slice::from_raw_parts_mut(pixels, capacity)
+    };
+    let (code, vue) = match garder(None, || commandes.copier_l_image(vers)) {
+        None => return -2,
+        Some(Ok(vue)) => (0, vue),
+        Some(Err(vue)) => (-3, vue),
+    };
+    if !out.is_null() {
+        *out = vue.into();
+    }
+    code
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` et n'a pas été libéré. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_stop(pc: *mut WisqPC) {
+    if let Some(commandes) = commandes(pc) {
+        commandes.arreter();
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_retired(pc: *const WisqPC) -> u64 {
+    poste_lu(pc).map_or(0, |poste| poste.machine.retirees)
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `retired` et `rip` sont inscriptibles. Tout
+/// fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_progress(
+    pc: *const WisqPC,
+    retired: *mut u64,
+    rip: *mut u64,
+) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if retired.is_null() || rip.is_null() {
+        return -1;
+    }
+    match commandes.avancement() {
+        Some((retirees, ici)) => {
+            *retired = retirees;
+            *rip = ici;
+            1
+        }
+        None => 0,
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_guest_time(pc: *const WisqPC) -> u64 {
+    poste_lu(pc).map_or(0, |poste| poste.temps())
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_guest_hertz(pc: *const WisqPC) -> u64 {
+    poste_lu(pc).map_or(0, |poste| poste.hertz())
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_halted(pc: *const WisqPC) -> c_int {
+    poste_lu(pc).map_or(0, |poste| c_int::from(poste.machine.arretee))
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_elapse(pc: *mut WisqPC, seconds: f64) {
+    if let Some(poste) = poste(pc) {
+        poste.rattraper(seconds);
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `out_bytes` et `out_len`
+/// sont inscriptibles.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_snapshot(
+    pc: *const WisqPC,
+    out_bytes: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    let Some(poste) = poste_lu(pc) else { return -1 };
+    if out_bytes.is_null() || out_len.is_null() {
+        return -1;
+    }
+    if !poste.pret() {
+        return -2;
+    }
+    let Some(sauve) = garder(None, || Some(instantane::sauver(poste))) else {
+        return WISQ_PC_PANIC;
+    };
+    let mut sauve = sauve.into_boxed_slice();
+    let (pointeur, longueur) = (sauve.as_mut_ptr(), sauve.len());
+    std::mem::forget(sauve);
+    *out_bytes = pointeur;
+    *out_len = longueur;
+    0
+}
+
+/// # Safety
+/// `bytes` et `len` sont exactement ce que `wisq_pc_snapshot` a rendu, pas
+/// encore libéré.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_free_snapshot(bytes: *mut u8, len: usize) {
+    if !bytes.is_null() {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            bytes, len,
+        )));
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `bytes` désigne `len` octets.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_restore(pc: *mut WisqPC, bytes: *const u8, len: usize) -> c_int {
+    let Some(poste) = poste(pc) else { return -1 };
+    if bytes.is_null() {
+        return -1;
+    }
+    let octets = std::slice::from_raw_parts(bytes, len);
+    garder(WISQ_PC_PANIC, || {
+        match instantane::reprendre(poste, octets) {
+            Ok(()) => 0,
+            Err(RefusDInstantane::PasUnInstantane) => -2,
+            Err(RefusDInstantane::VersionInconnue(_)) => -3,
+            Err(RefusDInstantane::Abime) => -4,
+            Err(RefusDInstantane::AutreMemoire { .. }) => -5,
+            Err(RefusDInstantane::AutreEcran) => -6,
+        }
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_flush_disks(pc: *mut WisqPC) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    garder(WISQ_PC_PANIC, || {
+        if commandes.vider_les_disques() {
+            0
+        } else {
+            -2
+        }
+    })
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`. Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_disk_bytes_written(pc: *const WisqPC) -> u64 {
+    commandes(pc).map_or(0, |commandes| garder(0, || commandes.octets_ecrits()))
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new` ; `served` et `refused` sont inscriptibles.
+/// Tout fil.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_disk_activity(
+    pc: *const WisqPC,
+    served: *mut u64,
+    refused: *mut u64,
+) -> c_int {
+    let Some(commandes) = commandes(pc) else {
+        return -1;
+    };
+    if served.is_null() || refused.is_null() {
+        return -1;
+    }
+    match garder(None, || commandes.activite_du_disque()) {
+        Some((servies, refusees)) => {
+            *served = servies;
+            *refused = refusees;
+            1
+        }
+        None => 0,
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, aucune course en cours, et n'est plus
+/// employé ensuite.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_free(pc: *mut WisqPC) {
+    if !pc.is_null() {
+        drop(Box::from_raw(pc));
+    }
+}

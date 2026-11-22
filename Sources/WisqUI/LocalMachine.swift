@@ -108,14 +108,64 @@ extension RustLinuxMachine: GuestMachine {
 }
 #endif
 
+/// **L'écran d'une machine PC, quel que soit son cœur** : ce que la vue en lit
+/// (`GuestScreenView`). `X86Framebuffer` le rend tel quel ; `RustPCScreen`,
+/// l'écran de la machine PC en Rust, rend la même surface.
+public protocol GuestScreen: AnyObject {
+    var revision: UInt64 { get }
+    var width: Int { get }
+    var height: Int { get }
+    func frame() -> (mode: X86Framebuffer.Mode, data: Data)
+}
+
+extension X86Framebuffer: GuestScreen {}
+
+/// **Le clavier, la tablette et la souris d'une machine PC**, quel que soit
+/// son cœur : ce que `LocalVMModel` leur demande.
+protocol PCInput: ScreenKeyboard {
+    @discardableResult func touch(x: Double, y: Double, buttons: UInt8) -> Bool
+    @discardableResult func scroll(notches: Int) -> Bool
+    func mouse(dx: Int, dy: Int, buttons: UInt8)
+}
+
+extension X86Machine: PCInput {}
+
+#if WISQ_RUST_CORE
+extension RustPCScreen: GuestScreen {}
+extension RustPCMachine: PCInput {}
+#endif
+
+/// Une machine dont la session se sauve : toutes, sauf la machine PC en Rust
+/// tant que son instantané ne porte pas la carte (`RustPCSetting`).
+func savesSessions(_ machine: GuestMachine) -> Bool {
+    #if WISQ_RUST_CORE
+    if machine is RustPCMachine { return RustPCSetting.savesSessions }
+    #endif
+    return true
+}
+
 /// La machine que ce fichier demande, construite.
 ///
 /// **C'est ici que la sélection automatique arrive dans l'application.**
 /// `KernelImageKind.core` a lu le fichier ; il ne reste qu'à obéir.
+///
+/// `rustPC` : le réglage `RustPCSetting` a choisi la machine PC en Rust
+/// (`RustPCSetting.runs`). Elle est faite ici, à la place de `X86Machine` ;
+/// si l'hôte ne peut pas lui donner sa mémoire, c'est le cœur Swift qui part.
 func makeLocalMachine(
     for core: GuestArchitecture.Core, ramSizeBytes: Int, settingsKey: String, storage: URL?,
+    rustPC: Bool = false,
     onOutput: @escaping @Sendable (Data) -> Void
 ) -> GuestMachine {
+    #if WISQ_RUST_CORE
+    if rustPC, core == .x86_64,
+       let machine = RustPCMachine(ramSize: ramSizeBytes, onOutput: onOutput) {
+        // L'aléa neuf, comme `GuestMachineFactory.make` pour le cœur Swift.
+        machine.seed(UInt64.random(in: .min ... .max))
+        machine.pacesIdleToWallClock = true
+        return machine
+    }
+    #endif
     // **Le réseau, comme chez QEMU** : l'invité a sa carte, un bail DHCP,
     // le DNS et le TCP de l'hôte — sauf si son réglage le coupe. Voir
     // `UserNetwork` et `MachineNetwork`.
