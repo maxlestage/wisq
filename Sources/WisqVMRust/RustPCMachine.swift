@@ -694,11 +694,16 @@ public final class RustPCScreen: @unchecked Sendable {
 /// carte (ses files, ce que le pilote a négocié) vient de l'instantané ; les
 /// trames en file n'y sont pas, comme chez le cœur Swift (`VirtioNet.save`).
 ///
-/// **Ce qui lui manque encore par rapport au cœur Swift** : les bureaux prêts
-/// refabriqués à son format (ceux qu'on télécharge sont des instantanés du
-/// cœur Swift, et s'y reprennent) ; les formats d'image de disque (qcow2,
-/// VMDK…), que seul le cœur Swift lit ; les refus des programmes, que
-/// `X86Machine` dit dans la console.
+/// **Les bureaux prêts à son format** : `wisq-fabrique --coeur rust` les
+/// fabrique et les vérifie sur la machine de l'application
+/// (`RustReadyDesktopBuild`), et l'application, ce réglage allumé, prend
+/// l'entrée du cœur Rust dans l'index (`ReadyDesktop.parse`) ; reprise, la
+/// machine prend l'aléa du téléphone (`reseed`). Un index qui n'a que le
+/// bureau du cœur Swift le donne encore, et il se reprend sur le cœur Swift.
+///
+/// **Ce qui lui manque encore par rapport au cœur Swift** : les formats
+/// d'image de disque (qcow2, VMDK…), que seul le cœur Swift lit ; les refus
+/// des programmes, que `X86Machine` dit dans la console.
 public enum RustPCSetting {
     public static let key = "wisq.machine.pc-rust"
     /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift

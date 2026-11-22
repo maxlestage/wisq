@@ -356,12 +356,175 @@ final class ReadyDesktopTests: XCTestCase {
         XCTAssertEqual(ReadyDesktop.parse(both).map(\.madeAt), [redone.madeAt])
     }
 
+    // MARK: - Les deux cœurs
+
+    static let rustArchiveName = "void-live-x86_64-20250202-xfce-pret-rust-niveau2.wisqmachine"
+    static let rustArchiveURL = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(rustArchiveName)"
+
+    /// L'entrée du bureau fabriqué sur le cœur Rust : la même image, son
+    /// archive à elle, la version de l'instantané pour niveau.
+    private func rustEntry(level: UInt64 = 2) -> ReadyDesktop.Index.Entry {
+        var rust = entry(level: level)
+        rust.core = .rust
+        rust.archive.name = Self.rustArchiveName
+        rust.archive.url = Self.rustArchiveURL
+        rust.archive.sha256 = String(repeating: "b", count: 64)
+        rust.kernelDigest = "d63775f2e341116a"
+        return rust
+    }
+
+    /// **L'entrée du cœur qui tournera** : le cœur Rust là, réglage allumé
+    /// (`rustLevel`), l'entrée Rust ; sinon, celle du cœur Swift — même titre,
+    /// même image, une autre archive.
+    func testTheRustEntryIsTakenWhenTheRustCoreRuns() throws {
+        var swift = entry()
+        swift.core = .swift
+        let text = try json([swift, rustEntry()])
+        let withoutRust = ReadyDesktop.parse(text)
+        XCTAssertEqual(withoutRust.map(\.core), [.swift])
+        XCTAssertEqual(withoutRust.map(\.archive.file), [Self.archiveName])
+        let withRust = ReadyDesktop.parse(text, rustLevel: 2)
+        XCTAssertEqual(withRust.map(\.core), [.rust])
+        XCTAssertEqual(withRust.map(\.level), [2])
+        XCTAssertEqual(withRust.map(\.archive.file), [Self.rustArchiveName])
+        XCTAssertEqual(withRust.map(\.image.file), [Self.isoName], "la même image")
+        // L'ordre de l'index n'y change rien.
+        XCTAssertEqual(ReadyDesktop.parse(try json([rustEntry(), swift]), rustLevel: 2).map(\.core), [.rust])
+        XCTAssertEqual(ReadyDesktop.parse(try json([rustEntry(), swift])).map(\.core), [.swift])
+        // **Le cœur d'abord, le niveau ensuite** : un bureau Swift d'un niveau
+        // plus haut ne passe pas devant le bureau Rust.
+        var swiftThree = entry(level: 3)
+        swiftThree.archive.name = "void-live-x86_64-20250202-xfce-pret-niveau3.wisqmachine"
+        swiftThree.archive.url = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(swiftThree.archive.name)"
+        let three = try json([swiftThree, rustEntry()])
+        XCTAssertEqual(ReadyDesktop.parse(three, supportedLevel: 3, rustLevel: 2).map(\.core), [.rust])
+        XCTAssertEqual(ReadyDesktop.parse(three, supportedLevel: 3).map(\.level), [3])
+        // Une version d'instantané que ce cœur ne reprend pas encore : la
+        // Swift, plutôt que rien.
+        XCTAssertEqual(ReadyDesktop.parse(try json([swift, rustEntry(level: 3)]), rustLevel: 2).map(\.core), [.swift])
+    }
+
+    /// **Il retombe proprement** quand l'index n'a que l'une des deux :
+    /// l'entrée Swift seule se propose aux deux (sa session se reprend sur le
+    /// cœur Swift) ; l'entrée Rust seule, au cœur Rust seulement.
+    func testAnIndexWithOneCoreFallsBackCleanly() throws {
+        let swiftOnly = try json([entry()])
+        XCTAssertEqual(ReadyDesktop.parse(swiftOnly).map(\.core), [.swift], "une entrée sans cœur est du cœur Swift")
+        XCTAssertEqual(ReadyDesktop.parse(swiftOnly, rustLevel: 2).map(\.core), [.swift])
+        let rustOnly = try json([rustEntry()])
+        XCTAssertEqual(ReadyDesktop.parse(rustOnly), [], "sans cœur Rust, rien : le cœur Swift ne la reprend pas")
+        XCTAssertEqual(ReadyDesktop.parse(rustOnly, rustLevel: 2).map(\.core), [.rust])
+        XCTAssertEqual(ReadyDesktop.parse(rustOnly, rustLevel: 1), [], "une version d'avant la carte")
+    }
+
+    /// **Les applications d'avant ne voient pas l'entrée Rust.** Elles
+    /// ignorent `core` : pour elles, c'est un bureau du cœur Swift, jugé par
+    /// son niveau seul — 2, au-dessus du leur. Elles gardent l'entrée Swift.
+    /// Une entrée Rust de niveau 1 leur serait proposée : la fabrique refuse
+    /// de l'écrire.
+    func testOlderApplicationsDoNotSeeTheRustEntry() throws {
+        let text = try json([entry(), rustEntry()])
+        XCTAssertTrue(text.contains("\"core\" : \"rust\""), text)
+        // Ce qu'une application d'avant décode : le même index, sans le champ.
+        let seenBefore = text.replacingOccurrences(of: "\"core\" : \"rust\",", with: "")
+        XCTAssertFalse(seenBefore.contains("rust\""), "le champ est retiré")
+        let before = ReadyDesktop.parse(seenBefore, supportedLevel: Core.levelSeenByOlderApps)
+        XCTAssertEqual(before.map(\.archive.file), [Self.archiveName])
+
+        let visible = rustEntry(level: Core.levelSeenByOlderApps)
+        XCTAssertEqual(ReadyDesktop.Index(desktops: [entry(), visible]).refused, [visible])
+        XCTAssertThrowsError(try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [visible]))) {
+            XCTAssertEqual($0 as? ReadyDesktop.Index.Fault,
+                           .refused(title: "Void Xfce (prêt)", url: Self.rustArchiveURL))
+        }
+        XCTAssertEqual(ReadyDesktop.parse(try json([visible]), rustLevel: 2), [], "et l'application ne la prend pas")
+        XCTAssertNoThrow(try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [rustEntry()])))
+        XCTAssertEqual(Core.firstRustLevel, 2)
+    }
+
+    private typealias Core = ReadyDesktop.Core
+
+    /// **L'index neuf garde l'autre cœur** : le bureau Rust publié seul ne
+    /// retire pas le bureau Swift de l'ancien index, ni l'inverse ; le même
+    /// titre, le même cœur et le même niveau remplacent.
+    func testTheMergedIndexKeepsTheOtherCore() throws {
+        let old = ReadyDesktop.Index(desktops: [entry()])
+        let withRust = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [rustEntry()]), keeping: old)
+        XCTAssertEqual(withRust.desktops.map(\.machineCore), [.rust, .swift])
+        var redone = entry()
+        redone.madeAt = Self.moment.addingTimeInterval(86_400)
+        let swiftAgain = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [redone]), keeping: withRust)
+        XCTAssertEqual(swiftAgain.desktops.map(\.machineCore), [.swift, .rust])
+        XCTAssertEqual(swiftAgain.desktops.first?.madeAt, redone.madeAt)
+        var rustAgain = rustEntry()
+        rustAgain.madeAt = redone.madeAt
+        let both = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [rustAgain]), keeping: swiftAgain)
+        XCTAssertEqual(both.desktops, [rustAgain, redone])
+        // **Au même niveau, le cœur départage** : un bureau Swift d'un niveau
+        // 2 à venir ne remplace pas le bureau Rust du niveau 2.
+        var swiftTwo = entry(level: 2)
+        swiftTwo.archive.name = "void-live-x86_64-20250202-xfce-pret-niveau2.wisqmachine"
+        swiftTwo.archive.url = "https://github.com/maxlestage/wisq/releases/download/bureaux-1/\(swiftTwo.archive.name)"
+        let kept = ReadyDesktop.Index(desktops: [swiftTwo]).merged(keeping: ReadyDesktop.Index(desktops: [rustEntry()]))
+        XCTAssertEqual(kept.desktops.map(\.machineCore), [.swift, .rust])
+    }
+
+    /// **Un cœur que cette version ne connaît pas** n'est pas proposé, et
+    /// n'emporte pas l'entrée d'à côté.
+    func testAnUnknownCoreIsNotOffered() throws {
+        let text = try json([entry(), rustEntry()])
+            .replacingOccurrences(of: "\"core\" : \"rust\"", with: "\"core\" : \"emetteur\"")
+        XCTAssertEqual(ReadyDesktop.parse(text, rustLevel: 2).map(\.core), [.swift])
+    }
+
+    /// **La fiche du cœur Rust devient son entrée** : le cœur, la version
+    /// de son instantané, son archive à elle ; écrite, relue, proposée.
+    func testTheSheetOfARustBuildBecomesARustEntry() throws {
+        let stem = ReadyDesktopBuild.outputStem(image: Self.isoName, level: 2, core: .rust)
+        XCTAssertEqual(stem + ".wisqmachine", Self.rustArchiveName)
+        XCTAssertEqual(ReadyDesktopBuild.outputStem(image: Self.isoName, level: 1, core: .swift) + ".wisqmachine",
+                       Self.archiveName, "le nom du cœur Swift ne change pas")
+        let sheet = ReadyDesktopBuild.Sheet(
+            title: "Void Xfce (prêt)", level: 2,
+            image: .init(name: Self.isoName, bytes: 1_446_789_120, sha256: String(repeating: "4", count: 64)),
+            archive: .init(name: Self.rustArchiveName, bytes: 150_000_000, sha256: String(repeating: "b", count: 64)),
+            kernelDigest: "d63775f2e341116a", ramBytes: 1 << 30, screen: [1024, 768],
+            commandLine: "init_on_free=1", madeAt: Self.moment, guestClock: Self.moment,
+            instructions: 3, snapshotBytes: 4, packedBytes: 5, commit: nil, core: .rust)
+        XCTAssertEqual(try ReadyDesktopBuild.Sheet.decode(try sheet.encoded()), sheet)
+        let built = ReadyDesktop.Index.Entry(
+            sheet: sheet, image: URL(string: Self.isoURL)!, archive: URL(string: Self.rustArchiveURL)!)
+        XCTAssertEqual(built.core, .rust)
+        let data = try ReadyDesktop.Index.publishable(ReadyDesktop.Index(desktops: [built])).encoded()
+        XCTAssertEqual(try ReadyDesktop.Index.decode(data).desktops, [built])
+        XCTAssertEqual(ReadyDesktop.parse(String(decoding: data, as: UTF8.self), rustLevel: 2).map(\.core), [.rust])
+        // Une fiche d'avant, sans cœur : du cœur Swift.
+        let oldSheet = String(decoding: try sheet.encoded(), as: UTF8.self)
+            .replacingOccurrences(of: "\"core\" : \"rust\",", with: "")
+        XCTAssertNil(try ReadyDesktopBuild.Sheet.decode(Data(oldSheet.utf8)).core)
+    }
+
     // MARK: - L'index, sur le réseau
 
     /// **L'index des bureaux absent ne cache rien et ne dit rien** : la
     /// release n'existe pas encore, GitHub répond 404 ; les images des
     /// distributions sont là, sans échec à montrer. Et dans l'autre sens :
     /// aucune distribution ne répond, les bureaux restent proposés.
+    /// **Le catalogue lu par le réseau choisit le cœur** : `rustCore` y
+    /// passe jusqu'au choix de l'entrée.
+    func testTheCatalogTakesTheEntryOfTheCoreThatRuns() async throws {
+        let index = try json([entry(), rustEntry()])
+        let router = Router([ReadyDesktop.index: Server(Array(index.utf8))])
+        let downloader = ImageDownloader(fetcher: router, partsFolder: downloads)
+        let swift = await downloader.readyCatalog()
+        XCTAssertEqual(swift.desktops.map(\.core), [.swift])
+        let rust = await downloader.readyCatalog(rustCore: true)
+        XCTAssertEqual(rust.desktops.map(\.core), [.rust])
+        XCTAssertEqual(rust.desktops.map(\.level), [UInt64(RustPCSnapshot.version)])
+        let catalog = await downloader.catalog(rustCore: true)
+        XCTAssertEqual(catalog.desktops.map(\.core), [.rust])
+    }
+
     func testAnAbsentIndexHidesNothingAndSaysNothing() async throws {
         let onlyAlpine = Router([ImageDownload.alpineIndex: Server(Array(ImageDownloadTests.index.utf8))])
         let downloader = ImageDownloader(fetcher: onlyAlpine, partsFolder: downloads)
