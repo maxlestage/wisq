@@ -1374,3 +1374,58 @@ fn waiting_keystrokes_that_are_not_keys_or_too_many_are_refused() {
         "plus de frappes que l'i8042 n'en admet"
     );
 }
+
+/// **Ce qu'un programme a demandé et que ce processeur refuse est dit à la
+/// console**, comme le cœur Swift le dit (`X86Machine.refusalNote`, mot pour
+/// mot) : après ce que l'invité a écrit dans la même tranche, une fois par
+/// forme — un programme qui réessaie ne la noie pas —, et une forme neuve
+/// dite à son tour. La machine remplit `refus` quand un programme reçoit son
+/// `#UD` (`an_unknown_form_in_a_program_is_delivered_as_invalid_opcode_and_remembered`) ;
+/// le poste le dit.
+#[test]
+fn a_form_a_program_was_refused_is_said_once_on_the_console() {
+    let note = |forme: &str| {
+        format!(
+            "\r\n[wisq : un programme a demandé {forme}, que ce processeur ne sait pas encore \
+             exécuter. Il reçoit « Illegal instruction » ; la machine continue.]\r\n"
+        )
+    };
+    let femms = "une forme que ce cœur ne lit pas (0f 0e)";
+    let vex = "une instruction vectorielle (c5 f9 6f c1)";
+    let mut poste = poste_charge(&image(), Some("a=b"));
+    poste.machine.refus.push(femms.to_string());
+    poste.machine.refus.push(femms.to_string());
+    let (_, console) = courir(&mut poste, 1);
+    let console = String::from_utf8(console).unwrap();
+    assert!(console.ends_with(&note(femms)), "{console:?}");
+    assert_eq!(
+        console.matches("[wisq :").count(),
+        1,
+        "une fois : {console:?}"
+    );
+    // La même forme encore, puis une neuve : seule la neuve est dite, après
+    // ce que l'invité a écrit.
+    poste.machine.refus.push(femms.to_string());
+    poste.machine.refus.push(vex.to_string());
+    let (fin, console) = courir(&mut poste, 50_000_000);
+    assert_eq!(fin, Fin::Eteinte);
+    let console = String::from_utf8(console).unwrap();
+    assert_eq!(
+        console,
+        format!("wisq-noyau-factice\na=b\n{}.....\nFIN\n", note(vex)),
+        "la note suit ce que l'invité a écrit dans sa tranche, et l'invité continue"
+    );
+    // Rien de neuf, rien de dit.
+    poste.machine.refus.push(vex.to_string());
+    let (_, console) = courir(&mut poste, 1000);
+    assert!(console.is_empty());
+    // Une liste vidée par l'hôte (elle est publique) repart de zéro, sans
+    // rien perdre de ce qui y entre ensuite.
+    poste.machine.refus.clear();
+    poste.machine.refus.push("rdpid (f3 0f c7 f8)".to_string());
+    let (_, console) = courir(&mut poste, 1000);
+    assert_eq!(
+        String::from_utf8(console).unwrap(),
+        note("rdpid (f3 0f c7 f8)")
+    );
+}

@@ -85,11 +85,11 @@ struct WebKitBenchView: View {
                 Toggle("Faire tourner les machines PC sur le cœur Rust", isOn: $rustPCEnabled)
             } footer: {
                 Text(
-                    "Par défaut. Une machine PC neuve démarre sur le cœur x86-64 écrit en Rust, "
-                        + "deux fois plus rapide que le cœur Swift, avec le même réseau, et sauve "
+                    "Par défaut. Une machine PC sans session, installée ou non, démarre sur le cœur "
+                        + "x86-64 écrit en Rust, deux fois plus rapide que le cœur Swift, avec le même "
+                        + "réseau et les mêmes disques (qcow2, VMDK et les autres compris), et sauve "
                         + "sa session comme lui. Une session sauvée se reprend toujours sur le cœur "
-                        + "qui l'a écrite, quel que soit ce réglage ; les machines installées restent "
-                        + "au cœur Swift.")
+                        + "qui l'a écrite, quel que soit ce réglage.")
             }
             #endif
 

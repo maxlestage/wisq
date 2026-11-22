@@ -207,7 +207,7 @@ final class RustReadyDesktopTests: XCTestCase {
             return XCTFail("pas de session sous l'empreinte du noyau")
         }
         XCTAssertEqual(session, snapshot)
-        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: false, session: session, installed: true),
+        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: false, session: session),
                       "la session du cœur Rust choisit son cœur")
         XCTAssertEqual(KernelMemory.size(forKernel: imported.key, in: phone, ceiling: .max), UInt64(Self.ram))
         let layer = try LocalDisk.writesURL(for: imported.keys.overlay(forDisk: image), in: phone)
@@ -301,7 +301,7 @@ final class RustReadyDesktopTests: XCTestCase {
         let found = SavedSession.find(kernel: identity, in: phone, core: .x86_64)
         guard case .readable(let session) = found else { return XCTFail("session : \(found)") }
         let unpackSeconds = Date().timeIntervalSince(opened)
-        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: false, session: session, installed: true))
+        XCTAssertTrue(RustPCSetting.runs(.x86_64, enabled: false, session: session))
         let first = FirstResume.pending(kernel: identity, in: phone)
         XCTAssertNotNil(first, "la marque de la première reprise")
         let savedAt = SuspendedMachine.savedAt(kernel: identity, in: phone)

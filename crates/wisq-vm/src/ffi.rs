@@ -1264,7 +1264,7 @@ unsafe fn borrowed_path(text: *const c_char) -> Option<std::path::PathBuf> {
 use crate::pc::instantane::{self, RefusDInstantane};
 use crate::pc::poste::{frappes_du_jeu_1, Commandes, Fin, Poste, RefusDeBranchement, VueDeLEcran};
 use std::sync::Arc;
-use wisq_carte::fichier::{DisqueFichier, Refus as RefusDuDisque};
+use wisq_carte::fichier::{DisqueFichier, Lecteur, Refus as RefusDuDisque};
 use wisq_carte::pc::{horloge_du_systeme, ArriereMemoire, Disque};
 
 /// Opaque à C : le poste, et ses commandes pour les autres fils.
@@ -1490,6 +1490,111 @@ pub unsafe extern "C" fn wisq_pc_attach_second_disk_file(
     writes: *const c_char,
 ) -> c_int {
     brancher_un_fichier(pc, Disque::Second, base, writes)
+}
+
+/// **Lire un morceau de la base** d'un disque que l'appelant traduit
+/// (`WisqPCDiskRead`) : remplir `length` octets à `buffer` depuis l'octet
+/// `offset` du disque ; 1 s'ils y sont tous, 0 sinon.
+pub type DiskReadCallback = Option<
+    unsafe extern "C" fn(
+        context: *mut c_void,
+        offset: u64,
+        buffer: *mut u8,
+        length: usize,
+    ) -> c_int,
+>;
+/// **Lâcher le lecteur** (`WisqPCDiskRelease`), une fois et une seule.
+pub type DiskReleaseCallback = Option<unsafe extern "C" fn(context: *mut c_void)>;
+
+/// **Le lecteur de l'appelant**, vu par la carte : un qcow2, un VMDK… que le
+/// cœur Swift traduit (`VirtualDiskImages`). Il est lâché quand le disque
+/// s'en va, ou tout de suite si le branchement est refusé.
+struct LecteurC {
+    taille: u64,
+    lire: unsafe extern "C" fn(*mut c_void, u64, *mut u8, usize) -> c_int,
+    lacher: DiskReleaseCallback,
+    contexte: *mut c_void,
+}
+
+// SAFETY : le contrat de l'en-tête — `read` est appelé du fil qui fait
+// tourner la machine, jamais deux fois à la fois (la carte est sous son
+// verrou), et `release` d'un seul fil, une fois. Le contexte appartient au
+// lecteur jusque-là.
+unsafe impl Send for LecteurC {}
+
+impl Lecteur for LecteurC {
+    fn taille(&self) -> u64 {
+        self.taille
+    }
+
+    fn lire(&mut self, decalage: u64, vers: &mut [u8]) -> bool {
+        // SAFETY : `vers` est à nous, `vers.len()` octets inscriptibles ; le
+        // disque ne demande jamais rien au-delà de `taille`.
+        unsafe { (self.lire)(self.contexte, decalage, vers.as_mut_ptr(), vers.len()) == 1 }
+    }
+}
+
+impl Drop for LecteurC {
+    fn drop(&mut self) {
+        if let Some(lacher) = self.lacher.take() {
+            // SAFETY : une fois, le contexte que l'appelant a donné.
+            unsafe { lacher(self.contexte) }
+        }
+    }
+}
+
+/// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `writes` est une chaîne
+/// terminée par NUL ; `read` et `release` suivent le contrat de l'en-tête.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_attach_disk_reader(
+    pc: *mut WisqPC,
+    which: u32,
+    size: u64,
+    read: DiskReadCallback,
+    release: DiskReleaseCallback,
+    context: *mut c_void,
+    writes: *const c_char,
+) -> c_int {
+    // Le lecteur d'abord : quoi qu'il arrive ensuite, `release` passe une
+    // fois — au refus, en lâchant `lecteur` ; sinon avec le disque.
+    let Some(lire) = read else {
+        if let Some(lacher) = release {
+            lacher(context);
+        }
+        return -1;
+    };
+    let lecteur = LecteurC {
+        taille: size,
+        lire,
+        lacher: release,
+        contexte: context,
+    };
+    let Some(poste) = poste(pc) else { return -1 };
+    let quel = match which {
+        0 => Disque::Premier,
+        1 => Disque::Second,
+        _ => return -1,
+    };
+    if writes.is_null() {
+        return -1;
+    }
+    let writes = chemin(writes);
+    garder(WISQ_PC_PANIC, move || {
+        if poste.pret() {
+            return -7;
+        }
+        match DisqueFichier::ouvrir_sur(Box::new(lecteur), writes) {
+            Ok(disque) => match poste.brancher_disque(quel, disque) {
+                Ok(()) => 0,
+                Err(_) => -7,
+            },
+            Err(RefusDuDisque::PasUnDisque) => -3,
+            Err(RefusDuDisque::CoucheDUnAutreDisque) => -5,
+            Err(RefusDuDisque::CoucheTronquee) => -6,
+            Err(_) => -4,
+        }
+    })
 }
 
 /// # Safety
