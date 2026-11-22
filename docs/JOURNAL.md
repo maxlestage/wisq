@@ -8,6 +8,139 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Les tests de l'émetteur dans une fenêtre visible : la cause de leurs rouges intermittents
+
+**Ce qui tombait.** `EmitterDesktopTests` a fait tomber « App iOS » trois fois
+le même jour : sur master après #720, et deux fois sur #722, que rien ne
+relie à l'émetteur. Les tests en cause changeaient d'une fois à l'autre
+(`testStopHaltsAMachineThatWaitsForAKey`,
+`testTheEmitterMachineBootsThroughItsSchemeInARealWebView`,
+`testTheApplicationsSendPathReachesTheGuest`), mais le tableau restait le
+même : la page se charge et prend la touche, puis la machine se fige. La
+touche n'est jamais lue (registre 15 à 0), `hlt` n'est jamais atteint, et
+aucune panne n'est dite.
+
+**La cause.** Le journal de ces jobs montre « WebProcess NearSuspended
+Assertion » et un processus de contenu « unresponsive » : iOS suspendait le
+processus de WebKit. Il le fait pour une `WKWebView` qui n'est dans aucune
+fenêtre visible, et ces tests n'en donnaient pas à la leur. Dans
+l'application, la vue est toujours à l'écran. `WebKitJITProbeTests` le dit et
+le fait depuis longtemps : « Une vue hors de toute fenêtre n'est pas sûre de
+démarrer ».
+
+**La correction.** `EmitterDesktopTests` pose chaque vue dans une `UIWindow`
+visible, gardée par l'instance, avant `start()`, comme le fait
+`WebKitJITProbeTests`. Rien n'est retiré ni affaibli : mêmes assertions, même
+patience.
+
+**Ce qui n'est pas prouvé ici.** Ces tests ne tournent que dans l'iPhone
+simulé de « App iOS ». Un passage vert ne prouve pas la fin de
+l'intermittence ; plusieurs passages verts de suite le diront. Le relevé des
+occurrences est dans `docs/ROADMAP.md`.
+
+## 2026-11-22 — Interface : une chaîne d'aperçus pour voir l'application, et ce que la carte d'une machine dira (le redessin attend la première série)
+
+**Ce qui n'allait pas.** L'utilisateur juge l'interface pas assez jolie, et
+personne ne peut la regarder : le SwiftUI (`Sources/WisqUI`, `App`) ne se
+construit que sur un Mac, et seule la CI le fait, sans rien montrer. Redessiner
+à l'aveugle, c'était deviner.
+
+**Ce qui est fait.**
+
+- *La chaîne d'aperçus.* Un paquet de tests `WisqApercus`
+  (`Tests/WisqApercus`), **hébergé par l'application** et **hors de la scheme
+  `Wisq`** : la CI ne le lance jamais. Il pose ses données de démonstration
+  dans le bac à sable du simulateur, par les fonctions mêmes de l'application
+  (`InstalledMachines.install`, `KernelLibrary.createBlankDisk`) — trois ISO
+  creux qui ne portent que la signature `CD001` (Alpine, Void Xfce, Debian),
+  un bureau Void Xfce installé avec sa session sauvée, une Debian installée sur
+  un disque vierge de 8 Gio, quatre connexions à distance — puis ouvre huit
+  écrans (accueil vide, machines, écran d'une machine en marche avec un bureau
+  Xfce dessiné, console d'Alpine, téléchargement d'un bureau prêt en cours,
+  connexions, éditeur rempli, banc) et les photographie en clair, en sombre et
+  en grand texte (`accessibility3`), par `drawHierarchy` dans une fenêtre posée
+  au-dessus de celle de l'application. Le workflow
+  `.github/workflows/apercus.yml`, à la main seulement (`workflow_dispatch`),
+  construit comme « App iOS » (XCFramework Rust, XcodeGen épinglé, projet
+  comparé au dépôt), choisit le plus récent des iPhone « Pro » installés, lance
+  la scheme `Apercus` et dépose les PNG en artefact.
+- *Pourquoi cette voie.* `ImageRenderer` ne rend pas ce que UIKit porte (une
+  `List`, une barre de navigation, un champ) : il aurait photographié des
+  écrans qui n'existent pas. Des tests UI (XCUITest) demandaient un mode de
+  démonstration **dans l'application**, lu dans ses arguments de lancement ;
+  ici, rien de la démonstration n'est dans l'application, et rien ne peut donc
+  s'y allumer chez quelqu'un. L'application n'y gagne que deux points d'entrée
+  internes que rien n'appelle chez elle : un modèle de machine posé sans noyau
+  (`LocalVMModel.pose`, `LocalVMTerminalView(kernelURL:installed:posed:)`) et
+  une feuille de téléchargement posée sans réseau
+  (`ImageDownloadModel(posing:...)`, `ImageDownloadSheet(posed:)`).
+- *Le relevé des suites suit la scheme.* La garde « tout ce qui lance
+  `xcodebuild test` lance aussi le relevé » (`site/tests/app-suites.test.ts`)
+  a refusé le nouveau workflow, à juste titre. `scripts/report-app-suites.sh`
+  prend maintenant la scheme en troisième argument et confronte alors au
+  relevé les suites de **cette** scheme (`schemes: Apercus: test: targets:`) ;
+  sans argument, rien ne change pour « App iOS ».
+- *Ce que la carte d'une machine dira*, dans `WisqVM` pour se tenir par des
+  tests sous Linux (`MachineBadge.swift`) : la distribution reconnue à un nom
+  — le nom donné par la personne d'abord, puis le fichier, **par mots
+  entiers** (« archive.img » n'est pas Arch, « avoid.iso » n'est pas Void) —,
+  son symbole (SF Symbols, aucun logo copié) et sa teinte ; si c'est un
+  bureau ; l'état (« Session sauvée » l'emporte sur « Éteinte » et « Jamais
+  lancée », et le bouton dit « Reprendre ») ; la ligne des caractéristiques
+  sans séparateur pendu ; le pourcentage d'un téléchargement, arrondi vers le
+  bas en double largeur (un flottant rend 28 pour 29 sur 100, et `* 100`
+  déborde).
+
+**Ce qui bloque : le workflow ne peut pas encore être lancé.** GitHub ne
+connaît un workflow à la main que s'il est sur la branche par défaut :
+`POST .../actions/workflows/apercus.yml/dispatches` répond 404, et
+`GET .../actions/workflows/apercus.yml` aussi. Le déclencher par un `push`
+provisoire sur `claude/interface` a été refusé (ce n'était pas le seul
+`workflow_dispatch` demandé). **Il faut donc que `apercus.yml` arrive sur
+`master`** (le fichier seul suffit ; sans `Tests/WisqApercus` ni la scheme il
+échouerait sur master, mais il se lance alors avec `ref: claude/interface`),
+ou qu'un déclenchement provisoire soit permis. Aucune série « avant » n'a
+donc été prise, et **le redessin n'est pas commencé** : il devait partir de
+ces images.
+
+**Les tests** : neuf de plus (4 388 → 4 397 au compte publié ; Swift 3 167,
+Rust 1 230). Les huit aperçus ne sont pas comptés : ce sont des photographies,
+et leurs noms (`test01AccueilVide`…) ne sont pas ceux que le compte lit.
+Plus un test du site (le relevé d'une autre scheme).
+
+**Les sabotages**, chacun d'une ligne, chacun rouge puis restauré :
+
+- les mots par sous-chaînes → `testWholeWordsOnly` (Arch, Void, Debian
+  trouvés dans « archive », « avoid », « debianish ») ;
+- les noms lus à l'envers → `testTheGivenNameComesFirst` (Alpine au lieu de
+  « Debian de test ») ;
+- la session sauvée à partir de deux → `testTheStateFollowsTheSession` ;
+- le pourcentage en flottant → `testPercentIsFlooredAndBounded` (28 au lieu
+  de 29) ;
+- le filtre des morceaux vides retiré → `testSpecsSkipWhatIsMissing`
+  (« 1 Gio · ») ;
+- le bureau par sous-chaînes → `testDesktopsAreToldApart` (« xfcelike ») ;
+- la teinte d'Arch égale à celle de Fedora → `testNoTwoDistributionsLookAlike` ;
+- la scheme ignorée par le relevé → « la scheme des aperçus est confrontée à
+  ses propres suites ».
+
+**Les vérifications.** `swift build --build-tests` et la suite Swift entière ;
+`swiftlint lint --strict` ; `swiftc -frontend -parse` sur les fichiers
+SwiftUI touchés et les trois du paquet d'aperçus ; `check-whitespace`,
+`check-project-sources` (16 fichiers), `check-generated-project` (4
+workflows) ; le projet engendré par XcodeGen 2.46.0 **construit sous Linux**
+depuis ses sources, et lancé depuis une copie nommée `wisq` (le nom du dossier
+entre dans le projet) : il rend à l'octet le projet du dépôt avant la
+tranche ; le site construit puis testé (477) ; `cargo fmt --check`.
+
+**Ce qui reste.** La première série « avant » dès que le workflow peut être
+lancé ; puis le redessin — un petit système de design, les machines en cartes
+avec leur badge (`MachineBadge`), leur état et leur dernière image d'écran,
+des états vides accueillants, la feuille « Télécharger » à l'action évidente,
+l'écran de la machine aux contrôles plus nets — et deux tours de captures
+au moins. Le paquet d'aperçus n'a jamais été compilé : sa première course
+dira ce qu'il faut y corriger. Le déclenchement provisoire, s'il est permis,
+partira avant la fusion.
 ## 2026-11-22 — L'accueil des machines : la liste vide n'est plus traversée par ses explications
 
 **Ce que l'utilisateur a vu**, sur une capture de son iPhone : sur l'écran
