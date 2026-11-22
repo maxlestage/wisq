@@ -16,9 +16,9 @@ import Foundation
 //     qemu-io -f qcow2 -c "write -P 0xab 1G 8192" f-2g.qcow2
 //
 // puis chaque fichier en deflate brut (zlib, wbits −15, niveau 9) et base64.
-enum Qcow2Fixtures {
+public enum Qcow2Fixtures {
     /// `a-v3-4k.qcow2` — 32768 octets.
-    static let a = [
+    public static let a = [
         "7dx3VE1xAMDx+yqRHp4klfWMQsszSggJL5G8l0SLzIyQsldZ2WTv7JBRFCqyKVtWyt7ZeyTzlOPIP/7q6Nz3/dxzf/fc+9f9",
         "/u45957fP1etdMkRBEFbyE+aO8p+n0vyDopfp7I/rv2Tzs89SAAAAAAAAP+ZnCkAAAAAAEDMJH9tAAAAAABAdMJyR0cmAgAA",
         "AAAA0a//VYXkPvx5IAAAFPj3lt/yAACgiSTFShlVrG5Zt6Gjs1tH3x79Bo8IDZ+1YPnazbF79h87fTHzTtbLD1919A1M5DVs",
@@ -29,7 +29,7 @@ enum Qcow2Fixtures {
     ].joined()
 
     /// `b-v3-4k-comp.qcow2` — 21504 octets.
-    static let b = [
+    public static let b = [
         "7ddnUBRnGMBxiICCNKUrSBKjFOEo0kHOJIqCdASkREDKUaSXoxM1EqkXRUDqJSFSpQsIJzCEgFINPYBAqCedA44TjruVgQwT",
         "P+VT4ox5fjv77Lzvp53/zs7OGmlpUxkYGA4wvI99d3Lvrxn3LrJ/Lbn/tvePmHZOLwYAAAAAAAAAAAB8YJ9CAgAAAAAAAAAA",
         "4GPGuH8cgBgAAAAAAAAAAMDH6dvdeR5CAAAAAAAAAAAAH7G9P3/DD34fF3anEQqeCAAAAPBvf/eNMVACAAAA+P+xn/pTIMG0",
@@ -49,7 +49,7 @@ enum Qcow2Fixtures {
     ].joined()
 
     /// `c-v2-64k.qcow2` — 524288 octets.
-    static let c = [
+    public static let c = [
         "7ddV7FDnGcDhP06R4u5QHIq7OxR3L17c3d3daXFpcYq7uxZ3d3f3hWUX6663ZSvP8yXvybk6+b0XX3LKFi72PiAgIHDAn4X/",
         "p/lFoL/PIH96CxQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "AADAX0tgKwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPjq",
@@ -75,7 +75,7 @@ enum Qcow2Fixtures {
     ].joined()
 
     /// `d-v3-64k-comp.qcow2` — 329216 octets.
-    static let d = [
+    public static let d = [
         "7dR5cBflGQDghEBpR6EWKo4VIRQUkRaKB3Io0FYIFEGxKpZwNIQfEMmBSSDEKEFQnBZSitylJsWzhhsqKGAiWNFBBKOGQAIE",
         "5QpiSJUjJCH5NWGmFf5RWmc6nfF5dvbd3Zn9dvd73+/dQX36VYWEhISFXOyKC2Kd0PMx7KKr0JBLU792H/+vi7FhZwfXDp0S",
         "EjIqJjE5NXxkTPKlPSU0OiExccL45EsdUS8wKTmQGB8VGz4qKjkqfHRMbOAr7w+LTogbnxhISopJiA9PTh0f+LpZ1T0/flRg",
@@ -104,7 +104,7 @@ enum Qcow2Fixtures {
     ].joined()
 
     /// `e-zero.qcow2` — 32768 octets.
-    static let e = [
+    public static let e = [
         "7dx3VE1xAMDxeytZL55VQjyblmeLkPDI6j0jWiQjM6GsoqzsWfbKng0aMrIpW6gUsrekrMg81XHwT391dN77fu65v3vu/et+",
         "f/ece8/vn6tS2GQLgqAt/E2SM0p/n4u5B3neqfSPa/nS+bV7CAAAAAAA4D+TMQUAAAAAAKgz8Z8NAAAAAACoHb+c0YqJAAAA",
         "AABA7df/SrFw3IcLDwQAgAL/3vJbHgAANJFYrLS+US2TRhZWnXr0cRo0YuwkX/9Fgeu27A47eOzspRspD56nf/ymU7Ksoayu",
@@ -115,7 +115,7 @@ enum Qcow2Fixtures {
     ].joined()
 
     /// `f-2g.qcow2` — 393216 octets.
-    static let f = [
+    public static let f = [
         "7dpBSsNAFAbgpK17jzBn8BCC4MaV69hMMdCmYTKiddX7eEHBjY1YbDdtBTfS7wv8MDDvMe+tc3d981EUxbjYdznE+uc8+crt",
         "rXInjxtqu+3hcfx+vyndtK6blFfhocmndSmny5SeunxqxSi+5Jjaah7qKldh1szjwfvj6XLRpdj3zbINedXFY1MN/ds61uH2",
         "KsQ2pyb2h55fzKvXVUhxNl0+tbk/+vxiM+ei6voTlzwqU/Uc9mYuAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",

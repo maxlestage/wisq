@@ -34,6 +34,24 @@ public enum SavedSession: Sendable {
         /// Pris par une machine plus récente que celle-ci : voir
         /// `X86Machine.snapshotLevel`.
         case newerMachine(saved: UInt64, supported: UInt64)
+        /// **Pris avec d'autres disques** que ceux que la machine a
+        /// maintenant : un disque débranché, remplacé par un fichier d'une
+        /// autre taille, ajouté, ou une image en mémoire là où vivait un
+        /// fichier. La session n'a rien d'abîmé : rebranchée sur ses disques,
+        /// elle se reprend. La machine PC en Rust le refuse
+        /// (`RustPCMachine.Refusal.snapshotOfOtherDisks`, code -8) ; le cœur
+        /// Swift reprend sur ce qu'il trouve.
+        case otherDisks
+    }
+
+    /// **Un refus de reprise qui sait ce qu'il dit de la session** : la
+    /// machine qui l'a levé vit hors de ce module (la machine PC en Rust,
+    /// dans `WisqVMRust`), et c'est elle qui sait lequel de ses refus veut
+    /// dire « d'autres disques ». Sans lui, tout refus inconnu se lit
+    /// `damaged`.
+    public protocol RefusalOfResume: Error {
+        /// Ce que la personne doit en lire.
+        var unreadableSession: Unreadable { get }
     }
 
     /// Les octets de la session, quand elle se reprend.
@@ -94,6 +112,7 @@ public enum SavedSession: Sendable {
     /// section abîmée plus loin que ce que `judge` a lu.
     public static func unreadable(after error: Error) -> Unreadable {
         if let refusal = error as? Unreadable { return refusal }
+        if let refusal = error as? RefusalOfResume { return refusal.unreadableSession }
         if case Snapshot.Failure.newerMachine(let saved, let supported)? = error as? Snapshot.Failure {
             return .newerMachine(saved: saved, supported: supported)
         }
@@ -124,6 +143,20 @@ public enum SavedSession: Sendable {
 
                 Elle est gardée telle quelle : mettez wisq à jour pour la \
                 reprendre. Pour repartir de zéro à la place, touchez \
+                « Oublier », puis rouvrez la machine.
+                """
+        case .otherDisks:
+            return """
+                La session de \(name) a été prise avec d'autres disques que \
+                ceux que la machine a maintenant : un disque débranché, \
+                remplacé par un autre fichier, ou ajouté depuis.
+
+                Elle n'est pas abîmée, et elle est gardée telle quelle : \
+                rebranchez le disque qu'elle avait — le même fichier, sous le \
+                même nom — puis rouvrez la machine pour la reprendre. Si un \
+                système vient d'être installé sur ce disque, « Démarrer \
+                l'image d'installation » remet les disques de la session. \
+                Pour repartir de zéro avec les disques d'aujourd'hui, touchez \
                 « Oublier », puis rouvrez la machine.
                 """
         }

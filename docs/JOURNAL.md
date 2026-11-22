@@ -8,6 +8,225 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : les disques qcow2, VMDK, VDI, VHD, VHDX et OVA par les lecteurs du cœur Swift, les machines installées sur le cœur Rust, une reprise sur d'autres disques dite comme telle, les refus des programmes à la console
+
+**Ce qui n'allait pas.** Trois choses gardaient des machines PC au cœur
+Swift, deux fois plus lent. *Les formats d'image* : le cœur Rust lisait sa
+base octet pour octet, et `RustPCMachine.attachFile` refusait un qcow2, un
+VMDK, un VDI, un VHD, un VHDX ou une OVA — une image de cloud Debian, une
+appliance VirtualBox ne démarraient que sur le cœur Swift (et une image de
+cloud démarrée telle quelle, son noyau lu dedans, échouait sur le cœur Rust
+au branchement du disque). *Les machines installées* :
+`RustPCSetting.runs(..., installed:)` les envoyait au cœur Swift, d'abord
+parce que le cœur Rust ne sauvait pas de session, ensuite parce que leurs
+disques sont souvent de ces formats. *Une reprise sur d'autres disques*
+(code -8, `snapshotOfOtherDisks`) remontait par `PendingSession` comme une
+session « abîmée », et la console conseillait « Oublier » — c'est-à-dire de
+jeter une session intacte.
+
+**Le choix pour les formats : faire servir les blocs par le Swift, à travers
+l'ABI, plutôt que porter les lecteurs.** Les raisons, dans l'ordre :
+
+- *Un seul lecteur par format pour les deux cœurs.* La couche d'écriture
+  d'une machine est la même sur les deux cœurs, au même format. Une machine
+  installée dont la session est jetée change de cœur avec sa couche : ce
+  qu'elle y a écrit repose sur les octets de base **tels que l'autre cœur les
+  lisait**. Deux lecteurs qui divergeraient d'un octet — un cluster
+  compressé, un grain zéro de VMDK, un bloc absent de VDI — feraient de cette
+  couche un système de fichiers corrompu, sans erreur nulle part. Un test
+  différentiel réduit ce risque ; un seul lecteur le supprime.
+- *Les lecteurs Swift sont déjà jugés et durcis* : 1 900 lignes pour sept
+  formats et le décodeur deflate, des fixtures de `qemu-img`, et
+  `HostileImageTests` (tables hors du fichier, tailles absurdes, en-têtes
+  hostiles). Les porter, c'était doubler la surface qu'un fichier téléchargé
+  attaque.
+- *Le rappel ne touche pas la machine.* Le réseau a refusé les rappels
+  (`pc::reseau`) parce qu'un rappel qui toucherait la machine pendant que le
+  verrou de la carte est tenu s'y bloquerait. Un lecteur d'image ne lit qu'un
+  fichier, et une lecture de disque doit de toute façon être servie pendant
+  l'`out` qui la notifie : une file n'y changerait rien. Le contrat est dans
+  l'en-tête (« read ne doit appeler aucune fonction wisq_pc_* »).
+- *Ce qu'on perd* : `wisq-pc` et la page (wasm32) ne lisent pas ces formats.
+  La page démarre des ISO brutes ; `wisq-pc` est un outil de banc. La preuve
+  de bout en bout passe donc par l'enveloppe Swift — le chemin de
+  l'application — et non par `wisq-pc`.
+
+**Ce qui est fait.**
+
+- *`wisq-carte`* (`fichier.rs`) : un trait `Lecteur` (la taille du disque,
+  « remplir ce tampon depuis cet octet »), et
+  `DisqueFichier::ouvrir_sur(lecteur, couche)`. La couche, ses refus et son
+  format ne changent pas ; la base est un fichier ou un lecteur, et le
+  lecteur reçoit les secteurs que personne n'a écrits **par suites**, comme
+  un fichier : une lecture d'un mébioctet que la couche ne touche pas est un
+  seul appel. Moins d'un secteur est refusé avant de créer la couche, et le
+  lecteur d'un disque refusé est lâché avec le refus.
+- *L'ABI* : `wisq_pc_attach_disk_reader(pc, which, size, read, release,
+  context, writes)` et ses deux types de rappel (79 → 80 fonctions). `read`
+  rend 1 ou 0 (une erreur d'entrée-sortie pour l'invité, jamais des zéros) ;
+  `release` est appelé **une fois et une seule**, au refus quel qu'il soit, ou
+  quand le disque s'en va. Un instantané dit ce disque « ailleurs », comme un
+  disque sur fichier.
+- *Swift* : `RustPCMachine.attachFile` reconnaît le format
+  (`VirtualDiskImages.recognizes`), ouvre le lecteur du cœur Swift
+  (`VirtualDiskImages.disk(fileAt:)`, le VMDK à descripteur et l'OVA
+  compris) et le tend par `attachImage` ; une image brute reste lue par le
+  cœur Rust lui-même. Une image reconnue mais refusée (chiffrée, à fichier
+  de base…) l'est sous la phrase que `FileDiskStore` dit sur le cœur Swift.
+- *Les machines installées* : `RustPCSetting.runs(core, enabled:, session:)`
+  perd son `installed:`. Une session décide toujours par son format ; sans
+  session — une machine neuve, ou dont la session a été jetée —, le réglage
+  décide, machine installée comprise. La note sous l'interrupteur et la doc
+  de `RustPCSetting` le disent.
+- *D'autres disques* : `SavedSession.Unreadable.otherDisks`, et un protocole
+  `SavedSession.RefusalOfResume` que `RustPCMachine.Refusal` adopte (le
+  refus vit dans `WisqVMRust`, la session dans `WisqVM`) : -8 devient
+  `otherDisks`, le reste `damaged`. La console dit que la session n'est pas
+  abîmée, qu'elle est gardée, de **rebrancher le disque qu'elle avait** — et,
+  si un système vient d'être installé sur ce disque, que « Démarrer l'image
+  d'installation » remet les disques de la session —, puis seulement le geste
+  qui repart de zéro. *Le cœur Swift*, lui, reprend sur ce qu'il trouve
+  (`VirtioBlock.restored(keeping:)` : le disque que l'application a branché,
+  ou un disque vide), et son seul refus est celui du fichier qui ne s'ouvre
+  plus, dit « Démarrage impossible », session gardée.
+- *Les refus des programmes* : le poste dit à la console, après ce que
+  l'invité a écrit dans la même tranche, chaque forme qu'un programme s'est
+  vu refuser (`Machine::refus`, déjà rempli au `#UD`), une fois par forme,
+  avec la phrase de `X86Machine.refusalNote` mot pour mot. L'application la
+  reçoit par la console, sans rien de plus.
+
+**La preuve de bout en bout.**
+
+- *Alpine installé sur un qcow2 démarre et lit son disque sur le cœur Rust*
+  (`testASystemInstalledOnAQcow2BootsOnTheRustCore`, `WISQ_PC_INSTALLED_DISK`).
+  Le disque : l'ISO `alpine-virt-3.24.4` démarrée par `wisq-pc` avec un
+  second disque brut de 512 Mio (une copie locale de `wisq-pc`, jamais
+  commitée), un MBR posé de l'hôte, puis dans l'invité `apk add e2fsprogs`,
+  `mkfs.ext4 /dev/vdb1`, `apk add --root /mnt --initdb alpine-base
+  e2fsprogs` depuis les paquets de l'ISO, le noyau et l'initramfs de l'ISO
+  et ses modules copiés, un `extlinux.conf` (`root=/dev/vda1`), un getty sur
+  `ttyS0` (131 s, 16,7 milliards d'instructions). `setup-disk` n'a pas pu
+  servir : l'ISO « virt » ne porte ni `linux-virt`, ni `syslinux`, ni
+  `mkinitfs`. Le disque vu à travers sa couche est ensuite écrit en qcow2 v3
+  (clusters de 64 Kio, les nuls absents, un sur trois des autres compressé
+  en deflate brut : 1 767 ordinaires, 750 compressés, 165 Mio) par un script
+  du bloc-notes — `qemu-img` n'est pas là, et son installation a été
+  refusée. Puis, par l'enveloppe Swift : `IsoBoot.decide` lit le noyau,
+  l'initramfs et la ligne dans le qcow2 (son `extlinux.conf`, à travers le
+  lecteur qcow2), `RustPCMachine` démarre avec le qcow2 en premier disque,
+  l'initramfs le monte en racine, et `login:` arrive à **2,67 milliards
+  d'instructions, en 22,4 à 23,7 s** (trois courses). Connecté : `cat
+  /root/preuve.txt /etc/hostname` rend « installee sur qcow2 » et
+  « wisq-installee », `/dev/vda1 on / type ext4`. Puis la racine remontée en
+  écriture, un fichier écrit, remontée en lecture seule : **le qcow2 n'a pas
+  bougé d'un octet, et le cœur Swift relit le fichier** dans la couche du
+  cœur Rust, par `FileDiskStore` sur le même qcow2, `PartitionTable` et
+  `Ext4Volume`.
+- *Chaque format sous un invité, sur les deux cœurs*
+  (`testEveryImageFormatIsReadByAGuestOfTheRustCore`) : un **pilote disque
+  minimal** écrit à la main (`noyau_factice::DISQUE`, 343 octets, sa source
+  dans le commentaire, sa copie `Tests/Fixtures/pc-noyau-disque.bin`
+  vérifiée octet pour octet) ouvre le premier disque virtio, lit 1 024 octets
+  à partir du secteur que porte son dernier quadruplet, les écrit au port
+  série, puis son statut. Sur treize images de `qemu-img` (qcow2 v2 et v3,
+  clusters de 4 et 64 Kio, compressés, marqués zéro, un disque de 2 Gio lu à
+  1 Gio ; VMDK creux, « stream » et de 2 Gio ; VDI dynamique ; VHD
+  dynamique ; VHDX dynamique ; OVA), ce que dit l'invité du cœur Rust est
+  ce que le lecteur Swift rend à cet endroit, et ce que dit le même invité
+  sur le cœur Swift. Les fixtures de ces formats passent de `WisqVMTests` à
+  `WisqVMTestKit` pour être partagées, sans changer d'un octet.
+
+**Les tests** : dix-sept de plus (4 353 → 4 370 au compte publié ; Swift
+3 140, Rust 1 230).
+
+- `wisq-carte` (trois) : la base lue par le lecteur par suites, jamais pour
+  un secteur écrit, le secteur d'une écriture partielle recopié une fois ;
+  **le même disque, par un lecteur et par un fichier brut, fait la même
+  couche octet pour octet** sous huit cents lectures et écritures tirées au
+  hasard, et chacun relit la couche de l'autre ; le lecteur qui échoue est
+  une erreur, moins d'un secteur est refusé sans couche, une couche d'un
+  autre disque est refusée, et le lecteur est lâché au refus comme avec le
+  disque.
+- `pc_disque` (trois, nouveau) : la fixture ; le pilote lit ce que le lecteur
+  traduit (un disque rangé à l'envers que le lecteur remet à l'endroit), en
+  un seul appel ; un secteur que le lecteur ne rend pas est un statut « 1 »
+  pour l'invité.
+- `pc_poste` (un) : la note d'un refus, une fois par forme, après ce que
+  l'invité a écrit, et une liste vidée qui repart de zéro.
+- `abi/pc.c` : chaque refus de `wisq_pc_attach_disk_reader` (pc nul, `read`
+  nul, troisième disque, couche nulle, moins d'un secteur, couche d'un autre
+  disque, machine chargée) lâche le lecteur une fois et ne crée pas de
+  couche ; le disque branché le garde jusqu'à `wisq_pc_free` ; l'instantané
+  se reprend sur un disque lu de même taille, pas sur une autre taille ni en
+  mémoire, ni en premier disque quand il était le second ; le pilote disque
+  lit à travers le lecteur C (« 0 »), et un octet que le lecteur ne rend
+  pas fait « 1 ». Le programme reçoit le pilote disque en sixième noyau.
+- Swift : `RustPCDiskImageTests` (sept, dont la preuve d'Alpine qui se tait
+  sans son disque) — les treize images sur les deux cœurs, l'image brute,
+  une table L1 qui mène à un pétaoctet (une erreur d'entrée-sortie sur les
+  deux cœurs), une image en second disque qui laisse le premier en place, le
+  refus sous la phrase du format, la vie du lecteur (lâché avec la machine,
+  au refus d'une couche, au refus d'une machine chargée) ;
+  `RustPCMachineTests` (un de plus, deux récrits) — la décision sans
+  `installed:`, la session jetée qui rend la machine au réglage, et une
+  session reprise sur d'autres disques (une autre taille, aucun, une image
+  en mémoire) qui remonte en `otherDisks`, la session promise gardée, puis
+  se reprend rebranchée ; `SavedSessionTests` (deux) — la phrase, et le
+  protocole lu tel quel.
+
+**Les sabotages** : vingt-neuf, d'une ligne chacun
+(`<bloc-notes>/disq/sab/sabotages.py`, journal `sabotages.log`), la source
+rendue après chacun et sa somme vérifiée, `git diff` identique avant et
+après. **Vingt-huit tombent, un survit.**
+
+| où | sabotages | tombent dans |
+|---|---|---|
+| `wisq-carte` | la taille du lecteur faussée, sa panne dite réussie, la base lue dans la couche, moins d'un secteur admis (F1 à F4) ; la panne dite réussie, sous l'invité (F2d) | les trois tests de `fichier` ; `pc_disque` |
+| l'ABI | le lecteur non lâché sans `read`, le second disque branché en premier, -5 rendu -4, la machine chargée pas refusée avant la couche, un 0 de `read` pris pour un succès, le lecteur jamais lâché, la taille coupée en deux (A1 à A7) | `abi/pc.c` |
+| le poste | chaque refus redit, la note jamais dite, la liste vidée qui fait paniquer (P1, P2, P4) | `a_form_a_program_was_refused_is_said_once_on_the_console` |
+| Swift | le format jamais reconnu, la panne du lecteur dite réussie, le lecteur jamais relâché, -5 mal nommé, -8 dit abîmé, le protocole ignoré, le réglage ignoré, le second disque en premier, la phrase du format perdue, la taille coupée, le tampon rempli de zéros, la phrase « rebranchez » retirée, la session qui ne décide plus (S1 à S13) | `RustPCDiskImageTests`, `RustPCMachineTests`, `SavedSessionTests` |
+
+*Le survivant* : P3, l'index des refus déjà lus qui n'avance plus. Le poste
+relit alors toute la liste à chaque tranche, et l'ensemble des formes dites
+l'empêche de rien redire : c'est un coût, pas un comportement, et aucun test
+d'octets ne le voit. Gardé pour ce coût (une liste qu'un programme qui
+réessaie fait grandir). *Une étiquette fausse* : le script a marqué les
+treize sabotages Swift « ne compile pas », parce qu'il prenait le « error: »
+des échecs de XCTest pour une erreur de compilation ; les treize ont
+compilé, et chacun tombe sur une assertion nommée dans le journal.
+
+**Les vérifications.** `cargo fmt --all --check` ; `cargo clippy
+--all-targets --all-features -- -D warnings` et `cargo clippy --all-targets
+-- -D warnings` ; `cargo test --release` sur tout l'espace de travail (1 231
+passés, 0 échec, 49 suites) ; sous `RUSTFLAGS="-C debug-assertions=yes -C
+overflow-checks=yes"` (dans le `target` de cette branche), les bibliothèques
+de `wisq-carte` (244) et de `wisq-vm` (149), `pc_disque` (3), `pc_poste`
+(33), `pc_reseau` (6), `pc_carte` (6) et `abi` (6), tous passés ;
+`cargo build --release -p wisq-vm`, `swift build --build-tests`, les tests
+touchés puis la suite Swift entière (`swift test --skip-build --parallel`,
+3 054 cas, 0 échec) ; SwiftLint `--strict` ; `swiftc -frontend -parse` sur
+`LocalVMModel.swift` et `WebKitBenchView.swift` ; `check-whitespace`,
+`check-project-sources` ; le recompte, puis `bun run build` et `bun test`
+dans `site/` (476 passés) — la page d'architecture dit désormais une ABI de
+quatre-vingts fonctions, et sa provenance dit laquelle s'est ajoutée.
+
+**Ce qui reste.**
+
+- *Le cœur Swift reprend toujours sur d'autres disques* : un disque changé
+  sous une session du cœur Swift est repris tel quel. Lui donner le refus du
+  cœur Rust changerait le format de ses sessions.
+- *Un système installé pendant une session* : la session prise pendant
+  l'installation (ISO en `vda`, disque en `vdb`) ne se reprend plus une fois
+  que `IsoBoot.decide` voit le système sur le disque et le démarre en `vda` ;
+  la console le dit désormais et donne le geste qui remet les disques, mais
+  l'application pourrait garder la disposition de la session tant qu'elle
+  existe.
+- *`wisq-pc` ne lit pas ces formats*, par choix (voir plus haut).
+- *Le rappel copie* : le lecteur Swift remplit un `[UInt8]`, recopié dans le
+  tampon du cœur Rust. Rien de mesuré ne le voit (Alpine démarre en 23 s
+  depuis le qcow2), mais une lecture de 1 Mio fait deux copies.
+- *Rien n'est mesuré sur un iPhone*, ni la reprise d'une machine installée.
+
 ## 2026-11-22 — Machine PC en Rust : la session sauvée et reprise — la carte entière dans l'instantané (version 2), le format de la session qui choisit le cœur
 
 **Ce qui n'allait pas.** Une machine PC neuve démarre sur le cœur Rust, mais

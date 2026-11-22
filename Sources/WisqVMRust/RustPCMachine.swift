@@ -269,28 +269,82 @@ public final class RustPCMachine: @unchecked Sendable {
         return counts
     }
 
-    /// Le cœur Rust lit sa base octet pour octet : un qcow2, un VMDK, un VDI,
-    /// un VHD dynamique, un VHDX ou une appliance n'en sont pas les octets.
-    /// Leurs lecteurs sont côté Swift, sous `X86Machine`.
-    private func refuseImageFormats(_ base: URL) throws {
-        guard VirtualDiskImages.recognizes(fileAt: base) else { return }
-        throw FileDiskStore.Failure.unreadableImage(
-            "ce disque est dans un format d'image (qcow2, VMDK, VDI, VHD, VHDX ou OVA) que la "
-                + "machine PC en Rust ne lit pas encore ; le cœur Swift le lit, ou il se convertit "
-                + "avec `qemu-img convert -O raw`.")
-    }
-
+    /// **Un disque sur fichier**, en premier disque (`which` 0) ou en second
+    /// (1). Une image brute, le cœur Rust la lit lui-même, octet pour octet.
+    /// **Un qcow2, un VMDK, un VDI, un VHD, un VHDX ou une appliance OVA** :
+    /// ses octets ne sont pas ceux du disque, et ce sont les lecteurs du cœur
+    /// Swift qui les traduisent (`VirtualDiskImages`, ceux que
+    /// `FileDiskStore` met sous sa couche) — tendus au cœur Rust par l'ABI
+    /// (`wisq_pc_attach_disk_reader`), qui leur demande les secteurs que
+    /// l'invité n'a pas écrits. **Un seul lecteur par format pour les deux
+    /// cœurs** : la couche d'une machine, écrite sur l'un, repose sur les
+    /// mêmes octets de base sous l'autre. Une image reconnue mais refusée
+    /// (chiffrée, à fichier de base…) l'est sous la phrase de son format,
+    /// comme `FileDiskStore` la dit.
     private func attachFile(
-        _ base: URL, writes: URL,
+        _ base: URL, writes: URL, which: UInt32,
         _ attach: (OpaquePointer, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Int32
     ) throws {
-        try refuseImageFormats(base)
+        if VirtualDiskImages.recognizes(fileAt: base) {
+            let image: (any VirtualDiskImage)?
+            do {
+                image = try VirtualDiskImages.disk(fileAt: base)
+            } catch {
+                throw FileDiskStore.Failure.unreadableImage(
+                    (error as? LocalizedError)?.errorDescription ?? "image de disque illisible.")
+            }
+            guard let image else { throw FileDiskStore.Failure.cannotOpenBase }
+            return try attachImage(image, writes: writes, which: which)
+        }
         let code = base.withUnsafeFileSystemRepresentation { basePath in
             writes.withUnsafeFileSystemRepresentation { writesPath -> Int32 in
                 guard let basePath, let writesPath else { return -1 }
                 return attach(pc, basePath, writesPath)
             }
         }
+        try Self.check(diskCode: code)
+    }
+
+    /// Le lecteur d'une image, tenu par la bibliothèque tant que le disque vit
+    /// (`Unmanaged`, lâché par le rappel `release`).
+    private final class ImageReader {
+        let image: any VirtualDiskImage
+        init(_ image: any VirtualDiskImage) { self.image = image }
+    }
+
+    /// **Brancher un disque lu par `image`.** Ce que `read` reçoit est copié
+    /// dans le tampon de la bibliothèque ; un `false` du lecteur devient une
+    /// erreur d'entrée-sortie pour l'invité. Le rappel est appelé du fil de
+    /// `run`, le verrou de la carte tenu : il ne touche qu'au lecteur, jamais
+    /// à la machine.
+    func attachImage(_ image: any VirtualDiskImage, writes: URL, which: UInt32) throws {
+        let reader = Unmanaged.passRetained(ImageReader(image)).toOpaque()
+        let code = writes.withUnsafeFileSystemRepresentation { writesPath -> Int32 in
+            // La bibliothèque lâche le lecteur à chaque refus, même ici.
+            wisq_pc_attach_disk_reader(
+                pc, which, image.virtualSize,
+                { context, offset, buffer, length in
+                    guard let context, let buffer else { return 0 }
+                    let reader = Unmanaged<ImageReader>.fromOpaque(context).takeUnretainedValue()
+                    var bytes = [UInt8](repeating: 0, count: length)
+                    guard reader.image.read(into: &bytes, at: offset) else { return 0 }
+                    bytes.withUnsafeBufferPointer { read in
+                        guard let source = read.baseAddress else { return }
+                        buffer.update(from: source, count: length)
+                    }
+                    return 1
+                },
+                { context in
+                    guard let context else { return }
+                    Unmanaged<ImageReader>.fromOpaque(context).release()
+                },
+                reader, writesPath)
+        }
+        try Self.check(diskCode: code)
+    }
+
+    /// Les codes de `wisq_pc_attach_disk_file` et `wisq_pc_attach_disk_reader`.
+    static func check(diskCode code: Int32) throws {
         switch code {
         case 0: return
         case -2: throw FileDiskStore.Failure.cannotOpenBase
@@ -499,6 +553,17 @@ public final class RustPCMachine: @unchecked Sendable {
     }
 }
 
+/// **Ce qu'une reprise refusée dit de la session** : d'autres disques que
+/// ceux de l'instantané, ce n'est pas une session abîmée — rebranchée sur ses
+/// disques, elle se reprend, et la console le dit (`SavedSession.Unreadable`).
+/// Les autres refus restent « abîmée » : `SavedSession.judge` a déjà lu
+/// l'en-tête, et ce qui échoue plus loin est le fichier lui-même.
+extension RustPCMachine.Refusal: SavedSession.RefusalOfResume {
+    public var unreadableSession: SavedSession.Unreadable {
+        self == .snapshotOfOtherDisks ? .otherDisks : .damaged
+    }
+}
+
 // MARK: - La machine vue par l'application
 
 extension RustPCMachine: GuestMachine {
@@ -550,11 +615,11 @@ extension RustPCMachine: GuestMachine {
     }
 
     public func attachDisk(fileAt base: URL, writes: URL) throws {
-        try attachFile(base, writes: writes) { wisq_pc_attach_disk_file($0, $1, $2) }
+        try attachFile(base, writes: writes, which: 0) { wisq_pc_attach_disk_file($0, $1, $2) }
     }
 
     public func attachSecondDisk(fileAt base: URL, writes: URL) throws {
-        try attachFile(base, writes: writes) { wisq_pc_attach_second_disk_file($0, $1, $2) }
+        try attachFile(base, writes: writes, which: 1) { wisq_pc_attach_second_disk_file($0, $1, $2) }
     }
 
     public func flushDisk() { _ = wisq_pc_flush_disks(pc) }
@@ -675,9 +740,19 @@ public final class RustPCScreen: @unchecked Sendable {
 /// (`WISQPC\r\n`, `RustPCSnapshot`) se reprend sur le cœur Rust, réglage
 /// éteint compris ; une session du cœur Swift, sur le cœur Swift, réglage
 /// allumé compris. Sinon, toucher l'interrupteur rendrait une session
-/// illisible. **Sans session**, le réglage décide pour une machine PC neuve ;
-/// une machine installée reste au cœur Swift, qui garde son disque et sa
-/// session.
+/// illisible. **Sans session** — une machine neuve, ou dont la session a été
+/// jetée —, le réglage décide, **machine installée comprise** : son disque
+/// est lu par les mêmes lecteurs et sa couche a le même format sur les deux
+/// cœurs, et sa session, une fois sauvée par l'un, y revient. Une reprise
+/// sur d'autres disques que ceux de l'instantané est refusée sans jeter la
+/// session (`SavedSession.Unreadable.otherDisks`) : la console dit de
+/// rebrancher le disque.
+///
+/// **Les disques, comme le cœur Swift** : une image brute lue sur place par
+/// le cœur Rust, et les formats d'autres hyperviseurs (qcow2, VMDK, VDI,
+/// VHD, VHDX, OVA) par les lecteurs du cœur Swift (`VirtualDiskImages`),
+/// tendus au cœur Rust par l'ABI (`attachImage`) ; la couche d'écriture est
+/// la même, au même format.
 ///
 /// **La machine du cœur Rust sauve ses sessions** (`savesSessions`), comme
 /// le cœur Swift : au départ de l'écran et toutes les cinq minutes
@@ -694,11 +769,14 @@ public final class RustPCScreen: @unchecked Sendable {
 /// carte (ses files, ce que le pilote a négocié) vient de l'instantané ; les
 /// trames en file n'y sont pas, comme chez le cœur Swift (`VirtioNet.save`).
 ///
+/// **Les refus des programmes, comme le cœur Swift** : une instruction qu'un
+/// programme demande et que ce processeur n'a pas lui vaut « Illegal
+/// instruction », et la console le dit, une fois par forme, avec la phrase de
+/// `X86Machine.refusalNote` (`Poste::dire_les_refus`).
+///
 /// **Ce qui lui manque encore par rapport au cœur Swift** : les bureaux prêts
 /// refabriqués à son format (ceux qu'on télécharge sont des instantanés du
-/// cœur Swift, et s'y reprennent) ; les formats d'image de disque (qcow2,
-/// VMDK…), que seul le cœur Swift lit ; les refus des programmes, que
-/// `X86Machine` dit dans la console.
+/// cœur Swift, et s'y reprennent).
 public enum RustPCSetting {
     public static let key = "wisq.machine.pc-rust"
     /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift
@@ -715,12 +793,12 @@ public enum RustPCSetting {
     }
 
     /// **Le cœur Rust prend-il cette machine ?** `session` est la session
-    /// sauvée, décompressée, s'il y en a une : son format décide.
-    public static func runs(
-        _ core: GuestArchitecture.Core, enabled: Bool, session: Data?, installed: Bool
-    ) -> Bool {
+    /// sauvée, décompressée, s'il y en a une : son format décide. Sans
+    /// session — une machine neuve, ou dont la session a été jetée —, le
+    /// réglage décide, machine installée comprise.
+    public static func runs(_ core: GuestArchitecture.Core, enabled: Bool, session: Data?) -> Bool {
         guard core == .x86_64 else { return false }
         if let session { return RustPCSnapshot.recognizes(session) }
-        return enabled && !installed
+        return enabled
     }
 }

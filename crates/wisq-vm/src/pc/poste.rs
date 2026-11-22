@@ -26,7 +26,7 @@
 //! le compile. Le disque sur fichier et l'heure du système sont donnés par
 //! l'appelant (`ffi.rs`).
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -452,6 +452,10 @@ pub struct Poste {
     /// Le temps rattrapé jusqu'ici, en instructions : du temps du dehors, pas
     /// du travail, et que [`Poste::temps`] ne compte pas.
     rattrape: u64,
+    /// Les refus de la machine ([`Machine::refus`]) déjà regardés.
+    refus_lus: usize,
+    /// Les formes refusées déjà dites à la console : une fois chacune.
+    refus_dits: HashSet<String>,
 }
 
 impl Poste {
@@ -477,6 +481,8 @@ impl Poste {
             pret: false,
             du: 0,
             rattrape: 0,
+            refus_lus: 0,
+            refus_dits: HashSet::new(),
         })
     }
 
@@ -690,7 +696,8 @@ impl Poste {
             self.donner_les_entrees();
             let rendu = self.machine.tourner(TRANCHE.min(budget - faites));
             self.publier();
-            let octets = self.machine.sortie();
+            let mut octets = self.machine.sortie();
+            self.dire_les_refus(&mut octets);
             if !octets.is_empty() {
                 sortie(&octets);
             }
@@ -716,6 +723,24 @@ impl Poste {
                 self.du -= pas;
             }
         }
+    }
+
+    /// **Ce qu'un programme a demandé et que ce processeur n'a pas** : le
+    /// programme a reçu son « Illegal instruction », la machine continue, et
+    /// la console dit pourquoi — la phrase de `X86Machine.refusalNote`, après
+    /// ce que l'invité a écrit dans la même tranche, une fois par forme, pour
+    /// qu'un programme qui réessaie en boucle ne la noie pas.
+    fn dire_les_refus(&mut self, sortie: &mut Vec<u8>) {
+        // Une machine reprise repart d'une liste qui n'est plus celle lue.
+        if self.refus_lus > self.machine.refus.len() {
+            self.refus_lus = 0;
+        }
+        for refus in &self.machine.refus[self.refus_lus..] {
+            if self.refus_dits.insert(refus.clone()) {
+                sortie.extend_from_slice(note_de_refus(refus).as_bytes());
+            }
+        }
+        self.refus_lus = self.machine.refus.len();
     }
 
     /// Les deux compteurs de rattrapage, pour l'instantané.
@@ -766,6 +791,15 @@ impl Poste {
         touches.tenues_au_bout = Tenues(entrees.tenues_au_bout);
         touches.tenues_remises = Tenues(entrees.tenues_remises);
     }
+}
+
+/// **La phrase de la console pour un refus**, celle du cœur Swift
+/// (`X86Machine.refusalNote`), entre crochets comme les autres notes de wisq.
+pub fn note_de_refus(refus: &str) -> String {
+    format!(
+        "\r\n[wisq : un programme a demandé {refus}, que ce processeur ne sait pas encore \
+         exécuter. Il reçoit « Illegal instruction » ; la machine continue.]\r\n"
+    )
 }
 
 /// **Les entrées pas encore données à l'invité** ([`Poste::entrees`]).

@@ -6,14 +6,15 @@
  * faux à l'exécution. Ce programme appelle chaque fonction `wisq_pc_*`, juge
  * ce qu'elle rend, et le dit en français.
  *
- * Il reçoit cinq petits noyaux, gravés par tests/abi.rs : le noyau factice
+ * Il reçoit six petits noyaux, gravés par tests/abi.rs : le noyau factice
  * (sa bannière, sa ligne, cinq battements, « FIN »), une boucle sans fin, un
- * `ud2` sans IDT, l'impulsion de remise à zéro de l'i8042, et le pilote
- * réseau minimal (une trame émise, une trame reçue sur son propre code) ;
- * puis un dossier où poser un disque.
+ * `ud2` sans IDT, l'impulsion de remise à zéro de l'i8042, le pilote réseau
+ * minimal (une trame émise, une trame reçue sur son propre code) et le
+ * pilote disque minimal (1 024 octets lus à partir du secteur 7, écrits au
+ * port série, puis le statut) ; puis un dossier où poser un disque.
  *
  *   cc -I include tests/abi/pc.c -L <libdir> -lwisq_vm -lpthread -o pc
- *   ./pc factice.bin boucle.bin faute.bin remise.bin reseau.bin <dossier>
+ *   ./pc factice.bin boucle.bin faute.bin remise.bin reseau.bin disque.bin <dossier>
  */
 
 #include "wisq_vm.h"
@@ -80,6 +81,47 @@ static WisqPC *booted(const File *kernel, const char *line, Console *console) {
     return pc;
 }
 
+/* Le lecteur d'une base que l'appelant traduit : ici une image en mémoire,
+ * qui compte ses lectures et ses lâchers. */
+typedef struct {
+    uint8_t bytes[8192];
+    uint64_t size;
+    int reads;
+    int outside;
+    int released;
+    uint64_t broken; /* un octet que le lecteur ne sait pas rendre, ou 0 */
+} Reader;
+
+static int reader_read(void *context, uint64_t offset, uint8_t *buffer, size_t length) {
+    Reader *reader = context;
+    reader->reads++;
+    if (offset > reader->size || length > reader->size - offset) {
+        reader->outside++;
+        return 0;
+    }
+    if (reader->broken && offset <= reader->broken && reader->broken < offset + length) return 0;
+    memcpy(buffer, reader->bytes + offset, length);
+    return 1;
+}
+
+static void reader_release(void *context) {
+    ((Reader *)context)->released++;
+}
+
+/* Une machine dont le premier disque est lu par `reader`, sa couche dans
+ * `writes`, le noyau factice chargé ; NULL si le branchement est refusé. */
+static WisqPC *with_reader(const File *kernel, Reader *reader, const char *writes, Console *console) {
+    WisqPC *pc = wisq_pc_new(RAM, console ? on_output : NULL, console);
+    if (!pc) return NULL;
+    check(wisq_pc_set_time(pc, 1795230600) == 0, "wisq_pc_set_time rend 0");
+    if (wisq_pc_attach_disk_reader(pc, 0, reader->size, reader_read, reader_release, reader, writes) != 0) {
+        wisq_pc_free(pc);
+        return NULL;
+    }
+    check(wisq_pc_load(pc, kernel->bytes, kernel->len, "x=y", NULL, 0) == 0, "le noyau se charge");
+    return pc;
+}
+
 /* Le fil qui arrête une course sans fin. */
 typedef struct {
     WisqPC *pc;
@@ -111,8 +153,8 @@ static void *stop_later(void *argument) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 7) {
-        fprintf(stderr, "usage : pc factice boucle faute remise reseau dossier\n");
+    if (argc < 8) {
+        fprintf(stderr, "usage : pc factice boucle faute remise reseau disque dossier\n");
         return 2;
     }
     File factice = read_file(argv[1]);
@@ -120,8 +162,9 @@ int main(int argc, char **argv) {
     File faute = read_file(argv[3]);
     File remise = read_file(argv[4]);
     File reseau = read_file(argv[5]);
-    const char *folder = argv[6];
-    if (!factice.len || !boucle.len || !faute.len || !remise.len || !reseau.len) {
+    File disque = read_file(argv[6]);
+    const char *folder = argv[7];
+    if (!factice.len || !boucle.len || !faute.len || !remise.len || !reseau.len || !disque.len) {
         fprintf(stderr, "ABI pc : un noyau illisible\n");
         return 2;
     }
@@ -344,6 +387,157 @@ int main(int argc, char **argv) {
     wisq_pc_free(reference);
     wisq_pc_free(cut);
     wisq_pc_free(resumed);
+
+    /* --- Un disque dont la base est lue par l'appelant (un qcow2, côté
+     * Swift) : chaque refus lâche le lecteur tout de suite, une fois ; le
+     * disque branché le garde jusqu'à wisq_pc_free ; l'instantané le dit
+     * « ailleurs », comme un disque sur fichier. --- */
+    {
+        static Reader reader, other;
+        memset(&reader, 0, sizeof reader);
+        reader.size = sizeof reader.bytes;
+        char couche[4096], couche_map[4096];
+        snprintf(couche, sizeof couche, "%s/lu.couche", folder);
+        snprintf(couche_map, sizeof couche_map, "%s/lu.couche.map", folder);
+        check(wisq_pc_attach_disk_reader(NULL, 0, 8192, reader_read, reader_release, &reader, couche) == -1 &&
+                  reader.released == 1,
+              "attach_disk_reader(NULL) refuse et lâche le lecteur");
+        WisqPC *lone = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(lone, 0, 8192, NULL, reader_release, &reader, couche) == -1 &&
+                  reader.released == 2,
+              "sans read : refusé, lâché");
+        check(wisq_pc_attach_disk_reader(lone, 0, 8192, NULL, NULL, &reader, couche) == -1,
+              "ni read ni release : refusé");
+        check(wisq_pc_attach_disk_reader(lone, 2, 8192, reader_read, reader_release, &reader, couche) == -1 &&
+                  reader.released == 3,
+              "un troisième disque n'existe pas");
+        check(wisq_pc_attach_disk_reader(lone, 0, 8192, reader_read, reader_release, &reader, NULL) == -1 &&
+                  reader.released == 4,
+              "sans couche : refusé");
+        check(wisq_pc_attach_disk_reader(lone, 1, 511, reader_read, reader_release, &reader, couche) == -3 &&
+                  reader.released == 5,
+              "moins d'un secteur");
+        check(access(couche, F_OK) != 0 && access(couche_map, F_OK) != 0,
+              "et aucune couche n'est créée pour un refus");
+        check(reader.reads == 0, "aucun refus ne lit la base");
+        wisq_pc_free(lone);
+
+        reader.released = 0;
+        for (size_t i = 0; i < sizeof reader.bytes; i++) reader.bytes[i] = (uint8_t)(i * 7 + i / 512);
+        WisqPC *read_pc = with_reader(&factice, &reader, couche, NULL);
+        check(read_pc != NULL, "le disque lu par l'appelant se branche");
+        check(reader.released == 0, "branché, il n'est pas lâché");
+        check(access(couche, F_OK) == 0 && access(couche_map, F_OK) == 0, "sa couche est créée");
+        char tard[4096], tard_map[4096];
+        snprintf(tard, sizeof tard, "%s/lu-tard.couche", folder);
+        snprintf(tard_map, sizeof tard_map, "%s/lu-tard.couche.map", folder);
+        check(wisq_pc_attach_disk_reader(read_pc, 1, 8192, reader_read, reader_release, &other, tard) == -7 &&
+                  other.released == 1,
+              "plus de disque une fois chargée, et le lecteur refusé est lâché");
+        check(access(tard, F_OK) != 0 && access(tard_map, F_OK) != 0,
+              "sans créer la couche d'un branchement refusé");
+        check(wisq_pc_disk_bytes_written(read_pc) == 0 && wisq_pc_flush_disks(read_pc) == 0,
+              "rien d'écrit, et la couche se scelle");
+        check(wisq_pc_run(read_pc, 1000000) == WISQ_PC_BUDGET, "la course coupée");
+        uint8_t *taken = NULL;
+        size_t taken_len = 0;
+        check(wisq_pc_snapshot(read_pc, &taken, &taken_len) == 0 && taken, "son instantané se prend");
+        check(taken_len < 1u << 20, "sans les octets du disque : ils vivent ailleurs");
+
+        /* La reprise : sur un disque lu de la même taille, oui ; d'une autre
+         * taille, ou en mémoire, non. */
+        static Reader same;
+        memcpy(&same, &reader, sizeof same);
+        same.released = 0;
+        WisqPC *again = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(again, 0, same.size, reader_read, reader_release, &same, couche) == 0,
+              "le même disque, rebranché");
+        check(wisq_pc_restore(again, taken, taken_len) == 0, "se reprend");
+        check(wisq_pc_run(again, 50000000) == WISQ_PC_POWER_OFF, "et finit sa course");
+        wisq_pc_free(again);
+        check(same.released == 1, "lâché avec la machine");
+
+        static Reader smaller;
+        memset(&smaller, 0, sizeof smaller);
+        smaller.size = 4096;
+        char autre[4096];
+        snprintf(autre, sizeof autre, "%s/lu-autre.couche", folder);
+        WisqPC *shrunk = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(shrunk, 0, smaller.size, reader_read, reader_release, &smaller, couche) ==
+                  -5 && smaller.released == 1,
+              "la couche d'un disque de huit mille octets refuse un disque de quatre mille");
+        check(wisq_pc_attach_disk_reader(shrunk, 0, smaller.size, reader_read, reader_release, &smaller, autre) == 0,
+              "sur sa propre couche, il se branche");
+        check(wisq_pc_restore(shrunk, taken, taken_len) == -8, "mais ne reprend pas l'instantané d'un autre disque");
+        wisq_pc_free(shrunk);
+        check(smaller.released == 2, "lâché avec la machine");
+        WisqPC *in_memory = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk(in_memory, reader.bytes, sizeof reader.bytes) == 0, "le même disque, en mémoire");
+        check(wisq_pc_restore(in_memory, taken, taken_len) == -8, "n'est pas celui qui vivait ailleurs");
+        wisq_pc_free(in_memory);
+        wisq_pc_free_snapshot(taken, taken_len);
+
+        check(wisq_pc_run(read_pc, 50000000) == WISQ_PC_POWER_OFF, "l'originale finit sa course");
+        check(reader.outside == 0 && same.outside == 0, "rien n'a été demandé hors du disque");
+        wisq_pc_free(read_pc);
+        check(reader.released == 1, "le lecteur est lâché une fois, avec la machine");
+
+        /* Le pilote disque lit à travers le lecteur : les 1 024 octets du
+         * secteur 7, puis « 0 » ; un octet que le lecteur ne sait pas rendre
+         * fait une erreur d'entrée-sortie, « 1 ». */
+        for (int broken = 0; broken < 2; broken++) {
+            static Reader guest_reader;
+            memcpy(&guest_reader, &reader, sizeof guest_reader);
+            guest_reader.released = 0;
+            guest_reader.reads = 0;
+            guest_reader.broken = broken ? 7 * 512 + 700 : 0;
+            char lue[4096];
+            snprintf(lue, sizeof lue, "%s/lu-invite-%d.couche", folder, broken);
+            static Console said;
+            memset(&said, 0, sizeof said);
+            WisqPC *guest = with_reader(&disque, &guest_reader, lue, &said);
+            check(guest && wisq_pc_run(guest, 50000000) == WISQ_PC_POWER_OFF, "le pilote disque s'éteint");
+            check(said.len == 1025, "1 024 octets et le statut");
+            check(said.bytes[1024] == (broken ? '1' : '0'),
+                  broken ? "ce que le lecteur ne rend pas est une erreur pour l'invité" : "lu");
+            if (!broken)
+                check(memcmp(said.bytes, guest_reader.bytes + 7 * 512, 1024) == 0,
+                      "l'invité lit ce que le lecteur rend");
+            check(guest_reader.reads == 1, "un seul appel pour 1 024 octets");
+            wisq_pc_free(guest);
+            check(guest_reader.released == 1, "lâché avec la machine");
+        }
+
+        /* Le second disque est le second : l'instantané d'une machine dont
+         * le seul disque lu est vdb ne se reprend pas là où il est vda. */
+        static Reader as_second, as_first, again_second;
+        memcpy(&as_second, &reader, sizeof as_second);
+        char seconde[4096];
+        snprintf(seconde, sizeof seconde, "%s/lu-second.couche", folder);
+        WisqPC *second_pc = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(second_pc, 1, 8192, reader_read, reader_release, &as_second, seconde) == 0,
+              "un disque lu, en second");
+        check(wisq_pc_load(second_pc, factice.bytes, factice.len, NULL, NULL, 0) == 0, "chargée");
+        check(wisq_pc_run(second_pc, 1000000) == WISQ_PC_BUDGET, "coupée");
+        uint8_t *second_snapshot = NULL;
+        size_t second_len = 0;
+        check(wisq_pc_snapshot(second_pc, &second_snapshot, &second_len) == 0, "son instantané");
+        memcpy(&as_first, &reader, sizeof as_first);
+        WisqPC *first_pc = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(first_pc, 0, 8192, reader_read, reader_release, &as_first, seconde) == 0,
+              "le même, en premier");
+        check(wisq_pc_restore(first_pc, second_snapshot, second_len) == -8, "n'est pas le même branchement");
+        memcpy(&again_second, &reader, sizeof again_second);
+        WisqPC *again_pc = wisq_pc_new(RAM, NULL, NULL);
+        check(wisq_pc_attach_disk_reader(again_pc, 1, 8192, reader_read, reader_release, &again_second, seconde) ==
+                  0,
+              "le même, en second");
+        check(wisq_pc_restore(again_pc, second_snapshot, second_len) == 0, "se reprend");
+        wisq_pc_free_snapshot(second_snapshot, second_len);
+        wisq_pc_free(second_pc);
+        wisq_pc_free(first_pc);
+        wisq_pc_free(again_pc);
+    }
 
     /* --- Le temps passé dehors : payé pendant le sommeil, hors du temps. --- */
     Console late = {{0}, 0};

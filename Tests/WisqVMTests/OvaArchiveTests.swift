@@ -1,5 +1,6 @@
 import XCTest
 @testable import WisqVM
+import WisqVMTestKit
 
 /// Le disque d'une appliance OVA, lu dans l'archive : contre des archives de
 /// GNU tar dans ses trois formats, et des décalages relevés par le module
