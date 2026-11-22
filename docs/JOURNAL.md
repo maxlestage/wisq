@@ -105,7 +105,7 @@ cinq octets, que son noyau ne connaît pas (« Unknown kernel command line
 parameters »), et sa console est la même à l'ordre de deux lignes près
 (l'horloge figée, la même graine).
 
-**Les tests** : six de plus (4 388 → 4 394 au compte publié, 4 403 une fois master fusionné ; Swift 3 162,
+**Les tests** : six de plus (4 388 → 4 394 au compte publié, 4 405 une fois master fusionné ; Swift 3 162,
 Rust 1 232).
 
 - Rust : `the_slices_say_whether_the_guest_stays_on_one_page` (`pc_poste`) —
@@ -151,6 +151,121 @@ Rust 1 232).
   la ligne d'état qui est corrigée, pour toutes.
 - *Les bureaux prêts* gardent leur ligne de fabrication dans leur manifeste ;
   ceux qui existent ne changent pas, une refabrication aura la nouvelle.
+## 2026-11-22 — Interface : la série « avant », un petit système de design, les machines en cartes, et quatre tours de captures
+
+**Ce qui n'allait pas.** L'utilisateur juge l'interface « pas belle ». Le
+premier run du workflow des aperçus sur master (**run 45033031541**, 24 PNG
+d'un iPhone simulé sous iOS 26, en clair, sombre et grand texte) l'a montré
+écran par écran :
+- *machines* : des rangées serrées, la même icône d'ordinateur pour toutes ;
+  le curseur de mémoire collé au nom ; un paragraphe de douze lignes sous les
+  machines installées ; en grand texte, le nom coupé en deux et le nom de
+  fichier sur cinq lignes ;
+- *accueil vide* : le bouton principal en pavé de quatre lignes au bas de
+  l'écran, loin de l'invitation ;
+- *écran d'une machine* : cinq boutons dans la barre, sans titre ; des
+  touches et un « Entrée » au style par défaut ;
+- *téléchargement* : un bureau prêt en texte serré, son action réduite à une
+  icône, des images aux noms de fichier pour titre ;
+- *connexions* : la même icône teintée partout, et le port écrit
+  « 3,389 » ;
+- *éditeur* : « le mot de passe VNC » pour une machine SPICE.
+
+**Ce qui est fait.**
+
+- *Le système de design* (`Sources/WisqUI/Views/Design.swift`) : l'accent,
+  les rayons, les espacements, les fonds du système (qui suivent le mode
+  sombre), le badge d'une distribution (`DistributionBadge`, d'après
+  `MachineBadge`), la pastille d'un état (`StatePill`), les puces
+  (`ChipLabel`), les cartes (`card()`, `cardRow()`), les touches
+  (`KeyCapStyle`), et une disposition qui passe à la ligne (`FlowLayout`).
+- *Machines* : chaque machine installée est une carte — badge, nom, fichier,
+  pastille « Session sauvée », « Éteinte » ou « Jamais lancée », bouton
+  rond « Reprendre » ou « Démarrer » ; la mémoire sur sa rangée, nommée ; le
+  disque, le réseau et « Plus » en puces. « Plus » montre les gestes de
+  l'appui long (renommer, exporter, dupliquer, démarrer l'image
+  d'installation), qui restent aussi sous l'appui long. Les images de la
+  bibliothèque ont la même carte, avec le bouton de lecture seulement pour ce
+  qui démarre. Le paragraphe des machines installées passe dans « À
+  propos ». La suppression garde son balayage et « Modifier ».
+- *Accueil vide* (#723 en a fait une rangée de la liste ; elle le reste) :
+  une carte à trois badges, « Aucune machine », une action principale
+  « Télécharger un bureau ou une image », puis « Importer une image » et
+  « Connexions à distance », l'une sous l'autre. Une seule chose à l'écran,
+  rien qui se chevauche.
+- *Écran d'une machine* : la barre ne garde que « Fermer », « Bureau »
+  (quand il existe), « Plein écran » et un menu (copier la console, taille
+  du texte, « Oublier », « Arrêter ») ; le titre revient. La ligne d'état
+  porte un point vert ; les touches sont des capsules nettes, le champ une
+  capsule, « Entrée » un bouton rond (dit « Entrée » à VoiceOver). L'écran
+  est sombre en mode clair aussi, comme un lecteur de photos.
+- *Téléchargement* : le bureau prêt en carte — badge, phrase, puces de taille
+  et de mémoire, un seul bouton « Installer », puis pendant le téléchargement
+  l'étape, un pourcentage et « Annuler » ; les images avec leur badge, leur
+  distribution et leur version pour titre, « Obtenir », et un anneau pendant
+  le téléchargement.
+- *Connexions et éditeur* : un badge par système (`RemoteBadge`), le
+  protocole en puce, le cadenas vert ; l'éditeur s'ouvre sur la machine telle
+  que la liste la montrera. La barre de touches des sessions distantes prend
+  les mêmes touches, l'accent pour un modificateur tenu.
+- *Deux défauts corrigés au passage* : le port d'une connexion s'écrit en
+  chiffres nus (`Machine.displayAddress`, une IPv6 entre crochets) — `Text`
+  mettait le nombre en forme selon la langue ; l'avertissement « sans
+  chiffrement » nomme le protocole de la machine.
+- *VoiceOver* : les badges sont décoratifs (la ligne dit la distribution) ;
+  une carte se lit d'un bloc avec son action pour indice ; la puce du réseau
+  se lit comme un interrupteur (« branché », « coupé ») ; les modificateurs
+  tenus sont « sélectionnés ». Les libellés d'avant (« Télécharger … »,
+  « Installer … », « Annuler le téléchargement de … », « Mémoire de … »,
+  « Disque de … ») sont gardés.
+
+**Quatre tours de captures.**
+- *Tour 1* (**run 45034669701**) : tout se construit et s'affiche du
+  premier coup. Défauts vus : la rangée de la mémoire perdait son mot et
+  prenait 80 points de haut (un `Label` figé à sa taille idéale) ; l'écart
+  icône–mot des puces était celui d'une rangée de liste ; « Session sauvée »
+  passait à la ligne ; le bouton de l'accueil se coupait et ses voisins se
+  césuraient ; le titre de la console, noir sur noir ; la phrase du bureau
+  prêt tronquée.
+- *Tour 2* (**run 45036077355**) : ces défauts corrigés. Le port s'écrit
+  « 3389 ». Restait le titre de la console, toujours invisible en clair.
+- *Tour 3* (**run 45037737145**) : l'écran de la machine sombre en clair
+  aussi ; le titre revient (« Void Xfce », « alpine-virt-3.22.2… »). Les
+  matières des barres restaient grises en mode clair : elles se lisaient sur
+  le fond clair de la fenêtre.
+- *Tour 4* : un fond noir derrière l'écran de la machine ; en très grand
+  texte, le badge du bureau prêt passe au-dessus de son titre, qui se coupait
+  (« Void Xfce… ») à côté d'une phrase de trois mots de large (**run
+  45039312423** ; un run 45039266581 lancé juste avant ce dernier
+  changement a été annulé). Les barres de l'écran de la machine sont
+  sombres en clair comme en sombre, et le bureau prêt se lit en grand texte.
+
+**Les tests** : deux de plus (4 397 → 4 399 au compte publié ; Swift
+3 169, Rust 1 230), `MachineDisplayAddressTests`. Les vues ne se testent pas
+sous Linux ; ce qu'elles décident d'autre vient de `MachineBadge` (neuf tests
+du 22 novembre) et des types déjà jugés.
+
+**Les sabotages**, chacun d'une ligne, rouge puis restauré :
+- l'IPv6 sans crochets → `testIPv6GoesBetweenBrackets` (« fe80::1:5900 ») ;
+- les crochets ajoutés à une adresse qui les a déjà → le même test
+  (« [[fe80::1]]:5900 ») ;
+- le port mis en forme (`port.formatted()`) → `testThePortIsPlainDigits`
+  (« atelier.local:3,389 »), le défaut même de la capture.
+
+**Les vérifications.** La suite Swift entière (3 083 tests, 0 échec) ;
+`swiftlint lint --strict` ; `swiftc -frontend -parse` sur chaque vue ;
+`check-whitespace`, `check-project-sources` ; le site construit puis testé
+(477) ; `cargo fmt --check` et les tests de `wisq-site` ; et surtout le
+workflow des aperçus, qui construit l'application comme « App iOS » à
+chaque tour.
+
+**Ce qui reste.** La dernière image de l'écran sur la carte d'une machine
+(il faudrait l'écrire à la suspension, à côté de la session) ; le banc et la
+session distante n'ont pas été redessinés ; « 212,0 Mio » passe sous la
+pastille sur une carte étroite ; un disque vierge de la bibliothèque porte
+encore le badge et le bouton de lecture de sa machine (il est de « type
+inconnu », que wisq laisse démarrer par principe).
+
 ## 2026-11-22 — Les tests de l'émetteur dans une fenêtre visible : la cause de leurs rouges intermittents
 
 **Ce qui tombait.** `EmitterDesktopTests` a fait tomber « App iOS » trois fois
