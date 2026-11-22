@@ -6,7 +6,8 @@ import WisqVM
 /// que `X86Machine` (deux 8259, le 8253, le 16550, l'horloge CMOS, l'i8042, le
 /// pont PCI, les disques virtio, l'écran de Bochs et sa tablette), un cœur
 /// x86-64 interprété en Rust (`crates/wisq-vm/src/pc`), atteint par l'ABI C
-/// (`wisq_pc_*`, `include/wisq_vm.h`).
+/// (`wisq_pc_*`, `include/wisq_vm.h`) ; et la carte réseau virtio, branchée
+/// sur le même `NetworkBackend` que le cœur Swift (`attachNetwork`).
 ///
 /// **La surface est celle que `LocalVMModel` emploie sur `X86Machine`** :
 /// `GuestMachine`, l'écran (`display`, une `RustPCScreen` qui rend les mêmes
@@ -34,6 +35,7 @@ public final class RustPCMachine: @unchecked Sendable {
     public enum Refusal: Error, Equatable, LocalizedError {
         case alreadyStarted
         case displayAlreadyAttached
+        case networkAlreadyAttached
         case displayTooLarge(width: Int, height: Int)
         case diskTooSmall
         case commandLineNotUTF8
@@ -54,6 +56,7 @@ public final class RustPCMachine: @unchecked Sendable {
             switch self {
             case .alreadyStarted: return "La machine est déjà démarrée : on la branche éteinte."
             case .displayAlreadyAttached: return "Cette machine a déjà un écran."
+            case .networkAlreadyAttached: return "Cette machine a déjà une carte réseau."
             case .displayTooLarge(let width, let height):
                 return "Un écran de \(width) × \(height) ne tient pas dans les seize mébioctets de la carte."
             case .diskTooSmall: return "Le disque fait moins d'un secteur."
@@ -180,6 +183,84 @@ public final class RustPCMachine: @unchecked Sendable {
         }
     }
 
+    // MARK: - Le réseau
+
+    /// **L'autre bout du câble**, une fois la carte branchée : celui du cœur
+    /// Swift (`UserNetwork`, `MachineNetwork.backend`), réutilisé tel quel.
+    /// Posé avant le démarrage et plus jamais changé : la course le lit
+    /// sans verrou.
+    public private(set) var networkBackend: NetworkBackend?
+
+    /// La plus grande trame qui passe (`WISQ_PC_FRAME_MAX`).
+    static let largestFrame = Int(WISQ_PC_FRAME_MAX)
+
+    /// **Brancher la carte réseau** (virtio, 00:05.0, ligne 3), avant `load`,
+    /// sur `backend` : ce que l'invité émet lui est donné (`send`), ce qu'il
+    /// rend (`receive`) est remis à l'invité — à chaque tranche de `run`,
+    /// voir `pumpNetwork`. Sans carte, la machine n'a pas de réseau du tout.
+    public func attachNetwork(_ backend: NetworkBackend, mac: [UInt8] = VirtioNet.defaultMAC) throws {
+        guard mac.count == 6 else { throw Refusal.unknown(-1) }
+        switch mac.withUnsafeBufferPointer({ wisq_pc_attach_network(pc, $0.baseAddress) }) {
+        case 0: networkBackend = backend
+        case -2: throw Refusal.alreadyStarted
+        case -3: throw Refusal.networkAlreadyAttached
+        case let code: throw Refusal.unknown(code)
+        }
+    }
+
+    /// **Le réseau que le réglage de cette machine demande** — l'hôte, ou la
+    /// passerelle qui ne mène nulle part si son réseau est coupé
+    /// (`MachineNetwork`) : le même backend que `GuestMachineFactory.make`
+    /// donne au cœur Swift.
+    public func attachNetwork(forKernel kernel: String, in directory: URL? = nil) throws {
+        try attachNetwork(MachineNetwork.backend(forKernel: kernel, in: directory))
+    }
+
+    /// **Relayer un port de l'hôte vers l'invité** — `X86Machine.forward`,
+    /// le même code : le relais vit dans `UserNetwork` (`HostStreams.forward`),
+    /// pas dans la carte. Rend le port qui écoute sur `127.0.0.1`, ou rien
+    /// sans ce réseau.
+    public func forward(hostPort: UInt16 = 0, toGuestPort guestPort: UInt16) throws -> UInt16? {
+        guard let streams = (networkBackend as? UserNetwork)?.streams else { return nil }
+        return try streams.forward(hostPort: hostPort, toGuestPort: guestPort)
+    }
+
+    /// **Faire passer les trames**, dans les deux sens : ce que l'invité a
+    /// émis depuis la dernière fois, donné au backend dans son ordre ; puis
+    /// ce que le backend a pour lui, remis à la machine. Une trame que la
+    /// file pleine refuse est perdue, comme sur un réseau, et comptée par la
+    /// machine (`networkCounts.refused`). Rend combien sont passées.
+    ///
+    /// `run` l'appelle avant chaque tranche ; de n'importe quel fil, c'est
+    /// sûr aussi (les deux files sont « tout fil »).
+    @discardableResult
+    public func pumpNetwork() -> (sent: Int, given: Int) {
+        guard let backend = networkBackend else { return (0, 0) }
+        var sent = 0
+        var buffer = [UInt8](repeating: 0, count: Self.largestFrame)
+        while true {
+            let length = buffer.withUnsafeMutableBufferPointer {
+                wisq_pc_net_take(pc, $0.baseAddress, $0.count)
+            }
+            guard length > 0, length <= buffer.count else { break }
+            backend.send(Array(buffer[0..<length]))
+            sent += 1
+        }
+        var given = 0
+        for frame in backend.receive() {
+            let code = frame.withUnsafeBufferPointer { wisq_pc_net_give(pc, $0.baseAddress, $0.count) }
+            if code == 1 { given += 1 }
+        }
+        return (sent, given)
+    }
+
+    /// Les compteurs du réseau, ou rien sans carte.
+    public var networkCounts: WisqPCNetwork? {
+        var counts = WisqPCNetwork()
+        guard wisq_pc_net_stats(pc, &counts) == 1 else { return nil }
+        return counts
+    }
+
     /// Le cœur Rust lit sa base octet pour octet : un qcow2, un VMDK, un VDI,
     /// un VHD dynamique, un VHDX ou une appliance n'en sont pas les octets.
     /// Leurs lecteurs sont côté Swift, sous `X86Machine`.
@@ -228,8 +309,10 @@ public final class RustPCMachine: @unchecked Sendable {
     @discardableResult
     public func run(instructionBudget: UInt64 = .max) -> Outcome {
         // Une tranche de l'hôte : un million d'instructions de l'invité, trois
-        // millisecondes de son temps. Entre deux, l'arrêt et le sommeil.
-        let slice: UInt64 = 1_000_000
+        // millisecondes de son temps. Entre deux, l'arrêt, le sommeil, et les
+        // trames : avec une carte réseau, deux cent mille, la tranche de
+        // `X86Machine` — une trame attend au plus une tranche de chaque côté.
+        let slice: UInt64 = networkBackend == nil ? 1_000_000 : 200_000
         let start = wisq_pc_guest_time(pc)
         let hertz = Double(max(wisq_pc_guest_hertz(pc), 1))
         let wallStart = DispatchTime.now().uptimeNanoseconds
@@ -240,6 +323,7 @@ public final class RustPCMachine: @unchecked Sendable {
             if stopped { return .stopped }
             let done = wisq_pc_guest_time(pc) &- start
             guard done < instructionBudget else { return .stopped }
+            pumpNetwork()
             switch wisq_pc_run(pc, min(slice, instructionBudget - done)) {
             case WISQ_PC_BUDGET: break
             case WISQ_PC_STOPPED: return .stopped
@@ -579,12 +663,17 @@ public final class RustPCScreen: @unchecked Sendable {
 /// rendrait à l'invité des pilotes devant des files oubliées. Quitter
 /// l'écran l'arrête ; la revoir la redémarre.
 ///
+/// **Le réseau, comme le cœur Swift** : la carte virtio-net de `wisq-carte`,
+/// branchée par `attachNetwork` sur le backend de `MachineNetwork` — la même
+/// pile `UserNetwork` (DHCP, DNS, TCP vers l'hôte), et le même réglage qui
+/// coupe le réseau d'une machine —, et le relais du port 5900
+/// (`RustPCMachine.forward`, celui de `X86Machine`).
+///
 /// **Ce qui lui manque encore par rapport au cœur Swift** : l'instantané de la carte (`wisq-carte`
 /// n'a ni sauvegarde ni reprise), puis les bureaux prêts refabriqués à son
-/// format ; le réseau (la carte virtio-net de `wisq-carte` n'est pas branchée
-/// par le poste) et le relais du port 5900 (`X86Machine.forward`) ; les
-/// formats d'image de disque (qcow2, VMDK…), que seul le cœur Swift lit ; les
-/// refus des programmes, que `X86Machine` dit dans la console.
+/// format ; les formats d'image de disque (qcow2, VMDK…), que seul le cœur
+/// Swift lit ; les refus des programmes, que `X86Machine` dit dans la
+/// console.
 public enum RustPCSetting {
     public static let key = "wisq.machine.pc-rust"
     /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift

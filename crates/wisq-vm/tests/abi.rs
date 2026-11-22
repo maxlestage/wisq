@@ -497,7 +497,7 @@ fn the_c_header_matches_the_disk_and_the_keyboard() {
 
 /// **La machine PC native, par le même en-tête.**
 ///
-/// Ni image de noyau ni réseau : les quatre petits noyaux que le programme
+/// Ni image de noyau ni réseau : les cinq petits noyaux que le programme
 /// démarre sont gravés ici (`noyau_factice`), et son disque est posé dans un
 /// dossier à lui. Le programme appelle chacune des fonctions `wisq_pc_*`,
 /// arrête une course d'un autre fil, et reprend un instantané pris à
@@ -547,6 +547,7 @@ fn the_c_header_matches_the_pc_machine() {
             "remise.bin",
             noyau_factice::image_de(&noyau_factice::REMISE),
         ),
+        ("reseau.bin", noyau_factice::image_reseau()),
     ];
     let mut arguments = Vec::new();
     for (nom, octets) in &noyaux {

@@ -6,13 +6,14 @@
  * faux à l'exécution. Ce programme appelle chaque fonction `wisq_pc_*`, juge
  * ce qu'elle rend, et le dit en français.
  *
- * Il reçoit quatre petits noyaux, gravés par tests/abi.rs : le noyau factice
+ * Il reçoit cinq petits noyaux, gravés par tests/abi.rs : le noyau factice
  * (sa bannière, sa ligne, cinq battements, « FIN »), une boucle sans fin, un
- * `ud2` sans IDT, et l'impulsion de remise à zéro de l'i8042 ; puis un dossier
- * où poser un disque.
+ * `ud2` sans IDT, l'impulsion de remise à zéro de l'i8042, et le pilote
+ * réseau minimal (une trame émise, une trame reçue sur son propre code) ;
+ * puis un dossier où poser un disque.
  *
  *   cc -I include tests/abi/pc.c -L <libdir> -lwisq_vm -lpthread -o pc
- *   ./pc factice.bin boucle.bin faute.bin remise.bin <dossier>
+ *   ./pc factice.bin boucle.bin faute.bin remise.bin reseau.bin <dossier>
  */
 
 #include "wisq_vm.h"
@@ -110,15 +111,17 @@ static void *stop_later(void *argument) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 6) {
-        fprintf(stderr, "usage : pc factice boucle faute remise dossier\n");
+    if (argc < 7) {
+        fprintf(stderr, "usage : pc factice boucle faute remise reseau dossier\n");
         return 2;
     }
     File factice = read_file(argv[1]);
     File boucle = read_file(argv[2]);
     File faute = read_file(argv[3]);
     File remise = read_file(argv[4]);
-    if (!factice.len || !boucle.len || !faute.len || !remise.len) {
+    File reseau = read_file(argv[5]);
+    const char *folder = argv[6];
+    if (!factice.len || !boucle.len || !faute.len || !remise.len || !reseau.len) {
         fprintf(stderr, "ABI pc : un noyau illisible\n");
         return 2;
     }
@@ -159,6 +162,12 @@ int main(int argc, char **argv) {
     check(wisq_pc_flush_disks(NULL) == -1, "flush_disks(NULL)");
     check(wisq_pc_disk_bytes_written(NULL) == 0, "disk_bytes_written(NULL)");
     check(wisq_pc_disk_activity(NULL, &a64, &b64) == -1, "disk_activity(NULL)");
+    WisqPCNetwork network;
+    uint8_t frame[WISQ_PC_FRAME_MAX];
+    check(wisq_pc_attach_network(NULL, NULL) == -1, "attach_network(NULL)");
+    check(wisq_pc_net_take(NULL, frame, sizeof frame) == 0, "net_take(NULL)");
+    check(wisq_pc_net_give(NULL, frame, 60) == -1, "net_give(NULL)");
+    check(wisq_pc_net_stats(NULL, &network) == -1, "net_stats(NULL)");
     wisq_pc_free(NULL);
 
     /* --- Une machine neuve, avant son noyau. --- */
@@ -202,10 +211,10 @@ int main(int argc, char **argv) {
     /* Les disques. */
     check(wisq_pc_attach_disk(pc, (const uint8_t *)"court", 5) == -3, "un disque de moins d'un secteur est refusé");
     char base[4096], writes[4096], second[4096], second_writes[4096];
-    snprintf(base, sizeof base, "%s/disque.img", argv[5]);
-    snprintf(writes, sizeof writes, "%s/disque.couche", argv[5]);
-    snprintf(second, sizeof second, "%s/second.img", argv[5]);
-    snprintf(second_writes, sizeof second_writes, "%s/second.couche", argv[5]);
+    snprintf(base, sizeof base, "%s/disque.img", folder);
+    snprintf(writes, sizeof writes, "%s/disque.couche", folder);
+    snprintf(second, sizeof second, "%s/second.img", folder);
+    snprintf(second_writes, sizeof second_writes, "%s/second.couche", folder);
     check(wisq_pc_attach_disk_file(pc, base, writes) == -2, "une base absente est refusée");
     FILE *disk = fopen(base, "wb");
     FILE *other = fopen(second, "wb");
@@ -238,8 +247,8 @@ int main(int argc, char **argv) {
     /* Refusé avant d'ouvrir quoi que ce soit : la couche d'un branchement
      * refusé n'est pas créée sur le disque. */
     char refused[4096], refused_map[4096];
-    snprintf(refused, sizeof refused, "%s/tard.couche", argv[5]);
-    snprintf(refused_map, sizeof refused_map, "%s/tard.couche.map", argv[5]);
+    snprintf(refused, sizeof refused, "%s/tard.couche", folder);
+    snprintf(refused_map, sizeof refused_map, "%s/tard.couche.map", folder);
     check(wisq_pc_attach_second_disk_file(pc, second, refused) == -7, "ni en second disque");
     check(access(refused, F_OK) != 0 && access(refused_map, F_OK) != 0,
           "et la couche d'un branchement refusé n'est pas créée");
@@ -353,6 +362,55 @@ int main(int argc, char **argv) {
     check(stopper.progress_seen, "l'avancement s'est lu pendant la course");
     check(wisq_pc_halted(looping) == 0, "une boucle n'est pas un hlt");
     wisq_pc_free(looping);
+
+    /* --- Le réseau : une trame émise sort, une trame remise entre. --- */
+    Console wire = {{0}, 0};
+    WisqPC *net = wisq_pc_new(RAM, on_output, &wire);
+    const uint8_t code_frame[60] = {0xB8, 'R', 0x00, 0x00, 0x00, 0xC3};
+    check(wisq_pc_net_give(net, code_frame, sizeof code_frame) == -3, "rien n'entre sans carte");
+    check(wisq_pc_net_stats(net, &network) == 0, "pas de compteurs sans carte");
+    check(wisq_pc_net_take(net, frame, sizeof frame) == 0, "rien ne sort sans carte");
+    /* Une adresse qui n'est pas celle par défaut : le pilote la lit dans la
+     * configuration de la carte, et la met en source de sa trame. */
+    const uint8_t mac[6] = {0x02, 0x00, 0x5E, 0x10, 0x20, 0x2A};
+    check(wisq_pc_attach_network(net, mac) == 0, "la carte réseau se branche");
+    check(wisq_pc_attach_network(net, NULL) == -3, "une seule carte");
+    check(wisq_pc_net_stats(NULL, NULL) == -1 && wisq_pc_net_stats(net, NULL) == -1, "stats sans sortie");
+    check(wisq_pc_net_give(net, NULL, 60) == -1, "une trame nulle");
+    check(wisq_pc_net_give(net, code_frame, 0) == -2, "une trame vide n'est pas une trame");
+    static uint8_t huge[WISQ_PC_FRAME_MAX + 1];
+    check(wisq_pc_net_give(net, huge, sizeof huge) == -2, "ni une trame de 1 515 octets");
+    check(wisq_pc_set_time(net, 1795230600) == 0, "l'heure");
+    check(wisq_pc_load(net, reseau.bytes, reseau.len, NULL, NULL, 0) == 0, "le pilote réseau se charge");
+    check(wisq_pc_attach_network(net, NULL) == -2, "plus de carte une fois chargée");
+    check(wisq_pc_run(net, 1000000) == WISQ_PC_BUDGET, "il attend sa trame");
+    check(wire.len == 1 && wire.bytes[0] == 'o', "le code d'avant a dit « o »");
+    /* La trame émise : sa longueur d'abord, sans la prendre, puis elle. */
+    size_t sent = wisq_pc_net_take(net, NULL, 0);
+    check(sent == 61, "la trame émise fait 61 octets");
+    check(wisq_pc_net_take(net, frame, 10) == sent, "un tampon trop court dit la longueur");
+    check(wisq_pc_net_take(net, frame, sizeof frame) == sent, "et la trame se prend");
+    check(memcmp(frame, "\xff\xff\xff\xff\xff\xff", 6) == 0 && memcmp(frame + 6, mac, 6) == 0 &&
+              frame[12] == 0x88 && frame[13] == 0xB5 && memcmp(frame + 14, "wisq-reseau", 11) == 0,
+          "diffusée, depuis l'adresse donnée à la carte, de type 0x88B5, son texte");
+    check(wisq_pc_net_take(net, frame, sizeof frame) == 0, "une seule");
+    check(wisq_pc_net_stats(net, &network) == 1 && network.transmitted == 1 && network.delivered == 0,
+          "une émise, rien de livré");
+    /* La trame remise, puis la file qui se remplit jusqu'au refus. */
+    check(wisq_pc_net_give(net, code_frame, sizeof code_frame) == 1, "la trame est prise");
+    int taken = 1;
+    for (int i = 1; i < WISQ_PC_FRAME_QUEUE; i++) taken += wisq_pc_net_give(net, code_frame, sizeof code_frame);
+    check(taken == WISQ_PC_FRAME_QUEUE, "la file entrante tient WISQ_PC_FRAME_QUEUE trames");
+    check(wisq_pc_net_give(net, code_frame, sizeof code_frame) == 0, "pleine, elle refuse");
+    check(wisq_pc_net_stats(net, &network) == 1 && network.refused == 1 &&
+              network.incoming == WISQ_PC_FRAME_QUEUE,
+          "le refus est compté");
+    check(wisq_pc_run(net, 10000000) == WISQ_PC_POWER_OFF, "la trame reçue, il s'éteint");
+    check(wire.len == 2 && wire.bytes[1] == 'R', "le code que la trame a rangé a dit « R »");
+    check(wisq_pc_net_stats(net, &network) == 1 && network.delivered == 1 && network.incoming == 0,
+          "livrée, et la carte a pris toute la file");
+    check(wisq_pc_net_give(net, code_frame, sizeof code_frame) == 1, "la file reprend");
+    wisq_pc_free(net);
 
     /* --- Une faute, nommée. --- */
     WisqPC *faulting = booted(&faute, NULL, &none);
