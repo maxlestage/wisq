@@ -22,7 +22,7 @@ import WisqVM
 /// l'écran entier, qu'ils n'ont pas à déplacer, ils tournent la molette
 /// (`ScreenWheel`). Un doigt reste la souris, zoom ou pas.
 struct GuestScreenView: View {
-    let screen: X86Framebuffer
+    let screen: any GuestScreen
     /// Un toucher absolu, de 0 à 1 ; faux quand la tablette n'est pas prise.
     var onTouch: (_ x: Double, _ y: Double, _ buttons: UInt8) -> Bool = { _, _, _ in false }
     /// La molette, en crans positifs vers le haut.
@@ -72,7 +72,7 @@ struct GuestScreenView: View {
     ///
     /// Le mode et ses pixels sont pris ensemble (`frame`) : une résolution qui
     /// change entre les deux lectures ferait une image de travers.
-    static func makeImage(_ screen: X86Framebuffer) -> CGImage? {
+    static func makeImage(_ screen: any GuestScreen) -> CGImage? {
         let (mode, pixels) = screen.frame()
         guard let provider = CGDataProvider(data: pixels as CFData) else { return nil }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue

@@ -15,8 +15,9 @@
 //! juste après l'`out` qu'elle a pris : la requête est
 //! lue, le fichier lu, la réponse rendue et la ligne levée avant que
 //! l'instruction suivante ne s'exécute — comme `VirtioBlock.serve` du cœur
-//! Swift. Un octet que le disque écrit dans du code se voit : les blocs et le
-//! cache de décodage comparent leurs octets à l'entrée.
+//! Swift. Un octet que le disque écrit dans du code se voit : il passe par
+//! `Ram::ecrire`, qui avance la génération de sa page, et les blocs décodés
+//! de cette page se recomparent à leur prochaine entrée.
 //!
 //! **La mémoire des périphériques** (la mémoire vidéo et les registres de
 //! l'écran de Bochs, la BAR0 de la tablette) répond hors de la RAM : la carte
