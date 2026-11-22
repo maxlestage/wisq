@@ -33,10 +33,25 @@ public struct GuestProgress: Equatable, Sendable {
     /// Où il en était. Un compteur qui grimpe dit **que** ça tourne ;
     /// l'adresse dit **où**, ce qui est la moitié qui permet d'agir.
     public var rip: UInt64
+    /// **Les publications depuis le départ**, et combien ont trouvé RIP dans
+    /// la même page de quatre kibioctets que la précédente. `nil` pour un
+    /// cœur qui ne les compte pas.
+    ///
+    /// Deux relevés pris à une seconde d'écart ne disent pas si l'invité
+    /// tourne en rond : l'image d'installation d'Arch déballe son initramfs
+    /// en xz pendant neuf milliards d'instructions, presque toujours dans
+    /// `lzma_main`, et la ligne d'état disait « en rond » d'un invité qui
+    /// avançait. Compter **chaque** publication le tranche : un quart en sort
+    /// pendant ce déballage, à peine une sur cinquante dans une boucle
+    /// d'attente (voir `GuestHeartbeat.loopShare`).
+    public var slices: UInt64?
+    public var slicesOnSamePage: UInt64?
 
-    public init(retired: UInt64, rip: UInt64) {
+    public init(retired: UInt64, rip: UInt64, slices: UInt64? = nil, slicesOnSamePage: UInt64? = nil) {
         self.retired = retired
         self.rip = rip
+        self.slices = slices
+        self.slicesOnSamePage = slicesOnSamePage
     }
 }
 

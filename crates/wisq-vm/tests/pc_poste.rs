@@ -13,7 +13,7 @@ use wisq_vm::pc::instantane::{self, RefusDInstantane, MAGIE, VERSION};
 use wisq_vm::pc::machine::Alea;
 use wisq_vm::pc::poste::{
     frappes_du_jeu_1, RefusDeBranchement, RefusDeTouches, DERNIERE_SECONDE, FRAPPES_REMISES,
-    PAS_DE_RATTRAPAGE_EN_SECONDES,
+    PAS_DE_RATTRAPAGE_EN_SECONDES, TRANCHE,
 };
 use wisq_vm::pc::{Fin, Poste};
 use wisq_vm::x86_paging::{Access, Unmapped};
@@ -113,6 +113,68 @@ fn a_run_is_stopped_from_another_thread_and_published_meanwhile() {
     let (retirees, rip) = vu.expect("publié");
     assert!(retirees >= 1_000_000 && retirees <= poste.machine.retirees);
     assert!(rip > 0);
+}
+
+/// **Un invité qui avance longtemps dans la même fonction** : une boucle
+/// dans une page, qui appelle à chaque tour une routine posée quatre
+/// kibioctets plus loin — la forme du déballage d'un initramfs en xz, où
+/// `lzma_main` appelle `crc32_le`. Les trois quarts du temps dans la
+/// première page : deux relevés pris au hasard y tombent souvent ensemble,
+/// mais une tranche sur cinq environ finit ailleurs que la précédente.
+///
+/// ```text
+/// 0x0000: cli
+/// 0x0001: mov  $0x3000, %ecx      # 24 576 instructions ici
+/// 0x0006: dec  %ecx
+/// 0x0008: jnz  0x0006
+/// 0x000a: call 0x1000
+/// 0x000f: jmp  0x0001
+/// 0x1000: mov  $0x1000, %ecx      # 8 192 instructions là
+/// 0x1005: dec  %ecx
+/// 0x1007: jnz  0x1005
+/// 0x1009: ret
+/// ```
+fn calcul_sur_deux_pages() -> Vec<u8> {
+    let mut code = vec![
+        0xFA, 0xB9, 0x00, 0x30, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC, 0xE8, 0xF1, 0x0F, 0x00, 0x00,
+        0xEB, 0xF0,
+    ];
+    code.resize(0x1000, 0xCC);
+    code.extend([0xB9, 0x00, 0x10, 0x00, 0x00, 0xFF, 0xC9, 0x75, 0xFC, 0xC3]);
+    code
+}
+
+/// **Où finissent les tranches** (`Commandes::sejour`) : un `jmp .` ne
+/// quitte jamais sa page, un invité qui calcule sur deux pages la quitte une
+/// tranche sur cinq. C'est ce qui permet à l'application de ne dire « en
+/// rond » que du premier — deux relevés de RIP ne les distinguaient pas.
+#[test]
+fn the_slices_say_whether_the_guest_stays_on_one_page() {
+    let mut boucle = poste_charge(&image_de(&BOUCLE), None);
+    assert_eq!(
+        boucle.commandes().sejour(),
+        (0, 0),
+        "rien avant la première tranche"
+    );
+    assert_eq!(courir(&mut boucle, 40 * TRANCHE).0, Fin::Budget);
+    assert_eq!(
+        boucle.commandes().sejour(),
+        (40, 39),
+        "un jmp . : chaque tranche finit dans la page de la précédente"
+    );
+
+    let mut calcul = poste_charge(&image_de(&calcul_sur_deux_pages()), None);
+    assert_eq!(
+        courir(&mut calcul, 400 * TRANCHE).0,
+        Fin::Budget,
+        "sans faute"
+    );
+    let (publiees, restees) = calcul.commandes().sejour();
+    assert_eq!(publiees, 400);
+    assert!(
+        restees * 10 < publiees * 9 && restees * 2 > publiees,
+        "entre la moitié et neuf dixièmes des tranches restent : {restees} sur {publiees}"
+    );
 }
 
 #[test]
