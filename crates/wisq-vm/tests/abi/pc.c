@@ -309,8 +309,11 @@ int main(int argc, char **argv) {
     check(wisq_pc_restore(resumed, (const uint8_t *)"autre chose", 11) == -2, "pas un instantané");
     uint8_t *altered = malloc(snapshot_len);
     memcpy(altered, snapshot, snapshot_len);
-    altered[8] = 2; /* la version */
+    check(snapshot[8] == 2, "la version 2, qui porte la carte");
+    altered[8] = 3; /* la version */
     check(wisq_pc_restore(resumed, altered, snapshot_len) == -3, "une version inconnue est refusée");
+    altered[8] = 1;
+    check(wisq_pc_restore(resumed, altered, snapshot_len) == -7, "la version 1, sans la carte, est refusée");
     check(wisq_pc_restore(resumed, snapshot, snapshot_len - 1) == -4, "un instantané tronqué est refusé");
     free(altered);
     WisqPC *bigger = wisq_pc_new(RAM * 2, NULL, NULL);
@@ -320,6 +323,11 @@ int main(int argc, char **argv) {
     check(wisq_pc_attach_display(screened, 640, 480) == 0, "un écran");
     check(wisq_pc_restore(screened, snapshot, snapshot_len) == -6, "un autre écran est refusé");
     wisq_pc_free(screened);
+    /* Un disque branché là où l'instantané n'en avait pas. */
+    WisqPC *disked = wisq_pc_new(RAM, NULL, NULL);
+    check(wisq_pc_attach_disk(disked, sector, sizeof sector) == 0, "un disque");
+    check(wisq_pc_restore(disked, snapshot, snapshot_len) == -8, "d'autres disques sont refusés");
+    wisq_pc_free(disked);
     check(wisq_pc_restore(resumed, snapshot, snapshot_len) == 0, "la reprise");
     wisq_pc_free_snapshot(snapshot, snapshot_len);
     check(wisq_pc_retired(resumed) == wisq_pc_retired(cut), "le compteur repris");

@@ -38,6 +38,7 @@
 
 use std::collections::VecDeque;
 
+use super::etat::{Ecrivain, Lecteur};
 use super::virtio_blk::{anneaux, lire_u16, Descripteur};
 use super::Ram;
 
@@ -518,6 +519,95 @@ impl VirtioNet {
             }
         }
         self.livrer(ram);
+    }
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+impl File {
+    fn sauver(&self, e: &mut Ecrivain) {
+        e.u32(self.page);
+        e.u64(self.descripteurs);
+        e.u64(self.disponibles);
+        e.u64(self.servies);
+        e.u16(self.prochaine_disponible);
+        e.u16(self.prochaine_servie);
+    }
+
+    /// Relue, ou rien : une file posée a les anneaux de sa page, une file
+    /// retirée n'a rien (`ecrire_port`, registre `0x08`) ; et chaque tête
+    /// lue a reçu sa réponse dans le même appel ([`VirtioNet::emettre`],
+    /// [`VirtioNet::livrer`]), donc les deux index se suivent.
+    fn relire(l: &mut Lecteur) -> Option<Self> {
+        let file = Self {
+            page: l.u32()?,
+            descripteurs: l.u64()?,
+            disponibles: l.u64()?,
+            servies: l.u64()?,
+            prochaine_disponible: l.u16()?,
+            prochaine_servie: l.u16()?,
+        };
+        let anneaux = if file.page == 0 {
+            (0, 0, 0)
+        } else {
+            anneaux(file.page, LIMITE_DE_FILE)
+        };
+        let valide = (file.descripteurs, file.disponibles, file.servies) == anneaux
+            && file.prochaine_servie == file.prochaine_disponible
+            && (file.page != 0 || file.prochaine_disponible == 0);
+        valide.then_some(file)
+    }
+}
+
+impl VirtioNet {
+    /// **L'état de la carte réseau**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : son adresse, ses deux files (leurs pages, leurs
+    /// anneaux, leurs deux index), la file choisie, les fonctions acceptées,
+    /// le statut, l'ISR, le passage du sondage et les compteurs.
+    ///
+    /// **Ni les trames en file, ni le câble** — la règle de `VirtioNet.save`
+    /// du cœur Swift : une trame qui attendait un tampon de l'invité, ou le
+    /// câble, est perdue à la reprise, comme sur un réseau (TCP la renvoie) ;
+    /// le câble est autour de la machine, pas dedans, et la carte reprise
+    /// prend celui de la machine qui reprend.
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.0.extend_from_slice(&self.mac);
+        for file in &self.files {
+            file.sauver(e);
+        }
+        e.u16(self.file_choisie);
+        e.u32(self.fonctions_du_pilote);
+        e.u8(self.statut);
+        e.u8(self.isr);
+        e.u32(self.passages);
+        e.u64(self.emises);
+        e.u64(self.livrees);
+        e.u64(self.perdues);
+    }
+
+    /// Relue, câble débranché et files de trames vides, ou rien. Sont
+    /// refusés : une file choisie au-delà des deux (elle indexe les files),
+    /// une fonction acceptée qui n'est pas offerte, un ISR qui n'est pas un
+    /// bit de file, et une file dont les anneaux ou les index ne tiennent pas
+    /// ensemble ([`File::relire`]).
+    pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
+        let mac: [u8; 6] = l.prendre(6)?.try_into().ok()?;
+        let mut carte = Self::nouvelle(mac);
+        for file in &mut carte.files {
+            *file = File::relire(l)?;
+        }
+        carte.file_choisie = l.u16()?;
+        carte.fonctions_du_pilote = l.u32()?;
+        carte.statut = l.u8()?;
+        carte.isr = l.u8()?;
+        carte.passages = l.u32()?;
+        carte.emises = l.u64()?;
+        carte.livrees = l.u64()?;
+        carte.perdues = l.u64()?;
+        let valide = carte.file_choisie < 2
+            && carte.fonctions_du_pilote & !FONCTION_MAC == 0
+            && carte.isr <= 1;
+        valide.then_some(carte)
     }
 }
 
@@ -1863,5 +1953,93 @@ pub(crate) mod tests {
         assert_eq!(carte.port_lire(0xC014, 4, &mut SansRam), Some(1));
         ouvrir(&mut carte, 5, 0xC040);
         assert_eq!(carte.port_lire(0xC054, 4, &mut SansRam), Some(0x0909_0902));
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **La carte réseau sauvée et relue** ([`VirtioNet::sauver`]) : ses
+    //! files et leurs index ; les trames en file et le câble restent dehors,
+    //! comme chez le cœur Swift.
+    use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
+    use super::tests::Pilote;
+    use super::*;
+
+    /// Une carte branchée, une trame émise et rendue, une qui attend un
+    /// tampon de l'invité, une qui attend le câble.
+    fn occupee() -> VirtioNet {
+        let mut pilote = Pilote::branche();
+        pilote
+            .carte
+            .ecrire_port(0x04, FONCTION_MAC, &mut pilote.ram);
+        pilote.poser_chaine(FILE_D_EMISSION, &[(0x8000, 10, false), (0x9000, 60, false)]);
+        pilote.carte.emettre(&mut pilote.ram);
+        assert!(pilote.carte.entrer(vec![0xAB; 60]));
+        pilote.carte.ecrire_port(0x0E, 1, &mut pilote.ram);
+        assert_eq!(pilote.carte.sortantes.len(), 1);
+        pilote.carte
+    }
+
+    #[test]
+    fn a_busy_card_reads_back_without_its_cable() {
+        let carte = occupee();
+        let octets = octets_de(&carte, VirtioNet::sauver);
+        let relue = relu(&octets, VirtioNet::relire).expect("relue");
+        assert!(
+            !relue.cable_branche(),
+            "le câble n'est pas dans l'instantané"
+        );
+        assert_eq!(
+            (relue.en_attente(), relue.sortantes.len()),
+            (0, 0),
+            "ni les trames en file"
+        );
+        let mut rebranchee = relue.clone();
+        rebranchee.brancher_cable(true);
+        let mut sans_trames = carte.clone();
+        sans_trames.attente.clear();
+        sans_trames.sortantes.clear();
+        assert_eq!(rebranchee, sans_trames, "tout le reste");
+        assert_eq!(relue.emises(), 1);
+        chaque_coupure_refusee(&octets, VirtioNet::relire);
+        let neuve = VirtioNet::nouvelle(MAC_PAR_DEFAUT);
+        assert_eq!(
+            relu(&octets_de(&neuve, VirtioNet::sauver), VirtioNet::relire),
+            Some(neuve)
+        );
+    }
+
+    #[test]
+    fn what_no_card_holds_is_refused() {
+        let carte = occupee();
+        let relit = |abimer: fn(&mut VirtioNet)| {
+            se_relit(&carte, abimer, VirtioNet::sauver, VirtioNet::relire)
+        };
+        assert!(relit(|_| {}), "telle quelle");
+        assert!(
+            !relit(|c| c.file_choisie = 2),
+            "une file choisie au-delà des deux"
+        );
+        assert!(
+            !relit(|c| c.fonctions_du_pilote |= 1),
+            "une fonction qui n'est pas offerte"
+        );
+        assert!(!relit(|c| c.isr = 2), "un ISR qui n'est pas un bit de file");
+        assert!(
+            !relit(|c| c.files[0].servies += 8),
+            "des anneaux qui ne sont pas ceux de la page"
+        );
+        assert!(
+            !relit(|c| c.files[1].prochaine_servie = 7),
+            "deux index qui ne se suivent pas"
+        );
+        assert!(
+            !relit(|c| c.files[0] = File {
+                prochaine_disponible: 3,
+                prochaine_servie: 3,
+                ..File::vide()
+            }),
+            "une file retirée qui garde ses index"
+        );
     }
 }

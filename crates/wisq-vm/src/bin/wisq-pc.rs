@@ -52,21 +52,29 @@
 //! `--input-file f` tape au port série ce qu'on ajoute au fichier `f` pendant
 //! la course (`echo 'ps' >> f`) : parler à un invité qu'on n'a pas fini de
 //! comprendre sans le redémarrer.
+//!
+//! **Sauver et reprendre** : `--sauver f` écrit l'instantané de la machine
+//! (`pc::instantane`, la carte comprise) à la fin de la course, les disques
+//! scellés d'abord ; `--reprendre f` le reprend à la place du noyau, dans un
+//! processus neuf, sur les mêmes disques (`--disque`, ou `--iso`) et le même
+//! écran (`--display`). La première ligne de `--input` part alors tout de
+//! suite : l'invite a été dite avant l'instantané.
 
 use std::io::Write;
 use std::time::Instant;
 
 use std::path::Path;
 
-use wisq_carte::ecran::BASE_DE_LA_MEMOIRE_VIDEO;
 use wisq_carte::fichier::DisqueFichier;
-use wisq_carte::pc::{horloge_du_systeme, CartePc, Disque};
+use wisq_carte::pc::{horloge_du_systeme, Disque};
 use wisq_vm::iso9660::{Iso, OnDisk, Recipe};
-use wisq_vm::pc::carte::{self as raccord, CartePartagee};
+use wisq_vm::pc::carte::CartePartagee;
 use wisq_vm::pc::chargeur::{initramfs_bout_a_bout, ligne_d_une_image, ligne_posee};
 use wisq_vm::pc::herites::HERTZ_DU_8253;
+use wisq_vm::pc::instantane;
 use wisq_vm::pc::memoire::RAM_MINIMALE;
-use wisq_vm::pc::{Ecran, Machine};
+use wisq_vm::pc::Poste;
+use wisq_vm::x86_paging::Devices;
 
 /// Ce que `--ram` accepte au plus, en mébioctets : soixante-quatre gibioctets.
 /// Au-delà, c'est une faute de frappe plus sûrement qu'une machine. **Ce
@@ -140,6 +148,8 @@ struct Options {
     touches: Vec<(f64, String)>,
     etat_toutes: Option<f64>,
     fichier_d_entree: Option<String>,
+    sauver: Option<String>,
+    reprendre: Option<String>,
 }
 
 /// **`--keys`** : des `secondes:texte` séparés par `;;`, rangés par heure ;
@@ -265,7 +275,8 @@ fn usage() -> ! {
          [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
          [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte] \
          [--iso <image>] [--display <L>x<H>] [--screen-dump <image.ppm>] [--screen-every <secondes>] \
-         [--keys 'secondes:texte;;…'] [--status <secondes>] [--input-file <fichier>]"
+         [--keys 'secondes:texte;;…'] [--status <secondes>] [--input-file <fichier>] \
+         [--sauver <instantané>] [--reprendre <instantané>]"
     );
     std::process::exit(2);
 }
@@ -295,6 +306,8 @@ fn options() -> Options {
         touches: Vec::new(),
         etat_toutes: None,
         fichier_d_entree: None,
+        sauver: None,
+        reprendre: None,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(nom) = arguments.next() {
@@ -346,15 +359,21 @@ fn options() -> Options {
                 );
             }
             "--couche" => options.couche = Some(valeur()),
+            "--sauver" | "--save" => options.sauver = Some(valeur()),
+            "--reprendre" | "--resume" => options.reprendre = Some(valeur()),
             "--sans-carte" => options.sans_carte = true,
             _ => usage(),
         }
     }
-    if options.noyau.is_empty() && options.iso.is_none() {
+    if options.noyau.is_empty() && options.iso.is_none() && options.reprendre.is_none() {
         usage();
     }
     if options.sans_carte
-        && (options.ecran.is_some() || options.iso.is_some() || !options.touches.is_empty())
+        && (options.ecran.is_some()
+            || options.iso.is_some()
+            || !options.touches.is_empty()
+            || options.sauver.is_some()
+            || options.reprendre.is_some())
     {
         usage();
     }
@@ -396,6 +415,8 @@ fn main() {
             let initramfs = options.initramfs.as_deref().map(lire).or(initramfs);
             (noyau, initramfs)
         }
+        // Une machine reprise n'a pas de noyau à charger.
+        None if options.noyau.is_empty() => (Vec::new(), None),
         None => (lire(&options.noyau), options.initramfs.as_deref().map(lire)),
     };
 
@@ -413,7 +434,9 @@ fn main() {
             RAM_MINIMALE >> 20
         );
     }
-    let Some(mut machine) = Machine::essayer(ram) else {
+    // **Un poste** (`pc::poste`), comme l'application : la machine et sa
+    // carte, branchée d'office. `--sans-carte` la débranche aussitôt.
+    let Some(mut poste) = Poste::essayer(ram) else {
         eprintln!(
             "wisq-pc : --ram {} : l'hôte ne peut pas donner cette mémoire",
             options.ram
@@ -421,18 +444,20 @@ fn main() {
         std::process::exit(2);
     };
     if let Some(battement) = options.battement {
-        machine.instructions_par_battement = battement.max(1);
+        poste.machine.instructions_par_battement = battement.max(1);
     }
     // L'heure de l'hôte, lue une fois : l'horloge CMOS de l'invité part de là,
     // sauf quand `--horloge` en donne une.
-    machine.herites.cmos.regler(heure(options.horloge));
-    machine.blocs_actifs = !options.sans_blocs;
-    let mut carte = CartePc::nouvelle();
+    poste.machine.herites.cmos.regler(heure(options.horloge));
+    poste.machine.blocs_actifs = !options.sans_blocs;
+    let carte = poste.commandes().carte().clone();
     // L'horloge CMOS de la carte, qui répond aux ports 0x70 et 0x71 : l'heure
     // figée par `--horloge`, celle de l'hôte sinon.
     match options.horloge {
-        Some(secondes) => carte.regler_heure((secondes as i64).saturating_mul(1000)),
-        None => carte.horloge(horloge_du_systeme),
+        Some(secondes) => carte
+            .tenir()
+            .regler_heure((secondes as i64).saturating_mul(1000)),
+        None => carte.tenir().horloge(horloge_du_systeme),
     }
     if let Some(disque) = options.disque.as_deref() {
         let couche = options
@@ -440,7 +465,9 @@ fn main() {
             .clone()
             .unwrap_or_else(|| format!("{disque}.couche"));
         match DisqueFichier::ouvrir(Path::new(disque), Path::new(&couche)) {
-            Ok(fichier) => carte.brancher(Disque::Premier, fichier),
+            Ok(fichier) => poste
+                .brancher_disque(Disque::Premier, fichier)
+                .expect("machine éteinte"),
             Err(refus) => {
                 eprintln!("wisq-pc : --disque {disque} : {refus}");
                 std::process::exit(1);
@@ -449,36 +476,68 @@ fn main() {
     }
     // **L'écran et la tablette**, derrière la mémoire : la carte est tenue
     // des deux côtés (`pc::carte::brancher`), et le noyau reçoit le cadre.
-    let ecran = options.ecran.map(|(largeur, hauteur)| {
-        if !carte.brancher_ecran(largeur, hauteur) {
+    if let Some((largeur, hauteur)) = options.ecran {
+        if poste.brancher_ecran(largeur, hauteur).is_err() {
             eprintln!("wisq-pc : --display {largeur}x{hauteur} : plus que seize mébioctets");
             std::process::exit(2);
         }
-        Ecran {
-            base: BASE_DE_LA_MEMOIRE_VIDEO,
-            largeur: largeur as usize,
-            hauteur: hauteur as usize,
+    }
+    let carte = if options.sans_carte {
+        poste.machine.peripheriques = None;
+        poste.machine.cpu.devices = Devices(None);
+        poste.machine.herites.cmos_ailleurs = false;
+        None
+    } else {
+        Some(carte)
+    };
+    match options.reprendre.as_deref() {
+        // **Une machine reprise** : l'instantané d'une autre course, sur les
+        // mêmes disques et le même écran, au lieu du noyau.
+        Some(chemin) => {
+            let octets = lire(chemin);
+            if let Err(refus) = instantane::reprendre(&mut poste, &octets) {
+                eprintln!("wisq-pc : --reprendre {chemin} : {refus:?}");
+                std::process::exit(1);
+            }
+            eprintln!(
+                "reprise : {chemin} ({} octets) ; {} instructions déjà retirées",
+                octets.len(),
+                poste.machine.retirees
+            );
         }
-    });
-    let carte = (!options.sans_carte).then(|| raccord::brancher(&mut machine, carte));
-    let placement = machine
-        .charger(&noyau, ligne.as_deref(), initramfs.as_deref(), ecran)
-        .unwrap_or_else(|refus| {
-            eprintln!("wisq-pc : {refus}");
-            std::process::exit(1);
-        });
-    // La ligne que le noyau recevra, lue là où `Machine::charger` l'a posée
-    // (`console=tty0` devant sous un écran) : rien n'est recalculé ici.
-    eprintln!(
-        "ligne : {}",
-        ligne_posee(&machine.cpu.memory.bytes, &placement).unwrap_or_default()
-    );
+        None => {
+            let placement = poste
+                .charger(&noyau, ligne.as_deref(), initramfs.as_deref())
+                .unwrap_or_else(|refus| {
+                    eprintln!("wisq-pc : {refus}");
+                    std::process::exit(1);
+                });
+            // La ligne que le noyau recevra, lue là où `Machine::charger` l'a
+            // posée (`console=tty0` devant sous un écran) : rien n'est
+            // recalculé ici.
+            eprintln!(
+                "ligne : {}",
+                ligne_posee(&poste.machine.cpu.memory.bytes, &placement).unwrap_or_default()
+            );
+        }
+    }
+    let machine = &mut poste.machine;
 
     let hertz = machine.instructions_par_battement * HERTZ_DU_8253;
     let patience = options.patience.saturating_mul(hertz);
     let mut a_taper = options.entree.clone().into_iter();
     let mut prochaine = a_taper.next();
     let mut tapees = 0usize;
+    // **Une machine reprise a déjà dit son invite**, avant d'être sauvée : la
+    // première ligne part tout de suite, les suivantes à l'invite.
+    if options.reprendre.is_some() {
+        if let Some(ligne) = prochaine.take() {
+            machine.taper(ligne.as_bytes());
+            machine.taper(b"\n");
+            tapees += 1;
+            prochaine = a_taper.next();
+        }
+    }
     let mut serie = String::new();
     // Où la recherche de l'invite reprend : derrière ce qui a déjà servi.
     let mut depuis = 0usize;
@@ -727,6 +786,32 @@ fn main() {
         "secondes : {secondes:.2} ; MIPS : {:.1}",
         retirees as f64 / secondes.max(1e-9) / 1e6
     );
+    // **L'instantané, à la fin de la course** : les disques scellés d'abord,
+    // comme `flushDisk` avant `snapshot` du côté Swift.
+    if let Some(chemin) = &options.sauver {
+        let debut = Instant::now();
+        if !poste.commandes().vider_les_disques() {
+            eprintln!("wisq-pc : --sauver : un disque a refusé de se vider");
+            std::process::exit(1);
+        }
+        match instantane::sauver(&poste) {
+            Ok(octets) => match std::fs::write(chemin, &octets) {
+                Ok(()) => eprintln!(
+                    "instantané : {chemin} ({} octets, {:.2} s)",
+                    octets.len(),
+                    debut.elapsed().as_secs_f64()
+                ),
+                Err(erreur) => {
+                    eprintln!("wisq-pc : --sauver {chemin} : {erreur}");
+                    std::process::exit(1);
+                }
+            },
+            Err(refus) => {
+                eprintln!("wisq-pc : --sauver : {refus:?}");
+                std::process::exit(1);
+            }
+        }
+    }
     if fin.starts_with("faute") {
         std::process::exit(1);
     }

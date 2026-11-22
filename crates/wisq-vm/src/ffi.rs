@@ -1809,8 +1809,10 @@ pub unsafe extern "C" fn wisq_pc_snapshot(
     if !poste.pret() {
         return -2;
     }
-    let Some(sauve) = garder(None, || Some(instantane::sauver(poste))) else {
-        return WISQ_PC_PANIC;
+    let sauve = match garder(None, || Some(instantane::sauver(poste))) {
+        None => return WISQ_PC_PANIC,
+        Some(Err(_)) => return -3,
+        Some(Ok(sauve)) => sauve,
     };
     let mut sauve = sauve.into_boxed_slice();
     let (pointeur, longueur) = (sauve.as_mut_ptr(), sauve.len());
@@ -1849,6 +1851,8 @@ pub unsafe extern "C" fn wisq_pc_restore(pc: *mut WisqPC, bytes: *const u8, len:
             Err(RefusDInstantane::Abime) => -4,
             Err(RefusDInstantane::AutreMemoire { .. }) => -5,
             Err(RefusDInstantane::AutreEcran) => -6,
+            Err(RefusDInstantane::Perime(_)) => -7,
+            Err(RefusDInstantane::AutresDisques) => -8,
         }
     })
 }

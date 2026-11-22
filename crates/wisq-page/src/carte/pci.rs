@@ -44,7 +44,8 @@
 //! Swift a deux hôtes du même type : chacun a sa commande, sa fenêtre et sa
 //! ligne, et l'adresse est celle du bus.
 
-use super::ecran::{Ecran, EMPLACEMENT_DE_L_ECRAN};
+use super::ecran::{Ecran, EcranLu, EMPLACEMENT_DE_L_ECRAN};
+use super::etat::{Ecrivain, Lecteur};
 use super::tablette::{Tablette, EMPLACEMENT_DE_LA_TABLETTE};
 use super::virtio_blk::VirtioBlk;
 use super::virtio_net::VirtioNet;
@@ -479,6 +480,149 @@ pub(crate) fn masque(largeur: u8) -> u64 {
         1 => 0xFF,
         2 => 0xFFFF,
         _ => 0xFFFF_FFFF,
+    }
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+impl<P> Emplacement<P> {
+    /// **L'emplacement**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : le registre de commande, la fenêtre (la BAR0), la
+    /// ligne, la mesure en cours, puis le périphérique s'il est là.
+    pub(crate) fn sauver_avec(&self, e: &mut Ecrivain, sauver: impl Fn(&P, &mut Ecrivain)) {
+        e.u16(self.commande);
+        e.u32(self.fenetre);
+        e.u8(self.ligne);
+        e.oui(self.mesure);
+        e.oui(self.peripherique.is_some());
+        if let Some(peripherique) = &self.peripherique {
+            sauver(peripherique, e);
+        }
+    }
+
+    /// Relu, ou rien : une fenêtre qui n'est pas alignée sur sa taille n'a
+    /// pas été posée par [`Emplacement::ecrire_configuration`].
+    pub(crate) fn relire_avec(
+        l: &mut Lecteur,
+        relire: impl FnOnce(&mut Lecteur) -> Option<P>,
+    ) -> Option<Self> {
+        let commande = l.u16()?;
+        let fenetre = l.u32()?;
+        let ligne = l.u8()?;
+        let mesure = l.oui()?;
+        if fenetre & (TAILLE_DE_FENETRE - 1) != 0 {
+            return None;
+        }
+        let peripherique = if l.oui()? { Some(relire(l)?) } else { None };
+        Some(Self {
+            commande,
+            fenetre,
+            ligne,
+            mesure,
+            peripherique,
+        })
+    }
+}
+
+/// **Le bus relu**, pas encore posé : l'écran garde ses pixels dans
+/// l'instantané jusqu'à [`Pci::poser`], qui les recopie dans la mémoire
+/// vidéo de la machine (son adresse a pu être tendue à une vue).
+pub(crate) struct PciLu<'a> {
+    adresse: u32,
+    premier: Emplacement,
+    second: Emplacement,
+    ecran: Option<EcranLu<'a>>,
+    tablette: Option<Tablette>,
+    reseau: Emplacement<VirtioNet>,
+}
+
+impl PciLu<'_> {
+    /// Le disque relu à cet emplacement, s'il y en a un.
+    pub(crate) fn disque(&self, quel: Disque) -> Option<&VirtioBlk> {
+        match quel {
+            Disque::Premier => self.premier.peripherique.as_ref(),
+            Disque::Second => self.second.peripherique.as_ref(),
+        }
+    }
+
+    /// Une tablette a été relue.
+    pub(crate) fn a_une_tablette(&self) -> bool {
+        self.tablette.is_some()
+    }
+
+    /// Une carte réseau a été relue.
+    pub(crate) fn a_un_reseau(&self) -> bool {
+        self.reseau.peripherique.is_some()
+    }
+}
+
+impl Pci {
+    /// **Le bus**, pour l'instantané : l'adresse choisie au port `0xCF8`,
+    /// les deux disques, l'écran et sa mémoire vidéo, la tablette, la carte
+    /// réseau — chacun avec ce que son pilote lui a écrit.
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u32(self.adresse);
+        self.premier.sauver_avec(e, VirtioBlk::sauver);
+        self.second.sauver_avec(e, VirtioBlk::sauver);
+        e.oui(self.ecran.is_some());
+        if let Some(ecran) = &self.ecran {
+            ecran.sauver(e);
+        }
+        e.oui(self.tablette.is_some());
+        if let Some(tablette) = &self.tablette {
+            tablette.sauver(e);
+        }
+        self.reseau.sauver_avec(e, VirtioNet::sauver);
+    }
+
+    /// **Relu contre le bus de cette machine**, ou rien : l'écran et la
+    /// tablette vont ensemble, et l'écran relu doit être celui que la
+    /// machine a branché (même cadre de départ, même mémoire vidéo) — la
+    /// machine ne branche pas d'écran après coup.
+    pub(crate) fn relire<'a>(&self, l: &mut Lecteur<'a>) -> Option<PciLu<'a>> {
+        let adresse = l.u32()?;
+        let premier = Emplacement::relire_avec(l, VirtioBlk::relire)?;
+        let second = Emplacement::relire_avec(l, VirtioBlk::relire)?;
+        let ecran = if l.oui()? {
+            Some(self.ecran.as_ref()?.relire(l)?)
+        } else {
+            None
+        };
+        if ecran.is_some() != self.ecran.is_some() {
+            return None;
+        }
+        let tablette = if l.oui()? {
+            Some(Tablette::relire(l)?)
+        } else {
+            None
+        };
+        if tablette.is_some() != ecran.is_some() {
+            return None;
+        }
+        let reseau = Emplacement::relire_avec(l, VirtioNet::relire)?;
+        Some(PciLu {
+            adresse,
+            premier,
+            second,
+            ecran,
+            tablette,
+            reseau,
+        })
+    }
+
+    /// **Poser le bus relu.** Rien ne peut plus échouer : la mémoire vidéo
+    /// est recopiée sur place, le reste remplacé. Le câble de la carte réseau
+    /// est celui de la machine, pas de l'instantané : c'est la façade qui le
+    /// redit ([`super::pc::CartePc`]).
+    pub(crate) fn poser(&mut self, lu: PciLu<'_>) {
+        self.adresse = lu.adresse;
+        self.premier = lu.premier;
+        self.second = lu.second;
+        if let (Some(ecran), Some(relu)) = (self.ecran.as_mut(), lu.ecran) {
+            ecran.poser(relu);
+        }
+        self.tablette = lu.tablette;
+        self.reseau = lu.reseau;
     }
 }
 

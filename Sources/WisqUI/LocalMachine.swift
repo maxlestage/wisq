@@ -135,8 +135,9 @@ extension RustPCScreen: GuestScreen {}
 extension RustPCMachine: PCInput {}
 #endif
 
-/// Une machine dont la session se sauve : toutes, sauf la machine PC en Rust
-/// tant que son instantané ne porte pas la carte (`RustPCSetting`).
+/// Une machine dont la session se sauve : toutes, la machine PC en Rust
+/// comprise depuis que son instantané porte la carte des périphériques
+/// (`RustPCSetting.savesSessions`).
 func savesSessions(_ machine: GuestMachine) -> Bool {
     #if WISQ_RUST_CORE
     if machine is RustPCMachine { return RustPCSetting.savesSessions }

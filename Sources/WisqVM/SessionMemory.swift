@@ -31,7 +31,10 @@ public enum SessionMemory {
     public static func savedRAMSize(_ saved: Data, core: GuestArchitecture.Core) -> Int? {
         switch core {
         case .riscv32: return LinuxMachine.savedRAMSize(in: saved)
-        case .x86_64: return X86Machine.savedRAMSize(in: saved)
+        case .x86_64:
+            // Une session de la machine PC en Rust dit sa mémoire en tête.
+            if RustPCSnapshot.recognizes(saved) { return RustPCSnapshot.header(of: saved)?.ramSize }
+            return X86Machine.savedRAMSize(in: saved)
         }
     }
 
