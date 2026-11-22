@@ -1234,6 +1234,117 @@ fn section(id: u8, body: Vec<u8>, out: &mut Vec<u8>) {
     out.extend_from_slice(&body);
 }
 
+/// Les noms des fonctions du **module d'accès**, dans l'ordre de leurs
+/// indices : c'est l'ordre dans lequel la page les pose dans la table de
+/// fonctions du module Rust (`crates/wisq-page/src/hote.rs`).
+pub const ACCESS_EXPORTS: [&str; 6] = ["lire", "ecrire", "lire64", "ecrire64", "lire8", "ecrire8"];
+
+/// **Le module d'accès** : ce qui laisse le Rust de la page lire et écrire
+/// l'état d'une machine traduite.
+///
+/// Les modules traduits importent leur mémoire (`env.mem`) et leurs
+/// registres (`env.g0` … `env.g92`, des globales mutables). Le module Rust
+/// de la page a sa propre mémoire, et Rust ne sait ni importer une globale
+/// mutable d'une autre instance ni lire une seconde mémoire. Ce module-ci
+/// importe exactement ce qu'importent les modules traduits et rend six
+/// fonctions — lire et écrire un registre par son numéro, huit octets ou un
+/// octet de la mémoire —, que la page pose dans la table de fonctions du
+/// module Rust : un appel de Rust y est un `call_indirect`, sans JavaScript
+/// entre les deux.
+///
+/// **Il ne dépend de rien** : sa mémoire est importée avec un minimum de
+/// zéro page, ses registres sont ceux de [`GLOBAL_COUNT`]. Le même module
+/// sert toutes les machines.
+#[must_use]
+pub fn access_module() -> Vec<u8> {
+    let mut module = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    // Les types : (i32) → i64, (i32, i64) → (), (i32) → i32, (i32, i32) → ().
+    let mut types = Vec::new();
+    unsigned(4, &mut types);
+    types.extend_from_slice(&[0x60, 0x01, 0x7f, 0x01, 0x7e]);
+    types.extend_from_slice(&[0x60, 0x02, 0x7f, 0x7e, 0x00]);
+    types.extend_from_slice(&[0x60, 0x01, 0x7f, 0x01, 0x7f]);
+    types.extend_from_slice(&[0x60, 0x02, 0x7f, 0x7f, 0x00]);
+    section(1, types, &mut module);
+
+    let mut imports = Vec::new();
+    unsigned(1 + GLOBAL_COUNT as u64, &mut imports);
+    let name = |text: &str, bytes: &mut Vec<u8>| {
+        unsigned(text.len() as u64, bytes);
+        bytes.extend_from_slice(text.as_bytes());
+    };
+    name("env", &mut imports);
+    name("mem", &mut imports);
+    imports.extend_from_slice(&[0x02, 0x00, 0x00]);
+    for slot in 0..GLOBAL_COUNT {
+        name("env", &mut imports);
+        name(&format!("g{slot}"), &mut imports);
+        imports.extend_from_slice(&[0x03, 0x7e, 0x01]);
+    }
+    section(2, imports, &mut module);
+
+    let signatures = [0u8, 1, 0, 1, 2, 3];
+    let mut functions = Vec::new();
+    unsigned(signatures.len() as u64, &mut functions);
+    functions.extend_from_slice(&signatures);
+    section(3, functions, &mut module);
+
+    let mut exports = Vec::new();
+    unsigned(ACCESS_EXPORTS.len() as u64, &mut exports);
+    for (index, export) in ACCESS_EXPORTS.iter().enumerate() {
+        name(export, &mut exports);
+        exports.push(0x00);
+        unsigned(index as u64, &mut exports);
+    }
+    section(7, exports, &mut module);
+
+    // `lire` et `ecrire` : un `br_table` sur le numéro du registre, un bloc
+    // par registre ; un numéro hors bornes rend zéro, ou n'écrit rien.
+    let dispatch = |write: bool| {
+        let mut body = vec![0x00];
+        for _ in 0..=GLOBAL_COUNT {
+            body.extend_from_slice(&[0x02, 0x40]);
+        }
+        body.extend_from_slice(&[0x20, 0x00, 0x0e]);
+        unsigned(GLOBAL_COUNT as u64, &mut body);
+        for label in 0..=GLOBAL_COUNT {
+            unsigned(label as u64, &mut body);
+        }
+        for slot in 0..GLOBAL_COUNT {
+            body.push(code::END);
+            if write {
+                body.extend_from_slice(&[0x20, 0x01, 0x24]);
+            } else {
+                body.push(0x23);
+            }
+            unsigned(slot as u64, &mut body);
+            body.push(0x0f);
+        }
+        body.push(code::END);
+        if !write {
+            body.extend_from_slice(&[0x42, 0x00]);
+        }
+        body.push(code::END);
+        body
+    };
+    let bodies = [
+        dispatch(false),
+        dispatch(true),
+        vec![0x00, 0x20, 0x00, 0x29, 0x03, 0x00, code::END],
+        vec![0x00, 0x20, 0x00, 0x20, 0x01, 0x37, 0x03, 0x00, code::END],
+        vec![0x00, 0x20, 0x00, 0x2d, 0x00, 0x00, code::END],
+        vec![0x00, 0x20, 0x00, 0x20, 0x01, 0x3a, 0x00, 0x00, code::END],
+    ];
+    let mut codes = Vec::new();
+    unsigned(bodies.len() as u64, &mut codes);
+    for body in bodies {
+        unsigned(body.len() as u64, &mut codes);
+        codes.extend_from_slice(&body);
+    }
+    section(10, codes, &mut module);
+    module
+}
+
 /// Les opcodes dont la traduction a besoin.
 mod code {
     pub const CALL: u8 = 0x10;

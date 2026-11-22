@@ -1060,3 +1060,78 @@ console.log("instances_fin " + porte.instances);
     );
     assert_eq!(said(&text, "instances_fin "), "4", "{text}");
 }
+
+/// **Le socle de la boucle hôte en Rust** (`src/hote.rs`) : depuis le module
+/// de la page, l'état d'une machine traduite se lit et s'écrit.
+///
+/// Le pilote fait ce que fera la boucle : une mémoire et les quatre-vingt-
+/// treize globales des modules traduits, données au Rust par `brancher`. Puis
+/// chaque sens : un registre posé en JavaScript lu par le Rust, un registre
+/// écrit par le Rust lu en JavaScript, huit octets et un octet de la mémoire
+/// dans les deux sens, un numéro de registre hors bornes. **Après une trappe
+/// de l'émetteur**, l'instance est neuve et sa table aussi : le Rust doit
+/// encore atteindre la machine. Le banc chiffre ce qu'un appel coûte, contre
+/// la même lecture faite en JavaScript.
+#[test]
+fn rust_in_the_page_reads_and_writes_the_translated_machine() {
+    use wisq_vm::x86_wasm::GLOBAL_COUNT;
+    let module = page_module();
+    let script = format!(
+        r#"{prelude}
+const memoire = new WebAssembly.Memory({{ initial: 4 }});
+const globales = [];
+for (let rang = 0; rang < {count}; rang++) {{
+  globales.push(new WebAssembly.Global({{ value: "i64", mutable: true }}, 0n));
+}}
+const p = () => porte.porte;
+console.log("avant " + p().hote_lire({rip}));
+porte.brancher(memoire, globales);
+globales[{rip}].value = 0xffffffff81000000n;
+console.log("rip " + BigInt.asUintN(64, p().hote_lire({rip})).toString(16));
+p().hote_ecrire({last}, -2n);
+console.log("ecrit " + globales[{last}].value);
+console.log("hors " + p().hote_lire(100000));
+new DataView(memoire.buffer).setBigUint64(0x2000, 0x1122334455667788n, true);
+console.log("lire64 " + p().hote_lire64(0x2000).toString(16));
+p().hote_ecrire64(0x3000, 0x0102030405060708n);
+console.log("ecrire64 " + new DataView(memoire.buffer).getBigUint64(0x3000, true).toString(16));
+p().hote_ecrire8(0x10, 0x1ab);
+console.log("octet " + new Uint8Array(memoire.buffer)[0x10] + " " + p().hote_lire8(0x10));
+
+// Une trappe de l'émetteur : instance neuve, table neuve, machine rebranchée.
+porte.resoudre({{ length: 0xffffffff }}, 0x100000n, 7, 16);
+globales[{rip}].value = 42n;
+console.log("apres_trappe " + porte.instances + " " + p().hote_lire({rip}));
+
+const fois = 2000000;
+let debut = performance.now();
+const somme = p().hote_banc({rip}, fois);
+const rust = performance.now() - debut;
+debut = performance.now();
+let js = 0n;
+for (let i = 0; i < fois; i++) js += globales[{rip}].value;
+const parJs = performance.now() - debut;
+console.log("banc " + somme + " " + (rust * 1e6 / fois).toFixed(1) + " ns/appel Rust, "
+  + (parJs * 1e6 / fois).toFixed(1) + " ns/lecture JS");
+"#,
+        prelude = prelude(&module),
+        count = GLOBAL_COUNT,
+        rip = RIP_SLOT,
+        last = GLOBAL_COUNT - 1,
+    );
+    let out = run_driver("hote", &script);
+    eprintln!("{}", said(&out, "banc"));
+    assert_eq!(said(&out, "avant"), "-1", "rien de branché : -1");
+    assert_eq!(said(&out, "rip"), "ffffffff81000000");
+    assert_eq!(said(&out, "ecrit"), "-2");
+    assert_eq!(
+        said(&out, "hors"),
+        "0",
+        "un registre hors bornes se lit zéro"
+    );
+    assert_eq!(said(&out, "lire64"), "1122334455667788");
+    assert_eq!(said(&out, "ecrire64"), "102030405060708");
+    assert_eq!(said(&out, "octet"), "171 171");
+    assert_eq!(said(&out, "apres_trappe"), "2 42");
+    assert!(said(&out, "banc").starts_with(&format!("{}", 42u64 * 2_000_000)));
+}

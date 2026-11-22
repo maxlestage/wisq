@@ -86,6 +86,31 @@ export function emetteur(source) {
     // l'émetteur se voie au lieu de lire une RAM qui n'est pas la sienne.
     porte = new WebAssembly.Instance(module, importsRefuses(module)).exports;
     instances += 1;
+    // Une instance neuve a une table neuve : la machine branchée l'est de
+    // nouveau, sans quoi la boucle Rust perdrait ses registres après une
+    // trappe de l'émetteur.
+    if (branchee !== null) poserAcces(branchee);
+  }
+  // **La machine dont le Rust de la page atteint l'état** : sa mémoire et ses
+  // registres, ceux qu'importent les modules traduits. Voir `brancher`.
+  let branchee = null;
+  function poserAcces({ memoire, globales }) {
+    // Les deux appels d'abord : le premier fait le module, et peut faire
+    // grandir la mémoire de l'instance — un tampon pris avant serait détaché.
+    const place = porte.acces_octets();
+    const longueur = porte.acces_longueur();
+    const octets = new Uint8Array(porte.memory.buffer, place, longueur).slice();
+    const acces = new WebAssembly.Module(octets);
+    const env = { mem: memoire };
+    globales.forEach((globale, rang) => { env["g" + rang] = globale; });
+    const fonctions = new WebAssembly.Instance(acces, { env }).exports;
+    // L'ordre est celui du module lui-même — celui que le Rust attend
+    // (`ACCESS_EXPORTS`) : rien n'est recopié ici qui pourrait diverger.
+    const noms = WebAssembly.Module.exports(acces).map(({ name }) => name);
+    const table = porte.__indirect_function_table;
+    const base = table.grow(noms.length);
+    noms.forEach((nom, rang) => table.set(base + rang, fonctions[nom]));
+    porte.brancher_acces(base);
   }
   instancier();
   // **La raison du dernier refus**, gardée pour qui veut la journaliser. La
@@ -176,6 +201,16 @@ export function emetteur(source) {
     /// Le nombre d'instances créées : 1 tant qu'aucune trappe n'a eu lieu.
     get instances() {
       return instances;
+    },
+    /// **Donne au Rust de la page l'état d'une machine traduite** : la
+    /// mémoire et les globales qu'importent ses modules (`src/hote.rs`).
+    brancher(memoire, globales) {
+      branchee = { memoire, globales };
+      poserAcces(branchee);
+    },
+    /// Les exports de l'instance courante, pour les essais de la page.
+    get porte() {
+      return porte;
     },
   };
 }
