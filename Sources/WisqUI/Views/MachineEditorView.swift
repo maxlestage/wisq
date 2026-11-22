@@ -89,6 +89,26 @@ public struct MachineEditorView: View {
 
     public var body: some View {
         Form {
+            // **Ce qu'on est en train de décrire**, tel que la liste le
+            // montrera : son badge, son nom, son protocole et son adresse.
+            Section {
+                HStack(spacing: 14) {
+                    RemoteBadge(system: draft.machine.guestOS, size: 54)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(draft.machine.name.isEmpty ? "Nouvelle machine" : draft.machine.name)
+                            .font(.title3.weight(.bold))
+                        Text(draft.address.isEmpty
+                            ? draft.machine.proto.displayName
+                            : "\(draft.machine.proto.displayName) · \(draft.address)")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .padding(.vertical, 4)
+                .accessibilityElement(children: .combine)
+            }
             Section("Machine") {
                 TextField("Nom", text: $draft.machine.name)
                     .textInputAutocapitalization(.words)

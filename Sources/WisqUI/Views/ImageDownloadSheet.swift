@@ -88,6 +88,8 @@ struct ImageDownloadSheet: View {
                         ForEach(model.releases, id: \.file) { release in
                             row(release)
                         }
+                    } header: {
+                        Text("Images des distributions")
                     } footer: {
                         Text("L'image n'entre dans la bibliothèque qu'entière et à la somme que publie sa distribution. Un téléchargement interrompu reprend où il s'était arrêté. L'image de Debian démarre telle quelle : wisq demandera le mot de passe de root au premier démarrage.")
                     }
@@ -125,20 +127,32 @@ struct ImageDownloadSheet: View {
         }
     }
 
+    /// **Une image d'une distribution** : son badge, son nom et sa version,
+    /// ce qu'elle pèse ; à droite « Obtenir », ou l'anneau de sa progression.
     @ViewBuilder
     private func row(_ release: ImageDownload.Release) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
+        let downloading = model.phase == .downloading(file: release.file)
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            HStack(spacing: Design.Space.m) {
+                DistributionBadge(distribution: MachineBadge.distribution(of: [release.distribution, release.file]),
+                                  size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(release.distribution) \(release.version) — \(release.title)")
+                    Text("\(release.distribution) \(release.version)")
                         .font(.body.weight(.semibold))
-                    Text("\(release.file) · \(LocalStorage.describe(bytes: release.size)) · \(release.checksum.algorithm)")
+                    Text("\(release.title) · \(LocalStorage.describe(bytes: release.size))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("\(release.file) · \(release.checksum.algorithm)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                Spacer(minLength: 12)
-                if model.phase == .downloading(file: release.file) {
-                    ProgressView()
+                Spacer(minLength: Design.Space.s)
+                if downloading {
+                    ProgressRing(fraction: fraction(model.progress.have, model.progress.total))
+                        .accessibilityLabel("Téléchargement de \(release.file)")
+                        .accessibilityValue("\(MachineCardText.percent(have: model.progress.have, total: model.progress.total)) %")
                 } else {
                     Button {
                         Task {
@@ -148,78 +162,65 @@ struct ImageDownloadSheet: View {
                             }
                         }
                     } label: {
-                        Label("Télécharger", systemImage: "arrow.down.circle")
-                            .labelStyle(.iconOnly)
-                            .font(.title2)
+                        Text("Obtenir")
+                            .font(.subheadline.weight(.bold))
+                            .padding(.horizontal, 4)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
                     .disabled(isDownloading)
                     .accessibilityLabel("Télécharger \(release.file)")
                 }
             }
-            if model.phase == .downloading(file: release.file), model.progress.total > 0 {
+            if downloading, model.progress.total > 0 {
                 ProgressView(value: Double(model.progress.have), total: Double(model.progress.total))
-                Text("\(LocalStorage.describe(bytes: model.progress.have)) sur \(LocalStorage.describe(bytes: model.progress.total))")
+                    .tint(Design.accent)
+                Text(MachineCardText.progress(have: model.progress.have, total: model.progress.total))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Design.Space.xs)
     }
 
-    /// **Une ligne de bureau prêt** : ce que c'est, ce que ça coûte, ce que
-    /// ça donne ; puis, pendant le téléchargement, l'étape et un seul progrès
-    /// sur les deux fichiers.
+    /// **Un bureau prêt, en carte** : ce que c'est, ce que ça coûte, ce que
+    /// ça donne, et un seul bouton évident ; puis, pendant le téléchargement,
+    /// l'étape et un seul progrès sur les deux fichiers.
     @ViewBuilder
     private func desktopRow(_ desktop: ReadyDesktop) -> some View {
-        let busy = model.phase == .fetchingDesktop(title: desktop.title)
-            || model.phase == .installingDesktop(title: desktop.title)
+        let fetching = model.phase == .fetchingDesktop(title: desktop.title)
+        let installingNow = model.phase == .installingDesktop(title: desktop.title)
         let fits = desktop.fits(ceiling: model.ceiling)
-        let shortfall = busy ? nil : model.spaceShortfall(desktop)
+        let shortfall = fetching || installingNow ? nil : model.spaceShortfall(desktop)
         let installed = model.alreadyInstalled(desktop)
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            HStack(alignment: .top, spacing: Design.Space.m) {
+                DistributionBadge(distribution: MachineBadge.distribution(of: [desktop.title, desktop.image.file]),
+                                  desktop: true, size: 56)
+                VStack(alignment: .leading, spacing: Design.Space.xs) {
                     Text(desktop.title)
-                        .font(.body.weight(.semibold))
+                        .font(.title3.weight(.bold))
                     Text(desktop.madePhrase)
-                        .font(.caption)
-                    Text(desktop.sizePhrase(imagePresent: model.imagePresent(desktop)))
-                        .font(.caption)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Text(desktop.memoryPhrase(ceiling: model.ceiling))
-                        .font(.caption)
-                        .foregroundStyle(fits ? Color.secondary : Color.orange)
                 }
-                Spacer(minLength: 12)
-                if model.phase == .fetchingDesktop(title: desktop.title) {
-                    // **Annuler**, pendant l'un ou l'autre fichier : le
-                    // transfert s'arrête, et la ligne dit ce qui est gardé.
-                    Button {
-                        model.cancelDesktop(desktop)
-                    } label: {
-                        Label("Annuler", systemImage: "xmark.circle")
-                            .labelStyle(.iconOnly)
-                            .font(.title2)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Annuler le téléchargement de \(desktop.title)")
-                } else if busy {
-                    ProgressView()
-                } else {
-                    Button {
-                        // Une machine démarre déjà cette image : installer en
-                        // ajoute une autre, et la feuille le demande d'abord.
-                        if installed != nil { confirming = desktop } else { start(desktop) }
-                    } label: {
-                        Label("Installer", systemImage: "arrow.down.circle")
-                            .labelStyle(.iconOnly)
-                            .font(.title2)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(isDownloading || !fits || shortfall != nil)
-                    .accessibilityLabel("Installer \(desktop.title)")
-                }
+            }
+            FlowLayout(spacing: Design.Space.s) {
+                ChipLabel(text: LocalStorage.describe(bytes: model.imagePresent(desktop)
+                    ? desktop.archive.size : desktop.image.size + desktop.archive.size),
+                          symbol: "arrow.down.circle")
+                ChipLabel(text: KernelMemory.describe(desktop.ramBytes), symbol: "memorychip",
+                          color: fits ? .primary : .orange)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(desktop.sizePhrase(imagePresent: model.imagePresent(desktop))) \(desktop.memoryPhrase(ceiling: model.ceiling))")
+            Text(desktop.sizePhrase(imagePresent: model.imagePresent(desktop)))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !fits {
+                Text(desktop.memoryPhrase(ceiling: model.ceiling))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
             }
             if let shortfall {
                 Text(shortfall)
@@ -236,27 +237,75 @@ struct ImageDownloadSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if model.phase == .fetchingDesktop(title: desktop.title), let step = model.desktopProgress,
-               step.total > 0 {
-                ProgressView(value: Double(step.have), total: Double(step.total))
-                Text(step.phrase)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            if fetching {
+                if let step = model.desktopProgress, step.total > 0 {
+                    VStack(alignment: .leading, spacing: Design.Space.xs) {
+                        HStack {
+                            Text(step.step == .image ? "L'image" : "Le bureau")
+                                .font(.subheadline.weight(.semibold))
+                            Text("étape \(step.number) sur \(step.steps)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(MachineCardText.percent(have: step.have, total: step.total)) %")
+                                .font(.subheadline.monospacedDigit().weight(.semibold))
+                        }
+                        ProgressView(value: Double(step.have), total: Double(step.total))
+                            .tint(Design.accent)
+                        Text(step.phrase)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
                 Text("Fermer la feuille ne l'arrête pas : le téléchargement continue en arrière-plan.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            if model.phase == .installingDesktop(title: desktop.title) {
-                Text("Vérification de l'image et installation du bureau…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // **Annuler**, pendant l'un ou l'autre fichier : le transfert
+                // s'arrête, et la ligne dit ce qui est gardé.
+                Button(role: .destructive) {
+                    model.cancelDesktop(desktop)
+                } label: {
+                    Label("Annuler", systemImage: "xmark")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .accessibilityLabel("Annuler le téléchargement de \(desktop.title)")
+            } else if installingNow {
+                HStack(spacing: Design.Space.m) {
+                    ProgressView()
+                    Text("Vérification de l'image et installation du bureau…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button {
+                    // Une machine démarre déjà cette image : installer en
+                    // ajoute une autre, et la feuille le demande d'abord.
+                    if installed != nil { confirming = desktop } else { start(desktop) }
+                } label: {
+                    Label("Installer", systemImage: "arrow.down.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .disabled(isDownloading || !fits || shortfall != nil)
+                .accessibilityLabel("Installer \(desktop.title)")
             }
             if let failure = model.desktopFailure, failure.title == desktop.title {
                 RefusalLabel(text: failure.why)
                     .foregroundStyle(.red)
             }
         }
-        .padding(.vertical, 4)
+        .card()
+        .cardRow()
+    }
+
+    private func fraction(_ have: Int, _ total: Int) -> Double {
+        Double(MachineCardText.percent(have: have, total: total)) / 100
     }
 
     /// Un téléchargement en cours, d'une image ou d'un bureau prêt : un seul
@@ -266,6 +315,23 @@ struct ImageDownloadSheet: View {
         case .downloading, .fetchingDesktop, .installingDesktop: return true
         default: return false
         }
+    }
+}
+/// **L'anneau d'un téléchargement**, à la place du bouton « Obtenir »,
+/// comme dans l'App Store.
+private struct ProgressRing: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Design.chipFill, lineWidth: 4)
+            Circle()
+                .trim(from: 0, to: max(0.02, min(fraction, 1)))
+                .stroke(Design.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            RoundedRectangle(cornerRadius: 2).fill(Design.accent).frame(width: 9, height: 9)
+        }
+        .frame(width: 30, height: 30)
     }
 }
 #endif
