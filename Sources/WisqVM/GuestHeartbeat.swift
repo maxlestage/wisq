@@ -59,10 +59,43 @@ public enum GuestHeartbeat {
         // que la deuxième capture a montré : elle n'apparaissait qu'au blocage,
         // c'est-à-dire dans le cas où elle sert le moins. Un invité lent et un
         // invité qui tourne en rond ont exactement le même compteur qui grimpe.
-        let place = ran > 0 && near(now.rip, since.rip)
+        let place = ran > 0 && near(now.rip, since.rip) && staysOnOnePage(now: now, since: since)
             ? "en rond autour de \(address(now.rip))"
             : address(now.rip)
         return "\(count) · \(speed(mips)) · \(place)"
+    }
+
+    /// **La part des publications qui doivent rester dans une même page
+    /// pour qu'on dise « en rond »** : neuf sur dix.
+    ///
+    /// Deux relevés proches ne suffisent pas, et c'est une capture qui l'a
+    /// montré : l'image d'installation d'Arch déballe son initramfs (dix-neuf
+    /// mégaoctets de xz) pendant neuf milliards d'instructions sans rien
+    /// écrire, presque toujours dans `lzma_main`, et la ligne disait « en
+    /// rond autour de 0xffffffff9c990e5d » d'un invité qui avançait — la
+    /// personne l'a lu comme un blocage. Mesuré sous `wisq-pc`, tranche par
+    /// tranche : **69 à 80 %** des publications y trouvent RIP dans la page
+    /// de la précédente (le décodeur appelle `crc32_le`, puis l'écriture des
+    /// fichiers) ; **98 %** dans la boucle d'attente d'un noyau en panique
+    /// (`delay_tsc`, entre deux tours de `panic`) ; toutes dans un `jmp .`.
+    public static let loopShare = 0.9
+
+    /// Assez de publications entre deux relevés pour que la part veuille
+    /// dire quelque chose : en deçà, on s'en tient aux deux relevés.
+    static let fewestSlices: UInt64 = 20
+
+    /// **L'invité est-il resté dans une page entre les deux relevés ?** Vrai
+    /// quand le cœur ne compte pas ses publications, ou en a trop peu publié
+    /// pour juger : les deux relevés proches décident alors seuls, comme
+    /// avant.
+    static func staysOnOnePage(now: GuestProgress, since: GuestProgress) -> Bool {
+        guard let slices = now.slices, let before = since.slices,
+              let same = now.slicesOnSamePage, let sameBefore = since.slicesOnSamePage,
+              slices >= before, same >= sameBefore
+        else { return true }
+        let published = slices - before
+        guard published >= fewestSlices else { return true }
+        return Double(same - sameBefore) >= loopShare * Double(published)
     }
 
     /// Deux adresses à moins d'une page l'une de l'autre.

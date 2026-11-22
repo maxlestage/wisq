@@ -727,7 +727,7 @@ const accounted = new Map<string, Map<string, string>>([
     HOME,
     provenanceOf([
       [
-        "4388",
+        "4394",
         "tenu par la garde du bloc `facts` ci-dessus, dans les deux langues : `testCount()` compte les `func test` de `Tests/` et les `#[test]` de `crates/`.",
       ],
       [
@@ -1460,7 +1460,7 @@ const accounted = new Map<string, Map<string, string>>([
           "entrées sur un timer ne voit rien d'un clic plus court.",
       ],
       [
-        "80",
+        "81",
         "compté, pas cité : les `pub extern \"C\" fn` de `crates/`, et le test " +
           "« la page d'architecture annonce le vrai nombre de fonctions du " +
           "C ABI » les recompte à chaque exécution. La page disait **sept**, " +
@@ -1487,7 +1487,10 @@ const accounted = new Map<string, Map<string, string>>([
           "lui, et les compteurs —, que le même programme appelle aussi. " +
           "Quatre-vingts : `wisq_pc_attach_disk_reader`, un disque dont la " +
           "base est lue par l'appelant — le qcow2 ou le VMDK que le cœur " +
-          "Swift traduit —, que `abi/pc.c` appelle à chacun de ses refus.",
+          "Swift traduit —, que `abi/pc.c` appelle à chacun de ses refus. " +
+          "Quatre-vingt-un : `wisq_pc_progress_pages`, les tranches publiées " +
+          "et celles restées dans la page de la précédente, pour que la ligne " +
+          "d'état ne dise « en rond » que d'un invité qui ne la quitte pas.",
       ],
       [
         "8",

@@ -81,6 +81,25 @@ final class RustPCMachineTests: XCTestCase {
         XCTAssertEqual(machine.liveProgress?.retired, machine.retiredInstructions)
     }
 
+    /// **Les deux cœurs comptent leurs publications**, et celles qui
+    /// trouvent RIP dans la page de la précédente : un `jmp .` n'en quitte
+    /// jamais, donc toutes sauf la première. C'est ce qui permet à la ligne
+    /// d'état de ne dire « en rond » que d'un invité qui y reste
+    /// (`GuestHeartbeat.loopShare`) ; le cœur Rust juge le cas d'un invité
+    /// qui calcule sur deux pages (`pc_poste.rs`).
+    func testBothCoresCountTheSlicesThatStayOnOnePage() throws {
+        let kernel = try Self.endlessKernel()
+        let cores: [GuestMachine] = [swift(Console()), try rust(Console())]
+        for core in cores {
+            try core.load(kernelImage: kernel, commandLine: nil, initialRamdisk: nil)
+            XCTAssertEqual(core.runGuest(instructionBudget: 20_000_000), .stopped)
+            let progress = try XCTUnwrap(core.liveProgress)
+            let slices = try XCTUnwrap(progress.slices, "\(type(of: core)) compte ses publications")
+            XCTAssertGreaterThanOrEqual(slices, 20, "\(type(of: core))")
+            XCTAssertEqual(progress.slicesOnSamePage, slices - 1, "\(type(of: core)) : un jmp . reste")
+        }
+    }
+
     /// **Sous un écran, les deux mettent `console=tty0` devant la ligne**, et
     /// montrent le même mode de démarrage.
     func testUnderAScreenBothPutTty0FirstAndShowTheSameMode() throws {
