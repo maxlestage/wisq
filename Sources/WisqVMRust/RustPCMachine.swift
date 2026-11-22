@@ -774,9 +774,17 @@ public final class RustPCScreen: @unchecked Sendable {
 /// instruction », et la console le dit, une fois par forme, avec la phrase de
 /// `X86Machine.refusalNote` (`Poste::dire_les_refus`).
 ///
-/// **Ce qui lui manque encore par rapport au cœur Swift** : les bureaux prêts
-/// refabriqués à son format (ceux qu'on télécharge sont des instantanés du
-/// cœur Swift, et s'y reprennent).
+/// **Les bureaux prêts à son format** : `wisq-fabrique --coeur rust` les
+/// fabrique et les vérifie sur la machine de l'application
+/// (`RustReadyDesktopBuild`), et l'application, ce réglage allumé, prend
+/// l'entrée du cœur Rust dans l'index (`ReadyDesktop.parse`) ; reprise, la
+/// machine prend l'aléa du téléphone (`reseed`). Un index qui n'a que le
+/// bureau du cœur Swift le donne encore, et il se reprend sur le cœur Swift.
+///
+/// **Ce qui lui manque encore par rapport au cœur Swift** : une session prise
+/// pendant une installation (l'image en `vda`, le disque en `vdb`) ne se
+/// reprend pas une fois que `IsoBoot` démarre le disque installé — la console
+/// dit quel geste remet les disques.
 public enum RustPCSetting {
     public static let key = "wisq.machine.pc-rust"
     /// **Allumé** : le cœur Rust va deux fois plus vite que le cœur Swift

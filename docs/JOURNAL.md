@@ -139,6 +139,15 @@ l'ABI, plutôt que porter les lecteurs.** Les raisons, dans l'ordre :
 **Les tests** : dix-sept de plus (4 353 → 4 370 au compte publié ; Swift
 3 140, Rust 1 230).
 
+**La fusion avec master (#720, les bureaux prêts)**. `RustPCSetting.runs`
+n'a plus d'argument `installed:` : les deux appels de `RustReadyDesktopTests`
+qui le passaient le perdent, sans rien changer à ce qu'ils jugent (une
+session du cœur Rust choisit son cœur, réglage éteint). Le compte publié,
+les deux branches ensemble : 4 388 (Swift 3 158, Rust 1 230). La doc de
+`RustPCSetting` garde les deux paragraphes, et ce qui lui manque encore
+n'est plus que la disposition des disques d'une session prise pendant une
+installation.
+
 - `wisq-carte` (trois) : la base lue par le lecteur par suites, jamais pour
   un secteur écrit, le secteur d'une écriture partielle recopié une fois ;
   **le même disque, par un lecteur et par un fichier brut, fait la même
@@ -226,6 +235,152 @@ quatre-vingts fonctions, et sa provenance dit laquelle s'est ajoutée.
   tampon du cœur Rust. Rien de mesuré ne le voit (Alpine démarre en 23 s
   depuis le qcow2), mais une lecture de 1 Mio fait deux copies.
 - *Rien n'est mesuré sur un iPhone*, ni la reprise d'une machine installée.
+## 2026-11-22 — Machine PC en Rust : les bureaux prêts à son format — la fabrique sur le cœur Rust, l'index qui dit le cœur, l'application qui prend le sien
+
+**Ce qui n'allait pas.** Une machine PC neuve démarre sur le cœur Rust, mais
+le bureau prêt qu'on télécharge (`bureaux-1`, `…-pret-niveau1.wisqmachine`)
+est un instantané du cœur Swift. Depuis #719, une session reprend sur le
+cœur qui l'a écrite : le bureau prêt tournait donc sur le cœur Swift, le
+plus lent, quel que soit le réglage. `wisq-fabrique`, `ReadyDesktopBuild` et
+`bureaux.yml` ne savaient fabriquer que pour le cœur Swift, et l'index ne
+disait pas quel cœur une entrée demande. Un défaut de plus, trouvé en
+chemin : l'instantané du cœur Rust **porte l'état de son générateur**
+(`RDRAND`, `RDSEED`) ; repris tel quel, un bureau prêt aurait tiré sur
+chaque téléphone la suite de la fabrique — la graine neuve que
+l'application donne à la machine était écrasée par la reprise. Le cœur
+Swift ne sauve pas son générateur, et le guetteur des clés SSH compte sur
+cette différence (`ReadyDesktopBuild.keyWatcher`).
+
+**Ce qui est fait.**
+
+- *La fabrique sur le cœur Rust* (`Sources/WisqVMRust/RustReadyDesktop.swift`).
+  `RustReadyDesktopBuild.machine` est la machine de l'application —
+  `RustPCMachine.make` (graine neuve, carte réseau sur le backend donné),
+  puis `attachApplicationScreen` (1024 × 768, l'écran de
+  `GuestMachineFactory`) — avec les deux écarts du cœur Swift : le réseau
+  isolé, son NTP à l'heure figée, l'horloge CMOS figée, et la graine fixée
+  (`X86Entropy.reproducibleSeed`). `makeLocalMachine` et `LocalVMModel`
+  passent par les mêmes `make` et `attachApplicationScreen` : fabrique et
+  application ne peuvent plus construire deux machines différentes.
+  `RustPCMachine` est une `ScriptableMachine` : le déroulé est
+  `ReadyDesktopBuild.voidXfce`, le même que pour le cœur Swift.
+- *La vérification* (`RustReadyDesktopBuild.check`) : la version de
+  l'instantané (2), la mémoire de l'en-tête, puis **une machine de
+  l'application neuve, les disques de la fabrique branchés** (l'image et la
+  couche que l'archive emporte ; la machine refuse une reprise sur d'autres
+  disques), la reprise, la carte réseau revenue sur le bus, la tablette
+  prise (un toucher admis), l'écran allumé à plus de la moitié — l'ordre et
+  les refus de `ReadyDesktopBuild.check`.
+- *`wisq-fabrique --coeur rust`* (`swift` sans l'option, comme avant) ;
+  l'assemblage lit la mémoire par `SessionMemory` (l'en-tête `WISQPC\r\n`,
+  que `X86Machine.savedRAMSize` ne lit pas) ; la fiche porte `core`.
+  **L'archive a son nom** : `…-xfce-pret-rust-niveau2.wisqmachine`
+  (`outputStem`) — dans la même release, sous le nom de l'archive Swift, elle
+  l'aurait remplacée.
+- *L'index* (`ReadyDesktop.Index.Entry.core`, `"swift"` ou `"rust"` ; absent :
+  une entrée d'avant, du cœur Swift). **Le niveau d'une entrée Rust est la
+  version de son instantané, 2** : les applications publiées ignorent `core`
+  et ne jugent une entrée que par son niveau, de 1 à
+  `X86Machine.snapshotLevel` (1) ; elles écartent donc l'entrée Rust et
+  gardent la Swift. `Core.firstRustLevel` (2) est une garde :
+  `Index.refused` et `Index.publishable` refusent une entrée Rust de niveau
+  1, qu'elles prendraient pour un bureau Swift. `Index.merged` remplace par
+  titre, **cœur** et niveau : publier le seul bureau Rust garde le bureau
+  Swift. Un cœur inconnu n'est pas décodé : l'entrée est écartée seule.
+- *Le choix dans l'application* (`ReadyDesktop.parse(…, rustLevel:)`) : un
+  bureau par titre, celui du cœur Rust quand l'application le fait tourner
+  et que son réglage est allumé (`ImageDownloadModel` lit
+  `RustPCSetting.isEnabled` sous `WISQ_RUST_CORE`, `ImageDownloader.catalog(rustCore:)`),
+  sinon celui du cœur Swift ; puis le niveau, puis la date. Il retombe
+  proprement : l'entrée Swift seule se propose aux deux, l'entrée Rust seule
+  ne se propose qu'au cœur Rust ; une version d'instantané que ce cœur ne
+  reprend pas encore laisse la Swift. L'installation est celle d'avant
+  (`ReadyDesktop.install`, sa marque de première reprise) ; la reprise passe
+  par le chemin de session de #719 — le format choisit le cœur.
+- *L'aléa à la reprise* (`GuestMachine.reseed`, appelé par
+  `PendingSession.resume` après chaque reprise ; rien à faire par défaut,
+  `seed` pour `RustPCMachine`) : la machine reprise prend la graine du
+  téléphone. Aucune fonction de l'ABI en plus (`wisq_pc_seed` existait).
+- *`bureaux.yml`* : une entrée `coeurs` (`les-deux` par défaut, `rust`,
+  `swift`), les bureaux fabriqués l'un après l'autre dans le même job, un
+  index pour toutes les fiches, les motifs `*-pret-*` ; la laisse passe à
+  300 minutes. Rien n'a été lancé.
+
+**La preuve, de bout en bout** (ce conteneur, seul à calculer pendant la
+fabrication) :
+
+| course | mesure |
+|---|---|
+| `wisq-fabrique --coeur rust`, ISO Void Xfce 20250202 (somme vérifiée), 1 Gio, `--heure 2026-11-14T00:00:00Z` | connexion à 301 s, panneau à 624 s, écran dessiné et préparé à **739 s** ; 97 731 472 918 instructions (~140 MIPS) ; 756 s en tout, sommes comprises |
+| vérification dans une machine neuve (dans la fabrique) | reprise en **0,63 s**, écran allumé à 99 % |
+| instantané | 423 205 449 octets bruts (le cœur Swift : 364 460 793) |
+| archive | **164 048 295 octets (156,4 Mio)** ; l'archive Swift publiée : 163 919 297 |
+| reprise par le chemin de l'application (`testARealRustDesktopComesBackThroughTheApplicationsPath`, Swift compilé en release) | entrée choisie par `parse`, installée par `ReadyDesktop.install` en 0,11 s ; session lue et dépliée en **0,87 à 0,93 s** ; reprise **0,60 à 0,62 s** ; écran allumé à 99 % dès la reprise ; la console répond **0,9 à 1,2 s** plus tard |
+| après la première reprise | l'heure de l'invité à 1 ou 2 s de l'hôte, son horloge CMOS à 0 s ; `xfdesktop` vivant ; la carte réseau tenue par `virtio_net` ; la tablette rend ses 96 octets ; **clés SSH refaites et servies par `sshd`** 37 à 62 s après la reprise |
+
+La même reprise sous des tests compilés en debug déplie la session en 7,1 s
+(le LZ4 de Swift sans optimisation) : c'est la mesure en release qui vaut.
+
+**La compression.** L'archive (`MachineArchive`) ne compresse rien : une
+marque, le manifeste, puis les fichiers bout à bout. La session, elle, est
+repliée par `SnapshotFile.pack` : du LZ4, par morceaux d'un mébioctet,
+chaque morceau gardé tel quel s'il ne rapetisse pas. L'instantané du cœur
+Rust n'écrit déjà que les pages non nulles ; LZ4 le mène de 423,2 à 164,0
+Mo (le cœur Swift : de 364,5 à 163,9). Pour mémoire, sur le même instantané
+brut : gzip -6 rend 112,9 Mo (16 s), xz -6 80,7 Mo (78 s, quatre fils) ; gzip
+sur l'archive déjà en LZ4, 127,2 Mo. Rien n'est changé ici : le format de la
+session est celui que l'application lit déjà.
+
+**Les tests** : dix-huit de plus (4 353 → 4 371 au compte publié ; Swift
+3 148, Rust 1 223). `ReadyDesktopTests` (sept : l'entrée du cœur qui tourne,
+le repli, les applications d'avant qui ne voient pas l'entrée Rust et la
+garde de son niveau, l'index fusionné qui garde l'autre cœur, un cœur
+inconnu, la fiche Rust devenue entrée, le catalogue lu par le réseau) ;
+`ReadyDesktopBuildTests` (l'option `--coeur`, l'assemblage d'un instantané
+Rust à sa mémoire) ; `GuestScriptTests` (le PPM depuis des pixels) ;
+`RustReadyDesktopTests` (huit : la machine de l'application, la fabrique
+reproductible et l'application non, le pilotage, le verdict, la
+vérification sur les disques de la fabrique et chacune de ses gardes,
+l'archive importée reprise sur sa couche, **l'aléa remplacé à la reprise**,
+et le banc armé du vrai bureau, `WISQ_BUREAU_RUST_FICHE` et
+`WISQ_BUREAU_ISO`).
+
+**Les sabotages** : trente-trois, d'une ligne chacun
+(`<bloc-notes>/bur/sab/sabotages.py`, journal `sabotages.log`), la source
+rendue après chacun et sa somme vérifiée, `git diff` identique avant et
+après. **Tous tombent**, aucun après reprise : le choix (le cœur Rust sans
+réglage, le niveau des applications d'avant, le rang sans le cœur, la
+fusion sans le cœur, le jugement à son niveau, le cœur par défaut, la fiche
+sans cœur, l'entrée faite Swift, `firstRustLevel` à 1, le catalogue sans
+`rustCore`, deux fois) ; la fabrique (le nom de l'archive, l'option trop
+tolérante, le défaut `rust`, la mémoire lue par `X86Machine`, la fiche sans
+cœur, le PPM) ; la reprise (`reseed` jamais appelé, sans effet) ; la machine
+(la graine de l'application, la carte réseau, l'écran, la graine fixée,
+l'heure figée) ; la vérification (la version, la mémoire, les disques, la
+carte réseau, la tablette, le seuil de l'écran, le refus de la tablette) ;
+le pilotage (l'extinction passée sous silence, l'écran inventé).
+
+**Les vérifications.** `swift build --build-tests`, les tests touchés puis
+la suite entière (`swift test --skip-build --parallel`, 3 062 cas, 0
+échec) ; SwiftLint `--strict` ; `swiftc -frontend -parse` sur
+`LocalMachine.swift`, `LocalVMModel.swift` et `ImageDownloadModel.swift` ;
+`check-whitespace`, `check-project-sources` ; le recompte, puis `bun run
+build` et `bun test` dans `site/` (476 passés). Rien n'est changé en Rust hors du
+compte publié : `cargo fmt --all --check`, puis Clippy `-D warnings` et
+`cargo test --release` sur `wisq-site`, qui le porte (14 passés).
+
+**Ce qui reste.**
+
+- *Publier* : lancer `bureaux.yml` (entrée `coeurs`), depuis un commit qui
+  connaît `core` — la fabrique d'avant relirait l'ancien index sans ce
+  champ et réécrirait l'entrée Rust comme une entrée Swift de niveau 2.
+- *L'iPhone* : ni le dépliage (0,9 s ici), ni la reprise (0,6 s), ni la
+  vitesse du bureau repris n'y sont mesurés.
+- *La note sous l'interrupteur* (`WebKitBenchView`) ne parle pas des bureaux
+  prêts ; la phrase « une demi-heure de démarrage » de la feuille vaut pour
+  le cœur Swift.
+- *La compression* : xz diviserait l'archive par deux, au prix d'un
+  dépliage plus lent et d'un format de session neuf.
 
 ## 2026-11-22 — Machine PC en Rust : la session sauvée et reprise — la carte entière dans l'instantané (version 2), le format de la session qui choisit le cœur
 
