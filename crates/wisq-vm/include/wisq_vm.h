@@ -557,7 +557,8 @@ int wisq_iso_extract(const char *path, const char *inside, const char *into,
  * La même carte que le cœur Swift (X86Machine) : deux 8259, le 8253, le
  * 16550 sur 0x3F8 (ligne 4), l'horloge CMOS, et la carte des périphériques
  * toujours branchée (l'i8042, le pont PCI 440FX, les disques virtio en
- * 00:03.0 et 00:04.0, l'écran de Bochs en 00:02.0 et sa tablette en 00:07.0).
+ * 00:03.0 et 00:04.0, l'écran de Bochs en 00:02.0 et sa tablette en 00:07.0,
+ * la carte réseau virtio en 00:05.0 : voir LE RÉSEAU).
  *
  * LES FILS. wisq_pc_run bloque. Les fonctions marquées « course arrêtée »
  * touchent la machine elle-même : un seul fil à la fois, et jamais pendant
@@ -830,6 +831,65 @@ uint64_t wisq_pc_disk_bytes_written(const WisqPC *pc);
  * aucun disque. Zéro et zéro dit un noyau sans pilote bloc. Tout fil.
  */
 int wisq_pc_disk_activity(const WisqPC *pc, uint64_t *served, uint64_t *refused);
+
+/*
+ * LE RÉSEAU. La carte virtio-net du cœur Swift (00:05.0, ligne 3, la seule
+ * fonction VIRTIO_NET_F_MAC), branchée avant wisq_pc_load. Ce qui fait un
+ * réseau (DHCP, DNS, TCP vers l'hôte : UserNetwork) est de l'autre côté,
+ * chez l'appelant. Les trames passent par DEUX FILES, sans rappel : rien de
+ * l'appelant ne s'exécute sous un verrou de la machine. L'appelant vide ce
+ * que l'invité émet (wisq_pc_net_take) et remet ce qui arrive pour lui
+ * (wisq_pc_net_give), de n'importe quel fil, quand il veut — entre deux
+ * wisq_pc_run, par exemple. La carte interroge la file entrante au tour du
+ * matériel : toutes les 1 024 instructions quand l'invité travaille, à
+ * chaque tour quand il dort, comme le cœur Swift.
+ *
+ * Une trame est une trame Ethernet sans l'en-tête virtio, d'un à
+ * WISQ_PC_FRAME_MAX octets. Chaque file en tient WISQ_PC_FRAME_QUEUE au plus.
+ * Pleine, la file entrante refuse la trame remise (0, compté dans
+ * `refused`) ; pleine, la file sortante perd la trame que l'invité émet
+ * (comptée dans `lost`).
+ */
+#define WISQ_PC_FRAME_MAX   1514
+#define WISQ_PC_FRAME_QUEUE 512
+
+/*
+ * Branche la carte réseau, d'adresse `mac` (six octets ; NULL : celle du cœur
+ * Swift, 02:77:69:73:71:01). 0 ; -2 machine déjà chargée ou reprise ; -3 une
+ * carte déjà branchée. Avant wisq_pc_load. Course arrêtée.
+ */
+int wisq_pc_attach_network(WisqPC *pc, const uint8_t *mac);
+
+/*
+ * La prochaine trame que l'invité a émise, dans son ordre. Rend sa longueur ;
+ * si `frame` n'est pas NULL et que `capacity` la tient, elle y est copiée et
+ * retirée de la file — sinon elle reste, et la longueur dit le tampon qu'il
+ * faut (WISQ_PC_FRAME_MAX suffit toujours). 0 : rien n'attend, ou pas de
+ * carte. Tout fil.
+ */
+size_t wisq_pc_net_take(WisqPC *pc, uint8_t *frame, size_t capacity);
+
+/*
+ * Remet une trame à l'invité : copiée, elle attend que la carte la prenne,
+ * puis un tampon de l'invité. 1 prise ; 0 la file entrante est pleine (la
+ * trame n'est pas prise ; le refus est compté) ; -2 ce n'est pas une trame
+ * (vide, ou plus de WISQ_PC_FRAME_MAX octets) ; -3 pas de carte. Tout fil.
+ */
+int wisq_pc_net_give(WisqPC *pc, const uint8_t *frame, size_t len);
+
+/* Les compteurs du réseau. */
+typedef struct {
+    uint64_t transmitted; /* émises par l'invité et données à la file sortante */
+    uint64_t delivered;   /* rangées dans les tampons de l'invité */
+    uint64_t dropped;     /* perdues par la carte : sans tampon assez grand, attente pleine… */
+    uint64_t refused;     /* refusées à l'entrée, file pleine */
+    uint64_t lost;        /* perdues à la sortie, file pleine */
+    uint64_t incoming;    /* attendent dans la file entrante */
+    uint64_t outgoing;    /* attendent dans la file sortante */
+} WisqPCNetwork;
+
+/* 1 ; 0 pas de carte. Tout fil. */
+int wisq_pc_net_stats(const WisqPC *pc, WisqPCNetwork *out);
 
 /* Libère la machine. Aucune course en cours ; plus rien ne l'emploie après. */
 void wisq_pc_free(WisqPC *pc);
