@@ -9,9 +9,14 @@ import WisqVMRust
 //
 //   swift build -c release --product wisq-fabrique
 //   .build/release/wisq-fabrique <image.iso> <dossier-de-sortie> \
+//       [--coeur swift|rust] \
 //       [--nom void-live-x86_64-20250202-xfce.iso] [--titre "Void Xfce (prêt)"] \
 //       [--ram 1024] [--budget 2000000000000] [--heure 2026-11-14T00:00:00Z] \
 //       [--commit <sha>] [--brut] [--sans-zero]
+//
+// `--coeur rust` fabrique sur la machine PC en Rust (`RustReadyDesktopBuild`) :
+// une session `WISQPC\r\n` que l'application reprend sur ce cœur, sous un nom
+// à part (`…-pret-rust-niveau2`). Sans l'option, le cœur Swift, comme avant.
 //
 // Et l'index que l'application lit (`ReadyDesktop.index`), à partir des
 // fiches, aux adresses où l'image et l'archive sont publiées :
@@ -48,12 +53,12 @@ final class Journal: @unchecked Sendable {
 
 /// La machine, plus une ligne de journal toutes les `every` tranches.
 final class Watched: ScriptableMachine {
-    let machine: X86Machine
+    let machine: ScriptableMachine & GuestMachine
     let journal: Journal
     let every: Int
     private var slices = 0
 
-    init(_ machine: X86Machine, journal: Journal, every: Int = 200) {
+    init(_ machine: ScriptableMachine & GuestMachine, journal: Journal, every: Int = 200) {
         self.machine = machine
         self.journal = journal
         self.every = every
@@ -91,16 +96,21 @@ func fabricate() throws {
         positional.append(word)
     }
     guard positional.count == 2 else {
-        throw Stop("usage : wisq-fabrique <image.iso> <dossier-de-sortie> [--nom N] [--titre T] "
-            + "[--ram Mio] [--budget N] [--heure AAAA-MM-JJTHH:MM:SSZ] [--commit SHA] [--brut] [--sans-zero]")
+        throw Stop("usage : wisq-fabrique <image.iso> <dossier-de-sortie> [--coeur swift|rust] [--nom N] "
+            + "[--titre T] [--ram Mio] [--budget N] [--heure AAAA-MM-JJTHH:MM:SSZ] [--commit SHA] [--brut] "
+            + "[--sans-zero]")
     }
     let iso = URL(fileURLWithPath: positional[0])
     let out = URL(fileURLWithPath: positional[1], isDirectory: true)
     let imageName = argument("--nom") ?? iso.lastPathComponent
     let title = argument("--titre") ?? "Void Xfce (prêt)"
     let budget = try ReadyDesktopBuild.budget(argument("--budget"))
-    // Le niveau dans le nom : voir `ReadyDesktopBuild.outputStem`.
-    let stem = ReadyDesktopBuild.outputStem(image: imageName, level: X86Machine.snapshotLevel)
+    // Le cœur, puis son niveau : celui d'`X86Machine`, ou la version de
+    // l'instantané du cœur Rust.
+    let core = try ReadyDesktopBuild.core(argument("--coeur"))
+    let level = core == .rust ? RustReadyDesktopBuild.level : X86Machine.snapshotLevel
+    // Le niveau, et le cœur, dans le nom : voir `ReadyDesktopBuild.outputStem`.
+    let stem = ReadyDesktopBuild.outputStem(image: imageName, level: level, core: core)
     let frozen: Date
     if let text = argument("--heure") {
         guard let date = ISO8601DateFormatter().date(from: text) else { throw Stop("--heure illisible : \(text)") }
@@ -136,6 +146,7 @@ func fabricate() throws {
         + "initramfs \(initrd?.count ?? 0) octets ; mémoire \(ram >> 20) Mio")
     journal.say("ligne : \(line)")
     journal.say("heure figée : \(ISO8601DateFormatter().string(from: frozen))")
+    journal.say("cœur : \(core.rawValue), niveau \(level)")
 
     let (installed, writes) = try ReadyDesktopBuild.install(image: imageName, name: title, in: work)
     let console = GuestConsole()
@@ -143,17 +154,35 @@ func fabricate() throws {
     let snapshot: Data
     let instructions: UInt64
     do {
-        let machine = try ReadyDesktopBuild.machine(ramSize: ram, frozenAt: frozen) { console.append($0) }
-        try machine.attach(diskFileAt: iso, writes: writes)
+        // **La machine de l'application**, du cœur choisi : la même carte,
+        // le même écran, le réseau isolé et l'heure figée.
+        let machine: ScriptableMachine & GuestMachine
+        let screenFile: () -> Data?
+        switch core {
+        case .swift:
+            let pc = try ReadyDesktopBuild.machine(ramSize: ram, frozenAt: frozen) { console.append($0) }
+            try pc.attach(diskFileAt: iso, writes: writes)
+            machine = pc
+            screenFile = { pc.display.map { GuestScript.ppm($0) } }
+        case .rust:
+            let pc = try RustReadyDesktopBuild.machine(ramSize: ram, frozenAt: frozen) { console.append($0) }
+            try pc.attachDisk(fileAt: iso, writes: writes)
+            machine = pc
+            screenFile = {
+                pc.display.map { screen in
+                    let (mode, data) = screen.frame()
+                    return GuestScript.ppm(pixels: [UInt8](data), width: mode.width, height: mode.height)
+                }
+            }
+        }
         try machine.load(kernelImage: kernel, commandLine: line, initialRamdisk: initrd)
         let script = GuestScript(machine: Watched(machine, journal: journal), console: console)
         script.log = { journal.say($0) }
         defer { _ = files.createFile(atPath: consolePath.path, contents: Data(console.text.utf8)) }
         try script.run(ReadyDesktopBuild.voidXfce, budget: budget)
         machine.flushDisk()
-        if let display = machine.display {
-            _ = files.createFile(atPath: out.appendingPathComponent(stem + ".ppm").path,
-                             contents: GuestScript.ppm(display))
+        if let ppm = screenFile() {
+            _ = files.createFile(atPath: out.appendingPathComponent(stem + ".ppm").path, contents: ppm)
         }
         snapshot = machine.snapshot()
         instructions = machine.retiredInstructions
@@ -165,8 +194,16 @@ func fabricate() throws {
 
     // **Repris dans une machine de l'application neuve**, avant d'emporter
     // quoi que ce soit : réseau, écran dessiné, tablette, mémoire, niveau.
-    let lit = try ReadyDesktopBuild.check(snapshot, ramSize: ram)
-    journal.say("vérifié : repris dans une machine neuve, écran allumé à \(Int(lit * 100)) %")
+    // Le cœur Rust reprend sur les disques de l'instantané : l'image, et la
+    // couche que l'archive va emporter.
+    let checkStart = Date()
+    let lit: Double
+    switch core {
+    case .swift: lit = try ReadyDesktopBuild.check(snapshot, ramSize: ram)
+    case .rust: lit = try RustReadyDesktopBuild.check(snapshot, ramSize: ram, disk: iso, writes: writes)
+    }
+    journal.say("vérifié : repris dans une machine neuve en \(String(format: "%.2f", Date().timeIntervalSince(checkStart))) s, "
+        + "écran allumé à \(Int(lit * 100)) %")
 
     let archive = out.appendingPathComponent(stem + "." + MachineArchive.fileExtension)
     let identity = try ReadyDesktopBuild.assemble(
@@ -177,13 +214,13 @@ func fabricate() throws {
 
     journal.say("sommes de l'image et de l'archive…")
     let sheet = ReadyDesktopBuild.Sheet(
-        title: title, level: X86Machine.snapshotLevel,
+        title: title, level: level,
         image: try .measure(iso, name: imageName), archive: try .measure(archive),
         kernelDigest: ReadyDesktopBuild.kernelDigest(kernel), ramBytes: UInt64(ram),
         screen: [GuestMachineFactory.screenSize.width, GuestMachineFactory.screenSize.height],
         commandLine: line, madeAt: Date(), guestClock: frozen, instructions: instructions,
         snapshotBytes: UInt64(snapshot.count), packedBytes: packed,
-        snapshotSHA256: SHA256Stream.hex(snapshot), commit: argument("--commit"))
+        snapshotSHA256: SHA256Stream.hex(snapshot), commit: argument("--commit"), core: core)
     let sheetURL = out.appendingPathComponent(stem + ".json")
     try sheet.encoded().write(to: sheetURL)
     journal.say("fiche : \(sheetURL.path)")

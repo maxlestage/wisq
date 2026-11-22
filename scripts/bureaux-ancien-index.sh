@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # **L'index des bureaux prêts déjà publié**, pour que `wisq-fabrique index
-# --garder` en reprenne les entrées d'un autre niveau de machine
-# (`ReadyDesktop.Index.merged`). Appelé par `.github/workflows/bureaux.yml`.
+# --garder` en reprenne les entrées d'un autre cœur ou d'un autre niveau de
+# machine (`ReadyDesktop.Index.merged`). Appelé par `.github/workflows/bureaux.yml`.
 #
 #   bureaux-ancien-index.sh <adresse> <fichier>
 #
