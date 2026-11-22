@@ -2,6 +2,7 @@
 import SwiftUI
 import WisqCore
 import WisqRemote
+import WisqVM
 
 /// The library. Big tap targets, connect in one tap, everything else behind a swipe.
 ///
@@ -236,39 +237,82 @@ struct MachineRow: View {
     let machine: Machine
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: machine.guestOS.symbolName)
-                .font(.title2)
-                .frame(width: 34)
-                .foregroundStyle(.tint)
+        HStack(spacing: Design.Space.m) {
+            RemoteBadge(system: machine.guestOS)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(machine.name)
-                    .font(.body.weight(.medium))
-                HStack(spacing: 6) {
-                    Text("\(machine.host):\(machine.port)")
-                    Text("·")
+                    .font(.body.weight(.semibold))
+                Text(verbatim: machine.displayAddress)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                HStack(spacing: Design.Space.xs) {
                     Text(machine.proto.displayName)
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Design.chipFill))
                     if machine.security != .none {
                         // The shield only when the connection really pins:
                         // `.tlsPinned` without a fingerprint is plain TLS.
                         Image(systemName: machine.pinsCertificate ? "lock.shield.fill" : "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                            .accessibilityLabel(machine.pinsCertificate ? "chiffrée, certificat épinglé" : "chiffrée")
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
 
-            Spacer()
+            Spacer(minLength: Design.Space.s)
 
             if let last = machine.lastConnectedAt {
                 Text(last, format: .relative(presentation: .numeric, unitsStyle: .narrow))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Design.Space.xs)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+}
+
+/// **Le badge d'une machine distante** : la teinte et le symbole de son
+/// système. Décoratif pour VoiceOver, comme celui des machines locales.
+struct RemoteBadge: View {
+    let system: GuestOS
+    var size: CGFloat = 42
+
+    var body: some View {
+        let tint = Self.tint(system)
+        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            .fill(LinearGradient(colors: [tint.opacity(0.8), tint], startPoint: .topLeading,
+                                 endPoint: .bottomTrailing))
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: system.symbolName)
+                    .font(.system(size: size * 0.45, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityHidden(true)
+    }
+
+    /// La teinte du badge, selon le système de la machine distante.
+    static func tint(_ system: GuestOS) -> Color {
+        switch system {
+        case .linux: return Design.tint(.linux)
+        case .windows: return Color(red: 0.0, green: 0.42, blue: 0.75)
+        case .macos: return Color(white: 0.36)
+        case .bsd: return Color(red: 0.62, green: 0.12, blue: 0.12)
+        case .unknown, .other: return Color(red: 0.30, green: 0.36, blue: 0.45)
+        }
     }
 }
 #endif
