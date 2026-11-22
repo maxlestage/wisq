@@ -64,7 +64,7 @@ struct BootAnnouncementView: View {
                     } icon: {
                         Image(systemName: announcement.outcome.startsSomething
                               ? "play.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(announcement.outcome.startsSomething ? Design.accent : .orange)
+                            .foregroundStyle(announcement.outcome.startsSomething ? Design.accent : Color.orange)
                     }
                     if announcement.outcome.startsSomething {
                         LabeledContent("Mémoire", value: KernelMemory.describe(
