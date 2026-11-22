@@ -869,15 +869,16 @@ impl Cpu {
             .ok_or_else(outside)
     }
 
-    /// **La lecture du chemin rapide** (`x86::rapide`, et les opérandes du
-    /// vectoriel, du x87 et du MMX) : ce que `read_memory` rend, par le plus
-    /// court quand la page est au tampon avec le droit de lire pour l'anneau
-    /// courant et que l'accès ne sort pas de sa page. Les opérandes de
-    /// `execute` gardent `read_memory` : `execute` est le juge des formes
-    /// (`tests/pc_rapide.rs`), et un juge qui passerait par le même chemin
-    /// rapide qu'elles n'en verrait pas les défauts — un sabotage du bord de
-    /// page l'a montré. Une
-    /// case du tampon ne tient jamais une page hors de la RAM ni dans le trou
+    /// **La lecture du chemin rapide** (`x86::rapide`, les opérandes et la
+    /// pile d'`execute`, ceux du vectoriel, du x87 et du MMX) : ce que
+    /// `read_memory` rend, par le plus court quand la page est au tampon avec
+    /// le droit de lire pour l'anneau courant et que l'accès ne sort pas de
+    /// sa page. `execute` est le juge des formes (`tests/pc_rapide.rs`) et
+    /// partage ce chemin avec elles : un défaut d'ici ne se verrait pas entre
+    /// les deux — un sabotage du bord de page l'a montré. Ces deux fonctions
+    /// sont donc jugées seules, contre `read_memory` et `write_memory`
+    /// (`the_fast_memory_paths_do_what_the_slow_ones_do`). Une case du
+    /// tampon ne tient jamais une page hors de la RAM ni dans le trou
     /// (`fill`), donc la place se lit sans autre question. Tout le reste —
     /// pas de pagination, pas de tampon, une page à cheval, une case absente
     /// ou sans le droit — passe par `read_memory`, hors de la ligne.
