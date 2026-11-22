@@ -36,13 +36,31 @@ public enum GuestHeartbeat {
     /// sinon, plutôt que d'affirmer une avancée qu'elle ne mesure pas.
     public static let sameRegion: UInt64 = 4096
 
+    /// Au bout de combien de secondes de console muette, pendant que l'invité
+    /// avance, la ligne commence par le dire.
+    ///
+    /// **D'où ça vient.** Une capture d'iPhone, après #725 : l'image
+    /// d'installation d'Arch, ses quatre lignes, puis rien, et la ligne
+    /// « 4,7 milliards d'instructions · 405,6… » — coupée là par la largeur
+    /// du téléphone. Le noyau d'Arch décode son initramfs xz pendant 9,3
+    /// milliards d'instructions sans écrire un mot ; rien de ce qui se
+    /// voyait ne disait que c'était voulu. Dix secondes : plus long qu'une
+    /// pause entre deux lignes d'un démarrage ordinaire, bien plus court que
+    /// la patience de qui regarde.
+    public static let quietAfter: TimeInterval = 10
+
     /// Ce qu'il faut afficher, à partir de deux relevés.
     ///
     /// `since` est le relevé précédent et `seconds` le temps qui les sépare.
     /// Sans précédent — le premier tour — la vitesse est inconnue, et la
     /// phrase le dit en ne la donnant pas plutôt qu'en affichant zéro.
+    ///
+    /// `silentFor` est le temps depuis le dernier octet écrit par l'invité.
+    /// Au-delà de `quietAfter`, et tant que les instructions avancent hors
+    /// d'une boucle, **la phrase commence par le silence** : c'est le seul
+    /// début qu'un écran étroit montre en entier.
     public static func line(
-        now: GuestProgress, since: GuestProgress?, seconds: TimeInterval
+        now: GuestProgress, since: GuestProgress?, seconds: TimeInterval, silentFor: TimeInterval = 0
     ) -> String {
         let count = instructions(now.retired)
         guard let since, seconds > 0 else { return "\(count) · \(address(now.rip))" }
@@ -62,6 +80,9 @@ public enum GuestHeartbeat {
         let place = ran > 0 && near(now.rip, since.rip) && staysOnOnePage(now: now, since: since)
             ? "en rond autour de \(address(now.rip))"
             : address(now.rip)
+        if ran > 0, silentFor >= quietAfter, !place.hasPrefix("en rond") {
+            return "silencieuse depuis \(duration(silentFor)), elle calcule · \(speed(mips)) · \(count) · \(place)"
+        }
         return "\(count) · \(speed(mips)) · \(place)"
     }
 
@@ -129,6 +150,14 @@ public enum GuestHeartbeat {
     }
 
     /// Une adresse invitée, en hexadécimal, telle qu'un désassembleur la rend.
+    /// « 25 s », « 3 min 05 s ».
+    static func duration(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        guard total >= 60 else { return "\(total) s" }
+        let rest = total % 60
+        return "\(total / 60) min " + (rest < 10 ? "0\(rest)" : "\(rest)") + " s"
+    }
+
     static func address(_ rip: UInt64) -> String { "0x" + String(rip, radix: 16) }
 
     /// Une décimale, et la virgule française plutôt que le point.

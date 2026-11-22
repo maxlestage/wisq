@@ -235,6 +235,13 @@ break APIs.
   « depuis la racine du volume ». Lu comme un chemin relatif, il devenait
   `/boot/syslinux/::/arch/…`, et l'image était refusée (« wisq n'a pas pu
   l'en sortir »).
+- **« Ça fonctionne toujours pas » : l'image d'Arch avançait, la ligne d'état ne
+  le disait pas assez tôt.** Le noyau d'Arch décode son initramfs xz pendant
+  9,3 milliards d'instructions sans écrire un mot ; la ligne « 4,7 milliards
+  d'instructions · 405,6… », coupée par la largeur du téléphone, ne disait
+  pas que c'était voulu. Après dix secondes de console muette pendant que
+  l'invité avance, elle commence par « silencieuse depuis 25 s, elle
+  calcule » (`GuestHeartbeat.quietAfter`).
 
 ## [0.4.0] — 2026-09-05
 
