@@ -93,6 +93,26 @@ final class ApercusTests: XCTestCase {
         }
     }
 
+    /// Le démarrage animé, photographié une fois la signature posée.
+    func test09Demarrage() async throws {
+        try await Apercu.photographier("09-demarrage", test: self, attente: 2) {
+            LaunchAnimationView {}
+        }
+    }
+
+    /// L'annonce d'avant le démarrage, sur une image de la bibliothèque.
+    func test10Annonce() async throws {
+        try Demonstration.bibliotheque()
+        let image = try KernelLibrary.directory().appendingPathComponent(Demonstration.alpine)
+        try await Apercu.photographier("10-annonce", test: self) {
+            NavigationStack {
+                BootAnnouncementView(
+                    image: image, title: image.lastPathComponent, kind: KernelImageKind.identify(fileAt: image),
+                    cloudImage: false, settingsKey: image.lastPathComponent) {}
+            }
+        }
+    }
+
     /// Un modèle de machine posé en marche, sans noyau.
     private static func enMarche(console: [String], ecran: (any GuestScreen)?, battement: String)
         -> LocalVMModel {

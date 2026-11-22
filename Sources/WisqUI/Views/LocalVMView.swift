@@ -74,6 +74,13 @@ struct LocalVMListView: View {
     @State private var showAbout = false
     @State private var importError: String?
     @State private var booting: BootTarget?
+    /// La machine dont on annonce la plateforme, avant tout démarrage : voir
+    /// `BootAnnouncementView`.
+    @State private var announcing: BootTarget?
+    /// Ce que la feuille d'annonce a dit de démarrer, lancé une fois qu'elle
+    /// est fermée (`onDismiss`) : SwiftUI ne présente pas la console, ni la
+    /// question du mot de passe, par-dessus une feuille qui s'en va.
+    @State private var pendingLaunch: BootTarget?
     /// L'image de cloud dont on demande le mot de passe de `root`, avant
     /// son premier démarrage.
     @State private var askingPassword: BootTarget?
@@ -364,6 +371,8 @@ struct LocalVMListView: View {
         // ferme, la machine se suspend comme par « Fermer ».
         .onChange(of: dismissal) {
             booting = nil
+            pendingLaunch = nil
+            announcing = nil
             showDownload = false
             showImporter = false
             exported = nil
@@ -379,6 +388,25 @@ struct LocalVMListView: View {
             Button("Annuler", role: .cancel) { installing = nil }
         } message: {
             Text("Elle démarre \(installing?.lastPathComponent ?? "cette image") avec sa propre mémoire, son propre disque et sa propre session. Le fichier, lui, reste partagé et n'est jamais modifié.")
+        }
+        .sheet(item: $announcing, onDismiss: {
+            if let target = pendingLaunch {
+                pendingLaunch = nil
+                launch(target)
+            }
+        }) { target in
+            NavigationStack {
+                BootAnnouncementView(
+                    image: target.url,
+                    title: target.machine?.name ?? target.url.lastPathComponent,
+                    kind: kinds[target.url] ?? KernelImageKind.identify(fileAt: target.url),
+                    cloudImage: cloudImages.contains(target.url),
+                    settingsKey: target.machine?.key ?? target.url.lastPathComponent
+                ) {
+                    pendingLaunch = target
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showAbout) {
             NavigationStack { MachinesAboutView() }
@@ -461,9 +489,21 @@ struct LocalVMListView: View {
         }
     }
 
+    /// **Annonce d'abord la plateforme**, puis démarre : rien ne démarre
+    /// sans que la feuille ait dit pour quelle machine est l'image, sur quoi
+    /// elle va tourner, et comment (`BootAnnouncementView`).
+    private func start(_ target: BootTarget) {
+        announcing = target
+    }
+
     /// Démarre, ou demande d'abord le mot de passe de `root` d'une image de
     /// cloud qui n'a jamais démarré. La décision vit dans `RootPassword`.
-    private func start(_ target: BootTarget) {
+    private func launch(_ target: BootTarget) {
+        // Demandé ici et pas au menu : une annonce refermée sans démarrer ne
+        // doit pas laisser la demande en suspens pour le démarrage suivant.
+        if target.bootsImage, let machine = target.machine {
+            ImageBootRequest.request(forKernel: machine.key)
+        }
         let key = target.machine?.key ?? target.url.lastPathComponent
         if RootPassword.shouldAsk(fileAt: target.url, forKernel: key) {
             rootPassword = ""
@@ -579,8 +619,7 @@ struct LocalVMListView: View {
         // réparer, réinstaller —, et le suivant revient au disque.
         if Self.isInstallationImage(kinds[image]) {
             Button("Démarrer l'image d'installation", systemImage: "opticaldisc") {
-                ImageBootRequest.request(forKernel: machine.key)
-                start(BootTarget(url: image, machine: machine))
+                start(BootTarget(url: image, machine: machine, bootsImage: true))
             }
         }
     }
@@ -796,9 +835,41 @@ struct MachinesAboutView: View {
                 Text("Chaque noyau peut recevoir un **disque** : une image importée ici, que l'invité voit sur `/dev/vda`. Le disque est lu sur place, quelle que soit sa taille.")
                 Text("Ce que l'invité y écrit va dans une couche à part, gardée d'une session à l'autre ; le fichier importé ne change jamais. wisq ne monte rien tout seul, et ne peut pas ajouter le pilote bloc à un noyau qui ne l'a pas.")
             }
+            Section("Avant chaque démarrage") {
+                Text("Toucher une machine ouvre d'abord une feuille qui dit **la plateforme de l'image** — x86-64, ARM64, RISC-V —, d'où wisq le sait, celle de ce téléphone (\(HostPlatform.current.summary)), et ce qui va se passer. Rien ne démarre avant « Démarrer ».")
+                Text("Une image ARM est reconnue et nommée, mais ne démarre pas encore sur le téléphone : wisq n'a pas de cœur ARM local. Ouvrez-la à distance, depuis un ordinateur ARM qui la fait tourner.")
+            }
             Section("Stockage") {
                 Text("Une machine sauvegardée pèse ce que l'invité a touché, pas ce qu'on lui a donné, et un disque **en plus** : l'instantané emporte ce que l'invité y a écrit.")
                 Text("Une image d'installation laisse son noyau et son initramfs déballés à côté ; ils repartent avec elle quand vous la supprimez.")
+            }
+            Section("Crédits") {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    WisqMark()
+                        .frame(width: 56, height: 56)
+                    Text(AppCredits.role)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(AppCredits.author)
+                        .font(.title3.weight(.bold))
+                    Text(AppCredits.crafted)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, Design.Space.xs)
+                .accessibilityElement(children: .combine)
+                ForEach(AppCredits.acknowledgements, id: \.name) { credit in
+                    VStack(alignment: .leading, spacing: Design.Space.xs) {
+                        Text(credit.name)
+                            .font(.subheadline.weight(.semibold))
+                        Text(credit.detail)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(AppCredits.copyright)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("À propos")
@@ -1268,6 +1339,9 @@ private struct BootTarget: Identifiable {
     let url: URL
     /// La machine installée, ou `nil` pour le fichier démarré tel quel.
     var machine: InstalledMachine?
+    /// « Démarrer l'image d'installation » : une fois, l'image au lieu du
+    /// disque installé (`ImageBootRequest`).
+    var bootsImage = false
     var id: String { machine.map { "installee:\($0.id)" } ?? url.absoluteString }
 }
 

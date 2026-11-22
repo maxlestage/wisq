@@ -317,15 +317,40 @@ public enum IsoBoot {
     /// démarrage. `nil` quand l'image n'a pas de recette ou que son noyau ne
     /// sort pas.
     public static func kernelDigest(of image: URL, scratch folder: URL, ceiling: UInt64) -> String? {
+        let digest = withKernel(of: image, scratch: folder, ceiling: ceiling) { kernel, _ in
+            (try? Data(contentsOf: kernel)).map(ReadyDesktopBuild.kernelDigest)
+        }
+        return digest.flatMap { $0 }
+    }
+
+    /// **Ce qu'est le noyau que porte l'image, sans la démarrer** : son genre
+    /// (`KernelImageKind`) et son chemin dans l'image.
+    ///
+    /// C'est ce que l'annonce d'avant le démarrage (`BootAnnouncement`) lit
+    /// pour dire la plateforme d'une image d'installation : le fichier ISO,
+    /// lui, ne la dit nulle part. Même chemin que `kernelDigest` — le noyau
+    /// seul, effacé ensuite —, et `nil` quand l'image n'a pas de recette ou
+    /// que son noyau ne sort pas : l'annonce se rabat alors sur les noms.
+    public static func announcedKernel(
+        of image: URL, scratch folder: URL, ceiling: UInt64
+    ) -> (kind: KernelImageKind, path: String)? {
+        withKernel(of: image, scratch: folder, ceiling: ceiling) { kernel, path in
+            (KernelImageKind.identify(fileAt: kernel), path)
+        }
+    }
+
+    /// Le noyau de la recette, sorti dans `folder` le temps de `body`, puis
+    /// effacé.
+    private static func withKernel<T>(
+        of image: URL, scratch folder: URL, ceiling: UInt64, _ body: (URL, String) -> T
+    ) -> T? {
         guard let recipe = IsoImage.recipe(of: image),
               (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil
         else { return nil }
         let kernel = folder.appendingPathComponent("noyau-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: kernel) }
-        guard IsoImage.extract(recipe.kernel, from: image, to: kernel, ceiling: ceiling),
-              let bytes = try? Data(contentsOf: kernel)
-        else { return nil }
-        return ReadyDesktopBuild.kernelDigest(bytes)
+        guard IsoImage.extract(recipe.kernel, from: image, to: kernel, ceiling: ceiling) else { return nil }
+        return body(kernel, recipe.kernel)
     }
 
     /// Ouvre l'image, en sort de quoi démarrer, ou dit pourquoi non.
