@@ -107,6 +107,20 @@ final class ImageDownloadModel {
         }
     }
 
+    /// **Un état posé, sans réseau** : ce que les aperçus de l'interface
+    /// (`Tests/WisqApercus`) montrent de la feuille — des bureaux, des images,
+    /// un téléchargement en cours. Sans téléchargeur : rien ne part. Interne
+    /// au module, et rien dans l'application ne l'appelle.
+    init(posing desktops: [ReadyDesktop], releases: [ImageDownload.Release], phase: Phase,
+         progress: (have: Int, total: Int) = (0, 0), desktopProgress: ReadyDesktop.Progress? = nil) {
+        downloader = nil
+        self.desktops = desktops
+        self.releases = releases
+        self.phase = phase
+        self.progress = progress
+        self.desktopProgress = desktopProgress
+    }
+
     func loadIndex() async {
         guard let downloader else {
             phase = .failed("le dossier des téléchargements n'a pas pu être créé.")
