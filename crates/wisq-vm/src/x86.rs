@@ -1483,7 +1483,7 @@ impl Cpu {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.read_memory(at, instruction.width).ok()
+                self.read_memory_fast(at, instruction.width).ok()
             }
             _ => Some(self.get(instruction.dst, instruction.width, instruction.dst_high)),
         }
@@ -1495,7 +1495,7 @@ impl Cpu {
             Some(address) if instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.read_memory(at, width).ok()
+                self.read_memory_fast(at, width).ok()
             }
             _ => Some(self.get(instruction.src, width, instruction.src_high)),
         }
@@ -1508,7 +1508,7 @@ impl Cpu {
             Some(address) if !instruction.memory_is_source => {
                 let at = self.after(instruction);
                 let at = self.effective_address(&address, at);
-                self.write_memory(at, instruction.width, value).ok()
+                self.write_memory_fast(at, instruction.width, value).ok()
             }
             _ => {
                 self.set(
@@ -2154,7 +2154,7 @@ impl Cpu {
     /// cœur-ci lisait ne pouvait le voir avant qu'on l'y branche.
     pub(crate) fn push(&mut self, value: u64, width: Width) {
         let top = self.regs[4].wrapping_sub(width as u64);
-        if self.write_memory(top, width, value).is_err() {
+        if self.write_memory_fast(top, width, value).is_err() {
             self.faulted = true;
             return;
         }
@@ -2174,7 +2174,7 @@ impl Cpu {
     /// L'ordre, lui, compte déjà : il lit **avant** de remonter, et c'est ce
     /// qui fait que `pop %rsp` rend la valeur dépilée et non elle plus huit.
     pub(crate) fn pop(&mut self) -> Option<u64> {
-        let Ok(value) = self.read_memory(self.regs[4], Width::Qword) else {
+        let Ok(value) = self.read_memory_fast(self.regs[4], Width::Qword) else {
             self.faulted = true;
             return None;
         };

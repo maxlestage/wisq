@@ -352,6 +352,39 @@ impl Blocs {
         Trouve::Rien
     }
 
+    /// **`trouver`, en regardant d'abord les deux blocs qui ont suivi celui
+    /// de `avant`** (`enchainer`) : presque toujours l'un d'eux, et sa case
+    /// est déjà venue au cache. `trouver` lisait la première case de la
+    /// paire, puis la seconde : quand le bloc était dans la seconde, la
+    /// première coûtait une ligne attendue pour rien. Rend la même chose que
+    /// `trouver` : un bloc ne vit que dans la paire de son adresse, et une
+    /// seule fois (`construire`), donc une case qui porte son étiquette est
+    /// celle que `trouver` rendrait.
+    #[inline(always)]
+    pub fn trouver_apres(
+        &self,
+        avant: usize,
+        physique: u64,
+        epoque: u64,
+        generation: Option<u32>,
+    ) -> Trouve {
+        if let Some(precedent) = self.cases.get(avant) {
+            let etiquette = physique.wrapping_add(1);
+            for place in [precedent.suivant, precedent.autre_suivant] {
+                let place = place as usize;
+                let bloc = &self.cases[place];
+                if bloc.etiquette == etiquette {
+                    return if bloc.epoque == epoque && Some(bloc.generation) == generation {
+                        Trouve::Juste(place)
+                    } else {
+                        Trouve::AComparer(place)
+                    };
+                }
+            }
+        }
+        self.trouver(physique, epoque, generation)
+    }
+
     /// Le bloc rangé à cette adresse, si ses octets sont ceux de la mémoire,
     /// sans regarder son tampon : ce que l'entrée fait quand il faut
     /// comparer.
@@ -395,11 +428,19 @@ impl Blocs {
                 precedent.suivant = apres as u32;
             }
         }
+        // **Quatre lignes du suivant, une de l'autre** : l'étiquette, le
+        // tampon et les instructions du premier ; l'étiquette seule du
+        // second, que `trouver_apres` lit aussi. Quatre lignes de chacun
+        // faisaient attendre l'hôte sur les préchargements mêmes (`perf` y
+        // mettait le huitième de la boucle, à l'ISO d'Alpine) : une ligne
+        // dans une page que le tampon de traduction de l'hôte ne tient pas
+        // fait d'abord marcher ses tables. Mesuré au banc commun, huit
+        // courses alternées : 16,5 s de médiane au lieu de 17,6.
         let courant = &self.cases[apres];
-        for suivant in [courant.suivant, courant.autre_suivant] {
+        for (suivant, lignes) in [(courant.suivant, 4), (courant.autre_suivant, 1)] {
             if let Some(bloc) = self.cases.get(suivant as usize) {
                 let debut = (bloc as *const Bloc).cast::<u8>();
-                for ligne in 0..4 {
+                for ligne in 0..lignes {
                     precharger(debut.wrapping_add(64 * ligne));
                 }
             }
