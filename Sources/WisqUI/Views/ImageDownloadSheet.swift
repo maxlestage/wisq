@@ -18,10 +18,29 @@ struct ImageDownloadSheet: View {
     let onDownloaded: (URL) -> Void
     let onInstalled: (InstalledMachine) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var model = ImageDownloadModel()
+    @State private var model: ImageDownloadModel
+    /// Lire les index en ouvrant la feuille : toujours, sauf pour un modèle
+    /// déjà posé (`ImageDownloadModel.init(posing:...)`).
+    private let loadsIndex: Bool
     /// Le bureau qu'on s'apprête à réinstaller à côté d'une machine qui
     /// démarre déjà son image : la feuille demande d'abord.
     @State private var confirming: ReadyDesktop?
+
+    init(onDownloaded: @escaping (URL) -> Void, onInstalled: @escaping (InstalledMachine) -> Void) {
+        self.onDownloaded = onDownloaded
+        self.onInstalled = onInstalled
+        _model = State(initialValue: ImageDownloadModel())
+        loadsIndex = true
+    }
+
+    /// **La feuille d'un modèle déjà posé**, qui ne lit aucun index : ce que
+    /// les aperçus de l'interface photographient.
+    init(posed: ImageDownloadModel) {
+        onDownloaded = { _ in }
+        onInstalled = { _ in }
+        _model = State(initialValue: posed)
+        loadsIndex = false
+    }
 
     var body: some View {
         NavigationStack {
@@ -81,7 +100,7 @@ struct ImageDownloadSheet: View {
                     Button("Fermer") { dismiss() }
                 }
             }
-            .task { await model.loadIndex() }
+            .task { if loadsIndex { await model.loadIndex() } }
             .confirmationDialog(
                 "Installer une autre machine ?",
                 isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
