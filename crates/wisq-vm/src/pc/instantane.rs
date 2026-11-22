@@ -1,7 +1,7 @@
 //! **L'instantané de la machine PC native** : un format à elle, versionné, et
 //! ce qu'il porte dit ici en entier.
 //!
-//! **Ce qu'il porte** (version 1) :
+//! **Ce qu'il porte** (version 2) :
 //! - l'en-tête : `WISQPC\r\n`, la version, la RAM, l'écran annoncé (largeur
 //!   et hauteur, zéro sans écran) — une reprise refuse une autre RAM ou un
 //!   autre écran, comme `X86Machine.restore` ;
@@ -19,17 +19,36 @@
 //!   et les autres), les registres de débogage ;
 //! - les puces de la machine : les deux 8259, le 8253 et son haut-parleur,
 //!   le 16550 (et ce qu'il tient en entrée comme en sortie), l'horloge CMOS ;
+//! - **les entrées pas encore données à l'invité** (les commandes du poste) :
+//!   les octets tapés au port série, les frappes qui attendent leur tour
+//!   avant l'i8042, et les deux états du clavier qui vont avec ;
+//! - **la carte des périphériques** (`wisq-carte`, `CartePc::sauver`),
+//!   précédée de sa longueur : l'horloge CMOS de la carte, l'i8042 et ses
+//!   frappes en attente, le pont PCI (l'adresse choisie, les BAR, les
+//!   registres de commande, les lignes), chaque disque virtio (ce que le
+//!   pilote a écrit, sa file et ses deux index), la carte de Bochs (ses
+//!   registres, son mode, sa mémoire vidéo page par page), la tablette (ses
+//!   files et ses événements en attente), la carte réseau si elle est là (ses
+//!   files, ses trames en attente), les notifications notées et pas encore
+//!   servies ; pour chaque disque, **où vivent ses octets** : « ailleurs »
+//!   pour un disque sur fichier (son fichier et sa couche, scellés par
+//!   `wisq_pc_flush_disks` avant l'instantané, comme `flushDisk` du cœur
+//!   Swift), embarqués pour une image en mémoire ;
 //! - la RAM, page par page : une carte d'un bit par page de quatre
 //!   kibioctets, puis les seules pages qui ne sont pas nulles.
 //!
-//! **Ce qu'il ne porte pas** : la carte des périphériques (`wisq-carte` :
-//! l'i8042, l'horloge CMOS de la carte, le pont PCI, les disques virtio, la
-//! carte de Bochs et sa mémoire vidéo, la tablette). Ses états sont privés à
-//! ce crate-là, qui n'offre ni sauvegarde ni reprise ; une reprise laisse la
-//! carte du poste telle qu'elle est. **Un invité qui s'est servi de la carte
-//! ne se reprend donc pas fidèlement** — ses pilotes croiraient à des files
-//! que la carte a oubliées. Ni les frappes en attente, ni ce qui a été tapé
-//! au port série et pas encore donné (les commandes du poste).
+//! **Ce qu'il ne porte pas** : ce qui est autour de la machine et pas
+//! dedans — les octets d'un disque sur fichier, le câble de la carte réseau,
+//! l'horloge de l'hôte, la graine de l'hôte. La machine qui reprend branche
+//! ses disques sur fichier **avant** la reprise, de la même capacité, aux
+//! mêmes emplacements, et pas d'autres ; sinon la reprise est refusée
+//! (`AutresDisques`).
+//!
+//! **La version 1** (sans la carte) est refusée (`Perime`) : un invité qui
+//! s'est servi de la carte ne s'y reprend pas fidèlement — ses pilotes
+//! croiraient à des files que la carte a oubliées —, et aucune session de la
+//! version 1 n'a été écrite par l'application, qui ne sauvait pas encore
+//! cette machine.
 //!
 //! Tout est petit-boutiste. Rien n'est reposé tant que tout n'a pas été lu
 //! et vérifié : sont refusés un instantané tronqué ou suivi d'octets de
@@ -37,7 +56,11 @@
 //! instruction (le temps de l'invité se divise par lui), une étiquette
 //! d'aléa inconnue, deux fois le même MSR, un bit de la carte des pages
 //! au-delà de la dernière, une carte dite absente (le poste la branche
-//! toujours) et une heure des puces au-delà de l'an 9999.
+//! toujours), une heure des puces au-delà de l'an 9999, une frappe en
+//! attente qui n'est pas une touche ou plus de frappes que l'i8042 n'en
+//! admet, et tout ce que la carte refuse d'elle-même (`CartePc::relire` :
+//! un index de file hors de sa taille, une fenêtre de travers, un écran qui
+//! n'est pas celui de la machine…).
 //!
 //! **Une machine qui a déjà tourné se reprend comme une neuve** : sa RAM est
 //! effacée avant que les pages de l'instantané y soient posées (une page nulle
@@ -49,14 +72,18 @@
 use super::chargeur::Placement;
 use super::herites::{Controleur, Herites, HorlogeCmos, Minuterie, Serie};
 use super::machine::Alea;
-use super::poste::{Poste, DERNIERE_SECONDE};
+use super::poste::{EntreesEnAttente, Poste, DERNIERE_SECONDE};
 use super::systeme::{Systeme, Table};
+use wisq_carte::i8042::{CodeTouche, PLUS_DE_FRAPPES, TOUCHES};
+use wisq_carte::pc::{EtatDeCarte, RefusDeReprise};
+
+pub use wisq_carte::pc::RefusDeSauvegarde;
 
 /// Les huit premiers octets : un nom, et `\r\n` pour qu'une conversion de
 /// fins de ligne se voie.
 pub const MAGIE: [u8; 8] = *b"WISQPC\r\n";
-/// La version de ce format.
-pub const VERSION: u32 = 1;
+/// La version de ce format : 2 porte la carte des périphériques.
+pub const VERSION: u32 = 2;
 /// La page de la carte de la RAM.
 pub const PAGE: usize = 4096;
 
@@ -67,6 +94,9 @@ pub enum RefusDInstantane {
     PasUnInstantane,
     /// Un format que ce code ne sait pas lire (plus récent).
     VersionInconnue(u32),
+    /// Un format plus ancien, qui ne portait pas la carte des périphériques :
+    /// refusé plutôt que repris à moitié.
+    Perime(u32),
     /// Tronqué, abîmé, ou suivi d'octets de trop.
     Abime,
     /// Sauvé d'une machine d'une autre RAM.
@@ -74,6 +104,11 @@ pub enum RefusDInstantane {
     /// Sauvé sous un autre écran (ou sans écran, ou avec) : le noyau a réglé
     /// son mode sur celui qu'il a trouvé.
     AutreEcran,
+    /// Les disques branchés ne sont pas ceux de l'instantané : un disque sur
+    /// fichier manque ou n'a pas la même capacité, un emplacement vide dans
+    /// l'instantané ne l'est pas ici, une image embarquée tomberait sur un
+    /// disque sur fichier.
+    AutresDisques,
 }
 
 struct Ecrivain(Vec<u8>);
@@ -279,7 +314,12 @@ fn lire_placement(l: &mut Lecteur) -> Option<Option<Placement>> {
 }
 
 /// **Sauver le poste.** Machine arrêtée : rien ne tourne pendant qu'on lit.
-pub fn sauver(poste: &Poste) -> Vec<u8> {
+///
+/// Refusé seulement pour une carte dont un disque a des requêtes en vol,
+/// ce que la machine native ne laisse jamais entre deux instructions (elle
+/// sert chaque requête pendant l'`out` qui la notifie).
+pub fn sauver(poste: &Poste) -> Result<Vec<u8>, RefusDeSauvegarde> {
+    let carte = poste.commandes().carte().tenir().sauver()?;
     let machine = &poste.machine;
     let cpu = &machine.cpu;
     let ram = &cpu.memory.bytes;
@@ -380,6 +420,22 @@ pub fn sauver(poste: &Poste) -> Vec<u8> {
     e.0.extend_from_slice(&h.cmos.memoire);
     e.oui(h.cmos_ailleurs);
 
+    // Les entrées pas encore données à l'invité.
+    let entrees = poste.entrees();
+    e.octets(&entrees.serie);
+    e.u64(entrees.frappes.len() as u64);
+    for (code, enfoncee) in &entrees.frappes {
+        e.u8(code.jeu1);
+        e.oui(code.etendue);
+        e.oui(*enfoncee);
+    }
+    for mot in entrees.tenues_au_bout.iter().chain(&entrees.tenues_remises) {
+        e.u64(*mot);
+    }
+
+    // La carte des périphériques, d'un bloc.
+    e.octets(&carte);
+
     // La RAM : la carte des pages non nulles, puis elles.
     e.u64(ram.len() as u64);
     let pages: Vec<&[u8]> = ram.chunks(PAGE).collect();
@@ -395,7 +451,7 @@ pub fn sauver(poste: &Poste) -> Vec<u8> {
             e.0.extend_from_slice(page);
         }
     }
-    e.0
+    Ok(e.0)
 }
 
 /// Tout ce qu'un instantané repose, lu avant d'être reposé.
@@ -434,8 +490,11 @@ fn lire_l_en_tete(l: &mut Lecteur, poste: &Poste) -> Result<(), RefusDInstantane
         return Err(RefusDInstantane::PasUnInstantane);
     }
     let version = l.u32().ok_or(RefusDInstantane::Abime)?;
-    if version != VERSION {
+    if version > VERSION {
         return Err(RefusDInstantane::VersionInconnue(version));
+    }
+    if version < VERSION {
+        return Err(RefusDInstantane::Perime(version));
     }
     let sauvee = l.u64().ok_or(RefusDInstantane::Abime)?;
     if sauvee != poste.machine.ram {
@@ -593,6 +652,55 @@ fn lire_le_reste(l: &mut Lecteur) -> Option<Lu> {
     })
 }
 
+/// **Les entrées pas encore données à l'invité**, ou rien : une frappe dont
+/// le code n'est pas une touche du jeu 1 (de 1 à 0x7F, ce que
+/// `frappes_du_jeu_1` admet), ou plus de frappes que l'i8042 n'en admet.
+fn lire_les_entrees(l: &mut Lecteur) -> Option<EntreesEnAttente> {
+    let serie = l.octets()?.to_vec();
+    let combien = usize::try_from(l.u64()?).ok()?;
+    if combien > PLUS_DE_FRAPPES {
+        return None;
+    }
+    let mut frappes = Vec::with_capacity(combien);
+    for _ in 0..combien {
+        let jeu1 = l.u8()?;
+        let etendue = l.oui()?;
+        let enfoncee = l.oui()?;
+        if !(1..=0x7F).contains(&jeu1) {
+            return None;
+        }
+        frappes.push((CodeTouche { jeu1, etendue }, enfoncee));
+    }
+    let mut tenues = [[0u64; TOUCHES / 64]; 2];
+    for mot in tenues.iter_mut().flatten() {
+        *mot = l.u64()?;
+    }
+    let [tenues_au_bout, tenues_remises] = tenues;
+    Some(EntreesEnAttente {
+        serie,
+        frappes,
+        tenues_au_bout,
+        tenues_remises,
+    })
+}
+
+/// La carte relue contre celle du poste, sans rien y changer.
+fn lire_la_carte<'a>(
+    l: &mut Lecteur<'a>,
+    poste: &Poste,
+) -> Result<EtatDeCarte<'a>, RefusDInstantane> {
+    let octets = l.octets().ok_or(RefusDInstantane::Abime)?;
+    poste
+        .commandes()
+        .carte()
+        .tenir()
+        .relire(octets)
+        .map_err(|refus| match refus {
+            RefusDeReprise::Abime => RefusDInstantane::Abime,
+            RefusDeReprise::AutresDisques => RefusDInstantane::AutresDisques,
+        })
+}
+
 /// Les pages de la RAM : la carte, puis les pages non nulles, jusqu'au bout
 /// exact de l'instantané. Rend, pour chaque page non nulle, son rang et ses
 /// octets.
@@ -623,6 +731,8 @@ pub fn reprendre(poste: &mut Poste, octets: &[u8]) -> Result<(), RefusDInstantan
     let mut l = Lecteur { octets, ou: 0 };
     lire_l_en_tete(&mut l, poste)?;
     let lu = lire_le_reste(&mut l).ok_or(RefusDInstantane::Abime)?;
+    let entrees = lire_les_entrees(&mut l).ok_or(RefusDInstantane::Abime)?;
+    let carte = lire_la_carte(&mut l, poste)?;
     let longueur = poste.machine.cpu.memory.bytes.len();
     let pages = lire_la_ram(&mut l, longueur).ok_or(RefusDInstantane::Abime)?;
     if l.ou != octets.len() {
@@ -664,6 +774,8 @@ pub fn reprendre(poste: &mut Poste, octets: &[u8]) -> Result<(), RefusDInstantan
     // comme le processeur l'aurait (`the_long_mode_bit_is_recomputed_on_resume`).
     super::systeme::rafraichir_le_mode_long(&mut machine.cpu);
     machine.apres_reprise(lu.ombre, lu.placement);
+    poste.commandes().carte().tenir().reposer(carte);
+    poste.reposer_les_entrees(entrees);
     poste.reposer(lu.du, lu.rattrape);
     Ok(())
 }

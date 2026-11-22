@@ -32,11 +32,13 @@
 //! événement en attente peut encore partir sans que l'invité agisse. Le
 //! cœur Swift, lui, tient la machine éveillée dès qu'une tablette existe.
 //!
-//! **Ce qui n'est pas porté** : l'instantané (`save`, `restore`).
+//! **L'instantané** n'est pas celui du cœur Swift (`save`, `restore`) :
+//! c'est celui de la machine native ([`Tablette::sauver`]).
 
 use std::collections::VecDeque;
 
 use super::ecran::BASE_DES_REGISTRES;
+use super::etat::{Ecrivain, Lecteur};
 use super::Ram;
 
 /// Le nom que `evdev` donne au périphérique.
@@ -849,6 +851,114 @@ fn lire_u32(ram: &dyn Ram, a: u64) -> Option<u32> {
 fn lire_u64(ram: &dyn Ram, a: u64) -> Option<u64> {
     let mut huit = [0u8; 8];
     ram.lire(a, &mut huit).then(|| u64::from_le_bytes(huit))
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+impl Tablette {
+    /// **La tablette**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : sa BAR0, sa commande et sa ligne, ses deux files
+    /// (taille, activation, les trois adresses et les deux index), les
+    /// registres communs que le pilote a choisis, les fonctions acceptées, le
+    /// statut, l'ISR, la configuration choisie, **les événements pas encore
+    /// rendus** et où en est le paquet commencé, les boutons rendus, et
+    /// l'attente du relâchement d'un bouton (en tics du 8254, comme le temps
+    /// de la machine qui la reprend).
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u64(self.base);
+        e.u16(self.commande);
+        e.oui(self.mesure);
+        e.u8(self.ligne);
+        for file in &self.files {
+            e.u16(file.taille);
+            e.oui(file.active);
+            e.u64(file.descripteurs);
+            e.u64(file.disponibles);
+            e.u64(file.servies);
+            e.u16(file.prochaine_disponible);
+            e.u16(file.prochaine_servie);
+        }
+        e.u16(self.choix_de_file);
+        e.u32(self.choix_des_offertes);
+        e.u32(self.choix_des_acceptees);
+        e.u64(self.acceptees);
+        e.u8(self.statut);
+        e.u8(self.etat_d_interruption);
+        e.u8(self.choix);
+        e.u8(self.sous_choix);
+        e.compte(self.en_attente.len());
+        for evenement in &self.en_attente {
+            e.u16(evenement.genre);
+            e.u16(evenement.code);
+            e.u32(evenement.valeur);
+        }
+        e.u8(self.boutons_rendus);
+        e.oui(self.dernier_changeait);
+        e.peut_etre_u64(self.horloge);
+        e.oui(self.acquitte);
+        e.peut_etre_u64(self.retenu_depuis);
+        e.compte(self.reste_du_paquet);
+        e.oui(self.a_court);
+    }
+
+    /// Relue, ou rien. Sont refusés : une BAR0 qui n'est pas alignée sur ses
+    /// seize kibioctets ou qui passe quatre gibioctets ; **une taille de file
+    /// nulle, plus grande que [`TAILLE_DE_FILE`] ou qui n'est pas une
+    /// puissance de deux** (les index s'y prennent modulo la taille) ; une
+    /// fonction acceptée qui n'est pas offerte ; un ISR qui n'est pas un bit
+    /// de file ; plus de [`LIMITE_EN_ATTENTE`] événements ; un paquet
+    /// commencé plus long que ce qui attend ; un bouton qui n'existe pas.
+    pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
+        let mut tablette = Self::nouvelle(0);
+        tablette.base = l.u64()?;
+        tablette.commande = l.u16()?;
+        tablette.mesure = l.oui()?;
+        tablette.ligne = l.u8()?;
+        for file in &mut tablette.files {
+            *file = File {
+                taille: l.u16()?,
+                active: l.oui()?,
+                descripteurs: l.u64()?,
+                disponibles: l.u64()?,
+                servies: l.u64()?,
+                prochaine_disponible: l.u16()?,
+                prochaine_servie: l.u16()?,
+            };
+            if !file.taille.is_power_of_two() || file.taille > TAILLE_DE_FILE {
+                return None;
+            }
+        }
+        tablette.choix_de_file = l.u16()?;
+        tablette.choix_des_offertes = l.u32()?;
+        tablette.choix_des_acceptees = l.u32()?;
+        tablette.acceptees = l.u64()?;
+        tablette.statut = l.u8()?;
+        tablette.etat_d_interruption = l.u8()?;
+        tablette.choix = l.u8()?;
+        tablette.sous_choix = l.u8()?;
+        let combien = l.compte(LIMITE_EN_ATTENTE)?;
+        for _ in 0..combien {
+            tablette.en_attente.push_back(Evenement {
+                genre: l.u16()?,
+                code: l.u16()?,
+                valeur: l.u32()?,
+            });
+        }
+        tablette.boutons_rendus = l.u8()?;
+        tablette.dernier_changeait = l.oui()?;
+        tablette.horloge = l.peut_etre_u64()?;
+        tablette.acquitte = l.oui()?;
+        tablette.retenu_depuis = l.peut_etre_u64()?;
+        tablette.reste_du_paquet = l.compte(LIMITE_EN_ATTENTE)?;
+        tablette.a_court = l.oui()?;
+        let valide = tablette.base % TAILLE_DE_LA_FENETRE == 0
+            && tablette.base < 1 << 32
+            && tablette.acceptees & !VERSION_1 == 0
+            && tablette.etat_d_interruption <= 1
+            && tablette.reste_du_paquet <= tablette.en_attente.len()
+            && tablette.boutons_rendus & !0x07 == 0;
+        valide.then_some(tablette)
+    }
 }
 
 #[cfg(test)]
@@ -2421,5 +2531,110 @@ pub(crate) mod tests {
         carte.servir(&mut ram);
         assert_eq!(ram.0, avant);
         assert_eq!(carte.tablette().unwrap().statut(), 0, "une tablette neuve");
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **La tablette sauvée et relue** ([`Tablette::sauver`]) : ses files,
+    //! ses événements en attente, le paquet commencé ; une taille de file qui
+    //! ferait diviser par zéro est refusée.
+    use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
+    use super::*;
+
+    fn prise() -> Tablette {
+        let mut tablette = Tablette::de_machine();
+        tablette.ecrire_configuration(0x04, 0x0006);
+        tablette.statut = 0x0F;
+        tablette.acceptees = VERSION_1;
+        for (rang, file) in tablette.files.iter_mut().enumerate() {
+            let base = 0x10_0000 * (rang as u64 + 1);
+            *file = File {
+                taille: 32,
+                active: true,
+                descripteurs: base,
+                disponibles: base + 0x1000,
+                servies: base + 0x2000,
+                prochaine_disponible: 70,
+                prochaine_servie: 69,
+            };
+        }
+        assert!(tablette.pointer(0.25, 0.5, 1));
+        tablette.reste_du_paquet = 2;
+        tablette.horloge = Some(123_456);
+        tablette.retenu_depuis = Some(120_000);
+        tablette.dernier_changeait = true;
+        tablette.acquitte = false;
+        tablette.etat_d_interruption = 1;
+        tablette
+    }
+
+    #[test]
+    fn a_taken_tablet_reads_back() {
+        let tablette = prise();
+        let octets = octets_de(&tablette, Tablette::sauver);
+        assert_eq!(relu(&octets, Tablette::relire), Some(tablette.clone()));
+        chaque_coupure_refusee(&octets, Tablette::relire);
+        let neuve = Tablette::de_machine();
+        assert_eq!(
+            relu(&octets_de(&neuve, Tablette::sauver), Tablette::relire),
+            Some(neuve)
+        );
+    }
+
+    #[test]
+    fn what_no_tablet_holds_is_refused() {
+        let tablette = prise();
+        let relit = |abimer: fn(&mut Tablette)| {
+            se_relit(&tablette, abimer, Tablette::sauver, Tablette::relire)
+        };
+        assert!(relit(|_| {}), "telle quelle");
+        assert!(relit(|t| t.files[0].taille = 1), "une file d'une place");
+        assert!(
+            relit(|t| t.files[1].taille = TAILLE_DE_FILE),
+            "la plus grande"
+        );
+        assert!(
+            !relit(|t| t.files[0].taille = 0),
+            "une file de taille nulle"
+        );
+        assert!(
+            !relit(|t| t.files[1].taille = 48),
+            "une taille qui n'est pas une puissance de deux"
+        );
+        assert!(
+            !relit(|t| t.files[0].taille = 2 * TAILLE_DE_FILE),
+            "une file plus grande qu'annoncé"
+        );
+        assert!(!relit(|t| t.base += 0x1000), "une BAR0 de travers");
+        assert!(
+            !relit(|t| t.base = 1 << 32),
+            "une BAR0 au-delà de quatre gibioctets"
+        );
+        assert!(
+            !relit(|t| t.acceptees |= 1),
+            "une fonction qui n'est pas offerte"
+        );
+        assert!(
+            !relit(|t| t.etat_d_interruption = 3),
+            "un ISR qui n'est pas un bit de file"
+        );
+        assert!(
+            !relit(|t| t.reste_du_paquet = 7),
+            "un paquet commencé plus long que ce qui attend"
+        );
+        assert!(relit(|t| t.reste_du_paquet = 6), "tout ce qui attend");
+        assert!(
+            !relit(|t| t.boutons_rendus = 8),
+            "un bouton qui n'existe pas"
+        );
+        let trop = |t: &mut Tablette| {
+            let un = t.en_attente[0];
+            t.en_attente = std::iter::repeat_n(un, LIMITE_EN_ATTENTE + 1).collect();
+        };
+        assert!(
+            !se_relit(&tablette, trop, Tablette::sauver, Tablette::relire),
+            "plus d'événements que la file n'en tient"
+        );
     }
 }

@@ -40,6 +40,7 @@
 
 use std::collections::VecDeque;
 
+use super::etat::{Ecrivain, Lecteur};
 use super::Ram;
 
 /// **Le registre de notification** de la fenêtre : le pilote y écrit le
@@ -875,6 +876,87 @@ fn ecrire_le_nom(ram: &mut dyn Ram, adresse: u64, longueur: u32) {
         }
         ram.ecrire(adresse.wrapping_add(fait), &zeros[..n]);
         fait += n as u64;
+    }
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+impl VirtioBlk {
+    /// **Le disque est au repos** : aucune requête partie, oubliée ou en
+    /// attente d'une réponse, et la file n'attend rien. C'est toujours le
+    /// cas entre deux instructions de la machine native, qui sert chaque
+    /// requête pendant l'`out` qui la notifie ([`super::pc::CartePc::servir`]) ;
+    /// l'instantané ne prend que ce disque-là.
+    pub fn au_repos(&self) -> bool {
+        self.a_envoyer.is_empty()
+            && self.en_vol.is_empty()
+            && self.oubliees.is_empty()
+            && !self.file_attend
+    }
+
+    /// **L'état du disque au repos**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : sa capacité, ce que le pilote a écrit (les
+    /// fonctions acceptées, le statut, la file choisie, sa page, sa taille et
+    /// ses trois anneaux), l'ISR, **les deux index** que seul le disque
+    /// tient (le prochain disponible à lire, le prochain servi à écrire), les
+    /// compteurs, et le nom de la prochaine requête. À n'appeler que sur un
+    /// disque [`VirtioBlk::au_repos`] : rien de ce qui est en vol n'est écrit.
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u64(self.secteurs);
+        e.u32(self.fonctions_du_pilote);
+        e.u8(self.statut);
+        e.u16(self.file_choisie);
+        e.u32(self.page_de_file);
+        e.u32(self.taille_de_file);
+        e.oui(self.prete);
+        e.u64(self.table);
+        e.u64(self.anneau_disponible);
+        e.u64(self.anneau_servi);
+        e.u8(self.isr);
+        e.u16(self.prochain_disponible);
+        e.u16(self.prochain_servi);
+        e.u64(self.servies);
+        e.u64(self.refusees);
+        e.u32(self.prochain_id);
+    }
+
+    /// Relu, au repos, ou rien. Sont refusés : une taille de file qui n'est
+    /// ni zéro ni [`LIMITE_DE_FILE`] ; une file prête sans sa taille, sans sa
+    /// page, ou dont les anneaux ne sont pas ceux de sa page ; une file qui
+    /// n'est pas prête et garde une taille ; un ISR qui n'est pas un bit de
+    /// file ; **deux index qui ne se suivent pas** — au repos, chaque entrée
+    /// lue a reçu sa réponse, donc le prochain servi est le prochain
+    /// disponible ; un nom de requête nul ou au-delà de 2³¹ − 1.
+    pub(crate) fn relire(l: &mut Lecteur) -> Option<Self> {
+        let mut disque = Self::nouveau(l.u64()?);
+        disque.fonctions_du_pilote = l.u32()?;
+        disque.statut = l.u8()?;
+        disque.file_choisie = l.u16()?;
+        disque.page_de_file = l.u32()?;
+        disque.taille_de_file = l.u32()?;
+        disque.prete = l.oui()?;
+        disque.table = l.u64()?;
+        disque.anneau_disponible = l.u64()?;
+        disque.anneau_servi = l.u64()?;
+        disque.isr = l.u8()?;
+        disque.prochain_disponible = l.u16()?;
+        disque.prochain_servi = l.u16()?;
+        disque.servies = l.u64()?;
+        disque.refusees = l.u64()?;
+        disque.prochain_id = l.u32()?;
+        let file = if disque.prete {
+            disque.taille_de_file == LIMITE_DE_FILE
+                && disque.page_de_file != 0
+                && (disque.table, disque.anneau_disponible, disque.anneau_servi)
+                    == anneaux(disque.page_de_file, LIMITE_DE_FILE)
+        } else {
+            disque.taille_de_file == 0
+        };
+        let valide = file
+            && disque.isr <= 1
+            && disque.prochain_servi == disque.prochain_disponible
+            && (1..=0x7FFF_FFFF).contains(&disque.prochain_id);
+        valide.then_some(disque)
     }
 }
 
@@ -2043,5 +2125,140 @@ mod tests {
         carte.port_ecrire(0xC00E, 2, 0, ram);
         carte.port_ecrire(0xC008, 4, File::PAGE, ram);
         carte.port_ecrire(0xC012, 1, 15, ram);
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **Le disque au repos, sauvé et relu** ([`VirtioBlk::sauver`]) : la
+    //! file reprend où elle en était, et ce qu'aucun disque ne tient est
+    //! refusé.
+    use super::super::etat::essais::{chaque_coupure_refusee, octets_de, relu, se_relit};
+    use super::super::{Ram, RamPlate};
+    use super::*;
+
+    /// Un disque de huit secteurs, sa file à la page 1, après une lecture.
+    fn servi() -> (VirtioBlk, RamPlate) {
+        let mut disque = VirtioBlk::nouveau(8);
+        let mut ram = RamPlate(vec![0; 0x10000]);
+        for (port, valeur) in [(0x12, 0), (0x12, 1), (0x12, 3), (0x04, 0), (0x12, 11)] {
+            disque.ecrire_port(port, valeur, &mut ram);
+        }
+        disque.ecrire_port(0x08, 1, &mut ram);
+        disque.ecrire_port(0x12, 15, &mut ram);
+        lire_le_secteur(&mut disque, &mut ram, 3, 0);
+        (disque, ram)
+    }
+
+    /// Une lecture du secteur `secteur`, publiée à l'entrée `entree`, servie
+    /// par une image dont chaque secteur vaut son numéro.
+    fn lire_le_secteur(disque: &mut VirtioBlk, ram: &mut RamPlate, secteur: u64, entree: u16) {
+        let (table, disponibles, _) = anneaux(1, LIMITE_DE_FILE);
+        ram.ecrire(0x4000, &0u32.to_le_bytes());
+        ram.ecrire(0x4008, &secteur.to_le_bytes());
+        for (index, (a, longueur, drapeaux, suivant)) in [
+            (0x4000u64, 16u32, 1u16, 1u16),
+            (0x5000, 512, 3, 2),
+            (0x4800, 1, 2, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = table + index as u64 * 16;
+            ram.ecrire(at, &a.to_le_bytes());
+            ram.ecrire(at + 8, &longueur.to_le_bytes());
+            ram.ecrire(at + 12, &drapeaux.to_le_bytes());
+            ram.ecrire(at + 14, &suivant.to_le_bytes());
+        }
+        ram.ecrire(
+            disponibles + 4 + u64::from(entree % 128) * 2,
+            &0u16.to_le_bytes(),
+        );
+        ram.ecrire(disponibles + 2, &(entree.wrapping_add(1)).to_le_bytes());
+        disque.ecrire_port(REGISTRE_DE_NOTIFICATION, 0, ram);
+        while let Some(requete) = disque.prendre_requete() {
+            let octets = vec![(requete.decalage / 512) as u8; requete.longueur as usize];
+            assert!(disque.lu(requete.id, &octets, ram));
+        }
+        assert!(disque.au_repos());
+    }
+
+    #[test]
+    fn a_resting_disk_reads_back_and_its_queue_goes_on() {
+        let (disque, ram) = servi();
+        assert_eq!((disque.prochain_disponible, disque.prochain_servi), (1, 1));
+        let octets = octets_de(&disque, VirtioBlk::sauver);
+        let mut repris = relu(&octets, VirtioBlk::relire).expect("relu");
+        assert_eq!(repris, disque);
+        chaque_coupure_refusee(&octets, VirtioBlk::relire);
+        // **La file continue** : la requête suivante, servie par l'original
+        // et par le disque repris, rend les mêmes octets au même endroit.
+        let (mut original, mut ram_a) = (disque, RamPlate(ram.0.clone()));
+        let mut ram_b = RamPlate(ram.0);
+        lire_le_secteur(&mut original, &mut ram_a, 6, 1);
+        lire_le_secteur(&mut repris, &mut ram_b, 6, 1);
+        assert_eq!(repris, original);
+        assert_eq!(ram_b.0, ram_a.0);
+        assert_eq!(ram_b.0[0x5000], 6, "le secteur 6 est arrivé");
+        assert_eq!(repris.prochain_servi, 2);
+        // Un disque neuf, et un disque dont la file a été retirée, se relisent.
+        let neuf = VirtioBlk::nouveau(8);
+        assert_eq!(
+            relu(&octets_de(&neuf, VirtioBlk::sauver), VirtioBlk::relire),
+            Some(neuf)
+        );
+        let mut retire = original.clone();
+        retire.ecrire_port(0x08, 0, &mut ram_a);
+        assert_eq!(
+            relu(&octets_de(&retire, VirtioBlk::sauver), VirtioBlk::relire),
+            Some(retire)
+        );
+    }
+
+    #[test]
+    fn what_no_disk_holds_is_refused() {
+        let (disque, _) = servi();
+        let relit = |abimer: fn(&mut VirtioBlk)| {
+            se_relit(&disque, abimer, VirtioBlk::sauver, VirtioBlk::relire)
+        };
+        assert!(relit(|_| {}), "tel quel");
+        assert!(relit(|d| d.isr = 1), "un ISR levé");
+        assert!(
+            !relit(|d| d.taille_de_file = 64),
+            "une taille de file que le disque n'annonce pas"
+        );
+        assert!(
+            !relit(|d| d.prete = false),
+            "une file retirée qui garde sa taille"
+        );
+        assert!(
+            !relit(|d| d.page_de_file = 2),
+            "des anneaux qui ne sont pas ceux de la page"
+        );
+        assert!(
+            !relit(|d| {
+                d.page_de_file = 0;
+                (d.table, d.anneau_disponible, d.anneau_servi) = anneaux(0, LIMITE_DE_FILE);
+            }),
+            "une file prête à la page zéro"
+        );
+        assert!(!relit(|d| d.isr = 2), "un ISR qui n'est pas un bit de file");
+        assert!(
+            !relit(|d| d.prochain_servi = 0),
+            "un index servi en retard sur le disponible"
+        );
+        assert!(
+            !relit(|d| d.prochain_disponible = 5),
+            "un index disponible en avance"
+        );
+        assert!(!relit(|d| d.prochain_id = 0), "un nom de requête nul");
+        assert!(
+            !relit(|d| d.prochain_id = 0x8000_0000),
+            "un nom au-delà de 2³¹ − 1"
+        );
+        assert!(
+            relit(|d| d.prochain_id = 0x7FFF_FFFF),
+            "le dernier nom est permis"
+        );
     }
 }

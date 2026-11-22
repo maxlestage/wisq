@@ -43,6 +43,8 @@
 
 use std::fmt;
 
+use super::etat::{poser_les_pages, Ecrivain, Lecteur};
+
 /// L'emplacement sur le bus : celui où QEMU met sa carte
 /// (`X86BochsDisplay.slot`).
 pub const EMPLACEMENT_DE_L_ECRAN: u32 = 2;
@@ -601,6 +603,138 @@ impl Ecran {
             }
             _ => {}
         }
+    }
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+fn sauver_le_mode(e: &mut Ecrivain, mode: Mode) {
+    e.u32(mode.largeur);
+    e.u32(mode.hauteur);
+    e.u32(mode.octets_par_ligne);
+    e.u64(mode.debut);
+}
+
+fn relire_le_mode(l: &mut Lecteur) -> Option<Mode> {
+    Some(Mode {
+        largeur: l.u32()?,
+        hauteur: l.u32()?,
+        octets_par_ligne: l.u32()?,
+        debut: l.u64()?,
+    })
+}
+
+/// **L'écran relu**, pas encore posé : ses pixels restent dans l'instantané
+/// jusqu'à [`Ecran::poser`], qui les recopie dans la mémoire vidéo de la
+/// machine — sur place, car son adresse a pu être tendue à une vue.
+pub(crate) struct EcranLu<'a> {
+    base: u64,
+    mode: Mode,
+    revision: u64,
+    pages: Vec<(usize, &'a [u8])>,
+    registres: [u16; registre::COMBIEN],
+    index: u16,
+    base_des_registres: u64,
+    commande: u16,
+    mesure_de_la_memoire: bool,
+    mesure_des_registres: bool,
+    ordre_des_octets: u32,
+}
+
+impl Ecran {
+    /// **L'écran**, pour l'instantané de la machine native
+    /// ([`super::etat`]) : où le noyau a posé la mémoire vidéo et les
+    /// registres, le cadre du départ et le mode montré, le compte des
+    /// changements, la mémoire vidéo page par page, les registres DISPI,
+    /// l'index, la commande PCI et les mesures en cours.
+    pub(crate) fn sauver(&self, e: &mut Ecrivain) {
+        e.u64(self.cadre.base);
+        sauver_le_mode(e, self.cadre.depart);
+        sauver_le_mode(e, self.cadre.mode);
+        e.u64(self.cadre.revision);
+        e.pages(&self.cadre.pixels);
+        for registre in self.registres {
+            e.u16(registre);
+        }
+        e.u16(self.index);
+        e.u64(self.base_des_registres);
+        e.u16(self.commande);
+        e.oui(self.mesure_de_la_memoire);
+        e.oui(self.mesure_des_registres);
+        e.u32(self.ordre_des_octets);
+    }
+
+    /// **Relu contre cet écran**, ou rien. Le cadre du départ et la taille
+    /// de la mémoire vidéo doivent être ceux de cet écran (la machine le
+    /// branche avant le démarrage, et le noyau a réglé son mode dessus) ; la
+    /// mémoire vidéo doit être alignée sur sa taille et les registres sur
+    /// quatre kibioctets, sous quatre gibioctets (une BAR de 32 bits) ; le
+    /// mode montré doit tenir dans la mémoire ([`Cadre::regler_mode`]) ;
+    /// l'identifiant est l'un de ceux que la carte accepte, et la taille de
+    /// la mémoire en blocs de 64 Kio est la sienne.
+    pub(crate) fn relire<'a>(&self, l: &mut Lecteur<'a>) -> Option<EcranLu<'a>> {
+        let base = l.u64()?;
+        let depart = relire_le_mode(l)?;
+        let mode = relire_le_mode(l)?;
+        let revision = l.u64()?;
+        let taille = self.cadre.taille();
+        let pages = l.pages(taille)?;
+        let mut registres = [0u16; registre::COMBIEN];
+        for valeur in &mut registres {
+            *valeur = l.u16()?;
+        }
+        let index = l.u16()?;
+        let base_des_registres = l.u64()?;
+        let commande = l.u16()?;
+        let mesure_de_la_memoire = l.oui()?;
+        let mesure_des_registres = l.oui()?;
+        let ordre_des_octets = l.u32()?;
+        let mode_tient = mode.largeur >= 1
+            && mode.hauteur >= 1
+            && u64::from(mode.octets_par_ligne) >= u64::from(mode.largeur) * 4
+            && mode
+                .debut
+                .checked_add(mode.etendue())
+                .is_some_and(|fin| fin <= taille as u64);
+        let valide = depart == self.cadre.depart
+            && mode_tient
+            && base < 1 << 32
+            && base % taille as u64 == 0
+            && base_des_registres < 1 << 32
+            && base_des_registres % TAILLE_DES_REGISTRES == 0
+            && (0xB0C0..=DERNIER_ID).contains(&registres[registre::ID])
+            && registres[registre::MEMOIRE_64K] == self.registres[registre::MEMOIRE_64K];
+        valide.then_some(EcranLu {
+            base,
+            mode,
+            revision,
+            pages,
+            registres,
+            index,
+            base_des_registres,
+            commande,
+            mesure_de_la_memoire,
+            mesure_des_registres,
+            ordre_des_octets,
+        })
+    }
+
+    /// **Poser l'écran relu** : la mémoire vidéo recopiée sur place (une
+    /// page nulle de l'instantané l'est aussi après), le reste remplacé. Le
+    /// compte des changements reprend celui de l'instantané **plus un** :
+    /// une vue qui aurait déjà montré ce numéro repeint quand même.
+    pub(crate) fn poser(&mut self, lu: EcranLu<'_>) {
+        poser_les_pages(&mut self.cadre.pixels, &lu.pages);
+        self.cadre.base = lu.base;
+        self.cadre.mode = lu.mode;
+        self.cadre.revision = lu.revision.wrapping_add(1);
+        self.registres = lu.registres;
+        self.index = lu.index;
+        self.base_des_registres = lu.base_des_registres;
+        self.commande = lu.commande;
+        self.mesure_de_la_memoire = lu.mesure_de_la_memoire;
+        self.mesure_des_registres = lu.mesure_des_registres;
+        self.ordre_des_octets = lu.ordre_des_octets;
     }
 }
 
@@ -1697,5 +1831,138 @@ pub(crate) mod tests {
         assert_eq!((mode.largeur, mode.hauteur), (1024, 768));
         assert_eq!(image.len(), 1024 * 768 * 4);
         assert_eq!(image[4096 * 10..4096 * 11], ligne[..]);
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **L'écran sauvé et relu** ([`Ecran::sauver`]) : la mémoire vidéo
+    //! recopiée sur place, le mode, les registres ; un écran que la machine
+    //! n'a pas branché est refusé.
+    use super::super::etat::essais::octets_de;
+    use super::super::etat::Lecteur;
+    use super::*;
+
+    /// L'écran d'une machine de 1024 × 768, en 800 × 600 sur 32 bits, une
+    /// page plus bas, quelques pixels peints.
+    fn regle() -> Ecran {
+        let mut ecran = Ecran::de_machine(1024, 768).expect("tient");
+        for (registre, valeur) in [(1, 800), (2, 600), (3, 32), (9, 4), (4, 0x41)] {
+            ecran.ecrire_registre(registre, valeur);
+        }
+        ecran.ecrire_configuration(0x10, 0xD000_0000);
+        ecran.ecrire_configuration(0x04, 0x0003);
+        ecran.cadre.ecrire(12, 4, 0x00FF_00FF);
+        ecran.cadre.ecrire(MEMOIRE_VIDEO - 4, 4, 0x0012_3456);
+        ecran
+    }
+
+    fn relu_contre(ici: &Ecran, octets: &[u8]) -> Option<Ecran> {
+        let mut l = Lecteur::nouveau(octets);
+        let lu = ici.relire(&mut l)?;
+        if !l.au_bout() {
+            return None;
+        }
+        let mut pose = ici.clone();
+        pose.poser(lu);
+        Some(pose)
+    }
+
+    #[test]
+    fn a_screen_reads_back_in_place_and_repaints() {
+        let ecran = regle();
+        assert_eq!(ecran.cadre.mode().largeur, 800);
+        assert_eq!(ecran.cadre.base(), 0xD000_0000);
+        let octets = octets_de(&ecran, Ecran::sauver);
+        assert!(
+            octets.len() < 3 * 4096,
+            "les pages nulles ne sont pas écrites"
+        );
+        // Sur un écran neuf de la même machine, salie ailleurs.
+        let mut neuf = Ecran::de_machine(1024, 768).expect("tient");
+        neuf.cadre.ecrire(4096 * 7, 4, 0xFFFF_FFFF);
+        let adresse = neuf.cadre.octets().as_ptr();
+        let mut l = Lecteur::nouveau(&octets);
+        let lu = neuf.relire(&mut l).expect("relu");
+        assert!(l.au_bout());
+        neuf.poser(lu);
+        assert_eq!(
+            neuf.cadre.octets().as_ptr(),
+            adresse,
+            "la mémoire vidéo n'a pas bougé"
+        );
+        assert_eq!(
+            neuf.cadre.octets(),
+            ecran.cadre.octets(),
+            "une page nulle l'est aussi après"
+        );
+        assert_eq!(
+            neuf.cadre.revision(),
+            ecran.cadre.revision() + 1,
+            "la vue repeint"
+        );
+        neuf.cadre.revision = ecran.cadre.revision;
+        assert_eq!(neuf, ecran);
+        let ici = regle();
+        for longueur in 0..octets.len() {
+            assert!(
+                relu_contre(&ici, &octets[..longueur]).is_none(),
+                "coupé à {longueur}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_screen_the_machine_did_not_plug_is_refused() {
+        let ecran = regle();
+        let ici = Ecran::de_machine(1024, 768).expect("tient");
+        let relit = |abimer: fn(&mut Ecran)| {
+            let mut abime = ecran.clone();
+            abimer(&mut abime);
+            relu_contre(&ici, &octets_de(&abime, Ecran::sauver)).is_some()
+        };
+        assert!(relit(|_| {}), "tel quel");
+        assert!(
+            relu_contre(
+                &Ecran::de_machine(800, 600).unwrap(),
+                &octets_de(&ecran, Ecran::sauver)
+            )
+            .is_none(),
+            "un autre cadre de départ"
+        );
+        assert!(
+            !relit(|e| e.cadre.mode.debut = MEMOIRE_VIDEO as u64),
+            "un mode hors de la mémoire"
+        );
+        assert!(
+            !relit(|e| e.cadre.mode.octets_par_ligne = 4),
+            "des lignes plus courtes que l'image"
+        );
+        assert!(!relit(|e| e.cadre.mode.largeur = 0), "une largeur nulle");
+        assert!(!relit(|e| e.cadre.mode.hauteur = 0), "une hauteur nulle");
+        assert!(
+            !relit(|e| e.cadre.base = 0xD000_1000),
+            "une mémoire vidéo de travers"
+        );
+        assert!(
+            !relit(|e| e.cadre.base = 1 << 32),
+            "une mémoire vidéo au-delà de quatre gibioctets"
+        );
+        assert!(
+            !relit(|e| e.base_des_registres = 0xE100_0800),
+            "des registres de travers"
+        );
+        assert!(
+            !relit(|e| e.base_des_registres = 1 << 32),
+            "des registres au-delà de quatre gibioctets"
+        );
+        assert!(
+            !relit(|e| e.registres[registre::ID] = 0xB0BF),
+            "un identifiant que la carte refuse"
+        );
+        assert!(
+            !relit(|e| e.registres[registre::MEMOIRE_64K] = 1),
+            "une autre taille de mémoire"
+        );
     }
 }

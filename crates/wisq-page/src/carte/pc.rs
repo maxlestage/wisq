@@ -72,12 +72,13 @@
 //! ```
 
 use super::ecran::Ecran;
+use super::etat::{Ecrivain, Lecteur};
 use super::i8042::CodeTouche;
 use super::pci::masque;
 use super::tablette::Tablette;
 use super::virtio_blk::{Sens, REGISTRE_DE_NOTIFICATION};
 use super::virtio_net::{VirtioNet, FILE_DE_RECEPTION, FILE_D_EMISSION};
-use super::{largeur_valide, Carte, Ram, Region, SansRam};
+use super::{largeur_valide, Carte, CarteLu, Ram, Region, SansRam};
 
 pub use super::pci::Disque;
 pub use super::virtio_net::{Cable, CableEnBoucle, MAC_PAR_DEFAUT};
@@ -107,6 +108,15 @@ pub trait Arriere: Send {
     /// l'hôte l'a refusé.
     fn vider(&mut self) -> bool {
         true
+    }
+
+    /// **L'image entière, quand elle tient en mémoire** : ce qu'un
+    /// instantané embarque ([`CartePc::sauver`]). Rien, le défaut, pour un
+    /// disque dont les octets vivent ailleurs (un fichier et sa couche, déjà
+    /// durables) : l'instantané le dit « ailleurs », et la machine qui
+    /// reprend le rebranche.
+    fn image(&self) -> Option<&[u8]> {
+        None
     }
 
     /// **Combien d'octets l'invité a changés** : ce que le rapport de
@@ -154,6 +164,10 @@ impl Arriere for ArriereMemoire {
 
     fn octets_ecrits(&self) -> u64 {
         self.0.len() as u64
+    }
+
+    fn image(&self) -> Option<&[u8]> {
+        Some(&self.0)
     }
 }
 
@@ -668,6 +682,206 @@ pub fn horloge_du_systeme() -> i64 {
         Ok(depuis) => i64::try_from(depuis.as_millis()).unwrap_or(i64::MAX),
         // Une horloge réglée avant 1970 : négatif, et la CMOS sait le lire.
         Err(avant) => i64::try_from(avant.duration().as_millis()).map_or(i64::MIN, |ms| -ms),
+    }
+}
+
+// ------------------------------------------------- l'état, pour l'instantané
+
+/// **Ce qu'une image de disque en mémoire peut peser dans un instantané** :
+/// deux gibioctets, la borne que le cœur Swift écrit pour la sienne
+/// (`VirtioBlock.maximumEmbeddedImageBytes`). Au-delà, l'état est refusé
+/// avant qu'on alloue quoi que ce soit.
+pub const PLUS_GRANDE_IMAGE_EMBARQUEE: usize = 2 << 30;
+
+/// Pourquoi la carte ne se sauve pas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusDeSauvegarde {
+    /// Ce disque a des requêtes en vol : la machine native n'en laisse
+    /// jamais entre deux instructions ([`super::virtio_blk::VirtioBlk::au_repos`]), mais une
+    /// carte menée autrement le pourrait, et l'instantané ne les porte pas.
+    DisqueOccupe(Disque),
+}
+
+/// Pourquoi un état de carte ne se reprend pas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusDeReprise {
+    /// Tronqué, abîmé, suivi d'octets de trop, ou incohérent.
+    Abime,
+    /// **Les disques de cette carte ne sont pas ceux de l'instantané** : un
+    /// disque sur fichier sauvé « ailleurs » doit être rebranché, de la même
+    /// capacité, avant la reprise ; un emplacement vide doit l'être ici
+    /// aussi ; une image embarquée ne remplace qu'un disque en mémoire.
+    AutresDisques,
+}
+
+/// **Où vivent les octets d'un disque sauvé.**
+enum DisqueLu<'a> {
+    /// Aucun disque à cet emplacement.
+    Aucun,
+    /// Un disque sur fichier : ses octets sont dans son fichier et sa couche,
+    /// déjà durables, et la machine qui reprend l'a rebranché.
+    Ailleurs,
+    /// Une image en mémoire, embarquée : sa longueur, et ses pages non nulles.
+    Embarque(usize, Vec<(usize, &'a [u8])>),
+}
+
+/// **L'état d'une carte, relu et vérifié contre la carte qui le reprendra**,
+/// pas encore posé ([`CartePc::reposer`]). Il emprunte les octets de
+/// l'instantané : la mémoire vidéo et les images embarquées n'y sont pas
+/// recopiées avant d'être posées.
+pub struct EtatDeCarte<'a> {
+    carte: CarteLu<'a>,
+    disques: [DisqueLu<'a>; 2],
+    notifies: [bool; 2],
+    sonnettes: [bool; 2],
+    reseau_notifie: [bool; 2],
+    tics: u64,
+}
+
+impl CartePc {
+    /// **L'état entier de la carte**, pour l'instantané de la machine native
+    /// (`wisq-vm`, `pc::instantane`, version 2) : chaque périphérique
+    /// ([`super::etat`]), puis, pour chaque disque, où vivent ses octets —
+    /// **ailleurs** pour un disque sur fichier (son fichier et sa couche sont
+    /// déjà durables : à l'appelant de les sceller par [`CartePc::vider`]
+    /// avant), **embarqués** pour une image en mémoire —, puis les
+    /// notifications, sonnettes et files réseau notées et pas encore servies,
+    /// et l'heure du dernier battement.
+    ///
+    /// Ni l'heure de l'hôte, ni l'horloge, ni le câble, ni le tampon de
+    /// lecture : ils sont à la machine qui fait tourner la carte.
+    pub fn sauver(&self) -> Result<Vec<u8>, RefusDeSauvegarde> {
+        for quel in Disque::TOUS {
+            if self.carte.disque(quel).is_some_and(|d| !d.au_repos()) {
+                return Err(RefusDeSauvegarde::DisqueOccupe(quel));
+            }
+        }
+        let mut e = Ecrivain(Vec::new());
+        self.carte.sauver(&mut e);
+        for arriere in &self.arrieres {
+            match arriere.as_deref().map(|arriere| arriere.image()) {
+                None => e.u8(0),
+                Some(None) => e.u8(1),
+                Some(Some(image)) => {
+                    e.u8(2);
+                    e.pages(image);
+                }
+            }
+        }
+        for drapeaux in [self.notifies, self.sonnettes, self.reseau_notifie] {
+            for drapeau in drapeaux {
+                e.oui(drapeau);
+            }
+        }
+        e.u64(self.tics);
+        Ok(e.0)
+    }
+
+    /// **Relire un état contre cette carte**, sans rien changer : tout est
+    /// lu et vérifié, jusqu'au dernier octet. Outre ce que chaque
+    /// périphérique refuse, sont refusés : un disque relu là où la carte n'a
+    /// pas d'arrière (ou l'inverse), un disque sur fichier d'une autre
+    /// capacité que celui qui est branché, une image embarquée d'une autre
+    /// capacité que son disque ou plus grande que
+    /// [`PLUS_GRANDE_IMAGE_EMBARQUEE`], une notification notée pour un disque
+    /// absent, une sonnette sans tablette, une file réseau notifiée sans
+    /// carte réseau.
+    pub fn relire<'a>(&self, octets: &'a [u8]) -> Result<EtatDeCarte<'a>, RefusDeReprise> {
+        let mut l = Lecteur::nouveau(octets);
+        let carte = self.carte.relire(&mut l).ok_or(RefusDeReprise::Abime)?;
+        let mut disques = [DisqueLu::Aucun, DisqueLu::Aucun];
+        for quel in Disque::TOUS {
+            let rang = quel.rang();
+            let sauve = carte.pci.disque(quel);
+            let ici = self.arrieres[rang].as_deref();
+            disques[rang] = match l.u8().ok_or(RefusDeReprise::Abime)? {
+                0 => {
+                    if sauve.is_some() {
+                        return Err(RefusDeReprise::Abime);
+                    }
+                    if ici.is_some() {
+                        return Err(RefusDeReprise::AutresDisques);
+                    }
+                    DisqueLu::Aucun
+                }
+                1 => {
+                    let sauve = sauve.ok_or(RefusDeReprise::Abime)?;
+                    match ici {
+                        Some(ici)
+                            if ici.image().is_none() && ici.secteurs() == sauve.secteurs() =>
+                        {
+                            DisqueLu::Ailleurs
+                        }
+                        _ => return Err(RefusDeReprise::AutresDisques),
+                    }
+                }
+                2 => {
+                    let sauve = sauve.ok_or(RefusDeReprise::Abime)?;
+                    let longueur = l
+                        .longueur_des_pages(PLUS_GRANDE_IMAGE_EMBARQUEE)
+                        .ok_or(RefusDeReprise::Abime)?;
+                    let pages = l.pages(longueur).ok_or(RefusDeReprise::Abime)?;
+                    if longueur as u64 / 512 != sauve.secteurs() {
+                        return Err(RefusDeReprise::Abime);
+                    }
+                    if ici.is_some_and(|ici| ici.image().is_none()) {
+                        return Err(RefusDeReprise::AutresDisques);
+                    }
+                    DisqueLu::Embarque(longueur, pages)
+                }
+                _ => return Err(RefusDeReprise::Abime),
+            };
+        }
+        let mut drapeaux = [[false; 2]; 3];
+        for paire in &mut drapeaux {
+            for drapeau in paire {
+                *drapeau = l.oui().ok_or(RefusDeReprise::Abime)?;
+            }
+        }
+        let [notifies, sonnettes, reseau_notifie] = drapeaux;
+        let tics = l.u64().ok_or(RefusDeReprise::Abime)?;
+        if !l.au_bout() {
+            return Err(RefusDeReprise::Abime);
+        }
+        let coherent = Disque::TOUS
+            .into_iter()
+            .all(|quel| !notifies[quel.rang()] || carte.pci.disque(quel).is_some())
+            && (!sonnettes.contains(&true) || carte.pci.a_une_tablette())
+            && (!reseau_notifie.contains(&true) || carte.pci.a_un_reseau());
+        if !coherent {
+            return Err(RefusDeReprise::Abime);
+        }
+        Ok(EtatDeCarte {
+            carte,
+            disques,
+            notifies,
+            sonnettes,
+            reseau_notifie,
+            tics,
+        })
+    }
+
+    /// **Poser un état relu par [`CartePc::relire`] sur cette même carte**,
+    /// d'un coup. La mémoire vidéo est recopiée sur place ; une image
+    /// embarquée devient l'arrière de son disque ; un disque sur fichier
+    /// garde le sien. La carte réseau reprise prend le câble de cette carte.
+    pub fn reposer(&mut self, etat: EtatDeCarte<'_>) {
+        self.carte.poser(etat.carte);
+        for (rang, disque) in etat.disques.into_iter().enumerate() {
+            if let DisqueLu::Embarque(longueur, pages) = disque {
+                let mut image = vec![0u8; longueur];
+                super::etat::poser_les_pages(&mut image, &pages);
+                self.arrieres[rang] = Some(Box::new(ArriereMemoire(image)));
+            }
+        }
+        self.notifies = etat.notifies;
+        self.sonnettes = etat.sonnettes;
+        self.reseau_notifie = etat.reseau_notifie;
+        self.tics = etat.tics;
+        let branche = self.cable.is_some();
+        if let Some(reseau) = self.carte.reseau_mut() {
+            reseau.brancher_cable(branche);
+        }
     }
 }
 
@@ -2268,5 +2482,413 @@ pub(crate) mod tests {
         assert_eq!(pilote.octets(0x5000A, trame().len()), trame());
         let reseau = carte.reseau().expect("branchée");
         assert_eq!((reseau.emises(), reseau.livrees()), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod tests_de_l_etat {
+    //! **La carte entière, sauvée et reprise sur une carte branchée pareil**
+    //! ([`CartePc::sauver`], [`CartePc::relire`], [`CartePc::reposer`]) :
+    //! chaque périphérique au milieu de son travail, la suite qui continue,
+    //! et les disques qui doivent être ceux de l'instantané.
+    use super::super::RamPlate;
+    use super::tests::{image, ram, PREMIER, SECOND};
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// **Un disque dont les octets vivent ailleurs** — un fichier et sa
+    /// couche, pour la carte : il n'a pas d'image à embarquer. Deux cartes
+    /// qui le partagent voient le même fichier.
+    #[derive(Clone)]
+    struct Ailleurs(Arc<Mutex<ArriereMemoire>>);
+
+    impl Ailleurs {
+        fn nouveau(secteurs: usize, plus: u8) -> Self {
+            Self(Arc::new(Mutex::new(ArriereMemoire(image(secteurs, plus)))))
+        }
+        fn octets(&self) -> Vec<u8> {
+            self.0.lock().unwrap().0.clone()
+        }
+    }
+
+    impl Arriere for Ailleurs {
+        fn secteurs(&self) -> u64 {
+            self.0.lock().unwrap().secteurs()
+        }
+        fn lire(&mut self, decalage: u64, vers: &mut [u8]) -> bool {
+            self.0.lock().unwrap().lire(decalage, vers)
+        }
+        fn ecrire(&mut self, decalage: u64, octets: &[u8]) -> bool {
+            self.0.lock().unwrap().ecrire(decalage, octets)
+        }
+        fn octets_ecrits(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Une carte branchée comme l'application la branche, sans rien d'autre.
+    fn branchee(premier: &Ailleurs, second: Option<ArriereMemoire>) -> CartePc {
+        let mut carte = CartePc::nouvelle();
+        carte.regler_heure(1_793_379_909_000);
+        carte.brancher(Disque::Premier, premier.clone());
+        if let Some(second) = second {
+            carte.brancher(Disque::Second, second);
+        }
+        assert!(carte.brancher_ecran(640, 480));
+        carte.brancher_reseau(MAC_PAR_DEFAUT);
+        carte.brancher_cable(CableEnBoucle::default());
+        carte
+    }
+
+    /// **Chaque périphérique au milieu de son travail** : deux disques
+    /// ouverts, une lecture servie sur le premier, une écriture sur le
+    /// second (en mémoire) ; des frappes qui attendent, l'index de l'horloge
+    /// choisi, des pixels peints, des notifications notées, l'heure battue.
+    fn au_travail(premier: &Ailleurs) -> (CartePc, RamPlate) {
+        let mut carte = branchee(premier, Some(ArriereMemoire(image(8, 0x40))));
+        let mut ram = ram();
+        PREMIER.ouvrir(&mut carte);
+        SECOND.ouvrir(&mut carte);
+        PREMIER.requete(&mut ram, 0, 1, 5, (0x30_0000, 512));
+        ram.0[0x30_0000..0x30_0200].fill(0x77);
+        PREMIER.notifier(&mut carte);
+        SECOND.requete(&mut ram, 0, 0, 3, (0x30_1000, 512));
+        SECOND.notifier(&mut carte);
+        assert_eq!(carte.servir(&mut ram), 2);
+        assert_eq!(premier.octets()[5 * 512], 0x77, "l'écriture est au fichier");
+        carte.taper_texte("ls\n");
+        carte.battre(1_000);
+        carte.port_ecrire(0x70, 1, 0x0B);
+        assert!(carte.mem_ecrire(0xE000_0000 + 4 * 640 * 10, 4, 0x00AB_CDEF));
+        // Une sonnette, une notification et une file réseau notées, pas
+        // encore servies : elles passent l'instantané, et la reprise les sert.
+        carte.sonnettes[0] = true;
+        carte.notifies[1] = true;
+        carte.reseau_notifie[0] = true;
+        (carte, ram)
+    }
+
+    #[test]
+    fn a_whole_card_resumes_on_a_card_plugged_the_same_way() {
+        let premier = Ailleurs::nouveau(16, 0);
+        let (mut carte, ram) = au_travail(&premier);
+        let octets = carte.sauver().expect("au repos");
+        // La machine qui reprend branche le même fichier et rien d'autre :
+        // le second disque, en mémoire, vient de l'instantané.
+        let mut reprise = branchee(&premier, None);
+        let memoire = reprise.ecran().unwrap().cadre.octets().as_ptr();
+        let etat = reprise.relire(&octets).expect("relu");
+        reprise.reposer(etat);
+        assert_eq!(
+            reprise.ecran().unwrap().cadre.octets().as_ptr(),
+            memoire,
+            "la mémoire vidéo n'a pas bougé"
+        );
+        assert_eq!(
+            reprise.ecran().unwrap().cadre.revision(),
+            carte.ecran().unwrap().cadre.revision() + 1,
+            "la vue repeint"
+        );
+        carte.carte.ecran_mut().unwrap().cadre.marquer();
+        assert_eq!(reprise.carte, carte.carte, "chaque périphérique");
+        assert_eq!(
+            (
+                reprise.notifies,
+                reprise.sonnettes,
+                reprise.reseau_notifie,
+                reprise.tics
+            ),
+            (
+                carte.notifies,
+                carte.sonnettes,
+                carte.reseau_notifie,
+                carte.tics
+            )
+        );
+        assert_eq!(
+            reprise.arrieres[1].as_ref().unwrap().image(),
+            carte.arrieres[1].as_ref().unwrap().image()
+        );
+        assert!(
+            reprise.reseau().unwrap().cable_branche(),
+            "le câble de la machine qui reprend"
+        );
+        assert!(
+            reprise.carte.ps2.frappes.len() > 2,
+            "les frappes attendent encore"
+        );
+
+        // **La suite continue pareil** : une lecture de plus sur chaque
+        // disque, servie par l'originale et par la reprise.
+        let (mut ram_a, mut ram_b) = (RamPlate(ram.0.clone()), RamPlate(ram.0));
+        for (carte, ram) in [(&mut carte, &mut ram_a), (&mut reprise, &mut ram_b)] {
+            PREMIER.requete(ram, 1, 0, 5, (0x30_2000, 512));
+            PREMIER.notifier(carte);
+            SECOND.requete(ram, 1, 0, 3, (0x30_3000, 512));
+            SECOND.notifier(carte);
+            carte.battre(50_000);
+            assert_eq!(carte.servir(ram), 2);
+            assert_eq!((PREMIER.rendues(ram), SECOND.rendues(ram)), (2, 2));
+        }
+        assert_eq!(ram_b.0, ram_a.0);
+        assert_eq!(ram_b.0[0x30_2000], 0x77, "le fichier a gardé l'écriture");
+        assert_eq!(ram_b.0[0x30_3000], 0x43, "l'image embarquée aussi");
+        assert_eq!(reprise.carte, carte.carte);
+    }
+
+    #[test]
+    fn the_disks_must_be_those_of_the_snapshot() {
+        let premier = Ailleurs::nouveau(16, 0);
+        let (carte, _) = au_travail(&premier);
+        let octets = carte.sauver().expect("au repos");
+        let refus = |reprise: CartePc| reprise.relire(&octets).err();
+        let sans_disque = {
+            let mut carte = CartePc::nouvelle();
+            assert!(carte.brancher_ecran(640, 480));
+            carte.brancher_reseau(MAC_PAR_DEFAUT);
+            carte
+        };
+        assert_eq!(
+            refus(sans_disque),
+            Some(RefusDeReprise::AutresDisques),
+            "le fichier n'est pas rebranché"
+        );
+        let mut en_memoire = branchee(&premier, None);
+        en_memoire.brancher(Disque::Premier, ArriereMemoire(image(16, 0)));
+        assert_eq!(
+            refus(en_memoire),
+            Some(RefusDeReprise::AutresDisques),
+            "un disque en mémoire à la place du fichier"
+        );
+        let autre = branchee(&Ailleurs::nouveau(15, 0), None);
+        assert_eq!(
+            refus(autre),
+            Some(RefusDeReprise::AutresDisques),
+            "un fichier d'une autre capacité"
+        );
+        let mut fichier_en_second = branchee(&premier, None);
+        fichier_en_second.brancher(Disque::Second, Ailleurs::nouveau(8, 0));
+        assert_eq!(
+            refus(fichier_en_second),
+            Some(RefusDeReprise::AutresDisques),
+            "une image embarquée ne remplace pas un fichier"
+        );
+        let memoire_en_second = branchee(&premier, Some(ArriereMemoire(vec![0; 512])));
+        assert!(
+            refus(memoire_en_second).is_none(),
+            "elle remplace un disque en mémoire"
+        );
+        // Un emplacement vide doit l'être ici aussi.
+        let seul = branchee(&premier, None).sauver().expect("au repos");
+        let deux = branchee(&premier, Some(ArriereMemoire(image(8, 0))));
+        assert_eq!(
+            deux.relire(&seul).err(),
+            Some(RefusDeReprise::AutresDisques),
+            "un disque de trop"
+        );
+        assert!(branchee(&premier, None).relire(&seul).is_ok());
+    }
+
+    /// Où commencent, dans l'état d'une carte, ce qui suit les périphériques.
+    fn apres_la_carte(carte: &CartePc) -> usize {
+        let mut e = Ecrivain(Vec::new());
+        carte.carte.sauver(&mut e);
+        e.0.len()
+    }
+
+    #[test]
+    fn a_card_state_that_does_not_hold_together_is_refused() {
+        let premier = Ailleurs::nouveau(16, 0);
+        let (carte, _) = au_travail(&premier);
+        let octets = carte.sauver().expect("au repos");
+        let ici = branchee(&premier, None);
+        for longueur in 0..octets.len() {
+            assert!(
+                ici.relire(&octets[..longueur]).is_err(),
+                "coupé à {longueur}"
+            );
+        }
+        let mut longue = octets.clone();
+        longue.push(0);
+        assert_eq!(
+            ici.relire(&longue).err(),
+            Some(RefusDeReprise::Abime),
+            "un octet de trop"
+        );
+        let debut = apres_la_carte(&carte);
+        assert_eq!(octets[debut], 1, "le premier disque vit ailleurs");
+        let abime = |rang: usize, valeur: u8| {
+            let mut abime = octets.clone();
+            abime[rang] = valeur;
+            ici.relire(&abime).err()
+        };
+        assert_eq!(
+            abime(debut, 3),
+            Some(RefusDeReprise::Abime),
+            "une étiquette inconnue"
+        );
+        assert_eq!(
+            abime(debut, 0),
+            Some(RefusDeReprise::Abime),
+            "« aucun disque » là où le bus en a un"
+        );
+
+        // Les notifications notées vont à ce qui existe.
+        let nue = {
+            let mut carte = CartePc::nouvelle();
+            carte.brancher(Disque::Premier, premier.clone());
+            carte
+        };
+        let octets = nue.sauver().expect("au repos");
+        let drapeaux = octets.len() - 8 - 6;
+        let note = |rang: usize| {
+            let mut abime = octets.clone();
+            abime[drapeaux + rang] = 1;
+            nue.relire(&abime).err()
+        };
+        assert_eq!(note(0), None, "le premier disque est là");
+        assert_eq!(
+            note(1),
+            Some(RefusDeReprise::Abime),
+            "une notification pour un disque absent"
+        );
+        assert_eq!(
+            note(2),
+            Some(RefusDeReprise::Abime),
+            "une sonnette sans tablette"
+        );
+        assert_eq!(
+            note(5),
+            Some(RefusDeReprise::Abime),
+            "une file réseau sans carte réseau"
+        );
+
+        // Une image embarquée d'une autre capacité que son disque.
+        let mut fausse = branchee(&premier, Some(ArriereMemoire(image(8, 0))));
+        fausse.arrieres[1] = Some(Box::new(ArriereMemoire(image(4, 0))));
+        let octets = fausse.sauver().expect("au repos");
+        assert_eq!(
+            branchee(&premier, None).relire(&octets).err(),
+            Some(RefusDeReprise::Abime),
+            "quatre secteurs embarqués pour un disque de huit"
+        );
+    }
+
+    /// **Une image embarquée plus grande que la borne est refusée avant
+    /// d'être allouée**, même quand sa carte de pages tient en entier dans
+    /// l'état : un disque de 2 Gio et un secteur, tout nul.
+    #[test]
+    fn an_embedded_image_past_the_bound_is_refused() {
+        let mut carte = CartePc::nouvelle();
+        let secteurs = (PLUS_GRANDE_IMAGE_EMBARQUEE as u64 + 512) / 512;
+        carte.brancher(Disque::Premier, ArriereMemoire(vec![0; 512]));
+        carte.carte.brancher(Disque::Premier, secteurs);
+        let mut octets = Vec::new();
+        let mut e = Ecrivain(Vec::new());
+        carte.carte.sauver(&mut e);
+        octets.extend_from_slice(&e.0);
+        octets.push(2);
+        let longueur = PLUS_GRANDE_IMAGE_EMBARQUEE + 512;
+        octets.extend_from_slice(&(longueur as u64).to_le_bytes());
+        octets.extend(std::iter::repeat_n(
+            0u8,
+            longueur.div_ceil(4096).div_ceil(8),
+        ));
+        octets.push(0);
+        octets.extend_from_slice(&[0; 6]);
+        octets.extend_from_slice(&0u64.to_le_bytes());
+        let ici = CartePc::nouvelle();
+        assert_eq!(ici.relire(&octets).err(), Some(RefusDeReprise::Abime));
+        // La même, à la borne tout juste, passe la borne (et la reprise).
+        let mut juste = CartePc::nouvelle();
+        juste.brancher(Disque::Premier, ArriereMemoire(vec![0; 512]));
+        juste
+            .carte
+            .brancher(Disque::Premier, PLUS_GRANDE_IMAGE_EMBARQUEE as u64 / 512);
+        let mut e = Ecrivain(Vec::new());
+        juste.carte.sauver(&mut e);
+        let mut octets = e.0;
+        octets.push(2);
+        octets.extend_from_slice(&(PLUS_GRANDE_IMAGE_EMBARQUEE as u64).to_le_bytes());
+        octets.extend(std::iter::repeat_n(
+            0u8,
+            PLUS_GRANDE_IMAGE_EMBARQUEE / 4096 / 8,
+        ));
+        octets.push(0);
+        octets.extend_from_slice(&[0; 6]);
+        octets.extend_from_slice(&0u64.to_le_bytes());
+        assert!(ici.relire(&octets).is_ok());
+    }
+
+    /// **Un disque sur fichier écrit avant l'instantané se relit après**,
+    /// dans une autre carte qui rouvre le même fichier et la même couche —
+    /// une autre vie de l'application : l'écriture scellée par
+    /// [`CartePc::vider`] avant l'instantané, comme `flushDisk` avant
+    /// `snapshot` du côté Swift, puis la file reprise où elle en était.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_file_disk_written_before_the_snapshot_reads_back_after_it() {
+        use super::super::fichier::DisqueFichier;
+        let dossier = std::env::temp_dir().join(format!("wisq-carte-etat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let (base, couche) = (dossier.join("disque.img"), dossier.join("disque.couche"));
+        std::fs::write(&base, image(16, 0)).unwrap();
+        let ouvrir = || DisqueFichier::ouvrir(&base, &couche).expect("le disque");
+
+        let (octets, ram) = {
+            let mut carte = CartePc::nouvelle();
+            carte.brancher(Disque::Premier, ouvrir());
+            let mut ram = ram();
+            PREMIER.ouvrir(&mut carte);
+            PREMIER.requete(&mut ram, 0, 1, 9, (0x30_0000, 512));
+            ram.0[0x30_0000..0x30_0200].fill(0x99);
+            PREMIER.notifier(&mut carte);
+            assert_eq!(carte.servir(&mut ram), 1);
+            assert_eq!(PREMIER.statut(&ram, 0), 0, "écrit");
+            assert!(carte.vider());
+            (carte.sauver().expect("au repos"), ram)
+        };
+        assert_eq!(
+            std::fs::read(&base).unwrap()[9 * 512],
+            9,
+            "la base n'est jamais écrite"
+        );
+
+        let mut reprise = CartePc::nouvelle();
+        reprise.brancher(Disque::Premier, ouvrir());
+        let etat = reprise.relire(&octets).expect("le même fichier");
+        reprise.reposer(etat);
+        let mut ram = ram;
+        PREMIER.requete(&mut ram, 1, 0, 9, (0x30_1000, 512));
+        PREMIER.notifier(&mut reprise);
+        assert_eq!(reprise.servir(&mut ram), 1);
+        assert_eq!(PREMIER.rendues(&ram), 2, "la file a continué");
+        assert_eq!(PREMIER.statut(&ram, 1), 0);
+        assert!(
+            ram.0[0x30_1000..0x30_1200].iter().all(|&o| o == 0x99),
+            "l'écriture est revenue"
+        );
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    #[test]
+    fn a_disk_with_requests_in_flight_is_not_saved() {
+        let mut carte = CartePc::nouvelle();
+        carte.brancher(Disque::Premier, ArriereMemoire(image(8, 0)));
+        let mut ram = ram();
+        PREMIER.ouvrir(&mut carte);
+        PREMIER.requete(&mut ram, 0, 0, 1, (0x30_0000, 512));
+        // La file relue sans la façade : la requête part, et personne ne la
+        // sert — ce que la machine native ne laisse jamais faire.
+        carte.carte.notifier(Disque::Premier, &mut ram);
+        assert_eq!(
+            carte.sauver().err(),
+            Some(RefusDeSauvegarde::DisqueOccupe(Disque::Premier))
+        );
+        assert_eq!(carte.servir(&mut ram), 0, "rien de notifié par le port");
+        carte.notifies[0] = true;
+        assert_eq!(carte.servir(&mut ram), 1);
+        assert!(carte.sauver().is_ok(), "servie, la carte se sauve");
     }
 }

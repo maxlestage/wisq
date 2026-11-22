@@ -63,7 +63,23 @@ public enum SavedSession: Sendable {
 
     /// Un instantané déjà décompressé, jugé par le cœur qui le reprendra :
     /// son niveau d'abord, puis tout ce qui précède sa mémoire.
+    ///
+    /// **Une session de la machine PC en Rust** (`WISQPC\r\n`) se juge par son
+    /// en-tête (`RustPCSnapshot`) : sa version, puis sa mémoire. C'est elle
+    /// qui décide du cœur qui la reprendra (`RustPCSetting.runs`), pas le
+    /// réglage.
     public static func judge(_ snapshot: Data, core: GuestArchitecture.Core) -> SavedSession {
+        if core == .x86_64, RustPCSnapshot.recognizes(snapshot) {
+            guard let header = RustPCSnapshot.header(of: snapshot) else { return .unreadable(.damaged) }
+            guard header.version <= RustPCSnapshot.version else {
+                return .unreadable(.newerMachine(
+                    saved: UInt64(header.version), supported: UInt64(RustPCSnapshot.version)))
+            }
+            // Plus ancienne : la version 1 ne portait pas la carte des
+            // périphériques, et la machine la refuse (`Refusal.olderSnapshot`).
+            guard header.version == RustPCSnapshot.version else { return .unreadable(.damaged) }
+            return .readable(snapshot)
+        }
         if core == .x86_64 {
             guard let level = X86Machine.savedLevel(in: snapshot) else { return .unreadable(.damaged) }
             guard level <= X86Machine.snapshotLevel else {
@@ -111,6 +127,40 @@ public enum SavedSession: Sendable {
                 « Oublier », puis rouvrez la machine.
                 """
         }
+    }
+}
+
+/// **L'en-tête d'un instantané de la machine PC en Rust**, lu côté Swift :
+/// `WISQPC\r\n`, la version (32 bits), la mémoire (64 bits), petit-boutistes —
+/// ce que `crates/wisq-vm/src/pc/instantane.rs` écrit en tête.
+///
+/// Ici, dans `WisqVM`, et pas dans `WisqVMRust` : la session se juge avant
+/// qu'on construise la machine (`SavedSession.judge`, `SessionMemory`), et la
+/// décision du cœur (`RustPCSetting.runs`) se juge sous Linux. Le test de
+/// `RustPCMachineTests` vérifie que cette version est celle de la
+/// bibliothèque.
+public enum RustPCSnapshot {
+    /// Les huit premiers octets.
+    public static let magic = Array("WISQPC\r\n".utf8)
+    /// La version que la machine PC en Rust écrit et reprend : la 2, qui
+    /// porte la carte des périphériques.
+    public static let version: UInt32 = 2
+
+    /// **Est-ce un instantané de la machine PC en Rust ?** La marque seule :
+    /// une session du cœur Swift ne commence jamais ainsi.
+    public static func recognizes(_ snapshot: Data) -> Bool {
+        snapshot.count >= magic.count && snapshot.prefix(magic.count).elementsEqual(magic)
+    }
+
+    /// La version et la mémoire, ou rien pour un en-tête tronqué, d'une autre
+    /// marque, ou d'une mémoire qui ne tient pas dans un `Int`.
+    public static func header(of snapshot: Data) -> (version: UInt32, ramSize: Int)? {
+        guard recognizes(snapshot), snapshot.count >= magic.count + 12 else { return nil }
+        let start = snapshot.startIndex + magic.count
+        let version = snapshot[start..<start + 4].reversed().reduce(UInt32(0)) { $0 << 8 | UInt32($1) }
+        let ram = snapshot[start + 4..<start + 12].reversed().reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        guard let ramSize = Int(exactly: ram) else { return nil }
+        return (version, ramSize)
     }
 }
 

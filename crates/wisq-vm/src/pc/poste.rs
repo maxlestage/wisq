@@ -665,4 +665,41 @@ impl Poste {
         self.rattrape = rattrape;
         self.pret = true;
     }
+
+    /// **Ce que les commandes tiennent et que l'invité n'a pas encore reçu**,
+    /// pour l'instantané : les octets tapés au port série, les frappes qui
+    /// attendent leur tour avant l'i8042, et les deux états du clavier qui
+    /// vont avec (une fois tout joué ; une fois jouées les seules frappes
+    /// remises).
+    pub(super) fn entrees(&self) -> EntreesEnAttente {
+        let touches = tenir(&self.commandes.touches);
+        EntreesEnAttente {
+            serie: tenir(&self.commandes.serie).clone(),
+            frappes: touches.attente.iter().copied().collect(),
+            tenues_au_bout: touches.tenues_au_bout.0,
+            tenues_remises: touches.tenues_remises.0,
+        }
+    }
+
+    /// Reposées par une reprise, à la place de celles d'avant.
+    pub(super) fn reposer_les_entrees(&mut self, entrees: EntreesEnAttente) {
+        *tenir(&self.commandes.serie) = entrees.serie;
+        let mut touches = tenir(&self.commandes.touches);
+        touches.attente = entrees.frappes.into_iter().collect();
+        touches.tenues_au_bout = Tenues(entrees.tenues_au_bout);
+        touches.tenues_remises = Tenues(entrees.tenues_remises);
+    }
+}
+
+/// **Les entrées pas encore données à l'invité** ([`Poste::entrees`]).
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct EntreesEnAttente {
+    /// Tapé au port série, pas encore remis au 16550.
+    pub serie: Vec<u8>,
+    /// Les frappes qui attendent leur tour, avant la file de l'i8042.
+    pub frappes: Vec<(CodeTouche, bool)>,
+    /// Les touches que tout laisse enfoncées, l'attente comprise.
+    pub tenues_au_bout: [u64; TOUCHES / 64],
+    /// Les touches que les seules frappes remises laissent enfoncées.
+    pub tenues_remises: [u64; TOUCHES / 64],
 }
