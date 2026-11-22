@@ -22,6 +22,7 @@ pub mod instantane;
 pub mod machine;
 pub mod memoire;
 pub mod poste;
+pub mod reseau;
 pub mod systeme;
 
 pub use chargeur::{Ecran, Placement, Refus};
