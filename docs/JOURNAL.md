@@ -8,6 +8,36 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Les tests de l'émetteur dans une fenêtre visible : la cause de leurs rouges intermittents
+
+**Ce qui tombait.** `EmitterDesktopTests` a fait tomber « App iOS » trois fois
+le même jour : sur master après #720, et deux fois sur #722, que rien ne
+relie à l'émetteur. Les tests en cause changeaient d'une fois à l'autre
+(`testStopHaltsAMachineThatWaitsForAKey`,
+`testTheEmitterMachineBootsThroughItsSchemeInARealWebView`,
+`testTheApplicationsSendPathReachesTheGuest`), mais le tableau restait le
+même : la page se charge et prend la touche, puis la machine se fige. La
+touche n'est jamais lue (registre 15 à 0), `hlt` n'est jamais atteint, et
+aucune panne n'est dite.
+
+**La cause.** Le journal de ces jobs montre « WebProcess NearSuspended
+Assertion » et un processus de contenu « unresponsive » : iOS suspendait le
+processus de WebKit. Il le fait pour une `WKWebView` qui n'est dans aucune
+fenêtre visible, et ces tests n'en donnaient pas à la leur. Dans
+l'application, la vue est toujours à l'écran. `WebKitJITProbeTests` le dit et
+le fait depuis longtemps : « Une vue hors de toute fenêtre n'est pas sûre de
+démarrer ».
+
+**La correction.** `EmitterDesktopTests` pose chaque vue dans une `UIWindow`
+visible, gardée par l'instance, avant `start()`, comme le fait
+`WebKitJITProbeTests`. Rien n'est retiré ni affaibli : mêmes assertions, même
+patience.
+
+**Ce qui n'est pas prouvé ici.** Ces tests ne tournent que dans l'iPhone
+simulé de « App iOS ». Un passage vert ne prouve pas la fin de
+l'intermittence ; plusieurs passages verts de suite le diront. Le relevé des
+occurrences est dans `docs/ROADMAP.md`.
+
 ## 2026-11-22 — Interface : une chaîne d'aperçus pour voir l'application, et ce que la carte d'une machine dira (le redessin attend la première série)
 
 **Ce qui n'allait pas.** L'utilisateur juge l'interface pas assez jolie, et
