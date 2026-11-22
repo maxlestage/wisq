@@ -8,6 +8,149 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : « Arch bloque » n'était pas un blocage — la ligne d'état ne dit plus « en rond » d'un invité qui calcule, et la console ne double plus les lignes du noyau
+
+**Ce qui n'allait pas, vu sur l'iPhone (build TestFlight 135, `94dba588`).**
+Une machine Arch Linux sur le cœur Rust : `Memory KASLR using RDRAND
+RDTSC...`, `Poking KASLR…`, puis trois lignes du noyau, chacune deux fois
+(l'erreur ACPI sans RSDP, TDX, `mce: Unable to init MCE device`), puis plus
+rien, et la ligne d'état :
+« 6,7 milliards d'instructions · 402,3 MIPS · en rond autour de
+0xffffffff9c990e5d ». Lu comme un blocage.
+
+**Ce que la course a montré : ce n'était pas l'image de cloud, et ce
+n'était pas un blocage.**
+
+- *L'image de cloud démarre.* `Arch-Linux-x86_64-cloudimg-20261115.625457`
+  (noyau 7.3.4-arch1-2), par le chemin de l'application (`IsoBoot.decide`,
+  le lecteur qcow2 du cœur Swift à travers l'ABI, l'écran, la carte réseau
+  sur `UserNetwork`, les réponses de la grille au terminal, le rythme du
+  mur, l'empreinte du mot de passe de `root`, 512 Mio) : le shell de
+  `root` à **34,5 milliards d'instructions, 519 s** ici. Par `wisq-pc`
+  aussi (1 Gio : 34,4 milliards, 447 s). Jusqu'à « Booting initrd » (sous
+  la ligne par défaut, celle de la capture) : vingt graines de `rdrand`, de
+  512 Mio à 12 Gio, l'horloge CMOS figée, une reprise d'instantané en plein
+  démarrage, les réponses de la grille au terminal — jamais rien de bloqué.
+  Le cœur Swift (`X86BootAttemptTests`) passe aussi dans la vraie racine.
+- *Sa console ne ressemble pas à la capture.* La ligne d'une image de cloud
+  (`CloudBoot`) n'a pas d'`earlyprintk` : ni « Memory KASLR » ni « Poking
+  KASLR », que le noyau n'écrit que sur la console précoce, ni lignes
+  doublées. Ces deux-là ne viennent que de `X86BootLoader.defaultCommandLine`
+  (`earlyprintk=serial,ttyS0,115200,keep`), que reçoit la ligne d'une
+  **image d'installation** (`IsoBoot.commandLine(from:)`).
+- *L'adresse nomme le noyau.* KASLR déplace le noyau par pas de 2 Mio : seul
+  `0x190e5d`, le reste modulo 2 Mio, compte. Dans le noyau de l'image de
+  cloud (symboles tirés de son `kallsyms` par `vmlinux-to-elf`), aucune
+  instruction de code ne tombe à ce reste ailleurs que dans du remplissage
+  `int3` ou dans `jbd2_journal_init_revoke`. Dans celui de l'**image
+  d'installation d'Arch du 1er novembre** (`archlinux-2026.11.01-x86_64.iso`,
+  noyau 7.2.11-arch1-1), c'est `lzma_main+0x74d`, une instruction du
+  décodeur de plage de xz.
+- *La capture, reproduite* : `wisq-pc --iso` sur cette image rend mot pour
+  mot les huit lignes de la capture, puis se tait **9,26 milliards
+  d'instructions**, jusqu'à `:: running early hook [udev]`. L'initramfs
+  (86 Mio) porte 64 Mio de modules non compressés puis 19 Mio de xz, qui en
+  font 68 : le noyau les décode (`lzma_main`) et en vérifie la somme
+  (`crc32_le`, octet par octet : ce processeur n'annonce pas `pclmulqdq`),
+  et le noyau d'Arch n'écrit que ses erreurs. À 402 MIPS, 23 s de silence ;
+  la capture est prise à 6,7 milliards, aux trois quarts. Ensuite l'image
+  va jusqu'à `archiso login:` (ci-dessous).
+
+**La cause, donc, en deux défauts de l'application.**
+
+1. *La ligne d'état a dit « en rond » d'un invité qui avançait.*
+   `GuestHeartbeat` le disait dès que deux relevés de RIP, pris à une
+   seconde d'écart, tombaient dans la même page. Un décodeur qui passe ses
+   secondes dans une fonction de quelques kibioctets fait exactement ça.
+2. *La console doublait chaque ligne du noyau.* `earlyprintk=…,keep` garde
+   la console précoce à côté de `ttyS0`, sur le même port. Le JOURNAL du
+   21 novembre l'avait mesuré sous l'émetteur (Void : 89 lignes doublées
+   sur 193) et laissé au cœur Swift, dont c'est la ligne.
+
+**Ce qui est fait.**
+
+- *Le poste compte ses tranches* (`Commandes::sejour`) : à chaque
+  publication (toutes les deux cent mille instructions), le nombre publié,
+  et combien ont trouvé RIP dans la page de la précédente. L'ABI le tend
+  par `wisq_pc_progress_pages` (80 → 81 fonctions ; la page
+  d'architecture le dit). Le cœur Swift compte de même à chaque vidage
+  (`X86Machine`), et `GuestProgress` porte les deux nombres.
+- *« En rond » se mérite* : la ligne ne le dit plus que si, entre les deux
+  relevés, **neuf publications sur dix** sont restées dans la page
+  (`GuestHeartbeat.loopShare`). Mesuré sous `wisq-pc`, tranche par tranche :
+  69 à 80 % pendant le déballage du xz (le décodeur appelle `crc32_le`,
+  puis l'écriture des fichiers), 98 % dans la boucle d'attente d'un noyau
+  en panique (`delay_tsc`), toutes dans un `jmp .`. Avec moins de vingt
+  publications entre les deux relevés, ou un cœur qui ne compte pas, les
+  deux relevés décident seuls, comme avant.
+- *La ligne par défaut perd `keep`*, sur les deux cœurs
+  (`X86BootLoader.defaultCommandLine`, `chargeur::LIGNE_PAR_DEFAUT`) : le
+  noyau éteint la console précoce quand `ttyS0` s'ouvre, et `ttyS0` ne
+  redit pas ce qu'elle a dit. Jusqu'au `/init` de l'image d'Arch : **cinq
+  lignes, chacune une fois**, au lieu de huit (ses trois messages deux
+  fois) ; jusqu'à « Welcome to Arch Linux » : 28 lignes, aucune répétée.
+
+**La preuve.**
+
+| image, par l'enveloppe Swift (écran, réseau, rythme du mur) | jusqu'à | instructions | ici | à 402 MIPS |
+| --- | --- | --- | --- | --- |
+| Arch, image d'installation du 1er novembre, 2 Gio | `:: running early hook` (`wisq-pc`) | 9,26 milliards | 79 s | 23 s |
+| | `archiso login:` | 87,2 milliards | 878 s | ~3 min 37 |
+| Arch, image de cloud du 15 novembre, 512 Mio, mot de passe | le shell de `root` | 34,5 milliards | 519 s | ~1 min 26 |
+| Alpine 3.24.4 (ISO), `wisq-pc`, horloge figée | `login:` | 5,765 → 5,756 milliards | 62 → 60 s | |
+
+Ce conteneur fait 77 à 117 MIPS sous la charge des autres sessions ; la
+dernière colonne est une division. Alpine change de 0,17 % : sa ligne perd
+cinq octets, que son noyau ne connaît pas (« Unknown kernel command line
+parameters »), et sa console est la même à l'ordre de deux lignes près
+(l'horloge figée, la même graine).
+
+**Les tests** : six de plus (4 388 → 4 394 au compte publié, 4 405 une fois master fusionné ; Swift 3 162,
+Rust 1 232).
+
+- Rust : `the_slices_say_whether_the_guest_stays_on_one_page` (`pc_poste`) —
+  un `jmp .` publie 40 tranches dont 39 restent ; un invité écrit à la main
+  qui boucle dans une page et appelle une routine posée 4 Kio plus loin, la
+  forme du décodeur, en garde 317 sur 400 ;
+  `the_default_command_line_does_not_keep_the_early_console`
+  (`pc_chargeur`) ; `abi/pc.c` : `wisq_pc_progress_pages` refuse un
+  pointeur nul, ne publie rien avant la première course, puis publie.
+- Swift : `GuestHeartbeatTests` (trois : la capture d'Arch n'est plus « en
+  rond », un noyau en panique l'est toujours, trop peu de tranches laissent
+  les deux relevés décider) ; `RustPCMachineTests` (un : les deux cœurs
+  comptent les tranches d'un `jmp .`) ; `X86BootLoaderTests` : la ligne par
+  défaut sans `keep`.
+
+**Les sabotages** : douze, d'une ligne, la source rendue après chacun,
+`git diff` identique avant et après. **Les douze tombent.**
+
+| où | sabotage | tombe dans |
+| --- | --- | --- |
+| le poste | la tranche restée jamais comptée ; toutes comptées restées ; la page lue à 16 Mio | `the_slices_say…` |
+| l'ABI | 1 rendu avant la première course | `abi/pc.c` |
+| le chargeur | `,keep` remis | `the_default_command_line_does_not_keep…` |
+| Swift | « en rond » sans la part ; la part à 70 % ; à 99 % ; sans le plancher de vingt tranches ; le cœur Swift qui ne compte pas les restées ; l'enveloppe Rust qui ne lit pas les tranches ; `,keep` remis | `GuestHeartbeatTests`, `RustPCMachineTests`, `X86BootLoaderTests` |
+
+**Ce qui reste.**
+
+- *Le déballage reste silencieux et long* : 9,3 milliards d'instructions
+  sans une ligne. Le noyau d'Arch n'écrit que ses erreurs, et le xz se
+  décode au rythme du cœur ; seul un cœur plus rapide le raccourcit
+  (`crc32_le`, neuf instructions par octet, n'en ferait qu'un quinzième
+  d'après sa boucle). La ligne d'état donne maintenant l'adresse sans
+  conclure ; elle ne dit pas « il déballe ».
+- *L'image que la personne a démarrée* : la feuille de téléchargement ne
+  propose que l'image de cloud, et c'est l'image d'installation qui rend la
+  capture. Une image d'installation importée à la main, ou gardée d'avant,
+  sous le même nom « Arch » dans la bibliothèque — à confirmer avec elle.
+- *Fedora et Ubuntu* : la feuille propose leurs images de cloud, dont la
+  ligne n'a pas d'`earlyprintk` (pas de doublement) et dont les noyaux
+  écrivent tout leur journal ; leurs initramfs sont en zstd. Non téléchargées
+  ni mesurées ici. La fausse boucle, elle, touchait tout invité qui calcule
+  longtemps dans une fonction (un déballage, un `mkfs`, une somme) : c'est
+  la ligne d'état qui est corrigée, pour toutes.
+- *Les bureaux prêts* gardent leur ligne de fabrication dans leur manifeste ;
+  ceux qui existent ne changent pas, une refabrication aura la nouvelle.
 ## 2026-11-22 — Interface : la série « avant », un petit système de design, les machines en cartes, et quatre tours de captures
 
 **Ce qui n'allait pas.** L'utilisateur juge l'interface « pas belle ». Le

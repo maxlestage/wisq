@@ -99,6 +99,53 @@ final class GuestHeartbeatTests: XCTestCase {
         XCTAssertTrue(line.contains("0xffffffff810b2c40"), line)
     }
 
+    /// **Un invité qui calcule dans une fonction n'est pas « en rond ».**
+    ///
+    /// La capture qui l'a appris : « 6,7 milliards d'instructions · 402,3
+    /// MIPS · en rond autour de 0xffffffff9c990e5d ». L'adresse est
+    /// `lzma_main` du noyau de l'image d'installation d'Arch, qui déballait
+    /// son initramfs ; il lui restait deux milliards et demi d'instructions,
+    /// et la personne a lu un blocage. Les deux relevés tombent dans la même
+    /// page, mais trois publications sur quatre seulement entre les deux
+    /// (`wisq-pc` en mesure 69 à 80 % pendant ce déballage) : la phrase
+    /// donne l'adresse et se tait.
+    func testAGuestComputingInOneFunctionIsNotALoop() {
+        let line = GuestHeartbeat.line(
+            now: GuestProgress(retired: 6_700_000_000, rip: 0xffff_ffff_9c99_0e5d,
+                               slices: 33_500, slicesOnSamePage: 25_000),
+            since: GuestProgress(retired: 6_300_000_000, rip: 0xffff_ffff_9c99_08aa,
+                                 slices: 31_500, slicesOnSamePage: 23_500),
+            seconds: 1)
+        XCTAssertFalse(line.contains("en rond"), line)
+        XCTAssertTrue(line.contains("0xffffffff9c990e5d"), line)
+        XCTAssertTrue(line.contains("400,0 MIPS"), line)
+    }
+
+    /// **Et une vraie boucle le reste** : quatre-vingt-dix-huit publications
+    /// sur cent dans la même page, la part d'un noyau en panique qui attend
+    /// dans `delay_tsc`.
+    func testAGuestThatNeverLeavesItsPageIsStillALoop() {
+        let line = GuestHeartbeat.line(
+            now: GuestProgress(retired: 30_000_000, rip: 0xffff_ffff_825c_c30d,
+                               slices: 200, slicesOnSamePage: 197),
+            since: GuestProgress(retired: 10_000_000, rip: 0xffff_ffff_825c_c2f7,
+                                 slices: 100, slicesOnSamePage: 99),
+            seconds: 1)
+        XCTAssertTrue(line.contains("en rond autour de 0xffffffff825cc30d"), line)
+    }
+
+    /// **Trop peu de publications pour juger** : les deux relevés décident
+    /// seuls, comme pour un cœur qui ne les compte pas.
+    func testTooFewSlicesLeaveTheTwoReadingsToDecide() {
+        let line = GuestHeartbeat.line(
+            now: GuestProgress(retired: 30_000_000, rip: 0xffff_ffff_810b_2c40,
+                               slices: 110, slicesOnSamePage: 50),
+            since: GuestProgress(retired: 10_000_000, rip: 0xffff_ffff_810b_2d90,
+                                 slices: 100, slicesOnSamePage: 50),
+            seconds: 1)
+        XCTAssertTrue(line.contains("en rond"), line)
+    }
+
     /// **Et l'inverse ne se déduit pas.** Deux adresses éloignées ne prouvent
     /// pas que le noyau avance : il peut tourner dans une boucle plus large
     /// qu'une page. La phrase donne donc l'adresse et se tait sur le reste —

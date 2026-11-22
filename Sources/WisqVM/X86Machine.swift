@@ -1224,7 +1224,13 @@ public final class X86Machine: @unchecked Sendable {
         // ne dirait jamais rien de l'invité qui en a le plus besoin — celui
         // qui n'écrit plus. C'est précisément le cas qu'une capture a montré.
         lock.lock()
-        published = GuestProgress(retired: core.retired, rip: core.rip)
+        // Chaque publication compte, et celles qui trouvent RIP dans la page
+        // de la précédente : voir `GuestProgress.slices`.
+        let slices = (published.slices ?? 0) + 1
+        var samePage = published.slicesOnSamePage ?? 0
+        if published.slices != nil, published.rip >> 12 == core.rip >> 12 { samePage += 1 }
+        published = GuestProgress(retired: core.retired, rip: core.rip, slices: slices,
+                                  slicesOnSamePage: samePage)
         lock.unlock()
         collectOutput()
         guard !pendingOutput.isEmpty else { return }

@@ -190,6 +190,12 @@ final class X86BootLoaderTests: XCTestCase {
         XCTAssertTrue(line.contains("earlyprintk=serial"),
                       "sans ça, un démarrage qui échoue tôt ne dit rien")
         XCTAssertTrue(line.contains("console=ttyS0"))
+        // **Sans `keep`** : la console précoce gardée à côté de `ttyS0`, sur
+        // le même port, faisait sortir chaque ligne du noyau deux fois.
+        for word in line.split(separator: " ") {
+            XCTAssertFalse(word.split(separator: ",").contains("keep") || word == "keep_bootcon",
+                           "« \(word) » garde la console précoce : chaque ligne sortirait deux fois")
+        }
         // Et la page zéro doit pointer dessus, sinon le noyau ne la lit pas.
         XCTAssertEqual(try ram.read(placement.bootParametersAddress &+ 0x228, 4),
                        placement.commandLineAddress)
