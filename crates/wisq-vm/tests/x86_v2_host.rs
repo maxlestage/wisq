@@ -509,3 +509,34 @@ fn bnd_prefixed_branches_are_branches() {
         "`f2` devant `inc` reste refusé"
     );
 }
+
+/// **Les rangements non temporels** rangent comme les autres, au bit près du
+/// silicium — et l'émetteur les traduit : il les rendait au secours un par
+/// un, et le banc RAID du noyau de Void, qui les enchaîne pendant seize tics
+/// d'horloge, ne finissait jamais.
+#[test]
+fn non_temporal_stores_store_and_the_emitter_translates_them() {
+    for (nom, octets) in [
+        ("movntdq", &[0x66, 0x0F, 0xE7, 0x06][..]),
+        ("movntps", &[0x0F, 0x2B, 0x0E]),
+        ("movntpd", &[0x66, 0x0F, 0x2B, 0x16]),
+        ("movnti", &[0x0F, 0xC3, 0x06]),
+        ("movnti 64", &[0x48, 0x0F, 0xC3, 0x0E]),
+    ] {
+        let lue = decode(octets).unwrap_or_else(|| panic!("{nom} se décode"));
+        assert_eq!(lue.length, octets.len(), "{nom} : la longueur");
+        let mut region = octets.to_vec();
+        region.push(0xC3);
+        assert!(
+            wisq_vm::x86_wasm::Module::region_or_why(&region, 0x40_0000, 0).is_ok(),
+            "{nom} : l'émetteur le traduit"
+        );
+        if hote_v2() {
+            juger(nom, octets, 50);
+        }
+    }
+    assert!(
+        decode(&[0x66, 0x0F, 0xE7, 0xC1]).is_none(),
+        "la forme registre reste refusée"
+    );
+}

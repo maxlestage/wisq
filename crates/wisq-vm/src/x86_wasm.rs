@@ -1594,6 +1594,25 @@ struct FarLocals {
 /// région a traduits, que l'hôte lit pour savoir quelles trames marquer.
 const NOTE: u32 = 5;
 const EXTENT: u32 = 6;
+/// **Les accesseurs, encore en queue** : quatre lectures (un, deux, quatre,
+/// huit octets) puis quatre écritures, comptées depuis la marche. Voir
+/// `Module::accessor_body`.
+const LOAD_FN: u32 = 7;
+const STORE_FN: u32 = 11;
+/// Combien de fonctions un module paginé porte après la marche, `run` et
+/// l'accesseur des débuts : les deux accès lents, l'inscription, l'étendue et
+/// les huit accesseurs.
+const PAGED_TAIL: u32 = 12;
+
+/// Le rang d'une largeur parmi les accesseurs.
+const fn width_rank(width: Width) -> u32 {
+    match width {
+        Width::Byte => 0,
+        Width::Word => 1,
+        Width::Dword => 2,
+        Width::Qword => 3,
+    }
+}
 /// **Ce bit dans la largeur passée à `FAR_STORE` en fait une réservation** :
 /// les deux marches d'écriture ont lieu, et rien n'est écrit. Voir
 /// `Body::claim`. Un bit plutôt qu'une sixième fonction : la même marche, le
@@ -1645,6 +1664,14 @@ struct Body {
     /// quand une instruction plus loin dans le même bloc les réécrit tous avant
     /// que rien ne les lise. Le calcul arithmétique les saute alors.
     flags_dead: bool,
+    /// **Les accès paginés passent par les accesseurs du module** au lieu
+    /// d'être écrits en ligne. Voir `Module::accessor_body` : c'est ce qui
+    /// fait tenir deux fois plus de régions sous la même borne d'octets.
+    accessors: bool,
+    /// **Le corps d'un accesseur** : la sortie de faute n'est pas écrite ici
+    /// — un accesseur ne peut pas rendre la main pour la région —, c'est
+    /// l'appelant qui relit le témoin.
+    bare: bool,
 }
 
 impl Body {
@@ -1706,6 +1733,10 @@ impl Body {
             // pas ferait refuser le module par le moteur.
             return self.access(load, 0);
         };
+        if self.accessors {
+            self.call(walk + LOAD_FN + width_rank(width));
+            return self.fault_exit();
+        }
         // L'adresse est rangée : le repli comme le tampon la relisent, et
         // WebAssembly n'a pas de quoi dupliquer une valeur.
         self.bytes.push(code::GLOBAL_SET);
@@ -1760,6 +1791,12 @@ impl Body {
             value(self);
             return self.access(store, 0);
         };
+        if self.accessors {
+            value(self);
+            self.call(walk + STORE_FN + width_rank(width));
+            self.wrote = true;
+            return self.fault_exit();
+        }
         value(self);
         self.bytes.push(code::GLOBAL_SET);
         unsigned(TRANSLATE_VALUE as u64, &mut self.bytes);
@@ -2005,6 +2042,18 @@ impl Body {
         direct(self);
         self.op(0x05); // else
         far(self);
+        if !self.bare {
+            self.fault_exit();
+        }
+        self.op(code::END);
+        self.op(code::END);
+        self
+    }
+
+    /// **La sortie de faute** : le témoin levé, RIP nomme l'instruction et la
+    /// région rend la main. Écrite après l'accès lent en ligne, ou après
+    /// chaque appel d'accesseur — qui ne peut pas rendre la main lui-même.
+    fn fault_exit(&mut self) -> &mut Self {
         self.load(FAULT_SLOT).op(code::I64_EQZ).op(code::I32_EQZ);
         self.op(code::IF).op(code::VOID);
         let here = self.here;
@@ -2014,10 +2063,7 @@ impl Body {
         self.bytes.push(code::I32_CONST);
         signed(-1, &mut self.bytes);
         self.op(code::RETURN);
-        self.op(code::END);
-        self.op(code::END);
-        self.op(code::END);
-        self
+        self.op(code::END)
     }
 
     /// **Après une instruction qui écrit, le test du témoin d'arrêt** — le
@@ -2525,6 +2571,7 @@ impl Module {
             let mut body = Body {
                 confine: mask,
                 walk: mask.map(|_| HOST_IMPORTS + blocks.len() as u32),
+                accessors: mask.is_some(),
                 ..Body::default()
             };
             let mut at = *start;
@@ -3686,7 +3733,7 @@ impl Module {
         // types avec eux : la forme libre reste, à l'octet près, celle que le
         // corpus matériel juge depuis le début.
         if paging {
-            types[0] = 0x0b;
+            types[0] = 0x0c;
             types.extend_from_slice(&[
                 0x60, 0x02, 0x7e, 0x7f, 0x01, 0x7e, // 7 : (i64, i32) -> i64, lire
                 0x60, 0x03, 0x7e, 0x7e, 0x7f, 0x00, // 8 : (i64, i64, i32) -> (), écrire
@@ -3698,6 +3745,9 @@ impl Module {
                 // 10 : (i32, i32) -> (), l'inscription d'une écriture dans
                 // une page de code — l'adresse physique et la largeur.
                 0x60, 0x02, 0x7f, 0x7f, 0x00,
+                // 11 : (i64, i64) -> (), un accesseur d'écriture — l'adresse
+                // et la valeur. Les lectures prennent le type six.
+                0x60, 0x02, 0x7e, 0x7e, 0x00,
             ]);
         }
         section(1, types, &mut module);
@@ -3783,7 +3833,7 @@ impl Module {
         // Un module paginé porte cinq fonctions de plus : la marche, les deux
         // accès lents, l'inscription au journal des pages de code et
         // l'étendue.
-        let extra = if paging { 5 } else { 0 };
+        let extra = if paging { 1 + u64::from(PAGED_TAIL) } else { 0 };
         let mut functions = Vec::new();
         unsigned(count as u64 + 2 + extra, &mut functions);
         // Les `count` premières fonctions sont les blocs, du type zéro ; vient
@@ -3815,6 +3865,10 @@ impl Module {
             // `EXTENT` se comptent depuis la marche comme les accès lents.
             functions.push(0x0a);
             functions.push(0x00);
+            // **Les accesseurs** : quatre lectures du type six, quatre
+            // écritures du type onze.
+            functions.extend_from_slice(&[0x06; 4]);
+            functions.extend_from_slice(&[0x0b; 4]);
         }
         section(3, functions, &mut module);
 
@@ -4030,12 +4084,24 @@ impl Module {
             let mut reach = vec![0x00, code::I32_CONST];
             signed(extent as i64, &mut reach);
             reach.push(code::END);
+            let widths = [Width::Byte, Width::Word, Width::Dword, Width::Qword];
+            let accessors = widths
+                .iter()
+                .map(|width| Self::accessor_body(walk, mask, *width, false))
+                .chain(
+                    widths
+                        .iter()
+                        .map(|width| Self::accessor_body(walk, mask, *width, true)),
+                );
             for entry in [
                 Self::far_load_body(walk),
                 Self::far_store_body(walk),
                 Self::note_body(pages),
                 reach,
-            ] {
+            ]
+            .into_iter()
+            .chain(accessors)
+            {
                 unsigned(entry.len() as u64, &mut code_section);
                 code_section.extend_from_slice(&entry);
             }
@@ -4374,6 +4440,48 @@ impl Module {
     /// et long, et le poser à chaque accès coûterait des centaines d'octets
     /// par instruction. Un accès à cheval paie deux marches entières, sans
     /// consulter le tampon — non mesuré, et rare par construction.
+    /// **Un accesseur : l'accès paginé d'une largeur, écrit une fois par
+    /// module au lieu d'une fois par instruction.**
+    ///
+    /// C'est le corps que `peek` et `poke` écrivaient en ligne — pagination
+    /// éteinte, tampon, accès lent —, mot pour mot, moins la sortie de faute :
+    /// l'appelant relit le témoin après l'appel. En ligne, une lecture pesait
+    /// 143 octets de wasm et une écriture 174 ; une région d'Arch, dix-sept
+    /// kibioctets en moyenne, et la borne de 32 Mio n'en tenait que 1 800 — le
+    /// démarrage passait son temps à retraduire ce qu'il venait d'évincer.
+    /// Appelé, l'accès ne laisse dans le bloc que l'appel et la sortie de
+    /// faute.
+    ///
+    /// Une lecture prend l'adresse et rend la valeur ; une écriture prend
+    /// l'adresse et la valeur. Les cases `TRANSLATE_ADDRESS` et
+    /// `TRANSLATE_VALUE` en sortent posées comme le faisait la forme en ligne.
+    fn accessor_body(walk: u32, mask: u32, width: Width, store: bool) -> Vec<u8> {
+        let mut b = Body {
+            confine: Some(mask),
+            walk: Some(walk),
+            bare: true,
+            ..Body::default()
+        };
+        if store {
+            b.poke(
+                width,
+                |b| {
+                    b.local_get(0);
+                },
+                |b| {
+                    b.local_get(1);
+                },
+            );
+        } else {
+            b.local_get(0);
+            b.peek(width);
+        }
+        let mut body = vec![0x00];
+        body.extend_from_slice(&b.bytes);
+        body.push(code::END);
+        body
+    }
+
     fn far_load_body(walk: u32) -> Vec<u8> {
         // Paramètres : 0, l'adresse ; 1, la largeur. Locales : le décalage
         // dans la page et les deux trames, puis la valeur et l'adresse
