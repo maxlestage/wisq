@@ -5355,13 +5355,37 @@ fn nothing_follows_an_indirect_jump() {
     assert_eq!(Module::unreadable(&called, 0), Ok(vec![6]));
 }
 
-/// **Une région s'arrête à 64 instructions**, tous blocs confondus : ce qui
+/// **La page de l'application s'arrête plus tôt : 64 instructions.** Sous la
+/// borne, sa région est celle de `resolving_or_why` à l'octet près ; au-delà,
+/// elle s'arrête et la suite devient une région de plus.
+#[test]
+fn the_page_region_stops_at_its_own_budget() {
+    let mut short = vec![0x90; 40];
+    short.extend_from_slice(&[0x0f, 0x0b]);
+    assert_eq!(
+        Module::resolving_for_page_or_why(&short, 0x10_0000, 0, 3, 16),
+        Module::resolving_or_why(&short, 0x10_0000, 0, 3, 16),
+        "sous la borne, la même région"
+    );
+    let mut long = vec![0x90; 200];
+    long.extend_from_slice(&[0x0f, 0x0b]);
+    let page = Module::resolving_for_page_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
+    let full = Module::resolving_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
+    assert!(
+        page.len() < full.len(),
+        "au-delà, la région de la page s'arrête : {} contre {} octets",
+        page.len(),
+        full.len()
+    );
+}
+
+/// **Une région s'arrête à 256 instructions**, tous blocs confondus : ce qui
 /// vient après devient une région de plus si l'exécution y va. Sans borne,
 /// une fonction-aiguillage du noyau (des centaines de comparaisons et de
 /// sauts) faisait une région de 600 Kio de wasm.
 #[test]
 fn a_region_stops_after_its_instruction_budget() {
-    let mut bytes = vec![0x90; 100];
+    let mut bytes = vec![0x90; 300];
     bytes.push(UNKNOWN);
     bytes.extend(std::iter::repeat_n(0x90, 40));
     assert_eq!(
@@ -5370,11 +5394,11 @@ fn a_region_stops_after_its_instruction_budget() {
         "l'octet illisible est au-delà de la borne : il n'est pas relevé"
     );
     assert!(Module::region_or_why(&bytes, CODE, 0).is_ok());
-    let mut near = vec![0x90; 50];
+    let mut near = vec![0x90; 200];
     near.push(UNKNOWN);
     assert_eq!(
         Module::unreadable(&near, 0),
-        Ok(vec![50]),
+        Ok(vec![200]),
         "en deçà, il l'est"
     );
 }
