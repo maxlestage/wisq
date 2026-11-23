@@ -509,13 +509,17 @@ final class EmitterMachineTests: XCTestCase {
 
     // MARK: - Le réglage
 
-    func testTheSettingIsOnByDefaultAndOpensOnlyWhatThePCBoots() {
-        XCTAssertTrue(EmitterSetting.defaultValue, "le JIT est allumé par défaut")
+    /// **Éteint par défaut** : l'interpréteur Rust démarre Arch en 369 s, le
+    /// JIT pas en 1 750. La clé a changé avec le défaut, pour qu'un ancien
+    /// réglage enregistré ne le garde pas allumé.
+    func testTheSettingIsOffByDefaultAndOpensOnlyWhatThePCBoots() {
+        XCTAssertFalse(EmitterSetting.defaultValue, "l'interpréteur Rust par défaut")
         let vierge = UserDefaults(suiteName: "wisq-emetteur-\(UUID().uuidString)")!
-        XCTAssertTrue(EmitterSetting.isEnabled(in: vierge), "jamais touché : le défaut")
-        vierge.set(false, forKey: EmitterSetting.key)
-        XCTAssertFalse(EmitterSetting.isEnabled(in: vierge), "éteint à la main : éteint")
-        XCTAssertEqual(EmitterSetting.key, "wisq.machine.emetteur")
+        XCTAssertFalse(EmitterSetting.isEnabled(in: vierge), "jamais touché : le défaut")
+        vierge.set(true, forKey: EmitterSetting.key)
+        XCTAssertTrue(EmitterSetting.isEnabled(in: vierge), "allumé à la main : allumé")
+        XCTAssertEqual(EmitterSetting.key, "wisq.machine.jit")
+        XCTAssertNotEqual(EmitterSetting.key, "wisq.machine.emetteur", "l'ancienne clé ne garde pas le JIT")
         let iso = KernelImageKind.discImage("ISO 9660")
         let pc = KernelImageKind.identify(prefix: Data(KernelPayloadTestsSupport.bzImage(gzip: EmitterFixtures.elf([0xF4]))))
         XCTAssertEqual(pc.core, .x86_64, "un bzImage x86-64")
