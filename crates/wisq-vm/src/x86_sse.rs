@@ -1261,29 +1261,26 @@ impl Cpu {
                         }
                     })
                     .collect();
-                // **L'ordre des sommes n'est pas celui du manuel**, qui écrit
-                // `p0 + p1`, puis une seule somme des deux paires. Le silicium
-                // (un Xeon, au banc `x86_v2_host`) additionne chaque paire
-                // élément impair d'abord, puis range `bas + haut` dans les
-                // deux voies basses et `haut + bas` dans les deux hautes.
-                // Seuls des NaN des deux côtés le montrent : c'est celui du
-                // premier opérande qui passe.
-                let (bottom, top) = if double {
-                    let sum = context.arithmetic(FloatOp::Add, products[1], products[0], format);
-                    (sum, sum)
+                // **La somme du manuel** : `p0 + p1`, `p2 + p3`, puis une seule
+                // somme des deux, rangée dans toutes les voies choisies. C'est
+                // ce que rend le silicium d'AMD (le processeur que cette
+                // machine annonce) ; un Xeon additionne dans un autre ordre,
+                // ce que seul le NaN qui passe trahit quand il y en a des deux
+                // côtés — voir `x86_v2_host`.
+                let sum = if double {
+                    context.arithmetic(FloatOp::Add, products[0], products[1], format)
                 } else {
-                    let low = context.arithmetic(FloatOp::Add, products[1], products[0], format);
-                    let high = context.arithmetic(FloatOp::Add, products[3], products[2], format);
-                    let bottom = context.arithmetic(FloatOp::Add, low, high, format);
-                    let top = context.arithmetic(FloatOp::Add, high, low, format);
-                    (bottom, top)
+                    let low = context.arithmetic(FloatOp::Add, products[0], products[1], format);
+                    let high = context.arithmetic(FloatOp::Add, products[2], products[3], format);
+                    context.arithmetic(FloatOp::Add, low, high, format)
                 };
-                let half = products.len() / 2;
                 let results: Vec<u64> = (0..products.len())
-                    .map(|rang| match (imm >> rang & 1 != 0, rang < half || double) {
-                        (false, _) => format.zero(false),
-                        (true, true) => bottom,
-                        (true, false) => top,
+                    .map(|rang| {
+                        if imm >> rang & 1 != 0 {
+                            sum
+                        } else {
+                            format.zero(false)
+                        }
                     })
                     .collect();
                 Write::Xmm(join_lanes(&results, double))

@@ -27443,3 +27443,54 @@ console.log("range " + new DataView(vm.memory.buffer).getBigUint64(0xf008, true)
         "le `ud2`, que personne ne lit\n{text}"
     );
 }
+
+/// **Une division de cent vingt-huit bits, que le module rend à l'hôte, est
+/// faite par le secours.** WebAssembly n'a pas de division de cette largeur :
+/// le module pose RIP sur la division et rend la main, comptant sur
+/// « l'interpréteur de l'hôte ». La page n'en avait pas, et Alpine 3.24
+/// s'arrêtait « sur place » sur un `div %rdi` de la libgcc d'`apk`.
+///
+/// `2⁶⁴ / 2` : RDX vaut 1, RAX 0, RCX 2 ; le quotient est `2⁶³`.
+#[test]
+fn a_wide_division_the_module_hands_back_is_done_by_the_rescue() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc2, 0x01, 0x00, 0x00, 0x00, // mov $1,%rdx
+        0x48, 0x31, 0xc0, // xor %rax,%rax
+        0x48, 0xc7, 0xc1, 0x02, 0x00, 0x00, 0x00, // mov $2,%rcx
+        0x48, 0xf7, 0xf1, // div %rcx
+        0x48, 0x89, 0xc3, // mov %rax,%rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let setup = format!(
+        "new Uint8Array(vm.memory.buffer).set({}, {BASE});",
+        js_bytes(&program)
+    );
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "division-large",
+        &setup,
+        r#"console.log("secourues " + vm.cache.secourues);
+console.log("quotient " + BigInt.asUintN(64, vm.globals[0].value).toString(16));"#,
+    );
+    if std::env::var_os("WISQ_HOTE_JS").is_some() {
+        return;
+    }
+    assert_eq!(
+        line_of(&text, "quotient "),
+        "8000000000000000",
+        "2⁶⁴ / 2\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "secourues "),
+        "1",
+        "la division, et rien d'autre\n{text}"
+    );
+}

@@ -70,7 +70,8 @@ pub enum Issue {
     Illisible,
 }
 
-/// `#UD`, `#GP`, `#MF`, `#XM`.
+/// `#DE`, `#UD`, `#GP`, `#MF`, `#XM`.
+const DIVISION: u8 = 0;
 const INDEFINIE: u8 = 6;
 const PROTECTION: u8 = 13;
 const FLOTTANT: u8 = 16;
@@ -115,8 +116,14 @@ impl Secours {
                 // refusé pour une raison** : le secours ne le reprend pas. Ce
                 // qu'il reprend, ce sont les formes que seul le lecteur de la
                 // machine native lit (`67` devant une instruction qui
-                // n'adresse rien, les rangements non temporels).
-                if decode(code).is_some() || !secourable(instruction.op) {
+                // n'adresse rien, les rangements non temporels) — **et la
+                // division**, que le module traduit mais rend à l'hôte quand
+                // il ne peut pas la faire : un dividende de cent vingt-huit
+                // bits (WebAssembly n'a pas de division de cette largeur), un
+                // diviseur nul, un quotient trop grand. Alpine 3.24 s'arrêtait
+                // « sur place » sur un `div %rdi` de la libgcc de `apk`.
+                let division = matches!(instruction.op, Op::Divide { .. });
+                if !division && (decode(code).is_some() || !secourable(instruction.op)) {
                     return Issue::Illisible;
                 }
                 (instruction.memory, instruction.length)
@@ -156,6 +163,17 @@ impl Secours {
             Lue::Commune(instruction) => {
                 cpu.jumped = false;
                 cpu.execute(&instruction);
+                if cpu.faulted
+                    && cpu.unmapped.is_none()
+                    && matches!(instruction.op, Op::Divide { .. })
+                {
+                    // Une division qui lève : `#DE`, sans code d'erreur, et
+                    // rien n'a changé.
+                    return Issue::Exception {
+                        vecteur: DIVISION,
+                        code: None,
+                    };
+                }
                 if cpu.faulted {
                     Err(ExtendedFault::Memory)
                 } else {
@@ -420,6 +438,30 @@ mod tests {
         assert_eq!(f64::from_le_bytes(fenetre[..8].try_into().unwrap()), 1.0);
         secours.annuler();
         assert_ne!(secours.cpu.fpu_tags, 0, "`fld1` est toujours sur la pile");
+    }
+
+    /// **Une division de cent vingt-huit bits** — que le module rend à
+    /// l'hôte — est faite ; une division par zéro devient `#DE`.
+    #[test]
+    fn a_division_the_module_hands_back_is_done() {
+        let mut secours = Secours::new();
+        let mut etat = etat();
+        etat.regs[0] = 0;
+        etat.regs[2] = 1;
+        etat.regs[1] = 2;
+        assert_eq!(
+            secours.executer(&mut etat, &[0x48, 0xf7, 0xf1], None),
+            Issue::Faite
+        ); // div %rcx
+        assert_eq!((etat.regs[0], etat.regs[2]), (1 << 63, 0));
+        etat.regs[1] = 0;
+        assert_eq!(
+            secours.executer(&mut etat, &[0x48, 0xf7, 0xf1], None),
+            Issue::Exception {
+                vecteur: 0,
+                code: None
+            }
+        );
     }
 
     /// **Ce que l'émetteur lit et refuse reste refusé** — `cpuid`, `push`,
