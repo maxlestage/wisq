@@ -723,6 +723,13 @@ final class IsoBootCommandLineTests: XCTestCase {
         XCTAssertEqual(own.split(separator: " ").filter { $0 == "norandmaps" }.count, 1, own)
     }
 
+    /// **L'attente de l'heure du réseau est masquée** : sans serveur NTP,
+    /// elle retenait le démarrage d'Omarchy sans limite.
+    func testTheNetworkTimeWaitIsMasked() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch")
+        XCTAssertTrue(line.split(separator: " ").contains("systemd.mask=systemd-time-wait-sync.service"), line)
+    }
+
     /// **Pas de parades spéculatives** : l'invité ne spécule pas, et les
     /// retpolines coûtent un aller-retour par appel indirect au traducteur.
     /// Une image qui en décide garde son choix.

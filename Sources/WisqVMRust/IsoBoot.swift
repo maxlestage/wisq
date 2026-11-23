@@ -209,9 +209,17 @@ public enum IsoBoot {
     /// démarrage.
     static let noMitigations = "mitigations=off"
 
+    /// **Ne pas attendre l'heure du réseau** : `systemd-time-wait-sync` est
+    /// masqué. Il retient `time-sync.target` jusqu'à ce qu'un serveur NTP
+    /// réponde, **sans limite** — Omarchy l'active, et sur l'iPhone son
+    /// démarrage restait sur « A start job is running for Time Synchronized
+    /// (20s / no limit) ». L'invité a déjà l'heure du téléphone par son
+    /// horloge CMOS ; masquer cette attente ne retire que l'attente.
+    static let noTimeWait = "systemd.mask=systemd-time-wait-sync.service"
+
     /// Ce que wisq ajoute à la ligne d'une image, chaque réglage seulement si
     /// l'image ne le fixe pas déjà.
-    static let added = patience + [noHandover, fixedLayout, noMitigations]
+    static let added = patience + [noHandover, fixedLayout, noMitigations, noTimeWait]
 
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
