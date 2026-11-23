@@ -5367,7 +5367,10 @@ fn the_page_region_stops_at_its_own_budget() {
         Module::resolving_or_why(&short, 0x10_0000, 0, 3, 16),
         "sous la borne, la même région"
     );
-    let mut long = vec![0x90; 200];
+    // `nop` n'écrit rien : il faut des instructions qui pèsent.
+    let mut long: Vec<u8> = std::iter::repeat_n([0x48, 0x83, 0xc7, 0x01], 200)
+        .flatten()
+        .collect();
     long.extend_from_slice(&[0x0f, 0x0b]);
     let page = Module::resolving_for_page_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
     let full = Module::resolving_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
