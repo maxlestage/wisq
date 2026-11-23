@@ -723,6 +723,17 @@ final class IsoBootCommandLineTests: XCTestCase {
         XCTAssertEqual(own.split(separator: " ").filter { $0 == "norandmaps" }.count, 1, own)
     }
 
+    /// **Pas de parades spéculatives** : l'invité ne spécule pas, et les
+    /// retpolines coûtent un aller-retour par appel indirect au traducteur.
+    /// Une image qui en décide garde son choix.
+    func testSpeculationMitigationsAreOffUnlessTheImageSaysOtherwise() {
+        let line = IsoBoot.commandLine(from: "archisobasedir=arch")
+        XCTAssertTrue(line.split(separator: " ").contains("mitigations=off"), line)
+        let own = IsoBoot.commandLine(from: "mitigations=auto root=/dev/vda")
+        XCTAssertTrue(own.contains("mitigations=auto"), own)
+        XCTAssertFalse(own.contains("mitigations=off"), own)
+    }
+
     /// **Et le plan porte la ligne complète, pas celle de la recette.**
     ///
     /// C'est l'assertion qui aurait attrapé l'écran noir : le champ que le
