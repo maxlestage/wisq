@@ -981,6 +981,40 @@ pub enum Refused {
 /// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
 const REACH: usize = crate::x86::LONGEST;
 
+/// **Les drapeaux d'une instruction meurent-ils avant d'être lus ?** Vrai
+/// quand, parmi les instructions qui la suivent dans son bloc, une de celles
+/// qui réécrivent les six drapeaux arithmétiques sans les lire vient avant
+/// toute autre qui pourrait les lire. Entre les deux, seules passent des
+/// instructions qui ne les touchent pas.
+///
+/// **Pourquoi.** Les drapeaux sont calculés tout de suite (voir l'en-tête),
+/// et c'est le plus gros de ce qu'une instruction arithmétique coûte : un
+/// `add` de registres, 144 octets de wasm, dont plus de cent pour eux. Or un
+/// calcul est presque toujours suivi d'un autre avant le saut qui teste le
+/// dernier. Moins d'octets, c'est moins de compilation — le quart du temps
+/// d'un démarrage d'Ubuntu sous JavaScriptCore — et moins de travail à
+/// chaque passage.
+///
+/// **Ce qui reste exact.** Les instructions qui tuent (`add`, `sub`, `cmp`,
+/// `and`, `or`, `xor`, `test`, `neg`) posent leurs six drapeaux d'après leurs
+/// seuls opérandes : ce qu'elles écrivent ne dépend pas de ce qu'il y avait
+/// avant, et c'est la dernière de la chaîne qui écrit. La fin du bloc garde
+/// tout : le suivant peut lire. Une faute entre les deux reprend sur la même
+/// instruction, donc sur le même chemin, où les drapeaux sont réécrits avant
+/// d'être lus.
+fn flags_die(after: &[Decoded]) -> bool {
+    for step in after {
+        match step.op {
+            Op::Add | Op::Sub | Op::Cmp | Op::And | Op::Or | Op::Xor | Op::Test | Op::Neg => {
+                return true
+            }
+            Op::Mov | Op::Movsx | Op::Lea | Op::Not | Op::Nop | Op::Push | Op::Pop => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// **Combien d'instructions une région traduit au plus**, tous blocs
 /// confondus. Passé ce nombre, la découverte s'arrête : le bloc en cours finit
 /// devant l'instruction suivante, et ce qui n'a pas été relevé devient une
@@ -1606,6 +1640,11 @@ struct Body {
     /// lu et remis à faux par `written`, qui ajoute après elle le test du
     /// journal des pages de code.
     wrote: bool,
+    /// **Les drapeaux que l'instruction en cours poserait sont-ils morts ?**
+    /// Posé par `build` avant chaque instruction (voir `flags_die`) : vrai
+    /// quand une instruction plus loin dans le même bloc les réécrit tous avant
+    /// que rien ne les lise. Le calcul arithmétique les saute alors.
+    flags_dead: bool,
 }
 
 impl Body {
@@ -2492,7 +2531,7 @@ impl Module {
             // **Où le bloc s'arrête devant une instruction qu'il ne sait pas
             // produire**, s'il s'y arrête : voir plus bas.
             let mut arret = None;
-            for step in steps {
+            for (index, step) in steps.iter().enumerate() {
                 // **L'adresse de l'instruction elle-même**, pas celle de la
                 // suivante : une division qui refuse doit y renvoyer l'hôte.
                 let here = base.wrapping_add(at as u64);
@@ -2503,6 +2542,7 @@ impl Module {
                 // mémoire elles aussi, et sortent de cette boucle avant
                 // `translate`. La dernière du bloc est la leur.
                 body.here = here;
+                body.flags_dead = flags_die(&steps[index + 1..]);
                 // **`iretd` est refusé en étant nommé.** Le décodeur lit `cf`
                 // sans REX.W ; en mode long c'est un retour de trente-deux
                 // bits qu'aucun noyau n'exécute, et le produire demanderait
@@ -6361,7 +6401,7 @@ impl Module {
         // **`not` ne touche à aucun drapeau.** C'est la seule du groupe, et
         // l'oublier donnerait un cœur qui écrase des drapeaux que le vrai
         // processeur préserve.
-        if step.op != Op::Not {
+        if step.op != Op::Not && !body.flags_dead {
             Self::flags(step, mask, sign, body);
         }
 
