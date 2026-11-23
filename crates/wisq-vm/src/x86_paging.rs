@@ -263,15 +263,28 @@ struct TlbEntry {
     taille: u8,
 }
 
-const TLB_SLOTS: usize = 1024;
-const TLB_WRITABLE: u8 = 1;
-const TLB_USER: u8 = 2;
+pub(crate) const TLB_SLOTS: usize = 1024;
+pub(crate) const TLB_WRITABLE: u8 = 1;
+pub(crate) const TLB_USER: u8 = 2;
 const TLB_NO_EXECUTE: u8 = 4;
-const TLB_DIRTY: u8 = 8;
+pub(crate) const TLB_DIRTY: u8 = 8;
 /// **L'écriture rapide est permise** : la trame ne porte aucun code décodé
 /// (`PagesDeCode`). Sans ce bit, une écriture passe par le chemin lent, qui
 /// fait avancer la génération de la page.
-const TLB_LIBRE: u8 = 16;
+pub(crate) const TLB_LIBRE: u8 = 16;
+
+/// **La disposition du tampon, pour le JIT** (`x86::jit`) : le code qu'il
+/// engendre refait `fast_place` lui-même, et lit donc les cases par leurs
+/// décalages. Calculés par le compilateur, jamais écrits à la main.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod disposition {
+    use super::{Tlb, TlbEntry};
+    pub const CASES: usize = std::mem::offset_of!(Tlb, entries);
+    pub const TAILLE_CASE: usize = std::mem::size_of::<TlbEntry>();
+    pub const ETIQUETTE: usize = std::mem::offset_of!(TlbEntry, tag);
+    pub const TRAME: usize = std::mem::offset_of!(TlbEntry, frame);
+    pub const DROITS: usize = std::mem::offset_of!(TlbEntry, flags);
+}
 
 /// **Les pages physiques qui portent du code décodé, et leurs générations.**
 ///
@@ -328,6 +341,18 @@ impl PagesDeCode {
     #[inline(always)]
     pub fn generation(&self, place: u64) -> Option<u32> {
         self.generations.get((place >> 12) as usize).copied()
+    }
+
+    /// **Pour le chaînage du JIT** (`x86::jit`) : les générations, leur
+    /// nombre, et l'époque, que le code engendré lit lui-même. Le tableau ne
+    /// change pas de taille après `pour`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pour_le_jit(&self) -> (*const u32, usize, *const u64) {
+        (
+            self.generations.as_ptr(),
+            self.generations.len(),
+            &self.epoque,
+        )
     }
 
     /// La page de cette adresse est-elle marquée ?

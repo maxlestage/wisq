@@ -8,6 +8,21 @@ break APIs.
 ## [Unreleased]
 
 ### Added
+- **Un JIT natif pour la machine PC en Rust, écrit à la main.** Les blocs
+  chauds du chemin rapide sont traduits en code x86-64 de l'hôte
+  (`crates/wisq-vm/src/x86_jit.rs`, `x86_jit_x64.rs`), sans dépendance :
+  `mov`, `movzx`, `movsx`, `lea`, les huit opérations de la grille sauf `adc`
+  et `sbb`, `inc`, `dec`, `not`, `neg`, les décalages, `push`, `pop`, `call`,
+  `ret`, `jmp` et `jcc` en instructions de l'hôte, accès mémoire compris par le
+  tampon de traduction ; le reste rendu à sa forme spécialisée. Les blocs
+  d'une même page se chaînent sans repasser par la boucle, RIP n'est écrit
+  qu'avant ce qui le lit, et les drapeaux qu'aucune instruction ne lira ne
+  sont pas calculés. Le résultat est le même à l'instruction près : trois
+  machines jugées ensemble par `tests/pc_rapide.rs`, et le banc commun qui
+  retire 1 912 258 440 instructions avec ou sans lui. Il ne tourne que là où
+  l'hôte accorde une page exécutable — Linux et macOS x86-64 (`wisq-pc`, la
+  fabrique des bureaux prêts) ; **sur iOS il ne demande rien au système et
+  n'existe pas**. `wisq-pc --sans-jit` l'éteint.
 - **Un écran pour la machine x86-64, et un vrai noyau qui le trouve.** Trois
   tranches : `screen_info` dans la page zéro dit au noyau où peindre,
   `X86Framebuffer` tient la mémoire derrière, et `X86Machine.attachDisplay`

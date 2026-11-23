@@ -72,6 +72,12 @@ mod extended;
 
 #[path = "x86_rapide.rs"]
 pub mod rapide;
+
+/// **Le JIT natif** : les blocs chauds du chemin rapide traduits en code
+/// machine de l'hôte, là où l'hôte accorde une page exécutable.
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "x86_jit.rs"]
+pub mod jit;
 use crate::x86_paging::is_canonical;
 // Le `FloatOp` du second décodeur (`x86_sse.rs`) garde son nom chez lui ; ici,
 // `FloatOp` est celui de `decode` (`Vector::Float`), que l'émetteur traduit.
@@ -154,7 +160,11 @@ pub const ARITHMETIC: u64 = CF | PF | AF | ZF | SF | OF;
 pub const WRITABLE_FLAGS: u64 = 0x0000_0000_003F_7FD5;
 
 /// L'opération qui a posé les drapeaux, gardée **à la place** des drapeaux.
+///
+/// `repr(u8)` : le JIT (`x86::jit`) lit et pose `Known` (zéro) depuis le code
+/// qu'il engendre, et une disposition laissée au compilateur ne se lit pas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
 enum FlagOp {
     /// Les six bits sont déjà connus : une écriture explicite, ou un `popfq`.
     Known,
