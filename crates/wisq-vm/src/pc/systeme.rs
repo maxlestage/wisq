@@ -571,11 +571,13 @@ pub fn faute_du_dernier_acces(cpu: &mut Cpu, par_la_pile: bool) -> Exception {
 /// est tenu pour vulnérable à Meltdown, et le noyau isole alors ses tables de
 /// pages à chaque entrée.)
 ///
-/// **Les capacités sont celles d'un x86-64 de base**, rien de plus : le
-/// coprocesseur, PSE, TSC, MSR, PAE, CX8, PGE, CMOV, MMX, FXSR, SSE, SSE2,
-/// `cmpxchg16b`, et le mode long. Ni SSE3, ni SSSE3, ni SSE4, ni AVX, ni BMI,
-/// ni AES, ni XSAVE : ce cœur ne les exécute pas, et une glibc ou un noyau
-/// choisissent leurs routines d'après ces bits.
+/// **Les capacités sont celles de x86-64-v2** : le coprocesseur, PSE, TSC,
+/// MSR, PAE, CX8, PGE, CMOV, MMX, FXSR, SSE, SSE2, SSE3, SSSE3, SSE4.1,
+/// SSE4.2, POPCNT, `cmpxchg16b`, LAHF/SAHF en mode long, et le mode long. La
+/// glibc de RHEL 9 (AlmaLinux, Rocky) refuse de démarrer sans eux ; chacune
+/// de leurs instructions est jugée contre le silicium (`x86_v2_host`). Ni
+/// AVX, ni BMI, ni AES, ni XSAVE : ce cœur ne les exécute pas, et une glibc
+/// ou un noyau choisissent leurs routines d'après ces bits.
 ///
 /// **`rdrand` et `rdseed` sont annoncés**, parce que la machine a une source
 /// (`machine::Alea`) : sans eux le générateur du noyau n'est pas prêt avant
@@ -603,7 +605,7 @@ pub fn cpuid(feuille: u32, sous_feuille: u32) -> [u32; 4] {
             _ => [0; 4],
         },
         0x8000_0000 => [0x8000_0004, 0, 0, 0],
-        0x8000_0001 => [0, 0, 0, MODE_LONG],
+        0x8000_0001 => [0, 0, LAHF_EN_MODE_LONG, MODE_LONG],
         0x8000_0002..=0x8000_0004 => {
             let base = (feuille - 0x8000_0002) as usize * 16;
             [
@@ -631,8 +633,12 @@ pub const CAPACITES_EDX: u32 = 1
     | (1 << 24)
     | (1 << 25)
     | (1 << 26);
-/// ECX de la feuille 1 : `cmpxchg16b` (13) et `rdrand` (30).
-pub const CAPACITES_ECX: u32 = (1 << 13) | (1 << 30);
+/// ECX de la feuille 1 : SSE3 (0), SSSE3 (9), `cmpxchg16b` (13), SSE4.1
+/// (19), SSE4.2 (20), POPCNT (23) et `rdrand` (30) — x86-64-v2.
+pub const CAPACITES_ECX: u32 =
+    1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23) | (1 << 30);
+/// ECX de la feuille 0x8000_0001 : LAHF et SAHF en mode long (0).
+pub const LAHF_EN_MODE_LONG: u32 = 1;
 /// EBX de la feuille 7 : `rdseed` (18).
 pub const RDSEED: u32 = 1 << 18;
 /// ERMS (feuille 7, EBX bit 9), FSRM (EDX bit 4), FSRS (sous-feuille 1, EAX
