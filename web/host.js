@@ -1638,6 +1638,24 @@ export function machine({
   /// chaud qui ne coûte rien — une région que seuls des sauts directs
   /// atteignent vieillit, et se retraduit si elle part.
   const recentes = new Set();
+  /// **Les régions gardées** : celles qu'on a retraduites après les avoir
+  /// évincées (leur clé était dans `oubliees`), dans le même ordre. C'est la
+  /// seconde file d'un cache 2Q, et la réponse à ce que `recentes` ne voit
+  /// pas : une région qu'on n'atteint que par la correspondance n'est jamais
+  /// « servie », donc pour elle l'ordre des récentes est celui d'arrivée — le
+  /// code le plus chaud partait le premier. Mesuré sur Arch sous udev : 25 000
+  /// retraductions par 30 s, sur 3 000 régions tenues. Une retraduction est
+  /// la preuve qu'une région sert encore ; les nouvelles venues, qu'on ne
+  /// reverra peut-être jamais, partent d'abord, et les gardées seulement
+  /// quand elles dépassent leur part (`PART_GARDEE`) ou qu'il n'y a plus
+  /// qu'elles.
+  const gardees = new Set();
+  let octetsGardes = 0;
+  const PART_GARDEE = 0.75;
+  /// La file d'une région : gardée ou récente.
+  const fileDe = (region) => (region.corps.gardee ? gardees : recentes);
+  /// Encore tenue par le cache ?
+  const vivante = (region) => recentes.has(region) || gardees.has(region);
   /// **Les places rendues dans la table des blocs**, sous `next`, triées et
   /// jamais contiguës entre elles : `{ debut, longueur }`.
   const libres = [];
@@ -2001,6 +2019,7 @@ export function machine({
     ici.delete(region.adresse);
     if (ici.size === 0) espaces.delete(region.contexte);
     recentes.delete(region);
+    gardees.delete(region);
     for (let rang = 0; rang < region.debuts.length; rang += 1) {
       effacer(region.debuts[rang], region.slot + rang, region.contexte);
     }
@@ -2014,6 +2033,7 @@ export function machine({
       }
       rendre(region.slot, region.debuts.length);
       tenu.octets -= region.octets;
+      if (corps.gardee) octetsGardes -= region.octets;
       evincesDepuis += region.octets;
       const memes = partages.get(region.adresse);
       if (memes !== undefined) {
@@ -2031,10 +2051,27 @@ export function machine({
   };
   /// **Faire de la place pour une région de `octets` octets**, en évinçant
   /// les moins récemment servies jusqu'à tenir sous les deux bornes.
-  const faireDeLaPlace = (octets) => {
-    for (const region of recentes) {
-      if (tenu.regions + 1 <= limite.regions && tenu.octets + octets <= limite.octets) return;
-      evincer(region);
+  const faireDeLaPlace = (octets) =>
+    evincerTantQue(
+      () => tenu.regions + 1 > limite.regions || tenu.octets + octets > limite.octets,
+      null,
+    );
+  /// **Évincer tant que `plein()`**, jamais `epargnee` : une récente d'abord,
+  /// une gardée quand les gardées dépassent leur part ou qu'il n'y a plus
+  /// qu'elles.
+  const evincerTantQue = (plein, epargnee) => {
+    while (plein()) {
+      const tropDeGardees =
+        octetsGardes > limite.octets * PART_GARDEE || gardees.size > limite.regions * PART_GARDEE;
+      const premiere = (file) => {
+        for (const region of file) if (region !== epargnee) return region;
+        return undefined;
+      };
+      let victime = tropDeGardees ? premiere(gardees) : undefined;
+      victime ??= premiere(recentes);
+      victime ??= premiere(gardees);
+      if (victime === undefined) return;
+      evincer(victime);
     }
   };
   /// **Laisser le moteur rendre ce qu'on a évincé**, une fois qu'un quart de
@@ -2077,8 +2114,9 @@ export function machine({
   /// deux programmes qui se relaient à la même adresse (un `fork`)
   /// repasseraient par l'hôte à chaque saut.
   const servir = (region) => {
-    recentes.delete(region);
-    recentes.add(region);
+    const file = fileDe(region);
+    file.delete(region);
+    file.add(region);
     ranger(region.adresse, region.slot, region.contexte, true);
   };
 
@@ -2087,12 +2125,16 @@ export function machine({
   /// récemment servie à la plus récente.
   const known = {
     get size() {
-      return recentes.size;
+      return recentes.size + gardees.size;
     },
     get: trouver,
-    values: () => recentes.values(),
+    values: function* () {
+      yield* recentes;
+      yield* gardees;
+    },
     *[Symbol.iterator]() {
       for (const region of recentes) yield [region.adresse, region];
+      for (const region of gardees) yield [region.adresse, region];
     },
   };
 
@@ -2623,7 +2665,7 @@ export function machine({
       espaces.set(ctx, ici);
     }
     ici.set(address, region);
-    recentes.add(region);
+    fileDe(region).add(region);
     tenu.regions += 1;
     if (ctx !== SLOTS.contextPresent && corps.codes !== null && corps.membres.size === 1) {
       let memes = partages.get(address);
@@ -2672,10 +2714,7 @@ export function machine({
       // contextes des morts la garderaient pour toujours. Elle est la plus
       // récente, donc ce sont d'autres qui partent — jamais elle, et jamais
       // le corps qu'elle tient.
-      for (const autre of recentes) {
-        if (tenu.regions <= limite.regions || autre === region) break;
-        evincer(autre);
-      }
+      evincerTantQue(() => tenu.regions > limite.regions, region);
       caches.pic.regions = Math.max(caches.pic.regions, tenu.regions);
       caches.pic.espaces = Math.max(caches.pic.espaces, espaces.size);
       return region;
@@ -2921,12 +2960,17 @@ export function machine({
       pagesCode: lues.slice(0, Math.ceil(fin / 4096)),
       codes: ctx === SLOTS.contextPresent ? null : codes,
       membres: new Set(),
+      gardee: false,
     };
+    const clef = `${ctx}:${address}`;
+    if (oubliees.delete(clef)) {
+      caches.retraduites += 1;
+      corps.gardee = true;
+      octetsGardes += bytes.length;
+    }
     const region = membre(corps, address, ctx, morceaux);
     tenu.octets += bytes.length;
     caches.traduites += 1;
-    const clef = `${ctx}:${address}`;
-    if (oubliees.delete(clef)) caches.retraduites += 1;
     caches.pic.regions = Math.max(caches.pic.regions, tenu.regions);
     caches.pic.octets = Math.max(caches.pic.octets, tenu.octets);
     caches.pic.emplacements = Math.max(caches.pic.emplacements, next);
@@ -3003,6 +3047,8 @@ export function machine({
     espaces.clear();
     partages.clear();
     recentes.clear();
+    gardees.clear();
+    octetsGardes = 0;
     tenu.regions = 0;
     tenu.octets = 0;
     // La correspondance entière : plus aucune adresse ne mène à un ancien
@@ -3485,7 +3531,7 @@ export function machine({
         // toute autre chose : la délivrance qui suit peut entrer dans une
         // région de ces trames. Si c'est elle-même qu'elle a réécrite, elle
         // ne tournera plus.
-        if (voirEcritures() && !recentes.has(region)) region = null;
+        if (voirEcritures() && !vivante(region)) region = null;
         // **Le passage en anneau trois se voit ici, dès que la région rend la
         // main, et avant toute délivrance.** Le regarder seulement en tête de
         // tour le manquait dès qu'une interruption attendait : la région qui
