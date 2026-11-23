@@ -3548,6 +3548,16 @@ export function machine({
           }
         }
         secoursDeSuite = 0;
+        // **Une région tourne : la délivrance d'avant a abouti**, et le
+        // compteur de double faute retombe. Il ne retombait qu'à
+        // l'installation d'une région ; depuis que le cache sert le
+        // gestionnaire de fautes de page sans le retraduire, deux fautes de
+        // chargement légitimes d'affilée — deux pages d'un programme
+        // cartographiées à la demande — passaient pour une double faute, et
+        // Arch s'arrêtait sous udev. Sur le silicium, la double faute est une
+        // faute **pendant** la délivrance, pas après un gestionnaire qui a
+        // tourné.
+        unfetchable = 0;
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
         // **Ce que la région a écrit dans des pages de code**, oublié avant
         // toute autre chose : la délivrance qui suit peut entrer dans une
