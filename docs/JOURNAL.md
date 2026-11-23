@@ -8,6 +8,43 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — La boucle hôte de l'émetteur en Rust, étape 1 : le socle
+
+**Le plan**, après une cartographie de `web/host.js` (≈ 1 500 lignes de code
+sur 3 436) : sept étapes, chacune verte sous `host_loop` (253 tests sous
+Bun) et sous les essais de la page — le socle, les puces (PIT, PIC, 16550,
+ports), la délivrance et la pagination, le cache de code, l'installation, la
+boucle par tranches, puis le nettoyage. Il restera du JavaScript, environ
+cent cinquante lignes, pour trois raisons qui ne dépendent pas de nous : Rust
+compilé en wasm32 ne sait pas compiler du WebAssembly, ne sait pas lire une
+seconde mémoire (la multi-mémoire n'est ni exploitable depuis Rust ni
+garantie sous WebKit iOS 17), et ne sait pas importer la globale mutable
+d'une autre instance.
+
+**Le socle.** Le module de la page exporte sa table de fonctions et la laisse
+grandir (`--export-table`, `--growable-table`, posés par `build.rs` pour
+wasm32 seulement). L'émetteur émet un module d'accès constant : il importe
+`env.mem` (minimum zéro page) et `env.g0` … `env.g92`, comme un module
+traduit, et rend `lire`, `ecrire`, `lire64`, `ecrire64`, `lire8`, `ecrire8`.
+`emetteur(...).brancher(memoire, globales)` l'instancie et pose ses
+fonctions dans la table, dans l'ordre de ses exports — rien n'est recopié en
+JavaScript qui pourrait diverger de `ACCESS_EXPORTS` — ; une instance neuve
+après une trappe est rebranchée. Côté Rust (`hote.rs`), un indice de la table
+devient un `extern "C" fn` : `call_indirect` vérifie la signature, une
+fonction posée au mauvais rang trappe au lieu de s'exécuter de travers.
+Aucun verrou n'est tenu pendant un appel sortant : une trappe ne déroule
+rien.
+
+**Un défaut trouvé par le premier essai** : `acces_octets()` fait le module
+au premier appel et peut faire grandir la mémoire de l'instance ; le tampon
+pris avant l'appel était détaché (« Buffer is already detached »). Les deux
+appels passent maintenant d'abord.
+
+**La mesure** : deux millions de lectures du registre RIP, 4,0 ns par appel
+de Rust à travers la table, 29,3 ns par lecture de la globale en JavaScript
+(un BigInt par lecture). C'est l'argument du port, chiffré avant d'avoir
+porté quoi que ce soit.
+
 ## 2026-11-22 — Machine PC en Rust : un JIT natif écrit à la main, et ce qu'il ne peut pas faire sur l'iPhone
 
 **La demande.** Une capture TestFlight : Arch Linux qui démarre dans la
