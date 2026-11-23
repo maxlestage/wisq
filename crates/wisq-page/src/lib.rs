@@ -60,6 +60,7 @@
 pub use wisq_carte as carte;
 
 mod carte_porte;
+pub mod hote;
 
 use std::sync::Mutex;
 

@@ -74,6 +74,17 @@ break APIs.
   attrapés. Pas encore de flottant ni de NEON, de MMU, d'exceptions, de GIC ni
   de minuterie : rien n'est branché dans l'application, qui annonce toujours
   qu'elle n'a pas de cœur ARM.
+- **La boucle hôte de l'émetteur en Rust, étape 1 : le socle.** Le module de
+  la page (`wisq_page.wasm`) exporte sa table de fonctions, extensible
+  (`crates/wisq-page/build.rs`) ; l'émetteur émet un **module d'accès**
+  (`x86_wasm::access_module`) qui importe la mémoire et les quatre-vingt-
+  treize registres des modules traduits et rend six fonctions, que la page
+  pose dans cette table (`emetteur(...).brancher`). Le Rust de la page lit et
+  écrit ainsi l'état d'une machine traduite par `call_indirect`, sans
+  JavaScript entre les deux (`crates/wisq-page/src/hote.rs`) : **4,0 ns par
+  lecture de registre, contre 29,3 en JavaScript** (BigInt). Rien ne s'en
+  sert encore ; les étapes suivantes y portent les puces, la délivrance, le
+  cache de code et la boucle de `web/host.js`.
 
 ### Changed
 - **Le site est en Yew et en WebAssembly, de la première page à la dernière,
