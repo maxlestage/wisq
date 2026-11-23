@@ -1784,6 +1784,15 @@ impl Cpu {
             }
             Op::Pop => {
                 let Some(value) = self.pop() else { return };
+                if instruction.memory.is_some() {
+                    // L'adresse avec RSP remonté ; une écriture qui fait faute
+                    // laisse RSP comme il était, comme le silicium.
+                    if self.write_destination(instruction, value).is_none() {
+                        self.regs[4] = self.regs[4].wrapping_sub(8);
+                        self.faulted = true;
+                    }
+                    return;
+                }
                 self.regs[instruction.dst as usize] = value;
             }
             Op::Call => {
@@ -4279,6 +4288,26 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`8f /0` : dépiler dans un registre ou en mémoire.** Le noyau de
+        // RHEL 9 (AlmaLinux, Rocky) fait `popq (%rsp)` dans ses premières
+        // centaines de millions d'instructions, et ce décodeur rendait `None`
+        // : les deux s'arrêtaient là, en anneau zéro. L'adresse se calcule
+        // **après** que RSP a remonté — le manuel le dit pour une base RSP —,
+        // ce que `Cpu::execute` et l'émetteur font en écrivant après la
+        // remontée.
+        0x8f if !prefixes.operand_size => {
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            if field.reg & 0b111 != 0 {
+                return None;
+            }
+            Some(Decoded {
+                op: Op::Pop,
+                dst: field.register,
+                length: at,
+                memory: field.memory,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
         // `push` d'un immédiat, étendu en signe sur huit octets — ou sur deux
         // avec `0x66`.
         //

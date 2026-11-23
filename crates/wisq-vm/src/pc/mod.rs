@@ -23,6 +23,7 @@ pub mod machine;
 pub mod memoire;
 pub mod poste;
 pub mod reseau;
+pub mod secours;
 pub mod systeme;
 
 pub use chargeur::{Ecran, Placement, Refus};
