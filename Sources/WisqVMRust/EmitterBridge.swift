@@ -173,6 +173,8 @@ public enum EmitterBridge {
 ///
 /// **La clé a changé avec le défaut** (`wisq.machine.jit`) : un téléphone qui
 /// avait déjà enregistré l'ancien réglage repart du nouveau défaut une fois.
+/// Les vues de `WisqUI` recopient la clé et le défaut en littéraux : elles
+/// compilent aussi sans `WisqVMRust` (`WISQ_RUST_CORE`).
 ///
 /// La clé est celle de `UserDefaults`, que la vue lit par `@AppStorage`. Le
 /// verdict — cette image s'ouvre-t-elle dans l'émetteur ? — est ici, jugé sous
