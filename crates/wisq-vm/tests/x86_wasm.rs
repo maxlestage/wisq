@@ -5355,13 +5355,13 @@ fn nothing_follows_an_indirect_jump() {
     assert_eq!(Module::unreadable(&called, 0), Ok(vec![6]));
 }
 
-/// **Une région s'arrête à 256 instructions**, tous blocs confondus : ce qui
+/// **Une région s'arrête à 64 instructions**, tous blocs confondus : ce qui
 /// vient après devient une région de plus si l'exécution y va. Sans borne,
 /// une fonction-aiguillage du noyau (des centaines de comparaisons et de
 /// sauts) faisait une région de 600 Kio de wasm.
 #[test]
 fn a_region_stops_after_its_instruction_budget() {
-    let mut bytes = vec![0x90; 300];
+    let mut bytes = vec![0x90; 100];
     bytes.push(UNKNOWN);
     bytes.extend(std::iter::repeat_n(0x90, 40));
     assert_eq!(
@@ -5370,11 +5370,11 @@ fn a_region_stops_after_its_instruction_budget() {
         "l'octet illisible est au-delà de la borne : il n'est pas relevé"
     );
     assert!(Module::region_or_why(&bytes, CODE, 0).is_ok());
-    let mut near = vec![0x90; 200];
+    let mut near = vec![0x90; 50];
     near.push(UNKNOWN);
     assert_eq!(
         Module::unreadable(&near, 0),
-        Ok(vec![200]),
+        Ok(vec![50]),
         "en deçà, il l'est"
     );
 }
