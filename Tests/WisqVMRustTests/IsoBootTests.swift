@@ -683,7 +683,7 @@ final class IsoBootCommandLineTests: XCTestCase {
     func testAnEmptyRecipeStillSpeaks() {
         XCTAssertEqual(
             IsoBoot.commandLine(from: "   "),
-            (IsoBoot.patience + [X86BootLoader.defaultCommandLine]).joined(separator: " "))
+            (IsoBoot.added + [X86BootLoader.defaultCommandLine]).joined(separator: " "))
     }
 
     /// **systemd attend dix minutes un périphérique, pas quatre-vingt-dix
@@ -700,6 +700,17 @@ final class IsoBootCommandLineTests: XCTestCase {
         XCTAssertTrue(own.contains("systemd.default_device_timeout_sec=30"), own)
         XCTAssertFalse(own.contains("systemd.default_device_timeout_sec=600"), own)
         XCTAssertTrue(own.contains("systemd.default_timeout_start_sec=600"), own)
+    }
+
+    /// **La passation kexec est coupée**, sauf si l'image en décide : sans
+    /// cela, Ubuntu 26.04 se réserve 340 Mio d'une machine d'un gibioctet et
+    /// ne peut plus déballer son initramfs.
+    func testKexecHandoverIsOffUnlessTheImageSaysOtherwise() {
+        let line = IsoBoot.commandLine(from: "boot=casper")
+        XCTAssertTrue(line.split(separator: " ").contains("kho=off"), line)
+        let own = IsoBoot.commandLine(from: "boot=casper kho=on")
+        XCTAssertTrue(own.contains("kho=on"), own)
+        XCTAssertFalse(own.contains("kho=off"), own)
     }
 
     /// **Et le plan porte la ligne complète, pas celle de la recette.**
