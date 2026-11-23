@@ -854,9 +854,11 @@ fn machine_avec_pile_d_interruption() -> Machine {
     machine
 }
 
-/// Ce que `CPUID` annonce : un x86-64 de base, sous le nom du cœur Swift.
+/// Ce que `CPUID` annonce : x86-64-v2, sous le nom du cœur Swift. La glibc
+/// de RHEL 9 vérifie exactement ces bits — SSE3, SSSE3, SSE4.1, SSE4.2,
+/// POPCNT, CX16 et LAHF en mode long — et s'arrête sans eux.
 #[test]
-fn cpuid_promises_a_baseline_x86_64_and_nothing_this_core_cannot_run() {
+fn cpuid_promises_x86_64_v2_and_nothing_this_core_cannot_run() {
     let [max, ebx, ecx, edx] = cpuid(0, 0);
     assert_eq!(max, 7);
     let mut nom = Vec::new();
@@ -884,8 +886,9 @@ fn cpuid_promises_a_baseline_x86_64_and_nothing_this_core_cannot_run() {
     assert_eq!(edx & (1 << 9), 0, "pas d'APIC : deux 8259");
     assert_eq!(
         ecx,
-        (1 << 13) | (1 << 30),
-        "cmpxchg16b et rdrand, et rien d'autre : ni SSE3, ni SSSE3, ni SSE4, ni XSAVE, ni AVX"
+        1 | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23) | (1 << 30),
+        "SSE3, SSSE3, cmpxchg16b, SSE4.1, SSE4.2, POPCNT et rdrand — x86-64-v2 —, \
+         et rien d'autre : ni XSAVE, ni AVX, ni AES"
     );
     let [_, ebx, ecx, edx] = cpuid(7, 0);
     assert_eq!(
@@ -895,7 +898,11 @@ fn cpuid_promises_a_baseline_x86_64_and_nothing_this_core_cannot_run() {
     );
     assert_eq!((ecx, edx), (0, 1 << 4), "FSRM");
     assert_eq!(cpuid(0x8000_0000, 0)[0], 0x8000_0004);
-    assert_eq!(cpuid(0x8000_0001, 0), [0, 0, 0, 1 << 29], "le mode long");
+    assert_eq!(
+        cpuid(0x8000_0001, 0),
+        [0, 0, 1, 1 << 29],
+        "LAHF/SAHF en mode long, et le mode long"
+    );
     let marque: Vec<u8> = (0x8000_0002..=0x8000_0004)
         .flat_map(|feuille| cpuid(feuille, 0))
         .flat_map(u32::to_le_bytes)
