@@ -1525,11 +1525,6 @@ struct Shape {
     confine: Option<u32>,
     /// Le module cherche-t-il lui-même les adresses qu'il ne connaît pas ?
     lookup: bool,
-    /// **L'hôte a-t-il un secours ?** La page en a un (`pc::secours`) : il
-    /// tient la pile du x87, que l'émetteur n'a pas. `fninit`, `fxsave` et
-    /// `fxrstor` lui sont alors laissés — un changement de contexte doit
-    /// ranger et reprendre les vrais registres du x87, pas une pile vide.
-    secours: bool,
 }
 
 /// **Les deux fonctions que l'hôte prête à chaque région.**
@@ -2501,35 +2496,6 @@ impl Module {
                 shared: Some(slot),
                 confine: Some(pages),
                 lookup: true,
-                ..Shape::default()
-            },
-        )
-    }
-
-    /// **La forme de la page, qui a un secours** : celle de
-    /// `resolving_or_why`, sauf que `fninit`, `fxsave` et `fxrstor` sont
-    /// laissés au secours (voir `Shape::secours`) — le bloc s'arrête devant
-    /// eux, et une région qui commence dessus est refusée, pour que la page
-    /// les fasse exécuter par l'interpréteur.
-    pub fn resolving_with_rescue(
-        bytes: &[u8],
-        base: u64,
-        entry: usize,
-        slot: u32,
-        pages: u32,
-    ) -> Result<Vec<u8>, Refused> {
-        if pages == 0 || !pages.is_power_of_two() {
-            return Err(Refused::RamIsNotAPowerOfTwo(pages));
-        }
-        Self::build(
-            bytes,
-            base,
-            entry,
-            Shape {
-                shared: Some(slot),
-                confine: Some(pages),
-                lookup: true,
-                secours: true,
             },
         )
     }
@@ -2600,13 +2566,6 @@ impl Module {
                 // adresse. C'est la même correction que pour un octet
                 // illisible (`discover`).
                 let devant = at - step.length;
-                if shape.secours && matches!(step.op, Op::FpuInit | Op::FxSave | Op::FxRestore) {
-                    if devant == entry {
-                        return Err(Refused::CannotTranslate { at: devant });
-                    }
-                    arret = Some(devant);
-                    break;
-                }
                 if matches!(step.op, Op::InterruptReturn | Op::FarReturn)
                     && step.width != Width::Qword
                 {

@@ -3506,9 +3506,28 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
 
     let opcode = *bytes.get(at)?;
     at += 1;
+    // **`f2` devant un branchement proche est `bnd`**, le préfixe de MPX : un
+    // processeur sans MPX l'ignore, et la glibc de RHEL 9 en met devant les
+    // sauts de sa PLT (`f2 ff 25`, `bnd jmp *…(%rip)`). AlmaLinux et Rocky
+    // prenaient `#UD` sur le premier appel de bibliothèque de `/init`. Il ne
+    // change rien : il est lu, compté dans la longueur, et oublié.
+    let bnd = match opcode {
+        0x70..=0x7f | 0xc2 | 0xc3 | 0xe8 | 0xe9 | 0xeb => true,
+        0xff => bytes
+            .get(at)
+            .is_some_and(|modrm| matches!((modrm >> 3) & 7, 2 | 4)),
+        0x0f => bytes
+            .get(at)
+            .is_some_and(|second| (0x80..=0x8f).contains(second)),
+        _ => false,
+    };
+    if prefixes.repeat_not && bnd {
+        prefixes.repeat_not = false;
+    }
     // `f2` n'est lu que devant la page vectorielle, où il est un octet
-    // d'opcode, et devant `cmps` et `scas`, où il est `repne`. Partout
-    // ailleurs — `repne movs` compris — il est refusé plutôt qu'avalé.
+    // d'opcode, devant `cmps` et `scas`, où il est `repne`, et devant un
+    // branchement, où il est `bnd`. Partout ailleurs — `repne movs` compris —
+    // il est refusé plutôt qu'avalé.
     if prefixes.repeat_not && !matches!(opcode, 0x0f | 0xa6 | 0xa7 | 0xae | 0xaf) {
         return None;
     }

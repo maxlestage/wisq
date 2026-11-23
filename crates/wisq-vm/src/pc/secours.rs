@@ -27,9 +27,14 @@
 //!    dans les registres, ni dans la pile du x87.
 //!
 //! **La pile du x87 vit ici**, et nulle part ailleurs : l'émetteur n'en a pas.
-//! C'est pourquoi `fninit`, `fxsave` et `fxrstor` — que l'émetteur traduisait
-//! avec une pile vide — passent aussi par le secours : un changement de
-//! contexte du noyau doit ranger et reprendre les vrais registres.
+//! `fninit`, `fxsave` et `fxrstor` restent à l'émetteur, qui les traduit avec
+//! une pile vide. **C'est une limite, et elle est connue** : un programme
+//! préempté au milieu d'une suite de x87 (musl le fait dans `printf` et
+//! `strtod`, sur quelques instructions) retrouve la pile telle que le suivant
+//! l'a laissée. Les faire passer par le secours tient la pile juste, mais
+//! coûte un aller-retour par changement de contexte et, mesuré au démarrage
+//! d'Alpine 3.24, un `fninit` qu'une interruption d'horloge devançait sans
+//! fin : le noyau ne passait plus l'initialisation du coprocesseur.
 
 use super::machine::{lire, Lue};
 use crate::x86::{decode, Cpu, ExtendedFault, GuestMemory, Op};
@@ -107,13 +112,11 @@ impl Secours {
             Lue::Etendue(instruction) => (instruction.memory, instruction.length),
             Lue::Commune(instruction) => {
                 // **Ce que le décodeur de l'émetteur lit, l'émetteur l'a
-                // refusé pour une raison** : le secours ne le reprend pas,
-                // sauf les trois instructions qu'on lui laisse exprès. Ce
+                // refusé pour une raison** : le secours ne le reprend pas. Ce
                 // qu'il reprend, ce sont les formes que seul le lecteur de la
                 // machine native lit (`67` devant une instruction qui
                 // n'adresse rien, les rangements non temporels).
-                let laissee = matches!(instruction.op, Op::FpuInit | Op::FxSave | Op::FxRestore);
-                if !laissee && (decode(code).is_some() || !secourable(instruction.op)) {
+                if decode(code).is_some() || !secourable(instruction.op) {
                     return Issue::Illisible;
                 }
                 (instruction.memory, instruction.length)
@@ -150,25 +153,15 @@ impl Secours {
                     Ok(())
                 }
             }
-            Lue::Commune(instruction) => match instruction.op {
-                Op::FpuInit => {
-                    cpu.fpu_control = 0x037F;
-                    cpu.fpu_status = 0;
-                    cpu.fpu_tags = 0;
+            Lue::Commune(instruction) => {
+                cpu.jumped = false;
+                cpu.execute(&instruction);
+                if cpu.faulted {
+                    Err(ExtendedFault::Memory)
+                } else {
                     Ok(())
                 }
-                Op::FxSave => cpu.save_floating_point_state(adresse.unwrap_or(0)),
-                Op::FxRestore => cpu.restore_floating_point_state(adresse.unwrap_or(0)),
-                _ => {
-                    cpu.jumped = false;
-                    cpu.execute(&instruction);
-                    if cpu.faulted {
-                        Err(ExtendedFault::Memory)
-                    } else {
-                        Ok(())
-                    }
-                }
-            },
+            }
         };
         match rendu {
             Ok(()) => {}
@@ -238,61 +231,63 @@ impl Secours {
     }
 }
 
-/// **Ce que le secours exécute de ce que le premier décodeur lit** : `fninit`,
-/// `fxsave`, `fxrstor`, et les instructions sans autre mémoire que leur
-/// opérande. La pile, les chaînes et tout ce qui parle à la machine (ports,
-/// `cpuid`, registres de contrôle) adressent une mémoire que la fenêtre ne
-/// porte pas, ou demandent la machine elle-même.
+/// **Ce que le secours exécute de ce que le lecteur de la machine native rend
+/// sous la forme du premier décodeur** : les instructions sans autre mémoire
+/// que leur opérande. La pile, les chaînes, le coprocesseur et tout ce qui
+/// parle à la machine (ports, `cpuid`, registres de contrôle) adressent une
+/// mémoire que la fenêtre ne porte pas, ou demandent la machine elle-même.
 fn secourable(op: Op) -> bool {
-    match op {
-        Op::FpuInit | Op::FxSave | Op::FxRestore => true,
-        Op::Push
-        | Op::Pop
-        | Op::Call
-        | Op::CallIndirect
-        | Op::Return
-        | Op::Leave
-        | Op::PushFlags
-        | Op::PopFlags
-        | Op::StringMove { .. }
-        | Op::StringStore { .. }
-        | Op::StringLoad { .. }
-        | Op::StringCompare { .. }
-        | Op::StringScan { .. }
-        | Op::PortIn
-        | Op::PortOut
-        | Op::ReadTimestamp
-        | Op::ReadTimestampAndProcessor
-        | Op::CpuId
-        | Op::ReadModelRegister
-        | Op::WriteModelRegister
-        | Op::FarReturn
-        | Op::InterruptReturn
-        | Op::SoftwareInterrupt
-        | Op::LoadDescriptorTable { .. }
-        | Op::StoreDescriptorTable { .. }
-        | Op::SwapGs
-        | Op::LoadKernelGs
-        | Op::HypervisorCall { .. }
-        | Op::InvalidatePcid
-        | Op::LoadTaskRegister
-        | Op::SystemCall
-        | Op::SystemReturn
-        | Op::LoadLocalDescriptorTable
-        | Op::ReadDebugRegister { .. }
-        | Op::WriteDebugRegister { .. }
-        | Op::LoadSegment { .. }
-        | Op::StoreSegment { .. }
-        | Op::InterruptFlag(_)
-        | Op::Halt
-        | Op::Undefined
-        | Op::InvalidatePage
-        | Op::ReadControlRegister { .. }
-        | Op::WriteControlRegister { .. }
-        | Op::ReadRandom { .. }
-        | Op::Vector(_) => false,
-        _ => true,
-    }
+    !matches!(
+        op,
+        Op::FpuInit
+            | Op::FxSave
+            | Op::FxRestore
+            | Op::Push
+            | Op::Pop
+            | Op::Call
+            | Op::CallIndirect
+            | Op::Return
+            | Op::Leave
+            | Op::PushFlags
+            | Op::PopFlags
+            | Op::StringMove { .. }
+            | Op::StringStore { .. }
+            | Op::StringLoad { .. }
+            | Op::StringCompare { .. }
+            | Op::StringScan { .. }
+            | Op::PortIn
+            | Op::PortOut
+            | Op::ReadTimestamp
+            | Op::ReadTimestampAndProcessor
+            | Op::CpuId
+            | Op::ReadModelRegister
+            | Op::WriteModelRegister
+            | Op::FarReturn
+            | Op::InterruptReturn
+            | Op::SoftwareInterrupt
+            | Op::LoadDescriptorTable { .. }
+            | Op::StoreDescriptorTable { .. }
+            | Op::SwapGs
+            | Op::LoadKernelGs
+            | Op::HypervisorCall { .. }
+            | Op::InvalidatePcid
+            | Op::LoadTaskRegister
+            | Op::SystemCall
+            | Op::SystemReturn
+            | Op::LoadLocalDescriptorTable
+            | Op::ReadDebugRegister { .. }
+            | Op::WriteDebugRegister { .. }
+            | Op::LoadSegment { .. }
+            | Op::StoreSegment { .. }
+            | Op::InterruptFlag(_)
+            | Op::Halt
+            | Op::Undefined
+            | Op::InvalidatePage
+            | Op::ReadControlRegister { .. }
+            | Op::WriteControlRegister { .. }
+            | Op::ReadRandom { .. }
+            | Op::Vector(_)
+    )
 }
 
 fn charger(cpu: &mut Cpu, etat: &Etat) {
@@ -441,10 +436,10 @@ mod tests {
                 "{code:02x?}"
             );
         }
-        // `fninit`, que l'émetteur lit, est laissé au secours exprès.
+        // `fninit` aussi : l'émetteur le traduit.
         assert_eq!(
             secours.executer(&mut etat, &[0xdb, 0xe3], None),
-            Issue::Faite
+            Issue::Illisible
         );
     }
 }
