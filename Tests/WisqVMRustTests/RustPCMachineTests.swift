@@ -576,12 +576,12 @@ final class RustPCMachineTests: XCTestCase {
 
     // MARK: - Le réglage
 
-    /// **Allumé par défaut**, à côté de celui de l'émetteur (éteint) ;
+    /// **Allumé par défaut**, comme celui de l'émetteur ;
     /// sans session, il décide seul — pour une machine neuve comme pour une
     /// machine installée, qui ne passe plus d'office au cœur Swift.
     func testTheSettingIsOnByDefaultAndTakesAnyPCWithoutASession() {
         XCTAssertTrue(RustPCSetting.defaultValue)
-        XCTAssertFalse(EmitterSetting.defaultValue, "l'émetteur reste éteint")
+        XCTAssertTrue(EmitterSetting.defaultValue, "le JIT est allumé par défaut")
         XCTAssertEqual(RustPCSetting.key, "wisq.machine.pc-rust")
         XCTAssertNotEqual(RustPCSetting.key, EmitterSetting.key)
         XCTAssertTrue(RustPCSetting.savesSessions, "la machine du cœur Rust sauve ses sessions")

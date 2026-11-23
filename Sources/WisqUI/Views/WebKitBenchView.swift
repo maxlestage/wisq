@@ -24,7 +24,7 @@ struct WebKitBenchView: View {
     @State private var verdict: WebKitBench.Verdict?
     @State private var running = false
     /// Le réglage de la machine de l'émetteur : voir `EmitterSetting`.
-    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
+    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = true
     /// Le réglage de la machine PC en Rust : voir `RustPCSetting`.
     @AppStorage("wisq.machine.pc-rust") private var rustPCEnabled = true
     private let host = BenchHost()
@@ -66,17 +66,17 @@ struct WebKitBenchView: View {
 
             #if WISQ_RUST_CORE
             // **Le réglage vit ici**, à côté de la mesure qui dit s'il a un
-            // sens sur cet appareil. Éteint par défaut : l'application ne
-            // bascule pas.
+            // sens sur cet appareil. Allumé par défaut : le JIT (voir
+            // `EmitterSetting`) ; la feuille d'avant le démarrage le règle aussi.
             Section {
-                Toggle("Ouvrir les machines PC dans l'émetteur", isOn: $emitterEnabled)
+                Toggle("Ouvrir les machines PC dans le JIT (émetteur)", isOn: $emitterEnabled)
                     .disabled(!EmitterMachine.isInThisBuild)
             } footer: {
                 Text(
                     EmitterMachine.isInThisBuild
-                        ? "Expérimental. Une image de PC s'ouvre alors dans l'émetteur x86-64 → "
-                            + "WebAssembly plutôt que dans le cœur Swift : sans session sauvée, "
-                            + "sans reprise. Les machines installées restent au cœur Swift."
+                        ? "Une image de PC s'ouvre dans le JIT : l'émetteur x86-64 → WebAssembly, "
+                            + "que WebKit compile. Sans session sauvée, sans reprise ; les "
+                            + "machines installées restent à l'interpréteur."
                         : "Cette construction de wisq ne porte pas la machine de l'émetteur.")
             }
             // **À côté, le cœur Rust de la machine PC**, allumé par défaut : le

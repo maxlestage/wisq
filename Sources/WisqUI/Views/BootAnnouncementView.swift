@@ -23,10 +23,35 @@ struct BootAnnouncementView: View {
     let cloudImage: Bool
     /// La clé des réglages : mémoire, disque, réseau.
     let settingsKey: String
+    /// Une machine installée : elle garde sa session, donc l'interpréteur.
+    var installed = false
     let onStart: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var announcement: BootAnnouncement?
+    /// **Le moteur** : le JIT de l'émetteur, ou l'interpréteur (`EmitterSetting`).
+    @AppStorage("wisq.machine.emetteur") private var jitEnabled = true
+
+    /// Cette image peut-elle s'ouvrir dans le JIT, dans cette construction ?
+    private var jitPossible: Bool {
+        #if WISQ_RUST_CORE
+        EmitterSetting.opens(kind, enabled: true, installed: installed,
+                             moduleEmbedded: EmitterMachine.isInThisBuild)
+        #else
+        false
+        #endif
+    }
+
+    /// Ce qui va se passer, selon le moteur choisi.
+    private func execution(_ announcement: BootAnnouncement) -> String {
+        guard announcement.outcome.startsSomething, jitPossible, jitEnabled else {
+            return announcement.executionText
+        }
+        return "Le JIT de wisq la démarre : l'émetteur traduit le code x86-64 en WebAssembly, "
+            + "que WebKit compile en code natif \(announcement.host.architecture.name) du téléphone — "
+            + "la seule voie de compilation qu'iOS laisse à une application. "
+            + "La session ne se sauve pas encore : fermer la machine l'arrête."
+    }
 
     var body: some View {
         List {
@@ -60,7 +85,7 @@ struct BootAnnouncementView: View {
                 Section(announcement.outcome.startsSomething ? "Ce qui va se passer" : "Pourquoi elle ne démarrera pas") {
                     Label {
                         // Le markdown des refus, sans formatage : voir `RefusalText`.
-                        Text(RefusalText.rendered(announcement.executionText))
+                        Text(RefusalText.rendered(execution(announcement)))
                     } icon: {
                         Image(systemName: announcement.outcome.startsSomething
                               ? "play.circle.fill" : "exclamationmark.triangle.fill")
@@ -72,6 +97,21 @@ struct BootAnnouncementView: View {
                         LabeledContent("Disque", value: LocalDisk.recordedName(forKernel: settingsKey) ?? "aucun")
                         LabeledContent("Réseau", value: MachineNetwork.isCut(forKernel: settingsKey)
                                        ? "coupé" : "branché")
+                    }
+                }
+                if announcement.outcome.startsSomething, jitPossible {
+                    Section {
+                        Picker("Moteur", selection: $jitEnabled) {
+                            Text("JIT (WebAssembly)").tag(true)
+                            Text("Interpréteur Rust").tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                    } header: {
+                        Text("Moteur")
+                    } footer: {
+                        Text(jitEnabled
+                             ? "Si une image bute dans le JIT, l'interpréteur la démarre aussi."
+                             : "Plus lent que le JIT, mais la session se sauve et se reprend.")
                     }
                 }
             } else {
