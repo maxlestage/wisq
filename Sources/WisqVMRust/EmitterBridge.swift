@@ -158,7 +158,11 @@ public enum EmitterBridge {
     }
 }
 
-/// **Le réglage qui ouvre une machine dans l'émetteur**, éteint par défaut.
+/// **Le réglage qui ouvre une machine dans l'émetteur — le JIT**, allumé par
+/// défaut depuis que Maxime l'a demandé (« je veux le JIT ») : c'est la seule
+/// voie de compilation qu'iOS laisse à une application, WebKit compilant le
+/// WebAssembly que l'émetteur écrit. La feuille d'avant le démarrage dit le
+/// moteur et laisse revenir à l'interpréteur d'un geste.
 ///
 /// La clé est celle de `UserDefaults`, que la vue lit par `@AppStorage`. Le
 /// verdict — cette image s'ouvre-t-elle dans l'émetteur ? — est ici, jugé sous
@@ -169,8 +173,14 @@ public enum EmitterBridge {
 /// ne sait pas encore.
 public enum EmitterSetting {
     public static let key = "wisq.machine.emetteur"
-    /// Éteint : l'application ne bascule pas.
-    public static let defaultValue = false
+    /// **Allumé** : une machine PC non installée s'ouvre dans le JIT.
+    public static let defaultValue = true
+
+    /// Le réglage tel qu'il est : sa valeur si quelqu'un l'a touché,
+    /// `defaultValue` sinon (`UserDefaults.bool` rendrait faux).
+    public static func isEnabled(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? defaultValue
+    }
 
     public static func opens(
         _ kind: KernelImageKind?, enabled: Bool, installed: Bool, moduleEmbedded: Bool
