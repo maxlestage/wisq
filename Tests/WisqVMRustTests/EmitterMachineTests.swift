@@ -509,8 +509,12 @@ final class EmitterMachineTests: XCTestCase {
 
     // MARK: - Le réglage
 
-    func testTheSettingIsOffByDefaultAndOpensOnlyWhatThePCBoots() {
-        XCTAssertFalse(EmitterSetting.defaultValue)
+    func testTheSettingIsOnByDefaultAndOpensOnlyWhatThePCBoots() {
+        XCTAssertTrue(EmitterSetting.defaultValue, "le JIT est allumé par défaut")
+        let vierge = UserDefaults(suiteName: "wisq-emetteur-\(UUID().uuidString)")!
+        XCTAssertTrue(EmitterSetting.isEnabled(in: vierge), "jamais touché : le défaut")
+        vierge.set(false, forKey: EmitterSetting.key)
+        XCTAssertFalse(EmitterSetting.isEnabled(in: vierge), "éteint à la main : éteint")
         XCTAssertEqual(EmitterSetting.key, "wisq.machine.emetteur")
         let iso = KernelImageKind.discImage("ISO 9660")
         let pc = KernelImageKind.identify(prefix: Data(KernelPayloadTestsSupport.bzImage(gzip: EmitterFixtures.elf([0xF4]))))

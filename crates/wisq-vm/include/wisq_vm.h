@@ -866,6 +866,16 @@ int wisq_pc_snapshot(const WisqPC *pc, uint8_t **out_bytes, size_t *out_len);
 void wisq_pc_free_snapshot(uint8_t *bytes, size_t len);
 
 /*
+ * Le même instantané, écrit dans le fichier `path` page par page, sans
+ * tampon de la taille de la RAM servie : c'est ce que l'application emploie,
+ * iOS tuant une application sur sa mémoire. Course arrêtée.
+ *
+ * 0 ; -1 argument nul ; -2 ni noyau chargé ni machine reprise ; -3 un disque
+ * a des requêtes en vol ; -4 le fichier ne s'écrit pas.
+ */
+int wisq_pc_snapshot_to_file(const WisqPC *pc, const char *path);
+
+/*
  * Reprend un instantané : tout est lu et vérifié avant que rien ne soit
  * reposé. Une machine qui a déjà tourné le reprend aussi : sa RAM est
  * effacée avant que les pages de l'instantané y soient posées, et les

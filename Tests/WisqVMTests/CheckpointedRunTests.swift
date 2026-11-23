@@ -124,6 +124,34 @@ final class CheckpointedRunTests: XCTestCase {
         XCTAssertEqual(last, 15_000)
     }
 
+    /// **Par un fichier brut** (`RawSaving`) : l'instantané n'est jamais
+    /// demandé en mémoire, chaque sauvegarde passe par `take`, `compress`
+    /// puis `install`, et la session écrite se relit. Le chemin réel :
+    /// `SuspendedMachine.takeRaw`, `compressRaw` et `installPacked`.
+    func testARawSaveGoesThroughAFileAndReadsBack() throws {
+        let machine = CountingMachine(work: 1_000, slicesBeforePowerOff: 20)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-brut-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = SteppingClock(step: 60)
+        let run = CheckpointedRun(
+            machine: machine, interval: 300, minimumWork: 1_000, clock: clock.read,
+            perform: { $0() },
+            raw: CheckpointedRun.RawSaving(
+                take: { SuspendedMachine.takeRaw(of: machine, kernel: "brut", in: folder) },
+                compress: { try SuspendedMachine.compressRaw($0, kernel: "brut", in: folder) },
+                install: { try SuspendedMachine.installPacked($0, kernel: "brut", in: folder) }),
+            write: { _ in XCTFail("l'instantané en mémoire ne doit pas servir") })
+        XCTAssertEqual(run.run(), .powerOff)
+        XCTAssertEqual(run.checkpoints, 3)
+        let back = try XCTUnwrap(SuspendedMachine.load(kernel: "brut", in: folder))
+        XCTAssertEqual(back.withUnsafeBytes { $0.load(as: UInt64.self) }, 15_000)
+        let left = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(left.filter { $0.hasSuffix(".brut") || $0.hasSuffix(".compression") }, [],
+                       "ni brut ni compression ne restent")
+    }
+
     /// **Une machine qui dort n'est pas réécrite.** L'intervalle passe, mais
     /// rien n'a été retiré : la sauvegarde d'avant vaut celle-ci.
     func testAnIdleMachineIsNotRewritten() {

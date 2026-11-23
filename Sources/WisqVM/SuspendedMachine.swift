@@ -107,6 +107,71 @@ public enum SuspendedMachine {
         try savePacked(SnapshotFile.pack(snapshot), kernel: kernel, in: directory)
     }
 
+    /// **La machine sauvée sans passer par la mémoire** : l'instantané écrit
+    /// par le cœur dans un fichier brut (`writeSnapshot(to:)`), compressé
+    /// morceau par morceau dans un fichier voisin
+    /// (`SnapshotFile.pack(fileAt:to:)`), qui remplace la session d'un seul
+    /// geste. Le fichier brut part ensuite, réussite ou non.
+    ///
+    /// En deux temps, pour `CheckpointedRun` : `takeRaw` sur le fil
+    /// d'émulation, machine arrêtée entre deux tranches ; `packRaw` à côté,
+    /// pendant que l'invité repart.
+    public static func takeRaw(of machine: GuestMachine, kernel: String, in directory: URL? = nil) -> URL? {
+        guard let folder = try? (directory ?? Self.directory()) else { return nil }
+        let raw = folder.appendingPathComponent(fileName(kernel: kernel) + ".brut")
+        guard machine.writeSnapshot(to: raw) else {
+            try? FileManager.default.removeItem(at: raw)
+            return nil
+        }
+        return raw
+    }
+
+    /// La seconde moitié, premier temps : le brut compressé dans un fichier
+    /// voisin, rendu ; le brut part, réussite ou non.
+    public static func compressRaw(_ raw: URL, kernel: String, in directory: URL? = nil) throws -> URL {
+        defer { try? FileManager.default.removeItem(at: raw) }
+        let folder = try directory ?? Self.directory()
+        let packing = folder.appendingPathComponent(fileName(kernel: kernel) + ".compression")
+        do {
+            try SnapshotFile.pack(fileAt: raw, to: packing)
+        } catch {
+            try? FileManager.default.removeItem(at: packing)
+            throw error
+        }
+        return packing
+    }
+
+    /// Second temps : le fichier compressé prend la place de la session, d'un
+    /// seul geste — l'ancienne reste entière tant que la nouvelle n'est pas là.
+    public static func installPacked(_ packing: URL, kernel: String, in directory: URL? = nil) throws {
+        let folder = try directory ?? Self.directory()
+        let final = folder.appendingPathComponent(fileName(kernel: kernel))
+        // `rename(2)` : il remplace la session d'un seul geste, sur iOS comme
+        // sous Linux. `FileManager.replaceItemAt` passe, sous Linux, par un
+        // échange que le système de fichiers des conteneurs de la CI ne sait
+        // pas toujours faire : la troisième sauvegarde d'un test n'y était pas
+        // installée.
+        guard rename(packing.path, final.path) == 0 else {
+            try? FileManager.default.removeItem(at: packing)
+            throw CocoaError(.fileWriteUnknown)
+        }
+        FirstResume.disarm(kernel: kernel, in: folder)
+    }
+
+    /// Les deux temps à la suite.
+    public static func packRaw(_ raw: URL, kernel: String, in directory: URL? = nil) throws {
+        try installPacked(try compressRaw(raw, kernel: kernel, in: directory), kernel: kernel, in: directory)
+    }
+
+    /// Les deux d'un trait : la suspension, quand iOS met l'application en
+    /// arrière-plan.
+    public static func save(machine: GuestMachine, kernel: String, in directory: URL? = nil) throws {
+        guard let raw = takeRaw(of: machine, kernel: kernel, in: directory) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try packRaw(raw, kernel: kernel, in: directory)
+    }
+
     /// La même écriture, d'un instantané **déjà compressé** par
     /// `SnapshotFile.pack`. C'est ce que fait `CheckpointedRun`, qui compresse
     /// hors de son verrou et n'y tient que l'écriture.

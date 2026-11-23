@@ -536,6 +536,18 @@ public final class RustPCMachine: @unchecked Sendable {
         return Data(UnsafeBufferPointer(start: bytes, count: length))
     }
 
+    /// **L'instantané écrit dans un fichier, page par page**
+    /// (`wisq_pc_snapshot_to_file`) : les mêmes octets que `snapshot()`, sans
+    /// tampon de la taille de la RAM que l'invité a servie. C'est ce que
+    /// l'application emploie pour sauver : une machine de 4 Gio tenait sinon
+    /// plusieurs gibioctets de plus, et iOS la tuait.
+    public func writeSnapshot(to url: URL) -> Bool {
+        url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return false }
+            return wisq_pc_snapshot_to_file(pc, path) == 0
+        }
+    }
+
     /// **Reprend un instantané** ; refusé, rien n'a changé. L'écran se
     /// branche avant (`attachDisplay`), et les disques sur fichier aussi, les
     /// mêmes aux mêmes places (`attachDisk(fileAt:writes:)`) : l'instantané

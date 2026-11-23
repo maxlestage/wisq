@@ -1949,6 +1949,43 @@ pub unsafe extern "C" fn wisq_pc_snapshot(
 }
 
 /// # Safety
+/// `pc` vient de `wisq_pc_new`, course arrêtée ; `path` est une chaîne C.
+///
+/// **L'instantané écrit dans un fichier, page par page** : les mêmes octets
+/// que `wisq_pc_snapshot`, sans tampon de la taille de la RAM servie. Voir
+/// `instantane::sauver_vers`.
+#[no_mangle]
+pub unsafe extern "C" fn wisq_pc_snapshot_to_file(pc: *const WisqPC, path: *const c_char) -> c_int {
+    let Some(poste) = poste_lu(pc) else { return -1 };
+    if path.is_null() {
+        return -1;
+    }
+    if !poste.pret() {
+        return -2;
+    }
+    let chemin = std::path::Path::new(std::ffi::OsStr::from_bytes(
+        std::ffi::CStr::from_ptr(path).to_bytes(),
+    ));
+    let ecrire = || -> Result<(), instantane::ErreurDEcriture> {
+        let fichier = std::fs::File::create(chemin).map_err(instantane::ErreurDEcriture::Io)?;
+        let mut tampon = std::io::BufWriter::with_capacity(1 << 20, fichier);
+        instantane::sauver_vers(poste, &mut tampon)?;
+        tampon
+            .into_inner()
+            .map_err(|e| instantane::ErreurDEcriture::Io(e.into_error()))?
+            .sync_all()
+            .map_err(instantane::ErreurDEcriture::Io)
+    };
+    let ecrit = garder(None, || Some(ecrire()));
+    match ecrit {
+        None => WISQ_PC_PANIC,
+        Some(Ok(())) => 0,
+        Some(Err(instantane::ErreurDEcriture::Refus(_))) => -3,
+        Some(Err(instantane::ErreurDEcriture::Io(_))) => -4,
+    }
+}
+
+/// # Safety
 /// `bytes` et `len` sont exactement ce que `wisq_pc_snapshot` a rendu, pas
 /// encore libéré.
 #[no_mangle]
