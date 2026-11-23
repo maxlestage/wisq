@@ -30,7 +30,7 @@ struct BootAnnouncementView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var announcement: BootAnnouncement?
     /// **Le moteur** : le JIT de l'émetteur, ou l'interpréteur (`EmitterSetting`).
-    @AppStorage("wisq.machine.emetteur") private var jitEnabled = true
+    @AppStorage(EmitterSetting.key) private var jitEnabled = EmitterSetting.defaultValue
 
     /// La RAM réglée, et celle que la machine recevra si iOS en laisse moins
     /// (`KernelMemory.given`).
@@ -110,16 +110,16 @@ struct BootAnnouncementView: View {
                 if announcement.outcome.startsSomething, jitPossible {
                     Section {
                         Picker("Moteur", selection: $jitEnabled) {
-                            Text("JIT (WebAssembly)").tag(true)
                             Text("Interpréteur Rust").tag(false)
+                            Text("JIT (WebAssembly)").tag(true)
                         }
                         .pickerStyle(.segmented)
                     } header: {
                         Text("Moteur")
                     } footer: {
                         Text(jitEnabled
-                             ? "Si une image bute dans le JIT, l'interpréteur la démarre aussi."
-                             : "Plus lent que le JIT, mais la session se sauve et se reprend.")
+                             ? "Expérimental : le code est compilé en WebAssembly. Un démarrage, qui exécute surtout du code une seule fois, y est bien plus lent."
+                             : "Le plus rapide pour démarrer, et la session se sauve et se reprend.")
                     }
                 }
             } else {

@@ -158,11 +158,21 @@ public enum EmitterBridge {
     }
 }
 
-/// **Le réglage qui ouvre une machine dans l'émetteur — le JIT**, allumé par
-/// défaut depuis que Maxime l'a demandé (« je veux le JIT ») : c'est la seule
-/// voie de compilation qu'iOS laisse à une application, WebKit compilant le
-/// WebAssembly que l'émetteur écrit. La feuille d'avant le démarrage dit le
-/// moteur et laisse revenir à l'interpréteur d'un geste.
+/// **Le réglage qui ouvre une machine dans l'émetteur — le JIT** : c'est la
+/// seule voie de compilation qu'iOS laisse à une application, WebKit compilant
+/// le WebAssembly que l'émetteur écrit. La feuille d'avant le démarrage dit le
+/// moteur et laisse passer de l'un à l'autre d'un geste.
+///
+/// **Éteint par défaut**, et c'est mesuré. Allumé par défaut depuis que
+/// Maxime l'avait demandé, il faisait démarrer chaque image dans le JIT, et le
+/// démarrage n'avançait plus sur l'iPhone. Sur l'ISO d'Arch, l'interpréteur
+/// Rust natif atteint `archiso login:` en 369 s ; le JIT n'y est pas en
+/// 1 750 s. Un démarrage exécute surtout du code qui ne sert qu'une fois, et
+/// le JIT en paie chaque fois la compilation. Maxime a choisi l'interpréteur
+/// par défaut, le JIT restant au choix.
+///
+/// **La clé a changé avec le défaut** (`wisq.machine.jit`) : un téléphone qui
+/// avait déjà enregistré l'ancien réglage repart du nouveau défaut une fois.
 ///
 /// La clé est celle de `UserDefaults`, que la vue lit par `@AppStorage`. Le
 /// verdict — cette image s'ouvre-t-elle dans l'émetteur ? — est ici, jugé sous
@@ -172,9 +182,10 @@ public enum EmitterBridge {
 /// au cœur Swift, qui sait la suspendre et la reprendre, ce que l'émetteur
 /// ne sait pas encore.
 public enum EmitterSetting {
-    public static let key = "wisq.machine.emetteur"
-    /// **Allumé** : une machine PC non installée s'ouvre dans le JIT.
-    public static let defaultValue = true
+    public static let key = "wisq.machine.jit"
+    /// **Éteint** : une machine PC s'ouvre dans l'interpréteur Rust, et le
+    /// JIT se choisit dans la feuille d'avant le démarrage.
+    public static let defaultValue = false
 
     /// Le réglage tel qu'il est : sa valeur si quelqu'un l'a touché,
     /// `defaultValue` sinon (`UserDefaults.bool` rendrait faux).
