@@ -27270,3 +27270,58 @@ console.log("gs " + BigInt.asUintN(64, vm.globals[{gs_sel}].value) + " " + BigIn
         "en anneau trois, le premier chargement s'arrête : {text}"
     );
 }
+
+/// **Des drapeaux qui meurent dans le bloc ne sont pas calculés, et ce qui
+/// les lit les voit quand même justes.**
+///
+/// L'émetteur saute les drapeaux d'une instruction quand une autre, plus loin
+/// dans le bloc, les réécrit tous avant que rien ne les lise (`flags_die`).
+/// Deux montages, et chacun tomberait sous une erreur différente :
+///
+/// - `add` pose CF et ZF (`-1 + 1`), puis `cmp` les réécrit (`5 - 3`) : ce que
+///   `pushf` relève doit être le `cmp` seul — CF, ZF et PF à zéro. Un `cmp`
+///   sauté à tort laisserait ceux de l'`add`.
+/// - `add` pose CF, puis `adc` **le lit** : l'`add` n'est pas mort, et `adc
+///   $0` sur zéro doit rendre un. Un `adc` pris pour une instruction neutre
+///   laisserait l'ancienne retenue, nulle.
+#[test]
+fn flags_that_die_in_the_block_are_skipped_and_what_reads_them_still_sees_them() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let killed: Vec<u8> = vec![
+        0xf9, // stc — une retenue d'avant, qu'un `cmp` sauté laisserait voir
+        0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, // mov $-1,%rax
+        0x48, 0xc7, 0xc3, 0x01, 0x00, 0x00, 0x00, // mov $1,%rbx
+        0x48, 0x01, 0xd8, // add %rbx,%rax — CF, ZF, PF : morts
+        0x48, 0xc7, 0xc1, 0x05, 0x00, 0x00, 0x00, // mov $5,%rcx
+        0x48, 0x83, 0xf9, 0x03, // cmp $3,%rcx — 2 : ni CF, ni ZF, ni PF
+        0x9c, // pushfq
+        0x5b, // pop %rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &killed, BASE, PAGES, "drapeaux-morts", "");
+    let flags: u64 = line_of(&text, "rbx ").parse().expect("RFLAGS");
+    assert_eq!(
+        flags & 0x8d5,
+        0,
+        "seuls les drapeaux du `cmp` comptent : CF, PF, AF, ZF, SF et OF à zéro, pas {flags:#x}\n{text}"
+    );
+
+    let read: Vec<u8> = vec![
+        0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, // mov $-1,%rax
+        0x48, 0xc7, 0xc3, 0x01, 0x00, 0x00, 0x00, // mov $1,%rbx
+        0x48, 0x01, 0xd8, // add %rbx,%rax — CF à un, lu plus bas
+        0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00, // mov $0,%rbx
+        0x48, 0x83, 0xd3, 0x00, // adc $0,%rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &read, BASE, PAGES, "drapeaux-lus", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "1",
+        "`adc` lit la retenue de l'`add` : elle devait être calculée\n{text}"
+    );
+}
