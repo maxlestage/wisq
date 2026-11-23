@@ -276,7 +276,14 @@ export async function demarrer({
     }
     if (r.encore !== undefined) return "encore";
     refusees += 1;
-    dernierRefus = { a: "0x" + BigInt.asUintN(64, BigInt(adresse)).toString(16), pourquoi: r.refus ?? `Trappe(${r.trappe})` };
+    // **Les octets refusés, cités** : sans eux, un refus ne dit qu'une
+    // adresse dans un programme que personne n'a sous la main, et il faut
+    // refaire tout le démarrage pour savoir quelle instruction manque.
+    const octets = Array.from(code.subarray(0, 16), (o) => o.toString(16).padStart(2, "0")).join(" ");
+    dernierRefus = {
+      a: "0x" + BigInt.asUintN(64, BigInt(adresse)).toString(16),
+      pourquoi: `${r.refus ?? `Trappe(${r.trappe})`} — octets ${octets}`,
+    };
     return null;
   };
 
