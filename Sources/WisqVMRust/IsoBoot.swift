@@ -125,12 +125,13 @@ public enum IsoBoot {
     /// sortie qui existe. Le reste passe mot pour mot — `splash` compris, qui
     /// ne demande qu'un dessin que personne ne fera.
     ///
-    /// **Et systemd reçoit de la patience** (voir `patience`), entre les deux.
+    /// **Et systemd reçoit de la patience** (voir `patience`), et le noyau
+    /// garde sa mémoire (voir `noHandover`), entre les deux.
     public static func commandLine(from recipe: String) -> String {
         let words = recipe
             .split(separator: " ", omittingEmptySubsequences: true)
             .filter { $0 != "quiet" }
-        let waits = patience.filter { setting in
+        let waits = added.filter { setting in
             let key = setting.prefix { $0 != "=" }
             return !words.contains { $0.hasPrefix(key + "=") }
         }
@@ -165,6 +166,21 @@ public enum IsoBoot {
         "systemd.default_device_timeout_sec=600",
         "systemd.default_timeout_start_sec=600",
     ]
+
+    /// **Pas de passation kexec (KHO) : la mémoire reste à l'invité.**
+    ///
+    /// Un noyau récent qui sait passer la main par kexec (Ubuntu 26.04, noyau
+    /// 7.0) se met de côté, dès le début, une « zone de travail » d'environ
+    /// deux fois la mémoire déjà réservée — noyau et initrd compris. Avec un
+    /// initrd de 93 Mio collé au noyau dans une machine d'un gibioctet, c'est
+    /// 340 Mio de plus : il ne restait que 176 Mio, l'initramfs ne se déballait
+    /// plus (« write error »), et le noyau paniquait faute de `/init`. Personne
+    /// ne fait de kexec ici ; une image qui fixe déjà `kho=` garde le sien.
+    static let noHandover = "kho=off"
+
+    /// Ce que wisq ajoute à la ligne d'une image, chaque réglage seulement si
+    /// l'image ne le fixe pas déjà.
+    static let added = patience + [noHandover]
 
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
