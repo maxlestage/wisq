@@ -1685,6 +1685,8 @@ export function machine({
     secourues: 0,
     /// Les régions reprises d'un autre programme sans retraduire (`partager`).
     partagees: 0,
+    /// Les secondes chances données avant une éviction (`evincerTantQue`).
+    sondees: 0,
     /// Les clés évincées que le cache retient pour compter les retraductions
     /// (voir `oubliees`), jamais plus que `limite.oubliees`.
     get oubliees() {
@@ -2071,6 +2073,25 @@ export function machine({
       victime ??= premiere(recentes);
       victime ??= premiere(gardees);
       if (victime === undefined) return;
+      // **Une seconde chance, et c'est le seul signal d'usage qui existe.**
+      // Une région que les autres atteignent par la correspondance n'est
+      // jamais « servie » : pour elle, l'ordre des files est celui d'arrivée,
+      // et le code le plus chaud partait le premier — sur Arch, des régions du
+      // noyau retraduites quatre-vingt-trois fois en quatre minutes, 1,3 Go
+      // de wasm compilé. Avant de partir, la plus ancienne perd donc la case
+      // de son entrée et passe en queue : si elle sert encore, le prochain
+      // appel rend la main à l'hôte, qui la sert et lui rend sa case — un
+      // retour de main au lieu d'une traduction. Seule une région que
+      // personne n'a appelée depuis part au tour suivant.
+      if (!victime.sondee) {
+        effacer(victime.adresse, victime.slot, victime.contexte);
+        victime.sondee = true;
+        const file = fileDe(victime);
+        file.delete(victime);
+        file.add(victime);
+        caches.sondees += 1;
+        continue;
+      }
       evincer(victime);
     }
   };
@@ -2114,6 +2135,7 @@ export function machine({
   /// deux programmes qui se relaient à la même adresse (un `fork`)
   /// repasseraient par l'hôte à chaque saut.
   const servir = (region) => {
+    region.sondee = false;
     const file = fileDe(region);
     file.delete(region);
     file.add(region);

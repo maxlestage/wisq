@@ -22261,6 +22261,9 @@ const avant = caseDeX();
 await courir(vm, X);
 const r1 = String(vm.known.get(X).slot);
 const reprise = caseDeX();
+// R2 a déjà eu sa seconde chance (`evincerTantQue`) : elle part sans que le
+// balayage ne passe par R1, et c'est bien son éviction qu'on juge.
+vm.known.get(0x10000n).sondee = true;
 await courir(vm, 0x12000n);
 console.log("bloc " + avant + " r1 " + r1 + " reprise " + reprise + " apres " + caseDeX()
   + " evincees " + vm.cache.evincees + " r2 " + (vm.known.get(0x10000n) === undefined ? "partie" : "la"));
