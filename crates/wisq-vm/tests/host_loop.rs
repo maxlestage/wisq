@@ -13082,28 +13082,24 @@ fn a_handler_whose_own_page_is_absent_is_named_instead_of_looping() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-/// **Le compteur de double faute retombe dès qu'une région s'installe.**
+/// **Le compteur de double faute retombe dès qu'une région tourne.**
 ///
-/// C'est la garde qu'aucune assertion ne tenait, et le sabotage l'a dit :
-/// retirer la remise à zéro ne faisait tomber aucun test, parce qu'aucun
-/// montage ne délivrait **deux** chargements fautifs séparés par une région
-/// installée. Or c'est exactement ce que fait un noyau qui cartographie à la
-/// demande : il en enchaîne autant que le programme a de pages.
+/// C'est ce que fait un noyau qui cartographie à la demande : il enchaîne
+/// autant de fautes de chargement que le programme a de pages, et entre deux,
+/// son gestionnaire **tourne**. La garde ne retombait qu'à l'installation
+/// d'une région ; depuis que le cache sert le gestionnaire sans le
+/// retraduire, deux fautes légitimes d'affilée passaient pour une double
+/// faute, et Arch s'arrêtait sous udev. Sur le silicium, la double faute est
+/// une faute **pendant** la délivrance — le test d'avant, la porte qui mène à
+/// une page absente —, pas après un gestionnaire qui a tourné.
 ///
 /// **Le montage : deux pages absentes, et un gestionnaire qui refaute.** Il
-/// compte ses passages dans RBX et saute sur la seconde. Entre les deux
-/// chargements fautifs, sa propre région s'est installée.
-///
-/// | | avec la remise à zéro | sans |
-/// | --- | --- | --- |
-/// | passages du gestionnaire | **2** | 1 |
-/// | arrêt | la double faute nommée | la même, un tour plus tôt |
-///
-/// **L'arrêt est le même des deux côtés** — c'est le nombre de passages qui
-/// tranche, et c'est pour ça que l'assertion porte sur lui. Une assertion sur
-/// l'arrêt aurait eu l'air d'une garde sans en être une.
+/// compte ses passages dans RBX et saute sur la seconde, encore et encore :
+/// une boucle de fautes de page, que le silicium délivre sans fin. Le
+/// gestionnaire passe donc bien plus de deux fois, et la course finit sur ses
+/// tours épuisés, jamais sur la double faute.
 #[test]
-fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
+fn the_double_fault_counter_falls_back_as_soon_as_a_region_runs() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
@@ -13118,20 +13114,17 @@ fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
         "// deux pages absentes, et le gestionnaire saute sur la seconde.",
     );
     let text = run_driver(&bun, &driver);
-    assert_eq!(
-        line_of(&text, "rbx "),
-        "0x2",
-        "**le gestionnaire est passé deux fois** : le premier chargement \
-         fautif a été délivré, sa région s'est installée, le compteur est \
-         retombé, et le second a été délivré aussi. Sans la remise à zéro il \
-         ne passerait qu'une fois : {text}"
+    let passages = u64::from_str_radix(line_of(&text, "rbx ").trim_start_matches("0x"), 16)
+        .expect("RBX en hexadécimal");
+    assert!(
+        passages > 2,
+        "**le gestionnaire est délivré à chaque faute** : il a tourné entre \
+         deux chargements fautifs, la garde retombe à chaque fois : {text}"
     );
     assert_eq!(
         line_of(&text, "arret "),
-        "une faute pendant la délivrance d'une faute de page sur un chargement \
-         d'instruction : le gestionnaire lui-même n'est pas cartographié",
-        "et le troisième chargement, lui, n'a rien installé entre-temps : la \
-         garde le nomme : {text}"
+        "tours épuisés",
+        "une boucle de fautes de page n'est pas une double faute : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
@@ -21577,6 +21570,85 @@ console.log("rdi " + vus.join(",") + " connues " + vm.known.size + " espaces " +
     );
 }
 
+/// **Deux programmes qui portent le même code, sur les mêmes trames, à la
+/// même adresse, partagent sa région** — c'est ce que laisse un `fork`.
+///
+/// Les deux tables mettent `0x400000` sur la même grande page physique,
+/// `0x200000` : `mov $1,%edi ; ud2`, et à `0x401000` un saut indirect vers
+/// lui. Le second programme ne retraduit rien — deux traductions en tout,
+/// deux reprises —, et il tourne juste, par l'hôte comme par la
+/// correspondance. Puis la racine du second est réécrite : sa reprise est
+/// oubliée, pas la région du premier, qui tourne encore sans retraduire. Et
+/// une écriture sur le code oublie tout le monde : la retraduction lit les
+/// nouveaux octets.
+#[test]
+fn two_programs_on_the_same_frames_share_the_region() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut jump = vec![0x48, 0xc7, 0xc0, 0x00, 0x00, 0x40, 0x00]; // mov $0x400000,%rax
+    jump.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 128 }});
+const m = new Uint8Array(vm.memory.buffer);
+const vue = new DataView(vm.memory.buffer);
+const tables = (pml4, physique) => {{
+  vue.setBigUint64(pml4, BigInt(pml4 + 0x1000) | 0x7n, true);
+  vue.setBigUint64(pml4 + 0x1000, BigInt(pml4 + 0x2000) | 0x7n, true);
+  vue.setBigUint64(pml4 + 0x2000, 0x0n | 0x83n, true);
+  vue.setBigUint64(pml4 + 0x2000 + 16, BigInt(physique) | 0x87n, true);
+}};
+tables(0x20000, 0x200000);
+tables(0x30000, 0x200000);
+m.set([0xbf, 1, 0, 0, 0, 0x0f, 0x0b], 0x200000);
+m.set({jump}, 0x201000);
+m.set([0x0f, 0x0b], 0x10000);
+vm.globals[SLOTS.control].value = 1n << 31n;
+vm.globals[SLOTS.control + 2].value = 0x20000n;
+await courir(vm, 0x10000n);
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+const tour = async (cr3, at) => {{
+  vm.globals[SLOTS.control + 2].value = cr3;
+  vm.globals[7].value = 0n;
+  await courir(vm, at);
+  return String(lire(vm, 7));
+}};
+const vus = [];
+for (const [cr3, at] of [[0x20000n, 0x400000n], [0x30000n, 0x400000n], [0x20000n, 0x401000n], [0x30000n, 0x401000n]]) {{
+  vus.push(await tour(cr3, at));
+}}
+const avant = vm.cache.traduites;
+console.log("rdi " + vus.join(",") + " traduites " + avant + " partagees " + vm.cache.partagees);
+// La racine du second, réécrite : seule sa reprise part.
+vm.ecrit(0x30000, 8);
+const premier = await tour(0x20000n, 0x400000n);
+console.log("apres-racine " + premier + " traduites " + (vm.cache.traduites - avant));
+// Le code réécrit : tout le monde l'oublie, et la retraduction lit le neuf.
+m[0x200001] = 5;
+vm.ecrit(0x200001, 1);
+const neuf = await tour(0x20000n, 0x400000n);
+console.log("apres-code " + neuf + " traduites " + (vm.cache.traduites - avant));
+"#,
+        jump = js_bytes(&jump),
+    );
+    let text = cache_course(&bun, "partage", 128, &corps);
+    assert!(
+        text.contains("rdi 1,1,1,1 traduites 3 partagees 2"),
+        "le second programme reprend les deux régions du premier (le noyau en a traduit \
+         une) et tourne juste : {text}"
+    );
+    assert!(
+        text.contains("apres-racine 1 traduites 0"),
+        "la racine du second réécrite n'oublie pas la région du premier : {text}"
+    );
+    assert!(
+        text.contains("apres-code 5 traduites 1"),
+        "le code réécrit se retraduit sur ses nouveaux octets : {text}"
+    );
+}
+
 /// **Un changement d'anneau ne se résout pas dans les blocs de sa propre
 /// région.**
 ///
@@ -22182,6 +22254,9 @@ const avant = caseDeX();
 await courir(vm, X);
 const r1 = String(vm.known.get(X).slot);
 const reprise = caseDeX();
+// R2 a déjà eu sa seconde chance (`evincerTantQue`) : elle part sans que le
+// balayage ne passe par R1, et c'est bien son éviction qu'on juge.
+vm.known.get(0x10000n).sondee = true;
 await courir(vm, 0x12000n);
 console.log("bloc " + avant + " r1 " + r1 + " reprise " + reprise + " apres " + caseDeX()
   + " evincees " + vm.cache.evincees + " r2 " + (vm.known.get(0x10000n) === undefined ? "partie" : "la"));
@@ -22268,6 +22343,51 @@ console.log("pas " + pas.join(",") + " replacees " + vm.cache.replacees + " r2 "
         text.contains("pas 1,10,3,20,10,20,30,10,20,1000,10 replacees 1 r2 131 s 71"),
         "R2 ne tient pas dans le trou d'en bas, est replacée au haut, et S, vivante en 71, \
          tourne toujours son propre code : {text}"
+    );
+}
+
+/// **Une région retraduite après une éviction est gardée** : les nouvelles
+/// venues partent avant elle.
+///
+/// Sous une borne de quatre régions, A est traduite, puis quatre autres la
+/// chassent ; A revient — c'est une retraduction, la preuve qu'elle sert
+/// encore — et passe dans la file des gardées. Cinq nouvelles régions
+/// passent ensuite : sans la seconde file, A, la plus ancienne des récentes,
+/// partirait à la troisième. Elle reste, et la revoir ne demande rien à
+/// l'émetteur.
+#[test]
+fn a_region_translated_again_after_an_eviction_is_kept() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut places = String::new();
+    for rang in 0..10u32 {
+        places.push_str(&format!(
+            "m.set({}, 0x10000 + {rang} * 0x100);\n",
+            js_bytes(&small_region(rang + 1))
+        ));
+    }
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 4 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+{places}
+const a = (rang) => 0x10000n + BigInt(rang) * 0x100n;
+for (const rang of [0, 1, 2, 3, 4]) await courir(vm, a(rang));
+const chassee = vm.known.get(a(0)) === undefined;
+await courir(vm, a(0));
+for (const rang of [5, 6, 7, 8, 9]) await courir(vm, a(rang));
+const avant = demandes.length;
+await courir(vm, a(0));
+console.log("chassee " + chassee + " retraduites " + vm.cache.retraduites + " gardee "
+  + (vm.known.get(a(0)) !== undefined) + " demandes " + (demandes.length - avant)
+  + " tenues " + vm.known.size);
+"#,
+    );
+    let text = cache_course(&bun, "gardee", 4, &corps);
+    assert!(
+        text.contains("chassee true retraduites 1 gardee true demandes 0 tenues 4"),
+        "A, retraduite une fois, survit aux cinq nouvelles et se revoit sans traduction : {text}"
     );
 }
 

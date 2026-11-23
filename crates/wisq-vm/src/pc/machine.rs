@@ -401,8 +401,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lue> {
     let lue = decode(octets)
         .map(Lue::Commune)
         .or_else(|| decode_extended(octets).map(Lue::Etendue))
-        .or_else(|| sans_taille_d_adresse(octets))
-        .or_else(|| non_temporel(octets))?;
+        .or_else(|| sans_taille_d_adresse(octets))?;
     // `Lue::Attente` ne sort que d'`attente`, qui a rendu la main plus haut :
     // ici, seules `Commune` et `Etendue` arrivent.
     let admise = match &lue {
@@ -410,56 +409,6 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lue> {
         _ => verrou_admis(octets, None),
     };
     admise.then_some(lue)
-}
-
-/// **Les rangements « non temporels » de SSE et SSE2** : `movntps` et
-/// `movntpd` (`0f 2b`), `movntdq` (`66 0f e7`), `movnti` (`0f c3`). Ils
-/// disent au processeur de ne pas garder la ligne dans ses caches ; ce cœur
-/// n'en a pas, et ils rangent exactement ce que rangent `movaps` (`0f 29`),
-/// `movdqa` (`66 0f 7f`) et `mov` (`89`). Le noyau de Void s'en sert pour ses
-/// bancs du RAID (`66 0f e7 14 33`, dans un module chargé au démarrage), et
-/// s'arrêtait là. En mémoire seulement : la forme registre est `#UD` sur le
-/// silicium. `decode`, que l'émetteur partage, n'est pas touché : l'octet
-/// d'opcode est remplacé dans une copie, lue par lui.
-fn non_temporel(octets: &[u8]) -> Option<Lue> {
-    let mut ici = 0;
-    let (mut operande, mut repete) = (false, false);
-    while let Some(&octet) = octets.get(ici) {
-        match octet {
-            0x66 => operande = true,
-            0xF2 | 0xF3 => repete = true,
-            0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 | 0x40..=0x4F => {}
-            _ => break,
-        }
-        ici += 1;
-    }
-    if repete || octets.get(ici) != Some(&0x0F) {
-        return None;
-    }
-    let mut copie = [0u8; 15];
-    let longueur = octets.len().min(15);
-    copie[..longueur].copy_from_slice(&octets[..longueur]);
-    let (copie, longueur, en_plus) = match *octets.get(ici + 1)? {
-        0x2B => {
-            copie[ici + 1] = 0x29;
-            (copie, longueur, 0)
-        }
-        0xE7 if operande => {
-            copie[ici + 1] = 0x7F;
-            (copie, longueur, 0)
-        }
-        // `0f c3` devient `89` : un octet de moins, rendu à la longueur.
-        0xC3 if !operande => {
-            copie.copy_within(ici + 1..longueur, ici);
-            copie[ici] = 0x89;
-            (copie, longueur - 1, 1)
-        }
-        _ => return None,
-    };
-    let mut instruction = decode(&copie[..longueur])?;
-    instruction.memory?;
-    instruction.length += en_plus;
-    Some(Lue::Commune(instruction))
 }
 
 /// **Le préfixe `67` devant une instruction qui n'adresse rien.** En mode
