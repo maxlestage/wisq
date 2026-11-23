@@ -94,7 +94,7 @@ struct LocalVMListView: View {
     /// **Le réglage de la machine de l'émetteur**, éteint par défaut : voir
     /// `EmitterSetting`. Allumé, une image de PC s'ouvre dans l'émetteur
     /// plutôt que dans le cœur Swift.
-    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = false
+    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = true
 
     var body: some View {
         List {
@@ -401,7 +401,8 @@ struct LocalVMListView: View {
                     title: target.machine?.name ?? target.url.lastPathComponent,
                     kind: kinds[target.url] ?? KernelImageKind.identify(fileAt: target.url),
                     cloudImage: cloudImages.contains(target.url),
-                    settingsKey: target.machine?.key ?? target.url.lastPathComponent
+                    settingsKey: target.machine?.key ?? target.url.lastPathComponent,
+                    installed: target.machine != nil
                 ) {
                     pendingLaunch = target
                 }

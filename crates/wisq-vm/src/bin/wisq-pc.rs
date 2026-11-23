@@ -809,20 +809,22 @@ fn main() {
             eprintln!("wisq-pc : --sauver : un disque a refusé de se vider");
             std::process::exit(1);
         }
-        match instantane::sauver(&poste) {
-            Ok(octets) => match std::fs::write(chemin, &octets) {
-                Ok(()) => eprintln!(
-                    "instantané : {chemin} ({} octets, {:.2} s)",
-                    octets.len(),
-                    debut.elapsed().as_secs_f64()
-                ),
-                Err(erreur) => {
-                    eprintln!("wisq-pc : --sauver {chemin} : {erreur}");
-                    std::process::exit(1);
-                }
-            },
-            Err(refus) => {
-                eprintln!("wisq-pc : --sauver : {refus:?}");
+        // Page par page, comme l'application (`wisq_pc_snapshot_to_file`) :
+        // un instantané de plusieurs gibioctets ne passe jamais en mémoire.
+        let ecrit = std::fs::File::create(chemin)
+            .map_err(instantane::ErreurDEcriture::Io)
+            .and_then(|fichier| {
+                let mut tampon = std::io::BufWriter::with_capacity(1 << 20, fichier);
+                instantane::sauver_vers(&poste, &mut tampon)
+            });
+        match ecrit {
+            Ok(()) => eprintln!(
+                "instantané : {chemin} ({} octets, {:.2} s)",
+                std::fs::metadata(chemin).map_or(0, |m| m.len()),
+                debut.elapsed().as_secs_f64()
+            ),
+            Err(erreur) => {
+                eprintln!("wisq-pc : --sauver {chemin} : {erreur:?}");
                 std::process::exit(1);
             }
         }

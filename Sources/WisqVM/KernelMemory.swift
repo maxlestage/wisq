@@ -117,6 +117,35 @@ public enum KernelMemory {
             core: core)
     }
 
+    /// **Ce que l'application garde pour elle** quand elle borne une machine
+    /// à ce qu'iOS lui laisse : l'interpréteur et son cache de blocs,
+    /// l'interface, WebKit, la compression d'une sauvegarde.
+    public static let appOverhead: UInt64 = 768 << 20
+
+    /// **La RAM qu'une machine reçoit vraiment** : le réglage, borné à ce
+    /// qu'iOS laisse à l'application (`os_proc_available_memory()`) moins
+    /// `appOverhead`, arrondi au pas, jamais sous la machine de référence.
+    ///
+    /// **D'où ça vient.** Le curseur va jusqu'à la mémoire du téléphone moins
+    /// deux gibioctets, la règle de Maxime. Mais iOS ne laisse à une
+    /// application que ce qu'il annonce — trois gibioctets sur un iPhone de
+    /// douze, relevés ici même —, et Linux remplit sa RAM de cache disque :
+    /// une machine de 4 Gio dépassait la limite au milieu de son démarrage, et
+    /// iOS fermait l'application, quelle que soit la distribution. Le
+    /// curseur garde sa règle ; c'est le démarrage qui borne, et la feuille
+    /// d'avant le démarrage le dit. Là où rien ne borne (`available` nul :
+    /// macOS, Linux), le réglage passe tel quel.
+    public static func given(_ requested: UInt64, available: UInt64?) -> UInt64 {
+        guard let available else { return requested }
+        let room = available > appOverhead ? available - appOverhead : 0
+        return min(requested, max(room / step * step, defaultSize))
+    }
+
+    /// La même, avec ce qu'iOS dit maintenant.
+    public static func given(_ requested: UInt64) -> UInt64 {
+        given(requested, available: systemAvailableMemory)
+    }
+
     /// How many bytes the system says this app may still allocate, or nil
     /// where nothing says.
     ///

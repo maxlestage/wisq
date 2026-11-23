@@ -30,6 +30,31 @@ public final class CheckpointedRun: @unchecked Sendable {
     private let pack: @Sendable (Data) -> Data
     private let write: @Sendable (Data) throws -> Void
     private let perform: @Sendable (@escaping @Sendable () -> Void) -> Void
+    private let raw: RawSaving?
+
+    /// **Sauver sans tenir l'instantané en mémoire** : le cœur l'écrit dans
+    /// un fichier brut (`take`, sur le fil d'émulation), il est compressé à
+    /// côté (`compress`), puis mis à la place de la session sous le verrou
+    /// (`install`). Une machine de 4 Gio dont l'invité remplit son cache
+    /// disque tenait sinon plusieurs gibioctets de plus le temps d'une
+    /// sauvegarde, et iOS tuait l'application à la première, cinq minutes
+    /// après le démarrage.
+    public struct RawSaving: Sendable {
+        public let take: @Sendable () -> URL?
+        public let compress: @Sendable (URL) throws -> URL
+        public let install: @Sendable (URL) throws -> Void
+        public let discard: @Sendable (URL) -> Void
+
+        public init(take: @escaping @Sendable () -> URL?,
+                    compress: @escaping @Sendable (URL) throws -> URL,
+                    install: @escaping @Sendable (URL) throws -> Void,
+                    discard: @escaping @Sendable (URL) -> Void = { try? FileManager.default.removeItem(at: $0) }) {
+            self.take = take
+            self.compress = compress
+            self.install = install
+            self.discard = discard
+        }
+    }
 
     /// Tenu pendant chaque écriture, et par `stop` pour poser son drapeau.
     /// Voir `stop`.
@@ -61,6 +86,7 @@ public final class CheckpointedRun: @unchecked Sendable {
                 perform: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = {
                     DispatchQueue(label: "app.wisq.checkpoint", qos: .utility).async(execute: $0)
                 },
+                raw: RawSaving? = nil,
                 write: @escaping @Sendable (Data) throws -> Void) {
         self.machine = machine
         self.interval = interval
@@ -69,6 +95,7 @@ public final class CheckpointedRun: @unchecked Sendable {
         self.clock = clock
         self.pack = pack
         self.perform = perform
+        self.raw = raw
         self.write = write
     }
 
@@ -120,6 +147,34 @@ public final class CheckpointedRun: @unchecked Sendable {
             // déjà sur le stockage, ceci les y scelle avant que l'instantané
             // ne prétende les connaître.
             machine.flushDisk()
+            if let raw {
+                guard let file = raw.take() else {
+                    lock.lock()
+                    writing = false
+                    lock.unlock()
+                    savedAt = clock()
+                    workAtSave = machine.retiredInstructions
+                    continue
+                }
+                perform { [self] in
+                    let packed = try? raw.compress(file)
+                    lock.lock()
+                    // Relu au moment d'installer, comme plus bas : un `stop`
+                    // a peut-être déjà effacé la sauvegarde.
+                    if let packed {
+                        if !stopRequested, !savingStopped, (try? raw.install(packed)) != nil {
+                            written += 1
+                        } else {
+                            raw.discard(packed)
+                        }
+                    }
+                    writing = false
+                    lock.unlock()
+                }
+                savedAt = clock()
+                workAtSave = machine.retiredInstructions
+                continue
+            }
             let snapshot = machine.snapshot()
             perform { [self] in
                 let packed = pack(snapshot)

@@ -230,4 +230,29 @@ final class X86SnapshotSpeedTests: XCTestCase {
         }
         XCTAssertEqual(again, saved)
     }
+
+    /// **Compressé d'un fichier à l'autre, morceau par morceau** : le même
+    /// fichier, octet pour octet, que `pack` en mémoire — sur plusieurs
+    /// morceaux, un qui se compresse et un qui ne se compresse pas (le cache
+    /// disque d'un invité, déjà compressé dans son ISO).
+    func testPackingFromAFileWritesWhatPackingInMemoryWrites() throws {
+        var bytes = [UInt8](repeating: 0x41, count: SnapshotFile.chunk + 1234)
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        for _ in 0..<SnapshotFile.chunk {
+            state = state &* 6_364_136_223_846_793_005 &+ 1
+            bytes.append(UInt8(truncatingIfNeeded: state >> 33))
+        }
+        let snapshot = Data(bytes)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-lz4-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let raw = folder.appendingPathComponent("brut")
+        let packed = folder.appendingPathComponent("compressé")
+        try snapshot.write(to: raw)
+        try SnapshotFile.pack(fileAt: raw, to: packed)
+        let written = try Data(contentsOf: packed)
+        XCTAssertEqual(written, SnapshotFile.pack(snapshot))
+        XCTAssertEqual(try SnapshotFile.unpack(written), snapshot)
+    }
 }

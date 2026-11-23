@@ -687,4 +687,17 @@ final class PerCoreMemoryCeilingTests: XCTestCase {
         XCTAssertEqual(KernelMemory.describe(8 << 30), "8 Gio")
         XCTAssertEqual(KernelMemory.describe(2 << 30), "2 Gio")
     }
+
+    /// **La machine reçoit ce qu'iOS laisse, pas plus** : 4 Gio réglés, 3 Gio
+    /// laissés par iOS, la machine en reçoit 3 Gio moins la part de
+    /// l'application, arrondi au pas ; jamais sous la machine de référence ;
+    /// et sans borne là où le système n'en dit pas.
+    func testAMachineGetsWhatIOSLeavesNotMore() {
+        let gib: UInt64 = 1 << 30
+        XCTAssertEqual(KernelMemory.given(4 * gib, available: 3 * gib),
+                       (3 * gib - KernelMemory.appOverhead) / KernelMemory.step * KernelMemory.step)
+        XCTAssertEqual(KernelMemory.given(2 * gib, available: 8 * gib), 2 * gib, "assez de place : le réglage")
+        XCTAssertEqual(KernelMemory.given(4 * gib, available: 100 << 20), KernelMemory.defaultSize)
+        XCTAssertEqual(KernelMemory.given(16 * gib, available: nil), 16 * gib, "rien ne borne : tel quel")
+    }
 }

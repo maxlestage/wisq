@@ -411,7 +411,11 @@ public final class LocalVMModel {
         // vit dans `KernelMemory.askedOf`, qui dit pourquoi — et qui, vivant
         // dans `WisqVM`, est jugé par un test sur le coureur qui ne coûte
         // rien, ce que ce fichier ne peut pas être.
-        var machineRAM = KernelMemory.askedOf(core, setting: ramSize)
+        // **Bornée à ce qu'iOS laisse à l'application** (`KernelMemory.given`) :
+        // au-delà, l'invité remplit sa RAM de cache disque et iOS ferme
+        // l'application au milieu du démarrage.
+        let fillable = Int(KernelMemory.given(UInt64(KernelMemory.askedOf(core, setting: ramSize))))
+        var machineRAM = fillable
         let savedRAM = saved.flatMap { SessionMemory.savedRAMSize($0, core: core) }
         if core == .x86_64, savedRAM == nil {
             // Le plancher de la machine PC, et celui du système qu'elle
@@ -429,7 +433,10 @@ public final class LocalVMModel {
         // libre ; sinon elle est gardée, et le démarrage refusé. Gardée pour
         // de bon : `machineSize` met l'état à `refused`, que « Arrêter »
         // n'efface pas — `guestFinished` ici le laissait l'effacer.
-        let memory = SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: Int(roomNow))
+        // Une session plus grosse que ce qu'iOS laisse est refusée, et dite,
+        // plutôt que reprise jusqu'à la fermeture de l'application.
+        let room = min(Int(roomNow), max(fillable, machineRAM))
+        let memory = SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: room)
         guard let size = life.machineSize(memory) else {
             if case .tooLittleRoom(let needed, let room) = memory {
                 finish(with: SessionMemory.explanation(
@@ -592,8 +599,17 @@ public final class LocalVMModel {
         let pending = PendingSession(saved)
         // Une machine qui ne sauve pas de session (`savesSessions`) ne prend
         // jamais d'instantané : l'intervalle ne passe pas.
+        // **Sauvée sans passer par la mémoire** : le cœur écrit l'instantané
+        // dans un fichier brut, compressé ensuite morceau par morceau (voir
+        // `CheckpointedRun.RawSaving`). Une machine de 4 Gio tenait sinon
+        // plusieurs gibioctets de plus à chaque sauvegarde, et iOS tuait
+        // l'application à la première, cinq minutes après le démarrage.
         let checkpointed = CheckpointedRun(
-            machine: machine, interval: savesSessions(machine) ? 300 : .infinity
+            machine: machine, interval: savesSessions(machine) ? 300 : .infinity,
+            raw: CheckpointedRun.RawSaving(
+                take: { SuspendedMachine.takeRaw(of: machine, kernel: savedUnder, in: storageFolder) },
+                compress: { try SuspendedMachine.compressRaw($0, kernel: savedUnder, in: storageFolder) },
+                install: { try SuspendedMachine.installPacked($0, kernel: savedUnder, in: storageFolder) })
         ) { packed in
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
         }
@@ -937,7 +953,7 @@ public final class LocalVMModel {
             return
         }
         do {
-            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
+            try SuspendedMachine.save(machine: machine, kernel: kernelName, in: storage)
         } catch {
             if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
         }
