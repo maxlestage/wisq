@@ -27325,3 +27325,121 @@ fn flags_that_die_in_the_block_are_skipped_and_what_reads_them_still_sees_them()
         "`adc` lit la retenue de l'`add` : elle devait être calculée\n{text}"
     );
 }
+
+/// **`popq (%rsp)` : dépiler en mémoire, à une adresse calculée après la
+/// remontée.** Le noyau de RHEL 9 (AlmaLinux, Rocky) le fait dès ses
+/// premières centaines de millions d'instructions, et `8f /0` ne se décodait
+/// pas : les deux images s'arrêtaient là.
+///
+/// `push $0x1234` puis `popq (%rsp)` : la valeur lue en haut de la pile est
+/// écrite **huit octets plus haut**, là où RSP pointe après la remontée. Le
+/// `pop %rbx` qui suit la relit donc. Une adresse prise avant la remontée
+/// la réécrirait sur elle-même, et RBX lirait ce qu'il y avait au-dessus.
+#[test]
+fn popping_into_memory_addresses_the_stack_after_it_rises() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0x68, 0x34, 0x12, 0x00, 0x00, // push $0x1234
+        0x8f, 0x04, 0x24, // popq (%rsp)
+        0x5b, // pop %rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "pop-memoire", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "4660",
+        "l'émetteur : la valeur dépilée est écrite à RSP remonté\n{text}"
+    );
+
+    let mut cpu = Cpu {
+        memory: GuestMemory {
+            base: 0,
+            bytes: vec![0; 0x2_0000],
+        },
+        ..Default::default()
+    };
+    cpu.rip = BASE;
+    let body = &program[..program.len() - 2];
+    while (cpu.rip.wrapping_sub(BASE) as usize) < body.len() {
+        let at = cpu.rip.wrapping_sub(BASE) as usize;
+        assert_ne!(
+            cpu.step(&body[at..]),
+            Step::Unknown,
+            "l'interpréteur lit `8f /0`"
+        );
+        assert!(!cpu.faulted);
+    }
+    assert_eq!(
+        (cpu.regs[3], cpu.regs[4]),
+        (0x1234, 0xf008),
+        "l'interpréteur Rust : RBX relit la valeur, RSP a remonté deux fois"
+    );
+}
+
+/// **Le secours : ce que l'émetteur refuse, l'interpréteur de la page le
+/// fait.** Alpine 3.24 s'arrêtait sur `fildl 0x20(%rsp)` (`db 44 24 20`) dans
+/// la libc de musl : l'émetteur n'a pas de x87. La boucle demande maintenant
+/// au module de la page (`pc::secours`) d'exécuter l'instruction, en lisant
+/// et récrivant l'opérande à travers les tables de pages.
+///
+/// `21 × 2` par le x87 — `fildl`, `fildll`, `fmulp`, `fistpll` : 42 rangé
+/// en mémoire, et la machine arrêtée sur le `ud2`, que l'émetteur lit — et
+/// que le secours, du coup, ne reprend pas.
+#[test]
+fn what_the_emitter_refuses_the_page_interpreter_runs() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0xc7, 0x44, 0x24, 0x20, 0x15, 0x00, 0x00, 0x00, // movl $21,0x20(%rsp)
+        0x48, 0xc7, 0x04, 0x24, 0x02, 0x00, 0x00, 0x00, // movq $2,(%rsp)
+        0xdb, 0x44, 0x24, 0x20, // fildl 0x20(%rsp)
+        0xdf, 0x2c, 0x24, // fildll (%rsp)
+        0xde, 0xc9, // fmulp
+        0xdf, 0x7c, 0x24, 0x08, // fistpll 8(%rsp)
+        0x0f, 0x0b, // ud2
+    ];
+    // Le secours lit l'instruction dans la mémoire de l'invité, comme le
+    // ferait une région : le programme y est posé.
+    let setup = format!(
+        "new Uint8Array(vm.memory.buffer).set({}, {BASE});",
+        js_bytes(&program)
+    );
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "secours-x87",
+        &setup,
+        r#"console.log("secourues " + vm.cache.secourues);
+console.log("range " + new DataView(vm.memory.buffer).getBigUint64(0xf008, true));"#,
+    );
+    if std::env::var_os("WISQ_HOTE_JS").is_some() {
+        // Sans le module de la page, pas de secours : la machine s'arrête sur
+        // le premier `fildl`, comme avant.
+        return;
+    }
+    assert_eq!(
+        line_of(&text, "range "),
+        "42",
+        "21 × 2 par le x87 du secours\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "secourues "),
+        "4",
+        "les quatre du x87\n{text}"
+    );
+    assert!(
+        text.contains("arret refusée"),
+        "le `ud2`, que personne ne lit\n{text}"
+    );
+}

@@ -82,10 +82,15 @@ public final class XfsVolume: @unchecked Sendable {
     /// entrées, les inodes clairsemés, l'identifiant de métadonnées à part,
     /// les dates étendues, les compteurs d'extents sur 64 bits, l'échange
     /// d'extents, et les pointeurs vers le parent — qu'openSUSE active, et
-    /// qui vivent dans les attributs étendus, qu'on ne lit pas. Rien de tout
-    /// ça ne change la façon de lire un fichier, sauf les compteurs sur
-    /// 64 bits, que `inode` traite.
-    static let readableIncompat: UInt32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80
+    /// qui vivent dans les attributs étendus, qu'on ne lit pas. Et le
+    /// répertoire des métadonnées (`METADIR`, 0x100, Linux 6.13), qu'openSUSE
+    /// Tumbleweed active depuis novembre 2026 : il range les inodes des
+    /// quotas et du temps réel dans un arbre à part, et ne change rien aux
+    /// fichiers ni aux répertoires ordinaires. Sans lui, l'image entière
+    /// était refusée — « aucune partition Linux ». Rien de tout ça ne change
+    /// la façon de lire un fichier, sauf les compteurs sur 64 bits, que
+    /// `inode` traite.
+    static let readableIncompat: UInt32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x20 | 0x40 | 0x80 | 0x100
 
     /// Ouvre le XFS d'une partition de `size` octets ; `read(offset, count)`
     /// lit dans la partition.
