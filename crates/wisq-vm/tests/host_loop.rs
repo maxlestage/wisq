@@ -10478,10 +10478,22 @@ fn the_timer_counts_down_at_the_rate_the_kernel_will_measure() {
             0x89, keep, // mov %eax,<registre gardé>
         ]);
     };
+    // **Quatre mille `rdtsc`, en boucle** : quatre-vingts tours de cinquante.
+    // Une région ne relève plus que 256 instructions — le corps d'une boucle
+    // compte deux fois, dans la ligne droite et comme cible —, et ce pilote
+    // n'en traduit qu'une ; `loop` ne touche que RCX, que `rdtsc` laisse, et
+    // n'avance pas l'horloge.
+    let four_thousand = |program: &mut Vec<u8>| {
+        program.extend_from_slice(&[0xb9, 80, 0, 0, 0]); // mov $80,%ecx
+        let top = program.len();
+        program.extend(std::iter::repeat_n([0x0f, 0x31], 50).flatten());
+        let back = top as i64 - (program.len() as i64 + 2);
+        program.extend_from_slice(&[0xe2, back as i8 as u8]); // loop top
+    };
     read_into(&mut program, 0xc3); // → %ebx
-    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    four_thousand(&mut program);
     read_into(&mut program, 0xc6); // → %esi
-    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    four_thousand(&mut program);
     read_into(&mut program, 0xc7); // → %edi
     program.extend_from_slice(&[0x0f, 0x0b]);
 
@@ -23557,10 +23569,11 @@ console.log("rdi " + lire(vm, 7) + " vidages " + vm.vidages.fois + " traduites "
 /// pas une instruction en mode long. Ici, le `call` fini, la région rend la
 /// main avant le saut ; l'hôte oublie T et relit ses octets neufs, que
 /// l'émetteur refuse. Sans le test après le `call`, le saut résolu dans le
-/// module entrerait dans l'ancienne T, qui ajouterait trois. Deux régions
-/// oubliées, et c'est juste : la découverte de C suit les octets après son
-/// `call` jusqu'au bout de sa fenêtre, donc jusque dans T, et C lit cette
-/// ligne-là aussi.
+/// module entrerait dans l'ancienne T, qui ajouterait trois. Une région
+/// oubliée, T seule : la découverte de C suit les octets après son `call`,
+/// mais les deux kibioctets de zéros qui la séparent de T font mille vingt-
+/// quatre instructions, et une région s'arrête à 256 — C ne lit plus la ligne
+/// de T.
 #[test]
 fn an_indirect_call_that_pushes_over_its_target_does_not_enter_it_stale() {
     let Some(bun) = bun() else {
@@ -23586,7 +23599,7 @@ console.log("t " + avant + " puis +" + (lire(vm, 7) - avant) + " premier " + m[0
     );
     let text = cache_course(&bun, "appel-sur-cible", 4, &corps);
     assert!(
-        text.contains("t 3 puis +0 premier 7 invalidees 2 arret refusée rip 12000"),
+        text.contains("t 3 puis +0 premier 7 invalidees 1 arret refusée rip 12000"),
         "T recouverte par l'adresse de retour n'est pas entrée sur son ancienne \
          traduction : {text}"
     );
