@@ -28,7 +28,7 @@
 // C'est ce qui le fait juger sous Bun, de bout en bout, par le même magasin
 // Swift que l'application (`EmitterMachineTests`), et la page
 // (`machine.html`) n'est qu'un raccord de quelques lignes.
-import { machine, SLOTS, ARRET_DEMANDE } from "./host.js";
+import { machine, SLOTS, ARRET_DEMANDE, CACHE_PAR_DEFAUT } from "./host.js";
 import { carte, arriereParUrl } from "./carte.js";
 import { emetteur } from "./page-emitter.js";
 
@@ -183,6 +183,40 @@ export function consoleTamponnee({
 /// seconde, et rien quand la révision n'a pas bougé.
 const ECRAN_PERIODE = 33;
 
+/// **Le cache de code d'une machine de la page**, selon sa RAM : la moitié
+/// de `CACHE_PAR_DEFAUT` en octets de wasm à partir d'un gibioctet.
+///
+/// **Pourquoi la page en a besoin, mesuré.** Le processus de la vue a sa
+/// propre limite sur un iPhone — autour de 1,5 à 2 Gio —, et c'est lui qui
+/// porte la RAM de l'invité. Ubuntu 26.04 la remplit, et ses quarante
+/// processus produisent plus d'un gibioctet de wasm distinct en trois
+/// minutes : le cache évince sans arrêt, quelle que soit sa borne. Sous Bun,
+/// collectes pleines forcées (`useGenerationalGC=0`, ce que JavaScriptCore
+/// fait sur iOS près de la limite), la page monte à 1 060 Mio résidents avec
+/// 64 Mio de modules, entre 846 et 920 Mio avec 32, au même rythme de
+/// traductions.
+/// Deux cents mébioctets de moins pour une machine qui en a besoin ; une
+/// petite machine garde la borne mesurée sur Alpine.
+export function cachePour(pages) {
+  const octets = pages * 65536 >= 1 << 30 ? CACHE_PAR_DEFAUT.octets / 2 : CACHE_PAR_DEFAUT.octets;
+  return { octets };
+}
+
+/// **Pousser le moteur à collecter**, à chaque respiration de la boucle (un
+/// quart de la borne évincé).
+///
+/// Une page ne peut pas demander de collecte, et le code compilé des modules
+/// évincés ne pèse rien sur le tas : rien ne déclenche celle qui les rend.
+/// Une allocation, si — `JavaScriptCore` compte les octets d'un
+/// `ArrayBuffer` dans ce qui déclenche la suivante, et sur iOS, passé 80 %
+/// de la limite du processus, toute collecte devient pleine. Huit mébioctets
+/// lâchés aussitôt : de quoi en déclencher une, pas de quoi peser.
+let lest = null;
+function pousserLaCollecte() {
+  lest = new ArrayBuffer(8 << 20);
+  lest = null;
+}
+
 /// Lire une réponse en octets, de la longueur attendue ou pas du tout.
 async function octetsDe(chercher, url, attendus = null) {
   const reponse = await chercher(url);
@@ -256,6 +290,8 @@ export async function demarrer({
   const disque = plan.disque ?? null;
   const vm = machine({
     translate,
+    cache: cachePour(plan.pages),
+    ramasser: pousserLaCollecte,
     pages: plan.pages,
     serial,
     // Les puces de la boucle en Rust, dans une instance à elles du même

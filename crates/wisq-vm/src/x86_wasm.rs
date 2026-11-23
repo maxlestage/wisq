@@ -981,6 +981,23 @@ pub enum Refused {
 /// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
 const REACH: usize = crate::x86::LONGEST;
 
+/// **Combien d'instructions une région traduit au plus**, tous blocs
+/// confondus. Passé ce nombre, la découverte s'arrête : le bloc en cours finit
+/// devant l'instruction suivante, et ce qui n'a pas été relevé devient une
+/// cible hors région — la correspondance, puis une région de plus si
+/// l'exécution y va vraiment.
+///
+/// **Sans borne, une région suivait toutes les issues de toute la fenêtre**,
+/// et c'est sa taille en sortie qui a fait tuer la page sur un iPhone. Le
+/// démarrage d'Ubuntu 26.04 (glibc et ses routines SSE, le décompresseur du
+/// noyau) produisait des régions de 4 Kio de x86 et 257 blocs pesant
+/// **1,1 Mio de wasm chacune**, une par point d'entrée dans la même page. Le
+/// cache de code (64 Mio de wasm) n'en tenait que sept cents : 125 000
+/// évictions en quatre minutes, et des modules évincés que seule une collecte
+/// pleine rend — la page montait à 3,9 Gio résidents sous Bun, et iOS tuait
+/// le processus de la vue.
+const STEPS_PER_REGION: usize = 256;
+
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
 /// peut pas la corrompre, et il n'a fallu pour ça aucune seconde mémoire.
@@ -2794,14 +2811,21 @@ impl Module {
         // la région. `unreadable` les rend, parce qu'ils doivent rester
         // comptables.
         let mut stops = std::collections::BTreeSet::new();
+        // Les instructions relevées jusqu'ici, contre `STEPS_PER_REGION`.
+        let mut decoded = 0usize;
         while let Some(start) = queue.pop() {
+            if decoded >= STEPS_PER_REGION {
+                break;
+            }
             if start >= bytes.len() || !starts.insert(start) {
                 continue;
             }
             let mut steps = Vec::new();
             let mut at = start;
             loop {
-                if at >= bytes.len() {
+                // **La borne atteinte, le bloc finit ici**, comme au bord de
+                // la fenêtre : sans terminateur, RIP sur l'instruction d'après.
+                if at >= bytes.len() || decoded >= STEPS_PER_REGION {
                     break;
                 }
                 let Some(step) = decode(&bytes[at..]) else {
@@ -2847,6 +2871,7 @@ impl Module {
                     break;
                 };
                 at += step.length;
+                decoded += 1;
                 let ends = matches!(
                     step.op,
                     Op::Jump(_)
@@ -2873,18 +2898,31 @@ impl Module {
                 // les octets d'après ne sont pas atteignables par cette route ;
                 // les mettre dans la file ferait décoder, et refuser, ce qu'un
                 // noyau range là — souvent des données de sa table de bogues.
+                //
+                // **Ni un `jmp *` :** il ne revient pas plus qu'un `jmp`. Le
+                // laisser « tomber » faisait traduire, depuis une seule entrée
+                // de la PLT d'un programme (`endbr64 ; jmp *[rip+x]`), toutes
+                // celles qui la suivent dans la fenêtre — 257 blocs et
+                // 1,1 Mio de wasm par région au démarrage d'Ubuntu 26.04, une
+                // région par fonction de bibliothèque appelée.
                 let falls = !matches!(
                     step.op,
                     Op::Jump(None)
+                        | Op::JumpIndirect
                         | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
                         | Op::SystemReturn
                         | Op::Undefined
                 );
+                // **Une forme indirecte n'a pas de cible écrite** : son
+                // immédiat vaut zéro, et `at + 0` mettait dans la file
+                // l'instruction d'après, comme une suite.
                 let jumps = !matches!(
                     step.op,
-                    Op::Return
+                    Op::JumpIndirect
+                        | Op::CallIndirect
+                        | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
                         | Op::SystemCall

@@ -5330,3 +5330,51 @@ fn every_vector_form_the_decoder_reads_is_one_the_emitter_translates() {
         "le balayage n'a vu que {seen} formes vectorielles"
     );
 }
+
+/// **Rien ne suit un `jmp *`.** Une entrée de PLT — `endbr64 ; jmp
+/// *[rip+x]` — est suivie de la suivante, et de deux cent cinquante autres
+/// dans la même page. Les relever toutes, c'était traduire 257 blocs et
+/// 1,1 Mio de wasm pour un appel de bibliothèque, au démarrage d'Ubuntu
+/// 26.04, et faire tuer la page par iOS. L'octet illisible posé juste après
+/// le saut ne doit donc pas être lu : la découverte s'arrête sur le saut.
+#[test]
+fn nothing_follows_an_indirect_jump() {
+    // endbr64 ; jmp *0x100(%rip)
+    let mut bytes = vec![0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x25, 0x00, 0x01, 0x00, 0x00];
+    bytes.push(UNKNOWN);
+    bytes.extend(std::iter::repeat_n(0x90, 40));
+    assert_eq!(
+        Module::unreadable(&bytes, 0),
+        Ok(vec![]),
+        "la suite d'un `jmp *` n'est pas atteignable par lui"
+    );
+    // Un `call *` revient, lui : sa suite reste relevée.
+    let mut called = vec![0xff, 0x15, 0x00, 0x01, 0x00, 0x00];
+    called.push(UNKNOWN);
+    called.extend(std::iter::repeat_n(0x90, 40));
+    assert_eq!(Module::unreadable(&called, 0), Ok(vec![6]));
+}
+
+/// **Une région s'arrête à 256 instructions**, tous blocs confondus : ce qui
+/// vient après devient une région de plus si l'exécution y va. Sans borne,
+/// une fonction-aiguillage du noyau (des centaines de comparaisons et de
+/// sauts) faisait une région de 600 Kio de wasm.
+#[test]
+fn a_region_stops_after_its_instruction_budget() {
+    let mut bytes = vec![0x90; 300];
+    bytes.push(UNKNOWN);
+    bytes.extend(std::iter::repeat_n(0x90, 40));
+    assert_eq!(
+        Module::unreadable(&bytes, 0),
+        Ok(vec![]),
+        "l'octet illisible est au-delà de la borne : il n'est pas relevé"
+    );
+    assert!(Module::region_or_why(&bytes, CODE, 0).is_ok());
+    let mut near = vec![0x90; 200];
+    near.push(UNKNOWN);
+    assert_eq!(
+        Module::unreadable(&near, 0),
+        Ok(vec![200]),
+        "en deçà, il l'est"
+    );
+}
