@@ -52,6 +52,56 @@ fn workspace_root() -> PathBuf {
     at
 }
 
+/// **Le module de la page, chargé avant chaque pilote** (`bun run --preload`).
+///
+/// Depuis l'étape 2 du port de `web/host.js` vers Rust, les puces (8254,
+/// 8259, 16550) vivent dans `crates/wisq-page/src/puces.rs` quand la boucle a
+/// le module de la page ; `machine()` le prend dans `globalThis.wisqPage`
+/// quand on ne le lui passe pas. Ce préambule l'y pose, une fois par pilote :
+/// les deux cent cinquante-trois pilotes de ce fichier jugent ainsi les puces
+/// Rust sans qu'un seul ait à changer. Le module est construit par le script
+/// que tout le monde lance (`scripts/build-page-emitter.sh`), une fois par
+/// processus de test.
+///
+/// **`WISQ_HOTE_JS=1` lance la même suite sans le module** : les puces en
+/// JavaScript, celles que garde le bureau d'avant (`desktop.rs`) tant qu'il
+/// n'est pas migré, restent ainsi jugées par les mêmes deux cent cinquante-
+/// trois pilotes.
+fn page_preload() -> Vec<std::ffi::OsString> {
+    if std::env::var_os("WISQ_HOTE_JS").is_some() {
+        return Vec::new();
+    }
+    use std::sync::OnceLock;
+    static PRELOAD: OnceLock<PathBuf> = OnceLock::new();
+    let path = PRELOAD.get_or_init(|| {
+        let root = workspace_root();
+        let output = Command::new("bash")
+            .arg(root.join("scripts/build-page-emitter.sh"))
+            .arg(&root)
+            .output()
+            .expect("le script de construction doit démarrer");
+        assert!(
+            output.status.success(),
+            "le module de la page ne se construit pas :\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let module = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let preload = std::env::temp_dir().join(format!("wisq-page-preload-{}.mjs", std::process::id()));
+        std::fs::write(
+            &preload,
+            format!(
+                "import {{ emetteur }} from {page:?};\n\
+                 import {{ readFileSync }} from \"fs\";\n\
+                 globalThis.wisqPage = emetteur(new WebAssembly.Module(readFileSync({module:?})));\n",
+                page = root.join("web/page-emitter.js").to_string_lossy(),
+            ),
+        )
+        .expect("le préambule");
+        preload
+    });
+    vec!["--preload".into(), path.clone().into_os_string()]
+}
+
 fn bun() -> Option<PathBuf> {
     ["/root/.bun/bin/bun", "bun"]
         .into_iter()
@@ -678,6 +728,7 @@ console.log("rdx " + vm.globals[2].value.toString());
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -931,6 +982,7 @@ console.log("r8 " + vm.globals[8].value.toString());
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -1111,6 +1163,7 @@ console.log("entree " + lire({base}n));
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -1235,6 +1288,7 @@ console.log("haut " + lire(2));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1381,6 +1435,7 @@ console.log("rsp " + lire(4));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1493,6 +1548,7 @@ console.log("r14 " + lire(14));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1597,6 +1653,7 @@ console.log("apres " + lire(6));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1701,6 +1758,7 @@ console.log("cr0 " + lire(7));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1820,6 +1878,7 @@ console.log("rip " + lire({rip}));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -1973,6 +2032,7 @@ console.log("rip " + lire({rip}));
         .expect("le pilote");
         let output = Command::new(&bun)
             .arg("run")
+            .args(page_preload())
             .arg(&driver)
             .output()
             .expect("bun");
@@ -2117,6 +2177,7 @@ console.log("rsp " + lire(4));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -2391,6 +2452,7 @@ console.log("plat " + plat.rdx);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -2632,6 +2694,7 @@ console.log("r8 " + lire(8));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -2845,6 +2908,7 @@ console.log("sans " + sans.why.stopped);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -2958,6 +3022,7 @@ console.log("demandes " + asked);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -3091,6 +3156,7 @@ console.log("rip " + lire({rip}));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -3206,6 +3272,7 @@ console.log("noyau " + lire(7));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -3315,6 +3382,7 @@ for (const [nom, at] of [["rsi", 6], ["rdi", 7], ["rbx", 3], ["rdx", 2], ["r8", 
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -3412,6 +3480,7 @@ console.log("rdi " + lire(7));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -3508,6 +3577,7 @@ console.log("rdi " + lire(7));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -4020,6 +4090,7 @@ console.log("limite " + lire({limit}));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -4160,6 +4231,7 @@ console.log("jamais " + lire(6));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -4341,6 +4413,7 @@ console.log("ebx " + lire(3));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -4541,6 +4614,7 @@ console.log(BigInt.asUintN(64, vm.globals[{tsc}].value).toString());
         .expect("le pilote");
         let output = Command::new(&bun)
             .arg("run")
+            .args(page_preload())
             .arg(&driver)
             .output()
             .expect("bun doit démarrer");
@@ -4667,6 +4741,7 @@ console.log("aux " + BigInt.asUintN(64, vm.globals[1].value).toString());
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -4785,6 +4860,7 @@ console.log("haut " + BigInt.asUintN(64, vm.globals[2].value).toString());
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -4903,6 +4979,7 @@ console.log("empile " + octets.getBigUint64({empile}, true).toString(16));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -5017,6 +5094,7 @@ console.log("ou " + why.at.toString(16));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -5319,6 +5397,7 @@ console.log("demandes " + asked);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -5379,6 +5458,7 @@ console.log("4 acceptee");
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -5432,6 +5512,7 @@ console.log([{listing}].map(tableSlot).join(","));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -5658,6 +5739,7 @@ console.log("fenetres " + fenêtres.join(","));
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&harness)
         .output()
         .expect("bun doit démarrer");
@@ -5935,6 +6017,7 @@ console.log("refus " + why.stopped);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -6054,6 +6137,7 @@ console.log("regions " + vm.known.size);
     let began = std::time::Instant::now();
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -6138,6 +6222,7 @@ console.log("abandon " + pourquoi.stopped);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -6243,6 +6328,7 @@ console.log("court " + court);
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -6425,6 +6511,7 @@ console.log("rdx-apnee " + apnée.rdx.toString());
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -6771,6 +6858,7 @@ console.log("finale " + images[images.length - 1]);
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&harness)
         .output()
         .expect("bun doit démarrer");
@@ -6923,6 +7011,7 @@ console.log("run " + typeof window.wisqRun);
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&harness)
         .output()
         .expect("bun doit démarrer");
@@ -7138,6 +7227,7 @@ console.log("demandes " + asked);
 fn run_driver(bun: &Path, driver: &Path) -> String {
     let output = Command::new(bun)
         .arg("run")
+        .args(page_preload())
         .arg(driver)
         .output()
         .expect("bun");
@@ -7675,6 +7765,7 @@ console.log("rdx " + vm.globals[2].value.toString());
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun doit démarrer");
@@ -9845,6 +9936,7 @@ console.log("octets " + tailles[0]);
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -10254,6 +10346,7 @@ console.log("rbx " + BigInt.asUintN(64, vm.globals[3].value).toString());
     .expect("le pilote");
     let output = Command::new(bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -11394,6 +11487,7 @@ console.log("voisine " + compte({next}, 0x1000));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -11731,6 +11825,7 @@ console.log("cr2 0x" + lire({control} + 1).toString(16));
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -11886,6 +11981,7 @@ console.log("rdx " + lire(2).toString());
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -12119,6 +12215,7 @@ console.log("cr2 0x" + BigInt.asUintN(64, vm.globals[{control} + 1].value).toStr
 
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -16691,6 +16788,7 @@ console.log("rsi " + lire(6));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -16889,6 +16987,7 @@ console.log("mot " + vue.getBigUint64({frame} + 0x7f8, true).toString());
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -17068,6 +17167,7 @@ console.log("rbx " + lire(3));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");
@@ -17189,6 +17289,7 @@ console.log("rsp " + lire(4));
     .expect("le pilote");
     let output = Command::new(&bun)
         .arg("run")
+        .args(page_preload())
         .arg(&driver)
         .output()
         .expect("bun");

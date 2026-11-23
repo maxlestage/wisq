@@ -8,6 +8,46 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-23 — La boucle hôte de l'émetteur en Rust, étape 2 : les puces
+
+**Ce qui passe en Rust.** Le 8254, les deux 8259 et le 16550 de
+`web/host.js` (ses lignes 583 à 1505 pour ces trois puces), dans
+`crates/wisq-page/src/puces.rs`. Reproduits, pas réécrits : la même horloge
+(le TSC à un gigahertz, 1 193 182 pas par seconde, la division entière du
+BigInt), les mêmes cas, les mêmes valeurs rendues. L'état est pur — l'heure
+en argument, les octets de la ligne série gardés — et quatre tests natifs le
+jugent (le compteur en mode 2 et son verrou, le portillon et la sortie du
+canal deux, l'initialisation et la cascade des 8259 avec OCW3 et EOI, la
+boucle et l'IIR du 16550).
+
+**Le câblage.** Les exports (`puces_sortir`, `puces_entrer`,
+`puces_en_attente`, `puces_prendre`, …) rendent des `i32` : un `i64` vers
+JavaScript serait un BigInt à chaque port. Ils lisent le TSC à travers le
+module d'accès de l'étape 1. `emetteur(...).hote(memoire, globales)` crée une
+instance du module pour la boucle seule — branchée, puces remises à
+l'allumage —, pour qu'une trappe de l'émetteur, qui refait son instance, ne
+remette pas les puces à zéro au milieu d'une course. `host.js` ne parle plus
+qu'à un objet `puces` à deux versions ; ses branches JavaScript sont sorties
+telles quelles dans `sortirJs`/`entrerJs`. La façade (`vm.pics`, `vm.pits`,
+`vm.uart`) lit et pose les champs en Rust : deux pilotes posent
+`vm.uart.interruptEnable` et `vm.pics.master.base` à la main, et le premier
+essai les a fait tomber sur « Attempted to assign to readonly property ».
+
+**Pourquoi deux versions, pour l'instant.** Le bureau d'avant
+(`crates/wisq-vm/src/desktop.rs`, que `LocalDesktopTests` juge sous WebKit)
+embarque `host.js` sans le module de la page. Il garde les puces JavaScript
+jusqu'à l'étape du nettoyage, qui le migrera ou le retirera. Les deux versions
+sont jugées par les mêmes pilotes : `host_loop` précharge le module
+(`bun run --preload`, `globalThis.wisqPage`) — **253/253 sur les puces
+Rust** —, et `WISQ_HOTE_JS=1` relance la suite sans lui — **253/253 sur les
+puces JavaScript**. Un vecteur du maître décalé de un dans le Rust fait
+tomber dix-neuf pilotes ; un verrou du 8254 oublié n'en fait tomber aucun,
+et c'est le test natif du verrou qui le tient.
+
+**L'application.** `web/machine.js` donne le module à la boucle :
+`EmitterPageTests` (la page sous Bun, le magasin Swift derrière son `fetch`)
+démarre son petit noyau sur les puces Rust.
+
 ## 2026-11-22 — La boucle hôte de l'émetteur en Rust, étape 1 : le socle
 
 **Le plan**, après une cartographie de `web/host.js` (≈ 1 500 lignes de code

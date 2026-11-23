@@ -814,6 +814,11 @@ export function machine({
   // page où du code a été traduit oublie ces traductions. Aucune par défaut :
   // la machine d'avant, ses quatre puces et rien d'autre.
   carte: brancherLaCarte = null,
+  // **Le module de la page**, quand on l'a : les puces (8254, 8259, 16550)
+  // vivent alors en Rust (`crates/wisq-page/src/puces.rs`), dans une
+  // instance à elles. Sans lui — le bureau d'avant, qui n'embarque pas le
+  // module —, elles restent ici, en JavaScript, jusqu'à sa migration.
+  page = globalThis.wisqPage ?? null,
 }) {
   if (!Number.isInteger(pages) || pages <= 0 || (pages & (pages - 1)) !== 0) {
     throw new Error(`la RAM doit être une puissance de deux, pas ${pages}`);
@@ -1293,26 +1298,18 @@ export function machine({
     // attente, la carte ne touche pas à la RAM.
     peripheriques.livrer(tics);
     const l = peripheriques.lignes();
-    pics.master.request = (pics.master.request & ~(l.tenuesMaitre & ~l.maitre)) | l.maitre;
-    pics.slave.request = (pics.slave.request & ~(l.tenuesEsclave & ~l.esclave)) | l.esclave;
+    puces.recopier(l);
   };
 
   /// **Tous les bits à un sur `largeur` octets** : ce que rend une adresse
   /// où il n'y a personne, le bus qui flotte, à la largeur de l'accès.
-  const flottant = (largeur) => (1n << (8n * BigInt(largeur))) - 1n;
-  env.out = (port, value, width) => {
-    const at = Number(port);
-    // **La mémoire d'un périphérique**, envoyée ici par l'accès lent : une
-    // adresse physique, pas un port. Sans carte, ou si l'adresse n'est à
-    // personne, l'écriture tombe dans le vide, comme sur un bus sans
-    // répondant.
-    if (at > DERNIER_PORT) {
-      if (peripheriques !== null) peripheriques.memoire.ecrire(port, value, width);
-      return;
-    }
+  // **Les puces en JavaScript** : ce que `env.out` et `env.in` en faisaient,
+  // sorti tel quel dans deux fonctions. Vrai (ou une valeur) quand le port est
+  // à elles. Servies quand la page n'a pas donné son module.
+  const sortirJs = (at, value) => {
     if (at >= SERIAL && at <= SERIAL_LAST) {
       serialWrite(at - SERIAL, Number(value & 0xffn));
-      return;
+      return true;
     }
     if (at === PIT_GATE) {
       // **Le portillon du canal deux.** Le bit cinq appartient à la puce et
@@ -1329,7 +1326,7 @@ export function machine({
         chip.open = wanted;
         chip.openedAt = now();
       }
-      return;
+      return true;
     }
     if (at === PIT_COMMAND) {
       const octet = Number(value & 0xffn);
@@ -1337,7 +1334,7 @@ export function machine({
       // **La commande de relecture** — canal trois — n'est pas modélisée. Ce
       // noyau ne l'emploie pas ; l'ignorer en le disant vaut mieux que de
       // rendre un état inventé.
-      if (which === 3) return;
+      if (which === 3) return true;
       const chip = pits[which];
       const access = (octet >> 4) & 3;
       if (access === 0) {
@@ -1346,7 +1343,7 @@ export function machine({
         // d'avant et un octet haut d'après.
         chip.latched = countOf(chip);
         chip.readHigh = false;
-        return;
+        return true;
       }
       chip.mode = (octet >> 1) & 7;
       chip.access = access;
@@ -1354,7 +1351,7 @@ export function machine({
       chip.readHigh = false;
       chip.writeHigh = false;
       chip.latched = null;
-      return;
+      return true;
     }
     if (at >= PIT_CHANNEL && at < PIT_CHANNEL + 3) {
       const chip = pits[at - PIT_CHANNEL];
@@ -1370,7 +1367,7 @@ export function machine({
         chip.writeHigh = false;
         load(chip, (octet << 8) | chip.low);
       }
-      return;
+      return true;
     }
     const chosen = controllerAt(at);
     if (chosen !== null) {
@@ -1383,12 +1380,12 @@ export function machine({
         if (octet & PIC_INIT) {
           chosen.chip.expects = 2;
           chosen.chip.wantsFour = (octet & PIC_WANTS_ICW4) !== 0;
-          return;
+          return true;
         }
         if ((octet & PIC_WORD) === PIC_IS_OCW3) {
           chosen.chip.reads =
             octet & PIC_READ_SERVICE ? "service" : "request";
-          return;
+          return true;
         }
         // **OCW2, et la fin d'interruption.** Sans le bit d'acquittement, le
         // mot ne demande qu'une rotation de priorités, qui n'est pas
@@ -1402,7 +1399,7 @@ export function machine({
           // zéro par accident — d'où le refus de `-1`.
           if (line >= 0) chosen.chip.service &= ~(1 << line);
         }
-        return;
+        return true;
       }
       // **Le port de données porte deux choses selon le moment** : les mots
       // d'initialisation tant qu'une séquence est ouverte, le masque sinon.
@@ -1412,7 +1409,7 @@ export function machine({
         case 2:
           chosen.chip.base = octet;
           chosen.chip.expects = 3;
-          return;
+          return true;
         case 3:
           // **ICW3, le câblage de la cascade.** Tenu pour acquis plutôt que
           // lu : la ligne deux, celle de tous les PC. Ce commentaire disait
@@ -1421,15 +1418,15 @@ export function machine({
           // constante et non de ce mot. Un noyau qui câblerait l'esclave
           // ailleurs serait routé de travers, et ce serait silencieux.
           chosen.chip.expects = chosen.chip.wantsFour ? 4 : 0;
-          return;
+          return true;
         case 4:
           // ICW4, le mode. Seul le mode 8086 est modélisé, et c'est le seul
           // qu'un noyau x86-64 demande.
           chosen.chip.expects = 0;
-          return;
+          return true;
         default:
           chosen.chip.mask = octet;
-          return;
+          return true;
       }
     }
     // **Le reste va à la carte, en dernier** : l'i8042, l'horloge, le bus et
@@ -1446,22 +1443,9 @@ export function machine({
     // Sans carte, tout le reste tombe dans le vide, comme sur une carte mère
     // sans périphériques : une écriture vers un port absent ne fait rien et
     // ne fait pas planter la machine.
-    if (peripheriques !== null && peripheriques.ports.out(port, value, width)) {
-      if ((at === 0x64 || at === 0x60) && peripheriques.remise()) remiseDemandee = true;
-    }
+    return false;
   };
-  /// **Combien de lectures de port l'invité a faites** : ce qui distingue un
-  /// bloc qui attend un périphérique d'un bloc bloqué (« sur place »).
-  let lecturesDePort = 0;
-  env.in = (port, width) => {
-    lecturesDePort += 1;
-    const at = Number(port);
-    // La mémoire d'un périphérique, comme pour `out` : tous les bits à un
-    // quand personne n'y répond.
-    if (at > DERNIER_PORT) {
-      const valeur = peripheriques === null ? null : peripheriques.memoire.lire(port, width);
-      return valeur === null ? flottant(width) : valeur;
-    }
+  const entrerJs = (at) => {
     if (at >= SERIAL && at <= SERIAL_LAST) return BigInt(serialRead(at - SERIAL));
     if (at === PIT_GATE) {
       return BigInt(gatePort | (outTwo() ? PIT_OUT_TWO : 0));
@@ -1497,6 +1481,105 @@ export function machine({
         chosen.chip.reads === "service" ? chosen.chip.service : chosen.chip.request);
     }
     // La carte, en dernier ; `null` quand le port n'est pas à elle non plus.
+    return null;
+  };
+  // **Les puces, d'un côté ou de l'autre.** La boucle ne parle qu'à cet
+  // objet ; ses deux versions disent la même chose, et `host_loop` juge la
+  // version Rust (ses pilotes chargent le module de la page) tandis que le
+  // bureau d'avant garde la version JavaScript.
+  const rust = page === null ? null : page.hote(memory, globals);
+  const puces = rust === null
+    ? {
+      sortir: sortirJs,
+      entrer: entrerJs,
+      enAttente: pendingIrq,
+      prendre: takeIrq,
+      reveillable: wakeable,
+      lever8254: raise8254,
+      leverSerie: raiseSerial,
+      recopier(l) {
+        pics.master.request = (pics.master.request & ~(l.tenuesMaitre & ~l.maitre)) | l.maitre;
+        pics.slave.request = (pics.slave.request & ~(l.tenuesEsclave & ~l.esclave)) | l.esclave;
+      },
+      recevoir(octet) {
+        uart.input.push(octet & 0xff);
+      },
+    }
+    : {
+      sortir(at, value) {
+        const fait = rust.puces_sortir(at, Number(value & 0xffffffffn));
+        if ((fait & 0x100) !== 0 && serial) serial(fait & 0xff);
+        return fait !== 0;
+      },
+      entrer(at) {
+        const valeur = rust.puces_entrer(at);
+        return valeur < 0 ? null : BigInt(valeur);
+      },
+      enAttente() {
+        const code = rust.puces_en_attente();
+        if (code < 0) return null;
+        return { line: (code >> 8) & 0xff, slave: ((code >> 16) & 1) === 1, vector: code & 0xff, code };
+      },
+      prendre(irq) {
+        rust.puces_prendre(irq.code);
+      },
+      reveillable: () => rust.puces_reveillable() === 1,
+      lever8254: () => rust.puces_lever_8254(),
+      leverSerie: () => rust.puces_lever_serie(),
+      recopier: (l) => rust.puces_recopier(l.maitre, l.tenuesMaitre, l.esclave, l.tenuesEsclave),
+      recevoir: (octet) => rust.puces_recevoir(octet & 0xff),
+    };
+  // **La façade** (`vm.pics`, `vm.pits`, `vm.uart`) : les relevés la lisent,
+  // et quelques tests posent un champ à la main. Côté Rust, chaque champ est
+  // lu et posé à la demande.
+  const champ = (numero) => ({
+    get: () => rust.puces_champ(numero),
+    set: (valeur) => rust.puces_poser(numero, valeur),
+    enumerable: true,
+  });
+  const champs = (base) => Object.defineProperties({}, {
+    request: champ(base),
+    mask: champ(base + 1),
+    base: champ(base + 2),
+    service: champ(base + 3),
+  });
+  const facade = rust === null
+    ? { pics, pits, uart }
+    : {
+      pics: { master: champs(0), slave: champs(10) },
+      pits: [0, 1, 2].map((rang) => ({ get reload() { return rust.puces_champ(30 + rang); } })),
+      uart: Object.defineProperties({}, { divisor: champ(20), interruptEnable: champ(21) }),
+    };
+  const flottant = (largeur) => (1n << (8n * BigInt(largeur))) - 1n;
+  env.out = (port, value, width) => {
+    const at = Number(port);
+    // **La mémoire d'un périphérique**, envoyée ici par l'accès lent : une
+    // adresse physique, pas un port. Sans carte, ou si l'adresse n'est à
+    // personne, l'écriture tombe dans le vide, comme sur un bus sans
+    // répondant.
+    if (at > DERNIER_PORT) {
+      if (peripheriques !== null) peripheriques.memoire.ecrire(port, value, width);
+      return;
+    }
+    if (puces.sortir(at, value)) return;
+    if (peripheriques !== null && peripheriques.ports.out(port, value, width)) {
+      if ((at === 0x64 || at === 0x60) && peripheriques.remise()) remiseDemandee = true;
+    }
+  };
+  /// **Combien de lectures de port l'invité a faites** : ce qui distingue un
+  /// bloc qui attend un périphérique d'un bloc bloqué (« sur place »).
+  let lecturesDePort = 0;
+  env.in = (port, width) => {
+    lecturesDePort += 1;
+    const at = Number(port);
+    // La mémoire d'un périphérique, comme pour `out` : tous les bits à un
+    // quand personne n'y répond.
+    if (at > DERNIER_PORT) {
+      const valeur = peripheriques === null ? null : peripheriques.memoire.lire(port, width);
+      return valeur === null ? flottant(width) : valeur;
+    }
+    const dePuce = puces.entrer(at);
+    if (dePuce !== null) return dePuce;
     if (peripheriques !== null) {
       const valeur = peripheriques.ports.in(port, width);
       if (valeur !== null) return valeur;
@@ -2796,8 +2879,8 @@ export function machine({
     /// attend une ligne. Le prochain `run` délivre l'interruption avant de
     /// regarder le `hlt`, et l'invité repart.
     send(octets) {
-      for (const octet of octets) uart.input.push(octet & 0xff);
-      raiseSerial();
+      for (const octet of octets) puces.recevoir(octet);
+      puces.leverSerie();
     },
     /// **Lire la mémoire de l'invité à une adresse invitée**, à travers les
     /// tables de pages quand elles sont en service — le même lecteur que la
@@ -2878,15 +2961,15 @@ export function machine({
     /// Les deux contrôleurs d'interruptions, pour que le relevé puisse dire ce
     /// qu'ils tiennent — le masque, et la base de vecteur qu'ICW2 a posée.
     /// Lecture ; rien ne se décide dessus.
-    pics,
+    pics: facade.pics,
     /// Les trois compteurs du 8254, au même titre et pour la même raison.
-    pits,
+    pits: facade.pits,
     /// **Combien d'interruptions de matériel l'hôte a délivrées, et où l'invité
     /// était à la première.** Lecture ; rien ne se décide dessus.
     materiel,
     surveillees,
     vidages,
-    uart,
+    uart: facade.uart,
     /// **La carte des périphériques**, telle que `carte` l'a rendue, ou
     /// `null`. C'est par elle que l'application tape, et que le relevé dit
     /// ce que le disque a servi.
@@ -3328,8 +3411,8 @@ export function machine({
         // gestionnaire n'a vue ne serait jamais acquittée : la ligne serait
         // morte pour le reste de la vie de la machine. L'ordre est donc
         // délivrer d'abord, prendre ensuite.
-        raise8254();
-        raiseSerial();
+        puces.lever8254();
+        puces.leverSerie();
         recopierLignes();
         const open =
           (BigInt.asUintN(64, globals[SLOTS.rflags].value) & INTERRUPT_FLAG) !== 0n;
@@ -3343,7 +3426,7 @@ export function machine({
         // est déjà prêt passe d'abord, sans attendre.
         if (
           stop === STOP_HALTED && open && peripheriques !== null
-          && pendingIrq() === null && peripheriques.disque.enVol() > 0
+          && puces.enAttente() === null && peripheriques.disque.enVol() > 0
         ) {
           await peripheriques.disque.attendre();
           recopierLignes();
@@ -3367,17 +3450,17 @@ export function machine({
         // à chaque pas, le temps passé d'abord ; sinon, pas un appel de plus
         // dans la boucle la plus serrée de la machine.
         const parLaCarte = peripheriques !== null && peripheriques.reveil();
-        if (stop === STOP_HALTED && open && (wakeable() || parLaCarte)) {
+        if (stop === STOP_HALTED && open && (puces.reveillable() || parLaCarte)) {
           const step = budget === 0n ? 1n : budget;
           let patience = 1 << 20;
-          while (pendingIrq() === null && patience-- > 0) {
+          while (puces.enAttente() === null && patience-- > 0) {
             globals[SLOTS.tsc].value = BigInt.asIntN(
               64, globals[SLOTS.tsc].value + step);
-            raise8254();
+            puces.lever8254();
             if (parLaCarte) recopierLignes();
           }
         }
-        const waiting = pendingIrq();
+        const waiting = puces.enAttente();
         if (waiting !== null && open) {
           const was = globals[SLOTS.stop].value;
           // **Lue avant la délivrance**, parce que c'est elle qui compte : le
@@ -3391,7 +3474,7 @@ export function machine({
             globals[SLOTS.stop].value = was;
             return { stopped: why, at: rip() };
           }
-          takeIrq(waiting);
+          puces.prendre(waiting);
           // **Comptée après, pas avant.** Une délivrance refusée — pas d'IDT,
           // pas de porte, pas de pile — n'est pas une délivrance, et la
           // compter ferait dire au relevé qu'une interruption est passée là
