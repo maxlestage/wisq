@@ -1627,6 +1627,9 @@ export function machine({
   }
   /// Les régions, par contexte puis par adresse.
   const espaces = new Map();
+  /// **Les corps traduits hors de l'anneau zéro, par adresse** : ce qu'un
+  /// autre programme peut reprendre sans retraduire (voir `partager`).
+  const partages = new Map();
   /// **Toutes les régions, de la moins récemment servie à la plus récente.**
   /// Un `Set` garde l'ordre d'insertion ; servir une région la retire et la
   /// remet, donc la première est toujours la prochaine à partir. « Servie »
@@ -1662,6 +1665,8 @@ export function machine({
     respirations: 0,
     /// Les instructions que l'émetteur refuse et que le secours a faites.
     secourues: 0,
+    /// Les régions reprises d'un autre programme sans retraduire (`partager`).
+    partagees: 0,
     /// Les clés évincées que le cache retient pour compter les retraductions
     /// (voir `oubliees`), jamais plus que `limite.oubliees`.
     get oubliees() {
@@ -1987,6 +1992,10 @@ export function machine({
   /// **Invalidée, ce n'est pas la borne qui la chasse** : comptée dans
   /// `invalidees` et non `evincees`, et sa clé n'entre pas dans `oubliees` —
   /// la retraduire n'est pas le prix de la borne.
+  ///
+  /// **Une région partagée** (voir `partager`) ne rend ses blocs et sa place
+  /// qu'avec le dernier contexte qui la sert : les autres les emploient
+  /// encore. Chacun n'efface que ses propres cases et ses propres marques.
   const evincer = (region, invalidee = false) => {
     const ici = espaces.get(region.contexte);
     ici.delete(region.adresse);
@@ -1994,13 +2003,24 @@ export function machine({
     recentes.delete(region);
     for (let rang = 0; rang < region.debuts.length; rang += 1) {
       effacer(region.debuts[rang], region.slot + rang, region.contexte);
-      blocks.set(region.slot + rang, null);
     }
-    rendre(region.slot, region.debuts.length);
     demarquer(region);
-    tenu.regions -= 1;
-    tenu.octets -= region.octets;
-    evincesDepuis += region.octets;
+    const corps = region.corps;
+    corps.membres.delete(region);
+    if (corps.membres.size === 0) {
+      for (let rang = 0; rang < region.debuts.length; rang += 1) {
+        blocks.set(region.slot + rang, null);
+      }
+      rendre(region.slot, region.debuts.length);
+      tenu.regions -= 1;
+      tenu.octets -= region.octets;
+      evincesDepuis += region.octets;
+      const memes = partages.get(region.adresse);
+      if (memes !== undefined) {
+        memes.delete(corps);
+        if (memes.size === 0) partages.delete(region.adresse);
+      }
+    }
     if (invalidee) {
       caches.invalidees += 1;
       return;
@@ -2580,6 +2600,78 @@ export function machine({
     return null;
   }
 
+  /// **Un contexte de plus sert ce corps** : la région rangée sous lui, ses
+  /// cases dans la correspondance, ses marques — celles du code et celle de
+  /// sa racine.
+  const membre = (corps, address, ctx, morceaux) => {
+    const region = {
+      run: corps.run,
+      slot: corps.slot,
+      lu: corps.lu,
+      adresse: address,
+      contexte: ctx,
+      debuts: corps.debuts,
+      octets: corps.octets,
+      morceaux,
+      corps,
+    };
+    corps.membres.add(region);
+    marquer(region);
+    let ici = espaces.get(ctx);
+    if (ici === undefined) {
+      ici = new Map();
+      espaces.set(ctx, ici);
+    }
+    ici.set(address, region);
+    recentes.add(region);
+    if (ctx !== SLOTS.contextPresent && corps.codes !== null && corps.membres.size === 1) {
+      let memes = partages.get(address);
+      if (memes === undefined) {
+        memes = new Set();
+        partages.set(address, memes);
+      }
+      memes.add(corps);
+    }
+    return region;
+  };
+
+  /// **Reprendre la région d'un autre programme au lieu de la retraduire.**
+  ///
+  /// Hors de l'anneau zéro, chaque espace d'adressage a son contexte, et un
+  /// processus neuf retraduisait tout ce qu'il touchait — la même libc, le
+  /// même chargeur, aux mêmes adresses, quand il sort d'un `fork`. Sur Arch,
+  /// le démarrage ne faisait plus que ça : vingt-cinq mille traductions par
+  /// vingt secondes et l'horloge de l'invité presque arrêtée, sous udev.
+  ///
+  /// **Le code d'une région ne dépend que de ses octets, de son adresse et
+  /// de sa place** : le module recalcule le contexte à chaque recherche, il
+  /// ne le grave pas. Et ses octets sont ceux de ses trames, qu'aucune
+  /// écriture n'a touchées depuis — la carte l'aurait oubliée. Donc la même
+  /// adresse, le même anneau, et une fenêtre qui passe **par les mêmes
+  /// trames** dans le contexte courant, c'est le même code : la région se
+  /// reprend telle quelle, avec ses blocs et sa place, et seules ses cases et
+  /// la marque de la racine s'ajoutent pour le nouveau contexte.
+  const partager = (address, ctx, lues) => {
+    const memes = partages.get(address);
+    if (memes === undefined) return null;
+    const racineDe = Number(BigInt.asUintN(64, globals[SLOTS.control + 2].value) & racine) / 4096;
+    for (const corps of memes) {
+      if (corps.anneau !== (ctx & 3) || lues.length < corps.pagesCode.length) continue;
+      if (!corps.pagesCode.every((trame, rang) => lues[rang] === trame)) continue;
+      if (corps.pagesCode.includes(racineDe)) continue;
+      const morceaux = corps.codes.map((m) => ({ ...m }));
+      morceaux.push({ trame: racineDe, bas: -1, haut: -1 });
+      const region = membre(corps, address, ctx, morceaux);
+      for (let rang = 1; rang < corps.debuts.length; rang += 1) {
+        ranger(corps.debuts[rang], corps.slot + rang, ctx, false);
+      }
+      ranger(address, corps.slot, ctx, true);
+      caches.partagees += 1;
+      return region;
+    }
+    return null;
+  };
+
   async function install(address) {
     // **Le contexte de la région est celui de l'instant** — l'anneau et
     // l'espace d'adressage où la machine va l'exécuter —, et c'est sous lui
@@ -2598,6 +2690,10 @@ export function machine({
     const window = read(address, WINDOW);
     if (window === null) return UNMAPPED;
     let lues = luesTrames;
+    if (ctx !== SLOTS.contextPresent) {
+      const reprise = partager(address, ctx, lues);
+      if (reprise !== null) return reprise;
+    }
     // **La fenêtre telle que le traducteur l'a vue**, gardée pour `revoir`.
     // Ce n'est pas celle du fichier ELF : sur le noyau Alpine, 15 761 des
     // 16 189 fenêtres traduites en diffèrent, parce que le noyau a déjà
@@ -2787,8 +2883,12 @@ export function machine({
         morceaux.push({ trame: lues[page], bas, haut });
       }
     }
+    // Les marques du code seul, avant celle de la racine : c'est ce qu'un
+    // autre contexte reprend (`partager`).
+    let codes = morceaux.map((m) => ({ ...m }));
     if (ctx !== SLOTS.contextPresent) {
       const racineDe = Number(BigInt.asUintN(64, globals[SLOTS.control + 2].value) & racine) / 4096;
+      if (codes.some((m) => m.trame === racineDe)) codes = null;
       const deja = morceaux.find((m) => m.trame === racineDe);
       if (deja !== undefined) {
         deja.bas = -1;
@@ -2797,24 +2897,21 @@ export function machine({
         morceaux.push({ trame: racineDe, bas: -1, haut: -1 });
       }
     }
-    const region = {
+    // **Le corps** : ce que les contextes qui partagent la région ont en
+    // commun — le module, ses blocs, sa place, et les trames de son code
+    // (sans la racine, qui est celle de chaque contexte).
+    const corps = {
       run,
       slot,
       lu,
-      adresse: address,
-      contexte: ctx,
       debuts,
       octets: bytes.length,
-      morceaux,
+      anneau: ctx & 3,
+      pagesCode: lues.slice(0, Math.ceil(fin / 4096)),
+      codes: ctx === SLOTS.contextPresent ? null : codes,
+      membres: new Set(),
     };
-    marquer(region);
-    let ici = espaces.get(ctx);
-    if (ici === undefined) {
-      ici = new Map();
-      espaces.set(ctx, ici);
-    }
-    ici.set(address, region);
-    recentes.add(region);
+    const region = membre(corps, address, ctx, morceaux);
     tenu.regions += 1;
     tenu.octets += bytes.length;
     caches.traduites += 1;
@@ -2894,6 +2991,7 @@ export function machine({
     // ensuite le code d'une autre.
     evincesDepuis += tenu.octets;
     espaces.clear();
+    partages.clear();
     recentes.clear();
     tenu.regions = 0;
     tenu.octets = 0;

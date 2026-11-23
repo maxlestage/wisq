@@ -21577,6 +21577,85 @@ console.log("rdi " + vus.join(",") + " connues " + vm.known.size + " espaces " +
     );
 }
 
+/// **Deux programmes qui portent le même code, sur les mêmes trames, à la
+/// même adresse, partagent sa région** — c'est ce que laisse un `fork`.
+///
+/// Les deux tables mettent `0x400000` sur la même grande page physique,
+/// `0x200000` : `mov $1,%edi ; ud2`, et à `0x401000` un saut indirect vers
+/// lui. Le second programme ne retraduit rien — deux traductions en tout,
+/// deux reprises —, et il tourne juste, par l'hôte comme par la
+/// correspondance. Puis la racine du second est réécrite : sa reprise est
+/// oubliée, pas la région du premier, qui tourne encore sans retraduire. Et
+/// une écriture sur le code oublie tout le monde : la retraduction lit les
+/// nouveaux octets.
+#[test]
+fn two_programs_on_the_same_frames_share_the_region() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut jump = vec![0x48, 0xc7, 0xc0, 0x00, 0x00, 0x40, 0x00]; // mov $0x400000,%rax
+    jump.extend_from_slice(&[0xff, 0xe0]); // jmp *%rax
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 128 }});
+const m = new Uint8Array(vm.memory.buffer);
+const vue = new DataView(vm.memory.buffer);
+const tables = (pml4, physique) => {{
+  vue.setBigUint64(pml4, BigInt(pml4 + 0x1000) | 0x7n, true);
+  vue.setBigUint64(pml4 + 0x1000, BigInt(pml4 + 0x2000) | 0x7n, true);
+  vue.setBigUint64(pml4 + 0x2000, 0x0n | 0x83n, true);
+  vue.setBigUint64(pml4 + 0x2000 + 16, BigInt(physique) | 0x87n, true);
+}};
+tables(0x20000, 0x200000);
+tables(0x30000, 0x200000);
+m.set([0xbf, 1, 0, 0, 0, 0x0f, 0x0b], 0x200000);
+m.set({jump}, 0x201000);
+m.set([0x0f, 0x0b], 0x10000);
+vm.globals[SLOTS.control].value = 1n << 31n;
+vm.globals[SLOTS.control + 2].value = 0x20000n;
+await courir(vm, 0x10000n);
+vm.globals[SLOTS.segment + 1].value = 0x33n;
+vm.globals[SLOTS.segment + 2].value = 0x2bn;
+const tour = async (cr3, at) => {{
+  vm.globals[SLOTS.control + 2].value = cr3;
+  vm.globals[7].value = 0n;
+  await courir(vm, at);
+  return String(lire(vm, 7));
+}};
+const vus = [];
+for (const [cr3, at] of [[0x20000n, 0x400000n], [0x30000n, 0x400000n], [0x20000n, 0x401000n], [0x30000n, 0x401000n]]) {{
+  vus.push(await tour(cr3, at));
+}}
+const avant = vm.cache.traduites;
+console.log("rdi " + vus.join(",") + " traduites " + avant + " partagees " + vm.cache.partagees);
+// La racine du second, réécrite : seule sa reprise part.
+vm.ecrit(0x30000, 8);
+const premier = await tour(0x20000n, 0x400000n);
+console.log("apres-racine " + premier + " traduites " + (vm.cache.traduites - avant));
+// Le code réécrit : tout le monde l'oublie, et la retraduction lit le neuf.
+m[0x200001] = 5;
+vm.ecrit(0x200001, 1);
+const neuf = await tour(0x20000n, 0x400000n);
+console.log("apres-code " + neuf + " traduites " + (vm.cache.traduites - avant));
+"#,
+        jump = js_bytes(&jump),
+    );
+    let text = cache_course(&bun, "partage", 128, &corps);
+    assert!(
+        text.contains("rdi 1,1,1,1 traduites 3 partagees 2"),
+        "le second programme reprend les deux régions du premier (le noyau en a traduit \
+         une) et tourne juste : {text}"
+    );
+    assert!(
+        text.contains("apres-racine 1 traduites 0"),
+        "la racine du second réécrite n'oublie pas la région du premier : {text}"
+    );
+    assert!(
+        text.contains("apres-code 5 traduites 1"),
+        "le code réécrit se retraduit sur ses nouveaux octets : {text}"
+    );
+}
+
 /// **Un changement d'anneau ne se résout pas dans les blocs de sa propre
 /// région.**
 ///
