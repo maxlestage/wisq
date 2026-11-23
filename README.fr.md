@@ -104,7 +104,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (4458 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (4459 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 
