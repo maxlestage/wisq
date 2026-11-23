@@ -2005,6 +2005,7 @@ export function machine({
       effacer(region.debuts[rang], region.slot + rang, region.contexte);
     }
     demarquer(region);
+    tenu.regions -= 1;
     const corps = region.corps;
     corps.membres.delete(region);
     if (corps.membres.size === 0) {
@@ -2012,7 +2013,6 @@ export function machine({
         blocks.set(region.slot + rang, null);
       }
       rendre(region.slot, region.debuts.length);
-      tenu.regions -= 1;
       tenu.octets -= region.octets;
       evincesDepuis += region.octets;
       const memes = partages.get(region.adresse);
@@ -2624,6 +2624,7 @@ export function machine({
     }
     ici.set(address, region);
     recentes.add(region);
+    tenu.regions += 1;
     if (ctx !== SLOTS.contextPresent && corps.codes !== null && corps.membres.size === 1) {
       let memes = partages.get(address);
       if (memes === undefined) {
@@ -2667,6 +2668,16 @@ export function machine({
       }
       ranger(address, corps.slot, ctx, true);
       caches.partagees += 1;
+      // **Une reprise compte comme une région** sous la borne : sinon les
+      // contextes des morts la garderaient pour toujours. Elle est la plus
+      // récente, donc ce sont d'autres qui partent — jamais elle, et jamais
+      // le corps qu'elle tient.
+      for (const autre of recentes) {
+        if (tenu.regions <= limite.regions || autre === region) break;
+        evincer(autre);
+      }
+      caches.pic.regions = Math.max(caches.pic.regions, tenu.regions);
+      caches.pic.espaces = Math.max(caches.pic.espaces, espaces.size);
       return region;
     }
     return null;
@@ -2912,7 +2923,6 @@ export function machine({
       membres: new Set(),
     };
     const region = membre(corps, address, ctx, morceaux);
-    tenu.regions += 1;
     tenu.octets += bytes.length;
     caches.traduites += 1;
     const clef = `${ctx}:${address}`;
