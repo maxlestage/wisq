@@ -3648,6 +3648,16 @@ export function machine({
           region.run(1n);
           voirEcritures();
           if (rip() === here && lecturesDePort === lectures) {
+            // **Une région qui rend la main sur sa propre entrée** : une
+            // division que le module ne sait pas faire (cent vingt-huit bits,
+            // un diviseur nul). L'interpréteur du secours la fait, ou livre
+            // `#DE`.
+            const secouru = secourir(here);
+            if (secouru === true) {
+              caches.secourues += 1;
+              continue;
+            }
+            if (typeof secouru === "string") return { stopped: secouru, at: here };
             return { stopped: "sur place", at: here };
           }
         }

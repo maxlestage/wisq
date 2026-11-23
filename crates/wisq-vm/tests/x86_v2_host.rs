@@ -203,6 +203,28 @@ impl Hasard {
 
 /// **Juger une forme** : `tirages` états, le silicium contre l'interpréteur.
 fn juger(nom: &str, instruction: &[u8], tirages: usize) {
+    juger_avec(nom, instruction, tirages, |etat| etat);
+}
+
+/// **Un NaN de simple précision vaut n'importe quel autre**, dans XMM0 : pour
+/// `dpps`, dont le NaN rendu dépend du modèle de processeur quand il y en a
+/// des deux côtés de la somme (un Xeon et le processeur de la CI ne
+/// s'accordent pas). Qu'il y ait un NaN, et où, se juge toujours.
+fn nan_quelconque(mut etat: Etat) -> Etat {
+    for moitie in &mut etat.xmm[0] {
+        let mut mot = *moitie;
+        for voie in 0..2 {
+            let bits = (mot >> (32 * voie)) as u32;
+            if bits & 0x7F80_0000 == 0x7F80_0000 && bits & 0x007F_FFFF != 0 {
+                mot = (mot & !(0xFFFF_FFFFu64 << (32 * voie))) | (0x7FC0_0000u64 << (32 * voie));
+            }
+        }
+        *moitie = mot;
+    }
+    etat
+}
+
+fn juger_avec(nom: &str, instruction: &[u8], tirages: usize, normaliser: fn(Etat) -> Etat) {
     let mut hasard = Hasard(
         instruction
             .iter()
@@ -219,7 +241,8 @@ fn juger(nom: &str, instruction: &[u8], tirages: usize) {
         attendu.sortie &= DRAPEAUX;
         obtenu.sortie &= DRAPEAUX;
         assert_eq!(
-            obtenu, attendu,
+            normaliser(obtenu),
+            normaliser(attendu),
             "{nom} ({instruction:02x?}), tirage {tirage}, depuis {depart:x?}"
         );
     }
@@ -434,8 +457,18 @@ fn float_forms_match_the_silicon() {
         }
     }
     for imm in [0xFFu8, 0xF1, 0x31, 0x5A, 0xA5, 0x0F, 0xF0, 0x33, 0xCC, 0x7E] {
-        juger("dpps", &[0x66, 0x0F, 0x3A, 0x40, 0xC1, imm], 100);
-        juger("dpps (mémoire)", &[0x66, 0x0F, 0x3A, 0x40, 0x06, imm], 100);
+        juger_avec(
+            "dpps",
+            &[0x66, 0x0F, 0x3A, 0x40, 0xC1, imm],
+            100,
+            nan_quelconque,
+        );
+        juger_avec(
+            "dpps (mémoire)",
+            &[0x66, 0x0F, 0x3A, 0x40, 0x06, imm],
+            100,
+            nan_quelconque,
+        );
         juger("dppd", &[0x66, 0x0F, 0x3A, 0x41, 0xC1, imm], 100);
     }
 }
