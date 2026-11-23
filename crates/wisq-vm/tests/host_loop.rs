@@ -13082,28 +13082,24 @@ fn a_handler_whose_own_page_is_absent_is_named_instead_of_looping() {
     let _ = std::fs::remove_dir_all(&scratch);
 }
 
-/// **Le compteur de double faute retombe dès qu'une région s'installe.**
+/// **Le compteur de double faute retombe dès qu'une région tourne.**
 ///
-/// C'est la garde qu'aucune assertion ne tenait, et le sabotage l'a dit :
-/// retirer la remise à zéro ne faisait tomber aucun test, parce qu'aucun
-/// montage ne délivrait **deux** chargements fautifs séparés par une région
-/// installée. Or c'est exactement ce que fait un noyau qui cartographie à la
-/// demande : il en enchaîne autant que le programme a de pages.
+/// C'est ce que fait un noyau qui cartographie à la demande : il enchaîne
+/// autant de fautes de chargement que le programme a de pages, et entre deux,
+/// son gestionnaire **tourne**. La garde ne retombait qu'à l'installation
+/// d'une région ; depuis que le cache sert le gestionnaire sans le
+/// retraduire, deux fautes légitimes d'affilée passaient pour une double
+/// faute, et Arch s'arrêtait sous udev. Sur le silicium, la double faute est
+/// une faute **pendant** la délivrance — le test d'avant, la porte qui mène à
+/// une page absente —, pas après un gestionnaire qui a tourné.
 ///
 /// **Le montage : deux pages absentes, et un gestionnaire qui refaute.** Il
-/// compte ses passages dans RBX et saute sur la seconde. Entre les deux
-/// chargements fautifs, sa propre région s'est installée.
-///
-/// | | avec la remise à zéro | sans |
-/// | --- | --- | --- |
-/// | passages du gestionnaire | **2** | 1 |
-/// | arrêt | la double faute nommée | la même, un tour plus tôt |
-///
-/// **L'arrêt est le même des deux côtés** — c'est le nombre de passages qui
-/// tranche, et c'est pour ça que l'assertion porte sur lui. Une assertion sur
-/// l'arrêt aurait eu l'air d'une garde sans en être une.
+/// compte ses passages dans RBX et saute sur la seconde, encore et encore :
+/// une boucle de fautes de page, que le silicium délivre sans fin. Le
+/// gestionnaire passe donc bien plus de deux fois, et la course finit sur ses
+/// tours épuisés, jamais sur la double faute.
 #[test]
-fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
+fn the_double_fault_counter_falls_back_as_soon_as_a_region_runs() {
     let Some(bun) = bun() else {
         panic!("Bun est absent : ce test ne serait vérifié par rien.");
     };
@@ -13118,20 +13114,17 @@ fn the_double_fault_counter_falls_back_as_soon_as_a_region_installs() {
         "// deux pages absentes, et le gestionnaire saute sur la seconde.",
     );
     let text = run_driver(&bun, &driver);
-    assert_eq!(
-        line_of(&text, "rbx "),
-        "0x2",
-        "**le gestionnaire est passé deux fois** : le premier chargement \
-         fautif a été délivré, sa région s'est installée, le compteur est \
-         retombé, et le second a été délivré aussi. Sans la remise à zéro il \
-         ne passerait qu'une fois : {text}"
+    let passages = u64::from_str_radix(line_of(&text, "rbx ").trim_start_matches("0x"), 16)
+        .expect("RBX en hexadécimal");
+    assert!(
+        passages > 2,
+        "**le gestionnaire est délivré à chaque faute** : il a tourné entre \
+         deux chargements fautifs, la garde retombe à chaque fois : {text}"
     );
     assert_eq!(
         line_of(&text, "arret "),
-        "une faute pendant la délivrance d'une faute de page sur un chargement \
-         d'instruction : le gestionnaire lui-même n'est pas cartographié",
-        "et le troisième chargement, lui, n'a rien installé entre-temps : la \
-         garde le nomme : {text}"
+        "tours épuisés",
+        "une boucle de fautes de page n'est pas une double faute : {text}"
     );
     let _ = std::fs::remove_dir_all(&scratch);
 }
