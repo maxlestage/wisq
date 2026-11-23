@@ -3,7 +3,7 @@
 //! `crates/wisq-page` compile l'émetteur en WebAssembly ; `web/page-emitter.js`
 //! le charge et le sert à la boucle hôte. Ce qui doit être vrai, et que ces
 //! tests tiennent : **pour chaque fenêtre, la porte wasm rend les mêmes
-//! octets que `Module::resolving_or_why` en natif**, au même octet, et refuse
+//! octets que `Module::resolving_for_page_or_why` en natif**, au même octet, et refuse
 //! là où il refuse, pour la même raison.
 //!
 //! Ce n'est pas acquis. L'émetteur compilé pour `wasm32` n'est pas le même
@@ -382,7 +382,8 @@ fn judge(text: &[u8], windows: &[Window], run: &Run) -> Tally {
     let mut tally = Tally::default();
     for (window, answer) in windows.iter().zip(&run.answers) {
         let bytes = &text[window.from..window.from + window.length];
-        let native = Module::resolving_or_why(bytes, window.base, 0, window.slot, window.pages);
+        let native =
+            Module::resolving_for_page_or_why(bytes, window.base, 0, window.slot, window.pages);
         let place = format!(
             "0x{:x} (emplacement {}, {} pages, {} octets)",
             window.base, window.slot, window.pages, window.length
@@ -697,7 +698,7 @@ fn as_js(octets: &[u8]) -> String {
 /// une coupe comme un refus ferait perdre en silence chaque région que le
 /// second essai aurait traduite. Chaque branche est donc appelée ici, avec ce
 /// qu'elle laisse dans `pourquoi` et ce qu'elle passe à `surRefus`, et jugée
-/// contre `Module::resolving_or_why` en natif.
+/// contre `Module::resolving_for_page_or_why` en natif.
 #[test]
 fn the_page_translator_answers_each_way_the_host_loop_reads() {
     let module = page_module();
@@ -737,13 +738,13 @@ console.log("instances " + porte.instances);
     );
     let text = run_driver("traducteur", &script);
 
-    let attendu = Module::resolving_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
+    let attendu = Module::resolving_for_page_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
     let hex = |octets: &[u8]| -> String { octets.iter().map(|o| format!("{o:02x}")).collect() };
     assert_eq!(said(&text, "module "), format!("octets {}", hex(&attendu)));
     assert_eq!(said(&text, "pourquoi_module "), "null", "{text}");
 
     // **La coupe** : la seule réponse qui fait relire la fenêtre plus large.
-    let coupe = Module::resolving_or_why(&PETIT[..2], 0x10_0000, 0, 0, 16)
+    let coupe = Module::resolving_for_page_or_why(&PETIT[..2], 0x10_0000, 0, 0, 16)
         .expect_err("deux octets d'un `mov $imm32` ne se traduisent pas");
     assert!(matches!(coupe, Refused::MayBeCut { .. }), "{coupe:?}");
     assert_eq!(said(&text, "coupe "), "encore", "{text}");
@@ -756,7 +757,7 @@ console.log("instances " + porte.instances);
 
     // **Deux refus francs**, d'espèces différentes : l'un vient du décodeur,
     // l'autre de la RAM déclarée au traducteur.
-    let illisible_natif = Module::resolving_or_why(&illisible(), 0x20_0000, 0, 0, 16)
+    let illisible_natif = Module::resolving_for_page_or_why(&illisible(), 0x20_0000, 0, 0, 16)
         .expect_err("`push %es` n'existe pas en mode 64 bits");
     assert!(
         matches!(illisible_natif, Refused::CannotDecode { .. }),
@@ -1004,7 +1005,7 @@ console.log("instances_fin " + porte.instances);
         budget = LAPS * LINKS + 2,
     );
     let text = run_driver("trappe", &script);
-    let attendu = Module::resolving_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
+    let attendu = Module::resolving_for_page_or_why(&PETIT, 0x10_0000, 0, 7, 16).expect("traduit");
     let hex: String = attendu.iter().map(|o| format!("{o:02x}")).collect();
     assert_eq!(said(&text, "avant "), hex);
     assert_eq!(said(&text, "trappe "), "true", "{text}");

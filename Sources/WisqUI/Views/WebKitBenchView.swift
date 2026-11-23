@@ -24,7 +24,7 @@ struct WebKitBenchView: View {
     @State private var verdict: WebKitBench.Verdict?
     @State private var running = false
     /// Le réglage de la machine de l'émetteur : voir `EmitterSetting`.
-    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = true
+    @AppStorage("wisq.machine.jit") private var emitterEnabled = false
     /// Le réglage de la machine PC en Rust : voir `RustPCSetting`.
     @AppStorage("wisq.machine.pc-rust") private var rustPCEnabled = true
     private let host = BenchHost()
