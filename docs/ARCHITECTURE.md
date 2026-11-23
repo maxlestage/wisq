@@ -242,6 +242,7 @@ de toucher à ce côté-là :
 | `Sources/WisqVM/X86Core*.swift` | Swift | interprète — **et c'est celui que l'application construit pour un invité x86** |
 | `crates/wisq-vm/src/x86.rs` | Rust | interprète ; `cargo run -p wisq-vm --release --example speed` en donne 32,6 à 34,3 MIPS sur trois passages du 14 septembre 2026, et le chiffre suit le coureur |
 | `crates/wisq-vm/src/x86_wasm.rs` | Rust | **traduit** une région en module WebAssembly |
+| `crates/wisq-vm/src/x86_jit.rs` + `x86_jit_x64.rs` | Rust | **JIT natif** des blocs chauds de la machine PC, en code x86-64 écrit à la main — seulement là où l'hôte accorde une page exécutable (Linux, macOS x86-64) ; éteint sur iOS |
 
 Les trois lisent le même corpus matériel, `Tests/Fixtures/x86-oracle.tsv` —
 13 388 cas relevés sur un vrai processeur, et les trois les rejouent sans un
@@ -252,6 +253,21 @@ Un cas rendu n'est pas un cas faux : c'est un cas non jugé, et depuis #267 le
 test refuse qu'une autre famille sorte du champ par ce chemin. Oublier le
 troisième cœur a déjà rougi la CI une fois : ce qui touche au décodage ou au
 calcul d'adresse doit être porté partout à la fois.
+
+**Le JIT natif, et pourquoi il ne contredit rien de ce qui précède.** La
+machine PC en Rust (`pc::machine`) traduit ses blocs chauds — ceux du chemin
+rapide, déjà décodés — en code machine de l'hôte (`x86::jit`) : les formes
+fréquentes écrites en instructions x86-64, le tampon de traduction lu par le
+code engendré, tout le reste rendu à la forme spécialisée qu'il remplace, et
+les blocs d'une même page chaînés sans repasser par la boucle. Il n'existe que
+là où l'hôte donne une page à la fois inscriptible et exécutable : Linux et
+macOS x86-64 — `wisq-pc`, la fabrique des bureaux prêts. **Sur iOS il ne
+demande rien et n'existe pas** : l'iPhone est arm64, et une application de
+l'App Store ou de TestFlight n'a pas de page exécutable. Il rend exactement ce
+que rend l'interprétation, instruction retirée pour instruction retirée — trois
+machines (pas à pas, blocs interprétés, blocs traduits) jugées ensemble par
+`tests/pc_rapide.rs`, et le banc commun qui retire 1 912 258 440 instructions
+avec ou sans lui.
 
 **Pourquoi un traducteur, alors que l'interprétation est le choix assumé
 au-dessus.** Le paragraphe qui précède reste vrai — iOS n'accorde de mémoire
