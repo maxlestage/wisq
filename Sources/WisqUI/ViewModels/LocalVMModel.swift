@@ -962,6 +962,8 @@ public final class LocalVMModel {
 
     /// La machine lâchée après une mise de côté, écrite ou non.
     private func letMachineGo() {
+        ticker?.cancel()
+        ticker = nil
         waiting = nil
         resumeWait = nil
         machine = nil
@@ -1003,6 +1005,13 @@ public final class LocalVMModel {
         // Une autre machine : ce qui restait à taper était pour la précédente,
         // dont le clavier n'est plus là.
         typist.reset()
+        // **Le battement ne tient pas la machine** : seulement son identité.
+        // Il la tenait par capture, et une tâche ne lâche ses captures qu'en
+        // finissant. Mise en arrière-plan, l'application est suspendue par
+        // iOS avant que la tâche ne se réveille : au retour, la reprise
+        // mesurait la mémoire libre avec l'ancienne machine encore en vie —
+        // 64 Mo libres pour une session de 5 Gio, et la session refusée.
+        let identity = ObjectIdentifier(machine)
         ticker = Task { @MainActor [weak self] in
             var previous: GuestProgress?
             var previousAt = Date()
@@ -1012,7 +1021,8 @@ public final class LocalVMModel {
             var heardAt = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled, let self, self.machine === machine else { return }
+                guard !Task.isCancelled, let self, let machine = self.machine,
+                      ObjectIdentifier(machine) == identity else { return }
                 // La file du clavier s'est vidée d'une seconde de frappe : ce
                 // qui attendait y reprend sa place, et l'avis « en cours »
                 // s'éteint quand la machine a tout joué.
