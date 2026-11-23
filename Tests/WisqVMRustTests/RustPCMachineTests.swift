@@ -267,6 +267,25 @@ final class RustPCMachineTests: XCTestCase {
         }
     }
 
+    /// **L'instantané écrit dans un fichier, page par page**
+    /// (`wisq_pc_snapshot_to_file`) : les octets de `snapshot()`, au même
+    /// octet, sur une machine qui a tourné ; rien d'écrit avant le noyau. C'est
+    /// le chemin par lequel l'application sauve, pour qu'une machine de
+    /// plusieurs gibioctets ne double pas sa mémoire le temps d'une sauvegarde.
+    func testTheSnapshotWrittenToAFileIsTheSnapshot() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-instantane-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let machine = try rust(Console())
+        let file = folder.appendingPathComponent("brut")
+        XCTAssertFalse(machine.writeSnapshot(to: file), "rien avant le noyau")
+        try machine.load(kernelImage: try Self.tinyKernel(), commandLine: nil, initialRamdisk: nil)
+        machine.runGuest(instructionBudget: 1_000_000)
+        XCTAssertTrue(machine.writeSnapshot(to: file))
+        XCTAssertEqual(try Data(contentsOf: file), machine.snapshot())
+    }
+
     /// **Une session reprise sur d'autres disques est refusée sans être dite
     /// abîmée** : la machine refuse (`snapshotOfOtherDisks`, code -8), la
     /// boîte de la session la rend comme `otherDisks` — que la console dit

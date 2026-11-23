@@ -148,6 +148,10 @@ public protocol GuestMachine: AnyObject, Sendable {
     func send(_ data: Data)
     /// La machine entière en octets.
     func snapshot() -> Data
+    /// **La même, écrite dans un fichier** (non compressée), sans la tenir en
+    /// mémoire quand le cœur le sait : voir `RustPCMachine`. `false` quand
+    /// rien n'est écrit.
+    func writeSnapshot(to url: URL) -> Bool
     /// Reprend une machine sauvée.
     func restore(_ data: Data) throws
     /// **Le temps passé hors de la machine** : une session reprise le
@@ -212,6 +216,14 @@ public enum GuestClock {
 /// forme « The operation couldn't be completed », qui est le contraire de ce
 /// que ces cas existent pour dire.
 extension GuestMachine {
+    /// Le défaut : l'instantané en mémoire, puis le fichier. Les cœurs dont la
+    /// RAM servie peut peser des gibioctets écrivent page par page.
+    public func writeSnapshot(to url: URL) -> Bool {
+        let bytes = snapshot()
+        guard !bytes.isEmpty else { return false }
+        return (try? bytes.write(to: url)) != nil
+    }
+
     /// Rien à reprendre ni à remplacer : voir `GuestMachine.reseed`.
     public func reseed(_ seed: UInt64) {}
 

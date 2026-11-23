@@ -326,11 +326,67 @@ fn lire_placement(l: &mut Lecteur) -> Option<Option<Placement>> {
 /// ce que la machine native ne laisse jamais entre deux instructions (elle
 /// sert chaque requête pendant l'`out` qui la notifie).
 pub fn sauver(poste: &Poste) -> Result<Vec<u8>, RefusDeSauvegarde> {
+    let (mut octets, carte, servies) = entete(poste)?;
+    // La place exacte, en une fois : aucun doublement, et `into_boxed_slice`
+    // (l'ABI) n'a rien à rétrécir.
+    octets.reserve_exact(carte.len() + servies * PAGE);
+    ecrire_la_ram(poste, &carte, &mut octets).expect("un Vec ne refuse pas d'écrire");
+    Ok(octets)
+}
+
+/// **L'instantané écrit dans `sortie`, page par page** : les mêmes octets que
+/// [`sauver`], sans jamais les tenir tous en mémoire.
+///
+/// Une machine de 4 Gio dont l'invité a rempli 2,5 Gio de cache disque
+/// donnait un instantané de 2,5 Gio, construit en entier avant d'être
+/// compressé : l'application, que iOS tue sur sa mémoire, ne passait pas sa
+/// première sauvegarde automatique, cinq minutes après le démarrage. Écrit
+/// ici, l'instantané ne coûte que l'en-tête (quelques mébioctets, la mémoire
+/// vidéo comprise) et la carte des pages.
+pub fn sauver_vers(poste: &Poste, sortie: &mut impl std::io::Write) -> Result<(), ErreurDEcriture> {
+    let (octets, carte, _) = entete(poste).map_err(ErreurDEcriture::Refus)?;
+    sortie.write_all(&octets).map_err(ErreurDEcriture::Io)?;
+    drop(octets);
+    ecrire_la_ram(poste, &carte, sortie).map_err(ErreurDEcriture::Io)?;
+    sortie.flush().map_err(ErreurDEcriture::Io)
+}
+
+/// Pourquoi [`sauver_vers`] n'a pas écrit.
+#[derive(Debug)]
+pub enum ErreurDEcriture {
+    Refus(RefusDeSauvegarde),
+    Io(std::io::Error),
+}
+
+/// La carte des pages non nulles, puis elles, dans `sortie`.
+fn ecrire_la_ram(
+    poste: &Poste,
+    carte: &[u8],
+    sortie: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    sortie.write_all(carte)?;
+    for (rang, page) in poste.machine.cpu.memory.bytes.chunks(PAGE).enumerate() {
+        if carte[rang / 8] & (1 << (rang % 8)) != 0 {
+            sortie.write_all(page)?;
+        }
+    }
+    Ok(())
+}
+
+/// Tout ce qui précède les pages de la RAM, la carte de ces pages, et leur
+/// nombre.
+fn entete(poste: &Poste) -> Result<(Vec<u8>, Vec<u8>, usize), RefusDeSauvegarde> {
     let carte = poste.commandes().carte().tenir().sauver()?;
     let machine = &poste.machine;
     let cpu = &machine.cpu;
     let ram = &cpu.memory.bytes;
-    let mut e = Ecrivain(Vec::with_capacity(ram.len() / 4 + 4096));
+    // **Petit d'abord, exact ensuite.** L'en-tête et la carte tiennent dans
+    // quelques mébioctets ; la RAM est réservée plus bas à sa taille exacte.
+    // Partir du quart de la RAM faisait doubler le tampon en le recopiant —
+    // 1, 2 puis 4 Gio pour une machine de 4 Gio dont 2,5 Gio de pages
+    // servent —, et l'application, que iOS tue sur sa mémoire, ne passait pas
+    // la première sauvegarde automatique.
+    let mut e = Ecrivain(Vec::with_capacity(1 << 20));
     e.0.extend_from_slice(&MAGIE);
     e.u32(VERSION);
     e.u64(machine.ram);
@@ -445,20 +501,15 @@ pub fn sauver(poste: &Poste) -> Result<Vec<u8>, RefusDeSauvegarde> {
 
     // La RAM : la carte des pages non nulles, puis elles.
     e.u64(ram.len() as u64);
-    let pages: Vec<&[u8]> = ram.chunks(PAGE).collect();
-    let mut carte = vec![0u8; pages.len().div_ceil(8)];
-    for (rang, page) in pages.iter().enumerate() {
+    let mut carte = vec![0u8; ram.len().div_ceil(PAGE).div_ceil(8)];
+    let mut servies = 0usize;
+    for (rang, page) in ram.chunks(PAGE).enumerate() {
         if page.iter().any(|&octet| octet != 0) {
             carte[rang / 8] |= 1 << (rang % 8);
+            servies += 1;
         }
     }
-    e.0.extend_from_slice(&carte);
-    for (rang, page) in pages.iter().enumerate() {
-        if carte[rang / 8] & (1 << (rang % 8)) != 0 {
-            e.0.extend_from_slice(page);
-        }
-    }
-    Ok(e.0)
+    Ok((e.0, carte, servies))
 }
 
 /// Tout ce qu'un instantané repose, lu avant d'être reposé.

@@ -202,6 +202,7 @@ int main(int argc, char **argv) {
     wisq_pc_elapse(NULL, 1.0);
     check(wisq_pc_snapshot(NULL, &snapshot, &snapshot_len) == -1, "snapshot(NULL)");
     wisq_pc_free_snapshot(NULL, 0);
+    check(wisq_pc_snapshot_to_file(NULL, "/tmp/x") == -1, "snapshot_to_file(NULL)");
     check(wisq_pc_restore(NULL, (const uint8_t *)"", 0) == -1, "restore(NULL)");
     check(wisq_pc_flush_disks(NULL) == -1, "flush_disks(NULL)");
     check(wisq_pc_disk_bytes_written(NULL) == 0, "disk_bytes_written(NULL)");
@@ -223,6 +224,9 @@ int main(int argc, char **argv) {
     }
     check(wisq_pc_run(pc, 1000) == WISQ_PC_NOT_READY, "une course sans noyau est refusée");
     check(wisq_pc_snapshot(pc, &snapshot, &snapshot_len) == -2, "un instantané sans noyau est refusé");
+    check(wisq_pc_snapshot_to_file(pc, NULL) == -1, "snapshot_to_file sans chemin");
+    check(wisq_pc_snapshot_to_file(pc, "/tmp/wisq-abi-vide.snap") == -2,
+          "un instantané sans noyau n'est pas écrit non plus");
     check(wisq_pc_progress(pc, &a64, &b64) == 0, "rien de publié avant la première course");
     check(wisq_pc_progress_pages(pc, &a64, &b64) == 0 && a64 == 0 && b64 == 0,
           "aucune tranche publiée avant la première course");
@@ -351,6 +355,25 @@ int main(int argc, char **argv) {
           "l'instantané se prend");
     check(memcmp(snapshot, "WISQPC\r\n", 8) == 0, "il commence par son nom");
     check(snapshot_len < (RAM / 8), "les pages nulles n'y sont pas");
+    {
+        /* Le même instantané, écrit page par page dans un fichier : les
+         * mêmes octets, au même octet. */
+        char path[] = "/tmp/wisq-abi-snapshot-XXXXXX";
+        int fd = mkstemp(path);
+        check(fd >= 0, "un fichier temporaire");
+        close(fd);
+        check(wisq_pc_snapshot_to_file(cut, path) == 0, "l'instantané s'écrit dans un fichier");
+        FILE *f = fopen(path, "rb");
+        check(f != NULL, "le fichier se relit");
+        uint8_t *written = malloc(snapshot_len + 1);
+        size_t got = f ? fread(written, 1, snapshot_len + 1, f) : 0;
+        if (f) fclose(f);
+        check(got == snapshot_len && memcmp(written, snapshot, snapshot_len) == 0,
+              "le fichier porte exactement les octets de wisq_pc_snapshot");
+        free(written);
+        unlink(path);
+        check(wisq_pc_snapshot_to_file(cut, "/nulle-part/ici.snap") == -4, "un chemin impossible : -4");
+    }
 
     Console second_half = {{0}, 0};
     WisqPC *resumed = wisq_pc_new(RAM, on_output, &second_half);

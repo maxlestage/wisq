@@ -198,6 +198,46 @@ public enum SnapshotFile {
         return output
     }
 
+    /// **L'instantané d'un fichier, compressé dans un autre, morceau par
+    /// morceau** : le même format que `pack`, sans tenir ni l'un ni l'autre
+    /// en mémoire. Le fichier source est projeté (ses pages se relisent sur
+    /// le stockage au lieu de compter dans la mémoire de l'application), et
+    /// chaque morceau compressé part aussitôt dans `destination`.
+    ///
+    /// C'est ce qui laisse une machine de plusieurs gibioctets se sauver sur
+    /// un iPhone : `pack` tenait l'instantané et sa version compressée côte à
+    /// côte — et le cache disque d'un invité, déjà compressé dans son ISO, ne
+    /// se compresse presque pas.
+    public static func pack(fileAt source: URL, to destination: URL) throws {
+        let snapshot = try Data(contentsOf: source, options: .alwaysMapped)
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        var header = Data(magic)
+        withUnsafeBytes(of: UInt64(snapshot.count).littleEndian) { header.append(contentsOf: $0) }
+        try output.write(contentsOf: header)
+        try snapshot.withUnsafeBytes { raw in
+            var start = 0
+            while start < raw.count {
+                let piece = UnsafeRawBufferPointer(rebasing: raw[start..<min(start + chunk, raw.count)])
+                let packed = LZ4.compress(piece)
+                var block = Data()
+                if packed.count < piece.count {
+                    withUnsafeBytes(of: UInt32(packed.count).littleEndian) { block.append(contentsOf: $0) }
+                    block.append(contentsOf: packed)
+                } else {
+                    withUnsafeBytes(of: (UInt32(piece.count) | stored).littleEndian) { block.append(contentsOf: $0) }
+                    block.append(contentsOf: piece)
+                }
+                try output.write(contentsOf: block)
+                start += piece.count
+            }
+        }
+        try output.synchronize()
+    }
+
     /// L'instantané qu'un fichier contient : décompressé s'il porte la marque,
     /// tel quel sinon.
     public static func unpack(_ file: Data) throws -> Data {
