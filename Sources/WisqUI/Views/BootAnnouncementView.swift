@@ -32,6 +32,15 @@ struct BootAnnouncementView: View {
     /// **Le moteur** : le JIT de l'émetteur, ou l'interpréteur (`EmitterSetting`).
     @AppStorage("wisq.machine.emetteur") private var jitEnabled = true
 
+    /// La RAM réglée, et celle que la machine recevra si iOS en laisse moins
+    /// (`KernelMemory.given`).
+    private var memoryLine: String {
+        let asked = KernelMemory.size(forKernel: settingsKey)
+        let given = KernelMemory.given(asked)
+        guard given < asked else { return KernelMemory.describe(asked) }
+        return "\(KernelMemory.describe(given)) (\(KernelMemory.describe(asked)) réglés ; iOS n'en laisse pas plus)"
+    }
+
     /// Cette image peut-elle s'ouvrir dans le JIT, dans cette construction ?
     private var jitPossible: Bool {
         #if WISQ_RUST_CORE
@@ -92,8 +101,7 @@ struct BootAnnouncementView: View {
                             .foregroundStyle(announcement.outcome.startsSomething ? Design.accent : Color.orange)
                     }
                     if announcement.outcome.startsSomething {
-                        LabeledContent("Mémoire", value: KernelMemory.describe(
-                            KernelMemory.size(forKernel: settingsKey)))
+                        LabeledContent("Mémoire", value: memoryLine)
                         LabeledContent("Disque", value: LocalDisk.recordedName(forKernel: settingsKey) ?? "aucun")
                         LabeledContent("Réseau", value: MachineNetwork.isCut(forKernel: settingsKey)
                                        ? "coupé" : "branché")
