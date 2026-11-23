@@ -22350,6 +22350,51 @@ console.log("pas " + pas.join(",") + " replacees " + vm.cache.replacees + " r2 "
     );
 }
 
+/// **Une région retraduite après une éviction est gardée** : les nouvelles
+/// venues partent avant elle.
+///
+/// Sous une borne de quatre régions, A est traduite, puis quatre autres la
+/// chassent ; A revient — c'est une retraduction, la preuve qu'elle sert
+/// encore — et passe dans la file des gardées. Cinq nouvelles régions
+/// passent ensuite : sans la seconde file, A, la plus ancienne des récentes,
+/// partirait à la troisième. Elle reste, et la revoir ne demande rien à
+/// l'émetteur.
+#[test]
+fn a_region_translated_again_after_an_eviction_is_kept() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    let mut places = String::new();
+    for rang in 0..10u32 {
+        places.push_str(&format!(
+            "m.set({}, 0x10000 + {rang} * 0x100);\n",
+            js_bytes(&small_region(rang + 1))
+        ));
+    }
+    let corps = format!(
+        r#"
+const vm = machine({{ translate: traduire, pages: 4, cache: {{ regions: 4 }} }});
+const m = new Uint8Array(vm.memory.buffer);
+{places}
+const a = (rang) => 0x10000n + BigInt(rang) * 0x100n;
+for (const rang of [0, 1, 2, 3, 4]) await courir(vm, a(rang));
+const chassee = vm.known.get(a(0)) === undefined;
+await courir(vm, a(0));
+for (const rang of [5, 6, 7, 8, 9]) await courir(vm, a(rang));
+const avant = demandes.length;
+await courir(vm, a(0));
+console.log("chassee " + chassee + " retraduites " + vm.cache.retraduites + " gardee "
+  + (vm.known.get(a(0)) !== undefined) + " demandes " + (demandes.length - avant)
+  + " tenues " + vm.known.size);
+"#,
+    );
+    let text = cache_course(&bun, "gardee", 4, &corps);
+    assert!(
+        text.contains("chassee true retraduites 1 gardee true demandes 0 tenues 4"),
+        "A, retraduite une fois, survit aux cinq nouvelles et se revoit sans traduction : {text}"
+    );
+}
+
 /// **Un espace d'adressage qui n'a plus de région quitte `espaces`.**
 ///
 /// C'est ce qui fait qu'un processus mort rend sa place : ses régions
