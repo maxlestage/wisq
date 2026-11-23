@@ -592,8 +592,17 @@ public final class LocalVMModel {
         let pending = PendingSession(saved)
         // Une machine qui ne sauve pas de session (`savesSessions`) ne prend
         // jamais d'instantané : l'intervalle ne passe pas.
+        // **Sauvée sans passer par la mémoire** : le cœur écrit l'instantané
+        // dans un fichier brut, compressé ensuite morceau par morceau (voir
+        // `CheckpointedRun.RawSaving`). Une machine de 4 Gio tenait sinon
+        // plusieurs gibioctets de plus à chaque sauvegarde, et iOS tuait
+        // l'application à la première, cinq minutes après le démarrage.
         let checkpointed = CheckpointedRun(
-            machine: machine, interval: savesSessions(machine) ? 300 : .infinity
+            machine: machine, interval: savesSessions(machine) ? 300 : .infinity,
+            raw: CheckpointedRun.RawSaving(
+                take: { SuspendedMachine.takeRaw(of: machine, kernel: savedUnder, in: storageFolder) },
+                compress: { try SuspendedMachine.compressRaw($0, kernel: savedUnder, in: storageFolder) },
+                install: { try SuspendedMachine.installPacked($0, kernel: savedUnder, in: storageFolder) })
         ) { packed in
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
         }
@@ -937,7 +946,7 @@ public final class LocalVMModel {
             return
         }
         do {
-            try SuspendedMachine.save(machine.snapshot(), kernel: kernelName, in: storage)
+            try SuspendedMachine.save(machine: machine, kernel: kernelName, in: storage)
         } catch {
             if life.couldNotSave() == .forget { SuspendedMachine.clear(kernel: kernelName, in: storage) }
         }
