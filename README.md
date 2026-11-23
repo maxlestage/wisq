@@ -50,9 +50,17 @@ different machine. What carries over is the shape: the same code path runs on
 the phone, there is no JIT anywhere in it, and nothing about it needs a
 jailbreak or a special entitlement.
 
+The x86-64 PC machine in Rust also has a **native JIT, written by hand**
+(`crates/wisq-vm/src/x86_jit.rs`): hot blocks translated to x86-64 host code,
+1.21× faster on the common Alpine boot bench and 1.73× on pure computation,
+retiring exactly the same instructions. It runs only where the host grants an
+executable page — Linux and macOS on x86-64, such as `wisq-pc` and the
+prebuilt-desktop factory. **On the iPhone it is off**: iOS gives no App Store
+or TestFlight app an executable page, and the machine interprets as before.
+
 ## Status
 
-Everything below is implemented, tested (4427 tests across Swift and Rust) and
+Everything below is implemented, tested (4428 tests across Swift and Rust) and
 green in CI, which among other things **boots a real Linux kernel inside the
 emulator** as a test. The package builds in the **Swift 6 language mode** with
 no warnings. The agent speaks TLS by default: a self-signed certificate whose

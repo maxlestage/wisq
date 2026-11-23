@@ -8,6 +8,74 @@ on ne peut pas vérifier le mandat après coup.
 
 L'ordre est antéchronologique : le plus récent en haut.
 
+## 2026-11-22 — Machine PC en Rust : un JIT natif écrit à la main, et ce qu'il ne peut pas faire sur l'iPhone
+
+**La demande.** Une capture TestFlight : Arch Linux qui démarre dans la
+console (« 4,7 milliards d'instructions »), et Maxime : « Écris un JIT à la
+main en Rust pour que ça soit plus rapide. Commit, PR, merge sur master, et
+fais tourner la CI automatiquement pour tous les merges sur master. »
+
+**Ce qui est fait.** `crates/wisq-vm/src/x86_jit.rs` et `x86_jit_x64.rs` : les
+blocs chauds du chemin rapide (`pc::blocs`, déjà décodés) traduits en code
+x86-64 assemblé à la main, sans dépendance. Les formes fréquentes — `mov`,
+`movzx`, `movsx`, `lea`, `add`/`or`/`and`/`sub`/`xor`/`cmp`/`test`,
+`inc`/`dec`/`not`/`neg`, `shl`/`shr`/`sar` sur 32 et 64 bits, `push`, `pop`,
+`call`, `ret`, `jmp`, `jcc` — sont écrites en instructions de l'hôte, le
+tampon de traduction lu par le code engendré ; tout le reste, et chaque cas
+rare (un accès qui manque le tampon, une cible pas canonique, une adresse à
+segment), appelle la forme spécialisée depuis l'état d'avant l'instruction.
+`rapide::decrire` décrit chaque forme sous les conditions exactes où
+`choisir` la choisit.
+
+**Ce qui l'a rendu rapide, mesuré pas à pas** sur le banc commun (Alpine
+6.18.60, `--horloge 1700000000`) :
+
+| étape | secondes |
+| --- | --- |
+| interprété (référence) | 13,5 |
+| premier JIT, tout en ligne, seuil 2 | 20,8 — plus lent |
+| son état dans le bloc (`Bloc::jit`) plutôt qu'une table à côté | 19,2 |
+| seuil 32 | 15,9 |
+| routines partagées (tampon, appel, sortie), RIP en retard | 12,3 |
+
+Le premier JIT perdait : 1,6 Kio de code par bloc débordait le cache
+d'instructions, et deux tables à côté coûtaient deux lignes attendues à chaque
+entrée. Puis le chaînage dans la page (78 % des entrées), un profil callgrind
+qui mettait 24 % du temps dans la routine du tampon (droits posés à l'entrée,
+contrôle de page fusionné à l'étiquette), les drapeaux morts non calculés, les
+décalages traduits.
+
+**Mesures finales**, cinq courses alternées, médianes :
+
+| | sans JIT | JIT | |
+| --- | --- | --- | --- |
+| banc commun (jusqu'au shell, `echo wisq-parle`) | 13,00 s | 10,76 s | ×1,21 |
+| premier milliard d'instructions (décompression, calcul pur) | 5,21 s | 3,01 s | ×1,73 |
+
+Les instructions retirées ne bougent pas : **1 912 258 440** dans les deux
+cas, la console identique à l'octet.
+
+**Ce qui le garde exact.** Chaque programme tiré au hasard et chaque garde de
+`tests/pc_rapide.rs` tournent sur trois machines — pas à pas, blocs
+interprétés, blocs traduits dès leur première entrée — comparées à chaque
+arrêt ; un test de plus pour les adresses relatives à RIP (compte publié
+4 428 après la fusion de master). Le JIT ne prend un bloc que s'il tient entier dans le budget et que sa
+page est suivie ; une écriture rendue à une forme relit le bloc comme
+`parcourir` le fait.
+
+**Ce qu'il ne fait pas, et il faut le dire à Maxime.** La capture vient de
+TestFlight, sur un iPhone : **là, le JIT ne tourne pas, et ne peut pas
+tourner.** iOS n'accorde de page exécutable à aucune application de l'App
+Store ni de TestFlight, et l'iPhone est arm64, pour lequel ce cœur n'a pas de
+traducteur. Sur iOS, `Jit::nouveau` ne demande rien au système et rend
+`None` ; la machine interprète comme avant, au même résultat près. Il sert
+aujourd'hui sur Linux et macOS x86-64 : `wisq-pc`, et la fabrique des bureaux
+prêts (`bureaux.yml`) que le téléphone télécharge.
+
+**La CI.** CI et Site se déclenchent déjà à chaque push sur `master`. Rendre
+TestFlight automatique au merge (il est lancé à la main après chaque merge) a
+été tenté et refusé par le garde-fou de la session : c'est une publication,
+au-delà de ce qui était demandé. Laissé à la décision de Maxime.
 ## 2026-11-22 — « Ça fonctionne toujours pas » : la ligne d'état dit le silence d'abord ; #728 fusionnée, TestFlight relancé ; le JIT en Rust décidé
 
 **La capture.** L'image d'installation d'Arch, sur le cœur Rust : quatre
