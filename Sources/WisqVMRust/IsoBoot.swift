@@ -196,9 +196,22 @@ public enum IsoBoot {
     /// n'est pas la frontière : elle vit dans le bac à sable de l'application.
     static let fixedLayout = "norandmaps"
 
+    /// **Pas de parades contre les fuites spéculatives** (`mitigations=off`).
+    ///
+    /// Le processeur de l'invité ne spécule pas : il n'y a rien à parer. Les
+    /// parades, elles, coûtent cher à un traducteur. Toutes les distributions
+    /// essayées posaient des retpolines et remplissaient le tampon des
+    /// retours à chaque changement de contexte : chaque appel indirect du
+    /// noyau passe alors par un `call` vers un bout de code qui récrit sa
+    /// propre adresse de retour et en sort par un `ret` vers une cible
+    /// calculée, et chaque changement de tâche enchaîne trente-deux appels
+    /// pour rien. Sans elles, le noyau se récrit en appels indirects nus au
+    /// démarrage.
+    static let noMitigations = "mitigations=off"
+
     /// Ce que wisq ajoute à la ligne d'une image, chaque réglage seulement si
     /// l'image ne le fixe pas déjà.
-    static let added = patience + [noHandover, fixedLayout]
+    static let added = patience + [noHandover, fixedLayout, noMitigations]
 
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
