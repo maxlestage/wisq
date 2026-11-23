@@ -349,6 +349,12 @@ fn the_extended_decoder_reads_exactly_its_forms() {
         ("fnsave", &[0xdd, 0x36]),
         ("fnstsw %ax précédé de 66", &[0x66, 0xdf, 0xe0]),
         ("fld avec REX.B", &[0x41, 0xd9, 0x00]),
+        // SSE3, depuis que la machine annonce x86-64-v2.
+        ("fisttpl", &[0xdb, 0x0e]),
+        ("fisttpll", &[0xdd, 0x0e]),
+        ("fisttps", &[0xdf, 0x0e]),
+        ("haddps", &[0xf2, 0x0f, 0x7c, 0xc1]),
+        ("pshufb", &[0x66, 0x0f, 0x38, 0x00, 0xc1]),
     ] {
         let decoded = decode_extended(code).unwrap_or_else(|| panic!("{name} se lit"));
         assert_eq!(decoded.length, code.len(), "{name} : la longueur");
@@ -374,12 +380,10 @@ fn the_extended_decoder_reads_exactly_its_forms() {
         ("emms précédé de f3", &[0xf3, 0x0f, 0x77]),
         ("femms", &[0x0f, 0x0e]),
         ("fnstcw à adresse de 32 bits", &[0x67, 0xd9, 0x38]),
-        ("fisttpl, du SSE3", &[0xdb, 0x0e]),
-        ("fisttpll, du SSE3", &[0xdd, 0x0e]),
-        ("fisttps, du SSE3", &[0xdf, 0x0e]),
         ("fnstcw coupé", &[0xd9, 0x7c, 0x24]),
-        ("haddps, du SSE3", &[0xf2, 0x0f, 0x7c, 0xc1]),
-        ("pshufb, du SSSE3", &[0x0f, 0x38, 0x00, 0xc1]),
+        // La forme MMX de SSSE3 : les compilateurs ne l'émettent pas, et elle
+        // n'est pas portée.
+        ("pshufb sur des registres MMX", &[0x0f, 0x38, 0x00, 0xc1]),
         (
             "deux préfixes obligatoires",
             &[0x66, 0xf3, 0x0f, 0x58, 0xc1],

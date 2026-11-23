@@ -1784,6 +1784,15 @@ impl Cpu {
             }
             Op::Pop => {
                 let Some(value) = self.pop() else { return };
+                if instruction.memory.is_some() {
+                    // L'adresse avec RSP remonté ; une écriture qui fait faute
+                    // laisse RSP comme il était, comme le silicium.
+                    if self.write_destination(instruction, value).is_none() {
+                        self.regs[4] = self.regs[4].wrapping_sub(8);
+                        self.faulted = true;
+                    }
+                    return;
+                }
                 self.regs[instruction.dst as usize] = value;
             }
             Op::Call => {
@@ -3497,9 +3506,28 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
 
     let opcode = *bytes.get(at)?;
     at += 1;
+    // **`f2` devant un branchement proche est `bnd`**, le préfixe de MPX : un
+    // processeur sans MPX l'ignore, et la glibc de RHEL 9 en met devant les
+    // sauts de sa PLT (`f2 ff 25`, `bnd jmp *…(%rip)`). AlmaLinux et Rocky
+    // prenaient `#UD` sur le premier appel de bibliothèque de `/init`. Il ne
+    // change rien : il est lu, compté dans la longueur, et oublié.
+    let bnd = match opcode {
+        0x70..=0x7f | 0xc2 | 0xc3 | 0xe8 | 0xe9 | 0xeb => true,
+        0xff => bytes
+            .get(at)
+            .is_some_and(|modrm| matches!((modrm >> 3) & 7, 2 | 4)),
+        0x0f => bytes
+            .get(at)
+            .is_some_and(|second| (0x80..=0x8f).contains(second)),
+        _ => false,
+    };
+    if prefixes.repeat_not && bnd {
+        prefixes.repeat_not = false;
+    }
     // `f2` n'est lu que devant la page vectorielle, où il est un octet
-    // d'opcode, et devant `cmps` et `scas`, où il est `repne`. Partout
-    // ailleurs — `repne movs` compris — il est refusé plutôt qu'avalé.
+    // d'opcode, devant `cmps` et `scas`, où il est `repne`, et devant un
+    // branchement, où il est `bnd`. Partout ailleurs — `repne movs` compris —
+    // il est refusé plutôt qu'avalé.
     if prefixes.repeat_not && !matches!(opcode, 0x0f | 0xa6 | 0xa7 | 0xae | 0xaf) {
         return None;
     }
@@ -4279,6 +4307,26 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
             length: at,
             ..Decoded::nothing(Width::Qword)
         }),
+        // **`8f /0` : dépiler dans un registre ou en mémoire.** Le noyau de
+        // RHEL 9 (AlmaLinux, Rocky) fait `popq (%rsp)` dans ses premières
+        // centaines de millions d'instructions, et ce décodeur rendait `None`
+        // : les deux s'arrêtaient là, en anneau zéro. L'adresse se calcule
+        // **après** que RSP a remonté — le manuel le dit pour une base RSP —,
+        // ce que `Cpu::execute` et l'émetteur font en écrivant après la
+        // remontée.
+        0x8f if !prefixes.operand_size => {
+            let field = read_modrm(bytes, &mut at, prefixes)?;
+            if field.reg & 0b111 != 0 {
+                return None;
+            }
+            Some(Decoded {
+                op: Op::Pop,
+                dst: field.register,
+                length: at,
+                memory: field.memory,
+                ..Decoded::nothing(Width::Qword)
+            })
+        }
         // `push` d'un immédiat, étendu en signe sur huit octets — ou sur deux
         // avec `0x66`.
         //

@@ -64,16 +64,29 @@ pub enum FloatOp {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sse {
     /// `addss`… `sqrtsd` : l'élément bas, le reste de la destination laissé.
-    Scalar { op: FloatOp, double: bool },
+    Scalar {
+        op: FloatOp,
+        double: bool,
+    },
     /// Leurs formes empaquetées.
-    Packed { op: FloatOp, double: bool },
+    Packed {
+        op: FloatOp,
+        double: bool,
+    },
     /// `cmpss`/`cmpsd` : un masque dans l'élément bas.
-    CompareScalar { double: bool },
+    CompareScalar {
+        double: bool,
+    },
     /// `cmpps`/`cmppd`.
-    ComparePacked { double: bool },
+    ComparePacked {
+        double: bool,
+    },
     /// `ucomiss`, `ucomisd` (`signaling` faux), `comiss`, `comisd` : ZF, PF,
     /// CF.
-    Order { double: bool, signaling: bool },
+    Order {
+        double: bool,
+        signaling: bool,
+    },
     /// `cvtss2sd`.
     Widen,
     /// `cvtsd2ss`.
@@ -83,22 +96,58 @@ pub enum Sse {
     /// `cvtpd2ps`.
     PackedNarrow,
     /// `cvtsi2ss`/`cvtsi2sd` : depuis un registre général ou la mémoire.
-    FromInteger { double: bool },
+    FromInteger {
+        double: bool,
+    },
     /// `cvt(t)ss2si`/`cvt(t)sd2si` : vers le registre général `reg`.
-    ToInteger { double: bool, truncate: bool },
+    ToInteger {
+        double: bool,
+        truncate: bool,
+    },
     /// `cvtdq2pd`, `cvtdq2ps`.
-    FromIntegers { double: bool },
+    FromIntegers {
+        double: bool,
+    },
     /// `cvtpd2dq`, `cvttpd2dq`, `cvtps2dq`, `cvttps2dq`.
-    ToIntegers { double: bool, truncate: bool },
+    ToIntegers {
+        double: bool,
+        truncate: bool,
+    },
     /// `cvtpi2ps`, `cvtpi2pd` : deux entiers d'un MMX ou de la mémoire.
-    FromMmx { double: bool },
+    FromMmx {
+        double: bool,
+    },
     /// `cvt(t)ps2pi`, `cvt(t)pd2pi` : vers le MMX `reg`.
-    ToMmx { double: bool, truncate: bool },
+    ToMmx {
+        double: bool,
+        truncate: bool,
+    },
     /// `rcpss`, `rcpps`, `rsqrtss`, `rsqrtps` : une approximation, que le
     /// manuel borne à 1,5 · 2⁻¹² en relatif. Ce cœur rend le quotient ou la
     /// racine **justes**, arrondis au plus proche : c'est dans la borne, et le
     /// même sur tout hôte.
-    Reciprocal { scalar: bool, root: bool },
+    Reciprocal {
+        scalar: bool,
+        root: bool,
+    },
+    /// **x86-64-v2** (lus par `x86_v2.rs`) : `addsubps`/`addsubpd` (SSE3),
+    /// les additions et soustractions horizontales (SSE3), l'arrondi à
+    /// l'entier (`roundps`… de SSE4.1, l'immédiat dit le mode) et le produit
+    /// scalaire (`dpps`, `dppd`).
+    AddSub {
+        double: bool,
+    },
+    Horizontal {
+        double: bool,
+        sub: bool,
+    },
+    Round {
+        double: bool,
+        scalar: bool,
+    },
+    Dot {
+        double: bool,
+    },
 }
 
 /// **Décoder une instruction flottante de la page `0f`**, l'octet `second`
@@ -443,6 +492,49 @@ impl Context {
     fn invalid(&mut self, format: Format) -> u64 {
         self.flags |= IE;
         format.indefinite()
+    }
+
+    /// **L'arrondi à l'entier**, dans le format même (`roundss`…) : `mode`
+    /// vient de l'immédiat ou de MXCSR. Seuls l'invalide (un NaN signalant)
+    /// et l'inexact — sauf si l'immédiat le tait — se signalent ; un
+    /// dénormal ne se dit pas, et DAZ le prend pour zéro.
+    fn integral(&mut self, bits: u64, format: Format, mode: Rounding, quiet: bool) -> u64 {
+        let exponent = (bits >> format.fraction) & format.all_ones();
+        let fraction = bits & ((1u64 << format.fraction) - 1);
+        if exponent == format.all_ones() {
+            if fraction != 0 && fraction >> (format.fraction - 1) & 1 == 0 {
+                self.flags |= IE;
+                return format.quiet(bits);
+            }
+            return bits;
+        }
+        let negative = bits & format.sign_bit() != 0;
+        if exponent == 0 && (fraction == 0 || self.daz) {
+            return format.zero(negative);
+        }
+        let rounded = if format.fraction == 52 {
+            let value = f64::from_bits(bits);
+            let integral = match mode {
+                Rounding::NearestEven => value.round_ties_even(),
+                Rounding::Down => value.floor(),
+                Rounding::Up => value.ceil(),
+                Rounding::TowardZero => value.trunc(),
+            };
+            integral.to_bits()
+        } else {
+            let value = f32::from_bits(bits as u32);
+            let integral = match mode {
+                Rounding::NearestEven => value.round_ties_even(),
+                Rounding::Down => value.floor(),
+                Rounding::Up => value.ceil(),
+                Rounding::TowardZero => value.trunc(),
+            };
+            u64::from(integral.to_bits())
+        };
+        if rounded != bits && !quiet {
+            self.flags |= PE;
+        }
+        rounded
     }
 
     /// **Une opération sur un élément**, `a` la destination, `b` la source.
@@ -1095,6 +1187,103 @@ impl Cpu {
                         .collect();
                     Write::Xmm(join_lanes(&results, false))
                 }
+            }
+            Sse::AddSub { double } => {
+                let format = Format::of(double);
+                let source = lanes(read(self, 16)?, double);
+                let destination = lanes(self.xmm[d], double);
+                let results: Vec<u64> = destination
+                    .iter()
+                    .zip(&source)
+                    .enumerate()
+                    .map(|(rang, (a, b))| {
+                        let op = if rang % 2 == 0 {
+                            FloatOp::Sub
+                        } else {
+                            FloatOp::Add
+                        };
+                        context.arithmetic(op, *a, *b, format)
+                    })
+                    .collect();
+                Write::Xmm(join_lanes(&results, double))
+            }
+            Sse::Horizontal { double, sub } => {
+                let format = Format::of(double);
+                let op = if sub { FloatOp::Sub } else { FloatOp::Add };
+                let source = lanes(read(self, 16)?, double);
+                let destination = lanes(self.xmm[d], double);
+                let mut results = Vec::new();
+                for pair in destination.chunks(2).chain(source.chunks(2)) {
+                    results.push(context.arithmetic(op, pair[0], pair[1], format));
+                }
+                Write::Xmm(join_lanes(&results, double))
+            }
+            Sse::Round { double, scalar } => {
+                let format = Format::of(double);
+                let mode = if instruction.imm & 4 != 0 {
+                    Rounding::from_field(self.mxcsr >> 13)
+                } else {
+                    Rounding::from_field(instruction.imm as u32)
+                };
+                let quiet = instruction.imm & 8 != 0;
+                let bytes = match (scalar, double) {
+                    (true, true) => 8,
+                    (true, false) => 4,
+                    _ => 16,
+                };
+                let source = read(self, bytes)?;
+                if scalar {
+                    let result = context.integral(source[0] & format.mask(), format, mode, quiet);
+                    let destination = self.xmm[d];
+                    Write::Xmm([(destination[0] & !format.mask()) | result, destination[1]])
+                } else {
+                    let results: Vec<u64> = lanes(source, double)
+                        .iter()
+                        .map(|bits| context.integral(*bits, format, mode, quiet))
+                        .collect();
+                    Write::Xmm(join_lanes(&results, double))
+                }
+            }
+            Sse::Dot { double } => {
+                let format = Format::of(double);
+                let imm = instruction.imm;
+                let source = lanes(read(self, 16)?, double);
+                let destination = lanes(self.xmm[d], double);
+                let products: Vec<u64> = destination
+                    .iter()
+                    .zip(&source)
+                    .enumerate()
+                    .map(|(rang, (a, b))| {
+                        if imm >> (4 + rang) & 1 != 0 {
+                            context.arithmetic(FloatOp::Mul, *a, *b, format)
+                        } else {
+                            format.zero(false)
+                        }
+                    })
+                    .collect();
+                // **La somme du manuel** : `p0 + p1`, `p2 + p3`, puis une seule
+                // somme des deux, rangée dans toutes les voies choisies. C'est
+                // ce que rend le silicium d'AMD (le processeur que cette
+                // machine annonce) ; un Xeon additionne dans un autre ordre,
+                // ce que seul le NaN qui passe trahit quand il y en a des deux
+                // côtés — voir `x86_v2_host`.
+                let sum = if double {
+                    context.arithmetic(FloatOp::Add, products[0], products[1], format)
+                } else {
+                    let low = context.arithmetic(FloatOp::Add, products[0], products[1], format);
+                    let high = context.arithmetic(FloatOp::Add, products[2], products[3], format);
+                    context.arithmetic(FloatOp::Add, low, high, format)
+                };
+                let results: Vec<u64> = (0..products.len())
+                    .map(|rang| {
+                        if imm >> rang & 1 != 0 {
+                            sum
+                        } else {
+                            format.zero(false)
+                        }
+                    })
+                    .collect();
+                Write::Xmm(join_lanes(&results, double))
             }
         };
         // **Une exception démasquée ne range rien** : les drapeaux, puis #XM.

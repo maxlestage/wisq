@@ -1660,6 +1660,8 @@ export function machine({
     retraduites: 0,
     replacees: 0,
     respirations: 0,
+    /// Les instructions que l'émetteur refuse et que le secours a faites.
+    secourues: 0,
     /// Les clés évincées que le cache retient pour compter les retraductions
     /// (voir `oubliees`), jamais plus que `limite.oubliees`.
     get oubliees() {
@@ -2459,6 +2461,125 @@ export function machine({
     return filled === 0 ? null : out.slice(0, filled);
   }
 
+  /// **Le secours : l'instruction que l'émetteur refuse, exécutée par
+  /// l'interpréteur de la page** (`crates/wisq-page/src/secours.rs`, sur
+  /// `wisq_vm::pc::secours`). Le x87 d'abord — Alpine 3.24 s'arrêtait sur un
+  /// `fildl` de musl —, et tout ce que le second décodeur de la machine
+  /// native lit : MMX, SSE, `fxsave`. Les registres, le Rust les lit et les
+  /// rend lui-même ; ici, on ne fait que ce que seule la boucle sait faire :
+  /// lire la mémoire de l'opérande à travers les tables de pages, récrire ce
+  /// que l'instruction y a changé, et livrer une faute.
+  ///
+  /// Rend `true` quand l'instruction est faite ou qu'une exception a été
+  /// livrée à sa place, une raison d'arrêt quand la délivrance échoue, et
+  /// `false` quand le secours ne la lit pas non plus.
+  function secourir(here) {
+    if (rust === null || typeof rust.secourir !== "function") return false;
+    const code = read(here, 16, SLOTS.walkFetch);
+    if (code === null) return false;
+    // **Le pointeur d'abord, le tampon ensuite** : le premier appel au
+    // secours alloue ses tampons, ce qui peut faire grandir la mémoire du
+    // module — et détacher un `buffer` pris avant.
+    const ouCode = rust.secours_code();
+    new Uint8Array(rust.memory.buffer, ouCode, 16).fill(0).set(code);
+    let base = 0n;
+    let taille = 0;
+    let avant = null;
+    for (let essai = 0; essai < 3; essai++) {
+      const issue = rust.secourir(code.length, base, taille);
+      if (issue === 0) {
+        if (avant !== null) {
+          const ouFenetre = rust.secours_fenetre();
+          const apres = new Uint8Array(rust.memory.buffer, ouFenetre, taille).slice();
+          const faute = recrire(base, avant, apres);
+          if (faute !== null) {
+            rust.secours_annuler();
+            return faute;
+          }
+        }
+        rust.secours_valider();
+        return true;
+      }
+      if (issue === 1) {
+        const ouRendu = rust.secours_rendu();
+        const rendu = new BigUint64Array(rust.memory.buffer, ouRendu, 2);
+        base = rendu[0];
+        taille = Number(rendu[1]);
+        avant = lireDonnees(base, taille);
+        if (!(avant instanceof Uint8Array)) return avant;
+        const ouFenetre = rust.secours_fenetre();
+        new Uint8Array(rust.memory.buffer, ouFenetre, taille).set(avant);
+        continue;
+      }
+      if (issue === 2) {
+        const ouRendu = rust.secours_rendu();
+        const rendu = new BigUint64Array(rust.memory.buffer, ouRendu, 2);
+        const why = deliver(Number(rendu[0]), rendu[1] === 0xffffffffffffffffn ? 0n : rendu[1],
+          "une exception de l'instruction secourue");
+        return why === null ? true : why;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  /// **Une faute de page sur un accès de données de l'hôte**, livrée comme
+  /// celle d'une région : la marche a posé le témoin (code plus un) et CR2.
+  function fauteDeDonnees() {
+    const fault = globals[SLOTS.fault].value;
+    globals[SLOTS.fault].value = 0n;
+    const why = deliver(PAGE_FAULT, pageFaultCode(fault === 0n ? 0n : fault - 1n, false),
+      "une faute de page sur l'opérande d'une instruction secourue");
+    if (why !== null) globals[SLOTS.fault].value = fault;
+    return why === null ? true : why;
+  }
+
+  /// `taille` octets à partir de `adresse`, chaque page lue par la marche
+  /// avec les droits d'une lecture — ou la faute livrée (`true`, ou la
+  /// raison d'arrêt).
+  function lireDonnees(adresse, taille) {
+    const out = new Uint8Array(taille);
+    let fait = 0;
+    while (fait < taille) {
+      const ici = adresse + BigInt(fait);
+      globals[SLOTS.fault].value = 0n;
+      const at = physical(ici, 1);
+      if (at === null) return fauteDeDonnees();
+      const prendre = Math.min(4096 - Number(ici & 0xfffn), taille - fait);
+      out.set(new Uint8Array(memory.buffer, at, prendre), fait);
+      fait += prendre;
+    }
+    return out;
+  }
+
+  /// **Récrire ce que l'instruction a changé**, page par page, avec les
+  /// droits d'une écriture : une page en lecture seule fait faute ici, avant
+  /// qu'un octet ne soit posé. Rend `null`, ou la faute livrée.
+  function recrire(adresse, avant, apres) {
+    let premier = 0;
+    while (premier < avant.length && avant[premier] === apres[premier]) premier++;
+    if (premier === avant.length) return null;
+    let dernier = avant.length - 1;
+    while (avant[dernier] === apres[dernier]) dernier--;
+    // Toutes les pages d'abord : rien n'est écrit si l'une manque.
+    const morceaux = [];
+    let fait = premier;
+    while (fait <= dernier) {
+      const ici = adresse + BigInt(fait);
+      globals[SLOTS.fault].value = 0n;
+      const at = physical(ici, 2);
+      if (at === null) return fauteDeDonnees();
+      const prendre = Math.min(4096 - Number(ici & 0xfffn), dernier + 1 - fait);
+      morceaux.push({ at, depuis: fait, prendre });
+      fait += prendre;
+    }
+    for (const { at, depuis, prendre } of morceaux) {
+      new Uint8Array(memory.buffer, at, prendre).set(apres.subarray(depuis, depuis + prendre));
+      ecrit(at, prendre);
+    }
+    return null;
+  }
+
   async function install(address) {
     // **Le contexte de la région est celui de l'instant** — l'anneau et
     // l'espace d'adressage où la machine va l'exécuter —, et c'est sous lui
@@ -3104,6 +3225,7 @@ export function machine({
       // chacun une région s'installe, et ce compteur retombe. Deux d'affilée
       // veut dire que le gestionnaire est lui-même hors de la carte.
       let unfetchable = 0;
+      let secoursDeSuite = 0;
       for (let round = 0; round < rounds; round++) {
         if (performance.now() - dernier >= breath) {
           await souffler();
@@ -3191,6 +3313,21 @@ export function machine({
             continue;
           }
           if (region === null) {
+            // **Avant de s'arrêter, le secours** : l'interpréteur de la page
+            // exécute l'instruction, et la boucle reprend après elle.
+            const secouru = secourir(here);
+            if (secouru === true) {
+              caches.secourues += 1;
+              unfetchable = 0;
+              // **Une instruction secourue ne coûte pas un tour** : elle ne
+              // fait presque rien du temps de l'invité, et une suite de x87
+              // épuiserait sinon les tours d'un pilote. Deux cent cinquante-six
+              // d'affilée au plus, pour qu'une boucle de secours ne tourne pas
+              // sans fin.
+              if (++secoursDeSuite < 256) round -= 1;
+              continue;
+            }
+            if (typeof secouru === "string") return { stopped: secouru, at: here };
             return { stopped: "refusée", at: here };
           }
           unfetchable = 0;
@@ -3234,6 +3371,7 @@ export function machine({
             }
           }
         }
+        secoursDeSuite = 0;
         const left = BigInt.asUintN(64, BigInt(region.run(budget)));
         // **Ce que la région a écrit dans des pages de code**, oublié avant
         // toute autre chose : la délivrance qui suit peut entrer dans une
@@ -3510,6 +3648,16 @@ export function machine({
           region.run(1n);
           voirEcritures();
           if (rip() === here && lecturesDePort === lectures) {
+            // **Une région qui rend la main sur sa propre entrée** : une
+            // division que le module ne sait pas faire (cent vingt-huit bits,
+            // un diviseur nul). L'interpréteur du secours la fait, ou livre
+            // `#DE`.
+            const secouru = secourir(here);
+            if (secouru === true) {
+              caches.secourues += 1;
+              continue;
+            }
+            if (typeof secouru === "string") return { stopped: secouru, at: here };
             return { stopped: "sur place", at: here };
           }
         }
