@@ -27,6 +27,8 @@ use crate::x86::{
 };
 use crate::x86_paging::{Access, PagesDeCode, Unmapped};
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::blocs::Bloc;
 use super::blocs::{Blocs, Trouve, PORTEE};
 use super::chargeur::{self, Ecran, Placement, Refus};
 use super::herites::{Herites, INSTRUCTIONS_PAR_BATTEMENT};
@@ -35,6 +37,8 @@ use super::systeme::{
     self, cpuid, drapeaux_permis, faute_du_dernier_acces, Exception, Livraison, Systeme, EFER_LME,
     IOPL,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::x86::jit::{self, Jit};
 
 /// **Les instructions qui touchent la pile sans opérande pour le dire** :
 /// leurs références implicites passent par SS.
@@ -632,6 +636,12 @@ pub struct Machine {
     reprise: Option<Reprise>,
     /// La case du dernier bloc exécuté (`Blocs::enchainer`).
     dernier_bloc: usize,
+    /// **Le JIT** (`x86::jit`) : les blocs chauds traduits en code de
+    /// l'hôte. `None` quand l'hôte n'accorde pas de page exécutable (iOS hors
+    /// débogueur), quand ce cœur n'a pas de traducteur pour lui, ou quand on
+    /// l'a éteint : la machine interprète alors, aux mêmes instructions près.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub jit: Option<Box<Jit>>,
 }
 
 impl Machine {
@@ -685,6 +695,8 @@ impl Machine {
             blocs: Blocs::default(),
             reprise: None,
             dernier_bloc: usize::MAX,
+            #[cfg(not(target_arch = "wasm32"))]
+            jit: Jit::nouveau().map(Box::new),
         })
     }
 
@@ -1267,7 +1279,111 @@ impl Machine {
         if nombre == 0 {
             return Passage::Aucun;
         }
+        // **Par le JIT**, quand le bloc tient entier dans le budget et que sa
+        // page est suivie (un bloc tamponné, sa page marquée : aucune
+        // écriture rapide n'y tombe, ce que le code traduit suppose).
+        #[cfg(not(target_arch = "wasm32"))]
+        if nombre == u64::from(bloc.nombre) && generation.is_some() {
+            if let Some(passage) = self.par_le_jit(place, permis) {
+                return passage;
+            }
+        }
         self.parcourir(place, 0, nombre)
+    }
+
+    /// **Le bloc de `place` par son code traduit**, s'il en a un ou s'il
+    /// vient d'en mériter un ; rien sinon, et la boucle l'interprète.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[inline(always)]
+    fn par_le_jit(&mut self, place: usize, permis: u64) -> Option<Passage> {
+        let jit = self.jit.as_deref_mut()?;
+        let code = jit.code(self.blocs.bloc_mut(place), &|octets| {
+            lire_en_ram(octets, 0, octets.len())
+        })?;
+        self.blocs.enchainer(self.dernier_bloc, place);
+        let bloc: *const Bloc = self.blocs.bloc(place);
+        let cases = self.blocs.cases();
+        let zone = u64::from(jit.generation());
+        let (generations, pages, epoque) = match self.cpu.code.as_deref() {
+            Some(code) => code.pour_le_jit(),
+            None => (std::ptr::null(), 0, std::ptr::null()),
+        };
+        let (droits_lecture, droits_ecriture) = jit::Contexte::droits(&self.cpu);
+        let cpu: *mut Cpu = &mut self.cpu;
+        // SAFETY: le bloc et la table vivent dans `blocs`, que rien ne
+        // reconstruit pendant l'appel ; le processeur et sa RAM ne sont tenus
+        // que par le code traduit et les formes qu'il appelle, l'un après
+        // l'autre ; les générations ne changent pas de taille.
+        let mut contexte = unsafe {
+            jit::Contexte {
+                cpu,
+                bloc,
+                ram: (*cpu).memory.bytes.as_mut_ptr(),
+                longueur: (*cpu).memory.bytes.len() as u64 & !0xFFF,
+                base: (*cpu).memory.base,
+                debut: (*bloc).etiquette.wrapping_sub(1),
+                reste: permis,
+                deja: 0,
+                place: place as u64,
+                cases,
+                generations,
+                pages: pages as u64,
+                epoque,
+                zone,
+                enchaines: 0,
+                droits_lecture,
+                droits_ecriture,
+            }
+        };
+        // SAFETY: voir plus haut.
+        let rendu = unsafe { code(cpu, &mut contexte) };
+        let place = contexte.place as usize;
+        self.dernier_bloc = place;
+        if let Some(jit) = self.jit.as_deref_mut() {
+            jit.passages += contexte.enchaines;
+            jit.enchaines += contexte.enchaines;
+        }
+        let rang = u64::from(rendu as u32);
+        self.retirees = self.retirees.wrapping_add(contexte.deja);
+        if rendu >> 32 == jit::FAUTE {
+            return Some(self.faute_traduite(place, rang, contexte.deja));
+        }
+        self.retirees = self.retirees.wrapping_add(rang);
+        Some(Passage::Fait(contexte.deja + rang))
+    }
+
+    /// **L'instruction `faites` d'un bloc traduit a fauté**, après `deja`
+    /// instructions des blocs chaînés avant lui (déjà retirées) : ce que
+    /// `parcourir` fait d'une faute, pour la même instruction.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cold]
+    #[inline(never)]
+    fn faute_traduite(&mut self, place: usize, faites: u64, deja: u64) -> Passage {
+        let bloc = self.blocs.bloc(place);
+        let rang = faites as usize;
+        let uop = bloc.uops[rang];
+        let instruction = match bloc.generales.get(uop.generale as usize) {
+            Some(instruction) => *instruction,
+            None => {
+                let ici = bloc.etiquette.wrapping_sub(1) as usize + physique_du_rang(bloc, rang);
+                let disponibles = 15.min(0x1000 - (ici & 0xFFF));
+                match lire_en_ram(&self.cpu.memory.bytes, ici, disponibles) {
+                    Some(instruction) => instruction,
+                    None => {
+                        return Passage::Faute(
+                            deja + faites,
+                            Evenement::Arret(format!(
+                                "une instruction d'un bloc ne se relit plus à rip {:#x}",
+                                self.cpu.rip
+                            )),
+                        )
+                    }
+                }
+            }
+        };
+        self.retirees = self.retirees.wrapping_add(faites);
+        let evenement = self.faute_d_execution(&instruction);
+        Passage::Faute(deja + faites, evenement)
     }
 
     /// **Reprendre un bloc là où le service du matériel l'a coupé.** Sans

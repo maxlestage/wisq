@@ -47,6 +47,15 @@ cœur A-series est une autre machine. Ce qui se transporte, c'est la forme : le
 même chemin de code tourne sur le téléphone, il n'y a aucun JIT dedans, et rien
 n'y exige de jailbreak ni d'autorisation particulière.
 
+La machine PC x86-64 en Rust a aussi un **JIT natif, écrit à la main**
+(`crates/wisq-vm/src/x86_jit.rs`) : les blocs chauds traduits en code x86-64
+de l'hôte, ×1,21 sur le banc commun du démarrage d'Alpine et ×1,73 sur du
+calcul pur, aux mêmes instructions retirées près. Il ne tourne que là où
+l'hôte accorde une page exécutable — Linux et macOS x86-64, comme `wisq-pc`
+et la fabrique des bureaux prêts. **Sur l'iPhone, il est éteint** : iOS
+n'accorde de page exécutable à aucune application de l'App Store ni de
+TestFlight, et la machine interprète comme avant.
+
 ## État
 
 Ce dépôt contient l'application complète : un client **VNC/RFB 3.8** écrit à
@@ -95,7 +104,7 @@ opérer, et `--no-tls` pour les tunnels qui chiffrent déjà.
 
 `WisqCore`, `WisqNet`, `WisqRemote` et `WisqVM` compilent sans erreur ni
 avertissement sous Swift 6.3, y compris en concurrence stricte complète, et
-leurs tests passent (4427 avec ceux du Rust) — dont un bout-à-bout où le vrai
+leurs tests passent (4428 avec ceux du Rust) — dont un bout-à-bout où le vrai
 démon est interrogé par le vrai client. La couche `WisqUI` et la cible application demandent UIKit : elles ne
 sont vérifiées que par le job macOS de la CI.
 

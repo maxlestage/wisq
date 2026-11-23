@@ -100,6 +100,11 @@ pub struct Bloc {
     pub suivant: u32,
     /// Celui qui le suivait avant : un saut conditionnel a deux suites.
     pub autre_suivant: u32,
+    /// **Ce que le JIT a fait de ce bloc** (`x86::jit`) : dans la première
+    /// ligne, que l'entrée fait venir de toute façon. Une table à côté
+    /// coûtait une ligne attendue de plus à chaque entrée — mesuré : le
+    /// démarrage d'Alpine plus lent par le JIT que sans lui.
+    pub jit: Traduit,
     pub uops: [Uop; CAPACITE],
     /// Les bits du dernier mot qui comptent.
     pub dernier: u64,
@@ -117,6 +122,19 @@ pub struct Bloc {
 /// Les instructions générales d'un bloc, au plus.
 pub const GENERALES: usize = 4;
 
+/// **Le code traduit d'un bloc** : son adresse (zéro : pas encore), la
+/// génération de la zone où il vit (`x86::jit::Jit`, vidée d'un coup quand
+/// elle est pleine), et les entrées dans le bloc avant qu'il ne soit traduit.
+/// Un bloc reconstruit repart de zéro (`Blocs::construire`) ; un bloc chassé
+/// dans la seconde case emporte son code, qui est toujours le sien.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct Traduit {
+    pub code: usize,
+    pub zone: u32,
+    pub compte: u32,
+}
+
 impl Bloc {
     fn vide() -> Self {
         Self {
@@ -128,6 +146,7 @@ impl Bloc {
             ecrit: 0,
             suivant: 0,
             autre_suivant: 0,
+            jit: Traduit::default(),
             dernier: 0,
             octets: [0; PORTEE / 8],
             uops: [Uop::vide(); CAPACITE],
@@ -412,6 +431,18 @@ impl Blocs {
         &self.cases[place]
     }
 
+    /// Le début de la table, que le chaînage du JIT parcourt lui-même.
+    pub fn cases(&self) -> *const Bloc {
+        self.cases.as_ptr()
+    }
+
+    /// Le bloc de `place`, à changer : ce que le JIT (`x86::jit`) retient de
+    /// lui (`Bloc::jit`).
+    #[inline(always)]
+    pub fn bloc_mut(&mut self, place: usize) -> &mut Bloc {
+        &mut self.cases[place]
+    }
+
     /// **Noter que `apres` a suivi `avant`, et faire venir au cache le bloc
     /// qui a suivi `apres` la dernière fois.** Une table de trente-deux
     /// mille blocs ne tient pas dans le cache de l'hôte, et chaque entrée
@@ -482,6 +513,8 @@ impl Blocs {
         // ne les lit.
         let bloc = &mut self.cases[place];
         bloc.ecrit = 0;
+        // Un bloc neuf n'a pas encore de code traduit.
+        bloc.jit = Traduit::default();
         let mut position = 0usize;
         let mut nombre = 0usize;
         let mut generales = 0usize;

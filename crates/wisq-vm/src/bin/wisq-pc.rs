@@ -26,7 +26,9 @@
 //!
 //! `--horloge` pose l'heure de l'horloge CMOS (des secondes depuis 1970) au
 //! lieu de celle de l'hôte : deux courses du même noyau retirent alors les
-//! mêmes instructions. `--sans-blocs` éteint le chemin rapide (`pc::blocs`) :
+//! mêmes instructions. `--sans-jit` éteint le JIT (`x86::jit`) : les blocs
+//! sont interprétés, aux mêmes instructions près. `--sans-blocs` éteint le
+//! chemin rapide (`pc::blocs`), JIT compris :
 //! chaque instruction passe par le pas à pas, le terme de comparaison.
 //!
 //! **L'écran** : `--display 1280x800` branche la carte de Bochs (00:02.0,
@@ -138,6 +140,7 @@ struct Options {
     battement: Option<u64>,
     horloge: Option<u64>,
     sans_blocs: bool,
+    sans_jit: bool,
     disque: Option<String>,
     couche: Option<String>,
     sans_carte: bool,
@@ -273,7 +276,7 @@ fn usage() -> ! {
         "usage : wisq-pc --kernel <bzImage> [--initrd <fichier>] [--cmdline <texte>] \
          [--ram <Mio>] [--budget <instructions>] [--input 'cmd;;cmd'] [--until <texte>] \
          [--prompt <texte>] [--patience <secondes>] [--tick <instructions>] [--quiet] \
-         [--horloge <secondes>] [--sans-blocs] [--disque <fichier> [--couche <fichier>]] [--sans-carte] \
+         [--horloge <secondes>] [--sans-blocs] [--sans-jit] [--disque <fichier> [--couche <fichier>]] [--sans-carte] \
          [--iso <image>] [--display <L>x<H>] [--screen-dump <image.ppm>] [--screen-every <secondes>] \
          [--keys 'secondes:texte;;…'] [--status <secondes>] [--input-file <fichier>] \
          [--sauver <instantané>] [--reprendre <instantané>]"
@@ -296,6 +299,7 @@ fn options() -> Options {
         battement: None,
         horloge: None,
         sans_blocs: false,
+        sans_jit: false,
         disque: None,
         couche: None,
         sans_carte: false,
@@ -332,6 +336,7 @@ fn options() -> Options {
             "--quiet" => options.muet = true,
             "--horloge" => options.horloge = Some(valeur().parse().unwrap_or_else(|_| usage())),
             "--sans-blocs" => options.sans_blocs = true,
+            "--sans-jit" => options.sans_jit = true,
             "--disque" | "--disk" => options.disque = Some(valeur()),
             "--iso" => options.iso = Some(valeur()),
             "--keys" => options.touches = frappes(&valeur()).unwrap_or_else(|| usage()),
@@ -450,6 +455,9 @@ fn main() {
     // sauf quand `--horloge` en donne une.
     poste.machine.herites.cmos.regler(heure(options.horloge));
     poste.machine.blocs_actifs = !options.sans_blocs;
+    if options.sans_jit {
+        poste.machine.jit = None;
+    }
     let carte = poste.commandes().carte().clone();
     // L'horloge CMOS de la carte, qui répond aux ports 0x70 et 0x71 : l'heure
     // figée par `--horloge`, celle de l'hôte sinon.
@@ -781,6 +789,13 @@ fn main() {
     );
     if machine.blocs_actifs {
         eprintln!("blocs construits : {}", machine.blocs.construits);
+        match machine.jit.as_deref() {
+            Some(jit) => eprintln!(
+                "JIT : {} blocs traduits ({} octets), {} passages par du code traduit dont {} chaînés",
+                jit.traduits, jit.octets, jit.passages, jit.enchaines
+            ),
+            None => eprintln!("JIT : éteint"),
+        }
     }
     eprintln!(
         "secondes : {secondes:.2} ; MIPS : {:.1}",
