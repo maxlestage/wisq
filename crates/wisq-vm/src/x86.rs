@@ -3549,6 +3549,9 @@ pub fn decode(bytes: &[u8]) -> Option<Decoded> {
     if opcode == 0x0f {
         let second = *bytes.get(at)?;
         at += 1;
+        if matches!(second, 0x2b | 0xc3 | 0xe7) && !prefixes.repeat && !prefixes.repeat_not {
+            return non_temporal(bytes, at - 1, prefixes.operand_size);
+        }
         if prefixes.repeat_not {
             return vector::decode(second, bytes, at, prefixes);
         }
@@ -5305,6 +5308,47 @@ fn decode_load_kernel_gs(bytes: &[u8]) -> Option<Decoded> {
         length: 4,
         ..Decoded::nothing(Width::Dword)
     })
+}
+
+/// **Les rangements « non temporels » de SSE et SSE2** : `movntps` et
+/// `movntpd` (`0f 2b`), `movntdq` (`66 0f e7`), `movnti` (`0f c3`). Ils disent
+/// au processeur de ne pas garder la ligne dans ses caches ; aucun des deux
+/// cœurs n'en a, et ils rangent exactement ce que rangent `movaps` (`0f 29`),
+/// `movdqa` (`66 0f 7f`) et `mov` (`89`) : l'octet d'opcode est remplacé
+/// dans une copie, lue par ce même décodeur. En mémoire seulement — la forme
+/// registre est `#UD` sur le silicium.
+///
+/// **Ils sont lus ici, et pas seulement par la machine native**, parce que
+/// l'émetteur les rendait au secours un par un : le banc RAID du noyau de
+/// Void (`raid6_select_algo`, au chargement de `raid456`) les enchaîne dans
+/// une boucle qui dure seize tics d'horloge de l'invité, et un secours
+/// n'avance pas l'horloge — le démarrage ne passait jamais « Loading kernel
+/// modules ».
+fn non_temporal(bytes: &[u8], opcode_at: usize, operand_size: bool) -> Option<Decoded> {
+    let mut copy = [0u8; 15];
+    let length = bytes.len().min(15);
+    copy[..length].copy_from_slice(&bytes[..length]);
+    let (copy, length, removed) = match *bytes.get(opcode_at)? {
+        0x2b => {
+            copy[opcode_at] = 0x29;
+            (copy, length, 0)
+        }
+        0xe7 if operand_size => {
+            copy[opcode_at] = 0x7f;
+            (copy, length, 0)
+        }
+        // `0f c3` devient `89` : un octet de moins, rendu à la longueur.
+        0xc3 if !operand_size => {
+            copy.copy_within(opcode_at..length, opcode_at - 1);
+            copy[opcode_at - 1] = 0x89;
+            (copy, length - 1, 1)
+        }
+        _ => return None,
+    };
+    let mut instruction = decode(&copy[..length])?;
+    instruction.memory?;
+    instruction.length += removed;
+    Some(instruction)
 }
 
 fn read_modrm(bytes: &[u8], at: &mut usize, prefixes: Prefixes) -> Option<ModRm> {
