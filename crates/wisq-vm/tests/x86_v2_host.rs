@@ -452,3 +452,27 @@ fn fisttp_matches_the_silicon() {
     juger("fisttpl", &[0xDD, 0x06, 0xDB, 0x4E, 0x08], 400);
     juger("fisttpll", &[0xDD, 0x06, 0xDD, 0x4E, 0x08], 400);
 }
+
+/// **`bnd`** (`f2` devant un branchement proche) : le préfixe de MPX, qu'un
+/// processeur sans MPX ignore. La glibc de RHEL 9 en met devant les sauts de
+/// sa PLT. Les sauts de déplacement nul vont à l'instruction d'après, ce que
+/// le banc sait exécuter ; `bnd jmp *` se juge par sa longueur.
+#[test]
+fn bnd_prefixed_branches_are_branches() {
+    if !hote_v2() {
+        return;
+    }
+    juger("bnd jmp", &[0xF2, 0xEB, 0x00], 20);
+    juger("bnd jz", &[0xF2, 0x74, 0x00], 50);
+    juger(
+        "bnd jnz rel32",
+        &[0xF2, 0x0F, 0x85, 0x00, 0x00, 0x00, 0x00],
+        50,
+    );
+    let indirect = decode(&[0xF2, 0xFF, 0x25, 0xD5, 0x2A, 0x1D, 0x00]).expect("bnd jmp *");
+    assert_eq!((indirect.op, indirect.length), (Op::JumpIndirect, 7));
+    assert!(
+        decode(&[0xF2, 0xFF, 0xC0]).is_none(),
+        "`f2` devant `inc` reste refusé"
+    );
+}
