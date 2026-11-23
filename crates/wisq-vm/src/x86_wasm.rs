@@ -4088,7 +4088,11 @@ impl Module {
             let accessors = widths
                 .iter()
                 .map(|width| Self::accessor_body(walk, mask, *width, false))
-                .chain(widths.iter().map(|width| Self::accessor_body(walk, mask, *width, true)));
+                .chain(
+                    widths
+                        .iter()
+                        .map(|width| Self::accessor_body(walk, mask, *width, true)),
+                );
             for entry in [
                 Self::far_load_body(walk),
                 Self::far_store_body(walk),
@@ -4459,11 +4463,15 @@ impl Module {
             ..Body::default()
         };
         if store {
-            b.poke(width, |b| {
-                b.local_get(0);
-            }, |b| {
-                b.local_get(1);
-            });
+            b.poke(
+                width,
+                |b| {
+                    b.local_get(0);
+                },
+                |b| {
+                    b.local_get(1);
+                },
+            );
         } else {
             b.local_get(0);
             b.peek(width);
