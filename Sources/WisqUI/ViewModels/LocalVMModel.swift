@@ -990,6 +990,10 @@ public final class LocalVMModel {
         ticker = Task { @MainActor [weak self] in
             var previous: GuestProgress?
             var previousAt = Date()
+            // Le dernier compte d'octets écrits par l'invité, et quand il a
+            // bougé : la ligne dit le silence (`GuestHeartbeat.quietAfter`).
+            var heardBytes = self?.sink.guestBytes ?? 0
+            var heardAt = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self, self.machine === machine else { return }
@@ -1005,8 +1009,13 @@ public final class LocalVMModel {
                 // Un cœur qui ne publie pas se tait — voir `liveProgress`.
                 guard let now = machine.liveProgress else { return }
                 let at = Date()
+                if self.sink.guestBytes != heardBytes {
+                    heardBytes = self.sink.guestBytes
+                    heardAt = at
+                }
                 self.heartbeat = GuestHeartbeat.line(
-                    now: now, since: previous, seconds: at.timeIntervalSince(previousAt))
+                    now: now, since: previous, seconds: at.timeIntervalSince(previousAt),
+                    silentFor: at.timeIntervalSince(heardAt))
                 previous = now
                 previousAt = at
             }
