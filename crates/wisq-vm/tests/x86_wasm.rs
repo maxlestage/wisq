@@ -5355,6 +5355,33 @@ fn nothing_follows_an_indirect_jump() {
     assert_eq!(Module::unreadable(&called, 0), Ok(vec![6]));
 }
 
+/// **La page de l'application s'arrête plus tôt : 64 instructions.** Sous la
+/// borne, sa région est celle de `resolving_or_why` à l'octet près ; au-delà,
+/// elle s'arrête et la suite devient une région de plus.
+#[test]
+fn the_page_region_stops_at_its_own_budget() {
+    let mut short = vec![0x90; 40];
+    short.extend_from_slice(&[0x0f, 0x0b]);
+    assert_eq!(
+        Module::resolving_for_page_or_why(&short, 0x10_0000, 0, 3, 16),
+        Module::resolving_or_why(&short, 0x10_0000, 0, 3, 16),
+        "sous la borne, la même région"
+    );
+    // `nop` n'écrit rien : il faut des instructions qui pèsent.
+    let mut long: Vec<u8> = std::iter::repeat_n([0x48, 0x83, 0xc7, 0x01], 200)
+        .flatten()
+        .collect();
+    long.extend_from_slice(&[0x0f, 0x0b]);
+    let page = Module::resolving_for_page_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
+    let full = Module::resolving_or_why(&long, 0x10_0000, 0, 3, 16).expect("traduite");
+    assert!(
+        page.len() < full.len(),
+        "au-delà, la région de la page s'arrête : {} contre {} octets",
+        page.len(),
+        full.len()
+    );
+}
+
 /// **Une région s'arrête à 256 instructions**, tous blocs confondus : ce qui
 /// vient après devient une région de plus si l'exécution y va. Sans borne,
 /// une fonction-aiguillage du noyau (des centaines de comparaisons et de

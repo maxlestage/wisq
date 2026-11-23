@@ -94,7 +94,7 @@ struct LocalVMListView: View {
     /// **Le réglage de la machine de l'émetteur**, éteint par défaut : voir
     /// `EmitterSetting`. Allumé, une image de PC s'ouvre dans l'émetteur
     /// plutôt que dans le cœur Swift.
-    @AppStorage("wisq.machine.emetteur") private var emitterEnabled = true
+    @AppStorage("wisq.machine.jit") private var emitterEnabled = false
 
     var body: some View {
         List {

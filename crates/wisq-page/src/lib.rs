@@ -133,7 +133,7 @@ extern "C" fn emettre(longueur: u32, base: u64, entree: u32, emplacement: u32, p
         .into_bytes();
         return MAL_FORME;
     };
-    match Module::resolving_or_why(octets, base, entree as usize, emplacement, pages) {
+    match Module::resolving_for_page_or_why(octets, base, entree as usize, emplacement, pages) {
         Ok(module) => {
             *dernier = module;
             // Un module tient toujours dans un `i32` : il traduit au plus une

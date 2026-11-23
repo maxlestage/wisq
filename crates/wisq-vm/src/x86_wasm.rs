@@ -1030,7 +1030,25 @@ fn flags_die(after: &[Decoded]) -> bool {
 /// évictions en quatre minutes, et des modules évincés que seule une collecte
 /// pleine rend — la page montait à 3,9 Gio résidents sous Bun, et iOS tuait
 /// le processus de la vue.
+///
 const STEPS_PER_REGION: usize = 256;
+
+/// **Ce que la page de l'application relève au plus : 64 instructions.**
+///
+/// Sous le cache de 32 Mio d'une machine d'un gibioctet, une région d'Arch
+/// pesait douze kibioctets en moyenne à 256 instructions, chemins froids
+/// compris : la découverte suit les deux issues de chaque saut, et la plupart
+/// ne sont jamais prises. Sous udev, le cache retraduisait sans fin. À 64,
+/// une région pèse environ six kibioctets et le cache en tient deux fois plus.
+/// Sur l'ISO d'Arch, mesuré sous Bun, chaque étape arrive de 10 à 22 % plus
+/// tôt : la racine montée à 527 s contre 678, « Coldplug All udev Devices »
+/// fini à 1 557 s contre 1 725.
+///
+/// `Module::resolving` et le traducteur de ligne de commande gardent
+/// `STEPS_PER_REGION` : les bancs de la boucle hôte font tenir leurs
+/// programmes dans une seule région, et la borne ne change rien à ce qu'une
+/// région fait — seulement à l'endroit où elle s'arrête.
+pub const PAGE_STEPS_PER_REGION: usize = 64;
 
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
@@ -1525,6 +1543,9 @@ struct Shape {
     confine: Option<u32>,
     /// Le module cherche-t-il lui-même les adresses qu'il ne connaît pas ?
     lookup: bool,
+    /// Combien d'instructions la région relève au plus ; `STEPS_PER_REGION`
+    /// si rien n'est dit.
+    steps: Option<usize>,
 }
 
 /// **Les deux fonctions que l'hôte prête à chaque région.**
@@ -2542,6 +2563,32 @@ impl Module {
                 shared: Some(slot),
                 confine: Some(pages),
                 lookup: true,
+                steps: None,
+            },
+        )
+    }
+
+    /// **La forme que la page de l'application traduit** : celle de
+    /// `resolving_or_why`, bornée à `PAGE_STEPS_PER_REGION` instructions.
+    pub fn resolving_for_page_or_why(
+        bytes: &[u8],
+        base: u64,
+        entry: usize,
+        slot: u32,
+        pages: u32,
+    ) -> Result<Vec<u8>, Refused> {
+        if pages == 0 || !pages.is_power_of_two() {
+            return Err(Refused::RamIsNotAPowerOfTwo(pages));
+        }
+        Self::build(
+            bytes,
+            base,
+            entry,
+            Shape {
+                shared: Some(slot),
+                confine: Some(pages),
+                lookup: true,
+                steps: Some(PAGE_STEPS_PER_REGION),
             },
         )
     }
@@ -2553,7 +2600,7 @@ impl Module {
         // **La pagination n'existe que sous confinement** : c'est lui qui ouvre
         // la place au-dessus de la RAM déclarée, où vivent la correspondance et
         // le tampon. Sans masque, `peek` et `poke` gardent leur forme d'avant.
-        let (blocks, _) = Self::discover(bytes, entry)?;
+        let (blocks, _) = Self::discover(bytes, entry, shape.steps.unwrap_or(STEPS_PER_REGION))?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         let starts: Vec<u64> = blocks
             .iter()
@@ -2738,7 +2785,7 @@ impl Module {
     /// retour de main doit pouvoir la lire. Un interpréteur qui vit ailleurs ne
     /// le peut pas — et « ailleurs » comprend l'application elle-même.
     pub fn survey(bytes: &[u8], entry: usize) -> Option<Survey> {
-        let (blocks, _) = Self::discover(bytes, entry).ok()?;
+        let (blocks, _) = Self::discover(bytes, entry, STEPS_PER_REGION).ok()?;
         let mut survey = Survey {
             blocks: blocks.len(),
             ..Default::default()
@@ -2806,7 +2853,7 @@ impl Module {
     /// `goes` sont vides parce qu'il n'y a rien à y mettre, pas parce que la
     /// question ne se pose pas.
     pub fn outline(bytes: &[u8], entry: usize) -> Result<Vec<Outline>, Refused> {
-        let (blocks, _) = Self::discover(bytes, entry)?;
+        let (blocks, _) = Self::discover(bytes, entry, STEPS_PER_REGION)?;
         let index = |offset: usize| blocks.iter().position(|(start, _)| *start == offset);
         Ok(blocks
             .iter()
@@ -2877,13 +2924,14 @@ impl Module {
     /// donc un octet nommé ici peut n'être jamais atteint. C'est justement
     /// pourquoi il ne coûte plus la région.
     pub fn unreadable(bytes: &[u8], entry: usize) -> Result<Vec<usize>, Refused> {
-        Self::discover(bytes, entry).map(|(_, stops)| stops)
+        Self::discover(bytes, entry, STEPS_PER_REGION).map(|(_, stops)| stops)
     }
 
     #[allow(clippy::type_complexity)]
     fn discover(
         bytes: &[u8],
         entry: usize,
+        limit: usize,
     ) -> Result<(Vec<(usize, Vec<Decoded>)>, Vec<usize>), Refused> {
         let mut starts = std::collections::BTreeSet::new();
         let mut queue = vec![entry];
@@ -2901,7 +2949,7 @@ impl Module {
         // Les instructions relevées jusqu'ici, contre `STEPS_PER_REGION`.
         let mut decoded = 0usize;
         while let Some(start) = queue.pop() {
-            if decoded >= STEPS_PER_REGION {
+            if decoded >= limit {
                 break;
             }
             if start >= bytes.len() || !starts.insert(start) {
@@ -2912,7 +2960,7 @@ impl Module {
             loop {
                 // **La borne atteinte, le bloc finit ici**, comme au bord de
                 // la fenêtre : sans terminateur, RIP sur l'instruction d'après.
-                if at >= bytes.len() || decoded >= STEPS_PER_REGION {
+                if at >= bytes.len() || decoded >= limit {
                     break;
                 }
                 let Some(step) = decode(&bytes[at..]) else {
