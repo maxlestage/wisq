@@ -30,7 +30,7 @@ struct BootAnnouncementView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var announcement: BootAnnouncement?
     /// **Le moteur** : le JIT de l'émetteur, ou l'interpréteur (`EmitterSetting`).
-    @AppStorage(EmitterSetting.key) private var jitEnabled = EmitterSetting.defaultValue
+    @AppStorage("wisq.machine.jit") private var jitEnabled = false
 
     /// La RAM réglée, et celle que la machine recevra si iOS en laisse moins
     /// (`KernelMemory.given`).
