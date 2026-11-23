@@ -133,7 +133,7 @@ public enum IsoBoot {
             .filter { $0 != "quiet" }
         let waits = added.filter { setting in
             let key = setting.prefix { $0 != "=" }
-            return !words.contains { $0.hasPrefix(key + "=") }
+            return !words.contains { $0 == setting || $0.hasPrefix(key + "=") }
         }
         return (words.map(String.init) + waits + [X86BootLoader.defaultCommandLine])
             .joined(separator: " ")
@@ -178,9 +178,27 @@ public enum IsoBoot {
     /// ne fait de kexec ici ; une image qui fixe déjà `kho=` garde le sien.
     static let noHandover = "kho=off"
 
+    /// **Les programmes chargés aux mêmes adresses d'un processus à l'autre**
+    /// (`norandmaps`) : c'est ce qui laisse l'émetteur traduire une fois la
+    /// libc, le chargeur et les programmes que tout le monde partage.
+    ///
+    /// Le code traduit d'une région porte ses adresses virtuelles, et l'hôte
+    /// ne la reprend pour un autre processus que si elle est **à la même
+    /// adresse, sur les mêmes trames** (`partager` dans `web/host.js`). Avec la
+    /// disposition aléatoire, chaque `exec` posait ld.so et la libc ailleurs :
+    /// tout se retraduisait. Mesuré sur Arch sous udev, qui lance un programme
+    /// par événement : 45 000 régions et 245 Mio de modules en quatre minutes,
+    /// et la borne de 32 Mio de l'appareil retraduisait sans fin, l'horloge de
+    /// l'invité presque arrêtée. Deux programmes différents posés à la même
+    /// adresse ne se confondent pas : leurs trames diffèrent.
+    ///
+    /// Le prix est la disposition aléatoire **dans** l'invité, dont la machine
+    /// n'est pas la frontière : elle vit dans le bac à sable de l'application.
+    static let fixedLayout = "norandmaps"
+
     /// Ce que wisq ajoute à la ligne d'une image, chaque réglage seulement si
     /// l'image ne le fixe pas déjà.
-    static let added = patience + [noHandover]
+    static let added = patience + [noHandover, fixedLayout]
 
     /// Où déballer, à partir du stockage que l'application connaît.
     ///
