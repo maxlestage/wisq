@@ -374,7 +374,7 @@ enum Passage {
 /// Une instruction lue : par le décodeur que l'émetteur partage, ou par le
 /// second, que seule cette machine consulte (`x86_extended.rs`).
 #[derive(Clone, Copy)]
-enum Lue {
+pub(crate) enum Lue {
     Commune(Decoded),
     Etendue(Extended),
     /// **`fwait`** (`9b`, et ses préfixes) : `decode` le lit comme un `nop`,
@@ -394,7 +394,7 @@ impl Lue {
 }
 
 /// Lire une instruction, par l'un ou l'autre décodeur.
-fn lire(octets: &[u8]) -> Option<Lue> {
+pub(crate) fn lire(octets: &[u8]) -> Option<Lue> {
     if let Some(longueur) = attente(octets) {
         return longueur.map(Lue::Attente);
     }

@@ -243,19 +243,9 @@ fn the_x87_rounds_like_the_silicon_in_every_mode() {
 
 // ---- Le flottant de SSE et SSE2 ----
 
-/// Les formes de SSE3 que le corpus flottant porte : `haddps`, `hsubps`,
-/// `haddpd`, `hsubpd`. CPUID ne les annonce pas ; elles doivent rester
-/// illisibles, et ce sont les seules.
-const SSE3_FORMS: [&str; 8] = [
-    "haddpd %xmm1, %xmm0",
-    "haddpd 0x20(%rsi), %xmm0",
-    "haddps %xmm1, %xmm0",
-    "haddps 0x20(%rsi), %xmm0",
-    "hsubpd %xmm1, %xmm0",
-    "hsubpd 0x20(%rsi), %xmm0",
-    "hsubps %xmm1, %xmm0",
-    "hsubps 0x20(%rsi), %xmm0",
-];
+// Les formes de SSE3 que le corpus flottant porte — `haddps`, `hsubps`,
+// `haddpd`, `hsubpd`, en registre et en mémoire — sont lues et jugées depuis
+// que la machine annonce x86-64-v2. Elles restaient illisibles avant.
 
 /// Rejouer un corpus à registres XMM (`x86-float-oracle.tsv` ou
 /// `x86-mmx-oracle.tsv`) : `xmm0`, `xmm1` et RAX après, les autres XMM et
@@ -349,14 +339,14 @@ fn replay_vectors(name: &str, flags_column: bool) -> Verdict {
     verdict
 }
 
-/// **Le corpus flottant en entier**, moins les huit formes de SSE3 : 119
+/// **Le corpus flottant en entier**, les huit formes de SSE3 comprises : 127
 /// formes, chaque cas au bit près, ZF, PF et CF compris.
 #[test]
 fn sse_floats_match_the_silicon() {
     let verdict = replay_vectors("x86-float-oracle.tsv", true);
     verdict.assert_clean();
-    assert_eq!(verdict.refused_forms(), SSE3_FORMS, "seul SSE3 est refusé");
-    assert_eq!(verdict.judged.len(), 119);
+    assert!(verdict.refused_forms().is_empty(), "plus rien n'est refusé");
+    assert_eq!(verdict.judged.len(), 127, "SSE3 compris");
     let judged: usize = verdict.judged.values().sum();
     let refused: usize = verdict.refused.values().sum();
     assert_eq!(judged + refused, 13_716, "tous les cas du corpus");

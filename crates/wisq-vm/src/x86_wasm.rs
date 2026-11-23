@@ -981,6 +981,57 @@ pub enum Refused {
 /// bord, un échec de décodage peut n'être qu'une coupe ; au-delà, non.
 const REACH: usize = crate::x86::LONGEST;
 
+/// **Les drapeaux d'une instruction meurent-ils avant d'être lus ?** Vrai
+/// quand, parmi les instructions qui la suivent dans son bloc, une de celles
+/// qui réécrivent les six drapeaux arithmétiques sans les lire vient avant
+/// toute autre qui pourrait les lire. Entre les deux, seules passent des
+/// instructions qui ne les touchent pas.
+///
+/// **Pourquoi.** Les drapeaux sont calculés tout de suite (voir l'en-tête),
+/// et c'est le plus gros de ce qu'une instruction arithmétique coûte : un
+/// `add` de registres, 144 octets de wasm, dont plus de cent pour eux. Or un
+/// calcul est presque toujours suivi d'un autre avant le saut qui teste le
+/// dernier. Moins d'octets, c'est moins de compilation — le quart du temps
+/// d'un démarrage d'Ubuntu sous JavaScriptCore — et moins de travail à
+/// chaque passage.
+///
+/// **Ce qui reste exact.** Les instructions qui tuent (`add`, `sub`, `cmp`,
+/// `and`, `or`, `xor`, `test`, `neg`) posent leurs six drapeaux d'après leurs
+/// seuls opérandes : ce qu'elles écrivent ne dépend pas de ce qu'il y avait
+/// avant, et c'est la dernière de la chaîne qui écrit. La fin du bloc garde
+/// tout : le suivant peut lire. Une faute entre les deux reprend sur la même
+/// instruction, donc sur le même chemin, où les drapeaux sont réécrits avant
+/// d'être lus.
+fn flags_die(after: &[Decoded]) -> bool {
+    for step in after {
+        match step.op {
+            Op::Add | Op::Sub | Op::Cmp | Op::And | Op::Or | Op::Xor | Op::Test | Op::Neg => {
+                return true
+            }
+            Op::Mov | Op::Movsx | Op::Lea | Op::Not | Op::Nop | Op::Push | Op::Pop => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// **Combien d'instructions une région traduit au plus**, tous blocs
+/// confondus. Passé ce nombre, la découverte s'arrête : le bloc en cours finit
+/// devant l'instruction suivante, et ce qui n'a pas été relevé devient une
+/// cible hors région — la correspondance, puis une région de plus si
+/// l'exécution y va vraiment.
+///
+/// **Sans borne, une région suivait toutes les issues de toute la fenêtre**,
+/// et c'est sa taille en sortie qui a fait tuer la page sur un iPhone. Le
+/// démarrage d'Ubuntu 26.04 (glibc et ses routines SSE, le décompresseur du
+/// noyau) produisait des régions de 4 Kio de x86 et 257 blocs pesant
+/// **1,1 Mio de wasm chacune**, une par point d'entrée dans la même page. Le
+/// cache de code (64 Mio de wasm) n'en tenait que sept cents : 125 000
+/// évictions en quatre minutes, et des modules évincés que seule une collecte
+/// pleine rend — la page montait à 3,9 Gio résidents sous Bun, et iOS tuait
+/// le processus de la vue.
+const STEPS_PER_REGION: usize = 256;
+
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
 /// peut pas la corrompre, et il n'a fallu pour ça aucune seconde mémoire.
@@ -1589,6 +1640,11 @@ struct Body {
     /// lu et remis à faux par `written`, qui ajoute après elle le test du
     /// journal des pages de code.
     wrote: bool,
+    /// **Les drapeaux que l'instruction en cours poserait sont-ils morts ?**
+    /// Posé par `build` avant chaque instruction (voir `flags_die`) : vrai
+    /// quand une instruction plus loin dans le même bloc les réécrit tous avant
+    /// que rien ne les lise. Le calcul arithmétique les saute alors.
+    flags_dead: bool,
 }
 
 impl Body {
@@ -2475,7 +2531,7 @@ impl Module {
             // **Où le bloc s'arrête devant une instruction qu'il ne sait pas
             // produire**, s'il s'y arrête : voir plus bas.
             let mut arret = None;
-            for step in steps {
+            for (index, step) in steps.iter().enumerate() {
                 // **L'adresse de l'instruction elle-même**, pas celle de la
                 // suivante : une division qui refuse doit y renvoyer l'hôte.
                 let here = base.wrapping_add(at as u64);
@@ -2486,6 +2542,7 @@ impl Module {
                 // mémoire elles aussi, et sortent de cette boucle avant
                 // `translate`. La dernière du bloc est la leur.
                 body.here = here;
+                body.flags_dead = flags_die(&steps[index + 1..]);
                 // **`iretd` est refusé en étant nommé.** Le décodeur lit `cf`
                 // sans REX.W ; en mode long c'est un retour de trente-deux
                 // bits qu'aucun noyau n'exécute, et le produire demanderait
@@ -2794,14 +2851,21 @@ impl Module {
         // la région. `unreadable` les rend, parce qu'ils doivent rester
         // comptables.
         let mut stops = std::collections::BTreeSet::new();
+        // Les instructions relevées jusqu'ici, contre `STEPS_PER_REGION`.
+        let mut decoded = 0usize;
         while let Some(start) = queue.pop() {
+            if decoded >= STEPS_PER_REGION {
+                break;
+            }
             if start >= bytes.len() || !starts.insert(start) {
                 continue;
             }
             let mut steps = Vec::new();
             let mut at = start;
             loop {
-                if at >= bytes.len() {
+                // **La borne atteinte, le bloc finit ici**, comme au bord de
+                // la fenêtre : sans terminateur, RIP sur l'instruction d'après.
+                if at >= bytes.len() || decoded >= STEPS_PER_REGION {
                     break;
                 }
                 let Some(step) = decode(&bytes[at..]) else {
@@ -2847,6 +2911,7 @@ impl Module {
                     break;
                 };
                 at += step.length;
+                decoded += 1;
                 let ends = matches!(
                     step.op,
                     Op::Jump(_)
@@ -2873,18 +2938,31 @@ impl Module {
                 // les octets d'après ne sont pas atteignables par cette route ;
                 // les mettre dans la file ferait décoder, et refuser, ce qu'un
                 // noyau range là — souvent des données de sa table de bogues.
+                //
+                // **Ni un `jmp *` :** il ne revient pas plus qu'un `jmp`. Le
+                // laisser « tomber » faisait traduire, depuis une seule entrée
+                // de la PLT d'un programme (`endbr64 ; jmp *[rip+x]`), toutes
+                // celles qui la suivent dans la fenêtre — 257 blocs et
+                // 1,1 Mio de wasm par région au démarrage d'Ubuntu 26.04, une
+                // région par fonction de bibliothèque appelée.
                 let falls = !matches!(
                     step.op,
                     Op::Jump(None)
+                        | Op::JumpIndirect
                         | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
                         | Op::SystemReturn
                         | Op::Undefined
                 );
+                // **Une forme indirecte n'a pas de cible écrite** : son
+                // immédiat vaut zéro, et `at + 0` mettait dans la file
+                // l'instruction d'après, comme une suite.
                 let jumps = !matches!(
                     step.op,
-                    Op::Return
+                    Op::JumpIndirect
+                        | Op::CallIndirect
+                        | Op::Return
                         | Op::FarReturn
                         | Op::InterruptReturn
                         | Op::SystemCall
@@ -6323,7 +6401,7 @@ impl Module {
         // **`not` ne touche à aucun drapeau.** C'est la seule du groupe, et
         // l'oublier donnerait un cœur qui écrase des drapeaux que le vrai
         // processeur préserve.
-        if step.op != Op::Not {
+        if step.op != Op::Not && !body.flags_dead {
             Self::flags(step, mask, sign, body);
         }
 
@@ -8133,9 +8211,20 @@ impl Module {
                 body.store(Self::slot(4), |b| {
                     b.load(Self::slot(4)).constant(8).op(code::I64_ADD);
                 });
-                body.store(Self::slot(step.dst), |b| {
-                    b.load(Body::scratch(0));
-                });
+                if step.memory.is_some() {
+                    // `popq (mem)` : écrit après la remontée de RSP, l'adresse
+                    // la voit. Une faute sur l'écriture garde RSP remonté — une
+                    // pile de noyau est toujours inscriptible, et c'est la
+                    // seule forme rencontrée (`popq (%rsp)`).
+                    body.store(Body::scratch(2), |b| {
+                        b.load(Body::scratch(0));
+                    });
+                    Self::write_back(step, Width::Qword.mask(), body);
+                } else {
+                    body.store(Self::slot(step.dst), |b| {
+                        b.load(Body::scratch(0));
+                    });
+                }
             }
             _ => {
                 // `leave` : RSP reprend RBP, puis RBP se dépile.

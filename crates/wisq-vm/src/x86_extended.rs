@@ -22,11 +22,14 @@ pub mod f80;
 mod mmx;
 #[path = "x86_sse.rs"]
 mod sse;
+#[path = "x86_v2.rs"]
+mod v2;
 #[path = "x86_x87.rs"]
 mod x87;
 
 pub use mmx::Mmx;
 pub use sse::{FloatOp, Sse};
+pub use v2::V2;
 
 /// Une instruction de ce second décodeur.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,6 +74,9 @@ pub enum Extra {
     Mmx(Mmx),
     /// **Le calcul flottant de SSE et SSE2** : voir `x86_sse.rs`.
     Sse(Sse),
+    /// **x86-64-v2**, la part entière (`x86_v2.rs`) : SSSE3, SSE4.1,
+    /// `crc32`, les copies de SSE3, `lahf` et `sahf`.
+    V2(V2),
 }
 
 /// Pourquoi une instruction de ce décodeur n'est pas allée au bout.
@@ -172,6 +178,12 @@ pub fn decode_extended(bytes: &[u8]) -> Option<Extended> {
                 ..nothing(Extra::X87 { opcode, modrm }, at)
             })
         }
+        // **`lahf` et `sahf`** : AH contre les cinq drapeaux bas.
+        0x9f if !prefixes.operand_size => Some(nothing(Extra::V2(V2::Lahf), at)),
+        0x9e if !prefixes.operand_size => Some(nothing(Extra::V2(V2::Sahf), at)),
+        // **x86-64-v2** d'abord : `crc32w` porte `66` et `f2` à la fois, ce
+        // que la règle du préfixe obligatoire, plus bas, refuse.
+        0x0f if v2::decode(bytes, at, prefixes).is_some() => v2::decode(bytes, at, prefixes),
         0x0f if plain && bytes.get(at) == Some(&0x77) => Some(nothing(Extra::Emms, at + 1)),
         // **La page `0f`** : le MMX et le flottant de SSE. Le préfixe
         // obligatoire fait partie de l'opcode ; deux à la fois ne désignent
@@ -233,7 +245,7 @@ impl Extended {
         match self.op {
             Extra::Emms | Extra::Mmx(_) | Extra::Sse(Sse::ToMmx { .. }) => true,
             Extra::Sse(Sse::FromMmx { .. }) => self.memory.is_none(),
-            Extra::X87 { .. } | Extra::Sse(_) => false,
+            Extra::X87 { .. } | Extra::Sse(_) | Extra::V2(_) => false,
         }
     }
 }
@@ -260,6 +272,7 @@ impl Cpu {
             }
             Extra::Mmx(_) => self.execute_mmx(instruction, at),
             Extra::Sse(_) => self.execute_sse(instruction, at),
+            Extra::V2(_) => self.execute_v2(instruction, at),
         }
     }
 

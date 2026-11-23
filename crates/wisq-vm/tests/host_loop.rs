@@ -10478,10 +10478,22 @@ fn the_timer_counts_down_at_the_rate_the_kernel_will_measure() {
             0x89, keep, // mov %eax,<registre gardé>
         ]);
     };
+    // **Quatre mille `rdtsc`, en boucle** : quatre-vingts tours de cinquante.
+    // Une région ne relève plus que 256 instructions — le corps d'une boucle
+    // compte deux fois, dans la ligne droite et comme cible —, et ce pilote
+    // n'en traduit qu'une ; `loop` ne touche que RCX, que `rdtsc` laisse, et
+    // n'avance pas l'horloge.
+    let four_thousand = |program: &mut Vec<u8>| {
+        program.extend_from_slice(&[0xb9, 80, 0, 0, 0]); // mov $80,%ecx
+        let top = program.len();
+        program.extend(std::iter::repeat_n([0x0f, 0x31], 50).flatten());
+        let back = top as i64 - (program.len() as i64 + 2);
+        program.extend_from_slice(&[0xe2, back as i8 as u8]); // loop top
+    };
     read_into(&mut program, 0xc3); // → %ebx
-    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    four_thousand(&mut program);
     read_into(&mut program, 0xc6); // → %esi
-    program.extend(std::iter::repeat_n([0x0f, 0x31], 4000).flatten());
+    four_thousand(&mut program);
     read_into(&mut program, 0xc7); // → %edi
     program.extend_from_slice(&[0x0f, 0x0b]);
 
@@ -23557,10 +23569,11 @@ console.log("rdi " + lire(vm, 7) + " vidages " + vm.vidages.fois + " traduites "
 /// pas une instruction en mode long. Ici, le `call` fini, la région rend la
 /// main avant le saut ; l'hôte oublie T et relit ses octets neufs, que
 /// l'émetteur refuse. Sans le test après le `call`, le saut résolu dans le
-/// module entrerait dans l'ancienne T, qui ajouterait trois. Deux régions
-/// oubliées, et c'est juste : la découverte de C suit les octets après son
-/// `call` jusqu'au bout de sa fenêtre, donc jusque dans T, et C lit cette
-/// ligne-là aussi.
+/// module entrerait dans l'ancienne T, qui ajouterait trois. Une région
+/// oubliée, T seule : la découverte de C suit les octets après son `call`,
+/// mais les deux kibioctets de zéros qui la séparent de T font mille vingt-
+/// quatre instructions, et une région s'arrête à 256 — C ne lit plus la ligne
+/// de T.
 #[test]
 fn an_indirect_call_that_pushes_over_its_target_does_not_enter_it_stale() {
     let Some(bun) = bun() else {
@@ -23586,7 +23599,7 @@ console.log("t " + avant + " puis +" + (lire(vm, 7) - avant) + " premier " + m[0
     );
     let text = cache_course(&bun, "appel-sur-cible", 4, &corps);
     assert!(
-        text.contains("t 3 puis +0 premier 7 invalidees 2 arret refusée rip 12000"),
+        text.contains("t 3 puis +0 premier 7 invalidees 1 arret refusée rip 12000"),
         "T recouverte par l'adresse de retour n'est pas entrée sur son ancienne \
          traduction : {text}"
     );
@@ -27255,5 +27268,229 @@ console.log("gs " + BigInt.asUintN(64, vm.globals[{gs_sel}].value) + " " + BigIn
             premier.to_string()
         ),
         "en anneau trois, le premier chargement s'arrête : {text}"
+    );
+}
+
+/// **Des drapeaux qui meurent dans le bloc ne sont pas calculés, et ce qui
+/// les lit les voit quand même justes.**
+///
+/// L'émetteur saute les drapeaux d'une instruction quand une autre, plus loin
+/// dans le bloc, les réécrit tous avant que rien ne les lise (`flags_die`).
+/// Deux montages, et chacun tomberait sous une erreur différente :
+///
+/// - `add` pose CF et ZF (`-1 + 1`), puis `cmp` les réécrit (`5 - 3`) : ce que
+///   `pushf` relève doit être le `cmp` seul — CF, ZF et PF à zéro. Un `cmp`
+///   sauté à tort laisserait ceux de l'`add`.
+/// - `add` pose CF, puis `adc` **le lit** : l'`add` n'est pas mort, et `adc
+///   $0` sur zéro doit rendre un. Un `adc` pris pour une instruction neutre
+///   laisserait l'ancienne retenue, nulle.
+#[test]
+fn flags_that_die_in_the_block_are_skipped_and_what_reads_them_still_sees_them() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let killed: Vec<u8> = vec![
+        0xf9, // stc — une retenue d'avant, qu'un `cmp` sauté laisserait voir
+        0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, // mov $-1,%rax
+        0x48, 0xc7, 0xc3, 0x01, 0x00, 0x00, 0x00, // mov $1,%rbx
+        0x48, 0x01, 0xd8, // add %rbx,%rax — CF, ZF, PF : morts
+        0x48, 0xc7, 0xc1, 0x05, 0x00, 0x00, 0x00, // mov $5,%rcx
+        0x48, 0x83, 0xf9, 0x03, // cmp $3,%rcx — 2 : ni CF, ni ZF, ni PF
+        0x9c, // pushfq
+        0x5b, // pop %rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &killed, BASE, PAGES, "drapeaux-morts", "");
+    let flags: u64 = line_of(&text, "rbx ").parse().expect("RFLAGS");
+    assert_eq!(
+        flags & 0x8d5,
+        0,
+        "seuls les drapeaux du `cmp` comptent : CF, PF, AF, ZF, SF et OF à zéro, pas {flags:#x}\n{text}"
+    );
+
+    let read: Vec<u8> = vec![
+        0x48, 0xc7, 0xc0, 0xff, 0xff, 0xff, 0xff, // mov $-1,%rax
+        0x48, 0xc7, 0xc3, 0x01, 0x00, 0x00, 0x00, // mov $1,%rbx
+        0x48, 0x01, 0xd8, // add %rbx,%rax — CF à un, lu plus bas
+        0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00, // mov $0,%rbx
+        0x48, 0x83, 0xd3, 0x00, // adc $0,%rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &read, BASE, PAGES, "drapeaux-lus", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "1",
+        "`adc` lit la retenue de l'`add` : elle devait être calculée\n{text}"
+    );
+}
+
+/// **`popq (%rsp)` : dépiler en mémoire, à une adresse calculée après la
+/// remontée.** Le noyau de RHEL 9 (AlmaLinux, Rocky) le fait dès ses
+/// premières centaines de millions d'instructions, et `8f /0` ne se décodait
+/// pas : les deux images s'arrêtaient là.
+///
+/// `push $0x1234` puis `popq (%rsp)` : la valeur lue en haut de la pile est
+/// écrite **huit octets plus haut**, là où RSP pointe après la remontée. Le
+/// `pop %rbx` qui suit la relit donc. Une adresse prise avant la remontée
+/// la réécrirait sur elle-même, et RBX lirait ce qu'il y avait au-dessus.
+#[test]
+fn popping_into_memory_addresses_the_stack_after_it_rises() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0x68, 0x34, 0x12, 0x00, 0x00, // push $0x1234
+        0x8f, 0x04, 0x24, // popq (%rsp)
+        0x5b, // pop %rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let text = drive(&bun, &program, BASE, PAGES, "pop-memoire", "");
+    assert_eq!(
+        line_of(&text, "rbx "),
+        "4660",
+        "l'émetteur : la valeur dépilée est écrite à RSP remonté\n{text}"
+    );
+
+    let mut cpu = Cpu {
+        memory: GuestMemory {
+            base: 0,
+            bytes: vec![0; 0x2_0000],
+        },
+        ..Default::default()
+    };
+    cpu.rip = BASE;
+    let body = &program[..program.len() - 2];
+    while (cpu.rip.wrapping_sub(BASE) as usize) < body.len() {
+        let at = cpu.rip.wrapping_sub(BASE) as usize;
+        assert_ne!(
+            cpu.step(&body[at..]),
+            Step::Unknown,
+            "l'interpréteur lit `8f /0`"
+        );
+        assert!(!cpu.faulted);
+    }
+    assert_eq!(
+        (cpu.regs[3], cpu.regs[4]),
+        (0x1234, 0xf008),
+        "l'interpréteur Rust : RBX relit la valeur, RSP a remonté deux fois"
+    );
+}
+
+/// **Le secours : ce que l'émetteur refuse, l'interpréteur de la page le
+/// fait.** Alpine 3.24 s'arrêtait sur `fildl 0x20(%rsp)` (`db 44 24 20`) dans
+/// la libc de musl : l'émetteur n'a pas de x87. La boucle demande maintenant
+/// au module de la page (`pc::secours`) d'exécuter l'instruction, en lisant
+/// et récrivant l'opérande à travers les tables de pages.
+///
+/// `21 × 2` par le x87 — `fildl`, `fildll`, `fmulp`, `fistpll` : 42 rangé
+/// en mémoire, et la machine arrêtée sur le `ud2`, que l'émetteur lit — et
+/// que le secours, du coup, ne reprend pas.
+#[test]
+fn what_the_emitter_refuses_the_page_interpreter_runs() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc4, 0x00, 0xf0, 0x00, 0x00, // mov $0xf000,%rsp
+        0xc7, 0x44, 0x24, 0x20, 0x15, 0x00, 0x00, 0x00, // movl $21,0x20(%rsp)
+        0x48, 0xc7, 0x04, 0x24, 0x02, 0x00, 0x00, 0x00, // movq $2,(%rsp)
+        0xdb, 0x44, 0x24, 0x20, // fildl 0x20(%rsp)
+        0xdf, 0x2c, 0x24, // fildll (%rsp)
+        0xde, 0xc9, // fmulp
+        0xdf, 0x7c, 0x24, 0x08, // fistpll 8(%rsp)
+        0x0f, 0x0b, // ud2
+    ];
+    // Le secours lit l'instruction dans la mémoire de l'invité, comme le
+    // ferait une région : le programme y est posé.
+    let setup = format!(
+        "new Uint8Array(vm.memory.buffer).set({}, {BASE});",
+        js_bytes(&program)
+    );
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "secours-x87",
+        &setup,
+        r#"console.log("secourues " + vm.cache.secourues);
+console.log("range " + new DataView(vm.memory.buffer).getBigUint64(0xf008, true));"#,
+    );
+    if std::env::var_os("WISQ_HOTE_JS").is_some() {
+        // Sans le module de la page, pas de secours : la machine s'arrête sur
+        // le premier `fildl`, comme avant.
+        return;
+    }
+    assert_eq!(
+        line_of(&text, "range "),
+        "42",
+        "21 × 2 par le x87 du secours\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "secourues "),
+        "4",
+        "les quatre du x87\n{text}"
+    );
+    assert!(
+        text.contains("arret refusée"),
+        "le `ud2`, que personne ne lit\n{text}"
+    );
+}
+
+/// **Une division de cent vingt-huit bits, que le module rend à l'hôte, est
+/// faite par le secours.** WebAssembly n'a pas de division de cette largeur :
+/// le module pose RIP sur la division et rend la main, comptant sur
+/// « l'interpréteur de l'hôte ». La page n'en avait pas, et Alpine 3.24
+/// s'arrêtait « sur place » sur un `div %rdi` de la libgcc d'`apk`.
+///
+/// `2⁶⁴ / 2` : RDX vaut 1, RAX 0, RCX 2 ; le quotient est `2⁶³`.
+#[test]
+fn a_wide_division_the_module_hands_back_is_done_by_the_rescue() {
+    let Some(bun) = bun() else {
+        panic!("Bun est absent : ce test ne serait vérifié par rien.");
+    };
+    const BASE: u64 = 0x1_0000;
+    const PAGES: u32 = 4;
+    let program: Vec<u8> = vec![
+        0x48, 0xc7, 0xc2, 0x01, 0x00, 0x00, 0x00, // mov $1,%rdx
+        0x48, 0x31, 0xc0, // xor %rax,%rax
+        0x48, 0xc7, 0xc1, 0x02, 0x00, 0x00, 0x00, // mov $2,%rcx
+        0x48, 0xf7, 0xf1, // div %rcx
+        0x48, 0x89, 0xc3, // mov %rax,%rbx
+        0x0f, 0x0b, // ud2
+    ];
+    let setup = format!(
+        "new Uint8Array(vm.memory.buffer).set({}, {BASE});",
+        js_bytes(&program)
+    );
+    let text = drive_with(
+        &bun,
+        &program,
+        BASE,
+        PAGES,
+        "division-large",
+        &setup,
+        r#"console.log("secourues " + vm.cache.secourues);
+console.log("quotient " + BigInt.asUintN(64, vm.globals[0].value).toString(16));"#,
+    );
+    if std::env::var_os("WISQ_HOTE_JS").is_some() {
+        return;
+    }
+    assert_eq!(
+        line_of(&text, "quotient "),
+        "8000000000000000",
+        "2⁶⁴ / 2\n{text}"
+    );
+    assert_eq!(
+        line_of(&text, "secourues "),
+        "1",
+        "la division, et rien d'autre\n{text}"
     );
 }

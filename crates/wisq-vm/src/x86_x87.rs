@@ -47,7 +47,7 @@
 //! **Ce qui n'est pas modélisé** : un dépassement démasqué vers un registre,
 //! où le silicium range le résultat au biais ajusté de 24 576 (ici, la
 //! réponse masquée) ; les pointeurs de la dernière instruction (FIP, FDP,
-//! FOP), rangés à zéro ; `fisttp`, du SSE3, que CPUID n'annonce pas.
+//! FOP), rangés à zéro.
 
 use super::f80::{self, Order, Report, Rounding, F80};
 use super::{Extended, ExtendedFault};
@@ -69,18 +69,16 @@ const CONDITIONS: u16 = C0 | C1 | C2 | C3;
 /// **La forme est-elle une instruction ?** Les octets de registre que le
 /// manuel ne nomme pas (les alias non documentés de `fcom`, `fstp`, `fxch`)
 /// et les champs mémoire réservés restent illisibles. **`fisttp`** (`DB /1`,
-/// `DD /1`, `DF /1`) aussi : c'est une instruction de SSE3, que CPUID
-/// n'annonce pas (`pc::systeme`) — un programme qui la tente sur ce
-/// processeur reçoit `#UD`, comme sur un x86-64 de base. Le cœur Swift la
-/// lit ; il se trompe.
+/// `DD /1`, `DF /1`) est lue depuis que la machine annonce SSE3, dont elle
+/// fait partie (x86-64-v2, pour RHEL 9).
 pub(super) fn valid(opcode: u8, modrm: u8) -> bool {
     let field = (modrm >> 3) & 7;
     if modrm < 0xC0 {
         return match opcode {
             0xD9 => field != 1,
-            0xDB => !matches!(field, 1 | 4 | 6),
-            0xDD => !matches!(field, 1 | 5),
-            0xDF => field != 1,
+            0xDB => !matches!(field, 4 | 6),
+            0xDD => field != 5,
+            0xDF => true,
             _ => true,
         };
     }
@@ -992,6 +990,25 @@ impl Cpu {
                 if field != 2 {
                     self.x87_pop();
                 }
+            }
+            // **`fisttp`** (SSE3) : comme `fistp`, mais toujours vers zéro,
+            // quel que soit le mode du mot de contrôle — le `(int)` du C sur
+            // un `long double`, sans toucher au mot de contrôle.
+            (0xDF | 0xDB | 0xDD, 1) => {
+                let bits = match opcode {
+                    0xDD => 64,
+                    0xDB => 32,
+                    _ => 16,
+                };
+                let width = width_of(bits);
+                self.x87_probe(at, width as u64, Access::Write)?;
+                let value = self.operand(0);
+                let whole = self.x87_integer(value, bits, Rounding::TowardZero);
+                if self.x87_store_stops(0) {
+                    return Ok(());
+                }
+                self.x87_write(at, width, whole)?;
+                self.x87_pop();
             }
             (0xDF, 4) => {
                 let value = self.x87_read_bcd(at)?;

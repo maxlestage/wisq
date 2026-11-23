@@ -148,6 +148,9 @@ final class XfsVolumeTests: XCTestCase {
         let first = try XCTUnwrap(image.blocks[0])
         XCTAssertEqual(try Self.fixture(patch: [219: first[first.startIndex + 219] | 0x80]).contents(of: "/etc/court"),
                        Self.court)
+        // Le répertoire des métadonnées (0x100), qu'active Tumbleweed : accepté.
+        XCTAssertEqual(try Self.fixture(patch: [218: first[first.startIndex + 218] | 0x01]).contents(of: "/etc/court"),
+                       Self.court)
         // L'octet de poids fort des fonctions incompatibles.
         XCTAssertThrowsError(try Self.fixture(patch: [216: 0x80])) {
             XCTAssertEqual($0 as? XfsVolume.Failure, .unsupported("une fonction inconnue (0x80000000)"))
