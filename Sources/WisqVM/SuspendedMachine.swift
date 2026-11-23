@@ -146,16 +146,14 @@ public enum SuspendedMachine {
     public static func installPacked(_ packing: URL, kernel: String, in directory: URL? = nil) throws {
         let folder = try directory ?? Self.directory()
         let final = folder.appendingPathComponent(fileName(kernel: kernel))
-        let files = FileManager.default
-        do {
-            if files.fileExists(atPath: final.path) {
-                _ = try files.replaceItemAt(final, withItemAt: packing)
-            } else {
-                try files.moveItem(at: packing, to: final)
-            }
-        } catch {
-            try? files.removeItem(at: packing)
-            throw error
+        // `rename(2)` : il remplace la session d'un seul geste, sur iOS comme
+        // sous Linux. `FileManager.replaceItemAt` passe, sous Linux, par un
+        // échange que le système de fichiers des conteneurs de la CI ne sait
+        // pas toujours faire : la troisième sauvegarde d'un test n'y était pas
+        // installée.
+        guard rename(packing.path, final.path) == 0 else {
+            try? FileManager.default.removeItem(at: packing)
+            throw CocoaError(.fileWriteUnknown)
         }
         FirstResume.disarm(kernel: kernel, in: folder)
     }
