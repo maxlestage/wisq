@@ -258,6 +258,9 @@ export async function demarrer({
     translate,
     pages: plan.pages,
     serial,
+    // Les puces de la boucle en Rust, dans une instance à elles du même
+    // module (`page-emitter.js`, `hote`).
+    page: porte,
     carte: (ram) =>
       carte(module, {
         ram,

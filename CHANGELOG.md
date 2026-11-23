@@ -85,6 +85,18 @@ break APIs.
   lecture de registre, contre 29,3 en JavaScript** (BigInt). Rien ne s'en
   sert encore ; les étapes suivantes y portent les puces, la délivrance, le
   cache de code et la boucle de `web/host.js`.
+- **La boucle hôte de l'émetteur en Rust, étape 2 : les puces.** Le 8254 (trois
+  compteurs et le portillon `0x61`), les deux 8259 en cascade et le 16550 de
+  `0x3F8` vivent dans `crates/wisq-page/src/puces.rs`, reproduits décision
+  pour décision depuis `web/host.js`, l'heure lue sur le TSC de l'invité à
+  travers le module d'accès. `machine()` les prend dans une instance du
+  module à elles (`emetteur(...).hote`), qu'une trappe de l'émetteur ne
+  remet pas à zéro, quand on lui donne le module (`page`, ou
+  `globalThis.wisqPage`) ; `web/machine.js` le donne. Sans lui — le bureau
+  d'avant —, les puces JavaScript restent, sorties telles quelles dans
+  `sortirJs`/`entrerJs`. Les 253 pilotes de `host_loop` jugent les deux : le
+  module est préchargé (`bun run --preload`), et `WISQ_HOTE_JS=1` relance la
+  suite sans lui.
 
 ### Changed
 - **Le site est en Yew et en WebAssembly, de la première page à la dernière,

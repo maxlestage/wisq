@@ -89,12 +89,12 @@ export function emetteur(source) {
     // Une instance neuve a une table neuve : la machine branchée l'est de
     // nouveau, sans quoi la boucle Rust perdrait ses registres après une
     // trappe de l'émetteur.
-    if (branchee !== null) poserAcces(branchee);
+    if (branchee !== null) poserAcces(porte, branchee);
   }
   // **La machine dont le Rust de la page atteint l'état** : sa mémoire et ses
   // registres, ceux qu'importent les modules traduits. Voir `brancher`.
   let branchee = null;
-  function poserAcces({ memoire, globales }) {
+  function poserAcces(porte, { memoire, globales }) {
     // Les deux appels d'abord : le premier fait le module, et peut faire
     // grandir la mémoire de l'instance — un tampon pris avant serait détaché.
     const place = porte.acces_octets();
@@ -206,7 +206,17 @@ export function emetteur(source) {
     /// mémoire et les globales qu'importent ses modules (`src/hote.rs`).
     brancher(memoire, globales) {
       branchee = { memoire, globales };
-      poserAcces(branchee);
+      poserAcces(porte, branchee);
+    },
+    /// **Une instance pour la boucle hôte**, à part de celle qui traduit :
+    /// ses puces (`src/puces.rs`) gardent leur état quand l'émetteur trappe
+    /// et que son instance est refaite. Elle est branchée sur la machine dès
+    /// sa création ; ses puces partent de l'allumage.
+    hote(memoire, globales) {
+      const instance = new WebAssembly.Instance(module, importsRefuses(module)).exports;
+      poserAcces(instance, { memoire, globales });
+      instance.puces_remettre();
+      return instance;
     },
     /// Les exports de l'instance courante, pour les essais de la page.
     get porte() {
