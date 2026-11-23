@@ -1030,7 +1030,16 @@ fn flags_die(after: &[Decoded]) -> bool {
 /// évictions en quatre minutes, et des modules évincés que seule une collecte
 /// pleine rend — la page montait à 3,9 Gio résidents sous Bun, et iOS tuait
 /// le processus de la vue.
-const STEPS_PER_REGION: usize = 256;
+///
+/// **Puis de 256 à 64.** Sous le cache de 32 Mio d'une machine d'un
+/// gibioctet, une région d'Arch pesait encore douze kibioctets en moyenne,
+/// cold paths compris : la découverte suit les deux issues de chaque saut, et
+/// la plupart ne sont jamais prises. Sous udev, le cache retraduisait sans
+/// fin. À 64, une région pèse environ six kibioctets et le cache en tient deux
+/// fois plus. Sur l'ISO d'Arch, mesuré sous Bun, chaque étape arrive de 10 à
+/// 22 % plus tôt : la racine montée à 527 s contre 678, « Coldplug All udev
+/// Devices » fini à 1 557 s contre 1 725.
+const STEPS_PER_REGION: usize = 64;
 
 /// **Où l'hôte doit poser la correspondance** : juste au-dessus de la RAM que
 /// l'invité peut atteindre. C'est tout l'intérêt du confinement — l'invité ne
