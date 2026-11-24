@@ -93,8 +93,8 @@ public final class RustPCMachine: @unchecked Sendable {
     public let ramSize: Int
 
     /// **L'écran**, une fois branché : une vue neuve à chaque lecture, qui
-    /// tient la machine en vie autant qu'elle — la machine, elle, ne la tient
-    /// pas, et rien ne fait de cycle.
+    /// **ne tient pas la machine** (voir `RustPCScreen`) — et la machine ne
+    /// la tient pas non plus.
     public var display: RustPCScreen? {
         hasDisplay ? RustPCScreen(pc: pc, owner: self) : nil
     }
@@ -677,18 +677,29 @@ extension RustPCMachine: ScreenKeyboard {}
 /// révision vont ensemble.
 public final class RustPCScreen: @unchecked Sendable {
     private let pc: OpaquePointer
-    /// La machine vit au moins autant que son écran : l'écran garde la
-    /// mémoire vidéo qu'il lit.
-    private let owner: RustPCMachine
+    /// **L'écran ne tient pas la machine en vie.** Il la tenait, et c'est ce
+    /// qui refusait une session au retour dans l'application : la machine
+    /// mise de côté, le modèle et la vue gardaient encore son écran, donc ses
+    /// cinq gibioctets, et la reprise ne trouvait plus de mémoire libre (« 256
+    /// Mo de libre »). Chaque lecture prend la machine le temps de lire ;
+    /// partie, l'écran n'a plus d'image, et rien n'est lu dans une mémoire
+    /// rendue.
+    private weak var owner: RustPCMachine?
 
     init(pc: OpaquePointer, owner: RustPCMachine) {
         self.pc = pc
         self.owner = owner
     }
 
+    /// La machine, tenue le temps d'une lecture ; `nil` une fois partie.
+    private func reading<T>(_ body: (OpaquePointer) -> T) -> T? {
+        guard let owner else { return nil }
+        return withExtendedLifetime(owner) { body(pc) }
+    }
+
     private var current: WisqPCDisplay {
         var display = WisqPCDisplay()
-        _ = wisq_pc_display(pc, &display)
+        _ = reading { wisq_pc_display($0, &display) }
         return display
     }
 
@@ -710,11 +721,13 @@ public final class RustPCScreen: @unchecked Sendable {
 
     /// **Le mode et son image, pris ensemble**, sans remplissage.
     public func frame() -> (mode: X86Framebuffer.Mode, data: Data) {
-        let copied = Self.frame { pixels, display in
-            wisq_pc_display_copy(
-                pc, pixels?.bindMemory(to: UInt8.self).baseAddress, pixels?.count ?? 0, &display)
+        let copied = reading { pc in
+            Self.frame { pixels, display in
+                wisq_pc_display_copy(
+                    pc, pixels?.bindMemory(to: UInt8.self).baseAddress, pixels?.count ?? 0, &display)
+            }
         }
-        return copied ?? (mode, Data())
+        return (copied ?? nil) ?? (mode, Data())
     }
 
     /// **La boucle de `frame()`**, la copie donnée (`wisq_pc_display_copy`,

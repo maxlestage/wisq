@@ -146,6 +146,22 @@ public enum KernelMemory {
         given(requested, available: systemAvailableMemory)
     }
 
+    /// **Ce qu'une session sauvée peut reprendre** : ce qu'iOS laisse, moins
+    /// la moitié de `appOverhead` ; `nil` là où rien ne borne.
+    ///
+    /// Une machine neuve garde toute la réserve. Une session, elle, a la
+    /// taille qu'elle a : mesurée à la règle d'un démarrage, elle était
+    /// refusée dès que l'application avait grandi de quelques dizaines de
+    /// mébioctets depuis — un cache, une image —, et la personne restait
+    /// devant une session « gardée telle quelle » que rien ne laissait
+    /// reprendre. La moitié de la réserve reste : l'interpréteur et
+    /// l'interface tournaient déjà quand elle a été sauvée.
+    public static func resumable(available: UInt64?) -> UInt64? {
+        guard let available else { return nil }
+        let reserve = appOverhead / 2
+        return available > reserve ? available - reserve : 0
+    }
+
     /// How many bytes the system says this app may still allocate, or nil
     /// where nothing says.
     ///

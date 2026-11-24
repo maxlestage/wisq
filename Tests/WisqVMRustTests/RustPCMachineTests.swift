@@ -100,6 +100,24 @@ final class RustPCMachineTests: XCTestCase {
         }
     }
 
+    /// **L'écran ne tient pas la machine en vie.** Il la tenait : la machine
+    /// mise de côté, le modèle et la vue gardaient son écran, donc toute sa
+    /// mémoire, et la reprise de la session était refusée faute de place.
+    /// Lâchée, la machine part ; son écran reste lisible, sans image.
+    func testTheScreenDoesNotKeepTheMachineAlive() throws {
+        var machine: RustPCMachine? = try rust(Console())
+        try XCTUnwrap(machine).attachDisplay(width: 1024, height: 768)
+        let screen = try XCTUnwrap(machine?.display)
+        XCTAssertEqual(screen.width, 1024)
+        XCTAssertFalse(screen.frame().data.isEmpty)
+        weak var gone = machine
+        machine = nil
+        XCTAssertNil(gone, "l'écran seul ne retient pas la machine")
+        XCTAssertEqual(screen.width, 0)
+        XCTAssertEqual(screen.revision, 0)
+        XCTAssertTrue(screen.frame().data.isEmpty, "plus d'image, et rien de lu dans une mémoire rendue")
+    }
+
     /// **Sous un écran, les deux mettent `console=tty0` devant la ligne**, et
     /// montrent le même mode de démarrage.
     func testUnderAScreenBothPutTty0FirstAndShowTheSameMode() throws {

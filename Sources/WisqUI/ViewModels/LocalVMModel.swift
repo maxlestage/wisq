@@ -373,6 +373,10 @@ public final class LocalVMModel {
         // mot, et la sauvegarde continue l'écrasait cinq minutes plus tard.
         // Elle est gardée, rien ne démarre, et la console dit pourquoi et quoi
         // faire. La décision vit dans `SavedSession`, que la CI Linux juge.
+        // **Ce qu'iOS laisse, mesuré avant de lire la session.** L'instantané
+        // déplié tient en mémoire jusqu'à la reprise : mesuré après lui, il
+        // comptait contre la machine qu'il venait justement remplir.
+        let availableBeforeSession = KernelMemory.systemAvailableMemory
         let session = SavedSession.find(kernel: kernelName, in: storage, core: core)
         if case .unreadable(let refusal) = session {
             // Gardée : « Arrêter » n'effacera rien de cet état (`userStopped`).
@@ -414,7 +418,8 @@ public final class LocalVMModel {
         // **Bornée à ce qu'iOS laisse à l'application** (`KernelMemory.given`) :
         // au-delà, l'invité remplit sa RAM de cache disque et iOS ferme
         // l'application au milieu du démarrage.
-        let fillable = Int(KernelMemory.given(UInt64(KernelMemory.askedOf(core, setting: ramSize))))
+        let fillable = Int(KernelMemory.given(
+            UInt64(KernelMemory.askedOf(core, setting: ramSize)), available: availableBeforeSession))
         var machineRAM = fillable
         let savedRAM = saved.flatMap { SessionMemory.savedRAMSize($0, core: core) }
         if core == .x86_64, savedRAM == nil {
@@ -435,7 +440,10 @@ public final class LocalVMModel {
         // n'efface pas — `guestFinished` ici le laissait l'effacer.
         // Une session plus grosse que ce qu'iOS laisse est refusée, et dite,
         // plutôt que reprise jusqu'à la fermeture de l'application.
-        let room = min(Int(roomNow), max(fillable, machineRAM))
+        // Une session se mesure à `KernelMemory.resumable`, plus large que la
+        // règle d'un démarrage : elle a la taille qu'elle a.
+        let resumable = KernelMemory.resumable(available: availableBeforeSession).map(Int.init) ?? 0
+        let room = min(Int(roomNow), max(fillable, machineRAM, resumable))
         let memory = SessionMemory.choose(fresh: machineRAM, saved: savedRAM, room: room)
         guard let size = life.machineSize(memory) else {
             if case .tooLittleRoom(let needed, let room) = memory {
@@ -964,6 +972,8 @@ public final class LocalVMModel {
     private func letMachineGo() {
         ticker?.cancel()
         ticker = nil
+        // L'écran part avec la machine : il n'a plus rien à montrer.
+        screen = nil
         waiting = nil
         resumeWait = nil
         machine = nil
