@@ -64,7 +64,9 @@ struct GuestScreenView: View {
         let revision = screen.revision
         guard revision != shownRevision else { return }
         shownRevision = revision
-        image = Self.makeImage(screen)
+        // Une machine partie n'a plus d'image : la dernière reste à l'écran.
+        guard let made = Self.makeImage(screen) else { return }
+        image = made
     }
 
     /// XRGB8888 petit-boutien : en mémoire B, G, R, X — ce que Core Graphics

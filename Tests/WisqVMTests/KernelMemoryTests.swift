@@ -700,4 +700,20 @@ final class PerCoreMemoryCeilingTests: XCTestCase {
         XCTAssertEqual(KernelMemory.given(4 * gib, available: 100 << 20), KernelMemory.defaultSize)
         XCTAssertEqual(KernelMemory.given(16 * gib, available: nil), 16 * gib, "rien ne borne : tel quel")
     }
+
+    /// **Une session sauvée se reprend sous une règle plus large qu'un
+    /// démarrage** : la machine sauvée à ce qu'un démarrage donnait tient
+    /// encore quand l'application a grandi de cent mébioctets depuis. À la
+    /// règle du démarrage, elle était refusée et gardée sans issue.
+    func testASavedSessionResumesUnderAWiderRuleThanAFreshBoot() throws {
+        let gib: UInt64 = 1 << 30
+        let atBoot = 6 * gib
+        let saved = KernelMemory.given(8 * gib, available: atBoot)
+        let later = atBoot - (100 << 20)
+        XCTAssertLessThan(KernelMemory.given(8 * gib, available: later), saved, "un démarrage donnerait moins")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(KernelMemory.resumable(available: later)), saved)
+        XCTAssertEqual(KernelMemory.resumable(available: 6 * gib), 6 * gib - KernelMemory.appOverhead / 2)
+        XCTAssertEqual(KernelMemory.resumable(available: 100 << 20), 0, "sous la réserve : rien")
+        XCTAssertNil(KernelMemory.resumable(available: nil), "rien ne borne")
+    }
 }
