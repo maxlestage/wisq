@@ -727,7 +727,7 @@ public final class RustPCScreen: @unchecked Sendable {
                     pc, pixels?.bindMemory(to: UInt8.self).baseAddress, pixels?.count ?? 0, &display)
             }
         }
-        return (copied ?? nil) ?? (mode, Data())
+        return copied.flatMap { $0 } ?? (mode, Data())
     }
 
     /// **La boucle de `frame()`**, la copie donnée (`wisq_pc_display_copy`,
