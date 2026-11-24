@@ -223,6 +223,10 @@ public enum SuspendedMachine {
         try? FileManager.default.removeItem(
             at: folder.appendingPathComponent(fileName(kernel: kernel))
         )
+        // Et ce qu'une reprise interrompue aurait laissé déplié à côté
+        // (`SnapshotFile.unpackMapped`).
+        try? FileManager.default.removeItem(
+            at: folder.appendingPathComponent(fileName(kernel: kernel)).appendingPathExtension("deplie"))
         // La marque d'une première reprise part avec la session qu'elle
         // décrivait (`FirstResume`).
         FirstResume.disarm(kernel: kernel, in: folder)
