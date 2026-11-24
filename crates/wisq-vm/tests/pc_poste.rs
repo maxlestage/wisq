@@ -1011,6 +1011,70 @@ fn the_time_caught_up_crosses_a_snapshot() {
     assert_eq!(reprise.temps(), original.temps(), "le temps de l'invité");
 }
 
+/// **Reprendre ne touche que les pages que l'instantané porte.** La reprise
+/// remplissait toute la RAM de zéros avant d'y poser les pages : une session
+/// de 5 Gio dont 474 Mio servaient en prenait 5 d'un coup, et iOS fermait
+/// l'application dans la seconde. Les pages que l'instantané ne porte pas
+/// restent celles que le système donne nulles, sans les rendre résidentes —
+/// `mincore` le dit.
+#[cfg(unix)]
+#[test]
+fn resuming_touches_only_the_pages_the_snapshot_carries() {
+    extern "C" {
+        fn mincore(adresse: *mut std::ffi::c_void, longueur: usize, vecteur: *mut u8) -> i32;
+    }
+    /// Les pages résidentes d'un bloc, comptées sur ses pages entières.
+    fn residentes(bloc: &[u8]) -> (usize, usize) {
+        const PAGE: usize = 4096;
+        let debut = (bloc.as_ptr() as usize).next_multiple_of(PAGE);
+        let pages = (bloc.as_ptr() as usize + bloc.len() - debut) / PAGE;
+        let mut vecteur = vec![0u8; pages];
+        // SÛRETÉ : la plage est dans le bloc, alignée sur une page, et le
+        // vecteur a un octet par page.
+        let rendu = unsafe { mincore(debut as *mut _, pages * PAGE, vecteur.as_mut_ptr()) };
+        assert_eq!(rendu, 0, "mincore");
+        (
+            vecteur.iter().filter(|octet| **octet & 1 != 0).count(),
+            pages,
+        )
+    }
+
+    let chargee = poste_charge(&image(), None);
+    let sauve = instantane::sauver(&chargee).expect("au repos");
+    let mut reprise = Poste::essayer(RAM).expect("la RAM");
+    instantane::reprendre(&mut reprise, &sauve).expect("la reprise");
+    let (touchees, pages) = residentes(&reprise.machine.cpu.memory.bytes);
+    assert!(
+        touchees * 8 < pages,
+        "{touchees} pages résidentes sur {pages} : la reprise a touché ce que l'instantané ne porte pas"
+    );
+    assert_eq!(
+        reprise.machine.cpu.memory.bytes, chargee.machine.cpu.memory.bytes,
+        "et la mémoire est celle de la machine sauvée"
+    );
+}
+
+/// **Reprise sur une machine usée, ce que l'instantané ne porte pas redevient
+/// nul** : le bloc neuf de la reprise ne garde rien de la RAM d'avant.
+#[test]
+fn resuming_over_a_used_machine_leaves_nothing_of_its_memory() {
+    let chargee = poste_charge(&image(), None);
+    let sauve = instantane::sauver(&chargee).expect("au repos");
+    let mut usee = poste_charge(&image(), None);
+    let loin = usee.machine.cpu.memory.bytes.len() - 4096 - 7;
+    assert_eq!(
+        chargee.machine.cpu.memory.bytes[loin], 0,
+        "une page que l'instantané ne porte pas"
+    );
+    usee.machine.cpu.memory.bytes[loin] = 0xA5;
+    instantane::reprendre(&mut usee, &sauve).expect("la reprise");
+    assert_eq!(usee.machine.cpu.memory.bytes[loin], 0);
+    assert_eq!(
+        usee.machine.cpu.memory.bytes,
+        chargee.machine.cpu.memory.bytes
+    );
+}
+
 /// `cmc ; xor %ecx, %ecx ; div %ecx` : une instruction du chemin
 /// général (qui lit `faulted` après `execute`), puis une division par zéro
 /// (dont la faute regarde `unmapped` d'abord).

@@ -238,6 +238,64 @@ public enum SnapshotFile {
         try output.synchronize()
     }
 
+    /// **L'instantané d'un fichier, sans le tenir en mémoire** : décompressé
+    /// morceau par morceau dans `scratch`, puis projeté. Le fichier est retiré
+    /// du dossier aussitôt projeté — ses pages vivent autant que la `Data`
+    /// rendue, et rien ne reste si l'application meurt entre-temps.
+    ///
+    /// `unpack` rendait une `Data` de la taille de l'instantané : pour une
+    /// machine dont l'invité a touché quatre gibioctets, quatre gibioctets à
+    /// côté des quatre de la machine qui la reprenait. Projetées, ces pages
+    /// se relisent sur le stockage et ne comptent pas dans la mémoire de
+    /// l'application ; il n'en coûte que la place du fichier, le temps de la
+    /// reprise — celle que la sauvegarde prend déjà (`pack(fileAt:to:)`).
+    ///
+    /// Un fichier sans la marque est un instantané d'avant : projeté tel quel.
+    public static func unpackMapped(fileAt source: URL, scratch: URL) throws -> Data {
+        let file = try Data(contentsOf: source, options: .alwaysMapped)
+        guard file.count >= magic.count, file.prefix(magic.count).elementsEqual(magic) else { return file }
+        try? FileManager.default.removeItem(at: scratch)
+        guard FileManager.default.createFile(atPath: scratch.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let output = try FileHandle(forWritingTo: scratch)
+        do {
+            defer { try? output.close() }
+            try file.withUnsafeBytes { raw in
+                var at = magic.count
+                guard raw.count >= at + 8 else { throw Failure.corrupt }
+                guard let total = Int(exactly: UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: at,
+                                                                                      as: UInt64.self)))
+                else { throw Failure.corrupt }
+                at += 8
+                guard total >= 0, total / chunk <= raw.count else { throw Failure.corrupt }
+                var written = 0
+                while written < total {
+                    guard raw.count >= at + 4 else { throw Failure.corrupt }
+                    let header = UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: at, as: UInt32.self))
+                    at += 4
+                    let length = Int(header & ~stored)
+                    let size = min(chunk, total - written)
+                    guard raw.count - at >= length else { throw Failure.corrupt }
+                    let body = UnsafeRawBufferPointer(rebasing: raw[at..<(at + length)])
+                    if header & stored != 0 {
+                        guard length == size else { throw Failure.corrupt }
+                        try output.write(contentsOf: Data(body))
+                    } else {
+                        guard let piece = try? LZ4.decompress(body, size: size) else { throw Failure.corrupt }
+                        try output.write(contentsOf: Data(piece))
+                    }
+                    written += size
+                    at += length
+                }
+                guard at == raw.count else { throw Failure.corrupt }
+            }
+        }
+        // Projeté avant d'être retiré du dossier (le `defer` plus haut).
+        return try Data(contentsOf: scratch, options: .alwaysMapped)
+    }
+
     /// L'instantané qu'un fichier contient : décompressé s'il porte la marque,
     /// tel quel sinon.
     public static func unpack(_ file: Data) throws -> Data {
