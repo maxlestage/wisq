@@ -16,6 +16,8 @@
 //   WISQ_CAMPAGNE_RAM_MIB   RAM du cœur Rust (défaut : max(1024, minimumRAM d'IsoBoot))
 //   WISQ_CAMPAGNE_ECRAN     « 1 » : l'écran de l'application branché sur le cœur Rust
 //   WISQ_CAMPAGNE_SERIE     où écrire tout le port série à la fin
+//   WISQ_CAMPAGNE_APRES     instructions de plus après le texte attendu, cœur Rust
+//   WISQ_CAMPAGNE_IMAGE_ECRAN  où écrire l'écran à la fin (PPM), cœur Rust
 
 import Foundation
 import WisqVM
@@ -119,6 +121,26 @@ final class CampagneBootTests: XCTestCase {
             outcome = machine.runGuest(instructionBudget: 50_000_000)
         }
         found = found || String(decoding: console.data, as: UTF8.self).contains(until)
+        // **Ce que l'écran montre**, après `WISQ_CAMPAGNE_APRES` instructions
+        // de plus (un bureau peint après l'invite de la console série) : une
+        // image PPM à `WISQ_CAMPAGNE_IMAGE_ECRAN`.
+        if let after = UInt64(environment["WISQ_CAMPAGNE_APRES"] ?? ""), outcome == .stopped {
+            let end = machine.retiredInstructions + after
+            while outcome == .stopped, machine.retiredInstructions < end {
+                outcome = machine.runGuest(instructionBudget: 50_000_000)
+            }
+        }
+        if let path = environment["WISQ_CAMPAGNE_IMAGE_ECRAN"], let screen = machine.display {
+            let (mode, pixels) = screen.frame()
+            var ppm = Data("P6\n\(mode.width) \(mode.height)\n255\n".utf8)
+            ppm.reserveCapacity(ppm.count + mode.width * mode.height * 3)
+            let raw = [UInt8](pixels)
+            for at in stride(from: 0, to: min(raw.count, mode.width * mode.height * 4), by: 4) {
+                ppm.append(contentsOf: [raw[at + 2], raw[at + 1], raw[at]])
+            }
+            try ppm.write(to: URL(fileURLWithPath: path))
+            print("CAMPAGNE écran \(mode.width)×\(mode.height) → \(path)")
+        }
         keep(console.data)
         print("CAMPAGNE cœur Rust \(disk.lastPathComponent) : « \(until) » "
               + (found ? "vu" : "pas vu") + String(format: " en %.1f s, ", Date().timeIntervalSince(start))
