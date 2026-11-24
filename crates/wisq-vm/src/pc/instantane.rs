@@ -821,7 +821,17 @@ pub fn reprendre(poste: &mut Poste, octets: &[u8]) -> Result<(), RefusDInstantan
     cpu.segments = lu.segments;
     cpu.efer = lu.efer;
     cpu.fault_code = lu.fault_code;
-    cpu.memory.bytes.fill(0);
+    // **Un bloc neuf plutôt qu'un `fill(0)`** : seules les pages que
+    // l'instantané porte sont écrites, et les autres restent celles que le
+    // système donne nulles sans les rendre résidentes. Remplir de zéros
+    // touchait toute la RAM : une session de 5 Gio dont 474 Mio servaient
+    // en prenait 5 d'un coup à la reprise, et iOS fermait l'application dans
+    // la seconde. Le bloc d'avant est rendu dès que le neuf prend sa place ;
+    // si le système refuse le second, le remplissage reste la reprise juste.
+    match super::memoire::bloc_nul(cpu.memory.bytes.len() as u64) {
+        Some(neuf) => cpu.memory.bytes = neuf,
+        None => cpu.memory.bytes.fill(0),
+    }
     for (rang, page) in pages {
         cpu.memory.bytes[rang * PAGE..rang * PAGE + page.len()].copy_from_slice(page);
     }

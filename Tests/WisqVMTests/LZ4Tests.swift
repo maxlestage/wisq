@@ -146,6 +146,42 @@ final class LZ4Tests: XCTestCase {
         XCTAssertEqual(try SnapshotFile.unpack(SnapshotFile.pack(Data())), Data())
     }
 
+    /// **Déplié dans un fichier projeté, le même instantané** — sans le tenir
+    /// en mémoire, et sans rien laisser dans le dossier : le fichier déplié
+    /// part dès qu'il est projeté. Un instantané d'avant passe tel quel, un
+    /// fichier abîmé est refusé et ne laisse rien non plus.
+    func testTheFileUnfoldsIntoAMappedFileAndLeavesNothingBehind() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-deplie-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var snapshot = [UInt8](repeating: 0, count: 2_500_000)
+        var state: UInt64 = 1
+        for index in 300_000..<1_900_000 {
+            state = state &* 6_364_136_223_846_793_005 &+ 1
+            snapshot[index] = index < 1_100_000 ? UInt8(truncatingIfNeeded: index / 10)
+                : UInt8(truncatingIfNeeded: state >> 33)
+        }
+        let source = folder.appendingPathComponent("machine.wisqvm")
+        let scratch = source.appendingPathExtension("deplie")
+        let packed = SnapshotFile.pack(Data(snapshot))
+        try packed.write(to: source)
+        // Un reste d'une reprise interrompue ne gêne pas.
+        try Data([1, 2, 3]).write(to: scratch)
+        XCTAssertEqual(try SnapshotFile.unpackMapped(fileAt: source, scratch: scratch), Data(snapshot))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["machine.wisqvm"])
+
+        let old = Data(Snapshot.magic + [1, 2, 3, 4])
+        try old.write(to: source)
+        XCTAssertEqual(try SnapshotFile.unpackMapped(fileAt: source, scratch: scratch), old)
+
+        try packed.dropLast(1).write(to: source)
+        XCTAssertThrowsError(try SnapshotFile.unpackMapped(fileAt: source, scratch: scratch))
+        try (packed + [0]).write(to: source)
+        XCTAssertThrowsError(try SnapshotFile.unpackMapped(fileAt: source, scratch: scratch))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["machine.wisqvm"])
+    }
+
     /// **Un instantané d'avant se lit tel quel**, et un fichier compressé
     /// abîmé est refusé.
     func testAnOldSnapshotPassesAndADamagedFileIsRefused() throws {

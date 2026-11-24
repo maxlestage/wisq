@@ -70,10 +70,19 @@ public enum SavedSession: Sendable {
         kernel: String, in directory: URL? = nil, core: GuestArchitecture.Core
     ) -> SavedSession {
         guard SuspendedMachine.exists(kernel: kernel, in: directory) else { return .none }
-        guard let folder = try? (directory ?? SuspendedMachine.directory()),
-              let file = try? Data(
-                contentsOf: folder.appendingPathComponent(SuspendedMachine.fileName(kernel: kernel)),
-                options: .mappedIfSafe),
+        guard let folder = try? (directory ?? SuspendedMachine.directory()) else {
+            return .unreadable(.damaged)
+        }
+        let source = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: kernel))
+        // **Déplié dans un fichier projeté, pas en mémoire** : l'instantané
+        // d'une grosse machine tenait à côté de la machine qui le reprenait,
+        // et iOS fermait l'application à la reprise (`unpackMapped`). Faute
+        // de place sur le stockage, il se déplie en mémoire comme avant.
+        let scratch = source.appendingPathExtension("deplie")
+        if let snapshot = try? SnapshotFile.unpackMapped(fileAt: source, scratch: scratch) {
+            return judge(snapshot, core: core)
+        }
+        guard let file = try? Data(contentsOf: source, options: .mappedIfSafe),
               let snapshot = try? SnapshotFile.unpack(file)
         else { return .unreadable(.damaged) }
         return judge(snapshot, core: core)
