@@ -131,7 +131,12 @@ public enum IsoBoot {
         let words = recipe
             .split(separator: " ", omittingEmptySubsequences: true)
             .filter { $0 != "quiet" }
+        // Une image qui demande AppArmor par son nom l'a choisi aussi.
+        let asksForAppArmor = words.contains {
+            $0 == "security=apparmor" || ($0.hasPrefix("lsm=") && $0.contains("apparmor"))
+        }
         let waits = added.filter { setting in
+            if setting == noAppArmor, asksForAppArmor { return false }
             let key = setting.prefix { $0 != "=" }
             return !words.contains { $0 == setting || $0.hasPrefix(key + "=") }
         }
@@ -229,8 +234,9 @@ public enum IsoBoot {
     ///
     /// **Ce que ça retire** : le confinement AppArmor des programmes de
     /// l'invité, snaps compris. C'est une machine émulée sur un téléphone,
-    /// dont rien ne sort que par wisq ; une image qui écrit `apparmor=1`
-    /// garde son choix. Sans effet sur les distributions qui ne l'ont pas.
+    /// dont rien ne sort que par wisq ; une image qui écrit `apparmor=1`,
+    /// `security=apparmor` ou un `lsm=` qui le nomme garde son choix. Sans
+    /// effet sur les distributions qui ne l'ont pas.
     static let noAppArmor = "apparmor=0"
 
     /// Ce que wisq ajoute à la ligne d'une image, chaque réglage seulement si

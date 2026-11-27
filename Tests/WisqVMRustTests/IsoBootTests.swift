@@ -739,6 +739,13 @@ final class IsoBootCommandLineTests: XCTestCase {
         let own = IsoBoot.commandLine(from: "boot=casper apparmor=1 security=apparmor")
         XCTAssertTrue(own.split(separator: " ").contains("apparmor=1"), own)
         XCTAssertFalse(own.split(separator: " ").contains("apparmor=0"), own)
+        // Demandé par son nom, sans `apparmor=1` : c'est un choix aussi.
+        for asked in ["root=/dev/vda security=apparmor", "root=/dev/vda lsm=landlock,yama,apparmor"] {
+            let line = IsoBoot.commandLine(from: asked)
+            XCTAssertFalse(line.split(separator: " ").contains("apparmor=0"), line)
+        }
+        let other = IsoBoot.commandLine(from: "root=/dev/vda security=selinux")
+        XCTAssertTrue(other.split(separator: " ").contains("apparmor=0"), other)
     }
 
     /// **Pas de parades spéculatives** : l'invité ne spécule pas, et les
