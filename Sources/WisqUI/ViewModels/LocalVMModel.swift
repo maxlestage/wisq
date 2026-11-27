@@ -116,9 +116,14 @@ public final class LocalVMModel {
         self.desktopPort = desktopPort
     }
 
-    public init(storageDirectory: URL? = nil) {
+    /// `hold` : ce qui tient l'application en vie quand une machine tourne
+    /// hors de l'écran (`BackgroundHold`). Les tests passent le leur.
+    public init(storageDirectory: URL? = nil, hold: BackgroundHold = .audio) {
         storage = storageDirectory
+        self.hold = hold
     }
+
+    private let hold: BackgroundHold
 
     /// Whether leaving and coming back would resume rather than restart.
     public var willResume: Bool {
@@ -622,6 +627,9 @@ public final class LocalVMModel {
             try SuspendedMachine.savePacked(packed, kernel: savedUnder, in: storageFolder)
         }
         self.checkpointed = checkpointed
+        // Un invité qui redémarre hors de l'écran : la nouvelle course garde
+        // l'allure d'arrière-plan.
+        if offScreen { checkpointed.setRestShare(BackgroundRun.restShare) }
         // Écrit par le fil **avant** qu'il ne signale `finished` : `suspend`,
         // qui attend ce signal, le lit donc sans course.
         let runStart = RunStart()
@@ -771,7 +779,11 @@ public final class LocalVMModel {
                 // système installé, une fois l'installation faite.
                 case .reboot:
                     if self.restarts.shouldRestart(at: Date()), let kernel = self.bootedKernel {
+                        // Elle repart juste après : ce qui tient
+                        // l'application en vie hors de l'écran reste ouvert.
+                        self.restartingInPlace = true
                         self.finish(with: "La machine redémarre." + silence)
+                        self.restartingInPlace = false
                         self.boot(kernelURL: kernel, installed: self.installed, keepingConsole: true)
                     } else {
                         self.finish(with: AutomaticRestart.loopExplanation + silence)
@@ -970,6 +982,8 @@ public final class LocalVMModel {
 
     /// La machine lâchée après une mise de côté, écrite ou non.
     private func letMachineGo() {
+        // Plus de machine : plus de raison de tenir l'application en vie.
+        hold.stop()
         ticker?.cancel()
         ticker = nil
         // L'écran part avec la machine : il n'a plus rien à montrer.
@@ -993,10 +1007,70 @@ public final class LocalVMModel {
     /// a dead terminal they can only escape by leaving the screen.
     public func scenePhaseChanged(to phase: ScenePhase, kernelURL: URL) {
         switch phase {
-        case .background: suspend()
-        case .active where shouldResumeOnReturn: boot(kernelURL: kernelURL, installed: installed)
-        default: break
+        case .inactive:
+            // **Avant de quitter l'écran**, pendant que l'application est
+            // encore au premier plan : iOS refuse une session audio demandée
+            // depuis l'arrière-plan. Refermée au retour si l'on ne part pas.
+            if !offScreen, runsOffScreen { _ = hold.start() }
+        case .background: leftTheScreen()
+        case .active:
+            cameBack()
+            if shouldResumeOnReturn { boot(kernelURL: kernelURL, installed: installed) }
+        @unknown default: break
         }
+    }
+
+    /// Le temps d'un `finish` suivi d'un `boot` : l'invité redémarre, et ce
+    /// qui tient l'application en vie n'est pas refermé entre les deux.
+    private var restartingInPlace = false
+
+    /// L'application n'est plus à l'écran, entre `.background` et `.active`.
+    /// Un invité qui redémarre pendant ce temps repart à l'allure réduite.
+    private var offScreen = false
+
+    /// Une machine tourne, et le réglage veut qu'elle continue hors de
+    /// l'écran (`BackgroundRun`).
+    private var runsOffScreen: Bool {
+        BackgroundRun.isEnabled(in: .standard) && machine != nil && status.isRunning
+    }
+
+    /// **L'application part en arrière-plan : la machine continue**, quand
+    /// `BackgroundRun` le dit ; sinon elle est mise de côté comme avant.
+    ///
+    /// Continuer, c'est trois choses. La session audio tient l'application
+    /// en vie (`BackgroundKeepAlive`). Une sauvegarde est demandée tout de
+    /// suite : si iOS arrête l'application quand même — pour sa mémoire, la
+    /// première reprise à une application d'arrière-plan — la session repart
+    /// de là. Et l'allure baisse, pour rester sous ce qu'iOS tolère d'une
+    /// application qu'on ne regarde pas.
+    private func leftTheScreen() {
+        let running = machine != nil && status.isRunning
+        let verdict = BackgroundRun.whenLeaving(
+            enabled: BackgroundRun.isEnabled(in: .standard), machineRunning: running,
+            keepAlive: { hold.start() })
+        offScreen = true
+        switch verdict {
+        case .setAside:
+            hold.stop()
+            suspend()
+        case .keepRunning:
+            // Une machine qui ne sauve pas de session n'en écrit pas ici non
+            // plus (`savesSessions`).
+            if let machine, savesSessions(machine) { checkpointed?.checkpointNow() }
+            checkpointed?.setRestShare(BackgroundRun.restShare)
+            // Un appel, une alarme : iOS prend la session audio et suspendra
+            // l'application. La machine est mise de côté, et reprise au retour.
+            hold.whenLost { [weak self] in
+                BackgroundKeepAlive.whileStillAwake { self?.suspend() }
+            }
+        }
+    }
+
+    /// Le retour à l'écran : pleine allure, et plus de session audio.
+    private func cameBack() {
+        offScreen = false
+        hold.stop()
+        checkpointed?.setRestShare(0)
     }
 
     /// **Relire la machine une fois par seconde, et en faire une phrase.**
@@ -1085,6 +1159,9 @@ public final class LocalVMModel {
     /// `**disque**` affiché avec ses astérisques. Passer par `ConsoleProse`
     /// coûte un appel et rend la phrase lisible.
     private func finish(with message: String) {
+        // Une machine finie hors de l'écran ne tient plus l'application en
+        // vie — sauf celle qui redémarre, que `boot` relance juste après.
+        if !restartingInPlace { hold.stop() }
         machine = nil
         runFinished = nil
         checkpointed = nil

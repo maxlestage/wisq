@@ -62,9 +62,96 @@ final class LocalVMModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: folder)
     }
 
+    /// **Sans rien pour tenir l'application en vie** : en arrière-plan, la
+    /// machine est mise de côté. C'est ce que fait l'application quand iOS
+    /// refuse la session audio, et ce que ces tests regardent ; la machine
+    /// qui continue a les siens plus bas, avec `Hold`.
     @MainActor
     private func model() -> LocalVMModel {
-        LocalVMModel(storageDirectory: folder)
+        LocalVMModel(storageDirectory: folder, hold: .nothing)
+    }
+
+    /// Ce qui tient l'application en vie, pour un test : accepté d'office, et
+    /// repris quand le test le dit.
+    @MainActor
+    private final class Hold {
+        var held = false
+        var lost: (@MainActor @Sendable () -> Void)?
+
+        var hold: BackgroundHold {
+            BackgroundHold(
+                start: { [self] in
+                    held = true
+                    return true
+                },
+                stop: { [self] in
+                    held = false
+                    lost = nil
+                },
+                whenLost: { [self] in lost = $0 })
+        }
+    }
+
+    /// **L'application part en arrière-plan et la machine continue**, quand
+    /// quelque chose tient l'application en vie : rien n'est arrêté, une
+    /// sauvegarde est écrite tout de suite, et le retour la retrouve en
+    /// marche, sans rien reprendre.
+    @MainActor
+    func testAMachineKeepsRunningInTheBackgroundWhenTheAppIsHeld() {
+        let held = Hold()
+        let model = LocalVMModel(storageDirectory: folder, hold: held.hold)
+        model.boot(kernelURL: kernel)
+        waitUntil("l'invité doit avoir écrit quelque chose") { !model.consoleText.isEmpty }
+
+        model.scenePhaseChanged(to: .inactive, kernelURL: kernel)
+        XCTAssertTrue(held.held, "tenue avant de quitter l'écran")
+        model.scenePhaseChanged(to: .background, kernelURL: kernel)
+        XCTAssertEqual(model.status, .running, "la machine continue hors de l'écran")
+        waitUntil("une sauvegarde est écrite en partant") { self.savedMachine != nil }
+
+        model.scenePhaseChanged(to: .active, kernelURL: kernel)
+        XCTAssertEqual(model.status, .running)
+        XCTAssertFalse(held.held, "plus rien à tenir une fois revenue à l'écran")
+        model.stop()
+    }
+
+    /// **iOS reprend ce qui tenait l'application** — un appel : la machine
+    /// est mise de côté comme avant, et reprise au retour.
+    @MainActor
+    func testAMachineIsSetAsideWhenTheHoldIsLostInTheBackground() throws {
+        let held = Hold()
+        let model = LocalVMModel(storageDirectory: folder, hold: held.hold)
+        model.boot(kernelURL: kernel)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        model.scenePhaseChanged(to: .background, kernelURL: kernel)
+        XCTAssertEqual(model.status, .running)
+
+        try XCTUnwrap(held.lost, "le modèle doit avoir dit quoi faire")()
+        XCTAssertEqual(model.status, .idle, "mise de côté")
+        XCTAssertNotNil(savedMachine)
+        XCTAssertFalse(held.held)
+
+        model.scenePhaseChanged(to: .active, kernelURL: kernel)
+        XCTAssertEqual(model.status, .running, "revenir doit reprendre la machine")
+        model.stop()
+    }
+
+    /// Une interruption passagère — le centre de notifications — ouvre de quoi
+    /// tenir, au cas où l'on parte, et le referme au retour.
+    @MainActor
+    func testAMomentaryInterruptionHoldsAndLetsGo() {
+        let held = Hold()
+        let model = LocalVMModel(storageDirectory: folder, hold: held.hold)
+        model.scenePhaseChanged(to: .inactive, kernelURL: kernel)
+        XCTAssertFalse(held.held, "sans machine, rien à tenir")
+        model.boot(kernelURL: kernel)
+        model.scenePhaseChanged(to: .inactive, kernelURL: kernel)
+        XCTAssertTrue(held.held)
+        model.scenePhaseChanged(to: .active, kernelURL: kernel)
+        XCTAssertFalse(held.held)
+        XCTAssertEqual(model.status, .running)
+        XCTAssertNil(savedMachine, "et rien n'est écrit")
+        model.stop()
     }
 
     /// The emulator runs on its own thread and reports back through the main

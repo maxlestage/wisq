@@ -110,6 +110,14 @@ targets:
         NSLocalNetworkUsageDescription: >-
           wisq se connecte aux machines de votre réseau local pour afficher
           leur écran.
+        # **Une machine continue hors de l'écran.** iOS suspend en quelques
+        # secondes une application d'arrière-plan qui ne déclare rien ; celle
+        # qui déclare `audio` et tient une session audio ouverte continue
+        # (`BackgroundKeepAlive`, qui ne joue que du silence). Une revue de
+        # l'App Store peut refuser cet usage du mode : c'est dit dans
+        # `WisqVM.BackgroundRun`.
+        UIBackgroundModes:
+          - audio
         # Le lien d'appairage que le démon imprime et que le QR encode.
         CFBundleURLTypes:
           - CFBundleURLName: app.wisq.pairing

@@ -92,11 +92,9 @@ public struct SessionView: View {
         .persistentSystemOverlays(.hidden)
         .onAppear {
             connect()
-            UIApplication.shared.isIdleTimerDisabled = model.machine.display.keepScreenAwake
         }
         .onDisappear {
             model.disconnect()
-            UIApplication.shared.isIdleTimerDisabled = false
         }
         .onChange(of: model.clipboardFromGuest) { _, text in
             // The guest owning the clipboard is the whole point of a remote session:
