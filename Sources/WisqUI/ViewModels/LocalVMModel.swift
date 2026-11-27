@@ -779,7 +779,11 @@ public final class LocalVMModel {
                 // système installé, une fois l'installation faite.
                 case .reboot:
                     if self.restarts.shouldRestart(at: Date()), let kernel = self.bootedKernel {
-                        self.finish(with: "La machine redémarre." + silence, restarting: true)
+                        // Elle repart juste après : ce qui tient
+                        // l'application en vie hors de l'écran reste ouvert.
+                        self.restartingInPlace = true
+                        self.finish(with: "La machine redémarre." + silence)
+                        self.restartingInPlace = false
                         self.boot(kernelURL: kernel, installed: self.installed, keepingConsole: true)
                     } else {
                         self.finish(with: AutomaticRestart.loopExplanation + silence)
@@ -1016,6 +1020,10 @@ public final class LocalVMModel {
         }
     }
 
+    /// Le temps d'un `finish` suivi d'un `boot` : l'invité redémarre, et ce
+    /// qui tient l'application en vie n'est pas refermé entre les deux.
+    private var restartingInPlace = false
+
     /// L'application n'est plus à l'écran, entre `.background` et `.active`.
     /// Un invité qui redémarre pendant ce temps repart à l'allure réduite.
     private var offScreen = false
@@ -1150,10 +1158,10 @@ public final class LocalVMModel {
     /// d'écran l'a montré — « aucun réglage ne changer / a ça », et un
     /// `**disque**` affiché avec ses astérisques. Passer par `ConsoleProse`
     /// coûte un appel et rend la phrase lisible.
-    private func finish(with message: String, restarting: Bool = false) {
+    private func finish(with message: String) {
         // Une machine finie hors de l'écran ne tient plus l'application en
         // vie — sauf celle qui redémarre, que `boot` relance juste après.
-        if !restarting { hold.stop() }
+        if !restartingInPlace { hold.stop() }
         machine = nil
         runFinished = nil
         checkpointed = nil
