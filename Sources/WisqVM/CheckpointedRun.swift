@@ -31,6 +31,7 @@ public final class CheckpointedRun: @unchecked Sendable {
     private let write: @Sendable (Data) throws -> Void
     private let perform: @Sendable (@escaping @Sendable () -> Void) -> Void
     private let raw: RawSaving?
+    private let pause: @Sendable (TimeInterval) -> Void
 
     /// **Sauver sans tenir l'instantané en mémoire** : le cœur l'écrit dans
     /// un fichier brut (`take`, sur le fil d'émulation), il est compressé à
@@ -65,6 +66,10 @@ public final class CheckpointedRun: @unchecked Sendable {
     /// Une sauvegarde est partie et n'a pas fini : la suivante attend.
     private var writing = false
     private var written = 0
+    /// `checkpointNow` : la prochaine tranche sauve sans attendre l'intervalle.
+    private var checkpointRequested = false
+    /// `setRestShare` : la part du temps où le fil d'émulation se repose.
+    private var restShare = 0.0
 
     /// Combien de sauvegardes ont été écrites.
     public var checkpoints: Int {
@@ -87,6 +92,9 @@ public final class CheckpointedRun: @unchecked Sendable {
                     DispatchQueue(label: "app.wisq.checkpoint", qos: .utility).async(execute: $0)
                 },
                 raw: RawSaving? = nil,
+                pause: @escaping @Sendable (TimeInterval) -> Void = { seconds in
+                    if seconds > 0 { Thread.sleep(forTimeInterval: seconds) }
+                },
                 write: @escaping @Sendable (Data) throws -> Void) {
         self.machine = machine
         self.interval = interval
@@ -96,6 +104,7 @@ public final class CheckpointedRun: @unchecked Sendable {
         self.pack = pack
         self.perform = perform
         self.raw = raw
+        self.pause = pause
         self.write = write
     }
 
@@ -110,6 +119,7 @@ public final class CheckpointedRun: @unchecked Sendable {
         var savedAt = clock()
         var workAtSave = machine.retiredInstructions
         while true {
+            let sliceStart = DispatchTime.now().uptimeNanoseconds
             let outcome = machine.runGuest(instructionBudget: slice)
             guard outcome == .stopped else {
                 // **L'invité a fini de lui-même** (extinction, redémarrage,
@@ -123,9 +133,17 @@ public final class CheckpointedRun: @unchecked Sendable {
                 return outcome
             }
             guard !stopWasRequested else { return outcome }
+            lock.lock()
+            let share = restShare
+            let asked = checkpointRequested
+            lock.unlock()
+            if share > 0 {
+                let ran = Double(DispatchTime.now().uptimeNanoseconds &- sliceStart) / 1e9
+                pause(Self.rest(after: ran, share: share))
+            }
             let now = clock()
             let work = machine.retiredInstructions &- workAtSave
-            guard now.timeIntervalSince(savedAt) >= interval, work >= minimumWork else { continue }
+            guard asked || (now.timeIntervalSince(savedAt) >= interval && work >= minimumWork) else { continue }
             lock.lock()
             if stopRequested {
                 lock.unlock()
@@ -142,6 +160,9 @@ public final class CheckpointedRun: @unchecked Sendable {
                 continue
             }
             writing = true
+            // La demande est servie par cette sauvegarde-ci ; gardée tant
+            // qu'une écriture en cours la faisait attendre.
+            checkpointRequested = false
             lock.unlock()
             // Le disque d'abord, comme à la suspension : ses écritures sont
             // déjà sur le stockage, ceci les y scelle avant que l'instantané
@@ -190,6 +211,37 @@ public final class CheckpointedRun: @unchecked Sendable {
             savedAt = clock()
             workAtSave = machine.retiredInstructions
         }
+    }
+
+    /// **Sauver à la prochaine tranche**, sans attendre l'intervalle ni le
+    /// travail minimal. C'est ce que fait l'application quand elle part en
+    /// arrière-plan en laissant la machine tourner : si iOS l'arrête quand
+    /// même, la session reprend de là, pas de cinq minutes plus tôt.
+    public func checkpointNow() {
+        lock.lock()
+        checkpointRequested = true
+        lock.unlock()
+    }
+
+    /// **La part du temps où le fil d'émulation se repose**, entre zéro
+    /// (pleine vitesse) et `maximumRestShare`. En arrière-plan, iOS arrête une
+    /// application qui tient un cœur à plus de 80 % pendant une minute : la
+    /// machine y tourne à une allure qui reste sous ce seuil, au lieu d'être
+    /// arrêtée.
+    public func setRestShare(_ share: Double) {
+        lock.lock()
+        restShare = min(max(share, 0), Self.maximumRestShare)
+        lock.unlock()
+    }
+
+    public static let maximumRestShare = 0.9
+
+    /// Combien se reposer après une tranche de `seconds` secondes pour que le
+    /// repos fasse `share` du temps total.
+    public static func rest(after seconds: Double, share: Double) -> Double {
+        guard share > 0, seconds > 0 else { return 0 }
+        let bounded = min(share, maximumRestShare)
+        return seconds * bounded / (1 - bounded)
     }
 
     /// Arrête la machine, depuis n'importe quel fil.

@@ -222,7 +222,6 @@ public struct MachineEditorView: View {
                         )
                     }
                 }
-                Toggle("Garder l'écran allumé", isOn: $draft.machine.display.keepScreenAwake)
             }
 
             Section("Pointeur et clavier") {

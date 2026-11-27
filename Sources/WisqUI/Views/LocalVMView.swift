@@ -1731,7 +1731,6 @@ struct LocalVMTerminalView: View {
         // l'écran à qui ne venait que regarder.
         .onAppear {
             if bootsOnAppear { model.boot(kernelURL: kernelURL, installed: installed) }
-            UIApplication.shared.isIdleTimerDisabled = true
         }
         // Leaving the screen suspends rather than stops: the machine is put
         // down where it stands and picked up on the next visit — "Fermer"
@@ -1739,7 +1738,6 @@ struct LocalVMTerminalView: View {
         // word has to mean.
         .onDisappear {
             model.suspend()
-            UIApplication.shared.isIdleTimerDisabled = false
         }
         // And the same when iOS takes the app away, which it can do without
         // the view ever disappearing. Saving here is the whole reason the

@@ -200,6 +200,43 @@ final class CheckpointedRunTests: XCTestCase {
                        [SuspendedMachine.fileName(kernel: "suspension")])
     }
 
+    /// **Une sauvegarde demandée n'attend pas l'intervalle** : l'application
+    /// qui part en arrière-plan en laissant la machine tourner la demande, pour
+    /// reprendre de là si iOS l'arrête quand même. Sans demande, l'horloge
+    /// immobile n'en écrit aucune ; avec, une seule, à la tranche suivante.
+    func testACheckpointAskedForDoesNotWaitForTheInterval() {
+        let machine = CountingMachine(work: 10, slicesBeforePowerOff: 6)
+        let box = Saved()
+        let frozen = Date()
+        let run = CheckpointedRun(
+            machine: machine, interval: 300, minimumWork: 1_000_000, clock: { frozen },
+            pack: { $0 }, perform: { $0() }, write: { box.append($0) })
+        machine.onSlice = { slice in if slice == 3 { run.checkpointNow() } }
+        XCTAssertEqual(run.run(), .powerOff)
+        XCTAssertEqual(run.checkpoints, 1, "une seule, celle qui a été demandée")
+        XCTAssertEqual(box.all.first?.withUnsafeBytes { $0.load(as: UInt64.self) }, 30)
+    }
+
+    /// **En arrière-plan, le fil d'émulation se repose une part du temps**,
+    /// pour rester sous ce qu'iOS tolère d'une application qu'on ne regarde
+    /// pas : un repos après chaque tranche, proportionné à ce qu'elle a duré,
+    /// et aucun à pleine vitesse.
+    func testTheEmulationThreadRestsAShareOfTheTimeWhenAskedTo() {
+        XCTAssertEqual(CheckpointedRun.rest(after: 0.7, share: 0.3), 0.3, accuracy: 1e-9)
+        XCTAssertEqual(CheckpointedRun.rest(after: 1, share: 0), 0)
+        XCTAssertEqual(CheckpointedRun.rest(after: 1, share: 5), 9, accuracy: 1e-9, "bornée à maximumRestShare")
+        for (share, expected) in [(0.0, 0), (0.3, 5)] {
+            let machine = CountingMachine(work: 10, slicesBeforePowerOff: 6)
+            let rests = Saved()
+            let run = CheckpointedRun(
+                machine: machine, interval: .infinity, clock: { Date() }, perform: { $0() },
+                pause: { _ in rests.append(Data([1])) }, write: { _ in })
+            run.setRestShare(share)
+            XCTAssertEqual(run.run(), .powerOff)
+            XCTAssertEqual(rests.all.count, expected, "part \(share) : un repos par tranche rendue")
+        }
+    }
+
     /// **Une machine qui dort n'est pas réécrite.** L'intervalle passe, mais
     /// rien n'a été retiré : la sauvegarde d'avant vaut celle-ci.
     func testAnIdleMachineIsNotRewritten() {
