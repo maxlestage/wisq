@@ -730,6 +730,24 @@ final class IsoBootCommandLineTests: XCTestCase {
         XCTAssertTrue(line.split(separator: " ").contains("systemd.mask=systemd-time-wait-sync.service"), line)
     }
 
+    /// **Pas d'AppArmor dans l'invité** : la compilation des profils des
+    /// snaps retenait l'écran de connexion d'Ubuntu d'un tiers de plus. Une
+    /// image qui en décide garde son choix.
+    func testAppArmorIsOffUnlessTheImageSaysOtherwise() {
+        let line = IsoBoot.commandLine(from: "boot=casper --- splash")
+        XCTAssertEqual(line.split(separator: " ").filter { $0 == "apparmor=0" }.count, 1, line)
+        let own = IsoBoot.commandLine(from: "boot=casper apparmor=1 security=apparmor")
+        XCTAssertTrue(own.split(separator: " ").contains("apparmor=1"), own)
+        XCTAssertFalse(own.split(separator: " ").contains("apparmor=0"), own)
+        // Demandé par son nom, sans `apparmor=1` : c'est un choix aussi.
+        for asked in ["root=/dev/vda security=apparmor", "root=/dev/vda lsm=landlock,yama,apparmor"] {
+            let line = IsoBoot.commandLine(from: asked)
+            XCTAssertFalse(line.split(separator: " ").contains("apparmor=0"), line)
+        }
+        let other = IsoBoot.commandLine(from: "root=/dev/vda security=selinux")
+        XCTAssertTrue(other.split(separator: " ").contains("apparmor=0"), other)
+    }
+
     /// **Pas de parades spéculatives** : l'invité ne spécule pas, et les
     /// retpolines coûtent un aller-retour par appel indirect au traducteur.
     /// Une image qui en décide garde son choix.
