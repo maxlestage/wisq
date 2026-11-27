@@ -104,18 +104,19 @@ final class BackgroundKeepAlive {
                                queue: .main) { [weak self] note in
                 let kind = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
                 let began = kind == AVAudioSession.InterruptionType.began.rawValue
-                Task { @MainActor [weak self] in
-                    if began { self?.lost() }
-                }
+                // **Sur place**, pas dans une tâche : la file est la
+                // principale, et iOS suspend l'application dans les secondes
+                // qui suivent — la mise de côté ne peut pas attendre un tour.
+                if began { MainActor.assumeIsolated { self?.lost() } }
             },
             // Une sortie qui change (des écouteurs retirés) arrête le moteur.
             center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
                                queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.reopen() }
+                MainActor.assumeIsolated { self?.reopen() }
             },
             center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session,
                                queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.reopen() }
+                MainActor.assumeIsolated { self?.reopen() }
             },
         ]
         return true
