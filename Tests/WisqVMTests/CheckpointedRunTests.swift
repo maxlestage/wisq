@@ -181,6 +181,25 @@ final class CheckpointedRunTests: XCTestCase {
                        [SuspendedMachine.fileName(kernel: "deux")], "aucun fichier de travail ne reste")
     }
 
+    /// **La suspension installe le brut sans le compresser** : iOS ne laisse
+    /// que quelques secondes à une application qui part en arrière-plan, et
+    /// la compression en prenait plus que ça pour une grosse session. Le
+    /// fichier se relit tel quel, et rien ne reste à côté.
+    func testTheSuspensionInstallsTheRawSnapshotWithoutCompressing() throws {
+        let machine = CountingMachine(work: 1_000, slicesBeforePowerOff: 20)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-suspension-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = machine.runGuest(instructionBudget: 1)
+        try SuspendedMachine.save(machine: machine, kernel: "suspension", in: folder)
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: "suspension"))
+        XCTAssertEqual(try Data(contentsOf: file), machine.snapshot(), "le brut, sans la marque de SnapshotFile")
+        XCTAssertEqual(SuspendedMachine.load(kernel: "suspension", in: folder), machine.snapshot())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path),
+                       [SuspendedMachine.fileName(kernel: "suspension")])
+    }
+
     /// **Une machine qui dort n'est pas réécrite.** L'intervalle passe, mais
     /// rien n'a été retiré : la sauvegarde d'avant vaut celle-ci.
     func testAnIdleMachineIsNotRewritten() {

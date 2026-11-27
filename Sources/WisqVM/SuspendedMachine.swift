@@ -194,13 +194,21 @@ public enum SuspendedMachine {
         try installPacked(try compressRaw(raw, kernel: kernel, in: directory), kernel: kernel, in: directory)
     }
 
-    /// Les deux d'un trait : la suspension, quand iOS met l'application en
-    /// arrière-plan.
+    /// **La suspension**, quand iOS met l'application en arrière-plan : le
+    /// brut prend la place de la session **sans être compressé**.
+    ///
+    /// iOS ne laisse que quelques secondes à une application qui part en
+    /// arrière-plan, et la tue passé ce délai. Compressée, la mise de côté
+    /// d'Omarchy après son invite prenait 9,1 s (779 Mio) : l'application
+    /// était tuée avant d'avoir installé la session, et y revenir relançait
+    /// le démarrage depuis le début. Un fichier sans la marque de
+    /// `SnapshotFile` se relit tel quel, et la sauvegarde périodique suivante
+    /// le remplace par un compressé : il n'en coûte que la place, d'ici là.
     public static func save(machine: GuestMachine, kernel: String, in directory: URL? = nil) throws {
         guard let raw = takeRaw(of: machine, kernel: kernel, in: directory) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        try packRaw(raw, kernel: kernel, in: directory)
+        try installPacked(raw, kernel: kernel, in: directory)
     }
 
     /// La même écriture, d'un instantané **déjà compressé** par
