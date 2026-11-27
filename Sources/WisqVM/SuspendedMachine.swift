@@ -116,9 +116,20 @@ public enum SuspendedMachine {
     /// En deux temps, pour `CheckpointedRun` : `takeRaw` sur le fil
     /// d'émulation, machine arrêtée entre deux tranches ; `packRaw` à côté,
     /// pendant que l'invité repart.
+    ///
+    /// **Chaque sauvegarde a ses propres fichiers de travail** (`.brut-…`,
+    /// puis `.compression-…`, d'un même tirage). Ils portaient un nom fixe, et
+    /// deux sauvegardes peuvent se chevaucher : la suspension — l'application
+    /// qui passe en arrière-plan, « Fermer » — prend la sienne pendant que la
+    /// sauvegarde périodique compresse encore la précédente, projetée en
+    /// mémoire. Le brut récrit sous elle était tronqué : erreur de bus, et
+    /// l'application fermée ; ou deux écritures mêlées dans le même fichier
+    /// compressé. Les restes d'une sauvegarde interrompue partent ici — un
+    /// fichier retiré du dossier reste lisible par qui le projette déjà.
     public static func takeRaw(of machine: GuestMachine, kernel: String, in directory: URL? = nil) -> URL? {
         guard let folder = try? (directory ?? Self.directory()) else { return nil }
-        let raw = folder.appendingPathComponent(fileName(kernel: kernel) + ".brut")
+        removeWorkFiles(kernel: kernel, in: folder)
+        let raw = folder.appendingPathComponent(fileName(kernel: kernel) + rawMark + UUID().uuidString)
         guard machine.writeSnapshot(to: raw) else {
             try? FileManager.default.removeItem(at: raw)
             return nil
@@ -131,7 +142,9 @@ public enum SuspendedMachine {
     public static func compressRaw(_ raw: URL, kernel: String, in directory: URL? = nil) throws -> URL {
         defer { try? FileManager.default.removeItem(at: raw) }
         let folder = try directory ?? Self.directory()
-        let packing = folder.appendingPathComponent(fileName(kernel: kernel) + ".compression")
+        // Le même tirage que le brut : deux sauvegardes ne partagent rien.
+        let draw = raw.lastPathComponent.components(separatedBy: rawMark).dropFirst().last ?? UUID().uuidString
+        let packing = folder.appendingPathComponent(fileName(kernel: kernel) + packingMark + draw)
         do {
             try SnapshotFile.pack(fileAt: raw, to: packing)
         } catch {
@@ -139,6 +152,24 @@ public enum SuspendedMachine {
             throw error
         }
         return packing
+    }
+
+    static let rawMark = ".brut-"
+    static let packingMark = ".compression-"
+
+    /// **Les fichiers de travail d'une sauvegarde** de ce noyau encore dans
+    /// le dossier : le brut, la compression, et ce qu'une reprise interrompue
+    /// aurait laissé déplié (`SnapshotFile.unpackMapped`).
+    static func workFiles(kernel: String, in folder: URL) -> [URL] {
+        let name = fileName(kernel: kernel)
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return entries
+            .filter { $0.hasPrefix(name + rawMark) || $0.hasPrefix(name + packingMark) || $0 == name + ".deplie" }
+            .map { folder.appendingPathComponent($0) }
+    }
+
+    static func removeWorkFiles(kernel: String, in folder: URL) {
+        for file in workFiles(kernel: kernel, in: folder) { try? FileManager.default.removeItem(at: file) }
     }
 
     /// Second temps : le fichier compressé prend la place de la session, d'un
@@ -163,13 +194,21 @@ public enum SuspendedMachine {
         try installPacked(try compressRaw(raw, kernel: kernel, in: directory), kernel: kernel, in: directory)
     }
 
-    /// Les deux d'un trait : la suspension, quand iOS met l'application en
-    /// arrière-plan.
+    /// **La suspension**, quand iOS met l'application en arrière-plan : le
+    /// brut prend la place de la session **sans être compressé**.
+    ///
+    /// iOS ne laisse que quelques secondes à une application qui part en
+    /// arrière-plan, et la tue passé ce délai. Compressée, la mise de côté
+    /// d'Omarchy après son invite prenait 9,1 s (779 Mio) : l'application
+    /// était tuée avant d'avoir installé la session, et y revenir relançait
+    /// le démarrage depuis le début. Un fichier sans la marque de
+    /// `SnapshotFile` se relit tel quel, et la sauvegarde périodique suivante
+    /// le remplace par un compressé : il n'en coûte que la place, d'ici là.
     public static func save(machine: GuestMachine, kernel: String, in directory: URL? = nil) throws {
         guard let raw = takeRaw(of: machine, kernel: kernel, in: directory) else {
             throw CocoaError(.fileWriteUnknown)
         }
-        try packRaw(raw, kernel: kernel, in: directory)
+        try installPacked(raw, kernel: kernel, in: directory)
     }
 
     /// La même écriture, d'un instantané **déjà compressé** par
@@ -223,10 +262,9 @@ public enum SuspendedMachine {
         try? FileManager.default.removeItem(
             at: folder.appendingPathComponent(fileName(kernel: kernel))
         )
-        // Et ce qu'une reprise interrompue aurait laissé déplié à côté
-        // (`SnapshotFile.unpackMapped`).
-        try? FileManager.default.removeItem(
-            at: folder.appendingPathComponent(fileName(kernel: kernel)).appendingPathExtension("deplie"))
+        // Et ce qu'une sauvegarde ou une reprise interrompue aurait laissé à
+        // côté (`workFiles`).
+        removeWorkFiles(kernel: kernel, in: folder)
         // La marque d'une première reprise part avec la session qu'elle
         // décrivait (`FirstResume`).
         FirstResume.disarm(kernel: kernel, in: folder)

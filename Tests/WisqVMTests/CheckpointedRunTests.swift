@@ -148,8 +148,56 @@ final class CheckpointedRunTests: XCTestCase {
         let back = try XCTUnwrap(SuspendedMachine.load(kernel: "brut", in: folder))
         XCTAssertEqual(back.withUnsafeBytes { $0.load(as: UInt64.self) }, 15_000)
         let left = try FileManager.default.contentsOfDirectory(atPath: folder.path)
-        XCTAssertEqual(left.filter { $0.hasSuffix(".brut") || $0.hasSuffix(".compression") }, [],
+        XCTAssertEqual(left.filter { $0.contains(".brut") || $0.contains(".compression") }, [],
                        "ni brut ni compression ne restent")
+    }
+
+    /// **Deux sauvegardes qui se chevauchent ne partagent pas leurs
+    /// fichiers.** La suspension prend la sienne pendant que la sauvegarde
+    /// périodique compresse encore la précédente, projetée en mémoire : sous
+    /// un nom fixe, le brut était récrit sous elle — tronqué quand la machine
+    /// avait changé de taille, d'où une erreur de bus et l'application fermée.
+    /// Le brut de la première reste lisible par qui le projette, la session
+    /// installée est celle de la suspension, et rien ne reste dans le dossier.
+    func testTwoOverlappingSavesDoNotShareTheirWorkFiles() throws {
+        let machine = CountingMachine(work: 1_000, slicesBeforePowerOff: 20)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-deux-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = machine.runGuest(instructionBudget: 1)
+        let periodic = try XCTUnwrap(SuspendedMachine.takeRaw(of: machine, kernel: "deux", in: folder))
+        // La compression de la sauvegarde périodique : le brut projeté.
+        let mapped = try Data(contentsOf: periodic, options: .alwaysMapped)
+        _ = machine.runGuest(instructionBudget: 1)
+        let suspension = try XCTUnwrap(SuspendedMachine.takeRaw(of: machine, kernel: "deux", in: folder))
+        XCTAssertNotEqual(periodic.lastPathComponent, suspension.lastPathComponent)
+        XCTAssertEqual(mapped.withUnsafeBytes { $0.load(as: UInt64.self) }, 1_000,
+                       "le brut de la première n'a pas été récrit sous sa compression")
+        try SuspendedMachine.packRaw(suspension, kernel: "deux", in: folder)
+        let back = try XCTUnwrap(SuspendedMachine.load(kernel: "deux", in: folder))
+        XCTAssertEqual(back.withUnsafeBytes { $0.load(as: UInt64.self) }, 2_000, "la session est celle de la suspension")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path),
+                       [SuspendedMachine.fileName(kernel: "deux")], "aucun fichier de travail ne reste")
+    }
+
+    /// **La suspension installe le brut sans le compresser** : iOS ne laisse
+    /// que quelques secondes à une application qui part en arrière-plan, et
+    /// la compression en prenait plus que ça pour une grosse session. Le
+    /// fichier se relit tel quel, et rien ne reste à côté.
+    func testTheSuspensionInstallsTheRawSnapshotWithoutCompressing() throws {
+        let machine = CountingMachine(work: 1_000, slicesBeforePowerOff: 20)
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wisq-suspension-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        _ = machine.runGuest(instructionBudget: 1)
+        try SuspendedMachine.save(machine: machine, kernel: "suspension", in: folder)
+        let file = folder.appendingPathComponent(SuspendedMachine.fileName(kernel: "suspension"))
+        XCTAssertEqual(try Data(contentsOf: file), machine.snapshot(), "le brut, sans la marque de SnapshotFile")
+        XCTAssertEqual(SuspendedMachine.load(kernel: "suspension", in: folder), machine.snapshot())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path),
+                       [SuspendedMachine.fileName(kernel: "suspension")])
     }
 
     /// **Une machine qui dort n'est pas réécrite.** L'intervalle passe, mais

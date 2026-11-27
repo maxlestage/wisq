@@ -373,6 +373,16 @@ fn ecrire_la_ram(
     Ok(())
 }
 
+/// **Cette page est-elle nulle ?** Comparée d'un bloc à une page de zéros,
+/// pas octet par octet : le relevé parcourt toute la RAM à chaque sauvegarde,
+/// et pour une machine de 5 Gio l'itération prenait 2,3 s là où la
+/// comparaison en prend 0,1 — sur une mise de côté qu'iOS ne laisse durer que
+/// quelques secondes.
+fn page_nulle(page: &[u8]) -> bool {
+    const ZEROS: [u8; PAGE] = [0; PAGE];
+    page == &ZEROS[..page.len()]
+}
+
 /// Tout ce qui précède les pages de la RAM, la carte de ces pages, et leur
 /// nombre.
 fn entete(poste: &Poste) -> Result<(Vec<u8>, Vec<u8>, usize), RefusDeSauvegarde> {
@@ -504,7 +514,7 @@ fn entete(poste: &Poste) -> Result<(Vec<u8>, Vec<u8>, usize), RefusDeSauvegarde>
     let mut carte = vec![0u8; ram.len().div_ceil(PAGE).div_ceil(8)];
     let mut servies = 0usize;
     for (rang, page) in ram.chunks(PAGE).enumerate() {
-        if page.iter().any(|&octet| octet != 0) {
+        if !page_nulle(page) {
             carte[rang / 8] |= 1 << (rang % 8);
             servies += 1;
         }
